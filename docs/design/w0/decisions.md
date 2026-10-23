@@ -66,3 +66,15 @@ Merged: sm-geom-api + sm-topo-api (faa768b), sm-model-api on top (7433b24). The 
 ## Follow-ups (not blocking, tracked for W1/W3)
 - geom hash: scale the `quantize_scale_free` zero cutoff by the largest magnitude in each definition, so cancellation noise after large translations hashes as zero.
 - model composites: match Part/Whole faces by base face across members, so interface faces are internal; make `pieces_of_face` agree with `piece_faces`; include `PieceShape::Sweep` CutIds in the `check_integrity` max-id scan.
+
+# W0e orchestrator decisions (2026-10-23)
+
+Merged: sm-scheme-api (5dbf6de; base = the `constraint` candidate, recommendation in `scheme-recommendation.md`) and sm-testkit (8dc2ef6). The losing candidates are kept as `archive/w0/scheme/*` tags.
+
+## API change requests (all three scheme designers raised the first three independently)
+1. **Classification onto decomposition entities:** accepted. `Classification::dim` accepts `PartitionVertex` (0), `PartitionEdge` (1) and `PartitionFace` (2), with `Param::fits` allowing the parameters that make sense (Curve/Surface when the virtual cell has a carrier, otherwise None).
+2. **Cut faces get persistent ids:** accepted. Keep the W0c Q5 rule that the topology overlay mints `Partition*` ids. Add a virtual volume split to the sm-topo-api `Overlay`, which creates the cut face, its edges and its vertices as `Partition*` cells. sm-model-api's `Decomposition` records the `CutId → overlay ids` mapping (persisted, never reused, deterministic), and a resolver returns the cells of any `PieceFace`. That lets split pieces be meshed and classified.
+3. **schemars features** on sm-topo-api and sm-model-api for the types used inside `MeshIntent`/`Plan`: accepted.
+4. **Duplicate transform algebra** in sm-scheme-api: remove it and use sm-core's `Transform::compose`/`inverse`. Index-map helpers stay.
+5. **Surface-only meshes:** accepted as a requirement (shell elements, sheet bodies, surface previews, deck-face checks). Recommended design: sm-mesh-api meshes carry a topological dimension, and a dim-2 mesh keeps the face-first invariants one level down (cells are polygons, facets are edges, facet→(left, right)). The fixer and the reviewer may choose otherwise only with a written reason.
+6. **Many-to-one sweep with several source faces into one target:** blocking. It is a core Cubit capability and needs a real test.
