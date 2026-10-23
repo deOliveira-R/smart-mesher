@@ -123,7 +123,7 @@ fn composite_rejects_different_volumes_sides_and_foreign_edges() {
 
     // A face sharing an edge with a face outside the composite (non-manifold fin).
     let mut t2 = CellComplex::new();
-    let (b2, fin) = with_op(&mut t2, OpId(1), |t| fixtures::brick_with_fin(t)).unwrap();
+    let (b2, fin) = with_op(&mut t2, OpId(1), fixtures::brick_with_fin).unwrap();
     let host2: Arc<dyn TopologyView> = Arc::new(t2);
     let mut ov2 = Overlay::new(host2);
     let err = ov2.composite_faces(&[b2.faces[0], b2.faces[2]]);

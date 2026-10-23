@@ -1,94 +1,73 @@
-# sm-topo-api: design (candidate "cellcomplex")
+# sm-topo-api: final design (frozen after W0c)
 
-The cellular non-manifold complex as **cells per dimension plus one oriented incidence relation**, with geometry attached as carriers through a GMI-like store, and everything else (loops, coedges, shells, face uses, face sides) *derived*, not stored.
+The cellular non-manifold complex: read trait, edit trait, reference implementation, decomposition overlay, validators and fixtures. Depends on `sm-core`, `sm-geom-api`, `thiserror`, `smallvec`; `serde` behind the `serde` feature. Base: panel candidate `cellcomplex`, plus the grafts and must-fix items of `docs/design/w0/geomtopo-recommendation.md`, as modified by the W0c decisions. **Instancing is not here** (Q8): prototypes, instances, lattices and their locations live in `sm-model-api`; each topology complex is self-contained.
 
-## The one idea
+## Model
 
-A complex is a set of cells of rank 0..3 (+ a grouping rank for bodies) and **one** incidence relation, stored as CSR boundary rows. Every entry carries the same tag, `Side { Left, Right, Both }`:
+- Cells of five ranks (`Dim`: vertex, edge, face, volume, body), each with a stable `EntityId`. Ids are serials of the real kinds `TopoVertex..TopoBody`; the decomposition overlay uses the per-rank kinds `PartitionVertex/Edge/Face/Cell` (Q5), and `Dim::of_kind` maps all of them, so `dim_of` needs no table.
+- **One** oriented incidence relation, `Incidence { cell, side, ring }`, stored as paged CSR boundary rows and kept transposed (coboundary) incrementally. `Side { Left, Right, Both }` is the only orientation tag:
 
-| Relation (entry in the parent's row) | `Left` | `Right` | `Both` |
-|---|---|---|---|
-| edge -> vertex | edge starts here | edge ends here | closed edge: one vertex at both ends (single entry) |
-| face -> edge (coedge, in a cyclic loop) | loop runs along the edge, face on its left (`Forward`) | against it (`Reversed`) | embedded edge only |
-| volume -> face (face use) | volume on the face's left, normal points **out** of the volume (`Forward`) | normal points **in** (`Reversed`) | **baffle**: volume on both sides |
+  | Row | `Left` | `Right` | `Both` |
+  |---|---|---|---|
+  | edge -> vertex | starts here | ends here | closed edge (single entry) |
+  | face -> edge (coedge) | loop runs along the edge (face on its left) | against it | embedded wire |
+  | volume -> face (face use) | volume on the left: the normal points out of it | on the right | baffle |
 
-The face normal points from its left side to its right side (docs/design/ir.md §6). `Exterior` is the absence of a volume on a side, so "each face has two sides, each side -> volume or exterior" is a derived query, `face_sides(face) -> {left: Region, right: Region}`, `Region = Volume(id) | Exterior`.
+  Loops (`ring` = loop index), shells (`ring` = shell index), coedges, face uses, face sides and radial rings are **derived views** (`TopologyViewExt`, `TopologyView::radial_uses`), not stored objects.
+- **Orientation rule (ir.md §6).** Loops run counter-clockwise seen from the face's **right** side, so the normal points from left to right (right-hand rule on the loop). A boundary face has `right = Exterior` and its volume on the left (outward normal). Between two volumes, `left` is the lower volume id. Stated and enforced everywhere, not only on merge: `end_op` re-applies the rule to every face whose volume uses changed (so `remove_face_use`, `kill`, `kill_cascade`, `merge_faces`, a volume claiming a face from the right all end up normalized, each flip logged as `Modified(Reversed)`), and `validate` reports a violation (`Rule::OrientationRule`) or two claims on one side (`Rule::FaceSides`). (This corrects the old `make_face` doc.)
+- **Stable names.** `CoedgeKey { face, edge, side }` names one use of an edge; an edge appears at most once per side in a face, so a periodic seam is `{f, e, Left}` and `{f, e, Right}`. `CornerKey { face, incoming: CoedgeKey }` names a vertex use (a seam vertex appears twice in a loop). Keys do not shift when other coedges change; when an edge splits, lineage maps `edge -> [e1, e2]` and callers re-key through the successors.
+- **Poles.** Sphere poles and cone apexes are degenerate closed edges flagged `CellFlags::DEGENERATE` with no curve; their coedges report `CoedgeKind::Pole` and are left out of Euler counts, shell closure, outlines and radial rings.
+- **Shells.** `ShellKind { Outer, Void, Internal }` is stored per `(volume, ring)`; baffles (`Both` uses) and wires live in `Internal` shells, never in `Outer`/`Void` (enforced by `make_volume`, `add_shell`, `add_face_use` and `validate`).
+- **Carriers.** `Carrier { None, Point, Curve, Surface, Csg(CsgCell), Composite(members) }`. Geometry is resolved through `TopologyView::shapes()`; the complex **owns** its `MemoryStore` and exposes it through `TopologyEdit::shapes_mut()` (insert tool geometry, snap/heal). Pcurves (`PCurve`, parametrized by the same parameter as the edge's curve) hang on `CoedgeKey` and are hashed by content.
+- **Lifecycle and lineage.** `EntityState { Live, Split(op), Merged(op), Deleted(op) }` keeps retired ids resolving. `LineageLog` is append-only, ordered by op, indexed both ways (`of`, `produced`, `parents`, `children`, `successors`, `for_op`). Kinds: `Created`, `Split { children }`, `Merged { into, gap }`, `Deleted`, `Modified(ModKind)`, `Generated { from_surface }` (the cut cap). `LineageEvent` is an alias of `LineageKind`. `Lineage { old, new }`, `CapFace` and `CutOutcome { lineage, caps }` are the shapes the model layer consumes; `LineageLog::cut_outcome(op)` derives them from the log.
 
-Because the tag is the same everywhere, one mechanism covers the cases that radial-edge B-reps special-case: coedge direction, FaceUse sense after merge, periodic seams (an edge listed twice, `Left` and `Right`, in one loop), closed edges, baffles.
+## Read trait (`TopologyView`) and derived queries
 
-## Stored vs derived
+Required: `tolerance`, `shapes`, `dim_of`, `state`, `cells(dim)` (ascending), `boundary`, `coboundary` (ascending by parent), `carrier`, `flags`, `pcurve`, `shell_kind`, `radial_uses`, `tolerance_override`, `coincidences`, `coincident_faces(f)`, `lineage`, `born`, `revision`, `volume_faces(v)`, `face_edges(f)`. Provided: `is_alive`, `tolerance_of`, `face_ordinal`, `canonical_hash`, and the geometric defaults `face_moments`, `volume_moments`, `classify_point_on_face` (see below). Slices are canonical (ascending / ring order); unknown ids give empty slices, `None` or defaults.
 
-Stored (`CellComplex`, `complex.rs`): per rank a table indexed by serial (`alive`, `born: OpId`, `carrier`, `flags`, boundary row); sparse tolerance overrides (`BTreeMap`); face-pair coincidence records; an append-only lineage log; the current op.
+`TopologyViewExt` (blanket over every view incl. `dyn` and overlays): `volumes`, `faces`, `volume_ids`, `face_ids`, `edge_ends`, `loops`, `coedges` (with keys and `CoedgeKind`), `loop_vertices`, `face_outline`, `shells`, `face_uses`, `face_uses_of`, `face_use_in`, `face_sides -> Option<FaceSides { left, right: Region }>`, `face_class` (`Free | Boundary | Interface | Baffle`), `boundary_faces`, `face_across_edge`, `entered_region`, `seam_edges`, `wire_edges`, `closure`, `live_descendants`, `coincidence(a, b)` (binary search). Typed ids `VertexId/EdgeId/FaceId/VolumeId/BodyId` are `repr(transparent)` wrappers with `From<..> for EntityId` and checked `TryFrom<EntityId>`.
 
-Derived (lazily built into a `OnceLock`, dropped by every edit): the coboundary rows (transpose, ascending by parent id) and the live-cell lists. Views computed on demand from rows (`derived.rs`, trait `TopologyViewExt`, blanket-implemented for every `TopologyView` including `dyn`):
+**Every query of `semantics-recommendation.md` §5.1 `TopologyView`** is covered: `volumes`, `faces`, `volume_faces` (ascending slice, index-backed), `face_sides`, `face_edges` (ascending slice, index-backed), `volume_moments`, `face_moments` (the semantics shape `{ area, first, second, vector_area }` plus `centroid()`, `plane(tol)`, `unit_normal(tol)`), and the additions `face_ordinal`, `coincident_faces`.
 
-| View | Computed from |
-|---|---|
-| `Loop` / `Coedge` | a ring of a face row; one entry |
-| `Shell` / `FaceUse` | a ring of a volume row; one entry (a `Both` entry yields two uses with opposite senses) |
-| `FaceSides`, `is_baffle`, `is_boundary_face`, `is_interface_face`, `is_free_face` | the volume entries of a face's coboundary |
-| radial star of an edge (`radial_uses`), `seam_edges`, `wire_edges`, `closure`, `descendants`, `lineage_of` | coboundary / rows / lineage |
+- **Radial ring.** For each non-degenerate edge, the faces around it in canonical counter-clockwise order about the edge direction. The inward direction of a use is `n_face x t` (reversed for a `Reversed` coedge) with `n_face` the carrier normal at the edge midpoint; angles are measured from the first use (lowest `(face, sense)`) and rounded to `RADIAL_ANGLE_STEP = 2^-20` rad, ties by `(face, sense)`, a turn that rounds to `2 pi` wraps to 0. Without carriers the order is `(face, sense)`. The ring is a derived index: only the edges whose incidences or geometry changed are rebuilt, at `end_op`. `face_across_edge(f, e, v)` turns around `e` inside `v` using the ring and the face sides.
+- **Moments (Q7).** `face_moments` / `volume_moments` are exact for planar faces and accurate (composite Gauss-Legendre, Green's theorem in the parameter space, parameter unwrapping across seams, inner loops handled by their orientation) for any face on a pole-free parametric surface whose loops are made of curve-carrying edges: planes, cylinders, tori, bounded NURBS. Volumes use the divergence theorem over the face uses (baffles cancel). Faces touching a pole, without a surface carrier, or virtual partition children return `QueryError::Unsupported`. Checked against analytic values for the brick (volume, centroid, full raw and central second moments), cylinder (lateral area, cap, volume, `pi r^4 h/4`) and annulus (area). `Moments` are about the origin and additive; `central_second()` applies the parallel-axis theorem. `classify_point_on_face` uses the winding number of the sampled boundary and the exact distance to the edge curves for `On`.
 
-Why not stored entities: `sm-core::EntityKind` (frozen) has no Shell/FaceUse/Loop/Coedge kinds, so they could not carry stable ids anyway. Cells that need ids (vertex, edge, face, volume, body) have them.
+## Edit trait (`TopologyEdit`)
 
-### Rows are ordered, canonically
-- Face row = coedges grouped by `ring` (loop index; 0 is the outer loop by builder convention), each loop **cyclic in traversal order** and rotated to start at its smallest `(edge id, side)` (addendum §7.2). Order is meaningful: at a vertex with more than two coedges of one face (pinches, seams) loops are not recoverable from bare incidence. Embedded members use `ring = u16::MAX`.
-- Volume and body rows are sets, sorted by `(ring, id, side)`. `ring` is the shell index; shell membership is the builder's statement, the API does not infer inside/outside.
-- Edge row is `[start(Left), end(Right)]` or `[v(Both)]`.
+All edits happen between `begin_op(op)` and `end_op()`; op ids strictly increase. Every operator is **atomic** (a failing operator is rolled back to its mark), `abort_op()` restores the exact state at `begin_op` (including the hash), and `end_op() -> OpSummary` normalizes orientation, runs the cheap local invariant checks on the touched cells and their parents (never a full `validate`) and aborts with `TopoError::OpInvalid` if one fails.
 
-Storage is a paged CSR (`(start, len)` spans into one flat vector): an edit appends the new row and orphans the old; `compact` rewrites in slot order. Rows of a cell never live in per-cell `Vec`s, so there is no per-element heap allocation in queries; `boundary`/`coboundary` return slices.
+Operators: `make_vertex/edge/face/volume/body`, `add_shell`, `add_face_use`, `remove_face_use(v, f, side)`, `embed/unembed`, `split_edge`, `split_face(f, FaceCut, InnerLoopAssign)`, `split_volume(v, cut, ShellAssign)`, `make_inner_loop` (MEKR), `kill_inner_loop` (KEMR), `merge_vertices(keep, drop, max_gap)`, `merge_edges`, `merge_faces`, `reverse_face`, `kill`, `kill_cascade`, `set_vertex_point`, `set_carrier`, `set_pcurve`, `replace_curve/surface`, `raise_tolerance`, `set_flags`, `record_coincidence`, `record_split`, `record_generated`, `record_created`.
 
-## Traits
+- **Ids**: each created cell takes the next serial of its kind; `split_edge` creates `[start..at, at..end]`, `split_face` `[first, second]` (documented per `FaceCut`), `split_volume` `[part with the lowest face id, other part]`. Serials are never reused, so ids replay exactly.
+- **D1 webcut**: `split_volume` partitions the outer shell by flood fill across shared edges that are not boundary edges of the cut faces; there must be exactly two parts. The cut faces are oriented so the first child is on their left (logged if reversed) and become interfaces; the volume is retired with `Split` lineage and replaced in bodies. `record_split(parent, children)` expresses composite operations built from `kill` (parent deleted in the same op becomes `Split`).
+- **D2 imprint**: `FaceCut::Chord { edge }` cuts a face between two distinct vertices of its outer loop; `FaceCut::ClosedLoop { edges }` either imprints an interior loop (children `[face with the loop as a new inner loop, disk]`) or splits a periodic face through a seam vertex that appears twice (children `[segment + loop, rest + reversed loop]`). Existing inner loops go to the children by `InnerLoopAssign::Explicit` or by a point-in-face test (`ByPointTest`).
+- **Merges (Q1, D10)**: the lowest id survives (`keep < drop` else `KeepNotLowest`; callers process pairs in ascending `(min, max)` order). `merge_vertices(.., max_gap)` accepts `d <= ta + tb` (capped by `linear_max`) or `d <= max_gap` (itself at most `linear_max`); edge and face merges inherit the op's `max_gap`. The survivor's tolerance becomes `max(own, gap + other)` (gap below the hash quantum counts as 0; error above `linear_max`), logged as `Modified(Tolerance)`; the discarded gap is recorded in `Merged { into, gap }`. `merge_faces` checks that the loops correspond under `relative` (same rings, same coedges up to rotation, reversed and flipped when `Reversed`), carries over embedded members, takes the maximum tolerance, measures the surface gap and re-orients the shared face lowest-volume-first.
+- **D11 coincidence**: pair records are sorted by `(min, max)` and also indexed per face (`coincident_faces`); a split moves them to both children; merges re-point the absorbed face's records to the survivor; every status change writes `Modified(Coincidence)` under the current op.
+- **D9** `kill_cascade` removes the cell and every lower cell left without a live parent, top-down (volumes, faces, edges, vertices, ascending), each with `Deleted` lineage.
+- **D3 cost**: coboundary rows, live lists, aux rows and face/volume indexes are updated per primitive row write; the radial index is rebuilt per changed edge at `end_op`. Building 10,000 bricks in one op takes about 0.2 s in release mode (test asserts < 2 s; debug builds run 1,000).
+- **Tolerance model (5.6)**: global `ModelTolerance` plus a sparse `BTreeMap<EntityId, f64>` of overrides; native construction never creates overrides; overrides come from merges with a gap, `raise_tolerance` (grow-only, <= `linear_max`) and import/heal.
 
-`TopologyView` (read-only, object-safe, `Send + Sync`): `model_tolerance`, `dim_of`, `is_alive`, `cells(dim)`, `boundary`, `coboundary`, `carrier`, `flags`, `tolerance_override`/`tolerance`, `coincidences`, `lineage`, `born`, `revision`, and a default `canonical_hash()` (FNV-1a over everything in canonical order; floats by bit pattern).
+## Decomposition overlay (D4)
 
-`TopologyEdit: TopologyView` (object-safe): `begin_op`; construction `make_vertex/edge/face/volume/body`, `add_face_use`, `remove_face_use`, `embed`, `unembed`; Euler-style refinement `split_edge`, `split_face` (by chord); `merge_vertices/edges/faces`; `reverse_face`, `kill`, `set_carrier`, `set_tolerance`, `set_flags`, `record_coincidence`, `set_model_tolerance`. Imprint = `split_edge` + `split_face` + `record_coincidence`; merge = bottom-up `merge_*`; booleans/webcut in `sm-model` compose these with geometry computed elsewhere.
+`Overlay` is a `TopologyView` over an `Arc<dyn TopologyView>` host snapshot (`VirtualOverlay`: `host_revision`, `resolve`, `virtual_of`). Composite faces (`composite_faces`) get a derived boundary, the members' sides and `Carrier::Composite(members)`; interior edges (and vertices only they used) are hidden; the call rejects members that are not live host faces, not connected, in different volumes/shells/sides, sharing an edge with a face outside the composite, non-manifold in the interior, or whose boundary pinches. `partition_edge` adds a virtual vertex with real curve geometry; `partition_face` adds a virtual chord whose curve is stored in the overlay's own geometry layer (`VirtualCut`). Virtual ids come from monotonic per-rank counters and are never reused; `remove(virt)` undoes one operation by replaying the rest (refused while a later operation depends on it). `is_stale_against(live)` / `rebase(new_host)` handle a moved host; `data()` / `from_data` persist the overlay as its operation history. The host is never touched: tests compare the host hash before and after, and an overlay with every operation removed hashes equal to the host.
 
-Contracts: edits are **atomic** (validated before mutation; tested by hash equality after a failed edit); new ids are the next unused serial of their kind, in the order documented per method; serials are never reused (dead cells stay in the table with `alive = false`).
+## Canonical hash (Q2)
 
-## Requirement map
+FNV-1a over little-endian words; floats never enter as raw bits. Lengths (vertex coordinates, tolerance overrides, merge gaps) are `round(x / (linear * 2^-10))`, parameter-valued floats (curve ranges, pcurve content) use `parametric * 2^-10` (see `sm_geom_api::ModelTolerance`). Covered: tolerance policy, revision, geometry store sizes, every live cell (id, birth op, flags, override, carrier, boundary row), pcurves by content, shell kinds, coincidence records and the whole lineage log. Tested: a vertex moved by 0.3 of a step hashes equal, by 5 steps differs; overrides quantize the same way; pcurve content changes the hash; two builds and four threads give identical ids, lineage and hash.
 
-| Requirement | Where |
-|---|---|
-| Body > Volume > Shell > FaceUse > Face > Loop > Coedge > Edge > Vertex | Body/Volume/Face/Edge/Vertex stored ranks; Shell/FaceUse/Loop/Coedge derived views (justified above) |
-| Each face two sides -> volume or exterior | `face_sides`, `Region`; validator rejects two cells on one side |
-| FaceUse sense after merge, Coedge sense | `Side::sense()`, `FaceUse.sense`, `Coedge.sense`; `merge_faces` orients the shared face from the lower to the higher volume id (§6) |
-| Internal faces/baffles, wires | `Side::Both` volume->face; `embed` for wire edges/points (ring `u16::MAX`); free faces/wires grouped by bodies |
-| Imprint/merge status per coincident face pair | `FacePair { a, b, status: Merged / ImprintedNotMerged / CoincidentUnimprinted / Overlapping, overlap_area }`, sorted table; `merge_faces` writes `Merged`; statuses of dead faces are dropped, `Merged` history is kept |
-| Stable ids deterministic | per-kind serial counters, documented creation order, `OpId` supplied by the caller |
-| Lineage | `LineageRecord { op, kind: Split/Merged/Deleted/Modified, from, to }`, append-only; `born(id)` for creation; `lineage_of`, `descendants` |
-| Read-only query trait separate from edit trait | `TopologyView` / `TopologyEdit` |
-| Topology -> geometry | `Carrier { Point, Curve{curve, range, sense}, Surface{surface, sense}, None }` with `EntityId` handles resolved by `sm_geom_api::GeometryStore`; `validate_geometry` checks them |
-| Virtual topology overlay | `TopologyOverlay: TopologyView` + `Overlay` (composite faces): virtual cells of kind `PartitionCell`, hidden host cells, patched rows; host untouched |
-| Reference implementors + tests | `CellComplex`, `fixtures` (brick, touching bricks + merge, cylinder with seam, baffle), `tests/reference.rs` |
+## Fixtures (all through `TopologyEdit`, inside an open op; `with_op` wraps one)
 
-## Tolerance: DECISION
+`brick`, `two_bricks` + `merge_touching_bricks[_gap]`, `webcut_brick` (face lineage `3 -> 3a, 3b`, volume `1 -> 1a, 1b`, cap `Generated`), `cylinder` (periodic seam, pcurves at `u = 0` and `u = 2 pi`), `sphere` (pole coedges), `brick_with_baffle` (`Internal` shell), `brick_with_fin` (non-manifold edge with three faces). The "mirrored instance" fixture of the recommendation is dropped with instancing (Q8).
 
-**Global modelling tolerance plus sparse per-entity overrides** (`Tolerance` in `sm-geom-api`, overrides in a `BTreeMap<EntityId, f64>`; `tolerance(id)` falls back to the global linear value).
+## Deviations from the recommendation (honest list)
 
-- Native construction is exact to the global tolerance, so the dense case costs one `f64` for the whole model and every comparison has one answer.
-- Imported STEP/IGES geometry carries per-entity tolerances; those become overrides, and only on the entities that need them. This is the Parasolid-style escape hatch without Parasolid's cost (every query consulting per-entity tolerances).
-- Merge semantics are well defined: vertices merge when `|p - q| <= tol(a) + tol(b)`; the survivor takes `max(tol)`; `validate_geometry` checks curve ends against vertices and edge samples against faces within the summed tolerances.
-- Not chosen: pure global (cannot represent imported sloppy models, forces blanket healing before use), pure per-entity (every cell stores and propagates a tolerance; tolerance growth during booleans is a known source of non-robustness).
-
-## Persistent naming scope
-
-Exactly P0-P1 (docs/ARCHITECTURE.md §3): stable ids and lineage, no selectors. Lineage lets a later `sm-naming` map an old id to its live descendants (`descendants`).
-
-## Overlay (virtual topology)
-
-`Overlay::composite_faces` creates a `PartitionCell` face standing for several host faces. Interior edges (shared by two members) and absorbed vertices are hidden; boundary edges, the parent volumes and bodies get patched rows pointing to the virtual face. The overlay is a `TopologyView`, so a mesher meshes the composite as one face; `resolve(host_id)` and `virtual_members(virtual_id)` map between layers; `clear()` restores the host. Unsupported (reported, not wrong): pinched boundaries, non-manifold interiors, members on different sides of a volume. Partition (split) cells and edge composites follow the same pattern and are not implemented here.
-
-## Tradeoffs and open issues
-
-- **Edit/query interleaving is O(N) per rebuild.** Every edit drops the derived index; the next query rebuilds the coboundary. Fine for op-at-a-time use, bad for algorithms that alternate thousands of edits and queries. A production store should maintain the coboundary incrementally; the trait surface does not change.
-- **Loops are ordered rows, not objects.** Cheap and canonical, but loop-level edits (e.g. moving a coedge between loops) are row rewrites. `split_face` supports single-loop faces only (holes and embedded members are `Unsupported`).
-- **Shells are rings the builder assigns.** The API does not decide which shell is outer or whether a volume's shell closes; `validate` checks closure (`boundary(boundary) = 0`) but not inside/outside classification. That needs geometry (a ray cast through `ParametricSurface::ray_hits`).
-- **Radial order is not stored.** `radial_uses(edge)` is in face-id order; angular order around a non-manifold edge is a geometry query.
-- **`merge_faces` checks edge *sets*, not loop correspondence under `relative`.** A wrong `relative` succeeds but yields a shell that `validate` flags (net edge use != 0). Known hole.
-- **Chord vertex ambiguity.** `split_face` takes the first occurrence of a vertex on the loop; a pinched loop with a vertex visited twice needs the caller to pass a chord that is unambiguous.
-- **`PartitionCell` is shared by overlay cells of any rank**, so rank cannot be read from the id of a virtual cell; hence `TopologyView::dim_of`.
-- **Hash is exact-bit.** It is bit-identical for the same platform; the cross-platform CI hash needs coordinates quantized first (ARCHITECTURE §3), a policy for the orchestrator.
-- **CSG volume carriers** are not modelled (`Carrier::None` for volumes); the CSG front end maps volumes to half-space expressions in the model layer.
-- Determinism test: `building_twice_gives_identical_ids_and_hashes` (twice, plus 4 concurrent threads). The crate has no rayon, so `RAYON_NUM_THREADS=1` vs default is trivially the same; the test suite passes under both.
-- `sm-testkit` does not exist yet, so the "property tests from sm-testkit" clause is vacuous; `random_edge_splits_keep_the_complex_valid` is a self-contained randomized invariant test (Euler characteristic, `validate` after every step).
+- **Lineage/CutOutcome shape.** `split_volume` returns `[EntityId; 2]` (D1); the "topology cut operations return `CutOutcome`" decision is realized as `LineageLog::cut_outcome(op)` (and `OpSummary` ranges), because a cut is a composition of operators inside one op. `CapFace` carries `from_surface` (the tool surface handle recorded by `record_generated`), not the model's `plane_ix`; the model maps surface to plane index.
+- **`Carrier::Csg` holds the `CsgCell` data**, not an `EntityId`: `GeomStore` has no cell handles, and a volume's CSG form is small, serializable data.
+- **`volume_moments`/`face_moments`/`classify_point_on_face` are `TopologyView` defaults** (Q7), not a separate `ModelGeometryQuery` trait; they return `Result<_, QueryError>` (semantics sketched `Option`). `Moments` uses the semantics field name `volume` (the §5.3 sketch said `measure`). `FaceMoments` has the semantics shape; `centroid()` and `plane()` are methods.
+- **`volume_faces` and `face_edges` return slices** (index-backed aux rows), as the semantics panel asked; the §5.2 sketch had a `SmallVec`.
+- **`CoedgeKind::Pole`** is derived from the `DEGENERATE` edge flag rather than a coedge with no edge (an `Incidence` always names a cell).
+- **Overlay holds the host as an immutable `Arc` snapshot.** "Refuses queries once the host has changed" becomes `is_stale_against` / `rebase` plus `StaleOverlay` errors: a frozen snapshot cannot change under the overlay, and the owner decides when to rebase. Virtual cells have no lineage, no pcurves, and `face_moments` of a partition child is `Unsupported`; the overlay covers faces, edges and vertices (virtual volume pieces stay in `sm-model-api`).
+- **`ModKind`** has no pcurve entry: `set_pcurve` is not logged (pcurves are derived data); `Created` lineage is only written by `record_created` (every cell has `born`).
+- **Serde** is derived on every owned public data type; borrowed input types (`ShellSpec`, `FaceCut`, `InnerLoopAssign`, `ShellAssign`), the borrowing views (`Loop`, `Shell`) and errors are not. There is no JSON dev-dependency, so the serde test checks the derives at compile time rather than round-tripping.
+- **`end_op` is not a full `validate`**: it checks the touched cells and their parents (row ranks, edge ends, loop closure, face sides, orientation rule, shell kinds and closure). `validate` additionally compares boundary and coboundary rows and covers the whole complex.
+- Reference implementation limits: `split_face` rejects faces with embedded members, chords ending on inner loops and ambiguous attachment vertices (documented `Unsupported`); `split_volume` with non-outer shells needs an explicit assignment; a `merge_faces` survivor's gap is measured at the centroid of the outline vertices projected on the survivor's surface.

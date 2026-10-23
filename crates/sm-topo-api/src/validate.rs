@@ -80,7 +80,7 @@ pub fn validate(view: &dyn TopologyView) -> Vec<TopoIssue> {
     }
     let mut out = check_cells(view, &ids);
     check_coboundary(view, &mut out);
-    out.sort_by(|a, b| (a.cell, a.rule).cmp(&(b.cell, b.rule)));
+    out.sort_by_key(|a| (a.cell, a.rule));
     out
 }
 

@@ -3,7 +3,7 @@
 //! recording, determinism and hash quantization, performance, and every semantics query.
 
 use core::f64::consts::{PI, TAU};
-use sm_core::{EntityId, Point3, Vector3};
+use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{CsgCell, Crossing, CurveDef, Frame, HalfSpace, ImplicitDef, Interval, Line, ModelTolerance, Quadric, RayHit, Sign, Sphere, SurfaceDef, Uv};
 use sm_topo_api::fixtures::{self, BrickIds, with_op};
 use sm_topo_api::*;
@@ -114,7 +114,7 @@ fn brick_is_a_valid_closed_cell_and_answers_every_semantics_query() {
 #[test]
 fn two_bricks_imprinted_and_merged_share_one_face() {
     let mut t = CellComplex::new();
-    let (a, b) = with_op(&mut t, OpId(1), |t| fixtures::two_bricks(t)).unwrap();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     assert_eq!(counts(&t), [16, 24, 12, 2, 2]);
     assert_eq!(t.coincidence(a.faces[1], b.faces[0]).map(|p| p.status), Some(Coincidence::CoincidentUnimprinted));
     assert_eq!(t.coincident_faces(a.faces[1]).len(), 1);
@@ -168,7 +168,7 @@ fn two_bricks_imprinted_and_merged_share_one_face() {
 #[test]
 fn removing_a_use_reapplies_the_orientation_rule_and_logs_it() {
     let mut t = CellComplex::new();
-    let (a, b) = with_op(&mut t, OpId(1), |t| fixtures::two_bricks(t)).unwrap();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let shared = a.faces[1];
     // Remove A's use of the shared face: B alone remains, on the RIGHT, so the face flips at once
@@ -470,7 +470,7 @@ fn sphere_has_pole_coedges_left_out_of_euler_counts_and_rings() {
 #[test]
 fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_sides() {
     let mut t = CellComplex::new();
-    let (b, f) = with_op(&mut t, OpId(1), |t| fixtures::brick_with_baffle(t)).unwrap();
+    let (b, f) = with_op(&mut t, OpId(1), fixtures::brick_with_baffle).unwrap();
     assert_valid(&t);
     assert_eq!(t.shell_kind(b.volume, 0), Some(ShellKind::Outer));
     assert_eq!(t.shell_kind(b.volume, 1), Some(ShellKind::Internal));
@@ -505,7 +505,7 @@ fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_
 #[test]
 fn non_manifold_edge_has_an_angular_radial_ring() {
     let mut t = CellComplex::new();
-    let (b, fin) = with_op(&mut t, OpId(1), |t| fixtures::brick_with_fin(t)).unwrap();
+    let (b, fin) = with_op(&mut t, OpId(1), fixtures::brick_with_fin).unwrap();
     assert_valid(&t);
     assert_eq!(t.face_class(fin.face), Some(FaceClass::Free));
     let e = b.edges[8];
@@ -614,7 +614,7 @@ fn failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything() {
 #[test]
 fn kill_cascade_removes_orphans_top_down_and_keeps_shared_cells() {
     let mut t = CellComplex::new();
-    let (a, b) = with_op(&mut t, OpId(1), |t| fixtures::two_bricks(t)).unwrap();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let killed = with_op(&mut t, OpId(3), |t| Ok(t.kill_cascade(a.volume)?)).unwrap();
     assert_eq!(killed[0], a.volume);
@@ -639,7 +639,7 @@ fn kill_cascade_removes_orphans_top_down_and_keeps_shared_cells() {
 #[test]
 fn record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation() {
     let mut t = CellComplex::new();
-    let (b, fin) = with_op(&mut t, OpId(1), |t| fixtures::brick_with_fin(t)).unwrap();
+    let (b, fin) = with_op(&mut t, OpId(1), fixtures::brick_with_fin).unwrap();
     t.begin_op(OpId(2)).unwrap();
     // Still alive: refused. Unknown ids and mismatched ranks: refused.
     assert!(t.record_split(fin.face, &[b.faces[0]]).is_err());
@@ -694,7 +694,7 @@ fn merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance() {
 
 fn build_model() -> (CellComplex, Vec<EntityId>) {
     let mut t = CellComplex::new();
-    let (a, b) = with_op(&mut t, OpId(1), |t| fixtures::two_bricks(t)).unwrap();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let w = with_op(&mut t, OpId(3), |t| fixtures::webcut_brick(t, &a, 0.5)).unwrap();
     let c = with_op(&mut t, OpId(4), |t| fixtures::cylinder(t, 1.0, 3.0)).unwrap();
@@ -819,4 +819,129 @@ fn public_data_types_are_serde() {
     is_serde::<FaceMoments>();
     is_serde::<TopoIssue>();
     is_serde::<EdgeUse>();
+}
+
+// ---------------------------------------------------------------- remaining contract clauses
+
+#[test]
+fn coincidence_records_move_to_split_children_and_status_changes_are_logged() {
+    let mut t = CellComplex::new();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
+    assert!(t.lineage().of(a.faces[1]).any(|r| r.op == OpId(1) && r.kind == LineageKind::Modified(ModKind::Coincidence)), "status change logged under the op");
+    assert_eq!(t.coincidence(a.faces[1], b.faces[0]).unwrap().op, OpId(1));
+    // Split A's +x face along a diagonal (corners 1 -> 7).
+    let [c0, c1] = with_op(&mut t, OpId(2), |t| {
+        let (p, q) = (Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+        let d = q - p;
+        let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(p, d).unwrap())).unwrap();
+        let chord = t.make_edge(a.vertices[1], a.vertices[7], Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }))?;
+        Ok(t.split_face(a.faces[1], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
+    })
+    .unwrap();
+    assert!(t.coincident_faces(a.faces[1]).is_empty(), "the retired face keeps no records");
+    for c in [c0, c1] {
+        let ps = t.coincident_faces(c);
+        assert_eq!(ps.len(), 1);
+        assert_eq!((ps[0].other(c), ps[0].status), (Some(b.faces[0]), Coincidence::CoincidentUnimprinted));
+    }
+    assert_eq!(t.coincident_faces(b.faces[0]).len(), 2);
+    assert!(t.coincidences().windows(2).all(|w| (w[0].a, w[0].b) < (w[1].a, w[1].b)), "sorted by (min, max)");
+    // Status change under a later op is recorded and overwrites the status.
+    with_op(&mut t, OpId(3), |t| Ok(t.record_coincidence(c0, b.faces[0], Coincidence::Overlapping)?)).unwrap();
+    assert_eq!(t.coincidence(c0, b.faces[0]).unwrap().status, Coincidence::Overlapping);
+    assert!(t.lineage().for_op(OpId(3)).iter().any(|r| r.kind == LineageKind::Modified(ModKind::Coincidence)));
+}
+
+#[test]
+fn merge_faces_checks_loop_correspondence_and_edge_merges_check_curves() {
+    let mut t = CellComplex::new();
+    let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
+    let h = t.canonical_hash();
+    // Edges were not merged first, so the loops differ.
+    t.begin_op(OpId(2)).unwrap();
+    assert!(matches!(t.merge_faces(a.faces[1], b.faces[0], Sense::Reversed), Err(TopoError::NotCoincident(_))));
+    // Edges whose end vertices are not merged yet.
+    assert!(matches!(t.merge_edges(a.edges[5], b.edges[4], Sense::Forward), Err(TopoError::NotCoincident(_))));
+    let h_open = t.canonical_hash();
+    t.abort_op();
+    assert_eq!(t.canonical_hash(), h);
+    assert_ne!(h_open, h);
+    // Curves that are far apart are refused even with merged end vertices (here: the curve behind
+    // the dropped edge is replaced by one that runs 1e-2 off in z, above linear_max).
+    with_op(&mut t, OpId(2), |t| {
+        for j in 0..2 {
+            for k in 0..2 {
+                t.merge_vertices(a.vertices[1 + 2 * j + 4 * k], b.vertices[2 * j + 4 * k], None)?;
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    t.begin_op(OpId(3)).unwrap();
+    let Carrier::Curve(cc) = t.carrier(b.edges[4]).clone() else { panic!() };
+    t.replace_curve(cc.curve, CurveDef::Line(Line::new(Point3::new(1.0, 0.0, 0.01), Vector3::new(0.0, 1.0, 0.0)).unwrap())).unwrap();
+    assert!(matches!(t.merge_edges(a.edges[5], b.edges[4], Sense::Forward), Err(TopoError::NotCoincident(_))));
+    t.abort_op();
+}
+
+#[test]
+fn geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them() {
+    let mut t = CellComplex::new();
+    let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
+    assert_valid(&t);
+    with_op(&mut t, OpId(2), |t| {
+        t.set_vertex_point(b.vertices[0], Point3::new(0.1, 0.0, 0.0))?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(t.lineage().for_op(OpId(2)).iter().any(|r| r.entity == b.vertices[0] && r.kind == LineageKind::Modified(ModKind::Point)));
+    assert!(validate_geometry(&t).iter().any(|i| i.rule == Rule::GeometryMismatch), "the moved vertex no longer sits on its curves");
+    // Move it back and re-store the same definitions (heal): logged on the handles.
+    let Carrier::Curve(c8) = t.carrier(b.edges[8]).clone() else { panic!() };
+    with_op(&mut t, OpId(3), |t| {
+        t.set_vertex_point(b.vertices[0], Point3::new(0.0, 0.0, 0.0))?;
+        t.replace_curve(c8.curve, CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap()))?;
+        let Carrier::Surface(sc) = t.carrier(b.faces[5]).clone() else { panic!() };
+        let def = t.shapes().surface_def(sc.surface).cloned().unwrap();
+        t.replace_surface(sc.surface, def)?;
+        t.set_carrier(b.faces[5], Carrier::Surface(sc))?;
+        Ok(())
+    })
+    .unwrap();
+    let ops3 = t.lineage().for_op(OpId(3));
+    assert!(ops3.iter().any(|r| r.entity == c8.curve && r.kind == LineageKind::Modified(ModKind::Curve)));
+    assert!(ops3.iter().any(|r| r.kind == LineageKind::Modified(ModKind::Surface)));
+    assert!(ops3.iter().any(|r| r.entity == b.faces[5] && r.kind == LineageKind::Modified(ModKind::Carrier)));
+    assert_valid(&t);
+    // Tolerance growth is logged, grow-only and capped.
+    with_op(&mut t, OpId(4), |t| Ok(t.raise_tolerance(b.edges[0], 2e-6)?)).unwrap();
+    assert_eq!(t.tolerance_override(b.edges[0]), Some(2e-6));
+    assert_eq!(t.tolerance_of(b.edges[0]), 2e-6);
+    assert_eq!(t.tolerance_of(b.edges[1]), t.tolerance().linear);
+    assert!(t.lineage().for_op(OpId(4)).iter().any(|r| r.kind == LineageKind::Modified(ModKind::Tolerance)));
+}
+
+#[test]
+fn typed_ids_and_kinds() {
+    let mut t = CellComplex::new();
+    let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
+    let v = VolumeId::new(b.volume).unwrap();
+    assert_eq!(EntityId::from(v), b.volume);
+    assert_eq!(VolumeId::try_from(b.volume), Ok(v));
+    assert_eq!(VolumeId::try_from(b.faces[0]), Err(WrongKind(b.faces[0])));
+    assert_eq!(FaceId::new(b.faces[0]).map(FaceId::get), Some(b.faces[0]));
+    assert_eq!(t.volume_ids().collect::<Vec<_>>(), vec![v]);
+    assert_eq!(t.face_ids().count(), 6);
+    assert_eq!(std::mem::size_of::<VolumeId>(), std::mem::size_of::<EntityId>(), "zero-cost wrapper");
+    // Virtual kinds map to ranks.
+    for (kind, dim) in [(EntityKind::PartitionVertex, Dim::Vertex), (EntityKind::PartitionEdge, Dim::Edge), (EntityKind::PartitionFace, Dim::Face), (EntityKind::PartitionCell, Dim::Volume)] {
+        assert_eq!(Dim::of_kind(kind), Some(dim));
+        assert_eq!(Dim::of_real_kind(kind), None);
+        assert_eq!(dim.virtual_kind(), Some(kind));
+    }
+    assert_eq!(Dim::of_kind(EntityKind::Surface), None);
+    // The complex does not claim virtual ids.
+    let virt = EntityId::new(EntityKind::PartitionFace, 0).unwrap();
+    assert_eq!(t.dim_of(virt), None);
+    assert_eq!(t.state(virt), None);
 }

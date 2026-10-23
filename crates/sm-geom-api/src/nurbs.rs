@@ -504,7 +504,7 @@ mod tests {
             assert!(j.d2.dot(vec3(j.p)) < 0.0);
         }
         // Total arc length is pi/2.
-        assert!((c.length(0.0, 1.0) - core::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        assert!((c.length(Interval::new(0.0, 1.0), 1e-10).unwrap() - core::f64::consts::FRAC_PI_2).abs() < 1e-9);
         // Derivatives against central differences.
         let (t, h) = (0.37, 1e-6);
         let fd = (c.eval(t + h) - c.eval(t - h)) * (1.0 / (2.0 * h));

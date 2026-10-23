@@ -1,60 +1,73 @@
-# sm-geom-api: design (candidate "cellcomplex")
+# sm-geom-api: final design (frozen after W0c)
 
-Exact-shape contract. Depends on `sm-core` (points, vectors, `EntityId`), `thiserror`, `smallvec`; `serde` behind a feature.
+Exact-shape contract. Depends on `sm-core` (points, vectors, `EntityId`), `thiserror`, `smallvec`; `serde` behind the `serde` feature (which also turns on `sm-core/serde` and `smallvec/serde`). Base: panel candidate `cellcomplex`, with the grafts and must-fix items of `docs/design/w0/geomtopo-recommendation.md` and the W0c decisions in `docs/design/w0/decisions.md`.
 
 ## Model
 
 Shape is split into **three things that topology never owns**:
 
-1. **Traits** that evaluate geometry: `ParametricCurve`, `ParametricSurface` (object-safe, `&dyn` for schemes).
-2. **Data** that describes geometry: analytic structs (`Line`, `Circle`, `Ellipse`, `Plane`, `Cylinder`, `Cone`, `Sphere`, `Torus`), `NurbsCurve`/`NurbsSurface` (validated data only), and `CurveData`/`SurfaceData` enums for persistence.
-3. **A handle resolver**, `GeometryStore` (the GMI-like seam). Topology holds `EntityId` handles (`Curve`/`Surface` kinds); the store turns a handle into `&dyn`. `MemoryStore` is the deterministic reference store.
+1. **Traits** that evaluate geometry (object-safe, `&dyn` for schemes): `ParametricCurve`, `ParametricSurface`, `ImplicitSurface`.
+2. **Closed, serializable data** that describes geometry: `CurveDef { Line, Circle, Ellipse, Nurbs }`, `SurfaceDef { Plane, Cylinder, Cone, Sphere, Torus, Nurbs, Implicit(ImplicitDef) }`, `ImplicitDef { Quadric, Torus(ImplicitTorus) }`, `PCurve { Line2, Polyline2, Nurbs2 }`. The defs are `#[non_exhaustive]` enums, so adding a kind later is not a breaking change for readers that have a wildcard arm.
+3. **A handle resolver**: `GeomStore` (read) and `GeomStoreMut` (add / replace / truncate). Topology holds `EntityId` handles (`Curve`, `Surface` kinds). `MemoryStore` is the deterministic reference store: it stores the defs themselves (no `Box<dyn>`), so it clones, compares and serializes, and it caches `Option<ImplicitDef>` per surface so `implicit(id)` can return a borrow. `curve(id)` / `surface(id)` return `&dyn` straight from the stored def. An implicit-only surface (`SurfaceDef::Implicit`: a general quadric, the torus quartic) has no parametrization: `surface(id)` is `None`, `implicit(id)` is `Some`. This is what lets a `HalfSpace` reference a general quadric.
 
-CSG comes in through `SignedSurface` (implicit `f(p)`, gradient, ray hits), with `Quadric` (10-coefficient general quadric), `TorusImplicit` (quartic), `ImplicitForm` (a `Copy` enum of the two) and `HalfSpace { surface, sign }`. Every analytic surface returns its implicit form from `ParametricSurface::implicit()`, so one object serves B-rep and CSG.
+CSG: `HalfSpace { surface, sign }`, `CsgCell { halfspaces }` (an intersection) with `contains(store, p, tol) -> Containment { Inside, On, Outside }` and `ray_hits(store, ray, range, out)`. Cell hits carry the **cell-outward normal** and a `Crossing` relative to it, and an edge or corner hit is reported once. Every analytic surface returns its implicit form from `ParametricSurface::implicit()`, so one object serves the boundary representation, the CSG form and the default ray hook.
 
 ## Key types
 
 | Type | Role |
 |---|---|
-| `Domain1 { range, period }` | Parameter domain; `period = Some(p)` means periodic, and the interval ends are the **seam**. `wrap`, `nearest_to` pick representatives. |
-| `Domain2 { u, v, singularities }` | Surface domain. `Singularity { along, at, point }` marks an iso-line that collapses to a point (sphere poles, cone apex). |
-| `CurveJet`, `SurfaceJet` | Position + derivatives up to order 2 in one call (one evaluation per sample in hot loops). |
-| `Ray`, `RayHit` | Tracking hook types. `RayHit { t, point, normal }`. |
-| `Tolerance { linear, angular, parametric }` | The tolerance policy value shared with topology. |
+| `Domain1 { range, period }` | Parameter domain; `period = Some(p)` means periodic and the interval ends are the **seam**. `wrap`, `nearest_to` pick representatives (used to unwrap parameters along a loop). |
+| `Domain2 { u, v, singularities }` | Surface domain. `Singularity { along, at, point }` marks an iso-line that collapses to a point (sphere poles, cone apex); `normal()` of an analytic kind returns the exact limit normal there. |
+| `CurveJet`, `SurfaceJet` | Position and derivatives up to order 2 in one call. |
+| `Ray`, `RayHit { t, point, normal, uv: Option<Uv>, crossing }` | Tracking hook. `Crossing { AlongNormal, AgainstNormal, Tangent }`; a double root is reported once, as `Tangent`. |
+| `ModelTolerance { linear, angular, parametric, linear_max }` | The one tolerance policy: `for_extent`, `coincident(d, ta, tb)` (`d <= ta + tb` and `ta + tb <= linear_max`), and the hash quantization (below). |
 | `Frame` | Right-handed orthonormal placement used by all analytic kinds. |
-| `GeomError` | `OutOfDomain`, `Singular`, `NoConvergence`, `Unsupported`, `Invalid` (`#[non_exhaustive]`). |
+| `GeomError` | `OutOfDomain`, `Singular`, `NoConvergence`, `Unsupported`, `Invalid` (`#[non_exhaustive]`). Every constructor returns `Result<_, GeomError>`. |
 
 ## Conventions (binding)
 
-- Surface normal is `du x dv`, normalized. For all analytic kinds this is outward (sphere, cylinder, cone, torus) or `+z` (plane) and equals the implicit gradient direction (tested). Face orientation is topology's `Sense` on its carrier, not the surface's business.
-- Evaluation is infallible and continues analytically outside the domain; periodic kinds wrap. Failure-capable operations (`normal`, `project`, `ray_hits`) return `Result`.
-- At a pole, `normal()` of analytic kinds returns the exact limit normal for the given `uv`; the trait default returns `Singular` when `|du x dv|` is below `1e-12 * scale^2`.
-- `project` returns the closest point and may return `Unsupported` (callers fall back to a numeric projector from `sm-geom`). Non-unique minima (a point on a circle's axis, a sphere's centre) are handled deterministically: circles/cylinders/cone/torus pick `u = 0`; a sphere centre is `Singular`.
-- Ray hook: `ParametricSurface::ray_hits(&Ray, Interval, &mut Vec<RayHit>)` appends hits in ascending `t` to a caller-owned buffer (no per-call allocation). Default goes through `implicit()`; implementors without one return `Unsupported` and the tracker facets that surface (NURBS). The cone overrides it to keep only one nappe.
-- Arc length: curves provide `length(a, b)`; default is 32-panel 5-point Gauss-Legendre of `|C'|`, overridden exactly for line and circle.
+- Surface normal is `du x dv`, normalized. For all analytic kinds this is outward (sphere, cylinder, cone, torus) or `+z` (plane) and equals the implicit gradient direction (tested). Face orientation is topology's `Sense` on its carrier.
+- Evaluation is infallible and continues analytically outside the domain; periodic kinds wrap. Failure-capable operations (`normal`, `project`, `length`, `ray_hits`) return `Result`.
+- `project(p, hint)` returns the closest point within the domain. Non-unique minima are deterministic (circle/cylinder/cone/torus pick `u = 0`; a sphere centre is `Singular`). Ellipse projection is `Unsupported`.
+- Ray hook: `ray_hits(&Ray, Interval, &mut Vec<RayHit>)` appends hits in ascending `t` to a caller-owned buffer. The default goes through `implicit()` and fills `uv` by projection; the cone keeps only its parametric nappe; NURBS surfaces return `Unsupported` (the tracker facets them).
+- `ParametricCurve::length(range, tol)` refines composite Gauss-Legendre until two successive estimates agree to `tol` (`NoConvergence` after 4096 panels); line and circle are exact.
+- Tangent roots (**D16**): `real_roots` returns each root with a double-root flag (from near-zero critical values of the derivative chain), so the quartic torus reports a grazing contact once as `Tangent`. Tested against the analytic graze at the tube top (`t = 7, 13`) and the four simple crossings just below it.
+
+## Hash quantization rule (Q2, binding, cross-platform)
+
+`ModelTolerance::quantum() = linear * 2^-10` quantizes lengths, `param_quantum() = parametric * 2^-10` quantizes parameter-valued floats; `quantize(x) = round_half_away_from_zero(x / q)` as `i64` (NaN -> `i64::MIN`, infinities saturate, `-0 == +0`). Topology's `canonical_hash` and the mesh `geometry_hash` hash these integers, never raw float bits. A value within a small fraction of a step of another hashes equal unless the pair straddles a rounding boundary; platform noise (a few ulp) is far below one step, so the only residual risk is a value within noise of a half-step boundary.
+
+## NURBS (Q4)
+
+`NurbsCurve` / `NurbsSurface` / `NurbsCurve2` are validated data **and** evaluable here: a small allocation-free de Boor evaluator (Piegl and Tiller A2.1/A2.3, degree <= 15, first and second derivatives, rational via the quotient rule) implements `ParametricCurve` / `ParametricSurface`, plus a numeric closest-point projector (dense sampling then safeguarded Newton). Non-periodic only; a boundary row of coincident control points is reported as a pole. `sm-geom` may provide faster implementations behind the same traits.
 
 ## Requirement map
 
 | Requirement | Where |
 |---|---|
-| ParametricCurve: eval, derivatives, param range, periodicity, projection, length | `curve.rs`; `jet`, `domain().period`, `project`, `length` |
-| ParametricSurface: eval, 1st/2nd derivatives, normal, domain with seams and poles, inverse projection | `surface.rs`, `domain.rs`; `jet`, `normal`, `Domain2::singularities`, `project` |
-| Analytic kinds | `analytic.rs`, all eight implement both traits' evaluation; closed-form projection for line, circle, plane, cylinder, cone, sphere, torus |
-| NURBS as data | `nurbs.rs`: knot/weight/multiplicity validation; evaluation intentionally lives in `sm-geom` |
-| CSG quadric half-spaces incl. torus/general quadric | `implicit.rs`: `Quadric::{from_local, plane, sphere, cylinder, cone}`, `TorusImplicit`, `HalfSpace` |
-| Ray/surface hook for tracking | `RayHit`, `ParametricSurface::ray_hits`, `SignedSurface::ray_hits` (exact quadratic and quartic) |
-| Tolerance policy type | `tol.rs` |
-| Object safety | every trait is object-safe; tests use `Box<dyn ParametricCurve/Surface>` and `&dyn GeometryStore` |
+| Curve: eval, derivatives, range, periodicity, projection, length | `curve.rs`, `analytic.rs`, `nurbs.rs` |
+| Surface: eval, 1st/2nd derivatives, normal, seams and poles, inverse projection | `surface.rs`, `domain.rs` |
+| Analytic kinds (ring torus only, single-nappe parametric cone plus double-nappe implicit cone: Q10) | `analytic.rs` |
+| NURBS as data and evaluator | `nurbs.rs` |
+| CSG: general quadric (incl. improper transforms via `Quadric::transformed`), torus quartic, half-spaces, cells | `implicit.rs` |
+| Closed serializable defs, shared surfaces by handle | `store.rs` |
+| Pcurves (hashed by content in topology) | `pcurve.rs` |
+| Ray hook with `Crossing` | `ray.rs`, `implicit.rs` |
+| Tolerance policy and hash rule | `tol.rs` |
 
-## Tests (analytic, not smoke)
+## Tests
 
-Finite-difference check of every first/second derivative of all curves and surfaces; closed-form values (circle, cylinder seam, sphere pole normal, cone apex); projection minimality against dense sampling plus normal-residual orthogonality; ray hits against hand values (sphere `t = 8, 12`; torus `t = 6, 8, 12, 14`; tangent torus contacts; one-nappe cone); implicit/parametric agreement (value, gradient direction equals the surface normal); polynomial root isolation; NURBS validation.
+Analytic, not smoke: finite-difference checks of every first/second derivative; closed-form values; projection minimality and orthogonality against dense sampling; ray hits against hand values (sphere `t = 8, 12`; torus `t = 6, 8, 12, 14`; grazing contacts as `Tangent`); implicit/parametric agreement; exact rational quarter circle (radius 1 to 1e-14, length pi/2); polynomial roots with multiplicity; quadric transforms (rotation, translation, mirror) against pointwise evaluation; a CSG cell with a general quadric stored as `SurfaceDef::Implicit` (containment, ray entry and exit with outward normals); store handles and validation; pcurve variants; the quantization rule; and a determinism test (repeated runs and four threads give bit-identical results and ids).
 
-## Tradeoffs and open issues
+## Deviations from `geomtopo-recommendation.md` (honest list)
 
-- **Ellipse projection** is `Unsupported` (needs a quartic or guarded Newton). **Torus is ring-only** (`R > r`). **Cone is one nappe** parametrically, the double cone implicitly (the cone's ray hook filters).
-- **NURBS cannot be a `&dyn ParametricCurve` here.** `CurveData::into_dyn` returns `Unsupported` for it; `sm-geom` supplies the evaluator. This keeps the API crate free of the largest numerical code.
-- **Root finder** (`real_roots`) isolates roots with derivative critical points; tangential contacts are accepted when the critical value is within `1e-12` relative. Very close double roots can be missed or reported as one.
-- `GeometryStore` is read-only and returns `Option<&dyn _>`; allocation of new handles is the store implementor's job (`MemoryStore` allocates sequentially per kind, so insertion order gives ids).
-- `Tolerance` is a plain value; the per-entity override lives in topology (see sm-topo-api DESIGN).
-- No `Hash`/`Eq` on f64-bearing types by design; content hashing happens in topology by bit pattern.
+- `Domain2` keeps cellcomplex's `singularities: SmallVec<[Singularity; 2]>` (an iso-line list) instead of the four `u_lo/u_hi/v_lo/v_hi` enum fields of the §5.1 sketch; the information is the same and it is what the analytic kinds already produce.
+- `CsgCell::ray_hits` takes an extra `range: Interval` (a tracker always has one). The optional "union of cells" region is not provided.
+- `ParametricCurve` keeps `d1`, `tangent`, `is_closed` helpers beyond the §5.1 sketch.
+- Names follow the sketch (`ImplicitSurface`, `ImplicitDef`, `ImplicitTorus`, `GeomStore`, `GeomStoreMut`, `ModelTolerance`); the cellcomplex names (`SignedSurface`, `TorusImplicit`, `ImplicitForm`, `GeometryStore`, `Tolerance`) are gone.
+
+## Open issues
+
+- Ellipse projection is `Unsupported` (needs a quartic); the torus is ring-only (spindle and horn tori later, Q10); NURBS surfaces have no ray hook.
+- Root finding accepts a tangency when the critical value is within `1e-12` relative; two roots closer than `1e-9` relative merge.
+- No `Hash`/`Eq` on f64-bearing types by design; content hashing happens in topology.

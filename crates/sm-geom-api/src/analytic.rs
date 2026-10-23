@@ -58,8 +58,8 @@ impl ParametricCurve for Line {
         let point = self.origin + self.dir * t;
         Ok(CurveProjection { t, point, distance: (p - point).norm() })
     }
-    fn length(&self, a: f64, b: f64) -> f64 {
-        b - a
+    fn length(&self, range: Interval, _tol: f64) -> Result<f64, GeomError> {
+        if range.is_valid() && range.is_bounded() { Ok(range.len()) } else { Err(GeomError::Invalid("arc length needs a bounded, ordered range")) }
     }
 }
 
@@ -95,8 +95,8 @@ impl ParametricCurve for Circle {
         let rho = l.x.hypot(l.y);
         Ok(CurveProjection { t, point: self.eval(t), distance: (rho - self.radius).hypot(l.z) })
     }
-    fn length(&self, a: f64, b: f64) -> f64 {
-        self.radius * (b - a)
+    fn length(&self, range: Interval, _tol: f64) -> Result<f64, GeomError> {
+        if range.is_valid() && range.is_bounded() { Ok(self.radius * range.len()) } else { Err(GeomError::Invalid("arc length needs a bounded, ordered range")) }
     }
 }
 
@@ -511,7 +511,7 @@ mod tests {
     fn circle_analytic_values() {
         let c = Circle::new(world(), 2.0).unwrap();
         assert!(close(pos(c.eval(core::f64::consts::FRAC_PI_2)), Vector3::new(0.0, 2.0, 0.0), 1e-14));
-        assert!((c.length(0.0, TAU) - 4.0 * core::f64::consts::PI).abs() < 1e-12);
+        assert!((c.length(Interval::new(0.0, TAU), 1e-12).unwrap() - 4.0 * core::f64::consts::PI).abs() < 1e-12);
         assert!(c.is_closed(1e-9));
         let pr = c.project(Point3::new(3.0, 4.0, 0.0), None).unwrap();
         assert!((pr.distance - 3.0).abs() < 1e-12); // |(3,4)| = 5, radius 2
@@ -522,7 +522,8 @@ mod tests {
     fn ellipse_length_gauss_matches_series() {
         // Perimeter of a=2,b=1 via Ramanujan II is 9.688448220547672 (accurate to ~1e-9).
         let e = Ellipse::new(world(), 2.0, 1.0).unwrap();
-        assert!((e.length(0.0, TAU) - 9.688_448_220_547_672).abs() < 1e-6);
+        assert!((e.length(Interval::new(0.0, TAU), 1e-9).unwrap() - 9.688_448_220_547_672).abs() < 1e-8);
+        assert!(e.length(Interval::new(1.0, 0.0), 1e-9).is_err() && e.length(Interval::REAL, 1e-9).is_err());
         assert!(e.project(Point3::default(), None).is_err());
     }
 

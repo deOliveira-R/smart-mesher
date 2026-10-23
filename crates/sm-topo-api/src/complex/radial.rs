@@ -30,7 +30,7 @@ impl CellComplex {
             let n = surf.normal(proj.uv).ok()? * sc.sense.sign();
             let d = n.cross(t) * u.sense.sign();
             let l = d.norm();
-            if !(l > 0.0) {
+            if l.is_nan() || l <= 0.0 {
                 return None;
             }
             dirs.push(d * (1.0 / l));

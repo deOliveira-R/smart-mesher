@@ -1,4 +1,4 @@
-//! [`CellComplex`]: the reference in-memory implementor of [`TopologyView`] and [`TopologyEdit`].
+//! [`CellComplex`]: the reference in-memory implementor of [`TopologyView`] and [`crate::TopologyEdit`].
 //!
 //! Storage (all that is stored, per rank): `state`, `born`, `carrier`, `flags`, one boundary row
 //! (a "paged" CSR: `(start, len)` spans into one flat `Vec<Incidence>`), and incrementally
@@ -142,8 +142,8 @@ struct OpState {
 
 /// The reference cellular non-manifold complex.
 ///
-/// Implements [`TopologyView`] and [`TopologyEdit`]. It owns its geometry store
-/// ([`TopologyView::shapes`] / [`TopologyEdit::shapes_mut`]). Equal edit sequences give equal ids
+/// Implements [`TopologyView`] and [`crate::TopologyEdit`]. It owns its geometry store
+/// ([`TopologyView::shapes`] / [`crate::TopologyEdit::shapes_mut`]). Equal edit sequences give equal ids
 /// and equal [`TopologyView::canonical_hash`].
 ///
 /// All edits must happen between `begin_op` and `end_op`; each operator is atomic and
@@ -288,10 +288,11 @@ impl CellComplex {
                         if let Err(i) = t.live.binary_search(&id) {
                             t.live.insert(i, id);
                         }
-                    } else if old != EntityState::Live && was_live {
-                        if let Ok(i) = t.live.binary_search(&id) {
-                            t.live.remove(i);
-                        }
+                    } else if old != EntityState::Live
+                        && was_live
+                        && let Ok(i) = t.live.binary_search(&id)
+                    {
+                        t.live.remove(i);
                     }
                 }
             }
@@ -471,10 +472,10 @@ impl CellComplex {
                 return;
             }
             t.state[slot] = new;
-            if old == EntityState::Live {
-                if let Ok(i) = t.live.binary_search(&id) {
-                    t.live.remove(i);
-                }
+            if old == EntityState::Live
+                && let Ok(i) = t.live.binary_search(&id)
+            {
+                t.live.remove(i);
             }
             self.journal.push(Undo::State { id, old });
         }
@@ -732,10 +733,10 @@ impl CellComplex {
         }
         self.replace_in_parents(face, |e| smallvec::smallvec![Incidence { side: e.side.flip(), ..*e }])?;
         self.set_row(face, &out)?;
-        if let Some((_, s)) = self.locate(face) {
-            if let Carrier::Surface(sc) = self.tables[Dim::Face.index()].carrier[s].clone() {
-                self.set_carrier_raw(face, Carrier::Surface(SurfaceCarrier { sense: sc.sense.flip(), ..sc }));
-            }
+        if let Some((_, s)) = self.locate(face)
+            && let Carrier::Surface(sc) = self.tables[Dim::Face.index()].carrier[s].clone()
+        {
+            self.set_carrier_raw(face, Carrier::Surface(SurfaceCarrier { sense: sc.sense.flip(), ..sc }));
         }
         self.note(face, LineageKind::Modified(ModKind::Reversed));
         Ok(())

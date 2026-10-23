@@ -380,8 +380,6 @@ pub enum ModKind {
     Surface,
     /// A tolerance grew.
     Tolerance,
-    /// A pcurve was set or cleared.
-    PCurve,
     /// A coincidence status changed.
     Coincidence,
     /// An inner loop was added or removed.
@@ -468,6 +466,7 @@ pub struct CutOutcome {
 
 /// Input to face construction: one coedge of a loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoedgeSpec {
     /// The edge.
     pub edge: EntityId,
@@ -477,6 +476,7 @@ pub struct CoedgeSpec {
 
 /// Input to volume construction: one face use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceUseSpec {
     /// The face.
     pub face: EntityId,
@@ -537,6 +537,7 @@ pub enum ShellAssign<'a> {
 
 /// Summary of a committed operation.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OpSummary {
     /// The operation.
     pub op: OpId,
@@ -549,3 +550,74 @@ pub struct OpSummary {
     /// Number of lineage records of the operation.
     pub lineage_len: usize,
 }
+
+/// The id given to a typed wrapper has the wrong entity kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} has the wrong kind for this typed id")]
+pub struct WrongKind(pub EntityId);
+
+macro_rules! typed_id {
+    ($(#[$m:meta])* $name:ident, $kind:ident) => {
+        $(#[$m])*
+        #[repr(transparent)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(transparent))]
+        pub struct $name(EntityId);
+
+        impl $name {
+            /// Wrap `id` if it has the right kind.
+            pub fn new(id: EntityId) -> Option<Self> {
+                (id.kind() == EntityKind::$kind).then_some(Self(id))
+            }
+            /// The raw id.
+            pub const fn get(self) -> EntityId {
+                self.0
+            }
+            /// Wrap an id the caller has already checked (or took from a rank-typed list).
+            #[allow(dead_code)]
+            pub(crate) const fn trusted(id: EntityId) -> Self {
+                Self(id)
+            }
+        }
+
+        impl From<$name> for EntityId {
+            fn from(v: $name) -> EntityId {
+                v.0
+            }
+        }
+
+        impl TryFrom<EntityId> for $name {
+            type Error = WrongKind;
+            fn try_from(id: EntityId) -> Result<Self, WrongKind> {
+                Self::new(id).ok_or(WrongKind(id))
+            }
+        }
+    };
+}
+
+typed_id!(
+    /// A vertex id (`EntityKind::TopoVertex`), zero-cost over [`EntityId`].
+    VertexId,
+    TopoVertex
+);
+typed_id!(
+    /// An edge id (`EntityKind::TopoEdge`), zero-cost over [`EntityId`].
+    EdgeId,
+    TopoEdge
+);
+typed_id!(
+    /// A face id (`EntityKind::TopoFace`), zero-cost over [`EntityId`].
+    FaceId,
+    TopoFace
+);
+typed_id!(
+    /// A volume id (`EntityKind::TopoVolume`), zero-cost over [`EntityId`].
+    VolumeId,
+    TopoVolume
+);
+typed_id!(
+    /// A body id (`EntityKind::TopoBody`), zero-cost over [`EntityId`].
+    BodyId,
+    TopoBody
+);

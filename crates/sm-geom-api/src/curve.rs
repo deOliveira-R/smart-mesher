@@ -1,6 +1,6 @@
 //! The [`ParametricCurve`] trait.
 
-use crate::{Domain1, GeomError, util};
+use crate::{Domain1, GeomError, Interval, util};
 use sm_core::{Point3, Vector3};
 
 /// Position and first two derivatives at one parameter.
@@ -57,10 +57,13 @@ pub trait ParametricCurve: Send + Sync + core::fmt::Debug {
     /// implementor has no projection.
     fn project(&self, p: Point3, hint: Option<f64>) -> Result<CurveProjection, GeomError>;
 
-    /// Arc length between parameters `a` and `b` (signed: negative if `b < a`).
-    /// The default uses composite 5-point Gauss-Legendre on `|C'|`.
-    fn length(&self, a: f64, b: f64) -> f64 {
-        gauss_length(self, a, b)
+    /// Arc length over a bounded parameter `range` (`lo <= hi`), accurate to about `tol` in
+    /// model length units. The default refines composite 5-point Gauss-Legendre on `|C'|` until
+    /// two successive estimates agree to `tol` ([`GeomError::NoConvergence`] otherwise;
+    /// [`GeomError::Invalid`] for an unbounded or reversed range). Line and circle override it
+    /// with the exact value.
+    fn length(&self, range: Interval, tol: f64) -> Result<f64, GeomError> {
+        gauss_length(self, range, tol)
     }
 
     /// True if `C(lo) == C(hi)` within `tol` or the curve is periodic.
@@ -70,18 +73,34 @@ pub trait ParametricCurve: Send + Sync + core::fmt::Debug {
     }
 }
 
-/// Composite 5-point Gauss-Legendre arc length of `|C'|` over `[a, b]` (32 panels).
-pub fn gauss_length<C: ParametricCurve + ?Sized>(c: &C, a: f64, b: f64) -> f64 {
+/// Adaptive composite 5-point Gauss-Legendre arc length of `|C'|` over `range`: the panel count
+/// doubles (from 8, at most 4096 panels) until two successive estimates differ by at most `tol`.
+pub fn gauss_length<C: ParametricCurve + ?Sized>(c: &C, range: Interval, tol: f64) -> Result<f64, GeomError> {
     const X: [f64; 5] = [0.0, 0.538_469_310_105_683_1, -0.538_469_310_105_683_1, 0.906_179_845_938_664, -0.906_179_845_938_664];
     const W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
-    const PANELS: usize = 32;
-    let h = (b - a) / PANELS as f64;
-    let mut sum = 0.0;
-    for k in 0..PANELS {
-        let mid = a + (k as f64 + 0.5) * h;
-        for (x, w) in X.iter().zip(W.iter()) {
-            sum += w * c.d1(mid + 0.5 * h * x).norm();
-        }
+    if !(range.is_valid() && range.is_bounded()) {
+        return Err(GeomError::Invalid("arc length needs a bounded, ordered range"));
     }
-    sum * 0.5 * h
+    let estimate = |panels: usize| -> f64 {
+        let h = range.len() / panels as f64;
+        let mut sum = 0.0;
+        for k in 0..panels {
+            let mid = range.lo + (k as f64 + 0.5) * h;
+            for (x, w) in X.iter().zip(W.iter()) {
+                sum += w * c.d1(mid + 0.5 * h * x).norm();
+            }
+        }
+        sum * 0.5 * h
+    };
+    let mut panels = 8;
+    let mut prev = estimate(panels);
+    while panels < 4096 {
+        panels *= 2;
+        let next = estimate(panels);
+        if (next - prev).abs() <= tol {
+            return Ok(next);
+        }
+        prev = next;
+    }
+    Err(GeomError::NoConvergence("arc length did not reach the requested tolerance"))
 }

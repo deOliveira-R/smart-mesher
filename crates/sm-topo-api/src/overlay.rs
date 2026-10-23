@@ -385,10 +385,10 @@ impl Overlay {
     }
 
     fn up_remove(&mut self, child: EntityId, inc: Incidence) {
-        if let Some(c) = self.cell_mut(child) {
-            if let Ok(i) = c.up.binary_search(&inc) {
-                c.up.remove(i);
-            }
+        if let Some(c) = self.cell_mut(child)
+            && let Ok(i) = c.up.binary_search(&inc)
+        {
+            c.up.remove(i);
         }
     }
 
@@ -452,10 +452,10 @@ impl Overlay {
             let mut out: SmallVec<[EdgeUse; 4]> = SmallVec::new();
             for hu in self.host.radial_uses(e) {
                 let mapped = current.iter().find(|c| c.sense == hu.sense && (c.face == hu.face || self.layer.cells.get(&c.face).is_some_and(|vc| vc.is_virtual && vc.members.contains(&hu.face))));
-                if let Some(m) = mapped {
-                    if !out.contains(m) {
-                        out.push(*m);
-                    }
+                if let Some(m) = mapped
+                    && !out.contains(m)
+                {
+                    out.push(*m);
                 }
             }
             for c in current {

@@ -5,7 +5,7 @@
 //! entry of it (named by a stable [`CoedgeKey`]), `Shell` = a ring of a volume row, `FaceUse` =
 //! one `(volume, face, side)`.
 
-use crate::types::{Carrier, CellFlags, CoedgeKey, CoedgeKind, Dim, EntityState, FacePair, Incidence, Region, Sense, Side};
+use crate::types::{Carrier, CellFlags, CoedgeKey, CoedgeKind, Dim, EntityState, FaceId, FacePair, Incidence, Region, Sense, Side, VolumeId};
 use crate::view::TopologyView;
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{Crossing, RayHit};
@@ -13,6 +13,7 @@ use smallvec::SmallVec;
 
 /// One use of an edge by a face loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Coedge {
     /// Stable name `{face, edge, side}`.
     pub key: CoedgeKey,
@@ -60,6 +61,7 @@ impl Loop<'_> {
 
 /// One side of one face as seen from a volume (the radial-edge "face use").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceUse {
     /// The face.
     pub face: EntityId,
@@ -106,6 +108,7 @@ fn expand_uses(volume: EntityId, shell: u16, e: Incidence) -> SmallVec<[FaceUse;
 
 /// The two sides of a face. The normal points from `left` to `right`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceSides {
     /// Region the normal points away from. For two volumes, the lower id (docs/design/ir.md §6).
     pub left: Region,
@@ -115,6 +118,7 @@ pub struct FaceSides {
 
 /// What a face is, topologically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FaceClass {
     /// No volume touches the face (a sheet).
     Free,
@@ -141,6 +145,16 @@ pub trait TopologyViewExt: TopologyView {
     /// Live faces, ascending (`cells(Dim::Face)`).
     fn faces(&self) -> &[EntityId] {
         self.cells(Dim::Face)
+    }
+
+    /// Live volumes as typed ids, ascending.
+    fn volume_ids(&self) -> impl Iterator<Item = VolumeId> + '_ {
+        self.volumes().iter().map(|&v| VolumeId::trusted(v))
+    }
+
+    /// Live faces as typed ids, ascending.
+    fn face_ids(&self) -> impl Iterator<Item = FaceId> + '_ {
+        self.faces().iter().map(|&f| FaceId::trusted(f))
     }
 
     /// `(start, end)` vertices of an edge.

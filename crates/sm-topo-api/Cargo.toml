@@ -20,4 +20,3 @@ sm-geom-api = { path = "../sm-geom-api" }
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 smallvec = "1"
-indexmap = "2"

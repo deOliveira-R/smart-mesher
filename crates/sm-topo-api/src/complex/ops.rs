@@ -404,8 +404,8 @@ impl CellComplex {
                 for &e in self.face_edges(f) {
                     if let Some(ns) = by_edge.get(&e) {
                         for &n in ns {
-                            if !comp_of.contains_key(&n) {
-                                comp_of.insert(n, ci);
+                            if let std::collections::btree_map::Entry::Vacant(v) = comp_of.entry(n) {
+                                v.insert(ci);
                                 stack.push(n);
                             }
                         }
@@ -662,10 +662,10 @@ impl TopologyEdit for CellComplex {
             if loops.len() >= usize::from(Incidence::EMBEDDED) {
                 return Err(TopoError::InvalidParameter("too many loops"));
             }
-            if let Some(sc) = surface {
-                if sc.surface.kind() != EntityKind::Surface {
-                    return Err(TopoError::InvalidParameter("face carrier must be a Surface handle"));
-                }
+            if let Some(sc) = surface
+                && sc.surface.kind() != EntityKind::Surface
+            {
+                return Err(TopoError::InvalidParameter("face carrier must be a Surface handle"));
             }
             let mut row: Row = Vec::new();
             for (ri, l) in loops.iter().enumerate() {
@@ -1062,11 +1062,11 @@ impl TopologyEdit for CellComplex {
             let pairs: Vec<FacePair> = s.coincident_faces(drop).to_vec();
             for p in pairs {
                 s.del_pair(p.a, p.b);
-                if let Some(other) = p.other(drop) {
-                    if other != keep {
-                        let (a, b) = if keep <= other { (keep, other) } else { (other, keep) };
-                        s.put_pair(FacePair { a, b, status: p.status, op });
-                    }
+                if let Some(other) = p.other(drop)
+                    && other != keep
+                {
+                    let (a, b) = if keep <= other { (keep, other) } else { (other, keep) };
+                    s.put_pair(FacePair { a, b, status: p.status, op });
                 }
             }
             s.replace_in_parents(drop, |e| smallvec![Incidence { cell: keep, side: if relative == Sense::Reversed { e.side.flip() } else { e.side }, ring: e.ring }])?;
