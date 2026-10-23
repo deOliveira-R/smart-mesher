@@ -5,13 +5,12 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use serde::Serialize;
+use sm_core::EntityId;
 
-use crate::hash::{Hash256, Sha256};
-use crate::toml::to_toml;
-use crate::value::to_value;
+use crate::codec::{CodecError, canonical_bytes, to_value};
+use crate::hash::{Hash256, Hasher};
 
 /// Conventional layer names (docs/design/ir.md §5). Concept nodes should use these for the
 /// corresponding store; any other name is equally valid.
@@ -24,8 +23,6 @@ pub mod names {
     pub const INTENT: &str = "intent";
     /// Mesh layer: meshes and hierarchy.
     pub const MESHES: &str = "meshes";
-    /// Derived layer: caches keyed by content hash (provided by this crate).
-    pub const DERIVED: &str = "derived";
 }
 
 /// Whether a layer's content is part of the state identity.
@@ -33,78 +30,127 @@ pub mod names {
 pub enum LayerRole {
     /// Part of the state hash; replay must reproduce it exactly.
     Authoritative,
-    /// A cache rebuilt on demand; excluded from the state hash.
+    /// Rebuildable from authoritative layers; excluded from the state hash.
     Derived,
 }
 
 /// Incremental canonical digest builder handed to [`LayerType::digest`].
 ///
-/// Every write is length- or type-framed so concatenations cannot collide.
-pub struct Digest(Sha256);
+/// Every write is type- and length-framed so concatenations cannot collide.
+pub struct Digest(Hasher);
 
 impl Digest {
-    pub(crate) fn new() -> Self {
-        Self(Sha256::new())
+    pub(crate) fn new(domain: &str) -> Self {
+        Self(Hasher::new(domain))
     }
     pub(crate) fn finish(self) -> Hash256 {
         self.0.finish()
     }
     /// Mix in raw bytes (length-prefixed).
     pub fn bytes(&mut self, b: &[u8]) -> &mut Self {
+        self.0.update(&[1]);
         self.0.update(&(b.len() as u64).to_le_bytes());
         self.0.update(b);
         self
     }
     /// Mix in a string.
     pub fn str(&mut self, s: &str) -> &mut Self {
-        self.bytes(s.as_bytes())
+        self.0.update(&[2]);
+        self.0.update(&(s.len() as u64).to_le_bytes());
+        self.0.update(s.as_bytes());
+        self
     }
     /// Mix in an unsigned integer.
     pub fn u64(&mut self, v: u64) -> &mut Self {
+        self.0.update(&[3]);
         self.0.update(&v.to_le_bytes());
         self
     }
     /// Mix in a signed integer.
     pub fn i64(&mut self, v: i64) -> &mut Self {
-        self.u64(v as u64)
+        self.0.update(&[4]);
+        self.0.update(&v.to_le_bytes());
+        self
+    }
+    /// Mix in an entity id.
+    pub fn id(&mut self, id: EntityId) -> &mut Self {
+        self.u64(id.to_raw())
     }
     /// Mix in a float quantised to multiples of `quantum` (docs/ARCHITECTURE.md §3: the CI
-    /// state hash covers *quantized* coordinates so it is platform independent).
+    /// state hash covers *quantized* coordinates so it is platform independent). `NaN` and
+    /// infinities hash to distinct markers; a non-positive or non-finite `quantum` hashes as an
+    /// error marker (deterministic, and a validator problem).
     pub fn f64_quantized(&mut self, v: f64, quantum: f64) -> &mut Self {
-        let q = (v / quantum).round();
-        // Saturating cast; NaN maps to 0, which is fine because NaN is a validator error.
-        self.i64(q as i64)
+        if !(quantum.is_finite() && quantum > 0.0) {
+            self.0.update(&[5, 0]);
+        } else if v.is_nan() {
+            self.0.update(&[5, 1]);
+        } else if v == f64::INFINITY {
+            self.0.update(&[5, 2]);
+        } else if v == f64::NEG_INFINITY {
+            self.0.update(&[5, 3]);
+        } else {
+            let q = (v / quantum).round(); // saturating cast below
+            self.0.update(&[5, 4]);
+            self.0.update(&(q as i64).to_le_bytes());
+        }
+        self
     }
     /// Mix in another hash.
     pub fn hash(&mut self, h: &Hash256) -> &mut Self {
+        self.0.update(&[6]);
         self.0.update(&h.0);
         self
     }
-    /// Mix in any serializable value via its canonical TOML form. Convenient default for
-    /// small layers; large layers should hash their arrays directly.
+    /// Mix in any serializable value via its canonical encoding (key order and text form do
+    /// not matter). Convenient for small layers; large layers should hash their arrays
+    /// directly. A value that cannot be encoded (NaN, ...) hashes as a fixed error marker.
     pub fn value<T: Serialize + ?Sized>(&mut self, v: &T) -> &mut Self {
         match to_value(v) {
             Ok(val) => {
-                let t = match val {
-                    crate::Value::Table(t) => t,
-                    other => BTreeMap::from([("v".to_owned(), other)]),
-                };
-                self.str(&to_toml(&t))
+                self.0.update(&[7]);
+                let b = canonical_bytes(&val);
+                self.0.update(&(b.len() as u64).to_le_bytes());
+                self.0.update(&b);
             }
-            Err(e) => self.str(&format!("<unserializable: {e}>")),
+            Err(_) => self.0.update(&[7, 0xFF]),
         }
+        self
     }
 }
 
 /// Implemented by a concept node for each store it contributes to the state.
-pub trait LayerType: Clone + Default + Send + Sync + 'static {
+pub trait LayerType: Clone + Send + Sync + 'static {
     /// Unique layer name (see [`names`]).
     const NAME: &'static str;
     /// Authoritative (default) or derived.
     const ROLE: LayerRole = LayerRole::Authoritative;
+    /// Names of layers this layer's data refers to (its upstream concept nodes), mirroring the
+    /// edges of the concept DAG in `docs/graph/concepts.yaml`. [`on_retired`](Self::on_retired)
+    /// reactions run upstream-first in the topological order of these edges (ties by name).
+    const DEPENDS_ON: &'static [&'static str] = &[];
     /// Feed the canonical content into the digest. Must be deterministic and independent of
-    /// allocation addresses, thread count and hash-map order.
+    /// allocation addresses, thread count and hash-map order. Quantize floats.
     fn digest(&self, d: &mut Digest);
+    /// True when the layer holds nothing. Empty layers do not enter the state hash, so
+    /// installing a new concept leaves the hashes of existing histories unchanged.
+    fn is_empty(&self) -> bool;
+    /// Called after an op retired `ids`, on every non-empty authoritative layer, so references
+    /// to deleted entities do not dangle. Must be deterministic. Default: nothing.
+    fn on_retired(&mut self, _ids: &[EntityId]) {}
+    /// Persisted-snapshot hook for very large layers (mesh arrays). `Ok(None)` (the default)
+    /// means "replay to rebuild"; `Some(bytes)` lets a storage backend persist the layer and
+    /// restore it via [`restore`](Self::restore) instead of replaying.
+    fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
+        Ok(None)
+    }
+    /// Rebuild a layer from [`snapshot`](Self::snapshot) bytes. Default: unsupported.
+    fn restore(_bytes: &[u8]) -> Result<Self, CodecError>
+    where
+        Self: Sized,
+    {
+        Err(CodecError::new("layer does not support snapshot restore"))
+    }
 }
 
 /// Object-safe view of a [`LayerType`]; implemented automatically.
@@ -113,8 +159,14 @@ pub trait Layer: Any + Send + Sync {
     fn name(&self) -> &'static str;
     /// Layer role.
     fn role(&self) -> LayerRole;
-    /// Content digest of this layer.
+    /// Content digest of this layer (not memoized; `State` memoizes).
     fn content_hash(&self) -> Hash256;
+    /// See [`LayerType::is_empty`].
+    fn is_empty(&self) -> bool;
+    /// See [`LayerType::on_retired`].
+    fn on_retired(&mut self, ids: &[EntityId]);
+    /// See [`LayerType::snapshot`].
+    fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError>;
     /// Deep copy (cheap for persistent/Arc-based stores).
     fn clone_box(&self) -> Box<dyn Layer>;
     /// Upcast for downcasting by type.
@@ -131,10 +183,19 @@ impl<T: LayerType> Layer for T {
         T::ROLE
     }
     fn content_hash(&self) -> Hash256 {
-        let mut d = Digest::new();
+        let mut d = Digest::new("smart-mesh/layer/v1");
         d.str(T::NAME);
         self.digest(&mut d);
         d.finish()
+    }
+    fn is_empty(&self) -> bool {
+        LayerType::is_empty(self)
+    }
+    fn on_retired(&mut self, ids: &[EntityId]) {
+        LayerType::on_retired(self, ids);
+    }
+    fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
+        LayerType::snapshot(self)
     }
     fn clone_box(&self) -> Box<dyn Layer> {
         Box::new(self.clone())
@@ -147,42 +208,66 @@ impl<T: LayerType> Layer for T {
     }
 }
 
-/// Factory producing an empty layer for a fresh state.
-pub(crate) type LayerFactory = fn() -> Arc<dyn Layer>;
-
-/// The derived layer: results (tessellations, overlap tables, ...) keyed by the content hash
-/// of their inputs. Excluded from the state hash. Installed by `Registry::new`.
-#[derive(Clone, Default)]
-pub struct DerivedCache {
-    entries: BTreeMap<(String, Hash256), Arc<dyn Any + Send + Sync>>,
+/// Reference store for concept layers: an ordered map from entity id to payload. Wrap it in a
+/// newtype that implements [`LayerType`] and forward `digest`, `is_empty` and `on_retired`.
+#[derive(Clone, Debug)]
+pub struct MapLayer<T> {
+    items: BTreeMap<EntityId, T>,
 }
 
-impl DerivedCache {
-    /// Fetch a cached value of type `T` for `(kind, key)`.
-    pub fn get<T: Any + Send + Sync>(&self, kind: &str, key: Hash256) -> Option<Arc<T>> {
-        let e = self.entries.get(&(kind.to_owned(), key))?;
-        Arc::clone(e).downcast::<T>().ok()
+impl<T> Default for MapLayer<T> {
+    fn default() -> Self {
+        Self { items: BTreeMap::new() }
     }
-    /// Store a value. Replaces any previous entry.
-    pub fn insert<T: Any + Send + Sync>(&mut self, kind: &str, key: Hash256, value: Arc<T>) {
-        self.entries.insert((kind.to_owned(), key), value);
+}
+
+impl<T> MapLayer<T> {
+    /// An empty map.
+    pub fn new() -> Self {
+        Self::default()
     }
-    /// Drop all entries (derived data is always rebuildable).
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    /// Look up a payload.
+    pub fn get(&self, id: EntityId) -> Option<&T> {
+        self.items.get(&id)
     }
-    /// Number of cached entries.
+    /// Mutable lookup.
+    pub fn get_mut(&mut self, id: EntityId) -> Option<&mut T> {
+        self.items.get_mut(&id)
+    }
+    /// Insert or replace; returns the previous payload.
+    pub fn insert(&mut self, id: EntityId, v: T) -> Option<T> {
+        self.items.insert(id, v)
+    }
+    /// Remove and return a payload.
+    pub fn remove(&mut self, id: EntityId) -> Option<T> {
+        self.items.remove(&id)
+    }
+    /// Entries in id order.
+    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &T)> {
+        self.items.iter().map(|(k, v)| (*k, v))
+    }
+    /// Number of entries.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.items.len()
     }
     /// True when empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.items.is_empty()
+    }
+    /// Drop entries for retired ids.
+    pub fn on_retired(&mut self, ids: &[EntityId]) {
+        for id in ids {
+            self.items.remove(id);
+        }
     }
 }
 
-impl LayerType for DerivedCache {
-    const NAME: &'static str = names::DERIVED;
-    const ROLE: LayerRole = LayerRole::Derived;
-    fn digest(&self, _: &mut Digest) {}
+impl<T: Serialize> MapLayer<T> {
+    /// Feed every entry (id, then payload) into the digest, in id order.
+    pub fn digest(&self, d: &mut Digest) {
+        d.u64(self.items.len() as u64);
+        for (id, v) in &self.items {
+            d.id(*id).value(v);
+        }
+    }
 }

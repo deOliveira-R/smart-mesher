@@ -1,9 +1,21 @@
 //! Error types.
 
-use sm_core::EntityId;
+use sm_core::{EntityId, EntityKind};
 
+use crate::codec::CodecError;
 use crate::hash::Hash256;
-use crate::value::CodecError;
+
+/// Derived-cache misuse.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CacheError {
+    /// An entry with this `(kind, key)` already holds a value of a different Rust type.
+    #[error("derived cache entry '{kind}' already holds a value of another type")]
+    TypeConflict {
+        /// The cache kind.
+        kind: String,
+    },
+}
 
 /// Why a single op's `apply` failed. Any `OpError` discards the whole op's effects.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -15,15 +27,35 @@ pub enum OpError {
     /// A referenced entity does not exist in the state.
     #[error("unknown entity {0:?}")]
     UnknownEntity(EntityId),
+    /// A referenced entity exists but has the wrong kind.
+    #[error("entity {id:?} is not a {expected:?}")]
+    WrongKind {
+        /// The offending id.
+        id: EntityId,
+        /// The kind the op required.
+        expected: EntityKind,
+    },
     /// The op needs a layer that the registry did not install.
     #[error("layer '{0}' is not registered in this state")]
-    MissingLayer(&'static str),
+    MissingLayer(String),
+    /// The op needs a service that the engine was not given.
+    #[error("service '{0}' is not available")]
+    MissingService(&'static str),
     /// The cancellation token fired.
     #[error("operation cancelled")]
     Cancelled,
     /// The 56-bit serial space of an entity kind is exhausted.
     #[error("entity serial space exhausted")]
     IdExhausted,
+    /// Derived-cache misuse.
+    #[error(transparent)]
+    Cache(#[from] CacheError),
+    /// A nested op (e.g. inside `core.batch`) could not be resolved.
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
+    /// Parameter encoding failed.
+    #[error(transparent)]
+    Codec(#[from] CodecError),
     /// Any other op-specific failure.
     #[error("{0}")]
     Failed(String),
@@ -42,6 +74,38 @@ pub enum RegistryError {
     /// No op of this name is registered.
     #[error("unknown op '{0}'")]
     UnknownOp(String),
+    /// A layer name is not registered.
+    #[error("layer '{0}' is not registered")]
+    MissingLayer(String),
+    /// A layer lists a dependency that is not registered.
+    #[error("layer '{layer}' depends on unregistered layer '{dep}'")]
+    UnknownLayerDependency {
+        /// The layer with the dangling dependency.
+        layer: &'static str,
+        /// The missing layer name.
+        dep: &'static str,
+    },
+    /// Layer dependencies form a cycle.
+    #[error("layer dependencies form a cycle through: {0:?}")]
+    LayerCycle(Vec<&'static str>),
+    /// A migration for this `(op, from)` already exists.
+    #[error("op '{name}' already has a migration from version {from}")]
+    DuplicateMigration {
+        /// Op name.
+        name: String,
+        /// Source version.
+        from: u32,
+    },
+    /// The migration's source version is not below the op's current version.
+    #[error("op '{name}': cannot migrate from version {from}; current version is {current}")]
+    BadMigration {
+        /// Op name.
+        name: String,
+        /// Source version given.
+        from: u32,
+        /// Current version of the op.
+        current: u32,
+    },
     /// The stored op version is newer than this build understands.
     #[error("op '{name}' version {found} is newer than supported version {supported}")]
     UnsupportedVersion {
@@ -65,6 +129,22 @@ pub enum RegistryError {
     Decode {
         /// Op name.
         name: String,
+        /// Underlying error.
+        source: CodecError,
+    },
+    /// The op's JSON schema could not be produced.
+    #[error("op '{name}' schema: {reason}")]
+    Schema {
+        /// Op name.
+        name: String,
+        /// What went wrong.
+        reason: String,
+    },
+    /// A persisted layer snapshot could not be restored.
+    #[error("layer '{layer}' snapshot: {source}")]
+    Snapshot {
+        /// Layer name.
+        layer: String,
         /// Underlying error.
         source: CodecError,
     },
@@ -95,7 +175,14 @@ pub enum ApplyError {
     },
 }
 
-/// Timeline, replay and storage errors.
+impl ApplyError {
+    /// True if the op stopped because cancellation was requested.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, ApplyError::Op { source: OpError::Cancelled, .. })
+    }
+}
+
+/// Timeline, replay and storage-format errors.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TimelineError {
@@ -111,18 +198,18 @@ pub enum TimelineError {
     /// The ref already exists.
     #[error("ref '{0}' already exists")]
     RefExists(String),
-    /// The ref name is not allowed.
+    /// The ref name is not allowed (bad characters, or it collides with another ref as file/directory).
     #[error("invalid ref name '{0}'")]
     BadRefName(String),
     /// There is no current node to branch from.
     #[error("nothing to branch from: the timeline position is empty")]
     EmptyPosition,
-    /// Replaying a node produced a different state hash than recorded.
+    /// Replaying a node produced a different quantized state hash than recorded.
     #[error("replay of node {node} diverged: recorded state {recorded}, got {actual}")]
     Diverged {
         /// Node being replayed.
         node: Hash256,
-        /// State hash stored in the node.
+        /// State hash stored in the node's check.
         recorded: Hash256,
         /// State hash after replay.
         actual: Hash256,
@@ -135,15 +222,32 @@ pub enum TimelineError {
         /// Hash of the content.
         actual: Hash256,
     },
-    /// A node could not be parsed or encoded.
-    #[error("node format: {0}")]
+    /// A stored file could not be parsed or a value could not be encoded.
+    #[error("format: {0}")]
     Format(String),
+    /// The session moved since the op was prepared.
+    #[error("stale base: op was prepared at {expected:?} but the session is at {found:?}")]
+    StaleBase {
+        /// Position the op was prepared against.
+        expected: Option<Hash256>,
+        /// Current position.
+        found: Option<Hash256>,
+    },
+    /// A long replay was cancelled.
+    #[error("operation cancelled")]
+    Cancelled,
+    /// The operation needs HEAD attached to a branch.
+    #[error("HEAD is detached")]
+    NotAttached,
+    /// Nothing to undo.
+    #[error("nothing to undo")]
+    NothingToUndo,
+    /// Nothing to redo.
+    #[error("nothing to redo")]
+    NothingToRedo,
     /// Applying an op during replay or append failed.
     #[error(transparent)]
     Apply(#[from] ApplyError),
-    /// Filesystem failure.
-    #[error("io: {0}")]
-    Io(String),
 }
 
 impl From<CodecError> for TimelineError {
@@ -152,8 +256,8 @@ impl From<CodecError> for TimelineError {
     }
 }
 
-impl From<std::io::Error> for TimelineError {
-    fn from(e: std::io::Error) -> Self {
-        TimelineError::Io(e.to_string())
+impl From<RegistryError> for TimelineError {
+    fn from(e: RegistryError) -> Self {
+        TimelineError::Apply(e.into())
     }
 }
