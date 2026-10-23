@@ -1,0 +1,28 @@
+[package]
+name = "sm-mesh-api"
+description = "Frozen contract for the mesh database (face-first topology, classification, high order, hierarchy) with an in-memory reference implementation."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Derive Serialize/Deserialize on the plain value types (EntityId serializes as "Kind#serial").
+serde = ["dep:serde", "sm-core/serde"]
+# Also derive schemars::JsonSchema on the same types (for MCP tool schemas).
+schemars = ["serde", "dep:schemars", "sm-core/schemars"]
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+thiserror = "2"
+indexmap = "2"
+smallvec = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
