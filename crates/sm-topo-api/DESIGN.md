@@ -42,7 +42,7 @@ Storage is a paged CSR (`(start, len)` spans into one flat vector): an edit appe
 
 `TopologyView` (read-only, object-safe, `Send + Sync`): `model_tolerance`, `dim_of`, `is_alive`, `cells(dim)`, `boundary`, `coboundary`, `carrier`, `flags`, `tolerance_override`/`tolerance`, `coincidences`, `lineage`, `born`, `revision`, and a default `canonical_hash()` (FNV-1a over everything in canonical order; floats by bit pattern).
 
-`TopologyEdit: TopologyView` (object-safe): `begin_op`; construction `make_vertex/edge/face/volume/body`, `add_face_use`, `remove_face_use`, `embed`; Euler-style refinement `split_edge`, `split_face` (by chord); `merge_vertices/edges/faces`; `reverse_face`, `kill`, `set_carrier`, `set_tolerance`, `set_flags`, `record_coincidence`, `set_model_tolerance`. Imprint = `split_edge` + `split_face` + `record_coincidence`; merge = bottom-up `merge_*`; booleans/webcut in `sm-model` compose these with geometry computed elsewhere.
+`TopologyEdit: TopologyView` (object-safe): `begin_op`; construction `make_vertex/edge/face/volume/body`, `add_face_use`, `remove_face_use`, `embed`, `unembed`; Euler-style refinement `split_edge`, `split_face` (by chord); `merge_vertices/edges/faces`; `reverse_face`, `kill`, `set_carrier`, `set_tolerance`, `set_flags`, `record_coincidence`, `set_model_tolerance`. Imprint = `split_edge` + `split_face` + `record_coincidence`; merge = bottom-up `merge_*`; booleans/webcut in `sm-model` compose these with geometry computed elsewhere.
 
 Contracts: edits are **atomic** (validated before mutation; tested by hash equality after a failed edit); new ids are the next unused serial of their kind, in the order documented per method; serials are never reused (dead cells stay in the table with `alive = false`).
 
@@ -85,6 +85,7 @@ Exactly P0-P1 (docs/ARCHITECTURE.md §3): stable ids and lineage, no selectors. 
 - **Loops are ordered rows, not objects.** Cheap and canonical, but loop-level edits (e.g. moving a coedge between loops) are row rewrites. `split_face` supports single-loop faces only (holes and embedded members are `Unsupported`).
 - **Shells are rings the builder assigns.** The API does not decide which shell is outer or whether a volume's shell closes; `validate` checks closure (`boundary(boundary) = 0`) but not inside/outside classification. That needs geometry (a ray cast through `ParametricSurface::ray_hits`).
 - **Radial order is not stored.** `radial_uses(edge)` is in face-id order; angular order around a non-manifold edge is a geometry query.
+- **`merge_faces` checks edge *sets*, not loop correspondence under `relative`.** A wrong `relative` succeeds but yields a shell that `validate` flags (net edge use != 0). Known hole.
 - **Chord vertex ambiguity.** `split_face` takes the first occurrence of a vertex on the loop; a pinched loop with a vertex visited twice needs the caller to pass a chord that is unambiguous.
 - **`PartitionCell` is shared by overlay cells of any rank**, so rank cannot be read from the id of a virtual cell; hence `TopologyView::dim_of`.
 - **Hash is exact-bit.** It is bit-identical for the same platform; the cross-platform CI hash needs coordinates quantized first (ARCHITECTURE §3), a policy for the orchestrator.

@@ -613,6 +613,16 @@ impl TopologyEdit for CellComplex {
         self.set_row(parent, &row)
     }
 
+    fn unembed(&mut self, parent: EntityId, child: EntityId) -> Result<(), TopoError> {
+        let (pd, _) = self.live_any(parent)?;
+        let keep = |e: &Incidence| !(e.cell == child && (e.ring == Incidence::EMBEDDED || pd == Dim::Body));
+        let row: Vec<Incidence> = self.row(parent).iter().copied().filter(keep).collect();
+        if row.len() == self.row(parent).len() {
+            return Err(TopoError::InvalidIncidence { parent, child });
+        }
+        self.set_row(parent, &row)
+    }
+
     fn split_edge(&mut self, edge: EntityId, at: EntityId, param: f64) -> Result<[EntityId; 2], TopoError> {
         self.live_slot(edge, Dim::Edge)?;
         self.live_slot(at, Dim::Vertex)?;

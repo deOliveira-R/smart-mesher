@@ -254,6 +254,41 @@ fn cylinder_has_a_seam_used_twice_and_closed_edges() {
     assert_eq!(t.edge_ends(e2), Some((mid, c.vertices[0])));
     assert_eq!(t.loops(c.faces[0]).next().unwrap().len(), 2);
     assert!(validate_geometry(&t, &s).is_empty(), "{:?}", validate_geometry(&t, &s));
+
+    // Splitting the seam: the lateral face holds it twice (Left and Right), both must be rewritten.
+    t.begin_op(OpId(2));
+    let mid_seam = t.make_vertex(Point3::new(2.0, 0.0, 2.5)).unwrap();
+    let [s1, s2] = t.split_edge(c.edges[2], mid_seam, 2.5).unwrap();
+    assert_valid(&t);
+    assert_eq!(t.loops(c.faces[2]).next().unwrap().len(), 7, "bottom circle (2, split above) + seam (2) + top circle + seam (2)");
+    assert_eq!(t.seam_edges(c.faces[2]).as_slice(), &[s1, s2]);
+    for e in [s1, s2] {
+        assert_eq!(t.radial_uses(e).count(), 2);
+    }
+    assert!(validate_geometry(&t, &s).is_empty(), "{:?}", validate_geometry(&t, &s));
+    assert_eq!(euler(&t), 2);
+}
+
+#[test]
+fn wires_embed_in_a_volume_and_unembed() {
+    let (mut t, mut s) = world();
+    let b = fixtures::brick(&mut t, &mut s, Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 1.0]).unwrap();
+    let p = t.make_vertex(Point3::new(0.25, 0.25, 0.25)).unwrap();
+    let q = t.make_vertex(Point3::new(0.75, 0.25, 0.25)).unwrap();
+    let line = s.add_curve(Box::new(Line::new(Point3::new(0.25, 0.25, 0.25), Vector3::new(1.0, 0.0, 0.0)).unwrap())).unwrap();
+    let w = t.make_edge(p, q, Some(CurveCarrier { curve: line, range: Interval::new(0.0, 0.5), sense: Sense::Forward })).unwrap();
+    t.embed(b.volume, w).unwrap();
+    assert_eq!(t.wire_edges(b.volume).collect::<Vec<_>>(), vec![w]);
+    assert_eq!(t.shells(b.volume).count(), 1, "embedded members are not a shell");
+    assert_valid(&t);
+    assert!(validate_geometry(&t, &s).is_empty());
+    assert_eq!(t.kill(w), Err(TopoError::StillReferenced(w)));
+    assert_eq!(t.embed(b.volume, b.volume), Err(TopoError::InvalidIncidence { parent: b.volume, child: b.volume }));
+    t.unembed(b.volume, w).unwrap();
+    assert_eq!(t.wire_edges(b.volume).count(), 0);
+    assert!(matches!(t.unembed(b.volume, w), Err(TopoError::InvalidIncidence { .. })));
+    t.kill(w).unwrap();
+    assert_valid(&t);
 }
 
 #[test]

@@ -59,6 +59,9 @@ pub trait TopologyEdit: TopologyView {
     /// `parent` (face, volume or body).
     fn embed(&mut self, parent: EntityId, child: EntityId) -> Result<(), TopoError>;
 
+    /// Inverse of [`Self::embed`]: remove `child` from the interior members of `parent`.
+    fn unembed(&mut self, parent: EntityId, child: EntityId) -> Result<(), TopoError>;
+
     // ---- Euler-style refinement (imprint) ----
 
     /// Split `edge` at an existing vertex `at` located at curve parameter `param`. Creates two

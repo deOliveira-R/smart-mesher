@@ -7,6 +7,7 @@ use smallvec::SmallVec;
 
 /// Cell dimension. `Body` is a grouping rank above `Volume`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Dim {
     /// 0-cells.
     Vertex = 0,
@@ -125,6 +126,7 @@ impl Sense {
 
 /// What lies on one side of a face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Region {
     /// A volume of the complex.
     Volume(EntityId),
@@ -135,6 +137,7 @@ pub enum Region {
 /// One oriented incidence: the same record is used in a parent's boundary row (`cell` = the
 /// lower-dimensional cell) and in a child's coboundary row (`cell` = the parent).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Incidence {
     /// The other end of the incidence.
     pub cell: EntityId,
