@@ -1,0 +1,18 @@
+graph BT
+  csg["csg<br/><small>CSG front end: signed quadrics, universes, lattices, boundary types (MC geometry in/out)</small>"]
+  geom["geom<br/><small>Analytic + NURBS curves/surfaces: eval, derivatives, projection, periodicity</small>"]
+  geom_intersect["geom-intersect<br/><small>Curve/curve, curve/surface, surface/surface intersection</small>"]
+  math(["math (foundation)"])
+  geom -->|math-api| math
+  geom_intersect -->|geom-api: ParametricCurve/ParametricSurface| geom
+  predicates(["predicates (foundation)"])
+  geom_intersect -->|predicates-api| predicates
+  topo_store(["topo-store (topology)"])
+  topo_store -->|geom-api: shape handles referenced by topology| geom
+  boolean(["boolean (topology)"])
+  boolean -->|intersect-api| geom_intersect
+  imprint_merge(["imprint-merge (topology)"])
+  imprint_merge -->|intersect-api| geom_intersect
+  csg -->|geom-api| geom
+  topo_store(["topo-store (topology)"])
+  topo_store -->|csg-api: CSG cells as shape providers| csg

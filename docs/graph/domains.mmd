@@ -1,0 +1,37 @@
+graph BT
+  foundation["foundation <br/><small>math, tolerances, exact predicates</small>"]
+  shape["shape [L0]<br/><small>curve/surface math and intersections</small>"]
+  topology["topology [L1]<br/><small>cell complex + all geometry operations on it</small>"]
+  regions["regions [L2,L3]<br/><small>materials, interfaces, boundary sets, assemblies, BCs</small>"]
+  intent["intent [L4]<br/><small>sizing and interval solving</small>"]
+  meshing["meshing [L5,L6]<br/><small>the meshing driver and all scheme families</small>"]
+  mesh_db["mesh-db [L5,L6]<br/><small>the mesh database, classification, validator</small>"]
+  mesh_ops["mesh-ops [L5,L6]<br/><small>quality, smoothing, modification</small>"]
+  interfaces["interfaces [L7]<br/><small>non-conformal detection, intersection, conformize</small>"]
+  distribution["distribution [L9]<br/><small>partitioning and parallel ownership</small>"]
+  fields["fields [L8]<br/><small>discretization descriptors and field data (later)</small>"]
+  io["io [L0,L1,L2,L3,L5,L6,L7,L8,L9]<br/><small>native IR store + importers/exporters with loss reports</small>"]
+  history["history [L10]<br/><small>ops, timeline, replay, project on disk</small>"]
+  frontends["frontends <br/><small>language, server/protocol, MCP, Python, CLI, GUI</small>"]
+  shape --> foundation
+  topology --> shape
+  regions --> topology
+  intent --> topology
+  intent --> regions
+  mesh_db --> topology
+  mesh_db --> regions
+  meshing --> mesh_db
+  meshing --> intent
+  meshing --> regions
+  io --> regions
+  io --> topology
+  mesh_ops --> mesh_db
+  interfaces --> mesh_db
+  interfaces --> regions
+  distribution --> mesh_db
+  fields --> mesh_db
+  io --> mesh_db
+  io --> interfaces
+  io --> distribution
+  io --> fields
+  frontends --> history

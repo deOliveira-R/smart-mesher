@@ -1,0 +1,39 @@
+graph BT
+  classification["classification<br/><small>Mesh entity -> (topology dim, id, params); closure rules</small>"]
+  mesh_geometry["mesh-geometry<br/><small>Coordinates, (shape, degree, basis) per cell, polyhedral face geometry rules</small>"]
+  mesh_hierarchy["mesh-hierarchy<br/><small>Instanced mesh view + flatten(); coarse-mesh slot with fine->coarse maps (CMFD); extrusion structure</small>"]
+  mesh_store["mesh-store<br/><small>Face-first tables, oriented incidences, adjacency indexes, tags, stable ids</small>"]
+  validator["validator<br/><small>All cross-layer invariants (classification closure, region partition, orientation, coverage)</small>"]
+  mesh_hierarchy -->|mesh-api| mesh_store
+  instancing(["instancing (regions)"])
+  mesh_hierarchy -->|instancing-api| instancing
+  validator -->|hierarchy-api| mesh_hierarchy
+  math(["math (foundation)"])
+  mesh_store -->|math-api| math
+  classification -->|mesh-api| mesh_store
+  topo_store(["topo-store (topology)"])
+  classification -->|topo-query-api| topo_store
+  mesh_geometry -->|mesh-api| mesh_store
+  validator -->|classification-api| classification
+  regions(["regions (regions)"])
+  validator -->|regions-api| regions
+  mesh_driver(["mesh-driver (meshing)"])
+  mesh_driver -->|classification-api (write)| classification
+  mesh_driver(["mesh-driver (meshing)"])
+  mesh_driver -->|mesh-geometry-api| mesh_geometry
+  quality(["quality (mesh-ops)"])
+  quality -->|mesh-geometry-api| mesh_geometry
+  smooth(["smooth (mesh-ops)"])
+  smooth -->|classification-api (project to geometry)| classification
+  modify(["modify (mesh-ops)"])
+  modify -->|classification-api| classification
+  interface_detect(["interface-detect (interfaces)"])
+  interface_detect -->|classification-api| classification
+  face_intersect(["face-intersect (interfaces)"])
+  face_intersect -->|mesh-geometry-api| mesh_geometry
+  partitioner(["partitioner (distribution)"])
+  partitioner -->|mesh-api| mesh_store
+  discretization(["discretization (fields)"])
+  discretization -->|mesh-api| mesh_store
+  ir_store(["ir-store (io)"])
+  ir_store -->|validator-api| validator

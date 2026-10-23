@@ -1,0 +1,28 @@
+graph BT
+  boundary_layer["boundary-layer<br/><small>inflation layers</small>"]
+  mesh_driver["mesh-driver<br/><small>Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, multi-volume calls</small>"]
+  scheme_convert["scheme-convert<br/><small>THex, QTri, HTet, TQuad, degree elevation</small>"]
+  scheme_curve["scheme-curve<br/><small>equal, bias, dualbias, stretch, curvature, copy</small>"]
+  scheme_hex["scheme-hex<br/><small>volume map, submap, sweep, multisweep, copy</small>"]
+  scheme_poly["scheme-poly<br/><small>polyhedral: duals, agglomeration, polyhedron scheme</small>"]
+  scheme_quad_structured["scheme-quad-structured<br/><small>map, submap, copy, mirror</small>"]
+  scheme_quad_unstructured["scheme-quad-unstructured<br/><small>paving and related</small>"]
+  scheme_tet["scheme-tet<br/><small>Delaunay + boundary recovery + optimization</small>"]
+  scheme_tri["scheme-tri<br/><small>Delaunay, advancing front, primitives</small>"]
+  classification(["classification (mesh-db)"])
+  mesh_driver -->|classification-api (write)| classification
+  mesh_geometry(["mesh-geometry (mesh-db)"])
+  mesh_driver -->|mesh-geometry-api| mesh_geometry
+  interval_solve(["interval-solve (intent)"])
+  mesh_driver -->|solved intervals| interval_solve
+  regions(["regions (regions)"])
+  mesh_driver -->|regions-api| regions
+  scheme_curve -->|scheme-api: CurveScheme| mesh_driver
+  scheme_quad_structured -->|scheme-api: SurfaceScheme| mesh_driver
+  scheme_quad_unstructured -->|scheme-api: SurfaceScheme| mesh_driver
+  scheme_tri -->|scheme-api: SurfaceScheme| mesh_driver
+  scheme_hex -->|scheme-api: VolumeScheme| mesh_driver
+  scheme_tet -->|scheme-api: VolumeScheme| mesh_driver
+  scheme_poly -->|scheme-api: VolumeScheme| mesh_driver
+  scheme_convert -->|scheme-api: MeshTransform| mesh_driver
+  boundary_layer -->|scheme-api: MeshTransform| mesh_driver

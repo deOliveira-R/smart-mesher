@@ -1,0 +1,30 @@
+graph BT
+  boolean["boolean<br/><small>Unite/subtract/intersect, webcut, general fuse (fragment)</small>"]
+  construct["construct<br/><small>Primitives, bottom-up creation, extrude/revolve/sweep/loft, transforms</small>"]
+  heal["heal<br/><small>Healing and defeaturing</small>"]
+  imprint_merge["imprint-merge<br/><small>Imprint (split so overlaps coincide) and merge (make coincident entities shared)</small>"]
+  tess["tess<br/><small>Display/facet tessellation of the complex</small>"]
+  topo_store["topo-store<br/><small>Cell complex store: entities, uses (Coedge/FaceUse), sides, stable IDs, lineage</small>"]
+  virtual_topo["virtual-topo<br/><small>Composite/partition/collapse as a reversible overlay</small>"]
+  geom(["geom (shape)"])
+  topo_store -->|geom-api: shape handles referenced by topology| geom
+  construct -->|topo-edit-api| topo_store
+  boolean -->|topo-edit-api| topo_store
+  geom_intersect(["geom-intersect (shape)"])
+  boolean -->|intersect-api| geom_intersect
+  imprint_merge -->|topo-edit-api| topo_store
+  geom_intersect(["geom-intersect (shape)"])
+  imprint_merge -->|intersect-api| geom_intersect
+  virtual_topo -->|topo-edit-api (overlay)| topo_store
+  heal -->|topo-edit-api| topo_store
+  tess -->|topo-query-api| topo_store
+  regions(["regions (regions)"])
+  regions -->|topo-query-api: entity ids, face sides| topo_store
+  csg(["csg (shape)"])
+  topo_store -->|csg-api: CSG cells as shape providers| csg
+  sizing(["sizing (intent)"])
+  sizing -->|topo-query-api| topo_store
+  classification(["classification (mesh-db)"])
+  classification -->|topo-query-api| topo_store
+  cad_io(["cad-io (io)"])
+  cad_io -->|topo-edit-api| topo_store

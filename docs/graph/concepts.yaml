@@ -1,0 +1,210 @@
+# smart-mesh concept graph, v1 (source of truth for code boundaries)
+#
+# Two zoom levels:
+#   domains: ~14 boxes. Read this first; it fits in a glance.
+#   nodes:   well-bounded concepts inside a domain (one or a few crates each).
+# Edges are "user -> provider" through a named interface. Every edge is a contract and maps to an `*-api` crate.
+# The graph must stay acyclic (checked by tools/graph.py).
+#
+# Data layers (see docs/design/ir.md). The user's 3 layers map as:
+#   geometry = L0+L1, partition = L2(+L3), mesh = L5..L7.
+layers:
+  L0: {name: shape,        what: "exact curves/surfaces/solids (B-rep geometry)"}
+  L1: {name: topology,     what: "cellular non-manifold complex; faces know (region_fwd, region_rev); imprint/merge status"}
+  L2: {name: regions,      what: "typed named selections over topology: materials (exact partition), interfaces, boundary sets, assemblies"}
+  L3: {name: attributes,   what: "physics intent on regions: materials, BC types, cases"}
+  L4: {name: intent,       what: "meshing intent: sizes, intervals, schemes, vertex types, priorities"}
+  L5: {name: mesh-topology, what: "face-first mesh tables, oriented incidences, classification onto L1"}
+  L6: {name: mesh-geometry, what: "coordinates, per-cell (shape, degree, basis), curved entities"}
+  L7: {name: interfaces,   what: "non-conformal interface records, overlap tables, hanging-node hierarchy"}
+  L8: {name: fields,       what: "discretization sections, function spaces, field data"}
+  L9: {name: distribution, what: "parts, owners, ghosts, global ids"}
+  L10: {name: history,     what: "op timeline/DAG, provenance, hashes of derived tables"}
+
+domains:
+  foundation:   {summary: "math, tolerances, exact predicates",                       layers: []}
+  shape:        {summary: "curve/surface math and intersections",                     layers: [L0]}
+  topology:     {summary: "cell complex + all geometry operations on it",             layers: [L1]}
+  regions:      {summary: "materials, interfaces, boundary sets, assemblies, BCs",    layers: [L2, L3]}
+  intent:       {summary: "sizing and interval solving",                              layers: [L4]}
+  meshing:      {summary: "the meshing driver and all scheme families",               layers: [L5, L6]}
+  mesh-db:      {summary: "the mesh database, classification, validator",             layers: [L5, L6]}
+  mesh-ops:     {summary: "quality, smoothing, modification",                         layers: [L5, L6]}
+  interfaces:   {summary: "non-conformal detection, intersection, conformize",        layers: [L7]}
+  distribution: {summary: "partitioning and parallel ownership",                      layers: [L9]}
+  fields:       {summary: "discretization descriptors and field data (later)",        layers: [L8]}
+  io:           {summary: "native IR store + importers/exporters with loss reports",  layers: [L0, L1, L2, L3, L5, L6, L7, L8, L9]}
+  history:      {summary: "ops, timeline, replay, project on disk",                   layers: [L10]}
+  frontends:    {summary: "language, server/protocol, MCP, Python, CLI, GUI",          layers: []}
+
+domain_edges:   # coarse view: user -> provider
+  - [shape, foundation]
+  - [topology, shape]
+  - [regions, topology]
+  - [intent, topology]
+  - [intent, regions]
+  - [mesh-db, topology]
+  - [mesh-db, regions]
+  - [meshing, mesh-db]
+  - [meshing, intent]
+  - [meshing, regions]
+  - [io, regions]
+  - [io, topology]
+  - [mesh-ops, mesh-db]
+  - [interfaces, mesh-db]
+  - [interfaces, regions]
+  - [distribution, mesh-db]
+  - [fields, mesh-db]
+  - [io, mesh-db]
+  - [io, interfaces]
+  - [io, distribution]
+  - [io, fields]
+  - [history, "*"]          # every domain registers Ops
+  - [frontends, history]
+
+nodes:
+  # foundation
+  math:              {domain: foundation, summary: "Vectors, transforms, tolerance policy, intervals"}
+  predicates:        {domain: foundation, summary: "Exact/adaptive orient/incircle/insphere, robust intersection tests"}
+  # shape (L0)
+  geom:              {domain: shape, summary: "Analytic + NURBS curves/surfaces: eval, derivatives, projection, periodicity"}
+  geom-intersect:    {domain: shape, summary: "Curve/curve, curve/surface, surface/surface intersection"}
+  csg:               {domain: shape, summary: "CSG front end: signed quadrics, universes, lattices, boundary types (MC geometry in/out)"}
+  # topology (L1)
+  topo-store:        {domain: topology, summary: "Cell complex store: entities, uses (Coedge/FaceUse), sides, stable IDs, lineage"}
+  construct:         {domain: topology, summary: "Primitives, bottom-up creation, extrude/revolve/sweep/loft, transforms"}
+  boolean:           {domain: topology, summary: "Unite/subtract/intersect, webcut, general fuse (fragment)"}
+  imprint-merge:     {domain: topology, summary: "Imprint (split so overlaps coincide) and merge (make coincident entities shared)"}
+  virtual-topo:      {domain: topology, summary: "Composite/partition/collapse as a reversible overlay"}
+  heal:              {domain: topology, summary: "Healing and defeaturing"}
+  tess:              {domain: topology, summary: "Display/facet tessellation of the complex"}
+  # regions (L2, L3)
+  regions:           {domain: regions, summary: "Typed selections: material regions, interface pairs, boundary sets, assemblies; geometry- vs mesh-bound lifetime"}
+  instancing:        {domain: regions, summary: "Prototype / Instance / Lattice (nestable, hex+cartesian), per-instance overrides, flatten paths"}
+  attributes:        {domain: regions, summary: "Materials, BC types (vacuum, reflective, albedo, periodic, ...), cases"}
+  # intent (L4)
+  sizing:            {domain: intent, summary: "Sizes, size fields, bias; firmness; priority rules"}
+  interval-solve:    {domain: intent, summary: "Global integer interval matching, corner picking, vertex types"}
+  # mesh-db (L5, L6)
+  mesh-store:        {domain: mesh-db, summary: "Face-first tables, oriented incidences, adjacency indexes, tags, stable ids"}
+  classification:    {domain: mesh-db, summary: "Mesh entity -> (topology dim, id, params); closure rules"}
+  mesh-geometry:     {domain: mesh-db, summary: "Coordinates, (shape, degree, basis) per cell, polyhedral face geometry rules"}
+  mesh-hierarchy:    {domain: mesh-db, summary: "Instanced mesh view + flatten(); coarse-mesh slot with fine->coarse maps (CMFD); extrusion structure"}
+  validator:         {domain: mesh-db, summary: "All cross-layer invariants (classification closure, region partition, orientation, coverage)"}
+  # meshing
+  mesh-driver:       {domain: meshing, summary: "Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, multi-volume calls"}
+  scheme-curve:      {domain: meshing, summary: "equal, bias, dualbias, stretch, curvature, copy"}
+  scheme-quad-structured:   {domain: meshing, summary: "map, submap, copy, mirror"}
+  scheme-quad-unstructured: {domain: meshing, summary: "paving and related"}
+  scheme-tri:        {domain: meshing, summary: "Delaunay, advancing front, primitives"}
+  scheme-hex:        {domain: meshing, summary: "volume map, submap, sweep, multisweep, copy"}
+  scheme-tet:        {domain: meshing, summary: "Delaunay + boundary recovery + optimization"}
+  scheme-poly:       {domain: meshing, summary: "polyhedral: duals, agglomeration, polyhedron scheme"}
+  scheme-convert:    {domain: meshing, summary: "THex, QTri, HTet, TQuad, degree elevation"}
+  boundary-layer:    {domain: meshing, summary: "inflation layers"}
+  # mesh-ops
+  quality:           {domain: mesh-ops, summary: "metrics and validity"}
+  smooth:            {domain: mesh-ops, summary: "smoothing, optimization, untangling"}
+  modify:            {domain: mesh-ops, summary: "refine, coarsen, pillow, collapse, remesh"}
+  # interfaces (L7)
+  interface-detect:  {domain: interfaces, summary: "find unmatched/coincident faces -> candidate interface records"}
+  face-intersect:    {domain: interfaces, summary: "overlap polygons/areas/weights (symmetric overlap table)"}
+  conformize:        {domain: interfaces, summary: "physical imprint of a mesh interface into conformal polyhedra"}
+  # distribution (L9)
+  partitioner:       {domain: distribution, summary: "graph partitioning, owners, ghosts, global ids"}
+  # fields (L8)
+  discretization:    {domain: fields, summary: "sections, function spaces, field storage"}
+  # io
+  ir-store:          {domain: io, summary: "native IR: schema, physical backend, versioning, validation hook"}
+  cad-io:            {domain: io, summary: "STEP/IGES/STL/MCNP import-export into L0/L1"}
+  exporters:         {domain: io, summary: "one sub-node per target (Exodus, OpenFOAM, DAGMC, VTKHDF, CGNS, Gmsh, MED, ...), each with a loss report"}
+  importers:         {domain: io, summary: "mesh import (incl. mesh-based geometry)"}
+  # history (L10)
+  ops:               {domain: history, summary: "Op registry and apply(): the only way state changes"}
+  timeline:          {domain: history, summary: "Op DAG, replay, snapshots, branches, project on disk"}
+  # frontends
+  lang:              {domain: frontends, summary: "command language -> ops"}
+  server:            {domain: frontends, summary: "session host + protocol"}
+  mcp:               {domain: frontends, summary: "MCP tools over the protocol"}
+  py:                {domain: frontends, summary: "Python bindings"}
+  cli:               {domain: frontends, summary: "smesh binary"}
+  gui:               {domain: frontends, summary: "web/desktop viewer and editor"}
+
+edges:   # user -> provider : interface (becomes part of an *-api crate)
+  - [predicates, math, "math-api"]
+  - [geom, math, "math-api"]
+  - [geom-intersect, geom, "geom-api: ParametricCurve/ParametricSurface"]
+  - [geom-intersect, predicates, "predicates-api"]
+  - [topo-store, geom, "geom-api: shape handles referenced by topology"]
+  - [construct, topo-store, "topo-edit-api"]
+  - [boolean, topo-store, "topo-edit-api"]
+  - [boolean, geom-intersect, "intersect-api"]
+  - [imprint-merge, topo-store, "topo-edit-api"]
+  - [imprint-merge, geom-intersect, "intersect-api"]
+  - [virtual-topo, topo-store, "topo-edit-api (overlay)"]
+  - [heal, topo-store, "topo-edit-api"]
+  - [tess, topo-store, "topo-query-api"]
+  - [regions, topo-store, "topo-query-api: entity ids, face sides"]
+  - [attributes, regions, "regions-api"]
+  - [csg, geom, "geom-api"]
+  - [topo-store, csg, "csg-api: CSG cells as shape providers"]
+  - [instancing, regions, "regions-api"]
+  - [mesh-hierarchy, mesh-store, "mesh-api"]
+  - [mesh-hierarchy, instancing, "instancing-api"]
+  - [validator, mesh-hierarchy, "hierarchy-api"]
+  - [sizing, topo-store, "topo-query-api"]
+  - [sizing, regions, "regions-api (sizes per region)"]
+  - [interval-solve, sizing, "intent-api: IntervalConstraint, firmness"]
+  - [mesh-store, math, "math-api"]
+  - [classification, mesh-store, "mesh-api"]
+  - [classification, topo-store, "topo-query-api"]
+  - [mesh-geometry, mesh-store, "mesh-api"]
+  - [validator, classification, "classification-api"]
+  - [validator, regions, "regions-api"]
+  - [mesh-driver, classification, "classification-api (write)"]
+  - [mesh-driver, mesh-geometry, "mesh-geometry-api"]
+  - [mesh-driver, interval-solve, "solved intervals"]
+  - [mesh-driver, regions, "regions-api"]
+  - [scheme-curve, mesh-driver, "scheme-api: CurveScheme"]
+  - [scheme-quad-structured, mesh-driver, "scheme-api: SurfaceScheme"]
+  - [scheme-quad-unstructured, mesh-driver, "scheme-api: SurfaceScheme"]
+  - [scheme-tri, mesh-driver, "scheme-api: SurfaceScheme"]
+  - [scheme-hex, mesh-driver, "scheme-api: VolumeScheme"]
+  - [scheme-tet, mesh-driver, "scheme-api: VolumeScheme"]
+  - [scheme-poly, mesh-driver, "scheme-api: VolumeScheme"]
+  - [scheme-convert, mesh-driver, "scheme-api: MeshTransform"]
+  - [boundary-layer, mesh-driver, "scheme-api: MeshTransform"]
+  - [quality, mesh-geometry, "mesh-geometry-api"]
+  - [smooth, quality, "quality-api"]
+  - [smooth, classification, "classification-api (project to geometry)"]
+  - [modify, classification, "classification-api"]
+  - [interface-detect, classification, "classification-api"]
+  - [interface-detect, regions, "regions-api (interface records)"]
+  - [face-intersect, interface-detect, "interface-api"]
+  - [face-intersect, mesh-geometry, "mesh-geometry-api"]
+  - [conformize, face-intersect, "overlap-api"]
+  - [partitioner, mesh-store, "mesh-api"]
+  - [discretization, mesh-store, "mesh-api"]
+  - [ir-store, validator, "validator-api"]
+  - [ir-store, face-intersect, "overlap-api"]
+  - [ir-store, partitioner, "distribution-api"]
+  - [ir-store, discretization, "fields-api"]
+  - [ir-store, attributes, "attributes-api"]
+  - [cad-io, topo-store, "topo-edit-api"]
+  - [exporters, ir-store, "ir-api (read)"]
+  - [importers, ir-store, "ir-api (write)"]
+  - [ops, timeline, "timeline-api"]
+  - [lang, ops, "op-api"]
+  - [server, ops, "op-api"]
+  - [server, timeline, "timeline-api"]
+  - [mcp, server, "protocol"]
+  - [py, server, "protocol (in-process)"]
+  - [cli, server, "protocol (in-process)"]
+  - [gui, server, "protocol (remote)"]
+  # aggregate: every concept that changes state registers Ops
+  - [ops, "*", "op-api: each node registers its Ops"]
+
+open:
+  - "Mixed-material cells (volume fractions): matset table in regions vs field in L8"
+  - "Units, 2D/RZ/1D meshes, time series"
+  - "Exodus writer: libnetcdf vs netCDF-4 layout through HDF5"
