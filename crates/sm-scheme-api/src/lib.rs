@@ -49,11 +49,21 @@ pub use driver::{Driver, DriverOptions, Meshed, Rejections};
 pub use error::{Attempt, FailureKind, GenerateFailure, Infeasible, Phase, Result, SchemeError};
 pub use exec::{Executor, ScopedThreads, Sequential};
 pub use firm::{Firm, Firmness};
-pub use intent::{AutoPolicy, BoundaryLayerIntent, CornerIntent, Defaults, EntityIntent, IntervalRequest, MeshGroup, MeshIntent, Params, SchemeChoice, SchemeName, SizingSpec, TransformIntent};
+pub use intent::{
+    AutoPolicy, BoundaryLayerIntent, CornerIntent, Defaults, EntityIntent, IntervalRequest,
+    MeshGroup, MeshIntent, Params, SchemeChoice, SchemeName, SizingSpec, TransformIntent,
+};
 pub use patch::{ElemShape, Elements, NodeGrid, Patch, PatchBuilder, PatchNode, PatchSet};
 pub use plan::{CopyClass, CopyMember, CopyMode, Footprint, Plan, TransformPlan};
-pub use problem::{Claim, ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink, MeshConstraint, MeshingProblem, Need, Origin, Record, Rel, Requirements, Role, Selection, TargetPlan};
-pub use scheme::{Applicability, BoundaryLoop, BoundaryUse, GenCtx, IntervalCtx, MeshInput, MeshTransform, PieceResolver, PlanCtx, Scheme, SchemeRegistry, WholeFaces};
+pub use problem::{
+    Claim, ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink,
+    MeshConstraint, MeshingProblem, Need, Origin, Record, Rel, Requirements, Role, Selection,
+    TargetPlan,
+};
+pub use scheme::{
+    Applicability, BoundaryLoop, BoundaryUse, GenCtx, IntervalCtx, MeshInput, MeshTransform,
+    PieceResolver, PlanCtx, Scheme, SchemeRegistry, WholeFaces,
+};
 pub use sizing::{ConstantSize, SizeField, SymMat3};
 pub use solve::{CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver};
 pub use target::{GroupId, Job, NodeKey, SchemeDim, Target, TransformId, piece_of};

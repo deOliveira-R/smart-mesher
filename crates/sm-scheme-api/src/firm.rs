@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 /// The solver may change `Default` and `Soft` values to satisfy other constraints (`Soft`
 /// is preferred over `Default` when two requests disagree); a `Hard` value is never changed,
 /// and two disagreeing `Hard` values make the problem infeasible.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 pub enum Firmness {
     /// Set automatically (sizing, auto selection, corner picking).
     #[default]
@@ -30,15 +32,24 @@ pub struct Firm<T> {
 impl<T> Firm<T> {
     /// A hard request.
     pub const fn hard(value: T) -> Self {
-        Self { value, firmness: Firmness::Hard }
+        Self {
+            value,
+            firmness: Firmness::Hard,
+        }
     }
     /// A soft request.
     pub const fn soft(value: T) -> Self {
-        Self { value, firmness: Firmness::Soft }
+        Self {
+            value,
+            firmness: Firmness::Soft,
+        }
     }
     /// An automatic (default-firmness) value.
     pub const fn auto(value: T) -> Self {
-        Self { value, firmness: Firmness::Default }
+        Self {
+            value,
+            firmness: Firmness::Default,
+        }
     }
     /// True if the value must not be changed.
     pub fn is_hard(&self) -> bool {

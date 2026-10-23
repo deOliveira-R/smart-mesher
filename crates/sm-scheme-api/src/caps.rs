@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 /// A set of capability bits. Combine with `|`; query with [`Caps::contains`] and
 /// [`Caps::intersects`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 pub struct Caps(pub u32);
 

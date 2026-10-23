@@ -21,9 +21,12 @@ use crate::firm::{Firm, Firmness};
 use crate::geom;
 use crate::intent::{IntervalRequest, MeshIntent, Params, SchemeChoice, SchemeName};
 use crate::plan::{CopyClass, CopyMode, Plan, TransformPlan};
-use crate::problem::{ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink, MeshConstraint, MeshingProblem, Need, Origin, Requirements, Role, Scope, Selection, TargetPlan};
-use crate::scheme::{Applicability, IntervalCtx, MeshInput, PlanCtx};
+use crate::problem::{
+    ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink,
+    MeshConstraint, MeshingProblem, Need, Origin, Requirements, Role, Scope, Selection, TargetPlan,
+};
 use crate::schedule::{ScheduleInput, schedule};
+use crate::scheme::{Applicability, IntervalCtx, MeshInput, PlanCtx};
 use crate::sizing::{SizeField, builtin_field};
 use crate::target::{GroupId, SchemeDim, Target, TransformId, piece_of};
 use crate::vertex::{FaceLayout, VertexRule, VertexType};
@@ -81,18 +84,26 @@ impl<'r> Driver<'r> {
     pub(crate) fn region(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Region> {
         let volumes = sorted(input.selection.to_vec());
         if let Some(v) = volumes.iter().find(|v| piece_of(**v).is_none()) {
-            return Err(SchemeError::Input(format!("{v} is not a TopoVolume or PartitionCell")));
+            return Err(SchemeError::Input(format!(
+                "{v} is not a TopoVolume or PartitionCell"
+            )));
         }
         let mut grouped = BTreeMap::new();
         let mut groups = Vec::new();
         for g in &intent.groups {
             if g.id.0 >= TransformId::GROUP_BASE {
-                return Err(SchemeError::Input(format!("group id {:?} is reserved", g.id)));
+                return Err(SchemeError::Input(format!(
+                    "group id {:?} is reserved",
+                    g.id
+                )));
             }
             let members = sorted(g.members.clone());
             for m in &members {
                 if volumes.binary_search(m).is_err() {
-                    return Err(SchemeError::Input(format!("group {:?}: member {m} is not selected", g.id)));
+                    return Err(SchemeError::Input(format!(
+                        "group {:?}: member {m} is not selected",
+                        g.id
+                    )));
                 }
                 if grouped.insert(*m, g.id).is_some() {
                     return Err(SchemeError::Input(format!("{m} is in two groups")));
@@ -110,8 +121,22 @@ impl<'r> Driver<'r> {
         }
         let faces: Vec<EntityId> = faces.into_iter().collect();
         let edges = sorted(faces.iter().flat_map(|f| input.face_edges(*f)).collect());
-        let vertices = sorted(edges.iter().filter_map(|e| input.topo.edge_ends(*e)).flat_map(|(a, b)| [a, b]).collect());
-        Ok(Region { volumes, groups, grouped, vol_faces, faces, edges, vertices })
+        let vertices = sorted(
+            edges
+                .iter()
+                .filter_map(|e| input.topo.edge_ends(*e))
+                .flat_map(|(a, b)| [a, b])
+                .collect(),
+        );
+        Ok(Region {
+            volumes,
+            groups,
+            grouped,
+            vol_faces,
+            faces,
+            edges,
+            vertices,
+        })
     }
 
     /// Assemble and solve the problem.
@@ -121,7 +146,12 @@ impl<'r> Driver<'r> {
 
     /// Assemble and solve the problem, skipping rejected `(target, scheme)` pairs. The same
     /// `(intent, rejections)` always gives the same plan.
-    pub fn plan_with(&self, input: &MeshInput<'_>, intent: &MeshIntent, rej: &Rejections) -> Result<Plan> {
+    pub fn plan_with(
+        &self,
+        input: &MeshInput<'_>,
+        intent: &MeshIntent,
+        rej: &Rejections,
+    ) -> Result<Plan> {
         intent.check()?;
         let region = self.region(input, intent)?;
         Planner::new(self, input, intent, rej, region).run()
@@ -155,7 +185,13 @@ struct Planner<'a, 'r> {
 }
 
 impl<'a, 'r> Planner<'a, 'r> {
-    fn new(drv: &'a Driver<'r>, input: &'a MeshInput<'a>, intent: &'a MeshIntent, rej: &'a Rejections, region: Region) -> Self {
+    fn new(
+        drv: &'a Driver<'r>,
+        input: &'a MeshInput<'a>,
+        intent: &'a MeshIntent,
+        rej: &'a Rejections,
+        region: Region,
+    ) -> Self {
         let mut intent_hard = BTreeSet::new();
         let mut copy_intent = BTreeSet::new();
         for (id, ei) in &intent.entities {
@@ -174,11 +210,17 @@ impl<'a, 'r> Planner<'a, 'r> {
             }
         }
         for g in &intent.groups {
-            if g.scheme.as_ref().is_some_and(|c| c.firmness == Firmness::Hard) {
+            if g.scheme
+                .as_ref()
+                .is_some_and(|c| c.firmness == Firmness::Hard)
+            {
                 intent_hard.insert(Target::Group(g.id));
             }
         }
-        let tol = drv.options.copy_tolerance.unwrap_or(input.topo.tolerance().linear);
+        let tol = drv
+            .options
+            .copy_tolerance
+            .unwrap_or(input.topo.tolerance().linear);
         Self {
             drv,
             input,
@@ -210,16 +252,27 @@ impl<'a, 'r> Planner<'a, 'r> {
         self.plan_volumes()?;
         self.user_copies()?;
         self.refresh_copies()?;
-        let faces: Vec<Target> = self.region.faces.iter().map(|f| Target::Surface(*f)).collect();
+        let faces: Vec<Target> = self
+            .region
+            .faces
+            .iter()
+            .map(|f| Target::Surface(*f))
+            .collect();
         self.plan_all(&faces)?;
-        let edges: Vec<Target> = self.region.edges.iter().map(|e| Target::Curve(*e)).collect();
+        let edges: Vec<Target> = self
+            .region
+            .edges
+            .iter()
+            .map(|e| Target::Curve(*e))
+            .collect();
         self.plan_all(&edges)?;
         self.finish_copies()?;
 
         // Corner requests from intent, then corner picking per face with a rule.
         for c in &self.intent.corners {
             if self.region.faces.binary_search(&c.corner.face).is_ok() {
-                self.p.push_vertex_type(Origin::Intent, c.corner, c.vertex_type);
+                self.p
+                    .push_vertex_type(Origin::Intent, c.corner, c.vertex_type);
             }
         }
         let layouts = self.pick_corners().map_err(|e| self.blame(e))?;
@@ -236,17 +289,37 @@ impl<'a, 'r> Planner<'a, 'r> {
             })
             .collect();
         for (a, b) in eqs {
-            self.p.push_interval(Origin::Driver, IntervalConstraint::sum_equal(&[a], &[b]));
+            self.p
+                .push_interval(Origin::Driver, IntervalConstraint::sum_equal(&[a], &[b]));
         }
         let roles: Vec<(Target, Role)> = self.p.roles.iter().map(|r| r.item).collect();
         let tps: Vec<TargetPlan> = self.plans.values().cloned().collect();
-        let icx = IntervalCtx { input: self.input, layouts: &layouts, roles: &roles, targets: &tps };
+        let icx = IntervalCtx {
+            input: self.input,
+            layouts: &layouts,
+            roles: &roles,
+            targets: &tps,
+        };
         for tp in &tps {
-            if tp.scheme.as_str() == SchemeName::COPY || matches!(tp.selection, Selection::Claimed { .. }) {
+            if tp.scheme.as_str() == SchemeName::COPY
+                || matches!(tp.selection, Selection::Claimed { .. })
+            {
                 continue;
             }
-            let s = self.drv.registry.get(tp.target.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: tp.target })?;
-            s.interval_constraints(&icx, tp.target, &tp.params, &mut IntervalSink::new(&mut self.p, &tp.scheme, tp.target))?;
+            let s = self
+                .drv
+                .registry
+                .get(tp.target.dim(), tp.scheme.as_str())
+                .ok_or_else(|| SchemeError::UnknownScheme {
+                    name: tp.scheme.clone(),
+                    target: tp.target,
+                })?;
+            s.interval_constraints(
+                &icx,
+                tp.target,
+                &tp.params,
+                &mut IntervalSink::new(&mut self.p, &tp.scheme, tp.target),
+            )?;
         }
         let intervals = match self.drv.solver.solve(&self.region.edges, &self.p.intervals) {
             Ok(v) => v,
@@ -257,8 +330,21 @@ impl<'a, 'r> Planner<'a, 'r> {
         self.p.targets = std::mem::take(&mut self.plans).into_values().collect();
         self.p.invalidate();
         let groups: BTreeMap<GroupId, Vec<EntityId>> = self.region.groups.iter().cloned().collect();
-        let plans: BTreeMap<Target, TargetPlan> = self.p.targets.iter().map(|t| (t.target, t.clone())).collect();
-        let (footprints, waves) = schedule(&ScheduleInput { input: self.input, plans: &plans, problem: &self.p, classes: &self.classes, transforms: &transforms, groups: &groups, grouped: &self.region.grouped })?;
+        let plans: BTreeMap<Target, TargetPlan> = self
+            .p
+            .targets
+            .iter()
+            .map(|t| (t.target, t.clone()))
+            .collect();
+        let (footprints, waves) = schedule(&ScheduleInput {
+            input: self.input,
+            plans: &plans,
+            problem: &self.p,
+            classes: &self.classes,
+            transforms: &transforms,
+            groups: &groups,
+            grouped: &self.region.grouped,
+        })?;
         Ok(Plan {
             problem: self.p,
             intervals,
@@ -290,7 +376,13 @@ impl<'a, 'r> Planner<'a, 'r> {
     fn pick_blame(&self, cids: &[ConstraintId]) -> Option<(Target, SchemeName)> {
         cids.iter()
             .filter_map(|id| match self.p.record_origin(*id)? {
-                Origin::Scheme { scheme, target } if scheme.as_str() != SchemeName::COPY && !self.hard.contains(target) && !self.rej.0.contains_key(&(*target, scheme.clone())) => Some((*id, *target, scheme.clone())),
+                Origin::Scheme { scheme, target }
+                    if scheme.as_str() != SchemeName::COPY
+                        && !self.hard.contains(target)
+                        && !self.rej.0.contains_key(&(*target, scheme.clone())) =>
+                {
+                    Some((*id, *target, scheme.clone()))
+                }
                 _ => None,
             })
             .min_by_key(|(id, t, _)| (t.dim().rank(), Reverse(*id)))
@@ -302,18 +394,54 @@ impl<'a, 'r> Planner<'a, 'r> {
     fn deck(&mut self) -> Result<()> {
         let topo = self.input.topo;
         for f in self.region.faces.clone() {
-            let Some(FaceKindView::Deck { boundary, deck, side, mate }) = self.input.model.face_kind(f, topo) else { continue };
-            if self.intent.entities.get(&f).is_some_and(|e| e.boundary_layer.is_some()) {
+            let Some(FaceKindView::Deck {
+                boundary,
+                deck,
+                side,
+                mate,
+            }) = self.input.model.face_kind(f, topo)
+            else {
+                continue;
+            };
+            if self
+                .intent
+                .entities
+                .get(&f)
+                .is_some_and(|e| e.boundary_layer.is_some())
+            {
                 return Err(SchemeError::BoundaryLayerOnDeck { face: f, boundary });
             }
             let origin = Origin::Deck { boundary };
-            self.p.push_imposition(origin.clone(), Imposition { child: Target::Surface(f), need: Need::Forbid(Caps::BOUNDARY_LAYER), firmness: Firmness::Hard, by: Target::Surface(f) });
+            self.p.push_imposition(
+                origin.clone(),
+                Imposition {
+                    child: Target::Surface(f),
+                    need: Need::Forbid(Caps::BOUNDARY_LAYER),
+                    firmness: Firmness::Hard,
+                    by: Target::Surface(f),
+                },
+            );
             match (deck, side, mate) {
                 (Deck::Mirror { plane }, _, _) => {
-                    self.p.push_constraint(origin, MeshConstraint::PlaneLock { face: f, normal: plane.normal, offset: plane.offset });
+                    self.p.push_constraint(
+                        origin,
+                        MeshConstraint::PlaneLock {
+                            face: f,
+                            normal: plane.normal,
+                            offset: plane.offset,
+                        },
+                    );
                 }
-                (_, sm_model_api::DeckSide::A, Some(m)) if self.region.faces.binary_search(&m).is_ok() => {
-                    let c = CopyConstraint { source: Target::Surface(f), target: Target::Surface(m), transform: deck.transform(), vertex_map: Vec::new(), reason: CopyReason::Deck { boundary } };
+                (_, sm_model_api::DeckSide::A, Some(m))
+                    if self.region.faces.binary_search(&m).is_ok() =>
+                {
+                    let c = CopyConstraint {
+                        source: Target::Surface(f),
+                        target: Target::Surface(m),
+                        transform: deck.transform(),
+                        vertex_map: Vec::new(),
+                        reason: CopyReason::Deck { boundary },
+                    };
                     self.p.push_copy(origin, c);
                 }
                 _ => {}
@@ -326,7 +454,9 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// a volume scheme with the boundary-layer capability.
     fn boundary_layers(&mut self) -> Result<()> {
         for f in self.region.faces.clone() {
-            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer) else { continue };
+            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer) else {
+                continue;
+            };
             let mut targets: Vec<Target> = Vec::new();
             for (v, faces) in &self.region.vol_faces {
                 if faces.binary_search(&f).is_err() {
@@ -338,8 +468,23 @@ impl<'a, 'r> Planner<'a, 'r> {
                 });
             }
             for vt in sorted(targets) {
-                self.p.push_constraint(Origin::Intent, MeshConstraint::BoundaryLayer { face: f, volume: vt, spec });
-                self.p.push_imposition(Origin::Intent, Imposition { child: vt, need: Need::Caps(Caps::BOUNDARY_LAYER), firmness: Firmness::Soft, by: Target::Surface(f) });
+                self.p.push_constraint(
+                    Origin::Intent,
+                    MeshConstraint::BoundaryLayer {
+                        face: f,
+                        volume: vt,
+                        spec,
+                    },
+                );
+                self.p.push_imposition(
+                    Origin::Intent,
+                    Imposition {
+                        child: vt,
+                        need: Need::Caps(Caps::BOUNDARY_LAYER),
+                        firmness: Firmness::Hard,
+                        by: Target::Surface(f),
+                    },
+                );
             }
         }
         Ok(())
@@ -354,7 +499,13 @@ impl<'a, 'r> Planner<'a, 'r> {
         }
         for (id, members) in self.region.groups.clone() {
             let mt: Vec<Target> = members.iter().map(|m| Target::Volume(*m)).collect();
-            self.p.push_constraint(Origin::Intent, MeshConstraint::Atomic { group: id, members: mt });
+            self.p.push_constraint(
+                Origin::Intent,
+                MeshConstraint::Atomic {
+                    group: id,
+                    members: mt,
+                },
+            );
             self.plan_target(Target::Group(id))?;
         }
         Ok(())
@@ -364,20 +515,51 @@ impl<'a, 'r> Planner<'a, 'r> {
     fn user_copies(&mut self) -> Result<()> {
         let topo = self.input.topo;
         for (id, ei) in &self.intent.entities {
-            let Some(ch) = ei.scheme.as_ref().filter(|c| c.name.as_str() == SchemeName::COPY) else { continue };
+            let Some(ch) = ei
+                .scheme
+                .as_ref()
+                .filter(|c| c.name.as_str() == SchemeName::COPY)
+            else {
+                continue;
+            };
             let t = match topo.dim_of(*id) {
-                Some(Dim::Face) if self.region.faces.binary_search(id).is_ok() => Target::Surface(*id),
-                Some(Dim::Edge) if self.region.edges.binary_search(id).is_ok() => Target::Curve(*id),
+                Some(Dim::Face) if self.region.faces.binary_search(id).is_ok() => {
+                    Target::Surface(*id)
+                }
+                Some(Dim::Edge) if self.region.edges.binary_search(id).is_ok() => {
+                    Target::Curve(*id)
+                }
                 _ => continue,
             };
-            let source: EntityId = ch.params.get(SchemeName::COPY, "source")?.ok_or_else(|| SchemeError::BadParams { scheme: ch.name.clone(), reason: "missing `source`".into() })?;
-            let transform: Transform = ch.params.get(SchemeName::COPY, "transform")?.unwrap_or(Transform::IDENTITY);
-            let vertex_map: Vec<(EntityId, EntityId)> = sorted(ch.params.get(SchemeName::COPY, "vertex_map")?.unwrap_or_default());
+            let source: EntityId = ch.params.get(SchemeName::COPY, "source")?.ok_or_else(|| {
+                SchemeError::BadParams {
+                    scheme: ch.name.clone(),
+                    reason: "missing `source`".into(),
+                }
+            })?;
+            let transform: Transform = ch
+                .params
+                .get(SchemeName::COPY, "transform")?
+                .unwrap_or(Transform::IDENTITY);
+            let vertex_map: Vec<(EntityId, EntityId)> = sorted(
+                ch.params
+                    .get(SchemeName::COPY, "vertex_map")?
+                    .unwrap_or_default(),
+            );
             let st = match t {
                 Target::Surface(_) => Target::Surface(source),
                 _ => Target::Curve(source),
             };
-            self.p.push_copy(Origin::Intent, CopyConstraint { source: st, target: t, transform, vertex_map, reason: CopyReason::User });
+            self.p.push_copy(
+                Origin::Intent,
+                CopyConstraint {
+                    source: st,
+                    target: t,
+                    transform,
+                    vertex_map,
+                    reason: CopyReason::User,
+                },
+            );
         }
         Ok(())
     }
@@ -397,16 +579,27 @@ impl<'a, 'r> Planner<'a, 'r> {
                     Target::Curve(e) => self.region.edges.binary_search(&e).is_ok(),
                     _ => false,
                 };
-                if !inside(c.source) || !inside(c.target) || c.source == c.target || c.source.dim() != c.target.dim() {
+                if !inside(c.source)
+                    || !inside(c.target)
+                    || c.source == c.target
+                    || c.source.dim() != c.target.dim()
+                {
                     return Err(SchemeError::Correspondence { source_target: c.source, target: c.target, reason: "source and target must be distinct entities of one dimension inside the meshed region".into() });
                 }
             }
             self.checked = n0;
             fill_vertex_maps(topo, &mut self.p.copies)?;
-            let mut pairs: BTreeSet<(Target, Target)> = self.p.copies.iter().map(|r| (r.item.source, r.item.target)).collect();
+            let mut pairs: BTreeSet<(Target, Target)> = self
+                .p
+                .copies
+                .iter()
+                .map(|r| (r.item.source, r.item.target))
+                .collect();
             // Edge copies implied by face copies.
             for i in 0..n0 {
-                if !matches!(self.p.copies[i].item.target, Target::Surface(_)) || !self.closed.insert(self.p.copies[i].id) {
+                if !matches!(self.p.copies[i].item.target, Target::Surface(_))
+                    || !self.closed.insert(self.p.copies[i].id)
+                {
                     continue;
                 }
                 let parent = self.p.copies[i].id;
@@ -416,15 +609,31 @@ impl<'a, 'r> Planner<'a, 'r> {
                     if e == f {
                         continue;
                     }
-                    if pairs.contains(&(Target::Curve(e), Target::Curve(f))) || pairs.contains(&(Target::Curve(f), Target::Curve(e))) {
+                    if pairs.contains(&(Target::Curve(e), Target::Curve(f)))
+                        || pairs.contains(&(Target::Curve(f), Target::Curve(e)))
+                    {
                         continue;
                     }
                     pairs.insert((Target::Curve(e), Target::Curve(f)));
-                    let Some((a, b)) = topo.edge_ends(e) else { continue };
-                    let mut evm: Vec<(EntityId, EntityId)> = [a, b].iter().filter_map(|v| vm.get(v).map(|w| (*v, *w))).collect();
+                    let Some((a, b)) = topo.edge_ends(e) else {
+                        continue;
+                    };
+                    let mut evm: Vec<(EntityId, EntityId)> = [a, b]
+                        .iter()
+                        .filter_map(|v| vm.get(v).map(|w| (*v, *w)))
+                        .collect();
                     evm.sort_unstable();
                     evm.dedup();
-                    self.p.push_copy(Origin::Driver, CopyConstraint { source: Target::Curve(e), target: Target::Curve(f), transform: c.transform, vertex_map: evm, reason: CopyReason::Closure { parent } });
+                    self.p.push_copy(
+                        Origin::Driver,
+                        CopyConstraint {
+                            source: Target::Curve(e),
+                            target: Target::Curve(f),
+                            transform: c.transform,
+                            vertex_map: evm,
+                            reason: CopyReason::Closure { parent },
+                        },
+                    );
                 }
             }
             if self.p.copies.len() == n0 {
@@ -437,10 +646,36 @@ impl<'a, 'r> Planner<'a, 'r> {
 
     fn rebuild_classes(&mut self) -> Result<()> {
         let claimed: BTreeSet<Target> = self.claimed.keys().copied().collect();
-        let resolved: BTreeSet<Target> = self.plans.values().filter(|t| !matches!(t.selection, Selection::Claimed { .. } | Selection::Copy { .. })).map(|t| t.target).filter(|t| matches!(t, Target::Surface(_) | Target::Curve(_))).collect();
-        let sweep_sources: BTreeSet<Target> = self.p.roles.iter().filter(|r| matches!(r.item.1, Role::SweepSource { .. })).map(|r| r.item.0).collect();
+        let resolved: BTreeSet<Target> = self
+            .plans
+            .values()
+            .filter(|t| {
+                !matches!(
+                    t.selection,
+                    Selection::Claimed { .. } | Selection::Copy { .. }
+                )
+            })
+            .map(|t| t.target)
+            .filter(|t| matches!(t, Target::Surface(_) | Target::Curve(_)))
+            .collect();
+        let sweep_sources: BTreeSet<Target> = self
+            .p
+            .roles
+            .iter()
+            .filter(|r| matches!(r.item.1, Role::SweepSource { .. }))
+            .map(|r| r.item.0)
+            .collect();
         let hard: BTreeSet<Target> = self.intent_hard.union(&self.hard).copied().collect();
-        self.classes = build_classes(&ClassInput { topo: self.input.topo, copies: &self.p.copies, claimed: &claimed, resolved: &resolved, sweep_sources: &sweep_sources, hard: &hard, copy_intent: &self.copy_intent, tol: self.tol })?;
+        self.classes = build_classes(&ClassInput {
+            topo: self.input.topo,
+            copies: &self.p.copies,
+            claimed: &claimed,
+            resolved: &resolved,
+            sweep_sources: &sweep_sources,
+            hard: &hard,
+            copy_intent: &self.copy_intent,
+            tol: self.tol,
+        })?;
         self.class_ix.clear();
         for (ci, c) in self.classes.iter().enumerate() {
             self.class_ix.insert(c.root, (ci, None));
@@ -466,44 +701,139 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// index and the caps of their root, and impositions on members hold (defect D3).
     fn finish_copies(&mut self) -> Result<()> {
         for (ci, class) in self.classes.iter().enumerate() {
-            let root_plan = self.plans.get(&class.root).ok_or_else(|| SchemeError::Input(format!("copy root {:?} was not planned", class.root)))?;
+            let root_plan = self.plans.get(&class.root).ok_or_else(|| {
+                SchemeError::Input(format!("copy root {:?} was not planned", class.root))
+            })?;
             if matches!(root_plan.selection, Selection::Copy { .. }) {
-                return Err(SchemeError::Input(format!("copy root {:?} was planned as a copy", class.root)));
+                return Err(SchemeError::Input(format!(
+                    "copy root {:?} was planned as a copy",
+                    class.root
+                )));
             }
-            let rcaps = if matches!(root_plan.selection, Selection::Claimed { .. }) { root_plan.caps } else { root_plan.caps.without(Caps::INHERIT) };
+            let rcaps = if matches!(root_plan.selection, Selection::Claimed { .. }) {
+                root_plan.caps
+            } else {
+                root_plan.caps.without(Caps::INHERIT)
+            };
             for m in &class.members {
-                let tp = self.plans.get_mut(&m.target).ok_or_else(|| SchemeError::Input(format!("copy member {:?} was not planned", m.target)))?;
+                let tp = self.plans.get_mut(&m.target).ok_or_else(|| {
+                    SchemeError::Input(format!("copy member {:?} was not planned", m.target))
+                })?;
                 match tp.selection {
                     Selection::Copy { .. } => {
                         tp.selection = Selection::Copy { class: ci as u32 };
                         tp.caps = rcaps;
                     }
                     Selection::Claimed { .. } => {}
-                    _ => return Err(SchemeError::Input(format!("copy member {:?} was planned with its own scheme", m.target))),
+                    _ => {
+                        return Err(SchemeError::Input(format!(
+                            "copy member {:?} was planned with its own scheme",
+                            m.target
+                        )));
+                    }
                 }
             }
         }
         // Impositions on members are checked against what actually meshes them.
+        let mut soft: Vec<Attempt> = Vec::new();
         for imp in &self.p.impositions {
-            let Some(&(ci, Some(mi))) = self.class_ix.get(&imp.item.child) else { continue };
+            let Some(&(ci, Some(mi))) = self.class_ix.get(&imp.item.child) else {
+                continue;
+            };
             let class = &self.classes[ci];
             let m = &class.members[mi];
-            let root = self.plans.get(&class.root).ok_or_else(|| SchemeError::Input(format!("copy root {:?} was not planned", class.root)))?;
+            let root = self.plans.get(&class.root).ok_or_else(|| {
+                SchemeError::Input(format!("copy root {:?} was not planned", class.root))
+            })?;
             let (name, caps) = match self.plans.get(&m.target).map(|t| &t.selection) {
                 Some(Selection::Claimed { by }) => {
-                    let bp = self.plans.get(by).ok_or_else(|| SchemeError::Input(format!("claimer {by:?} was not planned")))?;
+                    let bp = self.plans.get(by).ok_or_else(|| {
+                        SchemeError::Input(format!("claimer {by:?} was not planned"))
+                    })?;
                     (bp.scheme.clone(), child_caps(bp.caps))
                 }
-                _ => (root.scheme.clone(), if matches!(root.selection, Selection::Claimed { .. }) { root.caps } else { root.caps.without(Caps::INHERIT) }),
+                _ => (
+                    root.scheme.clone(),
+                    if matches!(root.selection, Selection::Claimed { .. }) {
+                        root.caps
+                    } else {
+                        root.caps.without(Caps::INHERIT)
+                    },
+                ),
             };
             if violates(&imp.item.need, &name, caps) {
-                return Err(SchemeError::ImpositionConflict { child: m.target, imposed_by: imp.item.by, required: imp.item.need.clone(), conflict: format!("it is meshed as a copy of {:?} by `{name}`", class.root) });
+                if imp.item.firmness != Firmness::Hard {
+                    soft.push(Attempt {
+                        target: m.target,
+                        scheme: name.clone(),
+                        phase: Phase::Resolve,
+                        kind: FailureKind::Rejected,
+                        message: format!(
+                            "soft imposition from {:?} not met: meshed as a copy of {:?}",
+                            imp.item.by, class.root
+                        ),
+                    });
+                    continue;
+                }
+                return Err(SchemeError::ImpositionConflict {
+                    child: m.target,
+                    imposed_by: imp.item.by,
+                    required: imp.item.need.clone(),
+                    conflict: format!("it is meshed as a copy of {:?} by `{name}`", class.root),
+                });
             }
         }
+        // Impositions on claimed children (not class members) hold against what the claimer
+        // writes there. The claimer's own impositions are its business.
+        for imp in &self.p.impositions {
+            if matches!(self.class_ix.get(&imp.item.child), Some(&(_, Some(_)))) {
+                continue;
+            }
+            let Some(Selection::Claimed { by }) =
+                self.plans.get(&imp.item.child).map(|p| &p.selection)
+            else {
+                continue;
+            };
+            if imp.item.by == *by {
+                continue;
+            }
+            let bp = self
+                .plans
+                .get(by)
+                .ok_or_else(|| SchemeError::Input(format!("claimer {by:?} was not planned")))?;
+            let (name, caps) = (bp.scheme.clone(), child_caps(bp.caps));
+            if violates(&imp.item.need, &name, caps) {
+                if imp.item.firmness != Firmness::Hard {
+                    soft.push(Attempt {
+                        target: imp.item.child,
+                        scheme: name.clone(),
+                        phase: Phase::Resolve,
+                        kind: FailureKind::Rejected,
+                        message: format!(
+                            "soft imposition from {:?} not met: written by {by:?}",
+                            imp.item.by
+                        ),
+                    });
+                    continue;
+                }
+                return Err(SchemeError::ImpositionConflict {
+                    child: imp.item.child,
+                    imposed_by: imp.item.by,
+                    required: imp.item.need.clone(),
+                    conflict: format!("it is written by {by:?} with `{name}`"),
+                });
+            }
+        }
+        self.attempts.extend(soft);
         // A copy plan must belong to a class.
         for tp in self.plans.values() {
-            if matches!(tp.selection, Selection::Copy { .. }) && !self.class_ix.contains_key(&tp.target) {
-                return Err(SchemeError::Input(format!("{:?} was planned as a copy but no copy constraint remains", tp.target)));
+            if matches!(tp.selection, Selection::Copy { .. })
+                && !self.class_ix.contains_key(&tp.target)
+            {
+                return Err(SchemeError::Input(format!(
+                    "{:?} was planned as a copy but no copy constraint remains",
+                    tp.target
+                )));
             }
         }
         Ok(())
@@ -530,22 +860,51 @@ impl<'a, 'r> Planner<'a, 'r> {
 
     fn intent_choice(&self, t: Target) -> Option<(&SchemeChoice, &[SchemeChoice])> {
         match t {
-            Target::Group(g) => self.intent.groups.iter().find(|x| x.id == g).and_then(|x| x.scheme.as_ref().map(|s| (s, x.fallbacks.as_slice()))),
-            _ => t.entity().and_then(|e| self.intent.entities.get(&e)).and_then(|ei| ei.scheme.as_ref().map(|s| (s, ei.fallbacks.as_slice()))),
+            Target::Group(g) => self
+                .intent
+                .groups
+                .iter()
+                .find(|x| x.id == g)
+                .and_then(|x| x.scheme.as_ref().map(|s| (s, x.fallbacks.as_slice()))),
+            _ => t
+                .entity()
+                .and_then(|e| self.intent.entities.get(&e))
+                .and_then(|ei| ei.scheme.as_ref().map(|s| (s, ei.fallbacks.as_slice()))),
         }
     }
 
     /// The plan of a claimed child: written by the claimer, so the claimer's scheme and caps.
     fn claimed_plan(&mut self, t: Target, by: Target) -> Result<TargetPlan> {
-        let bp = self.plans.get(&by).ok_or_else(|| SchemeError::Input(format!("{t:?} is claimed by {by:?}, which is not planned")))?;
+        let bp = self.plans.get(&by).ok_or_else(|| {
+            SchemeError::Input(format!("{t:?} is claimed by {by:?}, which is not planned"))
+        })?;
         let (scheme, caps) = (bp.scheme.clone(), child_caps(bp.caps));
         if let Some((ch, _)) = self.intent_choice(t).filter(|(c, _)| c.name != scheme) {
             if ch.firmness == Firmness::Hard {
-                return Err(SchemeError::ImpositionConflict { child: t, imposed_by: by, required: Need::Schemes(vec![scheme]), conflict: format!("the intent requires `{}` (hard)", ch.name) });
+                return Err(SchemeError::ImpositionConflict {
+                    child: t,
+                    imposed_by: by,
+                    required: Need::Schemes(vec![scheme]),
+                    conflict: format!("the intent requires `{}` (hard)", ch.name),
+                });
             }
-            self.attempts.push(Attempt { target: t, scheme: ch.name.clone(), phase: Phase::Resolve, kind: FailureKind::Rejected, message: format!("overridden: {t:?} is written by {by:?}") });
+            self.attempts.push(Attempt {
+                target: t,
+                scheme: ch.name.clone(),
+                phase: Phase::Resolve,
+                kind: FailureKind::Rejected,
+                message: format!("overridden: {t:?} is written by {by:?}"),
+            });
         }
-        Ok(TargetPlan { target: t, scheme, params: Params::empty(), data: Params::empty(), caps, selection: Selection::Claimed { by }, reason: format!("written by {by:?}") })
+        Ok(TargetPlan {
+            target: t,
+            scheme,
+            params: Params::empty(),
+            data: Params::empty(),
+            caps,
+            selection: Selection::Claimed { by },
+            reason: format!("written by {by:?}"),
+        })
     }
 
     /// The plan of a non-root class member. A hard intent for another scheme is an
@@ -554,24 +913,54 @@ impl<'a, 'r> Planner<'a, 'r> {
         let class = &self.classes[ci];
         let m = &class.members[mi];
         if m.mode == CopyMode::Verify {
-            return Err(SchemeError::Input(format!("{t:?} is a verify member but not claimed")));
+            return Err(SchemeError::Input(format!(
+                "{t:?} is a verify member but not claimed"
+            )));
         }
         let root = class.root;
-        let ch = self.intent_choice(t).map(|(c, _)| c.clone()).filter(|c| c.name.as_str() != SchemeName::COPY);
+        let ch = self
+            .intent_choice(t)
+            .map(|(c, _)| c.clone())
+            .filter(|c| c.name.as_str() != SchemeName::COPY);
         if let Some(ch) = ch {
             if ch.firmness == Firmness::Hard {
-                return Err(SchemeError::ImpositionConflict { child: t, imposed_by: root, required: Need::Schemes(vec![SchemeName::new(SchemeName::COPY)]), conflict: format!("the intent requires `{}` (hard)", ch.name) });
+                return Err(SchemeError::ImpositionConflict {
+                    child: t,
+                    imposed_by: root,
+                    required: Need::Schemes(vec![SchemeName::new(SchemeName::COPY)]),
+                    conflict: format!("the intent requires `{}` (hard)", ch.name),
+                });
             }
-            self.attempts.push(Attempt { target: t, scheme: ch.name.clone(), phase: Phase::Resolve, kind: FailureKind::Rejected, message: format!("overridden: {t:?} is a copy of {root:?}") });
+            self.attempts.push(Attempt {
+                target: t,
+                scheme: ch.name.clone(),
+                phase: Phase::Resolve,
+                kind: FailureKind::Rejected,
+                message: format!("overridden: {t:?} is a copy of {root:?}"),
+            });
         }
-        Ok(TargetPlan { target: t, scheme: SchemeName::new(SchemeName::COPY), params: Params::empty(), data: Params::empty(), caps: Caps::INHERIT, selection: Selection::Copy { class: ci as u32 }, reason: format!("copy of {root:?}") })
+        Ok(TargetPlan {
+            target: t,
+            scheme: SchemeName::new(SchemeName::COPY),
+            params: Params::empty(),
+            data: Params::empty(),
+            caps: Caps::INHERIT,
+            selection: Selection::Copy { class: ci as u32 },
+            reason: format!("copy of {root:?}"),
+        })
     }
 
     /// Impositions on `t`, and, when `t` is a class root, on the members it generates.
     fn needs_for(&self, t: Target) -> Vec<NeedRef> {
         let mut subjects = vec![t];
         if let Some(&(ci, None)) = self.class_ix.get(&t) {
-            subjects.extend(self.classes[ci].members.iter().filter(|m| m.mode == CopyMode::Generate).map(|m| m.target));
+            subjects.extend(
+                self.classes[ci]
+                    .members
+                    .iter()
+                    .filter(|m| m.mode == CopyMode::Generate)
+                    .map(|m| m.target),
+            );
         }
         subjects
             .iter()
@@ -580,29 +969,62 @@ impl<'a, 'r> Planner<'a, 'r> {
             .into_iter()
             .map(|i| {
                 let r = &self.p.impositions[i];
-                NeedRef { child: r.item.child, need: r.item.need.clone(), firmness: r.item.firmness, by: r.item.by, id: r.id, from_intent: r.origin == Origin::Intent }
+                NeedRef {
+                    child: r.item.child,
+                    need: r.item.need.clone(),
+                    firmness: r.item.firmness,
+                    by: r.item.by,
+                    id: r.id,
+                    from_intent: r.origin == Origin::Intent,
+                }
             })
             .collect()
     }
 
     fn sync_impositions(&mut self) {
         for i in self.imp_seen..self.p.impositions.len() {
-            self.imp_ix.entry(self.p.impositions[i].item.child).or_default().push(i);
+            self.imp_ix
+                .entry(self.p.impositions[i].item.child)
+                .or_default()
+                .push(i);
         }
         self.imp_seen = self.p.impositions.len();
     }
 
-    fn att(&self, t: Target, name: &SchemeName, kind: FailureKind, msg: impl Into<String>) -> Attempt {
-        Attempt { target: t, scheme: name.clone(), phase: Phase::Resolve, kind, message: msg.into() }
+    fn att(
+        &self,
+        t: Target,
+        name: &SchemeName,
+        kind: FailureKind,
+        msg: impl Into<String>,
+    ) -> Attempt {
+        Attempt {
+            target: t,
+            scheme: name.clone(),
+            phase: Phase::Resolve,
+            kind,
+            message: msg.into(),
+        }
     }
 
     /// Evaluate one candidate. `Some((score, reason))` if it can win; `None` if it was passed
     /// over (the reason is recorded in `local`).
-    fn try_candidate(&self, t: Target, choice: &SchemeChoice, needs: &[NeedRef], from_intent: bool, local: &mut Vec<Attempt>) -> Result<Option<(u32, String)>> {
+    fn try_candidate(
+        &self,
+        t: Target,
+        choice: &SchemeChoice,
+        needs: &[NeedRef],
+        from_intent: bool,
+        honour_soft: bool,
+        local: &mut Vec<Attempt>,
+    ) -> Result<Option<(u32, String)>> {
         let name = &choice.name;
         let Some(s) = self.drv.registry.get(t.dim(), name.as_str()) else {
             if from_intent {
-                return Err(SchemeError::UnknownScheme { name: name.clone(), target: t });
+                return Err(SchemeError::UnknownScheme {
+                    name: name.clone(),
+                    target: t,
+                });
             }
             local.push(self.att(t, name, FailureKind::NotApplicable, "not registered"));
             return Ok(None);
@@ -612,19 +1034,63 @@ impl<'a, 'r> Planner<'a, 'r> {
             return Ok(None);
         }
         if let Some(prev) = self.rej.0.get(&(t, name.clone())) {
-            local.push(self.att(t, name, FailureKind::Rejected, format!("rejected after a {:?} failure in {:?}: {}", prev.kind, prev.phase, prev.message)));
+            local.push(self.att(
+                t,
+                name,
+                FailureKind::Rejected,
+                format!(
+                    "rejected after a {:?} failure in {:?}: {}",
+                    prev.kind, prev.phase, prev.message
+                ),
+            ));
             return Ok(None);
         }
         let caps = s.caps(&choice.params).without(Caps::INHERIT);
-        if let Some(n) = needs.iter().find(|n| violates(&n.need, name, caps)) {
-            if choice.firmness == Firmness::Hard && from_intent {
+        // A hard intent beats soft impositions; soft ones are preferences, dropped in the
+        // fallback pass (`honour_soft == false`).
+        let hard_intent = choice.firmness == Firmness::Hard && from_intent;
+        for n in needs
+            .iter()
+            .filter(|n| n.firmness != Firmness::Hard && violates(&n.need, name, caps))
+        {
+            if hard_intent {
+                local.push(self.att(
+                    t,
+                    name,
+                    FailureKind::Rejected,
+                    format!(
+                        "soft imposition from {:?} ignored: the intent requires `{name}` (hard)",
+                        n.by
+                    ),
+                ));
+            }
+        }
+        if let Some(n) = needs.iter().find(|n| {
+            violates(&n.need, name, caps)
+                && (n.firmness == Firmness::Hard || (honour_soft && !hard_intent))
+        }) {
+            if hard_intent {
                 return Err(if n.from_intent {
-                    SchemeError::NotApplicable { target: t, scheme: name.clone(), reason: format!("requested {:?} is not provided by the scheme", n.need) }
+                    SchemeError::NotApplicable {
+                        target: t,
+                        scheme: name.clone(),
+                        reason: format!("requested {:?} is not provided by the scheme", n.need),
+                    }
                 } else {
-                    SchemeError::ImpositionConflict { child: n.child, imposed_by: n.by, required: n.need.clone(), conflict: format!("the intent requires `{name}` (hard)") }
+                    SchemeError::ImpositionConflict {
+                        child: n.child,
+                        imposed_by: n.by,
+                        required: n.need.clone(),
+                        conflict: format!("the intent requires `{name}` (hard)"),
+                    }
                 });
             }
-            local.push(self.att(t, name, FailureKind::Rejected, format!("overridden by imposition from {:?}: {:?}", n.by, n.need)));
+            local.push(self.att(
+                t,
+                name,
+                FailureKind::Rejected,
+                format!("overridden by imposition from {:?}: {:?}", n.by, n.need),
+            ));
             return Ok(None);
         }
         match s.applicability(&self.cx, t, &choice.params) {
@@ -636,18 +1102,56 @@ impl<'a, 'r> Planner<'a, 'r> {
         }
     }
 
-    fn tp(&self, t: Target, choice: SchemeChoice, selection: Selection, reason: String) -> TargetPlan {
-        let caps = self.drv.registry.get(t.dim(), choice.name.as_str()).map_or(Caps::NONE, |s| s.caps(&choice.params));
-        TargetPlan { target: t, scheme: choice.name, params: choice.params, data: Params::empty(), caps, selection, reason }
+    fn tp(
+        &self,
+        t: Target,
+        choice: SchemeChoice,
+        selection: Selection,
+        reason: String,
+    ) -> TargetPlan {
+        let caps = self
+            .drv
+            .registry
+            .get(t.dim(), choice.name.as_str())
+            .map_or(Caps::NONE, |s| s.caps(&choice.params));
+        TargetPlan {
+            target: t,
+            scheme: choice.name,
+            params: choice.params,
+            data: Params::empty(),
+            caps,
+            selection,
+            reason,
+        }
     }
 
     /// Choose the scheme of `t`. Order: the intent chain, the registry fallbacks of its last
     /// choice, else the piece-shape hint, else the best applicable candidate among the imposed
     /// set or the auto list. Returns the plan and whether the winner is a hard intent.
     fn resolve(&mut self, t: Target) -> Result<(TargetPlan, bool)> {
-        let dim = t.dim();
         self.sync_impositions();
-        let needs = self.needs_for(t);
+        match self.resolve_pass(t, true) {
+            // Soft impositions are preferences: when nothing satisfies them, plan without.
+            Err(
+                SchemeError::NoApplicableScheme { .. } | SchemeError::ImpositionConflict { .. },
+            ) if self
+                .needs_for(t)
+                .iter()
+                .any(|n| n.firmness != Firmness::Hard) =>
+            {
+                self.resolve_pass(t, false)
+            }
+            r => r,
+        }
+    }
+
+    fn resolve_pass(&mut self, t: Target, honour_soft: bool) -> Result<(TargetPlan, bool)> {
+        let dim = t.dim();
+        let needs: Vec<NeedRef> = self
+            .needs_for(t)
+            .into_iter()
+            .filter(|n| honour_soft || n.firmness == Firmness::Hard)
+            .collect();
         // Impositions by name intersect; an empty intersection is a conflict between parents.
         let mut allowed: Option<(Vec<SchemeName>, Target)> = None;
         for n in &needs {
@@ -655,9 +1159,15 @@ impl<'a, 'r> Planner<'a, 'r> {
                 allowed = Some(match allowed.take() {
                     None => (names.clone(), n.by),
                     Some((a, by)) => {
-                        let both: Vec<SchemeName> = a.iter().filter(|x| names.contains(x)).cloned().collect();
+                        let both: Vec<SchemeName> =
+                            a.iter().filter(|x| names.contains(x)).cloned().collect();
                         if both.is_empty() {
-                            return Err(SchemeError::ImpositionConflict { child: n.child, imposed_by: n.by, required: n.need.clone(), conflict: format!("{by:?} requires one of {a:?}") });
+                            return Err(SchemeError::ImpositionConflict {
+                                child: n.child,
+                                imposed_by: n.by,
+                                required: n.need.clone(),
+                                conflict: format!("{by:?} requires one of {a:?}"),
+                            });
                         }
                         (both, by)
                     }
@@ -669,36 +1179,67 @@ impl<'a, 'r> Planner<'a, 'r> {
         if let Some((s, fb)) = self.intent_choice(t) {
             chain.push(Cand::Chain(s.clone(), Selection::Intent { rank: 0 }));
             for (i, f) in fb.iter().enumerate() {
-                chain.push(Cand::Chain(f.clone(), Selection::Intent { rank: i as u32 + 1 }));
+                chain.push(Cand::Chain(
+                    f.clone(),
+                    Selection::Intent { rank: i as u32 + 1 },
+                ));
             }
         }
         let n_intent = chain.len();
+        let any_hard = chain
+            .iter()
+            .any(|Cand::Chain(c, _)| c.firmness == Firmness::Hard);
         if let Some(Cand::Chain(last, _)) = chain.last() {
-            let names: Vec<SchemeName> = self.drv.registry.fallbacks(dim, last.name.as_str()).to_vec();
+            let names: Vec<SchemeName> = self
+                .drv
+                .registry
+                .fallbacks(dim, last.name.as_str())
+                .to_vec();
             for (i, n) in names.into_iter().enumerate() {
-                chain.push(Cand::Chain(SchemeChoice::new(n.as_str(), Firmness::Default), Selection::Registry { rank: i as u32 }));
+                chain.push(Cand::Chain(
+                    SchemeChoice::new(n.as_str(), Firmness::Default),
+                    Selection::Registry { rank: i as u32 },
+                ));
             }
-        } else if let Some(PieceRef::Cell(c)) = t.piece()
+        }
+        // Then the piece-shape hint (never past a hard intent, which must not be replaced).
+        if !any_hard
+            && let Some(PieceRef::Cell(c)) = t.piece()
             && let Some(piece) = self.input.model.decomposition().piece(c)
         {
             match &piece.shape {
                 PieceShape::Sweep { source, target: tg } => {
-                    let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> { v.iter().filter_map(|pf| self.input.pieces.face_of(self.input.topo, self.input.model, pf)).collect() };
+                    let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> {
+                        v.iter()
+                            .filter_map(|pf| {
+                                self.input
+                                    .pieces
+                                    .face_of(self.input.topo, self.input.model, pf)
+                            })
+                            .collect()
+                    };
                     let params = serde_json::json!({ "source": map(source), "target": map(tg) });
-                    chain.push(Cand::Chain(SchemeChoice::with_params("sweep", params, Firmness::Default), Selection::PieceShape));
+                    chain.push(Cand::Chain(
+                        SchemeChoice::with_params("sweep", params, Firmness::Default),
+                        Selection::PieceShape,
+                    ));
                 }
-                PieceShape::Map => chain.push(Cand::Chain(SchemeChoice::new("map", Firmness::Default), Selection::PieceShape)),
+                PieceShape::Map => chain.push(Cand::Chain(
+                    SchemeChoice::new("map", Firmness::Default),
+                    Selection::PieceShape,
+                )),
                 PieceShape::Any => {}
             }
         }
-        let any_hard = chain[..n_intent].iter().any(|Cand::Chain(c, _)| c.firmness == Firmness::Hard);
         let mut local: Vec<Attempt> = Vec::new();
         let mut tried: BTreeSet<SchemeName> = BTreeSet::new();
         for (i, Cand::Chain(choice, sel)) in chain.into_iter().enumerate() {
             if !tried.insert(choice.name.clone()) {
                 continue;
             }
-            if let Some((_, reason)) = self.try_candidate(t, &choice, &needs, i < n_intent, &mut local)? {
+            if let Some((_, reason)) =
+                self.try_candidate(t, &choice, &needs, i < n_intent, honour_soft, &mut local)?
+            {
                 let hard = i < n_intent && choice.firmness == Firmness::Hard;
                 self.attempts.extend(local);
                 return Ok((self.tp(t, choice, sel, reason), hard));
@@ -711,9 +1252,17 @@ impl<'a, 'r> Planner<'a, 'r> {
                 && n_intent == 1
                 && only.kind == FailureKind::NotApplicable
             {
-                return Err(SchemeError::NotApplicable { target: t, scheme: only.scheme.clone(), reason: only.message.clone() });
+                return Err(SchemeError::NotApplicable {
+                    target: t,
+                    scheme: only.scheme.clone(),
+                    reason: only.message.clone(),
+                });
             }
-            return Err(SchemeError::NoApplicableScheme { target: t, tried: tried_n, imposed_by: self.blameable_imposers(t, &needs) });
+            return Err(SchemeError::NoApplicableScheme {
+                target: t,
+                tried: tried_n,
+                imposed_by: self.blameable_imposers(t, &needs),
+            });
         }
         // Imposed set or auto list.
         let policy = match dim {
@@ -726,7 +1275,11 @@ impl<'a, 'r> Planner<'a, 'r> {
         } else if !self.drv.registry.auto(dim).is_empty() {
             self.drv.registry.auto(dim).to_vec()
         } else {
-            self.drv.registry.of_dim(dim).map(|s| SchemeName::new(s.name())).collect()
+            self.drv
+                .registry
+                .of_dim(dim)
+                .map(|s| SchemeName::new(s.name()))
+                .collect()
         };
         // A parent's requirement must stay satisfiable under a narrow auto list: with
         // impositions, the remaining registered schemes follow the list (name order).
@@ -734,13 +1287,20 @@ impl<'a, 'r> Planner<'a, 'r> {
             names
         } else {
             let mut v = names;
-            let rest: Vec<SchemeName> = self.drv.registry.of_dim(dim).map(|s| SchemeName::new(s.name())).filter(|n| !v.contains(n)).collect();
+            let rest: Vec<SchemeName> = self
+                .drv
+                .registry
+                .of_dim(dim)
+                .map(|s| SchemeName::new(s.name()))
+                .filter(|n| !v.contains(n))
+                .collect();
             v.extend(rest);
             v
         };
         let names: Vec<SchemeName> = match &allowed {
             Some((a, _)) => {
-                let mut v: Vec<SchemeName> = names.iter().filter(|n| a.contains(n)).cloned().collect();
+                let mut v: Vec<SchemeName> =
+                    names.iter().filter(|n| a.contains(n)).cloned().collect();
                 v.extend(a.iter().filter(|n| !names.contains(n)).cloned());
                 v
             }
@@ -752,30 +1312,56 @@ impl<'a, 'r> Planner<'a, 'r> {
                 continue;
             }
             let choice = SchemeChoice::new(n.as_str(), Firmness::Default);
-            if let Some((score, reason)) = self.try_candidate(t, &choice, &needs, false, &mut local)? {
+            if let Some((score, reason)) =
+                self.try_candidate(t, &choice, &needs, false, honour_soft, &mut local)?
+            {
                 scored.push((score, n, reason));
             }
         }
-        let best = scored.iter().enumerate().fold(None::<usize>, |b, (i, s)| match b {
-            Some(j) if scored[j].0 >= s.0 => Some(j),
-            _ => Some(i),
-        });
+        let best = scored
+            .iter()
+            .enumerate()
+            .fold(None::<usize>, |b, (i, s)| match b {
+                Some(j) if scored[j].0 >= s.0 => Some(j),
+                _ => Some(i),
+            });
         match best {
             Some(w) => {
                 let (score, name, reason) = scored[w].clone();
                 for (i, (sc, n, _)) in scored.iter().enumerate() {
                     if i != w {
-                        local.push(self.att(t, n, FailureKind::Rejected, format!("outscored by `{name}` ({sc} < {score})")));
+                        local.push(self.att(
+                            t,
+                            n,
+                            FailureKind::Rejected,
+                            format!("outscored by `{name}` ({sc} < {score})"),
+                        ));
                     }
                 }
                 self.attempts.extend(local);
-                let selection = if needs.is_empty() { Selection::Auto { score } } else { Selection::Imposed { score } };
-                Ok((self.tp(t, SchemeChoice::new(name.as_str(), Firmness::Default), selection, reason), false))
+                let selection = if needs.is_empty() {
+                    Selection::Auto { score }
+                } else {
+                    Selection::Imposed { score }
+                };
+                Ok((
+                    self.tp(
+                        t,
+                        SchemeChoice::new(name.as_str(), Firmness::Default),
+                        selection,
+                        reason,
+                    ),
+                    false,
+                ))
             }
             None => {
                 let tried_n = local.clone();
                 self.attempts.extend(local);
-                Err(SchemeError::NoApplicableScheme { target: t, tried: tried_n, imposed_by: self.blameable_imposers(t, &needs) })
+                Err(SchemeError::NoApplicableScheme {
+                    target: t,
+                    tried: tried_n,
+                    imposed_by: self.blameable_imposers(t, &needs),
+                })
             }
         }
     }
@@ -784,7 +1370,13 @@ impl<'a, 'r> Planner<'a, 'r> {
     fn blameable_imposers(&self, t: Target, needs: &[NeedRef]) -> Vec<(Target, SchemeName)> {
         let mut out: Vec<(Target, SchemeName)> = Vec::new();
         for n in needs {
-            if n.by == t || n.firmness == Firmness::Hard && self.p.record_origin(n.id).is_some_and(|o| !matches!(o, Origin::Scheme { .. })) {
+            if n.by == t
+                || n.firmness == Firmness::Hard
+                    && self
+                        .p
+                        .record_origin(n.id)
+                        .is_some_and(|o| !matches!(o, Origin::Scheme { .. }))
+            {
                 continue;
             }
             if let Some(bp) = self.plans.get(&n.by)
@@ -804,7 +1396,7 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// The strict sub-entities of `t` a requirement may be about.
     fn children_of(&self, t: Target) -> Result<BTreeSet<Target>> {
         let mut out = BTreeSet::new();
-        let add_face =|f: EntityId, out: &mut BTreeSet<Target>| {
+        let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
             out.insert(Target::Surface(f));
             for e in self.input.face_edges(f) {
                 out.insert(Target::Curve(e));
@@ -818,7 +1410,13 @@ impl<'a, 'r> Planner<'a, 'r> {
                 }
             }
             Target::Volume(v) => {
-                for f in self.region.vol_faces.get(&v).map(Vec::as_slice).unwrap_or(&[]) {
+                for f in self
+                    .region
+                    .vol_faces
+                    .get(&v)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
                     add_face(*f, &mut out);
                 }
             }
@@ -826,7 +1424,13 @@ impl<'a, 'r> Planner<'a, 'r> {
                 for (id, members) in &self.region.groups {
                     if *id == g {
                         for m in members {
-                            for f in self.region.vol_faces.get(m).map(Vec::as_slice).unwrap_or(&[]) {
+                            for f in self
+                                .region
+                                .vol_faces
+                                .get(m)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[])
+                            {
                                 add_face(*f, &mut out);
                             }
                         }
@@ -838,8 +1442,18 @@ impl<'a, 'r> Planner<'a, 'r> {
     }
 
     fn require(&mut self, tp: &mut TargetPlan) -> Result<()> {
-        let s = self.drv.registry.get(tp.target.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: tp.target })?;
-        let scope = Scope { children: self.children_of(tp.target)?, resolved: &self.plans };
+        let s = self
+            .drv
+            .registry
+            .get(tp.target.dim(), tp.scheme.as_str())
+            .ok_or_else(|| SchemeError::UnknownScheme {
+                name: tp.scheme.clone(),
+                target: tp.target,
+            })?;
+        let scope = Scope {
+            children: self.children_of(tp.target)?,
+            resolved: &self.plans,
+        };
         let n_claims = self.p.claims.len();
         let mut req = Requirements::new(&mut self.p, &tp.scheme, tp.target, &scope);
         let r = s.requirements(&self.cx, tp.target, &tp.params, &mut req);
@@ -869,16 +1483,36 @@ impl<'a, 'r> Planner<'a, 'r> {
                 Some((have, ids)) => {
                     ids.push(r.id);
                     if *have != rule {
-                        return Err(Infeasible { reason: format!("conflicting corner rules {have:?} and {rule:?}"), constraints: ids.clone(), entities: vec![face], blame: None }.into());
+                        return Err(Infeasible {
+                            reason: format!("conflicting corner rules {have:?} and {rule:?}"),
+                            constraints: ids.clone(),
+                            entities: vec![face],
+                            blame: None,
+                        }
+                        .into());
                     }
                 }
             }
         }
         let mut out = Vec::with_capacity(rules.len());
         for (face, (rule, mut ids)) in rules {
-            let reqs: Vec<(CornerKey, Firm<VertexType>)> = p.vertex_types.iter().filter(|r| r.item.0.face == face).map(|r| r.item).collect();
-            ids.extend(p.vertex_types.iter().filter(|r| r.item.0.face == face).map(|r| r.id));
-            out.push(self.drv.picker.pick(self.input.topo, face, rule, &reqs, &ids)?);
+            let reqs: Vec<(CornerKey, Firm<VertexType>)> = p
+                .vertex_types
+                .iter()
+                .filter(|r| r.item.0.face == face)
+                .map(|r| r.item)
+                .collect();
+            ids.extend(
+                p.vertex_types
+                    .iter()
+                    .filter(|r| r.item.0.face == face)
+                    .map(|r| r.id),
+            );
+            out.push(
+                self.drv
+                    .picker
+                    .pick(self.input.topo, face, rule, &reqs, &ids)?,
+            );
         }
         Ok(out)
     }
@@ -890,7 +1524,13 @@ impl<'a, 'r> Planner<'a, 'r> {
         let mut req: BTreeMap<EntityId, Firm<IntervalRequest>> = BTreeMap::new();
         for v in self.region.volumes.iter().rev() {
             if let Some(r) = intent.entities.get(v).and_then(|e| e.intervals) {
-                for f in self.region.vol_faces.get(v).map(Vec::as_slice).unwrap_or(&[]) {
+                for f in self
+                    .region
+                    .vol_faces
+                    .get(v)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
                     for e in self.input.face_edges(*f) {
                         req.insert(e, r);
                     }
@@ -909,18 +1549,50 @@ impl<'a, 'r> Planner<'a, 'r> {
                 req.insert(*e, r);
             }
         }
-        let owned = if self.drv.size.is_none() { intent.defaults.sizing.as_ref().and_then(builtin_field) } else { None };
+        let owned = if self.drv.size.is_none() {
+            intent.defaults.sizing.as_ref().and_then(builtin_field)
+        } else {
+            None
+        };
         let field: Option<&dyn SizeField> = self.drv.size.or(owned.as_deref());
         for &e in &self.region.edges {
             let c = match req.get(&e) {
-                Some(Firm { value: IntervalRequest::Count(n), firmness }) => (Origin::Intent, IntervalConstraint::Fixed { edge: e, count: *n, firmness: *firmness }),
-                Some(Firm { value: IntervalRequest::Size(h), .. }) => (Origin::Intent, IntervalConstraint::Goal { edge: e, goal: geom::edge_length(topo, e)? / h }),
+                Some(Firm {
+                    value: IntervalRequest::Count(n),
+                    firmness,
+                }) => (
+                    Origin::Intent,
+                    IntervalConstraint::Fixed {
+                        edge: e,
+                        count: *n,
+                        firmness: *firmness,
+                    },
+                ),
+                Some(Firm {
+                    value: IntervalRequest::Size(h),
+                    ..
+                }) => (
+                    Origin::Intent,
+                    IntervalConstraint::Goal {
+                        edge: e,
+                        goal: geom::edge_length(topo, e)? / h,
+                    },
+                ),
                 None => match field {
                     Some(f) => {
                         let mid = geom::edge_point(topo, e, 0.5)?;
-                        (Origin::Sizing, IntervalConstraint::Goal { edge: e, goal: geom::edge_length(topo, e)? / f.size(mid) })
+                        (
+                            Origin::Sizing,
+                            IntervalConstraint::Goal {
+                                edge: e,
+                                goal: geom::edge_length(topo, e)? / f.size(mid),
+                            },
+                        )
                     }
-                    None => (Origin::Sizing, IntervalConstraint::Goal { edge: e, goal: 1.0 }),
+                    None => (
+                        Origin::Sizing,
+                        IntervalConstraint::Goal { edge: e, goal: 1.0 },
+                    ),
                 },
             };
             self.p.push_interval(c.0, c.1);
@@ -936,24 +1608,43 @@ impl<'a, 'r> Planner<'a, 'r> {
             let mut targets: Vec<Target> = Vec::new();
             for e in &t.targets {
                 if self.region.volumes.binary_search(e).is_err() {
-                    return Err(SchemeError::Input(format!("transform {:?}: {e} is not a selected piece", t.id)));
+                    return Err(SchemeError::Input(format!(
+                        "transform {:?}: {e} is not a selected piece",
+                        t.id
+                    )));
                 }
                 targets.push(match self.region.grouped.get(e) {
                     Some(g) => Target::Group(*g),
                     None => Target::Volume(*e),
                 });
             }
-            out.push(TransformPlan { id: t.id, targets: sorted(targets), transform: t.transform.clone() });
+            out.push(TransformPlan {
+                id: t.id,
+                targets: sorted(targets),
+                transform: t.transform.clone(),
+            });
         }
         for g in &self.intent.groups {
             if let Some(conv) = &g.conversion {
-                out.push(TransformPlan { id: TransformId(TransformId::GROUP_BASE | g.id.0), targets: vec![Target::Group(g.id)], transform: conv.clone() });
+                out.push(TransformPlan {
+                    id: TransformId(TransformId::GROUP_BASE | g.id.0),
+                    targets: vec![Target::Group(g.id)],
+                    transform: conv.clone(),
+                });
             }
         }
         out.sort_by_key(|t| t.id);
         for t in &out {
-            if self.drv.registry.transform(t.transform.name.as_str()).is_none() {
-                return Err(SchemeError::UnknownScheme { name: t.transform.name.clone(), target: t.targets[0] });
+            if self
+                .drv
+                .registry
+                .transform(t.transform.name.as_str())
+                .is_none()
+            {
+                return Err(SchemeError::UnknownScheme {
+                    name: t.transform.name.clone(),
+                    target: t.targets[0],
+                });
             }
         }
         Ok(out)

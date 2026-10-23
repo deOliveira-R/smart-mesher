@@ -16,7 +16,9 @@ use crate::solve::{CornerPicker, IntervalSolver};
 use crate::target::{Job, NodeKey, SchemeDim, Target};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sm_core::EntityId;
-use sm_mesh_api::{CellShape, Classification, Finished, MeshBuild, MeshEntityRef, SerialAlloc, VertexIx};
+use sm_mesh_api::{
+    CellShape, Classification, Finished, MeshBuild, MeshEntityRef, SerialAlloc, VertexIx,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
@@ -34,7 +36,11 @@ pub struct DriverOptions {
 
 impl Default for DriverOptions {
     fn default() -> Self {
-        Self { max_replans: 16, classify_edges: false, copy_tolerance: None }
+        Self {
+            max_replans: 16,
+            classify_edges: false,
+            copy_tolerance: None,
+        }
     }
 }
 
@@ -122,20 +128,45 @@ enum JobOut {
 
 impl<'r> Driver<'r> {
     /// A driver with default options and no size override.
-    pub fn new(registry: &'r SchemeRegistry, solver: &'r dyn IntervalSolver, picker: &'r dyn CornerPicker) -> Self {
-        Self { registry, solver, picker, size: None, options: DriverOptions::default() }
+    pub fn new(
+        registry: &'r SchemeRegistry,
+        solver: &'r dyn IntervalSolver,
+        picker: &'r dyn CornerPicker,
+    ) -> Self {
+        Self {
+            registry,
+            solver,
+            picker,
+            size: None,
+            options: DriverOptions::default(),
+        }
     }
 
     /// Generate every patch of the plan, wave by wave. Inside a wave the executor may run jobs
     /// concurrently; results are merged in job order, so the output is identical for every
     /// executor. The size field is `self.size`, else rebuilt from `plan.sizing`.
-    pub fn generate(&self, input: &MeshInput<'_>, plan: &Plan, exec: &dyn Executor) -> Result<PatchSet> {
-        let owned = if self.size.is_none() { plan.sizing.as_ref().and_then(builtin_field) } else { None };
+    pub fn generate(
+        &self,
+        input: &MeshInput<'_>,
+        plan: &Plan,
+        exec: &dyn Executor,
+    ) -> Result<PatchSet> {
+        let owned = if self.size.is_none() {
+            plan.sizing.as_ref().and_then(builtin_field)
+        } else {
+            None
+        };
         let field: Option<&dyn SizeField> = self.size.or(owned.as_deref());
         self.generate_with(input, plan, field, exec)
     }
 
-    fn generate_with(&self, input: &MeshInput<'_>, plan: &Plan, size: Option<&dyn SizeField>, exec: &dyn Executor) -> Result<PatchSet> {
+    fn generate_with(
+        &self,
+        input: &MeshInput<'_>,
+        plan: &Plan,
+        size: Option<&dyn SizeField>,
+        exec: &dyn Executor,
+    ) -> Result<PatchSet> {
         let mut ps = PatchSet::new();
         for &v in &plan.problem.vertices {
             if !ps.add_vertex_node(NodeKey::vertex(v), geom::vertex_point(input.topo, v)?) {
@@ -144,30 +175,46 @@ impl<'r> Driver<'r> {
         }
         let ctx = CheckCtx::new(plan);
         for wave in &plan.waves {
-            let slots: Vec<Mutex<Option<Result<JobOut>>>> = wave.iter().map(|_| Mutex::new(None)).collect();
+            let slots: Vec<Mutex<Option<Result<JobOut>>>> =
+                wave.iter().map(|_| Mutex::new(None)).collect();
             {
                 let ps_ref = &ps;
                 exec.run(wave.len(), &|i| {
                     let r = self.run_job(input, plan, ps_ref, size, wave[i]);
-                    *slots[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
+                    *slots[i]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
                 });
             }
             // Merge in job order. The first error in job order is the one reported.
             let mut replaced: Vec<Patch> = Vec::new();
             for (job, slot) in wave.iter().zip(slots) {
-                let out = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).ok_or_else(|| SchemeError::Input(format!("{job:?} did not run")))??;
+                let out = slot
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .ok_or_else(|| SchemeError::Input(format!("{job:?} did not run")))??;
                 match (job, out) {
                     (Job::Generate(t), JobOut::Patch(patch)) => {
                         ctx.check_patch(&ps, *t, &patch)?;
                         let (main, children) = ctx.split_claims(*t, *patch)?;
                         for c in children {
                             let target = c.target;
-                            ps.insert(c).map_err(|k| SchemeError::InvalidPatch { target, reason: format!("duplicate node {k:?}") })?;
+                            ps.insert(c).map_err(|k| SchemeError::InvalidPatch {
+                                target,
+                                reason: format!("duplicate node {k:?}"),
+                            })?;
                         }
-                        ps.insert(main).map_err(|k| SchemeError::InvalidPatch { target: *t, reason: format!("duplicate node {k:?}") })?;
+                        ps.insert(main).map_err(|k| SchemeError::InvalidPatch {
+                            target: *t,
+                            reason: format!("duplicate node {k:?}"),
+                        })?;
                     }
                     (Job::Transform(_), JobOut::Transformed(ps2)) => replaced.extend(ps2),
-                    _ => return Err(SchemeError::Input(format!("{job:?} returned the wrong kind of result"))),
+                    _ => {
+                        return Err(SchemeError::Input(format!(
+                            "{job:?} returned the wrong kind of result"
+                        )));
+                    }
                 }
             }
             if !replaced.is_empty() {
@@ -176,13 +223,19 @@ impl<'r> Driver<'r> {
                 for patch in replaced {
                     ctx.check_patch(&next, patch.target, &patch)?;
                     let target = patch.target;
-                    next.insert(patch).map_err(|k| SchemeError::InvalidPatch { target, reason: format!("duplicate node {k:?}") })?;
+                    next.insert(patch).map_err(|k| SchemeError::InvalidPatch {
+                        target,
+                        reason: format!("duplicate node {k:?}"),
+                    })?;
                 }
                 ps = next;
             }
         }
         // Members that a parent writes must equal the image of their root.
-        let tol = self.options.copy_tolerance.unwrap_or(input.topo.tolerance().linear);
+        let tol = self
+            .options
+            .copy_tolerance
+            .unwrap_or(input.topo.tolerance().linear);
         for class in &plan.copies {
             for m in class.members.iter().filter(|m| m.mode == CopyMode::Verify) {
                 copy::verify_copy(input.topo, &ps, class, m, tol)?;
@@ -191,30 +244,83 @@ impl<'r> Driver<'r> {
         Ok(ps)
     }
 
-    fn run_job(&self, input: &MeshInput<'_>, plan: &Plan, ps: &PatchSet, size: Option<&dyn SizeField>, job: Job) -> Result<JobOut> {
+    fn run_job(
+        &self,
+        input: &MeshInput<'_>,
+        plan: &Plan,
+        ps: &PatchSet,
+        size: Option<&dyn SizeField>,
+        job: Job,
+    ) -> Result<JobOut> {
         match job {
             Job::Generate(t) => {
-                let tp = plan.target(t).ok_or_else(|| SchemeError::Input(format!("{t:?} is not in the plan")))?;
+                let tp = plan
+                    .target(t)
+                    .ok_or_else(|| SchemeError::Input(format!("{t:?} is not in the plan")))?;
                 if let Selection::Copy { .. } = tp.selection {
-                    let (class, m) = plan.copy_of(t).ok_or_else(|| SchemeError::Input(format!("{t:?}: copy without a class")))?;
-                    let p = copy::copy_patch(input.topo, ps, class.root, t, &m.from_root, &m.vertex_map, &|e| plan.intervals(e))?;
+                    let (class, m) = plan.copy_of(t).ok_or_else(|| {
+                        SchemeError::Input(format!("{t:?}: copy without a class"))
+                    })?;
+                    let p = copy::copy_patch(
+                        input.topo,
+                        ps,
+                        class.root,
+                        t,
+                        &m.from_root,
+                        &m.vertex_map,
+                        &|e| plan.intervals(e),
+                    )?;
                     return Ok(JobOut::Patch(Box::new(p)));
                 }
-                let s = self.registry.get(t.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: t })?;
-                let cx = GenCtx { input, plan, patches: ps, size };
+                let s = self
+                    .registry
+                    .get(t.dim(), tp.scheme.as_str())
+                    .ok_or_else(|| SchemeError::UnknownScheme {
+                        name: tp.scheme.clone(),
+                        target: t,
+                    })?;
+                let cx = GenCtx {
+                    input,
+                    plan,
+                    patches: ps,
+                    size,
+                };
                 Ok(JobOut::Patch(Box::new(s.generate(&cx, t, &tp.params)?)))
             }
             Job::Transform(id) => {
-                let tp = plan.transforms.iter().find(|x| x.id == id).ok_or_else(|| SchemeError::Input(format!("transform {id:?} is not planned")))?;
-                let tr = self.registry.transform(tp.transform.name.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.transform.name.clone(), target: tp.targets[0] })?;
+                let tp = plan.transforms.iter().find(|x| x.id == id).ok_or_else(|| {
+                    SchemeError::Input(format!("transform {id:?} is not planned"))
+                })?;
+                let first = *tp.targets.first().ok_or_else(|| {
+                    SchemeError::Input(format!("transform {id:?} has no targets"))
+                })?;
+                let tr = self
+                    .registry
+                    .transform(tp.transform.name.as_str())
+                    .ok_or_else(|| SchemeError::UnknownScheme {
+                        name: tp.transform.name.clone(),
+                        target: first,
+                    })?;
                 let mut patches: Vec<Patch> = Vec::with_capacity(tp.targets.len());
                 for t in &tp.targets {
-                    patches.push(ps.get(*t).cloned().ok_or_else(|| SchemeError::Input(format!("transform {id:?}: {t:?} has no patch")))?);
+                    patches.push(ps.get(*t).cloned().ok_or_else(|| {
+                        SchemeError::Input(format!("transform {id:?}: {t:?} has no patch"))
+                    })?);
                 }
-                let cx = GenCtx { input, plan, patches: ps, size };
+                let cx = GenCtx {
+                    input,
+                    plan,
+                    patches: ps,
+                    size,
+                };
                 tr.apply(&cx, &tp.targets, &tp.transform.params, &mut patches)?;
-                if patches.len() != tp.targets.len() || patches.iter().zip(&tp.targets).any(|(p, t)| p.target != *t) {
-                    return Err(SchemeError::InvalidPatch { target: tp.targets[0], reason: "a transform must keep one patch per target, in order".into() });
+                if patches.len() != tp.targets.len()
+                    || patches.iter().zip(&tp.targets).any(|(p, t)| p.target != *t)
+                {
+                    return Err(SchemeError::InvalidPatch {
+                        target: first,
+                        reason: "a transform must keep one patch per target, in order".into(),
+                    });
                 }
                 Ok(JobOut::Transformed(patches))
             }
@@ -225,24 +331,56 @@ impl<'r> Driver<'r> {
     /// cells, then surface classifications, then optionally curve segments) and finish.
     /// All-or-nothing: on error nothing was finished and `alloc` is unchanged
     /// (`MeshBuild::finish` contract).
-    pub fn commit<B: MeshBuild>(&self, input: &MeshInput<'_>, ps: &PatchSet, mut b: B, alloc: &mut SerialAlloc) -> Result<Finished<B::Output>> {
-        let classify = |owner: EntityId| input.pieces.classify(owner).ok_or(SchemeError::Unclassifiable { owner });
+    pub fn commit<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        ps: &PatchSet,
+        mut b: B,
+        alloc: &mut SerialAlloc,
+    ) -> Result<Finished<B::Output>> {
+        let classify = |owner: EntityId| {
+            input
+                .pieces
+                .classify(owner)
+                .ok_or(SchemeError::Unclassifiable { owner })
+        };
         let mut verts: Vec<VertexIx> = Vec::with_capacity(ps.node_count());
         for (k, pt, param) in ps.nodes() {
             let v = b.add_vertex(pt)?;
             let ent = classify(k.owner)?;
-            let param = if ent == k.owner && param.fits(ent.kind()) { param } else { sm_mesh_api::Param::None };
-            b.set_class(MeshEntityRef::Vertex(v), Classification { entity: ent, param })?;
+            let param = if ent == k.owner && param.fits(ent.kind()) {
+                param
+            } else {
+                sm_mesh_api::Param::None
+            };
+            b.set_class(
+                MeshEntityRef::Vertex(v),
+                Classification { entity: ent, param },
+            )?;
             verts.push(v);
         }
         // Local index -> mesh vertex, one lookup per node or reference of a patch.
         let table = |patch: &Patch| -> Result<Vec<VertexIx>> {
             let mut t = Vec::with_capacity(patch.local_len());
             for n in &patch.nodes {
-                t.push(*ps.index_of(n.key).and_then(|i| verts.get(i as usize)).ok_or_else(|| SchemeError::InvalidPatch { target: patch.target, reason: format!("node {:?} missing", n.key) })?);
+                t.push(
+                    *ps.index_of(n.key)
+                        .and_then(|i| verts.get(i as usize))
+                        .ok_or_else(|| SchemeError::InvalidPatch {
+                            target: patch.target,
+                            reason: format!("node {:?} missing", n.key),
+                        })?,
+                );
             }
             for k in &patch.refs {
-                t.push(*ps.index_of(*k).and_then(|i| verts.get(i as usize)).ok_or_else(|| SchemeError::InvalidPatch { target: patch.target, reason: format!("node {k:?} missing") })?);
+                t.push(
+                    *ps.index_of(*k)
+                        .and_then(|i| verts.get(i as usize))
+                        .ok_or_else(|| SchemeError::InvalidPatch {
+                            target: patch.target,
+                            reason: format!("node {k:?} missing"),
+                        })?,
+                );
             }
             Ok(t)
         };
@@ -253,11 +391,18 @@ impl<'r> Driver<'r> {
             let t = patch.target;
             let tab = table(patch)?;
             for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
-                let map = |l: u32| tab.get(l as usize).copied().ok_or_else(|| bad(t, format!("local index {l} out of range")));
+                let map = |l: u32| {
+                    tab.get(l as usize)
+                        .copied()
+                        .ok_or_else(|| bad(t, format!("local index {l} out of range")))
+                };
                 let added = match shape {
                     ElemShape::Cell(cs) => {
                         if cs == CellShape::Polyhedron {
-                            return Err(bad(t, "use ElemShape::Polyhedron for polyhedral cells".into()));
+                            return Err(bad(
+                                t,
+                                "use ElemShape::Polyhedron for polyhedral cells".into(),
+                            ));
                         }
                         vs.clear();
                         for &l in nodes {
@@ -280,10 +425,16 @@ impl<'r> Driver<'r> {
                     (Some(e), None) => e,
                     (None, None) => return Err(bad(t, "group cell without owner".into())),
                 };
-                b.set_class(MeshEntityRef::Cell(added.cell), Classification::on(classify(owner)?))?;
+                b.set_class(
+                    MeshEntityRef::Cell(added.cell),
+                    Classification::on(classify(owner)?),
+                )?;
             }
         }
-        for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Surface) {
+        for patch in ps
+            .patches()
+            .filter(|p| p.target.dim() == SchemeDim::Surface)
+        {
             let t = patch.target;
             let Some(face) = t.entity() else { continue };
             let class = Classification::on(classify(face)?);
@@ -291,7 +442,11 @@ impl<'r> Driver<'r> {
             for (_, nodes) in patch.elements.iter() {
                 vs.clear();
                 for &l in nodes {
-                    vs.push(tab.get(l as usize).copied().ok_or_else(|| bad(t, format!("local index {l} out of range")))?);
+                    vs.push(
+                        tab.get(l as usize)
+                            .copied()
+                            .ok_or_else(|| bad(t, format!("local index {l} out of range")))?,
+                    );
                 }
                 let (f, _) = b.find_face(&vs).ok_or_else(|| bad(t, "surface element bounds no cell (surface-only meshes are not representable in sm-mesh-api)".into()))?;
                 b.set_class(MeshEntityRef::Face(f), class)?;
@@ -306,7 +461,9 @@ impl<'r> Driver<'r> {
                 for (_, nodes) in patch.elements.iter() {
                     if let [x, y] = nodes {
                         let (x, y) = (tab.get(*x as usize).copied(), tab.get(*y as usize).copied());
-                        let (Some(x), Some(y)) = (x, y) else { return Err(bad(t, "segment index out of range".into())) };
+                        let (Some(x), Some(y)) = (x, y) else {
+                            return Err(bad(t, "segment index out of range".into()));
+                        };
                         b.set_class(MeshEntityRef::Edge(x, y), class)?;
                     }
                 }
@@ -320,13 +477,32 @@ impl<'r> Driver<'r> {
     /// scheme-origin constraint, a child with no applicable scheme blames its imposing parent,
     /// a fallback-eligible generation failure blames its scheme) is rejected and the whole
     /// problem is re-planned, up to `options.max_replans` times.
-    pub fn mesh<B: MeshBuild>(&self, input: &MeshInput<'_>, intent: &MeshIntent, exec: &dyn Executor, builder: B, alloc: &mut SerialAlloc) -> Result<Meshed<B::Output>> {
+    pub fn mesh<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        intent: &MeshIntent,
+        exec: &dyn Executor,
+        builder: B,
+        alloc: &mut SerialAlloc,
+    ) -> Result<Meshed<B::Output>> {
         self.mesh_with(input, intent, &Rejections::default(), exec, builder, alloc)
     }
 
     /// [`Driver::mesh`] starting from known rejections (replaying a stored plan).
-    pub fn mesh_with<B: MeshBuild>(&self, input: &MeshInput<'_>, intent: &MeshIntent, rej: &Rejections, exec: &dyn Executor, builder: B, alloc: &mut SerialAlloc) -> Result<Meshed<B::Output>> {
-        let owned = if self.size.is_none() { intent.defaults.sizing.as_ref().and_then(builtin_field) } else { None };
+    pub fn mesh_with<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        intent: &MeshIntent,
+        rej: &Rejections,
+        exec: &dyn Executor,
+        builder: B,
+        alloc: &mut SerialAlloc,
+    ) -> Result<Meshed<B::Output>> {
+        let owned = if self.size.is_none() {
+            intent.defaults.sizing.as_ref().and_then(builtin_field)
+        } else {
+            None
+        };
         let field: Option<&dyn SizeField> = self.size.or(owned.as_deref());
         let mut rej = rej.clone();
         let mut history: Vec<Attempt> = Vec::new();
@@ -350,11 +526,22 @@ impl<'r> Driver<'r> {
                             attempts.push(a.clone());
                         }
                     }
-                    return Ok(Meshed { plan, patches, finished, attempts });
+                    return Ok(Meshed {
+                        plan,
+                        patches,
+                        finished,
+                        attempts,
+                    });
                 }
                 Err((e, blame)) => match blame {
                     Some((t, s)) if s.as_str() != SchemeName::COPY && !rej.contains(t, &s) => {
-                        let a = Attempt { target: t, scheme: s, phase: phase_of(&e), kind: kind_of(&e), message: e.to_string() };
+                        let a = Attempt {
+                            target: t,
+                            scheme: s,
+                            phase: phase_of(&e),
+                            kind: kind_of(&e),
+                            message: e.to_string(),
+                        };
                         history.push(a.clone());
                         rej.insert(a);
                     }
@@ -370,12 +557,19 @@ impl<'r> Driver<'r> {
         let blame = match &e {
             SchemeError::CopyMismatch { constraint, .. } => {
                 // The scheme that wrote the member (its claimer), else the one that asked for the copy.
-                let member = plan.copies.iter().flat_map(|c| c.members.iter()).find(|m| m.constraints.last() == Some(constraint)).map(|m| m.target);
+                let member = plan
+                    .copies
+                    .iter()
+                    .flat_map(|c| c.members.iter())
+                    .find(|m| m.constraints.last() == Some(constraint))
+                    .map(|m| m.target);
                 let writer = member.and_then(|m| plan.claimed_by(m));
                 writer
                     .and_then(|w| plan.target(w).map(|tp| (w, tp.scheme.clone())))
                     .or_else(|| match plan.problem.record_origin(*constraint) {
-                        Some(crate::problem::Origin::Scheme { scheme, target }) => Some((*target, scheme.clone())),
+                        Some(crate::problem::Origin::Scheme { scheme, target }) => {
+                            Some((*target, scheme.clone()))
+                        }
                         _ => None,
                     })
             }
@@ -388,7 +582,9 @@ impl<'r> Driver<'r> {
 fn phase_of(e: &SchemeError) -> Phase {
     match e {
         SchemeError::Infeasible(_) => Phase::Intervals,
-        SchemeError::NoApplicableScheme { .. } | SchemeError::NotApplicable { .. } | SchemeError::ImpositionConflict { .. } => Phase::Resolve,
+        SchemeError::NoApplicableScheme { .. }
+        | SchemeError::NotApplicable { .. }
+        | SchemeError::ImpositionConflict { .. } => Phase::Resolve,
         SchemeError::CopyMismatch { .. } => Phase::Verify,
         SchemeError::Generate(_) => Phase::Generate,
         _ => Phase::Generate,
@@ -398,7 +594,9 @@ fn phase_of(e: &SchemeError) -> Phase {
 fn kind_of(e: &SchemeError) -> FailureKind {
     match e {
         SchemeError::Generate(g) => g.kind,
-        SchemeError::NoApplicableScheme { .. } | SchemeError::NotApplicable { .. } => FailureKind::NotApplicable,
+        SchemeError::NoApplicableScheme { .. } | SchemeError::NotApplicable { .. } => {
+            FailureKind::NotApplicable
+        }
         _ => FailureKind::Constraint,
     }
 }
@@ -415,14 +613,21 @@ impl<'p> CheckCtx<'p> {
         let mut members: BTreeMap<Target, Vec<EntityId>> = BTreeMap::new();
         for r in &plan.problem.constraints {
             if let MeshConstraint::Atomic { group, members: ms } = &r.item {
-                members.insert(Target::Group(*group), ms.iter().filter_map(Target::entity).collect());
+                members.insert(
+                    Target::Group(*group),
+                    ms.iter().filter_map(Target::entity).collect(),
+                );
             }
         }
         let mut claimed: BTreeMap<Target, Vec<Target>> = BTreeMap::new();
         for c in &plan.problem.claims {
             claimed.entry(c.item.by).or_default().push(c.item.child);
         }
-        Self { plan, members, claimed }
+        Self {
+            plan,
+            members,
+            claimed,
+        }
     }
 
     /// The patch contract: right target; nodes owned by the target, a group member or a
@@ -438,7 +643,13 @@ impl<'p> CheckCtx<'p> {
             Target::Group(_) => self.members.get(&t).cloned().unwrap_or_default(),
             _ => t.entity().into_iter().collect(),
         };
-        let claimed: Vec<EntityId> = self.claimed.get(&t).into_iter().flatten().filter_map(Target::entity).collect();
+        let claimed: Vec<EntityId> = self
+            .claimed
+            .get(&t)
+            .into_iter()
+            .flatten()
+            .filter_map(Target::entity)
+            .collect();
         owners.extend(claimed.iter().copied());
         let mut keys: BTreeSet<NodeKey> = BTreeSet::new();
         for n in &patch.nodes {
@@ -449,7 +660,10 @@ impl<'p> CheckCtx<'p> {
                 return Err(bad(format!("duplicate node {:?}", n.key)));
             }
             if !n.param.fits(n.key.owner.kind()) {
-                return Err(bad(format!("node {:?}: parameter does not fit its owner", n.key)));
+                return Err(bad(format!(
+                    "node {:?}: parameter does not fit its owner",
+                    n.key
+                )));
             }
         }
         let mut ref_set: BTreeSet<NodeKey> = BTreeSet::new();
@@ -462,15 +676,28 @@ impl<'p> CheckCtx<'p> {
             }
         }
         if let Target::Curve(e) = t {
-            let n = self.plan.intervals(e).ok_or_else(|| bad("no interval count".into()))?;
+            let n = self
+                .plan
+                .intervals(e)
+                .ok_or_else(|| bad("no interval count".into()))?;
             let want: BTreeSet<NodeKey> = (1..n).map(|i| NodeKey::new(e, i)).collect();
             if keys != want {
-                return Err(bad(format!("a curve with {n} intervals needs nodes 1..={}", n.saturating_sub(1))));
+                return Err(bad(format!(
+                    "a curve with {n} intervals needs nodes 1..={}",
+                    n.saturating_sub(1)
+                )));
             }
         }
         let locals = patch.local_len();
-        if let Some(&l) = patch.elements.indices().iter().find(|&&l| l as usize >= locals) {
-            return Err(bad(format!("element index {l} out of range ({locals} locals)")));
+        if let Some(&l) = patch
+            .elements
+            .indices()
+            .iter()
+            .find(|&&l| l as usize >= locals)
+        {
+            return Err(bad(format!(
+                "element index {l} out of range ({locals} locals)"
+            )));
         }
         if !patch.owners.is_empty() && patch.owners.len() != patch.elements.len() {
             return Err(bad("owners must be empty or one per element".into()));
@@ -484,7 +711,10 @@ impl<'p> CheckCtx<'p> {
                 ElemShape::Quad => n == 4,
                 ElemShape::Polygon => n >= 3,
                 ElemShape::Cell(cs) => cs != CellShape::Polyhedron && cs.vertex_count() == Some(n),
-                ElemShape::Polyhedron => patch.elements.polyhedron_faces(i).is_some_and(|mut f| f.all(|l| l.len() >= 3)),
+                ElemShape::Polyhedron => patch
+                    .elements
+                    .polyhedron_faces(i)
+                    .is_some_and(|mut f| f.all(|l| l.len() >= 3)),
             };
             if !ok {
                 return Err(bad(format!("element {i}: {shape:?} with {n} nodes")));
@@ -499,17 +729,23 @@ impl<'p> CheckCtx<'p> {
                 (SchemeDim::Volume, SchemeDim::Surface) => {
                     // Surface elements of a volume patch belong to claimed faces.
                     if !owner.is_some_and(|o| claimed.contains(&o)) {
-                        return Err(bad(format!("element {i}: a surface element in a volume patch needs a claimed face as owner")));
+                        return Err(bad(format!(
+                            "element {i}: a surface element in a volume patch needs a claimed face as owner"
+                        )));
                     }
                 }
                 (SchemeDim::Volume, SchemeDim::Curve) => {
                     if !owner.is_some_and(|o| claimed.contains(&o)) {
-                        return Err(bad(format!("element {i}: a segment in a volume patch needs a claimed edge as owner")));
+                        return Err(bad(format!(
+                            "element {i}: a segment in a volume patch needs a claimed edge as owner"
+                        )));
                     }
                 }
                 (SchemeDim::Surface, SchemeDim::Curve) => {
                     if !owner.is_some_and(|o| claimed.contains(&o)) {
-                        return Err(bad(format!("element {i}: a segment in a surface patch needs a claimed edge as owner")));
+                        return Err(bad(format!(
+                            "element {i}: a segment in a surface patch needs a claimed edge as owner"
+                        )));
                     }
                 }
                 (a, b) => return Err(bad(format!("element {i}: {b:?} element in a {a:?} patch"))),
@@ -517,7 +753,9 @@ impl<'p> CheckCtx<'p> {
             if let Some(o) = owner
                 && !owners.contains(&o)
             {
-                return Err(bad(format!("element {i}: owner {o} is neither a member nor a claimed child")));
+                return Err(bad(format!(
+                    "element {i}: owner {o} is neither a member nor a claimed child"
+                )));
             }
         }
         if let Some(g) = &patch.grid
@@ -533,13 +771,19 @@ impl<'p> CheckCtx<'p> {
     /// read like any other. Returns the remainder and the child patches (child patches merge
     /// first: the remainder may reference their nodes).
     fn split_claims(&self, t: Target, patch: Patch) -> Result<(Patch, Vec<Patch>)> {
-        let Some(children) = self.claimed.get(&t) else { return Ok((patch, Vec::new())) };
+        let Some(children) = self.claimed.get(&t) else {
+            return Ok((patch, Vec::new()));
+        };
         let child_of = |o: EntityId| children.iter().copied().find(|c| c.entity() == Some(o));
-        let touched = patch.nodes.iter().any(|n| child_of(n.key.owner).is_some()) || patch.owners.iter().any(|o| child_of(*o).is_some());
+        let touched = patch.nodes.iter().any(|n| child_of(n.key.owner).is_some())
+            || patch.owners.iter().any(|o| child_of(*o).is_some());
         if !touched {
             return Ok((patch, Vec::new()));
         }
-        let mut kids: BTreeMap<Target, PatchBuilder> = children.iter().map(|c| (*c, PatchBuilder::new(*c))).collect();
+        let mut kids: BTreeMap<Target, PatchBuilder> = children
+            .iter()
+            .map(|c| (*c, PatchBuilder::new(*c)))
+            .collect();
         let mut main = PatchBuilder::new(t);
         // Nodes first, in order, so numbering follows the original.
         for n in &patch.nodes {
@@ -554,7 +798,12 @@ impl<'p> CheckCtx<'p> {
                 }
             }
         }
-        let key_of = |l: u32| patch.key(l).ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: format!("local index {l} out of range") });
+        let key_of = |l: u32| {
+            patch.key(l).ok_or_else(|| SchemeError::InvalidPatch {
+                target: t,
+                reason: format!("local index {l} out of range"),
+            })
+        };
         // Local index of `key` inside builder `b`: own node or reference.
         fn local(b: &mut PatchBuilder, own: &BTreeMap<NodeKey, u32>, key: NodeKey) -> u32 {
             own.get(&key).copied().unwrap_or_else(|| b.refer(key))
@@ -580,11 +829,16 @@ impl<'p> CheckCtx<'p> {
         let empty = BTreeMap::new();
         for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
             let owner = patch.owners.get(i).copied();
-            let kid = owner.and_then(child_of).filter(|_| !matches!(shape, ElemShape::Cell(_) | ElemShape::Polyhedron));
+            let kid = owner
+                .and_then(child_of)
+                .filter(|_| !matches!(shape, ElemShape::Cell(_) | ElemShape::Polyhedron));
             match kid {
                 Some(c) => {
                     let own = kid_own.get(&c).unwrap_or(&empty);
-                    let b = kids.get_mut(&c).ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: "claimed child lost".into() })?;
+                    let b = kids.get_mut(&c).ok_or_else(|| SchemeError::InvalidPatch {
+                        target: t,
+                        reason: "claimed child lost".into(),
+                    })?;
                     let mut ls: Vec<u32> = Vec::with_capacity(nodes.len());
                     for &l in nodes {
                         ls.push(local(b, own, key_of(l)?));
@@ -619,7 +873,11 @@ impl<'p> CheckCtx<'p> {
         if let Some(g) = patch.grid {
             main.grid(g);
         }
-        let mut out: Vec<Patch> = kids.into_values().map(PatchBuilder::finish).filter(|p| !p.nodes.is_empty() || !p.elements.is_empty()).collect();
+        let mut out: Vec<Patch> = kids
+            .into_values()
+            .map(PatchBuilder::finish)
+            .filter(|p| !p.nodes.is_empty() || !p.elements.is_empty())
+            .collect();
         out.sort_by_key(|p| p.target);
         Ok((main.finish(), out))
     }

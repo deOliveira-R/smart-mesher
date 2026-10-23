@@ -52,7 +52,13 @@ impl Default for Elements {
 impl Elements {
     /// Empty element block.
     pub fn new() -> Self {
-        Self { shapes: Vec::new(), offsets: vec![0], nodes: Vec::new(), face_start: vec![0], face_ends: Vec::new() }
+        Self {
+            shapes: Vec::new(),
+            offsets: vec![0],
+            nodes: Vec::new(),
+            face_start: vec![0],
+            face_ends: Vec::new(),
+        }
     }
 
     /// Empty element block with room for `n` elements of `k` nodes.
@@ -100,7 +106,10 @@ impl Elements {
     /// concatenated), or `None` if `i >= len()`.
     pub fn get(&self, i: usize) -> Option<(ElemShape, &[u32])> {
         let shape = *self.shapes.get(i)?;
-        let (a, b) = (*self.offsets.get(i)? as usize, *self.offsets.get(i + 1)? as usize);
+        let (a, b) = (
+            *self.offsets.get(i)? as usize,
+            *self.offsets.get(i + 1)? as usize,
+        );
         Some((shape, self.nodes.get(a..b)?))
     }
 
@@ -110,7 +119,10 @@ impl Elements {
             return None;
         }
         let start = *self.offsets.get(i)? as usize;
-        let (f0, f1) = (*self.face_start.get(i)? as usize, *self.face_start.get(i + 1)? as usize);
+        let (f0, f1) = (
+            *self.face_start.get(i)? as usize,
+            *self.face_start.get(i + 1)? as usize,
+        );
         let ends = self.face_ends.get(f0..f1)?;
         let nodes = &self.nodes;
         let mut prev = start;
@@ -175,7 +187,9 @@ impl NodeGrid {
         if i >= self.ni || j >= self.nj {
             return None;
         }
-        self.nodes.get(j as usize * self.ni as usize + i as usize).copied()
+        self.nodes
+            .get(j as usize * self.ni as usize + i as usize)
+            .copied()
     }
 
     /// Grid position `(i, j)` of `key`. The boundary ring is searched first (that is where
@@ -262,7 +276,14 @@ pub struct Patch {
 impl Patch {
     /// An empty patch for `target`.
     pub fn new(target: Target) -> Self {
-        Self { target, nodes: Vec::new(), refs: Vec::new(), elements: Elements::new(), grid: None, owners: Vec::new() }
+        Self {
+            target,
+            nodes: Vec::new(),
+            refs: Vec::new(),
+            elements: Elements::new(),
+            grid: None,
+            owners: Vec::new(),
+        }
     }
 
     /// The canonical key of local index `local`.
@@ -299,7 +320,16 @@ pub struct PatchBuilder {
 impl PatchBuilder {
     /// A builder for `target`.
     pub fn new(target: Target) -> Self {
-        Self { target, nodes: Vec::new(), refs: Vec::new(), ref_ix: BTreeMap::new(), elements: Elements::new(), grid: None, owners: Vec::new(), cur_owner: None }
+        Self {
+            target,
+            nodes: Vec::new(),
+            refs: Vec::new(),
+            ref_ix: BTreeMap::new(),
+            elements: Elements::new(),
+            grid: None,
+            owners: Vec::new(),
+            cur_owner: None,
+        }
     }
 
     /// Add a node the patch creates; returns its builder index.
@@ -350,8 +380,21 @@ impl PatchBuilder {
     /// Finish: renumber references after the new nodes.
     pub fn finish(mut self) -> Patch {
         let n = self.nodes.len() as u32;
-        self.elements.map_indices(|x| if x & REF_BIT != 0 { n + (x & !REF_BIT) } else { x });
-        Patch { target: self.target, nodes: self.nodes, refs: self.refs, elements: self.elements, grid: self.grid, owners: self.owners }
+        self.elements.map_indices(|x| {
+            if x & REF_BIT != 0 {
+                n + (x & !REF_BIT)
+            } else {
+                x
+            }
+        });
+        Patch {
+            target: self.target,
+            nodes: self.nodes,
+            refs: self.refs,
+            elements: self.elements,
+            grid: self.grid,
+            owners: self.owners,
+        }
     }
 }
 
@@ -372,7 +415,10 @@ pub struct PatchSet {
 
 impl core::fmt::Debug for PatchSet {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PatchSet").field("patches", &self.patches.len()).field("nodes", &self.keys.len()).finish()
+        f.debug_struct("PatchSet")
+            .field("patches", &self.patches.len())
+            .field("nodes", &self.keys.len())
+            .finish()
     }
 }
 
@@ -404,12 +450,16 @@ impl PatchSet {
     /// Merge a patch: its nodes are appended in order. Returns the duplicate key on error and
     /// leaves the set unchanged.
     pub(crate) fn insert(&mut self, patch: Patch) -> Result<(), NodeKey> {
-        let mut seen: Vec<NodeKey> = Vec::with_capacity(patch.nodes.len());
+        let mut keys: Vec<NodeKey> = Vec::with_capacity(patch.nodes.len());
         for n in &patch.nodes {
-            if self.index.contains_key(&n.key) || seen.contains(&n.key) {
+            if self.index.contains_key(&n.key) {
                 return Err(n.key);
             }
-            seen.push(n.key);
+            keys.push(n.key);
+        }
+        keys.sort_unstable();
+        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+            return Err(w[0]);
         }
         for n in &patch.nodes {
             self.add_node(n.key, n.point, n.param);
@@ -419,19 +469,20 @@ impl PatchSet {
         Ok(())
     }
 
-    /// A copy without the patches of `targets` (their nodes are dropped).
-    pub(crate) fn without(&self, targets: &[Target]) -> PatchSet {
+    /// The set without the patches of `targets` (their nodes are dropped). Consumes `self`,
+    /// moving the remaining patches instead of cloning them.
+    pub(crate) fn without(mut self, targets: &[Target]) -> PatchSet {
         let mut out = PatchSet::new();
         for i in 0..self.vertex_nodes {
             out.add_vertex_node(self.keys[i], self.points[i]);
         }
-        for t in &self.order {
-            if targets.contains(t) {
+        for t in std::mem::take(&mut self.order) {
+            if targets.contains(&t) {
                 continue;
             }
-            if let Some(p) = self.patches.get(t) {
+            if let Some(p) = self.patches.remove(&t) {
                 // Cannot fail: the keys were unique in `self`.
-                let _ = out.insert(p.clone());
+                let _ = out.insert(p);
             }
         }
         out
@@ -449,7 +500,9 @@ impl PatchSet {
 
     /// Position of a node.
     pub fn point(&self, k: NodeKey) -> Option<Point3> {
-        self.index_of(k).and_then(|i| self.points.get(i as usize)).copied()
+        self.index_of(k)
+            .and_then(|i| self.points.get(i as usize))
+            .copied()
     }
 
     /// Position and parameter of a node.

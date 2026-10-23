@@ -37,11 +37,16 @@ pub enum Applicability {
 impl Applicability {
     /// Applicable with `score`.
     pub fn yes(score: u32, reason: impl Into<String>) -> Self {
-        Applicability::Applicable { score, reason: reason.into() }
+        Applicability::Applicable {
+            score,
+            reason: reason.into(),
+        }
     }
     /// Not applicable.
     pub fn no(reason: impl Into<String>) -> Self {
-        Applicability::NotApplicable { reason: reason.into() }
+        Applicability::NotApplicable {
+            reason: reason.into(),
+        }
     }
 }
 
@@ -51,7 +56,12 @@ impl Applicability {
 /// decomposition-overlay resolver realizes cut faces.
 pub trait PieceResolver: Send + Sync {
     /// Faces of the view bounding `piece`, ascending.
-    fn faces(&self, topo: &dyn TopologyView, model: &Model, piece: PieceRef) -> Result<Vec<EntityId>>;
+    fn faces(
+        &self,
+        topo: &dyn TopologyView,
+        model: &Model,
+        piece: PieceRef,
+    ) -> Result<Vec<EntityId>>;
     /// The face of the view that realizes a piece face, if it is a single face.
     fn face_of(&self, topo: &dyn TopologyView, model: &Model, pf: &PieceFace) -> Option<EntityId>;
     /// The model or piece entity (`Topo*` or `PartitionCell`) a node owned by `owner` is
@@ -64,7 +74,12 @@ pub trait PieceResolver: Send + Sync {
 pub struct WholeFaces;
 
 impl PieceResolver for WholeFaces {
-    fn faces(&self, topo: &dyn TopologyView, model: &Model, piece: PieceRef) -> Result<Vec<EntityId>> {
+    fn faces(
+        &self,
+        topo: &dyn TopologyView,
+        model: &Model,
+        piece: PieceRef,
+    ) -> Result<Vec<EntityId>> {
         match piece {
             PieceRef::Whole(v) => Ok(topo.volume_faces(v).to_vec()),
             PieceRef::Cell(_) => {
@@ -72,7 +87,11 @@ impl PieceResolver for WholeFaces {
                 for pf in model.decomposition().piece_faces(piece, topo) {
                     match pf {
                         PieceFace::Whole(f) => out.push(f),
-                        other => return Err(SchemeError::Input(format!("piece {piece:?}: face {other:?} needs a decomposition-overlay resolver"))),
+                        other => {
+                            return Err(SchemeError::Input(format!(
+                                "piece {piece:?}: face {other:?} needs a decomposition-overlay resolver"
+                            )));
+                        }
                     }
                 }
                 out.sort_unstable();
@@ -82,7 +101,12 @@ impl PieceResolver for WholeFaces {
         }
     }
 
-    fn face_of(&self, _topo: &dyn TopologyView, _model: &Model, pf: &PieceFace) -> Option<EntityId> {
+    fn face_of(
+        &self,
+        _topo: &dyn TopologyView,
+        _model: &Model,
+        pf: &PieceFace,
+    ) -> Option<EntityId> {
         match pf {
             PieceFace::Whole(f) => Some(*f),
             _ => None,
@@ -91,7 +115,11 @@ impl PieceResolver for WholeFaces {
 
     fn classify(&self, owner: EntityId) -> Option<EntityId> {
         match owner.kind() {
-            EntityKind::TopoVertex | EntityKind::TopoEdge | EntityKind::TopoFace | EntityKind::TopoVolume | EntityKind::PartitionCell => Some(owner),
+            EntityKind::TopoVertex
+            | EntityKind::TopoEdge
+            | EntityKind::TopoFace
+            | EntityKind::TopoVolume
+            | EntityKind::PartitionCell => Some(owner),
             _ => None,
         }
     }
@@ -114,13 +142,20 @@ pub struct MeshInput<'a> {
 impl MeshInput<'_> {
     /// Faces of a volume target (via the resolver).
     pub fn piece_faces(&self, t: Target) -> Result<Vec<EntityId>> {
-        let p = t.piece().ok_or_else(|| SchemeError::Input(format!("{t:?} is not a piece")))?;
+        let p = t
+            .piece()
+            .ok_or_else(|| SchemeError::Input(format!("{t:?} is not a piece")))?;
         self.pieces.faces(self.topo, self.model, p)
     }
 
     /// Real (non-pole) edges of a face, ascending.
     pub fn face_edges(&self, f: EntityId) -> Vec<EntityId> {
-        self.topo.face_edges(f).iter().copied().filter(|e| !self.topo.flags(*e).contains(CellFlags::DEGENERATE)).collect()
+        self.topo
+            .face_edges(f)
+            .iter()
+            .copied()
+            .filter(|e| !self.topo.flags(*e).contains(CellFlags::DEGENERATE))
+            .collect()
     }
 
     /// The piece of a volume-target id.
@@ -153,7 +188,10 @@ pub struct IntervalCtx<'a> {
 impl IntervalCtx<'_> {
     /// Layout of `face`.
     pub fn layout(&self, face: EntityId) -> Option<&FaceLayout> {
-        self.layouts.binary_search_by(|l| l.face.cmp(&face)).ok().map(|i| &self.layouts[i])
+        self.layouts
+            .binary_search_by(|l| l.face.cmp(&face))
+            .ok()
+            .map(|i| &self.layouts[i])
     }
     /// Roles of `t`.
     pub fn roles_of(&self, t: Target) -> impl Iterator<Item = Role> + '_ {
@@ -161,7 +199,10 @@ impl IntervalCtx<'_> {
     }
     /// The plan row of `t`.
     pub fn target(&self, t: Target) -> Option<&TargetPlan> {
-        self.targets.binary_search_by(|p| p.target.cmp(&t)).ok().map(|i| &self.targets[i])
+        self.targets
+            .binary_search_by(|p| p.target.cmp(&t))
+            .ok()
+            .map(|i| &self.targets[i])
     }
     /// Scheme-private data stored for `t` ([`Requirements::set_data`]).
     pub fn data(&self, t: Target) -> Option<&Params> {
@@ -254,12 +295,25 @@ impl GenCtx<'_> {
         let t = self.input.topo;
         let mut out = Vec::new();
         for lp in t.loops(face) {
-            let mut bl = BoundaryLoop { ring: lp.ring, nodes: Vec::new(), uses: Vec::new() };
-            for k in lp.keys().filter(|k| !t.flags(k.edge).contains(CellFlags::DEGENERATE)) {
-                let cn = self.coedge_nodes(k).ok_or_else(|| SchemeError::Input(format!("edge {} has no interval count", k.edge)))?;
+            let mut bl = BoundaryLoop {
+                ring: lp.ring,
+                nodes: Vec::new(),
+                uses: Vec::new(),
+            };
+            for k in lp
+                .keys()
+                .filter(|k| !t.flags(k.edge).contains(CellFlags::DEGENERATE))
+            {
+                let cn = self.coedge_nodes(k).ok_or_else(|| {
+                    SchemeError::Input(format!("edge {} has no interval count", k.edge))
+                })?;
                 let first = bl.nodes.len() as u32;
                 bl.nodes.extend_from_slice(&cn[..cn.len() - 1]);
-                bl.uses.push(BoundaryUse { coedge: k, first, segments: (cn.len() - 1) as u32 });
+                bl.uses.push(BoundaryUse {
+                    coedge: k,
+                    first,
+                    segments: (cn.len() - 1) as u32,
+                });
             }
             if !bl.nodes.is_empty() {
                 out.push(bl);
@@ -270,7 +324,9 @@ impl GenCtx<'_> {
 
     /// The structured view of an already generated face.
     pub fn grid(&self, face: EntityId) -> Option<&NodeGrid> {
-        self.patches.get(Target::Surface(face)).and_then(|p| p.grid.as_ref())
+        self.patches
+            .get(Target::Surface(face))
+            .and_then(|p| p.grid.as_ref())
     }
 
     /// Position of a node of an earlier wave.
@@ -283,21 +339,40 @@ impl GenCtx<'_> {
     /// compute fractions; positions, parameters and keys are the driver's business.
     pub fn curve_patch(&self, edge: EntityId, fractions: &[f64]) -> Result<Patch, GenerateFailure> {
         let target = Target::Curve(edge);
-        let scheme = self.plan.target(target).map_or("curve", |p| p.scheme.as_str());
+        let scheme = self
+            .plan
+            .target(target)
+            .map_or("curve", |p| p.scheme.as_str());
         let fail = |kind: FailureKind, r: String| GenerateFailure::new(target, scheme, kind, r);
-        let n = self.intervals(edge).ok_or_else(|| fail(FailureKind::Internal, format!("edge {edge} has no interval count")))?;
+        let n = self.intervals(edge).ok_or_else(|| {
+            fail(
+                FailureKind::Internal,
+                format!("edge {edge} has no interval count"),
+            )
+        })?;
         if fractions.len() != n.saturating_sub(1) as usize {
-            return Err(fail(FailureKind::Internal, format!("{} fractions for {n} intervals", fractions.len())));
+            return Err(fail(
+                FailureKind::Internal,
+                format!("{} fractions for {n} intervals", fractions.len()),
+            ));
         }
         let mut prev = 0.0;
         for f in fractions {
             if !(f.is_finite() && *f > prev && *f < 1.0) {
-                return Err(fail(FailureKind::Geometry, format!("fractions must increase strictly inside (0, 1); got {f} after {prev}")));
+                return Err(fail(
+                    FailureKind::Geometry,
+                    format!("fractions must increase strictly inside (0, 1); got {f} after {prev}"),
+                ));
             }
             prev = *f;
         }
-        let (a, b) = self.input.topo.edge_ends(edge).ok_or_else(|| fail(FailureKind::Internal, "edge without ends".into()))?;
-        let (c, cc) = geom::edge_curve(self.input.topo, edge).map_err(|e| fail(FailureKind::Geometry, e.to_string()))?;
+        let (a, b) = self
+            .input
+            .topo
+            .edge_ends(edge)
+            .ok_or_else(|| fail(FailureKind::Internal, "edge without ends".into()))?;
+        let (c, cc) = geom::edge_curve(self.input.topo, edge)
+            .map_err(|e| fail(FailureKind::Geometry, e.to_string()))?;
         let mut pb = PatchBuilder::new(target);
         let mut chain = Vec::with_capacity(n as usize + 1);
         chain.push(pb.refer(NodeKey::vertex(a)));
@@ -337,17 +412,34 @@ pub trait Scheme: Send + Sync {
     /// Can this scheme mesh `target`?
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, params: &Params) -> Applicability;
     /// Contribute requirements (impositions on children, roles, claims, copies, corner rules).
-    fn requirements(&self, cx: &PlanCtx<'_>, target: Target, params: &Params, out: &mut Requirements<'_>) -> Result<()> {
+    fn requirements(
+        &self,
+        cx: &PlanCtx<'_>,
+        target: Target,
+        params: &Params,
+        out: &mut Requirements<'_>,
+    ) -> Result<()> {
         let _ = (cx, target, params, out);
         Ok(())
     }
     /// Contribute interval constraints (opposite sides, sums, parity, layer counts).
-    fn interval_constraints(&self, cx: &IntervalCtx<'_>, target: Target, params: &Params, out: &mut IntervalSink<'_>) -> Result<()> {
+    fn interval_constraints(
+        &self,
+        cx: &IntervalCtx<'_>,
+        target: Target,
+        params: &Params,
+        out: &mut IntervalSink<'_>,
+    ) -> Result<()> {
         let _ = (cx, target, params, out);
         Ok(())
     }
     /// Generate the patch of `target`.
-    fn generate(&self, cx: &GenCtx<'_>, target: Target, params: &Params) -> Result<Patch, GenerateFailure>;
+    fn generate(
+        &self,
+        cx: &GenCtx<'_>,
+        target: Target,
+        params: &Params,
+    ) -> Result<Patch, GenerateFailure>;
 }
 
 /// A conversion applied to the patches of its targets atomically after generation (THex,
@@ -359,15 +451,21 @@ pub trait MeshTransform: Send + Sync {
     fn caps(&self, params: &Params) -> Caps;
     /// Rewrite `patches` (one per target, in target order) in place. The driver keeps the
     /// rewritten patches only if every transform of the plan succeeds.
-    fn apply(&self, cx: &GenCtx<'_>, targets: &[Target], params: &Params, patches: &mut [Patch]) -> Result<(), GenerateFailure>;
+    fn apply(
+        &self,
+        cx: &GenCtx<'_>,
+        targets: &[Target],
+        params: &Params,
+        patches: &mut [Patch],
+    ) -> Result<(), GenerateFailure>;
 }
 
 /// Schemes and transforms by name, plus fallback chains and automatic-selection lists.
 #[derive(Default)]
 pub struct SchemeRegistry {
-    schemes: BTreeMap<(SchemeDim, String), Box<dyn Scheme>>,
+    schemes: BTreeMap<SchemeDim, BTreeMap<String, Box<dyn Scheme>>>,
     transforms: BTreeMap<String, Box<dyn MeshTransform>>,
-    fallbacks: BTreeMap<(SchemeDim, String), Vec<SchemeName>>,
+    fallbacks: BTreeMap<SchemeDim, BTreeMap<String, Vec<SchemeName>>>,
     auto: BTreeMap<SchemeDim, Vec<SchemeName>>,
 }
 
@@ -379,11 +477,15 @@ impl SchemeRegistry {
 
     /// Register a scheme. The name `copy` is reserved; duplicates are rejected.
     pub fn register(&mut self, s: Box<dyn Scheme>) -> Result<()> {
-        let key = (s.dim(), s.name().to_owned());
-        if key.1 == SchemeName::COPY || self.schemes.contains_key(&key) {
-            return Err(SchemeError::BadParams { scheme: SchemeName(key.1), reason: "name reserved or already registered".into() });
+        let (dim, name) = (s.dim(), s.name().to_owned());
+        let of_dim = self.schemes.entry(dim).or_default();
+        if name == SchemeName::COPY || of_dim.contains_key(&name) {
+            return Err(SchemeError::BadParams {
+                scheme: SchemeName(name),
+                reason: "name reserved or already registered".into(),
+            });
         }
-        self.schemes.insert(key, s);
+        of_dim.insert(name, s);
         Ok(())
     }
 
@@ -391,7 +493,10 @@ impl SchemeRegistry {
     pub fn register_transform(&mut self, t: Box<dyn MeshTransform>) -> Result<()> {
         let k = t.name().to_owned();
         if self.transforms.contains_key(&k) {
-            return Err(SchemeError::BadParams { scheme: SchemeName(k), reason: "already registered".into() });
+            return Err(SchemeError::BadParams {
+                scheme: SchemeName(k),
+                reason: "already registered".into(),
+            });
         }
         self.transforms.insert(k, t);
         Ok(())
@@ -399,7 +504,7 @@ impl SchemeRegistry {
 
     /// The scheme `name` of dimension `dim`.
     pub fn get(&self, dim: SchemeDim, name: &str) -> Option<&dyn Scheme> {
-        self.schemes.get(&(dim, name.to_owned())).map(|b| b.as_ref())
+        self.schemes.get(&dim)?.get(name).map(|b| b.as_ref())
     }
 
     /// The conversion `name`.
@@ -409,7 +514,11 @@ impl SchemeRegistry {
 
     /// Schemes of a dimension in name order.
     pub fn of_dim(&self, dim: SchemeDim) -> impl Iterator<Item = &dyn Scheme> {
-        self.schemes.iter().filter(move |(k, _)| k.0 == dim).map(|(_, v)| v.as_ref())
+        self.schemes
+            .get(&dim)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .map(|v| v.as_ref())
     }
 
     /// Set the registry-level fallback chain of scheme `name`: tried, in order, after the
@@ -418,16 +527,25 @@ impl SchemeRegistry {
     pub fn set_fallback(&mut self, dim: SchemeDim, name: &str, chain: &[&str]) -> Result<()> {
         for n in std::iter::once(&name).chain(chain.iter()) {
             if self.get(dim, n).is_none() {
-                return Err(SchemeError::BadParams { scheme: SchemeName::new(n), reason: format!("no {dim:?} scheme of that name is registered") });
+                return Err(SchemeError::BadParams {
+                    scheme: SchemeName::new(n),
+                    reason: format!("no {dim:?} scheme of that name is registered"),
+                });
             }
         }
-        self.fallbacks.insert((dim, name.to_owned()), chain.iter().map(|n| SchemeName::new(n)).collect());
+        self.fallbacks.entry(dim).or_default().insert(
+            name.to_owned(),
+            chain.iter().map(|n| SchemeName::new(n)).collect(),
+        );
         Ok(())
     }
 
     /// The fallback chain of `name` (empty if none).
     pub fn fallbacks(&self, dim: SchemeDim, name: &str) -> &[SchemeName] {
-        self.fallbacks.get(&(dim, name.to_owned())).map_or(&[], Vec::as_slice)
+        self.fallbacks
+            .get(&dim)
+            .and_then(|m| m.get(name))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Set the candidate list of automatic selection for `dim`, in priority order.
@@ -435,10 +553,14 @@ impl SchemeRegistry {
     pub fn set_auto(&mut self, dim: SchemeDim, names: &[&str]) -> Result<()> {
         for n in names {
             if self.get(dim, n).is_none() {
-                return Err(SchemeError::BadParams { scheme: SchemeName::new(n), reason: format!("no {dim:?} scheme of that name is registered") });
+                return Err(SchemeError::BadParams {
+                    scheme: SchemeName::new(n),
+                    reason: format!("no {dim:?} scheme of that name is registered"),
+                });
             }
         }
-        self.auto.insert(dim, names.iter().map(|n| SchemeName::new(n)).collect());
+        self.auto
+            .insert(dim, names.iter().map(|n| SchemeName::new(n)).collect());
         Ok(())
     }
 

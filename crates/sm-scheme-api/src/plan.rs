@@ -115,12 +115,18 @@ pub struct Plan {
 impl Plan {
     /// Solved interval count of `edge`.
     pub fn intervals(&self, edge: EntityId) -> Option<u32> {
-        self.intervals.binary_search_by(|p| p.0.cmp(&edge)).ok().map(|i| self.intervals[i].1)
+        self.intervals
+            .binary_search_by(|p| p.0.cmp(&edge))
+            .ok()
+            .map(|i| self.intervals[i].1)
     }
 
     /// Corner layout of `face`.
     pub fn layout(&self, face: EntityId) -> Option<&FaceLayout> {
-        self.layouts.binary_search_by(|l| l.face.cmp(&face)).ok().map(|i| &self.layouts[i])
+        self.layouts
+            .binary_search_by(|l| l.face.cmp(&face))
+            .ok()
+            .map(|i| &self.layouts[i])
     }
 
     /// The plan row of `target`.

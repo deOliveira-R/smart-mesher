@@ -36,7 +36,9 @@ impl SizeField for ConstantSize {
 /// crate, which registers them with the driver.
 pub fn builtin_field(spec: &SizingSpec) -> Option<Box<dyn SizeField>> {
     match spec {
-        SizingSpec::Constant { size } if size.is_finite() && *size > 0.0 => Some(Box::new(ConstantSize(*size))),
+        SizingSpec::Constant { size } if size.is_finite() && *size > 0.0 => {
+            Some(Box::new(ConstantSize(*size)))
+        }
         _ => None,
     }
 }

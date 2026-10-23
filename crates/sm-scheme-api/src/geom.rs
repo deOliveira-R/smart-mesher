@@ -4,23 +4,33 @@
 use crate::error::{Result, SchemeError};
 use core::f64::consts::PI;
 use sm_core::{EntityId, Point3, Vector3};
-use sm_mesh_api::Param;
 use sm_geom_api::{ParametricCurve, Uv};
-use sm_topo_api::{Carrier, CoedgeKey, CoedgeKind, CornerKey, CurveCarrier, Sense, Side, TopologyView, TopologyViewExt};
+use sm_mesh_api::Param;
+use sm_topo_api::{
+    Carrier, CoedgeKey, CoedgeKind, CornerKey, CurveCarrier, Sense, Side, TopologyView,
+    TopologyViewExt,
+};
 
 /// Position of a topology vertex (its point carrier).
 pub fn vertex_point(t: &dyn TopologyView, v: EntityId) -> Result<Point3> {
     match t.carrier(v) {
         Carrier::Point(p) => Ok(*p),
-        _ => Err(SchemeError::Input(format!("vertex {v} has no point carrier"))),
+        _ => Err(SchemeError::Input(format!(
+            "vertex {v} has no point carrier"
+        ))),
     }
 }
 
 /// The curve and carrier of an edge.
-pub fn edge_curve(t: &dyn TopologyView, e: EntityId) -> Result<(&dyn ParametricCurve, CurveCarrier)> {
+pub fn edge_curve(
+    t: &dyn TopologyView,
+    e: EntityId,
+) -> Result<(&dyn ParametricCurve, CurveCarrier)> {
     match t.carrier(e) {
         Carrier::Curve(cc) => {
-            let c = t.shapes().curve(cc.curve).ok_or_else(|| SchemeError::Input(format!("edge {e}: curve {} not in store", cc.curve)))?;
+            let c = t.shapes().curve(cc.curve).ok_or_else(|| {
+                SchemeError::Input(format!("edge {e}: curve {} not in store", cc.curve))
+            })?;
             Ok((c, *cc))
         }
         _ => Err(SchemeError::Input(format!("edge {e} has no curve carrier"))),
@@ -59,12 +69,20 @@ pub fn edge_length(t: &dyn TopologyView, e: EntityId) -> Result<f64> {
 /// `(start, end)` vertices of a coedge in loop direction.
 pub fn coedge_ends(t: &dyn TopologyView, k: CoedgeKey) -> Option<(EntityId, EntityId)> {
     let (a, b) = t.edge_ends(k.edge)?;
-    Some(if k.side == Side::Right { (b, a) } else { (a, b) })
+    Some(if k.side == Side::Right {
+        (b, a)
+    } else {
+        (a, b)
+    })
 }
 
 /// Travel direction of a coedge at fraction `s` of the loop direction.
 fn coedge_dir(t: &dyn TopologyView, k: CoedgeKey, s: f64) -> Result<Vector3> {
-    if k.side == Side::Right { Ok(-edge_tangent(t, k.edge, 1.0 - s)?) } else { edge_tangent(t, k.edge, s) }
+    if k.side == Side::Right {
+        Ok(-edge_tangent(t, k.edge, 1.0 - s)?)
+    } else {
+        edge_tangent(t, k.edge, s)
+    }
 }
 
 /// Unit normal of a face at (near) `p`, oriented left to right (the topology orientation
@@ -81,10 +99,18 @@ pub fn face_normal(t: &dyn TopologyView, f: EntityId, p: Point3) -> Result<Vecto
     let mut n = Vector3::default();
     for i in 0..pts.len() {
         let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-        n = n + Vector3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+        n = n + Vector3::new(
+            (a.y - b.y) * (a.z + b.z),
+            (a.z - b.z) * (a.x + b.x),
+            (a.x - b.x) * (a.y + b.y),
+        );
     }
     let l = n.norm();
-    if l > 0.0 { Ok(n * (1.0 / l)) } else { Err(SchemeError::Input(format!("face {f}: no normal"))) }
+    if l > 0.0 {
+        Ok(n * (1.0 / l))
+    } else {
+        Err(SchemeError::Input(format!("face {f}: no normal")))
+    }
 }
 
 /// One corner of a face loop with its measured interior angle.
@@ -104,15 +130,27 @@ pub struct Corner {
 pub fn corners(t: &dyn TopologyView, f: EntityId) -> Result<Vec<Corner>> {
     let mut out = Vec::new();
     for lp in t.loops(f) {
-        let keys: Vec<CoedgeKey> = lp.keys().filter(|k| !t.flags(k.edge).contains(sm_topo_api::CellFlags::DEGENERATE)).collect();
+        let keys: Vec<CoedgeKey> = lp
+            .keys()
+            .filter(|k| !t.flags(k.edge).contains(sm_topo_api::CellFlags::DEGENERATE))
+            .collect();
         for i in 0..keys.len() {
             let (inc, out_k) = (keys[i], keys[(i + 1) % keys.len()]);
-            let (_, v) = coedge_ends(t, inc).ok_or_else(|| SchemeError::Input(format!("edge {} has no ends", inc.edge)))?;
+            let (_, v) = coedge_ends(t, inc)
+                .ok_or_else(|| SchemeError::Input(format!("edge {} has no ends", inc.edge)))?;
             let p = vertex_point(t, v)?;
             let n = face_normal(t, f, p)?;
             let (a, b) = (coedge_dir(t, inc, 1.0)?, coedge_dir(t, out_k, 0.0)?);
             let turn = n.dot(a.cross(b)).atan2(a.dot(b));
-            out.push(Corner { key: CornerKey { face: f, incoming: inc }, vertex: v, ring: lp.ring, angle: PI - turn });
+            out.push(Corner {
+                key: CornerKey {
+                    face: f,
+                    incoming: inc,
+                },
+                vertex: v,
+                ring: lp.ring,
+                angle: PI - turn,
+            });
         }
     }
     Ok(out)
@@ -125,12 +163,22 @@ pub fn is_real(kind: CoedgeKind) -> bool {
 
 /// The coedges of every loop of `f` (ring order, outer loop first), without pole coedges.
 pub fn face_loops(t: &dyn TopologyView, f: EntityId) -> Vec<Vec<CoedgeKey>> {
-    t.loops(f).map(|lp| lp.keys().filter(|k| !t.flags(k.edge).contains(sm_topo_api::CellFlags::DEGENERATE)).collect()).collect()
+    t.loops(f)
+        .map(|lp| {
+            lp.keys()
+                .filter(|k| !t.flags(k.edge).contains(sm_topo_api::CellFlags::DEGENERATE))
+                .collect()
+        })
+        .collect()
 }
 
 /// The interior angle (radians, in `(0, 2 pi)`) at one face corner.
 pub fn corner_angle(t: &dyn TopologyView, key: CornerKey) -> Result<f64> {
-    corners(t, key.face)?.into_iter().find(|c| c.key == key).map(|c| c.angle).ok_or_else(|| SchemeError::Input(format!("{key:?} is not a corner of its face")))
+    corners(t, key.face)?
+        .into_iter()
+        .find(|c| c.key == key)
+        .map(|c| c.angle)
+        .ok_or_else(|| SchemeError::Input(format!("{key:?} is not a corner of its face")))
 }
 
 /// Project `p` onto the carrier of face `f`. Returns the projected point and its surface

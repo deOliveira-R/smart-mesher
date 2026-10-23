@@ -52,12 +52,20 @@ impl Uf {
 /// Group the copy constraints into classes (ascending by root) and check every redundant
 /// constraint against the composed one.
 pub(crate) fn build_classes(inp: &ClassInput<'_>) -> Result<Vec<CopyClass>> {
-    let nodes: Vec<Target> = inp.copies.iter().flat_map(|r| [r.item.source, r.item.target]).collect::<BTreeSet<_>>().into_iter().collect();
+    let nodes: Vec<Target> = inp
+        .copies
+        .iter()
+        .flat_map(|r| [r.item.source, r.item.target])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let ix = |t: &Target| nodes.binary_search(t).ok();
     let mut uf = Uf((0..nodes.len()).collect());
     let mut adj: Vec<Vec<(usize, usize, bool)>> = vec![Vec::new(); nodes.len()];
     for (ri, r) in inp.copies.iter().enumerate() {
-        let (Some(a), Some(b)) = (ix(&r.item.source), ix(&r.item.target)) else { continue };
+        let (Some(a), Some(b)) = (ix(&r.item.source), ix(&r.item.target)) else {
+            continue;
+        };
         uf.union(a, b);
         adj[a].push((b, ri, true));
         adj[b].push((a, ri, false));
@@ -92,12 +100,28 @@ struct Placed {
     path: Vec<ConstraintId>,
 }
 
-fn build_one(inp: &ClassInput<'_>, nodes: &[Target], adj: &[Vec<(usize, usize, bool)>], members: &[usize]) -> Result<CopyClass> {
-    let root_ix = members.iter().copied().min_by_key(|&i| root_key(inp, nodes[i])).ok_or_else(|| SchemeError::Input("empty copy class".into()))?;
+fn build_one(
+    inp: &ClassInput<'_>,
+    nodes: &[Target],
+    adj: &[Vec<(usize, usize, bool)>],
+    members: &[usize],
+) -> Result<CopyClass> {
+    let root_ix = members
+        .iter()
+        .copied()
+        .min_by_key(|&i| root_key(inp, nodes[i]))
+        .ok_or_else(|| SchemeError::Input("empty copy class".into()))?;
     let root = nodes[root_ix];
     let root_vs = target_vertices(inp.topo, root);
     let mut placed: BTreeMap<usize, Placed> = BTreeMap::new();
-    placed.insert(root_ix, Placed { from_root: Transform::IDENTITY, vm: root_vs.iter().map(|v| (*v, *v)).collect(), path: Vec::new() });
+    placed.insert(
+        root_ix,
+        Placed {
+            from_root: Transform::IDENTITY,
+            vm: root_vs.iter().map(|v| (*v, *v)).collect(),
+            path: Vec::new(),
+        },
+    );
     let mut tree: BTreeSet<usize> = BTreeSet::new();
     let mut queue = std::collections::VecDeque::from([root_ix]);
     while let Some(u) = queue.pop_front() {
@@ -108,15 +132,33 @@ fn build_one(inp: &ClassInput<'_>, nodes: &[Target], adj: &[Vec<(usize, usize, b
             let r = &inp.copies[ri];
             let pu = &placed[&u];
             let (from_root, vm) = if forward {
-                (compose(&r.item.transform, &pu.from_root), compose_maps(&pu.vm, &r.item.vertex_map))
+                (
+                    compose(&r.item.transform, &pu.from_root),
+                    compose_maps(&pu.vm, &r.item.vertex_map),
+                )
             } else {
-                let inv = inverse(&r.item.transform).ok_or_else(|| SchemeError::Correspondence { source_target: r.item.source, target: r.item.target, reason: "singular copy transform".into() })?;
-                (compose(&inv, &pu.from_root), compose_maps(&pu.vm, &invert_map(&r.item.vertex_map)))
+                let inv =
+                    inverse(&r.item.transform).ok_or_else(|| SchemeError::Correspondence {
+                        source_target: r.item.source,
+                        target: r.item.target,
+                        reason: "singular copy transform".into(),
+                    })?;
+                (
+                    compose(&inv, &pu.from_root),
+                    compose_maps(&pu.vm, &invert_map(&r.item.vertex_map)),
+                )
             };
             let mut path = pu.path.clone();
             path.push(r.id);
             tree.insert(ri);
-            placed.insert(v, Placed { from_root, vm, path });
+            placed.insert(
+                v,
+                Placed {
+                    from_root,
+                    vm,
+                    path,
+                },
+            );
             queue.push_back(v);
         }
     }
@@ -125,23 +167,43 @@ fn build_one(inp: &ClassInput<'_>, nodes: &[Target], adj: &[Vec<(usize, usize, b
         if tree.contains(&ri) {
             continue;
         }
-        let (Ok(a), Ok(b)) = (nodes.binary_search(&r.item.source), nodes.binary_search(&r.item.target)) else { continue };
-        let (Some(ps), Some(pd)) = (placed.get(&a), placed.get(&b)) else { continue };
+        let (Ok(a), Ok(b)) = (
+            nodes.binary_search(&r.item.source),
+            nodes.binary_search(&r.item.target),
+        ) else {
+            continue;
+        };
+        let (Some(ps), Some(pd)) = (placed.get(&a), placed.get(&b)) else {
+            continue;
+        };
         let first = pd.path.last().or(ps.path.last()).copied().unwrap_or(r.id);
-        let conflict = |reason: String| SchemeError::CopyConflict { target: r.item.target, first, second: r.id, reason };
+        let conflict = |reason: String| SchemeError::CopyConflict {
+            target: r.item.target,
+            first,
+            second: r.id,
+            reason,
+        };
         let vmap: BTreeMap<EntityId, EntityId> = r.item.vertex_map.iter().copied().collect();
         let d_of: BTreeMap<EntityId, EntityId> = pd.vm.iter().copied().collect();
         for (rv, sv) in &ps.vm {
             let Some(want) = vmap.get(sv) else { continue };
             match d_of.get(rv) {
                 Some(have) if have == want => {}
-                other => return Err(conflict(format!("vertex {rv} of the root maps to {other:?} along one path and to {want} along the other"))),
+                other => {
+                    return Err(conflict(format!(
+                        "vertex {rv} of the root maps to {other:?} along one path and to {want} along the other"
+                    )));
+                }
             }
             let p = geom::vertex_point(inp.topo, *rv)?;
             let via_s = r.item.transform.apply_point(ps.from_root.apply_point(p));
             let via_d = pd.from_root.apply_point(p);
             if (via_s - via_d).norm() > inp.tol {
-                return Err(conflict(format!("the two paths place vertex {rv} {:.3e} apart (tolerance {:.1e})", (via_s - via_d).norm(), inp.tol)));
+                return Err(conflict(format!(
+                    "the two paths place vertex {rv} {:.3e} apart (tolerance {:.1e})",
+                    (via_s - via_d).norm(),
+                    inp.tol
+                )));
             }
         }
     }
@@ -153,10 +215,25 @@ fn build_one(inp: &ClassInput<'_>, nodes: &[Target], adj: &[Vec<(usize, usize, b
         let t = nodes[i];
         if inp.resolved.contains(&t) {
             let last = pl.path.last().copied().unwrap_or(ConstraintId(0));
-            return Err(SchemeError::CopyConflict { target: t, first: last, second: last, reason: "the target already has a scheme of its own".into() });
+            return Err(SchemeError::CopyConflict {
+                target: t,
+                first: last,
+                second: last,
+                reason: "the target already has a scheme of its own".into(),
+            });
         }
-        let mode = if inp.claimed.contains(&t) { CopyMode::Verify } else { CopyMode::Generate };
-        ms.push(CopyMember { target: t, from_root: pl.from_root, vertex_map: pl.vm.clone(), mode, constraints: pl.path.clone() });
+        let mode = if inp.claimed.contains(&t) {
+            CopyMode::Verify
+        } else {
+            CopyMode::Generate
+        };
+        ms.push(CopyMember {
+            target: t,
+            from_root: pl.from_root,
+            vertex_map: pl.vm.clone(),
+            mode,
+            constraints: pl.path.clone(),
+        });
     }
     ms.sort_by_key(|m| m.target);
     Ok(CopyClass { root, members: ms })
@@ -164,7 +241,10 @@ fn build_one(inp: &ClassInput<'_>, nodes: &[Target], adj: &[Vec<(usize, usize, b
 
 /// Fill the vertex correspondence of every copy that has none (geometrically, from its
 /// transform). Returns the number filled.
-pub(crate) fn fill_vertex_maps(topo: &dyn TopologyView, copies: &mut [Record<CopyConstraint>]) -> Result<usize> {
+pub(crate) fn fill_vertex_maps(
+    topo: &dyn TopologyView,
+    copies: &mut [Record<CopyConstraint>],
+) -> Result<usize> {
     let mut n = 0;
     for r in copies.iter_mut() {
         if r.item.vertex_map.is_empty() {

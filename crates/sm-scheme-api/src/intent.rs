@@ -72,17 +72,29 @@ impl Params {
     pub fn check(&self) -> Result<(), SchemeError> {
         sm_op_api::codec::to_params(&self.0)
             .map(|_| ())
-            .map_err(|e| SchemeError::BadParams { scheme: SchemeName::new(""), reason: e.to_string() })
+            .map_err(|e| SchemeError::BadParams {
+                scheme: SchemeName::new(""),
+                reason: e.to_string(),
+            })
     }
 
     /// Typed field `key`; `Ok(None)` if absent. A field of the wrong type is an error naming
     /// `scheme`.
-    pub fn get<T: DeserializeOwned>(&self, scheme: &str, key: &str) -> Result<Option<T>, SchemeError> {
+    pub fn get<T: DeserializeOwned>(
+        &self,
+        scheme: &str,
+        key: &str,
+    ) -> Result<Option<T>, SchemeError> {
         match self.0.get(key) {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(v) => serde_json::from_value(v.clone())
-                .map(Some)
-                .map_err(|e| SchemeError::BadParams { scheme: SchemeName::new(scheme), reason: format!("{key}: {e}") }),
+            Some(v) => {
+                serde_json::from_value(v.clone())
+                    .map(Some)
+                    .map_err(|e| SchemeError::BadParams {
+                        scheme: SchemeName::new(scheme),
+                        reason: format!("{key}: {e}"),
+                    })
+            }
         }
     }
 }
@@ -104,11 +116,19 @@ pub struct SchemeChoice {
 impl SchemeChoice {
     /// A choice with no parameters.
     pub fn new(name: &str, firmness: Firmness) -> Self {
-        Self { name: SchemeName::new(name), params: Params::empty(), firmness }
+        Self {
+            name: SchemeName::new(name),
+            params: Params::empty(),
+            firmness,
+        }
     }
     /// A choice with parameters.
     pub fn with_params(name: &str, params: serde_json::Value, firmness: Firmness) -> Self {
-        Self { name: SchemeName::new(name), params: Params(params), firmness }
+        Self {
+            name: SchemeName::new(name),
+            params: Params(params),
+            firmness,
+        }
     }
 }
 
@@ -287,7 +307,13 @@ impl MeshIntent {
         for c in &self.corners {
             by.insert(c.corner, c.vertex_type);
         }
-        self.corners = by.into_iter().map(|(corner, vertex_type)| CornerIntent { corner, vertex_type }).collect();
+        self.corners = by
+            .into_iter()
+            .map(|(corner, vertex_type)| CornerIntent {
+                corner,
+                vertex_type,
+            })
+            .collect();
         for g in &mut self.groups {
             g.members.sort_unstable();
             g.members.dedup();
@@ -304,20 +330,34 @@ impl MeshIntent {
     /// transform ids are unique and in range, sizes and counts are sane.
     pub fn check(&self) -> Result<(), SchemeError> {
         let bad = |what: String| Err(SchemeError::Input(what));
-        let params = |who: &str, c: &SchemeChoice| c.params.check().map_err(|e| SchemeError::Input(format!("{who}: `{}`: {e}", c.name)));
+        let params = |who: &str, c: &SchemeChoice| {
+            c.params
+                .check()
+                .map_err(|e| SchemeError::Input(format!("{who}: `{}`: {e}", c.name)))
+        };
         for (id, e) in &self.entities {
             for c in e.scheme.iter().chain(e.fallbacks.iter()) {
                 params(&id.to_string(), c)?;
             }
             match e.intervals.map(|r| r.value) {
-                Some(IntervalRequest::Count(0)) => return bad(format!("{id}: interval count must be >= 1")),
-                Some(IntervalRequest::Size(h)) if !(h.is_finite() && h > 0.0) => return bad(format!("{id}: interval size must be positive and finite")),
+                Some(IntervalRequest::Count(0)) => {
+                    return bad(format!("{id}: interval count must be >= 1"));
+                }
+                Some(IntervalRequest::Size(h)) if !(h.is_finite() && h > 0.0) => {
+                    return bad(format!("{id}: interval size must be positive and finite"));
+                }
                 _ => {}
             }
             if let Some(b) = e.boundary_layer
-                && !(b.first.is_finite() && b.first > 0.0 && b.growth.is_finite() && b.growth >= 1.0 && b.layers >= 1)
+                && !(b.first.is_finite()
+                    && b.first > 0.0
+                    && b.growth.is_finite()
+                    && b.growth >= 1.0
+                    && b.layers >= 1)
             {
-                return bad(format!("{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"));
+                return bad(format!(
+                    "{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"
+                ));
             }
         }
         let mut gids: Vec<GroupId> = Vec::new();
@@ -329,7 +369,12 @@ impl MeshIntent {
             if g.members.is_empty() {
                 return bad(format!("group {:?} has no members", g.id));
             }
-            for c in g.scheme.iter().chain(g.fallbacks.iter()).chain(g.conversion.iter()) {
+            for c in g
+                .scheme
+                .iter()
+                .chain(g.fallbacks.iter())
+                .chain(g.conversion.iter())
+            {
                 params(&format!("group {:?}", g.id), c)?;
             }
         }
@@ -345,7 +390,8 @@ impl MeshIntent {
             params(&format!("transform {:?}", t.id), &t.transform)?;
         }
         if let Some(SizingSpec::Function { params: p, .. }) = &self.defaults.sizing {
-            p.check().map_err(|e| SchemeError::Input(format!("sizing: {e}")))?;
+            p.check()
+                .map_err(|e| SchemeError::Input(format!("sizing: {e}")))?;
         }
         Ok(())
     }

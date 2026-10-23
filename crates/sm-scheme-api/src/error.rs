@@ -89,7 +89,12 @@ pub struct GenerateFailure {
 impl GenerateFailure {
     /// A failure of `kind`.
     pub fn new(target: Target, scheme: &str, kind: FailureKind, reason: impl Into<String>) -> Self {
-        Self { target, scheme: SchemeName::new(scheme), kind, reason: reason.into() }
+        Self {
+            target,
+            scheme: SchemeName::new(scheme),
+            kind,
+            reason: reason.into(),
+        }
     }
     /// A quality failure: the driver may recover by falling back.
     pub fn fallback(target: Target, scheme: &str, reason: impl Into<String>) -> Self {
@@ -279,7 +284,9 @@ impl SchemeError {
     pub fn blame(&self) -> Option<(Target, SchemeName)> {
         match self {
             SchemeError::Infeasible(i) => i.blame.clone(),
-            SchemeError::Generate(g) if g.kind.allows_fallback() => Some((g.target, g.scheme.clone())),
+            SchemeError::Generate(g) if g.kind.allows_fallback() => {
+                Some((g.target, g.scheme.clone()))
+            }
             SchemeError::NoApplicableScheme { imposed_by, .. } => imposed_by.first().cloned(),
             _ => None,
         }

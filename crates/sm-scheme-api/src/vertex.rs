@@ -22,7 +22,12 @@ pub enum VertexType {
 
 impl VertexType {
     /// All types in angle order.
-    pub const ALL: [VertexType; 4] = [VertexType::End, VertexType::Side, VertexType::Corner, VertexType::Reversal];
+    pub const ALL: [VertexType; 4] = [
+        VertexType::End,
+        VertexType::Side,
+        VertexType::Corner,
+        VertexType::Reversal,
+    ];
 
     /// Number of quadrilaterals meeting at the corner inside the face.
     pub const fn element_count(self) -> u32 {

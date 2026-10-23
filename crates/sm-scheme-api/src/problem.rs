@@ -113,13 +113,19 @@ impl IntervalConstraint {
         for e in rhs {
             *acc.entry(*e).or_insert(0) -= 1;
         }
-        IntervalConstraint::Linear { terms: acc.into_iter().filter(|x| x.1 != 0).collect(), rel: Rel::Eq, rhs: 0 }
+        IntervalConstraint::Linear {
+            terms: acc.into_iter().filter(|x| x.1 != 0).collect(),
+            rel: Rel::Eq,
+            rhs: 0,
+        }
     }
 
     /// The edges the constraint mentions, sorted and unique.
     pub fn edges(&self) -> Vec<EntityId> {
         let mut v: Vec<EntityId> = match self {
-            IntervalConstraint::Fixed { edge, .. } | IntervalConstraint::Goal { edge, .. } | IntervalConstraint::Range { edge, .. } => vec![*edge],
+            IntervalConstraint::Fixed { edge, .. }
+            | IntervalConstraint::Goal { edge, .. }
+            | IntervalConstraint::Range { edge, .. } => vec![*edge],
             IntervalConstraint::Linear { terms, .. } => terms.iter().map(|t| t.0).collect(),
             IntervalConstraint::EvenSum { edges } => edges.clone(),
         };
@@ -418,7 +424,10 @@ impl MeshingProblem {
 
     /// The plan row of `target` (the `targets` table is sorted).
     pub fn target(&self, t: Target) -> Option<&TargetPlan> {
-        self.targets.binary_search_by(|p| p.target.cmp(&t)).ok().map(|i| &self.targets[i])
+        self.targets
+            .binary_search_by(|p| p.target.cmp(&t))
+            .ok()
+            .map(|i| &self.targets[i])
     }
 
     /// The first copy constraint whose target is `t`.
@@ -428,7 +437,12 @@ impl MeshingProblem {
 
     /// The roles of `t`, in contribution order.
     pub fn roles_of(&self, t: Target) -> impl Iterator<Item = Role> + '_ {
-        self.idx().roles.get(&t).into_iter().flatten().map(move |&i| self.roles[i].item.1)
+        self.idx()
+            .roles
+            .get(&t)
+            .into_iter()
+            .flatten()
+            .map(move |&i| self.roles[i].item.1)
     }
 
     /// The first claim on `child`.
@@ -439,7 +453,9 @@ impl MeshingProblem {
     /// Who contributed constraint `id`, whatever its kind.
     pub fn record_origin(&self, id: ConstraintId) -> Option<&Origin> {
         fn find<T>(v: &[Record<T>], id: ConstraintId) -> Option<&Origin> {
-            v.binary_search_by(|r| r.id.cmp(&id)).ok().map(|i| &v[i].origin)
+            v.binary_search_by(|r| r.id.cmp(&id))
+                .ok()
+                .map(|i| &v[i].origin)
         }
         find(&self.impositions, id)
             .or_else(|| find(&self.claims, id))
@@ -458,49 +474,91 @@ impl MeshingProblem {
 
     pub(crate) fn push_interval(&mut self, origin: Origin, c: IntervalConstraint) -> ConstraintId {
         let id = self.next_id();
-        self.intervals.push(Record { id, origin, item: c });
+        self.intervals.push(Record {
+            id,
+            origin,
+            item: c,
+        });
         id
     }
 
     pub(crate) fn push_copy(&mut self, origin: Origin, c: CopyConstraint) -> ConstraintId {
         let id = self.next_id();
-        self.copies.push(Record { id, origin, item: c });
+        self.copies.push(Record {
+            id,
+            origin,
+            item: c,
+        });
         id
     }
 
     pub(crate) fn push_constraint(&mut self, origin: Origin, c: MeshConstraint) -> ConstraintId {
         let id = self.next_id();
-        self.constraints.push(Record { id, origin, item: c });
+        self.constraints.push(Record {
+            id,
+            origin,
+            item: c,
+        });
         id
     }
 
     pub(crate) fn push_imposition(&mut self, origin: Origin, c: Imposition) -> ConstraintId {
         let id = self.next_id();
-        self.impositions.push(Record { id, origin, item: c });
+        self.impositions.push(Record {
+            id,
+            origin,
+            item: c,
+        });
         id
     }
 
     pub(crate) fn push_claim(&mut self, origin: Origin, c: Claim) -> ConstraintId {
         let id = self.next_id();
-        self.claims.push(Record { id, origin, item: c });
+        self.claims.push(Record {
+            id,
+            origin,
+            item: c,
+        });
         id
     }
 
     pub(crate) fn push_role(&mut self, origin: Origin, t: Target, r: Role) -> ConstraintId {
         let id = self.next_id();
-        self.roles.push(Record { id, origin, item: (t, r) });
+        self.roles.push(Record {
+            id,
+            origin,
+            item: (t, r),
+        });
         id
     }
 
-    pub(crate) fn push_vertex_rule(&mut self, origin: Origin, face: EntityId, r: VertexRule) -> ConstraintId {
+    pub(crate) fn push_vertex_rule(
+        &mut self,
+        origin: Origin,
+        face: EntityId,
+        r: VertexRule,
+    ) -> ConstraintId {
         let id = self.next_id();
-        self.vertex_rules.push(Record { id, origin, item: (face, r) });
+        self.vertex_rules.push(Record {
+            id,
+            origin,
+            item: (face, r),
+        });
         id
     }
 
-    pub(crate) fn push_vertex_type(&mut self, origin: Origin, c: CornerKey, t: Firm<VertexType>) -> ConstraintId {
+    pub(crate) fn push_vertex_type(
+        &mut self,
+        origin: Origin,
+        c: CornerKey,
+        t: Firm<VertexType>,
+    ) -> ConstraintId {
         let id = self.next_id();
-        self.vertex_types.push(Record { id, origin, item: (c, t) });
+        self.vertex_types.push(Record {
+            id,
+            origin,
+            item: (c, t),
+        });
         id
     }
 
@@ -536,8 +594,23 @@ pub struct Requirements<'a> {
 }
 
 impl<'a> Requirements<'a> {
-    pub(crate) fn new(problem: &'a mut MeshingProblem, scheme: &SchemeName, target: Target, scope: &'a Scope<'a>) -> Self {
-        Self { problem, origin: Origin::Scheme { scheme: scheme.clone(), target }, target, scope, error: None, data: None }
+    pub(crate) fn new(
+        problem: &'a mut MeshingProblem,
+        scheme: &SchemeName,
+        target: Target,
+        scope: &'a Scope<'a>,
+    ) -> Self {
+        Self {
+            problem,
+            origin: Origin::Scheme {
+                scheme: scheme.clone(),
+                target,
+            },
+            target,
+            scope,
+            error: None,
+            data: None,
+        }
     }
 
     /// Finish: the first refused requirement as an error, else the stored private data.
@@ -550,7 +623,11 @@ impl<'a> Requirements<'a> {
 
     fn fail(&mut self, child: Target, reason: &str) {
         if self.error.is_none() {
-            self.error = Some(SchemeError::BadRequirement { by: self.target, child, reason: reason.to_owned() });
+            self.error = Some(SchemeError::BadRequirement {
+                by: self.target,
+                child,
+                reason: reason.to_owned(),
+            });
         }
     }
 
@@ -559,7 +636,10 @@ impl<'a> Requirements<'a> {
             return false;
         }
         if !self.scope.children.contains(&child) {
-            self.fail(child, "not a strict sub-entity of the requesting target inside the meshed region");
+            self.fail(
+                child,
+                "not a strict sub-entity of the requesting target inside the meshed region",
+            );
             return false;
         }
         if unresolved && self.scope.resolved.contains_key(&child) {
@@ -587,7 +667,15 @@ impl<'a> Requirements<'a> {
         names.sort();
         names.dedup();
         let by = self.target;
-        self.problem.push_imposition(self.origin.clone(), Imposition { child, need: Need::Schemes(names), firmness: Firmness::Hard, by })
+        self.problem.push_imposition(
+            self.origin.clone(),
+            Imposition {
+                child,
+                need: Need::Schemes(names),
+                firmness: Firmness::Hard,
+                by,
+            },
+        )
     }
 
     /// Require that the scheme of `child` provides all of `caps` (`copy` inherits through its
@@ -597,7 +685,15 @@ impl<'a> Requirements<'a> {
             return REFUSED;
         }
         let by = self.target;
-        self.problem.push_imposition(self.origin.clone(), Imposition { child, need: Need::Caps(caps), firmness, by })
+        self.problem.push_imposition(
+            self.origin.clone(),
+            Imposition {
+                child,
+                need: Need::Caps(caps),
+                firmness,
+                by,
+            },
+        )
     }
 
     /// Forbid every capability in `caps` on `child` (hard).
@@ -606,7 +702,15 @@ impl<'a> Requirements<'a> {
             return REFUSED;
         }
         let by = self.target;
-        self.problem.push_imposition(self.origin.clone(), Imposition { child, need: Need::Forbid(caps), firmness: Firmness::Hard, by })
+        self.problem.push_imposition(
+            self.origin.clone(),
+            Imposition {
+                child,
+                need: Need::Forbid(caps),
+                firmness: Firmness::Hard,
+                by,
+            },
+        )
     }
 
     /// Declare that this target writes `child` itself (many-to-one sweep target, linking
@@ -616,7 +720,8 @@ impl<'a> Requirements<'a> {
             return REFUSED;
         }
         let by = self.target;
-        self.problem.push_claim(self.origin.clone(), Claim { child, by })
+        self.problem
+            .push_claim(self.origin.clone(), Claim { child, by })
     }
 
     /// Give `child` a role (sweep source/target/linking).
@@ -642,7 +747,8 @@ impl<'a> Requirements<'a> {
         if !self.face_ok(face) {
             return REFUSED;
         }
-        self.problem.push_vertex_rule(self.origin.clone(), face, rule)
+        self.problem
+            .push_vertex_rule(self.origin.clone(), face, rule)
     }
 
     /// Request a vertex type on one corner.
@@ -650,7 +756,8 @@ impl<'a> Requirements<'a> {
         if !self.face_ok(corner.face) {
             return REFUSED;
         }
-        self.problem.push_vertex_type(self.origin.clone(), corner, t)
+        self.problem
+            .push_vertex_type(self.origin.clone(), corner, t)
     }
 
     /// Add another mesh constraint (precedence, plane lock, boundary layer). Faces and targets
@@ -658,7 +765,9 @@ impl<'a> Requirements<'a> {
     /// driver's.
     pub fn constraint(&mut self, c: MeshConstraint) -> ConstraintId {
         let ok = match &c {
-            MeshConstraint::PlaneLock { face, .. } | MeshConstraint::BoundaryLayer { face, .. } => self.face_ok(*face),
+            MeshConstraint::PlaneLock { face, .. } | MeshConstraint::BoundaryLayer { face, .. } => {
+                self.face_ok(*face)
+            }
             MeshConstraint::Precedes { before, after } => {
                 let (b, a) = (*before, *after);
                 self.child_ok(b, false) && self.child_ok(a, false)
@@ -690,32 +799,65 @@ pub struct IntervalSink<'a> {
 }
 
 impl<'a> IntervalSink<'a> {
-    pub(crate) fn new(problem: &'a mut MeshingProblem, scheme: &SchemeName, target: Target) -> Self {
-        Self { problem, origin: Origin::Scheme { scheme: scheme.clone(), target } }
+    pub(crate) fn new(
+        problem: &'a mut MeshingProblem,
+        scheme: &SchemeName,
+        target: Target,
+    ) -> Self {
+        Self {
+            problem,
+            origin: Origin::Scheme {
+                scheme: scheme.clone(),
+                target,
+            },
+        }
     }
 
     /// `sum(lhs) == sum(rhs)`.
     pub fn equal(&mut self, lhs: &[EntityId], rhs: &[EntityId]) -> ConstraintId {
-        self.problem.push_interval(self.origin.clone(), IntervalConstraint::sum_equal(lhs, rhs))
+        self.problem
+            .push_interval(self.origin.clone(), IntervalConstraint::sum_equal(lhs, rhs))
     }
 
     /// `sum(coefficient * count) rel rhs`.
     pub fn linear(&mut self, terms: &[(EntityId, i32)], rel: Rel, rhs: i64) -> ConstraintId {
-        self.problem.push_interval(self.origin.clone(), IntervalConstraint::Linear { terms: terms.to_vec(), rel, rhs })
+        self.problem.push_interval(
+            self.origin.clone(),
+            IntervalConstraint::Linear {
+                terms: terms.to_vec(),
+                rel,
+                rhs,
+            },
+        )
     }
 
     /// `sum(edges)` is even.
     pub fn even(&mut self, edges: &[EntityId]) -> ConstraintId {
-        self.problem.push_interval(self.origin.clone(), IntervalConstraint::EvenSum { edges: edges.to_vec() })
+        self.problem.push_interval(
+            self.origin.clone(),
+            IntervalConstraint::EvenSum {
+                edges: edges.to_vec(),
+            },
+        )
     }
 
     /// Fix a count.
     pub fn fix(&mut self, edge: EntityId, count: u32, firmness: Firmness) -> ConstraintId {
-        self.problem.push_interval(self.origin.clone(), IntervalConstraint::Fixed { edge, count, firmness })
+        self.problem.push_interval(
+            self.origin.clone(),
+            IntervalConstraint::Fixed {
+                edge,
+                count,
+                firmness,
+            },
+        )
     }
 
     /// Bound a count.
     pub fn range(&mut self, edge: EntityId, min: u32, max: Option<u32>) -> ConstraintId {
-        self.problem.push_interval(self.origin.clone(), IntervalConstraint::Range { edge, min, max })
+        self.problem.push_interval(
+            self.origin.clone(),
+            IntervalConstraint::Range { edge, min, max },
+        )
     }
 }

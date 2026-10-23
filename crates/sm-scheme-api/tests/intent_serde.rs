@@ -5,7 +5,9 @@ mod stub_schemes;
 
 use sm_core::{EntityId, EntityKind};
 use sm_scheme_api::{
-    CornerIntent, Driver, Firm, Firmness, GroupId, IntervalRequest, MeshGroup, MeshInput, MeshIntent, Params, Plan, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeChoice, SizingSpec, TransformId, TransformIntent, VertexType, WholeFaces,
+    CornerIntent, Driver, Firm, Firmness, GroupId, IntervalRequest, MeshGroup, MeshInput,
+    MeshIntent, Params, Plan, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeChoice,
+    SizingSpec, TransformId, TransformIntent, VertexType, WholeFaces,
 };
 use sm_topo_api::{CoedgeKey, CornerKey, Side};
 use stub_schemes::{brick_setup, registry};
@@ -16,21 +18,48 @@ fn id(k: EntityKind, n: u64) -> EntityId {
 
 fn sample_intent() -> MeshIntent {
     let f = id(EntityKind::TopoFace, 3);
-    let corner = CornerKey { face: f, incoming: CoedgeKey { face: f, edge: id(EntityKind::TopoEdge, 2), side: Side::Left } };
+    let corner = CornerKey {
+        face: f,
+        incoming: CoedgeKey {
+            face: f,
+            edge: id(EntityKind::TopoEdge, 2),
+            side: Side::Left,
+        },
+    };
     let mut a = MeshIntent::default();
     a.set_scheme(f, SchemeChoice::new("pave", Firmness::Soft));
-    a.entity_mut(f).fallbacks = vec![SchemeChoice::new("tridelaunay", Firmness::Default), SchemeChoice::new("qtri", Firmness::Default)];
-    a.set_intervals(id(EntityKind::TopoEdge, 2), Firm::hard(IntervalRequest::Count(7)));
-    a.corners.push(CornerIntent { corner, vertex_type: Firm::soft(VertexType::Side) });
-    a.corners.push(CornerIntent { corner, vertex_type: Firm::hard(VertexType::End) });
+    a.entity_mut(f).fallbacks = vec![
+        SchemeChoice::new("tridelaunay", Firmness::Default),
+        SchemeChoice::new("qtri", Firmness::Default),
+    ];
+    a.set_intervals(
+        id(EntityKind::TopoEdge, 2),
+        Firm::hard(IntervalRequest::Count(7)),
+    );
+    a.corners.push(CornerIntent {
+        corner,
+        vertex_type: Firm::soft(VertexType::Side),
+    });
+    a.corners.push(CornerIntent {
+        corner,
+        vertex_type: Firm::hard(VertexType::End),
+    });
     a.groups.push(MeshGroup {
         id: GroupId(1),
         members: vec![id(EntityKind::TopoVolume, 2), id(EntityKind::TopoVolume, 1)],
         scheme: Some(SchemeChoice::new("sweep", Firmness::Hard)),
-        fallbacks: vec![SchemeChoice::with_params("tetmesh", serde_json::json!({ "growth": 1.3 }), Firmness::Default)],
+        fallbacks: vec![SchemeChoice::with_params(
+            "tetmesh",
+            serde_json::json!({ "growth": 1.3 }),
+            Firmness::Default,
+        )],
         conversion: Some(SchemeChoice::new("thex", Firmness::Hard)),
     });
-    a.transforms.push(TransformIntent { id: TransformId(2), targets: vec![id(EntityKind::TopoVolume, 3), id(EntityKind::TopoVolume, 3)], transform: SchemeChoice::new("htet", Firmness::Hard) });
+    a.transforms.push(TransformIntent {
+        id: TransformId(2),
+        targets: vec![id(EntityKind::TopoVolume, 3), id(EntityKind::TopoVolume, 3)],
+        transform: SchemeChoice::new("htet", Firmness::Hard),
+    });
     a.defaults.sizing = Some(SizingSpec::Constant { size: 0.5 });
     a
 }
@@ -65,14 +94,24 @@ fn intent_crosses_the_op_codec_and_rejects_non_toml_params() {
     assert!(!serde_json::to_string(&c).expect("json").contains("params"));
     // Parameters the codec cannot hold are refused when the intent is checked.
     let mut bad = sample_intent();
-    bad.set_scheme(id(EntityKind::TopoFace, 4), SchemeChoice::with_params("x", serde_json::json!({ "a": null }), Firmness::Soft));
+    bad.set_scheme(
+        id(EntityKind::TopoFace, 4),
+        SchemeChoice::with_params("x", serde_json::json!({ "a": null }), Firmness::Soft),
+    );
     assert!(bad.check().is_err());
     let mut bad = sample_intent();
-    bad.set_scheme(id(EntityKind::TopoFace, 4), SchemeChoice::with_params("x", serde_json::json!([1, 2]), Firmness::Soft));
+    bad.set_scheme(
+        id(EntityKind::TopoFace, 4),
+        SchemeChoice::with_params("x", serde_json::json!([1, 2]), Firmness::Soft),
+    );
     assert!(bad.check().is_err());
     // Reserved and duplicate ids.
     let mut bad = sample_intent();
-    bad.transforms.push(TransformIntent { id: TransformId(TransformId::GROUP_BASE), targets: vec![id(EntityKind::TopoVolume, 1)], transform: SchemeChoice::new("htet", Firmness::Hard) });
+    bad.transforms.push(TransformIntent {
+        id: TransformId(TransformId::GROUP_BASE),
+        targets: vec![id(EntityKind::TopoVolume, 1)],
+        transform: SchemeChoice::new("htet", Firmness::Hard),
+    });
     assert!(bad.check().is_err());
     let mut bad = sample_intent();
     bad.groups.push(bad.groups[0].clone());
@@ -86,7 +125,12 @@ fn plan_round_trips_through_json_and_the_op_codec() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput {
+        topo: &topo,
+        model: &model,
+        pieces: &WholeFaces,
+        selection: &sel,
+    };
     let mut intent = MeshIntent::default();
     intent.set_intervals(ids.volume, Firm::soft(IntervalRequest::Count(3)));
     let plan = driver.plan(&input, &intent).expect("plan");
