@@ -440,6 +440,7 @@ dependencies = [
 name = "sm-model-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
  "sm-core",

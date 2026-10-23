@@ -26,6 +26,7 @@ pub const MAX_GROUP_ORDER: usize = 4096;
 /// Which side a cut keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Keep {
     /// The side the plane normal points to (translation: the slab starts at `origin` and runs
     /// along the vector; rotation: the wedge runs counter-clockwise from the start direction).

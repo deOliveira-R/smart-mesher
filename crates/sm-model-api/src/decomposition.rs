@@ -15,19 +15,28 @@
 //! A cut face of a parent that straddles a further split is inherited by both children as
 //! [`PieceFace::CutPart`] (distinct keys); [`Model::split_sides`] lets the caller say which child
 //! gets a parent cut face whole.
+//!
+//! **Realized splits.** [`Model::split_realized`] also realizes a plane cut in the topology
+//! overlay (`sm_topo_api::Overlay::partition_volume_by_plane`): the overlay mints the cut face,
+//! its edges and vertices as `Partition*` cells, the two overlay volumes take the piece ids, and
+//! this layer records (persisted, deterministic, never reused) the `CutId -> overlay ids` mapping
+//! ([`CutCells`]), the cells of every non-`Whole` piece face and the faces the cut partitioned.
+//! [`Decomposition::piece_face_cells`] resolves any [`PieceFace`] to the cells of the view, so a
+//! split piece can be meshed and its mesh classified on the virtual cells.
 
 use crate::error::{ModelError, Result, expect_kind};
 use crate::model::Model;
 use crate::symmetry::Keep;
 use crate::xf::Plane;
-use sm_core::{EntityId, EntityKind};
-use sm_topo_api::TopologyView;
+use sm_core::{EntityId, EntityKind, Point3};
+use sm_topo_api::{Overlay, TopologyView};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Reference to a piece: a volume that is not decomposed, or a minted cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum PieceRef {
     /// The whole volume as one implicit piece (virtual id, nothing minted).
     Whole(EntityId),
@@ -50,11 +59,13 @@ pub enum CutGeometry {
 /// Identifier of a virtual cut. Local to the model; never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CutId(pub u32);
 
 /// A face as seen by a piece.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum PieceFace {
     /// A model face wholly on this piece's boundary.
     Whole(EntityId),
@@ -141,6 +152,23 @@ pub struct SplitRec {
     pub geometry: CutGeometry,
 }
 
+/// The topology-overlay cells a realized cut created or changed (see [`Model::split_realized`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CutCells {
+    /// The virtual cut face(s) (`PartitionFace`; one for a plane cut).
+    pub faces: Vec<EntityId>,
+    /// The edges of the cut face's loop, ascending.
+    pub edges: Vec<EntityId>,
+    /// The vertices of the cut face's loop, ascending.
+    pub vertices: Vec<EntityId>,
+    /// Faces the cut partitioned, with their halves `[negative side, positive side]`, in the
+    /// order the overlay made them.
+    pub split_faces: Vec<(EntityId, [EntityId; 2])>,
+    /// Edges the cut partitioned: `(edge, new virtual vertex, halves in edge order)`.
+    pub split_edges: Vec<(EntityId, EntityId, [EntityId; 2])>,
+}
+
 /// The piece tables (part of the [`Model`], serializable).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -157,6 +185,19 @@ pub struct Decomposition {
     /// Faces of the `Whole` members of each composite (captured when it is formed).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) whole_faces: BTreeMap<EntityId, Vec<EntityId>>,
+    /// The faces of each composite (captured when it is formed; internal faces removed).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) composite_faces: BTreeMap<EntityId, Vec<PieceFace>>,
+    /// Realized cuts: the overlay cells of each cut.
+    #[cfg_attr(feature = "serde", serde(default, with = "crate::serde_pairs"))]
+    pub(crate) realized: BTreeMap<CutId, CutCells>,
+    /// Overlay cells of the `Part` / `CutPart` faces of realized pieces (as recorded at the split;
+    /// expanded through `split_cells` when later cuts partition them).
+    #[cfg_attr(feature = "serde", serde(default, with = "crate::serde_pairs"))]
+    pub(crate) face_cells: BTreeMap<PieceFace, Vec<EntityId>>,
+    /// Faces partitioned by realized cuts: face -> `[negative half, positive half]`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) split_cells: BTreeMap<EntityId, [EntityId; 2]>,
 }
 
 fn cut_key(pf: &PieceFace) -> Option<(CutId, Keep)> {
@@ -177,6 +218,33 @@ pub struct SplitSides<'a> {
     pub neg_cuts: &'a [(CutId, Keep)],
     /// Parent cut faces bounding the positive part.
     pub pos_cuts: &'a [(CutId, Keep)],
+}
+
+/// Faces of a composite from the faces of its members, each tagged with the member's volume: a
+/// cut seen from both sides, or a model face held (whole or in part) by members of two
+/// different volumes (an interface between them), is internal and dropped. Parts of one model
+/// face held by members of the same volume stay (they bound the composite).
+fn merge_member_faces(items: Vec<(PieceFace, Option<EntityId>)>) -> Vec<PieceFace> {
+    let mut sides: BTreeMap<CutId, [bool; 2]> = BTreeMap::new();
+    let mut vols: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
+    for (f, vol) in &items {
+        if let Some((c, s)) = cut_key(f) {
+            sides.entry(c).or_default()[usize::from(s == Keep::Positive)] = true;
+        } else if let (Some(b), Some(v)) = (f.base(), vol) {
+            vols.entry(b).or_default().insert(*v);
+        }
+    }
+    let mut v: Vec<PieceFace> = items
+        .into_iter()
+        .map(|x| x.0)
+        .filter(|f| match f.base() {
+            Some(b) => vols.get(&b).is_none_or(|s| s.len() < 2),
+            None => cut_key(f).is_none_or(|(c, _)| sides.get(&c).is_none_or(|b| !(b[0] && b[1]))),
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn whole_volume(p: &PieceRef) -> Option<EntityId> {
@@ -239,36 +307,68 @@ impl Decomposition {
         self.splits.keys().chain(self.consumed.iter()).filter_map(whole_volume).collect()
     }
 
-    /// The faces of any piece (cells: stored; `Whole`: every face of the volume).
+    /// The faces of any piece (cells: stored; `Whole`: every face of the volume; composites: the
+    /// faces captured when the composite was formed, internal faces removed). `t` is the host
+    /// topology the model is defined on (not an overlay that has partitioned faces).
     pub fn piece_faces(&self, p: PieceRef, t: &dyn TopologyView) -> Vec<PieceFace> {
         match p {
             PieceRef::Whole(v) => t.volume_faces(v).iter().map(|f| PieceFace::Whole(*f)).collect(),
             PieceRef::Cell(c) => match self.cells.get(&c) {
-                Some(pc) if !pc.members.is_empty() => {
-                    let mut v: Vec<PieceFace> = pc.members.iter().flat_map(|m| self.piece_faces(*m, t)).collect();
-                    // A cut seen from both sides, or a model face held whole by two members, is
-                    // internal to the composite.
-                    let mut sides: BTreeMap<CutId, [bool; 2]> = BTreeMap::new();
-                    let mut wholes: BTreeMap<EntityId, u32> = BTreeMap::new();
-                    for f in &v {
-                        if let Some((c, s)) = cut_key(f) {
-                            sides.entry(c).or_default()[usize::from(s == Keep::Positive)] = true;
-                        } else if let PieceFace::Whole(m) = f {
-                            *wholes.entry(*m).or_default() += 1;
-                        }
-                    }
-                    v.retain(|f| match f {
-                        PieceFace::Whole(m) => wholes.get(m).copied().unwrap_or(0) < 2,
-                        _ => cut_key(f).is_none_or(|(c, _)| sides.get(&c).is_none_or(|b| !(b[0] && b[1]))),
-                    });
-                    v.sort();
-                    v.dedup();
-                    v
-                }
+                Some(_) if self.composite_faces.contains_key(&c) => self.composite_faces[&c].clone(),
+                Some(pc) if !pc.members.is_empty() => self.member_faces(pc, t),
                 Some(pc) => pc.faces.clone(),
                 None => Vec::new(),
             },
         }
+    }
+
+    /// Faces of a composite computed from its members (see `merge_member_faces`).
+    fn member_faces(&self, pc: &Piece, t: &dyn TopologyView) -> Vec<PieceFace> {
+        let items: Vec<(PieceFace, Option<EntityId>)> = pc.members.iter().flat_map(|m| {
+            let vol = self.volume_of(*m);
+            self.piece_faces(*m, t).into_iter().map(move |f| (f, vol))
+        }).collect();
+        merge_member_faces(items)
+    }
+
+    /// The overlay cut cells recorded for a realized cut.
+    pub fn cut_cells(&self, cut: CutId) -> Option<&CutCells> {
+        self.realized.get(&cut)
+    }
+
+    /// The cells of the view `topo` that realize piece face `pf`, ascending: `Whole(f)` is `f`;
+    /// a realized `Cut` is its cut face; a realized `Part` / `CutPart` the cells recorded at the
+    /// split. Faces that later realized cuts partitioned are replaced by their halves. `None` if
+    /// the face has no realization or a cell is not live in `topo` (an overlay that does not
+    /// match this decomposition).
+    pub fn piece_face_cells(&self, pf: &PieceFace, topo: &dyn TopologyView) -> Option<Vec<EntityId>> {
+        let base: Vec<EntityId> = match pf {
+            PieceFace::Whole(f) => vec![*f],
+            PieceFace::Cut { cut, .. } => self.realized.get(cut)?.faces.clone(),
+            PieceFace::Part { .. } | PieceFace::CutPart { .. } => self.face_cells.get(pf)?.clone(),
+        };
+        let mut out = Vec::new();
+        let mut stack = base;
+        let mut guard = 0usize;
+        while let Some(x) = stack.pop() {
+            guard += 1;
+            if guard > 1 << 20 {
+                return None;
+            }
+            if topo.is_alive(x) {
+                out.push(x);
+            } else {
+                stack.extend_from_slice(self.split_cells.get(&x)?);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Some(out)
+    }
+
+    /// True if the split that produced `p`'s children was realized in an overlay.
+    pub fn is_realized(&self, p: PieceRef) -> bool {
+        self.splits.get(&p).is_some_and(|r| self.realized.contains_key(&r.cut))
     }
 
     /// Leaves of the cut tree below `p`. Iterative with a visited set, so a cyclic tree from
@@ -306,8 +406,22 @@ impl Decomposition {
                 }
             }
         }
-        // Cut ids are never reused: the serial must exceed every id in use.
-        let used = self.splits.values().map(|r| r.cut.0).chain(self.cells.values().flat_map(|p| p.faces.iter().filter_map(cut_key).map(|(c, _)| c.0))).max();
+        // Cut ids are never reused: the serial must exceed every id in use (split records, piece
+        // faces, sweep hints, realized cuts and recorded face cells).
+        let sweep_cuts = self.cells.values().flat_map(|p| match &p.shape {
+            PieceShape::Sweep { source, target } => source.iter().chain(target).filter_map(cut_key).map(|(c, _)| c.0).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+        let used = self
+            .splits
+            .values()
+            .map(|r| r.cut.0)
+            .chain(self.cells.values().flat_map(|p| p.faces.iter().filter_map(cut_key).map(|(c, _)| c.0)))
+            .chain(sweep_cuts)
+            .chain(self.realized.keys().map(|c| c.0))
+            .chain(self.face_cells.keys().filter_map(cut_key).map(|(c, _)| c.0))
+            .chain(self.composite_faces.values().flatten().filter_map(cut_key).map(|(c, _)| c.0))
+            .max();
         if let Some(m) = used
             && self.cut_serial <= m
         {
@@ -325,6 +439,33 @@ impl Decomposition {
                     },
                     PieceRef::Whole(_) => break,
                 }
+            }
+        }
+        for (cut, cells) in &self.realized {
+            if !self.splits.values().any(|r| r.cut == *cut) {
+                return bad(format!("realized cut {cut:?} has no split record"));
+            }
+            let ok = |id: &EntityId, want: &[EntityKind]| want.contains(&id.kind());
+            let faces = [EntityKind::TopoFace, EntityKind::PartitionFace];
+            let edges = [EntityKind::TopoEdge, EntityKind::PartitionEdge];
+            let verts = [EntityKind::TopoVertex, EntityKind::PartitionVertex];
+            if cells.faces.is_empty()
+                || !cells.faces.iter().all(|f| ok(f, &faces))
+                || !cells.edges.iter().all(|e| ok(e, &edges))
+                || !cells.vertices.iter().all(|v| ok(v, &verts))
+                || !cells.split_faces.iter().all(|(f, h)| ok(f, &faces) && h.iter().all(|x| ok(x, &faces)))
+                || !cells.split_edges.iter().all(|(e, v, h)| ok(e, &edges) && ok(v, &verts) && h.iter().all(|x| ok(x, &edges)))
+            {
+                return bad(format!("realized cut {cut:?} names cells of the wrong kind"));
+            }
+        }
+        for (pf, cells) in &self.face_cells {
+            let piece = match pf {
+                PieceFace::Part { piece, .. } | PieceFace::CutPart { piece, .. } => *piece,
+                _ => return bad(format!("face cells recorded for {pf:?}")),
+            };
+            if !self.cells.contains_key(&piece) || cells.is_empty() {
+                return bad(format!("face cells of {pf:?} name an unknown piece or no cell"));
             }
         }
         for c in &self.composites {
@@ -370,6 +511,8 @@ impl Decomposition {
         let mut by_face: BTreeMap<EntityId, SmallVec<[PieceRef; 2]>> = BTreeMap::new();
         for c in self.active_cells() {
             let faces: Vec<PieceFace> = match self.cells.get(&c) {
+                // The same faces `piece_faces` reports (internal faces excluded).
+                Some(_) if self.composite_faces.contains_key(&c) => self.composite_faces[&c].clone(),
                 Some(p) if !p.members.is_empty() => p
                     .members
                     .iter()
@@ -522,7 +665,10 @@ impl Model {
         if !wf.is_empty() {
             d.whole_faces.insert(id, wf);
         }
-        d.cells.insert(id, Piece { id, volume, faces: Vec::new(), shape: PieceShape::Any, members: pieces.to_vec() });
+        let row = Piece { id, volume, faces: Vec::new(), shape: PieceShape::Any, members: pieces.to_vec() };
+        let faces = d.member_faces(&row, t);
+        d.composite_faces.insert(id, faces);
+        d.cells.insert(id, row);
         d.composites.insert(id);
         d.consumed.extend(pieces.iter().copied());
         d.reindex();
@@ -536,6 +682,7 @@ impl Model {
             return Err(ModelError::Unknown(composite));
         }
         d.whole_faces.remove(&composite);
+        d.composite_faces.remove(&composite);
         if let Some(p) = d.cells.remove(&composite) {
             for m in p.members {
                 d.consumed.remove(&m);
@@ -556,6 +703,15 @@ impl Model {
     /// Restores and returns the parent with its **original** id; the children's ids are retired
     /// and never reused.
     pub fn unsplit(&mut self, piece: EntityId) -> Result<PieceRef> {
+        let d = &self.decomposition;
+        let parent = *d.parent.get(&piece).ok_or(ModelError::Unknown(piece))?;
+        if d.is_realized(parent) {
+            return Err(ModelError::Invalid("the split is realized in an overlay; use unsplit_realized".into()));
+        }
+        self.unsplit_inner(piece)
+    }
+
+    fn unsplit_inner(&mut self, piece: EntityId) -> Result<PieceRef> {
         let d = &mut self.decomposition;
         let parent = *d.parent.get(&piece).ok_or(ModelError::Unknown(piece))?;
         let rec = d.splits.get(&parent).ok_or(ModelError::Unknown(piece))?.clone();
@@ -574,8 +730,142 @@ impl Model {
         Ok(parent)
     }
 
+    /// Split `piece` by a plane **and realize the cut in `overlay`** (the decomposition overlay
+    /// over the host topology the model is defined on). The overlay volume of `piece` (the
+    /// volume itself for `Whole`, the piece id for a cell realized earlier) is cut by
+    /// `Overlay::partition_volume_by_plane` with the two new piece ids, the model faces and
+    /// parent cut faces are classified onto the two sides from the overlay result, the split is
+    /// recorded like [`Model::split_sides`], and the overlay cells are recorded ([`CutCells`],
+    /// the cells of every `Part` / `CutPart` face of the children, the partitioned faces).
+    /// Returns `[negative, positive]` (the negative side is opposite the plane normal).
+    ///
+    /// Atomic: on error neither the model nor the overlay changes. The piece's faces must all be
+    /// resolvable in the overlay ([`Decomposition::piece_face_cells`]), which holds for whole
+    /// volumes and for pieces made by earlier realized splits.
+    pub fn split_realized(&mut self, piece: PieceRef, plane: Plane, overlay: &mut Overlay) -> Result<[EntityId; 2]> {
+        let d = &self.decomposition;
+        if !d.is_active(piece) || matches!(piece, PieceRef::Cell(c) if d.composites.contains(&c)) {
+            return Err(ModelError::Invalid("only an active, non-composite piece can be split".into()));
+        }
+        let vol = match piece {
+            PieceRef::Whole(v) => v,
+            PieceRef::Cell(c) => c,
+        };
+        if !overlay.is_alive(vol) {
+            return Err(ModelError::Invalid(format!("piece {vol} is not a volume of the overlay (split it with split_realized from the start)")));
+        }
+        let host = overlay.host_arc();
+        let parent_faces = d.piece_faces(piece, host.as_ref());
+        let mut cells_of: Vec<(PieceFace, Vec<EntityId>)> = Vec::with_capacity(parent_faces.len());
+        for pf in &parent_faces {
+            let cells = d.piece_face_cells(pf, overlay).ok_or_else(|| ModelError::Invalid(format!("piece face {pf:?} has no cells in the overlay")))?;
+            cells_of.push((*pf, cells));
+        }
+        let mut ids = self.ids.clone();
+        let kids = [ids.alloc(EntityKind::PartitionCell)?, ids.alloc(EntityKind::PartitionCell)?];
+        let snapshot = overlay.clone();
+        let origin = Point3::new(0.0, 0.0, 0.0) + plane.normal * plane.offset;
+        let result = (|| -> Result<[EntityId; 2]> {
+            let pc = overlay.partition_volume_by_plane(vol, origin, plane.normal, kids).map_err(|e| ModelError::CutInvalid(e.to_string()))?;
+            let halves: BTreeMap<EntityId, [EntityId; 2]> = pc.split_faces.iter().map(|(f, _, h)| (*f, *h)).collect();
+            let (neg_faces, pos_faces) = (overlay.volume_faces(kids[0]).to_vec(), overlay.volume_faces(kids[1]).to_vec());
+            // Per parent piece face: its cells on the negative and on the positive side.
+            let mut sided: Vec<(PieceFace, Vec<EntityId>, Vec<EntityId>)> = Vec::with_capacity(cells_of.len());
+            for (pf, cells) in &cells_of {
+                let (mut n, mut p) = (Vec::new(), Vec::new());
+                for c in cells {
+                    if let Some(h) = halves.get(c) {
+                        n.push(h[0]);
+                        p.push(h[1]);
+                    } else if neg_faces.contains(c) {
+                        n.push(*c);
+                    } else if pos_faces.contains(c) {
+                        p.push(*c);
+                    } else {
+                        return Err(ModelError::Invalid(format!("cell {c} of {pf:?} is on neither side of the cut")));
+                    }
+                }
+                sided.push((*pf, n, p));
+            }
+            let side_list = |neg: bool| -> Vec<EntityId> { sided.iter().filter(|(_, n, p)| if neg { !n.is_empty() } else { !p.is_empty() }).filter_map(|(pf, _, _)| pf.base()).collect() };
+            let cut_list = |neg: bool| -> Vec<(CutId, Keep)> { sided.iter().filter(|(_, n, p)| if neg { !n.is_empty() } else { !p.is_empty() }).filter_map(|(pf, _, _)| cut_key(pf)).collect() };
+            let (neg, pos, neg_cuts, pos_cuts) = (side_list(true), side_list(false), cut_list(true), cut_list(false));
+            let got = self.split_sides(piece, CutGeometry::Plane(plane), &SplitSides { neg: &neg, pos: &pos, neg_cuts: &neg_cuts, pos_cuts: &pos_cuts }, host.as_ref())?;
+            if got != kids {
+                return Err(ModelError::Invalid("internal: piece ids differ from the overlay volumes".into()));
+            }
+            let d = &mut self.decomposition;
+            let cut = d.splits.get(&piece).map(|r| r.cut).ok_or_else(|| ModelError::Invalid("internal: split not recorded".into()))?;
+            d.realized.insert(cut, CutCells {
+                faces: vec![pc.face],
+                edges: pc.loop_edges.clone(),
+                vertices: pc.loop_vertices.clone(),
+                split_faces: pc.split_faces.iter().map(|(f, _, h)| (*f, *h)).collect(),
+                split_edges: pc.split_edges.clone(),
+            });
+            d.split_cells.extend(halves.iter().map(|(f, h)| (*f, *h)));
+            for (k, child) in kids.iter().enumerate() {
+                let faces = d.cells.get(child).map(|p| p.faces.clone()).unwrap_or_default();
+                for pf in faces {
+                    let key = match pf {
+                        PieceFace::Part { face, .. } => sided.iter().find(|(q, _, _)| q.base() == Some(face)),
+                        PieceFace::CutPart { cut, side, .. } => sided.iter().find(|(q, _, _)| cut_key(q) == Some((cut, side))),
+                        _ => continue,
+                    };
+                    let Some((_, n, p)) = key else { return Err(ModelError::Invalid(format!("internal: {pf:?} has no parent face"))) };
+                    let mut cells = if k == 0 { n.clone() } else { p.clone() };
+                    cells.sort();
+                    d.face_cells.insert(pf, cells);
+                }
+            }
+            Ok(kids)
+        })();
+        if result.is_err() {
+            *overlay = snapshot;
+        }
+        result
+    }
+
+    /// Undo a realized split (see [`Model::split_realized`]): removes the overlay operations of
+    /// the cut (the volume split, then the face and edge partitions, newest first), then undoes
+    /// the split like [`Model::unsplit`] and drops its recorded cells. Atomic: fails (changing
+    /// nothing) if a later overlay operation still uses one of the cut's cells.
+    pub fn unsplit_realized(&mut self, piece: EntityId, overlay: &mut Overlay) -> Result<PieceRef> {
+        let d = &self.decomposition;
+        let parent = *d.parent.get(&piece).ok_or(ModelError::Unknown(piece))?;
+        let rec = d.splits.get(&parent).ok_or(ModelError::Unknown(piece))?.clone();
+        let cells = d.realized.get(&rec.cut).cloned().ok_or_else(|| ModelError::Invalid("the split is not realized; use unsplit".into()))?;
+        for c in rec.children {
+            let r = PieceRef::Cell(c);
+            if d.splits.contains_key(&r) || d.consumed.contains(&r) {
+                return Err(ModelError::Invalid("both children must be unsplit leaves".into()));
+            }
+        }
+        let mut ov = overlay.clone();
+        let undo = |ov: &mut Overlay, id: EntityId| ov.remove(id).map_err(|e| ModelError::CutInvalid(e.to_string()));
+        for f in &cells.faces {
+            undo(&mut ov, *f)?;
+        }
+        for (_, h) in cells.split_faces.iter().rev() {
+            undo(&mut ov, h[0])?;
+        }
+        for (_, v, _) in cells.split_edges.iter().rev() {
+            undo(&mut ov, *v)?;
+        }
+        let out = self.unsplit_inner(piece)?;
+        let d = &mut self.decomposition;
+        d.realized.remove(&rec.cut);
+        for (f, _) in &cells.split_faces {
+            d.split_cells.remove(f);
+        }
+        d.face_cells.retain(|pf, _| !matches!(pf, PieceFace::Part { piece, .. } | PieceFace::CutPart { piece, .. } if rec.children.contains(piece)));
+        *overlay = ov;
+        Ok(out)
+    }
+
     /// Drop the whole decomposition. Colors and every other table are untouched; piece ids stay
-    /// retired.
+    /// retired. Recorded overlay cells are dropped too; clearing the overlay itself is the
+    /// caller's job (`Overlay::clear`).
     pub fn clear_decomposition(&mut self) {
         let serial = self.decomposition.cut_serial;
         self.decomposition = Decomposition { cut_serial: serial, ..Decomposition::default() };

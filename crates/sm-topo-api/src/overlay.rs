@@ -361,6 +361,11 @@ impl Overlay {
         self.host.as_ref()
     }
 
+    /// A shared handle to the host snapshot (usable while the overlay is borrowed mutably).
+    pub fn host_arc(&self) -> Arc<dyn TopologyView> {
+        self.host.clone()
+    }
+
     /// The host's content hash at construction (unchanged by any overlay operation).
     pub fn host_hash(&self) -> u64 {
         self.host_hash

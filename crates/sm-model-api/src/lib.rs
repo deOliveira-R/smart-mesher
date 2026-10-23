@@ -41,7 +41,7 @@ pub mod xf;
 
 pub use boundary::{BoundaryKind, BoundaryRow, Deck, DeckHit, DeckLookup, DeckSide, FaceBoundary, FaceKindView, FaceRole, InterfaceIntent};
 pub use color::{ColorRow, Domain, GroupRow};
-pub use decomposition::{CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
+pub use decomposition::{CutCells, CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
 pub use detect::{Candidate, CandidateKind, ColorInvariant, DetectionResult, Stage, Verification, detect_symmetry, verify_transform};
 pub use error::{ModelError, Result};
 pub use instancing::{ColorMap, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};

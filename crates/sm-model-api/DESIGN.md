@@ -101,6 +101,33 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
     the mesh classifier's key for the part of a face that straddles a cut; cut faces are local
     `CutId` handles (this layer mints no `PartitionFace` ids, which belong to the topology
     overlay). `composite` refuses mixed colors.
+13. **Realized splits (W0f, W0e decision 2).** `split_realized(piece, plane, &mut Overlay)` also
+    cuts the piece's overlay volume with `Overlay::partition_volume_by_plane`, passing the two
+    piece ids this layer mints (the overlay mints the cut face, its edges and vertices as
+    `PartitionFace/Edge/Vertex`; it never mints `PartitionCell`), classifies the parent's model
+    faces and cut faces onto the two sides from the overlay result, records the split like
+    `split_sides`, and records three persisted, deterministic tables: `realized: CutId ->
+    CutCells { faces, edges, vertices, split_faces, split_edges }`, `face_cells` (the overlay
+    cells of every `Part` / `CutPart` face of the children, at split time) and `split_cells`
+    (faces the cut partitioned -> `[negative, positive]` halves). `Decomposition::piece_face_cells
+    (pf, topo)` resolves any `PieceFace`: `Whole(f)` is `f`, `Cut` the cut face, `Part` /
+    `CutPart` the recorded cells, each expanded through `split_cells` until live in `topo` (so a
+    neighbour's `Whole` face that a later cut partitioned, or a sibling's `Cut` key whose face a
+    nested split partitioned, resolves to the halves). Atomic: on error neither the model nor the
+    overlay changes. `unsplit_realized(piece, &mut Overlay)` removes the cut's overlay operations
+    newest first and refuses while a later operation uses them; plain `unsplit` refuses a realized
+    split. `clear_decomposition` drops the tables (clearing the overlay is the caller's job).
+    Plane cuts only (`CutGeometry::Surface` / `Faces` stay unrealized); the overlay's plane-cut
+    limits apply (planar faces, one simple section loop).
+14. **Composite faces (W0d follow-up).** A composite's faces are captured when it is formed
+    (`composite_faces`, persisted) from its members' faces tagged with each member's volume: a cut
+    seen from both sides, and a model face held (whole or in part) by members of two different
+    volumes, are internal. `piece_faces` returns the captured list and `pieces_of_face` is indexed
+    from the same list, so the two agree (an interface face no longer lists the composite).
+    Limit: an interface held whole by one member and only in part by another (a whole volume
+    composited with one half of its split neighbour) is dropped entirely, although the part
+    facing the other half still bounds the composite; do not composite across a partially shared
+    interface.
 
 ## 3. Topology queries used (all from the `sm-topo-api` read trait)
 
@@ -166,8 +193,13 @@ compares hashes (API crates do not use rayon).
 - Two parallel mirrors cannot be declared as one symmetry (`GroupNotFinite`); the cell stays valid.
 - `Cargo.lock` is not touched (decisions.md Q3); the orchestrator regenerates it at merge.
 - `serde_json` is a **dev-dependency** only (round-trip tests); the shipped dependency set is
-  `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `smallvec`, `thiserror`. `indexmap`
-  is not needed.
+  `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `schemars` (feature, implies
+  `serde`; derives `JsonSchema` on `PieceRef`, `PieceFace`, `CutId`, `Keep`, the piece keys used
+  inside meshing intents and plans, W0e decision 3), `smallvec`, `thiserror`. `indexmap` is not
+  needed.
+- `check_integrity` (W0d follow-up) also counts the cut ids of `PieceShape::Sweep` hints, realized
+  cuts, recorded face cells and captured composite faces against `cut_serial`, and checks the
+  realized tables (kinds of the recorded cells, a split record per realized cut, existing pieces).
 - `sm-testkit` does not exist yet, so its property tests are not used.
 - Moments of faces touching a pole (sphere, cone apex) are `Unsupported` in the reference
   topology, so deck/interface geometry checks on such faces report `GeometryUnavailable` instead
@@ -176,8 +208,8 @@ compares hashes (API crates do not use rayon).
 ## 6. Open points
 
 - Mixed-material cells stay out (ir.md §7): volume coloring is an exact partition.
-- `EntityKind::PartitionFace` for cut faces would let `CutId` become a persistent id once the
-  decomposition layer and the overlay agree on one allocator.
+- Done in W0f for plane cuts: a realized `CutId` maps to persistent overlay ids
+  (`Decomposition::cut_cells`). Surface and face-set cuts are not realized yet.
 - Hex lattice symmetry (D6 of an assembly) is expressible with decks over a prototype but is not
   detected on lattices.
 - Slab/wedge cuts need a 1:1 pairing of cap faces; an M:N cap pairing needs a kernel that imprints
