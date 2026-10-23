@@ -139,12 +139,14 @@ fn at_mut<'v>(mut cur: &'v mut Value, path: &[Seg]) -> Option<&'v mut Value> {
 fn restore_refs(orig: &Value, subst: &Value, canon: &mut OpRecord) -> bool {
     let mut found = Vec::new();
     diffs(orig, subst, &mut Vec::new(), &mut found);
-    for (path, _, s) in &found {
-        if let Some(v) = at(&canon.params, path)
-            && v.as_str() != Some(s.as_str())
-        {
-            return false;
-        }
+    let matches = found
+        .iter()
+        .all(|(path, _, s)| at(&canon.params, path).is_none_or(|v| v.as_str() == Some(s.as_str())));
+    // After substitution every string is a literal: escape the `$`-prefixed ones so replay
+    // does not read them as references (this also covers the concrete-id fallback).
+    escape_literals(&mut canon.params);
+    if !matches {
+        return false;
     }
     for (path, o, _) in found {
         if let Some(v) = at_mut(&mut canon.params, &path) {
@@ -152,6 +154,20 @@ fn restore_refs(orig: &Value, subst: &Value, canon: &mut OpRecord) -> bool {
         }
     }
     true
+}
+
+/// Prepend `$` to every string that starts with `$` (the inverse of the `$$` unescape).
+fn escape_literals(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if s.starts_with('$') {
+                s.insert(0, '$');
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(escape_literals),
+        Value::Object(m) => m.values_mut().for_each(escape_literals),
+        _ => {}
+    }
 }
 
 fn reference(s: &str) -> Option<(usize, &str, usize)> {

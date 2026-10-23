@@ -56,6 +56,8 @@ as amended by `docs/design/w0/decisions.md`.
   survives. References in fields the op does not know are dropped with the field. If the
   canonical record no longer holds the substituted value at a reference path (a migration
   reshaped the params), that sub-op is stored with concrete ids instead, which replays exactly.
+  Strings in a stored sub-op are always escape-safe: a literal starting with `$` is stored as `$$...`,
+  including in the concrete-id fallback (escaping runs first, references are restored after).
   The raw client record is never stored, so typed and JSON clients produce the same node hash.
 - **Retire reactions**: `LayerType::references_any(&ids)` (default `true`) lets a layer say through
   `&self` that it holds none of the retired ids; such layers are neither copied-on-write nor listed

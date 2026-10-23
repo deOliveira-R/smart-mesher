@@ -2276,3 +2276,74 @@ fn engine_and_apply_ctx_are_send_and_sync() {
     both::<State>();
     both::<DerivedCache>();
 }
+
+/// v2 of a label op; v1 had `a` and `b` the other way round.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct LabelV2 {
+    a: EntityId,
+    b: EntityId,
+    label: String,
+}
+
+impl TypedOp for LabelV2 {
+    const NAME: &'static str = "test.label";
+    const VERSION: u32 = 2;
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let a = ctx.resolve(self.a)?;
+        ctx.resolve(self.b)?;
+        let layer = ctx.layer_mut::<ModelLayer>()?;
+        let mut br = layer
+            .bricks
+            .get(a)
+            .cloned()
+            .ok_or(OpError::Failed("no brick".into()))?;
+        br.name = self.label.clone();
+        layer.bricks.insert(a, br);
+        Ok(())
+    }
+}
+
+#[test]
+fn migrated_batch_sub_op_keeps_dollar_literals_escaped_and_replays() {
+    let mut r = registry();
+    r.register::<LabelV2>().unwrap();
+    r.register_migration("test.label", 1, |mut v| {
+        if let Some(m) = v.as_object_mut() {
+            let a = m.remove("a");
+            let b = m.remove("b");
+            m.insert("a".into(), b.unwrap_or_default());
+            m.insert("b".into(), a.unwrap_or_default());
+        }
+        Ok(v)
+    })
+    .unwrap();
+    let c = q();
+    let mk = || OpRecord::of(&brick(1.0)).unwrap();
+    let label = |lit: &str| {
+        OpRecord::new(
+            "test.label",
+            1,
+            serde_json::json!({"a": "$0.body", "b": "$1.body", "label": lit}),
+        )
+        .unwrap()
+    };
+    for lit in ["$$0.body", "$$$x", "$$"] {
+        let mut s = Session::new(engine_with(r.clone(), Services::new()));
+        let expect = &lit[1..];
+        let (h, d) = s
+            .apply(
+                &batch_of(vec![mk(), mk(), label(lit)]),
+                meta(""),
+                &c.control(),
+            )
+            .unwrap();
+        // v1 `a` ($0) became v2 `b`, so the label lands on op 1's brick.
+        let id = d.outputs["1.body"][0];
+        let layer = s.state().layer::<ModelLayer>().unwrap();
+        assert_eq!(layer.bricks.get(id).unwrap().name, expect);
+        let text = format!("{:?}", s.timeline().get(h).unwrap().body.op);
+        assert!(text.contains(&format!("\"{lit}\"")), "{text}");
+        let st = s.state_at_from_root(h, &c.control()).unwrap();
+        assert_eq!(st.hash(), s.state().hash());
+    }
+}
