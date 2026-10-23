@@ -143,6 +143,11 @@ fn circle_and_line_closest_points_off_the_curve() {
 
 #[test]
 fn ellipse_perimeter_closed_form() {
+    // Degenerate inputs are defined: a flat ellipse is a doubled segment.
+    assert_eq!(ellipse_perimeter(2.0, 0.0), 8.0);
+    assert_eq!(ellipse_perimeter(0.0, 3.0), 12.0);
+    assert_eq!(ellipse_perimeter(0.0, 0.0), 0.0);
+    assert!(ellipse_perimeter(-1.0, 1.0).is_nan() && ellipse_perimeter(1.0, f64::INFINITY).is_nan());
     assert!((ellipse_perimeter(1.0, 1.0) - TAU).abs() < 1e-14);
     assert!((ellipse_perimeter(3.0, 3.0) - 6.0 * PI).abs() < 1e-13);
     assert!((ellipse_perimeter(2.0, 1.0) - 9.688_448_220_547_672).abs() < 1e-12);

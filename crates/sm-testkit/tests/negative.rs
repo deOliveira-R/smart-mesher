@@ -86,6 +86,22 @@ fn hole_in_the_boundary_is_caught() {
 }
 
 #[test]
+fn tampered_face_kinds_follow_the_owned_columns() {
+    use sm_mesh_api::{FaceIx, FaceKind, MeshRead};
+    let m = block();
+    let bf = boundary_face(&m);
+    let t = Tampered::of(&m).set_face_right(bf, 7);
+    // The kind and the right cell agree, so every checker sees the same boundary.
+    assert_eq!(t.face_kind(FaceIx::new(bf)), FaceKind::Interior);
+    assert!(!t.is_boundary_face(FaceIx::new(bf)));
+    for f in 0..t.face_count() {
+        let fi = FaceIx::new(f);
+        assert_eq!(t.is_boundary_face(fi), t.face_right(fi).is_none(), "face {f}");
+    }
+    assert_eq!(t.dim(), m.dim());
+}
+
+#[test]
 fn missing_classification_is_caught() {
     let m = block();
     for (k, ix) in [(MeshEntityKind::Vertex, 3), (MeshEntityKind::Face, boundary_face(&m) as u32), (MeshEntityKind::Cell, 0)] {

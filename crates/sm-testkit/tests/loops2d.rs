@@ -79,6 +79,25 @@ fn interior_angles_sum_to_the_polygon_angle_sum() {
 }
 
 #[test]
+fn reversal_is_ambiguous_from_coordinates() {
+    // A slit: the tip at (2, 0) turns back on itself. Its interior angle is 0 or 2 pi from the
+    // sign of a zero, so the type is End or Reversal; the documented rule is that callers assign
+    // Reversal themselves.
+    let slit = [(0.0, 0.0), (2.0, 0.0), (0.0, 0.0 + 0.0), (0.0, -1.0)];
+    let a = interior_angles(&slit)[1];
+    assert!(a.abs() < 1e-12 || (a - core::f64::consts::TAU).abs() < 1e-12, "{a}");
+    assert!(matches!(vertex_types(&slit)[1], VertexType::End | VertexType::Reversal));
+    assert_eq!(VertexType::from_interior_angle(core::f64::consts::TAU), VertexType::Reversal);
+}
+
+#[test]
+fn empty_loops_are_ignored_by_contains() {
+    let mut r = l_shape();
+    r.holes.push(Vec::new());
+    assert!(r.contains((0.5, 1.5)));
+}
+
+#[test]
 fn point_in_region() {
     let r = rectangle_with_holes();
     assert!(r.contains((1.0, 1.0)));

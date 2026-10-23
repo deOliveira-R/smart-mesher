@@ -8,24 +8,25 @@ Principle: **reuse the contracts, add oracles.** Fixtures are the contract crate
 |---|---|
 | `geom` | `SurfaceExpect` (implemented for `Plane`, `Cylinder`, `Cone`, `Sphere`, `Torus`): exact normal, `K`, `H`, area of a parameter rectangle, closest point, sample parameters. `CurveExpect` (`Line`, `Circle`, `Ellipse`): tangent, curvature, arc length, closest point. `curvatures_from_jet`, `ellipse_perimeter` (AGM, machine precision), `surface_fixtures()` and `curve_fixtures()` (world and tilted frames). |
 | `loops2d` | `Region2` (outer loop CCW, holes CW, exact area, expected submap `VertexType`s): square, rectangle, rectangle with two holes, annulus, L-shape, circle, five-sided submap region. `vertex_types`, `interior_angles`, turning weights. |
-| `meshes` | `MeshFixture` (mesh, exact cell volumes). Single hex/tet/wedge/pyramid, truncated octahedron, hexagonal prism, cube with a split face, 2x2x2 hex block, hex+wedge+pyramid+tet transition, 7-cell honeycomb dual patch. `build_mesh` (points + `CellSpec`s, classified like a CAD solid) and `convex_loops`. |
+| `meshes` | `MeshFixture` (mesh, exact cell volumes, exact boundary area). Single hex/tet/wedge/pyramid, truncated octahedron, hexagonal prism, cube with a split face, 2x2x2 hex block, hex+wedge+pyramid+tet transition, 7-cell honeycomb dual patch. `build_mesh` (points + `CellSpec`s, classified like a CAD solid) and `convex_loops`. |
 | `topo` | `TopoFixture` (counts, Euler, volumes, area): cube, brick, cylinder, sphere, merged bricks, webcut cube. `ModelFixture`: `pin_lattice_stub` (3x3 lattice instance), `mirror_chamber` (webcut + mirror cut + deck face). `finish_boundaries`, `model_errors`. |
 | `check` | `mesh_valid`, `orientation_rule`, `closed_cells`, `positive_volumes`, `watertight`, `classification_complete`, `check_mesh_euler`, `conformity` (+ `Carriers`, `box_carriers`); `topo_valid`, `check_topo_euler`, `manifold_edges`, `model_valid`; `mesh_hash`, `topo_hash`. All return `Result<(), CheckError>` (check name plus a list of problems). |
 | `broken` | `Tampered` (editable copy of a `ReferenceMesh`; swap left/right, reverse a loop, move a vertex, drop a cell face, open the boundary, declassify) and broken topology/model fixtures (fin, baffle, two disjoint bricks, moved vertex, bad mirror deck). |
-| `determinism` | `check(runs, threads, f)`, `par_map`, `Fnv`, `hash_f64_bits`. |
-| `strategies` | `brick_spec`, `hex_block_spec`, `translation`, `rotation`, `reflection`, `proper_transform`, `any_transform`. |
+| `determinism` | `check(runs, threads, f)`, `check_f64_bits` (compares bit patterns), `par_map`, `Fnv`, `hash_f64_bits`. |
+| `strategies` | `config(cases)` (fixed seed `SEED`), `brick_spec`, `hex_block_spec`, `translation`, `rotation`, `reflection`, `proper_transform`, `any_transform`. |
 
 ## Conventions
 
 - **Curvature sign.** `H` is positive when the surface bends away from its normal `du x dv` (a sphere with outward normal has `H = 1/r`). Normals follow the `sm-geom-api` convention (outward for sphere, torus, cone; radial for cylinder).
 - **Discretized curves.** A circle or annulus with `n` points has the exact area of its *n-gon* (`ngon_area`), not `pi r^2`. Vertex types of such loops are not meaningful and `outer_types` is `None`.
-- **Vertex types** (Cubit nomenclature): interior angle about 90, 180, 270, 360 degrees = `End`, `Side`, `Corner`, `Reversal`. Right-angled outer loops have turning sum `+4` (weights `+1, 0, -1, -2`), hole loops `-4`.
+- **Vertex types** (Cubit nomenclature): interior angle about 90, 180, 270, 360 degrees = `End`, `Side`, `Corner`, `Reversal`. Right-angled outer loops have turning sum `+4` (weights `+1, 0, -1, -2`), hole loops `-4`. `Reversal` cannot be derived reliably from coordinates: at a slit tip the antiparallel segments give an interior angle of 0 or `2 pi` from the sign of a zero, so `vertex_types` may say `End`; callers assign `Reversal` themselves (W0f, documented and tested).
+- **Seeds.** Property tests use `strategies::config(cases)`, which pins the proptest RNG seed (`RngSeed::Fixed(SEED)`, failure persistence off), so every run explores the same cases (W0f; `ProptestConfig::with_cases` alone leaves it random). Downstream crates should use the same helper.
 - **Mesh classification.** `build_mesh` puts cells on `TopoVolume#1`, groups boundary faces by plane into `TopoFace#k`, vertices on one group on that face, on two groups on a `TopoEdge`, on three or more on their own `TopoVertex`, interior vertices on the volume. Ids come from a fresh `SerialAlloc` per fixture, so fixtures are reproducible bit for bit.
 - **Hash rule.** `topo_hash` is `TopologyView::canonical_hash` (quantized, cross-platform). `mesh_hash` mixes `connectivity_hash`, `topology_hash` and `geometry_hash`.
 
 ## Determinism harness
 
-`check(runs, threads, f)` with `f: Fn(usize) -> T` (the argument is the number of workers `f` may use): baseline `f(1)`; then `runs` times `f(1)` and `f(threads)`; then `threads` concurrent `f(1)` calls on std threads (catches hidden global state). A difference returns `DeterminismError::Mismatch` naming the run; a panic in a concurrent call returns `Panicked`. `par_map(threads, n, f)` runs `f(0..n)` on contiguous chunks and returns results in index order, so a reduction over its result is independent of scheduling. Crates that use rayon call `check` with a closure that builds a pool of `threads` workers (the equivalent of `RAYON_NUM_THREADS=1` against the default).
+`check(runs, threads, f)` with `f: Fn(usize) -> T` (the argument is the number of workers `f` may use): baseline `f(1)`; then `runs` times `f(1)` and `f(threads)`; then `threads` concurrent `f(1)` calls on std threads (catches hidden global state). A difference returns `DeterminismError::Mismatch` naming the run; a panic in a concurrent call returns `Panicked`. `check` compares with `PartialEq`, so floats compare by value (`-0.0 == 0.0` hides a bit difference, `NaN != NaN` is a false mismatch): return hashes (`hash_f64_bits`, `mesh_hash`, `topo_hash`) or use `check_f64_bits`, which compares bit patterns. `par_map(threads, n, f)` runs `f(0..n)` on contiguous chunks and returns results in index order, so a reduction over its result is independent of scheduling. Crates that use rayon call `check` with a closure that builds a pool of `threads` workers (the equivalent of `RAYON_NUM_THREADS=1` against the default).
 
 ## Negative tests
 
@@ -33,13 +34,14 @@ Principle: **reuse the contracts, add oracles.** Fixtures are the contract crate
 
 ## Tests (`cargo test -p sm-testkit`, about 1 s)
 
-`tests/geom.rs` (normals, curvature, area against quadrature, closest points against `project`, lengths, ellipse perimeter), `tests/loops2d.rs`, `tests/meshes.rs` (volumes, shapes, counts, every mesh checker on every fixture), `tests/topo.rs` (counts, Euler, volumes and areas, flatten counts, deck face, symmetry detection), `tests/negative.rs`, `tests/determinism.rs` (harness self-test and the fixture pipeline), `tests/strategies.rs` (proptest, 32 cases per property).
+`tests/geom.rs` (normals, curvature, area against quadrature, closest points against `project`, lengths, ellipse perimeter incl. degenerate axes), `tests/loops2d.rs` (incl. the reversal ambiguity and empty loops), `tests/meshes.rs` (volumes, boundary areas, shapes, counts, every mesh checker on every fixture), `tests/topo.rs` (counts, Euler, volumes and areas, flatten counts, deck face, symmetry detection), `tests/negative.rs` (incl. `Tampered` face kinds agreeing with its columns), `tests/determinism.rs` (harness self-test, the fixture pipeline as `determinism_fixture_pipeline`, bit-pattern comparison, published FNV-1a vectors), `tests/strategies.rs` (proptest, 32 cases per property, pinned seed).
 
 ## Limits and deviations
 
 - No ellipse closest point (a quartic root; `Ellipse::project` is `Unsupported` in the contract) and no closed-form partial ellipse arc length; only the full period has one.
 - The sphere's `face_moments`/`volume_moments` are errors in the reference complex (faces touch poles), so `sphere` carries closed-form expectations that the reference topology cannot confirm; the test asserts the error instead.
 - `manifold_edges` fails on the merged-bricks complex (three faces meet on the junction edges) by design: it checks a manifold *surface* complex, not a valid non-manifold B-rep.
-- `Tampered` leaves the reverse classification index stale (as a corrupted file would).
+- `Tampered` leaves the reverse classification index stale (as a corrupted file would). Its `face_kind` is derived from its own `face_right` column (W0f), so the boundary-based checkers agree after `set_face_right`.
+- `check::conformity` builds its problem labels lazily (no allocation per vertex on success). `Region2::contains` ignores empty loops; `ellipse_perimeter` defines degenerate axes (one zero: `4 max(a, b)`; negative or non-finite: NaN). Its AGM series loses accuracy as `b/a -> 0` (not used near there).
 - Fixtures that the task lists but the contracts cannot yet express: none missing. The mirror-cut chamber's deck face is the cap of `Model::apply_cut`; the 3x3 pin lattice is a stub (rectangular pins, no cylinders).
 - The task asked for "dual patch" and "prism split polyhedron": the dual patch is seven welded hexagonal prisms; "prism split polyhedron" is the cube with a split face plus a hexagonal prism.

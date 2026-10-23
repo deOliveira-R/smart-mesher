@@ -20,7 +20,7 @@ fn close(a: Point3, b: Point3) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(config(32))]
 
     #[test]
     fn bricks_are_valid_with_the_right_volume(spec in brick_spec()) {
@@ -91,4 +91,17 @@ proptest! {
         prop_assert!(!t.is_improper() && !r.is_improper());
         prop_assert!((r.det() - 1.0).abs() < 1e-9);
     }
+}
+
+#[test]
+fn the_seed_is_pinned_so_runs_see_the_same_cases() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    let draw = || {
+        let mut r = TestRunner::new(config(8));
+        (0..8).map(|_| brick_spec().new_tree(&mut r).unwrap().current()).collect::<Vec<_>>()
+    };
+    assert_eq!(draw(), draw());
+    assert!(matches!(config(5).rng_seed, proptest::test_runner::RngSeed::Fixed(SEED)));
+    assert_eq!(config(5).cases, 5);
 }
