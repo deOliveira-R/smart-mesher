@@ -21,3 +21,6 @@ sm-topo-api = { path = "../sm-topo-api" }
 serde = { version = "1", features = ["derive"], optional = true }
 smallvec = "1"
 thiserror = "2"
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }

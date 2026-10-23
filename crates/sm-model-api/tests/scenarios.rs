@@ -6,7 +6,7 @@ use common::*;
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_model_api::*;
 use sm_topo_api::fixtures::{self, with_op};
-use sm_topo_api::{CellComplex, OpId, Sense, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{CapFace, CellComplex, CutOutcome, OpId, Sense, TopologyEdit, TopologyView, TopologyViewExt};
 
 fn p3(x: f64, y: f64, z: f64) -> Point3 {
     Point3::new(x, y, z)
@@ -82,6 +82,9 @@ fn uncolored_boundary_face_is_a_warning_not_an_error() {
     assert_eq!(w[0].code, IssueCode::BoundaryFaceUncolored);
     assert_eq!(w[0].severity, Severity::Warning);
     assert_eq!(w[0].entities.as_slice(), &[b.faces[5]]);
+    // At export time, when the target format needs boundary colors, the same finding is an error.
+    let strict = r.clone().promote(&[IssueCode::BoundaryFaceUncolored]);
+    assert!(!strict.is_ok() && strict.errors().count() == 1);
     // Without any kind on a boundary face it is an error.
     let mut m2 = m.clone();
     m2.unassign(&[b.faces[5]]);
@@ -625,4 +628,28 @@ fn curved_periodic_disks_validate_by_integrated_moments() {
     let per2 = m2.add_boundary("axial", BoundaryKind::Deck(Deck::Translation { vector: Vector3::new(0.0, 0.0, 2.0) })).unwrap();
     m2.assign_pairs(per2, &[(c.faces[0], c.faces[1])]).unwrap();
     assert!(validate(&m2, &t, tol()).has(IssueCode::DeckGeometry));
+}
+
+#[test]
+fn imported_geometry_already_cut_needs_only_the_caps() {
+    // Nothing straddles the plane: the kernel returns no lineage, only the cap faces.
+    let mut t = CellComplex::new();
+    let b = brick_at(&mut t, 1, [0.0; 3], [1.0, 1.0, 1.0]);
+    let mut m = Model::new();
+    let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
+    m.color_volumes(mat, &[b.volume]).unwrap();
+    finish_boundaries(&mut m, &t, 7, true);
+    let cap_color = m.add_color(9, "reflect", Domain::Face).unwrap();
+    let surface = EntityId::new(sm_core::EntityKind::Surface, 0).unwrap();
+    let out = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[5], from_surface: surface }] };
+    // The +z face lies on z = 1; the face was already a response face, so tagging it fails cleanly.
+    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 1.0).unwrap() }, keep: Keep::Negative, origin: p3(0.0, 0.0, 1.0) }).unwrap();
+    let mut probe = m.clone();
+    assert_eq!(probe.apply_cut(&plan, &out, Some(cap_color), &t), Err(ModelError::Duplicate(b.faces[5])));
+    assert_eq!(probe, m);
+    m.unassign(&[b.faces[5]]);
+    let boundary = m.apply_cut(&plan, &out, Some(cap_color), &t).unwrap();
+    assert_eq!(m.face_boundary(b.faces[5]).unwrap().boundary, boundary);
+    assert_eq!(m.face_color(b.faces[5]), Some(cap_color));
+    assert!(validate(&m, &t, tol()).is_ok());
 }

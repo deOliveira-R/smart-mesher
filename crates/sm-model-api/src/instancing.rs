@@ -3,7 +3,7 @@
 //! copies, so ids are never reused).
 //!
 //! Instancing is a group action on a fundamental piece, like symmetry: [`Placement`] and
-//! [`crate::unfold`] share the same copy description.
+//! [`unfold`](mod@crate::unfold) share the same copy description.
 //!
 //! **Recolor order** (inner first, outer last): prototype color, then the inner slot, outer
 //! slot(s), the instance, and finally [`PathOverride`]s (deeper prefixes first). Within one

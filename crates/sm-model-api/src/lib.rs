@@ -11,10 +11,10 @@
 //! | [`boundary`] | decks, interface intents, per-face roles, the O(1) [`DeckLookup`] |
 //! | [`symmetry`] | declare, [`plan_cut`] / [`Model::apply_cut`], point-group closure |
 //! | [`detect`] | symmetry detection from colored invariants, staged verification |
-//! | [`unfold`] | the unfolded model as a view of `(base, elem)` copies |
+//! | [`unfold`](mod@crate::unfold) | the unfolded model as a view of `(base, elem)` copies |
 //! | [`instancing`] | prototypes, instances, lattices, recoloring, [`flatten`] |
 //! | [`decomposition`] | pieces (`PartitionCell`) over volumes, split / composite / unsplit |
-//! | [`validate`] | the validator ([`validate()`], [`validate_unfolded`]) |
+//! | [`validate`](mod@crate::validate) | the validator ([`validate()`](fn@crate::validate()), [`validate_unfolded`]) |
 //!
 //! Out of scope by design: material properties and response values (this layer colors; the
 //! consumer resolves colors), mixed-material cells, detection of translation symmetry (declared,

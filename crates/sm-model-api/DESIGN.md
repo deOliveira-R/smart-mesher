@@ -1,74 +1,154 @@
-# sm-model-api: candidate "tables"
+# sm-model-api: final design (frozen contract)
 
-Model-semantics and decomposition layers (docs/design/ir.md §5) as **typed attribute tables over topology**, in the style of Salome groups and Simmetrix attribute cases. A row exists for an entity or it does not. Group actions (symmetry and instancing) are transform lists.
+Model-semantics and decomposition layers of `docs/design/ir.md` §5, as **attribute tables over
+topology**. Base: the `tables` candidate, with grafts from `grouptheory`/`selections` and the
+must-fix list of `docs/design/w0/semantics-recommendation.md`, modified by the W0c decisions in
+`docs/design/w0/decisions.md`. The crate depends on `sm-core`, `sm-topo-api` (its
+`TopologyView` read trait, `Lineage`, `CutOutcome`, `CapFace`, `FaceMoments`, `Moments`,
+`coincident_faces`) and `sm-geom-api` (feature chain only); it never mutates topology.
 
-Scope reminder: the mesher only **colors** volumes and faces. No physics lives here.
+## 1. The model in one paragraph
 
-## 1. Model
+A `Model` is a set of private tables keyed by `EntityId`: colors (with numeric labels), volume and
+face colors, groups, boundary records, a face-keyed role table, one optional `Symmetry`, an
+append-only `Provenance` log, instancing tables and the decomposition tree. Topology is only read.
+Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut` /
+`Model::apply_lineage`, which re-key every table through the lineage transactionally.
 
-`Model` is a plain struct of `BTreeMap` tables keyed by `EntityId` (BTreeMap gives deterministic order). It never stores topology.
+| Module | Content |
+|---|---|
+| `color` | `ColorRow{id,label,name,domain}`, `Domain`, `GroupRow`; lookups by label and name; recursive group expansion |
+| `boundary` | `Deck{Mirror,Translation,Rotation}`, `InterfaceIntent`, `BoundaryKind`, `DeckSide`, `FaceRole`, `FaceKindView`, `DeckLookup` |
+| `symmetry` | `Symmetry`, `Provenance`, `CutSpec`/`plan_cut`/`apply_cut`, `point_group`, `declare_symmetry` |
+| `detect` | `detect_symmetry`, `verify_transform`, `Candidate`, `Verification{Unverified,Verified,Rejected{stage,..}}` |
+| `unfold` | `unfold`, `UnfoldedModel`, `CopyRef{base,elem}`, `Glue` (a view; mints nothing) |
+| `instancing` | `Prototype`, `Lattice`, `InstanceRow`, `ColorMap`, `PathOverride`, `flatten`, `FlatModel` |
+| `decomposition` | `PieceRef{Whole,Cell}`, `PieceFace{Whole,Part,Cut}`, `split`/`composite`/`unsplit` |
+| `validate` | `validate`, `validate_unfolded`, `Report`, `IssueCode` |
+| `xf` | `Tolerance`, `Plane`, `Axis`, `Turns`, `transform_moments`, `transform_face_moments`, internal cache and bins |
 
-| Table | Key -> row | Meaning |
-|---|---|---|
-| `colors` | `Color` -> name, domain (Volume or Boundary) | abstract labels |
-| `volume_color` | `TopoVolume` -> `Color` | exact partition (validator: total over the topology) |
-| `face_color` | `TopoFace` -> `Color` | boundary colors, sparse |
-| `groups` | `Group` -> name, kind (Block/Assembly/Set), sorted members | named sets; may nest |
-| `boundaries` | `Boundary` -> name, `BoundaryKind` | the record |
-| `face_boundary` | `TopoFace` -> (boundary, side A/B, mate) | the **only** source of membership and pairing |
-| `symmetry` | (single) generators, fundamental domain, origin | generators are `Boundary` ids |
-| `instancing.{prototypes,instances,lattices}` | `Instance` -> rows; `roots` | one id space |
-| `decomposition` | `PartitionCell` -> piece; `CutId` -> cut | optional |
+## 2. Decisions that shape the API
 
-Topology is reached only through `TopologyView` (section 5). Ids for new rows come from `IdAlloc` (per kind, serial from 1, never reused).
+1. **Deck kinds are per face.** Membership, side and mate live in one table keyed by face
+   (`FaceBoundary{boundary, role}`), so the two directions cannot disagree. A reflective unit cell
+   with mirrors at `x = 0` and `x = 1` validates. Only *declaring* a symmetry needs a finite point
+   group: `declare_symmetry` closes the point part (BFS, deduplicated through a quantized index
+   with neighbour-cell probing, `GROUP_TOL = 1e-9`) and returns `GroupNotFinite` for parallel
+   mirrors (they compose to a translation; declare a translation with a window instead).
+2. **Parameters are the source of truth.** `Deck` stores plane / vector / axis + `Turns{num,den}`
+   (exact rational angle, reduced, order = `den`); `Deck::transform()` derives the matrix.
+   Degenerate decks cannot enter a model (`Deck::check` in `add_boundary`), so `transform()` is
+   infallible by contract.
+3. **Sign rule `n_B = -g(n_A)`** (`IssueCode::DeckOrientation`): a translation pair whose volumes
+   would end up on the same side is rejected even when the geometry coincides. For a mirror
+   `g(n) = -n`, so the face is its own mate with the same outward normal.
+4. **Geometry checks use integrated moments** (`FaceMoments`: area, first, second, vector
+   area): independent of seam position, sensitive to shape (second moment), exact under rigid
+   transforms (`transform_face_moments`). A planar face is `nᵀSn = d²A` (`FaceMoments::plane`).
+   All comparisons scale with the model's length scale (cube root of total volume).
+5. **Cuts are two-phase.** `plan_cut(&CutSpec) -> CutPlan` (pure: half-spaces whose normals point
+   into the kept region, plus the deck role of each cap); the kernel executes it and returns a
+   `CutOutcome{lineage, caps}`; `apply_cut` verifies caps lie on planned planes (by moments), that
+   kept volumes lie in the half-spaces, re-keys, tags caps (mirror self-paired, slab/wedge A/B
+   paired by moments under the deck transform), applies `cap_color`, reuses an equal existing
+   generator, records `Provenance::Cut`. No second code path for pre-split geometry: the kernel
+   returns an empty lineage and only caps.
+6. **Lineage chains are resolved transitively** (`webcut` records `Split`, `kill_cascade` records
+   `Deleted` on the discarded child; the color must land on the live child). When a deck mate
+   splits, children are re-paired by matching face moments under the deck transform; the pairing
+   stays reciprocal by construction.
+7. **Unfold is a view.** `CopyRef{base, elem}` names a copy; element order is translation shifts
+   (first generator slowest) times the point group. Glue rule `A@e ~ B@(e∘g⁻¹)`, mirror
+   `a@e ~ a@(e∘g)`; faces whose partner is outside the window stay `exposed`. `kind_of` turns a
+   glued deck face into `Interior`; `sense` is `Reversed` exactly for improper copies (the loop of
+   each image face is reversed so the stored normal follows the right-hand rule again, then
+   left/right is re-derived from volume ids; sense is never mixed with that swap);
+   `origin_of` follows the recorded cut lineage to the pre-cut entity; `refold` returns the exact
+   `Symmetry`. The view owns its data (serde).
+8. **O(1) deck lookup for tracking.** `Model::deck_lookup(&t)` builds a dense table once;
+   `hit_by_ordinal(i)` is O(1) (`i` is the index in `cells(Dim::Face)`), `hit(face)` adds one
+   binary search. `DeckHit{mate, to_mate, improper}`; B faces carry the inverse transform.
+9. **Interfaces are two M:N face sets** with an optional transform. Facing = summed vector areas
+   opposed (after the transform); every face needs a counterpart (a recorded
+   `coincident_faces` pair, or overlapping bounds); a face recorded `Merged` with a face of the
+   interface, or an interface declared on a shared face, is rejected. Coincidence is read from
+   topology, never inferred from moments. Interior faces between different volume colors derive
+   `Interface(Conformal)` in `face_kind`; the validator only requires an explicit kind on boundary
+   faces. An uncolored boundary face is a **Warning**; `Report::promote` turns it into an error at
+   export time.
+10. **Detection** (`detect_symmetry`): per-color invariants (stage 0, necessary), then volumes
+    (stage 1) and faces with color, boundary record and side volumes (stage 2) through binned
+    matching, O(n log n). Directions come from the coordinate axes, principal axes, planar-face
+    normals, face-centroid offsets, same-color volume offsets and bisectors, and cross products of
+    axes with those, so degenerate inertia (hex, C4) is covered. Only the maximal cyclic order per
+    axis is reported, plus a greedy minimal generator set and the group order; `complete` is false
+    when an eigenspace was degenerate and no in-plane source existed. Candidates that pass stage 0
+    but fail later are reported with `Rejected{stage, residual, reason}`;
+    `Model::declare_detected` refuses unverified ones unless forced. Translation symmetry is
+    declared, not detected.
+11. **Instancing** shares `Placement{transform, orientation_reversed}` with unfold. Copies are
+    named by `InstancePath` (`Instance` then `Slot{lattice, ix}` steps); no ids are minted per
+    copy, so ids are never reused and removing a slot shifts nobody. Slots order by `(k, j, i)`;
+    `FlatModel.paths` are strictly increasing, so `find` is a binary search over a placement arena
+    (`entries` hold `u32` indices, not 240 B clones). Recolor order: prototype, inner slot, outer
+    slot, instance, then `PathOverride`s (deeper prefixes first, so outer wins); a per-entity key
+    beats a per-color key inside one `ColorMap`; domains are checked on insertion and by the
+    validator. Hex `rings = 5` is 61 slots.
+12. **Decomposition** is an implicit binary cut tree per volume: an undecomposed volume is
+    `PieceRef::Whole(volume)` (virtual, nothing minted). `split` mints two `PartitionCell` ids,
+    keeps the parent inactive, `unsplit` restores the parent with its original id; ids are never
+    reused. Pieces have no color field (read through the volume). `PieceFace::Part{face,piece}` is
+    the mesh classifier's key for the part of a face that straddles a cut; cut faces are local
+    `CutId` handles (this layer mints no `PartitionFace` ids, which belong to the topology
+    overlay). `composite` refuses mixed colors.
 
-## 2. Requirements and how each is met
+## 3. Topology queries used (all from the `sm-topo-api` read trait)
 
-**(1) Coloring.** `add_color(name, domain)`, `color_volume`, `color_face`. A volume color cannot label a face and vice versa (`ColorDomain` error). Groups (`add_group`) are named sets of volumes, faces, colors or other groups (cycle-checked). Colors carry no properties.
+`cells`, `volume_faces`, `face_edges`, `face_ordinal`, `face_moments`, `volume_moments`,
+`face_sides` / `face_class` (derived), `coincident_faces`, `boundary` (bodies), `dim_of`,
+`is_alive`, `tolerance`. Nothing else; no mutation.
 
-**(2) Boundary kind.** `BoundaryKind` = `Deck(Deck)` | `Response` | `Interface(InterfaceIntent)`.
-- `Deck::Mirror{plane}` is self-paired (faces on side A, no mate). `Deck::Translation{shift}` and `Deck::Rotation{axis, order}` are `A <-> B = T(A)` pairs. **Parameters are stored, the matrix is derived** (`Deck::transform()`), so kind and transform cannot disagree. A mirror's transform is the improper reflection fixing the plane.
-- `Response` is a tag only; the face color carries the label.
-- `Interface`: `Conformal` (shared face between colors) or `NonConformal{transform?}` (separate A/B face sets, explicit intent).
-- Mating is stored per face (`FaceBoundary.mate`), reciprocal by construction in `assign_pairs`; the validator re-checks.
+## 4. Determinism and ids
 
-**(3) Symmetry.** The model's topology **is** the fundamental domain F; the deck group G is generated by the deck boundaries. Declared: `declare_symmetry(generators, domain, origin)`. Detected: `detect::detect_symmetry` returns `DetectionResult` with per-color invariants (volume, barycentre, inertia tensor `J = tr(S)I - S` from exact moments) and `Candidate`s (mirror planes, rotation axes with order) each carrying `Verification::{Unverified, Verified{max_deviation}, Rejected{reason}}`. Stage 1 tests necessary conditions (every color's barycentre on the element, every inertia tensor invariant); stage 2 (`verify_transform`) applies the transform to the whole model and requires a bijection of volumes (color + moments), faces (outline, face color, boundary kind) and face-volume incidence with outward normals compared geometrically. `Candidate::chamber()` turns a candidate into a cut request.
-- **Cut and keep chamber** is split honestly across the boundary. The topology kernel executes the cut and reports a `CutOutcome` (lineage for every changed or dropped volume/face, plus cap faces with optional mates). `Model::cut_and_keep_chamber(spec, outcome)` then, transactionally: re-keys every table through the lineage (`apply_lineage`), creates the deck record, tags the caps (mirror faces, or pairs), colors them, and registers the generator and domain. Deck boundaries exist immediately. `ChamberCut` has `Mirror{plane, keep}`, `Periodic{plane_a, shift}`, `Wedge{axis, order, start}`.
-- **Unfold** (`Model::unfold(&UnfoldSpec)`) is a pure view: `UnfoldedModel{copies: Vec<Placed>, volumes, glued, exposed}`. Copy 0 is the identity. Finite generators (mirror, rotation) close under composition (`GroupAction::closure`); translations need explicit `repeats` and tile as `T^i g`. Gluing: copy k's A face meets copy `e_k s^-1`'s B face (mirror: same face); absent neighbors become `exposed`. Reversible by construction: nothing is mutated and `CopyRef.base` names the F entity. Improper copies set `improper`; `Sense::under(improper)` gives the flipped sense relative to the image loop (reverse the loop to restore the left/right rule). `validate_unfolded` checks glued faces coincide.
+`BTreeMap`/`BTreeSet`/sorted `Vec` everywhere; outputs in ascending id or documented canonical
+order; no randomness, no threads. Ids minted here (`Color`, `Group`, `Boundary`, `Prototype`,
+`Lattice`, `Instance`, `PartitionCell`) come from one per-kind allocator starting at serial 1 and
+never reused. `tests/determinism.rs` runs the whole pipeline twice and on four `std::thread`s and
+compares hashes (API crates do not use rayon).
 
-**(4) Instancing.** `Prototype{members: Volume | Instance}`, `InstanceRow{fill, transform, overrides}`, `Lattice{layout, slots: BTreeMap<SlotIndex, Slot>, outer}` with `Layout::Cartesian` and `Layout::Hex` (axial `[q, r, k]`, two row orientations). Fills are `Prototype | Lattice | Homogeneous(color)`, so lattices nest to any depth (cycle and depth checked). Slots are sparse (absent slots take `outer`), the index map is separate from fill records. Overrides: `ReplaceColor`, `SetVolume`, `SetAll`, applied inner to outer so the outer level wins. `Model::flatten()` is depth-first in table order, slots ascending; each `FlatEntry` carries a `Placed` with its `Path` (`Instance(id)`, `Slot{lattice, index}`), transform and `improper`; `FlatModel.ranges` maps path to entry range; `fingerprint()` is an FNV hash for determinism tests. **Shared machinery** with symmetry: `Placed`, `Path`, `compose`, `GroupAction`; `Layout::placements()` is the lattice's transform list.
+## 5. Deviations from the recommendation / decisions (honest list)
 
-**(5) Decomposition.** `Piece{volumes (>=1), faces: Original(face) | Cut(CutId), shape: Sweep{source,target} | Mappable | Free}` keyed by `PartitionCell`. A piece has **no color field**; `Model::piece_color` reads through its volumes, so coloring cannot change. `undo_decomposition` drops the tables and leaves everything else identical. Queries: `pieces_of_volume`, `pieces_of_face`, `volumes_of_piece`, `original_faces_of_piece`, `pieces_of_cut`. Composites are pieces with several volumes of one color.
+- Topology parameter is `&dyn TopologyView` rather than `&impl TopologyView` (the trait is
+  object-safe; `TopologyViewExt` works on `dyn`).
+- `apply_cut` returns the deck `EntityId` of the caps instead of `()`.
+- `plan_cut` is fallible (`Result`): a wedge must span less than half a turn and have a start
+  point off the axis. `CutPlan` has an extra `roles` field.
+- `CutId(u32)` is kept as the local handle for virtual cut faces (no `PartitionFace` minted here).
+  A cut face of a parent piece is inherited by both children of a further split.
+- `composite` takes no topology, so a composite's faces are read lazily
+  (`Decomposition::piece_faces`) and `pieces_of_face` indexes only decomposed (`Cell`) members;
+  `pieces_of_face_in(f, t)` adds `Whole` pieces.
+- Interface "bounding boxes overlap" is implemented as bounding **spheres** from the second
+  moments (r = 1.01 sqrt(3 tr(S_c)/A)), since moments do not give boxes.
+- Extra issue codes: `RotationOrder` (a deck rotation must be a primitive `1/n`), `GeometryUnavailable`
+  (warning: moments unsupported for a face, e.g. at a pole).
+- Two parallel mirrors cannot be declared as one symmetry (`GroupNotFinite`); the cell stays valid.
+- `Cargo.lock` is updated in this commit although decisions.md Q3 says the orchestrator owns it
+  (the task asked for it).
+- `serde_json` is a **dev-dependency** only (round-trip tests); the shipped dependency set is
+  `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `smallvec`, `thiserror`. `indexmap`
+  is not needed.
+- `sm-testkit` does not exist yet, so its property tests are not used.
+- Moments of faces touching a pole (sphere, cone apex) are `Unsupported` in the reference
+  topology, so deck/interface geometry checks on such faces report `GeometryUnavailable` instead
+  of a verdict.
 
-**(6) Validator** (`validate::validate`, `validate_unfolded`): returns a `Report` of `Issue{code, entity, message}`: volume partition (uncolored, dangling, wrong color domain), groups, every single-sided face has a kind, kinds on the wrong face class, deck mating reciprocity, deck geometry within tolerance (mirror faces on the plane; `T(A) = B` as point sets), deck mates agree in face color and adjacent volume color, symmetry record, instancing references/cycles/ranges, pieces (color-uniform, cover all volumes, faces bound the piece, cuts have exactly two sides, sweep source/target). It never mutates.
+## 6. Open points
 
-## 3. Key types
-
-`Model`, `ColorRow`, `GroupRow`, `BoundaryRow`, `BoundaryKind`, `Deck`, `FaceBoundary`, `Symmetry`, `ChamberSpec`/`ChamberCut`, `CutOutcome`, `Lineage`, `UnfoldedModel`, `DetectionResult`/`Candidate`, `Instancing`, `Layout`, `Lattice`, `FlatModel`, `Decomposition`/`Piece`, `Placed`/`PathStep`, `GroupAction`, `Report`.
-
-## 4. Tradeoffs
-
-- **Tables vs object graph.** Plain tables are trivially serializable (optional `serde` feature), diffable, and every cross-reference is an id the validator can check. The cost: invariants are not enforced by the type system; mutation methods cover kinds and domains, `validate` covers the rest. Fields are `pub` for table-style reads.
-- **Face-keyed membership.** One source of truth for "which record, which side, which mate". Listing the faces of a record is a scan (`O(faces)`), acceptable at model scale (hundreds to thousands), not mesh scale.
-- **Parameters, not matrices, for decks.** No drift, but the translation `repeats` and non-commuting translation/point-group combinations are special-cased in unfold (documented).
-- **Cut as data in, tables out.** The semantics layer never mutates topology, so it cannot half-apply a cut; the price is that the kernel must report lineage and caps (a binding requirement on the cut op, see below).
-- **Detection is moment-based.** Cheap and deterministic but misses planes/axes that are not principal-axis, coordinate-axis or per-color-eigenvector directions when tensors are degenerate; translation symmetry is declared, not detected. Verification is geometric (outline point sets, exact moments), not a full graph isomorphism; curved faces are compared by their corner vertices plus the volume moments.
-- **Verification is `O(n^2)`** in volumes and faces (greedy matching). Fine for model-level counts; needs a spatial index beyond ~10^4 faces.
-- **Unfold tolerance**: group elements are identified by entrywise transform comparison (`Tolerance`); long products accumulate rounding but stay far below 1e-9 for orders up to hundreds.
-- **Pieces own no faces in the topology**: cut faces are local `CutId`s. A later layer that needs mesh classification onto cut faces must key on `(PartitionCell, CutId)`.
-
-## 5. TopologyView: exactly what this layer needs (input to sm-topo-api)
-
-```rust
-fn volumes(&self) -> Vec<EntityId>;                               // ascending
-fn faces(&self) -> Vec<EntityId>;                                 // ascending
-fn face_sides(&self, face: EntityId) -> SmallVec<[FaceSide; 2]>;  // (volume, Sense::{Forward=outward, Reverse}); len 1 = boundary face
-fn face_outline(&self, face: EntityId) -> Vec<Point3>;            // outer-loop corner points
-fn volume_moments(&self, volume: EntityId) -> Option<Moments>;    // exact ∫1, ∫x, ∫xxᵀ
-```
-
-Nothing else: no vertices, edges, shells, adjacency by volume, or parametric access. Mutation is never requested. Topology **operations** must additionally report, for cut-and-keep: `CutOutcome { lineage: Vec<Lineage{old, new[]}>, caps: Vec<CapFace{face, mate}> }`, and for any id-changing op, `Lineage` records so `Model::apply_lineage` can re-key the tables.
-
-## 6. Tests (`tests/`)
-
-Two-material model with boundary colors and interface; mirror cut keep chamber then unfold back (improper copy, flipped senses, glued cap, coincidence check); translation pair (valid, wrong shift, bad mate, color mismatch, 3-tile strip with exposed ends); 1/6 rotation (6 copies, 6 seams, wrong order caught); two mirrors (Klein four group); hex lattice of pins with an override and a sparse hole (analytic slot positions, outer-wins override precedence); 2x2 of 3x3 nested lattice flatten with a mirrored root (counts, analytic position, fingerprint equal across runs, rebuilds and threads); cycle errors; decomposition of a box into two sweep pieces (queries, coloring identical before/during/after, undo); decomposition validator failures; detection (verified mirrors and 2/4-fold axes, orders 3/5/8 rejected by verification, color asymmetry removes a mirror, shifted plane rejected); a whole-pipeline determinism test. All run identically with `RAYON_NUM_THREADS=1` (no rayon is used; flatten/unfold/detect are sequential and order-fixed).
+- Mixed-material cells stay out (ir.md §7): volume coloring is an exact partition.
+- `EntityKind::PartitionFace` for cut faces would let `CutId` become a persistent id once the
+  decomposition layer and the overlay agree on one allocator.
+- Hex lattice symmetry (D6 of an assembly) is expressible with decks over a prototype but is not
+  detected on lattices.
+- Slab/wedge cuts need a 1:1 pairing of cap faces; an M:N cap pairing needs a kernel that imprints
+  the two caps identically.

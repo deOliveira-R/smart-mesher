@@ -156,6 +156,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-model-api"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "sm-topo-api"
 version = "0.0.0"
 dependencies = [

@@ -140,6 +140,18 @@ impl Report {
         self.issues.iter().filter(move |i| i.code == c)
     }
 
+    /// Promote the warnings with the given codes to errors, for export-time strictness (an
+    /// uncolored boundary is a warning in validation, and an error at export when the target
+    /// format needs boundary colors: `report.promote(&[IssueCode::BoundaryFaceUncolored])`).
+    pub fn promote(mut self, codes: &[IssueCode]) -> Report {
+        for i in &mut self.issues {
+            if codes.contains(&i.code) {
+                i.severity = Severity::Error;
+            }
+        }
+        self
+    }
+
     /// The errors.
     pub fn errors(&self) -> impl Iterator<Item = &Issue> {
         self.issues.iter().filter(|i| i.severity == Severity::Error)
