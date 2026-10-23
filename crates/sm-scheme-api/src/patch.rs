@@ -165,6 +165,11 @@ pub struct NodeGrid {
 }
 
 impl NodeGrid {
+    /// A grid of `ni x nj` keys, row-major.
+    pub fn new(ni: u32, nj: u32, nodes: Vec<NodeKey>) -> Self {
+        Self { ni, nj, nodes }
+    }
+
     /// Node `(i, j)`, or `None` if outside the grid.
     pub fn at(&self, i: u32, j: u32) -> Option<NodeKey> {
         if i >= self.ni || j >= self.nj {
