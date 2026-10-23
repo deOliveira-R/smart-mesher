@@ -945,3 +945,33 @@ fn typed_ids_and_kinds() {
     assert_eq!(t.dim_of(virt), None);
     assert_eq!(t.state(virt), None);
 }
+
+#[test]
+fn wires_embed_in_a_volume_and_unembed() {
+    let mut t = CellComplex::new();
+    let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
+    let wire = with_op(&mut t, OpId(2), |t| {
+        let p = Point3::new(0.25, 0.25, 0.25);
+        let q = Point3::new(0.75, 0.25, 0.25);
+        let (v0, v1) = (t.make_vertex(p)?, t.make_vertex(q)?);
+        let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(p, q - p).unwrap())).unwrap();
+        let e = t.make_edge(v0, v1, Some(CurveCarrier { curve, range: Interval::new(0.0, 0.5), sense: Sense::Forward }))?;
+        t.embed(b.volume, e)?;
+        Ok(e)
+    })
+    .unwrap();
+    assert_valid(&t);
+    assert_eq!(t.wire_edges(b.volume).collect::<Vec<_>>(), vec![wire]);
+    assert_eq!(t.volume_faces(b.volume).len(), 6, "wires are not faces");
+    assert_eq!(t.coboundary(wire).iter().map(|e| (e.cell, e.ring)).collect::<Vec<_>>(), vec![(b.volume, Incidence::EMBEDDED)]);
+    with_op(&mut t, OpId(3), |t| Ok(t.unembed(b.volume, wire)?)).unwrap();
+    assert_eq!(t.wire_edges(b.volume).count(), 0);
+    assert!(t.coboundary(wire).is_empty());
+    assert_valid(&t);
+    // A wire cannot be unembedded twice, and a body can hold wires too.
+    t.begin_op(OpId(4)).unwrap();
+    assert!(t.unembed(b.volume, wire).is_err());
+    t.embed(b.body, wire).unwrap();
+    t.end_op().unwrap();
+    assert!(t.wire_edges(b.body).any(|e| e == wire));
+}
