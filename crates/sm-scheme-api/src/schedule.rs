@@ -46,7 +46,19 @@ fn children(inp: &ScheduleInput<'_>, t: Target) -> Result<Vec<Target>> {
 
 /// Footprints (in job order) and waves.
 pub(crate) fn schedule(inp: &ScheduleInput<'_>) -> Result<(Vec<Footprint>, Vec<Vec<Job>>)> {
-    let claims: BTreeMap<Target, Target> = inp.problem.claims.iter().rev().map(|c| (c.item.child, c.item.by)).collect();
+    let mut first_claim: BTreeMap<Target, (Target, ConstraintId)> = BTreeMap::new();
+    for c in &inp.problem.claims {
+        match first_claim.get(&c.item.child) {
+            Some((by, id)) if *by != c.item.by => {
+                return Err(SchemeError::Schedule { jobs: vec![Job::Generate(*by), Job::Generate(c.item.by)], constraints: vec![*id, c.id], reason: format!("{:?} is written by two jobs", c.item.child) });
+            }
+            Some(_) => {}
+            None => {
+                first_claim.insert(c.item.child, (c.item.by, c.id));
+            }
+        }
+    }
+    let claims: BTreeMap<Target, Target> = first_claim.iter().map(|(c, (by, _))| (*c, *by)).collect();
     let mut claims_by: BTreeMap<Target, Vec<Target>> = BTreeMap::new();
     for (c, by) in &claims {
         claims_by.entry(*by).or_default().push(*c);
@@ -147,18 +159,12 @@ pub(crate) fn schedule(inp: &ScheduleInput<'_>) -> Result<(Vec<Footprint>, Vec<V
     while !remaining.is_empty() {
         let (ready, rest): (Vec<Job>, Vec<Job>) = remaining.iter().partition(|j| deps[*j].iter().all(|d| done.contains(d)));
         if ready.is_empty() {
-            let cids: Vec<ConstraintId> = inp
-                .problem
-                .copies
-                .iter()
-                .map(|c| c.id)
-                .chain(inp.problem.claims.iter().map(|c| c.id))
-                .chain(precedes.iter().map(|p| p.2))
-                .filter(|id| {
-                    let t = inp.problem.copies.iter().find(|c| c.id == *id).map(|c| (c.item.source, c.item.target)).or_else(|| inp.problem.claims.iter().find(|c| c.id == *id).map(|c| (c.item.child, c.item.by)));
-                    t.is_some_and(|(a, b)| remaining.contains(&Job::Generate(a)) || remaining.contains(&Job::Generate(b)))
-                })
-                .collect();
+            let involved = |t: Target| writer(t).is_some_and(|w| remaining.contains(&w));
+            let mut cids: Vec<ConstraintId> = Vec::new();
+            cids.extend(inp.problem.copies.iter().filter(|c| involved(c.item.source) && involved(c.item.target)).map(|c| c.id));
+            cids.extend(inp.problem.claims.iter().filter(|c| involved(c.item.child) && involved(c.item.by)).map(|c| c.id));
+            cids.extend(precedes.iter().filter(|p| involved(p.0) && involved(p.1)).map(|p| p.2));
+            cids.sort_unstable();
             return Err(SchemeError::Schedule { jobs: remaining, constraints: cids, reason: "dependency cycle".into() });
         }
         done.extend(ready.iter().copied());
