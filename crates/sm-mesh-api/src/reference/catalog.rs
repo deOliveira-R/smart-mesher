@@ -92,6 +92,11 @@ impl CatalogEdit for ReferenceCatalog {
                 view.id
             )));
         }
+        if view.id.kind() != EntityKind::Instance {
+            return Err(MeshError::Hierarchy(
+                "view id must be an Instance id".into(),
+            ));
+        }
         let mut ids: Vec<EntityId> = view.instances.iter().map(|i| i.id).collect();
         ids.sort_unstable();
         if ids.windows(2).any(|w| w[0] == w[1])

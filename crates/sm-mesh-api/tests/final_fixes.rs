@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 use sm_core::{EntityKind, Point3};
-use sm_mesh_api::reference::{ReferenceBuilder, hex_block};
+use sm_mesh_api::reference::{ReferenceBuilder, hex_block, hex_block_with_edges};
 use sm_mesh_api::*;
 
 fn state(a: &SerialAlloc) -> Vec<(EntityKind, u64)> {
@@ -308,4 +308,81 @@ mod serde_round_trips {
 #[cfg(feature = "serde")]
 fn hex_block_edges(alloc: &mut SerialAlloc) -> reference::ReferenceMesh {
     reference::hex_block_with_edges([1, 1, 1], [1.0; 3], alloc).unwrap()
+}
+
+#[test]
+fn serial_overflow_leaves_no_trace() {
+    let mut a = SerialAlloc::new();
+    let before = state(&a);
+    assert!(a.take(EntityKind::Group, usize::MAX).is_err());
+    assert_eq!(
+        state(&a),
+        before,
+        "failed take on a fresh kind adds no entry"
+    );
+}
+
+#[test]
+fn edge_derivation_uses_lowest_dimension_entity() {
+    let mut alloc = SerialAlloc::new();
+    let full = hex_block_with_edges([2, 2, 2], [1.0; 3], &mut alloc).unwrap();
+    let t = full.edges().unwrap();
+    // Only the model-edge classes; surface and interior edges must be derived.
+    let explicit: Vec<_> = t
+        .vertices
+        .iter()
+        .zip(&t.class)
+        .filter(|(_, c)| c.entity.kind() == EntityKind::TopoEdge)
+        .map(|(v, c)| (v[0], v[1], *c))
+        .collect();
+    assert!(!explicit.is_empty());
+    let mut m = hex_block([2, 2, 2], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    MeshEdit::ensure_edges(&mut m, &mut SerialAlloc::new(), &explicit).unwrap();
+    assert_eq!(m.edges().unwrap().class, t.class);
+    assert_valid(&m);
+}
+
+#[test]
+fn set_face_kind_drops_the_geometry_cache() {
+    let mut m = hex_block([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    let c = compute_geometry_cache(&m);
+    MeshEdit::set_geometry_cache(&mut m, Some(c)).unwrap();
+    MeshEdit::set_face_kind(&mut m, FaceIx(0), FaceKind::NonConformal).unwrap();
+    assert!(m.geometry_cache().is_none());
+    assert!(validate(&m).is_empty());
+}
+
+#[test]
+fn corners_that_do_not_realise_the_template_fail_at_finish() {
+    let mut b = ReferenceBuilder::new();
+    let vs: Vec<VertexIx> = template_points(CellShape::Hex)
+        .iter()
+        .map(|p| b.add_vertex(Point3::new(p[0], p[1], p[2])).unwrap())
+        .collect();
+    let mut swapped = vs.clone();
+    swapped.swap(0, 6);
+    let faces: Vec<Vec<VertexIx>> = CellShape::Hex
+        .local_faces()
+        .iter()
+        .map(|lf| lf.iter().map(|&i| vs[i as usize]).collect())
+        .collect();
+    let refs: Vec<&[VertexIx]> = faces.iter().map(Vec::as_slice).collect();
+    let added = b
+        .add_polyhedron_with_corners(&refs, Some(&swapped))
+        .unwrap();
+    for (i, &v) in vs.iter().enumerate() {
+        let c = on(EntityKind::TopoVertex, 1 + i as u64);
+        b.set_class(MeshEntityRef::Vertex(v), c).unwrap();
+    }
+    b.set_class(MeshEntityRef::Cell(added.cell), vol()).unwrap();
+    for (i, sf) in added.faces.iter().enumerate() {
+        let c = on(EntityKind::TopoFace, 1 + i as u64);
+        b.set_class(MeshEntityRef::Face(sf.face()), c).unwrap();
+    }
+    let r = b.finish(&mut SerialAlloc::new());
+    assert!(
+        matches!(r, Err(MeshError::ShapeMismatch(..))),
+        "{:?}",
+        r.err()
+    );
 }

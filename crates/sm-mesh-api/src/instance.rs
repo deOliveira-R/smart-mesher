@@ -86,6 +86,12 @@ pub struct FlattenOptions<'a> {
     /// cells agree; for vertices, the existing classification when equal to the incoming one,
     /// and the shared classification of all cells around it when it became interior; otherwise
     /// [`MeshError::ClassConflict`].
+    ///
+    /// Not consulted when both sides already agree: a welded vertex that stays on the boundary
+    /// of the union keeps its classification even if it names a vanished symmetry entity (a
+    /// `TopoEdge` where the symmetry face meets the top face, or the axis `TopoVertex` of a
+    /// quarter unfold). Fixing those is the caller's job, via `remap_class` or by reclassifying
+    /// afterwards; the default output carries such stale model references.
     pub on_merge: Option<MergeRule<'a>>,
 }
 

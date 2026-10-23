@@ -60,15 +60,14 @@ impl SerialAlloc {
     }
     /// Reserve `n` consecutive serials of `kind`; returns the first.
     pub fn take(&mut self, kind: EntityKind, n: usize) -> Result<u64> {
-        let slot = self.next.entry(kind).or_insert(0);
-        let first = *slot;
+        let first = self.next.get(&kind).copied().unwrap_or(0);
         let end = first
             .checked_add(n as u64)
             .ok_or(MeshError::SerialOverflow)?;
         if end > EntityId::MAX_SERIAL {
             return Err(MeshError::SerialOverflow);
         }
-        *slot = end;
+        self.next.insert(kind, end);
         Ok(first)
     }
     /// Reserve one id.
@@ -122,7 +121,7 @@ pub trait MeshBuild {
     fn face_count(&self) -> usize;
     /// Number of cells so far.
     fn cell_count(&self) -> usize;
-    /// Coordinates of vertex `v`.
+    /// Coordinates of vertex `v`. Panics if `v` is out of range.
     fn vertex_point(&self, v: VertexIx) -> Point3;
     /// Lowest-index vertex within `tol` of `p` (Chebyshev distance), for welding. `tol <= 0`
     /// means exact coordinate equality. Expected `O(1)` per query.
@@ -132,9 +131,9 @@ pub trait MeshBuild {
     fn add_face(&mut self, vertex_loop: &[VertexIx]) -> Result<FaceIx>;
     /// Find an existing face with the same vertex cycle, and whether it runs the same way.
     fn find_face(&self, vertex_loop: &[VertexIx]) -> Option<(FaceIx, LoopRelation)>;
-    /// Current loop of a face.
+    /// Current loop of a face. Panics if `f` is out of range.
     fn face_loop(&self, f: FaceIx) -> &[VertexIx];
-    /// Number of cells attached to a face so far.
+    /// Number of cells attached to a face so far. Panics if `f` is out of range.
     fn face_degree(&self, f: FaceIx) -> usize;
     /// Drop all faces with index `>= len`. They must have no cells (used to roll back
     /// `add_polyhedron`); fails otherwise.
@@ -145,8 +144,10 @@ pub trait MeshBuild {
     ///
     /// Two-phase: every check (face range, repeated faces, a side already taken, corners that
     /// do not fit) runs before anything is stored, so an error leaves the builder unchanged.
+    /// "Fit" means the right number of distinct, existing vertices. Whether the corners
+    /// realise the template's faces is checked by `finish` ([`MeshError::ShapeMismatch`]).
     fn add_cell(&mut self, faces: &[SignedFace], corners: Option<&[VertexIx]>) -> Result<CellIx>;
-    /// Signed faces of a (provisional) cell.
+    /// Signed faces of a (provisional) cell. Panics if `c` is out of range.
     fn cell_faces(&self, c: CellIx) -> &[SignedFace];
     /// The cell attached to `f` on the given side so far, if any.
     fn face_cell(&self, f: FaceIx, side: Side) -> Option<CellIx>;
@@ -298,7 +299,7 @@ fn add_poly<B: MeshBuild + ?Sized>(
 /// Edits check the rules local to one entity (the parameter fits, a `Boundary` face stays on a
 /// `TopoFace`, a cell stays on a volume, an edge tag needs an edge table). They do **not** check
 /// rules that relate entities, such as the vertex <= edge <= face dimension order, so a caller
-/// that edits classifications should run [`crate::validate`] afterwards.
+/// that edits classifications should run [`crate::validate()`] afterwards.
 ///
 /// Every edit that changes stored geometry
 /// (`set_point`, `add_extra_node`) or the connectivity-keyed cache inputs drops the geometry
@@ -321,6 +322,9 @@ pub trait MeshEdit: MeshRead {
         Ok(())
     }
     /// Change the kind of a one-cell face to `Boundary`, `NonConformal` or `PartitionCut`.
+    ///
+    /// Face kinds are part of the connectivity hash, so this drops the geometry cache and makes
+    /// every `LevelMap` built over the mesh stale.
     fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()>;
     /// Set or clear a cell's high-order record (count-checked; polyhedra rejected).
     fn set_high_order(&mut self, c: CellIx, h: Option<HighOrderCell>) -> Result<()>;

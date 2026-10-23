@@ -46,10 +46,12 @@ impl EdgeTable {
     /// Derive the table from any mesh; ids come from `alloc`.
     ///
     /// `explicit` gives classifications by (sorted) vertex pair. An edge without one takes the
-    /// classification its incident faces share, if they all share one (this classifies the edges
-    /// of a mesh whose boundary is a single model face, and every edge strictly inside a
-    /// volume). Otherwise, if no incident face is a boundary, non-conformal or partition-cut
-    /// face, it takes the volume or partition cell shared by all cells around it. An edge
+    /// classification of its incident faces: among their model entities it takes those of the
+    /// lowest dimension, and uses that entity if there is exactly one. So a surface edge inside
+    /// a model face lies on that face even though it also touches interior faces (volume), and
+    /// an edge strictly inside a volume lies on the volume. An edge on a model edge is
+    /// ambiguous (several model faces) and needs an explicit class. Failing that, if no incident face is a boundary, non-conformal or
+    /// partition-cut face, it takes the volume or partition cell shared by all cells around it. An edge
     /// that is still unclassified fails with [`MeshError::UnclassifiedEdge`] naming its vertices.
     /// Pairs in `explicit` that are not edges of the mesh are an error.
     ///
@@ -82,16 +84,15 @@ impl EdgeTable {
         let ne = t.vertices.len();
         let mut around: Vec<Vec<CellIx>> = vec![Vec::new(); ne];
         let mut all_interior = vec![true; ne];
-        // Entity shared by all incident faces; `None` once two faces disagree.
-        let mut face_common: Vec<Option<Option<EntityId>>> = vec![None; ne];
+        // Lowest-dimension model entity among the incident faces, and that entity if unique.
+        let mut face_low: Vec<Option<(u8, Option<EntityId>)>> = vec![None; ne];
         for f in 0..nf {
             let fi = FaceIx::new(f);
             let l = m.face_vertices(fi);
             let (left, right) = (m.face_left(fi), m.face_right(fi));
             let interior = m.face_kind(fi) == FaceKind::Interior;
-            let fc = m
-                .classification(crate::index::MeshEntityKind::Face, f as u32)
-                .entity;
+            let fcl = m.classification(crate::index::MeshEntityKind::Face, f as u32);
+            let (fc, fd) = (fcl.entity, fcl.dim().unwrap_or(u8::MAX));
             for i in 0..l.len() {
                 let (a, b) = (l[i], l[(i + 1) % l.len()]);
                 let e = map[&edge_key(a, b)] as usize;
@@ -102,10 +103,11 @@ impl EdgeTable {
                 all_interior[e] &= interior;
                 around[e].push(left);
                 around[e].extend(right);
-                face_common[e] = match face_common[e] {
-                    None => Some(Some(fc)),
-                    Some(Some(x)) if x == fc => Some(Some(x)),
-                    _ => Some(None),
+                face_low[e] = match face_low[e] {
+                    None => Some((fd, Some(fc))),
+                    Some((d, _)) if fd < d => Some((fd, Some(fc))),
+                    Some((d, Some(x))) if fd == d && x != fc => Some((d, None)),
+                    keep => keep,
                 };
             }
             t.face_off.push(t.face_edges.len() as u32);
@@ -115,7 +117,7 @@ impl EdgeTable {
             cells.dedup();
             let c = if let Some(c) = explicit.get(&t.vertices[e]) {
                 *c
-            } else if let Some(Some(ent)) = face_common[e] {
+            } else if let Some((_, Some(ent))) = face_low[e] {
                 Classification::on(ent)
             } else {
                 let mut it = cells

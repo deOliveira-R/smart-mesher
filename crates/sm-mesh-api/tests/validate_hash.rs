@@ -517,7 +517,6 @@ fn make(o: &Opts) -> ReferenceMesh {
         }
         cells.push(added.cell);
     }
-    // The shared face was classified on the first cell's creation; reclassify it on the volume.
     b.add_tag(
         "mat",
         MeshEntityKind::Cell,
@@ -684,6 +683,60 @@ fn content_hashes_cover_all_stored_data() {
         new_tag.1, h0.1,
         "a new real tag changes the topology hash through its name"
     );
+    // High-order cell records and their extra nodes.
+    let ho_rec = |m: &mut ReferenceMesh, swap: bool, shift: f64| {
+        let corners: Vec<VertexIx> = m.cell_corners(CellIx(0)).unwrap().to_vec();
+        let mut nodes: Vec<PointIx> = corners.iter().map(|&v| v.into()).collect();
+        for (k, [a, b]) in CellShape::Hex.local_edges().iter().enumerate() {
+            let (pa, pb) = (
+                m.point(corners[*a as usize].get()),
+                m.point(corners[*b as usize].get()),
+            );
+            let mid = Point3::new(
+                (pa.x + pb.x) / 2.0 + if k == 0 { shift } else { 0.0 },
+                (pa.y + pb.y) / 2.0,
+                (pa.z + pb.z) / 2.0,
+            );
+            nodes.push(MeshEdit::add_extra_node(m, mid).unwrap());
+        }
+        if swap {
+            nodes.swap(8, 9);
+        }
+        let rec = HighOrderCell {
+            degree: 2,
+            basis: Basis::Serendipity,
+            nodes,
+        };
+        MeshEdit::set_high_order(m, CellIx(0), Some(rec)).unwrap();
+    };
+    let ho = edit(&|m| ho_rec(m, false, 0.0));
+    assert_ne!(ho.1, h0.1, "a high-order record changes the topology hash");
+    let ho_swapped = edit(&|m| ho_rec(m, true, 0.0));
+    assert_ne!(ho_swapped.1, ho.1, "node indices are hashed");
+    let ho_moved = edit(&|m| ho_rec(m, false, 0.01));
+    assert_eq!(
+        ho_moved.1, ho.1,
+        "moving an extra node keeps the topology hash"
+    );
+    assert_ne!(
+        ho_moved.2, ho.2,
+        "moving an extra node changes the geometry hash"
+    );
+    // Degree/basis: the same cell as a clone with a Lagrange record (27 nodes).
+    let lag = edit(&|m| {
+        let corners: Vec<VertexIx> = m.cell_corners(CellIx(0)).unwrap().to_vec();
+        let mut nodes: Vec<PointIx> = corners.iter().map(|&v| v.into()).collect();
+        for _ in 8..27 {
+            nodes.push(MeshEdit::add_extra_node(m, Point3::new(0.5, 0.5, 0.5)).unwrap());
+        }
+        let rec = HighOrderCell {
+            degree: 2,
+            basis: Basis::LagrangeEquispaced,
+            nodes,
+        };
+        MeshEdit::set_high_order(m, CellIx(0), Some(rec)).unwrap();
+    });
+    assert_ne!(lag.1, ho.1, "basis/degree/node count are hashed");
     // Face kind.
     let fk = edit(&|m| {
         let f = (0..m.face_count())

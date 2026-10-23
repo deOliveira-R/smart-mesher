@@ -182,7 +182,6 @@ impl MeshRead for ReferenceMesh {
 
 impl ReferenceMesh {
     /// Assemble a mesh from finished columns (used by the builder).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(p: builder::Parts) -> Self {
         let mut m = ReferenceMesh {
             id: p.id,
@@ -390,6 +389,8 @@ impl MeshEdit for ReferenceMesh {
             ));
         }
         self.face_kind[f.get()] = kind;
+        // `face_kind` is part of the connectivity hash.
+        self.cache = None;
         Ok(())
     }
     fn set_high_order(&mut self, c: CellIx, h: Option<HighOrderCell>) -> Result<()> {

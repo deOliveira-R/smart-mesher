@@ -114,11 +114,11 @@ impl LevelMap {
     pub fn coarse_len(&self) -> usize {
         self.off.len() - 1
     }
-    /// Coarse parent of a fine cell.
+    /// Coarse parent of a fine cell. Panics if `fine` is out of range.
     pub fn coarse_of(&self, fine: CellIx) -> CellIx {
         self.coarse_of[fine.get()]
     }
-    /// Fine children of a coarse cell, ascending.
+    /// Fine children of a coarse cell, ascending. Panics if `coarse` is out of range.
     pub fn fines_of(&self, coarse: CellIx) -> &[CellIx] {
         &self.fines[self.off[coarse.get()] as usize..self.off[coarse.get() + 1] as usize]
     }

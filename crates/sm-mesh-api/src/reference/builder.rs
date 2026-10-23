@@ -605,7 +605,7 @@ impl ReferenceBuilder {
         }
         struct Fin {
             old: usize,
-            lp: Vec<VertexIx>,
+            lp: SmallVec<[VertexIx; 8]>,
             left: CellIx,
             right: u32,
             kind: FaceKind,
@@ -632,7 +632,7 @@ impl ReferenceBuilder {
                 }
                 (_, k) => k.copied().unwrap_or(FaceKind::Boundary),
             };
-            let mut lp = self.loop_of(f).to_vec();
+            let mut lp: SmallVec<[VertexIx; 8]> = self.loop_of(f).iter().copied().collect();
             let reversed = i[0].1 == Side::Right;
             if reversed {
                 lp.reverse();
@@ -743,6 +743,20 @@ impl ReferenceBuilder {
                             cix,
                             format!("{} corners do not match topology {shape:?}", ov.len()),
                         ));
+                    }
+                    // Every template face must be one of the cell's outward loops.
+                    for lf in shape.local_faces() {
+                        let want: SmallVec<[VertexIx; 4]> =
+                            lf.iter().map(|&i| ov[i as usize]).collect();
+                        if !loops
+                            .iter()
+                            .any(|l| loop_relation(&want, l) == Some(LoopRelation::Same))
+                        {
+                            return Err(MeshError::ShapeMismatch(
+                                cix,
+                                format!("corners do not realise the faces of a {shape:?}"),
+                            ));
+                        }
                     }
                     Some(ov.clone())
                 }
