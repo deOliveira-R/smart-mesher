@@ -2,9 +2,11 @@
 //!
 //! A similarity (rotation, translation, uniform scale, optionally a reflection) keeps every kind:
 //! frames are mapped and lengths scaled. A non-uniform map keeps lines, planes and NURBS (affine
-//! invariance: the control points are mapped); circles and ellipses become ellipses; cylinders,
-//! cones and spheres become their implicit quadric ([`SurfaceDef::Implicit`]); a torus has no
-//! exact representation here and returns [`GeomError::Unsupported`]. A singular map is
+//! invariance: the control points are mapped); circles and ellipses become ellipses; cylinders
+//! and elliptic cylinders become [`SurfaceDef::EllipticCylinder`], cones and elliptic cones
+//! [`SurfaceDef::EllipticCone`] (the same nappe, its `v = 0` section through the image of the old
+//! section centre); spheres become their implicit quadric ([`SurfaceDef::Implicit`]); a torus has
+//! no exact representation here and returns [`GeomError::Unsupported`]. A singular map is
 //! [`GeomError::Singular`].
 //!
 //! **Parametrization.** Curves keep their parameter where the kind allows: a line's parameter
@@ -22,7 +24,8 @@
 use crate::implicit::{ImplicitDef, ImplicitTorus};
 use crate::store::{CurveDef, SurfaceDef};
 use crate::util::unit;
-use crate::{Circle, Cone, Cylinder, Ellipse, Frame, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Sphere, Torus};
+use crate::elliptic::{cone_from_quadric, cylinder_from_section};
+use crate::{Circle, Cone, Cylinder, EllipticCone, EllipticCylinder, Ellipse, Frame, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Sphere, Torus};
 use sm_core::{Point3, Transform, Vector3};
 
 /// Whether a transformed surface's natural normal agrees with the image of the original normal.
@@ -78,7 +81,7 @@ fn frame_zx(fr: &Frame, t: &Transform, s: f64) -> Frame {
 
 /// The ellipse `o + cos t u + sin t w` written with principal axes: returns the frame, the
 /// semi-axes and the phase `t0` such that the new angle is `t - t0`.
-fn principal_ellipse(o: Point3, u: Vector3, w: Vector3) -> Result<(Frame, f64, f64, f64), GeomError> {
+pub(crate) fn principal_ellipse(o: Point3, u: Vector3, w: Vector3) -> Result<(Frame, f64, f64, f64), GeomError> {
     let t0 = 0.5 * (2.0 * u.dot(w)).atan2(u.dot(u) - w.dot(w));
     let (s0, c0) = t0.sin_cos();
     let a = u * c0 + w * s0;
@@ -144,9 +147,11 @@ impl CurveDef {
 
 impl SurfaceDef {
     /// Exact image under `t` and whether its natural normal is opposite to the image of the old
-    /// normal (see the module docs). Non-uniform maps of cylinders, cones and spheres give their
-    /// implicit quadric (a cone gives the double-nappe quadric, as [`Cone`]'s `implicit()`
-    /// does); a non-uniformly mapped torus is [`GeomError::Unsupported`].
+    /// normal (see the module docs). Non-uniform maps of (elliptic) cylinders give an
+    /// [`SurfaceDef::EllipticCylinder`], of (elliptic) cones an [`SurfaceDef::EllipticCone`] (same
+    /// nappe), of spheres their implicit quadric; a non-uniformly mapped torus is
+    /// [`GeomError::Unsupported`]. Surfaces of revolution and elliptic kinds keep their outward
+    /// normal (`Forward`).
     pub fn transformed(&self, t: &Transform) -> Result<(SurfaceDef, Sense), GeomError> {
         use crate::surface::ParametricSurface;
         let sim = similarity(t)?;
@@ -170,14 +175,36 @@ impl SurfaceDef {
             (SurfaceDef::Cone(c), Some((s, _))) => (SurfaceDef::Cone(Cone::new(frame_zx(&c.frame, t, s), c.radius * s, c.half_angle)?), Sense::Forward),
             (SurfaceDef::Sphere(c), Some((s, _))) => (SurfaceDef::Sphere(Sphere::new(frame_zx(&c.frame, t, s), c.radius * s)?), Sense::Forward),
             (SurfaceDef::Torus(c), Some((s, _))) => (SurfaceDef::Torus(Torus::new(frame_zx(&c.frame, t, s), c.major * s, c.minor * s)?), Sense::Forward),
-            (SurfaceDef::Cylinder(c), None) => quadric(c.implicit())?,
-            (SurfaceDef::Cone(c), None) => quadric(c.implicit())?,
+            (SurfaceDef::Cylinder(c), None) => {
+                let f = &c.frame;
+                (SurfaceDef::EllipticCylinder(cylinder_from_section(t.apply_point(f.origin), lin(t, f.x) * c.radius, lin(t, f.y) * c.radius, lin(t, f.z))?), Sense::Forward)
+            }
+            (SurfaceDef::EllipticCylinder(c), Some((s, _))) => (SurfaceDef::EllipticCylinder(EllipticCylinder::new(frame_zx(&c.frame, t, s), c.a * s, c.b * s)?), Sense::Forward),
+            (SurfaceDef::EllipticCylinder(c), None) => {
+                let f = &c.frame;
+                (SurfaceDef::EllipticCylinder(cylinder_from_section(t.apply_point(f.origin), lin(t, f.x) * c.a, lin(t, f.y) * c.b, lin(t, f.z))?), Sense::Forward)
+            }
+            (SurfaceDef::Cone(c), None) => {
+                // The v = 0 section centre, or one unit up the axis when it is the apex.
+                let up = if c.radius > 0.0 { 0.0 } else { 1.0 };
+                (SurfaceDef::EllipticCone(cone_image(c.implicit(), t, lin(t, c.frame.z), c.frame.origin + c.frame.z * up)?), Sense::Forward)
+            }
+            (SurfaceDef::EllipticCone(c), Some((s, _))) => (SurfaceDef::EllipticCone(EllipticCone::new(frame_zx(&c.frame, t, s), c.a * s, c.b * s, c.half_angle)?), Sense::Forward),
+            (SurfaceDef::EllipticCone(c), None) => (SurfaceDef::EllipticCone(cone_image(c.implicit(), t, lin(t, c.frame.z), c.frame.origin)?), Sense::Forward),
             (SurfaceDef::Sphere(c), None) => quadric(c.implicit())?,
             (SurfaceDef::Torus(_), None) => return Err(GeomError::Unsupported("non-uniformly scaled torus")),
             (SurfaceDef::Nurbs(n), _) => (SurfaceDef::Nurbs(n.transformed(t)?), flip),
             (SurfaceDef::Implicit(d), _) => (SurfaceDef::Implicit(d.transformed(t)?), Sense::Forward),
         })
     }
+}
+
+/// The right elliptic cone of the image of a cone's double-cone quadric: the nappe along
+/// `toward`, its `v = 0` section through the image of `section` (a point on the old axis).
+fn cone_image(q: Option<ImplicitDef>, t: &Transform, toward: Vector3, section: Point3) -> Result<EllipticCone, GeomError> {
+    let Some(ImplicitDef::Quadric(q)) = q else { return Err(GeomError::Unsupported("cone without a quadric")) };
+    let img = q.transformed(t).ok_or(GeomError::Singular("transform is singular"))?;
+    cone_from_quadric(&img, toward, t.apply_point(section))
 }
 
 impl ImplicitTorus {
@@ -329,6 +356,8 @@ mod tests {
             SurfaceDef::Sphere(x) => x,
             SurfaceDef::Torus(x) => x,
             SurfaceDef::Nurbs(x) => x,
+            SurfaceDef::EllipticCylinder(x) => x,
+            SurfaceDef::EllipticCone(x) => x,
             _ => return None,
         })
     }
@@ -348,6 +377,9 @@ mod tests {
             SurfaceDef::Cone(Cone::new(tilted(), 0.5, 0.4).unwrap()),
             SurfaceDef::Sphere(Sphere::new(tilted(), 2.0).unwrap()),
             SurfaceDef::Torus(Torus::new(tilted(), 3.0, 1.0).unwrap()),
+            SurfaceDef::Cone(Cone::new(tilted(), 0.0, 0.7).unwrap()),
+            SurfaceDef::EllipticCylinder(EllipticCylinder::new(tilted(), 2.0, 0.7).unwrap()),
+            SurfaceDef::EllipticCone(EllipticCone::new(tilted(), 1.2, 0.5, 0.4).unwrap()),
             SurfaceDef::Nurbs(NurbsSurface {
                 degree_u: 1,
                 degree_v: 1,
@@ -372,12 +404,17 @@ mod tests {
                 for uv in uvs {
                     let p = t.apply_point(src.eval(uv));
                     let n_img = cofactor_normal(&t, src.normal(uv).unwrap());
-                    let n_new = match psurf(&img) {
-                        Some(s) => {
-                            let pr = s.project(p, None).unwrap();
+                    let n_new = match psurf(&img).map(|s| (s, s.project(p, None))) {
+                        Some((s, Ok(pr))) => {
                             assert!(pr.distance < 1e-9, "{d:?} under {t:?}: off by {}", pr.distance);
                             s.normal(pr.uv).unwrap()
                         }
+                        Some((s, Err(GeomError::Unsupported(_)))) => {
+                            let q = s.implicit().unwrap();
+                            assert!(q.value(p).abs() < 1e-9 * q.gradient(p).norm().max(1.0), "{d:?} under {t:?}: residual {}", q.value(p));
+                            q.gradient(p)
+                        }
+                        Some((_, Err(e))) => panic!("{e:?}"),
                         None => {
                             let SurfaceDef::Implicit(id) = &img else { panic!() };
                             let v = id.value(p);
@@ -390,6 +427,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn non_uniform_cylinders_and_cones_become_elliptic_kinds() {
+        // Unit cylinder about z stretched by (2, 1, 0.5): elliptic, a = 2, b = 1 (in some order).
+        let cyl = SurfaceDef::Cylinder(Cylinder::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0).unwrap());
+        let (SurfaceDef::EllipticCylinder(e), Sense::Forward) = cyl.transformed(&stretch()).unwrap() else { panic!("elliptic cylinder expected") };
+        assert!((e.a.max(e.b) - 2.0).abs() < 1e-14 && (e.a.min(e.b) - 1.0).abs() < 1e-14);
+        assert!((e.frame.z.cross(Vector3::new(0.0, 0.0, 1.0))).norm() < 1e-14);
+        // A shear tilts the axis: the section is taken perpendicular to it.
+        let shear = Transform { m: [[1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: Vector3::default() };
+        let (SurfaceDef::EllipticCylinder(e), _) = cyl.transformed(&shear).unwrap() else { panic!() };
+        assert!((e.frame.z - Vector3::new(1.0, 0.0, 1.0) * core::f64::consts::FRAC_1_SQRT_2).norm() < 1e-14);
+        assert!((e.a.min(e.b) - core::f64::consts::FRAC_1_SQRT_2).abs() < 1e-14 && (e.a.max(e.b) - 1.0).abs() < 1e-14);
+        // A 45 degree cone stretched by 2 along x: section semi-axes (2, 1) per unit height, so
+        // the half-angles are atan 2 (x) and 45 degrees (y); the nappe is kept.
+        let cone = SurfaceDef::Cone(Cone::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 1.0, core::f64::consts::FRAC_PI_4).unwrap());
+        let sx = Transform { m: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: Vector3::default() };
+        let (SurfaceDef::EllipticCone(c), Sense::Forward) = cone.transformed(&sx).unwrap() else { panic!("elliptic cone expected") };
+        assert!((c.apex() - Point3::new(0.0, 0.0, -1.0)).norm() < 1e-12);
+        assert!(c.frame.z.z > 0.0, "same nappe");
+        let (ta, tb) = (c.half_angle.tan(), c.b * c.half_angle.tan() / c.a);
+        assert!((ta.max(tb) - 2.0).abs() < 1e-12 && (ta.min(tb) - 1.0).abs() < 1e-12, "{ta} {tb}");
+        // Similarities keep the elliptic kinds; the hash visits them.
+        let (SurfaceDef::EllipticCone(c2), _) = SurfaceDef::EllipticCone(c).transformed(&scaled(2.0)).unwrap() else { panic!() };
+        assert!((c2.a - 2.0 * c.a).abs() < 1e-12 && c2.half_angle == c.half_angle);
+        let mut n = 0;
+        SurfaceDef::EllipticCone(c).for_each_value(|_| n += 1);
+        assert_eq!(n, 1 + 12 + 3);
+        assert!(SurfaceDef::EllipticCylinder(e).validate().is_ok());
+        assert!(SurfaceDef::EllipticCylinder(EllipticCylinder { a: -1.0, ..e }).validate().is_err());
     }
 
     #[cfg(feature = "schemars")]

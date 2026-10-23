@@ -47,6 +47,11 @@ pub enum SurfaceDef {
     Nurbs(NurbsSurface),
     /// An implicit-only surface (general quadric, torus quartic). No parametrization.
     Implicit(ImplicitDef),
+    /// Elliptic cylinder (W0f gaps 2; also the image of a non-uniformly scaled cylinder).
+    EllipticCylinder(crate::EllipticCylinder),
+    /// One nappe of an elliptic cone (W0f gaps 2; the elliptic frustum primitive and the image
+    /// of a non-uniformly scaled cone).
+    EllipticCone(crate::EllipticCone),
 }
 
 /// One number of a shape definition, tagged with how it is quantized for hashing (see
@@ -252,6 +257,19 @@ impl SurfaceDef {
                 f(ShapeValue::Int(7));
                 d.for_each_value(f);
             }
+            Self::EllipticCylinder(c) => {
+                f(ShapeValue::Int(8));
+                frame_values(&c.frame, &mut f);
+                f(ShapeValue::Length(c.a));
+                f(ShapeValue::Length(c.b));
+            }
+            Self::EllipticCone(c) => {
+                f(ShapeValue::Int(9));
+                frame_values(&c.frame, &mut f);
+                f(ShapeValue::Length(c.a));
+                f(ShapeValue::Length(c.b));
+                f(ShapeValue::Angle(c.half_angle));
+            }
         }
     }
 
@@ -264,6 +282,8 @@ impl SurfaceDef {
             Self::Sphere(s) => s,
             Self::Torus(s) => s,
             Self::Nurbs(s) => s,
+            Self::EllipticCylinder(s) => s,
+            Self::EllipticCone(s) => s,
             Self::Implicit(_) => return None,
         })
     }
@@ -286,6 +306,8 @@ impl SurfaceDef {
             Self::Torus(t) if !(finite_pos(t.minor) && t.major > t.minor && t.major.is_finite()) => Err(GeomError::Invalid("torus must satisfy major > minor > 0")),
             Self::Nurbs(n) => n.validate(),
             Self::Implicit(ImplicitDef::Quadric(q)) if q.coeffs.iter().any(|c| !c.is_finite()) => Err(GeomError::Invalid("quadric coefficients")),
+            Self::EllipticCylinder(c) if !(finite_pos(c.a) && finite_pos(c.b)) => Err(GeomError::Invalid("elliptic cylinder semi-axes")),
+            Self::EllipticCone(c) if !(finite_pos(c.a) && finite_pos(c.b) && c.half_angle > 0.0 && c.half_angle < core::f64::consts::FRAC_PI_2) => Err(GeomError::Invalid("elliptic cone")),
             _ => Ok(()),
         }
     }
