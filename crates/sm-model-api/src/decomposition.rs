@@ -791,9 +791,8 @@ impl Model {
             let cut_list = |neg: bool| -> Vec<(CutId, Keep)> { sided.iter().filter(|(_, n, p)| if neg { !n.is_empty() } else { !p.is_empty() }).filter_map(|(pf, _, _)| cut_key(pf)).collect() };
             let (neg, pos, neg_cuts, pos_cuts) = (side_list(true), side_list(false), cut_list(true), cut_list(false));
             let got = self.split_sides(piece, CutGeometry::Plane(plane), &SplitSides { neg: &neg, pos: &pos, neg_cuts: &neg_cuts, pos_cuts: &pos_cuts }, host.as_ref())?;
-            if got != kids {
-                return Err(ModelError::Invalid("internal: piece ids differ from the overlay volumes".into()));
-            }
+            // Same allocator state as the clone above, so the ids are the overlay's volumes.
+            debug_assert_eq!(got, kids, "piece ids differ from the overlay volumes");
             let d = &mut self.decomposition;
             let cut = d.splits.get(&piece).map(|r| r.cut).ok_or_else(|| ModelError::Invalid("internal: split not recorded".into()))?;
             d.realized.insert(cut, CutCells {

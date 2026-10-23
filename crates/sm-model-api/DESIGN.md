@@ -109,8 +109,8 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
     `split_sides`, and records three persisted, deterministic tables: `realized: CutId ->
     CutCells { faces, edges, vertices, split_faces, split_edges }`, `face_cells` (the overlay
     cells of every `Part` / `CutPart` face of the children, at split time) and `split_cells`
-    (faces the cut partitioned -> `[negative, positive]` halves). `Decomposition::piece_face_cells
-    (pf, topo)` resolves any `PieceFace`: `Whole(f)` is `f`, `Cut` the cut face, `Part` /
+    (faces the cut partitioned -> `[negative, positive]` halves). `Decomposition::piece_face_cells(pf,
+    topo)` resolves any `PieceFace`: `Whole(f)` is `f`, `Cut` the cut face, `Part` /
     `CutPart` the recorded cells, each expanded through `split_cells` until live in `topo` (so a
     neighbour's `Whole` face that a later cut partitioned, or a sibling's `Cut` key whose face a
     nested split partitioned, resolves to the halves). Atomic: on error neither the model nor the
