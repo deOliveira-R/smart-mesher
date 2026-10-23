@@ -8,10 +8,10 @@
 //! - [`Sphere`] longitude `u`, latitude `v` in `[-pi/2, pi/2]`.
 //! - [`Torus`] `(R + r cos v)(cos u x + sin u y) + r sin v z`, requires `R > r > 0`.
 
-use crate::implicit::{ImplicitForm, Quadric, TorusImplicit};
+use crate::implicit::{ImplicitDef, Quadric, ImplicitTorus};
 use crate::util::{comb2, unit, wrap_tau};
 use crate::{
-    CurveJet, CurveProjection, Domain1, Domain2, Frame, GeomError, Interval, ParamAxis, ParametricCurve, ParametricSurface, Ray, RayHit, SignedSurface,
+    CurveJet, CurveProjection, Domain1, Domain2, Frame, GeomError, Interval, ParamAxis, ParametricCurve, ParametricSurface, Ray, RayHit, ImplicitSurface,
     Singularity, SurfaceJet, SurfaceProjection, Uv,
 };
 use core::f64::consts::{FRAC_PI_2, TAU};
@@ -165,8 +165,8 @@ impl ParametricSurface for Plane {
         let uv = Uv::new(l.x, l.y);
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: l.z.abs() })
     }
-    fn implicit(&self) -> Option<ImplicitForm> {
-        Some(ImplicitForm::Quadric(Quadric::plane(&self.frame)))
+    fn implicit(&self) -> Option<ImplicitDef> {
+        Some(ImplicitDef::Quadric(Quadric::plane(&self.frame)))
     }
 }
 
@@ -207,8 +207,8 @@ impl ParametricSurface for Cylinder {
         let uv = Uv::new(u, l.z);
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (rho - self.radius).abs() })
     }
-    fn implicit(&self) -> Option<ImplicitForm> {
-        Some(ImplicitForm::Quadric(Quadric::cylinder(&self.frame, self.radius)))
+    fn implicit(&self) -> Option<ImplicitDef> {
+        Some(ImplicitDef::Quadric(Quadric::cylinder(&self.frame, self.radius)))
     }
 }
 
@@ -285,13 +285,13 @@ impl ParametricSurface for Cone {
         let uv = Uv::new(u, va + along);
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (rho * c - h * s).abs() })
     }
-    fn implicit(&self) -> Option<ImplicitForm> {
+    fn implicit(&self) -> Option<ImplicitDef> {
         let apex_frame = Frame { origin: self.apex(), ..self.frame };
-        Some(ImplicitForm::Quadric(Quadric::cone(&apex_frame, self.half_angle)))
+        Some(ImplicitDef::Quadric(Quadric::cone(&apex_frame, self.half_angle)))
     }
     /// Intersect the double-cone quadric, keeping only the nappe `v >= apex_v`.
     fn ray_hits(&self, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
-        let Some(ImplicitForm::Quadric(q)) = self.implicit() else { return Err(GeomError::Unsupported("cone")) };
+        let Some(ImplicitDef::Quadric(q)) = self.implicit() else { return Err(GeomError::Unsupported("cone")) };
         let first = out.len();
         q.ray_hits(ray, range, out)?;
         let apex = self.apex();
@@ -303,6 +303,9 @@ impl ParametricSurface for Cone {
             }
         }
         out.truncate(keep);
+        for h in &mut out[first..] {
+            h.uv = self.project(h.point, None).ok().map(|p| p.uv);
+        }
         Ok(())
     }
 }
@@ -366,8 +369,8 @@ impl ParametricSurface for Sphere {
         let uv = Uv::new(u, (l.z / d).clamp(-1.0, 1.0).asin());
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (d - self.radius).abs() })
     }
-    fn implicit(&self) -> Option<ImplicitForm> {
-        Some(ImplicitForm::Quadric(Quadric::sphere(&self.frame, self.radius)))
+    fn implicit(&self) -> Option<ImplicitDef> {
+        Some(ImplicitDef::Quadric(Quadric::sphere(&self.frame, self.radius)))
     }
 }
 
@@ -426,8 +429,8 @@ impl ParametricSurface for Torus {
         let uv = Uv::new(u, v);
         Ok(SurfaceProjection { uv, point: self.eval(uv), distance: (wr.hypot(wz) - self.minor).abs() })
     }
-    fn implicit(&self) -> Option<ImplicitForm> {
-        Some(ImplicitForm::Torus(TorusImplicit { frame: self.frame, major: self.major, minor: self.minor }))
+    fn implicit(&self) -> Option<ImplicitDef> {
+        Some(ImplicitDef::Torus(ImplicitTorus { frame: self.frame, major: self.major, minor: self.minor }))
     }
 }
 

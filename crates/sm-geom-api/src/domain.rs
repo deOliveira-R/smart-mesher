@@ -119,6 +119,7 @@ pub enum ParamAxis {
 /// The first partial derivative across it vanishes, so the normal cannot be derived from
 /// `du x dv` there; implementors return the exact limit normal instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Singularity {
     /// The held-constant parameter.
     pub along: ParamAxis,
@@ -130,6 +131,7 @@ pub struct Singularity {
 
 /// Domain of a surface: two [`Domain1`] plus the singular iso-lines.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Domain2 {
     /// Domain of `u`.
     pub u: Domain1,

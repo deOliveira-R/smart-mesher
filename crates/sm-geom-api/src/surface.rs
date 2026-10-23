@@ -1,6 +1,6 @@
 //! The [`ParametricSurface`] trait.
 
-use crate::{Domain2, GeomError, ImplicitForm, Interval, Ray, RayHit, SignedSurface, Uv, util};
+use crate::{Domain2, GeomError, ImplicitDef, Interval, Ray, RayHit, ImplicitSurface, Uv, util};
 use sm_core::{Point3, Vector3};
 
 /// Position and partial derivatives up to second order at one `(u, v)`.
@@ -69,7 +69,7 @@ pub trait ParametricSurface: Send + Sync + core::fmt::Debug {
 
     /// Implicit (signed) form if the surface is a quadric or torus. It is the "positive side =
     /// side the normal points to" function. Used for CSG half-spaces and the default ray hook.
-    fn implicit(&self) -> Option<ImplicitForm> {
+    fn implicit(&self) -> Option<ImplicitDef> {
         None
     }
 
@@ -78,9 +78,12 @@ pub trait ParametricSurface: Send + Sync + core::fmt::Debug {
     /// The default intersects the [`Self::implicit`] form; implementors without one return
     /// [`GeomError::Unsupported`] and the tracker falls back to facets.
     fn ray_hits(&self, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
-        match self.implicit() {
-            Some(f) => f.ray_hits(ray, range, out),
-            None => Err(GeomError::Unsupported("ray_hits")),
+        let Some(f) = self.implicit() else { return Err(GeomError::Unsupported("ray_hits")) };
+        let first = out.len();
+        f.ray_hits(ray, range, out)?;
+        for h in &mut out[first..] {
+            h.uv = self.project(h.point, None).ok().map(|p| p.uv);
         }
+        Ok(())
     }
 }

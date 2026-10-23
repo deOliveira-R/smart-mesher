@@ -1,29 +1,59 @@
-//! Tolerance policy.
+//! Tolerance policy and the cross-platform hash quantization rule.
 
 use sm_core::Point3;
 
-/// The tolerance policy of a model.
+/// The tolerance policy of a model: one global value set plus (in topology) sparse per-entity
+/// linear overrides.
 ///
-/// Topology stores one global [`Tolerance`] plus sparse per-entity linear overrides
-/// (see `sm-topo-api`). All geometric "is it the same?" decisions use these numbers, never
-/// ad-hoc epsilons.
+/// All geometric "is it the same?" decisions use these numbers, never ad-hoc epsilons.
+///
+/// # Hash quantization rule (binding, cross-platform)
+/// Content hashes (`sm-topo-api` `canonical_hash`, the mesh `geometry_hash`) never hash raw float
+/// bits. A length-valued float `x` is replaced by the integer `round(x / q)` with
+/// `q = linear * 2^-10` ([`Self::quantum`]); a parameter-valued float (curve parameters, pcurve
+/// coordinates) uses `q = parametric * 2^-10` ([`Self::param_quantum`]). Rounding is
+/// round-half-away-from-zero, `-0` and `+0` agree, NaN maps to `i64::MIN` and infinities
+/// saturate ([`Self::quantize`]). Two values within a small fraction of a step hash equal unless
+/// they straddle a rounding boundary; platform noise (a few ulp) is far below one step for any
+/// sane model, so the residual risk is a value that sits within noise of a half-step boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Tolerance {
+pub struct ModelTolerance {
     /// Model resolution: two points closer than this are the same point (model length units).
     pub linear: f64,
     /// Two unit directions closer than this angle (radians) are parallel.
     pub angular: f64,
     /// Resolution in parameter space for periodic wrap and seam matching.
     pub parametric: f64,
+    /// Hard cap on any per-entity tolerance (and on the sum used by a coincidence test).
+    pub linear_max: f64,
 }
 
-impl Tolerance {
-    /// Default policy: 1e-6 length, 1e-9 rad, 1e-9 parameter.
-    pub const DEFAULT: Self = Self { linear: 1e-6, angular: 1e-9, parametric: 1e-9 };
+/// `2^-10`, the hash quantization fraction.
+const QUANT_FRACTION: f64 = 1.0 / 1024.0;
 
-    /// True if the two points coincide within [`Self::linear`].
-    pub fn coincident(&self, a: Point3, b: Point3) -> bool {
+impl ModelTolerance {
+    /// Default policy: 1e-6 length, 1e-9 rad, 1e-9 parameter, cap 1e-3 (a unit-size model).
+    pub const DEFAULT: Self = Self { linear: 1e-6, angular: 1e-9, parametric: 1e-9, linear_max: 1e-3 };
+
+    /// Policy scaled to a model of characteristic size `extent`: `linear = 1e-6 extent`,
+    /// `linear_max = 1e-3 extent`. A non-positive or non-finite `extent` gives [`Self::DEFAULT`].
+    pub fn for_extent(extent: f64) -> Self {
+        if !(extent.is_finite() && extent > 0.0) {
+            return Self::DEFAULT;
+        }
+        Self { linear: extent * 1e-6, angular: 1e-9, parametric: 1e-9, linear_max: extent * 1e-3 }
+    }
+
+    /// Coincidence test for two entities with tolerances `ta`, `tb` at distance `d`:
+    /// `d <= ta + tb` and `ta + tb <= linear_max`.
+    pub fn coincident(&self, d: f64, ta: f64, tb: f64) -> bool {
+        let sum = ta + tb;
+        d <= sum && sum <= self.linear_max
+    }
+
+    /// True if the two points coincide within [`Self::linear`] (global tolerance only).
+    pub fn points_coincide(&self, a: Point3, b: Point3) -> bool {
         (a - b).norm() <= self.linear
     }
 
@@ -32,18 +62,48 @@ impl Tolerance {
         len.abs() <= self.linear
     }
 
-    /// True if all components are finite and strictly positive.
+    /// True if all components are finite and strictly positive and `linear <= linear_max`.
     pub fn is_valid(&self) -> bool {
-        [self.linear, self.angular, self.parametric].iter().all(|v| v.is_finite() && *v > 0.0)
+        [self.linear, self.angular, self.parametric, self.linear_max].iter().all(|v| v.is_finite() && *v > 0.0) && self.linear <= self.linear_max
     }
 
-    /// A copy with the linear tolerance replaced (used for per-entity overrides).
+    /// Hash step for length-valued floats: `linear * 2^-10`.
+    pub fn quantum(&self) -> f64 {
+        self.linear * QUANT_FRACTION
+    }
+
+    /// Hash step for parameter-valued floats: `parametric * 2^-10`.
+    pub fn param_quantum(&self) -> f64 {
+        self.parametric * QUANT_FRACTION
+    }
+
+    /// Quantize `x` with step `q` (see the type-level rule).
+    pub fn quantize_with(x: f64, q: f64) -> i64 {
+        if x.is_nan() || q.is_nan() || q <= 0.0 {
+            return i64::MIN;
+        }
+        // `as` saturates for out-of-range and infinite values.
+        let r = (x / q).round();
+        if r == 0.0 { 0 } else { r as i64 }
+    }
+
+    /// Quantize a length-valued float.
+    pub fn quantize(&self, x: f64) -> i64 {
+        Self::quantize_with(x, self.quantum())
+    }
+
+    /// Quantize a parameter-valued float.
+    pub fn quantize_param(&self, x: f64) -> i64 {
+        Self::quantize_with(x, self.param_quantum())
+    }
+
+    /// A copy with the linear tolerance replaced.
     pub fn with_linear(self, linear: f64) -> Self {
         Self { linear, ..self }
     }
 }
 
-impl Default for Tolerance {
+impl Default for ModelTolerance {
     fn default() -> Self {
         Self::DEFAULT
     }
@@ -54,10 +114,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coincidence() {
-        let t = Tolerance::default();
+    fn coincidence_and_validity() {
+        let t = ModelTolerance::default();
         assert!(t.is_valid());
-        assert!(t.coincident(Point3::new(0.0, 0.0, 0.0), Point3::new(1e-7, 0.0, 0.0)));
-        assert!(!t.coincident(Point3::new(0.0, 0.0, 0.0), Point3::new(1e-5, 0.0, 0.0)));
+        assert!(t.points_coincide(Point3::new(0.0, 0.0, 0.0), Point3::new(1e-7, 0.0, 0.0)));
+        assert!(!t.points_coincide(Point3::new(0.0, 0.0, 0.0), Point3::new(1e-5, 0.0, 0.0)));
+        assert!(t.coincident(1.5e-6, 1e-6, 1e-6));
+        assert!(!t.coincident(3e-6, 1e-6, 1e-6));
+        assert!(!t.coincident(1e-6, 1e-3, 1e-3), "sum above linear_max is never coincident");
+        assert_eq!(ModelTolerance::for_extent(1.0), ModelTolerance::DEFAULT);
+        assert_eq!(ModelTolerance::for_extent(-3.0), ModelTolerance::DEFAULT);
+    }
+
+    #[test]
+    fn quantization_rule() {
+        let t = ModelTolerance::DEFAULT;
+        let q = t.quantum();
+        assert_eq!(q, 1e-6 / 1024.0);
+        assert_eq!(t.quantize(0.0), 0);
+        assert_eq!(t.quantize(-0.0), 0);
+        assert_eq!(t.quantize(0.4 * q), 0);
+        assert_eq!(t.quantize(0.6 * q), 1);
+        assert_eq!(t.quantize(-0.6 * q), -1);
+        assert_eq!(t.quantize(1.0), (1.0 / q).round() as i64);
+        assert_eq!(t.quantize(f64::NAN), i64::MIN);
+        assert_eq!(t.quantize(f64::INFINITY), i64::MAX);
+        assert_eq!(t.quantize(f64::NEG_INFINITY), i64::MIN);
+        assert_eq!(t.quantize_param(1.0), (1.0f64 / (1e-9 / 1024.0)).round() as i64);
     }
 }

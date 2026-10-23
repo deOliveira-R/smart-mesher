@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 default = []
-serde = ["dep:serde", "sm-core/serde"]
+serde = ["dep:serde", "sm-core/serde", "smallvec/serde"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
