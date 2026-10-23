@@ -758,7 +758,7 @@ impl Scheme for MSweep {
         SchemeDim::Volume
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN
+        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED
     }
     fn supports_groups(&self) -> bool {
         true

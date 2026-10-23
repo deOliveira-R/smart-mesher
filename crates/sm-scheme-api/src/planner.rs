@@ -708,6 +708,16 @@ impl<'a, 'r> Planner<'a, 'r> {
         } else {
             self.drv.registry.of_dim(dim).map(|s| SchemeName::new(s.name())).collect()
         };
+        // A parent's requirement must stay satisfiable under a narrow auto list: with
+        // impositions, the remaining registered schemes follow the list (name order).
+        let names: Vec<SchemeName> = if needs.is_empty() {
+            names
+        } else {
+            let mut v = names;
+            let rest: Vec<SchemeName> = self.drv.registry.of_dim(dim).map(|s| SchemeName::new(s.name())).filter(|n| !v.contains(n)).collect();
+            v.extend(rest);
+            v
+        };
         let names: Vec<SchemeName> = match &allowed {
             Some((a, _)) => {
                 let mut v: Vec<SchemeName> = names.iter().filter(|n| a.contains(n)).cloned().collect();
