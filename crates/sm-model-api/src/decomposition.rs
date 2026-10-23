@@ -246,13 +246,21 @@ impl Decomposition {
             PieceRef::Cell(c) => match self.cells.get(&c) {
                 Some(pc) if !pc.members.is_empty() => {
                     let mut v: Vec<PieceFace> = pc.members.iter().flat_map(|m| self.piece_faces(*m, t)).collect();
-                    // Cut faces shared by two members are internal.
-                    let both = |cut: CutId| {
-                        let has = |s| v.iter().any(|f| matches!(f, PieceFace::Cut { cut: c2, side } if *c2 == cut && *side == s));
-                        has(Keep::Negative) && has(Keep::Positive)
-                    };
-                    let keep: Vec<PieceFace> = v.iter().copied().filter(|f| !matches!(f, PieceFace::Cut { cut, .. } if both(*cut))).collect();
-                    v = keep;
+                    // A cut seen from both sides, or a model face held whole by two members, is
+                    // internal to the composite.
+                    let mut sides: BTreeMap<CutId, [bool; 2]> = BTreeMap::new();
+                    let mut wholes: BTreeMap<EntityId, u32> = BTreeMap::new();
+                    for f in &v {
+                        if let Some((c, s)) = cut_key(f) {
+                            sides.entry(c).or_default()[usize::from(s == Keep::Positive)] = true;
+                        } else if let PieceFace::Whole(m) = f {
+                            *wholes.entry(*m).or_default() += 1;
+                        }
+                    }
+                    v.retain(|f| match f {
+                        PieceFace::Whole(m) => wholes.get(m).copied().unwrap_or(0) < 2,
+                        _ => cut_key(f).is_none_or(|(c, _)| sides.get(&c).is_none_or(|b| !(b[0] && b[1]))),
+                    });
                     v.sort();
                     v.dedup();
                     v
@@ -297,6 +305,13 @@ impl Decomposition {
                     return bad(format!("piece {c} is its own child"));
                 }
             }
+        }
+        // Cut ids are never reused: the serial must exceed every id in use.
+        let used = self.splits.values().map(|r| r.cut.0).chain(self.cells.values().flat_map(|p| p.faces.iter().filter_map(cut_key).map(|(c, _)| c.0))).max();
+        if let Some(m) = used
+            && self.cut_serial <= m
+        {
+            return bad(format!("cut serial {} does not exceed the cut id {m} in use", self.cut_serial));
         }
         for (c, p) in &self.parent {
             // Walking up must reach a root within `cells.len()` steps.
@@ -432,11 +447,15 @@ impl Model {
             return Err(ModelError::Invalid(format!("cut face {k:?} of the piece is on neither side of the new cut")));
         }
         let before = self.coloring_fingerprint();
-        let n_id = self.ids.alloc(EntityKind::PartitionCell)?;
-        let p_id = self.ids.alloc(EntityKind::PartitionCell)?;
+        let next_serial = d.cut_serial.checked_add(1).ok_or_else(|| ModelError::Invalid("cut id space exhausted".into()))?;
+        // Allocate both ids from a copy so a failure leaves the allocator untouched.
+        let mut ids = self.ids.clone();
+        let n_id = ids.alloc(EntityKind::PartitionCell)?;
+        let p_id = ids.alloc(EntityKind::PartitionCell)?;
+        self.ids = ids;
         let d = &mut self.decomposition;
         let cut_id = CutId(d.cut_serial);
-        d.cut_serial += 1;
+        d.cut_serial = next_serial;
         let mk = |child: EntityId, mine: &[EntityId], other: &[EntityId], mine_cuts: &[(CutId, Keep)], other_cuts: &[(CutId, Keep)], side: Keep| {
             let mut faces: Vec<PieceFace> = Vec::new();
             for pf in &parent_faces {

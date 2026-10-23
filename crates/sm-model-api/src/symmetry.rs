@@ -14,7 +14,7 @@ use crate::boundary::{BoundaryKind, Deck, DeckSide};
 use crate::detect::Verification;
 use crate::error::{ModelError, Result, expect_kind};
 use crate::model::Model;
-use crate::xf::{Bins, GROUP_TOL, GeomCache, Plane, Tolerance, TransformIndex, face_shape_close, transform_face_moments, transforms_close, vec_of, vector_area_sign};
+use crate::xf::{Bins, Turns, GROUP_TOL, GeomCache, Plane, Tolerance, TransformIndex, face_shape_close, transform_face_moments, transforms_close, vec_of, vector_area_sign};
 use sm_core::{EntityId, EntityKind, Point3, Transform, Vector3};
 use sm_topo_api::{CutOutcome, Dim, FaceClass, TopologyView, TopologyViewExt};
 use smallvec::SmallVec;
@@ -81,9 +81,7 @@ pub fn plan_cut(spec: &CutSpec) -> Result<CutPlan> {
             roles.extend([DeckSide::A, DeckSide::B]);
         }
         Deck::Rotation { axis, angle } => {
-            if i64::from(angle.num) * 2 >= i64::from(angle.den) {
-                return Err(ModelError::Invalid("a wedge must span less than half a turn".into()));
-            }
+            check_wedge_angle(&angle)?;
             let a = axis.dir;
             let r = spec.origin - axis.point;
             let perp = r - a * a.dot(r);
@@ -106,10 +104,25 @@ pub fn plan_cut(spec: &CutSpec) -> Result<CutPlan> {
     Ok(CutPlan { half_spaces, roles, spec: *spec })
 }
 
+/// A cut wedge must be a primitive `1/n` turn below half a turn, so its images tile the
+/// full turn without overlap.
+fn check_wedge_angle(angle: &Turns) -> Result<()> {
+    if i64::from(angle.num) * 2 >= i64::from(angle.den) {
+        return Err(ModelError::Invalid("a wedge must span less than half a turn".into()));
+    }
+    if angle.num != 1 {
+        return Err(ModelError::Invalid(format!("a wedge must be a primitive 1/n turn, not {}/{}", angle.num, angle.den)));
+    }
+    Ok(())
+}
+
 /// A hand-built [`CutPlan`] must have the shape `plan_cut` gives its deck: one self-paired
 /// half-space for a mirror, an `A`/`B` pair for a translation or rotation.
 fn check_plan_shape(plan: &CutPlan) -> Result<()> {
     plan.spec.deck.check()?;
+    if let Deck::Rotation { angle, .. } = plan.spec.deck {
+        check_wedge_angle(&angle)?;
+    }
     let want: &[DeckSide] = if plan.spec.deck.is_self_paired() { &[DeckSide::SelfPaired] } else { &[DeckSide::A, DeckSide::B] };
     if plan.half_spaces.len() != want.len() || plan.roles.as_slice() != want {
         return Err(ModelError::Invalid(format!("cut plan has {} half-spaces and roles {:?}; a {} needs {} with roles {:?}", plan.half_spaces.len(), plan.roles, if want.len() == 1 { "mirror" } else { "slab or wedge" }, want.len(), want)));

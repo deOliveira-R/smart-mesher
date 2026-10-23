@@ -242,6 +242,11 @@ impl Model {
         if let Some(k) = minted.iter().find(|k| self.ids.peek(k.kind()) <= k.serial()) {
             return bad(format!("the id allocator would reuse {k}"));
         }
+        for r in self.boundaries.values() {
+            if let Some(d) = r.kind.as_deck() {
+                d.check()?;
+            }
+        }
         for l in ins.lattices.values() {
             l.layout.check()?;
             if let Some(ix) = l.slots.keys().find(|ix| !l.layout.contains(**ix)) {

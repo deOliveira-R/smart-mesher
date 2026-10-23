@@ -59,6 +59,7 @@ fn pipeline() -> Vec<u64> {
     m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::translation(Vector3::new(1.0, 2.0, 3.0)), recolor: ColorMap::default() }).unwrap();
     let f = flatten(&m).unwrap();
     out.push(f.fingerprint());
+    out.push(f.fingerprint_quantized(1e-8));
     out.push(fnv(&format!("{f:?}")));
     // Decomposition.
     let faces = sm_topo_api::TopologyViewExt::faces(&t).to_vec();
