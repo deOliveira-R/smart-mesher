@@ -86,7 +86,7 @@ pub struct ReferenceBuilder {
     extra: Vec<Point3>,
     vclass: Vec<Option<Classification>>,
     vcell: Vec<u32>,
-    face_off: Vec<u32>,
+    face_off: Vec<u64>,
     face_verts: Vec<VertexIx>,
     face_key: BTreeMap<FaceKey, SmallVec<[u32; 1]>>,
     face_sides: Vec<u8>,
@@ -265,7 +265,7 @@ impl MeshBuild for ReferenceBuilder {
         }
         let f = self.nfaces();
         self.face_verts.extend_from_slice(l);
-        self.face_off.push(self.face_verts.len() as u32);
+        self.face_off.push(self.face_verts.len() as u64);
         self.fclass.push(None);
         self.face_sides.push(0);
         self.face_deg.push(0);

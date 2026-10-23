@@ -30,7 +30,7 @@ pub struct EdgeTable {
     /// Endpoints with `a < b`, sorted.
     pub vertices: Vec<[VertexIx; 2]>,
     /// CSR offsets into `face_edges` (length `face_count + 1`).
-    pub face_off: Vec<u32>,
+    pub face_off: Vec<u64>,
     /// Edges of each face, in loop order (edge `i` joins loop vertices `i` and `i+1`).
     pub face_edges: Vec<FaceEdge>,
     /// Classification per edge (always present once the table exists).
@@ -110,7 +110,7 @@ impl EdgeTable {
                     keep => keep,
                 };
             }
-            t.face_off.push(t.face_edges.len() as u32);
+            t.face_off.push(t.face_edges.len() as u64);
         }
         for (e, cells) in around.iter_mut().enumerate() {
             cells.sort_unstable();

@@ -18,12 +18,13 @@
 //! high-order cells is `Unsupported`. Sets, tags, the edge table and face curves are not
 //! carried; each is reported as a [`LossNote`] in [`FlattenMap::loss`].
 
-use crate::build::{MeshBuild, SerialAlloc};
+use crate::build::{CellAdded, MeshBuild, SerialAlloc};
 use crate::classify::Classification;
 use crate::error::{MeshError, Result};
 use crate::hierarchy::MeshCatalog;
 use crate::highorder::NodeRef;
-use crate::index::{CellIx, FaceIx, FaceKind, MeshEntityKind, Side, VertexIx};
+use crate::index::{CellIx, FaceIx, FaceKind, MeshEntityKind, SignedFace, VertexIx};
+use crate::shape::LoopRelation;
 use crate::read::MeshRead;
 use sm_core::{EntityId, EntityKind, Point3, Transform, Vector3};
 use smallvec::SmallVec;
@@ -241,12 +242,24 @@ pub fn append_transformed<B: MeshBuild>(
         }
     }
 
+    // Weld targets are boundary vertices of earlier instances only (one-cell faces).
+    let mut target_ok = vec![false; vertex_start];
+    if o.weld_tol.is_some() {
+        for f in 0..face_start {
+            let f = FaceIx::new(f);
+            if b.face_degree(f) == 1 {
+                for v in b.face_loop(f) {
+                    target_ok[v.get()] = true;
+                }
+            }
+        }
+    }
     let mut vmap = Vec::with_capacity(nv);
     let mut welds = Vec::new();
     for i in 0..nv {
         let p = t.apply_point(co.get(i));
         let merged = match o.weld_tol {
-            Some(tol) if on_boundary[i] => b.find_vertex(p, tol).filter(|v| v.get() < vertex_start),
+            Some(tol) if on_boundary[i] => b.find_vertex(p, tol).filter(|v| v.get() < vertex_start && target_ok[v.get()]),
             _ => None,
         };
         let cls = remap(src.vertex_class(VertexIx::new(i)));
@@ -272,24 +285,46 @@ pub fn append_transformed<B: MeshBuild>(
         .collect::<Result<_>>()?;
 
     let mut fmap = vec![FaceIx(FaceIx::NONE); nf];
+    // Per source face: true when the new face's loop runs opposite to the source loop.
+    let mut fflip: Vec<Option<bool>> = vec![None; nf];
     let mut cmap = Vec::with_capacity(nc);
     let mut merged_faces = Vec::new();
     for ci in 0..nc {
         let c = CellIx::new(ci);
         let sfs = src.cell_faces(c);
-        let loops: SmallVec<[SmallVec<[VertexIx; 4]>; 6]> = sfs
-            .iter()
-            .map(|sf| {
-                let l = src.face_vertices(sf.face());
-                let rev = (sf.side() == Side::Right) != improper;
-                if rev {
-                    l.iter().rev().map(|v| vmap[v.get()]).collect()
-                } else {
-                    l.iter().map(|v| vmap[v.get()]).collect()
+        // Source faces map 1:1 (a topological baffle keeps its two faces). A face is shared
+        // only with an earlier instance, and only when that face's side is still free.
+        let mut signed: SmallVec<[SignedFace; 6]> = SmallVec::new();
+        let mut reused: SmallVec<[bool; 6]> = SmallVec::new();
+        for sf in sfs.iter() {
+            let sface = sf.face();
+            let base = if improper { sf.side().flipped() } else { sf.side() };
+            let (nf_ix, flip, was) = match fflip[sface.get()] {
+                Some(flip) => (fmap[sface.get()], flip, true),
+                None => {
+                    let l: SmallVec<[VertexIx; 4]> = src
+                        .face_vertices(sface)
+                        .iter()
+                        .map(|v| vmap[v.get()])
+                        .collect();
+                    let shared = b.find_face(&l).and_then(|(f, rel)| {
+                        let flip = rel == LoopRelation::Reversed;
+                        let side = if flip { base.flipped() } else { base };
+                        (f.get() < face_start && b.face_cell(f, side).is_none())
+                            .then_some((f, flip))
+                    });
+                    match shared {
+                        Some((f, flip)) => (f, flip, true),
+                        None => (b.add_face(&l)?, false, false),
+                    }
                 }
-            })
-            .collect();
-        let refs: SmallVec<[&[VertexIx]; 6]> = loops.iter().map(SmallVec::as_slice).collect();
+            };
+            fmap[sface.get()] = nf_ix;
+            fflip[sface.get()] = Some(flip);
+            let side = if flip { base.flipped() } else { base };
+            signed.push(SignedFace::new(nf_ix, side));
+            reused.push(was);
+        }
         let corners: Option<SmallVec<[VertexIx; 8]>> = src.cell_corners(c).map(|ov| {
             let mapped: SmallVec<[VertexIx; 8]> = ov.iter().map(|v| vmap[v.get()]).collect();
             if improper {
@@ -302,7 +337,11 @@ pub fn append_transformed<B: MeshBuild>(
                 mapped
             }
         });
-        let added = b.add_polyhedron_with_corners(&refs, corners.as_deref())?;
+        let added = CellAdded {
+            cell: b.add_cell(&signed, corners.as_deref())?,
+            faces: signed,
+            reused,
+        };
         let nc_ix = added.cell;
         let cell_cls = remap(src.cell_class(c));
         b.set_class(crate::index::MeshEntityRef::Cell(nc_ix), cell_cls)?;
@@ -423,6 +462,12 @@ pub fn finalize_welds<B: MeshBuild>(
     if welds.is_empty() {
         return Ok(());
     }
+    if let Some(w) = welds.iter().find(|w| w.vertex.get() >= b.vertex_count()) {
+        return Err(MeshError::State(format!(
+            "weld names vertex {:?} that does not exist",
+            w.vertex
+        )));
+    }
     let wanted: std::collections::BTreeSet<VertexIx> = welds.iter().map(|w| w.vertex).collect();
     let mut bnd: BTreeMap<VertexIx, bool> = wanted.iter().map(|&v| (v, false)).collect();
     for f in 0..b.face_count() {
@@ -450,7 +495,7 @@ pub fn finalize_welds<B: MeshBuild>(
         vs.sort_unstable();
         vs.dedup();
         for v in vs {
-            if !bnd[&v] {
+            if bnd.get(&v) == Some(&false) {
                 around.entry(v).or_default().extend(ce);
             }
         }
@@ -459,8 +504,13 @@ pub fn finalize_welds<B: MeshBuild>(
         let existing = b.vertex_class(w.vertex).ok_or(MeshError::Unclassified(
             crate::index::MeshEntity::Vertex(w.vertex),
         ))?;
-        let result = if !bnd[&w.vertex] {
-            let ents = &around[&w.vertex];
+        let on_bnd = *bnd
+            .get(&w.vertex)
+            .ok_or_else(|| MeshError::State("weld vertex not tracked".into()))?;
+        let result = if !on_bnd {
+            let ents = around.get(&w.vertex).ok_or_else(|| {
+                MeshError::State(format!("welded vertex {:?} touches no cell", w.vertex))
+            })?;
             match ents.split_first() {
                 Some((e0, rest)) if rest.iter().all(|e| e == e0) => Classification::on(*e0),
                 _ => resolve_vertex(b, w, existing, o)?,

@@ -96,6 +96,17 @@ fn quarter_unfold_has_18_vertices_and_4_interior_faces() {
         .filter(|&v| u.point(v).x == 0.0 && u.point(v).y == 0.0)
         .collect();
     assert_eq!(corner_ids.len(), 2);
+    // Documented stale state (`FlattenOptions::on_merge` is the caller's job): the axis vertices
+    // keep the prototype's TopoVertex even though that model vertex no longer bounds the union.
+    for &v in &corner_ids {
+        let z = u.point(v).z;
+        let sv = (0..m.vertex_count())
+            .find(|&i| m.point(i).x == 0.0 && m.point(i).y == 0.0 && m.point(i).z == z)
+            .unwrap();
+        let want = m.vertex_class(VertexIx::new(sv));
+        assert_eq!(want.entity.kind(), EntityKind::TopoVertex);
+        assert_eq!(u.vertex_class(VertexIx::new(v)), want);
+    }
     assert!((total_volume(&u) - 4.0).abs() < 1e-12);
     // The result is a conforming mesh: every cell has 6 faces and 4 of the 8 cell-face pairs are shared.
     for c in 0..4 {
@@ -361,6 +372,150 @@ fn baffles_inside_a_prototype_are_never_welded() {
         "the baffle at x = 1 and x = 3 stays two boundary faces each"
     );
     assert_eq!(m.face_count(), 12 + 12 - 1);
+}
+
+/// Two hexes on a 3x2x2 vertex lattice sharing their x = 1 vertices, but built with one
+/// `add_face` per template face: the coincident x = 1 faces stay two one-cell faces (a baffle).
+fn lattice_baffle(nc_kind: Option<FaceKind>, alloc: &mut SerialAlloc) -> ReferenceMesh {
+    let mut b = ReferenceBuilder::new();
+    let mut lat = Vec::new();
+    for k in 0..2 {
+        for j in 0..2 {
+            for i in 0..3 {
+                let v = b
+                    .add_vertex(sm_core::Point3::new(i as f64, j as f64, k as f64))
+                    .unwrap();
+                b.set_class(
+                    MeshEntityRef::Vertex(v),
+                    on(EntityKind::TopoVertex, lat.len() as u64),
+                )
+                .unwrap();
+                lat.push(v);
+            }
+        }
+    }
+    for x0 in [0usize, 1] {
+        let vs: Vec<VertexIx> = template_points(CellShape::Hex)
+            .iter()
+            .map(|p| lat[(x0 + p[0] as usize) + 3 * (p[1] as usize + 2 * p[2] as usize)])
+            .collect();
+        let mut faces = Vec::new();
+        for lf in CellShape::Hex.local_faces() {
+            let l: Vec<VertexIx> = lf.iter().map(|&i| vs[i as usize]).collect();
+            let f = b.add_face(&l).unwrap();
+            let on_baffle = l.iter().all(|v| b.vertex_point(*v).x == 1.0);
+            let cls = if on_baffle && nc_kind.is_some() {
+                vol()
+            } else {
+                on(EntityKind::TopoFace, 1 + faces.len() as u64)
+            };
+            b.set_class(MeshEntityRef::Face(f), cls).unwrap();
+            if on_baffle && let Some(k) = nc_kind {
+                b.set_face_kind(f, k).unwrap();
+            }
+            faces.push(SignedFace::new(f, Side::Left));
+        }
+        let c = b.add_cell(&faces, Some(&vs)).unwrap();
+        b.set_class(MeshEntityRef::Cell(c), vol()).unwrap();
+    }
+    b.finish(alloc).unwrap().mesh
+}
+
+#[test]
+fn identity_append_keeps_topological_baffles() {
+    for kind in [None, Some(FaceKind::NonConformal)] {
+        let mut alloc = SerialAlloc::new();
+        let proto = lattice_baffle(kind, &mut alloc);
+        assert_valid(&proto);
+        assert_eq!((proto.face_count(), interior_faces(&proto).len()), (12, 0));
+        let mut t = ReferenceBuilder::new();
+        let am = append_transformed(
+            &mut t,
+            &proto,
+            id(EntityKind::Instance, 1),
+            &Transform::IDENTITY,
+            &FlattenOptions::default(),
+        )
+        .unwrap();
+        assert!(am.merged_faces.is_empty());
+        let m = t.finish(&mut alloc).unwrap().mesh;
+        assert_valid(&m);
+        assert_eq!((m.face_count(), interior_faces(&m).len()), (12, 0), "{kind:?}");
+        let nc = (0..m.face_count())
+            .filter(|&f| m.face_kind(FaceIx::new(f)) == FaceKind::NonConformal)
+            .count();
+        assert_eq!(nc, if kind.is_some() { 2 } else { 0 });
+    }
+}
+
+#[test]
+fn mirrored_append_keeps_topological_baffles() {
+    let mut alloc = SerialAlloc::new();
+    let proto = lattice_baffle(None, &mut alloc);
+    let mut t = ReferenceBuilder::new();
+    append_transformed(
+        &mut t,
+        &proto,
+        id(EntityKind::Instance, 1),
+        &mirror_x(-1.0),
+        &FlattenOptions::default(),
+    )
+    .unwrap();
+    let m = t.finish(&mut alloc).unwrap().mesh;
+    assert_valid(&m);
+    assert_eq!((m.face_count(), interior_faces(&m).len()), (12, 0));
+    assert!((total_volume(&m) - 2.0).abs() < 1e-12);
+}
+
+#[test]
+fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
+    // Instance 2 is a copy of instance 1 shifted so one of its boundary vertices lands on an
+    // interior vertex of a 2x2x2 block: it must not be merged.
+    let mut alloc = SerialAlloc::new();
+    let big = hex_block([2, 2, 2], [1.0; 3], &mut alloc).unwrap();
+    let small = unit_hex(&mut alloc);
+    let mut t = ReferenceBuilder::new();
+    let opts = weld();
+    append_transformed(&mut t, &big, id(EntityKind::Instance, 1), &Transform::IDENTITY, &opts)
+        .unwrap();
+    let n = t.vertex_count();
+    let a = append_transformed(
+        &mut t,
+        &small,
+        id(EntityKind::Instance, 2),
+        &translate(1.0, 1.0, 1.0),
+        &opts,
+    )
+    .unwrap();
+    // The unit cube [1,2]^3 touches the block's interior vertex (1,1,1) only.
+    assert_eq!(a.welds.len(), 7, "all but the interior corner weld");
+    assert_eq!(t.vertex_count(), n + 1);
+}
+
+#[test]
+fn finalize_welds_rejects_unknown_and_cellless_vertices() {
+    let mut alloc = SerialAlloc::new();
+    let m = unit_hex(&mut alloc);
+    let mut t = ReferenceBuilder::new();
+    append_transformed(
+        &mut t,
+        &m,
+        id(EntityKind::Instance, 1),
+        &Transform::IDENTITY,
+        &FlattenOptions::default(),
+    )
+    .unwrap();
+    let lone = t.add_vertex(sm_core::Point3::new(5.0, 5.0, 5.0)).unwrap();
+    t.set_class(MeshEntityRef::Vertex(lone), on(EntityKind::TopoVertex, 99))
+        .unwrap();
+    let w = |vertex| Weld {
+        vertex,
+        incoming: on(EntityKind::TopoVertex, 1),
+        incoming_cell: vol(),
+    };
+    let o = FlattenOptions::default();
+    assert!(finalize_welds(&mut t, &[w(VertexIx::new(500))], &o).is_err());
+    assert!(finalize_welds(&mut t, &[w(lone)], &o).is_err());
 }
 
 #[test]
