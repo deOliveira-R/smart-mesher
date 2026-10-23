@@ -313,12 +313,18 @@ pub fn append_transformed<B: MeshBuild>(
                         .iter()
                         .map(|v| vmap[v.get()])
                         .collect();
-                    let shared = b.find_face(&l).and_then(|(f, rel)| {
-                        let flip = rel == LoopRelation::Reversed;
-                        let side = if flip { base.flipped() } else { base };
-                        (f.get() < face_start && b.face_cell(f, side).is_none())
-                            .then_some((f, flip))
-                    });
+                    // Any earlier face on this cycle with the needed side free (coincident
+                    // baffle faces share a cycle); creation order keeps it deterministic.
+                    let shared = b
+                        .find_face_where(&l, &mut |f, rel| {
+                            let side = if rel == LoopRelation::Reversed {
+                                base.flipped()
+                            } else {
+                                base
+                            };
+                            f.get() < face_start && b.face_cell(f, side).is_none()
+                        })
+                        .map(|(f, rel)| (f, rel == LoopRelation::Reversed));
                     match shared {
                         Some((f, flip)) => (f, flip, true),
                         None => (b.add_face(&l)?, false, false),

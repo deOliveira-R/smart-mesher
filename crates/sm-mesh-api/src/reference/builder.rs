@@ -279,6 +279,16 @@ impl MeshBuild for ReferenceBuilder {
             .iter()
             .find_map(|&f| loop_relation(l, self.loop_of(f as usize)).map(|r| (FaceIx(f), r)))
     }
+    fn find_face_where(
+        &self,
+        l: &[VertexIx],
+        accept: &mut dyn FnMut(FaceIx, LoopRelation) -> bool,
+    ) -> Option<(FaceIx, LoopRelation)> {
+        self.face_key.get(&Self::key_of(l))?.iter().find_map(|&f| {
+            let r = loop_relation(l, self.loop_of(f as usize))?;
+            accept(FaceIx(f), r).then_some((FaceIx(f), r))
+        })
+    }
     fn face_loop(&self, f: FaceIx) -> &[VertexIx] {
         self.loop_of(f.get())
     }
@@ -795,6 +805,7 @@ impl ReferenceBuilder {
         // Points, high order, face curves.
         let pidx = |n: NodeRef| match n {
             NodeRef::Vertex(v) => PointIx(v.0),
+            // Vertex and extra-node counts are capped below u32::MAX by the builder, so this cannot wrap.
             NodeRef::Extra(k) => PointIx(nv as u32 + k),
         };
         let ho: BTreeMap<u32, HighOrderCell> = self

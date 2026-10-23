@@ -473,13 +473,17 @@ fn mirrored_append_keeps_topological_baffles() {
 
 #[test]
 fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
-    // Instance 2 is a copy of instance 1 shifted so one of its boundary vertices lands on an
-    // interior vertex of a 2x2x2 block: it must not be merged.
+    // The cube [2,3]^3 only touches the 2x2x2 block [0,2]^3 at its corner (2,2,2), but the
+    // generous tolerance puts the block's interior vertex (1,1,1) (lowest index) within reach
+    // of that corner. Interior vertices are never weld targets.
     let mut alloc = SerialAlloc::new();
     let big = hex_block([2, 2, 2], [1.0; 3], &mut alloc).unwrap();
     let small = unit_hex(&mut alloc);
     let mut t = ReferenceBuilder::new();
-    let opts = weld();
+    let opts = FlattenOptions {
+        weld_tol: Some(1.0),
+        ..FlattenOptions::default()
+    };
     append_transformed(
         &mut t,
         &big,
@@ -488,18 +492,53 @@ fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
         &opts,
     )
     .unwrap();
-    let n = t.vertex_count();
     let a = append_transformed(
         &mut t,
         &small,
         id(EntityKind::Instance, 2),
-        &translate(1.0, 1.0, 1.0),
+        &translate(2.0, 2.0, 2.0),
         &opts,
     )
     .unwrap();
-    // The unit cube [1,2]^3 touches the block's interior vertex (1,1,1) only.
-    assert_eq!(a.welds.len(), 7, "all but the interior corner weld");
-    assert_eq!(t.vertex_count(), n + 1);
+    for w in &a.welds {
+        let p = t.vertex_point(w.vertex);
+        assert!(
+            (p.x, p.y, p.z) != (1.0, 1.0, 1.0),
+            "welded to an interior vertex"
+        );
+    }
+}
+
+#[test]
+fn shares_the_free_face_of_a_coincident_pair() {
+    // The baffle lattice holds two coincident faces at x=1 (one per cell). A cube appended at
+    // [0,1]^3 has a +x face matching both; the first is taken, so it must use the second.
+    let mut alloc = SerialAlloc::new();
+    let proto = lattice_baffle(None, &mut alloc);
+    let small = unit_hex(&mut alloc);
+    let mut t = ReferenceBuilder::new();
+    append_transformed(
+        &mut t,
+        &proto,
+        id(EntityKind::Instance, 1),
+        &Transform::IDENTITY,
+        &FlattenOptions::default(),
+    )
+    .unwrap();
+    let before = t.face_count();
+    append_transformed(
+        &mut t,
+        &small,
+        id(EntityKind::Instance, 2),
+        &Transform::IDENTITY,
+        &weld(),
+    )
+    .unwrap();
+    assert_eq!(t.face_count(), before + 5, "the +x face is shared");
+    assert!(
+        (0..before).any(|f| t.face_degree(FaceIx::new(f)) == 2),
+        "a baffle face got its second cell"
+    );
 }
 
 #[test]

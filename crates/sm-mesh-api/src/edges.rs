@@ -74,6 +74,9 @@ impl EdgeTable {
                 "edge class given for {k:?}, which is not an edge of the mesh"
             )));
         }
+        if map.len() > u32::MAX as usize {
+            return Err(MeshError::TooLarge);
+        }
         let mut t = EdgeTable::default();
         for (i, (k, v)) in map.iter_mut().enumerate() {
             *v = i as u32;

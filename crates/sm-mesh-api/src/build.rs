@@ -149,6 +149,17 @@ pub trait MeshBuild {
     fn add_face(&mut self, vertex_loop: &[VertexIx]) -> Result<FaceIx>;
     /// Find an existing face with the same vertex cycle, and whether it runs the same way.
     fn find_face(&self, vertex_loop: &[VertexIx]) -> Option<(FaceIx, LoopRelation)>;
+    /// First existing face (in creation order) with the same vertex cycle for which `accept`
+    /// returns true. Coincident faces (baffle pairs) share a cycle, so [`Self::find_face`] alone
+    /// can miss a usable one. The default only considers what `find_face` returns; builders that
+    /// keep coincident faces should override it.
+    fn find_face_where(
+        &self,
+        vertex_loop: &[VertexIx],
+        accept: &mut dyn FnMut(FaceIx, LoopRelation) -> bool,
+    ) -> Option<(FaceIx, LoopRelation)> {
+        self.find_face(vertex_loop).filter(|&(f, r)| accept(f, r))
+    }
     /// Current loop of a face. Panics if `f` is out of range.
     fn face_loop(&self, f: FaceIx) -> &[VertexIx];
     /// Number of cells attached to a face so far. Panics if `f` is out of range.
