@@ -5,7 +5,8 @@ Read `docs/ARCHITECTURE.md` (design), `docs/PLAN.md` (how work is split), `docs/
 ## Ownership
 - You own only the directory your task names (usually `crates/<name>/`). Do not edit other crates, the root `Cargo.toml`, CI, or docs outside your crate.
 - `crates/*-api` and `crates/sm-testkit` are frozen contracts that only the orchestrator edits. If you need a change, stop and return `status: blocked_on_api` with an `api_change_request` (what, why, proposed signature). Do not work around a contract with duplicated types or `unsafe` casts.
-- Commit your work on your task branch (`wave<N>/<crate>`) and report the commit SHA.
+- Commit your work and report the commit SHA; the SHA, not the branch name, is what the orchestrator merges.
+- In a worktree, never check out an existing branch name (it may be checked out in another worktree). Use `git checkout --detach <sha>`, commit, then `git branch <new-unique-name>` at your commit. Run git commands one at a time in simple form.
 
 ## Determinism (binding)
 - Never let `HashMap`/`HashSet` iteration order affect output. Use `IndexMap`, `BTreeMap`, or sort first.
