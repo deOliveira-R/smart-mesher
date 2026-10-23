@@ -396,7 +396,7 @@ fn edge_classification_obeys_the_dimension_order() {
     let mut mm = hex_block([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
     assert!(matches!(
         MeshEdit::ensure_edges(&mut mm, &mut SerialAlloc::new(), &[]),
-        Err(MeshError::Unclassified(MeshEntity::Edge(_)))
+        Err(MeshError::UnclassifiedEdge(..))
     ));
 }
 
@@ -690,8 +690,8 @@ fn content_hashes_cover_all_stored_data() {
             .map(FaceIx::new)
             .find(|&f| m.is_boundary_face(f))
             .unwrap();
-        MeshEdit::set_class(m, MeshEntity::Face(f), vol()).unwrap();
         MeshEdit::set_face_kind(m, f, FaceKind::NonConformal).unwrap();
+        MeshEdit::set_class(m, MeshEntity::Face(f), vol()).unwrap();
     });
     assert_ne!(fk.0, h0.0, "face kind is part of the connectivity hash");
     // The geometry cache is derived and excluded from both hashes.
@@ -737,4 +737,49 @@ fn edge_table_is_hashed() {
         topology_hash(&b),
         "edge classification is hashed"
     );
+}
+
+#[test]
+fn untested_codes_are_triggered() {
+    let m = base();
+    let last = m.face_count() as u32 - 1;
+    // Face order: the last face claims cell 0, which sorts before its predecessor.
+    let mut b = Broken::of(m.clone());
+    b.face_left = Some((last, 0));
+    expect(&b, ViolationCode::FaceOrder);
+    // Index range: a face whose left cell does not exist.
+    let mut b = Broken::of(m.clone());
+    b.face_left = Some((0, 99));
+    expect(&b, ViolationCode::IndexRange);
+    // Normal direction: mirror every point; the loops now point the wrong way.
+    let mut mm = m.clone();
+    for i in 0..mm.coords().len() {
+        let p = mm.coords().get(i);
+        MeshEdit::set_point(&mut mm, PointIx::new(i), Point3::new(-p.x, p.y, p.z)).unwrap();
+    }
+    let v = validate_geometry(&mm, &GeomTol::default());
+    assert!(
+        v.iter().any(|x| x.code == ViolationCode::GeomNormal),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn geometry_cache_is_keyed_on_coordinates() {
+    let m = base();
+    let stale = compute_geometry_cache(&m);
+    let mut moved = m.clone();
+    MeshEdit::set_point(&mut moved, PointIx(0), Point3::new(-0.25, -0.25, -0.25)).unwrap();
+    // Same connectivity, different coordinates.
+    assert_eq!(connectivity_hash(&m), connectivity_hash(&moved));
+    assert!(MeshEdit::set_geometry_cache(&mut moved, Some(stale.clone())).is_err());
+    assert!(moved.geometry_cache().is_none());
+    // A cache attached by another implementation is caught by validate.
+    let mut b = Broken::of(moved);
+    b.cache = Some(stale);
+    expect(&b, ViolationCode::Cache);
+    // A matching cache is accepted.
+    let mut ok = m.clone();
+    MeshEdit::set_geometry_cache(&mut ok, Some(compute_geometry_cache(&m))).unwrap();
+    assert!(validate(&ok).is_empty());
 }

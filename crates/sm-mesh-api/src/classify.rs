@@ -15,6 +15,7 @@ use sm_core::{EntityId, EntityKind};
 /// Parametric position on the classified model entity (when it has a parametrisation). The
 /// variant must match the kind of the classified entity (see [`Param::fits`]).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Param {
     /// No parametric information (always allowed).
@@ -43,6 +44,7 @@ impl Param {
 
 /// The model/partition entity a mesh entity lies on, with optional parametric coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Classification {
     /// Model (`Topo*`) or partition (`PartitionCell`) entity.

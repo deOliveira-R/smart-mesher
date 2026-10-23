@@ -5,6 +5,8 @@ use sm_core::EntityId;
 
 /// Members of a set, ascending and unique.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SetMembers {
     /// A vertex set.
     Vertices(Vec<VertexIx>),
@@ -55,6 +57,8 @@ impl SetMembers {
 
 /// A named set of mesh entities. Sets are annotations: they never replace classification.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshSet {
     /// Stable id (`EntityKind::Group`).
     pub id: EntityId,
@@ -66,6 +70,8 @@ pub struct MeshSet {
 
 /// Values of a tag column: one per entity, in dense index order.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TagValues {
     /// Integer values (material ids, block ids, flags).
     I64(Vec<i64>),
@@ -104,6 +110,8 @@ impl TagValues {
 /// A named typed column over all entities of one kind (dense; one value per entity). Columns are
 /// keyed by `(target, name)`.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TagColumn {
     /// Name, unique per target kind.
     pub name: String,

@@ -32,7 +32,7 @@ fn half_unfold_welds_the_mirror_plane_and_reclassifies_the_seam() {
     .unwrap();
     assert_valid(&u);
     assert_eq!((u.cell_count(), u.vertex_count()), (4, 20));
-    // Two seam faces (one per cell row) are interior now.
+    // One seam face (a single cell row) is interior now.
     let seam: Vec<FaceIx> = interior_faces(&u)
         .into_iter()
         .filter(|&f| face_centroid(&u, f).x.abs() < 1e-12)
@@ -52,7 +52,8 @@ fn half_unfold_welds_the_mirror_plane_and_reclassifies_the_seam() {
     assert_eq!(map.cells.len(), 2);
     assert_eq!(map.locate(CellIx(2)).map(|(_, c)| c), Some(CellIx(0)));
     assert!((total_volume(&u) - 4.0).abs() < 1e-12);
-    // Boundary count: 10 for each 2x1x1 half minus 1... = 2*(2*(2+1+2)) - 2 seam = 20 - 2... computed directly:
+    // Each cell has 6 faces; every interior face is shared by two cells, so
+    // boundary faces = 4 cells * 6 - 2 * interior faces.
     let nb = (0..u.face_count())
         .filter(|&f| u.is_boundary_face(FaceIx::new(f)))
         .count();

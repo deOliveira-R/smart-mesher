@@ -63,3 +63,32 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 - Inactive parents keep their faces; consumers filter by `cell_active` (the faces of a refined parent are not marked inactive).
 - Non-conformal interface records, partition-local views (ghosts) and refinement edits belong to later crates; only `FaceKind` slots and lineage columns are reserved.
 - No `rayon` here: all algorithms are sequential and deterministic (`BTreeMap`/sorted vectors, no hash-order dependence), so 1 thread and N threads are trivially identical.
+
+## Failure atomicity
+
+`MeshBuild::finish`, `MeshEdit::ensure_edges`, `MeshEdit::add_set`, `flatten` and `unfold` leave the `SerialAlloc` unchanged on `Err`: ids are what the model history records, so a failed attempt must not shift the ids of a later successful one (op decision 4, strict Diverged rule). The reference builder runs `finish` against a clone and copies it back on `Ok`; `EdgeTable::derive` draws edge ids only after every check; `flatten`/`unfold` work on a clone. `append_transformed` is **not** atomic (it takes `&mut B`); discard the builder after an error.
+
+## Edits, edge classes, caches
+
+- `MeshEdit` checks the rules local to one entity (parameter fits, `Boundary` face stays on a `TopoFace`, cell on a volume, edge tag needs a table). Rules relating entities (dimension order) are not checked: run `validate` after classification edits. `set_classes` is the batch form (one index rebuild, all-or-nothing).
+- `EdgeTable::derive`: explicit class, else the entity shared by all incident faces, else (all faces interior) the shared cell entity, else `UnclassifiedEdge(a, b)` naming the vertex pair.
+- `MeshBuild::set_face_kind(f, Boundary)` clears a NonConformal/PartitionCut mark; welding a seam clears it automatically.
+- `GeometryCache` carries `connectivity_hash` and `coordinate_hash`; `validate` and `set_geometry_cache` check both. (`geometry_hash` is not used for this: it also covers tags and parameters, which do not affect the cache.)
+- `MeshRead::face_active` is false for the faces of a refined parent; filter with it before integrating over `classified_on(TopoFace)` or boundary faces.
+- Hash change: `topology_hash` now prefixes the set and tag lists with their counts.
+
+## Features
+
+`serde` derives (de)serialization on the plain value types (`EntityId` as `Kind#serial`): indices, `SignedFace` (raw `u32`), `Classification`, `HighOrderCell`, sets and tags, `EdgeTable`, `GeometryCache`, `Instance`/`InstancedView`, `Violation`/`ViolationCode`, `LossNote`, and `SerialAlloc` (also `state()`, `next_serial()`, `from_state()` for snapshots). `schemars` implies `serde`, passes through to `sm-core` and derives `JsonSchema` on the same types. Not serialized: `ReferenceMesh`, builders, `ClassSet` (derived), callbacks and `*Map` results.
+
+## Deviations from `mesh-api-recommendation.md` section 5
+
+1. `GeometryCache` and `LevelMap` are keyed on `connectivity_hash`, not `topology_hash`, so reclassifying or tagging does not invalidate them. The cache also keys on `coordinate_hash`.
+2. `MeshBuild::set_high_order` / `set_face_curve` take `NodeRef` (vertex or extra), because extra-node indices are not final until `finish`.
+3. `CellAdded` carries `reused`, so meshers and `append_transformed` need no second `find_face`.
+4. `on_merge` is a `MergeRule` taking `&MergeCtx` (kind, existing, incoming, cells) rather than separate arguments.
+5. `ensure_edges` takes explicit classes by vertex pair, plus derivation from faces.
+6. `FlattenMap.instance_vertices` added next to `vertex_origin` for per-instance vertex lookup.
+7. An extra `connectivity_hash` (and `coordinate_hash`) beyond the two recommended hashes.
+8. Face limit: `MAX_FACES = 2^31` faces are addressable and enforced exactly.
+

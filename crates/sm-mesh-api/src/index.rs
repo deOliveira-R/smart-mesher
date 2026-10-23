@@ -15,6 +15,7 @@ macro_rules! dense_index {
         $(#[$m])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         #[repr(transparent)]
         pub struct $name(pub u32);
         impl $name {
@@ -66,6 +67,7 @@ impl From<VertexIx> for PointIx {
 /// The face loop's right-hand normal points from `Left` to `Right`. A `Left` cell sees the
 /// normal as *outward*; a `Right` cell sees it as *inward*. This is the CGNS NFACE sign.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Side {
     /// The cell sees the normal as outward (lower cell id of the pair; the only cell of a one-cell face).
@@ -98,6 +100,8 @@ impl Side {
 /// In a finished mesh the side obeys the declared orientation rule. In a builder it is relative
 /// to the face's *current* loop and is normalised by `finish`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[repr(transparent)]
 pub struct SignedFace(u32);
 
@@ -146,6 +150,7 @@ impl core::fmt::Debug for SignedFace {
 
 /// Kind of mesh entity addressed by classification, sets and tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MeshEntityKind {
     /// Vertex.
@@ -161,6 +166,7 @@ pub enum MeshEntityKind {
 /// What a face is in the global mesh. `Interior` faces have two cells; every other kind has one
 /// cell (the left cell, with the normal outward) and no right cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FaceKind {
     /// Two cells; `face_right` is present.
@@ -177,6 +183,8 @@ pub enum FaceKind {
 
 /// A reference to one mesh entity by dense index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MeshEntity {
     /// A vertex.
     Vertex(VertexIx),
@@ -212,6 +220,8 @@ impl MeshEntity {
 /// An entity reference for builders, where edges do not have indices yet: an edge is named by
 /// its two end vertices (order irrelevant).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MeshEntityRef {
     /// A vertex.
     Vertex(VertexIx),

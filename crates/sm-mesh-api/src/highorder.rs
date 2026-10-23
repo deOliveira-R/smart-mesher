@@ -21,6 +21,7 @@ use crate::shape::{CellShape, FaceShape};
 
 /// Polynomial basis family of high-order geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum Basis {
@@ -135,6 +136,8 @@ pub const fn face_node_count(loop_len: usize, degree: u8, basis: Basis) -> Optio
 /// vertex-numbered points) in `smartmesh.nodes.v1` order; the first entries equal the cell's
 /// [`crate::MeshRead::cell_corners`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HighOrderCell {
     /// Polynomial degree (`>= 2` in a stored record).
     pub degree: u8,
@@ -157,6 +160,8 @@ pub struct FaceCurve<'a> {
 
 /// A node reference used while building, before final point numbering exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum NodeRef {
     /// An ordinary mesh vertex.
     Vertex(crate::index::VertexIx),

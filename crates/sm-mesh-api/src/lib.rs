@@ -57,6 +57,6 @@ pub use read::{Coords, GeometryCache, MeshRead, TopologyColumns};
 pub use sets::{MeshSet, SetMembers, TagColumn, TagValues};
 pub use shape::{CellShape, FaceShape, LoopRelation, derive_corners, loop_relation};
 pub use validate::{
-    GeomTol, Violation, ViolationCode, connectivity_hash, geometry_hash, topology_hash, validate,
-    validate_geometry,
+    GeomTol, Violation, ViolationCode, connectivity_hash, coordinate_hash, geometry_hash,
+    topology_hash, validate, validate_geometry,
 };

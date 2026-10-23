@@ -74,11 +74,15 @@ pub struct TopologyColumns<'a> {
 /// Cached face and cell geometry under a rule id (addendum 7.5 and 7.7 item 5). Derived data:
 /// excluded from both content hashes and checked by `validate` against the mesh.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GeometryCache {
     /// Geometry rule id the values were computed under.
     pub rule: String,
     /// [`crate::connectivity_hash`] of the mesh the cache was computed for.
     pub connectivity_hash: u64,
+    /// [`crate::coordinate_hash`] of the mesh the cache was computed for.
+    pub coordinate_hash: u64,
     /// Face area vectors (left -> right).
     pub face_area: Vec<Vector3>,
     /// Face centroids.
@@ -137,6 +141,8 @@ pub trait MeshRead: Send + Sync {
     /// edge count is 0, so any edge index is out of range).
     fn classification(&self, k: MeshEntityKind, ix: u32) -> Classification;
     /// All mesh entities classified on a model/partition entity, or `None` if there are none.
+    /// After refinement the set holds the faces of inactive parents as well as their children's;
+    /// filter faces with [`MeshRead::face_active`] before integrating.
     fn classified_on(&self, model: EntityId) -> Option<&ClassSet>;
     /// Every model/partition entity that has mesh entities on it, ascending.
     fn classified_entities(&self) -> &[EntityId];
@@ -186,8 +192,18 @@ pub trait MeshRead: Send + Sync {
         }
     }
     /// True for faces on the model boundary ([`FaceKind::Boundary`]).
+    ///
+    /// **Refinement warning:** an inactive (refined) parent keeps its boundary faces next to its
+    /// children's, so summing over boundary faces counts that area twice. Filter with
+    /// [`MeshRead::face_active`].
     fn is_boundary_face(&self, f: FaceIx) -> bool {
         self.face_kind(f) == FaceKind::Boundary
+    }
+    /// True if at least one cell of the face is active. Faces of a refined parent (all cells
+    /// inactive) are not active; use this to skip them when integrating over a face set.
+    fn face_active(&self, f: FaceIx) -> bool {
+        self.cell_active(self.face_left(f))
+            || self.face_right(f).is_some_and(|r| self.cell_active(r))
     }
     /// `(left, right)` cells of a face.
     fn face_cells(&self, f: FaceIx) -> (CellIx, Option<CellIx>) {

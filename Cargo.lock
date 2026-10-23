@@ -172,7 +172,9 @@ name = "sm-mesh-api"
 version = "0.0.0"
 dependencies = [
  "indexmap",
+ "schemars",
  "serde",
+ "serde_json",
  "sm-core",
  "smallvec",
  "thiserror",

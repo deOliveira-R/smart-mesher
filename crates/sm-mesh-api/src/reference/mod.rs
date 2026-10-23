@@ -252,6 +252,70 @@ impl ReferenceMesh {
         self.class_index = idx;
     }
 
+    /// Everything `set_class` checks, without changing anything.
+    fn check_set_class(&self, e: MeshEntity, c: &Classification) -> Result<()> {
+        Self::check_class(c)?;
+        let oob = || MeshError::OutOfRange(format!("{e:?}"));
+        match e {
+            MeshEntity::Vertex(v) => {
+                (v.get() < self.vclass.len())
+                    .then_some(())
+                    .ok_or_else(oob)?;
+            }
+            MeshEntity::Face(f) => {
+                let kind = *self.face_kind.get(f.get()).ok_or_else(oob)?;
+                let k = c.entity.kind();
+                let ok = match kind {
+                    FaceKind::Boundary => k == EntityKind::TopoFace,
+                    _ => {
+                        k == EntityKind::TopoFace
+                            || matches!(k, EntityKind::TopoVolume | EntityKind::PartitionCell)
+                    }
+                };
+                if !ok {
+                    return Err(MeshError::BadClassification(format!(
+                        "a {kind:?} face cannot be classified on {k:?}"
+                    )));
+                }
+            }
+            MeshEntity::Cell(cell) => {
+                if cell.get() >= self.cclass.len() {
+                    return Err(oob());
+                }
+                if !matches!(
+                    c.entity.kind(),
+                    EntityKind::TopoVolume | EntityKind::PartitionCell
+                ) {
+                    return Err(MeshError::BadClassification(
+                        "cells need a volume or partition cell".into(),
+                    ));
+                }
+            }
+            MeshEntity::Edge(i) => {
+                let t = self
+                    .edges
+                    .as_ref()
+                    .ok_or_else(|| MeshError::State("no edge table".into()))?;
+                (i.get() < t.class.len()).then_some(()).ok_or_else(oob)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store a class already accepted by `check_set_class`.
+    fn apply_class(&mut self, e: MeshEntity, c: Classification) {
+        match e {
+            MeshEntity::Vertex(v) => self.vclass[v.get()] = c,
+            MeshEntity::Face(f) => self.fclass[f.get()] = c,
+            MeshEntity::Cell(cell) => self.cclass[cell.get()] = c,
+            MeshEntity::Edge(i) => {
+                if let Some(t) = self.edges.as_mut() {
+                    t.class[i.get()] = c;
+                }
+            }
+        }
+    }
+
     fn check_class(c: &Classification) -> Result<()> {
         if c.dim().is_none() {
             return Err(MeshError::BadClassification(
@@ -294,29 +358,17 @@ impl MeshEdit for ReferenceMesh {
         Ok(PointIx::new(self.x.len() - 1))
     }
     fn set_class(&mut self, e: MeshEntity, c: Classification) -> Result<()> {
-        Self::check_class(&c)?;
-        let oob = || MeshError::OutOfRange(format!("{e:?}"));
-        match e {
-            MeshEntity::Vertex(v) => *self.vclass.get_mut(v.get()).ok_or_else(oob)? = c,
-            MeshEntity::Face(f) => *self.fclass.get_mut(f.get()).ok_or_else(oob)? = c,
-            MeshEntity::Cell(cell) => {
-                if !matches!(
-                    c.entity.kind(),
-                    EntityKind::TopoVolume | EntityKind::PartitionCell
-                ) {
-                    return Err(MeshError::BadClassification(
-                        "cells need a volume or partition cell".into(),
-                    ));
-                }
-                *self.cclass.get_mut(cell.get()).ok_or_else(oob)? = c;
-            }
-            MeshEntity::Edge(i) => {
-                let t = self
-                    .edges
-                    .as_mut()
-                    .ok_or_else(|| MeshError::State("no edge table".into()))?;
-                *t.class.get_mut(i.get()).ok_or_else(oob)? = c;
-            }
+        self.check_set_class(e, &c)?;
+        self.apply_class(e, c);
+        self.rebuild_class_index();
+        Ok(())
+    }
+    fn set_classes(&mut self, items: &[(MeshEntity, Classification)]) -> Result<()> {
+        for (e, c) in items {
+            self.check_set_class(*e, c)?;
+        }
+        for (e, c) in items {
+            self.apply_class(*e, *c);
         }
         self.rebuild_class_index();
         Ok(())
@@ -432,6 +484,9 @@ impl MeshEdit for ReferenceMesh {
         Ok(id)
     }
     fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()> {
+        if target == MeshEntityKind::Edge && self.edges.is_none() {
+            return Err(MeshError::State("no edge table for an edge tag".into()));
+        }
         let n = self.count(target);
         if values.len() != n {
             return Err(MeshError::OutOfRange(format!(
@@ -484,10 +539,11 @@ impl MeshEdit for ReferenceMesh {
                 && g.face_apex.len() == nf
                 && g.cell_volume.len() == nc
                 && g.cell_centroid.len() == nc
-                && g.connectivity_hash == crate::validate::connectivity_hash(self);
+                && g.connectivity_hash == crate::validate::connectivity_hash(self)
+                && g.coordinate_hash == crate::validate::coordinate_hash(self);
             if !ok {
                 return Err(MeshError::State(
-                    "geometry cache does not match this mesh (rule, sizes or connectivity hash)"
+                    "geometry cache does not match this mesh (rule, sizes, connectivity or coordinates)"
                         .into(),
                 ));
             }

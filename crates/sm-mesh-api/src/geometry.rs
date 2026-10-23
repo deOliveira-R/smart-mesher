@@ -165,6 +165,7 @@ pub fn compute_geometry_cache(m: &dyn MeshRead) -> GeometryCache {
     let mut g = GeometryCache {
         rule: FAN_VERTEX_MEAN_V1.to_string(),
         connectivity_hash: crate::validate::connectivity_hash(m),
+        coordinate_hash: crate::validate::coordinate_hash(m),
         face_area: Vec::with_capacity(nf),
         face_centroid: Vec::with_capacity(nf),
         face_apex: Vec::with_capacity(nf),

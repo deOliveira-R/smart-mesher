@@ -220,3 +220,27 @@ fn nonconformal_marking_is_checked() {
     let inner = interior_faces(&m)[0];
     assert!(MeshEdit::set_face_kind(&mut m, inner, FaceKind::NonConformal).is_err());
 }
+
+#[test]
+fn face_active_skips_the_faces_of_a_refined_parent() {
+    let (m, [a, _]) = refined(Some(FaceKind::NonConformal), false).unwrap();
+    let area = |f: FaceIx| face_area_vector(&m, f).norm();
+    let (mut all, mut active) = (0.0, 0.0);
+    for f in (0..m.face_count()).map(FaceIx::new) {
+        if m.face_left(f) == a && m.face_right(f).is_none() {
+            assert!(
+                !m.face_active(f),
+                "a parent's own one-cell face is inactive"
+            );
+        }
+        if m.is_boundary_face(f) {
+            all += area(f);
+            if m.face_active(f) {
+                active += area(f);
+            }
+        }
+    }
+    // The parent's 5 exposed faces are double counted without the filter.
+    assert!((all - 15.0).abs() < 1e-12, "{all}");
+    assert!((active - 10.0).abs() < 1e-12, "{active}");
+}

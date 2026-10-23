@@ -18,6 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable machine-readable code of a [`Violation`]; [`ViolationCode::as_str`] never changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ViolationCode {
     /// Ids are unordered, duplicated or of the wrong kind.
@@ -118,6 +120,8 @@ impl ViolationCode {
 
 /// One validation finding.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Violation {
     /// Stable code.
     pub code: ViolationCode,
@@ -425,6 +429,12 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
                 ViolationCode::Cache,
                 None,
                 "geometry cache was computed for different connectivity",
+            );
+        } else if g.coordinate_hash != coordinate_hash(m) {
+            s.add(
+                ViolationCode::Cache,
+                None,
+                "geometry cache was computed for different coordinates",
             );
         }
     }
@@ -1019,6 +1029,21 @@ pub fn connectivity_hash(m: &dyn MeshRead) -> u64 {
     h.0
 }
 
+/// Hash of the point coordinates only (bits of vertices and extra nodes). It keys the geometry
+/// cache together with [`connectivity_hash`], so a cache computed before a point moved is
+/// rejected by `validate` and `set_geometry_cache`.
+pub fn coordinate_hash(m: &dyn MeshRead) -> u64 {
+    let mut h = Hasher::new("smartmesh.coordinates.v1");
+    let co = m.coords();
+    h.u(co.len() as u64);
+    for i in 0..co.len() {
+        h.u(co.x[i].to_bits());
+        h.u(co.y[i].to_bits());
+        h.u(co.z[i].to_bits());
+    }
+    h.0
+}
+
 /// Hash of everything stored that is not a real-valued coordinate or parameter: the
 /// connectivity, class entities of vertices, edges, faces and cells, the edge table, high-order
 /// node indices, face-curve node indices, set members, integer tag values and the names and
@@ -1075,6 +1100,7 @@ pub fn topology_hash(m: &dyn MeshRead) -> u64 {
         }
     }
     h.u(u64::MAX);
+    h.u(m.sets().len() as u64);
     for st in m.sets() {
         h.u(st.id.to_raw());
         h.str(&st.name);
@@ -1085,6 +1111,7 @@ pub fn topology_hash(m: &dyn MeshRead) -> u64 {
             h.u(x.into());
         }
     }
+    h.u(m.tags().len() as u64);
     for t in m.tags() {
         h.str(&t.name);
         h.u(t.target as u64);

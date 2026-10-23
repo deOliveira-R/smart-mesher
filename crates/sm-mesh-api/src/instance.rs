@@ -32,6 +32,8 @@ use std::ops::Range;
 
 /// One placement of a prototype mesh.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Instance {
     /// Stable id (`EntityKind::Instance`); flatten order is ascending id.
     pub id: EntityId,
@@ -43,6 +45,8 @@ pub struct Instance {
 
 /// An instanced view: prototypes live in the catalog, the view only lists placements.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstancedView {
     /// Stable id of the view.
     pub id: EntityId,
@@ -87,6 +91,8 @@ pub struct FlattenOptions<'a> {
 
 /// What a flatten or append could not carry over.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum LossKind {
     /// A named set was dropped.
     Set(String),
@@ -100,6 +106,8 @@ pub enum LossKind {
 
 /// One dropped item and the instance it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LossNote {
     /// Instance whose prototype held the item.
     pub instance: EntityId,
@@ -184,6 +192,10 @@ pub fn compose(a: &Transform, b: &Transform) -> Transform {
 /// ([`crate::CellShape::reflect_permutation`]); the builder's `finish` re-applies the left/right
 /// rule. Welded faces are reclassified here; welded vertices are returned in
 /// [`AppendMap::welds`] for [`finalize_welds`].
+///
+/// **Not atomic**: on `Err` the builder may already hold some of the copy's vertices, faces and
+/// cells (`MeshBuild` has no vertex rollback). Discard the builder after an error; `flatten` and
+/// `unfold` do, since they take it by value.
 pub fn append_transformed<B: MeshBuild>(
     b: &mut B,
     src: &dyn MeshRead,
@@ -334,6 +346,8 @@ pub fn append_transformed<B: MeshBuild>(
                     }
                 };
                 b.set_class(crate::index::MeshEntityRef::Face(nf_ix), new)?;
+                // The seam is interior now: drop a NonConformal / PartitionCut mark.
+                b.set_face_kind(nf_ix, FaceKind::Boundary)?;
                 merged_faces.push(nf_ix);
             }
         }
@@ -559,6 +573,7 @@ fn flatten_items<B: MeshBuild>(
 /// Expand an instanced view into one mesh. Instances are placed in ascending id order, so the
 /// result is deterministic. With `weld_tol`, abutting instances share vertices and faces
 /// (a conforming flatten); otherwise they stay disjoint and meet through interface records.
+/// `alloc` is unchanged on `Err`.
 pub fn flatten<B: MeshBuild>(
     cat: &dyn MeshCatalog,
     view: EntityId,
@@ -585,7 +600,10 @@ pub fn flatten<B: MeshBuild>(
             })
         })
         .collect::<Result<_>>()?;
-    flatten_items(&items, b, o, alloc)
+    let mut a = alloc.clone();
+    let r = flatten_items(&items, b, o, &mut a)?;
+    *alloc = a;
+    Ok(r)
 }
 
 /// Unfold a reduced mesh by a deck of transforms (typically mirrors).
@@ -595,7 +613,7 @@ pub fn flatten<B: MeshBuild>(
 /// (image `k` uses `t_i` iff bit `i` of `k` is set). **The deck excludes the identity**, which is
 /// always image 0. Each image gets a fresh `Instance` id from `alloc` (ascending with `k`), which
 /// is what `remap_class` and the [`FlattenMap`] see. Use `weld_tol` so images touching along the
-/// mirror planes share vertices and faces. At most 16 transforms.
+/// mirror planes share vertices and faces. At most 16 transforms. `alloc` is unchanged on `Err`.
 pub fn unfold<B: MeshBuild>(
     src: &dyn MeshRead,
     deck: &[Transform],
@@ -608,6 +626,7 @@ pub fn unfold<B: MeshBuild>(
             "an unfold deck has at most 16 transforms".into(),
         ));
     }
+    let mut a = alloc.clone();
     let mut items = Vec::with_capacity(1 << deck.len());
     for k in 0..(1usize << deck.len()) {
         let mut t = Transform::IDENTITY;
@@ -617,12 +636,14 @@ pub fn unfold<B: MeshBuild>(
             }
         }
         items.push(Item {
-            id: alloc.one(EntityKind::Instance)?,
+            id: a.one(EntityKind::Instance)?,
             mesh: src,
             t,
         });
     }
-    flatten_items(&items, b, o, alloc)
+    let r = flatten_items(&items, b, o, &mut a)?;
+    *alloc = a;
+    Ok(r)
 }
 
 /// Helper for tests and callers: a point mirrored across the plane with unit normal `n` through `p0`.

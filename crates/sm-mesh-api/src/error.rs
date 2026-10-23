@@ -32,6 +32,10 @@ pub enum MeshError {
     /// An entity has no classification at `finish` and none could be derived.
     #[error("{0:?} is unclassified")]
     Unclassified(MeshEntity),
+    /// An edge (named by its vertex pair, since no table exists yet) has no explicit class and
+    /// none could be derived.
+    #[error("edge {0:?}-{1:?} is unclassified")]
+    UnclassifiedEdge(VertexIx, VertexIx),
     /// A classification names a non-model entity or carries a parameter of the wrong kind.
     #[error("bad classification: {0}")]
     BadClassification(String),

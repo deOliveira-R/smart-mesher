@@ -24,6 +24,8 @@ use std::collections::BTreeMap;
 /// Deterministic per-kind serial allocator. Serials are never reused; one allocator is shared by
 /// every mesh of a model so ids stay unique across hierarchy levels and instances.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SerialAlloc {
     next: BTreeMap<EntityKind, u64>,
 }
@@ -32,6 +34,29 @@ impl SerialAlloc {
     /// A fresh allocator (all kinds start at serial 0).
     pub fn new() -> Self {
         Self::default()
+    }
+    /// The next serial that `take` would hand out for `kind` (0 if none was taken yet).
+    pub fn next_serial(&self, kind: EntityKind) -> u64 {
+        self.next.get(&kind).copied().unwrap_or(0)
+    }
+    /// The counters in ascending kind order, for snapshots.
+    pub fn state(&self) -> impl Iterator<Item = (EntityKind, u64)> + '_ {
+        self.next.iter().map(|(k, n)| (*k, *n))
+    }
+    /// Restore an allocator from `(kind, next serial)` pairs (as produced by
+    /// [`SerialAlloc::state`]). A repeated kind or a serial above [`EntityId::MAX_SERIAL`] is an
+    /// error.
+    pub fn from_state(state: impl IntoIterator<Item = (EntityKind, u64)>) -> Result<Self> {
+        let mut next = BTreeMap::new();
+        for (k, n) in state {
+            if n > EntityId::MAX_SERIAL {
+                return Err(MeshError::SerialOverflow);
+            }
+            if next.insert(k, n).is_some() {
+                return Err(MeshError::State(format!("kind {k:?} given twice")));
+            }
+        }
+        Ok(Self { next })
     }
     /// Reserve `n` consecutive serials of `kind`; returns the first.
     pub fn take(&mut self, kind: EntityKind, n: usize) -> Result<u64> {
@@ -140,6 +165,7 @@ pub trait MeshBuild {
     fn set_class(&mut self, e: MeshEntityRef, c: Classification) -> Result<()>;
     /// Mark a one-cell face as [`FaceKind::NonConformal`] or [`FaceKind::PartitionCut`]
     /// (the default kinds are derived: two cells = `Interior`, one cell = `Boundary`).
+    /// Passing `Boundary` clears an earlier mark; `Interior` is rejected.
     fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()>;
     /// Record that `c` is a child of `parent` (refinement lineage). The parent must have a
     /// lower index than the child.
@@ -174,6 +200,9 @@ pub trait MeshBuild {
 
     /// Orient, canonicalise, validate incidence, assign ids and return the finished mesh with the
     /// face remap. The mesh id and all other ids come from `alloc`.
+    ///
+    /// **`alloc` is unchanged on `Err`**: ids are what the model history records, so a failed
+    /// attempt must not shift the ids of a later successful one.
     fn finish(self, alloc: &mut SerialAlloc) -> Result<Finished<Self::Output>>
     where
         Self: Sized;
@@ -264,7 +293,14 @@ fn add_poly<B: MeshBuild + ?Sized>(
     }
 }
 
-/// Topology-preserving edits of a finished mesh. Every edit that changes stored geometry
+/// Topology-preserving edits of a finished mesh.
+///
+/// Edits check the rules local to one entity (the parameter fits, a `Boundary` face stays on a
+/// `TopoFace`, a cell stays on a volume, an edge tag needs an edge table). They do **not** check
+/// rules that relate entities, such as the vertex <= edge <= face dimension order, so a caller
+/// that edits classifications should run [`crate::validate`] afterwards.
+///
+/// Every edit that changes stored geometry
 /// (`set_point`, `add_extra_node`) or the connectivity-keyed cache inputs drops the geometry
 /// cache; recompute it with [`crate::compute_geometry_cache`] and `set_geometry_cache`.
 pub trait MeshEdit: MeshRead {
@@ -274,6 +310,16 @@ pub trait MeshEdit: MeshRead {
     fn add_extra_node(&mut self, p: Point3) -> Result<PointIx>;
     /// Reclassify a vertex, edge, face or cell. The parameter must fit the entity kind.
     fn set_class(&mut self, e: MeshEntity, c: Classification) -> Result<()>;
+    /// Reclassify many entities at once; all-or-nothing (every item is checked before any is
+    /// applied). Implementations should rebuild their reverse index once, so reclassifying a
+    /// patch of `k` entities does not cost `k` full passes. The default loops over
+    /// [`MeshEdit::set_class`] and is not atomic.
+    fn set_classes(&mut self, items: &[(MeshEntity, Classification)]) -> Result<()> {
+        for (e, c) in items {
+            self.set_class(*e, *c)?;
+        }
+        Ok(())
+    }
     /// Change the kind of a one-cell face to `Boundary`, `NonConformal` or `PartitionCut`.
     fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()>;
     /// Set or clear a cell's high-order record (count-checked; polyhedra rejected).
@@ -281,7 +327,7 @@ pub trait MeshEdit: MeshRead {
     /// Set or clear a face's curvature record `(degree, basis, nodes)` (count-checked; the
     /// first nodes must be the face's loop vertices).
     fn set_face_curve(&mut self, f: FaceIx, c: Option<(u8, Basis, Vec<PointIx>)>) -> Result<()>;
-    /// Add a named set; its id comes from `alloc`.
+    /// Add a named set; its id comes from `alloc`, which is unchanged on `Err`.
     fn add_set(
         &mut self,
         name: &str,
@@ -291,7 +337,8 @@ pub trait MeshEdit: MeshRead {
     /// Add or replace a tag column.
     fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()>;
     /// Derive and attach the edge table (no-op if present). `explicit` gives classifications by
-    /// vertex pair; other edges are classified like `finish` does.
+    /// vertex pair; other edges are classified like `finish` does (see [`crate::EdgeTable::derive`]).
+    /// `alloc` is unchanged on `Err`.
     fn ensure_edges(
         &mut self,
         alloc: &mut SerialAlloc,
@@ -300,6 +347,6 @@ pub trait MeshEdit: MeshRead {
     /// Detach the edge table together with all edge-target tags.
     fn drop_edges(&mut self);
     /// Attach or drop a geometry cache. A cache whose rule, sizes or connectivity hash do not
-    /// match the mesh is rejected.
+    /// match the mesh (including the coordinate hash) is rejected.
     fn set_geometry_cache(&mut self, g: Option<GeometryCache>) -> Result<()>;
 }

@@ -4,13 +4,15 @@
 use crate::build::SerialAlloc;
 use crate::classify::Classification;
 use crate::error::{MeshError, Result};
-use crate::index::{CellIx, EdgeIx, FaceIx, FaceKind, MeshEntity, VertexIx};
+use crate::index::{CellIx, EdgeIx, FaceIx, FaceKind, VertexIx};
 use crate::read::MeshRead;
 use sm_core::{EntityId, EntityKind};
 use std::collections::BTreeMap;
 
 /// One face-edge incidence: the edge and whether the face loop traverses it low->high vertex.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FaceEdge {
     /// The edge.
     pub edge: EdgeIx,
@@ -20,6 +22,8 @@ pub struct FaceEdge {
 
 /// Derived edges: unique vertex pairs sorted lexicographically, plus face->edge CSR.
 #[derive(Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct EdgeTable {
     /// Stable ids (`EntityKind::MeshEdge`), ascending.
     pub ids: Vec<EntityId>,
@@ -41,11 +45,15 @@ pub fn edge_key(a: VertexIx, b: VertexIx) -> [VertexIx; 2] {
 impl EdgeTable {
     /// Derive the table from any mesh; ids come from `alloc`.
     ///
-    /// `explicit` gives classifications by (sorted) vertex pair. An edge without one is
-    /// classified on the volume or partition cell shared by all cells around it, but only if
-    /// none of its faces is a boundary, non-conformal or partition-cut face; otherwise
-    /// the derivation fails with [`MeshError::Unclassified`]. Pairs in `explicit` that are not
-    /// edges of the mesh are an error.
+    /// `explicit` gives classifications by (sorted) vertex pair. An edge without one takes the
+    /// classification its incident faces share, if they all share one (this classifies the edges
+    /// of a mesh whose boundary is a single model face, and every edge strictly inside a
+    /// volume). Otherwise, if no incident face is a boundary, non-conformal or partition-cut
+    /// face, it takes the volume or partition cell shared by all cells around it. An edge
+    /// that is still unclassified fails with [`MeshError::UnclassifiedEdge`] naming its vertices.
+    /// Pairs in `explicit` that are not edges of the mesh are an error.
+    ///
+    /// `alloc` is unchanged on `Err`: serials are drawn only after every check has passed.
     pub fn derive(
         m: &dyn MeshRead,
         alloc: &mut SerialAlloc,
@@ -64,25 +72,26 @@ impl EdgeTable {
                 "edge class given for {k:?}, which is not an edge of the mesh"
             )));
         }
-        let first = alloc.take(EntityKind::MeshEdge, map.len())?;
         let mut t = EdgeTable::default();
         for (i, (k, v)) in map.iter_mut().enumerate() {
             *v = i as u32;
             t.vertices.push(*k);
-            t.ids.push(
-                EntityId::new(EntityKind::MeshEdge, first + i as u64)
-                    .ok_or(MeshError::SerialOverflow)?,
-            );
         }
         t.face_off.push(0);
-        // Cells around each edge, found through the faces (sorted pairs, deduplicated).
-        let mut around: Vec<Vec<CellIx>> = vec![Vec::new(); t.vertices.len()];
-        let mut all_interior = vec![true; t.vertices.len()];
+        // Cells and face classes around each edge, found through the faces.
+        let ne = t.vertices.len();
+        let mut around: Vec<Vec<CellIx>> = vec![Vec::new(); ne];
+        let mut all_interior = vec![true; ne];
+        // Entity shared by all incident faces; `None` once two faces disagree.
+        let mut face_common: Vec<Option<Option<EntityId>>> = vec![None; ne];
         for f in 0..nf {
             let fi = FaceIx::new(f);
             let l = m.face_vertices(fi);
             let (left, right) = (m.face_left(fi), m.face_right(fi));
             let interior = m.face_kind(fi) == FaceKind::Interior;
+            let fc = m
+                .classification(crate::index::MeshEntityKind::Face, f as u32)
+                .entity;
             for i in 0..l.len() {
                 let (a, b) = (l[i], l[(i + 1) % l.len()]);
                 let e = map[&edge_key(a, b)] as usize;
@@ -93,6 +102,11 @@ impl EdgeTable {
                 all_interior[e] &= interior;
                 around[e].push(left);
                 around[e].extend(right);
+                face_common[e] = match face_common[e] {
+                    None => Some(Some(fc)),
+                    Some(Some(x)) if x == fc => Some(Some(x)),
+                    _ => Some(None),
+                };
             }
             t.face_off.push(t.face_edges.len() as u32);
         }
@@ -101,6 +115,8 @@ impl EdgeTable {
             cells.dedup();
             let c = if let Some(c) = explicit.get(&t.vertices[e]) {
                 *c
+            } else if let Some(Some(ent)) = face_common[e] {
+                Classification::on(ent)
             } else {
                 let mut it = cells
                     .iter()
@@ -109,10 +125,21 @@ impl EdgeTable {
                     Some(c0) if all_interior[e] && it.all(|c| c.entity == c0.entity) => {
                         Classification::on(c0.entity)
                     }
-                    _ => return Err(MeshError::Unclassified(MeshEntity::Edge(EdgeIx(e as u32)))),
+                    _ => {
+                        let [a, b] = t.vertices[e];
+                        return Err(MeshError::UnclassifiedEdge(a, b));
+                    }
                 }
             };
             t.class.push(c);
+        }
+        // Everything that can fail has passed: draw the ids.
+        // `take` checks the range before it writes, so it is atomic.
+        let first = alloc.take(EntityKind::MeshEdge, ne)?;
+        for i in 0..ne as u64 {
+            t.ids.push(
+                EntityId::new(EntityKind::MeshEdge, first + i).ok_or(MeshError::SerialOverflow)?,
+            );
         }
         Ok(t)
     }

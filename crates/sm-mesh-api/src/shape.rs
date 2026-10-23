@@ -16,6 +16,7 @@ use smallvec::SmallVec;
 
 /// Shape tag of a 3D cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CellShape {
     /// 4 triangles, 4 vertices.
@@ -32,6 +33,7 @@ pub enum CellShape {
 
 /// Shape tag of a face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FaceShape {
     /// Triangle.

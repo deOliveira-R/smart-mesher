@@ -164,7 +164,7 @@ impl MeshBuild for ReferenceBuilder {
     type Output = ReferenceMesh;
 
     fn add_vertex(&mut self, p: Point3) -> Result<VertexIx> {
-        if self.pts.len() >= u32::MAX as usize - 1 {
+        if self.pts.len() + self.extra.len() >= u32::MAX as usize - 1 {
             return Err(MeshError::TooLarge);
         }
         self.pts.push(p);
@@ -173,6 +173,9 @@ impl MeshBuild for ReferenceBuilder {
         Ok(VertexIx::new(self.pts.len() - 1))
     }
     fn add_extra_node(&mut self, p: Point3) -> Result<NodeRef> {
+        if self.pts.len() + self.extra.len() >= u32::MAX as usize - 1 {
+            return Err(MeshError::TooLarge);
+        }
         self.extra.push(p);
         Ok(NodeRef::Extra(self.extra.len() as u32 - 1))
     }
@@ -257,7 +260,7 @@ impl MeshBuild for ReferenceBuilder {
         if let Some(v) = l.iter().find(|v| v.get() >= self.pts.len()) {
             return Err(MeshError::UnknownVertex(*v));
         }
-        if self.nfaces() >= MAX_FACES - 1 {
+        if self.nfaces() >= MAX_FACES {
             return Err(MeshError::TooLarge);
         }
         let f = self.nfaces();
@@ -429,7 +432,11 @@ impl MeshBuild for ReferenceBuilder {
                 "Interior is derived from having two cells and cannot be set".into(),
             ));
         }
-        self.fkind.insert(f.0, kind);
+        if kind == FaceKind::Boundary {
+            self.fkind.remove(&f.0); // back to the derived default
+        } else {
+            self.fkind.insert(f.0, kind);
+        }
         Ok(())
     }
     fn set_cell_parent(&mut self, c: CellIx, parent: CellIx) -> Result<()> {
@@ -561,6 +568,16 @@ impl MeshBuild for ReferenceBuilder {
     }
 
     fn finish(self, alloc: &mut SerialAlloc) -> Result<Finished<ReferenceMesh>> {
+        // Run against a copy so a failed call draws no ids.
+        let mut a = alloc.clone();
+        let fin = self.finish_inner(&mut a)?;
+        *alloc = a;
+        Ok(fin)
+    }
+}
+
+impl ReferenceBuilder {
+    fn finish_inner(self, alloc: &mut SerialAlloc) -> Result<Finished<ReferenceMesh>> {
         let (nv, nf, nc) = (self.pts.len(), self.nfaces(), self.cells.len());
         let vclass: Vec<Classification> = self
             .vclass
