@@ -105,6 +105,14 @@ pub struct Meshed<M> {
     pub attempts: Vec<Attempt>,
 }
 
+impl<M> Meshed<M> {
+    /// The mesh vertex of a node: by the commit correspondence ([`Driver::commit`]) it is
+    /// `VertexIx(patches.index_of(key))`. `None` for a key the patch set does not hold.
+    pub fn vertex_of(&self, key: NodeKey) -> Option<VertexIx> {
+        self.patches.index_of(key).map(VertexIx)
+    }
+}
+
 /// The meshing driver. Holds the registry and the solvers; stateless otherwise, so one driver
 /// can mesh many models (and the same input always gives the same output).
 pub struct Driver<'r> {
@@ -173,7 +181,7 @@ impl<'r> Driver<'r> {
                 return Err(SchemeError::Input(format!("vertex {v} listed twice")));
             }
         }
-        let ctx = CheckCtx::new(plan);
+        let ctx = CheckCtx::new(plan, input);
         for wave in &plan.waves {
             let slots: Vec<Mutex<Option<Result<JobOut>>>> =
                 wave.iter().map(|_| Mutex::new(None)).collect();
@@ -338,6 +346,13 @@ impl<'r> Driver<'r> {
     /// whole when its elements run against the normal at their first element), and every curve
     /// segment classifies its facet on its edge. Faces whose normals disagree across a shared
     /// edge cannot form one oriented surface: `finish` reports the inconsistent facet.
+    ///
+    /// **Node correspondence (contract, W0f gaps 2).** Nodes become mesh vertices in
+    /// [`PatchSet::nodes`] order, so `VertexIx(i) == PatchSet::index_of(key) == i` for the
+    /// `i`-th node, in the builder and in the finished mesh (finishing does not renumber
+    /// vertices); [`Meshed::vertex_of`] reads it. `b` must therefore be an empty builder
+    /// (`SchemeError::Input` otherwise). There is no separate commit map: the target a cell or
+    /// face came from is its classification.
     pub fn commit<B: MeshBuild>(
         &self,
         input: &MeshInput<'_>,
@@ -352,8 +367,11 @@ impl<'r> Driver<'r> {
                 .ok_or(SchemeError::Unclassifiable { owner })
         };
         let mut verts: Vec<VertexIx> = Vec::with_capacity(ps.node_count());
-        for (k, pt, param) in ps.nodes() {
+        for (i, (k, pt, param)) in ps.nodes().enumerate() {
             let v = b.add_vertex(pt)?;
+            if v.get() != i {
+                return Err(SchemeError::Input("commit needs an empty builder: node i must become VertexIx(i)".into()));
+            }
             let ent = classify(k.owner)?;
             let param = if ent == k.owner && param.fits(ent.kind()) {
                 param
@@ -707,12 +725,13 @@ fn kind_of(e: &SchemeError) -> FailureKind {
 /// Patch-contract checks that need the plan: owners and claims.
 struct CheckCtx<'p> {
     plan: &'p Plan,
+    input: &'p MeshInput<'p>,
     members: BTreeMap<Target, Vec<EntityId>>,
     claimed: BTreeMap<Target, Vec<Target>>,
 }
 
 impl<'p> CheckCtx<'p> {
-    fn new(plan: &'p Plan) -> Self {
+    fn new(plan: &'p Plan, input: &'p MeshInput<'p>) -> Self {
         let mut members: BTreeMap<Target, Vec<EntityId>> = BTreeMap::new();
         for r in &plan.problem.constraints {
             if let MeshConstraint::Atomic { group, members: ms } = &r.item {
@@ -728,9 +747,23 @@ impl<'p> CheckCtx<'p> {
         }
         Self {
             plan,
+            input,
             members,
             claimed,
         }
+    }
+
+    /// Node keys of the embedded members of `parent` that its mesh must reference (the chains
+    /// of `GenCtx::embedded`).
+    fn embedded_keys(&self, parent: EntityId, out: &mut BTreeSet<NodeKey>) {
+        for e in self.input.embedded_edges(parent) {
+            if let (Some((a, b)), Some(n)) = (sm_topo_api::TopologyViewExt::edge_ends(self.input.topo, e), self.plan.intervals(e)) {
+                out.insert(NodeKey::vertex(a));
+                out.insert(NodeKey::vertex(b));
+                out.extend((1..n).map(|i| NodeKey::new(e, i)));
+            }
+        }
+        out.extend(self.input.embedded_vertices(parent).into_iter().map(NodeKey::vertex));
     }
 
     /// The patch contract: right target; nodes owned by the target, a group member or a
@@ -776,6 +809,23 @@ impl<'p> CheckCtx<'p> {
             }
             if !ref_set.insert(*r) {
                 return Err(bad(format!("reference {r:?} listed twice")));
+            }
+        }
+        // Embedded conformity (W0f gaps 2): a face or piece mesh references every node of its
+        // embedded members (and of those of the faces it claims).
+        if !matches!(t, Target::Curve(_)) {
+            let mut need: BTreeSet<NodeKey> = BTreeSet::new();
+            let parents: Vec<EntityId> = match t {
+                Target::Group(_) => self.members.get(&t).cloned().unwrap_or_default(),
+                _ => t.entity().into_iter().collect(),
+            };
+            for p in parents.iter().chain(claimed.iter().filter(|c| self.claimed[&t].contains(&Target::Surface(**c)))) {
+                self.embedded_keys(*p, &mut need);
+            }
+            if let Some(k) = need.iter().find(|k| !ref_set.contains(k)) {
+                return Err(bad(format!(
+                    "does not conform to its embedded members: node {k:?} is not referenced (a scheme must conform or report NotApplicable)"
+                )));
             }
         }
         // The curve rule, for a curve target and for every curve the target claims (a claimed

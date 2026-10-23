@@ -47,6 +47,7 @@ pub enum Origin {
 
 /// Relation of a [`IntervalConstraint::Linear`] row to its right-hand side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Rel {
     /// `sum == rhs`.
     Eq,
@@ -58,6 +59,7 @@ pub enum Rel {
 
 /// An interval constraint over curve interval counts (the IIA system).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum IntervalConstraint {
     /// The count of `edge` is `count` (hard: never changed; soft/default: a preferred value).
     Fixed {
@@ -117,6 +119,51 @@ impl IntervalConstraint {
             terms: acc.into_iter().filter(|x| x.1 != 0).collect(),
             rel: Rel::Eq,
             rhs: 0,
+        }
+    }
+
+    /// Canonical form: `Linear` terms sorted by edge with repeated edges merged (coefficients
+    /// add; zero terms dropped), `EvenSum` edges sorted (multiplicity kept).
+    pub fn canonicalize(&mut self) {
+        match self {
+            IntervalConstraint::Linear { terms, .. } => {
+                let mut acc: BTreeMap<EntityId, i64> = BTreeMap::new();
+                for (e, c) in terms.iter() {
+                    *acc.entry(*e).or_insert(0) += i64::from(*c);
+                }
+                *terms = acc.into_iter().filter(|x| x.1 != 0).map(|(e, c)| (e, c.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)).collect();
+            }
+            IntervalConstraint::EvenSum { edges } => edges.sort_unstable(),
+            _ => {}
+        }
+    }
+
+    /// Check a user row (W0f gaps 2, `MeshIntent::intervals`): every edge is a `TopoEdge` or
+    /// `PartitionEdge`; `Fixed` counts and `Range` minimums are at least 1 and a maximum is not
+    /// below its minimum; a `Goal` is finite and positive; a `Linear` row has at least one term,
+    /// no zero coefficient and a right-hand side within `±2^53`; an `EvenSum` lists an edge.
+    pub fn check(&self) -> Result<()> {
+        let bad = |m: String| Err(SchemeError::Input(format!("interval row: {m}")));
+        if let Some(e) = self.edges().into_iter().find(|e| !matches!(e.kind(), sm_core::EntityKind::TopoEdge | sm_core::EntityKind::PartitionEdge)) {
+            return bad(format!("{e} is not an edge"));
+        }
+        match self {
+            IntervalConstraint::Fixed { count: 0, .. } => bad("a fixed count must be >= 1".into()),
+            IntervalConstraint::Goal { goal, .. } if !(goal.is_finite() && *goal > 0.0) => bad("a goal must be positive and finite".into()),
+            IntervalConstraint::Range { min, max, .. } if *min == 0 || max.is_some_and(|m| m < *min) => bad("a range needs 1 <= min <= max".into()),
+            IntervalConstraint::Linear { terms, rhs, .. } => {
+                if terms.is_empty() {
+                    bad("a linear row needs a term".into())
+                } else if terms.iter().any(|t| t.1 == 0) {
+                    bad("a linear row has a zero coefficient".into())
+                } else if rhs.unsigned_abs() > 1 << 53 {
+                    bad("the right-hand side is out of range".into())
+                } else {
+                    Ok(())
+                }
+            }
+            IntervalConstraint::EvenSum { edges } if edges.is_empty() => bad("an even-sum row needs an edge".into()),
+            _ => Ok(()),
         }
     }
 

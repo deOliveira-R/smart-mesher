@@ -135,12 +135,22 @@ impl<'r> Driver<'r> {
             vol_faces.insert(*v, f);
         }
         let faces: Vec<EntityId> = faces.into_iter().collect();
-        let edges = sorted(faces.iter().flat_map(|f| input.face_edges(*f)).collect());
+        // Embedded members (W0f gaps 2): the wire edges and points of every selected face and
+        // piece get curve targets and vertex nodes, so the parent's mesh can conform to them.
+        let parents = || faces.iter().chain(volumes.iter());
+        let edges = sorted(
+            faces
+                .iter()
+                .flat_map(|f| input.face_edges(*f))
+                .chain(parents().flat_map(|p| input.embedded_edges(*p)))
+                .collect(),
+        );
         let vertices = sorted(
             edges
                 .iter()
                 .filter_map(|e| input.topo.edge_ends(*e))
                 .flat_map(|(a, b)| [a, b])
+                .chain(parents().flat_map(|p| input.embedded_vertices(*p)))
                 .collect(),
         );
         Ok(Region {
@@ -1426,20 +1436,27 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// The strict sub-entities of `t` a requirement may be about.
     fn children_of(&self, t: Target) -> Result<BTreeSet<Target>> {
         let mut out = BTreeSet::new();
+        // Boundary edges and embedded (wire) edges of a face are its curve children.
         let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
             out.insert(Target::Surface(f));
-            for e in self.input.face_edges(f) {
+            for e in self.input.face_edges(f).into_iter().chain(self.input.embedded_edges(f)) {
+                out.insert(Target::Curve(e));
+            }
+        };
+        let add_embedded = |v: EntityId, out: &mut BTreeSet<Target>| {
+            for e in self.input.embedded_edges(v) {
                 out.insert(Target::Curve(e));
             }
         };
         match t {
             Target::Curve(_) => {}
             Target::Surface(f) => {
-                for e in self.input.face_edges(f) {
+                for e in self.input.face_edges(f).into_iter().chain(self.input.embedded_edges(f)) {
                     out.insert(Target::Curve(e));
                 }
             }
             Target::Volume(v) => {
+                add_embedded(v, &mut out);
                 for f in self
                     .region
                     .vol_faces
@@ -1454,6 +1471,7 @@ impl<'a, 'r> Planner<'a, 'r> {
                 for (id, members) in &self.region.groups {
                     if *id == g {
                         for m in members {
+                            add_embedded(*m, &mut out);
                             for f in self
                                 .region
                                 .vol_faces
@@ -1632,6 +1650,15 @@ impl<'a, 'r> Planner<'a, 'r> {
             };
             self.p.push_interval(c.0, c.1);
         }
+        // User relations between edges, in intent order.
+        for r in &intent.intervals {
+            if let Some(e) = r.edges().into_iter().find(|e| self.region.edges.binary_search(e).is_err()) {
+                return Err(SchemeError::Input(format!("interval row names {e}, which is not an edge of the region")));
+            }
+            let mut r = r.clone();
+            r.canonicalize();
+            self.p.push_interval(Origin::Intent, r);
+        }
         Ok(())
     }
 
@@ -1642,16 +1669,24 @@ impl<'a, 'r> Planner<'a, 'r> {
         for t in &self.intent.transforms {
             let mut targets: Vec<Target> = Vec::new();
             for e in &t.targets {
-                if self.region.volumes.binary_search(e).is_err() {
+                // Pieces (their group's patch for a grouped one), and faces and curves inside
+                // the region (W0f gaps 2: smoothing a surface before a sweep, surface meshes).
+                let target = if self.region.volumes.binary_search(e).is_ok() {
+                    match self.region.grouped.get(e) {
+                        Some(g) => Target::Group(*g),
+                        None => Target::Volume(*e),
+                    }
+                } else if self.region.faces.binary_search(e).is_ok() {
+                    Target::Surface(*e)
+                } else if self.region.edges.binary_search(e).is_ok() {
+                    Target::Curve(*e)
+                } else {
                     return Err(SchemeError::Input(format!(
-                        "transform {:?}: {e} is not a selected piece",
+                        "transform {:?}: {e} is not a selected piece, nor a face or curve of the region",
                         t.id
                     )));
-                }
-                targets.push(match self.region.grouped.get(e) {
-                    Some(g) => Target::Group(*g),
-                    None => Target::Volume(*e),
-                });
+                };
+                targets.push(target);
             }
             out.push(TransformPlan {
                 id: t.id,

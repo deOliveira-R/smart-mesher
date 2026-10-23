@@ -243,18 +243,24 @@ pub struct MeshGroup {
     pub conversion: Option<SchemeChoice>,
 }
 
-/// A standalone mesh transform over volume targets: a **topology-preserving patch edit**
-/// (smoothing, node snapping, reclassification of a generated patch) through a registered
-/// [`crate::MeshTransform`]. Runs after every writer of its targets; the driver swaps in the
-/// rewritten patches only if all succeed. Element conversions (THex, HTet, QTri, TQuad) are not
+/// A standalone mesh transform: a **topology-preserving patch edit** (smoothing, node
+/// snapping, reclassification of a generated patch) through a registered
+/// [`crate::MeshTransform`]. Targets are pieces and, W0f gaps 2, faces and curves inside the
+/// region. Runs after every writer of its targets (transforms over a target chain in id
+/// order); the last transform over a target is the writer its readers depend on, so a volume
+/// meshed after a surface smoothing reads the smoothed patch and a copy of a transformed root
+/// is generated from the transformed patch. A transform cannot cover a target together with
+/// one of its readers (a dependency cycle). The driver swaps in the rewritten patches only if
+/// all succeed. Element conversions (THex, HTet, QTri, TQuad) are not
 /// transforms: they are IR -> IR passes over `MeshRead -> MeshBuild` (see `DESIGN.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TransformIntent {
     /// Id (unique within the intent, below [`TransformId::GROUP_BASE`]).
     pub id: TransformId,
-    /// The converted pieces (`TopoVolume` or `PartitionCell` ids; a member of a group converts
-    /// the group's patch).
+    /// The transformed targets: pieces (`TopoVolume` or `PartitionCell` ids; a member of a
+    /// group transforms the group's patch), faces (`TopoFace` / `PartitionFace`) and curves of
+    /// the region.
     pub targets: Vec<EntityId>,
     /// The registered [`crate::MeshTransform`] and its parameters.
     pub transform: SchemeChoice,
@@ -328,9 +334,15 @@ pub struct MeshIntent {
     /// Atomic groups.
     #[serde(default)]
     pub groups: Vec<MeshGroup>,
-    /// Standalone topology-preserving mesh transforms over volume targets.
+    /// Standalone topology-preserving mesh transforms over volume targets (and, W0f gaps 2,
+    /// over faces and curves inside the region).
     #[serde(default)]
     pub transforms: Vec<TransformIntent>,
+    /// User interval relations between edges (W0f gaps 2; PARITY C P1): match intervals
+    /// (`sum_equal`), relative intervals and sums over a chain, as rows of the IIA system. The
+    /// planner adds each row with `Origin::Intent`; every edge must be in the region.
+    #[serde(default)]
+    pub intervals: Vec<crate::problem::IntervalConstraint>,
     /// Defaults.
     #[serde(default)]
     pub defaults: Defaults,
@@ -376,6 +388,9 @@ impl MeshIntent {
             t.targets.dedup();
         }
         self.transforms.sort_by_key(|t| t.id);
+        for r in &mut self.intervals {
+            r.canonicalize();
+        }
     }
 
     /// Validate what the type system cannot: parameters are Op-codec values, group and
@@ -452,6 +467,9 @@ impl MeshIntent {
                 return bad(format!("transform {:?} has no targets", t.id));
             }
             params(&format!("transform {:?}", t.id), &t.transform)?;
+        }
+        for r in &self.intervals {
+            r.check()?;
         }
         if let Some(SizingSpec::Function { params: p, .. }) = &self.defaults.sizing {
             p.check()

@@ -13,7 +13,7 @@ use crate::vertex::FaceLayout;
 use sm_core::{EntityId, Point3};
 use sm_mesh_api::Param;
 use sm_model_api::{Model, PieceFace, PieceRef};
-use sm_topo_api::{CellFlags, CoedgeKey, Side, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellFlags, CoedgeKey, Dim, Incidence, Side, TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
 
 /// Whether a scheme can mesh a target, with a score for automatic selection.
@@ -207,6 +207,38 @@ impl MeshInput<'_> {
             .collect()
     }
 
+    /// Embedded (wire) edges of a face or piece (`Incidence::EMBEDDED` edge members of its
+    /// boundary row in the view; pole edges skipped), ascending (W0f gaps 2). The planner gives
+    /// each one a curve target, the parent's scheme must conform to it (see
+    /// [`GenCtx::embedded`]).
+    pub fn embedded_edges(&self, parent: EntityId) -> Vec<EntityId> {
+        let t = self.topo;
+        let mut v: Vec<EntityId> = t
+            .boundary(parent)
+            .iter()
+            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Edge) && !t.flags(i.cell).contains(CellFlags::DEGENERATE))
+            .map(|i| i.cell)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Embedded vertices of a face or piece (`Incidence::EMBEDDED` vertex members), ascending.
+    /// Each gets a vertex node the parent's mesh must contain.
+    pub fn embedded_vertices(&self, parent: EntityId) -> Vec<EntityId> {
+        let t = self.topo;
+        let mut v: Vec<EntityId> = t
+            .boundary(parent)
+            .iter()
+            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Vertex))
+            .map(|i| i.cell)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     /// The piece of a volume-target id.
     pub fn piece(&self, id: EntityId) -> Option<PieceRef> {
         piece_of(id)
@@ -290,7 +322,9 @@ pub struct GenCtx<'a> {
     pub input: &'a MeshInput<'a>,
     /// The plan.
     pub plan: &'a Plan,
-    /// Patches of earlier waves.
+    /// Patches of earlier waves. A target's patch here is the one left by every transform over
+    /// it (W0f gaps 2: the last transform over a target is the writer its readers depend on, so
+    /// a later wave sees the transformed patch).
     pub patches: &'a PatchSet,
     /// The size field, if any.
     pub size: Option<&'a dyn SizeField>,
@@ -366,6 +400,32 @@ impl GenCtx<'_> {
             }
             if !bl.nodes.is_empty() {
                 out.push(bl);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The embedded members of a face or piece `parent` as node chains (W0f gaps 2): one chain
+    /// per embedded edge, ascending by edge, `[start, (e,1)..(e,n-1), end]` in the edge's own
+    /// direction ([`GenCtx::edge_nodes`]), then a one-node chain `[(v,0)]` for each embedded
+    /// vertex that ends no embedded edge. Every key exists before the parent is generated (the
+    /// parent's job reads the embedded curves). **Contract:** a scheme meshing a face or piece
+    /// with embedded members must conform to them (every chain node is a node of its mesh,
+    /// every chain segment an element edge, referenced through these keys) or report
+    /// `NotApplicable`; the driver rejects a patch that does not reference every chain node.
+    pub fn embedded(&self, parent: EntityId) -> Result<Vec<Vec<NodeKey>>> {
+        let mut out: Vec<Vec<NodeKey>> = Vec::new();
+        let mut ends: Vec<EntityId> = Vec::new();
+        for e in self.input.embedded_edges(parent) {
+            let chain = self.edge_nodes(e).ok_or_else(|| SchemeError::Input(format!("embedded edge {e} has no interval count")))?;
+            if let Some((a, b)) = self.input.topo.edge_ends(e) {
+                ends.extend([a, b]);
+            }
+            out.push(chain);
+        }
+        for v in self.input.embedded_vertices(parent) {
+            if !ends.contains(&v) {
+                out.push(vec![NodeKey::vertex(v)]);
             }
         }
         Ok(out)
