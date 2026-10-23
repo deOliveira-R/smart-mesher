@@ -6,7 +6,7 @@
 //! volumes swept as one; it claims the interface faces and the target), plus plan-level
 //! `mapvol`, `tetvol`, `polyvol`. Transforms: `noop`, `boom`. Fixtures: bricks and a row of
 //! merged bricks. Shared by several test binaries.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::needless_range_loop)]
 
 use core::f64::consts::FRAC_PI_2;
 use serde::{Deserialize, Serialize};

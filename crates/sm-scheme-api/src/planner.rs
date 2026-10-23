@@ -149,6 +149,9 @@ struct Planner<'a, 'r> {
     closed: BTreeSet<ConstraintId>,
     checked: usize,
     tol: f64,
+    /// Impositions by constrained child (append-only, synced before each resolve).
+    imp_ix: BTreeMap<Target, Vec<usize>>,
+    imp_seen: usize,
 }
 
 impl<'a, 'r> Planner<'a, 'r> {
@@ -195,6 +198,8 @@ impl<'a, 'r> Planner<'a, 'r> {
             closed: BTreeSet::new(),
             checked: 0,
             tol,
+            imp_ix: BTreeMap::new(),
+            imp_seen: 0,
         }
     }
 
@@ -465,7 +470,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             if matches!(root_plan.selection, Selection::Copy { .. }) {
                 return Err(SchemeError::Input(format!("copy root {:?} was planned as a copy", class.root)));
             }
-            let (rscheme, rcaps) = (root_plan.scheme.clone(), if matches!(root_plan.selection, Selection::Claimed { .. }) { root_plan.caps } else { root_plan.caps.without(Caps::INHERIT) });
+            let rcaps = if matches!(root_plan.selection, Selection::Claimed { .. }) { root_plan.caps } else { root_plan.caps.without(Caps::INHERIT) };
             for m in &class.members {
                 let tp = self.plans.get_mut(&m.target).ok_or_else(|| SchemeError::Input(format!("copy member {:?} was not planned", m.target)))?;
                 match tp.selection {
@@ -477,19 +482,22 @@ impl<'a, 'r> Planner<'a, 'r> {
                     _ => return Err(SchemeError::Input(format!("copy member {:?} was planned with its own scheme", m.target))),
                 }
             }
-            // Impositions on members are checked against what actually meshes them.
-            for imp in &self.p.impositions {
-                let Some(m) = class.members.iter().find(|m| m.target == imp.item.child) else { continue };
-                let (name, caps) = match self.plans.get(&m.target).map(|t| &t.selection) {
-                    Some(Selection::Claimed { by }) => {
-                        let bp = self.plans.get(by).ok_or_else(|| SchemeError::Input(format!("claimer {by:?} was not planned")))?;
-                        (bp.scheme.clone(), child_caps(bp.caps))
-                    }
-                    _ => (rscheme.clone(), rcaps),
-                };
-                if violates(&imp.item.need, &name, caps) {
-                    return Err(SchemeError::ImpositionConflict { child: m.target, imposed_by: imp.item.by, required: imp.item.need.clone(), conflict: format!("it is meshed as a copy of {:?} by `{name}`", class.root) });
+        }
+        // Impositions on members are checked against what actually meshes them.
+        for imp in &self.p.impositions {
+            let Some(&(ci, Some(mi))) = self.class_ix.get(&imp.item.child) else { continue };
+            let class = &self.classes[ci];
+            let m = &class.members[mi];
+            let root = self.plans.get(&class.root).ok_or_else(|| SchemeError::Input(format!("copy root {:?} was not planned", class.root)))?;
+            let (name, caps) = match self.plans.get(&m.target).map(|t| &t.selection) {
+                Some(Selection::Claimed { by }) => {
+                    let bp = self.plans.get(by).ok_or_else(|| SchemeError::Input(format!("claimer {by:?} was not planned")))?;
+                    (bp.scheme.clone(), child_caps(bp.caps))
                 }
+                _ => (root.scheme.clone(), if matches!(root.selection, Selection::Claimed { .. }) { root.caps } else { root.caps.without(Caps::INHERIT) }),
+            };
+            if violates(&imp.item.need, &name, caps) {
+                return Err(SchemeError::ImpositionConflict { child: m.target, imposed_by: imp.item.by, required: imp.item.need.clone(), conflict: format!("it is meshed as a copy of {:?} by `{name}`", class.root) });
             }
         }
         // A copy plan must belong to a class.
@@ -565,12 +573,23 @@ impl<'a, 'r> Planner<'a, 'r> {
         if let Some(&(ci, None)) = self.class_ix.get(&t) {
             subjects.extend(self.classes[ci].members.iter().filter(|m| m.mode == CopyMode::Generate).map(|m| m.target));
         }
-        self.p
-            .impositions
+        subjects
             .iter()
-            .filter(|r| subjects.contains(&r.item.child))
-            .map(|r| NeedRef { child: r.item.child, need: r.item.need.clone(), firmness: r.item.firmness, by: r.item.by, id: r.id, from_intent: r.origin == Origin::Intent })
+            .flat_map(|s| self.imp_ix.get(s).into_iter().flatten().copied())
+            .collect::<BTreeSet<usize>>()
+            .into_iter()
+            .map(|i| {
+                let r = &self.p.impositions[i];
+                NeedRef { child: r.item.child, need: r.item.need.clone(), firmness: r.item.firmness, by: r.item.by, id: r.id, from_intent: r.origin == Origin::Intent }
+            })
             .collect()
+    }
+
+    fn sync_impositions(&mut self) {
+        for i in self.imp_seen..self.p.impositions.len() {
+            self.imp_ix.entry(self.p.impositions[i].item.child).or_default().push(i);
+        }
+        self.imp_seen = self.p.impositions.len();
     }
 
     fn att(&self, t: Target, name: &SchemeName, kind: FailureKind, msg: impl Into<String>) -> Attempt {
@@ -627,6 +646,7 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// set or the auto list. Returns the plan and whether the winner is a hard intent.
     fn resolve(&mut self, t: Target) -> Result<(TargetPlan, bool)> {
         let dim = t.dim();
+        self.sync_impositions();
         let needs = self.needs_for(t);
         // Impositions by name intersect; an empty intersection is a conflict between parents.
         let mut allowed: Option<(Vec<SchemeName>, Target)> = None;

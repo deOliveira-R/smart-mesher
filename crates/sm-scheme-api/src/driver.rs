@@ -116,7 +116,7 @@ pub struct Driver<'r> {
 
 /// What one job produced.
 enum JobOut {
-    Patch(Patch),
+    Patch(Box<Patch>),
     Transformed(Vec<Patch>),
 }
 
@@ -159,7 +159,7 @@ impl<'r> Driver<'r> {
                 match (job, out) {
                     (Job::Generate(t), JobOut::Patch(patch)) => {
                         ctx.check_patch(&ps, *t, &patch)?;
-                        let (main, children) = ctx.split_claims(*t, patch)?;
+                        let (main, children) = ctx.split_claims(*t, *patch)?;
                         for c in children {
                             let target = c.target;
                             ps.insert(c).map_err(|k| SchemeError::InvalidPatch { target, reason: format!("duplicate node {k:?}") })?;
@@ -198,11 +198,11 @@ impl<'r> Driver<'r> {
                 if let Selection::Copy { .. } = tp.selection {
                     let (class, m) = plan.copy_of(t).ok_or_else(|| SchemeError::Input(format!("{t:?}: copy without a class")))?;
                     let p = copy::copy_patch(input.topo, ps, class.root, t, &m.from_root, &m.vertex_map, &|e| plan.intervals(e))?;
-                    return Ok(JobOut::Patch(p));
+                    return Ok(JobOut::Patch(Box::new(p)));
                 }
                 let s = self.registry.get(t.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: t })?;
                 let cx = GenCtx { input, plan, patches: ps, size };
-                Ok(JobOut::Patch(s.generate(&cx, t, &tp.params)?))
+                Ok(JobOut::Patch(Box::new(s.generate(&cx, t, &tp.params)?)))
             }
             Job::Transform(id) => {
                 let tp = plan.transforms.iter().find(|x| x.id == id).ok_or_else(|| SchemeError::Input(format!("transform {id:?} is not planned")))?;
