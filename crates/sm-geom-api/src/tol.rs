@@ -38,6 +38,9 @@ pub struct ModelTolerance {
 /// `2^-10`, the hash quantization fraction.
 const QUANT_FRACTION: f64 = 1.0 / 1024.0;
 
+/// `2^-40`, the relative step of [`ModelTolerance::quantize_scale_free`].
+const SCALE_FREE_STEP: f64 = 1.0 / 1_099_511_627_776.0;
+
 impl ModelTolerance {
     /// Default policy: 1e-6 length, 1e-9 rad, 1e-9 parameter, cap 1e-3 (a unit-size model).
     pub const DEFAULT: Self = Self { linear: 1e-6, angular: 1e-9, parametric: 1e-9, linear_max: 1e-3 };
@@ -99,6 +102,29 @@ impl ModelTolerance {
         }
     }
 
+    /// Quantize one value of a shape definition whose largest scale-free magnitude is `scale`
+    /// (see [`Self::quantize_scale_free_in`]). Content hashes use this through
+    /// [`crate::CurveDef::quantized_values`] / [`crate::SurfaceDef::quantized_values`].
+    pub fn quantize_shape_in(&self, v: crate::ShapeValue, scale: f64) -> i64 {
+        match v {
+            crate::ShapeValue::Unitless(x) => self.quantize_scale_free_in(x, scale),
+            other => self.quantize_shape(other),
+        }
+    }
+
+    /// [`Self::quantize_scale_free`] with the zero cutoff relative to `scale`, the largest
+    /// scale-free magnitude of the same definition: `|x| < max(parametric * 2^-10, scale * 2^-40)`
+    /// maps to 0. `2^-40` is the relative step of the mantissa rounding, so a value below one
+    /// step of the definition's largest value (cancellation noise after a large translation, e.g.
+    /// a cross term of a translated quadric) hashes as zero. A non-finite `scale` is ignored.
+    pub fn quantize_scale_free_in(&self, x: f64, scale: f64) -> i64 {
+        let rel = if scale.is_finite() { scale.abs() * SCALE_FREE_STEP } else { 0.0 };
+        if x.is_finite() && x.abs() < rel {
+            return 0;
+        }
+        self.quantize_scale_free(x)
+    }
+
     /// Quantize `x` with step `q` (see the type-level rule).
     pub fn quantize_with(x: f64, q: f64) -> i64 {
         if x.is_nan() || q.is_nan() || q <= 0.0 {
@@ -115,7 +141,9 @@ impl ModelTolerance {
     /// rounded to 40 bits (relative step about 1e-12) and packed with the biased exponent and
     /// sign into an `i64`. The result never saturates for finite input. A few ulp of noise is far
     /// below one step, including just below a power of two (the rounding carry moves into the
-    /// exponent). The zero cutoff is absolute, not relative to the definition's scale. NaN maps to `i64::MIN`, `+-inf` to `+-i64::MAX`.
+    /// exponent). The zero cutoff here is absolute; content hashes use
+    /// [`Self::quantize_scale_free_in`], which also zeroes values below one relative step of the
+    /// largest scale-free value of the same definition. NaN maps to `i64::MIN`, `+-inf` to `+-i64::MAX`.
     pub fn quantize_scale_free(&self, x: f64) -> i64 {
         if x.is_nan() {
             return i64::MIN;
@@ -203,6 +231,23 @@ mod tests {
             }
             assert!(t.quantize_scale_free(1.0) < t.quantize_scale_free(1.0 + 1e-9));
         }
+    }
+
+    #[test]
+    fn scale_free_cutoff_is_relative_to_the_definition() {
+        let t = ModelTolerance::DEFAULT;
+        // Cancellation noise next to a large coefficient hashes as zero ...
+        let big = 4.0e12;
+        let noise = big * f64::EPSILON * 8.0;
+        assert_ne!(t.quantize_scale_free(noise), 0);
+        assert_eq!(t.quantize_scale_free_in(noise, big), 0);
+        assert_eq!(t.quantize_scale_free_in(-noise, big), 0);
+        // ... while values above one relative step keep their code.
+        assert_eq!(t.quantize_scale_free_in(10.0, big), t.quantize_scale_free(10.0));
+        assert_eq!(t.quantize_scale_free_in(1.0, big), 0, "below one relative step of 4e12");
+        assert_eq!(t.quantize_scale_free_in(big, big), t.quantize_scale_free(big));
+        assert_eq!(t.quantize_scale_free_in(1e-3, 1.0), t.quantize_scale_free(1e-3));
+        assert_eq!(t.quantize_scale_free_in(1e-3, f64::INFINITY), t.quantize_scale_free(1e-3));
     }
 
     #[test]

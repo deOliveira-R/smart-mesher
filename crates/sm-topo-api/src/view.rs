@@ -149,7 +149,8 @@ pub trait TopologyView: Send + Sync {
     /// `ModelTolerance::param_quantum()` (see [`ModelTolerance`] for the exact rule), so equal
     /// complexes hash equal on every platform. Covered: tolerance policy, revision, every curve and
     /// surface definition by value (lengths, angles and unitless values each quantized per
-    /// [`ModelTolerance`]), every live
+    /// [`ModelTolerance`]; a unitless value below one relative step of the largest unitless value
+    /// of its definition hashes as zero, see `CurveDef::quantized_values`), every live
     /// cell (id, birth op, flags, quantized tolerance override, carrier, boundary row), the
     /// pcurves by content, shell kinds, coincidence records and the full lineage log.
     fn canonical_hash(&self) -> u64 {
@@ -167,14 +168,14 @@ pub trait TopologyView: Send + Sync {
             let def = EntityId::new(EntityKind::Curve, n as u64).and_then(|id| shapes.curve_def(id));
             match def {
                 None => h.u64(u64::MAX),
-                Some(d) => d.for_each_value(|v| h.i64(tol.quantize_shape(v))),
+                Some(d) => d.quantized_values(&tol, |c| h.i64(c)),
             }
         }
         for n in 0..shapes.surface_count() {
             let def = EntityId::new(EntityKind::Surface, n as u64).and_then(|id| shapes.surface_def(id));
             match def {
                 None => h.u64(u64::MAX),
-                Some(d) => d.for_each_value(|v| h.i64(tol.quantize_shape(v))),
+                Some(d) => d.quantized_values(&tol, |c| h.i64(c)),
             }
         }
         for dim in Dim::ALL {

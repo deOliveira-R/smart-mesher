@@ -120,7 +120,28 @@ fn finite_pos(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 
+/// Largest `|x|` of the scale-free values a definition visits.
+fn unitless_scale(visit: impl FnOnce(&mut dyn FnMut(ShapeValue))) -> f64 {
+    let mut m = 0.0f64;
+    visit(&mut |v| {
+        if let ShapeValue::Unitless(x) = v
+            && x.is_finite()
+        {
+            m = m.max(x.abs());
+        }
+    });
+    m
+}
+
 impl CurveDef {
+    /// The hash codes of the definition, in [`Self::for_each_value`] order: each value goes
+    /// through [`crate::ModelTolerance::quantize_shape_in`] with the largest scale-free magnitude
+    /// of this definition, so cancellation noise next to a large coefficient hashes as zero.
+    pub fn quantized_values(&self, tol: &crate::ModelTolerance, mut f: impl FnMut(i64)) {
+        let scale = unitless_scale(|g| self.for_each_value(g));
+        self.for_each_value(|v| f(tol.quantize_shape_in(v, scale)));
+    }
+
     /// Visit every number of the definition in a fixed order (variant tag first), each tagged
     /// with its quantization class. Content hashes are built from this.
     pub fn for_each_value(&self, mut f: impl FnMut(ShapeValue)) {
@@ -178,6 +199,12 @@ impl CurveDef {
 }
 
 impl SurfaceDef {
+    /// The hash codes of the definition (see [`CurveDef::quantized_values`]).
+    pub fn quantized_values(&self, tol: &crate::ModelTolerance, mut f: impl FnMut(i64)) {
+        let scale = unitless_scale(|g| self.for_each_value(g));
+        self.for_each_value(|v| f(tol.quantize_shape_in(v, scale)));
+    }
+
     /// Visit every number of the definition in a fixed order (variant tag first), each tagged
     /// with its quantization class. Content hashes are built from this.
     pub fn for_each_value(&self, mut f: impl FnMut(ShapeValue)) {
@@ -452,6 +479,35 @@ mod tests {
         let mut c = Vec::new();
         CurveDef::Line(Line::new(Point3::default(), Vector3::new(1.0, 0.0, 0.0)).unwrap()).for_each_value(|x| c.push(x));
         assert_eq!(c.len(), 7);
+    }
+
+    #[test]
+    fn quantized_values_zero_cancellation_noise_relative_to_the_definition() {
+        let tol = crate::ModelTolerance::DEFAULT;
+        let codes = |d: &SurfaceDef| {
+            let mut v = Vec::new();
+            d.quantized_values(&tol, |c| v.push(c));
+            v
+        };
+        // A unit cylinder about z translated to x = 1e6: the analytic cross terms are exactly
+        // zero, a noisy evaluation leaves residues of a few ulp of the constant term (1e12).
+        let shifted = Frame::at(Point3::new(1.0e6, 0.0, 0.0));
+        let exact = Quadric::from_local(&shifted, [1.0, 1.0, 0.0], [0.0; 3], -1.0);
+        let mut noisy = exact.clone();
+        noisy.coeffs[3] = 3.0 * f64::EPSILON * 1.0e12;
+        noisy.coeffs[4] = -2.0 * f64::EPSILON * 1.0e12;
+        let a = SurfaceDef::Implicit(ImplicitDef::Quadric(exact));
+        let b = SurfaceDef::Implicit(ImplicitDef::Quadric(noisy));
+        assert_eq!(codes(&a), codes(&b));
+        // A real change of a coefficient still changes the hash.
+        let mut changed = Quadric::from_local(&shifted, [1.0, 1.0, 0.0], [0.0; 3], -1.0);
+        changed.coeffs[3] = 10.0;
+        assert_ne!(codes(&a), codes(&SurfaceDef::Implicit(ImplicitDef::Quadric(changed))));
+        // Lines: the direction is scale-free and unaffected.
+        let l = CurveDef::Line(Line::new(Point3::new(1.0e6, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).unwrap());
+        let mut lc = Vec::new();
+        l.quantized_values(&tol, |c| lc.push(c));
+        assert_eq!(lc.len(), 7);
     }
 
     #[test]
