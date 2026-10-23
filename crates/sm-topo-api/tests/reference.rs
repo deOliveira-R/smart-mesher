@@ -228,7 +228,7 @@ fn merge_orients_the_shared_face_lowest_volume_first_after_an_imprint() {
         for i in 0..4 {
             let (p, q) = (pts[i], pts[(i + 1) % 4]);
             let d = Vector3::new(0.0, q.0 - p.0, q.1 - p.1);
-            let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(Point3::new(1.0, p.0, p.1), d).unwrap())).unwrap();
+            let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(1.0, p.0, p.1), d).unwrap())).unwrap();
             es.push(t.make_edge(vs[i], vs[(i + 1) % 4], Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }))?);
         }
         // The loop that bounds the disk counter-clockwise seen from +x (the face's right side).
@@ -282,7 +282,7 @@ fn make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_
         for i in 0..4 {
             let (p, q) = (pts[i], pts[(i + 1) % 4]);
             let d = Vector3::new(q.0 - p.0, q.1 - p.1, 0.0);
-            let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(Point3::new(p.0, p.1, 1.0), d).unwrap())).unwrap();
+            let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(p.0, p.1, 1.0), d).unwrap())).unwrap();
             es.push(t.make_edge(vs[i], vs[(i + 1) % 4], Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }))?);
         }
         // MEKR then KEMR: the inner loop appears as ring 1 and removing it restores the row.
@@ -312,7 +312,7 @@ fn make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_
     // Split the face by the corner-to-corner chord: the hole goes to the child that contains it,
     // found by a point-in-face test.
     let [c0, c1] = with_op(&mut t, OpId(4), |t| {
-        let line = t.shapes_mut().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
+        let line = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
         let chord = t.make_edge(a.vertices[4], a.vertices[7], Some(CurveCarrier { curve: line, range: Interval::new(0.0, 2f64.sqrt()), sense: Sense::Forward }))?;
         Ok(t.split_face(top, FaceCut::Chord { edge: chord }, InnerLoopAssign::ByPointTest)?)
     })
@@ -529,8 +529,8 @@ fn non_manifold_edge_has_an_angular_radial_ring() {
 fn csg_carrier_volume_with_general_quadric_validates() {
     let mut t = CellComplex::new();
     let v = with_op(&mut t, OpId(1), |t| {
-        let sphere = t.shapes_mut().add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 1.0).unwrap())).unwrap();
-        let gq = t.shapes_mut().add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [0.25, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5] }))).unwrap();
+        let sphere = t.shapes_mut().unwrap().add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 1.0).unwrap())).unwrap();
+        let gq = t.shapes_mut().unwrap().add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [0.25, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5] }))).unwrap();
         let vol = t.make_volume(&[])?;
         t.set_carrier(vol, Carrier::Csg(CsgCell::new([HalfSpace { surface: sphere, sign: Sign::Negative }, HalfSpace { surface: gq, sign: Sign::Negative }])))?;
         Ok(vol)
@@ -833,7 +833,7 @@ fn coincidence_records_move_to_split_children_and_status_changes_are_logged() {
     let [c0, c1] = with_op(&mut t, OpId(2), |t| {
         let (p, q) = (Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
         let d = q - p;
-        let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(p, d).unwrap())).unwrap();
+        let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(p, d).unwrap())).unwrap();
         let chord = t.make_edge(a.vertices[1], a.vertices[7], Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }))?;
         Ok(t.split_face(a.faces[1], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?)
     })
@@ -954,7 +954,7 @@ fn wires_embed_in_a_volume_and_unembed() {
         let p = Point3::new(0.25, 0.25, 0.25);
         let q = Point3::new(0.75, 0.25, 0.25);
         let (v0, v1) = (t.make_vertex(p)?, t.make_vertex(q)?);
-        let curve = t.shapes_mut().add_curve(CurveDef::Line(Line::new(p, q - p).unwrap())).unwrap();
+        let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(p, q - p).unwrap())).unwrap();
         let e = t.make_edge(v0, v1, Some(CurveCarrier { curve, range: Interval::new(0.0, 0.5), sense: Sense::Forward }))?;
         t.embed(b.volume, e)?;
         Ok(e)
@@ -974,4 +974,72 @@ fn wires_embed_in_a_volume_and_unembed() {
     t.embed(b.body, wire).unwrap();
     t.end_op().unwrap();
     assert!(t.wire_edges(b.body).any(|e| e == wire));
+}
+
+// ---------------------------------------------------------------- review fixes
+
+fn csg_model(coef_a: f64, radius: f64) -> CellComplex {
+    let mut t = CellComplex::new();
+    with_op(&mut t, OpId(1), |t| {
+        let sphere = t.shapes_mut()?.add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), radius).unwrap()))?;
+        let gq = t.shapes_mut()?.add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [coef_a, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5] })))?;
+        let vol = t.make_volume(&[])?;
+        t.set_carrier(vol, Carrier::Csg(CsgCell::new([HalfSpace { surface: sphere, sign: Sign::Negative }, HalfSpace { surface: gq, sign: Sign::Negative }])))?;
+        Ok(())
+    })
+    .unwrap();
+    t
+}
+
+#[test]
+fn canonical_hash_covers_geometry_definitions() {
+    let base = csg_model(0.25, 1.0).canonical_hash();
+    assert_eq!(csg_model(0.25, 1.0).canonical_hash(), base);
+    assert_ne!(csg_model(4.0, 1.0).canonical_hash(), base, "quadric coefficient");
+    assert_ne!(csg_model(0.25, 7.0).canonical_hash(), base, "sphere radius");
+    // replace_surface on an existing handle changes the hash, abort restores it.
+    let mut t = csg_model(0.25, 1.0);
+    let sid = EntityId::new(EntityKind::Surface, 0).unwrap();
+    t.begin_op(OpId(2)).unwrap();
+    t.replace_surface(sid, SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 3.0).unwrap())).unwrap();
+    assert_ne!(t.canonical_hash(), base);
+    t.abort_op();
+    assert_eq!(t.canonical_hash(), base);
+}
+
+#[test]
+fn shapes_mut_needs_an_open_op_and_is_append_only() {
+    let mut t = CellComplex::new();
+    assert!(matches!(t.shapes_mut().map(|_| ()), Err(TopoError::NoOpenOp)));
+    t.begin_op(OpId(1)).unwrap();
+    t.shapes_mut().unwrap().add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 1.0).unwrap())).unwrap();
+    t.abort_op();
+    assert_eq!(t.shapes().surface_count(), 0, "additions roll back with the op");
+}
+
+#[test]
+fn set_carrier_checks_handle_kinds() {
+    let mut t = CellComplex::new();
+    t.begin_op(OpId(1)).unwrap();
+    let wrong = EntityId::new(EntityKind::Curve, 0).unwrap();
+    let vol = t.make_volume(&[]).unwrap();
+    let cell = Carrier::Csg(CsgCell::new([HalfSpace { surface: wrong, sign: Sign::Negative }]));
+    assert!(matches!(t.set_carrier(vol, cell), Err(TopoError::InvalidParameter(_))));
+    t.abort_op();
+}
+
+#[test]
+fn kill_then_record_split_yields_one_lineage_row() {
+    let mut t = CellComplex::new();
+    with_op(&mut t, OpId(1), |t| {
+        let a = t.make_vertex(Point3::new(0.0, 0.0, 0.0))?;
+        let b = t.make_vertex(Point3::new(1.0, 0.0, 0.0))?;
+        t.kill(a)?;
+        t.record_split(a, &[b])?;
+        Ok(())
+    })
+    .unwrap();
+    let out = t.lineage().cut_outcome(OpId(1));
+    assert_eq!(out.lineage.len(), 1, "{:?}", out.lineage);
+    assert_eq!(out.lineage[0].new.len(), 1);
 }

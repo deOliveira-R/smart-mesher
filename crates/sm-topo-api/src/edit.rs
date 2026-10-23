@@ -8,7 +8,7 @@ use crate::error::TopoError;
 use crate::types::{Carrier, Coincidence, CoedgeKey, CoedgeSpec, CurveCarrier, FaceCut, FaceUseSpec, InnerLoopAssign, OpId, OpSummary, Sense, ShellAssign, ShellSpec, Side, SurfaceCarrier};
 use crate::view::TopologyView;
 use sm_core::{EntityId, Point3};
-use sm_geom_api::{CurveDef, GeomStoreMut, ModelTolerance, PCurve, SurfaceDef};
+use sm_geom_api::{CurveDef, GeomAppend, ModelTolerance, PCurve, SurfaceDef};
 use smallvec::SmallVec;
 
 /// Mutating access to a cellular complex. Object-safe.
@@ -41,9 +41,11 @@ pub trait TopologyEdit: TopologyView {
     /// Undo everything since `begin_op`, restoring the exact state (including the hash).
     fn abort_op(&mut self);
 
-    /// The geometry store, for inserting curves and surfaces (tool geometry, chords, caps).
-    /// Additions are rolled back with the operation.
-    fn shapes_mut(&mut self) -> &mut dyn GeomStoreMut;
+    /// The geometry store as an append-only view, for inserting curves and surfaces (tool
+    /// geometry, chords, caps). Needs an open operation (`NoOpenOp` otherwise); additions are
+    /// rolled back with the operation. Replacing a definition goes through
+    /// [`Self::replace_curve`] / [`Self::replace_surface`], which are journaled and logged.
+    fn shapes_mut(&mut self) -> Result<&mut dyn GeomAppend, TopoError>;
 
     /// Replace the global tolerance policy.
     fn set_model_tolerance(&mut self, tol: ModelTolerance) -> Result<(), TopoError>;
@@ -151,7 +153,8 @@ pub trait TopologyEdit: TopologyView {
     /// Delete a cell that no non-body parent references. Lineage: `Deleted`.
     fn kill(&mut self, cell: EntityId) -> Result<(), TopoError>;
 
-    /// Delete `cell` and every lower cell it leaves orphaned (no live non-body parent left),
+    /// Delete `cell` and every lower cell it leaves orphaned (no live parent of any kind left; a lower
+    /// cell that is a member of a body is kept),
     /// top-down: faces, then edges, then vertices, each ascending. Returns the killed cells in
     /// that order, `cell` first. Lineage: `Deleted` for each.
     fn kill_cascade(&mut self, cell: EntityId) -> Result<SmallVec<[EntityId; 16]>, TopoError>;

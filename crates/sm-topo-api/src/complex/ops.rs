@@ -610,8 +610,9 @@ impl TopologyEdit for CellComplex {
         }
     }
 
-    fn shapes_mut(&mut self) -> &mut dyn GeomStoreMut {
-        &mut self.shapes
+    fn shapes_mut(&mut self) -> Result<&mut dyn GeomAppend, TopoError> {
+        self.ensure_open()?;
+        Ok(&mut self.shapes)
     }
 
     fn set_model_tolerance(&mut self, tol: ModelTolerance) -> Result<(), TopoError> {
@@ -1146,6 +1147,15 @@ impl TopologyEdit for CellComplex {
             );
             if !ok {
                 return Err(TopoError::WrongDim { id: cell, expected: d });
+            }
+            let kinds_ok = match &carrier {
+                Carrier::Curve(c) => c.curve.kind() == EntityKind::Curve,
+                Carrier::Surface(sc) => sc.surface.kind() == EntityKind::Surface,
+                Carrier::Csg(cell) => cell.halfspaces.iter().all(|h| h.surface.kind() == EntityKind::Surface),
+                _ => true,
+            };
+            if !kinds_ok {
+                return Err(TopoError::InvalidParameter("carrier handle has the wrong kind"));
             }
             s.set_carrier_raw(cell, carrier);
             s.mark_dirty_around(cell);

@@ -13,7 +13,11 @@ use sm_core::Point3;
 /// `q = linear * 2^-10` ([`Self::quantum`]); a parameter-valued float (curve parameters, pcurve
 /// coordinates) uses `q = parametric * 2^-10` ([`Self::param_quantum`]). Rounding is
 /// round-half-away-from-zero, `-0` and `+0` agree, NaN maps to `i64::MIN` and infinities
-/// saturate ([`Self::quantize`]). Two values within a small fraction of a step hash equal unless
+/// saturate ([`Self::quantize`]). Angles and unit-vector components (frame axes, cone
+/// half-angle) use `q = angular * 2^-10` ([`Self::angular_quantum`]); unitless values (NURBS knots
+/// and weights, quadric coefficients, line direction scale) use the parameter quantum. Shape
+/// definitions are hashed value by value through [`crate::CurveDef::for_each_value`] and
+/// [`Self::quantize_shape`]. Two values within a small fraction of a step hash equal unless
 /// they straddle a rounding boundary; platform noise (a few ulp) is far below one step for any
 /// sane model, so the residual risk is a value that sits within noise of a half-step boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +79,22 @@ impl ModelTolerance {
     /// Hash step for parameter-valued floats: `parametric * 2^-10`.
     pub fn param_quantum(&self) -> f64 {
         self.parametric * QUANT_FRACTION
+    }
+
+    /// Hash step for angles and direction components: `angular * 2^-10`.
+    pub fn angular_quantum(&self) -> f64 {
+        self.angular * QUANT_FRACTION
+    }
+
+    /// Quantize one value of a shape definition according to its class.
+    pub fn quantize_shape(&self, v: crate::ShapeValue) -> i64 {
+        use crate::ShapeValue as S;
+        match v {
+            S::Int(n) => n as i64,
+            S::Length(x) => self.quantize(x),
+            S::Angle(x) => Self::quantize_with(x, self.angular_quantum()),
+            S::Unitless(x) => self.quantize_param(x),
+        }
     }
 
     /// Quantize `x` with step `q` (see the type-level rule).

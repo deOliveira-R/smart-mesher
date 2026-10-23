@@ -124,15 +124,22 @@ impl CsgCell {
         const TOL: f64 = 1e-9;
         let first = out.len();
         let dir_len = ray.dir.norm();
-        let mut scratch: Vec<RayHit> = Vec::new();
         for (i, h) in self.halfspaces.iter().enumerate() {
-            scratch.clear();
-            Self::implicit_of(s, h)?.ray_hits(ray, range, &mut scratch)?;
-            'hit: for hit in &scratch {
+            // Raw hits land directly in `out`; the loop below compacts them in place.
+            let start = out.len();
+            Self::implicit_of(s, h)?.ray_hits(ray, range, out)?;
+            let mut keep = start;
+            for k in start..out.len() {
+                let hit = out[k];
+                let mut inside = true;
                 for (j, other) in self.halfspaces.iter().enumerate() {
                     if j != i && other.depth(Self::implicit_of(s, other)?, hit.point) < -TOL {
-                        continue 'hit;
+                        inside = false;
+                        break;
                     }
+                }
+                if !inside {
+                    continue;
                 }
                 // Outward from the cell: along the gradient for a negative-inside half-space.
                 let normal = if h.sign == Sign::Negative { hit.normal } else { -hit.normal };
@@ -144,8 +151,10 @@ impl CsgCell {
                 } else {
                     Crossing::AgainstNormal
                 };
-                out.push(RayHit { normal, crossing, uv: None, ..*hit });
+                out[keep] = RayHit { normal, crossing, uv: None, ..hit };
+                keep += 1;
             }
+            out.truncate(keep);
         }
         out[first..].sort_by(|a, b| a.t.total_cmp(&b.t));
         // Merge hits at the same parameter (edges and corners of the cell).
@@ -509,7 +518,7 @@ pub(crate) fn real_roots(c: &[f64], lo: f64, hi: f64) -> Vec<Root> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryStore, SurfaceDef, store::GeomStoreMut};
+    use crate::{MemoryStore, SurfaceDef, store::GeomAppend};
 
     fn ray_x(x0: f64) -> Ray {
         Ray { origin: Point3::new(x0, 0.0, 0.0), dir: Vector3::new(1.0, 0.0, 0.0) }

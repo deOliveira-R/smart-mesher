@@ -33,7 +33,7 @@ use crate::lineage::LineageLog;
 use crate::types::{Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, EntityState, FacePair, Incidence, OpId, Sense, ShellKind, Side};
 use crate::view::{EdgeUse, NO_CARRIER, TopologyView};
 use sm_core::{EntityId, EntityKind, Point3};
-use sm_geom_api::{CurveDef, GeomError, GeomStore, GeomStoreMut, ImplicitSurface, Interval, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, SurfaceDef, Uv};
+use sm_geom_api::{CurveDef, GeomError, GeomAppend, GeomStore, ImplicitSurface, Interval, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, SurfaceDef, Uv};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

@@ -23,7 +23,7 @@ fn brick_with_split_top() -> (CellComplex, BrickIds, [EntityId; 2], EntityId) {
     let mut t = CellComplex::new();
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let (halves, chord) = with_op(&mut t, OpId(2), |t| {
-        let line = t.shapes_mut().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
+        let line = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
         let chord = t.make_edge(b.vertices[4], b.vertices[7], Some(CurveCarrier { curve: line, range: Interval::new(0.0, 2f64.sqrt()), sense: Sense::Forward }))?;
         Ok((t.split_face(b.faces[5], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?, chord))
     })

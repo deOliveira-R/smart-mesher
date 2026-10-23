@@ -141,6 +141,9 @@ fn vec3(p: Point3) -> Vector3 {
 }
 
 /// A NURBS curve: degree, knot vector, control points, optional weights (absent = polynomial B-spline).
+///
+/// The fields are public for reading and serialization. Construct with `new()` (or add through a
+/// `GeomAppend` store, which validates): evaluating an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsCurve {
@@ -297,6 +300,9 @@ impl NurbsCurve2 {
 }
 
 /// A tensor-product NURBS surface; control points are stored `u`-major: index `iu * nv + iv`.
+///
+/// The fields are public for reading and serialization. Call `validate()` (a `GeomAppend` store
+/// does) before evaluating: an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsSurface {

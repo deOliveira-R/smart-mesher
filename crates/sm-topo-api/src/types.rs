@@ -504,6 +504,10 @@ pub enum FaceCut<'a> {
         edge: EntityId,
     },
     /// A closed loop of edges. Its coedge senses give the traversal of the child that bounds it.
+    /// The chain must run in the face's own loop direction (counter-clockwise seen from the face's
+    /// right side, like `make_face` loops); the orientation is not checked here. A clockwise
+    /// chain gives a disk child oriented against its parent and a mis-directed hole loop, which
+    /// a negative `face_moments` area exposes.
     /// If the loop has no vertex on the face, it lies in the interior: children are
     /// `[face with the loop as a new inner loop, disk bounded by the loop]` (this is how a
     /// smaller face is imprinted onto a larger one). If it passes through a vertex that appears

@@ -26,7 +26,7 @@ use crate::types::{
 use crate::validate;
 use crate::view::{EdgeUse, NO_CARRIER, TopologyView};
 use sm_core::EntityId;
-use sm_geom_api::{CurveDef, GeomStore, GeomStoreMut, MemoryStore, ModelTolerance, PCurve, SurfaceDef};
+use sm_geom_api::{CurveDef, GeomAppend, GeomStore, GeomStoreMut, MemoryStore, ModelTolerance, PCurve, SurfaceDef};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -102,6 +102,8 @@ struct Table {
     down: Rows,
     up: Vec<SmallVec<[Incidence; 4]>>,
     aux: Vec<SmallVec<[EntityId; 8]>>,
+    // Ascending. Retiring a cell is a `Vec::remove` (O(live)); fine for 10k-cell builds, switch to
+    // a tombstone list or B-tree if split- or merge-heavy ops on huge models show up in profiles.
     live: Vec<EntityId>,
 }
 

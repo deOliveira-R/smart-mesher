@@ -41,11 +41,11 @@ pub fn with_op<E: TopologyEdit + ?Sized, T>(topo: &mut E, op: OpId, f: impl FnOn
 }
 
 fn add_curve<E: TopologyEdit + ?Sized>(topo: &mut E, def: CurveDef) -> Result<EntityId, FixtureError> {
-    Ok(topo.shapes_mut().add_curve(def)?)
+    Ok(topo.shapes_mut()?.add_curve(def)?)
 }
 
 fn add_surface<E: TopologyEdit + ?Sized>(topo: &mut E, def: SurfaceDef) -> Result<EntityId, FixtureError> {
-    Ok(topo.shapes_mut().add_surface(def)?)
+    Ok(topo.shapes_mut()?.add_surface(def)?)
 }
 
 fn line_edge<E: TopologyEdit + ?Sized>(topo: &mut E, a: (EntityId, Point3), b: (EntityId, Point3)) -> Result<EntityId, FixtureError> {

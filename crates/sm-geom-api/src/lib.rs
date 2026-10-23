@@ -37,6 +37,6 @@ pub use implicit::{Containment, CsgCell, HalfSpace, ImplicitDef, ImplicitSurface
 pub use nurbs::{NurbsCurve, NurbsCurve2, NurbsSurface};
 pub use pcurve::{Line2, PCurve};
 pub use ray::{Crossing, Ray, RayHit};
-pub use store::{CurveDef, GeomStore, GeomStoreMut, MemoryStore, StoreData, SurfaceDef};
+pub use store::{CurveDef, GeomAppend, GeomStore, GeomStoreMut, MemoryStore, ShapeValue, StoreData, SurfaceDef};
 pub use surface::{ParametricSurface, SurfaceJet, SurfaceProjection};
 pub use tol::ModelTolerance;

@@ -146,8 +146,13 @@ impl LineageLog {
     /// Successions and cap faces of one operation, in the shape the model layer consumes.
     pub fn cut_outcome(&self, op: OpId) -> CutOutcome {
         let mut out = CutOutcome::default();
-        for r in self.for_op(op) {
+        let records = self.for_op(op);
+        // A composite op kills a cell and then records its split: the Split/Merged record
+        // supersedes the Deleted one, so each entity yields one row.
+        let replaced = |e: EntityId| records.iter().any(|r| r.entity == e && matches!(r.kind, LineageKind::Split { .. } | LineageKind::Merged { .. }));
+        for r in records {
             match &r.kind {
+                LineageKind::Deleted if replaced(r.entity) => {}
                 LineageKind::Split { children } => out.lineage.push(Lineage { old: r.entity, new: children.clone() }),
                 LineageKind::Merged { into, .. } => out.lineage.push(Lineage { old: r.entity, new: SmallVec::from_slice(&[*into]) }),
                 LineageKind::Deleted => out.lineage.push(Lineage { old: r.entity, new: SmallVec::new() }),
@@ -182,6 +187,13 @@ mod tests {
         assert_eq!(log.for_op(OpId(9)).len(), 0);
         let co = log.cut_outcome(OpId(2));
         assert_eq!(co.lineage.len(), 2);
+        // Deleted then Split for the same entity in one op: one row, the split.
+        let mut log2 = LineageLog::new();
+        log2.push(LineageRecord { op: OpId(1), entity: f(0), kind: LineageKind::Deleted });
+        log2.push(LineageRecord { op: OpId(1), entity: f(0), kind: LineageKind::Split { children: SmallVec::from_slice(&[f(1)]) } });
+        let co2 = log2.cut_outcome(OpId(1));
+        assert_eq!(co2.lineage, vec![Lineage { old: f(0), new: SmallVec::from_slice(&[f(1)]) }]);
+        assert_eq!(log2.successors(f(0)), vec![f(1)]);
         log.truncate(2);
         assert_eq!(log.len(), 2);
         assert!(log.produced(f(12)).count() == 1 && log.of(f(11)).count() == 0);

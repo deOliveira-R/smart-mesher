@@ -5,7 +5,7 @@ use crate::error::QueryError;
 use crate::geometry::{self, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
 use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind};
-use sm_core::EntityId;
+use sm_core::{EntityId, EntityKind};
 use sm_geom_api::{GeomStore, ModelTolerance, PCurve, Uv};
 
 /// The carrier returned for unknown cells.
@@ -147,7 +147,9 @@ pub trait TopologyView: Send + Sync {
     /// Floats never enter the hash as raw bits: lengths are quantized with
     /// `ModelTolerance::quantum() = linear * 2^-10` and parameters with
     /// `ModelTolerance::param_quantum()` (see [`ModelTolerance`] for the exact rule), so equal
-    /// complexes hash equal on every platform. Covered: tolerance policy, revision, every live
+    /// complexes hash equal on every platform. Covered: tolerance policy, revision, every curve and
+    /// surface definition by value (lengths, angles and unitless values each quantized per
+    /// [`ModelTolerance`]), every live
     /// cell (id, birth op, flags, quantized tolerance override, carrier, boundary row), the
     /// pcurves by content, shell kinds, coincidence records and the full lineage log.
     fn canonical_hash(&self) -> u64 {
@@ -159,6 +161,22 @@ pub trait TopologyView: Send + Sync {
         h.u64(self.revision().0);
         h.u64(self.shapes().curve_count() as u64);
         h.u64(self.shapes().surface_count() as u64);
+        // Geometry definitions, per handle in serial order.
+        let shapes = self.shapes();
+        for n in 0..shapes.curve_count() {
+            let def = EntityId::new(EntityKind::Curve, n as u64).and_then(|id| shapes.curve_def(id));
+            match def {
+                None => h.u64(u64::MAX),
+                Some(d) => d.for_each_value(|v| h.i64(tol.quantize_shape(v))),
+            }
+        }
+        for n in 0..shapes.surface_count() {
+            let def = EntityId::new(EntityKind::Surface, n as u64).and_then(|id| shapes.surface_def(id));
+            match def {
+                None => h.u64(u64::MAX),
+                Some(d) => d.for_each_value(|v| h.i64(tol.quantize_shape(v))),
+            }
+        }
         for dim in Dim::ALL {
             let cells = self.cells(dim);
             h.u64(cells.len() as u64);
