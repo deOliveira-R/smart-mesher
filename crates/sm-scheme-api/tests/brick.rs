@@ -271,3 +271,21 @@ fn transform_runs_after_writers_and_replaces_atomically() {
     assert_eq!(out.ledger.writer(&Target::Topo(ids.volume)), Some(last));
     assert_eq!(topology_hash(&write(&out, &model)), topology_hash(&write(&base, &model)));
 }
+
+#[test]
+fn whole_piece_target_meshes_like_its_volume() {
+    let (cc, ids) = setup();
+    let model = Model::new();
+    let piece = Target::Piece(sm_model_api::PieceRef::Whole(ids.volume));
+    let mut intent = MeshIntent { mesh: vec![piece], default_size: Some(0.5), ..MeshIntent::default() };
+    intent.set_scheme(piece, SchemeChoice::Fixed(sweep_params(ids.faces[4], ids.faces[5])), Firmness::Hard);
+    let out = mesh_it(&cc, &model, &intent, &registry(), &SequentialExecutor).expect("piece");
+    assert_eq!(out.ledger.cells(&piece).map(|c| c.len()), Some(16));
+    let mesh = write(&out, &model);
+    assert!(validate(&mesh).is_empty());
+    assert_eq!(mesh.count(MeshEntityKind::Vertex), 45);
+    // Cells and interior nodes of a whole piece are classified on its volume.
+    let on_vol = mesh.classified_on(ids.volume).expect("classified");
+    assert_eq!(on_vol.cells.len(), 16);
+    assert_eq!(on_vol.vertices.len(), 3);
+}

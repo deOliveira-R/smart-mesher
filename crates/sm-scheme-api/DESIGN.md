@@ -66,7 +66,7 @@ MeshIntent (serde) ──► MeshProblem::build ──► solve (IntervalSolver)
 | Atomic multi-volume (multisweep, merged clusters, THex) | `GroupIntent { kind: Multisweep \| Cluster, members, scheme }` → one job over all members, one patch; `TransformIntent` → `JobKind::Transform`, runs after the writers of every target it rewrites and replaces them in one commit |
 | All-or-nothing commit | `Ledger::commit` checks the whole patch first; the run writes to `MeshBuild` only at the end, so a failed run never touches the database or its `SerialAlloc` |
 | Deck copy constraints, no boundary layers on deck faces | driver reads `Model::face_boundary` / `BoundaryKind::Deck`: every deck face gets `NoBoundaryLayer` (Hard), mirror faces `OnPlane`, side B of a translation/rotation pair `CopyOf { source, transform }` plus Hard `Origin::Deck` equalities between mapped edges; B becomes a `JobKind::Copy(CopySpec)` job, or, if another job writes it (a sweep), a post-commit `verify_copy` check (`DriverError::DeckMismatch`) |
-| Meshing pieces from the Decomposition layer | `Target::{Topo, Piece(PieceRef), PieceFace}`; `Target::piece_face` normalizes; `PieceShape::Sweep { source, target }` is read by the stub sweep; cells on a `PartitionCell` are classified on it; faces between two pieces of one volume are classified on the volume (§5) |
+| Meshing pieces from the Decomposition layer | `Target::{Topo, Piece(PieceRef), PieceFace}`; `Target::piece_face` normalizes; closure of a `Cell` piece goes through `piece_faces`; a sweep reads `PieceShape::Sweep { source, target }` for its source/target; a `Whole` piece is meshed end to end in the tests (`whole_piece_target_meshes_like_its_volume`); cells on a `PartitionCell` are classified on it; faces between two pieces of one volume are classified on the volume (§5) |
 | Inputs | `PlanCtx`/`ExecCtx`: `&dyn TopologyView` (an `Overlay` works the same way), `&Model`, `&MeshIntent`, `Option<&dyn SizeField>`, plus `&Ledger`, `&IntervalSolution`, `&VertexTypes` at execution |
 | Output with classification | `MeshPatch` (columnar) → `Ledger` → `Ledger::write_mesh(&mut impl MeshBuild, &Model)`; node classification from `NodeKey::owner`, `Param::Curve(t)` kept on edge nodes |
 | Sizing layer | `SizeField { size(p), metric(p) }`, `IntervalSpec::{Count, Size}`, `MeshIntent::default_size` |
@@ -113,7 +113,10 @@ node to its end vertex node. Checked before any mutation.
 - `equal` (curve): equal parameter spacing (equal arc length on lines), `Param::Curve(t)`.
 - `map` (surface): vertex types from intent or corner angles (soft), 4 logical sides, two Hard
   side-sum equalities, transfinite interpolation from the committed side nodes.
-- `sweep` (volume, 1-to-1 translational): source/target from params or `PieceShape::Sweep`;
+- `sweep` (volume, 1-to-1 translational): source/target from params or `PieceShape::Sweep`
+  (the latter for `Cell` pieces, which the stub then rejects as `NotApplicable`: it meshes
+  topology volumes and `Whole` pieces only, since `Cell` pieces with cut faces need overlay or
+  `PartitionFace` ids, see §6);
   plans Hard layer equalities over the linking edges and target-edge = source-edge equalities,
   soft `End` types on the linking faces, a `Role(Source)` imposition; reads the source face and all
   edges, writes the volume, the target face and the linking faces; emits hexes.
@@ -124,7 +127,7 @@ On the `sm-topo-api` brick fixture (2 × 1 × 1, size 0.5): 14 jobs in 3 waves (
 sweep), counts 4/2/2, 16 hexes of volume 0.125 each summing to 2.0 exactly, 45 vertices,
 `sm_mesh_api::validate` clean, boundary faces classified on the right `TopoFace`s (4/4/8/8/8/8).
 Also tested: auto fallback after an execution failure, chain fallback, hard interval conflict,
-unknown/not-applicable schemes, a deck pair meshed as a copy job, a deck pair written by the sweep
+unknown/not-applicable schemes, a `Whole` piece target meshed and classified on its volume, a deck pair meshed as a copy job, a deck pair written by the sweep
 and verified, a transform replacing the volume's cells, commit-rule rejections that leave the
 ledger unchanged, schedule conflicts and cycles, and the reference solver's classes/goals/parity.
 
