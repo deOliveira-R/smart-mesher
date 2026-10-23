@@ -279,6 +279,12 @@ pub struct Slot {
     pub fill: Fill,
     /// Recoloring of everything below this slot.
     pub recolor: ColorMap,
+    /// A live `TopoVolume` whose region bounds this slot's fill (the copies are truncated to
+    /// it, like an MCNP/OpenMC container cell). It lies in the **lattice frame** (the frame the
+    /// slot offsets are measured in), so [`flatten`] places it with the lattice placement.
+    /// `None`: the fill is not clipped at this level.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<EntityId>,
 }
 
 /// A lattice: a layout plus a **sparse** slot table. In-range slots without an entry take `outer`.
@@ -318,6 +324,11 @@ pub struct InstanceRow {
     pub at: Transform,
     /// Recoloring of everything below.
     pub recolor: ColorMap,
+    /// A live `TopoVolume` whose region bounds the fill (an MCNP/OpenMC container cell, or a
+    /// lattice truncated by a core barrel). It lies in the model frame (the instance's parent
+    /// frame; it does not move with `at`). `None`: not clipped.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<EntityId>,
 }
 
 /// A recoloring of every copy whose path starts with `prefix`. Reaches inner slots from an outer
@@ -381,7 +392,7 @@ impl Instancing {
 }
 
 impl Model {
-    fn check_fill(&self, f: Fill) -> Result<()> {
+    pub(crate) fn check_fill(&self, f: Fill) -> Result<()> {
         match f {
             Fill::Void => Ok(()),
             Fill::Prototype(p) => {
@@ -395,8 +406,13 @@ impl Model {
         }
     }
 
+    /// A clip must name a `TopoVolume` (liveness is [`crate::validate()`]'s).
+    pub(crate) fn check_clip(clip: Option<EntityId>) -> Result<()> {
+        clip.map_or(Ok(()), |c| expect_kind(c, EntityKind::TopoVolume))
+    }
+
     /// Check key kinds, value domains and that colors exist.
-    fn check_color_map(&self, m: &ColorMap) -> Result<()> {
+    pub(crate) fn check_color_map(&self, m: &ColorMap) -> Result<()> {
         let check = |map: &BTreeMap<EntityId, EntityId>, ent: EntityKind, dom: crate::color::Domain| -> Result<()> {
             for (k, v) in map {
                 match k.kind() {
@@ -449,6 +465,7 @@ impl Model {
             }
             self.check_fill(s.fill)?;
             self.check_color_map(&s.recolor)?;
+            Self::check_clip(s.clip)?;
         }
         let id = self.ids.alloc(EntityKind::Lattice)?;
         self.instancing.lattices.insert(id, l);
@@ -464,6 +481,7 @@ impl Model {
         }
         self.check_fill(slot.fill)?;
         self.check_color_map(&slot.recolor)?;
+        Self::check_clip(slot.clip)?;
         let old = self.instancing.lattices.get_mut(&lattice).and_then(|l| l.slots.insert(ix, slot));
         if self.instancing.find_cycle().is_some() {
             if let Some(l) = self.instancing.lattices.get_mut(&lattice) {
@@ -481,6 +499,7 @@ impl Model {
     pub fn add_instance(&mut self, i: InstanceRow) -> Result<EntityId> {
         self.check_fill(i.of)?;
         self.check_color_map(&i.recolor)?;
+        Self::check_clip(i.clip)?;
         let id = self.ids.alloc(EntityKind::Instance)?;
         self.instancing.instances.insert(id, i);
         Ok(id)
@@ -547,6 +566,26 @@ pub struct FlatEntry {
     pub volume: EntityId,
     /// Resolved volume color.
     pub color: EntityId,
+    /// Index into [`FlatModel::clips`] of the innermost clip bounding this copy; follow
+    /// [`FlatClip::outer`] for the enclosing ones (the copy is bounded by all of them). `None`:
+    /// not clipped.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<u32>,
+}
+
+/// One clip occurrence of a flattened model: an [`InstanceRow::clip`] or [`Slot::clip`] volume
+/// at the placement it has in the model frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct FlatClip {
+    /// The clip volume (stored once, like prototype volumes).
+    pub volume: EntityId,
+    /// Where the clip volume sits in the model frame (identity for an instance clip, the
+    /// lattice placement for a slot clip).
+    pub placement: Placement,
+    /// The enclosing clip (an outer level's), if any: an index into [`FlatModel::clips`].
+    pub outer: Option<u32>,
 }
 
 /// Result of [`flatten`]. Entries are in canonical order: instance id, slot `(k, j, i)` (nested),
@@ -561,6 +600,9 @@ pub struct FlatModel {
     pub paths: Vec<InstancePath>,
     /// The volumes, ascending by `(path, volume)`.
     pub entries: Vec<FlatEntry>,
+    /// Clip occurrences, in walk order (an outer clip before the clips nested in it).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clips: Vec<FlatClip>,
 }
 
 impl FlatModel {
@@ -627,6 +669,19 @@ impl FlatModel {
             eat(e.volume.to_raw());
             eat(e.color.to_raw());
         }
+        // Clips are hashed only when present, so unclipped models keep their fingerprints.
+        if !self.clips.is_empty() {
+            let opt = |o: Option<u32>| o.map_or(0, |x| u64::from(x) + 1);
+            for e in &self.entries {
+                eat(opt(e.clip));
+            }
+            for c in &self.clips {
+                eat(c.volume.to_raw());
+                c.placement.transform.m.iter().flatten().chain([&c.placement.transform.t.x, &c.placement.transform.t.y, &c.placement.transform.t.z]).for_each(|v| eat(num(*v)));
+                eat(u64::from(c.placement.orientation_reversed));
+                eat(opt(c.outer));
+            }
+        }
         h
     }
 }
@@ -637,7 +692,13 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    fn go(&mut self, fill: Fill, at: Transform, path: &mut InstancePath, levels: &mut Vec<&'a ColorMap>, depth: usize) -> Result<()> {
+    fn push_clip(&mut self, volume: EntityId, at: Transform, outer: Option<u32>) -> Option<u32> {
+        let ix = self.out.clips.len() as u32;
+        self.out.clips.push(FlatClip { volume, placement: Placement::of(at), outer });
+        Some(ix)
+    }
+
+    fn go(&mut self, fill: Fill, at: Transform, path: &mut InstancePath, levels: &mut Vec<&'a ColorMap>, clip: Option<u32>, depth: usize) -> Result<()> {
         if depth > MAX_DEPTH {
             return Err(ModelError::Invalid("instancing nesting too deep".into()));
         }
@@ -659,7 +720,7 @@ impl<'a> Walk<'a> {
                     for o in &overrides {
                         c = o.apply_volume(*v, c);
                     }
-                    self.out.entries.push(FlatEntry { path: pix, placement: plix, volume: *v, color: c });
+                    self.out.entries.push(FlatEntry { path: pix, placement: plix, volume: *v, color: c, clip });
                 }
                 self.out.paths.push(path.clone());
                 self.out.placements.push(Placement::of(at));
@@ -679,7 +740,11 @@ impl<'a> Walk<'a> {
                     if let Some(s) = slot.filter(|_| pushed) {
                         levels.push(&s.recolor);
                     }
-                    self.go(f, base.compose(&local), path, levels, depth + 1)?;
+                    let inner = match slot.and_then(|s| s.clip) {
+                        Some(cv) => self.push_clip(cv, base, clip),
+                        None => clip,
+                    };
+                    self.go(f, base.compose(&local), path, levels, inner, depth + 1)?;
                     if pushed {
                         levels.pop();
                     }
@@ -692,8 +757,9 @@ impl<'a> Walk<'a> {
 }
 
 /// Flatten every instance into placed copies with resolved colors, in canonical order. Copies are
-/// named by [`InstancePath`]; no ids are minted, so nothing is ever reused. Fails on reference
-/// cycles, unknown ids or uncolored prototype volumes.
+/// named by [`InstancePath`]; no ids are minted, so nothing is ever reused. Each entry carries
+/// its innermost clip ([`FlatEntry::clip`], chained through [`FlatClip::outer`]). Fails on
+/// reference cycles, unknown ids or uncolored prototype volumes.
 pub fn flatten(m: &Model) -> Result<FlatModel> {
     if let Some(l) = m.instancing.find_cycle() {
         return Err(ModelError::Cycle(l));
@@ -702,7 +768,8 @@ pub fn flatten(m: &Model) -> Result<FlatModel> {
     for (id, inst) in &m.instancing.instances {
         let mut path: InstancePath = SmallVec::from_slice(&[PathStep::Instance(*id)]);
         let mut levels: Vec<&ColorMap> = vec![&inst.recolor];
-        w.go(inst.of, inst.at, &mut path, &mut levels, 0)?;
+        let clip = inst.clip.and_then(|cv| w.push_clip(cv, Transform::IDENTITY, None));
+        w.go(inst.of, inst.at, &mut path, &mut levels, clip, 0)?;
     }
     Ok(w.out)
 }

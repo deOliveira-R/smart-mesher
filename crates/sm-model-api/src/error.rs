@@ -73,6 +73,18 @@ pub enum ModelError {
     /// A detected candidate was not verified and `force` was not set.
     #[error("candidate is not verified")]
     Unverified,
+    /// The row is still referenced (faces assigned to a boundary, a symmetry generator, a fill,
+    /// a group member or a path override) and cannot be removed.
+    #[error("{0} is still referenced")]
+    InUse(EntityId),
+    /// [`crate::Model::apply_transform`]: this boundary record or piece has entities on both
+    /// sides of the moved set, so its geometric parameters cannot follow the motion.
+    #[error("{0} straddles moved and unmoved entities")]
+    Straddles(EntityId),
+    /// [`crate::Model::apply_transform`]: a partial move touches the declared symmetry's
+    /// domain or one of its generators (only a whole-model move carries the symmetry).
+    #[error("the declared symmetry straddles moved and unmoved entities")]
+    SymmetryStraddles,
     /// The decomposition of this volume must be undone before its topology changes.
     #[error("volume {0} is decomposed; undo the decomposition before changing its topology")]
     DecompositionActive(EntityId),

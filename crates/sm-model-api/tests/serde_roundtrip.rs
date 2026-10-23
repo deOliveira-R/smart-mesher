@@ -42,10 +42,10 @@ fn model_and_results_round_trip() {
             layout: Layout::Hex { rings: 2, pitch: 1.0, orient: HexOrient::XRows, nz: 1, dz: 0.0 },
             origin: Transform::IDENTITY,
             outer: Fill::Prototype(pin),
-            slots: BTreeMap::from([(SlotIx::new(1, 0, 0), Slot { fill: Fill::Void, recolor: ColorMap::default() })]),
+            slots: BTreeMap::from([(SlotIx::new(1, 0, 0), Slot { fill: Fill::Void, recolor: ColorMap::default(), clip: None })]),
         })
         .unwrap();
-    let inst = m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default() }).unwrap();
+    let inst = m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None }).unwrap();
     let faces = sm_topo_api::TopologyViewExt::faces(&t).to_vec();
     m.split(PieceRef::Whole(vol), CutGeometry::Plane(Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.5).unwrap()), &faces, &faces, &t).unwrap();
     m.add_path_override(PathOverride { prefix: [PathStep::Instance(inst)].into_iter().collect(), recolor: ColorMap::default() }).unwrap();

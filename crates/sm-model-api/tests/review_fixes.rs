@@ -224,7 +224,7 @@ fn a_changed_face_of_a_decomposed_volume_is_refused_even_if_the_volume_stays() {
 fn quantized_fingerprint_ignores_noise_below_the_step_and_the_raw_one_does_not() {
     let (_t, mut m, b) = colored_brick();
     let proto = m.add_prototype(&[b.volume]).unwrap();
-    m.add_instance(InstanceRow { of: Fill::Prototype(proto), at: Transform::translation(Vector3::new(0.5, 0.0, 0.0)), recolor: ColorMap::default() }).unwrap();
+    m.add_instance(InstanceRow { of: Fill::Prototype(proto), at: Transform::translation(Vector3::new(0.5, 0.0, 0.0)), recolor: ColorMap::default(), clip: None }).unwrap();
     let flat = flatten(&m).unwrap();
     let mut noisy = flat.clone();
     noisy.placements[0].transform.t.x += 1e-15;

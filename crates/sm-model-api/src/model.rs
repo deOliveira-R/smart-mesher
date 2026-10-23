@@ -253,8 +253,14 @@ impl Model {
                 d.check()?;
             }
         }
+        for i in ins.instances.values() {
+            Self::check_clip(i.clip)?;
+        }
         for l in ins.lattices.values() {
             l.layout.check()?;
+            for sl in l.slots.values() {
+                Self::check_clip(sl.clip)?;
+            }
             if let Some(ix) = l.slots.keys().find(|ix| !l.layout.contains(**ix)) {
                 return bad(format!("slot {ix:?} is outside its layout"));
             }
@@ -329,12 +335,21 @@ impl Model {
         for p in next.instancing.prototypes.values_mut() {
             p.volumes = r.set(&p.volumes);
         }
+        // A clip volume follows a lineage only to a single successor; otherwise it keeps the
+        // old id and `validate` reports it (the user re-targets it with `set_instance` /
+        // `set_lattice_slot`).
+        let clip = |c: Option<EntityId>| match c.map(|c| (c, r.resolve(c))) {
+            Some((_, v)) if v.len() == 1 => Some(v[0]),
+            other => other.map(|(c, _)| c),
+        };
         for i in next.instancing.instances.values_mut() {
             i.recolor = r.color_map(&i.recolor);
+            i.clip = clip(i.clip);
         }
         for l in next.instancing.lattices.values_mut() {
             for s in l.slots.values_mut() {
                 s.recolor = r.color_map(&s.recolor);
+                s.clip = clip(s.clip);
             }
         }
         for o in &mut next.instancing.overrides {

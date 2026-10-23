@@ -580,6 +580,9 @@ fn check_instancing(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         if !fill_ok(i.of) {
             s.add(IssueCode::UnknownEntity, &[*id], "instance fill does not exist");
         }
+        if let Some(c) = i.clip.filter(|c| c.kind() != EntityKind::TopoVolume || !alive(t, *c)) {
+            s.add(IssueCode::UnknownEntity, &[*id, c], "instance clip is not a live volume");
+        }
         check_map(m, t, &i.recolor, *id, s);
     }
     for (id, l) in &ins.lattices {
@@ -588,6 +591,9 @@ fn check_instancing(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
                 s.add(IssueCode::UnknownEntity, &[*id], format!("slot {ix:?} is outside the layout or its fill does not exist"));
             }
             check_map(m, t, &sl.recolor, *id, s);
+            if let Some(c) = sl.clip.filter(|c| c.kind() != EntityKind::TopoVolume || !alive(t, *c)) {
+                s.add(IssueCode::UnknownEntity, &[*id, c], format!("slot {ix:?} clip is not a live volume"));
+            }
         }
         if !fill_ok(l.outer) {
             s.add(IssueCode::UnknownEntity, &[*id], "lattice outer fill does not exist");

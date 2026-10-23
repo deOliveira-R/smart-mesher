@@ -22,7 +22,7 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
 | `symmetry` | `Symmetry`, `Provenance`, `CutSpec`/`plan_cut`/`apply_cut`, `point_group`, `declare_symmetry` |
 | `detect` | `detect_symmetry`, `verify_transform`, `Candidate`, `Verification{Unverified,Verified,Rejected{stage,..}}` |
 | `unfold` | `unfold`, `UnfoldedModel`, `CopyRef{base,elem}`, `Glue` (a view; mints nothing) |
-| `instancing` | `Prototype`, `Lattice`, `InstanceRow`, `ColorMap`, `PathOverride`, `flatten`, `FlatModel` |
+| `instancing` | `Prototype`, `Lattice`, `InstanceRow`, `ColorMap`, `PathOverride`, `flatten`, `FlatModel`, `FlatClip` |
 | `decomposition` | `PieceRef{Whole,Cell}`, `PieceFace{Whole,Part,Cut}`, `split`/`composite`/`unsplit` |
 | `validate` | `validate`, `validate_unfolded`, `Report`, `IssueCode` |
 | `xf` | `Tolerance`, `Plane`, `Axis`, `Turns`, `transform_moments`, `transform_face_moments`, internal cache and bins |
@@ -128,6 +128,38 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
     composited with one half of its split neighbour) is dropped entirely, although the part
     facing the other half still bounds the composite; do not composite across a partially shared
     interface.
+15. **Row editing (W0f gaps 2).** Inherent methods beside `remove_color` / `remove_group` /
+    `set_lattice_slot`: `set_boundary_kind(b, kind)` (deck parameters checked; refused with
+    `Invalid` when an assigned face's role does not fit the new kind, or when `b` generates the
+    symmetry and the new kind is not a deck), `remove_boundary(b)`, `set_instance(id, row)` (same
+    checks as `add_instance`, id kept), `remove_instance`, `remove_prototype`, `remove_lattice`.
+    Removals return the new typed `ModelError::InUse(id)` while anything refers to the row: faces
+    assigned or a symmetry generator (boundary), a fill (prototype, lattice), a path override
+    (instance, or a slot step of a lattice) or a group member (all), so `check_integrity` keeps
+    holding. Ids are never reused.
+16. **`apply_transform(x, volumes, t)` (W0f gaps 2).** Carries the model's geometric parameters
+    through the motion `x` of `volumes`: a boundary whose assigned faces all bound moved volumes
+    gets `x g x^-1` (deck plane, vector, axis; a rotation axis flips under an improper `x`; a
+    non-conformal interface transform likewise); mirror and rotation decks need a similarity
+    (`Invalid` otherwise). Every `CutGeometry::Plane` of a split over moved volumes maps (plane
+    image under the affine map). The symmetry is carried (through its generator decks) only when
+    every live volume of `t` moves, and then every deck and cut plane maps. A record or composite
+    piece over moved and unmoved volumes is refused with `ModelError::Straddles(id)`, a partial
+    move touching the symmetry domain or a generator with `ModelError::SymmetryStraddles`.
+    Transactional. Deviation from the requested signature: it takes `t: &dyn TopologyView`, the
+    only way to know which faces bound the moved volumes and whether the whole model moves.
+    Instance placements and prototype membership are untouched.
+17. **Fill clips (W0f gaps 2).** `InstanceRow::clip` and `Slot::clip: Option<EntityId>`
+    (`#[serde(default)]`) name a live `TopoVolume` bounding the fill (an MCNP/OpenMC container
+    cell, a lattice truncated by a core barrel). An instance clip lies in the model frame (it
+    does not move with `at`); a slot clip lies in the lattice frame (where slot offsets are
+    measured). The mutators and `check_integrity` check the kind; `validate` reports a clip that
+    is not a live volume (`UnknownEntity`); `apply_lineage` follows a clip to a single successor
+    and otherwise keeps the old id for `validate` to report. `flatten` records each clip
+    occurrence in `FlatModel::clips` as `FlatClip { volume, placement, outer }` (placed in the
+    model frame, chained to the enclosing clip) and gives every `FlatEntry` its innermost clip
+    (`clip: Option<u32>`); clips enter the fingerprints only when present, so unclipped models
+    keep theirs. Flattening a clipped cell into geometry is a separate item.
 
 ## 3. Topology queries used (all from the `sm-topo-api` read trait)
 

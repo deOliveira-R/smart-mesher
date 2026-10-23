@@ -53,10 +53,10 @@ fn pipeline() -> Vec<u64> {
             layout: Layout::Hex { rings: 3, pitch: 1.0, orient: HexOrient::YRows, nz: 2, dz: 2.0 },
             origin: Transform::IDENTITY,
             outer: Fill::Prototype(pin),
-            slots: BTreeMap::from([(SlotIx::new(1, -1, 1), Slot { fill: Fill::Prototype(pin), recolor: ColorMap { volume: BTreeMap::from([(mat, other)]), face: BTreeMap::new() } })]),
+            slots: BTreeMap::from([(SlotIx::new(1, -1, 1), Slot { fill: Fill::Prototype(pin), recolor: ColorMap { volume: BTreeMap::from([(mat, other)]), face: BTreeMap::new() }, clip: None })]),
         })
         .unwrap();
-    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::translation(Vector3::new(1.0, 2.0, 3.0)), recolor: ColorMap::default() }).unwrap();
+    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::translation(Vector3::new(1.0, 2.0, 3.0)), recolor: ColorMap::default(), clip: None }).unwrap();
     let f = flatten(&m).unwrap();
     out.push(f.fingerprint());
     out.push(f.fingerprint_quantized(1e-8));
