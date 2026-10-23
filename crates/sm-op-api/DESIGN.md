@@ -34,7 +34,7 @@ as amended by `docs/design/w0/decisions.md`.
   layers instead of replaying. `MapLayer<T>` is the reference store for concept layers.
 - **Derived cache** (`DerivedCache`): owned by the session, shared with every state and op through
   `ApplyCtx::derived()`; bounded LRU by a byte estimate; keyed by `State::cache_key(kind, input layer
-  names, params)`, which hashes the *content hashes* of the named layers, so an entry is reused exactly
+  names, params)`, which hashes the *exact (unquantized) content hashes* of the named layers (the CI state hash is quantized; cache keys must not be), so an entry is reused exactly
   when its inputs are unchanged, across checkout, failure and cancellation. Never part of the state
   hash. A hit must never change op output. Type confusion under one key is an error.
 - **Engine / ApplyCtx**: `Engine::apply` runs the op on a clone and swaps it in only on `Ok`, after the
@@ -118,8 +118,9 @@ injected nondeterminism raises `Diverged`.
   `to_files` returns `Result`; `Node.check` is a `Check { state }` struct.
 - No `rayon` (not an allowed dependency): the thread test uses `std::thread::scope` and the thread
   count is an op parameter instead of `RAYON_NUM_THREADS`.
-- Layer dependency validation is lazy: `install` rejects cycles but tolerates not-yet-registered
+- Layer dependency validation: `install` rejects cycles but tolerates not-yet-registered
   dependencies (plugins install in any order); `Registry::layer_order()` is the strict check and
-  `sm-engine` should call it at startup.
+  `Engine::new` runs it (fallible) and caches the order, so a bad registry fails at startup.
+- Op names must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` without `__` (`RegistryError::BadOpName`); client records are decoded and re-encoded canonically before hashing; `core.batch` strings starting `$$` are literal `$...`; `on_retired` runs after each batch sub-op.
 - The "no git conflict" test simulates a git merge as a union of file maps; it does not run real git.
 - ARCHITECTURE §4 (HEAD location) still needs the orchestrator's amendment.

@@ -166,7 +166,7 @@ fn registry() -> Registry {
 }
 
 fn engine_with(r: Registry, services: Services) -> Engine {
-    Engine::new(Arc::new(r), services, Arc::new(DerivedCache::default()))
+    Engine::new(Arc::new(r), services, Arc::new(DerivedCache::default())).unwrap()
 }
 
 fn session() -> Session {
@@ -1388,4 +1388,171 @@ fn params_codec_rejects_unrepresentable_values_before_anything_is_recorded() {
     s.apply_record(rec, meta(""), &c.control()).unwrap();
     assert!(OpRecord::new("model.create_brick", 1, serde_json::json!({"x": u64::MAX})).is_err());
     assert!(OpRecord::new("model.create_brick", 1, serde_json::json!([1])).is_err());
+}
+
+// ------------------------------------------------------------------- review fixes
+
+#[test]
+fn sub_quantum_change_invalidates_cache_key_but_not_state_hash() {
+    let mk = |x: f64| {
+        let mut s = session();
+        apply(&mut s, &CreateBrick { x, y: 1.0, z: 1.0, name: None });
+        s
+    };
+    let (a, b) = (mk(1.0), mk(1.0 + 1e-11)); // quantum is 1e-9
+    assert_eq!(a.state().hash(), b.state().hash(), "identity hash is quantized");
+    let key = |s: &Session| s.state().cache_key("tess", &[names::MODEL], &serde_json::json!({})).unwrap();
+    assert_ne!(key(&a), key(&b), "cache keys use exact content");
+    assert_eq!(key(&a), key(&mk(1.0)));
+}
+
+#[test]
+fn typed_and_json_record_paths_give_the_same_node() {
+    let c = q();
+    let typed = {
+        let mut s = session();
+        s.apply(&CreateBrick { x: 1.0, y: 1.0, z: 1.0, name: None }, meta("m"), &c.control()).unwrap().0
+    };
+    for params in [
+        serde_json::json!({"x": 1, "y": 1, "z": 1}),
+        serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0, "name": null}),
+        serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0, "junk": "zzz"}),
+    ] {
+        let mut s = session();
+        let rec = OpRecord::new("model.create_brick", 1, params).unwrap();
+        let h = s.apply_record(rec, meta("m"), &c.control()).unwrap().0;
+        assert_eq!(h, typed);
+        let stored = &s.timeline().get(h).unwrap().body.op;
+        assert_eq!(stored, &OpRecord::of(&CreateBrick { x: 1.0, y: 1.0, z: 1.0, name: None }).unwrap());
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct NamedOp {}
+
+macro_rules! named_op {
+    ($t:ident, $n:literal) => {
+        struct $t;
+        impl OpType for $t {
+            fn name(&self) -> &'static str {
+                $n
+            }
+            fn version(&self) -> u32 {
+                1
+            }
+            fn schema(&self) -> Result<schemars::Schema, String> {
+                Ok(schemars::schema_for!(NamedOp))
+            }
+            fn decode(&self, _: &Value) -> Result<Box<dyn Op>, CodecError> {
+                Err(CodecError::new("unused"))
+            }
+        }
+    };
+}
+named_op!(N1, "a.b");
+named_op!(N2, "a__b");
+named_op!(N3, "A.b");
+named_op!(N4, "a..b");
+named_op!(N5, "a b.c");
+named_op!(N6, "");
+named_op!(N7, "plain");
+named_op!(N8, "a.b_c.d9");
+
+#[test]
+fn op_names_are_validated_so_tool_names_are_injective() {
+    let mut r = Registry::new();
+    r.register_dyn(Arc::new(N1)).unwrap();
+    r.register_dyn(Arc::new(N8)).unwrap();
+    for t in [Arc::new(N2) as Arc<dyn OpType>, Arc::new(N3), Arc::new(N4), Arc::new(N5), Arc::new(N6), Arc::new(N7)] {
+        assert!(matches!(r.register_dyn(t), Err(RegistryError::BadOpName(_))));
+    }
+    let names: Vec<String> = r.catalog().into_iter().map(|i| i.unwrap().tool_name()).collect();
+    let set: BTreeSet<_> = names.iter().collect();
+    assert_eq!(set.len(), names.len());
+}
+
+#[test]
+fn batch_dollar_escape_passes_literal_strings() {
+    let mut s = session();
+    let c = q();
+    let batch = Batch {
+        ops: vec![OpRecord::new("model.create_brick", 1, serde_json::json!({"x": 1, "y": 1, "z": 1, "name": "$$0.price"})).unwrap()],
+    };
+    let (_, d) = s.apply(&batch, meta(""), &c.control()).unwrap();
+    let id = d.outputs["0.body"][0];
+    assert_eq!(s.state().layer::<ModelLayer>().unwrap().bricks.get(id).unwrap().name, "$0.price");
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct AssertNoSizes {}
+
+impl TypedOp for AssertNoSizes {
+    const NAME: &'static str = "test.assert_no_sizes";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        if ctx.layer::<IntentLayer>()?.sizes.is_empty() { Ok(()) } else { Err(OpError::Failed("dangling size".into())) }
+    }
+}
+
+#[test]
+fn batch_layers_react_after_each_sub_op() {
+    let mut r = registry();
+    r.register::<AssertNoSizes>().unwrap();
+    let mut s = Session::new(engine_with(r, Services::new()));
+    let c = q();
+    let rec = |n: &str, p: serde_json::Value| OpRecord::new(n, 1, p).unwrap();
+    let batch = Batch {
+        ops: vec![
+            rec("model.create_brick", serde_json::json!({"x": 1, "y": 1, "z": 1})),
+            rec("intent.set_size", serde_json::json!({"id": "$0.body", "size": 0.5})),
+            rec("model.delete_body", serde_json::json!({"id": "$0.body"})),
+            rec("test.assert_no_sizes", serde_json::json!({})),
+        ],
+    };
+    let (_, d) = s.apply(&batch, meta(""), &c.control()).unwrap();
+    assert!(d.touched_layers.contains(&"intent"));
+}
+
+#[test]
+fn engine_new_fails_fast_on_a_dangling_layer_dependency() {
+    chain_layer!(Dang, "dang", ["nope"]);
+    let mut r = Registry::new();
+    r.register_layer::<Dang>().unwrap();
+    let e = Engine::new(Arc::new(r), Services::new(), Arc::new(DerivedCache::default()));
+    assert!(matches!(e, Err(RegistryError::UnknownLayerDependency { .. })));
+}
+
+#[test]
+fn prepared_from_another_engine_cannot_be_committed() {
+    let (mut a, b) = (session(), session());
+    let c = q();
+    let p = b.prepare(&brick(1.0), &c.control()).unwrap();
+    assert!(matches!(a.commit(p, meta("")), Err(TimelineError::ForeignPrepared)));
+    assert!(a.timeline().is_empty());
+    // Own prepare/commit still works.
+    let p = a.prepare(&brick(1.0), &c.control()).unwrap();
+    a.commit(p, meta("")).unwrap();
+}
+
+#[test]
+fn fork_from_node_3_of_10_replays_without_recent_cache() {
+    let mut s = session();
+    s.set_cache_policy(4, 0); // no recent-state LRU; depth snapshots at 4 and 8
+    let nodes: Vec<_> = (1..=10).map(|i| apply(&mut s, &brick(i as f64)).0).collect();
+    let c = q();
+    let h10 = s.state().hash();
+    s.checkout(Rev::Node(nodes[2]), &c.control()).unwrap(); // replays from the root
+    assert_eq!(bricks(s.state()), 3);
+    s.checkout(Rev::Node(nodes[5]), &c.control()).unwrap(); // from the depth-4 snapshot
+    assert_eq!(bricks(s.state()), 6);
+    s.checkout(Rev::Node(nodes[9]), &c.control()).unwrap();
+    assert_eq!(s.state().hash(), h10);
+}
+
+#[test]
+fn engine_and_apply_ctx_are_send_and_sync() {
+    fn both<T: Send + Sync>() {}
+    both::<Engine>();
+    both::<ApplyCtx<'static>>();
+    both::<State>();
+    both::<DerivedCache>();
 }

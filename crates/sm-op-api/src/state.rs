@@ -16,20 +16,26 @@ use crate::layer::{Layer, LayerRole, LayerType};
 struct Slot {
     layer: Arc<dyn Layer>,
     hash: OnceLock<Hash256>,
+    exact: OnceLock<Hash256>,
 }
 
 impl Slot {
     fn new(layer: Arc<dyn Layer>) -> Self {
-        Self { layer, hash: OnceLock::new() }
+        Self { layer, hash: OnceLock::new(), exact: OnceLock::new() }
     }
 
     fn hash(&self) -> Hash256 {
         *self.hash.get_or_init(|| self.layer.content_hash())
     }
 
-    /// Unique mutable access (copy-on-write), invalidating the memo.
+    fn exact_hash(&self) -> Hash256 {
+        *self.exact.get_or_init(|| self.layer.exact_hash())
+    }
+
+    /// Unique mutable access (copy-on-write), invalidating the memos.
     fn make_mut(&mut self) -> &mut dyn Layer {
         self.hash = OnceLock::new();
+        self.exact = OnceLock::new();
         if Arc::get_mut(&mut self.layer).is_none() {
             self.layer = Arc::from(self.layer.clone_box());
         }
@@ -47,9 +53,11 @@ struct KindTable {
     retired_acc: MultisetHash,
 }
 
+/// Per-kind tables are `Arc`-shared so the first alloc/retire in an op copies only the kind it
+/// touches (and only its retired set when that set is non-empty), not every kind.
 #[derive(Clone, Default)]
 struct Entities {
-    kinds: BTreeMap<EntityKind, KindTable>,
+    kinds: BTreeMap<EntityKind, Arc<KindTable>>,
 }
 
 /// Persisted form of the allocation state of one entity kind.
@@ -172,7 +180,7 @@ impl State {
             return Err(OpError::IdExhausted);
         }
         if n > 0 {
-            Arc::make_mut(&mut self.entities).kinds.entry(kind).or_default().next = end;
+            Arc::make_mut(Arc::make_mut(&mut self.entities).kinds.entry(kind).or_default()).next = end;
         }
         Ok(first)
     }
@@ -185,7 +193,7 @@ impl State {
         if !self.contains(id) {
             return false;
         }
-        let t = Arc::make_mut(&mut self.entities).kinds.entry(id.kind()).or_default();
+        let t = Arc::make_mut(Arc::make_mut(&mut self.entities).kinds.entry(id.kind()).or_default());
         t.retired.insert(id.serial());
         t.retired_acc.add(&id.serial().to_le_bytes());
         true
@@ -217,8 +225,10 @@ impl State {
         h.finish()
     }
 
-    /// Key for a derived-cache entry: hash of the cache `kind`, the current content hash of each
-    /// named input layer, and extra parameters. Equal inputs give equal keys on any replay.
+    /// Key for a derived-cache entry: hash of the cache `kind`, the *exact* (unquantized) content
+    /// hash of each named input layer, and extra parameters. Equal inputs give equal keys on any
+    /// replay, and states differing by less than the identity quantum get different keys, so a
+    /// hit never changes op output.
     /// Fails with [`OpError::MissingLayer`] on an unknown input name.
     pub fn cache_key(&self, kind: &str, inputs: &[&str], params: &Value) -> Result<Hash256, OpError> {
         let mut h = Hasher::new("smart-mesh/cache-key/v1");
@@ -228,7 +238,8 @@ impl State {
         for name in inputs {
             h.update(&(name.len() as u64).to_le_bytes());
             h.update(name.as_bytes());
-            h.update(&self.layer_hash(name)?.0);
+            let slot = self.layers.get(name).ok_or_else(|| OpError::MissingLayer((*name).to_owned()))?;
+            h.update(&slot.exact_hash().0);
         }
         h.update(&canonical_bytes(params));
         Ok(h.finish())
@@ -272,7 +283,7 @@ impl State {
                 }
                 t.retired_acc.add(&s.to_le_bytes());
             }
-            if e.kinds.insert(k.kind, t).is_some() {
+            if e.kinds.insert(k.kind, Arc::new(t)).is_some() {
                 return Err(CodecError::new("snapshot: duplicate kind"));
             }
         }

@@ -13,15 +13,20 @@ use crate::error::CacheError;
 use crate::hash::Hash256;
 
 struct Entry {
+    kind: String,
     value: Arc<dyn Any + Send + Sync>,
     ty: TypeId,
     bytes: usize,
     last_used: u64,
 }
 
+/// Keyed by the key hash alone (it already mixes in the kind, see `State::cache_key`), so
+/// lookups allocate nothing; `lru` orders keys by last use (ticks are unique) for O(log n)
+/// eviction.
 #[derive(Default)]
 struct Inner {
-    map: BTreeMap<(String, Hash256), Entry>,
+    map: BTreeMap<Hash256, Entry>,
+    lru: BTreeMap<u64, Hash256>,
     bytes: usize,
     tick: u64,
     hits: u64,
@@ -65,14 +70,21 @@ impl DerivedCache {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Fetch a cached value of type `T` for `(kind, key)`. A value of another type counts as a miss.
+    /// Fetch a cached value of type `T` for `(kind, key)`. A value of another type or kind
+    /// counts as a miss.
     pub fn get<T: Any + Send + Sync>(&self, kind: &str, key: Hash256) -> Option<Arc<T>> {
         let mut g = self.lock();
         g.tick += 1;
         let tick = g.tick;
-        let found = g.map.get_mut(&(kind.to_owned(), key)).and_then(|e| {
+        let inner = &mut *g;
+        let found = inner.map.get_mut(&key).and_then(|e| {
+            if e.kind != kind {
+                return None;
+            }
             let v = Arc::clone(&e.value).downcast::<T>().ok()?;
+            inner.lru.remove(&e.last_used);
             e.last_used = tick;
+            inner.lru.insert(tick, key);
             Some(v)
         });
         if found.is_some() {
@@ -84,31 +96,27 @@ impl DerivedCache {
     }
 
     /// Store a value with an explicit size estimate. Replacing an entry that holds a different
-    /// type is an error; replacing one of the same type keeps the new value.
+    /// type (or was stored under a different kind) is an error; replacing one of the same type
+    /// keeps the new value.
     pub fn insert_sized<T: Any + Send + Sync>(&self, kind: &str, key: Hash256, value: Arc<T>, bytes: usize) -> Result<(), CacheError> {
         let mut g = self.lock();
         g.tick += 1;
         let tick = g.tick;
-        let k = (kind.to_owned(), key);
-        if let Some(old) = g.map.get(&k) {
-            if old.ty != TypeId::of::<T>() {
+        if let Some(old) = g.map.get(&key) {
+            if old.ty != TypeId::of::<T>() || old.kind != kind {
                 return Err(CacheError::TypeConflict { kind: kind.to_owned() });
             }
-            let ob = old.bytes;
+            let (ob, ot) = (old.bytes, old.last_used);
             g.bytes -= ob;
+            g.lru.remove(&ot);
         }
         g.bytes += bytes;
-        g.map.insert(k, Entry { value, ty: TypeId::of::<T>(), bytes, last_used: tick });
-        // Evict least-recently-used (ties by key order) until within capacity, keeping the newest.
+        g.lru.insert(tick, key);
+        g.map.insert(key, Entry { kind: kind.to_owned(), value, ty: TypeId::of::<T>(), bytes, last_used: tick });
+        // Evict least-recently-used until within capacity, keeping the newest.
         while g.bytes > self.capacity_bytes && g.map.len() > 1 {
-            let victim = g
-                .map
-                .iter()
-                .filter(|(_, e)| e.last_used != tick)
-                .min_by_key(|(k, e)| (e.last_used, (*k).clone()))
-                .map(|(k, _)| k.clone());
-            let Some(v) = victim else { break };
-            if let Some(e) = g.map.remove(&v) {
+            let Some((_, victim)) = g.lru.pop_first() else { break };
+            if let Some(e) = g.map.remove(&victim) {
                 g.bytes -= e.bytes;
             }
         }
@@ -145,6 +153,7 @@ impl DerivedCache {
     pub fn clear(&self) {
         let mut g = self.lock();
         g.map.clear();
+        g.lru.clear();
         g.bytes = 0;
     }
 

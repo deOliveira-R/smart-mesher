@@ -52,6 +52,7 @@ pub struct ReflogEntry {
 /// An op applied to a cloned state but not yet recorded; produced off-thread by
 /// [`PrepareBase::prepare`] and recorded with [`Session::commit`].
 pub struct Prepared {
+    engine: Engine,
     base: Option<Hash256>,
     record: OpRecord,
     state: State,
@@ -92,14 +93,18 @@ impl PrepareBase {
     /// Apply `op` (encoded and decoded first, so the live path is the replay path).
     pub fn prepare(&self, op: &dyn Op, ctl: &Control<'_>) -> Result<Prepared, TimelineError> {
         let record = OpRecord::of(op).map_err(|source| ApplyError::Encode { name: op.name().to_owned(), source })?;
-        self.prepare_record(record, ctl)
-    }
-
-    /// Apply a stored-form op (remote clients, scripts).
-    pub fn prepare_record(&self, record: OpRecord, ctl: &Control<'_>) -> Result<Prepared, TimelineError> {
+        // Apply the decoded record, so the live path is the replay path.
         let mut state = self.state.clone();
         let delta = self.engine.apply_record(&mut state, &record, ctl)?;
-        Ok(Prepared { base: self.at, record, state, delta })
+        Ok(Prepared { engine: self.engine.clone(), base: self.at, record, state, delta })
+    }
+
+    /// Apply a stored-form op (remote clients, scripts). The record is decoded (migrated if
+    /// older) and re-encoded canonically, so the same op is the same node whichever client
+    /// produced it; fields the op does not know are dropped.
+    pub fn prepare_record(&self, record: OpRecord, ctl: &Control<'_>) -> Result<Prepared, TimelineError> {
+        let op = self.engine.registry().decode(&record).map_err(ApplyError::from)?;
+        self.prepare(op.as_ref(), ctl)
     }
 }
 
@@ -253,6 +258,9 @@ impl Session {
     /// Fails with [`TimelineError::StaleBase`] if the position moved since it was prepared.
     /// Nothing is recorded on failure.
     pub fn commit(&mut self, p: Prepared, meta: Meta) -> Result<(Hash256, Delta), TimelineError> {
+        if !p.engine.same_context(&self.engine) {
+            return Err(TimelineError::ForeignPrepared);
+        }
         if p.base != self.at {
             return Err(TimelineError::StaleBase { expected: p.base, found: self.at });
         }

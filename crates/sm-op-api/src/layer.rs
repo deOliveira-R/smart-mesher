@@ -37,11 +37,15 @@ pub enum LayerRole {
 /// Incremental canonical digest builder handed to [`LayerType::digest`].
 ///
 /// Every write is type- and length-framed so concatenations cannot collide.
-pub struct Digest(Hasher);
+///
+/// A digest runs in one of two modes, invisible to implementors: *identity* (floats quantized,
+/// used for the CI state hash) or *exact* (floats hashed bit-for-bit, used for derived-cache
+/// keys so a cache hit can never change op output).
+pub struct Digest(Hasher, bool);
 
 impl Digest {
-    pub(crate) fn new(domain: &str) -> Self {
-        Self(Hasher::new(domain))
+    pub(crate) fn new(domain: &str, exact: bool) -> Self {
+        Self(Hasher::new(domain), exact)
     }
     pub(crate) fn finish(self) -> Hash256 {
         self.0.finish()
@@ -79,7 +83,9 @@ impl Digest {
     /// Mix in a float quantised to multiples of `quantum` (docs/ARCHITECTURE.md §3: the CI
     /// state hash covers *quantized* coordinates so it is platform independent). `NaN` and
     /// infinities hash to distinct markers; a non-positive or non-finite `quantum` hashes as an
-    /// error marker (deterministic, and a validator problem).
+    /// error marker (deterministic, and a validator problem). Magnitudes too large for the
+    /// quantized `i64` (`|v / quantum| >= 2^63`) hash their raw bits instead of saturating, so
+    /// they do not all collide. In exact mode (cache keys) the raw bits are always hashed.
     pub fn f64_quantized(&mut self, v: f64, quantum: f64) -> &mut Self {
         if !(quantum.is_finite() && quantum > 0.0) {
             self.0.update(&[5, 0]);
@@ -90,9 +96,14 @@ impl Digest {
         } else if v == f64::NEG_INFINITY {
             self.0.update(&[5, 3]);
         } else {
-            let q = (v / quantum).round(); // saturating cast below
-            self.0.update(&[5, 4]);
-            self.0.update(&(q as i64).to_le_bytes());
+            let q = (v / quantum).round();
+            if self.1 || q.abs() >= 9.2e18 {
+                self.0.update(&[5, 5]);
+                self.0.update(&v.to_bits().to_le_bytes());
+            } else {
+                self.0.update(&[5, 4]);
+                self.0.update(&(q as i64).to_le_bytes());
+            }
         }
         self
     }
@@ -104,7 +115,9 @@ impl Digest {
     }
     /// Mix in any serializable value via its canonical encoding (key order and text form do
     /// not matter). Convenient for small layers; large layers should hash their arrays
-    /// directly. A value that cannot be encoded (NaN, ...) hashes as a fixed error marker.
+    /// directly. A value that cannot be encoded (NaN, ...) hashes its encoding error text, so
+    /// distinct failures differ, but values failing the same way still collide: keep such values
+    /// out of layers. Floats inside are *not* quantized.
     pub fn value<T: Serialize + ?Sized>(&mut self, v: &T) -> &mut Self {
         match to_value(v) {
             Ok(val) => {
@@ -113,7 +126,12 @@ impl Digest {
                 self.0.update(&(b.len() as u64).to_le_bytes());
                 self.0.update(&b);
             }
-            Err(_) => self.0.update(&[7, 0xFF]),
+            Err(e) => {
+                let m = e.to_string();
+                self.0.update(&[7, 0xFF]);
+                self.0.update(&(m.len() as u64).to_le_bytes());
+                self.0.update(m.as_bytes());
+            }
         }
         self
     }
@@ -161,6 +179,9 @@ pub trait Layer: Any + Send + Sync {
     fn role(&self) -> LayerRole;
     /// Content digest of this layer (not memoized; `State` memoizes).
     fn content_hash(&self) -> Hash256;
+    /// Exact content digest: like [`content_hash`](Self::content_hash) but floats written via
+    /// [`Digest::f64_quantized`] are hashed bit-for-bit. Used for derived-cache keys.
+    fn exact_hash(&self) -> Hash256;
     /// See [`LayerType::is_empty`].
     fn is_empty(&self) -> bool;
     /// See [`LayerType::on_retired`].
@@ -183,7 +204,13 @@ impl<T: LayerType> Layer for T {
         T::ROLE
     }
     fn content_hash(&self) -> Hash256 {
-        let mut d = Digest::new("smart-mesh/layer/v1");
+        let mut d = Digest::new("smart-mesh/layer/v1", false);
+        d.str(T::NAME);
+        self.digest(&mut d);
+        d.finish()
+    }
+    fn exact_hash(&self) -> Hash256 {
+        let mut d = Digest::new("smart-mesh/layer-exact/v1", true);
         d.str(T::NAME);
         self.digest(&mut d);
         d.finish()

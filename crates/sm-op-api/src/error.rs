@@ -65,6 +65,9 @@ pub enum OpError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RegistryError {
+    /// An op name violates the naming rule (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, no `__`).
+    #[error("bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__'")]
+    BadOpName(String),
     /// Two registrations used the same op name.
     #[error("op '{0}' is already registered")]
     DuplicateOp(String),
@@ -233,6 +236,9 @@ pub enum TimelineError {
         /// Current position.
         found: Option<Hash256>,
     },
+    /// The prepared op came from a session with a different engine (registry, services, cache).
+    #[error("prepared op belongs to a different engine")]
+    ForeignPrepared,
     /// A long replay was cancelled.
     #[error("operation cancelled")]
     Cancelled,

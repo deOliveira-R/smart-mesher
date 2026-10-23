@@ -153,6 +153,8 @@ pub struct ApplyCtx<'a> {
     services: &'a Services,
     cache: &'a DerivedCache,
     registry: &'a Registry,
+    order: &'a [&'static str],
+    notified: usize,
     created: Vec<EntityId>,
     removed: Vec<EntityId>,
     outputs: BTreeMap<String, Vec<EntityId>>,
@@ -166,6 +168,7 @@ impl<'a> ApplyCtx<'a> {
         services: &'a Services,
         cache: &'a DerivedCache,
         registry: &'a Registry,
+        order: &'a [&'static str],
     ) -> Self {
         Self {
             state,
@@ -173,6 +176,8 @@ impl<'a> ApplyCtx<'a> {
             services,
             cache,
             registry,
+            order,
+            notified: 0,
             created: Vec::new(),
             removed: Vec::new(),
             outputs: BTreeMap::new(),
@@ -181,17 +186,22 @@ impl<'a> ApplyCtx<'a> {
     }
 
     pub(crate) fn finish(&mut self) -> Result<Delta, OpError> {
-        if !self.removed.is_empty() {
-            let order = self.registry.layer_order()?;
-            let touched = self.state.notify_retired(&order, &self.removed);
-            self.touched.extend(touched);
-        }
+        self.flush_retired();
         Ok(Delta {
             created: std::mem::take(&mut self.created),
             removed: std::mem::take(&mut self.removed),
             outputs: std::mem::take(&mut self.outputs),
             touched_layers: std::mem::take(&mut self.touched).into_iter().collect(),
         })
+    }
+
+    /// Tell layers about ids retired since the last flush (dependency order).
+    fn flush_retired(&mut self) {
+        if self.notified < self.removed.len() {
+            let touched = self.state.notify_retired(self.order, &self.removed[self.notified..]);
+            self.touched.extend(touched);
+            self.notified = self.removed.len();
+        }
     }
 
     /// Read-only view of the (scratch) state.
@@ -236,7 +246,8 @@ impl<'a> ApplyCtx<'a> {
     }
 
     /// Retire a live entity. Its serial is never reused. Layers are told via
-    /// [`LayerType::on_retired`] once the op body returns.
+    /// [`LayerType::on_retired`] once the op body returns (inside `core.batch`: after each
+    /// sub-op).
     pub fn retire(&mut self, id: EntityId) -> Result<(), OpError> {
         if self.state.retire(id) {
             self.removed.push(id);
@@ -270,8 +281,9 @@ impl<'a> ApplyCtx<'a> {
 
     /// Mutate a layer (copy-on-write; the committed state is untouched until the op succeeds).
     pub fn layer_mut<L: LayerType>(&mut self) -> Result<&mut L, OpError> {
+        let l = self.state.layer_mut::<L>().ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))?;
         self.touched.insert(L::NAME);
-        self.state.layer_mut::<L>().ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))
+        Ok(l)
     }
 
     /// The session's derived cache. A hit must never change the op's output.
@@ -308,6 +320,9 @@ impl<'a> ApplyCtx<'a> {
         let r = op.apply(self);
         let sub = std::mem::replace(&mut self.outputs, saved);
         r?;
+        // Layers react after each nested op, so later sub-ops never see references to ids an
+        // earlier sub-op retired.
+        self.flush_retired();
         for (role, ids) in &sub {
             self.outputs.entry(format!("{prefix}.{role}")).or_default().extend(ids.iter().copied());
         }

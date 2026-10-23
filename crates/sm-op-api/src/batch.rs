@@ -13,7 +13,9 @@ use crate::op::{ApplyCtx, OpRecord, TypedOp};
 ///
 /// A string parameter of the form `"$<i>.<role>"` (or `"$<i>.<role>[<k>]"` for the k-th id of a
 /// role) in op `j > i` is replaced by the id that op `i` allocated with
-/// `ApplyCtx::alloc_as(role, ..)`. There is no control flow. The batch's own [`Delta`](crate::Delta)
+/// `ApplyCtx::alloc_as(role, ..)`. To pass a literal string that starts with `$`, double the
+/// first `$` (`"$$0.price"` becomes the literal `"$0.price"`). Layers react to ids retired by op
+/// `i` (via `on_retired`) before op `i + 1` runs. There is no control flow. The batch's own [`Delta`](crate::Delta)
 /// outputs carry every sub-op output as `"<i>.<role>"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Batch {
@@ -52,7 +54,9 @@ fn reference(s: &str) -> Option<(usize, &str, usize)> {
 fn substitute(v: &mut Value, done: &Outputs) -> Result<(), OpError> {
     match v {
         Value::String(s) => {
-            if let Some((i, role, k)) = reference(s) {
+            if s.starts_with("$$") {
+                s.remove(0);
+            } else if let Some((i, role, k)) = reference(s) {
                 let id = done
                     .get(i)
                     .ok_or_else(|| OpError::Invalid(format!("batch reference '{s}' points to an op that has not run")))?
@@ -92,5 +96,8 @@ mod tests {
         assert_eq!(v, json!({"a": ["TopoVolume#4", "plain"], "b": {"c": "TopoVolume#4"}}));
         assert!(substitute(&mut json!("$1.volume"), &done).is_err());
         assert!(substitute(&mut json!("$0.nope"), &done).is_err());
+        let mut lit = json!({"a": "$$0.volume", "b": "$$$x"});
+        substitute(&mut lit, &done).unwrap();
+        assert_eq!(lit, json!({"a": "$0.volume", "b": "$$x"}));
     }
 }

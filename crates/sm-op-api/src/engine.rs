@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::cache::DerivedCache;
-use crate::error::ApplyError;
+use crate::error::{ApplyError, RegistryError};
 use crate::op::{ApplyCtx, Delta, Op, OpRecord};
 use crate::progress::Control;
 use crate::registry::Registry;
@@ -17,12 +17,25 @@ pub struct Engine {
     registry: Arc<Registry>,
     services: Arc<Services>,
     cache: Arc<DerivedCache>,
+    /// Layer dependency order, validated once at construction.
+    order: Arc<[&'static str]>,
 }
 
 impl Engine {
     /// Build over a finished registry, the injected services and the derived cache.
-    pub fn new(registry: Arc<Registry>, services: Services, cache: Arc<DerivedCache>) -> Self {
-        Self { registry, services: Arc::new(services), cache }
+    ///
+    /// Validates the layer dependency graph (strict: unknown dependency or cycle is an error) and
+    /// caches the `on_retired` order, so a misconfigured registry fails here, not mid-session.
+    pub fn new(registry: Arc<Registry>, services: Services, cache: Arc<DerivedCache>) -> Result<Self, RegistryError> {
+        let order: Arc<[&'static str]> = registry.layer_order()?.into();
+        Ok(Self { registry, services: Arc::new(services), cache, order })
+    }
+
+    /// True when `other` shares this engine's registry, services and cache.
+    pub fn same_context(&self, other: &Engine) -> bool {
+        Arc::ptr_eq(&self.registry, &other.registry)
+            && Arc::ptr_eq(&self.services, &other.services)
+            && Arc::ptr_eq(&self.cache, &other.cache)
     }
 
     /// The registry.
@@ -42,7 +55,7 @@ impl Engine {
         let mut scratch = state.clone();
         let name = || op.name().to_owned();
         let delta = {
-            let mut ctx = ApplyCtx::new(&mut scratch, *ctl, &self.services, &self.cache, &self.registry);
+            let mut ctx = ApplyCtx::new(&mut scratch, *ctl, &self.services, &self.cache, &self.registry, &self.order);
             op.apply(&mut ctx).map_err(|source| ApplyError::Op { name: name(), source })?;
             ctx.finish().map_err(|source| ApplyError::Op { name: name(), source })?
         };

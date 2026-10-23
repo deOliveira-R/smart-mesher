@@ -68,10 +68,25 @@ pub struct OpInfo {
 }
 
 impl OpInfo {
-    /// Name usable as an MCP/LLM tool name (`^[a-zA-Z0-9_-]+$`): `.` becomes `__`.
+    /// Name usable as an MCP/LLM tool name (`^[a-zA-Z0-9_-]+$`): `.` becomes `__`. Injective,
+    /// because registered op names never contain `__`.
     pub fn tool_name(&self) -> String {
         self.name.replace('.', "__")
     }
+}
+
+/// Op-name rule: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` with no `__` (so `tool_name` is
+/// injective). Names are stored in every node, so the rule is part of the format.
+pub fn valid_op_name(name: &str) -> bool {
+    let mut segs = 0;
+    for seg in name.split('.') {
+        let mut c = seg.chars();
+        if !c.next().is_some_and(|f| f.is_ascii_lowercase()) || !c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_') {
+            return false;
+        }
+        segs += 1;
+    }
+    segs >= 2 && !name.contains("__")
 }
 
 type RestoreFn = fn(&[u8]) -> Result<Arc<dyn Layer>, CodecError>;
@@ -127,6 +142,9 @@ impl Registry {
     /// Register a hand-written [`OpType`].
     pub fn register_dyn(&mut self, t: Arc<dyn OpType>) -> Result<&mut Self, RegistryError> {
         let name = t.name().to_owned();
+        if !valid_op_name(&name) {
+            return Err(RegistryError::BadOpName(name));
+        }
         if self.ops.contains_key(&name) {
             return Err(RegistryError::DuplicateOp(name));
         }
