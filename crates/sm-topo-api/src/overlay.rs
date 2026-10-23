@@ -14,6 +14,13 @@
 //! - **Partitions** take real cut geometry: [`Overlay::partition_edge`] adds a virtual vertex on
 //!   an edge curve, [`Overlay::partition_face`] adds a virtual chord edge (with its own curve,
 //!   stored in the overlay's geometry layer) between two vertices of a face's outer loop.
+//! - **Volume splits** ([`Overlay::partition_volume`]) add a virtual cut face (with its own
+//!   carrier surface) spanning a closed loop of live edges and replace the volume by two virtual
+//!   volumes. The two volume ids are **supplied by the caller** (the model's decomposition mints
+//!   `PartitionCell` piece ids; the overlay mints vertex, edge and face ids), so a piece and its
+//!   overlay volume are the same id. [`Overlay::partition_volume_by_plane`] does the whole plane
+//!   cut: virtual vertices where edges cross the plane, virtual chords across the faces it
+//!   cuts, then the volume split.
 //! - Ids are **never reused**: each rank keeps a monotonic counter, and [`Overlay::remove`] undoes
 //!   one virtual cell (rebuilding the rest) without recycling its id.
 //! - The overlay keeps the host as an `Arc<dyn TopologyView>` snapshot with its
@@ -24,16 +31,22 @@
 //! Limits (documented, not hidden): virtual cells have no lineage of their own (the host's log is
 //! shown) and no pcurves; the radial ring of an edge whose faces changed keeps the host's angular
 //! order (absorbed faces replaced by their virtual face) and appends new faces in `(face, sense)`
-//! order; `face_moments` of a partition child is `Unsupported`.
+//! order; `face_moments` of a partition child and `volume_moments` of a virtual volume are
+//! `Unsupported`. Virtual volumes have one `Outer` shell and no baffles; the orientation of the
+//! cut face (normal from the first child into the second) is found from the side of the first
+//! child's vertices, exact for planar cuts and a convexity assumption for curved ones. Faces
+//! keep their host orientation (the lowest-id-left rule is not re-applied across virtual
+//! volumes).
 
 use crate::complex::canonical_rotate;
 use crate::error::{QueryError, TopoError};
 use crate::geometry::{FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
-use crate::types::{Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, EntityState, FacePair, Incidence, OpId, Sense, ShellKind, Side};
+use crate::types::{Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, EntityState, FacePair, Incidence, OpId, Sense, ShellKind, Side, SurfaceCarrier};
+use crate::derived::TopologyViewExt;
 use crate::view::{EdgeUse, NO_CARRIER, TopologyView};
-use sm_core::{EntityId, EntityKind, Point3};
-use sm_geom_api::{CurveDef, GeomError, GeomAppend, GeomStore, ImplicitSurface, Interval, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, SurfaceDef, Uv};
+use sm_core::{EntityId, EntityKind, Point3, Vector3};
+use sm_geom_api::{CurveDef, Frame, GeomError, GeomAppend, GeomStore, ImplicitSurface, Interval, Line, MemoryStore, ModelTolerance, PCurve, ParametricCurve, ParametricSurface, Plane, SurfaceDef, Uv};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -62,6 +75,37 @@ pub struct VirtualCut {
     pub curve: CurveDef,
     /// Curve parameter range from `from` to `to`.
     pub range: Interval,
+}
+
+/// A virtual volume split: the cut face spans the closed loop `edges` and lies on `surface`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VolumeCut {
+    /// Live edges (host or virtual) of the volume's faces forming one closed loop, in loop order
+    /// (consecutive edges share a vertex; either direction).
+    pub edges: Vec<EntityId>,
+    /// Carrier surface of the cut face (added to the overlay's geometry layer). Must be
+    /// parametric (not implicit-only).
+    pub surface: SurfaceDef,
+    /// A face of the volume that goes to the first child (the cut face's left side).
+    pub seed: EntityId,
+}
+
+/// What [`Overlay::partition_volume_by_plane`] created.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaneCut {
+    /// The virtual cut face.
+    pub face: EntityId,
+    /// The two virtual volumes: `[negative side, positive side]` of the plane (the ids passed in).
+    pub children: [EntityId; 2],
+    /// Edges that crossed the plane: `(edge, new virtual vertex, halves in edge order)`.
+    pub split_edges: Vec<(EntityId, EntityId, [EntityId; 2])>,
+    /// Faces the plane cut: `(face, virtual chord, [negative half, positive half])`.
+    pub split_faces: Vec<(EntityId, EntityId, [EntityId; 2])>,
+    /// The cut face's loop edges, ascending.
+    pub loop_edges: Vec<EntityId>,
+    /// The cut face's loop vertices, ascending.
+    pub loop_vertices: Vec<EntityId>,
 }
 
 /// One recorded virtual operation, with the ids it allocated, so replay reproduces them.
@@ -97,6 +141,18 @@ pub enum VirtualOp {
         /// The two child faces.
         halves: [EntityId; 2],
     },
+    /// A virtual volume split.
+    PartitionVolume {
+        /// The split volume (host or virtual).
+        volume: EntityId,
+        /// The cut.
+        cut: VolumeCut,
+        /// The new cut face.
+        face: EntityId,
+        /// The two virtual volumes (caller-supplied `PartitionCell` ids), the first on the cut
+        /// face's left.
+        children: [EntityId; 2],
+    },
 }
 
 impl VirtualOp {
@@ -105,6 +161,7 @@ impl VirtualOp {
             VirtualOp::Composite { id, .. } => SmallVec::from_slice(&[*id]),
             VirtualOp::PartitionEdge { vertex, halves, .. } => SmallVec::from_slice(&[*vertex, halves[0], halves[1]]),
             VirtualOp::PartitionFace { chord, halves, .. } => SmallVec::from_slice(&[*chord, halves[0], halves[1]]),
+            VirtualOp::PartitionVolume { face, children, .. } => SmallVec::from_slice(&[*face, children[0], children[1]]),
         }
     }
 
@@ -113,6 +170,7 @@ impl VirtualOp {
             VirtualOp::Composite { faces, .. } => faces.iter().copied().collect(),
             VirtualOp::PartitionEdge { edge, .. } => SmallVec::from_slice(&[*edge]),
             VirtualOp::PartitionFace { face, cut, .. } => SmallVec::from_slice(&[*face, cut.from, cut.to]),
+            VirtualOp::PartitionVolume { volume, cut, .. } => std::iter::once(*volume).chain(cut.edges.iter().copied()).chain(std::iter::once(cut.seed)).collect(),
         }
     }
 }
@@ -156,6 +214,11 @@ impl Layered {
     fn add_curve(&mut self, def: CurveDef) -> Result<EntityId, GeomError> {
         let local = self.extra.add_curve(def)?;
         EntityId::new(EntityKind::Curve, local.serial() + self.curve_off as u64).ok_or(GeomError::Invalid("id space exhausted"))
+    }
+
+    fn add_surface(&mut self, def: SurfaceDef) -> Result<EntityId, GeomError> {
+        let local = self.extra.add_surface(def)?;
+        EntityId::new(EntityKind::Surface, local.serial() + self.surface_off as u64).ok_or(GeomError::Invalid("id space exhausted"))
     }
 }
 
@@ -378,7 +441,13 @@ impl Overlay {
     fn cell_mut(&mut self, id: EntityId) -> Option<&mut OCell> {
         if !self.layer.cells.contains_key(&id) {
             let dim = self.host.dim_of(id)?;
-            let c = OCell { dim, is_virtual: false, down: self.host.boundary(id).to_vec(), up: self.host.coboundary(id).to_vec(), carrier: self.host.carrier(id).clone(), members: Vec::new(), aux: SmallVec::new(), radial: SmallVec::new() };
+            // The aux row (face -> edges, volume -> faces) is derived from `down`; copy it too.
+            let aux: SmallVec<[EntityId; 8]> = match dim {
+                Dim::Face => SmallVec::from_slice(self.host.face_edges(id)),
+                Dim::Volume => SmallVec::from_slice(self.host.volume_faces(id)),
+                _ => SmallVec::new(),
+            };
+            let c = OCell { dim, is_virtual: false, down: self.host.boundary(id).to_vec(), up: self.host.coboundary(id).to_vec(), carrier: self.host.carrier(id).clone(), members: Vec::new(), aux, radial: SmallVec::new() };
             self.layer.cells.insert(id, c);
         }
         self.layer.cells.get_mut(&id)
@@ -547,6 +616,188 @@ impl Overlay {
         Ok(out)
     }
 
+    /// Split `volume` (host or virtual, one outer shell, no baffles) into two virtual volumes
+    /// `children` (fresh `PartitionCell` ids, ascending; the caller mints them) by a virtual cut
+    /// face spanning `cut.edges`. The volume's faces are partitioned by flood fill across the
+    /// edges that are not on the loop; the part containing `cut.seed` goes to `children[0]`,
+    /// which sits on the cut face's left (its normal points into `children[1]`). Exactly two
+    /// parts are required. Returns the cut face. The loop edges must already exist (use
+    /// [`Overlay::partition_edge`] / [`Overlay::partition_face`], or
+    /// [`Overlay::partition_volume_by_plane`] for the whole plane cut).
+    pub fn partition_volume(&mut self, volume: EntityId, cut: VolumeCut, children: [EntityId; 2]) -> Result<EntityId, TopoError> {
+        let face = self.peek(Dim::Face, 0)?;
+        let done = self.atomic(VirtualOp::PartitionVolume { volume, cut, face, children }, [0, 0, 1])?;
+        self.ops.push(done);
+        self.rebuild_live();
+        Ok(face)
+    }
+
+    /// Cut `volume` by the plane through `origin` with normal `normal` into `children =
+    /// [negative side, positive side]` (fresh `PartitionCell` ids, ascending): a virtual vertex
+    /// where an edge's end vertices lie strictly on opposite sides (bisection on its curve), a
+    /// straight virtual chord across every face with vertices strictly on both sides (the face
+    /// must be planar, with exactly two outer-loop vertices on the plane), then
+    /// [`Overlay::partition_volume`] with the plane as carrier. Atomic: on error the overlay is
+    /// unchanged. Vertices within the model's linear tolerance of the plane count as on it.
+    ///
+    /// Limits: an edge is assumed to cross the plane at most once (only its end vertices are
+    /// tested); the section must be one simple loop; a face lying in the plane is refused.
+    pub fn partition_volume_by_plane(&mut self, volume: EntityId, origin: Point3, normal: Vector3, children: [EntityId; 2]) -> Result<PlaneCut, TopoError> {
+        let snapshot = self.clone();
+        let r = self.plane_cut(volume, origin, normal, children);
+        if r.is_err() {
+            *self = snapshot;
+        }
+        r
+    }
+
+    fn point_of(&self, v: EntityId) -> Result<Point3, TopoError> {
+        match self.carrier_of(v) {
+            Carrier::Point(p) => Ok(*p),
+            _ => Err(TopoError::Unsupported("vertex without a point carrier")),
+        }
+    }
+
+    fn plane_cut(&mut self, volume: EntityId, origin: Point3, normal: Vector3, children: [EntityId; 2]) -> Result<PlaneCut, TopoError> {
+        let len = normal.norm();
+        if !(len.is_finite() && len > 0.0) {
+            return Err(TopoError::InvalidParameter("zero plane normal"));
+        }
+        let n = normal * (1.0 / len);
+        let tol = self.host.tolerance().linear;
+        let dist = |p: Point3| n.dot(p - origin);
+        if self.dim_of(volume) != Some(Dim::Volume) || !self.is_live(volume) {
+            return Err(TopoError::WrongDim { id: volume, expected: Dim::Volume });
+        }
+        // 1. Edges whose ends lie strictly on opposite sides.
+        let mut edges: Vec<EntityId> = self.volume_faces(volume).iter().flat_map(|f| self.face_edges(*f).to_vec()).collect();
+        edges.sort();
+        edges.dedup();
+        let mut split_edges = Vec::new();
+        for e in edges {
+            let Some((a, b)) = self.edge_ends_of(e) else { continue };
+            let (da, db) = (dist(self.point_of(a)?), dist(self.point_of(b)?));
+            if !((da < -tol && db > tol) || (da > tol && db < -tol)) {
+                continue;
+            }
+            let Carrier::Curve(cc) = self.carrier_of(e).clone() else { return Err(TopoError::Unsupported("plane cut of an edge without a curve")) };
+            let curve = self.layer.shapes.curve(cc.curve).ok_or(TopoError::Geom(GeomError::Invalid("curve not in store")))?;
+            let (mut lo, mut hi) = (cc.range.lo, cc.range.hi);
+            let mut flo = dist(curve.eval(lo));
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                let fm = dist(curve.eval(mid));
+                if (fm < 0.0) == (flo < 0.0) {
+                    lo = mid;
+                    flo = fm;
+                } else {
+                    hi = mid;
+                }
+            }
+            let t = 0.5 * (lo + hi);
+            let (v, halves) = self.partition_edge(e, t)?;
+            split_edges.push((e, v, halves));
+        }
+        // 2. Faces with vertices strictly on both sides get a chord.
+        let mut split_faces = Vec::new();
+        let faces: Vec<EntityId> = self.volume_faces(volume).to_vec();
+        for f in faces {
+            let verts: Vec<EntityId> = self.loop_vertices(f, 0).collect();
+            let ds: Vec<f64> = verts.iter().map(|v| self.point_of(*v).map(dist)).collect::<Result<_, _>>()?;
+            let (neg, pos) = (ds.iter().any(|d| *d < -tol), ds.iter().any(|d| *d > tol));
+            if !neg && !pos {
+                return Err(TopoError::Unsupported("the cut plane contains a face of the volume"));
+            }
+            if !(neg && pos) {
+                continue;
+            }
+            let on: Vec<EntityId> = verts.iter().zip(&ds).filter(|(_, d)| d.abs() <= tol).map(|(v, _)| *v).collect();
+            if on.len() != 2 {
+                return Err(TopoError::Unsupported("the plane must cross a cut face through exactly two of its vertices"));
+            }
+            let planar = match self.carrier_of(f) {
+                Carrier::Surface(sc) => matches!(self.layer.shapes.surface_def(sc.surface), Some(SurfaceDef::Plane(_))),
+                _ => false,
+            };
+            if !planar {
+                return Err(TopoError::Unsupported("plane cut of a face that is not planar"));
+            }
+            let (pa, pb) = (self.point_of(on[0])?, self.point_of(on[1])?);
+            let d = pb - pa;
+            let chord_len = d.norm();
+            let line = Line::new(pa, d)?;
+            let halves = self.partition_face(f, VirtualCut { from: on[0], to: on[1], curve: CurveDef::Line(line), range: Interval::new(0.0, chord_len) })?;
+            let chord = self.face_edges(halves[0]).iter().copied().find(|e| self.face_edges(halves[1]).contains(e)).ok_or(TopoError::Unsupported("internal: chord not shared"))?;
+            // Order the halves [negative, positive].
+            let side_of = |o: &Self, h: EntityId| -> Result<f64, TopoError> {
+                let mut s = 0.0f64;
+                for v in o.loop_vertices(h, 0) {
+                    let d = dist(o.point_of(v)?);
+                    if d.abs() > s.abs() {
+                        s = d;
+                    }
+                }
+                Ok(s)
+            };
+            let ordered = if side_of(self, halves[0])? < 0.0 { halves } else { [halves[1], halves[0]] };
+            split_faces.push((f, chord, ordered));
+        }
+        // 3. The loop: edges on the plane separating a negative face from a positive one.
+        let faces: Vec<EntityId> = self.volume_faces(volume).to_vec();
+        let mut face_side: BTreeMap<EntityId, bool> = BTreeMap::new();
+        for f in &faces {
+            let mut neg = false;
+            for v in self.loop_vertices(*f, 0) {
+                neg |= dist(self.point_of(v)?) < -tol;
+            }
+            face_side.insert(*f, neg);
+        }
+        let mut cand: BTreeMap<EntityId, (EntityId, EntityId)> = BTreeMap::new();
+        for f in &faces {
+            for e in self.face_edges(*f) {
+                if cand.contains_key(e) {
+                    continue;
+                }
+                let Some((a, b)) = self.edge_ends_of(*e) else { continue };
+                if dist(self.point_of(a)?).abs() > tol || dist(self.point_of(b)?).abs() > tol {
+                    continue;
+                }
+                let users: Vec<bool> = faces.iter().filter(|g| self.face_edges(**g).contains(e)).map(|g| face_side[g]).collect();
+                if users.contains(&true) && users.contains(&false) {
+                    cand.insert(*e, (a, b));
+                }
+            }
+        }
+        let mut by_vertex: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
+        for (e, (a, b)) in &cand {
+            by_vertex.entry(*a).or_default().push(*e);
+            by_vertex.entry(*b).or_default().push(*e);
+        }
+        if cand.is_empty() || by_vertex.values().any(|v| v.len() != 2) {
+            return Err(TopoError::Unsupported("the plane section is not one simple loop"));
+        }
+        let first = *cand.keys().next().ok_or(TopoError::Unsupported("empty plane section"))?;
+        let mut ordered = vec![first];
+        let mut at = cand[&first].1;
+        while ordered.len() < cand.len() {
+            let next = by_vertex[&at].iter().copied().find(|e| !ordered.contains(e)).ok_or(TopoError::Unsupported("the plane section is not one simple loop"))?;
+            let (a, b) = cand[&next];
+            at = if a == at { b } else { a };
+            ordered.push(next);
+        }
+        if at != cand[&first].0 {
+            return Err(TopoError::Unsupported("the plane section is not one simple loop"));
+        }
+        let seed = *faces.iter().find(|f| face_side[*f]).ok_or(TopoError::Unsupported("nothing on the negative side of the plane"))?;
+        let frame = Frame::from_z(origin, n)?;
+        let face = self.partition_volume(volume, VolumeCut { edges: ordered.clone(), surface: SurfaceDef::Plane(Plane { frame }), seed }, children)?;
+        let mut loop_edges = ordered;
+        loop_edges.sort();
+        let mut loop_vertices: Vec<EntityId> = by_vertex.keys().copied().collect();
+        loop_vertices.sort();
+        Ok(PlaneCut { face, children, split_edges, split_faces, loop_edges, loop_vertices })
+    }
+
     /// Undo the operation that created virtual cell `virt` (any of the cells it created names
     /// it), restoring the cells it hid. Fails with `StillReferenced` if a later operation uses
     /// one of its cells. The id is not reused.
@@ -588,6 +839,7 @@ impl Overlay {
             VirtualOp::Composite { faces, id } => self.apply_composite(faces, *id),
             VirtualOp::PartitionEdge { edge, param, vertex, halves } => self.apply_partition_edge(*edge, *param, *vertex, *halves),
             VirtualOp::PartitionFace { face, cut, chord, halves } => self.apply_partition_face(*face, cut, *chord, *halves),
+            VirtualOp::PartitionVolume { volume, cut, face, children } => self.apply_partition_volume(*volume, cut, *face, *children),
         }?;
         self.rebuild_live();
         Ok(())
@@ -827,6 +1079,153 @@ impl Overlay {
     }
 }
 
+impl Overlay {
+    fn apply_partition_volume(&mut self, volume: EntityId, cut: &VolumeCut, face: EntityId, children: [EntityId; 2]) -> Result<(), TopoError> {
+        if self.dim_of(volume) != Some(Dim::Volume) {
+            return Err(TopoError::WrongDim { id: volume, expected: Dim::Volume });
+        }
+        if !self.is_live(volume) {
+            return Err(TopoError::Dead(volume));
+        }
+        for c in children {
+            if c.kind() != EntityKind::PartitionCell || self.layer.cells.contains_key(&c) || self.layer.hidden.contains(&c) || self.host.dim_of(c).is_some() {
+                return Err(TopoError::InvalidParameter("volume children must be fresh PartitionCell ids"));
+            }
+        }
+        if children[0] >= children[1] {
+            return Err(TopoError::InvalidParameter("volume children must ascend"));
+        }
+        let rows: Vec<Incidence> = self.down_of(volume).to_vec();
+        if rows.iter().any(|r| r.ring != 0 || r.side == Side::Both) {
+            return Err(TopoError::Unsupported("partition_volume of a volume with several shells or baffles"));
+        }
+        // Chain the loop head to tail.
+        let n = cut.edges.len();
+        if n == 0 {
+            return Err(TopoError::InvalidParameter("a volume cut needs a loop of edges"));
+        }
+        let ends: Vec<(EntityId, EntityId)> = cut.edges.iter().map(|e| self.edge_ends_of(*e).ok_or(TopoError::WrongDim { id: *e, expected: Dim::Edge })).collect::<Result<_, _>>()?;
+        let s0 = if n == 1 || ends[0].1 == ends[1].0 || ends[0].1 == ends[1].1 {
+            Side::Left
+        } else if ends[0].0 == ends[1].0 || ends[0].0 == ends[1].1 {
+            Side::Right
+        } else {
+            return Err(TopoError::OpenLoop { ring: 0, at: 1 });
+        };
+        let mut sides = vec![s0];
+        let (tail0, mut head) = if s0 == Side::Left { ends[0] } else { (ends[0].1, ends[0].0) };
+        for (i, (a, b)) in ends.iter().enumerate().skip(1) {
+            let s = if *a == head {
+                head = *b;
+                Side::Left
+            } else if *b == head {
+                head = *a;
+                Side::Right
+            } else {
+                return Err(TopoError::OpenLoop { ring: 0, at: i });
+            };
+            sides.push(s);
+        }
+        if head != tail0 {
+            return Err(TopoError::OpenLoop { ring: 0, at: n });
+        }
+        let loop_set: BTreeSet<EntityId> = cut.edges.iter().copied().collect();
+        if loop_set.len() != n {
+            return Err(TopoError::InvalidParameter("a loop edge is listed twice"));
+        }
+        let vfaces: Vec<EntityId> = rows.iter().map(|r| r.cell).collect();
+        for e in &cut.edges {
+            if !vfaces.iter().any(|f| self.face_edges(*f).contains(e)) {
+                return Err(TopoError::InvalidParameter("a loop edge is not an edge of the volume"));
+            }
+        }
+        if !vfaces.contains(&cut.seed) {
+            return Err(TopoError::InvalidParameter("the seed is not a face of the volume"));
+        }
+        // Flood fill across the edges that are not on the loop.
+        let fill = |o: &Self, start: EntityId, within: &[EntityId]| -> BTreeSet<EntityId> {
+            let mut part = BTreeSet::from([start]);
+            let mut stack = vec![start];
+            while let Some(f) = stack.pop() {
+                for e in o.face_edges(f).iter().filter(|e| !loop_set.contains(e)) {
+                    for g in within {
+                        if !part.contains(g) && o.face_edges(*g).contains(e) {
+                            part.insert(*g);
+                            stack.push(*g);
+                        }
+                    }
+                }
+            }
+            part
+        };
+        let part_a = fill(self, cut.seed, &vfaces);
+        let rest: Vec<EntityId> = vfaces.iter().copied().filter(|f| !part_a.contains(f)).collect();
+        let Some(&b0) = rest.first() else { return Err(TopoError::Unsupported("the cut loop does not separate the volume")) };
+        if fill(self, b0, &rest).len() != rest.len() {
+            return Err(TopoError::Unsupported("the cut loop separates the volume into more than two parts"));
+        }
+        // Orientation: the normal points out of the first child.
+        let tails: Vec<EntityId> = ends.iter().zip(&sides).map(|((a, b), s)| if *s == Side::Left { *a } else { *b }).collect();
+        let pts: Vec<Point3> = tails.iter().map(|v| self.point_of(*v)).collect::<Result<_, _>>()?;
+        let mut nrm = Vector3::default();
+        let mut c = Vector3::default();
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            nrm = nrm + Vector3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+            c = c + Vector3::new(a.x, a.y, a.z) * (1.0 / pts.len() as f64);
+        }
+        let centre = Point3::new(c.x, c.y, c.z);
+        let loop_verts: BTreeSet<EntityId> = ends.iter().flat_map(|(a, b)| [*a, *b]).collect();
+        let mut a_verts: BTreeSet<EntityId> = BTreeSet::new();
+        for f in &part_a {
+            a_verts.extend(self.loop_vertices(*f, 0).filter(|v| !loop_verts.contains(v)));
+        }
+        if a_verts.is_empty() || nrm.norm() == 0.0 {
+            return Err(TopoError::Unsupported("cannot orient the cut face"));
+        }
+        let mut pa = Vector3::default();
+        for v in &a_verts {
+            let p = self.point_of(*v)?;
+            pa = pa + Vector3::new(p.x, p.y, p.z) * (1.0 / a_verts.len() as f64);
+        }
+        let mut lp: Vec<Incidence> = cut.edges.iter().zip(&sides).map(|(e, s)| Incidence::new(*e, *s, 0)).collect();
+        if nrm.dot(Point3::new(pa.x, pa.y, pa.z) - centre) > 0.0 {
+            lp.reverse();
+            for i in &mut lp {
+                i.side = i.side.flip();
+            }
+            nrm = -nrm;
+        }
+        canonical_rotate(&mut lp);
+        let surface = self.layer.shapes.add_surface(cut.surface.clone())?;
+        let s = self.layer.shapes.surface(surface).ok_or(TopoError::Unsupported("the cut surface must be parametric"))?;
+        let uv = s.project(centre, None)?.uv;
+        let sense = if s.normal(uv)?.dot(nrm) < 0.0 { Sense::Reversed } else { Sense::Forward };
+        // Commit.
+        let parents: Vec<Incidence> = self.up_of(volume).to_vec();
+        self.hide(volume, children[0]);
+        self.add_virtual(face, Dim::Face, lp, Carrier::Surface(SurfaceCarrier { surface, sense }), vec![volume]);
+        for (child, part_side) in [(children[0], Side::Left), (children[1], Side::Right)] {
+            let mut row: Vec<Incidence> = rows.iter().copied().filter(|r| part_a.contains(&r.cell) == (part_side == Side::Left)).collect();
+            row.push(Incidence::new(face, part_side, 0));
+            row.sort_by_key(|e| (e.ring, e.cell, e.side));
+            self.add_virtual(child, Dim::Volume, row, Carrier::None, vec![volume]);
+        }
+        for p in parents {
+            let mut prow = self.down_of(p.cell).to_vec();
+            prow.push(Incidence::new(children[0], p.side, p.ring));
+            prow.push(Incidence::new(children[1], p.side, p.ring));
+            prow.sort_by_key(|e| (e.ring, e.cell, e.side));
+            self.set_down(p.cell, prow);
+        }
+        Ok(())
+    }
+
+    fn is_virtual_volume(&self, id: EntityId) -> bool {
+        self.layer.cells.get(&id).is_some_and(|c| c.is_virtual && c.dim == Dim::Volume)
+    }
+}
+
 impl Layer {
     fn fresh(host: &Arc<dyn TopologyView>) -> Self {
         Self { cells: BTreeMap::new(), hidden: BTreeSet::new(), covering: BTreeMap::new(), live: Default::default(), shapes: Layered::new(host.clone()) }
@@ -888,6 +1287,12 @@ impl TopologyView for Overlay {
     }
 
     fn shell_kind(&self, volume: EntityId, ring: u16) -> Option<ShellKind> {
+        if self.layer.hidden.contains(&volume) {
+            return None;
+        }
+        if self.is_virtual_volume(volume) {
+            return (ring == 0).then_some(ShellKind::Outer);
+        }
         self.host.shell_kind(volume, ring)
     }
 
@@ -926,6 +1331,9 @@ impl TopologyView for Overlay {
     }
 
     fn volume_faces(&self, v: EntityId) -> &[EntityId] {
+        if self.layer.hidden.contains(&v) {
+            return &[];
+        }
         match self.layer.cells.get(&v) {
             Some(c) => &c.aux,
             None => self.host.volume_faces(v),
@@ -943,6 +1351,12 @@ impl TopologyView for Overlay {
     }
 
     fn volume_moments(&self, v: EntityId) -> Result<Moments, QueryError> {
+        if self.layer.hidden.contains(&v) {
+            return Err(QueryError::NoSuchCell(v));
+        }
+        if self.is_virtual_volume(v) {
+            return Err(QueryError::Unsupported("moments of a virtual volume"));
+        }
         self.host.volume_moments(v)
     }
 

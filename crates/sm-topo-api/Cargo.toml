@@ -13,10 +13,14 @@ workspace = true
 [features]
 default = []
 serde = ["dep:serde", "sm-core/serde", "sm-geom-api/serde", "smallvec/serde"]
+# Derive schemars::JsonSchema on the small key types that appear inside meshing intents and
+# plans (`Side`, `CoedgeKey`, `CornerKey`), for MCP tool schemas.
+schemars = ["serde", "dep:schemars", "sm-core/schemars"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-geom-api = { path = "../sm-geom-api" }
 serde = { version = "1", features = ["derive"], optional = true }
+schemars = { version = "1", optional = true }
 thiserror = "2"
 smallvec = "1"

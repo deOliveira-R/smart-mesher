@@ -94,6 +94,7 @@ impl Dim {
 /// loops of a face run counter-clockwise seen from its **right** side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Side {
     /// Left.
     Left = 0,
@@ -197,6 +198,7 @@ impl Incidence {
 /// the lineage maps `edge -> [e1, e2]` and callers re-key through the successors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CoedgeKey {
     /// The face.
     pub face: EntityId,
@@ -210,6 +212,7 @@ pub struct CoedgeKey {
 /// `(face, vertex)` pair it stays unique where a seam vertex appears twice in one loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CornerKey {
     /// The face.
     pub face: EntityId,

@@ -515,6 +515,7 @@ dependencies = [
 name = "sm-topo-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "sm-core",
  "sm-geom-api",
