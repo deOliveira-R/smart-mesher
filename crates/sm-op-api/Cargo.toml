@@ -1,0 +1,21 @@
+[package]
+name = "sm-op-api"
+description = "Operation and timeline contract for smart-mesh: closed-enum ops, pure transactional apply, content-addressed timeline DAG (orchestrator-owned contract)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+smallvec = { version = "1", features = ["serde"] }
+schemars = "1"
+
+[dev-dependencies]
+toml = "0.8"
+serde_json = "1"
+
+[lints]
+workspace = true
