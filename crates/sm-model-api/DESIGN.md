@@ -132,6 +132,10 @@ compares hashes (API crates do not use rayon).
   moments (r = 1.01 sqrt(3 tr(S_c)/A)), since moments do not give boxes.
 - Extra issue codes: `RotationOrder` (a deck rotation must be a primitive `1/n`), `GeometryUnavailable`
   (warning: moments unsupported for a face, e.g. at a pole).
+- `detect_symmetry` and `verify_transform` propagate `Topology(Unsupported)` when a face has no
+  moments (pole faces, faces without a surface carrier): detection hard-fails there instead of
+  degrading to `complete: false`; only the validator degrades (`GeometryUnavailable`).
+- `color_by_label` / `color_by_name` are linear scans over the color table (not indexed).
 - Two parallel mirrors cannot be declared as one symmetry (`GroupNotFinite`); the cell stays valid.
 - `Cargo.lock` is updated in this commit although decisions.md Q3 says the orchestrator owns it
   (the task asked for it).

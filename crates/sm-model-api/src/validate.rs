@@ -287,7 +287,7 @@ fn check_decks(m: &Model, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mu
                         Some((n, d)) => {
                             let dot = n.dot(plane.normal);
                             let off = if dot > 0.0 { d } else { -d };
-                            if dot.abs() < 1.0 - 1e-6 || (off - plane.offset * dot.signum()).abs() > dist {
+                            if dot.abs() < 1.0 - 1e-6 || (off - plane.offset).abs() > dist {
                                 s.add(IssueCode::MirrorOffPlane, &[f], "mirror face is not on the mirror plane");
                             }
                         }

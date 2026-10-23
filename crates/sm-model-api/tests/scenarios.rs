@@ -37,7 +37,7 @@ fn two_materials_with_boundary_colors_and_an_uncolored_boundary_warning() {
     let seam = m.add_color(8, "fuel-water", Domain::Face).unwrap();
     m.color_volumes(fuel, &[a.volume]).unwrap();
     m.color_volumes(water, &[b.volume]).unwrap();
-    // Labels and names are looked up in O(log n).
+    // Labels and names are looked up (linear scan over the small color table).
     assert_eq!(m.color_by_label(Domain::Face, 7), Some(vac));
     assert_eq!(m.color_by_label(Domain::Volume, 7), None, "labels are per domain");
     assert_eq!(m.color_by_name("water"), Some(water));
@@ -416,6 +416,14 @@ fn reflective_unit_cell_with_mirrors_at_x0_and_x1_is_valid() {
     assert!(matches!(m.declare_symmetry(&[m0, m1], &t), Err(ModelError::GroupNotFinite { .. })));
     assert!(m.symmetry().is_none(), "nothing was recorded");
     m.declare_symmetry(&[m0], &t).unwrap();
+    // The same plane x = 1 with a flipped normal and offset describes the same mirror.
+    let mut flipped = Model::new();
+    let f1 = flipped.add_boundary("mirror-x1-flipped", BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(-1.0, 0.0, 0.0), -1.0).unwrap() })).unwrap();
+    flipped.assign_self_paired(f1, &[b.faces[1]]).unwrap();
+    assert!(!validate(&flipped, &t, tol()).has(IssueCode::MirrorOffPlane));
+    let f0 = flipped.add_boundary("mirror-x0-flipped", BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(-1.0, 0.0, 0.0), 0.0).unwrap() })).unwrap();
+    flipped.assign_self_paired(f0, &[b.faces[0]]).unwrap();
+    assert!(!validate(&flipped, &t, tol()).has(IssueCode::MirrorOffPlane));
     // A mirror face off its plane is an error.
     let mut bad = Model::new();
     let wrong = bad.add_boundary("m", BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.5).unwrap() })).unwrap();
