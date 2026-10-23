@@ -25,9 +25,27 @@ use std::collections::BTreeMap;
 /// every mesh of a model so ids stay unique across hierarchy levels and instances.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// Deserialization goes through `from_state` so a bad snapshot is rejected at load time.
+#[cfg_attr(feature = "serde", serde(try_from = "SerialAllocRaw"))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SerialAlloc {
     next: BTreeMap<EntityKind, u64>,
+}
+
+/// Unchecked wire form of [`SerialAlloc`].
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+struct SerialAllocRaw {
+    next: BTreeMap<EntityKind, u64>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<SerialAllocRaw> for SerialAlloc {
+    type Error = MeshError;
+    fn try_from(r: SerialAllocRaw) -> Result<Self> {
+        Self::from_state(r.next)
+    }
 }
 
 impl SerialAlloc {

@@ -34,6 +34,8 @@ fn building_twice_gives_identical_hashes() {
 }
 
 #[test]
+/// The crate has no rayon dependency, so this concurrent-build test stands in for the
+/// CLAUDE.md `RAYON_NUM_THREADS=1` vs default comparison; parallel consumers get the same bytes.
 fn hashes_do_not_depend_on_threads() {
     // The crate itself is single threaded; building concurrently must not change anything
     // (no thread-local or time-based state, no hash-map iteration order).

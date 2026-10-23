@@ -24,8 +24,8 @@ use crate::error::{MeshError, Result};
 use crate::hierarchy::MeshCatalog;
 use crate::highorder::NodeRef;
 use crate::index::{CellIx, FaceIx, FaceKind, MeshEntityKind, SignedFace, VertexIx};
-use crate::shape::LoopRelation;
 use crate::read::MeshRead;
+use crate::shape::LoopRelation;
 use sm_core::{EntityId, EntityKind, Point3, Transform, Vector3};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
@@ -259,7 +259,9 @@ pub fn append_transformed<B: MeshBuild>(
     for i in 0..nv {
         let p = t.apply_point(co.get(i));
         let merged = match o.weld_tol {
-            Some(tol) if on_boundary[i] => b.find_vertex(p, tol).filter(|v| v.get() < vertex_start && target_ok[v.get()]),
+            Some(tol) if on_boundary[i] => b
+                .find_vertex(p, tol)
+                .filter(|v| v.get() < vertex_start && target_ok[v.get()]),
             _ => None,
         };
         let cls = remap(src.vertex_class(VertexIx::new(i)));
@@ -298,7 +300,11 @@ pub fn append_transformed<B: MeshBuild>(
         let mut reused: SmallVec<[bool; 6]> = SmallVec::new();
         for sf in sfs.iter() {
             let sface = sf.face();
-            let base = if improper { sf.side().flipped() } else { sf.side() };
+            let base = if improper {
+                sf.side().flipped()
+            } else {
+                sf.side()
+            };
             let (nf_ix, flip, was) = match fflip[sface.get()] {
                 Some(flip) => (fmap[sface.get()], flip, true),
                 None => {

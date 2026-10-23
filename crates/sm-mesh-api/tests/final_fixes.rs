@@ -226,6 +226,17 @@ fn serial_alloc_state_round_trips() {
 mod serde_round_trips {
     use super::*;
 
+    #[test]
+    fn serial_alloc_rejects_bad_snapshots_at_load_time() {
+        let mut a = SerialAlloc::new();
+        a.take(EntityKind::MeshCell, 1).unwrap();
+        let good = serde_json::to_string(&a).unwrap();
+        assert!(serde_json::from_str::<SerialAlloc>(&good).is_ok());
+        let bad = good.replace(":1", ":18446744073709551615");
+        assert_ne!(good, bad);
+        assert!(serde_json::from_str::<SerialAlloc>(&bad).is_err());
+    }
+
     fn rt<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
         v: &T,
     ) -> String {

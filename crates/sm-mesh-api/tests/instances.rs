@@ -440,7 +440,11 @@ fn identity_append_keeps_topological_baffles() {
         assert!(am.merged_faces.is_empty());
         let m = t.finish(&mut alloc).unwrap().mesh;
         assert_valid(&m);
-        assert_eq!((m.face_count(), interior_faces(&m).len()), (12, 0), "{kind:?}");
+        assert_eq!(
+            (m.face_count(), interior_faces(&m).len()),
+            (12, 0),
+            "{kind:?}"
+        );
         let nc = (0..m.face_count())
             .filter(|&f| m.face_kind(FaceIx::new(f)) == FaceKind::NonConformal)
             .count();
@@ -476,8 +480,14 @@ fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
     let small = unit_hex(&mut alloc);
     let mut t = ReferenceBuilder::new();
     let opts = weld();
-    append_transformed(&mut t, &big, id(EntityKind::Instance, 1), &Transform::IDENTITY, &opts)
-        .unwrap();
+    append_transformed(
+        &mut t,
+        &big,
+        id(EntityKind::Instance, 1),
+        &Transform::IDENTITY,
+        &opts,
+    )
+    .unwrap();
     let n = t.vertex_count();
     let a = append_transformed(
         &mut t,
