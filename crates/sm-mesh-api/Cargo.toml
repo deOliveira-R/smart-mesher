@@ -1,0 +1,16 @@
+[package]
+name = "sm-mesh-api"
+description = "Mesh database contract for smart-mesh: Hasse-diagram (DMPlex-style) face-first topology, classification, hierarchy, read/edit traits, plus an in-memory reference implementation."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+thiserror = "2"
+smallvec = "1"
+indexmap = "2"
+
+[lints]
+workspace = true
