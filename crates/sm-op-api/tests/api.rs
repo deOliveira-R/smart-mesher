@@ -65,6 +65,9 @@ impl LayerType for IntentLayer {
             self.sizes.remove(id);
         }
     }
+    fn references_any(&self, ids: &[EntityId]) -> bool {
+        ids.iter().any(|id| self.sizes.contains_key(id))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -1284,6 +1287,43 @@ fn reset_branch_moves_the_ref_like_git_reset() {
     assert!(s.reset_branch("nope", n1, &c.control()).is_err());
 }
 
+#[test]
+fn reset_of_a_detached_branch_logs_its_previous_tip() {
+    let mut s = session();
+    let n1 = apply(&mut s, &brick(1.0)).0;
+    let n2 = apply(&mut s, &brick(2.0)).0;
+    s.branch("side").unwrap();
+    let n3 = apply(&mut s, &brick(3.0)).0;
+    let c = q();
+    // HEAD is on `side` (at n3); reset `main`, which is at n2.
+    s.reset_branch("main", n1, &c.control()).unwrap();
+    assert_eq!(s.position(), Some(n3));
+    let e = s.reflog().last().unwrap();
+    assert_eq!(e.action, "reset");
+    assert_eq!(e.ref_name.as_deref(), Some("main"));
+    assert_eq!(
+        e.from,
+        Some(n2),
+        "the abandoned tip, not the session position"
+    );
+    assert_eq!(e.to, Some(n1));
+}
+
+#[test]
+fn retire_only_touches_layers_that_reference_the_ids() {
+    let mut s = session();
+    let a = apply(&mut s, &brick(1.0)).1.outputs["body"][0];
+    let b = apply(&mut s, &brick(2.0)).1.outputs["body"][0];
+    apply(&mut s, &SetSize { id: a, size: 0.3 });
+    let (_, d) = apply(&mut s, &DeleteBody { id: b });
+    assert!(d.touched_layers.contains(&"model"));
+    assert!(
+        !d.touched_layers.contains(&"intent"),
+        "intent does not reference the retired id"
+    );
+    assert_eq!(s.state().layer::<IntentLayer>().unwrap().sizes.len(), 1);
+}
+
 // ------------------------------------------------------------------- derived cache
 
 #[derive(Default)]
@@ -1987,6 +2027,10 @@ fn batch_typed_and_json_record_paths_give_the_same_node() {
         (
             serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0, "junk": "zzz"}),
             serde_json::json!({"id": "$0.body", "size": 0.5, "junk": 1}),
+        ),
+        (
+            serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0}),
+            serde_json::json!({"id": "$0.body", "size": 0.5, "junk": "$0.body"}),
         ),
     ] {
         let mut s = session();

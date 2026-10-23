@@ -49,6 +49,19 @@ as amended by `docs/design/w0/decisions.md`.
   `Registry::layer_order()` is strict (unknown dependency or cycle is an error); `install` rejects cycles.
 - **core.batch**: one node, atomic, ops applied in sequence. A string `"$i.role"` / `"$i.role[k]"` in a
   later op's params is replaced by an id allocated by op `i` with `alloc_as`. No control flow.
+  Format rules: (1) a string starting `$$` is the literal with one `$` removed. (2) Nesting a
+  `core.batch` is rejected. (3) The stored node holds each sub-op in canonical form (decoded by
+  the registry and re-encoded at the current version, so unknown fields, nulls and int-for-float
+  are gone), with the original `$i.role` references and `$$` escapes restored where the field
+  survives. References in fields the op does not know are dropped with the field. If the
+  canonical record no longer holds the substituted value at a reference path (a migration
+  reshaped the params), that sub-op is stored with concrete ids instead, which replays exactly.
+  The raw client record is never stored, so typed and JSON clients produce the same node hash.
+- **Retire reactions**: `LayerType::references_any(&ids)` (default `true`) lets a layer say through
+  `&self` that it holds none of the retired ids; such layers are neither copied-on-write nor listed
+  in `Delta::touched_layers`. Override it for large layers. Known limit: `Delta::created` lists
+  every allocated id (8 bytes each); range compression is deferred because it changes the frozen
+  `Delta` shape.
 - **Registry**: ordered maps behind `Arc`; `Clone`; `install(plugin)` stages a clone and commits only
   on success (atomic); registration order never affects the catalog, layer order or new-state hash.
   `register_layer_with(factory)`, `register_migration(op, from, fn)` (op must exist, no duplicates),

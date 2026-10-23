@@ -85,7 +85,11 @@ impl Digest {
     /// infinities hash to distinct markers; a non-positive or non-finite `quantum` hashes as an
     /// error marker (deterministic, and a validator problem). Magnitudes too large for the
     /// quantized `i64` (`|v / quantum| >= 2^63`) hash their raw bits instead of saturating, so
-    /// they do not all collide. In exact mode (cache keys) the raw bits are always hashed.
+    /// they do not all collide. Rounding is inherent to quantization: a value within one ulp of
+    /// a half-quantum boundary (`(k + 0.5) * quantum`) can round to different integers on
+    /// different platforms or after harmless float reassociation, which shows up as a spurious
+    /// `Diverged`. Choose quanta well away from the model's tolerances and from values that
+    /// land on such boundaries. In exact mode (cache keys) the raw bits are always hashed.
     pub fn f64_quantized(&mut self, v: f64, quantum: f64) -> &mut Self {
         if !(quantum.is_finite() && quantum > 0.0) {
             self.0.update(&[5, 0]);
@@ -158,6 +162,13 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// Called after an op retired `ids`, on every non-empty authoritative layer, so references
     /// to deleted entities do not dangle. Must be deterministic. Default: nothing.
     fn on_retired(&mut self, _ids: &[EntityId]) {}
+    /// Whether [`on_retired`](Self::on_retired) would change this layer for `ids`. Checked
+    /// through `&self` before the layer is copied-on-write, so a retire only clones, re-digests
+    /// and reports (in `Delta::touched_layers`) layers that actually refer to the ids. Must
+    /// not return `false` when `on_retired` would change anything. Default: `true`.
+    fn references_any(&self, _ids: &[EntityId]) -> bool {
+        true
+    }
     /// Persisted-snapshot hook for very large layers (mesh arrays). `Ok(None)` (the default)
     /// means "replay to rebuild"; `Some(bytes)` lets a storage backend persist the layer and
     /// restore it via [`restore`](Self::restore) instead of replaying.
@@ -188,6 +199,8 @@ pub trait Layer: Any + Send + Sync {
     fn is_empty(&self) -> bool;
     /// See [`LayerType::on_retired`].
     fn on_retired(&mut self, ids: &[EntityId]);
+    /// See [`LayerType::references_any`].
+    fn references_any(&self, ids: &[EntityId]) -> bool;
     /// See [`LayerType::snapshot`].
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError>;
     /// Deep copy (cheap for persistent/Arc-based stores).
@@ -222,6 +235,9 @@ impl<T: LayerType> Layer for T {
     }
     fn on_retired(&mut self, ids: &[EntityId]) {
         LayerType::on_retired(self, ids);
+    }
+    fn references_any(&self, ids: &[EntityId]) -> bool {
+        LayerType::references_any(self, ids)
     }
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         LayerType::snapshot(self)

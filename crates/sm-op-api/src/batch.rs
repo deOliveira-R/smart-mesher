@@ -58,11 +58,13 @@ impl TypedOp for Batch {
             let mut sub = rec.clone();
             substitute(&mut sub.params, &done)?;
             let (outputs, canon) = ctx.apply_nested(&sub, i, total)?;
-            // Store the canonical form (typed re-encode) with the original references put back;
-            // if a reference cannot be located in it (a migration reshaped the params), keep the
-            // record as sent so the stored batch still replays.
-            canonical
-                .push(restore_refs(&rec.params, &sub.params, canon).unwrap_or_else(|| rec.clone()));
+            // Store the canonical form (typed re-encode) with the original references put back.
+            // Fields the op does not know are gone from it, so their references are skipped. If a
+            // migration reshaped the params, the canonical record keeps concrete ids instead
+            // (replay reproduces it exactly); the raw client record is never stored.
+            let mut canon = canon;
+            restore_refs(&rec.params, &sub.params, &mut canon);
+            canonical.push(canon);
             done.push(outputs);
         }
         ctx.step(total as u64, total as u64, "batch")?;
@@ -108,26 +110,48 @@ fn diffs(
     }
 }
 
+fn at<'v>(mut cur: &'v Value, path: &[Seg]) -> Option<&'v Value> {
+    for seg in path {
+        cur = match seg {
+            Seg::Key(k) => cur.get(k.as_str())?,
+            Seg::Idx(i) => cur.get(*i)?,
+        };
+    }
+    Some(cur)
+}
+
+fn at_mut<'v>(mut cur: &'v mut Value, path: &[Seg]) -> Option<&'v mut Value> {
+    for seg in path {
+        cur = match seg {
+            Seg::Key(k) => cur.get_mut(k.as_str())?,
+            Seg::Idx(i) => cur.get_mut(*i)?,
+        };
+    }
+    Some(cur)
+}
+
 /// Put the original reference strings (`$i.role`, `$$literal`) back into `canon` at the paths
-/// where substitution replaced them. `None` if any such path is missing in the canonical params
-/// or no longer holds the substituted value.
-fn restore_refs(orig: &Value, subst: &Value, mut canon: OpRecord) -> Option<OpRecord> {
+/// where substitution replaced them. A path absent from `canon` is skipped: the op does not know
+/// that field, so the canonical re-encode dropped it and there is nothing to restore. If a path
+/// is present but holds a different value (a migration reshaped the params), nothing is changed
+/// and `false` is returned: the caller then stores `canon` with concrete ids, which replays
+/// exactly (it never stores the raw client record).
+fn restore_refs(orig: &Value, subst: &Value, canon: &mut OpRecord) -> bool {
     let mut found = Vec::new();
     diffs(orig, subst, &mut Vec::new(), &mut found);
-    for (path, o, s) in found {
-        let mut cur = &mut canon.params;
-        for seg in &path {
-            cur = match seg {
-                Seg::Key(k) => cur.get_mut(k.as_str())?,
-                Seg::Idx(i) => cur.get_mut(*i)?,
-            };
+    for (path, _, s) in &found {
+        if let Some(v) = at(&canon.params, path)
+            && v.as_str() != Some(s.as_str())
+        {
+            return false;
         }
-        if cur.as_str() != Some(s.as_str()) {
-            return None;
-        }
-        *cur = Value::String(o);
     }
-    Some(canon)
+    for (path, o, _) in found {
+        if let Some(v) = at_mut(&mut canon.params, &path) {
+            *v = Value::String(o);
+        }
+    }
+    true
 }
 
 fn reference(s: &str) -> Option<(usize, &str, usize)> {
@@ -180,6 +204,25 @@ mod tests {
         assert_eq!(reference("$12.face[3]"), Some((12, "face", 3)));
         assert_eq!(reference("$x.volume"), None);
         assert_eq!(reference("volume"), None);
+    }
+
+    #[test]
+    fn restore_skips_dropped_fields_and_falls_back_on_mismatch() {
+        let rec = |p: Value| OpRecord {
+            name: "x".into(),
+            version: 1,
+            params: p,
+        };
+        let orig = json!({"id": "$0.body", "junk": "$0.body"});
+        let subst = json!({"id": "Body#1", "junk": "Body#1"});
+        // `junk` dropped by the canonical re-encode: skipped, `id` restored.
+        let mut c = rec(json!({"id": "Body#1"}));
+        assert!(restore_refs(&orig, &subst, &mut c));
+        assert_eq!(c.params, json!({"id": "$0.body"}));
+        // Present but different (migration reshaped it): unchanged, concrete ids kept.
+        let mut c = rec(json!({"id": "Body#1", "junk": "Other#2"}));
+        assert!(!restore_refs(&orig, &subst, &mut c));
+        assert_eq!(c.params, json!({"id": "Body#1", "junk": "Other#2"}));
     }
 
     #[test]

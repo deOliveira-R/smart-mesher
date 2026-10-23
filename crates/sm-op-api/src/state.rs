@@ -147,6 +147,7 @@ impl State {
             if let Some(slot) = self.layers.get_mut(name)
                 && slot.layer.role() == LayerRole::Authoritative
                 && !slot.layer.is_empty()
+                && slot.layer.references_any(ids)
             {
                 slot.make_mut().on_retired(ids);
                 touched.push(*name);

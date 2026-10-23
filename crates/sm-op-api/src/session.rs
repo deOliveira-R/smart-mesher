@@ -574,16 +574,17 @@ impl Session {
         } else {
             None
         };
-        let from = self.at;
+        let prev_tip = self.timeline.refs().get(name).copied();
+        let at = self.at;
         self.timeline.set_ref(name, to)?;
         if let Some(s) = state {
-            self.swap_state(from, s);
+            self.swap_state(at, s);
             self.at = Some(to);
         }
         self.redo.clear();
         let entry = ReflogEntry {
             ref_name: Some(name.to_owned()),
-            from,
+            from: prev_tip,
             to: Some(to),
             action: "reset".to_owned(),
         };
