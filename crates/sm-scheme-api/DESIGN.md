@@ -145,6 +145,11 @@ and parity.
 - `TopoShape` handles pieces whose faces are all `PieceFace::Whole`. Cut and partial piece
   faces return `Unsupported` until the model and the overlay share ids (API request 2).
   Composite pieces are not handled either (a model follow-up is already tracked).
+- A `CopyOf` face whose **source** is claimed by a volume scheme (the deck's A face is a sweep
+  target and B is a linking face) cannot be satisfied: the copy is applied in the face pass,
+  before the volume that meshes its source, and fails with `Constraint`. The other direction
+  (B claimed, checked by `verify_copy`) works. The fix is a cross-dimension dependency: the
+  copy runs after the claiming volume, or the claiming scheme also meshes the copy.
 - `SimpleSolver` is not an optimizer: it only raises counts, and it handles sums and parity
   greedily. The real IIA belongs in `sm-sizing`.
 - Mesh output is 3D only, because `sm-mesh-api` models 3D cells and faces with at least 3
