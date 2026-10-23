@@ -10,6 +10,8 @@ use core::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EntityKind {
     // Model layer: topology
     /// Topological vertex.
@@ -131,6 +133,61 @@ impl fmt::Debug for EntityId {
     }
 }
 
+impl fmt::Display for EntityId {
+    /// Text form `Kind#serial`, e.g. `MeshCell#42`. Used by text codecs (TOML/JSON).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}#{}", self.kind(), self.serial())
+    }
+}
+
+impl core::str::FromStr for EntityId {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (k, n) = s.split_once('#').ok_or(ParseIdError)?;
+        let serial: u64 = n.parse().map_err(|_| ParseIdError)?;
+        let kind = (0u8..=255).filter_map(EntityKind::from_u8).find(|kk| format!("{kk:?}") == k).ok_or(ParseIdError)?;
+        EntityId::new(kind, serial).ok_or(ParseIdError)
+    }
+}
+
+/// Error parsing an [`EntityId`] from its `Kind#serial` text form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseIdError;
+
+impl fmt::Display for ParseIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid entity id (expected `Kind#serial`)")
+    }
+}
+
+impl std::error::Error for ParseIdError {}
+
+/// Serializes as the text form `Kind#serial` (human-readable, git-diffable). Binary backends store [`EntityId::to_raw`].
+#[cfg(feature = "serde")]
+impl serde::Serialize for EntityId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for EntityId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for EntityId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "EntityId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "pattern": "^[A-Za-z]+#[0-9]+$", "description": "Stable entity id `Kind#serial`" })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +200,14 @@ mod tests {
         assert_eq!(EntityId::from_raw(id.to_raw()), Some(id));
         assert!(EntityId::new(EntityKind::MeshCell, EntityId::MAX_SERIAL + 1).is_none());
         assert!(EntityId::from_raw(0).is_none());
+    }
+
+    #[test]
+    fn text_roundtrip() {
+        let id = EntityId::new(EntityKind::TopoFace, 7).unwrap();
+        assert_eq!(id.to_string(), "TopoFace#7");
+        assert_eq!("TopoFace#7".parse::<EntityId>(), Ok(id));
+        assert!("Nope#1".parse::<EntityId>().is_err());
     }
 
     #[test]
