@@ -1,0 +1,10 @@
+[package]
+name = "sm-core"
+description = "Shared primitives for smart-mesh: stable entity ids and basic geometric types (orchestrator-owned contract)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
