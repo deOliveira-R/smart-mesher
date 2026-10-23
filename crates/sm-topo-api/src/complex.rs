@@ -166,6 +166,7 @@ pub struct CellComplex {
     merge_gap: Option<f64>,
     journal: Vec<Undo>,
     dirty_edges: BTreeSet<EntityId>,
+    orient_dirty: BTreeSet<EntityId>,
 }
 
 impl Default for CellComplex {
@@ -199,6 +200,7 @@ impl CellComplex {
             merge_gap: None,
             journal: Vec::new(),
             dirty_edges: BTreeSet::new(),
+            orient_dirty: BTreeSet::new(),
         }
     }
 
@@ -363,16 +365,24 @@ impl CellComplex {
 
     /// Move the coboundary links of `id` from the entries `from` to the entries `to`.
     fn relink(&mut self, id: EntityId, from: &[Incidence], to: &[Incidence]) {
-        for e in from {
-            self.remove_up(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
-            if e.cell.kind() == sm_core::EntityKind::TopoEdge {
-                self.dirty_edges.insert(e.cell);
+        let from_volume = id.kind() == sm_core::EntityKind::TopoVolume;
+        for e in from.iter().map(|e| (e, false)).chain(to.iter().map(|e| (e, true))) {
+            let (e, add) = e;
+            let inc = Incidence { cell: id, side: e.side, ring: e.ring };
+            if add {
+                self.insert_up(e.cell, inc);
+            } else {
+                self.remove_up(e.cell, inc);
             }
-        }
-        for e in to {
-            self.insert_up(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
-            if e.cell.kind() == sm_core::EntityKind::TopoEdge {
-                self.dirty_edges.insert(e.cell);
+            match e.cell.kind() {
+                sm_core::EntityKind::TopoEdge => {
+                    self.dirty_edges.insert(e.cell);
+                }
+                // A volume's use of a face changed: the orientation rule must be re-applied.
+                sm_core::EntityKind::TopoFace if from_volume => {
+                    self.orient_dirty.insert(e.cell);
+                }
+                _ => {}
             }
         }
     }

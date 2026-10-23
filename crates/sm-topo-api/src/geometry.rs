@@ -144,7 +144,6 @@ struct Sample {
     uv: Uv,
     /// Quadrature weight times `dv/dt` times the traversal direction (for `∮ H dv`).
     dv: f64,
-    p3: Point3,
 }
 
 struct FaceSamples<'a> {
@@ -204,7 +203,7 @@ fn sample_face<'a, V: TopologyView + ?Sized>(view: &'a V, f: EntityId, gauss: bo
                 let j = surf.jet(uv);
                 let (_, dvdt) = solve_duv(&j, cj.d1).ok_or(QueryError::Unsupported("degenerate parametrization on boundary"))?;
                 let dir = if along { 1.0 } else { -1.0 };
-                samples.push(Sample { uv, dv: dir * w * dvdt, p3: cj.p });
+                samples.push(Sample { uv, dv: dir * w * dvdt });
                 *prev = Some(uv);
                 Ok(())
             };
@@ -341,22 +340,35 @@ pub fn volume_moments<V: TopologyView + ?Sized>(view: &V, v: EntityId) -> Result
     Ok(Moments { volume: acc[0], first: Vector3::new(acc[1], acc[2], acc[3]), second: mat([acc[4], acc[5], acc[6], acc[7], acc[8], acc[9]]) })
 }
 
-fn seg_dist(p: Point3, a: Point3, b: Point3) -> f64 {
-    let ab = b - a;
-    let l2 = ab.dot(ab);
-    let t = if l2 > 0.0 { ((p - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    (p - (a + ab * t)).norm()
-}
 
 /// Classify a parameter-space point against a face (winding number of the sampled boundary;
-/// `On` within the model's linear tolerance of the boundary polyline).
+/// `On` within the model's linear tolerance of the boundary curves).
 pub fn classify_point_on_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, uv: Uv) -> Result<PointClass, QueryError> {
     let fs = sample_face(view, f, false)?;
     let tol = view.tolerance().linear.max(1e-12);
     let p3 = fs.surf.eval(uv);
-    for lp in &fs.loops {
-        for w in lp.windows(2) {
-            if seg_dist(p3, w[0].p3, w[1].p3) <= tol {
+    // On the boundary: exact distance to the edge curves (clamped to the edge ranges).
+    for lp in view.loops(f) {
+        for key in lp.keys() {
+            if view.flags(key.edge).contains(CellFlags::DEGENERATE) {
+                continue;
+            }
+            let Carrier::Curve(cc) = view.carrier(key.edge) else { continue };
+            let Some(curve) = view.shapes().curve(cc.curve) else { continue };
+            let Ok(pr) = curve.project(p3, None) else { continue };
+            let dom = curve.domain();
+            let mut best = f64::INFINITY;
+            let mut cands = vec![cc.range.lo, cc.range.hi];
+            for k in [-1.0, 0.0, 1.0] {
+                let t = pr.t + k * dom.period.unwrap_or(0.0);
+                if cc.range.contains(t, 0.0) {
+                    cands.push(t);
+                }
+            }
+            for t in cands {
+                best = best.min((curve.eval(t) - p3).norm());
+            }
+            if best <= tol {
                 return Ok(PointClass::On);
             }
         }

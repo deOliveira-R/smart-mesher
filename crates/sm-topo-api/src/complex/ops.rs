@@ -507,6 +507,7 @@ impl TopologyEdit for CellComplex {
         }
         self.journal.clear();
         self.dirty_edges.clear();
+        self.orient_dirty.clear();
         self.merge_gap = None;
         self.open = Some(OpState { op, prev_revision: self.revision, start: self.mark() });
         self.revision = op;
@@ -525,7 +526,8 @@ impl TopologyEdit for CellComplex {
                 _ => {}
             }
         }
-        let faces: Vec<EntityId> = touched.iter().copied().filter(|id| id.kind() == EntityKind::TopoFace).collect();
+        let mut faces: BTreeSet<EntityId> = touched.iter().copied().filter(|id| id.kind() == EntityKind::TopoFace).collect();
+        faces.extend(core::mem::take(&mut self.orient_dirty));
         for f in faces {
             if let Err(e) = self.normalize_orientation(f) {
                 self.abort_op();
@@ -603,6 +605,7 @@ impl TopologyEdit for CellComplex {
             self.revision = st.prev_revision;
             self.merge_gap = None;
             self.dirty_edges.clear();
+            self.orient_dirty.clear();
             self.journal.clear();
         }
     }
