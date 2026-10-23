@@ -738,6 +738,7 @@ fn generate_stack(
     group: bool,
     name: &str,
     perturb: bool,
+    misorient: bool,
 ) -> GResult<Patch> {
     let fatal = |r: String| GenerateFailure::fatal(target, name, r);
     let t = cx.input.topo;
@@ -979,7 +980,8 @@ fn generate_stack(
                 for col in &c {
                     buf.push(idx(&mut pb, col[p]));
                 }
-                if plane_flip[p] {
+                // `misorient` (test hook) writes the target against its normal.
+                if plane_flip[p] != (misorient && p == layers) {
                     buf[1..].reverse();
                 }
                 pb.owner(if p == layers {
@@ -1106,7 +1108,7 @@ impl Scheme for Sweep {
     }
     fn generate(&self, cx: &GenCtx<'_>, target: Target, _p: &Params) -> GResult<Patch> {
         let st = stack_of(cx, target, "sweep")?;
-        generate_stack(cx, target, &st, false, "sweep", false)
+        generate_stack(cx, target, &st, false, "sweep", false, false)
     }
 }
 
@@ -1240,12 +1242,8 @@ impl Scheme for MSweep {
             _ => {}
         }
         let st = stack_of(cx, target, "msweep")?;
-        let perturb = p
-            .get::<bool>("msweep", "perturb")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-        generate_stack(cx, target, &st, true, "msweep", perturb)
+        let flag = |k: &str| p.get::<bool>("msweep", k).ok().flatten().unwrap_or(false);
+        generate_stack(cx, target, &st, true, "msweep", flag("perturb"), flag("misorient"))
     }
 }
 
