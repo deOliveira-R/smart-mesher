@@ -31,7 +31,7 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
 
 1. **Deck kinds are per face.** Membership, side and mate live in one table keyed by face
    (`FaceBoundary{boundary, role}`), so the two directions cannot disagree. A reflective unit cell
-   with mirrors at `x = 0` and `x = 1` validates. Only *declaring* a symmetry needs a finite point
+   with mirrors at `x = 0` and `x = 1` validates. Declaring a symmetry or applying a cut needs a finite point
    group: `declare_symmetry` closes the point part (BFS, deduplicated through a quantized index
    with neighbour-cell probing, `GROUP_TOL = 1e-9`) and returns `GroupNotFinite` for parallel
    mirrors (they compose to a translation; declare a translation with a window instead).

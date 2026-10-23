@@ -3,7 +3,7 @@
 //! All geometric checks run on integrated moments (`face_moments`), so they do not depend on where
 //! a periodic seam sits and are sensitive to shape, not only to area and centroid. Deck checks
 //! are scoped to each deck (a reflective cell with mirrors at `x = 0` and `x = 1` is valid; only
-//! *declaring* a symmetry needs a finite point group). All checks of one call share one geometry
+//! *declaring* a symmetry or *applying a cut* needs a finite point group). All checks of one call share one geometry
 //! cache. Coincidence is read from the topology's `coincident_faces`, never inferred from moments.
 
 use crate::boundary::{BoundaryKind, Deck, DeckSide, FaceBoundary, FaceRole, InterfaceIntent};

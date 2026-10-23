@@ -316,9 +316,9 @@ impl Decomposition {
             let Some(row) = self.cells.get(c) else { return bad(format!("composite {c} has no row")) };
             for m in &row.members {
                 if let PieceRef::Cell(x) = m
-                    && !self.cells.contains_key(x)
+                    && (!self.cells.contains_key(x) || self.composites.contains(x))
                 {
-                    return bad(format!("composite {c} has an unknown member {x}"));
+                    return bad(format!("composite {c} has an unknown or composite member {x}"));
                 }
             }
         }
