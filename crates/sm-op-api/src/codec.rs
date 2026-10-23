@@ -36,15 +36,25 @@ struct Wrap<'a, T: ?Sized> {
 /// integers beyond `i64`. `-0.0` becomes `+0.0`; `None` struct fields are omitted.
 pub fn to_value<T: Serialize + ?Sized>(v: &T) -> Result<Value, CodecError> {
     let t = toml::Value::try_from(Wrap { v }).map_err(|e| CodecError(format!("encode: {e}")))?;
-    let toml::Value::Table(mut t) = t else { return Err(CodecError::new("encode: internal wrapper")) };
-    let inner = t.remove("v").ok_or_else(|| CodecError::new("encode: value is null/None, which is not representable"))?;
+    let toml::Value::Table(mut t) = t else {
+        return Err(CodecError::new("encode: internal wrapper"));
+    };
+    let inner = t
+        .remove("v")
+        .ok_or_else(|| CodecError::new("encode: value is null/None, which is not representable"))?;
     from_toml_value(inner)
 }
 
 /// Encode op parameters: like [`to_value`] but the result must be an object.
 pub fn to_params<T: Serialize + ?Sized>(v: &T) -> Result<Value, CodecError> {
     let val = to_value(v)?;
-    if val.is_object() { Ok(val) } else { Err(CodecError::new("op parameters must serialize to a struct or map")) }
+    if val.is_object() {
+        Ok(val)
+    } else {
+        Err(CodecError::new(
+            "op parameters must serialize to a struct or map",
+        ))
+    }
 }
 
 /// Decode a [`Value`] into a typed value.
@@ -58,13 +68,26 @@ fn from_toml_value(v: toml::Value) -> Result<Value, CodecError> {
         toml::Value::Integer(i) => Value::Number(i.into()),
         toml::Value::Float(f) => {
             if !f.is_finite() {
-                return Err(CodecError::new("non-finite float (NaN or infinity) is not allowed in op parameters"));
+                return Err(CodecError::new(
+                    "non-finite float (NaN or infinity) is not allowed in op parameters",
+                ));
             }
-            Value::Number(Number::from_f64(if f == 0.0 { 0.0 } else { f }).ok_or_else(|| CodecError::new("bad float"))?)
+            Value::Number(
+                Number::from_f64(if f == 0.0 { 0.0 } else { f })
+                    .ok_or_else(|| CodecError::new("bad float"))?,
+            )
         }
         toml::Value::Boolean(b) => Value::Bool(b),
-        toml::Value::Datetime(_) => return Err(CodecError::new("datetime values are not allowed in op parameters")),
-        toml::Value::Array(a) => Value::Array(a.into_iter().map(from_toml_value).collect::<Result<_, _>>()?),
+        toml::Value::Datetime(_) => {
+            return Err(CodecError::new(
+                "datetime values are not allowed in op parameters",
+            ));
+        }
+        toml::Value::Array(a) => Value::Array(
+            a.into_iter()
+                .map(from_toml_value)
+                .collect::<Result<_, _>>()?,
+        ),
         toml::Value::Table(t) => {
             let mut m = Map::new();
             for (k, x) in t {
@@ -91,7 +114,9 @@ pub fn canonicalize(v: &mut Value) -> Result<(), CodecError> {
             } else if n.is_i64() {
                 Ok(())
             } else {
-                Err(CodecError(format!("integer {n} exceeds the i64 range supported by TOML")))
+                Err(CodecError(format!(
+                    "integer {n} exceeds the i64 range supported by TOML"
+                )))
             }
         }
         Value::Array(a) => a.iter_mut().try_for_each(canonicalize),
@@ -170,15 +195,34 @@ mod tests {
 
     #[test]
     fn none_is_omitted_and_negzero_folded() {
-        let v = to_params(&P { a: -0.0, b: None, c: vec![1, 2] }).unwrap();
+        let v = to_params(&P {
+            a: -0.0,
+            b: None,
+            c: vec![1, 2],
+        })
+        .unwrap();
         assert_eq!(v, json!({"a": 0.0, "c": [1, 2]}));
         assert!(v["a"].as_f64().unwrap().is_sign_positive());
     }
 
     #[test]
     fn nan_and_inf_rejected() {
-        assert!(to_params(&P { a: f64::NAN, b: None, c: vec![] }).is_err());
-        assert!(to_params(&P { a: f64::INFINITY, b: None, c: vec![] }).is_err());
+        assert!(
+            to_params(&P {
+                a: f64::NAN,
+                b: None,
+                c: vec![]
+            })
+            .is_err()
+        );
+        assert!(
+            to_params(&P {
+                a: f64::INFINITY,
+                b: None,
+                c: vec![]
+            })
+            .is_err()
+        );
     }
 
     #[test]

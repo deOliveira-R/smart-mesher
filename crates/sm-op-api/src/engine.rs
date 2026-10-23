@@ -26,9 +26,18 @@ impl Engine {
     ///
     /// Validates the layer dependency graph (strict: unknown dependency or cycle is an error) and
     /// caches the `on_retired` order, so a misconfigured registry fails here, not mid-session.
-    pub fn new(registry: Arc<Registry>, services: Services, cache: Arc<DerivedCache>) -> Result<Self, RegistryError> {
+    pub fn new(
+        registry: Arc<Registry>,
+        services: Services,
+        cache: Arc<DerivedCache>,
+    ) -> Result<Self, RegistryError> {
         let order: Arc<[&'static str]> = registry.layer_order()?.into();
-        Ok(Self { registry, services: Arc::new(services), cache, order })
+        Ok(Self {
+            registry,
+            services: Arc::new(services),
+            cache,
+            order,
+        })
     }
 
     /// True when `other` shares this engine's registry, services and cache.
@@ -51,21 +60,67 @@ impl Engine {
     /// Apply a decoded op transactionally: it runs on a copy-on-write clone of `state`, and
     /// `state` is replaced only if the op (and the `on_retired` reactions that follow it)
     /// succeed. On any error, including cancellation, `state` is left exactly as it was.
-    pub fn apply(&self, state: &mut State, op: &dyn Op, ctl: &Control<'_>) -> Result<Delta, ApplyError> {
+    pub fn apply(
+        &self,
+        state: &mut State,
+        op: &dyn Op,
+        ctl: &Control<'_>,
+    ) -> Result<Delta, ApplyError> {
+        self.apply_canonical(state, op, ctl).map(|r| r.0)
+    }
+
+    /// Like [`apply`](Self::apply), also returning the canonical stored record when the op
+    /// supplied one (`core.batch` canonicalizes its nested records after substitution).
+    pub(crate) fn apply_canonical(
+        &self,
+        state: &mut State,
+        op: &dyn Op,
+        ctl: &Control<'_>,
+    ) -> Result<(Delta, Option<OpRecord>), ApplyError> {
         let mut scratch = state.clone();
         let name = || op.name().to_owned();
-        let delta = {
-            let mut ctx = ApplyCtx::new(&mut scratch, *ctl, &self.services, &self.cache, &self.registry, &self.order);
-            op.apply(&mut ctx).map_err(|source| ApplyError::Op { name: name(), source })?;
-            ctx.finish().map_err(|source| ApplyError::Op { name: name(), source })?
+        let (delta, canonical) = {
+            let mut ctx = ApplyCtx::new(
+                &mut scratch,
+                *ctl,
+                &self.services,
+                &self.cache,
+                &self.registry,
+                &self.order,
+            );
+            op.apply(&mut ctx).map_err(|source| ApplyError::Op {
+                name: name(),
+                source,
+            })?;
+            let delta = ctx.finish().map_err(|source| ApplyError::Op {
+                name: name(),
+                source,
+            })?;
+            (delta, ctx.take_canonical())
         };
         *state = scratch;
-        Ok(delta)
+        Ok((delta, canonical))
     }
 
     /// Decode a stored record and apply it. This is the path used for replay.
-    pub fn apply_record(&self, state: &mut State, rec: &OpRecord, ctl: &Control<'_>) -> Result<Delta, ApplyError> {
+    pub fn apply_record(
+        &self,
+        state: &mut State,
+        rec: &OpRecord,
+        ctl: &Control<'_>,
+    ) -> Result<Delta, ApplyError> {
         let op = self.registry.decode(rec)?;
         self.apply(state, op.as_ref(), ctl)
+    }
+
+    /// [`apply_record`](Self::apply_record), also returning the op's canonical stored record.
+    pub(crate) fn apply_record_canonical(
+        &self,
+        state: &mut State,
+        rec: &OpRecord,
+        ctl: &Control<'_>,
+    ) -> Result<(Delta, Option<OpRecord>), ApplyError> {
+        let op = self.registry.decode(rec)?;
+        self.apply_canonical(state, op.as_ref(), ctl)
     }
 }

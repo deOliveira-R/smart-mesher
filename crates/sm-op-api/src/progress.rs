@@ -92,7 +92,10 @@ impl QuietControl {
     }
     /// Borrow as a [`Control`].
     pub fn control(&self) -> Control<'_> {
-        Control { progress: &self.progress, cancel: &self.cancel }
+        Control {
+            progress: &self.progress,
+            cancel: &self.cancel,
+        }
     }
 }
 
@@ -105,6 +108,9 @@ pub(crate) struct Scaled<'a> {
 
 impl Progress for Scaled<'_> {
     fn report(&self, fraction: f32, message: &str) {
-        self.inner.report(self.lo + (self.hi - self.lo) * fraction.clamp(0.0, 1.0), message);
+        self.inner.report(
+            self.lo + (self.hi - self.lo) * fraction.clamp(0.0, 1.0),
+            message,
+        );
     }
 }

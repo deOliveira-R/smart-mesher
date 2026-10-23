@@ -66,7 +66,9 @@ pub enum OpError {
 #[non_exhaustive]
 pub enum RegistryError {
     /// An op name violates the naming rule (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, no `__`).
-    #[error("bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__'")]
+    #[error(
+        "bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__'"
+    )]
     BadOpName(String),
     /// Two registrations used the same op name.
     #[error("op '{0}' is already registered")]
@@ -181,7 +183,13 @@ pub enum ApplyError {
 impl ApplyError {
     /// True if the op stopped because cancellation was requested.
     pub fn is_cancelled(&self) -> bool {
-        matches!(self, ApplyError::Op { source: OpError::Cancelled, .. })
+        matches!(
+            self,
+            ApplyError::Op {
+                source: OpError::Cancelled,
+                ..
+            }
+        )
     }
 }
 

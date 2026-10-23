@@ -81,7 +81,9 @@ pub fn valid_op_name(name: &str) -> bool {
     let mut segs = 0;
     for seg in name.split('.') {
         let mut c = seg.chars();
-        if !c.next().is_some_and(|f| f.is_ascii_lowercase()) || !c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_') {
+        if !c.next().is_some_and(|f| f.is_ascii_lowercase())
+            || !c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_')
+        {
             return false;
         }
         segs += 1;
@@ -120,8 +122,15 @@ impl Default for Registry {
 impl Registry {
     /// A registry with only the built-in `core.batch` op.
     pub fn new() -> Self {
-        let mut r = Self { ops: BTreeMap::new(), layers: BTreeMap::new(), migrations: BTreeMap::new() };
-        r.ops.insert(Batch::NAME.to_owned(), Arc::new(Typed::<Batch>(std::marker::PhantomData)));
+        let mut r = Self {
+            ops: BTreeMap::new(),
+            layers: BTreeMap::new(),
+            migrations: BTreeMap::new(),
+        };
+        r.ops.insert(
+            Batch::NAME.to_owned(),
+            Arc::new(Typed::<Batch>(std::marker::PhantomData)),
+        );
         r
     }
 
@@ -160,13 +169,24 @@ impl Registry {
         from: u32,
         m: impl Fn(Value) -> Result<Value, CodecError> + Send + Sync + 'static,
     ) -> Result<&mut Self, RegistryError> {
-        let current = self.ops.get(name).ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))?.version();
+        let current = self
+            .ops
+            .get(name)
+            .ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))?
+            .version();
         if from >= current {
-            return Err(RegistryError::BadMigration { name: name.to_owned(), from, current });
+            return Err(RegistryError::BadMigration {
+                name: name.to_owned(),
+                from,
+                current,
+            });
         }
         let key = (name.to_owned(), from);
         if self.migrations.contains_key(&key) {
-            return Err(RegistryError::DuplicateMigration { name: name.to_owned(), from });
+            return Err(RegistryError::DuplicateMigration {
+                name: name.to_owned(),
+                from,
+            });
         }
         self.migrations.insert(key, Arc::new(m));
         Ok(self)
@@ -178,7 +198,10 @@ impl Registry {
     }
 
     /// Register a layer type built by `factory` (for layers that need configuration).
-    pub fn register_layer_with<L: LayerType>(&mut self, factory: impl Fn() -> L + Send + Sync + 'static) -> Result<&mut Self, RegistryError> {
+    pub fn register_layer_with<L: LayerType>(
+        &mut self,
+        factory: impl Fn() -> L + Send + Sync + 'static,
+    ) -> Result<&mut Self, RegistryError> {
         if self.layers.contains_key(L::NAME) {
             return Err(RegistryError::DuplicateLayer(L::NAME));
         }
@@ -197,17 +220,31 @@ impl Registry {
 
     /// An empty state with every registered layer instantiated.
     pub fn new_state(&self) -> State {
-        State::with_layers(self.layers.iter().map(|(k, e)| (*k, (e.factory)())).collect())
+        State::with_layers(
+            self.layers
+                .iter()
+                .map(|(k, e)| (*k, (e.factory)()))
+                .collect(),
+        )
     }
 
     /// Rebuild a state from a persisted snapshot (see [`State::snapshot`]).
     pub fn restore(&self, snap: &StateSnapshot) -> Result<State, RegistryError> {
         let mut st = self.new_state();
         st.restore_entities(&snap.kinds)
-            .map_err(|source| RegistryError::Snapshot { layer: "<entities>".to_owned(), source })?;
+            .map_err(|source| RegistryError::Snapshot {
+                layer: "<entities>".to_owned(),
+                source,
+            })?;
         for (name, bytes) in &snap.layers {
-            let e = self.layers.get(name.as_str()).ok_or_else(|| RegistryError::MissingLayer(name.clone()))?;
-            let layer = (e.restore)(bytes).map_err(|source| RegistryError::Snapshot { layer: name.clone(), source })?;
+            let e = self
+                .layers
+                .get(name.as_str())
+                .ok_or_else(|| RegistryError::MissingLayer(name.clone()))?;
+            let layer = (e.restore)(bytes).map_err(|source| RegistryError::Snapshot {
+                layer: name.clone(),
+                source,
+            })?;
             st.replace_layer(e.name, layer);
         }
         Ok(st)
@@ -232,7 +269,10 @@ impl Registry {
                 if self.layers.contains_key(d) {
                     deps.insert(*d);
                 } else if strict {
-                    return Err(RegistryError::UnknownLayerDependency { layer: e.name, dep: d });
+                    return Err(RegistryError::UnknownLayerDependency {
+                        layer: e.name,
+                        dep: d,
+                    });
                 }
             }
             pending.insert(e.name, deps);
@@ -259,21 +299,38 @@ impl Registry {
 
     /// Current version of the named op.
     pub fn op_version(&self, name: &str) -> Result<u32, RegistryError> {
-        self.ops.get(name).map(|t| t.version()).ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))
+        self.ops
+            .get(name)
+            .map(|t| t.version())
+            .ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))
     }
 
     fn info(t: &dyn OpType) -> Result<OpInfo, RegistryError> {
         let name = t.name().to_owned();
-        let schema = t.schema().map_err(|reason| RegistryError::Schema { name: name.clone(), reason })?;
+        let schema = t.schema().map_err(|reason| RegistryError::Schema {
+            name: name.clone(),
+            reason,
+        })?;
         if schema.as_object().is_none() {
-            return Err(RegistryError::Schema { name, reason: "schema is not an object".to_owned() });
+            return Err(RegistryError::Schema {
+                name,
+                reason: "schema is not an object".to_owned(),
+            });
         }
-        Ok(OpInfo { name, version: t.version(), schema, output_schema: schema_for!(Delta) })
+        Ok(OpInfo {
+            name,
+            version: t.version(),
+            schema,
+            output_schema: schema_for!(Delta),
+        })
     }
 
     /// Schema of the named op's params.
     pub fn schema(&self, name: &str) -> Result<Schema, RegistryError> {
-        let t = self.ops.get(name).ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))?;
+        let t = self
+            .ops
+            .get(name)
+            .ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))?;
         Ok(Self::info(t.as_ref())?.schema)
     }
 
@@ -286,19 +343,34 @@ impl Registry {
 
     /// Decode a stored record, running migrations from its version up to the current one.
     pub fn decode(&self, rec: &OpRecord) -> Result<Box<dyn Op>, RegistryError> {
-        let t = self.ops.get(&rec.name).ok_or_else(|| RegistryError::UnknownOp(rec.name.clone()))?;
+        let t = self
+            .ops
+            .get(&rec.name)
+            .ok_or_else(|| RegistryError::UnknownOp(rec.name.clone()))?;
         let cur = t.version();
         if rec.version > cur {
-            return Err(RegistryError::UnsupportedVersion { name: rec.name.clone(), found: rec.version, supported: cur });
+            return Err(RegistryError::UnsupportedVersion {
+                name: rec.name.clone(),
+                found: rec.version,
+                supported: cur,
+            });
         }
         let mut params = rec.params.clone();
         for v in rec.version..cur {
-            let m = self
-                .migrations
-                .get(&(rec.name.clone(), v))
-                .ok_or_else(|| RegistryError::MissingMigration { name: rec.name.clone(), from: v })?;
-            params = m(params).map_err(|source| RegistryError::Decode { name: rec.name.clone(), source })?;
+            let m = self.migrations.get(&(rec.name.clone(), v)).ok_or_else(|| {
+                RegistryError::MissingMigration {
+                    name: rec.name.clone(),
+                    from: v,
+                }
+            })?;
+            params = m(params).map_err(|source| RegistryError::Decode {
+                name: rec.name.clone(),
+                source,
+            })?;
         }
-        t.decode(&params).map_err(|source| RegistryError::Decode { name: rec.name.clone(), source })
+        t.decode(&params).map_err(|source| RegistryError::Decode {
+            name: rec.name.clone(),
+            source,
+        })
     }
 }

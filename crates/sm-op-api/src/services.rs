@@ -23,7 +23,8 @@ impl Services {
     /// Add (or replace) the service of type `S`.
     #[must_use]
     pub fn with<S: Any + Send + Sync>(mut self, s: S) -> Self {
-        self.map.insert(TypeId::of::<S>(), (std::any::type_name::<S>(), Arc::new(s)));
+        self.map
+            .insert(TypeId::of::<S>(), (std::any::type_name::<S>(), Arc::new(s)));
         self
     }
 
@@ -35,6 +36,8 @@ impl Services {
 
 impl std::fmt::Debug for Services {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.map.values().map(|(n, _)| n)).finish()
+        f.debug_list()
+            .entries(self.map.values().map(|(n, _)| n))
+            .finish()
     }
 }

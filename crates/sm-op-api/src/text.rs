@@ -12,7 +12,12 @@ use crate::timeline::Node;
 
 /// Render a node as `ops/<hash>.toml` text, or explain why it cannot be rendered.
 pub(crate) fn node_to_toml(n: &Node) -> Result<String, String> {
-    let params = n.body.op.params.as_object().ok_or("params are not an object")?;
+    let params = n
+        .body
+        .op
+        .params
+        .as_object()
+        .ok_or("params are not an object")?;
     let mut out = String::new();
     if let Some(p) = n.body.parent {
         out.push_str(&format!("parent = \"{p}\"\n\n"));
@@ -50,7 +55,9 @@ fn quote(s: &str) -> String {
             '\n' => o.push_str("\\n"),
             '\r' => o.push_str("\\r"),
             '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\u{:04X}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                o.push_str(&format!("\\u{:04X}", c as u32))
+            }
             c => o.push(c),
         }
     }
@@ -59,7 +66,10 @@ fn quote(s: &str) -> String {
 }
 
 fn key(k: &str) -> String {
-    if !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if !k.is_empty()
+        && k.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         k.to_owned()
     } else {
         quote(k)

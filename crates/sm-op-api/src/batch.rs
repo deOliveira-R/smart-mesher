@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::EntityId;
 use std::collections::BTreeMap;
 
-use crate::codec::Value;
+use crate::codec::{Value, canonicalize};
 use crate::error::OpError;
 use crate::op::{ApplyCtx, OpRecord, TypedOp};
 
@@ -16,11 +16,27 @@ use crate::op::{ApplyCtx, OpRecord, TypedOp};
 /// `ApplyCtx::alloc_as(role, ..)`. To pass a literal string that starts with `$`, double the
 /// first `$` (`"$$0.price"` becomes the literal `"$0.price"`). Layers react to ids retired by op
 /// `i` (via `on_retired`) before op `i + 1` runs. There is no control flow. The batch's own [`Delta`](crate::Delta)
-/// outputs carry every sub-op output as `"<i>.<role>"`.
+/// outputs carry every sub-op output as `"<i>.<role>"`. A `core.batch` inside a `core.batch` is
+/// rejected (reference scoping would be ambiguous).
+///
+/// The stored record is canonical: every nested record is decoded after substitution and
+/// re-encoded (current version, unknown fields dropped), with the original reference strings
+/// restored, so equal batches are equal nodes whichever client built them.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Batch {
-    /// The ops, in application order.
+    /// The ops, in application order. Params are canonicalized (nulls dropped) on encoding.
+    #[serde(serialize_with = "ser_ops")]
     pub ops: Vec<OpRecord>,
+}
+
+fn ser_ops<S: serde::Serializer>(ops: &[OpRecord], ser: S) -> Result<S::Ok, S::Error> {
+    let mut canon = Vec::with_capacity(ops.len());
+    for r in ops {
+        let mut r = r.clone();
+        canonicalize(&mut r.params).map_err(serde::ser::Error::custom)?;
+        canon.push(r);
+    }
+    canon.serialize(ser)
 }
 
 type Outputs = Vec<BTreeMap<String, Vec<EntityId>>>;
@@ -29,16 +45,89 @@ impl TypedOp for Batch {
     const NAME: &'static str = "core.batch";
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let total = self.ops.len() as u64;
-        let mut done: Outputs = Vec::with_capacity(self.ops.len());
+        let total = self.ops.len();
+        let mut done: Outputs = Vec::with_capacity(total);
+        let mut canonical: Vec<OpRecord> = Vec::with_capacity(total);
         for (i, rec) in self.ops.iter().enumerate() {
-            ctx.step(i as u64, total, &rec.name)?;
-            let mut rec = rec.clone();
-            substitute(&mut rec.params, &done)?;
-            done.push(ctx.apply_nested(&rec, i)?);
+            ctx.step(i as u64, total as u64, &rec.name)?;
+            if rec.name == Self::NAME {
+                return Err(OpError::Invalid(
+                    "core.batch cannot be nested inside core.batch".into(),
+                ));
+            }
+            let mut sub = rec.clone();
+            substitute(&mut sub.params, &done)?;
+            let (outputs, canon) = ctx.apply_nested(&sub, i, total)?;
+            // Store the canonical form (typed re-encode) with the original references put back;
+            // if a reference cannot be located in it (a migration reshaped the params), keep the
+            // record as sent so the stored batch still replays.
+            canonical
+                .push(restore_refs(&rec.params, &sub.params, canon).unwrap_or_else(|| rec.clone()));
+            done.push(outputs);
         }
-        ctx.step(total, total, "batch")
+        ctx.step(total as u64, total as u64, "batch")?;
+        ctx.set_canonical_record(OpRecord::of(&Batch { ops: canonical })?);
+        Ok(())
     }
+}
+
+#[derive(Clone)]
+enum Seg {
+    Key(String),
+    Idx(usize),
+}
+
+/// Collect the places where substitution changed a string: (path, original, substituted).
+fn diffs(
+    orig: &Value,
+    subst: &Value,
+    path: &mut Vec<Seg>,
+    out: &mut Vec<(Vec<Seg>, String, String)>,
+) {
+    match (orig, subst) {
+        (Value::String(o), Value::String(s)) if o != s => {
+            out.push((path.clone(), o.clone(), s.clone()));
+        }
+        (Value::Array(o), Value::Array(s)) => {
+            for (i, (a, b)) in o.iter().zip(s).enumerate() {
+                path.push(Seg::Idx(i));
+                diffs(a, b, path, out);
+                path.pop();
+            }
+        }
+        (Value::Object(o), Value::Object(s)) => {
+            for (k, a) in o {
+                if let Some(b) = s.get(k) {
+                    path.push(Seg::Key(k.clone()));
+                    diffs(a, b, path, out);
+                    path.pop();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Put the original reference strings (`$i.role`, `$$literal`) back into `canon` at the paths
+/// where substitution replaced them. `None` if any such path is missing in the canonical params
+/// or no longer holds the substituted value.
+fn restore_refs(orig: &Value, subst: &Value, mut canon: OpRecord) -> Option<OpRecord> {
+    let mut found = Vec::new();
+    diffs(orig, subst, &mut Vec::new(), &mut found);
+    for (path, o, s) in found {
+        let mut cur = &mut canon.params;
+        for seg in &path {
+            cur = match seg {
+                Seg::Key(k) => cur.get_mut(k.as_str())?,
+                Seg::Idx(i) => cur.get_mut(*i)?,
+            };
+        }
+        if cur.as_str() != Some(s.as_str()) {
+            return None;
+        }
+        *cur = Value::String(o);
+    }
+    Some(canon)
 }
 
 fn reference(s: &str) -> Option<(usize, &str, usize)> {
@@ -59,10 +148,16 @@ fn substitute(v: &mut Value, done: &Outputs) -> Result<(), OpError> {
             } else if let Some((i, role, k)) = reference(s) {
                 let id = done
                     .get(i)
-                    .ok_or_else(|| OpError::Invalid(format!("batch reference '{s}' points to an op that has not run")))?
+                    .ok_or_else(|| {
+                        OpError::Invalid(format!(
+                            "batch reference '{s}' points to an op that has not run"
+                        ))
+                    })?
                     .get(role)
                     .and_then(|ids| ids.get(k))
-                    .ok_or_else(|| OpError::Invalid(format!("batch reference '{s}': no such output")))?;
+                    .ok_or_else(|| {
+                        OpError::Invalid(format!("batch reference '{s}': no such output"))
+                    })?;
                 *s = id.to_string();
             }
             Ok(())
@@ -93,7 +188,10 @@ mod tests {
         let done: Outputs = vec![BTreeMap::from([("volume".to_owned(), vec![id])])];
         let mut v = json!({"a": ["$0.volume", "plain"], "b": {"c": "$0.volume[0]"}});
         substitute(&mut v, &done).unwrap();
-        assert_eq!(v, json!({"a": ["TopoVolume#4", "plain"], "b": {"c": "TopoVolume#4"}}));
+        assert_eq!(
+            v,
+            json!({"a": ["TopoVolume#4", "plain"], "b": {"c": "TopoVolume#4"}})
+        );
         assert!(substitute(&mut json!("$1.volume"), &done).is_err());
         assert!(substitute(&mut json!("$0.nope"), &done).is_err());
         let mut lit = json!({"a": "$$0.volume", "b": "$$$x"});

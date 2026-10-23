@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{CodecError, canonicalize, canonical_bytes};
+use crate::codec::{CodecError, canonical_bytes, canonicalize};
 use crate::error::TimelineError;
 use crate::hash::Hash256;
 use crate::op::OpRecord;
@@ -91,7 +91,14 @@ struct NodeFile {
 
 impl From<NodeFile> for Node {
     fn from(f: NodeFile) -> Self {
-        Self { body: NodeBody { parent: f.parent, op: f.op, meta: f.meta }, check: f.check }
+        Self {
+            body: NodeBody {
+                parent: f.parent,
+                op: f.op,
+                meta: f.meta,
+            },
+            check: f.check,
+        }
     }
 }
 
@@ -116,8 +123,12 @@ pub fn valid_ref_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')
         && !name.ends_with('/')
-        && name.split('/').all(|p| !p.is_empty() && p != "." && p != ".." && !p.ends_with(".lock"))
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+        && name
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != ".." && !p.ends_with(".lock"))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
 }
 
 #[derive(Clone, Debug)]
@@ -149,14 +160,24 @@ impl Timeline {
     /// [`Diverged`](TimelineError::Diverged) error (the op is not deterministic).
     pub fn insert(&mut self, mut node: Node) -> Result<Hash256, TimelineError> {
         let depth = match node.body.parent {
-            Some(p) => self.nodes.get(&p).ok_or(TimelineError::UnknownParent(p))?.depth + 1,
+            Some(p) => {
+                self.nodes
+                    .get(&p)
+                    .ok_or(TimelineError::UnknownParent(p))?
+                    .depth
+                    + 1
+            }
             None => 1,
         };
         canonicalize(&mut node.body.op.params)?;
         let h = node.body.hash()?;
         if let Some(old) = self.nodes.get(&h) {
             if old.node.check != node.check {
-                return Err(TimelineError::Diverged { node: h, recorded: old.node.check.state, actual: node.check.state });
+                return Err(TimelineError::Diverged {
+                    node: h,
+                    recorded: old.node.check.state,
+                    actual: node.check.state,
+                });
             }
             return Ok(h);
         }
@@ -250,7 +271,11 @@ impl Timeline {
         }
         if !self.refs.contains_key(name) {
             let as_dir = format!("{name}/");
-            if self.refs.keys().any(|r| r.starts_with(&as_dir) || name.starts_with(&format!("{r}/"))) {
+            if self
+                .refs
+                .keys()
+                .any(|r| r.starts_with(&as_dir) || name.starts_with(&format!("{r}/")))
+            {
                 return Err(TimelineError::BadRefName(name.to_owned()));
             }
         }
@@ -259,7 +284,9 @@ impl Timeline {
 
     /// Delete a ref, returning where it pointed.
     pub fn delete_ref(&mut self, name: &str) -> Result<Hash256, TimelineError> {
-        self.refs.remove(name).ok_or_else(|| TimelineError::UnknownRef(name.to_owned()))
+        self.refs
+            .remove(name)
+            .ok_or_else(|| TimelineError::UnknownRef(name.to_owned()))
     }
 
     /// The HEAD to use when none was recorded: `main` if it exists, else the first branch by
@@ -280,7 +307,8 @@ impl Timeline {
     pub fn to_files(&self) -> Result<BTreeMap<String, String>, TimelineError> {
         let mut out = BTreeMap::new();
         for (h, e) in &self.nodes {
-            let text = crate::text::node_to_toml(&e.node).map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
+            let text = crate::text::node_to_toml(&e.node)
+                .map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
             out.insert(format!("{OPS_DIR}{h}.toml"), text);
         }
         for (name, h) in &self.refs {
@@ -295,12 +323,16 @@ impl Timeline {
     pub fn from_files(files: &BTreeMap<String, String>) -> Result<Self, TimelineError> {
         let mut parsed: BTreeMap<Hash256, Node> = BTreeMap::new();
         for (path, text) in files {
-            let Some(file) = path.strip_prefix(OPS_DIR) else { continue };
+            let Some(file) = path.strip_prefix(OPS_DIR) else {
+                continue;
+            };
             let expected: Hash256 = file
                 .strip_suffix(".toml")
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| TimelineError::Format(format!("bad node file name '{path}'")))?;
-            let node: Node = toml::from_str::<NodeFile>(text).map_err(|e| TimelineError::Format(format!("{path}: {e}")))?.into();
+            let node: Node = toml::from_str::<NodeFile>(text)
+                .map_err(|e| TimelineError::Format(format!("{path}: {e}")))?
+                .into();
             let mut canon = node.clone();
             canonicalize(&mut canon.body.op.params)?;
             let actual = canon.body.hash()?;
@@ -332,7 +364,9 @@ impl Timeline {
             return Err(TimelineError::UnknownNode(*h)); // unreachable from any root: a cycle
         }
         for (path, text) in files {
-            let Some(name) = path.strip_prefix(HEADS_DIR) else { continue };
+            let Some(name) = path.strip_prefix(HEADS_DIR) else {
+                continue;
+            };
             let h: Hash256 = text
                 .trim()
                 .parse()

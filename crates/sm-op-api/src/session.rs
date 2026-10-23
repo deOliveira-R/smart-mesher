@@ -92,18 +92,39 @@ pub struct PrepareBase {
 impl PrepareBase {
     /// Apply `op` (encoded and decoded first, so the live path is the replay path).
     pub fn prepare(&self, op: &dyn Op, ctl: &Control<'_>) -> Result<Prepared, TimelineError> {
-        let record = OpRecord::of(op).map_err(|source| ApplyError::Encode { name: op.name().to_owned(), source })?;
-        // Apply the decoded record, so the live path is the replay path.
+        let record = OpRecord::of(op).map_err(|source| ApplyError::Encode {
+            name: op.name().to_owned(),
+            source,
+        })?;
+        // Apply the decoded record, so the live path is the replay path. An op such as
+        // `core.batch` may hand back a more canonical stored form.
         let mut state = self.state.clone();
-        let delta = self.engine.apply_record(&mut state, &record, ctl)?;
-        Ok(Prepared { engine: self.engine.clone(), base: self.at, record, state, delta })
+        let (delta, canonical) = self
+            .engine
+            .apply_record_canonical(&mut state, &record, ctl)?;
+        let record = canonical.unwrap_or(record);
+        Ok(Prepared {
+            engine: self.engine.clone(),
+            base: self.at,
+            record,
+            state,
+            delta,
+        })
     }
 
     /// Apply a stored-form op (remote clients, scripts). The record is decoded (migrated if
     /// older) and re-encoded canonically, so the same op is the same node whichever client
     /// produced it; fields the op does not know are dropped.
-    pub fn prepare_record(&self, record: OpRecord, ctl: &Control<'_>) -> Result<Prepared, TimelineError> {
-        let op = self.engine.registry().decode(&record).map_err(ApplyError::from)?;
+    pub fn prepare_record(
+        &self,
+        record: OpRecord,
+        ctl: &Control<'_>,
+    ) -> Result<Prepared, TimelineError> {
+        let op = self
+            .engine
+            .registry()
+            .decode(&record)
+            .map_err(ApplyError::from)?;
         self.prepare(op.as_ref(), ctl)
     }
 }
@@ -157,7 +178,12 @@ impl Session {
 
     /// Resume over an existing timeline (e.g. loaded by `sm-engine`) with the HEAD recorded for
     /// this checkout, replaying to the head's node.
-    pub fn open(engine: Engine, timeline: Timeline, head: Head, ctl: &Control<'_>) -> Result<Self, TimelineError> {
+    pub fn open(
+        engine: Engine,
+        timeline: Timeline,
+        head: Head,
+        ctl: &Control<'_>,
+    ) -> Result<Self, TimelineError> {
         let target = Self::resolve_head(&timeline, &head)?;
         let mut s = Self::new(engine);
         s.timeline = timeline;
@@ -173,7 +199,10 @@ impl Session {
                 t.check_ref_name(n)?;
                 Ok(t.refs().get(n).copied())
             }
-            Head::Detached(Some(h)) => t.get(*h).map(|_| Some(*h)).ok_or(TimelineError::UnknownNode(*h)),
+            Head::Detached(Some(h)) => t
+                .get(*h)
+                .map(|_| Some(*h))
+                .ok_or(TimelineError::UnknownNode(*h)),
             Head::Detached(None) => Ok(None),
         }
     }
@@ -241,12 +270,21 @@ impl Session {
             Head::Ref(n) => Some(n.clone()),
             Head::Detached(_) => None,
         };
-        self.reflog.push(ReflogEntry { ref_name, from, to: self.at, action: action.to_owned() });
+        self.reflog.push(ReflogEntry {
+            ref_name,
+            from,
+            to: self.at,
+            action: action.to_owned(),
+        });
     }
 
     /// Copy what is needed to prepare an op on another thread.
     pub fn prepare_base(&self) -> PrepareBase {
-        PrepareBase { engine: self.engine.clone(), state: self.state.clone(), at: self.at }
+        PrepareBase {
+            engine: self.engine.clone(),
+            state: self.state.clone(),
+            at: self.at,
+        }
     }
 
     /// Apply `op` to a clone of the current state without recording it.
@@ -262,13 +300,25 @@ impl Session {
             return Err(TimelineError::ForeignPrepared);
         }
         if p.base != self.at {
-            return Err(TimelineError::StaleBase { expected: p.base, found: self.at });
+            return Err(TimelineError::StaleBase {
+                expected: p.base,
+                found: self.at,
+            });
         }
         if let Head::Ref(name) = &self.head {
             self.timeline.check_ref_name(name)?;
         }
-        let check = Check { state: p.state.hash() };
-        let h = self.timeline.insert(Node { body: NodeBody { parent: self.at, op: p.record, meta }, check })?;
+        let check = Check {
+            state: p.state.hash(),
+        };
+        let h = self.timeline.insert(Node {
+            body: NodeBody {
+                parent: self.at,
+                op: p.record,
+                meta,
+            },
+            check,
+        })?;
         let from = self.at;
         match self.head.clone() {
             Head::Ref(name) => self.timeline.set_ref(&name, h)?,
@@ -286,13 +336,23 @@ impl Session {
     }
 
     /// Apply an op at the current position and record it (prepare + commit).
-    pub fn apply(&mut self, op: &dyn Op, meta: Meta, ctl: &Control<'_>) -> Result<(Hash256, Delta), TimelineError> {
+    pub fn apply(
+        &mut self,
+        op: &dyn Op,
+        meta: Meta,
+        ctl: &Control<'_>,
+    ) -> Result<(Hash256, Delta), TimelineError> {
         let p = self.prepare(op, ctl)?;
         self.commit(p, meta)
     }
 
     /// Apply a stored-form op (remote clients, scripts) and record it.
-    pub fn apply_record(&mut self, rec: OpRecord, meta: Meta, ctl: &Control<'_>) -> Result<(Hash256, Delta), TimelineError> {
+    pub fn apply_record(
+        &mut self,
+        rec: OpRecord,
+        meta: Meta,
+        ctl: &Control<'_>,
+    ) -> Result<(Hash256, Delta), TimelineError> {
         let p = self.prepare_base().prepare_record(rec, ctl)?;
         self.commit(p, meta)
     }
@@ -338,7 +398,11 @@ impl Session {
         if self.at == Some(h) {
             return Some(&self.state);
         }
-        self.recent.iter().find(|(k, _)| *k == h).map(|(_, s)| s).or_else(|| self.snapshots.get(&h))
+        self.recent
+            .iter()
+            .find(|(k, _)| *k == h)
+            .map(|(_, s)| s)
+            .or_else(|| self.snapshots.get(&h))
     }
 
     /// Replay `nodes` (a chain, each the child of the previous) onto `state`, verifying every
@@ -358,16 +422,33 @@ impl Session {
             if ctl.cancel.is_cancelled() {
                 return Err(TimelineError::Cancelled);
             }
-            let node = self.timeline.get(*h).ok_or(TimelineError::UnknownNode(*h))?;
+            let node = self
+                .timeline
+                .get(*h)
+                .ok_or(TimelineError::UnknownNode(*h))?;
             ctl.progress.report(i as f32 / n.max(1) as f32, "replay");
-            let scaled = Scaled { inner: ctl.progress, lo: i as f32 / n as f32, hi: (i + 1) as f32 / n as f32 };
+            let scaled = Scaled {
+                inner: ctl.progress,
+                lo: i as f32 / n as f32,
+                hi: (i + 1) as f32 / n as f32,
+            };
             let sub = Control::new(&scaled, ctl.cancel);
-            self.engine.apply_record(&mut state, &node.body.op, &sub).map_err(|e| {
-                if e.is_cancelled() { TimelineError::Cancelled } else { TimelineError::Apply(e) }
-            })?;
+            self.engine
+                .apply_record(&mut state, &node.body.op, &sub)
+                .map_err(|e| {
+                    if e.is_cancelled() {
+                        TimelineError::Cancelled
+                    } else {
+                        TimelineError::Apply(e)
+                    }
+                })?;
             let actual = state.hash();
             if actual != node.check.state {
-                let err = TimelineError::Diverged { node: *h, recorded: node.check.state, actual };
+                let err = TimelineError::Diverged {
+                    node: *h,
+                    recorded: node.check.state,
+                    actual,
+                };
                 match self.policy {
                     ReplayPolicy::Strict => return Err(err),
                     ReplayPolicy::Warn => warnings.push(err),
@@ -384,15 +465,25 @@ impl Session {
     /// Reconstruct the state at `target`, replaying from the nearest cached state (current
     /// position, recent positions, depth snapshots) or the root, verifying each node's recorded
     /// result hash. Reports progress and honours cancellation.
-    pub fn state_at(&mut self, target: Option<Hash256>, ctl: &Control<'_>) -> Result<State, TimelineError> {
-        let Some(target) = target else { return Ok(self.engine.registry().new_state()) };
+    pub fn state_at(
+        &mut self,
+        target: Option<Hash256>,
+        ctl: &Control<'_>,
+    ) -> Result<State, TimelineError> {
+        let Some(target) = target else {
+            return Ok(self.engine.registry().new_state());
+        };
         if let Some(s) = self.cached_state(target) {
             return Ok(s.clone());
         }
         let path = self.timeline.path_to_root(target)?;
-        let start = path.iter().rposition(|h| self.cached_state(*h).is_some());
+        let start = path
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, h)| self.cached_state(*h).map(|s| (i, s.clone())));
         let (state, from) = match start {
-            Some(i) => (self.cached_state(path[i]).cloned().unwrap_or_default(), i + 1),
+            Some((i, s)) => (s, i + 1),
             None => (self.engine.registry().new_state(), 0),
         };
         let mut warnings = Vec::new();
@@ -406,10 +497,23 @@ impl Session {
 
     /// Reconstruct the state at `h` by replaying every node from the root, using no cache. For
     /// validating snapshots and for determinism tests.
-    pub fn state_at_from_root(&self, h: Hash256, ctl: &Control<'_>) -> Result<State, TimelineError> {
+    pub fn state_at_from_root(
+        &self,
+        h: Hash256,
+        ctl: &Control<'_>,
+    ) -> Result<State, TimelineError> {
         let path = self.timeline.path_to_root(h)?;
         let mut warnings = Vec::new();
-        Ok(self.replay(self.engine.registry().new_state(), &path, 0, ctl, false, &mut warnings)?.state)
+        Ok(self
+            .replay(
+                self.engine.registry().new_state(),
+                &path,
+                0,
+                ctl,
+                false,
+                &mut warnings,
+            )?
+            .state)
     }
 
     /// Check out a revision. On error the session is unchanged.
@@ -421,7 +525,11 @@ impl Session {
                 (Head::Detached(Some(h)), Some(h))
             }
             Rev::Ref(name) => {
-                let h = *self.timeline.refs().get(&name).ok_or_else(|| TimelineError::UnknownRef(name.clone()))?;
+                let h = *self
+                    .timeline
+                    .refs()
+                    .get(&name)
+                    .ok_or_else(|| TimelineError::UnknownRef(name.clone()))?;
                 (Head::Ref(name), Some(h))
             }
         };
@@ -448,13 +556,24 @@ impl Session {
     /// Move an existing branch to `to` (git reset). If HEAD is attached to it, the session
     /// moves too. Nodes the branch no longer reaches stay in the timeline and remain
     /// checkout-able by hash.
-    pub fn reset_branch(&mut self, name: &str, to: Hash256, ctl: &Control<'_>) -> Result<(), TimelineError> {
+    pub fn reset_branch(
+        &mut self,
+        name: &str,
+        to: Hash256,
+        ctl: &Control<'_>,
+    ) -> Result<(), TimelineError> {
         if !self.timeline.refs().contains_key(name) {
             return Err(TimelineError::UnknownRef(name.to_owned()));
         }
-        self.timeline.get(to).ok_or(TimelineError::UnknownNode(to))?;
+        self.timeline
+            .get(to)
+            .ok_or(TimelineError::UnknownNode(to))?;
         let attached = self.head == Head::Ref(name.to_owned());
-        let state = if attached { Some(self.state_at(Some(to), ctl)?) } else { None };
+        let state = if attached {
+            Some(self.state_at(Some(to), ctl)?)
+        } else {
+            None
+        };
         let from = self.at;
         self.timeline.set_ref(name, to)?;
         if let Some(s) = state {
@@ -462,7 +581,12 @@ impl Session {
             self.at = Some(to);
         }
         self.redo.clear();
-        let entry = ReflogEntry { ref_name: Some(name.to_owned()), from, to: Some(to), action: "reset".to_owned() };
+        let entry = ReflogEntry {
+            ref_name: Some(name.to_owned()),
+            from,
+            to: Some(to),
+            action: "reset".to_owned(),
+        };
         self.reflog.push(entry);
         Ok(())
     }
@@ -476,9 +600,16 @@ impl Session {
     /// replayed without progress reporting (use [`checkout`](Self::checkout) for cancellable
     /// navigation).
     pub fn undo(&mut self) -> Result<(), TimelineError> {
-        let Head::Ref(name) = self.head.clone() else { return Err(TimelineError::NotAttached) };
+        let Head::Ref(name) = self.head.clone() else {
+            return Err(TimelineError::NotAttached);
+        };
         let tip = self.at.ok_or(TimelineError::NothingToUndo)?;
-        let parent = self.timeline.get(tip).ok_or(TimelineError::UnknownNode(tip))?.body.parent;
+        let parent = self
+            .timeline
+            .get(tip)
+            .ok_or(TimelineError::UnknownNode(tip))?
+            .body
+            .parent;
         let q = QuietControl::new();
         let state = self.state_at(parent, &q.control())?;
         match parent {
@@ -496,9 +627,14 @@ impl Session {
 
     /// Re-apply the most recently undone node by moving the branch back to it.
     pub fn redo(&mut self) -> Result<(), TimelineError> {
-        let Head::Ref(name) = self.head.clone() else { return Err(TimelineError::NotAttached) };
+        let Head::Ref(name) = self.head.clone() else {
+            return Err(TimelineError::NotAttached);
+        };
         let target = *self.redo.last().ok_or(TimelineError::NothingToRedo)?;
-        let node = self.timeline.get(target).ok_or(TimelineError::UnknownNode(target))?;
+        let node = self
+            .timeline
+            .get(target)
+            .ok_or(TimelineError::UnknownNode(target))?;
         if node.body.parent != self.at {
             self.redo.clear();
             return Err(TimelineError::NothingToRedo);

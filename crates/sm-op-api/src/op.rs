@@ -38,7 +38,9 @@ pub trait Op: Debug + Send + Sync + 'static {
 /// A typed op payload: plain data plus its `apply`. Registering one via
 /// `Registry::register::<T>()` provides decoding, versioning and a JSON schema.
 /// The payload must serialize to a struct or map.
-pub trait TypedOp: Serialize + DeserializeOwned + JsonSchema + Debug + Send + Sync + 'static {
+pub trait TypedOp:
+    Serialize + DeserializeOwned + JsonSchema + Debug + Send + Sync + 'static
+{
     /// Registry name.
     const NAME: &'static str;
     /// Payload version (default 1).
@@ -80,17 +82,29 @@ pub struct OpRecord {
 impl OpRecord {
     /// Encode an op.
     pub fn of(op: &dyn Op) -> Result<Self, CodecError> {
-        Ok(Self { name: op.name().to_owned(), version: op.version(), params: op.encode()? })
+        Ok(Self {
+            name: op.name().to_owned(),
+            version: op.version(),
+            params: op.encode()?,
+        })
     }
 
     /// Build a record from externally supplied params (e.g. a JSON client), canonicalizing them:
     /// null entries are dropped and `-0.0` folded; params must be an object.
-    pub fn new(name: impl Into<String>, version: u32, mut params: Value) -> Result<Self, CodecError> {
+    pub fn new(
+        name: impl Into<String>,
+        version: u32,
+        mut params: Value,
+    ) -> Result<Self, CodecError> {
         if !params.is_object() {
             return Err(CodecError::new("op parameters must be an object"));
         }
         canonicalize(&mut params)?;
-        Ok(Self { name: name.into(), version, params })
+        Ok(Self {
+            name: name.into(),
+            version,
+            params,
+        })
     }
 }
 
@@ -119,7 +133,12 @@ pub struct ApplyCtxScope<'a> {
 
 impl<'a> ApplyCtxScope<'a> {
     pub(crate) fn root(c: Control<'a>) -> Self {
-        Self { progress: c.progress, cancel: c.cancel, lo: 0.0, hi: 1.0 }
+        Self {
+            progress: c.progress,
+            cancel: c.cancel,
+            lo: 0.0,
+            hi: 1.0,
+        }
     }
 
     /// Check cancellation, then report `done / total` mapped into this scope's range.
@@ -129,7 +148,11 @@ impl<'a> ApplyCtxScope<'a> {
         if self.cancel.is_cancelled() {
             return Err(OpError::Cancelled);
         }
-        let f = if total == 0 { 1.0 } else { (done as f64 / total as f64).clamp(0.0, 1.0) as f32 };
+        let f = if total == 0 {
+            1.0
+        } else {
+            (done as f64 / total as f64).clamp(0.0, 1.0) as f32
+        };
         self.progress.report(self.lo + (self.hi - self.lo) * f, msg);
         Ok(())
     }
@@ -159,6 +182,7 @@ pub struct ApplyCtx<'a> {
     removed: Vec<EntityId>,
     outputs: BTreeMap<String, Vec<EntityId>>,
     touched: BTreeSet<&'static str>,
+    canonical: Option<OpRecord>,
 }
 
 impl<'a> ApplyCtx<'a> {
@@ -182,7 +206,17 @@ impl<'a> ApplyCtx<'a> {
             removed: Vec::new(),
             outputs: BTreeMap::new(),
             touched: BTreeSet::new(),
+            canonical: None,
         }
+    }
+
+    /// Let the op supply the canonical stored form of itself (used by `core.batch`).
+    pub(crate) fn set_canonical_record(&mut self, rec: OpRecord) {
+        self.canonical = Some(rec);
+    }
+
+    pub(crate) fn take_canonical(&mut self) -> Option<OpRecord> {
+        self.canonical.take()
     }
 
     pub(crate) fn finish(&mut self) -> Result<Delta, OpError> {
@@ -198,7 +232,9 @@ impl<'a> ApplyCtx<'a> {
     /// Tell layers about ids retired since the last flush (dependency order).
     fn flush_retired(&mut self) {
         if self.notified < self.removed.len() {
-            let touched = self.state.notify_retired(self.order, &self.removed[self.notified..]);
+            let touched = self
+                .state
+                .notify_retired(self.order, &self.removed[self.notified..]);
             self.touched.extend(touched);
             self.notified = self.removed.len();
         }
@@ -222,7 +258,9 @@ impl<'a> ApplyCtx<'a> {
     }
 
     /// Allocate and record the id under a named output `role` of the [`Delta`], so later ops in a
-    /// `core.batch` (and clients) can refer to it without positional guesswork.
+    /// `core.batch` (and clients) can refer to it without positional guesswork. Meant for a few
+    /// per-op outputs: it allocates a `String` per call, so do not use it in per-element loops;
+    /// use [`alloc_sorted`](Self::alloc_sorted) for bulk ids.
     pub fn alloc_as(&mut self, role: &str, kind: EntityKind) -> Result<EntityId, OpError> {
         let id = self.alloc(kind)?;
         self.outputs.entry(role.to_owned()).or_default().push(id);
@@ -232,13 +270,18 @@ impl<'a> ApplyCtx<'a> {
     /// Allocate one id per key as a contiguous range, assigned in sorted key order (ties by input
     /// position), so the ids do not depend on the order the caller produced the keys in
     /// (docs/research/mesh-ir-addendum-r2.md §7.2). `result[i]` belongs to `keys[i]`.
-    pub fn alloc_sorted<K: Ord>(&mut self, kind: EntityKind, keys: &[K]) -> Result<Vec<EntityId>, OpError> {
+    pub fn alloc_sorted<K: Ord>(
+        &mut self,
+        kind: EntityKind,
+        keys: &[K],
+    ) -> Result<Vec<EntityId>, OpError> {
         let mut order: Vec<usize> = (0..keys.len()).collect();
         order.sort_by(|&a, &b| keys[a].cmp(&keys[b]).then(a.cmp(&b)));
         let first = self.state.alloc_range(kind, keys.len() as u64)?;
         let mut out = vec![first; keys.len()];
         for (rank, &i) in order.iter().enumerate() {
-            let id = EntityId::new(kind, first.serial() + rank as u64).ok_or(OpError::IdExhausted)?;
+            let id =
+                EntityId::new(kind, first.serial() + rank as u64).ok_or(OpError::IdExhausted)?;
             out[i] = id;
             self.created.push(id);
         }
@@ -259,7 +302,11 @@ impl<'a> ApplyCtx<'a> {
 
     /// Fail with [`OpError::UnknownEntity`] unless `id` is live. Use for every id in params.
     pub fn require(&self, id: EntityId) -> Result<(), OpError> {
-        if self.state.contains(id) { Ok(()) } else { Err(OpError::UnknownEntity(id)) }
+        if self.state.contains(id) {
+            Ok(())
+        } else {
+            Err(OpError::UnknownEntity(id))
+        }
     }
 
     /// Like [`require`](Self::require) and returns the id, for use in expressions.
@@ -271,17 +318,26 @@ impl<'a> ApplyCtx<'a> {
     /// Require `id` to be live and of kind `kind`.
     pub fn resolve_kind(&self, id: EntityId, kind: EntityKind) -> Result<EntityId, OpError> {
         self.require(id)?;
-        if id.kind() == kind { Ok(id) } else { Err(OpError::WrongKind { id, expected: kind }) }
+        if id.kind() == kind {
+            Ok(id)
+        } else {
+            Err(OpError::WrongKind { id, expected: kind })
+        }
     }
 
     /// Read a layer.
     pub fn layer<L: LayerType>(&self) -> Result<&L, OpError> {
-        self.state.layer::<L>().ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))
+        self.state
+            .layer::<L>()
+            .ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))
     }
 
     /// Mutate a layer (copy-on-write; the committed state is untouched until the op succeeds).
     pub fn layer_mut<L: LayerType>(&mut self) -> Result<&mut L, OpError> {
-        let l = self.state.layer_mut::<L>().ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))?;
+        let l = self
+            .state
+            .layer_mut::<L>()
+            .ok_or_else(|| OpError::MissingLayer(L::NAME.to_owned()))?;
         self.touched.insert(L::NAME);
         Ok(l)
     }
@@ -293,7 +349,9 @@ impl<'a> ApplyCtx<'a> {
 
     /// Look up an injected service (geometry kernel, mesher, ...).
     pub fn service<S: Any + Send + Sync>(&self) -> Result<&S, OpError> {
-        self.services.get::<S>().ok_or(OpError::MissingService(std::any::type_name::<S>()))
+        self.services
+            .get::<S>()
+            .ok_or(OpError::MissingService(std::any::type_name::<S>()))
     }
 
     /// Check cancellation and report `done / total`. Callable through `&self` from scoped
@@ -312,20 +370,35 @@ impl<'a> ApplyCtx<'a> {
         self.scope.sub(lo, hi)
     }
 
-    /// Decode and apply a nested record in this context (used by `core.batch`). Its named
-    /// outputs are returned and also merged into this op's outputs as `"<prefix>.<role>"`.
-    pub(crate) fn apply_nested(&mut self, rec: &OpRecord, prefix: usize) -> Result<BTreeMap<String, Vec<EntityId>>, OpError> {
+    /// Decode and apply sub-op `index` of `count` in this context (used by `core.batch`), with
+    /// progress confined to its slice of this op's range. Returns its named outputs (also merged
+    /// into this op's outputs as `"<index>.<role>"`) and its canonical record (current version,
+    /// re-encoded from the decoded op).
+    pub(crate) fn apply_nested(
+        &mut self,
+        rec: &OpRecord,
+        index: usize,
+        count: usize,
+    ) -> Result<(BTreeMap<String, Vec<EntityId>>, OpRecord), OpError> {
         let op = self.registry.decode(rec)?;
+        let canonical = OpRecord::of(op.as_ref())?;
         let saved = std::mem::take(&mut self.outputs);
+        let outer = self.scope;
+        let n = count.max(1) as f32;
+        self.scope = outer.sub(index as f32 / n, (index + 1) as f32 / n);
         let r = op.apply(self);
+        self.scope = outer;
         let sub = std::mem::replace(&mut self.outputs, saved);
         r?;
         // Layers react after each nested op, so later sub-ops never see references to ids an
         // earlier sub-op retired.
         self.flush_retired();
         for (role, ids) in &sub {
-            self.outputs.entry(format!("{prefix}.{role}")).or_default().extend(ids.iter().copied());
+            self.outputs
+                .entry(format!("{index}.{role}"))
+                .or_default()
+                .extend(ids.iter().copied());
         }
-        Ok(sub)
+        Ok((sub, canonical))
     }
 }

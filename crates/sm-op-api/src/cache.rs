@@ -63,7 +63,10 @@ impl Default for DerivedCache {
 impl DerivedCache {
     /// A cache that evicts least-recently-used entries beyond `capacity_bytes` (estimated).
     pub fn with_capacity(capacity_bytes: usize) -> Self {
-        Self { inner: Mutex::default(), capacity_bytes }
+        Self {
+            inner: Mutex::default(),
+            capacity_bytes,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -98,26 +101,45 @@ impl DerivedCache {
     /// Store a value with an explicit size estimate. Replacing an entry that holds a different
     /// type (or was stored under a different kind) is an error; replacing one of the same type
     /// keeps the new value.
-    pub fn insert_sized<T: Any + Send + Sync>(&self, kind: &str, key: Hash256, value: Arc<T>, bytes: usize) -> Result<(), CacheError> {
+    pub fn insert_sized<T: Any + Send + Sync>(
+        &self,
+        kind: &str,
+        key: Hash256,
+        value: Arc<T>,
+        bytes: usize,
+    ) -> Result<(), CacheError> {
         let mut g = self.lock();
         g.tick += 1;
         let tick = g.tick;
         if let Some(old) = g.map.get(&key) {
             if old.ty != TypeId::of::<T>() || old.kind != kind {
-                return Err(CacheError::TypeConflict { kind: kind.to_owned() });
+                return Err(CacheError::TypeConflict {
+                    kind: kind.to_owned(),
+                });
             }
             let (ob, ot) = (old.bytes, old.last_used);
-            g.bytes -= ob;
+            g.bytes = g.bytes.saturating_sub(ob);
             g.lru.remove(&ot);
         }
         g.bytes += bytes;
         g.lru.insert(tick, key);
-        g.map.insert(key, Entry { kind: kind.to_owned(), value, ty: TypeId::of::<T>(), bytes, last_used: tick });
+        g.map.insert(
+            key,
+            Entry {
+                kind: kind.to_owned(),
+                value,
+                ty: TypeId::of::<T>(),
+                bytes,
+                last_used: tick,
+            },
+        );
         // Evict least-recently-used until within capacity, keeping the newest.
         while g.bytes > self.capacity_bytes && g.map.len() > 1 {
-            let Some((_, victim)) = g.lru.pop_first() else { break };
+            let Some((_, victim)) = g.lru.pop_first() else {
+                break;
+            };
             if let Some(e) = g.map.remove(&victim) {
-                g.bytes -= e.bytes;
+                g.bytes = g.bytes.saturating_sub(e.bytes);
             }
         }
         Ok(())
@@ -125,7 +147,12 @@ impl DerivedCache {
 
     /// Return the cached value or compute, store and return it. The size estimate is
     /// `size_of::<T>()`; use [`get_or_compute_sized`](Self::get_or_compute_sized) for heap-heavy values.
-    pub fn get_or_compute<T, E>(&self, kind: &str, key: Hash256, f: impl FnOnce() -> Result<T, E>) -> Result<Arc<T>, E>
+    pub fn get_or_compute<T, E>(
+        &self,
+        kind: &str,
+        key: Hash256,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Arc<T>, E>
     where
         T: Any + Send + Sync,
         E: From<CacheError>,
@@ -135,7 +162,12 @@ impl DerivedCache {
 
     /// Like [`get_or_compute`](Self::get_or_compute) with `f` returning `(value, estimated_bytes)`.
     /// `f` runs without the cache lock held, so it may itself use the cache.
-    pub fn get_or_compute_sized<T, E>(&self, kind: &str, key: Hash256, f: impl FnOnce() -> Result<(T, usize), E>) -> Result<Arc<T>, E>
+    pub fn get_or_compute_sized<T, E>(
+        &self,
+        kind: &str,
+        key: Hash256,
+        f: impl FnOnce() -> Result<(T, usize), E>,
+    ) -> Result<Arc<T>, E>
     where
         T: Any + Send + Sync,
         E: From<CacheError>,
@@ -160,12 +192,19 @@ impl DerivedCache {
     /// Current counters.
     pub fn stats(&self) -> CacheStats {
         let g = self.lock();
-        CacheStats { hits: g.hits, misses: g.misses, entries: g.map.len(), bytes: g.bytes }
+        CacheStats {
+            hits: g.hits,
+            misses: g.misses,
+            entries: g.map.len(),
+            bytes: g.bytes,
+        }
     }
 }
 
 impl std::fmt::Debug for DerivedCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DerivedCache").field("stats", &self.stats()).finish()
+        f.debug_struct("DerivedCache")
+            .field("stats", &self.stats())
+            .finish()
     }
 }

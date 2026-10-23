@@ -148,7 +148,9 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// reactions run upstream-first in the topological order of these edges (ties by name).
     const DEPENDS_ON: &'static [&'static str] = &[];
     /// Feed the canonical content into the digest. Must be deterministic and independent of
-    /// allocation addresses, thread count and hash-map order. Quantize floats.
+    /// allocation addresses, thread count and hash-map order. Write floats via
+    /// [`Digest::f64_quantized`], never pre-round: a layer that rounds itself and writes
+    /// `i64`/`u64` collapses sub-quantum differences in cache keys too.
     fn digest(&self, d: &mut Digest);
     /// True when the layer holds nothing. Empty layers do not enter the state hash, so
     /// installing a new concept leaves the hashes of existing histories unchanged.
@@ -236,7 +238,8 @@ impl<T: LayerType> Layer for T {
 }
 
 /// Reference store for concept layers: an ordered map from entity id to payload. Wrap it in a
-/// newtype that implements [`LayerType`] and forward `digest`, `is_empty` and `on_retired`.
+/// newtype that implements [`LayerType`] and forward `digest_with` (quantizing floats),
+/// `is_empty` and `on_retired`.
 #[derive(Clone, Debug)]
 pub struct MapLayer<T> {
     items: BTreeMap<EntityId, T>,
@@ -244,7 +247,9 @@ pub struct MapLayer<T> {
 
 impl<T> Default for MapLayer<T> {
     fn default() -> Self {
-        Self { items: BTreeMap::new() }
+        Self {
+            items: BTreeMap::new(),
+        }
     }
 }
 
@@ -289,12 +294,27 @@ impl<T> MapLayer<T> {
     }
 }
 
-impl<T: Serialize> MapLayer<T> {
-    /// Feed every entry (id, then payload) into the digest, in id order.
-    pub fn digest(&self, d: &mut Digest) {
+impl<T> MapLayer<T> {
+    /// Feed every entry into the digest in id order, length-prefixed: the id, then whatever
+    /// `f` writes for the payload. This is the documented way to digest a `MapLayer`: write
+    /// float fields with [`Digest::f64_quantized`] inside `f` so the state hash is quantized
+    /// and platform independent.
+    pub fn digest_with(&self, d: &mut Digest, f: impl Fn(&mut Digest, &T)) {
         d.u64(self.items.len() as u64);
         for (id, v) in &self.items {
-            d.id(*id).value(v);
+            d.id(*id);
+            f(d, v);
         }
+    }
+}
+
+impl<T: Serialize> MapLayer<T> {
+    /// Digest through the payload's canonical serialization. **Only for payloads without
+    /// floats**: [`Digest::value`] does not quantize, so float bits would leak into the state
+    /// hash. Use [`digest_with`](Self::digest_with) for anything holding an `f64`.
+    pub fn digest_float_free(&self, d: &mut Digest) {
+        self.digest_with(d, |d, v| {
+            d.value(v);
+        });
     }
 }

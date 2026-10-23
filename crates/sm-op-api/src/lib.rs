@@ -27,7 +27,9 @@ pub mod timeline;
 
 pub use batch::Batch;
 pub use cache::{CacheStats, DerivedCache};
-pub use codec::{CodecError, Value, canonical_bytes, canonicalize, from_value, to_params, to_value};
+pub use codec::{
+    CodecError, Value, canonical_bytes, canonicalize, from_value, to_params, to_value,
+};
 pub use engine::Engine;
 pub use error::{ApplyError, CacheError, OpError, RegistryError, TimelineError};
 pub use hash::{Hash256, ParseHashError, content_hash};

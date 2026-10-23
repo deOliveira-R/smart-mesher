@@ -21,7 +21,11 @@ struct Slot {
 
 impl Slot {
     fn new(layer: Arc<dyn Layer>) -> Self {
-        Self { layer, hash: OnceLock::new(), exact: OnceLock::new() }
+        Self {
+            layer,
+            hash: OnceLock::new(),
+            exact: OnceLock::new(),
+        }
     }
 
     fn hash(&self) -> Hash256 {
@@ -95,7 +99,10 @@ pub struct State {
 
 impl State {
     pub(crate) fn with_layers(layers: BTreeMap<&'static str, Arc<dyn Layer>>) -> Self {
-        Self { layers: layers.into_iter().map(|(k, v)| (k, Slot::new(v))).collect(), entities: Arc::default() }
+        Self {
+            layers: layers.into_iter().map(|(k, v)| (k, Slot::new(v))).collect(),
+            entities: Arc::default(),
+        }
     }
 
     pub(crate) fn replace_layer(&mut self, name: &'static str, layer: Arc<dyn Layer>) {
@@ -114,7 +121,10 @@ impl State {
 
     /// Content hash of one layer by name (memoized until the layer is next mutated).
     pub fn layer_hash(&self, name: &str) -> Result<Hash256, OpError> {
-        self.layers.get(name).map(Slot::hash).ok_or_else(|| OpError::MissingLayer(name.to_owned()))
+        self.layers
+            .get(name)
+            .map(Slot::hash)
+            .ok_or_else(|| OpError::MissingLayer(name.to_owned()))
     }
 
     /// Copy-on-write access to a layer; clears its memoized hash.
@@ -127,7 +137,11 @@ impl State {
     }
 
     /// Run `on_retired` on non-empty authoritative layers in `order`. Returns the layers touched.
-    pub(crate) fn notify_retired(&mut self, order: &[&'static str], ids: &[EntityId]) -> Vec<&'static str> {
+    pub(crate) fn notify_retired(
+        &mut self,
+        order: &[&'static str],
+        ids: &[EntityId],
+    ) -> Vec<&'static str> {
         let mut touched = Vec::new();
         for name in order {
             if let Some(slot) = self.layers.get_mut(name)
@@ -143,10 +157,9 @@ impl State {
 
     /// Whether `id` is a live entity.
     pub fn contains(&self, id: EntityId) -> bool {
-        self.entities
-            .kinds
-            .get(&id.kind())
-            .is_some_and(|t| id.serial() >= 1 && id.serial() < t.next && !t.retired.contains(&id.serial()))
+        self.entities.kinds.get(&id.kind()).is_some_and(|t| {
+            id.serial() >= 1 && id.serial() < t.next && !t.retired.contains(&id.serial())
+        })
     }
 
     /// The kind of `id` if it is live (the kind is also encoded in the id itself).
@@ -157,13 +170,19 @@ impl State {
     /// Live entities in id order.
     pub fn entities(&self) -> impl Iterator<Item = EntityId> + '_ {
         self.entities.kinds.iter().flat_map(|(kind, t)| {
-            (1..t.next).filter(|s| !t.retired.contains(s)).filter_map(move |s| EntityId::new(*kind, s))
+            (1..t.next)
+                .filter(|s| !t.retired.contains(s))
+                .filter_map(move |s| EntityId::new(*kind, s))
         })
     }
 
     /// Number of live entities.
     pub fn entity_count(&self) -> usize {
-        self.entities.kinds.values().map(|t| (t.next.saturating_sub(1) as usize) - t.retired.len()).sum()
+        self.entities
+            .kinds
+            .values()
+            .map(|t| (t.next.saturating_sub(1) as usize) - t.retired.len())
+            .sum()
     }
 
     /// The id the next `ApplyCtx::alloc` of `kind` would return.
@@ -180,7 +199,13 @@ impl State {
             return Err(OpError::IdExhausted);
         }
         if n > 0 {
-            Arc::make_mut(Arc::make_mut(&mut self.entities).kinds.entry(kind).or_default()).next = end;
+            Arc::make_mut(
+                Arc::make_mut(&mut self.entities)
+                    .kinds
+                    .entry(kind)
+                    .or_default(),
+            )
+            .next = end;
         }
         Ok(first)
     }
@@ -193,7 +218,12 @@ impl State {
         if !self.contains(id) {
             return false;
         }
-        let t = Arc::make_mut(Arc::make_mut(&mut self.entities).kinds.entry(id.kind()).or_default());
+        let t = Arc::make_mut(
+            Arc::make_mut(&mut self.entities)
+                .kinds
+                .entry(id.kind())
+                .or_default(),
+        );
         t.retired.insert(id.serial());
         t.retired_acc.add(&id.serial().to_le_bytes());
         true
@@ -230,7 +260,12 @@ impl State {
     /// replay, and states differing by less than the identity quantum get different keys, so a
     /// hit never changes op output.
     /// Fails with [`OpError::MissingLayer`] on an unknown input name.
-    pub fn cache_key(&self, kind: &str, inputs: &[&str], params: &Value) -> Result<Hash256, OpError> {
+    pub fn cache_key(
+        &self,
+        kind: &str,
+        inputs: &[&str],
+        params: &Value,
+    ) -> Result<Hash256, OpError> {
         let mut h = Hasher::new("smart-mesh/cache-key/v1");
         h.update(&(kind.len() as u64).to_le_bytes());
         h.update(kind.as_bytes());
@@ -238,7 +273,10 @@ impl State {
         for name in inputs {
             h.update(&(name.len() as u64).to_le_bytes());
             h.update(name.as_bytes());
-            let slot = self.layers.get(name).ok_or_else(|| OpError::MissingLayer((*name).to_owned()))?;
+            let slot = self
+                .layers
+                .get(name)
+                .ok_or_else(|| OpError::MissingLayer((*name).to_owned()))?;
             h.update(&slot.exact_hash().0);
         }
         h.update(&canonical_bytes(params));
@@ -253,17 +291,20 @@ impl State {
             .kinds
             .iter()
             .filter(|(_, t)| t.next != 0)
-            .map(|(k, t)| KindSnapshot { kind: *k, next: t.next, retired: t.retired.iter().copied().collect() })
+            .map(|(k, t)| KindSnapshot {
+                kind: *k,
+                next: t.next,
+                retired: t.retired.iter().copied().collect(),
+            })
             .collect();
         let mut layers = BTreeMap::new();
         for (name, slot) in &self.layers {
             if slot.layer.role() != LayerRole::Authoritative || slot.layer.is_empty() {
                 continue;
             }
-            let bytes = slot
-                .layer
-                .snapshot()?
-                .ok_or_else(|| CodecError(format!("layer '{name}' has no persisted snapshot support")))?;
+            let bytes = slot.layer.snapshot()?.ok_or_else(|| {
+                CodecError(format!("layer '{name}' has no persisted snapshot support"))
+            })?;
             layers.insert((*name).to_owned(), bytes);
         }
         Ok(StateSnapshot { kinds, layers })
@@ -273,7 +314,10 @@ impl State {
     pub(crate) fn restore_entities(&mut self, kinds: &[KindSnapshot]) -> Result<(), CodecError> {
         let mut e = Entities::default();
         for k in kinds {
-            let mut t = KindTable { next: k.next, ..KindTable::default() };
+            let mut t = KindTable {
+                next: k.next,
+                ..KindTable::default()
+            };
             if k.next == 0 || k.next - 1 > EntityId::MAX_SERIAL {
                 return Err(CodecError::new("snapshot: bad next serial"));
             }
