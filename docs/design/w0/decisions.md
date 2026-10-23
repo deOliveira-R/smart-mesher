@@ -24,3 +24,34 @@ Answers to the open questions in `mesh-api-recommendation.md` §6 and `op-api-re
 6. **Undo:** moves the branch ref (git-reset style), with the reflog in `.cache/`. Abandoned nodes stay in `timeline/ops/` (content-addressed), so any undone experiment can still be checked out or forked.
 7. **File I/O:** `fs::save/load`, atomic writes and `project.toml` move to `sm-engine`. `sm-op-api` keeps pure `to_files`/`from_files`.
 8. **Large layers:** add an optional persisted-snapshot hook to `LayerType` now (default: none), so the storage API can plug in without a breaking change.
+
+# W0c orchestrator decisions (2026-10-23)
+
+## sm-core changes (done)
+- New kinds: `Prototype=36`, `Lattice=37`, `Symmetry=38`, and per-rank decomposition kinds `PartitionCell=48` (piece), `PartitionFace=49`, `PartitionEdge=50`, `PartitionVertex=51`. No `dim_of` needed.
+- `Transform`: `translation`, `reflection(n, d)`, `rotation(p, axis, angle)`, `compose`, `inverse`. `IDENTITY`, `det` and `is_improper` already existed.
+
+## sm-geom-api + sm-topo-api (base: `w0/geomtopo/cellcomplex` + grafts §3 + must-fix §4 of `geomtopo-recommendation.md`)
+- Q1 merge tolerance: `merge_vertices` takes an op-level `max_gap`; edge and face merges inherit it. The discarded gap is recorded in `LineageEvent::Merged { gap }`.
+- Q2 hash rounding: quantization step = `ModelTolerance::linear × 2^-10`. The same rule is used for the mesh `geometry_hash`. Document it as the cross-platform hash rule.
+- Q3 Cargo.lock: the orchestrator owns it and regenerates it at merge.
+- Q4 NURBS: keep the small reference de Boor evaluator in sm-geom-api, so the contract is complete.
+- Q5 overlay ids: use the per-rank kinds above.
+- Q6 `CoedgeKey{face, edge, side}` + lineage are enough for P0–P1. No new kinds.
+- Q7 geometry queries the semantics layer needs (`face_moments` by quadrature within tolerance, `face_edges`, dense `face_ordinal`, `coincident_faces(f)` with imprint/merge status) live in the sm-topo-api read trait. The final read trait **must cover every query in `semantics-recommendation.md` §5's `TopologyView`**.
+- Q8 instancing: **not in sm-topo-api**. Prototypes, instances, lattices and their locations live in sm-model-api (Model layer, ir.md §5). Each topology complex is self-contained, and a STEP assembly maps to model-layer instancing on import.
+- Q9 transform ops: in sm-core (done).
+- Q10 P0 surfaces: a single-nappe parametric cone plus a double-nappe implicit cone; ring torus only (R > r). Spindle/horn tori come later.
+- Lineage: one `Lineage` type, owned by sm-topo-api (sm-naming's P0 scope is folded into topology). Topology cut operations return `CutOutcome { lineage, caps }`.
+
+## sm-model-api (base: `w0/semantics/tables` + grafts from grouptheory per `semantics-recommendation.md`)
+1. Kinds: done (see sm-core).
+2. Transform ops: done.
+3. Topology queries: slices are fine; `face_ordinal`, `face_moments`, `face_edges` and `coincident_faces` are added to the sm-topo-api read trait (Q7). sm-model-api **depends on sm-topo-api** and uses its read trait instead of a private `TopologyView`.
+4. Lineage: use sm-topo-api's `Lineage`.
+5. Interface validation reads topology's `coincident_faces(f)` status. Never infer coincidence from moments.
+6. Translation symmetry is declared, not detected (P0–P1). Confirmed.
+7. Mixed-material cells are out for P0–P1. Volume coloring is an exact partition. Confirmed.
+8. Determinism test for API crates: run twice and compare hashes, plus a cross-thread hash comparison (`std::thread`). No rayon in API crates.
+9. Cargo.lock: the orchestrator owns it.
+10. An uncolored boundary face is a **Warning** in validation, and an **Error** at export time if the target format requires boundary colors. Cut caps take the `cap_color` passed to `apply_cut`.

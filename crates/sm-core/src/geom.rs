@@ -138,4 +138,116 @@ impl Transform {
     pub fn is_improper(&self) -> bool {
         self.det() < 0.0
     }
+
+    /// Pure translation by `v`.
+    pub const fn translation(v: Vector3) -> Self {
+        Self { m: Self::IDENTITY.m, t: v }
+    }
+
+    /// Reflection in the plane `{x : n·x = d}`. `n` need not be unit length.
+    /// Returns `None` if `n` is (near) zero.
+    pub fn reflection(n: Vector3, d: f64) -> Option<Self> {
+        let l2 = n.dot(n);
+        if l2 <= f64::MIN_POSITIVE {
+            return None;
+        }
+        let u = n * (1.0 / l2.sqrt());
+        let dd = d / l2.sqrt();
+        let a = [u.x, u.y, u.z];
+        let mut m = [[0.0; 3]; 3];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, e) in row.iter_mut().enumerate() {
+                *e = if i == j { 1.0 } else { 0.0 } - 2.0 * a[i] * a[j];
+            }
+        }
+        Some(Self { m, t: u * (2.0 * dd) })
+    }
+
+    /// Rotation by `angle` radians (right-hand rule) about the axis through `p` with direction `axis`.
+    /// Returns `None` if `axis` is (near) zero.
+    pub fn rotation(p: Point3, axis: Vector3, angle: f64) -> Option<Self> {
+        let l = axis.norm();
+        if l <= f64::MIN_POSITIVE {
+            return None;
+        }
+        let k = axis * (1.0 / l);
+        let (s, c) = angle.sin_cos();
+        let v = 1.0 - c;
+        let m = [
+            [c + k.x * k.x * v, k.x * k.y * v - k.z * s, k.x * k.z * v + k.y * s],
+            [k.y * k.x * v + k.z * s, c + k.y * k.y * v, k.y * k.z * v - k.x * s],
+            [k.z * k.x * v - k.y * s, k.z * k.y * v + k.x * s, c + k.z * k.z * v],
+        ];
+        let lin = Self { m, t: Vector3::new(0.0, 0.0, 0.0) };
+        let pv = Vector3::new(p.x, p.y, p.z);
+        // x -> R(x - p) + p
+        Some(Self { m, t: pv - lin.apply_vector(pv) })
+    }
+
+    /// Composition `self ∘ other`: apply `other` first, then `self`.
+    pub fn compose(&self, other: &Self) -> Self {
+        let mut m = [[0.0; 3]; 3];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, e) in row.iter_mut().enumerate() {
+                *e = (0..3).map(|k| self.m[i][k] * other.m[k][j]).sum();
+            }
+        }
+        Self { m, t: self.apply_vector(other.t) + self.t }
+    }
+
+    /// Inverse transform. Returns `None` if the linear part is singular.
+    pub fn inverse(&self) -> Option<Self> {
+        let d = self.det();
+        if d.abs() <= f64::MIN_POSITIVE {
+            return None;
+        }
+        let m = &self.m;
+        let inv_d = 1.0 / d;
+        let c = |r0: usize, c0: usize, r1: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+        let mi = [
+            [c(1, 1, 2, 2) * inv_d, -c(0, 1, 2, 2) * inv_d, c(0, 1, 1, 2) * inv_d],
+            [-c(1, 0, 2, 2) * inv_d, c(0, 0, 2, 2) * inv_d, -c(0, 0, 1, 2) * inv_d],
+            [c(1, 0, 2, 1) * inv_d, -c(0, 0, 2, 1) * inv_d, c(0, 0, 1, 1) * inv_d],
+        ];
+        let lin = Self { m: mi, t: Vector3::new(0.0, 0.0, 0.0) };
+        Some(Self { m: mi, t: -lin.apply_vector(self.t) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: Point3, b: Point3) -> bool {
+        (a - b).norm() < 1e-12
+    }
+
+    #[test]
+    fn reflection_is_involutive_and_improper() {
+        let r = Transform::reflection(Vector3::new(1.0, 0.0, 0.0), 2.0).unwrap();
+        assert!(r.is_improper());
+        assert!(close(r.apply_point(Point3::new(0.0, 1.0, 1.0)), Point3::new(4.0, 1.0, 1.0)));
+        let rr = r.compose(&r);
+        assert!(close(rr.apply_point(Point3::new(0.3, -2.0, 5.0)), Point3::new(0.3, -2.0, 5.0)));
+    }
+
+    #[test]
+    fn rotation_about_offset_axis() {
+        let r = Transform::rotation(Point3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), core::f64::consts::FRAC_PI_2).unwrap();
+        assert!(!r.is_improper());
+        assert!(close(r.apply_point(Point3::new(2.0, 0.0, 0.0)), Point3::new(1.0, 1.0, 0.0)));
+        let six = (0..6).fold(Transform::IDENTITY, |acc, _| {
+            Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), core::f64::consts::PI / 3.0).unwrap().compose(&acc)
+        });
+        assert!(close(six.apply_point(Point3::new(1.0, 2.0, 3.0)), Point3::new(1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn inverse_roundtrip() {
+        let t = Transform::rotation(Point3::new(1.0, 2.0, 3.0), Vector3::new(1.0, 1.0, 0.0), 0.7)
+            .unwrap()
+            .compose(&Transform::translation(Vector3::new(-3.0, 0.5, 2.0)));
+        let p = Point3::new(0.1, 0.2, 0.3);
+        assert!(close(t.inverse().unwrap().apply_point(t.apply_point(p)), p));
+    }
 }

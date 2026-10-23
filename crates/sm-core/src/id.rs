@@ -36,11 +36,23 @@ pub enum EntityKind {
     Group = 33,
     /// Deck transformation or boundary-kind record.
     Boundary = 34,
-    /// Prototype / instance / lattice.
+    /// Placement of a prototype (an instance).
     Instance = 35,
-    // Partition layer
-    /// Partition cell (virtual decomposition piece).
+    /// A reusable definition placed by instances (e.g. a pin, an assembly).
+    Prototype = 36,
+    /// A lattice of slots holding instances (cartesian or hex).
+    Lattice = 37,
+    /// A symmetry / deck-group record (generators + fundamental domain).
+    Symmetry = 38,
+    // Decomposition layer (virtual, reversible pieces; one kind per rank)
+    /// Decomposition piece of rank 3 (a virtual volume piece).
     PartitionCell = 48,
+    /// Decomposition face of rank 2 (a virtual cut or composite face).
+    PartitionFace = 49,
+    /// Decomposition edge of rank 1.
+    PartitionEdge = 50,
+    /// Decomposition vertex of rank 0.
+    PartitionVertex = 51,
     // Mesh layer
     /// A mesh (one level of a hierarchy).
     Mesh = 64,
@@ -72,7 +84,13 @@ impl EntityKind {
             33 => Group,
             34 => Boundary,
             35 => Instance,
+            36 => Prototype,
+            37 => Lattice,
+            38 => Symmetry,
             48 => PartitionCell,
+            49 => PartitionFace,
+            50 => PartitionEdge,
+            51 => PartitionVertex,
             64 => Mesh,
             65 => MeshVertex,
             66 => MeshEdge,
