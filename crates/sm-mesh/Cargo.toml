@@ -1,0 +1,16 @@
+[package]
+name = "sm-mesh"
+description = "High-performance mesh store implementing sm-mesh-api: CSR face-first storage and adjacency."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+thiserror = "2"
+
+[lints]
+workspace = true

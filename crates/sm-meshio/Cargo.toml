@@ -1,0 +1,16 @@
+[package]
+name = "sm-meshio"
+description = "Mesh export: native .smsh container and VTU, later Exodus, CGNS, Gmsh and others."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+thiserror = "2"
+
+[lints]
+workspace = true
