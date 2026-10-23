@@ -6,14 +6,14 @@
 
 #![allow(clippy::needless_range_loop)] // dense-index loops over parallel columns are the clearest form here
 
-use crate::classify::ClassSet;
+use crate::classify::{ClassSet, Classification};
 use crate::geometry::{cell_volume_centroid, face_geometry};
 use crate::highorder::{face_node_count, node_count};
 use crate::index::{
     CellIx, EdgeIx, FaceIx, FaceKind, MeshDim, MeshEntity, MeshEntityKind, Side, VertexIx,
 };
 use crate::read::MeshRead;
-use crate::sets::TagValues;
+use crate::sets::{SetMembers, TagValues};
 use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation, polygon_cycle};
 use sm_core::{EntityId, EntityKind, Point3};
 use std::collections::{BTreeMap, BTreeSet};
@@ -839,13 +839,21 @@ fn validate_sets_tags_edges(
             MeshEntityKind::Edge => 0,
         };
         let raw = st.members.raw();
-        if st.id.kind() != EntityKind::Group
+        if st.id.kind() != EntityKind::MeshSet
             || (i > 0 && sets[i - 1].id >= st.id)
             || sets[..i].iter().any(|o| o.name == st.name)
             || raw.windows(2).any(|w| w[0] >= w[1])
-            || raw.last().is_some_and(|&x| x as usize >= n)
+            || st.members.max_index().is_some_and(|x| x as usize >= n)
         {
             s.add(ViolationCode::Set, None, format!("set '{}' is invalid (id kind/order, duplicate name, or members not ascending/in range)", st.name));
+        }
+        if let SetMembers::Sides(v) = &st.members
+            && v.iter().any(|sf| (sf.face().0 as usize) < nf && sf.side() == Side::Right && m.face_right(sf.face()).is_none())
+        {
+            s.add(ViolationCode::Set, None, format!("side set '{}' names the right side of a one-cell face", st.name));
+        }
+        if st.label.is_some() && sets[..i].iter().any(|o| o.label == st.label && o.members.kind() == st.members.kind()) {
+            s.add(ViolationCode::Set, None, format!("set '{}' repeats label {:?} for its members kind", st.name, st.label));
         }
     }
     let tags = m.tags();
@@ -1193,7 +1201,15 @@ pub fn topology_hash(m: &dyn MeshRead) -> u64 {
     for st in m.sets() {
         h.u(st.id.to_raw());
         h.str(&st.name);
+        match st.label {
+            Some(l) => {
+                h.u(1);
+                h.u(l as u64);
+            }
+            None => h.u(0),
+        }
         h.u(st.members.kind() as u64);
+        h.u(u64::from(st.members.code()));
         let raw = st.members.raw();
         h.u(raw.len() as u64);
         for x in raw {
@@ -1213,6 +1229,71 @@ pub fn topology_hash(m: &dyn MeshRead) -> u64 {
                 }
             }
             TagValues::F64(_) => h.u(1),
+        }
+    }
+    h.0
+}
+
+/// Quantize one float for [`geometry_hash_quantized`]: `round(x / quantum)` (half away from
+/// zero, the W0c Q2 rule of `sm_geom_api::ModelTolerance::quantize_with` and the op layer's
+/// `Digest::f64_quantized`), `-0` folded to `0`, out-of-range and infinite values saturate, NaN
+/// (or a non-positive quantum) maps to `i64::MIN`.
+pub fn quantize_word(x: f64, quantum: f64) -> i64 {
+    if x.is_nan() || quantum.is_nan() || quantum <= 0.0 {
+        return i64::MIN;
+    }
+    let r = (x / quantum).round();
+    if r == 0.0 { 0 } else { r as i64 }
+}
+
+/// Cross-platform geometry hash (the W0c Q2 implementation for meshes): like
+/// [`geometry_hash`] (rule id, vertex and extra-node coordinates, every classification `Param`,
+/// real tag values) but every float is hashed as [`quantize_word`]`(x, quantum)` instead of its
+/// bits, so it is platform independent. Use `ModelTolerance::linear * 2^-10` as the quantum for
+/// the state identity; keep [`geometry_hash`] (exact bits) for cache keys.
+pub fn geometry_hash_quantized(m: &dyn MeshRead, quantum: f64) -> u64 {
+    let mut h = Hasher::new("smartmesh.geometry-quantized.v1");
+    let q = |x: f64| quantize_word(x, quantum) as u64;
+    h.str(m.geometry_rule());
+    h.u(quantum.to_bits());
+    let co = m.coords();
+    h.u(co.len() as u64);
+    for i in 0..co.len() {
+        h.u(q(co.x[i]));
+        h.u(q(co.y[i]));
+        h.u(q(co.z[i]));
+    }
+    let param = |h: &mut Hasher, c: Classification| {
+        let [tag, a, b, cc] = c.param_bits();
+        h.u(tag);
+        for (k, bits) in [a, b, cc].into_iter().enumerate() {
+            if (k as u64) < tag {
+                h.u(q(f64::from_bits(bits)));
+            }
+        }
+    };
+    let [nv, _, nf, nc] = counts(m);
+    for (k, n) in [
+        (MeshEntityKind::Vertex, nv),
+        (MeshEntityKind::Face, nf),
+        (MeshEntityKind::Cell, nc),
+    ] {
+        for i in 0..n {
+            param(&mut h, m.classification(k, i as u32));
+        }
+    }
+    if let Some(t) = m.edges() {
+        for c in &t.class {
+            param(&mut h, *c);
+        }
+    }
+    for t in m.tags() {
+        if let TagValues::F64(v) = &t.values {
+            h.str(&t.name);
+            h.u(t.target as u64);
+            for x in v {
+                h.u(q(*x));
+            }
         }
     }
     h.0

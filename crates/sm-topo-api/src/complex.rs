@@ -220,7 +220,8 @@ impl CellComplex {
 
     fn locate(&self, id: EntityId) -> Option<(Dim, usize)> {
         let dim = Dim::of_real_kind(id.kind())?;
-        let slot = usize::try_from(id.serial()).ok()?;
+        // Serial = slot + 1: serial 0 is never a cell (the entity table starts at 1).
+        let slot = usize::try_from(id.serial().checked_sub(1)?).ok()?;
         (slot < self.tables[dim.index()].state.len()).then_some((dim, slot))
     }
 
@@ -404,7 +405,7 @@ impl CellComplex {
     fn alloc(&mut self, dim: Dim, carrier: Carrier) -> Result<EntityId, TopoError> {
         let op = self.ensure_open()?;
         let t = &mut self.tables[dim.index()];
-        let id = EntityId::new(dim.kind(), t.state.len() as u64).ok_or(TopoError::IdExhausted)?;
+        let id = EntityId::new(dim.kind(), t.state.len() as u64 + 1).ok_or(TopoError::IdExhausted)?;
         t.state.push(EntityState::Live);
         t.born.push(op);
         t.carrier.push(carrier);

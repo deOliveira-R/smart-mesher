@@ -36,7 +36,8 @@ use std::ops::Range;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Instance {
-    /// Stable id (`EntityKind::Instance`); flatten order is ascending id.
+    /// Stable id (`EntityKind::MeshInstance`, minted by the mesh layer); flatten order is
+    /// ascending id.
     pub id: EntityId,
     /// Prototype mesh id (`EntityKind::Mesh`).
     pub prototype: EntityId,
@@ -49,7 +50,7 @@ pub struct Instance {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstancedView {
-    /// Stable id of the view.
+    /// Stable id of the view (`EntityKind::MeshInstance`).
     pub id: EntityId,
     /// Placements.
     pub instances: Vec<Instance>,
@@ -617,7 +618,7 @@ fn flatten_items<B: MeshBuild>(
     let fin = b.finish(alloc)?;
     let mut face_origin = vec![
         (
-            EntityId::new(EntityKind::Instance, 0).ok_or(MeshError::SerialOverflow)?,
+            EntityId::new(EntityKind::MeshInstance, 0).ok_or(MeshError::SerialOverflow)?,
             FaceIx(0)
         );
         face_origin_prov.len()
@@ -709,7 +710,7 @@ pub fn unfold<B: MeshBuild>(
             }
         }
         items.push(Item {
-            id: a.one(EntityKind::Instance)?,
+            id: a.one(EntityKind::MeshInstance)?,
             mesh: src,
             t,
         });

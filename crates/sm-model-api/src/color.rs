@@ -9,12 +9,13 @@
 use crate::error::{ModelError, Result, expect_kind};
 use crate::model::Model;
 use sm_core::{EntityId, EntityKind};
-use sm_topo_api::{Dim, TopologyView};
+use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
 use std::collections::BTreeSet;
 
 /// What a color may be attached to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Domain {
     /// Colors volumes (an abstract material).
     Volume,
@@ -25,6 +26,7 @@ pub enum Domain {
 /// Row of the color table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ColorRow {
     /// The `EntityKind::Color` id.
     pub id: EntityId,
@@ -36,15 +38,44 @@ pub struct ColorRow {
     pub domain: Domain,
 }
 
+/// How [`Model::group_edit`] changes a group's members (Cubit `group ... add / remove / equals /
+/// xor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum GroupEdit {
+    /// Add the entities.
+    Add,
+    /// Remove the entities (absent ones are ignored).
+    Remove,
+    /// Replace the members by the entities.
+    Equals,
+    /// Toggle membership of each entity.
+    Xor,
+}
+
+/// Whether `id` may be a group member. The model is the single group store (W0f): topology
+/// cells of every rank, decomposition entities, and the model-minted kinds; never geometry
+/// handles (`Curve`, `Surface`, not op-addressable) or mesh entities (`MeshSet` holds those).
+pub fn group_member_kind_ok(id: EntityId) -> bool {
+    use EntityKind::*;
+    matches!(
+        id.kind(),
+        TopoVertex | TopoEdge | TopoFace | TopoVolume | TopoBody | PartitionCell | PartitionFace | PartitionEdge | PartitionVertex | Color | Group | Boundary | Instance | Prototype | Lattice | Symmetry
+    )
+}
+
 /// Row of the group table: a named set of entities of any kind, expanded recursively.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GroupRow {
     /// The `EntityKind::Group` id.
     pub id: EntityId,
     /// Unique name.
     pub name: String,
-    /// Members: `TopoVolume`, `TopoFace`, `TopoBody`, `Color` or nested `Group`.
+    /// Members: topology cells of any rank, decomposition entities (`Partition*`), colors,
+    /// nested groups and other model rows (see [`group_member_kind_ok`]).
     pub members: BTreeSet<EntityId>,
 }
 
@@ -156,25 +187,200 @@ impl Model {
         self.face_color.iter().filter(|(_, x)| **x == c).map(|(f, _)| *f).collect()
     }
 
-    /// Add a named group of entities (volumes, faces, bodies, colors, groups).
+    /// Check one prospective member: allowed kind, and present when the model mints its kind.
+    pub(crate) fn check_group_member(&self, m: EntityId) -> Result<()> {
+        if !group_member_kind_ok(m) {
+            return Err(ModelError::Invalid(format!("{m} cannot be a group member")));
+        }
+        let known = match m.kind() {
+            EntityKind::Color => self.colors.contains_key(&m),
+            EntityKind::Group => self.groups.contains_key(&m),
+            EntityKind::Boundary => self.boundaries.contains_key(&m),
+            EntityKind::Instance => self.instancing.instances.contains_key(&m),
+            EntityKind::Prototype => self.instancing.prototypes.contains_key(&m),
+            EntityKind::Lattice => self.instancing.lattices.contains_key(&m),
+            EntityKind::PartitionCell => self.decomposition.cells.contains_key(&m),
+            _ => true,
+        };
+        if known { Ok(()) } else { Err(ModelError::Unknown(m)) }
+    }
+
+    /// A group reachable from `from` through nested groups, if `target` is one (cycle check).
+    fn group_reaches(&self, from: EntityId, target: EntityId, depth: u32) -> bool {
+        if from == target {
+            return true;
+        }
+        if depth > 1024 {
+            return true;
+        }
+        self.groups.get(&from).is_some_and(|g| g.members.iter().filter(|m| m.kind() == EntityKind::Group).any(|m| self.group_reaches(*m, target, depth + 1)))
+    }
+
+    /// Add a named group (members: see [`group_member_kind_ok`]; model-minted members must
+    /// exist).
     pub fn add_group(&mut self, name: &str, members: &[EntityId]) -> Result<EntityId> {
         if self.groups.values().any(|g| g.name == name) {
             return Err(ModelError::NameTaken(name.to_owned()));
         }
         for m in members {
-            if !matches!(m.kind(), EntityKind::TopoVolume | EntityKind::TopoFace | EntityKind::TopoBody | EntityKind::Color | EntityKind::Group) {
-                return Err(ModelError::Invalid(format!("{m} cannot be a group member")));
-            }
-            if m.kind() == EntityKind::Color && !self.colors.contains_key(m) {
-                return Err(ModelError::Unknown(*m));
-            }
-            if m.kind() == EntityKind::Group && !self.groups.contains_key(m) {
-                return Err(ModelError::Unknown(*m));
-            }
+            self.check_group_member(*m)?;
         }
         let id = self.ids.alloc(EntityKind::Group)?;
         self.groups.insert(id, GroupRow { id, name: name.to_owned(), members: members.iter().copied().collect() });
         Ok(id)
+    }
+
+    /// Edit a group's members. Atomic: every entity is checked first (kind, existence, and that
+    /// a nested group would not create a cycle).
+    pub fn group_edit(&mut self, g: EntityId, edit: GroupEdit, entities: &[EntityId]) -> Result<()> {
+        expect_kind(g, EntityKind::Group)?;
+        let row = self.groups.get(&g).ok_or(ModelError::Unknown(g))?;
+        if !matches!(edit, GroupEdit::Remove) {
+            for m in entities {
+                self.check_group_member(*m)?;
+                if m.kind() == EntityKind::Group && self.group_reaches(*m, g, 0) {
+                    return Err(ModelError::Cycle(*m));
+                }
+            }
+        }
+        let mut members = row.members.clone();
+        match edit {
+            GroupEdit::Add => members.extend(entities.iter().copied()),
+            GroupEdit::Remove => entities.iter().for_each(|m| {
+                members.remove(m);
+            }),
+            GroupEdit::Equals => members = entities.iter().copied().collect(),
+            GroupEdit::Xor => {
+                for m in entities.iter().copied().collect::<BTreeSet<_>>() {
+                    if !members.remove(&m) {
+                        members.insert(m);
+                    }
+                }
+            }
+        }
+        if let Some(row) = self.groups.get_mut(&g) {
+            row.members = members;
+        }
+        Ok(())
+    }
+
+    /// Remove a group. Fails while another group lists it ([`ModelError::Duplicate`] is not
+    /// used: the error is [`ModelError::Invalid`] naming the referrer).
+    pub fn remove_group(&mut self, g: EntityId) -> Result<()> {
+        expect_kind(g, EntityKind::Group)?;
+        if !self.groups.contains_key(&g) {
+            return Err(ModelError::Unknown(g));
+        }
+        if let Some(r) = self.groups.values().find(|r| r.members.contains(&g)) {
+            return Err(ModelError::Invalid(format!("group {g} is a member of group {}", r.id)));
+        }
+        self.groups.remove(&g);
+        Ok(())
+    }
+
+    /// Rename a group (names are unique).
+    pub fn rename_group(&mut self, g: EntityId, name: &str) -> Result<()> {
+        expect_kind(g, EntityKind::Group)?;
+        if !self.groups.contains_key(&g) {
+            return Err(ModelError::Unknown(g));
+        }
+        if self.groups.values().any(|r| r.name == name && r.id != g) {
+            return Err(ModelError::NameTaken(name.to_owned()));
+        }
+        if let Some(row) = self.groups.get_mut(&g) {
+            row.name = name.to_owned();
+        }
+        Ok(())
+    }
+
+    /// The group named `name`.
+    pub fn group_by_name(&self, name: &str) -> Option<EntityId> {
+        self.groups.values().find(|g| g.name == name).map(|g| g.id)
+    }
+
+    /// All groups, ascending by id.
+    pub fn groups(&self) -> impl Iterator<Item = &GroupRow> {
+        self.groups.values()
+    }
+
+    fn group_combine(&mut self, name: &str, a: EntityId, b: EntityId, f: impl Fn(&BTreeSet<EntityId>, &BTreeSet<EntityId>) -> BTreeSet<EntityId>) -> Result<EntityId> {
+        for g in [a, b] {
+            expect_kind(g, EntityKind::Group)?;
+        }
+        let ra = self.groups.get(&a).ok_or(ModelError::Unknown(a))?;
+        let rb = self.groups.get(&b).ok_or(ModelError::Unknown(b))?;
+        let members: Vec<EntityId> = f(&ra.members, &rb.members).into_iter().collect();
+        self.add_group(name, &members)
+    }
+
+    /// New group `name` with the direct members of `a` or `b`.
+    pub fn group_unite(&mut self, name: &str, a: EntityId, b: EntityId) -> Result<EntityId> {
+        self.group_combine(name, a, b, |x, y| x | y)
+    }
+
+    /// New group `name` with the direct members of both `a` and `b`.
+    pub fn group_intersect(&mut self, name: &str, a: EntityId, b: EntityId) -> Result<EntityId> {
+        self.group_combine(name, a, b, |x, y| x & y)
+    }
+
+    /// New group `name` with the direct members of `a` that are not in `b`.
+    pub fn group_subtract(&mut self, name: &str, a: EntityId, b: EntityId) -> Result<EntityId> {
+        self.group_combine(name, a, b, |x, y| x - y)
+    }
+
+    /// Re-key group members through a successor map (the op layer's succession hook:
+    /// `old -> successors`, a copy is `A -> [A, A']`, an empty list removes). Applies to every
+    /// member kind; members without an entry pass through unchanged.
+    pub fn apply_group_successors(&mut self, succ: &std::collections::BTreeMap<EntityId, Vec<EntityId>>) {
+        for g in self.groups.values_mut() {
+            if g.members.iter().any(|m| succ.contains_key(m)) {
+                g.members = g.members.iter().flat_map(|m| succ.get(m).cloned().unwrap_or_else(|| vec![*m])).collect();
+            }
+        }
+    }
+
+    /// Whether any group lists one of `ids` (cheap test for the succession hook's gating).
+    pub fn groups_reference_any(&self, ids: &[EntityId]) -> bool {
+        self.groups.values().any(|g| ids.iter().any(|i| g.members.contains(i)))
+    }
+
+    /// Entities of rank `dim` reachable from group `g`: members of that rank, the closure of
+    /// higher-rank members (`TopologyView::closure`, so a volume brings its faces, edges and
+    /// vertices; works for `Topo*` and, on an overlay view, `Partition*` members), the volumes or
+    /// faces of member colors, and nested groups (cycle-checked). Ascending, deduplicated.
+    /// Members of lower rank and non-topological members contribute nothing.
+    pub fn group_entities(&self, g: EntityId, t: &dyn TopologyView, dim: Dim) -> Result<Vec<EntityId>> {
+        let mut out = BTreeSet::new();
+        self.collect_entities(g, t, dim, &mut Vec::new(), &mut out)?;
+        Ok(out.into_iter().collect())
+    }
+
+    fn collect_entities(&self, g: EntityId, t: &dyn TopologyView, dim: Dim, stack: &mut Vec<EntityId>, out: &mut BTreeSet<EntityId>) -> Result<()> {
+        if stack.contains(&g) {
+            return Err(ModelError::Cycle(g));
+        }
+        let row = self.groups.get(&g).ok_or(ModelError::Unknown(g))?;
+        stack.push(g);
+        let take = |e: EntityId, out: &mut BTreeSet<EntityId>| match Dim::of_kind(e.kind()) {
+            Some(d) if d == dim => {
+                out.insert(e);
+            }
+            Some(d) if d > dim => out.extend(t.closure(e).into_iter().filter(|c| t.dim_of(*c) == Some(dim))),
+            _ => {}
+        };
+        for m in &row.members {
+            match m.kind() {
+                EntityKind::Group => self.collect_entities(*m, t, dim, stack, out)?,
+                EntityKind::Color => match self.colors.get(m).map(|c| c.domain) {
+                    Some(Domain::Volume) => self.volumes_of_color(*m).into_iter().for_each(|v| take(v, out)),
+                    Some(Domain::Face) => self.faces_of_color(*m).into_iter().for_each(|f| take(f, out)),
+                    None => {}
+                },
+                _ => take(*m, out),
+            }
+        }
+        stack.pop();
+        Ok(())
     }
 
     /// The group row for `id`.

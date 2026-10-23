@@ -1316,9 +1316,9 @@ fn retire_only_touches_layers_that_reference_the_ids() {
     let b = apply(&mut s, &brick(2.0)).1.outputs["body"][0];
     apply(&mut s, &SetSize { id: a, size: 0.3 });
     let (_, d) = apply(&mut s, &DeleteBody { id: b });
-    assert!(d.touched_layers.contains(&"model"));
+    assert!(d.touched_layers.iter().any(|l| l == "model"));
     assert!(
-        !d.touched_layers.contains(&"intent"),
+        !d.touched_layers.iter().any(|l| l == "intent"),
         "intent does not reference the retired id"
     );
     assert_eq!(s.state().layer::<IntentLayer>().unwrap().sizes.len(), 1);
@@ -1554,7 +1554,7 @@ fn deleting_a_body_cleans_downstream_layers_in_the_same_transaction() {
         "no dangling intent"
     );
     assert_eq!(bricks(s.state()), 0);
-    assert!(d.touched_layers.contains(&"intent"));
+    assert!(d.touched_layers.iter().any(|l| l == "intent"));
     // Replay agrees.
     let c = q();
     let tip = s.position().unwrap();
@@ -2217,7 +2217,7 @@ fn batch_layers_react_after_each_sub_op() {
         ],
     };
     let (_, d) = s.apply(&batch, meta(""), &c.control()).unwrap();
-    assert!(d.touched_layers.contains(&"intent"));
+    assert!(d.touched_layers.iter().any(|l| l == "intent"));
 }
 
 #[test]

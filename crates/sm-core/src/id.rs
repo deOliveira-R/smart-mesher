@@ -66,6 +66,10 @@ pub enum EntityKind {
     MeshCell = 68,
     /// Non-conformal interface record.
     Interface = 69,
+    /// Named mesh set (node/side/element set), minted by the mesh layer.
+    MeshSet = 70,
+    /// Mesh instance (placement of a prototype mesh or an unfolded image), minted by the mesh layer.
+    MeshInstance = 71,
 }
 
 impl EntityKind {
@@ -97,8 +101,66 @@ impl EntityKind {
             67 => MeshFace,
             68 => MeshCell,
             69 => Interface,
+            70 => MeshSet,
+            71 => MeshInstance,
             _ => return None,
         })
+    }
+
+    /// Every kind, in ascending byte order.
+    pub const ALL: &'static [EntityKind] = {
+        use EntityKind::*;
+        &[
+            TopoVertex, TopoEdge, TopoFace, TopoVolume, TopoBody, Curve, Surface, Color, Group, Boundary, Instance, Prototype,
+            Lattice, Symmetry, PartitionCell, PartitionFace, PartitionEdge, PartitionVertex, Mesh, MeshVertex, MeshEdge, MeshFace,
+            MeshCell, Interface, MeshSet, MeshInstance,
+        ]
+    };
+
+    /// Stable text name (the on-disk spelling used by `Kind#serial`; frozen).
+    pub const fn name(self) -> &'static str {
+        use EntityKind::*;
+        match self {
+            TopoVertex => "TopoVertex",
+            TopoEdge => "TopoEdge",
+            TopoFace => "TopoFace",
+            TopoVolume => "TopoVolume",
+            TopoBody => "TopoBody",
+            Curve => "Curve",
+            Surface => "Surface",
+            Color => "Color",
+            Group => "Group",
+            Boundary => "Boundary",
+            Instance => "Instance",
+            Prototype => "Prototype",
+            Lattice => "Lattice",
+            Symmetry => "Symmetry",
+            PartitionCell => "PartitionCell",
+            PartitionFace => "PartitionFace",
+            PartitionEdge => "PartitionEdge",
+            PartitionVertex => "PartitionVertex",
+            Mesh => "Mesh",
+            MeshVertex => "MeshVertex",
+            MeshEdge => "MeshEdge",
+            MeshFace => "MeshFace",
+            MeshCell => "MeshCell",
+            Interface => "Interface",
+            MeshSet => "MeshSet",
+            MeshInstance => "MeshInstance",
+        }
+    }
+}
+
+impl fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl core::str::FromStr for EntityKind {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        EntityKind::ALL.iter().copied().find(|k| k.name() == s).ok_or(ParseIdError)
     }
 }
 
@@ -147,14 +209,14 @@ impl EntityId {
 
 impl fmt::Debug for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}#{}", self.kind(), self.serial())
+        write!(f, "{}#{}", self.kind().name(), self.serial())
     }
 }
 
 impl fmt::Display for EntityId {
     /// Text form `Kind#serial`, e.g. `MeshCell#42`. Used by text codecs (TOML/JSON).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}#{}", self.kind(), self.serial())
+        write!(f, "{}#{}", self.kind().name(), self.serial())
     }
 }
 
@@ -163,7 +225,7 @@ impl core::str::FromStr for EntityId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (k, n) = s.split_once('#').ok_or(ParseIdError)?;
         let serial: u64 = n.parse().map_err(|_| ParseIdError)?;
-        let kind = (0u8..=255).filter_map(EntityKind::from_u8).find(|kk| format!("{kk:?}") == k).ok_or(ParseIdError)?;
+        let kind: EntityKind = k.parse()?;
         EntityId::new(kind, serial).ok_or(ParseIdError)
     }
 }
@@ -226,6 +288,22 @@ mod tests {
         assert_eq!(id.to_string(), "TopoFace#7");
         assert_eq!("TopoFace#7".parse::<EntityId>(), Ok(id));
         assert!("Nope#1".parse::<EntityId>().is_err());
+    }
+
+    #[test]
+    fn kind_names_roundtrip() {
+        let mut prev = 0u8;
+        for &k in EntityKind::ALL {
+            assert_eq!(k.name(), format!("{k:?}"));
+            assert_eq!(k.name().parse::<EntityKind>(), Ok(k));
+            assert_eq!(EntityKind::from_u8(k as u8), Some(k));
+            assert!(k as u8 > prev);
+            prev = k as u8;
+        }
+        let n = (0u8..=255).filter_map(EntityKind::from_u8).count();
+        assert_eq!(n, EntityKind::ALL.len());
+        assert_eq!(EntityKind::MeshSet as u8, 70);
+        assert_eq!(EntityKind::MeshInstance as u8, 71);
     }
 
     #[test]

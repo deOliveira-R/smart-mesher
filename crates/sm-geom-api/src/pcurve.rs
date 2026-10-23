@@ -9,6 +9,7 @@ use crate::{Interval, Uv};
 /// uses of the seam edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Line2 {
     /// Point at `t = 0`.
     pub origin: Uv,
@@ -22,6 +23,7 @@ pub struct Line2 {
 /// with `eval`, `d1` and `range`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum PCurve {
     /// A straight segment.

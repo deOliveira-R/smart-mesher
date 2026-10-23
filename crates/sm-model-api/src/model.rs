@@ -13,7 +13,7 @@ use crate::instancing::{ColorMap, Instancing};
 use crate::symmetry::{Provenance, Symmetry, pair_by_moments};
 use crate::xf::{GeomCache, Tolerance};
 use sm_core::{EntityId, EntityKind};
-use sm_topo_api::{Lineage, TopologyView};
+use sm_topo_api::{Dim, Lineage, TopologyView};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -224,6 +224,12 @@ impl Model {
             }
             minted.push(*k);
         }
+        let mut names = BTreeSet::new();
+        for r in self.groups.values() {
+            if !names.insert(r.name.as_str()) {
+                return bad(format!("group name {:?} is used twice", r.name));
+            }
+        }
         for (k, r) in &self.boundaries {
             if r.id != *k || k.kind() != EntityKind::Boundary {
                 return bad(format!("boundary row {k} is mis-keyed"));
@@ -256,7 +262,32 @@ impl Model {
         if let Some(l) = ins.find_cycle() {
             return Err(ModelError::Cycle(l));
         }
-        self.decomposition.check_integrity()
+        self.decomposition.check_integrity()?;
+        // Group members: allowed kinds, model-minted members present, no nesting cycle.
+        for r in self.groups.values() {
+            for m in &r.members {
+                self.check_group_member(*m).map_err(|e| ModelError::Invalid(format!("model integrity: group {}: {e}", r.id)))?;
+            }
+        }
+        for g in self.groups.keys() {
+            let mut stack = Vec::new();
+            self.group_cycle(*g, &mut stack)?;
+        }
+        Ok(())
+    }
+
+    fn group_cycle(&self, g: EntityId, stack: &mut Vec<EntityId>) -> Result<()> {
+        if stack.contains(&g) {
+            return Err(ModelError::Cycle(g));
+        }
+        stack.push(g);
+        if let Some(r) = self.groups.get(&g) {
+            for m in r.members.iter().filter(|m| m.kind() == EntityKind::Group) {
+                self.group_cycle(*m, stack)?;
+            }
+        }
+        stack.pop();
+        Ok(())
     }
 
     /// The id allocator state (read only).
@@ -290,7 +321,7 @@ impl Model {
         next.volume_color = r.map(&self.volume_color, true)?;
         next.face_color = r.map(&self.face_color, false)?;
         for g in next.groups.values_mut() {
-            g.members = g.members.iter().flat_map(|m| if matches!(m.kind(), EntityKind::TopoVolume | EntityKind::TopoFace | EntityKind::TopoBody) { r.resolve(*m) } else { vec![*m] }).collect();
+            g.members = g.members.iter().flat_map(|m| if Dim::of_kind(m.kind()).is_some() { r.resolve(*m) } else { vec![*m] }).collect();
         }
         if let Some(s) = &mut next.symmetry {
             s.domain = r.set(&s.domain);

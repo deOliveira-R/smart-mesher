@@ -23,7 +23,7 @@ as amended by `docs/design/w0/decisions.md`.
   `layer_mut`, so a trivial op costs O(touched layers). Empty layers are skipped, so installing a new
   concept does not change old hashes. Floats must be quantized in `LayerType::digest`
   (`Digest::f64_quantized`) so the hash is platform independent.
-- **Entity table**: per kind `next` serial and a set of retired serials (live = `1..next` minus retired).
+- **Entity table**: serials start at 1 (serial 0 is never live). Per kind `next` serial and a set of retired serials (live = `1..next` minus retired).
   Alloc is a counter bump (a million mesh cells cost nothing); retire feeds an order-independent
   multiset hash (sum mod 2^256 of `sha256(serial)`). Serials are never reused. `alloc_sorted` assigns a
   contiguous range in sorted-key order (addendum §7.2). Ids are a pure function of the op prefix, so
@@ -43,6 +43,33 @@ as amended by `docs/design/w0/decisions.md`.
   `layer`/`layer_mut`, `derived`, `service::<S>()` (geometry kernel, mesher; injected at `Engine::new`),
   `step(done, total, msg)` (progress + cancellation in one call), `scope()`/`sub(lo, hi)` (copyable
   `Sync` progress scopes for scoped worker threads).
+- **Id authority** (W0f): exactly one layer mints each kind. The topology complex mints `Topo*`;
+  the overlay mints `PartitionFace/Edge/Vertex`; the model mints `Color/Group/Boundary/Prototype/
+  Lattice/Instance/PartitionCell` (and `Symmetry`); the mesh mints `Mesh*` (including `MeshSet`,
+  `MeshInstance`). Every minting store starts at serial 1 and allocates densely, so an op that
+  drives a store calls `ApplyCtx::adopt(&ids)` / `adopt_range(first, n)` / `adopt_as(role, &ids)`
+  with what the store minted; each id must equal `State::peek_next(kind)` in order, otherwise
+  `OpError::IdMismatch { expected, got }`. Adopted ids are listed in `Delta.created`. Ops mirror
+  the store's retired ids (`OpSummary.retired`) with `ctx.retire`. sm-topo-api stays independent
+  of sm-op-api. `MemoryStore` curve/surface handles are not op-addressable and are not adopted.
+- **Succession hook** (W0f): `ApplyCtx::record_successors(old, &new)` (a copy is `A -> [A, A']`;
+  every successor must be live). After the op body and after each `core.batch` sub-op the engine
+  calls `LayerType::on_succession(&map)` on non-empty authoritative layers in concept-DAG order,
+  gated by `references_any(keys)`, **before** `on_retired`; each round delivers only the entries
+  recorded since the previous round. No upstream state access in v1 (a second default method can
+  add it later). The whole map is returned as `Delta.successors`.
+- **Delta / diagnostics** (W0f): `Delta` is `#[non_exhaustive]`, `Serialize + Deserialize +
+  JsonSchema` (every field `serde(default)`): `created`, `removed`, `outputs`, `touched_layers:
+  Vec<String>`, `successors`, `diagnostics: Vec<Diagnostic>`. `Diagnostic { severity: Info|Warning,
+  code, message, entities }` comes from `ApplyCtx::warn` / `info`. Diagnostics are not part of any
+  state or node hash; verbosity, suppression and stop-on-warning are front-end policy.
+- **Queries** (W0f): `TypedQuery { NAME, type Output, run(&State, &QueryCtx) }`, type-erased as
+  `QueryType`, registered with `Registry::register_query::<Q>()` (op-name rule, separate
+  namespace, `DuplicateQuery`). `QueryCtx` is read-only: services, derived cache, `Control`.
+  `Registry::run_query(&State, name, &Value, &QueryCtx)` and the convenience
+  `Engine::run_query(&State, name, &Value, &Control)`; `query_catalog()` lists input and output
+  schemas. Queries are never recorded.
+- **Per-kind access**: `State::entities_of(kind)`, `State::count_of(kind)` (O(kind)).
 - **Cross-layer reactions**: after the op body the engine calls `on_retired(&removed)` on every
   non-empty authoritative layer in the topological order of `DEPENDS_ON` (upstream first, ties by name).
   Plugins mirror the edges of `docs/graph/concepts.yaml`; the api crate cannot read yaml.
@@ -72,15 +99,24 @@ as amended by `docs/design/w0/decisions.md`.
 
 ## Timeline
 
-- **Node** = `NodeBody{parent, op: OpRecord, meta}` (hashed) + `Check{state}` (not hashed).
+- **Node** = `NodeBody{parent, op: OpRecord, meta}` (hashed) + `Check{state, layers}` (not hashed).
+  `Node`, `NodeBody`, `Meta`, `Check` serialize with the node-file shape (`parent` omitted for a
+  root); `Head` and `Rev` serialize externally tagged (`{"ref": "main"}`, `{"node": "<hash>"}`,
+  `"empty"`). `OpInfo`/`QueryInfo` serialize. Every error enum has `code() -> &'static str`
+  (stable kebab-case).
   Node hash = `SHA-256(domain ‖ canonical_bytes(body))` (`canonical_bytes`: type-tagged, length-framed,
   sorted keys). It never depends on TOML text, CRLF, key order or the op's result, so the same op appended
   on another platform is the same node. `from_files` recomputes the hash of every parsed file and
   compares it to the file name (`HashMismatch`). A golden-hash test pins the format.
-- **Result check**: `Check.state` is the quantized `State::hash()` after the op. Replay compares it;
-  a mismatch is a strict `Diverged` error by default (`ReplayPolicy::Warn` collects instead).
-  `Timeline::insert` of the same body with another check is also `Diverged`.
+- **Result check**: `Check.state` is the quantized `State::hash()` after the op; `Check.layers`
+  holds the quantized hash of every non-empty authoritative layer (`State::layer_hashes`, written
+  as a sorted `[check.layers]` table, omitted when empty). Replay compares `state`; a mismatch is a
+  strict `Diverged { node, recorded, actual, layers }` error by default, where `layers` names the
+  layers whose hashes differ (`ReplayPolicy::Warn` collects instead). `Timeline::insert` of the
+  same body with another `check.state` is also `Diverged`.
 - **Timeline** stores `depth` and a `children` index at insert time, sorted refs, no HEAD.
+- **Incremental files**: `Timeline::node_file(h)` / `ref_file(name)` return exactly the path and
+  text `to_files` produces for one node / one branch (sm-engine autosave).
 - **Files** (`to_files`): `ops/<hash>.toml` (immutable, content-addressed) and `refs/heads/<name>` (one
   file per branch). Independent branches add disjoint files; nothing existing is rewritten. Node text is
   written by a small emitter (`text.rs`) that never produces multi-line strings, so autocrlf cannot alter
@@ -95,7 +131,11 @@ as amended by `docs/design/w0/decisions.md`.
   `reset_branch` take a `Control` (progress, cancellation). `state_at_from_root` replays without caches.
   `undo` moves the attached branch ref to the parent (git reset); the undone node stays in the timeline
   (checkout-able, branch-able); `redo` moves it back; a new op clears the redo stack. `reflog()` is
-  in memory; `sm-engine` persists it in `.cache/`.
+  in memory; `sm-engine` persists it in `.cache/`. Branch management: `create_branch_at(name, h)`,
+  `delete_branch(name)` (`HeadOnBranch` if attached), `rename_branch(from, to)` (HEAD follows),
+  each logged. `seed_state(h, State)` puts a state in the snapshot cache only if its hash equals the
+  node's `check.state`; `open_with(engine, timeline, head, seeds, reflog, ctl)` seeds, restores the
+  reflog, then replays from the nearest seed (the W0a decision-8 snapshot hook on open).
 
 ## Determinism
 
@@ -129,13 +169,17 @@ injected nondeterminism raises `Diverged`.
 - Decision 2 drops the hand-written TOML *parser* (done: parsing uses `toml`). A ~110-line *emitter*
   (`text.rs`) is kept because `toml::to_string` writes strings with newlines as multi-line literals,
   which a CRLF checkout (autocrlf) would alter.
+- `Registry::run_query` takes a `&QueryCtx` (the registry owns no services or cache);
+  `Engine::run_query` builds it. `RegistryError` is no longer `Eq` (it boxes an `OpError` for
+  failed queries).
 - `OpType::schema` returns `Result<Schema, String>`; `register_dyn` takes `Arc<dyn OpType>`;
-  `to_files` returns `Result`; `Node.check` is a `Check { state }` struct.
+  `to_files` returns `Result`; `Node.check` is a `Check { state, layers }` struct (not `Copy`).
 - No `rayon` (not an allowed dependency): the thread test uses `std::thread::scope` and the thread
   count is an op parameter instead of `RAYON_NUM_THREADS`.
 - Layer dependency validation: `install` rejects cycles but tolerates not-yet-registered
   dependencies (plugins install in any order); `Registry::layer_order()` is the strict check and
   `Engine::new` runs it (fallible) and caches the order, so a bad registry fails at startup.
-- Op names must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` without `__` (`RegistryError::BadOpName`); client records are decoded and re-encoded canonically before hashing; `core.batch` strings starting `$$` are literal `$...`; `on_retired` runs after each batch sub-op.
+- Op (and query) names must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` without `__`, and
+  `name.replace('.', "__").len() <= 64` (`MAX_TOOL_NAME`, the MCP tool-name limit) (`RegistryError::BadOpName`); client records are decoded and re-encoded canonically before hashing; `core.batch` strings starting `$$` are literal `$...`; `on_retired` runs after each batch sub-op.
 - The "no git conflict" test simulates a git merge as a union of file maps; it does not run real git.
 - ARCHITECTURE §4 (HEAD location) still needs the orchestrator's amendment.

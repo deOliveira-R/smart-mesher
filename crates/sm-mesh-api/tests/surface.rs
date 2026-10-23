@@ -267,7 +267,7 @@ fn polygons_and_high_order_triangles() {
     let r = append_transformed(
         &mut out,
         &m,
-        id(EntityKind::Instance, 0),
+        id(EntityKind::MeshInstance, 0),
         &sm_core::Transform::IDENTITY,
         &FlattenOptions::default(),
     );

@@ -62,6 +62,95 @@ impl CellComplex {
         Ok(entries)
     }
 
+    /// Validate an open chain of coedges (head to tail, not closed, distinct edges) and return
+    /// it as ring-0 entries.
+    fn open_chain_entries(&self, chain: &[CoedgeSpec]) -> Result<Row, TopoError> {
+        if chain.is_empty() {
+            return Err(TopoError::EmptyLoop);
+        }
+        for c in chain {
+            self.live_slot(c.edge, Dim::Edge)?;
+        }
+        let entries: Row = chain.iter().map(|c| Incidence::new(c.edge, c.sense.side(), 0)).collect();
+        let mut seen: Vec<EntityId> = entries.iter().map(|e| e.cell).collect();
+        seen.sort();
+        if seen.windows(2).any(|w| w[0] == w[1]) {
+            return Err(TopoError::InvalidParameter("chain uses an edge twice"));
+        }
+        for (i, w) in entries.windows(2).enumerate() {
+            let head = self.head_of(&w[0]).ok_or(TopoError::WrongDim { id: w[0].cell, expected: Dim::Edge })?;
+            let tail = self.tail_of(&w[1]).ok_or(TopoError::WrongDim { id: w[1].cell, expected: Dim::Edge })?;
+            if head != tail {
+                return Err(TopoError::OpenLoop { ring: 0, at: i });
+            }
+        }
+        Ok(entries)
+    }
+
+    fn bridge_loops_impl(&mut self, face: EntityId, edge: EntityId) -> Result<(), TopoError> {
+        self.live_slot(face, Dim::Face)?;
+        self.live_slot(edge, Dim::Edge)?;
+        let (es, ee) = self.edge_ends_raw(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
+        if es == ee {
+            return Err(TopoError::InvalidParameter("bridge_loops needs an open edge"));
+        }
+        let row = self.row(face).to_vec();
+        let (rings, embedded) = split_rings(&row);
+        if rings.iter().flatten().any(|e| e.cell == edge) {
+            return Err(TopoError::InvalidParameter("edge is already a coedge of the face"));
+        }
+        // The loop and position (tail vertex) of each end.
+        let this: &Self = self;
+        let find = |v: EntityId| -> Result<(usize, usize), TopoError> {
+            let mut hits = Vec::new();
+            for (r, ring) in rings.iter().enumerate() {
+                for (i, e) in ring.iter().enumerate() {
+                    if this.tail_of(e) == Some(v) {
+                        hits.push((r, i));
+                    }
+                }
+            }
+            match hits[..] {
+                [] => Err(TopoError::ChordNotOnLoop),
+                [one] => Ok(one),
+                _ => Err(TopoError::Unsupported("bridge end vertex appears more than once in the face's loops")),
+            }
+        };
+        let (rs, ps) = find(es)?;
+        let (re, pe) = find(ee)?;
+        if rs == re {
+            return Err(TopoError::InvalidParameter("bridge ends lie on the same loop: split the face instead"));
+        }
+        // Merged loop: ring rs from `es`, the edge forward to `ee`, ring re from `ee`, the edge back.
+        let mut a = rings[rs].clone();
+        a.rotate_left(ps);
+        let mut b = rings[re].clone();
+        b.rotate_left(pe);
+        let mut merged: Row = a;
+        merged.push(Incidence::new(edge, Side::Left, 0));
+        merged.extend(b);
+        merged.push(Incidence::new(edge, Side::Right, 0));
+        let (lo, hi) = (rs.min(re), rs.max(re));
+        let mut new: Row = Vec::with_capacity(row.len() + 2);
+        for (r, ring) in rings.iter().enumerate() {
+            let src: &[Incidence] = if r == lo {
+                &merged
+            } else if r == hi {
+                continue;
+            } else {
+                ring
+            };
+            let idx = if r > hi { r - 1 } else { r };
+            new.extend(with_ring(src, idx as u16));
+        }
+        new.extend(embedded.into_iter().filter(|e| e.cell != edge));
+        Self::normalize(Dim::Face, &mut new);
+        self.set_row(face, &new)?;
+        self.mark_dirty_around(face);
+        self.note(face, LineageKind::Modified(ModKind::InnerLoop));
+        Ok(())
+    }
+
     fn drop_face_pcurves(&mut self, face: EntityId, row: &[Incidence]) {
         for e in row {
             if e.ring != Incidence::EMBEDDED && e.side != Side::Both {
@@ -246,6 +335,43 @@ impl CellComplex {
                 r1.push(Incidence::new(edge, side1, 0));
                 let mut r2: Row = outer[b..].iter().chain(outer[..a].iter()).copied().collect();
                 r2.push(Incidence::new(edge, side1.flip(), 0));
+                (r1, r2, None, false)
+            }
+            FaceCut::Chain { edges } => {
+                let chain = self.open_chain_entries(edges)?;
+                let first = chain.first().ok_or(TopoError::EmptyLoop)?;
+                let last = chain.last().ok_or(TopoError::EmptyLoop)?;
+                let cs = self.tail_of(first).ok_or(TopoError::WrongDim { id: first.cell, expected: Dim::Edge })?;
+                let ce = self.head_of(last).ok_or(TopoError::WrongDim { id: last.cell, expected: Dim::Edge })?;
+                if cs == ce {
+                    return Err(TopoError::InvalidParameter("closed chain: cut with FaceCut::ClosedLoop"));
+                }
+                if chain.iter().any(|n| row.iter().any(|e| e.cell == n.cell)) {
+                    return Err(TopoError::InvalidParameter("chain edge already used by the face"));
+                }
+                if on_inner(cs) || on_inner(ce) {
+                    return Err(TopoError::Unsupported("chain ending on an inner loop: bridge_loops first"));
+                }
+                for e in &chain[1..] {
+                    let v = self.tail_of(e).ok_or(TopoError::WrongDim { id: e.cell, expected: Dim::Edge })?;
+                    if !positions(v).is_empty() || on_inner(v) {
+                        return Err(TopoError::InvalidParameter("chain interior vertex lies on a face loop"));
+                    }
+                }
+                let (pi, pj) = (positions(cs), positions(ce));
+                if pi.is_empty() || pj.is_empty() {
+                    return Err(TopoError::ChordNotOnLoop);
+                }
+                if pi.len() != 1 || pj.len() != 1 {
+                    return Err(TopoError::Unsupported("chain end vertex appears more than once in the loop"));
+                }
+                let (a, b) = (pi[0].min(pj[0]), pi[0].max(pj[0]));
+                // r1 runs a..b (ending at vb) and must return vb -> va; r2 the opposite.
+                let (back, fwd) = if pi[0] < pj[0] { (reversed_ring(&chain), chain.clone()) } else { (chain.clone(), reversed_ring(&chain)) };
+                let mut r1: Row = outer[a..b].to_vec();
+                r1.extend(back);
+                let mut r2: Row = outer[b..].iter().chain(outer[..a].iter()).copied().collect();
+                r2.extend(fwd);
                 (r1, r2, None, false)
             }
             FaceCut::ClosedLoop { edges } => {
@@ -890,6 +1016,10 @@ impl TopologyEdit for CellComplex {
 
     fn split_volume(&mut self, volume: EntityId, cut: &[EntityId], assign: ShellAssign<'_>) -> Result<[EntityId; 2], TopoError> {
         self.atomic(|s| s.split_volume_impl(volume, cut, assign))
+    }
+
+    fn bridge_loops(&mut self, face: EntityId, edge: EntityId) -> Result<(), TopoError> {
+        self.atomic(|s| s.bridge_loops_impl(face, edge))
     }
 
     fn make_inner_loop(&mut self, face: EntityId, lp: &[CoedgeSpec]) -> Result<u16, TopoError> {

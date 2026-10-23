@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// A rigid placement of a copy and whether it reverses orientation (improper).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Placement {
     /// Transform from the prototype/fundamental frame to the model frame.
     pub transform: Transform,
@@ -42,6 +43,7 @@ impl Placement {
 /// Ordered by `(k, j, i)`: the canonical slot order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SlotIx {
     /// First index (cartesian x; hex q).
     pub i: i32,
@@ -72,6 +74,7 @@ impl PartialOrd for SlotIx {
 /// One step of an instance path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum PathStep {
     /// A top-level `Instance`.
     Instance(EntityId),
@@ -90,6 +93,7 @@ pub type InstancePath = SmallVec<[PathStep; 4]>;
 /// Hex row orientation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum HexOrient {
     /// Rows along x: `(x, y) = pitch * (q + r/2, sqrt(3)/2 r)`.
     XRows,
@@ -100,6 +104,7 @@ pub enum HexOrient {
 /// Slot geometry of a lattice. Slot `(0, 0, 0)` is at the lattice origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Layout {
     /// `n[0] x n[1] x n[2]` slots, indices from 0.
     Cartesian {
@@ -225,6 +230,7 @@ impl Layout {
 /// What fills an instance or a lattice slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Fill {
     /// A [`Prototype`].
     Prototype(EntityId),
@@ -239,6 +245,7 @@ pub enum Fill {
 /// a per-color key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ColorMap {
     /// Volume recoloring: key `TopoVolume` or volume `Color`; value volume `Color`.
     pub volume: BTreeMap<EntityId, EntityId>,
@@ -266,6 +273,7 @@ impl ColorMap {
 /// A slot of a lattice: what fills it and how it is recolored.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Slot {
     /// The fill.
     pub fill: Fill,
@@ -276,6 +284,7 @@ pub struct Slot {
 /// A lattice: a layout plus a **sparse** slot table. In-range slots without an entry take `outer`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Lattice {
     /// Slot geometry.
     pub layout: Layout,
@@ -285,12 +294,14 @@ pub struct Lattice {
     pub outer: Fill,
     /// Explicit slots.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(SlotIx, Slot)>"))]
     pub slots: BTreeMap<SlotIx, Slot>,
 }
 
 /// A reusable definition: volumes of the topology (stored once, placed many times).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Prototype {
     /// The volumes.
     pub volumes: BTreeSet<EntityId>,
@@ -299,6 +310,7 @@ pub struct Prototype {
 /// A placement of a [`Fill`] at the top level.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstanceRow {
     /// What is placed.
     pub of: Fill,
@@ -312,6 +324,7 @@ pub struct InstanceRow {
 /// level (for example absorbers only in assembly #3).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PathOverride {
     /// The path prefix.
     pub prefix: InstancePath,
@@ -322,6 +335,7 @@ pub struct PathOverride {
 /// The instancing tables.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Instancing {
     /// Prototypes by `Prototype` id.
     pub prototypes: BTreeMap<EntityId, Prototype>,
@@ -523,6 +537,7 @@ impl Model {
 /// One flattened volume of one copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FlatEntry {
     /// Index into [`FlatModel::paths`].
     pub path: u32,
@@ -538,6 +553,7 @@ pub struct FlatEntry {
 /// volume id. Paths are strictly increasing, so lookups by path are binary searches.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FlatModel {
     /// One placement per path.
     pub placements: Vec<Placement>,

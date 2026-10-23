@@ -40,7 +40,7 @@ pub mod validate;
 pub mod xf;
 
 pub use boundary::{BoundaryKind, BoundaryRow, Deck, DeckHit, DeckLookup, DeckSide, FaceBoundary, FaceKindView, FaceRole, InterfaceIntent};
-pub use color::{ColorRow, Domain, GroupRow};
+pub use color::{ColorRow, Domain, GroupEdit, GroupRow, group_member_kind_ok};
 pub use decomposition::{CutCells, CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
 pub use detect::{Candidate, CandidateKind, ColorInvariant, DetectionResult, Stage, Verification, detect_symmetry, verify_transform};
 pub use error::{ModelError, Result};

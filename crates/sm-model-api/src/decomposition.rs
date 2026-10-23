@@ -47,6 +47,7 @@ pub enum PieceRef {
 /// The geometry of a virtual cut. There is no "unspecified" cut.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CutGeometry {
     /// A plane.
     Plane(Plane),
@@ -109,6 +110,7 @@ impl PieceFace {
 /// Meshing-relevant shape class of a piece.
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum PieceShape {
     /// No assertion; the mesher decides.
     #[default]
@@ -127,6 +129,7 @@ pub enum PieceShape {
 /// Row of the piece table. There is no color field.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Piece {
     /// The `PartitionCell` id.
     pub id: EntityId,
@@ -143,6 +146,7 @@ pub struct Piece {
 /// A recorded split.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SplitRec {
     /// `[negative side, positive side]`, the negative one with the lower id.
     pub children: [EntityId; 2],
@@ -155,6 +159,7 @@ pub struct SplitRec {
 /// The topology-overlay cells a realized cut created or changed (see [`Model::split_realized`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CutCells {
     /// The virtual cut face(s) (`PartitionFace`; one for a plane cut).
     pub faces: Vec<EntityId>,
@@ -172,9 +177,11 @@ pub struct CutCells {
 /// The piece tables (part of the [`Model`], serializable).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Decomposition {
     pub(crate) cells: BTreeMap<EntityId, Piece>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(PieceRef, SplitRec)>"))]
     pub(crate) splits: BTreeMap<PieceRef, SplitRec>,
     pub(crate) parent: BTreeMap<EntityId, PieceRef>,
     pub(crate) composites: BTreeSet<EntityId>,
@@ -190,10 +197,12 @@ pub struct Decomposition {
     pub(crate) composite_faces: BTreeMap<EntityId, Vec<PieceFace>>,
     /// Realized cuts: the overlay cells of each cut.
     #[cfg_attr(feature = "serde", serde(default, with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(CutId, CutCells)>"))]
     pub(crate) realized: BTreeMap<CutId, CutCells>,
     /// Overlay cells of the `Part` / `CutPart` faces of realized pieces (as recorded at the split;
     /// expanded through `split_cells` when later cuts partition them).
     #[cfg_attr(feature = "serde", serde(default, with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(PieceFace, Vec<EntityId>)>"))]
     pub(crate) face_cells: BTreeMap<PieceFace, Vec<EntityId>>,
     /// Faces partitioned by realized cuts: face -> `[negative half, positive half]`.
     #[cfg_attr(feature = "serde", serde(default))]

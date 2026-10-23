@@ -9,7 +9,7 @@ use sm_core::{EntityId, EntityKind};
 use crate::codec::{CodecError, Value, canonical_bytes};
 use crate::error::OpError;
 use crate::hash::{Hash256, Hasher, MultisetHash};
-use crate::layer::{Layer, LayerRole, LayerType};
+use crate::layer::{Layer, LayerRole, LayerType, Successors};
 
 /// One layer plus its memoized content hash (cleared whenever the layer is borrowed mutably).
 #[derive(Clone)]
@@ -154,6 +154,56 @@ impl State {
             }
         }
         touched
+    }
+
+    /// Run `on_succession` on non-empty authoritative layers in `order` that reference any key.
+    /// Returns the layers touched.
+    pub(crate) fn notify_succession(
+        &mut self,
+        order: &[&'static str],
+        succ: &Successors,
+    ) -> Vec<&'static str> {
+        let keys: Vec<EntityId> = succ.keys().copied().collect();
+        let mut touched = Vec::new();
+        for name in order {
+            if let Some(slot) = self.layers.get_mut(name)
+                && slot.layer.role() == LayerRole::Authoritative
+                && !slot.layer.is_empty()
+                && slot.layer.references_any(&keys)
+            {
+                slot.make_mut().on_succession(succ);
+                touched.push(*name);
+            }
+        }
+        touched
+    }
+
+    /// Live entities of one kind in serial order. Cost is O(serials of that kind).
+    pub fn entities_of(&self, kind: EntityKind) -> impl Iterator<Item = EntityId> + '_ {
+        self.entities.kinds.get(&kind).into_iter().flat_map(move |t| {
+            (1..t.next)
+                .filter(|s| !t.retired.contains(s))
+                .filter_map(move |s| EntityId::new(kind, s))
+        })
+    }
+
+    /// Number of live entities of one kind. O(1).
+    pub fn count_of(&self, kind: EntityKind) -> usize {
+        self.entities
+            .kinds
+            .get(&kind)
+            .map_or(0, |t| (t.next.saturating_sub(1) as usize) - t.retired.len())
+    }
+
+    /// Quantized content hash of every non-empty authoritative layer, by name: the per-layer
+    /// part of [`hash`](Self::hash), recorded in a node's `Check::layers` so a divergence can
+    /// name the layers that differ.
+    pub fn layer_hashes(&self) -> BTreeMap<String, Hash256> {
+        self.layers
+            .iter()
+            .filter(|(_, s)| s.layer.role() == LayerRole::Authoritative && !s.layer.is_empty())
+            .map(|(n, s)| ((*n).to_owned(), s.hash()))
+            .collect()
     }
 
     /// Whether `id` is a live entity.

@@ -137,9 +137,9 @@ fn two_translated_copies_weld_to_one_interior_face() {
     let pid = proto.mesh_id();
     let mut cat = ReferenceCatalog::new();
     cat.insert_mesh(Box::new(proto)).unwrap();
-    let (i1, i2) = (id(EntityKind::Instance, 100), id(EntityKind::Instance, 101));
+    let (i1, i2) = (id(EntityKind::MeshInstance, 100), id(EntityKind::MeshInstance, 101));
     cat.insert_view(InstancedView {
-        id: id(EntityKind::Instance, 200),
+        id: id(EntityKind::MeshInstance, 200),
         // Deliberately listed out of id order: flatten sorts by id.
         instances: vec![
             Instance {
@@ -158,7 +158,7 @@ fn two_translated_copies_weld_to_one_interior_face() {
     // Without a rule for the seam vertices the two TopoVertex classes conflict.
     let err = flatten(
         &cat,
-        id(EntityKind::Instance, 200),
+        id(EntityKind::MeshInstance, 200),
         ReferenceBuilder::new(),
         &weld(),
         &mut alloc.clone(),
@@ -178,7 +178,7 @@ fn two_translated_copies_weld_to_one_interior_face() {
     };
     let (m, map) = flatten(
         &cat,
-        id(EntityKind::Instance, 200),
+        id(EntityKind::MeshInstance, 200),
         ReferenceBuilder::new(),
         &opts,
         &mut alloc,
@@ -219,7 +219,7 @@ fn two_translated_copies_weld_to_one_interior_face() {
     // Run twice: identical.
     let (m2, _) = flatten(
         &cat,
-        id(EntityKind::Instance, 200),
+        id(EntityKind::MeshInstance, 200),
         ReferenceBuilder::new(),
         &opts,
         &mut SerialAlloc::new(),
@@ -227,7 +227,7 @@ fn two_translated_copies_weld_to_one_interior_face() {
     .unwrap();
     let (m3, _) = flatten(
         &cat,
-        id(EntityKind::Instance, 200),
+        id(EntityKind::MeshInstance, 200),
         ReferenceBuilder::new(),
         &opts,
         &mut SerialAlloc::new(),
@@ -250,17 +250,17 @@ fn separated_copies_do_not_weld_and_report_losses() {
     let pid = proto.mesh_id();
     let mut cat = ReferenceCatalog::new();
     cat.insert_mesh(Box::new(proto)).unwrap();
-    let vid = id(EntityKind::Instance, 9);
+    let vid = id(EntityKind::MeshInstance, 9);
     cat.insert_view(InstancedView {
         id: vid,
         instances: vec![
             Instance {
-                id: id(EntityKind::Instance, 1),
+                id: id(EntityKind::MeshInstance, 1),
                 prototype: pid,
                 transform: Transform::IDENTITY,
             },
             Instance {
-                id: id(EntityKind::Instance, 2),
+                id: id(EntityKind::MeshInstance, 2),
                 prototype: pid,
                 transform: translate(5.0, 0.0, 0.0),
             },
@@ -327,7 +327,7 @@ fn baffles_inside_a_prototype_are_never_welded() {
     append_transformed(
         &mut t,
         &proto,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &opts,
     )
@@ -347,7 +347,7 @@ fn baffles_inside_a_prototype_are_never_welded() {
     let a1 = append_transformed(
         &mut t,
         &proto,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &opts,
     )
@@ -355,7 +355,7 @@ fn baffles_inside_a_prototype_are_never_welded() {
     let a2 = append_transformed(
         &mut t,
         &proto,
-        id(EntityKind::Instance, 2),
+        id(EntityKind::MeshInstance, 2),
         &translate(2.0, 0.0, 0.0),
         &opts,
     )
@@ -432,7 +432,7 @@ fn identity_append_keeps_topological_baffles() {
         let am = append_transformed(
             &mut t,
             &proto,
-            id(EntityKind::Instance, 1),
+            id(EntityKind::MeshInstance, 1),
             &Transform::IDENTITY,
             &FlattenOptions::default(),
         )
@@ -460,7 +460,7 @@ fn mirrored_append_keeps_topological_baffles() {
     append_transformed(
         &mut t,
         &proto,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &mirror_x(-1.0),
         &FlattenOptions::default(),
     )
@@ -487,7 +487,7 @@ fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
     append_transformed(
         &mut t,
         &big,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &opts,
     )
@@ -495,7 +495,7 @@ fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
     let a = append_transformed(
         &mut t,
         &small,
-        id(EntityKind::Instance, 2),
+        id(EntityKind::MeshInstance, 2),
         &translate(2.0, 2.0, 2.0),
         &opts,
     )
@@ -520,7 +520,7 @@ fn shares_the_free_face_of_a_coincident_pair() {
     append_transformed(
         &mut t,
         &proto,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &FlattenOptions::default(),
     )
@@ -529,7 +529,7 @@ fn shares_the_free_face_of_a_coincident_pair() {
     append_transformed(
         &mut t,
         &small,
-        id(EntityKind::Instance, 2),
+        id(EntityKind::MeshInstance, 2),
         &Transform::IDENTITY,
         &weld(),
     )
@@ -549,7 +549,7 @@ fn finalize_welds_rejects_unknown_and_cellless_vertices() {
     append_transformed(
         &mut t,
         &m,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &FlattenOptions::default(),
     )
@@ -580,7 +580,7 @@ fn append_with_weld_accepts_nothing_inside_one_instance() {
     let am = append_transformed(
         &mut b,
         &m,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &Transform::IDENTITY,
         &opts,
     )
@@ -631,7 +631,7 @@ fn unfold_rejects_high_order() {
     append_transformed(
         &mut b,
         &m,
-        id(EntityKind::Instance, 1),
+        id(EntityKind::MeshInstance, 1),
         &translate(1.0, 2.0, 3.0),
         &FlattenOptions::default(),
     )

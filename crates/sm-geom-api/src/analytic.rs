@@ -32,6 +32,7 @@ fn unit_dir(f: &Frame, u: f64) -> (Vector3, Vector3) {
 /// Infinite line, unit direction, parameter = arc length.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Line {
     /// Point at `t = 0`.
     pub origin: Point3,
@@ -66,6 +67,7 @@ impl ParametricCurve for Line {
 /// Circle in the `x`-`y` plane of its frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Circle {
     /// Placement; the circle lies in the `x`-`y` plane about the origin.
     pub frame: Frame,
@@ -103,6 +105,7 @@ impl ParametricCurve for Circle {
 /// Ellipse in the `x`-`y` plane of its frame, semi-axis `a` along `x`, `b` along `y`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Ellipse {
     /// Placement.
     pub frame: Frame,
@@ -143,6 +146,7 @@ impl ParametricCurve for Ellipse {
 /// Infinite plane. Normal is `frame.z`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Plane {
     /// Placement; `(u, v)` are coordinates along `frame.x`, `frame.y`.
     pub frame: Frame,
@@ -173,6 +177,7 @@ impl ParametricSurface for Plane {
 /// Infinite circular cylinder about `frame.z`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Cylinder {
     /// Placement; `u` is the angle from `frame.x` about `frame.z`, `v` the height along `z`.
     pub frame: Frame,
@@ -215,6 +220,7 @@ impl ParametricSurface for Cylinder {
 /// One nappe of a circular cone about `frame.z`, widening toward `+z`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Cone {
     /// Placement; the circle of radius `radius` at `v = 0` is centred on `frame.origin`.
     pub frame: Frame,
@@ -313,6 +319,7 @@ impl ParametricSurface for Cone {
 /// Sphere. `u` = longitude from `frame.x`, `v` = latitude from the `x`-`y` plane.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Sphere {
     /// Placement; the centre is `frame.origin`, poles lie on `+-z`.
     pub frame: Frame,
@@ -377,6 +384,7 @@ impl ParametricSurface for Sphere {
 /// Torus about `frame.z` with `R > r > 0` (ring torus; spindle/horn tori are rejected).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Torus {
     /// Placement; the ring of radius `major` lies in the `x`-`y` plane.
     pub frame: Frame,

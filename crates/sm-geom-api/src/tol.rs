@@ -24,6 +24,7 @@ use sm_core::Point3;
 /// sane model, so the residual risk is a value that sits within noise of a half-step boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ModelTolerance {
     /// Model resolution: two points closer than this are the same point (model length units).
     pub linear: f64,

@@ -49,26 +49,30 @@ impl TryFrom<SerialAllocRaw> for SerialAlloc {
 }
 
 impl SerialAlloc {
-    /// A fresh allocator (all kinds start at serial 0).
+    /// A fresh allocator (all kinds start at serial 1, like the op layer's entity table, so
+    /// the minted ids can be adopted in order: W0f id authority).
     pub fn new() -> Self {
         Self::default()
     }
-    /// The next serial that `take` would hand out for `kind` (0 if none was taken yet).
+    /// The next serial that `take` would hand out for `kind` (1 if none was taken yet).
     pub fn next_serial(&self, kind: EntityKind) -> u64 {
-        self.next.get(&kind).copied().unwrap_or(0)
+        self.next.get(&kind).copied().unwrap_or(1)
     }
     /// The counters in ascending kind order, for snapshots.
     pub fn state(&self) -> impl Iterator<Item = (EntityKind, u64)> + '_ {
         self.next.iter().map(|(k, n)| (*k, *n))
     }
     /// Restore an allocator from `(kind, next serial)` pairs (as produced by
-    /// [`SerialAlloc::state`]). A repeated kind or a serial above [`EntityId::MAX_SERIAL`] is an
-    /// error.
+    /// [`SerialAlloc::state`]). A repeated kind, a serial of 0 (serials start at 1) or a serial
+    /// above [`EntityId::MAX_SERIAL`] + 1 is an error.
     pub fn from_state(state: impl IntoIterator<Item = (EntityKind, u64)>) -> Result<Self> {
         let mut next = BTreeMap::new();
         for (k, n) in state {
-            if n > EntityId::MAX_SERIAL {
+            if n > EntityId::MAX_SERIAL.saturating_add(1) {
                 return Err(MeshError::SerialOverflow);
+            }
+            if n == 0 {
+                return Err(MeshError::State(format!("kind {k:?}: serials start at 1")));
             }
             if next.insert(k, n).is_some() {
                 return Err(MeshError::State(format!("kind {k:?} given twice")));
@@ -78,11 +82,11 @@ impl SerialAlloc {
     }
     /// Reserve `n` consecutive serials of `kind`; returns the first.
     pub fn take(&mut self, kind: EntityKind, n: usize) -> Result<u64> {
-        let first = self.next.get(&kind).copied().unwrap_or(0);
+        let first = self.next_serial(kind);
         let end = first
             .checked_add(n as u64)
             .ok_or(MeshError::SerialOverflow)?;
-        if end > EntityId::MAX_SERIAL {
+        if end - 1 > EntityId::MAX_SERIAL {
             return Err(MeshError::SerialOverflow);
         }
         self.next.insert(kind, end);
@@ -233,8 +237,15 @@ pub trait MeshBuild {
         basis: Basis,
         nodes: &[NodeRef],
     ) -> Result<()>;
-    /// Add a named set (face members use provisional face handles).
+    /// Add a named set (face members use provisional face handles; a side set's sides are
+    /// relative to the provisional face's cells and are re-sided by `finish`).
     fn add_set(&mut self, name: &str, members: SetMembers) -> Result<()>;
+    /// Set or clear the integer label of the set `name` (unique per members kind, checked at
+    /// `finish`). Provided: implementations without labels return `Unsupported`.
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        let _ = (name, label);
+        Err(MeshError::Unsupported("set labels".into()))
+    }
     /// Add a named tag column over all entities of `target` (length checked at `finish`).
     /// Face columns are indexed by provisional face handle.
     fn add_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()>;
@@ -405,6 +416,12 @@ pub trait MeshEdit: MeshRead {
         members: SetMembers,
         alloc: &mut SerialAlloc,
     ) -> Result<EntityId>;
+    /// Set or clear the integer label of the set `name` (must stay unique per members kind).
+    /// Provided: implementations without labels return `Unsupported`.
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        let _ = (name, label);
+        Err(MeshError::Unsupported("set labels".into()))
+    }
     /// Add or replace a tag column.
     fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()>;
     /// Derive and attach the edge table (no-op if present). `explicit` gives classifications by

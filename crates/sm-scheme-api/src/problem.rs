@@ -235,8 +235,10 @@ pub struct CopyConstraint {
     pub reason: CopyReason,
 }
 
-/// Other (non-interval) constraints on the generated mesh.
+/// Other (non-interval) constraints on the generated mesh. `#[non_exhaustive]` (W0f) so later
+/// constraints (curve boundary layers, ...) are not breaking.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum MeshConstraint {
     /// Nodes of the face must stay on the plane `n . x = offset` (mirror deck faces; a
     /// smoothing constraint).
@@ -285,8 +287,10 @@ pub struct Record<T> {
     pub item: T,
 }
 
-/// How a target's scheme was chosen.
+/// How a target's scheme was chosen. `#[non_exhaustive]` (W0f) so later selection kinds (a
+/// seeded selection, ...) are not breaking.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Selection {
     /// Requested in the intent (`rank` is the position in `[scheme, fallbacks...]`).
     Intent {

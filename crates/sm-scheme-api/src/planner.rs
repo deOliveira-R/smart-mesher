@@ -468,13 +468,25 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// Boundary-layer requests: a constraint per adjacent volume target, plus a soft need for
     /// a volume scheme with the boundary-layer capability.
     fn boundary_layers(&mut self) -> Result<()> {
+        // A request on anything but a region face would be silently dropped: refuse it (curve
+        // boundary layers do not exist yet; `MeshIntent::check` refuses non-face kinds too).
+        for (id, e) in &self.intent.entities {
+            if e.boundary_layer.is_some() && self.region.faces.binary_search(id).is_err() && !matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace) {
+                return Err(SchemeError::Input(format!("{id}: boundary layers are only supported on faces")));
+            }
+        }
         for f in self.region.faces.clone() {
-            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer) else {
+            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer.clone()) else {
                 continue;
             };
             let mut targets: Vec<Target> = Vec::new();
+            let mut adjacent: Vec<EntityId> = Vec::new();
             for (v, faces) in &self.region.vol_faces {
                 if faces.binary_search(&f).is_err() {
+                    continue;
+                }
+                adjacent.push(*v);
+                if !spec.into.is_empty() && !spec.into.contains(v) {
                     continue;
                 }
                 targets.push(match self.region.grouped.get(v) {
@@ -482,13 +494,16 @@ impl<'a, 'r> Planner<'a, 'r> {
                     None => Target::Volume(*v),
                 });
             }
+            if let Some(v) = spec.into.iter().find(|v| !adjacent.contains(v)) {
+                return Err(SchemeError::Input(format!("{f}: boundary layer `into` volume {v} is not adjacent to the face")));
+            }
             for vt in sorted(targets) {
                 self.p.push_constraint(
                     Origin::Intent,
                     MeshConstraint::BoundaryLayer {
                         face: f,
                         volume: vt,
-                        spec,
+                        spec: spec.clone(),
                     },
                 );
                 self.p.push_imposition(
@@ -1585,25 +1600,30 @@ impl<'a, 'r> Planner<'a, 'r> {
                 ),
                 Some(Firm {
                     value: IntervalRequest::Size(h),
-                    ..
-                }) => (
-                    Origin::Intent,
-                    IntervalConstraint::Goal {
-                        edge: e,
-                        goal: geom::edge_length(topo, e)? / h,
-                    },
-                ),
-                None => match field {
-                    Some(f) => {
-                        let mid = geom::edge_point(topo, e, 0.5)?;
-                        (
-                            Origin::Sizing,
-                            IntervalConstraint::Goal {
+                    firmness,
+                }) => {
+                    let goal = geom::edge_length(topo, e)? / h;
+                    match firmness {
+                        // A firm size is a firm count: keep its firmness (it used to be dropped).
+                        Firmness::Hard | Firmness::Soft => (
+                            Origin::Intent,
+                            IntervalConstraint::Fixed {
                                 edge: e,
-                                goal: geom::edge_length(topo, e)? / f.size(mid),
+                                count: size_count(goal),
+                                firmness: *firmness,
                             },
-                        )
+                        ),
+                        Firmness::Default => (Origin::Intent, IntervalConstraint::Goal { edge: e, goal }),
                     }
+                }
+                None => match field {
+                    Some(f) => (
+                        Origin::Sizing,
+                        IntervalConstraint::Goal {
+                            edge: e,
+                            goal: geom::edge_size_goal(topo, e, f)?,
+                        },
+                    ),
                     None => (
                         Origin::Sizing,
                         IntervalConstraint::Goal { edge: e, goal: 1.0 },
@@ -1664,4 +1684,9 @@ impl<'a, 'r> Planner<'a, 'r> {
         }
         Ok(out)
     }
+}
+
+/// Interval count of a firm size request: `round(length / size)`, at least 1.
+fn size_count(goal: f64) -> u32 {
+    if goal.is_finite() { goal.round().clamp(1.0, f64::from(u32::MAX)) as u32 } else { 1 }
 }

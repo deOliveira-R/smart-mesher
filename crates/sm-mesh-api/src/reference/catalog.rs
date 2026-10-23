@@ -92,18 +92,18 @@ impl CatalogEdit for ReferenceCatalog {
                 view.id
             )));
         }
-        if view.id.kind() != EntityKind::Instance {
+        if view.id.kind() != EntityKind::MeshInstance {
             return Err(MeshError::Hierarchy(
-                "view id must be an Instance id".into(),
+                "view id must be a MeshInstance id".into(),
             ));
         }
         let mut ids: Vec<EntityId> = view.instances.iter().map(|i| i.id).collect();
         ids.sort_unstable();
         if ids.windows(2).any(|w| w[0] == w[1])
-            || ids.iter().any(|i| i.kind() != EntityKind::Instance)
+            || ids.iter().any(|i| i.kind() != EntityKind::MeshInstance)
         {
             return Err(MeshError::Hierarchy(
-                "instance ids must be unique Instance ids".into(),
+                "instance ids must be unique MeshInstance ids".into(),
             ));
         }
         if let Some(i) = view

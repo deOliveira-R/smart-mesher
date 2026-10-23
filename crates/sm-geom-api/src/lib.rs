@@ -26,6 +26,7 @@ pub mod ray;
 pub mod store;
 pub mod surface;
 pub mod tol;
+pub mod transform;
 mod util;
 
 pub use analytic::{Circle, Cone, Cylinder, Ellipse, Line, Plane, Sphere, Torus};
@@ -40,3 +41,4 @@ pub use ray::{Crossing, Ray, RayHit};
 pub use store::{CurveDef, GeomAppend, GeomStore, GeomStoreMut, MemoryStore, ShapeValue, StoreData, SurfaceDef};
 pub use surface::{ParametricSurface, SurfaceJet, SurfaceProjection};
 pub use tol::ModelTolerance;
+pub use transform::Sense;

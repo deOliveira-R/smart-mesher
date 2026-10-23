@@ -108,6 +108,7 @@ pub struct ReferenceBuilder {
     ho: BTreeMap<u32, (u8, Basis, Vec<NodeRef>)>,
     eclass: BTreeMap<[VertexIx; 2], Classification>,
     sets: IndexMap<String, SetMembers>,
+    set_labels: BTreeMap<String, i64>,
     tags: IndexMap<(MeshEntityKind, String), TagValues>,
     grid: RefCell<Grid>,
 }
@@ -591,6 +592,16 @@ impl MeshBuild for ReferenceBuilder {
         self.sets.insert(name.into(), members);
         Ok(())
     }
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        if !self.sets.contains_key(name) {
+            return Err(MeshError::State(format!("no set '{name}'")));
+        }
+        match label {
+            Some(l) => self.set_labels.insert(name.into(), l),
+            None => self.set_labels.remove(name),
+        };
+        Ok(())
+    }
     fn add_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()> {
         if target == MeshEntityKind::Edge {
             return Err(MeshError::State(
@@ -904,7 +915,7 @@ impl ReferenceBuilder {
         }
 
         // Sets and tags, in final face numbering.
-        let set_ids = ids(alloc, EntityKind::Group, self.sets.len())?;
+        let set_ids = ids(alloc, EntityKind::MeshSet, self.sets.len())?;
         let mut sets = Vec::new();
         for ((name, members), id) in self.sets.into_iter().zip(set_ids) {
             let oob = |what: &str| MeshError::OutOfRange(format!("set '{name}' {what}"));
@@ -935,8 +946,32 @@ impl ReferenceBuilder {
                     }
                     SetMembers::Cells(v)
                 }
+                SetMembers::Sides(v) => {
+                    // Re-side through the cell on that side: `finish` may swap left and right.
+                    let mut m = Vec::with_capacity(v.len());
+                    for sf in &v {
+                        let pf = sf.face().get();
+                        if pf >= nf {
+                            return Err(oob("face"));
+                        }
+                        let c = self.face_cells[pf][usize::from(sf.side() == Side::Right)];
+                        if c == CellIx::NONE {
+                            return Err(oob("side without a cell"));
+                        }
+                        let n = new_of_old[pf];
+                        let side = if face_left[n as usize] == CellIx(c) { Side::Left } else { Side::Right };
+                        m.push(SignedFace::new(FaceIx(n), side));
+                    }
+                    m.sort_unstable();
+                    m.dedup();
+                    SetMembers::Sides(m)
+                }
             };
-            sets.push(MeshSet { id, name, members });
+            let label = self.set_labels.get(&name).copied();
+            if label.is_some() && sets.iter().any(|s: &MeshSet| s.label == label && s.members.kind() == members.kind()) {
+                return Err(MeshError::DuplicateName(format!("set label {label:?}")));
+            }
+            sets.push(MeshSet { id, name, label, members });
         }
         let mut tags = Vec::new();
         for ((target, name), values) in self.tags {

@@ -1,12 +1,13 @@
 //! Named sets and typed tag columns.
 
-use crate::index::{CellIx, FaceIx, MeshEntityKind, VertexIx};
+use crate::index::{CellIx, FaceIx, MeshEntityKind, SignedFace, VertexIx};
 use sm_core::EntityId;
 
 /// Members of a set, ascending and unique.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum SetMembers {
     /// A vertex set.
     Vertices(Vec<VertexIx>),
@@ -14,6 +15,10 @@ pub enum SetMembers {
     Faces(Vec<FaceIx>),
     /// A cell set (e.g. a block).
     Cells(Vec<CellIx>),
+    /// A side set (W0f): cell sides of faces. The side selects the face's `face_left` or
+    /// `face_right` cell (a `Right` entry needs a two-cell face); both sides of a face are two
+    /// entries. Ascending by raw word (`face << 1 | side`) and unique. `kind()` is `Face`.
+    Sides(Vec<SignedFace>),
 }
 
 impl SetMembers {
@@ -23,34 +28,58 @@ impl SetMembers {
             SetMembers::Vertices(_) => MeshEntityKind::Vertex,
             SetMembers::Faces(_) => MeshEntityKind::Face,
             SetMembers::Cells(_) => MeshEntityKind::Cell,
+            SetMembers::Sides(_) => MeshEntityKind::Face,
         }
     }
-    /// Number of members.
+    /// Stable variant code (hashed: `Faces` and `Sides` share a kind).
+    pub const fn code(&self) -> u8 {
+        match self {
+            SetMembers::Vertices(_) => 0,
+            SetMembers::Faces(_) => 1,
+            SetMembers::Cells(_) => 2,
+            SetMembers::Sides(_) => 3,
+        }
+    }
+    /// Number of members (sides for a side set).
     pub fn len(&self) -> usize {
         match self {
             SetMembers::Vertices(v) => v.len(),
             SetMembers::Faces(v) => v.len(),
             SetMembers::Cells(v) => v.len(),
+            SetMembers::Sides(v) => v.len(),
         }
     }
     /// True if the set has no members.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// Raw member indices, ascending.
+    /// Raw member words, ascending: indices, or packed `face << 1 | side` words for a side set.
     pub fn raw(&self) -> Vec<u32> {
         match self {
             SetMembers::Vertices(v) => v.iter().map(|x| x.0).collect(),
             SetMembers::Faces(v) => v.iter().map(|x| x.0).collect(),
             SetMembers::Cells(v) => v.iter().map(|x| x.0).collect(),
+            SetMembers::Sides(v) => v.iter().map(|x| x.to_raw()).collect(),
         }
     }
-    /// True if `ix` is a member (`O(log n)`).
+    /// The largest entity index referenced (the face of a side), for range checks.
+    pub fn max_index(&self) -> Option<u32> {
+        match self {
+            SetMembers::Sides(v) => v.last().map(|x| x.face().0),
+            _ => self.raw().last().copied(),
+        }
+    }
+    /// True if entity `ix` (of [`kind`](Self::kind)) is a member; for a side set, if either
+    /// side of face `ix` is (`O(log n)`).
     pub fn contains(&self, ix: u32) -> bool {
         match self {
             SetMembers::Vertices(v) => v.binary_search(&VertexIx(ix)).is_ok(),
             SetMembers::Faces(v) => v.binary_search(&FaceIx(ix)).is_ok(),
             SetMembers::Cells(v) => v.binary_search(&CellIx(ix)).is_ok(),
+            SetMembers::Sides(v) => {
+                let lo = ix.checked_mul(2);
+                lo.is_some_and(|lo| v.binary_search_by_key(&lo, |x| x.to_raw()).is_ok() || v.binary_search_by_key(&(lo | 1), |x| x.to_raw()).is_ok())
+            }
         }
     }
 }
@@ -60,10 +89,14 @@ impl SetMembers {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshSet {
-    /// Stable id (`EntityKind::Group`).
+    /// Stable id (`EntityKind::MeshSet`, minted by the mesh layer).
     pub id: EntityId,
     /// Unique name within the mesh.
     pub name: String,
+    /// Optional integer label for formats that number sets (`.smsh`, Exodus block / side-set
+    /// ids). Unique per members kind when present.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub label: Option<i64>,
     /// Members.
     pub members: SetMembers,
 }

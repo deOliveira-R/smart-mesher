@@ -56,18 +56,57 @@ pub enum OpError {
     /// Parameter encoding failed.
     #[error(transparent)]
     Codec(#[from] CodecError),
+    /// An adopted id (minted by a downstream store) is not the id the entity table would
+    /// allocate next.
+    #[error("adopted id {got:?} does not match the next id {expected:?}")]
+    IdMismatch {
+        /// The id `State::peek_next` reports for the kind.
+        expected: EntityId,
+        /// The id offered for adoption.
+        got: EntityId,
+    },
     /// Any other op-specific failure.
     #[error("{0}")]
     Failed(String),
 }
 
+impl CacheError {
+    /// Stable kebab-case code for protocols and front ends.
+    pub fn code(&self) -> &'static str {
+        match self {
+            CacheError::TypeConflict { .. } => "cache-type-conflict",
+        }
+    }
+}
+
+impl OpError {
+    /// Stable kebab-case code for protocols and front ends.
+    pub fn code(&self) -> &'static str {
+        match self {
+            OpError::Invalid(_) => "invalid-params",
+            OpError::UnknownEntity(_) => "unknown-entity",
+            OpError::WrongKind { .. } => "wrong-kind",
+            OpError::MissingLayer(_) => "missing-layer",
+            OpError::MissingService(_) => "missing-service",
+            OpError::Cancelled => "cancelled",
+            OpError::IdExhausted => "id-exhausted",
+            OpError::Cache(e) => e.code(),
+            OpError::Registry(e) => e.code(),
+            OpError::Codec(_) => "codec",
+            OpError::IdMismatch { .. } => "id-mismatch",
+            OpError::Failed(_) => "failed",
+        }
+    }
+}
+
 /// Registry construction and lookup errors.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RegistryError {
-    /// An op name violates the naming rule (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`, no `__`).
+    /// An op or query name violates the naming rule (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`,
+    /// no `__`, at most 64 bytes once `.` is mangled to `__`).
     #[error(
-        "bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__'"
+        "bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__', at most 64 bytes as a tool name"
     )]
     BadOpName(String),
     /// Two registrations used the same op name.
@@ -153,6 +192,45 @@ pub enum RegistryError {
         /// Underlying error.
         source: CodecError,
     },
+    /// Two registrations used the same query name.
+    #[error("query '{0}' is already registered")]
+    DuplicateQuery(String),
+    /// No query of this name is registered.
+    #[error("unknown query '{0}'")]
+    UnknownQuery(String),
+    /// A query ran and failed (or its output could not be encoded).
+    #[error("query '{name}' failed: {source}")]
+    Query {
+        /// Query name.
+        name: String,
+        /// Underlying error.
+        source: Box<OpError>,
+    },
+}
+
+impl RegistryError {
+    /// Stable kebab-case code for protocols and front ends.
+    pub fn code(&self) -> &'static str {
+        match self {
+            RegistryError::BadOpName(_) => "bad-op-name",
+            RegistryError::DuplicateOp(_) => "duplicate-op",
+            RegistryError::DuplicateLayer(_) => "duplicate-layer",
+            RegistryError::UnknownOp(_) => "unknown-op",
+            RegistryError::MissingLayer(_) => "missing-layer",
+            RegistryError::UnknownLayerDependency { .. } => "unknown-layer-dependency",
+            RegistryError::LayerCycle(_) => "layer-cycle",
+            RegistryError::DuplicateMigration { .. } => "duplicate-migration",
+            RegistryError::BadMigration { .. } => "bad-migration",
+            RegistryError::UnsupportedVersion { .. } => "unsupported-version",
+            RegistryError::MissingMigration { .. } => "missing-migration",
+            RegistryError::Decode { .. } => "decode",
+            RegistryError::Schema { .. } => "schema",
+            RegistryError::Snapshot { .. } => "snapshot",
+            RegistryError::DuplicateQuery(_) => "duplicate-query",
+            RegistryError::UnknownQuery(_) => "unknown-query",
+            RegistryError::Query { .. } => "query-failed",
+        }
+    }
 }
 
 /// Failure applying an op through the [`Engine`](crate::Engine).
@@ -181,6 +259,16 @@ pub enum ApplyError {
 }
 
 impl ApplyError {
+    /// Stable kebab-case code for protocols and front ends (the inner op error's code for
+    /// [`ApplyError::Op`]).
+    pub fn code(&self) -> &'static str {
+        match self {
+            ApplyError::Registry(e) => e.code(),
+            ApplyError::Encode { .. } => "encode",
+            ApplyError::Op { source, .. } => source.code(),
+        }
+    }
+
     /// True if the op stopped because cancellation was requested.
     pub fn is_cancelled(&self) -> bool {
         matches!(
@@ -216,7 +304,7 @@ pub enum TimelineError {
     #[error("nothing to branch from: the timeline position is empty")]
     EmptyPosition,
     /// Replaying a node produced a different quantized state hash than recorded.
-    #[error("replay of node {node} diverged: recorded state {recorded}, got {actual}")]
+    #[error("replay of node {node} diverged: recorded state {recorded}, got {actual} (layers {layers:?})")]
     Diverged {
         /// Node being replayed.
         node: Hash256,
@@ -224,6 +312,9 @@ pub enum TimelineError {
         recorded: Hash256,
         /// State hash after replay.
         actual: Hash256,
+        /// Names of the layers whose recorded and replayed hashes differ (sorted; empty when
+        /// the check carries no layer hashes).
+        layers: Vec<String>,
     },
     /// A stored node's content does not match its hash.
     #[error("node file {expected} has content hashing to {actual}")]
@@ -259,9 +350,37 @@ pub enum TimelineError {
     /// Nothing to redo.
     #[error("nothing to redo")]
     NothingToRedo,
+    /// The branch cannot be deleted because HEAD is attached to it.
+    #[error("HEAD is attached to branch '{0}'")]
+    HeadOnBranch(String),
     /// Applying an op during replay or append failed.
     #[error(transparent)]
     Apply(#[from] ApplyError),
+}
+
+impl TimelineError {
+    /// Stable kebab-case code for protocols and front ends.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TimelineError::UnknownParent(_) => "unknown-parent",
+            TimelineError::UnknownNode(_) => "unknown-node",
+            TimelineError::UnknownRef(_) => "unknown-ref",
+            TimelineError::RefExists(_) => "ref-exists",
+            TimelineError::BadRefName(_) => "bad-ref-name",
+            TimelineError::EmptyPosition => "empty-position",
+            TimelineError::Diverged { .. } => "diverged",
+            TimelineError::HashMismatch { .. } => "hash-mismatch",
+            TimelineError::Format(_) => "format",
+            TimelineError::StaleBase { .. } => "stale-base",
+            TimelineError::ForeignPrepared => "foreign-prepared",
+            TimelineError::Cancelled => "cancelled",
+            TimelineError::NotAttached => "not-attached",
+            TimelineError::NothingToUndo => "nothing-to-undo",
+            TimelineError::NothingToRedo => "nothing-to-redo",
+            TimelineError::HeadOnBranch(_) => "head-on-branch",
+            TimelineError::Apply(e) => e.code(),
+        }
+    }
 }
 
 impl From<CodecError> for TimelineError {

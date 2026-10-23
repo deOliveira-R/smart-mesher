@@ -13,6 +13,7 @@ pub const GROUP_TOL: f64 = 1e-9;
 /// Geometric tolerances used by comparisons in this crate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Tolerance {
     /// Absolute distance tolerance in model units.
     pub linear: f64,
@@ -31,6 +32,7 @@ impl Default for Tolerance {
 /// An oriented plane `{x : normal . x = offset}` with a unit normal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Plane {
     /// Unit normal.
     pub normal: Vector3,
@@ -73,6 +75,7 @@ impl Plane {
 /// A directed axis (unit direction) for rotations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Axis {
     /// A point on the axis.
     pub point: Point3,
@@ -100,6 +103,7 @@ impl Axis {
 /// `0 <= num < den`. Exact order and `k * 2 pi / n` are expressible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Turns {
     /// Numerator (reduced).
     pub num: i32,

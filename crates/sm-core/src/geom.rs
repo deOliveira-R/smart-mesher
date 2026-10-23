@@ -214,6 +214,59 @@ impl Transform {
     }
 }
 
+/// Axis-aligned bounding box. The empty box has `lo = +inf`, `hi = -inf`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Aabb {
+    /// Minimum corner.
+    pub lo: Point3,
+    /// Maximum corner.
+    pub hi: Point3,
+}
+
+impl Aabb {
+    /// The empty box (contains nothing; identity for [`Aabb::union`]).
+    pub const fn empty() -> Self {
+        Self { lo: Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), hi: Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY) }
+    }
+
+    /// Degenerate box holding one point.
+    pub const fn from_point(p: Point3) -> Self {
+        Self { lo: p, hi: p }
+    }
+
+    /// True if the box contains no point (some `lo > hi`, or a NaN bound).
+    pub fn is_empty(&self) -> bool {
+        !(self.lo.x <= self.hi.x && self.lo.y <= self.hi.y && self.lo.z <= self.hi.z)
+    }
+
+    /// Grow the box to include `p`.
+    pub fn extend(&mut self, p: Point3) {
+        self.lo = Point3::new(self.lo.x.min(p.x), self.lo.y.min(p.y), self.lo.z.min(p.z));
+        self.hi = Point3::new(self.hi.x.max(p.x), self.hi.y.max(p.y), self.hi.z.max(p.z));
+    }
+
+    /// Smallest box containing both.
+    pub fn union(&self, o: &Self) -> Self {
+        Self {
+            lo: Point3::new(self.lo.x.min(o.lo.x), self.lo.y.min(o.lo.y), self.lo.z.min(o.lo.z)),
+            hi: Point3::new(self.hi.x.max(o.hi.x), self.hi.y.max(o.hi.y), self.hi.z.max(o.hi.z)),
+        }
+    }
+
+    /// True if `p` lies in the closed box.
+    pub fn contains(&self, p: Point3) -> bool {
+        self.lo.x <= p.x && p.x <= self.hi.x && self.lo.y <= p.y && p.y <= self.hi.y && self.lo.z <= p.z && p.z <= self.hi.z
+    }
+}
+
+impl Default for Aabb {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +293,24 @@ mod tests {
             Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), core::f64::consts::PI / 3.0).unwrap().compose(&acc)
         });
         assert!(close(six.apply_point(Point3::new(1.0, 2.0, 3.0)), Point3::new(1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn aabb_ops() {
+        let mut b = Aabb::empty();
+        assert!(b.is_empty());
+        assert!(!b.contains(Point3::new(0.0, 0.0, 0.0)));
+        b.extend(Point3::new(1.0, -1.0, 2.0));
+        assert!(!b.is_empty());
+        assert_eq!(b, Aabb::from_point(Point3::new(1.0, -1.0, 2.0)));
+        b.extend(Point3::new(-1.0, 3.0, 0.0));
+        assert_eq!(b.lo, Point3::new(-1.0, -1.0, 0.0));
+        assert_eq!(b.hi, Point3::new(1.0, 3.0, 2.0));
+        assert!(b.contains(Point3::new(0.0, 0.0, 1.0)));
+        assert!(!b.contains(Point3::new(0.0, 0.0, 2.5)));
+        assert_eq!(b.union(&Aabb::empty()), b);
+        let u = b.union(&Aabb::from_point(Point3::new(5.0, 0.0, 0.0)));
+        assert_eq!(u.hi.x, 5.0);
     }
 
     #[test]

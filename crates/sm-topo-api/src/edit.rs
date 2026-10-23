@@ -117,6 +117,15 @@ pub trait TopologyEdit: TopologyView {
     /// volume is retired with `Split` lineage and replaced in bodies by both children.
     fn split_volume(&mut self, volume: EntityId, cut: &[EntityId], assign: ShellAssign<'_>) -> Result<[EntityId; 2], TopoError>;
 
+    /// Join two different loops of `face` with `edge` without splitting the face (the KEMR-style
+    /// bridge a plane webcut of a holed plate needs before its second chord). `edge` is a live
+    /// open edge whose end vertices lie on two different loops of the face (each appearing once
+    /// in its loop), and is not yet a loop coedge of the face (an embedded wire is consumed).
+    /// The two loops merge into one loop at the lower ring index that uses `edge` once from each
+    /// side; higher rings shift down by one. Existing coedge keys, pcurves and coincidence
+    /// records are kept. Lineage: `Modified(InnerLoop)` on the face.
+    fn bridge_loops(&mut self, face: EntityId, edge: EntityId) -> Result<(), TopoError>;
+
     /// Add an inner loop to `face` (MEKR): returns its ring index. The loop is not required to
     /// lie inside the face geometrically; closure is checked at `end_op`.
     fn make_inner_loop(&mut self, face: EntityId, lp: &[CoedgeSpec]) -> Result<u16, TopoError>;

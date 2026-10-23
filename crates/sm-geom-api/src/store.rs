@@ -14,6 +14,7 @@ use sm_core::{EntityId, EntityKind};
 /// Serializable description of a curve.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CurveDef {
     /// Line.
@@ -29,6 +30,7 @@ pub enum CurveDef {
 /// Serializable description of a surface.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum SurfaceDef {
     /// Plane.
@@ -340,6 +342,7 @@ pub struct MemoryStore {
 /// The persisted form of a [`MemoryStore`] (definitions only).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StoreData {
     /// Curve definitions, serial order.
     pub curves: Vec<CurveDef>,

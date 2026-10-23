@@ -111,6 +111,7 @@ pub struct PlaneCut {
 /// One recorded virtual operation, with the ids it allocated, so replay reproduces them.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum VirtualOp {
     /// A composite face.
     Composite {
@@ -184,7 +185,7 @@ pub struct OverlayData {
     pub host_revision: OpId,
     /// The operations, in order.
     pub ops: Vec<VirtualOp>,
-    /// Next unused serial per virtual rank (vertex, edge, face).
+    /// Next unused serial per virtual rank (vertex, edge, face); starts at 1.
     pub next_serial: [u64; 3],
 }
 
@@ -332,7 +333,7 @@ impl Overlay {
         let host_revision = host.revision();
         let host_hash = host.canonical_hash();
         let layer = Layer::fresh(&host);
-        let mut o = Self { host, host_revision, host_hash, ops: Vec::new(), next_serial: [0; 3], layer };
+        let mut o = Self { host, host_revision, host_hash, ops: Vec::new(), next_serial: [1; 3], layer };
         o.rebuild_live();
         o
     }

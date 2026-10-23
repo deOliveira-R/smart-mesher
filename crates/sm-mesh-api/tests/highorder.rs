@@ -101,6 +101,7 @@ fn ho_hex(basis: Basis, degree: u8, drop: usize) -> Result<ReferenceMesh> {
             NodeSlot::Interior => {
                 b.add_extra_node(centroid_of(&(0..8).map(p).collect::<Vec<_>>()))?
             }
+            other => panic!("slot {other:?} not used by HEX27/HEX20"),
         });
     }
     nodes.truncate(nodes.len() - drop);

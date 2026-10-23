@@ -12,7 +12,7 @@ use sm_core::{EntityId, EntityKind};
 use crate::cache::DerivedCache;
 use crate::codec::{CodecError, Value, canonicalize, to_params};
 use crate::error::OpError;
-use crate::layer::LayerType;
+use crate::layer::{LayerType, Successors};
 use crate::progress::{CancelToken, Control, Progress};
 use crate::registry::Registry;
 use crate::services::Services;
@@ -108,17 +108,73 @@ impl OpRecord {
     }
 }
 
-/// What an applied op changed. Deterministic order throughout.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
+/// What an applied op changed. Deterministic order throughout. Not part of any state or node
+/// hash; it is the op's reply to the caller (and the output schema of every op tool).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Delta {
-    /// Ids allocated, in allocation order.
+    /// Ids allocated or adopted, in allocation order.
+    #[serde(default)]
     pub created: Vec<EntityId>,
     /// Ids retired, in call order.
+    #[serde(default)]
     pub removed: Vec<EntityId>,
-    /// Ids allocated through [`ApplyCtx::alloc_as`], by role.
+    /// Ids allocated through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`], by role.
+    #[serde(default)]
     pub outputs: BTreeMap<String, Vec<EntityId>>,
-    /// Names of layers mutably accessed (including by `on_retired`), sorted.
-    pub touched_layers: Vec<&'static str>,
+    /// Names of layers mutably accessed (including by `on_succession` / `on_retired`), sorted.
+    #[serde(default)]
+    pub touched_layers: Vec<String>,
+    /// Successor map recorded with [`ApplyCtx::record_successors`]: old id to its successors
+    /// (a copy is `A -> [A, A']`).
+    #[serde(default)]
+    pub successors: BTreeMap<EntityId, Vec<EntityId>>,
+    /// Warnings and notes emitted with [`ApplyCtx::warn`] / [`ApplyCtx::info`], in call order.
+    /// Verbosity, suppression and stop-on-warning are front-end policy.
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Severity of a [`Diagnostic`]. Errors are not diagnostics: they fail the op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Informational note.
+    Info,
+    /// Something the user should look at; the op still succeeded.
+    Warning,
+}
+
+/// A non-fatal message from an op. Never part of a state or node hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct Diagnostic {
+    /// Severity.
+    pub severity: Severity,
+    /// Stable machine-readable code, e.g. `"mesh.inverted_cells"`.
+    pub code: String,
+    /// Human-readable message.
+    pub message: String,
+    /// Entities the message is about.
+    #[serde(default)]
+    pub entities: Vec<EntityId>,
+}
+
+impl Diagnostic {
+    /// Build a diagnostic.
+    pub fn new(
+        severity: Severity,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        entities: Vec<EntityId>,
+    ) -> Self {
+        Self {
+            severity,
+            code: code.into(),
+            message: message.into(),
+            entities,
+        }
+    }
 }
 
 /// A scoped handle for progress and cancellation. `Copy` and `Sync`, so scoped worker threads
@@ -182,6 +238,9 @@ pub struct ApplyCtx<'a> {
     removed: Vec<EntityId>,
     outputs: BTreeMap<String, Vec<EntityId>>,
     touched: BTreeSet<&'static str>,
+    successors: Successors,
+    pending_succ: Successors,
+    diagnostics: Vec<Diagnostic>,
     canonical: Option<OpRecord>,
 }
 
@@ -206,6 +265,9 @@ impl<'a> ApplyCtx<'a> {
             removed: Vec::new(),
             outputs: BTreeMap::new(),
             touched: BTreeSet::new(),
+            successors: BTreeMap::new(),
+            pending_succ: BTreeMap::new(),
+            diagnostics: Vec::new(),
             canonical: None,
         }
     }
@@ -220,17 +282,29 @@ impl<'a> ApplyCtx<'a> {
     }
 
     pub(crate) fn finish(&mut self) -> Result<Delta, OpError> {
-        self.flush_retired();
+        self.flush_reactions();
         Ok(Delta {
             created: std::mem::take(&mut self.created),
             removed: std::mem::take(&mut self.removed),
             outputs: std::mem::take(&mut self.outputs),
-            touched_layers: std::mem::take(&mut self.touched).into_iter().collect(),
+            touched_layers: std::mem::take(&mut self.touched)
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            successors: std::mem::take(&mut self.successors),
+            diagnostics: std::mem::take(&mut self.diagnostics),
         })
     }
 
-    /// Tell layers about ids retired since the last flush (dependency order).
-    fn flush_retired(&mut self) {
+    /// Run the cross-layer reactions for everything recorded since the last flush, in
+    /// dependency order: first `on_succession` (so a layer can carry references over to split
+    /// or copied entities), then `on_retired`.
+    fn flush_reactions(&mut self) {
+        if !self.pending_succ.is_empty() {
+            let succ = std::mem::take(&mut self.pending_succ);
+            let touched = self.state.notify_succession(self.order, &succ);
+            self.touched.extend(touched);
+        }
         if self.notified < self.removed.len() {
             let touched = self
                 .state
@@ -288,9 +362,99 @@ impl<'a> ApplyCtx<'a> {
         Ok(out)
     }
 
+    /// Adopt ids minted by a downstream store (topology complex, overlay, model, mesh) into the
+    /// entity table. Each id must equal [`State::peek_next`] for its kind at the moment it is
+    /// adopted, in order, otherwise [`OpError::IdMismatch`]. Adopted ids are listed in
+    /// [`Delta::created`]. The store stays the single minting layer for its kinds; adoption
+    /// keeps the shared table (and so [`State::contains`] and the state hash) in step with it.
+    pub fn adopt(&mut self, ids: &[EntityId]) -> Result<(), OpError> {
+        for &id in ids {
+            let expected = self
+                .state
+                .peek_next(id.kind())
+                .ok_or(OpError::IdExhausted)?;
+            if id != expected {
+                return Err(OpError::IdMismatch { expected, got: id });
+            }
+            self.state.alloc(id.kind())?;
+            self.created.push(id);
+        }
+        Ok(())
+    }
+
+    /// Adopt `n` consecutive ids starting at `first` (bulk mesh ranges). `first` must equal
+    /// [`State::peek_next`] for its kind. Every id is listed in [`Delta::created`].
+    pub fn adopt_range(&mut self, first: EntityId, n: u64) -> Result<(), OpError> {
+        let expected = self
+            .state
+            .peek_next(first.kind())
+            .ok_or(OpError::IdExhausted)?;
+        if first != expected {
+            return Err(OpError::IdMismatch {
+                expected,
+                got: first,
+            });
+        }
+        let start = self.state.alloc_range(first.kind(), n)?;
+        self.created.reserve(usize::try_from(n).unwrap_or(0));
+        for k in 0..n {
+            let id = EntityId::new(first.kind(), start.serial() + k).ok_or(OpError::IdExhausted)?;
+            self.created.push(id);
+        }
+        Ok(())
+    }
+
+    /// [`adopt`](Self::adopt) and record the ids under the named output `role` of the [`Delta`].
+    pub fn adopt_as(&mut self, role: &str, ids: &[EntityId]) -> Result<(), OpError> {
+        self.adopt(ids)?;
+        self.outputs
+            .entry(role.to_owned())
+            .or_default()
+            .extend_from_slice(ids);
+        Ok(())
+    }
+
+    /// Record that `old` was succeeded by `new` (split children, merge survivor; a copy is
+    /// `old = A`, `new = [A, A']`). Every id in `new` must be live. Downstream layers receive
+    /// the map through [`LayerType::on_succession`] after the op body (inside `core.batch`:
+    /// after each sub-op), before `on_retired`, so they can carry groups and names over to the
+    /// successors. Repeated calls for the same `old` append. The whole map is returned as
+    /// [`Delta::successors`].
+    pub fn record_successors(&mut self, old: EntityId, new: &[EntityId]) -> Result<(), OpError> {
+        for &n in new {
+            self.require(n)?;
+        }
+        self.successors
+            .entry(old)
+            .or_default()
+            .extend_from_slice(new);
+        self.pending_succ
+            .entry(old)
+            .or_default()
+            .extend_from_slice(new);
+        Ok(())
+    }
+
+    /// Emit a warning (returned in [`Delta::diagnostics`]; not part of any hash).
+    pub fn warn(&mut self, code: &'static str, msg: impl Into<String>, entities: &[EntityId]) {
+        self.diagnostics.push(Diagnostic::new(
+            Severity::Warning,
+            code,
+            msg,
+            entities.to_vec(),
+        ));
+    }
+
+    /// Emit an informational note (returned in [`Delta::diagnostics`]; not part of any hash).
+    pub fn info(&mut self, code: &'static str, msg: impl Into<String>, entities: &[EntityId]) {
+        self.diagnostics
+            .push(Diagnostic::new(Severity::Info, code, msg, entities.to_vec()));
+    }
+
     /// Retire a live entity. Its serial is never reused. Layers are told via
     /// [`LayerType::on_retired`] once the op body returns (inside `core.batch`: after each
-    /// sub-op).
+    /// sub-op). Ops that drive a minting store mirror the ids it retired (e.g. sm-topo-api's
+    /// `OpSummary::retired`) here.
     pub fn retire(&mut self, id: EntityId) -> Result<(), OpError> {
         if self.state.retire(id) {
             self.removed.push(id);
@@ -392,7 +556,7 @@ impl<'a> ApplyCtx<'a> {
         r?;
         // Layers react after each nested op, so later sub-ops never see references to ids an
         // earlier sub-op retired.
-        self.flush_retired();
+        self.flush_reactions();
         for (role, ids) in &sub {
             self.outputs
                 .entry(format!("{index}.{role}"))

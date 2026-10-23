@@ -6,6 +6,9 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
+/// Successor map handed to [`LayerType::on_succession`]: old id to its successors.
+pub type Successors = BTreeMap<EntityId, Vec<EntityId>>;
+
 use serde::Serialize;
 use sm_core::EntityId;
 
@@ -159,6 +162,13 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// True when the layer holds nothing. Empty layers do not enter the state hash, so
     /// installing a new concept leaves the hashes of existing histories unchanged.
     fn is_empty(&self) -> bool;
+    /// Called after an op recorded successors (`ApplyCtx::record_successors`): old id to new
+    /// ids (split children, merge survivor; a copy is `A -> [A, A']`). Runs in the same
+    /// dependency order as [`on_retired`](Self::on_retired) and before it, on every non-empty
+    /// authoritative layer whose [`references_any`](Self::references_any) holds for the keys,
+    /// so a downstream layer can carry groups or names over before the old ids are retired.
+    /// Must be deterministic. Default: nothing. (v1 gives no upstream state access.)
+    fn on_succession(&mut self, _succ: &Successors) {}
     /// Called after an op retired `ids`, on every non-empty authoritative layer, so references
     /// to deleted entities do not dangle. Must be deterministic. Default: nothing.
     fn on_retired(&mut self, _ids: &[EntityId]) {}
@@ -197,6 +207,8 @@ pub trait Layer: Any + Send + Sync {
     fn exact_hash(&self) -> Hash256;
     /// See [`LayerType::is_empty`].
     fn is_empty(&self) -> bool;
+    /// See [`LayerType::on_succession`].
+    fn on_succession(&mut self, succ: &Successors);
     /// See [`LayerType::on_retired`].
     fn on_retired(&mut self, ids: &[EntityId]);
     /// See [`LayerType::references_any`].
@@ -232,6 +244,9 @@ impl<T: LayerType> Layer for T {
     }
     fn is_empty(&self) -> bool {
         LayerType::is_empty(self)
+    }
+    fn on_succession(&mut self, succ: &Successors) {
+        LayerType::on_succession(self, succ);
     }
     fn on_retired(&mut self, ids: &[EntityId]) {
         LayerType::on_retired(self, ids);

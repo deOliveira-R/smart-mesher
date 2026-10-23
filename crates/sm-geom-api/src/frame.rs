@@ -6,6 +6,7 @@ use sm_core::{Point3, Vector3};
 /// A right-handed orthonormal frame: `x cross y == z`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Frame {
     /// Origin.
     pub origin: Point3,

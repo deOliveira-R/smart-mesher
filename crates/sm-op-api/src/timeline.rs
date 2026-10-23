@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::codec::{CodecError, canonical_bytes, canonicalize};
@@ -19,7 +20,7 @@ pub const NODE_DOMAIN: &str = "smart-mesh/node/v1";
 
 /// Free-form node metadata. Part of the node hash, so callers supply `time` explicitly (the
 /// engine never reads a clock).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
     /// Who issued the op (user, script, agent).
@@ -30,10 +31,12 @@ pub struct Meta {
     pub message: String,
 }
 
-/// The hashed part of a node: where it hangs, what it does, who did it.
-#[derive(Clone, Debug, PartialEq)]
+/// The hashed part of a node: where it hangs, what it does, who did it. Serializes with the
+/// same field names as the node file (`parent` omitted for a root).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeBody {
     /// Parent node, `None` for a root (applied to the empty state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Hash256>,
     /// The op, in stored form.
     pub op: OpRecord,
@@ -62,17 +65,57 @@ impl NodeBody {
 
 /// The recorded result of a node: not hashed, so the same op on another platform yields the
 /// same node even if float bits differ; replay compares it and reports `Diverged` on mismatch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
     /// `State::hash()` (quantized, platform independent) after applying the op.
     pub state: Hash256,
+    /// Quantized hash of every non-empty authoritative layer after the op
+    /// (`State::layer_hashes`), so a divergence names the layers that differ. Not part of the
+    /// node hash; may be empty (then a divergence reports no layer names).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layers: BTreeMap<String, Hash256>,
 }
 
-/// One timeline node: hashed [`NodeBody`] plus the unhashed result [`Check`].
-#[derive(Clone, Debug, PartialEq)]
+impl Check {
+    /// The check of a state: its hash and its per-layer hashes.
+    pub fn of(state: &crate::state::State) -> Self {
+        Self {
+            state: state.hash(),
+            layers: state.layer_hashes(),
+        }
+    }
+
+    /// Names of layers whose hashes differ between `self` (recorded) and `actual`, sorted.
+    /// Empty when either side carries no layer hashes.
+    pub fn differing_layers(&self, actual: &Check) -> Vec<String> {
+        if self.layers.is_empty() || actual.layers.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<String> = self
+            .layers
+            .iter()
+            .filter(|(n, h)| actual.layers.get(*n) != Some(h))
+            .map(|(n, _)| n.clone())
+            .collect();
+        out.extend(
+            actual
+                .layers
+                .keys()
+                .filter(|n| !self.layers.contains_key(*n))
+                .cloned(),
+        );
+        out.sort();
+        out
+    }
+}
+
+/// One timeline node: hashed [`NodeBody`] plus the unhashed result [`Check`]. Serializes with
+/// the same shape as the node file: `parent`, `op`, `meta`, `check`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
     /// The hashed part.
+    #[serde(flatten)]
     pub body: NodeBody,
     /// The recorded result hash.
     pub check: Check,
@@ -109,13 +152,46 @@ impl Node {
     }
 }
 
-/// Where HEAD points.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where HEAD points. Serializes like [`Rev`](crate::Rev): `{"ref": "main"}`,
+/// `{"node": "<hash>"}` (detached) or `"empty"` (detached at the empty state).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "crate::session::Rev", into = "crate::session::Rev")]
 pub enum Head {
     /// Attached to a branch; new nodes advance it. The branch may be unborn.
     Ref(String),
     /// Detached at a node (or at the empty root state); new nodes do not move any ref.
     Detached(Option<Hash256>),
+}
+
+impl From<crate::session::Rev> for Head {
+    fn from(r: crate::session::Rev) -> Self {
+        use crate::session::Rev;
+        match r {
+            Rev::Empty => Head::Detached(None),
+            Rev::Node(h) => Head::Detached(Some(h)),
+            Rev::Ref(n) => Head::Ref(n),
+        }
+    }
+}
+
+impl From<Head> for crate::session::Rev {
+    fn from(h: Head) -> Self {
+        use crate::session::Rev;
+        match h {
+            Head::Detached(None) => Rev::Empty,
+            Head::Detached(Some(h)) => Rev::Node(h),
+            Head::Ref(n) => Rev::Ref(n),
+        }
+    }
+}
+
+impl JsonSchema for Head {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Head".into()
+    }
+    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <crate::session::Rev as JsonSchema>::json_schema(g)
+    }
 }
 
 /// Whether `name` is an acceptable ref name (also a safe relative path).
@@ -172,11 +248,12 @@ impl Timeline {
         canonicalize(&mut node.body.op.params)?;
         let h = node.body.hash()?;
         if let Some(old) = self.nodes.get(&h) {
-            if old.node.check != node.check {
+            if old.node.check.state != node.check.state {
                 return Err(TimelineError::Diverged {
                     node: h,
                     recorded: old.node.check.state,
                     actual: node.check.state,
+                    layers: old.node.check.differing_layers(&node.check),
                 });
             }
             return Ok(h);
@@ -306,15 +383,33 @@ impl Timeline {
     /// each branch owns exactly one ref file, so independent branches touch disjoint files.
     pub fn to_files(&self) -> Result<BTreeMap<String, String>, TimelineError> {
         let mut out = BTreeMap::new();
-        for (h, e) in &self.nodes {
-            let text = crate::text::node_to_toml(&e.node)
-                .map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
-            out.insert(format!("{OPS_DIR}{h}.toml"), text);
+        for h in self.nodes.keys() {
+            let (path, text) = self.node_file(*h)?;
+            out.insert(path, text);
         }
-        for (name, h) in &self.refs {
-            out.insert(format!("{HEADS_DIR}{name}"), format!("{h}\n"));
+        for name in self.refs.keys() {
+            if let Some((path, text)) = self.ref_file(name) {
+                out.insert(path, text);
+            }
         }
         Ok(out)
+    }
+
+    /// Path and text of one node file, exactly as [`to_files`](Self::to_files) writes it (for
+    /// incremental saves: node files are immutable, so only new ones need writing).
+    pub fn node_file(&self, h: Hash256) -> Result<(String, String), TimelineError> {
+        let e = self.nodes.get(&h).ok_or(TimelineError::UnknownNode(h))?;
+        let text = crate::text::node_to_toml(&e.node)
+            .map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
+        Ok((format!("{OPS_DIR}{h}.toml"), text))
+    }
+
+    /// Path and text of one ref file, exactly as [`to_files`](Self::to_files) writes it, or
+    /// `None` if no such branch exists.
+    pub fn ref_file(&self, name: &str) -> Option<(String, String)> {
+        self.refs
+            .get(name)
+            .map(|h| (format!("{HEADS_DIR}{name}"), format!("{h}\n")))
     }
 
     /// Parse the layout written by [`to_files`](Self::to_files). Every node's hash is

@@ -302,8 +302,9 @@ fn violation_codes_are_stable_and_specific() {
 
     let mut b = Broken::of(m.clone());
     b.sets = Some(vec![MeshSet {
-        id: id(EntityKind::Group, 0),
+        id: id(EntityKind::MeshSet, 1),
         name: "s".into(),
+        label: None,
         members: SetMembers::Cells(vec![CellIx(1), CellIx(0)]),
     }]);
     expect(&b, ViolationCode::Set);

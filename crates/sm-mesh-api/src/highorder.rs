@@ -55,8 +55,10 @@ pub struct CellGeometry {
     pub basis: Basis,
 }
 
-/// What one node of a high-order cell sits on (`smartmesh.nodes.v1`).
+/// What one node of a high-order cell sits on (`smartmesh.nodes.v1`). `#[non_exhaustive]`
+/// (W0f) so triangle-face and higher-order edge slots can be added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NodeSlot {
     /// A template corner.
     Corner(u8),

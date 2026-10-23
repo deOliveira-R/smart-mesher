@@ -472,19 +472,34 @@ impl MeshEdit for ReferenceMesh {
         }
         let n = self.count(members.kind());
         let raw = members.raw();
-        if raw.last().is_some_and(|&i| i as usize >= n) || raw.windows(2).any(|w| w[0] >= w[1]) {
+        if members.max_index().is_some_and(|i| i as usize >= n) || raw.windows(2).any(|w| w[0] >= w[1]) {
             return Err(MeshError::OutOfRange(format!(
                 "set '{name}' members must be ascending, unique and in range"
             )));
         }
-        let id = alloc.one(EntityKind::Group)?;
+        if let SetMembers::Sides(v) = &members
+            && v.iter().any(|sf| sf.side() == crate::index::Side::Right && self.face_right(sf.face()).is_none())
+        {
+            return Err(MeshError::OutOfRange(format!("set '{name}' names the right side of a one-cell face")));
+        }
+        let id = alloc.one(EntityKind::MeshSet)?;
         self.sets.push(MeshSet {
             id,
             name: name.into(),
+            label: None,
             members,
         });
         self.sets.sort_by_key(|s| s.id);
         Ok(id)
+    }
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        let i = self.sets.iter().position(|s| s.name == name).ok_or_else(|| MeshError::State(format!("no set '{name}'")))?;
+        let kind = self.sets[i].members.kind();
+        if label.is_some() && self.sets.iter().enumerate().any(|(j, s)| j != i && s.label == label && s.members.kind() == kind) {
+            return Err(MeshError::DuplicateName(format!("set label {label:?}")));
+        }
+        self.sets[i].label = label;
+        Ok(())
     }
     fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()> {
         if target == MeshEntityKind::Edge && self.edges.is_none() {

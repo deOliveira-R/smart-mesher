@@ -491,8 +491,13 @@ pub trait Scheme: Send + Sync {
     ) -> Result<Patch, GenerateFailure>;
 }
 
-/// A conversion applied to the patches of its targets atomically after generation (THex,
-/// HTet, QTri).
+/// A **topology-preserving patch edit** applied to the patches of its targets atomically after
+/// generation (smoothing, node snapping, reclassification): it may move nodes and change node
+/// data but must keep the patch's nodes and elements (the driver re-checks every rewritten patch
+/// with `check_patch`, which rejects nodes the target does not own). Element conversions (THex,
+/// HTet, QTri, TQuad) are **not** `MeshTransform`s: they are IR -> IR mesh passes over
+/// `sm_mesh_api::MeshRead -> MeshBuild` that re-verify deck pairs on the result (see
+/// `DESIGN.md`).
 pub trait MeshTransform: Send + Sync {
     /// Registered name.
     fn name(&self) -> &str;
@@ -538,7 +543,7 @@ impl SchemeRegistry {
         Ok(())
     }
 
-    /// Register a conversion.
+    /// Register a mesh transform (topology-preserving patch edit).
     pub fn register_transform(&mut self, t: Box<dyn MeshTransform>) -> Result<()> {
         let k = t.name().to_owned();
         if self.transforms.contains_key(&k) {
@@ -556,7 +561,7 @@ impl SchemeRegistry {
         self.schemes.get(&dim)?.get(name).map(|b| b.as_ref())
     }
 
-    /// The conversion `name`.
+    /// The mesh transform `name`.
     pub fn transform(&self, name: &str) -> Option<&dyn MeshTransform> {
         self.transforms.get(name).map(|b| b.as_ref())
     }

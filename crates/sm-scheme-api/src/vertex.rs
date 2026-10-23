@@ -9,6 +9,7 @@ use sm_topo_api::{CoedgeKey, CornerKey};
 /// ([`CornerKey`]), never on the vertex: the same vertex can be an End on one face and a
 /// Side on another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum VertexType {
     /// One element at the corner, interior angle about 90 degrees.
     End,

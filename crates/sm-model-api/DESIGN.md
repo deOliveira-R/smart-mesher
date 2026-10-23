@@ -143,6 +143,27 @@ order; no randomness, no threads. Ids minted here (`Color`, `Group`, `Boundary`,
 never reused. `tests/determinism.rs` runs the whole pipeline twice and on four `std::thread`s and
 compares hashes (API crates do not use rayon).
 
+**Id authority (W0f).** The model is the single minting layer for `Color`, `Group`, `Boundary`,
+`Prototype`, `Lattice`, `Instance`, `PartitionCell` (and `Symmetry`); the topology complex mints
+`Topo*`, the overlay `PartitionFace/Edge/Vertex`, the mesh `Mesh*` (including its own `MeshSet`
+and `MeshInstance`, so mesh sets and mesh instances never collide with model groups and
+instances). Because the allocator starts at 1 like the op layer's entity table, the op that
+drives the model adopts each minted id in order (`ApplyCtx::adopt`).
+
+**Group store (W0f, option (a): the model is the single group store).** `add_group`,
+`group_edit(g, GroupEdit::{Add, Remove, Equals, Xor}, &ids)` (atomic, cycle-checked),
+`remove_group` (refused while another group lists it), `rename_group`, `group_by_name`,
+`groups()`, and `group_unite` / `group_intersect` / `group_subtract`, which mint a new group from
+the direct members of two groups. Members may be topology cells of every rank (`TopoVertex`
+through `TopoBody`), decomposition entities (`Partition*`), colors, nested groups and the other
+model rows (`group_member_kind_ok`); never geometry handles or mesh entities. Model-minted members
+must exist. `apply_lineage` re-keys every `Topo*`/`Partition*` member; `apply_group_successors`
+(with `groups_reference_any` for gating) is what a model layer's `on_succession` calls; other
+members pass through. `group_entities(g, t, dim)` expands by closure (`TopologyView::closure`): a
+member of rank `dim` is itself, a higher-rank member brings its closure cells of rank `dim`,
+colors bring their volumes or faces, nested groups recurse. `check_integrity` (and so
+deserialization) checks member kinds, model-minted members, unique names and nesting cycles.
+
 ## 5. Deviations from the recommendation / decisions (honest list)
 
 - Topology parameter is `&dyn TopologyView` rather than `&impl TopologyView` (the trait is
@@ -194,8 +215,10 @@ compares hashes (API crates do not use rayon).
 - `Cargo.lock` is not touched (decisions.md Q3); the orchestrator regenerates it at merge.
 - `serde_json` is a **dev-dependency** only (round-trip tests); the shipped dependency set is
   `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `schemars` (feature, implies
-  `serde`; derives `JsonSchema` on `PieceRef`, `PieceFace`, `CutId`, `Keep`, the piece keys used
-  inside meshing intents and plans, W0e decision 3), `smallvec`, `thiserror`. `indexmap` is not
+  `serde` and `sm-geom-api/schemars`; since W0f derives `JsonSchema` on every serde input value
+  type of `xf`, `boundary`, `color`, `instancing`, `symmetry`, `decomposition` and `detect`, with
+  schemars' `smallvec1` support and pair-list schemas for the `serde_pairs` maps), `smallvec`,
+  `thiserror`. `indexmap` is not
   needed.
 - `check_integrity` (W0d follow-up) also counts the cut ids of `PieceShape::Sweep` hints, realized
   cuts, recorded face cells and captured composite faces against `cut_serial`, and checks the

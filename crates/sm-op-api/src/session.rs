@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::DerivedCache;
@@ -15,8 +16,10 @@ use crate::state::State;
 use crate::timeline::{Check, Head, Meta, Node, NodeBody, Timeline};
 use std::sync::Arc;
 
-/// A revision to check out.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A revision to check out. Externally tagged: `{"ref": "main"}`, `{"node": "<hash>"}` or
+/// `"empty"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Rev {
     /// The empty state, before any op (detached).
     Empty,
@@ -45,7 +48,8 @@ pub struct ReflogEntry {
     pub from: Option<Hash256>,
     /// Position after.
     pub to: Option<Hash256>,
-    /// What happened: `apply`, `checkout`, `branch`, `reset`, `undo`, `redo`.
+    /// What happened: `apply`, `checkout`, `branch`, `reset`, `undo`, `redo`,
+    /// `delete-branch`, `rename-branch`.
     pub action: String,
 }
 
@@ -184,13 +188,51 @@ impl Session {
         head: Head,
         ctl: &Control<'_>,
     ) -> Result<Self, TimelineError> {
+        Self::open_with(engine, timeline, head, std::iter::empty(), Vec::new(), ctl)
+    }
+
+    /// Like [`open`](Self::open), first seeding the snapshot cache with persisted states (the
+    /// W0a decision-8 snapshot hook: `Registry::restore` of stored `StateSnapshot`s) and
+    /// restoring the persisted reflog. Every seed is checked with [`seed_state`](Self::seed_state),
+    /// so a stale or foreign snapshot is an error, never a silent wrong state. Replay to HEAD
+    /// then starts from the nearest seed.
+    pub fn open_with(
+        engine: Engine,
+        timeline: Timeline,
+        head: Head,
+        seeds: impl IntoIterator<Item = (Hash256, State)>,
+        reflog: Vec<ReflogEntry>,
+        ctl: &Control<'_>,
+    ) -> Result<Self, TimelineError> {
         let target = Self::resolve_head(&timeline, &head)?;
         let mut s = Self::new(engine);
         s.timeline = timeline;
+        for (h, st) in seeds {
+            s.seed_state(h, st)?;
+        }
+        s.reflog = reflog;
         s.state = s.state_at(target, ctl)?;
         s.at = target;
         s.head = head;
         Ok(s)
+    }
+
+    /// Put a known state for node `h` into the snapshot cache (e.g. restored from a persisted
+    /// snapshot). Accepted only if `state.hash()` equals the node's recorded `check.state`;
+    /// otherwise [`TimelineError::Diverged`].
+    pub fn seed_state(&mut self, h: Hash256, state: State) -> Result<(), TimelineError> {
+        let node = self.timeline.get(h).ok_or(TimelineError::UnknownNode(h))?;
+        let actual = Check::of(&state);
+        if actual.state != node.check.state {
+            return Err(TimelineError::Diverged {
+                node: h,
+                recorded: node.check.state,
+                actual: actual.state,
+                layers: node.check.differing_layers(&actual),
+            });
+        }
+        self.store_snapshot(h, state);
+        Ok(())
     }
 
     fn resolve_head(t: &Timeline, head: &Head) -> Result<Option<Hash256>, TimelineError> {
@@ -308,9 +350,7 @@ impl Session {
         if let Head::Ref(name) = &self.head {
             self.timeline.check_ref_name(name)?;
         }
-        let check = Check {
-            state: p.state.hash(),
-        };
+        let check = Check::of(&p.state);
         let h = self.timeline.insert(Node {
             body: NodeBody {
                 parent: self.at,
@@ -448,6 +488,7 @@ impl Session {
                     node: *h,
                     recorded: node.check.state,
                     actual,
+                    layers: node.check.differing_layers(&Check::of(&state)),
                 };
                 match self.policy {
                     ReplayPolicy::Strict => return Err(err),
@@ -550,6 +591,67 @@ impl Session {
         self.head = Head::Ref(name.to_owned());
         self.redo.clear();
         self.log("branch", Some(at));
+        Ok(())
+    }
+
+    /// Create a branch at node `h` without moving HEAD.
+    pub fn create_branch_at(&mut self, name: &str, h: Hash256) -> Result<(), TimelineError> {
+        self.timeline.create_ref(name, h)?;
+        self.reflog.push(ReflogEntry {
+            ref_name: Some(name.to_owned()),
+            from: None,
+            to: Some(h),
+            action: "branch".to_owned(),
+        });
+        Ok(())
+    }
+
+    /// Delete a branch. Fails with [`TimelineError::HeadOnBranch`] if HEAD is attached to it.
+    /// Its nodes stay in the timeline (checkout-able by hash).
+    pub fn delete_branch(&mut self, name: &str) -> Result<(), TimelineError> {
+        if self.head == Head::Ref(name.to_owned()) {
+            return Err(TimelineError::HeadOnBranch(name.to_owned()));
+        }
+        let was = self.timeline.delete_ref(name)?;
+        self.reflog.push(ReflogEntry {
+            ref_name: Some(name.to_owned()),
+            from: Some(was),
+            to: None,
+            action: "delete-branch".to_owned(),
+        });
+        Ok(())
+    }
+
+    /// Rename a branch. If HEAD is attached to it, HEAD follows. `to` must be a valid, unused
+    /// name (the file/directory rule ignores `from`, which goes away). On error nothing changes.
+    pub fn rename_branch(&mut self, from: &str, to: &str) -> Result<(), TimelineError> {
+        let h = *self
+            .timeline
+            .refs()
+            .get(from)
+            .ok_or_else(|| TimelineError::UnknownRef(from.to_owned()))?;
+        if from == to {
+            return Ok(());
+        }
+        if self.timeline.refs().contains_key(to) {
+            return Err(TimelineError::RefExists(to.to_owned()));
+        }
+        self.timeline.delete_ref(from)?;
+        if let Err(e) = self.timeline.create_ref(to, h) {
+            self.timeline.set_ref(from, h)?;
+            return Err(e);
+        }
+        if self.head == Head::Ref(from.to_owned()) {
+            self.head = Head::Ref(to.to_owned());
+        }
+        for (name, f, t) in [(from, Some(h), None), (to, None, Some(h))] {
+            self.reflog.push(ReflogEntry {
+                ref_name: Some(name.to_owned()),
+                from: f,
+                to: t,
+                action: "rename-branch".to_owned(),
+            });
+        }
         Ok(())
     }
 

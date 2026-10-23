@@ -26,8 +26,9 @@ impl SchemeDim {
     }
 }
 
-/// Identifier of an atomic meshing group (multisweep, merged volumes meshed together, THex).
+/// Identifier of an atomic meshing group (multisweep, merged volumes meshed together).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GroupId(pub u32);
 
 /// Identifier of a standalone mesh transform ([`crate::TransformIntent`]).
@@ -35,6 +36,7 @@ pub struct GroupId(pub u32);
 /// Ids at or above [`TransformId::GROUP_BASE`] are reserved for the driver (the conversion
 /// shorthand of a [`crate::MeshGroup`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TransformId(pub u32);
 
 impl TransformId {

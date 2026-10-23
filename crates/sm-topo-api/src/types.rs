@@ -133,6 +133,24 @@ pub enum Sense {
     Reversed,
 }
 
+impl From<sm_geom_api::Sense> for Sense {
+    fn from(s: sm_geom_api::Sense) -> Self {
+        match s {
+            sm_geom_api::Sense::Forward => Sense::Forward,
+            sm_geom_api::Sense::Reversed => Sense::Reversed,
+        }
+    }
+}
+
+impl From<Sense> for sm_geom_api::Sense {
+    fn from(s: Sense) -> Self {
+        match s {
+            Sense::Forward => sm_geom_api::Sense::Forward,
+            Sense::Reversed => sm_geom_api::Sense::Reversed,
+        }
+    }
+}
+
 impl Sense {
     /// The opposite sense.
     pub const fn flip(self) -> Sense {
@@ -246,6 +264,7 @@ pub struct SurfaceCarrier {
 /// [`crate::TopologyView::shapes`]; topology never owns shape beyond the store.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Carrier {
     /// No geometry (bodies, topology-only cells, degenerate edges).
     None,
@@ -498,6 +517,7 @@ pub struct ShellSpec<'a> {
 
 /// How a face is cut by [`crate::TopologyEdit::split_face`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FaceCut<'a> {
     /// An existing open edge joining two distinct vertices of the face's outer loop.
     /// Children: `[first, second]`, `first` being the loop segment from the earlier loop
@@ -518,6 +538,18 @@ pub enum FaceCut<'a> {
     /// children are `[segment from the earlier occurrence + the loop, the rest + reversed loop]`.
     ClosedLoop {
         /// The loop, in traversal order.
+        edges: &'a [CoedgeSpec],
+    },
+    /// An open chain of edges (a polyline imprint, a curved cut made of several edges). The
+    /// chain runs head to tail; its start (tail of the first coedge) and end (head of the last)
+    /// are two distinct vertices of the face's outer loop (after
+    /// [`crate::TopologyEdit::bridge_loops`] every loop of a holed face is one outer loop), and
+    /// its interior vertices must not lie on any loop of the face (that they lie inside the face
+    /// geometrically is not checked). A one-edge chain is a [`FaceCut::Chord`]. Children:
+    /// `[first, second]`, `first` being the loop segment from the earlier loop position of the
+    /// two chain ends, as for `Chord`.
+    Chain {
+        /// The chain, in traversal order.
         edges: &'a [CoedgeSpec],
     },
 }

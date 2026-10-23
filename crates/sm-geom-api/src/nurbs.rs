@@ -146,6 +146,7 @@ fn vec3(p: Point3) -> Vector3 {
 /// `GeomAppend` store, which validates): evaluating an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsCurve {
     /// Polynomial degree `p` in `1..=15`.
     pub degree: usize,
@@ -265,6 +266,7 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
 /// A 2D NURBS curve in a surface's parameter space (used by [`crate::PCurve`]).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsCurve2 {
     /// Polynomial degree in `1..=15`.
     pub degree: usize,
@@ -305,6 +307,7 @@ impl NurbsCurve2 {
 /// does) before evaluating: an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsSurface {
     /// Degree in `u`.
     pub degree_u: usize,

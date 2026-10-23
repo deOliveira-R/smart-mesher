@@ -10,6 +10,7 @@ use crate::codec::{CodecError, Value, from_value};
 use crate::error::RegistryError;
 use crate::layer::{Layer, LayerRole, LayerType};
 use crate::op::{Delta, Op, OpRecord, TypedOp};
+use crate::query::{QueryCtx, QueryInfo, QueryType, TypedQ, TypedQuery};
 use crate::state::{State, StateSnapshot};
 
 /// Type-erased registration of one op payload type.
@@ -46,7 +47,7 @@ impl<T: TypedOp> OpType for Typed<T> {
 /// Rewrites params from version `n` to `n + 1`.
 pub type Migration = Arc<dyn Fn(Value) -> Result<Value, CodecError> + Send + Sync>;
 
-/// A plugin contributes ops, layers and migrations (one per concept node).
+/// A plugin contributes ops, queries, layers and migrations (one per concept node).
 pub trait Plugin {
     /// Human-readable id, e.g. the concept node name.
     fn id(&self) -> &str;
@@ -55,7 +56,7 @@ pub trait Plugin {
 }
 
 /// Description of one registered op, for tool/help/stub generation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct OpInfo {
     /// Op name, e.g. `model.create_brick`.
     pub name: String,
@@ -75,9 +76,17 @@ impl OpInfo {
     }
 }
 
+/// Longest allowed tool name (`name` with `.` mangled to `__`), in bytes.
+pub const MAX_TOOL_NAME: usize = 64;
+
 /// Op-name rule: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` with no `__` (so `tool_name` is
-/// injective). Names are stored in every node, so the rule is part of the format.
+/// injective), and at most [`MAX_TOOL_NAME`] bytes once `.` is mangled to `__` (MCP / LLM tool
+/// name limit). Names are stored in every node, so the rule is part of the format. Query names
+/// follow the same rule.
 pub fn valid_op_name(name: &str) -> bool {
+    if name.replace('.', "__").len() > MAX_TOOL_NAME {
+        return false;
+    }
     let mut segs = 0;
     for seg in name.split('.') {
         let mut c = seg.chars();
@@ -109,6 +118,7 @@ struct LayerEntry {
 #[derive(Clone)]
 pub struct Registry {
     ops: BTreeMap<String, Arc<dyn OpType>>,
+    queries: BTreeMap<String, Arc<dyn QueryType>>,
     layers: BTreeMap<&'static str, LayerEntry>,
     migrations: BTreeMap<(String, u32), Migration>,
 }
@@ -124,6 +134,7 @@ impl Registry {
     pub fn new() -> Self {
         let mut r = Self {
             ops: BTreeMap::new(),
+            queries: BTreeMap::new(),
             layers: BTreeMap::new(),
             migrations: BTreeMap::new(),
         };
@@ -159,6 +170,78 @@ impl Registry {
         }
         self.ops.insert(name, t);
         Ok(self)
+    }
+
+    /// Register a typed query (same name rule as ops; queries have their own namespace).
+    pub fn register_query<Q: TypedQuery>(&mut self) -> Result<&mut Self, RegistryError> {
+        self.register_query_dyn(Arc::new(TypedQ::<Q>(std::marker::PhantomData)))
+    }
+
+    /// Register a hand-written [`QueryType`].
+    pub fn register_query_dyn(
+        &mut self,
+        t: Arc<dyn QueryType>,
+    ) -> Result<&mut Self, RegistryError> {
+        let name = t.name().to_owned();
+        if !valid_op_name(&name) {
+            return Err(RegistryError::BadOpName(name));
+        }
+        if self.queries.contains_key(&name) {
+            return Err(RegistryError::DuplicateQuery(name));
+        }
+        self.queries.insert(name, t);
+        Ok(self)
+    }
+
+    /// Names of registered queries, sorted.
+    pub fn query_names(&self) -> Vec<&str> {
+        self.queries.keys().map(String::as_str).collect()
+    }
+
+    /// Run a query against `state`: decode `input`, run, encode the reply. Read-only; nothing
+    /// is recorded. `cx` supplies services, the derived cache and progress (see
+    /// `Engine::run_query` for the usual entry point).
+    pub fn run_query(
+        &self,
+        state: &State,
+        name: &str,
+        input: &Value,
+        cx: &QueryCtx<'_>,
+    ) -> Result<Value, RegistryError> {
+        let q = self
+            .queries
+            .get(name)
+            .ok_or_else(|| RegistryError::UnknownQuery(name.to_owned()))?;
+        q.run(state, input, cx)
+            .map_err(|e| RegistryError::Query {
+                name: name.to_owned(),
+                source: Box::new(e),
+            })
+    }
+
+    /// All queries with input and output schemas, sorted by name. One query with a broken
+    /// schema yields an `Err` entry without hiding the others.
+    pub fn query_catalog(&self) -> Vec<Result<QueryInfo, RegistryError>> {
+        self.queries
+            .values()
+            .map(|t| {
+                let name = t.name().to_owned();
+                let err = |reason| RegistryError::Schema {
+                    name: name.clone(),
+                    reason,
+                };
+                let schema = t.input_schema().map_err(err)?;
+                let output_schema = t.output_schema().map_err(err)?;
+                if schema.as_object().is_none() {
+                    return Err(err("schema is not an object".to_owned()));
+                }
+                Ok(QueryInfo {
+                    name: name.clone(),
+                    schema,
+                    output_schema,
+                })
+            })
+            .collect()
     }
 
     /// Register the step that upgrades `name` params from version `from` to `from + 1`.

@@ -48,7 +48,7 @@ fn failed_finish_draws_no_ids() {
     let mut alloc = SerialAlloc::new();
     assert!(b.finish(&mut alloc).is_err());
     assert!(
-        state(&alloc).iter().all(|(_, n)| *n == 0),
+        state(&alloc).iter().all(|(_, n)| *n == 1),
         "{:?}",
         state(&alloc)
     );
@@ -57,13 +57,13 @@ fn failed_finish_draws_no_ids() {
     b.add_tag("t", MeshEntityKind::Cell, TagValues::I64(vec![1, 2, 3]))
         .unwrap();
     assert!(b.finish(&mut alloc).is_err());
-    assert_eq!(alloc.next_serial(EntityKind::Mesh), 0);
-    // The next success sees the ids a fresh allocator would give.
+    assert_eq!(alloc.next_serial(EntityKind::Mesh), 1);
+    // The next success sees the ids a fresh allocator would give (serials start at 1).
     let m = hex_builder().finish(&mut alloc).unwrap().mesh;
-    assert_eq!(m.mesh_id(), id(EntityKind::Mesh, 0));
+    assert_eq!(m.mesh_id(), id(EntityKind::Mesh, 1));
     assert_eq!(
         m.id(MeshEntityKind::Vertex, 0),
-        id(EntityKind::MeshVertex, 0)
+        id(EntityKind::MeshVertex, 1)
     );
 }
 
@@ -213,8 +213,9 @@ fn serial_alloc_state_round_trips() {
     a.take(EntityKind::MeshCell, 5).unwrap();
     a.one(EntityKind::Mesh).unwrap();
     let b = SerialAlloc::from_state(a.state()).unwrap();
-    assert_eq!(b.next_serial(EntityKind::MeshCell), 5);
-    assert_eq!(b.next_serial(EntityKind::Group), 0);
+    assert_eq!(b.next_serial(EntityKind::MeshCell), 6);
+    assert_eq!(b.next_serial(EntityKind::MeshSet), 1);
+    assert!(SerialAlloc::from_state([(EntityKind::Mesh, 0)]).is_err(), "serials start at 1");
     assert!(
         SerialAlloc::from_state([(EntityKind::Mesh, 1), (EntityKind::Mesh, 2)]).is_err(),
         "a repeated kind is rejected"
@@ -232,7 +233,7 @@ mod serde_round_trips {
         a.take(EntityKind::MeshCell, 1).unwrap();
         let good = serde_json::to_string(&a).unwrap();
         assert!(serde_json::from_str::<SerialAlloc>(&good).is_ok());
-        let bad = good.replace(":1", ":18446744073709551615");
+        let bad = good.replace(":2", ":18446744073709551615");
         assert_ne!(good, bad);
         assert!(serde_json::from_str::<SerialAlloc>(&bad).is_err());
     }
@@ -292,16 +293,16 @@ mod serde_round_trips {
         };
         rt(&viol);
         rt(&LossNote {
-            instance: id(EntityKind::Instance, 4),
+            instance: id(EntityKind::MeshInstance, 4),
             what: LossKind::Tag(MeshEntityKind::Cell, "t".into()),
         });
         let inst = Instance {
-            id: id(EntityKind::Instance, 1),
-            prototype: id(EntityKind::Mesh, 0),
+            id: id(EntityKind::MeshInstance, 1),
+            prototype: id(EntityKind::Mesh, 1),
             transform: mirror_x(1.0),
         };
         rt(&InstancedView {
-            id: id(EntityKind::Group, 0),
+            id: id(EntityKind::MeshInstance, 2),
             instances: vec![inst],
         });
     }
@@ -325,7 +326,7 @@ fn hex_block_edges(alloc: &mut SerialAlloc) -> reference::ReferenceMesh {
 fn serial_overflow_leaves_no_trace() {
     let mut a = SerialAlloc::new();
     let before = state(&a);
-    assert!(a.take(EntityKind::Group, usize::MAX).is_err());
+    assert!(a.take(EntityKind::MeshSet, usize::MAX).is_err());
     assert_eq!(
         state(&a),
         before,

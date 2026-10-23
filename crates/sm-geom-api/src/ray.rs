@@ -6,6 +6,7 @@ use sm_core::{Point3, Vector3};
 /// A ray `origin + t * dir`. `dir` need not be unit; `t` is then in units of `|dir|`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Ray {
     /// Start point.
     pub origin: Point3,
@@ -23,6 +24,7 @@ impl Ray {
 /// How a ray passes through a surface at a hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Crossing {
     /// The ray goes the way the hit normal points (`dir . normal > 0`): it leaves the region the
     /// normal points away from.
@@ -37,6 +39,7 @@ pub enum Crossing {
 /// One ray/surface crossing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct RayHit {
     /// Ray parameter of the crossing.
     pub t: f64,
