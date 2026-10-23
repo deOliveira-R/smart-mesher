@@ -15,9 +15,9 @@ use sm_core::Point3;
 /// round-half-away-from-zero, `-0` and `+0` agree, NaN maps to `i64::MIN` and infinities
 /// saturate ([`Self::quantize`]). Scale-free values (knots, weights, quadric coefficients, line
 /// direction components) are quantized relatively instead ([`Self::quantize_scale_free`]): their
-/// magnitude is unbounded (quadric terms scale like L^2), so a fixed absolute step would saturate. Angles and unit-vector components (frame axes, cone
-/// half-angle) use `q = angular * 2^-10` ([`Self::angular_quantum`]); unitless values (NURBS knots
-/// and weights, quadric coefficients, line direction scale) use the parameter quantum. Shape
+/// magnitude is unbounded (quadric terms scale like L^2), so a fixed absolute step would
+/// saturate. Angles and unit-vector components (frame axes, cone half-angle) use
+/// `q = angular * 2^-10` ([`Self::angular_quantum`]). Shape
 /// definitions are hashed value by value through [`crate::CurveDef::for_each_value`] and
 /// [`Self::quantize_shape`]. Two values within a small fraction of a step hash equal unless
 /// they straddle a rounding boundary; platform noise (a few ulp) is far below one step for any
@@ -113,8 +113,9 @@ impl ModelTolerance {
     ///
     /// Relative rule: values with `|x| < parametric * 2^-10` map to 0; otherwise the mantissa is
     /// rounded to 40 bits (relative step about 1e-12) and packed with the biased exponent and
-    /// sign into an `i64`. The result never saturates for finite input, and a few ulp of noise
-    /// is far below one step at any magnitude. NaN maps to `i64::MIN`, `+-inf` to `+-i64::MAX`.
+    /// sign into an `i64`. The result never saturates for finite input. A few ulp of noise is far
+    /// below one step, including just below a power of two (the rounding carry moves into the
+    /// exponent). The zero cutoff is absolute, not relative to the definition's scale. NaN maps to `i64::MIN`, `+-inf` to `+-i64::MAX`.
     pub fn quantize_scale_free(&self, x: f64) -> i64 {
         if x.is_nan() {
             return i64::MIN;
@@ -123,14 +124,14 @@ impl ModelTolerance {
             return if x > 0.0 { i64::MAX } else { -i64::MAX };
         }
         let a = x.abs();
-        let exp_field = (a.to_bits() >> 52) as i64;
+        let exp_field = a.to_bits() >> 52;
         if a < self.param_quantum() || exp_field == 0 {
             return 0;
         }
-        let mant = (a.to_bits() & ((1u64 << 52) - 1)) | (1u64 << 52);
-        // Round the 53-bit significand to 40 bits (half up); a carry stays distinct.
-        let mq = ((mant + (1u64 << 12)) >> 13) as i64;
-        let code = (exp_field << 41) + mq;
+        // Exponent and mantissa are contiguous in the bit pattern: dropping the low 13 bits with
+        // round-half-up lets a mantissa carry increment the exponent, so a power of two and the
+        // value one ulp below it share a code. Monotone; cannot overflow for finite input.
+        let code = ((a.to_bits() + (1u64 << 12)) >> 13) as i64;
         if x < 0.0 { -code } else { code }
     }
 
@@ -188,6 +189,20 @@ mod tests {
         assert_eq!(t.quantize(f64::INFINITY), i64::MAX);
         assert_eq!(t.quantize(f64::NEG_INFINITY), i64::MIN);
         assert_eq!(t.quantize_param(1.0), (1.0f64 / (1e-9 / 1024.0)).round() as i64);
+    }
+
+    #[test]
+    fn scale_free_stable_below_powers_of_two() {
+        for t in [ModelTolerance::DEFAULT, ModelTolerance::for_extent(1000.0)] {
+            for v in [0.5f64, 1.0, 2.0, 1024.0, 1.6e7] {
+                let below = f64::from_bits(v.to_bits() - 1);
+                let above = f64::from_bits(v.to_bits() + 1);
+                assert_eq!(t.quantize_scale_free(v), t.quantize_scale_free(below), "{v}");
+                assert_eq!(t.quantize_scale_free(v), t.quantize_scale_free(above), "{v}");
+                assert_eq!(t.quantize_scale_free(-v), t.quantize_scale_free(-below), "{v}");
+            }
+            assert!(t.quantize_scale_free(1.0) < t.quantize_scale_free(1.0 + 1e-9));
+        }
     }
 
     #[test]
