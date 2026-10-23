@@ -1,0 +1,24 @@
+[package]
+name = "sm-scheme-api"
+description = "Contract between the meshing driver and every meshing scheme: plan/apply phases, capabilities, child requirements, interval constraints, vertex types, fallback chains and a deterministic bottom-up driver."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core", features = ["serde"] }
+sm-geom-api = { path = "../sm-geom-api", features = ["serde"] }
+sm-topo-api = { path = "../sm-topo-api", features = ["serde"] }
+sm-model-api = { path = "../sm-model-api", features = ["serde"] }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+smallvec = "1"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
