@@ -1,6 +1,7 @@
 //! The sizing layer seam: size fields evaluated by the driver (interval goals) and by
 //! unstructured schemes (pave, tetmesh).
 
+use crate::error::{Result, SchemeError};
 use crate::intent::SizingSpec;
 use sm_core::Point3;
 
@@ -40,5 +41,21 @@ pub fn builtin_field(spec: &SizingSpec) -> Option<Box<dyn SizeField>> {
             Some(Box::new(ConstantSize(*size)))
         }
         _ => None,
+    }
+}
+
+/// The size field the driver builds for `spec` when it has no override: `None` without a spec,
+/// the built-in field for `Constant`. A `Function` (or a non-positive constant) is a typed
+/// error, never a silent fallback to one interval per edge: named functions need a
+/// [`SizeField`] passed as `Driver::size`.
+pub fn field_for(spec: Option<&SizingSpec>) -> Result<Option<Box<dyn SizeField>>> {
+    match spec {
+        None => Ok(None),
+        Some(s @ SizingSpec::Constant { size }) => builtin_field(s)
+            .map(Some)
+            .ok_or_else(|| SchemeError::Input(format!("sizing: constant size {size} must be positive and finite"))),
+        Some(SizingSpec::Function { name, .. }) => Err(SchemeError::Input(format!(
+            "sizing function '{name}' needs a SizeField (set Driver::size)"
+        ))),
     }
 }

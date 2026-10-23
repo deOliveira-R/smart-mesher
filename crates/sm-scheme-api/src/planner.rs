@@ -27,7 +27,7 @@ use crate::problem::{
 };
 use crate::schedule::{ScheduleInput, schedule};
 use crate::scheme::{Applicability, IntervalCtx, MeshInput, PlanCtx};
-use crate::sizing::{SizeField, builtin_field};
+use crate::sizing::{SizeField, field_for};
 use crate::target::{GroupId, SchemeDim, Target, TransformId, piece_of};
 use crate::vertex::{FaceLayout, VertexRule, VertexType};
 use sm_core::{EntityId, EntityKind, Transform};
@@ -82,12 +82,27 @@ enum Cand {
 
 impl<'r> Driver<'r> {
     pub(crate) fn region(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Region> {
-        let volumes = sorted(input.selection.to_vec());
-        if let Some(v) = volumes.iter().find(|v| piece_of(**v).is_none()) {
-            return Err(SchemeError::Input(format!(
-                "{v} is not a TopoVolume or PartitionCell"
-            )));
-        }
+        let selected = sorted(input.selection.to_vec());
+        let is_face = |id: &EntityId| {
+            matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace)
+        };
+        // Surface-only selection: faces of the view, no pieces.
+        let surface_only = !selected.is_empty() && selected.iter().all(is_face);
+        let (volumes, picked_faces) = if surface_only {
+            for f in &selected {
+                if input.topo.dim_of(*f) != Some(Dim::Face) || !input.topo.is_alive(*f) {
+                    return Err(SchemeError::Input(format!("{f} is not a live face of the view")));
+                }
+            }
+            (Vec::new(), selected)
+        } else {
+            if let Some(v) = selected.iter().find(|v| piece_of(**v).is_none()) {
+                return Err(SchemeError::Input(format!(
+                    "{v} is not a TopoVolume or PartitionCell (a selection is all pieces or all faces)"
+                )));
+            }
+            (selected, Vec::new())
+        };
         let mut grouped = BTreeMap::new();
         let mut groups = Vec::new();
         for g in &intent.groups {
@@ -112,7 +127,7 @@ impl<'r> Driver<'r> {
             groups.push((g.id, members));
         }
         groups.sort();
-        let mut faces = BTreeSet::new();
+        let mut faces: BTreeSet<EntityId> = picked_faces.into_iter().collect();
         let mut vol_faces = BTreeMap::new();
         for v in &volumes {
             let f = input.piece_faces(Target::Volume(*v))?;
@@ -1550,7 +1565,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             }
         }
         let owned = if self.drv.size.is_none() {
-            intent.defaults.sizing.as_ref().and_then(builtin_field)
+            field_for(intent.defaults.sizing.as_ref())?
         } else {
             None
         };

@@ -10,7 +10,7 @@ use crate::problem::{IntervalSink, Requirements, Role, TargetPlan};
 use crate::sizing::SizeField;
 use crate::target::{NodeKey, SchemeDim, Target, piece_of};
 use crate::vertex::FaceLayout;
-use sm_core::{EntityId, EntityKind, Point3};
+use sm_core::{EntityId, Point3};
 use sm_mesh_api::Param;
 use sm_model_api::{Model, PieceFace, PieceRef};
 use sm_topo_api::{CellFlags, CoedgeKey, Side, TopologyView, TopologyViewExt};
@@ -51,9 +51,10 @@ impl Applicability {
 }
 
 /// How pieces of the decomposition layer are seen through the topology view, and how node
-/// owners are classified. The default [`WholeFaces`] handles whole volumes and cells whose
-/// faces are all whole model faces (including composites of whole volumes); a
-/// decomposition-overlay resolver realizes cut faces.
+/// owners are classified. [`WholeFaces`] handles whole volumes and cells whose faces are all
+/// whole model faces (including composites of whole volumes); [`DecompositionFaces`] also
+/// resolves the cut and part faces of pieces split with `Model::split_realized`, through the
+/// decomposition overlay.
 pub trait PieceResolver: Send + Sync {
     /// Faces of the view bounding `piece`, ascending.
     fn faces(
@@ -64,14 +65,67 @@ pub trait PieceResolver: Send + Sync {
     ) -> Result<Vec<EntityId>>;
     /// The face of the view that realizes a piece face, if it is a single face.
     fn face_of(&self, topo: &dyn TopologyView, model: &Model, pf: &PieceFace) -> Option<EntityId>;
-    /// The model or piece entity (`Topo*` or `PartitionCell`) a node owned by `owner` is
-    /// classified on (virtual overlay cells map to their host entity).
+    /// The model or decomposition entity (`Topo*` or `Partition*`) a node owned by `owner` is
+    /// classified on. Mesh entities may be classified on the virtual cells of the overlay
+    /// (`PartitionVertex/Edge/Face`) and on pieces (`PartitionCell`) directly.
     fn classify(&self, owner: EntityId) -> Option<EntityId>;
+}
+
+/// Model and decomposition entity kinds a node owner can be classified on as itself.
+fn classifiable(owner: EntityId) -> Option<EntityId> {
+    sm_mesh_api::entity_dim(owner.kind()).map(|_| owner)
 }
 
 /// Resolver for whole volumes and for cells whose faces are all [`PieceFace::Whole`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WholeFaces;
+
+/// Resolver for every piece of the decomposition: whole volumes, cells, composites and pieces
+/// split with `Model::split_realized`, whose cut and part faces resolve through
+/// `Decomposition::piece_face_cells` to the cells of the view (the decomposition overlay the
+/// split was realized in). Node owners are classified on themselves, virtual `Partition*`
+/// cells included.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DecompositionFaces;
+
+impl PieceResolver for DecompositionFaces {
+    fn faces(
+        &self,
+        topo: &dyn TopologyView,
+        model: &Model,
+        piece: PieceRef,
+    ) -> Result<Vec<EntityId>> {
+        match piece {
+            PieceRef::Whole(v) => Ok(topo.volume_faces(v).to_vec()),
+            PieceRef::Cell(_) => {
+                let d = model.decomposition();
+                let mut out = Vec::new();
+                for pf in d.piece_faces(piece, topo) {
+                    let cells = d.piece_face_cells(&pf, topo).ok_or_else(|| {
+                        SchemeError::Input(format!(
+                            "piece {piece:?}: face {pf:?} has no cells in the view (realize the split with Model::split_realized and mesh through its overlay)"
+                        ))
+                    })?;
+                    out.extend(cells);
+                }
+                out.sort_unstable();
+                out.dedup();
+                Ok(out)
+            }
+        }
+    }
+
+    fn face_of(&self, topo: &dyn TopologyView, model: &Model, pf: &PieceFace) -> Option<EntityId> {
+        match model.decomposition().piece_face_cells(pf, topo)?.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+
+    fn classify(&self, owner: EntityId) -> Option<EntityId> {
+        classifiable(owner)
+    }
+}
 
 impl PieceResolver for WholeFaces {
     fn faces(
@@ -114,14 +168,7 @@ impl PieceResolver for WholeFaces {
     }
 
     fn classify(&self, owner: EntityId) -> Option<EntityId> {
-        match owner.kind() {
-            EntityKind::TopoVertex
-            | EntityKind::TopoEdge
-            | EntityKind::TopoFace
-            | EntityKind::TopoVolume
-            | EntityKind::PartitionCell => Some(owner),
-            _ => None,
-        }
+        classifiable(owner)
     }
 }
 
@@ -135,7 +182,9 @@ pub struct MeshInput<'a> {
     pub model: &'a Model,
     /// Piece resolution.
     pub pieces: &'a dyn PieceResolver,
-    /// Pieces to mesh (`TopoVolume` or `PartitionCell` ids).
+    /// What to mesh: pieces (`TopoVolume` or `PartitionCell` ids), or faces of the view only
+    /// (`TopoFace` / `PartitionFace` ids) for a surface-only mesh, committed into a
+    /// dimension-2 builder. The two cannot be mixed.
     pub selection: &'a [EntityId],
 }
 

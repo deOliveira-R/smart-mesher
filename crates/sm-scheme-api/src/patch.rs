@@ -166,6 +166,12 @@ pub struct PatchNode {
 /// Row `j = 0` runs along logical side 0 of the face layout, column `i = ni - 1` along side 1;
 /// row `nj - 1` and column `0` run along sides 2 and 3 reversed. Lets a volume scheme (sweep,
 /// map) walk lines of a neighbouring mapped face without knowing its private numbering.
+///
+/// **Exception: copy members.** The grid of a face generated as a copy keeps the root's `ni`,
+/// `nj` and order with the keys mapped through the correspondence, so it follows the *image of
+/// the root's layout*, which need not be the member's own logical side 0. Consumers that need
+/// the member's sides must go by keys ([`NodeGrid::line_from`], [`NodeGrid::position`]), not by
+/// the side numbering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeGrid {
     /// Nodes along `i`.

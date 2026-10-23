@@ -61,8 +61,8 @@ pub use problem::{
     TargetPlan,
 };
 pub use scheme::{
-    Applicability, BoundaryLoop, BoundaryUse, GenCtx, IntervalCtx, MeshInput, MeshTransform,
-    PieceResolver, PlanCtx, Scheme, SchemeRegistry, WholeFaces,
+    Applicability, BoundaryLoop, BoundaryUse, DecompositionFaces, GenCtx, IntervalCtx, MeshInput,
+    MeshTransform, PieceResolver, PlanCtx, Scheme, SchemeRegistry, WholeFaces,
 };
 pub use sizing::{ConstantSize, SizeField, SymMat3};
 pub use solve::{CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver};

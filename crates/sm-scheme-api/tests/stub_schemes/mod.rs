@@ -912,6 +912,25 @@ fn generate_stack(
             .or_else(|| cx.point(k))
             .ok_or_else(|| fatal(format!("node {k:?}")))
     };
+    // Claimed planes follow their face's normal (the patch contract): flip the source
+    // orientation where the plane face's normal opposes the source normal.
+    let mut plane_flip = vec![false; layers + 1];
+    if group {
+        let p0 = t
+            .face_outline(st.source)
+            .first()
+            .copied()
+            .ok_or_else(|| fatal("source outline".into()))?;
+        let ns = geom::face_normal(t, st.source, p0).map_err(|e| fatal(e.to_string()))?;
+        for (p, flip) in plane_flip.iter_mut().enumerate().skip(1) {
+            let face = if p == layers { Some(st.target) } else { plane_owner[p] };
+            if let Some(f) = face {
+                let q = p0 + shift * frac[p];
+                let nf = geom::face_normal(t, f, q).map_err(|e| fatal(e.to_string()))?;
+                *flip = ns.dot(nf) < 0.0;
+            }
+        }
+    }
     let mut buf: Vec<u32> = Vec::with_capacity(8);
     for (shape, nodes) in src.elements.iter() {
         let sk: Vec<NodeKey> = nodes
@@ -954,11 +973,14 @@ fn generate_stack(
             pb.push(ElemShape::Cell(cell), &buf);
         }
         if group {
-            // Surface elements of the claimed planes, in source orientation.
+            // Surface elements of the claimed planes, along each plane face's normal.
             for p in (1..=layers).filter(|p| *p == layers || plane_owner[*p].is_some()) {
                 buf.clear();
                 for col in &c {
                     buf.push(idx(&mut pb, col[p]));
+                }
+                if plane_flip[p] {
+                    buf[1..].reverse();
                 }
                 pb.owner(if p == layers {
                     st.target
