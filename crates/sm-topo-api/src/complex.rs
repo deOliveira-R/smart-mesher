@@ -1,29 +1,38 @@
 //! [`CellComplex`]: the reference in-memory implementor of [`TopologyView`] and [`TopologyEdit`].
 //!
-//! Storage (all that is stored):
-//! - per rank, a table of cells indexed by serial: `alive`, `born`, `carrier`, `flags`, and one
-//!   boundary row each (a "paged" CSR: `(start, len)` spans into one flat `Vec<Incidence>`);
-//! - sparse tolerance overrides, face-pair records, the lineage log, the current op.
+//! Storage (all that is stored, per rank): `state`, `born`, `carrier`, `flags`, one boundary row
+//! (a "paged" CSR: `(start, len)` spans into one flat `Vec<Incidence>`), and incrementally
+//! maintained derived data:
+//! - the **coboundary** (transpose) rows, updated by every row write, ascending by parent id;
+//! - the sorted **live lists**;
+//! - **aux rows**: distinct edges of a face and distinct faces of a volume, ascending;
+//! - the geometry-dependent **radial rings** of edges, rebuilt per changed edge at `end_op`.
 //!
-//! The coboundary (transpose), live-cell lists and every loop/shell/use view are *derived*:
-//! built lazily from the boundary rows into a `OnceLock` and dropped by every edit.
+//! Every mutation goes through a few primitives (`alloc`, `set_row`, `retire`, carrier/flag/
+//! tolerance/pcurve/pair setters) that append an inverse record to the op **journal**. That one
+//! mechanism gives atomic operators (a failing operator rolls back to its mark), `abort_op`, and
+//! the set of touched cells that `end_op` validates, so building N cells costs O(N log N) and
+//! never rebuilds an index wholesale.
+
+mod ops;
+mod radial;
 
 use crate::derived::TopologyViewExt;
-use crate::edit::TopologyEdit;
 use crate::error::TopoError;
+use crate::lineage::LineageLog;
 use crate::types::{
-    Carrier, CellFlags, Coincidence, CoedgeSpec, CurveCarrier, Dim, FacePair, FaceUseSpec, Incidence, LineageKind, LineageRecord, OpId, Region, Sense,
-    Side, SurfaceCarrier,
+    Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, LineageRecord, ModKind, OpId, OpSummary, ShellKind, Side, Sense, SurfaceCarrier,
 };
-use crate::view::TopologyView;
-use sm_core::{EntityId, Point3};
-use sm_geom_api::{Interval, Tolerance};
-use smallvec::{SmallVec, smallvec};
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use crate::validate;
+use crate::view::{EdgeUse, NO_CARRIER, TopologyView};
+use sm_core::EntityId;
+use sm_geom_api::{CurveDef, GeomStore, GeomStoreMut, MemoryStore, ModelTolerance, PCurve, SurfaceDef};
+use smallvec::SmallVec;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Paged CSR rows: row `slot` lives at `data[span.0 .. span.0 + span.1]`. Replacing a row appends
-/// the new one and orphans the old; `compact` rewrites in slot order (deterministic).
+/// the new one and orphans the old; `compact` rewrites in slot order (deterministic). Compaction
+/// only runs when no operation is open, so a rollback can always restore an old span.
 #[derive(Clone, Debug, Default)]
 struct Rows {
     span: Vec<(u32, u32)>,
@@ -43,24 +52,37 @@ impl Rows {
         }
     }
 
-    fn set(&mut self, slot: usize, entries: &[Incidence]) -> Result<(), TopoError> {
+    fn span_row(&self, span: (u32, u32)) -> &[Incidence] {
+        self.data.get(span.0 as usize..(span.0 + span.1) as usize).unwrap_or(&[])
+    }
+
+    /// Replace row `slot`; returns the previous span.
+    fn set(&mut self, slot: usize, entries: &[Incidence]) -> Result<(u32, u32), TopoError> {
         let start = u32::try_from(self.data.len()).map_err(|_| TopoError::IdExhausted)?;
         let len = u32::try_from(entries.len()).map_err(|_| TopoError::IdExhausted)?;
         let Some(sp) = self.span.get_mut(slot) else { return Err(TopoError::IdExhausted) };
-        self.garbage += sp.1 as usize;
+        let old = *sp;
+        self.garbage += old.1 as usize;
         *sp = (start, len);
         self.data.extend_from_slice(entries);
-        if self.garbage > 4096 && self.garbage * 2 > self.data.len() {
-            self.compact()?;
-        }
-        Ok(())
+        Ok(old)
     }
 
-    fn compact(&mut self) -> Result<(), TopoError> {
+    fn restore(&mut self, slot: usize, span: (u32, u32)) {
+        if let Some(sp) = self.span.get_mut(slot) {
+            self.garbage += sp.1 as usize;
+            *sp = span;
+        }
+    }
+
+    fn maybe_compact(&mut self) {
+        if self.garbage <= 4096 || self.garbage * 2 <= self.data.len() {
+            return;
+        }
         let mut data = Vec::with_capacity(self.data.len() - self.garbage.min(self.data.len()));
         let mut span = Vec::with_capacity(self.span.len());
         for slot in 0..self.span.len() {
-            let start = u32::try_from(data.len()).map_err(|_| TopoError::IdExhausted)?;
+            let start = data.len() as u32;
             let row = self.row(slot);
             data.extend_from_slice(row);
             span.push((start, row.len() as u32));
@@ -68,39 +90,82 @@ impl Rows {
         self.data = data;
         self.span = span;
         self.garbage = 0;
-        Ok(())
     }
 }
 
 #[derive(Clone, Debug, Default)]
 struct Table {
-    alive: Vec<bool>,
+    state: Vec<EntityState>,
     born: Vec<OpId>,
     carrier: Vec<Carrier>,
     flags: Vec<CellFlags>,
     down: Rows,
+    up: Vec<SmallVec<[Incidence; 4]>>,
+    aux: Vec<SmallVec<[EntityId; 8]>>,
+    live: Vec<EntityId>,
 }
 
-/// Lazily derived indexes: live-cell lists and the transposed (coboundary) rows.
-#[derive(Clone, Debug, Default)]
-struct Derived {
-    live: [Vec<EntityId>; 5],
-    up: [Rows; 5],
+/// Inverse of one primitive mutation.
+#[derive(Clone, Debug)]
+enum Undo {
+    Alloc(EntityId),
+    Row { id: EntityId, old: (u32, u32) },
+    State { id: EntityId, old: EntityState },
+    Carrier { id: EntityId, old: Carrier },
+    Flags { id: EntityId, old: CellFlags },
+    Tol { id: EntityId, old: Option<f64> },
+    PCurve { key: CoedgeKey, old: Option<PCurve> },
+    Shell { key: (EntityId, u16), old: Option<ShellKind> },
+    Pair { a: EntityId, b: EntityId, old: Option<FacePair> },
+    ModelTol(ModelTolerance),
+    Curve { id: EntityId, old: CurveDef },
+    Surface { id: EntityId, old: SurfaceDef },
+    Gap(Option<f64>),
+}
+
+/// A point to roll back to.
+#[derive(Clone, Copy, Debug)]
+struct Mark {
+    journal: usize,
+    lineage: usize,
+    curves: usize,
+    surfaces: usize,
+}
+
+/// State of the open operation.
+#[derive(Clone, Copy, Debug)]
+struct OpState {
+    op: OpId,
+    prev_revision: OpId,
+    start: Mark,
 }
 
 /// The reference cellular non-manifold complex.
 ///
-/// Implements [`TopologyView`] and [`TopologyEdit`]. Equal edit sequences give equal ids and equal
-/// [`TopologyView::canonical_hash`].
+/// Implements [`TopologyView`] and [`TopologyEdit`]. It owns its geometry store
+/// ([`TopologyView::shapes`] / [`TopologyEdit::shapes_mut`]). Equal edit sequences give equal ids
+/// and equal [`TopologyView::canonical_hash`].
+///
+/// All edits must happen between `begin_op` and `end_op`; each operator is atomic and
+/// `abort_op` restores the state at `begin_op`.
 #[derive(Clone, Debug)]
 pub struct CellComplex {
-    tol: Tolerance,
+    tol: ModelTolerance,
     tables: [Table; 5],
     tol_override: BTreeMap<EntityId, f64>,
+    pcurves: BTreeMap<CoedgeKey, PCurve>,
+    shells: BTreeMap<(EntityId, u16), ShellKind>,
     pairs: Vec<FacePair>,
-    lineage: Vec<LineageRecord>,
-    op: OpId,
-    derived: OnceLock<Derived>,
+    pair_by_face: BTreeMap<EntityId, SmallVec<[FacePair; 2]>>,
+    lineage: LineageLog,
+    shapes: MemoryStore,
+    radial: Vec<SmallVec<[EdgeUse; 4]>>,
+    revision: OpId,
+    open: Option<OpState>,
+    ops_run: u64,
+    merge_gap: Option<f64>,
+    journal: Vec<Undo>,
+    dirty_edges: BTreeSet<EntityId>,
 }
 
 impl Default for CellComplex {
@@ -112,108 +177,260 @@ impl Default for CellComplex {
 impl CellComplex {
     /// An empty complex with the default tolerance policy.
     pub fn new() -> Self {
-        Self::with_tolerance(Tolerance::DEFAULT)
+        Self::with_tolerance(ModelTolerance::DEFAULT)
     }
 
     /// An empty complex with the given global tolerance policy.
-    pub fn with_tolerance(tol: Tolerance) -> Self {
+    pub fn with_tolerance(tol: ModelTolerance) -> Self {
         Self {
             tol,
             tables: core::array::from_fn(|_| Table::default()),
             tol_override: BTreeMap::new(),
+            pcurves: BTreeMap::new(),
+            shells: BTreeMap::new(),
             pairs: Vec::new(),
-            lineage: Vec::new(),
-            op: OpId(0),
-            derived: OnceLock::new(),
+            pair_by_face: BTreeMap::new(),
+            lineage: LineageLog::new(),
+            shapes: MemoryStore::new(),
+            radial: Vec::new(),
+            revision: OpId(0),
+            open: None,
+            ops_run: 0,
+            merge_gap: None,
+            journal: Vec::new(),
+            dirty_edges: BTreeSet::new(),
         }
     }
 
-    // ---------------------------------------------------------------- internals
+    /// The geometry store (read access without going through the trait object).
+    pub fn store(&self) -> &MemoryStore {
+        &self.shapes
+    }
+
+    /// The operation currently open, if any.
+    pub fn open_op(&self) -> Option<OpId> {
+        self.open.as_ref().map(|o| o.op)
+    }
+
+    // ---------------------------------------------------------------- primitives
 
     fn locate(&self, id: EntityId) -> Option<(Dim, usize)> {
-        let dim = Dim::of_kind(id.kind())?;
+        let dim = Dim::of_real_kind(id.kind())?;
         let slot = usize::try_from(id.serial()).ok()?;
-        (slot < self.tables[dim.index()].alive.len()).then_some((dim, slot))
+        (slot < self.tables[dim.index()].state.len()).then_some((dim, slot))
     }
 
-    fn derived(&self) -> &Derived {
-        self.derived.get_or_init(|| self.build_derived())
+    fn ensure_open(&self) -> Result<OpId, TopoError> {
+        self.open.as_ref().map(|o| o.op).ok_or(TopoError::NoOpenOp)
     }
 
-    fn invalidate(&mut self) {
-        self.derived = OnceLock::new();
+    fn mark(&self) -> Mark {
+        Mark { journal: self.journal.len(), lineage: self.lineage.len(), curves: self.shapes.curve_count(), surfaces: self.shapes.surface_count() }
     }
 
-    fn build_derived(&self) -> Derived {
-        let mut d = Derived::default();
-        for dim in Dim::ALL {
-            let t = &self.tables[dim.index()];
-            for (slot, alive) in t.alive.iter().enumerate() {
-                if *alive && let Some(id) = EntityId::new(dim.kind(), slot as u64) {
-                    d.live[dim.index()].push(id);
-                }
-            }
-            d.up[dim.index()].span = vec![(0, 0); t.alive.len()];
+    /// Run `f` as one atomic operator: on error everything it did is rolled back.
+    fn atomic<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, TopoError>) -> Result<T, TopoError> {
+        self.ensure_open()?;
+        let mark = self.mark();
+        let r = f(self);
+        if r.is_err() {
+            self.rollback(mark);
         }
-        // Parents are visited in ascending id order and the sort below is stable, so every
-        // coboundary row comes out ascending by parent id.
-        let mut tuples: Vec<(usize, usize, Incidence)> = Vec::new();
-        for dim in Dim::ALL {
-            for &parent in &d.live[dim.index()] {
-                let Some((_, pslot)) = self.locate(parent) else { continue };
-                for e in self.tables[dim.index()].down.row(pslot) {
-                    if let Some((cd, cs)) = self.locate(e.cell) {
-                        tuples.push((cd.index(), cs, Incidence { cell: parent, side: e.side, ring: e.ring }));
+        r
+    }
+
+    fn rollback(&mut self, mark: Mark) {
+        while self.journal.len() > mark.journal {
+            let Some(u) = self.journal.pop() else { break };
+            self.undo(u);
+        }
+        self.lineage.truncate(mark.lineage);
+        self.shapes.truncate(mark.curves, mark.surfaces);
+    }
+
+    fn undo(&mut self, u: Undo) {
+        match u {
+            Undo::Alloc(id) => {
+                if let Some(dim) = Dim::of_real_kind(id.kind()) {
+                    let t = &mut self.tables[dim.index()];
+                    t.state.pop();
+                    t.born.pop();
+                    t.carrier.pop();
+                    t.flags.pop();
+                    t.down.span.pop();
+                    t.up.pop();
+                    t.aux.pop();
+                    if let Ok(i) = t.live.binary_search(&id) {
+                        t.live.remove(i);
+                    }
+                    if dim == Dim::Edge {
+                        self.radial.pop();
                     }
                 }
             }
-        }
-        tuples.sort_by_key(|t| (t.0, t.1));
-        for (cd, cs, inc) in tuples {
-            let rows = &mut d.up[cd];
-            let sp = &mut rows.span[cs];
-            if sp.1 == 0 {
-                sp.0 = rows.data.len() as u32;
+            Undo::Row { id, old } => {
+                if let Some((dim, slot)) = self.locate(id) {
+                    let cur: Vec<Incidence> = self.tables[dim.index()].down.row(slot).to_vec();
+                    let prev: Vec<Incidence> = self.tables[dim.index()].down.span_row(old).to_vec();
+                    self.relink(id, &cur, &prev);
+                    self.tables[dim.index()].down.restore(slot, old);
+                    self.refresh_aux(dim, slot);
+                }
             }
-            sp.1 += 1;
-            rows.data.push(inc);
+            Undo::State { id, old } => {
+                if let Some((dim, slot)) = self.locate(id) {
+                    let t = &mut self.tables[dim.index()];
+                    let was_live = t.state[slot] == EntityState::Live;
+                    t.state[slot] = old;
+                    if old == EntityState::Live && !was_live {
+                        if let Err(i) = t.live.binary_search(&id) {
+                            t.live.insert(i, id);
+                        }
+                    } else if old != EntityState::Live && was_live {
+                        if let Ok(i) = t.live.binary_search(&id) {
+                            t.live.remove(i);
+                        }
+                    }
+                }
+            }
+            Undo::Carrier { id, old } => {
+                if let Some((dim, slot)) = self.locate(id) {
+                    self.tables[dim.index()].carrier[slot] = old;
+                }
+            }
+            Undo::Flags { id, old } => {
+                if let Some((dim, slot)) = self.locate(id) {
+                    self.tables[dim.index()].flags[slot] = old;
+                }
+            }
+            Undo::Tol { id, old } => match old {
+                Some(t) => {
+                    self.tol_override.insert(id, t);
+                }
+                None => {
+                    self.tol_override.remove(&id);
+                }
+            },
+            Undo::PCurve { key, old } => match old {
+                Some(p) => {
+                    self.pcurves.insert(key, p);
+                }
+                None => {
+                    self.pcurves.remove(&key);
+                }
+            },
+            Undo::Shell { key, old } => match old {
+                Some(k) => {
+                    self.shells.insert(key, k);
+                }
+                None => {
+                    self.shells.remove(&key);
+                }
+            },
+            Undo::Pair { a, b, old } => match old {
+                Some(p) => self.raw_put_pair(p),
+                None => self.raw_del_pair(a, b),
+            },
+            Undo::ModelTol(t) => self.tol = t,
+            Undo::Curve { id, old } => {
+                let _ = self.shapes.replace_curve(id, old);
+            }
+            Undo::Surface { id, old } => {
+                let _ = self.shapes.replace_surface(id, old);
+            }
+            Undo::Gap(g) => self.merge_gap = g,
         }
-        d
+    }
+
+    fn remove_up(&mut self, child: EntityId, inc: Incidence) {
+        if let Some((d, s)) = self.locate(child) {
+            let r = &mut self.tables[d.index()].up[s];
+            if let Ok(i) = r.binary_search(&inc) {
+                r.remove(i);
+            }
+        }
+    }
+
+    fn insert_up(&mut self, child: EntityId, inc: Incidence) {
+        if let Some((d, s)) = self.locate(child) {
+            let r = &mut self.tables[d.index()].up[s];
+            let i = match r.binary_search(&inc) {
+                Ok(i) | Err(i) => i,
+            };
+            r.insert(i, inc);
+        }
+    }
+
+    /// Move the coboundary links of `id` from the entries `from` to the entries `to`.
+    fn relink(&mut self, id: EntityId, from: &[Incidence], to: &[Incidence]) {
+        for e in from {
+            self.remove_up(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
+            if e.cell.kind() == sm_core::EntityKind::TopoEdge {
+                self.dirty_edges.insert(e.cell);
+            }
+        }
+        for e in to {
+            self.insert_up(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
+            if e.cell.kind() == sm_core::EntityKind::TopoEdge {
+                self.dirty_edges.insert(e.cell);
+            }
+        }
+    }
+
+    fn refresh_aux(&mut self, dim: Dim, slot: usize) {
+        if !matches!(dim, Dim::Face | Dim::Volume) {
+            return;
+        }
+        let t = &self.tables[dim.index()];
+        let mut v: SmallVec<[EntityId; 8]> = t.down.row(slot).iter().filter(|e| e.ring != Incidence::EMBEDDED).map(|e| e.cell).collect();
+        v.sort();
+        v.dedup();
+        self.tables[dim.index()].aux[slot] = v;
     }
 
     fn alloc(&mut self, dim: Dim, carrier: Carrier) -> Result<EntityId, TopoError> {
+        let op = self.ensure_open()?;
         let t = &mut self.tables[dim.index()];
-        let id = EntityId::new(dim.kind(), t.alive.len() as u64).ok_or(TopoError::IdExhausted)?;
-        t.alive.push(true);
-        t.born.push(self.op);
+        let id = EntityId::new(dim.kind(), t.state.len() as u64).ok_or(TopoError::IdExhausted)?;
+        t.state.push(EntityState::Live);
+        t.born.push(op);
         t.carrier.push(carrier);
         t.flags.push(CellFlags::NONE);
         t.down.push_empty();
-        self.invalidate();
+        t.up.push(SmallVec::new());
+        t.aux.push(SmallVec::new());
+        t.live.push(id);
+        if dim == Dim::Edge {
+            self.radial.push(SmallVec::new());
+        }
+        self.journal.push(Undo::Alloc(id));
         Ok(id)
     }
 
     /// Check `id` is a live cell of rank `dim`; returns its slot.
     fn live_slot(&self, id: EntityId, dim: Dim) -> Result<usize, TopoError> {
-        if Dim::of_kind(id.kind()) != Some(dim) {
+        if Dim::of_real_kind(id.kind()) != Some(dim) {
             return Err(TopoError::WrongDim { id, expected: dim });
         }
         match self.locate(id) {
             None => Err(TopoError::NoSuchCell(id)),
-            Some((_, slot)) if self.tables[dim.index()].alive[slot] => Ok(slot),
+            Some((_, slot)) if self.tables[dim.index()].state[slot] == EntityState::Live => Ok(slot),
             Some(_) => Err(TopoError::Dead(id)),
         }
     }
 
     fn live_any(&self, id: EntityId) -> Result<(Dim, usize), TopoError> {
         let (dim, slot) = self.locate(id).ok_or(TopoError::NoSuchCell(id))?;
-        if self.tables[dim.index()].alive[slot] { Ok((dim, slot)) } else { Err(TopoError::Dead(id)) }
+        if self.tables[dim.index()].state[slot] == EntityState::Live { Ok((dim, slot)) } else { Err(TopoError::Dead(id)) }
     }
 
     fn set_row(&mut self, id: EntityId, entries: &[Incidence]) -> Result<(), TopoError> {
         let (dim, slot) = self.live_any(id)?;
-        self.tables[dim.index()].down.set(slot, entries)?;
-        self.invalidate();
+        let prev: Vec<Incidence> = self.tables[dim.index()].down.row(slot).to_vec();
+        let old = self.tables[dim.index()].down.set(slot, entries)?;
+        self.journal.push(Undo::Row { id, old });
+        self.relink(id, &prev, entries);
+        self.refresh_aux(dim, slot);
         Ok(())
     }
 
@@ -226,27 +443,145 @@ impl CellComplex {
 
     fn up(&self, id: EntityId) -> &[Incidence] {
         match self.locate(id) {
-            Some((d, s)) => self.derived().up[d.index()].row(s),
+            Some((d, s)) => &self.tables[d.index()].up[s],
             None => &[],
         }
     }
 
-    fn note(&mut self, kind: LineageKind, from: &[EntityId], to: &[EntityId]) {
-        self.lineage.push(LineageRecord { op: self.op, kind, from: from.iter().copied().collect(), to: to.iter().copied().collect() });
+    fn note(&mut self, entity: EntityId, kind: LineageKind) {
+        let op = self.open.as_ref().map_or(self.revision, |o| o.op);
+        self.lineage.push(LineageRecord { op, entity, kind });
     }
 
-    /// Mark dead and clear the row. Does not touch parents or lineage.
-    fn retire(&mut self, id: EntityId) -> Result<(), TopoError> {
-        self.set_row(id, &[])?;
-        if let Some((d, s)) = self.locate(id) {
-            self.tables[d.index()].alive[s] = false;
+    fn set_state(&mut self, id: EntityId, new: EntityState) {
+        if let Some((dim, slot)) = self.locate(id) {
+            let t = &mut self.tables[dim.index()];
+            let old = t.state[slot];
+            if old == new {
+                return;
+            }
+            t.state[slot] = new;
+            if old == EntityState::Live {
+                if let Ok(i) = t.live.binary_search(&id) {
+                    t.live.remove(i);
+                }
+            }
+            self.journal.push(Undo::State { id, old });
         }
-        self.tol_override.remove(&id);
-        self.pairs.retain(|p| p.status == Coincidence::Merged || (p.a != id && p.b != id));
-        self.invalidate();
+    }
+
+    fn set_carrier_raw(&mut self, id: EntityId, c: Carrier) {
+        if let Some((dim, slot)) = self.locate(id) {
+            let old = core::mem::replace(&mut self.tables[dim.index()].carrier[slot], c);
+            self.journal.push(Undo::Carrier { id, old });
+        }
+    }
+
+    fn set_flags_raw(&mut self, id: EntityId, f: CellFlags) {
+        if let Some((dim, slot)) = self.locate(id) {
+            let old = core::mem::replace(&mut self.tables[dim.index()].flags[slot], f);
+            self.journal.push(Undo::Flags { id, old });
+        }
+    }
+
+    fn set_tol_raw(&mut self, id: EntityId, t: Option<f64>) {
+        let old = match t {
+            Some(v) => self.tol_override.insert(id, v),
+            None => self.tol_override.remove(&id),
+        };
+        if old != t {
+            self.journal.push(Undo::Tol { id, old });
+        }
+    }
+
+    fn set_pcurve_raw(&mut self, key: CoedgeKey, pc: Option<PCurve>) {
+        let old = match pc {
+            Some(p) => self.pcurves.insert(key, p),
+            None => self.pcurves.remove(&key),
+        };
+        self.journal.push(Undo::PCurve { key, old });
+    }
+
+    fn move_pcurve(&mut self, from: CoedgeKey, to: CoedgeKey) {
+        if let Some(p) = self.pcurves.get(&from).cloned() {
+            self.set_pcurve_raw(from, None);
+            self.set_pcurve_raw(to, Some(p));
+        }
+    }
+
+    fn set_shell_raw(&mut self, key: (EntityId, u16), k: Option<ShellKind>) {
+        let old = match k {
+            Some(v) => self.shells.insert(key, v),
+            None => self.shells.remove(&key),
+        };
+        self.journal.push(Undo::Shell { key, old });
+    }
+
+    fn raw_put_pair(&mut self, p: FacePair) {
+        match self.pairs.binary_search_by(|q| (q.a, q.b).cmp(&(p.a, p.b))) {
+            Ok(i) => self.pairs[i] = p,
+            Err(i) => self.pairs.insert(i, p),
+        }
+        for f in [p.a, p.b] {
+            let v = self.pair_by_face.entry(f).or_default();
+            match v.binary_search_by(|q| (q.a, q.b).cmp(&(p.a, p.b))) {
+                Ok(i) => v[i] = p,
+                Err(i) => v.insert(i, p),
+            }
+        }
+    }
+
+    fn raw_del_pair(&mut self, a: EntityId, b: EntityId) {
+        if let Ok(i) = self.pairs.binary_search_by(|q| (q.a, q.b).cmp(&(a, b))) {
+            self.pairs.remove(i);
+        }
+        for f in [a, b] {
+            if let Some(v) = self.pair_by_face.get_mut(&f) {
+                if let Ok(i) = v.binary_search_by(|q| (q.a, q.b).cmp(&(a, b))) {
+                    v.remove(i);
+                }
+                if v.is_empty() {
+                    self.pair_by_face.remove(&f);
+                }
+            }
+        }
+    }
+
+    fn put_pair(&mut self, p: FacePair) {
+        let old = self.pairs.binary_search_by(|q| (q.a, q.b).cmp(&(p.a, p.b))).ok().map(|i| self.pairs[i]);
+        self.journal.push(Undo::Pair { a: p.a, b: p.b, old });
+        self.raw_put_pair(p);
+    }
+
+    fn del_pair(&mut self, a: EntityId, b: EntityId) {
+        let old = self.pairs.binary_search_by(|q| (q.a, q.b).cmp(&(a, b))).ok().map(|i| self.pairs[i]);
+        if old.is_some() {
+            self.journal.push(Undo::Pair { a, b, old });
+            self.raw_del_pair(a, b);
+        }
+    }
+
+    /// Mark dead (with the given state) and clear the row. Parents must already be rewritten.
+    fn retire(&mut self, id: EntityId, state: EntityState) -> Result<(), TopoError> {
+        self.set_row(id, &[])?;
+        self.set_state(id, state);
+        self.set_tol_raw(id, None);
+        if let Some((Dim::Face, _)) = self.locate(id) {
+            let doomed: Vec<FacePair> = self.pair_by_face.get(&id).map(|v| v.iter().copied().filter(|p| p.status != crate::types::Coincidence::Merged).collect()).unwrap_or_default();
+            for p in doomed {
+                self.del_pair(p.a, p.b);
+            }
+        }
+        if let Some((Dim::Volume, _)) = self.locate(id) {
+            let keys: Vec<(EntityId, u16)> = self.shells.range((id, 0)..=(id, u16::MAX)).map(|(k, _)| *k).collect();
+            for k in keys {
+                self.set_shell_raw(k, None);
+            }
+        }
         Ok(())
     }
 
+    /// Normalize a row into canonical form for its rank.
     fn normalize(dim: Dim, row: &mut Vec<Incidence>) {
         match dim {
             Dim::Vertex => {}
@@ -313,53 +648,29 @@ impl CellComplex {
     }
 
     fn effective_tol(&self, id: EntityId) -> f64 {
-        TopologyView::tolerance(self, id)
+        TopologyView::tolerance_of(self, id)
     }
 
     fn inherit(&mut self, from: EntityId, to: EntityId) {
-        if let Some((d, s)) = self.locate(from)
-            && let Some((d2, s2)) = self.locate(to)
-        {
+        if let Some((d, s)) = self.locate(from) {
             let fl = self.tables[d.index()].flags[s];
-            self.tables[d2.index()].flags[s2] = fl;
+            self.set_flags_raw(to, fl);
         }
         if let Some(t) = self.tol_override.get(&from).copied() {
-            self.tol_override.insert(to, t);
+            self.set_tol_raw(to, Some(t));
         }
     }
 
-    fn raise_tolerance(&mut self, keep: EntityId, other_tol: f64) {
-        let t = self.effective_tol(keep).max(other_tol);
-        if t > self.tol.linear {
-            self.tol_override.insert(keep, t);
-        }
-    }
-
+    /// Which sides of a face are occupied by volumes.
     fn occupancy(&self, face: EntityId) -> (bool, bool) {
-        let s = self.face_sides(face);
-        (s.left != Region::Exterior, s.right != Region::Exterior)
-    }
-
-    fn reverse_inner(&mut self, face: EntityId) -> Result<(), TopoError> {
-        let row = self.row(face).to_vec();
-        let mut out: Vec<Incidence> = Vec::with_capacity(row.len());
-        for g in row.chunk_by(|a, b| a.ring == b.ring) {
-            if g[0].ring == Incidence::EMBEDDED {
-                out.extend_from_slice(g);
-            } else {
-                out.extend(g.iter().rev().map(|e| Incidence { side: e.side.flip(), ..*e }));
+        let mut occ = (false, false);
+        for e in self.up(face) {
+            if Dim::of_real_kind(e.cell.kind()) == Some(Dim::Volume) {
+                occ.0 |= e.side != Side::Right;
+                occ.1 |= e.side != Side::Left;
             }
         }
-        Self::normalize(Dim::Face, &mut out);
-        self.replace_in_parents(face, |e| smallvec![Incidence { side: e.side.flip(), ..*e }])?;
-        self.set_row(face, &out)?;
-        if let Some((_, s)) = self.locate(face)
-            && let Carrier::Surface(sc) = self.tables[Dim::Face.index()].carrier[s]
-        {
-            self.tables[Dim::Face.index()].carrier[s] = Carrier::Surface(SurfaceCarrier { sense: sc.sense.flip(), ..sc });
-        }
-        self.note(LineageKind::Modified, &[face], &[face]);
-        Ok(())
+        occ
     }
 
     fn check_occupancy(&self, uses: &[(EntityId, Side)]) -> Result<(), TopoError> {
@@ -378,10 +689,86 @@ impl CellComplex {
         }
         Ok(())
     }
+
+    /// Reverse a face's orientation: loops run backwards, left and right swap in every parent,
+    /// the carrier sense flips and pcurves follow their coedges. Lineage: `Modified(Reversed)`.
+    fn reverse_inner(&mut self, face: EntityId) -> Result<(), TopoError> {
+        let row = self.row(face).to_vec();
+        let mut out: Vec<Incidence> = Vec::with_capacity(row.len());
+        for g in row.chunk_by(|a, b| a.ring == b.ring) {
+            if g[0].ring == Incidence::EMBEDDED {
+                out.extend_from_slice(g);
+            } else {
+                out.extend(g.iter().rev().map(|e| Incidence { side: e.side.flip(), ..*e }));
+            }
+        }
+        Self::normalize(Dim::Face, &mut out);
+        // Re-key pcurves (the uv curve of an edge does not change when the loop is reversed).
+        let mut moved: Vec<(CoedgeKey, PCurve)> = Vec::new();
+        for e in &row {
+            if e.ring == Incidence::EMBEDDED {
+                continue;
+            }
+            let k = CoedgeKey { face, edge: e.cell, side: e.side };
+            if let Some(p) = self.pcurves.get(&k).cloned() {
+                moved.push((k, p));
+            }
+        }
+        for (k, _) in &moved {
+            self.set_pcurve_raw(*k, None);
+        }
+        for (k, p) in moved {
+            self.set_pcurve_raw(CoedgeKey { side: k.side.flip(), ..k }, Some(p));
+        }
+        self.replace_in_parents(face, |e| smallvec::smallvec![Incidence { side: e.side.flip(), ..*e }])?;
+        self.set_row(face, &out)?;
+        if let Some((_, s)) = self.locate(face) {
+            if let Carrier::Surface(sc) = self.tables[Dim::Face.index()].carrier[s].clone() {
+                self.set_carrier_raw(face, Carrier::Surface(SurfaceCarrier { sense: sc.sense.flip(), ..sc }));
+            }
+        }
+        self.note(face, LineageKind::Modified(ModKind::Reversed));
+        Ok(())
+    }
+
+    /// Re-apply the orientation rule (ir.md §6) to one face: a lone volume sits on the left, two
+    /// different volumes are `left < right`. Logs a `Modified(Reversed)` if it had to flip.
+    fn normalize_orientation(&mut self, face: EntityId) -> Result<(), TopoError> {
+        if self.live_slot(face, Dim::Face).is_err() {
+            return Ok(());
+        }
+        let mut left = None;
+        let mut right = None;
+        for e in self.up(face) {
+            if Dim::of_real_kind(e.cell.kind()) != Some(Dim::Volume) {
+                continue;
+            }
+            match e.side {
+                Side::Left => left = Some(e.cell),
+                Side::Right => right = Some(e.cell),
+                Side::Both => {}
+            }
+        }
+        let flip = match (left, right) {
+            (None, Some(_)) => true,
+            (Some(l), Some(r)) => l > r,
+            _ => false,
+        };
+        if flip { self.reverse_inner(face) } else { Ok(()) }
+    }
+
+    fn edge_ends_raw(&self, edge: EntityId) -> Option<(EntityId, EntityId)> {
+        match self.row(edge) {
+            [only] if only.side == Side::Both => Some((only.cell, only.cell)),
+            [a, b] if a.side == Side::Left && b.side == Side::Right => Some((a.cell, b.cell)),
+            _ => None,
+        }
+    }
+
 }
 
-/// `a < b`, false if either is NaN.
-fn lt(a: f64, b: f64) -> bool {
+/// `a < b`, false if either is NaN (used by operators).
+pub(crate) fn lt(a: f64, b: f64) -> bool {
     a.partial_cmp(&b) == Some(core::cmp::Ordering::Less)
 }
 
@@ -413,34 +800,38 @@ pub(crate) fn canonical_rotate(ring: &mut [Incidence]) {
 }
 
 impl TopologyView for CellComplex {
-    fn model_tolerance(&self) -> Tolerance {
-        self.tol
+    fn tolerance(&self) -> &ModelTolerance {
+        &self.tol
+    }
+
+    fn shapes(&self) -> &dyn GeomStore {
+        &self.shapes
     }
 
     fn dim_of(&self, id: EntityId) -> Option<Dim> {
         self.locate(id).map(|(d, _)| d)
     }
 
-    fn is_alive(&self, id: EntityId) -> bool {
-        self.locate(id).is_some_and(|(d, s)| self.tables[d.index()].alive[s])
+    fn state(&self, id: EntityId) -> Option<EntityState> {
+        self.locate(id).map(|(d, s)| self.tables[d.index()].state[s])
     }
 
     fn cells(&self, dim: Dim) -> &[EntityId] {
-        &self.derived().live[dim.index()]
+        &self.tables[dim.index()].live
     }
 
     fn boundary(&self, id: EntityId) -> &[Incidence] {
-        if self.is_alive(id) { self.row(id) } else { &[] }
+        self.row(id)
     }
 
     fn coboundary(&self, id: EntityId) -> &[Incidence] {
-        if self.is_alive(id) { self.up(id) } else { &[] }
+        self.up(id)
     }
 
-    fn carrier(&self, id: EntityId) -> Carrier {
+    fn carrier(&self, id: EntityId) -> &Carrier {
         match self.locate(id) {
-            Some((d, s)) => self.tables[d.index()].carrier[s],
-            None => Carrier::None,
+            Some((d, s)) => &self.tables[d.index()].carrier[s],
+            None => &NO_CARRIER,
         }
     }
 
@@ -448,6 +839,21 @@ impl TopologyView for CellComplex {
         match self.locate(id) {
             Some((d, s)) => self.tables[d.index()].flags[s],
             None => CellFlags::NONE,
+        }
+    }
+
+    fn pcurve(&self, k: CoedgeKey) -> Option<&PCurve> {
+        self.pcurves.get(&k)
+    }
+
+    fn shell_kind(&self, volume: EntityId, ring: u16) -> Option<ShellKind> {
+        self.shells.get(&(volume, ring)).copied()
+    }
+
+    fn radial_uses(&self, edge: EntityId) -> &[EdgeUse] {
+        match self.locate(edge) {
+            Some((Dim::Edge, s)) => &self.radial[s],
+            _ => &[],
         }
     }
 
@@ -459,7 +865,11 @@ impl TopologyView for CellComplex {
         &self.pairs
     }
 
-    fn lineage(&self) -> &[LineageRecord] {
+    fn coincident_faces(&self, f: EntityId) -> &[FacePair] {
+        self.pair_by_face.get(&f).map_or(&[], |v| v.as_slice())
+    }
+
+    fn lineage(&self) -> &LineageLog {
         &self.lineage
     }
 
@@ -468,382 +878,26 @@ impl TopologyView for CellComplex {
     }
 
     fn revision(&self) -> OpId {
-        self.op
+        self.revision
+    }
+
+    fn volume_faces(&self, v: EntityId) -> &[EntityId] {
+        match self.locate(v) {
+            Some((Dim::Volume, s)) => &self.tables[Dim::Volume.index()].aux[s],
+            _ => &[],
+        }
+    }
+
+    fn face_edges(&self, f: EntityId) -> &[EntityId] {
+        match self.locate(f) {
+            Some((Dim::Face, s)) => &self.tables[Dim::Face.index()].aux[s],
+            _ => &[],
+        }
     }
 }
 
-impl TopologyEdit for CellComplex {
-    fn begin_op(&mut self, op: OpId) {
-        self.op = op;
-    }
 
-    fn set_model_tolerance(&mut self, tol: Tolerance) -> Result<(), TopoError> {
-        if !tol.is_valid() {
-            return Err(TopoError::InvalidParameter("tolerance must be finite and positive"));
-        }
-        self.tol = tol;
-        Ok(())
-    }
-
-    fn make_vertex(&mut self, p: Point3) -> Result<EntityId, TopoError> {
-        if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
-            return Err(TopoError::InvalidParameter("non-finite vertex position"));
-        }
-        self.alloc(Dim::Vertex, Carrier::Point(p))
-    }
-
-    fn make_edge(&mut self, start: EntityId, end: EntityId, curve: Option<CurveCarrier>) -> Result<EntityId, TopoError> {
-        self.live_slot(start, Dim::Vertex)?;
-        self.live_slot(end, Dim::Vertex)?;
-        if let Some(c) = curve
-            && !lt(c.range.lo, c.range.hi)
-        {
-            return Err(TopoError::InvalidParameter("empty curve range"));
-        }
-        let id = self.alloc(Dim::Edge, curve.map_or(Carrier::None, Carrier::Curve))?;
-        let row = if start == end { vec![Incidence::new(start, Side::Both, 0)] } else { vec![Incidence::new(start, Side::Left, 0), Incidence::new(end, Side::Right, 0)] };
-        self.set_row(id, &row)?;
-        Ok(id)
-    }
-
-    fn make_face(&mut self, loops: &[&[CoedgeSpec]], surface: Option<SurfaceCarrier>) -> Result<EntityId, TopoError> {
-        if loops.is_empty() {
-            return Err(TopoError::EmptyLoop);
-        }
-        if loops.len() >= usize::from(Incidence::EMBEDDED) {
-            return Err(TopoError::InvalidParameter("too many loops"));
-        }
-        let ends_of = |c: &CoedgeSpec| -> Result<(EntityId, EntityId), TopoError> {
-            self.live_slot(c.edge, Dim::Edge)?;
-            let (s, e) = self.edge_ends(c.edge).ok_or(TopoError::WrongDim { id: c.edge, expected: Dim::Edge })?;
-            Ok(if c.sense == Sense::Forward { (s, e) } else { (e, s) })
-        };
-        for (ri, l) in loops.iter().enumerate() {
-            if l.is_empty() {
-                return Err(TopoError::EmptyLoop);
-            }
-            for (i, c) in l.iter().enumerate() {
-                let (_, head) = ends_of(c)?;
-                let (next_tail, _) = ends_of(&l[(i + 1) % l.len()])?;
-                if head != next_tail {
-                    return Err(TopoError::OpenLoop { ring: ri, at: i });
-                }
-            }
-        }
-        let id = self.alloc(Dim::Face, surface.map_or(Carrier::None, Carrier::Surface))?;
-        let mut row = Vec::new();
-        for (ri, l) in loops.iter().enumerate() {
-            row.extend(l.iter().map(|c| Incidence::new(c.edge, c.sense.side(), ri as u16)));
-        }
-        Self::normalize(Dim::Face, &mut row);
-        self.set_row(id, &row)?;
-        Ok(id)
-    }
-
-    fn make_volume(&mut self, shells: &[&[FaceUseSpec]]) -> Result<EntityId, TopoError> {
-        if shells.len() >= usize::from(Incidence::EMBEDDED) {
-            return Err(TopoError::InvalidParameter("too many shells"));
-        }
-        let mut uses = Vec::new();
-        for s in shells {
-            for u in *s {
-                self.live_slot(u.face, Dim::Face)?;
-                uses.push((u.face, u.side));
-            }
-        }
-        self.check_occupancy(&uses)?;
-        let id = self.alloc(Dim::Volume, Carrier::None)?;
-        let mut row: Vec<Incidence> = shells.iter().enumerate().flat_map(|(ri, s)| s.iter().map(move |u| Incidence::new(u.face, u.side, ri as u16))).collect();
-        Self::normalize(Dim::Volume, &mut row);
-        self.set_row(id, &row)?;
-        Ok(id)
-    }
-
-    fn make_body(&mut self, members: &[EntityId]) -> Result<EntityId, TopoError> {
-        for &m in members {
-            let (d, _) = self.live_any(m)?;
-            if d == Dim::Body || self.up(m).iter().any(|e| self.dim_of(e.cell) == Some(Dim::Body)) {
-                return Err(TopoError::InvalidIncidence { parent: m, child: m });
-            }
-        }
-        let id = self.alloc(Dim::Body, Carrier::None)?;
-        let mut row: Vec<Incidence> = members.iter().map(|&m| Incidence::new(m, Side::Both, 0)).collect();
-        Self::normalize(Dim::Body, &mut row);
-        self.set_row(id, &row)?;
-        Ok(id)
-    }
-
-    fn add_face_use(&mut self, volume: EntityId, ring: u16, use_: FaceUseSpec) -> Result<(), TopoError> {
-        self.live_slot(volume, Dim::Volume)?;
-        self.live_slot(use_.face, Dim::Face)?;
-        if ring == Incidence::EMBEDDED {
-            return Err(TopoError::InvalidParameter("reserved ring"));
-        }
-        self.check_occupancy(&[(use_.face, use_.side)])?;
-        let mut row = self.row(volume).to_vec();
-        row.push(Incidence::new(use_.face, use_.side, ring));
-        Self::normalize(Dim::Volume, &mut row);
-        self.set_row(volume, &row)
-    }
-
-    fn remove_face_use(&mut self, volume: EntityId, face: EntityId) -> Result<(), TopoError> {
-        self.live_slot(volume, Dim::Volume)?;
-        let row: Vec<Incidence> = self.row(volume).iter().copied().filter(|e| e.cell != face).collect();
-        if row.len() == self.row(volume).len() {
-            return Err(TopoError::InvalidIncidence { parent: volume, child: face });
-        }
-        self.set_row(volume, &row)
-    }
-
-    fn embed(&mut self, parent: EntityId, child: EntityId) -> Result<(), TopoError> {
-        let (pd, _) = self.live_any(parent)?;
-        let (cd, _) = self.live_any(child)?;
-        let ok = match pd {
-            Dim::Face | Dim::Volume => cd < Dim::Face,
-            Dim::Body => cd < Dim::Body,
-            _ => false,
-        };
-        if !ok || cd >= pd {
-            return Err(TopoError::InvalidIncidence { parent, child });
-        }
-        let ring = if pd == Dim::Body { 0 } else { Incidence::EMBEDDED };
-        let mut row = self.row(parent).to_vec();
-        row.push(Incidence::new(child, Side::Both, ring));
-        Self::normalize(pd, &mut row);
-        self.set_row(parent, &row)
-    }
-
-    fn unembed(&mut self, parent: EntityId, child: EntityId) -> Result<(), TopoError> {
-        let (pd, _) = self.live_any(parent)?;
-        let keep = |e: &Incidence| !(e.cell == child && (e.ring == Incidence::EMBEDDED || pd == Dim::Body));
-        let row: Vec<Incidence> = self.row(parent).iter().copied().filter(keep).collect();
-        if row.len() == self.row(parent).len() {
-            return Err(TopoError::InvalidIncidence { parent, child });
-        }
-        self.set_row(parent, &row)
-    }
-
-    fn split_edge(&mut self, edge: EntityId, at: EntityId, param: f64) -> Result<[EntityId; 2], TopoError> {
-        self.live_slot(edge, Dim::Edge)?;
-        self.live_slot(at, Dim::Vertex)?;
-        if self.flags(edge).contains(CellFlags::DEGENERATE) {
-            return Err(TopoError::Unsupported("split of a degenerate edge"));
-        }
-        let (start, end) = self.edge_ends(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
-        if at == start || at == end {
-            return Err(TopoError::InvalidParameter("split vertex equals an end vertex"));
-        }
-        let (c1, c2) = match self.carrier(edge) {
-            Carrier::Curve(c) => {
-                if !(lt(c.range.lo, param) && lt(param, c.range.hi)) {
-                    return Err(TopoError::InvalidParameter("split parameter outside edge range"));
-                }
-                let (lo, hi) = (Interval::new(c.range.lo, param), Interval::new(param, c.range.hi));
-                let (r1, r2) = if c.sense == Sense::Forward { (lo, hi) } else { (hi, lo) };
-                (Carrier::Curve(CurveCarrier { range: r1, ..c }), Carrier::Curve(CurveCarrier { range: r2, ..c }))
-            }
-            _ => (Carrier::None, Carrier::None),
-        };
-        let e1 = self.alloc(Dim::Edge, c1)?;
-        let e2 = self.alloc(Dim::Edge, c2)?;
-        self.set_row(e1, &[Incidence::new(start, Side::Left, 0), Incidence::new(at, Side::Right, 0)])?;
-        self.set_row(e2, &[Incidence::new(at, Side::Left, 0), Incidence::new(end, Side::Right, 0)])?;
-        self.inherit(edge, e1);
-        self.inherit(edge, e2);
-        self.replace_in_parents(edge, |e| match e.side {
-            Side::Left => smallvec![Incidence { cell: e1, ..*e }, Incidence { cell: e2, ..*e }],
-            Side::Right => smallvec![Incidence { cell: e2, ..*e }, Incidence { cell: e1, ..*e }],
-            Side::Both => smallvec![Incidence { cell: e1, ..*e }, Incidence { cell: e2, ..*e }],
-        })?;
-        self.retire(edge)?;
-        self.note(LineageKind::Split, &[edge], &[e1, e2]);
-        Ok([e1, e2])
-    }
-
-    fn split_face(&mut self, face: EntityId, chord: EntityId) -> Result<[EntityId; 2], TopoError> {
-        self.live_slot(face, Dim::Face)?;
-        self.live_slot(chord, Dim::Edge)?;
-        let row = self.row(face).to_vec();
-        if row.iter().any(|e| e.ring == Incidence::EMBEDDED) {
-            return Err(TopoError::Unsupported("split_face with embedded members"));
-        }
-        if row.iter().any(|e| e.ring != 0) {
-            return Err(TopoError::Unsupported("split_face on a face with holes"));
-        }
-        let (cs, ce) = self.edge_ends(chord).ok_or(TopoError::WrongDim { id: chord, expected: Dim::Edge })?;
-        if cs == ce {
-            return Err(TopoError::ChordNotOnLoop);
-        }
-        let mut tails = Vec::with_capacity(row.len());
-        for e in &row {
-            let (s, t) = self.edge_ends(e.cell).ok_or(TopoError::WrongDim { id: e.cell, expected: Dim::Edge })?;
-            tails.push(if e.side == Side::Right { t } else { s });
-        }
-        let pi = tails.iter().position(|v| *v == cs).ok_or(TopoError::ChordNotOnLoop)?;
-        let pj = tails.iter().position(|v| *v == ce).ok_or(TopoError::ChordNotOnLoop)?;
-        let (a, b) = (pi.min(pj), pi.max(pj));
-        let (va, vb) = (tails[a], tails[b]);
-        // Child 1 runs a..b then closes b -> a along the chord; child 2 runs b..a (wrapping) and closes a -> b.
-        let chord_side_1 = if cs == vb && ce == va { Side::Left } else { Side::Right };
-        let mut r1: Vec<Incidence> = row[a..b].to_vec();
-        r1.push(Incidence::new(chord, chord_side_1, 0));
-        let mut r2: Vec<Incidence> = row[b..].iter().chain(row[..a].iter()).copied().collect();
-        r2.push(Incidence::new(chord, chord_side_1.flip(), 0));
-        Self::normalize(Dim::Face, &mut r1);
-        Self::normalize(Dim::Face, &mut r2);
-        let carrier = self.carrier(face);
-        let f1 = self.alloc(Dim::Face, carrier)?;
-        let f2 = self.alloc(Dim::Face, carrier)?;
-        self.set_row(f1, &r1)?;
-        self.set_row(f2, &r2)?;
-        self.inherit(face, f1);
-        self.inherit(face, f2);
-        self.replace_in_parents(face, |e| smallvec![Incidence { cell: f1, ..*e }, Incidence { cell: f2, ..*e }])?;
-        self.retire(face)?;
-        self.note(LineageKind::Split, &[face], &[f1, f2]);
-        Ok([f1, f2])
-    }
-
-    fn merge_vertices(&mut self, keep: EntityId, drop: EntityId) -> Result<(), TopoError> {
-        self.live_slot(keep, Dim::Vertex)?;
-        self.live_slot(drop, Dim::Vertex)?;
-        if keep == drop {
-            return Err(TopoError::InvalidParameter("cannot merge a cell with itself"));
-        }
-        if let (Carrier::Point(a), Carrier::Point(b)) = (self.carrier(keep), self.carrier(drop))
-            && (a - b).norm() > self.effective_tol(keep) + self.effective_tol(drop)
-        {
-            return Err(TopoError::NotCoincident("vertex positions differ"));
-        }
-        let other = self.effective_tol(drop);
-        self.replace_in_parents(drop, |e| smallvec![Incidence { cell: keep, ..*e }])?;
-        self.raise_tolerance(keep, other);
-        self.retire(drop)?;
-        self.note(LineageKind::Merged, &[keep, drop], &[keep]);
-        Ok(())
-    }
-
-    fn merge_edges(&mut self, keep: EntityId, drop: EntityId, relative: Sense) -> Result<(), TopoError> {
-        self.live_slot(keep, Dim::Edge)?;
-        self.live_slot(drop, Dim::Edge)?;
-        if keep == drop {
-            return Err(TopoError::InvalidParameter("cannot merge a cell with itself"));
-        }
-        let (ks, ke) = self.edge_ends(keep).ok_or(TopoError::WrongDim { id: keep, expected: Dim::Edge })?;
-        let (ds, de) = self.edge_ends(drop).ok_or(TopoError::WrongDim { id: drop, expected: Dim::Edge })?;
-        let ok = if relative == Sense::Forward { ks == ds && ke == de } else { ks == de && ke == ds };
-        if !ok {
-            return Err(TopoError::NotCoincident("end vertices differ (merge vertices first)"));
-        }
-        let other = self.effective_tol(drop);
-        self.replace_in_parents(drop, |e| smallvec![Incidence { cell: keep, side: if relative == Sense::Reversed { e.side.flip() } else { e.side }, ring: e.ring }])?;
-        self.raise_tolerance(keep, other);
-        self.retire(drop)?;
-        self.note(LineageKind::Merged, &[keep, drop], &[keep]);
-        Ok(())
-    }
-
-    fn merge_faces(&mut self, keep: EntityId, drop: EntityId, relative: Sense) -> Result<(), TopoError> {
-        self.live_slot(keep, Dim::Face)?;
-        self.live_slot(drop, Dim::Face)?;
-        if keep == drop {
-            return Err(TopoError::InvalidParameter("cannot merge a cell with itself"));
-        }
-        let edges = |f: EntityId| {
-            let mut v: Vec<EntityId> = self.row(f).iter().map(|e| e.cell).collect();
-            v.sort();
-            v
-        };
-        if edges(keep) != edges(drop) {
-            return Err(TopoError::NotCoincident("loops consist of different edges (imprint and merge edges first)"));
-        }
-        let (kl, kr) = self.occupancy(keep);
-        let (dl, dr) = self.occupancy(drop);
-        let (dl, dr) = if relative == Sense::Reversed { (dr, dl) } else { (dl, dr) };
-        if (kl && dl) || (kr && dr) {
-            return Err(TopoError::SideOccupied { face: keep });
-        }
-        self.replace_in_parents(drop, |e| smallvec![Incidence { cell: keep, side: if relative == Sense::Reversed { e.side.flip() } else { e.side }, ring: e.ring }])?;
-        self.retire(drop)?;
-        self.note(LineageKind::Merged, &[keep, drop], &[keep]);
-        let (a, b) = if keep <= drop { (keep, drop) } else { (drop, keep) };
-        let at = self.pairs.partition_point(|p| (p.a, p.b) < (a, b));
-        self.pairs.insert(at, FacePair { a, b, status: Coincidence::Merged, overlap_area: None });
-        let s = self.face_sides(keep);
-        if let (Region::Volume(l), Region::Volume(r)) = (s.left, s.right)
-            && l > r
-        {
-            self.reverse_inner(keep)?;
-        }
-        Ok(())
-    }
-
-    fn reverse_face(&mut self, face: EntityId) -> Result<(), TopoError> {
-        self.live_slot(face, Dim::Face)?;
-        self.reverse_inner(face)
-    }
-
-    fn kill(&mut self, cell: EntityId) -> Result<(), TopoError> {
-        self.live_any(cell)?;
-        let bodies: Vec<EntityId> = self.up(cell).iter().filter(|e| self.dim_of(e.cell) == Some(Dim::Body)).map(|e| e.cell).collect();
-        if self.up(cell).iter().any(|e| self.dim_of(e.cell) != Some(Dim::Body)) {
-            return Err(TopoError::StillReferenced(cell));
-        }
-        for b in bodies {
-            let row: Vec<Incidence> = self.row(b).iter().copied().filter(|e| e.cell != cell).collect();
-            self.set_row(b, &row)?;
-        }
-        self.retire(cell)?;
-        self.note(LineageKind::Deleted, &[cell], &[]);
-        Ok(())
-    }
-
-    fn set_carrier(&mut self, cell: EntityId, carrier: Carrier) -> Result<(), TopoError> {
-        let (d, s) = self.live_any(cell)?;
-        let ok = matches!(
-            (d, carrier),
-            (Dim::Vertex, Carrier::Point(_)) | (Dim::Edge, Carrier::Curve(_) | Carrier::None) | (Dim::Face, Carrier::Surface(_) | Carrier::None) | (Dim::Volume | Dim::Body, Carrier::None)
-        );
-        if !ok {
-            return Err(TopoError::WrongDim { id: cell, expected: d });
-        }
-        self.tables[d.index()].carrier[s] = carrier;
-        self.note(LineageKind::Modified, &[cell], &[cell]);
-        Ok(())
-    }
-
-    fn set_tolerance(&mut self, cell: EntityId, tol: Option<f64>) -> Result<(), TopoError> {
-        self.live_any(cell)?;
-        match tol {
-            Some(t) if !(t.is_finite() && t > 0.0) => return Err(TopoError::InvalidParameter("tolerance must be finite and positive")),
-            Some(t) => {
-                self.tol_override.insert(cell, t);
-            }
-            None => {
-                self.tol_override.remove(&cell);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_flags(&mut self, cell: EntityId, flags: CellFlags) -> Result<(), TopoError> {
-        let (d, s) = self.live_any(cell)?;
-        self.tables[d.index()].flags[s] = flags;
-        Ok(())
-    }
-
-    fn record_coincidence(&mut self, a: EntityId, b: EntityId, status: Coincidence, area: Option<f64>) -> Result<(), TopoError> {
-        self.live_slot(a, Dim::Face)?;
-        self.live_slot(b, Dim::Face)?;
-        if a == b || status == Coincidence::Merged {
-            return Err(TopoError::InvalidParameter("pair must be two faces and not Merged"));
-        }
-        let (a, b) = if a <= b { (a, b) } else { (b, a) };
-        let rec = FacePair { a, b, status, overlap_area: area };
-        match self.pairs.binary_search_by(|p| (p.a, p.b).cmp(&(a, b))) {
-            Ok(i) => self.pairs[i] = rec,
-            Err(i) => self.pairs.insert(i, rec),
-        }
-        Ok(())
-    }
-}
+const _: fn() = || {
+    fn is_send_sync<T: Send + Sync>() {}
+    is_send_sync::<CellComplex>();
+};
