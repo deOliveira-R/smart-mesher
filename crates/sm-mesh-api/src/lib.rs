@@ -32,7 +32,7 @@ pub mod shape;
 pub mod validate;
 
 pub use build::{CellAdded, Finished, MeshBuild, MeshEdit, SerialAlloc};
-pub use classify::{ClassSet, Classification, Param};
+pub use classify::{ClassSet, Classification, Param, entity_dim};
 pub use edges::{EdgeTable, FaceEdge};
 pub use error::{MeshError, Result};
 pub use geometry::{
@@ -45,7 +45,7 @@ pub use highorder::{
     node_layout,
 };
 pub use index::{
-    CellIx, EdgeIx, FaceIx, FaceKind, MAX_FACES, MeshEntity, MeshEntityKind, MeshEntityRef,
+    CellIx, EdgeIx, FaceIx, FaceKind, MAX_FACES, MeshDim, MeshEntity, MeshEntityKind, MeshEntityRef,
     NO_CELL, PointIx, Side, SignedFace, VertexIx,
 };
 pub use instance::{

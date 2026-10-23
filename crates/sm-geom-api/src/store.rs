@@ -493,7 +493,7 @@ mod tests {
         // zero, a noisy evaluation leaves residues of a few ulp of the constant term (1e12).
         let shifted = Frame::at(Point3::new(1.0e6, 0.0, 0.0));
         let exact = Quadric::from_local(&shifted, [1.0, 1.0, 0.0], [0.0; 3], -1.0);
-        let mut noisy = exact.clone();
+        let mut noisy = exact;
         noisy.coeffs[3] = 3.0 * f64::EPSILON * 1.0e12;
         noisy.coeffs[4] = -2.0 * f64::EPSILON * 1.0e12;
         let a = SurfaceDef::Implicit(ImplicitDef::Quadric(exact));

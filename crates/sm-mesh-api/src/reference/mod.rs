@@ -16,7 +16,9 @@ use crate::classify::{ClassSet, Classification};
 use crate::edges::{EdgeTable, edge_key};
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, FaceCurve, HighOrderCell, face_node_count, node_count};
-use crate::index::{CellIx, FaceIx, FaceKind, MeshEntity, MeshEntityKind, PointIx, VertexIx};
+use crate::index::{
+    CellIx, FaceIx, FaceKind, MeshDim, MeshEntity, MeshEntityKind, PointIx, VertexIx,
+};
 use crate::read::{Coords, GeometryCache, MeshRead, TopologyColumns};
 use crate::sets::{MeshSet, SetMembers, TagColumn, TagValues};
 use crate::shape::CellShape;
@@ -26,6 +28,7 @@ use std::collections::BTreeMap;
 /// A finished, canonical, in-memory mesh. Create with [`ReferenceBuilder`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceMesh {
+    dim: MeshDim,
     id: EntityId,
     vertex_ids: Vec<EntityId>,
     face_ids: Vec<EntityId>,
@@ -66,6 +69,9 @@ fn range(off: &[u64], i: usize) -> core::ops::Range<usize> {
 impl MeshRead for ReferenceMesh {
     fn mesh_id(&self) -> EntityId {
         self.id
+    }
+    fn dim(&self) -> MeshDim {
+        self.dim
     }
     fn count(&self, k: MeshEntityKind) -> usize {
         match k {
@@ -184,6 +190,7 @@ impl ReferenceMesh {
     /// Assemble a mesh from finished columns (used by the builder).
     pub(crate) fn from_parts(p: builder::Parts) -> Self {
         let mut m = ReferenceMesh {
+            dim: p.dim,
             id: p.id,
             vertex_ids: p.vertex_ids,
             face_ids: p.face_ids,
@@ -264,14 +271,7 @@ impl ReferenceMesh {
             MeshEntity::Face(f) => {
                 let kind = *self.face_kind.get(f.get()).ok_or_else(oob)?;
                 let k = c.entity.kind();
-                let ok = match kind {
-                    FaceKind::Boundary => k == EntityKind::TopoFace,
-                    _ => {
-                        k == EntityKind::TopoFace
-                            || matches!(k, EntityKind::TopoVolume | EntityKind::PartitionCell)
-                    }
-                };
-                if !ok {
+                if !self.dim.accepts_facet(kind, k) {
                     return Err(MeshError::BadClassification(format!(
                         "a {kind:?} face cannot be classified on {k:?}"
                     )));
@@ -281,13 +281,12 @@ impl ReferenceMesh {
                 if cell.get() >= self.cclass.len() {
                     return Err(oob());
                 }
-                if !matches!(
-                    c.entity.kind(),
-                    EntityKind::TopoVolume | EntityKind::PartitionCell
-                ) {
-                    return Err(MeshError::BadClassification(
-                        "cells need a volume or partition cell".into(),
-                    ));
+                if !self.dim.accepts_cell(c.entity.kind()) {
+                    return Err(MeshError::BadClassification(format!(
+                        "cells of a {:?} mesh cannot be classified on {:?}",
+                        self.dim,
+                        c.entity.kind()
+                    )));
                 }
             }
             MeshEntity::Edge(i) => {
@@ -382,10 +381,13 @@ impl MeshEdit for ReferenceMesh {
                 "Interior is derived from having two cells and cannot be set".into(),
             ));
         }
-        if kind == FaceKind::Boundary && self.fclass[f.get()].entity.kind() != EntityKind::TopoFace
+        if kind == FaceKind::Boundary
+            && !self
+                .dim
+                .accepts_facet(FaceKind::Boundary, self.fclass[f.get()].entity.kind())
         {
             return Err(MeshError::BadClassification(
-                "a Boundary face must be classified on a TopoFace".into(),
+                "a Boundary face must be classified on a face entity (TopoFace / PartitionFace; edge entities in a dimension-2 mesh)".into(),
             ));
         }
         self.face_kind[f.get()] = kind;
@@ -516,6 +518,11 @@ impl MeshEdit for ReferenceMesh {
     ) -> Result<()> {
         if self.edges.is_some() {
             return Ok(());
+        }
+        if self.dim == MeshDim::Two {
+            return Err(MeshError::Unsupported(
+                "a dimension-2 mesh has no edge table: its facets are the edges".into(),
+            ));
         }
         let mut map = BTreeMap::new();
         for (a, b, c) in explicit {

@@ -9,10 +9,12 @@
 use crate::classify::ClassSet;
 use crate::geometry::{cell_volume_centroid, face_geometry};
 use crate::highorder::{face_node_count, node_count};
-use crate::index::{CellIx, EdgeIx, FaceIx, FaceKind, MeshEntity, MeshEntityKind, Side, VertexIx};
+use crate::index::{
+    CellIx, EdgeIx, FaceIx, FaceKind, MeshDim, MeshEntity, MeshEntityKind, Side, VertexIx,
+};
 use crate::read::MeshRead;
 use crate::sets::TagValues;
-use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation};
+use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation, polygon_cycle};
 use sm_core::{EntityId, EntityKind, Point3};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -152,17 +154,19 @@ impl Sink {
     }
 }
 
-const fn is_volume(k: EntityKind) -> bool {
-    matches!(k, EntityKind::TopoVolume | EntityKind::PartitionCell)
-}
-
 /// Topological validation. Empty result means valid. Checks ids and column sizes, loops,
 /// canonical order, the orientation rule in both directions, closedness (directed loop edges
 /// cancel per cell), shape tags and template corners, high-order and face-curve records,
 /// classification (kinds, parameters, dimension order including edges, reverse index), lineage,
 /// sets, tags, the edge table and the geometry cache.
+///
+/// For a dimension-2 mesh ([`MeshRead::dim`]) facets must have exactly two vertices and are not
+/// rotated, closedness means the directed facets of a cell chain into one cycle, every cell
+/// carries its vertex cycle as corners, cells lie on face entities and boundary facets on edge
+/// entities, and there is no edge table.
 pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
     let mut s = Sink(Vec::new());
+    let dim = m.dim();
     let (nv, nf, nc) = (
         m.count(MeshEntityKind::Vertex),
         m.count(MeshEntityKind::Face),
@@ -234,16 +238,17 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
         let mut sorted = l.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        if l.len() < 3 || sorted.len() != l.len() || l.iter().any(|v| v.get() >= nv) {
+        if !dim.facet_len_ok(l.len()) || sorted.len() != l.len() || l.iter().any(|v| v.get() >= nv)
+        {
             s.add(
                 ViolationCode::LoopInvalid,
                 e,
-                "loop has < 3 vertices, repeats a vertex, or names a missing vertex",
+                "loop has the wrong number of vertices for the mesh dimension (< 3, or not 2 in dimension 2), repeats a vertex, or names a missing vertex",
             );
             loops_ok[f] = false;
             continue;
         }
-        if l[0] != sorted[0] {
+        if dim == MeshDim::Three && l[0] != sorted[0] {
             s.add(
                 ViolationCode::LoopNotCanonical,
                 e,
@@ -442,7 +447,63 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
     s.0
 }
 
+/// Dimension-2 cell: the directed facets chain into one cycle, the tag matches, and the corners
+/// are that cycle in boundary order.
+fn validate_cell_2d(m: &dyn MeshRead, ci: CellIx, s: &mut Sink) {
+    let e = Some(MeshEntity::Cell(ci));
+    let faces = m.cell_faces(ci);
+    let directed: Vec<[VertexIx; 2]> = faces
+        .iter()
+        .filter_map(|sf| {
+            let l = m.face_vertices(sf.face());
+            (l.len() == 2).then(|| {
+                if sf.side() == Side::Left {
+                    [l[0], l[1]]
+                } else {
+                    [l[1], l[0]]
+                }
+            })
+        })
+        .collect();
+    let refs: Vec<&[VertexIx]> = directed.iter().map(|d| d.as_slice()).collect();
+    let Some(cyc) = polygon_cycle(&refs) else {
+        s.add(
+            ViolationCode::Closedness,
+            e,
+            "directed facets do not chain into one closed cycle",
+        );
+        return;
+    };
+    let detected = CellShape::detect(cyc.len(), &vec![2; faces.len()]);
+    let shape = m.cell_shape(ci);
+    if shape != detected {
+        s.add(
+            ViolationCode::ShapeTag,
+            e,
+            format!("tag {shape:?} but topology is {detected:?}"),
+        );
+    }
+    match m.cell_corners(ci) {
+        None => s.add(
+            ViolationCode::Corners,
+            e,
+            "a dimension-2 cell must carry its vertex cycle as corners",
+        ),
+        Some(ov) if loop_relation(ov, &cyc) != Some(LoopRelation::Same) => s.add(
+            ViolationCode::Corners,
+            e,
+            "corners are not the cell's vertex cycle in boundary order",
+        ),
+        Some(_) => {}
+    }
+}
+
 fn validate_cell(m: &dyn MeshRead, ci: CellIx, np: usize, s: &mut Sink) {
+    if m.dim() == MeshDim::Two {
+        validate_cell_2d(m, ci, s);
+        validate_high_order(m, ci, np, s);
+        return;
+    }
     let e = Some(MeshEntity::Cell(ci));
     let faces = m.cell_faces(ci);
     // Outward loops, as slices of directed edges.
@@ -552,12 +613,19 @@ fn validate_cell(m: &dyn MeshRead, ci: CellIx, np: usize, s: &mut Sink) {
             }
         }
     }
+    validate_high_order(m, ci, np, s);
+}
+
+fn validate_high_order(m: &dyn MeshRead, ci: CellIx, np: usize, s: &mut Sink) {
+    let e = Some(MeshEntity::Cell(ci));
+    let shape = m.cell_shape(ci);
+    let corners = m.cell_corners(ci);
     if let Some(h) = m.high_order_cell(ci) {
         match (corners, node_count(shape, h.degree, h.basis)) {
-            _ if shape == CellShape::Polyhedron => s.add(
+            _ if shape.is_general() => s.add(
                 ViolationCode::HighOrder,
                 e,
-                "polyhedra cannot carry a high-order record (use face curves)",
+                "polyhedra and polygons cannot carry a high-order record (use face curves)",
             ),
             (_, _) if h.degree < 2 => {
                 s.add(ViolationCode::HighOrder, e, "stored degree must be >= 2")
@@ -596,6 +664,7 @@ fn validate_classification(
     loops_ok: &[bool],
     s: &mut Sink,
 ) {
+    let dim = m.dim();
     let check = |k: MeshEntityKind, ix: usize, s: &mut Sink| -> Option<u8> {
         let c = m.classification(k, ix as u32);
         let e = Some(MeshEntity::from_parts(k, ix as u32));
@@ -626,11 +695,14 @@ fn validate_classification(
     for c in 0..nc {
         let cl = m.classification(MeshEntityKind::Cell, c as u32);
         let _ = check(MeshEntityKind::Cell, c, s);
-        if cl.dim().is_some() && !is_volume(cl.entity.kind()) {
+        if cl.dim().is_some() && !dim.accepts_cell(cl.entity.kind()) {
             s.add(
                 ViolationCode::ClassKind,
                 Some(MeshEntity::Cell(CellIx::new(c))),
-                "cells must be classified on a volume or partition cell",
+                format!(
+                    "cells of a {dim:?} mesh must be classified on an entity of that dimension, not {:?}",
+                    cl.entity.kind()
+                ),
             );
         }
     }
@@ -640,13 +712,7 @@ fn validate_classification(
         if m.face_class(fi).dim().is_none() {
             continue;
         }
-        let ok = match m.face_kind(fi) {
-            FaceKind::Boundary => k == EntityKind::TopoFace,
-            FaceKind::Interior | FaceKind::NonConformal | FaceKind::PartitionCut => {
-                k == EntityKind::TopoFace || is_volume(k)
-            }
-        };
-        if !ok {
+        if !dim.accepts_facet(m.face_kind(fi), k) {
             s.add(
                 ViolationCode::ClassKind,
                 Some(MeshEntity::Face(fi)),
@@ -805,7 +871,13 @@ fn validate_sets_tags_edges(
             );
         }
     }
-    if let Some(t) = m.edges() {
+    if m.edges().is_some() && m.dim() == MeshDim::Two {
+        s.add(
+            ViolationCode::EdgeTable,
+            None,
+            "a dimension-2 mesh has no edge table (its facets are the edges)",
+        );
+    } else if let Some(t) = m.edges() {
         let mut want: BTreeSet<[VertexIx; 2]> = BTreeSet::new();
         let mut face_ok = true;
         for f in 0..nf {
@@ -876,12 +948,28 @@ impl Default for GeomTol {
 
 /// Geometric validation: positive cell volumes, positive side tetrahedra, face normals pointing
 /// from the left cell to the right cell (outward at one-cell faces), planarity within tolerance.
+///
+/// For a dimension-2 mesh only the cell areas are checked (`min_volume` applies to the area):
+/// an embedded surface has no inside, so facet orientation is purely topological (checked by
+/// [`validate`]).
 pub fn validate_geometry(m: &dyn MeshRead, tol: &GeomTol) -> Vec<Violation> {
     let mut s = Sink(Vec::new());
     let (nf, nc) = (m.count(MeshEntityKind::Face), m.count(MeshEntityKind::Cell));
     let cent: Vec<(f64, Point3)> = (0..nc)
         .map(|c| cell_volume_centroid(m, CellIx::new(c)))
         .collect();
+    if m.dim() == MeshDim::Two {
+        for (c, (area, _)) in cent.iter().enumerate() {
+            if *area <= tol.min_volume {
+                s.add(
+                    ViolationCode::GeomVolume,
+                    Some(MeshEntity::Cell(CellIx::new(c))),
+                    format!("area {area} is not above {}", tol.min_volume),
+                );
+            }
+        }
+        return s.0;
+    }
     let co = m.coords();
     for (c, (vol, g)) in cent.iter().enumerate() {
         let ci = CellIx::new(c);
@@ -983,6 +1071,7 @@ fn counts(m: &dyn MeshRead) -> [usize; 4] {
 fn hash_connectivity(h: &mut Hasher, m: &dyn MeshRead) {
     let [nv, _, nf, nc] = counts(m);
     h.u(m.mesh_id().to_raw());
+    h.u(u64::from(m.dim().get()));
     for n in [nv, nf, nc, m.coords().len()] {
         h.u(n as u64);
     }
@@ -1020,8 +1109,8 @@ fn hash_connectivity(h: &mut Hasher, m: &dyn MeshRead) {
     }
 }
 
-/// Hash of the connectivity only: ids, counts, face loops, left/right, kinds, signed cell->face
-/// lists, shapes, corners and lineage. It does not change when classification, sets, tags,
+/// Hash of the connectivity only: dimension, ids, counts, face loops, left/right, kinds, signed
+/// cell->face lists, shapes, corners and lineage. It does not change when classification, sets, tags,
 /// high-order or coordinates change. It keys the geometry cache and hierarchy maps.
 pub fn connectivity_hash(m: &dyn MeshRead) -> u64 {
     let mut h = Hasher::new("smartmesh.connectivity.v1");

@@ -11,8 +11,8 @@ use crate::classify::Classification;
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, HighOrderCell, NodeRef};
 use crate::index::{
-    CellIx, FaceIx, FaceKind, MeshEntity, MeshEntityKind, MeshEntityRef, PointIx, Side, SignedFace,
-    VertexIx,
+    CellIx, FaceIx, FaceKind, MeshDim, MeshEntity, MeshEntityKind, MeshEntityRef, PointIx, Side,
+    SignedFace, VertexIx,
 };
 use crate::read::{GeometryCache, MeshRead};
 use crate::sets::{SetMembers, TagValues};
@@ -125,9 +125,19 @@ pub struct Finished<M> {
 /// **Classification is mandatory** for vertices, boundary-like faces and cells; `finish` fills in
 /// an unset interior (or non-conformal / partition-cut) face from its cell when the cells around
 /// it share a classification, and an unset edge likewise, and errors otherwise.
+///
+/// **Dimension.** A builder makes meshes of one [`MeshDim`] ([`MeshBuild::dim`]). In dimension 2
+/// faces are two-vertex facets and cells are polygons ([`MeshBuild::add_polygon`],
+/// `add_cell_from_vertices` with `Tri` / `Quad`); cells are classified on a `TopoFace` /
+/// `PartitionFace` and boundary facets on a `TopoEdge` / `PartitionEdge`.
 pub trait MeshBuild {
     /// The finished mesh type.
     type Output: MeshRead;
+
+    /// Dimension of the mesh being built (default [`MeshDim::Three`]).
+    fn dim(&self) -> MeshDim {
+        MeshDim::Three
+    }
 
     /// Add a vertex.
     fn add_vertex(&mut self, p: Point3) -> Result<VertexIx>;
@@ -145,7 +155,8 @@ pub trait MeshBuild {
     /// means exact coordinate equality. Expected `O(1)` per query.
     fn find_vertex(&self, p: Point3, tol: f64) -> Option<VertexIx>;
 
-    /// Add a face with the given loop (no deduplication). Needs >= 3 distinct, existing vertices.
+    /// Add a face with the given loop (no deduplication). Needs >= 3 distinct, existing vertices
+    /// (exactly 2 in a dimension-2 mesh).
     fn add_face(&mut self, vertex_loop: &[VertexIx]) -> Result<FaceIx>;
     /// Find an existing face with the same vertex cycle, and whether it runs the same way.
     fn find_face(&self, vertex_loop: &[VertexIx]) -> Option<(FaceIx, LoopRelation)>;
@@ -254,6 +265,27 @@ pub trait MeshBuild {
         add_poly(self, outward, corners)
     }
 
+    /// Add a polygon cell of a dimension-2 mesh from its vertex cycle (boundary order), reusing
+    /// facets that already exist. The cycle is recorded as the cell's corners. On error the
+    /// builder is left unchanged.
+    fn add_polygon(&mut self, cycle: &[VertexIx]) -> Result<CellAdded> {
+        if self.dim() != MeshDim::Two {
+            return Err(MeshError::Unsupported(
+                "add_polygon builds dimension-2 meshes".into(),
+            ));
+        }
+        let n = cycle.len();
+        if n < 3 {
+            return Err(MeshError::InvalidLoop(
+                "a polygon needs at least 3 vertices".into(),
+            ));
+        }
+        let edges: SmallVec<[[VertexIx; 2]; 8]> =
+            (0..n).map(|i| [cycle[i], cycle[(i + 1) % n]]).collect();
+        let refs: SmallVec<[&[VertexIx]; 8]> = edges.iter().map(|e| e.as_slice()).collect();
+        self.add_polyhedron_with_corners(&refs, Some(cycle))
+    }
+
     /// Add a template-shaped cell from vertices in the template order of `shape`.
     fn add_cell_from_vertices(
         &mut self,
@@ -265,6 +297,12 @@ pub trait MeshBuild {
                 "{shape:?} needs {:?} vertices, got {}",
                 shape.vertex_count(),
                 verts.len()
+            )));
+        }
+        if shape.dim() != self.dim() {
+            return Err(MeshError::State(format!(
+                "{shape:?} cells do not belong in a {:?} mesh",
+                self.dim()
             )));
         }
         let loops: SmallVec<[SmallVec<[VertexIx; 4]>; 6]> = shape

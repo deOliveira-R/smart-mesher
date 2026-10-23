@@ -148,6 +148,73 @@ impl core::fmt::Debug for SignedFace {
     }
 }
 
+/// Topological dimension of a mesh: the dimension of its cells.
+///
+/// The face-first invariants hold one level down in a dimension-2 mesh: cells are polygons,
+/// "faces" (facets) are their edges with exactly two vertices, and every facet has a `left`
+/// and optionally a `right` cell. A facet `[a, b]` is traversed `a -> b` by its left cell
+/// (the cell's boundary orientation, half-edge convention) and `b -> a` by its right cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MeshDim {
+    /// Surface mesh: polygon cells, two-vertex facets (shells, sheet bodies, surface previews).
+    Two,
+    /// Volume mesh: polyhedral cells, polygonal faces (the default).
+    #[default]
+    Three,
+}
+
+impl MeshDim {
+    /// The dimension as a number (2 or 3).
+    pub const fn get(self) -> u8 {
+        match self {
+            MeshDim::Two => 2,
+            MeshDim::Three => 3,
+        }
+    }
+
+    /// Number of vertices of a facet loop: exactly 2 in a dimension-2 mesh, at least 3 otherwise.
+    pub const fn facet_len_ok(self, n: usize) -> bool {
+        match self {
+            MeshDim::Two => n == 2,
+            MeshDim::Three => n >= 3,
+        }
+    }
+
+    /// Smallest number of facets of a cell (3 edges of a polygon, 4 faces of a polyhedron).
+    pub const fn min_cell_facets(self) -> usize {
+        match self {
+            MeshDim::Two => 3,
+            MeshDim::Three => 4,
+        }
+    }
+
+    /// True if a cell of this mesh may be classified on an entity of kind `k`: the entity's
+    /// dimension ([`crate::entity_dim`]) must equal the mesh dimension (`TopoVolume` /
+    /// `PartitionCell` for dimension 3, `TopoFace` / `PartitionFace` for dimension 2).
+    pub const fn accepts_cell(self, k: sm_core::EntityKind) -> bool {
+        matches!(crate::classify::entity_dim(k), Some(d) if d == self.get())
+    }
+
+    /// True if a facet of kind `kind` may be classified on an entity of kind `k`. A `Boundary`
+    /// facet lies on an entity one dimension below the mesh (`TopoFace` / `PartitionFace` in
+    /// dimension 3, `TopoEdge` / `PartitionEdge` in dimension 2); interior-like facets may also
+    /// lie inside a cell entity (dimension equal to the mesh).
+    pub const fn accepts_facet(self, kind: FaceKind, k: sm_core::EntityKind) -> bool {
+        let Some(d) = crate::classify::entity_dim(k) else {
+            return false;
+        };
+        let m = self.get();
+        match kind {
+            FaceKind::Boundary => d + 1 == m,
+            FaceKind::Interior | FaceKind::NonConformal | FaceKind::PartitionCut => {
+                d + 1 == m || d == m
+            }
+        }
+    }
+}
+
 /// Kind of mesh entity addressed by classification, sets and tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

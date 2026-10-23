@@ -46,7 +46,9 @@ pub fn template_points(shape: CellShape) -> Vec<[f64; 3]> {
             [1., 1., 1.],
             [0., 1., 1.],
         ],
-        CellShape::Polyhedron => unreachable!(),
+        CellShape::Polyhedron | CellShape::Tri | CellShape::Quad | CellShape::Polygon => {
+            unreachable!()
+        }
     }
 }
 
@@ -56,7 +58,9 @@ pub fn analytic_volume(shape: CellShape) -> f64 {
         CellShape::Wedge => 0.5,
         CellShape::Pyramid => 1.0 / 3.0,
         CellShape::Hex => 1.0,
-        CellShape::Polyhedron => unreachable!(),
+        CellShape::Polyhedron | CellShape::Tri | CellShape::Quad | CellShape::Polygon => {
+            unreachable!()
+        }
     }
 }
 

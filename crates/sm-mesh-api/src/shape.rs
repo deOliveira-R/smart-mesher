@@ -10,11 +10,14 @@
 //! - Hex: 0..3 bottom (counter-clockwise from +z), 4..7 the top ring above 0..3.
 //! - Wedge: 0..2 bottom triangle (counter-clockwise from +z), 3..5 the top above them.
 //! - Pyramid: 0..3 base (counter-clockwise from +z), 4 apex.
+//! - Tri / Quad (dimension-2 meshes): the vertex cycle in the cell's boundary orientation; the
+//!   "faces" are the edges `(i, i + 1)`, each traversed forward by the cell.
 
-use crate::index::VertexIx;
+use crate::index::{MeshDim, VertexIx};
 use smallvec::SmallVec;
 
-/// Shape tag of a 3D cell.
+/// Shape tag of a cell. `Tet..Polyhedron` are the cells of a dimension-3 mesh, `Tri`, `Quad`
+/// and `Polygon` those of a dimension-2 mesh ([`MeshDim`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -29,6 +32,12 @@ pub enum CellShape {
     Pyramid,
     /// Anything else (general closed polyhedron).
     Polyhedron,
+    /// Dimension 2: 3 edges, 3 vertices.
+    Tri,
+    /// Dimension 2: 4 edges, 4 vertices.
+    Quad,
+    /// Dimension 2: a general polygon with five or more vertices.
+    Polygon,
 }
 
 /// Shape tag of a face.
@@ -42,12 +51,15 @@ pub enum FaceShape {
     Quad,
     /// General polygon with five or more vertices.
     Polygon,
+    /// Two vertices: the facet (edge) of a dimension-2 mesh.
+    Segment,
 }
 
 impl FaceShape {
-    /// Tag for a loop of `n` vertices (`n >= 3`).
+    /// Tag for a loop of `n` vertices (`n >= 2`; 2 is a dimension-2 facet).
     pub const fn from_vertex_count(n: usize) -> Self {
         match n {
+            2 => FaceShape::Segment,
             3 => FaceShape::Tri,
             4 => FaceShape::Quad,
             _ => FaceShape::Polygon,
@@ -71,6 +83,8 @@ const WEDGE_FACES: &[&[u8]] = &[
     &[1, 2, 5, 4],
     &[2, 0, 3, 5],
 ];
+const TRI_EDGES: &[&[u8]] = &[&[0, 1], &[1, 2], &[2, 0]];
+const QUAD_EDGES: &[&[u8]] = &[&[0, 1], &[1, 2], &[2, 3], &[3, 0]];
 const PYR_FACES: &[&[u8]] = &[
     &[0, 3, 2, 1],
     &[0, 1, 4],
@@ -80,25 +94,45 @@ const PYR_FACES: &[&[u8]] = &[
 ];
 
 impl CellShape {
-    /// Number of vertices of a fast-path shape; `None` for [`CellShape::Polyhedron`].
+    /// Number of vertices of a fast-path shape; `None` for [`CellShape::Polyhedron`] and
+    /// [`CellShape::Polygon`].
     pub const fn vertex_count(self) -> Option<usize> {
         match self {
             CellShape::Tet => Some(4),
             CellShape::Hex => Some(8),
             CellShape::Wedge => Some(6),
             CellShape::Pyramid => Some(5),
-            CellShape::Polyhedron => None,
+            CellShape::Tri => Some(3),
+            CellShape::Quad => Some(4),
+            CellShape::Polyhedron | CellShape::Polygon => None,
         }
     }
 
-    /// Local outward face loops (indices into the ordered vertex list). Empty for polyhedra.
+    /// Dimension of the mesh this shape belongs to.
+    pub const fn dim(self) -> MeshDim {
+        match self {
+            CellShape::Tri | CellShape::Quad | CellShape::Polygon => MeshDim::Two,
+            _ => MeshDim::Three,
+        }
+    }
+
+    /// True for the general shapes without a template ([`CellShape::Polyhedron`],
+    /// [`CellShape::Polygon`]).
+    pub const fn is_general(self) -> bool {
+        matches!(self, CellShape::Polyhedron | CellShape::Polygon)
+    }
+
+    /// Local outward face loops (indices into the ordered vertex list); for `Tri` / `Quad` the
+    /// edges in boundary order. Empty for polyhedra and polygons.
     pub const fn local_faces(self) -> &'static [&'static [u8]] {
         match self {
             CellShape::Tet => TET_FACES,
             CellShape::Hex => HEX_FACES,
             CellShape::Wedge => WEDGE_FACES,
             CellShape::Pyramid => PYR_FACES,
-            CellShape::Polyhedron => &[],
+            CellShape::Tri => TRI_EDGES,
+            CellShape::Quad => QUAD_EDGES,
+            CellShape::Polyhedron | CellShape::Polygon => &[],
         }
     }
 
@@ -110,12 +144,22 @@ impl CellShape {
             CellShape::Hex => &[0, 3, 2, 1, 4, 7, 6, 5],
             CellShape::Wedge => &[0, 2, 1, 3, 5, 4],
             CellShape::Pyramid => &[0, 3, 2, 1, 4],
-            CellShape::Polyhedron => &[],
+            CellShape::Tri => &[0, 2, 1],
+            CellShape::Quad => &[0, 3, 2, 1],
+            CellShape::Polyhedron | CellShape::Polygon => &[],
         }
     }
 
-    /// Classify a cell from its distinct-vertex count and face sizes.
+    /// Classify a cell from its distinct-vertex count and face sizes. Faces of two vertices
+    /// are dimension-2 facets: such a cell is a `Tri`, `Quad` or `Polygon` by its facet count.
     pub fn detect(n_vertices: usize, face_sizes: &[usize]) -> Self {
+        if !face_sizes.is_empty() && face_sizes.iter().all(|&s| s == 2) {
+            return match (face_sizes.len(), n_vertices) {
+                (3, 3) => CellShape::Tri,
+                (4, 4) => CellShape::Quad,
+                _ => CellShape::Polygon,
+            };
+        }
         let (mut tris, mut quads, mut other) = (0usize, 0usize, 0usize);
         for &s in face_sizes {
             match s {
@@ -133,13 +177,23 @@ impl CellShape {
         }
     }
 
-    /// Shape implied by an ordered vertex count (template shapes only; 5 means pyramid).
+    /// Shape implied by an ordered vertex count of a dimension-3 cell (template shapes only;
+    /// 5 means pyramid). See [`CellShape::from_corner_count_in`] for dimension 2.
     pub const fn from_corner_count(n: usize) -> Option<Self> {
-        match n {
-            4 => Some(CellShape::Tet),
-            5 => Some(CellShape::Pyramid),
-            6 => Some(CellShape::Wedge),
-            8 => Some(CellShape::Hex),
+        Self::from_corner_count_in(MeshDim::Three, n)
+    }
+
+    /// Shape implied by an ordered corner count in a mesh of dimension `dim`. In dimension 2
+    /// every cell has corners (its vertex cycle), so any `n >= 3` is a shape (`Polygon` from 5).
+    pub const fn from_corner_count_in(dim: MeshDim, n: usize) -> Option<Self> {
+        match (dim, n) {
+            (MeshDim::Three, 4) => Some(CellShape::Tet),
+            (MeshDim::Three, 5) => Some(CellShape::Pyramid),
+            (MeshDim::Three, 6) => Some(CellShape::Wedge),
+            (MeshDim::Three, 8) => Some(CellShape::Hex),
+            (MeshDim::Two, 3) => Some(CellShape::Tri),
+            (MeshDim::Two, 4) => Some(CellShape::Quad),
+            (MeshDim::Two, n) if n >= 5 => Some(CellShape::Polygon),
             _ => None,
         }
     }
@@ -183,7 +237,9 @@ impl CellShape {
                 [2, 4],
                 [3, 4],
             ],
-            CellShape::Polyhedron => &[],
+            CellShape::Tri => &[[0, 1], [1, 2], [2, 0]],
+            CellShape::Quad => &[[0, 1], [1, 2], [2, 3], [3, 0]],
+            CellShape::Polyhedron | CellShape::Polygon => &[],
         }
     }
 
@@ -201,7 +257,8 @@ impl CellShape {
             ],
             CellShape::Wedge => &[[0, 1, 4, 3], [0, 2, 5, 3], [1, 2, 5, 4]],
             CellShape::Pyramid => &[[0, 3, 2, 1]],
-            CellShape::Tet | CellShape::Polyhedron => &[],
+            CellShape::Quad => &[[0, 1, 2, 3]],
+            CellShape::Tet | CellShape::Tri | CellShape::Polyhedron | CellShape::Polygon => &[],
         }
     }
 }
@@ -213,6 +270,11 @@ impl CellShape {
 /// the cell's faces in the given order, rotations ascending), so the result is deterministic for
 /// a given face numbering but is only one of several equivalent orderings.
 pub fn derive_corners(shape: CellShape, loops: &[&[VertexIx]]) -> Option<SmallVec<[VertexIx; 8]>> {
+    if shape.dim() == MeshDim::Two {
+        let cyc = polygon_cycle(loops)?;
+        return (CellShape::from_corner_count_in(MeshDim::Two, cyc.len()) == Some(shape))
+            .then_some(cyc);
+    }
     let n = shape.vertex_count()?;
     let tf = shape.local_faces();
     let t0 = tf[0];
@@ -231,6 +293,33 @@ pub fn derive_corners(shape: CellShape, loops: &[&[VertexIx]]) -> Option<SmallVe
         }
     }
     None
+}
+
+/// The vertex cycle of a dimension-2 cell from its directed facets (`[a, b]` traversed
+/// `a -> b`), starting at the smallest vertex. `None` unless every facet has two distinct
+/// vertices and the facets chain into exactly one closed cycle through distinct vertices.
+pub fn polygon_cycle(directed: &[&[VertexIx]]) -> Option<SmallVec<[VertexIx; 8]>> {
+    let n = directed.len();
+    if n < 3 || directed.iter().any(|d| d.len() != 2 || d[0] == d[1]) {
+        return None;
+    }
+    let mut tails: SmallVec<[(VertexIx, VertexIx); 8]> =
+        directed.iter().map(|d| (d[0], d[1])).collect();
+    tails.sort_unstable();
+    if tails.windows(2).any(|w| w[0].0 == w[1].0) {
+        return None;
+    }
+    let start = tails[0].0;
+    let mut out: SmallVec<[VertexIx; 8]> = SmallVec::with_capacity(n);
+    let mut cur = start;
+    for _ in 0..n {
+        out.push(cur);
+        let i = tails.binary_search_by(|t| t.0.cmp(&cur)).ok()?;
+        cur = tails[i].1;
+    }
+    let mut s = out.clone();
+    s.sort_unstable();
+    (cur == start && s.windows(2).all(|w| w[0] != w[1])).then_some(out)
 }
 
 fn propagate(map: &mut [Option<VertexIx>; 8], tf: &[&[u8]], loops: &[&[VertexIx]]) -> bool {
@@ -304,10 +393,22 @@ pub enum LoopRelation {
 }
 
 /// Compare two loops as cycles. `None` if they are not the same cycle in either direction.
+///
+/// A two-vertex loop (a dimension-2 facet) is directed: `[a, b]` is `Same` as `[a, b]` and
+/// `Reversed` against `[b, a]` (for two vertices a rotation would equal a reversal).
 pub fn loop_relation(a: &[VertexIx], b: &[VertexIx]) -> Option<LoopRelation> {
     let n = a.len();
     if n != b.len() || n == 0 {
         return None;
+    }
+    if n == 2 {
+        return if a == b {
+            Some(LoopRelation::Same)
+        } else if a[0] == b[1] && a[1] == b[0] {
+            Some(LoopRelation::Reversed)
+        } else {
+            None
+        };
     }
     let s = b.iter().position(|&v| v == a[0])?;
     if (0..n).all(|i| a[i] == b[(s + i) % n]) {

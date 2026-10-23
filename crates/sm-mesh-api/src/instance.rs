@@ -210,6 +210,11 @@ pub fn append_transformed<B: MeshBuild>(
     t: &Transform,
     o: &FlattenOptions<'_>,
 ) -> Result<AppendMap> {
+    if src.dim() != crate::index::MeshDim::Three || b.dim() != crate::index::MeshDim::Three {
+        return Err(MeshError::Unsupported(
+            "instancing, welding and unfolding work on dimension-3 meshes in v1".into(),
+        ));
+    }
     let remap = |c: Classification| o.remap_class.map_or(c, |f| f(instance, c));
     let improper = t.is_improper();
     let (nv, nf, nc) = (src.vertex_count(), src.face_count(), src.cell_count());

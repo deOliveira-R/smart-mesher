@@ -13,6 +13,13 @@
 //! Ids ascend with dense index. Face loops start at their smallest vertex index. Faces are
 //! ordered by `(left, right-or-none, loop)`. Cell->face lists ascend by face index.
 //!
+//! # Dimension
+//! [`MeshRead::dim`] is the topological dimension ([`MeshDim`]). Everything above describes a
+//! dimension-3 mesh; a dimension-2 mesh keeps the same invariants one level down: cells are
+//! polygons, faces are two-vertex facets `[a, b]` (no rotation: the loop is directed), the left
+//! cell traverses the facet `a -> b` and the right cell `b -> a`, and `cell_corners` is the
+//! cell's vertex cycle in boundary order (present for every cell, polygons included).
+//!
 //! # Indices
 //! Every method taking an index requires it to be below the matching `count`; a foreign or
 //! out-of-range index panics (slice indexing) in the reference implementation, and other
@@ -22,7 +29,7 @@ use crate::classify::{ClassSet, Classification};
 use crate::edges::EdgeTable;
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, CellGeometry, FaceCurve, HighOrderCell};
-use crate::index::{CellIx, FaceIx, FaceKind, MeshEntityKind, Side, SignedFace, VertexIx};
+use crate::index::{CellIx, FaceIx, FaceKind, MeshDim, MeshEntityKind, Side, SignedFace, VertexIx};
 use crate::sets::{MeshSet, TagColumn};
 use crate::shape::{CellShape, FaceShape};
 use sm_core::{EntityId, Point3, Vector3};
@@ -100,6 +107,10 @@ pub struct GeometryCache {
 pub trait MeshRead: Send + Sync {
     /// Stable id of this mesh (`EntityKind::Mesh`).
     fn mesh_id(&self) -> EntityId;
+    /// Topological dimension (default [`MeshDim::Three`]; a dimension-2 mesh overrides it).
+    fn dim(&self) -> MeshDim {
+        MeshDim::Three
+    }
     /// Number of entities of kind `k` (edges: 0 without an edge table).
     fn count(&self, k: MeshEntityKind) -> usize;
     /// Stable id of entity `ix` of kind `k`; ids ascend with the dense index.
@@ -126,7 +137,8 @@ pub trait MeshRead: Send + Sync {
     /// Derived shape tag of a cell.
     fn cell_shape(&self, c: CellIx) -> CellShape;
     /// Corner vertices in the template order of the cell's shape; `Some` for every
-    /// template-shaped (non-polyhedron) cell.
+    /// template-shaped (non-polyhedron) cell, and for every cell of a dimension-2 mesh (the
+    /// vertex cycle in boundary order).
     fn cell_corners(&self, c: CellIx) -> Option<&[VertexIx]>;
     /// High-order record of a cell, `None` if linear.
     fn high_order_cell(&self, c: CellIx) -> Option<&HighOrderCell>;
