@@ -1,0 +1,21 @@
+[package]
+name = "sm-geom-api"
+description = "Frozen contract for exact shape: parametric curves/surfaces, analytic kinds, NURBS data, CSG quadrics, ray hooks, tolerance policy."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "sm-core/serde", "smallvec/serde"]
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+smallvec = "1"

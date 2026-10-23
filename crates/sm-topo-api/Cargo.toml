@@ -1,0 +1,22 @@
+[package]
+name = "sm-topo-api"
+description = "Frozen contract for the cellular non-manifold complex: cells, one oriented incidence relation, carriers, lineage, view/edit traits, reference implementation."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "sm-core/serde", "sm-geom-api/serde", "smallvec/serde"]
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+smallvec = "1"

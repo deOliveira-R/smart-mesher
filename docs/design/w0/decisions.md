@@ -55,3 +55,14 @@ Answers to the open questions in `mesh-api-recommendation.md` §6 and `op-api-re
 8. Determinism test for API crates: run twice and compare hashes, plus a cross-thread hash comparison (`std::thread`). No rayon in API crates.
 9. Cargo.lock: the orchestrator owns it.
 10. An uncolored boundary face is a **Warning** in validation, and an **Error** at export time if the target format requires boundary colors. Cut caps take the `cap_color` passed to `apply_cut`.
+
+# W0d orchestrator decisions (2026-10-23)
+
+Merged: sm-geom-api + sm-topo-api (faa768b), sm-model-api on top (7433b24). The deviations are listed in each crate's DESIGN.md.
+
+## Sign-off
+- **Transformed interfaces (residual of W0c model decision 5):** an interface with an explicit transform has its two face sets in different places, so no `coincident_faces` record can exist for it. For P0–P1 the counterpart test stays as overlapping bounding spheres from moments, and it reports a Warning, not a proof. The real check, which maps one side by the transform and then matches imprint/merge status within tolerance, belongs to the `interfaces` domain (W3). An interface without a transform still requires a recorded coincident pair.
+
+## Follow-ups (not blocking, tracked for W1/W3)
+- geom hash: scale the `quantize_scale_free` zero cutoff by the largest magnitude in each definition, so cancellation noise after large translations hashes as zero.
+- model composites: match Part/Whole faces by base face across members, so interface faces are internal; make `pieces_of_face` agree with `piece_faces`; include `PieceShape::Sweep` CutIds in the `check_integrity` max-id scan.
