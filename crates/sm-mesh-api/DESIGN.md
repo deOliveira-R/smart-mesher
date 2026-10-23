@@ -1,59 +1,65 @@
-# sm-mesh-api: face-first candidate
+# sm-mesh-api: final design (frozen contract)
+
+Base: the face-first candidate, plus the grafts and defect fixes of `docs/design/w0/mesh-api-recommendation.md`, as modified by `docs/design/w0/decisions.md`. This crate is a frozen contract after merge: only the orchestrator edits it.
 
 ## Model
 
-OpenFOAM/CGNS-style **face-first** core. The backbone is three CSR/column tables:
+OpenFOAM/CGNS-style **face-first** core. Three CSR/column tables are the backbone (offsets are `u64`, the on-disk width):
 
 - `face -> vertex loop` (right-hand rule gives the normal),
-- `face_left`, `face_right` (`right = None` on the boundary),
-- `cell -> [CellFace { face, side }]` where `side` is the CGNS NFACE sign (`Left` = outward, `Right` = inward).
+- `face_left` (always present), `face_right` (`NO_CELL` if none), `face_kind`,
+- `cell -> [SignedFace]`, a packed `u32` (`face << 1 | side`, at most 2^31 faces). The sign is the CGNS NFACE sign: `+` (Left) = the stored loop is outward for this cell.
 
-Everything else is derived or a side table: cell shape tags (derived from face sizes and vertex count, re-checked by `validate`), cell ordered-vertex lists (only for fast-path cells built from a vertex list), the optional `EdgeTable` (derived, with its own classification column), classification, sparse high-order records, sets, tag columns.
+Everything else is derived or a side table: the cell shape tag, template **corners** for every template-shaped cell (Tet/Hex/Wedge/Pyramid; supplied by the mesher, or derived at `finish` from the outward loops), the optional `EdgeTable` (fully classified when present), classification with reverse index (vertices, edges, faces, cells), sparse high-order cell records, sparse face-curve records, lineage columns (`cell_parent`, `cell_active`), named sets, typed tag columns, and an optional geometry cache.
 
-**Orientation rule** (ir.md section 6): the face loop's right-hand normal points left -> right; `left` is the lower cell id; boundary faces have normal outward. It is enforced in one place: `MeshBuild::finish`. Builders accept cells whose `side` is relative to the face's *current* loop; `finish` reverses the loop where the lower cell sees it inward, and rejects two cells that disagree (`InconsistentOrientation`), more than two cells, and dangling faces. No geometry is needed, so it works for polyhedra and for improper transforms.
+**Orientation rule** (ir.md section 6, binding): the loop normal points from `left` to `right`; `left` is the lower cell id; one-cell faces have the normal outward. Enforced in one place, `MeshBuild::finish`, independent of insertion order: it reverses a loop when the lower cell sees it inward, rejects two cells that disagree, more than two cells, and dangling faces. No geometry is needed, so it works for polyhedra and improper transforms. Canonical order (`validate` checks it): ids ascend with the dense index; loops start at the smallest vertex; faces sorted by `(left, right-or-none, loop)`; cell->face lists ascend. Exporters permute (OpenFOAM: interior by `(owner, neighbour)`, then patches by classification; CGNS ParentElements = `(left, right)`, NFACE = signed face ids) and never flip.
 
-**Ids and canonical order.** Stable `EntityId`s (kinds `MeshVertex/Face/Cell/Edge`, `Group` for sets) come from a shared `SerialAlloc`, so ids stay unique across hierarchy levels and instances. In a finished mesh dense index order equals ascending id order; "lower cell id" = "lower cell index". `finish` sorts faces by `(left, right-or-none, loop)`, starts loops at the smallest vertex, and sorts cell->face lists. Vertex and cell order are the mesher's contract (it owns the canonical sort of its op). `content_hash` is bit-exact FNV-1a over everything stored; tests show it is independent of face creation order.
+**Face kinds.** `Interior` (two cells), `Boundary` (one cell, classified on a `TopoFace`), `NonConformal` and `PartitionCut` (one cell, reserved; classified on a volume/partition cell or `TopoFace`). Defaults are derived; `set_face_kind` marks the other two. `is_boundary_face` is true only for `Boundary`.
 
-## Key types
+**Ids.** One `SerialAlloc` is shared by all meshes of a model. `finish` draws the mesh id, then vertex, face, cell, set and edge ids. Dense order equals id order, ids never collide across meshes.
+
+**Classification is mandatory** for vertices, boundary faces and cells. `finish` fills an unset interior / non-conformal / partition-cut face (and an unset edge strictly inside the volume) from the cells around it when they share one classification, and errors otherwise. `Param` must match the entity kind (`None` always fits; `Curve` on `TopoEdge`, `Surface` on `TopoFace`, `Volume` on `TopoVolume`); a mismatch is rejected, never rewritten. `validate` also enforces `dim(sub-entity) <= dim(entity)` (vertex <= edge <= face), edges included, and that the reverse index matches the columns.
+
+## Traits
 
 | Item | Role |
 |---|---|
-| `MeshRead` (object safe) | consumer queries: slices for CSR, `across(CellFace)` for O(1) mesh walking, `classified_on`, sets, tags, edges |
-| `MeshBuild` | mesher API: `add_vertex/add_face/find_face/add_cell`, plus provided `add_polyhedron` (outward loops, faces deduplicated by vertex cycle) and `add_cell_from_vertices(shape, verts)`; `finish(&mut SerialAlloc)` |
-| `MeshEdit: MeshRead` | topology-preserving edits (move points, reclassify, high order, sets, tags, edges) |
-| `CellShape` / `FaceShape` | tags plus templates (`local_faces`, `reflect_permutation`) for Tet/Hex/Wedge/Pyramid and Tri/Quad |
-| `Classification { entity, param }`, `Param`, `ClassSet` | every vertex/face/cell lies on a `Topo*`/`PartitionCell` id with optional (u) or (u,v); reverse index per model entity |
-| `HighOrderCell`, `Basis`, `CellGeometry`, `NodeRef` | sparse (degree, basis, node list); coords SoA = vertices then extra nodes |
-| `MeshCatalog` / `CatalogEdit`, `CellMap` | meshes by level; fine->coarse total map with inverse CSR; link checks sizes, level+1, equal classification |
-| `InstancedView`, `Instance`, `flatten`, `FlattenMap` | prototype + placements; deterministic expansion (ascending instance id) with `locate(cell) -> (instance, local cell)` |
-| `append_transformed`, `unfold` | generic over any `MeshBuild`; the improper-transform path |
-| `validate`, `validate_geometry`, `geometry::*` | topology/orientation/closedness/template/classification checks; normals left->right and positive volumes; rule `smartmesh.fan_vertex_mean.v1` |
-| `reference::{ReferenceMesh, ReferenceBuilder, ReferenceCatalog}` | in-memory oracle; `finish` runs `validate` |
+| `MeshRead` (object safe, `Send + Sync`) | kind-indexed `count/id/index_of/classification`, required `columns()` (whole slices, no dyn dispatch in hot loops), `across(SignedFace)` O(1) walking, checked `other_cell`, `face_kind`, `cell_corners`, `high_order_cell`, `face_curve`, `cell_parent/cell_active`, `classified_on`, `edges`, `sets`, `tags`, `geometry_rule`, `geometry_cache` |
+| `MeshBuild` | mesher/importer API. Two-phase `add_cell` (all checks before any change), `CellAdded {cell, faces, reused}`, `Finished {mesh, face_remap}`, atomic provided `add_polyhedron[_with_corners]` and `add_cell_from_vertices`, `set_class` (edges by vertex pair, resolved at finish), `set_face_kind`, `set_cell_parent`, `set_cell_active`, `set_high_order`, `set_face_curve`, sets, typed tags, quantized `find_vertex` |
+| `MeshEdit: MeshRead` | topology-preserving: `set_point`, `add_extra_node`, `set_class` (all four kinds), `set_face_kind`, `set_high_order`, `set_face_curve`, sets, tags, `ensure_edges`, `drop_edges` (removes edge tags), `set_geometry_cache` |
+| `geometry` | allocation-free free functions over `&dyn MeshRead` (below) |
+| `LevelMap`, `MeshCatalog`, `CatalogEdit` | fine->coarse maps (`restrict_sum`, `prolong_copy`, `fines_of`, `compose`, optional validated `face_map`), catalog with `maps_from/maps_to` |
+| `InstancedView`, `flatten`, `unfold`, `append_transformed`, `finalize_welds` | instancing, mirror unfold, welding |
+| `validate`, `validate_geometry`, `connectivity_hash`, `topology_hash`, `geometry_hash` | checks with stable `ViolationCode`s; content hashes |
+| `select` | `Selector` algebra and sorted-slice set operations as free functions |
+| `reference::{ReferenceBuilder, ReferenceMesh, ReferenceCatalog, hex_block, hex_block_with_edges}` | in-memory oracle |
 
-## Requirements
+## Geometry rule `smartmesh.fan_vertex_mean.v1`
 
-- **Face-first, stored orientation**: tables above; `validate` checks that `cell_faces` sides and `face_left/right` agree both ways.
-- **Polyhedra general, fast paths**: `add_polyhedron` is the general entry; shape tag is derived; `add_cell_from_vertices` stores template-ordered vertices which `validate` checks against the outward loops. Tri/Quad are face tags (`face_shape`).
-- **Classification**: required at `finish` (`Unclassified` error); boundary faces must be on a `TopoFace`; cells on a volume/partition cell; reverse queries via `classified_on`. Boundary sets are therefore classification, not a second source of truth. Sets/tags are annotations.
-- **Geometry / high order**: f64 SoA; per-cell (shape, degree, basis) via `cell_geometry`; default linear.
-- **Hierarchy**: catalog with levels and `CellMap`; instanced view and `flatten`; `weld_tol` makes abutting instances conforming.
-- **Mirror unfold**: `append_transformed` rebuilds each cell from its *outward* loops. If `det < 0` every loop is reversed and fast-path vertex order is permuted (`reflect_permutation`); `finish` then re-applies the left/right rule, so shared plane faces get left = original cell, normal = mirror direction. Tested, including a negative control (inside-out hex fails `validate_geometry`).
-- **Read vs build/edit separation**: three traits; consumers never see builder methods.
-- **Determinism**: `BTreeMap`/sorted vectors only, no hash iteration; canonical face order; ids from a counter; `content_hash` tests.
+Face: apex = vertex mean, `A = 1/2 sum (p_i - apex) x (p_{i+1} - apex)`, centre = area-weighted fan centroid. Cell: the fan polyhedron; `V = 1/3 sum_f s_f A_f . (apex_f - o)` equals the sum of side tetrahedra `(o, apex_f, p_i, p_{i+1})` exactly (the cross term vanishes because each triangle's area vector is orthogonal to its edges from the apex), `o` = first vertex of the first face; centroid from the same tetrahedra. No `Vec`, no heap allocation (a counting-allocator test enforces zero allocations for `face_area_vector`, `cell_volume`, `across` over `&dyn MeshRead`).
 
-## Tradeoffs
+## High order
 
-- Cell->face signs are redundant with `face_left/right` (kept, per the "stored oriented" requirement, to avoid a branch in sweeps); `validate` guards against drift.
-- Ordered vertices exist only for cells built from a vertex list; a hex built from face loops is tagged `Hex` but has no template order. Cheap and honest, but a FE consumer must check `cell_ordered_vertices`.
+`smartmesh.nodes.v1` = Gmsh ordering for template shapes up to degree 2: corners, then local edges (`CellShape::local_edges`), then quadrilateral faces (`local_quads`, Lagrange only), then the hex centre. `node_count(shape, degree, basis)` is checked everywhere (HEX27 vs HEX20 via `Basis::Serendipity`; TET10; WEDGE18/15; PYRAMID14/13); everything else is `Unsupported`, including mirroring high-order cells. Polyhedra cannot carry cell records; they curve through `face_curve` (loop vertices first, then edge nodes, then the Lagrange-quad centre), which `finish` permutes when it re-orients a loop. `MeshEdit::add_extra_node` lets a finished mesh be curved. Node ids are `PointIx`; the builder uses `NodeRef` because extra-node indices are not final until `finish`.
+
+## Hierarchy
+
+A coarse mesh is an independent mesh over the same model; no classification equality is required (CMFD nodes may sit on `PartitionCell`s). `LevelMap` stores both mesh ids and connectivity hashes and refuses a stale or foreign pair (`check_meshes`, `link`). The face map is validated against both meshes. A catalog may hold several maps per fine mesh.
+
+## Instancing, welding, unfold
+
+`flatten` places instances in ascending id order. Welding is global on a quantized grid (`BTreeMap`, lowest index wins) but **across instances only** and **only on source boundary vertices**, so baffles inside a prototype survive. A face shared with an earlier instance becomes interior and is reclassified through `FlattenOptions::on_merge` (default: the cells' common classification, else `ClassConflict`), recorded in `FlattenMap::merged_faces`; welded vertices are resolved by `finalize_welds` (interior => shared cell classification; still on the boundary => equal classes keep, otherwise `on_merge`/error). `remap_class(instance, class)` applies to vertices, faces and cells. `unfold(src, deck, ..)` builds the images of all subsets of the deck (identity implicit): a 2-mirror deck on a hex gives 18 vertices / 4 interior faces. Sets, tags, the edge table and face curves are not carried and are reported as `LossNote`s.
+
+## Hashes
+
+`connectivity_hash`: ids, counts, loops, left/right, face kinds, signed cell faces, shapes, corners, lineage (keys the geometry cache and level maps). `topology_hash`: connectivity plus class entities, the edge table and its classification, high-order and face-curve node indices, set members, integer tag values, real tag names. `geometry_hash`: coordinate bits (vertices and extra nodes), all `Param` bits, real tag values, rule id. The geometry cache is derived and excluded.
+
+## Tradeoffs and limits
+
+- Cell->face signs duplicate `face_left/right` (kept so sweeps avoid a branch); `validate` guards against drift.
+- A template cell built from loops gets *a* valid corner order (first match of a fixed search); symmetric shapes have several.
 - Face dedup in the builder is by vertex set + cyclic order; twisted duplicates are separate faces.
-- `cell_vertices_sorted`, `boundary_faces`, geometry helpers allocate: cold-path conveniences, not sweep inner loops.
-- The reference `find_vertex` is O(n); a real backend needs a deterministic grid.
-
-## Open issues
-
-- 2D/1D/RZ meshes (ir.md section 7) are not modelled; faces need >= 3 vertices.
-- High-order nodes cannot be mirrored (reference-element permutation tables per basis not defined); `append_transformed` errors. Face-level curvature tables and the addendum's sparse curvature table are not separate yet.
-- `flatten`/`unfold` do not carry sets/tags; interface records (non-conformal L7) and deck-pairing lowering are not in this crate.
-- Mirror image classification is the caller's `remap_class`; deriving unfolded model entities belongs to the model layer.
-- Refinement/coarsening (parents inactive, lineage) is not part of the traits yet; ids are append-only via `SerialAlloc`.
-- Cached face/cell geometry arrays keyed by rule id are not stored; only the functions are provided.
+- 2D/1D/RZ meshes are not modelled; faces need >= 3 vertices.
+- Inactive parents keep their faces; consumers filter by `cell_active` (the faces of a refined parent are not marked inactive).
+- Non-conformal interface records, partition-local views (ghosts) and refinement edits belong to later crates; only `FaceKind` slots and lineage columns are reserved.
+- No `rayon` here: all algorithms are sequential and deterministic (`BTreeMap`/sorted vectors, no hash-order dependence), so 1 thread and N threads are trivially identical.

@@ -3,20 +3,22 @@
 //! Plain `Vec` columns in CSR layout; no cleverness. It exists to pin down semantics for the
 //! contract tests and to be the oracle other implementations are compared against.
 
+mod blocks;
 mod builder;
 mod catalog;
 
+pub use blocks::{hex_block, hex_block_with_edges};
 pub use builder::ReferenceBuilder;
 pub use catalog::ReferenceCatalog;
 
 use crate::build::{MeshEdit, SerialAlloc};
 use crate::classify::{ClassSet, Classification};
-use crate::edges::EdgeTable;
+use crate::edges::{EdgeTable, edge_key};
 use crate::error::{MeshError, Result};
-use crate::highorder::HighOrderCell;
-use crate::index::{CellFace, CellIx, EdgeIx, FaceIx, MeshEntity, MeshEntityKind, VertexIx};
-use crate::read::{Coords, MeshRead};
-use crate::sets::{MeshSet, SetMembers, TagColumn};
+use crate::highorder::{Basis, FaceCurve, HighOrderCell, face_node_count, node_count};
+use crate::index::{CellIx, FaceIx, FaceKind, MeshEntity, MeshEntityKind, PointIx, VertexIx};
+use crate::read::{Coords, GeometryCache, MeshRead, TopologyColumns};
+use crate::sets::{MeshSet, SetMembers, TagColumn, TagValues};
 use crate::shape::CellShape;
 use sm_core::{EntityId, EntityKind, Point3};
 use std::collections::BTreeMap;
@@ -32,72 +34,84 @@ pub struct ReferenceMesh {
     y: Vec<f64>,
     z: Vec<f64>,
     n_vertices: usize,
-    face_off: Vec<u32>,
+    face_off: Vec<u64>,
     face_verts: Vec<VertexIx>,
     face_left: Vec<CellIx>,
     face_right: Vec<u32>,
-    cell_off: Vec<u32>,
-    cell_faces: Vec<CellFace>,
+    face_kind: Vec<FaceKind>,
+    cell_off: Vec<u64>,
+    cell_faces: Vec<crate::index::SignedFace>,
     cell_shape: Vec<CellShape>,
-    ordered_off: Vec<u32>,
-    ordered: Vec<VertexIx>,
+    corner_off: Vec<u64>,
+    corners: Vec<VertexIx>,
+    cell_parent: Vec<u32>,
+    cell_active: Vec<bool>,
     vclass: Vec<Classification>,
     fclass: Vec<Classification>,
     cclass: Vec<Classification>,
     class_index: BTreeMap<EntityId, ClassSet>,
+    class_entities: Vec<EntityId>,
     ho: BTreeMap<u32, HighOrderCell>,
+    fcurve: BTreeMap<u32, (u8, Basis, Vec<PointIx>)>,
     sets: Vec<MeshSet>,
     tags: Vec<TagColumn>,
     edges: Option<EdgeTable>,
+    cache: Option<GeometryCache>,
 }
 
-fn sorted_insert<T: Ord + Copy>(v: &mut Vec<T>, x: T) {
-    if let Err(p) = v.binary_search(&x) {
-        v.insert(p, x);
-    }
-}
-fn sorted_remove<T: Ord + Copy>(v: &mut Vec<T>, x: T) {
-    if let Ok(p) = v.binary_search(&x) {
-        v.remove(p);
-    }
+fn range(off: &[u64], i: usize) -> core::ops::Range<usize> {
+    off[i] as usize..off[i + 1] as usize
 }
 
 impl MeshRead for ReferenceMesh {
     fn mesh_id(&self) -> EntityId {
         self.id
     }
-    fn vertex_count(&self) -> usize {
-        self.n_vertices
+    fn count(&self, k: MeshEntityKind) -> usize {
+        match k {
+            MeshEntityKind::Vertex => self.n_vertices,
+            MeshEntityKind::Edge => self.edges.as_ref().map_or(0, EdgeTable::len),
+            MeshEntityKind::Face => self.face_ids.len(),
+            MeshEntityKind::Cell => self.cell_ids.len(),
+        }
     }
-    fn face_count(&self) -> usize {
-        self.face_ids.len()
+    fn id(&self, k: MeshEntityKind, ix: u32) -> EntityId {
+        match k {
+            MeshEntityKind::Vertex => self.vertex_ids[ix as usize],
+            MeshEntityKind::Edge => self.edges.as_ref().map_or(&[][..], |t| &t.ids)[ix as usize],
+            MeshEntityKind::Face => self.face_ids[ix as usize],
+            MeshEntityKind::Cell => self.cell_ids[ix as usize],
+        }
     }
-    fn cell_count(&self) -> usize {
-        self.cell_ids.len()
-    }
-    fn vertex_id(&self, v: VertexIx) -> EntityId {
-        self.vertex_ids[v.get()]
-    }
-    fn face_id(&self, f: FaceIx) -> EntityId {
-        self.face_ids[f.get()]
-    }
-    fn cell_id(&self, c: CellIx) -> EntityId {
-        self.cell_ids[c.get()]
-    }
-    fn vertex_index(&self, id: EntityId) -> Option<VertexIx> {
-        self.vertex_ids.binary_search(&id).ok().map(VertexIx::new)
-    }
-    fn face_index(&self, id: EntityId) -> Option<FaceIx> {
-        self.face_ids.binary_search(&id).ok().map(FaceIx::new)
-    }
-    fn cell_index(&self, id: EntityId) -> Option<CellIx> {
-        self.cell_ids.binary_search(&id).ok().map(CellIx::new)
+    fn index_of(&self, id: EntityId) -> Option<u32> {
+        let ids: &[EntityId] = match id.kind() {
+            EntityKind::MeshVertex => &self.vertex_ids,
+            EntityKind::MeshEdge => self.edges.as_ref().map_or(&[][..], |t| &t.ids),
+            EntityKind::MeshFace => &self.face_ids,
+            EntityKind::MeshCell => &self.cell_ids,
+            _ => return None,
+        };
+        ids.binary_search(&id).ok().map(|i| i as u32)
     }
     fn coords(&self) -> Coords<'_> {
-        Coords { x: &self.x, y: &self.y, z: &self.z }
+        Coords {
+            x: &self.x,
+            y: &self.y,
+            z: &self.z,
+        }
+    }
+    fn columns(&self) -> TopologyColumns<'_> {
+        TopologyColumns {
+            face_vertex_offsets: &self.face_off,
+            face_vertices: &self.face_verts,
+            face_left: &self.face_left,
+            face_right: &self.face_right,
+            cell_face_offsets: &self.cell_off,
+            cell_faces: &self.cell_faces,
+        }
     }
     fn face_vertices(&self, f: FaceIx) -> &[VertexIx] {
-        &self.face_verts[self.face_off[f.get()] as usize..self.face_off[f.get() + 1] as usize]
+        &self.face_verts[range(&self.face_off, f.get())]
     }
     fn face_left(&self, f: FaceIx) -> CellIx {
         self.face_left[f.get()]
@@ -106,33 +120,54 @@ impl MeshRead for ReferenceMesh {
         let r = self.face_right[f.get()];
         (r != CellIx::NONE).then_some(CellIx(r))
     }
-    fn cell_faces(&self, c: CellIx) -> &[CellFace] {
-        &self.cell_faces[self.cell_off[c.get()] as usize..self.cell_off[c.get() + 1] as usize]
+    fn face_kind(&self, f: FaceIx) -> FaceKind {
+        self.face_kind[f.get()]
+    }
+    fn cell_faces(&self, c: CellIx) -> &[crate::index::SignedFace] {
+        &self.cell_faces[range(&self.cell_off, c.get())]
     }
     fn cell_shape(&self, c: CellIx) -> CellShape {
         self.cell_shape[c.get()]
     }
-    fn cell_ordered_vertices(&self, c: CellIx) -> Option<&[VertexIx]> {
-        let s = &self.ordered[self.ordered_off[c.get()] as usize..self.ordered_off[c.get() + 1] as usize];
+    fn cell_corners(&self, c: CellIx) -> Option<&[VertexIx]> {
+        let s = &self.corners[range(&self.corner_off, c.get())];
         (!s.is_empty()).then_some(s)
     }
     fn high_order_cell(&self, c: CellIx) -> Option<&HighOrderCell> {
         self.ho.get(&c.0)
     }
-    fn vertex_class(&self, v: VertexIx) -> Classification {
-        self.vclass[v.get()]
+    fn face_curve(&self, f: FaceIx) -> Option<FaceCurve<'_>> {
+        self.fcurve
+            .get(&f.0)
+            .map(|(degree, basis, nodes)| FaceCurve {
+                degree: *degree,
+                basis: *basis,
+                nodes,
+            })
     }
-    fn face_class(&self, f: FaceIx) -> Classification {
-        self.fclass[f.get()]
+    fn cell_parent(&self, c: CellIx) -> Option<CellIx> {
+        let p = self.cell_parent[c.get()];
+        (p != CellIx::NONE).then_some(CellIx(p))
     }
-    fn cell_class(&self, c: CellIx) -> Classification {
-        self.cclass[c.get()]
+    fn cell_active(&self, c: CellIx) -> bool {
+        self.cell_active[c.get()]
     }
-    fn classified_on(&self, e: EntityId) -> Option<&ClassSet> {
-        self.class_index.get(&e)
+    fn classification(&self, k: MeshEntityKind, ix: u32) -> Classification {
+        match k {
+            MeshEntityKind::Vertex => self.vclass[ix as usize],
+            MeshEntityKind::Edge => self.edges.as_ref().map_or(&[][..], |t| &t.class)[ix as usize],
+            MeshEntityKind::Face => self.fclass[ix as usize],
+            MeshEntityKind::Cell => self.cclass[ix as usize],
+        }
     }
-    fn classified_entities(&self) -> Vec<EntityId> {
-        self.class_index.keys().copied().collect()
+    fn classified_on(&self, model: EntityId) -> Option<&ClassSet> {
+        self.class_index.get(&model)
+    }
+    fn classified_entities(&self) -> &[EntityId] {
+        &self.class_entities
+    }
+    fn edges(&self) -> Option<&EdgeTable> {
+        self.edges.as_ref()
     }
     fn sets(&self) -> &[MeshSet] {
         &self.sets
@@ -140,125 +175,324 @@ impl MeshRead for ReferenceMesh {
     fn tags(&self) -> &[TagColumn] {
         &self.tags
     }
-    fn edges(&self) -> Option<&EdgeTable> {
-        self.edges.as_ref()
+    fn geometry_cache(&self) -> Option<&GeometryCache> {
+        self.cache.as_ref()
     }
 }
 
 impl ReferenceMesh {
-    fn reindex(&mut self, e: MeshEntity, old: Classification, new: Classification) {
-        if old.entity == new.entity {
-            return;
+    /// Assemble a mesh from finished columns (used by the builder).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(p: builder::Parts) -> Self {
+        let mut m = ReferenceMesh {
+            id: p.id,
+            vertex_ids: p.vertex_ids,
+            face_ids: p.face_ids,
+            cell_ids: p.cell_ids,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            n_vertices: p.n_vertices,
+            face_off: p.face_off,
+            face_verts: p.face_verts,
+            face_left: p.face_left,
+            face_right: p.face_right,
+            face_kind: p.face_kind,
+            cell_off: p.cell_off,
+            cell_faces: p.cell_faces,
+            cell_shape: p.cell_shape,
+            corner_off: p.corner_off,
+            corners: p.corners,
+            cell_parent: p.cell_parent,
+            cell_active: p.cell_active,
+            vclass: p.vclass,
+            fclass: p.fclass,
+            cclass: p.cclass,
+            class_index: BTreeMap::new(),
+            class_entities: Vec::new(),
+            ho: p.ho,
+            fcurve: p.fcurve,
+            sets: p.sets,
+            tags: p.tags,
+            edges: None,
+            cache: None,
+        };
+        m.rebuild_class_index();
+        m
+    }
+
+    pub(crate) fn attach_edges(&mut self, t: EdgeTable) {
+        self.edges = Some(t);
+        self.rebuild_class_index();
+    }
+
+    fn rebuild_class_index(&mut self) {
+        let mut idx: BTreeMap<EntityId, ClassSet> = BTreeMap::new();
+        for (i, c) in self.vclass.iter().enumerate() {
+            idx.entry(c.entity)
+                .or_default()
+                .vertices
+                .push(VertexIx::new(i));
         }
-        if let Some(s) = self.class_index.get_mut(&old.entity) {
-            match e {
-                MeshEntity::Vertex(v) => sorted_remove(&mut s.vertices, v),
-                MeshEntity::Face(f) => sorted_remove(&mut s.faces, f),
-                MeshEntity::Cell(c) => sorted_remove(&mut s.cells, c),
-                MeshEntity::Edge(_) => {}
+        if let Some(t) = &self.edges {
+            for (i, c) in t.class.iter().enumerate() {
+                idx.entry(c.entity)
+                    .or_default()
+                    .edges
+                    .push(crate::index::EdgeIx::new(i));
             }
-            if s.vertices.is_empty() && s.faces.is_empty() && s.cells.is_empty() {
-                self.class_index.remove(&old.entity);
-            }
         }
-        let s = self.class_index.entry(new.entity).or_default();
-        match e {
-            MeshEntity::Vertex(v) => sorted_insert(&mut s.vertices, v),
-            MeshEntity::Face(f) => sorted_insert(&mut s.faces, f),
-            MeshEntity::Cell(c) => sorted_insert(&mut s.cells, c),
-            MeshEntity::Edge(_) => {}
+        for (i, c) in self.fclass.iter().enumerate() {
+            idx.entry(c.entity).or_default().faces.push(FaceIx::new(i));
         }
+        for (i, c) in self.cclass.iter().enumerate() {
+            idx.entry(c.entity).or_default().cells.push(CellIx::new(i));
+        }
+        self.class_entities = idx.keys().copied().collect();
+        self.class_index = idx;
+    }
+
+    fn check_class(c: &Classification) -> Result<()> {
+        if c.dim().is_none() {
+            return Err(MeshError::BadClassification(
+                "must name a model or partition entity".into(),
+            ));
+        }
+        if !c.param.fits(c.entity.kind()) {
+            return Err(MeshError::BadClassification(format!(
+                "parameter {:?} does not fit {:?}",
+                c.param,
+                c.entity.kind()
+            )));
+        }
+        Ok(())
+    }
+
+    fn cell_corner_count(&self, c: CellIx) -> Result<&[VertexIx]> {
+        self.cell_corners(c)
+            .ok_or_else(|| MeshError::Unsupported("high order needs a template-shaped cell".into()))
     }
 }
 
 impl MeshEdit for ReferenceMesh {
-    fn set_point(&mut self, i: usize, p: Point3) -> Result<()> {
-        if i >= self.x.len() {
-            return Err(MeshError::OutOfRange(format!("point {i}")));
+    fn set_point(&mut self, i: PointIx, p: Point3) -> Result<()> {
+        if i.get() >= self.x.len() {
+            return Err(MeshError::OutOfRange(format!("point {i:?}")));
         }
-        (self.x[i], self.y[i], self.z[i]) = (p.x, p.y, p.z);
+        (self.x[i.get()], self.y[i.get()], self.z[i.get()]) = (p.x, p.y, p.z);
+        self.cache = None;
         Ok(())
+    }
+    fn add_extra_node(&mut self, p: Point3) -> Result<PointIx> {
+        if self.x.len() >= u32::MAX as usize - 1 {
+            return Err(MeshError::TooLarge);
+        }
+        self.x.push(p.x);
+        self.y.push(p.y);
+        self.z.push(p.z);
+        self.cache = None;
+        Ok(PointIx::new(self.x.len() - 1))
     }
     fn set_class(&mut self, e: MeshEntity, c: Classification) -> Result<()> {
-        if c.dim().is_none() {
-            return Err(MeshError::State("classification must name a model or partition entity".into()));
-        }
+        Self::check_class(&c)?;
         let oob = || MeshError::OutOfRange(format!("{e:?}"));
         match e {
-            MeshEntity::Vertex(v) => {
-                let old = *self.vclass.get(v.get()).ok_or_else(oob)?;
-                self.vclass[v.get()] = c;
-                self.reindex(e, old, c);
-            }
-            MeshEntity::Face(f) => {
-                let old = *self.fclass.get(f.get()).ok_or_else(oob)?;
-                self.fclass[f.get()] = c;
-                self.reindex(e, old, c);
-            }
+            MeshEntity::Vertex(v) => *self.vclass.get_mut(v.get()).ok_or_else(oob)? = c,
+            MeshEntity::Face(f) => *self.fclass.get_mut(f.get()).ok_or_else(oob)? = c,
             MeshEntity::Cell(cell) => {
-                let old = *self.cclass.get(cell.get()).ok_or_else(oob)?;
-                self.cclass[cell.get()] = c;
-                self.reindex(e, old, c);
+                if !matches!(
+                    c.entity.kind(),
+                    EntityKind::TopoVolume | EntityKind::PartitionCell
+                ) {
+                    return Err(MeshError::BadClassification(
+                        "cells need a volume or partition cell".into(),
+                    ));
+                }
+                *self.cclass.get_mut(cell.get()).ok_or_else(oob)? = c;
             }
-            MeshEntity::Edge(EdgeIx(i)) => {
-                let t = self.edges.as_mut().ok_or_else(|| MeshError::State("no edge table".into()))?;
-                *t.class.get_mut(i as usize).ok_or_else(oob)? = Some(c);
+            MeshEntity::Edge(i) => {
+                let t = self
+                    .edges
+                    .as_mut()
+                    .ok_or_else(|| MeshError::State("no edge table".into()))?;
+                *t.class.get_mut(i.get()).ok_or_else(oob)? = c;
             }
         }
+        self.rebuild_class_index();
         Ok(())
     }
-    fn set_high_order(&mut self, c: CellIx, h: HighOrderCell) -> Result<()> {
-        if c.get() >= self.cell_count() || h.degree < 2 || h.nodes.iter().any(|&n| n as usize >= self.x.len()) {
-            return Err(MeshError::OutOfRange("high-order record".into()));
+    fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()> {
+        let cur = *self
+            .face_kind
+            .get(f.get())
+            .ok_or_else(|| MeshError::OutOfRange(format!("{f:?}")))?;
+        if cur == FaceKind::Interior || kind == FaceKind::Interior {
+            return Err(MeshError::State(
+                "Interior is derived from having two cells and cannot be set".into(),
+            ));
+        }
+        if kind == FaceKind::Boundary && self.fclass[f.get()].entity.kind() != EntityKind::TopoFace
+        {
+            return Err(MeshError::BadClassification(
+                "a Boundary face must be classified on a TopoFace".into(),
+            ));
+        }
+        self.face_kind[f.get()] = kind;
+        Ok(())
+    }
+    fn set_high_order(&mut self, c: CellIx, h: Option<HighOrderCell>) -> Result<()> {
+        if c.get() >= self.cell_ids.len() {
+            return Err(MeshError::OutOfRange(format!("{c:?}")));
+        }
+        let Some(h) = h else {
+            self.ho.remove(&c.0);
+            return Ok(());
+        };
+        let corners = self.cell_corner_count(c)?;
+        let want = node_count(self.cell_shape[c.get()], h.degree, h.basis)
+            .filter(|_| h.degree >= 2)
+            .ok_or_else(|| {
+                MeshError::Unsupported(format!(
+                    "high order {:?} degree {} {:?}",
+                    self.cell_shape[c.get()],
+                    h.degree,
+                    h.basis
+                ))
+            })?;
+        if h.nodes.len() != want {
+            return Err(MeshError::OutOfRange(format!(
+                "expected {want} nodes, got {}",
+                h.nodes.len()
+            )));
+        }
+        if h.nodes.iter().any(|n| n.get() >= self.x.len())
+            || h.nodes.iter().zip(corners).any(|(n, v)| n.get() != v.get())
+        {
+            return Err(MeshError::OutOfRange(
+                "nodes must exist and start with the cell corners".into(),
+            ));
         }
         self.ho.insert(c.0, h);
         Ok(())
     }
-    fn clear_high_order(&mut self, c: CellIx) -> Result<()> {
-        self.ho.remove(&c.0);
+    fn set_face_curve(&mut self, f: FaceIx, c: Option<(u8, Basis, Vec<PointIx>)>) -> Result<()> {
+        if f.get() >= self.face_ids.len() {
+            return Err(MeshError::OutOfRange(format!("{f:?}")));
+        }
+        let Some((degree, basis, nodes)) = c else {
+            self.fcurve.remove(&f.0);
+            return Ok(());
+        };
+        let l = &self.face_verts[range(&self.face_off, f.get())];
+        let want = face_node_count(l.len(), degree, basis).ok_or_else(|| {
+            MeshError::Unsupported(format!(
+                "face curve with {} vertices, degree {degree}, {basis:?}",
+                l.len()
+            ))
+        })?;
+        if nodes.len() != want {
+            return Err(MeshError::OutOfRange(format!(
+                "expected {want} nodes, got {}",
+                nodes.len()
+            )));
+        }
+        if nodes.iter().any(|n| n.get() >= self.x.len())
+            || nodes.iter().zip(l).any(|(n, v)| n.get() != v.get())
+        {
+            return Err(MeshError::OutOfRange(
+                "nodes must exist and start with the face loop vertices".into(),
+            ));
+        }
+        self.fcurve.insert(f.0, (degree, basis, nodes));
         Ok(())
     }
-    fn add_set(&mut self, name: &str, members: SetMembers, alloc: &mut SerialAlloc) -> Result<EntityId> {
+    fn add_set(
+        &mut self,
+        name: &str,
+        members: SetMembers,
+        alloc: &mut SerialAlloc,
+    ) -> Result<EntityId> {
         if self.sets.iter().any(|s| s.name == name) {
             return Err(MeshError::DuplicateName(name.into()));
         }
-        let (n, len) = match &members {
-            SetMembers::Vertices(v) => (self.vertex_count(), v.iter().map(|x| x.get()).collect::<Vec<_>>()),
-            SetMembers::Faces(v) => (self.face_count(), v.iter().map(|x| x.get()).collect()),
-            SetMembers::Cells(v) => (self.cell_count(), v.iter().map(|x| x.get()).collect()),
-        };
-        if len.iter().any(|&i| i >= n) || len.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(MeshError::OutOfRange(format!("set '{name}' members must be ascending, unique and in range")));
+        let n = self.count(members.kind());
+        let raw = members.raw();
+        if raw.last().is_some_and(|&i| i as usize >= n) || raw.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(MeshError::OutOfRange(format!(
+                "set '{name}' members must be ascending, unique and in range"
+            )));
         }
         let id = alloc.one(EntityKind::Group)?;
-        self.sets.push(MeshSet { id, name: name.into(), members });
+        self.sets.push(MeshSet {
+            id,
+            name: name.into(),
+            members,
+        });
         self.sets.sort_by_key(|s| s.id);
         Ok(id)
     }
-    fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: Vec<i64>) -> Result<()> {
-        let n = match target {
-            MeshEntityKind::Vertex => self.vertex_count(),
-            MeshEntityKind::Edge => self.edges.as_ref().map_or(0, EdgeTable::len),
-            MeshEntityKind::Face => self.face_count(),
-            MeshEntityKind::Cell => self.cell_count(),
-        };
+    fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()> {
+        let n = self.count(target);
         if values.len() != n {
-            return Err(MeshError::OutOfRange(format!("tag '{name}' has {} values, expected {n}", values.len())));
+            return Err(MeshError::OutOfRange(format!(
+                "tag '{name}' has {} values, expected {n}",
+                values.len()
+            )));
         }
-        let col = TagColumn { name: name.into(), target, values };
-        match self.tags.iter_mut().find(|t| t.name == name) {
-            Some(t) => *t = col,
-            None => self.tags.push(col),
+        let col = TagColumn {
+            name: name.into(),
+            target,
+            values,
+        };
+        match self
+            .tags
+            .binary_search_by(|t| (t.target, &t.name).cmp(&(target, &col.name)))
+        {
+            Ok(i) => self.tags[i] = col,
+            Err(i) => self.tags.insert(i, col),
         }
         Ok(())
     }
-    fn ensure_edges(&mut self, alloc: &mut SerialAlloc) -> Result<()> {
-        if self.edges.is_none() {
-            self.edges = Some(EdgeTable::derive(self, alloc)?);
+    fn ensure_edges(
+        &mut self,
+        alloc: &mut SerialAlloc,
+        explicit: &[(VertexIx, VertexIx, Classification)],
+    ) -> Result<()> {
+        if self.edges.is_some() {
+            return Ok(());
         }
+        let mut map = BTreeMap::new();
+        for (a, b, c) in explicit {
+            Self::check_class(c)?;
+            map.insert(edge_key(*a, *b), *c);
+        }
+        let t = EdgeTable::derive(self, alloc, &map)?;
+        self.attach_edges(t);
         Ok(())
     }
     fn drop_edges(&mut self) {
         self.edges = None;
+        self.tags.retain(|t| t.target != MeshEntityKind::Edge);
+        self.rebuild_class_index();
+    }
+    fn set_geometry_cache(&mut self, g: Option<GeometryCache>) -> Result<()> {
+        if let Some(g) = &g {
+            let (nf, nc) = (self.face_ids.len(), self.cell_ids.len());
+            let ok = g.rule == self.geometry_rule()
+                && g.face_area.len() == nf
+                && g.face_centroid.len() == nf
+                && g.face_apex.len() == nf
+                && g.cell_volume.len() == nc
+                && g.cell_centroid.len() == nc
+                && g.connectivity_hash == crate::validate::connectivity_hash(self);
+            if !ok {
+                return Err(MeshError::State(
+                    "geometry cache does not match this mesh (rule, sizes or connectivity hash)"
+                        .into(),
+                ));
+            }
+        }
+        self.cache = g;
+        Ok(())
     }
 }

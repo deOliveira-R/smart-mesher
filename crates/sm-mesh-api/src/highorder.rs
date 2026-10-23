@@ -1,22 +1,46 @@
-//! High-order geometry: a sparse per-cell `(shape, degree, basis)` table plus extra nodes.
+//! High-order geometry: sparse per-cell `(degree, basis)` records and per-face curvature records.
 //!
-//! The coordinate arrays hold the `vertex_count` vertices first, then any extra (non-vertex)
-//! nodes. A high-order cell lists its nodes as indices into that combined array, in the
-//! reference-element order of `(shape, basis)`. Cells absent from the table are linear.
+//! The coordinate arrays hold the `n_vertices` vertices first, then any extra (non-vertex)
+//! nodes; both kinds are addressed by [`PointIx`].
+//!
+//! # Node order `smartmesh.nodes.v1`
+//! For template shapes up to degree 2 the node list follows Gmsh ordering: the corners in
+//! template order, then one node per local edge in [`CellShape::local_edges`] order, then (for
+//! Lagrange bases only) one node per quadrilateral face in [`CellShape::local_quads`] order, then
+//! (hex only, Lagrange only) the cell centre. [`node_layout`] spells the list out.
+//! [`Basis::Serendipity`] drops the face and centre nodes (HEX20 against HEX27). Every other
+//! `(shape, degree)` is unsupported in v1: [`node_count`] returns `None` and builders refuse it.
+//! GLL and equispaced Lagrange coincide at degree 2.
+//!
+//! Face curves ([`FaceCurve`]) list the face's loop vertices first (in loop order), then one node
+//! per loop edge (edge `i` joins loop vertices `i` and `i+1`), then, for a Lagrange quad, the
+//! centre.
 
-use crate::index::VertexIx;
-use crate::shape::CellShape;
+use crate::index::PointIx;
+use crate::shape::{CellShape, FaceShape};
 
-/// Polynomial basis family of a high-order cell's geometry.
+/// Polynomial basis family of high-order geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum Basis {
-    /// Lagrange with equispaced nodes.
+    /// Full Lagrange with equispaced nodes.
     LagrangeEquispaced,
-    /// Lagrange with Gauss-Lobatto-Legendre nodes.
+    /// Full Lagrange with Gauss-Lobatto-Legendre nodes.
     LagrangeGll,
-    /// Bernstein-Bezier control points.
-    Bernstein,
+    /// Serendipity: corner and edge nodes only (HEX20, WEDGE15, PYRAMID13).
+    Serendipity,
+}
+
+impl Basis {
+    /// Stable small integer for hashing and codecs.
+    pub const fn code(self) -> u8 {
+        match self {
+            Basis::LagrangeEquispaced => 0,
+            Basis::LagrangeGll => 1,
+            Basis::Serendipity => 2,
+        }
+    }
 }
 
 /// Geometric order of one cell.
@@ -30,22 +54,112 @@ pub struct CellGeometry {
     pub basis: Basis,
 }
 
-/// Sparse high-order record of one cell.
+/// What one node of a high-order cell sits on (`smartmesh.nodes.v1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeSlot {
+    /// A template corner.
+    Corner(u8),
+    /// The midpoint of the local edge joining two local corners.
+    Edge(u8, u8),
+    /// The centre of the local quadrilateral face with these four local corners.
+    Face([u8; 4]),
+    /// The cell centre.
+    Interior,
+}
+
+/// Number of nodes of a cell of `shape` at `degree` in `basis`; `None` if unsupported in v1
+/// (polyhedra, degree 0 or above 2, serendipity at degree 1 is the linear element).
+pub const fn node_count(shape: CellShape, degree: u8, basis: Basis) -> Option<usize> {
+    let Some(corners) = shape.vertex_count() else {
+        return None;
+    };
+    match degree {
+        1 => Some(corners),
+        2 => {
+            let edges = shape.local_edges().len();
+            Some(match basis {
+                Basis::Serendipity => corners + edges,
+                _ => {
+                    corners
+                        + edges
+                        + shape.local_quads().len()
+                        + matches!(shape, CellShape::Hex) as usize
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The slots of every node, in order, for a supported `(shape, degree, basis)`.
+pub fn node_layout(shape: CellShape, degree: u8, basis: Basis) -> Option<Vec<NodeSlot>> {
+    let n = node_count(shape, degree, basis)?;
+    let mut v = Vec::with_capacity(n);
+    v.extend((0..shape.vertex_count()? as u8).map(NodeSlot::Corner));
+    if degree == 2 {
+        v.extend(
+            shape
+                .local_edges()
+                .iter()
+                .map(|e| NodeSlot::Edge(e[0], e[1])),
+        );
+        if basis != Basis::Serendipity {
+            v.extend(shape.local_quads().iter().map(|q| NodeSlot::Face(*q)));
+            if shape == CellShape::Hex {
+                v.push(NodeSlot::Interior);
+            }
+        }
+    }
+    debug_assert_eq!(v.len(), n);
+    Some(v)
+}
+
+/// Number of nodes of a curved face with `loop_len` vertices; `None` if unsupported in v1.
+///
+/// Degree 2 only: triangle 6; quadrilateral 9 (Lagrange) or 8 (serendipity); polygon with
+/// `n >= 5` vertices `2n` (serendipity only).
+pub const fn face_node_count(loop_len: usize, degree: u8, basis: Basis) -> Option<usize> {
+    if degree != 2 || loop_len < 3 {
+        return None;
+    }
+    match (FaceShape::from_vertex_count(loop_len), basis) {
+        (FaceShape::Tri, _) => Some(6),
+        (FaceShape::Quad, Basis::Serendipity) => Some(8),
+        (FaceShape::Quad, _) => Some(9),
+        (FaceShape::Polygon, Basis::Serendipity) => Some(2 * loop_len),
+        (FaceShape::Polygon, _) => None,
+    }
+}
+
+/// Sparse high-order record of one cell. `nodes` lists every node (corners included, as
+/// vertex-numbered points) in `smartmesh.nodes.v1` order; the first entries equal the cell's
+/// [`crate::MeshRead::cell_corners`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HighOrderCell {
-    /// Polynomial degree (`>= 2`).
+    /// Polynomial degree (`>= 2` in a stored record).
     pub degree: u8,
     /// Basis family.
     pub basis: Basis,
-    /// Node indices into the combined coordinate array, reference-element order.
-    pub nodes: Vec<u32>,
+    /// Node points, `smartmesh.nodes.v1` order.
+    pub nodes: Vec<PointIx>,
+}
+
+/// Borrowed curvature record of one face (the sparse side table of addendum 7.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaceCurve<'a> {
+    /// Polynomial degree (2 in v1).
+    pub degree: u8,
+    /// Basis family.
+    pub basis: Basis,
+    /// Node points: loop vertices first, then edge nodes, then the centre (Lagrange quad).
+    pub nodes: &'a [PointIx],
 }
 
 /// A node reference used while building, before final point numbering exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeRef {
     /// An ordinary mesh vertex.
-    Vertex(VertexIx),
+    Vertex(crate::index::VertexIx),
     /// The n-th extra node added to the builder.
     Extra(u32),
 }

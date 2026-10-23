@@ -1,52 +1,110 @@
-//! Several meshes over one model: levels with fine->coarse maps, instanced views, flatten and
-//! mirror-unfold.
+//! Several meshes over one model: independent meshes (levels, coarse CMFD meshes, instance
+//! prototypes) linked by fine->coarse [`LevelMap`]s.
 //!
-//! A *catalog* holds the meshes of one model. Level 0 is the finest. A coarse mesh is an
-//! independent mesh over the same model (its cells are classified on the same volumes); the
-//! fine->coarse [`CellMap`] says which coarse cell contains each fine cell (CMFD, multigrid).
-//! An [`InstancedView`] stores one prototype mesh plus placements; [`flatten`] expands it
-//! deterministically into a single mesh and reports which cells came from which instance.
+//! A coarse mesh is an independent mesh over the same model; its cells need not be classified
+//! like the fine cells they contain (a CMFD node can span several volumes and may sit on a
+//! `PartitionCell`). The map says which coarse cell contains each fine cell; an optional face
+//! map says which coarse face carries each fine face (CMFD surface currents).
 
-use crate::build::{MeshBuild, SerialAlloc};
-use crate::classify::Classification;
 use crate::error::{MeshError, Result};
-use crate::highorder::NodeRef;
-use crate::index::{CellIx, FaceIx, MeshEntity, Side, VertexIx};
+use crate::index::{CellIx, FaceIx, MeshEntityKind, NO_CELL};
+use crate::instance::InstancedView;
 use crate::read::MeshRead;
-use sm_core::{EntityId, Transform};
-use std::ops::Range;
+use crate::validate::connectivity_hash;
+use sm_core::EntityId;
 
-/// Total map from fine cells to coarse cells, with its inverse as CSR.
+/// Total map from the cells of a fine mesh to the cells of a coarse mesh, with its inverse as
+/// CSR. It remembers which meshes it was built for (ids and connectivity hashes) and refuses to
+/// be used with a stale or different pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CellMap {
+pub struct LevelMap {
+    fine: EntityId,
+    coarse: EntityId,
+    fine_hash: u64,
+    coarse_hash: u64,
     coarse_of: Vec<CellIx>,
     off: Vec<u32>,
     fines: Vec<CellIx>,
+    face_map: Option<Vec<u32>>,
 }
 
-impl CellMap {
+impl LevelMap {
     /// Build from the coarse parent of every fine cell. Every coarse cell must have a child.
-    pub fn new(coarse_count: usize, coarse_of: Vec<CellIx>) -> Result<Self> {
-        let mut counts = vec![0u32; coarse_count + 1];
+    ///
+    /// `face_map`, when given, has one entry per fine face: the coarse face that carries it, or
+    /// [`NO_CELL`] if the fine face lies inside a coarse cell. It is validated against both
+    /// meshes: a fine face between two different coarse cells must map to the coarse face whose
+    /// cells are exactly those two; a face between fine cells of the same coarse cell must not
+    /// map; a one-cell fine face may map only to a one-cell coarse face of its coarse cell.
+    pub fn new(
+        fine: &dyn MeshRead,
+        coarse: &dyn MeshRead,
+        coarse_of: Vec<CellIx>,
+        face_map: Option<Vec<u32>>,
+    ) -> Result<Self> {
+        let (nfc, ncc) = (
+            fine.count(MeshEntityKind::Cell),
+            coarse.count(MeshEntityKind::Cell),
+        );
+        if coarse_of.len() != nfc {
+            return Err(MeshError::Hierarchy(format!(
+                "map has {} entries for {nfc} fine cells",
+                coarse_of.len()
+            )));
+        }
+        let mut off = vec![0u32; ncc + 1];
         for &c in &coarse_of {
-            if c.get() >= coarse_count {
-                return Err(MeshError::Hierarchy(format!("coarse cell {c:?} out of range")));
+            if c.get() >= ncc {
+                return Err(MeshError::Hierarchy(format!(
+                    "coarse cell {c:?} out of range"
+                )));
             }
-            counts[c.get() + 1] += 1;
+            off[c.get() + 1] += 1;
         }
-        if counts[1..].contains(&0) {
-            return Err(MeshError::Hierarchy("a coarse cell has no fine children".into()));
+        if off[1..].contains(&0) {
+            return Err(MeshError::Hierarchy(
+                "a coarse cell has no fine children".into(),
+            ));
         }
-        for i in 0..coarse_count {
-            counts[i + 1] += counts[i];
+        for i in 0..ncc {
+            off[i + 1] += off[i];
         }
-        let mut cursor = counts.clone();
-        let mut fines = vec![CellIx(0); coarse_of.len()];
+        let mut cursor = off.clone();
+        let mut fines = vec![CellIx(0); nfc];
         for (f, &c) in coarse_of.iter().enumerate() {
             fines[cursor[c.get()] as usize] = CellIx::new(f);
             cursor[c.get()] += 1;
         }
-        Ok(Self { coarse_of, off: counts, fines })
+        if let Some(fm) = &face_map {
+            check_face_map(fine, coarse, &coarse_of, fm)?;
+        }
+        Ok(Self {
+            fine: fine.mesh_id(),
+            coarse: coarse.mesh_id(),
+            fine_hash: connectivity_hash(fine),
+            coarse_hash: connectivity_hash(coarse),
+            coarse_of,
+            off,
+            fines,
+            face_map,
+        })
+    }
+
+    /// Id of the fine mesh.
+    pub fn fine_id(&self) -> EntityId {
+        self.fine
+    }
+    /// Id of the coarse mesh.
+    pub fn coarse_id(&self) -> EntityId {
+        self.coarse
+    }
+    /// Connectivity hash of the fine mesh at construction time.
+    pub fn fine_hash(&self) -> u64 {
+        self.fine_hash
+    }
+    /// Connectivity hash of the coarse mesh at construction time.
+    pub fn coarse_hash(&self) -> u64 {
+        self.coarse_hash
     }
     /// Number of fine cells.
     pub fn fine_len(&self) -> usize {
@@ -64,198 +122,192 @@ impl CellMap {
     pub fn fines_of(&self, coarse: CellIx) -> &[CellIx] {
         &self.fines[self.off[coarse.get()] as usize..self.off[coarse.get() + 1] as usize]
     }
+    /// The coarse face carrying fine face `f` ([`NO_CELL`] entries mean none), if a face map was given.
+    pub fn face_map(&self) -> Option<&[u32]> {
+        self.face_map.as_deref()
+    }
+
+    /// Fail unless `fine` and `coarse` are the meshes (same ids, same connectivity) this map
+    /// was built for.
+    pub fn check_meshes(&self, fine: &dyn MeshRead, coarse: &dyn MeshRead) -> Result<()> {
+        if fine.mesh_id() != self.fine || coarse.mesh_id() != self.coarse {
+            return Err(MeshError::Hierarchy(
+                "map was built for different meshes".into(),
+            ));
+        }
+        if connectivity_hash(fine) != self.fine_hash
+            || connectivity_hash(coarse) != self.coarse_hash
+        {
+            return Err(MeshError::Hierarchy(
+                "stale map: a mesh changed since the map was built".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Sum fine-cell values into coarse cells (extensive quantities: volumes, sources, reaction rates).
+    pub fn restrict_sum(&self, fine_values: &[f64]) -> Result<Vec<f64>> {
+        if fine_values.len() != self.fine_len() {
+            return Err(MeshError::Hierarchy(format!(
+                "expected {} fine values, got {}",
+                self.fine_len(),
+                fine_values.len()
+            )));
+        }
+        let mut out = vec![0.0; self.coarse_len()];
+        for (c, o) in out.iter_mut().enumerate() {
+            // Fixed (ascending) order: bit-reproducible.
+            *o = self.fines[self.off[c] as usize..self.off[c + 1] as usize]
+                .iter()
+                .map(|f| fine_values[f.get()])
+                .sum();
+        }
+        Ok(out)
+    }
+
+    /// Copy each coarse value to all its fine children (intensive quantities: fluxes, correction factors).
+    pub fn prolong_copy(&self, coarse_values: &[f64]) -> Result<Vec<f64>> {
+        if coarse_values.len() != self.coarse_len() {
+            return Err(MeshError::Hierarchy(format!(
+                "expected {} coarse values, got {}",
+                self.coarse_len(),
+                coarse_values.len()
+            )));
+        }
+        Ok(self
+            .coarse_of
+            .iter()
+            .map(|c| coarse_values[c.get()])
+            .collect())
+    }
+
+    /// Compose with the map from this map's coarse mesh to a still coarser mesh.
+    pub fn compose(&self, next: &LevelMap) -> Result<LevelMap> {
+        if next.fine != self.coarse || next.fine_hash != self.coarse_hash {
+            return Err(MeshError::Hierarchy(
+                "maps do not chain: next.fine is not this map's coarse mesh".into(),
+            ));
+        }
+        let coarse_of: Vec<CellIx> = self.coarse_of.iter().map(|&c| next.coarse_of(c)).collect();
+        let face_map = match (&self.face_map, &next.face_map) {
+            (Some(a), Some(b)) => Some(
+                a.iter()
+                    .map(|&g| if g == NO_CELL { NO_CELL } else { b[g as usize] })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        let mut off = vec![0u32; next.coarse_len() + 1];
+        for c in &coarse_of {
+            off[c.get() + 1] += 1;
+        }
+        for i in 0..next.coarse_len() {
+            off[i + 1] += off[i];
+        }
+        let mut cursor = off.clone();
+        let mut fines = vec![CellIx(0); coarse_of.len()];
+        for (f, c) in coarse_of.iter().enumerate() {
+            fines[cursor[c.get()] as usize] = CellIx::new(f);
+            cursor[c.get()] += 1;
+        }
+        Ok(LevelMap {
+            fine: self.fine,
+            coarse: next.coarse,
+            fine_hash: self.fine_hash,
+            coarse_hash: next.coarse_hash,
+            coarse_of,
+            off,
+            fines,
+            face_map,
+        })
+    }
+}
+
+fn check_face_map(
+    fine: &dyn MeshRead,
+    coarse: &dyn MeshRead,
+    coarse_of: &[CellIx],
+    fm: &[u32],
+) -> Result<()> {
+    let (nff, ncf) = (
+        fine.count(MeshEntityKind::Face),
+        coarse.count(MeshEntityKind::Face),
+    );
+    if fm.len() != nff {
+        return Err(MeshError::Hierarchy(format!(
+            "face map has {} entries for {nff} fine faces",
+            fm.len()
+        )));
+    }
+    for (f, &g) in fm.iter().enumerate() {
+        let fi = FaceIx::new(f);
+        let cl = coarse_of[fine.face_left(fi).get()];
+        let cr = fine.face_right(fi).map(|r| coarse_of[r.get()]);
+        let bad =
+            |why: &str| MeshError::Hierarchy(format!("face map entry for fine face {f}: {why}"));
+        if g != NO_CELL && g as usize >= ncf {
+            return Err(bad("coarse face out of range"));
+        }
+        match (cr, g) {
+            (Some(r), g) if r != cl => {
+                if g == NO_CELL {
+                    return Err(bad(
+                        "face between two coarse cells must map to a coarse face",
+                    ));
+                }
+                let gi = FaceIx(g);
+                let (lo, hi) = if cl < r { (cl, r) } else { (r, cl) };
+                if coarse.face_left(gi) != lo || coarse.face_right(gi) != Some(hi) {
+                    return Err(bad("coarse face does not separate the two coarse cells"));
+                }
+            }
+            (Some(_), g) => {
+                if g != NO_CELL {
+                    return Err(bad("face inside a coarse cell must not map"));
+                }
+            }
+            (None, g) => {
+                if g == NO_CELL {
+                    if fine.face_kind(fi) == crate::index::FaceKind::Boundary {
+                        return Err(bad(
+                            "a boundary fine face must map to a boundary coarse face",
+                        ));
+                    }
+                } else {
+                    let gi = FaceIx(g);
+                    if coarse.face_left(gi) != cl || coarse.face_right(gi).is_some() {
+                        return Err(bad(
+                            "one-cell fine face must map to a one-cell coarse face of its coarse cell",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Read access to the meshes of one model.
 pub trait MeshCatalog {
     /// Ids of all meshes, ascending.
-    fn mesh_ids(&self) -> Vec<EntityId>;
+    fn mesh_ids(&self) -> &[EntityId];
     /// A mesh by id.
     fn mesh(&self, id: EntityId) -> Option<&dyn MeshRead>;
-    /// Level of a mesh (0 = finest).
-    fn level(&self, id: EntityId) -> Option<u32>;
-    /// The coarse mesh linked above `fine`, with the fine->coarse map.
-    fn coarse_of(&self, fine: EntityId) -> Option<(EntityId, &CellMap)>;
-    /// Instanced views stored in the catalog.
+    /// All maps whose fine mesh is `fine`, as `(coarse id, map)` in ascending coarse id.
+    fn maps_from(&self, fine: EntityId) -> Vec<(EntityId, &LevelMap)>;
+    /// All maps whose coarse mesh is `coarse`, as `(fine id, map)` in ascending fine id.
+    fn maps_to(&self, coarse: EntityId) -> Vec<(EntityId, &LevelMap)>;
+    /// Instanced views stored in the catalog, ascending by id.
     fn views(&self) -> &[InstancedView];
 }
 
 /// Write access to a catalog.
 pub trait CatalogEdit: MeshCatalog {
-    /// Insert a mesh at a level. Ids must be new.
-    fn insert_mesh(&mut self, mesh: Box<dyn MeshRead>, level: u32) -> Result<()>;
-    /// Link `coarse` above `fine` (levels must be consecutive; map and classification must agree).
-    fn link_levels(&mut self, fine: EntityId, coarse: EntityId, map: CellMap) -> Result<()>;
+    /// Insert a mesh. Its id must be new.
+    fn insert_mesh(&mut self, mesh: Box<dyn MeshRead>) -> Result<()>;
+    /// Link two meshes already in the catalog with a map. Rejects unknown meshes, a map built for
+    /// meshes whose connectivity has since changed, and a second map for the same pair.
+    fn link(&mut self, map: LevelMap) -> Result<()>;
     /// Add an instanced view; every prototype must already be in the catalog.
     fn insert_view(&mut self, view: InstancedView) -> Result<()>;
-}
-
-/// One placement of a prototype mesh.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Instance {
-    /// Stable id (`EntityKind::Instance`); flatten order is ascending id.
-    pub id: EntityId,
-    /// Prototype mesh id (`EntityKind::Mesh`).
-    pub prototype: EntityId,
-    /// Placement; may be improper (mirrored copy).
-    pub transform: Transform,
-}
-
-/// An instanced view: prototypes live in the catalog, the view only lists placements.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InstancedView {
-    /// Stable id of the view.
-    pub id: EntityId,
-    /// Placements.
-    pub instances: Vec<Instance>,
-}
-
-/// Which flattened cells came from which instance.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FlattenMap {
-    /// `(instance, cell range)` in flatten order (ascending instance id, ascending cell index).
-    pub ranges: Vec<(EntityId, Range<u32>)>,
-}
-
-impl FlattenMap {
-    /// The instance and prototype-local cell index of a flattened cell.
-    pub fn locate(&self, c: CellIx) -> Option<(EntityId, CellIx)> {
-        let i = self.ranges.partition_point(|(_, r)| r.end <= c.0);
-        let (id, r) = self.ranges.get(i)?;
-        (r.start <= c.0).then(|| (*id, CellIx(c.0 - r.start)))
-    }
-}
-
-/// Options for [`append_transformed`].
-#[derive(Default)]
-pub struct AppendOptions<'a> {
-    /// Merge vertices within this distance with vertices already in the builder; faces with the
-    /// same vertex cycle are always shared. `None` keeps copies disjoint.
-    pub weld_tol: Option<f64>,
-    /// Maps source classification to the classification in the target model (e.g. mirror image
-    /// of a face in the unfolded model). Identity when `None`.
-    pub remap_class: Option<&'a dyn Fn(Classification) -> Classification>,
-}
-
-/// Where source entities landed in the builder.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppendMap {
-    /// Builder vertex for each source vertex.
-    pub vertex: Vec<VertexIx>,
-    /// Builder (provisional) face for each source face.
-    pub face: Vec<FaceIx>,
-    /// Builder cell for each source cell.
-    pub cell: Vec<CellIx>,
-}
-
-/// Append a transformed copy of `src` to a builder.
-///
-/// Orientation is rebuilt from outward loops, so an **improper** transform (mirror, `det < 0`)
-/// reverses every face loop and permutes fast-path vertex orders
-/// ([`crate::CellShape::reflect_permutation`]); the builder's `finish` then re-applies the
-/// left/right rule. High-order cells are only supported for proper transforms.
-pub fn append_transformed<B: MeshBuild>(b: &mut B, src: &dyn MeshRead, t: &Transform, o: &AppendOptions<'_>) -> Result<AppendMap> {
-    let remap = |c: Classification| o.remap_class.map_or(c, |f| f(c));
-    let improper = t.is_improper();
-    let (nv, co) = (src.vertex_count(), src.coords());
-    let mut vmap = Vec::with_capacity(nv);
-    for i in 0..nv {
-        let p = t.apply_point(co.get(i));
-        if let Some(v) = o.weld_tol.and_then(|tol| b.find_vertex(p, tol)) {
-            vmap.push(v);
-        } else {
-            let v = b.add_vertex(p)?;
-            b.set_class(MeshEntity::Vertex(v), remap(src.vertex_class(VertexIx::new(i))))?;
-            vmap.push(v);
-        }
-    }
-    let mut extra = Vec::new();
-    for i in nv..co.len() {
-        extra.push(b.add_extra_node(t.apply_point(co.get(i)))?);
-    }
-    let mut fmap = vec![FaceIx(FaceIx::NONE); src.face_count()];
-    let mut cmap = Vec::with_capacity(src.cell_count());
-    for ci in 0..src.cell_count() {
-        let c = CellIx::new(ci);
-        let cfs = src.cell_faces(c);
-        let loops: Vec<Vec<VertexIx>> = cfs
-            .iter()
-            .map(|cf| {
-                let mut l: Vec<VertexIx> = src.face_vertices(cf.face).iter().map(|v| vmap[v.get()]).collect();
-                if (cf.side == Side::Right) != improper {
-                    l.reverse();
-                }
-                l
-            })
-            .collect();
-        let ordered: Option<Vec<VertexIx>> = src.cell_ordered_vertices(c).map(|ov| {
-            let mapped: Vec<VertexIx> = ov.iter().map(|v| vmap[v.get()]).collect();
-            match (improper, src.cell_shape(c).reflect_permutation()) {
-                (true, Some(p)) => p.iter().map(|&k| mapped[k as usize]).collect(),
-                _ => mapped,
-            }
-        });
-        let before = b.face_count();
-        let nc = b.add_polyhedron_ordered(&loops, ordered.as_deref())?;
-        for (cf, l) in cfs.iter().zip(&loops) {
-            let (f, _) = b.find_face(l).ok_or_else(|| MeshError::State("face vanished after add".into()))?;
-            fmap[cf.face.get()] = f;
-            if f.get() >= before {
-                b.set_class(MeshEntity::Face(f), remap(src.face_class(cf.face)))?;
-            }
-        }
-        b.set_class(MeshEntity::Cell(nc), remap(src.cell_class(c)))?;
-        if let Some(h) = src.high_order_cell(c) {
-            if improper {
-                return Err(MeshError::State("high-order cells cannot be mirrored".into()));
-            }
-            let nodes: Vec<NodeRef> = h
-                .nodes
-                .iter()
-                .map(|&n| if (n as usize) < nv { NodeRef::Vertex(vmap[n as usize]) } else { extra[n as usize - nv] })
-                .collect();
-            b.set_high_order(nc, h.degree, h.basis, &nodes)?;
-        }
-        cmap.push(nc);
-    }
-    Ok(AppendMap { vertex: vmap, face: fmap, cell: cmap })
-}
-
-/// Expand an instanced view into one mesh. Instances are placed in ascending id order, so the
-/// result is deterministic. With `weld_tol`, abutting instances share vertices and faces
-/// (a conforming flatten); otherwise they stay disjoint and meet through interface records.
-/// Sets and tags are not carried (use the returned [`FlattenMap`] to re-derive them).
-pub fn flatten<B: MeshBuild>(
-    view: &InstancedView,
-    catalog: &dyn MeshCatalog,
-    mut b: B,
-    weld_tol: Option<f64>,
-    alloc: &mut SerialAlloc,
-) -> Result<(B::Output, FlattenMap)> {
-    let mut insts: Vec<&Instance> = view.instances.iter().collect();
-    insts.sort_by_key(|i| i.id);
-    let mut ranges = Vec::with_capacity(insts.len());
-    let opts = AppendOptions { weld_tol, remap_class: None };
-    for inst in insts {
-        let proto = catalog.mesh(inst.prototype).ok_or(MeshError::UnknownMesh(inst.prototype))?;
-        let start = b.cell_count() as u32;
-        append_transformed(&mut b, proto, &inst.transform, &opts)?;
-        ranges.push((inst.id, start..b.cell_count() as u32));
-    }
-    Ok((b.finish(alloc)?, FlattenMap { ranges }))
-}
-
-/// Unfold a reduced mesh by a deck transformation `t` (typically a mirror): the result holds the
-/// original plus its image, welded where they touch, with orientation re-derived.
-pub fn unfold<B: MeshBuild>(
-    src: &dyn MeshRead,
-    t: &Transform,
-    weld_tol: f64,
-    remap_class: Option<&dyn Fn(Classification) -> Classification>,
-    mut b: B,
-    alloc: &mut SerialAlloc,
-) -> Result<B::Output> {
-    append_transformed(&mut b, src, &Transform::IDENTITY, &AppendOptions::default())?;
-    append_transformed(&mut b, src, t, &AppendOptions { weld_tol: Some(weld_tol), remap_class })?;
-    b.finish(alloc)
 }
