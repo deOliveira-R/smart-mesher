@@ -196,7 +196,7 @@ impl<'r> Driver<'r> {
         for &f in &region.faces {
             let t = Target::Surface(f);
             let tp = match p.copy_into(t) {
-                Some(rec) => copy_plan(t, rec.id),
+                Some(rec) => copy_plan(intent, t, rec)?,
                 None => {
                     let tp = self.resolve(&cx, &p, t, rej)?;
                     self.require(&cx, &mut p, &tp)?;
@@ -208,7 +208,7 @@ impl<'r> Driver<'r> {
         for &e in &region.edges {
             let t = Target::Curve(e);
             let tp = match p.copy_into(t) {
-                Some(rec) => copy_plan(t, rec.id),
+                Some(rec) => copy_plan(intent, t, rec)?,
                 None => {
                     let tp = self.resolve(&cx, &p, t, rej)?;
                     self.require(&cx, &mut p, &tp)?;
@@ -622,8 +622,17 @@ impl<'r> Driver<'r> {
     }
 }
 
-fn copy_plan(t: Target, id: ConstraintId) -> TargetPlan {
-    TargetPlan { target: t, scheme: SchemeName::new(SchemeName::COPY), params: Params::empty(), selection: Selection::Copy { constraint: id }, rejected: Vec::new() }
+/// The plan of a copy target. A hard intent for another scheme on it is an
+/// `ImpositionConflict` (the copy source imposes `copy`); a soft one is recorded as overridden.
+fn copy_plan(intent: &MeshIntent, t: Target, rec: &crate::problem::Record<CopyConstraint>) -> Result<TargetPlan> {
+    let mut rejected = Vec::new();
+    if let Some(ch) = t.entity().and_then(|e| intent.entities.get(&e)).and_then(|ei| ei.scheme.as_ref()).filter(|c| c.name.as_str() != SchemeName::COPY) {
+        if ch.firmness == Firmness::Hard {
+            return Err(SchemeError::ImpositionConflict { child: t, imposed_by: rec.item.source, required: vec![SchemeName::new(SchemeName::COPY)], conflict: format!("the intent requires `{}` (hard)", ch.name) });
+        }
+        rejected.push((ch.name.clone(), format!("overridden by copy constraint {:?}", rec.id)));
+    }
+    Ok(TargetPlan { target: t, scheme: SchemeName::new(SchemeName::COPY), params: Params::empty(), selection: Selection::Copy { constraint: rec.id }, rejected })
 }
 
 /// Group targets into waves: by dimension (groups after volumes), then by dependency depth

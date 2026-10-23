@@ -138,6 +138,18 @@ fn hard_pave_on_a_linking_face_conflicts_with_the_sweep() {
     let tp = plan.target(Target::Surface(ids.faces[1])).expect("face");
     assert_eq!(tp.scheme.as_str(), "map");
     assert_eq!(tp.rejected[0].0.as_str(), "pave");
+    // The sweep target is a copy: a hard pave there conflicts too, a soft one is overridden.
+    intent.set_scheme(ids.faces[5], SchemeChoice::new("pave", Firmness::Hard));
+    match driver.plan(&input, &intent) {
+        Err(SchemeError::ImpositionConflict { child, imposed_by, .. }) => {
+            assert_eq!((child, imposed_by), (Target::Surface(ids.faces[5]), Target::Surface(ids.faces[4])));
+        }
+        other => panic!("expected ImpositionConflict, got {:?}", other.map(|_| ())),
+    }
+    intent.set_scheme(ids.faces[5], SchemeChoice::new("pave", Firmness::Soft));
+    let plan = driver.plan(&input, &intent).expect("plan");
+    let tp = plan.target(Target::Surface(ids.faces[5])).expect("target face");
+    assert_eq!((tp.scheme.as_str(), tp.rejected[0].0.as_str()), ("copy", "pave"));
 }
 
 #[test]
