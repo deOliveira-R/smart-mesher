@@ -437,6 +437,17 @@ pub fn append_transformed<B: MeshBuild>(
         cmap.push(nc_ix);
     }
 
+    // High-order cells need the edge table of the result (their edge nodes take their edge's
+    // class): carry the source's edge classes, so `finish` derives it.
+    let carried_edges = match src.edges() {
+        Some(t) if has_ho => {
+            for (k, [a, c]) in t.vertices.iter().enumerate() {
+                b.set_class(crate::index::MeshEntityRef::Edge(vmap[a.get()], vmap[c.get()]), remap(t.class[k]))?;
+            }
+            true
+        }
+        _ => false,
+    };
     let mut loss = Vec::new();
     for s in src.sets() {
         loss.push(LossKind::Set(s.name.clone()));
@@ -444,7 +455,7 @@ pub fn append_transformed<B: MeshBuild>(
     for tcol in src.tags() {
         loss.push(LossKind::Tag(tcol.target, tcol.name.clone()));
     }
-    if src.edges().is_some() {
+    if src.edges().is_some() && !carried_edges {
         loss.push(LossKind::EdgeTable);
     }
     let curves = (0..nf)

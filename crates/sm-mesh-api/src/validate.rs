@@ -15,7 +15,7 @@ use crate::index::{
 use crate::read::MeshRead;
 use crate::sets::{SetMembers, TagValues};
 use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation, polygon_cycle};
-use sm_core::{EntityId, EntityKind, Point3};
+use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable machine-readable code of a [`Violation`]; [`ViolationCode::as_str`] never changes.
@@ -81,6 +81,9 @@ pub enum ViolationCode {
     GeomSideTet,
     /// A face is not planar within the tolerance.
     GeomPlanar,
+    /// A dimension-2 cell's corner cycle is not right-handed about the normal of the face it is
+    /// classified on (carrier sense applied), see [`validate_geometry_with`].
+    GeomShellOrientation,
 }
 
 impl ViolationCode {
@@ -116,6 +119,7 @@ impl ViolationCode {
             GeomNormal => "geom.normal",
             GeomSideTet => "geom.side_tet",
             GeomPlanar => "geom.planar",
+            GeomShellOrientation => "geom.shell_orientation",
         }
     }
 }
@@ -414,6 +418,15 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
         }
     }
 
+    // A dimension-3 mesh with edge-slot nodes needs a (fully classified) edge table, so every
+    // extra node's class follows from its slot owner (`MeshRead::point_class`).
+    if dim == MeshDim::Three && m.edges().is_none() {
+        let cell = (0..nc).find(|c| m.high_order_cell(CellIx::new(*c)).is_some()).map(|c| MeshEntity::Cell(CellIx::new(c)));
+        let face = (0..nf).find(|f| m.face_curve(FaceIx::new(*f)).is_some()).map(|f| MeshEntity::Face(FaceIx::new(f)));
+        if let Some(e) = cell.or(face) {
+            s.add(ViolationCode::HighOrder, Some(e), "high-order cells and face curves need an edge table (their edge nodes take the class of their edge)");
+        }
+    }
     validate_sets_tags_edges(m, nv, nf, nc, &loops_ok, &mut s);
 
     if let Some(g) = m.geometry_cache() {
@@ -831,13 +844,18 @@ fn validate_sets_tags_edges(
     s: &mut Sink,
 ) {
     let sets = m.sets();
+    let np = m.coords().len();
     for (i, st) in sets.iter().enumerate() {
-        let n = match st.members.kind() {
-            MeshEntityKind::Vertex => nv,
-            MeshEntityKind::Face => nf,
-            MeshEntityKind::Cell => nc,
-            MeshEntityKind::Edge => 0,
+        let n = match (&st.members, st.members.kind()) {
+            (SetMembers::Points(_), _) => np,
+            (_, MeshEntityKind::Vertex) => nv,
+            (_, MeshEntityKind::Face) => nf,
+            (_, MeshEntityKind::Cell) => nc,
+            (_, MeshEntityKind::Edge) => 0,
         };
+        if matches!(st.members, SetMembers::ShellSides(_)) && m.dim() != MeshDim::Two {
+            s.add(ViolationCode::Set, None, format!("shell side set '{}' in a dimension-3 mesh", st.name));
+        }
         let raw = st.members.raw();
         if st.id.kind() != EntityKind::MeshSet
             || (i > 0 && sets[i - 1].id >= st.id)
@@ -954,12 +972,64 @@ impl Default for GeomTol {
     }
 }
 
+/// Oriented normals of the model faces a dimension-2 mesh is classified on, for the shell
+/// orientation rule (W0f gaps 2). Implemented over the topology by the caller (this crate does
+/// not depend on it): for a `TopoFace` or `PartitionFace` with a surface carrier, the unit
+/// surface normal at the point nearest `near`, times the face's carrier sense (the face normal
+/// of `sm-topo-api`); `None` when the entity has no surface carrier (the rule is then not
+/// checked for its cells).
+pub trait FaceNormals {
+    /// The oriented face normal of `entity` near `near`, or `None`.
+    fn normal(&self, entity: EntityId, near: Point3) -> Option<Vector3>;
+}
+
+/// [`validate_geometry`] plus, for a dimension-2 mesh, the **shell orientation rule** (W0f gaps
+/// 2, contract for every mesher): a cell's corner cycle follows the right-hand rule about the
+/// normal of the `TopoFace` / `PartitionFace` it is classified on, with the carrier sense
+/// applied. The cell's area vector (Newell, over its corner cycle) must have a positive dot
+/// product with `normals.normal(entity, centroid)`; cells whose entity has no normal are
+/// skipped. This defines the shell normal and its top (side 0 of
+/// [`crate::SetMembers::ShellSides`], along the normal) and bottom (side 1).
+pub fn validate_geometry_with(m: &dyn MeshRead, tol: &GeomTol, normals: &dyn FaceNormals) -> Vec<Violation> {
+    let mut out = validate_geometry(m, tol);
+    if m.dim() != MeshDim::Two {
+        return out;
+    }
+    let co = m.coords();
+    for c in 0..m.count(MeshEntityKind::Cell) {
+        let ci = CellIx::new(c);
+        let Some(cyc) = m.cell_corners(ci) else { continue };
+        let n = cyc.len();
+        if n < 3 {
+            continue;
+        }
+        let entity = m.cell_class(ci).entity;
+        let (mut area, mut cen) = (Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0));
+        for i in 0..n {
+            let (a, b) = (co.get(cyc[i].get()), co.get(cyc[(i + 1) % n].get()));
+            area = area + Vector3::new(a.x, a.y, a.z).cross(Vector3::new(b.x, b.y, b.z));
+            cen = cen + Vector3::new(a.x, a.y, a.z);
+        }
+        let cen = cen * (1.0 / n as f64);
+        let Some(nrm) = normals.normal(entity, Point3::new(cen.x, cen.y, cen.z)) else { continue };
+        if area.dot(nrm) <= 0.0 {
+            out.push(Violation {
+                code: ViolationCode::GeomShellOrientation,
+                entity: Some(MeshEntity::Cell(ci)),
+                detail: format!("corner cycle is not right-handed about the normal of {entity}"),
+            });
+        }
+    }
+    out
+}
+
 /// Geometric validation: positive cell volumes, positive side tetrahedra, face normals pointing
 /// from the left cell to the right cell (outward at one-cell faces), planarity within tolerance.
 ///
 /// For a dimension-2 mesh only the cell areas are checked (`min_volume` applies to the area):
 /// an embedded surface has no inside, so facet orientation is purely topological (checked by
-/// [`validate`]).
+/// [`validate`]); the shell orientation rule against the classified faces' normals needs a
+/// normal source, see [`validate_geometry_with`].
 pub fn validate_geometry(m: &dyn MeshRead, tol: &GeomTol) -> Vec<Violation> {
     let mut s = Sink(Vec::new());
     let (nf, nc) = (m.count(MeshEntityKind::Face), m.count(MeshEntityKind::Cell));

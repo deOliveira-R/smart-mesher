@@ -84,6 +84,7 @@ fn ho_hex(basis: Basis, degree: u8, drop: usize) -> Result<ReferenceMesh> {
         .collect();
     let added = b.add_cell_from_vertices(CellShape::Hex, &vs)?;
     b.set_class(MeshEntityRef::Cell(added.cell), vol())?;
+    classify_template_edges(&mut b, CellShape::Hex, &vs);
     for (i, sf) in added.faces.iter().enumerate() {
         b.set_class(
             MeshEntityRef::Face(sf.face()),
@@ -291,6 +292,7 @@ fn face_curvature_side_table_follows_loop_reorientation() {
             v
         })
         .collect();
+    classify_template_edges(&mut b, CellShape::Hex, &vs);
     let mut sfs = Vec::new();
     let mut inward: Vec<FaceIx> = Vec::new();
     for lf in CellShape::Hex.local_faces() {

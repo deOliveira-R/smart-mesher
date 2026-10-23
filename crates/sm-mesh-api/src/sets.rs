@@ -1,6 +1,6 @@
 //! Named sets and typed tag columns.
 
-use crate::index::{CellIx, FaceIx, MeshEntityKind, SignedFace, VertexIx};
+use crate::index::{CellIx, FaceIx, MeshEntityKind, PointIx, SignedFace, VertexIx};
 use sm_core::EntityId;
 
 /// Members of a set, ascending and unique.
@@ -19,6 +19,15 @@ pub enum SetMembers {
     /// `face_right` cell (a `Right` entry needs a two-cell face); both sides of a face are two
     /// entries. Ascending by raw word (`face << 1 | side`) and unique. `kind()` is `Face`.
     Sides(Vec<SignedFace>),
+    /// A shell side set (W0f gaps 2; the Exodus shell sideset, PARITY D "sheet"): packed
+    /// `cell << 1 | side` words of a **dimension-2** mesh, side 0 = top (the side the cell normal
+    /// points to: right-hand rule on its corner cycle, which follows its classified face's
+    /// normal), 1 = bottom. Ascending and unique. `kind()` is `Cell`.
+    ShellSides(Vec<u32>),
+    /// A point set (W0f gaps 2): indices into the `coords()` space (vertices, then high-order
+    /// extra nodes), ascending and unique, range-checked against the point count. `kind()` is
+    /// `Vertex` (a node set that may hold high-order nodes).
+    Points(Vec<PointIx>),
 }
 
 impl SetMembers {
@@ -29,6 +38,8 @@ impl SetMembers {
             SetMembers::Faces(_) => MeshEntityKind::Face,
             SetMembers::Cells(_) => MeshEntityKind::Cell,
             SetMembers::Sides(_) => MeshEntityKind::Face,
+            SetMembers::ShellSides(_) => MeshEntityKind::Cell,
+            SetMembers::Points(_) => MeshEntityKind::Vertex,
         }
     }
     /// Stable variant code (hashed: `Faces` and `Sides` share a kind).
@@ -38,6 +49,8 @@ impl SetMembers {
             SetMembers::Faces(_) => 1,
             SetMembers::Cells(_) => 2,
             SetMembers::Sides(_) => 3,
+            SetMembers::ShellSides(_) => 4,
+            SetMembers::Points(_) => 5,
         }
     }
     /// Number of members (sides for a side set).
@@ -47,30 +60,38 @@ impl SetMembers {
             SetMembers::Faces(v) => v.len(),
             SetMembers::Cells(v) => v.len(),
             SetMembers::Sides(v) => v.len(),
+            SetMembers::ShellSides(v) => v.len(),
+            SetMembers::Points(v) => v.len(),
         }
     }
     /// True if the set has no members.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// Raw member words, ascending: indices, or packed `face << 1 | side` words for a side set.
+    /// Raw member words, ascending: indices, or packed `face << 1 | side` (side set) and
+    /// `cell << 1 | side` (shell side set) words.
     pub fn raw(&self) -> Vec<u32> {
         match self {
             SetMembers::Vertices(v) => v.iter().map(|x| x.0).collect(),
             SetMembers::Faces(v) => v.iter().map(|x| x.0).collect(),
             SetMembers::Cells(v) => v.iter().map(|x| x.0).collect(),
             SetMembers::Sides(v) => v.iter().map(|x| x.to_raw()).collect(),
+            SetMembers::ShellSides(v) => v.clone(),
+            SetMembers::Points(v) => v.iter().map(|x| x.0).collect(),
         }
     }
-    /// The largest entity index referenced (the face of a side), for range checks.
+    /// The largest entity index referenced (the face of a side, the cell of a shell side, the
+    /// point of a point set), for range checks. A point set is checked against the point count,
+    /// not the vertex count.
     pub fn max_index(&self) -> Option<u32> {
         match self {
             SetMembers::Sides(v) => v.last().map(|x| x.face().0),
+            SetMembers::ShellSides(v) => v.last().map(|x| x >> 1),
             _ => self.raw().last().copied(),
         }
     }
-    /// True if entity `ix` (of [`kind`](Self::kind)) is a member; for a side set, if either
-    /// side of face `ix` is (`O(log n)`).
+    /// True if entity `ix` (of [`kind`](Self::kind)) is a member; for a (shell) side set, if
+    /// either side of face (cell) `ix` is; for a point set, if point `ix` is (`O(log n)`).
     pub fn contains(&self, ix: u32) -> bool {
         match self {
             SetMembers::Vertices(v) => v.binary_search(&VertexIx(ix)).is_ok(),
@@ -80,6 +101,8 @@ impl SetMembers {
                 let lo = ix.checked_mul(2);
                 lo.is_some_and(|lo| v.binary_search_by_key(&lo, |x| x.to_raw()).is_ok() || v.binary_search_by_key(&(lo | 1), |x| x.to_raw()).is_ok())
             }
+            SetMembers::ShellSides(v) => ix.checked_mul(2).is_some_and(|lo| v.binary_search(&lo).is_ok() || v.binary_search(&(lo | 1)).is_ok()),
+            SetMembers::Points(v) => v.binary_search(&PointIx(ix)).is_ok(),
         }
     }
 }

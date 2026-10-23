@@ -594,6 +594,9 @@ fn unfold_rejects_high_order() {
     let mut alloc = SerialAlloc::new();
     let mut m = single_cell(CellShape::Tet, &mut alloc);
     let corners = m.cell_corners(CellIx(0)).unwrap().to_vec();
+    let explicit: Vec<(VertexIx, VertexIx, Classification)> =
+        CellShape::Tet.local_edges().iter().enumerate().map(|(i, e)| (corners[e[0] as usize], corners[e[1] as usize], on(EntityKind::TopoEdge, 1 + i as u64))).collect();
+    MeshEdit::ensure_edges(&mut m, &mut alloc, &explicit).unwrap();
     let mut nodes: Vec<PointIx> = corners.iter().map(|&v| v.into()).collect();
     for e in CellShape::Tet.local_edges() {
         let (a, b) = (

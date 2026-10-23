@@ -187,6 +187,19 @@ impl MeshRead for ReferenceMesh {
 }
 
 impl ReferenceMesh {
+    /// True for a dimension-3 mesh with high-order cells or face curves (edge-slot nodes).
+    pub(crate) fn needs_edge_table(&self) -> bool {
+        self.dim == MeshDim::Three && (!self.ho.is_empty() || !self.fcurve.is_empty())
+    }
+
+    /// High-order records on a dimension-3 mesh need its edge table first.
+    fn require_edges_for_high_order(&self) -> Result<()> {
+        if self.dim == MeshDim::Three && self.edges.is_none() {
+            return Err(MeshError::State("a high-order dimension-3 mesh needs an edge table: call ensure_edges first".into()));
+        }
+        Ok(())
+    }
+
     /// Assemble a mesh from finished columns (used by the builder).
     pub(crate) fn from_parts(p: builder::Parts) -> Self {
         let mut m = ReferenceMesh {
@@ -403,6 +416,7 @@ impl MeshEdit for ReferenceMesh {
             self.ho.remove(&c.0);
             return Ok(());
         };
+        self.require_edges_for_high_order()?;
         let corners = self.cell_corner_count(c)?;
         let want = node_count(self.cell_shape[c.get()], h.degree, h.basis)
             .filter(|_| h.degree >= 2)
@@ -438,6 +452,7 @@ impl MeshEdit for ReferenceMesh {
             self.fcurve.remove(&f.0);
             return Ok(());
         };
+        self.require_edges_for_high_order()?;
         let l = &self.face_verts[range(&self.face_off, f.get())];
         let want = face_node_count(l.len(), degree, basis).ok_or_else(|| {
             MeshError::Unsupported(format!(
@@ -470,7 +485,13 @@ impl MeshEdit for ReferenceMesh {
         if self.sets.iter().any(|s| s.name == name) {
             return Err(MeshError::DuplicateName(name.into()));
         }
-        let n = self.count(members.kind());
+        let n = match &members {
+            SetMembers::Points(_) => self.x.len(),
+            m => self.count(m.kind()),
+        };
+        if matches!(members, SetMembers::ShellSides(_)) && self.dim != MeshDim::Two {
+            return Err(MeshError::Unsupported(format!("set '{name}': shell side sets belong to dimension-2 meshes")));
+        }
         let raw = members.raw();
         if members.max_index().is_some_and(|i| i as usize >= n) || raw.windows(2).any(|w| w[0] >= w[1]) {
             return Err(MeshError::OutOfRange(format!(
@@ -548,10 +569,14 @@ impl MeshEdit for ReferenceMesh {
         self.attach_edges(t);
         Ok(())
     }
-    fn drop_edges(&mut self) {
+    fn drop_edges(&mut self) -> Result<()> {
+        if self.needs_edge_table() {
+            return Err(MeshError::State("a high-order dimension-3 mesh keeps its edge table (drop the high-order records first)".into()));
+        }
         self.edges = None;
         self.tags.retain(|t| t.target != MeshEntityKind::Edge);
         self.rebuild_class_index();
+        Ok(())
     }
     fn set_geometry_cache(&mut self, g: Option<GeometryCache>) -> Result<()> {
         if let Some(g) = &g {

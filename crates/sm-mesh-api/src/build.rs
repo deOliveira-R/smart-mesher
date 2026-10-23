@@ -405,9 +405,11 @@ pub trait MeshEdit: MeshRead {
     /// every `LevelMap` built over the mesh stale.
     fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()>;
     /// Set or clear a cell's high-order record (count-checked; polyhedra rejected).
+    /// On a dimension-3 mesh a new record needs the edge table first ([`MeshEdit::ensure_edges`]).
     fn set_high_order(&mut self, c: CellIx, h: Option<HighOrderCell>) -> Result<()>;
     /// Set or clear a face's curvature record `(degree, basis, nodes)` (count-checked; the
     /// first nodes must be the face's loop vertices).
+    /// On a dimension-3 mesh a new record needs the edge table first ([`MeshEdit::ensure_edges`]).
     fn set_face_curve(&mut self, f: FaceIx, c: Option<(u8, Basis, Vec<PointIx>)>) -> Result<()>;
     /// Add a named set; its id comes from `alloc`, which is unchanged on `Err`.
     fn add_set(
@@ -432,8 +434,10 @@ pub trait MeshEdit: MeshRead {
         alloc: &mut SerialAlloc,
         explicit: &[(VertexIx, VertexIx, Classification)],
     ) -> Result<()>;
-    /// Detach the edge table together with all edge-target tags.
-    fn drop_edges(&mut self);
+    /// Detach the edge table together with all edge-target tags. Refused
+    /// ([`crate::MeshError::State`]) on a dimension-3 mesh with high-order cells or face curves,
+    /// whose edge nodes take the class of their edge.
+    fn drop_edges(&mut self) -> Result<()>;
     /// Attach or drop a geometry cache. A cache whose rule, sizes or connectivity hash do not
     /// match the mesh (including the coordinate hash) is rejected.
     fn set_geometry_cache(&mut self, g: Option<GeometryCache>) -> Result<()>;

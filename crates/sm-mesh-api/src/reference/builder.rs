@@ -966,6 +966,25 @@ impl ReferenceBuilder {
                     m.dedup();
                     SetMembers::Sides(m)
                 }
+                SetMembers::ShellSides(mut v) => {
+                    if self.dim != MeshDim::Two {
+                        return Err(oob("is a shell side set, valid only in a dimension-2 mesh"));
+                    }
+                    v.sort_unstable();
+                    v.dedup();
+                    if v.last().is_some_and(|x| (x >> 1) as usize >= nc) {
+                        return Err(oob("cell"));
+                    }
+                    SetMembers::ShellSides(v)
+                }
+                SetMembers::Points(mut v) => {
+                    v.sort_unstable();
+                    v.dedup();
+                    if v.last().is_some_and(|x| x.get() >= nv + self.extra.len()) {
+                        return Err(oob("point"));
+                    }
+                    SetMembers::Points(v)
+                }
             };
             let label = self.set_labels.get(&name).copied();
             if label.is_some() && sets.iter().any(|s: &MeshSet| s.label == label && s.members.kind() == members.kind()) {
@@ -1033,7 +1052,10 @@ impl ReferenceBuilder {
             sets,
             tags,
         });
-        if !self.eclass.is_empty() {
+        // Edge-slot nodes (dimension 3) need the edge table: derive it even without explicit
+        // edge classes (an ambiguous edge fails with `UnclassifiedEdge`; classify it with
+        // `set_class(Edge(..))`).
+        if !self.eclass.is_empty() || mesh.needs_edge_table() {
             let t = EdgeTable::derive(&mesh, alloc, &self.eclass)?;
             mesh.attach_edges(t);
         }

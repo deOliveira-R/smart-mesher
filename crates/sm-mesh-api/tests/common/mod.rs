@@ -131,3 +131,12 @@ pub fn interior_faces(m: &dyn MeshRead) -> Vec<FaceIx> {
         .filter(|&f| m.face_kind(f) == FaceKind::Interior)
         .collect()
 }
+
+/// Classify every template edge of a cell on its own `TopoEdge` (a brick's edges lie on two
+/// model faces, so the edge table needs them explicitly; high-order meshes carry one).
+#[allow(dead_code)]
+pub fn classify_template_edges(b: &mut sm_mesh_api::reference::ReferenceBuilder, shape: CellShape, vs: &[VertexIx]) {
+    for (i, [a, c]) in shape.local_edges().iter().enumerate() {
+        b.set_class(MeshEntityRef::Edge(vs[*a as usize], vs[*c as usize]), on(EntityKind::TopoEdge, 1 + i as u64)).unwrap();
+    }
+}
