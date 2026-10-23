@@ -121,6 +121,16 @@ impl CsgCell {
     /// it (`AlongNormal` = the ray leaves the cell). A ray through an edge or corner of the cell
     /// reports one hit.
     pub fn ray_hits(&self, s: &dyn GeomStore, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
+        let first = out.len();
+        let r = self.ray_hits_inner(s, ray, range, out);
+        if r.is_err() {
+            // Leave `out` as the caller passed it, not half-compacted.
+            out.truncate(first);
+        }
+        r
+    }
+
+    fn ray_hits_inner(&self, s: &dyn GeomStore, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
         const TOL: f64 = 1e-9;
         let first = out.len();
         let dir_len = ray.dir.norm();

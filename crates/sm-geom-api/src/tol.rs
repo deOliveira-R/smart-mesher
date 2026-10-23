@@ -13,7 +13,9 @@ use sm_core::Point3;
 /// `q = linear * 2^-10` ([`Self::quantum`]); a parameter-valued float (curve parameters, pcurve
 /// coordinates) uses `q = parametric * 2^-10` ([`Self::param_quantum`]). Rounding is
 /// round-half-away-from-zero, `-0` and `+0` agree, NaN maps to `i64::MIN` and infinities
-/// saturate ([`Self::quantize`]). Angles and unit-vector components (frame axes, cone
+/// saturate ([`Self::quantize`]). Scale-free values (knots, weights, quadric coefficients, line
+/// direction components) are quantized relatively instead ([`Self::quantize_scale_free`]): their
+/// magnitude is unbounded (quadric terms scale like L^2), so a fixed absolute step would saturate. Angles and unit-vector components (frame axes, cone
 /// half-angle) use `q = angular * 2^-10` ([`Self::angular_quantum`]); unitless values (NURBS knots
 /// and weights, quadric coefficients, line direction scale) use the parameter quantum. Shape
 /// definitions are hashed value by value through [`crate::CurveDef::for_each_value`] and
@@ -93,7 +95,7 @@ impl ModelTolerance {
             S::Int(n) => n as i64,
             S::Length(x) => self.quantize(x),
             S::Angle(x) => Self::quantize_with(x, self.angular_quantum()),
-            S::Unitless(x) => self.quantize_param(x),
+            S::Unitless(x) => self.quantize_scale_free(x),
         }
     }
 
@@ -105,6 +107,31 @@ impl ModelTolerance {
         // `as` saturates for out-of-range and infinite values.
         let r = (x / q).round();
         if r == 0.0 { 0 } else { r as i64 }
+    }
+
+    /// Quantize a scale-free value (knots, weights, quadric coefficients, line direction).
+    ///
+    /// Relative rule: values with `|x| < parametric * 2^-10` map to 0; otherwise the mantissa is
+    /// rounded to 40 bits (relative step about 1e-12) and packed with the biased exponent and
+    /// sign into an `i64`. The result never saturates for finite input, and a few ulp of noise
+    /// is far below one step at any magnitude. NaN maps to `i64::MIN`, `+-inf` to `+-i64::MAX`.
+    pub fn quantize_scale_free(&self, x: f64) -> i64 {
+        if x.is_nan() {
+            return i64::MIN;
+        }
+        if x.is_infinite() {
+            return if x > 0.0 { i64::MAX } else { -i64::MAX };
+        }
+        let a = x.abs();
+        let exp_field = (a.to_bits() >> 52) as i64;
+        if a < self.param_quantum() || exp_field == 0 {
+            return 0;
+        }
+        let mant = (a.to_bits() & ((1u64 << 52) - 1)) | (1u64 << 52);
+        // Round the 53-bit significand to 40 bits (half up); a carry stays distinct.
+        let mq = ((mant + (1u64 << 12)) >> 13) as i64;
+        let code = (exp_field << 41) + mq;
+        if x < 0.0 { -code } else { code }
     }
 
     /// Quantize a length-valued float.
@@ -161,5 +188,23 @@ mod tests {
         assert_eq!(t.quantize(f64::INFINITY), i64::MAX);
         assert_eq!(t.quantize(f64::NEG_INFINITY), i64::MIN);
         assert_eq!(t.quantize_param(1.0), (1.0f64 / (1e-9 / 1024.0)).round() as i64);
+    }
+
+    #[test]
+    fn scale_free_does_not_saturate() {
+        for t in [ModelTolerance::DEFAULT, ModelTolerance::for_extent(1000.0)] {
+            let a = t.quantize_scale_free(1.6e7 - 1.0);
+            let b = t.quantize_scale_free(1.6e7 - 100.0);
+            assert_ne!(a, b);
+            assert_ne!(a, i64::MAX);
+            assert_eq!(t.quantize_scale_free(-8000.0), -t.quantize_scale_free(8000.0));
+            assert_eq!(t.quantize_scale_free(1e9), t.quantize_scale_free(1e9 * (1.0 + 4.0 * f64::EPSILON)));
+            assert_ne!(t.quantize_scale_free(1e9), t.quantize_scale_free(1e9 * (1.0 + 1e-10)));
+            assert_eq!(t.quantize_scale_free(1e-15), 0);
+            assert_eq!(t.quantize_scale_free(-0.0), 0);
+            assert_eq!(t.quantize_scale_free(f64::NAN), i64::MIN);
+            assert_eq!(t.quantize_scale_free(f64::INFINITY), i64::MAX);
+            assert_eq!(t.quantize_scale_free(f64::MAX), t.quantize_scale_free(f64::MAX));
+        }
     }
 }

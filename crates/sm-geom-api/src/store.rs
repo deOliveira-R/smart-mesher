@@ -48,7 +48,7 @@ pub enum SurfaceDef {
 }
 
 /// One number of a shape definition, tagged with how it is quantized for hashing (see
-/// [`ModelTolerance`]). Produced by [`CurveDef::for_each_value`] and [`SurfaceDef::for_each_value`].
+/// [`crate::ModelTolerance`]). Produced by [`CurveDef::for_each_value`] and [`SurfaceDef::for_each_value`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShapeValue {
     /// A discriminant, count or degree: hashed as is.
@@ -57,8 +57,9 @@ pub enum ShapeValue {
     Length(f64),
     /// An angle or a unit-vector component (cone half-angle, frame axes): `angular * 2^-10`.
     Angle(f64),
-    /// A unitless or parameter-like value (knots, weights, quadric coefficients, line direction
-    /// scale): `parametric * 2^-10`.
+    /// A scale-free value (knots, weights, quadric coefficients, line direction): quantized
+    /// relatively (40-bit mantissa, never saturates), see
+    /// [`crate::ModelTolerance::quantize_scale_free`].
     Unitless(f64),
 }
 

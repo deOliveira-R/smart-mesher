@@ -1190,9 +1190,18 @@ impl TopologyEdit for CellComplex {
         self.atomic(|s| {
             let old = s.shapes.replace_surface(id, def)?;
             s.journal.push(Undo::Surface { id, old });
-            let faces: Vec<EntityId> = s.tables[Dim::Face.index()].live.iter().copied().filter(|f| matches!(s.carrier(*f), Carrier::Surface(c) if c.surface == id)).collect();
-            for f in faces {
-                s.mark_dirty_around(f);
+            // Faces carried by the surface and CSG cells with a half-space on it.
+            let uses = |c: &Carrier| match c {
+                Carrier::Surface(c) => c.surface == id,
+                Carrier::Csg(cell) => cell.halfspaces.iter().any(|h| h.surface == id),
+                _ => false,
+            };
+            let mut hit: Vec<EntityId> = Vec::new();
+            for dim in [Dim::Face, Dim::Volume] {
+                hit.extend(s.tables[dim.index()].live.iter().copied().filter(|c| uses(s.carrier(*c))));
+            }
+            for c in hit {
+                s.mark_dirty_around(c);
             }
             s.note(id, LineageKind::Modified(ModKind::Surface));
             Ok(())

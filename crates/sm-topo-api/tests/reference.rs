@@ -555,6 +555,26 @@ fn csg_carrier_volume_with_general_quadric_validates() {
     t.abort_op();
 }
 
+#[test]
+fn large_magnitude_quadric_coefficients_do_not_collide_in_the_hash() {
+    // Sphere centred at (4000,0,0): constant term ~ L^2 = 1.6e7; r=1 vs r=10 must differ.
+    for tol in [ModelTolerance::DEFAULT, ModelTolerance::for_extent(1000.0)] {
+        let hash_for = |c: f64| {
+            let mut t = CellComplex::with_tolerance(tol);
+            with_op(&mut t, OpId(1), |t| {
+                let gq = t.shapes_mut().unwrap().add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, -8000.0, 0.0, 0.0, c] }))).unwrap();
+                let vol = t.make_volume(&[])?;
+                t.set_carrier(vol, Carrier::Csg(CsgCell::new([HalfSpace { surface: gq, sign: Sign::Negative }])))?;
+                Ok(vol)
+            })
+            .unwrap();
+            t.canonical_hash()
+        };
+        assert_ne!(hash_for(1.6e7 - 1.0), hash_for(1.6e7 - 100.0));
+        assert_eq!(hash_for(1.6e7 - 1.0), hash_for(1.6e7 - 1.0));
+    }
+}
+
 // ---------------------------------------------------------------- virtual dummy for later modules
 
 // ---------------------------------------------------------------- atomicity, lifecycle, errors
