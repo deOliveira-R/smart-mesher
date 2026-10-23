@@ -1,0 +1,20 @@
+[package]
+name = "sm-testkit"
+description = "Frozen test-support crate: analytic fixtures, 2D loops, small meshes, synthetic B-reps, property checkers, determinism harness and proptest strategies."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-model-api = { path = "../sm-model-api" }
+thiserror = "2"
+proptest = { version = "1", default-features = false, features = ["std"] }
