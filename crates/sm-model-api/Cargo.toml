@@ -1,0 +1,22 @@
+[package]
+name = "sm-model-api"
+description = "Model-semantics and decomposition layers for smart-mesh: coloring, boundary kinds, symmetry, instancing, pieces (selection-algebra candidate)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+mock = []
+serde = ["dep:serde", "sm-core/serde", "smallvec/serde"]
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+thiserror = "2"
+smallvec = "1"
+serde = { version = "1", features = ["derive"], optional = true }
