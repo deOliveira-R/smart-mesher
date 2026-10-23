@@ -6,7 +6,7 @@
 //! *declaring* a symmetry needs a finite point group). All checks of one call share one geometry
 //! cache. Coincidence is read from the topology's `coincident_faces`, never inferred from moments.
 
-use crate::boundary::{BoundaryKind, Deck, DeckSide, FaceRole, InterfaceIntent};
+use crate::boundary::{BoundaryKind, Deck, DeckSide, FaceBoundary, FaceRole, InterfaceIntent};
 use crate::color::Domain;
 use crate::decomposition::{PieceFace, PieceRef, PieceShape};
 use crate::instancing::ColorMap;
@@ -17,7 +17,7 @@ use crate::xf::{GeomCache, Tolerance, face_shape_close, transform_face_moments, 
 use sm_core::{EntityId, EntityKind, Transform, Vector3};
 use sm_topo_api::{Coincidence, Dim, FaceClass, Region, TopologyView, TopologyViewExt};
 use smallvec::SmallVec;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How serious an issue is. Only errors make a report not [`Report::is_ok`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -184,14 +184,30 @@ pub fn validate(m: &Model, t: &dyn TopologyView, tol: Tolerance) -> Report {
     let mut s = Sink(Vec::new());
     let mut c = GeomCache::new(t);
     let l = c.length_scale();
+    let by_b = faces_by_boundary(m);
     check_coloring(m, t, &mut s);
     check_faces(m, t, &mut s);
-    check_decks(m, &mut c, l, &tol, &mut s);
-    check_symmetry(m, t, &tol, &mut s);
-    check_interfaces(m, t, &mut c, l, &tol, &mut s);
+    check_decks(m, &by_b, &mut c, l, &tol, &mut s);
+    check_symmetry(m, &by_b, t, &tol, &mut s);
+    check_interfaces(m, &by_b, t, &mut c, l, &tol, &mut s);
     check_instancing(m, t, &mut s);
     check_decomposition(m, t, &mut s);
     s.finish()
+}
+
+type ByBoundary<'a> = BTreeMap<EntityId, Vec<(EntityId, &'a FaceBoundary)>>;
+
+/// Faces grouped by boundary record, once per validation (ascending by face within a record).
+fn faces_by_boundary(m: &Model) -> ByBoundary<'_> {
+    let mut out: ByBoundary<'_> = BTreeMap::new();
+    for (f, fb) in &m.face_boundary {
+        out.entry(fb.boundary).or_default().push((*f, fb));
+    }
+    out
+}
+
+fn faces_of<'a>(by_b: &'a ByBoundary<'a>, b: EntityId) -> impl Iterator<Item = (EntityId, &'a FaceBoundary)> {
+    by_b.get(&b).into_iter().flatten().copied()
 }
 
 fn check_coloring(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
@@ -257,7 +273,7 @@ fn check_faces(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
     }
 }
 
-fn check_decks(m: &Model, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
+fn check_decks(m: &Model, by_b: &ByBoundary<'_>, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
     let planar = tol.linear.max(1e-9 * l);
     let dist = 10.0 * tol.linear + 1e-9 * l;
     for row in m.boundaries() {
@@ -267,12 +283,12 @@ fn check_decks(m: &Model, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mu
             continue;
         }
         if let Deck::Rotation { angle, .. } = deck
-            && !(angle.num == 1 || angle.num + 1 == angle.den as i32)
+            && !(angle.num == 1 || i64::from(angle.num) + 1 == i64::from(angle.den))
         {
             s.add(IssueCode::RotationOrder, &[row.id], format!("rotation {}/{} of a turn is not a primitive 1/n rotation; the wedge would not tile", angle.num, angle.den));
         }
         let g = deck.transform();
-        for (f, fb) in m.boundary_faces(row.id) {
+        for (f, fb) in faces_of(by_b, row.id) {
             let FaceRole::Deck { side, mate } = fb.role else {
                 s.add(IssueCode::KindOnInteriorFace, &[f], "face of a deck record has a non-deck role");
                 continue;
@@ -339,7 +355,7 @@ fn check_decks(m: &Model, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mu
         }
         let Ok(plan) = plan_cut(spec) else { continue };
         for row in m.boundaries().filter(|r| r.kind.as_deck().is_some_and(|d| d.same_as(&spec.deck))) {
-            for (f, _) in m.boundary_faces(row.id) {
+            for (f, _) in faces_of(by_b, row.id) {
                 let Some(fm) = c.face(f) else { continue };
                 let on = fm.plane(planar).is_some_and(|(n, d)| {
                     plan.half_spaces.iter().any(|h| {
@@ -355,12 +371,12 @@ fn check_decks(m: &Model, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mu
     }
 }
 
-fn check_symmetry(m: &Model, t: &dyn TopologyView, tol: &Tolerance, s: &mut Sink) {
+fn check_symmetry(m: &Model, by_b: &ByBoundary<'_>, t: &dyn TopologyView, tol: &Tolerance, s: &mut Sink) {
     let gens: Vec<EntityId> = m.symmetry().map(|x| x.generators.clone()).unwrap_or_default();
     for row in m.boundaries() {
         if let BoundaryKind::Deck(_) = row.kind
             && !gens.contains(&row.id)
-            && m.boundary_faces(row.id).next().is_some()
+            && faces_of(by_b, row.id).next().is_some()
         {
             s.add(IssueCode::DeckNotInSymmetry, &[row.id], "deck record has faces but is not a generator of a declared symmetry");
         }
@@ -378,7 +394,7 @@ fn check_symmetry(m: &Model, t: &dyn TopologyView, tol: &Tolerance, s: &mut Sink
             s.add(IssueCode::UnknownEntity, &[*b], "generator is not a deck record");
             continue;
         };
-        if m.boundary_faces(*b).next().is_none() {
+        if faces_of(by_b, *b).next().is_none() {
             s.add(IssueCode::GeneratorUnused, &[*b], "generator has no faces");
         }
         match deck {
@@ -405,11 +421,10 @@ fn bounding_radius(fm: &sm_topo_api::FaceMoments) -> f64 {
     (3.0 * tr.max(0.0) / fm.area.max(1e-300)).sqrt() * 1.01
 }
 
-fn check_interfaces(m: &Model, t: &dyn TopologyView, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
+fn check_interfaces(m: &Model, by_b: &ByBoundary<'_>, t: &dyn TopologyView, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
     for row in m.boundaries() {
         let BoundaryKind::Interface(intent) = row.kind else { continue };
-        let faces: Vec<(EntityId, DeckSide)> = m
-            .boundary_faces(row.id)
+        let faces: Vec<(EntityId, DeckSide)> = faces_of(by_b, row.id)
             .filter_map(|(f, fb)| match fb.role {
                 FaceRole::Interface { side } => Some((f, side)),
                 _ => None,
@@ -465,28 +480,34 @@ fn check_interfaces(m: &Model, t: &dyn TopologyView, c: &mut GeomCache<'_>, l: f
                         s.add(IssueCode::InterfaceNotFacing, &[row.id], "the summed vector areas of the two sides are not opposed");
                     }
                 }
-                // Every face has a counterpart: a recorded coincidence or overlapping bounds.
+                // Every face has a counterpart: a coincidence recorded by the topology (never
+                // inferred from moments). The one exception is an explicit transform: the two
+                // sets are then not colocated, so no record can exist and the transformed
+                // bounds must overlap.
                 let (aset, bset): (BTreeSet<EntityId>, BTreeSet<EntityId>) = (a.iter().copied().collect(), b.iter().copied().collect());
-                let img_t = transform.unwrap_or(Transform::IDENTITY);
                 for (mine, other, forward) in [(&a, &bset, true), (&b, &aset, false)] {
                     for f in mine {
                         let pairs = t.coincident_faces(*f);
-                        if pairs.iter().any(|p| p.status == Coincidence::Merged && p.other(*f).is_some_and(|o| other.contains(&o) || aset.contains(&o) || bset.contains(&o))) {
+                        if pairs.iter().any(|p| p.status == Coincidence::Merged && p.other(*f).is_some_and(|o| aset.contains(&o) || bset.contains(&o))) {
                             s.add(IssueCode::InterfaceUnmatched, &[*f], "the face is recorded as merged with a face of the interface");
                             continue;
                         }
                         if pairs.iter().any(|p| p.other(*f).is_some_and(|o| other.contains(&o))) {
                             continue;
                         }
+                        let Some(xf) = transform else {
+                            s.add(IssueCode::InterfaceUnmatched, &[*f], "the face has no recorded coincident counterpart on the other side");
+                            continue;
+                        };
                         let Some(fm) = c.face(*f) else { continue };
                         let Some(pc) = fm.centroid() else { continue };
-                        // Compare in B's frame: A faces are moved by the optional transform.
-                        let p1 = if forward { img_t.apply_point(pc) } else { pc };
+                        // Compare in B's frame: A faces are moved by the transform.
+                        let p1 = if forward { xf.apply_point(pc) } else { pc };
                         let r = bounding_radius(&fm);
                         let found = other.iter().any(|g| {
                             let Some(gm) = c.face(*g) else { return true };
                             let Some(gc) = gm.centroid() else { return false };
-                            let p2 = if forward { gc } else { img_t.apply_point(gc) };
+                            let p2 = if forward { gc } else { xf.apply_point(gc) };
                             (p1 - p2).norm() <= r + bounding_radius(&gm) + 10.0 * tol.linear
                         });
                         if !found {
@@ -590,7 +611,12 @@ fn check_decomposition(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         // Tiling: the leaves cover every face of the volume, and each cut has both sides.
         let mut leaves = Vec::new();
         let mut stack = vec![PieceRef::Whole(v)];
+        let mut seen: BTreeSet<PieceRef> = BTreeSet::new();
         while let Some(p) = stack.pop() {
+            if !seen.insert(p) {
+                s.add(IssueCode::PieceTilingBroken, &[v], "the cut tree has a cycle");
+                break;
+            }
             match d.split_of(p) {
                 Some(rec) => stack.extend(rec.children.iter().map(|c| PieceRef::Cell(*c))),
                 None => leaves.push(p),
@@ -602,7 +628,7 @@ fn check_decomposition(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         for lf in &leaves {
             for pf in d.piece_faces(*lf, t) {
                 match pf {
-                    PieceFace::Cut { cut, side } => {
+                    PieceFace::Cut { cut, side } | PieceFace::CutPart { cut, side, .. } => {
                         let e = cuts.entry(cut).or_default();
                         if side == Keep::Negative { e.0 = true } else { e.1 = true }
                     }
@@ -680,4 +706,139 @@ pub fn validate_unfolded(u: &UnfoldedModel, m: &Model, t: &dyn TopologyView, tol
         }
     }
     s.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Negative tests: states that the mutators refuse to build are corrupted through the
+    //! private tables, as a hand-edited or damaged file would.
+    use super::*;
+    use crate::boundary::FaceBoundary;
+    use crate::symmetry::{CutSpec, Provenance};
+    use crate::xf::{Axis, Plane, Turns};
+    use sm_core::{Point3, Vector3};
+    use sm_topo_api::fixtures::{self, BrickIds, with_op};
+    use sm_topo_api::{CellComplex, CoedgeSpec, OpId, Sense, TopologyEdit};
+
+    fn setup() -> (CellComplex, Model, BrickIds) {
+        let mut t = CellComplex::new();
+        let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])).unwrap();
+        let mut m = Model::new();
+        let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
+        m.color_volumes(mat, &[b.volume]).unwrap();
+        (t, m, b)
+    }
+
+    fn mirror(n: [f64; 3], off: f64) -> BoundaryKind {
+        BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(n[0], n[1], n[2]), off).unwrap() })
+    }
+
+    #[test]
+    fn color_table_damage_is_reported() {
+        let (t, mut m, b) = setup();
+        let vc = m.volume_color(b.volume).unwrap();
+        let fc = m.add_color(2, "bc", Domain::Face).unwrap();
+        // A second volume color with the same label.
+        let dup = m.ids.alloc(EntityKind::Color).unwrap();
+        m.colors.insert(dup, crate::color::ColorRow { id: dup, label: 1, name: "dup".into(), domain: Domain::Volume });
+        // A volume with a face color, a face with a volume color.
+        m.volume_color.insert(b.volume, fc);
+        m.face_color.insert(b.faces[0], vc);
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.has(IssueCode::LabelDuplicate) && r.has(IssueCode::ColorDomainMismatch), "{:#?}", r.issues);
+    }
+
+    #[test]
+    fn broken_pairs_and_generators_are_reported() {
+        let (t, mut m, b) = setup();
+        let per = m.add_boundary("per", BoundaryKind::Deck(Deck::Translation { vector: Vector3::new(1.0, 0.0, 0.0) })).unwrap();
+        m.assign_pairs(per, &[(b.faces[0], b.faces[1])]).unwrap();
+        // B points back to the wrong face.
+        m.face_boundary.insert(b.faces[1], FaceBoundary { boundary: per, role: FaceRole::Deck { side: DeckSide::B, mate: Some(b.faces[2]) } });
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.has(IssueCode::DeckMateNotReciprocal), "{:#?}", r.issues);
+
+        // Parallel mirrors forced into the generator list: the group does not close.
+        let (t, mut m, b) = setup();
+        let m0 = m.add_boundary("m0", mirror([0.0, 0.0, 1.0], 0.0)).unwrap();
+        let m1 = m.add_boundary("m1", mirror([0.0, 0.0, 1.0], 1.0)).unwrap();
+        m.assign_self_paired(m0, &[b.faces[4]]).unwrap();
+        m.assign_self_paired(m1, &[b.faces[5]]).unwrap();
+        m.declare_symmetry(&[m0], &t).unwrap();
+        m.symmetry.as_mut().unwrap().generators.push(m1);
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.has(IssueCode::GroupNotFinite), "{:#?}", r.issues);
+    }
+
+    #[test]
+    fn translation_not_normalized_and_unused_generators() {
+        let (t, mut m, _) = setup();
+        let axis = Axis::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let rot = m.add_boundary("rot", BoundaryKind::Deck(Deck::Rotation { axis, angle: Turns::new(1, 4).unwrap() })).unwrap();
+        let tr = m.add_boundary("tr", BoundaryKind::Deck(Deck::Translation { vector: Vector3::new(1.0, 0.0, 0.0) })).unwrap();
+        m.declare_symmetry(&[rot, tr], &t).unwrap();
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.has(IssueCode::TranslationNotNormalized), "{:#?}", r.issues);
+        assert_eq!(r.with(IssueCode::GeneratorUnused).count(), 2);
+        // A translation along the rotation axis commutes.
+        let (t, mut m, _) = setup();
+        let rot = m.add_boundary("rot", BoundaryKind::Deck(Deck::Rotation { axis, angle: Turns::new(1, 4).unwrap() })).unwrap();
+        let tr = m.add_boundary("tr", BoundaryKind::Deck(Deck::Translation { vector: Vector3::new(0.0, 0.0, 1.0) })).unwrap();
+        m.declare_symmetry(&[rot, tr], &t).unwrap();
+        assert!(!validate(&m, &t, Tolerance::default()).has(IssueCode::TranslationNotNormalized));
+    }
+
+    #[test]
+    fn caps_off_the_planned_plane_are_reported() {
+        let (t, mut m, b) = setup();
+        let vector = Vector3::new(0.0, 0.0, 1.0);
+        let per = m.add_boundary("slab", BoundaryKind::Deck(Deck::Translation { vector })).unwrap();
+        m.assign_pairs(per, &[(b.faces[4], b.faces[5])]).unwrap();
+        // The recorded cut was planned at z = 5..6; the tagged faces sit at z = 0 and 1.
+        m.provenance.push(Provenance::Cut { spec: CutSpec { deck: Deck::Translation { vector }, keep: crate::symmetry::Keep::Positive, origin: Point3::new(0.0, 0.0, 5.0) } });
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.has(IssueCode::CapOffPlane), "{:#?}", r.issues);
+    }
+
+    #[test]
+    fn broken_decompositions_are_reported() {
+        let (mut t, mut m, b) = setup();
+        let other = with_op(&mut t, OpId(2), |t| fixtures::brick(t, Point3::new(5.0, 0.0, 0.0), [1.0, 1.0, 1.0])).unwrap();
+        let all = b.faces.to_vec();
+        let [n, p] = m.split(PieceRef::Whole(b.volume), crate::decomposition::CutGeometry::Plane(Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.5).unwrap()), &all, &all, &t).unwrap();
+        assert!(!validate(&m, &t, Tolerance::default()).has(IssueCode::PieceTilingBroken));
+        // Drop a face from a leaf: the leaves no longer cover the volume.
+        let mut broken = m.clone();
+        for c in [n, p] {
+            broken.decomposition.cells.get_mut(&c).unwrap().faces.retain(|f| f.base() != Some(b.faces[2]));
+        }
+        assert!(validate(&broken, &t, Tolerance::default()).has(IssueCode::PieceTilingBroken));
+        // A face that does not bound the volume.
+        let mut alien = m.clone();
+        alien.decomposition.cells.get_mut(&n).unwrap().faces.push(PieceFace::Whole(other.faces[0]));
+        assert!(validate(&alien, &t, Tolerance::default()).has(IssueCode::PieceFacesNotOfVolume));
+    }
+
+    #[test]
+    fn missing_moments_are_a_warning_not_a_panic() {
+        // A face with no surface carrier has no moments.
+        let mut t = CellComplex::new();
+        let f = with_op(&mut t, OpId(1), |t| {
+            let mut v: Vec<EntityId> = Vec::new();
+            for p in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+                v.push(t.make_vertex(Point3::new(p.0, p.1, 0.0))?);
+            }
+            let mut lp: Vec<CoedgeSpec> = Vec::new();
+            for i in 0..3 {
+                lp.push(CoedgeSpec { edge: t.make_edge(v[i], v[(i + 1) % 3], None)?, sense: Sense::Forward });
+            }
+            Ok(t.make_face(&[&lp], None)?)
+        })
+        .unwrap();
+        let mut m = Model::new();
+        let mir = m.add_boundary("m", mirror([0.0, 0.0, 1.0], 0.0)).unwrap();
+        m.assign_self_paired(mir, &[f]).unwrap();
+        let r = validate(&m, &t, Tolerance::default());
+        assert!(r.warnings().any(|w| w.code == IssueCode::GeometryUnavailable), "{:#?}", r.issues);
+    }
 }

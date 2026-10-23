@@ -6,7 +6,7 @@ use common::*;
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_model_api::*;
 use sm_topo_api::fixtures::{self, with_op};
-use sm_topo_api::{CapFace, CellComplex, CutOutcome, OpId, Sense, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{CapFace, Coincidence, CellComplex, CutOutcome, OpId, Sense, TopologyEdit, TopologyView, TopologyViewExt};
 
 fn p3(x: f64, y: f64, z: f64) -> Point3 {
     Point3::new(x, y, z)
@@ -542,6 +542,17 @@ fn interface_between_colors_reads_coincident_faces_and_non_conformal_counts() {
     let i = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b1.faces[0], b2.faces[0]]).unwrap();
     finish_boundaries(&mut m, &t, 7, true);
+    // Without a recorded coincidence the faces have no counterpart, however close they are:
+    // coincidence is never inferred from moments.
+    let r = validate(&m, &t, tol());
+    assert_eq!(r.with(IssueCode::InterfaceUnmatched).count(), 3, "{:#?}", r.issues);
+    // The topology records the partial overlaps; that record is what satisfies the check.
+    with_op(&mut t, OpId(4), |t| {
+        t.record_coincidence(a.faces[1], b1.faces[0], Coincidence::Overlapping)?;
+        t.record_coincidence(a.faces[1], b2.faces[0], Coincidence::Overlapping)?;
+        Ok(())
+    })
+    .unwrap();
     let r = validate(&m, &t, tol());
     assert!(r.is_ok(), "{:#?}", r.issues);
     assert!(!r.has(IssueCode::InterfaceSameColor));

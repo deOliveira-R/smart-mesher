@@ -124,12 +124,39 @@ compares hashes (API crates do not use rayon).
 - `plan_cut` is fallible (`Result`): a wedge must span less than half a turn and have a start
   point off the axis. `CutPlan` has an extra `roles` field.
 - `CutId(u32)` is kept as the local handle for virtual cut faces (no `PartitionFace` minted here).
-  A cut face of a parent piece is inherited by both children of a further split.
-- `composite` takes no topology, so a composite's faces are read lazily
-  (`Decomposition::piece_faces`) and `pieces_of_face` indexes only decomposed (`Cell`) members;
-  `pieces_of_face_in(f, t)` adds `Whole` pieces.
-- Interface "bounding boxes overlap" is implemented as bounding **spheres** from the second
-  moments (r = 1.01 sqrt(3 tr(S_c)/A)), since moments do not give boxes.
+  A cut face of a parent piece that straddles a further split is inherited by both children as
+  `PieceFace::CutPart{cut, side, piece}` (a distinct key per child, like `Part` for model faces);
+  `Model::split_sides` classifies the parent's cut faces explicitly (`SplitSides`), and
+  `split` assumes every parent cut face straddles.
+- `composite(pieces, t)` takes the topology so the faces of `Whole` members are captured when the
+  composite is formed; `pieces_of_face` then finds composites of whole volumes too, and
+  `pieces_of_face_in(f, t)` adds the `Whole` pieces of volumes that are not decomposed.
+- `apply_lineage` also refuses a change to any model face listed by a piece, not only a change
+  of the decomposed volume id (`DecompositionActive`).
+- Coincidence of interface faces is read from the topology record only (binding decision 5).
+  The one exception is an interface with an explicit `transform`: the two face sets are not
+  colocated, so no record can exist, and the transformed bounding **spheres** (from the second
+  moments, r = 1.01 sqrt(3 tr(S_c)/A)) must overlap. This is the only place geometry stands in
+  for a record.
+- `apply_cut` runs the point-group closure on the new generator set (`GroupNotFinite`), checks
+  the shape of a hand-built `CutPlan`, and checks the kept side by the volume centroid **and**
+  every face-outline corner. Volumes with few or no corners (smooth closed surfaces) are only
+  checked by their centroid.
+- `Deck::check` requires a rotation angle to be a reduced proper fraction `0 < num < den` with
+  `den <= MAX_GROUP_ORDER`; the validator and `plan_cut` use widened arithmetic.
+- `unfold` bounds the element count (`MAX_GROUP_ORDER`) with checked arithmetic before it
+  allocates. Lattice layouts are bounded to `MAX_LAYOUT_SLOTS` and `flatten` to
+  `MAX_FLAT_ENTRIES`.
+- With `serde`, `Model` deserializes through `Model::check_integrity` (row kinds and keys, id
+  allocator ahead of every minted id, acyclic lattices and cut trees, bounded layouts).
+- `FlatModel::fingerprint` hashes raw `f64` bits and is **single-platform**;
+  `fingerprint_quantized(linear)` applies the Q2 step `linear * 2^-10` and is the cross-platform
+  hash.
+- `DetectionResult::complete` is false when an eigenspace is degenerate and no geometric
+  direction source (face normal, face or volume offset; cross products do not count) lies in
+  it. It is a heuristic, not a proof of completeness.
+- A mirror cut that deletes one face of an existing translation or rotation pair fails with a
+  `CutInvalid` that names the lost partner; unassign the pair first.
 - Extra issue codes: `RotationOrder` (a deck rotation must be a primitive `1/n`), `GeometryUnavailable`
   (warning: moments unsupported for a face, e.g. at a pole).
 - `detect_symmetry` and `verify_transform` propagate `Topology(Unsupported)` when a face has no
@@ -137,8 +164,7 @@ compares hashes (API crates do not use rayon).
   degrading to `complete: false`; only the validator degrades (`GeometryUnavailable`).
 - `color_by_label` / `color_by_name` are linear scans over the color table (not indexed).
 - Two parallel mirrors cannot be declared as one symmetry (`GroupNotFinite`); the cell stays valid.
-- `Cargo.lock` is updated in this commit although decisions.md Q3 says the orchestrator owns it
-  (the task asked for it).
+- `Cargo.lock` is not touched (decisions.md Q3); the orchestrator regenerates it at merge.
 - `serde_json` is a **dev-dependency** only (round-trip tests); the shipped dependency set is
   `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `smallvec`, `thiserror`. `indexmap`
   is not needed.

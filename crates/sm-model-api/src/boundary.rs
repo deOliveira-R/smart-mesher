@@ -73,13 +73,19 @@ impl Deck {
     }
 
     /// Reject degenerate parameters (zero or non-unit normals and axes, zero translation or
-    /// angle, non-finite numbers).
+    /// angle, non-finite numbers, and a rotation angle that is not a reduced proper fraction with
+    /// a bounded denominator).
     pub fn check(&self) -> Result<()> {
         let unit = |v: Vector3| v.norm().is_finite() && (v.norm() - 1.0).abs() <= 1e-9;
         match self {
             Deck::Mirror { plane } if !(unit(plane.normal) && plane.offset.is_finite()) => Err(ModelError::Invalid("mirror plane needs a unit normal".into())),
             Deck::Translation { vector } if !(vector.norm().is_finite() && vector.norm() > 0.0) => Err(ModelError::Invalid("translation must be finite and non-zero".into())),
-            Deck::Rotation { axis, angle } if !unit(axis.dir) || angle.is_zero() || angle.den < 2 => Err(ModelError::Invalid("rotation needs a unit axis and a non-zero angle".into())),
+            Deck::Rotation { axis, .. } if !unit(axis.dir) || !(axis.point.x.is_finite() && axis.point.y.is_finite() && axis.point.z.is_finite()) => {
+                Err(ModelError::Invalid("rotation needs a finite unit axis".into()))
+            }
+            Deck::Rotation { angle, .. } if !angle.is_proper(crate::symmetry::MAX_GROUP_ORDER as u32) => {
+                Err(ModelError::Invalid(format!("rotation angle {}/{} must be a reduced fraction 0 < num < den with den <= {}", angle.num, angle.den, crate::symmetry::MAX_GROUP_ORDER)))
+            }
             _ => Ok(()),
         }
     }

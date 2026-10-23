@@ -142,6 +142,13 @@ impl Turns {
     pub fn is_zero(&self) -> bool {
         self.num == 0
     }
+
+    /// True if this is a proper reduced fraction `0 < num < den` with `den <= max_den` (the
+    /// shape every non-trivial rotation deck must have). Fields are public, so this guards
+    /// hand-built values.
+    pub fn is_proper(&self, max_den: u32) -> bool {
+        self.num > 0 && i64::from(self.num) < i64::from(self.den) && self.den <= max_den && gcd(self.num as u64, u64::from(self.den)) == 1
+    }
 }
 
 pub(crate) type Mat = [[f64; 3]; 3];
@@ -284,6 +291,22 @@ impl<'a> GeomCache<'a> {
         *self.vols.entry(v).or_insert_with(|| t.volume_moments(v).ok())
     }
 
+    /// Like [`GeomCache::face`], with the topology's error when moments are unavailable.
+    pub(crate) fn face_res(&mut self, f: EntityId) -> Result<FaceMoments> {
+        match self.face(f) {
+            Some(m) => Ok(m),
+            None => Err(self.t.face_moments(f).err().map_or_else(|| ModelError::Invalid(format!("no moments for face {f}")), ModelError::from)),
+        }
+    }
+
+    /// Like [`GeomCache::volume`], with the topology's error when moments are unavailable.
+    pub(crate) fn volume_res(&mut self, v: EntityId) -> Result<Moments> {
+        match self.volume(v) {
+            Some(m) => Ok(m),
+            None => Err(self.t.volume_moments(v).err().map_or_else(|| ModelError::Invalid(format!("no moments for volume {v}")), ModelError::from)),
+        }
+    }
+
     /// Characteristic model length: cube root of the total volume (1 if unavailable).
     pub(crate) fn length_scale(&mut self) -> f64 {
         if let Some(s) = self.scale {
@@ -341,16 +364,20 @@ pub fn transforms_close(a: &Transform, b: &Transform, tol: f64) -> bool {
     (0..3).all(|i| (0..3).all(|j| (a.m[i][j] - b.m[i][j]).abs() <= tol)) && (a.t - b.t).norm() <= tol
 }
 
+/// Grid shift in cells: puts the common values 0, +-1/2, +-1 away from cell borders, so the
+/// neighbour probe is rarely needed.
+const GRID_SHIFT: f64 = 0.37;
+
 fn transform_cells(x: &Transform, q: f64) -> [f64; 12] {
     let mut v = [0.0; 12];
     for i in 0..3 {
         for j in 0..3 {
-            v[3 * i + j] = x.m[i][j] / q;
+            v[3 * i + j] = x.m[i][j] / q + GRID_SHIFT;
         }
     }
-    v[9] = x.t.x / q;
-    v[10] = x.t.y / q;
-    v[11] = x.t.z / q;
+    v[9] = x.t.x / q + GRID_SHIFT;
+    v[10] = x.t.y / q + GRID_SHIFT;
+    v[11] = x.t.z / q + GRID_SHIFT;
     v
 }
 
@@ -394,10 +421,8 @@ impl TransformIndex {
                     next.push(nb);
                 }
             }
+            // At most 2^12 combinations; every borderline coordinate is probed.
             bases = next;
-            if bases.len() > 256 {
-                break;
-            }
         }
         let mut out = Vec::new();
         for b in bases {

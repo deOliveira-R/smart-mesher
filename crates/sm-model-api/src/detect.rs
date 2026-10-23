@@ -10,8 +10,8 @@
 //!
 //! Only the maximal cyclic order per axis is reported, plus a minimal generator set. Detection
 //! never changes the model. All tolerances are relative to the model's length scale.
-//! [`DetectionResult::complete`] is false when an eigenspace was degenerate and no in-plane
-//! direction source existed.
+//! [`DetectionResult::complete`] is false when an eigenspace was degenerate and no geometric
+//! direction source (face normal, face or volume offset) lay inside it.
 
 use crate::boundary::Deck;
 use crate::error::{ModelError, Result};
@@ -151,7 +151,7 @@ fn color_moments(m: &Model, c: &mut GeomCache<'_>) -> Result<BTreeMap<EntityId, 
     let vols: Vec<EntityId> = c.t.cells(Dim::Volume).to_vec();
     for v in vols {
         let col = m.volume_color(v).ok_or_else(|| ModelError::Invalid(format!("volume {v} is not colored")))?;
-        let mv = c.t.volume_moments(v)?;
+        let mv = c.volume_res(v)?;
         let e = per.entry(col).or_insert(Moments { volume: 0.0, first: Vector3::default(), second: [[0.0; 3]; 3] });
         *e = e.add(&mv);
     }
@@ -204,7 +204,7 @@ fn verify_stages(m: &Model, c: &mut GeomCache<'_>, x: &Transform, l: f64, tol: &
     let mut vm = Vec::with_capacity(vols.len());
     let mut bins = Bins::new(h);
     for (i, v) in vols.iter().enumerate() {
-        let mv = t.volume_moments(*v)?;
+        let mv = c.volume_res(*v)?;
         if let Some(p) = mv.centroid() {
             bins.insert(p, i);
         }
@@ -235,7 +235,7 @@ fn verify_stages(m: &Model, c: &mut GeomCache<'_>, x: &Transform, l: f64, tol: &
     let mut fm = Vec::with_capacity(faces.len());
     let mut fbins = Bins::new(h);
     for (i, f) in faces.iter().enumerate() {
-        let mf = t.face_moments(*f)?;
+        let mf = c.face_res(*f)?;
         if let Some(p) = mf.centroid() {
             fbins.insert(p, i);
         }
@@ -363,37 +363,49 @@ pub fn detect_symmetry(m: &Model, t: &dyn TopologyView, tol: Tolerance) -> Resul
         }
     }
     let emax = evals.iter().fold(0.0f64, |a, b| a.max(b.abs())).max(1e-300);
-    let degenerate = (evals[1] - evals[0]).abs() < 1e-6 * emax || (evals[2] - evals[1]).abs() < 1e-6 * emax;
-    let mut extra = 0usize;
-    for f in t.cells(Dim::Face) {
-        let fm = t.face_moments(*f)?;
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6 * emax;
+    // Geometric direction sources (not cross products, which are derived), new or not: the
+    // eigenvectors of a degenerate eigenspace are arbitrary, so what matters is whether the
+    // geometry itself offers a direction inside it.
+    let mut sources: Vec<Vector3> = Vec::new();
+    let mut add_src = |dirs: &mut Dirs, d: Vector3| {
+        let n = d.norm();
+        if n.is_finite() && n > 1e-9 {
+            sources.push(d * (1.0 / n));
+        }
+        dirs.add(d);
+    };
+    let faces: Vec<EntityId> = t.cells(Dim::Face).to_vec();
+    for f in &faces {
+        let fm = c.face_res(*f)?;
         if let Some((n, _)) = fm.plane(1e-6 * l + tol.linear) {
-            extra += usize::from(dirs.add(n));
+            add_src(&mut dirs, n);
         }
         if let Some(cf) = fm.centroid() {
-            extra += usize::from(dirs.add(cf - g));
+            add_src(&mut dirs, cf - g);
         }
     }
     let mut bary: BTreeMap<EntityId, Vec<Point3>> = BTreeMap::new();
-    for v in t.cells(Dim::Volume) {
-        if let (Some(col), Some(b)) = (m.volume_color(*v), t.volume_moments(*v)?.centroid()) {
+    let volumes: Vec<EntityId> = t.cells(Dim::Volume).to_vec();
+    for v in &volumes {
+        if let (Some(col), Some(b)) = (m.volume_color(*v), c.volume_res(*v)?.centroid()) {
             bary.entry(col).or_default().push(b);
         }
     }
     for pts in bary.values() {
         for (i, b) in pts.iter().enumerate() {
             if (*b - g).norm() > dtol {
-                extra += usize::from(dirs.add(*b - g));
+                add_src(&mut dirs, *b - g);
             }
             for b2 in pts.iter().skip(i + 1).take(24) {
-                extra += usize::from(dirs.add(*b - *b2));
+                add_src(&mut dirs, *b - *b2);
             }
         }
     }
     let snapshot = dirs.v.clone();
     for a in &axes {
         for d in &snapshot {
-            extra += usize::from(dirs.add(a.cross(*d)));
+            dirs.add(a.cross(*d));
         }
     }
     let mut ds = dirs.v;
@@ -444,7 +456,18 @@ pub fn detect_symmetry(m: &Model, t: &dyn TopologyView, tol: Tolerance) -> Resul
             Err(_) => closed = false,
         }
     }
-    let complete = !(degenerate && extra == 0);
+    // A degenerate eigenspace leaves its in-plane (or in-space) axes undetermined; they are only
+    // found if a geometric source gave a direction inside it.
+    let in_space = |basis: &[Vector3]| sources.iter().any(|d| basis.iter().all(|n| d.dot(*n).abs() < 1e-6));
+    let complete = if close(evals[0], evals[2]) {
+        !sources.is_empty()
+    } else if close(evals[0], evals[1]) {
+        in_space(&[evecs[2]])
+    } else if close(evals[1], evals[2]) {
+        in_space(&[evecs[0]])
+    } else {
+        true
+    };
     Ok(DetectionResult { invariants, candidates, generators, group_order: if closed { order as u32 } else { 0 }, complete })
 }
 

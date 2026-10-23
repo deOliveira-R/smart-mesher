@@ -177,6 +177,11 @@ pub fn unfold(m: &Model, t: &dyn TopologyView, spec: &UnfoldSpec) -> Result<Unfo
     let pg = point_group(&point, MAX_GROUP_ORDER)?;
     let mut shifts = vec![Transform::IDENTITY];
     for (_, tr, n) in &tiles {
+        // Bound the element count before allocating (u32::MAX repeats must not allocate).
+        let total = shifts.len().checked_mul(*n as usize).and_then(|c| c.checked_mul(pg.len()));
+        if total.is_none_or(|c| c > MAX_GROUP_ORDER) {
+            return Err(ModelError::GroupNotFinite { limit: MAX_GROUP_ORDER });
+        }
         let mut next = Vec::with_capacity(shifts.len() * *n as usize);
         for s in &shifts {
             let mut cur = *s;
@@ -186,9 +191,6 @@ pub fn unfold(m: &Model, t: &dyn TopologyView, spec: &UnfoldSpec) -> Result<Unfo
             }
         }
         shifts = next;
-        if shifts.len() * pg.len() > MAX_GROUP_ORDER {
-            return Err(ModelError::GroupNotFinite { limit: MAX_GROUP_ORDER });
-        }
     }
     let mut elems: Vec<Transform> = Vec::with_capacity(shifts.len() * pg.len());
     for s in &shifts {

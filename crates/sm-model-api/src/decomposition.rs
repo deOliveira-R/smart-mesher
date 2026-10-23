@@ -12,7 +12,9 @@
 //! ids, which belong to the topology overlay); the part of a model face that straddles a cut is
 //! [`PieceFace::Part`], the key the mesh classifier uses.
 //!
-//! Limitation: a cut face of a parent is inherited by both children of a further split.
+//! A cut face of a parent that straddles a further split is inherited by both children as
+//! [`PieceFace::CutPart`] (distinct keys); [`Model::split_sides`] lets the caller say which child
+//! gets a parent cut face whole.
 
 use crate::error::{ModelError, Result, expect_kind};
 use crate::model::Model;
@@ -70,6 +72,17 @@ pub enum PieceFace {
         /// Which side of the cut this piece is on.
         side: Keep,
     },
+    /// The part of a cut face that straddles a later cut and bounds `piece` (the analogue of
+    /// [`PieceFace::Part`] for virtual faces). Two grandchildren that both touch an earlier
+    /// cut face carry distinct `CutPart` keys, so the key is never ambiguous.
+    CutPart {
+        /// The earlier cut.
+        cut: CutId,
+        /// Which side of that cut the piece is on.
+        side: Keep,
+        /// The piece it bounds.
+        piece: EntityId,
+    },
 }
 
 impl PieceFace {
@@ -77,7 +90,7 @@ impl PieceFace {
     pub fn base(&self) -> Option<EntityId> {
         match self {
             PieceFace::Whole(f) | PieceFace::Part { face: f, .. } => Some(*f),
-            PieceFace::Cut { .. } => None,
+            PieceFace::Cut { .. } | PieceFace::CutPart { .. } => None,
         }
     }
 }
@@ -141,6 +154,29 @@ pub struct Decomposition {
     pub(crate) by_volume: BTreeMap<EntityId, SmallVec<[PieceRef; 4]>>,
     pub(crate) by_face: BTreeMap<EntityId, SmallVec<[PieceRef; 2]>>,
     pub(crate) cut_serial: u32,
+    /// Faces of the `Whole` members of each composite (captured when it is formed).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) whole_faces: BTreeMap<EntityId, Vec<EntityId>>,
+}
+
+fn cut_key(pf: &PieceFace) -> Option<(CutId, Keep)> {
+    match pf {
+        PieceFace::Cut { cut, side } | PieceFace::CutPart { cut, side, .. } => Some((*cut, *side)),
+        _ => None,
+    }
+}
+
+/// How the faces of a piece fall on the two sides of a new cut (see [`Model::split_sides`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitSides<'a> {
+    /// Model faces bounding the negative part (a face also in `pos` straddles the cut).
+    pub neg: &'a [EntityId],
+    /// Model faces bounding the positive part.
+    pub pos: &'a [EntityId],
+    /// Parent cut faces `(cut, side)` bounding the negative part.
+    pub neg_cuts: &'a [(CutId, Keep)],
+    /// Parent cut faces bounding the positive part.
+    pub pos_cuts: &'a [(CutId, Keep)],
 }
 
 fn whole_volume(p: &PieceRef) -> Option<EntityId> {
@@ -185,6 +221,19 @@ impl Decomposition {
         }
     }
 
+    /// The first `(volume, face)` for which a piece lists a model face that `changed` reports
+    /// as changed (used to refuse topology edits that would leave piece face lists stale).
+    pub(crate) fn find_stale_face(&self, changed: impl Fn(EntityId) -> bool) -> Option<(EntityId, EntityId)> {
+        for c in self.cells.values() {
+            let own = c.faces.iter().filter_map(PieceFace::base);
+            let whole = self.whole_faces.get(&c.id).into_iter().flatten().copied();
+            if let Some(f) = own.chain(whole).find(|f| changed(*f)) {
+                return Some((c.volume, f));
+            }
+        }
+        None
+    }
+
     /// Volumes that have any decomposition structure.
     pub fn decomposed_volumes(&self) -> BTreeSet<EntityId> {
         self.splits.keys().chain(self.consumed.iter()).filter_map(whole_volume).collect()
@@ -214,11 +263,66 @@ impl Decomposition {
         }
     }
 
+    /// Leaves of the cut tree below `p`. Iterative with a visited set, so a cyclic tree from
+    /// untrusted data cannot recurse without bound (it is reported by `check_integrity`).
     fn leaves(&self, p: PieceRef, out: &mut Vec<PieceRef>) {
-        match self.splits.get(&p) {
-            None => out.push(p),
-            Some(rec) => rec.children.iter().for_each(|c| self.leaves(PieceRef::Cell(*c), out)),
+        let mut seen: BTreeSet<PieceRef> = BTreeSet::new();
+        let mut stack = vec![p];
+        while let Some(q) = stack.pop() {
+            if !seen.insert(q) {
+                continue;
+            }
+            match self.splits.get(&q) {
+                None => out.push(q),
+                // Children pushed in reverse so the negative child is visited first.
+                Some(rec) => stack.extend(rec.children.iter().rev().map(|c| PieceRef::Cell(*c))),
+            }
         }
+    }
+
+    /// Structural checks for data that did not come through the mutators (deserialization):
+    /// every split has two existing children that point back to it, the cut trees are acyclic,
+    /// and composites refer to existing members.
+    pub(crate) fn check_integrity(&self) -> Result<()> {
+        let bad = |what: String| Err(ModelError::Invalid(format!("decomposition: {what}")));
+        for (parent, rec) in &self.splits {
+            for c in rec.children {
+                if !self.cells.contains_key(&c) {
+                    return bad(format!("split child {c} has no row"));
+                }
+                if self.parent.get(&c) != Some(parent) {
+                    return bad(format!("split child {c} does not point back to its parent"));
+                }
+                if PieceRef::Cell(c) == *parent {
+                    return bad(format!("piece {c} is its own child"));
+                }
+            }
+        }
+        for (c, p) in &self.parent {
+            // Walking up must reach a root within `cells.len()` steps.
+            let mut cur = *p;
+            for _ in 0..=self.cells.len() {
+                match cur {
+                    PieceRef::Cell(x) if x == *c => return bad(format!("cut tree has a cycle through {c}")),
+                    PieceRef::Cell(x) => match self.parent.get(&x) {
+                        Some(up) => cur = *up,
+                        None => break,
+                    },
+                    PieceRef::Whole(_) => break,
+                }
+            }
+        }
+        for c in &self.composites {
+            let Some(row) = self.cells.get(c) else { return bad(format!("composite {c} has no row")) };
+            for m in &row.members {
+                if let PieceRef::Cell(x) = m
+                    && !self.cells.contains_key(x)
+                {
+                    return bad(format!("composite {c} has an unknown member {x}"));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn volume_of(&self, p: PieceRef) -> Option<EntityId> {
@@ -251,7 +355,13 @@ impl Decomposition {
         let mut by_face: BTreeMap<EntityId, SmallVec<[PieceRef; 2]>> = BTreeMap::new();
         for c in self.active_cells() {
             let faces: Vec<PieceFace> = match self.cells.get(&c) {
-                Some(p) if !p.members.is_empty() => p.members.iter().filter_map(|m| if let PieceRef::Cell(x) = m { self.cells.get(x) } else { None }).flat_map(|m| m.faces.iter().copied()).collect(),
+                Some(p) if !p.members.is_empty() => p
+                    .members
+                    .iter()
+                    .filter_map(|m| if let PieceRef::Cell(x) = m { self.cells.get(x) } else { None })
+                    .flat_map(|m| m.faces.iter().copied())
+                    .chain(self.whole_faces.get(&c).into_iter().flatten().map(|f| PieceFace::Whole(*f)))
+                    .collect(),
                 Some(p) => p.faces.clone(),
                 None => continue,
             };
@@ -276,8 +386,19 @@ impl Model {
     /// Split the active piece `piece` in two along `cut`. `neg` and `pos` are the model faces
     /// that bound the negative and positive part; a face in both straddles the cut (each child
     /// gets a [`PieceFace::Part`]). Every model face of the piece must be in at least one of them.
-    /// Returns `[negative, positive]` ids. Colors are untouched by construction.
+    /// Cut faces of the parent are assumed to straddle the new cut (both children get a
+    /// [`PieceFace::CutPart`]); use [`Model::split_sides`] to classify them. Returns
+    /// `[negative, positive]` ids. Colors are untouched by construction.
     pub fn split(&mut self, piece: PieceRef, cut: CutGeometry, neg: &[EntityId], pos: &[EntityId], t: &dyn TopologyView) -> Result<[EntityId; 2]> {
+        let parent_cuts: Vec<(CutId, Keep)> = self.decomposition.piece_faces(piece, t).iter().filter_map(cut_key).collect();
+        self.split_sides(piece, cut, &SplitSides { neg, pos, neg_cuts: &parent_cuts, pos_cuts: &parent_cuts }, t)
+    }
+
+    /// Like [`Model::split`], also classifying the parent's cut faces: a `(cut, side)` listed only
+    /// in `neg_cuts` bounds the negative child alone, one listed in both straddles the new cut
+    /// (each child gets a [`PieceFace::CutPart`]). Every cut face of the parent must be listed.
+    pub fn split_sides(&mut self, piece: PieceRef, cut: CutGeometry, sides: &SplitSides<'_>, t: &dyn TopologyView) -> Result<[EntityId; 2]> {
+        let (neg, pos) = (sides.neg, sides.pos);
         let d = &self.decomposition;
         if !d.is_active(piece) {
             return Err(ModelError::Invalid("only an active, non-composite piece can be split".into()));
@@ -303,17 +424,30 @@ impl Model {
         if let Some(f) = bases.iter().find(|f| !neg.contains(f) && !pos.contains(f)) {
             return Err(ModelError::Invalid(format!("face {f} of the piece is on neither side of the cut")));
         }
+        let parent_cuts: BTreeSet<(CutId, Keep)> = parent_faces.iter().filter_map(cut_key).collect();
+        if let Some(k) = sides.neg_cuts.iter().chain(sides.pos_cuts).find(|k| !parent_cuts.contains(k)) {
+            return Err(ModelError::Invalid(format!("{k:?} is not a cut face of the piece")));
+        }
+        if let Some(k) = parent_cuts.iter().find(|k| !sides.neg_cuts.contains(k) && !sides.pos_cuts.contains(k)) {
+            return Err(ModelError::Invalid(format!("cut face {k:?} of the piece is on neither side of the new cut")));
+        }
         let before = self.coloring_fingerprint();
         let n_id = self.ids.alloc(EntityKind::PartitionCell)?;
         let p_id = self.ids.alloc(EntityKind::PartitionCell)?;
         let d = &mut self.decomposition;
         let cut_id = CutId(d.cut_serial);
         d.cut_serial += 1;
-        let mk = |child: EntityId, mine: &[EntityId], other: &[EntityId], side: Keep| {
+        let mk = |child: EntityId, mine: &[EntityId], other: &[EntityId], mine_cuts: &[(CutId, Keep)], other_cuts: &[(CutId, Keep)], side: Keep| {
             let mut faces: Vec<PieceFace> = Vec::new();
             for pf in &parent_faces {
                 match pf {
-                    PieceFace::Cut { .. } => faces.push(*pf),
+                    PieceFace::Cut { cut, side } | PieceFace::CutPart { cut, side, .. } => {
+                        let key = (*cut, *side);
+                        if mine_cuts.contains(&key) {
+                            let straddles = other_cuts.contains(&key) || matches!(pf, PieceFace::CutPart { .. });
+                            faces.push(if straddles { PieceFace::CutPart { cut: *cut, side: *side, piece: child } } else { *pf });
+                        }
+                    }
                     PieceFace::Whole(f) | PieceFace::Part { face: f, .. } => {
                         if mine.contains(f) {
                             let straddles = other.contains(f) || matches!(pf, PieceFace::Part { .. });
@@ -327,7 +461,8 @@ impl Model {
             faces.dedup();
             Piece { id: child, volume, faces, shape: PieceShape::Any, members: Vec::new() }
         };
-        let (np, pp) = (mk(n_id, neg, pos, Keep::Negative), mk(p_id, pos, neg, Keep::Positive));
+        let np = mk(n_id, neg, pos, sides.neg_cuts, sides.pos_cuts, Keep::Negative);
+        let pp = mk(p_id, pos, neg, sides.pos_cuts, sides.neg_cuts, Keep::Positive);
         d.cells.insert(n_id, np);
         d.cells.insert(p_id, pp);
         d.splits.insert(piece, SplitRec { children: [n_id, p_id], cut: cut_id, geometry: cut });
@@ -339,8 +474,9 @@ impl Model {
     }
 
     /// Merge active, same-colored pieces into one composite piece (internal cuts vanish). The
-    /// members stay in the tree but are covered by the composite.
-    pub fn composite(&mut self, pieces: &[PieceRef]) -> Result<EntityId> {
+    /// members stay in the tree but are covered by the composite. `t` supplies the faces of
+    /// members that are whole volumes, so [`Model::pieces_of_face`] finds the composite.
+    pub fn composite(&mut self, pieces: &[PieceRef], t: &dyn TopologyView) -> Result<EntityId> {
         if pieces.len() < 2 {
             return Err(ModelError::Invalid("a composite needs at least two pieces".into()));
         }
@@ -361,6 +497,12 @@ impl Model {
         let volume = pieces.iter().filter_map(|p| self.decomposition.volume_of(*p)).min().ok_or(ModelError::Invalid("unknown piece".into()))?;
         let id = self.ids.alloc(EntityKind::PartitionCell)?;
         let d = &mut self.decomposition;
+        let mut wf: Vec<EntityId> = pieces.iter().filter_map(whole_volume).flat_map(|v| t.volume_faces(v).iter().copied()).collect();
+        wf.sort();
+        wf.dedup();
+        if !wf.is_empty() {
+            d.whole_faces.insert(id, wf);
+        }
         d.cells.insert(id, Piece { id, volume, faces: Vec::new(), shape: PieceShape::Any, members: pieces.to_vec() });
         d.composites.insert(id);
         d.consumed.extend(pieces.iter().copied());
@@ -374,6 +516,7 @@ impl Model {
         if !d.composites.remove(&composite) {
             return Err(ModelError::Unknown(composite));
         }
+        d.whole_faces.remove(&composite);
         if let Some(p) = d.cells.remove(&composite) {
             for m in p.members {
                 d.consumed.remove(&m);
@@ -424,8 +567,9 @@ impl Model {
         self.decomposition.by_volume.get(&v).cloned().unwrap_or_else(|| SmallVec::from_slice(&[PieceRef::Whole(v)]))
     }
 
-    /// The active decomposed pieces bounded by model face `f` (indexed). Faces of volumes that
-    /// are not decomposed are not listed; see [`Model::pieces_of_face_in`].
+    /// The active decomposed pieces bounded by model face `f` (indexed), composites of whole
+    /// volumes included. Faces of volumes that are not decomposed are not listed; see
+    /// [`Model::pieces_of_face_in`].
     pub fn pieces_of_face(&self, f: EntityId) -> SmallVec<[PieceRef; 2]> {
         self.decomposition.by_face.get(&f).cloned().unwrap_or_default()
     }

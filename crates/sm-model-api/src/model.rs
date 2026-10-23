@@ -42,8 +42,13 @@ impl IdAlloc {
 }
 
 /// The model-semantics and decomposition layers.
+///
+/// With the `serde` feature, deserialization runs [`Model::check_integrity`], so a model read
+/// from untrusted data cannot hold cyclic cut trees, rows under the wrong kind or a reset id
+/// allocator.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "ModelData"))]
 pub struct Model {
     pub(crate) ids: IdAlloc,
     pub(crate) colors: BTreeMap<EntityId, ColorRow>,
@@ -57,6 +62,48 @@ pub struct Model {
     pub(crate) cuts: Vec<Vec<Lineage>>,
     pub(crate) instancing: Instancing,
     pub(crate) decomposition: Decomposition,
+}
+
+/// Wire shape of [`Model`]; converted through [`Model::check_integrity`].
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct ModelData {
+    ids: IdAlloc,
+    colors: BTreeMap<EntityId, ColorRow>,
+    volume_color: BTreeMap<EntityId, EntityId>,
+    face_color: BTreeMap<EntityId, EntityId>,
+    groups: BTreeMap<EntityId, GroupRow>,
+    boundaries: BTreeMap<EntityId, BoundaryRow>,
+    face_boundary: BTreeMap<EntityId, FaceBoundary>,
+    symmetry: Option<Symmetry>,
+    provenance: Vec<Provenance>,
+    cuts: Vec<Vec<Lineage>>,
+    instancing: Instancing,
+    decomposition: Decomposition,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<ModelData> for Model {
+    type Error = ModelError;
+
+    fn try_from(d: ModelData) -> Result<Self> {
+        let m = Model {
+            ids: d.ids,
+            colors: d.colors,
+            volume_color: d.volume_color,
+            face_color: d.face_color,
+            groups: d.groups,
+            boundaries: d.boundaries,
+            face_boundary: d.face_boundary,
+            symmetry: d.symmetry,
+            provenance: d.provenance,
+            cuts: d.cuts,
+            instancing: d.instancing,
+            decomposition: d.decomposition,
+        };
+        m.check_integrity()?;
+        Ok(m)
+    }
 }
 
 /// Transitive lineage resolution: old id -> live descendants.
@@ -158,6 +205,55 @@ impl Model {
         Self::default()
     }
 
+    /// Structural integrity of tables that did not necessarily come through the mutators (for
+    /// example after deserialization): row ids match their keys and kinds, the id allocator is
+    /// ahead of every minted id (ids are never reused), layouts are bounded, lattices are acyclic
+    /// and cut trees are well-formed. Geometry-dependent checks are [`crate::validate()`]'s.
+    pub fn check_integrity(&self) -> Result<()> {
+        let bad = |what: String| Err(ModelError::Invalid(format!("model integrity: {what}")));
+        let mut minted: Vec<EntityId> = Vec::new();
+        for (k, r) in &self.colors {
+            if r.id != *k || k.kind() != EntityKind::Color {
+                return bad(format!("color row {k} is mis-keyed"));
+            }
+            minted.push(*k);
+        }
+        for (k, r) in &self.groups {
+            if r.id != *k || k.kind() != EntityKind::Group {
+                return bad(format!("group row {k} is mis-keyed"));
+            }
+            minted.push(*k);
+        }
+        for (k, r) in &self.boundaries {
+            if r.id != *k || k.kind() != EntityKind::Boundary {
+                return bad(format!("boundary row {k} is mis-keyed"));
+            }
+            minted.push(*k);
+        }
+        let ins = &self.instancing;
+        for (ks, kind) in [(ins.prototypes.keys().collect::<Vec<_>>(), EntityKind::Prototype), (ins.lattices.keys().collect(), EntityKind::Lattice), (ins.instances.keys().collect(), EntityKind::Instance), (self.decomposition.cells.keys().collect(), EntityKind::PartitionCell)] {
+            for k in ks {
+                if k.kind() != kind {
+                    return bad(format!("{k} is stored under the wrong kind"));
+                }
+                minted.push(*k);
+            }
+        }
+        if let Some(k) = minted.iter().find(|k| self.ids.peek(k.kind()) <= k.serial()) {
+            return bad(format!("the id allocator would reuse {k}"));
+        }
+        for l in ins.lattices.values() {
+            l.layout.check()?;
+            if let Some(ix) = l.slots.keys().find(|ix| !l.layout.contains(**ix)) {
+                return bad(format!("slot {ix:?} is outside its layout"));
+            }
+        }
+        if let Some(l) = ins.find_cycle() {
+            return Err(ModelError::Cycle(l));
+        }
+        self.decomposition.check_integrity()
+    }
+
     /// The id allocator state (read only).
     pub fn ids(&self) -> &IdAlloc {
         &self.ids
@@ -170,14 +266,19 @@ impl Model {
     /// moments under the deck transform. Entities with no live descendant vanish from the tables.
     /// Transactional: on error the model is unchanged.
     ///
-    /// Volumes with an active decomposition must be undone first
-    /// ([`ModelError::DecompositionActive`]).
+    /// Volumes with an active decomposition, or whose faces are listed by a piece, must be
+    /// undone first ([`ModelError::DecompositionActive`]).
     pub fn apply_lineage(&mut self, lineage: &[Lineage], t: &dyn TopologyView) -> Result<()> {
         let r = Resolver::new(lineage);
         if r.is_empty() {
             return Ok(());
         }
         if let Some(v) = self.decomposition.decomposed_volumes().into_iter().find(|v| r.changed(*v)) {
+            return Err(ModelError::DecompositionActive(v));
+        }
+        // A face of a decomposed volume may change while the volume id stays: the piece face
+        // lists would go stale silently.
+        if let Some((v, _)) = self.decomposition.find_stale_face(|f| r.changed(f)) {
             return Err(ModelError::DecompositionActive(v));
         }
         let mut next = self.clone();
@@ -248,7 +349,7 @@ impl Model {
                 };
                 let side = |s| -> Vec<EntityId> { out.iter().filter(|(_, fb)| fb.boundary == b && matches!(fb.role, FaceRole::Deck { side, .. } if side == s)).map(|(f, _)| *f).collect() };
                 let (a_faces, b_faces) = (side(crate::boundary::DeckSide::A), side(crate::boundary::DeckSide::B));
-                let pairs = pair_by_moments(&mut cache, &a_faces, &b_faces, &deck.transform(), &tol).map_err(|e| ModelError::CutInvalid(format!("deck {b}: {e}")))?;
+                let pairs = pair_by_moments(&mut cache, &a_faces, &b_faces, &deck.transform(), &tol).map_err(|e| ModelError::CutInvalid(format!("deck {b}: {e}; the cut removed or changed the partner of a paired face (a deck pair must be cut symmetrically, or unassigned first)")))?;
                 for (x, y) in pairs {
                     out.insert(x, FaceBoundary { boundary: b, role: FaceRole::Deck { side: crate::boundary::DeckSide::A, mate: Some(y) } });
                     out.insert(y, FaceBoundary { boundary: b, role: FaceRole::Deck { side: crate::boundary::DeckSide::B, mate: Some(x) } });

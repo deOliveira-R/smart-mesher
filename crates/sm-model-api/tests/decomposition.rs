@@ -105,18 +105,18 @@ fn composite_merges_same_colored_pieces_only() {
     m.color_volumes(red, &[a.volume, b.volume]).unwrap();
     m.color_volumes(blue, &[c.volume]).unwrap();
     finish_boundaries(&mut m, &t, 7, true);
-    let comp = m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(b.volume)]).unwrap();
+    let comp = m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(b.volume)], &t).unwrap();
     assert_eq!(m.pieces_of_volume(a.volume).as_slice(), &[PieceRef::Cell(comp)]);
     assert_eq!(m.pieces_of_volume(b.volume).as_slice(), &[PieceRef::Cell(comp)]);
     assert_eq!(m.piece_color(PieceRef::Cell(comp)), Some(red));
-    assert!(m.composite(&[PieceRef::Cell(comp), PieceRef::Whole(c.volume)]).is_err(), "mixed colors");
-    assert!(m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(c.volume)]).is_err(), "a is covered already");
+    assert!(m.composite(&[PieceRef::Cell(comp), PieceRef::Whole(c.volume)], &t).is_err(), "mixed colors");
+    assert!(m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(c.volume)], &t).is_err(), "a is covered already");
     assert!(m.split(PieceRef::Cell(comp), cut_plane(), &a.faces, &a.faces, &t).is_err(), "composites are not split");
     assert!(validate(&m, &t, Tolerance::default()).is_ok());
     m.uncomposite(comp).unwrap();
     assert_eq!(m.pieces_of_volume(a.volume).as_slice(), &[PieceRef::Whole(a.volume)]);
     // Recoloring one member afterwards makes a stale composite visible.
-    let comp2 = m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(b.volume)]).unwrap();
+    let comp2 = m.composite(&[PieceRef::Whole(a.volume), PieceRef::Whole(b.volume)], &t).unwrap();
     m.color_volumes(blue, &[b.volume]).unwrap();
     assert!(validate(&m, &t, Tolerance::default()).has(IssueCode::DecompositionChangedColoring));
     assert_eq!(m.piece_color(PieceRef::Cell(comp2)), None);

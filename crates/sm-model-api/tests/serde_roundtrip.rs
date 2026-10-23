@@ -58,3 +58,31 @@ fn model_and_results_round_trip() {
     rt(&Turns::new(5, 6).unwrap());
     rt(&Provenance::Detected(Verification::Rejected { stage: Stage::Faces, residual: 0.5, reason: "x".into() }));
 }
+
+#[test]
+fn tampered_models_are_rejected_not_looped_on() {
+    let mut t = CellComplex::new();
+    let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])).unwrap();
+    let mut m = Model::new();
+    let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
+    m.color_volumes(mat, &[b.volume]).unwrap();
+    let all = b.faces.to_vec();
+    m.split(PieceRef::Whole(b.volume), CutGeometry::Plane(Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.5).unwrap()), &all, &all, &t).unwrap();
+    let good = serde_json::to_value(&m).unwrap();
+    assert_eq!(serde_json::from_value::<Model>(good.clone()).unwrap(), m);
+
+    // A reset id allocator would reuse ids.
+    let mut reset = good.clone();
+    reset["ids"] = serde_json::json!({ "next": {} });
+    let e = serde_json::from_value::<Model>(reset).unwrap_err().to_string();
+    assert!(e.contains("reuse"), "{e}");
+
+    // A split record whose child is itself a parent of its own parent.
+    let mut cyc = good.clone();
+    let splits = cyc["decomposition"]["splits"].as_array_mut().unwrap();
+    let rec = splits[0][1].clone();
+    let child = rec["children"][0].clone();
+    splits.push(serde_json::json!([{ "Cell": child }, rec]));
+    let e = serde_json::from_value::<Model>(cyc).unwrap_err().to_string();
+    assert!(e.contains("decomposition"), "{e}");
+}

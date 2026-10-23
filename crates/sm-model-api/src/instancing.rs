@@ -123,9 +123,16 @@ pub enum Layout {
     },
 }
 
+/// Largest slot count a stored [`Layout`] may have.
+pub const MAX_LAYOUT_SLOTS: usize = 1 << 22;
+
 impl Layout {
-    /// All in-range slots in canonical order `(k, j, i)`.
+    /// All in-range slots in canonical order `(k, j, i)`. Empty for a layout over
+    /// [`MAX_LAYOUT_SLOTS`] (such a layout cannot be stored in a model).
     pub fn indices(&self) -> Vec<SlotIx> {
+        if self.slot_count_checked().is_none() {
+            return Vec::new();
+        }
         let mut v = Vec::new();
         match *self {
             Layout::Cartesian { n, .. } => {
@@ -153,12 +160,24 @@ impl Layout {
         v
     }
 
-    /// Number of in-range slots.
+    /// Number of in-range slots (saturating at `usize::MAX`).
     pub fn slot_count(&self) -> usize {
+        self.slot_count_u128().try_into().unwrap_or(usize::MAX)
+    }
+
+    fn slot_count_u128(&self) -> u128 {
         match *self {
-            Layout::Cartesian { n, .. } => n.iter().map(|x| *x as usize).product(),
-            Layout::Hex { rings, nz, .. } => (3 * rings as usize * (rings as usize).saturating_sub(1) + 1) * nz as usize,
+            Layout::Cartesian { n, .. } => n.iter().map(|x| u128::from(*x)).product(),
+            Layout::Hex { rings, nz, .. } => {
+                let r = u128::from(rings);
+                (3 * r * r.saturating_sub(1) + 1) * u128::from(nz)
+            }
         }
+    }
+
+    /// The slot count if it is within [`MAX_LAYOUT_SLOTS`].
+    fn slot_count_checked(&self) -> Option<usize> {
+        usize::try_from(self.slot_count_u128()).ok().filter(|n| *n <= MAX_LAYOUT_SLOTS)
     }
 
     /// True if `ix` is inside the layout.
@@ -188,12 +207,18 @@ impl Layout {
         }
     }
 
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         let ok = match *self {
             Layout::Cartesian { n, pitch } => n.iter().all(|d| *d >= 1) && [pitch.x, pitch.y, pitch.z].iter().all(|p| p.is_finite()),
             Layout::Hex { rings, nz, pitch, dz, .. } => rings >= 1 && nz >= 1 && pitch.is_finite() && dz.is_finite(),
         };
-        if ok { Ok(()) } else { Err(ModelError::Invalid("lattice layout needs at least one slot per axis and finite pitches".into())) }
+        if !ok {
+            return Err(ModelError::Invalid("lattice layout needs at least one slot per axis and finite pitches".into()));
+        }
+        if self.slot_count_checked().is_none() {
+            return Err(ModelError::Invalid(format!("lattice layout has more than {MAX_LAYOUT_SLOTS} slots")));
+        }
+        Ok(())
     }
 }
 
@@ -309,6 +334,9 @@ pub struct Instancing {
 }
 
 const MAX_DEPTH: usize = 64;
+
+/// Largest number of volume copies [`flatten`] will produce.
+pub const MAX_FLAT_ENTRIES: usize = 1 << 24;
 
 impl Instancing {
     /// A lattice that is (transitively) its own descendant, if any.
@@ -533,9 +561,21 @@ impl FlatModel {
         &self.placements[e.placement as usize]
     }
 
-    /// FNV-1a fingerprint of the whole result (paths, placements, volumes, colors), for
-    /// determinism tests and cache keys. Bit-exact on one platform.
+    /// FNV-1a fingerprint of the whole result (paths, placements, volumes, colors) over the raw
+    /// `f64` bits of the placements. Bit-exact on **one platform only**; use
+    /// [`FlatModel::fingerprint_quantized`] for a cross-platform hash.
     pub fn fingerprint(&self) -> u64 {
+        self.fingerprint_with(|v| v.to_bits())
+    }
+
+    /// Cross-platform fingerprint: placement numbers are quantized with the step
+    /// `linear * 2^-10` (the Q2 rule, `linear` = the model's linear tolerance) before hashing.
+    pub fn fingerprint_quantized(&self, linear: f64) -> u64 {
+        let q = linear.abs().max(1e-300) * (1.0 / 1024.0);
+        self.fingerprint_with(|v| (v / q).round() as i64 as u64)
+    }
+
+    fn fingerprint_with(&self, num: impl Fn(f64) -> u64) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         let mut eat = |x: u64| {
             for b in x.to_le_bytes() {
@@ -562,7 +602,7 @@ impl FlatModel {
             }
         }
         for pl in &self.placements {
-            pl.transform.m.iter().flatten().chain([&pl.transform.t.x, &pl.transform.t.y, &pl.transform.t.z]).for_each(|v| eat(v.to_bits()));
+            pl.transform.m.iter().flatten().chain([&pl.transform.t.x, &pl.transform.t.y, &pl.transform.t.z]).for_each(|v| eat(num(*v)));
             eat(u64::from(pl.orientation_reversed));
         }
         for e in &self.entries {
@@ -589,6 +629,9 @@ impl<'a> Walk<'a> {
             Fill::Void => {}
             Fill::Prototype(p) => {
                 let proto = self.m.instancing.prototypes.get(&p).ok_or(ModelError::Unknown(p))?;
+                if self.out.entries.len().saturating_add(proto.volumes.len()) > MAX_FLAT_ENTRIES {
+                    return Err(ModelError::Invalid(format!("flattening would exceed {MAX_FLAT_ENTRIES} entries")));
+                }
                 let pix = self.out.paths.len() as u32;
                 let plix = self.out.placements.len() as u32;
                 let overrides = self.m.matching_overrides(path);

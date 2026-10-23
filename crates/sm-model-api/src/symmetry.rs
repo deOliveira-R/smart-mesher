@@ -81,7 +81,7 @@ pub fn plan_cut(spec: &CutSpec) -> Result<CutPlan> {
             roles.extend([DeckSide::A, DeckSide::B]);
         }
         Deck::Rotation { axis, angle } => {
-            if angle.num * 2 >= angle.den as i32 {
+            if i64::from(angle.num) * 2 >= i64::from(angle.den) {
                 return Err(ModelError::Invalid("a wedge must span less than half a turn".into()));
             }
             let a = axis.dir;
@@ -104,6 +104,17 @@ pub fn plan_cut(spec: &CutSpec) -> Result<CutPlan> {
         }
     }
     Ok(CutPlan { half_spaces, roles, spec: *spec })
+}
+
+/// A hand-built [`CutPlan`] must have the shape `plan_cut` gives its deck: one self-paired
+/// half-space for a mirror, an `A`/`B` pair for a translation or rotation.
+fn check_plan_shape(plan: &CutPlan) -> Result<()> {
+    plan.spec.deck.check()?;
+    let want: &[DeckSide] = if plan.spec.deck.is_self_paired() { &[DeckSide::SelfPaired] } else { &[DeckSide::A, DeckSide::B] };
+    if plan.half_spaces.len() != want.len() || plan.roles.as_slice() != want {
+        return Err(ModelError::Invalid(format!("cut plan has {} half-spaces and roles {:?}; a {} needs {} with roles {:?}", plan.half_spaces.len(), plan.roles, if want.len() == 1 { "mirror" } else { "slab or wedge" }, want.len(), want)));
+    }
+    Ok(())
 }
 
 /// The symmetry record (at most one per model).
@@ -224,22 +235,27 @@ impl Model {
     }
 
     fn declare_with(&mut self, gens: &[EntityId], t: &dyn TopologyView, p: Provenance) -> Result<()> {
-        let mut point = Vec::new();
         for (i, g) in gens.iter().enumerate() {
             expect_kind(*g, EntityKind::Boundary)?;
             let row = self.boundaries.get(g).ok_or(ModelError::Unknown(*g))?;
-            let Some(d) = row.kind.as_deck() else { return Err(ModelError::Invalid(format!("{g} is not a deck boundary"))) };
+            if row.kind.as_deck().is_none() {
+                return Err(ModelError::Invalid(format!("{g} is not a deck boundary")));
+            }
             if gens[..i].contains(g) {
                 return Err(ModelError::Duplicate(*g));
             }
-            if d.order().is_some() {
-                point.push(d.transform());
-            }
         }
-        point_group(&point, MAX_GROUP_ORDER)?;
+        self.check_point_closure(gens)?;
         self.symmetry = Some(Symmetry { generators: gens.to_vec(), domain: t.cells(Dim::Volume).iter().copied().collect() });
         self.provenance.push(p);
         Ok(())
+    }
+
+    /// The point part (mirrors, rotations) of the deck generators `gens` must close into a finite
+    /// group; translations are not part of the closure.
+    fn check_point_closure(&self, gens: &[EntityId]) -> Result<()> {
+        let point: Vec<Transform> = gens.iter().filter_map(|g| self.boundaries.get(g)?.kind.as_deck()).filter(|d| d.order().is_some()).map(Deck::transform).collect();
+        point_group(&point, MAX_GROUP_ORDER).map(|_| ())
     }
 
     /// The lineage of every applied cut, oldest first.
@@ -259,6 +275,7 @@ impl Model {
     /// deck) and records [`Provenance::Cut`]. Returns the deck boundary of the caps.
     pub fn apply_cut(&mut self, plan: &CutPlan, out: &CutOutcome, cap_color: Option<EntityId>, t: &dyn TopologyView) -> Result<EntityId> {
         let tol = Tolerance::of(t);
+        check_plan_shape(plan)?;
         let mut next = self.clone();
         next.apply_lineage(&out.lineage, t)?;
         let mut cache = GeomCache::new(t);
@@ -282,7 +299,7 @@ impl Model {
                 None => return Err(ModelError::CutInvalid(format!("cap {} is off the planned planes", cap.face))),
             }
         }
-        // Kept volumes inside the half-spaces.
+        // Kept volumes inside the half-spaces: the centroid and every corner of every face.
         let domain: Vec<EntityId> = match &next.symmetry {
             Some(s) => s.domain.iter().copied().collect(),
             None => t.cells(Dim::Volume).to_vec(),
@@ -290,8 +307,14 @@ impl Model {
         for v in &domain {
             let m = cache.volume(*v).ok_or_else(|| ModelError::CutInvalid(format!("no moments for volume {v}")))?;
             let c = m.centroid().ok_or_else(|| ModelError::CutInvalid(format!("volume {v} is empty")))?;
-            if let Some(h) = plan.half_spaces.iter().find(|h| h.signed_distance(c) < -dist_tol) {
-                return Err(ModelError::CutInvalid(format!("volume {v} lies outside the kept half-space (normal {:?})", h.normal)));
+            let outside = |p: Point3| plan.half_spaces.iter().find(|h| h.signed_distance(p) < -dist_tol).map(|h| h.normal);
+            if let Some(n) = outside(c) {
+                return Err(ModelError::CutInvalid(format!("volume {v} lies outside the kept half-space (normal {n:?})")));
+            }
+            for f in t.volume_faces(*v) {
+                if let Some(n) = t.face_outline(*f).into_iter().find_map(outside) {
+                    return Err(ModelError::CutInvalid(format!("volume {v} has a corner outside the kept half-space (normal {n:?}); the kernel did not cut it")));
+                }
             }
         }
         // Tag caps.
@@ -324,6 +347,10 @@ impl Model {
                 }
             }
             None => next.symmetry = Some(Symmetry { generators: vec![b], domain: domain.iter().copied().collect() }),
+        }
+        // The point part of the generators must still close (e.g. two parallel mirror cuts do not).
+        if let Some(s) = &next.symmetry {
+            next.check_point_closure(&s.generators)?;
         }
         next.provenance.push(Provenance::Cut { spec: plan.spec });
         next.cuts.push(out.lineage.clone());
