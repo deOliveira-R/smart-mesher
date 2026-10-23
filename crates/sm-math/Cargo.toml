@@ -1,0 +1,15 @@
+[package]
+name = "sm-math"
+description = "Robust exact predicates (orient2d/3d, incircle/insphere), intervals and numeric utilities."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+thiserror = "2"
+
+[lints]
+workspace = true

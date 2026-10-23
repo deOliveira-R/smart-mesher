@@ -1,0 +1,16 @@
+[package]
+name = "sm-lang"
+description = "The smart-mesh command language: parser, entity lists, scripts, translation to Ops."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-op-api = { path = "../sm-op-api" }
+thiserror = "2"
+
+[lints]
+workspace = true

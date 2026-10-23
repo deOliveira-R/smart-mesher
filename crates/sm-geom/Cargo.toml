@@ -1,0 +1,17 @@
+[package]
+name = "sm-geom"
+description = "Geometry kernel: analytic and NURBS curves and surfaces, evaluation, projection and intersection."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-math = { path = "../sm-math" }
+sm-geom-api = { path = "../sm-geom-api" }
+thiserror = "2"
+
+[lints]
+workspace = true

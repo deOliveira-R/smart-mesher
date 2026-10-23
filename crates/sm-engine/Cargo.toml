@@ -1,0 +1,16 @@
+[package]
+name = "sm-engine"
+description = "Op registry, apply, timeline DAG, replay, snapshots and the project on-disk format."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-op-api = { path = "../sm-op-api" }
+thiserror = "2"
+
+[lints]
+workspace = true
