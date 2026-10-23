@@ -21,3 +21,9 @@ Sources: code.claude.com/docs/en/claude-code-on-the-web.md, cloud-environments.m
   - **A.** Orchestrator local (this session, running Workflow). Workers are cloud agents via `isolation: "remote"` if it works, otherwise via `claude --cloud` launched from a workflow agent's Bash.
   - **B.** Everything in one cloud session (only 4 vCPU), which is bad for fan-out.
   - Recommendation: **A**, after a smoke test of `isolation: "remote"`.
+
+## Verified (2026-10-23)
+- `claude --cloud "<task>"` works after `/web-setup` (token needs the `workflow` scope). It requires a TTY. From scripts, run `script -q /dev/null claude --cloud "<task>" < /dev/null`. It prints the session URL and returns immediately.
+- The cloud VM cloned the repo from GitHub, honored `rust-toolchain.toml` (installed 1.99.1), built and tested `sm-core`, and pushed a branch. Measured resources: 4 vCPU, 15 GB RAM, 31 GB free disk.
+- Completion signal: the pushed branch (poll `git ls-remote origin`).
+- `isolation: "remote"` on the Agent tool silently fell back to a local worktree. Don't use it.
