@@ -6,9 +6,12 @@ How we build `ARCHITECTURE.md` to `PARITY.md` with orchestrated agents.
 
 | Role | Model | Does |
 |---|---|---|
-| Orchestrator | Opus (main session) | Owns the `*-api` crates, workspace `Cargo.toml`, CI, and merges. Writes each wave's workflow script, reads the results, and decides the next wave. |
+| Orchestrator | Opus (main session) | Owns the `*-api` crates, workspace `Cargo.toml`, CI, and merges. Writes each wave's workflow script, reads the results, decides the next wave, and answers worker escalations. |
 | Workers | Sonnet | Implement one crate or one scheme against the frozen APIs, each in its own git worktree and branch. |
-| Advisors / judges / reviewers | Fable | Design panels, adversarial code review, numerical-correctness review, and API-gap critique. |
+| Reviewers / judges | Opus (inside workflows) | Adversarial code review, numerical-correctness review, design judging, API-gap critique. |
+| Advisor | Fable (orchestrator's `advisor` tool only) | Consulted by the orchestrator on hard calls. Never a workflow agent. |
+
+**Escalation:** a worker that wants a higher opinion sets `escalation: {question, context}` in its structured output and stops. The orchestrator answers between waves, consulting Fable when it's worth it, and re-runs the task.
 
 ## Rules that make parallelism safe
 
@@ -25,7 +28,7 @@ How we build `ARCHITECTURE.md` to `PARITY.md` with orchestrated agents.
 implement (Sonnet, worktree): commits on branch wave<N>/<crate>, returns {branch, sha, status}
   status ∈ {done, blocked_on_api}. blocked_on_api exits the pipeline at once with its api_change_request
   → gate (low effort): build/test/clippy/determinism   ──fail──┐
-  → adversarial review (Fable, 2 lenses:               │
+  → adversarial review (Opus, 2 lenses:               │
       correctness/numerics + contract/determinism)     │
   → fix loop (Sonnet), at most 3 rounds  ◄──────────────┘
   → result: {branch, status, test summary, api_change_requests, known_gaps}
@@ -37,7 +40,7 @@ Run as `pipeline(tasks, implement, gate, review, fix)` with no barrier: a fast c
 ```
 wave workflow:  pipeline(per-task harness)  →  orchestrator merges green branches
                 → integration agent: workspace build + cross-crate tests + milestone scenario
-                → completeness critic (Fable): "which PARITY items in this wave's scope are missing/untested?"
+                → completeness critic (Opus): "which PARITY items in this wave's scope are missing/untested?"
 orchestrator (between waves): resolve API change requests, bump APIs, update PARITY.md checkboxes, plan the next wave
 ```
 
@@ -47,7 +50,7 @@ The orchestrator reviews every wave before starting the next, so plans change ba
 
 ### W0: Contracts (orchestrator-heavy, gate for everything)
 0. Initial commit: docs, `CLAUDE.md` (binding rules, injected into every agent automatically), workspace skeleton.
-1. **Design panels, one per API**, run concurrently. Each panel has 3 Fable designers with different approaches, and each designer delivers **compiling Rust**: the api crate plus one stub implementor.
+1. **Design panels, one per API**, run concurrently. Each panel has 3 designers (Opus) with different approaches, and each designer delivers **compiling Rust**: the api crate plus one stub implementor.
    - `sm-geom-api` + `sm-topo-api` together, because they decide how topology references geometry (face → surface handle), the tolerance model, cellular non-manifold topology, FaceUse/Coedge, and IDs + lineage. **`sm-naming`'s P0 scope (stable IDs + lineage) folds into `sm-topo`**; selectors stay a W5 crate.
    - `sm-mesh-api`: mixed + polyhedral + high-order elements, ownership, CSR storage.
    - `sm-scheme-api`: built from `research/cubit-schemes.md` (vertex types, interval constraints, imposed child schemes, fallback chains, atomic multi-volume transforms).
@@ -55,7 +58,7 @@ The orchestrator reviews every wave before starting the next, so plans change ba
    Judges score each design by writing stubs that express 3–4 PARITY items against it (does it compile, and is it natural?). The orchestrator synthesizes from the winner and grafts in the best ideas from the other designs.
 2. **Orchestrator writes** `sm-math` core types, the final `*-api` crates, CI script, and skeletons for every crate in the map.
 3. **`sm-testkit` with real fixtures** (agents): analytic `ParametricSurface`/`ParametricCurve` impls (plane, cylinder, cone, sphere, torus), discretized boundary loops, small hex/tet/wedge/pyramid/polyhedral meshes, synthetic B-rep volumes (cube, cylinder, merged two-block), and property checkers. W1/W2 depend on these.
-4. **API gap critique, loop until dry** (parallel Fable reviewers, one per PARITY section): write stub code expressing every PARITY item. Any item that can't be expressed, or that needs a breaking change, is a gap and gets fixed in the API. Repeat until 2 rounds find no new gaps.
+4. **API gap critique, loop until dry** (parallel Opus reviewers, one per PARITY section): write stub code expressing every PARITY item. Any item that can't be expressed, or that needs a breaking change, is a gap and gets fixed in the API. Repeat until 2 rounds find no new gaps.
 
 ### W1: Foundations (about 10 parallel tasks)
 `sm-math` exact predicates · `sm-geom` analytic curves/surfaces · `sm-geom` NURBS · `sm-topo` arena + Euler ops + stable IDs/lineage · `sm-mesh` store + adjacency · `sm-engine` (op registry, timeline DAG, replay, snapshots, project on-disk format) · `sm-meshio` (.smsh + VTU) · `sm-lang` parser → Ops · `sm-quality` metrics · `sm-testkit` fixture expansion.

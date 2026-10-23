@@ -1,8 +1,8 @@
 graph BT
-  cad_io["cad-io<br/><small>STEP/IGES/STL/MCNP import-export into L0/L1</small>"]
-  exporters["exporters<br/><small>one sub-node per target (Exodus, OpenFOAM, DAGMC, VTKHDF, CGNS, Gmsh, MED, ...), each with a loss report</small>"]
+  cad_io["cad-io<br/><small>STEP (AP203/214/242), IGES, STL import; SAT (research: cq-acis as reference), CSG import (MCNP/OpenMC)</small>"]
+  exporters["exporters<br/><small>one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report</small>"]
   importers["importers<br/><small>mesh import (incl. mesh-based geometry)</small>"]
-  ir_store["ir-store<br/><small>native IR: schema, physical backend, versioning, validation hook</small>"]
+  ir_store["ir-store<br/><small>native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook</small>"]
   validator(["validator (mesh-db)"])
   ir_store -->|validator-api| validator
   face_intersect(["face-intersect (interfaces)"])
@@ -11,8 +11,8 @@ graph BT
   ir_store -->|distribution-api| partitioner
   discretization(["discretization (fields)"])
   ir_store -->|fields-api| discretization
-  attributes(["attributes (regions)"])
-  ir_store -->|attributes-api| attributes
+  tracking_structure(["tracking-structure (tracking)"])
+  ir_store -->|tracking-api| tracking_structure
   topo_store(["topo-store (topology)"])
   cad_io -->|topo-edit-api| topo_store
   exporters -->|ir-api (read)| ir_store

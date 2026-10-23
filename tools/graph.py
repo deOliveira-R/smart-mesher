@@ -91,7 +91,7 @@ if "--domain" in sys.argv:
 else:
     print("graph BT")
     for d, v in doms.items():
-        layers = ",".join(v["layers"])
+        layers = ",".join(v.get("layers", []))
         print(f'  {mid(d)}["{d} {("[" + layers + "]") if layers else ""}<br/><small>{v["summary"]}</small>"]')
     for a, b, _ in dom_edges:
         print(f"  {mid(a)} --> {mid(b)}")

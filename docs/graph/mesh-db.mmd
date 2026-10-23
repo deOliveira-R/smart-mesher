@@ -1,22 +1,25 @@
 graph BT
-  classification["classification<br/><small>Mesh entity -> (topology dim, id, params); closure rules</small>"]
+  classification["classification<br/><small>Mesh entity -> (model/partition entity, params); closure rules</small>"]
   mesh_geometry["mesh-geometry<br/><small>Coordinates, (shape, degree, basis) per cell, polyhedral face geometry rules</small>"]
-  mesh_hierarchy["mesh-hierarchy<br/><small>Instanced mesh view + flatten(); coarse-mesh slot with fine->coarse maps (CMFD); extrusion structure</small>"]
+  mesh_hierarchy["mesh-hierarchy<br/><small>Multiple meshes per model (fine/coarse for CMFD/AMG), inter-mesh maps, instanced view, symmetric unfold</small>"]
   mesh_store["mesh-store<br/><small>Face-first tables, oriented incidences, adjacency indexes, tags, stable ids</small>"]
-  validator["validator<br/><small>All cross-layer invariants (classification closure, region partition, orientation, coverage)</small>"]
-  mesh_hierarchy -->|mesh-api| mesh_store
-  instancing(["instancing (regions)"])
-  mesh_hierarchy -->|instancing-api| instancing
-  validator -->|hierarchy-api| mesh_hierarchy
+  validator["validator<br/><small>Cross-layer invariants (classification closure, coloring partition, orientation, deck consistency, coverage)</small>"]
   math(["math (foundation)"])
   mesh_store -->|math-api| math
   classification -->|mesh-api| mesh_store
+  decomposition(["decomposition (partition)"])
+  classification -->|partition-query-api| decomposition
   topo_store(["topo-store (topology)"])
   classification -->|topo-query-api| topo_store
   mesh_geometry -->|mesh-api| mesh_store
-  validator -->|classification-api| classification
-  regions(["regions (regions)"])
-  validator -->|regions-api| regions
+  mesh_hierarchy -->|classification-api| classification
+  instancing(["instancing (model-semantics)"])
+  mesh_hierarchy -->|instancing-api| instancing
+  symmetry(["symmetry (model-semantics)"])
+  mesh_hierarchy -->|group-action-api: unfold with orientation flips| symmetry
+  validator -->|hierarchy-api| mesh_hierarchy
+  boundary_kind(["boundary-kind (model-semantics)"])
+  validator -->|boundary-api| boundary_kind
   mesh_driver(["mesh-driver (meshing)"])
   mesh_driver -->|classification-api (write)| classification
   mesh_driver(["mesh-driver (meshing)"])
@@ -31,6 +34,8 @@ graph BT
   interface_detect -->|classification-api| classification
   face_intersect(["face-intersect (interfaces)"])
   face_intersect -->|mesh-geometry-api| mesh_geometry
+  tracking_structure(["tracking-structure (tracking)"])
+  tracking_structure -->|hierarchy-api (instances, levels)| mesh_hierarchy
   partitioner(["partitioner (distribution)"])
   partitioner -->|mesh-api| mesh_store
   discretization(["discretization (fields)"])

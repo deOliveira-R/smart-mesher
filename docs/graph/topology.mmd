@@ -5,9 +5,11 @@ graph BT
   imprint_merge["imprint-merge<br/><small>Imprint (split so overlaps coincide) and merge (make coincident entities shared)</small>"]
   tess["tess<br/><small>Display/facet tessellation of the complex</small>"]
   topo_store["topo-store<br/><small>Cell complex store: entities, uses (Coedge/FaceUse), sides, stable IDs, lineage</small>"]
-  virtual_topo["virtual-topo<br/><small>Composite/partition/collapse as a reversible overlay</small>"]
+  virtual_topo["virtual-topo<br/><small>Composite/partition/collapse as a reversible overlay (cleanup)</small>"]
   geom(["geom (shape)"])
   topo_store -->|geom-api: shape handles referenced by topology| geom
+  csg(["csg (shape)"])
+  topo_store -->|csg-api: CSG cells as shape providers| csg
   construct -->|topo-edit-api| topo_store
   boolean -->|topo-edit-api| topo_store
   geom_intersect(["geom-intersect (shape)"])
@@ -18,12 +20,14 @@ graph BT
   virtual_topo -->|topo-edit-api (overlay)| topo_store
   heal -->|topo-edit-api| topo_store
   tess -->|topo-query-api| topo_store
-  regions(["regions (regions)"])
-  regions -->|topo-query-api: entity ids, face sides| topo_store
-  csg(["csg (shape)"])
-  topo_store -->|csg-api: CSG cells as shape providers| csg
-  sizing(["sizing (intent)"])
-  sizing -->|topo-query-api| topo_store
+  coloring(["coloring (model-semantics)"])
+  coloring -->|topo-query-api: volume ids| topo_store
+  boundary_kind(["boundary-kind (model-semantics)"])
+  boundary_kind -->|topo-query-api: boundary faces, sides| topo_store
+  symmetry(["symmetry (model-semantics)"])
+  symmetry -->|cut along mirror plane (keep chamber)| boolean
+  decomposition(["decomposition (partition)"])
+  decomposition -->|overlay-api| virtual_topo
   classification(["classification (mesh-db)"])
   classification -->|topo-query-api| topo_store
   cad_io(["cad-io (io)"])

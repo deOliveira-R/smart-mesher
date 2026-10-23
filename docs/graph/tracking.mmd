@@ -1,0 +1,10 @@
+graph BT
+  tracking_structure["tracking-structure<br/><small>Hierarchy-aware BVH (lattice/instance -> volume -> surface), exact quadric/analytic hits, face-side next-volume, mesh walking</small>"]
+  mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
+  tracking_structure -->|hierarchy-api (instances, levels)| mesh_hierarchy
+  geom_intersect(["geom-intersect (shape)"])
+  tracking_structure -->|ray/surface intersection| geom_intersect
+  boundary_kind(["boundary-kind (model-semantics)"])
+  tracking_structure -->|boundary-api (deck = reflect/periodic on hit)| boundary_kind
+  ir_store(["ir-store (io)"])
+  ir_store -->|tracking-api| tracking_structure

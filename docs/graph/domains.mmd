@@ -1,37 +1,48 @@
 graph BT
   foundation["foundation <br/><small>math, tolerances, exact predicates</small>"]
-  shape["shape [L0]<br/><small>curve/surface math and intersections</small>"]
-  topology["topology [L1]<br/><small>cell complex + all geometry operations on it</small>"]
-  regions["regions [L2,L3]<br/><small>materials, interfaces, boundary sets, assemblies, BCs</small>"]
-  intent["intent [L4]<br/><small>sizing and interval solving</small>"]
-  meshing["meshing [L5,L6]<br/><small>the meshing driver and all scheme families</small>"]
-  mesh_db["mesh-db [L5,L6]<br/><small>the mesh database, classification, validator</small>"]
-  mesh_ops["mesh-ops [L5,L6]<br/><small>quality, smoothing, modification</small>"]
-  interfaces["interfaces [L7]<br/><small>non-conformal detection, intersection, conformize</small>"]
-  distribution["distribution [L9]<br/><small>partitioning and parallel ownership</small>"]
-  fields["fields [L8]<br/><small>discretization descriptors and field data (later)</small>"]
-  io["io [L0,L1,L2,L3,L5,L6,L7,L8,L9]<br/><small>native IR store + importers/exporters with loss reports</small>"]
-  history["history [L10]<br/><small>ops, timeline, replay, project on disk</small>"]
+  shape["shape [M.shape]<br/><small>curve/surface math, CSG quadrics, intersections</small>"]
+  topology["topology [M.topology]<br/><small>cell complex + geometry operations (construct, boolean, imprint, merge, heal)</small>"]
+  model_semantics["model-semantics [M.coloring,M.boundary,M.symmetry,M.instancing]<br/><small>coloring, boundary kinds, symmetry/deck group, instancing</small>"]
+  partition["partition [P.decomposition]<br/><small>virtual decomposition for meshing</small>"]
+  intent["intent [I.intent]<br/><small>sizing and interval solving</small>"]
+  meshing["meshing [X.mesh]<br/><small>meshing driver + scheme families</small>"]
+  mesh_db["mesh-db [X.mesh,X.hierarchy]<br/><small>mesh database, classification, hierarchy, validator</small>"]
+  mesh_ops["mesh-ops [X.mesh]<br/><small>quality, smoothing, modification</small>"]
+  interfaces["interfaces [X.interfaces]<br/><small>non-conformal detection, intersection, conformize</small>"]
+  tracking["tracking [D.derived]<br/><small>ray-tracing acceleration from the known hierarchy</small>"]
+  distribution["distribution [D.derived]<br/><small>parallel partitioning and ownership</small>"]
+  fields["fields <br/><small>discretization descriptors and field data (later)</small>"]
+  io["io <br/><small>native IR store, CAD import, mesh import/export with loss reports</small>"]
+  history["history [H.history]<br/><small>ops, timeline, replay, project on disk</small>"]
   frontends["frontends <br/><small>language, server/protocol, MCP, Python, CLI, GUI</small>"]
   shape --> foundation
   topology --> shape
-  regions --> topology
+  model_semantics --> topology
+  partition --> model_semantics
+  partition --> topology
+  intent --> partition
+  intent --> model_semantics
   intent --> topology
-  intent --> regions
+  mesh_db --> partition
+  mesh_db --> model_semantics
   mesh_db --> topology
-  mesh_db --> regions
   meshing --> mesh_db
   meshing --> intent
-  meshing --> regions
-  io --> regions
-  io --> topology
+  meshing --> model_semantics
   mesh_ops --> mesh_db
+  mesh_ops --> model_semantics
   interfaces --> mesh_db
-  interfaces --> regions
+  interfaces --> model_semantics
+  tracking --> mesh_db
+  tracking --> model_semantics
+  tracking --> shape
   distribution --> mesh_db
   fields --> mesh_db
   io --> mesh_db
   io --> interfaces
+  io --> tracking
   io --> distribution
   io --> fields
+  io --> model_semantics
+  io --> topology
   frontends --> history

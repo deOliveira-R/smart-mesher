@@ -1,11 +1,11 @@
 graph BT
-  conformize["conformize<br/><small>physical imprint of a mesh interface into conformal polyhedra</small>"]
+  conformize["conformize<br/><small>replace coarse faces by fine faces to make an interface conformal</small>"]
   face_intersect["face-intersect<br/><small>overlap polygons/areas/weights (symmetric overlap table)</small>"]
   interface_detect["interface-detect<br/><small>find unmatched/coincident faces -> candidate interface records</small>"]
   classification(["classification (mesh-db)"])
   interface_detect -->|classification-api| classification
-  regions(["regions (regions)"])
-  interface_detect -->|regions-api (interface records)| regions
+  boundary_kind(["boundary-kind (model-semantics)"])
+  interface_detect -->|boundary-api (declared interfaces, deck pairs)| boundary_kind
   face_intersect -->|interface-api| interface_detect
   mesh_geometry(["mesh-geometry (mesh-db)"])
   face_intersect -->|mesh-geometry-api| mesh_geometry

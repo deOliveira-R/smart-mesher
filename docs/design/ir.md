@@ -65,19 +65,70 @@ Exporters lower these per target:
 - CGNS: Abutting connectivity.
 - DAGMC: needs a merged, watertight model.
 
-## 5. Layers
+## 5. Layers (v2, after user review 2026-10-23)
 
-Your three layers map as: **geometry = L0 shape + L1 topology**, **partition = L2 regions (+ L3 attributes)**, **mesh = L5 mesh topology + L6 mesh geometry + L7 interfaces**. The research adds L4 (meshing intent), L8 (fields), L9 (distribution) and L10 (history/provenance). The full table is in `docs/graph/concepts.yaml` (`layers:`).
+Physical volumes, their colors and their boundary kinds can't be separated. Symmetry is undefined until volumes are colored (a barycentre needs to know which material is where) and until each boundary is known to be a deck transformation or a response boundary. So the first layer is one **Model** layer with sub-layers, not three separate layers.
 
-Note: SCOREC/PUMI's "partition model" means *parallel* parts. To avoid that clash, our material/color layer is called **Regions**.
+| Layer | Sub-layer | Content |
+|---|---|---|
+| **Model** (what the problem *is*; no discretization) | shape | exact curves/surfaces (B-rep + CSG quadrics) |
+| | topology | non-manifold cell complex; imprint/merge status per coincident face pair |
+| | coloring | abstract material IDs per volume ("material 1", "material 2"; exact partition), blocks/assemblies as named groupings. No physics. |
+| | boundary kind | every boundary face is a **deck** boundary (mirror / translation / rotation, with pairing and transform), a **response** boundary (tag only), or an **interface** |
+| | symmetry | deck group + fundamental domain, declared or detected; the full model is the **unfold** (derived, reversible) |
+| | instancing | prototypes, instances, lattices. These are group actions on a fundamental piece, so they share the symmetry machinery. |
+| **Partition** | decomposition | virtual, reversible cuts/composites of the colored model for meshability (sweep blocks, mappable chunks). Never changes coloring. *(Interpretation to confirm.)* |
+| **Intent** | | sizes, intervals, schemes, layers per partition cell; reads boundary kind (deck faces get no boundary layers) |
+| **Meshes** (plural) | mesh | face-first tables, classification onto partition/model entities, coordinates, (shape, degree, basis) |
+| | hierarchy | several meshes over one model: fine + coarse levels (CMFD / algebraic multigrid) with inter-mesh maps; instanced view |
+| | interfaces | non-conformal records + overlap tables; deck pairings **lowered** from the model via classification (declared once, never twice) |
+| **Derived** | | tracking structure, geometry caches, sweep graphs, parallel distribution. Rebuildable, keyed by content hash. |
+| **History** | | op timeline, provenance (cross-cutting) |
 
-All layers coexist and are linked by **classification**: every mesh entity points to the lowest-dimensional topology entity that contains it, with parametric coordinates. A validator enforces the cross-layer rules:
-- classification closure
-- materials partition the volumes exactly
-- every topology face has two sides
-- one declared orientation convention
-- overlap reciprocity
-- geometry-bound vs mesh-bound set lifetime, so remeshing keeps intent
+Out of scope, tags only (to confirm): material properties and response-function values.
+
+### 5.1 Deck transformations
+
+Deck transformations are topological information on boundaries, not response functions. They need no knowledge of the physics on other boundaries.
+
+| Kind | Transform | Pairing | Meshing consequence |
+|---|---|---|---|
+| Mirror | reflection in a plane (improper, det = −1) | self-paired: the plane is fixed pointwise | boundary nodes stay on the plane (smoothing constraint); no boundary layers |
+| Translation | rigid translation T | face set A ↔ face set B = T(A) | paired curves need equal intervals; mesh on B = T(mesh on A) |
+| Rotation | rotation by 2π/n about an axis | A ↔ B = R(A) | same as translation, with R |
+
+The name follows covering-space theory. The reduced model is the **fundamental domain** F, the deck group G acts on it, and the full model is ⋃ g·F over g ∈ G.
+
+Workflows this enables:
+- **Cut and keep a chamber.** Place a mirror plane (or a pair of periodic planes): the model is cut, the chosen chamber is kept, and the new faces are tagged as deck boundaries immediately.
+- **Imported pre-cut geometry.** Tag existing faces as deck boundaries; tag the rest as response boundaries.
+- **Undo symmetry.** Unfold to the full geometry, e.g. for a transient that breaks symmetry. The full model stays derived from F + G until you choose to edit it as a full model.
+- **Mesh once, unfold.** Meshing F and unfolding gives an *exactly* symmetric full mesh for free.
+- **Detection.** Candidate planes and axes come from colored invariants (per-color barycentres and inertia tensors), then get verified by mapping topology, geometry, colors and boundary kinds.
+
+Constraints this puts on the interfaces:
+1. Improper transforms reverse orientation, so unfolding must flip face loops and re-apply the left/right rule for reflected copies.
+2. Paired deck boundaries become interval-matching constraints and copy-under-transform constraints for the scheme API.
+3. The tracking structure treats a deck boundary as reflect-or-wrap on hit, so a reduced model can be ray-traced directly.
+
+### 5.2 Tracking structure for Monte Carlo (derived)
+
+DAGMC baseline (checked against DAGMC source): an OBB tree per surface over triangle **facets**, joined into one tree per volume (MOAB). The optional double-down backend uses Embree (single-precision traversal, double-precision Plücker test at the leaves). On crossing a surface, the next volume is read from the surface's two sense tags. An implicit complement covers the space outside the CAD model. Facets only: no exact surfaces.
+
+We differ, because we know every level from geometry to mesh:
+- **The hierarchy is the top of the tree.** Lattice/instance → volume → surface, with bounding volumes taken from the known structure (no rediscovery). Instances are traced in the prototype's frame, so one tree serves N copies.
+- **Exact hits on analytic surfaces** (quadrics, tori), with facets only for freeform NURBS. This removes faceting error and cuts primitive count.
+- **No tree search after a crossing.** Face sides (`left`/`right` in the model, face→cell in the mesh) give the next volume or cell directly ("mesh walking"). The tree is needed only for the first location and for re-entry.
+- **Deck boundaries handled in the tracker** (reflect or wrap), so symmetric reduced models trace directly.
+- The structure is a derived, content-hashed cache that can be exported. It is not a new geometry format.
+
+Benchmarks against DAGMC and native CSG (OpenMC) are a W3 deliverable; we have no performance numbers yet.
+
+### 5.3 CAD import
+
+- STEP AP203/214/242 (P1; what every CAD system exports), IGES, STL.
+- SAT is feasible: `cq-acis` (MIT, Rust core, experimental) decodes SAT versions 105–700 and is a reference implementation.
+- Parasolid x_t is to be researched.
 
 ## 6. Decisions from round 2 (addendum §7)
 

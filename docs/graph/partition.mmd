@@ -1,0 +1,10 @@
+graph BT
+  decomposition["decomposition<br/><small>Virtual cuts/composites for meshability; sweep groups; reversible; coloring-preserving</small>"]
+  virtual_topo(["virtual-topo (topology)"])
+  decomposition -->|overlay-api| virtual_topo
+  coloring(["coloring (model-semantics)"])
+  decomposition -->|coloring-api (must be preserved)| coloring
+  sizing(["sizing (intent)"])
+  sizing -->|partition-query-api| decomposition
+  classification(["classification (mesh-db)"])
+  classification -->|partition-query-api| decomposition
