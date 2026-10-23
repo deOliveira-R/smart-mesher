@@ -1,0 +1,17 @@
+[package]
+name = "sm-op-api"
+description = "Contract for operations and the timeline: Op, State layers, deltas, content-addressed timeline DAG (orchestrator-owned contract)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+indexmap = "2"
+schemars = "1"
