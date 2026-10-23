@@ -77,13 +77,24 @@ pub trait TopologyEdit: TopologyView {
     /// Append a shell to a volume; returns its ring index.
     fn add_shell(&mut self, volume: EntityId, shell: ShellSpec<'_>) -> Result<u16, TopoError>;
 
+    /// Remove the non-outer shell `ring` of `volume` with all its face uses, re-applying the
+    /// orientation rule to those faces. Higher rings shift down by one at `end_op` (as for a
+    /// shell emptied by [`Self::remove_face_use`]). Ring 0 is refused (`InvalidParameter`).
+    /// Default: [`TopoError::Unsupported`].
+    fn remove_shell(&mut self, volume: EntityId, ring: u16) -> Result<(), TopoError> {
+        let _ = (volume, ring);
+        Err(TopoError::Unsupported("remove_shell"))
+    }
+
     /// Add a face use to an existing shell `ring` of `volume` (a baffle `Both` needs an
     /// `Internal` shell).
     fn add_face_use(&mut self, volume: EntityId, ring: u16, use_: FaceUseSpec) -> Result<(), TopoError>;
 
     /// Remove the use of `face` on `side` from `volume` (`Side::Both` removes every use). A
     /// baffle use loses one side when `Left` or `Right` is given. Re-applies the orientation
-    /// rule to the face (a `reverse_face` is logged if it had to flip).
+    /// rule to the face (a `reverse_face` is logged if it had to flip). At `end_op`, every
+    /// non-outer shell left without uses loses its kind and the higher rings shift down, so the
+    /// result hashes like a volume built without that shell.
     fn remove_face_use(&mut self, volume: EntityId, face: EntityId, side: Side) -> Result<(), TopoError>;
 
     /// Embed a lower-dimensional `child` (wire edge, point, free face) in the interior of

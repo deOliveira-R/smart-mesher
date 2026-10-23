@@ -45,6 +45,11 @@ pub trait TypedOp:
     const NAME: &'static str;
     /// Payload version (default 1).
     const VERSION: u32 = 1;
+    /// Implementation version (default 1): bump it when `apply` changes its result for the
+    /// same params (a bug fix, a better algorithm) without changing the payload. Not part of
+    /// the node hash; recorded in every node's `Check::versions` as `op:<NAME>`, so replay of
+    /// an older node reports `TimelineError::Upgraded` instead of a bare `Diverged`.
+    const IMPL_VERSION: u32 = 1;
     /// Apply this op.
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError>;
 }

@@ -556,6 +556,7 @@ pub enum FaceCut<'a> {
 
 /// Which child gets each existing inner loop when a face is split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InnerLoopAssign<'a> {
     /// The face has no inner loops (error otherwise).
     None,
@@ -567,6 +568,7 @@ pub enum InnerLoopAssign<'a> {
 
 /// Which child gets each non-outer shell when a volume is split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShellAssign<'a> {
     /// The volume has only its outer shell (error otherwise).
     None,

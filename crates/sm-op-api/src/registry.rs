@@ -23,6 +23,10 @@ pub trait OpType: Send + Sync {
     fn schema(&self) -> Result<Schema, String>;
     /// Decode current-version params into an op.
     fn decode(&self, params: &Value) -> Result<Box<dyn Op>, CodecError>;
+    /// Implementation version (see `TypedOp::IMPL_VERSION`). Default 1.
+    fn impl_version(&self) -> u32 {
+        1
+    }
 }
 
 struct Typed<T>(std::marker::PhantomData<fn() -> T>);
@@ -41,6 +45,9 @@ impl<T: TypedOp> OpType for Typed<T> {
     }
     fn decode(&self, params: &Value) -> Result<Box<dyn Op>, CodecError> {
         Ok(Box::new(from_value::<T>(params)?))
+    }
+    fn impl_version(&self) -> u32 {
+        T::IMPL_VERSION
     }
 }
 
@@ -106,6 +113,7 @@ type RestoreFn = fn(&[u8]) -> Result<Arc<dyn Layer>, CodecError>;
 struct LayerEntry {
     name: &'static str,
     role: LayerRole,
+    digest_version: u32,
     deps: &'static [&'static str],
     factory: Arc<dyn Fn() -> Arc<dyn Layer> + Send + Sync>,
     restore: RestoreFn,
@@ -293,6 +301,7 @@ impl Registry {
             LayerEntry {
                 name: L::NAME,
                 role: L::ROLE,
+                digest_version: L::DIGEST_VERSION,
                 deps: L::DEPENDS_ON,
                 factory: Arc::new(move || Arc::new(factory()) as Arc<dyn Layer>),
                 restore: |b| Ok(Arc::new(L::restore(b)?) as Arc<dyn Layer>),
@@ -336,6 +345,16 @@ impl Registry {
     /// Registered layer names with their roles, sorted by name.
     pub fn layer_roles(&self) -> Vec<(&'static str, LayerRole)> {
         self.layers.values().map(|e| (e.name, e.role)).collect()
+    }
+
+    /// Digest version of a registered layer (`LayerType::DIGEST_VERSION`).
+    pub fn layer_digest_version(&self, name: &str) -> Option<u32> {
+        self.layers.get(name).map(|e| e.digest_version)
+    }
+
+    /// Implementation version of a registered op (`OpType::impl_version`).
+    pub fn op_impl_version(&self, name: &str) -> Option<u32> {
+        self.ops.get(name).map(|t| t.impl_version())
     }
 
     /// Layers in dependency order: every layer after the layers it `DEPENDS_ON`; ties by name.

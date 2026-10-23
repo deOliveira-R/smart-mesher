@@ -157,7 +157,11 @@ pub enum VirtualOp {
 }
 
 impl VirtualOp {
-    fn created(&self) -> SmallVec<[EntityId; 4]> {
+    /// The ids this operation minted, in a fixed per-variant order: the composite id, or the
+    /// new cut cell followed by the two halves/children. These are the ids
+    /// [`Overlay::remove`] retires when given any one of them; find the op through
+    /// [`Overlay::ops`]. Use this instead of matching the (non-exhaustive) variants.
+    pub fn created(&self) -> SmallVec<[EntityId; 4]> {
         match self {
             VirtualOp::Composite { id, .. } => SmallVec::from_slice(&[*id]),
             VirtualOp::PartitionEdge { vertex, halves, .. } => SmallVec::from_slice(&[*vertex, halves[0], halves[1]]),

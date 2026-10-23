@@ -624,6 +624,27 @@ impl CellComplex {
 }
 
 impl TopologyEdit for CellComplex {
+    fn remove_shell(&mut self, volume: EntityId, ring: u16) -> Result<(), TopoError> {
+        self.atomic(|s| {
+            s.live_slot(volume, Dim::Volume)?;
+            if ring == 0 || ring == Incidence::EMBEDDED {
+                return Err(TopoError::InvalidParameter("only a non-outer shell can be removed"));
+            }
+            if !s.shells.contains_key(&(volume, ring)) {
+                return Err(TopoError::InvalidParameter("no such shell"));
+            }
+            let (keep, drop): (Row, Row) = s.row(volume).iter().partition(|e| e.ring != ring);
+            s.set_row(volume, &keep)?;
+            s.set_shell_raw((volume, ring), None);
+            let mut faces: Vec<EntityId> = drop.iter().map(|e| e.cell).collect();
+            faces.dedup();
+            for f in faces {
+                s.normalize_orientation(f)?;
+            }
+            Ok(())
+        })
+    }
+
     fn begin_op(&mut self, op: OpId) -> Result<(), TopoError> {
         if self.open.is_some() {
             return Err(TopoError::OpAlreadyOpen);
@@ -659,6 +680,12 @@ impl TopologyEdit for CellComplex {
                 self.abort_op();
                 return Err(e);
             }
+        }
+        // 1b. Drop the kinds of emptied non-outer shells and close the ring gaps, so equal
+        // shapes hash equal whatever shells they once had.
+        if let Err(e) = self.compact_shells() {
+            self.abort_op();
+            return Err(e);
         }
         // 2. Cheap local checks on the touched cells and their parents.
         let mut check: BTreeSet<EntityId> = BTreeSet::new();

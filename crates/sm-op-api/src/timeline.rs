@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::codec::{CodecError, canonical_bytes, canonicalize};
 use crate::error::TimelineError;
 use crate::hash::Hash256;
-use crate::op::OpRecord;
+use crate::op::{OpRecord, TypedOp};
 
 /// Domain tag of node hashes. Bump only with a format version.
 pub const NODE_DOMAIN: &str = "smart-mesh/node/v1";
@@ -75,14 +75,74 @@ pub struct Check {
     /// node hash; may be empty (then a divergence reports no layer names).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layers: BTreeMap<String, Hash256>,
+    /// Implementation provenance: `layer:<name>` to the layer's `LayerType::DIGEST_VERSION`
+    /// (for every layer in [`layers`](Self::layers)) and `op:<name>` to the op's
+    /// `TypedOp::IMPL_VERSION` (the node's op and, for `core.batch`, every nested op). Not
+    /// part of the node hash. When replay mismatches and one of these differs from the current
+    /// registry, the error is [`Upgraded`](TimelineError::Upgraded) rather than `Diverged`.
+    /// May be empty (older nodes, hand-built checks).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, u32>,
 }
 
 impl Check {
-    /// The check of a state: its hash and its per-layer hashes.
-    pub fn of(state: &crate::state::State) -> Self {
+    /// The check of a state after applying `op`: its hash, its per-layer hashes and the
+    /// implementation versions the engine's registry reports for those layers and for `op`
+    /// (and the ops nested in a `core.batch`). Names the registry does not know are skipped.
+    pub fn of(registry: &crate::Registry, state: &crate::state::State, op: &OpRecord) -> Self {
+        let layers = state.layer_hashes();
+        let mut versions = BTreeMap::new();
+        for name in layers.keys() {
+            if let Some(v) = registry.layer_digest_version(name) {
+                versions.insert(format!("layer:{name}"), v);
+            }
+        }
+        let mut ops = vec![op.name.as_str()];
+        if op.name == crate::batch::Batch::NAME
+            && let Some(list) = op.params.get("ops").and_then(|v| v.as_array())
+        {
+            ops.extend(
+                list.iter()
+                    .filter_map(|r| r.get("name").and_then(|n| n.as_str())),
+            );
+        }
+        for name in ops {
+            if let Some(v) = registry.op_impl_version(name) {
+                versions.insert(format!("op:{name}"), v);
+            }
+        }
         Self {
             state: state.hash(),
-            layers: state.layer_hashes(),
+            layers,
+            versions,
+        }
+    }
+
+    /// Keys whose recorded version (in `self`) differs from the version in `current`, sorted.
+    /// Only keys present on both sides count: a key on one side only means the content
+    /// differs (a layer became non-empty), not that an implementation changed.
+    pub fn changed_versions(&self, current: &Check) -> Vec<String> {
+        self.versions
+            .iter()
+            .filter(|(k, v)| current.versions.get(*k).is_some_and(|c| c != *v))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// The error for a replay whose result `actual` does not match this recorded check of
+    /// node `node`: [`Upgraded`](TimelineError::Upgraded) when a recorded implementation
+    /// version differs from the current one, else [`Diverged`](TimelineError::Diverged).
+    pub fn mismatch(&self, node: Hash256, actual: &Check) -> TimelineError {
+        let changed = self.changed_versions(actual);
+        if changed.is_empty() {
+            TimelineError::Diverged {
+                node,
+                recorded: self.state,
+                actual: actual.state,
+                layers: self.differing_layers(actual),
+            }
+        } else {
+            TimelineError::Upgraded { node, changed }
         }
     }
 
@@ -268,6 +328,16 @@ impl Timeline {
         Ok(h)
     }
 
+    /// Replace the recorded result of node `h` (re-baselining after an implementation
+    /// upgrade). The body, and so the node hash, file name and every descendant, stay
+    /// unchanged; only the node file's `[check]` text changes, so a storage backend must
+    /// rewrite that one file ([`node_file`](Self::node_file)).
+    pub fn replace_check(&mut self, h: Hash256, check: Check) -> Result<(), TimelineError> {
+        let e = self.nodes.get_mut(&h).ok_or(TimelineError::UnknownNode(h))?;
+        e.node.check = check;
+        Ok(())
+    }
+
     /// Look up a node.
     pub fn get(&self, h: Hash256) -> Option<&Node> {
         self.nodes.get(&h).map(|e| &e.node)
@@ -379,7 +449,7 @@ impl Timeline {
     }
 
     /// The committed layout as path to text: `ops/<hash>.toml` per node and `refs/heads/<name>`
-    /// per branch. There is no HEAD file. Node files are content-addressed and immutable, and
+    /// per branch. There is no HEAD file. Node files are content-addressed (immutable but for `replace_check`), and
     /// each branch owns exactly one ref file, so independent branches touch disjoint files.
     pub fn to_files(&self) -> Result<BTreeMap<String, String>, TimelineError> {
         let mut out = BTreeMap::new();
@@ -396,7 +466,7 @@ impl Timeline {
     }
 
     /// Path and text of one node file, exactly as [`to_files`](Self::to_files) writes it (for
-    /// incremental saves: node files are immutable, so only new ones need writing).
+    /// incremental saves: node files are immutable except after `replace_check`, so only new or re-baselined ones need writing).
     pub fn node_file(&self, h: Hash256) -> Result<(String, String), TimelineError> {
         let e = self.nodes.get(&h).ok_or(TimelineError::UnknownNode(h))?;
         let text = crate::text::node_to_toml(&e.node)

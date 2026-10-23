@@ -595,6 +595,66 @@ impl CellComplex {
         Ok(())
     }
 
+    /// For every live volume whose row or shell kinds changed in the open op: drop the kind of
+    /// each non-outer ring left without uses and renumber the remaining non-outer rings
+    /// `1..n` in their old order (rows and kinds together).
+    fn compact_shells(&mut self) -> Result<(), TopoError> {
+        let mut vols: BTreeSet<EntityId> = BTreeSet::new();
+        for u in &self.journal {
+            match u {
+                Undo::Row { id, .. } if id.kind() == sm_core::EntityKind::TopoVolume => {
+                    vols.insert(*id);
+                }
+                Undo::Shell { key, .. } => {
+                    vols.insert(key.0);
+                }
+                _ => {}
+            }
+        }
+        for v in vols {
+            if self.state(v) != Some(EntityState::Live) {
+                continue;
+            }
+            let used: BTreeSet<u16> = self.row(v).iter().map(|e| e.ring).filter(|r| *r != Incidence::EMBEDDED).collect();
+            let kinds: Vec<(u16, ShellKind)> = self.shells.range((v, 0)..=(v, u16::MAX)).map(|(k, s)| (k.1, *s)).collect();
+            // Old ring -> new ring for every kept non-outer ring.
+            let mut map: BTreeMap<u16, u16> = BTreeMap::new();
+            let mut next = 1u16;
+            for (r, _) in &kinds {
+                if *r == 0 {
+                    continue;
+                }
+                if used.contains(r) {
+                    map.insert(*r, next);
+                    next += 1;
+                }
+            }
+            let changed = kinds.iter().any(|(r, _)| *r != 0 && map.get(r) != Some(r));
+            if !changed {
+                continue;
+            }
+            for (r, _) in &kinds {
+                if *r != 0 {
+                    self.set_shell_raw((v, *r), None);
+                }
+            }
+            for (r, k) in &kinds {
+                if let Some(n) = map.get(r) {
+                    self.set_shell_raw((v, *n), Some(*k));
+                }
+            }
+            let mut row: Vec<Incidence> = self.row(v).iter().map(|e| match map.get(&e.ring) {
+                Some(n) => Incidence { ring: *n, ..*e },
+                None => *e,
+            }).collect();
+            Self::normalize(Dim::Volume, &mut row);
+            if row.as_slice() != self.row(v) {
+                self.set_row(v, &row)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Normalize a row into canonical form for its rank.
     fn normalize(dim: Dim, row: &mut Vec<Incidence>) {
         match dim {

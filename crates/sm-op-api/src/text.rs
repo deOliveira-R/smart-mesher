@@ -49,6 +49,12 @@ pub(crate) fn node_to_toml(n: &Node) -> Result<String, String> {
             out.push_str(&format!("{} = \"{h}\"\n", key(name)));
         }
     }
+    if !n.check.versions.is_empty() {
+        out.push_str("\n[check.versions]\n");
+        for (name, v) in &n.check.versions {
+            out.push_str(&format!("{} = {v}\n", key(name)));
+        }
+    }
     Ok(out)
 }
 

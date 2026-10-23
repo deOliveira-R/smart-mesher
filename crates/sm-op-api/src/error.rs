@@ -316,6 +316,18 @@ pub enum TimelineError {
         /// the check carries no layer hashes).
         layers: Vec<String>,
     },
+    /// Replaying a node produced a different state hash than recorded, and the node's
+    /// `Check::versions` shows that a layer digest or op implementation it depends on changed
+    /// version since it was recorded: an upgrade, not nondeterminism. Re-baseline with
+    /// `ReplayPolicy::Rebaseline` or `Timeline::replace_check`.
+    #[error("replay of node {node} differs after an implementation upgrade of {changed:?}")]
+    Upgraded {
+        /// Node being replayed.
+        node: Hash256,
+        /// `Check::versions` keys (`layer:<name>`, `op:<name>`) whose recorded version differs
+        /// from the current one, sorted.
+        changed: Vec<String>,
+    },
     /// A stored node's content does not match its hash.
     #[error("node file {expected} has content hashing to {actual}")]
     HashMismatch {
@@ -369,6 +381,7 @@ impl TimelineError {
             TimelineError::BadRefName(_) => "bad-ref-name",
             TimelineError::EmptyPosition => "empty-position",
             TimelineError::Diverged { .. } => "diverged",
+            TimelineError::Upgraded { .. } => "upgraded",
             TimelineError::HashMismatch { .. } => "hash-mismatch",
             TimelineError::Format(_) => "format",
             TimelineError::StaleBase { .. } => "stale-base",

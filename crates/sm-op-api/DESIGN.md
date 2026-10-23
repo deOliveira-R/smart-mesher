@@ -99,7 +99,7 @@ as amended by `docs/design/w0/decisions.md`.
 
 ## Timeline
 
-- **Node** = `NodeBody{parent, op: OpRecord, meta}` (hashed) + `Check{state, layers}` (not hashed).
+- **Node** = `NodeBody{parent, op: OpRecord, meta}` (hashed) + `Check{state, layers, versions}` (not hashed).
   `Node`, `NodeBody`, `Meta`, `Check` serialize with the node-file shape (`parent` omitted for a
   root); `Head` and `Rev` serialize externally tagged (`{"ref": "main"}`, `{"node": "<hash>"}`,
   `"empty"`). `OpInfo`/`QueryInfo` serialize. Every error enum has `code() -> &'static str`
@@ -114,10 +114,22 @@ as amended by `docs/design/w0/decisions.md`.
   strict `Diverged { node, recorded, actual, layers }` error by default, where `layers` names the
   layers whose hashes differ (`ReplayPolicy::Warn` collects instead). `Timeline::insert` of the
   same body with another `check.state` is also `Diverged`.
+- **Implementation provenance**: `LayerType::DIGEST_VERSION` and `TypedOp::IMPL_VERSION` (both
+  default 1; `OpType::impl_version()`, `Registry::layer_digest_version` / `op_impl_version`) are
+  recorded by `Check::of(registry, state, op)` in `Check.versions` (`layer:<name>` for every layer
+  in `layers`, `op:<name>` for the op and every op nested in a `core.batch`; sorted
+  `[check.versions]` table, omitted when empty, not hashed). On a replay mismatch where a key
+  present on both sides changed version, the error is `Upgraded { node, changed }` instead of
+  `Diverged` (`Check::mismatch`). `Timeline::replace_check(h, check)` re-records a result in place
+  (body, hash and file name unchanged; only that node file's text changes).
+  `ReplayPolicy::Rebaseline` re-records every mismatching check during `state_at`/`checkout`,
+  reports each as a warning and lists the nodes in `Session::take_rebaselined()` so sm-engine
+  rewrites those files; `state_at_from_root` (`&self`) acts as `Warn`. Landed in W0f because
+  `Check` is `deny_unknown_fields`.
 - **Timeline** stores `depth` and a `children` index at insert time, sorted refs, no HEAD.
 - **Incremental files**: `Timeline::node_file(h)` / `ref_file(name)` return exactly the path and
   text `to_files` produces for one node / one branch (sm-engine autosave).
-- **Files** (`to_files`): `ops/<hash>.toml` (immutable, content-addressed) and `refs/heads/<name>` (one
+- **Files** (`to_files`): `ops/<hash>.toml` (content-addressed; immutable except for an explicit re-baseline of its `[check]`) and `refs/heads/<name>` (one
   file per branch). Independent branches add disjoint files; nothing existing is rewritten. Node text is
   written by a small emitter (`text.rs`) that never produces multi-line strings, so autocrlf cannot alter
   values; reading uses the `toml` crate. Ref names `a` and `a/b` cannot coexist (file vs directory).
@@ -173,7 +185,7 @@ injected nondeterminism raises `Diverged`.
   `Engine::run_query` builds it. `RegistryError` is no longer `Eq` (it boxes an `OpError` for
   failed queries).
 - `OpType::schema` returns `Result<Schema, String>`; `register_dyn` takes `Arc<dyn OpType>`;
-  `to_files` returns `Result`; `Node.check` is a `Check { state, layers }` struct (not `Copy`).
+  `to_files` returns `Result`; `Node.check` is a `Check { state, layers, versions }` struct (not `Copy`).
 - No `rayon` (not an allowed dependency): the thread test uses `std::thread::scope` and the thread
   count is an op parameter instead of `RAYON_NUM_THREADS`.
 - Layer dependency validation: `install` rejects cycles but tolerates not-yet-registered

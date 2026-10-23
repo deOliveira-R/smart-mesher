@@ -37,6 +37,12 @@ pub enum ReplayPolicy {
     Strict,
     /// Keep going and collect the divergence in [`Session::take_warnings`].
     Warn,
+    /// Re-record the node's check in place ([`Timeline::replace_check`]) with the replayed
+    /// result and keep going: re-baselining a timeline after an implementation upgrade. Every
+    /// re-recorded mismatch is still reported in [`Session::take_warnings`] and its node in
+    /// [`Session::take_rebaselined`] (so a storage backend rewrites those node files). Node
+    /// hashes never change. [`Session::state_at_from_root`] cannot mutate and acts as `Warn`.
+    Rebaseline,
 }
 
 /// One movement of a ref or of HEAD, for the local reflog persisted by `sm-engine` in `.cache/`.
@@ -150,11 +156,13 @@ pub struct Session {
     reflog: Vec<ReflogEntry>,
     policy: ReplayPolicy,
     warnings: Vec<TimelineError>,
+    rebaselined: Vec<Hash256>,
 }
 
 struct Replayed {
     state: State,
     snaps: Vec<(Hash256, State)>,
+    rebase: Vec<(Hash256, Check)>,
 }
 
 impl Session {
@@ -177,6 +185,7 @@ impl Session {
             reflog: Vec::new(),
             policy: ReplayPolicy::Strict,
             warnings: Vec::new(),
+            rebaselined: Vec::new(),
         }
     }
 
@@ -219,17 +228,13 @@ impl Session {
 
     /// Put a known state for node `h` into the snapshot cache (e.g. restored from a persisted
     /// snapshot). Accepted only if `state.hash()` equals the node's recorded `check.state`;
-    /// otherwise [`TimelineError::Diverged`].
+    /// otherwise [`TimelineError::Diverged`] (or [`TimelineError::Upgraded`], see
+    /// [`Check::mismatch`]).
     pub fn seed_state(&mut self, h: Hash256, state: State) -> Result<(), TimelineError> {
         let node = self.timeline.get(h).ok_or(TimelineError::UnknownNode(h))?;
-        let actual = Check::of(&state);
-        if actual.state != node.check.state {
-            return Err(TimelineError::Diverged {
-                node: h,
-                recorded: node.check.state,
-                actual: actual.state,
-                layers: node.check.differing_layers(&actual),
-            });
+        if state.hash() != node.check.state {
+            let actual = Check::of(self.engine.registry(), &state, &node.body.op);
+            return Err(node.check.mismatch(h, &actual));
         }
         self.store_snapshot(h, state);
         Ok(())
@@ -262,9 +267,16 @@ impl Session {
         self.policy = p;
     }
 
-    /// Divergences tolerated under [`ReplayPolicy::Warn`] since the last call.
+    /// Divergences tolerated under [`ReplayPolicy::Warn`] or re-recorded under
+    /// [`ReplayPolicy::Rebaseline`] since the last call.
     pub fn take_warnings(&mut self) -> Vec<TimelineError> {
         std::mem::take(&mut self.warnings)
+    }
+
+    /// Nodes whose check was re-recorded under [`ReplayPolicy::Rebaseline`] since the last
+    /// call, in the order they were replayed (each once). Their node files need rewriting.
+    pub fn take_rebaselined(&mut self) -> Vec<Hash256> {
+        std::mem::take(&mut self.rebaselined)
     }
 
     /// The engine.
@@ -350,7 +362,7 @@ impl Session {
         if let Head::Ref(name) = &self.head {
             self.timeline.check_ref_name(name)?;
         }
-        let check = Check::of(&p.state);
+        let check = Check::of(self.engine.registry(), &p.state, &p.record);
         let h = self.timeline.insert(Node {
             body: NodeBody {
                 parent: self.at,
@@ -458,6 +470,7 @@ impl Session {
     ) -> Result<Replayed, TimelineError> {
         let n = nodes.len();
         let mut snaps = Vec::new();
+        let mut rebase = Vec::new();
         for (i, h) in nodes.iter().enumerate() {
             if ctl.cancel.is_cancelled() {
                 return Err(TimelineError::Cancelled);
@@ -482,17 +495,16 @@ impl Session {
                         TimelineError::Apply(e)
                     }
                 })?;
-            let actual = state.hash();
-            if actual != node.check.state {
-                let err = TimelineError::Diverged {
-                    node: *h,
-                    recorded: node.check.state,
-                    actual,
-                    layers: node.check.differing_layers(&Check::of(&state)),
-                };
+            if state.hash() != node.check.state {
+                let actual = Check::of(self.engine.registry(), &state, &node.body.op);
+                let err = node.check.mismatch(*h, &actual);
                 match self.policy {
                     ReplayPolicy::Strict => return Err(err),
                     ReplayPolicy::Warn => warnings.push(err),
+                    ReplayPolicy::Rebaseline => {
+                        warnings.push(err);
+                        rebase.push((*h, actual));
+                    }
                 }
             }
             if keep_snaps && (base_depth + i + 1).is_multiple_of(self.snapshot_every) {
@@ -500,7 +512,11 @@ impl Session {
             }
         }
         ctl.progress.report(1.0, "replay");
-        Ok(Replayed { state, snaps })
+        Ok(Replayed {
+            state,
+            snaps,
+            rebase,
+        })
     }
 
     /// Reconstruct the state at `target`, replaying from the nearest cached state (current
@@ -530,6 +546,12 @@ impl Session {
         let mut warnings = Vec::new();
         let r = self.replay(state, &path[from..], from, ctl, true, &mut warnings)?;
         self.warnings.extend(warnings);
+        for (h, c) in r.rebase {
+            self.timeline.replace_check(h, c)?;
+            if !self.rebaselined.contains(&h) {
+                self.rebaselined.push(h);
+            }
+        }
         for (h, s) in r.snaps {
             self.store_snapshot(h, s);
         }

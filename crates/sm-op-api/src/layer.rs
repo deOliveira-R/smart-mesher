@@ -154,6 +154,11 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// edges of the concept DAG in `docs/graph/concepts.yaml`. [`on_retired`](Self::on_retired)
     /// reactions run upstream-first in the topological order of these edges (ties by name).
     const DEPENDS_ON: &'static [&'static str] = &[];
+    /// Version of this layer's [`digest`](Self::digest) encoding. Bump it whenever the digest
+    /// of unchanged content changes (a field added to the hash, a new quantum, ...). Recorded
+    /// in every node's `Check::versions` as `layer:<NAME>`, so replay over an older timeline
+    /// reports `TimelineError::Upgraded` instead of a bare `Diverged`.
+    const DIGEST_VERSION: u32 = 1;
     /// Feed the canonical content into the digest. Must be deterministic and independent of
     /// allocation addresses, thread count and hash-map order. Write floats via
     /// [`Digest::f64_quantized`], never pre-round: a layer that rounds itself and writes
@@ -200,6 +205,8 @@ pub trait Layer: Any + Send + Sync {
     fn name(&self) -> &'static str;
     /// Layer role.
     fn role(&self) -> LayerRole;
+    /// See [`LayerType::DIGEST_VERSION`].
+    fn digest_version(&self) -> u32;
     /// Content digest of this layer (not memoized; `State` memoizes).
     fn content_hash(&self) -> Hash256;
     /// Exact content digest: like [`content_hash`](Self::content_hash) but floats written via
@@ -229,6 +236,9 @@ impl<T: LayerType> Layer for T {
     }
     fn role(&self) -> LayerRole {
         T::ROLE
+    }
+    fn digest_version(&self) -> u32 {
+        T::DIGEST_VERSION
     }
     fn content_hash(&self) -> Hash256 {
         let mut d = Digest::new("smart-mesh/layer/v1", false);
