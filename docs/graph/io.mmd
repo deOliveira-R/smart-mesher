@@ -1,7 +1,6 @@
 graph BT
-  cad_io["cad-io<br/><small>STEP (AP203/214/242), IGES, STL import; SAT (research: cq-acis as reference), CSG import (MCNP/OpenMC)</small>"]
+  cad_io["cad-io<br/><small>Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC); STEP export</small>"]
   exporters["exporters<br/><small>one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report</small>"]
-  importers["importers<br/><small>mesh import (incl. mesh-based geometry)</small>"]
   ir_store["ir-store<br/><small>native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook</small>"]
   validator(["validator (mesh-db)"])
   ir_store -->|validator-api| validator
@@ -16,4 +15,3 @@ graph BT
   topo_store(["topo-store (topology)"])
   cad_io -->|topo-edit-api| topo_store
   exporters -->|ir-api (read)| ir_store
-  importers -->|ir-api (write)| ir_store

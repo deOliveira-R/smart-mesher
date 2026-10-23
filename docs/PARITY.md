@@ -35,7 +35,7 @@ Virtual topology (P1):
 Cleanup / healing / defeaturing (P2):
 - [ ] small curve/surface detection, sliver removal, blend removal, hole removal, heal (gaps, tolerances), cleanup angle
 Import (P1 STEP, STL; P2 rest):
-- [ ] STEP · IGES · STL/facets · mesh-based geometry (import mesh as geometry) · MCNP CSG (relevant for transport!) · native format (our op log)
+- [ ] STEP · IGES · SAT · STL/facets (as faceted geometry) · MCNP/OpenMC CSG · native project (our op log). Mesh-based geometry: deferred with mesh import.
 Export (P1):
 - [ ] STEP · IGES · facets/STL
 Attributes & metadata (P2): names, colors, assemblies/parts, attribute propagation through ops
@@ -64,7 +64,7 @@ Smoothing (P1):
 Modification (P2):
 - [ ] refine (local/uniform, templates) · coarsen · pillow · cleanup · intersection removal · node repositioning · collapse edges · align · create/merge elements · tet mesh matching · remesh · scale · skin · cohesive element insertion
 Boundary layers (P1): layered hex/wedge inflation on surfaces/curves
-Mesh import/deletion (P1): import mesh (Exodus, ours, others) · delete mesh with propagation · free meshes
+Mesh deletion (P1): delete mesh with propagation · free meshes. **Mesh import: deferred by decision** (we import geometry, export meshes).
 
 ## D. FE model — `sm-fem`
 - [ ] P0 blocks (element blocks) with element type

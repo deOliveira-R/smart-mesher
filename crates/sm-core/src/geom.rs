@@ -4,6 +4,8 @@ use core::ops::{Add, Mul, Neg, Sub};
 
 /// A 3D vector.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Vector3 {
     /// x component.
     pub x: f64,
@@ -15,6 +17,8 @@ pub struct Vector3 {
 
 /// A 3D point.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Point3 {
     /// x coordinate.
     pub x: f64,
@@ -90,6 +94,8 @@ impl Add<Vector3> for Point3 {
 /// An affine transform `p -> M p + t`. May be improper (`det(M) < 0`, e.g. a mirror),
 /// which reverses orientation. See docs/design/ir.md §5.1.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Transform {
     /// Row-major 3x3 linear part.
     pub m: [[f64; 3]; 3],

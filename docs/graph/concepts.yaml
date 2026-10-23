@@ -43,7 +43,7 @@ domains:
   tracking:       {summary: "ray-tracing acceleration from the known hierarchy",                     layers: [D.derived]}
   distribution:   {summary: "parallel partitioning and ownership",                                   layers: [D.derived]}
   fields:         {summary: "discretization descriptors and field data (later)"}
-  io:             {summary: "native IR store, CAD import, mesh import/export with loss reports"}
+  io:             {summary: "native IR store, CAD/geometry import, mesh export with loss reports (no mesh import yet)"}
   history:        {summary: "ops, timeline, replay, project on disk",                                layers: [H.history]}
   frontends:      {summary: "language, server/protocol, MCP, Python, CLI, GUI"}
 
@@ -140,9 +140,8 @@ nodes:
   discretization:    {domain: fields, summary: "sections, function spaces, field storage"}
   # io
   ir-store:          {domain: io, summary: "native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook"}
-  cad-io:            {domain: io, summary: "STEP (AP203/214/242), IGES, STL import; SAT (research: cq-acis as reference), CSG import (MCNP/OpenMC)"}
+  cad-io:            {domain: io, summary: "Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC); STEP export"}
   exporters:         {domain: io, summary: "one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report"}
-  importers:         {domain: io, summary: "mesh import (incl. mesh-based geometry)"}
   # history
   ops:               {domain: history, summary: "Op registry and apply(): the only way state changes"}
   timeline:          {domain: history, summary: "Op DAG, replay, snapshots, branches, project on disk"}
@@ -230,7 +229,6 @@ edges:   # user -> provider : interface
   - [ir-store, tracking-structure, "tracking-api"]
   - [cad-io, topo-store, "topo-edit-api"]
   - [exporters, ir-store, "ir-api (read)"]
-  - [importers, ir-store, "ir-api (write)"]
   - [ops, timeline, "timeline-api"]
   - [lang, ops, "op-api"]
   - [server, ops, "op-api"]
@@ -242,6 +240,7 @@ edges:   # user -> provider : interface
   - [ops, "*", "op-api: each node registers its Ops"]
 
 open:
+  - "Mesh import deferred (user, 2026-10-23): we import geometry and export meshes. Revisit later for remeshing / tracking-structure generation from foreign meshes."
   - "Confirm: 'partition' = virtual decomposition for meshability (materials moved into the model layer)"
   - "Confirm: material properties and response-function values stay outside smart-mesh (tags only)"
   - "Mixed-material cells (volume fractions)"

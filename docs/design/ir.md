@@ -124,7 +124,11 @@ We differ, because we know every level from geometry to mesh:
 
 Benchmarks against DAGMC and native CSG (OpenMC) are a W3 deliverable; we have no performance numbers yet.
 
-### 5.3 CAD import
+### 5.3 Import/export direction
+
+**Geometry in, meshes out.** We import CAD/geometry (below) and only export meshes. CGNS, Exodus, OpenFOAM, VTKHDF, DAGMC, etc. are export targets. Mesh import is deferred; it may come back later so our machinery (remeshing, tracking structures) can run on foreign meshes.
+
+Geometry import:
 
 - STEP AP203/214/242 (P1; what every CAD system exports), IGES, STL.
 - SAT is feasible: `cq-acis` (MIT, Rust core, experimental) decodes SAT versions 105–700 and is a reference implementation.
