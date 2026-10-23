@@ -7,6 +7,8 @@ edition = "2024"
 rust-version = "1.99"
 version = "0.0.0"
 publish = false
+license = "MIT"
+repository = "https://github.com/deOliveira-R/smart-mesher"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

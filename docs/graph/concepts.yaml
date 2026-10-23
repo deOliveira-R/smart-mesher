@@ -11,11 +11,11 @@ layers:
   # symmetry needs coloring (barycentres, invariants) and boundary kinds (deck vs response).
   M.shape:      "exact curves/surfaces (B-rep and CSG quadrics)"
   M.topology:   "cellular non-manifold complex; imprint/merge status per coincident face pair"
-  M.coloring:   "abstract material ids per volume (exact partition); blocks/assemblies as named groupings; no physics"
+  M.coloring:   "colors on volumes (abstract material ids, exact partition) and on faces/boundaries; named groupings; no physics: the consuming code maps colors to properties"
   M.boundary:   "kind of every boundary face: deck (mirror|translation|rotation, with pairing+transform) | response (tag only) | interface"
   M.symmetry:   "deck group + fundamental domain; declared or detected; full model = unfold (derived, reversible)"
   M.instancing: "prototypes, instances, lattices: also group actions on a fundamental piece"
-  # PARTITION: virtual, reversible decomposition of the colored model for meshing (same material, conceptual cuts).
+  # DECOMPOSITION: virtual, reversible split of the colored model into meshable pieces (same material, conceptual cuts).
   P.decomposition: "virtual cuts/composites for meshability (sweep blocks, mappable chunks); never changes coloring"
   # INTENT: how to mesh each partition cell.
   I.intent:     "sizes, intervals, schemes, vertex types, layers; reads boundary kind (deck faces get no boundary layers)"
@@ -27,14 +27,14 @@ layers:
   D.derived:    "tracking structure (ray tracing), geometry caches, sweep graphs, distribution (parts/ghosts)"
   # HISTORY: cross-cutting.
   H.history:    "op timeline/DAG, provenance"
-  # Out of scope (tags only): material properties, response-function values (pending user confirmation).
+  # Out of scope (confirmed 2026-10-23): material properties and response-function values. The mesher colors; consumers resolve colors.
 
 domains:
   foundation:     {summary: "math, tolerances, exact predicates"}
   shape:          {summary: "curve/surface math, CSG quadrics, intersections",                       layers: [M.shape]}
   topology:       {summary: "cell complex + geometry operations (construct, boolean, imprint, merge, heal)", layers: [M.topology]}
   model-semantics: {summary: "coloring, boundary kinds, symmetry/deck group, instancing",            layers: [M.coloring, M.boundary, M.symmetry, M.instancing]}
-  partition:      {summary: "virtual decomposition for meshing",                                     layers: [P.decomposition]}
+  decomposition:  {summary: "virtual, reversible split into meshable pieces",                                     layers: [P.decomposition]}
   intent:         {summary: "sizing and interval solving",                                           layers: [I.intent]}
   meshing:        {summary: "meshing driver + scheme families",                                      layers: [X.mesh]}
   mesh-db:        {summary: "mesh database, classification, hierarchy, validator",                   layers: [X.mesh, X.hierarchy]}
@@ -51,12 +51,12 @@ domain_edges:   # user -> provider
   - [shape, foundation]
   - [topology, shape]
   - [model-semantics, topology]
-  - [partition, model-semantics]
-  - [partition, topology]
-  - [intent, partition]
+  - [decomposition, model-semantics]
+  - [decomposition, topology]
+  - [intent, decomposition]
   - [intent, model-semantics]
   - [intent, topology]
-  - [mesh-db, partition]
+  - [mesh-db, decomposition]
   - [mesh-db, model-semantics]
   - [mesh-db, topology]
   - [meshing, mesh-db]
@@ -103,7 +103,7 @@ nodes:
   symmetry:          {domain: model-semantics, summary: "Deck group, fundamental domain, detect (colored invariants) / declare, cut-and-keep-chamber, unfold"}
   instancing:        {domain: model-semantics, summary: "Prototype / Instance / Lattice (nestable, hex+cartesian), overrides, flatten paths"}
   # partition
-  decomposition:     {domain: partition, summary: "Virtual cuts/composites for meshability; sweep groups; reversible; coloring-preserving"}
+  decomposition:     {domain: decomposition, summary: "Virtual cuts/composites for meshability; sweep groups; reversible; coloring-preserving"}
   # intent
   sizing:            {domain: intent, summary: "Sizes, size fields, bias; firmness; priority rules"}
   interval-solve:    {domain: intent, summary: "Global integer interval matching (incl. deck-paired curves), corner picking, vertex types"}
@@ -241,8 +241,6 @@ edges:   # user -> provider : interface
 
 open:
   - "Mesh import deferred (user, 2026-10-23): we import geometry and export meshes. Revisit later for remeshing / tracking-structure generation from foreign meshes."
-  - "Confirm: 'partition' = virtual decomposition for meshability (materials moved into the model layer)"
-  - "Confirm: material properties and response-function values stay outside smart-mesh (tags only)"
   - "Mixed-material cells (volume fractions)"
   - "Units, 2D/RZ/1D meshes, time series"
   - "Exodus writer: libnetcdf vs netCDF-4 layout through HDF5"

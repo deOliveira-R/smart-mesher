@@ -3,7 +3,7 @@ graph BT
   shape["shape [M.shape]<br/><small>curve/surface math, CSG quadrics, intersections</small>"]
   topology["topology [M.topology]<br/><small>cell complex + geometry operations (construct, boolean, imprint, merge, heal)</small>"]
   model_semantics["model-semantics [M.coloring,M.boundary,M.symmetry,M.instancing]<br/><small>coloring, boundary kinds, symmetry/deck group, instancing</small>"]
-  partition["partition [P.decomposition]<br/><small>virtual decomposition for meshing</small>"]
+  decomposition["decomposition [P.decomposition]<br/><small>virtual, reversible split into meshable pieces</small>"]
   intent["intent [I.intent]<br/><small>sizing and interval solving</small>"]
   meshing["meshing [X.mesh]<br/><small>meshing driver + scheme families</small>"]
   mesh_db["mesh-db [X.mesh,X.hierarchy]<br/><small>mesh database, classification, hierarchy, validator</small>"]
@@ -18,12 +18,12 @@ graph BT
   shape --> foundation
   topology --> shape
   model_semantics --> topology
-  partition --> model_semantics
-  partition --> topology
-  intent --> partition
+  decomposition --> model_semantics
+  decomposition --> topology
+  intent --> decomposition
   intent --> model_semantics
   intent --> topology
-  mesh_db --> partition
+  mesh_db --> decomposition
   mesh_db --> model_semantics
   mesh_db --> topology
   meshing --> mesh_db

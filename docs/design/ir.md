@@ -73,11 +73,11 @@ Physical volumes, their colors and their boundary kinds can't be separated. Symm
 |---|---|---|
 | **Model** (what the problem *is*; no discretization) | shape | exact curves/surfaces (B-rep + CSG quadrics) |
 | | topology | non-manifold cell complex; imprint/merge status per coincident face pair |
-| | coloring | abstract material IDs per volume ("material 1", "material 2"; exact partition), blocks/assemblies as named groupings. No physics. |
+| | coloring | colors on volumes and on faces/boundaries; abstract material IDs per volume ("material 1", "material 2"; exact partition), blocks/assemblies as named groupings. No physics. |
 | | boundary kind | every boundary face is a **deck** boundary (mirror / translation / rotation, with pairing and transform), a **response** boundary (tag only), or an **interface** |
 | | symmetry | deck group + fundamental domain, declared or detected; the full model is the **unfold** (derived, reversible) |
 | | instancing | prototypes, instances, lattices. These are group actions on a fundamental piece, so they share the symmetry machinery. |
-| **Partition** | decomposition | virtual, reversible cuts/composites of the colored model for meshability (sweep blocks, mappable chunks). Never changes coloring. *(Interpretation to confirm.)* |
+| **Decomposition** | pieces | virtual, reversible cuts/composites of the colored model into meshable **pieces** (sweep blocks, mappable chunks). Never changes coloring. Named to avoid "partition" (parallel parts) and "block" (Exodus material groups). |
 | **Intent** | | sizes, intervals, schemes, layers per partition cell; reads boundary kind (deck faces get no boundary layers) |
 | **Meshes** (plural) | mesh | face-first tables, classification onto partition/model entities, coordinates, (shape, degree, basis) |
 | | hierarchy | several meshes over one model: fine + coarse levels (CMFD / algebraic multigrid) with inter-mesh maps; instanced view |
@@ -85,7 +85,7 @@ Physical volumes, their colors and their boundary kinds can't be separated. Symm
 | **Derived** | | tracking structure, geometry caches, sweep graphs, parallel distribution. Rebuildable, keyed by content hash. |
 | **History** | | op timeline, provenance (cross-cutting) |
 
-Out of scope, tags only (to confirm): material properties and response-function values.
+**Out of scope (confirmed):** material properties and response-function values. The mesher colors volumes and faces/boundaries; the consuming code resolves colors into properties.
 
 ### 5.1 Deck transformations
 
