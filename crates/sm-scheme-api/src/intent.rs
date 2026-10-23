@@ -3,7 +3,7 @@
 
 use crate::error::SchemeError;
 use crate::firm::{Firm, Firmness};
-use crate::target::GroupId;
+use crate::target::{GroupId, TransformId};
 use crate::vertex::VertexType;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -38,16 +38,41 @@ impl core::fmt::Display for SchemeName {
     }
 }
 
-/// Scheme parameters: a JSON object owned by the scheme (same value model as `sm-op-api`
-/// params). Schemes read typed fields with [`Params::get`].
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+/// Scheme parameters: a JSON object owned by the scheme. The value model is exactly
+/// `sm_op_api::codec::Value` (`serde_json::Value` restricted to what TOML can represent: no
+/// `null`, finite floats), so intents and plans cross the Op boundary without conversion.
+/// Entity references are [`EntityId`] strings (`Kind#serial`) read with [`Params::get`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Params(pub serde_json::Value);
 
+impl Default for Params {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl Params {
-    /// Empty parameters.
+    /// Empty parameters: the empty object `{}` (never `null`, which TOML cannot hold).
     pub fn empty() -> Self {
-        Self(serde_json::Value::Null)
+        Self(serde_json::Value::Object(serde_json::Map::new()))
+    }
+
+    /// True for the empty object (and for `null`, read as empty).
+    pub fn is_empty(&self) -> bool {
+        match &self.0 {
+            serde_json::Value::Null => true,
+            serde_json::Value::Object(m) => m.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Check that the value is an object the Op codec accepts (TOML-representable, no `null`,
+    /// finite floats). Run when an intent is loaded (see [`MeshIntent::check`]).
+    pub fn check(&self) -> Result<(), SchemeError> {
+        sm_op_api::codec::to_params(&self.0)
+            .map(|_| ())
+            .map_err(|e| SchemeError::BadParams { scheme: SchemeName::new(""), reason: e.to_string() })
     }
 
     /// Typed field `key`; `Ok(None)` if absent. A field of the wrong type is an error naming
@@ -68,16 +93,12 @@ pub struct SchemeChoice {
     /// Scheme name.
     pub name: SchemeName,
     /// Scheme parameters.
-    #[serde(default, skip_serializing_if = "is_null")]
+    #[serde(default, skip_serializing_if = "Params::is_empty")]
     pub params: Params,
     /// Firmness: a `Hard` choice that conflicts with an imposition is an error; a `Soft` or
     /// `Default` one is overridden.
     #[serde(default)]
     pub firmness: Firmness,
-}
-
-fn is_null(p: &Params) -> bool {
-    p.0.is_null()
 }
 
 impl SchemeChoice {
@@ -148,9 +169,27 @@ pub struct MeshGroup {
     /// The group scheme (a volume scheme that supports groups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheme: Option<SchemeChoice>,
+    /// Fallback chain tried in order after `scheme`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<SchemeChoice>,
     /// Optional conversion applied to the whole group after generation (thex, htet, qtri).
+    /// Shorthand for a [`TransformIntent`] over the group (driver transform id
+    /// `TransformId::GROUP_BASE | group id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversion: Option<SchemeChoice>,
+}
+
+/// A standalone conversion (THex, HTet, QTri) over arbitrary volume targets. Runs after every
+/// writer of its targets; the driver swaps in the rewritten patches only if all succeed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransformIntent {
+    /// Id (unique within the intent, below [`TransformId::GROUP_BASE`]).
+    pub id: TransformId,
+    /// The converted pieces (`TopoVolume` or `PartitionCell` ids; a member of a group converts
+    /// the group's patch).
+    pub targets: Vec<EntityId>,
+    /// The registered [`crate::MeshTransform`] and its parameters.
+    pub transform: SchemeChoice,
 }
 
 /// A sizing function (Cubit: constant, curvature, linear, interval, inverse, super, bias,
@@ -174,7 +213,8 @@ pub enum SizingSpec {
 
 /// Candidate schemes for automatic selection, in priority order per dimension (Cubit auto:
 /// surfaces from {pave, submap, triprimitive, map}, volumes from {map, submap, sweep}). An
-/// empty list means "every registered scheme of that dimension".
+/// empty list means "the registry's auto list, else every registered scheme of that
+/// dimension".
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AutoPolicy {
     /// Curve candidates.
@@ -194,16 +234,17 @@ pub struct Defaults {
     /// Default sizing (none: every curve gets a goal of one interval).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sizing: Option<SizingSpec>,
-    /// Auto-selection candidates.
+    /// Auto-selection candidates (a non-empty list overrides the registry's auto list).
     #[serde(default)]
     pub auto: AutoPolicy,
 }
 
-/// The whole meshing intent of a model (the Intent layer of `docs/design/ir.md` §5).
+/// The whole meshing intent of a model (the Intent layer of `docs/design/ir.md` section 5).
 ///
 /// Keyed by entity id: edges and faces of the topology view, `TopoVolume` ids for whole
 /// volumes and `PartitionCell` ids for decomposition pieces. `BTreeMap` keeps the serialized
-/// form canonical.
+/// form canonical. The solver state of a fallback (`Rejections`) is deliberately **not** part
+/// of the intent; it is stored in the `Plan`.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct MeshIntent {
     /// Per-entity requests.
@@ -215,6 +256,9 @@ pub struct MeshIntent {
     /// Atomic groups.
     #[serde(default)]
     pub groups: Vec<MeshGroup>,
+    /// Standalone conversions over volume targets.
+    #[serde(default)]
+    pub transforms: Vec<TransformIntent>,
     /// Defaults.
     #[serde(default)]
     pub defaults: Defaults,
@@ -236,8 +280,8 @@ impl MeshIntent {
         self.entity_mut(id).intervals = Some(req);
     }
 
-    /// Sort corner overrides and group members (later entries for the same corner win) and
-    /// groups by id, so equal intents serialize identically.
+    /// Sort corner overrides, group members and transform targets (later entries for the same
+    /// corner win) and groups and transforms by id, so equal intents serialize identically.
     pub fn canonicalize(&mut self) {
         let mut by: BTreeMap<CornerKey, Firm<VertexType>> = BTreeMap::new();
         for c in &self.corners {
@@ -249,5 +293,60 @@ impl MeshIntent {
             g.members.dedup();
         }
         self.groups.sort_by_key(|g| g.id);
+        for t in &mut self.transforms {
+            t.targets.sort_unstable();
+            t.targets.dedup();
+        }
+        self.transforms.sort_by_key(|t| t.id);
+    }
+
+    /// Validate what the type system cannot: parameters are Op-codec values, group and
+    /// transform ids are unique and in range, sizes and counts are sane.
+    pub fn check(&self) -> Result<(), SchemeError> {
+        let bad = |what: String| Err(SchemeError::Input(what));
+        let params = |who: &str, c: &SchemeChoice| c.params.check().map_err(|e| SchemeError::Input(format!("{who}: `{}`: {e}", c.name)));
+        for (id, e) in &self.entities {
+            for c in e.scheme.iter().chain(e.fallbacks.iter()) {
+                params(&id.to_string(), c)?;
+            }
+            match e.intervals.map(|r| r.value) {
+                Some(IntervalRequest::Count(0)) => return bad(format!("{id}: interval count must be >= 1")),
+                Some(IntervalRequest::Size(h)) if !(h.is_finite() && h > 0.0) => return bad(format!("{id}: interval size must be positive and finite")),
+                _ => {}
+            }
+            if let Some(b) = e.boundary_layer
+                && !(b.first.is_finite() && b.first > 0.0 && b.growth.is_finite() && b.growth >= 1.0 && b.layers >= 1)
+            {
+                return bad(format!("{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"));
+            }
+        }
+        let mut gids: Vec<GroupId> = Vec::new();
+        for g in &self.groups {
+            if gids.contains(&g.id) {
+                return bad(format!("group {:?} listed twice", g.id));
+            }
+            gids.push(g.id);
+            if g.members.is_empty() {
+                return bad(format!("group {:?} has no members", g.id));
+            }
+            for c in g.scheme.iter().chain(g.fallbacks.iter()).chain(g.conversion.iter()) {
+                params(&format!("group {:?}", g.id), c)?;
+            }
+        }
+        let mut tids: Vec<TransformId> = Vec::new();
+        for t in &self.transforms {
+            if t.id.0 >= TransformId::GROUP_BASE || tids.contains(&t.id) {
+                return bad(format!("transform {:?} is reserved or listed twice", t.id));
+            }
+            tids.push(t.id);
+            if t.targets.is_empty() {
+                return bad(format!("transform {:?} has no targets", t.id));
+            }
+            params(&format!("transform {:?}", t.id), &t.transform)?;
+        }
+        if let Some(SizingSpec::Function { params: p, .. }) = &self.defaults.sizing {
+            p.check().map_err(|e| SchemeError::Input(format!("sizing: {e}")))?;
+        }
+        Ok(())
     }
 }

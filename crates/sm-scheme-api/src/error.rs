@@ -1,21 +1,75 @@
-//! Typed errors. [`GenerateFailure`] is the structured failure that lets the driver fall back.
+//! Typed errors, the attempt history and the structured failures that let the driver re-plan.
 
 use crate::intent::SchemeName;
-use crate::problem::ConstraintId;
-use crate::target::Target;
+use crate::problem::{ConstraintId, Need};
+use crate::target::{Job, Target};
 use serde::{Deserialize, Serialize};
 use sm_core::EntityId;
 
-/// Why generation failed, and what the driver may do about it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Why a scheme attempt failed or was passed over, and what the driver may do about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum FailureKind {
-    /// The scheme could not mesh this input (bad quality, inverted element, unsupported
-    /// topology). The driver rejects `(target, scheme)`, re-plans and tries the next scheme of
-    /// the fallback chain (or the next auto candidate).
-    Fallback,
-    /// The plan itself is inconsistent with what the scheme needs (a missing boundary patch, a
-    /// side count mismatch). This is a bug in a scheme or the solver: no fallback.
-    Fatal,
+    /// The scheme does not apply to this input (reported by `applicability`).
+    NotApplicable,
+    /// The scheme was passed over: overridden by an imposition, outscored, or rejected by an
+    /// earlier failure.
+    Rejected,
+    /// The scheme's constraints cannot be met with the others (interval parity, copy
+    /// mismatch, corner sums).
+    Constraint,
+    /// The geometry defeated the scheme (self-intersecting loop, failed projection).
+    Geometry,
+    /// The mesh the scheme produced is not good enough (inverted element, bad quality).
+    Quality,
+    /// The input needs a feature the scheme does not implement.
+    Unsupported,
+    /// The plan or the scheme is inconsistent (a bug). No fallback.
+    Internal,
+}
+
+impl FailureKind {
+    /// True if the driver may reject the scheme and re-plan. Only `Internal` is fatal.
+    pub const fn allows_fallback(self) -> bool {
+        !matches!(self, FailureKind::Internal)
+    }
+}
+
+/// The driver phase an [`Attempt`] belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Phase {
+    /// Scheme selection (applicability, impositions, auto scoring).
+    Resolve,
+    /// Requirements (impositions, roles, claims, copies).
+    Requirements,
+    /// Corner picking.
+    Corners,
+    /// Interval assembly and solve.
+    Intervals,
+    /// Footprints and waves.
+    Schedule,
+    /// Scheme generation.
+    Generate,
+    /// Standalone and group transforms.
+    Transform,
+    /// Post-generation copy verification.
+    Verify,
+    /// Commit into the mesh builder.
+    Commit,
+}
+
+/// One scheme candidate that was evaluated and did not win, or that failed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attempt {
+    /// The target.
+    pub target: Target,
+    /// The candidate scheme.
+    pub scheme: SchemeName,
+    /// Where it was rejected or failed.
+    pub phase: Phase,
+    /// Why.
+    pub kind: FailureKind,
+    /// Human-readable detail.
+    pub message: String,
 }
 
 /// A structured generation failure.
@@ -26,25 +80,29 @@ pub struct GenerateFailure {
     pub target: Target,
     /// The scheme that failed.
     pub scheme: SchemeName,
-    /// Whether the driver may fall back.
+    /// What kind of failure. Everything but `Internal` lets the driver fall back.
     pub kind: FailureKind,
     /// Human-readable reason.
     pub reason: String,
 }
 
 impl GenerateFailure {
-    /// A failure the driver may recover from by falling back.
-    pub fn fallback(target: Target, scheme: &str, reason: impl Into<String>) -> Self {
-        Self { target, scheme: SchemeName::new(scheme), kind: FailureKind::Fallback, reason: reason.into() }
+    /// A failure of `kind`.
+    pub fn new(target: Target, scheme: &str, kind: FailureKind, reason: impl Into<String>) -> Self {
+        Self { target, scheme: SchemeName::new(scheme), kind, reason: reason.into() }
     }
-    /// A failure that aborts meshing.
+    /// A quality failure: the driver may recover by falling back.
+    pub fn fallback(target: Target, scheme: &str, reason: impl Into<String>) -> Self {
+        Self::new(target, scheme, FailureKind::Quality, reason)
+    }
+    /// A failure that aborts meshing (`Internal`).
     pub fn fatal(target: Target, scheme: &str, reason: impl Into<String>) -> Self {
-        Self { target, scheme: SchemeName::new(scheme), kind: FailureKind::Fatal, reason: reason.into() }
+        Self::new(target, scheme, FailureKind::Internal, reason)
     }
 }
 
 /// The constraint system has no solution. Lists the constraints and entities involved so the
-/// caller (or a UI) can show the conflict, and so the driver can fall back.
+/// caller (or a UI) can show the conflict, and so the driver can re-plan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("infeasible: {reason} (constraints {constraints:?}, entities {entities:?})")]
 pub struct Infeasible {
@@ -54,6 +112,11 @@ pub struct Infeasible {
     pub constraints: Vec<ConstraintId>,
     /// The entities involved (ascending).
     pub entities: Vec<EntityId>,
+    /// The `(target, scheme)` the driver would reject to re-plan: among the involved
+    /// scheme-origin constraints whose selection is not a hard intent, the lowest-dimension
+    /// one, ties to the later contribution. Solvers leave it `None`; the driver fills it.
+    #[serde(default)]
+    pub blame: Option<(Target, SchemeName)>,
 }
 
 /// Errors of planning, generation and commit.
@@ -90,31 +153,56 @@ pub enum SchemeError {
     NoApplicableScheme {
         /// The target.
         target: Target,
-        /// `(scheme, reason)` for every candidate, in the order tried.
-        tried: Vec<(SchemeName, String)>,
+        /// Every candidate evaluated, in the order tried.
+        tried: Vec<Attempt>,
+        /// The imposing parents that can be re-planned (soft or auto choices, never `copy`).
+        /// [`SchemeError::blame`] returns the first.
+        imposed_by: Vec<(Target, SchemeName)>,
     },
-    /// A parent scheme imposes a scheme set on a child whose hard intent is outside it, or two
-    /// parents impose disjoint sets.
-    #[error("{child:?}: {imposed_by:?} requires one of {required:?}, but {conflict}")]
+    /// A parent imposes something on a child that its hard intent (or another imposition)
+    /// contradicts.
+    #[error("{child:?}: {imposed_by:?} requires {required:?}, but {conflict}")]
     ImpositionConflict {
         /// The constrained child.
         child: Target,
         /// The imposing parent.
         imposed_by: Target,
-        /// The allowed schemes.
-        required: Vec<SchemeName>,
+        /// What was required.
+        required: Need,
         /// The conflicting request (a hard intent or another imposition).
         conflict: String,
     },
-    /// Two copy constraints (deck, sweep target, user copy) claim the same target.
-    #[error("{target:?} is the target of two copy constraints ({first:?}, {second:?})")]
+    /// A scheme contributed a requirement about something that is not its strict sub-entity,
+    /// or about something already resolved.
+    #[error("{by:?}: bad requirement on {child:?}: {reason}")]
+    BadRequirement {
+        /// The requesting target.
+        by: Target,
+        /// The entity the requirement is about.
+        child: Target,
+        /// What is wrong.
+        reason: String,
+    },
+    /// Two copy constraints of one equivalence class disagree (different transforms or vertex
+    /// correspondences).
+    #[error("copy conflict on {target:?} ({first:?}, {second:?}): {reason}")]
     CopyConflict {
-        /// The target.
+        /// The target where the disagreement shows.
         target: Target,
         /// The first constraint.
         first: ConstraintId,
         /// The second one.
         second: ConstraintId,
+        /// What disagrees.
+        reason: String,
+    },
+    /// A claimed or externally written copy target does not equal the image of its source.
+    #[error("copy constraint {constraint:?} violated: {reason}")]
+    CopyMismatch {
+        /// The (last) constraint on the path from the class root to the member.
+        constraint: ConstraintId,
+        /// What differs.
+        reason: String,
     },
     /// A copy correspondence could not be built (entities do not map under the transform).
     #[error("copy {source_target:?} -> {target:?}: {reason}")]
@@ -126,13 +214,24 @@ pub enum SchemeError {
         /// What did not map.
         reason: String,
     },
-    /// A boundary layer was requested on a deck face (ir.md §5.1).
+    /// A boundary layer was requested on a deck face (ir.md section 5.1).
     #[error("boundary layer requested on deck face {face} (boundary {boundary})")]
     BoundaryLayerOnDeck {
         /// The face.
         face: EntityId,
         /// Its deck boundary record.
         boundary: EntityId,
+    },
+    /// The jobs cannot be scheduled: a dependency cycle, two writers of one target, or a read
+    /// with no writer.
+    #[error("schedule: {reason} (jobs {jobs:?}, constraints {constraints:?})")]
+    Schedule {
+        /// The jobs involved.
+        jobs: Vec<Job>,
+        /// The constraints involved (claims, copies, precedences).
+        constraints: Vec<ConstraintId>,
+        /// What is wrong.
+        reason: String,
     },
     /// The interval or corner system has no solution.
     #[error(transparent)]
@@ -154,12 +253,15 @@ pub enum SchemeError {
         /// The owner.
         owner: EntityId,
     },
-    /// The input topology or model is unusable (missing carrier, unknown piece, ...).
+    /// The input topology, model or intent is unusable.
     #[error("input: {0}")]
     Input(String),
     /// Re-planning after fallbacks did not converge.
-    #[error("gave up after {0} re-plans")]
-    ReplanLimit(usize),
+    #[error("gave up after {} attempts", attempts.len())]
+    ReplanLimit {
+        /// Everything tried.
+        attempts: Vec<Attempt>,
+    },
     /// A topology query failed.
     #[error(transparent)]
     Topology(#[from] sm_topo_api::QueryError),
@@ -172,10 +274,13 @@ pub enum SchemeError {
 }
 
 impl SchemeError {
-    /// The fallback-eligible generation failure inside this error, if any.
-    pub fn as_fallback(&self) -> Option<&GenerateFailure> {
+    /// The `(target, scheme)` the driver should reject to re-plan after this error, if the
+    /// error is something a different scheme choice could avoid.
+    pub fn blame(&self) -> Option<(Target, SchemeName)> {
         match self {
-            SchemeError::Generate(g) if g.kind == FailureKind::Fallback => Some(g),
+            SchemeError::Infeasible(i) => i.blame.clone(),
+            SchemeError::Generate(g) if g.kind.allows_fallback() => Some((g.target, g.scheme.clone())),
+            SchemeError::NoApplicableScheme { imposed_by, .. } => imposed_by.first().cloned(),
             _ => None,
         }
     }

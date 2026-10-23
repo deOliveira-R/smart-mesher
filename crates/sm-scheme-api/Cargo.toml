@@ -16,6 +16,7 @@ sm-geom-api = { path = "../sm-geom-api", features = ["serde"] }
 sm-topo-api = { path = "../sm-topo-api", features = ["serde"] }
 sm-model-api = { path = "../sm-model-api", features = ["serde"] }
 sm-mesh-api = { path = "../sm-mesh-api", features = ["serde"] }
+sm-op-api = { path = "../sm-op-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

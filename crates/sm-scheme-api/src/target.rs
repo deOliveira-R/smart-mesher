@@ -30,6 +30,18 @@ impl SchemeDim {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GroupId(pub u32);
 
+/// Identifier of a standalone mesh transform ([`crate::TransformIntent`]).
+///
+/// Ids at or above [`TransformId::GROUP_BASE`] are reserved for the driver (the conversion
+/// shorthand of a [`crate::MeshGroup`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TransformId(pub u32);
+
+impl TransformId {
+    /// First id the driver uses for `MeshGroup::conversion` (`GROUP_BASE | group id`).
+    pub const GROUP_BASE: u32 = 0x8000_0000;
+}
+
 /// One unit of meshing work.
 ///
 /// Curves and surfaces are cells of the [`sm_topo_api::TopologyView`] being meshed (real
@@ -95,6 +107,18 @@ pub fn piece_of(id: EntityId) -> Option<PieceRef> {
     }
 }
 
+/// One schedulable job: generating a target or applying a standalone transform.
+///
+/// Ordering (derived) is generation jobs by [`Target`] order, then transforms by id. It is the
+/// tie-break of the scheduler and the merge order of patches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Job {
+    /// Run the scheme (or copy) of a target and merge its patch.
+    Generate(Target),
+    /// Apply a [`crate::MeshTransform`] to the patches of its targets.
+    Transform(TransformId),
+}
+
 /// Canonical name of a generated mesh node, independent of generation order.
 ///
 /// `owner` is the lowest-dimensional entity the node lies on; `index` numbers the nodes the
@@ -103,7 +127,7 @@ pub fn piece_of(id: EntityId) -> Option<PieceRef> {
 /// | owner | index |
 /// |---|---|
 /// | topology vertex | always 0 (one node per vertex, created by the driver) |
-/// | edge with `n` intervals | `1..n` in the **edge's own direction** (start vertex = 0) |
+/// | edge with `n` intervals | `1..=n-1` in the **edge's own direction** (the start vertex is the vertex node, the end vertex likewise) |
 /// | face | generator-defined, `0..` (a copy keeps the source's index) |
 /// | volume / piece | generator-defined, `0..` |
 ///

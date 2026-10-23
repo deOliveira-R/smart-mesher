@@ -4,8 +4,8 @@
 use crate::error::{Infeasible, Result, SchemeError};
 use crate::firm::{Firm, Firmness};
 use crate::geom;
-use crate::problem::{ConstraintId, IntervalConstraint, Record};
-use crate::vertex::{CornerAssignment, FaceLayout, LogicalSide, VertexRule, VertexType};
+use crate::problem::{ConstraintId, IntervalConstraint, Record, Rel};
+use crate::vertex::{CornerAssignment, FaceLayout, LogicalSide, SideDir, VertexRule, VertexType};
 use sm_core::EntityId;
 use sm_topo_api::{CornerKey, TopologyView};
 
@@ -81,12 +81,28 @@ fn find(p: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+/// If `terms` is `x - y` after merging duplicate edges, the pair `(x, y)`.
+fn pair_difference(terms: &[(EntityId, i32)]) -> Option<(EntityId, EntityId)> {
+    let mut acc: Vec<(EntityId, i32)> = Vec::with_capacity(terms.len());
+    for (e, k) in terms {
+        match acc.iter_mut().find(|x| x.0 == *e) {
+            Some(x) => x.1 += k,
+            None => acc.push((*e, *k)),
+        }
+    }
+    acc.retain(|x| x.1 != 0);
+    match acc.as_slice() {
+        [(a, 1), (b, -1)] | [(b, -1), (a, 1)] => Some((*a, *b)),
+        _ => None,
+    }
+}
+
 fn infeasible(reason: impl Into<String>, mut cids: Vec<ConstraintId>, mut entities: Vec<EntityId>) -> Infeasible {
     cids.sort_unstable();
     cids.dedup();
     entities.sort_unstable();
     entities.dedup();
-    Infeasible { reason: reason.into(), constraints: cids, entities }
+    Infeasible { reason: reason.into(), constraints: cids, entities, blame: None }
 }
 
 impl IntervalSolver for ReferenceIntervalSolver {
@@ -97,12 +113,11 @@ impl IntervalSolver for ReferenceIntervalSolver {
         let mut parent: Vec<usize> = (0..n).collect();
         let mut single_eq: Vec<(ConstraintId, usize)> = Vec::new();
         for r in constraints {
-            if let IntervalConstraint::SumEqual { lhs, rhs } = &r.item
-                && lhs.len() == 1
-                && rhs.len() == 1
+            if let IntervalConstraint::Linear { terms, rel: Rel::Eq, rhs: 0 } = &r.item
+                && let Some((x, y)) = pair_difference(terms)
             {
-                let a = ix(&lhs[0]).ok_or_else(|| unknown(&lhs[0], r.id))?;
-                let b = ix(&rhs[0]).ok_or_else(|| unknown(&rhs[0], r.id))?;
+                let a = ix(&x).ok_or_else(|| unknown(&x, r.id))?;
+                let b = ix(&y).ok_or_else(|| unknown(&y, r.id))?;
                 let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
                 if ra != rb {
                     parent[ra.max(rb)] = ra.min(rb);
@@ -163,7 +178,7 @@ impl IntervalSolver for ReferenceIntervalSolver {
                         c.max = c.max.min(*m);
                     }
                 }
-                IntervalConstraint::SumEqual { .. } | IntervalConstraint::EvenSum { .. } => {}
+                IntervalConstraint::Linear { .. } | IntervalConstraint::EvenSum { .. } => {}
             }
         }
         for c in &mut classes {
@@ -183,28 +198,34 @@ impl IntervalSolver for ReferenceIntervalSolver {
                 None => (c.goal.round().max(1.0) as u32).clamp(c.min, c.max),
             };
         }
-        // Multi-term equalities as sparse integer rows over classes.
-        type Row = (ConstraintId, Vec<(usize, i64)>);
+        // Linear rows as sparse integer rows over classes.
+        type Row = (ConstraintId, Vec<(usize, i64)>, Rel, i64);
         let mut rows: Vec<Row> = Vec::new();
-        let mut parity: Vec<Row> = Vec::new();
+        let mut parity: Vec<(ConstraintId, Vec<(usize, i64)>)> = Vec::new();
         let add = |acc: &mut Vec<(usize, i64)>, c: usize, k: i64| match acc.iter_mut().find(|x| x.0 == c) {
             Some(x) => x.1 += k,
             None => acc.push((c, k)),
         };
         for r in constraints {
             match &r.item {
-                IntervalConstraint::SumEqual { lhs, rhs } if !(lhs.len() == 1 && rhs.len() == 1) => {
+                IntervalConstraint::Linear { terms, rel, rhs } if !(*rel == Rel::Eq && *rhs == 0 && pair_difference(terms).is_some()) => {
                     let mut acc = Vec::new();
-                    for e in lhs {
-                        add(&mut acc, class_of[ix(e).ok_or_else(|| unknown(e, r.id))?], 1);
-                    }
-                    for e in rhs {
-                        add(&mut acc, class_of[ix(e).ok_or_else(|| unknown(e, r.id))?], -1);
+                    for (e, k) in terms {
+                        add(&mut acc, class_of[ix(e).ok_or_else(|| unknown(e, r.id))?], i64::from(*k));
                     }
                     acc.retain(|x| x.1 != 0);
                     acc.sort_unstable();
-                    if !acc.is_empty() {
-                        rows.push((r.id, acc));
+                    if acc.is_empty() {
+                        let ok = match rel {
+                            Rel::Eq => *rhs == 0,
+                            Rel::Le => 0 <= *rhs,
+                            Rel::Ge => 0 >= *rhs,
+                        };
+                        if !ok {
+                            return Err(infeasible("a constant row cannot hold", vec![r.id], terms.iter().map(|t| t.0).collect()));
+                        }
+                    } else {
+                        rows.push((r.id, acc, *rel, *rhs));
                     }
                 }
                 IntervalConstraint::EvenSum { edges: es } => {
@@ -218,10 +239,10 @@ impl IntervalSolver for ReferenceIntervalSolver {
                 _ => {}
             }
         }
-        let row_cids = |row: &Row, classes: &[Class]| {
-            let mut v = vec![row.0];
+        let row_cids = |id: ConstraintId, cs: &[(usize, i64)], classes: &[Class]| {
+            let mut v = vec![id];
             let mut es = Vec::new();
-            for (c, _) in &row.1 {
+            for (c, _) in cs {
                 v.extend_from_slice(&classes[*c].cids);
                 es.extend(ents(&classes[*c]));
             }
@@ -229,15 +250,20 @@ impl IntervalSolver for ReferenceIntervalSolver {
         };
         let mut steps = 0usize;
         'outer: loop {
-            // Equalities.
+            // Linear rows.
             for row in &rows {
-                let resid: i64 = row.1.iter().map(|(c, k)| k * i64::from(classes[*c].value)).sum();
-                if resid == 0 {
+                let resid: i64 = row.1.iter().map(|(c, k)| k * i64::from(classes[*c].value)).sum::<i64>() - row.3;
+                let viol = |r: i64| match row.2 {
+                    Rel::Eq => r.abs(),
+                    Rel::Le => r.max(0),
+                    Rel::Ge => (-r).max(0),
+                };
+                if viol(resid) == 0 {
                     continue;
                 }
                 steps += 1;
                 if steps > self.max_steps {
-                    let (v, es) = row_cids(row, &classes);
+                    let (v, es) = row_cids(row.0, &row.1, &classes);
                     return Err(infeasible("interval repair did not converge", v, es));
                 }
                 // Candidate steps: (cost delta, class, +1/-1), reducing |resid| preferred.
@@ -253,8 +279,9 @@ impl IntervalSolver for ReferenceIntervalSolver {
                             continue;
                         }
                         let new_resid = resid + k * d;
-                        let improves = new_resid.abs() < resid.abs();
-                        if !improves && new_resid.signum() == resid.signum() {
+                        let improves = viol(new_resid) < viol(resid);
+                        // Overshooting an equality (sign flip) is allowed when nothing improves.
+                        if !improves && !(row.2 == Rel::Eq && new_resid.signum() != resid.signum()) {
                             continue;
                         }
                         let dc = cl.cost(nv as u32) - cl.cost(cl.value);
@@ -275,8 +302,8 @@ impl IntervalSolver for ReferenceIntervalSolver {
                         continue 'outer;
                     }
                     None => {
-                        let (v, es) = row_cids(row, &classes);
-                        return Err(infeasible("sum equality cannot be met (hard counts or bounds)", v, es));
+                        let (v, es) = row_cids(row.0, &row.1, &classes);
+                        return Err(infeasible("linear row cannot be met (hard counts or bounds)", v, es));
                     }
                 }
             }
@@ -288,7 +315,7 @@ impl IntervalSolver for ReferenceIntervalSolver {
                 }
                 steps += 1;
                 if steps > self.max_steps {
-                    let (v, es) = row_cids(row, &classes);
+                    let (v, es) = row_cids(row.0, &row.1, &classes);
                     return Err(infeasible("parity repair did not converge", v, es));
                 }
                 let mut best: Option<(f64, usize)> = None;
@@ -308,7 +335,7 @@ impl IntervalSolver for ReferenceIntervalSolver {
                         continue 'outer;
                     }
                     None => {
-                        let (v, es) = row_cids(row, &classes);
+                        let (v, es) = row_cids(row.0, &row.1, &classes);
                         return Err(infeasible("odd interval sum on a loop that needs an even count", v, es));
                     }
                 }
@@ -395,7 +422,9 @@ impl CornerPicker for ReferenceCornerPicker {
 }
 
 /// Split the (single) loop into logical sides at `End` corners (or at every non-`Side`
-/// corner when `any_turn`). Corner `i` sits at the end of coedge `i`.
+/// corner when `any_turn`). Corner `i` sits at the end of coedge `i`. Each side's direction
+/// comes from the cumulative quarter turns of the corners before it (End +1, Side 0,
+/// Corner -1, Reversal -2), starting at `PlusI`.
 fn sides_of(corners: &[CornerAssignment], any_turn: bool) -> Vec<LogicalSide> {
     let is_break = |c: &CornerAssignment| if any_turn { c.vertex_type != VertexType::Side } else { c.vertex_type == VertexType::End };
     let Some(first) = corners.iter().position(is_break) else {
@@ -404,11 +433,14 @@ fn sides_of(corners: &[CornerAssignment], any_turn: bool) -> Vec<LogicalSide> {
     let n = corners.len();
     let mut sides = Vec::new();
     let mut cur = Vec::new();
+    let mut dir = SideDir::PlusI;
     for s in 1..=n {
         let i = (first + s) % n;
         cur.push(corners[i].corner.incoming);
         if is_break(&corners[i]) {
-            sides.push(LogicalSide { coedges: std::mem::take(&mut cur) });
+            sides.push(LogicalSide { coedges: std::mem::take(&mut cur), dir });
+            // Non-break corners turn nothing (Map/Ends rules keep them as Side).
+            dir = dir.turned(if any_turn { corners[i].vertex_type.submap_weight() } else { 1 });
         }
     }
     sides

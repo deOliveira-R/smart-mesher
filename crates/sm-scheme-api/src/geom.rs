@@ -4,6 +4,7 @@
 use crate::error::{Result, SchemeError};
 use core::f64::consts::PI;
 use sm_core::{EntityId, Point3, Vector3};
+use sm_mesh_api::Param;
 use sm_geom_api::{ParametricCurve, Uv};
 use sm_topo_api::{Carrier, CoedgeKey, CoedgeKind, CornerKey, CurveCarrier, Sense, Side, TopologyView, TopologyViewExt};
 
@@ -120,4 +121,32 @@ pub fn corners(t: &dyn TopologyView, f: EntityId) -> Result<Vec<Corner>> {
 /// True if the coedge is a real (non-pole) edge use.
 pub fn is_real(kind: CoedgeKind) -> bool {
     kind == CoedgeKind::Edge
+}
+
+/// The coedges of every loop of `f` (ring order, outer loop first), without pole coedges.
+pub fn face_loops(t: &dyn TopologyView, f: EntityId) -> Vec<Vec<CoedgeKey>> {
+    t.loops(f).map(|lp| lp.keys().filter(|k| !t.flags(k.edge).contains(sm_topo_api::CellFlags::DEGENERATE)).collect()).collect()
+}
+
+/// The interior angle (radians, in `(0, 2 pi)`) at one face corner.
+pub fn corner_angle(t: &dyn TopologyView, key: CornerKey) -> Result<f64> {
+    corners(t, key.face)?.into_iter().find(|c| c.key == key).map(|c| c.angle).ok_or_else(|| SchemeError::Input(format!("{key:?} is not a corner of its face")))
+}
+
+/// Project `p` onto the carrier of face `f`. Returns the projected point and its surface
+/// parameter; a face without a surface carrier returns `p` and [`Param::None`].
+pub fn snap_to_face(t: &dyn TopologyView, f: EntityId, p: Point3) -> Result<(Point3, Param)> {
+    if let Carrier::Surface(sc) = t.carrier(f)
+        && let Some(s) = t.shapes().surface(sc.surface)
+    {
+        let pr = s.project(p, None)?;
+        return Ok((pr.point, Param::Surface([pr.uv.u, pr.uv.v])));
+    }
+    Ok((p, Param::None))
+}
+
+/// The face uses of a volume piece: `(face, side)` per boundary incidence, in the topology's
+/// canonical order.
+pub fn volume_face_uses(t: &dyn TopologyView, v: EntityId) -> Vec<(EntityId, Side)> {
+    t.boundary(v).iter().map(|i| (i.cell, i.side)).collect()
 }

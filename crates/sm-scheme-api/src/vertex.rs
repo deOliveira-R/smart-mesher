@@ -39,8 +39,9 @@ impl VertexType {
         f64::from(self.element_count()) * FRAC_PI_2
     }
 
-    /// Contribution to the submap corner sum: End `+1`, Side `0`, Corner `-1`, Reversal `-2`.
-    /// A single-loop face is submappable iff the sum over its corners is 4.
+    /// Contribution to the submap corner sum, which is also the quarter turn the boundary
+    /// makes at the corner: End `+1`, Side `0`, Corner `-1`, Reversal `-2`. A single-loop face
+    /// is submappable iff the sum over its corners is 4.
     pub const fn submap_weight(self) -> i32 {
         2 - self.element_count() as i32
     }
@@ -87,16 +88,62 @@ pub struct CornerAssignment {
     pub angle: f64,
 }
 
-/// One logical side of a structured face: consecutive coedges between two `End` corners
+/// Direction of a logical side in the face's (i, j) frame, from the cumulative quarter turns
+/// of the boundary: the first side runs `PlusI`, each End turns left (`PlusJ`, `MinusI`,
+/// `MinusJ`), each Corner turns right, a Reversal turns back twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SideDir {
+    /// Along +i.
+    PlusI,
+    /// Along +j.
+    PlusJ,
+    /// Along -i.
+    MinusI,
+    /// Along -j.
+    MinusJ,
+}
+
+impl SideDir {
+    /// The direction after `quarter_turns` left turns (negative: right turns).
+    pub const fn turned(self, quarter_turns: i32) -> SideDir {
+        let base = match self {
+            SideDir::PlusI => 0,
+            SideDir::PlusJ => 1,
+            SideDir::MinusI => 2,
+            SideDir::MinusJ => 3,
+        };
+        match (base + quarter_turns).rem_euclid(4) {
+            0 => SideDir::PlusI,
+            1 => SideDir::PlusJ,
+            2 => SideDir::MinusI,
+            _ => SideDir::MinusJ,
+        }
+    }
+
+    /// The opposite direction.
+    pub const fn reversed(self) -> SideDir {
+        self.turned(2)
+    }
+
+    /// True for `PlusI` and `MinusI`.
+    pub const fn along_i(self) -> bool {
+        matches!(self, SideDir::PlusI | SideDir::MinusI)
+    }
+}
+
+/// One logical side of a structured face: consecutive coedges between two logical corners
 /// (curves may be grouped, and a side may end mid-curve only after a virtual split).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalSide {
     /// Coedges in loop order.
     pub coedges: Vec<CoedgeKey>,
+    /// Direction in the face's (i, j) frame (see [`SideDir`]). Submap, triprimitive and sweep
+    /// crates all read the same driver-owned value.
+    pub dir: SideDir,
 }
 
 /// Solved corner layout of one face: corner types in loop order and, for structured rules,
-/// the logical sides starting at the first `End` corner.
+/// the logical sides starting at the first logical corner.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FaceLayout {
     /// The face.

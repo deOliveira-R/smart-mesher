@@ -1,14 +1,17 @@
 //! The scheme trait, its three phase contexts, input resolution and the registry.
 
-use crate::error::{GenerateFailure, Result, SchemeError};
+use crate::caps::Caps;
+use crate::error::{FailureKind, GenerateFailure, Result, SchemeError};
+use crate::geom;
 use crate::intent::{MeshIntent, Params, SchemeName};
-use crate::patch::{Patch, PatchSet};
+use crate::patch::{ElemShape, NodeGrid, Patch, PatchBuilder, PatchSet};
 use crate::plan::Plan;
-use crate::problem::{IntervalSink, Requirements, Role};
+use crate::problem::{IntervalSink, Requirements, Role, TargetPlan};
 use crate::sizing::SizeField;
 use crate::target::{NodeKey, SchemeDim, Target, piece_of};
 use crate::vertex::FaceLayout;
 use sm_core::{EntityId, EntityKind, Point3};
+use sm_mesh_api::Param;
 use sm_model_api::{Model, PieceFace, PieceRef};
 use sm_topo_api::{CellFlags, CoedgeKey, Side, TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
@@ -16,7 +19,7 @@ use std::collections::BTreeMap;
 /// Whether a scheme can mesh a target, with a score for automatic selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Applicability {
-    /// Applicable. Higher scores win auto selection (ties: auto-policy order, then name).
+    /// Applicable. Higher scores win auto selection (ties: auto-list order, then name).
     /// Convention: 100 = exact fit (map on a 4-sided face), 50 = workable, 10 = last resort.
     Applicable {
         /// Score.
@@ -44,7 +47,8 @@ impl Applicability {
 
 /// How pieces of the decomposition layer are seen through the topology view, and how node
 /// owners are classified. The default [`WholeFaces`] handles whole volumes and cells whose
-/// faces are all whole model faces; a decomposition-overlay resolver realizes cut faces.
+/// faces are all whole model faces (including composites of whole volumes); a
+/// decomposition-overlay resolver realizes cut faces.
 pub trait PieceResolver: Send + Sync {
     /// Faces of the view bounding `piece`, ascending.
     fn faces(&self, topo: &dyn TopologyView, model: &Model, piece: PieceRef) -> Result<Vec<EntityId>>;
@@ -141,6 +145,9 @@ pub struct IntervalCtx<'a> {
     pub layouts: &'a [FaceLayout],
     /// Roles `(target, role)`.
     pub roles: &'a [(Target, Role)],
+    /// The resolved targets, ascending (their `data` is what the scheme stored while
+    /// planning).
+    pub targets: &'a [TargetPlan],
 }
 
 impl IntervalCtx<'_> {
@@ -152,6 +159,38 @@ impl IntervalCtx<'_> {
     pub fn roles_of(&self, t: Target) -> impl Iterator<Item = Role> + '_ {
         self.roles.iter().filter(move |r| r.0 == t).map(|r| r.1)
     }
+    /// The plan row of `t`.
+    pub fn target(&self, t: Target) -> Option<&TargetPlan> {
+        self.targets.binary_search_by(|p| p.target.cmp(&t)).ok().map(|i| &self.targets[i])
+    }
+    /// Scheme-private data stored for `t` ([`Requirements::set_data`]).
+    pub fn data(&self, t: Target) -> Option<&Params> {
+        self.target(t).map(|p| &p.data)
+    }
+}
+
+/// One coedge's stretch of a [`BoundaryLoop`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundaryUse {
+    /// The coedge (loop direction).
+    pub coedge: CoedgeKey,
+    /// Index into [`BoundaryLoop::nodes`] of the coedge's first node.
+    pub first: u32,
+    /// Number of segments (intervals) of the coedge.
+    pub segments: u32,
+}
+
+/// A closed boundary loop of a face as node keys: what pave, tri* and polygon schemes need.
+/// `nodes[i]` and `nodes[(i + 1) % len]` are consecutive (the last node connects to the
+/// first); the face lies on the left.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundaryLoop {
+    /// Loop index (0 = outer).
+    pub ring: u16,
+    /// The nodes in loop order, without repeating the first.
+    pub nodes: Vec<NodeKey>,
+    /// The coedges and where they start.
+    pub uses: Vec<BoundaryUse>,
 }
 
 /// Context of the generation phase: the solved plan and every patch of earlier waves.
@@ -171,6 +210,11 @@ impl GenCtx<'_> {
     /// Solved interval count of `edge`.
     pub fn intervals(&self, edge: EntityId) -> Option<u32> {
         self.plan.intervals(edge)
+    }
+
+    /// Scheme-private data stored for `t` ([`Requirements::set_data`]).
+    pub fn data(&self, t: Target) -> Option<&Params> {
+        self.plan.target(t).map(|p| &p.data)
     }
 
     /// Nodes of an edge from its start vertex to its end vertex: `[start, (e,1)..(e,n-1), end]`.
@@ -205,9 +249,67 @@ impl GenCtx<'_> {
         Some(out)
     }
 
+    /// The boundary loops of `face` as node keys (pole coedges skipped), outer loop first.
+    pub fn loops(&self, face: EntityId) -> Result<Vec<BoundaryLoop>> {
+        let t = self.input.topo;
+        let mut out = Vec::new();
+        for lp in t.loops(face) {
+            let mut bl = BoundaryLoop { ring: lp.ring, nodes: Vec::new(), uses: Vec::new() };
+            for k in lp.keys().filter(|k| !t.flags(k.edge).contains(CellFlags::DEGENERATE)) {
+                let cn = self.coedge_nodes(k).ok_or_else(|| SchemeError::Input(format!("edge {} has no interval count", k.edge)))?;
+                let first = bl.nodes.len() as u32;
+                bl.nodes.extend_from_slice(&cn[..cn.len() - 1]);
+                bl.uses.push(BoundaryUse { coedge: k, first, segments: (cn.len() - 1) as u32 });
+            }
+            if !bl.nodes.is_empty() {
+                out.push(bl);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The structured view of an already generated face.
+    pub fn grid(&self, face: EntityId) -> Option<&NodeGrid> {
+        self.patches.get(Target::Surface(face)).and_then(|p| p.grid.as_ref())
+    }
+
     /// Position of a node of an earlier wave.
     pub fn point(&self, k: NodeKey) -> Option<Point3> {
         self.patches.point(k)
+    }
+
+    /// A valid curve patch for `edge` from `n - 1` increasing parameter fractions in `(0, 1)`
+    /// measured from the edge's start vertex. Bias, dualbias and curvature schemes only
+    /// compute fractions; positions, parameters and keys are the driver's business.
+    pub fn curve_patch(&self, edge: EntityId, fractions: &[f64]) -> Result<Patch, GenerateFailure> {
+        let target = Target::Curve(edge);
+        let scheme = self.plan.target(target).map_or("curve", |p| p.scheme.as_str());
+        let fail = |kind: FailureKind, r: String| GenerateFailure::new(target, scheme, kind, r);
+        let n = self.intervals(edge).ok_or_else(|| fail(FailureKind::Internal, format!("edge {edge} has no interval count")))?;
+        if fractions.len() != n.saturating_sub(1) as usize {
+            return Err(fail(FailureKind::Internal, format!("{} fractions for {n} intervals", fractions.len())));
+        }
+        let mut prev = 0.0;
+        for f in fractions {
+            if !(f.is_finite() && *f > prev && *f < 1.0) {
+                return Err(fail(FailureKind::Geometry, format!("fractions must increase strictly inside (0, 1); got {f} after {prev}")));
+            }
+            prev = *f;
+        }
+        let (a, b) = self.input.topo.edge_ends(edge).ok_or_else(|| fail(FailureKind::Internal, "edge without ends".into()))?;
+        let (c, cc) = geom::edge_curve(self.input.topo, edge).map_err(|e| fail(FailureKind::Geometry, e.to_string()))?;
+        let mut pb = PatchBuilder::new(target);
+        let mut chain = Vec::with_capacity(n as usize + 1);
+        chain.push(pb.refer(NodeKey::vertex(a)));
+        for (i, f) in fractions.iter().enumerate() {
+            let t = geom::edge_param(&cc, *f);
+            chain.push(pb.node(NodeKey::new(edge, i as u32 + 1), c.eval(t), Param::Curve(t)));
+        }
+        chain.push(pb.refer(NodeKey::vertex(b)));
+        for w in chain.windows(2) {
+            pb.push(ElemShape::Segment, w);
+        }
+        Ok(pb.finish())
     }
 }
 
@@ -216,7 +318,7 @@ impl GenCtx<'_> {
 ///
 /// Phases, all driven by the driver in a deterministic order:
 /// 1. [`Scheme::applicability`] (auto selection, fallback chains).
-/// 2. [`Scheme::requirements`]: child impositions, roles, copies, corner rules.
+/// 2. [`Scheme::requirements`]: child impositions, roles, claims, copies, corner rules.
 /// 3. [`Scheme::interval_constraints`]: after corners/roles are solved.
 /// 4. [`Scheme::generate`]: returns a [`Patch`]; may run concurrently with other targets of
 ///    the same wave, so it must be pure (no interior mutability that changes results).
@@ -225,13 +327,16 @@ pub trait Scheme: Send + Sync {
     fn name(&self) -> &str;
     /// Dimension.
     fn dim(&self) -> SchemeDim;
+    /// What this scheme produces with `params`. Impositions are phrased over capabilities
+    /// (see [`Caps`]), so a new structured scheme needs no edits in the schemes that impose.
+    fn caps(&self, params: &Params) -> Caps;
     /// True if the scheme can mesh a [`Target::Group`] in one invocation.
     fn supports_groups(&self) -> bool {
         false
     }
     /// Can this scheme mesh `target`?
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, params: &Params) -> Applicability;
-    /// Contribute requirements (impositions on children, roles, copies, corner rules).
+    /// Contribute requirements (impositions on children, roles, claims, copies, corner rules).
     fn requirements(&self, cx: &PlanCtx<'_>, target: Target, params: &Params, out: &mut Requirements<'_>) -> Result<()> {
         let _ = (cx, target, params, out);
         Ok(())
@@ -245,20 +350,25 @@ pub trait Scheme: Send + Sync {
     fn generate(&self, cx: &GenCtx<'_>, target: Target, params: &Params) -> Result<Patch, GenerateFailure>;
 }
 
-/// A conversion applied to the patches of a group atomically after generation (THex, HTet,
-/// QTri). All member patches are rewritten together or not at all.
+/// A conversion applied to the patches of its targets atomically after generation (THex,
+/// HTet, QTri).
 pub trait MeshTransform: Send + Sync {
     /// Registered name.
     fn name(&self) -> &str;
-    /// Rewrite `patch` (the group patch). On error nothing is committed.
-    fn apply(&self, cx: &GenCtx<'_>, group: Target, params: &Params, patch: &mut Patch) -> Result<(), GenerateFailure>;
+    /// What the converted mesh provides.
+    fn caps(&self, params: &Params) -> Caps;
+    /// Rewrite `patches` (one per target, in target order) in place. The driver keeps the
+    /// rewritten patches only if every transform of the plan succeeds.
+    fn apply(&self, cx: &GenCtx<'_>, targets: &[Target], params: &Params, patches: &mut [Patch]) -> Result<(), GenerateFailure>;
 }
 
-/// Schemes and transforms by name.
+/// Schemes and transforms by name, plus fallback chains and automatic-selection lists.
 #[derive(Default)]
 pub struct SchemeRegistry {
     schemes: BTreeMap<(SchemeDim, String), Box<dyn Scheme>>,
     transforms: BTreeMap<String, Box<dyn MeshTransform>>,
+    fallbacks: BTreeMap<(SchemeDim, String), Vec<SchemeName>>,
+    auto: BTreeMap<SchemeDim, Vec<SchemeName>>,
 }
 
 impl SchemeRegistry {
@@ -300,5 +410,40 @@ impl SchemeRegistry {
     /// Schemes of a dimension in name order.
     pub fn of_dim(&self, dim: SchemeDim) -> impl Iterator<Item = &dyn Scheme> {
         self.schemes.iter().filter(move |(k, _)| k.0 == dim).map(|(_, v)| v.as_ref())
+    }
+
+    /// Set the registry-level fallback chain of scheme `name`: tried, in order, after the
+    /// last scheme of an intent chain that names `name` (Cubit's pave, then tridelaunay,
+    /// then triadvance). Every name must be registered for `dim`.
+    pub fn set_fallback(&mut self, dim: SchemeDim, name: &str, chain: &[&str]) -> Result<()> {
+        for n in std::iter::once(&name).chain(chain.iter()) {
+            if self.get(dim, n).is_none() {
+                return Err(SchemeError::BadParams { scheme: SchemeName::new(n), reason: format!("no {dim:?} scheme of that name is registered") });
+            }
+        }
+        self.fallbacks.insert((dim, name.to_owned()), chain.iter().map(|n| SchemeName::new(n)).collect());
+        Ok(())
+    }
+
+    /// The fallback chain of `name` (empty if none).
+    pub fn fallbacks(&self, dim: SchemeDim, name: &str) -> &[SchemeName] {
+        self.fallbacks.get(&(dim, name.to_owned())).map_or(&[], Vec::as_slice)
+    }
+
+    /// Set the candidate list of automatic selection for `dim`, in priority order.
+    /// `MeshIntent::defaults.auto` overrides it when non-empty.
+    pub fn set_auto(&mut self, dim: SchemeDim, names: &[&str]) -> Result<()> {
+        for n in names {
+            if self.get(dim, n).is_none() {
+                return Err(SchemeError::BadParams { scheme: SchemeName::new(n), reason: format!("no {dim:?} scheme of that name is registered") });
+            }
+        }
+        self.auto.insert(dim, names.iter().map(|n| SchemeName::new(n)).collect());
+        Ok(())
+    }
+
+    /// The registry's automatic-selection list for `dim` (empty: every registered scheme).
+    pub fn auto(&self, dim: SchemeDim) -> &[SchemeName] {
+        self.auto.get(&dim).map_or(&[], Vec::as_slice)
     }
 }

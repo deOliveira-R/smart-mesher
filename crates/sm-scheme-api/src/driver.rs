@@ -1,45 +1,90 @@
-//! The driver: assemble the [`MeshingProblem`], solve it into a [`Plan`], generate patches
-//! wave by wave (concurrently inside a wave), and commit them in a fixed order into a
-//! [`MeshBuild`].
+//! The driver: plan (see `planner`), generate patches wave by wave (concurrently inside a
+//! wave), verify copies, and commit in a fixed order into a [`MeshBuild`]; `mesh` re-plans
+//! around failures.
 
 use crate::copy;
-use crate::error::{Infeasible, Result, SchemeError};
+use crate::error::{Attempt, FailureKind, Phase, Result, SchemeError};
 use crate::exec::Executor;
-use crate::firm::{Firm, Firmness};
 use crate::geom;
-use crate::intent::{IntervalRequest, MeshIntent, Params, SchemeChoice, SchemeName};
-use crate::patch::{ElemShape, Patch, PatchSet};
-use crate::plan::Plan;
-use crate::problem::{ConstraintId, CopyConstraint, CopyReason, IntervalConstraint, IntervalSink, MeshConstraint, MeshingProblem, Origin, Requirements, Role, Selection, TargetPlan};
-use crate::scheme::{Applicability, GenCtx, IntervalCtx, MeshInput, PlanCtx, SchemeRegistry};
+use crate::intent::{MeshIntent, SchemeName};
+use crate::patch::{ElemShape, Patch, PatchBuilder, PatchSet};
+use crate::plan::{CopyMode, Plan};
+use crate::problem::{MeshConstraint, Selection};
+use crate::scheme::{GenCtx, MeshInput, SchemeRegistry};
 use crate::sizing::{SizeField, builtin_field};
 use crate::solve::{CornerPicker, IntervalSolver};
-use crate::target::{GroupId, NodeKey, SchemeDim, Target, piece_of};
-use crate::vertex::{FaceLayout, VertexRule, VertexType};
-use sm_core::{EntityId, Transform};
-use sm_mesh_api::{CellShape, Classification, Finished, MeshBuild, MeshEntityRef, Param, SerialAlloc, VertexIx};
-use sm_model_api::{Deck, FaceKindView, PieceRef, PieceShape};
-use sm_topo_api::{CornerKey, Dim, TopologyViewExt};
+use crate::target::{Job, NodeKey, SchemeDim, Target};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sm_core::EntityId;
+use sm_mesh_api::{CellShape, Classification, Finished, MeshBuild, MeshEntityRef, SerialAlloc, VertexIx};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 /// Driver options.
 #[derive(Clone, Copy, Debug)]
 pub struct DriverOptions {
-    /// Maximum number of re-plans after fallback-eligible generation failures.
+    /// Maximum number of re-plans after failures a different scheme could avoid.
     pub max_replans: usize,
     /// Also classify mesh edges on curves (creates the mesh edge table).
     pub classify_edges: bool,
+    /// Tolerance of copy redundancy checks and verification (default: the model's linear
+    /// tolerance).
+    pub copy_tolerance: Option<f64>,
 }
 
 impl Default for DriverOptions {
     fn default() -> Self {
-        Self { max_replans: 16, classify_edges: false }
+        Self { max_replans: 16, classify_edges: false, copy_tolerance: None }
     }
 }
 
-/// `(target, scheme)` pairs rejected after a generation failure, with the reason.
+/// `(target, scheme)` pairs rejected after a failure, with the attempt that caused each.
+///
+/// Serializes as the list of attempts (JSON cannot key a map by a pair). Stored in
+/// [`Plan::rejections`], not in the intent: replaying `(intent, rejections)` through
+/// [`Driver::plan_with`] reproduces a plan, and the user's Op payload never holds solver state.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Rejections(pub BTreeMap<(Target, SchemeName), String>);
+pub struct Rejections(pub BTreeMap<(Target, SchemeName), Attempt>);
+
+impl Rejections {
+    /// Reject the attempt's `(target, scheme)`.
+    pub fn insert(&mut self, a: Attempt) {
+        self.0.insert((a.target, a.scheme.clone()), a);
+    }
+    /// True if `(target, scheme)` is rejected.
+    pub fn contains(&self, t: Target, scheme: &SchemeName) -> bool {
+        self.0.contains_key(&(t, scheme.clone()))
+    }
+    /// True if nothing is rejected.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Number of rejected pairs.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    /// The attempts, in `(target, scheme)` order.
+    pub fn attempts(&self) -> impl Iterator<Item = &Attempt> {
+        self.0.values()
+    }
+}
+
+impl Serialize for Rejections {
+    fn serialize<S: Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
+        s.collect_seq(self.0.values())
+    }
+}
+
+impl<'de> Deserialize<'de> for Rejections {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> core::result::Result<Self, D::Error> {
+        let v = Vec::<Attempt>::deserialize(d)?;
+        let mut r = Rejections::default();
+        for a in v {
+            r.insert(a);
+        }
+        Ok(r)
+    }
+}
 
 /// The result of [`Driver::mesh`].
 pub struct Meshed<M> {
@@ -49,8 +94,9 @@ pub struct Meshed<M> {
     pub patches: PatchSet,
     /// The finished mesh.
     pub finished: Finished<M>,
-    /// Rejections accumulated by fallbacks.
-    pub rejections: Rejections,
+    /// Every attempt that was rejected or failed on the way, in order: failures that caused a
+    /// re-plan first, then the passed-over candidates of the final plan.
+    pub attempts: Vec<Attempt>,
 }
 
 /// The meshing driver. Holds the registry and the solvers; stateless otherwise, so one driver
@@ -68,19 +114,10 @@ pub struct Driver<'r> {
     pub options: DriverOptions,
 }
 
-struct Region {
-    volumes: Vec<EntityId>,
-    groups: Vec<(GroupId, Vec<EntityId>)>,
-    grouped: BTreeMap<EntityId, GroupId>,
-    faces: Vec<EntityId>,
-    edges: Vec<EntityId>,
-    vertices: Vec<EntityId>,
-}
-
-fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
-    v.sort();
-    v.dedup();
-    v
+/// What one job produced.
+enum JobOut {
+    Patch(Patch),
+    Transformed(Vec<Patch>),
 }
 
 impl<'r> Driver<'r> {
@@ -89,482 +126,159 @@ impl<'r> Driver<'r> {
         Self { registry, solver, picker, size: None, options: DriverOptions::default() }
     }
 
-    fn region(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Region> {
-        let volumes = sorted(input.selection.to_vec());
-        if let Some(v) = volumes.iter().find(|v| piece_of(**v).is_none()) {
-            return Err(SchemeError::Input(format!("{v} is not a TopoVolume or PartitionCell")));
-        }
-        let mut grouped = BTreeMap::new();
-        let mut groups = Vec::new();
-        for g in &intent.groups {
-            let members = sorted(g.members.clone());
-            for m in &members {
-                if volumes.binary_search(m).is_err() {
-                    return Err(SchemeError::Input(format!("group {:?}: member {m} is not selected", g.id)));
-                }
-                if grouped.insert(*m, g.id).is_some() {
-                    return Err(SchemeError::Input(format!("{m} is in two groups")));
-                }
-            }
-            groups.push((g.id, members));
-        }
-        groups.sort();
-        let mut faces = BTreeSet::new();
-        for v in &volumes {
-            faces.extend(input.piece_faces(Target::Volume(*v))?);
-        }
-        let faces: Vec<EntityId> = faces.into_iter().collect();
-        let edges = sorted(faces.iter().flat_map(|f| input.face_edges(*f)).collect());
-        let vertices = sorted(edges.iter().filter_map(|e| input.topo.edge_ends(*e)).flat_map(|(a, b)| [a, b]).collect());
-        Ok(Region { volumes, groups, grouped, faces, edges, vertices })
-    }
-
-    /// Assemble and solve the problem.
-    pub fn plan(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Plan> {
-        self.plan_with(input, intent, &Rejections::default())
-    }
-
-    /// Assemble and solve the problem, skipping rejected `(target, scheme)` pairs.
-    pub fn plan_with(&self, input: &MeshInput<'_>, intent: &MeshIntent, rej: &Rejections) -> Result<Plan> {
-        let topo = input.topo;
-        let region = self.region(input, intent)?;
-        let cx = PlanCtx { input, intent };
-        let mut p = MeshingProblem::default();
-        p.vertices = region.vertices.clone();
-        let mut plans: BTreeMap<Target, TargetPlan> = BTreeMap::new();
-
-        // Deck boundaries (model layer): copies, no boundary layers, plane locks.
-        for &f in &region.faces {
-            if let Some(FaceKindView::Deck { boundary, deck, side, mate }) = input.model.face_kind(f, topo) {
-                if intent.entities.get(&f).is_some_and(|e| e.boundary_layer.is_some()) {
-                    return Err(SchemeError::BoundaryLayerOnDeck { face: f, boundary });
-                }
-                let origin = Origin::Deck { boundary };
-                p.push_constraint(origin.clone(), MeshConstraint::NoBoundaryLayer { face: f });
-                match (deck, side, mate) {
-                    (Deck::Mirror { plane }, _, _) => {
-                        p.push_constraint(origin, MeshConstraint::PlaneLock { face: f, normal: plane.normal, offset: plane.offset });
-                    }
-                    (_, sm_model_api::DeckSide::A, Some(m)) if region.faces.binary_search(&m).is_ok() => {
-                        let c = CopyConstraint { source: Target::Surface(f), target: Target::Surface(m), transform: deck.transform(), vertex_map: Vec::new(), reason: CopyReason::Deck { boundary } };
-                        p.push_copy(origin, c);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Volumes, then groups (top-down: their requirements constrain faces and curves).
-        for &v in &region.volumes {
-            if region.grouped.contains_key(&v) {
-                continue;
-            }
-            let t = Target::Volume(v);
-            let tp = self.resolve(&cx, &p, t, rej)?;
-            self.require(&cx, &mut p, &tp)?;
-            plans.insert(t, tp);
-        }
-        for (id, members) in &region.groups {
-            let t = Target::Group(*id);
-            let mt: Vec<Target> = members.iter().map(|m| Target::Volume(*m)).collect();
-            p.push_constraint(Origin::Intent, MeshConstraint::Atomic { group: *id, members: mt });
-            let tp = self.resolve(&cx, &p, t, rej)?;
-            self.require(&cx, &mut p, &tp)?;
-            plans.insert(t, tp);
-        }
-
-        // User copies on faces and curves.
-        for (id, ei) in &intent.entities {
-            let Some(ch) = ei.scheme.as_ref().filter(|c| c.name.as_str() == SchemeName::COPY) else { continue };
-            let t = match topo.dim_of(*id) {
-                Some(Dim::Face) if region.faces.binary_search(id).is_ok() => Target::Surface(*id),
-                Some(Dim::Edge) if region.edges.binary_search(id).is_ok() => Target::Curve(*id),
-                _ => continue,
-            };
-            let source: EntityId = ch.params.get(SchemeName::COPY, "source")?.ok_or_else(|| SchemeError::BadParams { scheme: ch.name.clone(), reason: "missing `source`".into() })?;
-            let transform: Transform = ch.params.get(SchemeName::COPY, "transform")?.unwrap_or(Transform::IDENTITY);
-            let vertex_map: Vec<(EntityId, EntityId)> = sorted(ch.params.get(SchemeName::COPY, "vertex_map")?.unwrap_or_default());
-            let st = match t {
-                Target::Surface(_) => Target::Surface(source),
-                _ => Target::Curve(source),
-            };
-            p.push_copy(Origin::Intent, CopyConstraint { source: st, target: t, transform, vertex_map, reason: CopyReason::User });
-        }
-        self.copy_closure(input, &region, &mut p)?;
-
-        // Faces, then curves.
-        for &f in &region.faces {
-            let t = Target::Surface(f);
-            let tp = match p.copy_into(t) {
-                Some(rec) => copy_plan(intent, t, rec)?,
-                None => {
-                    let tp = self.resolve(&cx, &p, t, rej)?;
-                    self.require(&cx, &mut p, &tp)?;
-                    tp
-                }
-            };
-            plans.insert(t, tp);
-        }
-        for &e in &region.edges {
-            let t = Target::Curve(e);
-            let tp = match p.copy_into(t) {
-                Some(rec) => copy_plan(intent, t, rec)?,
-                None => {
-                    let tp = self.resolve(&cx, &p, t, rej)?;
-                    self.require(&cx, &mut p, &tp)?;
-                    tp
-                }
-            };
-            plans.insert(t, tp);
-        }
-
-        // Corner requests from intent, then corner picking per face with a rule.
-        for c in &intent.corners {
-            if region.faces.binary_search(&c.corner.face).is_ok() {
-                p.push_vertex_type(Origin::Intent, c.corner, c.vertex_type);
-            }
-        }
-        let layouts = self.pick_corners(input, &p)?;
-
-        // Intervals: intent and sizing goals, then scheme equations.
-        self.sizing_constraints(input, intent, &region, &mut p)?;
-        let roles: Vec<(Target, Role)> = p.roles.iter().map(|r| r.item).collect();
-        let icx = IntervalCtx { input, layouts: &layouts, roles: &roles };
-        for tp in plans.values() {
-            if tp.scheme.as_str() == SchemeName::COPY {
-                continue;
-            }
-            let s = self.registry.get(tp.target.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: tp.target })?;
-            s.interval_constraints(&icx, tp.target, &tp.params, &mut IntervalSink::new(&mut p, &tp.scheme, tp.target))?;
-        }
-        let intervals = self.solver.solve(&region.edges, &p.intervals)?;
-
-        p.targets = plans.into_values().collect();
-        let waves = waves(&p)?;
-        Ok(Plan { problem: p, intervals, layouts, waves })
-    }
-
-    fn require(&self, cx: &PlanCtx<'_>, p: &mut MeshingProblem, tp: &TargetPlan) -> Result<()> {
-        let s = self.registry.get(tp.target.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: tp.target })?;
-        s.requirements(cx, tp.target, &tp.params, &mut Requirements::new(p, &tp.scheme, tp.target))
-    }
-
-    /// Choose the scheme of `target`: intent chain (scheme, fallbacks), else the piece shape
-    /// hint, else the best applicable candidate among the imposed set or the auto policy.
-    fn resolve(&self, cx: &PlanCtx<'_>, p: &MeshingProblem, target: Target, rej: &Rejections) -> Result<TargetPlan> {
-        let dim = target.dim();
-        // Impositions: intersect every allowed set.
-        let mut allowed: Option<(Vec<SchemeName>, Target)> = None;
-        for r in p.impositions.iter().filter(|r| r.item.child == target) {
-            allowed = Some(match allowed {
-                None => (r.item.allowed.clone(), r.item.by),
-                Some((a, by)) => {
-                    let both: Vec<SchemeName> = a.iter().filter(|n| r.item.allowed.contains(n)).cloned().collect();
-                    if both.is_empty() {
-                        return Err(SchemeError::ImpositionConflict { child: target, imposed_by: r.item.by, required: r.item.allowed.clone(), conflict: format!("{by:?} requires one of {a:?}") });
-                    }
-                    (both, by)
-                }
-            });
-        }
-        // Explicit chain.
-        let mut chain: Vec<(SchemeChoice, Selection)> = Vec::new();
-        let ent = match target {
-            Target::Group(g) => cx.intent.groups.iter().find(|x| x.id == g).and_then(|x| x.scheme.clone()).map(|s| (s, Vec::new())),
-            _ => target.entity().and_then(|e| cx.intent.entities.get(&e)).and_then(|ei| ei.scheme.clone().map(|s| (s, ei.fallbacks.clone()))),
-        };
-        if let Some((s, fb)) = ent {
-            chain.push((s, Selection::Intent { rank: 0 }));
-            for (i, f) in fb.into_iter().enumerate() {
-                chain.push((f, Selection::Intent { rank: i as u32 + 1 }));
-            }
-        } else if let Some(PieceRef::Cell(c)) = target.piece()
-            && let Some(piece) = cx.input.model.decomposition().piece(c)
-        {
-            match &piece.shape {
-                PieceShape::Sweep { source, target: tg } => {
-                    let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> { v.iter().filter_map(|pf| cx.input.pieces.face_of(cx.input.topo, cx.input.model, pf)).collect() };
-                    let params = serde_json::json!({ "source": map(source), "target": map(tg) });
-                    chain.push((SchemeChoice::with_params("sweep", params, Firmness::Default), Selection::PieceShape));
-                }
-                PieceShape::Map => chain.push((SchemeChoice::new("map", Firmness::Default), Selection::PieceShape)),
-                PieceShape::Any => {}
-            }
-        }
-        let mut rejected: Vec<(SchemeName, String)> = Vec::new();
-        let any_hard = chain.iter().any(|c| c.0.firmness == Firmness::Hard);
-        for (choice, sel) in chain {
-            if let Some((a, by)) = &allowed
-                && !a.contains(&choice.name)
-            {
-                if choice.firmness == Firmness::Hard {
-                    return Err(SchemeError::ImpositionConflict { child: target, imposed_by: *by, required: a.clone(), conflict: format!("the intent requires `{}` (hard)", choice.name) });
-                }
-                rejected.push((choice.name.clone(), format!("overridden by imposition from {by:?}")));
-                continue;
-            }
-            if let Some(why) = rej.0.get(&(target, choice.name.clone())) {
-                rejected.push((choice.name.clone(), format!("rejected after failure: {why}")));
-                continue;
-            }
-            let s = self.registry.get(dim, choice.name.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: choice.name.clone(), target })?;
-            if matches!(target, Target::Group(_)) && !s.supports_groups() {
-                rejected.push((choice.name.clone(), "does not mesh groups".into()));
-                continue;
-            }
-            match s.applicability(cx, target, &choice.params) {
-                Applicability::Applicable { .. } => return Ok(TargetPlan { target, scheme: choice.name, params: choice.params, selection: sel, rejected }),
-                Applicability::NotApplicable { reason } => rejected.push((choice.name, reason)),
-            }
-        }
-        if any_hard {
-            return Err(SchemeError::NoApplicableScheme { target, tried: rejected });
-        }
-        // Imposed set or auto policy.
-        let policy = match dim {
-            SchemeDim::Curve => &cx.intent.defaults.auto.curve,
-            SchemeDim::Surface => &cx.intent.defaults.auto.surface,
-            SchemeDim::Volume => &cx.intent.defaults.auto.volume,
-        };
-        let names: Vec<SchemeName> = if policy.is_empty() { self.registry.of_dim(dim).map(|s| SchemeName::new(s.name())).collect() } else { policy.clone() };
-        let names: Vec<SchemeName> = match &allowed {
-            Some((a, _)) => {
-                let mut v: Vec<SchemeName> = names.iter().filter(|n| a.contains(n)).cloned().collect();
-                v.extend(a.iter().filter(|n| !names.contains(n)).cloned());
-                v
-            }
-            None => names,
-        };
-        let mut best: Option<(u32, SchemeName)> = None;
-        for n in names {
-            if rej.0.contains_key(&(target, n.clone())) {
-                rejected.push((n, "rejected after failure".into()));
-                continue;
-            }
-            let Some(s) = self.registry.get(dim, n.as_str()) else { continue };
-            if matches!(target, Target::Group(_)) && !s.supports_groups() {
-                continue;
-            }
-            match s.applicability(cx, target, &Params::empty()) {
-                Applicability::Applicable { score, .. } => {
-                    if best.as_ref().is_none_or(|b| score > b.0) {
-                        best = Some((score, n));
-                    }
-                }
-                Applicability::NotApplicable { reason } => rejected.push((n, reason)),
-            }
-        }
-        match best {
-            Some((score, name)) => {
-                let selection = if allowed.is_some() { Selection::Imposed } else { Selection::Auto { score } };
-                Ok(TargetPlan { target, scheme: name, params: Params::empty(), selection, rejected })
-            }
-            None => Err(SchemeError::NoApplicableScheme { target, tried: rejected }),
-        }
-    }
-
-    /// Fill vertex maps of surface copies, add the implied curve copies of their edges, check
-    /// that no target is copied twice and add the interval equalities of curve copies.
-    fn copy_closure(&self, input: &MeshInput<'_>, region: &Region, p: &mut MeshingProblem) -> Result<()> {
-        let topo = input.topo;
-        for i in 0..p.copies.len() {
-            let c = &p.copies[i].item;
-            let inside = |t: Target| match t {
-                Target::Surface(f) => region.faces.binary_search(&f).is_ok(),
-                Target::Curve(e) => region.edges.binary_search(&e).is_ok(),
-                _ => false,
-            };
-            if !inside(c.source) || !inside(c.target) || c.source == c.target {
-                return Err(SchemeError::Correspondence { source_target: c.source, target: c.target, reason: "source and target must be distinct entities of the meshed region".into() });
-            }
-            if c.vertex_map.is_empty() {
-                let vm = copy::derive_vertex_map(topo, c)?;
-                p.copies[i].item.vertex_map = vm;
-            }
-        }
-        let n0 = p.copies.len();
-        for i in 0..n0 {
-            if !matches!(p.copies[i].item.target, Target::Surface(_)) {
-                continue;
-            }
-            let parent = p.copies[i].id;
-            let c = p.copies[i].item.clone();
-            let vm: BTreeMap<EntityId, EntityId> = c.vertex_map.iter().copied().collect();
-            for (e, f, _) in copy::edge_map(topo, &c)? {
-                if e == f || p.copy_into(Target::Curve(f)).is_some() {
-                    continue;
-                }
-                let Some((a, b)) = topo.edge_ends(e) else { continue };
-                let mut evm: Vec<(EntityId, EntityId)> = [a, b].iter().filter_map(|v| vm.get(v).map(|w| (*v, *w))).collect();
-                evm.sort_unstable();
-                evm.dedup();
-                p.push_copy(Origin::Driver, CopyConstraint { source: Target::Curve(e), target: Target::Curve(f), transform: c.transform, vertex_map: evm, reason: CopyReason::Closure { parent } });
-            }
-        }
-        let mut seen: BTreeMap<Target, ConstraintId> = BTreeMap::new();
-        for r in &p.copies {
-            if let Some(first) = seen.insert(r.item.target, r.id) {
-                return Err(SchemeError::CopyConflict { target: r.item.target, first, second: r.id });
-            }
-        }
-        let eqs: Vec<(EntityId, EntityId)> = p
-            .copies
-            .iter()
-            .filter_map(|r| match (r.item.source, r.item.target) {
-                (Target::Curve(a), Target::Curve(b)) => Some((a, b)),
-                _ => None,
-            })
-            .collect();
-        for (a, b) in eqs {
-            p.push_interval(Origin::Driver, IntervalConstraint::SumEqual { lhs: vec![a], rhs: vec![b] });
-        }
-        Ok(())
-    }
-
-    fn pick_corners(&self, input: &MeshInput<'_>, p: &MeshingProblem) -> Result<Vec<FaceLayout>> {
-        let mut rules: BTreeMap<EntityId, (VertexRule, Vec<ConstraintId>)> = BTreeMap::new();
-        for r in &p.vertex_rules {
-            let (face, rule) = r.item;
-            match rules.get_mut(&face) {
-                None => {
-                    rules.insert(face, (rule, vec![r.id]));
-                }
-                Some((have, ids)) => {
-                    ids.push(r.id);
-                    if *have != rule {
-                        return Err(Infeasible { reason: format!("conflicting corner rules {have:?} and {rule:?}"), constraints: ids.clone(), entities: vec![face] }.into());
-                    }
-                }
-            }
-        }
-        let mut out = Vec::with_capacity(rules.len());
-        for (face, (rule, mut ids)) in rules {
-            let reqs: Vec<(CornerKey, Firm<VertexType>)> = p.vertex_types.iter().filter(|r| r.item.0.face == face).map(|r| r.item).collect();
-            ids.extend(p.vertex_types.iter().filter(|r| r.item.0.face == face).map(|r| r.id));
-            out.push(self.picker.pick(input.topo, face, rule, &reqs, &ids)?);
-        }
-        Ok(out)
-    }
-
-    fn sizing_constraints(&self, input: &MeshInput<'_>, intent: &MeshIntent, region: &Region, p: &mut MeshingProblem) -> Result<()> {
-        let topo = input.topo;
-        // Requests cascade volume -> face -> edge; the lowest id wins within a level.
-        let mut req: BTreeMap<EntityId, Firm<IntervalRequest>> = BTreeMap::new();
-        for v in region.volumes.iter().rev() {
-            if let Some(r) = intent.entities.get(v).and_then(|e| e.intervals) {
-                for f in input.piece_faces(Target::Volume(*v))? {
-                    for e in input.face_edges(f) {
-                        req.insert(e, r);
-                    }
-                }
-            }
-        }
-        for f in region.faces.iter().rev() {
-            if let Some(r) = intent.entities.get(f).and_then(|e| e.intervals) {
-                for e in input.face_edges(*f) {
-                    req.insert(e, r);
-                }
-            }
-        }
-        for e in &region.edges {
-            if let Some(r) = intent.entities.get(e).and_then(|x| x.intervals) {
-                req.insert(*e, r);
-            }
-        }
-        let owned = if self.size.is_none() { intent.defaults.sizing.as_ref().and_then(builtin_field) } else { None };
+    /// Generate every patch of the plan, wave by wave. Inside a wave the executor may run jobs
+    /// concurrently; results are merged in job order, so the output is identical for every
+    /// executor. The size field is `self.size`, else rebuilt from `plan.sizing`.
+    pub fn generate(&self, input: &MeshInput<'_>, plan: &Plan, exec: &dyn Executor) -> Result<PatchSet> {
+        let owned = if self.size.is_none() { plan.sizing.as_ref().and_then(builtin_field) } else { None };
         let field: Option<&dyn SizeField> = self.size.or(owned.as_deref());
-        for &e in &region.edges {
-            let c = match req.get(&e) {
-                Some(Firm { value: IntervalRequest::Count(n), firmness }) => (Origin::Intent, IntervalConstraint::Fixed { edge: e, count: *n, firmness: *firmness }),
-                Some(Firm { value: IntervalRequest::Size(h), .. }) => (Origin::Intent, IntervalConstraint::Goal { edge: e, goal: geom::edge_length(topo, e)? / h }),
-                None => match field {
-                    Some(f) => {
-                        let mid = geom::edge_point(topo, e, 0.5)?;
-                        (Origin::Sizing, IntervalConstraint::Goal { edge: e, goal: geom::edge_length(topo, e)? / f.size(mid) })
-                    }
-                    None => (Origin::Sizing, IntervalConstraint::Goal { edge: e, goal: 1.0 }),
-                },
-            };
-            p.push_interval(c.0, c.1);
-        }
-        Ok(())
+        self.generate_with(input, plan, field, exec)
     }
 
-    /// Generate every patch of the plan, wave by wave. Inside a wave the executor may run
-    /// targets concurrently; results are merged in target order, so the output is identical
-    /// for every executor.
-    pub fn generate<E: Executor>(&self, input: &MeshInput<'_>, intent: &MeshIntent, plan: &Plan, exec: &E) -> Result<PatchSet> {
-        let owned = if self.size.is_none() { intent.defaults.sizing.as_ref().and_then(builtin_field) } else { None };
-        let field: Option<&dyn SizeField> = self.size.or(owned.as_deref());
-        let mut ps = PatchSet::default();
+    fn generate_with(&self, input: &MeshInput<'_>, plan: &Plan, size: Option<&dyn SizeField>, exec: &dyn Executor) -> Result<PatchSet> {
+        let mut ps = PatchSet::new();
         for &v in &plan.problem.vertices {
-            ps.nodes.insert(NodeKey::vertex(v), (geom::vertex_point(input.topo, v)?, Param::None));
+            if !ps.add_vertex_node(NodeKey::vertex(v), geom::vertex_point(input.topo, v)?) {
+                return Err(SchemeError::Input(format!("vertex {v} listed twice")));
+            }
         }
+        let ctx = CheckCtx::new(plan);
         for wave in &plan.waves {
-            let results = exec.map(wave.len(), &|i| self.generate_one(input, intent, plan, &ps, field, wave[i]));
-            for (t, r) in wave.iter().zip(results) {
-                let patch = r?;
-                check_patch(input, plan, &ps, *t, &patch)?;
-                for n in &patch.nodes {
-                    ps.nodes.insert(n.key, (n.point, n.param));
+            let slots: Vec<Mutex<Option<Result<JobOut>>>> = wave.iter().map(|_| Mutex::new(None)).collect();
+            {
+                let ps_ref = &ps;
+                exec.run(wave.len(), &|i| {
+                    let r = self.run_job(input, plan, ps_ref, size, wave[i]);
+                    *slots[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
+                });
+            }
+            // Merge in job order. The first error in job order is the one reported.
+            let mut replaced: Vec<Patch> = Vec::new();
+            for (job, slot) in wave.iter().zip(slots) {
+                let out = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).ok_or_else(|| SchemeError::Input(format!("{job:?} did not run")))??;
+                match (job, out) {
+                    (Job::Generate(t), JobOut::Patch(patch)) => {
+                        ctx.check_patch(&ps, *t, &patch)?;
+                        let (main, children) = ctx.split_claims(*t, patch)?;
+                        for c in children {
+                            let target = c.target;
+                            ps.insert(c).map_err(|k| SchemeError::InvalidPatch { target, reason: format!("duplicate node {k:?}") })?;
+                        }
+                        ps.insert(main).map_err(|k| SchemeError::InvalidPatch { target: *t, reason: format!("duplicate node {k:?}") })?;
+                    }
+                    (Job::Transform(_), JobOut::Transformed(ps2)) => replaced.extend(ps2),
+                    _ => return Err(SchemeError::Input(format!("{job:?} returned the wrong kind of result"))),
                 }
-                ps.patches.insert(*t, patch);
+            }
+            if !replaced.is_empty() {
+                let targets: Vec<Target> = replaced.iter().map(|p| p.target).collect();
+                let mut next = ps.without(&targets);
+                for patch in replaced {
+                    ctx.check_patch(&next, patch.target, &patch)?;
+                    let target = patch.target;
+                    next.insert(patch).map_err(|k| SchemeError::InvalidPatch { target, reason: format!("duplicate node {k:?}") })?;
+                }
+                ps = next;
+            }
+        }
+        // Members that a parent writes must equal the image of their root.
+        let tol = self.options.copy_tolerance.unwrap_or(input.topo.tolerance().linear);
+        for class in &plan.copies {
+            for m in class.members.iter().filter(|m| m.mode == CopyMode::Verify) {
+                copy::verify_copy(input.topo, &ps, class, m, tol)?;
             }
         }
         Ok(ps)
     }
 
-    fn generate_one(&self, input: &MeshInput<'_>, intent: &MeshIntent, plan: &Plan, ps: &PatchSet, size: Option<&dyn SizeField>, t: Target) -> Result<Patch> {
-        let tp = plan.target(t).ok_or_else(|| SchemeError::Input(format!("{t:?} is not in the plan")))?;
-        if tp.scheme.as_str() == SchemeName::COPY {
-            let rec = plan.copy_into(t).ok_or_else(|| SchemeError::Input(format!("{t:?}: copy without constraint")))?;
-            return copy::copy_patch(input.topo, ps, rec, &|e| plan.intervals(e));
+    fn run_job(&self, input: &MeshInput<'_>, plan: &Plan, ps: &PatchSet, size: Option<&dyn SizeField>, job: Job) -> Result<JobOut> {
+        match job {
+            Job::Generate(t) => {
+                let tp = plan.target(t).ok_or_else(|| SchemeError::Input(format!("{t:?} is not in the plan")))?;
+                if let Selection::Copy { .. } = tp.selection {
+                    let (class, m) = plan.copy_of(t).ok_or_else(|| SchemeError::Input(format!("{t:?}: copy without a class")))?;
+                    let p = copy::copy_patch(input.topo, ps, class.root, t, &m.from_root, &m.vertex_map, &|e| plan.intervals(e))?;
+                    return Ok(JobOut::Patch(p));
+                }
+                let s = self.registry.get(t.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: t })?;
+                let cx = GenCtx { input, plan, patches: ps, size };
+                Ok(JobOut::Patch(s.generate(&cx, t, &tp.params)?))
+            }
+            Job::Transform(id) => {
+                let tp = plan.transforms.iter().find(|x| x.id == id).ok_or_else(|| SchemeError::Input(format!("transform {id:?} is not planned")))?;
+                let tr = self.registry.transform(tp.transform.name.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.transform.name.clone(), target: tp.targets[0] })?;
+                let mut patches: Vec<Patch> = Vec::with_capacity(tp.targets.len());
+                for t in &tp.targets {
+                    patches.push(ps.get(*t).cloned().ok_or_else(|| SchemeError::Input(format!("transform {id:?}: {t:?} has no patch")))?);
+                }
+                let cx = GenCtx { input, plan, patches: ps, size };
+                tr.apply(&cx, &tp.targets, &tp.transform.params, &mut patches)?;
+                if patches.len() != tp.targets.len() || patches.iter().zip(&tp.targets).any(|(p, t)| p.target != *t) {
+                    return Err(SchemeError::InvalidPatch { target: tp.targets[0], reason: "a transform must keep one patch per target, in order".into() });
+                }
+                Ok(JobOut::Transformed(patches))
+            }
         }
-        let s = self.registry.get(t.dim(), tp.scheme.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: tp.scheme.clone(), target: t })?;
-        let cx = GenCtx { input, plan, patches: ps, size };
-        let mut patch = s.generate(&cx, t, &tp.params)?;
-        if let Target::Group(g) = t
-            && let Some(conv) = intent.groups.iter().find(|x| x.id == g).and_then(|x| x.conversion.as_ref())
-        {
-            let tr = self.registry.transform(conv.name.as_str()).ok_or_else(|| SchemeError::UnknownScheme { name: conv.name.clone(), target: t })?;
-            tr.apply(&cx, t, &conv.params, &mut patch)?;
-        }
-        Ok(patch)
     }
 
-    /// Write every patch into `b` in a fixed order (nodes by key, then cells by target, then
-    /// surface classifications) and finish. All-or-nothing: on error nothing was finished
-    /// and `alloc` is unchanged (`MeshBuild::finish` contract).
-    pub fn commit<B: MeshBuild>(&self, input: &MeshInput<'_>, plan: &Plan, ps: &PatchSet, mut b: B, alloc: &mut SerialAlloc) -> Result<Finished<B::Output>> {
+    /// Write every patch into `b` in a fixed order (nodes in patch-set order, then volume
+    /// cells, then surface classifications, then optionally curve segments) and finish.
+    /// All-or-nothing: on error nothing was finished and `alloc` is unchanged
+    /// (`MeshBuild::finish` contract).
+    pub fn commit<B: MeshBuild>(&self, input: &MeshInput<'_>, ps: &PatchSet, mut b: B, alloc: &mut SerialAlloc) -> Result<Finished<B::Output>> {
         let classify = |owner: EntityId| input.pieces.classify(owner).ok_or(SchemeError::Unclassifiable { owner });
-        let mut verts: BTreeMap<NodeKey, VertexIx> = BTreeMap::new();
+        let mut verts: Vec<VertexIx> = Vec::with_capacity(ps.node_count());
         for (k, pt, param) in ps.nodes() {
             let v = b.add_vertex(pt)?;
             let ent = classify(k.owner)?;
-            let param = if ent == k.owner && param.fits(ent.kind()) { param } else { Param::None };
+            let param = if ent == k.owner && param.fits(ent.kind()) { param } else { sm_mesh_api::Param::None };
             b.set_class(MeshEntityRef::Vertex(v), Classification { entity: ent, param })?;
-            verts.insert(k, v);
+            verts.push(v);
         }
+        // Local index -> mesh vertex, one lookup per node or reference of a patch.
+        let table = |patch: &Patch| -> Result<Vec<VertexIx>> {
+            let mut t = Vec::with_capacity(patch.local_len());
+            for n in &patch.nodes {
+                t.push(*ps.index_of(n.key).and_then(|i| verts.get(i as usize)).ok_or_else(|| SchemeError::InvalidPatch { target: patch.target, reason: format!("node {:?} missing", n.key) })?);
+            }
+            for k in &patch.refs {
+                t.push(*ps.index_of(*k).and_then(|i| verts.get(i as usize)).ok_or_else(|| SchemeError::InvalidPatch { target: patch.target, reason: format!("node {k:?} missing") })?);
+            }
+            Ok(t)
+        };
+        let bad = |t: Target, reason: String| SchemeError::InvalidPatch { target: t, reason };
         let mut vs: Vec<VertexIx> = Vec::with_capacity(8);
-        let lookup = |verts: &BTreeMap<NodeKey, VertexIx>, k: NodeKey, t: Target| verts.get(&k).copied().ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: format!("node {k:?} missing") });
+        let mut faces: Vec<Vec<VertexIx>> = Vec::new();
         for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Volume) {
             let t = patch.target;
+            let tab = table(patch)?;
             for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
-                let ElemShape::Cell(cs) = shape else {
-                    return Err(SchemeError::InvalidPatch { target: t, reason: format!("volume patch element {shape:?}") });
+                let map = |l: u32| tab.get(l as usize).copied().ok_or_else(|| bad(t, format!("local index {l} out of range")));
+                let added = match shape {
+                    ElemShape::Cell(cs) => {
+                        if cs == CellShape::Polyhedron {
+                            return Err(bad(t, "use ElemShape::Polyhedron for polyhedral cells".into()));
+                        }
+                        vs.clear();
+                        for &l in nodes {
+                            vs.push(map(l)?);
+                        }
+                        b.add_cell_from_vertices(cs, &vs)?
+                    }
+                    ElemShape::Polyhedron => {
+                        faces.clear();
+                        for f in patch.elements.polyhedron_faces(i).into_iter().flatten() {
+                            faces.push(f.iter().map(|&l| map(l)).collect::<Result<Vec<_>>>()?);
+                        }
+                        let refs: Vec<&[VertexIx]> = faces.iter().map(Vec::as_slice).collect();
+                        b.add_polyhedron(&refs)?
+                    }
+                    other => return Err(bad(t, format!("volume patch element {other:?}"))),
                 };
-                if cs == CellShape::Polyhedron {
-                    return Err(SchemeError::InvalidPatch { target: t, reason: "polyhedral cells need face lists (not in the patch contract yet)".into() });
-                }
-                vs.clear();
-                for k in nodes {
-                    vs.push(lookup(&verts, *k, t)?);
-                }
-                let added = b.add_cell_from_vertices(cs, &vs)?;
                 let owner = match (t.entity(), patch.owners.get(i)) {
                     (_, Some(o)) => *o,
                     (Some(e), None) => e,
-                    (None, None) => return Err(SchemeError::InvalidPatch { target: t, reason: "group cell without owner".into() }),
+                    (None, None) => return Err(bad(t, "group cell without owner".into())),
                 };
                 b.set_class(MeshEntityRef::Cell(added.cell), Classification::on(classify(owner)?))?;
             }
@@ -573,12 +287,13 @@ impl<'r> Driver<'r> {
             let t = patch.target;
             let Some(face) = t.entity() else { continue };
             let class = Classification::on(classify(face)?);
+            let tab = table(patch)?;
             for (_, nodes) in patch.elements.iter() {
                 vs.clear();
-                for k in nodes {
-                    vs.push(lookup(&verts, *k, t)?);
+                for &l in nodes {
+                    vs.push(tab.get(l as usize).copied().ok_or_else(|| bad(t, format!("local index {l} out of range")))?);
                 }
-                let (f, _) = b.find_face(&vs).ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: "surface element bounds no cell (surface-only meshes are not representable in sm-mesh-api)".into() })?;
+                let (f, _) = b.find_face(&vs).ok_or_else(|| bad(t, "surface element bounds no cell (surface-only meshes are not representable in sm-mesh-api)".into()))?;
                 b.set_class(MeshEntityRef::Face(f), class)?;
             }
         }
@@ -587,144 +302,325 @@ impl<'r> Driver<'r> {
                 let t = patch.target;
                 let Some(edge) = t.entity() else { continue };
                 let class = Classification::on(classify(edge)?);
+                let tab = table(patch)?;
                 for (_, nodes) in patch.elements.iter() {
-                    if let [a, c] = nodes {
-                        b.set_class(MeshEntityRef::Edge(lookup(&verts, *a, t)?, lookup(&verts, *c, t)?), class)?;
+                    if let [x, y] = nodes {
+                        let (x, y) = (tab.get(*x as usize).copied(), tab.get(*y as usize).copied());
+                        let (Some(x), Some(y)) = (x, y) else { return Err(bad(t, "segment index out of range".into())) };
+                        b.set_class(MeshEntityRef::Edge(x, y), class)?;
                     }
                 }
             }
         }
-        let _ = plan;
         Ok(b.finish(alloc)?)
     }
 
-    /// Plan, generate and commit, falling back on fallback-eligible generation failures:
-    /// the failing `(target, scheme)` is rejected and the whole problem is re-planned (a
-    /// different scheme changes the constraints), up to `options.max_replans` times.
-    pub fn mesh<B: MeshBuild, E: Executor>(&self, input: &MeshInput<'_>, intent: &MeshIntent, exec: &E, builder: B, alloc: &mut SerialAlloc) -> Result<Meshed<B::Output>> {
-        let mut rej = Rejections::default();
+    /// Plan, generate and commit, re-planning around failures a different scheme could avoid:
+    /// the error's [`SchemeError::blame`] (an infeasible interval system blames the cheapest
+    /// scheme-origin constraint, a child with no applicable scheme blames its imposing parent,
+    /// a fallback-eligible generation failure blames its scheme) is rejected and the whole
+    /// problem is re-planned, up to `options.max_replans` times.
+    pub fn mesh<B: MeshBuild>(&self, input: &MeshInput<'_>, intent: &MeshIntent, exec: &dyn Executor, builder: B, alloc: &mut SerialAlloc) -> Result<Meshed<B::Output>> {
+        self.mesh_with(input, intent, &Rejections::default(), exec, builder, alloc)
+    }
+
+    /// [`Driver::mesh`] starting from known rejections (replaying a stored plan).
+    pub fn mesh_with<B: MeshBuild>(&self, input: &MeshInput<'_>, intent: &MeshIntent, rej: &Rejections, exec: &dyn Executor, builder: B, alloc: &mut SerialAlloc) -> Result<Meshed<B::Output>> {
+        let owned = if self.size.is_none() { intent.defaults.sizing.as_ref().and_then(builtin_field) } else { None };
+        let field: Option<&dyn SizeField> = self.size.or(owned.as_deref());
+        let mut rej = rej.clone();
+        let mut history: Vec<Attempt> = Vec::new();
         for _ in 0..=self.options.max_replans {
-            let plan = self.plan_with(input, intent, &rej)?;
-            match self.generate(input, intent, &plan, exec) {
-                Ok(patches) => {
-                    let finished = self.commit(input, &plan, &patches, builder, alloc)?;
-                    return Ok(Meshed { plan, patches, finished, rejections: rej });
+            let step = match self.plan_with(input, intent, &rej) {
+                Err(e) => {
+                    let blame = e.blame();
+                    Err((e, blame))
                 }
-                Err(e) => match e.as_fallback() {
-                    Some(g) if g.scheme.as_str() != SchemeName::COPY => {
-                        rej.0.insert((g.target, g.scheme.clone()), g.reason.clone());
+                Ok(plan) => match self.generate_with(input, &plan, field, exec) {
+                    Ok(ps) => Ok((plan, ps)),
+                    Err(e) => Err(self.annotate(&plan, e)),
+                },
+            };
+            match step {
+                Ok((plan, patches)) => {
+                    let finished = self.commit(input, &patches, builder, alloc)?;
+                    let mut attempts = history;
+                    for a in &plan.attempts {
+                        if !attempts.contains(a) {
+                            attempts.push(a.clone());
+                        }
+                    }
+                    return Ok(Meshed { plan, patches, finished, attempts });
+                }
+                Err((e, blame)) => match blame {
+                    Some((t, s)) if s.as_str() != SchemeName::COPY && !rej.contains(t, &s) => {
+                        let a = Attempt { target: t, scheme: s, phase: phase_of(&e), kind: kind_of(&e), message: e.to_string() };
+                        history.push(a.clone());
+                        rej.insert(a);
                     }
                     _ => return Err(e),
                 },
             }
         }
-        Err(SchemeError::ReplanLimit(self.options.max_replans))
+        Err(SchemeError::ReplanLimit { attempts: history })
     }
-}
 
-/// The plan of a copy target. A hard intent for another scheme on it is an
-/// `ImpositionConflict` (the copy source imposes `copy`); a soft one is recorded as overridden.
-fn copy_plan(intent: &MeshIntent, t: Target, rec: &crate::problem::Record<CopyConstraint>) -> Result<TargetPlan> {
-    let mut rejected = Vec::new();
-    if let Some(ch) = t.entity().and_then(|e| intent.entities.get(&e)).and_then(|ei| ei.scheme.as_ref()).filter(|c| c.name.as_str() != SchemeName::COPY) {
-        if ch.firmness == Firmness::Hard {
-            return Err(SchemeError::ImpositionConflict { child: t, imposed_by: rec.item.source, required: vec![SchemeName::new(SchemeName::COPY)], conflict: format!("the intent requires `{}` (hard)", ch.name) });
-        }
-        rejected.push((ch.name.clone(), format!("overridden by copy constraint {:?}", rec.id)));
-    }
-    Ok(TargetPlan { target: t, scheme: SchemeName::new(SchemeName::COPY), params: Params::empty(), selection: Selection::Copy { constraint: rec.id }, rejected })
-}
-
-/// Group targets into waves: by dimension (groups after volumes), then by dependency depth
-/// within a dimension (copy source before copy target, `Precedes`). Sorted inside a wave.
-fn waves(p: &MeshingProblem) -> Result<Vec<Vec<Target>>> {
-    let mut deps: BTreeMap<Target, Vec<Target>> = BTreeMap::new();
-    for r in &p.copies {
-        deps.entry(r.item.target).or_default().push(r.item.source);
-    }
-    for r in &p.constraints {
-        if let MeshConstraint::Precedes { before, after } = r.item {
-            deps.entry(after).or_default().push(before);
-        }
-    }
-    let rank = |t: &Target| (t.dim().rank(), matches!(t, Target::Group(_)));
-    let mut level: BTreeMap<Target, u32> = BTreeMap::new();
-    fn depth(t: Target, deps: &BTreeMap<Target, Vec<Target>>, level: &mut BTreeMap<Target, u32>, stack: &mut Vec<Target>, rank: &dyn Fn(&Target) -> (u8, bool)) -> Result<u32> {
-        if let Some(l) = level.get(&t) {
-            return Ok(*l);
-        }
-        if stack.contains(&t) {
-            return Err(SchemeError::Input(format!("dependency cycle through {t:?}")));
-        }
-        stack.push(t);
-        let mut l = 0;
-        for d in deps.get(&t).map(Vec::as_slice).unwrap_or(&[]) {
-            if rank(d) > rank(&t) {
-                return Err(SchemeError::Input(format!("{t:?} depends on higher-dimensional {d:?}")));
+    /// Attach the blame of a generation-time error that needs the plan to be found.
+    fn annotate(&self, plan: &Plan, e: SchemeError) -> (SchemeError, Option<(Target, SchemeName)>) {
+        let blame = match &e {
+            SchemeError::CopyMismatch { constraint, .. } => {
+                // The scheme that wrote the member (its claimer), else the one that asked for the copy.
+                let member = plan.copies.iter().flat_map(|c| c.members.iter()).find(|m| m.constraints.last() == Some(constraint)).map(|m| m.target);
+                let writer = member.and_then(|m| plan.claimed_by(m));
+                writer
+                    .and_then(|w| plan.target(w).map(|tp| (w, tp.scheme.clone())))
+                    .or_else(|| match plan.problem.record_origin(*constraint) {
+                        Some(crate::problem::Origin::Scheme { scheme, target }) => Some((*target, scheme.clone())),
+                        _ => None,
+                    })
             }
-            if rank(d) == rank(&t) {
-                l = l.max(depth(*d, deps, level, stack, rank)? + 1);
-            }
-        }
-        stack.pop();
-        level.insert(t, l);
-        Ok(l)
+            other => other.blame(),
+        };
+        (e, blame)
     }
-    let mut buckets: BTreeMap<(u8, bool, u32), Vec<Target>> = BTreeMap::new();
-    for tp in &p.targets {
-        let l = depth(tp.target, &deps, &mut level, &mut Vec::new(), &rank)?;
-        let (d, g) = rank(&tp.target);
-        buckets.entry((d, g, l)).or_default().push(tp.target);
-    }
-    Ok(buckets.into_values().collect())
 }
 
-/// The patch contract: right target, nodes owned by the target (curves: exactly the indices
-/// `1..n`), unique keys, every referenced node known.
-fn check_patch(input: &MeshInput<'_>, plan: &Plan, ps: &PatchSet, t: Target, patch: &Patch) -> Result<()> {
-    let bad = |reason: String| SchemeError::InvalidPatch { target: t, reason };
-    if patch.target != t {
-        return Err(bad(format!("patch is for {:?}", patch.target)));
+fn phase_of(e: &SchemeError) -> Phase {
+    match e {
+        SchemeError::Infeasible(_) => Phase::Intervals,
+        SchemeError::NoApplicableScheme { .. } | SchemeError::NotApplicable { .. } | SchemeError::ImpositionConflict { .. } => Phase::Resolve,
+        SchemeError::CopyMismatch { .. } => Phase::Verify,
+        SchemeError::Generate(_) => Phase::Generate,
+        _ => Phase::Generate,
     }
-    let owners: Vec<EntityId> = match t {
-        Target::Group(g) => plan
-            .problem
-            .constraints
-            .iter()
-            .find_map(|r| match &r.item {
-                MeshConstraint::Atomic { group, members } if *group == g => Some(members.iter().filter_map(Target::entity).collect()),
-                _ => None,
-            })
-            .unwrap_or_default(),
-        _ => t.entity().into_iter().collect(),
-    };
-    let mut keys: BTreeSet<NodeKey> = BTreeSet::new();
-    for n in &patch.nodes {
-        if !owners.contains(&n.key.owner) {
-            return Err(bad(format!("node {:?} is not owned by the target", n.key)));
-        }
-        if !keys.insert(n.key) || ps.nodes.contains_key(&n.key) {
-            return Err(bad(format!("duplicate node {:?}", n.key)));
-        }
-        if !n.param.fits(n.key.owner.kind()) {
-            return Err(bad(format!("node {:?}: parameter does not fit its owner", n.key)));
-        }
+}
+
+fn kind_of(e: &SchemeError) -> FailureKind {
+    match e {
+        SchemeError::Generate(g) => g.kind,
+        SchemeError::NoApplicableScheme { .. } | SchemeError::NotApplicable { .. } => FailureKind::NotApplicable,
+        _ => FailureKind::Constraint,
     }
-    if let Target::Curve(e) = t {
-        let n = plan.intervals(e).ok_or_else(|| bad("no interval count".into()))?;
-        let want: BTreeSet<NodeKey> = (1..n).map(|i| NodeKey::new(e, i)).collect();
-        if keys != want {
-            return Err(bad(format!("a curve with {n} intervals needs nodes 1..{n}")));
+}
+
+/// Patch-contract checks that need the plan: owners and claims.
+struct CheckCtx<'p> {
+    plan: &'p Plan,
+    members: BTreeMap<Target, Vec<EntityId>>,
+    claimed: BTreeMap<Target, Vec<Target>>,
+}
+
+impl<'p> CheckCtx<'p> {
+    fn new(plan: &'p Plan) -> Self {
+        let mut members: BTreeMap<Target, Vec<EntityId>> = BTreeMap::new();
+        for r in &plan.problem.constraints {
+            if let MeshConstraint::Atomic { group, members: ms } = &r.item {
+                members.insert(Target::Group(*group), ms.iter().filter_map(Target::entity).collect());
+            }
         }
-    }
-    for k in patch.elements.node_refs() {
-        if !keys.contains(k) && !ps.nodes.contains_key(k) {
-            return Err(bad(format!("element references unknown node {k:?}")));
+        let mut claimed: BTreeMap<Target, Vec<Target>> = BTreeMap::new();
+        for c in &plan.problem.claims {
+            claimed.entry(c.item.by).or_default().push(c.item.child);
         }
+        Self { plan, members, claimed }
     }
-    if !patch.owners.is_empty() && patch.owners.len() != patch.elements.len() {
-        return Err(bad("owners must be empty or one per element".into()));
+
+    /// The patch contract: right target; nodes owned by the target, a group member or a
+    /// claimed child (curves: exactly the indices `1..=n-1`); unique keys; parameters that fit;
+    /// element shapes with the right node counts; every reference already known; owners empty
+    /// or one per element; surface elements in a volume patch only for claimed faces.
+    fn check_patch(&self, ps: &PatchSet, t: Target, patch: &Patch) -> Result<()> {
+        let bad = |reason: String| SchemeError::InvalidPatch { target: t, reason };
+        if patch.target != t {
+            return Err(bad(format!("patch is for {:?}", patch.target)));
+        }
+        let mut owners: Vec<EntityId> = match t {
+            Target::Group(_) => self.members.get(&t).cloned().unwrap_or_default(),
+            _ => t.entity().into_iter().collect(),
+        };
+        let claimed: Vec<EntityId> = self.claimed.get(&t).into_iter().flatten().filter_map(Target::entity).collect();
+        owners.extend(claimed.iter().copied());
+        let mut keys: BTreeSet<NodeKey> = BTreeSet::new();
+        for n in &patch.nodes {
+            if !owners.contains(&n.key.owner) {
+                return Err(bad(format!("node {:?} is not owned by the target", n.key)));
+            }
+            if !keys.insert(n.key) || ps.index_of(n.key).is_some() {
+                return Err(bad(format!("duplicate node {:?}", n.key)));
+            }
+            if !n.param.fits(n.key.owner.kind()) {
+                return Err(bad(format!("node {:?}: parameter does not fit its owner", n.key)));
+            }
+        }
+        let mut ref_set: BTreeSet<NodeKey> = BTreeSet::new();
+        for r in &patch.refs {
+            if ps.index_of(*r).is_none() {
+                return Err(bad(format!("element references unknown node {r:?}")));
+            }
+            if !ref_set.insert(*r) {
+                return Err(bad(format!("reference {r:?} listed twice")));
+            }
+        }
+        if let Target::Curve(e) = t {
+            let n = self.plan.intervals(e).ok_or_else(|| bad("no interval count".into()))?;
+            let want: BTreeSet<NodeKey> = (1..n).map(|i| NodeKey::new(e, i)).collect();
+            if keys != want {
+                return Err(bad(format!("a curve with {n} intervals needs nodes 1..={}", n.saturating_sub(1))));
+            }
+        }
+        let locals = patch.local_len();
+        if let Some(&l) = patch.elements.indices().iter().find(|&&l| l as usize >= locals) {
+            return Err(bad(format!("element index {l} out of range ({locals} locals)")));
+        }
+        if !patch.owners.is_empty() && patch.owners.len() != patch.elements.len() {
+            return Err(bad("owners must be empty or one per element".into()));
+        }
+        for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
+            let n = nodes.len();
+            let owner = patch.owners.get(i).copied();
+            let ok = match shape {
+                ElemShape::Segment => n == 2,
+                ElemShape::Tri => n == 3,
+                ElemShape::Quad => n == 4,
+                ElemShape::Polygon => n >= 3,
+                ElemShape::Cell(cs) => cs != CellShape::Polyhedron && cs.vertex_count() == Some(n),
+                ElemShape::Polyhedron => patch.elements.polyhedron_faces(i).is_some_and(|mut f| f.all(|l| l.len() >= 3)),
+            };
+            if !ok {
+                return Err(bad(format!("element {i}: {shape:?} with {n} nodes")));
+            }
+            let want_dim = match shape {
+                ElemShape::Segment => SchemeDim::Curve,
+                ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon => SchemeDim::Surface,
+                ElemShape::Cell(_) | ElemShape::Polyhedron => SchemeDim::Volume,
+            };
+            match (t.dim(), want_dim) {
+                (a, b) if a == b => {}
+                (SchemeDim::Volume, SchemeDim::Surface) => {
+                    // Surface elements of a volume patch belong to claimed faces.
+                    if !owner.is_some_and(|o| claimed.contains(&o)) {
+                        return Err(bad(format!("element {i}: a surface element in a volume patch needs a claimed face as owner")));
+                    }
+                }
+                (SchemeDim::Volume, SchemeDim::Curve) => {
+                    if !owner.is_some_and(|o| claimed.contains(&o)) {
+                        return Err(bad(format!("element {i}: a segment in a volume patch needs a claimed edge as owner")));
+                    }
+                }
+                (SchemeDim::Surface, SchemeDim::Curve) => {
+                    if !owner.is_some_and(|o| claimed.contains(&o)) {
+                        return Err(bad(format!("element {i}: a segment in a surface patch needs a claimed edge as owner")));
+                    }
+                }
+                (a, b) => return Err(bad(format!("element {i}: {b:?} element in a {a:?} patch"))),
+            }
+            if let Some(o) = owner
+                && !owners.contains(&o)
+            {
+                return Err(bad(format!("element {i}: owner {o} is neither a member nor a claimed child")));
+            }
+        }
+        if let Some(g) = &patch.grid
+            && g.nodes.len() != g.ni as usize * g.nj as usize
+        {
+            return Err(bad("grid size does not match ni * nj".into()));
+        }
+        Ok(())
     }
-    let _ = input;
-    Ok(())
+
+    /// Move the nodes and elements owned by claimed children out of a claimer's patch into
+    /// patches of their own (target = child), so claimed faces and curves are classified and
+    /// read like any other. Returns the remainder and the child patches (child patches merge
+    /// first: the remainder may reference their nodes).
+    fn split_claims(&self, t: Target, patch: Patch) -> Result<(Patch, Vec<Patch>)> {
+        let Some(children) = self.claimed.get(&t) else { return Ok((patch, Vec::new())) };
+        let child_of = |o: EntityId| children.iter().copied().find(|c| c.entity() == Some(o));
+        let touched = patch.nodes.iter().any(|n| child_of(n.key.owner).is_some()) || patch.owners.iter().any(|o| child_of(*o).is_some());
+        if !touched {
+            return Ok((patch, Vec::new()));
+        }
+        let mut kids: BTreeMap<Target, PatchBuilder> = children.iter().map(|c| (*c, PatchBuilder::new(*c))).collect();
+        let mut main = PatchBuilder::new(t);
+        // Nodes first, in order, so numbering follows the original.
+        for n in &patch.nodes {
+            match child_of(n.key.owner) {
+                Some(c) => {
+                    if let Some(b) = kids.get_mut(&c) {
+                        b.node(n.key, n.point, n.param);
+                    }
+                }
+                None => {
+                    main.node(n.key, n.point, n.param);
+                }
+            }
+        }
+        let key_of = |l: u32| patch.key(l).ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: format!("local index {l} out of range") });
+        // Local index of `key` inside builder `b`: own node or reference.
+        fn local(b: &mut PatchBuilder, own: &BTreeMap<NodeKey, u32>, key: NodeKey) -> u32 {
+            own.get(&key).copied().unwrap_or_else(|| b.refer(key))
+        }
+        let mut main_own: BTreeMap<NodeKey, u32> = BTreeMap::new();
+        let mut kid_own: BTreeMap<Target, BTreeMap<NodeKey, u32>> = BTreeMap::new();
+        {
+            let (mut mi, mut ki): (u32, BTreeMap<Target, u32>) = (0, BTreeMap::new());
+            for n in &patch.nodes {
+                match child_of(n.key.owner) {
+                    Some(c) => {
+                        let i = ki.entry(c).or_insert(0);
+                        kid_own.entry(c).or_default().insert(n.key, *i);
+                        *i += 1;
+                    }
+                    None => {
+                        main_own.insert(n.key, mi);
+                        mi += 1;
+                    }
+                }
+            }
+        }
+        let empty = BTreeMap::new();
+        for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
+            let owner = patch.owners.get(i).copied();
+            let kid = owner.and_then(child_of).filter(|_| !matches!(shape, ElemShape::Cell(_) | ElemShape::Polyhedron));
+            match kid {
+                Some(c) => {
+                    let own = kid_own.get(&c).unwrap_or(&empty);
+                    let b = kids.get_mut(&c).ok_or_else(|| SchemeError::InvalidPatch { target: t, reason: "claimed child lost".into() })?;
+                    let mut ls: Vec<u32> = Vec::with_capacity(nodes.len());
+                    for &l in nodes {
+                        ls.push(local(b, own, key_of(l)?));
+                    }
+                    b.push(shape, &ls);
+                }
+                None => {
+                    if let Some(o) = owner {
+                        main.owner(o);
+                    }
+                    if shape == ElemShape::Polyhedron {
+                        let mut fs: Vec<Vec<u32>> = Vec::new();
+                        for f in patch.elements.polyhedron_faces(i).into_iter().flatten() {
+                            let mut ls = Vec::with_capacity(f.len());
+                            for &l in f {
+                                ls.push(local(&mut main, &main_own, key_of(l)?));
+                            }
+                            fs.push(ls);
+                        }
+                        let refs: Vec<&[u32]> = fs.iter().map(Vec::as_slice).collect();
+                        main.push_polyhedron(&refs);
+                    } else {
+                        let mut ls: Vec<u32> = Vec::with_capacity(nodes.len());
+                        for &l in nodes {
+                            ls.push(local(&mut main, &main_own, key_of(l)?));
+                        }
+                        main.push(shape, &ls);
+                    }
+                }
+            }
+        }
+        if let Some(g) = patch.grid {
+            main.grid(g);
+        }
+        let mut out: Vec<Patch> = kids.into_values().map(PatchBuilder::finish).filter(|p| !p.nodes.is_empty() || !p.elements.is_empty()).collect();
+        out.sort_by_key(|p| p.target);
+        Ok((main.finish(), out))
+    }
 }

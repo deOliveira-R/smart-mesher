@@ -1,18 +1,71 @@
-//! Copy constraints: correspondence construction and the built-in copy generator (user copy,
-//! mirror, deck pairs, sweep targets), at curve and surface level.
+//! Copy constraints: correspondence construction, transform algebra, the built-in copy
+//! generator (user copy, mirror, deck pairs, sweep targets) at curve and surface level, and the
+//! post-generation verification of members that another job writes.
 
 use crate::error::{Result, SchemeError};
 use crate::geom;
-use crate::patch::{ElemShape, Patch, PatchNode, PatchSet};
-use crate::problem::{CopyConstraint, Record};
+use crate::patch::{ElemShape, Elements, NodeGrid, Patch, PatchNode, PatchSet};
+use crate::plan::{CopyClass, CopyMember};
+use crate::problem::{ConstraintId, CopyConstraint};
 use crate::target::{NodeKey, Target};
-use sm_core::{EntityId, Point3, Transform};
+use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_mesh_api::Param;
-use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
+use sm_topo_api::{TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
 
-fn corr(c: &CopyConstraint, reason: impl Into<String>) -> SchemeError {
-    SchemeError::Correspondence { source_target: c.source, target: c.target, reason: reason.into() }
+fn corr(source: Target, target: Target, reason: impl Into<String>) -> SchemeError {
+    SchemeError::Correspondence { source_target: source, target, reason: reason.into() }
+}
+
+/// `a` after `b` (apply `b` first): `p -> A (B p + tb) + ta`.
+pub fn compose(a: &Transform, b: &Transform) -> Transform {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, e) in row.iter_mut().enumerate() {
+            *e = (0..3).map(|k| a.m[i][k] * b.m[k][j]).sum();
+        }
+    }
+    let t = a.apply_vector(b.t) + a.t;
+    Transform { m, t }
+}
+
+/// The inverse of a transform, or `None` if its linear part is singular.
+pub fn inverse(a: &Transform) -> Option<Transform> {
+    let m = &a.m;
+    let det = a.det();
+    if !det.is_finite() || det.abs() < 1e-300 {
+        return None;
+    }
+    let c = |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let adj = [
+        [c(1, 2, 1, 2), -c(0, 2, 1, 2), c(0, 1, 1, 2)],
+        [-c(1, 2, 0, 2), c(0, 2, 0, 2), -c(0, 1, 0, 2)],
+        [c(1, 2, 0, 1), -c(0, 2, 0, 1), c(0, 1, 0, 1)],
+    ];
+    let mut inv = [[0.0; 3]; 3];
+    for (i, row) in inv.iter_mut().enumerate() {
+        for (j, e) in row.iter_mut().enumerate() {
+            *e = adj[i][j] / det;
+        }
+    }
+    let linear = Transform { m: inv, t: Vector3::new(0.0, 0.0, 0.0) };
+    let t = linear.apply_vector(a.t);
+    Some(Transform { m: inv, t: Vector3::new(-t.x, -t.y, -t.z) })
+}
+
+/// Compose two sorted correspondences: `(a, b)` then `(b, c)` gives `(a, c)`.
+pub fn compose_maps(first: &[(EntityId, EntityId)], second: &[(EntityId, EntityId)]) -> Vec<(EntityId, EntityId)> {
+    let s: BTreeMap<EntityId, EntityId> = second.iter().copied().collect();
+    let mut out: Vec<(EntityId, EntityId)> = first.iter().filter_map(|(a, b)| s.get(b).map(|c| (*a, *c))).collect();
+    out.sort_unstable();
+    out
+}
+
+/// Swap the two sides of a correspondence (sorted by the new source).
+pub fn invert_map(m: &[(EntityId, EntityId)]) -> Vec<(EntityId, EntityId)> {
+    let mut out: Vec<(EntityId, EntityId)> = m.iter().map(|(a, b)| (*b, *a)).collect();
+    out.sort_unstable();
+    out
 }
 
 /// Vertices of a curve or surface target, ascending.
@@ -43,30 +96,36 @@ pub fn derive_vertex_map(t: &dyn TopologyView, c: &CopyConstraint) -> Result<Vec
         let hit: Vec<EntityId> = pts.iter().filter(|(w, q)| (*q - p).norm() <= t.tolerance_of(*v) + t.tolerance_of(*w)).map(|x| x.0).collect();
         match hit.as_slice() {
             [w] => out.push((*v, *w)),
-            [] => return Err(corr(c, format!("vertex {v} has no image"))),
-            _ => return Err(corr(c, format!("vertex {v} has several images"))),
+            [] => return Err(corr(c.source, c.target, format!("vertex {v} has no image"))),
+            _ => return Err(corr(c.source, c.target, format!("vertex {v} has several images"))),
         }
     }
     let mut imgs: Vec<EntityId> = out.iter().map(|x| x.1).collect();
     imgs.sort_unstable();
     if imgs.windows(2).any(|w| w[0] == w[1]) {
-        return Err(corr(c, "two vertices map to one"));
+        return Err(corr(c.source, c.target, "two vertices map to one"));
     }
+    out.sort_unstable();
     Ok(out)
 }
 
 /// For each edge of the source face, the target-face edge whose ends are the images of its
-/// ends, and whether it runs the same way.
+/// ends under the constraint's vertex map, and whether it runs the same way.
 pub fn edge_map(t: &dyn TopologyView, c: &CopyConstraint) -> Result<Vec<(EntityId, EntityId, bool)>> {
-    let (Target::Surface(s), Target::Surface(d)) = (c.source, c.target) else {
-        return Err(corr(c, "edge maps exist for surface copies only"));
+    edge_map_for(t, c.source, c.target, &c.vertex_map)
+}
+
+/// [`edge_map`] for an explicit pair of faces and vertex correspondence (class members).
+pub fn edge_map_for(t: &dyn TopologyView, source: Target, target: Target, vertex_map: &[(EntityId, EntityId)]) -> Result<Vec<(EntityId, EntityId, bool)>> {
+    let (Target::Surface(s), Target::Surface(d)) = (source, target) else {
+        return Err(corr(source, target, "edge maps exist for surface copies only"));
     };
-    let vm: BTreeMap<EntityId, EntityId> = c.vertex_map.iter().copied().collect();
+    let vm: BTreeMap<EntityId, EntityId> = vertex_map.iter().copied().collect();
     let mut out = Vec::new();
     for e in t.face_edges(s) {
         let Some((a, b)) = t.edge_ends(*e) else { continue };
         let (Some(&ma), Some(&mb)) = (vm.get(&a), vm.get(&b)) else {
-            return Err(corr(c, format!("edge {e}: ends not in the vertex map")));
+            return Err(corr(source, target, format!("edge {e}: ends not in the vertex map")));
         };
         let mut found = None;
         for f in t.face_edges(d) {
@@ -81,83 +140,105 @@ pub fn edge_map(t: &dyn TopologyView, c: &CopyConstraint) -> Result<Vec<(EntityI
                 }
             }
         }
-        let (f, same) = found.ok_or_else(|| corr(c, format!("edge {e} has no image")))?;
+        let (f, same) = found.ok_or_else(|| corr(source, target, format!("edge {e} has no image")))?;
         out.push((*e, f, same));
     }
     Ok(out)
 }
 
-/// Generate the target patch of a copy constraint from the source patch.
-///
-/// Keys: vertices map through `vertex_map`; nodes of a source edge map to the corresponding
-/// target edge (index `i` or `n - i` when the edge runs the other way); nodes owned by the
-/// source map to the target with the same index. Points are `transform(p)`; parameters are
-/// dropped (`Param::None`). Surface elements are reversed when the mapped orientation
-/// disagrees with the target face normal.
-pub fn copy_patch(t: &dyn TopologyView, ps: &PatchSet, rec: &Record<CopyConstraint>, intervals: &dyn Fn(EntityId) -> Option<u32>) -> Result<Patch> {
-    let c = &rec.item;
-    let src = ps.get(c.source).ok_or_else(|| corr(c, "source patch not generated"))?;
-    let (Some(s_ent), Some(d_ent)) = (c.source.entity(), c.target.entity()) else {
-        return Err(corr(c, "groups cannot be copied"));
-    };
-    let vm: BTreeMap<EntityId, EntityId> = c.vertex_map.iter().copied().collect();
-    // Edge map: source edge -> (target edge, same direction).
-    let mut em: BTreeMap<EntityId, (EntityId, bool)> = BTreeMap::new();
-    match (c.source, c.target) {
-        (Target::Curve(a), Target::Curve(b)) => {
-            let (Some((sa, _)), Some((ta, tb))) = (t.edge_ends(a), t.edge_ends(b)) else {
-                return Err(corr(c, "edge without ends"));
-            };
-            let img = vm.get(&sa).copied().ok_or_else(|| corr(c, "start vertex not mapped"))?;
-            let same = img != tb || ta == tb;
-            em.insert(a, (b, same));
-        }
-        (Target::Surface(_), Target::Surface(_)) => {
-            for (e, f, same) in edge_map(t, c)? {
-                em.insert(e, (f, same));
+/// Maps node keys of a source face or curve to the target's, through the vertex and edge
+/// correspondences. Nodes owned by the source entity keep their index.
+struct KeyMapper {
+    source: Target,
+    target: Target,
+    s_ent: EntityId,
+    d_ent: EntityId,
+    vm: BTreeMap<EntityId, EntityId>,
+    em: BTreeMap<EntityId, (EntityId, bool, u32)>,
+}
+
+impl KeyMapper {
+    fn new(t: &dyn TopologyView, source: Target, target: Target, vertex_map: &[(EntityId, EntityId)], intervals: &dyn Fn(EntityId) -> Option<u32>) -> Result<Self> {
+        let (Some(s_ent), Some(d_ent)) = (source.entity(), target.entity()) else {
+            return Err(corr(source, target, "groups cannot be copied"));
+        };
+        let vm: BTreeMap<EntityId, EntityId> = vertex_map.iter().copied().collect();
+        let mut em: BTreeMap<EntityId, (EntityId, bool, u32)> = BTreeMap::new();
+        let n_of = |f: EntityId| intervals(f).ok_or_else(|| corr(source, target, format!("edge {f} has no intervals")));
+        match (source, target) {
+            (Target::Curve(a), Target::Curve(b)) => {
+                let (Some((sa, _)), Some((ta, tb))) = (t.edge_ends(a), t.edge_ends(b)) else {
+                    return Err(corr(source, target, "edge without ends"));
+                };
+                let img = vm.get(&sa).copied().ok_or_else(|| corr(source, target, "start vertex not mapped"))?;
+                let same = img != tb || ta == tb;
+                em.insert(a, (b, same, n_of(b)?));
             }
+            (Target::Surface(_), Target::Surface(_)) => {
+                for (e, f, same) in edge_map_for(t, source, target, vertex_map)? {
+                    em.insert(e, (f, same, n_of(f)?));
+                }
+            }
+            _ => return Err(corr(source, target, "only curve and surface copies are supported")),
         }
-        _ => return Err(corr(c, "only curve and surface copies are supported")),
+        Ok(Self { source, target, s_ent, d_ent, vm, em })
     }
-    let map_key = |k: NodeKey| -> Result<NodeKey> {
-        if k.owner == s_ent && !matches!(c.source, Target::Curve(_)) {
-            return Ok(NodeKey::new(d_ent, k.index));
+
+    fn map(&self, k: NodeKey) -> Result<NodeKey> {
+        if k.owner == self.s_ent && !matches!(self.source, Target::Curve(_)) {
+            return Ok(NodeKey::new(self.d_ent, k.index));
         }
-        match t.dim_of(k.owner) {
-            Some(Dim::Vertex) => vm.get(&k.owner).map(|w| NodeKey::vertex(*w)).ok_or_else(|| corr(c, format!("vertex {} not mapped", k.owner))),
-            Some(Dim::Edge) => {
-                let (f, same) = *em.get(&k.owner).ok_or_else(|| corr(c, format!("edge {} not mapped", k.owner)))?;
-                let n = intervals(f).ok_or_else(|| corr(c, format!("edge {f} has no intervals")))?;
-                Ok(NodeKey::new(f, if same { k.index } else { n - k.index }))
-            }
-            _ => Err(corr(c, format!("node owner {} is outside the source", k.owner))),
+        if let Some(w) = self.vm.get(&k.owner) {
+            return Ok(NodeKey::vertex(*w));
         }
-    };
-    let mut out = Patch::new(c.target);
+        match self.em.get(&k.owner) {
+            Some((f, same, n)) => Ok(NodeKey::new(*f, if *same { k.index } else { n.saturating_sub(k.index) })),
+            None => Err(corr(self.source, self.target, format!("node owner {} is outside the source", k.owner))),
+        }
+    }
+}
+
+/// Generate the target patch of a copy from the source patch: `transform` places the nodes,
+/// keys map through the vertex and edge correspondences (nodes of the source entity keep their
+/// index), parameters are dropped (`Param::None`) and surface elements are reversed when the
+/// mapped orientation disagrees with the target face normal.
+pub fn copy_patch(t: &dyn TopologyView, ps: &PatchSet, source: Target, target: Target, transform: &Transform, vertex_map: &[(EntityId, EntityId)], intervals: &dyn Fn(EntityId) -> Option<u32>) -> Result<Patch> {
+    let src = ps.get(source).ok_or_else(|| corr(source, target, "source patch not generated"))?;
+    let km = KeyMapper::new(t, source, target, vertex_map, intervals)?;
+    let mut out = Patch::new(target);
+    out.nodes.reserve(src.nodes.len());
     for n in &src.nodes {
-        out.nodes.push(PatchNode { key: map_key(n.key)?, point: c.transform.apply_point(n.point), param: Param::None });
+        out.nodes.push(PatchNode { key: km.map(n.key)?, point: transform.apply_point(n.point), param: Param::None });
     }
-    let flip = match (c.source, c.target) {
-        (Target::Surface(sf), Target::Surface(df)) => orientation_flip(t, sf, df, &c.transform)?,
+    out.refs.reserve(src.refs.len());
+    for r in &src.refs {
+        out.refs.push(km.map(*r)?);
+    }
+    let flip = match (source, target) {
+        (Target::Surface(sf), Target::Surface(df)) => orientation_flip(t, sf, df, transform)?,
         _ => false,
     };
-    let mut buf: Vec<NodeKey> = Vec::with_capacity(8);
-    for (shape, nodes) in src.elements.iter() {
-        buf.clear();
-        for k in nodes {
-            buf.push(map_key(*k)?);
+    out.elements = Elements::with_capacity(src.elements.len(), 4);
+    let mut buf: Vec<u32> = Vec::with_capacity(8);
+    for (i, (shape, nodes)) in src.elements.iter().enumerate() {
+        if shape == ElemShape::Polyhedron {
+            let faces: Vec<&[u32]> = src.elements.polyhedron_faces(i).into_iter().flatten().collect();
+            out.elements.push_polyhedron(&faces);
+            continue;
         }
-        if flip && matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) {
+        buf.clear();
+        buf.extend_from_slice(nodes);
+        if flip && matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) && buf.len() > 1 {
             buf[1..].reverse();
         }
         out.elements.push(shape, &buf);
     }
     if let Some(g) = &src.grid {
-        let mut ng = g.clone();
-        for k in &mut ng.nodes {
-            *k = map_key(*k)?;
+        let mut nodes = Vec::with_capacity(g.nodes.len());
+        for k in &g.nodes {
+            nodes.push(km.map(*k)?);
         }
-        out.grid = Some(ng);
+        out.grid = Some(NodeGrid { ni: g.ni, nj: g.nj, nodes });
     }
     Ok(out)
 }
@@ -171,4 +252,49 @@ fn orientation_flip(t: &dyn TopologyView, s: EntityId, d: EntityId, g: &Transfor
     let nd = geom::face_normal(t, d, pd)?;
     let m = g.apply_vector(ns) * g.det().signum();
     Ok(m.dot(nd) < 0.0)
+}
+
+fn canonical_elements(p: &Patch, map: &dyn Fn(NodeKey) -> Result<NodeKey>) -> Result<Vec<Vec<NodeKey>>> {
+    let mut out = Vec::with_capacity(p.elements.len());
+    for (_, nodes) in p.elements.iter() {
+        let mut ks = Vec::with_capacity(nodes.len());
+        for &l in nodes {
+            let k = p.key(l).ok_or_else(|| SchemeError::InvalidPatch { target: p.target, reason: format!("local index {l} out of range") })?;
+            ks.push(map(k)?);
+        }
+        ks.sort_unstable();
+        out.push(ks);
+    }
+    out.sort_unstable();
+    Ok(out)
+}
+
+/// Check that the patch of `m.target` equals the image of the class root's patch: the same
+/// node keys at `from_root(p)` within `tol`, and the same elements by key. Used for members
+/// that a parent writes (claimed) instead of the driver. The constraint reported on failure is
+/// the last one on the member's path.
+pub fn verify_copy(t: &dyn TopologyView, ps: &PatchSet, class: &CopyClass, m: &CopyMember, tol: f64) -> Result<()> {
+    let last = m.constraints.last().copied().unwrap_or(ConstraintId(0));
+    let mismatch = |reason: String| SchemeError::CopyMismatch { constraint: last, reason };
+    let src = ps.get(class.root).ok_or_else(|| mismatch(format!("root {:?} has no patch", class.root)))?;
+    let dst = ps.get(m.target).ok_or_else(|| mismatch(format!("{:?} has no patch", m.target)))?;
+    let n_of = |e: EntityId| ps.get(Target::Curve(e)).map(|p| p.nodes.len() as u32 + 1);
+    let km = KeyMapper::new(t, class.root, m.target, &m.vertex_map, &n_of)?;
+    for n in &src.nodes {
+        let k = km.map(n.key)?;
+        let want = m.from_root.apply_point(n.point);
+        let got = ps.point(k).ok_or_else(|| mismatch(format!("image node {k:?} of {:?} does not exist", n.key)))?;
+        if (got - want).norm() > tol {
+            return Err(mismatch(format!("node {k:?} is {:.3e} away from the image of {:?}", (got - want).norm(), n.key)));
+        }
+    }
+    if src.nodes.len() != dst.nodes.len() {
+        return Err(mismatch(format!("{} nodes against {} in the root", dst.nodes.len(), src.nodes.len())));
+    }
+    let a = canonical_elements(src, &|k| km.map(k))?;
+    let b = canonical_elements(dst, &|k| Ok(k))?;
+    if a != b {
+        return Err(mismatch(format!("element connectivity differs ({} elements against {})", b.len(), a.len())));
+    }
+    Ok(())
 }
