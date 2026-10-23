@@ -1,0 +1,18 @@
+[package]
+name = "sm-op-api"
+description = "Contract for operations and the timeline: Op registry, layered state, content-addressed timeline DAG."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+smallvec = { version = "1", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
+schemars = "1"
+
+[lints]
+workspace = true
