@@ -2,7 +2,7 @@
 //! scheduling errors (D6), patch API (D11, D12), polyhedral cells (D13), linear interval rows,
 //! geometry helpers, executors.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use core::f64::consts::FRAC_PI_2;
 use sm_core::{EntityId, EntityKind, Point3};

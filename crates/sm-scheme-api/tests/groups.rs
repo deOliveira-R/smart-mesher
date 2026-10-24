@@ -2,7 +2,7 @@
 //! volumes (interval matching, claimed faces written by the group), atomic failure,
 //! standalone transforms, and meshing a decomposition piece.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;

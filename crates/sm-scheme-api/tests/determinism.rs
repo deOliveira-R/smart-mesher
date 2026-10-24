@@ -3,7 +3,7 @@
 //! use rayon; decisions.md W0c 8). Covers the deck copy classes, the pave-to-tri re-plan and
 //! the claiming group sweep.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityKind, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;

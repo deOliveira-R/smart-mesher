@@ -1,6 +1,6 @@
 //! W0f gaps4: `Requirements::reads` (a curve scheme reading a sibling curve's patch).
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::reference::ReferenceBuilder;

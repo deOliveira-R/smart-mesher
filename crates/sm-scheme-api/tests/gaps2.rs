@@ -1,7 +1,7 @@
 //! W0f gaps 2: embedded conformity, transforms over faces and curves, user interval rows and
 //! the commit node correspondence.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{CurveDef, Interval, Line};

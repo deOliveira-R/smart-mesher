@@ -2,7 +2,7 @@
 //! boundary layers off faces are refused, `BoundaryLayerIntent` is extensible, and the intent
 //! has a JSON schema.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Point3};
 use sm_scheme_api::{

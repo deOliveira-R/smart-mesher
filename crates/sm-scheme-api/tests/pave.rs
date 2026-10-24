@@ -1,7 +1,7 @@
 //! Pave (even loop sum) with a fallback to triangles, driven by interval infeasibility (D7),
 //! by the intent chain and by the registry fallback chain (G3).
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_mesh_api::reference::ReferenceBuilder;
 use sm_mesh_api::{CellIx, MeshEntityKind, MeshRead, SerialAlloc, cell_volume, validate};

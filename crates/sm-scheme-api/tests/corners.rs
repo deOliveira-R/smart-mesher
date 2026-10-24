@@ -1,7 +1,7 @@
 //! Vertex types, corner picking and submap side directions on a brick whose bottom x-edge has
 //! a vertex in its middle (so two faces have a 180-degree corner).
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use core::f64::consts::PI;
 use sm_core::{EntityId, Point3};

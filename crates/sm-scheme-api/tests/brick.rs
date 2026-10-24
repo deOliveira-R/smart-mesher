@@ -2,7 +2,7 @@
 //! reference `MeshBuild`. Analytic checks (counts, volumes, coordinates, classification), plus
 //! selection, impositions, infeasibility, fallback and deck copies.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;

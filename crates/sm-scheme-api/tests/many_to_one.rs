@@ -7,7 +7,7 @@
 //! structured linking faces, columns of nodes inside the sources (including the interior edge
 //! where the two sources meet) are generated through the volume and end on target-face nodes.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{CurveDef, Frame, Interval, Line, Plane, SurfaceDef};
