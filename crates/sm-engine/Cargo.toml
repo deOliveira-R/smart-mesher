@@ -1,6 +1,6 @@
 [package]
 name = "sm-engine"
-description = "Op registry, apply, timeline DAG, replay, snapshots and the project on-disk format."
+description = "Session engine: project on-disk format, atomic autosave, branches and undo persistence, diagnostics policy, and the JSON plugin facade."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -8,9 +8,23 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-sm-core = { path = "../sm-core" }
+sm-core = { path = "../sm-core", features = ["serde"] }
 sm-op-api = { path = "../sm-op-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
 thiserror = "2"
+rayon = "1.12"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+schemars = "1"
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.7", default-features = false }
+
+[[bench]]
+name = "engine"
+harness = false
 
 [lints]
 workspace = true
