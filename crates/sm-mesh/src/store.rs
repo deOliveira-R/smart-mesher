@@ -31,7 +31,7 @@ impl IdRange {
 
 /// A finished, canonical face-first mesh in structure-of-arrays / CSR layout.
 ///
-/// Created by [`crate::MeshBuilder::finish`]; implements [`MeshRead`] and
+/// Created by [`sm_mesh_api::MeshBuild::finish`] on a [`crate::MeshBuilder`]; implements [`MeshRead`] and
 /// [`sm_mesh_api::MeshEdit`]. All topology lives in flat columns (see [`crate::RawColumns`]);
 /// stable ids are implicit consecutive ranges; classification is a dense `u64` column per entity
 /// kind plus a sparse parameter map; adjacency tables are built on demand and cached.

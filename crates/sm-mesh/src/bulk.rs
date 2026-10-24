@@ -103,7 +103,7 @@ impl MeshBuilder {
         if start + n + self.extra.len() >= u32::MAX as usize - 1 {
             return Err(MeshError::TooLarge);
         }
-        let pts: Vec<Point3> = (0..n).into_par_iter().map(|i| f(i)).collect();
+        let pts: Vec<Point3> = (0..n).into_par_iter().map(&f).collect();
         self.x.extend(pts.iter().map(|p| p.x));
         self.y.extend(pts.iter().map(|p| p.y));
         self.z.extend(pts.iter().map(|p| p.z));
@@ -118,7 +118,7 @@ impl MeshBuilder {
         let k = shape.vertex_count().ok_or_else(|| {
             MeshError::State(format!("{shape:?} is not a template shape: bulk insertion needs a fixed vertex count"))
         })?;
-        if verts.len() % k != 0 {
+        if !verts.len().is_multiple_of(k) {
             return Err(MeshError::State(format!("{shape:?} needs {k} vertices per cell, got {}", verts.len())));
         }
         let n = verts.len() / k;

@@ -44,8 +44,8 @@ pub fn replay<B: MeshBuild>(
     };
     let mut prov: Vec<Option<FaceIx>> = vec![None; nf];
     if mode == Mode::Explicit {
-        for f in 0..nf {
-            prov[f] = Some(b.add_face(src.face_vertices(FaceIx::new(f)))?);
+        for (f, slot) in prov.iter_mut().enumerate() {
+            *slot = Some(b.add_face(src.face_vertices(FaceIx::new(f)))?);
         }
     }
     for c in 0..nc {

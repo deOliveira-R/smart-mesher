@@ -674,6 +674,8 @@ dependencies = [
  "indexmap",
  "proptest",
  "rayon",
+ "serde",
+ "serde_json",
  "sm-core",
  "sm-mesh-api",
  "sm-testkit",

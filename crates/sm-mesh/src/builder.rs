@@ -102,7 +102,7 @@ pub(crate) const FLAG_TEMPLATE: u8 = 1;
 /// Same contract as the reference builder (`sm_mesh_api::reference::ReferenceBuilder`): the
 /// finished mesh has canonical face order `(left, right, loop)`, the lower cell on the left, loops
 /// starting at their smallest vertex, ids from the allocator in dense order, and passes
-/// [`sm_mesh_api::validate`]. [`MeshBuilder::new`] builds dimension-3 meshes,
+/// [`sm_mesh_api::validate()`]. [`MeshBuilder::new`] builds dimension-3 meshes,
 /// [`MeshBuilder::surface`] dimension-2 meshes. For large template meshes,
 /// [`MeshBuilder::add_cells_bulk`] builds the face table in parallel.
 #[derive(Default)]
