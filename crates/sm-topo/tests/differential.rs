@@ -248,3 +248,24 @@ fn building_is_deterministic_across_runs_and_threads() {
     let _ = &mut r;
     assert_ne!(h, 0);
 }
+
+/// Polyline and NURBS pcurves, weights included, hash to the same words on both stores (the
+/// store emits the canonical stream with its own traversal).
+#[test]
+fn pcurve_variants_emit_identical_canonical_words() {
+    use sm_geom_api::{NurbsCurve2, PCurve, Uv};
+    let mut tw = Twin::new();
+    let b = tw.op("brick", 1, |t| fx(fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0, 2.0, 3.0]))).unwrap();
+    let keys: Vec<CoedgeKey> = tw.a.boundary(b.faces[0]).iter().map(|e| CoedgeKey { face: b.faces[0], edge: e.cell, side: e.side }).collect();
+    let poly = PCurve::Polyline2(vec![Uv::new(0.0, 0.0), Uv::new(2.0, 0.5), Uv::new(2.0, 4.0)]);
+    let ctrl = vec![Uv::new(0.0, 0.0), Uv::new(1.0, 2.0), Uv::new(3.0, 2.5), Uv::new(4.0, 0.0)];
+    let nurbs = NurbsCurve2::new(2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], ctrl.clone(), Some(vec![1.0, 2.0, 0.5, 1.0])).unwrap();
+    let plain = NurbsCurve2::new(2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], ctrl, None).unwrap();
+    tw.op("pcurves", 2, |t| {
+        t.set_pcurve(keys[0], Some(poly.clone()))?;
+        t.set_pcurve(keys[1], Some(PCurve::Nurbs2(nurbs.clone())))?;
+        t.set_pcurve(keys[2], Some(PCurve::Nurbs2(plain.clone())))?;
+        Ok(())
+    })
+    .unwrap();
+}

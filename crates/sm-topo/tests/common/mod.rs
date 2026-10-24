@@ -63,8 +63,19 @@ impl Twin {
     }
 }
 
+fn words(v: &dyn TopologyView) -> Vec<sm_topo_api::HashWord> {
+    let mut out = Vec::new();
+    v.canonical_visit(&mut |w| out.push(w));
+    out
+}
+
 pub fn same_state(a: &dyn TopologyView, b: &dyn TopologyView, ctx: &str) {
     assert_eq!(a.canonical_hash(), b.canonical_hash(), "{ctx}: canonical hash");
+    let (wa, wb) = (words(a), words(b));
+    assert_eq!(wa.len(), wb.len(), "{ctx}: canonical word count");
+    if let Some(i) = (0..wa.len()).find(|&i| wa[i] != wb[i]) {
+        panic!("{ctx}: canonical words differ at {i}: {:?} vs {:?}", wa[i], wb[i]);
+    }
     assert_eq!(a.revision(), b.revision(), "{ctx}: revision");
     assert_eq!(a.tolerance(), b.tolerance(), "{ctx}: tolerance");
     assert_eq!(a.shapes().curve_count(), b.shapes().curve_count(), "{ctx}: curve count");

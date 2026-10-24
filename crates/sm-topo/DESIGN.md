@@ -26,9 +26,12 @@ same operators with the same atomicity (`Err` leaves the store unchanged, `abort
 the exact state including the hash), the same id minting (serial = slot + 1, never reused),
 the same lineage records in the same order (the lineage log is hashed), the same
 `end_op` normalization (orientation rule, ring compaction), the same `OpInvalid` payloads,
-and the same canonical hash: `canonical_visit` is the trait's provided method over the same
-rows, so the word stream is the contract's by construction. The operator algorithms follow the
-reference step by step; what changed is the machinery under them.
+and the same canonical hash. `canonical_visit` / `canonical_hash` are overridden with the same
+traversal specialised to the store's columns (`hash.rs`: slot-indexed column reads, shell rings
+of long volume rows by binary search, the FNV fold inlined instead of one dynamic call per
+word); the comparison helper of every differential test checks that the **word stream** (not
+only the hash) equals the reference's, including polyline and NURBS pcurves. The operator
+algorithms follow the reference step by step; what changed is the machinery under them.
 
 ## Storage
 
@@ -121,7 +124,8 @@ the list in between, instead of an O(live) `Vec::remove`.
   `sm_topo_api::validate`, computed over fixed chunks of cells and concatenated in order, then
   sorted by `(cell, rule)`) use rayon. All reductions are ordered collects.
 - Operators are sequential: each touches a local neighbourhood. The canonical hash is the
-  contract's sequential FNV fold.
+  contract's sequential FNV-1a fold (byte-serial and order-dependent, so not parallelizable
+  without changing the contract); at 10^5 faces it costs about 65 ms, dominated by the fold.
 - No `HashMap`/`HashSet`, no time or thread dependent state. The determinism tests build the
   same history twice, with 1 and 4 rayon workers, and concurrently from several threads, and
   compare the canonical hash, every radial ring and both validators.

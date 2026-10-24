@@ -6,6 +6,7 @@
 //! rows edited in place and journaled as deltas. See `DESIGN.md`.
 
 mod check;
+mod hash;
 mod helpers;
 mod lifecycle;
 mod norm;

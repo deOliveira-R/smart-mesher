@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 use sm_core::{EntityId, EntityKind};
 use sm_geom_api::{CurveDef, GeomStore, GeomStoreMut, MemoryStore, ModelTolerance, PCurve, SurfaceDef};
 use sm_topo_api::{
-    Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, LineageLog, LineageRecord, OpId, Side, ShellKind, TopoError, TopologyView, EdgeUse,
+    Carrier, CellFlags, CoedgeKey, Dim, EdgeUse, EntityState, FacePair, HashWord, Incidence, LineageKind, LineageLog, LineageRecord, OpId, ShellKind, Side, TopoError, TopologyView,
 };
 use std::sync::OnceLock;
 
@@ -965,6 +965,14 @@ impl TopologyView for TopoStore {
             Some((Dim::Face, s)) => self.t[Dim::Face.index()].aux.row(s),
             _ => &[],
         }
+    }
+
+    fn canonical_visit(&self, f: &mut dyn FnMut(HashWord)) {
+        self.visit_words(&mut |w| f(w));
+    }
+
+    fn canonical_hash(&self) -> u64 {
+        self.hash_words()
     }
 }
 
