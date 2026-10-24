@@ -40,6 +40,10 @@ pub struct FaceRangeOut {
     pub first_index: u32,
     /// Number of indices (a multiple of 3).
     pub index_count: u32,
+    /// True if this curved face was resolved at its boundary points only: its interior deviation
+    /// from the surface is not bounded by `chord_tol`.
+    #[serde(default)]
+    pub boundary_only: bool,
 }
 
 /// Polyline range of one edge, as sent on the wire.
@@ -89,7 +93,7 @@ impl TessellateReply {
             triangle_count: t.triangle_count() as u32,
             positions: base64(&f32s),
             indices: u32s(&t.indices),
-            faces: t.faces.iter().map(|r| FaceRangeOut { face: r.face, first_index: r.first_index, index_count: r.index_count }).collect(),
+            faces: t.faces.iter().map(|r| FaceRangeOut { face: r.face, first_index: r.first_index, index_count: r.index_count, boundary_only: r.boundary_only }).collect(),
             edge_indices: u32s(&t.edge_indices),
             edges: t.edges.iter().map(|r| EdgeRangeOut { edge: r.edge, first: r.first, count: r.count }).collect(),
             chord_tol: o.chord_tol,

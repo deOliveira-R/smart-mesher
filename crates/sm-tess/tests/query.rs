@@ -85,7 +85,18 @@ fn plugin_registers_the_query_with_entity_kinds_in_its_schema() {
     let schema = serde_json::to_value(&info.schema).unwrap();
     let kinds = &schema["properties"]["entities"]["x-entity-kind"];
     assert_eq!(kinds, &json!(["TopoFace", "TopoVolume", "TopoBody", "TopoEdge"]));
-    assert!(e.registry().op_names().iter().all(|n| !n.starts_with("view.")), "the plugin registers no ops");
+}
+
+#[test]
+fn plugin_alone_registers_exactly_one_query_and_no_ops() {
+    let mut reg = Registry::new();
+    reg.install(&TessPlugin).expect("tess");
+    // A fresh registry already holds the built-in ops (e.g. `core.batch`); the plugin adds none.
+    let builtin: Vec<String> = Registry::new().op_names().iter().map(|s| (*s).to_owned()).collect();
+    let with_plugin: Vec<String> = reg.op_names().iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(with_plugin, builtin, "the plugin registers no ops");
+    assert!(with_plugin.iter().all(|n| !n.starts_with("view.")));
+    assert_eq!(reg.query_names(), vec!["view.tessellate"]);
 }
 
 #[test]
@@ -105,6 +116,7 @@ fn reply_buffers_equal_the_library_result() {
     assert_eq!(reply.faces.len(), faces.len());
     assert_eq!(reply.edges.len(), t.edges.len());
     assert_eq!(reply.faces[0].first_index, 0);
+    assert!(reply.faces.iter().all(|f| !f.boundary_only), "brick, cylinder and sphere faces are all fully resolved");
     assert_eq!((reply.chord_tol, reply.angle_tol, reply.max_edge), (0.002, o.angle_tol, None));
 }
 

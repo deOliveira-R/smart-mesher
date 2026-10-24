@@ -5,6 +5,8 @@
 //! through [`adaptive_params`], a bisection that tests the chord deviation at three interior
 //! fractions and the turning angle at the midpoint.
 
+use sm_geom_api::SurfaceDef;
+
 use crate::options::TessOptions;
 
 /// Hard cap on segments per curve (keeps `u32` indices and memory in range).
@@ -32,6 +34,18 @@ fn dist_to_segment(p: P3, a: P3, b: P3) -> f64 {
     let l2 = dot(ab, ab);
     let t = if l2 > 0.0 { (dot(ap, ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
     norm(sub(ap, [ab[0] * t, ab[1] * t, ab[2] * t]))
+}
+
+/// Surfaces whose triangles sag in both parametric directions (everything but planes, cylinders
+/// and cones, which are developable: a triangle sags only along the curved direction).
+pub(crate) fn is_doubly_curved(def: &SurfaceDef) -> bool {
+    !matches!(def, SurfaceDef::Plane(_) | SurfaceDef::Cylinder(_) | SurfaceDef::Cone(_))
+}
+
+/// Options for sampling a grid face and the edges next to a doubly curved face: the chord budget
+/// is split evenly between the two directions, since a triangle sags about `sag_u + sag_v`.
+pub(crate) fn grid_opts(def: &SurfaceDef, o: &TessOptions) -> TessOptions {
+    if is_doubly_curved(def) { TessOptions { chord_tol: 0.5 * o.chord_tol, ..*o } } else { *o }
 }
 
 /// `n + 1` parameters `lo + (hi - lo) * i / n`, both ends exact.

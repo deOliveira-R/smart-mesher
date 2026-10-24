@@ -47,6 +47,9 @@ fn cylinder_lateral_area_within_derived_chord_bound() {
     let f32_slack = 1e-5 * exact;
     assert!(area <= exact + f32_slack, "inscribed area {area} exceeds exact {exact}");
     assert!(exact - area <= bound + f32_slack, "area error {} exceeds bound {bound}", exact - area);
+    // Lateral sag: every sampled point of the mesh is within chord_tol of the cylinder.
+    let dev = max_deviation(&t, ids.faces[2], |p| ((p[0] * p[0] + p[1] * p[1]).sqrt() - r).abs());
+    assert!(dev <= o.chord_tol + common::f32_slack(r), "lateral sag {dev} exceeds chord_tol {}", o.chord_tol);
     // The caps: inscribed regular n-gon.
     let cap = 0.5 * n as f64 * r * r * theta.sin();
     for f in [ids.faces[0], ids.faces[1]] {
@@ -72,6 +75,22 @@ fn sphere_area_within_bound() {
     assert!((exact - area) / exact < theta_chord * theta_chord, "deficit {}", (exact - area) / exact);
     // Poles are single shared vertices: V - E + F style check on the closed surface.
     check_face_structure(&c, &t, ids.face);
+}
+
+#[test]
+fn sphere_sag_is_within_chord_tol() {
+    // angle_tol is loose so the chord tolerance governs.
+    for (r, chord) in [(1.5, 1e-2), (1.5, 1e-3), (1.0, 1e-2), (10.0, 1e-2), (1.0, 1e-4), (1.0, 5e-2), (1.0, 0.2), (2.0, 0.3)] {
+        let (c, ids) = build(|t| sphere(t, r));
+        let o = TessOptions { chord_tol: chord, angle_tol: 3.0, max_edge: f64::INFINITY };
+        let t = tessellate(&c, &all_faces(&c), &o).unwrap();
+        let dev = max_deviation(&t, ids.face, |p| (norm(p) - r).abs());
+        assert!(dev <= chord + f32_slack(r), "r={r} chord={chord}: deviation {dev} is {:.3}x chord_tol", dev / chord);
+        eprintln!("sphere r={r} chord={chord}: max deviation {:.3}x chord_tol", dev / chord);
+        // The bound is not vacuous: the mesh is not wildly finer than needed.
+        assert!(dev > 0.2 * chord, "r={r} chord={chord}: deviation {dev} suspiciously small");
+        check_face_structure(&c, &t, ids.face);
+    }
 }
 
 #[test]

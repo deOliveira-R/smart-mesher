@@ -151,3 +151,29 @@ pub fn digest(t: &Tessellation) -> u64 {
 pub fn pool<T: Send>(threads: usize, f: impl FnOnce() -> T + Send) -> T {
     rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("pool").install(f)
 }
+
+/// Largest distance from the mesh of `face` to the exact surface, with `dist` giving the
+/// unsigned distance of a point to the surface. Samples every triangle at barycentric lattice
+/// points `(i, j)/10` with `i + j <= 10` (vertices, edges, interior) plus the exact centroid.
+pub fn max_deviation(t: &Tessellation, face: EntityId, dist: impl Fn([f64; 3]) -> f64) -> f64 {
+    let mut worst: f64 = 0.0;
+    for tri in t.face_indices(face).expect("face").chunks(3) {
+        let (a, b, c) = (p64(t, tri[0]), p64(t, tri[1]), p64(t, tri[2]));
+        for i in 0..=10 {
+            for j in 0..=(10 - i) {
+                let (wb, wc) = (f64::from(i) / 10.0, f64::from(j) / 10.0);
+                let wa = 1.0 - wb - wc;
+                let p = [0, 1, 2].map(|k| wa * a[k] + wb * b[k] + wc * c[k]);
+                worst = worst.max(dist(p));
+            }
+        }
+        let cen = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0);
+        worst = worst.max(dist(cen));
+    }
+    worst
+}
+
+/// f32 rounding slack for positions of magnitude `scale`.
+pub fn f32_slack(scale: f64) -> f64 {
+    4.0 * f64::from(f32::EPSILON) * scale
+}

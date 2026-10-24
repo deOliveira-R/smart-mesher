@@ -36,12 +36,24 @@ Branch: the task text says `claude/w2-sm-tess`; this session was assigned `claud
 ## Known gaps
 
 - No per-vertex normals in the output.
-- Curved faces that are not parameter rectangles (trimmed or multi-loop curved faces, NURBS patches whose opposite sides are sampled differently) get boundary points only: interior chord error is not controlled.
+- Curved faces that are not parameter rectangles (trimmed or multi-loop curved faces, NURBS patches whose opposite sides are sampled differently) get boundary points only: interior chord error is not controlled (flagged by `boundary_only`).
 - Grid faces need matching left and right side samples; otherwise they fall back to the boundary-only path.
 - Implicit-only surfaces and periodic faces without pcurves return typed errors.
 - Not cached in `DerivedCache`.
 - No criterion bench (none named in the task); informal release timings are in `DESIGN.md`.
 - Only reference-complex (`CellComplex`) fixtures were exercised; `sm_topo::TopoStore` is not a dev-dependency (not in the Deps list). The code uses only `TopologyView`, so a `TopoStore` run is expected to match (the canonical hash equivalence is sm-topo's contract).
+
+## Fix round 0 (review findings)
+
+- **Grid sag (must-fix 1, 2).** Interior rows now take the larger of the blended count and the count of their own iso-`v` curve (circle rule at the row's distance from the axis; `adaptive_params` for non-revolved surfaces), which fixes the formula error on the inner-seamed torus and equator-crossing sphere bands. On doubly curved surfaces (not plane, cylinder, cone) the chord budget is split: edges adjacent to such a face and the face's rows use `chord_tol / 2` (`sample::grid_opts`, `tess::edge_options`). The edge rule inspects the whole model, so polylines do not depend on the requested face set. Measured max distance to the surface (test, `angle_tol = 3`): sphere 0.71-0.99x `chord_tol`, torus 0.99x for both seams, cone/frustum 0.87x, cylinder lateral under 1x; before: sphere 1.87-1.93x, torus 1.97x / 2.95x. Tests: `geometry::sphere_sag_is_within_chord_tol`, `shapes::{torus_sag_is_within_chord_tol_for_both_seams, cone_and_frustum_sag_is_within_chord_tol}`, lateral sag in `geometry::cylinder_lateral_area_within_derived_chord_bound`. Cost: sphere and torus meshes have about twice as many points per direction (about four times the triangles) for the same `chord_tol`. The `TessOptions` rustdoc, crate docs and DESIGN.md state the bound and that it is derived and measured for the analytic grid surfaces, not a theorem for freeform ones. Limit: a freeform grid face whose side edges are straight lines gets no `v` refinement (extra rows would need vertices on the shared side edges).
+- **SHOULD 1 (earcut speed).** Work-queue ear clipping with local re-tests and an `x`-sorted reflex index: the 10 004-vertex plate with hole drops from 2.5-4.3 s to about 0.16 s (release); test `earcut::tests::large_plate_with_a_hole_is_fast_and_correct`.
+- **SHOULD 2.** `query::plugin_alone_registers_exactly_one_query_and_no_ops` builds a `Registry` with only `TessPlugin`.
+- **SHOULD 3.** `FaceRange::boundary_only` / `FaceRangeOut::boundary_only` (serde default false) flag curved faces triangulated from their boundary only. Test `shapes::curved_face_with_a_hole_is_flagged_boundary_only` (torus with a hole loop).
+- **SHOULD 4.** `shapes::reversed_curve_carrier_still_gets_a_grid`: frustum whose seam is carried `Sense::Reversed` (pcurve parameter equals the curve parameter); it must produce the same interior rows and triangle count as the forward fixture.
+- **SHOULD 5, 9.** Rows follow the circle rule including `angle_tol`, so turning between neighbouring points of every row is bounded; the rustdoc is narrowed to say that the angle between grid lines across rows is not controlled.
+- **SHOULD 6, 8.** `earcut::triangulate` returns an error (`coincide on the 2^30 snapping lattice`) when two distinct mesh vertices of a ring snap together, instead of dropping one and cracking the edge. Test `earcut::tests::distinct_vertices_on_one_lattice_point_are_an_error_not_a_crack`.
+- **SHOULD 7.** Dependencies unchanged; the orchestrator should amend the T2 Deps line to include `thiserror`, `serde`, `schemars` (not edited here, outside the crate).
+- **SHOULD 10.** Done in DESIGN.md ("Sag bound on grid faces"); the edge-sagitta theorem is now stated as edge-only.
 
 ## api_change_requests
 

@@ -9,7 +9,7 @@ use sm_topo_api::{Carrier, CellFlags, Dim, TopologyView, TopologyViewExt};
 use crate::edges::{self, EdgeSamples};
 use crate::face::{self, FaceOut, Shared};
 use crate::options::{TessError, TessOptions};
-use crate::sample::P3;
+use crate::sample::{self, P3};
 
 /// The triangles of one face inside [`Tessellation::indices`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +20,10 @@ pub struct FaceRange {
     pub first_index: u32,
     /// Number of indices (a multiple of 3).
     pub index_count: u32,
+    /// True for a curved face that was triangulated from its boundary points only (a hole in a
+    /// cylindrical wall, a trimmed patch, a multi-loop curved face): its interior deviation from
+    /// the surface is not controlled by the tolerances.
+    pub boundary_only: bool,
 }
 
 /// The polyline of one edge inside [`Tessellation::edge_indices`].
@@ -175,6 +179,20 @@ pub(crate) fn scene_diagonal(view: &dyn TopologyView, faces: &[EntityId], extra_
     (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt()
 }
 
+/// Sampling options of one edge: halved chord if any adjacent face is on a doubly curved surface.
+fn edge_options(view: &dyn TopologyView, edge: EntityId, o: &TessOptions) -> TessOptions {
+    let shapes = view.shapes();
+    for inc in view.coboundary(edge) {
+        if let Carrier::Surface(sc) = view.carrier(inc.cell)
+            && let Some(def) = shapes.surface_def(sc.surface)
+            && sample::is_doubly_curved(def)
+        {
+            return sample::grid_opts(def, o);
+        }
+    }
+    *o
+}
+
 fn first_error<T>(results: Vec<Result<T, TessError>>) -> Result<Vec<T>, TessError> {
     results.into_iter().collect()
 }
@@ -229,7 +247,11 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
             Ok((ix(a)?, ix(b)?))
         })
         .collect::<Result<_, TessError>>()?;
-    let sampled: Vec<Result<EdgeSamples, TessError>> = edges.par_iter().zip(ends.par_iter()).map(|(&e, &(a, b))| edges::sample_edge(view, e, a == b, opts)).collect();
+    // Edges next to a doubly curved face use half the chord budget (the face's rows get the other
+    // half). The rule looks at all faces of the model, not only the requested ones, so an edge's
+    // polyline never depends on which faces were asked for.
+    let edge_opts: Vec<TessOptions> = edges.iter().map(|&e| edge_options(view, e, opts)).collect();
+    let sampled: Vec<Result<EdgeSamples, TessError>> = edges.par_iter().zip(ends.par_iter()).zip(edge_opts.par_iter()).map(|((&e, &(a, b)), o)| edges::sample_edge(view, e, a == b, o)).collect();
     let sampled = first_error(sampled)?;
 
     // Stage B (serial): number vertices, then edge interiors in edge order.
@@ -286,7 +308,7 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
                 indices.push(if i >= g_count { i - g_count + offset as u32 } else { i });
             }
         }
-        face_ranges.push(FaceRange { face: f, first_index: first, index_count: indices.len() as u32 - first });
+        face_ranges.push(FaceRange { face: f, first_index: first, index_count: indices.len() as u32 - first, boundary_only: out.boundary_only });
     }
     let edge_ranges = edges.iter().enumerate().map(|(k, &e)| EdgeRange { edge: e, first: edge_off[k] as u32, count: (edge_off[k + 1] - edge_off[k]) as u32 }).collect();
     Ok(Tessellation { positions, indices, faces: face_ranges, edge_indices: edge_g, edges: edge_ranges })

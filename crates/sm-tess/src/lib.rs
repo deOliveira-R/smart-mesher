@@ -13,10 +13,18 @@
 //!   turning angle and `max_edge` are met.
 //! - **Grid faces** (a curved surface whose parameter-space loop is a rectangle: cylinder,
 //!   cone, sphere, torus, revolved or ruled patches) get interior rows evaluated on the surface
-//!   and joined by a merge triangulation.
+//!   and joined by a merge triangulation. Each row's point count comes from its own iso-`v`
+//!   curve (and is at least the blend of the bottom and top counts). On doubly curved surfaces
+//!   (everything but plane, cylinder, cone) a triangle sags about `sag_u + sag_v`, so the edges
+//!   next to such a face and its rows each use `chord_tol / 2`: the mesh stays within
+//!   `chord_tol` of the surface everywhere (measured at most 0.99 `chord_tol` on sphere and
+//!   torus; cylinder and cone are developable and meet it with one direction's budget). The `v`
+//!   resolution of a grid face is that of its side edges, so a freeform patch whose side edges
+//!   are straight lines is not refined across `v`.
 //! - **All other faces** are ear-clipped from their boundary points only (planar faces are exact
 //!   this way). A curved face that is not a parameter rectangle is therefore resolved at its
-//!   boundary only: its interior chord error is not controlled. See `DESIGN.md`.
+//!   boundary only: its interior chord error is not controlled. Such faces are flagged with
+//!   [`FaceRange::boundary_only`] (and `boundary_only` in the query reply). See `DESIGN.md`.
 //!
 //! # Determinism
 //!

@@ -6,10 +6,15 @@ use sm_core::EntityId;
 ///
 /// All three are upper bounds on the produced mesh:
 /// - `chord_tol`: largest distance (model length units) between a curve or surface and its
-///   polyline or triangles, where the sampling rule resolves it (see the crate docs for the
-///   cases that are only resolved at the boundary);
+///   polyline or triangles, where the sampling rule resolves it. On grid-meshed faces (cylinder,
+///   cone, sphere, torus, revolved or ruled patches) this holds for the whole triangle, interior
+///   included: on doubly curved surfaces the budget is split in half between the two directions.
+///   Faces that are not parameter rectangles are resolved at their boundary only (flagged by
+///   `FaceRange::boundary_only`), and freeform grid faces get their `v` resolution from the
+///   side edges (see the crate docs);
 /// - `angle_tol`: largest turning angle (radians) between neighbouring segments of a curved edge
-///   (and, on grid-meshed faces, between neighbouring grid lines);
+///   and between neighbouring points of every grid row of a grid-meshed face (the angle between
+///   grid lines across rows is not controlled);
 /// - `max_edge`: longest segment of an edge polyline or grid line (`f64::INFINITY` disables it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TessOptions {

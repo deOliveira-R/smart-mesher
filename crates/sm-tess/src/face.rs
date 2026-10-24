@@ -4,8 +4,14 @@
 //!
 //! 1. **Grid** (curved faces whose parameter-space loop is an axis-aligned rectangle: cylinder
 //!    lateral, cone, sphere, torus, ruled or revolved patches). The four sides come from the
-//!    edge samples; interior rows sit at the left/right side's sample parameters, each with a
-//!    point count interpolated between the bottom and top counts, evaluated on the surface.
+//!    edge samples; interior rows sit at the left/right side's sample parameters, evaluated on
+//!    the surface. A row's point count is the larger of (a) the count interpolated between the
+//!    bottom and top counts and (b) the count its own iso-`v` curve needs (circle rule at the
+//!    row's radius for revolved surfaces, adaptive sampling otherwise), so bulging patches
+//!    (torus seamed at the inner equator, sphere bands) are resolved. On doubly curved
+//!    surfaces the chord budget is split: edges next to such a face are sampled with
+//!    `chord_tol / 2` (see `tess.rs`) and rows use `chord_tol / 2` too, so a triangle's sag,
+//!    about `sag_u + sag_v`, stays within `chord_tol`.
 //!    Adjacent rows are joined by a merge ("zipper") triangulation, so unequal counts work.
 //!    Pole rows collapse to the single pole vertex and the wedges that degenerate are dropped.
 //! 2. **Polygon** (planar faces, and any other face): ear clipping of the loops in a 2-D frame
@@ -42,6 +48,8 @@ pub(crate) struct Shared<'a> {
 pub(crate) struct FaceOut {
     pub steiner: Vec<P3>,
     pub tris: Vec<[u32; 3]>,
+    /// A curved face resolved at its boundary points only (no interior sampling).
+    pub boundary_only: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -101,7 +109,11 @@ pub(crate) fn tessellate_face(sh: &Shared<'_>, face: EntityId) -> Result<FaceOut
             }
             let mut out = match out {
                 Some(o) => o,
-                None => polygon_face(face, Some((surf, def)), &rings)?,
+                None => {
+                    let mut o = polygon_face(face, Some((surf, def)), &rings)?;
+                    o.boundary_only = !matches!(def, SurfaceDef::Plane(_));
+                    o
+                }
             };
             if sc.sense == Sense::Reversed {
                 out.tris.iter_mut().for_each(|t| t.swap(1, 2));
@@ -156,6 +168,9 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
         vhi = vhi.max(v);
     }
     let (du, dv) = (uhi - ulo, vhi - vlo);
+    // Row and column budget (halved chord on doubly curved surfaces).
+    let o = sample::grid_opts(def, sh.opts);
+    let o = &o;
     if du <= 0.0 || dv <= 0.0 {
         return Ok(None);
     }
@@ -222,7 +237,7 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
         match (s.pole, n.pole) {
             (None, _) => Ok(s.g.len() - 1),
             (Some(_), None) => Ok(n.g.len() - 1),
-            (Some(_), Some(_)) => surface_u_count(surf, def, (ulo, uhi), 0.5 * (vlo + vhi), sh.opts).map_err(|r| TessError::face(face, r)),
+            (Some(_), Some(_)) => row_u_count(surf, def, (ulo, uhi), 0.5 * (vlo + vhi), o).map_err(|r| TessError::face(face, r)),
         }
     };
     let cu = count_u(&s, &n)?;
@@ -252,8 +267,11 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
     row_u.push(s.c.clone());
     let mut uvs: Vec<Uv> = Vec::new();
     for j in 1..rows {
-        let k = ((a + (b - a) * (j as f64 / rows as f64)).round() as usize).max(1);
         let v = w.c[j];
+        let interp = ((a + (b - a) * (j as f64 / rows as f64)).round() as usize).max(1);
+        // The row's own iso-v curve may need more points than the linear blend (bulging patches).
+        let own = row_u_count(surf, def, (ulo, uhi), v, o).map_err(|r| TessError::face(face, r))?;
+        let k = interp.max(own).max(1);
         let mut g = Vec::with_capacity(k + 1);
         let mut u = Vec::with_capacity(k + 1);
         g.push(w.g[j]);
@@ -282,7 +300,7 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
     for j in 0..rows {
         zipper(&row_g[j], &row_u[j], &row_g[j + 1], &row_u[j + 1], &mut tris);
     }
-    Ok(Some(FaceOut { steiner, tris }))
+    Ok(Some(FaceOut { steiner, tris, boundary_only: false }))
 }
 
 /// Merge-triangulate the strip between a lower row `a` and an upper row `b` (both left to
@@ -308,21 +326,31 @@ fn zipper(ag: &[u32], au: &[f64], bg: &[u32], bu: &[f64], tris: &mut Vec<[u32; 3
     }
 }
 
-/// Segments along `u` on the iso-line `v = vm` (only needed when both horizontal sides are poles).
-fn surface_u_count(surf: &dyn ParametricSurface, def: &SurfaceDef, (ulo, uhi): (f64, f64), vm: f64, o: &TessOptions) -> Result<usize, String> {
+/// Segments along `u` on the iso-line `v = vm`: the circle rule at the line's radius for
+/// revolved analytic surfaces (sphere, torus, cone, cylinder), adaptive sampling otherwise.
+fn row_u_count(surf: &dyn ParametricSurface, def: &SurfaceDef, (ulo, uhi): (f64, f64), vm: f64, o: &TessOptions) -> Result<usize, String> {
     let span = uhi - ulo;
     let full = (span - core::f64::consts::TAU).abs() < 1e-9;
-    match def {
-        SurfaceDef::Sphere(s) => sample::circle_segments(span, s.radius * vm.cos().abs().max(1e-3), full, o),
-        SurfaceDef::Cylinder(c) => sample::circle_segments(span, c.radius, full, o),
-        _ => {
-            let f = |u: f64| {
-                let p = surf.eval(Uv::new(u, vm));
-                [p.x, p.y, p.z]
-            };
-            Ok(sample::adaptive_params(&f, ulo, uhi, o)?.len() - 1)
-        }
+    let frame = match def {
+        SurfaceDef::Sphere(s) => Some(&s.frame),
+        SurfaceDef::Torus(t) => Some(&t.frame),
+        SurfaceDef::Cone(c) => Some(&c.frame),
+        SurfaceDef::Cylinder(c) => Some(&c.frame),
+        _ => None,
+    };
+    if let Some(fr) = frame {
+        // Distance of the iso-line from the axis.
+        let p = surf.eval(Uv::new(ulo, vm));
+        let d = [p.x - fr.origin.x, p.y - fr.origin.y, p.z - fr.origin.z];
+        let along = d[0] * fr.z.x + d[1] * fr.z.y + d[2] * fr.z.z;
+        let radius = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - along * along).max(0.0).sqrt();
+        return sample::circle_segments(span, radius, full, o);
     }
+    let f = |u: f64| {
+        let p = surf.eval(Uv::new(u, vm));
+        [p.x, p.y, p.z]
+    };
+    Ok(sample::adaptive_params(&f, ulo, uhi, o)?.len() - 1)
 }
 
 // -------------------------------------------------------------------------------- polygon path
@@ -424,5 +452,5 @@ fn polygon_face(face: EntityId, surface: Option<(Option<&dyn ParametricSurface>,
         rp.push(pts);
     }
     let tris = earcut::triangulate(&rp).map_err(|e| TessError::face(face, e))?;
-    Ok(FaceOut { steiner: Vec::new(), tris })
+    Ok(FaceOut { steiner: Vec::new(), tris, boundary_only: false })
 }
