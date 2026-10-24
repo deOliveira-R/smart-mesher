@@ -7,10 +7,29 @@ version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Also run the contract's serde round-trip tests (the store itself has no serialized form).
+serde = ["sm-mesh-api/serde"]
+
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-mesh-api = { path = "../sm-mesh-api" }
-thiserror = "2"
+rayon = "1"
+smallvec = "1"
+indexmap = "2"
+bytemuck = "1"
+
+[dev-dependencies]
+serde = "1"
+serde_json = "1"
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "build"
+harness = false
 
 [lints]
 workspace = true
