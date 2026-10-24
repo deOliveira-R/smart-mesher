@@ -13,12 +13,11 @@ fn table_covers_every_kind_exactly_once_in_order() {
 
 #[test]
 fn spellings_are_unique_and_do_not_collide_with_reserved_words() {
+    // Script spellings (preferred, aliases, plurals) are unique across kinds. Canonical names are only a fallback in
+    // `kind_from_singular`, and may be claimed as an alias of another kind (`Surface` is a face in scripts).
     let mut seen = BTreeSet::new();
     for r in KIND_TABLE {
-        for s in [r.singular, r.kind.name(), r.plural] {
-            if s == r.kind.name() && r.singular == r.kind.name() {
-                continue; // alias equals the canonical name
-            }
+        for s in std::iter::once(r.singular).chain(r.aliases.iter().copied()).chain(std::iter::once(r.plural)).chain(r.plural_aliases.iter().copied()) {
             assert!(seen.insert(s), "duplicate spelling {s}");
         }
         assert!(r.singular.chars().next().unwrap().is_ascii_uppercase(), "{}", r.singular);
@@ -48,11 +47,16 @@ fn alias_table_is_pinned() {
         ("TopoVolume", EntityKind::TopoVolume),
         ("MeshCell", EntityKind::MeshCell),
         ("Color", EntityKind::Color),
+        // Cubit vocabulary: a surface is a face and a curve is an edge; the geometry carriers are spelled out.
+        ("Surface", EntityKind::TopoFace),
+        ("Curve", EntityKind::TopoEdge),
+        ("GeomSurface", EntityKind::Surface),
+        ("GeomCurve", EntityKind::Curve),
     ];
     for (s, k) in pairs {
         assert_eq!(kind_from_singular(s), Some(k), "{s}");
     }
-    let plurals = [("vertices", EntityKind::TopoVertex), ("faces", EntityKind::TopoFace), ("volumes", EntityKind::TopoVolume), ("bodies", EntityKind::TopoBody), ("nodes", EntityKind::MeshVertex), ("elements", EntityKind::MeshCell)];
+    let plurals = [("vertices", EntityKind::TopoVertex), ("faces", EntityKind::TopoFace), ("volumes", EntityKind::TopoVolume), ("bodies", EntityKind::TopoBody), ("nodes", EntityKind::MeshVertex), ("elements", EntityKind::MeshCell), ("surfaces", EntityKind::TopoFace), ("curves", EntityKind::TopoEdge), ("geom_surfaces", EntityKind::Surface), ("geom_curves", EntityKind::Curve)];
     for (s, k) in plurals {
         assert_eq!(kind_from_plural(s), Some(k), "{s}");
     }
@@ -71,4 +75,15 @@ fn entity_text_round_trips_through_the_contract() {
     assert!(parse_entity_text("Volume").is_err());
     assert!(parse_entity_text("Nope#1").is_err());
     assert!(parse_entity_text("Volume#x").is_err());
+}
+
+#[test]
+fn every_kind_stays_reachable_by_one_script_spelling() {
+    for &k in EntityKind::ALL {
+        assert_eq!(kind_from_singular(singular_of(k)), Some(k), "{k:?}");
+        assert_eq!(kind_from_plural(plural_of(k).unwrap()), Some(k), "{k:?}");
+    }
+    // The canonical carrier names are claimed by the Cubit words, so only the explicit names reach them in source.
+    assert_eq!(singular_of(EntityKind::Surface), "GeomSurface");
+    assert_eq!(singular_of(EntityKind::TopoFace), "Face");
 }

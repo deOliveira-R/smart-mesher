@@ -1,6 +1,6 @@
 # The smart-mesh command language (`smesh`), v1
 
-Status: design for W1, implemented by this crate. Binding facts come from the frozen contracts in
+Status: design for W1 (revision `fix0`: the semantic decisions below are binding because scripts will depend on them), implemented by this crate. Binding facts come from the frozen contracts in
 `sm-core` (entity ids) and `sm-op-api` (op/query registry, JSON schemas, `core.batch`).
 
 A script is plain UTF-8 text, conventionally `*.smesh`. It is **not** Cubit-journal compatible and does
@@ -31,7 +31,7 @@ completion and validation cannot drift from the ops because they are generated f
 * **Whitespace**: space, tab, CR. A line feed is a statement separator, except that line feeds are ignored
   inside `( )` and `[ ]`, directly after a binary operator or `,` (unless the next line starts with a statement keyword, which then ends the
   dangling statement), and after `\` at end of line.
-* **Separators**: newline or `;` (empty statements allowed).
+* **Separators**: newline or `;` (empty statements allowed). `else` may start the line after the closing `}` (Allman style) or follow it on the same line.
 * **Comments**: `// to end of line`, and `/* block */` (nests; unterminated is an error). `#` is *not* a comment:
   it is the entity-id sigil (`Volume#3`), matching the `Kind#serial` text form of `sm-core`.
 * **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`. Dotted names (`model.create_brick`) are parsed as identifier paths; after a `.` any word,
@@ -39,14 +39,16 @@ completion and validation cannot drift from the ops because they are generated f
 * **Numbers**: `123`, `1_000`, `1.5`, `2e-3`, `1.5E+2`. Maximal munch: a `.` belongs to a number only when a digit follows it, so `1.` and `.5` are
   not floats (write `1.0`, `0.5`) and `1..5` lexes as `Int(1)` `..` `Int(5)`. Integers are `i64` (overflow is an error); anything with `.` or an
   exponent is `f64`. No `NaN`/`inf` literals.
-* **Entity references** are a single token: an identifier *immediately* followed by `#` and then a digit or `[` (`Volume#3`, `Volume#[1,2]`)
-  lexes as `EntityRef(kind-name)` and the parser then reads the id spec (`3`, `1..5`, `[1, 3, 5..7]`). No spaces are allowed around `#`; one span
-  covers `Volume#`, so entity diagnostics point at it. A `#` anywhere else is an error.
+* **Entity references** are a single token: an identifier *immediately* followed by `#` and then a digit, `[` or `(` (`Volume#3`, `Volume#[1,2]`,
+  `Volume#(n + 1)`) lexes as `EntityRef(kind-name)` and the parser then reads the id spec (§5.2). No spaces are allowed around `#`; one span
+  covers `Volume#`, so entity diagnostics point at it. A `#` anywhere else is an error (`Volume#i` explains that a variable goes in brackets: `Volume#[i]`).
 * **Strings**: `"..."`, escapes `\n \t \r \" \\ \$ \u{HEX}`; may not contain a raw newline.
 * **Punctuation / operators**: `( ) [ ] { } , ; : = . .. ... #`, `+ - * / % **`, `== != < <= > >=`, `| &`.
 * **Reserved words**: `let set alias batch if else for in include print assert true false and or not all except`. `help`, `by` and the plural
   entity keywords (`faces`, `volumes`, ... §5) are *contextual*: they are keywords only directly after `all` or directly before `in`, so
-  they remain usable as variable names elsewhere.
+  they remain usable as variable names elsewhere. `where`, `named` and `with` are contextual too, and reserved for entity predicates (§5.5):
+  directly after an entity expression they are a `not-yet-supported` error, everywhere else they are ordinary names.
+  The name `timeline` followed by `.` is a reserved namespace for timeline control (§4.6); it is not a registry namespace.
 * There is no `null`: absent optional parameters are omitted (the op-api params model has no null).
 
 ## 3. Values and expressions (APREPRO replacement)
@@ -57,15 +59,28 @@ effects, so a script's lowered form is a pure function of (script text, registry
 
 Precedence, loosest to tightest: `or`; `and`; `not`; comparison (non-associative); `|` (set union);
 `&` (set intersection); `+ - except`; `* / %`; unary `-`; `**` (right-associative); postfix `.field`,
-`[index]`. `-` and `except` are difference on `Ents`; `+` also concatenates strings and lists.
+`[index]`. `-` and `except` are difference on `Ents`; `+` concatenates strings and lists (on entity sets use `|`; `+` there is an error that says so).
+
+**Mixing difference with union or intersection is a parse error unless parenthesized** (`ambiguous-set-expression`): `all faces - Face#1 | Face#2`
+and `all volumes except Volume#1 | Volume#2` do not parse; write `(all faces - Face#1) | Face#2` or `all volumes except (Volume#1 | Volume#2)`.
+The two readings differ (Python-style precedence keeps `Volume#2`; the English word `except` excludes it), so the language makes the writer choose.
+Turning an error into a meaning later is compatible; changing a meaning is not. The same rule applies to `kind in X` (§5.2).
 
 * Arithmetic: `Int op Int` is `Int` (checked, overflow is an error) except `/`, which is always `Num`;
-  mixed promotes to `Num`. Division or modulo by zero is an error (never `inf`/`NaN`).
+  mixed arithmetic promotes to `Num`. Division or modulo by zero is an error (never `inf`/`NaN`). `%` is the **truncated remainder** (sign of
+  the left operand, like C and Rust): `-7 % 3 == -1`, not Python's `2`. `**` with a negative integer exponent is a `Num` (`2 ** -1 == 0.5`);
+  `2 ** 63` overflows.
+* Comparison of an `Int` and a `Num` is **exact** (no rounding of the integer through `f64`): `9007199254740993 == 9007199254740992.0` is false.
+  `min`/`max` of all-`Int` arguments are exact `Int`s. Passing an `Int` to a `number` parameter converts it to a float only when that is exact
+  (|n| at most 2^53), else `integer-precision` (write it as a float if the rounding is intended).
 * Builtins (pure, deterministic; names are not reserved but cannot be called as ops):
   `abs min max floor ceil round sqrt sin cos tan asin acos atan atan2 exp ln log10 pow int float
-  len count range str ents`, constants `pi`, `tau`. `floor`/`ceil`/`round`/`int` return `Int` (checked), `ents("Volume#3")` /
-  `ents([..])` turns id strings (for example from a query result) into an entity set, and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
-  randomness must be seeded from op parameters. `range(a, b[, step])` is half-open and capped (§9).
+  len count range str ents`, constants `pi`, `tau`. `floor`/`ceil`/`round`/`int` return `Int` (checked); `round` is **half away from zero** (`round(-2.5) == -3`, Python rounds to even) and `int`
+  truncates toward zero (`int(-0.5) == 0`); `contains(set, id)` / `contains(list, v)` / `contains(str, sub)` / `contains(obj, key)` is the membership test
+  (there is no `x in set` operator: `in` needs a plural kind on its left); `ents("Volume#3")` /
+  `ents([..])` turns id strings (for example from a query result) into an entity set (strings are wire form, §5.1), and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
+  randomness must be seeded from op parameters. `range(a, b[, step])` is half-open and capped (§9). Half-open is spelled `range` and nothing else: `..` exists **only inside id specs** (§5.2), where it is
+  inclusive; there is no `a..b` expression, and if one is ever added it will be inclusive like every other `..`, never half-open.
   Transcendental functions use the platform libm; the value written into an op record is what is replayed, so
   cross-platform last-digit differences affect only *re-evaluating the script*, never replay of a timeline.
 * Lists `[1, 2, 3]`, objects `{ x: 1, "y z": 2 }`, indexing `l[0]`, `l[-1]` (negative from the end),
@@ -73,7 +88,10 @@ Precedence, loosest to tightest: `or`; `and`; `not`; comparison (non-associative
 * Variables: `let x = expr` binds once per scope (rebinding in the same scope is an error); `set x = expr` rebinds an
   existing binding of any enclosing scope. Names resolve lexically; there is no implicit global mutation.
 * Control flow: `if cond { } else { }`, `for i in list_or_set { }`. Loops are bounded (§9). No user functions in v1.
-* `print e1, e2` emits text; `assert cond[, "message"]` fails the script with a span if `cond` is false.
+* `print e1, e2` emits text; `assert cond[, "message"]` fails the script with a span if `cond` is false. Printing is meant to be pasted back:
+  floats always read as floats (`5.0`, `1e300`, `1.5e-7`; shortest round-trip digits, never hundreds of digits), entity sets use the preferred alias of
+  each kind in braces (`{Face#1, Volume#2}`; the recorded ops stay canonical).
+* Value sizes are bounded (`max_value_len`, §9) for strings and lists built by `+`, `str`, `range` and query results.
 
 ## 4. Statements and their meaning
 
@@ -105,8 +123,10 @@ registry name, and its target must exist when the alias is defined).
 1. Arguments are collected into one JSON object **in source order**; a later source overrides an earlier one, so
    `f(...base, x: 5)` overrides `x` from `base`, while `f(x: 1, ...{x: 2})` gives `x = 2`. A *named* argument written twice is
    `duplicate-argument`.
-2. **One positional argument** is allowed when the op has exactly one *required* property: it binds to that property.
-   Any other positional use is `positional-ambiguous`.
+2. **One positional argument** is allowed when the op has exactly one *required* property: it binds to that property. A schema may name the
+   positional parameter explicitly with `"x-positional": true` on one property (schemars: `#[schemars(extend("x-positional" = true))]`); that
+   marker wins, so a later version that adds a required parameter does not break existing positional scripts. Any other positional use is
+   `positional-ambiguous`. (A first-class marker in the `sm-op-api` contract is requested in `W1_REPORT.md`.)
 3. Each value is converted to JSON under the guidance of the parameter's schema (§6): an `Ents` becomes an id string or an
    array of id strings; a string literal naming an entity (`"Volume#3"`) is normalized through the alias table;
    an `Int` is accepted for `number` and `integer`; a `Num` only for `number`.
@@ -114,12 +134,18 @@ registry name, and its target must exist when the alias is defined).
    (which canonicalizes: no nulls, `-0.0` folded). Every record, top-level or a `core.batch` member, carries its own current `version`.
    Top-level records are also decoded with `Registry::decode` as a last gate, so the statement is known to apply before it is sent
    (batch members cannot be decoded early because their params may hold `$` references).
-5. A **query** is the same, but its record is never stored; its JSON result is the value of the call.
-6. Unknown argument names are an error (`unknown-argument`, with a did-you-mean), even where the op's decoder would silently ignore
+5. A **query** is the same, but its record is never stored; its JSON result is the value of the call. Where the query's result schema says "entity id"
+   or "array of entity ids" (the `EntityId` pattern), those strings become entity sets (`Ents`), also inside objects and lists, so
+   `bc.sideset(faces: geom.find_faces(normal: [0, 0, 1]))` and `count(geom.find_faces(...))` work.
+6. **Enum values are strings**: `scheme: "map"`. A bare `scheme: map` is an `unknown-variable` error whose help says to quote it. This is
+   decided: bare identifiers are *not* enum values in v1, and if they ever are, a variable of the same name always wins (so existing scripts keep
+   their meaning). A misspelled value gets a did-you-mean from the allowed values.
+7. Unknown argument names are an error (`unknown-argument`, with a did-you-mean), even where the op's decoder would silently ignore
    them: a typo must not turn into a default.
 
-An op or query call is a statement, or the whole right-hand side of `let`/`set`. Inside a larger expression it is `op-in-expression`:
-expressions are pure, calls to the registry are not.
+An op call is a statement, or the whole right-hand side of `let`/`set`; inside a larger expression it is `op-in-expression` (ops change the
+state). A **query** is read-only and deterministic for a given state, so it may also appear inside expressions (`assert model.count().count == 6`,
+`intent.set_size(ids: topo.related(...), size: 1)`), but not inside a `batch` (`query-in-batch`).
 
 ### 4.3 Execution model, ids and results
 
@@ -131,11 +157,23 @@ the statement runs, so `all volumes` after a `create_brick` sees the new volume.
 `let b = model.create_brick(x: 1, y: 1, z: 1)` binds an `Outcome`: `b.created`, `b.removed`, and one field per output
 role the op allocated (`b.body`), each an `Ents`. `b.body[0]` is the first id, `b.body[*]` the whole set.
 
+**Order.** `b.created`, `b.removed` and every `b.role` are **ordered id lists**: they keep the order in which the op reported the ids
+(`Outcome::Concrete.created` is "ids created, in order"), so `b.created[0]` is the first entity the op allocated, and `b.role[k]` is the same entity
+as `$i.role[k]` inside a `batch` (which indexes the op's own order), even when a role mixes kinds. Everything built from ranges, `all`, `kind in`
+and the set operators (`| & - except`) is a **sorted set** (by kind, then serial); set algebra always returns a sorted set, whatever its inputs.
+`[k]`, `for`, `print` and conversion to an array parameter follow the stored order; equality and `contains` ignore it.
+
+**Partial application.** A script run is not transactional: statements that completed before a runtime error stay applied (the Cubit weakness §1
+mentions applies to scripts too). Parse errors are different: nothing runs. Use `batch { }` where an all-or-nothing step is needed; whether a
+whole-run atomic mode is worth adding is open (`W1_REPORT.md`).
+
 **Plan mode** (`PlanHost`: validate and lower without executing) cannot know an op's outputs: the number of ids an op allocates is not
 predictable from the state. There, a top-level `let b = op(...)` binds a *symbolic* outcome (the op is schema-checked, and its record is
 collected). Using `b.role` as an argument produces a `plan-unresolved` warning and a placeholder `"$plan.<n>.<role>"` string that is
 **not** valid in a record; plan output is for validation, completion and review, not for application. Wrap dependent
-statements in `batch { }` to get a fully lowered, applicable form without executing anything.
+statements in `batch { }` to get a fully lowered, applicable form without executing anything. A `for` loop over an unknown sequence
+(`for f in b.faces { ... }`) does not fail the plan: its body is checked **once** with a placeholder loop variable under a `plan-unresolved`
+warning, and a `plan-unresolved` error inside that check is downgraded to a warning and ends it. A query used in an expression yields a placeholder too.
 
 ### 4.4 `batch { ... }` is `core.batch`
 
@@ -143,11 +181,14 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
 
 * ops are collected, not executed; the batch index `i` counts **only emitted ops** (an unrolled `for` contributes one index per emitted op;
   `let`, `if`, `print`, `assert` contribute none), and each member record carries its own `version`; entity lists resolve against the state *at block entry* (documented snapshot
-  semantics; explicit ids of entities created inside the block cannot exist yet);
+  semantics; explicit ids of entities created inside the block cannot exist yet: `entity-not-found` then says that ids created inside a block cannot be named and to use
+  the op result). `all`, a range, or `kind in X` written **after an emitted op** of the same block gets a `batch-snapshot` warning, because the selection silently leaves
+  out what the block created;
 * `let b = op(...)` binds a **symbolic** outcome of batch index `i`. `b.role` becomes the reference string
   `"$i.role"`; `b.role[k]` becomes `"$i.role[k]"`; `b.role[*]` becomes `"$i.role[*]"`. The contract only accepts `[*]` as an **array element**,
-  so the lowering is chosen by the schema of the parameter the value lands in: scalar id parameter, `b.role` → `"$i.role"` (the bare form, alias of `[0]`);
-  array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`; inside an array literal a bare `b.role` is
+  so the lowering is chosen by the schema of the parameter the value lands in. **Wrapping code in `batch` never changes what it means:** a scalar id
+  parameter needs exactly one id, so a bare `b.role` there is `expected-one-entity` in a batch just as it is outside one when the role holds several ids
+  (a batch cannot know how many, so it never silently takes the first); write `b.role[0]`, which lowers to `"$i.role[0]"`. Array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`; inside an array literal a bare `b.role` is
   spliced as `"$i.role[*]"`. `b.role[*]` for a scalar parameter is an error; Symbolic values may only be used as op arguments (or list elements of them);
   arithmetic or set algebra on them is `not-concrete`;
 * a user string literal starting with `$` is emitted as `$$...` (the batch escape), so literals can never be mistaken
@@ -166,6 +207,26 @@ A script file is a statement list. `include "path"` asks the host's loader for t
 **current scope**. Cycles and depth beyond 16 are errors. Parsing is all-or-nothing per source file: if any source fails to parse,
 **no statement of the run executes**; every syntax error found by recovery is reported.
 
+### 4.6 Timeline control
+
+Fork, checkout, undo and redo are central to the project, and they are **statements of the language but not registry ops**: a fork is not itself a
+timeline node, so recording it as one would be circular. They live in a reserved namespace, `timeline.*`, dispatched to
+`Host::timeline(&TimelineCommand)` (default: error `timeline-failed`/`timeline-unsupported`), never to `Host::apply`:
+
+```
+timeline.branch("alt")               // fork: create a branch at the current position and attach to it   (Session::branch)
+timeline.checkout("main")            // a branch by name                                                   (Session::checkout, Rev::Ref)
+timeline.checkout(node: "<hash>")    // a node, detached                                                   (Rev::Node)
+timeline.checkout(empty: true)       // the empty state                                                    (Rev::Empty)
+timeline.undo()    timeline.redo()                                                                          (Session::undo / redo)
+```
+
+One string may be positional (`branch(name)`, `checkout(ref)`). They are statements only (`op-in-expression` inside an expression, `timeline-in-batch`
+inside a batch: a batch is one timeline node). Each becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timeline` warning says
+later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
+so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
+resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
+
 ## 5. Entity references and entity lists
 
 All entity expressions evaluate to `Ents`: a duplicate-free set of `EntityId` ordered by `EntityId` (kind, then serial), so output never
@@ -179,30 +240,47 @@ or one of these aliases:
 | alias | kind | plural keyword | | alias | kind | plural keyword |
 |---|---|---|---|---|---|---|
 | `Vertex` | `TopoVertex` | `vertices` | | `Node` | `MeshVertex` | `nodes` |
-| `Edge` | `TopoEdge` | `edges` | | `Element` | `MeshCell` | `elements` |
-| `Face` | `TopoFace` | `faces` | | | | |
-| `Volume` | `TopoVolume` | `volumes` | | | | |
+| `Edge`, **`Curve`** | `TopoEdge` | `edges`, **`curves`** | | `Element` | `MeshCell` | `elements` |
+| `Face`, **`Surface`** | `TopoFace` | `faces`, **`surfaces`** | | `GeomCurve` | `Curve` (carrier) | `geom_curves` |
+| `Volume` | `TopoVolume` | `volumes` | | `GeomSurface` | `Surface` (carrier) | `geom_surfaces` |
 | `Body` | `TopoBody` | `bodies` | | | | |
 
-Every other kind name is also its own alias, and has a snake_case plural keyword (`Curve`/`curves`, `Color`/`colors`, `Group`/`groups`,
+**Cubit vocabulary wins.** In Cubit `surface` and `curve` are the topological faces and edges, and `sm-core` itself calls `TopoFace` "(surface)". So in
+scripts `Surface#5`, `all surfaces` and `surfaces in Volume#2` are **faces**, and `Curve#n`/`curves` are **edges**. The geometry carriers (`sm-core`'s
+`Surface` and `Curve` kinds) are spelled `GeomSurface`/`GeomCurve` and `geom_surfaces`/`geom_curves`; the canonical names `Surface`/`Curve` are *not* accepted
+for them in source, so a carrier id can never be named by accident. An empty `geom_surfaces` selection says what the carriers are. This table is frozen by a test.
+
+Every other kind name is also its own alias, and has a snake_case plural keyword (`Color`/`colors`, `Group`/`groups`,
 `Boundary`/`boundaries`, `PartitionCell`/`partition_cells`, `Mesh`/`meshes`, `MeshFace`/`mesh_faces`, `Symmetry`/`symmetries`, ...; the full table
 is `kinds::KIND_TABLE`, tested to cover `EntityKind::ALL`). Unknown kinds are `unknown-entity-kind` with a did-you-mean.
+
+**Strings are wire form.** An id inside a string (`ents("Face#3")`, `model.pick("TopoFace#3")`, ids from a query result) is read canonical-first, exactly as
+`sm-core` prints it, so `"Surface#7"` in a string is the geometry carrier an op or query reported; only if that fails are the aliases tried
+(`"Face#3"`, `"Volume#3"`). Bare source (`Surface#7`) is the Cubit reading above.
 
 ### 5.2 Forms
 
 ```
-Volume#3                  one id
+Volume#3                  one id (an integer literal)
 Volume#1..5               inclusive range (live members only; a warning if none)
 Volume#1..9 by 2          stepped range (1, 3, 5, 7, 9)
 Volume#[1, 3, 5..7]       list of ids and ranges
+Volume#[i]  Volume#(i+1)  serials are expressions inside [...] or (...):  Volume#[a..b by 2]   Volume#[i, j + 1]
 all faces                 every live entity of the kind
-faces in Volume#2         entities of that kind related to the right operand (see 5.3)
+faces in Volume#2         entities of that kind related to the right operand (see 5.3); `all faces in Volume#2` is the same
 a | b    a & b    a - b   union, intersection, difference ('-' may be written 'except')
 (…)  variable names       parentheses and variables holding an Ents
 ```
 
-`faces in X` has the *tightest* binding on its right side (`faces in Volume#2 - faces in Volume#3` is
-`(faces in Volume#2) - (faces in Volume#3)`); use parentheses for compound operands: `faces in (Volume#2 | Volume#3)`.
+**Computed ids** replace APREPRO's `volume {i}`: inside `[...]` or `(...)` a serial is any expression that evaluates to an integer from 0 to 2^56-1
+(`bad-id-range` / `type-mismatch` otherwise); the bare `Volume#3` form stays a literal so that `Volume#3 - Volume#2` is a set difference. A single
+computed id must be live like a literal one; in a range, live members are selected. `for i in range(1, n + 1) { mesh.run(targets: Volume#[i], ...) }` works.
+`..` is inclusive and exists only here (see §3).
+
+**`in` takes a postfix operand and must not be followed by a set operator.** `faces in Volume#1 | Volume#2` is an `ambiguous-in` parse error (it would
+silently have been `(faces in Volume#1) | Volume#2`, a set of mixed kinds, while a Cubit user reads `faces in (Volume#1 | Volume#2)`). Write the
+parentheses you mean: `faces in (Volume#1 | Volume#2)` or `(faces in Volume#1) | Volume#2`. `faces in Volume#2 - faces in Volume#3` needs them too.
+`-`/`except` mixed with `|`/`&` is rejected in the same way (§3).
 
 ### 5.3 Liveness and relations
 
@@ -222,7 +300,23 @@ a | b    a & b    a - b   union, intersection, difference ('-' may be written 'e
 ### 5.4 Conversion to parameters
 
 An `Ents` bound to an id parameter must contain **exactly one** entity (`expected-one-entity` with the count otherwise);
-bound to an array of ids it becomes the array in id order. It is a type error anywhere else.
+bound to an array of ids it becomes the array in stored order (id order for a sorted set, the op's order for an output list). It is a type error anywhere else.
+
+### 5.5 Reserved: predicates and names (not implemented)
+
+Selecting by attribute, name or location is the most common real-world selection (Cubit `with`, `name`, `at`). v1 has ids and relations only, but the grammar is
+fixed now so scripts written today stay valid. After an entity expression, the contextual words `where` and `named` (and `with`) introduce a predicate:
+
+```
+faces in Volume#1 where area > 2                  // attribute / geometric predicate over the selected entities
+faces in Volume#1 where normal == +z              // vector literals and axis names to be decided with the geometry layer
+volumes named "fuel*"                              // selection by the name given with `name:` (glob)
+all faces with name "inlet"                        // `with` is an alias of `where` for attribute-equality (reserved)
+```
+
+Today each of them is a `not-yet-supported` parse error that points at the word. Elsewhere `where`, `named` and `with` remain ordinary variable names, and
+adding predicates later cannot change the meaning of a valid v1 script. Until then a script that must find entities by property runs a query and passes
+`ents(result)` (or the query result directly: §4.2.5).
 
 ## 6. Schema-driven checking
 
@@ -252,7 +346,9 @@ yields the same records; tests compare hashes across runs and thread counts.
 ## 9. Limits (denial-of-service guards, configurable in `Options`)
 
 Source size 16 MiB, nesting depth 64, expression height 256 (nesting plus operator chains such as `1 + 1 + ...`; `expression-too-long`),
-loop iterations 1,000,000 per run, `range` length 1,000,000, include depth 16, errors reported per source 100. All are fields of `ParseLimits` / `Options`.
+loop iterations 1,000,000 per run, `range` length 1,000,000, string bytes / list length of any built value (`max_value_len`) 1,000,000 (checked in `+`, `str`, `range` and query
+results, so `set l = l + l` in a loop stops at `value-too-long` instead of exhausting memory), include depth 16, errors reported per source 100. All are fields of `ParseLimits` / `Options`.
+An `else if` chain is flat and costs no nesting depth. `Options::allow_top_level_rebind` lets an interactive session re-send `let w = 10` (a `shadowed` warning).
 
 ## 10. Examples
 
@@ -266,10 +362,14 @@ batch {                                 // one atomic node
     let p = model.create_brick(x: 1, y: 1, z: 1)
     intent.set_size(ids: p.body, size: 0.25)       // ids: ["$0.body[*]"] when `ids` is an array parameter
     intent.set_size(ids: [p.body[0]], size: 0.5)
+    model.pick(p.body[0])                           // a scalar id parameter needs an index inside a batch
 }
 
 for i in range(0, 3) { model.create_brick(x: i + 1, y: 1, z: 1) }
+for i in range(1, 4) { mesh.run(targets: Volume#[i], scheme: "map") }     // computed ids
 
 mesh.run(targets: all volumes - Volume#2)
+mesh.run(targets: (all volumes - Volume#2) | Volume#9)                   // parentheses required when mixing - with |
+timeline.branch("coarse")                                                 // fork the history here
 model.delete_body(...{ id: "Body#1" })           // raw JSON spread
 ```

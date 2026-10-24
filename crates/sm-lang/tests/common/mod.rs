@@ -239,6 +239,41 @@ impl TypedOp for AllocMany {
     }
 }
 
+/// Allocate one face, one body and one volume into the same output role, in that order (a mixed-kind role).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Mixed {
+    /// Unused.
+    pub n: Option<u32>,
+}
+
+impl TypedOp for Mixed {
+    const NAME: &'static str = "test.mixed";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.alloc_as("mix", EntityKind::TopoFace)?;
+        ctx.alloc_as("mix", EntityKind::TopoBody)?;
+        ctx.alloc_as("mix", EntityKind::TopoVolume)?;
+        Ok(())
+    }
+}
+
+/// Two required parameters, one of them marked as the positional one in the schema.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Tag {
+    /// The label (the positional parameter).
+    #[schemars(extend("x-positional" = true))]
+    pub label: String,
+    /// A count.
+    pub n: u32,
+}
+
+impl TypedOp for Tag {
+    const NAME: &'static str = "test.tag";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.layer_mut::<DemoModel>()?.notes.push(format!("{}:{}", self.label, self.n));
+        Ok(())
+    }
+}
+
 /// Count entities (optionally of one kind).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Count {
@@ -318,6 +353,8 @@ pub fn registry() -> Registry {
     r.register::<SetSize>().unwrap();
     r.register::<MeshRun>().unwrap();
     r.register::<AllocMany>().unwrap();
+    r.register::<Mixed>().unwrap();
+    r.register::<Tag>().unwrap();
     r.register_query::<Count>().unwrap();
     r.register_query::<Related>().unwrap();
     r

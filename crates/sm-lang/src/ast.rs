@@ -229,6 +229,8 @@ pub enum BinOp {
     Inter,
 }
 
+// A range holds three expressions; boxing them would add an allocation per id item for no benefit.
+#[allow(clippy::large_enum_variant)]
 /// One element of an id specification. Serials are expressions (`Volume#[i + 1]`), evaluated to integers when the
 /// statement runs; a plain `Volume#3` holds an integer literal.
 #[derive(Clone, Debug, PartialEq)]

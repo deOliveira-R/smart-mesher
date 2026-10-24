@@ -78,10 +78,11 @@ pub fn cmp_int_num(i: i64, f: f64) -> Option<Ordering> {
     if f.is_nan() {
         return None;
     }
-    if f >= 9.223_372_036_854_775_8e18 {
+    const TWO63: f64 = (1u64 << 63) as f64;
+    if f >= TWO63 {
         return Some(Ordering::Less);
     }
-    if f < -9.223_372_036_854_775_8e18 {
+    if f < -TWO63 {
         return Some(Ordering::Greater);
     }
     let t = f.trunc();

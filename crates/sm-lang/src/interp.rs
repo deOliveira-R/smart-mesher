@@ -1006,12 +1006,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 "enum-violation" => {
                     let bad = json_at(&params, &iss.path);
                     let choices: Vec<String> = view_at(view, &iss.path).map(|v| v.non_null().choices().iter().filter_map(|c| c.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-                    match (bad, choices.is_empty()) {
-                        (Some(Json::String(b)), false) => match suggest(b, choices.iter().map(String::as_str)) {
+                    if let (Some(Json::String(b)), false) = (bad, choices.is_empty()) {
+                        match suggest(b, choices.iter().map(String::as_str)) {
                             Some(s) => d = d.help(format!("did you mean \"{s}\"?")),
                             None => d = d.help(format!("allowed values: {}", choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", "))),
-                        },
-                        _ => {}
+                        }
                     }
                 }
                 _ => {}

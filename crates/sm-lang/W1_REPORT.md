@@ -1,6 +1,6 @@
 # sm-lang: W1 report
 
-Status: **done** (definition of done passes; see "Test summary"). Commit: the tip of `claude/w1-sm-lang-96bwd7`; the SHA is reported in the session's final message.
+Status: **done**, revised by **fix0** (review findings; see the "fix0" section, which supersedes the older text below where they differ). Definition of done passes; see "Test summary". Commit: the tip of `claude/w1-sm-lang-96bwd7`; the SHA is reported in the session's final message.
 
 Branch: the session designated `claude/w1-sm-lang-96bwd7`, and the work was developed and pushed there. The task text names
 `claude/w1-sm-lang`; the orchestrator should merge by SHA as CLAUDE.md prescribes, so the name does not matter, but it is not the name the task text gave.
@@ -30,7 +30,7 @@ ignore them; explicit op names only (no suffix resolution, `alias` instead).
 
 ## Test summary
 
-`cargo test -p sm-lang`: **80 tests, all passing**, and identical under `RAYON_NUM_THREADS=1`.
+`cargo test -p sm-lang`: **116 tests, all passing** (80 before fix0), and identical under `RAYON_NUM_THREADS=1`.
 
 | File | Tests | What |
 |---|---|---|
@@ -69,7 +69,7 @@ the demo layer, ops, queries and relations in `tests/common/mod.rs` follow the p
 
 ## Known gaps
 
-* No user-defined functions, no `where`/attribute predicates in entity lists, no `else` on a line after `}`.
+* No user-defined functions, no `where`/attribute predicates in entity lists (reserved and specified in `LANGUAGE.md` §5.5, rejected with `not-yet-supported`).
 * A batch reference stored inside a list/object variable is not rebound to concrete ids after the batch applies (using it afterwards is `stale-reference`).
 * Completion is lexical (no expression type inference); fields only for variables holding op results or objects.
 * `kind in X` has no production resolver yet (needs the topology plugin, request 1); with a host without one the error is `no-relations`.
@@ -98,4 +98,44 @@ the demo layer, ops, queries and relations in `tests/common/mod.rs` follow the p
 3. **crate: sm-engine / sm-cli (follow-up, not a contract change)**: a `Host` implementation over `Session` (`apply` = `Session::apply` with a `Meta` supplied by the
    caller, one node per record, `state()` = the current state, `relations()` from the topology adapter). `Host` is the only trait that needs implementing.
 
-No change to a frozen contract is required for sm-lang to do its job.
+No change to a frozen contract is required for sm-lang to do its job. fix0 adds the optional requests 4 to 6 below.
+
+## fix0: review findings
+
+Branch `w1/sm-lang-fix0-*`, started from `842517e`. Everything is inside `crates/sm-lang`. `LANGUAGE.md` is updated for every decision (sections named below).
+Tests: `tests/fix0.rs` (27) plus additions to `parse.rs`, `batch.rs`, `kinds.rs`, `schema.rs` and new goldens; `cargo clippy -p sm-lang --all-targets -- -D warnings`,
+`cargo doc` with `-D warnings`, `cargo check --benches` and `RAYON_NUM_THREADS=1 cargo test` pass.
+
+### MUST FIX: language decisions (all binding from now on)
+
+| # | Decision | Where |
+|---|---|---|
+| 1 | **Batch never changes meaning.** A bare `b.role` for a *scalar* id parameter inside a batch is `expected-one-entity` ("write `<result>.role[0]`"), because a batch cannot know the cardinality of a role and the same statement outside a batch fails when the role holds several ids. `b.role[0]` lowers to `$i.role[0]`. Test: `a_bare_role_for_a_single_id_parameter_means_the_same_inside_and_outside_a_batch` (batch.rs). Cost: scripts that relied on the bare form for single-id roles must add `[0]`. | LANGUAGE §4.4 |
+| 2 | **`in` (option b).** `kind in X` followed by `\|`, `&`, `-`, `+` or `except` is the parse error `ambiguous-in`; the writer chooses `faces in (A \| B)` or `(faces in A) \| B`. An error can be relaxed into a meaning later; a meaning cannot be changed. `all faces in X` is accepted as `faces in X`. | §5.2 |
+| 3 | **Outputs are ordered lists.** `b.role`, `b.created`, `b.removed` keep op order (`EntitySet` now has a sorted flag and an ordered flavour; set algebra always returns sorted sets; equality is set equality). `b.role[k]` outside a batch equals `$i.role[k]` inside, also for mixed-kind roles (test with a mixed-kind demo op). | §4.3 |
+| 4 | **Computed ids**: `Volume#[i]`, `Volume#(i+1)`, `Volume#[a..b by s]`, `Volume#[i, j+1]`; the bare form stays a literal. Serials are validated when evaluated. | §5.2 |
+| 5 | **Cubit vocabulary**: `Surface`/`surfaces` are `TopoFace`, `Curve`/`curves` are `TopoEdge`; the carriers are `GeomSurface`/`GeomCurve` (`geom_surfaces`/`geom_curves`). The canonical names `Surface`/`Curve` no longer reach the carriers in source. **Strings are wire form**: they are read canonical-first, so `"Surface#7"` in a string (for example from a query result) is still the carrier; only then are aliases tried. The residual risk is a user writing `"Surface#5"` inside quotes meaning a face; documented in §5.1. | §5.1 |
+| 6 | **`except` / `-` (option b).** Mixing `-` or `except` with `\|` or `&` without parentheses is the parse error `ambiguous-set-expression` (needs a `paren` flag on `Expr`). `-`/`except` keep their tier. `all volumes except Volume#1 \| Volume#2` must now be written `... except (Volume#1 \| Volume#2)`. | §3 |
+| 7 | **Timeline**: reserved non-registry namespace `timeline.*` (`branch`, `checkout`, `undo`, `redo`), dispatched to the new defaulted `Host::timeline(&TimelineCommand)`; `Event::Timeline`; an error inside a batch and in an expression; a `plan-timeline` warning under `PlanHost`. Not keywords, so no existing identifier stops working. Plugins must not register the `timeline.` prefix (test asserts the demo registry has none). | §4.6 |
+
+### SHOULD FIX
+
+Done: 1 (exact integer min/max and Int/Num comparison, `integer-precision` for `number` parameters above 2^53), 2 (analytic builtin tests, rules documented), 3 (plan-mode `for` over an unknown sequence checks the body once under a warning), 4 (enum values are strings: help and did-you-mean; decision: no bare enum identifiers in v1, a variable of the same name would win if ever added), 5 (= MUST 4), 6 (= MUST 5, plus the empty-selection note for carriers), 7 (`all faces in X`), 8 and 22 (`else` on the next line; flat `else if` chain, one diagnostic), 9 (`Options::max_value_len`, `value-too-long`, checked in `+`, `str`, query results; `range` keeps its own cap), 10 (`Val::List`, `Val::Obj` and `EntitySet` are `Arc`s; `lookup_var` and `.role` are O(1)), 11 and 24 (floats print as floats, ids with their preferred alias), 12 (snapshot explanation), 13 and 29 (`..` only in id specs, inclusive, documented), 16 (partial application documented; `Options::atomic` not added: `batch` is the atomic tool and a whole-run mode needs a decision about queries and `print` between ops), 17 (queries allowed in expressions, id-typed outputs become `Ents`; `Callable` now carries the query output schema), 18 and 15 (predicate grammar written in §5.5; `where`/`named`/`with` reserved after entity expressions with a targeted error), 19 (`batch-snapshot` warning), 20 (`contains(...)`, and `in` errors say a plural kind is needed), 21 (`+` on sets suggests `|`), 23 (`Options::allow_top_level_rebind`, `shadowed` warning), 25 (op failures point at the argument that supplied the entity, message de-duplicated, parameter description as help), 26 (`Diagnostic::to_json(&SourceMap)`, `RunReport::diagnostics_json`), 27 (`ID_PATTERN` pinned against `schemars::schema_for!(EntityId)`; `is_batch_ref` still reimplements the private contract function, covered by the pinned `REF_PATTERN` and the batch-vs-sequential state test), 28 (a schema property with `"x-positional": true` is the positional parameter and wins over the single-required-parameter rule), 30 (the three `expect()` calls and one `unreachable!` are gone; `internal-error` diagnostic instead).
+
+Skipped or only partly done, with reasons:
+
+* **14** schema-level kind checking: needs the `EntityId` schema to carry the kind (request 4). Until then the op's own error (`wrong-kind`) is localized to the argument (25) and the parameter description is shown as help.
+* **15 (3)** selection by name: specified in §5.5 (`volumes named "x*"`) but not implemented; it needs a name store that the layers own.
+* **Batch-vs-top-level `plan` for `if`**: only `for` got the plan-mode downgrade; an `if` whose condition is a plan placeholder is still a `plan-unresolved` error.
+* **Completion** does not offer `timeline.*` names or the new `Volume#[` form specially; it still works on them lexically.
+
+### Behaviour changes that break old scripts (all were error or ambiguous before)
+
+`model.pick(p.body)` inside a batch (write `p.body[0]`); `faces in A | B`, `A - B | C`, `A except B | C` (parenthesize); `Surface#n` / `all surfaces` now select faces; printed output uses `Face#1`
+spellings and `5.0` for floats; `ents(r.ids)` accepts entity sets as well as strings.
+
+### More api_change_requests (optional, open tier)
+
+4. **sm-core / sm-op-api**: let the `EntityId` JSON schema carry the expected kind (for example `x-entity-kind`), so sm-lang can reject `mesh.run(targets: faces in Volume#1)` at the argument span (SHOULD 14) and offer kind-aware completion.
+5. **sm-op-api**: a first-class positional marker in op schemas (sm-lang already honours `"x-positional": true`), and per-role output cardinality in `OpInfo` (so a batch could accept a bare `b.role` where a role is known to hold exactly one id, MUST 1).
+6. **sm-op-api**: export `batch::reference`/`REF_PATTERN` matching as a public function so `schema::is_batch_ref` can be deleted.

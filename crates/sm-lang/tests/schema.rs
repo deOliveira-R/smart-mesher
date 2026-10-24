@@ -42,6 +42,16 @@ fn the_contract_patterns_are_pinned() {
     }
 }
 
+/// The id pattern is recognized by exact string match, so it is pinned against what `sm-core` really emits: if the
+/// contract's schema changes, entity parameters would silently stop being recognized without this test.
+#[test]
+fn the_id_pattern_is_what_sm_core_emits() {
+    let schema = schemars::schema_for!(sm_core::EntityId);
+    let v = serde_json::to_value(&schema).unwrap();
+    assert_eq!(v["pattern"], sm_lang::schema::ID_PATTERN, "{v}");
+    assert_eq!(v["type"], "string");
+}
+
 #[test]
 fn validates_values_against_op_schemas() {
     assert!(issues("model.create_brick", json!({"x": 1.0, "y": 2.0, "z": 3.0})).is_empty());

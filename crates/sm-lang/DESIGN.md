@@ -38,7 +38,7 @@ text ──lex──► tokens ──parse──► AST (+ diagnostics, recovery
 | `lexer` | byte lexer, never panics, `Kind#` is one token, `1..5` is `Int .. Int`, errors become diagnostics + `Error` tokens |
 | `parser`, `ast` | statement recovery (`sync`), argument-level recovery, bracket-aware newline handling, `Expr::height` bound, `parse_many` (rayon, ordered) |
 | `kinds` | the frozen alias table (`KIND_TABLE`), tested to cover `EntityKind::ALL` |
-| `entity` | `EntitySet` (sorted unique ids), chunked parallel union/intersection/difference, `live_range`, `all_of`, the `Relations` hook |
+| `entity` | `EntitySet` (an `Arc`ed id vector: a sorted set, or an ordered list for op outputs; set algebra always returns sorted sets), chunked parallel union/intersection/difference, `live_range`, `all_of`, the `Relations` hook |
 | `value`, `eval` | `Val`, symbolic `Outcome`/`Ref`/`Placeholder`, checked arithmetic, builtins |
 | `schema` | JSON-Schema reader/checker for what `schemars` 1 emits; `ParamInfo` for help/completion |
 | `host` | `Host`, `EngineHost`, `PlanHost`, `QueryRelations` |
@@ -62,6 +62,10 @@ text ──lex──► tokens ──parse──► AST (+ diagnostics, recovery
   even where the registry's decoder would drop them silently.
 * **No I/O, no `Meta`.** The language reads files only through `Host::load` and never builds a timeline `Meta` (author/time are not its business and
   time is non-deterministic input). A `Session`-backed host belongs in sm-engine/sm-cli.
+* **Decisions that scripts depend on are made by parse errors where the alternative readings differ** (`in` before a set operator, `-`/`except` mixed with
+  `|`/`&`): relaxing an error later is compatible, changing a meaning is not. `Expr::paren` exists only for this.
+* **Timeline control is not an op.** `timeline.*` statements go to `Host::timeline`, never to `apply`; a session host maps them to `Session::branch/checkout/undo/redo`.
+* **Op outputs are ordered lists** (`EntitySet` with `sorted == false`), so `b.role[k]` outside a batch is the entity `$i.role[k]` names inside one.
 * **Plan mode** (`PlanHost`) validates and lowers without executing. Outputs that depend on execution are symbolic (`$plan.n.role` placeholders that
   can never match `REF_PATTERN`) with a `plan-unresolved` warning, and arithmetic on them is an error.
 * **Adjacency is not on `State`.** `kind in X` calls a host `Relations` resolver; results are sorted, de-duplicated and filtered to live entities of the
@@ -105,7 +109,7 @@ Union gains nothing from chunking at this size; it is kept chunked only so that 
 
 ## Known gaps and non-goals (v1)
 
-* No user-defined functions, no `where` predicates, no dictionaries of ops, no `else` on a following line.
+* No user-defined functions, no `where`/`named` predicates (reserved, `LANGUAGE.md` §5.5), no dictionaries of ops.
 * A batch reference stored inside a list or object variable is not rebound after the batch applies (documented in `LANGUAGE.md` §4.4).
 * `Event::Batch.record` is the record the client built; the canonical stored form comes from the engine/session (see `W1_REPORT.md`).
 * Completion is lexical: it does not infer the types of expressions beyond the enclosing call parameter; fields are offered only for variables that

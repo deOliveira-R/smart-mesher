@@ -96,9 +96,12 @@ pub fn language_summary() -> &'static str {
   calls       model.create_brick(x: 10, y: 10, z: 10)     named args; ...{json} spreads an object
   variables   let w = 10;  set w = 12;  let b = model.create_brick(x: w, y: w, z: w)   (b.body is its output)
   expressions + - * / % **  == != < <= > >=  and or not  | & (set union/intersection)  - except (difference)
-  entities    Volume#3  Volume#1..5  Volume#[1, 3, 5..7]  all faces  faces in Volume#2
+              (`-`/`except` next to `|`/`&`, and `in` before a set operator, need parentheses)
+  entities    Volume#3  Volume#1..5  Volume#[1, 3, 5..7]  Volume#[i]  Volume#(n + 1)  all faces  faces in Volume#2
+              (Cubit words: surfaces = faces, curves = edges; contains(set, Face#2) tests membership)
   batch       batch { ... }   one atomic node; outputs referenced as $i.role
   control     if c { } else { }   for i in range(0, 3) { }   include \"file.smesh\"
+  timeline    timeline.branch(\"name\")  timeline.checkout(\"name\")  timeline.undo()  timeline.redo()   (statements, not ops)
   other       print e, ...   assert cond, \"msg\"   alias short = model.create_brick   help [name]
   comments    // line   /* block */
 "
@@ -108,6 +111,15 @@ pub fn language_summary() -> &'static str {
 pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
     if name == "language" {
         return Ok(language_summary().to_owned());
+    }
+    if let Some(verb) = name.strip_prefix("timeline.") {
+        return match verb {
+            "branch" => Ok("timeline.branch(name: string)  (timeline command, not an op)\nFork: create a branch at the current position and switch to it.\n".to_owned()),
+            "checkout" => Ok("timeline.checkout(ref | node | empty)  (timeline command, not an op)\nMove to a branch (`ref`, or the single positional string), a node by hash (`node`), or the empty state (`empty: true`).\n".to_owned()),
+            "undo" => Ok("timeline.undo()  (timeline command, not an op)\nStep back one node; the undone node stays reachable by `checkout`.\n".to_owned()),
+            "redo" => Ok("timeline.redo()  (timeline command, not an op)\nStep forward again after an undo.\n".to_owned()),
+            _ => Err(format!("no timeline command `{name}`; timeline commands: branch, checkout, undo, redo")),
+        };
     }
     let all = callables(registry);
     let Some(c) = all.iter().find(|c| c.name == name) else {
