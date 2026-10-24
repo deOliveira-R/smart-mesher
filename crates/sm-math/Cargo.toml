@@ -8,8 +8,19 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+rayon = "1.12.0"
 sm-core = { path = "../sm-core" }
+smallvec = "1.16.4"
 thiserror = "2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.12.0"
+sm-testkit = { path = "../sm-testkit" }
+
+[[bench]]
+name = "kernels"
+harness = false
