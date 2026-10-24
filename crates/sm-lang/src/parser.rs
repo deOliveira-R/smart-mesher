@@ -14,13 +14,17 @@ use crate::span::Span;
 pub struct ParseLimits {
     /// Maximum expression/statement nesting.
     pub max_depth: usize,
+    /// Maximum height of one expression tree (nesting plus operator chains such as `1 + 1 + ...`).
+    pub max_height: u32,
+    /// Sources longer than this many bytes are rejected without being scanned.
+    pub max_source_bytes: usize,
     /// Stop after this many diagnostics (a final `too-many-errors` is added).
     pub max_errors: usize,
 }
 
 impl Default for ParseLimits {
     fn default() -> Self {
-        Self { max_depth: 64, max_errors: 100 }
+        Self { max_depth: 64, max_height: 256, max_source_bytes: 16 << 20, max_errors: 100 }
     }
 }
 
@@ -47,6 +51,11 @@ pub fn parse(file: u32, text: &str) -> ParseOutput {
 
 /// Lex and parse with explicit limits.
 pub fn parse_with(file: u32, text: &str, limits: ParseLimits) -> ParseOutput {
+    if text.len() > limits.max_source_bytes || text.len() >= u32::MAX as usize {
+        let d = Diagnostic::error("source-too-large", Span::new(file, 0, 0), format!("source is {} bytes, the limit is {}", text.len(), limits.max_source_bytes))
+            .label("not parsed");
+        return ParseOutput { script: Script { file, stmts: Vec::new() }, diagnostics: vec![d] };
+    }
     let mut diags = Vec::new();
     let toks = lex(file, text, &mut diags);
     let mut p = P { toks, pos: 0, text, file, diags, nl: 0, depth: 0, limits, last_hi: 0, aborted: false };
@@ -662,12 +671,25 @@ impl P<'_> {
     }
 
     fn mk(&self, lo: u32, kind: ExprKind) -> Expr {
-        Expr { span: self.sp(lo), kind }
+        Expr::new(self.sp(lo), kind)
     }
 
-    fn bin(&self, op: BinOp, l: Expr, r: Expr) -> Expr {
+    /// Reject trees taller than the limit (long operator chains build deep left-leaning trees).
+    fn check_height(&mut self, e: Expr) -> R<Expr> {
+        if e.height > self.limits.max_height {
+            let max = self.limits.max_height;
+            self.push(
+                Diagnostic::error("expression-too-long", e.span, format!("expression is too long (limit: {max} chained or nested terms)"))
+                    .label("split it with `let`"),
+            );
+            return Err(());
+        }
+        Ok(e)
+    }
+
+    fn bin(&mut self, op: BinOp, l: Expr, r: Expr) -> R<Expr> {
         let span = l.span.to(r.span);
-        Expr { span, kind: ExprKind::Binary(op, Box::new(l), Box::new(r)) }
+        self.check_height(Expr::new(span, ExprKind::Binary(op, Box::new(l), Box::new(r))))
     }
 
     fn or(&mut self) -> R<Expr> {
@@ -676,7 +698,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.and()?;
-            l = self.bin(BinOp::Or, l, r);
+            l = self.bin(BinOp::Or, l, r)?;
         }
         Ok(l)
     }
@@ -687,7 +709,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.not()?;
-            l = self.bin(BinOp::And, l, r);
+            l = self.bin(BinOp::And, l, r)?;
         }
         Ok(l)
     }
@@ -731,7 +753,7 @@ impl P<'_> {
                 );
                 return Err(());
             }
-            return Ok(self.bin(op, l, r));
+            return self.bin(op, l, r);
         }
         Ok(l)
     }
@@ -742,7 +764,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.inter()?;
-            l = self.bin(BinOp::Union, l, r);
+            l = self.bin(BinOp::Union, l, r)?;
         }
         Ok(l)
     }
@@ -753,7 +775,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.add()?;
-            l = self.bin(BinOp::Inter, l, r);
+            l = self.bin(BinOp::Inter, l, r)?;
         }
         Ok(l)
     }
@@ -770,7 +792,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.mul()?;
-            l = self.bin(op, l, r);
+            l = self.bin(op, l, r)?;
         }
         Ok(l)
     }
@@ -787,7 +809,7 @@ impl P<'_> {
             self.bump();
             self.skip_nl();
             let r = self.unary()?;
-            l = self.bin(op, l, r);
+            l = self.bin(op, l, r)?;
         }
         Ok(l)
     }
@@ -812,7 +834,7 @@ impl P<'_> {
             self.enter()?;
             let e = self.unary();
             self.depth -= 1;
-            return Ok(self.bin(BinOp::Pow, base, e?));
+            return self.bin(BinOp::Pow, base, e?);
         }
         Ok(base)
     }
@@ -826,6 +848,7 @@ impl P<'_> {
                     self.bump();
                     let f = self.expect_ident("a field name")?;
                     e = self.mk(lo, ExprKind::Field(Box::new(e), f));
+                    e = self.check_height(e)?;
                 }
                 Tok::LBracket => {
                     let open = self.bump();
@@ -845,6 +868,7 @@ impl P<'_> {
                     self.bump();
                     self.nl -= 1;
                     e = self.mk(lo, ExprKind::Index(Box::new(e), idx));
+                    e = self.check_height(e)?;
                 }
                 _ => break,
             }
@@ -936,7 +960,7 @@ impl P<'_> {
                 if self.is_call_head() {
                     let path = self.path("a function name")?;
                     let call = self.call(path)?;
-                    return Ok(Expr { span: call.span, kind: ExprKind::Call(call) });
+                    return Ok(Expr::new(call.span, ExprKind::Call(call)));
                 }
                 self.bump();
                 Ok(self.mk(lo, ExprKind::Var(name)))

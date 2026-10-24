@@ -245,3 +245,34 @@ fn crlf_and_unicode_do_not_break_spans() {
     let r = out.diagnostics[0].render(&map);
     assert!(r.contains("u:3:5"), "{r}");
 }
+
+#[test]
+fn long_operator_and_postfix_chains_are_diagnostics_not_aborts() {
+    // Left-leaning trees would otherwise be as deep as the chain is long and overflow on drop or recursion.
+    for src in [
+        format!("let x = {}1", "1 + ".repeat(100_000)),
+        format!("let x = x{}", ".a".repeat(100_000)),
+        format!("let x = x{}", "[0]".repeat(100_000)),
+        format!("let x = {}b", "a | ".repeat(100_000)),
+        format!("let x = {}b", "a and ".repeat(100_000)),
+        format!("let x = {}b", "a ** ".repeat(100_000)),
+        format!("let x = {}b", "not ".repeat(100_000)),
+        format!("let x = {}b", "- ".repeat(100_000)),
+    ] {
+        let out = parse(0, &src);
+        assert!(out.has_errors());
+        assert!(out.diagnostics.iter().any(|d| d.code == "expression-too-long" || d.code == "too-deep"), "{:?}", out.diagnostics.first());
+        drop(out);
+    }
+    // A moderately long chain is fine.
+    let ok = format!("let x = {}1", "1 + ".repeat(200));
+    assert!(parse(0, &ok).diagnostics.is_empty());
+}
+
+#[test]
+fn oversized_sources_are_rejected_before_scanning() {
+    let limits = sm_lang::ParseLimits { max_source_bytes: 10, ..Default::default() };
+    let out = sm_lang::parse_with(0, "let x = 1000000", limits);
+    assert_eq!(out.diagnostics[0].code, "source-too-large");
+    assert!(out.script.stmts.is_empty());
+}

@@ -291,6 +291,43 @@ pub struct Expr {
     pub span: Span,
     /// What it is.
     pub kind: ExprKind,
+    /// Height of the tree below (1 for a leaf). Bounded by the parser so later phases can recurse safely.
+    pub height: u32,
+}
+
+impl Expr {
+    /// Build a node, computing its height from its children.
+    pub fn new(span: Span, kind: ExprKind) -> Self {
+        let height = 1 + kind.child_height();
+        Self { span, kind, height }
+    }
+}
+
+impl ExprKind {
+    fn child_height(&self) -> u32 {
+        fn call(c: &Call) -> u32 {
+            c.args
+                .iter()
+                .map(|a| match a {
+                    Arg::Named { value, .. } => value.height,
+                    Arg::Spread(e) | Arg::Pos(e) => e.height,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        match self {
+            ExprKind::List(v) => v.iter().map(|e| e.height).max().unwrap_or(0),
+            ExprKind::Obj(v) => v.iter().map(|(_, e)| e.height).max().unwrap_or(0),
+            ExprKind::Field(b, _) => b.height,
+            ExprKind::Index(b, Index::All) => b.height,
+            ExprKind::Index(b, Index::At(i)) => b.height.max(i.height),
+            ExprKind::Call(c) => call(c),
+            ExprKind::Unary(_, a) => a.height,
+            ExprKind::Binary(_, a, b) => a.height.max(b.height),
+            ExprKind::Entity(EntityExpr::In { within, .. }) => within.height,
+            _ => 0,
+        }
+    }
 }
 
 /// Expression kinds.

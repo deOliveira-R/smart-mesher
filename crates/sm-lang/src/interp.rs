@@ -1,0 +1,1188 @@
+//! The interpreter: evaluates statements, resolves entity lists against the host state, checks arguments against op
+//! schemas, lowers calls to op records (and `batch` blocks to `core.batch`) and executes them through a [`Host`].
+
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use serde_json::{Map, Value as Json};
+use sm_core::{EntityId, EntityKind};
+use sm_op_api::{Batch, Delta, OpRecord};
+
+use crate::ast::*;
+use crate::diag::{Diagnostic, suggest};
+use crate::entity::{EntitySet, all_of, live_range};
+use crate::eval::{self, BUILTIN_NAMES, EvalErr};
+use crate::help::{self, Callable};
+use crate::host::Host;
+use crate::kinds;
+use crate::parser::{ParseLimits, parse_with};
+use crate::schema::{self, Issue, PathSeg, View};
+use crate::span::{SourceMap, Span};
+use crate::value::{Outcome, Sel, Val};
+
+/// Interpreter limits.
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// Parser limits (also applied to included files).
+    pub parse: ParseLimits,
+    /// Total loop iterations allowed per interpreter (denial-of-service guard).
+    pub max_loop_iterations: u64,
+    /// Longest list `range` may build.
+    pub max_range_len: u64,
+    /// Deepest `include` nesting.
+    pub max_include_depth: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { parse: ParseLimits::default(), max_loop_iterations: 1_000_000, max_range_len: 1_000_000, max_include_depth: 16 }
+    }
+}
+
+/// Something that happened while running a script, in order.
+#[derive(Clone, Debug)]
+pub enum Event {
+    /// A top-level op statement (applied unless the host plans only).
+    Op {
+        /// Statement span.
+        span: Span,
+        /// The record that was (or would be) applied: the canonical encoded form.
+        record: OpRecord,
+        /// The op's delta; `None` in plan mode.
+        delta: Option<Delta>,
+    },
+    /// A `batch { }` block, lowered to one `core.batch` record.
+    Batch {
+        /// Block span.
+        span: Span,
+        /// The `core.batch` record.
+        record: OpRecord,
+        /// Number of member ops.
+        members: usize,
+        /// The batch delta; `None` in plan mode.
+        delta: Option<Delta>,
+    },
+    /// A query statement.
+    Query {
+        /// Statement span.
+        span: Span,
+        /// Query name.
+        name: String,
+        /// Input parameters.
+        params: Json,
+        /// Result; `None` in plan mode.
+        result: Option<Json>,
+    },
+    /// Output of `print`.
+    Print {
+        /// Statement span.
+        span: Span,
+        /// The text.
+        text: String,
+    },
+    /// Output of `help`.
+    Help {
+        /// Statement span.
+        span: Span,
+        /// The text.
+        text: String,
+    },
+}
+
+/// What one run produced.
+#[derive(Clone, Debug, Default)]
+pub struct RunReport {
+    /// Events in order.
+    pub events: Vec<Event>,
+    /// Errors (at most one runtime error, any number of syntax errors) and warnings.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Number of statements that completed.
+    pub statements: usize,
+}
+
+impl RunReport {
+    /// True if there is no error diagnostic.
+    pub fn ok(&self) -> bool {
+        !self.diagnostics.iter().any(Diagnostic::is_error)
+    }
+
+    /// The op and batch records in the order they were applied (or planned).
+    pub fn records(&self) -> Vec<&OpRecord> {
+        self.events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Op { record, .. } | Event::Batch { record, .. } => Some(record),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+struct Binding {
+    val: Val,
+    span: Span,
+}
+
+struct BatchState {
+    id: u64,
+    records: Vec<OpRecord>,
+}
+
+type IR<T> = Result<T, ()>;
+
+/// Evaluates smesh scripts against a [`Host`].
+pub struct Interpreter<'h, H: Host + ?Sized> {
+    host: &'h mut H,
+    opts: Options,
+    scopes: Vec<BTreeMap<String, Binding>>,
+    aliases: BTreeMap<String, String>,
+    map: SourceMap,
+    events: Vec<Event>,
+    diags: Vec<Diagnostic>,
+    batch: Option<BatchState>,
+    batch_counter: u64,
+    includes: Vec<String>,
+    loop_count: u64,
+    stmt_count: usize,
+    plan_n: usize,
+    callables: Option<BTreeMap<String, Rc<Callable>>>,
+    saw_placeholder: bool,
+    /// Set when the call being built contains a plan placeholder (so it cannot be decoded).
+    tainted: bool,
+}
+
+impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
+    /// A new interpreter over `host`.
+    pub fn new(host: &'h mut H, opts: Options) -> Self {
+        Self {
+            host,
+            opts,
+            scopes: vec![BTreeMap::new()],
+            aliases: BTreeMap::new(),
+            map: SourceMap::new(),
+            events: Vec::new(),
+            diags: Vec::new(),
+            batch: None,
+            batch_counter: 0,
+            includes: Vec::new(),
+            loop_count: 0,
+            stmt_count: 0,
+            plan_n: 0,
+            callables: None,
+            saw_placeholder: false,
+            tainted: false,
+        }
+    }
+
+    /// All sources seen so far (render diagnostics against this).
+    pub fn sources(&self) -> &SourceMap {
+        &self.map
+    }
+
+    /// The host.
+    pub fn host(&self) -> &H {
+        self.host
+    }
+
+    /// Visible variable names with their values (innermost binding wins), for completion and inspection.
+    pub fn bindings(&self) -> Vec<(&str, &Val)> {
+        let mut m: BTreeMap<&str, &Val> = BTreeMap::new();
+        for scope in &self.scopes {
+            for (k, b) in scope {
+                m.insert(k.as_str(), &b.val);
+            }
+        }
+        m.into_iter().collect()
+    }
+
+    /// Script-scope aliases (`alias short = full.name`).
+    pub fn aliases(&self) -> &BTreeMap<String, String> {
+        &self.aliases
+    }
+
+    /// Parse and run `text`. Nothing runs if it does not parse.
+    pub fn run_source(&mut self, name: &str, text: &str) -> RunReport {
+        let file = self.map.add(name, text);
+        let out = parse_with(file, text, self.opts.parse);
+        self.diags.extend(out.diagnostics);
+        if self.diags.iter().any(Diagnostic::is_error) {
+            return self.finish();
+        }
+        self.run_parsed(&out.script)
+    }
+
+    /// Register `text` as a source and parse it (so spans resolve in [`sources`](Self::sources)), without running it.
+    pub fn parse_source(&mut self, name: &str, text: &str) -> (Script, Vec<Diagnostic>) {
+        let file = self.map.add(name, text);
+        let out = parse_with(file, text, self.opts.parse);
+        (out.script, out.diagnostics)
+    }
+
+    /// Run an already parsed script (parsed through [`parse_source`](Self::parse_source) of this interpreter).
+    pub fn run_parsed(&mut self, script: &Script) -> RunReport {
+        self.batch = None;
+        self.scopes.truncate(1);
+        let _ = self.exec_stmts(&script.stmts);
+        self.batch = None;
+        self.scopes.truncate(1);
+        self.finish()
+    }
+
+    fn finish(&mut self) -> RunReport {
+        RunReport { events: std::mem::take(&mut self.events), diagnostics: std::mem::take(&mut self.diags), statements: std::mem::take(&mut self.stmt_count) }
+    }
+
+    // ---- diagnostics helpers -------------------------------------------------------------
+
+    fn fail<T>(&mut self, d: Diagnostic) -> IR<T> {
+        self.diags.push(d);
+        Err(())
+    }
+
+    fn eval_fail<T>(&mut self, e: EvalErr, span: Span) -> IR<T> {
+        let (code, msg) = e;
+        self.fail(Diagnostic::error(code, span, msg).label("here"))
+    }
+
+    fn warn(&mut self, d: Diagnostic) {
+        self.diags.push(d);
+    }
+
+    fn callable_map(&mut self) -> &BTreeMap<String, Rc<Callable>> {
+        if self.callables.is_none() {
+            let m = help::callables(self.host.registry()).into_iter().map(|c| (c.name.clone(), Rc::new(c))).collect();
+            self.callables = Some(m);
+        }
+        self.callables.as_ref().expect("filled above")
+    }
+
+    fn lookup_callable(&mut self, name: &str) -> Option<Rc<Callable>> {
+        self.callable_map().get(name).cloned()
+    }
+
+    // ---- statements ---------------------------------------------------------------------
+
+    fn exec_stmts(&mut self, stmts: &[Stmt]) -> IR<()> {
+        for s in stmts {
+            self.exec(s)?;
+        }
+        Ok(())
+    }
+
+    fn exec(&mut self, s: &Stmt) -> IR<()> {
+        match &s.kind {
+            StmtKind::Let { name, value } => {
+                let v = self.eval_stmt_value(value)?;
+                self.bind(name, v)?;
+            }
+            StmtKind::Set { name, value } => {
+                let v = self.eval_stmt_value(value)?;
+                self.rebind(name, v)?;
+            }
+            StmtKind::Alias { name, target } => self.exec_alias(name, target)?,
+            StmtKind::Call(c) => {
+                self.exec_call(c, s.span)?;
+            }
+            StmtKind::Batch(b) => self.exec_batch(b, s.span)?,
+            StmtKind::If { cond, then, els } => self.exec_if(cond, then, els.as_ref())?,
+            StmtKind::For { var, iter, body } => self.exec_for(var, iter, body)?,
+            StmtKind::Include { path, path_span } => self.exec_include(path, *path_span)?,
+            StmtKind::Print(es) => {
+                let mut parts = Vec::new();
+                for e in es {
+                    let v = self.eval(e)?;
+                    parts.push(v.to_string());
+                }
+                self.events.push(Event::Print { span: s.span, text: parts.join(" ") });
+            }
+            StmtKind::Assert { cond, msg } => {
+                let c = self.eval(cond)?;
+                match c {
+                    Val::Bool(true) => {}
+                    Val::Bool(false) => {
+                        let text = match msg {
+                            Some(m) => self.eval(m)?.to_string(),
+                            None => "assertion failed".to_owned(),
+                        };
+                        return self.fail(Diagnostic::error("assert-failed", cond.span, text).label("this condition is false"));
+                    }
+                    other => {
+                        let d = Diagnostic::error("type-mismatch", cond.span, format!("`assert` needs a bool, found a {}", other.type_name())).label("not a bool");
+                        return self.fail(d);
+                    }
+                }
+            }
+            StmtKind::Help(name) => {
+                let text = match name {
+                    None => help::overview(self.host.registry()),
+                    Some(p) => {
+                        let dotted = p.dotted();
+                        let full = self.aliases.get(&dotted).cloned().unwrap_or(dotted);
+                        match help::op_help(self.host.registry(), &full) {
+                            Ok(t) => t,
+                            Err(m) => return self.fail(Diagnostic::error("unknown-name", p.span, m).label("not an op or query")),
+                        }
+                    }
+                };
+                self.events.push(Event::Help { span: s.span, text });
+            }
+            StmtKind::Error => {}
+        }
+        self.stmt_count += 1;
+        Ok(())
+    }
+
+    fn bind(&mut self, name: &Ident, val: Val) -> IR<()> {
+        let top = self.scopes.last_mut().expect("scope stack is never empty");
+        if let Some(prev) = top.get(&name.name) {
+            let d = Diagnostic::error("rebind", name.span, format!("`{}` is already defined in this scope", name.name))
+                .label("defined again here")
+                .note(prev.span, "first defined here")
+                .help("use `set` to change its value");
+            return self.fail(d);
+        }
+        top.insert(name.name.clone(), Binding { val, span: name.span });
+        Ok(())
+    }
+
+    fn rebind(&mut self, name: &Ident, val: Val) -> IR<()> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.get_mut(&name.name) {
+                b.val = val;
+                return Ok(());
+            }
+        }
+        let names: Vec<&str> = self.scopes.iter().flat_map(|s| s.keys().map(String::as_str)).collect();
+        let mut d = Diagnostic::error("unknown-variable", name.span, format!("`{}` is not defined", name.name)).label("nothing to `set` here");
+        if let Some(s) = suggest(&name.name, names.iter().copied()) {
+            d = d.help(format!("did you mean `{s}`?"));
+        } else {
+            d = d.help("define it first with `let`");
+        }
+        self.fail(d)
+    }
+
+    fn exec_alias(&mut self, name: &Ident, target: &Path) -> IR<()> {
+        let full = target.dotted();
+        if self.lookup_callable(&full).is_none() {
+            let mut d = Diagnostic::error("unknown-name", target.span, format!("no op or query named `{full}`")).label("alias target does not exist");
+            let names: Vec<String> = self.callable_map().keys().cloned().collect();
+            if let Some(s) = suggest(&full, names.iter().map(String::as_str)) {
+                d = d.help(format!("did you mean `{s}`?"));
+            }
+            return self.fail(d);
+        }
+        if self.lookup_callable(&name.name).is_some() || BUILTIN_NAMES.contains(&name.name.as_str()) {
+            let d = Diagnostic::error("alias-shadows", name.span, format!("`{}` is already a registry or builtin name", name.name)).label("choose another alias");
+            return self.fail(d);
+        }
+        self.aliases.insert(name.name.clone(), full);
+        Ok(())
+    }
+
+    fn exec_if(&mut self, cond: &Expr, then: &Block, els: Option<&Else>) -> IR<()> {
+        let c = self.eval(cond)?;
+        let Val::Bool(b) = c else {
+            let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found a {}", c.type_name())).label("not a bool");
+            return self.fail(d);
+        };
+        if b {
+            self.exec_block(then)
+        } else {
+            match els {
+                Some(Else::Block(b)) => self.exec_block(b),
+                Some(Else::If(s)) => self.exec(s),
+                None => Ok(()),
+            }
+        }
+    }
+
+    fn exec_block(&mut self, b: &Block) -> IR<()> {
+        self.scopes.push(BTreeMap::new());
+        let r = self.exec_stmts(&b.stmts);
+        self.scopes.pop();
+        r
+    }
+
+    fn exec_for(&mut self, var: &Ident, iter: &Expr, body: &Block) -> IR<()> {
+        let v = self.eval(iter)?;
+        let items: Vec<Val> = match v {
+            Val::List(l) => l,
+            Val::Ents(s) => s.iter().map(|i| Val::Ents(EntitySet::single(*i))).collect(),
+            other => {
+                let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot iterate over a {}", other.type_name())).label("expected a list or an entity set");
+                return self.fail(d);
+            }
+        };
+        for item in items {
+            self.loop_count += 1;
+            if self.loop_count > self.opts.max_loop_iterations {
+                let d = Diagnostic::error("loop-limit", iter.span, format!("more than {} loop iterations", self.opts.max_loop_iterations)).label("this loop");
+                return self.fail(d);
+            }
+            let mut scope = BTreeMap::new();
+            scope.insert(var.name.clone(), Binding { val: item, span: var.span });
+            self.scopes.push(scope);
+            let r = self.exec_stmts(&body.stmts);
+            self.scopes.pop();
+            r?;
+        }
+        Ok(())
+    }
+
+    fn exec_include(&mut self, path: &str, span: Span) -> IR<()> {
+        if self.batch.is_some() {
+            return self.fail(Diagnostic::error("include-in-batch", span, "`include` is not allowed inside a batch").label("move it out of the block"));
+        }
+        if self.includes.len() >= self.opts.max_include_depth {
+            return self.fail(Diagnostic::error("include-cycle", span, format!("includes nest deeper than {}", self.opts.max_include_depth)).label("too deep"));
+        }
+        if self.includes.iter().any(|p| p == path) {
+            return self.fail(Diagnostic::error("include-cycle", span, format!("{path:?} includes itself")).label("already being included"));
+        }
+        let text = match self.host.load(path) {
+            Ok(t) => t,
+            Err(m) => return self.fail(Diagnostic::error("include-failed", span, m).label("cannot load this file")),
+        };
+        let file = self.map.add(path, &text);
+        let out = parse_with(file, &text, self.opts.parse);
+        let bad = out.diagnostics.iter().any(Diagnostic::is_error);
+        self.diags.extend(out.diagnostics);
+        if bad {
+            return Err(());
+        }
+        self.includes.push(path.to_owned());
+        let r = self.exec_stmts(&out.script.stmts);
+        self.includes.pop();
+        r
+    }
+
+    fn exec_batch(&mut self, b: &Block, span: Span) -> IR<()> {
+        if self.batch.is_some() {
+            return self.fail(
+                Diagnostic::error("nested-batch", span, "a batch cannot contain another batch")
+                    .label("nested here")
+                    .help("core.batch rejects nesting; flatten the blocks"),
+            );
+        }
+        self.batch_counter += 1;
+        let id = self.batch_counter;
+        self.batch = Some(BatchState { id, records: Vec::new() });
+        let r = self.exec_stmts(&b.stmts);
+        let state = self.batch.take().expect("batch state set above");
+        r?;
+        if state.records.is_empty() {
+            self.warn(Diagnostic::warning("empty-batch", span, "the batch emitted no ops").label("nothing to apply"));
+            return Ok(());
+        }
+        let members = state.records.len();
+        let rec = match OpRecord::of(&Batch { ops: state.records }) {
+            Ok(r) => r,
+            Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode the batch")),
+        };
+        if !self.host.executes() {
+            self.events.push(Event::Batch { span, record: rec, members, delta: None });
+            return Ok(());
+        }
+        match self.host.apply(&rec) {
+            Ok(delta) => {
+                self.export_batch(id, &delta);
+                self.events.push(Event::Batch { span, record: rec, members, delta: Some(delta) });
+                Ok(())
+            }
+            Err(e) => self.fail(Diagnostic::error("op-failed", span, format!("batch failed [{}]: {}", e.code, e.message)).label("this batch was rejected and had no effect")),
+        }
+    }
+
+    /// Rebind symbolic members of batch `id` to the concrete outputs the batch produced.
+    fn export_batch(&mut self, id: u64, delta: &Delta) {
+        for scope in &mut self.scopes {
+            for b in scope.values_mut() {
+                if let Val::Outcome(Outcome::Batch { batch, index }) = &b.val
+                    && *batch == id
+                {
+                    let prefix = format!("{index}.");
+                    let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), v.clone()))).collect();
+                    b.val = Val::Outcome(Outcome::Applied { outputs });
+                }
+            }
+        }
+    }
+
+    // ---- calls ---------------------------------------------------------------------------
+
+    /// Evaluate the right-hand side of `let`/`set`: an op or query call is allowed here, anything else is an expression.
+    fn eval_stmt_value(&mut self, e: &Expr) -> IR<Val> {
+        if let ExprKind::Call(c) = &e.kind
+            && self.is_registry_call(c)
+        {
+            return self.exec_call(c, e.span);
+        }
+        self.eval(e)
+    }
+
+    fn is_registry_call(&self, c: &Call) -> bool {
+        c.path.segs.len() > 1 || self.aliases.contains_key(&c.path.segs[0].name) || !BUILTIN_NAMES.contains(&c.path.segs[0].name.as_str())
+    }
+
+    fn exec_call(&mut self, call: &Call, span: Span) -> IR<Val> {
+        let written = call.path.dotted();
+        let name = if call.path.segs.len() == 1 { self.aliases.get(&written).cloned().unwrap_or(written.clone()) } else { written.clone() };
+        let Some(info) = self.lookup_callable(&name) else {
+            let aliases: Vec<String> = self.aliases.keys().cloned().collect();
+            let names: Vec<String> = self.callable_map().keys().cloned().chain(aliases).collect();
+            let mut d = Diagnostic::error("unknown-name", call.path.span, format!("no op or query named `{written}`")).label("not in the registry");
+            if let Some(s) = suggest(&written, names.iter().map(String::as_str)) {
+                d = d.help(format!("did you mean `{s}`?"));
+            } else if call.path.segs.len() == 1 {
+                d = d.help("op and query names are dotted, like `model.create_brick`; `help` lists them");
+            } else {
+                d = d.help("`help` lists every op and query");
+            }
+            return self.fail(d);
+        };
+        self.tainted = false;
+        let params = self.build_params(call, &info)?;
+        let in_batch = self.batch.is_some();
+        if info.is_query {
+            if in_batch {
+                return self.fail(
+                    Diagnostic::error("query-in-batch", span, format!("`{name}` is a query; queries are not recorded and cannot be part of a batch"))
+                        .label("queries run immediately")
+                        .help("run the query before or after the batch"),
+                );
+            }
+            let pj = Json::Object(params);
+            if !self.host.executes() {
+                self.events.push(Event::Query { span, name, params: pj, result: None });
+                self.plan_n += 1;
+                return Ok(Val::Outcome(Outcome::Plan { n: self.plan_n }));
+            }
+            return match self.host.query(&name, &pj) {
+                Ok(res) => {
+                    let val = match Val::from_json(&res) {
+                        Ok(v) => v,
+                        Err(m) => return self.fail(Diagnostic::error("null-value", span, format!("query `{name}` returned a value the language cannot hold: {m}")).label("this query")),
+                    };
+                    self.events.push(Event::Query { span, name, params: pj, result: Some(res) });
+                    Ok(val)
+                }
+                Err(e) => self.fail(Diagnostic::error("query-failed", span, format!("query `{name}` failed [{}]: {}", e.code, e.message)).label("this query")),
+            };
+        }
+        let rec = match OpRecord::new(&name, self.host.registry().op_version(&name).unwrap_or(info.version), Json::Object(params)) {
+            Ok(r) => r,
+            Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode these arguments")),
+        };
+        if let Some(b) = &mut self.batch {
+            if name == "core.batch" {
+                return self.fail(Diagnostic::error("nested-batch", span, "a batch cannot contain another batch").label("nested here"));
+            }
+            let index = b.records.len();
+            let batch = b.id;
+            b.records.push(rec);
+            return Ok(Val::Outcome(Outcome::Batch { batch, index }));
+        }
+        // Decode gate: the record is known to decode, and the stored form is the canonical re-encoding.
+        // (A plan record holding placeholders cannot decode; it is reported as is.)
+        let rec = if self.tainted { rec } else { match self.host.registry().decode(&rec) {
+            Ok(op) => match OpRecord::of(op.as_ref()) {
+                Ok(c) => c,
+                Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode this op")),
+            },
+            Err(e) => return self.fail(Diagnostic::error("decode-failed", span, format!("the registry rejects these arguments [{}]: {e}", e.code())).label("this call")),
+        } };
+        if !self.host.executes() {
+            self.events.push(Event::Op { span, record: rec, delta: None });
+            self.plan_n += 1;
+            return Ok(Val::Outcome(Outcome::Plan { n: self.plan_n }));
+        }
+        match self.host.apply(&rec) {
+            Ok(delta) => {
+                let out = Val::Outcome(Outcome::Concrete { created: delta.created.clone(), removed: delta.removed.clone(), outputs: delta.outputs.clone() });
+                self.events.push(Event::Op { span, record: rec, delta: Some(delta) });
+                Ok(out)
+            }
+            Err(e) => self.fail(Diagnostic::error("op-failed", span, format!("`{name}` failed [{}]: {}", e.code, e.message)).label("this op was rejected and had no effect")),
+        }
+    }
+
+    /// Evaluate and convert the arguments, then check the resulting object against the schema.
+    fn build_params(&mut self, call: &Call, info: &Callable) -> IR<Map<String, Json>> {
+        struct Entry<'a> {
+            key: String,
+            val: Val,
+            expr: &'a Expr,
+            name_span: Option<Span>,
+        }
+        let view = info.doc.view();
+        let mut entries: Vec<Entry<'_>> = Vec::new();
+        let mut named_seen: BTreeMap<String, Span> = BTreeMap::new();
+        let mut positional: Vec<&Expr> = Vec::new();
+        for arg in &call.args {
+            match arg {
+                Arg::Named { name, value } => {
+                    if let Some(prev) = named_seen.get(&name.name) {
+                        let d = Diagnostic::error("duplicate-argument", name.span, format!("argument `{}` is given twice", name.name))
+                            .label("given again here")
+                            .note(*prev, "first given here");
+                        return self.fail(d);
+                    }
+                    named_seen.insert(name.name.clone(), name.span);
+                    let v = self.eval(value)?;
+                    entries.retain(|e| e.key != name.name);
+                    entries.push(Entry { key: name.name.clone(), val: v, expr: value, name_span: Some(name.span) });
+                }
+                Arg::Spread(e) => match self.eval(e)? {
+                    Val::Obj(m) => {
+                        for (k, v) in m {
+                            entries.retain(|x| x.key != k);
+                            entries.push(Entry { key: k, val: v, expr: e, name_span: None });
+                        }
+                    }
+                    other => {
+                        let d = Diagnostic::error("type-mismatch", e.span, format!("`...` spreads an object, found a {}", other.type_name())).label("not an object");
+                        return self.fail(d);
+                    }
+                },
+                Arg::Pos(e) => positional.push(e),
+            }
+        }
+        if !positional.is_empty() {
+            let required = view.required();
+            if required.len() != 1 || positional.len() != 1 {
+                let help = if required.len() == 1 { "only one positional argument is allowed".to_owned() } else { format!("positional arguments need an op with exactly one required parameter; `{}` has {}", info.name, required.len()) };
+                let d = Diagnostic::error("positional-ambiguous", positional[0].span, "cannot tell which parameter this value is for").label("write `name: value`").help(help);
+                return self.fail(d);
+            }
+            let key = required[0].to_owned();
+            if let Some(sp) = named_seen.get(&key) {
+                let d = Diagnostic::error("duplicate-argument", positional[0].span, format!("parameter `{key}` is also given by name")).label("given positionally").note(*sp, "given by name here");
+                return self.fail(d);
+            }
+            let v = self.eval(positional[0])?;
+            entries.retain(|e| e.key != key);
+            entries.push(Entry { key, val: v, expr: positional[0], name_span: None });
+        }
+        // Convert each entry, guided by its parameter schema.
+        let mut params = Map::new();
+        let mut failed = false;
+        for e in &entries {
+            let pview = view.property(&e.key);
+            self.saw_placeholder = false;
+            let mut path = Vec::new();
+            match self.conv(&e.val, pview, &mut path) {
+                Ok(j) => {
+                    params.insert(e.key.clone(), j);
+                }
+                Err(issue) => {
+                    let sp = if e.name_span.is_some() { locate(e.expr, &issue.path) } else { locate_in_spread(e.expr, &e.key, &issue.path) };
+                    self.diags.push(Diagnostic::error(issue_code(issue.code), sp, issue.message).label("here"));
+                    failed = true;
+                }
+            }
+            if self.saw_placeholder {
+                self.tainted = true;
+                self.warn(
+                    Diagnostic::warning("plan-unresolved", e.expr.span, "this value depends on an op result that is unknown without executing")
+                        .label("placeholder `$plan...` emitted")
+                        .help("wrap dependent statements in `batch { }` to lower them without executing"),
+                );
+            }
+        }
+        if failed {
+            return Err(());
+        }
+        // Check the whole object.
+        let obj = Json::Object(params);
+        let mut issues = Vec::new();
+        schema::check(view, &obj, true, &mut issues);
+        let Json::Object(params) = obj else { unreachable!("built as an object") };
+        if issues.is_empty() {
+            return Ok(params);
+        }
+        let pinfo = view.params();
+        for iss in issues {
+            let (span, mut d) = match iss.path.first() {
+                Some(PathSeg::Key(k)) => {
+                    let ent = entries.iter().find(|e| &e.key == k);
+                    let span = match ent {
+                        Some(e) if e.name_span.is_some() && iss.code == "unknown-property" => e.name_span.unwrap_or(call.span),
+                        Some(e) if e.name_span.is_some() => locate(e.expr, &iss.path[1..]),
+                        Some(e) => locate_in_spread(e.expr, k, &iss.path[1..]),
+                        None => call.args_span,
+                    };
+                    (span, Diagnostic::error(issue_code(iss.code), span, iss.message.clone()))
+                }
+                _ => (call.args_span, Diagnostic::error(issue_code(iss.code), call.args_span, iss.message.clone())),
+            };
+            d = d.label("here");
+            match iss.code {
+                "unknown-property" => {
+                    if let Some(PathSeg::Key(k)) = iss.path.first() {
+                        d.message = format!("`{}` has no parameter `{k}`", info.name);
+                        match suggest(k, pinfo.iter().map(|p| p.name.as_str())) {
+                            Some(s) => d = d.help(format!("did you mean `{s}`?")),
+                            None => {
+                                let names: Vec<&str> = pinfo.iter().map(|p| p.name.as_str()).collect();
+                                d = d.help(format!("parameters: {}", names.join(", ")));
+                            }
+                        }
+                    }
+                }
+                "missing-property" => {
+                    if let Some(name) = iss.message.split('`').nth(1)
+                        && let Some(p) = pinfo.iter().find(|p| p.name == name)
+                    {
+                        d.message = format!("missing required argument `{name}` for `{}`", info.name);
+                        d.label = Some(format!("`{name}: {}` is required", p.ty));
+                        if let Some(desc) = &p.description {
+                            d = d.help(desc.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            let _ = span;
+            self.diags.push(d);
+        }
+        Err(())
+    }
+
+    /// Schema-guided conversion of a value to JSON. `Err` carries the path and message of the problem.
+    fn conv(&mut self, v: &Val, view: Option<View<'_>>, path: &mut Vec<PathSeg>) -> Result<Json, Issue> {
+        let issue = |path: &[PathSeg], code: &'static str, message: String| Issue { path: path.to_vec(), code, message };
+        let in_batch = self.batch.is_some();
+        let batch_id = self.batch.as_ref().map(|b| b.id);
+        let nn = view.map(View::non_null);
+        let is_id = nn.is_some_and(View::is_entity_id);
+        let id_items = nn.and_then(View::id_array_items);
+
+        // A reference or placeholder as a single id string.
+        let ref_str = |this: &mut Self, v: &Val, array_elem: bool, path: &[PathSeg]| -> Option<Result<Json, Issue>> {
+            match v {
+                Val::Ref { batch, index, role, sel } => {
+                    if Some(*batch) != batch_id {
+                        return Some(Err(issue(path, "stale-reference", "this output belongs to a batch that is not the one being built".into())));
+                    }
+                    let s = match sel {
+                        Sel::All => format!("${index}.{role}"),
+                        Sel::At(k) => format!("${index}.{role}[{k}]"),
+                        Sel::Star => {
+                            if !array_elem {
+                                return Some(Err(issue(path, "type-mismatch", "`[*]` selects every output and is only valid as an element of an array parameter".into())));
+                            }
+                            format!("${index}.{role}[*]")
+                        }
+                    };
+                    Some(Ok(Json::String(s)))
+                }
+                Val::Placeholder { n, role } => {
+                    this.saw_placeholder = true;
+                    Some(Ok(Json::String(format!("$plan.{n}.{role}"))))
+                }
+                Val::Outcome(_) => Some(Err(issue(path, "type-mismatch", "an op result is not a value; use one of its outputs, e.g. `r.body`".into()))),
+                _ => None,
+            }
+        };
+
+        if is_id {
+            let one_id = |s: &EntitySet, path: &[PathSeg]| -> Result<Json, Issue> {
+                match s.as_slice() {
+                    [id] => Ok(Json::String(id.to_string())),
+                    other => Err(issue(path, "expected-one-entity", format!("expected exactly one entity, found {}", other.len()))),
+                }
+            };
+            return match v {
+                Val::Ents(s) => one_id(s, path),
+                Val::Str(s) => match kinds::parse_entity_text(s) {
+                    Ok(id) => Ok(Json::String(id.to_string())),
+                    Err(m) if nn.is_some_and(|n| !n.alternatives().is_empty()) => {
+                        let _ = m;
+                        Ok(Json::String(self.escape(s)))
+                    }
+                    Err(m) => Err(issue(path, "pattern-mismatch", m)),
+                },
+                other => match ref_str(self, other, false, path) {
+                    Some(r) => r,
+                    None => Err(issue(path, "type-mismatch", format!("expected an entity id, found a {}", other.type_name()))),
+                },
+            };
+        }
+        if id_items.is_some() {
+            let mut out = Vec::new();
+            let push_elem = |this: &mut Self, el: &Val, path: &mut Vec<PathSeg>, out: &mut Vec<Json>| -> Result<(), Issue> {
+                match el {
+                    Val::Ents(s) => out.extend(s.iter().map(|i| Json::String(i.to_string()))),
+                    Val::Str(s) => match kinds::parse_entity_text(s) {
+                        Ok(id) => out.push(Json::String(id.to_string())),
+                        Err(m) => return Err(issue(path, "pattern-mismatch", m)),
+                    },
+                    other => match ref_str(this, other, true, path) {
+                        Some(r) => out.push(r?),
+                        None => return Err(issue(path, "type-mismatch", format!("expected an entity id, found a {}", other.type_name()))),
+                    },
+                }
+                Ok(())
+            };
+            match v {
+                Val::List(items) => {
+                    for (i, el) in items.iter().enumerate() {
+                        path.push(PathSeg::Idx(i));
+                        let r = push_elem(self, el, path, &mut out);
+                        path.pop();
+                        r?;
+                    }
+                }
+                single => push_elem(self, single, path, &mut out)?,
+            }
+            return Ok(Json::Array(out));
+        }
+        match v {
+            Val::Bool(b) => Ok(Json::Bool(*b)),
+            Val::Int(i) => {
+                if nn.is_some_and(View::is_float_only) {
+                    serde_json::Number::from_f64(*i as f64).map(Json::Number).ok_or_else(|| issue(path, "non-finite", "not a finite number".into()))
+                } else {
+                    Ok(Json::from(*i))
+                }
+            }
+            Val::Num(n) => serde_json::Number::from_f64(*n).map(Json::Number).ok_or_else(|| issue(path, "non-finite", "not a finite number".into())),
+            Val::Str(s) => Ok(Json::String(if in_batch { self.escape(s) } else { s.clone() })),
+            Val::List(items) => {
+                let iv = nn.and_then(View::items);
+                let mut out = Vec::with_capacity(items.len());
+                for (i, el) in items.iter().enumerate() {
+                    path.push(PathSeg::Idx(i));
+                    let r = self.conv(el, iv, path);
+                    path.pop();
+                    out.push(r?);
+                }
+                Ok(Json::Array(out))
+            }
+            Val::Obj(m) => {
+                let mut out = Map::new();
+                for (k, el) in m {
+                    let pv = nn.and_then(|n| n.property(k));
+                    path.push(PathSeg::Key(k.clone()));
+                    let r = self.conv(el, pv, path);
+                    path.pop();
+                    out.insert(k.clone(), r?);
+                }
+                Ok(Json::Object(out))
+            }
+            Val::Ents(s) => Ok(Json::Array(s.iter().map(|i| Json::String(i.to_string())).collect())),
+            other => match ref_str(self, other, false, path) {
+                Some(Ok(_)) | None => Err(issue(path, "type-mismatch", format!("a {} can only be used where an entity id is expected", other.type_name()))),
+                Some(Err(e)) => Err(e),
+            },
+        }
+    }
+
+    /// Inside a batch, a literal string starting with `$` is written `$$...` so it is never read as a reference.
+    fn escape(&self, s: &str) -> String {
+        if self.batch.is_some() && s.starts_with('$') { format!("${s}") } else { s.to_owned() }
+    }
+
+    // ---- expressions --------------------------------------------------------------------
+
+    fn lookup_var(&mut self, name: &str, span: Span) -> IR<Val> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(b) = scope.get(name) {
+                return Ok(b.val.clone());
+            }
+        }
+        if let Some(c) = eval::constant(name) {
+            return Ok(c);
+        }
+        let names: Vec<&str> = self.scopes.iter().flat_map(|s| s.keys().map(String::as_str)).chain(["pi", "tau"]).collect();
+        let mut d = Diagnostic::error("unknown-variable", span, format!("`{name}` is not defined")).label("unknown name");
+        if let Some(s) = suggest(name, names.iter().copied()) {
+            d = d.help(format!("did you mean `{s}`?"));
+        }
+        self.fail(d)
+    }
+
+    fn eval(&mut self, e: &Expr) -> IR<Val> {
+        match &e.kind {
+            ExprKind::Int(v) => Ok(Val::Int(*v)),
+            ExprKind::Num(v) => Ok(Val::Num(*v)),
+            ExprKind::Str(s) => Ok(Val::Str(s.clone())),
+            ExprKind::Bool(b) => Ok(Val::Bool(*b)),
+            ExprKind::List(items) => Ok(Val::List(items.iter().map(|i| self.eval(i)).collect::<IR<_>>()?)),
+            ExprKind::Obj(items) => {
+                let mut m = BTreeMap::new();
+                for (k, v) in items {
+                    let val = self.eval(v)?;
+                    if m.insert(k.name.clone(), val).is_some() {
+                        let d = Diagnostic::error("duplicate-key", k.span, format!("key `{}` appears twice in this object", k.name)).label("duplicate");
+                        return self.fail(d);
+                    }
+                }
+                Ok(Val::Obj(m))
+            }
+            ExprKind::Var(n) => self.lookup_var(n, e.span),
+            ExprKind::Field(b, f) => {
+                let v = self.eval(b)?;
+                self.field(v, f, e.span)
+            }
+            ExprKind::Index(b, idx) => {
+                let v = self.eval(b)?;
+                let i = match idx {
+                    Index::All => None,
+                    Index::At(x) => Some(self.eval(x)?),
+                };
+                self.index(v, i, e.span)
+            }
+            ExprKind::Call(c) => self.eval_builtin_call(c, e.span),
+            ExprKind::Unary(op, a) => {
+                let v = self.eval(a)?;
+                match eval::unop(*op, &v) {
+                    Ok(r) => Ok(r),
+                    Err(er) => self.eval_fail(er, e.span),
+                }
+            }
+            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), l, r) => {
+                let lv = self.eval(l)?;
+                let Val::Bool(lb) = lv else {
+                    let d = Diagnostic::error("type-mismatch", l.span, format!("`and`/`or` need bools, found a {}", lv.type_name())).label("not a bool");
+                    return self.fail(d);
+                };
+                if (*op == BinOp::And && !lb) || (*op == BinOp::Or && lb) {
+                    return Ok(Val::Bool(lb));
+                }
+                let rv = self.eval(r)?;
+                match rv {
+                    Val::Bool(b) => Ok(Val::Bool(b)),
+                    other => {
+                        let d = Diagnostic::error("type-mismatch", r.span, format!("`and`/`or` need bools, found a {}", other.type_name())).label("not a bool");
+                        self.fail(d)
+                    }
+                }
+            }
+            ExprKind::Binary(op, l, r) => {
+                let lv = self.eval(l)?;
+                let rv = self.eval(r)?;
+                match eval::binop(*op, &lv, &rv) {
+                    Ok(v) => Ok(v),
+                    Err(er) => self.eval_fail(er, e.span),
+                }
+            }
+            ExprKind::Entity(en) => self.resolve_entities(en, e.span).map(Val::Ents),
+            ExprKind::Error => Err(()),
+        }
+    }
+
+    fn eval_builtin_call(&mut self, c: &Call, span: Span) -> IR<Val> {
+        let name = c.path.dotted();
+        if self.is_registry_call(c) {
+            let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is not a function"))
+                .label("ops and queries cannot be used inside expressions")
+                .help("call it as a statement, or as the whole right-hand side of `let`: `let r = op(...)`");
+            return self.fail(d);
+        }
+        let mut args = Vec::new();
+        for a in &c.args {
+            match a {
+                Arg::Pos(e) => args.push(self.eval(e)?),
+                Arg::Named { name, .. } => {
+                    return self.fail(Diagnostic::error("bad-arguments", name.span, "builtin functions take positional arguments").label("named argument"));
+                }
+                Arg::Spread(e) => return self.fail(Diagnostic::error("bad-arguments", e.span, "builtin functions do not take `...`").label("spread")),
+            }
+        }
+        match eval::call_builtin(&name, &args, self.opts.max_range_len) {
+            Ok(v) => Ok(v),
+            Err(er) => self.eval_fail(er, span),
+        }
+    }
+
+    fn field(&mut self, v: Val, f: &Ident, span: Span) -> IR<Val> {
+        let name = f.name.as_str();
+        match v {
+            Val::Obj(m) => match m.get(name) {
+                Some(x) => Ok(x.clone()),
+                None => {
+                    let mut d = Diagnostic::error("unknown-field", f.span, format!("the object has no field `{name}`")).label("no such field");
+                    match suggest(name, m.keys().map(String::as_str)) {
+                        Some(s) => d = d.help(format!("did you mean `{s}`?")),
+                        None => d = d.help(format!("fields: {}", m.keys().cloned().collect::<Vec<_>>().join(", "))),
+                    }
+                    self.fail(d)
+                }
+            },
+            Val::Outcome(Outcome::Concrete { created, removed, outputs }) => match name {
+                "created" => Ok(Val::Ents(EntitySet::from_vec(created))),
+                "removed" => Ok(Val::Ents(EntitySet::from_vec(removed))),
+                _ => match outputs.get(name) {
+                    Some(ids) => Ok(Val::Ents(EntitySet::from_vec(ids.clone()))),
+                    None => self.no_output(name, f.span, outputs.keys().map(String::as_str).chain(["created", "removed"])),
+                },
+            },
+            Val::Outcome(Outcome::Applied { outputs }) => match name {
+                "created" | "removed" => self.eval_fail(("not-concrete", format!("`{name}` is not available for an op that ran inside a batch (only its named outputs are)")), span),
+                _ => match outputs.get(name) {
+                    Some(ids) => Ok(Val::Ents(EntitySet::from_vec(ids.clone()))),
+                    None => self.no_output(name, f.span, outputs.keys().map(String::as_str)),
+                },
+            },
+            Val::Outcome(Outcome::Batch { batch, index }) => match name {
+                "created" | "removed" => self.eval_fail(("not-concrete", format!("`{name}` is only known after the batch is applied")), span),
+                _ => Ok(Val::Ref { batch, index, role: name.to_owned(), sel: Sel::All }),
+            },
+            Val::Outcome(Outcome::Plan { n }) => Ok(Val::Placeholder { n, role: name.to_owned() }),
+            Val::Placeholder { n, role } => Ok(Val::Placeholder { n, role: format!("{role}.{name}") }),
+            other => self.fail(Diagnostic::error("type-mismatch", f.span, format!("a {} has no fields", other.type_name())).label("field access")),
+        }
+    }
+
+    fn no_output<'a>(&mut self, name: &str, span: Span, roles: impl Iterator<Item = &'a str>) -> IR<Val> {
+        let roles: Vec<&str> = roles.collect();
+        let mut d = Diagnostic::error("unknown-field", span, format!("the op result has no output `{name}`")).label("no such output");
+        match suggest(name, roles.iter().copied()) {
+            Some(s) => d = d.help(format!("did you mean `{s}`?")),
+            None => d = d.help(format!("available: {}", roles.join(", "))),
+        }
+        self.fail(d)
+    }
+
+    fn index(&mut self, v: Val, i: Option<Val>, span: Span) -> IR<Val> {
+        match (v, i) {
+            (Val::List(l), Some(Val::Int(k))) => match norm_index(k, l.len()) {
+                Some(ix) => Ok(l[ix].clone()),
+                None => self.eval_fail(("index-out-of-range", format!("index {k} is out of range for a list of {} elements", l.len())), span),
+            },
+            (Val::List(l), None) => Ok(Val::List(l)),
+            (Val::Ents(s), None) => Ok(Val::Ents(s)),
+            (Val::Ents(s), Some(Val::Int(k))) => match norm_index(k, s.len()) {
+                Some(ix) => Ok(Val::Ents(EntitySet::single(s.as_slice()[ix]))),
+                None => self.eval_fail(("index-out-of-range", format!("index {k} is out of range for {} entities", s.len())), span),
+            },
+            (Val::Obj(m), Some(Val::Str(k))) => match m.get(&k) {
+                Some(x) => Ok(x.clone()),
+                None => self.eval_fail(("unknown-field", format!("the object has no key {k:?}")), span),
+            },
+            (Val::Ref { batch, index, role, sel: Sel::All }, Some(Val::Int(k))) if k >= 0 => Ok(Val::Ref { batch, index, role, sel: Sel::At(k as usize) }),
+            (Val::Ref { batch, index, role, sel: Sel::All }, None) => Ok(Val::Ref { batch, index, role, sel: Sel::Star }),
+            (Val::Ref { .. }, _) => self.eval_fail(("type-mismatch", "a batch output can be indexed once, with a non-negative integer or `*`".into()), span),
+            (Val::Placeholder { n, role }, _) => Ok(Val::Placeholder { n, role }),
+            (other, Some(i)) => self.eval_fail(("type-mismatch", format!("cannot index a {} with a {}", other.type_name(), i.type_name())), span),
+            (other, None) => self.eval_fail(("type-mismatch", format!("`[*]` does not apply to a {}", other.type_name())), span),
+        }
+    }
+
+    // ---- entity lists -------------------------------------------------------------------
+
+    fn describe_live(&self, kind: EntityKind) -> String {
+        let n = self.host.state().count_of(kind);
+        let sing = kinds::singular_of(kind);
+        if n == 0 {
+            return format!("there are no live {sing} entities");
+        }
+        let first: Vec<String> = self.host.state().entities_of(kind).take(4).map(|i| i.to_string()).collect();
+        format!("{n} live {sing} entit{}: {}{}", if n == 1 { "y" } else { "ies" }, first.join(", "), if n > 4 { ", ..." } else { "" })
+    }
+
+    fn resolve_entities(&mut self, en: &EntityExpr, span: Span) -> IR<EntitySet> {
+        match en {
+            EntityExpr::Ids { kind, items, .. } => {
+                let mut ids: Vec<EntityId> = Vec::new();
+                let exec = self.host.executes();
+                for it in items {
+                    match it {
+                        IdItem::One(serial, sp) => {
+                            let at = if items.len() == 1 { span } else { *sp };
+                            let Some(id) = EntityId::new(*kind, *serial) else {
+                                return self.fail(Diagnostic::error("entity-not-found", at, "serial too large").label("exceeds the 56-bit serial space"));
+                            };
+                            if exec && !self.host.state().contains(id) {
+                                let d = Diagnostic::error("entity-not-found", at, format!("there is no live {id}")).label("not in the current state").help(self.describe_live(*kind));
+                                return self.fail(d);
+                            }
+                            ids.push(id);
+                        }
+                        IdItem::Range { lo, hi, step, span: rs } => {
+                            let set = live_range(self.host.state(), *kind, *lo, *hi, *step);
+                            if set.is_empty() {
+                                let h = self.describe_live(*kind);
+                                self.warn(Diagnostic::warning("empty-selection", *rs, "the range selects no live entity").label("empty").help(h));
+                            }
+                            ids.extend_from_slice(set.as_slice());
+                        }
+                    }
+                }
+                Ok(EntitySet::from_vec(ids))
+            }
+            EntityExpr::All { kind, .. } => {
+                let set = all_of(self.host.state(), *kind);
+                if set.is_empty() {
+                    self.warn(Diagnostic::warning("empty-selection", span, format!("there are no live {} entities", kinds::singular_of(*kind))).label("empty"));
+                }
+                Ok(set)
+            }
+            EntityExpr::In { kind, within, .. } => {
+                let w = self.eval(within)?;
+                let set = match w {
+                    Val::Ents(s) => s,
+                    other => {
+                        let er = match &other {
+                            Val::Ref { .. } | Val::Outcome(_) | Val::Placeholder { .. } => eval::opaque_err(&other),
+                            _ => ("type-mismatch", format!("`in` needs an entity set on its right, found a {}", other.type_name())),
+                        };
+                        return self.eval_fail(er, within.span);
+                    }
+                };
+                let Some(rel) = self.host.relations() else {
+                    let d = Diagnostic::error("no-relations", span, "this host cannot resolve relations between entities")
+                        .label("`in` needs topology")
+                        .help("the host must provide a `Relations` resolver (see `LANGUAGE.md` §5.3)");
+                    return self.fail(d);
+                };
+                match rel.related(self.host.state(), *kind, set.as_slice()) {
+                    Ok(v) => {
+                        let st = self.host.state();
+                        let out: Vec<EntityId> = v.into_iter().filter(|i| i.kind() == *kind && st.contains(*i)).collect();
+                        let out = EntitySet::from_vec(out);
+                        if out.is_empty() {
+                            self.warn(Diagnostic::warning("empty-selection", span, "no related entities").label("empty"));
+                        }
+                        Ok(out)
+                    }
+                    Err(m) => self.fail(Diagnostic::error("relation-failed", span, format!("relation lookup failed: {m}")).label("here")),
+                }
+            }
+        }
+    }
+}
+
+fn norm_index(k: i64, len: usize) -> Option<usize> {
+    let ix = if k < 0 { i64::try_from(len).ok()? + k } else { k };
+    usize::try_from(ix).ok().filter(|i| *i < len)
+}
+
+fn issue_code(c: &'static str) -> &'static str {
+    match c {
+        "unknown-property" => "unknown-argument",
+        "missing-property" => "missing-argument",
+        "enum-violation" | "out-of-range" | "pattern-mismatch" => "invalid-argument",
+        other => other,
+    }
+}
+
+/// Span of the sub-expression a value path points to, descending into list and object literals.
+pub fn locate(e: &Expr, path: &[PathSeg]) -> Span {
+    match (&e.kind, path.first()) {
+        (ExprKind::List(items), Some(PathSeg::Idx(i))) => items.get(*i).map_or(e.span, |x| locate(x, &path[1..])),
+        (ExprKind::Obj(items), Some(PathSeg::Key(k))) => items.iter().find(|(kk, _)| kk.name == *k).map_or(e.span, |(_, x)| locate(x, &path[1..])),
+        _ => e.span,
+    }
+}
+
+fn locate_in_spread(e: &Expr, key: &str, rest: &[PathSeg]) -> Span {
+    if let ExprKind::Obj(items) = &e.kind
+        && let Some((_, x)) = items.iter().find(|(k, _)| k.name == key)
+    {
+        return locate(x, rest);
+    }
+    e.span
+}
