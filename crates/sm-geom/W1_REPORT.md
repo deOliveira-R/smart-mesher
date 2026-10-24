@@ -2,7 +2,7 @@
 
 status: done (definition of done met; known gaps listed below)
 
-Branch: `claude/w1-sm-geom-86oupw` (the branch the session designated; the task text names `claude/w1-sm-geom`, which was also pushed pointing at the same commit). The commit SHA is the last line of this report.
+Branch: `claude/w1-sm-geom-86oupw`, the branch the session designated and the only one pushed. The task text names `claude/w1-sm-geom`; it was not created, because the session instruction forbids pushing to any other branch. Merge by SHA (see "Commit").
 
 ## Summary
 
@@ -37,7 +37,7 @@ Definition of done: `cargo build`, `cargo test -p sm-geom`, `RAYON_NUM_THREADS=1
 
 1. **Analytic kinds are not re-implemented.** The contract crate already ships exact closed-form implementations of every analytic curve and surface (Q4 decision), the orphan rule forbids a second `impl` of its traits on its types, and `SurfaceDef::as_surface` always returns them. `KernelStore` therefore resolves analytic handles to those evaluators; sm-geom adds NURBS, the store, batching and intersections. Differential tests compare the store with the reference, so analytic results are bit-identical by construction.
 2. **`sm-math` is an empty skeleton**, so "use sm-math for roots/predicates" was not possible. A private `roots` module (Brent, stable quadratic, polynomial roots with double-root flag, dense solve) lives in sm-geom; it should migrate to `sm-math` (coordination note, not an API change). The api's own `real_roots` / `solve_quadratic` are `pub(crate)`. No exact predicates (`orient*`, `incircle`) are needed by the geometry kernel.
-3. **Branch**: pushed to `claude/w1-sm-geom-86oupw` (session instruction) and to `claude/w1-sm-geom` (task text). No worktree was used; this cloud checkout was the worktree.
+3. **Branch**: developed and pushed on `claude/w1-sm-geom-86oupw` (the session-designated branch); `claude/w1-sm-geom` from the task text was not created. No worktree was used; this cloud checkout was the worktree.
 4. **`Cargo.toml`**: dropped the unused `sm-math` and `thiserror` skeleton dependencies; added `smallvec`, `rayon`, optional `serde`, and dev-dependencies `sm-testkit`, `proptest`, `criterion` (all in the allowed list). `Cargo.lock` grew (criterion and its transitive dependencies): the orchestrator will need to re-resolve it when merging with other workers.
 5. **Intersection result types live in sm-geom** (`SsiResult`, `IntersectionCurve`, `CurveGeometry`, `MarchedCurve`, `CurveSurface`): the contract defines no intersection trait. Downstream crates (webcut) depend on `sm-geom` for them.
 6. Parabola and hyperbola have no `CurveDef` variant; they are returned as exact rational quadratic `CurveDef::Nurbs` chains inside the caller's window (see api_change_request 1).
@@ -50,6 +50,7 @@ Definition of done: `cargo build`, `cargo test -p sm-geom`, `RAYON_NUM_THREADS=1
 - A curve running **on** a NURBS surface gives `GeomError::NoConvergence` (coincidence is detected only for planes and implicit surfaces).
 - Periodic knot insertion needs more unique poles than the degree (`Unsupported` otherwise).
 - Not provided: degree elevation / reduction, knot removal, curve-curve and self-intersection, NURBS-NURBS curve intersection, SIMD / GPU paths. The prepared jet is only about 1.2x faster than the reference (which is already allocation-free); the large wins are position-only evaluation (5.8x), the global projector (4-6x) and batching.
+- `eval_many` / `jet_many` assert equal buffer lengths: a caller-owned precondition, not data-reachable input.
 - `KernelStore::from(StoreData)` is infallible and silently leaves the prepared layer empty for an entry that fails validation (evaluation then uses the reference evaluator); `KernelStore::from_data` validates.
 - Tolerance constants inside conic classification (1e-10..1e-12 relative) and the marcher's 1e-7 rad tangency threshold are fixed, not taken from `ModelTolerance::angular`.
 
@@ -65,4 +66,4 @@ All additive and optional (`#[non_exhaustive]` enums / default methods); nothing
 
 ## Commit
 
-(see the final line)
+Code complete at `9848cddb909961d9b81ffe7dfea54b4a1b991ce9`; this report fix is one commit on top of it (the HEAD of the branch, which is the merge target).
