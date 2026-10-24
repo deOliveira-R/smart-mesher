@@ -557,8 +557,8 @@ fn act_biased(t: &mut dyn TopologyEdit, r: &mut Rng, kind: u8) -> String {
 
 /// Run an op sequence `(sub-seed, kind, abort)` in lock step with a full `validate` comparison
 /// (and `validate_par`) after every op.
-fn drive_ops(ops: &[(u64, u8, bool)]) {
-    let mut tw = Twin::new();
+fn drive_ops(ops: &[(u64, u8, bool)], prod: bool) {
+    let mut tw = if prod { Twin::production() } else { Twin::new() };
     for (n, &(s, kind, abort)) in ops.iter().enumerate() {
         let ctx = format!("op {} (sub-seed {s:#x}, kind {kind}, abort {abort})", n + 1);
         tw.run(&ctx, |t| t.begin_op(OpId(n as u64 + 1))).expect("begin");
@@ -583,6 +583,12 @@ proptest! {
     /// Shrinking differential test over biased op sequences.
     #[test]
     fn biased_sequences_agree_with_the_reference(ops in proptest::collection::vec((any::<u64>(), 0u8..12, any::<u8>().prop_map(|b| b % 8 == 0)), 1..24)) {
-        drive_ops(&ops);
+        drive_ops(&ops, false);
+    }
+
+    /// The same driver with production settings on the store (paranoid off, default thresholds).
+    #[test]
+    fn biased_sequences_agree_with_the_reference_in_production_settings(ops in proptest::collection::vec((any::<u64>(), 0u8..12, any::<u8>().prop_map(|b| b % 8 == 0)), 1..24)) {
+        drive_ops(&ops, true);
     }
 }

@@ -168,7 +168,10 @@ fn check_shells(view: &dyn TopologyView, vol: EntityId, open: Option<&OpenShells
 }
 
 /// `check_shells` for a long row: ring groups by binary search, the baffle test on the entries
-/// inserted in this operation (or on the whole ring if its kind was just set).
+/// inserted in this operation. Invariant: every place that sets a shell kind (`make_volume`,
+/// `add_shell`, `split_volume`) also splices that ring's entries into the row, and every splice
+/// into a volume/body row is appended to `ins_log`, so a ring whose kind changed has all its
+/// entries in `changed`.
 fn check_shells_long(view: &dyn TopologyView, vol: EntityId, open: &OpenShells, changed: &[Incidence], out: &mut Vec<TopoIssue>) {
     let row = view.boundary(vol);
     let mut pos = 0;

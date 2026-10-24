@@ -14,7 +14,7 @@ Every row lives in a paged CSR arena and is edited **in place by position** (a b
 and a `memmove`), every edit is journaled as a **delta**, and the end-of-operation checks are
 **incremental** (they look at the entries and edges the operation changed, not at whole
 volumes). That gives operators whose cost depends on what they change rather than on the size
-of the cells they touch: refining one volume to 10^5 faces costs about 45 µs per split instead
+of the cells they touch: refining one volume to 10^5 faces costs about 31-32 µs per split instead
 of a whole-volume rewrite per split, with **bit-identical observable behaviour** (ids,
 lineage, validation results, `canonical_hash`) to the reference, which is what lets the op
 layer swap it in without changing a stored project.
@@ -133,10 +133,10 @@ shell visible. Shortcuts and what they rely on:
 
 | Shortcut | Relies on | Adversarial test |
 |---|---|---|
-| Closure from marked edges | marks cover every edge whose net use changes, plus `open_edges` | `committed_open_shell_is_reported_by_a_later_touch`, `pole_flag_restored_closes_the_carry_over` |
+| Closure from marked edges | marks cover every edge whose net use changes, plus `open_edges` | `committed_open_shell_is_reported_by_a_later_touch`, `pole_flag_restored_closes_the_carry_over`, `open_shell_persists_across_aborts_failed_touches_and_unrelated_commits`, `two_open_poles_restored_one_at_a_time`, `open_shell_on_one_sphere_persists_through_edits_of_another`, `clear_and_touch_in_one_op_fails_and_a_double_toggle_commits_closed` (paranoid and production settings) |
 | Orientation only for faces with changed uses | normalization is applied to touched faces and uses never change silently | `ops_on_a_committed_invalid_state_agree_with_the_reference` (reverse, remove use, kill) |
-| Long-row checks on inserted entries | row rules are flag-independent | the same test with thresholds forced to 6; the proptest driver |
-| Empty `Splice` for an identical `set_row` | the touched set must match the reference | the proptest driver (touch ops on invalid states) |
+| Long-row checks on inserted entries | row rules are flag-independent | `ops_on_a_committed_invalid_state_agree_with_the_reference` with `set_row_thresholds(1, 1)` (the sphere's volume row has a single entry); the proptest drivers (thresholds 6 and production) |
+| Empty `Splice` for an identical `set_row` | the touched set must match the reference | the proptest drivers (touch ops on invalid states) |
 
 `paranoid` mode asserts each shortcut against the full algorithm in tests; the cases above also
 compare the real results in lock step with the reference, without relying on `paranoid`.
@@ -156,7 +156,7 @@ the list in between, instead of an O(live) `Vec::remove`.
   sorted by `(cell, rule)`) use rayon. All reductions are ordered collects.
 - Operators are sequential: each touches a local neighbourhood. The canonical hash is the
   contract's sequential FNV-1a fold (byte-serial and order-dependent, so not parallelizable
-  without changing the contract); at 10^5 faces it costs about 65 ms, dominated by the fold.
+  without changing the contract); at 10^5 faces it costs about 76 ms, dominated by the fold.
 - No `HashMap`/`HashSet`, no time or thread dependent state. The determinism tests build the
   same history twice, with 1 and 4 rayon workers, and concurrently from several threads, and
   compare the canonical hash, every radial ring and both validators.

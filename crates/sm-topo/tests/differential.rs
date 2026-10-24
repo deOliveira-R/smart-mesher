@@ -32,26 +32,41 @@ fn build(f: impl FnOnce(&mut TopoStore) -> Result<(), FixtureError>) -> TopoStor
 /// testkit's reference complex exactly and satisfy the fixture's own expectations.
 #[test]
 fn testkit_fixtures_are_identical_and_satisfy_their_expectations() {
-    let mut cases: Vec<(topo::TopoFixture, TopoStore)> = Vec::new();
     let b = |t: &mut TopoStore, op: u64, min: [f64; 3], size: [f64; 3]| with_op(t, OpId(op), |t| fixtures::brick(t, Point3::new(min[0], min[1], min[2]), size));
-    cases.push((topo::cube().unwrap(), build(|t| b(t, 1, [0.0; 3], [1.0; 3]).map(|_| ()))));
-    cases.push((topo::brick([-1.0, 2.0, 0.5], [2.0, 3.0, 4.0]).unwrap(), build(|t| b(t, 1, [-1.0, 2.0, 0.5], [2.0, 3.0, 4.0]).map(|_| ()))));
-    cases.push((topo::cylinder(1.0, 2.0).unwrap(), build(|t| with_op(t, OpId(1), |t| fixtures::cylinder(t, 1.0, 2.0)).map(|_| ()))));
-    cases.push((topo::sphere(1.5).unwrap(), build(|t| with_op(t, OpId(1), |t| fixtures::sphere(t, 1.5)).map(|_| ()))));
-    cases.push((
-        topo::merged_bricks().unwrap(),
-        build(|t| {
-            let (a, bb) = with_op(t, OpId(1), fixtures::two_bricks)?;
-            with_op(t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &bb))
-        }),
-    ));
-    cases.push((
-        topo::webcut_cube(0.25).unwrap(),
-        build(|t| {
-            let br = b(t, 1, [0.0; 3], [1.0; 3])?;
-            with_op(t, OpId(2), |t| fixtures::webcut_brick(t, &br, 0.25)).map(|_| ())
-        }),
-    ));
+    // One rebuild per fixture of `topo::all_topo_fixtures()`, in its order; the name and count
+    // checks below make a new or reordered testkit fixture fail here instead of going untested.
+    type Rebuild = Box<dyn Fn() -> TopoStore>;
+    let rebuilds: Vec<(&str, Rebuild)> = vec![
+        ("cube", Box::new(move || build(|t| b(t, 1, [0.0; 3], [1.0; 3]).map(|_| ())))),
+        ("brick", Box::new(move || build(|t| b(t, 1, [-1.0, 2.0, 0.5], [2.0, 3.0, 4.0]).map(|_| ())))),
+        ("cylinder", Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::cylinder(t, 1.0, 2.0)).map(|_| ())))),
+        ("sphere", Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::sphere(t, 1.5)).map(|_| ())))),
+        (
+            "merged_bricks",
+            Box::new(|| {
+                build(|t| {
+                    let (a, bb) = with_op(t, OpId(1), fixtures::two_bricks)?;
+                    with_op(t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &bb))
+                })
+            }),
+        ),
+        (
+            "webcut_cube",
+            Box::new(move || {
+                build(|t| {
+                    let br = b(t, 1, [0.0; 3], [1.0; 3])?;
+                    with_op(t, OpId(2), |t| fixtures::webcut_brick(t, &br, 0.25)).map(|_| ())
+                })
+            }),
+        ),
+    ];
+    let all = topo::all_topo_fixtures().unwrap();
+    assert_eq!(all.len(), rebuilds.len(), "all_topo_fixtures changed: add a rebuild");
+    let mut cases: Vec<(topo::TopoFixture, TopoStore)> = Vec::new();
+    for (fixture, (name, rebuild)) in all.into_iter().zip(&rebuilds) {
+        assert_eq!(fixture.name, *name, "all_topo_fixtures order changed");
+        cases.push((fixture, rebuild()));
+    }
     cases.push((broken::brick_with_fin().unwrap(), build(|t| with_op(t, OpId(1), fixtures::brick_with_fin).map(|_| ()))));
     cases.push((broken::brick_with_baffle().unwrap(), build(|t| with_op(t, OpId(1), fixtures::brick_with_baffle).map(|_| ()))));
     cases.push((
@@ -94,6 +109,38 @@ fn testkit_fixtures_are_identical_and_satisfy_their_expectations() {
             }
         }
     }
+}
+
+/// The topology of the testkit's model fixtures (pin lattice stub, mirror chamber) rebuilt on
+/// `TopoStore`: identical state, and the cut's lineage outcome (webcut + kill_cascade in one op)
+/// is the same on both.
+#[test]
+fn testkit_model_fixture_topology_is_identical() {
+    let pin = topo::pin_lattice_stub().unwrap();
+    let mine = build(|t| {
+        with_op(t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [0.4, 0.4, 1.0]))?;
+        with_op(t, OpId(2), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 1.0), [0.4, 0.4, 1.0]))?;
+        Ok(())
+    });
+    same_state(&pin.complex, &mine, pin.name);
+    assert_eq!(mine.validate_par(), validate(&mine));
+    assert!(validate(&mine).is_empty());
+
+    let mirror = topo::mirror_chamber().unwrap();
+    let mine = build(|t| {
+        let br = with_op(t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3]))?;
+        with_op(t, OpId(2), |t| {
+            let w = fixtures::webcut_brick(t, &br, 0.5)?;
+            t.kill_cascade(w.volumes[1])?;
+            Ok(())
+        })
+    });
+    same_state(&mirror.complex, &mine, mirror.name);
+    let (want, got) = (mirror.complex.lineage().cut_outcome(OpId(2)), mine.lineage().cut_outcome(OpId(2)));
+    assert_eq!(format!("{want:?}"), format!("{got:?}"), "cut_outcome");
+    assert_eq!(mine.validate_par(), validate(&mine));
+    let vol: f64 = mine.cells(Dim::Volume).iter().map(|v| mine.volume_moments(*v).unwrap().volume).sum();
+    assert!((vol - mirror.volume).abs() < 1e-9);
 }
 
 #[test]
@@ -278,7 +325,7 @@ fn pcurve_variants_emit_identical_canonical_words() {
 fn pole_flag_then_touch(prod: bool, touch: u8) {
     let mut tw = Twin::new();
     if prod {
-        tw.b = TopoStore::new();
+        tw = Twin::production();
     }
     let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
     tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
@@ -330,6 +377,8 @@ fn pole_flag_restored_closes_the_carry_over() {
 fn ops_on_a_committed_invalid_state_agree_with_the_reference() {
     for case in 0..8u8 {
         let mut tw = Twin::new();
+        // The sphere's volume row has a single entry: force the long-row paths on it too.
+        tw.b.set_row_thresholds(1, 1);
         let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
         tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
         let r = tw.op("adversarial", 3, |t| match case {
@@ -352,5 +401,105 @@ fn ops_on_a_committed_invalid_state_agree_with_the_reference() {
             t.set_carrier(s.volume, c)
         });
         eprintln!("case {case} touch: {:?}", r.map(|_| ()));
+    }
+}
+
+// ---------------------------------------------------------------- directed shell-closure regressions
+
+/// Both settings: the small-threshold paranoid twin and the production twin.
+fn twins() -> [(&'static str, Twin); 2] {
+    [("paranoid", Twin::new()), ("production", Twin::production())]
+}
+
+fn touch_volume(tw: &mut Twin, op: u64, v: EntityId) -> Result<(), TopoError> {
+    tw.op("touch volume", op, |t| {
+        let c = t.carrier(v).clone();
+        t.set_carrier(v, c)
+    })
+}
+
+fn is_open_shell(r: &Result<(), TopoError>) -> bool {
+    matches!(r, Err(TopoError::OpInvalid(_)))
+}
+
+/// (a) An open shell survives an aborted touch, two failing touches and six unrelated commits.
+#[test]
+fn open_shell_persists_across_aborts_failed_touches_and_unrelated_commits() {
+    for (setting, mut tw) in twins() {
+        let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+        tw.op("open", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+        // Aborted touch (the edit succeeds, the op is abandoned).
+        tw.run(setting, |t| t.begin_op(OpId(3))).unwrap();
+        tw.run(setting, |t| {
+            let c = t.carrier(s.volume).clone();
+            t.set_carrier(s.volume, c)
+        })
+        .unwrap();
+        tw.run(setting, |t| t.abort_op());
+        tw.same(setting);
+        assert!(is_open_shell(&touch_volume(&mut tw, 4, s.volume)), "{setting}: first failing touch");
+        assert!(is_open_shell(&touch_volume(&mut tw, 5, s.volume)), "{setting}: second failing touch");
+        for n in 0..6u64 {
+            tw.op("unrelated", 6 + n, |t| t.make_vertex(Point3::new(9.0 + n as f64, 0.0, 0.0)).map(|_| ())).unwrap();
+        }
+        assert!(is_open_shell(&touch_volume(&mut tw, 12, s.volume)), "{setting}: touch after unrelated commits");
+        assert!(!validate(&tw.a).is_empty(), "{setting}: still invalid");
+    }
+}
+
+/// (b) Both poles cleared in separate ops: restoring one leaves the other open.
+#[test]
+fn two_open_poles_restored_one_at_a_time() {
+    for (setting, mut tw) in twins() {
+        let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+        let (p0, p1) = (s.edges[0], s.edges[2]);
+        tw.op("clear 0", 2, |t| t.set_flags(p0, CellFlags::NONE)).unwrap();
+        tw.op("clear 1", 3, |t| t.set_flags(p1, CellFlags::NONE)).unwrap();
+        tw.op("restore 0", 4, |t| t.set_flags(p0, CellFlags::DEGENERATE)).unwrap();
+        assert!(is_open_shell(&touch_volume(&mut tw, 5, s.volume)), "{setting}: the other pole is still open");
+        tw.op("restore 1", 6, |t| t.set_flags(p1, CellFlags::DEGENERATE)).unwrap();
+        assert!(validate(&tw.a).is_empty(), "{setting}");
+        touch_volume(&mut tw, 7, s.volume).unwrap_or_else(|e| panic!("{setting}: closed again, touch must pass: {e:?}"));
+    }
+}
+
+/// (c) An open shell on sphere 1 persists while sphere 2 is touched, opened and kill_cascaded.
+#[test]
+fn open_shell_on_one_sphere_persists_through_edits_of_another() {
+    for (setting, mut tw) in twins() {
+        let s1 = tw.op("sphere 1", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+        let s2 = tw.op("sphere 2", 2, |t| fx(fixtures::sphere(t, 2.0))).unwrap();
+        tw.op("open 1", 3, |t| t.set_flags(s1.edges[0], CellFlags::NONE)).unwrap();
+        touch_volume(&mut tw, 4, s2.volume).unwrap_or_else(|e| panic!("{setting}: sphere 2 touch: {e:?}"));
+        assert!(is_open_shell(&touch_volume(&mut tw, 5, s1.volume)), "{setting}: after touching sphere 2");
+        tw.op("open 2", 6, |t| t.set_flags(s2.edges[0], CellFlags::NONE)).unwrap();
+        assert!(is_open_shell(&touch_volume(&mut tw, 7, s1.volume)), "{setting}: after opening sphere 2");
+        tw.op("kill 2", 8, |t| t.kill_cascade(s2.volume).map(|_| ())).unwrap();
+        assert!(is_open_shell(&touch_volume(&mut tw, 9, s1.volume)), "{setting}: after killing sphere 2");
+    }
+}
+
+/// (d) Clearing a pole and touching the volume in one op fails and rolls back; a DEGENERATE
+/// double toggle inside one op commits closed.
+#[test]
+fn clear_and_touch_in_one_op_fails_and_a_double_toggle_commits_closed() {
+    for (setting, mut tw) in twins() {
+        let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+        let before = tw.a.canonical_hash();
+        let r = tw.op("clear+touch", 2, |t| {
+            t.set_flags(s.edges[0], CellFlags::NONE)?;
+            let c = t.carrier(s.volume).clone();
+            t.set_carrier(s.volume, c)
+        });
+        assert!(is_open_shell(&r), "{setting}: {r:?}");
+        assert_eq!(tw.a.canonical_hash(), before, "{setting}: rolled back");
+        assert!(validate(&tw.a).is_empty());
+        tw.op("double toggle", 3, |t| {
+            t.set_flags(s.edges[0], CellFlags::NONE)?;
+            t.set_flags(s.edges[0], CellFlags::DEGENERATE)
+        })
+        .unwrap();
+        assert!(validate(&tw.a).is_empty(), "{setting}: closed");
+        touch_volume(&mut tw, 4, s.volume).unwrap_or_else(|e| panic!("{setting}: touch after double toggle: {e:?}"));
     }
 }

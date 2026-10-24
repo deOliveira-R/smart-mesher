@@ -52,7 +52,7 @@ to a few percent (values below are rounded between them):
 | `validate_par` | 100 000 | | 375-680 ms | |
 
 The reference is quadratic per op (its cost per split grows with the volume row); the store stays
-near linear. DESIGN.md's ~45 us/split at 10^5 is slightly pessimistic on this machine.
+near linear. DESIGN.md now quotes the measured ~31-32 us/split at 10^5 and ~76 ms for the canonical hash.
 
 At 10^5 faces the reference does not finish in reasonable time (it is quadratic: it was 5 s at
 4 000 per-op splits and the cost per split grows with the volume row), so it is benchmarked only
@@ -87,7 +87,7 @@ up to 4 000; the store runs to 10^5.
 
 ## Test summary
 
-`cargo test -p sm-topo` (debug) and `RAYON_NUM_THREADS=1 cargo test -p sm-topo`: **87 passed, 0
+`cargo test -p sm-topo` (debug) and `RAYON_NUM_THREADS=1 cargo test -p sm-topo`: **93 passed, 0
 failed, 2 ignored** (timing and 10^5-size reports, run with `--release --ignored`).
 
 | File | Tests | What |
@@ -97,8 +97,8 @@ failed, 2 ignored** (timing and 10^5-size reports, run with `--release --ignored
 | `ref_shells.rs` / `ref_bridge_chain.rs` / `ref_gaps3.rs` / `ref_gaps4.rs` | 6 / 4 / 4 / 6 | shell compaction, bridge + chain cuts, `canonical_visit` + `record_merged` + `live_cover`, unmerge, degenerate splits, meridian cut with analytic areas |
 | `ref_freeze.rs` | 5 | pcurve word and hash goldens (frozen values) |
 | `ref_overlay.rs` / `ref_overlay_volume.rs` | 6 / 4 | decomposition overlay over `TopoStore` hosts |
-| `differential.rs` | 11 | committed-invalid-state regressions and adversarial cases;  testkit fixtures rebuilt and compared with the testkit's own complexes + its checkers; fixture catalogue; merge/unmerge; sphere pole splits + `ChordAt`; overlay over `Arc<TopoStore>` and `Arc<CellComplex>`; polyline/NURBS pcurve words; determinism |
-| `random.rs` | 3 | proptest over biased op sequences (shrinking);  8 seeds x 60 ops and 2 seeds x 150 ops, 1-3 operators per op, random aborts, failing `end_op`s (OpInvalid payloads compared), row thresholds forced to 6 so the positional/incremental paths run on small models |
+| `differential.rs` | 16 | committed-invalid-state regressions and adversarial cases (thresholds forced to 1 for the long-row paths); four directed shell-closure regressions (aborted/failed touches, two poles, two spheres, clear+touch and double toggle) in paranoid and production settings; the model fixtures' topology (`pin_lattice_stub`, `mirror_chamber` with webcut + kill_cascade and `cut_outcome`) rebuilt and compared;  testkit fixtures (iterating `all_topo_fixtures()`) rebuilt and compared with the testkit's own complexes + its checkers; fixture catalogue; merge/unmerge; sphere pole splits + `ChordAt`; overlay over `Arc<TopoStore>` and `Arc<CellComplex>`; polyline/NURBS pcurve words; determinism |
+| `random.rs` | 4 | proptest over biased op sequences (shrinking), run with Twin settings and again with production settings (`TopoStore::new()`, paranoid off);  8 seeds x 60 ops and 2 seeds x 150 ops, 1-3 operators per op, random aborts, failing `end_op`s (OpInvalid payloads compared), row thresholds forced to 6 so the positional/incremental paths run on small models |
 | `scale.rs` | 2 (+2 ignored) | refinement (300 and 700 splits, one op and per op) equal to the reference, at forced and at production thresholds; timing reports |
 | `props.rs` | 2 | proptest (fixed seed, 24 cases): random bricks vs closed forms and the testkit complex; random refinement + webcut vs reference |
 | `determinism.rs` | 3 | same history twice, 1 vs 4 rayon workers, concurrent builds: canonical hash, every radial ring, both validators; `validate_par` == `validate` |
@@ -200,3 +200,12 @@ All additive (open tier of the freeze policy).
    `canonical_visit` / `canonical_hash` provided the word stream is identical, and add a public
    `pub fn canonical_words(view: &dyn TopologyView) -> Vec<HashWord>` for conformance tests.
    *Why:* deviation 1 above; the word-by-word comparison currently needs a hand-written collector.
+
+## Polish round 0 (review items)
+
+- Item 1: `ops_on_a_committed_invalid_state_agree_with_the_reference` forces `set_row_thresholds(1, 1)`.
+- Item 2: `check_shells_long` doc states the kind-set / insertion-log invariant.
+- Item 3: model fixtures' topology compared; the fixtures test iterates `all_topo_fixtures()`.
+- Item 4: four directed regressions (a-d) in both settings (`differential.rs`).
+- Item 5: second proptest driver with production settings (`Twin::production()`).
+- Item 6: DESIGN.md performance numbers updated.

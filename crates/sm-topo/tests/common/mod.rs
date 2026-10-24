@@ -24,6 +24,11 @@ impl Twin {
         Self { a: CellComplex::new(), b }
     }
 
+    /// Production settings on the store: `TopoStore::new()`, paranoid off, default thresholds.
+    pub fn production() -> Self {
+        Self { a: CellComplex::new(), b: TopoStore::new() }
+    }
+
     pub fn with_tolerance(tol: sm_geom_api::ModelTolerance) -> Self {
         let mut b = TopoStore::with_tolerance(tol);
         b.set_paranoid(true);
