@@ -1356,10 +1356,13 @@ dependencies = [
 name = "sm-scheme-mapvol"
 version = "0.0.0"
 dependencies = [
+ "rayon",
  "sm-core",
  "sm-geom-api",
  "sm-math",
  "sm-mesh",
+ "sm-mesh-api",
+ "sm-model-api",
  "sm-quality",
  "sm-scheme-api",
  "sm-testkit",
