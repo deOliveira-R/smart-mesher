@@ -1,6 +1,6 @@
 # sm-lang: W1 report
 
-Status: **done** (definition of done passes; see "Test summary"). Commit: see the branch tip below.
+Status: **done** (definition of done passes; see "Test summary"). Commit: the tip of `claude/w1-sm-lang-96bwd7`; the SHA is reported in the session's final message.
 
 Branch: the session designated `claude/w1-sm-lang-96bwd7`, and the work was developed and pushed there. The task text names
 `claude/w1-sm-lang`; the orchestrator should merge by SHA as CLAUDE.md prescribes, so the name does not matter, but it is not the name the task text gave.
@@ -76,6 +76,7 @@ the demo layer, ops, queries and relations in `tests/common/mod.rs` follow the p
 * No `Session`-backed host: it belongs in sm-engine/sm-cli because sm-lang must not manufacture `Meta` (author/time). `EngineHost` demonstrates the replay path.
 * Transcendental builtins use platform libm, so *re-evaluating a script* on another platform can change the last bit of a float; replay of a recorded node never re-evaluates.
 * Set union on two 1M-id sets does not gain from the parallel path (memory bound); intersection and difference do (about 1.5x on 4 cores).
+* `Interpreter` is `Send` when its host is (callables are `Arc`ed), but it is not `Sync`.
 * The schema checker interprets only what `schemars` 1 emits for op params; anything else passes and `Registry::decode` decides.
 
 ## api_change_requests

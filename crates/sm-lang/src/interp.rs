@@ -2,7 +2,7 @@
 //! schemas, lowers calls to op records (and `batch` blocks to `core.batch`) and executes them through a [`Host`].
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
 use sm_core::{EntityId, EntityKind};
@@ -145,7 +145,7 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     loop_count: u64,
     stmt_count: usize,
     plan_n: usize,
-    callables: Option<BTreeMap<String, Rc<Callable>>>,
+    callables: Option<BTreeMap<String, Arc<Callable>>>,
     saw_placeholder: bool,
     /// Set when the call being built contains a plan placeholder (so it cannot be decoded).
     tainted: bool,
@@ -249,15 +249,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         self.diags.push(d);
     }
 
-    pub(crate) fn callable_map(&mut self) -> &BTreeMap<String, Rc<Callable>> {
+    pub(crate) fn callable_map(&mut self) -> &BTreeMap<String, Arc<Callable>> {
         if self.callables.is_none() {
-            let m = help::callables(self.host.registry()).into_iter().map(|c| (c.name.clone(), Rc::new(c))).collect();
+            let m = help::callables(self.host.registry()).into_iter().map(|c| (c.name.clone(), Arc::new(c))).collect();
             self.callables = Some(m);
         }
         self.callables.as_ref().expect("filled above")
     }
 
-    pub(crate) fn lookup_callable(&mut self, name: &str) -> Option<Rc<Callable>> {
+    pub(crate) fn lookup_callable(&mut self, name: &str) -> Option<Arc<Callable>> {
         self.callable_map().get(name).cloned()
     }
 

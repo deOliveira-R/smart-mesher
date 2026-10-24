@@ -75,14 +75,14 @@ impl Source {
 
     /// Text of a 1-based line without its line terminator.
     pub fn line_text(&self, line: usize) -> &str {
-        let Some(&s) = self.line_starts.get(line - 1) else { return "" };
+        let Some(&s) = line.checked_sub(1).and_then(|i| self.line_starts.get(i)) else { return "" };
         let e = self.line_starts.get(line).map_or(self.text.len(), |&e| e as usize);
         self.text[s as usize..e].trim_end_matches(['\n', '\r'])
     }
 
     /// Byte offset of the start of a 1-based line.
     pub fn line_start(&self, line: usize) -> u32 {
-        self.line_starts.get(line - 1).copied().unwrap_or(self.text.len() as u32)
+        line.checked_sub(1).and_then(|i| self.line_starts.get(i)).copied().unwrap_or(self.text.len() as u32)
     }
 
     /// Number of lines (a trailing newline does not start a counted line of text, but is indexable).
