@@ -94,6 +94,7 @@ impl Dim {
 /// loops of a face run counter-clockwise seen from its **right** side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Side {
     /// Left.
     Left = 0,
@@ -130,6 +131,24 @@ pub enum Sense {
     Forward,
     /// Opposite orientation.
     Reversed,
+}
+
+impl From<sm_geom_api::Sense> for Sense {
+    fn from(s: sm_geom_api::Sense) -> Self {
+        match s {
+            sm_geom_api::Sense::Forward => Sense::Forward,
+            sm_geom_api::Sense::Reversed => Sense::Reversed,
+        }
+    }
+}
+
+impl From<Sense> for sm_geom_api::Sense {
+    fn from(s: Sense) -> Self {
+        match s {
+            Sense::Forward => sm_geom_api::Sense::Forward,
+            Sense::Reversed => sm_geom_api::Sense::Reversed,
+        }
+    }
 }
 
 impl Sense {
@@ -197,6 +216,7 @@ impl Incidence {
 /// the lineage maps `edge -> [e1, e2]` and callers re-key through the successors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CoedgeKey {
     /// The face.
     pub face: EntityId,
@@ -210,6 +230,7 @@ pub struct CoedgeKey {
 /// `(face, vertex)` pair it stays unique where a seam vertex appears twice in one loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CornerKey {
     /// The face.
     pub face: EntityId,
@@ -243,6 +264,7 @@ pub struct SurfaceCarrier {
 /// [`crate::TopologyView::shapes`]; topology never owns shape beyond the store.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Carrier {
     /// No geometry (bodies, topology-only cells, degenerate edges).
     None,
@@ -367,6 +389,7 @@ impl FacePair {
 /// What a [`LineageKind::Modified`] record changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ModKind {
     /// A face's orientation was reversed (loops, sides, carrier sense).
     Reversed,
@@ -386,9 +409,11 @@ pub enum ModKind {
     InnerLoop,
 }
 
-/// What an operation did to an entity.
+/// What an operation did to an entity. Open for extension (a `Copied` kind may follow; today
+/// op-level successors carry copies as `A -> [A, A']`): downstream matches need a wildcard arm.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum LineageKind {
     /// The entity was created by a composite operation that declared it (`record_created`).
     /// Every cell also has [`crate::TopologyView::born`].
@@ -495,6 +520,7 @@ pub struct ShellSpec<'a> {
 
 /// How a face is cut by [`crate::TopologyEdit::split_face`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FaceCut<'a> {
     /// An existing open edge joining two distinct vertices of the face's outer loop.
     /// Children: `[first, second]`, `first` being the loop segment from the earlier loop
@@ -517,10 +543,48 @@ pub enum FaceCut<'a> {
         /// The loop, in traversal order.
         edges: &'a [CoedgeSpec],
     },
+    /// An open chain of edges (a polyline imprint, a curved cut made of several edges). The
+    /// chain runs head to tail; its start (tail of the first coedge) and end (head of the last)
+    /// are two distinct vertices of the face's outer loop (after
+    /// [`crate::TopologyEdit::bridge_loops`] every loop of a holed face is one outer loop), and
+    /// its interior vertices must not lie on any loop of the face (that they lie inside the face
+    /// geometrically is not checked). A one-edge chain is a [`FaceCut::Chord`]. Children:
+    /// `[first, second]`, `first` being the loop segment from the earlier loop position of the
+    /// two chain ends, as for `Chord`.
+    Chain {
+        /// The chain, in traversal order.
+        edges: &'a [CoedgeSpec],
+    },
+    /// [`FaceCut::Chord`] whose end vertices may appear more than once in the outer loop (a
+    /// pole or seam vertex): `start` and `end` name the corners where the chord's start and end
+    /// vertices attach (the corner's vertex must be that end, and both corners must be of the
+    /// face's outer loop). Children as for `Chord`, positions taken from the corners. Used for
+    /// an axial cut of a sphere or of a cone through its apex, after
+    /// [`crate::TopologyEdit::split_degenerate_edge`].
+    ChordAt {
+        /// The chord edge.
+        edge: EntityId,
+        /// Corner of the chord's start vertex.
+        start: CornerKey,
+        /// Corner of the chord's end vertex.
+        end: CornerKey,
+    },
+    /// [`FaceCut::Chain`] whose end vertices may appear more than once in the outer loop:
+    /// `start` / `end` name the corners of the chain's start (tail of the first coedge) and end
+    /// (head of the last). Children as for `Chain`.
+    ChainAt {
+        /// The chain, in traversal order.
+        edges: &'a [CoedgeSpec],
+        /// Corner of the chain's start vertex.
+        start: CornerKey,
+        /// Corner of the chain's end vertex.
+        end: CornerKey,
+    },
 }
 
 /// Which child gets each existing inner loop when a face is split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InnerLoopAssign<'a> {
     /// The face has no inner loops (error otherwise).
     None,
@@ -532,6 +596,7 @@ pub enum InnerLoopAssign<'a> {
 
 /// Which child gets each non-outer shell when a volume is split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShellAssign<'a> {
     /// The volume has only its outer shell (error otherwise).
     None,

@@ -1,8 +1,11 @@
 //! NURBS curves and surfaces as validated data with a small reference evaluator
 //! (de Boor / Piegl & Tiller A2.1, A2.3) and a numeric closest-point projector.
 //!
-//! Non-periodic only: closed NURBS are represented by coincident end control points, not by a
-//! period. Weights are optional (`None` = all ones, a polynomial B-spline). The evaluator is
+//! Periodic NURBS (W0f gaps4) carry an explicit `periodic` flag per direction: unclamped knots
+//! whose spacing repeats with the period, and the first `p` control points (rows, columns)
+//! repeated as the last `p`. The domain then reports `period = Some(range length)` and evaluation
+//! and projection wrap the parameter. A clamped closed NURBS (coincident end control points) stays
+//! non-periodic. Weights are optional (`None` = all ones, a polynomial B-spline). The evaluator is
 //! deliberately small and allocation-free (degree is capped at [`MAX_DEGREE`]); `sm-geom` may
 //! provide faster implementations behind the same traits.
 
@@ -124,6 +127,33 @@ fn check_knots(knots: &[f64], npoles: usize, degree: usize) -> Result<(), GeomEr
     Ok(())
 }
 
+/// Validate a periodic direction: unclamped knots whose spacing repeats with the period
+/// (`knots[i + m] - knots[i] == period` for every `i`, `m = npoles - degree` unique poles), and
+/// `same(i, i + m)` for the first `degree` poles (rows, columns), compared exactly.
+fn check_periodic(knots: &[f64], npoles: usize, degree: usize, same: impl Fn(usize, usize) -> bool) -> Result<(), GeomError> {
+    let m = npoles - degree;
+    if m < 2 {
+        return Err(GeomError::Invalid("periodic nurbs needs at least two unique control points"));
+    }
+    if knots[0] == knots[degree] {
+        return Err(GeomError::Invalid("periodic nurbs knots must be unclamped"));
+    }
+    let period = knots[npoles] - knots[degree];
+    let scale = knots.iter().fold(period.abs(), |a, k| a.max(k.abs()));
+    if (0..knots.len() - m).any(|i| ((knots[i + m] - knots[i]) - period).abs() > 1e-12 * scale) {
+        return Err(GeomError::Invalid("periodic nurbs knot spacing must repeat with the period"));
+    }
+    if !(0..degree).all(|i| same(i, i + m)) {
+        return Err(GeomError::Invalid("periodic nurbs: the first degree control points must equal the last"));
+    }
+    Ok(())
+}
+
+/// Wrap (periodic) or clamp `t` into `r`.
+fn fold(r: Interval, periodic: bool, t: f64) -> f64 {
+    if periodic { Domain1::periodic(r.lo, r.len()).wrap(t) } else { r.clamp(t) }
+}
+
 fn check_weights(weights: &Option<Vec<f64>>, n: usize) -> Result<(), GeomError> {
     if let Some(w) = weights {
         if w.len() != n {
@@ -146,6 +176,7 @@ fn vec3(p: Point3) -> Vector3 {
 /// `GeomAppend` store, which validates): evaluating an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsCurve {
     /// Polynomial degree `p` in `1..=15`.
     pub degree: usize,
@@ -155,21 +186,37 @@ pub struct NurbsCurve {
     pub control: Vec<Point3>,
     /// Positive weights, one per control point; `None` for non-rational.
     pub weights: Option<Vec<f64>>,
+    /// Periodic (see the module docs). Absent in older data: `false`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub periodic: bool,
 }
 
 impl NurbsCurve {
-    /// Build and validate.
+    /// Build and validate a non-periodic curve.
     pub fn new(degree: usize, knots: Vec<f64>, control: Vec<Point3>, weights: Option<Vec<f64>>) -> Result<Self, GeomError> {
-        let c = Self { degree, knots, control, weights };
+        let c = Self { degree, knots, control, weights, periodic: false };
         c.validate()?;
         Ok(c)
     }
 
-    /// Validate the data (counts, knot order and multiplicity, positive weights). Data obtained
-    /// by deserialization must be validated before evaluation.
+    /// Build and validate a periodic curve (`control` already repeats its first `degree` points
+    /// at the end).
+    pub fn new_periodic(degree: usize, knots: Vec<f64>, control: Vec<Point3>, weights: Option<Vec<f64>>) -> Result<Self, GeomError> {
+        let c = Self { degree, knots, control, weights, periodic: true };
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// Validate the data (counts, knot order and multiplicity, positive weights, and the
+    /// periodic conditions when `periodic`). Data obtained by deserialization must be
+    /// validated before evaluation.
     pub fn validate(&self) -> Result<(), GeomError> {
         check_knots(&self.knots, self.control.len(), self.degree)?;
-        check_weights(&self.weights, self.control.len())
+        check_weights(&self.weights, self.control.len())?;
+        if self.periodic {
+            check_periodic(&self.knots, self.control.len(), self.degree, |i, j| self.control[i] == self.control[j] && self.w(i) == self.w(j))?;
+        }
+        Ok(())
     }
 
     /// The valid parameter range `[knots[p], knots[n]]`.
@@ -185,12 +232,12 @@ impl NurbsCurve {
 impl ParametricCurve for NurbsCurve {
     fn domain(&self) -> Domain1 {
         let r = self.range();
-        Domain1::open(r.lo, r.hi)
+        if self.periodic { Domain1::periodic(r.lo, r.len()) } else { Domain1::open(r.lo, r.hi) }
     }
 
     fn jet(&self, t: f64) -> CurveJet {
         let p = self.degree;
-        let t = self.range().clamp(t);
+        let t = fold(self.range(), self.periodic, t);
         let span = find_span(self.control.len() - 1, p, t, &self.knots);
         let d = ders_basis(span, t, p, &self.knots);
         let mut a = [Vector3::default(); 3];
@@ -214,9 +261,12 @@ impl ParametricCurve for NurbsCurve {
     }
 }
 
-/// Closest point on any bounded curve by dense sampling followed by safeguarded Newton.
+/// Closest point on any bounded curve by dense sampling followed by safeguarded Newton (the
+/// parameter wraps on a periodic domain, else it is clamped).
 pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point3, hint: Option<f64>, samples: usize) -> CurveProjection {
-    let r = c.domain().range;
+    let dom = c.domain();
+    let r = dom.range;
+    let fix = |t: f64| fold(r, dom.is_periodic(), t);
     let n = samples.max(8);
     let mut best_t = r.lo;
     let mut best_d = f64::INFINITY;
@@ -232,7 +282,7 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
         consider(t, &mut best_t, &mut best_d);
     }
     if let Some(h) = hint {
-        consider(r.clamp(h), &mut best_t, &mut best_d);
+        consider(fix(h), &mut best_t, &mut best_d);
     }
     let mut t = best_t;
     for _ in 0..40 {
@@ -243,7 +293,7 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
         if h.abs() < 1e-300 {
             break;
         }
-        let nt = r.clamp(t - g / h);
+        let nt = fix(t - g / h);
         if (nt - t).abs() <= 1e-15 * (1.0 + t.abs()) {
             t = nt;
             break;
@@ -265,6 +315,7 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
 /// A 2D NURBS curve in a surface's parameter space (used by [`crate::PCurve`]).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsCurve2 {
     /// Polynomial degree in `1..=15`.
     pub degree: usize,
@@ -274,17 +325,19 @@ pub struct NurbsCurve2 {
     pub control: Vec<Uv>,
     /// Positive weights or `None`.
     pub weights: Option<Vec<f64>>,
+    /// Periodic (same rules as [`NurbsCurve::periodic`]). Absent in older data: `false`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub periodic: bool,
 }
 
 impl NurbsCurve2 {
     /// Validate the data.
     pub fn validate(&self) -> Result<(), GeomError> {
-        check_knots(&self.knots, self.control.len(), self.degree)?;
-        check_weights(&self.weights, self.control.len())
+        self.as_3d().validate()
     }
 
     fn as_3d(&self) -> NurbsCurve {
-        NurbsCurve { degree: self.degree, knots: self.knots.clone(), control: self.control.iter().map(|c| Point3::new(c.u, c.v, 0.0)).collect(), weights: self.weights.clone() }
+        NurbsCurve { degree: self.degree, knots: self.knots.clone(), control: self.control.iter().map(|c| Point3::new(c.u, c.v, 0.0)).collect(), weights: self.weights.clone(), periodic: self.periodic }
     }
 
     /// Parameter range.
@@ -292,7 +345,7 @@ impl NurbsCurve2 {
         Interval::new(self.knots[self.degree], self.knots[self.control.len()])
     }
 
-    /// Point and first derivative at `t` (clamped to the range).
+    /// Point and first derivative at `t` (wrapped into the range if periodic, else clamped).
     pub fn eval_d1(&self, t: f64) -> (Uv, Uv) {
         let j = self.as_3d().jet(t);
         (Uv::new(j.p.x, j.p.y), Uv::new(j.d1.x, j.d1.y))
@@ -305,6 +358,7 @@ impl NurbsCurve2 {
 /// does) before evaluating: an unvalidated value may index out of bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NurbsSurface {
     /// Degree in `u`.
     pub degree_u: usize,
@@ -322,6 +376,10 @@ pub struct NurbsSurface {
     pub control: Vec<Point3>,
     /// Positive weights (same layout) or `None`.
     pub weights: Option<Vec<f64>>,
+    /// Periodic in `[u, v]` (see the module docs: in a periodic direction the first `degree`
+    /// rows / columns repeat as the last). Absent in older data: `[false, false]`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub periodic: [bool; 2],
 }
 
 impl NurbsSurface {
@@ -332,7 +390,16 @@ impl NurbsSurface {
         if self.control.len() != self.nu * self.nv {
             return Err(GeomError::Invalid("control net must be nu * nv"));
         }
-        check_weights(&self.weights, self.control.len())
+        check_weights(&self.weights, self.control.len())?;
+        let nv = self.nv;
+        let eq = |a: usize, b: usize| self.control[a] == self.control[b] && self.w(a) == self.w(b);
+        if self.periodic[0] {
+            check_periodic(&self.knots_u, self.nu, self.degree_u, |i, j| (0..nv).all(|iv| eq(i * nv + iv, j * nv + iv)))?;
+        }
+        if self.periodic[1] {
+            check_periodic(&self.knots_v, self.nv, self.degree_v, |i, j| (0..self.nu).all(|iu| eq(iu * nv + i, iu * nv + j)))?;
+        }
+        Ok(())
     }
 
     fn w(&self, i: usize) -> f64 {
@@ -347,8 +414,9 @@ impl NurbsSurface {
 impl ParametricSurface for NurbsSurface {
     fn domain(&self) -> Domain2 {
         let (du, dv) = self.param_domain();
-        let mut d = Domain2::regular(Domain1::open(du.lo, du.hi), Domain1::open(dv.lo, dv.hi));
-        // A boundary row of coincident control points collapses to a pole.
+        let dom = |r: Interval, per: bool| if per { Domain1::periodic(r.lo, r.len()) } else { Domain1::open(r.lo, r.hi) };
+        let mut d = Domain2::regular(dom(du, self.periodic[0]), dom(dv, self.periodic[1]));
+        // A boundary row (u) or column (v) of coincident control points collapses to a pole.
         let same = |r: core::ops::Range<usize>| -> Option<Point3> {
             let first = self.control[r.start];
             self.control[r].iter().all(|q| *q == first).then_some(first)
@@ -360,6 +428,17 @@ impl ParametricSurface for NurbsSurface {
         if let Some(point) = same((self.nu - 1) * self.nv..self.nu * self.nv) {
             s.push(Singularity { along: ParamAxis::U, at: du.hi, point });
         }
+        // Boundary columns `iv = 0` and `iv = nv - 1`: `control[iu * nv + iv]` for every `iu`.
+        let same_col = |iv: usize| -> Option<Point3> {
+            let first = self.control[iv];
+            (0..self.nu).all(|iu| self.control[iu * self.nv + iv] == first).then_some(first)
+        };
+        if let Some(point) = same_col(0) {
+            s.push(Singularity { along: ParamAxis::V, at: dv.lo, point });
+        }
+        if let Some(point) = same_col(self.nv - 1) {
+            s.push(Singularity { along: ParamAxis::V, at: dv.hi, point });
+        }
         d.singularities = s;
         d
     }
@@ -367,7 +446,7 @@ impl ParametricSurface for NurbsSurface {
     fn jet(&self, uv: Uv) -> SurfaceJet {
         let (pu, pv) = (self.degree_u, self.degree_v);
         let (du, dv) = self.param_domain();
-        let (u, v) = (du.clamp(uv.u), dv.clamp(uv.v));
+        let (u, v) = (fold(du, self.periodic[0], uv.u), fold(dv, self.periodic[1], uv.v));
         let su = find_span(self.nu - 1, pu, u, &self.knots_u);
         let sv = find_span(self.nv - 1, pv, v, &self.knots_v);
         let nu_d = ders_basis(su, u, pu, &self.knots_u);
@@ -416,7 +495,7 @@ impl ParametricSurface for NurbsSurface {
             }
         }
         if let Some(h) = hint {
-            consider(du.clamp(h.u), dv.clamp(h.v), &mut best, &mut best_d);
+            consider(fold(du, self.periodic[0], h.u), fold(dv, self.periodic[1], h.v), &mut best, &mut best_d);
         }
         let (mut u, mut v) = best;
         for _ in 0..60 {
@@ -431,8 +510,9 @@ impl ParametricSurface for NurbsSurface {
                 break;
             }
             let (su, sv) = ((h11 * g0 - h01 * g1) / det, (h00 * g1 - h01 * g0) / det);
-            let (nu_, nv_) = (du.clamp(u - su), dv.clamp(v - sv));
-            let moved = (nu_ - u).abs() + (nv_ - v).abs();
+            let (nu_, nv_) = (fold(du, self.periodic[0], u - su), fold(dv, self.periodic[1], v - sv));
+            // Step length before wrapping (a wrap across the seam is not a large move).
+            let moved = if self.periodic.iter().any(|p| *p) { su.abs() + sv.abs() } else { (nu_ - u).abs() + (nv_ - v).abs() };
             if (self.jet(Uv::new(nu_, nv_)).p - p).norm() > r.norm() {
                 break;
             }
@@ -456,7 +536,7 @@ mod tests {
     use super::*;
 
     fn line() -> NurbsCurve {
-        NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)], weights: None }
+        NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)], weights: None, periodic: false }
     }
 
     /// Exact rational quarter circle of radius 1 (degree 2, weights 1, sqrt2/2, 1).
@@ -491,6 +571,7 @@ mod tests {
             nv: 2,
             control: vec![Point3::default(); 4],
             weights: None,
+            periodic: [false; 2],
         };
         assert!(s.validate().is_ok());
         let bad = NurbsSurface { control: vec![Point3::default(); 3], ..s };
@@ -540,6 +621,7 @@ mod tests {
             nv: 2,
             control: vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0), Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 2.0, 0.0)],
             weights: None,
+            periodic: [false; 2],
         };
         let j = s.jet(Uv::new(0.25, 0.5));
         assert!((j.p - Point3::new(0.5, 1.0, 0.0)).norm() < 1e-14);
@@ -550,5 +632,51 @@ mod tests {
         assert!((pr.distance - 3.0).abs() < 1e-9 && (pr.point - Point3::new(0.5, 1.5, 0.0)).norm() < 1e-9);
         // Last-knot evaluation stays on the surface.
         assert!((s.jet(Uv::new(1.0, 1.0)).p - Point3::new(2.0, 2.0, 0.0)).norm() < 1e-14);
+    }
+
+    fn net(nu: usize, nv: usize, control: Vec<Point3>) -> NurbsSurface {
+        let k = |n: usize| {
+            // Degree 1, clamped, uniform interior knots on [0, 1].
+            let mut v = vec![0.0, 0.0];
+            for i in 1..n - 1 {
+                v.push(i as f64 / (n - 1) as f64);
+            }
+            v.extend([1.0, 1.0]);
+            v
+        };
+        let s = NurbsSurface { degree_u: 1, degree_v: 1, knots_u: k(nu), knots_v: k(nv), nu, nv, control, weights: None, periodic: [false; 2] };
+        s.validate().unwrap();
+        s
+    }
+
+    #[test]
+    fn collapsed_last_v_column_is_one_v_singularity() {
+        // 2 x 3 net (u-major): the column iv = 2 collapses to the apex.
+        let apex = Point3::new(0.0, 0.0, 1.0);
+        let s = net(2, 3, vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.5, 0.0, 0.5), apex, Point3::new(0.0, 1.0, 0.0), Point3::new(0.5, 1.0, 0.5), apex]);
+        let d = s.domain();
+        assert_eq!(d.singularities.len(), 1, "{:?}", d.singularities);
+        let sg = d.singularities[0];
+        assert_eq!(sg.along, ParamAxis::V);
+        assert_eq!(sg.at, 1.0);
+        assert_eq!(sg.point, apex);
+        assert!((s.jet(Uv::new(0.3, 1.0)).p - apex).norm() < 1e-14, "the iso-line v = 1 is the apex");
+    }
+
+    #[test]
+    fn net_collapsed_in_both_directions_reports_every_pole() {
+        // 2 x 2 net with every control point equal: all four boundary iso-lines collapse.
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let d = net(2, 2, vec![p; 4]).domain();
+        let got: Vec<(ParamAxis, f64)> = d.singularities.iter().map(|s| (s.along, s.at)).collect();
+        assert_eq!(got, vec![(ParamAxis::U, 0.0), (ParamAxis::U, 1.0), (ParamAxis::V, 0.0), (ParamAxis::V, 1.0)]);
+        assert!(d.singularities.iter().all(|s| s.point == p));
+        // A 3 x 3 net whose row iu = 0 collapses to `a`; the column iv = 2 reads (a, b, b), so
+        // it is not a pole.
+        let (a, b) = (Point3::new(0.0, 0.0, 0.0), Point3::new(9.0, 9.0, 9.0));
+        let c = vec![a, a, a, Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0), b, Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 1.0, 0.0), b];
+        let d = net(3, 3, c).domain();
+        let got: Vec<(ParamAxis, f64)> = d.singularities.iter().map(|s| (s.along, s.at)).collect();
+        assert_eq!(got, vec![(ParamAxis::U, 0.0)]);
     }
 }

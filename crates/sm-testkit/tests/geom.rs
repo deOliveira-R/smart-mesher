@@ -143,6 +143,11 @@ fn circle_and_line_closest_points_off_the_curve() {
 
 #[test]
 fn ellipse_perimeter_closed_form() {
+    // Degenerate inputs are defined: a flat ellipse is a doubled segment.
+    assert_eq!(ellipse_perimeter(2.0, 0.0), 8.0);
+    assert_eq!(ellipse_perimeter(0.0, 3.0), 12.0);
+    assert_eq!(ellipse_perimeter(0.0, 0.0), 0.0);
+    assert!(ellipse_perimeter(-1.0, 1.0).is_nan() && ellipse_perimeter(1.0, f64::INFINITY).is_nan());
     assert!((ellipse_perimeter(1.0, 1.0) - TAU).abs() < 1e-14);
     assert!((ellipse_perimeter(3.0, 3.0) - 6.0 * PI).abs() < 1e-13);
     assert!((ellipse_perimeter(2.0, 1.0) - 9.688_448_220_547_672).abs() < 1e-12);
@@ -155,7 +160,11 @@ fn ellipse_perimeter_closed_form() {
 }
 
 #[test]
-fn ellipse_projection_is_unsupported_in_the_contract() {
+fn ellipse_projection_is_exact_in_the_contract() {
+    // W0f gaps4: the contract projects onto ellipses (Eberly bisection).
     let e = Ellipse::new(world_frame(), 2.0, 1.0).unwrap();
-    assert!(e.project(sm_core::Point3::new(1.0, 1.0, 0.0), None).is_err());
+    let q = sm_core::Point3::new(1.0, 1.0, 0.0);
+    let pr = e.project(q, None).unwrap();
+    let best = (0..20000).map(|i| (e.eval(2.0 * PI * f64::from(i) / 20000.0) - q).norm()).fold(f64::INFINITY, f64::min);
+    assert!(pr.distance <= best + 1e-9, "{} vs {best}", pr.distance);
 }

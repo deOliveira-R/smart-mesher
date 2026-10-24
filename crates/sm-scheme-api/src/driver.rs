@@ -11,13 +11,13 @@ use crate::patch::{ElemShape, Patch, PatchBuilder, PatchSet};
 use crate::plan::{CopyMode, Plan};
 use crate::problem::{MeshConstraint, Selection};
 use crate::scheme::{GenCtx, MeshInput, SchemeRegistry};
-use crate::sizing::{SizeField, builtin_field};
+use crate::sizing::{SizeField, field_for};
 use crate::solve::{CornerPicker, IntervalSolver};
 use crate::target::{Job, NodeKey, SchemeDim, Target};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sm_core::EntityId;
 use sm_mesh_api::{
-    CellShape, Classification, Finished, MeshBuild, MeshEntityRef, SerialAlloc, VertexIx,
+    CellShape, Classification, Finished, MeshBuild, MeshDim, MeshEntityRef, SerialAlloc, VertexIx,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -105,6 +105,14 @@ pub struct Meshed<M> {
     pub attempts: Vec<Attempt>,
 }
 
+impl<M> Meshed<M> {
+    /// The mesh vertex of a node: by the commit correspondence ([`Driver::commit`]) it is
+    /// `VertexIx(patches.index_of(key))`. `None` for a key the patch set does not hold.
+    pub fn vertex_of(&self, key: NodeKey) -> Option<VertexIx> {
+        self.patches.index_of(key).map(VertexIx)
+    }
+}
+
 /// The meshing driver. Holds the registry and the solvers; stateless otherwise, so one driver
 /// can mesh many models (and the same input always gives the same output).
 pub struct Driver<'r> {
@@ -152,7 +160,7 @@ impl<'r> Driver<'r> {
         exec: &dyn Executor,
     ) -> Result<PatchSet> {
         let owned = if self.size.is_none() {
-            plan.sizing.as_ref().and_then(builtin_field)
+            field_for(plan.sizing.as_ref())?
         } else {
             None
         };
@@ -173,7 +181,7 @@ impl<'r> Driver<'r> {
                 return Err(SchemeError::Input(format!("vertex {v} listed twice")));
             }
         }
-        let ctx = CheckCtx::new(plan);
+        let ctx = CheckCtx::new(plan, input);
         for wave in &plan.waves {
             let slots: Vec<Mutex<Option<Result<JobOut>>>> =
                 wave.iter().map(|_| Mutex::new(None)).collect();
@@ -331,6 +339,20 @@ impl<'r> Driver<'r> {
     /// cells, then surface classifications, then optionally curve segments) and finish.
     /// All-or-nothing: on error nothing was finished and `alloc` is unchanged
     /// (`MeshBuild::finish` contract).
+    ///
+    /// **Surface-only meshes.** With a dimension-2 builder (`MeshBuild::dim() == Two`) the
+    /// patch set must hold no volume patches: every surface element becomes a polygon cell
+    /// classified on its face, oriented along the face normal (each face patch is reversed as a
+    /// whole when its elements run against the normal at their first element), and every curve
+    /// segment classifies its facet on its edge. Faces whose normals disagree across a shared
+    /// edge cannot form one oriented surface: `finish` reports the inconsistent facet.
+    ///
+    /// **Node correspondence (contract, W0f gaps 2).** Nodes become mesh vertices in
+    /// [`PatchSet::nodes`] order, so `VertexIx(i) == PatchSet::index_of(key) == i` for the
+    /// `i`-th node, in the builder and in the finished mesh (finishing does not renumber
+    /// vertices); [`Meshed::vertex_of`] reads it. `b` must therefore be an empty builder
+    /// (`SchemeError::Input` otherwise). There is no separate commit map: the target a cell or
+    /// face came from is its classification.
     pub fn commit<B: MeshBuild>(
         &self,
         input: &MeshInput<'_>,
@@ -345,8 +367,11 @@ impl<'r> Driver<'r> {
                 .ok_or(SchemeError::Unclassifiable { owner })
         };
         let mut verts: Vec<VertexIx> = Vec::with_capacity(ps.node_count());
-        for (k, pt, param) in ps.nodes() {
+        for (i, (k, pt, param)) in ps.nodes().enumerate() {
             let v = b.add_vertex(pt)?;
+            if v.get() != i {
+                return Err(SchemeError::Input("commit needs an empty builder: node i must become VertexIx(i)".into()));
+            }
             let ent = classify(k.owner)?;
             let param = if ent == k.owner && param.fits(ent.kind()) {
                 param
@@ -386,6 +411,9 @@ impl<'r> Driver<'r> {
         };
         let bad = |t: Target, reason: String| SchemeError::InvalidPatch { target: t, reason };
         let mut vs: Vec<VertexIx> = Vec::with_capacity(8);
+        if b.dim() == MeshDim::Two {
+            return self.commit_surface(input, ps, b, alloc, &table);
+        }
         let mut faces: Vec<Vec<VertexIx>> = Vec::new();
         for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Volume) {
             let t = patch.target;
@@ -448,7 +476,7 @@ impl<'r> Driver<'r> {
                             .ok_or_else(|| bad(t, format!("local index {l} out of range")))?,
                     );
                 }
-                let (f, _) = b.find_face(&vs).ok_or_else(|| bad(t, "surface element bounds no cell (surface-only meshes are not representable in sm-mesh-api)".into()))?;
+                let (f, _) = b.find_face(&vs).ok_or_else(|| bad(t, "surface element bounds no cell (mesh a surface-only selection into a dimension-2 builder)".into()))?;
                 b.set_class(MeshEntityRef::Face(f), class)?;
             }
         }
@@ -465,6 +493,99 @@ impl<'r> Driver<'r> {
                             return Err(bad(t, "segment index out of range".into()));
                         };
                         b.set_class(MeshEntityRef::Edge(x, y), class)?;
+                    }
+                }
+            }
+        }
+        Ok(b.finish(alloc)?)
+    }
+
+    /// The dimension-2 part of [`Driver::commit`]: polygons from surface patches, facet classes
+    /// from curve patches.
+    fn commit_surface<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        ps: &PatchSet,
+        mut b: B,
+        alloc: &mut SerialAlloc,
+        table: &dyn Fn(&Patch) -> Result<Vec<VertexIx>>,
+    ) -> Result<Finished<B::Output>> {
+        let classify = |owner: EntityId| {
+            input
+                .pieces
+                .classify(owner)
+                .ok_or(SchemeError::Unclassifiable { owner })
+        };
+        let bad = |t: Target, reason: String| SchemeError::InvalidPatch { target: t, reason };
+        if let Some(p) = ps.patches().find(|p| p.target.dim() == SchemeDim::Volume) {
+            return Err(bad(
+                p.target,
+                "a dimension-2 (surface-only) mesh cannot hold volume elements".into(),
+            ));
+        }
+        let mut vs: Vec<VertexIx> = Vec::with_capacity(8);
+        for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Surface) {
+            let t = patch.target;
+            let Some(face) = t.entity() else { continue };
+            let class = Classification::on(classify(face)?);
+            let tab = table(patch)?;
+            // Orientation of the patch against the face normal, from its first element.
+            let mut flip = false;
+            if let Some((_, nodes)) = patch.elements.iter().next()
+                && nodes.len() >= 3
+            {
+                let p = |l: u32| -> Result<sm_core::Point3> {
+                    let v = tab
+                        .get(l as usize)
+                        .copied()
+                        .ok_or_else(|| bad(t, format!("local index {l} out of range")))?;
+                    Ok(b.vertex_point(v))
+                };
+                let a = p(nodes[0])?;
+                let mut area = sm_core::Vector3::default();
+                let mut centre = sm_core::Vector3::default();
+                for w in 0..nodes.len() {
+                    let (x, y) = (p(nodes[w])?, p(nodes[(w + 1) % nodes.len()])?);
+                    area = area + (x - a).cross(y - a);
+                    centre = centre + (x - sm_core::Point3::default()) * (1.0 / nodes.len() as f64);
+                }
+                let n = geom::face_normal(input.topo, face, sm_core::Point3::default() + centre)?;
+                flip = area.dot(n) < 0.0;
+            }
+            for (shape, nodes) in patch.elements.iter() {
+                if !matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) {
+                    continue; // segments of claimed edges are classified below
+                }
+                vs.clear();
+                for &l in nodes {
+                    vs.push(
+                        tab.get(l as usize)
+                            .copied()
+                            .ok_or_else(|| bad(t, format!("local index {l} out of range")))?,
+                    );
+                }
+                if flip {
+                    vs[1..].reverse();
+                }
+                let added = b.add_polygon(&vs)?;
+                b.set_class(MeshEntityRef::Cell(added.cell), class)?;
+            }
+        }
+        for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Curve) {
+            let t = patch.target;
+            let Some(edge) = t.entity() else { continue };
+            let class = Classification::on(classify(edge)?);
+            let tab = table(patch)?;
+            for (_, nodes) in patch.elements.iter() {
+                if let [x, y] = nodes {
+                    let (Some(x), Some(y)) =
+                        (tab.get(*x as usize).copied(), tab.get(*y as usize).copied())
+                    else {
+                        return Err(bad(t, "segment index out of range".into()));
+                    };
+                    // A curve outside every selected face has no facet; skip it.
+                    if let Some((f, _)) = b.find_face(&[x, y]) {
+                        b.set_class(MeshEntityRef::Face(f), class)?;
                     }
                 }
             }
@@ -499,7 +620,7 @@ impl<'r> Driver<'r> {
         alloc: &mut SerialAlloc,
     ) -> Result<Meshed<B::Output>> {
         let owned = if self.size.is_none() {
-            intent.defaults.sizing.as_ref().and_then(builtin_field)
+            field_for(intent.defaults.sizing.as_ref())?
         } else {
             None
         };
@@ -604,12 +725,13 @@ fn kind_of(e: &SchemeError) -> FailureKind {
 /// Patch-contract checks that need the plan: owners and claims.
 struct CheckCtx<'p> {
     plan: &'p Plan,
+    input: &'p MeshInput<'p>,
     members: BTreeMap<Target, Vec<EntityId>>,
     claimed: BTreeMap<Target, Vec<Target>>,
 }
 
 impl<'p> CheckCtx<'p> {
-    fn new(plan: &'p Plan) -> Self {
+    fn new(plan: &'p Plan, input: &'p MeshInput<'p>) -> Self {
         let mut members: BTreeMap<Target, Vec<EntityId>> = BTreeMap::new();
         for r in &plan.problem.constraints {
             if let MeshConstraint::Atomic { group, members: ms } = &r.item {
@@ -625,9 +747,23 @@ impl<'p> CheckCtx<'p> {
         }
         Self {
             plan,
+            input,
             members,
             claimed,
         }
+    }
+
+    /// Node keys of the embedded members of `parent` that its mesh must reference (the chains
+    /// of `GenCtx::embedded`).
+    fn embedded_keys(&self, parent: EntityId, out: &mut BTreeSet<NodeKey>) {
+        for e in self.input.embedded_edges(parent) {
+            if let (Some((a, b)), Some(n)) = (sm_topo_api::TopologyViewExt::edge_ends(self.input.topo, e), self.plan.intervals(e)) {
+                out.insert(NodeKey::vertex(a));
+                out.insert(NodeKey::vertex(b));
+                out.extend((1..n).map(|i| NodeKey::new(e, i)));
+            }
+        }
+        out.extend(self.input.embedded_vertices(parent).into_iter().map(NodeKey::vertex));
     }
 
     /// The patch contract: right target; nodes owned by the target, a group member or a
@@ -675,15 +811,43 @@ impl<'p> CheckCtx<'p> {
                 return Err(bad(format!("reference {r:?} listed twice")));
             }
         }
+        // Embedded conformity (W0f gaps 2): a face or piece mesh references every node of its
+        // embedded members (and of those of the faces it claims).
+        if !matches!(t, Target::Curve(_)) {
+            let mut need: BTreeSet<NodeKey> = BTreeSet::new();
+            let parents: Vec<EntityId> = match t {
+                Target::Group(_) => self.members.get(&t).cloned().unwrap_or_default(),
+                _ => t.entity().into_iter().collect(),
+            };
+            for p in parents.iter().chain(claimed.iter().filter(|c| self.claimed[&t].contains(&Target::Surface(**c)))) {
+                self.embedded_keys(*p, &mut need);
+            }
+            if let Some(k) = need.iter().find(|k| !ref_set.contains(k)) {
+                return Err(bad(format!(
+                    "does not conform to its embedded members: node {k:?} is not referenced (a scheme must conform or report NotApplicable)"
+                )));
+            }
+        }
+        // The curve rule, for a curve target and for every curve the target claims (a claimed
+        // edge is split out of this patch and committed as a curve of its own).
+        let mut curves: Vec<EntityId> = claimed
+            .iter()
+            .copied()
+            .filter(|c| self.claimed[&t].contains(&Target::Curve(*c)))
+            .collect();
         if let Target::Curve(e) = t {
+            curves.push(e);
+        }
+        for e in curves {
             let n = self
                 .plan
                 .intervals(e)
-                .ok_or_else(|| bad("no interval count".into()))?;
+                .ok_or_else(|| bad(format!("edge {e} has no interval count")))?;
+            let got: BTreeSet<NodeKey> = keys.iter().copied().filter(|k| k.owner == e).collect();
             let want: BTreeSet<NodeKey> = (1..n).map(|i| NodeKey::new(e, i)).collect();
-            if keys != want {
+            if got != want {
                 return Err(bad(format!(
-                    "a curve with {n} intervals needs nodes 1..={}",
+                    "curve {e} with {n} intervals needs nodes 1..={} in its own direction",
                     n.saturating_sub(1)
                 )));
             }
@@ -774,59 +938,39 @@ impl<'p> CheckCtx<'p> {
         let Some(children) = self.claimed.get(&t) else {
             return Ok((patch, Vec::new()));
         };
-        let child_of = |o: EntityId| children.iter().copied().find(|c| c.entity() == Some(o));
+        let child_of = |o: EntityId| children.iter().position(|c| c.entity() == Some(o));
         let touched = patch.nodes.iter().any(|n| child_of(n.key.owner).is_some())
             || patch.owners.iter().any(|o| child_of(*o).is_some());
         if !touched {
             return Ok((patch, Vec::new()));
         }
-        let mut kids: BTreeMap<Target, PatchBuilder> = children
-            .iter()
-            .map(|c| (*c, PatchBuilder::new(*c)))
+        // Builder 0 is the remainder, builder 1 + i the claimed child `children[i]`.
+        let mut builders: Vec<PatchBuilder> = std::iter::once(PatchBuilder::new(t))
+            .chain(children.iter().map(|c| PatchBuilder::new(*c)))
             .collect();
-        let mut main = PatchBuilder::new(t);
-        // Nodes first, in order, so numbering follows the original.
+        // Nodes first, in order, so numbering follows the original. `slot[l]` is the builder
+        // and the local index of own node `l` (a dense table: nodes are already in order).
+        let mut slot: Vec<(usize, u32)> = Vec::with_capacity(patch.nodes.len());
         for n in &patch.nodes {
-            match child_of(n.key.owner) {
-                Some(c) => {
-                    if let Some(b) = kids.get_mut(&c) {
-                        b.node(n.key, n.point, n.param);
-                    }
-                }
-                None => {
-                    main.node(n.key, n.point, n.param);
-                }
-            }
+            let b = child_of(n.key.owner).map_or(0, |i| i + 1);
+            slot.push((b, builders[b].node(n.key, n.point, n.param)));
         }
-        let key_of = |l: u32| {
-            patch.key(l).ok_or_else(|| SchemeError::InvalidPatch {
-                target: t,
-                reason: format!("local index {l} out of range"),
-            })
+        let bad_index = |l: u32| SchemeError::InvalidPatch {
+            target: t,
+            reason: format!("local index {l} out of range"),
         };
-        // Local index of `key` inside builder `b`: own node or reference.
-        fn local(b: &mut PatchBuilder, own: &BTreeMap<NodeKey, u32>, key: NodeKey) -> u32 {
-            own.get(&key).copied().unwrap_or_else(|| b.refer(key))
-        }
-        let mut main_own: BTreeMap<NodeKey, u32> = BTreeMap::new();
-        let mut kid_own: BTreeMap<Target, BTreeMap<NodeKey, u32>> = BTreeMap::new();
-        {
-            let (mut mi, mut ki): (u32, BTreeMap<Target, u32>) = (0, BTreeMap::new());
-            for n in &patch.nodes {
-                match child_of(n.key.owner) {
-                    Some(c) => {
-                        let i = ki.entry(c).or_insert(0);
-                        kid_own.entry(c).or_default().insert(n.key, *i);
-                        *i += 1;
-                    }
-                    None => {
-                        main_own.insert(n.key, mi);
-                        mi += 1;
-                    }
+        // Local index of patch-local `l` inside builder `b`: its own node if `b` owns it,
+        // otherwise a reference by key.
+        let local = |builders: &mut [PatchBuilder], b: usize, l: u32| -> Result<u32> {
+            match slot.get(l as usize) {
+                Some(&(owner, i)) if owner == b => Ok(i),
+                _ => {
+                    let k = patch.key(l).ok_or_else(|| bad_index(l))?;
+                    Ok(builders[b].refer(k))
                 }
             }
-        }
-        let empty = BTreeMap::new();
+        };
+        let mut ls: Vec<u32> = Vec::with_capacity(8);
         for (i, (shape, nodes)) in patch.elements.iter().enumerate() {
             let owner = patch.owners.get(i).copied();
             let kid = owner
@@ -834,47 +978,43 @@ impl<'p> CheckCtx<'p> {
                 .filter(|_| !matches!(shape, ElemShape::Cell(_) | ElemShape::Polyhedron));
             match kid {
                 Some(c) => {
-                    let own = kid_own.get(&c).unwrap_or(&empty);
-                    let b = kids.get_mut(&c).ok_or_else(|| SchemeError::InvalidPatch {
-                        target: t,
-                        reason: "claimed child lost".into(),
-                    })?;
-                    let mut ls: Vec<u32> = Vec::with_capacity(nodes.len());
+                    ls.clear();
                     for &l in nodes {
-                        ls.push(local(b, own, key_of(l)?));
+                        ls.push(local(&mut builders, c + 1, l)?);
                     }
-                    b.push(shape, &ls);
+                    builders[c + 1].push(shape, &ls);
                 }
                 None => {
                     if let Some(o) = owner {
-                        main.owner(o);
+                        builders[0].owner(o);
                     }
                     if shape == ElemShape::Polyhedron {
                         let mut fs: Vec<Vec<u32>> = Vec::new();
                         for f in patch.elements.polyhedron_faces(i).into_iter().flatten() {
-                            let mut ls = Vec::with_capacity(f.len());
+                            let mut fl = Vec::with_capacity(f.len());
                             for &l in f {
-                                ls.push(local(&mut main, &main_own, key_of(l)?));
+                                fl.push(local(&mut builders, 0, l)?);
                             }
-                            fs.push(ls);
+                            fs.push(fl);
                         }
                         let refs: Vec<&[u32]> = fs.iter().map(Vec::as_slice).collect();
-                        main.push_polyhedron(&refs);
+                        builders[0].push_polyhedron(&refs);
                     } else {
-                        let mut ls: Vec<u32> = Vec::with_capacity(nodes.len());
+                        ls.clear();
                         for &l in nodes {
-                            ls.push(local(&mut main, &main_own, key_of(l)?));
+                            ls.push(local(&mut builders, 0, l)?);
                         }
-                        main.push(shape, &ls);
+                        builders[0].push(shape, &ls);
                     }
                 }
             }
         }
+        let mut it = builders.into_iter();
+        let mut main = it.next().ok_or_else(|| bad_index(0))?;
         if let Some(g) = patch.grid {
             main.grid(g);
         }
-        let mut out: Vec<Patch> = kids
-            .into_values()
+        let mut out: Vec<Patch> = it
             .map(PatchBuilder::finish)
             .filter(|p| !p.nodes.is_empty() || !p.elements.is_empty())
             .collect();

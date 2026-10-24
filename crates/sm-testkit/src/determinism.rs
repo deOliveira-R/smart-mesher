@@ -40,6 +40,11 @@ pub enum DeterminismError {
 ///
 /// `runs` repetitions of `f(1)` and `f(threads)`, plus one round of `threads` concurrent
 /// `f(1)` calls. Returns the first [`DeterminismError`] found.
+///
+/// **Compare bits, not values.** Results are compared with `PartialEq`, so floats compare by
+/// value: `-0.0 == 0.0` hides a bit difference and `NaN != NaN` reports a false mismatch. The
+/// binding rule is bit-identical output, so return hashes (`hash_f64_bits`,
+/// `check::mesh_hash`, `check::topo_hash`) or use [`check_f64_bits`] for float vectors.
 pub fn check<T: PartialEq + Debug + Send>(runs: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Result<T, DeterminismError> {
     if runs == 0 || threads == 0 {
         return Err(DeterminismError::BadArguments);
@@ -65,6 +70,22 @@ pub fn check<T: PartialEq + Debug + Send>(runs: usize, threads: usize, f: impl F
             Some(v) => compare(format!("concurrent call {i} of {threads}"), v)?,
             None => return Err(DeterminismError::Panicked(format!("concurrent call {i}"))),
         }
+    }
+    Ok(baseline)
+}
+
+/// [`check`] for float results compared **by bit pattern** (`-0.0` and `0.0` differ, a NaN
+/// equals the same NaN): `f` returns the floats, the harness compares their
+/// [`hash_f64_bits`] and returns the baseline floats.
+pub fn check_f64_bits(runs: usize, threads: usize, f: impl Fn(usize) -> Vec<f64> + Sync) -> Result<Vec<f64>, DeterminismError> {
+    let baseline = f(1);
+    let want = hash_f64_bits(&baseline);
+    let got = check(runs, threads, |t| {
+        let v = f(t);
+        (hash_f64_bits(&v), v.iter().map(|x| x.to_bits()).collect::<Vec<u64>>())
+    })?;
+    if got.0 != want {
+        return Err(DeterminismError::Mismatch { what: "baseline".into(), expected: format!("{want:#x}"), actual: format!("{:#x}", got.0) });
     }
     Ok(baseline)
 }

@@ -46,7 +46,9 @@ pub fn template_points(shape: CellShape) -> Vec<[f64; 3]> {
             [1., 1., 1.],
             [0., 1., 1.],
         ],
-        CellShape::Polyhedron => unreachable!(),
+        CellShape::Polyhedron | CellShape::Tri | CellShape::Quad | CellShape::Polygon => {
+            unreachable!()
+        }
     }
 }
 
@@ -56,7 +58,9 @@ pub fn analytic_volume(shape: CellShape) -> f64 {
         CellShape::Wedge => 0.5,
         CellShape::Pyramid => 1.0 / 3.0,
         CellShape::Hex => 1.0,
-        CellShape::Polyhedron => unreachable!(),
+        CellShape::Polyhedron | CellShape::Tri | CellShape::Quad | CellShape::Polygon => {
+            unreachable!()
+        }
     }
 }
 
@@ -126,4 +130,13 @@ pub fn interior_faces(m: &dyn MeshRead) -> Vec<FaceIx> {
         .map(FaceIx::new)
         .filter(|&f| m.face_kind(f) == FaceKind::Interior)
         .collect()
+}
+
+/// Classify every template edge of a cell on its own `TopoEdge` (a brick's edges lie on two
+/// model faces, so the edge table needs them explicitly; high-order meshes carry one).
+#[allow(dead_code)]
+pub fn classify_template_edges(b: &mut sm_mesh_api::reference::ReferenceBuilder, shape: CellShape, vs: &[VertexIx]) {
+    for (i, [a, c]) in shape.local_edges().iter().enumerate() {
+        b.set_class(MeshEntityRef::Edge(vs[*a as usize], vs[*c as usize]), on(EntityKind::TopoEdge, 1 + i as u64)).unwrap();
+    }
 }

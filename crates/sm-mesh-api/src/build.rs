@@ -11,8 +11,8 @@ use crate::classify::Classification;
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, HighOrderCell, NodeRef};
 use crate::index::{
-    CellIx, FaceIx, FaceKind, MeshEntity, MeshEntityKind, MeshEntityRef, PointIx, Side, SignedFace,
-    VertexIx,
+    CellIx, FaceIx, FaceKind, MeshDim, MeshEntity, MeshEntityKind, MeshEntityRef, PointIx, Side,
+    SignedFace, VertexIx,
 };
 use crate::read::{GeometryCache, MeshRead};
 use crate::sets::{SetMembers, TagValues};
@@ -49,26 +49,30 @@ impl TryFrom<SerialAllocRaw> for SerialAlloc {
 }
 
 impl SerialAlloc {
-    /// A fresh allocator (all kinds start at serial 0).
+    /// A fresh allocator (all kinds start at serial 1, like the op layer's entity table, so
+    /// the minted ids can be adopted in order: W0f id authority).
     pub fn new() -> Self {
         Self::default()
     }
-    /// The next serial that `take` would hand out for `kind` (0 if none was taken yet).
+    /// The next serial that `take` would hand out for `kind` (1 if none was taken yet).
     pub fn next_serial(&self, kind: EntityKind) -> u64 {
-        self.next.get(&kind).copied().unwrap_or(0)
+        self.next.get(&kind).copied().unwrap_or(1)
     }
     /// The counters in ascending kind order, for snapshots.
     pub fn state(&self) -> impl Iterator<Item = (EntityKind, u64)> + '_ {
         self.next.iter().map(|(k, n)| (*k, *n))
     }
     /// Restore an allocator from `(kind, next serial)` pairs (as produced by
-    /// [`SerialAlloc::state`]). A repeated kind or a serial above [`EntityId::MAX_SERIAL`] is an
-    /// error.
+    /// [`SerialAlloc::state`]). A repeated kind, a serial of 0 (serials start at 1) or a serial
+    /// above [`EntityId::MAX_SERIAL`] + 1 is an error.
     pub fn from_state(state: impl IntoIterator<Item = (EntityKind, u64)>) -> Result<Self> {
         let mut next = BTreeMap::new();
         for (k, n) in state {
-            if n > EntityId::MAX_SERIAL {
+            if n > EntityId::MAX_SERIAL.saturating_add(1) {
                 return Err(MeshError::SerialOverflow);
+            }
+            if n == 0 {
+                return Err(MeshError::State(format!("kind {k:?}: serials start at 1")));
             }
             if next.insert(k, n).is_some() {
                 return Err(MeshError::State(format!("kind {k:?} given twice")));
@@ -78,11 +82,11 @@ impl SerialAlloc {
     }
     /// Reserve `n` consecutive serials of `kind`; returns the first.
     pub fn take(&mut self, kind: EntityKind, n: usize) -> Result<u64> {
-        let first = self.next.get(&kind).copied().unwrap_or(0);
+        let first = self.next_serial(kind);
         let end = first
             .checked_add(n as u64)
             .ok_or(MeshError::SerialOverflow)?;
-        if end > EntityId::MAX_SERIAL {
+        if end - 1 > EntityId::MAX_SERIAL {
             return Err(MeshError::SerialOverflow);
         }
         self.next.insert(kind, end);
@@ -125,9 +129,19 @@ pub struct Finished<M> {
 /// **Classification is mandatory** for vertices, boundary-like faces and cells; `finish` fills in
 /// an unset interior (or non-conformal / partition-cut) face from its cell when the cells around
 /// it share a classification, and an unset edge likewise, and errors otherwise.
+///
+/// **Dimension.** A builder makes meshes of one [`MeshDim`] ([`MeshBuild::dim`]). In dimension 2
+/// faces are two-vertex facets and cells are polygons ([`MeshBuild::add_polygon`],
+/// `add_cell_from_vertices` with `Tri` / `Quad`); cells are classified on a `TopoFace` /
+/// `PartitionFace` and boundary facets on a `TopoEdge` / `PartitionEdge`.
 pub trait MeshBuild {
     /// The finished mesh type.
     type Output: MeshRead;
+
+    /// Dimension of the mesh being built (default [`MeshDim::Three`]).
+    fn dim(&self) -> MeshDim {
+        MeshDim::Three
+    }
 
     /// Add a vertex.
     fn add_vertex(&mut self, p: Point3) -> Result<VertexIx>;
@@ -145,7 +159,8 @@ pub trait MeshBuild {
     /// means exact coordinate equality. Expected `O(1)` per query.
     fn find_vertex(&self, p: Point3, tol: f64) -> Option<VertexIx>;
 
-    /// Add a face with the given loop (no deduplication). Needs >= 3 distinct, existing vertices.
+    /// Add a face with the given loop (no deduplication). Needs >= 3 distinct, existing vertices
+    /// (exactly 2 in a dimension-2 mesh).
     fn add_face(&mut self, vertex_loop: &[VertexIx]) -> Result<FaceIx>;
     /// Find an existing face with the same vertex cycle, and whether it runs the same way.
     fn find_face(&self, vertex_loop: &[VertexIx]) -> Option<(FaceIx, LoopRelation)>;
@@ -222,8 +237,15 @@ pub trait MeshBuild {
         basis: Basis,
         nodes: &[NodeRef],
     ) -> Result<()>;
-    /// Add a named set (face members use provisional face handles).
+    /// Add a named set (face members use provisional face handles; a side set's sides are
+    /// relative to the provisional face's cells and are re-sided by `finish`).
     fn add_set(&mut self, name: &str, members: SetMembers) -> Result<()>;
+    /// Set or clear the integer label of the set `name` (unique per members kind, checked at
+    /// `finish`). Provided: implementations without labels return `Unsupported`.
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        let _ = (name, label);
+        Err(MeshError::Unsupported("set labels".into()))
+    }
     /// Add a named tag column over all entities of `target` (length checked at `finish`).
     /// Face columns are indexed by provisional face handle.
     fn add_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()>;
@@ -254,6 +276,27 @@ pub trait MeshBuild {
         add_poly(self, outward, corners)
     }
 
+    /// Add a polygon cell of a dimension-2 mesh from its vertex cycle (boundary order), reusing
+    /// facets that already exist. The cycle is recorded as the cell's corners. On error the
+    /// builder is left unchanged.
+    fn add_polygon(&mut self, cycle: &[VertexIx]) -> Result<CellAdded> {
+        if self.dim() != MeshDim::Two {
+            return Err(MeshError::Unsupported(
+                "add_polygon builds dimension-2 meshes".into(),
+            ));
+        }
+        let n = cycle.len();
+        if n < 3 {
+            return Err(MeshError::InvalidLoop(
+                "a polygon needs at least 3 vertices".into(),
+            ));
+        }
+        let edges: SmallVec<[[VertexIx; 2]; 8]> =
+            (0..n).map(|i| [cycle[i], cycle[(i + 1) % n]]).collect();
+        let refs: SmallVec<[&[VertexIx]; 8]> = edges.iter().map(|e| e.as_slice()).collect();
+        self.add_polyhedron_with_corners(&refs, Some(cycle))
+    }
+
     /// Add a template-shaped cell from vertices in the template order of `shape`.
     fn add_cell_from_vertices(
         &mut self,
@@ -265,6 +308,12 @@ pub trait MeshBuild {
                 "{shape:?} needs {:?} vertices, got {}",
                 shape.vertex_count(),
                 verts.len()
+            )));
+        }
+        if shape.dim() != self.dim() {
+            return Err(MeshError::State(format!(
+                "{shape:?} cells do not belong in a {:?} mesh",
+                self.dim()
             )));
         }
         let loops: SmallVec<[SmallVec<[VertexIx; 4]>; 6]> = shape
@@ -356,9 +405,11 @@ pub trait MeshEdit: MeshRead {
     /// every `LevelMap` built over the mesh stale.
     fn set_face_kind(&mut self, f: FaceIx, kind: FaceKind) -> Result<()>;
     /// Set or clear a cell's high-order record (count-checked; polyhedra rejected).
+    /// On a dimension-3 mesh a new record needs the edge table first ([`MeshEdit::ensure_edges`]).
     fn set_high_order(&mut self, c: CellIx, h: Option<HighOrderCell>) -> Result<()>;
     /// Set or clear a face's curvature record `(degree, basis, nodes)` (count-checked; the
     /// first nodes must be the face's loop vertices).
+    /// On a dimension-3 mesh a new record needs the edge table first ([`MeshEdit::ensure_edges`]).
     fn set_face_curve(&mut self, f: FaceIx, c: Option<(u8, Basis, Vec<PointIx>)>) -> Result<()>;
     /// Add a named set; its id comes from `alloc`, which is unchanged on `Err`.
     fn add_set(
@@ -367,6 +418,12 @@ pub trait MeshEdit: MeshRead {
         members: SetMembers,
         alloc: &mut SerialAlloc,
     ) -> Result<EntityId>;
+    /// Set or clear the integer label of the set `name` (must stay unique per members kind).
+    /// Provided: implementations without labels return `Unsupported`.
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        let _ = (name, label);
+        Err(MeshError::Unsupported("set labels".into()))
+    }
     /// Add or replace a tag column.
     fn set_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()>;
     /// Derive and attach the edge table (no-op if present). `explicit` gives classifications by
@@ -377,8 +434,10 @@ pub trait MeshEdit: MeshRead {
         alloc: &mut SerialAlloc,
         explicit: &[(VertexIx, VertexIx, Classification)],
     ) -> Result<()>;
-    /// Detach the edge table together with all edge-target tags.
-    fn drop_edges(&mut self);
+    /// Detach the edge table together with all edge-target tags. Refused
+    /// ([`crate::MeshError::State`]) on a dimension-3 mesh with high-order cells or face curves,
+    /// whose edge nodes take the class of their edge.
+    fn drop_edges(&mut self) -> Result<()>;
     /// Attach or drop a geometry cache. A cache whose rule, sizes or connectivity hash do not
     /// match the mesh (including the coordinate hash) is rejected.
     fn set_geometry_cache(&mut self, g: Option<GeometryCache>) -> Result<()>;

@@ -5,5 +5,5 @@
 pub mod id;
 pub mod geom;
 
-pub use geom::{Point3, Transform, Vector3};
+pub use geom::{Aabb, Point3, Transform, Vector3};
 pub use id::{EntityId, EntityKind};

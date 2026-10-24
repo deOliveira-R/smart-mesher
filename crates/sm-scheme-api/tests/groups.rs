@@ -339,6 +339,17 @@ fn a_mesh_that_fails_verification_is_rejected_and_replanned() {
         }
         other => panic!("expected CopyMismatch, got {:?}", other.map(|_| ())),
     }
+    // A target written with the right nodes but against its normal (the image of the root
+    // elements reversed) is caught too: verification compares the cyclic orientation.
+    let mut wrong = group_intent(&ids, serde_json::json!({ "misorient": true }));
+    counted(&ids, &mut wrong, [1, 1]);
+    let plan2 = driver.plan(&input, &wrong).expect("the plan is fine");
+    match driver.generate(&input, &plan2, &Sequential) {
+        Err(SchemeError::CopyMismatch { reason, .. }) => {
+            assert!(reason.contains("orientation"), "{reason}")
+        }
+        other => panic!("expected CopyMismatch, got {:?}", other.map(|_| ())),
+    }
     // `mesh` rejects the group scheme and re-plans; with nothing else to try (even for a soft
     // choice) it fails with the history, and nothing is committed.
     let mut alloc = SerialAlloc::new();

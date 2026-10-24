@@ -24,6 +24,7 @@ pub trait ImplicitSurface: Send + Sync + core::fmt::Debug {
 /// Which side of a signed surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Sign {
     /// `f <= 0` (inside for closed shapes).
     Negative,
@@ -44,6 +45,7 @@ impl Sign {
 /// A half-space `sign * f >= 0` of a surface held in a [`GeomStore`] (kind `Surface`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HalfSpace {
     /// Handle of the bounding surface (an `EntityKind::Surface` id).
     pub surface: EntityId,
@@ -74,6 +76,7 @@ impl HalfSpace {
 /// Where a point lies relative to a [`CsgCell`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Containment {
     /// Strictly inside every half-space.
     Inside,
@@ -88,8 +91,10 @@ pub enum Containment {
 /// general quadric or a torus quartic can bound a cell like a plane.
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CsgCell {
     /// The half-spaces whose intersection is the cell.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<HalfSpace>"))]
     pub halfspaces: SmallVec<[HalfSpace; 4]>,
 }
 
@@ -186,6 +191,7 @@ impl CsgCell {
 /// whatever the coefficients say (negative inside for a closed quadric).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Quadric {
     /// Coefficients `[A, B, C, D, E, F, G, H, J, K]`.
     pub coeffs: [f64; 10],
@@ -307,6 +313,7 @@ impl ImplicitSurface for Quadric {
 /// in local coordinates `l` (negative inside the tube). Requires `major > minor > 0` (ring torus).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ImplicitTorus {
     /// Placement; `z` is the symmetry axis.
     pub frame: Frame,
@@ -351,6 +358,8 @@ impl ImplicitSurface for ImplicitTorus {
 /// [`crate::ParametricSurface::implicit`] and stored by [`crate::SurfaceDef::Implicit`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum ImplicitDef {
     /// A (degree <= 2) quadric, including a general quadric.
     Quadric(Quadric),

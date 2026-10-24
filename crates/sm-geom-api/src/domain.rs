@@ -6,6 +6,7 @@ use smallvec::SmallVec;
 /// A closed parameter interval. Ends may be infinite (lines, planes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Interval {
     /// Lower bound.
     pub lo: f64,
@@ -48,6 +49,7 @@ impl Interval {
 /// The interval ends are then the *seam*.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Domain1 {
     /// The principal interval.
     pub range: Interval,
@@ -90,6 +92,7 @@ impl Domain1 {
 /// A point in a surface parameter space.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Uv {
     /// First parameter.
     pub u: f64,
@@ -107,6 +110,7 @@ impl Uv {
 /// Which surface parameter is held constant along an iso-line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ParamAxis {
     /// The iso-line `u = const`.
     U,
@@ -120,6 +124,7 @@ pub enum ParamAxis {
 /// `du x dv` there; implementors return the exact limit normal instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Singularity {
     /// The held-constant parameter.
     pub along: ParamAxis,
@@ -132,12 +137,14 @@ pub struct Singularity {
 /// Domain of a surface: two [`Domain1`] plus the singular iso-lines.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Domain2 {
     /// Domain of `u`.
     pub u: Domain1,
     /// Domain of `v`.
     pub v: Domain1,
     /// Collapsed iso-lines (poles), usually 0 to 2.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<Singularity>"))]
     pub singularities: SmallVec<[Singularity; 2]>,
 }
 

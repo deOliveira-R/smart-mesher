@@ -1,7 +1,7 @@
 //! Reference catalog: meshes of one model, level maps and instanced views.
 
 use crate::error::{MeshError, Result};
-use crate::hierarchy::{CatalogEdit, LevelMap, MeshCatalog};
+use crate::hierarchy::{CatalogEdit, ExtrusionMap, LevelMap, MeshCatalog};
 use crate::instance::InstancedView;
 use crate::read::MeshRead;
 use sm_core::{EntityId, EntityKind};
@@ -14,6 +14,7 @@ pub struct ReferenceCatalog {
     meshes: BTreeMap<EntityId, Box<dyn MeshRead>>,
     maps: BTreeMap<(EntityId, EntityId), LevelMap>,
     views: Vec<InstancedView>,
+    extrusions: BTreeMap<(EntityId, EntityId), ExtrusionMap>,
 }
 
 impl ReferenceCatalog {
@@ -50,6 +51,13 @@ impl MeshCatalog for ReferenceCatalog {
     fn views(&self) -> &[InstancedView] {
         &self.views
     }
+    fn extrusions_of(&self, mesh: EntityId) -> Vec<&ExtrusionMap> {
+        self.extrusions
+            .iter()
+            .filter(|((b, e), _)| *b == mesh || *e == mesh)
+            .map(|(_, m)| m)
+            .collect()
+    }
 }
 
 impl CatalogEdit for ReferenceCatalog {
@@ -85,6 +93,20 @@ impl CatalogEdit for ReferenceCatalog {
         Ok(())
     }
 
+    fn link_extrusion(&mut self, map: ExtrusionMap) -> Result<()> {
+        let (b, e) = (map.base_id(), map.extruded_id());
+        let bm = self.meshes.get(&b).ok_or(MeshError::UnknownMesh(b))?;
+        let em = self.meshes.get(&e).ok_or(MeshError::UnknownMesh(e))?;
+        map.check_meshes(bm.as_ref(), em.as_ref())?;
+        if self.extrusions.contains_key(&(b, e)) {
+            return Err(MeshError::Hierarchy(
+                "these meshes already have an extrusion map".into(),
+            ));
+        }
+        self.extrusions.insert((b, e), map);
+        Ok(())
+    }
+
     fn insert_view(&mut self, view: InstancedView) -> Result<()> {
         if self.views.iter().any(|v| v.id == view.id) {
             return Err(MeshError::Hierarchy(format!(
@@ -92,18 +114,18 @@ impl CatalogEdit for ReferenceCatalog {
                 view.id
             )));
         }
-        if view.id.kind() != EntityKind::Instance {
+        if view.id.kind() != EntityKind::MeshInstance {
             return Err(MeshError::Hierarchy(
-                "view id must be an Instance id".into(),
+                "view id must be a MeshInstance id".into(),
             ));
         }
         let mut ids: Vec<EntityId> = view.instances.iter().map(|i| i.id).collect();
         ids.sort_unstable();
         if ids.windows(2).any(|w| w[0] == w[1])
-            || ids.iter().any(|i| i.kind() != EntityKind::Instance)
+            || ids.iter().any(|i| i.kind() != EntityKind::MeshInstance)
         {
             return Err(MeshError::Hierarchy(
-                "instance ids must be unique Instance ids".into(),
+                "instance ids must be unique MeshInstance ids".into(),
             ));
         }
         if let Some(i) = view

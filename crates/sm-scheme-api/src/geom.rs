@@ -66,6 +66,49 @@ pub fn edge_length(t: &dyn TopologyView, e: EntityId) -> Result<f64> {
     Ok(c.length(cc.range, t.tolerance_of(e))?)
 }
 
+/// Interval goal of an edge under a size field: `integral ds / h(x)` along the edge (the number
+/// of elements of size `h` that fit), by composite 5-point Gauss-Legendre over the curve
+/// parameter, doubling the panel count until two estimates agree to `1e-10` relative (at most
+/// 2^14 panels; the last estimate is returned). Deterministic. A non-positive or non-finite
+/// size is an input error.
+pub fn edge_size_goal(t: &dyn TopologyView, e: EntityId, f: &dyn crate::sizing::SizeField) -> Result<f64> {
+    const X: [f64; 5] = [0.0, -0.538_469_310_105_683_1, 0.538_469_310_105_683_1, -0.906_179_845_938_664, 0.906_179_845_938_664];
+    const W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
+    let (c, cc) = edge_curve(t, e)?;
+    let (lo, hi) = (cc.range.lo, cc.range.hi);
+    if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+        return Err(SchemeError::Input(format!("edge {e}: unbounded or empty curve range")));
+    }
+    let estimate = |panels: u32| -> Result<f64> {
+        let w = (hi - lo) / f64::from(panels);
+        let mut sum = 0.0;
+        for k in 0..panels {
+            let mid = lo + (f64::from(k) + 0.5) * w;
+            for (x, wt) in X.iter().zip(W) {
+                let u = mid + 0.5 * w * x;
+                let j = c.jet(u);
+                let h = f.size(j.p);
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(SchemeError::Input(format!("edge {e}: size field gave {h}")));
+                }
+                sum += wt * j.d1.norm() / h;
+            }
+        }
+        Ok(sum * 0.5 * w)
+    };
+    let mut panels = 4u32;
+    let mut prev = estimate(panels)?;
+    while panels < (1 << 14) {
+        panels *= 2;
+        let next = estimate(panels)?;
+        if (next - prev).abs() <= 1e-10 * next.abs() {
+            return Ok(next);
+        }
+        prev = next;
+    }
+    Ok(prev)
+}
+
 /// `(start, end)` vertices of a coedge in loop direction.
 pub fn coedge_ends(t: &dyn TopologyView, k: CoedgeKey) -> Option<(EntityId, EntityId)> {
     let (a, b) = t.edge_ends(k.edge)?;

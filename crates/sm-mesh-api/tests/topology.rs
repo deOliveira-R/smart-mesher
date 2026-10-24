@@ -532,7 +532,7 @@ fn template_shapes_mirrored_in_place() {
         let am = append_transformed(
             &mut b,
             &m,
-            id(EntityKind::Instance, 1),
+            id(EntityKind::MeshInstance, 1),
             &mirror_x(0.0),
             &opts,
         )

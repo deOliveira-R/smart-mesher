@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::DerivedCache;
@@ -15,8 +16,10 @@ use crate::state::State;
 use crate::timeline::{Check, Head, Meta, Node, NodeBody, Timeline};
 use std::sync::Arc;
 
-/// A revision to check out.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A revision to check out. Externally tagged: `{"ref": "main"}`, `{"node": "<hash>"}` or
+/// `"empty"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Rev {
     /// The empty state, before any op (detached).
     Empty,
@@ -34,6 +37,12 @@ pub enum ReplayPolicy {
     Strict,
     /// Keep going and collect the divergence in [`Session::take_warnings`].
     Warn,
+    /// Re-record the node's check in place ([`Timeline::replace_check`]) with the replayed
+    /// result and keep going: re-baselining a timeline after an implementation upgrade. Every
+    /// re-recorded mismatch is still reported in [`Session::take_warnings`] and its node in
+    /// [`Session::take_rebaselined`] (so a storage backend rewrites those node files). Node
+    /// hashes never change. [`Session::state_at_from_root`] cannot mutate and acts as `Warn`.
+    Rebaseline,
 }
 
 /// One movement of a ref or of HEAD, for the local reflog persisted by `sm-engine` in `.cache/`.
@@ -45,7 +54,8 @@ pub struct ReflogEntry {
     pub from: Option<Hash256>,
     /// Position after.
     pub to: Option<Hash256>,
-    /// What happened: `apply`, `checkout`, `branch`, `reset`, `undo`, `redo`.
+    /// What happened: `apply`, `checkout`, `branch`, `reset`, `undo`, `redo`,
+    /// `delete-branch`, `rename-branch`.
     pub action: String,
 }
 
@@ -146,11 +156,13 @@ pub struct Session {
     reflog: Vec<ReflogEntry>,
     policy: ReplayPolicy,
     warnings: Vec<TimelineError>,
+    rebaselined: Vec<Hash256>,
 }
 
 struct Replayed {
     state: State,
     snaps: Vec<(Hash256, State)>,
+    rebase: Vec<(Hash256, Check)>,
 }
 
 impl Session {
@@ -173,6 +185,7 @@ impl Session {
             reflog: Vec::new(),
             policy: ReplayPolicy::Strict,
             warnings: Vec::new(),
+            rebaselined: Vec::new(),
         }
     }
 
@@ -184,13 +197,52 @@ impl Session {
         head: Head,
         ctl: &Control<'_>,
     ) -> Result<Self, TimelineError> {
+        Self::open_with(engine, timeline, head, std::iter::empty(), Vec::new(), ctl)
+    }
+
+    /// Like [`open`](Self::open), first seeding the snapshot cache with persisted states (the
+    /// W0a decision-8 snapshot hook: `Registry::restore` of stored `StateSnapshot`s) and
+    /// restoring the persisted reflog. Every seed is checked with [`seed_state`](Self::seed_state),
+    /// so a stale or foreign snapshot is an error, never a silent wrong state. Replay to HEAD
+    /// then starts from the nearest seed.
+    pub fn open_with(
+        engine: Engine,
+        timeline: Timeline,
+        head: Head,
+        seeds: impl IntoIterator<Item = (Hash256, State)>,
+        reflog: Vec<ReflogEntry>,
+        ctl: &Control<'_>,
+    ) -> Result<Self, TimelineError> {
         let target = Self::resolve_head(&timeline, &head)?;
         let mut s = Self::new(engine);
         s.timeline = timeline;
+        for (h, st) in seeds {
+            s.seed_state(h, st)?;
+        }
+        s.reflog = reflog;
         s.state = s.state_at(target, ctl)?;
         s.at = target;
         s.head = head;
         Ok(s)
+    }
+
+    /// Put a known state for node `h` into the snapshot cache (e.g. restored from a persisted
+    /// snapshot). Accepted only if `state.hash()` equals the node's recorded `check.state`;
+    /// otherwise [`TimelineError::Diverged`] (or [`TimelineError::Upgraded`], see
+    /// [`Check::mismatch`]).
+    pub fn seed_state(&mut self, h: Hash256, state: State) -> Result<(), TimelineError> {
+        let node = self.timeline.get(h).ok_or(TimelineError::UnknownNode(h))?;
+        if state.hash() != node.check.state {
+            let actual = Check::of_with(
+                self.engine.registry(),
+                self.engine.services(),
+                &state,
+                &node.body.op,
+            );
+            return Err(node.check.mismatch(h, &actual));
+        }
+        self.store_snapshot(h, state);
+        Ok(())
     }
 
     fn resolve_head(t: &Timeline, head: &Head) -> Result<Option<Hash256>, TimelineError> {
@@ -220,9 +272,16 @@ impl Session {
         self.policy = p;
     }
 
-    /// Divergences tolerated under [`ReplayPolicy::Warn`] since the last call.
+    /// Divergences tolerated under [`ReplayPolicy::Warn`] or re-recorded under
+    /// [`ReplayPolicy::Rebaseline`] since the last call.
     pub fn take_warnings(&mut self) -> Vec<TimelineError> {
         std::mem::take(&mut self.warnings)
+    }
+
+    /// Nodes whose check was re-recorded under [`ReplayPolicy::Rebaseline`] since the last
+    /// call, in the order they were replayed (each once). Their node files need rewriting.
+    pub fn take_rebaselined(&mut self) -> Vec<Hash256> {
+        std::mem::take(&mut self.rebaselined)
     }
 
     /// The engine.
@@ -258,6 +317,40 @@ impl Session {
     /// Movements of refs and HEAD in this session, oldest first.
     pub fn reflog(&self) -> &[ReflogEntry] {
         &self.reflog
+    }
+
+    /// The redo stack, bottom first: the last entry is the node [`redo`](Self::redo) moves to
+    /// next, and each entry is the parent of the one below it. `sm-engine` persists it next to
+    /// the reflog in `.cache/` and restores it with [`set_redo_stack`](Self::set_redo_stack);
+    /// it is not derived from reflog entries, because the engine owns the reflog and may
+    /// truncate it.
+    pub fn redo_stack(&self) -> &[Hash256] {
+        &self.redo
+    }
+
+    /// Restore a persisted redo stack (see [`redo_stack`](Self::redo_stack)). Requires HEAD
+    /// attached ([`TimelineError::NothingToRedo`] otherwise), every entry a known node
+    /// ([`TimelineError::UnknownNode`]), and a chain: the top's parent is the current position
+    /// and each lower entry's parent is the entry above it ([`TimelineError::NothingToRedo`]).
+    /// An empty `v` clears the stack. On error the stack is unchanged.
+    pub fn set_redo_stack(&mut self, v: Vec<Hash256>) -> Result<(), TimelineError> {
+        if v.is_empty() {
+            self.redo.clear();
+            return Ok(());
+        }
+        if !matches!(self.head, Head::Ref(_)) {
+            return Err(TimelineError::NothingToRedo);
+        }
+        let mut above = self.at;
+        for h in v.iter().rev() {
+            let node = self.timeline.get(*h).ok_or(TimelineError::UnknownNode(*h))?;
+            if node.body.parent != above {
+                return Err(TimelineError::NothingToRedo);
+            }
+            above = Some(*h);
+        }
+        self.redo = v;
+        Ok(())
     }
 
     /// Number of cached depth-interval states.
@@ -308,9 +401,12 @@ impl Session {
         if let Head::Ref(name) = &self.head {
             self.timeline.check_ref_name(name)?;
         }
-        let check = Check {
-            state: p.state.hash(),
-        };
+        let check = Check::of_with(
+            self.engine.registry(),
+            self.engine.services(),
+            &p.state,
+            &p.record,
+        );
         let h = self.timeline.insert(Node {
             body: NodeBody {
                 parent: self.at,
@@ -418,6 +514,7 @@ impl Session {
     ) -> Result<Replayed, TimelineError> {
         let n = nodes.len();
         let mut snaps = Vec::new();
+        let mut rebase = Vec::new();
         for (i, h) in nodes.iter().enumerate() {
             if ctl.cancel.is_cancelled() {
                 return Err(TimelineError::Cancelled);
@@ -442,16 +539,21 @@ impl Session {
                         TimelineError::Apply(e)
                     }
                 })?;
-            let actual = state.hash();
-            if actual != node.check.state {
-                let err = TimelineError::Diverged {
-                    node: *h,
-                    recorded: node.check.state,
-                    actual,
-                };
+            if state.hash() != node.check.state {
+                let actual = Check::of_with(
+                self.engine.registry(),
+                self.engine.services(),
+                &state,
+                &node.body.op,
+            );
+                let err = node.check.mismatch(*h, &actual);
                 match self.policy {
                     ReplayPolicy::Strict => return Err(err),
                     ReplayPolicy::Warn => warnings.push(err),
+                    ReplayPolicy::Rebaseline => {
+                        warnings.push(err);
+                        rebase.push((*h, actual));
+                    }
                 }
             }
             if keep_snaps && (base_depth + i + 1).is_multiple_of(self.snapshot_every) {
@@ -459,7 +561,11 @@ impl Session {
             }
         }
         ctl.progress.report(1.0, "replay");
-        Ok(Replayed { state, snaps })
+        Ok(Replayed {
+            state,
+            snaps,
+            rebase,
+        })
     }
 
     /// Reconstruct the state at `target`, replaying from the nearest cached state (current
@@ -489,14 +595,22 @@ impl Session {
         let mut warnings = Vec::new();
         let r = self.replay(state, &path[from..], from, ctl, true, &mut warnings)?;
         self.warnings.extend(warnings);
+        for (h, c) in r.rebase {
+            self.timeline.replace_check(h, c)?;
+            if !self.rebaselined.contains(&h) {
+                self.rebaselined.push(h);
+            }
+        }
         for (h, s) in r.snaps {
             self.store_snapshot(h, s);
         }
         Ok(r.state)
     }
 
-    /// Reconstruct the state at `h` by replaying every node from the root, using no cache. For
-    /// validating snapshots and for determinism tests.
+    /// Reconstruct the state at `h` by replaying every node from the root, using no *state*
+    /// cache (no snapshots, no recent states). Ops still use the engine's derived cache; for a
+    /// fully cold replay build the engine on [`DerivedCache::disabled`]. For validating
+    /// snapshots and for determinism tests.
     pub fn state_at_from_root(
         &self,
         h: Hash256,
@@ -550,6 +664,67 @@ impl Session {
         self.head = Head::Ref(name.to_owned());
         self.redo.clear();
         self.log("branch", Some(at));
+        Ok(())
+    }
+
+    /// Create a branch at node `h` without moving HEAD.
+    pub fn create_branch_at(&mut self, name: &str, h: Hash256) -> Result<(), TimelineError> {
+        self.timeline.create_ref(name, h)?;
+        self.reflog.push(ReflogEntry {
+            ref_name: Some(name.to_owned()),
+            from: None,
+            to: Some(h),
+            action: "branch".to_owned(),
+        });
+        Ok(())
+    }
+
+    /// Delete a branch. Fails with [`TimelineError::HeadOnBranch`] if HEAD is attached to it.
+    /// Its nodes stay in the timeline (checkout-able by hash).
+    pub fn delete_branch(&mut self, name: &str) -> Result<(), TimelineError> {
+        if self.head == Head::Ref(name.to_owned()) {
+            return Err(TimelineError::HeadOnBranch(name.to_owned()));
+        }
+        let was = self.timeline.delete_ref(name)?;
+        self.reflog.push(ReflogEntry {
+            ref_name: Some(name.to_owned()),
+            from: Some(was),
+            to: None,
+            action: "delete-branch".to_owned(),
+        });
+        Ok(())
+    }
+
+    /// Rename a branch. If HEAD is attached to it, HEAD follows. `to` must be a valid, unused
+    /// name (the file/directory rule ignores `from`, which goes away). On error nothing changes.
+    pub fn rename_branch(&mut self, from: &str, to: &str) -> Result<(), TimelineError> {
+        let h = *self
+            .timeline
+            .refs()
+            .get(from)
+            .ok_or_else(|| TimelineError::UnknownRef(from.to_owned()))?;
+        if from == to {
+            return Ok(());
+        }
+        if self.timeline.refs().contains_key(to) {
+            return Err(TimelineError::RefExists(to.to_owned()));
+        }
+        self.timeline.delete_ref(from)?;
+        if let Err(e) = self.timeline.create_ref(to, h) {
+            self.timeline.set_ref(from, h)?;
+            return Err(e);
+        }
+        if self.head == Head::Ref(from.to_owned()) {
+            self.head = Head::Ref(to.to_owned());
+        }
+        for (name, f, t) in [(from, Some(h), None), (to, None, Some(h))] {
+            self.reflog.push(ReflogEntry {
+                ref_name: Some(name.to_owned()),
+                from: f,
+                to: t,
+                action: "rename-branch".to_owned(),
+            });
+        }
         Ok(())
     }
 

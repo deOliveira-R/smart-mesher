@@ -166,7 +166,7 @@ pub fn pin_lattice_stub() -> Result<ModelFixture, BuildError> {
         outer: Fill::Prototype(pin),
         slots: BTreeMap::new(),
     })?;
-    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default() })?;
+    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None })?;
     Ok(ModelFixture { name: "pin_lattice_stub", complex: t, model: m, flat_paths: 9, flat_entries: 18, deck_faces: 0, volume: 2.0 * 0.4 * 0.4 })
 }
 

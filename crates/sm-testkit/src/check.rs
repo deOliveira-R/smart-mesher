@@ -238,18 +238,19 @@ pub fn conformity(m: &dyn MeshRead, carriers: &Carriers, tol: f64) -> CheckResul
             _ => Ok(0.0),
         }
     };
-    let mut check = |what: String, e: EntityId, q: Point3| match dist(e, q) {
+    // The label is built only when a problem is found (no allocation per element on success).
+    let mut check = |what: &dyn Fn() -> String, e: EntityId, q: Point3| match dist(e, q) {
         Ok(d) if d <= tol => {}
-        Ok(d) => p.push(format!("{what}: {d:e} from {e:?} (tol {tol:e})")),
-        Err(msg) => p.push(format!("{what}: {msg}")),
+        Ok(d) => p.push(format!("{}: {d:e} from {e:?} (tol {tol:e})", what())),
+        Err(msg) => p.push(format!("{}: {msg}", what())),
     };
     for v in 0..m.vertex_count() {
-        check(format!("vertex {v}"), m.classification(MeshEntityKind::Vertex, v as u32).entity, m.point(v));
+        check(&|| format!("vertex {v}"), m.classification(MeshEntityKind::Vertex, v as u32).entity, m.point(v));
     }
     for f in faces(m).filter(|f| m.is_boundary_face(*f)) {
         let e = m.classification(MeshEntityKind::Face, f.0).entity;
         for v in m.face_vertices(f) {
-            check(format!("boundary face {f:?} vertex {v:?}"), e, m.point(v.get()));
+            check(&|| format!("boundary face {f:?} vertex {v:?}"), e, m.point(v.get()));
         }
     }
     done("conformity", p)

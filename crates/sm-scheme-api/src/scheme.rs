@@ -10,10 +10,10 @@ use crate::problem::{IntervalSink, Requirements, Role, TargetPlan};
 use crate::sizing::SizeField;
 use crate::target::{NodeKey, SchemeDim, Target, piece_of};
 use crate::vertex::FaceLayout;
-use sm_core::{EntityId, EntityKind, Point3};
+use sm_core::{EntityId, Point3};
 use sm_mesh_api::Param;
 use sm_model_api::{Model, PieceFace, PieceRef};
-use sm_topo_api::{CellFlags, CoedgeKey, Side, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellFlags, CoedgeKey, Dim, Incidence, Side, TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
 
 /// Whether a scheme can mesh a target, with a score for automatic selection.
@@ -51,9 +51,10 @@ impl Applicability {
 }
 
 /// How pieces of the decomposition layer are seen through the topology view, and how node
-/// owners are classified. The default [`WholeFaces`] handles whole volumes and cells whose
-/// faces are all whole model faces (including composites of whole volumes); a
-/// decomposition-overlay resolver realizes cut faces.
+/// owners are classified. [`WholeFaces`] handles whole volumes and cells whose faces are all
+/// whole model faces (including composites of whole volumes); [`DecompositionFaces`] also
+/// resolves the cut and part faces of pieces split with `Model::split_realized`, through the
+/// decomposition overlay.
 pub trait PieceResolver: Send + Sync {
     /// Faces of the view bounding `piece`, ascending.
     fn faces(
@@ -64,14 +65,67 @@ pub trait PieceResolver: Send + Sync {
     ) -> Result<Vec<EntityId>>;
     /// The face of the view that realizes a piece face, if it is a single face.
     fn face_of(&self, topo: &dyn TopologyView, model: &Model, pf: &PieceFace) -> Option<EntityId>;
-    /// The model or piece entity (`Topo*` or `PartitionCell`) a node owned by `owner` is
-    /// classified on (virtual overlay cells map to their host entity).
+    /// The model or decomposition entity (`Topo*` or `Partition*`) a node owned by `owner` is
+    /// classified on. Mesh entities may be classified on the virtual cells of the overlay
+    /// (`PartitionVertex/Edge/Face`) and on pieces (`PartitionCell`) directly.
     fn classify(&self, owner: EntityId) -> Option<EntityId>;
+}
+
+/// Model and decomposition entity kinds a node owner can be classified on as itself.
+fn classifiable(owner: EntityId) -> Option<EntityId> {
+    sm_mesh_api::entity_dim(owner.kind()).map(|_| owner)
 }
 
 /// Resolver for whole volumes and for cells whose faces are all [`PieceFace::Whole`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WholeFaces;
+
+/// Resolver for every piece of the decomposition: whole volumes, cells, composites and pieces
+/// split with `Model::split_realized`, whose cut and part faces resolve through
+/// `Decomposition::piece_face_cells` to the cells of the view (the decomposition overlay the
+/// split was realized in). Node owners are classified on themselves, virtual `Partition*`
+/// cells included.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DecompositionFaces;
+
+impl PieceResolver for DecompositionFaces {
+    fn faces(
+        &self,
+        topo: &dyn TopologyView,
+        model: &Model,
+        piece: PieceRef,
+    ) -> Result<Vec<EntityId>> {
+        match piece {
+            PieceRef::Whole(v) => Ok(topo.volume_faces(v).to_vec()),
+            PieceRef::Cell(_) => {
+                let d = model.decomposition();
+                let mut out = Vec::new();
+                for pf in d.piece_faces(piece, topo) {
+                    let cells = d.piece_face_cells(&pf, topo).ok_or_else(|| {
+                        SchemeError::Input(format!(
+                            "piece {piece:?}: face {pf:?} has no cells in the view (realize the split with Model::split_realized and mesh through its overlay)"
+                        ))
+                    })?;
+                    out.extend(cells);
+                }
+                out.sort_unstable();
+                out.dedup();
+                Ok(out)
+            }
+        }
+    }
+
+    fn face_of(&self, topo: &dyn TopologyView, model: &Model, pf: &PieceFace) -> Option<EntityId> {
+        match model.decomposition().piece_face_cells(pf, topo)?.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+
+    fn classify(&self, owner: EntityId) -> Option<EntityId> {
+        classifiable(owner)
+    }
+}
 
 impl PieceResolver for WholeFaces {
     fn faces(
@@ -114,14 +168,7 @@ impl PieceResolver for WholeFaces {
     }
 
     fn classify(&self, owner: EntityId) -> Option<EntityId> {
-        match owner.kind() {
-            EntityKind::TopoVertex
-            | EntityKind::TopoEdge
-            | EntityKind::TopoFace
-            | EntityKind::TopoVolume
-            | EntityKind::PartitionCell => Some(owner),
-            _ => None,
-        }
+        classifiable(owner)
     }
 }
 
@@ -135,7 +182,9 @@ pub struct MeshInput<'a> {
     pub model: &'a Model,
     /// Piece resolution.
     pub pieces: &'a dyn PieceResolver,
-    /// Pieces to mesh (`TopoVolume` or `PartitionCell` ids).
+    /// What to mesh: pieces (`TopoVolume` or `PartitionCell` ids), or faces of the view only
+    /// (`TopoFace` / `PartitionFace` ids) for a surface-only mesh, committed into a
+    /// dimension-2 builder. The two cannot be mixed.
     pub selection: &'a [EntityId],
 }
 
@@ -156,6 +205,38 @@ impl MeshInput<'_> {
             .copied()
             .filter(|e| !self.topo.flags(*e).contains(CellFlags::DEGENERATE))
             .collect()
+    }
+
+    /// Embedded (wire) edges of a face or piece (`Incidence::EMBEDDED` edge members of its
+    /// boundary row in the view; pole edges skipped), ascending (W0f gaps 2). The planner gives
+    /// each one a curve target, the parent's scheme must conform to it (see
+    /// [`GenCtx::embedded`]).
+    pub fn embedded_edges(&self, parent: EntityId) -> Vec<EntityId> {
+        let t = self.topo;
+        let mut v: Vec<EntityId> = t
+            .boundary(parent)
+            .iter()
+            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Edge) && !t.flags(i.cell).contains(CellFlags::DEGENERATE))
+            .map(|i| i.cell)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Embedded vertices of a face or piece (`Incidence::EMBEDDED` vertex members), ascending.
+    /// Each gets a vertex node the parent's mesh must contain.
+    pub fn embedded_vertices(&self, parent: EntityId) -> Vec<EntityId> {
+        let t = self.topo;
+        let mut v: Vec<EntityId> = t
+            .boundary(parent)
+            .iter()
+            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Vertex))
+            .map(|i| i.cell)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// The piece of a volume-target id.
@@ -241,7 +322,9 @@ pub struct GenCtx<'a> {
     pub input: &'a MeshInput<'a>,
     /// The plan.
     pub plan: &'a Plan,
-    /// Patches of earlier waves.
+    /// Patches of earlier waves. A target's patch here is the one left by every transform over
+    /// it (W0f gaps 2: the last transform over a target is the writer its readers depend on, so
+    /// a later wave sees the transformed patch).
     pub patches: &'a PatchSet,
     /// The size field, if any.
     pub size: Option<&'a dyn SizeField>,
@@ -322,11 +405,49 @@ impl GenCtx<'_> {
         Ok(out)
     }
 
-    /// The structured view of an already generated face.
+    /// The embedded members of a face or piece `parent` as node chains (W0f gaps 2): one chain
+    /// per embedded edge, ascending by edge, `[start, (e,1)..(e,n-1), end]` in the edge's own
+    /// direction ([`GenCtx::edge_nodes`]), then a one-node chain `[(v,0)]` for each embedded
+    /// vertex that ends no embedded edge. Every key exists before the parent is generated (the
+    /// parent's job reads the embedded curves). **Contract:** a scheme meshing a face or piece
+    /// with embedded members must conform to them (every chain node is a node of its mesh,
+    /// every chain segment an element edge, referenced through these keys) or report
+    /// `NotApplicable`; the driver rejects a patch that does not reference every chain node.
+    pub fn embedded(&self, parent: EntityId) -> Result<Vec<Vec<NodeKey>>> {
+        let mut out: Vec<Vec<NodeKey>> = Vec::new();
+        let mut ends: Vec<EntityId> = Vec::new();
+        for e in self.input.embedded_edges(parent) {
+            let chain = self.edge_nodes(e).ok_or_else(|| SchemeError::Input(format!("embedded edge {e} has no interval count")))?;
+            if let Some((a, b)) = self.input.topo.edge_ends(e) {
+                ends.extend([a, b]);
+            }
+            out.push(chain);
+        }
+        for v in self.input.embedded_vertices(parent) {
+            if !ends.contains(&v) {
+                out.push(vec![NodeKey::vertex(v)]);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The single-block structured view of an already generated face (map; see
+    /// [`Patch::grid`]).
     pub fn grid(&self, face: EntityId) -> Option<&NodeGrid> {
         self.patches
             .get(Target::Surface(face))
             .and_then(|p| p.grid.as_ref())
+    }
+
+    /// The patch of an already generated face.
+    pub fn surface_patch(&self, face: EntityId) -> Option<&Patch> {
+        self.patches.get(Target::Surface(face))
+    }
+
+    /// The quad strip of an already generated face that starts at boundary node `key` (see
+    /// [`Patch::strip_from`]); what a sweep walks across a `BLOCK_STRUCTURED` linking face.
+    pub fn strip_from(&self, face: EntityId, key: NodeKey) -> Option<Vec<NodeKey>> {
+        self.surface_patch(face)?.strip_from(key)
     }
 
     /// Position of a node of an earlier wave.
@@ -442,8 +563,13 @@ pub trait Scheme: Send + Sync {
     ) -> Result<Patch, GenerateFailure>;
 }
 
-/// A conversion applied to the patches of its targets atomically after generation (THex,
-/// HTet, QTri).
+/// A **topology-preserving patch edit** applied to the patches of its targets atomically after
+/// generation (smoothing, node snapping, reclassification): it may move nodes and change node
+/// data but must keep the patch's nodes and elements (the driver re-checks every rewritten patch
+/// with `check_patch`, which rejects nodes the target does not own). Element conversions (THex,
+/// HTet, QTri, TQuad) are **not** `MeshTransform`s: they are IR -> IR mesh passes over
+/// `sm_mesh_api::MeshRead -> MeshBuild` that re-verify deck pairs on the result (see
+/// `DESIGN.md`).
 pub trait MeshTransform: Send + Sync {
     /// Registered name.
     fn name(&self) -> &str;
@@ -489,7 +615,7 @@ impl SchemeRegistry {
         Ok(())
     }
 
-    /// Register a conversion.
+    /// Register a mesh transform (topology-preserving patch edit).
     pub fn register_transform(&mut self, t: Box<dyn MeshTransform>) -> Result<()> {
         let k = t.name().to_owned();
         if self.transforms.contains_key(&k) {
@@ -507,7 +633,7 @@ impl SchemeRegistry {
         self.schemes.get(&dim)?.get(name).map(|b| b.as_ref())
     }
 
-    /// The conversion `name`.
+    /// The mesh transform `name`.
     pub fn transform(&self, name: &str) -> Option<&dyn MeshTransform> {
         self.transforms.get(name).map(|b| b.as_ref())
     }

@@ -32,20 +32,20 @@ pub mod shape;
 pub mod validate;
 
 pub use build::{CellAdded, Finished, MeshBuild, MeshEdit, SerialAlloc};
-pub use classify::{ClassSet, Classification, Param};
+pub use classify::{ClassSet, Classification, Param, entity_dim};
 pub use edges::{EdgeTable, FaceEdge};
 pub use error::{MeshError, Result};
 pub use geometry::{
     FAN_VERTEX_MEAN_V1, FaceGeometry, cell_volume, cell_volume_centroid, compute_geometry_cache,
     face_apex, face_area_vector, face_centroid, face_geometry,
 };
-pub use hierarchy::{CatalogEdit, LevelMap, MeshCatalog};
+pub use hierarchy::{CatalogEdit, ExtrusionFaceRole, ExtrusionMap, LevelMap, MeshCatalog};
 pub use highorder::{
     Basis, CellGeometry, FaceCurve, HighOrderCell, NodeRef, NodeSlot, face_node_count, node_count,
     node_layout,
 };
 pub use index::{
-    CellIx, EdgeIx, FaceIx, FaceKind, MAX_FACES, MeshEntity, MeshEntityKind, MeshEntityRef,
+    CellIx, EdgeIx, FaceIx, FaceKind, MAX_FACES, MeshDim, MeshEntity, MeshEntityKind, MeshEntityRef,
     NO_CELL, PointIx, Side, SignedFace, VertexIx,
 };
 pub use instance::{
@@ -57,6 +57,6 @@ pub use read::{Coords, GeometryCache, MeshRead, TopologyColumns};
 pub use sets::{MeshSet, SetMembers, TagColumn, TagValues};
 pub use shape::{CellShape, FaceShape, LoopRelation, derive_corners, loop_relation};
 pub use validate::{
-    GeomTol, Violation, ViolationCode, connectivity_hash, coordinate_hash, geometry_hash,
-    topology_hash, validate, validate_geometry,
+    FaceNormals, GeomTol, Violation, ViolationCode, connectivity_hash, coordinate_hash, geometry_hash, geometry_hash_quantized, quantize_word,
+    topology_hash, validate, validate_geometry, validate_geometry_with,
 };

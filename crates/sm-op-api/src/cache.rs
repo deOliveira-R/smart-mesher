@@ -25,6 +25,8 @@ struct Entry {
 /// eviction.
 #[derive(Default)]
 struct Inner {
+    capacity_bytes: usize,
+    disabled: bool,
     map: BTreeMap<Hash256, Entry>,
     lru: BTreeMap<u64, Hash256>,
     bytes: usize,
@@ -49,9 +51,13 @@ pub struct CacheStats {
 /// Bounded LRU cache, `Sync`, with interior mutability. Eviction order depends only on the
 /// access sequence; since entries are pure functions of their key, eviction never changes
 /// results.
+///
+/// Every entry counts at least 1 byte toward the capacity, so a zero-byte estimate is still
+/// evictable. The capacity can change at run time ([`set_capacity`](Self::set_capacity)), and
+/// [`disabled`](Self::disabled) builds a cache that never holds anything (determinism tests
+/// compare a run on it against a warm run).
 pub struct DerivedCache {
     inner: Mutex<Inner>,
-    capacity_bytes: usize,
 }
 
 impl Default for DerivedCache {
@@ -64,9 +70,44 @@ impl DerivedCache {
     /// A cache that evicts least-recently-used entries beyond `capacity_bytes` (estimated).
     pub fn with_capacity(capacity_bytes: usize) -> Self {
         Self {
-            inner: Mutex::default(),
-            capacity_bytes,
+            inner: Mutex::new(Inner {
+                capacity_bytes,
+                ..Inner::default()
+            }),
         }
+    }
+
+    /// A cache that stores nothing: [`get`](Self::get) always misses (counted in
+    /// [`stats`](Self::stats)) and [`insert_sized`](Self::insert_sized) validates nothing,
+    /// stores nothing and returns `Ok`, so `get_or_compute*` always computes. Determinism tests
+    /// replay on `Engine::new(.., Arc::new(DerivedCache::disabled()))` and compare against a
+    /// warm run.
+    pub fn disabled() -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                disabled: true,
+                ..Inner::default()
+            }),
+        }
+    }
+
+    /// Whether this cache was built with [`disabled`](Self::disabled).
+    pub fn is_disabled(&self) -> bool {
+        self.lock().disabled
+    }
+
+    /// The current capacity bound in (estimated) bytes.
+    pub fn capacity(&self) -> usize {
+        self.lock().capacity_bytes
+    }
+
+    /// Change the capacity bound and evict least-recently-used entries until within it, with
+    /// the same rule as [`insert_sized`](Self::insert_sized): the most recently used entry is
+    /// always kept. No effect on a [`disabled`](Self::disabled) cache, which holds nothing.
+    pub fn set_capacity(&self, capacity_bytes: usize) {
+        let mut g = self.lock();
+        g.capacity_bytes = capacity_bytes;
+        g.evict();
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -77,6 +118,10 @@ impl DerivedCache {
     /// counts as a miss.
     pub fn get<T: Any + Send + Sync>(&self, kind: &str, key: Hash256) -> Option<Arc<T>> {
         let mut g = self.lock();
+        if g.disabled {
+            g.misses += 1;
+            return None;
+        }
         g.tick += 1;
         let tick = g.tick;
         let inner = &mut *g;
@@ -98,9 +143,10 @@ impl DerivedCache {
         found
     }
 
-    /// Store a value with an explicit size estimate. Replacing an entry that holds a different
-    /// type (or was stored under a different kind) is an error; replacing one of the same type
-    /// keeps the new value.
+    /// Store a value with an explicit size estimate (at least 1 byte is counted). Replacing an
+    /// entry that holds a different type (or was stored under a different kind) is an error;
+    /// replacing one of the same type keeps the new value. On a [`disabled`](Self::disabled)
+    /// cache this does nothing and returns `Ok`.
     pub fn insert_sized<T: Any + Send + Sync>(
         &self,
         kind: &str,
@@ -109,6 +155,10 @@ impl DerivedCache {
         bytes: usize,
     ) -> Result<(), CacheError> {
         let mut g = self.lock();
+        if g.disabled {
+            return Ok(());
+        }
+        let bytes = bytes.max(1);
         g.tick += 1;
         let tick = g.tick;
         if let Some(old) = g.map.get(&key) {
@@ -133,15 +183,7 @@ impl DerivedCache {
                 last_used: tick,
             },
         );
-        // Evict least-recently-used until within capacity, keeping the newest.
-        while g.bytes > self.capacity_bytes && g.map.len() > 1 {
-            let Some((_, victim)) = g.lru.pop_first() else {
-                break;
-            };
-            if let Some(e) = g.map.remove(&victim) {
-                g.bytes = g.bytes.saturating_sub(e.bytes);
-            }
-        }
+        g.evict();
         Ok(())
     }
 
@@ -197,6 +239,20 @@ impl DerivedCache {
             misses: g.misses,
             entries: g.map.len(),
             bytes: g.bytes,
+        }
+    }
+}
+
+impl Inner {
+    /// Evict least-recently-used entries until within capacity, keeping the newest.
+    fn evict(&mut self) {
+        while self.bytes > self.capacity_bytes && self.map.len() > 1 {
+            let Some((_, victim)) = self.lru.pop_first() else {
+                break;
+            };
+            if let Some(e) = self.map.remove(&victim) {
+                self.bytes = self.bytes.saturating_sub(e.bytes);
+            }
         }
     }
 }

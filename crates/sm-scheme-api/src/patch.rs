@@ -166,6 +166,12 @@ pub struct PatchNode {
 /// Row `j = 0` runs along logical side 0 of the face layout, column `i = ni - 1` along side 1;
 /// row `nj - 1` and column `0` run along sides 2 and 3 reversed. Lets a volume scheme (sweep,
 /// map) walk lines of a neighbouring mapped face without knowing its private numbering.
+///
+/// **Exception: copy members.** The grid of a face generated as a copy keeps the root's `ni`,
+/// `nj` and order with the keys mapped through the correspondence, so it follows the *image of
+/// the root's layout*, which need not be the member's own logical side 0. Consumers that need
+/// the member's sides must go by keys ([`NodeGrid::line_from`], [`NodeGrid::position`]), not by
+/// the side numbering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeGrid {
     /// Nodes along `i`.
@@ -265,7 +271,9 @@ pub struct Patch {
     pub refs: Vec<NodeKey>,
     /// Elements, as local indices into `nodes` then `refs`.
     pub elements: Elements,
-    /// Structured view, if the scheme is structured (map, submap blocks).
+    /// Single-block structured view (map, `Caps::STRUCTURED`). A multi-block scheme
+    /// (submap, `Caps::BLOCK_STRUCTURED` only) need not attach one; walk its strips with
+    /// [`Patch::strip_from`].
     pub grid: Option<NodeGrid>,
     /// Per-element owning entity: for group patches the member piece of a cell, or the
     /// claimed face of a surface element. Empty means every element belongs to the target
@@ -298,6 +306,88 @@ impl Patch {
     /// Number of local indices (`nodes.len() + refs.len()`).
     pub fn local_len(&self) -> usize {
         self.nodes.len() + self.refs.len()
+    }
+
+    /// The quad strip that starts at boundary node `key` and runs across the patch to the
+    /// opposite boundary, as the node line through the strip (`key` first): the analogue of
+    /// [`NodeGrid::line_from`] for a multi-block (`Caps::BLOCK_STRUCTURED`) quad mesh.
+    ///
+    /// With a grid, [`NodeGrid::line_from`] answers (fast path). Otherwise the element table is
+    /// walked: from `key` along its interior edge, then at each node along the edge opposite
+    /// the incoming one (the edge sharing no quad with it), until a boundary node is reached.
+    /// Where more than one interior edge leaves the start node (a re-entrant boundary corner)
+    /// the neighbour with the smallest key is taken, so the walk is deterministic.
+    /// `None` if the patch has a non-quad element, `key` is not a boundary node of the patch,
+    /// it is a corner with no interior edge (as `line_from` refuses grid corners), the walk
+    /// meets an interior node of valence other than 4 (no strip passes through it), or the
+    /// walk does not close on the boundary. Builds its edge index per call: O(E log E + L log E)
+    /// for a strip of L nodes.
+    pub fn strip_from(&self, key: NodeKey) -> Option<Vec<NodeKey>> {
+        if let Some(g) = &self.grid
+            && let Some(line) = g.line_from(key)
+        {
+            return Some(line);
+        }
+        if self.elements.is_empty() || self.elements.iter().any(|(s, _)| s != ElemShape::Quad) {
+            return None;
+        }
+        // Undirected edge -> quads using it; node -> neighbours.
+        let quads: Vec<[u32; 4]> = self.elements.iter().map(|(_, q)| [q[0], q[1], q[2], q[3]]).collect();
+        let mut uses: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
+        let mut nbrs: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for (qi, q) in quads.iter().enumerate() {
+            for c in 0..4 {
+                let (a, b) = (q[c], q[(c + 1) % 4]);
+                let u = uses.entry((a.min(b), a.max(b))).or_default();
+                u.push(qi);
+                if u.len() == 1 {
+                    nbrs.entry(a).or_default().push(b);
+                    nbrs.entry(b).or_default().push(a);
+                }
+            }
+        }
+        let edge = |a: u32, b: u32| (a.min(b), a.max(b));
+        let count = |a: u32, b: u32| uses.get(&edge(a, b)).map_or(0, Vec::len);
+        let on_boundary = |n: u32| nbrs.get(&n).is_some_and(|v| v.iter().any(|m| count(n, *m) == 1));
+        // Quad-mates of the edge (a, b): the nodes adjacent to `b` in quads containing a and b.
+        let mates = |a: u32, b: u32| -> Vec<u32> {
+            let mut out = Vec::new();
+            for &qi in uses.get(&edge(a, b)).map_or(&[][..], |v| v.as_slice()) {
+                let q = &quads[qi];
+                if let (Some(ia), Some(ib)) = (q.iter().position(|x| *x == a), q.iter().position(|x| *x == b))
+                    && ((ia + 1) % 4 == ib || (ib + 1) % 4 == ia)
+                {
+                    out.push(q[(ib + 1) % 4]);
+                    out.push(q[(ib + 3) % 4]);
+                }
+            }
+            out
+        };
+        let start = (0..self.local_len() as u32).find(|i| self.key(*i) == Some(key))?;
+        if !on_boundary(start) {
+            return None;
+        }
+        let pick = |cands: Vec<u32>| cands.into_iter().filter_map(|c| Some((self.key(c)?, c))).min().map(|(_, c)| c);
+        let interior: Vec<u32> = nbrs.get(&start)?.iter().copied().filter(|m| count(start, *m) == 2).collect();
+        let mut prev = start;
+        let mut cur = pick(interior)?;
+        let mut line = vec![key, self.key(cur)?];
+        for _ in 0..self.local_len() {
+            if on_boundary(cur) {
+                return Some(line);
+            }
+            // An irregular interior node (valence other than 4) has no well-defined opposite edge.
+            if nbrs.get(&cur)?.len() != 4 {
+                return None;
+            }
+            let side = mates(prev, cur);
+            let next: Vec<u32> = nbrs.get(&cur)?.iter().copied().filter(|m| *m != prev && !side.contains(m)).collect();
+            let n = pick(next)?;
+            prev = cur;
+            cur = n;
+            line.push(self.key(cur)?);
+        }
+        None
     }
 }
 

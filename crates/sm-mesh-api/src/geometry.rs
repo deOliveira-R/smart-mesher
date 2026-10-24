@@ -10,8 +10,15 @@
 //!
 //! Every function here works on `&dyn MeshRead`, reads only borrowed slices and performs **no
 //! heap allocation**. Linear (degree 1) geometry only; high-order cells use their own quadrature.
+//!
+//! **Dimension 2.** A facet `[a, b]` has "area vector" `b - a` (its length is the facet's
+//! measure; the left cell traverses it forward, so the signed facet vectors of a cell sum to
+//! zero like the area vectors of a closed polyhedron), centroid and apex at the midpoint. A
+//! polygon cell's "volume" is its area `|A|` with `A = 1/2 sum (a - o) x (b - o)` over its
+//! directed facets (independent of the facet order), and its centroid is the area-weighted
+//! centroid of the triangles `(o, a, b)` measured along `A / |A|`.
 
-use crate::index::{CellIx, FaceIx, MeshEntityKind, Side, VertexIx};
+use crate::index::{CellIx, FaceIx, MeshDim, MeshEntityKind, Side, VertexIx};
 use crate::read::{Coords, GeometryCache, MeshRead};
 use sm_core::{Point3, Vector3};
 
@@ -54,6 +61,13 @@ pub fn face_geometry(m: &dyn MeshRead, f: FaceIx) -> FaceGeometry {
     let l = m.face_vertices(f);
     let n = l.len();
     let apex = apex_of(&co, l);
+    if n == 2 {
+        return FaceGeometry {
+            area_vector: pt(&co, l[1]) - pt(&co, l[0]),
+            centroid: apex,
+            apex,
+        };
+    }
     let mut area = Vector3::default();
     for i in 0..n {
         let (a, b) = (pt(&co, l[i]), pt(&co, l[(i + 1) % n]));
@@ -95,6 +109,9 @@ pub fn face_area_vector(m: &dyn MeshRead, f: FaceIx) -> Vector3 {
     let co = m.coords();
     let l = m.face_vertices(f);
     let n = l.len();
+    if n == 2 {
+        return pt(&co, l[1]) - pt(&co, l[0]);
+    }
     let apex = apex_of(&co, l);
     let mut area = Vector3::default();
     for i in 0..n {
@@ -114,8 +131,53 @@ pub fn face_apex(m: &dyn MeshRead, f: FaceIx) -> Point3 {
     apex_of(&m.coords(), m.face_vertices(f))
 }
 
-/// Cell volume and centroid under the default rule (the cell is the fan polyhedron of its faces).
+/// Area and centroid of a polygon cell of a dimension-2 mesh (see the module docs).
+fn polygon_area_centroid(m: &dyn MeshRead, c: CellIx) -> (f64, Point3) {
+    let co = m.coords();
+    let faces = m.cell_faces(c);
+    let Some(first) = faces.first() else {
+        return (0.0, Point3::default());
+    };
+    let o = m
+        .face_vertices(first.face())
+        .first()
+        .map_or(Point3::default(), |&v| pt(&co, v));
+    let directed = |sf: &crate::index::SignedFace| -> Option<(Point3, Point3)> {
+        let l = m.face_vertices(sf.face());
+        let (a, b) = (pt(&co, *l.first()?), pt(&co, *l.last()?));
+        Some(if sf.side() == Side::Left { (a, b) } else { (b, a) })
+    };
+    let mut area = Vector3::default();
+    for sf in faces {
+        if let Some((a, b)) = directed(sf) {
+            area = area + (a - o).cross(b - o) * 0.5;
+        }
+    }
+    let len = area.norm();
+    if len == 0.0 {
+        return (0.0, o);
+    }
+    let nhat = area * (1.0 / len);
+    let (mut w, mut mom) = (0.0, Vector3::default());
+    for sf in faces {
+        if let Some((a, b)) = directed(sf) {
+            let wk = ((a - o).cross(b - o) * 0.5).dot(nhat);
+            w += wk;
+            mom = mom + Vector3::new(o.x + a.x + b.x, o.y + a.y + b.y, o.z + a.z + b.z) * (wk / 3.0);
+        }
+    }
+    if w == 0.0 {
+        return (len, o);
+    }
+    (len, Point3::new(mom.x / w, mom.y / w, mom.z / w))
+}
+
+/// Cell volume and centroid under the default rule (the cell is the fan polyhedron of its
+/// faces). For a dimension-2 mesh: the polygon's area and centroid.
 pub fn cell_volume_centroid(m: &dyn MeshRead, c: CellIx) -> (f64, Point3) {
+    if m.dim() == MeshDim::Two {
+        return polygon_area_centroid(m, c);
+    }
     let co = m.coords();
     let faces = m.cell_faces(c);
     let Some(first) = faces.first() else {
@@ -154,7 +216,7 @@ pub fn cell_volume_centroid(m: &dyn MeshRead, c: CellIx) -> (f64, Point3) {
     )
 }
 
-/// Cell volume under the default rule.
+/// Cell volume under the default rule (area for a dimension-2 mesh).
 pub fn cell_volume(m: &dyn MeshRead, c: CellIx) -> f64 {
     cell_volume_centroid(m, c).0
 }

@@ -35,6 +35,8 @@ pub struct MeshFixture {
     pub cell_volumes: Vec<f64>,
     /// Exact total volume.
     pub volume: f64,
+    /// Exact area of the boundary surface (the one-cell faces).
+    pub area: f64,
     /// Number of faces with one cell.
     pub boundary_faces: usize,
 }
@@ -126,37 +128,41 @@ pub fn build_mesh(points: &[[f64; 3]], cells: &[CellSpec], alloc: &mut SerialAll
     Ok(b.finish(alloc)?.mesh)
 }
 
-fn fixture(name: &'static str, points: &[[f64; 3]], cells: &[CellSpec], cell_volumes: Vec<f64>) -> Result<MeshFixture> {
+fn fixture(name: &'static str, points: &[[f64; 3]], cells: &[CellSpec], cell_volumes: Vec<f64>, area: f64) -> Result<MeshFixture> {
     let mesh = build_mesh(points, cells, &mut SerialAlloc::new())?;
     let boundary_faces = (0..mesh.face_count()).filter(|&f| mesh.face_right(FaceIx::new(f)).is_none()).count();
-    Ok(MeshFixture { name, mesh, volume: cell_volumes.iter().sum(), cell_volumes, boundary_faces })
+    Ok(MeshFixture { name, mesh, volume: cell_volumes.iter().sum(), cell_volumes, area, boundary_faces })
 }
+
+const SQRT2: f64 = core::f64::consts::SQRT_2;
 
 const UNIT_CUBE: [[f64; 3]; 8] =
     [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
 
-/// One unit hexahedron `[0,1]^3`: volume 1, 8 vertices, 6 faces.
+/// One unit hexahedron `[0,1]^3`: volume 1, area 6, 8 vertices, 6 faces.
 pub fn single_hex() -> Result<MeshFixture> {
-    fixture("single_hex", &UNIT_CUBE, &[CellSpec::Template(CellShape::Hex, (0..8).collect())], vec![1.0])
+    fixture("single_hex", &UNIT_CUBE, &[CellSpec::Template(CellShape::Hex, (0..8).collect())], vec![1.0], 6.0)
 }
 
-/// One tetrahedron `(0,0,0) (1,0,0) (0,1,0) (0,0,1)`: volume 1/6, 4 vertices, 4 faces.
+/// One tetrahedron `(0,0,0) (1,0,0) (0,1,0) (0,0,1)`: volume 1/6, area `3/2 + sqrt(3)/2` (three
+/// right triangles and an equilateral one of side `sqrt 2`), 4 vertices, 4 faces.
 pub fn single_tet() -> Result<MeshFixture> {
     let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-    fixture("single_tet", &p, &[CellSpec::Template(CellShape::Tet, (0..4).collect())], vec![1.0 / 6.0])
+    fixture("single_tet", &p, &[CellSpec::Template(CellShape::Tet, (0..4).collect())], vec![1.0 / 6.0], 1.5 + 0.5 * 3.0_f64.sqrt())
 }
 
-/// One wedge: the triangle `(0,0) (1,0) (0,1)` extruded over `z in [0,1]`: volume 1/2, 6
-/// vertices, 5 faces.
+/// One wedge: the triangle `(0,0) (1,0) (0,1)` extruded over `z in [0,1]`: volume 1/2, area
+/// `3 + sqrt 2`, 6 vertices, 5 faces.
 pub fn single_wedge() -> Result<MeshFixture> {
     let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [0., 1., 1.]];
-    fixture("single_wedge", &p, &[CellSpec::Template(CellShape::Wedge, (0..6).collect())], vec![0.5])
+    fixture("single_wedge", &p, &[CellSpec::Template(CellShape::Wedge, (0..6).collect())], vec![0.5], 3.0 + SQRT2)
 }
 
-/// One pyramid: unit square base, apex `(0.5, 0.5, 1)`: volume 1/3, 5 vertices, 5 faces.
+/// One pyramid: unit square base, apex `(0.5, 0.5, 1)`: volume 1/3, area `1 + sqrt 5` (slant
+/// height `sqrt(5)/2`), 5 vertices, 5 faces.
 pub fn single_pyramid() -> Result<MeshFixture> {
     let p = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0.5, 0.5, 1.]];
-    fixture("single_pyramid", &p, &[CellSpec::Template(CellShape::Pyramid, (0..5).collect())], vec![1.0 / 3.0])
+    fixture("single_pyramid", &p, &[CellSpec::Template(CellShape::Pyramid, (0..5).collect())], vec![1.0 / 3.0], 1.0 + 5.0_f64.sqrt())
 }
 
 /// Outward, counter-clockwise (seen from outside) loops of the convex polyhedron with the given
@@ -191,8 +197,8 @@ pub fn convex_loops(points: &[[f64; 3]], planes: &[([f64; 3], f64)]) -> Vec<Vec<
 }
 
 /// A truncated octahedron as one polyhedral cell: the 24 permutations of `(0, +-1, +-2)`, 6
-/// square and 8 hexagonal faces (14 faces, 36 edges). Edge length `sqrt(2)`; volume `8 sqrt(2)
-/// a^3 = 32`.
+/// square and 8 hexagonal faces (14 faces, 36 edges). Edge length `a = sqrt(2)`; volume
+/// `8 sqrt(2) a^3 = 32`; area `(6 + 12 sqrt 3) a^2`.
 pub fn truncated_octahedron() -> Result<MeshFixture> {
     let mut pts: Vec<[f64; 3]> = Vec::new();
     for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
@@ -224,7 +230,7 @@ pub fn truncated_octahedron() -> Result<MeshFixture> {
         }
     }
     let loops = convex_loops(&pts, &planes);
-    fixture("truncated_octahedron", &pts, &[CellSpec::Poly(loops)], vec![32.0])
+    fixture("truncated_octahedron", &pts, &[CellSpec::Poly(loops)], vec![32.0], (6.0 + 12.0 * 3.0_f64.sqrt()) * 2.0)
 }
 
 fn ring(n: usize, r: f64, center: (f64, f64), phase: f64, z: f64) -> Vec<[f64; 3]> {
@@ -249,16 +255,16 @@ fn prism_loops(bottom: &[usize], top: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// A regular hexagonal prism of circumradius `r` and height `h` as one polyhedral cell (8
-/// faces): volume `3 sqrt(3)/2 r^2 h`.
+/// faces): volume `3 sqrt(3)/2 r^2 h`, area `3 sqrt(3) r^2 + 6 r h`.
 pub fn hexagonal_prism(r: f64, h: f64) -> Result<MeshFixture> {
     let mut pts = ring(6, r, (0.0, 0.0), 0.0, 0.0);
     pts.extend(ring(6, r, (0.0, 0.0), 0.0, h));
     let loops = prism_loops(&(0..6).collect::<Vec<_>>(), &(6..12).collect::<Vec<_>>());
-    fixture("hexagonal_prism", &pts, &[CellSpec::Poly(loops)], vec![1.5 * 3.0_f64.sqrt() * r * r * h])
+    fixture("hexagonal_prism", &pts, &[CellSpec::Poly(loops)], vec![1.5 * 3.0_f64.sqrt() * r * r * h], 3.0 * 3.0_f64.sqrt() * r * r + 6.0 * r * h)
 }
 
 /// The unit cube as a polyhedron whose `-z` face is split into two triangles (7 faces, shape
-/// `Polyhedron`): volume 1.
+/// `Polyhedron`): volume 1, area 6.
 pub fn split_face_cube() -> Result<MeshFixture> {
     let loops = vec![
         vec![0, 2, 1],
@@ -269,14 +275,14 @@ pub fn split_face_cube() -> Result<MeshFixture> {
         vec![2, 3, 7, 6],
         vec![3, 0, 4, 7],
     ];
-    fixture("split_face_cube", &UNIT_CUBE, &[CellSpec::Poly(loops)], vec![1.0])
+    fixture("split_face_cube", &UNIT_CUBE, &[CellSpec::Poly(loops)], vec![1.0], 6.0)
 }
 
 /// The unit cube split into a `2 x 2 x 2` block of hexahedra (`h = 1/2`): 27 vertices, 8 cells
 /// of volume 1/8, 24 boundary faces. Classified like a CAD box by `sm_mesh_api::reference::hex_block`.
 pub fn hex_block_2x2x2() -> Result<MeshFixture> {
     let mesh = hex_block([2, 2, 2], [0.5; 3], &mut SerialAlloc::new())?;
-    Ok(MeshFixture { name: "hex_block_2x2x2", mesh, cell_volumes: vec![0.125; 8], volume: 1.0, boundary_faces: 24 })
+    Ok(MeshFixture { name: "hex_block_2x2x2", mesh, cell_volumes: vec![0.125; 8], volume: 1.0, area: 6.0, boundary_faces: 24 })
 }
 
 /// Hexahedron, wedge, pyramid and tetrahedron glued by conforming faces:
@@ -287,6 +293,9 @@ pub fn hex_block_2x2x2() -> Result<MeshFixture> {
 /// - a tetrahedron on the pyramid's `-y` triangle, extra vertex `(0.5, -1, 1.5)`: volume 5/24.
 ///
 /// Total `1 + 1/2 + 1/3 + 5/24`. Three interior faces: hex|wedge, hex|pyramid, pyramid|tet.
+/// Boundary area `6 + sqrt 2 + sqrt 5 + sqrt(35)/4`: four hex faces (4), the wedge's two
+/// triangles, `y = 0` quad and slanted quad (`2 + sqrt 2`), three pyramid triangles of slant
+/// height `sqrt(5)/2` (`3 sqrt(5)/4`), and the tet's free faces (`sqrt(5)/4 + 2 sqrt(35)/8`).
 pub fn mixed_transition() -> Result<MeshFixture> {
     let mut p: Vec<[f64; 3]> = UNIT_CUBE.to_vec();
     p.extend([[2., 0., 0.], [2., 0., 1.]]); // 8, 9
@@ -301,14 +310,15 @@ pub fn mixed_transition() -> Result<MeshFixture> {
         // tet on the pyramid face (4, 5, 10): right-handed (4, 5, 10, 11)
         CellSpec::Template(CellShape::Tet, vec![4, 5, 10, 11]),
     ];
-    fixture("mixed_transition", &p, &cells, vec![1.0, 0.5, 1.0 / 3.0, 1.25 / 6.0])
+    fixture("mixed_transition", &p, &cells, vec![1.0, 0.5, 1.0 / 3.0, 1.25 / 6.0], 6.0 + SQRT2 + 5.0_f64.sqrt() + 35.0_f64.sqrt() / 4.0)
 }
 
 /// A polyhedral dual patch: seven regular hexagonal prisms (circumradius 1, height `h = 1`)
 /// forming a honeycomb flower (centre cell and its six neighbours), vertices welded so
 /// neighbours share hexagon side faces. Each cell has volume `3 sqrt(3)/2`. There are 24
 /// distinct points per z level (48 vertices) and 12 interior faces: 6 between the centre and the
-/// ring, 6 between ring neighbours.
+/// ring, 6 between ring neighbours. Boundary area `21 sqrt 3 + 18`: 14 hexagon caps and the
+/// `42 - 2 * 12` free side quads of area 1.
 pub fn dual_patch() -> Result<MeshFixture> {
     let h = 1.0;
     let sqrt3 = 3.0_f64.sqrt();
@@ -338,7 +348,7 @@ pub fn dual_patch() -> Result<MeshFixture> {
         cells.push(CellSpec::Poly(prism_loops(&levels[0], &levels[1])));
     }
     let v = 1.5 * sqrt3 * h;
-    fixture("dual_patch", &pts, &cells, vec![v; 7])
+    fixture("dual_patch", &pts, &cells, vec![v; 7], 21.0 * sqrt3 + 18.0 * h)
 }
 
 /// Every fixture of this module.

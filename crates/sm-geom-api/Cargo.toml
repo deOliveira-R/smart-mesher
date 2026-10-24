@@ -13,9 +13,12 @@ workspace = true
 [features]
 default = []
 serde = ["dep:serde", "sm-core/serde", "smallvec/serde"]
+# Derive schemars::JsonSchema on the serde value types (MCP tool schemas).
+schemars = ["serde", "dep:schemars", "sm-core/schemars"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
 serde = { version = "1", features = ["derive"], optional = true }
+schemars = { version = "1", optional = true }
 thiserror = "2"
 smallvec = "1"

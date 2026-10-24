@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 /// Registered name of a scheme (`"equal"`, `"map"`, `"sweep"`, ...). Names are unique per
 /// dimension in a [`crate::SchemeRegistry`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct SchemeName(pub String);
 
@@ -45,6 +46,19 @@ impl core::fmt::Display for SchemeName {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Params(pub serde_json::Value);
+
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Params {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Params".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "description": "Scheme parameters (owned by the scheme): an object of TOML-representable values; entity references are `Kind#serial` strings."
+        })
+    }
+}
 
 impl Default for Params {
     fn default() -> Self {
@@ -101,6 +115,7 @@ impl Params {
 
 /// A scheme request: name, parameters and firmness.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SchemeChoice {
     /// Scheme name.
     pub name: SchemeName,
@@ -134,15 +149,19 @@ impl SchemeChoice {
 
 /// An interval request on a curve.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum IntervalRequest {
-    /// Exactly this many intervals (a goal if not `Hard`).
+    /// Exactly this many intervals (`Hard`: fixed; `Soft` / `Default`: a preferred count).
     Count(u32),
-    /// Target element size; the goal is `length / size`.
+    /// Target element size. `Hard` / `Soft`: a fixed count `round(length / size).max(1)` with
+    /// that firmness; `Default`: a real goal `length / size`.
     Size(f64),
 }
 
-/// Boundary-layer request on a face (into the adjacent volumes). Refused on deck faces.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Boundary-layer request on a face (into the adjacent volumes). Refused on deck faces and on
+/// anything that is not a face (curve boundary layers do not exist yet).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BoundaryLayerIntent {
     /// First layer thickness.
     pub first: f64,
@@ -150,10 +169,31 @@ pub struct BoundaryLayerIntent {
     pub growth: f64,
     /// Number of layers.
     pub layers: u32,
+    /// Volumes (`TopoVolume` / `PartitionCell` pieces) the layer grows into; empty = every
+    /// adjacent volume. Each listed volume must be adjacent to the face.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub into: Vec<EntityId>,
+    /// Extra parameters for the boundary-layer generator (owned by the volume scheme).
+    #[serde(default, skip_serializing_if = "Params::is_empty")]
+    pub params: Params,
+}
+
+impl BoundaryLayerIntent {
+    /// A layer into every adjacent volume, without extra parameters.
+    pub fn new(first: f64, growth: f64, layers: u32) -> Self {
+        Self {
+            first,
+            growth,
+            layers,
+            into: Vec::new(),
+            params: Params::empty(),
+        }
+    }
 }
 
 /// Everything asked for one entity (edge, face, volume or piece).
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct EntityIntent {
     /// The scheme, if chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,6 +211,7 @@ pub struct EntityIntent {
 
 /// A user vertex-type override on one face corner.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CornerIntent {
     /// The corner.
     pub corner: CornerKey,
@@ -179,8 +220,9 @@ pub struct CornerIntent {
 }
 
 /// Volumes meshed together by one scheme invocation and committed all-or-nothing:
-/// multisweep, merged volumes that must be converted in one call (THex), polyhedral assemblies.
+/// multisweep, polyhedral assemblies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshGroup {
     /// Group id (unique within the intent).
     pub id: GroupId,
@@ -192,21 +234,33 @@ pub struct MeshGroup {
     /// Fallback chain tried in order after `scheme`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<SchemeChoice>,
-    /// Optional conversion applied to the whole group after generation (thex, htet, qtri).
-    /// Shorthand for a [`TransformIntent`] over the group (driver transform id
-    /// `TransformId::GROUP_BASE | group id`).
+    /// **Deprecated (W0f).** A topology-preserving [`TransformIntent`] over the whole group
+    /// (driver transform id `TransformId::GROUP_BASE | group id`). Element conversions (THex,
+    /// HTet, QTri, TQuad) cannot be expressed here: they create nodes the group does not own
+    /// (rejected by `check_patch`) and are IR -> IR mesh passes instead (see `DESIGN.md`).
+    /// Kept for format compatibility; new intents should not use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversion: Option<SchemeChoice>,
 }
 
-/// A standalone conversion (THex, HTet, QTri) over arbitrary volume targets. Runs after every
-/// writer of its targets; the driver swaps in the rewritten patches only if all succeed.
+/// A standalone mesh transform: a **topology-preserving patch edit** (smoothing, node
+/// snapping, reclassification of a generated patch) through a registered
+/// [`crate::MeshTransform`]. Targets are pieces and, W0f gaps 2, faces and curves inside the
+/// region. Runs after every writer of its targets (transforms over a target chain in id
+/// order); the last transform over a target is the writer its readers depend on, so a volume
+/// meshed after a surface smoothing reads the smoothed patch and a copy of a transformed root
+/// is generated from the transformed patch. A transform cannot cover a target together with
+/// one of its readers (a dependency cycle). The driver swaps in the rewritten patches only if
+/// all succeed. Element conversions (THex, HTet, QTri, TQuad) are not
+/// transforms: they are IR -> IR passes over `MeshRead -> MeshBuild` (see `DESIGN.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TransformIntent {
     /// Id (unique within the intent, below [`TransformId::GROUP_BASE`]).
     pub id: TransformId,
-    /// The converted pieces (`TopoVolume` or `PartitionCell` ids; a member of a group converts
-    /// the group's patch).
+    /// The transformed targets: pieces (`TopoVolume` or `PartitionCell` ids; a member of a
+    /// group transforms the group's patch), faces (`TopoFace` / `PartitionFace`) and curves of
+    /// the region.
     pub targets: Vec<EntityId>,
     /// The registered [`crate::MeshTransform`] and its parameters.
     pub transform: SchemeChoice,
@@ -215,6 +269,7 @@ pub struct TransformIntent {
 /// A sizing function (Cubit: constant, curvature, linear, interval, inverse, super, bias,
 /// field-from-file, geometry-adaptive). Built into a [`crate::SizeField`] by the sizing layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum SizingSpec {
     /// The same size everywhere.
     Constant {
@@ -236,6 +291,7 @@ pub enum SizingSpec {
 /// empty list means "the registry's auto list, else every registered scheme of that
 /// dimension".
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AutoPolicy {
     /// Curve candidates.
     #[serde(default)]
@@ -250,6 +306,7 @@ pub struct AutoPolicy {
 
 /// Model-wide defaults.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Defaults {
     /// Default sizing (none: every curve gets a goal of one interval).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +323,7 @@ pub struct Defaults {
 /// form canonical. The solver state of a fallback (`Rejections`) is deliberately **not** part
 /// of the intent; it is stored in the `Plan`.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshIntent {
     /// Per-entity requests.
     #[serde(default)]
@@ -276,9 +334,15 @@ pub struct MeshIntent {
     /// Atomic groups.
     #[serde(default)]
     pub groups: Vec<MeshGroup>,
-    /// Standalone conversions over volume targets.
+    /// Standalone topology-preserving mesh transforms over volume targets (and, W0f gaps 2,
+    /// over faces and curves inside the region).
     #[serde(default)]
     pub transforms: Vec<TransformIntent>,
+    /// User interval relations between edges (W0f gaps 2; PARITY C P1): match intervals
+    /// (`sum_equal`), relative intervals and sums over a chain, as rows of the IIA system. The
+    /// planner adds each row with `Origin::Intent`; every edge must be in the region.
+    #[serde(default)]
+    pub intervals: Vec<crate::problem::IntervalConstraint>,
     /// Defaults.
     #[serde(default)]
     pub defaults: Defaults,
@@ -324,6 +388,9 @@ impl MeshIntent {
             t.targets.dedup();
         }
         self.transforms.sort_by_key(|t| t.id);
+        for r in &mut self.intervals {
+            r.canonicalize();
+        }
     }
 
     /// Validate what the type system cannot: parameters are Op-codec values, group and
@@ -348,16 +415,28 @@ impl MeshIntent {
                 }
                 _ => {}
             }
-            if let Some(b) = e.boundary_layer
-                && !(b.first.is_finite()
+            if let Some(b) = &e.boundary_layer {
+                if !matches!(id.kind(), sm_core::EntityKind::TopoFace | sm_core::EntityKind::PartitionFace) {
+                    return bad(format!(
+                        "{id}: boundary layers are only supported on faces (curve boundary layers do not exist yet)"
+                    ));
+                }
+                if !(b.first.is_finite()
                     && b.first > 0.0
                     && b.growth.is_finite()
                     && b.growth >= 1.0
                     && b.layers >= 1)
-            {
-                return bad(format!(
-                    "{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"
-                ));
+                {
+                    return bad(format!(
+                        "{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"
+                    ));
+                }
+                if let Some(v) = b.into.iter().find(|v| !matches!(v.kind(), sm_core::EntityKind::TopoVolume | sm_core::EntityKind::PartitionCell)) {
+                    return bad(format!("{id}: boundary layer `into` lists {v}, which is not a volume piece"));
+                }
+                b.params
+                    .check()
+                    .map_err(|e| SchemeError::Input(format!("{id}: boundary layer params: {e}")))?;
             }
         }
         let mut gids: Vec<GroupId> = Vec::new();
@@ -388,6 +467,9 @@ impl MeshIntent {
                 return bad(format!("transform {:?} has no targets", t.id));
             }
             params(&format!("transform {:?}", t.id), &t.transform)?;
+        }
+        for r in &self.intervals {
+            r.check()?;
         }
         if let Some(SizingSpec::Function { params: p, .. }) = &self.defaults.sizing {
             p.check()

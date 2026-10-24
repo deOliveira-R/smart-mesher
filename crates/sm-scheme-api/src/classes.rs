@@ -3,7 +3,7 @@
 //! A class is meshed from one root; every other member derives from it by the composition of
 //! the constraints along a spanning tree, and every redundant constraint is only checked.
 
-use crate::copy::{compose, compose_maps, derive_vertex_map, inverse, invert_map, target_vertices};
+use crate::copy::{compose_maps, derive_vertex_map, invert_map, target_vertices};
 use crate::error::{Result, SchemeError};
 use crate::geom;
 use crate::plan::{CopyClass, CopyMember, CopyMode};
@@ -133,18 +133,18 @@ fn build_one(
             let pu = &placed[&u];
             let (from_root, vm) = if forward {
                 (
-                    compose(&r.item.transform, &pu.from_root),
+                    r.item.transform.compose(&pu.from_root),
                     compose_maps(&pu.vm, &r.item.vertex_map),
                 )
             } else {
                 let inv =
-                    inverse(&r.item.transform).ok_or_else(|| SchemeError::Correspondence {
+                    r.item.transform.inverse().ok_or_else(|| SchemeError::Correspondence {
                         source_target: r.item.source,
                         target: r.item.target,
                         reason: "singular copy transform".into(),
                     })?;
                 (
-                    compose(&inv, &pu.from_root),
+                    inv.compose(&pu.from_root),
                     compose_maps(&pu.vm, &invert_map(&r.item.vertex_map)),
                 )
             };

@@ -26,6 +26,7 @@ pub const MAX_GROUP_ORDER: usize = 4096;
 /// Which side a cut keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Keep {
     /// The side the plane normal points to (translation: the slab starts at `origin` and runs
     /// along the vector; rotation: the wedge runs counter-clockwise from the start direction).
@@ -37,6 +38,7 @@ pub enum Keep {
 /// A cut-and-keep request: the deck the new cap faces get, and where the chamber is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CutSpec {
     /// The deck of the cut: a mirror plane, a translation (slab) or a rotation (wedge).
     pub deck: Deck,
@@ -50,6 +52,7 @@ pub struct CutSpec {
 /// The geometry the kernel must produce, derived purely from a [`CutSpec`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CutPlan {
     /// Half-spaces whose intersection is the kept chamber. Each plane's normal points **into**
     /// the kept region (kept: `n . x >= offset`).
@@ -133,6 +136,7 @@ fn check_plan_shape(plan: &CutPlan) -> Result<()> {
 /// The symmetry record (at most one per model).
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Symmetry {
     /// Generators: `Boundary` ids whose kind is a deck, in declaration order.
     pub generators: Vec<EntityId>,
@@ -143,6 +147,7 @@ pub struct Symmetry {
 /// How a symmetry statement entered the model. The log is append-only.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Provenance {
     /// Stated by the user.
     Declared,

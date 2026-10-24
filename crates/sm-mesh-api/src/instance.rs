@@ -36,7 +36,8 @@ use std::ops::Range;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Instance {
-    /// Stable id (`EntityKind::Instance`); flatten order is ascending id.
+    /// Stable id (`EntityKind::MeshInstance`, minted by the mesh layer); flatten order is
+    /// ascending id.
     pub id: EntityId,
     /// Prototype mesh id (`EntityKind::Mesh`).
     pub prototype: EntityId,
@@ -49,7 +50,7 @@ pub struct Instance {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstancedView {
-    /// Stable id of the view.
+    /// Stable id of the view (`EntityKind::MeshInstance`).
     pub id: EntityId,
     /// Placements.
     pub instances: Vec<Instance>,
@@ -210,6 +211,11 @@ pub fn append_transformed<B: MeshBuild>(
     t: &Transform,
     o: &FlattenOptions<'_>,
 ) -> Result<AppendMap> {
+    if src.dim() != crate::index::MeshDim::Three || b.dim() != crate::index::MeshDim::Three {
+        return Err(MeshError::Unsupported(
+            "instancing, welding and unfolding work on dimension-3 meshes in v1".into(),
+        ));
+    }
     let remap = |c: Classification| o.remap_class.map_or(c, |f| f(instance, c));
     let improper = t.is_improper();
     let (nv, nf, nc) = (src.vertex_count(), src.face_count(), src.cell_count());
@@ -431,6 +437,17 @@ pub fn append_transformed<B: MeshBuild>(
         cmap.push(nc_ix);
     }
 
+    // High-order cells need the edge table of the result (their edge nodes take their edge's
+    // class): carry the source's edge classes, so `finish` derives it.
+    let carried_edges = match src.edges() {
+        Some(t) if has_ho => {
+            for (k, [a, c]) in t.vertices.iter().enumerate() {
+                b.set_class(crate::index::MeshEntityRef::Edge(vmap[a.get()], vmap[c.get()]), remap(t.class[k]))?;
+            }
+            true
+        }
+        _ => false,
+    };
     let mut loss = Vec::new();
     for s in src.sets() {
         loss.push(LossKind::Set(s.name.clone()));
@@ -438,7 +455,7 @@ pub fn append_transformed<B: MeshBuild>(
     for tcol in src.tags() {
         loss.push(LossKind::Tag(tcol.target, tcol.name.clone()));
     }
-    if src.edges().is_some() {
+    if src.edges().is_some() && !carried_edges {
         loss.push(LossKind::EdgeTable);
     }
     let curves = (0..nf)
@@ -612,7 +629,7 @@ fn flatten_items<B: MeshBuild>(
     let fin = b.finish(alloc)?;
     let mut face_origin = vec![
         (
-            EntityId::new(EntityKind::Instance, 0).ok_or(MeshError::SerialOverflow)?,
+            EntityId::new(EntityKind::MeshInstance, 0).ok_or(MeshError::SerialOverflow)?,
             FaceIx(0)
         );
         face_origin_prov.len()
@@ -682,6 +699,16 @@ pub fn flatten<B: MeshBuild>(
 /// always image 0. Each image gets a fresh `Instance` id from `alloc` (ascending with `k`), which
 /// is what `remap_class` and the [`FlattenMap`] see. Use `weld_tol` so images touching along the
 /// mirror planes share vertices and faces. At most 16 transforms. `alloc` is unchanged on `Err`.
+///
+/// Image `k`'s transform is the product of the deck elements whose bits are set in `k`, applied
+/// in deck order (`t_{i1}` first for the lowest set bit), so a caller can join images to model
+/// copy references bit by bit. The `2^n` subset products are the whole group only for
+/// pairwise-commuting involutions (orthogonal mirrors, half turns about orthogonal axes), so the
+/// deck is checked first: every element must square to the identity and every pair must
+/// commute, both within a quantized tolerance (`1e-9` on the matrix, `1e-9 (1 + |t|)` on the
+/// translation); otherwise `MeshError::Unsupported`. A rotation or dihedral deck goes through
+/// the model's point group (`sm_model_api::point_group`) into an [`InstancedView`] and
+/// [`flatten`] instead.
 pub fn unfold<B: MeshBuild>(
     src: &dyn MeshRead,
     deck: &[Transform],
@@ -694,6 +721,7 @@ pub fn unfold<B: MeshBuild>(
             "an unfold deck has at most 16 transforms".into(),
         ));
     }
+    check_unfold_deck(deck)?;
     let mut a = alloc.clone();
     let mut items = Vec::with_capacity(1 << deck.len());
     for k in 0..(1usize << deck.len()) {
@@ -704,7 +732,7 @@ pub fn unfold<B: MeshBuild>(
             }
         }
         items.push(Item {
-            id: a.one(EntityKind::Instance)?,
+            id: a.one(EntityKind::MeshInstance)?,
             mesh: src,
             t,
         });
@@ -712,6 +740,37 @@ pub fn unfold<B: MeshBuild>(
     let r = flatten_items(&items, b, o, &mut a)?;
     *alloc = a;
     Ok(r)
+}
+
+/// Equal within the unfold deck tolerance (quantized: `1e-9` on the matrix, `1e-9 (1 + |t|)`
+/// on the translation).
+fn deck_close(a: &Transform, b: &Transform) -> bool {
+    let scale = 1.0 + [a.t.x, a.t.y, a.t.z, b.t.x, b.t.y, b.t.z].iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    let q = |x: f64, s: f64| (x / s).round() as i64;
+    let mq = |x: f64| q(x, 1e-9);
+    let tq = |x: f64| q(x, 1e-9 * scale);
+    let close = |x: i64, y: i64| (x - y).abs() <= 1;
+    (0..3).all(|i| (0..3).all(|j| close(mq(a.m[i][j]), mq(b.m[i][j]))))
+        && [(a.t.x, b.t.x), (a.t.y, b.t.y), (a.t.z, b.t.z)].iter().all(|(x, y)| close(tq(*x), tq(*y)))
+}
+
+/// The unfold deck must be pairwise-commuting involutions (see [`unfold`]).
+fn check_unfold_deck(deck: &[Transform]) -> Result<()> {
+    for (i, d) in deck.iter().enumerate() {
+        if !deck_close(&compose(d, d), &Transform::IDENTITY) {
+            return Err(MeshError::Unsupported(format!(
+                "unfold deck element {i} is not an involution (t t != identity); use point_group -> InstancedView -> flatten"
+            )));
+        }
+        for (j, e) in deck.iter().enumerate().skip(i + 1) {
+            if !deck_close(&compose(d, e), &compose(e, d)) {
+                return Err(MeshError::Unsupported(format!(
+                    "unfold deck elements {i} and {j} do not commute; use point_group -> InstancedView -> flatten"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Helper for tests and callers: a point mirrored across the plane with unit normal `n` through `p0`.

@@ -2,9 +2,23 @@
 //!
 //! Sizes are modest so that a test building a mesh per case stays fast: use `cases <= 64` for
 //! anything that builds a complex or a mesh.
+//!
+//! **Seeds are pinned.** Use [`config`] for `#![proptest_config(..)]`: it fixes the RNG seed
+//! ([`SEED`]), so every run explores the same cases (CLAUDE.md: randomness is seeded
+//! explicitly). Plain `ProptestConfig::with_cases` leaves the seed random.
 
 use crate::topo::{self, TopoFixture};
 use proptest::prelude::*;
+use proptest::test_runner::{Config, RngSeed};
+
+/// The fixed proptest seed of [`config`].
+pub const SEED: u64 = 0x5eed_5a17_3e5c_0001;
+
+/// A proptest configuration with `cases` cases and the fixed seed [`SEED`] (failure persistence
+/// off, so no files are written next to the tests).
+pub fn config(cases: u32) -> Config {
+    Config { cases, rng_seed: RngSeed::Fixed(SEED), failure_persistence: None, ..Config::default() }
+}
 use sm_core::{Point3, Transform, Vector3};
 use sm_mesh_api::reference::{ReferenceMesh, hex_block};
 use sm_mesh_api::{Result as MeshResult, SerialAlloc};

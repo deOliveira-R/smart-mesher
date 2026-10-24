@@ -21,6 +21,7 @@ use sm_topo_api::{Dim, FaceClass, Region, TopologyView, TopologyViewExt};
 /// and transform cannot disagree.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Deck {
     /// Reflection in a plane (improper). Self-paired: the faces lie on the plane.
     Mirror {
@@ -99,6 +100,7 @@ impl Deck {
 /// Intent of an interface boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum InterfaceIntent {
     /// A shared (merged) face between volumes of different colors.
     Conformal,
@@ -113,6 +115,7 @@ pub enum InterfaceIntent {
 /// What a boundary record means for meshing and tracking.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum BoundaryKind {
     /// Deck transformation boundary (mirror / translation / rotation).
     Deck(Deck),
@@ -136,6 +139,7 @@ impl BoundaryKind {
 /// Row of the boundary table.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BoundaryRow {
     /// The `EntityKind::Boundary` id.
     pub id: EntityId,
@@ -149,6 +153,7 @@ pub struct BoundaryRow {
 /// the deck transform `g`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum DeckSide {
     /// Source side.
     A,
@@ -161,6 +166,7 @@ pub enum DeckSide {
 /// What a face does within its boundary record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum FaceRole {
     /// Deck face. `mate` is `None` exactly when `side` is [`DeckSide::SelfPaired`].
     Deck {
@@ -181,6 +187,7 @@ pub enum FaceRole {
 /// Row of the face-boundary table: the single source of truth, keyed by face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FaceBoundary {
     /// The boundary record this face belongs to.
     pub boundary: EntityId,
@@ -191,6 +198,7 @@ pub struct FaceBoundary {
 /// The effective kind of a face, with derivation for interior faces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum FaceKindView {
     /// Deck face.
     Deck {
@@ -226,6 +234,7 @@ pub enum FaceKindView {
 /// transform of position (and direction, by the linear part).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DeckHit {
     /// The mate face (`face` itself for a mirror).
     pub mate: EntityId,
@@ -240,6 +249,7 @@ pub struct DeckHit {
 /// binary search.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DeckLookup {
     faces: Vec<EntityId>,
     hits: Vec<Option<DeckHit>>,

@@ -42,6 +42,19 @@ pub(crate) fn node_to_toml(n: &Node) -> Result<String, String> {
         quote(&m.time),
         quote(&m.message),
     ));
+    if !n.check.layers.is_empty() {
+        out.push_str("\n[check.layers]\n");
+        // BTreeMap: sorted by layer name.
+        for (name, h) in &n.check.layers {
+            out.push_str(&format!("{} = \"{h}\"\n", key(name)));
+        }
+    }
+    if !n.check.versions.is_empty() {
+        out.push_str("\n[check.versions]\n");
+        for (name, v) in &n.check.versions {
+            out.push_str(&format!("{} = {v}\n", key(name)));
+        }
+    }
     Ok(out)
 }
 

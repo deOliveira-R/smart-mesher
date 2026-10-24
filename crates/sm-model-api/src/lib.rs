@@ -26,9 +26,11 @@
 //! one per-kind allocator and are never reused.
 
 pub mod boundary;
+mod canonical;
 pub mod color;
 pub mod decomposition;
 pub mod detect;
+mod edit;
 pub mod error;
 pub mod instancing;
 pub mod model;
@@ -40,11 +42,11 @@ pub mod validate;
 pub mod xf;
 
 pub use boundary::{BoundaryKind, BoundaryRow, Deck, DeckHit, DeckLookup, DeckSide, FaceBoundary, FaceKindView, FaceRole, InterfaceIntent};
-pub use color::{ColorRow, Domain, GroupRow};
-pub use decomposition::{CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
+pub use color::{ColorRow, Domain, GroupEdit, GroupRow, group_member_kind_ok};
+pub use decomposition::{CutCells, CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
 pub use detect::{Candidate, CandidateKind, ColorInvariant, DetectionResult, Stage, Verification, detect_symmetry, verify_transform};
 pub use error::{ModelError, Result};
-pub use instancing::{ColorMap, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};
+pub use instancing::{Cluster, ClusterMember, ColorMap, FlatClip, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};
 pub use model::{IdAlloc, Model};
 pub use symmetry::{CutPlan, CutSpec, Keep, Provenance, Symmetry, plan_cut, point_group};
 pub use unfold::{CopyRef, Glue, UnfoldSpec, UnfoldedModel, unfold};

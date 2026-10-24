@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 /// Barycentre and inertia tensor of one color.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ColorInvariant {
     /// The volume color.
     pub color: EntityId,
@@ -39,6 +40,7 @@ pub struct ColorInvariant {
 /// A candidate symmetry element, through the global barycentre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CandidateKind {
     /// Mirror plane.
     Mirror(Plane),
@@ -54,6 +56,7 @@ pub enum CandidateKind {
 /// The verification stage that rejected a candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Stage {
     /// Per-color invariants (volume, barycentre, inertia).
     Invariants,
@@ -66,6 +69,7 @@ pub enum Stage {
 /// Outcome of verifying a candidate against the whole model.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Verification {
     /// Not verified (invariants only).
     Unverified,
@@ -89,6 +93,7 @@ pub enum Verification {
 /// One detected candidate.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Candidate {
     /// What it is.
     pub kind: CandidateKind,
@@ -125,6 +130,7 @@ impl Candidate {
 /// Detection result.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DetectionResult {
     /// Per-color invariants, ascending by color id.
     pub invariants: Vec<ColorInvariant>,

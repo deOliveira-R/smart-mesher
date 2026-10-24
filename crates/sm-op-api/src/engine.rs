@@ -52,6 +52,11 @@ impl Engine {
         &self.registry
     }
 
+    /// The injected services.
+    pub fn services(&self) -> &Arc<Services> {
+        &self.services
+    }
+
     /// The derived cache shared with every state.
     pub fn cache(&self) -> &Arc<DerivedCache> {
         &self.cache
@@ -100,6 +105,19 @@ impl Engine {
         };
         *state = scratch;
         Ok((delta, canonical))
+    }
+
+    /// Run a registered query against `state` with this engine's services and derived cache.
+    /// Read-only; nothing is recorded.
+    pub fn run_query(
+        &self,
+        state: &State,
+        name: &str,
+        input: &crate::codec::Value,
+        ctl: &Control<'_>,
+    ) -> Result<crate::codec::Value, RegistryError> {
+        let cx = crate::query::QueryCtx::new(&self.services, &self.cache, *ctl);
+        self.registry.run_query(state, name, input, &cx)
     }
 
     /// Decode a stored record and apply it. This is the path used for replay.

@@ -1,8 +1,9 @@
 //! Stub scheme implementors used by the integration tests.
 //!
-//! Curve: `equal`. Surface: `map`, `submap` (direction sums from `SideDir`), `pave` (even
-//! loop sum, quad fan), `tri` (triangle fan). Volume: `sweep` (columns may pass through
-//! interior vertices, so it also meshes a composite piece), `msweep` (a group of stacked
+//! Curve: `equal`. Surface: `map` (single grid), `submap` (direction sums from `SideDir`;
+//! `BLOCK_STRUCTURED`, attaches no grid), `pave` (even loop sum, quad fan), `tri` (triangle
+//! fan). Volume: `sweep` (walks linking-face strips with `GenCtx::strip_from`; columns may pass
+//! through interior vertices, so it also meshes a composite piece), `msweep` (a group of stacked
 //! volumes swept as one; it claims the interface faces and the target), plus plan-level
 //! `mapvol`, `tetvol`, `polyvol`. Transforms: `noop`, `boom`. Fixtures: bricks and a row of
 //! merged bricks. Shared by several test binaries.
@@ -172,7 +173,7 @@ impl Scheme for Map {
         SchemeDim::Surface
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::QUAD | Caps::STRUCTURED
+        Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED
     }
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, _p: &Params) -> Applicability {
         let Target::Surface(f) = target else {
@@ -258,7 +259,7 @@ impl Scheme for Submap {
         SchemeDim::Surface
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::QUAD | Caps::STRUCTURED
+        Caps::QUAD | Caps::BLOCK_STRUCTURED
     }
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, _p: &Params) -> Applicability {
         let Target::Surface(f) = target else {
@@ -310,7 +311,10 @@ impl Scheme for Submap {
         Ok(())
     }
     fn generate(&self, cx: &GenCtx<'_>, target: Target, _p: &Params) -> GResult<Patch> {
-        structured_patch(cx, target, "submap")
+        // Submap promises blocks, not a single grid: consumers walk strips (`strip_from`).
+        let mut p = structured_patch(cx, target, "submap")?;
+        p.grid = None;
+        Ok(p)
     }
 }
 
@@ -738,6 +742,7 @@ fn generate_stack(
     group: bool,
     name: &str,
     perturb: bool,
+    misorient: bool,
 ) -> GResult<Patch> {
     let fatal = |r: String| GenerateFailure::fatal(target, name, r);
     let t = cx.input.topo;
@@ -853,11 +858,8 @@ fn generate_stack(
                         .find(|l| !used.contains(l) && t.face_edges(*l).contains(&cur.owner))
                         .ok_or_else(|| fatal(format!("edge {} has no linking face", cur.owner)))?;
                     used.push(l);
-                    let g = cx
-                        .grid(l)
-                        .ok_or_else(|| fatal(format!("linking face {l} has no grid")))?;
-                    let line = g.line_from(cur).ok_or_else(|| {
-                        fatal(format!("node {cur:?} not on the grid boundary of {l}"))
+                    let line = cx.strip_from(l, cur).ok_or_else(|| {
+                        fatal(format!("node {cur:?} starts no quad strip of linking face {l}"))
                     })?;
                     col.extend_from_slice(&line[1..]);
                     cur = *line.last().ok_or_else(|| fatal("empty line".into()))?;
@@ -912,6 +914,25 @@ fn generate_stack(
             .or_else(|| cx.point(k))
             .ok_or_else(|| fatal(format!("node {k:?}")))
     };
+    // Claimed planes follow their face's normal (the patch contract): flip the source
+    // orientation where the plane face's normal opposes the source normal.
+    let mut plane_flip = vec![false; layers + 1];
+    if group {
+        let p0 = t
+            .face_outline(st.source)
+            .first()
+            .copied()
+            .ok_or_else(|| fatal("source outline".into()))?;
+        let ns = geom::face_normal(t, st.source, p0).map_err(|e| fatal(e.to_string()))?;
+        for (p, flip) in plane_flip.iter_mut().enumerate().skip(1) {
+            let face = if p == layers { Some(st.target) } else { plane_owner[p] };
+            if let Some(f) = face {
+                let q = p0 + shift * frac[p];
+                let nf = geom::face_normal(t, f, q).map_err(|e| fatal(e.to_string()))?;
+                *flip = ns.dot(nf) < 0.0;
+            }
+        }
+    }
     let mut buf: Vec<u32> = Vec::with_capacity(8);
     for (shape, nodes) in src.elements.iter() {
         let sk: Vec<NodeKey> = nodes
@@ -954,11 +975,15 @@ fn generate_stack(
             pb.push(ElemShape::Cell(cell), &buf);
         }
         if group {
-            // Surface elements of the claimed planes, in source orientation.
+            // Surface elements of the claimed planes, along each plane face's normal.
             for p in (1..=layers).filter(|p| *p == layers || plane_owner[*p].is_some()) {
                 buf.clear();
                 for col in &c {
                     buf.push(idx(&mut pb, col[p]));
+                }
+                // `misorient` (test hook) writes the target against its normal.
+                if plane_flip[p] != (misorient && p == layers) {
+                    buf[1..].reverse();
                 }
                 pb.owner(if p == layers {
                     st.target
@@ -1047,7 +1072,7 @@ impl Scheme for Sweep {
             out.role(Target::Surface(*l), Role::SweepLinking { volume: target });
             out.require_caps(
                 Target::Surface(*l),
-                Caps::QUAD | Caps::STRUCTURED,
+                Caps::QUAD | Caps::BLOCK_STRUCTURED,
                 Firmness::Hard,
             );
         }
@@ -1084,7 +1109,7 @@ impl Scheme for Sweep {
     }
     fn generate(&self, cx: &GenCtx<'_>, target: Target, _p: &Params) -> GResult<Patch> {
         let st = stack_of(cx, target, "sweep")?;
-        generate_stack(cx, target, &st, false, "sweep", false)
+        generate_stack(cx, target, &st, false, "sweep", false, false)
     }
 }
 
@@ -1135,7 +1160,7 @@ impl Scheme for MSweep {
         SchemeDim::Volume
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED
+        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED
     }
     fn supports_groups(&self) -> bool {
         true
@@ -1176,7 +1201,7 @@ impl Scheme for MSweep {
             out.role(Target::Surface(*l), Role::SweepLinking { volume: target });
             out.require_caps(
                 Target::Surface(*l),
-                Caps::QUAD | Caps::STRUCTURED,
+                Caps::QUAD | Caps::BLOCK_STRUCTURED,
                 Firmness::Hard,
             );
         }
@@ -1218,12 +1243,8 @@ impl Scheme for MSweep {
             _ => {}
         }
         let st = stack_of(cx, target, "msweep")?;
-        let perturb = p
-            .get::<bool>("msweep", "perturb")
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-        generate_stack(cx, target, &st, true, "msweep", perturb)
+        let flag = |k: &str| p.get::<bool>("msweep", k).ok().flatten().unwrap_or(false);
+        generate_stack(cx, target, &st, true, "msweep", flag("perturb"), flag("misorient"))
     }
 }
 

@@ -1,12 +1,13 @@
-//! Instancing: prototypes, instances, lattices (cartesian + hex, sparse, nestable), recoloring and
+//! Instancing: prototypes, instances, lattices (cartesian + hex, sparse, nestable), clusters
+//! (fills at explicit transforms, nestable: TRISO in a pebble, pebbles in a core), recoloring and
 //! a deterministic flatten whose copies are named by instance paths (no ids are minted for
 //! copies, so ids are never reused).
 //!
 //! Instancing is a group action on a fundamental piece, like symmetry: [`Placement`] and
 //! [`unfold`](mod@crate::unfold) share the same copy description.
 //!
-//! **Recolor order** (inner first, outer last): prototype color, then the inner slot, outer
-//! slot(s), the instance, and finally [`PathOverride`]s (deeper prefixes first). Within one
+//! **Recolor order** (inner first, outer last): prototype color, then the inner slot or cluster
+//! member, outer slot(s) / member(s), the instance, and finally [`PathOverride`]s (deeper prefixes first). Within one
 //! [`ColorMap`] a per-volume entry beats a per-color entry. A volume color may only map to a
 //! volume color, and a face color to a face color (checked on insertion and by the validator).
 
@@ -19,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// A rigid placement of a copy and whether it reverses orientation (improper).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Placement {
     /// Transform from the prototype/fundamental frame to the model frame.
     pub transform: Transform,
@@ -42,6 +44,7 @@ impl Placement {
 /// Ordered by `(k, j, i)`: the canonical slot order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SlotIx {
     /// First index (cartesian x; hex q).
     pub i: i32,
@@ -72,6 +75,8 @@ impl PartialOrd for SlotIx {
 /// One step of an instance path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum PathStep {
     /// A top-level `Instance`.
     Instance(EntityId),
@@ -82,6 +87,13 @@ pub enum PathStep {
         /// The slot.
         ix: SlotIx,
     },
+    /// A member of a [`Cluster`].
+    Member {
+        /// The cluster.
+        cluster: EntityId,
+        /// Index into [`Cluster::members`].
+        ix: u32,
+    },
 }
 
 /// Stable name of a flattened copy: no minted ids. Paths compare in emission order.
@@ -90,6 +102,7 @@ pub type InstancePath = SmallVec<[PathStep; 4]>;
 /// Hex row orientation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum HexOrient {
     /// Rows along x: `(x, y) = pitch * (q + r/2, sqrt(3)/2 r)`.
     XRows,
@@ -100,6 +113,7 @@ pub enum HexOrient {
 /// Slot geometry of a lattice. Slot `(0, 0, 0)` is at the lattice origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Layout {
     /// `n[0] x n[1] x n[2]` slots, indices from 0.
     Cartesian {
@@ -222,9 +236,11 @@ impl Layout {
     }
 }
 
-/// What fills an instance or a lattice slot.
+/// What fills an instance, a lattice slot or a cluster member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Fill {
     /// A [`Prototype`].
     Prototype(EntityId),
@@ -232,6 +248,8 @@ pub enum Fill {
     Lattice(EntityId),
     /// Nothing (a hole).
     Void,
+    /// A nested [`Cluster`] (irregular placements).
+    Cluster(EntityId),
 }
 
 /// A recoloring, typed by domain: `volume` maps volume colors (or single `TopoVolume`s) to volume
@@ -239,6 +257,7 @@ pub enum Fill {
 /// a per-color key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ColorMap {
     /// Volume recoloring: key `TopoVolume` or volume `Color`; value volume `Color`.
     pub volume: BTreeMap<EntityId, EntityId>,
@@ -266,16 +285,24 @@ impl ColorMap {
 /// A slot of a lattice: what fills it and how it is recolored.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Slot {
     /// The fill.
     pub fill: Fill,
     /// Recoloring of everything below this slot.
     pub recolor: ColorMap,
+    /// A live `TopoVolume` whose region bounds this slot's fill (the copies are truncated to
+    /// it, like an MCNP/OpenMC container cell). It lies in the **lattice frame** (the frame the
+    /// slot offsets are measured in), so [`flatten`] places it with the lattice placement.
+    /// `None`: the fill is not clipped at this level.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<EntityId>,
 }
 
 /// A lattice: a layout plus a **sparse** slot table. In-range slots without an entry take `outer`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Lattice {
     /// Slot geometry.
     pub layout: Layout,
@@ -285,12 +312,42 @@ pub struct Lattice {
     pub outer: Fill,
     /// Explicit slots.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<(SlotIx, Slot)>"))]
     pub slots: BTreeMap<SlotIx, Slot>,
+}
+
+/// One member of a [`Cluster`]: a fill at an explicit placement in the cluster frame.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ClusterMember {
+    /// The fill.
+    pub fill: Fill,
+    /// Placement of the fill in the cluster frame (may be improper).
+    pub at: Transform,
+    /// Recoloring of everything below this member (applied like a slot's).
+    pub recolor: ColorMap,
+    /// A live `TopoVolume` bounding this member's fill, in the **cluster frame** (it does not
+    /// move with `at`), so [`flatten`] places it with the cluster placement. `None`: not clipped.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<EntityId>,
+}
+
+/// Irregular placements nested inside a fill (OpenMC/Serpent universes, the CSG front end):
+/// TRISO particles in a pebble, pebbles in a core, a rotated lattice slot (a one-member
+/// cluster). Members flatten in index order and their paths use [`PathStep::Member`].
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Cluster {
+    /// The members, in flatten order.
+    pub members: Vec<ClusterMember>,
 }
 
 /// A reusable definition: volumes of the topology (stored once, placed many times).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Prototype {
     /// The volumes.
     pub volumes: BTreeSet<EntityId>,
@@ -299,6 +356,7 @@ pub struct Prototype {
 /// A placement of a [`Fill`] at the top level.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InstanceRow {
     /// What is placed.
     pub of: Fill,
@@ -306,12 +364,18 @@ pub struct InstanceRow {
     pub at: Transform,
     /// Recoloring of everything below.
     pub recolor: ColorMap,
+    /// A live `TopoVolume` whose region bounds the fill (an MCNP/OpenMC container cell, or a
+    /// lattice truncated by a core barrel). It lies in the model frame (the instance's parent
+    /// frame; it does not move with `at`). `None`: not clipped.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<EntityId>,
 }
 
 /// A recoloring of every copy whose path starts with `prefix`. Reaches inner slots from an outer
 /// level (for example absorbers only in assembly #3).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PathOverride {
     /// The path prefix.
     pub prefix: InstancePath,
@@ -322,6 +386,7 @@ pub struct PathOverride {
 /// The instancing tables.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Instancing {
     /// Prototypes by `Prototype` id.
     pub prototypes: BTreeMap<EntityId, Prototype>,
@@ -331,6 +396,9 @@ pub struct Instancing {
     pub instances: BTreeMap<EntityId, InstanceRow>,
     /// Path overrides, in declaration order.
     pub overrides: Vec<PathOverride>,
+    /// Clusters by `Cluster` id (absent in older data).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clusters: BTreeMap<EntityId, Cluster>,
 }
 
 const MAX_DEPTH: usize = 64;
@@ -339,7 +407,15 @@ const MAX_DEPTH: usize = 64;
 pub const MAX_FLAT_ENTRIES: usize = 1 << 24;
 
 impl Instancing {
-    /// A lattice that is (transitively) its own descendant, if any.
+    /// The nested fills of a lattice or cluster (`None` for other ids or unknown rows).
+    fn children_of(&self, id: EntityId) -> Option<Vec<Fill>> {
+        if let Some(lat) = self.lattices.get(&id) {
+            return Some(lat.slots.values().map(|s| s.fill).chain([lat.outer]).collect());
+        }
+        self.clusters.get(&id).map(|c| c.members.iter().map(|m| m.fill).collect())
+    }
+
+    /// A lattice or cluster that is (transitively) its own descendant, if any.
     pub fn find_cycle(&self) -> Option<EntityId> {
         fn visit(ins: &Instancing, l: EntityId, stack: &mut Vec<EntityId>, done: &mut BTreeSet<EntityId>) -> Option<EntityId> {
             if stack.contains(&l) {
@@ -348,10 +424,10 @@ impl Instancing {
             if done.contains(&l) {
                 return None;
             }
-            let lat = ins.lattices.get(&l)?;
+            let fills = ins.children_of(l)?;
             stack.push(l);
-            for f in lat.slots.values().map(|s| s.fill).chain([lat.outer]) {
-                if let Fill::Lattice(c) = f
+            for f in fills {
+                if let Fill::Lattice(c) | Fill::Cluster(c) = f
                     && let Some(x) = visit(ins, c, stack, done)
                 {
                     return Some(x);
@@ -362,12 +438,12 @@ impl Instancing {
             None
         }
         let mut done = BTreeSet::new();
-        self.lattices.keys().find_map(|l| visit(self, *l, &mut Vec::new(), &mut done))
+        self.lattices.keys().chain(self.clusters.keys()).find_map(|l| visit(self, *l, &mut Vec::new(), &mut done))
     }
 }
 
 impl Model {
-    fn check_fill(&self, f: Fill) -> Result<()> {
+    pub(crate) fn check_fill(&self, f: Fill) -> Result<()> {
         match f {
             Fill::Void => Ok(()),
             Fill::Prototype(p) => {
@@ -378,11 +454,63 @@ impl Model {
                 expect_kind(l, EntityKind::Lattice)?;
                 self.instancing.lattices.contains_key(&l).then_some(()).ok_or(ModelError::Unknown(l))
             }
+            Fill::Cluster(c) => {
+                expect_kind(c, EntityKind::Cluster)?;
+                self.instancing.clusters.contains_key(&c).then_some(()).ok_or(ModelError::Unknown(c))
+            }
         }
     }
 
+    pub(crate) fn check_cluster(&self, c: &Cluster) -> Result<()> {
+        if c.members.len() > MAX_FLAT_ENTRIES {
+            return Err(ModelError::Invalid(format!("a cluster has at most {MAX_FLAT_ENTRIES} members")));
+        }
+        for m in &c.members {
+            self.check_fill(m.fill)?;
+            self.check_color_map(&m.recolor)?;
+            Self::check_clip(m.clip)?;
+            if !(m.at.m.iter().flatten().all(|x| x.is_finite()) && [m.at.t.x, m.at.t.y, m.at.t.z].iter().all(|x| x.is_finite())) {
+                return Err(ModelError::Invalid("cluster member placement must be finite".into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a cluster. Member fills must exist, recolor maps are domain-checked, clips must
+    /// name `TopoVolume`s and placements be finite. Acyclic by construction (fills reference
+    /// existing ids).
+    pub fn add_cluster(&mut self, c: Cluster) -> Result<EntityId> {
+        self.check_cluster(&c)?;
+        let id = self.ids.alloc(EntityKind::Cluster)?;
+        self.instancing.clusters.insert(id, c);
+        Ok(id)
+    }
+
+    /// Replace the members of cluster `id` (same checks as [`Self::add_cluster`]). Rejects a
+    /// fill that would make the cluster contain itself ([`ModelError::Cycle`]).
+    pub fn set_cluster(&mut self, id: EntityId, c: Cluster) -> Result<()> {
+        expect_kind(id, EntityKind::Cluster)?;
+        if !self.instancing.clusters.contains_key(&id) {
+            return Err(ModelError::Unknown(id));
+        }
+        self.check_cluster(&c)?;
+        let old = self.instancing.clusters.insert(id, c);
+        if self.instancing.find_cycle().is_some() {
+            if let Some(o) = old {
+                self.instancing.clusters.insert(id, o);
+            }
+            return Err(ModelError::Cycle(id));
+        }
+        Ok(())
+    }
+
+    /// A clip must name a `TopoVolume` (liveness is [`crate::validate()`]'s).
+    pub(crate) fn check_clip(clip: Option<EntityId>) -> Result<()> {
+        clip.map_or(Ok(()), |c| expect_kind(c, EntityKind::TopoVolume))
+    }
+
     /// Check key kinds, value domains and that colors exist.
-    fn check_color_map(&self, m: &ColorMap) -> Result<()> {
+    pub(crate) fn check_color_map(&self, m: &ColorMap) -> Result<()> {
         let check = |map: &BTreeMap<EntityId, EntityId>, ent: EntityKind, dom: crate::color::Domain| -> Result<()> {
             for (k, v) in map {
                 match k.kind() {
@@ -435,6 +563,7 @@ impl Model {
             }
             self.check_fill(s.fill)?;
             self.check_color_map(&s.recolor)?;
+            Self::check_clip(s.clip)?;
         }
         let id = self.ids.alloc(EntityKind::Lattice)?;
         self.instancing.lattices.insert(id, l);
@@ -450,6 +579,7 @@ impl Model {
         }
         self.check_fill(slot.fill)?;
         self.check_color_map(&slot.recolor)?;
+        Self::check_clip(slot.clip)?;
         let old = self.instancing.lattices.get_mut(&lattice).and_then(|l| l.slots.insert(ix, slot));
         if self.instancing.find_cycle().is_some() {
             if let Some(l) = self.instancing.lattices.get_mut(&lattice) {
@@ -467,6 +597,7 @@ impl Model {
     pub fn add_instance(&mut self, i: InstanceRow) -> Result<EntityId> {
         self.check_fill(i.of)?;
         self.check_color_map(&i.recolor)?;
+        Self::check_clip(i.clip)?;
         let id = self.ids.alloc(EntityKind::Instance)?;
         self.instancing.instances.insert(id, i);
         Ok(id)
@@ -493,6 +624,11 @@ impl Model {
                     if let Some(s) = l.slots.get(ix) {
                         out.push(&s.recolor);
                     }
+                }
+                PathStep::Member { cluster, ix } => {
+                    let c = self.instancing.clusters.get(cluster).ok_or(ModelError::Unknown(*cluster))?;
+                    let m = c.members.get(*ix as usize).ok_or_else(|| ModelError::Invalid(format!("cluster {cluster} has no member {ix}")))?;
+                    out.push(&m.recolor);
                 }
             }
         }
@@ -523,6 +659,7 @@ impl Model {
 /// One flattened volume of one copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FlatEntry {
     /// Index into [`FlatModel::paths`].
     pub path: u32,
@@ -532,12 +669,33 @@ pub struct FlatEntry {
     pub volume: EntityId,
     /// Resolved volume color.
     pub color: EntityId,
+    /// Index into [`FlatModel::clips`] of the innermost clip bounding this copy; follow
+    /// [`FlatClip::outer`] for the enclosing ones (the copy is bounded by all of them). `None`:
+    /// not clipped.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clip: Option<u32>,
 }
 
-/// Result of [`flatten`]. Entries are in canonical order: instance id, slot `(k, j, i)` (nested),
-/// volume id. Paths are strictly increasing, so lookups by path are binary searches.
+/// One clip occurrence of a flattened model: an [`InstanceRow::clip`] or [`Slot::clip`] volume
+/// at the placement it has in the model frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct FlatClip {
+    /// The clip volume (stored once, like prototype volumes).
+    pub volume: EntityId,
+    /// Where the clip volume sits in the model frame (identity for an instance clip, the
+    /// lattice placement for a slot clip).
+    pub placement: Placement,
+    /// The enclosing clip (an outer level's), if any: an index into [`FlatModel::clips`].
+    pub outer: Option<u32>,
+}
+
+/// Result of [`flatten`]. Entries are in canonical order: instance id, slot `(k, j, i)` or
+/// cluster member index (nested), volume id. Paths are strictly increasing, so lookups by path are binary searches.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct FlatModel {
     /// One placement per path.
     pub placements: Vec<Placement>,
@@ -545,6 +703,9 @@ pub struct FlatModel {
     pub paths: Vec<InstancePath>,
     /// The volumes, ascending by `(path, volume)`.
     pub entries: Vec<FlatEntry>,
+    /// Clip occurrences, in walk order (an outer clip before the clips nested in it).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub clips: Vec<FlatClip>,
 }
 
 impl FlatModel {
@@ -598,6 +759,11 @@ impl FlatModel {
                         eat(ix.j as u32 as u64);
                         eat(ix.k as u32 as u64);
                     }
+                    PathStep::Member { cluster, ix } => {
+                        eat(3);
+                        eat(cluster.to_raw());
+                        eat(u64::from(*ix));
+                    }
                 }
             }
         }
@@ -611,6 +777,19 @@ impl FlatModel {
             eat(e.volume.to_raw());
             eat(e.color.to_raw());
         }
+        // Clips are hashed only when present, so unclipped models keep their fingerprints.
+        if !self.clips.is_empty() {
+            let opt = |o: Option<u32>| o.map_or(0, |x| u64::from(x) + 1);
+            for e in &self.entries {
+                eat(opt(e.clip));
+            }
+            for c in &self.clips {
+                eat(c.volume.to_raw());
+                c.placement.transform.m.iter().flatten().chain([&c.placement.transform.t.x, &c.placement.transform.t.y, &c.placement.transform.t.z]).for_each(|v| eat(num(*v)));
+                eat(u64::from(c.placement.orientation_reversed));
+                eat(opt(c.outer));
+            }
+        }
         h
     }
 }
@@ -618,10 +797,27 @@ impl FlatModel {
 struct Walk<'a> {
     m: &'a Model,
     out: FlatModel,
+    /// Slots and members visited (bounded by [`MAX_FLAT_ENTRIES`], so void-only nesting cannot
+    /// run away either).
+    visits: usize,
 }
 
 impl<'a> Walk<'a> {
-    fn go(&mut self, fill: Fill, at: Transform, path: &mut InstancePath, levels: &mut Vec<&'a ColorMap>, depth: usize) -> Result<()> {
+    fn push_clip(&mut self, volume: EntityId, at: Transform, outer: Option<u32>) -> Option<u32> {
+        let ix = self.out.clips.len() as u32;
+        self.out.clips.push(FlatClip { volume, placement: Placement::of(at), outer });
+        Some(ix)
+    }
+
+    fn visit(&mut self) -> Result<()> {
+        self.visits += 1;
+        if self.visits > MAX_FLAT_ENTRIES {
+            return Err(ModelError::Invalid(format!("flattening would visit more than {MAX_FLAT_ENTRIES} slots and members")));
+        }
+        Ok(())
+    }
+
+    fn go(&mut self, fill: Fill, at: Transform, path: &mut InstancePath, levels: &mut Vec<&'a ColorMap>, clip: Option<u32>, depth: usize) -> Result<()> {
         if depth > MAX_DEPTH {
             return Err(ModelError::Invalid("instancing nesting too deep".into()));
         }
@@ -643,7 +839,7 @@ impl<'a> Walk<'a> {
                     for o in &overrides {
                         c = o.apply_volume(*v, c);
                     }
-                    self.out.entries.push(FlatEntry { path: pix, placement: plix, volume: *v, color: c });
+                    self.out.entries.push(FlatEntry { path: pix, placement: plix, volume: *v, color: c, clip });
                 }
                 self.out.paths.push(path.clone());
                 self.out.placements.push(Placement::of(at));
@@ -657,13 +853,41 @@ impl<'a> Walk<'a> {
                     if f == Fill::Void {
                         continue;
                     }
+                    self.visit()?;
                     let local = Transform::translation(lat.layout.offset(ix));
                     path.push(PathStep::Slot { lattice: l, ix });
                     let pushed = slot.is_some_and(|s| !s.recolor.is_empty());
                     if let Some(s) = slot.filter(|_| pushed) {
                         levels.push(&s.recolor);
                     }
-                    self.go(f, base.compose(&local), path, levels, depth + 1)?;
+                    let inner = match slot.and_then(|s| s.clip) {
+                        Some(cv) => self.push_clip(cv, base, clip),
+                        None => clip,
+                    };
+                    self.go(f, base.compose(&local), path, levels, inner, depth + 1)?;
+                    if pushed {
+                        levels.pop();
+                    }
+                    path.pop();
+                }
+            }
+            Fill::Cluster(c) => {
+                let cl = self.m.instancing.clusters.get(&c).ok_or(ModelError::Unknown(c))?;
+                for (ix, mem) in cl.members.iter().enumerate() {
+                    if mem.fill == Fill::Void {
+                        continue;
+                    }
+                    self.visit()?;
+                    path.push(PathStep::Member { cluster: c, ix: ix as u32 });
+                    let pushed = !mem.recolor.is_empty();
+                    if pushed {
+                        levels.push(&mem.recolor);
+                    }
+                    let inner = match mem.clip {
+                        Some(cv) => self.push_clip(cv, at, clip),
+                        None => clip,
+                    };
+                    self.go(mem.fill, at.compose(&mem.at), path, levels, inner, depth + 1)?;
                     if pushed {
                         levels.pop();
                     }
@@ -676,17 +900,19 @@ impl<'a> Walk<'a> {
 }
 
 /// Flatten every instance into placed copies with resolved colors, in canonical order. Copies are
-/// named by [`InstancePath`]; no ids are minted, so nothing is ever reused. Fails on reference
-/// cycles, unknown ids or uncolored prototype volumes.
+/// named by [`InstancePath`]; no ids are minted, so nothing is ever reused. Each entry carries
+/// its innermost clip ([`FlatEntry::clip`], chained through [`FlatClip::outer`]). Fails on
+/// reference cycles, unknown ids or uncolored prototype volumes.
 pub fn flatten(m: &Model) -> Result<FlatModel> {
     if let Some(l) = m.instancing.find_cycle() {
         return Err(ModelError::Cycle(l));
     }
-    let mut w = Walk { m, out: FlatModel::default() };
+    let mut w = Walk { m, out: FlatModel::default(), visits: 0 };
     for (id, inst) in &m.instancing.instances {
         let mut path: InstancePath = SmallVec::from_slice(&[PathStep::Instance(*id)]);
         let mut levels: Vec<&ColorMap> = vec![&inst.recolor];
-        w.go(inst.of, inst.at, &mut path, &mut levels, 0)?;
+        let clip = inst.clip.and_then(|cv| w.push_clip(cv, Transform::IDENTITY, None));
+        w.go(inst.of, inst.at, &mut path, &mut levels, clip, 0)?;
     }
     Ok(w.out)
 }

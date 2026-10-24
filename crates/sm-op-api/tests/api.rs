@@ -1203,6 +1203,39 @@ fn ref_names_are_validated_and_cannot_collide_as_file_and_directory() {
     assert_eq!(t.default_head(), Head::Ref("main".into()));
 }
 
+#[test]
+fn ref_names_are_portable_to_case_insensitive_and_windows_file_systems() {
+    let mut s = session();
+    let tip = apply(&mut s, &brick(1.0)).0;
+    let mut t = s.timeline().clone();
+    // Reserved device stems (any case, any extension) and a trailing '.' are invalid.
+    for bad in ["con", "aux/x", "lpt9.txt", "a.", "x/NUL", "Com1", "prn.a.b", "ok/a."] {
+        assert!(!valid_ref_name(bad), "{bad:?}");
+        assert!(matches!(t.check_ref_name(bad), Err(TimelineError::BadRefName(_))), "{bad:?}");
+    }
+    for good in ["console", "com0", "com10", "lpt", "auxiliary/x", "a.b", "MixedCase", "x/Con1"] {
+        assert!(valid_ref_name(good), "{good:?}");
+    }
+    // Case-insensitive collisions with an existing ref are rejected; mixed case stays allowed.
+    t.create_ref("try", tip).unwrap();
+    assert!(matches!(t.create_ref("Try", tip), Err(TimelineError::BadRefName(_))));
+    assert!(t.check_ref_name("try").is_ok(), "an existing ref can be moved");
+    t.create_ref("Feat", tip).unwrap();
+    assert!(t.create_ref("feat/one", tip).is_err(), "file vs directory after lowercasing");
+    t.create_ref("dir/Sub", tip).unwrap();
+    assert!(t.create_ref("DIR", tip).is_err());
+    assert!(t.create_ref("Dir/sub", tip).is_err());
+    t.create_ref("Dir/other", tip).unwrap();
+    // from_files applies the same rule.
+    let mut files = s.timeline().to_files().unwrap();
+    files.insert("refs/heads/main2".into(), format!("{tip}\n"));
+    files.insert("refs/heads/MAIN2".into(), format!("{tip}\n"));
+    assert!(matches!(Timeline::from_files(&files), Err(TimelineError::BadRefName(_))));
+    // Renaming only the case of a branch works (the old name goes away first).
+    s.rename_branch("main", "Main").unwrap();
+    assert_eq!(s.head(), &Head::Ref("Main".into()));
+}
+
 // ------------------------------------------------------------------- undo / redo
 
 #[test]
@@ -1316,9 +1349,9 @@ fn retire_only_touches_layers_that_reference_the_ids() {
     let b = apply(&mut s, &brick(2.0)).1.outputs["body"][0];
     apply(&mut s, &SetSize { id: a, size: 0.3 });
     let (_, d) = apply(&mut s, &DeleteBody { id: b });
-    assert!(d.touched_layers.contains(&"model"));
+    assert!(d.touched_layers.iter().any(|l| l == "model"));
     assert!(
-        !d.touched_layers.contains(&"intent"),
+        !d.touched_layers.iter().any(|l| l == "intent"),
         "intent does not reference the retired id"
     );
     assert_eq!(s.state().layer::<IntentLayer>().unwrap().sizes.len(), 1);
@@ -1554,7 +1587,7 @@ fn deleting_a_body_cleans_downstream_layers_in_the_same_transaction() {
         "no dangling intent"
     );
     assert_eq!(bricks(s.state()), 0);
-    assert!(d.touched_layers.contains(&"intent"));
+    assert!(d.touched_layers.iter().any(|l| l == "intent"));
     // Replay agrees.
     let c = q();
     let tip = s.position().unwrap();
@@ -2217,7 +2250,7 @@ fn batch_layers_react_after_each_sub_op() {
         ],
     };
     let (_, d) = s.apply(&batch, meta(""), &c.control()).unwrap();
-    assert!(d.touched_layers.contains(&"intent"));
+    assert!(d.touched_layers.iter().any(|l| l == "intent"));
 }
 
 #[test]

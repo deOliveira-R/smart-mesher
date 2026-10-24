@@ -23,7 +23,7 @@ fn pipeline(threads: usize) -> Vec<u64> {
 }
 
 #[test]
-fn the_fixture_pipeline_is_deterministic() {
+fn determinism_fixture_pipeline() {
     let h = check(2, 4, pipeline).unwrap();
     assert_eq!(h.len(), 18);
     // Different fixtures give different hashes.
@@ -88,9 +88,26 @@ fn par_map_keeps_index_order() {
 }
 
 #[test]
+fn determinism_compares_float_bits() {
+    // By value -0.0 == 0.0 would pass; by bits the difference is caught.
+    let r = check_f64_bits(1, 2, |t| vec![if t == 1 { 0.0 } else { -0.0 }]);
+    assert!(matches!(r, Err(DeterminismError::Mismatch { .. })), "{r:?}");
+    // By value NaN != NaN would fail; by bits the same NaN agrees.
+    assert!(check_f64_bits(2, 3, |_| vec![f64::NAN, 1.5]).is_ok());
+    assert!(check(1, 2, |_| f64::NAN).is_err(), "the value harness reports NaN as a mismatch");
+}
+
+#[test]
 fn hashing_is_stable() {
     // FNV-1a of the little-endian bits of 1.0 and -0.0 versus 0.0.
     assert_eq!(hash_f64_bits(&[]), 0xcbf2_9ce4_8422_2325);
+    // Published FNV-1a 64 test vectors pin the constants.
+    use core::hash::Hasher;
+    for (input, want) in [(&b"a"[..], 0xaf63_dc4c_8601_ec8c_u64), (&b"foobar"[..], 0x8594_4171_f739_67e8)] {
+        let mut h = Fnv::default();
+        h.write(input);
+        assert_eq!(h.finish(), want, "{input:?}");
+    }
     assert_ne!(hash_f64_bits(&[0.0]), hash_f64_bits(&[-0.0]));
     assert_eq!(hash_f64_bits(&[1.0, 2.0]), hash_f64_bits(&[1.0, 2.0]));
     assert_ne!(hash_f64_bits(&[1.0, 2.0]), hash_f64_bits(&[2.0, 1.0]));

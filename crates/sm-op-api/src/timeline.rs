@@ -7,19 +7,20 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::codec::{CodecError, canonical_bytes, canonicalize};
 use crate::error::TimelineError;
 use crate::hash::Hash256;
-use crate::op::OpRecord;
+use crate::op::{OpRecord, TypedOp};
 
 /// Domain tag of node hashes. Bump only with a format version.
 pub const NODE_DOMAIN: &str = "smart-mesh/node/v1";
 
 /// Free-form node metadata. Part of the node hash, so callers supply `time` explicitly (the
 /// engine never reads a clock).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
     /// Who issued the op (user, script, agent).
@@ -30,10 +31,12 @@ pub struct Meta {
     pub message: String,
 }
 
-/// The hashed part of a node: where it hangs, what it does, who did it.
-#[derive(Clone, Debug, PartialEq)]
+/// The hashed part of a node: where it hangs, what it does, who did it. Serializes with the
+/// same field names as the node file (`parent` omitted for a root).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeBody {
     /// Parent node, `None` for a root (applied to the empty state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Hash256>,
     /// The op, in stored form.
     pub op: OpRecord,
@@ -62,17 +65,136 @@ impl NodeBody {
 
 /// The recorded result of a node: not hashed, so the same op on another platform yields the
 /// same node even if float bits differ; replay compares it and reports `Diverged` on mismatch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
     /// `State::hash()` (quantized, platform independent) after applying the op.
     pub state: Hash256,
+    /// Quantized hash of every non-empty authoritative layer after the op
+    /// (`State::layer_hashes`), so a divergence names the layers that differ. Not part of the
+    /// node hash; may be empty (then a divergence reports no layer names).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layers: BTreeMap<String, Hash256>,
+    /// Implementation provenance: `layer:<name>` to the layer's `LayerType::DIGEST_VERSION`
+    /// (for every layer in [`layers`](Self::layers)) and `op:<name>` to the op's
+    /// `TypedOp::IMPL_VERSION` (the node's op and, for `core.batch`, every nested op), plus
+    /// `service:<name>` for each versioned injected service ([`Check::of_with`]). Not
+    /// part of the node hash. When replay mismatches and one of these differs from the current
+    /// registry, the error is [`Upgraded`](TimelineError::Upgraded) rather than `Diverged`.
+    /// May be empty (older nodes, hand-built checks).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, u32>,
 }
 
-/// One timeline node: hashed [`NodeBody`] plus the unhashed result [`Check`].
-#[derive(Clone, Debug, PartialEq)]
+impl Check {
+    /// The check of a state after applying `op`: its hash, its per-layer hashes and the
+    /// implementation versions the engine's registry reports for those layers and for `op`
+    /// (and the ops nested in a `core.batch`). Names the registry does not know are skipped.
+    pub fn of(registry: &crate::Registry, state: &crate::state::State, op: &OpRecord) -> Self {
+        let layers = state.layer_hashes();
+        let mut versions = BTreeMap::new();
+        for name in layers.keys() {
+            if let Some(v) = registry.layer_digest_version(name) {
+                versions.insert(format!("layer:{name}"), v);
+            }
+        }
+        let mut ops = vec![op.name.as_str()];
+        if op.name == crate::batch::Batch::NAME
+            && let Some(list) = op.params.get("ops").and_then(|v| v.as_array())
+        {
+            ops.extend(
+                list.iter()
+                    .filter_map(|r| r.get("name").and_then(|n| n.as_str())),
+            );
+        }
+        for name in ops {
+            if let Some(v) = registry.op_impl_version(name) {
+                versions.insert(format!("op:{name}"), v);
+            }
+        }
+        Self {
+            state: state.hash(),
+            layers,
+            versions,
+        }
+    }
+
+    /// Like [`of`](Self::of), also recording every versioned service of `services`
+    /// (`Services::with_versioned`) as `service:<name>` -> version. This is what `Session`
+    /// records, so a replay mismatch after an injected service changed version reports
+    /// [`Upgraded`](TimelineError::Upgraded). Nodes recorded without these keys are unaffected
+    /// (`changed_versions` ignores keys present on one side only).
+    pub fn of_with(
+        registry: &crate::Registry,
+        services: &crate::Services,
+        state: &crate::state::State,
+        op: &OpRecord,
+    ) -> Self {
+        let mut c = Self::of(registry, state, op);
+        for (name, v) in services.versions() {
+            c.versions.insert(format!("service:{name}"), v);
+        }
+        c
+    }
+
+    /// Keys whose recorded version (in `self`) differs from the version in `current`, sorted.
+    /// Only keys present on both sides count: a key on one side only means the content
+    /// differs (a layer became non-empty), not that an implementation changed.
+    pub fn changed_versions(&self, current: &Check) -> Vec<String> {
+        self.versions
+            .iter()
+            .filter(|(k, v)| current.versions.get(*k).is_some_and(|c| c != *v))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// The error for a replay whose result `actual` does not match this recorded check of
+    /// node `node`: [`Upgraded`](TimelineError::Upgraded) when a recorded implementation
+    /// version differs from the current one, else [`Diverged`](TimelineError::Diverged).
+    pub fn mismatch(&self, node: Hash256, actual: &Check) -> TimelineError {
+        let changed = self.changed_versions(actual);
+        if changed.is_empty() {
+            TimelineError::Diverged {
+                node,
+                recorded: self.state,
+                actual: actual.state,
+                layers: self.differing_layers(actual),
+            }
+        } else {
+            TimelineError::Upgraded { node, changed }
+        }
+    }
+
+    /// Names of layers whose hashes differ between `self` (recorded) and `actual`, sorted.
+    /// Empty when either side carries no layer hashes.
+    pub fn differing_layers(&self, actual: &Check) -> Vec<String> {
+        if self.layers.is_empty() || actual.layers.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<String> = self
+            .layers
+            .iter()
+            .filter(|(n, h)| actual.layers.get(*n) != Some(h))
+            .map(|(n, _)| n.clone())
+            .collect();
+        out.extend(
+            actual
+                .layers
+                .keys()
+                .filter(|n| !self.layers.contains_key(*n))
+                .cloned(),
+        );
+        out.sort();
+        out
+    }
+}
+
+/// One timeline node: hashed [`NodeBody`] plus the unhashed result [`Check`]. Serializes with
+/// the same shape as the node file: `parent`, `op`, `meta`, `check`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
     /// The hashed part.
+    #[serde(flatten)]
     pub body: NodeBody,
     /// The recorded result hash.
     pub check: Check,
@@ -109,8 +231,10 @@ impl Node {
     }
 }
 
-/// Where HEAD points.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where HEAD points. Serializes like [`Rev`](crate::Rev): `{"ref": "main"}`,
+/// `{"node": "<hash>"}` (detached) or `"empty"` (detached at the empty state).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "crate::session::Rev", into = "crate::session::Rev")]
 pub enum Head {
     /// Attached to a branch; new nodes advance it. The branch may be unborn.
     Ref(String),
@@ -118,17 +242,64 @@ pub enum Head {
     Detached(Option<Hash256>),
 }
 
-/// Whether `name` is an acceptable ref name (also a safe relative path).
+impl From<crate::session::Rev> for Head {
+    fn from(r: crate::session::Rev) -> Self {
+        use crate::session::Rev;
+        match r {
+            Rev::Empty => Head::Detached(None),
+            Rev::Node(h) => Head::Detached(Some(h)),
+            Rev::Ref(n) => Head::Ref(n),
+        }
+    }
+}
+
+impl From<Head> for crate::session::Rev {
+    fn from(h: Head) -> Self {
+        use crate::session::Rev;
+        match h {
+            Head::Detached(None) => Rev::Empty,
+            Head::Detached(Some(h)) => Rev::Node(h),
+            Head::Ref(n) => Rev::Ref(n),
+        }
+    }
+}
+
+impl JsonSchema for Head {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Head".into()
+    }
+    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <crate::session::Rev as JsonSchema>::json_schema(g)
+    }
+}
+
+/// Whether `name` is an acceptable ref name (also a safe, portable relative path).
+///
+/// Segments are separated by `/` and use only ASCII letters, digits, `.`, `_` and `-`. A segment
+/// must not be empty, `.` or `..`, end in `.lock` or `.`, or have a stem (the part before its
+/// first `.`) that is a Windows reserved device name, case-insensitively: `CON`, `PRN`, `AUX`,
+/// `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Mixed case is allowed; case-insensitive collisions
+/// between refs are rejected by [`Timeline::check_ref_name`].
 pub fn valid_ref_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')
         && !name.ends_with('/')
-        && name
-            .split('/')
-            .all(|p| !p.is_empty() && p != "." && p != ".." && !p.ends_with(".lock"))
+        && name.split('/').all(valid_segment)
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
+fn valid_segment(p: &str) -> bool {
+    if p.is_empty() || p == "." || p == ".." || p.ends_with(".lock") || p.ends_with('.') {
+        return false;
+    }
+    let stem = p.split('.').next().unwrap_or(p).to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    !reserved
 }
 
 #[derive(Clone, Debug)]
@@ -172,11 +343,12 @@ impl Timeline {
         canonicalize(&mut node.body.op.params)?;
         let h = node.body.hash()?;
         if let Some(old) = self.nodes.get(&h) {
-            if old.node.check != node.check {
+            if old.node.check.state != node.check.state {
                 return Err(TimelineError::Diverged {
                     node: h,
                     recorded: old.node.check.state,
                     actual: node.check.state,
+                    layers: old.node.check.differing_layers(&node.check),
                 });
             }
             return Ok(h);
@@ -189,6 +361,16 @@ impl Timeline {
         list.insert(at, h);
         self.nodes.insert(h, Entry { node, depth });
         Ok(h)
+    }
+
+    /// Replace the recorded result of node `h` (re-baselining after an implementation
+    /// upgrade). The body, and so the node hash, file name and every descendant, stay
+    /// unchanged; only the node file's `[check]` text changes, so a storage backend must
+    /// rewrite that one file ([`node_file`](Self::node_file)).
+    pub fn replace_check(&mut self, h: Hash256, check: Check) -> Result<(), TimelineError> {
+        let e = self.nodes.get_mut(&h).ok_or(TimelineError::UnknownNode(h))?;
+        e.node.check = check;
+        Ok(())
     }
 
     /// Look up a node.
@@ -263,19 +445,27 @@ impl Timeline {
         Ok(())
     }
 
-    /// Whether a ref of this name could be created or moved: valid, and not colliding with
-    /// another ref as a file versus a directory (`a` and `a/b`).
+    /// Whether a ref of this name could be created or moved: valid ([`valid_ref_name`]), and,
+    /// for a new name, not colliding with an existing ref on a case-insensitive file system:
+    /// its ASCII-lowercased form must differ from every existing ref's lowercased form (`try`
+    /// and `Try`), and must not clash with one as a file versus a directory after lowercasing
+    /// (`a` and `a/b`, `Feat` and `feat/one`).
     pub fn check_ref_name(&self, name: &str) -> Result<(), TimelineError> {
         if !valid_ref_name(name) {
             return Err(TimelineError::BadRefName(name.to_owned()));
         }
         if !self.refs.contains_key(name) {
-            let as_dir = format!("{name}/");
-            if self
-                .refs
-                .keys()
-                .any(|r| r.starts_with(&as_dir) || name.starts_with(&format!("{r}/")))
-            {
+            let lower = name.to_ascii_lowercase();
+            let nested = |long: &str, short: &str| {
+                long.len() > short.len()
+                    && long.starts_with(short)
+                    && long.as_bytes()[short.len()] == b'/'
+            };
+            let clash = self.refs.keys().any(|r| {
+                let r = r.to_ascii_lowercase();
+                r == lower || nested(&r, &lower) || nested(&lower, &r)
+            });
+            if clash {
                 return Err(TimelineError::BadRefName(name.to_owned()));
             }
         }
@@ -302,19 +492,37 @@ impl Timeline {
     }
 
     /// The committed layout as path to text: `ops/<hash>.toml` per node and `refs/heads/<name>`
-    /// per branch. There is no HEAD file. Node files are content-addressed and immutable, and
+    /// per branch. There is no HEAD file. Node files are content-addressed (immutable but for `replace_check`), and
     /// each branch owns exactly one ref file, so independent branches touch disjoint files.
     pub fn to_files(&self) -> Result<BTreeMap<String, String>, TimelineError> {
         let mut out = BTreeMap::new();
-        for (h, e) in &self.nodes {
-            let text = crate::text::node_to_toml(&e.node)
-                .map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
-            out.insert(format!("{OPS_DIR}{h}.toml"), text);
+        for h in self.nodes.keys() {
+            let (path, text) = self.node_file(*h)?;
+            out.insert(path, text);
         }
-        for (name, h) in &self.refs {
-            out.insert(format!("{HEADS_DIR}{name}"), format!("{h}\n"));
+        for name in self.refs.keys() {
+            if let Some((path, text)) = self.ref_file(name) {
+                out.insert(path, text);
+            }
         }
         Ok(out)
+    }
+
+    /// Path and text of one node file, exactly as [`to_files`](Self::to_files) writes it (for
+    /// incremental saves: node files are immutable except after `replace_check`, so only new or re-baselined ones need writing).
+    pub fn node_file(&self, h: Hash256) -> Result<(String, String), TimelineError> {
+        let e = self.nodes.get(&h).ok_or(TimelineError::UnknownNode(h))?;
+        let text = crate::text::node_to_toml(&e.node)
+            .map_err(|e| TimelineError::Format(format!("encode node {h}: {e}")))?;
+        Ok((format!("{OPS_DIR}{h}.toml"), text))
+    }
+
+    /// Path and text of one ref file, exactly as [`to_files`](Self::to_files) writes it, or
+    /// `None` if no such branch exists.
+    pub fn ref_file(&self, name: &str) -> Option<(String, String)> {
+        self.refs
+            .get(name)
+            .map(|h| (format!("{HEADS_DIR}{name}"), format!("{h}\n")))
     }
 
     /// Parse the layout written by [`to_files`](Self::to_files). Every node's hash is

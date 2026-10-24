@@ -263,6 +263,7 @@ dependencies = [
  "schemars_derive",
  "serde",
  "serde_json",
+ "smallvec",
 ]
 
 [[package]]
@@ -382,6 +383,7 @@ dependencies = [
 name = "sm-geom-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "sm-core",
  "smallvec",
@@ -440,6 +442,7 @@ dependencies = [
 name = "sm-model-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
  "sm-core",
@@ -475,6 +478,7 @@ dependencies = [
 name = "sm-scheme-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
  "sm-core",
@@ -515,6 +519,7 @@ dependencies = [
 name = "sm-topo-api"
 version = "0.0.0"
 dependencies = [
+ "schemars",
  "serde",
  "sm-core",
  "sm-geom-api",

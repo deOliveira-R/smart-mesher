@@ -10,7 +10,7 @@ Depends on `sm-core`, `sm-geom-api`, `sm-topo-api`, `sm-model-api`, `sm-mesh-api
 
 > Like **Cubit's scheme + interval-assignment (IIA) model**, it has per-entity schemes with firmness, auto selection, vertex types per surface, and a global integer interval solve. Like **Gmsh's transfinite/recombine pipeline**, constraints (transfinite curves/surfaces, periodic copies) are declared first and structured meshes are generated from them. It differs in four ways:
 > - **(A) One explicit, inspectable constraint store.** Every constraint has an id and an origin (intent, sizing, scheme + target, deck boundary, piece hint, driver), and the whole store, the solution, the schedule and every rejected candidate are serialized in the `Plan`. In Cubit these constraints are implicit session state; in Gmsh they are side effects of API calls.
-> - **(B) Impositions are data, phrased over capabilities.** A parent scheme requires `Caps::QUAD | Caps::STRUCTURED` of its linking faces, not a list of scheme names, so a new structured scheme needs no edits in the crates that impose. A conflict with a hard user choice is a typed error that names both sides.
+> - **(B) Impositions are data, phrased over capabilities.** A parent scheme requires `Caps::QUAD | Caps::BLOCK_STRUCTURED` of its linking faces (W0f gaps3; `STRUCTURED` alone before), not a list of scheme names, so a new structured scheme needs no edits in the crates that impose. A conflict with a hard user choice is a typed error that names both sides.
 > - **(C) Generation is pure and runs in parallel.** Generated nodes have canonical names (`NodeKey`), jobs of one wave run concurrently, and merge and commit are in a fixed order, so 1 thread and N threads give bit-identical meshes. Cubit and Gmsh mesh entity by entity and write straight into the mesh.
 > - **(D) Model-layer semantics feed the solve directly.** Deck pairs (periodic, rotational) become copy constraints that join equivalence classes with the sweep's own copies. Deck faces get a hard `Forbid(BOUNDARY_LAYER)`, and mirror faces get `PlaneLock`. Decomposition pieces (`PieceRef`, `PieceShape::Sweep`) are first-class volume targets.
 >
@@ -34,7 +34,8 @@ MeshIntent (serde) + Rejections + MeshInput {TopologyView, Model, PieceResolver,
   | 10. footprints per job; Kahn levels -> waves                                -> Plan (serde)
   | Driver::generate (Executor per wave; patches checked, claims split, merged in job order;
   |                    transforms; copy verification)                           -> PatchSet
-  | Driver::commit (nodes in patch-set order -> cells -> face and edge classes -> finish)
+  | Driver::commit (nodes in patch-set order -> cells -> face and edge classes -> finish;
+  |              a dimension-2 builder takes surface elements as polygon cells)
   \ Driver::mesh = plan -> generate -> commit; on err.blame() reject (target, scheme) and re-plan
 ```
 
@@ -88,10 +89,10 @@ Copy constraints (user copies, deck pairs, sweep targets, edge copies implied by
 
 ## Footprints, claims and waves
 
-Every job (`Job::Generate(target)` or `Job::Transform(id)`) has a **derived** `Footprint { reads, writes }`:
+Every job (`Job::Generate(target)` or `Job::Transform(id)`) has a **derived** `Footprint { reads, writes }` (W0f gaps 2: a generate job's dependency on a read target goes to the last transform over it, if any):
 
 - writes = the job's own target plus the children it claims;
-- reads = its boundary children that it does not claim (edges of a face, faces of a piece or group), its class root if it is a generated member, its `Precedes` predecessors; for a transform its targets.
+- reads = its boundary children that it does not claim (edges of a face, faces of a piece or group, and the embedded edges of a face or piece), its class root if it is a generated member, its `Precedes` predecessors; for a transform its targets.
 
 A job depends on the writer of everything it reads: the claimer for a claimed child, the group job for a grouped volume, the target's own job otherwise. Waves are Kahn levels over these dependencies; ties are broken in `Job` order. Two writers of one target, a read with no writer, and a cycle are `SchemeError::Schedule { jobs, constraints, reason }` naming the claims, copies or precedences involved.
 
@@ -103,11 +104,53 @@ A `Patch` has a local node table. Element entries are `u32`: `0..nodes.len()` na
 
 `PatchSet` keeps points and parameters as dense arrays in commit order (vertex nodes first, then each patch's nodes in merge order) plus a lookup-only `NodeKey -> u32` hash index that is never iterated. Commit resolves each patch's table once, so it does one lookup per node or reference of a patch, not one per element corner.
 
-`check_patch` enforces: the right target; node owners; unique keys that fit their owner; references that exist and are unique; curve patches own exactly `1..=n-1` of their edge; element shapes with the right node counts and dimension; owners empty or one per element; surface elements in a volume patch only for claimed faces.
+`check_patch` enforces: the right target; node owners; unique keys that fit their owner; references that exist and are unique; curve patches own exactly `1..=n-1` of their edge, **and so does every curve the target claims** (W0f: a claimed edge is split out and committed as a curve, so its numbering must hold for the copy generator's reversed mapping `n - k`); element shapes with the right node counts and dimension; owners empty or one per element; surface elements in a volume patch only for claimed faces. `split_claims` maps patch-local indices through a dense table (nodes are already in order), not a per-node `BTreeMap`.
 
 **Node keys.** `NodeKey { owner, index }`. A topology vertex is `(v, 0)`. An edge with `n` intervals owns `(e, 1..=n-1)` **in the edge's own direction**, so `GenCtx::edge_nodes`/`coedge_nodes`/`side_nodes`/`loops` give every boundary node without asking the curve scheme. Faces and volumes number their own nodes. A copy keeps the source index.
 
+**Surface element orientation (W0f).** Surface elements follow their face's normal (the topology orientation rule, left to right) or, for a copy, the root's orientation relative to the root's normal: the copy generator reverses elements when `det(M) (M n_s) . n_t < 0`, and `verify_copy` now compares elements with their cyclic orientation (rotated to the smallest key, the root's reversed when the copy flips), so a claimer that writes a verified member against its normal is a `CopyMismatch`. The `msweep` stub writes claimed planes along each plane face's normal.
+
 **Narrow inputs.** `GenCtx::loops(face)` returns closed `BoundaryLoop`s of node keys with the coedge stretches (pave, tri*, polygon schemes). `GenCtx::curve_patch(edge, fractions)` builds a valid curve patch from `n - 1` increasing fractions, so bias, dualbias and curvature schemes never compute keys or positions. `geom` has `face_loops`, `corner_angle`, `snap_to_face`, `volume_face_uses` next to the older point, tangent, length, normal and corner helpers. There is no second query trait: `&dyn TopologyView` is object-safe and `CellComplex` fixtures serve scheme tests.
+
+## Surface-only meshes (W0f, W0e decision 5)
+
+`MeshInput::selection` holds either pieces or faces of the view (`TopoFace` / `PartitionFace`), never both (`SchemeError::Input`). A face selection plans faces, curves and vertices only. `Driver::commit` into a dimension-2 builder (`ReferenceBuilder::surface()`) adds every surface element as a polygon cell (`MeshBuild::add_polygon`) classified on its face, oriented along the face normal (each face patch is reversed as a whole when its first element runs against the normal, so schemes need not agree on an orientation), and classifies every curve segment's facet on its edge; interior facets derive their class from the cells. A volume patch cannot go into a dimension-2 builder (`InvalidPatch`). Faces whose normals disagree across a shared edge cannot form one oriented surface; `finish` reports the facet. Tested in `surface_only.rs`: the six faces of a brick as one closed quad shell (`V - E + F = 2`, analytic area, cells along the outward normals, identical across executors), a single open face, mixed and mismatched selections.
+
+## W0f fixes (before plans are persisted)
+
+- **Firm sizes keep their firmness.** `IntervalRequest::Size(h)` with `Hard` or `Soft` becomes `Fixed { count: round(L / h).max(1), firmness }`; `Default` stays a real `Goal { L / h }`. (It used to become a goal and drop the firmness.)
+- **Size-field goals integrate.** With a `SizeField` and no request, an edge's goal is `integral ds / h(x)` (`geom::edge_size_goal`: composite 5-point Gauss-Legendre over the curve parameter, panels doubled until two estimates agree to `1e-10` relative). It used to sample `h` once at the midpoint. Test: `h(x) = 0.01 + x` on a unit edge gives `ln 101`.
+- **Boundary layers off faces are refused.** `MeshIntent::check` and the planner reject a boundary layer on anything but a `TopoFace` / `PartitionFace` (`SchemeError::Input`) until curve boundary layers exist; it used to be dropped silently. `BoundaryLayerIntent` gained `into: Vec<EntityId>` (empty = every adjacent volume; each entry must be an adjacent volume piece) and `params: Params`, both `serde(default)`, so later options are not breaking; it is no longer `Copy` (`BoundaryLayerIntent::new(first, growth, layers)`).
+- **`#[non_exhaustive]`**: `Selection` and `MeshConstraint` (a seeded selection, curve boundary layers later).
+- **Schemas.** The `schemars` feature (enables the upstream `schemars` features) derives `JsonSchema` on `SchemeName`, `Params` (object schema), `SchemeChoice`, `Firmness`, `Firm`, `IntervalRequest`, `BoundaryLayerIntent`, `EntityIntent`, `CornerIntent`, `MeshGroup`, `TransformIntent`, `SizingSpec`, `AutoPolicy`, `Defaults`, `MeshIntent` (and `VertexType`, `GroupId`, `TransformId` inside them). `schema_for!(MeshIntent)` is tested.
+
+## W0f gaps 2
+
+- **Embedded conformity (contract-owned planner behaviour).** `MeshInput::embedded_edges(parent)` / `embedded_vertices(parent)` read the `Incidence::EMBEDDED` edge and vertex members of a face or piece in the view. `Planner::region` adds the embedded edges of every selected face and piece to the region's edges (each gets a curve target, an interval variable and node keys `(e, 1..n-1)`) and their ends and the embedded vertices to its vertices (vertex nodes). `children_of` lists them as curve children of the face, of the piece and of a group's members, so `Requirements` accepts them; the schedule makes the parent's job read them, so their keys exist when it runs. `GenCtx::embedded(parent)` returns one node chain per embedded edge (edge direction) and a one-node chain per embedded vertex that ends no embedded edge. A scheme meshing a face or piece with embedded members must conform (reference every chain node, every chain segment an element edge) or report `NotApplicable`; `check_patch` rejects a face, volume or group patch (and its claimed faces) that does not reference every embedded node (`InvalidPatch` "does not conform to its embedded members"), replacing the old silent non-conforming mesh. Embedded faces of a volume are not covered. Tested in `gaps2.rs` with a conforming two-polygon scheme (`splitpoly`) on a face split by an embedded diagonal, the stub `tri` refused, and an embedded point that needs a vertex node.
+- **Transforms over faces and curves.** `TransformIntent::targets` may name faces and curves of the region besides pieces (`plan_transforms`). In the scheduler the last transform over a target (by id) is the writer its readers depend on (a volume reading a smoothed face, a face reading a transformed edge, a copy member reading its transformed root); transforms over one target keep their id-order chain and still depend on the target's generator. `GenCtx::patches` therefore shows later waves the transformed patch, and a generated copy of a transformed root is the image of the transformed patch. `Plan` and `Footprint` are unchanged. A transform covering a target and one of its readers is a dependency cycle (`Schedule`). Needed for smoothing a surface before a sweep and for transforms on surface-only meshes (W0e decision 5).
+- **User interval rows.** `MeshIntent::intervals: Vec<IntervalConstraint>` (`serde(default)`; `IntervalConstraint` and `Rel` derive `JsonSchema` under `schemars`): matched, relative and chain-sum intervals (PARITY C P1). `IntervalConstraint::check` (called by `MeshIntent::check`) requires edge kinds, counts and minimums `>= 1`, `min <= max`, finite positive goals, non-empty rows without zero coefficients and `|rhs| <= 2^53`; `IntervalConstraint::canonicalize` (called by `MeshIntent::canonicalize` and the planner) sorts and merges `Linear` terms and sorts `EvenSum` edges. The planner adds each row with `Origin::Intent` after the per-edge goals, refusing an edge outside the region (`Input`). Not adopted: an optional `IntervalSink::goal`.
+- **Commit node correspondence (contract).** `Driver::commit` adds nodes in `PatchSet::nodes()` order, so `VertexIx(i) == PatchSet::index_of(key) == i` (finishing does not renumber vertices); a non-empty builder is refused (`Input`). `Meshed::vertex_of(key)` reads it. There is no `CommitMap`: a cell's target is its classification.
+
+## W0f gaps3: block-structured faces
+
+- `Caps::BLOCK_STRUCTURED = Caps(1 << 10)`: all-quad, valence-4 interior, so every quad strip
+  can be walked boundary to boundary. `Caps::STRUCTURED` is narrowed to "exactly one
+  `NodeGrid`" (a single-block mapped mesh). Map produces `QUAD | STRUCTURED | BLOCK_STRUCTURED`,
+  submap `QUAD | BLOCK_STRUCTURED`. `Patch::grid` is the single-block structured view (map); a
+  submap patch need not carry one (the submap promise of "grid blocks" is dropped).
+- `Patch::strip_from(key) -> Option<Vec<NodeKey>>`: the node line of the quad strip that starts
+  at boundary node `key`, `key` first. A grid answers through `NodeGrid::line_from` (fast path);
+  otherwise the element table is walked (interior edge from `key`, then at each node the edge
+  sharing no quad with the incoming one) until a boundary node; ties (re-entrant corner,
+  irregular node) go to the smallest neighbour key. `None` for a non-quad patch, a key off the
+  boundary, a corner without an interior edge, or a walk that does not close. `GenCtx::strip_from(face,
+  key)` and `GenCtx::surface_patch(face)` expose it to generators.
+- The planner's claimer mask (`child_caps`) includes `BLOCK_STRUCTURED`, so a claimed linking
+  face written by its claimer still satisfies the imposition.
+- Stubs: the sweep imposes `QUAD | BLOCK_STRUCTURED` on linking faces and walks them with
+  `GenCtx::strip_from`; the stub submap attaches no grid. Tests (`gaps3.rs`): an L-shaped
+  submapped face (two blocks, no grid) walked from every kind of boundary node, the grid fast
+  path agreeing with the walk, and a sweep through four hard-submapped (grid-less) linking faces.
 
 ## Failure, blame and re-plan
 
@@ -127,13 +170,13 @@ Nothing is written before every patch exists, and `commit` builds a fresh builde
 
 ## Transforms
 
-`MeshTransform::apply(cx, targets, params, patches)` rewrites one patch per target, in target order. `MeshIntent::transforms` lists standalone conversions (THex, HTet, QTri) over arbitrary volume targets; `MeshGroup::conversion` is shorthand for a transform over the group (driver id `TransformId::GROUP_BASE | group id`). A transform is a job whose reads and writes are its targets: it runs after every writer of them, and transforms over the same targets run in id order. The rewritten patches are checked and swapped in after the wave; any failure fails the mesh.
+`MeshTransform::apply(cx, targets, params, patches)` rewrites one patch per target, in target order; it is restricted to **topology-preserving patch edits** (smoothing, snapping, reclassification), because the rewritten patch is re-checked by `check_patch`, which rejects nodes its target does not own. `MeshIntent::transforms` lists such transforms over volume targets (pieces); `MeshGroup::conversion` is shorthand for a transform over the group (driver id `TransformId::GROUP_BASE | group id`) and is **deprecated** (W0f). **Element conversions** (THex, HTet, QTri, TQuad) cannot work as `MeshTransform`s: they create new nodes on shared faces and edges (owned by neighbours) and change element counts. They are IR -> IR mesh passes: read a finished mesh through `sm_mesh_api::MeshRead`, build the converted mesh through `MeshBuild` (classification carried over, new nodes classified on the entity of the split face/edge/cell), and re-verify the deck pairs on the result (the conversion must split paired deck faces identically). They live in the mesh-ops crates, not in this contract. A transform is a job whose reads and writes are its targets: it runs after every writer of them, and transforms over the same targets run in id order. The rewritten patches are checked and swapped in after the wave; any failure fails the mesh.
 
 ## Model layer
 
 - **Decks.** Each `FaceKindView::Deck` face gets a hard, deck-origin `Forbid(BOUNDARY_LAYER)` imposition (a `BoundaryLayerIntent` on it is `BoundaryLayerOnDeck`). The A side of a translation or rotation pair gets a `CopyConstraint` to B with `deck.transform()`. A mirror face gets `PlaneLock`.
 - **Boundary layers.** The intent on a face becomes `MeshConstraint::BoundaryLayer { face, volume, spec }` per adjacent volume target plus a hard `Need::Caps(BOUNDARY_LAYER)` on it (a user request is never silently dropped). Only a volume scheme with that capability can honour it: others are passed over, a hard choice is `NotApplicable`, and nothing applicable is `NoApplicableScheme`. No boundary-layer scheme ships in W1.
-- **Pieces.** Volume targets are pieces (`Target::piece`, `piece_of`): a `TopoVolume` id is `PieceRef::Whole`, a `PartitionCell` id `PieceRef::Cell`. `PieceResolver` maps pieces to faces of the view and node owners to classification entities. The default `WholeFaces` handles whole volumes and cells whose faces are all whole model faces, including composites of whole volumes (internal faces vanish, so a composite of merged bricks is meshed as one piece). It refuses cut faces with a clear error; a decomposition-overlay resolver is the seam for them.
+- **Pieces.** Volume targets are pieces (`Target::piece`, `piece_of`): a `TopoVolume` id is `PieceRef::Whole`, a `PartitionCell` id `PieceRef::Cell`. `PieceResolver` maps pieces to faces of the view and node owners to classification entities. `WholeFaces` handles whole volumes and cells whose faces are all whole model faces, including composites of whole volumes (internal faces vanish, so a composite of merged bricks is meshed as one piece), and refuses cut faces with a clear error. **`DecompositionFaces` (W0f)** resolves every piece face through `Decomposition::piece_face_cells`, so pieces split with `Model::split_realized` mesh through the decomposition overlay (`MeshInput::topo` = the `Overlay`): the cut face, the partitioned halves of model faces and the virtual edges and vertices are ordinary faces, edges and vertices of the view, and `PieceShape::Sweep` hints resolve through `face_of`. Both resolvers classify node owners on themselves for every model and decomposition kind (`Topo*` and `Partition*`, W0e decision 1), so a split piece's mesh lies on its `PartitionCell`, its cut-face nodes and faces on the `PartitionFace`, and so on. Tested end to end in `split_piece.rs` (both pieces: interior faces on the cut face; one piece alone: boundary faces on it).
 
 ## Determinism and parallelism
 
@@ -159,27 +202,32 @@ Tests (all through the sm-topo-api `CellComplex` fixtures and the sm-mesh-api `R
 | `copies.rs` | deck x sweep matrix (source/target in both directions), conflicting redundant constraints, impositions through `copy`, copies contributed by a face scheme, a deck copy of a claimed face scheduled after the group |
 | `contracts.rs` | `BadRequirement`, schedule errors, blame of a soft parent, polyhedral commit, patch and grid API, linear rows, geometry helpers, executors |
 | `intent_serde.rs` | intent and plan round trips through JSON and the Op codec (TOML-safe), parameter checks |
+| `many_to_one.rs` | several sources into one claimed target (see above) |
+| `split_piece.rs` | realized decomposition split meshed end to end through the overlay, classification on `Partition*`, determinism |
+| `surface_only.rs` | dimension-2 commits, claimed-edge curve rule, sizing-function error |
 | `determinism.rs` | see above |
 
 ## Deviations and limits (honest list)
 
-- **Additions to the section 5 listing** (nothing removed): `CopyMember::vertex_map` (the composed root-to-member correspondence, needed by the generator and the verifier); `Plan::sizing` (so `generate(input, plan, exec)` can rebuild the size field without the intent); `Plan::class_of`, `MeshingProblem::{claim_of, planned_targets}`; `NodeGrid::new`; `Patch::local_len`; `PatchSet::merge_order`; `Elements::indices`; `Caps::without` and `BitAnd`; `SideDir::{turned, reversed, along_i}`; `TransformId::GROUP_BASE`; `copy::{compose, inverse, compose_maps, invert_map, edge_map_for, target_vertices}`; `SchemeError::BadRequirement` also covers requirements on resolved targets.
+- **Additions to the section 5 listing** (nothing removed): `CopyMember::vertex_map` (the composed root-to-member correspondence, needed by the generator and the verifier); `Plan::sizing` (so `generate(input, plan, exec)` can rebuild the size field without the intent); `Plan::class_of`, `MeshingProblem::{claim_of, planned_targets}`; `NodeGrid::new`; `Patch::local_len`; `PatchSet::merge_order`; `Elements::indices`; `Caps::without` and `BitAnd`; `SideDir::{turned, reversed, along_i}`; `TransformId::GROUP_BASE`; `copy::{compose_maps, invert_map, edge_map_for, target_vertices}`; `SchemeError::BadRequirement` also covers requirements on resolved targets. W0f additions: `DecompositionFaces`, `sizing::field_for`.
+- **Removed in W0f (W0e decision 4):** `copy::{compose, inverse}`. Copy transforms compose with `sm_core::Transform::{compose, inverse}` (same convention: `a.compose(b)` applies `b` first).
 - `Meshed::attempts` is the history of failures that caused re-plans followed by the passed-over candidates of the final plan; `Plan::attempts` has only the latter (plus candidates skipped because of rejections).
 - `NodeGrid::position` searches the boundary ring first and then the interior instead of keeping a sorted boundary index, so `NodeGrid` stays constructible by struct literal. `line_from` is O(ni + nj).
 - `MeshingProblem` and `Plan` keep lazily built lookup tables that are skipped by serde and equality. Mutating the public tables by hand after a lookup leaves them stale; the driver never does.
 - With impositions present, an auto list does not hide the registered schemes that are not in it (a narrow list must not make a parent's requirement unsatisfiable).
 - Generation-time blame does not look at firmness (planning-time blame never blames a hard intent). A hard choice that fails generation is rejected and the re-plan ends in `NoApplicableScheme` with the failure in its attempts.
 - Planning builds copy classes from scratch after every requirement that adds copies; this is O(copies) each time. Fine for decks and sweeps, to be revisited if a scheme adds thousands of copies one by one.
-- A claimed *edge* child is split out of its claimer's patch like a face, but the curve rule (`1..=n-1`) is not re-checked on the split patch.
-- Volume copies, a boundary-layer scheme and surface-only meshes (an `sm-mesh-api` face needs a cell) are out of v1. Copied nodes get `Param::None`; a later pass may re-project.
+- Volume copies and a boundary-layer scheme are out of v1. Copied nodes get `Param::None`; a later pass may re-project.
 - The reference interval solver is not an optimal IIA: greedy repair with a step limit. It is exact for the structured rows used here; an ILP or network-flow solver can plug in behind `IntervalSolver`.
-- The face-copy vertex correspondence is geometric (`transform(p)` within the summed vertex tolerances) unless `vertex_map` is given. A closed edge matches by its ends only.
-- Test stubs are stubs: `sweep` finds columns by straight continuation and handles prismatic stacks only; `submap` meshes layouts with exactly four logical sides (the corner-override test generates a face whose straight-through vertex sits inside a logical side); the many-to-one test is a multisweep through three stacked volumes with one source and one target (it exercises claims, interface faces, the path sum and verification, not several sources into one target face).
+- The face-copy vertex correspondence is geometric (`transform(p)` within the summed vertex tolerances) unless `vertex_map` is given. A closed edge matches by its ends only. The edge correspondence is one-to-one: two source edges with one image (two edges sharing their ends against a single target edge) are a `Correspondence` error (W0f).
+- Sizing: `SizingSpec::Function` without `Driver::size` is `SchemeError::Input("sizing function '..' needs a SizeField")` in planning and generation (`sizing::field_for`), never a silent fallback to one interval per edge; a non-positive constant size is an error too (W0f).
+- `NodeGrid` of a copy member follows the image of the root's layout (keys mapped, `ni`/`nj` and order kept), not the member's own logical side 0; documented on `NodeGrid`. The existing consumer (`line_from`) is key-based.
+- Test stubs are stubs: `sweep` finds columns by straight continuation and handles prismatic stacks only; `submap` meshes layouts with exactly four logical sides (the corner-override test generates a face whose straight-through vertex sits inside a logical side). `groups.rs` has a multisweep through three stacked volumes (claims, interface faces, the path sum, verification). **`many_to_one.rs` (W0f, W0e decision 6)** is the real many-to-one sweep: two source faces of different densities (2 x 2 and 1 x 2 quads) swept into one six-sided target face, which the `m2one` test scheme claims and writes as the projection of both sources (boundary columns from vertical edges and linking-face grids, interior columns, including the edge where the sources meet, through the volume onto target-face nodes); 18 hexes, analytic volume, 6 target quads, `validate` clean, deterministic.
 - `Cargo.lock` gained the `sm-op-api` edge for this crate (written by cargo).
 
 ## Answers to the open questions (recommendation section 6)
 
-1. **Cut faces of pieces.** The contract does not change. `PieceResolver` is the seam and `WholeFaces` refuses cut faces with a typed error; an overlay resolver arrives with the decomposition overlay.
+1. **Cut faces of pieces.** The contract does not change. `PieceResolver` is the seam: `WholeFaces` refuses cut faces with a typed error, `DecompositionFaces` (W0f) resolves them through the overlay.
 2. **Submap side directions.** Driver-owned, in `FaceLayout` (`LogicalSide::dir`). Many-to-one layer surfaces stay scheme-private (`TargetPlan::data`).
 3. **Rotational sweeps, morph copies, volume copies.** Copies stay rigid (one `sm_core::Transform`; a rotation is one). Morphing is a sweep generation detail. Volume copies are model-layer instancing, not schemes.
 4. **Re-plan granularity.** Full deterministic re-plan; `plan_with(rejections)` leaves room for an incremental re-solve behind the same API.
@@ -187,12 +235,29 @@ Tests (all through the sm-topo-api `CellComplex` fixtures and the sm-mesh-api `R
 6. **Deck pair where B is the sweep source.** Copy classes (D2); tested in both directions.
 7. **Capabilities or names.** Capabilities by default; names for "exactly this algorithm". A scheme crate must never list sibling scheme names to express a property.
 8. **Params and replay.** `serde_json::Value` checked through the Op codec; `Rejections` stored in the `Plan`.
-9. **Surface-only meshes.** An `sm-mesh-api` change if `docs/PARITY.md` ever needs them; the patch contract already carries surface elements.
+9. **Surface-only meshes.** Done in W0f: dimension-2 meshes in `sm-mesh-api`, face selections and dimension-2 commits here.
 10. **A rayon executor.** Lives in the mesher crate and implements `Executor`.
 
-## API change requests (non-blocking)
+## API change requests
 
-- `sm-mesh-api`: `Classification::dim` should accept `PartitionFace` (2), `PartitionEdge` (1) and `PartitionVertex` (0), so mesh entities on virtual cuts can be classified.
-- `sm-model-api` / `sm-topo-api`: a way to realize a piece's cut faces as topology ids, so a resolver can return them. Proposed: `Decomposition::piece_face_cells(&self, pf: &PieceFace, topo: &dyn TopologyView) -> Option<Vec<EntityId>>`, backed by an overlay `Model::realize_cut(cut: CutId, faces: &[EntityId])`.
-- `sm-topo-api` / `sm-model-api`: an optional `schemars` feature deriving `JsonSchema` on `CoedgeKey`, `CornerKey`, `Side`, `PieceRef`, `PieceFace`, `CutId` and `Keep`, so that `MeshIntent` and `Plan` can export schemas for `TypedOp`/MCP.
-- `sm-core`: `Transform::inverse()` and composition (`then`). This crate carries its own `copy::{compose, inverse}`; a shared one would remove the duplicate.
+All four requests were accepted (W0e decisions 1 to 4) and applied in W0f: `Classification::dim` accepts the `Partition*` kinds; `Model::split_realized` + `Decomposition::piece_face_cells` realize and resolve cut faces (the overlay mints the cut cells, the piece ids come from the model); `schemars` features on `sm-topo-api` and `sm-model-api` derive `JsonSchema` on `Side`, `CoedgeKey`, `CornerKey`, `PieceRef`, `PieceFace`, `CutId`, `Keep`; the duplicate transform algebra is gone. This crate does not yet derive `JsonSchema` on `MeshIntent` / `Plan` themselves (no `schemars` feature here); that is the MCP layer's step now that the leaf types have schemas.
+
+## W0f gaps4
+
+- **`Requirements::reads(other) -> ConstraintId`.** A scheme may declare that its generation
+  reads the patch of a target that is not one of its sub-entities (curve `copy` by percent or
+  auto, PARITY C P1, as an ordinary scheme). It records a scheme-origin
+  `MeshConstraint::Precedes { before: other, after: self }`, so `GenCtx::patches.get(other)` is
+  guaranteed during generation. Refused (`REFUSED`, `BadRequirement` when `requirements`
+  returns) when `other` is not a target of the meshed region, is the requester, one of its
+  ancestors (the requester is in `other`'s sub-entities) or a child the requester claimed.
+  `constraint(Precedes)` keeps its old child-only rule. The planner's `Scope` (crate-private)
+  now carries region membership and a sub-entity predicate (`children_in`, factored out of
+  `children_of`). No public type changes.
+- **Blamed read cycles.** A schedule `dependency cycle` whose involved constraints include a
+  scheme-origin `Precedes` from a blameable `(target, scheme)` (not hard, not `copy`, not
+  already rejected) is reported as `Infeasible { reason: "dependency cycle through a scheme
+  read", blame: Some(reader) }` (the later such constraint), so the re-plan loop rejects that
+  scheme and falls back; otherwise it stays `SchemeError::Schedule`. Tested: a sibling read
+  orders the waves and finds the source patch; self, parent and out-of-region reads are refused;
+  a soft two-curve read cycle falls back, a hard one stays a schedule error.

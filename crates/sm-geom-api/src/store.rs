@@ -14,6 +14,7 @@ use sm_core::{EntityId, EntityKind};
 /// Serializable description of a curve.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CurveDef {
     /// Line.
@@ -29,6 +30,7 @@ pub enum CurveDef {
 /// Serializable description of a surface.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum SurfaceDef {
     /// Plane.
@@ -45,6 +47,11 @@ pub enum SurfaceDef {
     Nurbs(NurbsSurface),
     /// An implicit-only surface (general quadric, torus quartic). No parametrization.
     Implicit(ImplicitDef),
+    /// Elliptic cylinder (W0f gaps 2; also the image of a non-uniformly scaled cylinder).
+    EllipticCylinder(crate::EllipticCylinder),
+    /// One nappe of an elliptic cone (W0f gaps 2; the elliptic frustum primitive and the image
+    /// of a non-uniformly scaled cone).
+    EllipticCone(crate::EllipticCone),
 }
 
 /// One number of a shape definition, tagged with how it is quantized for hashing (see
@@ -72,6 +79,14 @@ fn frame_values(fr: &Frame, f: &mut impl FnMut(ShapeValue)) {
             f(ShapeValue::Angle(v));
         }
     }
+}
+
+/// Bit set in a NURBS degree value when that direction is periodic: periodic data hashes apart
+/// from non-periodic data with the same numbers, and non-periodic hashes are unchanged.
+const PERIODIC_DEGREE_FLAG: u64 = 1 << 32;
+
+fn degree_value(degree: usize, periodic: bool) -> ShapeValue {
+    ShapeValue::Int(degree as u64 | if periodic { PERIODIC_DEGREE_FLAG } else { 0 })
 }
 
 fn points_values(pts: &[sm_core::Point3], f: &mut impl FnMut(ShapeValue)) {
@@ -120,7 +135,28 @@ fn finite_pos(v: f64) -> bool {
     v.is_finite() && v > 0.0
 }
 
+/// Largest `|x|` of the scale-free values a definition visits.
+fn unitless_scale(visit: impl FnOnce(&mut dyn FnMut(ShapeValue))) -> f64 {
+    let mut m = 0.0f64;
+    visit(&mut |v| {
+        if let ShapeValue::Unitless(x) = v
+            && x.is_finite()
+        {
+            m = m.max(x.abs());
+        }
+    });
+    m
+}
+
 impl CurveDef {
+    /// The hash codes of the definition, in [`Self::for_each_value`] order: each value goes
+    /// through [`crate::ModelTolerance::quantize_shape_in`] with the largest scale-free magnitude
+    /// of this definition, so cancellation noise next to a large coefficient hashes as zero.
+    pub fn quantized_values(&self, tol: &crate::ModelTolerance, mut f: impl FnMut(i64)) {
+        let scale = unitless_scale(|g| self.for_each_value(g));
+        self.for_each_value(|v| f(tol.quantize_shape_in(v, scale)));
+    }
+
     /// Visit every number of the definition in a fixed order (variant tag first), each tagged
     /// with its quantization class. Content hashes are built from this.
     pub fn for_each_value(&self, mut f: impl FnMut(ShapeValue)) {
@@ -147,7 +183,7 @@ impl CurveDef {
             }
             Self::Nurbs(n) => {
                 f(ShapeValue::Int(4));
-                f(ShapeValue::Int(n.degree as u64));
+                f(degree_value(n.degree, n.periodic));
                 floats_values(&n.knots, &mut f);
                 points_values(&n.control, &mut f);
                 weights_values(&n.weights, &mut f);
@@ -178,6 +214,12 @@ impl CurveDef {
 }
 
 impl SurfaceDef {
+    /// The hash codes of the definition (see [`CurveDef::quantized_values`]).
+    pub fn quantized_values(&self, tol: &crate::ModelTolerance, mut f: impl FnMut(i64)) {
+        let scale = unitless_scale(|g| self.for_each_value(g));
+        self.for_each_value(|v| f(tol.quantize_shape_in(v, scale)));
+    }
+
     /// Visit every number of the definition in a fixed order (variant tag first), each tagged
     /// with its quantization class. Content hashes are built from this.
     pub fn for_each_value(&self, mut f: impl FnMut(ShapeValue)) {
@@ -210,8 +252,8 @@ impl SurfaceDef {
             }
             Self::Nurbs(n) => {
                 f(ShapeValue::Int(6));
-                f(ShapeValue::Int(n.degree_u as u64));
-                f(ShapeValue::Int(n.degree_v as u64));
+                f(degree_value(n.degree_u, n.periodic[0]));
+                f(degree_value(n.degree_v, n.periodic[1]));
                 f(ShapeValue::Int(n.nu as u64));
                 f(ShapeValue::Int(n.nv as u64));
                 floats_values(&n.knots_u, &mut f);
@@ -222,6 +264,19 @@ impl SurfaceDef {
             Self::Implicit(d) => {
                 f(ShapeValue::Int(7));
                 d.for_each_value(f);
+            }
+            Self::EllipticCylinder(c) => {
+                f(ShapeValue::Int(8));
+                frame_values(&c.frame, &mut f);
+                f(ShapeValue::Length(c.a));
+                f(ShapeValue::Length(c.b));
+            }
+            Self::EllipticCone(c) => {
+                f(ShapeValue::Int(9));
+                frame_values(&c.frame, &mut f);
+                f(ShapeValue::Length(c.a));
+                f(ShapeValue::Length(c.b));
+                f(ShapeValue::Angle(c.half_angle));
             }
         }
     }
@@ -235,6 +290,8 @@ impl SurfaceDef {
             Self::Sphere(s) => s,
             Self::Torus(s) => s,
             Self::Nurbs(s) => s,
+            Self::EllipticCylinder(s) => s,
+            Self::EllipticCone(s) => s,
             Self::Implicit(_) => return None,
         })
     }
@@ -257,6 +314,8 @@ impl SurfaceDef {
             Self::Torus(t) if !(finite_pos(t.minor) && t.major > t.minor && t.major.is_finite()) => Err(GeomError::Invalid("torus must satisfy major > minor > 0")),
             Self::Nurbs(n) => n.validate(),
             Self::Implicit(ImplicitDef::Quadric(q)) if q.coeffs.iter().any(|c| !c.is_finite()) => Err(GeomError::Invalid("quadric coefficients")),
+            Self::EllipticCylinder(c) if !(finite_pos(c.a) && finite_pos(c.b)) => Err(GeomError::Invalid("elliptic cylinder semi-axes")),
+            Self::EllipticCone(c) if !(finite_pos(c.a) && finite_pos(c.b) && c.half_angle > 0.0 && c.half_angle < core::f64::consts::FRAC_PI_2) => Err(GeomError::Invalid("elliptic cone")),
             _ => Ok(()),
         }
     }
@@ -313,6 +372,7 @@ pub struct MemoryStore {
 /// The persisted form of a [`MemoryStore`] (definitions only).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StoreData {
     /// Curve definitions, serial order.
     pub curves: Vec<CurveDef>,
@@ -455,6 +515,35 @@ mod tests {
     }
 
     #[test]
+    fn quantized_values_zero_cancellation_noise_relative_to_the_definition() {
+        let tol = crate::ModelTolerance::DEFAULT;
+        let codes = |d: &SurfaceDef| {
+            let mut v = Vec::new();
+            d.quantized_values(&tol, |c| v.push(c));
+            v
+        };
+        // A unit cylinder about z translated to x = 1e6: the analytic cross terms are exactly
+        // zero, a noisy evaluation leaves residues of a few ulp of the constant term (1e12).
+        let shifted = Frame::at(Point3::new(1.0e6, 0.0, 0.0));
+        let exact = Quadric::from_local(&shifted, [1.0, 1.0, 0.0], [0.0; 3], -1.0);
+        let mut noisy = exact;
+        noisy.coeffs[3] = 3.0 * f64::EPSILON * 1.0e12;
+        noisy.coeffs[4] = -2.0 * f64::EPSILON * 1.0e12;
+        let a = SurfaceDef::Implicit(ImplicitDef::Quadric(exact));
+        let b = SurfaceDef::Implicit(ImplicitDef::Quadric(noisy));
+        assert_eq!(codes(&a), codes(&b));
+        // A real change of a coefficient still changes the hash.
+        let mut changed = Quadric::from_local(&shifted, [1.0, 1.0, 0.0], [0.0; 3], -1.0);
+        changed.coeffs[3] = 10.0;
+        assert_ne!(codes(&a), codes(&SurfaceDef::Implicit(ImplicitDef::Quadric(changed))));
+        // Lines: the direction is scale-free and unaffected.
+        let l = CurveDef::Line(Line::new(Point3::new(1.0e6, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).unwrap());
+        let mut lc = Vec::new();
+        l.quantized_values(&tol, |c| lc.push(c));
+        assert_eq!(lc.len(), 7);
+    }
+
+    #[test]
     fn implicit_only_and_nurbs_and_validation() {
         let mut s = MemoryStore::new();
         let q = s.add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric::sphere(&Frame::at(Point3::default()), 2.0)))).unwrap();
@@ -464,10 +553,10 @@ mod tests {
         let c = s.add_curve(CurveDef::Line(Line::new(Point3::default(), Vector3::new(1.0, 0.0, 0.0)).unwrap())).unwrap();
         assert!(s.curve(c).is_some());
         assert!(s.add_curve(CurveDef::Circle(Circle { frame: Frame::at(Point3::default()), radius: -1.0 })).is_err());
-        let n = NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::default(), Point3::new(1.0, 0.0, 0.0)], weights: None };
+        let n = NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::default(), Point3::new(1.0, 0.0, 0.0)], weights: None, periodic: false };
         let nc = s.add_curve(CurveDef::Nurbs(n)).unwrap();
         assert!((s.curve(nc).unwrap().eval(0.5) - Point3::new(0.5, 0.0, 0.0)).norm() < 1e-14, "NURBS is evaluable through the store");
-        let bad = NurbsCurve { degree: 1, knots: vec![0.0, 1.0], control: vec![Point3::default(), Point3::default()], weights: None };
+        let bad = NurbsCurve { degree: 1, knots: vec![0.0, 1.0], control: vec![Point3::default(), Point3::default()], weights: None, periodic: false };
         assert!(s.add_curve(CurveDef::Nurbs(bad)).is_err());
         // Replace and truncate.
         let old = s.replace_curve(c, CurveDef::Line(Line::new(Point3::default(), Vector3::new(0.0, 1.0, 0.0)).unwrap())).unwrap();

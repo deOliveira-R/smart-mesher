@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum Firmness {
     /// Set automatically (sizing, auto selection, corner picking).
     #[default]
@@ -22,6 +23,7 @@ pub enum Firmness {
 
 /// A value together with its firmness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Firm<T> {
     /// The requested value.
     pub value: T,

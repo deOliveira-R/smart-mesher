@@ -1,6 +1,7 @@
-//! Copy constraints: correspondence construction, transform algebra, the built-in copy
-//! generator (user copy, mirror, deck pairs, sweep targets) at curve and surface level, and the
-//! post-generation verification of members that another job writes.
+//! Copy constraints: correspondence construction, the built-in copy generator (user copy,
+//! mirror, deck pairs, sweep targets) at curve and surface level, and the post-generation
+//! verification of members that another job writes. Transform algebra is `sm_core::Transform`
+//! (`compose`, `inverse`); this module keeps only the index-map helpers.
 
 use crate::error::{Result, SchemeError};
 use crate::geom;
@@ -8,7 +9,7 @@ use crate::patch::{ElemShape, Elements, NodeGrid, Patch, PatchNode, PatchSet};
 use crate::plan::{CopyClass, CopyMember};
 use crate::problem::{ConstraintId, CopyConstraint};
 use crate::target::{NodeKey, Target};
-use sm_core::{EntityId, Point3, Transform, Vector3};
+use sm_core::{EntityId, Point3, Transform};
 use sm_mesh_api::Param;
 use sm_topo_api::{TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
@@ -21,48 +22,6 @@ fn corr(source: Target, target: Target, reason: impl Into<String>) -> SchemeErro
     }
 }
 
-/// `a` after `b` (apply `b` first): `p -> A (B p + tb) + ta`.
-pub fn compose(a: &Transform, b: &Transform) -> Transform {
-    let mut m = [[0.0; 3]; 3];
-    for (i, row) in m.iter_mut().enumerate() {
-        for (j, e) in row.iter_mut().enumerate() {
-            *e = (0..3).map(|k| a.m[i][k] * b.m[k][j]).sum();
-        }
-    }
-    let t = a.apply_vector(b.t) + a.t;
-    Transform { m, t }
-}
-
-/// The inverse of a transform, or `None` if its linear part is singular.
-pub fn inverse(a: &Transform) -> Option<Transform> {
-    let m = &a.m;
-    let det = a.det();
-    if !det.is_finite() || det.abs() < 1e-300 {
-        return None;
-    }
-    let c =
-        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
-    let adj = [
-        [c(1, 2, 1, 2), -c(0, 2, 1, 2), c(0, 1, 1, 2)],
-        [-c(1, 2, 0, 2), c(0, 2, 0, 2), -c(0, 1, 0, 2)],
-        [c(1, 2, 0, 1), -c(0, 2, 0, 1), c(0, 1, 0, 1)],
-    ];
-    let mut inv = [[0.0; 3]; 3];
-    for (i, row) in inv.iter_mut().enumerate() {
-        for (j, e) in row.iter_mut().enumerate() {
-            *e = adj[i][j] / det;
-        }
-    }
-    let linear = Transform {
-        m: inv,
-        t: Vector3::new(0.0, 0.0, 0.0),
-    };
-    let t = linear.apply_vector(a.t);
-    Some(Transform {
-        m: inv,
-        t: Vector3::new(-t.x, -t.y, -t.z),
-    })
-}
 
 /// Compose two sorted correspondences: `(a, b)` then `(b, c)` gives `(a, c)`.
 pub fn compose_maps(
@@ -236,6 +195,17 @@ pub fn edge_map_for(
             same = same_direction(t, *e, f, transform)?;
         }
         out.push((*e, f, same));
+    }
+    // A correspondence is one-to-one: two source edges must not share an image (for example
+    // two source edges with the same ends against a single target edge).
+    let mut imgs: Vec<EntityId> = out.iter().map(|o| o.1).collect();
+    imgs.sort_unstable();
+    if let Some(w) = imgs.windows(2).find(|w| w[0] == w[1]) {
+        return Err(corr(
+            source,
+            target,
+            format!("two source edges map to target edge {}", w[0]),
+        ));
     }
     Ok(out)
 }
@@ -421,11 +391,17 @@ fn orientation_flip(t: &dyn TopologyView, s: EntityId, d: EntityId, g: &Transfor
 /// Canonical element list: flat key storage and element ranges sorted by their key lists.
 type Canon = (Vec<NodeKey>, Vec<(usize, usize)>);
 
-fn canonical_elements(p: &Patch, map: &dyn Fn(NodeKey) -> Result<NodeKey>) -> Result<Canon> {
-    // Flat: keys of all elements back to back, each element sorted, plus its end offset.
+/// Elements in a comparable form. Surface elements (`Tri`, `Quad`, `Polygon`) keep their
+/// cyclic orientation: they are rotated to start at the smallest key, after reversing the cycle
+/// when `flip` (the copy reverses orientation); other elements are compared as key sets.
+fn canonical_elements(
+    p: &Patch,
+    map: &dyn Fn(NodeKey) -> Result<NodeKey>,
+    flip: bool,
+) -> Result<Canon> {
     let mut keys: Vec<NodeKey> = Vec::new();
     let mut ends: Vec<usize> = Vec::with_capacity(p.elements.len());
-    for (_, nodes) in p.elements.iter() {
+    for (shape, nodes) in p.elements.iter() {
         let start = keys.len();
         for &l in nodes {
             let k = p.key(l).ok_or_else(|| SchemeError::InvalidPatch {
@@ -434,7 +410,20 @@ fn canonical_elements(p: &Patch, map: &dyn Fn(NodeKey) -> Result<NodeKey>) -> Re
             })?;
             keys.push(map(k)?);
         }
-        keys[start..].sort_unstable();
+        let el = &mut keys[start..];
+        if matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) && !el.is_empty() {
+            if flip {
+                el[1..].reverse();
+            }
+            let lo = el
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, k)| **k)
+                .map_or(0, |(i, _)| i);
+            el.rotate_left(lo);
+        } else {
+            el.sort_unstable();
+        }
         ends.push(keys.len());
     }
     let mut ranges: Vec<(usize, usize)> = ends
@@ -450,9 +439,10 @@ fn canonical_elements(p: &Patch, map: &dyn Fn(NodeKey) -> Result<NodeKey>) -> Re
 }
 
 /// Check that the patch of `m.target` equals the image of the class root's patch: the same
-/// node keys at `from_root(p)` within `tol`, and the same elements by key. Used for members
-/// that a parent writes (claimed) instead of the driver. The constraint reported on failure is
-/// the last one on the member's path.
+/// node keys at `from_root(p)` within `tol`, and the same elements by key with the same cyclic
+/// orientation (the root's surface elements reversed when the copy reverses orientation, as the
+/// copy generator does). Used for members that a parent writes (claimed) instead of the
+/// driver. The constraint reported on failure is the last one on the member's path.
 pub fn verify_copy(
     t: &dyn TopologyView,
     ps: &PatchSet,
@@ -494,8 +484,12 @@ pub fn verify_copy(
             src.nodes.len()
         )));
     }
-    let a = canonical_elements(src, &|k| km.map(k))?;
-    let b = canonical_elements(dst, &|k| Ok(k))?;
+    let flip = match (class.root, m.target) {
+        (Target::Surface(sf), Target::Surface(df)) => orientation_flip(t, sf, df, &m.from_root)?,
+        _ => false,
+    };
+    let a = canonical_elements(src, &|k| km.map(k), flip)?;
+    let b = canonical_elements(dst, &|k| Ok(k), false)?;
     let same = a.1.len() == b.1.len()
         && a.1
             .iter()
@@ -503,7 +497,7 @@ pub fn verify_copy(
             .all(|(x, y)| a.0[x.0..x.1] == b.0[y.0..y.1]);
     if !same {
         return Err(mismatch(format!(
-            "element connectivity differs ({} elements against {})",
+            "element connectivity or orientation differs ({} elements against {})",
             b.1.len(),
             a.1.len()
         )));

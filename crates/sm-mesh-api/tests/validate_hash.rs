@@ -302,8 +302,9 @@ fn violation_codes_are_stable_and_specific() {
 
     let mut b = Broken::of(m.clone());
     b.sets = Some(vec![MeshSet {
-        id: id(EntityKind::Group, 0),
+        id: id(EntityKind::MeshSet, 1),
         name: "s".into(),
+        label: None,
         members: SetMembers::Cells(vec![CellIx(1), CellIx(0)]),
     }]);
     expect(&b, ViolationCode::Set);
@@ -383,7 +384,7 @@ fn edge_classification_obeys_the_dimension_order() {
             .edges
             .contains(&e)
     );
-    MeshEdit::drop_edges(&mut mm);
+    MeshEdit::drop_edges(&mut mm).unwrap();
     assert!(mm.tag(MeshEntityKind::Edge, "w").is_none() && mm.edges().is_none());
     assert!(
         mm.classified_on(id(EntityKind::TopoFace, 1))
@@ -685,6 +686,7 @@ fn content_hashes_cover_all_stored_data() {
     );
     // High-order cell records and their extra nodes.
     let ho_rec = |m: &mut ReferenceMesh, swap: bool, shift: f64| {
+        ensure_all_edges(m);
         let corners: Vec<VertexIx> = m.cell_corners(CellIx(0)).unwrap().to_vec();
         let mut nodes: Vec<PointIx> = corners.iter().map(|&v| v.into()).collect();
         for (k, [a, b]) in CellShape::Hex.local_edges().iter().enumerate() {
@@ -724,6 +726,7 @@ fn content_hashes_cover_all_stored_data() {
     );
     // Degree/basis: the same cell as a clone with a Lagrange record (27 nodes).
     let lag = edit(&|m| {
+        ensure_all_edges(m);
         let corners: Vec<VertexIx> = m.cell_corners(CellIx(0)).unwrap().to_vec();
         let mut nodes: Vec<PointIx> = corners.iter().map(|&v| v.into()).collect();
         for _ in 8..27 {
@@ -835,4 +838,18 @@ fn geometry_cache_is_keyed_on_coordinates() {
     let mut ok = m.clone();
     MeshEdit::set_geometry_cache(&mut ok, Some(compute_geometry_cache(&m))).unwrap();
     assert!(validate(&ok).is_empty());
+}
+
+/// Give a mesh an edge table with every edge on its own `TopoEdge` (high-order records need one).
+fn ensure_all_edges(m: &mut ReferenceMesh) {
+    let mut pairs = std::collections::BTreeSet::new();
+    for f in 0..m.face_count() {
+        let l = m.face_vertices(FaceIx::new(f));
+        for i in 0..l.len() {
+            let (a, b) = (l[i], l[(i + 1) % l.len()]);
+            pairs.insert(if a < b { (a, b) } else { (b, a) });
+        }
+    }
+    let explicit: Vec<(VertexIx, VertexIx, Classification)> = pairs.into_iter().enumerate().map(|(k, (a, b))| (a, b, on(EntityKind::TopoEdge, 900 + k as u64))).collect();
+    MeshEdit::ensure_edges(m, &mut SerialAlloc::new(), &explicit).unwrap();
 }

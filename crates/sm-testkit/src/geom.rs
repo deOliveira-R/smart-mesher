@@ -321,8 +321,16 @@ impl CurveExpect for Circle {
 
 /// Complete perimeter of an ellipse with semi-axes `a, b > 0`, to machine precision, from the
 /// arithmetic-geometric mean: `L = 4 a E(m)`, `m = 1 - b^2/a^2` (axes swapped so `a >= b`).
+/// Degenerate inputs are defined, not left to the series: one zero semi-axis gives the doubled
+/// segment `4 max(a, b)` (both zero: 0); a negative or non-finite semi-axis gives NaN.
 pub fn ellipse_perimeter(a: f64, b: f64) -> f64 {
+    if !(a.is_finite() && b.is_finite()) || a < 0.0 || b < 0.0 {
+        return f64::NAN;
+    }
     let (a, b) = if a >= b { (a, b) } else { (b, a) };
+    if b == 0.0 {
+        return 4.0 * a;
+    }
     let m = 1.0 - (b / a) * (b / a);
     let (mut an, mut bn) = (1.0_f64, (1.0 - m).sqrt());
     let mut cn2 = m; // c_0^2

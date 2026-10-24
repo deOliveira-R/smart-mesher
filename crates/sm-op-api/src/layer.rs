@@ -6,6 +6,9 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
+/// Successor map handed to [`LayerType::on_succession`]: old id to its successors.
+pub type Successors = BTreeMap<EntityId, Vec<EntityId>>;
+
 use serde::Serialize;
 use sm_core::EntityId;
 
@@ -111,6 +114,27 @@ impl Digest {
         }
         self
     }
+    /// Mix in a float whose identity quantization the caller already computed (`quantized`),
+    /// for layers whose quantum varies per field (`sm-model-api`'s Q2 rule, `sm-topo-api`'s
+    /// `HashWord::Float`). Identity mode writes `quantized`; exact mode writes `v.to_bits()`.
+    /// `NaN` and infinities use the same markers as [`f64_quantized`](Self::f64_quantized) in
+    /// both modes. Rounding to `quantized` is the caller's job and must be deterministic.
+    pub fn f64_with(&mut self, v: f64, quantized: i64) -> &mut Self {
+        if v.is_nan() {
+            self.0.update(&[5, 1]);
+        } else if v == f64::INFINITY {
+            self.0.update(&[5, 2]);
+        } else if v == f64::NEG_INFINITY {
+            self.0.update(&[5, 3]);
+        } else if self.1 {
+            self.0.update(&[5, 5]);
+            self.0.update(&v.to_bits().to_le_bytes());
+        } else {
+            self.0.update(&[5, 4]);
+            self.0.update(&quantized.to_le_bytes());
+        }
+        self
+    }
     /// Mix in another hash.
     pub fn hash(&mut self, h: &Hash256) -> &mut Self {
         self.0.update(&[6]);
@@ -151,6 +175,11 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// edges of the concept DAG in `docs/graph/concepts.yaml`. [`on_retired`](Self::on_retired)
     /// reactions run upstream-first in the topological order of these edges (ties by name).
     const DEPENDS_ON: &'static [&'static str] = &[];
+    /// Version of this layer's [`digest`](Self::digest) encoding. Bump it whenever the digest
+    /// of unchanged content changes (a field added to the hash, a new quantum, ...). Recorded
+    /// in every node's `Check::versions` as `layer:<NAME>`, so replay over an older timeline
+    /// reports `TimelineError::Upgraded` instead of a bare `Diverged`.
+    const DIGEST_VERSION: u32 = 1;
     /// Feed the canonical content into the digest. Must be deterministic and independent of
     /// allocation addresses, thread count and hash-map order. Write floats via
     /// [`Digest::f64_quantized`], never pre-round: a layer that rounds itself and writes
@@ -159,6 +188,13 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     /// True when the layer holds nothing. Empty layers do not enter the state hash, so
     /// installing a new concept leaves the hashes of existing histories unchanged.
     fn is_empty(&self) -> bool;
+    /// Called after an op recorded successors (`ApplyCtx::record_successors`): old id to new
+    /// ids (split children, merge survivor; a copy is `A -> [A, A']`). Runs in the same
+    /// dependency order as [`on_retired`](Self::on_retired) and before it, on every non-empty
+    /// authoritative layer whose [`references_any`](Self::references_any) holds for the keys,
+    /// so a downstream layer can carry groups or names over before the old ids are retired.
+    /// Must be deterministic. Default: nothing. (v1 gives no upstream state access.)
+    fn on_succession(&mut self, _succ: &Successors) {}
     /// Called after an op retired `ids`, on every non-empty authoritative layer, so references
     /// to deleted entities do not dangle. Must be deterministic. Default: nothing.
     fn on_retired(&mut self, _ids: &[EntityId]) {}
@@ -190,6 +226,8 @@ pub trait Layer: Any + Send + Sync {
     fn name(&self) -> &'static str;
     /// Layer role.
     fn role(&self) -> LayerRole;
+    /// See [`LayerType::DIGEST_VERSION`].
+    fn digest_version(&self) -> u32;
     /// Content digest of this layer (not memoized; `State` memoizes).
     fn content_hash(&self) -> Hash256;
     /// Exact content digest: like [`content_hash`](Self::content_hash) but floats written via
@@ -197,6 +235,8 @@ pub trait Layer: Any + Send + Sync {
     fn exact_hash(&self) -> Hash256;
     /// See [`LayerType::is_empty`].
     fn is_empty(&self) -> bool;
+    /// See [`LayerType::on_succession`].
+    fn on_succession(&mut self, succ: &Successors);
     /// See [`LayerType::on_retired`].
     fn on_retired(&mut self, ids: &[EntityId]);
     /// See [`LayerType::references_any`].
@@ -218,6 +258,9 @@ impl<T: LayerType> Layer for T {
     fn role(&self) -> LayerRole {
         T::ROLE
     }
+    fn digest_version(&self) -> u32 {
+        T::DIGEST_VERSION
+    }
     fn content_hash(&self) -> Hash256 {
         let mut d = Digest::new("smart-mesh/layer/v1", false);
         d.str(T::NAME);
@@ -232,6 +275,9 @@ impl<T: LayerType> Layer for T {
     }
     fn is_empty(&self) -> bool {
         LayerType::is_empty(self)
+    }
+    fn on_succession(&mut self, succ: &Successors) {
+        LayerType::on_succession(self, succ);
     }
     fn on_retired(&mut self, ids: &[EntityId]) {
         LayerType::on_retired(self, ids);
@@ -332,5 +378,47 @@ impl<T: Serialize> MapLayer<T> {
         self.digest_with(d, |d, v| {
             d.value(v);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn both(f: impl Fn(&mut Digest)) -> (Hash256, Hash256) {
+        let mut a = Digest::new("t", false);
+        let mut b = Digest::new("t", true);
+        f(&mut a);
+        f(&mut b);
+        (a.finish(), b.finish())
+    }
+
+    #[test]
+    fn f64_with_hashes_the_given_quantum_in_identity_mode_and_bits_in_exact_mode() {
+        // Same quantized value, sub-quantum difference: identity equal, exact different.
+        let (i1, e1) = both(|d| {
+            d.f64_with(1.0, 1024);
+        });
+        let (i2, e2) = both(|d| {
+            d.f64_with(1.0 + 1e-9, 1024);
+        });
+        assert_eq!(i1, i2);
+        assert_ne!(e1, e2);
+        // It matches f64_quantized when the caller rounds the same way.
+        let (iq, eq) = both(|d| {
+            d.f64_quantized(1.0, 1.0 / 1024.0);
+        });
+        assert_eq!(iq, i1);
+        assert_eq!(eq, e1);
+        // Non-finite values use the f64_quantized markers in both modes.
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (a, b) = both(|d| {
+                d.f64_with(v, 0);
+            });
+            let (c, e) = both(|d| {
+                d.f64_quantized(v, 1.0);
+            });
+            assert_eq!((a, b), (c, e));
+        }
     }
 }

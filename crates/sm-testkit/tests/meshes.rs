@@ -25,6 +25,13 @@ fn every_fixture_has_the_documented_volumes_and_is_valid() {
         check_mesh_euler(m, 1).unwrap_or_else(|e| panic!("{}: {e:?}", f.name));
         let nb = (0..m.face_count()).filter(|&f| m.face_right(sm_mesh_api::FaceIx::new(f)).is_none()).count();
         assert_eq!(nb, f.boundary_faces, "{}", f.name);
+        // The boundary surface has the documented exact area.
+        let area: f64 = (0..m.face_count())
+            .map(sm_mesh_api::FaceIx::new)
+            .filter(|f| m.face_right(*f).is_none())
+            .map(|f| sm_mesh_api::face_area_vector(m, f).norm())
+            .sum();
+        assert!((area - f.area).abs() < 1e-12 * f.area, "{}: area {area} vs {}", f.name, f.area);
     }
 }
 

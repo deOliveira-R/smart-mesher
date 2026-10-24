@@ -13,7 +13,7 @@ use crate::instancing::{ColorMap, Instancing};
 use crate::symmetry::{Provenance, Symmetry, pair_by_moments};
 use crate::xf::{GeomCache, Tolerance};
 use sm_core::{EntityId, EntityKind};
-use sm_topo_api::{Lineage, TopologyView};
+use sm_topo_api::{Dim, Lineage, TopologyView};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IdAlloc {
-    next: BTreeMap<u8, u64>,
+    pub(crate) next: BTreeMap<u8, u64>,
 }
 
 impl IdAlloc {
@@ -224,6 +224,12 @@ impl Model {
             }
             minted.push(*k);
         }
+        let mut names = BTreeSet::new();
+        for r in self.groups.values() {
+            if !names.insert(r.name.as_str()) {
+                return bad(format!("group name {:?} is used twice", r.name));
+            }
+        }
         for (k, r) in &self.boundaries {
             if r.id != *k || k.kind() != EntityKind::Boundary {
                 return bad(format!("boundary row {k} is mis-keyed"));
@@ -231,13 +237,19 @@ impl Model {
             minted.push(*k);
         }
         let ins = &self.instancing;
-        for (ks, kind) in [(ins.prototypes.keys().collect::<Vec<_>>(), EntityKind::Prototype), (ins.lattices.keys().collect(), EntityKind::Lattice), (ins.instances.keys().collect(), EntityKind::Instance), (self.decomposition.cells.keys().collect(), EntityKind::PartitionCell)] {
+        for (ks, kind) in [(ins.prototypes.keys().collect::<Vec<_>>(), EntityKind::Prototype), (ins.lattices.keys().collect(), EntityKind::Lattice), (ins.instances.keys().collect(), EntityKind::Instance), (ins.clusters.keys().collect(), EntityKind::Cluster), (self.decomposition.cells.keys().collect(), EntityKind::PartitionCell)] {
             for k in ks {
                 if k.kind() != kind {
                     return bad(format!("{k} is stored under the wrong kind"));
                 }
                 minted.push(*k);
             }
+        }
+        if let Some(k) = self.volume_color.keys().find(|k| k.kind() != EntityKind::TopoVolume) {
+            return bad(format!("volume color on {k}, which is not a volume"));
+        }
+        if let Some(k) = self.face_color.keys().find(|k| crate::color::expect_face_kind(**k).is_err()) {
+            return bad(format!("face color on {k}, which is not a TopoFace or PartitionFace"));
         }
         if let Some(k) = minted.iter().find(|k| self.ids.peek(k.kind()) <= k.serial()) {
             return bad(format!("the id allocator would reuse {k}"));
@@ -247,16 +259,55 @@ impl Model {
                 d.check()?;
             }
         }
+        for i in ins.instances.values() {
+            Self::check_clip(i.clip)?;
+        }
         for l in ins.lattices.values() {
             l.layout.check()?;
+            for sl in l.slots.values() {
+                Self::check_clip(sl.clip)?;
+            }
             if let Some(ix) = l.slots.keys().find(|ix| !l.layout.contains(**ix)) {
                 return bad(format!("slot {ix:?} is outside its layout"));
+            }
+        }
+        for c in ins.clusters.values() {
+            if c.members.len() > crate::instancing::MAX_FLAT_ENTRIES {
+                return bad(format!("a cluster has more than {} members", crate::instancing::MAX_FLAT_ENTRIES));
+            }
+            for mem in &c.members {
+                Self::check_clip(mem.clip)?;
             }
         }
         if let Some(l) = ins.find_cycle() {
             return Err(ModelError::Cycle(l));
         }
-        self.decomposition.check_integrity()
+        self.decomposition.check_integrity()?;
+        // Group members: allowed kinds, model-minted members present, no nesting cycle.
+        for r in self.groups.values() {
+            for m in &r.members {
+                self.check_group_member(*m).map_err(|e| ModelError::Invalid(format!("model integrity: group {}: {e}", r.id)))?;
+            }
+        }
+        for g in self.groups.keys() {
+            let mut stack = Vec::new();
+            self.group_cycle(*g, &mut stack)?;
+        }
+        Ok(())
+    }
+
+    fn group_cycle(&self, g: EntityId, stack: &mut Vec<EntityId>) -> Result<()> {
+        if stack.contains(&g) {
+            return Err(ModelError::Cycle(g));
+        }
+        stack.push(g);
+        if let Some(r) = self.groups.get(&g) {
+            for m in r.members.iter().filter(|m| m.kind() == EntityKind::Group) {
+                self.group_cycle(*m, stack)?;
+            }
+        }
+        stack.pop();
+        Ok(())
     }
 
     /// The id allocator state (read only).
@@ -290,7 +341,7 @@ impl Model {
         next.volume_color = r.map(&self.volume_color, true)?;
         next.face_color = r.map(&self.face_color, false)?;
         for g in next.groups.values_mut() {
-            g.members = g.members.iter().flat_map(|m| if matches!(m.kind(), EntityKind::TopoVolume | EntityKind::TopoFace | EntityKind::TopoBody) { r.resolve(*m) } else { vec![*m] }).collect();
+            g.members = g.members.iter().flat_map(|m| if Dim::of_kind(m.kind()).is_some() { r.resolve(*m) } else { vec![*m] }).collect();
         }
         if let Some(s) = &mut next.symmetry {
             s.domain = r.set(&s.domain);
@@ -298,12 +349,27 @@ impl Model {
         for p in next.instancing.prototypes.values_mut() {
             p.volumes = r.set(&p.volumes);
         }
+        // A clip volume follows a lineage only to a single successor; otherwise it keeps the
+        // old id and `validate` reports it (the user re-targets it with `set_instance` /
+        // `set_lattice_slot`).
+        let clip = |c: Option<EntityId>| match c.map(|c| (c, r.resolve(c))) {
+            Some((_, v)) if v.len() == 1 => Some(v[0]),
+            other => other.map(|(c, _)| c),
+        };
         for i in next.instancing.instances.values_mut() {
             i.recolor = r.color_map(&i.recolor);
+            i.clip = clip(i.clip);
         }
         for l in next.instancing.lattices.values_mut() {
             for s in l.slots.values_mut() {
                 s.recolor = r.color_map(&s.recolor);
+                s.clip = clip(s.clip);
+            }
+        }
+        for c in next.instancing.clusters.values_mut() {
+            for mem in &mut c.members {
+                mem.recolor = r.color_map(&mem.recolor);
+                mem.clip = clip(mem.clip);
             }
         }
         for o in &mut next.instancing.overrides {

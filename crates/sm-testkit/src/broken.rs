@@ -22,6 +22,10 @@ use crate::topo::TopoFixture;
 /// everything else (ids, shapes, sets, edges, ...) is read from the original.
 ///
 /// The stale reverse classification index is *not* rebuilt, as in a real corrupted file.
+/// `face_kind` is derived from the owned columns (a face with a right cell is `Interior`; a
+/// one-cell face keeps the original's one-cell kind, `Boundary` if the original was interior),
+/// so `is_boundary_face` and `face_right().is_none()` agree after `set_face_right` or a swap.
+/// The dimension is the original's.
 #[derive(Clone, Debug)]
 pub struct Tampered<'a> {
     inner: &'a ReferenceMesh,
@@ -154,7 +158,14 @@ impl MeshRead for Tampered<'_> {
         (r != CellIx::NONE).then_some(CellIx(r))
     }
     fn face_kind(&self, f: FaceIx) -> FaceKind {
-        self.inner.face_kind(f)
+        match (self.face_right(f), self.inner.face_kind(f)) {
+            (Some(_), _) => FaceKind::Interior,
+            (None, FaceKind::Interior) => FaceKind::Boundary,
+            (None, k) => k,
+        }
+    }
+    fn dim(&self) -> sm_mesh_api::MeshDim {
+        self.inner.dim()
     }
     fn cell_faces(&self, c: CellIx) -> &[SignedFace] {
         &self.cell_faces[self.cell_off[c.get()] as usize..self.cell_off[c.get() + 1] as usize]

@@ -7,11 +7,11 @@ use crate::edges::{EdgeTable, edge_key};
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, HighOrderCell, NodeRef, face_node_count, node_count};
 use crate::index::{
-    CellIx, FaceIx, FaceKind, MAX_FACES, MeshEntity, MeshEntityKind, MeshEntityRef, PointIx, Side,
-    SignedFace, VertexIx,
+    CellIx, FaceIx, FaceKind, MAX_FACES, MeshDim, MeshEntity, MeshEntityKind, MeshEntityRef,
+    PointIx, Side, SignedFace, VertexIx,
 };
 use crate::sets::{MeshSet, SetMembers, TagColumn, TagValues};
-use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation};
+use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation, polygon_cycle};
 use indexmap::IndexMap;
 use sm_core::{EntityId, EntityKind, Point3};
 use smallvec::SmallVec;
@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 /// Columns handed from the builder to [`ReferenceMesh::from_parts`].
 pub(crate) struct Parts {
+    pub dim: MeshDim,
     pub id: EntityId,
     pub vertex_ids: Vec<EntityId>,
     pub face_ids: Vec<EntityId>,
@@ -80,8 +81,13 @@ fn norm_bits(c: f64) -> u64 {
 /// `(left, right, loop)` with loops starting at their smallest vertex; ids are assigned from the
 /// allocator in dense order; template-shaped cells have corner lists; the result passes
 /// [`crate::validate::validate`].
+///
+/// [`ReferenceBuilder::new`] builds dimension-3 meshes, [`ReferenceBuilder::surface`]
+/// dimension-2 meshes (polygon cells, two-vertex facets; facet loops are directed and never
+/// rotated, the lower cell traverses its facet forward).
 #[derive(Default)]
 pub struct ReferenceBuilder {
+    dim: MeshDim,
     pts: Vec<Point3>,
     extra: Vec<Point3>,
     vclass: Vec<Option<Classification>>,
@@ -102,14 +108,26 @@ pub struct ReferenceBuilder {
     ho: BTreeMap<u32, (u8, Basis, Vec<NodeRef>)>,
     eclass: BTreeMap<[VertexIx; 2], Classification>,
     sets: IndexMap<String, SetMembers>,
+    set_labels: BTreeMap<String, i64>,
     tags: IndexMap<(MeshEntityKind, String), TagValues>,
     grid: RefCell<Grid>,
 }
 
 impl ReferenceBuilder {
-    /// Start an empty mesh. The mesh id is drawn from the allocator in `finish`.
+    /// Start an empty dimension-3 mesh. The mesh id is drawn from the allocator in `finish`.
     pub fn new() -> Self {
+        Self::with_dim(MeshDim::Three)
+    }
+
+    /// Start an empty dimension-2 (surface) mesh.
+    pub fn surface() -> Self {
+        Self::with_dim(MeshDim::Two)
+    }
+
+    /// Start an empty mesh of dimension `dim`.
+    pub fn with_dim(dim: MeshDim) -> Self {
         Self {
+            dim,
             face_off: vec![0],
             ..Self::default()
         }
@@ -163,6 +181,9 @@ fn check_class(c: &Classification) -> Result<()> {
 impl MeshBuild for ReferenceBuilder {
     type Output = ReferenceMesh;
 
+    fn dim(&self) -> MeshDim {
+        self.dim
+    }
     fn add_vertex(&mut self, p: Point3) -> Result<VertexIx> {
         if self.pts.len() + self.extra.len() >= u32::MAX as usize - 1 {
             return Err(MeshError::TooLarge);
@@ -252,10 +273,11 @@ impl MeshBuild for ReferenceBuilder {
 
     fn add_face(&mut self, l: &[VertexIx]) -> Result<FaceIx> {
         let key = Self::key_of(l);
-        if l.len() < 3 || key.windows(2).any(|w| w[0] == w[1]) {
-            return Err(MeshError::InvalidLoop(
-                "needs at least 3 distinct vertices".into(),
-            ));
+        if !self.dim.facet_len_ok(l.len()) || key.windows(2).any(|w| w[0] == w[1]) {
+            return Err(MeshError::InvalidLoop(match self.dim {
+                MeshDim::Three => "needs at least 3 distinct vertices".into(),
+                MeshDim::Two => "a dimension-2 facet needs exactly 2 distinct vertices".into(),
+            }));
         }
         if let Some(v) = l.iter().find(|v| v.get() >= self.pts.len()) {
             return Err(MeshError::UnknownVertex(*v));
@@ -328,8 +350,11 @@ impl MeshBuild for ReferenceBuilder {
         if self.cells.len() >= u32::MAX as usize - 1 {
             return Err(MeshError::TooLarge);
         }
-        if faces.len() < 4 {
-            return Err(MeshError::State("a cell needs at least 4 faces".into()));
+        if faces.len() < self.dim.min_cell_facets() {
+            return Err(MeshError::State(format!(
+                "a cell needs at least {} faces",
+                self.dim.min_cell_facets()
+            )));
         }
         let mut seen: SmallVec<[u32; 8]> = faces.iter().map(|sf| sf.face().0).collect();
         seen.sort_unstable();
@@ -351,7 +376,7 @@ impl MeshBuild for ReferenceBuilder {
         if let Some(ov) = corners {
             let mut s: SmallVec<[u32; 8]> = ov.iter().map(|v| v.0).collect();
             s.sort_unstable();
-            if CellShape::from_corner_count(ov.len()).is_none()
+            if CellShape::from_corner_count_in(self.dim, ov.len()).is_none()
                 || s.windows(2).any(|w| w[0] == w[1])
                 || ov.iter().any(|v| v.get() >= self.pts.len())
             {
@@ -414,15 +439,19 @@ impl MeshBuild for ReferenceBuilder {
             MeshEntityRef::Vertex(v) => *self.vclass.get_mut(v.get()).ok_or_else(oob)? = Some(c),
             MeshEntityRef::Face(f) => *self.fclass.get_mut(f.get()).ok_or_else(oob)? = Some(c),
             MeshEntityRef::Cell(cell) => {
-                if !matches!(
-                    c.entity.kind(),
-                    EntityKind::TopoVolume | EntityKind::PartitionCell
-                ) {
-                    return Err(MeshError::BadClassification(
-                        "cells need a volume or partition cell".into(),
-                    ));
+                if !self.dim.accepts_cell(c.entity.kind()) {
+                    return Err(MeshError::BadClassification(format!(
+                        "cells of a {:?} mesh cannot be classified on {:?}",
+                        self.dim,
+                        c.entity.kind()
+                    )));
                 }
                 *self.cclass.get_mut(cell.get()).ok_or_else(oob)? = Some(c);
+            }
+            MeshEntityRef::Edge(..) if self.dim == MeshDim::Two => {
+                return Err(MeshError::Unsupported(
+                    "a dimension-2 mesh has no edge table: its facets are the edges, classify the facet".into(),
+                ));
             }
             MeshEntityRef::Edge(a, b) => {
                 if a == b || a.get() >= self.pts.len() || b.get() >= self.pts.len() {
@@ -563,6 +592,16 @@ impl MeshBuild for ReferenceBuilder {
         self.sets.insert(name.into(), members);
         Ok(())
     }
+    fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
+        if !self.sets.contains_key(name) {
+            return Err(MeshError::State(format!("no set '{name}'")));
+        }
+        match label {
+            Some(l) => self.set_labels.insert(name.into(), l),
+            None => self.set_labels.remove(name),
+        };
+        Ok(())
+    }
     fn add_tag(&mut self, name: &str, target: MeshEntityKind, values: TagValues) -> Result<()> {
         if target == MeshEntityKind::Edge {
             return Err(MeshError::State(
@@ -647,11 +686,15 @@ impl ReferenceBuilder {
             if reversed {
                 lp.reverse();
             }
-            let rot = lp
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, v)| **v)
-                .map_or(0, |(p, _)| p);
+            // A two-vertex facet is directed: rotating it would reverse it.
+            let rot = if self.dim == MeshDim::Two {
+                0
+            } else {
+                lp.iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| **v)
+                    .map_or(0, |(p, _)| p)
+            };
             lp.rotate_left(rot);
             fin.push(Fin {
                 old: f,
@@ -747,6 +790,26 @@ impl ReferenceBuilder {
             let sizes: SmallVec<[usize; 6]> = loops.iter().map(SmallVec::len).collect();
             let mut shape = CellShape::detect(vs.len(), &sizes);
             let cs: Option<SmallVec<[VertexIx; 8]>> = match &c.corners {
+                _ if self.dim == MeshDim::Two => {
+                    let refs: SmallVec<[&[VertexIx]; 6]> =
+                        loops.iter().map(SmallVec::as_slice).collect();
+                    let cyc = polygon_cycle(&refs).ok_or_else(|| {
+                        MeshError::ShapeMismatch(
+                            cix,
+                            "the facets of a dimension-2 cell do not form one closed cycle".into(),
+                        )
+                    })?;
+                    match &c.corners {
+                        Some(ov) if loop_relation(ov, &cyc) != Some(LoopRelation::Same) => {
+                            return Err(MeshError::ShapeMismatch(
+                                cix,
+                                "corners are not the cell's vertex cycle in boundary order".into(),
+                            ));
+                        }
+                        Some(ov) => Some(ov.clone()),
+                        None => Some(cyc),
+                    }
+                }
                 Some(ov) => {
                     if CellShape::from_corner_count(ov.len()) != Some(shape) {
                         return Err(MeshError::ShapeMismatch(
@@ -852,7 +915,7 @@ impl ReferenceBuilder {
         }
 
         // Sets and tags, in final face numbering.
-        let set_ids = ids(alloc, EntityKind::Group, self.sets.len())?;
+        let set_ids = ids(alloc, EntityKind::MeshSet, self.sets.len())?;
         let mut sets = Vec::new();
         for ((name, members), id) in self.sets.into_iter().zip(set_ids) {
             let oob = |what: &str| MeshError::OutOfRange(format!("set '{name}' {what}"));
@@ -883,8 +946,51 @@ impl ReferenceBuilder {
                     }
                     SetMembers::Cells(v)
                 }
+                SetMembers::Sides(v) => {
+                    // Re-side through the cell on that side: `finish` may swap left and right.
+                    let mut m = Vec::with_capacity(v.len());
+                    for sf in &v {
+                        let pf = sf.face().get();
+                        if pf >= nf {
+                            return Err(oob("face"));
+                        }
+                        let c = self.face_cells[pf][usize::from(sf.side() == Side::Right)];
+                        if c == CellIx::NONE {
+                            return Err(oob("side without a cell"));
+                        }
+                        let n = new_of_old[pf];
+                        let side = if face_left[n as usize] == CellIx(c) { Side::Left } else { Side::Right };
+                        m.push(SignedFace::new(FaceIx(n), side));
+                    }
+                    m.sort_unstable();
+                    m.dedup();
+                    SetMembers::Sides(m)
+                }
+                SetMembers::ShellSides(mut v) => {
+                    if self.dim != MeshDim::Two {
+                        return Err(oob("is a shell side set, valid only in a dimension-2 mesh"));
+                    }
+                    v.sort_unstable();
+                    v.dedup();
+                    if v.last().is_some_and(|x| (x >> 1) as usize >= nc) {
+                        return Err(oob("cell"));
+                    }
+                    SetMembers::ShellSides(v)
+                }
+                SetMembers::Points(mut v) => {
+                    v.sort_unstable();
+                    v.dedup();
+                    if v.last().is_some_and(|x| x.get() >= nv + self.extra.len()) {
+                        return Err(oob("point"));
+                    }
+                    SetMembers::Points(v)
+                }
             };
-            sets.push(MeshSet { id, name, members });
+            let label = self.set_labels.get(&name).copied();
+            if label.is_some() && sets.iter().any(|s: &MeshSet| s.label == label && s.members.kind() == members.kind()) {
+                return Err(MeshError::DuplicateName(format!("set label {label:?}")));
+            }
+            sets.push(MeshSet { id, name, label, members });
         }
         let mut tags = Vec::new();
         for ((target, name), values) in self.tags {
@@ -917,6 +1023,7 @@ impl ReferenceBuilder {
         tags.sort_by(|a, b| (a.target, &a.name).cmp(&(b.target, &b.name)));
 
         let mut mesh = ReferenceMesh::from_parts(Parts {
+            dim: self.dim,
             id: mesh_id,
             vertex_ids,
             face_ids,
@@ -945,7 +1052,10 @@ impl ReferenceBuilder {
             sets,
             tags,
         });
-        if !self.eclass.is_empty() {
+        // Edge-slot nodes (dimension 3) need the edge table: derive it even without explicit
+        // edge classes (an ambiguous edge fails with `UnclassifiedEdge`; classify it with
+        // `set_class(Edge(..))`).
+        if !self.eclass.is_empty() || mesh.needs_edge_table() {
             let t = EdgeTable::derive(&mesh, alloc, &self.eclass)?;
             mesh.attach_edges(t);
         }

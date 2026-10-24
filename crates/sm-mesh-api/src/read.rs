@@ -13,6 +13,13 @@
 //! Ids ascend with dense index. Face loops start at their smallest vertex index. Faces are
 //! ordered by `(left, right-or-none, loop)`. Cell->face lists ascend by face index.
 //!
+//! # Dimension
+//! [`MeshRead::dim`] is the topological dimension ([`MeshDim`]). Everything above describes a
+//! dimension-3 mesh; a dimension-2 mesh keeps the same invariants one level down: cells are
+//! polygons, faces are two-vertex facets `[a, b]` (no rotation: the loop is directed), the left
+//! cell traverses the facet `a -> b` and the right cell `b -> a`, and `cell_corners` is the
+//! cell's vertex cycle in boundary order (present for every cell, polygons included).
+//!
 //! # Indices
 //! Every method taking an index requires it to be below the matching `count`; a foreign or
 //! out-of-range index panics (slice indexing) in the reference implementation, and other
@@ -22,7 +29,7 @@ use crate::classify::{ClassSet, Classification};
 use crate::edges::EdgeTable;
 use crate::error::{MeshError, Result};
 use crate::highorder::{Basis, CellGeometry, FaceCurve, HighOrderCell};
-use crate::index::{CellIx, FaceIx, FaceKind, MeshEntityKind, Side, SignedFace, VertexIx};
+use crate::index::{CellIx, FaceIx, FaceKind, MeshDim, MeshEntityKind, PointIx, Side, SignedFace, VertexIx};
 use crate::sets::{MeshSet, TagColumn};
 use crate::shape::{CellShape, FaceShape};
 use sm_core::{EntityId, Point3, Vector3};
@@ -100,6 +107,10 @@ pub struct GeometryCache {
 pub trait MeshRead: Send + Sync {
     /// Stable id of this mesh (`EntityKind::Mesh`).
     fn mesh_id(&self) -> EntityId;
+    /// Topological dimension (default [`MeshDim::Three`]; a dimension-2 mesh overrides it).
+    fn dim(&self) -> MeshDim {
+        MeshDim::Three
+    }
     /// Number of entities of kind `k` (edges: 0 without an edge table).
     fn count(&self, k: MeshEntityKind) -> usize;
     /// Stable id of entity `ix` of kind `k`; ids ascend with the dense index.
@@ -126,7 +137,8 @@ pub trait MeshRead: Send + Sync {
     /// Derived shape tag of a cell.
     fn cell_shape(&self, c: CellIx) -> CellShape;
     /// Corner vertices in the template order of the cell's shape; `Some` for every
-    /// template-shaped (non-polyhedron) cell.
+    /// template-shaped (non-polyhedron) cell, and for every cell of a dimension-2 mesh (the
+    /// vertex cycle in boundary order).
     fn cell_corners(&self, c: CellIx) -> Option<&[VertexIx]>;
     /// High-order record of a cell, `None` if linear.
     fn high_order_cell(&self, c: CellIx) -> Option<&HighOrderCell>;
@@ -267,6 +279,81 @@ pub trait MeshRead: Send + Sync {
     /// Classification of a cell.
     fn cell_class(&self, c: CellIx) -> Classification {
         self.classification(MeshEntityKind::Cell, c.0)
+    }
+    /// Classification of point `p` of the [`coords`](MeshRead::coords) space (W0f gaps 2):
+    /// below `n_vertices` the vertex class; above, the class of the slot that owns the extra
+    /// node (the first high-order cell, in cell order, then the first face curve, listing it):
+    /// an edge slot takes its edge's class (dimension 3: from the edge table, which such a mesh
+    /// must carry; dimension 2: from the facet), a quadrilateral-face slot its face's class (the
+    /// cell's in dimension 2), the interior slot the cell's, a face-curve edge node its edge's
+    /// and a face-curve centre the face's. `None` when `p` is out of range or no record lists
+    /// it. Allocation free, `O(cells + faces)` for an extra node: implementations with a node
+    /// index should override it.
+    fn point_class(&self, p: PointIx) -> Option<Classification> {
+        let nv = self.vertex_count();
+        if p.get() < nv {
+            return Some(self.vertex_class(VertexIx(p.0)));
+        }
+        if p.get() >= self.coords().len() {
+            return None;
+        }
+        let edge_class = |a: VertexIx, b: VertexIx, cell: Option<CellIx>| -> Option<Classification> {
+            if self.dim() == MeshDim::Two {
+                let c = cell?;
+                let f = self.cell_faces(c).iter().map(|sf| sf.face()).find(|f| {
+                    let l = self.face_vertices(*f);
+                    l.len() == 2 && l.contains(&a) && l.contains(&b)
+                })?;
+                Some(self.face_class(f))
+            } else {
+                let t = self.edges()?;
+                t.find(a, b).map(|e| t.class[e.get()])
+            }
+        };
+        for c in 0..self.cell_count() {
+            let ci = CellIx::new(c);
+            let Some(h) = self.high_order_cell(ci) else { continue };
+            let Some(k) = h.nodes.iter().position(|n| *n == p) else { continue };
+            let shape = self.cell_shape(ci);
+            let corners = self.cell_corners(ci)?;
+            let (nc, edges, quads) = (corners.len(), shape.local_edges(), shape.local_quads());
+            if k < nc {
+                return Some(self.vertex_class(corners[k]));
+            }
+            if let Some([a, b]) = edges.get(k - nc) {
+                return edge_class(corners[*a as usize], corners[*b as usize], Some(ci));
+            }
+            let qk = k - nc - edges.len();
+            if h.basis != Basis::Serendipity
+                && let Some(q) = quads.get(qk)
+            {
+                if self.dim() == MeshDim::Two {
+                    return Some(self.cell_class(ci));
+                }
+                let f = self.cell_faces(ci).iter().map(|sf| sf.face()).find(|f| {
+                    let l = self.face_vertices(*f);
+                    l.len() == 4 && q.iter().all(|i| l.contains(&corners[*i as usize]))
+                })?;
+                return Some(self.face_class(f));
+            }
+            return Some(self.cell_class(ci));
+        }
+        for f in 0..self.face_count() {
+            let fi = FaceIx::new(f);
+            let Some(fc) = self.face_curve(fi) else { continue };
+            let Some(k) = fc.nodes.iter().position(|n| *n == p) else { continue };
+            let l = self.face_vertices(fi);
+            let n = l.len();
+            if k < n {
+                return Some(self.vertex_class(l[k]));
+            }
+            if k < 2 * n {
+                let i = k - n;
+                return edge_class(l[i], l[(i + 1) % n], None);
+            }
+            return Some(self.face_class(fi));
+        }
+        None
     }
     /// A named set.
     fn set_by_name(&self, name: &str) -> Option<&MeshSet> {

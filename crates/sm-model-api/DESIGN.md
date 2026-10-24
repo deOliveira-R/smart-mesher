@@ -22,7 +22,7 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
 | `symmetry` | `Symmetry`, `Provenance`, `CutSpec`/`plan_cut`/`apply_cut`, `point_group`, `declare_symmetry` |
 | `detect` | `detect_symmetry`, `verify_transform`, `Candidate`, `Verification{Unverified,Verified,Rejected{stage,..}}` |
 | `unfold` | `unfold`, `UnfoldedModel`, `CopyRef{base,elem}`, `Glue` (a view; mints nothing) |
-| `instancing` | `Prototype`, `Lattice`, `InstanceRow`, `ColorMap`, `PathOverride`, `flatten`, `FlatModel` |
+| `instancing` | `Prototype`, `Lattice`, `InstanceRow`, `ColorMap`, `PathOverride`, `flatten`, `FlatModel`, `FlatClip` |
 | `decomposition` | `PieceRef{Whole,Cell}`, `PieceFace{Whole,Part,Cut}`, `split`/`composite`/`unsplit` |
 | `validate` | `validate`, `validate_unfolded`, `Report`, `IssueCode` |
 | `xf` | `Tolerance`, `Plane`, `Axis`, `Turns`, `transform_moments`, `transform_face_moments`, internal cache and bins |
@@ -101,6 +101,65 @@ Topology *changes* (cuts) come back as data and are applied by `Model::apply_cut
     the mesh classifier's key for the part of a face that straddles a cut; cut faces are local
     `CutId` handles (this layer mints no `PartitionFace` ids, which belong to the topology
     overlay). `composite` refuses mixed colors.
+13. **Realized splits (W0f, W0e decision 2).** `split_realized(piece, plane, &mut Overlay)` also
+    cuts the piece's overlay volume with `Overlay::partition_volume_by_plane`, passing the two
+    piece ids this layer mints (the overlay mints the cut face, its edges and vertices as
+    `PartitionFace/Edge/Vertex`; it never mints `PartitionCell`), classifies the parent's model
+    faces and cut faces onto the two sides from the overlay result, records the split like
+    `split_sides`, and records three persisted, deterministic tables: `realized: CutId ->
+    CutCells { faces, edges, vertices, split_faces, split_edges }`, `face_cells` (the overlay
+    cells of every `Part` / `CutPart` face of the children, at split time) and `split_cells`
+    (faces the cut partitioned -> `[negative, positive]` halves). `Decomposition::piece_face_cells(pf,
+    topo)` resolves any `PieceFace`: `Whole(f)` is `f`, `Cut` the cut face, `Part` /
+    `CutPart` the recorded cells, each expanded through `split_cells` until live in `topo` (so a
+    neighbour's `Whole` face that a later cut partitioned, or a sibling's `Cut` key whose face a
+    nested split partitioned, resolves to the halves). Atomic: on error neither the model nor the
+    overlay changes. `unsplit_realized(piece, &mut Overlay)` removes the cut's overlay operations
+    newest first and refuses while a later operation uses them; plain `unsplit` refuses a realized
+    split. `clear_decomposition` drops the tables (clearing the overlay is the caller's job).
+    Plane cuts only (`CutGeometry::Surface` / `Faces` stay unrealized); the overlay's plane-cut
+    limits apply (planar faces, one simple section loop).
+14. **Composite faces (W0d follow-up).** A composite's faces are captured when it is formed
+    (`composite_faces`, persisted) from its members' faces tagged with each member's volume: a cut
+    seen from both sides, and a model face held (whole or in part) by members of two different
+    volumes, are internal. `piece_faces` returns the captured list and `pieces_of_face` is indexed
+    from the same list, so the two agree (an interface face no longer lists the composite).
+    Limit: an interface held whole by one member and only in part by another (a whole volume
+    composited with one half of its split neighbour) is dropped entirely, although the part
+    facing the other half still bounds the composite; do not composite across a partially shared
+    interface.
+15. **Row editing (W0f gaps 2).** Inherent methods beside `remove_color` / `remove_group` /
+    `set_lattice_slot`: `set_boundary_kind(b, kind)` (deck parameters checked; refused with
+    `Invalid` when an assigned face's role does not fit the new kind, or when `b` generates the
+    symmetry and the new kind is not a deck), `remove_boundary(b)`, `set_instance(id, row)` (same
+    checks as `add_instance`, id kept), `remove_instance`, `remove_prototype`, `remove_lattice`.
+    Removals return the new typed `ModelError::InUse(id)` while anything refers to the row: faces
+    assigned or a symmetry generator (boundary), a fill (prototype, lattice), a path override
+    (instance, or a slot step of a lattice) or a group member (all), so `check_integrity` keeps
+    holding. Ids are never reused.
+16. **`apply_transform(x, volumes, t)` (W0f gaps 2).** Carries the model's geometric parameters
+    through the motion `x` of `volumes`: a boundary whose assigned faces all bound moved volumes
+    gets `x g x^-1` (deck plane, vector, axis; a rotation axis flips under an improper `x`; a
+    non-conformal interface transform likewise); mirror and rotation decks need a similarity
+    (`Invalid` otherwise). Every `CutGeometry::Plane` of a split over moved volumes maps (plane
+    image under the affine map). The symmetry is carried (through its generator decks) only when
+    every live volume of `t` moves, and then every deck and cut plane maps. A record or composite
+    piece over moved and unmoved volumes is refused with `ModelError::Straddles(id)`, a partial
+    move touching the symmetry domain or a generator with `ModelError::SymmetryStraddles`.
+    Transactional. Deviation from the requested signature: it takes `t: &dyn TopologyView`, the
+    only way to know which faces bound the moved volumes and whether the whole model moves.
+    Instance placements and prototype membership are untouched.
+17. **Fill clips (W0f gaps 2).** `InstanceRow::clip` and `Slot::clip: Option<EntityId>`
+    (`#[serde(default)]`) name a live `TopoVolume` bounding the fill (an MCNP/OpenMC container
+    cell, a lattice truncated by a core barrel). An instance clip lies in the model frame (it
+    does not move with `at`); a slot clip lies in the lattice frame (where slot offsets are
+    measured). The mutators and `check_integrity` check the kind; `validate` reports a clip that
+    is not a live volume (`UnknownEntity`); `apply_lineage` follows a clip to a single successor
+    and otherwise keeps the old id for `validate` to report. `flatten` records each clip
+    occurrence in `FlatModel::clips` as `FlatClip { volume, placement, outer }` (placed in the
+    model frame, chained to the enclosing clip) and gives every `FlatEntry` its innermost clip
+    (`clip: Option<u32>`); clips enter the fingerprints only when present, so unclipped models
+    keep theirs. Flattening a clipped cell into geometry is a separate item.
 
 ## 3. Topology queries used (all from the `sm-topo-api` read trait)
 
@@ -115,6 +174,30 @@ order; no randomness, no threads. Ids minted here (`Color`, `Group`, `Boundary`,
 `Lattice`, `Instance`, `PartitionCell`) come from one per-kind allocator starting at serial 1 and
 never reused. `tests/determinism.rs` runs the whole pipeline twice and on four `std::thread`s and
 compares hashes (API crates do not use rayon).
+
+**Id authority (W0f).** The model is the single minting layer for `Color`, `Group`, `Boundary`,
+`Prototype`, `Lattice`, `Instance`, `PartitionCell` (and `Symmetry`); the topology complex mints
+`Topo*`, the overlay `PartitionFace/Edge/Vertex`, the mesh `Mesh*` (including its own `MeshSet`
+and `MeshInstance`, so mesh sets and mesh instances never collide with model groups and
+instances). Because the allocator starts at 1 like the op layer's entity table, the op that
+drives the model adopts each minted id in order (`ApplyCtx::adopt`).
+
+**Group store (W0f, option (a): the model is the single group store).** `add_group`,
+`group_edit(g, GroupEdit::{Add, Remove, Equals, Xor}, &ids)` (atomic, cycle-checked),
+`remove_group` (refused while another group lists it), `rename_group`, `group_by_name`,
+`groups()`, and `group_unite` / `group_intersect` / `group_subtract`, which mint a new group from
+the direct members of two groups. Members may be topology cells of every rank (`TopoVertex`
+through `TopoBody`), decomposition entities (`Partition*`), colors, nested groups and the other
+model rows (`group_member_kind_ok`); never geometry handles or mesh entities. Model-minted members
+must exist. `apply_lineage` re-keys every `Topo*`/`Partition*` member; `apply_group_successors`
+(with `groups_reference_any` for gating) is what a model layer's `on_succession` calls; other
+members pass through. Since W0f gaps3, `group_entities`, `group_faces` and `group_volumes` first map every
+topological member (`Topo*`, `Partition*`, and the volumes / faces of member colors) through
+`TopologyView::live_cover` before the rank test and the closure, so on an overlay a hidden host
+cell yields its live overlay cells (and a deleted member nothing). `group_entities(g, t, dim)` expands by closure (`TopologyView::closure`): a
+member of rank `dim` is itself, a higher-rank member brings its closure cells of rank `dim`,
+colors bring their volumes or faces, nested groups recurse. `check_integrity` (and so
+deserialization) checks member kinds, model-minted members, unique names and nesting cycles.
 
 ## 5. Deviations from the recommendation / decisions (honest list)
 
@@ -166,8 +249,15 @@ compares hashes (API crates do not use rayon).
 - Two parallel mirrors cannot be declared as one symmetry (`GroupNotFinite`); the cell stays valid.
 - `Cargo.lock` is not touched (decisions.md Q3); the orchestrator regenerates it at merge.
 - `serde_json` is a **dev-dependency** only (round-trip tests); the shipped dependency set is
-  `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `smallvec`, `thiserror`. `indexmap`
-  is not needed.
+  `sm-core`, `sm-geom-api`, `sm-topo-api`, `serde` (feature), `schemars` (feature, implies
+  `serde` and `sm-geom-api/schemars`; since W0f derives `JsonSchema` on every serde input value
+  type of `xf`, `boundary`, `color`, `instancing`, `symmetry`, `decomposition` and `detect`, with
+  schemars' `smallvec1` support and pair-list schemas for the `serde_pairs` maps), `smallvec`,
+  `thiserror`. `indexmap` is not
+  needed.
+- `check_integrity` (W0d follow-up) also counts the cut ids of `PieceShape::Sweep` hints, realized
+  cuts, recorded face cells and captured composite faces against `cut_serial`, and checks the
+  realized tables (kinds of the recorded cells, a split record per realized cut, existing pieces).
 - `sm-testkit` does not exist yet, so its property tests are not used.
 - Moments of faces touching a pole (sphere, cone apex) are `Unsupported` in the reference
   topology, so deck/interface geometry checks on such faces report `GeometryUnavailable` instead
@@ -176,9 +266,65 @@ compares hashes (API crates do not use rayon).
 ## 6. Open points
 
 - Mixed-material cells stay out (ir.md §7): volume coloring is an exact partition.
-- `EntityKind::PartitionFace` for cut faces would let `CutId` become a persistent id once the
-  decomposition layer and the overlay agree on one allocator.
+- Done in W0f for plane cuts: a realized `CutId` maps to persistent overlay ids
+  (`Decomposition::cut_cells`). Surface and face-set cuts are not realized yet.
 - Hex lattice symmetry (D6 of an assembly) is expressible with decks over a prototype but is not
   detected on lattices.
 - Slab/wedge cuts need a 1:1 pairing of cap faces; an M:N cap pairing needs a kernel that imprints
   the two caps identically.
+
+## 7. W0f gaps3
+
+- **`Model::canonical_visit(&self, tol: &ModelTolerance, f: &mut dyn FnMut(HashWord))`**
+  (`canonical.rs`) emits every persisted table in canonical order (`BTreeMap` order, declaration
+  order for lists), each behind a tag and its length: id allocator, colors, volume / face
+  coloring, groups, boundaries, face boundaries, symmetry, provenance, recorded cut lineage,
+  instancing (prototypes, lattices with layouts and slots, instances, path overrides) and every
+  serialized decomposition field. Strings are emitted as length plus 8-byte words. Floats follow
+  Q2 with the model's topology tolerance: lengths (plane offsets, points, translations,
+  transform translations, pitches, deviations) as `round(v / (linear * 2^-10))`; direction
+  components, transform matrix entries and angles with `angular * 2^-10`. It takes `tol`
+  because the model stores no tolerance; the state layer passes the topology's. The op layer
+  folds it with `Digest::f64_with(raw, q)`; tests check that a sub-quantum change keeps the
+  identity words and changes the exact words.
+- **Groups through `live_cover`**: see section 4. `color.rs` no longer claims that closure
+  works on hidden host members of an overlay; it maps them first.
+
+## 8. W0f gaps4
+
+- **Coloring iterators** (additive): `Model::volume_coloring()` / `face_coloring()` iterate
+  `(entity, color)` ascending by entity over the stored keys, live or not, so the hidden host
+  faces of an overlay can be enumerated without scanning `&dyn TopologyView`.
+- **Overlay-aware colors.** `color_faces` / `uncolor_faces` accept `PartitionFace` keys (and
+  `check_integrity` now checks that face-color keys are `TopoFace`/`PartitionFace` and
+  volume-color keys `TopoVolume`; `apply_lineage` carries partition keys unchanged, since host
+  lineage never names them). `Model::live_face_color(f, t)` / `live_volume_color(v, t)`: an own
+  color first, otherwise the color of the lowest stored non-live host whose `live_cover`
+  contains the cell (so an own color on a live overlay face overrides the inherited one).
+  `validate` accepts a colored key whose `live_cover` is non-empty, and runs the uncolored
+  boundary-face and volume-partition checks through an inherited-color index built once
+  (`color::inherited_colors`), so a split host no longer yields false `UnknownEntity`,
+  `BoundaryFaceUncolored` or `ColoringNotPartition`. No composite-face-colors ruling exists in
+  `decisions.md`, so this is the whole fix. Seen but out of scope: the decomposition checks
+  still report `UnknownEntity` ("decomposed volume is not alive") for a host volume realized
+  through the overlay.
+- **Clusters (breaking, before W1).** Irregular placements nested inside a fill (OpenMC/Serpent
+  universes, ir.md §5.2 "nestable", the CSG front end): TRISO in a pebble, pebbles in a core,
+  without billions of top-level rows. New row kind `Instancing::clusters: BTreeMap<EntityId,
+  Cluster>` (`serde(default)`), `Cluster { members: Vec<ClusterMember { fill, at: Transform,
+  recolor: ColorMap, clip: Option<EntityId> }> }`, `Fill::Cluster(EntityId)` and
+  `PathStep::Member { cluster, ix: u32 }`; `Fill` and `PathStep` are now `#[non_exhaustive]`.
+  Ids are a new kind `EntityKind::Cluster = 39` (sm-core; the model mints it). A member clip is
+  in the cluster frame (placed with the cluster's placement, like a slot clip with the lattice's).
+  `add_cluster` / `set_cluster` (checks fills, recolor maps, clip kinds, finite placements, at
+  most `MAX_FLAT_ENTRIES` members; `set_cluster` refuses a cycle) / `remove_cluster` (`InUse`
+  while a fill, group or a `Member` override step names it); `remove_prototype` /
+  `remove_lattice` see member fills. `flatten` walks members in index order (void members
+  skipped), a member is treated like a slot in the recolor order, and every slot/member visit
+  counts against `MAX_FLAT_ENTRIES` (void-only nesting cannot run away). `find_cycle` covers
+  lattices and clusters; `check_integrity` checks cluster keys, member clips and member counts;
+  `validate` checks member fills, recolor maps and clips; `apply_lineage` re-keys member recolor
+  maps and clips; group members may name clusters. `canonical_visit` emits clusters (tag 13,
+  after the overrides) only when there are any, and `Fill::Cluster` / `PathStep::Member` use the
+  new tags 4 / 3, so models without clusters keep their words. A rotated lattice slot is a
+  one-member cluster (no `Slot::at`).

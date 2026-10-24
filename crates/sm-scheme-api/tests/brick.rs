@@ -307,7 +307,7 @@ fn hard_pave_on_a_linking_face_conflicts_with_the_sweep() {
         }) => {
             assert_eq!(child, Target::Surface(ids.faces[1]));
             assert_eq!(imposed_by, Target::Volume(ids.volume));
-            assert_eq!(required, Need::Caps(Caps::QUAD | Caps::STRUCTURED));
+            assert_eq!(required, Need::Caps(Caps::QUAD | Caps::BLOCK_STRUCTURED));
         }
         other => panic!("expected ImpositionConflict, got {:?}", other.map(|_| ())),
     }
@@ -616,11 +616,7 @@ fn translation_deck_pair_is_meshed_as_an_exact_copy() {
     );
 
     // A boundary layer on a deck face is refused.
-    intent.entity_mut(ids.faces[0]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent {
-        first: 0.01,
-        growth: 1.2,
-        layers: 3,
-    });
+    intent.entity_mut(ids.faces[0]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
     assert!(matches!(
         driver.plan(&input, &intent),
         Err(SchemeError::BoundaryLayerOnDeck { .. })
@@ -641,11 +637,7 @@ fn boundary_layer_needs_a_capable_volume_scheme() {
         selection: &sel,
     };
     let mut intent = counts_intent(&ids, [1, 1, 1]);
-    intent.entity_mut(ids.faces[2]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent {
-        first: 0.01,
-        growth: 1.2,
-        layers: 3,
-    });
+    intent.entity_mut(ids.faces[2]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
     // No registered volume scheme has the capability: the intent is refused, with attempts.
     match driver.plan(&input, &intent) {
         Err(SchemeError::NoApplicableScheme { target, tried, .. }) => {

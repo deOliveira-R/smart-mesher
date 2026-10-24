@@ -83,6 +83,11 @@ pub fn perimeter(l: &[P2]) -> f64 {
 
 /// Interior angle at every vertex of a loop whose interior is on its left (outer loops counter-
 /// clockwise, holes clockwise). A left turn of `t` gives `pi - t`.
+///
+/// **Reversals are ambiguous.** At a slit tip the two segments are antiparallel, the turn is
+/// `atan2(+-0, negative) = +-pi` depending on the sign of a zero cross product, and the
+/// interior angle comes out as `0` or `2 pi` from rounding alone. Coordinates cannot tell a
+/// slit tip from a hairpin, so a caller that needs `VertexType::Reversal` must assign it itself.
 pub fn interior_angles(l: &[P2]) -> Vec<f64> {
     let n = l.len();
     (0..n)
@@ -95,7 +100,8 @@ pub fn interior_angles(l: &[P2]) -> Vec<f64> {
         .collect()
 }
 
-/// Vertex types of a loop whose interior is on its left.
+/// Vertex types of a loop whose interior is on its left. `Reversal` is never reliable from
+/// coordinates (see [`interior_angles`]); assign it explicitly at slit tips.
 pub fn vertex_types(l: &[P2]) -> Vec<VertexType> {
     interior_angles(l).into_iter().map(VertexType::from_interior_angle).collect()
 }
@@ -133,11 +139,15 @@ impl Region2 {
         self.loops().map(<[P2]>::len).sum()
     }
 
-    /// Even-odd point-in-region test over all loops (boundary points unspecified).
+    /// Even-odd point-in-region test over all loops (boundary points unspecified). Empty loops
+    /// are ignored.
     pub fn contains(&self, p: P2) -> bool {
         let mut inside = false;
         for l in self.loops() {
             let n = l.len();
+            if n == 0 {
+                continue;
+            }
             let mut j = n - 1;
             for i in 0..n {
                 let (a, b) = (l[i], l[j]);

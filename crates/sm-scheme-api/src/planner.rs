@@ -27,8 +27,8 @@ use crate::problem::{
 };
 use crate::schedule::{ScheduleInput, schedule};
 use crate::scheme::{Applicability, IntervalCtx, MeshInput, PlanCtx};
-use crate::sizing::{SizeField, builtin_field};
-use crate::target::{GroupId, SchemeDim, Target, TransformId, piece_of};
+use crate::sizing::{SizeField, field_for};
+use crate::target::{GroupId, Job, SchemeDim, Target, TransformId, piece_of};
 use crate::vertex::{FaceLayout, VertexRule, VertexType};
 use sm_core::{EntityId, EntityKind, Transform};
 use sm_model_api::{Deck, FaceKindView, PieceRef, PieceShape};
@@ -44,6 +44,61 @@ pub(crate) struct Region {
     pub faces: Vec<EntityId>,
     pub edges: Vec<EntityId>,
     pub vertices: Vec<EntityId>,
+}
+
+impl Region {
+    /// Is `t` a target of the region (sorted tables, binary search)?
+    pub(crate) fn contains(&self, t: Target) -> bool {
+        match t {
+            Target::Curve(e) => self.edges.binary_search(&e).is_ok(),
+            Target::Surface(f) => self.faces.binary_search(&f).is_ok(),
+            Target::Volume(v) => self.volumes.binary_search(&v).is_ok(),
+            Target::Group(g) => self.groups.iter().any(|(id, _)| *id == g),
+        }
+    }
+}
+
+/// The strict sub-entity targets of `t` inside the region: edges (boundary and embedded) of a
+/// face; faces, their edges and embedded edges of a piece or of every member of a group.
+fn children_in(input: &MeshInput<'_>, region: &Region, t: Target) -> Result<BTreeSet<Target>> {
+    let mut out = BTreeSet::new();
+    // Boundary edges and embedded (wire) edges of a face are its curve children.
+    let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
+        out.insert(Target::Surface(f));
+        for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+            out.insert(Target::Curve(e));
+        }
+    };
+    let add_embedded = |v: EntityId, out: &mut BTreeSet<Target>| {
+        for e in input.embedded_edges(v) {
+            out.insert(Target::Curve(e));
+        }
+    };
+    let add_piece = |v: EntityId, out: &mut BTreeSet<Target>| {
+        add_embedded(v, out);
+        for f in region.vol_faces.get(&v).map(Vec::as_slice).unwrap_or(&[]) {
+            add_face(*f, out);
+        }
+    };
+    match t {
+        Target::Curve(_) => {}
+        Target::Surface(f) => {
+            for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+                out.insert(Target::Curve(e));
+            }
+        }
+        Target::Volume(v) => add_piece(v, &mut out),
+        Target::Group(g) => {
+            for (id, members) in &region.groups {
+                if *id == g {
+                    for m in members {
+                        add_piece(*m, &mut out);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
@@ -73,7 +128,7 @@ fn violates(n: &Need, name: &SchemeName, caps: Caps) -> bool {
 
 /// Caps a claimed child shows to impositions: what its claimer produces on surfaces.
 fn child_caps(claimer: Caps) -> Caps {
-    claimer & (Caps::TRI | Caps::QUAD | Caps::STRUCTURED | Caps::POLY)
+    claimer & (Caps::TRI | Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED | Caps::POLY)
 }
 
 enum Cand {
@@ -82,12 +137,27 @@ enum Cand {
 
 impl<'r> Driver<'r> {
     pub(crate) fn region(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Region> {
-        let volumes = sorted(input.selection.to_vec());
-        if let Some(v) = volumes.iter().find(|v| piece_of(**v).is_none()) {
-            return Err(SchemeError::Input(format!(
-                "{v} is not a TopoVolume or PartitionCell"
-            )));
-        }
+        let selected = sorted(input.selection.to_vec());
+        let is_face = |id: &EntityId| {
+            matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace)
+        };
+        // Surface-only selection: faces of the view, no pieces.
+        let surface_only = !selected.is_empty() && selected.iter().all(is_face);
+        let (volumes, picked_faces) = if surface_only {
+            for f in &selected {
+                if input.topo.dim_of(*f) != Some(Dim::Face) || !input.topo.is_alive(*f) {
+                    return Err(SchemeError::Input(format!("{f} is not a live face of the view")));
+                }
+            }
+            (Vec::new(), selected)
+        } else {
+            if let Some(v) = selected.iter().find(|v| piece_of(**v).is_none()) {
+                return Err(SchemeError::Input(format!(
+                    "{v} is not a TopoVolume or PartitionCell (a selection is all pieces or all faces)"
+                )));
+            }
+            (selected, Vec::new())
+        };
         let mut grouped = BTreeMap::new();
         let mut groups = Vec::new();
         for g in &intent.groups {
@@ -112,7 +182,7 @@ impl<'r> Driver<'r> {
             groups.push((g.id, members));
         }
         groups.sort();
-        let mut faces = BTreeSet::new();
+        let mut faces: BTreeSet<EntityId> = picked_faces.into_iter().collect();
         let mut vol_faces = BTreeMap::new();
         for v in &volumes {
             let f = input.piece_faces(Target::Volume(*v))?;
@@ -120,12 +190,22 @@ impl<'r> Driver<'r> {
             vol_faces.insert(*v, f);
         }
         let faces: Vec<EntityId> = faces.into_iter().collect();
-        let edges = sorted(faces.iter().flat_map(|f| input.face_edges(*f)).collect());
+        // Embedded members (W0f gaps 2): the wire edges and points of every selected face and
+        // piece get curve targets and vertex nodes, so the parent's mesh can conform to them.
+        let parents = || faces.iter().chain(volumes.iter());
+        let edges = sorted(
+            faces
+                .iter()
+                .flat_map(|f| input.face_edges(*f))
+                .chain(parents().flat_map(|p| input.embedded_edges(*p)))
+                .collect(),
+        );
         let vertices = sorted(
             edges
                 .iter()
                 .filter_map(|e| input.topo.edge_ends(*e))
                 .flat_map(|(a, b)| [a, b])
+                .chain(parents().flat_map(|p| input.embedded_vertices(*p)))
                 .collect(),
         );
         Ok(Region {
@@ -336,7 +416,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             .iter()
             .map(|t| (t.target, t.clone()))
             .collect();
-        let (footprints, waves) = schedule(&ScheduleInput {
+        let scheduled = schedule(&ScheduleInput {
             input: self.input,
             plans: &plans,
             problem: &self.p,
@@ -344,7 +424,11 @@ impl<'a, 'r> Planner<'a, 'r> {
             transforms: &transforms,
             groups: &groups,
             grouped: &self.region.grouped,
-        })?;
+        });
+        let (footprints, waves) = match scheduled {
+            Err(SchemeError::Schedule { jobs, constraints, reason }) => return Err(self.blame_cycle(jobs, constraints, reason)),
+            other => other?,
+        };
         Ok(Plan {
             problem: self.p,
             intervals,
@@ -369,6 +453,43 @@ impl<'a, 'r> Planner<'a, 'r> {
             inf.blame = self.pick_blame(&inf.constraints);
         }
         e
+    }
+
+    /// A schedule error stays a schedule error unless it is a dependency cycle through a
+    /// scheme-origin `Precedes` (a scheme's [`Requirements::reads`]): that becomes an
+    /// [`Infeasible`] blaming the reading `(target, scheme)` (the later such constraint, if the
+    /// scheme is blameable), so the driver rejects it and re-plans.
+    fn blame_cycle(&self, jobs: Vec<Job>, constraints: Vec<ConstraintId>, reason: String) -> SchemeError {
+        let blame = (reason == "dependency cycle")
+            .then(|| {
+                constraints.iter().rev().find_map(|id| {
+                    let is_read = self.p.constraints.iter().any(|r| r.id == *id && matches!(r.item, MeshConstraint::Precedes { .. }));
+                    match self.p.record_origin(*id)? {
+                        Origin::Scheme { scheme, target }
+                            if is_read && scheme.as_str() != SchemeName::COPY && !self.hard.contains(target) && !self.rej.0.contains_key(&(*target, scheme.clone())) =>
+                        {
+                            Some((*target, scheme.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+            })
+            .flatten();
+        match blame {
+            Some(b) => {
+                let mut entities: Vec<EntityId> = jobs
+                    .iter()
+                    .filter_map(|j| match j {
+                        Job::Generate(t) => t.entity(),
+                        Job::Transform(_) => None,
+                    })
+                    .collect();
+                entities.sort_unstable();
+                entities.dedup();
+                Infeasible { reason: "dependency cycle through a scheme read".into(), constraints, entities, blame: Some(b) }.into()
+            }
+            None => SchemeError::Schedule { jobs, constraints, reason },
+        }
     }
 
     /// Among the involved scheme-origin constraints whose selection is not a hard intent, the
@@ -453,13 +574,25 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// Boundary-layer requests: a constraint per adjacent volume target, plus a soft need for
     /// a volume scheme with the boundary-layer capability.
     fn boundary_layers(&mut self) -> Result<()> {
+        // A request on anything but a region face would be silently dropped: refuse it (curve
+        // boundary layers do not exist yet; `MeshIntent::check` refuses non-face kinds too).
+        for (id, e) in &self.intent.entities {
+            if e.boundary_layer.is_some() && self.region.faces.binary_search(id).is_err() && !matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace) {
+                return Err(SchemeError::Input(format!("{id}: boundary layers are only supported on faces")));
+            }
+        }
         for f in self.region.faces.clone() {
-            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer) else {
+            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer.clone()) else {
                 continue;
             };
             let mut targets: Vec<Target> = Vec::new();
+            let mut adjacent: Vec<EntityId> = Vec::new();
             for (v, faces) in &self.region.vol_faces {
                 if faces.binary_search(&f).is_err() {
+                    continue;
+                }
+                adjacent.push(*v);
+                if !spec.into.is_empty() && !spec.into.contains(v) {
                     continue;
                 }
                 targets.push(match self.region.grouped.get(v) {
@@ -467,13 +600,16 @@ impl<'a, 'r> Planner<'a, 'r> {
                     None => Target::Volume(*v),
                 });
             }
+            if let Some(v) = spec.into.iter().find(|v| !adjacent.contains(v)) {
+                return Err(SchemeError::Input(format!("{f}: boundary layer `into` volume {v} is not adjacent to the face")));
+            }
             for vt in sorted(targets) {
                 self.p.push_constraint(
                     Origin::Intent,
                     MeshConstraint::BoundaryLayer {
                         face: f,
                         volume: vt,
-                        spec,
+                        spec: spec.clone(),
                     },
                 );
                 self.p.push_imposition(
@@ -1395,50 +1531,7 @@ impl<'a, 'r> Planner<'a, 'r> {
 
     /// The strict sub-entities of `t` a requirement may be about.
     fn children_of(&self, t: Target) -> Result<BTreeSet<Target>> {
-        let mut out = BTreeSet::new();
-        let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
-            out.insert(Target::Surface(f));
-            for e in self.input.face_edges(f) {
-                out.insert(Target::Curve(e));
-            }
-        };
-        match t {
-            Target::Curve(_) => {}
-            Target::Surface(f) => {
-                for e in self.input.face_edges(f) {
-                    out.insert(Target::Curve(e));
-                }
-            }
-            Target::Volume(v) => {
-                for f in self
-                    .region
-                    .vol_faces
-                    .get(&v)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
-                    add_face(*f, &mut out);
-                }
-            }
-            Target::Group(g) => {
-                for (id, members) in &self.region.groups {
-                    if *id == g {
-                        for m in members {
-                            for f in self
-                                .region
-                                .vol_faces
-                                .get(m)
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[])
-                            {
-                                add_face(*f, &mut out);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(out)
+        children_in(self.input, &self.region, t)
     }
 
     fn require(&mut self, tp: &mut TargetPlan) -> Result<()> {
@@ -1450,9 +1543,14 @@ impl<'a, 'r> Planner<'a, 'r> {
                 name: tp.scheme.clone(),
                 target: tp.target,
             })?;
+        let (input, region) = (self.input, &self.region);
+        let in_region = |t: Target| region.contains(t);
+        let within = |parent: Target, child: Target| children_in(input, region, parent).is_ok_and(|c| c.contains(&child));
         let scope = Scope {
             children: self.children_of(tp.target)?,
             resolved: &self.plans,
+            in_region: &in_region,
+            within: &within,
         };
         let n_claims = self.p.claims.len();
         let mut req = Requirements::new(&mut self.p, &tp.scheme, tp.target, &scope);
@@ -1550,7 +1648,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             }
         }
         let owned = if self.drv.size.is_none() {
-            intent.defaults.sizing.as_ref().and_then(builtin_field)
+            field_for(intent.defaults.sizing.as_ref())?
         } else {
             None
         };
@@ -1570,25 +1668,30 @@ impl<'a, 'r> Planner<'a, 'r> {
                 ),
                 Some(Firm {
                     value: IntervalRequest::Size(h),
-                    ..
-                }) => (
-                    Origin::Intent,
-                    IntervalConstraint::Goal {
-                        edge: e,
-                        goal: geom::edge_length(topo, e)? / h,
-                    },
-                ),
-                None => match field {
-                    Some(f) => {
-                        let mid = geom::edge_point(topo, e, 0.5)?;
-                        (
-                            Origin::Sizing,
-                            IntervalConstraint::Goal {
+                    firmness,
+                }) => {
+                    let goal = geom::edge_length(topo, e)? / h;
+                    match firmness {
+                        // A firm size is a firm count: keep its firmness (it used to be dropped).
+                        Firmness::Hard | Firmness::Soft => (
+                            Origin::Intent,
+                            IntervalConstraint::Fixed {
                                 edge: e,
-                                goal: geom::edge_length(topo, e)? / f.size(mid),
+                                count: size_count(goal),
+                                firmness: *firmness,
                             },
-                        )
+                        ),
+                        Firmness::Default => (Origin::Intent, IntervalConstraint::Goal { edge: e, goal }),
                     }
+                }
+                None => match field {
+                    Some(f) => (
+                        Origin::Sizing,
+                        IntervalConstraint::Goal {
+                            edge: e,
+                            goal: geom::edge_size_goal(topo, e, f)?,
+                        },
+                    ),
                     None => (
                         Origin::Sizing,
                         IntervalConstraint::Goal { edge: e, goal: 1.0 },
@@ -1596,6 +1699,15 @@ impl<'a, 'r> Planner<'a, 'r> {
                 },
             };
             self.p.push_interval(c.0, c.1);
+        }
+        // User relations between edges, in intent order.
+        for r in &intent.intervals {
+            if let Some(e) = r.edges().into_iter().find(|e| self.region.edges.binary_search(e).is_err()) {
+                return Err(SchemeError::Input(format!("interval row names {e}, which is not an edge of the region")));
+            }
+            let mut r = r.clone();
+            r.canonicalize();
+            self.p.push_interval(Origin::Intent, r);
         }
         Ok(())
     }
@@ -1607,16 +1719,24 @@ impl<'a, 'r> Planner<'a, 'r> {
         for t in &self.intent.transforms {
             let mut targets: Vec<Target> = Vec::new();
             for e in &t.targets {
-                if self.region.volumes.binary_search(e).is_err() {
+                // Pieces (their group's patch for a grouped one), and faces and curves inside
+                // the region (W0f gaps 2: smoothing a surface before a sweep, surface meshes).
+                let target = if self.region.volumes.binary_search(e).is_ok() {
+                    match self.region.grouped.get(e) {
+                        Some(g) => Target::Group(*g),
+                        None => Target::Volume(*e),
+                    }
+                } else if self.region.faces.binary_search(e).is_ok() {
+                    Target::Surface(*e)
+                } else if self.region.edges.binary_search(e).is_ok() {
+                    Target::Curve(*e)
+                } else {
                     return Err(SchemeError::Input(format!(
-                        "transform {:?}: {e} is not a selected piece",
+                        "transform {:?}: {e} is not a selected piece, nor a face or curve of the region",
                         t.id
                     )));
-                }
-                targets.push(match self.region.grouped.get(e) {
-                    Some(g) => Target::Group(*g),
-                    None => Target::Volume(*e),
-                });
+                };
+                targets.push(target);
             }
             out.push(TransformPlan {
                 id: t.id,
@@ -1649,4 +1769,9 @@ impl<'a, 'r> Planner<'a, 'r> {
         }
         Ok(out)
     }
+}
+
+/// Interval count of a firm size request: `round(length / size)`, at least 1.
+fn size_count(goal: f64) -> u32 {
+    if goal.is_finite() { goal.round().clamp(1.0, f64::from(u32::MAX)) as u32 } else { 1 }
 }

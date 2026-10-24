@@ -55,8 +55,10 @@ pub struct CellGeometry {
     pub basis: Basis,
 }
 
-/// What one node of a high-order cell sits on (`smartmesh.nodes.v1`).
+/// What one node of a high-order cell sits on (`smartmesh.nodes.v1`). `#[non_exhaustive]`
+/// (W0f) so triangle-face and higher-order edge slots can be added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NodeSlot {
     /// A template corner.
     Corner(u8),
@@ -69,7 +71,8 @@ pub enum NodeSlot {
 }
 
 /// Number of nodes of a cell of `shape` at `degree` in `basis`; `None` if unsupported in v1
-/// (polyhedra, degree 0 or above 2, serendipity at degree 1 is the linear element).
+/// (polyhedra and polygons, degree 0 or above 2, serendipity at degree 1 is the linear
+/// element). Dimension-2 templates follow Gmsh too: TRI6, QUAD8 (serendipity), QUAD9.
 pub const fn node_count(shape: CellShape, degree: u8, basis: Basis) -> Option<usize> {
     let Some(corners) = shape.vertex_count() else {
         return None;
@@ -128,7 +131,7 @@ pub const fn face_node_count(loop_len: usize, degree: u8, basis: Basis) -> Optio
         (FaceShape::Quad, Basis::Serendipity) => Some(8),
         (FaceShape::Quad, _) => Some(9),
         (FaceShape::Polygon, Basis::Serendipity) => Some(2 * loop_len),
-        (FaceShape::Polygon, _) => None,
+        (FaceShape::Polygon, _) | (FaceShape::Segment, _) => None,
     }
 }
 

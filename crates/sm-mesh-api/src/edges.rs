@@ -56,11 +56,17 @@ impl EdgeTable {
     /// Pairs in `explicit` that are not edges of the mesh are an error.
     ///
     /// `alloc` is unchanged on `Err`: serials are drawn only after every check has passed.
+    /// A dimension-2 mesh has no edge table (its facets are the edges): `Unsupported`.
     pub fn derive(
         m: &dyn MeshRead,
         alloc: &mut SerialAlloc,
         explicit: &BTreeMap<[VertexIx; 2], Classification>,
     ) -> Result<Self> {
+        if m.dim() == crate::index::MeshDim::Two {
+            return Err(MeshError::Unsupported(
+                "a dimension-2 mesh has no edge table: its facets are the edges".into(),
+            ));
+        }
         let nf = m.count(crate::index::MeshEntityKind::Face);
         let mut map: BTreeMap<[VertexIx; 2], u32> = BTreeMap::new();
         for f in 0..nf {

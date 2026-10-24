@@ -28,8 +28,10 @@ fn sorted(mut v: Vec<Target>) -> Vec<Target> {
     v
 }
 
-/// The boundary children a target reads: faces of a piece or group, edges of a face.
+/// The children a target reads: faces of a piece or group, edges of a face, and the embedded
+/// (wire) edges of a face or piece (W0f gaps 2), which are generated before their parent.
 fn children(inp: &ScheduleInput<'_>, t: Target) -> Result<Vec<Target>> {
+    let embedded = |p: EntityId| inp.input.embedded_edges(p).into_iter().map(Target::Curve);
     Ok(match t {
         Target::Curve(_) => Vec::new(),
         Target::Surface(f) => inp
@@ -37,12 +39,14 @@ fn children(inp: &ScheduleInput<'_>, t: Target) -> Result<Vec<Target>> {
             .face_edges(f)
             .into_iter()
             .map(Target::Curve)
+            .chain(embedded(f))
             .collect(),
-        Target::Volume(_) => inp
+        Target::Volume(v) => inp
             .input
             .piece_faces(t)?
             .into_iter()
             .map(Target::Surface)
+            .chain(embedded(v))
             .collect(),
         Target::Group(g) => {
             let mut v = Vec::new();
@@ -53,6 +57,7 @@ fn children(inp: &ScheduleInput<'_>, t: Target) -> Result<Vec<Target>> {
                         .into_iter()
                         .map(Target::Surface),
                 );
+                v.extend(embedded(*m));
             }
             v
         }
@@ -174,10 +179,28 @@ pub(crate) fn schedule(inp: &ScheduleInput<'_>) -> Result<(Vec<Footprint>, Vec<V
         }
         footprints.push(Footprint { job, reads, writes });
     }
+    // The last transform over a target (by id) is the writer its readers depend on (W0f gaps 2):
+    // a volume reads its smoothed faces, a copy member its transformed root.
+    let mut last_transform: BTreeMap<Target, Job> = BTreeMap::new();
+    for tp in inp.transforms {
+        for t in &tp.targets {
+            let j = Job::Transform(tp.id);
+            match last_transform.get(t) {
+                Some(Job::Transform(prev)) if *prev > tp.id => {}
+                _ => {
+                    last_transform.insert(*t, j);
+                }
+            }
+        }
+    }
     for fp in &footprints {
         let mut d: BTreeSet<Job> = BTreeSet::new();
         for r in &fp.reads {
-            match writer(*r) {
+            let w = match fp.job {
+                Job::Generate(_) => last_transform.get(r).copied().or_else(|| writer(*r)),
+                Job::Transform(_) => writer(*r),
+            };
+            match w {
                 Some(w) if w != fp.job => {
                     d.insert(w);
                 }
