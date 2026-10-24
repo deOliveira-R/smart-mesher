@@ -71,7 +71,8 @@ report with the language's own diagnostic.
 Human mode prints results on stdout and errors as `error[kind]: message` (plus the error's `data`
 pretty-printed) on stderr. `--json` prints the server's result value verbatim as one compact line;
 a failure prints `{"error": {code, kind, message, data?}}` on stdout with the same exit code. Usage
-errors found by clap itself go to stderr as text. The exceptions to "verbatim" are `log --json`, which
+errors found by clap itself are the same object on stdout when `--json` appears among the arguments,
+and text on stderr otherwise. The exceptions to "verbatim" are `log --json`, which
 is `{head, position, branches, nodes}` because `timeline.log` returns nodes only, `help --json`
 (catalog, or one entry plus `"kind": "op"|"query"`) and `query` (pretty JSON in human mode).
 

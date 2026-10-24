@@ -847,3 +847,18 @@ fn help_json_is_the_catalog_or_one_entry() {
     let q = go(&["help", "mesh.info", "--json"]).json();
     assert_eq!(q["kind"], "query");
 }
+
+#[test]
+fn clap_errors_are_json_on_stdout_when_json_is_requested() {
+    let o = go(&["--json", "apply", "mesh.size"]);
+    assert_eq!(o.code, 2);
+    assert!(o.err.is_empty(), "{}", o.err);
+    let v = o.json();
+    assert_eq!(v["error"]["kind"], "usage");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("required"),
+        "{v}"
+    );
+    // Help and version stay plain text.
+    assert!(!go(&["--json", "--version"]).out.starts_with('{'));
+}
