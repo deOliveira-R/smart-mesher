@@ -70,10 +70,37 @@ FNV-1a over little-endian words; no geometry float ever enters as raw bits (only
 - **`CoedgeKind::Pole`** is derived from the `DEGENERATE` edge flag rather than a coedge with no edge (an `Incidence` always names a cell).
 - **Overlay holds the host as an immutable `Arc` snapshot.** "Refuses queries once the host has changed" becomes `is_stale_against` / `rebase` plus `StaleOverlay` errors: a frozen snapshot cannot change under the overlay, and the owner decides when to rebase. Virtual cells have no lineage, no pcurves, and `face_moments` of a partition child is `Unsupported`. Since W0f the overlay also realizes volume splits (above); the piece tables (colors, shapes, cut tree) stay in `sm-model-api`, which records how its `CutId`s map to overlay ids.
 - **`ModKind`** has no pcurve entry: `set_pcurve` is not logged (pcurves are derived data); `Created` lineage is only written by `record_created` (every cell has `born`).
-- **`#[non_exhaustive]`** (W0f): `FaceCut`, `VirtualOp`, `Carrier`, `ShellAssign` and `InnerLoopAssign`, so later kinds (CSG regions, composite/collapse virtual ops) are not breaking; downstream matches need a wildcard arm.
+- **`#[non_exhaustive]`** (W0f): `FaceCut`, `VirtualOp`, `Carrier`, `ShellAssign`, `InnerLoopAssign`, and (W0f gaps3) `LineageKind` and `ModKind`, so later kinds (CSG regions, composite/collapse virtual ops) are not breaking; downstream matches need a wildcard arm.
 - **Serde** is derived on every owned public data type; borrowed input types (`ShellSpec`, `FaceCut`, `InnerLoopAssign`, `ShellAssign`), the borrowing views (`Loop`, `Shell`) and errors are not. There is no JSON dev-dependency, so the serde test checks the derives at compile time rather than round-tripping.
 - **`end_op` is not a full `validate`**: it checks the touched cells and their parents (row ranks, edge ends, loop closure, face sides, orientation rule, shell kinds and closure). `validate` additionally compares boundary and coboundary rows and covers the whole complex.
 - Reference implementation limits: `split_face` rejects faces with embedded members, chords ending on inner loops and ambiguous attachment vertices (documented `Unsupported`); `split_volume` with non-outer shells needs an explicit assignment; a `merge_faces` survivor's gap is measured at the centroid of the outline vertices projected on the survivor's surface.
 - **Signature-level differences the next crate will hit.** `TopologyView::carrier(id)` returns `&Carrier` (the sketch's `Carrier` was `Copy`; this one holds `CsgCell` and `SmallVec`). `face_sides` returns `Option<FaceSides { left: Region, right: Region }>` (the semantics sketch had `{ left: EntityId, right: Option<EntityId> }`; `Region::Exterior` is `None`). `CurveDef`, `SurfaceDef` and `PCurve` are `#[non_exhaustive]`: downstream matches need a wildcard arm. The model tolerance policy fields enter `canonical_hash` by bit pattern (they are user-supplied constants); geometry floats are always quantized, including every curve and surface definition (hashed per handle through `CurveDef::for_each_value` / `SurfaceDef::for_each_value`, lengths, angles and unitless values each with their own quantum). `split_face(ClosedLoop)` expects the chain in the face's own loop direction (unchecked). `kill_cascade` keeps any cell that still has a live parent, bodies included. Live-cell lists are sorted `Vec`s, so retiring a cell is O(live).
 - **Instancing dropped (Q8).** `location()`, `make_instance`, `Location`/`Instance`/`ShapeRef` and the "mirrored instance" fixture are not in this crate; they belong to `sm-model-api`.
 - **Cargo.lock** was regenerated on the branch (it drops `indexmap`, which the final crate does not use); the orchestrator owns the lock (Q3) and should regenerate it at merge.
+
+## W0f gaps3
+
+- **`canonical_visit` and `HashWord`.** `HashWord { Int(u64), Float { raw: f64, q: i64 } }` and
+  the provided `TopologyView::canonical_visit(&self, f: &mut dyn FnMut(HashWord))` emit exactly
+  the sequence `canonical_hash` covers, with each geometric float as its raw value plus its Q2
+  code (length, parameter, angle or scale-free, per `ModelTolerance`). `canonical_hash` is now the
+  FNV fold of the visit (ints as is, floats by `q`), so its value is unchanged (a unit test keeps
+  the previous implementation and compares on a mixed fixture). The tolerance policy fields stay
+  `Int` (raw bits). An `sm-op-api` layer folds the words into a `Digest` with
+  `f64_with(raw, q)`: identity hash quantized, exact (cache-key) hash bit-for-bit.
+- **`record_merged`.** Provided `TopologyEdit::record_merged(drop, into, gap)` (default
+  `Unsupported`; `CellComplex` implements it): for a cell retired (deleted) in the open op, with
+  `into` live, of the same rank and different, and `gap` finite and `>= 0`, it records
+  `Merged { into, gap }` and sets the state to `Merged(op)`, so a composite unite yields `Merged`,
+  not `Split`. `LineageLog::successors` already follows it. A `Copied` lineage kind is deferred:
+  op-level successors carry copies as `A -> [A, A']`, and `#[non_exhaustive]` makes adding it
+  later non-breaking (`LineageKind` and `ModKind` were missed by the earlier non-exhaustive pass;
+  breaking for exhaustive matches, but there are no implementations yet).
+- **`live_cover`.** Provided `TopologyView::live_cover(id) -> Vec<EntityId>`, ascending and
+  deduplicated: `vec![id]` if alive, else `live_descendants(id)`. `Overlay` overrides it: hiding
+  now records host -> *all* covering cells (a second table next to `covering`, which keeps the
+  first child for `virtual_of`), and `live_cover` chases it recursively (a face partitioned, then
+  a half partitioned again, gives every live piece; composite members give the composite;
+  partitioned volumes give both children). Host-dead cells follow the host lineage first. This
+  covers `split_realized`, `partition_edge` / `partition_face` and composites. Groups in
+  `sm-model-api` expand through it.

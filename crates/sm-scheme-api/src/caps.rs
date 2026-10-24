@@ -20,7 +20,9 @@ impl Caps {
     pub const TRI: Caps = Caps(1);
     /// Produces quadrilaterals on a surface.
     pub const QUAD: Caps = Caps(1 << 1);
-    /// Produces a logically structured (i, j) grid ([`crate::NodeGrid`]).
+    /// Produces exactly one logically structured (i, j) grid ([`crate::NodeGrid`], attached
+    /// as [`crate::Patch::grid`]): a single-block mapped mesh (map). Implies
+    /// [`Self::BLOCK_STRUCTURED`].
     pub const STRUCTURED: Caps = Caps(1 << 2);
     /// Produces tetrahedra.
     pub const TET: Caps = Caps(1 << 3);
@@ -36,6 +38,13 @@ impl Caps {
     pub const BOUNDARY_LAYER: Caps = Caps(1 << 8);
     /// Writes the meshes of its lower-dimensional children itself (claims).
     pub const MESHES_CHILDREN: Caps = Caps(1 << 9);
+    /// All-quad with valence-4 interior nodes (a multi-block structured mesh, e.g. submap), so
+    /// every quad strip can be walked from boundary to boundary
+    /// ([`crate::Patch::strip_from`]). No single grid is promised; that is
+    /// [`Self::STRUCTURED`]. Map produces `QUAD | STRUCTURED | BLOCK_STRUCTURED`, submap
+    /// `QUAD | BLOCK_STRUCTURED`; a sweep imposes `QUAD | BLOCK_STRUCTURED` on its linking
+    /// faces.
+    pub const BLOCK_STRUCTURED: Caps = Caps(1 << 10);
     /// The scheme produces whatever its copy source produces. Resolved through the copy
     /// class root by the driver; only meaningful for the reserved `copy` scheme.
     pub const INHERIT: Caps = Caps(1 << 31);

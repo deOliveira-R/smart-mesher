@@ -346,9 +346,15 @@ impl Model {
 
     /// Entities of rank `dim` reachable from group `g`: members of that rank, the closure of
     /// higher-rank members (`TopologyView::closure`, so a volume brings its faces, edges and
-    /// vertices; works for `Topo*` and, on an overlay view, `Partition*` members), the volumes or
-    /// faces of member colors, and nested groups (cycle-checked). Ascending, deduplicated.
-    /// Members of lower rank and non-topological members contribute nothing.
+    /// vertices), the volumes or faces of member colors, and nested groups (cycle-checked).
+    /// Ascending, deduplicated. Members of lower rank and non-topological members contribute
+    /// nothing.
+    ///
+    /// Every topological member (`Topo*`, `Partition*`, and the volumes and faces of member
+    /// colors) is first mapped through [`TopologyView::live_cover`] before the rank test and the
+    /// closure: a live cell stays itself, a split host cell becomes its live descendants and,
+    /// on an [`sm_topo_api::Overlay`] view, a hidden host cell becomes every live overlay cell
+    /// standing for it (partition children, composites). A deleted member contributes nothing.
     pub fn group_entities(&self, g: EntityId, t: &dyn TopologyView, dim: Dim) -> Result<Vec<EntityId>> {
         let mut out = BTreeSet::new();
         self.collect_entities(g, t, dim, &mut Vec::new(), &mut out)?;
@@ -361,12 +367,16 @@ impl Model {
         }
         let row = self.groups.get(&g).ok_or(ModelError::Unknown(g))?;
         stack.push(g);
-        let take = |e: EntityId, out: &mut BTreeSet<EntityId>| match Dim::of_kind(e.kind()) {
-            Some(d) if d == dim => {
-                out.insert(e);
+        let take = |m: EntityId, out: &mut BTreeSet<EntityId>| {
+            for e in t.live_cover(m) {
+                match t.dim_of(e) {
+                    Some(d) if d == dim => {
+                        out.insert(e);
+                    }
+                    Some(d) if d > dim => out.extend(t.closure(e).into_iter().filter(|c| t.dim_of(*c) == Some(dim))),
+                    _ => {}
+                }
             }
-            Some(d) if d > dim => out.extend(t.closure(e).into_iter().filter(|c| t.dim_of(*c) == Some(dim))),
-            _ => {}
         };
         for m in &row.members {
             match m.kind() {
@@ -376,7 +386,8 @@ impl Model {
                     Some(Domain::Face) => self.faces_of_color(*m).into_iter().for_each(|f| take(f, out)),
                     None => {}
                 },
-                _ => take(*m, out),
+                k if is_topo_kind(k) => take(*m, out),
+                _ => {}
             }
         }
         stack.pop();
@@ -389,7 +400,9 @@ impl Model {
     }
 
     /// Volumes reachable from a group: volume members, volumes of member bodies and colors,
-    /// nested groups (cycle-checked). Ascending, deduplicated.
+    /// nested groups (cycle-checked). Ascending, deduplicated. Members are mapped through
+    /// [`TopologyView::live_cover`] first, as in [`Model::group_entities`]; on an overlay view a
+    /// partitioned volume yields its live pieces.
     pub fn group_volumes(&self, g: EntityId, t: &dyn TopologyView) -> Result<Vec<EntityId>> {
         let mut out = BTreeSet::new();
         self.collect_group(g, t, true, &mut Vec::new(), &mut out)?;
@@ -397,7 +410,9 @@ impl Model {
     }
 
     /// Faces reachable from a group: face members, faces of member volumes and bodies, faces of
-    /// member face colors, nested groups. Ascending, deduplicated.
+    /// member face colors, nested groups. Ascending, deduplicated. Members are mapped through
+    /// [`TopologyView::live_cover`] first, as in [`Model::group_entities`]; on an overlay view a
+    /// hidden host face yields its live overlay faces.
     pub fn group_faces(&self, g: EntityId, t: &dyn TopologyView) -> Result<Vec<EntityId>> {
         let mut out = BTreeSet::new();
         self.collect_group(g, t, false, &mut Vec::new(), &mut out)?;
@@ -410,46 +425,51 @@ impl Model {
         }
         let row = self.groups.get(&g).ok_or(ModelError::Unknown(g))?;
         stack.push(g);
+        // One live cell: volumes and faces by rank, bodies through their volume members.
+        let take = |e: EntityId, out: &mut BTreeSet<EntityId>| match t.dim_of(e) {
+            Some(Dim::Volume) => {
+                if vols {
+                    out.insert(e);
+                } else {
+                    out.extend(t.volume_faces(e).iter().copied());
+                }
+            }
+            Some(Dim::Face) if !vols => {
+                out.insert(e);
+            }
+            Some(Dim::Body) => {
+                for b in t.boundary(e) {
+                    if t.dim_of(b.cell) == Some(Dim::Volume) {
+                        if vols {
+                            out.insert(b.cell);
+                        } else {
+                            out.extend(t.volume_faces(b.cell).iter().copied());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        };
+        let cover = |m: EntityId, out: &mut BTreeSet<EntityId>| t.live_cover(m).into_iter().for_each(|e| take(e, out));
         for m in &row.members {
             match m.kind() {
-                EntityKind::TopoVolume => {
-                    if vols {
-                        out.insert(*m);
-                    } else {
-                        out.extend(t.volume_faces(*m).iter().copied());
-                    }
-                }
-                EntityKind::TopoFace => {
-                    if !vols {
-                        out.insert(*m);
-                    }
-                }
-                EntityKind::TopoBody => {
-                    for e in t.boundary(*m) {
-                        if t.dim_of(e.cell) == Some(Dim::Volume) {
-                            if vols {
-                                out.insert(e.cell);
-                            } else {
-                                out.extend(t.volume_faces(e.cell).iter().copied());
-                            }
-                        }
-                    }
-                }
                 EntityKind::Color => match (self.colors.get(m).map(|c| c.domain), vols) {
-                    (Some(Domain::Volume), true) => out.extend(self.volumes_of_color(*m)),
-                    (Some(Domain::Volume), false) => {
-                        for v in self.volumes_of_color(*m) {
-                            out.extend(t.volume_faces(v).iter().copied());
-                        }
-                    }
-                    (Some(Domain::Face), false) => out.extend(self.faces_of_color(*m)),
+                    (Some(Domain::Volume), _) => self.volumes_of_color(*m).into_iter().for_each(|v| cover(v, out)),
+                    (Some(Domain::Face), false) => self.faces_of_color(*m).into_iter().for_each(|f| cover(f, out)),
                     _ => {}
                 },
                 EntityKind::Group => self.collect_group(*m, t, vols, stack, out)?,
+                k if is_topo_kind(k) => cover(*m, out),
                 _ => {}
             }
         }
         stack.pop();
         Ok(())
     }
+}
+
+/// Topology cells (host or overlay) that groups map through `live_cover`.
+fn is_topo_kind(k: EntityKind) -> bool {
+    use EntityKind::*;
+    matches!(k, TopoVertex | TopoEdge | TopoFace | TopoVolume | TopoBody | PartitionCell | PartitionFace | PartitionEdge | PartitionVertex)
 }

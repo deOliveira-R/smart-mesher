@@ -1435,6 +1435,31 @@ impl TopologyEdit for CellComplex {
         })
     }
 
+    fn record_merged(&mut self, drop: EntityId, into: EntityId, gap: f64) -> Result<(), TopoError> {
+        self.atomic(|s| {
+            let op = s.ensure_open()?;
+            if !(gap.is_finite() && gap >= 0.0) {
+                return Err(TopoError::InvalidParameter("the merge gap must be finite and non-negative"));
+            }
+            if drop == into {
+                return Err(TopoError::InvalidParameter("a cell cannot merge into itself"));
+            }
+            match s.state(drop) {
+                Some(EntityState::Deleted(o)) if o == op => {}
+                Some(EntityState::Live) => return Err(TopoError::InvalidParameter("the merged cell must be retired in this operation")),
+                None => return Err(TopoError::NoSuchCell(drop)),
+                Some(_) => return Err(TopoError::InvalidParameter("only a cell deleted in this operation can be recorded as merged")),
+            }
+            if Dim::of_real_kind(into.kind()) != Dim::of_real_kind(drop.kind()) {
+                return Err(TopoError::InvalidParameter("the survivor must have the merged cell's rank"));
+            }
+            s.live_any(into)?;
+            s.set_state(drop, EntityState::Merged(op));
+            s.note(drop, LineageKind::Merged { into, gap });
+            Ok(())
+        })
+    }
+
     fn record_generated(&mut self, cell: EntityId, from_surface: EntityId) -> Result<(), TopoError> {
         self.atomic(|s| {
             s.live_slot(cell, Dim::Face)?;

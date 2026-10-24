@@ -80,6 +80,14 @@ Analytic, not smoke: finite-difference checks of every first/second derivative; 
 - Root finding accepts a tangency when the critical value is within `1e-12` relative; two roots closer than `1e-9` relative merge.
 - No `Hash`/`Eq` on f64-bearing types by design; content hashing happens in topology.
 
+## W0f gaps3: NURBS poles in both directions
+
+`NurbsSurface::domain` reports a `Singularity` for every collapsed boundary iso-line: rows
+`iu = 0` / `iu = nu - 1` as before (`along: U`, `at: du.lo / du.hi`) and now also columns
+`iv = 0` / `iv = nv - 1` (`control[iu * nv + iv]` all equal for every `iu`; `along: V`,
+`at: dv.lo / dv.hi`). Order: U low, U high, V low, V high. Tests: a 2 x 3 net with a collapsed
+last column reports one V singularity; a fully collapsed net reports all four.
+
 ## W0f gaps 2: elliptic quadrics
 
 `SurfaceDef::EllipticCylinder(EllipticCylinder { frame, a, b })` (`o + a cos u x + b sin u y + v z`) and `SurfaceDef::EllipticCone(EllipticCone { frame, a, b, half_angle })` (`o + k(v)(a cos u x + b sin u y) + v cos h z`, `k = 1 + v sin h / a`: the `v = 0` section is the ellipse `(a, b)`, `h` is the half-angle in the `x`-`z` plane, apex at `v = -a / sin h`; one nappe, like `Cone`). Both implement `ParametricSurface` (outward `du x dv` in a right-handed frame, exact normal at the cone apex since the normal is constant along a generator) and `implicit()` (quadric, negative inside; the cone's is the double cone and `ray_hits` keeps the `+z` nappe). `EllipticCylinder::project` is exact (closest point on the section ellipse by bisection, Eberly); `EllipticCone::project` is `Unsupported` (no closed form; `sm-geom` supplies one), like `Ellipse`. They are the elliptic frustum primitive of PARITY B and the images of non-uniformly scaled cylinders and cones in `SurfaceDef::transformed`, which no longer returns a parameterless `Implicit` for those (spheres still do; tori stay `Unsupported`). Hash tags 8 and 9 in `for_each_value`. This changes `transformed()` output, so it lands before W1 pins geometry hashes. Tested: points on the quadric, outward normals, finite-difference derivatives, `a = b` against `Cylinder` / `Cone`, projection minimality against dense sampling, ray hits, the Jacobi eigen-solver, and analytic images (stretched cylinder `a = 2, b = 1`, sheared cylinder axis and section, stretched 45° cone half-angles `atan 2` and 45°).

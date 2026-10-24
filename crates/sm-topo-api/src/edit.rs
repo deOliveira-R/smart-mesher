@@ -213,6 +213,17 @@ pub trait TopologyEdit: TopologyView {
     /// parent's state becomes `Split(op)`.
     fn record_split(&mut self, parent: EntityId, children: &[EntityId]) -> Result<(), TopoError>;
 
+    /// Declare that `drop` (already retired in this operation) was absorbed into `into` (live,
+    /// same rank, a different cell), with `gap` the geometric gap the merge discarded (finite,
+    /// `>= 0`, model length units). Records `LineageKind::Merged { into, gap }` and sets the
+    /// state of `drop` to `Merged(op)`, so a composite unite yields `Merged`, not `Split`;
+    /// `LineageLog::successors` follows it. Allowed only inside an operation and only for a cell
+    /// retired (deleted) in it. Default: [`TopoError::Unsupported`].
+    fn record_merged(&mut self, drop: EntityId, into: EntityId, gap: f64) -> Result<(), TopoError> {
+        let _ = (drop, into, gap);
+        Err(TopoError::Unsupported("record_merged"))
+    }
+
     /// Record that face `cell` was generated on tool surface `from_surface`, so "the new cut
     /// face" can be found by a query.
     fn record_generated(&mut self, cell: EntityId, from_surface: EntityId) -> Result<(), TopoError>;

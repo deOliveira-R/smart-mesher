@@ -73,7 +73,7 @@ fn violates(n: &Need, name: &SchemeName, caps: Caps) -> bool {
 
 /// Caps a claimed child shows to impositions: what its claimer produces on surfaces.
 fn child_caps(claimer: Caps) -> Caps {
-    claimer & (Caps::TRI | Caps::QUAD | Caps::STRUCTURED | Caps::POLY)
+    claimer & (Caps::TRI | Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED | Caps::POLY)
 }
 
 enum Cand {

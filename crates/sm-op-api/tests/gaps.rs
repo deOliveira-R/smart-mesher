@@ -495,7 +495,7 @@ fn queries_are_registered_run_and_catalogued() {
         .run_query(s.state(), "t.list_bodies", &serde_json::json!({"count_only": 3}), &c.control())
         .unwrap_err();
     assert!(matches!(err, RegistryError::Query { .. }), "{err:?}");
-    // A query name may equal an op name: separate namespace. Duplicates and bad names fail.
+    // Ops and queries share one namespace (their MCP tool names do). Duplicates fail.
     let mut r = registry();
     assert_eq!(
         r.register_query::<ListBodies>().err(),
@@ -510,8 +510,11 @@ fn queries_are_registered_run_and_catalogued() {
             Ok(())
         }
     }
-    assert!(r.register_query::<Shadow>().is_ok());
-    assert_eq!(r.query_names(), vec!["t.kernel_version", "t.list_bodies", "t.make"]);
+    assert_eq!(
+        r.register_query::<Shadow>().err(),
+        Some(RegistryError::DuplicateQuery("t.make".into()))
+    );
+    assert_eq!(r.query_names(), vec!["t.kernel_version", "t.list_bodies"]);
     // Catalog: sorted, input + output schemas.
     let cat: Vec<QueryInfo> = r.query_catalog().into_iter().map(Result::unwrap).collect();
     assert_eq!(cat[1].name, "t.list_bodies");
@@ -735,4 +738,143 @@ fn error_codes_are_stable_kebab_case() {
     for c in codes {
         assert!(c.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'));
     }
+}
+
+// ------------------------------------------------------------------ W0f gaps3
+
+#[test]
+fn ops_and_queries_share_one_namespace() {
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct OpNamedLikeQuery {}
+    impl TypedOp for OpNamedLikeQuery {
+        const NAME: &'static str = "t.list_bodies";
+        fn apply(&self, _: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+            Ok(())
+        }
+    }
+    let mut r = registry();
+    let ops_before = r.op_names().len();
+    assert_eq!(
+        r.register::<OpNamedLikeQuery>().err(),
+        Some(RegistryError::DuplicateOp("t.list_bodies".into()))
+    );
+    assert_eq!(r.op_names().len(), ops_before);
+}
+
+fn kh(i: u64) -> Hash256 {
+    Hash256::of(&i.to_le_bytes())
+}
+
+#[test]
+fn shrinking_the_cache_capacity_evicts_the_oldest_entries_first() {
+    let c = DerivedCache::with_capacity(1000);
+    for i in 0..5u64 {
+        c.insert_sized("k", kh(i), Arc::new(i), 100).unwrap();
+    }
+    // Touch entry 0 so it becomes the most recently used.
+    assert!(c.get::<u64>("k", kh(0)).is_some());
+    assert_eq!(c.stats().entries, 5);
+    assert_eq!(c.capacity(), 1000);
+    c.set_capacity(250);
+    assert_eq!(c.capacity(), 250);
+    assert_eq!(c.stats().entries, 2);
+    assert_eq!(c.stats().bytes, 200);
+    let alive: Vec<u64> = (0..5).filter(|i| c.get::<u64>("k", kh(*i)).is_some()).collect();
+    assert_eq!(alive, vec![0, 4], "1, 2, 3 were least recently used");
+    // The newest entry is kept even when it alone exceeds the bound (same rule as insert).
+    c.set_capacity(0);
+    assert_eq!(c.stats().entries, 1);
+    // Growing evicts nothing.
+    c.set_capacity(1 << 20);
+    assert_eq!(c.stats().entries, 1);
+}
+
+#[test]
+fn zero_byte_entries_count_one_byte_and_are_evictable() {
+    let c = DerivedCache::with_capacity(2);
+    for i in 0..4u64 {
+        c.insert_sized("k", kh(i), Arc::new(i), 0).unwrap();
+    }
+    assert_eq!(c.stats().entries, 2);
+    assert_eq!(c.stats().bytes, 2);
+    assert!(c.get::<u64>("k", kh(3)).is_some());
+    assert!(c.get::<u64>("k", kh(0)).is_none());
+}
+
+#[test]
+fn disabled_cache_always_computes_and_stores_nothing() {
+    let c = DerivedCache::disabled();
+    assert!(c.is_disabled());
+    let mut runs = 0;
+    for _ in 0..3 {
+        let v: Arc<u64> = c
+            .get_or_compute::<u64, CacheError>("k", kh(1), || {
+                runs += 1;
+                Ok(7)
+            })
+            .unwrap();
+        assert_eq!(*v, 7);
+    }
+    assert_eq!(runs, 3);
+    // Type conflicts are not validated: nothing is stored.
+    c.insert_sized("other", kh(1), Arc::new("x".to_owned()), 10).unwrap();
+    let st = c.stats();
+    assert_eq!((st.hits, st.misses, st.entries, st.bytes), (0, 3, 0, 0));
+    // A session on a disabled cache replays to the same hashes as a warm one.
+    let cold = Engine::new(
+        Arc::new(registry()),
+        Services::new().with(Kernel(7)),
+        Arc::new(DerivedCache::disabled()),
+    )
+    .unwrap();
+    let mut warm = session();
+    apply(&mut warm, &Make {});
+    let (tip, _) = apply(&mut warm, &Split { body: id(EntityKind::TopoBody, 1) });
+    let mut s = Session::new(cold);
+    apply(&mut s, &Make {});
+    let (tip2, _) = apply(&mut s, &Split { body: id(EntityKind::TopoBody, 1) });
+    assert_eq!(tip, tip2);
+    let cq = q();
+    assert_eq!(
+        s.state_at_from_root(tip2, &cq.control()).unwrap().hash(),
+        warm.state_at_from_root(tip, &cq.control()).unwrap().hash()
+    );
+}
+
+#[test]
+fn redo_stack_round_trips_through_set_redo_stack() {
+    let mut s = session();
+    let (h1, _) = apply(&mut s, &Make {});
+    let (h2, _) = apply(&mut s, &Make {});
+    let (h3, _) = apply(&mut s, &Make {});
+    s.undo().unwrap();
+    s.undo().unwrap();
+    assert_eq!(s.redo_stack(), &[h3, h2]);
+    let saved = s.redo_stack().to_vec();
+    // Reopen (as sm-engine would) and restore the persisted stack.
+    let c = q();
+    let mut r =
+        Session::open(engine(), s.timeline().clone(), s.head().clone(), &c.control()).unwrap();
+    assert_eq!(r.position(), Some(h1));
+    assert!(r.redo_stack().is_empty());
+    // Broken chains and unknown nodes are rejected and leave the stack unchanged.
+    assert_eq!(r.set_redo_stack(vec![h2, h3]), Err(TimelineError::NothingToRedo));
+    assert_eq!(r.set_redo_stack(vec![h3]), Err(TimelineError::NothingToRedo));
+    let ghost = Hash256::of(b"ghost");
+    assert_eq!(r.set_redo_stack(vec![ghost, h2]), Err(TimelineError::UnknownNode(ghost)));
+    assert!(r.redo_stack().is_empty());
+    r.set_redo_stack(saved.clone()).unwrap();
+    assert_eq!(r.redo_stack(), saved.as_slice());
+    r.redo().unwrap();
+    r.redo().unwrap();
+    assert_eq!(r.position(), Some(h3));
+    assert!(matches!(r.redo(), Err(TimelineError::NothingToRedo)));
+    // Detached HEAD: restoring is refused; undo/redo stay NotAttached.
+    r.checkout(Rev::Node(h1), &c.control()).unwrap();
+    assert_eq!(r.set_redo_stack(vec![h2]), Err(TimelineError::NothingToRedo));
+    assert!(r.redo_stack().is_empty());
+    assert!(matches!(r.undo(), Err(TimelineError::NotAttached)));
+    assert!(matches!(r.redo(), Err(TimelineError::NotAttached)));
+    // An empty stack is always accepted.
+    r.set_redo_stack(Vec::new()).unwrap();
 }

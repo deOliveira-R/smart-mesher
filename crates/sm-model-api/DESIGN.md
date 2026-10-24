@@ -191,7 +191,10 @@ through `TopoBody`), decomposition entities (`Partition*`), colors, nested group
 model rows (`group_member_kind_ok`); never geometry handles or mesh entities. Model-minted members
 must exist. `apply_lineage` re-keys every `Topo*`/`Partition*` member; `apply_group_successors`
 (with `groups_reference_any` for gating) is what a model layer's `on_succession` calls; other
-members pass through. `group_entities(g, t, dim)` expands by closure (`TopologyView::closure`): a
+members pass through. Since W0f gaps3, `group_entities`, `group_faces` and `group_volumes` first map every
+topological member (`Topo*`, `Partition*`, and the volumes / faces of member colors) through
+`TopologyView::live_cover` before the rank test and the closure, so on an overlay a hidden host
+cell yields its live overlay cells (and a deleted member nothing). `group_entities(g, t, dim)` expands by closure (`TopologyView::closure`): a
 member of rank `dim` is itself, a higher-rank member brings its closure cells of rank `dim`,
 colors bring their volumes or faces, nested groups recurse. `check_integrity` (and so
 deserialization) checks member kinds, model-minted members, unique names and nesting cycles.
@@ -269,3 +272,20 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   detected on lattices.
 - Slab/wedge cuts need a 1:1 pairing of cap faces; an M:N cap pairing needs a kernel that imprints
   the two caps identically.
+
+## 7. W0f gaps3
+
+- **`Model::canonical_visit(&self, tol: &ModelTolerance, f: &mut dyn FnMut(HashWord))`**
+  (`canonical.rs`) emits every persisted table in canonical order (`BTreeMap` order, declaration
+  order for lists), each behind a tag and its length: id allocator, colors, volume / face
+  coloring, groups, boundaries, face boundaries, symmetry, provenance, recorded cut lineage,
+  instancing (prototypes, lattices with layouts and slots, instances, path overrides) and every
+  serialized decomposition field. Strings are emitted as length plus 8-byte words. Floats follow
+  Q2 with the model's topology tolerance: lengths (plane offsets, points, translations,
+  transform translations, pitches, deviations) as `round(v / (linear * 2^-10))`; direction
+  components, transform matrix entries and angles with `angular * 2^-10`. It takes `tol`
+  because the model stores no tolerance; the state layer passes the topology's. The op layer
+  folds it with `Digest::f64_with(raw, q)`; tests check that a sub-quantum change keeps the
+  identity words and changes the exact words.
+- **Groups through `live_cover`**: see section 4. `color.rs` no longer claims that closure
+  works on hidden host members of an overlay; it maps them first.

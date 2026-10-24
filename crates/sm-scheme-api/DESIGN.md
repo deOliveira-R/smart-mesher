@@ -10,7 +10,7 @@ Depends on `sm-core`, `sm-geom-api`, `sm-topo-api`, `sm-model-api`, `sm-mesh-api
 
 > Like **Cubit's scheme + interval-assignment (IIA) model**, it has per-entity schemes with firmness, auto selection, vertex types per surface, and a global integer interval solve. Like **Gmsh's transfinite/recombine pipeline**, constraints (transfinite curves/surfaces, periodic copies) are declared first and structured meshes are generated from them. It differs in four ways:
 > - **(A) One explicit, inspectable constraint store.** Every constraint has an id and an origin (intent, sizing, scheme + target, deck boundary, piece hint, driver), and the whole store, the solution, the schedule and every rejected candidate are serialized in the `Plan`. In Cubit these constraints are implicit session state; in Gmsh they are side effects of API calls.
-> - **(B) Impositions are data, phrased over capabilities.** A parent scheme requires `Caps::QUAD | Caps::STRUCTURED` of its linking faces, not a list of scheme names, so a new structured scheme needs no edits in the crates that impose. A conflict with a hard user choice is a typed error that names both sides.
+> - **(B) Impositions are data, phrased over capabilities.** A parent scheme requires `Caps::QUAD | Caps::BLOCK_STRUCTURED` of its linking faces (W0f gaps3; `STRUCTURED` alone before), not a list of scheme names, so a new structured scheme needs no edits in the crates that impose. A conflict with a hard user choice is a typed error that names both sides.
 > - **(C) Generation is pure and runs in parallel.** Generated nodes have canonical names (`NodeKey`), jobs of one wave run concurrently, and merge and commit are in a fixed order, so 1 thread and N threads give bit-identical meshes. Cubit and Gmsh mesh entity by entity and write straight into the mesh.
 > - **(D) Model-layer semantics feed the solve directly.** Deck pairs (periodic, rotational) become copy constraints that join equivalence classes with the sweep's own copies. Deck faces get a hard `Forbid(BOUNDARY_LAYER)`, and mirror faces get `PlaneLock`. Decomposition pieces (`PieceRef`, `PieceShape::Sweep`) are first-class volume targets.
 >
@@ -130,6 +130,27 @@ A `Patch` has a local node table. Element entries are `u32`: `0..nodes.len()` na
 - **Transforms over faces and curves.** `TransformIntent::targets` may name faces and curves of the region besides pieces (`plan_transforms`). In the scheduler the last transform over a target (by id) is the writer its readers depend on (a volume reading a smoothed face, a face reading a transformed edge, a copy member reading its transformed root); transforms over one target keep their id-order chain and still depend on the target's generator. `GenCtx::patches` therefore shows later waves the transformed patch, and a generated copy of a transformed root is the image of the transformed patch. `Plan` and `Footprint` are unchanged. A transform covering a target and one of its readers is a dependency cycle (`Schedule`). Needed for smoothing a surface before a sweep and for transforms on surface-only meshes (W0e decision 5).
 - **User interval rows.** `MeshIntent::intervals: Vec<IntervalConstraint>` (`serde(default)`; `IntervalConstraint` and `Rel` derive `JsonSchema` under `schemars`): matched, relative and chain-sum intervals (PARITY C P1). `IntervalConstraint::check` (called by `MeshIntent::check`) requires edge kinds, counts and minimums `>= 1`, `min <= max`, finite positive goals, non-empty rows without zero coefficients and `|rhs| <= 2^53`; `IntervalConstraint::canonicalize` (called by `MeshIntent::canonicalize` and the planner) sorts and merges `Linear` terms and sorts `EvenSum` edges. The planner adds each row with `Origin::Intent` after the per-edge goals, refusing an edge outside the region (`Input`). Not adopted: an optional `IntervalSink::goal`.
 - **Commit node correspondence (contract).** `Driver::commit` adds nodes in `PatchSet::nodes()` order, so `VertexIx(i) == PatchSet::index_of(key) == i` (finishing does not renumber vertices); a non-empty builder is refused (`Input`). `Meshed::vertex_of(key)` reads it. There is no `CommitMap`: a cell's target is its classification.
+
+## W0f gaps3: block-structured faces
+
+- `Caps::BLOCK_STRUCTURED = Caps(1 << 10)`: all-quad, valence-4 interior, so every quad strip
+  can be walked boundary to boundary. `Caps::STRUCTURED` is narrowed to "exactly one
+  `NodeGrid`" (a single-block mapped mesh). Map produces `QUAD | STRUCTURED | BLOCK_STRUCTURED`,
+  submap `QUAD | BLOCK_STRUCTURED`. `Patch::grid` is the single-block structured view (map); a
+  submap patch need not carry one (the submap promise of "grid blocks" is dropped).
+- `Patch::strip_from(key) -> Option<Vec<NodeKey>>`: the node line of the quad strip that starts
+  at boundary node `key`, `key` first. A grid answers through `NodeGrid::line_from` (fast path);
+  otherwise the element table is walked (interior edge from `key`, then at each node the edge
+  sharing no quad with the incoming one) until a boundary node; ties (re-entrant corner,
+  irregular node) go to the smallest neighbour key. `None` for a non-quad patch, a key off the
+  boundary, a corner without an interior edge, or a walk that does not close. `GenCtx::strip_from(face,
+  key)` and `GenCtx::surface_patch(face)` expose it to generators.
+- The planner's claimer mask (`child_caps`) includes `BLOCK_STRUCTURED`, so a claimed linking
+  face written by its claimer still satisfies the imposition.
+- Stubs: the sweep imposes `QUAD | BLOCK_STRUCTURED` on linking faces and walks them with
+  `GenCtx::strip_from`; the stub submap attaches no grid. Tests (`gaps3.rs`): an L-shaped
+  submapped face (two blocks, no grid) walked from every kind of boundary node, the grid fast
+  path agreeing with the walk, and a sweep through four hard-submapped (grid-less) linking faces.
 
 ## Failure, blame and re-plan
 

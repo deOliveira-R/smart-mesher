@@ -64,8 +64,9 @@ as amended by `docs/design/w0/decisions.md`.
   code, message, entities }` comes from `ApplyCtx::warn` / `info`. Diagnostics are not part of any
   state or node hash; verbosity, suppression and stop-on-warning are front-end policy.
 - **Queries** (W0f): `TypedQuery { NAME, type Output, run(&State, &QueryCtx) }`, type-erased as
-  `QueryType`, registered with `Registry::register_query::<Q>()` (op-name rule, separate
-  namespace, `DuplicateQuery`). `QueryCtx` is read-only: services, derived cache, `Control`.
+  `QueryType`, registered with `Registry::register_query::<Q>()` (op-name rule). Op and query
+  names share **one namespace**, because their MCP tool names (`tool_name`) do: a query named
+  like an op is `DuplicateQuery`, an op named like a query is `DuplicateOp`. `QueryCtx` is read-only: services, derived cache, `Control`.
   `Registry::run_query(&State, name, &Value, &QueryCtx)` and the convenience
   `Engine::run_query(&State, name, &Value, &Control)`; `query_catalog()` lists input and output
   schemas. Queries are never recorded.
@@ -132,7 +133,15 @@ as amended by `docs/design/w0/decisions.md`.
 - **Files** (`to_files`): `ops/<hash>.toml` (content-addressed; immutable except for an explicit re-baseline of its `[check]`) and `refs/heads/<name>` (one
   file per branch). Independent branches add disjoint files; nothing existing is rewritten. Node text is
   written by a small emitter (`text.rs`) that never produces multi-line strings, so autocrlf cannot alter
-  values; reading uses the `toml` crate. Ref names `a` and `a/b` cannot coexist (file vs directory).
+  values; reading uses the `toml` crate.
+- **Ref-name format** (part of the on-disk format, so a project opens on every file system):
+  segments of ASCII letters, digits, `.`, `_`, `-` separated by `/`; no empty, `.` or `..`
+  segment; no segment ending in `.lock` or `.`; no segment whose stem (before its first `.`) is,
+  case-insensitively, `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9` or `LPT1`-`LPT9`
+  (`valid_ref_name`). Mixed case is allowed, but a new ref (`check_ref_name`, hence `create_ref`,
+  `set_ref`, `from_files`, `rename_branch`) must not equal an existing ref after ASCII
+  lowercasing (`try` vs `Try`) nor clash with one as file vs directory after lowercasing (`a` vs
+  `a/b`, `Feat` vs `feat/one`).
 - **HEAD** is per-checkout state, held by `Session` as `Head` and persisted by `sm-engine` in gitignored
   `.cache/HEAD`. A missing HEAD means `Timeline::default_head()` (`main`, else first branch, else unborn
   `main`), never a silent empty detached state. Needs an ARCHITECTURE §4 amendment (orchestrator).
@@ -140,7 +149,8 @@ as amended by `docs/design/w0/decisions.md`.
   depth-interval snapshots, at most 64). `apply` = `prepare` + `commit`; `PrepareBase::prepare` runs
   off-thread on an owned clone, `commit` fails with `StaleBase` if the position moved. The live path is
   the replay path (encode, decode, apply the decoded record). `checkout`, `state_at`, `open`,
-  `reset_branch` take a `Control` (progress, cancellation). `state_at_from_root` replays without caches.
+  `reset_branch` take a `Control` (progress, cancellation). `state_at_from_root` replays without state
+  caches (snapshots, recent states) but still through the engine's derived cache.
   `undo` moves the attached branch ref to the parent (git reset); the undone node stays in the timeline
   (checkout-able, branch-able); `redo` moves it back; a new op clears the redo stack. `reflog()` is
   in memory; `sm-engine` persists it in `.cache/`. Branch management: `create_branch_at(name, h)`,
@@ -148,6 +158,30 @@ as amended by `docs/design/w0/decisions.md`.
   each logged. `seed_state(h, State)` puts a state in the snapshot cache only if its hash equals the
   node's `check.state`; `open_with(engine, timeline, head, seeds, reflog, ctl)` seeds, restores the
   reflog, then replays from the nearest seed (the W0a decision-8 snapshot hook on open).
+
+## W0f gaps3 additions
+
+- **Redo stack persistence**: `Session::redo_stack() -> &[Hash256]` (bottom first, the last
+  entry is the next redo) and `set_redo_stack(Vec<Hash256>)`. sm-engine persists the stack next
+  to the reflog in `.cache/` and restores it after `open_with`. The setter needs HEAD attached
+  and a chain (top's parent is the position, each lower entry's parent is the entry above it),
+  else `NothingToRedo`; unknown nodes are `UnknownNode`; on error the stack is unchanged; an
+  empty vector always clears. It is not derived from reflog entries because the engine owns the
+  reflog and may truncate it. Undo/redo on a detached HEAD stay `NotAttached` (checkout already
+  navigates).
+- **Cache capacity and disabled mode**: the capacity lives inside the cache's mutex;
+  `DerivedCache::set_capacity(&self, bytes)` evicts LRU entries with the same rule as insert
+  (the most recently used entry is always kept); `capacity()` reads it. Every entry counts at
+  least 1 byte, so zero-byte estimates are evictable. `DerivedCache::disabled()`: `get` always
+  misses (counted), `insert_sized` validates and stores nothing and returns `Ok`, so
+  `get_or_compute*` always computes. **Determinism tests replay on
+  `Engine::new(.., Arc::new(DerivedCache::disabled()))` and compare the state hashes against a
+  warm run**, which proves a cache hit never changes output.
+- **Per-field float quanta**: `Digest::f64_with(v, quantized)` writes the caller's quantized
+  integer in identity mode and `v.to_bits()` in exact mode (same NaN/inf markers as
+  `f64_quantized`). Used by layers that fold `TopologyView::canonical_visit` /
+  `Model::canonical_visit` (`HashWord::Float { raw, q }` -> `f64_with(raw, q)`).
+- **Portable ref names** and the **shared op/query namespace**: see above.
 
 ## Determinism
 
@@ -172,6 +206,12 @@ injected nondeterminism raises `Diverged`.
 | `on_retired` in DAG order | `on_retired_runs_in_declared_dag_order_...` |
 | `Diverged` on nondeterminism | `diverged_is_raised_when_...` |
 | persisted-snapshot hook | `persisted_snapshot_hook_...` |
+| redo stack persist / restore | `gaps.rs::redo_stack_round_trips_through_set_redo_stack` |
+| cache shrink evicts LRU first | `gaps.rs::shrinking_the_cache_capacity_evicts_the_oldest_entries_first` |
+| disabled cache vs warm run | `gaps.rs::disabled_cache_always_computes_and_stores_nothing` |
+| op/query one namespace | `gaps.rs::ops_and_queries_share_one_namespace` |
+| portable ref names | `ref_names_are_portable_to_case_insensitive_and_windows_file_systems` |
+| `Digest::f64_with` | `layer.rs::tests::f64_with_hashes_...` |
 
 ## Deviations from the recommendation and decisions
 

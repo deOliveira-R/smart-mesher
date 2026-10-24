@@ -167,20 +167,25 @@ impl Registry {
         self.register_dyn(Arc::new(Typed::<T>(std::marker::PhantomData)))
     }
 
-    /// Register a hand-written [`OpType`].
+    /// Register a hand-written [`OpType`]. Fails with [`RegistryError::DuplicateOp`] if the name
+    /// is already an op or a query (one namespace, see [`register_query`](Self::register_query)).
     pub fn register_dyn(&mut self, t: Arc<dyn OpType>) -> Result<&mut Self, RegistryError> {
         let name = t.name().to_owned();
         if !valid_op_name(&name) {
             return Err(RegistryError::BadOpName(name));
         }
-        if self.ops.contains_key(&name) {
+        // Ops and queries share one namespace: their MCP tool names (`tool_name`) do.
+        if self.ops.contains_key(&name) || self.queries.contains_key(&name) {
             return Err(RegistryError::DuplicateOp(name));
         }
         self.ops.insert(name, t);
         Ok(self)
     }
 
-    /// Register a typed query (same name rule as ops; queries have their own namespace).
+    /// Register a typed query (same name rule as ops). Op and query names share one namespace,
+    /// because their MCP tool names (`OpInfo::tool_name`, `QueryInfo::tool_name`) do: registering a query
+    /// under an op's name is [`RegistryError::DuplicateQuery`], and the reverse
+    /// [`RegistryError::DuplicateOp`].
     pub fn register_query<Q: TypedQuery>(&mut self) -> Result<&mut Self, RegistryError> {
         self.register_query_dyn(Arc::new(TypedQ::<Q>(std::marker::PhantomData)))
     }
@@ -194,7 +199,7 @@ impl Registry {
         if !valid_op_name(&name) {
             return Err(RegistryError::BadOpName(name));
         }
-        if self.queries.contains_key(&name) {
+        if self.queries.contains_key(&name) || self.ops.contains_key(&name) {
             return Err(RegistryError::DuplicateQuery(name));
         }
         self.queries.insert(name, t);

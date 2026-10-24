@@ -114,6 +114,27 @@ impl Digest {
         }
         self
     }
+    /// Mix in a float whose identity quantization the caller already computed (`quantized`),
+    /// for layers whose quantum varies per field (`sm-model-api`'s Q2 rule, `sm-topo-api`'s
+    /// `HashWord::Float`). Identity mode writes `quantized`; exact mode writes `v.to_bits()`.
+    /// `NaN` and infinities use the same markers as [`f64_quantized`](Self::f64_quantized) in
+    /// both modes. Rounding to `quantized` is the caller's job and must be deterministic.
+    pub fn f64_with(&mut self, v: f64, quantized: i64) -> &mut Self {
+        if v.is_nan() {
+            self.0.update(&[5, 1]);
+        } else if v == f64::INFINITY {
+            self.0.update(&[5, 2]);
+        } else if v == f64::NEG_INFINITY {
+            self.0.update(&[5, 3]);
+        } else if self.1 {
+            self.0.update(&[5, 5]);
+            self.0.update(&v.to_bits().to_le_bytes());
+        } else {
+            self.0.update(&[5, 4]);
+            self.0.update(&quantized.to_le_bytes());
+        }
+        self
+    }
     /// Mix in another hash.
     pub fn hash(&mut self, h: &Hash256) -> &mut Self {
         self.0.update(&[6]);
@@ -357,5 +378,47 @@ impl<T: Serialize> MapLayer<T> {
         self.digest_with(d, |d, v| {
             d.value(v);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn both(f: impl Fn(&mut Digest)) -> (Hash256, Hash256) {
+        let mut a = Digest::new("t", false);
+        let mut b = Digest::new("t", true);
+        f(&mut a);
+        f(&mut b);
+        (a.finish(), b.finish())
+    }
+
+    #[test]
+    fn f64_with_hashes_the_given_quantum_in_identity_mode_and_bits_in_exact_mode() {
+        // Same quantized value, sub-quantum difference: identity equal, exact different.
+        let (i1, e1) = both(|d| {
+            d.f64_with(1.0, 1024);
+        });
+        let (i2, e2) = both(|d| {
+            d.f64_with(1.0 + 1e-9, 1024);
+        });
+        assert_eq!(i1, i2);
+        assert_ne!(e1, e2);
+        // It matches f64_quantized when the caller rounds the same way.
+        let (iq, eq) = both(|d| {
+            d.f64_quantized(1.0, 1.0 / 1024.0);
+        });
+        assert_eq!(iq, i1);
+        assert_eq!(eq, e1);
+        // Non-finite values use the f64_quantized markers in both modes.
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (a, b) = both(|d| {
+                d.f64_with(v, 0);
+            });
+            let (c, e) = both(|d| {
+                d.f64_quantized(v, 1.0);
+            });
+            assert_eq!((a, b), (c, e));
+        }
     }
 }

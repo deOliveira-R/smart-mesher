@@ -351,7 +351,7 @@ impl ParametricSurface for NurbsSurface {
     fn domain(&self) -> Domain2 {
         let (du, dv) = self.param_domain();
         let mut d = Domain2::regular(Domain1::open(du.lo, du.hi), Domain1::open(dv.lo, dv.hi));
-        // A boundary row of coincident control points collapses to a pole.
+        // A boundary row (u) or column (v) of coincident control points collapses to a pole.
         let same = |r: core::ops::Range<usize>| -> Option<Point3> {
             let first = self.control[r.start];
             self.control[r].iter().all(|q| *q == first).then_some(first)
@@ -362,6 +362,17 @@ impl ParametricSurface for NurbsSurface {
         }
         if let Some(point) = same((self.nu - 1) * self.nv..self.nu * self.nv) {
             s.push(Singularity { along: ParamAxis::U, at: du.hi, point });
+        }
+        // Boundary columns `iv = 0` and `iv = nv - 1`: `control[iu * nv + iv]` for every `iu`.
+        let same_col = |iv: usize| -> Option<Point3> {
+            let first = self.control[iv];
+            (0..self.nu).all(|iu| self.control[iu * self.nv + iv] == first).then_some(first)
+        };
+        if let Some(point) = same_col(0) {
+            s.push(Singularity { along: ParamAxis::V, at: dv.lo, point });
+        }
+        if let Some(point) = same_col(self.nv - 1) {
+            s.push(Singularity { along: ParamAxis::V, at: dv.hi, point });
         }
         d.singularities = s;
         d
@@ -553,5 +564,51 @@ mod tests {
         assert!((pr.distance - 3.0).abs() < 1e-9 && (pr.point - Point3::new(0.5, 1.5, 0.0)).norm() < 1e-9);
         // Last-knot evaluation stays on the surface.
         assert!((s.jet(Uv::new(1.0, 1.0)).p - Point3::new(2.0, 2.0, 0.0)).norm() < 1e-14);
+    }
+
+    fn net(nu: usize, nv: usize, control: Vec<Point3>) -> NurbsSurface {
+        let k = |n: usize| {
+            // Degree 1, clamped, uniform interior knots on [0, 1].
+            let mut v = vec![0.0, 0.0];
+            for i in 1..n - 1 {
+                v.push(i as f64 / (n - 1) as f64);
+            }
+            v.extend([1.0, 1.0]);
+            v
+        };
+        let s = NurbsSurface { degree_u: 1, degree_v: 1, knots_u: k(nu), knots_v: k(nv), nu, nv, control, weights: None };
+        s.validate().unwrap();
+        s
+    }
+
+    #[test]
+    fn collapsed_last_v_column_is_one_v_singularity() {
+        // 2 x 3 net (u-major): the column iv = 2 collapses to the apex.
+        let apex = Point3::new(0.0, 0.0, 1.0);
+        let s = net(2, 3, vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.5, 0.0, 0.5), apex, Point3::new(0.0, 1.0, 0.0), Point3::new(0.5, 1.0, 0.5), apex]);
+        let d = s.domain();
+        assert_eq!(d.singularities.len(), 1, "{:?}", d.singularities);
+        let sg = d.singularities[0];
+        assert_eq!(sg.along, ParamAxis::V);
+        assert_eq!(sg.at, 1.0);
+        assert_eq!(sg.point, apex);
+        assert!((s.jet(Uv::new(0.3, 1.0)).p - apex).norm() < 1e-14, "the iso-line v = 1 is the apex");
+    }
+
+    #[test]
+    fn net_collapsed_in_both_directions_reports_every_pole() {
+        // 2 x 2 net with every control point equal: all four boundary iso-lines collapse.
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let d = net(2, 2, vec![p; 4]).domain();
+        let got: Vec<(ParamAxis, f64)> = d.singularities.iter().map(|s| (s.along, s.at)).collect();
+        assert_eq!(got, vec![(ParamAxis::U, 0.0), (ParamAxis::U, 1.0), (ParamAxis::V, 0.0), (ParamAxis::V, 1.0)]);
+        assert!(d.singularities.iter().all(|s| s.point == p));
+        // A 3 x 3 net whose row iu = 0 collapses to `a`; the column iv = 2 reads (a, b, b), so
+        // it is not a pole.
+        let (a, b) = (Point3::new(0.0, 0.0, 0.0), Point3::new(9.0, 9.0, 9.0));
+        let c = vec![a, a, a, Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0), b, Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 1.0, 0.0), b];
+        let d = net(3, 3, c).domain();
+        let got: Vec<(ParamAxis, f64)> = d.singularities.iter().map(|s| (s.along, s.at)).collect();
+        assert_eq!(got, vec![(ParamAxis::U, 0.0)]);
     }
 }

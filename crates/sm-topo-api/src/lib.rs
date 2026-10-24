@@ -43,4 +43,4 @@ pub use types::{
     InnerLoopAssign, Lineage, LineageEvent, LineageKind, LineageRecord, ModKind, OpId, OpSummary, Region, Sense, ShellAssign, ShellKind, ShellSpec, Side, SurfaceCarrier, VertexId, VolumeId, WrongKind, BodyId, EdgeId, FaceId,
 };
 pub use validate::{Rule, Severity, TopoIssue, euler_characteristic, validate, validate_geometry};
-pub use view::{EdgeUse, RADIAL_ANGLE_STEP, TopologyView};
+pub use view::{EdgeUse, HashWord, RADIAL_ANGLE_STEP, TopologyView};

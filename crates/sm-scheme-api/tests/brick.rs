@@ -307,7 +307,7 @@ fn hard_pave_on_a_linking_face_conflicts_with_the_sweep() {
         }) => {
             assert_eq!(child, Target::Surface(ids.faces[1]));
             assert_eq!(imposed_by, Target::Volume(ids.volume));
-            assert_eq!(required, Need::Caps(Caps::QUAD | Caps::STRUCTURED));
+            assert_eq!(required, Need::Caps(Caps::QUAD | Caps::BLOCK_STRUCTURED));
         }
         other => panic!("expected ImpositionConflict, got {:?}", other.map(|_| ())),
     }

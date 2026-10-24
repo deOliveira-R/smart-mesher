@@ -249,8 +249,9 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
     assert_eq!(sum(SideDir::PlusJ), sum(SideDir::MinusJ));
 
     // The face with a straight-through corner and overridden vertex types actually
-    // generates: a structured grid over the four logical sides, the straight-through vertex
-    // among the boundary nodes.
+    // generates: an all-quad block mesh over the four logical sides (submap attaches no grid,
+    // it is BLOCK_STRUCTURED), the straight-through vertex among the boundary nodes, and every
+    // strip walks across.
     let mut reg2 = registry();
     reg2.register(Box::new(NoCells)).expect("nocells");
     let driver2 = Driver::new(&reg2, &solver, &picker);
@@ -261,7 +262,7 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
         .generate(&input, &gplan, &Sequential)
         .expect("generate with corner overrides");
     let patch = ps.get(Target::Surface(face)).expect("face patch");
-    let grid = patch.grid.as_ref().expect("structured grid");
+    assert!(patch.grid.is_none(), "submap promises blocks, not a grid");
     let glayout = gplan.layout(face).expect("layout");
     let gsum = |d: SideDir| -> u32 {
         glayout
@@ -272,18 +273,26 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
             .map(|c| gplan.intervals(c.edge).expect("n"))
             .sum()
     };
-    assert_eq!(
-        (grid.ni, grid.nj),
-        (gsum(SideDir::PlusI) + 1, gsum(SideDir::PlusJ) + 1)
-    );
-    assert_eq!(
-        patch.elements.len(),
-        ((grid.ni - 1) * (grid.nj - 1)) as usize
-    );
-    assert!(
-        grid.nodes.contains(&sm_scheme_api::NodeKey::vertex(f.mid)),
-        "the straight-through vertex is a grid node"
-    );
+    let (ni, nj) = (gsum(SideDir::PlusI), gsum(SideDir::PlusJ));
+    assert_eq!(patch.elements.len(), (ni * nj) as usize);
+    assert!(patch.elements.iter().all(|(s, _)| s == sm_scheme_api::ElemShape::Quad));
+    let mid = sm_scheme_api::NodeKey::vertex(f.mid);
+    assert!(patch.refs.contains(&mid), "the straight-through vertex is a boundary node");
+    // Every non-corner boundary node starts a strip across the block; the four corners none.
+    let mut starts = 0;
+    for k in &patch.refs {
+        if let Some(strip) = patch.strip_from(*k) {
+            starts += 1;
+            assert!(
+                strip.len() == ni as usize + 1 || strip.len() == nj as usize + 1,
+                "{} nodes for a {ni} x {nj} block",
+                strip.len()
+            );
+            assert_eq!(strip.first(), Some(k));
+            assert!(patch.refs.contains(strip.last().expect("end")), "ends on the boundary");
+        }
+    }
+    assert_eq!(starts, 2 * (ni - 1) + 2 * (nj - 1));
 
     // One override alone breaks the corner sum (Ends 3, Side 2 -> 3): infeasible, naming the
     // request and the rule. The face's scheme is a hard intent, so nothing is blamed.

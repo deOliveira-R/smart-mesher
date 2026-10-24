@@ -254,17 +254,33 @@ impl JsonSchema for Head {
     }
 }
 
-/// Whether `name` is an acceptable ref name (also a safe relative path).
+/// Whether `name` is an acceptable ref name (also a safe, portable relative path).
+///
+/// Segments are separated by `/` and use only ASCII letters, digits, `.`, `_` and `-`. A segment
+/// must not be empty, `.` or `..`, end in `.lock` or `.`, or have a stem (the part before its
+/// first `.`) that is a Windows reserved device name, case-insensitively: `CON`, `PRN`, `AUX`,
+/// `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Mixed case is allowed; case-insensitive collisions
+/// between refs are rejected by [`Timeline::check_ref_name`].
 pub fn valid_ref_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')
         && !name.ends_with('/')
-        && name
-            .split('/')
-            .all(|p| !p.is_empty() && p != "." && p != ".." && !p.ends_with(".lock"))
+        && name.split('/').all(valid_segment)
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
+fn valid_segment(p: &str) -> bool {
+    if p.is_empty() || p == "." || p == ".." || p.ends_with(".lock") || p.ends_with('.') {
+        return false;
+    }
+    let stem = p.split('.').next().unwrap_or(p).to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    !reserved
 }
 
 #[derive(Clone, Debug)]
@@ -410,19 +426,27 @@ impl Timeline {
         Ok(())
     }
 
-    /// Whether a ref of this name could be created or moved: valid, and not colliding with
-    /// another ref as a file versus a directory (`a` and `a/b`).
+    /// Whether a ref of this name could be created or moved: valid ([`valid_ref_name`]), and,
+    /// for a new name, not colliding with an existing ref on a case-insensitive file system:
+    /// its ASCII-lowercased form must differ from every existing ref's lowercased form (`try`
+    /// and `Try`), and must not clash with one as a file versus a directory after lowercasing
+    /// (`a` and `a/b`, `Feat` and `feat/one`).
     pub fn check_ref_name(&self, name: &str) -> Result<(), TimelineError> {
         if !valid_ref_name(name) {
             return Err(TimelineError::BadRefName(name.to_owned()));
         }
         if !self.refs.contains_key(name) {
-            let as_dir = format!("{name}/");
-            if self
-                .refs
-                .keys()
-                .any(|r| r.starts_with(&as_dir) || name.starts_with(&format!("{r}/")))
-            {
+            let lower = name.to_ascii_lowercase();
+            let nested = |long: &str, short: &str| {
+                long.len() > short.len()
+                    && long.starts_with(short)
+                    && long.as_bytes()[short.len()] == b'/'
+            };
+            let clash = self.refs.keys().any(|r| {
+                let r = r.to_ascii_lowercase();
+                r == lower || nested(&r, &lower) || nested(&lower, &r)
+            });
+            if clash {
                 return Err(TimelineError::BadRefName(name.to_owned()));
             }
         }

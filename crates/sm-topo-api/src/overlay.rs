@@ -288,7 +288,10 @@ struct OCell {
 struct Layer {
     cells: BTreeMap<EntityId, OCell>,
     hidden: BTreeSet<EntityId>,
+    /// Hidden cell -> the first virtual cell standing for it (`virtual_of`).
     covering: BTreeMap<EntityId, EntityId>,
+    /// Hidden cell -> every same-rank virtual cell standing for it (`live_cover`).
+    cover: BTreeMap<EntityId, SmallVec<[EntityId; 2]>>,
     live: [Vec<EntityId>; 5],
     shapes: Layered,
 }
@@ -498,8 +501,9 @@ impl Overlay {
         }
     }
 
-    /// Hide a host or virtual cell: detach it from its children and parents.
-    fn hide(&mut self, id: EntityId, covered_by: EntityId) {
+    /// Hide a host or virtual cell: detach it from its children and parents. `covered_by` lists
+    /// the virtual cells standing for it (the first one is what `virtual_of` reports).
+    fn hide(&mut self, id: EntityId, covered_by: &[EntityId]) {
         let down: Vec<Incidence> = self.down_of(id).to_vec();
         for e in &down {
             self.up_remove(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
@@ -513,7 +517,10 @@ impl Overlay {
             self.layer.cells.remove(&id);
         }
         self.layer.hidden.insert(id);
-        self.layer.covering.insert(id, covered_by);
+        if let Some(&first) = covered_by.first() {
+            self.layer.covering.insert(id, first);
+        }
+        self.layer.cover.insert(id, covered_by.iter().copied().collect());
     }
 
     /// Rebuild the radial rings of edges whose faces changed: the host's angular order with each
@@ -960,18 +967,18 @@ impl Overlay {
         // Commit: hide the members and the interior, then create the virtual face.
         let parents = first;
         for &f in members {
-            self.hide(f, vf);
+            self.hide(f, &[vf]);
         }
         let mut verts: BTreeSet<EntityId> = BTreeSet::new();
         for &e in &interior {
             if let Some((a, b)) = self.edge_ends_of(e) {
                 verts.extend([a, b]);
             }
-            self.hide(e, vf);
+            self.hide(e, &[vf]);
         }
         for v in verts {
             if self.up_of(v).is_empty() && self.is_live(v) {
-                self.hide(v, vf);
+                self.hide(v, &[vf]);
             }
         }
         let carrier = Carrier::Composite(members.iter().copied().collect());
@@ -1032,7 +1039,7 @@ impl Overlay {
             }
             self.set_down(par.cell, row);
         }
-        self.hide(edge, e1);
+        self.hide(edge, &[e1, e2]);
         Ok(())
     }
 
@@ -1077,7 +1084,7 @@ impl Overlay {
         self.add_virtual(f1, Dim::Face, r1, carrier.clone(), vec![face]);
         self.add_virtual(f2, Dim::Face, r2, carrier, vec![face]);
         let parents: Vec<Incidence> = self.up_of(face).to_vec();
-        self.hide(face, f1);
+        self.hide(face, &[f1, f2]);
         for p in parents {
             let mut prow = self.down_of(p.cell).to_vec();
             prow.push(Incidence::new(f1, p.side, p.ring));
@@ -1213,7 +1220,7 @@ impl Overlay {
         let sense = if s.normal(uv)?.dot(nrm) < 0.0 { Sense::Reversed } else { Sense::Forward };
         // Commit.
         let parents: Vec<Incidence> = self.up_of(volume).to_vec();
-        self.hide(volume, children[0]);
+        self.hide(volume, &children);
         self.add_virtual(face, Dim::Face, lp, Carrier::Surface(SurfaceCarrier { surface, sense }), vec![volume]);
         for (child, part_side) in [(children[0], Side::Left), (children[1], Side::Right)] {
             let mut row: Vec<Incidence> = rows.iter().copied().filter(|r| part_a.contains(&r.cell) == (part_side == Side::Left)).collect();
@@ -1238,7 +1245,7 @@ impl Overlay {
 
 impl Layer {
     fn fresh(host: &Arc<dyn TopologyView>) -> Self {
-        Self { cells: BTreeMap::new(), hidden: BTreeSet::new(), covering: BTreeMap::new(), live: Default::default(), shapes: Layered::new(host.clone()) }
+        Self { cells: BTreeMap::new(), hidden: BTreeSet::new(), covering: BTreeMap::new(), cover: BTreeMap::new(), live: Default::default(), shapes: Layered::new(host.clone()) }
     }
 }
 
@@ -1270,6 +1277,18 @@ impl TopologyView for Overlay {
 
     fn cells(&self, dim: Dim) -> &[EntityId] {
         &self.layer.live[dim.index()]
+    }
+
+    /// A hidden host (or virtual) cell maps to every live overlay cell standing for it, chased
+    /// recursively through later partitions and composites (a face partitioned twice gives all
+    /// its live pieces; a composited member gives the composite). Host-dead cells follow the
+    /// host lineage first.
+    fn live_cover(&self, id: EntityId) -> Vec<EntityId> {
+        let mut out = Vec::new();
+        self.cover_into(id, &mut out, &mut BTreeSet::new());
+        out.sort();
+        out.dedup();
+        out
     }
 
     fn boundary(&self, id: EntityId) -> &[Incidence] {
@@ -1401,6 +1420,28 @@ impl TopologyView for Overlay {
         match self.layer.cells.get(&f) {
             Some(c) if c.is_virtual => Err(QueryError::Unsupported("point classification on a virtual face")),
             _ => self.host.classify_point_on_face(f, uv),
+        }
+    }
+}
+
+impl Overlay {
+    fn cover_into(&self, id: EntityId, out: &mut Vec<EntityId>, seen: &mut BTreeSet<EntityId>) {
+        if !seen.insert(id) {
+            return;
+        }
+        if self.is_alive(id) {
+            out.push(id);
+        } else if let Some(cs) = self.layer.cover.get(&id) {
+            for &c in cs {
+                self.cover_into(c, out, seen);
+            }
+        } else {
+            // Dead in the host: follow the host lineage, then any overlay cover of the result.
+            for d in self.lineage().successors(id) {
+                if d != id {
+                    self.cover_into(d, out, seen);
+                }
+            }
         }
     }
 }

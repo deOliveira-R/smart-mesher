@@ -431,11 +431,23 @@ impl GenCtx<'_> {
         Ok(out)
     }
 
-    /// The structured view of an already generated face.
+    /// The single-block structured view of an already generated face (map; see
+    /// [`Patch::grid`]).
     pub fn grid(&self, face: EntityId) -> Option<&NodeGrid> {
         self.patches
             .get(Target::Surface(face))
             .and_then(|p| p.grid.as_ref())
+    }
+
+    /// The patch of an already generated face.
+    pub fn surface_patch(&self, face: EntityId) -> Option<&Patch> {
+        self.patches.get(Target::Surface(face))
+    }
+
+    /// The quad strip of an already generated face that starts at boundary node `key` (see
+    /// [`Patch::strip_from`]); what a sweep walks across a `BLOCK_STRUCTURED` linking face.
+    pub fn strip_from(&self, face: EntityId, key: NodeKey) -> Option<Vec<NodeKey>> {
+        self.surface_patch(face)?.strip_from(key)
     }
 
     /// Position of a node of an earlier wave.

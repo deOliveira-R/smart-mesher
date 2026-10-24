@@ -1,8 +1,9 @@
 //! Stub scheme implementors used by the integration tests.
 //!
-//! Curve: `equal`. Surface: `map`, `submap` (direction sums from `SideDir`), `pave` (even
-//! loop sum, quad fan), `tri` (triangle fan). Volume: `sweep` (columns may pass through
-//! interior vertices, so it also meshes a composite piece), `msweep` (a group of stacked
+//! Curve: `equal`. Surface: `map` (single grid), `submap` (direction sums from `SideDir`;
+//! `BLOCK_STRUCTURED`, attaches no grid), `pave` (even loop sum, quad fan), `tri` (triangle
+//! fan). Volume: `sweep` (walks linking-face strips with `GenCtx::strip_from`; columns may pass
+//! through interior vertices, so it also meshes a composite piece), `msweep` (a group of stacked
 //! volumes swept as one; it claims the interface faces and the target), plus plan-level
 //! `mapvol`, `tetvol`, `polyvol`. Transforms: `noop`, `boom`. Fixtures: bricks and a row of
 //! merged bricks. Shared by several test binaries.
@@ -172,7 +173,7 @@ impl Scheme for Map {
         SchemeDim::Surface
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::QUAD | Caps::STRUCTURED
+        Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED
     }
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, _p: &Params) -> Applicability {
         let Target::Surface(f) = target else {
@@ -258,7 +259,7 @@ impl Scheme for Submap {
         SchemeDim::Surface
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::QUAD | Caps::STRUCTURED
+        Caps::QUAD | Caps::BLOCK_STRUCTURED
     }
     fn applicability(&self, cx: &PlanCtx<'_>, target: Target, _p: &Params) -> Applicability {
         let Target::Surface(f) = target else {
@@ -310,7 +311,10 @@ impl Scheme for Submap {
         Ok(())
     }
     fn generate(&self, cx: &GenCtx<'_>, target: Target, _p: &Params) -> GResult<Patch> {
-        structured_patch(cx, target, "submap")
+        // Submap promises blocks, not a single grid: consumers walk strips (`strip_from`).
+        let mut p = structured_patch(cx, target, "submap")?;
+        p.grid = None;
+        Ok(p)
     }
 }
 
@@ -854,11 +858,8 @@ fn generate_stack(
                         .find(|l| !used.contains(l) && t.face_edges(*l).contains(&cur.owner))
                         .ok_or_else(|| fatal(format!("edge {} has no linking face", cur.owner)))?;
                     used.push(l);
-                    let g = cx
-                        .grid(l)
-                        .ok_or_else(|| fatal(format!("linking face {l} has no grid")))?;
-                    let line = g.line_from(cur).ok_or_else(|| {
-                        fatal(format!("node {cur:?} not on the grid boundary of {l}"))
+                    let line = cx.strip_from(l, cur).ok_or_else(|| {
+                        fatal(format!("node {cur:?} starts no quad strip of linking face {l}"))
                     })?;
                     col.extend_from_slice(&line[1..]);
                     cur = *line.last().ok_or_else(|| fatal("empty line".into()))?;
@@ -1071,7 +1072,7 @@ impl Scheme for Sweep {
             out.role(Target::Surface(*l), Role::SweepLinking { volume: target });
             out.require_caps(
                 Target::Surface(*l),
-                Caps::QUAD | Caps::STRUCTURED,
+                Caps::QUAD | Caps::BLOCK_STRUCTURED,
                 Firmness::Hard,
             );
         }
@@ -1159,7 +1160,7 @@ impl Scheme for MSweep {
         SchemeDim::Volume
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED
+        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED
     }
     fn supports_groups(&self) -> bool {
         true
@@ -1200,7 +1201,7 @@ impl Scheme for MSweep {
             out.role(Target::Surface(*l), Role::SweepLinking { volume: target });
             out.require_caps(
                 Target::Surface(*l),
-                Caps::QUAD | Caps::STRUCTURED,
+                Caps::QUAD | Caps::BLOCK_STRUCTURED,
                 Firmness::Hard,
             );
         }

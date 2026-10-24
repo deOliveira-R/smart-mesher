@@ -389,6 +389,7 @@ impl FacePair {
 /// What a [`LineageKind::Modified`] record changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ModKind {
     /// A face's orientation was reversed (loops, sides, carrier sense).
     Reversed,
@@ -408,9 +409,11 @@ pub enum ModKind {
     InnerLoop,
 }
 
-/// What an operation did to an entity.
+/// What an operation did to an entity. Open for extension (a `Copied` kind may follow; today
+/// op-level successors carry copies as `A -> [A, A']`): downstream matches need a wildcard arm.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum LineageKind {
     /// The entity was created by a composite operation that declared it (`record_created`).
     /// Every cell also has [`crate::TopologyView::born`].

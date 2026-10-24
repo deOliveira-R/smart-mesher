@@ -314,6 +314,40 @@ impl Session {
         &self.reflog
     }
 
+    /// The redo stack, bottom first: the last entry is the node [`redo`](Self::redo) moves to
+    /// next, and each entry is the parent of the one below it. `sm-engine` persists it next to
+    /// the reflog in `.cache/` and restores it with [`set_redo_stack`](Self::set_redo_stack);
+    /// it is not derived from reflog entries, because the engine owns the reflog and may
+    /// truncate it.
+    pub fn redo_stack(&self) -> &[Hash256] {
+        &self.redo
+    }
+
+    /// Restore a persisted redo stack (see [`redo_stack`](Self::redo_stack)). Requires HEAD
+    /// attached ([`TimelineError::NothingToRedo`] otherwise), every entry a known node
+    /// ([`TimelineError::UnknownNode`]), and a chain: the top's parent is the current position
+    /// and each lower entry's parent is the entry above it ([`TimelineError::NothingToRedo`]).
+    /// An empty `v` clears the stack. On error the stack is unchanged.
+    pub fn set_redo_stack(&mut self, v: Vec<Hash256>) -> Result<(), TimelineError> {
+        if v.is_empty() {
+            self.redo.clear();
+            return Ok(());
+        }
+        if !matches!(self.head, Head::Ref(_)) {
+            return Err(TimelineError::NothingToRedo);
+        }
+        let mut above = self.at;
+        for h in v.iter().rev() {
+            let node = self.timeline.get(*h).ok_or(TimelineError::UnknownNode(*h))?;
+            if node.body.parent != above {
+                return Err(TimelineError::NothingToRedo);
+            }
+            above = Some(*h);
+        }
+        self.redo = v;
+        Ok(())
+    }
+
     /// Number of cached depth-interval states.
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
@@ -558,8 +592,10 @@ impl Session {
         Ok(r.state)
     }
 
-    /// Reconstruct the state at `h` by replaying every node from the root, using no cache. For
-    /// validating snapshots and for determinism tests.
+    /// Reconstruct the state at `h` by replaying every node from the root, using no *state*
+    /// cache (no snapshots, no recent states). Ops still use the engine's derived cache; for a
+    /// fully cold replay build the engine on [`DerivedCache::disabled`]. For validating
+    /// snapshots and for determinism tests.
     pub fn state_at_from_root(
         &self,
         h: Hash256,

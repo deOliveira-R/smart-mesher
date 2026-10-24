@@ -26,6 +26,7 @@
 //! one per-kind allocator and are never reused.
 
 pub mod boundary;
+mod canonical;
 pub mod color;
 pub mod decomposition;
 pub mod detect;
