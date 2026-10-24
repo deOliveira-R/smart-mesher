@@ -70,10 +70,15 @@ impl NeumaierSum {
         Self::default()
     }
 
-    /// Add one term.
+    /// Add one term. A non-finite term (or sum) propagates like plain addition: the
+    /// compensation is left untouched so `inf` stays `inf` instead of becoming NaN.
     #[inline]
     pub fn add(&mut self, x: f64) {
         let t = self.sum + x;
+        if !t.is_finite() || !x.is_finite() {
+            self.sum = t;
+            return;
+        }
         if self.sum.abs() >= x.abs() {
             self.comp += (self.sum - t) + x;
         } else {

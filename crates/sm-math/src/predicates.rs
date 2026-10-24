@@ -31,7 +31,7 @@
 //! integer-like, so every platform returns identical signs.
 
 use crate::Sign;
-use crate::exact::Expansion;
+use crate::exact::{Expansion, two_diff};
 use sm_core::Point3;
 
 const EPS: f64 = f64::EPSILON * 0.5;
@@ -39,6 +39,12 @@ const CCW_ERR_A: f64 = (3.0 + 16.0 * EPS) * EPS;
 const O3D_ERR_A: f64 = (7.0 + 56.0 * EPS) * EPS;
 const ICC_ERR_A: f64 = (10.0 + 96.0 * EPS) * EPS;
 const ISP_ERR_A: f64 = (16.0 + 224.0 * EPS) * EPS;
+
+// Stage-B bounds (Shewchuk): error of the exact determinant of the rounded differences.
+const CCW_ERR_B: f64 = (2.0 + 12.0 * EPS) * EPS;
+const O3D_ERR_B: f64 = (3.0 + 28.0 * EPS) * EPS;
+const ICC_ERR_B: f64 = (4.0 + 48.0 * EPS) * EPS;
+const ISP_ERR_B: f64 = (5.0 + 72.0 * EPS) * EPS;
 
 const RANGE_MAX: f64 = f64::from_bits((1023 + 100) << 52);
 const RANGE_MIN: f64 = f64::from_bits((1023 - 100) << 52);
@@ -71,6 +77,42 @@ fn d(a: f64, b: f64) -> Expansion {
     Expansion::from_diff(a, b)
 }
 
+/// Rounded difference `fl(a - b)` and whether it was exact (zero tail).
+#[inline]
+fn rd(a: f64, b: f64) -> (f64, bool) {
+    let (x, y) = two_diff(a, b);
+    (x, y == 0.0)
+}
+
+/// Float value of an exact expansion whose sign is taken from the top component (as in
+/// Shewchuk's `predicates.c`), so correctness does not depend on how the components sum in
+/// floating point. The magnitude is the estimate.
+fn signed_estimate(e: &Expansion) -> f64 {
+    match e.components().last() {
+        None => 0.0,
+        Some(&top) => {
+            let est = e.estimate();
+            if est.is_sign_negative() == top.is_sign_negative() && est != 0.0 {
+                est
+            } else {
+                top
+            }
+        }
+    }
+}
+
+/// Stage B: accept the sign of the exact determinant `eb` of the *rounded* differences when it
+/// clears `bound * permanent`, or when every difference was exact (then `eb` is the answer).
+#[inline]
+fn stage_b(eb: &Expansion, all_exact: bool, bound: f64, permanent: f64) -> Option<f64> {
+    let est = eb.estimate();
+    if all_exact || est.abs() >= bound * permanent {
+        Some(signed_estimate(eb))
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // orient2d
 
@@ -98,13 +140,26 @@ pub fn orient2d_det(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     if det.abs() >= CCW_ERR_A * sum {
         return det;
     }
-    orient2d_exact(a, b, c).estimate()
+    orient2d_adapt(a, b, c, sum)
+}
+
+fn orient2d_core(acx: &Expansion, acy: &Expansion, bcx: &Expansion, bcy: &Expansion) -> Expansion {
+    acx.mul(bcy).sub(&acy.mul(bcx))
 }
 
 #[inline(never)]
-fn orient2d_exact(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Expansion {
+fn orient2d_adapt(a: [f64; 2], b: [f64; 2], c: [f64; 2], permanent: f64) -> f64 {
+    let (acx, e1) = rd(a[0], c[0]);
+    let (acy, e2) = rd(a[1], c[1]);
+    let (bcx, e3) = rd(b[0], c[0]);
+    let (bcy, e4) = rd(b[1], c[1]);
+    let f = Expansion::from_f64;
+    let eb = orient2d_core(&f(acx), &f(acy), &f(bcx), &f(bcy));
+    if let Some(v) = stage_b(&eb, e1 && e2 && e3 && e4, CCW_ERR_B, permanent) {
+        return v;
+    }
     let (acx, acy, bcx, bcy) = (d(a[0], c[0]), d(a[1], c[1]), d(b[0], c[0]), d(b[1], c[1]));
-    acx.mul(&bcy).sub(&acy.mul(&bcx))
+    signed_estimate(&orient2d_core(&acx, &acy, &bcx, &bcy))
 }
 
 /// Exact orientation of the triangle `a, b, c`: [`Sign::Positive`] if counter-clockwise,
@@ -142,17 +197,45 @@ pub fn orient3d_det(a: Point3, b: Point3, c: Point3, d: Point3) -> f64 {
     if det.abs() > O3D_ERR_A * permanent {
         return det;
     }
-    orient3d_exact(a, b, c, d).estimate()
+    orient3d_adapt(a, b, c, d, permanent)
 }
 
 #[inline(never)]
-fn orient3d_exact(a: Point3, b: Point3, c: Point3, p: Point3) -> Expansion {
+fn orient3d_adapt(a: Point3, b: Point3, c: Point3, p: Point3, permanent: f64) -> f64 {
+    let (adx, e1) = rd(a.x, p.x);
+    let (ady, e2) = rd(a.y, p.y);
+    let (adz, e3) = rd(a.z, p.z);
+    let (bdx, e4) = rd(b.x, p.x);
+    let (bdy, e5) = rd(b.y, p.y);
+    let (bdz, e6) = rd(b.z, p.z);
+    let (cdx, e7) = rd(c.x, p.x);
+    let (cdy, e8) = rd(c.y, p.y);
+    let (cdz, e9) = rd(c.z, p.z);
+    let f = Expansion::from_f64;
+    let eb = orient3d_core(
+        [&f(adx), &f(ady), &f(adz)],
+        [&f(bdx), &f(bdy), &f(bdz)],
+        [&f(cdx), &f(cdy), &f(cdz)],
+    );
+    let all = e1 && e2 && e3 && e4 && e5 && e6 && e7 && e8 && e9;
+    if let Some(v) = stage_b(&eb, all, O3D_ERR_B, permanent) {
+        return v;
+    }
     let (adx, ady, adz) = (d(a.x, p.x), d(a.y, p.y), d(a.z, p.z));
     let (bdx, bdy, bdz) = (d(b.x, p.x), d(b.y, p.y), d(b.z, p.z));
     let (cdx, cdy, cdz) = (d(c.x, p.x), d(c.y, p.y), d(c.z, p.z));
-    let t1 = adz.mul(&bdx.mul(&cdy).sub(&cdx.mul(&bdy)));
-    let t2 = bdz.mul(&cdx.mul(&ady).sub(&adx.mul(&cdy)));
-    let t3 = cdz.mul(&adx.mul(&bdy).sub(&bdx.mul(&ady)));
+    signed_estimate(&orient3d_core(
+        [&adx, &ady, &adz],
+        [&bdx, &bdy, &bdz],
+        [&cdx, &cdy, &cdz],
+    ))
+}
+
+fn orient3d_core(a: [&Expansion; 3], b: [&Expansion; 3], c: [&Expansion; 3]) -> Expansion {
+    let ([adx, ady, adz], [bdx, bdy, bdz], [cdx, cdy, cdz]) = (a, b, c);
+    let t1 = adz.mul(&bdx.mul(cdy).sub(&cdx.mul(bdy)));
+    let t2 = bdz.mul(&cdx.mul(ady).sub(&adx.mul(cdy)));
+    let t3 = cdz.mul(&adx.mul(bdy).sub(&bdx.mul(ady)));
     t1.add(&t2).add(&t3)
 }
 
@@ -193,20 +276,42 @@ pub fn incircle_det(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> f64 {
     if det.abs() > ICC_ERR_A * permanent {
         return det;
     }
-    incircle_exact(a, b, c, p).estimate()
+    incircle_adapt(a, b, c, p, permanent)
 }
 
 #[inline(never)]
-fn incircle_exact(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> Expansion {
+fn incircle_adapt(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2], permanent: f64) -> f64 {
+    let (adx, e1) = rd(a[0], p[0]);
+    let (ady, e2) = rd(a[1], p[1]);
+    let (bdx, e3) = rd(b[0], p[0]);
+    let (bdy, e4) = rd(b[1], p[1]);
+    let (cdx, e5) = rd(c[0], p[0]);
+    let (cdy, e6) = rd(c[1], p[1]);
+    let f = Expansion::from_f64;
+    let eb = incircle_core(&f(adx), &f(ady), &f(bdx), &f(bdy), &f(cdx), &f(cdy));
+    if let Some(v) = stage_b(&eb, e1 && e2 && e3 && e4 && e5 && e6, ICC_ERR_B, permanent) {
+        return v;
+    }
     let (adx, ady) = (d(a[0], p[0]), d(a[1], p[1]));
     let (bdx, bdy) = (d(b[0], p[0]), d(b[1], p[1]));
     let (cdx, cdy) = (d(c[0], p[0]), d(c[1], p[1]));
+    signed_estimate(&incircle_core(&adx, &ady, &bdx, &bdy, &cdx, &cdy))
+}
+
+fn incircle_core(
+    adx: &Expansion,
+    ady: &Expansion,
+    bdx: &Expansion,
+    bdy: &Expansion,
+    cdx: &Expansion,
+    cdy: &Expansion,
+) -> Expansion {
     let alift = adx.square().add(&ady.square());
     let blift = bdx.square().add(&bdy.square());
     let clift = cdx.square().add(&cdy.square());
-    let t1 = alift.mul(&bdx.mul(&cdy).sub(&cdx.mul(&bdy)));
-    let t2 = blift.mul(&cdx.mul(&ady).sub(&adx.mul(&cdy)));
-    let t3 = clift.mul(&adx.mul(&bdy).sub(&bdx.mul(&ady)));
+    let t1 = alift.mul(&bdx.mul(cdy).sub(&cdx.mul(bdy)));
+    let t2 = blift.mul(&cdx.mul(ady).sub(&adx.mul(cdy)));
+    let t3 = clift.mul(&adx.mul(bdy).sub(&bdx.mul(ady)));
     t1.add(&t2).add(&t3)
 }
 
@@ -290,21 +395,48 @@ pub fn insphere_det(a: Point3, b: Point3, c: Point3, dd: Point3, e: Point3) -> f
     if det.abs() > ISP_ERR_A * permanent {
         return det;
     }
-    insphere_exact(a, b, c, dd, e).estimate()
+    insphere_adapt(a, b, c, dd, e, permanent)
 }
 
 #[inline(never)]
-fn insphere_exact(a: Point3, b: Point3, c: Point3, dd: Point3, e: Point3) -> Expansion {
-    let (aex, aey, aez) = (d(a.x, e.x), d(a.y, e.y), d(a.z, e.z));
-    let (bex, bey, bez) = (d(b.x, e.x), d(b.y, e.y), d(b.z, e.z));
-    let (cex, cey, cez) = (d(c.x, e.x), d(c.y, e.y), d(c.z, e.z));
-    let (dex, dey, dez) = (d(dd.x, e.x), d(dd.y, e.y), d(dd.z, e.z));
-    let ab = aex.mul(&bey).sub(&bex.mul(&aey));
-    let bc = bex.mul(&cey).sub(&cex.mul(&bey));
-    let cd = cex.mul(&dey).sub(&dex.mul(&cey));
-    let da = dex.mul(&aey).sub(&aex.mul(&dey));
-    let ac = aex.mul(&cey).sub(&cex.mul(&aey));
-    let bd = bex.mul(&dey).sub(&dex.mul(&bey));
+fn insphere_adapt(a: Point3, b: Point3, c: Point3, dd: Point3, e: Point3, permanent: f64) -> f64 {
+    let pts = [a, b, c, dd];
+    let mut r = [0.0f64; 12];
+    let mut all = true;
+    for (i, q) in pts.iter().enumerate() {
+        for (k, (u, v)) in [(q.x, e.x), (q.y, e.y), (q.z, e.z)].into_iter().enumerate() {
+            let (x, ex) = rd(u, v);
+            r[3 * i + k] = x;
+            all &= ex;
+        }
+    }
+    let f = Expansion::from_f64;
+    let fe: [Expansion; 12] = core::array::from_fn(|i| f(r[i]));
+    let eb = insphere_core(&fe);
+    if let Some(v) = stage_b(&eb, all, ISP_ERR_B, permanent) {
+        return v;
+    }
+    let mut full: [Expansion; 12] = core::array::from_fn(|_| Expansion::zero());
+    for (i, q) in pts.iter().enumerate() {
+        full[3 * i] = d(q.x, e.x);
+        full[3 * i + 1] = d(q.y, e.y);
+        full[3 * i + 2] = d(q.z, e.z);
+    }
+    signed_estimate(&insphere_core(&full))
+}
+
+/// Exact insphere determinant from the 12 differences `[a-e, b-e, c-e, d-e]` (x, y, z each).
+fn insphere_core(v: &[Expansion; 12]) -> Expansion {
+    let (aex, aey, aez) = (&v[0], &v[1], &v[2]);
+    let (bex, bey, bez) = (&v[3], &v[4], &v[5]);
+    let (cex, cey, cez) = (&v[6], &v[7], &v[8]);
+    let (dex, dey, dez) = (&v[9], &v[10], &v[11]);
+    let ab = aex.mul(bey).sub(&bex.mul(aey));
+    let bc = bex.mul(cey).sub(&cex.mul(bey));
+    let cd = cex.mul(dey).sub(&dex.mul(cey));
+    let da = dex.mul(aey).sub(&aex.mul(dey));
+    let ac = aex.mul(cey).sub(&cex.mul(aey));
+    let bd = bex.mul(dey).sub(&dex.mul(bey));
     let abc = aez.mul(&bc).sub(&bez.mul(&ac)).add(&cez.mul(&ab));
     let bcd = bez.mul(&cd).sub(&cez.mul(&bd)).add(&dez.mul(&bc));
     let cda = cez.mul(&da).add(&dez.mul(&ac)).add(&aez.mul(&cd));
@@ -312,10 +444,10 @@ fn insphere_exact(a: Point3, b: Point3, c: Point3, dd: Point3, e: Point3) -> Exp
     let lift =
         |x: &Expansion, y: &Expansion, z: &Expansion| x.square().add(&y.square()).add(&z.square());
     let (alift, blift, clift, dlift) = (
-        lift(&aex, &aey, &aez),
-        lift(&bex, &bey, &bez),
-        lift(&cex, &cey, &cez),
-        lift(&dex, &dey, &dez),
+        lift(aex, aey, aez),
+        lift(bex, bey, bez),
+        lift(cex, cey, cez),
+        lift(dex, dey, dez),
     );
     let left = dlift.mul(&abc).sub(&clift.mul(&dab));
     let right = blift.mul(&cda).sub(&alift.mul(&bcd));

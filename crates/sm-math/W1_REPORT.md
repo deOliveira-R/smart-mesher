@@ -103,3 +103,37 @@ None blocking. Optional, non-frozen additions to consider for `sm-core` (additiv
    why: `sm-math::linalg::Mat3` is defined there; other crates would need to depend on `sm-math` to
    name it. Not required.
    proposed signature: `pub type Mat3 = [[f64; 3]; 3];`
+
+## fix0 (review findings)
+
+Must fix:
+- `sym3_eigen` and `svd3` now scale the input by an exact power of two (max |a_ij| into [1, 2)),
+  run the Jacobi method, and scale eigenvalues / singular values back. The squared convergence
+  quantities can no longer overflow or underflow. Tests at 1e+-150, 1e+-300 (and 1e160, 1e-170).
+
+Should fix, done:
+1. `Interval::around` with NaN and `hull_of(inf, inf)` / `(-inf, -inf)` now return `ENTIRE`.
+2. `Interval::mid` is clamped into `[lo, hi]` (fixes `[5e-324, 5e-324]`).
+3. `solve3/solve4/inverse3` equilibrate rows by powers of two (exact) and use a fixed tolerance
+   `16 * EPSILON` on the equilibrated matrix, so `diag(1e20, 1, 1)` solves. `Singular.pivot` is
+   reported in equilibrated units (documented). `inverse3` factors once (new private `Lu`).
+4. `NeumaierSum::add` propagates non-finite terms like plain addition (`[1, inf]` gives `inf`).
+5. `brent` uses `0.5*c - 0.5*b` for `xm` and a saturated span for `d`/`e`; the full-range
+   bracket `[-1e308, 1.7e308]` works. The 200-iteration default is kept; the docs now say that
+   higher-multiplicity roots (`x^3` needs about 150) may need a larger `max_iter`.
+6. New tests: extreme-scale eigen/SVD, row-scaled solve, Interval invariants for non-finite
+   constructor args, subnormal `mid`, Neumaier infinity, Brent full-range bracket.
+7. Shewchuk stage B implemented for all four predicates: the exact determinant of the rounded
+   differences (expansions of plain doubles, no tails), accepted when the B bound clears or when
+   every difference was exact (all tails zero). Only otherwise does the full exact path run.
+   Stages C/D (tail corrections, bound C) are still not implemented. New randomized differential
+   test (20k near-degenerate cases per predicate vs a `det_exact` oracle). Speedups were not
+   re-benchmarked in this pass.
+8. All four predicates take the sign from the top expansion component (`signed_estimate`); the
+   estimate only supplies the magnitude.
+9. `det_exact` documents its square-matrix precondition with a `# Panics` section (signature
+   unchanged, as it is public API).
+10. SoS minors no longer allocate a `Vec<Vec<Expansion>>` per minor: determinants are expanded
+    over index arrays (`det_minor`). Expansion temporaries may still spill to the heap.
+
+Skipped: none. Not done beyond the above: stages C/D, and enlarging the inline expansion capacity.

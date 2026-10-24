@@ -32,7 +32,7 @@
 //! (it evaluates a handful of exact sub-determinants), which is acceptable because it is only
 //! taken for exactly degenerate inputs.
 
-use crate::exact::{Expansion, det_exact};
+use crate::exact::Expansion;
 use crate::{Sign, incircle, insphere, orient2d, orient3d};
 use sm_core::Point3;
 use std::sync::OnceLock;
@@ -145,24 +145,71 @@ fn sos_sign(entries: &[Vec<Expansion>], ids: &[u64]) -> Result<Sign, SosError> {
                 .filter(|&&(r2, c2)| r2 > r && c2 < c)
                 .count();
         }
-        let minor: Vec<Vec<Expansion>> = (0..n)
-            .filter(|&r| rows_used & (1 << r) == 0)
-            .map(|r| {
-                let mut row: Vec<Expansion> = (0..cols)
-                    .filter(|&c| cols_used & (1 << c) == 0)
-                    .map(|c| entries[r][c].clone())
-                    .collect();
-                row.push(one.clone());
-                row
-            })
-            .collect();
-        let s = det_exact(&minor).sign();
+        let mut rows = [0usize; 5];
+        let mut nr = 0;
+        for r in (0..n).filter(|&r| rows_used & (1 << r) == 0) {
+            rows[nr] = r;
+            nr += 1;
+        }
+        // Remaining columns; index `cols` is the constant-1 column.
+        let mut cs = [0usize; 5];
+        let mut nc = 0;
+        for c in (0..=cols).filter(|&c| c == cols || cols_used & (1 << c) == 0) {
+            cs[nc] = c;
+            nc += 1;
+        }
+        let s = det_minor(entries, &one, &rows[..nr], &cs[..nc]).sign();
         if !s.is_zero() {
             return Ok(if parity.is_multiple_of(2) { s } else { -s });
         }
     }
     // Unreachable for distinct ids: the monomial of a maximal matching has coefficient +-1.
     Err(SosError::DuplicateId(ids[order[0]]))
+}
+
+/// Exact determinant of the submatrix of `[entries | 1]` on `rows` x `cols` (column index
+/// `entries[r].len()` is the constant column), by Laplace expansion on the first column.
+/// Builds no per-minor matrices; dimensions are at most 5.
+fn det_minor(
+    entries: &[Vec<Expansion>],
+    one: &Expansion,
+    rows: &[usize],
+    cols: &[usize],
+) -> Expansion {
+    let get = |r: usize, c: usize| -> &Expansion {
+        if c == entries[r].len() {
+            one
+        } else {
+            &entries[r][c]
+        }
+    };
+    match rows.len() {
+        0 => return Expansion::from_f64(1.0),
+        1 => return get(rows[0], cols[0]).clone(),
+        _ => {}
+    }
+    let mut acc = Expansion::zero();
+    for (i, &r) in rows.iter().enumerate() {
+        let e = get(r, cols[0]);
+        if e.is_zero() {
+            continue;
+        }
+        let mut sub = [0usize; 5];
+        let mut k = 0;
+        for (j, &rj) in rows.iter().enumerate() {
+            if j != i {
+                sub[k] = rj;
+                k += 1;
+            }
+        }
+        let term = e.mul(&det_minor(entries, one, &sub[..k], &cols[1..]));
+        acc = if i % 2 == 0 {
+            acc.add(&term)
+        } else {
+            acc.sub(&term)
+        };
+    }
+    acc
 }
 
 fn ex(x: f64) -> Expansion {

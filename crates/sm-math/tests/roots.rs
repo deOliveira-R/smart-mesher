@@ -133,3 +133,9 @@ fn default_options_resolve_a_root_at_zero() {
     let r = brent(|x| x - 3e-20, -1e-19, 1e-19, RootOptions::default()).unwrap();
     assert!((r.x - 3e-20).abs() <= 1e-34, "{r:?}");
 }
+
+#[test]
+fn brent_handles_full_range_bracket() {
+    let r = sm_math::roots::brent(|x| x - 3.0, -1e308, 1.7e308, Default::default()).unwrap();
+    assert!((r.x - 3.0).abs() < 1e293);
+}

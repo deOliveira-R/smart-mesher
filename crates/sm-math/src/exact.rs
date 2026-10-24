@@ -313,6 +313,10 @@ impl Neg for &Expansion {
 
 /// Exact sign of the determinant of a small square matrix of expansions (Laplace expansion
 /// along the first column). Intended for dimensions up to 5.
+///
+/// # Panics
+/// Panics if `m` is not square (any row shorter than `m.len()`). Callers must pass a square
+/// matrix.
 pub fn det_exact(m: &[Vec<Expansion>]) -> Expansion {
     let n = m.len();
     match n {

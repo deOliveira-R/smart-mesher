@@ -76,6 +76,11 @@ fn effective_x_tol(a: f64, b: f64, o: &RootOptions) -> f64 {
     }
 }
 
+/// `b - a`, saturated to `+-MAX` so a bracket spanning the full range cannot overflow.
+fn span(a: f64, b: f64) -> f64 {
+    (b - a).clamp(-f64::MAX, f64::MAX)
+}
+
 fn same_strict_sign(x: f64, y: f64) -> bool {
     (x > 0.0 && y > 0.0) || (x < 0.0 && y < 0.0)
 }
@@ -86,6 +91,10 @@ fn same_strict_sign(x: f64, y: f64) -> bool {
 /// [`RootError::NotBracketed`] if there is no sign change, [`RootError::NonFinite`] if `f`
 /// returns a non-finite value or the inputs are invalid, [`RootError::MaxIterations`] if the
 /// cap is hit.
+///
+/// The default cap of 200 is generous for simple roots (`x^3` on `[-1, 2]` needs about 150
+/// because Brent degrades to bisection steps near a triple root). Roots of higher multiplicity
+/// can exceed it; raise [`RootOptions::max_iter`] for those.
 pub fn brent(
     mut f: impl FnMut(f64) -> f64,
     a: f64,
@@ -120,13 +129,13 @@ pub fn brent(
         return Err(RootError::NotBracketed { fa, fb });
     }
     let (mut c, mut fc) = (a, fa);
-    let mut d = b - a;
+    let mut d = span(a, b);
     let mut e = d;
     for iter in 1..=opts.max_iter {
         if same_strict_sign(fb, fc) {
             c = a;
             fc = fa;
-            d = b - a;
+            d = span(a, b);
             e = d;
         }
         if fc.abs() < fb.abs() {
@@ -138,7 +147,7 @@ pub fn brent(
             fc = fa;
         }
         let tol = 2.0 * f64::EPSILON * b.abs() + 0.5 * x_tol;
-        let xm = 0.5 * (c - b);
+        let xm = 0.5 * c - 0.5 * b;
         if xm.abs() <= tol || fb == 0.0 {
             return Ok(Root {
                 x: b,

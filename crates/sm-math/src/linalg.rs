@@ -4,7 +4,7 @@
 //! [`sm_core::Transform::m`]. Vectors are [`sm_core::Vector3`] or `[f64; N]`.
 //!
 //! - [`solve3`], [`solve4`], [`inverse3`], [`det3`], [`det4`]: Gaussian elimination with
-//!   partial pivoting and a relative singularity test.
+//!   row equilibration, partial pivoting and a relative singularity test.
 //! - [`sym3_eigen`]: symmetric 3x3 eigen decomposition by cyclic Jacobi. Unlike the closed-form
 //!   (Cardano) solution it stays accurate for repeated and nearly repeated eigenvalues, which
 //!   is exactly what moment and quality computations on regular shapes produce.
@@ -26,8 +26,10 @@ pub const IDENTITY3: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 /// Failure of a dense linear-algebra routine.
 #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum LinAlgError {
-    /// The matrix is singular to working precision: elimination found a pivot no larger than
-    /// `16 * EPSILON * max|a_ij|`.
+    /// The matrix is singular to working precision: after scaling each row by a power of two so
+    /// its largest entry is in `[1, 2)`, elimination found a pivot no larger than
+    /// `16 * EPSILON`. The test is therefore invariant to row scaling (`diag(1e20, 1, 1)` is
+    /// fine); `pivot` is reported in the equilibrated units.
     #[error("matrix is singular to working precision (pivot {pivot} at step {step})")]
     Singular {
         /// Elimination step at which it failed.
@@ -106,58 +108,132 @@ pub fn det4(m: &Mat4) -> f64 {
     s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
 }
 
-/// Solve `A x = b` by Gaussian elimination with partial pivoting.
-fn solve_n<const N: usize>(a: &[[f64; N]; N], b: &[f64; N]) -> Result<[f64; N], LinAlgError> {
-    let mut m = *a;
-    let mut x = *b;
-    let mut scale = 0.0f64;
-    for v in m.iter().flatten().chain(x.iter()) {
-        if !v.is_finite() {
+/// Exact power of two `2^e` as a pair of factors whose product is `2^e`, each a normal number
+/// (so `x * f.0 * f.1` scales exactly unless the result leaves the normal range).
+fn pow2_pair(e: i32) -> (f64, f64) {
+    let h = e / 2;
+    let f = |k: i32| f64::from_bits(((1023 + k) as u64) << 52);
+    (f(h), f(e - h))
+}
+
+/// `x * 2^e` computed in two exact steps (`|e| <= 1074`).
+#[inline]
+fn scale2(x: f64, e: i32) -> f64 {
+    let (p, q) = pow2_pair(e);
+    x * p * q
+}
+
+/// Binary exponent `e` with `2^e <= v < 2^(e+1)` for finite `v > 0` (subnormals included).
+fn exponent2(v: f64) -> i32 {
+    let bits = v.to_bits() >> 52;
+    if bits == 0 {
+        // Subnormal: scale up exactly to find the exponent.
+        exponent2(v * f64::from_bits((1023 + 100) << 52)) - 100
+    } else {
+        bits as i32 - 1023
+    }
+}
+
+/// Exponent `e` such that scaling by `2^-e` brings the largest magnitude into `[1, 2)`;
+/// 0 for an all-zero input.
+fn scale_exponent(max_abs: f64) -> i32 {
+    if max_abs > 0.0 { exponent2(max_abs) } else { 0 }
+}
+
+/// LU factorisation (row-equilibrated, partial pivoting) of an `N x N` matrix.
+struct Lu<const N: usize> {
+    /// Unit-lower multipliers below the diagonal, `U` on and above it.
+    m: [[f64; N]; N],
+    /// Row swap performed at each elimination step.
+    swaps: [usize; N],
+    /// Binary exponent used to equilibrate each original row (row scaled by `2^-e`).
+    row_exp: [i32; N],
+}
+
+impl<const N: usize> Lu<N> {
+    fn factor(a: &[[f64; N]; N]) -> Result<Self, LinAlgError> {
+        if a.iter().flatten().any(|v| !v.is_finite()) {
             return Err(LinAlgError::NonFinite);
         }
-    }
-    for v in m.iter().flatten() {
-        scale = scale.max(v.abs());
-    }
-    let tol = 16.0 * f64::EPSILON * scale;
-    for k in 0..N {
-        let mut piv = k;
-        for i in k + 1..N {
-            if m[i][k].abs() > m[piv][k].abs() {
-                piv = i;
+        let mut m = *a;
+        let mut row_exp = [0i32; N];
+        for (row, e) in m.iter_mut().zip(row_exp.iter_mut()) {
+            let mx = row.iter().fold(0.0f64, |acc, v| acc.max(v.abs()));
+            *e = scale_exponent(mx);
+            for v in row.iter_mut() {
+                *v = scale2(*v, -*e);
             }
         }
-        let pivot = m[piv][k].abs();
-        if pivot <= tol || scale == 0.0 {
-            return Err(LinAlgError::Singular { step: k, pivot });
-        }
-        m.swap(k, piv);
-        x.swap(k, piv);
-        let pivot_row = m[k];
-        for i in k + 1..N {
-            let f = m[i][k] / pivot_row[k];
-            if f != 0.0 {
-                for (e, p) in m[i][k..].iter_mut().zip(&pivot_row[k..]) {
-                    *e -= f * p;
+        // Every row now has max magnitude in [1, 2) (or is zero), so one tolerance fits all.
+        let tol = 16.0 * f64::EPSILON;
+        let mut swaps = [0usize; N];
+        for k in 0..N {
+            let mut piv = k;
+            for i in k + 1..N {
+                if m[i][k].abs() > m[piv][k].abs() {
+                    piv = i;
                 }
-                x[i] -= f * x[k];
+            }
+            let pivot = m[piv][k].abs();
+            if pivot <= tol {
+                return Err(LinAlgError::Singular { step: k, pivot });
+            }
+            m.swap(k, piv);
+            swaps[k] = piv;
+            let pivot_row = m[k];
+            for row in m.iter_mut().skip(k + 1) {
+                let f = row[k] / pivot_row[k];
+                row[k] = f;
+                if f != 0.0 {
+                    for (e, p) in row[k + 1..].iter_mut().zip(&pivot_row[k + 1..]) {
+                        *e -= f * p;
+                    }
+                }
             }
         }
+        Ok(Self { m, swaps, row_exp })
     }
-    for k in (0..N).rev() {
-        let mut s = x[k];
-        for j in k + 1..N {
-            s -= m[k][j] * x[j];
+
+    fn solve(&self, b: &[f64; N]) -> Result<[f64; N], LinAlgError> {
+        if b.iter().any(|v| !v.is_finite()) {
+            return Err(LinAlgError::NonFinite);
         }
-        x[k] = s / m[k][k];
+        let mut x = [0.0; N];
+        for (i, xi) in x.iter_mut().enumerate() {
+            *xi = scale2(b[i], -self.row_exp[i]);
+        }
+        // Factor swaps whole rows (multipliers included), so apply all swaps first.
+        for k in 0..N {
+            x.swap(k, self.swaps[k]);
+        }
+        for k in 0..N {
+            for i in k + 1..N {
+                x[i] -= self.m[i][k] * x[k];
+            }
+        }
+        for k in (0..N).rev() {
+            let mut s = x[k];
+            for (u, xj) in self.m[k][k + 1..].iter().zip(&x[k + 1..]) {
+                s -= u * xj;
+            }
+            x[k] = s / self.m[k][k];
+        }
+        if x.iter().any(|v| !v.is_finite()) {
+            return Err(LinAlgError::NonFinite);
+        }
+        Ok(x)
     }
-    Ok(x)
+}
+
+/// Solve `A x = b` by Gaussian elimination with partial pivoting on a row-equilibrated copy.
+fn solve_n<const N: usize>(a: &[[f64; N]; N], b: &[f64; N]) -> Result<[f64; N], LinAlgError> {
+    Lu::factor(a)?.solve(b)
 }
 
 /// Solve the 3x3 system `a x = b`.
 ///
 /// # Errors
-/// [`LinAlgError::Singular`] if a pivot is below `16 * EPSILON * max|a_ij|`;
+/// [`LinAlgError::Singular`] if an equilibrated pivot is below `16 * EPSILON` (see [`LinAlgError::Singular`]);
 /// [`LinAlgError::NonFinite`] for NaN/inf input.
 pub fn solve3(a: &Mat3, b: Vector3) -> Result<Vector3, LinAlgError> {
     let x = solve_n(a, &[b.x, b.y, b.z])?;
@@ -171,11 +247,12 @@ pub fn solve4(a: &Mat4, b: [f64; 4]) -> Result<[f64; 4], LinAlgError> {
 
 /// Inverse of a 3x3 matrix. Errors as for [`solve3`].
 pub fn inverse3(a: &Mat3) -> Result<Mat3, LinAlgError> {
+    let lu = Lu::factor(a)?;
     let mut inv = [[0.0; 3]; 3];
     for k in 0..3 {
         let mut e = [0.0; 3];
         e[k] = 1.0;
-        let col = solve_n(a, &e)?;
+        let col = lu.solve(&e)?;
         for (row, v) in inv.iter_mut().zip(col) {
             row[k] = v;
         }
@@ -223,6 +300,16 @@ pub fn sym3_eigen(a: &Mat3) -> Result<SymEigen3, LinAlgError> {
     if a.iter().flatten().any(|v| !v.is_finite()) {
         return Err(LinAlgError::NonFinite);
     }
+    // Scale by an exact power of two so max|a_ij| is in [1, 2): the squared convergence
+    // quantities can then neither overflow nor underflow. Eigenvalues scale back exactly.
+    let e = scale_exponent(a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())));
+    let scaled = a.map(|row| row.map(|v| scale2(v, -e)));
+    let mut r = sym3_eigen_scaled(&scaled)?;
+    r.values = r.values.map(|v| scale2(v, e));
+    Ok(r)
+}
+
+fn sym3_eigen_scaled(a: &Mat3) -> Result<SymEigen3, LinAlgError> {
     let mut m = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -340,6 +427,15 @@ pub fn svd3(a: &Mat3) -> Result<Svd3, LinAlgError> {
     if a.iter().flatten().any(|v| !v.is_finite()) {
         return Err(LinAlgError::NonFinite);
     }
+    // Exact power-of-two scaling keeps the squared column norms in range (see `sym3_eigen`).
+    let e = scale_exponent(a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())));
+    let scaled = a.map(|row| row.map(|v| scale2(v, -e)));
+    let mut r = svd3_scaled(&scaled)?;
+    r.s = r.s.map(|v| scale2(v, e));
+    Ok(r)
+}
+
+fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
     // Columns of `w` start as the columns of A and are rotated until mutually orthogonal.
     let mut w = *a;
     let mut v = IDENTITY3;

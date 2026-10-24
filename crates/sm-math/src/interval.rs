@@ -133,20 +133,23 @@ impl Interval {
         }
     }
 
-    /// The smallest interval enclosing `a` and `b` (in either order). NaN gives [`Interval::ENTIRE`].
+    /// The smallest interval enclosing `a` and `b` (in either order). NaN, or both inputs `+inf` (or both `-inf`),
+    /// gives [`Interval::ENTIRE`].
     pub fn hull_of(a: f64, b: f64) -> Self {
-        if a.is_nan() || b.is_nan() {
+        let (lo, hi) = (a.min(b), a.max(b));
+        if a.is_nan() || b.is_nan() || lo == f64::INFINITY || hi == f64::NEG_INFINITY {
             Self::ENTIRE
         } else {
-            Self {
-                lo: a.min(b),
-                hi: a.max(b),
-            }
+            Self { lo, hi }
         }
     }
 
     /// `[x - r, x + r]` (enclosing, rounded outward); `r` is taken in absolute value.
+    /// NaN `x` or `r` gives [`Interval::ENTIRE`].
     pub fn around(x: f64, r: f64) -> Self {
+        if x.is_nan() || r.is_nan() {
+            return Self::ENTIRE;
+        }
         Self::point(x)
             + Self {
                 lo: -r.abs(),
@@ -172,7 +175,7 @@ impl Interval {
     /// A point inside the interval: the midpoint, or a finite endpoint/zero when unbounded.
     pub fn mid(&self) -> f64 {
         match (self.lo.is_finite(), self.hi.is_finite()) {
-            (true, true) => self.lo * 0.5 + self.hi * 0.5,
+            (true, true) => (self.lo * 0.5 + self.hi * 0.5).clamp(self.lo, self.hi),
             (true, false) => self.lo.max(0.0),
             (false, true) => self.hi.min(0.0),
             (false, false) => 0.0,

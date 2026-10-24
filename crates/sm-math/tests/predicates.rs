@@ -389,3 +389,69 @@ fn try_variants_reject_out_of_range() {
         Ok(Sign::Positive)
     );
 }
+
+/// Near-degenerate random inputs (stage-B territory) against expansion-arithmetic oracles built
+/// from `det_exact`, independent of the predicate code paths.
+#[test]
+fn near_degenerate_matches_expansion_oracle() {
+    use sm_core::Point3;
+    use sm_math::exact::{Expansion, det_exact};
+    let mut rng = Rng(0xB0B);
+    let u = |rng: &mut Rng| 1.0 + (rng.next() >> 11) as f64 / (1u64 << 53) as f64;
+    let tiny = |rng: &mut Rng| rng.int(3) as f64 * f64::EPSILON;
+    let diff = |a: f64, b: f64| Expansion::from_diff(a, b);
+    let mut isp_mul = None;
+    for _ in 0..20000 {
+        // orient3d: near-coplanar.
+        let mk = |rng: &mut Rng| {
+            let (x, y) = (u(rng), u(rng));
+            Point3::new(x, y, 0.3 * x + 0.7 * y + tiny(rng))
+        };
+        let p: Vec<Point3> = (0..5).map(|_| mk(&mut rng)).collect();
+        let m: Vec<Vec<Expansion>> = (0..3)
+            .map(|i| {
+                vec![
+                    diff(p[i].x, p[3].x),
+                    diff(p[i].y, p[3].y),
+                    diff(p[i].z, p[3].z),
+                ]
+            })
+            .collect();
+        assert_eq!(orient3d(p[0], p[1], p[2], p[3]), det_exact(&m).sign());
+        // insphere: the global sign convention is fixed but unknown here, so require that the
+        // relation between predicate and oracle is the same for every nonzero case.
+        let lift = |q: Point3| {
+            let (x, y, z) = (diff(q.x, p[4].x), diff(q.y, p[4].y), diff(q.z, p[4].z));
+            let w = x.square().add(&y.square()).add(&z.square());
+            vec![x, y, z, w]
+        };
+        let m4: Vec<Vec<Expansion>> = (0..4).map(|i| lift(p[i])).collect();
+        let want = det_exact(&m4).sign();
+        let got = insphere(p[0], p[1], p[2], p[3], p[4]);
+        if want.is_zero() || got.is_zero() {
+            assert_eq!(want, got);
+        } else {
+            let same = got == want;
+            assert_eq!(*isp_mul.get_or_insert(same), same);
+        }
+        // orient2d / incircle: near-collinear points.
+        let q: Vec<[f64; 2]> = (0..4)
+            .map(|_| {
+                let t = u(&mut rng);
+                [t, 0.25 * t + 0.5 + tiny(&mut rng)]
+            })
+            .collect();
+        let m2: Vec<Vec<Expansion>> = (0..2)
+            .map(|i| vec![diff(q[i][0], q[2][0]), diff(q[i][1], q[2][1])])
+            .collect();
+        assert_eq!(orient2d(q[0], q[1], q[2]), det_exact(&m2).sign());
+        let ml: Vec<Vec<Expansion>> = (0..3)
+            .map(|i| {
+                let (x, y) = (diff(q[i][0], q[3][0]), diff(q[i][1], q[3][1]));
+                let w = x.square().add(&y.square());
+                vec![x, y, w]
+            })
+            .collect();
+        assert_eq!(incircle(q[0], q[1], q[2], q[3]), det_exact(&ml).sign());
+    }
+}

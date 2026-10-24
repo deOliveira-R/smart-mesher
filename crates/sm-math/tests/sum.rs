@@ -111,3 +111,15 @@ fn edge_sizes() {
     let v = par_sum_vec3_by(0, 8, |_| Vector3::new(1.0, 1.0, 1.0));
     assert_eq!((v.x, v.y, v.z), (0.0, 0.0, 0.0));
 }
+
+#[test]
+fn neumaier_propagates_infinity_like_kahan() {
+    use sm_math::sum::sum_neumaier;
+    assert_eq!(sum_neumaier(&[1.0, f64::INFINITY]), f64::INFINITY);
+    assert_eq!(sum_neumaier(&[f64::INFINITY, 1.0]), f64::INFINITY);
+    assert_eq!(
+        sum_neumaier(&[f64::NEG_INFINITY, 1.0, 2.0]),
+        f64::NEG_INFINITY
+    );
+    assert!(sum_neumaier(&[f64::INFINITY, f64::NEG_INFINITY]).is_nan());
+}

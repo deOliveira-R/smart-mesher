@@ -159,3 +159,43 @@ fn edge_cases() {
     let r = Interval::around(1.0, 0.5);
     assert!(r.contains(0.5) && r.contains(1.5));
 }
+
+#[test]
+fn constructors_keep_invariants_for_nonfinite_input() {
+    let valid = |i: Interval| {
+        !i.lo().is_nan()
+            && !i.hi().is_nan()
+            && i.lo() < f64::INFINITY
+            && i.hi() > f64::NEG_INFINITY
+            && i.lo() <= i.hi()
+    };
+    let vals = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        1.0,
+        -1.0,
+        f64::MAX,
+    ];
+    for &a in &vals {
+        for &b in &vals {
+            assert!(valid(Interval::around(a, b)), "around({a},{b})");
+            assert!(valid(Interval::hull_of(a, b)), "hull_of({a},{b})");
+        }
+    }
+    assert_eq!(Interval::around(1.0, f64::NAN), Interval::ENTIRE);
+    assert_eq!(
+        Interval::hull_of(f64::INFINITY, f64::INFINITY),
+        Interval::ENTIRE
+    );
+}
+
+#[test]
+fn mid_is_inside_for_subnormals() {
+    let t = 5e-324;
+    let i = Interval::new(t, t).unwrap();
+    assert!(i.contains(i.mid()));
+    let j = Interval::new(t, 2.0 * t).unwrap();
+    assert!(j.contains(j.mid()));
+}

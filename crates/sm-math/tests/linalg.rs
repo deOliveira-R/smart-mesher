@@ -320,3 +320,42 @@ proptest! {
         check_eigen(&sym, &e, 1e-14);
     }
 }
+
+#[test]
+fn extreme_scale_sym3_eigen_and_svd() {
+    for &s in &[1e150, 1e-150, 1e300, 1e-300, 1e160, 1e-170] {
+        let e = sym3_eigen(&[[0.0, s, 0.0], [s, 0.0, 0.0], [0.0, 0.0, 0.0]]).unwrap();
+        let tol = 8.0 * f64::EPSILON * s;
+        for (got, want) in e.values.iter().zip([-s, 0.0, s]) {
+            assert!((got - want).abs() <= tol, "s={s}: {:?}", e.values);
+        }
+        let r = svd3(&[[s, 2.0 * s, 0.0], [0.0, s, 0.0], [0.0, 0.0, 3.0 * s]]).unwrap();
+        let r1 = svd3(&[[1.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 3.0]]).unwrap();
+        for k in 0..3 {
+            assert!(
+                (r.s[k] - r1.s[k] * s).abs() <= 1e-14 * s,
+                "s={s}: {:?}",
+                r.s
+            );
+        }
+        assert!(
+            r.u.iter()
+                .flatten()
+                .chain(r.v.iter().flatten())
+                .all(|x| x.is_finite())
+        );
+        let want = [[s, 2.0 * s, 0.0], [0.0, s, 0.0], [0.0, 0.0, 3.0 * s]];
+        assert!(maxdiff(&r.reconstruct(), &want) <= 1e-14 * s, "s={s}");
+    }
+}
+
+#[test]
+fn row_scaled_system_is_not_singular() {
+    let a = [[1e20, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let x = solve3(&a, Vector3::new(1e20, 2.0, 3.0)).unwrap();
+    assert_eq!((x.x, x.y, x.z), (1.0, 2.0, 3.0));
+    let inv = inverse3(&a).unwrap();
+    assert!((inv[0][0] - 1e-20).abs() <= 1e-35);
+    let sing = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [1.0, 0.0, 1.0]];
+    assert!(solve3(&sing, Vector3::new(1.0, 1.0, 1.0)).is_err());
+}
