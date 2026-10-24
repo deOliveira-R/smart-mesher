@@ -287,6 +287,188 @@ fn check_face_map(
     Ok(())
 }
 
+/// Role of a face of an extruded mesh, derived on demand by [`ExtrusionMap::face_role`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtrusionFaceRole {
+    /// A face at one level: every vertex has height `z[level]` (a copy of a base cell).
+    Axial {
+        /// Level index into [`ExtrusionMap::z`] (`0..=n_layers`).
+        level: u32,
+    },
+    /// A face spanning one layer: its vertices sit at `z[layer]` and `z[layer + 1]` (a base
+    /// facet swept through the layer).
+    Lateral {
+        /// Layer index (`0..n_layers`).
+        layer: u32,
+    },
+}
+
+/// A base mesh times layers: the record that an extruded (dimension-3) mesh is the sweep of a
+/// dimension-2 base mesh along `+z` through the levels `z` (ir.md round-2 decision: extrusion is
+/// first-class). Like [`LevelMap`] it stores the ids and connectivity hashes of both meshes and
+/// refuses a stale pair ([`Self::check_meshes`]). Lateral and axial face roles are derived on
+/// demand ([`Self::face_role`]), not stored.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtrusionMap {
+    base: EntityId,
+    extruded: EntityId,
+    base_hash: u64,
+    extruded_hash: u64,
+    z: Vec<f64>,
+    cell_of: Vec<(CellIx, u32)>,
+    /// Inverse: `cell_at[base * n_layers + layer]`.
+    cell_at: Vec<CellIx>,
+}
+
+type VertexList = smallvec::SmallVec<[crate::index::VertexIx; 16]>;
+
+/// Distinct vertices of a cell (union of its faces' vertices), ascending.
+fn cell_vertices(m: &dyn MeshRead, c: CellIx) -> VertexList {
+    let mut v = VertexList::new();
+    for sf in m.cell_faces(c) {
+        v.extend_from_slice(m.face_vertices(sf.face()));
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+impl ExtrusionMap {
+    /// Build and validate. `base` must be a dimension-2 mesh and `extruded` a dimension-3 mesh;
+    /// `z` holds `n_layers + 1` finite, strictly monotone levels; `cell_of[c]` is the
+    /// `(base cell, layer)` extruded cell `c` comes from. Every `(base cell, layer)` must appear
+    /// exactly once, and each extruded cell's vertices must be exactly its base cell's vertices
+    /// (their `x`, `y`) at heights `z[layer]` and `z[layer + 1]`, within `1e-9 (1 + extent)`.
+    pub fn new(base: &dyn MeshRead, extruded: &dyn MeshRead, z: Vec<f64>, cell_of: Vec<(CellIx, u32)>) -> Result<Self> {
+        let bad = |why: String| MeshError::Hierarchy(format!("extrusion map: {why}"));
+        if base.dim() != crate::index::MeshDim::Two || extruded.dim() != crate::index::MeshDim::Three {
+            return Err(bad("the base must be a 2D mesh and the extruded mesh a 3D mesh".into()));
+        }
+        if z.len() < 2 || z.iter().any(|x| !x.is_finite()) {
+            return Err(bad("need at least two finite levels".into()));
+        }
+        let up = z[1] > z[0];
+        if z.windows(2).any(|w| if up { w[1] <= w[0] } else { w[1] >= w[0] }) {
+            return Err(bad("levels must be strictly monotone".into()));
+        }
+        let layers = z.len() - 1;
+        let (nb, ne) = (base.cell_count(), extruded.cell_count());
+        if cell_of.len() != ne {
+            return Err(bad(format!("{} entries for {ne} extruded cells", cell_of.len())));
+        }
+        if nb.checked_mul(layers) != Some(ne) {
+            return Err(bad(format!("{ne} extruded cells for {nb} base cells x {layers} layers")));
+        }
+        let mut cell_at = vec![CellIx(NO_CELL); ne];
+        for (c, &(b, k)) in cell_of.iter().enumerate() {
+            if b.get() >= nb || k as usize >= layers {
+                return Err(bad(format!("entry {c} = ({b:?}, {k}) out of range")));
+            }
+            let slot = &mut cell_at[b.get() * layers + k as usize];
+            if slot.0 != NO_CELL {
+                return Err(bad(format!("({b:?}, layer {k}) appears twice")));
+            }
+            *slot = CellIx::new(c);
+        }
+        // Vertex check: base x, y at the two levels of the layer.
+        let extent = (0..base.vertex_count())
+            .map(|i| base.point(i))
+            .chain((0..extruded.vertex_count()).map(|i| extruded.point(i)))
+            .fold(z.iter().fold(0.0f64, |m, x| m.max(x.abs())), |m, p| m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs()));
+        let tol = 1e-9 * (1.0 + extent);
+        for (c, &(b, k)) in cell_of.iter().enumerate() {
+            let bv = cell_vertices(base, b);
+            let ev = cell_vertices(extruded, CellIx::new(c));
+            if ev.len() != 2 * bv.len() {
+                return Err(bad(format!("extruded cell {c} has {} vertices, base cell {b:?} has {}", ev.len(), bv.len())));
+            }
+            let mut used: smallvec::SmallVec<[bool; 32]> = smallvec::smallvec![false; ev.len()];
+            for level in [z[k as usize], z[k as usize + 1]] {
+                for v in &bv {
+                    let p = base.point(v.get());
+                    let hit = ev.iter().enumerate().position(|(i, e)| {
+                        let q = extruded.point(e.get());
+                        !used[i] && (q.x - p.x).abs() <= tol && (q.y - p.y).abs() <= tol && (q.z - level).abs() <= tol
+                    });
+                    match hit {
+                        Some(i) => used[i] = true,
+                        None => return Err(bad(format!("extruded cell {c} has no vertex over base vertex {v:?} at z = {level}"))),
+                    }
+                }
+            }
+        }
+        Ok(Self { base: base.mesh_id(), extruded: extruded.mesh_id(), base_hash: connectivity_hash(base), extruded_hash: connectivity_hash(extruded), z, cell_of, cell_at })
+    }
+
+    /// Id of the base (2D) mesh.
+    pub fn base_id(&self) -> EntityId {
+        self.base
+    }
+    /// Id of the extruded (3D) mesh.
+    pub fn extruded_id(&self) -> EntityId {
+        self.extruded
+    }
+    /// Connectivity hash of the base mesh at construction time.
+    pub fn base_hash(&self) -> u64 {
+        self.base_hash
+    }
+    /// Connectivity hash of the extruded mesh at construction time.
+    pub fn extruded_hash(&self) -> u64 {
+        self.extruded_hash
+    }
+    /// The levels (`n_layers + 1`, strictly monotone).
+    pub fn z(&self) -> &[f64] {
+        &self.z
+    }
+    /// Number of layers.
+    pub fn n_layers(&self) -> usize {
+        self.z.len() - 1
+    }
+    /// `(base cell, layer)` of an extruded cell. Panics if out of range.
+    pub fn cell_of(&self, c: CellIx) -> (CellIx, u32) {
+        self.cell_of[c.get()]
+    }
+    /// The extruded cell over `base` in `layer`. Panics if out of range.
+    pub fn cell_at(&self, base: CellIx, layer: u32) -> CellIx {
+        self.cell_at[base.get() * self.n_layers() + layer as usize]
+    }
+
+    /// Fail unless `base` and `extruded` are the meshes (ids and connectivity) this map was
+    /// built for.
+    pub fn check_meshes(&self, base: &dyn MeshRead, extruded: &dyn MeshRead) -> Result<()> {
+        if base.mesh_id() != self.base || extruded.mesh_id() != self.extruded {
+            return Err(MeshError::Hierarchy("extrusion map was built for different meshes".into()));
+        }
+        if connectivity_hash(base) != self.base_hash || connectivity_hash(extruded) != self.extruded_hash {
+            return Err(MeshError::Hierarchy("stale extrusion map: a mesh changed since the map was built".into()));
+        }
+        Ok(())
+    }
+
+    /// Role of face `f` of the extruded mesh, from its vertex heights: `Axial { level }` if they
+    /// all sit at one level, `Lateral { layer }` if they span exactly the two levels of one
+    /// layer. Fails for a face that is neither, or for a different mesh.
+    pub fn face_role(&self, extruded: &dyn MeshRead, f: FaceIx) -> Result<ExtrusionFaceRole> {
+        if extruded.mesh_id() != self.extruded {
+            return Err(MeshError::Hierarchy("face_role needs the extruded mesh".into()));
+        }
+        let span = self.z.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let tol = 1e-9 * (1.0 + span);
+        let level_of = |h: f64| self.z.iter().position(|zz| (zz - h).abs() <= tol);
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        for v in extruded.face_vertices(f) {
+            let l = level_of(extruded.point(v.get()).z).ok_or_else(|| MeshError::Hierarchy(format!("face {f:?} has a vertex off every level")))?;
+            lo = lo.min(l);
+            hi = hi.max(l);
+        }
+        match hi.checked_sub(lo) {
+            Some(0) => Ok(ExtrusionFaceRole::Axial { level: lo as u32 }),
+            Some(1) => Ok(ExtrusionFaceRole::Lateral { layer: lo as u32 }),
+            _ => Err(MeshError::Hierarchy(format!("face {f:?} is neither axial nor lateral"))),
+        }
+    }
+}
+
 /// Read access to the meshes of one model.
 pub trait MeshCatalog {
     /// Ids of all meshes, ascending.
@@ -299,6 +481,12 @@ pub trait MeshCatalog {
     fn maps_to(&self, coarse: EntityId) -> Vec<(EntityId, &LevelMap)>;
     /// Instanced views stored in the catalog, ascending by id.
     fn views(&self) -> &[InstancedView];
+    /// Extrusion maps whose base or extruded mesh is `mesh`, ascending by `(base, extruded)`.
+    /// Default: none (catalogs that store no extrusions).
+    fn extrusions_of(&self, mesh: EntityId) -> Vec<&ExtrusionMap> {
+        let _ = mesh;
+        Vec::new()
+    }
 }
 
 /// Write access to a catalog.
@@ -310,4 +498,11 @@ pub trait CatalogEdit: MeshCatalog {
     fn link(&mut self, map: LevelMap) -> Result<()>;
     /// Add an instanced view; every prototype must already be in the catalog.
     fn insert_view(&mut self, view: InstancedView) -> Result<()>;
+    /// Record that one catalog mesh is the extrusion of another. Implementations reject unknown
+    /// meshes, a stale map ([`ExtrusionMap::check_meshes`]) and a second map for the same pair.
+    /// Default: [`MeshError::Unsupported`].
+    fn link_extrusion(&mut self, map: ExtrusionMap) -> Result<()> {
+        let _ = map;
+        Err(MeshError::Unsupported("link_extrusion".into()))
+    }
 }

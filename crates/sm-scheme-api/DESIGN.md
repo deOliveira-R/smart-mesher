@@ -241,3 +241,23 @@ Tests (all through the sm-topo-api `CellComplex` fixtures and the sm-mesh-api `R
 ## API change requests
 
 All four requests were accepted (W0e decisions 1 to 4) and applied in W0f: `Classification::dim` accepts the `Partition*` kinds; `Model::split_realized` + `Decomposition::piece_face_cells` realize and resolve cut faces (the overlay mints the cut cells, the piece ids come from the model); `schemars` features on `sm-topo-api` and `sm-model-api` derive `JsonSchema` on `Side`, `CoedgeKey`, `CornerKey`, `PieceRef`, `PieceFace`, `CutId`, `Keep`; the duplicate transform algebra is gone. This crate does not yet derive `JsonSchema` on `MeshIntent` / `Plan` themselves (no `schemars` feature here); that is the MCP layer's step now that the leaf types have schemas.
+
+## W0f gaps4
+
+- **`Requirements::reads(other) -> ConstraintId`.** A scheme may declare that its generation
+  reads the patch of a target that is not one of its sub-entities (curve `copy` by percent or
+  auto, PARITY C P1, as an ordinary scheme). It records a scheme-origin
+  `MeshConstraint::Precedes { before: other, after: self }`, so `GenCtx::patches.get(other)` is
+  guaranteed during generation. Refused (`REFUSED`, `BadRequirement` when `requirements`
+  returns) when `other` is not a target of the meshed region, is the requester, one of its
+  ancestors (the requester is in `other`'s sub-entities) or a child the requester claimed.
+  `constraint(Precedes)` keeps its old child-only rule. The planner's `Scope` (crate-private)
+  now carries region membership and a sub-entity predicate (`children_in`, factored out of
+  `children_of`). No public type changes.
+- **Blamed read cycles.** A schedule `dependency cycle` whose involved constraints include a
+  scheme-origin `Precedes` from a blameable `(target, scheme)` (not hard, not `copy`, not
+  already rejected) is reported as `Infeasible { reason: "dependency cycle through a scheme
+  read", blame: Some(reader) }` (the later such constraint), so the re-plan loop rejects that
+  scheme and falls back; otherwise it stays `SchemeError::Schedule`. Tested: a sibling read
+  orders the waves and finds the source patch; self, parent and out-of-region reads are refused;
+  a soft two-curve read cycle falls back, a hard one stays a schedule error.

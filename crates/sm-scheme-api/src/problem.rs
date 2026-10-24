@@ -620,10 +620,13 @@ impl MeshingProblem {
 
 /// What a requirement may be about: the strict sub-entities of the requesting target and the
 /// targets that are already resolved. Built by the driver.
-#[derive(Debug)]
 pub(crate) struct Scope<'a> {
     pub(crate) children: BTreeSet<Target>,
     pub(crate) resolved: &'a BTreeMap<Target, TargetPlan>,
+    /// Is the target part of the meshed region?
+    pub(crate) in_region: &'a dyn Fn(Target) -> bool,
+    /// `within(parent, child)`: is `child` a strict sub-entity of `parent`?
+    pub(crate) within: &'a dyn Fn(Target, Target) -> bool,
 }
 
 /// The id returned for a requirement that was refused (the error surfaces when the scheme's
@@ -833,6 +836,42 @@ impl<'a> Requirements<'a> {
             return REFUSED;
         }
         self.problem.push_constraint(self.origin.clone(), c)
+    }
+
+    /// Declare that this target's generation reads the patch of `other`, a target that is not
+    /// one of its sub-entities (a curve scheme reading a sibling curve's patch: curve `copy` by
+    /// percent or auto, PARITY C). Records a scheme-origin
+    /// `MeshConstraint::Precedes { before: other, after: self }`, so `other` is generated in an
+    /// earlier wave and `GenCtx::patches.get(other)` is guaranteed to be present when this
+    /// target generates.
+    ///
+    /// Refused (with [`REFUSED`], the error surfacing when `requirements` returns) if `other`
+    /// is not a target of the meshed region, is the requester itself, one of its ancestors
+    /// (a target the requester is a sub-entity of), or one of the children it claimed (it
+    /// writes them). A dependency cycle through such a read is found when the plan is
+    /// scheduled and reported as [`crate::Infeasible`] blaming the reading `(target, scheme)`,
+    /// so the driver rejects that scheme and re-plans with a fallback.
+    pub fn reads(&mut self, other: Target) -> ConstraintId {
+        if self.error.is_some() {
+            return REFUSED;
+        }
+        let me = self.target;
+        let why = if !(self.scope.in_region)(other) {
+            Some("not a target of the meshed region")
+        } else if other == me {
+            Some("a target cannot read itself")
+        } else if (self.scope.within)(other, me) {
+            Some("an ancestor is generated after its sub-entities")
+        } else if self.problem.claims.iter().any(|c| c.item.by == me && c.item.child == other) {
+            Some("a claimed child is written by the requester itself")
+        } else {
+            None
+        };
+        if let Some(reason) = why {
+            self.fail(other, reason);
+            return REFUSED;
+        }
+        self.problem.push_constraint(self.origin.clone(), MeshConstraint::Precedes { before: other, after: me })
     }
 
     /// Store scheme-private data for this target. It is kept in

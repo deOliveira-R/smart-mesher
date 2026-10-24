@@ -112,3 +112,27 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 14. `SerialAlloc` deserializes through `from_state` (`serde(try_from)`), so a bad snapshot is rejected at load time.
 15. (W0f) `MeshRead::dim` and `MeshBuild::dim` are provided methods defaulting to `MeshDim::Three`, so existing implementors keep compiling; a dimension-2 implementation must override both. `MeshBuild::add_polygon` is provided on top of `add_polyhedron_with_corners`.
 16. (W0f) `CellShape::from_corner_count` stays dimension-3; `from_corner_count_in(dim, n)` is the dimension-aware form. `derive_corners` handles dimension-2 shapes through `polygon_cycle`.
+
+## W0f gaps4
+
+- **`hierarchy::ExtrusionMap`** (base mesh x layers, first-class per the ir.md round-2
+  decisions). `ExtrusionMap::new(base /*dim 2*/, extruded /*dim 3*/, z /*n_layers + 1, strictly
+  monotone*/, cell_of: Vec<(CellIx, u32)>)` stores both mesh ids and connectivity hashes (as
+  `LevelMap`), the levels, `cell_of` and its inverse `cell_at(base, layer)`. Validation: the
+  dimensions, finite strictly monotone levels, `n_base * n_layers` extruded cells with every
+  `(base cell, layer)` exactly once, and each extruded cell's vertices exactly the base cell's
+  `(x, y)` at `z[layer]` and `z[layer + 1]` (`1e-9 (1 + extent)`; the sweep is along `+z`).
+  `check_meshes` refuses a different or stale pair. `face_role(extruded, f)` derives
+  `ExtrusionFaceRole::{Axial { level }, Lateral { layer }}` from the face's vertex heights; roles
+  are never stored. Provided catalog methods keep old implementors compiling:
+  `MeshCatalog::extrusions_of(mesh)` (default empty) and `CatalogEdit::link_extrusion(map)`
+  (default `Unsupported`); `ReferenceCatalog` implements both (unknown meshes, stale maps and a
+  second map for a pair are rejected).
+- **`instance::unfold` deck check.** The `2^n` subset products are the group only for
+  pairwise-commuting involutions, so `unfold` now checks that every deck transform squares to
+  the identity and that every pair commutes (quantized: `1e-9` on the matrix, `1e-9 (1 + |t|)`
+  on the translation) and returns `MeshError::Unsupported` otherwise (a rotation or dihedral
+  deck goes through `point_group -> InstancedView -> flatten`). Documented: image `k`'s transform
+  is the product of the deck elements whose bits are set in `k`, in deck order, so callers can
+  join images to model copy references. Tested: an R90 deck and a mirror + diagonal mirror are
+  rejected (allocator untouched); orthogonal mirrors and a mirror + half turn unfold as before.

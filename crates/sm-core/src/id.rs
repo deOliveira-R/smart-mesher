@@ -44,6 +44,9 @@ pub enum EntityKind {
     Lattice = 37,
     /// A symmetry / deck-group record (generators + fundamental domain).
     Symmetry = 38,
+    /// A cluster: fills placed at explicit transforms inside a fill (irregular nesting, e.g. TRISO
+    /// particles in a pebble).
+    Cluster = 39,
     // Decomposition layer (virtual, reversible pieces; one kind per rank)
     /// Decomposition piece of rank 3 (a virtual volume piece).
     PartitionCell = 48,
@@ -91,6 +94,7 @@ impl EntityKind {
             36 => Prototype,
             37 => Lattice,
             38 => Symmetry,
+            39 => Cluster,
             48 => PartitionCell,
             49 => PartitionFace,
             50 => PartitionEdge,
@@ -112,7 +116,7 @@ impl EntityKind {
         use EntityKind::*;
         &[
             TopoVertex, TopoEdge, TopoFace, TopoVolume, TopoBody, Curve, Surface, Color, Group, Boundary, Instance, Prototype,
-            Lattice, Symmetry, PartitionCell, PartitionFace, PartitionEdge, PartitionVertex, Mesh, MeshVertex, MeshEdge, MeshFace,
+            Lattice, Symmetry, Cluster, PartitionCell, PartitionFace, PartitionEdge, PartitionVertex, Mesh, MeshVertex, MeshEdge, MeshFace,
             MeshCell, Interface, MeshSet, MeshInstance,
         ]
     };
@@ -135,6 +139,7 @@ impl EntityKind {
             Prototype => "Prototype",
             Lattice => "Lattice",
             Symmetry => "Symmetry",
+            Cluster => "Cluster",
             PartitionCell => "PartitionCell",
             PartitionFace => "PartitionFace",
             PartitionEdge => "PartitionEdge",

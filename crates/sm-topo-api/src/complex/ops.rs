@@ -3,7 +3,7 @@
 use super::*;
 use crate::edit::TopologyEdit;
 use crate::geometry::PointClass;
-use crate::types::{CellFlags, Coincidence, CoedgeSpec, CurveCarrier, FaceCut, FaceUseSpec, InnerLoopAssign, ShellAssign, ShellSpec};
+use crate::types::{CellFlags, Coincidence, CoedgeSpec, CornerKey, CurveCarrier, FaceCut, FaceUseSpec, InnerLoopAssign, ShellAssign, ShellSpec};
 use sm_core::{EntityKind, Point3};
 use sm_geom_api::Interval;
 use smallvec::smallvec;
@@ -210,31 +210,49 @@ impl CellComplex {
         if cc.sense == Sense::Forward { lo + s * (hi - lo) } else { hi - s * (hi - lo) }
     }
 
-    fn curve_gap(&self, keep: EntityId, drop: EntityId, rel: Sense) -> f64 {
-        let (Carrier::Curve(ck), Carrier::Curve(cd)) = (self.carrier(keep), self.carrier(drop)) else { return 0.0 };
-        let (Some(kc), Some(dc)) = (self.shapes.curve(ck.curve), self.shapes.curve(cd.curve)) else { return 0.0 };
+    /// The sampled distance between two edge curves. Two curve-less edges have nothing to
+    /// measure (0); anything else that cannot be measured is an error, never a silent zero.
+    fn curve_gap(&self, keep: EntityId, drop: EntityId, rel: Sense) -> Result<f64, TopoError> {
+        const NOT: TopoError = TopoError::Unsupported("gap not measurable");
+        let (ck, cd) = match (self.carrier(keep), self.carrier(drop)) {
+            (Carrier::Curve(ck), Carrier::Curve(cd)) => (ck, cd),
+            (Carrier::None, Carrier::None) => return Ok(0.0),
+            _ => return Err(NOT),
+        };
+        let (Some(kc), Some(dc)) = (self.shapes.curve(ck.curve), self.shapes.curve(cd.curve)) else { return Err(NOT) };
         let mut gap: f64 = 0.0;
         for s in [0.25, 0.5, 0.75] {
             let pd = dc.eval(Self::param_at(cd, s));
             let hint = Self::param_at(ck, if rel == Sense::Forward { s } else { 1.0 - s });
-            if let Ok(pr) = kc.project(pd, Some(hint)) {
-                gap = gap.max(pr.distance);
+            let pr = kc.project(pd, Some(hint)).map_err(|_| NOT)?;
+            if !pr.distance.is_finite() {
+                return Err(NOT);
             }
+            gap = gap.max(pr.distance);
         }
-        gap
+        Ok(gap)
     }
 
-    fn face_gap(&self, keep: EntityId, drop: EntityId) -> f64 {
-        let (Carrier::Surface(sk), Carrier::Surface(sd)) = (self.carrier(keep), self.carrier(drop)) else { return 0.0 };
-        let (Some(ks), Some(ds)) = (self.shapes.surface(sk.surface), self.shapes.surface(sd.surface)) else { return 0.0 };
+    /// The distance between two face surfaces at the keep face's outline centroid. Two
+    /// surface-less faces have nothing to measure (0); anything else that cannot be measured is
+    /// an error.
+    fn face_gap(&self, keep: EntityId, drop: EntityId) -> Result<f64, TopoError> {
+        const NOT: TopoError = TopoError::Unsupported("gap not measurable");
+        let (sk, sd) = match (self.carrier(keep), self.carrier(drop)) {
+            (Carrier::Surface(sk), Carrier::Surface(sd)) => (sk, sd),
+            (Carrier::None, Carrier::None) => return Ok(0.0),
+            _ => return Err(NOT),
+        };
+        let (Some(ks), Some(ds)) = (self.shapes.surface(sk.surface), self.shapes.surface(sd.surface)) else { return Err(NOT) };
         let pts = self.face_outline(keep);
         if pts.is_empty() {
-            return 0.0;
+            return Err(NOT);
         }
         let n = pts.len() as f64;
         let c = Point3::new(pts.iter().map(|p| p.x).sum::<f64>() / n, pts.iter().map(|p| p.y).sum::<f64>() / n, pts.iter().map(|p| p.z).sum::<f64>() / n);
-        let Ok(q) = ks.project(c, None) else { return 0.0 };
-        ds.project(q.point, None).map_or(0.0, |p| p.distance)
+        let q = ks.project(c, None).map_err(|_| NOT)?;
+        let d = ds.project(q.point, None).map_err(|_| NOT)?.distance;
+        if d.is_finite() { Ok(d) } else { Err(NOT) }
     }
 
     /// Assign the existing inner loops of a split face to the two children.
@@ -311,8 +329,42 @@ impl CellComplex {
 
         // Outer loops of the two children and the loop (if any) that becomes a new inner loop of
         // the first child.
-        let (c1_outer, c2_outer, new_inner, second_is_inside): (Row, Row, Option<Row>, bool) = match cut {
-            FaceCut::Chord { edge } => {
+        // Loop position of a chord/chain end: from its corner if given, else the vertex's only
+        // occurrence in the outer loop.
+        let n_outer = outer.len();
+        let end_position = |v: EntityId, corner: Option<CornerKey>, what: &'static str| -> Result<usize, TopoError> {
+            match corner {
+                Some(ck) => {
+                    if ck.face != face || ck.incoming.face != face {
+                        return Err(TopoError::InvalidParameter("corner of another face"));
+                    }
+                    let i = outer
+                        .iter()
+                        .position(|e| e.cell == ck.incoming.edge && e.side == ck.incoming.side)
+                        .ok_or(TopoError::InvalidParameter("corner coedge is not on the outer loop"))?;
+                    let p = (i + 1) % n_outer;
+                    if tails[p] != Some(v) {
+                        return Err(TopoError::InvalidParameter("corner is not at the cut's end vertex"));
+                    }
+                    Ok(p)
+                }
+                None => match positions(v)[..] {
+                    [] => Err(TopoError::ChordNotOnLoop),
+                    [one] => Ok(one),
+                    _ => Err(TopoError::Unsupported(what)),
+                },
+            }
+        };
+        type CutParts<'c> = (Option<EntityId>, Option<&'c [CoedgeSpec]>, Option<(CornerKey, CornerKey)>);
+        let (chord, chain, corners): CutParts<'_> = match cut {
+            FaceCut::Chord { edge } => (Some(edge), None, None),
+            FaceCut::ChordAt { edge, start, end } => (Some(edge), None, Some((start, end))),
+            FaceCut::Chain { edges } => (None, Some(edges), None),
+            FaceCut::ChainAt { edges, start, end } => (None, Some(edges), Some((start, end))),
+            _ => (None, None, None),
+        };
+        let (c1_outer, c2_outer, new_inner, second_is_inside): (Row, Row, Option<Row>, bool) = match (chord, chain, cut) {
+            (Some(edge), _, _) => {
                 self.live_slot(edge, Dim::Edge)?;
                 let (cs, ce) = self.edge_ends_raw(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
                 if cs == ce {
@@ -321,23 +373,19 @@ impl CellComplex {
                 if on_inner(cs) || on_inner(ce) {
                     return Err(TopoError::Unsupported("chord ending on an inner loop (KEMR)"));
                 }
-                let (pi, pj) = (positions(cs), positions(ce));
-                if pi.is_empty() || pj.is_empty() {
-                    return Err(TopoError::ChordNotOnLoop);
-                }
-                if pi.len() != 1 || pj.len() != 1 {
-                    return Err(TopoError::Unsupported("chord end vertex appears more than once in the loop"));
-                }
-                let (a, b) = (pi[0].min(pj[0]), pi[0].max(pj[0]));
-                let (va, vb) = (tails[a], tails[b]);
-                let side1 = if Some(cs) == vb && Some(ce) == va { Side::Left } else { Side::Right };
+                let what = "chord end vertex appears more than once in the loop (name its corner: FaceCut::ChordAt)";
+                let pi = end_position(cs, corners.map(|c| c.0), what)?;
+                let pj = end_position(ce, corners.map(|c| c.1), what)?;
+                let (a, b) = (pi.min(pj), pi.max(pj));
+                // r1 runs a..b and returns from tails[b] to tails[a] over the chord.
+                let side1 = if pi > pj { Side::Left } else { Side::Right };
                 let mut r1: Row = outer[a..b].to_vec();
                 r1.push(Incidence::new(edge, side1, 0));
                 let mut r2: Row = outer[b..].iter().chain(outer[..a].iter()).copied().collect();
                 r2.push(Incidence::new(edge, side1.flip(), 0));
                 (r1, r2, None, false)
             }
-            FaceCut::Chain { edges } => {
+            (None, Some(edges), _) => {
                 let chain = self.open_chain_entries(edges)?;
                 let first = chain.first().ok_or(TopoError::EmptyLoop)?;
                 let last = chain.last().ok_or(TopoError::EmptyLoop)?;
@@ -358,23 +406,19 @@ impl CellComplex {
                         return Err(TopoError::InvalidParameter("chain interior vertex lies on a face loop"));
                     }
                 }
-                let (pi, pj) = (positions(cs), positions(ce));
-                if pi.is_empty() || pj.is_empty() {
-                    return Err(TopoError::ChordNotOnLoop);
-                }
-                if pi.len() != 1 || pj.len() != 1 {
-                    return Err(TopoError::Unsupported("chain end vertex appears more than once in the loop"));
-                }
-                let (a, b) = (pi[0].min(pj[0]), pi[0].max(pj[0]));
+                let what = "chain end vertex appears more than once in the loop (name its corner: FaceCut::ChainAt)";
+                let pi = end_position(cs, corners.map(|c| c.0), what)?;
+                let pj = end_position(ce, corners.map(|c| c.1), what)?;
+                let (a, b) = (pi.min(pj), pi.max(pj));
                 // r1 runs a..b (ending at vb) and must return vb -> va; r2 the opposite.
-                let (back, fwd) = if pi[0] < pj[0] { (reversed_ring(&chain), chain.clone()) } else { (chain.clone(), reversed_ring(&chain)) };
+                let (back, fwd) = if pi < pj { (reversed_ring(&chain), chain.clone()) } else { (chain.clone(), reversed_ring(&chain)) };
                 let mut r1: Row = outer[a..b].to_vec();
                 r1.extend(back);
                 let mut r2: Row = outer[b..].iter().chain(outer[..a].iter()).copied().collect();
                 r2.extend(fwd);
                 (r1, r2, None, false)
             }
-            FaceCut::ClosedLoop { edges } => {
+            (None, None, FaceCut::ClosedLoop { edges }) => {
                 let chain = self.chain_entries(0, edges)?;
                 let chain_tails: Vec<EntityId> = chain.iter().filter_map(|e| self.tail_of(e)).collect();
                 let touching: Vec<EntityId> = chain_tails.iter().copied().filter(|v| !positions(*v).is_empty() || on_inner(*v)).collect();
@@ -402,6 +446,7 @@ impl CellComplex {
                     (r1, r2, None, false)
                 }
             }
+            _ => return Err(TopoError::Unsupported("face cut kind")),
         };
 
         let carrier = self.carrier(face).clone();
@@ -1144,7 +1189,7 @@ impl TopologyEdit for CellComplex {
                 return Err(TopoError::NotCoincident("end vertices differ (merge vertices first)"));
             }
             let (tk, td) = (s.effective_tol(keep), s.effective_tol(drop));
-            let gap = s.curve_gap(keep, drop, relative);
+            let gap = s.curve_gap(keep, drop, relative)?;
             if !s.gap_allowed(gap, tk, td) {
                 return Err(TopoError::NotCoincident("curves are farther apart than the tolerances allow"));
             }
@@ -1197,7 +1242,7 @@ impl TopologyEdit for CellComplex {
                 return Err(TopoError::SideOccupied { face: keep });
             }
             let (tk, td) = (s.effective_tol(keep), s.effective_tol(drop));
-            let gap = s.face_gap(keep, drop);
+            let gap = s.face_gap(keep, drop)?;
             if !s.gap_allowed(gap, tk, td) {
                 return Err(TopoError::NotCoincident("surfaces are farther apart than the tolerances allow"));
             }
@@ -1233,6 +1278,206 @@ impl TopologyEdit for CellComplex {
             s.note(drop, LineageKind::Merged { into: keep, gap });
             s.put_pair(FacePair { a: keep, b: drop, status: Coincidence::Merged, op });
             s.normalize_orientation(keep)
+        })
+    }
+
+    fn unmerge_vertex(&mut self, v: EntityId, edges: &[EntityId]) -> Result<EntityId, TopoError> {
+        self.atomic(|s| {
+            s.live_slot(v, Dim::Vertex)?;
+            if edges.is_empty() {
+                return Err(TopoError::InvalidParameter("unmerge_vertex needs edges"));
+            }
+            let mut sorted = edges.to_vec();
+            sorted.sort();
+            if sorted.windows(2).any(|w| w[0] == w[1]) {
+                return Err(TopoError::InvalidParameter("an edge is listed twice"));
+            }
+            for &e in edges {
+                s.live_slot(e, Dim::Edge)?;
+                if !s.row(e).iter().any(|i| i.cell == v) {
+                    return Err(TopoError::InvalidIncidence { parent: e, child: v });
+                }
+            }
+            let carrier = s.carrier(v).clone();
+            let copy = s.alloc(Dim::Vertex, carrier)?;
+            s.inherit(v, copy);
+            for &e in &sorted {
+                let row: Row = s.row(e).iter().map(|i| if i.cell == v { Incidence { cell: copy, ..*i } } else { *i }).collect();
+                s.set_row(e, &row)?;
+                s.mark_dirty_around(e);
+            }
+            s.note(copy, LineageKind::Created);
+            Ok(copy)
+        })
+    }
+
+    fn unmerge_edge(&mut self, edge: EntityId, faces: &[EntityId]) -> Result<EntityId, TopoError> {
+        self.atomic(|s| {
+            s.live_slot(edge, Dim::Edge)?;
+            if faces.is_empty() {
+                return Err(TopoError::InvalidParameter("unmerge_edge needs faces"));
+            }
+            let mut sorted = faces.to_vec();
+            sorted.sort();
+            if sorted.windows(2).any(|w| w[0] == w[1]) {
+                return Err(TopoError::InvalidParameter("a face is listed twice"));
+            }
+            for &f in &sorted {
+                s.live_slot(f, Dim::Face)?;
+                if !s.row(f).iter().any(|i| i.cell == edge && i.ring != Incidence::EMBEDDED) {
+                    return Err(TopoError::InvalidIncidence { parent: f, child: edge });
+                }
+            }
+            let carrier = s.carrier(edge).clone();
+            let row = s.row(edge).to_vec();
+            let copy = s.alloc(Dim::Edge, carrier)?;
+            s.set_row(copy, &row)?;
+            s.inherit(edge, copy);
+            for &f in &sorted {
+                let old = s.row(f).to_vec();
+                for i in old.iter().filter(|i| i.cell == edge && i.ring != Incidence::EMBEDDED) {
+                    s.move_pcurve(CoedgeKey { face: f, edge, side: i.side }, CoedgeKey { face: f, edge: copy, side: i.side });
+                }
+                let mut new: Row = old.iter().map(|i| if i.cell == edge && i.ring != Incidence::EMBEDDED { Incidence { cell: copy, ..*i } } else { *i }).collect();
+                Self::normalize(Dim::Face, &mut new);
+                s.set_row(f, &new)?;
+            }
+            s.mark_dirty_around(edge);
+            s.mark_dirty_around(copy);
+            s.note(copy, LineageKind::Created);
+            Ok(copy)
+        })
+    }
+
+    fn unmerge_face(&mut self, face: EntityId, side: Side) -> Result<EntityId, TopoError> {
+        self.atomic(|s| {
+            let op = s.ensure_open()?;
+            s.live_slot(face, Dim::Face)?;
+            if side == Side::Both {
+                return Err(TopoError::InvalidParameter("unmerge_face takes Left or Right"));
+            }
+            let uses: Vec<Incidence> = s.up(face).iter().copied().filter(|i| Dim::of_real_kind(i.cell.kind()) == Some(Dim::Volume)).collect();
+            if uses.iter().any(|i| i.side == Side::Both) {
+                return Err(TopoError::Unsupported("unmerge_face of a baffle"));
+            }
+            let Some(u) = uses.iter().find(|i| i.side == side).copied() else {
+                return Err(TopoError::InvalidParameter("no volume uses that side of the face"));
+            };
+            let carrier = s.carrier(face).clone();
+            let loops: Row = s.row(face).iter().copied().filter(|i| i.ring != Incidence::EMBEDDED).collect();
+            let new = s.alloc(Dim::Face, carrier)?;
+            s.set_row(new, &loops)?;
+            s.inherit(face, new);
+            for i in &loops {
+                let k = CoedgeKey { face, edge: i.cell, side: i.side };
+                if let Some(p) = s.pcurves.get(&k).cloned() {
+                    s.set_pcurve_raw(CoedgeKey { face: new, ..k }, Some(p));
+                }
+            }
+            let mut vrow: Row = s.row(u.cell).iter().map(|i| if i.cell == face && i.side == side && i.ring == u.ring { Incidence { cell: new, ..*i } } else { *i }).collect();
+            Self::normalize(Dim::Volume, &mut vrow);
+            s.set_row(u.cell, &vrow)?;
+            // The merge record no longer describes this face.
+            let stale: Vec<FacePair> = s.coincident_faces(face).iter().copied().filter(|p| p.status == Coincidence::Merged && p.other(face).is_some_and(|o| s.state(o) != Some(EntityState::Live))).collect();
+            for p in stale {
+                s.del_pair(p.a, p.b);
+            }
+            s.put_pair(FacePair { a: face.min(new), b: face.max(new), status: Coincidence::ImprintedNotMerged, op });
+            s.note(face.min(new), LineageKind::Modified(ModKind::Coincidence));
+            s.mark_dirty_around(face);
+            s.mark_dirty_around(new);
+            s.note(new, LineageKind::Created);
+            Ok(new)
+        })
+    }
+
+    fn split_degenerate_edge(&mut self, edge: EntityId, param: f64) -> Result<[EntityId; 2], TopoError> {
+        self.atomic(|s| {
+            let op = s.ensure_open()?;
+            s.live_slot(edge, Dim::Edge)?;
+            if !s.flags(edge).contains(CellFlags::DEGENERATE) {
+                return Err(TopoError::InvalidParameter("not a degenerate edge: use split_edge"));
+            }
+            let (v, w) = s.edge_ends_raw(edge).ok_or(TopoError::WrongDim { id: edge, expected: Dim::Edge })?;
+            if v != w {
+                return Err(TopoError::InvalidParameter("a degenerate edge is closed"));
+            }
+            if !param.is_finite() {
+                return Err(TopoError::InvalidParameter("non-finite split parameter"));
+            }
+            let mut checked = false;
+            let (c1, c2) = match s.carrier(edge).clone() {
+                Carrier::Curve(c) => {
+                    if !(super::lt(c.range.lo, param) && super::lt(param, c.range.hi)) {
+                        return Err(TopoError::InvalidParameter("split parameter outside edge range"));
+                    }
+                    checked = true;
+                    let (lo, hi) = (Interval::new(c.range.lo, param), Interval::new(param, c.range.hi));
+                    let (r1, r2) = if c.sense == Sense::Forward { (lo, hi) } else { (hi, lo) };
+                    (Carrier::Curve(CurveCarrier { range: r1, ..c }), Carrier::Curve(CurveCarrier { range: r2, ..c }))
+                }
+                other => (other.clone(), other),
+            };
+            // Split every pole pcurve at `param` (its parameter is the edge parameter).
+            let uses: Vec<Incidence> = s.up(edge).iter().copied().filter(|u| Dim::of_real_kind(u.cell.kind()) == Some(Dim::Face)).collect();
+            let mut halves: Vec<(CoedgeKey, PCurve, PCurve)> = Vec::new();
+            for u in &uses {
+                let k = CoedgeKey { face: u.cell, edge, side: u.side };
+                let Some(p) = s.pcurves.get(&k) else { continue };
+                let PCurve::Line2(l) = p else { return Err(TopoError::Unsupported("split of a non-Line2 pole pcurve")) };
+                if !(super::lt(l.range.lo, param) && super::lt(param, l.range.hi)) {
+                    return Err(TopoError::InvalidParameter("split parameter outside a pole pcurve range"));
+                }
+                checked = true;
+                let a = PCurve::Line2(sm_geom_api::Line2 { range: Interval::new(l.range.lo, param), ..*l });
+                let b = PCurve::Line2(sm_geom_api::Line2 { range: Interval::new(param, l.range.hi), ..*l });
+                halves.push((k, a, b));
+            }
+            if !checked {
+                return Err(TopoError::InvalidParameter("nothing to split at the parameter: the edge has no curve and no pcurve"));
+            }
+            let e1 = s.alloc(Dim::Edge, c1)?;
+            let e2 = s.alloc(Dim::Edge, c2)?;
+            s.set_row(e1, &[Incidence::new(v, Side::Both, 0)])?;
+            s.set_row(e2, &[Incidence::new(v, Side::Both, 0)])?;
+            s.inherit(edge, e1);
+            s.inherit(edge, e2);
+            for (k, a, b) in halves {
+                s.set_pcurve_raw(k, None);
+                s.set_pcurve_raw(CoedgeKey { edge: e1, ..k }, Some(a));
+                s.set_pcurve_raw(CoedgeKey { edge: e2, ..k }, Some(b));
+            }
+            s.replace_in_parents(edge, |e| match e.side {
+                Side::Right => smallvec![Incidence { cell: e2, ..*e }, Incidence { cell: e1, ..*e }],
+                _ => smallvec![Incidence { cell: e1, ..*e }, Incidence { cell: e2, ..*e }],
+            })?;
+            s.retire(edge, EntityState::Split(op))?;
+            s.note(edge, LineageKind::Split { children: smallvec![e1, e2] });
+            Ok([e1, e2])
+        })
+    }
+
+    fn scale_tolerances(&mut self, cells: &[EntityId], factor: f64) -> Result<(), TopoError> {
+        self.atomic(|s| {
+            if !(factor.is_finite() && factor > 0.0) {
+                return Err(TopoError::InvalidParameter("scale factor must be finite and positive"));
+            }
+            let mut ids = cells.to_vec();
+            ids.sort();
+            ids.dedup();
+            for &c in &ids {
+                s.live_any(c)?;
+            }
+            for c in ids {
+                let Some(t) = s.tol_override.get(&c).copied() else { continue };
+                let scaled = (t * factor).min(s.tol.linear_max);
+                let new = if scaled <= s.tol.linear { None } else { Some(scaled) };
+                if new != Some(t) {
+                    s.set_tol_raw(c, new);
+                    s.note(c, LineageKind::Modified(ModKind::Tolerance));
+                }
+            }
+            Ok(())
         })
     }
 

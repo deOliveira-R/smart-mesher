@@ -39,7 +39,7 @@ pub use geometry::{
     FAN_VERTEX_MEAN_V1, FaceGeometry, cell_volume, cell_volume_centroid, compute_geometry_cache,
     face_apex, face_area_vector, face_centroid, face_geometry,
 };
-pub use hierarchy::{CatalogEdit, LevelMap, MeshCatalog};
+pub use hierarchy::{CatalogEdit, ExtrusionFaceRole, ExtrusionMap, LevelMap, MeshCatalog};
 pub use highorder::{
     Basis, CellGeometry, FaceCurve, HighOrderCell, NodeRef, NodeSlot, face_node_count, node_count,
     node_layout,

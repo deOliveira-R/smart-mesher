@@ -81,6 +81,14 @@ fn frame_values(fr: &Frame, f: &mut impl FnMut(ShapeValue)) {
     }
 }
 
+/// Bit set in a NURBS degree value when that direction is periodic: periodic data hashes apart
+/// from non-periodic data with the same numbers, and non-periodic hashes are unchanged.
+const PERIODIC_DEGREE_FLAG: u64 = 1 << 32;
+
+fn degree_value(degree: usize, periodic: bool) -> ShapeValue {
+    ShapeValue::Int(degree as u64 | if periodic { PERIODIC_DEGREE_FLAG } else { 0 })
+}
+
 fn points_values(pts: &[sm_core::Point3], f: &mut impl FnMut(ShapeValue)) {
     f(ShapeValue::Int(pts.len() as u64));
     for p in pts {
@@ -175,7 +183,7 @@ impl CurveDef {
             }
             Self::Nurbs(n) => {
                 f(ShapeValue::Int(4));
-                f(ShapeValue::Int(n.degree as u64));
+                f(degree_value(n.degree, n.periodic));
                 floats_values(&n.knots, &mut f);
                 points_values(&n.control, &mut f);
                 weights_values(&n.weights, &mut f);
@@ -244,8 +252,8 @@ impl SurfaceDef {
             }
             Self::Nurbs(n) => {
                 f(ShapeValue::Int(6));
-                f(ShapeValue::Int(n.degree_u as u64));
-                f(ShapeValue::Int(n.degree_v as u64));
+                f(degree_value(n.degree_u, n.periodic[0]));
+                f(degree_value(n.degree_v, n.periodic[1]));
                 f(ShapeValue::Int(n.nu as u64));
                 f(ShapeValue::Int(n.nv as u64));
                 floats_values(&n.knots_u, &mut f);
@@ -545,10 +553,10 @@ mod tests {
         let c = s.add_curve(CurveDef::Line(Line::new(Point3::default(), Vector3::new(1.0, 0.0, 0.0)).unwrap())).unwrap();
         assert!(s.curve(c).is_some());
         assert!(s.add_curve(CurveDef::Circle(Circle { frame: Frame::at(Point3::default()), radius: -1.0 })).is_err());
-        let n = NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::default(), Point3::new(1.0, 0.0, 0.0)], weights: None };
+        let n = NurbsCurve { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Point3::default(), Point3::new(1.0, 0.0, 0.0)], weights: None, periodic: false };
         let nc = s.add_curve(CurveDef::Nurbs(n)).unwrap();
         assert!((s.curve(nc).unwrap().eval(0.5) - Point3::new(0.5, 0.0, 0.0)).norm() < 1e-14, "NURBS is evaluable through the store");
-        let bad = NurbsCurve { degree: 1, knots: vec![0.0, 1.0], control: vec![Point3::default(), Point3::default()], weights: None };
+        let bad = NurbsCurve { degree: 1, knots: vec![0.0, 1.0], control: vec![Point3::default(), Point3::default()], weights: None, periodic: false };
         assert!(s.add_curve(CurveDef::Nurbs(bad)).is_err());
         // Replace and truncate.
         let old = s.replace_curve(c, CurveDef::Line(Line::new(Point3::default(), Vector3::new(0.0, 1.0, 0.0)).unwrap())).unwrap();

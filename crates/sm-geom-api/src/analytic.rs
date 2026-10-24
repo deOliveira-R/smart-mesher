@@ -135,9 +135,15 @@ impl ParametricCurve for Ellipse {
             d2: comb2(-self.a * c, f.x, -self.b * s, f.y),
         }
     }
-    /// Not provided (needs a quartic/Newton solve); `sm-geom` supplies a robust version.
-    fn project(&self, _p: Point3, _hint: Option<f64>) -> Result<CurveProjection, GeomError> {
-        Err(GeomError::Unsupported("ellipse projection"))
+    /// Exact closest point: the closest point of the ellipse to the query's projection on its
+    /// plane (Eberly's robust bisection, shared with [`crate::EllipticCylinder`]). For a query
+    /// on the centre normal of a non-circular ellipse the two minor-axis ends tie; the one at
+    /// positive-side one is returned (a circle returns `t = 0`).
+    fn project(&self, p: Point3, _hint: Option<f64>) -> Result<CurveProjection, GeomError> {
+        let l = self.frame.to_local(p);
+        let t = crate::elliptic::ellipse_closest_angle(self.a, self.b, l.x, l.y);
+        let point = self.eval(t);
+        Ok(CurveProjection { t, point, distance: (p - point).norm() })
     }
 }
 
@@ -532,7 +538,8 @@ mod tests {
         let e = Ellipse::new(world(), 2.0, 1.0).unwrap();
         assert!((e.length(Interval::new(0.0, TAU), 1e-9).unwrap() - 9.688_448_220_547_672).abs() < 1e-8);
         assert!(e.length(Interval::new(1.0, 0.0), 1e-9).is_err() && e.length(Interval::REAL, 1e-9).is_err());
-        assert!(e.project(Point3::default(), None).is_err());
+        // Centre query: the minor-axis ends tie at distance b.
+        assert!((e.project(Point3::default(), None).unwrap().distance - 1.0).abs() < 1e-12);
     }
 
     #[test]

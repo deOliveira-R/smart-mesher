@@ -28,7 +28,7 @@ use crate::problem::{
 use crate::schedule::{ScheduleInput, schedule};
 use crate::scheme::{Applicability, IntervalCtx, MeshInput, PlanCtx};
 use crate::sizing::{SizeField, field_for};
-use crate::target::{GroupId, SchemeDim, Target, TransformId, piece_of};
+use crate::target::{GroupId, Job, SchemeDim, Target, TransformId, piece_of};
 use crate::vertex::{FaceLayout, VertexRule, VertexType};
 use sm_core::{EntityId, EntityKind, Transform};
 use sm_model_api::{Deck, FaceKindView, PieceRef, PieceShape};
@@ -44,6 +44,61 @@ pub(crate) struct Region {
     pub faces: Vec<EntityId>,
     pub edges: Vec<EntityId>,
     pub vertices: Vec<EntityId>,
+}
+
+impl Region {
+    /// Is `t` a target of the region (sorted tables, binary search)?
+    pub(crate) fn contains(&self, t: Target) -> bool {
+        match t {
+            Target::Curve(e) => self.edges.binary_search(&e).is_ok(),
+            Target::Surface(f) => self.faces.binary_search(&f).is_ok(),
+            Target::Volume(v) => self.volumes.binary_search(&v).is_ok(),
+            Target::Group(g) => self.groups.iter().any(|(id, _)| *id == g),
+        }
+    }
+}
+
+/// The strict sub-entity targets of `t` inside the region: edges (boundary and embedded) of a
+/// face; faces, their edges and embedded edges of a piece or of every member of a group.
+fn children_in(input: &MeshInput<'_>, region: &Region, t: Target) -> Result<BTreeSet<Target>> {
+    let mut out = BTreeSet::new();
+    // Boundary edges and embedded (wire) edges of a face are its curve children.
+    let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
+        out.insert(Target::Surface(f));
+        for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+            out.insert(Target::Curve(e));
+        }
+    };
+    let add_embedded = |v: EntityId, out: &mut BTreeSet<Target>| {
+        for e in input.embedded_edges(v) {
+            out.insert(Target::Curve(e));
+        }
+    };
+    let add_piece = |v: EntityId, out: &mut BTreeSet<Target>| {
+        add_embedded(v, out);
+        for f in region.vol_faces.get(&v).map(Vec::as_slice).unwrap_or(&[]) {
+            add_face(*f, out);
+        }
+    };
+    match t {
+        Target::Curve(_) => {}
+        Target::Surface(f) => {
+            for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+                out.insert(Target::Curve(e));
+            }
+        }
+        Target::Volume(v) => add_piece(v, &mut out),
+        Target::Group(g) => {
+            for (id, members) in &region.groups {
+                if *id == g {
+                    for m in members {
+                        add_piece(*m, &mut out);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
@@ -361,7 +416,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             .iter()
             .map(|t| (t.target, t.clone()))
             .collect();
-        let (footprints, waves) = schedule(&ScheduleInput {
+        let scheduled = schedule(&ScheduleInput {
             input: self.input,
             plans: &plans,
             problem: &self.p,
@@ -369,7 +424,11 @@ impl<'a, 'r> Planner<'a, 'r> {
             transforms: &transforms,
             groups: &groups,
             grouped: &self.region.grouped,
-        })?;
+        });
+        let (footprints, waves) = match scheduled {
+            Err(SchemeError::Schedule { jobs, constraints, reason }) => return Err(self.blame_cycle(jobs, constraints, reason)),
+            other => other?,
+        };
         Ok(Plan {
             problem: self.p,
             intervals,
@@ -394,6 +453,43 @@ impl<'a, 'r> Planner<'a, 'r> {
             inf.blame = self.pick_blame(&inf.constraints);
         }
         e
+    }
+
+    /// A schedule error stays a schedule error unless it is a dependency cycle through a
+    /// scheme-origin `Precedes` (a scheme's [`Requirements::reads`]): that becomes an
+    /// [`Infeasible`] blaming the reading `(target, scheme)` (the later such constraint, if the
+    /// scheme is blameable), so the driver rejects it and re-plans.
+    fn blame_cycle(&self, jobs: Vec<Job>, constraints: Vec<ConstraintId>, reason: String) -> SchemeError {
+        let blame = (reason == "dependency cycle")
+            .then(|| {
+                constraints.iter().rev().find_map(|id| {
+                    let is_read = self.p.constraints.iter().any(|r| r.id == *id && matches!(r.item, MeshConstraint::Precedes { .. }));
+                    match self.p.record_origin(*id)? {
+                        Origin::Scheme { scheme, target }
+                            if is_read && scheme.as_str() != SchemeName::COPY && !self.hard.contains(target) && !self.rej.0.contains_key(&(*target, scheme.clone())) =>
+                        {
+                            Some((*target, scheme.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+            })
+            .flatten();
+        match blame {
+            Some(b) => {
+                let mut entities: Vec<EntityId> = jobs
+                    .iter()
+                    .filter_map(|j| match j {
+                        Job::Generate(t) => t.entity(),
+                        Job::Transform(_) => None,
+                    })
+                    .collect();
+                entities.sort_unstable();
+                entities.dedup();
+                Infeasible { reason: "dependency cycle through a scheme read".into(), constraints, entities, blame: Some(b) }.into()
+            }
+            None => SchemeError::Schedule { jobs, constraints, reason },
+        }
     }
 
     /// Among the involved scheme-origin constraints whose selection is not a hard intent, the
@@ -1435,58 +1531,7 @@ impl<'a, 'r> Planner<'a, 'r> {
 
     /// The strict sub-entities of `t` a requirement may be about.
     fn children_of(&self, t: Target) -> Result<BTreeSet<Target>> {
-        let mut out = BTreeSet::new();
-        // Boundary edges and embedded (wire) edges of a face are its curve children.
-        let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
-            out.insert(Target::Surface(f));
-            for e in self.input.face_edges(f).into_iter().chain(self.input.embedded_edges(f)) {
-                out.insert(Target::Curve(e));
-            }
-        };
-        let add_embedded = |v: EntityId, out: &mut BTreeSet<Target>| {
-            for e in self.input.embedded_edges(v) {
-                out.insert(Target::Curve(e));
-            }
-        };
-        match t {
-            Target::Curve(_) => {}
-            Target::Surface(f) => {
-                for e in self.input.face_edges(f).into_iter().chain(self.input.embedded_edges(f)) {
-                    out.insert(Target::Curve(e));
-                }
-            }
-            Target::Volume(v) => {
-                add_embedded(v, &mut out);
-                for f in self
-                    .region
-                    .vol_faces
-                    .get(&v)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
-                    add_face(*f, &mut out);
-                }
-            }
-            Target::Group(g) => {
-                for (id, members) in &self.region.groups {
-                    if *id == g {
-                        for m in members {
-                            add_embedded(*m, &mut out);
-                            for f in self
-                                .region
-                                .vol_faces
-                                .get(m)
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[])
-                            {
-                                add_face(*f, &mut out);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(out)
+        children_in(self.input, &self.region, t)
     }
 
     fn require(&mut self, tp: &mut TargetPlan) -> Result<()> {
@@ -1498,9 +1543,14 @@ impl<'a, 'r> Planner<'a, 'r> {
                 name: tp.scheme.clone(),
                 target: tp.target,
             })?;
+        let (input, region) = (self.input, &self.region);
+        let in_region = |t: Target| region.contains(t);
+        let within = |parent: Target, child: Target| children_in(input, region, parent).is_ok_and(|c| c.contains(&child));
         let scope = Scope {
             children: self.children_of(tp.target)?,
             resolved: &self.plans,
+            in_region: &in_region,
+            within: &within,
         };
         let n_claims = self.p.claims.len();
         let mut req = Requirements::new(&mut self.p, &tp.scheme, tp.target, &scope);

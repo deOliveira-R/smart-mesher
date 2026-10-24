@@ -5,7 +5,7 @@ use crate::boundary::{BoundaryKind, BoundaryRow, FaceBoundary, Deck, DeckSide, F
 use crate::color::{ColorRow, Domain, GroupRow};
 use crate::decomposition::{CutCells, CutGeometry, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitRec};
 use crate::detect::Verification;
-use crate::instancing::{ColorMap, Fill, HexOrient, InstanceRow, Instancing, Lattice, Layout, PathOverride, PathStep, Prototype, Slot};
+use crate::instancing::{Cluster, ClusterMember, ColorMap, Fill, HexOrient, InstanceRow, Instancing, Lattice, Layout, PathOverride, PathStep, Prototype, Slot};
 use crate::model::Model;
 use crate::symmetry::{CutSpec, Keep, Provenance, Symmetry};
 use crate::xf::{Axis, Plane};
@@ -179,6 +179,10 @@ impl W<'_, '_> {
                 self.id(l);
             }
             Fill::Void => self.int(3),
+            Fill::Cluster(c) => {
+                self.int(4);
+                self.id(c);
+            }
         }
     }
     fn color_map(&mut self, c: &ColorMap) {
@@ -348,7 +352,7 @@ impl Model {
         }
         // 11. Instancing.
         let ins = &self.instancing;
-        let Instancing { prototypes: _, lattices: _, instances: _, overrides: _ } = ins;
+        let Instancing { prototypes: _, lattices: _, instances: _, overrides: _, clusters: _ } = ins;
         w.int(11);
         w.int(ins.prototypes.len() as u64);
         for (id, p) in &ins.prototypes {
@@ -417,9 +421,32 @@ impl Model {
                             w.int(v as i64 as u64);
                         }
                     }
+                    PathStep::Member { cluster, ix } => {
+                        w.int(3);
+                        w.id(cluster);
+                        w.int(u64::from(ix));
+                    }
                 }
             }
             w.color_map(&o.recolor);
+        }
+        // 11b. Clusters, only when present (tag 13 before the decomposition's 12), so models
+        // without clusters keep their words.
+        if !ins.clusters.is_empty() {
+            w.int(13);
+            w.int(ins.clusters.len() as u64);
+            for (id, c) in &ins.clusters {
+                w.id(*id);
+                let Cluster { members: _ } = c;
+                w.int(c.members.len() as u64);
+                for m in &c.members {
+                    let ClusterMember { fill: _, at: _, recolor: _, clip: _ } = m;
+                    w.fill(m.fill);
+                    w.transform(&m.at);
+                    w.color_map(&m.recolor);
+                    w.opt_id(m.clip);
+                }
+            }
         }
         // 12. Decomposition (every serialized field).
         let d = &self.decomposition;

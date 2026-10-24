@@ -324,7 +324,7 @@ pub enum TimelineError {
     Upgraded {
         /// Node being replayed.
         node: Hash256,
-        /// `Check::versions` keys (`layer:<name>`, `op:<name>`) whose recorded version differs
+        /// `Check::versions` keys (`layer:<name>`, `op:<name>`, `service:<name>`) whose recorded version differs
         /// from the current one, sorted.
         changed: Vec<String>,
     },

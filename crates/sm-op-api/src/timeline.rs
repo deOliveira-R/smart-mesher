@@ -77,7 +77,8 @@ pub struct Check {
     pub layers: BTreeMap<String, Hash256>,
     /// Implementation provenance: `layer:<name>` to the layer's `LayerType::DIGEST_VERSION`
     /// (for every layer in [`layers`](Self::layers)) and `op:<name>` to the op's
-    /// `TypedOp::IMPL_VERSION` (the node's op and, for `core.batch`, every nested op). Not
+    /// `TypedOp::IMPL_VERSION` (the node's op and, for `core.batch`, every nested op), plus
+    /// `service:<name>` for each versioned injected service ([`Check::of_with`]). Not
     /// part of the node hash. When replay mismatches and one of these differs from the current
     /// registry, the error is [`Upgraded`](TimelineError::Upgraded) rather than `Diverged`.
     /// May be empty (older nodes, hand-built checks).
@@ -116,6 +117,24 @@ impl Check {
             layers,
             versions,
         }
+    }
+
+    /// Like [`of`](Self::of), also recording every versioned service of `services`
+    /// (`Services::with_versioned`) as `service:<name>` -> version. This is what `Session`
+    /// records, so a replay mismatch after an injected service changed version reports
+    /// [`Upgraded`](TimelineError::Upgraded). Nodes recorded without these keys are unaffected
+    /// (`changed_versions` ignores keys present on one side only).
+    pub fn of_with(
+        registry: &crate::Registry,
+        services: &crate::Services,
+        state: &crate::state::State,
+        op: &OpRecord,
+    ) -> Self {
+        let mut c = Self::of(registry, state, op);
+        for (name, v) in services.versions() {
+            c.versions.insert(format!("service:{name}"), v);
+        }
+        c
     }
 
     /// Keys whose recorded version (in `self`) differs from the version in `current`, sorted.

@@ -237,13 +237,19 @@ impl Model {
             minted.push(*k);
         }
         let ins = &self.instancing;
-        for (ks, kind) in [(ins.prototypes.keys().collect::<Vec<_>>(), EntityKind::Prototype), (ins.lattices.keys().collect(), EntityKind::Lattice), (ins.instances.keys().collect(), EntityKind::Instance), (self.decomposition.cells.keys().collect(), EntityKind::PartitionCell)] {
+        for (ks, kind) in [(ins.prototypes.keys().collect::<Vec<_>>(), EntityKind::Prototype), (ins.lattices.keys().collect(), EntityKind::Lattice), (ins.instances.keys().collect(), EntityKind::Instance), (ins.clusters.keys().collect(), EntityKind::Cluster), (self.decomposition.cells.keys().collect(), EntityKind::PartitionCell)] {
             for k in ks {
                 if k.kind() != kind {
                     return bad(format!("{k} is stored under the wrong kind"));
                 }
                 minted.push(*k);
             }
+        }
+        if let Some(k) = self.volume_color.keys().find(|k| k.kind() != EntityKind::TopoVolume) {
+            return bad(format!("volume color on {k}, which is not a volume"));
+        }
+        if let Some(k) = self.face_color.keys().find(|k| crate::color::expect_face_kind(**k).is_err()) {
+            return bad(format!("face color on {k}, which is not a TopoFace or PartitionFace"));
         }
         if let Some(k) = minted.iter().find(|k| self.ids.peek(k.kind()) <= k.serial()) {
             return bad(format!("the id allocator would reuse {k}"));
@@ -263,6 +269,14 @@ impl Model {
             }
             if let Some(ix) = l.slots.keys().find(|ix| !l.layout.contains(**ix)) {
                 return bad(format!("slot {ix:?} is outside its layout"));
+            }
+        }
+        for c in ins.clusters.values() {
+            if c.members.len() > crate::instancing::MAX_FLAT_ENTRIES {
+                return bad(format!("a cluster has more than {} members", crate::instancing::MAX_FLAT_ENTRIES));
+            }
+            for mem in &c.members {
+                Self::check_clip(mem.clip)?;
             }
         }
         if let Some(l) = ins.find_cycle() {
@@ -350,6 +364,12 @@ impl Model {
             for s in l.slots.values_mut() {
                 s.recolor = r.color_map(&s.recolor);
                 s.clip = clip(s.clip);
+            }
+        }
+        for c in next.instancing.clusters.values_mut() {
+            for mem in &mut c.members {
+                mem.recolor = r.color_map(&mem.recolor);
+                mem.clip = clip(mem.clip);
             }
         }
         for o in &mut next.instancing.overrides {

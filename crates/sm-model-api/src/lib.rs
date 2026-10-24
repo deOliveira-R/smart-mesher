@@ -46,7 +46,7 @@ pub use color::{ColorRow, Domain, GroupEdit, GroupRow, group_member_kind_ok};
 pub use decomposition::{CutCells, CutGeometry, CutId, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitSides};
 pub use detect::{Candidate, CandidateKind, ColorInvariant, DetectionResult, Stage, Verification, detect_symmetry, verify_transform};
 pub use error::{ModelError, Result};
-pub use instancing::{ColorMap, FlatClip, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};
+pub use instancing::{Cluster, ClusterMember, ColorMap, FlatClip, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};
 pub use model::{IdAlloc, Model};
 pub use symmetry::{CutPlan, CutSpec, Keep, Provenance, Symmetry, plan_cut, point_group};
 pub use unfold::{CopyRef, Glue, UnfoldSpec, UnfoldedModel, unfold};

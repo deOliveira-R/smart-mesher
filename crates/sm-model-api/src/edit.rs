@@ -72,10 +72,15 @@ impl Model {
         self.groups.values().find(|g| g.members.contains(&id)).map(|g| g.id)
     }
 
-    /// Every fill of the instancing tables (instances, lattice outers and slots).
+    /// Every fill of the instancing tables (instances, lattice outers and slots, cluster
+    /// members).
     fn fills(&self) -> impl Iterator<Item = Fill> + '_ {
         let ins = &self.instancing;
-        ins.instances.values().map(|i| i.of).chain(ins.lattices.values().flat_map(|l| l.slots.values().map(|s| s.fill).chain([l.outer])))
+        ins.instances
+            .values()
+            .map(|i| i.of)
+            .chain(ins.lattices.values().flat_map(|l| l.slots.values().map(|s| s.fill).chain([l.outer])))
+            .chain(ins.clusters.values().flat_map(|c| c.members.iter().map(|m| m.fill)))
     }
 
     /// Change the kind of boundary record `b`. Deck parameters are validated. Refused
@@ -171,6 +176,21 @@ impl Model {
             return Err(ModelError::InUse(id));
         }
         self.instancing.lattices.remove(&id);
+        Ok(())
+    }
+
+    /// Remove cluster `id`. Refused with [`ModelError::InUse`] while any fill, group or path
+    /// override (a member step of this cluster) refers to it.
+    pub fn remove_cluster(&mut self, id: EntityId) -> Result<()> {
+        expect_kind(id, EntityKind::Cluster)?;
+        if !self.instancing.clusters.contains_key(&id) {
+            return Err(ModelError::Unknown(id));
+        }
+        let in_override = self.instancing.overrides.iter().any(|o| o.prefix.iter().any(|s| matches!(s, PathStep::Member { cluster, .. } if *cluster == id)));
+        if in_override || self.fills().any(|f| f == Fill::Cluster(id)) || self.group_referring(id).is_some() {
+            return Err(ModelError::InUse(id));
+        }
+        self.instancing.clusters.remove(&id);
         Ok(())
     }
 

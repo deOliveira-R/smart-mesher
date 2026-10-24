@@ -21,7 +21,7 @@ fn positive(v: f64, what: &'static str) -> Result<f64, GeomError> {
 
 /// Closest point on the ellipse `(x/a)^2 + (y/b)^2 = 1` to `(px, py)`, as the angle `t` of
 /// `(a cos t, b sin t)` (bisection on the Lagrange root, Eberly's robust method).
-fn ellipse_closest_angle(a: f64, b: f64, px: f64, py: f64) -> f64 {
+pub(crate) fn ellipse_closest_angle(a: f64, b: f64, px: f64, py: f64) -> f64 {
     // Work in the first quadrant with e0 >= e1.
     let swap = b > a;
     let (e0, e1, y0, y1) = if swap { (b, a, py.abs(), px.abs()) } else { (a, b, px.abs(), py.abs()) };
@@ -183,9 +183,70 @@ impl ParametricSurface for EllipticCone {
         let de = comb2(-self.a * s, f.x, self.b * c, f.y);
         unit(de.cross(e * (sh / self.a) + f.z * ch)).ok_or(GeomError::Singular("elliptic cone normal"))
     }
-    /// Not provided (no closed form); `sm-geom` supplies an iterative version.
-    fn project(&self, _p: Point3, _hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
-        Err(GeomError::Unsupported("elliptic cone projection"))
+    /// Numeric closest point on the nappe (apex included). Each generator is the ray
+    /// `apex + s g(u)`, `s >= 0`, so the distance to it is closed form; the angle `u` is found by
+    /// dense sampling (refined with more samples for eccentric sections) and a safeguarded
+    /// golden-section refinement in the best sample's bracket, then the hint is tried too.
+    fn project(&self, p: Point3, hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
+        let l = self.frame.to_local(p);
+        let (sh, ch) = self.half_angle.sin_cos();
+        let av = self.apex_v();
+        let rel = Vector3::new(l.x, l.y, l.z - av * ch);
+        // Squared distance to generator `u`, and the clamped ray parameter (as `v - apex_v`).
+        let gen_dist = |u: f64| -> (f64, f64) {
+            let (s, c) = u.sin_cos();
+            let g = Vector3::new(c * sh, self.b * s * sh / self.a, ch);
+            let t = (rel.dot(g) / g.dot(g)).max(0.0);
+            { let d = rel - g * t; (d.dot(d), t) }
+        };
+        let ratio = (self.a / self.b).max(self.b / self.a);
+        let n = (64.0 * ratio.ceil()).min(4096.0) as usize;
+        let step = TAU / n as f64;
+        let (mut bu, mut bd) = (0.0, f64::INFINITY);
+        for i in 0..n {
+            let u = step * i as f64;
+            let d = gen_dist(u).0;
+            if d < bd {
+                (bu, bd) = (u, d);
+            }
+        }
+        // Golden section on [bu - step, bu + step] (keeps the best value seen).
+        let g = 0.5 * (5f64.sqrt() - 1.0);
+        let (mut lo, mut hi) = (bu - step, bu + step);
+        let (mut x1, mut x2) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        let (mut f1, mut f2) = (gen_dist(x1).0, gen_dist(x2).0);
+        for _ in 0..100 {
+            if f1 < f2 {
+                hi = x2;
+                (x2, f2) = (x1, f1);
+                x1 = hi - g * (hi - lo);
+                f1 = gen_dist(x1).0;
+            } else {
+                lo = x1;
+                (x1, f1) = (x2, f2);
+                x2 = lo + g * (hi - lo);
+                f2 = gen_dist(x2).0;
+            }
+            if hi - lo <= 1e-15 * TAU {
+                break;
+            }
+        }
+        for (u, d) in [(x1, f1), (x2, f2)] {
+            if d < bd {
+                (bu, bd) = (u, d);
+            }
+        }
+        if let Some(h) = hint {
+            let d = gen_dist(h.u).0;
+            if d < bd {
+                bu = h.u;
+            }
+        }
+        let u = wrap_tau(bu);
+        let v = av + gen_dist(u).1;
+        let uv = Uv::new(u, v);
+        let point = self.eval(uv);
+        Ok(SurfaceProjection { uv, point, distance: (p - point).norm() })
     }
     /// The double cone `(x/a)^2 + (y/b)^2 - (1 + z tan h / a)^2` (negative inside), like
     /// [`crate::Cone`]'s.

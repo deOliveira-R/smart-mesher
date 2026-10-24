@@ -52,6 +52,11 @@ impl Engine {
         &self.registry
     }
 
+    /// The injected services.
+    pub fn services(&self) -> &Arc<Services> {
+        &self.services
+    }
+
     /// The derived cache shared with every state.
     pub fn cache(&self) -> &Arc<DerivedCache> {
         &self.cache

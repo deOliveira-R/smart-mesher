@@ -217,13 +217,15 @@ fn check_coloring(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
             s.add(IssueCode::LabelDuplicate, &[c.id], format!("label {} is used twice", c.label));
         }
     }
+    // A live cell may inherit its color from a hidden host (overlay pieces).
+    let inherited = crate::color::inherited_colors(&m.volume_color, t);
     for v in t.cells(Dim::Volume) {
-        if m.volume_color(*v).is_none() {
+        if m.volume_color(*v).is_none() && !inherited.contains_key(v) {
             s.add(IssueCode::ColoringNotPartition, &[*v], "volume has no color");
         }
     }
     for (v, col) in &m.volume_color {
-        if !alive(t, *v) {
+        if !alive(t, *v) && t.live_cover(*v).is_empty() {
             s.add(IssueCode::UnknownEntity, &[*v], "colored volume is not alive");
         }
         match m.color(*col) {
@@ -233,7 +235,7 @@ fn check_coloring(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         }
     }
     for (f, col) in &m.face_color {
-        if !alive(t, *f) {
+        if !alive(t, *f) && t.live_cover(*f).is_empty() {
             s.add(IssueCode::UnknownEntity, &[*f], "colored face is not alive");
         }
         match m.color(*col) {
@@ -245,6 +247,7 @@ fn check_coloring(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
 }
 
 fn check_faces(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
+    let inherited = crate::color::inherited_colors(&m.face_color, t);
     for f in t.cells(Dim::Face) {
         let class = t.face_class(*f);
         let fb = m.face_boundary(*f);
@@ -252,7 +255,7 @@ fn check_faces(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
             if fb.is_none() {
                 s.add(IssueCode::BoundaryFaceNoKind, &[*f], "boundary face needs a deck, response or interface kind");
             }
-            if m.face_color(*f).is_none() {
+            if m.face_color(*f).is_none() && !inherited.contains_key(f) {
                 s.add(IssueCode::BoundaryFaceUncolored, &[*f], "boundary face has no color (an error at export if the format needs one)");
             }
         }
@@ -568,6 +571,7 @@ fn check_instancing(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         crate::instancing::Fill::Void => true,
         crate::instancing::Fill::Prototype(p) => ins.prototypes.contains_key(&p),
         crate::instancing::Fill::Lattice(l) => ins.lattices.contains_key(&l),
+        crate::instancing::Fill::Cluster(c) => ins.clusters.contains_key(&c),
     };
     for (id, p) in &ins.prototypes {
         for v in &p.volumes {
@@ -597,6 +601,17 @@ fn check_instancing(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
         }
         if !fill_ok(l.outer) {
             s.add(IssueCode::UnknownEntity, &[*id], "lattice outer fill does not exist");
+        }
+    }
+    for (id, c) in &ins.clusters {
+        for (ix, mem) in c.members.iter().enumerate() {
+            if !fill_ok(mem.fill) {
+                s.add(IssueCode::UnknownEntity, &[*id], format!("cluster member {ix} fill does not exist"));
+            }
+            check_map(m, t, &mem.recolor, *id, s);
+            if let Some(cv) = mem.clip.filter(|cv| cv.kind() != EntityKind::TopoVolume || !alive(t, *cv)) {
+                s.add(IssueCode::UnknownEntity, &[*id, cv], format!("cluster member {ix} clip is not a live volume"));
+            }
         }
     }
     for o in &ins.overrides {

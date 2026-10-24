@@ -289,3 +289,42 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   identity words and changes the exact words.
 - **Groups through `live_cover`**: see section 4. `color.rs` no longer claims that closure
   works on hidden host members of an overlay; it maps them first.
+
+## 8. W0f gaps4
+
+- **Coloring iterators** (additive): `Model::volume_coloring()` / `face_coloring()` iterate
+  `(entity, color)` ascending by entity over the stored keys, live or not, so the hidden host
+  faces of an overlay can be enumerated without scanning `&dyn TopologyView`.
+- **Overlay-aware colors.** `color_faces` / `uncolor_faces` accept `PartitionFace` keys (and
+  `check_integrity` now checks that face-color keys are `TopoFace`/`PartitionFace` and
+  volume-color keys `TopoVolume`; `apply_lineage` carries partition keys unchanged, since host
+  lineage never names them). `Model::live_face_color(f, t)` / `live_volume_color(v, t)`: an own
+  color first, otherwise the color of the lowest stored non-live host whose `live_cover`
+  contains the cell (so an own color on a live overlay face overrides the inherited one).
+  `validate` accepts a colored key whose `live_cover` is non-empty, and runs the uncolored
+  boundary-face and volume-partition checks through an inherited-color index built once
+  (`color::inherited_colors`), so a split host no longer yields false `UnknownEntity`,
+  `BoundaryFaceUncolored` or `ColoringNotPartition`. No composite-face-colors ruling exists in
+  `decisions.md`, so this is the whole fix. Seen but out of scope: the decomposition checks
+  still report `UnknownEntity` ("decomposed volume is not alive") for a host volume realized
+  through the overlay.
+- **Clusters (breaking, before W1).** Irregular placements nested inside a fill (OpenMC/Serpent
+  universes, ir.md §5.2 "nestable", the CSG front end): TRISO in a pebble, pebbles in a core,
+  without billions of top-level rows. New row kind `Instancing::clusters: BTreeMap<EntityId,
+  Cluster>` (`serde(default)`), `Cluster { members: Vec<ClusterMember { fill, at: Transform,
+  recolor: ColorMap, clip: Option<EntityId> }> }`, `Fill::Cluster(EntityId)` and
+  `PathStep::Member { cluster, ix: u32 }`; `Fill` and `PathStep` are now `#[non_exhaustive]`.
+  Ids are a new kind `EntityKind::Cluster = 39` (sm-core; the model mints it). A member clip is
+  in the cluster frame (placed with the cluster's placement, like a slot clip with the lattice's).
+  `add_cluster` / `set_cluster` (checks fills, recolor maps, clip kinds, finite placements, at
+  most `MAX_FLAT_ENTRIES` members; `set_cluster` refuses a cycle) / `remove_cluster` (`InUse`
+  while a fill, group or a `Member` override step names it); `remove_prototype` /
+  `remove_lattice` see member fills. `flatten` walks members in index order (void members
+  skipped), a member is treated like a slot in the recolor order, and every slot/member visit
+  counts against `MAX_FLAT_ENTRIES` (void-only nesting cannot run away). `find_cycle` covers
+  lattices and clusters; `check_integrity` checks cluster keys, member clips and member counts;
+  `validate` checks member fills, recolor maps and clips; `apply_lineage` re-keys member recolor
+  maps and clips; group members may name clusters. `canonical_visit` emits clusters (tag 13,
+  after the overrides) only when there are any, and `Fill::Cluster` / `PathStep::Member` use the
+  new tags 4 / 3, so models without clusters keep their words. A rotated lattice slot is a
+  one-member cluster (no `Slot::at`).

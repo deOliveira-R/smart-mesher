@@ -10,7 +10,38 @@ use crate::error::{ModelError, Result, expect_kind};
 use crate::model::Model;
 use sm_core::{EntityId, EntityKind};
 use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A face key: `TopoFace` or an overlay `PartitionFace`.
+pub(crate) fn expect_face_kind(f: EntityId) -> Result<()> {
+    match f.kind() {
+        EntityKind::TopoFace | EntityKind::PartitionFace => Ok(()),
+        found => Err(ModelError::WrongKind { id: f, expected: EntityKind::TopoFace, found }),
+    }
+}
+
+/// Own color, else the color of the lowest non-live key whose `live_cover` contains `id`.
+fn live_color(table: &BTreeMap<EntityId, EntityId>, id: EntityId, t: &dyn TopologyView) -> Option<EntityId> {
+    if let Some(c) = table.get(&id) {
+        return Some(*c);
+    }
+    table.iter().find(|(k, _)| **k != id && !t.is_alive(**k) && t.live_cover(**k).contains(&id)).map(|(_, c)| *c)
+}
+
+/// Inverse of the hidden-host covers of a coloring table: live cell -> inherited color (lowest
+/// host id wins). Own colors are not included.
+pub(crate) fn inherited_colors(table: &BTreeMap<EntityId, EntityId>, t: &dyn TopologyView) -> BTreeMap<EntityId, EntityId> {
+    let mut out = BTreeMap::new();
+    for (k, c) in table {
+        if t.is_alive(*k) {
+            continue;
+        }
+        for x in t.live_cover(*k) {
+            out.entry(x).or_insert(*c);
+        }
+    }
+    out
+}
 
 /// What a color may be attached to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -115,11 +146,14 @@ impl Model {
         Ok(())
     }
 
-    /// Color `faces` with the face color `c`, replacing any previous color.
+    /// Color `faces` with the face color `c`, replacing any previous color. A face is a
+    /// `TopoFace` or an overlay `PartitionFace` (a cut or composite face of a decomposition); an
+    /// own color on a live overlay face overrides the color it inherits from a hidden host (see
+    /// [`Self::live_face_color`]).
     pub fn color_faces(&mut self, c: EntityId, faces: &[EntityId]) -> Result<()> {
         self.check_color(c, Domain::Face)?;
         for f in faces {
-            expect_kind(*f, EntityKind::TopoFace)?;
+            expect_face_kind(*f)?;
         }
         for f in faces {
             self.face_color.insert(*f, c);
@@ -127,7 +161,7 @@ impl Model {
         Ok(())
     }
 
-    /// Remove the color of `faces`.
+    /// Remove the color of `faces` (`TopoFace` or `PartitionFace` keys; others are ignored).
     pub fn uncolor_faces(&mut self, faces: &[EntityId]) {
         for f in faces {
             self.face_color.remove(f);
@@ -187,6 +221,34 @@ impl Model {
         self.face_color.iter().filter(|(_, x)| **x == c).map(|(f, _)| *f).collect()
     }
 
+    /// The whole volume coloring as `(volume, color)`, ascending by volume. Keys are stored ids,
+    /// live or not (on an overlay a colored host volume may be hidden; see
+    /// [`Self::live_volume_color`]).
+    pub fn volume_coloring(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
+        self.volume_color.iter().map(|(k, v)| (*k, *v))
+    }
+
+    /// The whole face coloring as `(face, color)`, ascending by face (stored keys, live or not:
+    /// this is how hidden host faces of an overlay are enumerated).
+    pub fn face_coloring(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
+        self.face_color.iter().map(|(k, v)| (*k, *v))
+    }
+
+    /// The color a live face `f` carries in `t`: its own color first, otherwise the color of a
+    /// stored (hidden) host face whose `live_cover` contains `f` (the lowest such host id). On a
+    /// plain complex this is [`Self::face_color`] for live faces. The fallback scans the face
+    /// coloring (`O(colored faces)`); `validate` builds the inverse index once instead.
+    pub fn live_face_color(&self, f: EntityId, t: &dyn TopologyView) -> Option<EntityId> {
+        live_color(&self.face_color, f, t)
+    }
+
+    /// The color a live volume (or overlay piece) `v` carries in `t`: its own color first,
+    /// otherwise the color of a stored host volume whose `live_cover` contains `v` (the lowest
+    /// such host id). Same cost note as [`Self::live_face_color`].
+    pub fn live_volume_color(&self, v: EntityId, t: &dyn TopologyView) -> Option<EntityId> {
+        live_color(&self.volume_color, v, t)
+    }
+
     /// Check one prospective member: allowed kind, and present when the model mints its kind.
     pub(crate) fn check_group_member(&self, m: EntityId) -> Result<()> {
         if !group_member_kind_ok(m) {
@@ -199,6 +261,7 @@ impl Model {
             EntityKind::Instance => self.instancing.instances.contains_key(&m),
             EntityKind::Prototype => self.instancing.prototypes.contains_key(&m),
             EntityKind::Lattice => self.instancing.lattices.contains_key(&m),
+            EntityKind::Cluster => self.instancing.clusters.contains_key(&m),
             EntityKind::PartitionCell => self.decomposition.cells.contains_key(&m),
             _ => true,
         };

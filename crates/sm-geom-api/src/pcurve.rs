@@ -89,7 +89,7 @@ impl PCurve {
                 }
             }
             Self::Nurbs2(n) => {
-                f(n.degree as f64);
+                f(if n.periodic { -(n.degree as f64) } else { n.degree as f64 }); // negative degree: periodic
                 n.knots.iter().for_each(|k| f(*k));
                 for q in &n.control {
                     f(q.u);
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(p.eval(1.5), Uv::new(2.0, 2.0));
         assert_eq!(p.d1(1.5), Uv::new(0.0, 4.0));
         assert_eq!(p.eval(9.0), Uv::new(2.0, 4.0));
-        let n = PCurve::Nurbs2(NurbsCurve2 { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Uv::new(0.0, 0.0), Uv::new(2.0, 4.0)], weights: None });
+        let n = PCurve::Nurbs2(NurbsCurve2 { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], control: vec![Uv::new(0.0, 0.0), Uv::new(2.0, 4.0)], weights: None, periodic: false });
         assert_eq!(n.range(), Interval::new(0.0, 1.0));
         let (a, d) = (n.eval(0.5), n.d1(0.5));
         assert!((a.u - 1.0).abs() < 1e-14 && (a.v - 2.0).abs() < 1e-14 && (d.u - 2.0).abs() < 1e-14 && (d.v - 4.0).abs() < 1e-14);

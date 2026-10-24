@@ -45,7 +45,7 @@ as amended by `docs/design/w0/decisions.md`.
   `Sync` progress scopes for scoped worker threads).
 - **Id authority** (W0f): exactly one layer mints each kind. The topology complex mints `Topo*`;
   the overlay mints `PartitionFace/Edge/Vertex`; the model mints `Color/Group/Boundary/Prototype/
-  Lattice/Instance/PartitionCell` (and `Symmetry`); the mesh mints `Mesh*` (including `MeshSet`,
+  Lattice/Instance/PartitionCell` (and `Symmetry`, `Cluster`); the mesh mints `Mesh*` (including `MeshSet`,
   `MeshInstance`). Every minting store starts at serial 1 and allocates densely, so an op that
   drives a store calls `ApplyCtx::adopt(&ids)` / `adopt_range(first, n)` / `adopt_as(role, &ids)`
   with what the store minted; each id must equal `State::peek_next(kind)` in order, otherwise
@@ -87,6 +87,20 @@ as amended by `docs/design/w0/decisions.md`.
   Strings in a stored sub-op are always escape-safe: a literal starting with `$` is stored as `$$...`,
   including in the concrete-id fallback (escaping runs first, references are restored after).
   The raw client record is never stored, so typed and JSON clients produce the same node hash.
+  (4) W0f gaps4: an array element `"$i.role[*]"` splices every id of that role in place, in
+  allocation order (an empty or absent role splices nothing); `[*]` anywhere else is
+  `OpError::Invalid`. Substitution records each spliced run (array path, start, ids), and
+  canonical restore folds each run back into its single reference string (rewrites are undone
+  in reverse substitution order, so index shifts never break a later path). If the canonical
+  array no longer holds the run, the concrete-id fallback applies (literals still escaped). The
+  bare `$i.role` stays the alias of `[0]`. The grammar is `batch::REF_PATTERN`
+  (`^\$[0-9]+\.[^\[\]]+(\[([0-9]+|\*)\])?$`, shared with the parser and pinned by a test);
+  `batch::ESCAPED_LITERAL_PATTERN` is `^\$\$`. (5) `Batch::concat(&[OpRecord])` flattens an undo
+  group into one batch: nested `core.batch` records are inlined in order and every `$i.`
+  reference (bare, `[k]`, `[*]`) is rebased by its batch's start offset (recursively, mapping
+  `$j.<k>.<role>` outputs of an inner batch to the inlined op); `$$` escapes are kept byte for
+  byte; other records are copied with their `$`-prefixed strings escaped (alone they were
+  literals). Applying `concat(rs)` gives the same `State::hash` as applying `rs` in order.
 - **Retire reactions**: `LayerType::references_any(&ids)` (default `true`) lets a layer say through
   `&self` that it holds none of the retired ids; such layers are neither copied-on-write nor listed
   in `Delta::touched_layers`. Override it for large layers. Known limit: `Delta::created` lists
@@ -97,6 +111,13 @@ as amended by `docs/design/w0/decisions.md`.
   `register_layer_with(factory)`, `register_migration(op, from, fn)` (op must exist, no duplicates),
   versioned decode with a v -> v+1 migration chain. `catalog()` returns a per-op `Result<OpInfo>`
   (schema title = op name, `tool_name()` mangles `.` to `__`, output schema = `Delta`).
+  `Registry::batch_schema()` (gaps4) is the typed `core.batch` schema, also returned by
+  `schema("core.batch")` and in `catalog()`: `ops.items` is a `oneOf` over the registered ops
+  (not `core.batch`) of `{name: const, version: const, params: {$ref: "#/$defs/<op>.params"}}`;
+  each op's params schema is stored once under `$defs` (its own defs as `<op>.<def>`), and inside
+  these batch-local defs every `EntityId` becomes `$defs/BatchEntityId` = `anyOf[EntityId
+  pattern, REF_PATTERN, ^\$\$]`. An op with a broken schema is omitted (its own catalog entry is
+  the error). Schemas are not hashed, so the node format is unchanged.
 
 ## Timeline
 
@@ -127,6 +148,12 @@ as amended by `docs/design/w0/decisions.md`.
   reports each as a warning and lists the nodes in `Session::take_rebaselined()` so sm-engine
   rewrites those files; `state_at_from_root` (`&self`) acts as `Warn`. Landed in W0f because
   `Check` is `deny_unknown_fields`.
+  Service provenance (gaps4): `Services::with_versioned(name, version, s)` registers a service
+  under a provenance name (last wins per name and per type; `with` on the same type drops the
+  entry); `Services::versions()` lists `(name, version)` in name order; `Engine::services()`.
+  `Check::of_with(registry, services, state, op)` adds `service:<name>` -> version, and Session
+  records and compares checks with it, so a replaced kernel or scheme registry reports
+  `Upgraded`. Old nodes lack the keys, which `changed_versions` ignores (one side only).
 - **Timeline** stores `depth` and a `children` index at insert time, sorted refs, no HEAD.
 - **Incremental files**: `Timeline::node_file(h)` / `ref_file(name)` return exactly the path and
   text `to_files` produces for one node / one branch (sm-engine autosave).

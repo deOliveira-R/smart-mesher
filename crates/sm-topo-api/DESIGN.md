@@ -104,3 +104,42 @@ FNV-1a over little-endian words; no geometry float ever enters as raw bits (only
   partitioned volumes give both children). Host-dead cells follow the host lineage first. This
   covers `split_realized`, `partition_edge` / `partition_face` and composites. Groups in
   `sm-model-api` expand through it.
+
+## W0f gaps4
+
+- **Unmerge (inverse of `merge_*`, webcut `nomerge`).** Provided `TopologyEdit` methods
+  (default `Unsupported`; `CellComplex` implements them; the `Overlay` has no `TopologyEdit` and
+  keeps no edit path for them). `unmerge_vertex(v, edges)` copies `v` (point, flags, tolerance)
+  and re-points the listed edges (both ends of a closed edge). `unmerge_edge(edge, faces)` copies
+  the edge (carrier, range, row, flags, tolerance) and re-points the coedges of the listed faces,
+  re-keying their pcurves; the copy keeps the current end vertices, so a full separation is
+  face -> edges -> vertices (`unmerge_vertex` afterwards lists the copies). `unmerge_face(face,
+  side)` gives the volume on `side` a new face with the same carrier and loops (pcurves copied,
+  embedded members stay), records `(face, new)` as `ImprintedNotMerged` and drops stale `Merged`
+  records whose other face is dead. New cells log `Created`; the op-level succession is
+  `old -> [old, new]`. Inputs are checked (incidence, duplicates, `Both`/baffles); loop closure is
+  checked at `end_op`, so a half-done unmerge rolls back. Tested: merge then unmerge of the
+  touching bricks equals the never-merged pair by an id-free signature (counts, positions,
+  face and volume moments, coincidence statuses, overrides).
+- **Corner-named cuts and pole splits.** `FaceCut::ChordAt { edge, start, end }` and
+  `FaceCut::ChainAt { edges, start, end }` name the attachment corners (`CornerKey`, the incoming
+  coedge) of chord/chain ends that repeat in the outer loop; positions come from the corners
+  (validated: same face, outer loop, corner vertex = cut end), children as for `Chord`/`Chain`.
+  `split_degenerate_edge(edge, param)` splits a `DEGENERATE` pole edge into two degenerate
+  halves on the same vertex (`[before, after]`), splitting every pole pcurve at `param` in its
+  own parameter (`Line2` only; others `Unsupported`), with `Split` lineage and parents rewritten
+  as by `split_edge`. Tested: the meridian cut of `fixtures::sphere` (split both poles at `pi`,
+  chord along `u = pi` at the corners between the halves) gives two valid hemispheres whose areas
+  (`2 pi r^2` each) and `y` moments (`+- pi r^3`) sum to the sphere's, integrated over the
+  pcurves (`face_moments` refuses surfaces with poles). The overlay's own `partition_face` chord
+  still refuses repeated vertices.
+- **Measured merge gaps.** `curve_gap` / `face_gap` return `Result`: two geometry-less cells
+  measure 0; a carrier on one side only, a handle missing from the store or a failed projection
+  is `Unsupported("gap not measurable")` from `merge_edges` / `merge_faces` (documented on
+  both). With `Ellipse::project` implemented in sm-geom-api, ellipses 0.5 apart are refused under
+  `1e-6`. Not done: reporting an unmeasurable radial ring through `validate` (optional).
+- **`scale_tolerances(cells, factor)`.** Provided (default `Unsupported`), reserved for
+  similarity-transform ops: multiplies existing overrides by `factor` (finite, `> 0`), clamps to
+  `linear_max`, and removes an override that falls to the model linear tolerance (so a scaled
+  model hashes like one that never had it); journaled, `Modified(Tolerance)` per changed cell.
+  No topology transform operator exists, so it is a separate method.

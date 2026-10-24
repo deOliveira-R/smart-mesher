@@ -389,6 +389,7 @@ mod tests {
                 nv: 2,
                 control: vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.2), Point3::new(1.0, 0.0, 0.1), Point3::new(1.0, 1.0, 0.0)],
                 weights: None,
+                periodic: [false; 2],
             }),
         ];
         for d in &defs {

@@ -13,6 +13,117 @@ use crate::op::{Delta, Op, OpRecord, TypedOp};
 use crate::query::{QueryCtx, QueryInfo, QueryType, TypedQ, TypedQuery};
 use crate::state::{State, StateSnapshot};
 
+mod batch_schema {
+    //! Assembly of the typed `core.batch` schema.
+
+    use schemars::Schema;
+    use serde_json::{Map, Value, json};
+
+    use super::{OpInfo, OpType};
+    use crate::batch::{Batch, ESCAPED_LITERAL_PATTERN, REF_PATTERN};
+    use crate::error::RegistryError;
+    use crate::op::TypedOp;
+
+    /// sm-core's `EntityId` pattern.
+    const ENTITY_PATTERN: &str = "^[A-Za-z]+#[0-9]+$";
+    /// Name of the shared id-or-reference def.
+    pub(super) const BATCH_ENTITY_ID: &str = "BatchEntityId";
+
+    fn rewrite(v: &mut Value, prefix: &str) {
+        match v {
+            Value::Object(m) => {
+                let inline_id = m.get("type").and_then(Value::as_str) == Some("string")
+                    && m.get("pattern").and_then(Value::as_str) == Some(ENTITY_PATTERN);
+                if inline_id {
+                    *v = json!({ "$ref": format!("#/$defs/{BATCH_ENTITY_ID}") });
+                    return;
+                }
+                if let Some(Value::String(r)) = m.get_mut("$ref")
+                    && let Some(k) = r.strip_prefix("#/$defs/")
+                {
+                    *r = if k == "EntityId" {
+                        format!("#/$defs/{BATCH_ENTITY_ID}")
+                    } else {
+                        format!("#/$defs/{prefix}{k}")
+                    };
+                }
+                m.values_mut().for_each(|x| rewrite(x, prefix));
+            }
+            Value::Array(a) => a.iter_mut().for_each(|x| rewrite(x, prefix)),
+            _ => {}
+        }
+    }
+
+    pub(super) fn build<'a>(
+        ops: impl Iterator<Item = &'a dyn OpType>,
+        info: fn(&dyn OpType) -> Result<OpInfo, RegistryError>,
+    ) -> Result<Schema, RegistryError> {
+        let mut defs = Map::new();
+        defs.insert(
+            BATCH_ENTITY_ID.to_owned(),
+            json!({
+                "description": "Entity id `Kind#serial`, a batch reference `$i.role` / `$i.role[k]` / `$i.role[*]` (`[*]` only as an array element), or a `$$`-escaped literal",
+                "anyOf": [
+                    { "type": "string", "pattern": ENTITY_PATTERN },
+                    { "type": "string", "pattern": REF_PATTERN },
+                    { "type": "string", "pattern": ESCAPED_LITERAL_PATTERN },
+                ],
+            }),
+        );
+        let mut variants = Vec::new();
+        for t in ops {
+            if t.name() == Batch::NAME {
+                continue;
+            }
+            let name = t.name();
+            // A broken op schema is reported by its own catalog entry; the batch omits it.
+            let Ok(i) = info(t) else { continue };
+            let mut v = i.schema.to_value();
+            let prefix = format!("{name}.");
+            let local = v.as_object_mut().and_then(|m| {
+                m.remove("$schema");
+                m.remove("$defs")
+            });
+            if let Some(Value::Object(local)) = local {
+                for (k, mut d) in local {
+                    if k == "EntityId" {
+                        continue;
+                    }
+                    rewrite(&mut d, &prefix);
+                    defs.insert(format!("{prefix}{k}"), d);
+                }
+            }
+            rewrite(&mut v, &prefix);
+            defs.insert(format!("{name}.params"), v);
+            variants.push(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "const": name },
+                    "version": { "const": t.version() },
+                    "params": { "$ref": format!("#/$defs/{name}.params") },
+                },
+                "required": ["name", "version", "params"],
+                "additionalProperties": false,
+            }));
+        }
+        let s = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": Batch::NAME,
+            "description": "Several ops applied atomically as one node; later ops may reference ids allocated by earlier ones (`$i.role`).",
+            "type": "object",
+            "properties": {
+                "ops": { "type": "array", "items": { "oneOf": variants } },
+            },
+            "required": ["ops"],
+            "$defs": defs,
+        });
+        Schema::try_from(s).map_err(|e| RegistryError::Schema {
+            name: Batch::NAME.to_owned(),
+            reason: e.to_string(),
+        })
+    }
+}
+
 /// Type-erased registration of one op payload type.
 pub trait OpType: Send + Sync {
     /// Registry name.
@@ -432,20 +543,45 @@ impl Registry {
         })
     }
 
-    /// Schema of the named op's params.
+    /// Schema of the named op's params. For `core.batch` this is [`batch_schema`](Self::batch_schema).
     pub fn schema(&self, name: &str) -> Result<Schema, RegistryError> {
         let t = self
             .ops
             .get(name)
             .ok_or_else(|| RegistryError::UnknownOp(name.to_owned()))?;
-        Ok(Self::info(t.as_ref())?.schema)
+        Ok(self.info_full(t.as_ref())?.schema)
     }
 
     /// All ops with schemas, sorted by name: the single source for MCP tool lists, language
     /// help and Python stub generation. One op with a broken schema yields an `Err` entry
-    /// without hiding the others.
+    /// without hiding the others (`core.batch` embeds the schemas of the ops that have one).
     pub fn catalog(&self) -> Vec<Result<OpInfo, RegistryError>> {
-        self.ops.values().map(|t| Self::info(t.as_ref())).collect()
+        self.ops.values().map(|t| self.info_full(t.as_ref())).collect()
+    }
+
+    fn info_full(&self, t: &dyn OpType) -> Result<OpInfo, RegistryError> {
+        let mut info = Self::info(t)?;
+        if info.name == Batch::NAME {
+            info.schema = self.batch_schema()?;
+        }
+        Ok(info)
+    }
+
+    /// The typed schema of `core.batch` params over the ops registered now.
+    ///
+    /// `ops.items` is a `oneOf` with one variant per registered op except `core.batch` itself
+    /// (nesting is rejected): `{name: const, version: const (current), params: {$ref:
+    /// "#/$defs/<op>.params"}}`. Each op's params schema is stored once under `$defs` as
+    /// `<op>.params`, and its own `$defs` entries as `<op>.<def>`. Inside these batch-local
+    /// defs every `EntityId` (by `$ref` or inline) is replaced by a reference to the shared
+    /// def `BatchEntityId`: `anyOf` the `EntityId` pattern,
+    /// [`REF_PATTERN`](crate::batch::REF_PATTERN) and the `$$`-escaped literal pattern. Schemas
+    /// are not hashed, so this never changes the node format.
+    ///
+    /// An op whose own schema is broken is left out (its [`catalog`](Self::catalog) entry is
+    /// the `Err`), so one broken op does not hide the batch.
+    pub fn batch_schema(&self) -> Result<Schema, RegistryError> {
+        batch_schema::build(self.ops.values().map(|t| t.as_ref()), Self::info)
     }
 
     /// Decode a stored record, running migrations from its version up to the current one.

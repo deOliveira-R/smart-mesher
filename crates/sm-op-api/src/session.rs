@@ -233,7 +233,12 @@ impl Session {
     pub fn seed_state(&mut self, h: Hash256, state: State) -> Result<(), TimelineError> {
         let node = self.timeline.get(h).ok_or(TimelineError::UnknownNode(h))?;
         if state.hash() != node.check.state {
-            let actual = Check::of(self.engine.registry(), &state, &node.body.op);
+            let actual = Check::of_with(
+                self.engine.registry(),
+                self.engine.services(),
+                &state,
+                &node.body.op,
+            );
             return Err(node.check.mismatch(h, &actual));
         }
         self.store_snapshot(h, state);
@@ -396,7 +401,12 @@ impl Session {
         if let Head::Ref(name) = &self.head {
             self.timeline.check_ref_name(name)?;
         }
-        let check = Check::of(self.engine.registry(), &p.state, &p.record);
+        let check = Check::of_with(
+            self.engine.registry(),
+            self.engine.services(),
+            &p.state,
+            &p.record,
+        );
         let h = self.timeline.insert(Node {
             body: NodeBody {
                 parent: self.at,
@@ -530,7 +540,12 @@ impl Session {
                     }
                 })?;
             if state.hash() != node.check.state {
-                let actual = Check::of(self.engine.registry(), &state, &node.body.op);
+                let actual = Check::of_with(
+                self.engine.registry(),
+                self.engine.services(),
+                &state,
+                &node.body.op,
+            );
                 let err = node.check.mismatch(*h, &actual);
                 match self.policy {
                     ReplayPolicy::Strict => return Err(err),

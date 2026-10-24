@@ -160,7 +160,11 @@ fn ellipse_perimeter_closed_form() {
 }
 
 #[test]
-fn ellipse_projection_is_unsupported_in_the_contract() {
+fn ellipse_projection_is_exact_in_the_contract() {
+    // W0f gaps4: the contract projects onto ellipses (Eberly bisection).
     let e = Ellipse::new(world_frame(), 2.0, 1.0).unwrap();
-    assert!(e.project(sm_core::Point3::new(1.0, 1.0, 0.0), None).is_err());
+    let q = sm_core::Point3::new(1.0, 1.0, 0.0);
+    let pr = e.project(q, None).unwrap();
+    let best = (0..20000).map(|i| (e.eval(2.0 * PI * f64::from(i) / 20000.0) - q).norm()).fold(f64::INFINITY, f64::min);
+    assert!(pr.distance <= best + 1e-9, "{} vs {best}", pr.distance);
 }

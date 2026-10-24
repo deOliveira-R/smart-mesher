@@ -555,6 +555,31 @@ pub enum FaceCut<'a> {
         /// The chain, in traversal order.
         edges: &'a [CoedgeSpec],
     },
+    /// [`FaceCut::Chord`] whose end vertices may appear more than once in the outer loop (a
+    /// pole or seam vertex): `start` and `end` name the corners where the chord's start and end
+    /// vertices attach (the corner's vertex must be that end, and both corners must be of the
+    /// face's outer loop). Children as for `Chord`, positions taken from the corners. Used for
+    /// an axial cut of a sphere or of a cone through its apex, after
+    /// [`crate::TopologyEdit::split_degenerate_edge`].
+    ChordAt {
+        /// The chord edge.
+        edge: EntityId,
+        /// Corner of the chord's start vertex.
+        start: CornerKey,
+        /// Corner of the chord's end vertex.
+        end: CornerKey,
+    },
+    /// [`FaceCut::Chain`] whose end vertices may appear more than once in the outer loop:
+    /// `start` / `end` name the corners of the chain's start (tail of the first coedge) and end
+    /// (head of the last). Children as for `Chain`.
+    ChainAt {
+        /// The chain, in traversal order.
+        edges: &'a [CoedgeSpec],
+        /// Corner of the chain's start vertex.
+        start: CornerKey,
+        /// Corner of the chain's end vertex.
+        end: CornerKey,
+    },
 }
 
 /// Which child gets each existing inner loop when a face is split.
