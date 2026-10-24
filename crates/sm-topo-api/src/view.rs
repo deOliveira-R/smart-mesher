@@ -546,6 +546,25 @@ mod tests {
     }
 
     #[test]
+    fn canonical_hash_agrees_with_legacy_for_polyline_and_nurbs_pcurves() {
+        use crate::TopologyEdit;
+        use sm_geom_api::NurbsCurve2;
+        let mut t = sample();
+        let keys: Vec<CoedgeKey> = t.cells(Dim::Face).to_vec().into_iter().flat_map(|f| t.coedges(f).map(|c| c.key).collect::<Vec<_>>()).collect();
+        assert!(keys.len() >= 2);
+        let poly = PCurve::Polyline2(vec![Uv::new(0.0, 0.0), Uv::new(2.0, 0.5), Uv::new(2.0, 4.0)]);
+        let ctrl = vec![Uv::new(0.0, 0.0), Uv::new(1.0, 2.0), Uv::new(3.0, 2.5), Uv::new(4.0, 0.0)];
+        let nurbs = NurbsCurve2::new(2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], ctrl, Some(vec![1.0, 2.0, 0.5, 1.0])).unwrap();
+        crate::fixtures::with_op(&mut t, OpId(7), |t| {
+            t.set_pcurve(keys[0], Some(poly))?;
+            t.set_pcurve(keys[1], Some(PCurve::Nurbs2(nurbs)))?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(t.canonical_hash(), legacy_hash(&t));
+    }
+
+    #[test]
     fn canonical_visit_floats_carry_raw_values_and_codes() {
         let t = sample();
         let tol = *t.tolerance();

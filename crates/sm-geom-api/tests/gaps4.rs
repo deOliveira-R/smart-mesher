@@ -141,7 +141,7 @@ fn periodic_flag_changes_the_geometry_hash() {
     };
     let vals = |pc: &PCurve| {
         let mut v = Vec::new();
-        pc.for_each_value(|x| v.push(x.to_bits()));
+        pc.for_each_word(|w| v.push(format!("{w:?}")));
         v
     };
     assert_ne!(vals(&mk(true)), vals(&mk(false)));

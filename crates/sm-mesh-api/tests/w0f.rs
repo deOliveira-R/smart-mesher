@@ -174,10 +174,12 @@ fn quantized_geometry_hash_large_values_and_golden() {
     assert_ne!(h(1e12), h(2e12));
     assert_ne!(h(1e300), h(-1e300));
     assert_ne!(h(f64::INFINITY), h(f64::MAX));
-    // Relative noise far below the 2^-40 step is invisible; zero-ish values fold.
+    // Relative noise far below the 2^-40 step is invisible; signed zero folds; tiny real values do not.
     assert_eq!(h(1e12), h(1e12 * (1.0 + 1e-15)));
     assert_eq!(h(0.0), h(-0.0));
-    assert_eq!(h(1e-20), h(0.0));
+    assert_ne!(h(1e-20), h(0.0));
+    assert_ne!(h(1e-24), h(1e-18));
+    assert_eq!(h(5e-324), h(0.0));
     // Coordinates beyond the i64 code range: distinct, not saturated.
     let far = |x: f64| {
         let mut m = base.clone();

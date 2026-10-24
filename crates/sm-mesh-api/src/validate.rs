@@ -1327,8 +1327,8 @@ pub fn quantize_word(x: f64, quantum: f64) -> i64 {
 pub struct HashQuanta {
     /// Absolute step for coordinates (vertices and extra nodes).
     pub length: f64,
-    /// Absolute step for classification parameters (curve `t`, surface `(u, v)`), and the zero
-    /// cutoff of the scale-free tag-value rule.
+    /// Absolute step for classification parameters (curve `t`, surface `(u, v)`). Tag values
+    /// are scale-free and do not use it.
     pub param: f64,
 }
 
@@ -1363,16 +1363,17 @@ fn abs_words(h: &mut Hasher, x: f64, q: f64) {
     raw_words(h, x);
 }
 
-/// Scale-free float (real tag values): `|x| < cutoff` and subnormals hash as 0; otherwise the
+/// Scale-free float (real tag values): subnormals and -0 hash as 0 (no absolute cutoff: user
+/// fields have arbitrary units); otherwise the
 /// mantissa is rounded to 40 bits (relative step about 1e-12) and packed with exponent and sign,
 /// the rule of `sm_geom_api::ModelTolerance::quantize_scale_free` (never out of range for finite
 /// input). Non-finite values hash by raw bits.
-fn scale_free_words(h: &mut Hasher, x: f64, cutoff: f64) {
+fn scale_free_words(h: &mut Hasher, x: f64) {
     if !x.is_finite() {
         return raw_words(h, x);
     }
     let a = x.abs();
-    let code = if a < cutoff || (a.to_bits() >> 52) == 0 {
+    let code = if (a.to_bits() >> 52) == 0 {
         0
     } else {
         // Round half up on the low 13 bits; a mantissa carry moves into the exponent.
@@ -1390,7 +1391,7 @@ fn scale_free_words(h: &mut Hasher, x: f64, cutoff: f64) {
 ///
 /// - coordinates: absolute step `q.length`;
 /// - classification parameters: absolute step `q.param`;
-/// - real tag values: scale-free (relative 40-bit mantissa, zero below `q.param`), so a large
+/// - real tag values: scale-free (relative 40-bit mantissa, no absolute cutoff), so a large
 ///   value never saturates.
 ///
 /// Every float is a marker word then either its code or, when the code would be out of `i64`
@@ -1440,7 +1441,7 @@ pub fn geometry_hash_quantized(m: &dyn MeshRead, q: &HashQuanta) -> u64 {
             h.u(t.target as u64);
             h.u(v.len() as u64);
             for x in v {
-                scale_free_words(&mut h, *x, qp);
+                scale_free_words(&mut h, *x);
             }
         }
     }
