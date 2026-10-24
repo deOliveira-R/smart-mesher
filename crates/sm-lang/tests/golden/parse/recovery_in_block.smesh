@@ -1,0 +1,6 @@
+batch {
+    model.a(x: 1)
+    model.b(x: )
+    model.c(x: 3, , y: 4)
+    let k = [1, 2
+    model.d(x: 5)

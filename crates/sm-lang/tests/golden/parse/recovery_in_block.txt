@@ -1,0 +1,27 @@
+error[expected-expression]: expected an expression, found `)`
+ --> recovery_in_block.smesh:3:16
+  |
+3 |     model.b(x: )
+  |                ^ an expression is needed here
+
+error[expected-expression]: expected an expression, found `,`
+ --> recovery_in_block.smesh:4:19
+  |
+4 |     model.c(x: 3, , y: 4)
+  |                   ^ an expression is needed here
+
+error[expected-token]: expected `,` or `]`, found identifier `model`
+ --> recovery_in_block.smesh:6:5
+  |
+6 |     model.d(x: 5)
+  |     ^^^^^ expected `,` or `]`
+
+error[expected-token]: expected `}` to close the block, found end of input
+ --> recovery_in_block.smesh:6:18
+  |
+6 |     model.d(x: 5)
+  |                  ^ expected `}`
+ ..> recovery_in_block.smesh:1:7
+  |
+1 | batch {
+  |       - block opened here

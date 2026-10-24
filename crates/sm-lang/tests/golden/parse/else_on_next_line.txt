@@ -1,0 +1,6 @@
+error[expected-statement]: `else` without a matching `if`
+ --> else_on_next_line.smesh:4:1
+  |
+4 | else {
+  | ^^^^ no `if` to attach to
+  = help: `else` must follow the closing `}` of an `if` on the same line

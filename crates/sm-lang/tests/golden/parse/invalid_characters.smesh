@@ -1,0 +1,4 @@
+let ok = 1
+model.a(x: @)
+let also_ok = 2
+model.b(y: $)

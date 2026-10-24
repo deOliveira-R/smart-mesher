@@ -1,0 +1,11 @@
+error[expected-expression]: expected an expression, found end of line
+ --> missing_expr.smesh:1:8
+  |
+1 | let x = 
+  |        ^ an expression is needed here
+
+error[expected-expression]: expected an expression, found end of input
+ --> missing_expr.smesh:2:12
+  |
+2 | let y = 1 +
+  |            ^ an expression is needed here

@@ -1,0 +1,11 @@
+error[invalid-character]: unexpected character '@'
+ --> invalid_characters.smesh:2:12
+  |
+2 | model.a(x: @)
+  |            ^ not part of the language
+
+error[invalid-character]: unexpected character '$'
+ --> invalid_characters.smesh:4:12
+  |
+4 | model.b(y: $)
+  |            ^ not part of the language

@@ -1,0 +1,9 @@
+error[expected-token]: expected `,` or `)`, found identifier `y`
+ --> missing_comma.smesh:1:25
+  |
+1 | model.create_brick(x: 1 y: 2, z: 3)
+  |                         ^ missing `,` between arguments?
+ ..> missing_comma.smesh:1:19
+  |
+1 | model.create_brick(x: 1 y: 2, z: 3)
+  |                   - arguments of this call

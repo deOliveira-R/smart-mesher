@@ -1,0 +1,20 @@
+error[unknown-entity-kind]: unknown entity kind `Volum`
+ --> unknown_kind.smesh:1:19
+  |
+1 | model.delete(ids: Volum#3, other: Fase#[1, 2])
+  |                   ^^^^^ not an entity kind
+  = help: did you mean `Volume`?
+
+error[unknown-entity-kind]: unknown entity kind `Fase`
+ --> unknown_kind.smesh:1:35
+  |
+1 | model.delete(ids: Volum#3, other: Fase#[1, 2])
+  |                                   ^^^^ not an entity kind
+  = help: did you mean `Face`?
+
+error[unknown-entity-kind]: `volumess` is not an entity kind keyword
+ --> unknown_kind.smesh:2:13
+  |
+2 | let a = all volumess
+  |             ^^^^^^^^ expected a plural kind like `faces` or `volumes`
+  = help: did you mean `volumes`?

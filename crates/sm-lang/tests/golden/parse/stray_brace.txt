@@ -1,0 +1,6 @@
+error[expected-statement]: expected a statement, found `}`
+ --> stray_brace.smesh:2:1
+  |
+2 | }
+  | ^ a statement cannot start here
+  = help: statements: a call `name(args)`, `let`, `set`, `alias`, `batch`, `if`, `for`, `include`, `print`, `assert`, `help`

@@ -1,0 +1,6 @@
+error[unterminated-comment]: unterminated block comment
+ --> unterminated_comment.smesh:1:11
+  |
+1 | let a = 1 /* never closed
+  |           ^^ comment starts here
+  = help: close it with `*/` (block comments nest)
