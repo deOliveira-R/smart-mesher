@@ -27,8 +27,12 @@ parse + CRC verify + full decode 14 ms, VTU raw 4.2 ms, VTU base64 5.6 ms.
 
 ## Test summary
 
-`cargo test -p sm-meshio` (default features and `--all-features`, also with
-`RAYON_NUM_THREADS=1`): 4 unit, 12 `.smsh`, 4 VTU, 2 Python-reader, 1 property test; all pass.
+`cargo test -p sm-meshio` (also with `RAYON_NUM_THREADS=1`; all pass):
+
+* default features: 40 tests = 4 unit, 11 `.smsh` (`tests/smsh.rs`), 14 hostile-input and
+  stale-map (`tests/corrupt.rs`), 8 VTU, 2 Python-reader, 1 property test;
+* `--all-features`: 41 tests, the same plus the `mmap` test in `tests/smsh.rs` (12 `.smsh`).
+
 Clippy (`--all-targets --all-features -D warnings`, and default features) and
 `RUSTDOCFLAGS="-D warnings" cargo doc` are clean.
 
@@ -61,6 +65,24 @@ Clippy (`--all-targets --all-features -D warnings`, and default features) and
   equal over repeated runs, 1 thread, 4 threads, and 4 concurrent 1-thread calls
   (`sm_testkit::determinism::check`); a 24,000-cell block (larger than every chunk size)
   compares full bytes for 1 vs 6/7 threads.
+
+## Polish round 0 (review items)
+
+* Decoder range-checks every index column (face cells, cell parents, cell corners / faces, edge
+  table, set words by kind, high-order and face-curve records, tag lengths, `n_points`, level
+  map and extrusion columns by the role of the file's mesh) and rejects `cell_shape` /
+  `face_kind` codes outside the table; one test per class in `tests/corrupt.rs`.
+* Writer verifies level and extrusion maps against the mesh (connectivity hash and sizes) and
+  returns `Inconsistent` for a stale map instead of panicking; tested with stale meshes whose id
+  matches. The extrusion check relies on the hash because `ExtrusionMap` has no length accessor
+  (api_change_request 3 below).
+* VTU packs connectivity, offsets, faces and face offsets straight into byte buffers; tag
+  columns of the wrong length are `Inconsistent`.
+* VTU tests: hand-written oracle (wedge, pyramid, polyhedron); the VTK check fails loudly when
+  `SM_PYTHON` is set and `vtkmodules` cannot be imported.
+* `SmshMesh` holds `sm_mesh_api::EdgeTable` and `MeshSet` (the redundant role string is gone).
+* `DeckRecord` stays a file-format schema, not the serde form of `sm_model_api::Deck`; the
+  reason is documented in `DESIGN.md` and `SMSH_FORMAT.md` 2.7.
 
 ## Deviations from the contracts' intent
 

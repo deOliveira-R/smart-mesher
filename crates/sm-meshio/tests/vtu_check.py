@@ -40,14 +40,19 @@ def decode(path):
     return out
 
 
+VTK_IMPORT_ERROR = None
+
+
 def vtk_facts(path):
+    global VTK_IMPORT_ERROR
     try:
         from vtkmodules.vtkIOXML import vtkXMLUnstructuredGridReader
         from vtkmodules.vtkFiltersVerdict import vtkCellSizeFilter
         from vtkmodules.vtkCommonDataModel import vtkPolygon
         from vtkmodules.util.numpy_support import vtk_to_numpy
         import numpy as np
-    except Exception:
+    except Exception as e:
+        VTK_IMPORT_ERROR = repr(e)
         return None
     r = vtkXMLUnstructuredGridReader()
     r.SetFileName(path)
@@ -90,4 +95,5 @@ def vtk_facts(path):
 if __name__ == "__main__":
     d = decode(sys.argv[1])
     d["vtk"] = vtk_facts(sys.argv[1])
+    d["vtk_import_error"] = VTK_IMPORT_ERROR
     print(json.dumps(d))

@@ -106,6 +106,10 @@ fn vtu_decodes_to_the_mesh_in_both_encodings() {
             std::fs::write(&path, vtu_bytes(&m, &VtuOptions::with_encoding(enc)).unwrap()).unwrap();
             let j = run_json(&py, script, &path);
             check_decoded(&format!("{name}/{ext}"), &m, &j);
+            // An explicitly chosen interpreter is a request for the VTK check: fail loudly.
+            if std::env::var_os("SM_PYTHON").is_some() {
+                assert!(j["vtk"].is_object(), "SM_PYTHON is set but vtk cannot be imported: {}", j["vtk_import_error"]);
+            }
             if let Some(v) = j["vtk"].as_object() {
                 // VTK's own reader sees the same cells, with positive-measure, outward-faced cells.
                 assert_eq!(v["n_cells"], m.cell_count());
@@ -205,4 +209,243 @@ fn vtu_is_deterministic_across_runs_and_thread_counts() {
     let b = rayon::ThreadPoolBuilder::new().num_threads(6).build().unwrap().install(|| vtu_bytes(&m, &VtuOptions::default()).unwrap());
     assert!(a == b);
     let _ = EntityKind::Mesh;
+}
+
+// ---- Hand-written fixed oracle -------------------------------------------------------------
+
+use sm_core::Point3;
+use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh};
+use std::collections::BTreeMap;
+
+/// One cell with the given points, classified on TopoVolume#1 / TopoFace#k / TopoVertex#k.
+fn single_cell(points: &[[f64; 3]], add: impl FnOnce(&mut ReferenceBuilder, &[VertexIx]) -> CellIx) -> ReferenceMesh {
+    let mut b = ReferenceBuilder::new();
+    let vs: Vec<VertexIx> = points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let v = b.add_vertex(Point3::new(p[0], p[1], p[2])).unwrap();
+            b.set_class(MeshEntityRef::Vertex(v), on(EntityKind::TopoVertex, 1 + i as u64)).unwrap();
+            v
+        })
+        .collect();
+    let c = add(&mut b, &vs);
+    b.set_class(MeshEntityRef::Cell(c), on(EntityKind::TopoVolume, 1)).unwrap();
+    for f in 0..b.face_count() {
+        b.set_class(MeshEntityRef::Face(FaceIx::new(f)), on(EntityKind::TopoFace, 1 + f as u64)).unwrap();
+    }
+    b.finish(&mut SerialAlloc::new()).unwrap().mesh
+}
+
+type RawArrays = BTreeMap<String, (String, Vec<u8>)>;
+
+/// The appended-raw arrays of a VTU file, keyed `Section/Name`, as `(type, payload bytes)`.
+/// Written without the exporter's helpers: header text scan plus the `UInt64` block headers.
+fn raw_arrays(bytes: &[u8]) -> RawArrays {
+    let at = bytes.windows(13).position(|w| w == b"<AppendedData").unwrap();
+    let head = std::str::from_utf8(&bytes[..at]).unwrap();
+    let body = &bytes[at + bytes[at..].iter().position(|b| *b == b'_').unwrap() + 1..];
+    let attr = |line: &str, key: &str| -> String {
+        let p = line.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
+        line[p..p + line[p..].find('"').unwrap()].to_string()
+    };
+    let mut section = String::new();
+    let mut out = BTreeMap::new();
+    for line in head.lines().map(str::trim) {
+        if let Some(s) = ["Points", "Cells", "PointData", "CellData"].iter().find(|s| line.starts_with(&format!("<{s}"))) {
+            section = (*s).to_string();
+        } else if line.starts_with("<DataArray") {
+            let off: usize = attr(line, "offset").parse().unwrap();
+            let len = u64::from_le_bytes(body[off..off + 8].try_into().unwrap()) as usize;
+            out.insert(format!("{section}/{}", attr(line, "Name")), (attr(line, "type"), body[off + 8..off + 8 + len].to_vec()));
+        }
+    }
+    out
+}
+
+fn as_i32(a: &(String, Vec<u8>)) -> Vec<i32> {
+    assert_eq!(a.0, "Int32");
+    a.1.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect()
+}
+
+fn as_f64(a: &(String, Vec<u8>)) -> Vec<f64> {
+    assert_eq!(a.0, "Float64");
+    a.1.chunks(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect()
+}
+
+fn export(m: &ReferenceMesh) -> RawArrays {
+    raw_arrays(&vtu_bytes(m, &VtuOptions::default()).unwrap())
+}
+
+#[test]
+fn fixed_oracle_wedge() {
+    let pts = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [0., 1., 1.]];
+    let m = single_cell(&pts, |b, vs| b.add_cell_from_vertices(CellShape::Wedge, vs).unwrap().cell);
+    let a = export(&m);
+    assert_eq!(as_f64(&a["Points/Points"]), pts.iter().flatten().copied().collect::<Vec<f64>>());
+    assert_eq!(a["Cells/types"].1, vec![13]);
+    assert_eq!(as_i32(&a["Cells/connectivity"]), vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(as_i32(&a["Cells/offsets"]), vec![6]);
+    assert!(!a.contains_key("Cells/faces") && !a.contains_key("Cells/faceoffsets"));
+}
+
+#[test]
+fn fixed_oracle_pyramid() {
+    let pts = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0.5, 0.5, 1.]];
+    let m = single_cell(&pts, |b, vs| b.add_cell_from_vertices(CellShape::Pyramid, vs).unwrap().cell);
+    let a = export(&m);
+    assert_eq!(as_f64(&a["Points/Points"]), pts.iter().flatten().copied().collect::<Vec<f64>>());
+    assert_eq!(a["Cells/types"].1, vec![14]);
+    assert_eq!(as_i32(&a["Cells/connectivity"]), vec![0, 1, 2, 3, 4]);
+    assert_eq!(as_i32(&a["Cells/offsets"]), vec![5]);
+    assert!(!a.contains_key("Cells/faces"));
+}
+
+/// Pentagonal prism: not a template shape, so it is a `VTK_POLYHEDRON`.
+fn prism5() -> ([[f64; 3]; 10], ReferenceMesh) {
+    let ring = [[0., 0.], [2., 0.], [3., 1.], [1., 3.], [-1., 1.]];
+    let mut pts = [[0.0; 3]; 10];
+    for i in 0..5 {
+        pts[i] = [ring[i][0], ring[i][1], 0.0];
+        pts[5 + i] = [ring[i][0], ring[i][1], 1.0];
+    }
+    let m = single_cell(&pts, |b, vs| {
+        let v = |i: usize| vs[i];
+        let bottom: Vec<VertexIx> = [4, 3, 2, 1, 0].map(v).to_vec();
+        let top: Vec<VertexIx> = [5, 6, 7, 8, 9].map(v).to_vec();
+        let sides: Vec<Vec<VertexIx>> = (0..5).map(|i| vec![v(i), v((i + 1) % 5), v(5 + (i + 1) % 5), v(5 + i)]).collect();
+        let mut loops: Vec<&[VertexIx]> = vec![&bottom, &top];
+        loops.extend(sides.iter().map(Vec::as_slice));
+        b.add_polyhedron(&loops).unwrap().cell
+    });
+    (pts, m)
+}
+
+#[test]
+fn fixed_oracle_polyhedron() {
+    let (pts, m) = prism5();
+    assert_eq!(m.cell_shape(CellIx(0)), CellShape::Polyhedron);
+    let a = export(&m);
+    assert_eq!(as_f64(&a["Points/Points"]), pts.iter().flatten().copied().collect::<Vec<f64>>());
+    assert_eq!(a["Cells/types"].1, vec![42]);
+    assert_eq!(as_i32(&a["Cells/connectivity"]), (0..10).collect::<Vec<i32>>());
+    assert_eq!(as_i32(&a["Cells/offsets"]), vec![10]);
+    // Seven faces, each `n v0 .. vn-1` with the loop outward (checked by hand against the
+    // prism: bottom runs clockwise seen from +z, top and sides counter-clockwise from outside;
+    // loops start at their smallest vertex).
+    let faces = vec![
+        7, //
+        4, 0, 1, 6, 5, // side 0-1
+        5, 0, 4, 3, 2, 1, // bottom (normal -z)
+        4, 0, 5, 9, 4, // side 4-0
+        4, 1, 2, 7, 6, // side 1-2
+        4, 2, 3, 8, 7, // side 2-3
+        4, 3, 4, 9, 8, // side 3-4
+        5, 5, 6, 7, 8, 9, // top (normal +z)
+    ];
+    assert_eq!(as_i32(&a["Cells/faces"]), faces);
+    assert_eq!(as_i32(&a["Cells/faceoffsets"]), vec![faces.len() as i32]);
+}
+
+/// A mesh whose tag columns are replaced (the wrapper edits only `tags`; every other call goes
+/// to the real mesh), so a column length can disagree with the entity count.
+struct WrongTags<'a> {
+    inner: &'a ReferenceMesh,
+    tags: Vec<TagColumn>,
+}
+
+impl MeshRead for WrongTags<'_> {
+    fn mesh_id(&self) -> sm_core::EntityId {
+        self.inner.mesh_id()
+    }
+    fn count(&self, k: MeshEntityKind) -> usize {
+        self.inner.count(k)
+    }
+    fn id(&self, k: MeshEntityKind, ix: u32) -> sm_core::EntityId {
+        self.inner.id(k, ix)
+    }
+    fn index_of(&self, id: sm_core::EntityId) -> Option<u32> {
+        self.inner.index_of(id)
+    }
+    fn coords(&self) -> Coords<'_> {
+        self.inner.coords()
+    }
+    fn columns(&self) -> TopologyColumns<'_> {
+        self.inner.columns()
+    }
+    fn face_vertices(&self, f: FaceIx) -> &[VertexIx] {
+        self.inner.face_vertices(f)
+    }
+    fn face_left(&self, f: FaceIx) -> CellIx {
+        self.inner.face_left(f)
+    }
+    fn face_right(&self, f: FaceIx) -> Option<CellIx> {
+        self.inner.face_right(f)
+    }
+    fn face_kind(&self, f: FaceIx) -> FaceKind {
+        self.inner.face_kind(f)
+    }
+    fn dim(&self) -> MeshDim {
+        self.inner.dim()
+    }
+    fn cell_faces(&self, c: CellIx) -> &[SignedFace] {
+        self.inner.cell_faces(c)
+    }
+    fn cell_shape(&self, c: CellIx) -> CellShape {
+        self.inner.cell_shape(c)
+    }
+    fn cell_corners(&self, c: CellIx) -> Option<&[VertexIx]> {
+        self.inner.cell_corners(c)
+    }
+    fn high_order_cell(&self, c: CellIx) -> Option<&HighOrderCell> {
+        self.inner.high_order_cell(c)
+    }
+    fn face_curve(&self, f: FaceIx) -> Option<FaceCurve<'_>> {
+        self.inner.face_curve(f)
+    }
+    fn cell_parent(&self, c: CellIx) -> Option<CellIx> {
+        self.inner.cell_parent(c)
+    }
+    fn cell_active(&self, c: CellIx) -> bool {
+        self.inner.cell_active(c)
+    }
+    fn classification(&self, k: MeshEntityKind, ix: u32) -> Classification {
+        self.inner.classification(k, ix)
+    }
+    fn classified_on(&self, model: sm_core::EntityId) -> Option<&ClassSet> {
+        self.inner.classified_on(model)
+    }
+    fn classified_entities(&self) -> &[sm_core::EntityId] {
+        self.inner.classified_entities()
+    }
+    fn edges(&self) -> Option<&EdgeTable> {
+        self.inner.edges()
+    }
+    fn sets(&self) -> &[MeshSet] {
+        self.inner.sets()
+    }
+    fn tags(&self) -> &[TagColumn] {
+        &self.tags
+    }
+}
+
+#[test]
+fn tag_columns_of_the_wrong_length_are_an_error() {
+    let m = hex_block([2, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    let (nv, nc) = (m.vertex_count(), m.cell_count());
+    for (target, n) in [(MeshEntityKind::Cell, nc), (MeshEntityKind::Vertex, nv)] {
+        for values in [TagValues::I64(vec![1; n - 1]), TagValues::F64(vec![1.0; n + 1])] {
+            let w = WrongTags { inner: &m, tags: vec![TagColumn::new("bad", target, values)] };
+            let r = vtu_bytes(&w, &VtuOptions::default());
+            assert!(matches!(r, Err(sm_meshio::MeshioError::Inconsistent(_))), "{target:?}: {r:?}");
+        }
+        // The right length passes.
+        let w = WrongTags { inner: &m, tags: vec![TagColumn::new("good", target, TagValues::I64(vec![1; n]))] };
+        vtu_bytes(&w, &VtuOptions::default()).unwrap();
+    }
+    // With tags switched off the column is not looked at.
+    let w = WrongTags { inner: &m, tags: vec![TagColumn::new("bad", MeshEntityKind::Cell, TagValues::I64(vec![]))] };
+    let mut o = VtuOptions::default();
+    o.tags = false;
+    vtu_bytes(&w, &o).unwrap();
 }

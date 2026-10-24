@@ -29,6 +29,11 @@ in next to them.
 | `vtu` | `write_vtu` / `vtu_bytes`, `VtuOptions`, `VtuEncoding` |
 | `le`, `crc` | little-endian packing, CRC-32 (slicing-by-8) |
 
+Decoded edge tables and sets use the contract types (`sm_mesh_api::EdgeTable`, `MeshSet`).
+`DeckRecord` is deliberately not the serde form of `sm_model_api::Deck`: the file format is
+specified independently of any Rust type's serde shape (see `SMSH_FORMAT.md` 2.7), so a model
+refactor cannot silently change what is on disk.
+
 The byte-level spec is `SMSH_FORMAT.md`. The reference reader is `readers/smsh.py`.
 
 ## `.smsh`

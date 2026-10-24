@@ -238,14 +238,7 @@ pub fn assert_matches(m: &dyn MeshRead, d: &SmshMesh) {
     // Edge table.
     match (m.edges(), &d.edges) {
         (None, None) => {}
-        (Some(t), Some(e)) => {
-            assert_eq!(e.ids, t.ids);
-            assert_eq!(e.vertices, t.vertices.iter().map(|p| [p[0].0, p[1].0]).collect::<Vec<_>>());
-            assert_eq!(e.class, t.class);
-            assert_eq!(e.face_offsets, t.face_off);
-            assert_eq!(e.face_edge, t.face_edges.iter().map(|x| x.edge.0).collect::<Vec<_>>());
-            assert_eq!(e.face_edge_forward, t.face_edges.iter().map(|x| x.forward).collect::<Vec<_>>());
-        }
+        (Some(t), Some(e)) => assert_eq!(e, t),
         _ => panic!("edge table presence differs"),
     }
     // High order.
@@ -264,7 +257,7 @@ pub fn assert_matches(m: &dyn MeshRead, d: &SmshMesh) {
     // Sets and tags.
     assert_eq!(d.sets.len(), m.sets().len());
     for (a, b) in d.sets.iter().zip(m.sets()) {
-        assert_eq!((a.id, &a.name, a.label, &a.members), (b.id, &b.name, b.label, &b.members));
+        assert_eq!(a, b);
     }
     assert_eq!(d.tags.as_slice(), m.tags());
     // Hashes recorded in the header agree with the mesh.

@@ -332,6 +332,11 @@ pub(crate) fn hex(h: u64) -> String {
     format!("{h:016x}")
 }
 
+/// Largest valid `cell_shape` code (the table below has codes `0..=7`).
+pub(crate) const MAX_SHAPE_CODE: u8 = 7;
+/// Largest valid `face_kind` code (codes `0..=3`).
+pub(crate) const MAX_FACE_KIND_CODE: u8 = 3;
+
 /// Cell shape code table (`cell_shape` array).
 pub(crate) fn shape_code(s: sm_mesh_api::CellShape) -> Option<u8> {
     use sm_mesh_api::CellShape::*;

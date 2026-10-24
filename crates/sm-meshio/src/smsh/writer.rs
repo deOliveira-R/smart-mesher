@@ -289,12 +289,22 @@ impl<'a> SmshWriter<'a> {
             }
         }
 
-        // Hierarchy.
+        // Hierarchy. A map is checked against the mesh it is attached to (ids, sizes and the
+        // connectivity hash it recorded), so a stale map is an error, never a panic.
         let id = m.mesh_id();
+        let hash = (!self.level_maps.is_empty() || !self.extrusions.is_empty()).then(|| connectivity_hash(m));
+        let stale = |what: String| bad(format!("{what} is stale: it was built for a different mesh state than mesh {id}"));
         let mut level_maps = Vec::new();
         for (i, lm) in self.level_maps.iter().enumerate() {
             if id != lm.fine_id() && id != lm.coarse_id() {
                 return Err(bad(format!("level map {i} is not attached to mesh {id}")));
+            }
+            let (own_hash, own_len) = if id == lm.fine_id() { (lm.fine_hash(), lm.fine_len()) } else { (lm.coarse_hash(), lm.coarse_len()) };
+            if hash != Some(own_hash) || own_len != nc {
+                return Err(stale(format!("level map {i}")));
+            }
+            if id == lm.fine_id() && lm.face_map().is_some_and(|f| f.len() != nf) {
+                return Err(stale(format!("level map {i}")));
             }
             let name = format!("levelmap.{i}.coarse_of");
             push(&name, Dtype::U32, n1(lm.fine_len()), pack(lm.fine_len(), |c| lm.coarse_of(CellIx::new(c)).0).into());
@@ -314,13 +324,18 @@ impl<'a> SmshWriter<'a> {
         }
         let mut extrusions = Vec::new();
         for (i, x) in self.extrusions.iter().enumerate() {
-            let n_ext = if id == x.extruded_id() {
-                nc
+            let (own_hash, n_ext) = if id == x.extruded_id() {
+                (x.extruded_hash(), nc)
             } else if id == x.base_id() {
-                nc * x.n_layers()
+                (x.base_hash(), nc.saturating_mul(x.n_layers()))
             } else {
                 return Err(bad(format!("extrusion map {i} is not attached to mesh {id}")));
             };
+            // The map holds one entry per extruded cell of the mesh state it hashed; the
+            // contract has no length accessor, so the hash is what makes `cell_of(0..n_ext)` safe.
+            if hash != Some(own_hash) {
+                return Err(stale(format!("extrusion map {i}")));
+            }
             let (zn, bn, ln) = (format!("extrusion.{i}.z"), format!("extrusion.{i}.cell_base"), format!("extrusion.{i}.cell_layer"));
             push(&zn, Dtype::F64, n1(x.z().len()), f64_bytes(x.z()));
             push(&bn, Dtype::U32, n1(n_ext), pack(n_ext, |c| x.cell_of(CellIx::new(c)).0.0).into());

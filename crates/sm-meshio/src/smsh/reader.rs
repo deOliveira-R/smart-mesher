@@ -8,8 +8,8 @@ use crate::le::{Le, decode};
 use rayon::prelude::*;
 use sm_core::EntityId;
 use sm_mesh_api::{
-    Basis, CellIx, Classification, FaceIx, GeometryCache, HighOrderCell, MeshDim, MeshEntityKind, Param, PointIx, SetMembers, SignedFace, TagColumn,
-    TagValues, VertexIx,
+    Basis, CellIx, Classification, EdgeIx, EdgeTable, FaceEdge, FaceIx, GeometryCache, HighOrderCell, MeshDim, MeshEntityKind, MeshSet, NO_CELL, Param,
+    PointIx, SetMembers, SignedFace, TagColumn, TagValues, VertexIx,
 };
 use std::borrow::Cow;
 
@@ -139,23 +139,6 @@ impl SmshMap {
     }
 }
 
-/// Decoded edge table.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SmshEdges {
-    /// Edge ids.
-    pub ids: Vec<EntityId>,
-    /// Vertex pair of every edge.
-    pub vertices: Vec<[u32; 2]>,
-    /// Classification of every edge.
-    pub class: Vec<Classification>,
-    /// CSR offsets of the face-edge incidences, `n_faces + 1`.
-    pub face_offsets: Vec<u64>,
-    /// Edge of every incidence.
-    pub face_edge: Vec<u32>,
-    /// True if the face loop traverses the edge from its first to its second vertex.
-    pub face_edge_forward: Vec<bool>,
-}
-
 /// Decoded fine-to-coarse map.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SmshLevelMap {
@@ -190,21 +173,6 @@ pub struct SmshExtrusion {
     pub cell_base: Vec<u32>,
     /// Layer of every extruded cell.
     pub cell_layer: Vec<u32>,
-}
-
-/// A named set as stored.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SmshSet {
-    /// Set id.
-    pub id: EntityId,
-    /// Unique name.
-    pub name: String,
-    /// Integer label.
-    pub label: Option<i64>,
-    /// Role name from the header (`node_set`, `face_set`, `cell_set`, ...).
-    pub role: String,
-    /// Members.
-    pub members: SetMembers,
 }
 
 /// A fully decoded `.smsh` mesh: the file's arrays as owned vectors, in the layout of
@@ -263,7 +231,7 @@ pub struct SmshMesh {
     /// Classification of every cell.
     pub cell_class: Vec<Classification>,
     /// Edge table, if the mesh had one.
-    pub edges: Option<SmshEdges>,
+    pub edges: Option<EdgeTable>,
     /// High-order cell records `(cell, record)`.
     pub high_order: Vec<(CellIx, HighOrderCell)>,
     /// Face-curve records `(face, degree, basis, nodes)`.
@@ -271,7 +239,7 @@ pub struct SmshMesh {
     /// Cached geometry, if present.
     pub geometry_cache: Option<GeometryCache>,
     /// Sets in header order.
-    pub sets: Vec<SmshSet>,
+    pub sets: Vec<MeshSet>,
     /// Tag columns in header order.
     pub tags: Vec<TagColumn>,
     /// Level maps.
@@ -318,6 +286,39 @@ fn len_is(name: &str, got: usize, want: usize) -> Result<()> {
     if got == want { Ok(()) } else { bad(format!("'{name}' has {got} entries, expected {want}")) }
 }
 
+/// Every word is below `n`.
+fn below(name: &str, v: &[u32], n: usize) -> Result<()> {
+    match v.iter().position(|w| *w as usize >= n) {
+        None => Ok(()),
+        Some(i) => bad(format!("'{name}'[{i}] = {} is out of range (limit {n})", v[i])),
+    }
+}
+
+/// Every word is below `n` or `u32::MAX` (none).
+fn below_or_none(name: &str, v: &[u32], n: usize) -> Result<()> {
+    match v.iter().position(|w| *w != NO_CELL && *w as usize >= n) {
+        None => Ok(()),
+        Some(i) => bad(format!("'{name}'[{i}] = {} is out of range (limit {n})", v[i])),
+    }
+}
+
+/// Every entry `w >> 1` is below `n` (packed `index << 1 | side` words).
+fn below_packed(name: &str, v: &[u32], n: usize) -> Result<()> {
+    match v.iter().position(|w| (*w >> 1) as usize >= n) {
+        None => Ok(()),
+        Some(i) => bad(format!("'{name}'[{i}] = {} names an index out of range (limit {n})", v[i])),
+    }
+}
+
+/// Strictly ascending and below `n`.
+fn ascending_below(name: &str, v: &[u32], n: usize) -> Result<()> {
+    below(name, v, n)?;
+    if v.windows(2).any(|w| w[0] >= w[1]) {
+        return bad(format!("'{name}' is not strictly ascending"));
+    }
+    Ok(())
+}
+
 fn basis_of(code: u8) -> Result<Basis> {
     [Basis::LagrangeEquispaced, Basis::LagrangeGll, Basis::Serendipity]
         .into_iter()
@@ -361,6 +362,9 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
     let h = &f.header;
     let mi = &h.mesh;
     let (nv, np, nf, nc, ne) = (mi.n_vertices as usize, mi.n_points as usize, mi.n_faces as usize, mi.n_cells as usize, mi.n_edges as usize);
+    if np < nv {
+        return bad(format!("n_points {np} is below n_vertices {nv}"));
+    }
     let dim = match mi.dim {
         2 => MeshDim::Two,
         3 => MeshDim::Three,
@@ -400,8 +404,15 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
     if face_vertices.iter().any(|v| *v as usize >= nv) || cell_corners.iter().any(|v| *v as usize >= nv) {
         return bad("vertex index out of range");
     }
-    if cell_faces.iter().any(|r| (*r >> 1) as usize >= nf) {
-        return bad("cell face index out of range");
+    below_packed("cell_faces", &cell_faces, nf)?;
+    below("face_left", &face_left, nc)?;
+    below_or_none("face_right", &face_right, nc)?;
+    below_or_none("cell_parent", &cell_parent, nc)?;
+    if let Some(i) = face_kind.iter().position(|k| *k > MAX_FACE_KIND_CODE) {
+        return bad(format!("face_kind[{i}] = {} is not a known face kind code", face_kind[i]));
+    }
+    if let Some(i) = cell_shape.iter().position(|k| *k > MAX_SHAPE_CODE) {
+        return bad(format!("cell_shape[{i}] = {} is not a known cell shape code", cell_shape[i]));
     }
 
     let class_entities = ids(&f.u64s("class_entities")?)?;
@@ -419,13 +430,14 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
         let fwd: Vec<bool> = f.u8s("edge_face_forward")?.iter().map(|b| *b != 0).collect();
         check_csr("edge_face_offsets", &face_offsets, nf, face_edge.len())?;
         len_is("edge_face_forward", fwd.len(), face_edge.len())?;
-        Some(SmshEdges {
+        below("edge_vertices", &ev, nv)?;
+        below("edge_face_edge", &face_edge, ne)?;
+        Some(EdgeTable {
             ids: eids,
-            vertices: ev.as_chunks::<2>().0.to_vec(),
+            vertices: ev.as_chunks::<2>().0.iter().map(|p| [VertexIx(p[0]), VertexIx(p[1])]).collect(),
+            face_off: face_offsets,
+            face_edges: face_edge.iter().zip(&fwd).map(|(e, f)| FaceEdge { edge: EdgeIx(*e), forward: *f }).collect(),
             class: class_of(f, "edge", ne, &class_entities)?,
-            face_offsets,
-            face_edge,
-            face_edge_forward: fwd,
         })
     } else {
         None
@@ -439,6 +451,8 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
         check_csr("ho_node_offsets", &off, cells.len(), nodes.len())?;
         len_is("ho_degree", deg.len(), cells.len())?;
         len_is("ho_basis", bas.len(), cells.len())?;
+        ascending_below("ho_cell", &cells, nc)?;
+        below("ho_nodes", &nodes, np)?;
         for k in 0..cells.len() {
             let n = nodes[off[k] as usize..off[k + 1] as usize].iter().map(|p| PointIx(*p)).collect();
             high_order.push((CellIx(cells[k]), HighOrderCell::new(deg[k], basis_of(bas[k])?, n)));
@@ -452,6 +466,8 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
         check_csr("fc_node_offsets", &off, faces.len(), nodes.len())?;
         len_is("fc_degree", deg.len(), faces.len())?;
         len_is("fc_basis", bas.len(), faces.len())?;
+        ascending_below("fc_face", &faces, nf)?;
+        below("fc_nodes", &nodes, np)?;
         for k in 0..faces.len() {
             let n = nodes[off[k] as usize..off[k + 1] as usize].iter().map(|p| PointIx(*p)).collect();
             face_curves.push((FaceIx(faces[k]), deg[k], basis_of(bas[k])?, n));
@@ -480,16 +496,22 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
     let mut sets = Vec::new();
     for s in &h.sets {
         let w = f.u32s(&s.array)?.into_owned();
-        let members = match s.members {
-            0 => SetMembers::Vertices(w.into_iter().map(VertexIx).collect()),
-            1 => SetMembers::Faces(w.into_iter().map(FaceIx).collect()),
-            2 => SetMembers::Cells(w.into_iter().map(CellIx).collect()),
-            3 => SetMembers::Sides(w.into_iter().map(SignedFace::from_raw).collect()),
-            4 => SetMembers::ShellSides(w),
-            5 => SetMembers::Points(w.into_iter().map(PointIx).collect()),
+        let (members, limit) = match s.members {
+            0 => (SetMembers::Vertices(w.into_iter().map(VertexIx).collect()), nv),
+            1 => (SetMembers::Faces(w.into_iter().map(FaceIx).collect()), nf),
+            2 => (SetMembers::Cells(w.into_iter().map(CellIx).collect()), nc),
+            3 => (SetMembers::Sides(w.into_iter().map(SignedFace::from_raw).collect()), nf),
+            4 => (SetMembers::ShellSides(w), nc),
+            5 => (SetMembers::Points(w.into_iter().map(PointIx).collect()), np),
             c => return bad(format!("unknown set members code {c}")),
         };
-        sets.push(SmshSet { id: parse_id(&s.id)?, name: s.name.clone(), label: s.label, role: s.role.clone(), members });
+        // Sides and shell sides are packed `index << 1 | side` words.
+        let packed = matches!(members, SetMembers::Sides(_) | SetMembers::ShellSides(_));
+        let words = members.raw();
+        if packed { below_packed(&s.array, &words, limit)? } else { below(&s.array, &words, limit)? }
+        let mut set = MeshSet::new(parse_id(&s.id)?, s.name.clone(), members);
+        set.label = s.label;
+        sets.push(set);
     }
     let mut tags = Vec::new();
     for t in &h.tags {
@@ -506,19 +528,43 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
             Dtype::F64 => TagValues::F64(f.f64s(&t.array)?.into_owned()),
             d => return bad(format!("tag array has dtype {d:?}")),
         };
+        let want = match target {
+            MeshEntityKind::Vertex => nv,
+            MeshEntityKind::Edge => ne,
+            MeshEntityKind::Face => nf,
+            _ => nc,
+        };
+        len_is(&t.array, values.len(), want)?;
         tags.push(TagColumn::new(t.name.clone(), target, values));
     }
 
+    let mesh_id = parse_id(&mi.id)?;
     let mut level_maps = Vec::new();
     for l in &h.level_maps {
-        level_maps.push(SmshLevelMap {
+        let m = SmshLevelMap {
             fine: parse_id(&l.fine)?,
             coarse: parse_id(&l.coarse)?,
             fine_hash: parse_hash(&l.fine_hash)?,
             coarse_hash: parse_hash(&l.coarse_hash)?,
             coarse_of: f.u32s(&l.coarse_of)?.into_owned(),
             face_map: l.face_map.as_ref().map(|n| f.u32s(n).map(Cow::into_owned)).transpose()?,
-        });
+        };
+        if mesh_id != m.fine && mesh_id != m.coarse {
+            return bad(format!("level map {} -> {} does not involve mesh {mesh_id}", m.fine, m.coarse));
+        }
+        if mesh_id == m.fine {
+            len_is(&l.coarse_of, m.coarse_of.len(), nc)?;
+            if let (Some(fm), Some(n)) = (&m.face_map, &l.face_map) {
+                len_is(n, fm.len(), nf)?;
+            }
+        }
+        if mesh_id == m.coarse {
+            below(&l.coarse_of, &m.coarse_of, nc)?;
+            if let (Some(fm), Some(n)) = (&m.face_map, &l.face_map) {
+                below_or_none(n, fm, nf)?;
+            }
+        }
+        level_maps.push(m);
     }
     let mut extrusions = Vec::new();
     for x in &h.extrusions {
@@ -531,14 +577,25 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
             cell_base: f.u32s(&x.cell_base)?.into_owned(),
             cell_layer: f.u32s(&x.cell_layer)?.into_owned(),
         };
-        len_is("extrusion z", e.z.len(), x.n_layers as usize + 1)?;
+        let n_layers = usize::try_from(x.n_layers).or_else(|_| bad("extrusion n_layers is too large"))?;
+        len_is("extrusion z", e.z.len(), n_layers.saturating_add(1))?;
         len_is("extrusion cell_layer", e.cell_layer.len(), e.cell_base.len())?;
+        below("extrusion cell_layer", &e.cell_layer, n_layers)?;
+        if mesh_id == e.extruded {
+            len_is("extrusion cell_base", e.cell_base.len(), nc)?;
+        } else if mesh_id == e.base {
+            let want = nc.checked_mul(n_layers).map_or_else(|| bad("extrusion size overflows"), Ok)?;
+            len_is("extrusion cell_base", e.cell_base.len(), want)?;
+            below("extrusion cell_base", &e.cell_base, nc)?;
+        } else {
+            return bad(format!("extrusion {} -> {} does not involve mesh {mesh_id}", e.base, e.extruded));
+        }
         extrusions.push(e);
     }
 
     Ok(SmshMesh {
         header: h.clone(),
-        mesh_id: parse_id(&mi.id)?,
+        mesh_id,
         dim,
         x,
         y,

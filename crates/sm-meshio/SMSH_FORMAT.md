@@ -37,6 +37,17 @@ A reader must check: magic; `16 + header_len <= file size` and `% 64 == 0`; `for
 and `offset + nbytes <= file size - D`; array names are unique. `crc32` verification is
 optional but cheap (see 3).
 
+A reader that decodes the arrays into a mesh must also range-check every index column before
+use: `face_left` below `nc`; `face_right` below `nc` or `0xFFFFFFFF`; `cell_parent` likewise;
+`face_vertices`, `cell_corners`, `edge_vertices` below `nv`; `cell_faces` entries `w >> 1` below
+`nf`; `cell_shape` and `face_kind` inside their code tables (3.1); set words by `members` kind
+against `nv` / `nf` / `nc` / `np` (sides: `w >> 1` against `nf`; shell sides: `w >> 1` against
+`nc`); `edge_face_edge` below `ne`; `ho_cell` strictly ascending and below `nc`, `fc_face`
+strictly ascending and below `nf`, `ho_nodes` / `fc_nodes` below `np`; tag columns of exactly
+the entity count of their target; `n_points >= n_vertices`; level maps and extrusions sized and
+ranged for the role of the file's mesh (2.5, 2.6). Violations are a malformed file, not
+undefined behaviour. `sm-meshio` does this in `SmshFile::decode`.
+
 ## 2. Header (JSON)
 
 A single JSON object. Unknown fields are ignored. Writers emit compact JSON with the field order
@@ -133,6 +144,14 @@ taking side A to side B (`B = matrix * A + translation`); `improper` is true for
 `order` is the order of the generated cyclic group (`null` = infinite). `face_set` / `mate_set`
 name face or side sets of this file holding sides A and B (`mate_set` is null for a self-paired
 mirror). The parameters are the source of truth; the matrix is derived.
+
+**Why `params` is its own schema.** The file format does not embed the serde form of
+`sm_model_api::Deck`. That shape is a Rust type owned by the model crate (enum tagging, field
+names, `Turns` as a struct, `#[non_exhaustive]` variants) and may change with it, while a `.smsh`
+file must stay readable from any language for as long as its major version lives. `params` is
+therefore specified here (the three variants above, plain numbers and arrays), and the Rust
+side converts with `DeckRecord::from_deck`. A new deck variant needs a minor version bump of
+this spec (new `kind`); a writer meeting an unknown model variant returns `Unsupported`.
 
 ### 2.8 `provenance`
 

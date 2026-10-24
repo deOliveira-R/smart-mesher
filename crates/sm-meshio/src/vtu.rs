@@ -16,7 +16,7 @@
 //! points); see `DESIGN.md`.
 
 use crate::error::{MeshioError, Result};
-use crate::le::pack;
+use crate::le::{pack, pack_slice};
 use rayon::prelude::*;
 use sm_mesh_api::{CellIx, CellShape, MeshEntityKind, MeshRead, SetMembers, TagValues};
 use std::io::Write;
@@ -150,10 +150,23 @@ fn cell_block(m: &dyn MeshRead, lo: usize, hi: usize) -> Result<CellBlock> {
     Ok(b)
 }
 
-fn idx_arr(name: &str, vals: impl Iterator<Item = u64> + Clone, n: usize, wide: bool) -> Arr {
-    let v: Vec<u64> = vals.collect();
-    debug_assert_eq!(v.len(), n);
-    if wide { Arr::new(name, "Int64", 1, pack(n, |i| v[i] as i64)) } else { Arr::new(name, "Int32", 1, pack(n, |i| v[i] as i32)) }
+/// One little-endian index in the output width (`u64::MAX` becomes -1).
+#[inline]
+fn put_idx(out: &mut Vec<u8>, v: u64, wide: bool) {
+    if wide { out.extend_from_slice(&(v as i64).to_le_bytes()) } else { out.extend_from_slice(&(v as i32).to_le_bytes()) }
+}
+
+fn idx_arr(name: &str, bytes: Vec<u8>, wide: bool) -> Arr {
+    Arr::new(name, if wide { "Int64" } else { "Int32" }, 1, bytes)
+}
+
+/// Tag values must have exactly one entry per entity.
+fn check_tag_len(name: &str, got: usize, want: usize) -> Result<()> {
+    if got == want {
+        Ok(())
+    } else {
+        Err(MeshioError::Inconsistent(format!("tag '{name}' has {got} values for {want} entities")))
+    }
 }
 
 struct Built {
@@ -186,39 +199,40 @@ fn build_arrays(m: &dyn MeshRead, o: &VtuOptions) -> Result<Built> {
     let wide = np >= 1 << 31 || conn_total >= 1 << 31 || faces_total >= 1 << 31;
     let has_poly = faces_total > 0;
 
+    // Pack straight from the block vectors into the output byte buffers.
+    let isz = if wide { 8 } else { 4 };
     let mut types = Vec::with_capacity(nc);
-    let mut conn: Vec<u64> = Vec::with_capacity(conn_total);
-    let mut offsets: Vec<u64> = Vec::with_capacity(nc);
-    let mut faces: Vec<u64> = Vec::with_capacity(faces_total);
-    let mut faceoffsets: Vec<u64> = Vec::new();
+    let mut conn: Vec<u8> = Vec::with_capacity(conn_total * isz);
+    let mut offsets: Vec<u8> = Vec::with_capacity(nc * isz);
+    let mut faces: Vec<u8> = Vec::with_capacity(faces_total * isz);
+    let mut faceoffsets: Vec<u8> = Vec::with_capacity(if has_poly { nc * isz } else { 0 });
     let (mut acc, mut facc) = (0u64, 0u64);
     for b in &blocks {
         types.extend_from_slice(&b.types);
-        conn.extend(b.conn.iter().map(|v| u64::from(*v)));
-        faces.extend(b.faces.iter().map(|v| u64::from(*v)));
+        for v in &b.conn {
+            put_idx(&mut conn, u64::from(*v), wide);
+        }
+        for v in &b.faces {
+            put_idx(&mut faces, u64::from(*v), wide);
+        }
         for (i, l) in b.conn_len.iter().enumerate() {
             acc += u64::from(*l);
-            offsets.push(acc);
-            let fl = u64::from(b.faces_len[i]);
+            put_idx(&mut offsets, acc, wide);
             if has_poly {
                 // -1 (all ones) marks a cell without a face stream.
                 if b.types[i] == VTK_POLYHEDRON {
-                    facc += fl;
-                    faceoffsets.push(facc);
+                    facc += u64::from(b.faces_len[i]);
+                    put_idx(&mut faceoffsets, facc, wide);
                 } else {
-                    faceoffsets.push(u64::MAX);
+                    put_idx(&mut faceoffsets, u64::MAX, wide);
                 }
             }
         }
     }
-    let mut cells = vec![
-        idx_arr("connectivity", conn.iter().copied(), conn.len(), wide),
-        idx_arr("offsets", offsets.iter().copied(), nc, wide),
-        Arr::new("types", "UInt8", 1, types),
-    ];
+    let mut cells = vec![idx_arr("connectivity", conn, wide), idx_arr("offsets", offsets, wide), Arr::new("types", "UInt8", 1, types)];
     if has_poly {
-        cells.push(idx_arr("faces", faces.iter().copied(), faces.len(), wide));
-        cells.push(idx_arr("faceoffsets", faceoffsets.iter().copied(), nc, wide));
+        cells.push(idx_arr("faces", faces, wide));
+        cells.push(idx_arr("faceoffsets", faceoffsets, wide));
     }
 
     // Point data.
@@ -248,9 +262,16 @@ fn build_arrays(m: &dyn MeshRead, o: &VtuOptions) -> Result<Built> {
     }
     if o.tags {
         for t in m.tags().iter().filter(|t| t.target == MeshEntityKind::Vertex) {
+            // One value per vertex; extra high-order points past `nv` carry the fill value.
             match &t.values {
-                TagValues::I64(v) => pd.push(Arr::new(format!("tag:{}", t.name), "Int64", 1, pack(np, |i| v.get(i).copied().unwrap_or(0)))),
-                TagValues::F64(v) => pd.push(Arr::new(format!("tag:{}", t.name), "Float64", 1, pack(np, |i| v.get(i).copied().unwrap_or(f64::NAN)))),
+                TagValues::I64(v) => {
+                    check_tag_len(&t.name, v.len(), nv)?;
+                    pd.push(Arr::new(format!("tag:{}", t.name), "Int64", 1, pack(np, |i| v.get(i).copied().unwrap_or(0))));
+                }
+                TagValues::F64(v) => {
+                    check_tag_len(&t.name, v.len(), nv)?;
+                    pd.push(Arr::new(format!("tag:{}", t.name), "Float64", 1, pack(np, |i| v.get(i).copied().unwrap_or(f64::NAN))));
+                }
                 _ => return Err(MeshioError::Unsupported(format!("tag '{}' has an unknown value type", t.name))),
             }
         }
@@ -292,8 +313,14 @@ fn build_arrays(m: &dyn MeshRead, o: &VtuOptions) -> Result<Built> {
     if o.tags {
         for t in m.tags().iter().filter(|t| t.target == MeshEntityKind::Cell) {
             match &t.values {
-                TagValues::I64(v) => cd.push(Arr::new(format!("tag:{}", t.name), "Int64", 1, pack(nc, |i| v.get(i).copied().unwrap_or(0)))),
-                TagValues::F64(v) => cd.push(Arr::new(format!("tag:{}", t.name), "Float64", 1, pack(nc, |i| v.get(i).copied().unwrap_or(f64::NAN)))),
+                TagValues::I64(v) => {
+                    check_tag_len(&t.name, v.len(), nc)?;
+                    cd.push(Arr::new(format!("tag:{}", t.name), "Int64", 1, pack_slice(v)));
+                }
+                TagValues::F64(v) => {
+                    check_tag_len(&t.name, v.len(), nc)?;
+                    cd.push(Arr::new(format!("tag:{}", t.name), "Float64", 1, pack_slice(v)));
+                }
                 _ => return Err(MeshioError::Unsupported(format!("tag '{}' has an unknown value type", t.name))),
             }
         }

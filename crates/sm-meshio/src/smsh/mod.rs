@@ -11,6 +11,6 @@ pub use format::{
 };
 #[cfg(feature = "mmap")]
 pub use reader::SmshMap;
-pub use reader::{SmshEdges, SmshExtrusion, SmshFile, SmshLevelMap, SmshMesh, SmshSet};
+pub use reader::{SmshExtrusion, SmshFile, SmshLevelMap, SmshMesh};
 pub(crate) use writer::check_columns;
 pub use writer::SmshWriter;
