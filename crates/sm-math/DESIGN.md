@@ -29,6 +29,11 @@ thread count.
 | `linalg` | `Mat3`/`Mat4`, `solve3`, `solve4`, `inverse3`, `det3`, `det4`, `sym3_eigen`, `svd3` |
 | `sum` | `KahanSum`, `NeumaierSum`, `par_sum*`, `par_reduce` |
 
+Name collision: `sm_math::Sign` (three-valued) and `sm_math::interval::Interval` (rigorous
+enclosure, private fields) are unrelated to `sm-geom-api`'s `implicit::Sign` (two-valued side) and
+`domain::Interval` (parameter domain, public fields). `sm-math` is L0, below the API crates, so
+this is not duplication; alias on import (`use sm_math::Sign as ExactSign`) when using both.
+
 `Point3`, `Vector3` and `Transform` are `sm-core`'s and are re-exported; nothing is redefined.
 2D predicates take `[f64; 2]` (there is no `Point2` in `sm-core`); 3D predicates take `Point3`.
 
@@ -49,7 +54,9 @@ Stages:
 2. **Exact.** Otherwise the *same polynomial* is evaluated with `Expansion` arithmetic on exact
    coordinate differences (`two_diff`). Expansions are non-overlapping sequences of doubles; add,
    scale and multiply are exact barring overflow/underflow, so the sign of the top component is the
-   true sign. No intermediate adaptive stages (Shewchuk's B/C/D): see "Known gaps" in the report.
+   true sign. Stage B (exact determinant of the rounded differences, with bound B) sits between the
+   filter and the full exact evaluation; Shewchuk's stages C/D are not implemented. So: A + B + full
+   exact, no C/D.
    Measured cost (release, x86-64): 4 ns / 11 ns / 9 ns / 36 ns per filtered
    `orient2d` / `orient3d` / `incircle` / `insphere`; exactly degenerate inputs 0.2 / 0.4 / 0.8 / 3 us.
 
@@ -106,7 +113,10 @@ the bracket, converges too slowly, or the derivative is zero/non-finite.
 Partial-pivot elimination with a relative singularity test (`16*EPSILON*max|a_ij|`), so uniformly
 scaled matrices behave identically. `sym3_eigen`: cyclic Jacobi, fixed pair order, ascending
 eigenvalues, sign-canonical eigenvectors (largest component positive). `svd3`: one-sided Jacobi
-(Hestenes), never forms `A^T A`, completes `U` for rank-deficient input.
+(Hestenes), never forms `A^T A`, completes `U` for rank-deficient input, and flushes columns with squared norm below
+`EPSILON^2 ||A||_F^2` (so parallel rounding-noise columns, e.g. identical rows, cannot stall the
+sweeps). Accuracy is absolute, `O(EPSILON ||A||)`; it does not resolve singular values more than
+~1e300 below the largest entry.
 
 ## Summation
 

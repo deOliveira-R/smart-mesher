@@ -2,8 +2,11 @@
 //!
 //! Each predicate first evaluates the determinant in plain `f64` together with a rigorous
 //! forward error bound (Shewchuk's "stage A" filter). When the bound proves the sign, that is
-//! the answer. Otherwise the same polynomial is re-evaluated exactly with expansion
-//! arithmetic ([`crate::exact`]), which always yields the true sign, zero included.
+//! the answer. Otherwise stage B re-evaluates the determinant of the rounded differences exactly
+//! (accepted when its bound clears or every difference was exact). Only if that is inconclusive
+//! is the full polynomial re-evaluated exactly with expansion arithmetic ([`crate::exact`]),
+//! which always yields the true sign, zero included. So: A + B + full exact; Shewchuk's stages
+//! C/D are not implemented (performance only, never correctness).
 //!
 //! # Conventions (identical to Shewchuk's `predicates.c`)
 //! - [`orient2d`] is positive when `a, b, c` are in counter-clockwise order.
@@ -24,6 +27,11 @@
 //! and underflow. Outside that range the functions may return a wrong sign; the `try_*`
 //! variants check the range and return [`PredicateError::OutOfRange`]. Coordinates in
 //! practical models (metres, millimetres, normalized units) are far inside it.
+//!
+//! The plain predicates do not check the range and can silently return a wrong nonzero sign
+//! for subnormal inputs. For example `incircle([1.0, 1.75], [1.5, 0.75], [1.0, -0.25],
+//! [-0.75, -5e-324])` yields `Negative`, but the points are cocircular at `y = 0` and the true
+//! answer is `Positive`. Use the `try_*` variants whenever inputs may be subnormal or huge.
 //!
 //! # Platform independence
 //! No FMA, no extended precision, no rounding-mode changes: only IEEE-754 binary64 `+ - *` in

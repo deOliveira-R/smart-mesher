@@ -247,8 +247,8 @@ pub fn newton_bisect(
     let (min_x, max_x) = (a.min(b), a.max(b));
     let mut x = x0
         .filter(|v| v.is_finite())
-        .map_or(0.5 * (a + b), |v| v.clamp(min_x, max_x));
-    let mut dx_old = (b - a).abs();
+        .map_or(0.5 * a + 0.5 * b, |v| v.clamp(min_x, max_x));
+    let mut dx_old = span(a, b).abs();
     let mut dx = dx_old;
     let (mut fx, mut dfx) = fdf(x);
     for iter in 1..=opts.max_iter {
@@ -273,7 +273,7 @@ pub fn newton_bisect(
         let prev = x;
         if !dfx.is_finite() || dfx == 0.0 || newton_out || slow {
             dx_old = dx;
-            dx = 0.5 * (hi - lo);
+            dx = 0.5 * span(lo, hi);
             x = lo + dx;
         } else {
             dx_old = dx;
@@ -281,7 +281,7 @@ pub fn newton_bisect(
             x -= dx;
         }
         let tol = x_tol + 2.0 * f64::EPSILON * x.abs();
-        if x == prev || dx.abs() <= tol || (hi - lo).abs() <= tol {
+        if x == prev || dx.abs() <= tol || span(lo, hi).abs() <= tol {
             let (fx_end, _) = fdf(x);
             return Ok(Root {
                 x,

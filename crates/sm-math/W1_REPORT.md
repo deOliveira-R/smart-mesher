@@ -4,7 +4,7 @@
 
 Implemented `crates/sm-math` per the task:
 
-- `predicates`: `orient2d`, `orient3d`, `incircle`, `insphere` with Shewchuk's stage-A filter and an
+- `predicates`: `orient2d`, `orient3d`, `incircle`, `insphere` with Shewchuk's stage-A filter, stage B and an
   exact expansion fallback; `*_det` variants; `try_*` range-checked variants.
 - `exact`: `two_sum`/`two_diff`/`fast_two_sum`/`two_product` (Dekker, no FMA), public `Expansion`
   arithmetic, `det_exact`.
@@ -56,13 +56,13 @@ Benchmarks (release, this container; `cargo bench -p sm-math --bench kernels`): 
 
 ## Deviations from the contracts' intent
 
-- **Exact stage is filter + full exact, not Shewchuk's four-stage adaptive scheme.** Stages B-D
-  (progressively tighter bounds reusing partial results) are not implemented. Correctness is
+- **Predicates are A + B + full exact, not Shewchuk's four-stage adaptive scheme.** Stage B is
+  implemented (fix0); stages C/D (tail corrections) are not. Correctness is
   identical; near-degenerate-but-nonzero inputs that stage B would resolve cheaply instead pay the
   full exact evaluation (0.2-3 us). Allocation: the filter path is allocation-free. The exact
   fallback of `orient2d` fits the 24-component inline `SmallVec` of `Expansion`, but every other
   exact fallback (`orient3d`, `incircle`, `insphere`) spills to the heap (intermediate products have
-  tens to hundreds of components), and so does the SoS tie-break (`Vec<Vec<Expansion>>`). Fine for
+  tens to hundreds of components), and so does the SoS tie-break (one flat `Vec<Expansion>` per call). Fine for
   the rare exact path, not for tight per-element loops that hit exact degeneracy constantly.
 - **Documented input range** for exactness: coordinates `0` or `2^-100 <= |x| <= 2^100`.
 - **SoS lifted coordinate** is perturbed independently (infinitesimal weights), not along the
@@ -74,7 +74,8 @@ Benchmarks (release, this container; `cargo bench -p sm-math --bench kernels`): 
 
 ## Known gaps
 
-- No Shewchuk stages B-D (above).
+- No Shewchuk stages C/D (above); the stage-B speedup has not been benchmarked.
+- Plain (non-`try_`) predicates return a wrong nonzero sign for subnormal coordinates (documented).
 - `Interval` lacks `exp`/`ln`/trig; `powi` is repeated multiplication (loose for wide intervals).
 - `svd3` / `sym3_eigen` are 3x3 only; no 2x2/4x4 SVD, no general `N` eigen.
 - Exactness is not guaranteed outside the stated coordinate range (no error is raised by the plain
@@ -137,3 +138,27 @@ Should fix, done:
     over index arrays (`det_minor`). Expansion temporaries may still spill to the heap.
 
 Skipped: none. Not done beyond the above: stages C/D, and enlarging the inline expansion capacity.
+
+## fix1 (review round 2)
+
+1. MUST: `svd3` returned `NoConvergence` for identical-row (rank-1) input at ~28% of random
+   inputs. Cause: exactly parallel columns (including the rounding-noise column) can never meet
+   `|gamma| <= EPSILON*sqrt(alpha*beta)`. Fix: before the orthogonality test, a column with squared
+   norm `<= EPSILON^2 * ||A||_F^2` is zeroed (the standard one-sided Jacobi guard; `U` is then
+   completed as for any rank-deficient input). Tests in `tests/fix1.rs`: the reproducer at scales
+   1e-300..1e254, plus a 30k identical-row fuzz asserting no errors, reconstruction and
+   orthogonality.
+2. `newton_bisect`: initial midpoint, `dx_old`, `dx` and the bracket-width test now use
+   `0.5*a + 0.5*b` and the saturated `span`; wide-bracket tests added.
+3. SoS: sorted matching order is cached per rank permutation (150 `OnceLock` slots), and the
+   per-row `Vec`s are replaced by one flat `Vec<Expansion>` per call. Not re-benchmarked.
+4. SoS fall-through now debug-asserts and returns the new `SosError::Unresolved` instead of a
+   mislabelled `DuplicateId`.
+5. Stale docs fixed (this report, `DESIGN.md`, `predicates.rs` module doc): A + B + full exact.
+6. Subnormal wrong-sign example added to the `predicates` module docs with guidance to use
+   `try_*`; behaviour unchanged.
+7. `svd3` doc claim weakened to absolute `O(EPSILON*||A||)` accuracy; no hypot-style accumulation.
+8. `DESIGN.md` notes the `Sign`/`Interval` name collision with `sm-geom-api`.
+
+Skipped: SHOULD FIX item 4 (Shewchuk stages C/D and keeping exact fallbacks off the heap) is a
+performance-only gap with no correctness impact; not attempted here.

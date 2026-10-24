@@ -8,8 +8,10 @@
 //! - [`sym3_eigen`]: symmetric 3x3 eigen decomposition by cyclic Jacobi. Unlike the closed-form
 //!   (Cardano) solution it stays accurate for repeated and nearly repeated eigenvalues, which
 //!   is exactly what moment and quality computations on regular shapes produce.
-//! - [`svd3`]: singular value decomposition by one-sided Jacobi (Hestenes), which keeps small
-//!   singular values accurate and never forms `AᵀA`.
+//! - [`svd3`]: singular value decomposition by one-sided Jacobi (Hestenes), which never forms
+//!   `AᵀA`. Singular values are accurate to `O(EPSILON * ||A||)` absolute; values below that, or
+//!   more than about 1e300 below the largest entry, are not resolved (columns with squared norm
+//!   below `EPSILON² ||A||_F²` are flushed to zero).
 //!
 //! All routines use a fixed sweep and pair order, so results are deterministic.
 
@@ -422,7 +424,7 @@ fn unit(v: Vector3) -> Vector3 {
 ///
 /// # Errors
 /// [`LinAlgError::NonFinite`] for NaN/inf input, [`LinAlgError::NoConvergence`] if 60 sweeps
-/// do not suffice (not expected).
+/// do not suffice (not expected; identical-row and other rank-deficient inputs converge).
 pub fn svd3(a: &Mat3) -> Result<Svd3, LinAlgError> {
     if a.iter().flatten().any(|v| !v.is_finite()) {
         return Err(LinAlgError::NonFinite);
@@ -440,6 +442,11 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
     let mut w = *a;
     let mut v = IDENTITY3;
     let mut converged = false;
+    // Columns whose squared norm is below this are numerically zero relative to ||A||_F and are
+    // flushed. Without it, parallel rounding-noise columns (e.g. identical rows) never satisfy
+    // the orthogonality test.
+    let fro2: f64 = w.iter().flatten().map(|v| v * v).sum();
+    let tiny = f64::EPSILON * f64::EPSILON * fro2;
     for _ in 0..60 {
         let mut rotated = false;
         for (p, q) in [(0usize, 1usize), (0, 2), (1, 2)] {
@@ -448,6 +455,13 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
                 alpha += row[p] * row[p];
                 beta += row[q] * row[q];
                 gamma += row[p] * row[q];
+            }
+            if alpha.min(beta) <= tiny {
+                let k = if alpha <= beta { p } else { q };
+                for row in w.iter_mut() {
+                    row[k] = 0.0;
+                }
+                continue;
             }
             if gamma == 0.0 || gamma.abs() <= f64::EPSILON * (alpha * beta).sqrt() {
                 continue;

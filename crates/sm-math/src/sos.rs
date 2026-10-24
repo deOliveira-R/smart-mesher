@@ -62,6 +62,10 @@ pub enum SosError {
     /// Two arguments of a degenerate call share an id, so no perturbation can separate them.
     #[error("duplicate perturbation id {0}")]
     DuplicateId(u64),
+    /// No perturbation monomial had a nonzero coefficient. Not reachable for distinct ids;
+    /// reported instead of a wrong sign should an internal invariant ever break.
+    #[error("symbolic perturbation could not resolve the sign")]
+    Unresolved,
 }
 
 /// A partial permutation matrix: up to four `(row, col)` cells with distinct rows and columns.
@@ -104,35 +108,59 @@ fn matchings(n: usize) -> &'static [Matching] {
     T[n - 3].get_or_init(|| gen_matchings(n))
 }
 
+/// Matchings sorted by perturbation order for one rank permutation `pos` (cached per
+/// permutation: at most 6 + 24 + 120 distinct tables).
+fn ordered_matchings(n: usize, pos: &[usize; 5]) -> &'static [Matching] {
+    const SLOTS: usize = 6 + 24 + 120;
+    static CACHE: [OnceLock<Vec<Matching>>; SLOTS] = [const { OnceLock::new() }; SLOTS];
+    // Lehmer code of `pos[..n]` indexes the slot within the block of size n!.
+    let mut code = 0usize;
+    for i in 0..n {
+        let smaller = pos[i + 1..n].iter().filter(|&&p| p < pos[i]).count();
+        code = code * (n - i) + smaller;
+    }
+    let base = match n {
+        3 => 0,
+        4 => 6,
+        _ => 30,
+    };
+    let pos = *pos;
+    CACHE[base + code].get_or_init(|| {
+        let cols = n - 1;
+        let mut keyed: Vec<(u32, Matching)> = matchings(n)
+            .iter()
+            .map(|m| {
+                let key = m.cells[..m.k as usize]
+                    .iter()
+                    .map(|&(r, c)| 1u32 << (pos[r as usize] * cols + c as usize))
+                    .sum();
+                (key, *m)
+            })
+            .collect();
+        keyed.sort_unstable_by_key(|&(key, _)| key);
+        keyed.into_iter().map(|(_, m)| m).collect()
+    })
+}
+
 /// Sign of the determinant of `[entries | 1]` under the perturbation described in the module
-/// docs. `entries[r]` holds the `n - 1` exact non-constant entries of row `r`.
-fn sos_sign(entries: &[Vec<Expansion>], ids: &[u64]) -> Result<Sign, SosError> {
-    let n = entries.len();
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by_key(|&r| ids[r]);
-    for w in order.windows(2) {
+/// docs. `entries` is row-major with `n - 1` exact non-constant entries per row.
+fn sos_sign(entries: &[Expansion], ids: &[u64]) -> Result<Sign, SosError> {
+    let n = ids.len();
+    let mut order = [0usize, 1, 2, 3, 4];
+    order[..n].sort_by_key(|&r| ids[r]);
+    for w in order[..n].windows(2) {
         if ids[w[0]] == ids[w[1]] {
             return Err(SosError::DuplicateId(ids[w[0]]));
         }
     }
-    let mut pos = vec![0usize; n];
-    for (rank, &r) in order.iter().enumerate() {
+    let mut pos = [0usize; 5];
+    for (rank, &r) in order[..n].iter().enumerate() {
         pos[r] = rank;
     }
     let cols = n - 1;
-    let mut keyed: Vec<(u32, &Matching)> = matchings(n)
-        .iter()
-        .map(|m| {
-            let key = m.cells[..m.k as usize]
-                .iter()
-                .map(|&(r, c)| 1u32 << (pos[r as usize] * cols + c as usize))
-                .sum();
-            (key, m)
-        })
-        .collect();
-    keyed.sort_unstable_by_key(|&(key, _)| key);
+    let keyed = ordered_matchings(n, &pos);
     let one = Expansion::from_f64(1.0);
-    for (_, m) in keyed {
+    for m in keyed {
         let cells = &m.cells[..m.k as usize];
         let (mut rows_used, mut cols_used) = (0u32, 0u32);
         let mut parity = 0usize;
@@ -158,29 +186,31 @@ fn sos_sign(entries: &[Vec<Expansion>], ids: &[u64]) -> Result<Sign, SosError> {
             cs[nc] = c;
             nc += 1;
         }
-        let s = det_minor(entries, &one, &rows[..nr], &cs[..nc]).sign();
+        let s = det_minor(entries, cols, &one, &rows[..nr], &cs[..nc]).sign();
         if !s.is_zero() {
             return Ok(if parity.is_multiple_of(2) { s } else { -s });
         }
     }
     // Unreachable for distinct ids: the monomial of a maximal matching has coefficient +-1.
-    Err(SosError::DuplicateId(ids[order[0]]))
+    debug_assert!(false, "SoS fell through with distinct ids");
+    Err(SosError::Unresolved)
 }
 
 /// Exact determinant of the submatrix of `[entries | 1]` on `rows` x `cols` (column index
-/// `entries[r].len()` is the constant column), by Laplace expansion on the first column.
+/// `stride` is the constant column), by Laplace expansion on the first column.
 /// Builds no per-minor matrices; dimensions are at most 5.
 fn det_minor(
-    entries: &[Vec<Expansion>],
+    entries: &[Expansion],
+    stride: usize,
     one: &Expansion,
     rows: &[usize],
     cols: &[usize],
 ) -> Expansion {
     let get = |r: usize, c: usize| -> &Expansion {
-        if c == entries[r].len() {
+        if c == stride {
             one
         } else {
-            &entries[r][c]
+            &entries[r * stride + c]
         }
     };
     match rows.len() {
@@ -202,7 +232,7 @@ fn det_minor(
                 k += 1;
             }
         }
-        let term = e.mul(&det_minor(entries, one, &sub[..k], &cols[1..]));
+        let term = e.mul(&det_minor(entries, stride, one, &sub[..k], &cols[1..]));
         acc = if i % 2 == 0 {
             acc.add(&term)
         } else {
@@ -237,8 +267,11 @@ pub fn orient2d_sos(
     if !s.is_zero() {
         return Ok(s);
     }
-    let row = |t: &Tagged<[f64; 2]>| vec![ex(t.point[0]), ex(t.point[1])];
-    sos_sign(&[row(&a), row(&b), row(&c)], &[a.id, b.id, c.id])
+    let mut v = Vec::with_capacity(6);
+    for t in [&a, &b, &c] {
+        v.extend([ex(t.point[0]), ex(t.point[1])]);
+    }
+    sos_sign(&v, &[a.id, b.id, c.id])
 }
 
 /// [`orient3d`] that never returns zero: ties are broken by symbolic perturbation.
@@ -252,11 +285,11 @@ pub fn orient3d_sos(
     if !s.is_zero() {
         return Ok(s);
     }
-    let row = |t: &Tagged<Point3>| vec![ex(t.point.x), ex(t.point.y), ex(t.point.z)];
-    sos_sign(
-        &[row(&a), row(&b), row(&c), row(&d)],
-        &[a.id, b.id, c.id, d.id],
-    )
+    let mut v = Vec::with_capacity(12);
+    for t in [&a, &b, &c, &d] {
+        v.extend([ex(t.point.x), ex(t.point.y), ex(t.point.z)]);
+    }
+    sos_sign(&v, &[a.id, b.id, c.id, d.id])
 }
 
 /// [`incircle`] that never returns zero: ties are broken by symbolic perturbation.
@@ -270,11 +303,11 @@ pub fn incircle_sos(
     if !s.is_zero() {
         return Ok(s);
     }
-    let row = |t: &Tagged<[f64; 2]>| vec![ex(t.point[0]), ex(t.point[1]), lift2(t.point)];
-    sos_sign(
-        &[row(&a), row(&b), row(&c), row(&d)],
-        &[a.id, b.id, c.id, d.id],
-    )
+    let mut v = Vec::with_capacity(12);
+    for t in [&a, &b, &c, &d] {
+        v.extend([ex(t.point[0]), ex(t.point[1]), lift2(t.point)]);
+    }
+    sos_sign(&v, &[a.id, b.id, c.id, d.id])
 }
 
 /// [`insphere`] that never returns zero: ties are broken by symbolic perturbation.
@@ -289,10 +322,9 @@ pub fn insphere_sos(
     if !s.is_zero() {
         return Ok(s);
     }
-    let row =
-        |t: &Tagged<Point3>| vec![ex(t.point.x), ex(t.point.y), ex(t.point.z), lift3(t.point)];
-    sos_sign(
-        &[row(&a), row(&b), row(&c), row(&d), row(&e)],
-        &[a.id, b.id, c.id, d.id, e.id],
-    )
+    let mut v = Vec::with_capacity(20);
+    for t in [&a, &b, &c, &d, &e] {
+        v.extend([ex(t.point.x), ex(t.point.y), ex(t.point.z), lift3(t.point)]);
+    }
+    sos_sign(&v, &[a.id, b.id, c.id, d.id, e.id])
 }
