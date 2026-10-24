@@ -20,7 +20,7 @@ pub mod value;
 pub use complete::{Candidate, CandidateKind, Completion};
 pub use diag::{Diagnostic, Severity};
 pub use entity::{EntitySet, Relations};
-pub use host::{EngineHost, Host, HostError, PlanHost, QueryRelations, TimelineCommand, TimelineHead};
+pub use host::{EngineHost, Host, HostError, PlanHost, QueryRelations, SessionCommand, TimelineCommand, TimelineHead};
 pub use interp::{Event, Interpreter, Options, RunReport, respell_json};
 pub use value::Val;
 pub use parser::{ParseLimits, ParseOutput, parse, parse_many, parse_with};

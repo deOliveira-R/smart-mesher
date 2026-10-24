@@ -27,10 +27,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
+dependencies = [
+ "anstyle",
+ "anstyle-parse",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "anstyle-parse"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-query"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
+name = "anstyle-wincon"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+dependencies = [
+ "anstyle",
+ "once_cell_polyfill",
+ "windows-sys",
+]
 
 [[package]]
 name = "autocfg"
@@ -209,8 +253,10 @@ version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
 dependencies = [
+ "anstream",
  "anstyle",
  "clap_lex",
+ "strsim",
 ]
 
 [[package]]
@@ -218,6 +264,12 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "core_detect"
@@ -531,6 +583,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "is_terminal_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,6 +664,12 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "once_cell_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oorandom"
@@ -963,6 +1027,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "sm-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "sm-mcp",
+ "sm-protocol",
+ "sm-server",
+]
+
+[[package]]
 name = "sm-core"
 version = "0.0.0"
 dependencies = [
@@ -985,6 +1059,24 @@ dependencies = [
  "sm-testkit",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "sm-fem"
+version = "0.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "sm-core",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-meshio",
+ "sm-model-api",
+ "sm-op-api",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
 ]
 
 [[package]]
@@ -1063,6 +1155,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-mcp"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "sm-op-api",
+ "sm-protocol",
+]
+
+[[package]]
 name = "sm-mesh"
 version = "0.0.0"
 dependencies = [
@@ -1094,6 +1195,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-mesher"
+version = "0.0.0"
+dependencies = [
+ "rayon",
+ "schemars",
+ "serde",
+ "sm-core",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-op-api",
+ "sm-quality",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+]
+
+[[package]]
 name = "sm-meshio"
 version = "0.0.0"
 dependencies = [
@@ -1109,6 +1229,22 @@ dependencies = [
  "sm-model-api",
  "sm-testkit",
  "thiserror",
+]
+
+[[package]]
+name = "sm-model"
+version = "0.0.0"
+dependencies = [
+ "sm-core",
+ "sm-geom",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-math",
+ "sm-model-api",
+ "sm-op-api",
+ "sm-testkit",
+ "sm-topo",
+ "sm-topo-api",
 ]
 
 [[package]]
@@ -1182,6 +1318,96 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-scheme-curve"
+version = "0.0.0"
+dependencies = [
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-mesh",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+]
+
+[[package]]
+name = "sm-scheme-map"
+version = "0.0.0"
+dependencies = [
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-mesh",
+ "sm-quality",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+]
+
+[[package]]
+name = "sm-scheme-mapvol"
+version = "0.0.0"
+dependencies = [
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-mesh",
+ "sm-quality",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+]
+
+[[package]]
+name = "sm-server"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "sm-core",
+ "sm-engine",
+ "sm-fem",
+ "sm-lang",
+ "sm-layer-api",
+ "sm-mesher",
+ "sm-model",
+ "sm-op-api",
+ "sm-protocol",
+ "sm-scheme-api",
+ "sm-scheme-curve",
+ "sm-scheme-map",
+ "sm-scheme-mapvol",
+ "sm-sizing",
+ "sm-tess",
+ "sm-topo",
+]
+
+[[package]]
+name = "sm-sizing"
+version = "0.0.0"
+dependencies = [
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+]
+
+[[package]]
+name = "sm-tess"
+version = "0.0.0"
+dependencies = [
+ "rayon",
+ "sm-core",
+ "sm-geom",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-math",
+ "sm-op-api",
+ "sm-topo-api",
+]
+
+[[package]]
 name = "sm-testkit"
 version = "0.0.0"
 dependencies = [
@@ -1232,6 +1458,12 @@ checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"
@@ -1375,6 +1607,12 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "utf8parse"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "version_check"

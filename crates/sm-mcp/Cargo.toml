@@ -1,0 +1,19 @@
+[package]
+name = "sm-mcp"
+description = "W2 skeleton: T11: MCP server over the protocol."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-protocol = { path = "../sm-protocol" }
+sm-op-api = { path = "../sm-op-api" }
+serde_json = "1"
+
+[lints]
+workspace = true
