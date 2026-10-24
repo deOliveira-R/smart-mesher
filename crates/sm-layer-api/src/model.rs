@@ -285,10 +285,12 @@ pub fn topo_txn<R>(
 }
 
 /// Every id of `ids` (ascending, distinct kinds are consecutive per kind) must be what the
-/// entity table would allocate next, in order; roles must name ids of `ids` or live ids, once.
+/// entity table would allocate next, in order; roles must name ids of `ids` or live ids, once,
+/// and never an id in `retiring` (sorted: what the same transaction retires).
 fn check_adoption(
     state: &State,
     ids: &[EntityId],
+    retiring: &[EntityId],
     roles: &[(&str, &[EntityId])],
 ) -> Result<(), OpError> {
     let mut next: std::collections::BTreeMap<EntityKind, u64> = std::collections::BTreeMap::new();
@@ -309,6 +311,9 @@ fn check_adoption(
             return Err(LayerError::Txn("empty role name".into()).into());
         }
         for m in *members {
+            if retiring.binary_search(m).is_ok() {
+                return Err(LayerError::Txn(format!("role '{role}' lists {m}, which this transaction retires")).into());
+            }
             // An id this transaction did not create must already be live (a surviving id).
             if ids.binary_search(m).is_err() && !state.contains(*m) {
                 return Err(LayerError::Txn(format!("role '{role}' lists {m}, which is neither created by this transaction nor live")).into());
@@ -372,7 +377,11 @@ fn adopt_all(
 ///    ([`ApplyCtx::record_successors`]), skipping successors retired again in the same
 ///    transaction;
 /// 4. `summary.retired` and `model_removed` are retired in ascending `(kind, serial)` order
-///    (`on_retired` reactions of other layers run when the op body returns).
+///    (`on_retired` reactions of other layers run when the op body returns). A `model_removed`
+///    id the entity table never adopted is skipped, as in [`model_txn`].
+///
+/// A role may not list an id that this same transaction retires (`summary.retired` or
+/// `model_removed`): that is a [`LayerError::Txn`].
 ///
 /// The model tables are re-keyed through the operation's lineage ([`Model::apply_lineage`])
 /// before any id is adopted. The adoption and role checks run before anything is changed; a
@@ -385,7 +394,11 @@ pub fn commit_topology(
 ) -> Result<(), OpError> {
     let mut ids: Vec<EntityId> = txn.summary.created.iter().chain(&txn.model_created).copied().collect();
     ids.sort_unstable();
-    check_adoption(ctx.state(), &ids, roles)?;
+    let mut gone: Vec<EntityId> =
+        txn.summary.retired.iter().chain(&txn.model_removed).copied().collect();
+    gone.sort_unstable();
+    gone.dedup();
+    check_adoption(ctx.state(), &ids, &gone, roles)?;
     let lineage = {
         let layer = ctx.layer_mut::<ModelLayer>()?;
         if !layer.pending {
@@ -407,11 +420,15 @@ pub fn commit_topology(
             ctx.record_successors(row.old, &live)?;
         }
     }
-    let mut gone: Vec<EntityId> =
-        txn.summary.retired.iter().chain(&txn.model_removed).copied().collect();
-    gone.sort_unstable();
-    gone.dedup();
     for id in gone {
+        // Model records the entity table never adopted are skipped (as in `model_txn`); cells
+        // the topology store retired must be live.
+        if txn.model_removed.binary_search(&id).is_ok()
+            && txn.summary.retired.binary_search(&id).is_err()
+            && !ctx.state().contains(id)
+        {
+            continue;
+        }
         ctx.retire(id)?;
     }
     Ok(())
@@ -458,11 +475,11 @@ pub fn model_txn<R>(
     let (r, new_ids, removed) = ran?;
     let role_list = roles(&r, &new_ids);
     let role_refs: Vec<(&str, &[EntityId])> = role_list.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-    let adopted = check_adoption(ctx.state(), &new_ids, &role_refs)
+    let adopted = check_adoption(ctx.state(), &new_ids, &removed, &role_refs)
         .and_then(|()| adopt_all(ctx, &new_ids, &role_refs))
         .and_then(|()| {
-            for id in removed {
-                // Ids the entity table never adopted (none are expected) are skipped.
+            for &id in &removed {
+                // Ids the entity table never adopted are skipped (same policy as `commit_topology`).
                 if ctx.state().contains(id) {
                     ctx.retire(id)?;
                 }

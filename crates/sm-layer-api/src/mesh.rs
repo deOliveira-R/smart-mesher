@@ -112,6 +112,19 @@ impl MeshLayer {
         entry: MeshEntry,
         alloc_after: SerialAlloc,
     ) -> Result<(), LayerError> {
+        self.check_insert(id, &entry, &alloc_after)?;
+        self.entries.insert(id, entry);
+        self.alloc = alloc_after;
+        Ok(())
+    }
+
+    /// The validation of [`insert`](Self::insert), without changing the layer.
+    pub fn check_insert(
+        &self,
+        id: EntityId,
+        entry: &MeshEntry,
+        alloc_after: &SerialAlloc,
+    ) -> Result<(), LayerError> {
         if id.kind() != EntityKind::Mesh {
             return Err(LayerError::BadMeshId(format!("{id} is not a Mesh id")));
         }
@@ -127,8 +140,6 @@ impl MeshLayer {
                 return Err(LayerError::AllocRegressed(kind));
             }
         }
-        self.entries.insert(id, entry);
-        self.alloc = alloc_after;
         Ok(())
     }
 
@@ -247,15 +258,19 @@ impl LayerType for MeshLayer {
     }
 }
 
-/// A sorted, deduplicated copy of an id slice for repeated membership tests.
-struct SortedIds(Vec<EntityId>);
+/// A sorted view of an id slice for repeated membership tests. Borrows the slice when it is
+/// already ascending (`Delta.removed` is), otherwise sorts a copy.
+struct SortedIds<'a>(std::borrow::Cow<'a, [EntityId]>);
 
-impl SortedIds {
-    fn new(ids: &[EntityId]) -> Self {
+impl<'a> SortedIds<'a> {
+    fn new(ids: &'a [EntityId]) -> Self {
+        if ids.is_sorted() {
+            return Self(std::borrow::Cow::Borrowed(ids));
+        }
         let mut v = ids.to_vec();
         v.sort_unstable();
         v.dedup();
-        Self(v)
+        Self(std::borrow::Cow::Owned(v))
     }
 
     fn contains(&self, id: EntityId) -> bool {
@@ -294,9 +309,11 @@ pub fn adopt_minted(
 /// entry can never be inserted without its ids being adopted.
 ///
 /// `before` is [`MeshLayer::alloc`] as read before building, `after` the advanced clone; the
-/// entry's mesh id is the id inserted. The `Mesh` id is recorded under `mesh_role`. Adoption
-/// runs first; if the insert is then refused the op must fail as a whole (the engine discards
-/// the scratch state).
+/// entry's mesh id is the id inserted. The `Mesh` id is recorded under `mesh_role`.
+///
+/// Atomic on `Err` from validation: the entry is checked ([`MeshLayer::check_insert`]) and
+/// `before` must equal the layer's current allocator before any id is adopted, so a refused
+/// insert leaves the state untouched even if the caller ignores the error.
 pub fn insert_mesh(
     ctx: &mut ApplyCtx<'_>,
     entry: MeshEntry,
@@ -305,6 +322,13 @@ pub fn insert_mesh(
     mesh_role: &str,
 ) -> Result<(), OpError> {
     let id = entry.mesh().mesh_id();
+    {
+        let layer = ctx.layer::<MeshLayer>()?;
+        layer.check_insert(id, &entry, &after)?;
+        if before.state().ne(layer.alloc().state()) {
+            return Err(LayerError::BadMeshId("the allocator before the build is not the layer's".into()).into());
+        }
+    }
     adopt_minted(ctx, before, &after, mesh_role)?;
     ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;
     Ok(())
@@ -328,13 +352,18 @@ fn mesh_ids(mesh_id: EntityId, m: &dyn MeshRead) -> Vec<EntityId> {
 /// the entity count returns to its pre-insert value and `on_retired` hooks of downstream layers
 /// fire. Serials are never reused: the allocator keeps its counters.
 ///
-/// Fails with [`OpError::UnknownEntity`] when `mesh` is not in the layer.
+/// Atomic: fails with [`OpError::UnknownEntity`] when `mesh` is not in the layer, or when any of
+/// its ids is no longer live (e.g. an op retired one cell of it), and then changes nothing.
 pub fn retire_mesh(ctx: &mut ApplyCtx<'_>, mesh: EntityId) -> Result<(), OpError> {
-    let entry = ctx
-        .layer_mut::<MeshLayer>()?
-        .remove(mesh)
-        .ok_or(OpError::UnknownEntity(mesh))?;
-    for id in mesh_ids(mesh, entry.mesh()) {
+    let ids = {
+        let entry = ctx.layer::<MeshLayer>()?.get(mesh).ok_or(OpError::UnknownEntity(mesh))?;
+        mesh_ids(mesh, entry.mesh())
+    };
+    if let Some(&dead) = ids.iter().find(|i| !ctx.state().contains(**i)) {
+        return Err(OpError::UnknownEntity(dead));
+    }
+    ctx.layer_mut::<MeshLayer>()?.remove(mesh);
+    for id in ids {
         ctx.retire(id)?;
     }
     Ok(())

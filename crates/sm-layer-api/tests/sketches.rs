@@ -114,6 +114,41 @@ impl TypedOp for MeshDelete {
     }
 }
 
+/// Retires one id, then (optionally) tries `retire_mesh` and ignores its error.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CellThenMesh {
+    cell: EntityId,
+    mesh: EntityId,
+    try_mesh: bool,
+}
+
+impl TypedOp for CellThenMesh {
+    const NAME: &'static str = "test.cell_then_mesh";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.retire(self.cell)?;
+        if self.try_mesh {
+            assert!(retire_mesh(ctx, self.mesh).is_err());
+        }
+        Ok(())
+    }
+}
+
+/// Kills a volume, then lists it in a role (must be refused).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct KillThenRole {
+    volume: EntityId,
+}
+
+impl TypedOp for KillThenRole {
+    const NAME: &'static str = "test.kill_then_role";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let (_, txn) = topo_txn(ctx, |topo, _| topo.kill_cascade(self.volume).or_op())?;
+        commit_topology(ctx, &txn, &[("volumes", &[self.volume])])
+    }
+}
+
 /// Inserts a generated hex block (no selection): the large-mesh path.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -359,6 +394,8 @@ fn engine(factory: Factory, cache: DerivedCache) -> Engine {
     reg.register::<DeleteVolume>().expect("delete");
     reg.register::<MeshDelete>().expect("mesh.delete");
     reg.register::<HexBlock>().expect("hex");
+    reg.register::<CellThenMesh>().expect("ctm");
+    reg.register::<KillThenRole>().expect("ktr");
     reg.register::<Block>().expect("block");
     reg.register::<MoveVolume>().expect("move");
     Engine::new(Arc::new(reg), Services::new(), Arc::new(cache)).expect("engine")
@@ -823,4 +860,32 @@ fn surviving_ids_can_be_reported_in_roles() {
         let q = QuietControl::new();
         assert_eq!(s.state_at_from_root(h, &q.control()).expect("replay").hash(), now);
     }
+}
+
+#[test]
+fn roles_may_not_name_ids_the_same_transaction_retires() {
+    let mut s = Session::new(engine(cell_complex, DerivedCache::disabled()));
+    run(&mut s, &brick_op()).expect("brick");
+    let h = s.state().hash();
+    assert!(run(&mut s, &KillThenRole { volume: id(EntityKind::TopoVolume, 1) }).is_err());
+    assert_eq!(s.state().hash(), h);
+}
+
+#[test]
+fn retire_mesh_is_atomic_when_an_id_is_already_gone() {
+    let mut s = Session::new(engine(cell_complex, DerivedCache::disabled()));
+    run(&mut s, &brick_op()).expect("brick");
+    let (_, d) = run(&mut s, &MeshRun { volume: id(EntityKind::TopoVolume, 1), size: 0.5 }).expect("mesh");
+    let mid = d.outputs["mesh"][0];
+    let cell = d.created.iter().copied().find(|i| i.kind() == EntityKind::MeshCell).expect("cell");
+    // Control: retire only the cell.
+    let mut c = Session::new(engine(cell_complex, DerivedCache::disabled()));
+    run(&mut c, &brick_op()).expect("brick");
+    run(&mut c, &MeshRun { volume: id(EntityKind::TopoVolume, 1), size: 0.5 }).expect("mesh");
+    run(&mut c, &CellThenMesh { cell, mesh: mid, try_mesh: false }).expect("control");
+    // The failing retire_mesh must change nothing beyond the cell.
+    run(&mut s, &CellThenMesh { cell, mesh: mid, try_mesh: true }).expect("op");
+    assert_eq!(s.state().hash(), c.state().hash());
+    assert!(s.state().contains(mid));
+    assert_eq!(s.state().layer::<MeshLayer>().expect("layer").len(), 1);
 }
