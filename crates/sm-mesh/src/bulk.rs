@@ -11,7 +11,7 @@ use crate::util::{CHUNK, ErrSink, chunk_bounds, nil, prefix, range, split_by_off
 use rayon::prelude::*;
 use sm_core::Point3;
 use sm_mesh_api::{
-    CellIx, CellShape, Classification, FaceIx, LoopRelation, MAX_FACES, MeshError, Result,
+    MeshBuild, CellIx, CellShape, Classification, FaceIx, LoopRelation, MAX_FACES, MeshError, Result,
     SignedFace, VertexIx, loop_relation,
 };
 use std::ops::Range;
@@ -95,12 +95,91 @@ fn resolve_run(inp: &Input<'_>, run: &[Rec], hd: &mut [u32], bad: &mut Option<Ba
     }
 }
 
+/// Why a template cell is rejected, in the order `add_cell_from_vertices` checks.
+#[derive(Clone, Copy)]
+enum Problem {
+    Count,
+    Dim,
+    /// Loop of a local face: not distinct / wrong length, or an unknown vertex.
+    Loop,
+    /// Corners are not distinct vertices of a template shape.
+    Corners,
+}
+
+/// First problem of a cell, without allocating (cold errors are built by [`Problem::to_error`]).
+fn cell_problem(dim: sm_mesh_api::MeshDim, nv: usize, shape: CellShape, vs: &[VertexIx]) -> Option<Problem> {
+    if shape.vertex_count() != Some(vs.len()) {
+        return Some(Problem::Count);
+    }
+    if shape.dim() != dim {
+        return Some(Problem::Dim);
+    }
+    let mut buf = [VertexIx(0); 4];
+    for lf in shape.local_faces() {
+        for (j, &i) in lf.iter().enumerate() {
+            buf[j] = vs[i as usize];
+        }
+        if crate::builder::check_loop_in(dim, nv, &buf[..lf.len()]).is_err() {
+            return Some(Problem::Loop);
+        }
+    }
+    let distinct = (0..vs.len()).all(|i| (i + 1..vs.len()).all(|j| vs[i] != vs[j]));
+    if !distinct || vs.iter().any(|v| v.get() >= nv) {
+        return Some(Problem::Corners);
+    }
+    None
+}
+
+impl Problem {
+    /// The error `add_cell_from_vertices` reports for this problem.
+    fn to_error(self, dim: sm_mesh_api::MeshDim, nv: usize, shape: CellShape, vs: &[VertexIx]) -> MeshError {
+        match self {
+            Problem::Count => MeshError::State(format!(
+                "{shape:?} needs {:?} vertices, got {}",
+                shape.vertex_count(),
+                vs.len()
+            )),
+            Problem::Dim => MeshError::State(format!("{shape:?} cells do not belong in a {dim:?} mesh")),
+            Problem::Loop => {
+                let mut buf = [VertexIx(0); 4];
+                for lf in shape.local_faces() {
+                    for (j, &i) in lf.iter().enumerate() {
+                        buf[j] = vs[i as usize];
+                    }
+                    if let Err(e) = crate::builder::check_loop_in(dim, nv, &buf[..lf.len()]) {
+                        return e;
+                    }
+                }
+                MeshError::State("cell loop check failed".into())
+            }
+            Problem::Corners => MeshError::State("corners are not distinct vertices of a template shape".into()),
+        }
+    }
+}
+
 impl MeshBuilder {
+    /// Exact incremental error of the first `count` cells (cold path for degenerate cells whose
+    /// corner and clash errors compete).
+    fn replay_error(&self, shapes: &[CellShape], offsets: &[u64], verts: &[VertexIx], count: usize) -> MeshError {
+        let mut scratch = if self.dim == sm_mesh_api::MeshDim::Two { MeshBuilder::surface() } else { MeshBuilder::new() };
+        for _ in 0..self.x.len() {
+            if let Err(e) = scratch.add_vertex(Point3::new(0.0, 0.0, 0.0)) {
+                return e;
+            }
+        }
+        for c in 0..count {
+            if let Err(e) = scratch.add_cell_from_vertices(shapes[c], &verts[range(offsets, c)]) {
+                return e;
+            }
+        }
+        MeshError::State("bulk cell validation failed".into())
+    }
+
     /// Append `n` vertices at once; `f(i)` gives the point of the `i`-th new vertex. Computed in
     /// parallel; returns the range of new vertex indices.
     pub fn add_vertices_with(&mut self, n: usize, f: impl Fn(usize) -> Point3 + Sync) -> Result<Range<usize>> {
         let start = self.x.len();
-        if start + n + self.extra.len() >= u32::MAX as usize - 1 {
+        if start + n + self.extra.len() > u32::MAX as usize - 1 {
             return Err(MeshError::TooLarge);
         }
         let pts: Vec<Point3> = (0..n).into_par_iter().map(&f).collect();
@@ -157,29 +236,27 @@ impl MeshBuilder {
         }
         let dim = self.dim;
         let nv = self.x.len();
+        let (shapes_all, offsets_all, verts_all) = (shapes, offsets, verts);
 
-        // Validate cells (the lowest bad cell is reported, as the incremental path would).
-        let errs = ErrSink::default();
-        (0..n).into_par_iter().for_each(|c| {
-            let vs = &verts[range(offsets, c)];
-            let shape = shapes[c];
-            if shape.vertex_count() != Some(vs.len()) {
-                errs.push(c, MeshError::State(format!(
-                    "{shape:?} needs {:?} vertices, got {}",
-                    shape.vertex_count(),
-                    vs.len()
-                )));
-            } else if shape.dim() != dim {
-                errs.push(c, MeshError::State(format!("{shape:?} cells do not belong in a {dim:?} mesh")));
-            } else if let Some(v) = vs.iter().find(|v| v.get() >= nv) {
-                errs.push(c, MeshError::UnknownVertex(*v));
-            } else if (0..vs.len()).any(|i| (i + 1..vs.len()).any(|j| vs[i] == vs[j])) {
-                errs.push(c, MeshError::InvalidLoop("needs at least 3 distinct vertices".into()));
-            }
+        // Validate cells in the order `add_cell_from_vertices` checks them. The lowest invalid
+        // cell is found first; face clashes are then resolved only over the cells below it (they
+        // depend on valid cells only), so the lowest offending cell wins whatever the kind.
+        let first_bad = (0..n).into_par_iter().position_first(|c| {
+            cell_problem(dim, nv, shapes[c], &verts[range(offsets, c)]).is_some()
         });
-        if let Some(e) = errs.take_first() {
-            return Err(e);
-        }
+        let val_err = first_bad.map(|c| {
+            let e = cell_problem(dim, nv, shapes[c], &verts[range(offsets, c)]);
+            (c, e.unwrap_or(Problem::Corners))
+        });
+        // A cell with bad corners but valid loops takes part in the clash search (the incremental
+        // path checks orientation before corners); one with a bad loop does not.
+        let n_used = match &val_err {
+            None => n,
+            Some((c, Problem::Corners)) => c + 1,
+            Some((c, _)) => *c,
+        };
+        let (shapes, offsets, verts) = (&shapes[..n_used], &offsets[..=n_used], &verts[..offsets[n_used] as usize]);
+        let n = n_used;
 
         // Record bases: cell c owns records rbase[c]..rbase[c + 1], one per local face.
         let counts: Vec<u32> = shapes.par_iter().map(|s| s.local_faces().len() as u32).collect();
@@ -270,7 +347,20 @@ impl MeshBuilder {
             before[w] + (words[w] & ((1u64 << b) - 1)).count_ones()
         };
 
-        if let Some(bad) = bads.into_iter().flatten().min_by_key(|b| b.r) {
+        let bad = bads.into_iter().flatten().min_by_key(|b| b.r);
+        if let Some((cv, p)) = &val_err {
+            let clash_cell = bad.map(|b| rbase.partition_point(|&x| x <= b.r) - 1);
+            match clash_cell {
+                Some(cb) if cb < *cv => {}
+                // Corners that are not distinct can also repeat a face of the cell or clash on
+                // its own: replay (cold path) for the exact incremental error.
+                _ if matches!(p, Problem::Corners) => {
+                    return Err(self.replay_error(shapes, offsets, verts, cv + 1));
+                }
+                _ => return Err(p.to_error(dim, nv, shapes_all[*cv], &verts_all[range(offsets_all, *cv)])),
+            }
+        }
+        if let Some(bad) = bad {
             let f = FaceIx(rank(bad.head));
             return Err(if bad.non_manifold {
                 MeshError::NonManifoldFace(f)

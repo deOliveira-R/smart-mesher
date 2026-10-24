@@ -36,6 +36,44 @@ impl FaceIndex {
         self.slots[i] = (u64::from(tag) << 32) | u64::from(face + 1);
         self.used += 1;
     }
+    /// Remove `face` (hashed to `tag`) with a backward-shift delete; the probe order of the
+    /// remaining equal tags (creation order) is preserved.
+    fn remove(&mut self, tag: u32, face: u32) {
+        if self.slots.is_empty() {
+            return;
+        }
+        let mask = self.slots.len() - 1;
+        let mut i = tag as usize & mask;
+        let want = u64::from(face + 1);
+        loop {
+            let s = self.slots[i];
+            if s == 0 {
+                return;
+            }
+            if s & 0xFFFF_FFFF == want {
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+        self.used -= 1;
+        let mut hole = i;
+        let mut j = i;
+        loop {
+            j = (j + 1) & mask;
+            let s = self.slots[j];
+            if s == 0 {
+                break;
+            }
+            let home = (s >> 32) as usize & mask;
+            // Move s into the hole unless its home lies cyclically in (hole, j].
+            let stays = if hole <= j { hole < home && home <= j } else { hole < home || home <= j };
+            if !stays {
+                self.slots[hole] = s;
+                hole = j;
+            }
+        }
+        self.slots[hole] = 0;
+    }
     fn grow(&mut self) {
         let cap = (self.slots.len() * 2).max(64);
         let old = std::mem::replace(&mut self.slots, vec![0; cap]);
@@ -82,12 +120,40 @@ pub(crate) fn check_class(c: &Classification) -> Result<()> {
     Ok(())
 }
 
+/// `check_loop` of the builder for a mesh of `dim` with `nv` vertices: length and distinctness
+/// first, then unknown vertices.
+pub(crate) fn check_loop_in(dim: MeshDim, nv: usize, l: &[VertexIx]) -> Result<()> {
+    let distinct = if l.len() <= 8 {
+        (0..l.len()).all(|i| (i + 1..l.len()).all(|j| l[i] != l[j]))
+    } else {
+        let mut k: SmallVec<[u32; 16]> = l.iter().map(|v| v.0).collect();
+        k.sort_unstable();
+        k.windows(2).all(|w| w[0] != w[1])
+    };
+    if !dim.facet_len_ok(l.len()) || !distinct {
+        return Err(MeshError::InvalidLoop(match dim {
+            MeshDim::Three => "needs at least 3 distinct vertices".into(),
+            MeshDim::Two => "a dimension-2 facet needs exactly 2 distinct vertices".into(),
+        }));
+    }
+    if let Some(v) = l.iter().find(|v| v.get() >= nv) {
+        return Err(MeshError::UnknownVertex(*v));
+    }
+    Ok(())
+}
+
 /// How much checking `finish` does after building the mesh.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Validation {
     /// Check, in parallel, the rules that the builder input can break (classification kinds and
     /// dimension order, open cells, lineage) and run the full contract validator only when one
     /// fails, to produce its report. Everything else holds by construction. The default.
+    ///
+    /// **Coupling.** `fast_checks` (in `finish.rs`) mirrors the classification, dimension-order,
+    /// lineage and open-cell rules of the frozen `sm_mesh_api::validate`, and sends any mesh with
+    /// high-order cells or face curves to the full validator. A new `validate` rule that builder
+    /// input can break must be added to `fast_checks` too (or use [`Validation::Full`]) until
+    /// the contract exposes the classification rules (api_change_request 3 in `W1_REPORT.md`).
     #[default]
     Fast,
     /// Always run the full sequential `sm_mesh_api::validate` (what the reference builder does).
@@ -105,6 +171,9 @@ pub(crate) const FLAG_TEMPLATE: u8 = 1;
 /// [`sm_mesh_api::validate()`]. [`MeshBuilder::new`] builds dimension-3 meshes,
 /// [`MeshBuilder::surface`] dimension-2 meshes. For large template meshes,
 /// [`MeshBuilder::add_cells_bulk`] builds the face table in parallel.
+///
+/// `finish` validates in [`Validation::Fast`] mode by default, which duplicates some private
+/// rules of `sm_mesh_api::validate`; see [`Validation::Fast`] for the coupling.
 #[derive(Default)]
 pub struct MeshBuilder {
     pub(crate) dim: MeshDim,
@@ -245,23 +314,7 @@ impl MeshBuilder {
     }
 
     fn check_loop(&self, l: &[VertexIx]) -> Result<()> {
-        let distinct = if l.len() <= 8 {
-            (0..l.len()).all(|i| (i + 1..l.len()).all(|j| l[i] != l[j]))
-        } else {
-            let mut k: SmallVec<[u32; 16]> = l.iter().map(|v| v.0).collect();
-            k.sort_unstable();
-            k.windows(2).all(|w| w[0] != w[1])
-        };
-        if !self.dim.facet_len_ok(l.len()) || !distinct {
-            return Err(MeshError::InvalidLoop(match self.dim {
-                MeshDim::Three => "needs at least 3 distinct vertices".into(),
-                MeshDim::Two => "a dimension-2 facet needs exactly 2 distinct vertices".into(),
-            }));
-        }
-        if let Some(v) = l.iter().find(|v| v.get() >= self.x.len()) {
-            return Err(MeshError::UnknownVertex(*v));
-        }
-        Ok(())
+        check_loop_in(self.dim, self.x.len(), l)
     }
 
     /// `add_cell` with an explicit template flag.
@@ -499,9 +552,11 @@ impl MeshBuild for MeshBuilder {
         }
         {
             let mut ix = self.face_index.lock().unwrap_or_else(PoisonError::into_inner);
-            if ix.upto > len {
-                *ix = FaceIndex::default();
+            for f in (len..ix.upto).rev() {
+                let tag = Self::tag_of(self.loop_of(f));
+                ix.remove(tag, f as u32);
             }
+            ix.upto = ix.upto.min(len);
         }
         self.face_verts.truncate(self.face_off[len] as usize);
         self.face_off.truncate(len + 1);

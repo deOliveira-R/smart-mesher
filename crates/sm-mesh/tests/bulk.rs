@@ -195,3 +195,149 @@ fn bulk_then_incremental_calls_work_together() {
     assert_eq!(added.reused.iter().filter(|r| **r).count(), 1);
     assert!(b.add_uniform_cells(CellShape::Hex, &slab(&vs, 1, false)).is_err());
 }
+
+/// First error of adding `cells` one by one on a builder with `nv` vertices.
+fn incremental_error(nv: usize, cells: &[Vec<VertexIx>]) -> Option<MeshError> {
+    let mut b = MeshBuilder::new();
+    for i in 0..nv {
+        b.add_vertex(Point3::new(i as f64, 0.0, 0.0)).unwrap();
+    }
+    cells.iter().find_map(|c| b.add_cell_from_vertices(CellShape::Hex, c).err())
+}
+
+fn bulk_error(nv: usize, cells: &[Vec<VertexIx>]) -> Option<MeshError> {
+    let mut b = MeshBuilder::new();
+    for i in 0..nv {
+        b.add_vertex(Point3::new(i as f64, 0.0, 0.0)).unwrap();
+    }
+    let flat: Vec<VertexIx> = cells.iter().flatten().copied().collect();
+    let r = b.add_uniform_cells(CellShape::Hex, &flat);
+    if r.is_err() {
+        assert_eq!((b.cell_count(), b.face_count()), (0, 0), "builder changed on error");
+    }
+    r.err()
+}
+
+#[test]
+fn bulk_reports_the_incremental_error_of_the_lowest_offending_cell() {
+    let ix = |a: [u32; 8]| a.iter().map(|&i| VertexIx(i)).collect::<Vec<_>>();
+    let lat = {
+        let mut b = MeshBuilder::new();
+        unit(&mut b, 3)
+    };
+    let good = |i, flip| slab(&lat, i, flip);
+    let mut bad99 = good(2, false);
+    bad99[3] = VertexIx(99);
+    let mut dup2 = good(2, false);
+    dup2[1] = dup2[0];
+    let cases: Vec<(&str, Vec<Vec<VertexIx>>)> = vec![
+        ("opposite corners equal", vec![ix([0, 1, 2, 3, 4, 5, 0, 7])]),
+        ("loop error before unknown vertex", vec![ix([0, 0, 2, 3, 4, 5, 6, 99])]),
+        ("clash then unknown vertex", vec![good(0, false), good(1, true), bad99.clone()]),
+        ("clash then duplicate", vec![good(0, false), good(1, true), dup2.clone()]),
+        ("unknown vertex before clash", vec![good(0, false), bad99, good(1, true)]),
+        ("duplicate before clash", vec![good(0, false), dup2, good(1, true)]),
+    ];
+    for (name, cells) in cases {
+        let want = incremental_error(16, &cells);
+        assert!(want.is_some(), "{name}: incremental must fail");
+        assert_eq!(bulk_error(16, &cells), want, "{name}");
+    }
+    // Pin the kinds the report names.
+    let a = [ix([0, 1, 2, 3, 4, 5, 0, 7])];
+    assert!(matches!(bulk_error(16, &a), Some(MeshError::State(_))));
+    let b = [ix([0, 0, 2, 3, 4, 5, 6, 99])];
+    assert!(matches!(bulk_error(16, &b), Some(MeshError::InvalidLoop(_))));
+    let c = [good(0, false), good(1, true), {
+        let mut v = good(2, false);
+        v[3] = VertexIx(99);
+        v
+    }];
+    assert!(matches!(bulk_error(16, &c), Some(MeshError::InconsistentOrientation(_))));
+}
+
+// ------------------------------------------------------- randomized bulk vs reference
+
+use proptest::prelude::*;
+use sm_core::EntityId;
+use sm_testkit::strategies::config;
+
+/// Classify everything a random cell soup needs so `finish` reaches its later checks.
+fn classify_all<B: MeshBuild>(b: &mut B) {
+    let on = |k, n| Classification::on(EntityId::new(k, n).unwrap());
+    let (ck, fk) = if b.dim() == MeshDim::Two {
+        (EntityKind::TopoFace, EntityKind::TopoEdge)
+    } else {
+        (EntityKind::TopoVolume, EntityKind::TopoFace)
+    };
+    for v in 0..b.vertex_count() {
+        let _ = b.set_class(MeshEntityRef::Vertex(VertexIx::new(v)), on(EntityKind::TopoVertex, 1));
+    }
+    for c in 0..b.cell_count() {
+        let _ = b.set_class(MeshEntityRef::Cell(CellIx::new(c)), on(ck, 1));
+    }
+    for f in 0..b.face_count() {
+        if b.face_degree(FaceIx::new(f)) == 1 {
+            let _ = b.set_class(MeshEntityRef::Face(FaceIx::new(f)), on(fk, 1));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(config(400))]
+
+    /// Random cell soups (shared faces, duplicate and unknown vertices, clashes) in dimension 3
+    /// and 2: the bulk path gives the same first error as the reference's cell-by-cell path and,
+    /// when it succeeds, the same finished mesh.
+    #[test]
+    fn bulk_matches_the_reference_cell_by_cell(
+        surface in any::<bool>(),
+        cells in prop::collection::vec((0u8..4, prop::collection::vec(0u8..11, 8..=8)), 1..7),
+        nv in 6usize..10,
+    ) {
+        let shapes3 = [CellShape::Tet, CellShape::Hex, CellShape::Wedge, CellShape::Pyramid];
+        let shapes2 = [CellShape::Tri, CellShape::Quad, CellShape::Tri, CellShape::Quad];
+        let list: Vec<(CellShape, Vec<VertexIx>)> = cells
+            .iter()
+            .map(|(s, v)| {
+                let shape = if surface { shapes2[*s as usize] } else { shapes3[*s as usize] };
+                let k = shape.vertex_count().unwrap();
+                (shape, v[..k].iter().map(|&x| VertexIx(u32::from(x))).collect())
+            })
+            .collect();
+        let (mut r, mut m) = if surface {
+            (ReferenceBuilder::surface(), MeshBuilder::surface())
+        } else {
+            (ReferenceBuilder::new(), MeshBuilder::new())
+        };
+        for i in 0..nv {
+            r.add_vertex(Point3::new(i as f64, 0.0, 0.0)).unwrap();
+            m.add_vertex(Point3::new(i as f64, 0.0, 0.0)).unwrap();
+        }
+        let want_err = list.iter().find_map(|(s, v)| r.add_cell_from_vertices(*s, v).err());
+        let shapes: Vec<CellShape> = list.iter().map(|c| c.0).collect();
+        let mut offsets = vec![0u64];
+        let mut verts = Vec::new();
+        for (_, v) in &list {
+            verts.extend_from_slice(v);
+            offsets.push(verts.len() as u64);
+        }
+        let got = m.add_cells_bulk(&shapes, &offsets, &verts);
+        prop_assert_eq!(want_err.clone(), got.clone().err(), "{:?}", list);
+        if want_err.is_some() {
+            prop_assert_eq!((m.cell_count(), m.face_count()), (0, 0));
+        } else {
+            classify_all(&mut r);
+            classify_all(&mut m);
+            let (w, g) = (r.finish(&mut SerialAlloc::new()), m.finish(&mut SerialAlloc::new()));
+            match (w, g) {
+                (Ok(w), Ok(g)) => {
+                    assert_same(&w.mesh, &g.mesh, "bulk soup");
+                    prop_assert_eq!(w.face_remap, g.face_remap);
+                }
+                (Err(w), Err(g)) => prop_assert_eq!(w, g),
+                (w, g) => prop_assert!(false, "reference {:?} vs bulk {:?}", w.map(|_| ()), g.map(|_| ())),
+            }
+        }
+    }
+}

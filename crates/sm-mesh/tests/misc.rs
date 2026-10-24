@@ -153,3 +153,43 @@ fn bulk_edge_cases() {
     c.add_uniform_cells(CellShape::Hex, &vs).unwrap();
     assert!(c.classify_cells_with(|_| Some(good)).is_err());
 }
+
+#[test]
+fn rolled_back_polyhedra_keep_the_face_index_consistent() {
+    // A failing add_polyhedron adds faces and drops them again; the lazy face index must stay
+    // correct (no stale slot for a dropped face, no lost slot for a kept one).
+    let mut b = MeshBuilder::new();
+    let vs: Vec<VertexIx> = (0..40).map(|i| b.add_vertex(Point3::new(f64::from(i), 0.0, 0.0)).unwrap()).collect();
+    let tri = |a: usize, b: usize, c: usize| vec![vs[a], vs[b], vs[c]];
+    let mut kept = Vec::new();
+    for i in 0..30 {
+        let l = tri(i, i + 1, i + 2);
+        kept.push((b.add_face(&l).unwrap(), l));
+    }
+    for round in 0..200 {
+        // Syncs the index past the first two new faces, then fails on the third.
+        let bad = vec![VertexIx(9999), vs[0], vs[1]];
+        let loops = [tri(0, 10 + round % 7, 30), tri(1, 12, 31 + round % 5), bad];
+        let refs: Vec<&[VertexIx]> = loops.iter().map(Vec::as_slice).collect();
+        assert!(b.add_polyhedron(&refs).is_err());
+        assert_eq!(b.face_count(), 30, "round {round}");
+        for (f, l) in &kept {
+            let (g, rel) = b.find_face(l).expect("kept face stays findable");
+            assert_eq!((g, rel), (*f, LoopRelation::Same), "round {round}");
+        }
+        for l in &loops[..2] {
+            assert!(b.find_face(l).is_none(), "dropped face must be gone (round {round})");
+        }
+    }
+    // Faces added afterwards are found at their new indices.
+    let f = b.add_face(&tri(5, 20, 35)).unwrap();
+    assert_eq!(f, FaceIx(30));
+    assert_eq!(b.find_face(&tri(20, 35, 5)).map(|x| x.0), Some(f));
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn id_of_an_out_of_range_index_panics_like_the_reference() {
+    let m = hex_block_bulk([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap().mesh;
+    let _ = m.id(MeshEntityKind::Vertex, 8);
+}

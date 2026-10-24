@@ -244,6 +244,9 @@ enum Fault {
     NonConformalMark(usize),
     OpenCell,
     EdgeAboveItsFaces,
+    FaceCurveBadNode,
+    FaceCurveExtraNodes,
+    HighOrderBadNode,
 }
 
 /// A 2x2x2 block (edges fully classified) with one injected classification fault.
@@ -328,6 +331,37 @@ fn faulty<B: MeshBuild>(mut b: B, fault: Fault, alloc: &mut SerialAlloc) -> Resu
             }
         }
     }
+    match fault {
+        Fault::FaceCurveBadNode | Fault::FaceCurveExtraNodes => {
+            let mut nodes: Vec<NodeRef> = b.face_loop(FaceIx(0)).iter().map(|v| NodeRef::Vertex(*v)).collect();
+            for i in 0..5 {
+                nodes.push(if matches!(fault, Fault::FaceCurveBadNode) {
+                    NodeRef::Vertex(VertexIx(999))
+                } else {
+                    b.add_extra_node(Point3::new(0.5, 0.5, i as f64))?
+                });
+            }
+            b.set_face_curve(FaceIx(0), 2, Basis::LagrangeEquispaced, &nodes)?;
+        }
+        Fault::HighOrderBadNode => {
+            let mut nodes: Vec<NodeRef> = [
+                ix(0, 0, 0),
+                ix(1, 0, 0),
+                ix(1, 1, 0),
+                ix(0, 1, 0),
+                ix(0, 0, 1),
+                ix(1, 0, 1),
+                ix(1, 1, 1),
+                ix(0, 1, 1),
+            ]
+            .iter()
+            .map(|v| NodeRef::Vertex(*v))
+            .collect();
+            nodes.extend(std::iter::repeat_n(NodeRef::Extra(50), 19));
+            b.set_high_order(first_cells[0], 2, Basis::LagrangeEquispaced, &nodes)?;
+        }
+        _ => {}
+    }
     if let Fault::ActiveChildOfActiveParent(c) = fault {
         let c = c.max(1).min(first_cells.len() - 1);
         b.set_cell_parent(first_cells[c], first_cells[0])?;
@@ -371,6 +405,9 @@ fn fault_strategy() -> impl Strategy<Value = Fault> {
         (0usize..24).prop_map(Fault::NonConformalMark),
         Just(Fault::OpenCell),
         Just(Fault::EdgeAboveItsFaces),
+        Just(Fault::FaceCurveBadNode),
+        Just(Fault::FaceCurveExtraNodes),
+        Just(Fault::HighOrderBadNode),
     ]
 }
 
@@ -421,6 +458,8 @@ fn the_fault_scripts_really_exercise_failures() {
         Fault::ConflictingCells,
         Fault::OpenCell,
         Fault::EdgeAboveItsFaces,
+        Fault::FaceCurveBadNode,
+        Fault::HighOrderBadNode,
     ] {
         assert!(run(f).is_err(), "{f:?} should fail");
     }

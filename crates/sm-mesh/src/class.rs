@@ -47,30 +47,24 @@ fn group(ent: &[EntityId]) -> BTreeMap<EntityId, Vec<u32>> {
         .enumerate()
         .map(|(k, chunk)| {
             let base = (k * CHUNK * 4) as u32;
-            let mut m: BTreeMap<EntityId, Vec<u32>> = BTreeMap::new();
+            let mut at: BTreeMap<EntityId, usize> = BTreeMap::new();
             let mut last: Option<(EntityId, usize)> = None;
             let mut slots: Vec<(EntityId, Vec<u32>)> = Vec::new();
             for (i, e) in chunk.iter().enumerate() {
                 let slot = match last {
                     Some((le, s)) if le == *e => s,
                     _ => {
-                        let s = match slots.iter().position(|(x, _)| x == e) {
-                            Some(s) => s,
-                            None => {
-                                slots.push((*e, Vec::new()));
-                                slots.len() - 1
-                            }
-                        };
+                        let s = *at.entry(*e).or_insert_with(|| {
+                            slots.push((*e, Vec::new()));
+                            slots.len() - 1
+                        });
                         last = Some((*e, s));
                         s
                     }
                 };
                 slots[slot].1.push(base + i as u32);
             }
-            for (e, v) in slots {
-                m.insert(e, v);
-            }
-            m
+            slots.into_iter().collect()
         })
         .collect();
     let mut out: BTreeMap<EntityId, Vec<u32>> = BTreeMap::new();

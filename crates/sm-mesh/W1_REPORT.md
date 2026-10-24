@@ -39,10 +39,28 @@ What is tested:
 * **State-machine differential** (`tests/builder_ops.rs`, 600 cases): random valid and invalid builder call sequences; every return value and error, the `finish` outcome and the allocator state agree with the reference.
 * **Bulk equals incremental equals reference** (`tests/bulk.rs`, `properties.rs`): hex blocks, random mixed hex/wedge meshes, random Tri/Quad surface meshes; same provisional face numbering, same errors for the lowest offending cell, builder unchanged on error.
 * **Property tests with the testkit checkers** (`mesh_valid`, `orientation_rule`, `closed_cells`, `positive_volumes`, `watertight`, `classification_complete`, Euler, `conformity`) plus exact volume and boundary area of random blocks.
-* **Fault injection** (`properties.rs`): eleven classes of classification/lineage/open-cell faults; reference, `Validation::Fast` and `Validation::Full` give the same outcome, including the complete violation lists. Mutating a fast check makes the property fail (checked by hand).
+* **Fault injection** (`properties.rs`): fourteen fault classes (classification, lineage, open cells, face curves, high order); reference, `Validation::Fast` and `Validation::Full` give the same outcome, including the complete violation lists. Mutating a fast check makes the property fail (checked by hand).
 * **Edge table and adjacency** (`tests/edges_adjacency.rs`): parallel derivation equals `EdgeTable::derive` (results, errors, allocator state, explicit classes); adjacency tables equal brute force; Euler characteristic of a block.
 * **Determinism** (`tests/determinism.rs`): `sm_testkit::determinism::check` over 1 vs N threads, repeats and concurrent builds, for bulk and incremental blocks, all fixtures in both feeding modes, face remap, adjacency, and a failing build (the reported error is the lowest one).
 * `tests/misc.rs`: `Send + Sync`, zero-copy pointer identity and byte widths, memory density, id ranges, bulk edge cases, `Fast` vs `Full`.
+
+## Fix round fix0 (review findings)
+
+Must fix:
+1. `fast_checks` now returns `false` whenever the mesh holds high-order cells or face curves, so the full validator judges them (the builder cannot range-check `NodeRef::Vertex` tails of a face curve; `Validation::Fast` used to finish `Ok` with PointIx 999 in an 8-point mesh). Builder API unchanged, so errors still equal the reference's. Regression: `tests/curves.rs` (explicit case plus a 200-case property over random curve tails, Fast and Full against the reference; fails without the fix). Cost: meshes with curves skip the fast path (they are rare and small).
+2. `add_cells_bulk` / `add_uniform_cells` report the incremental error of the lowest offending cell. Each cell is checked in the order of `add_cell_from_vertices` (vertex count, dimension, per-face `check_loop`, corners). The lowest invalid cell is found first (parallel `position_first`, no per-cell `format!`); face clashes are then resolved only over the cells below it (or including it when only its corners are bad), and the lowest cell wins; for one cell a loop error beats a clash. A corner-invalid cell that also clashes or repeats a face is replayed incrementally on a scratch builder (cold path, exact error). Tests: `tests/bulk.rs` cases (a)-(d) plus reversed orders, and a 400-case property against the reference cell by cell (dimension 3 and 2, duplicate and unknown vertices, clashes, mixed shapes).
+
+Should fix, done:
+1. `builder_ops` now also runs `add_extra_node`, `set_high_order`, `set_face_curve`, `add_set`, `set_label`, `add_tag` and a `MeshBuilder::surface()` variant; the fault-injection property has face-curve and high-order faults; `tests/curves.rs` covers classified hexes with curves that reach `finish`. The state machine alone did not catch the face-curve bug (a random sequence rarely gets a classified, closed mesh with a bad curve), which is why `curves.rs` and the faults exist. Bulk methods are compared with the reference in `bulk_matches_the_reference_cell_by_cell`.
+2. and 7. `tests/determinism.rs`: bulk 24x20x18 (8640 cells, 51840 records, more than one run-resolution chunk), incremental with edges 20x18x16 (5760 cells), a shuffled 22x20x18 lattice with random vertex numbering and cell order through bulk and incremental at 1/3/10 threads (bit-identical and equal to each other), and a 8640-cell bulk error test where the lowest of three defects must win at 1/3/8 threads. The reference topology/geometry hash comparison from the review was ad hoc and is not repeated in-repo.
+3. `class::group` finds a chunk's slot through a `BTreeMap<EntityId, usize>` (`O(log k)`), not a linear scan.
+4. `truncate_faces` deletes the truncated slots from the face index (backward-shift delete in tag order) instead of dropping the index; a failed `add_polyhedron` no longer costs `O(F)` on the next lookup. Test: `rolled_back_polyhedra_keep_the_face_index_consistent`.
+5. `IdRange::id` panics for `ix >= n` like indexing the reference id column (`MeshRead::id` out of range: test `id_of_an_out_of_range_index_panics_like_the_reference`).
+6. `add_vertices_with` allows the same total as `add_vertex` (one more vertex); the per-cell `format!` in bulk validation is gone (see Must fix 2).
+8. Chosen: document the coupling (rustdoc on `MeshBuilder` and `Validation::Fast`) and keep `Fast` as the default; the curves bug is closed by routing all curve/high-order meshes to the full validator.
+10. 10^6 bulk time is "1.0-1.4 s" in both this report and `DESIGN.md`.
+
+Skipped: 9 (retire `tests/contract_*.rs`): the contract suite is not generic over an implementation yet, so the copies stay; this is already in the deviations list.
 
 ## Deviations from the contracts' intent
 

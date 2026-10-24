@@ -258,6 +258,11 @@ fn ids(alloc: &mut SerialAlloc, kind: EntityKind, n: usize) -> Result<IdRange> {
 /// edge table, set and tag shape) holds by construction in `finish`. `false` means "suspicious":
 /// the caller then runs the full contract validator, which produces the report.
 fn fast_checks(m: &Mesh) -> bool {
+    // High-order cells and face curves carry rules (node range, degree, edge table) that the
+    // builder does not fully enforce: always let the full validator judge them.
+    if !m.ho.is_empty() || !m.fcurve.is_empty() {
+        return false;
+    }
     let dim_of = |e: EntityId| entity_dim(e.kind()).unwrap_or(u8::MAX);
     let vdim: Vec<u8> = m.vclass.ent.par_iter().map(|e| dim_of(*e)).collect();
     let faces_ok = (0..m.n_faces()).into_par_iter().all(|f| {

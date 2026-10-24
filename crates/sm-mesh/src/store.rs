@@ -20,7 +20,9 @@ pub(crate) struct IdRange {
 }
 
 impl IdRange {
+    /// Id of entity `ix`; panics when `ix >= n`, like indexing the reference id column.
     pub(crate) fn id(&self, ix: usize) -> EntityId {
+        assert!(ix < self.n, "entity index {ix} out of bounds (len {})", self.n);
         EntityId::from_raw(self.first.to_raw() + ix as u64).unwrap_or(self.first)
     }
     pub(crate) fn index_of(&self, id: EntityId) -> Option<u32> {

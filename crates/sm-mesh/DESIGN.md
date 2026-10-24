@@ -4,7 +4,7 @@
 
 ## Positioning
 
-Similar to OpenFOAM's `polyMesh` and CGNS NGON/NFACE (face-first storage: face -> vertex loop, face -> (owner, neighbour), cell -> signed faces) and to the `sm-mesh-api` reference implementation, differs in how it is built and stored: flat structure-of-arrays/CSR columns with implicit ids and a compact classification column, a face table constructed by a deterministic parallel sort instead of one hash insertion per face, a parallel `finish` with fixed tie-breaks and error selection, a parallel edge table, adjacency tables (vertex -> cells, cell -> neighbours, edge -> faces) built on demand and cached, and a validation mode that only re-checks what user input can break, giving a 10^6-hexahedron mesh in about 1.2 s on four cores (7.1 s for the reference), bit-identical for 1 and N threads, in about 260 bytes per cell, with primitive columns exposed as byte slices for zero-copy export.
+Similar to OpenFOAM's `polyMesh` and CGNS NGON/NFACE (face-first storage: face -> vertex loop, face -> (owner, neighbour), cell -> signed faces) and to the `sm-mesh-api` reference implementation, differs in how it is built and stored: flat structure-of-arrays/CSR columns with implicit ids and a compact classification column, a face table constructed by a deterministic parallel sort instead of one hash insertion per face, a parallel `finish` with fixed tie-breaks and error selection, a parallel edge table, adjacency tables (vertex -> cells, cell -> neighbours, edge -> faces) built on demand and cached, and a validation mode that only re-checks what user input can break, giving a 10^6-hexahedron mesh in 1.0-1.4 s on four cores (7.1 s for the reference), bit-identical for 1 and N threads, in about 260 bytes per cell, with primitive columns exposed as byte slices for zero-copy export.
 
 ## Layout
 
@@ -69,7 +69,7 @@ No `HashMap` iteration reaches an output (the face index and vertex grid are use
 |---|---|---|---|---|
 | 32^3 | 33 k | 37 ms | 47 ms | 191 ms |
 | 64^3 | 262 k | 305 ms | 514 ms | 1.70 s |
-| 100^3 | 1 M | 1.2-1.4 s | 2.1 s | 7.1 s |
+| 100^3 | 1 M | 1.0-1.4 s | 2.1 s | 7.1 s |
 
 Bulk 64^3 on 1, 2, 4 threads: 511, 335, 229 ms. Queries on 64^3: `vertex_cells` 59 ms, `cell_neighbors` 18 ms; edge table of a 32^3 block 44 ms. Timings on this shared machine vary by up to 2x between runs; the table shows the criterion medians.
 

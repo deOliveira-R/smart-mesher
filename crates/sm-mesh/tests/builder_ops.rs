@@ -29,6 +29,19 @@ enum Op {
     Active(u8, bool),
     FindVertex(i8, i8, i8, u8),
     Query(u8),
+    AddExtra(i8, i8, i8),
+    HighOrder(u8, u8, u8, Vec<(bool, u8)>),
+    FaceCurve(u8, u8, u8, Vec<(bool, u8)>),
+    AddSet(u8, u8, Vec<u8>),
+    SetLabel(u8, Option<i8>),
+    AddTag(u8, u8, u8, bool),
+}
+
+/// What the generic `apply` needs to remember to build valid high-order input.
+#[derive(Default)]
+struct Ctx {
+    cells: Vec<(u32, CellShape, Vec<VertexIx>)>,
+    extra: u32,
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -51,6 +64,14 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (0u8..8, any::<bool>()).prop_map(|(c, a)| Op::Active(c, a)),
         2 => (any::<i8>(), any::<i8>(), any::<i8>(), 0u8..3).prop_map(|(x, y, z, t)| Op::FindVertex(x % 3, y % 3, z % 3, t)),
         2 => (0u8..16).prop_map(Op::Query),
+        1 => (any::<i8>(), any::<i8>(), any::<i8>()).prop_map(|(x, y, z)| Op::AddExtra(x % 3, y % 3, z % 3)),
+        3 => (0u8..8, 0u8..4, 0u8..3, prop::collection::vec((any::<bool>(), any::<u8>()), 0..4))
+            .prop_map(|(c, d, b, t)| Op::HighOrder(c, d, b, t)),
+        3 => (0u8..16, 0u8..3, 0u8..3, prop::collection::vec((any::<bool>(), any::<u8>()), 0..4))
+            .prop_map(|(f, d, b, t)| Op::FaceCurve(f, d, b, t)),
+        2 => (0u8..3, 0u8..3, prop::collection::vec(any::<u8>(), 0..5)).prop_map(|(n, k, m)| Op::AddSet(n, k, m)),
+        1 => (0u8..3, prop::option::of(0i8..3)).prop_map(|(n, l)| Op::SetLabel(n, l)),
+        1 => (0u8..3, 0u8..4, 0u8..4, any::<bool>()).prop_map(|(n, t, d, f)| Op::AddTag(n, t, d, f)),
     ]
 }
 
@@ -68,8 +89,25 @@ fn class(i: u8) -> Classification {
     }
 }
 
+const BASES: [Basis; 3] = [Basis::LagrangeEquispaced, Basis::LagrangeGll, Basis::Serendipity];
+
+/// Extend `nodes` to `want` entries from `tail` (cycled); vertex nodes may be out of range.
+fn fill_nodes(nodes: &mut Vec<NodeRef>, want: Option<usize>, tail: &[(bool, u8)], nv: usize, extra: u32) {
+    let Some(want) = want else { return };
+    let mut i = 0;
+    while nodes.len() < want {
+        let (is_extra, x) = tail.get(i % tail.len().max(1)).copied().unwrap_or((false, 0));
+        nodes.push(if is_extra {
+            NodeRef::Extra(u32::from(x) % (extra + 2))
+        } else {
+            NodeRef::Vertex(VertexIx(u32::from(x) % (nv as u32 + 4)))
+        });
+        i += 1;
+    }
+}
+
 /// Apply one op; the result is a string so reference and subject outcomes compare directly.
-fn apply<B: MeshBuild>(b: &mut B, op: &Op) -> String {
+fn apply<B: MeshBuild>(b: &mut B, op: &Op, ctx: &mut Ctx) -> String {
     let nv = b.vertex_count();
     let vs = |l: &[u8]| -> Vec<VertexIx> { l.iter().map(|&i| VertexIx(u32::from(i) % (nv as u32 + 2))).collect() };
     match op {
@@ -89,7 +127,11 @@ fn apply<B: MeshBuild>(b: &mut B, op: &Op) -> String {
             let n = shape.vertex_count().unwrap_or(4);
             let mut v = vs(l);
             v.resize(n, VertexIx(0));
-            format!("{:?}", b.add_cell_from_vertices(shape, &v))
+            let r = b.add_cell_from_vertices(shape, &v);
+            if let Ok(a) = &r {
+                ctx.cells.push((a.cell.0, shape, v));
+            }
+            format!("{r:?}")
         }
         Op::AddPoly(loops) => {
             let l: Vec<Vec<VertexIx>> = loops.iter().map(|l| vs(l)).collect();
@@ -127,6 +169,65 @@ fn apply<B: MeshBuild>(b: &mut B, op: &Op) -> String {
             let tol = [0.0, 0.5, 1.5][*t as usize % 3];
             format!("{:?}", b.find_vertex(Point3::new(f64::from(*x), f64::from(*y), f64::from(*z)), tol))
         }
+        Op::AddExtra(x, y, z) => {
+            let r = b.add_extra_node(Point3::new(f64::from(*x), f64::from(*y), f64::from(*z)));
+            if r.is_ok() {
+                ctx.extra += 1;
+            }
+            format!("{r:?}")
+        }
+        Op::HighOrder(c, d, bs, tail) => {
+            let nc = b.cell_count() as u32;
+            let cell = u32::from(*c) % (nc + 2);
+            let (degree, basis) = (d % 4 + 1, BASES[*bs as usize % 3]);
+            let (shape, mut nodes) = match ctx.cells.iter().find(|x| x.0 == cell) {
+                Some((_, s, v)) => (*s, v.iter().map(|v| NodeRef::Vertex(*v)).collect::<Vec<_>>()),
+                None => (CellShape::Hex, Vec::new()),
+            };
+            fill_nodes(&mut nodes, node_count(shape, degree, basis), tail, nv, ctx.extra);
+            format!("{:?}", b.set_high_order(CellIx(cell), degree, basis, &nodes))
+        }
+        Op::FaceCurve(f, d, bs, tail) => {
+            let nf = b.face_count() as u32;
+            let face = u32::from(*f) % (nf + 2);
+            let (degree, basis) = (d % 3 + 1, BASES[*bs as usize % 3]);
+            let mut nodes: Vec<NodeRef> = Vec::new();
+            let mut want = None;
+            if face < nf {
+                let l = b.face_loop(FaceIx(face));
+                nodes.extend(l.iter().map(|v| NodeRef::Vertex(*v)));
+                want = face_node_count(l.len(), degree, basis);
+            }
+            fill_nodes(&mut nodes, want, tail, nv, ctx.extra);
+            format!("{:?}", b.set_face_curve(FaceIx(face), degree, basis, &nodes))
+        }
+        Op::AddSet(n, k, m) => {
+            let name = format!("set{n}");
+            let (nf, nc) = (b.face_count() as u32, b.cell_count() as u32);
+            let members = match k % 3 {
+                0 => SetMembers::Vertices(m.iter().map(|&i| VertexIx(u32::from(i) % (nv as u32 + 2))).collect()),
+                1 => SetMembers::Faces(m.iter().map(|&i| FaceIx(u32::from(i) % (nf + 2))).collect()),
+                _ => SetMembers::Cells(m.iter().map(|&i| CellIx(u32::from(i) % (nc + 2))).collect()),
+            };
+            format!("{:?}", b.add_set(&name, members))
+        }
+        Op::SetLabel(n, l) => format!("{:?}", b.set_label(&format!("set{n}"), l.map(i64::from))),
+        Op::AddTag(n, t, d, float) => {
+            let kind = [MeshEntityKind::Vertex, MeshEntityKind::Face, MeshEntityKind::Cell, MeshEntityKind::Edge][*t as usize % 4];
+            let count = match kind {
+                MeshEntityKind::Vertex => nv,
+                MeshEntityKind::Face => b.face_count(),
+                MeshEntityKind::Cell => b.cell_count(),
+                _ => 0,
+            };
+            let len = count + usize::from(*d == 3);
+            let values = if *float {
+                TagValues::F64((0..len).map(|i| i as f64 * 0.5).collect())
+            } else {
+                TagValues::I64((0..len).map(|i| i as i64).collect())
+            };
+            format!("{:?}", b.add_tag(&format!("tag{n}"), kind, values))
+        }
         Op::Query(i) => {
             let (nf, nc) = (b.face_count(), b.cell_count());
             let mut s = format!("{}/{}/{}", b.vertex_count(), nf, nc);
@@ -162,6 +263,8 @@ fn classify_rest<B: MeshBuild>(b: &mut B, all: bool) {
         return;
     }
     let m = |k, n| Classification::on(EntityId::new(k, n).unwrap());
+    let surface = b.dim() == MeshDim::Two;
+    let (cell_k, face_k) = if surface { (EntityKind::TopoFace, EntityKind::TopoEdge) } else { (EntityKind::TopoVolume, EntityKind::TopoFace) };
     for v in 0..b.vertex_count() {
         if b.vertex_class(VertexIx::new(v)).is_none() {
             let _ = b.set_class(MeshEntityRef::Vertex(VertexIx::new(v)), m(EntityKind::TopoVertex, 1));
@@ -169,13 +272,13 @@ fn classify_rest<B: MeshBuild>(b: &mut B, all: bool) {
     }
     for c in 0..b.cell_count() {
         if b.cell_class(CellIx::new(c)).is_none() {
-            let _ = b.set_class(MeshEntityRef::Cell(CellIx::new(c)), m(EntityKind::TopoVolume, 1));
+            let _ = b.set_class(MeshEntityRef::Cell(CellIx::new(c)), m(cell_k, 1));
         }
     }
     for f in 0..b.face_count() {
         let fi = FaceIx::new(f);
         if b.face_class(fi).is_none() && b.face_degree(fi) == 1 {
-            let _ = b.set_class(MeshEntityRef::Face(fi), m(EntityKind::TopoFace, 1));
+            let _ = b.set_class(MeshEntityRef::Face(fi), m(face_k, 1));
         }
     }
 }
@@ -187,15 +290,21 @@ proptest! {
     fn builder_state_machine_matches_the_reference(
         ops in prop::collection::vec(op(), 1..40),
         classify in any::<bool>(),
+        surface in any::<bool>(),
     ) {
-        let (mut r, mut m) = (ReferenceBuilder::new(), MeshBuilder::new());
+        let (mut r, mut m) = if surface {
+            (ReferenceBuilder::surface(), MeshBuilder::surface())
+        } else {
+            (ReferenceBuilder::new(), MeshBuilder::new())
+        };
+        let (mut cr, mut cm) = (Ctx::default(), Ctx::default());
         for p in 0..7u8 {
             let q = Point3::new(f64::from(p % 3), f64::from((p / 3) % 3), f64::from(p / 6));
             r.add_vertex(q).unwrap();
             m.add_vertex(q).unwrap();
         }
         for (k, o) in ops.iter().enumerate() {
-            let (a, b) = (apply(&mut r, o), apply(&mut m, o));
+            let (a, b) = (apply(&mut r, o, &mut cr), apply(&mut m, o, &mut cm));
             prop_assert_eq!(a, b, "op {} {:?}", k, o);
         }
         classify_rest(&mut r, classify);
@@ -229,8 +338,9 @@ fn the_state_machine_reaches_successful_builds() {
         r.add_vertex(q).unwrap();
         m.add_vertex(q).unwrap();
     }
+    let (mut cr, mut cm) = (Ctx::default(), Ctx::default());
     for o in &ops {
-        assert_eq!(apply(&mut r, o), apply(&mut m, o));
+        assert_eq!(apply(&mut r, o, &mut cr), apply(&mut m, o, &mut cm));
     }
     classify_rest(&mut r, true);
     classify_rest(&mut m, true);
