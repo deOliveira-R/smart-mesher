@@ -11,10 +11,7 @@ fn unit_hex(alloc: &mut SerialAlloc) -> ReferenceMesh {
 }
 
 fn weld() -> FlattenOptions<'static> {
-    FlattenOptions {
-        weld_tol: Some(1e-9),
-        ..FlattenOptions::default()
-    }
+    FlattenOptions::new().with_weld_tol(1e-9)
 }
 
 #[test]
@@ -138,22 +135,11 @@ fn two_translated_copies_weld_to_one_interior_face() {
     let mut cat = ReferenceCatalog::new();
     cat.insert_mesh(Box::new(proto)).unwrap();
     let (i1, i2) = (id(EntityKind::MeshInstance, 100), id(EntityKind::MeshInstance, 101));
-    cat.insert_view(InstancedView {
-        id: id(EntityKind::MeshInstance, 200),
-        // Deliberately listed out of id order: flatten sorts by id.
-        instances: vec![
-            Instance {
-                id: i2,
-                prototype: pid,
-                transform: translate(1.0, 0.0, 0.0),
-            },
-            Instance {
-                id: i1,
-                prototype: pid,
-                transform: Transform::IDENTITY,
-            },
-        ],
-    })
+    // Deliberately listed out of id order: flatten sorts by id.
+    cat.insert_view(InstancedView::new(
+        id(EntityKind::MeshInstance, 200),
+        vec![Instance::new(i2, pid, translate(1.0, 0.0, 0.0)), Instance::new(i1, pid, Transform::IDENTITY)],
+    ))
     .unwrap();
     // Without a rule for the seam vertices the two TopoVertex classes conflict.
     let err = flatten(
@@ -171,11 +157,7 @@ fn two_translated_copies_weld_to_one_interior_face() {
         MeshEntityKind::Vertex => Ok(c.existing),
         _ => Ok(Classification::on(c.cells[0].entity)),
     };
-    let opts = FlattenOptions {
-        weld_tol: Some(1e-9),
-        on_merge: Some(&keep),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(1e-9).with_on_merge(&keep);
     let (m, map) = flatten(
         &cat,
         id(EntityKind::MeshInstance, 200),
@@ -251,21 +233,10 @@ fn separated_copies_do_not_weld_and_report_losses() {
     let mut cat = ReferenceCatalog::new();
     cat.insert_mesh(Box::new(proto)).unwrap();
     let vid = id(EntityKind::MeshInstance, 9);
-    cat.insert_view(InstancedView {
-        id: vid,
-        instances: vec![
-            Instance {
-                id: id(EntityKind::MeshInstance, 1),
-                prototype: pid,
-                transform: Transform::IDENTITY,
-            },
-            Instance {
-                id: id(EntityKind::MeshInstance, 2),
-                prototype: pid,
-                transform: translate(5.0, 0.0, 0.0),
-            },
-        ],
-    })
+    cat.insert_view(InstancedView::new(vid, vec![
+            Instance::new(id(EntityKind::MeshInstance, 1), pid, Transform::IDENTITY),
+            Instance::new(id(EntityKind::MeshInstance, 2), pid, translate(5.0, 0.0, 0.0)),
+        ]))
     .unwrap();
     let (m, map) = flatten(&cat, vid, ReferenceBuilder::new(), &weld(), &mut alloc).unwrap();
     assert_eq!((m.vertex_count(), interior_faces(&m).len()), (16, 0));
@@ -320,10 +291,7 @@ fn baffles_inside_a_prototype_are_never_welded() {
     assert_eq!((proto.vertex_count(), proto.face_count()), (16, 12));
     // One append with a huge tolerance keeps both coincident vertex sets.
     let mut t = ReferenceBuilder::new();
-    let opts = FlattenOptions {
-        weld_tol: Some(1e-9),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(1e-9);
     append_transformed(
         &mut t,
         &proto,
@@ -338,11 +306,7 @@ fn baffles_inside_a_prototype_are_never_welded() {
         MeshEntityKind::Vertex => Ok(c.existing),
         _ => Ok(Classification::on(c.cells[0].entity)),
     };
-    let opts = FlattenOptions {
-        weld_tol: Some(1e-9),
-        on_merge: Some(&keep),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(1e-9).with_on_merge(&keep);
     let mut t = ReferenceBuilder::new();
     let a1 = append_transformed(
         &mut t,
@@ -480,10 +444,7 @@ fn welding_to_interior_vertices_of_an_earlier_instance_is_refused() {
     let big = hex_block([2, 2, 2], [1.0; 3], &mut alloc).unwrap();
     let small = unit_hex(&mut alloc);
     let mut t = ReferenceBuilder::new();
-    let opts = FlattenOptions {
-        weld_tol: Some(1.0),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(1.0);
     append_transformed(
         &mut t,
         &big,
@@ -573,10 +534,7 @@ fn append_with_weld_accepts_nothing_inside_one_instance() {
     let mut alloc = SerialAlloc::new();
     let m = unit_hex(&mut alloc);
     let mut b = ReferenceBuilder::new();
-    let opts = FlattenOptions {
-        weld_tol: Some(10.0),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(10.0);
     let am = append_transformed(
         &mut b,
         &m,
@@ -614,11 +572,7 @@ fn unfold_rejects_high_order() {
     MeshEdit::set_high_order(
         &mut m,
         CellIx(0),
-        Some(HighOrderCell {
-            degree: 2,
-            basis: Basis::LagrangeEquispaced,
-            nodes,
-        }),
+        Some(HighOrderCell::new(2, Basis::LagrangeEquispaced, nodes)),
     )
     .unwrap();
     let r = unfold(

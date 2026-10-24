@@ -135,7 +135,7 @@ fn embedded_edges_get_curve_targets_and_faces_must_conform() {
     let driver = Driver::new(&reg, &solver, &picker);
     let face = ids.faces[4];
     let sel = [face];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     assert_eq!(input.embedded_edges(face), vec![diag]);
     let mut intent = counts(&ids, [2, 2, 2]);
     intent.set_intervals(diag, Firm::hard(IntervalRequest::Count(3)));
@@ -153,7 +153,7 @@ fn embedded_edges_get_curve_targets_and_faces_must_conform() {
     assert!((0..2).all(|c| m.cell_shape(sm_mesh_api::CellIx::new(c)) == CellShape::Polygon));
     assert_eq!(m.classified_on(diag).map(|c| c.faces.len()), Some(3), "the facets along the wire lie on it");
     // GenCtx::embedded: one chain in the edge's own direction.
-    let cx = GenCtx { input: &input, plan: &out.plan, patches: &out.patches, size: None };
+    let cx = GenCtx::new(&input, &out.plan, &out.patches, None);
     let (a, c) = topo.edge_ends(diag).unwrap();
     assert_eq!(cx.embedded(face).unwrap(), vec![vec![NodeKey::vertex(a), NodeKey::new(diag, 1), NodeKey::new(diag, 2), NodeKey::vertex(c)]]);
     // A scheme that ignores the wire is refused instead of silently not conforming.
@@ -175,7 +175,7 @@ fn embedded_points_get_vertex_nodes_the_face_must_reference() {
     let driver = Driver::new(&reg, &solver, &picker);
     let face = ids.faces[4];
     let sel = [face];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     assert_eq!(input.embedded_vertices(face), vec![pt]);
     let mut intent = counts(&ids, [2, 2, 2]);
     intent.set_scheme(face, SchemeChoice::new("splitpoly", Firmness::Hard));
@@ -197,14 +197,10 @@ fn a_surface_transform_runs_before_the_sweep_that_reads_it() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts(&ids, [2, 2, 2]);
     intent.set_scheme(ids.volume, SchemeChoice::with_params("sweep", serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }), Firmness::Hard));
-    intent.transforms.push(TransformIntent {
-        id: TransformId(1),
-        targets: vec![ids.faces[4]],
-        transform: SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.01 }), Firmness::Hard),
-    });
+    intent.transforms.push(TransformIntent::new(TransformId(1), vec![ids.faces[4]], SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.01 }), Firmness::Hard)));
     let plan = driver.plan(&input, &intent).expect("plan");
     assert_eq!(plan.transforms[0].targets, vec![Target::Surface(ids.faces[4])]);
     let wave_of = |j: Job| plan.waves.iter().position(|w| w.contains(&j)).unwrap();
@@ -235,14 +231,10 @@ fn a_copy_of_a_transformed_root_is_generated_from_the_transformed_patch() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.faces[0], ids.faces[1]];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts(&ids, [2, 2, 2]);
     intent.set_scheme(ids.faces[0], SchemeChoice::new("map", Firmness::Hard));
-    intent.transforms.push(TransformIntent {
-        id: TransformId(3),
-        targets: vec![ids.faces[0]],
-        transform: SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.05 }), Firmness::Hard),
-    });
+    intent.transforms.push(TransformIntent::new(TransformId(3), vec![ids.faces[0]], SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.05 }), Firmness::Hard)));
     let out = driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()).expect("mesh");
     let root = out.patches.get(Target::Surface(ids.faces[0])).unwrap();
     let copy = out.patches.get(Target::Surface(ids.faces[1])).unwrap();
@@ -262,11 +254,11 @@ fn a_curve_transform_is_read_by_its_faces() {
     let driver = Driver::new(&reg, &solver, &picker);
     let face = ids.faces[4];
     let sel = [face];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let e = topo.face_edges(face)[0];
     let mut intent = counts(&ids, [2, 2, 2]);
-    intent.transforms.push(TransformIntent { id: TransformId(1), targets: vec![e], transform: SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.0 }), Firmness::Hard) });
-    intent.transforms.push(TransformIntent { id: TransformId(2), targets: vec![e], transform: SchemeChoice::new("noop", Firmness::Hard) });
+    intent.transforms.push(TransformIntent::new(TransformId(1), vec![e], SchemeChoice::with_params("lift", serde_json::json!({ "dz": 0.0 }), Firmness::Hard)));
+    intent.transforms.push(TransformIntent::new(TransformId(2), vec![e], SchemeChoice::new("noop", Firmness::Hard)));
     let plan = driver.plan(&input, &intent).unwrap();
     let wave_of = |j: Job| plan.waves.iter().position(|w| w.contains(&j)).unwrap();
     let (t1, t2, f) = (Job::Transform(TransformId(1)), Job::Transform(TransformId(2)), Job::Generate(Target::Surface(face)));
@@ -286,7 +278,7 @@ fn user_interval_rows_enter_the_solve() {
     let driver = Driver::new(&reg, &solver, &picker);
     let face = ids.faces[2]; // -y: x edges and z edges
     let sel = [face];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_intervals(ids.edges[8], Firm::hard(IntervalRequest::Count(2)));
     // count(x edge) = 2 * count(z edge), written with a repeated term that canonicalizes.
@@ -320,7 +312,8 @@ fn user_interval_rows_enter_the_solve() {
     // Serde: the field defaults, and struct literals keep compiling through Default.
     let parsed: MeshIntent = serde_json::from_value(serde_json::json!({})).unwrap();
     assert!(parsed.intervals.is_empty());
-    let lit = MeshIntent { intervals: vec![IntervalConstraint::EvenSum { edges: vec![ids.edges[0]] }], ..Default::default() };
+    let mut lit = MeshIntent::new();
+    lit.intervals = vec![IntervalConstraint::EvenSum { edges: vec![ids.edges[0]] }];
     let back: MeshIntent = serde_json::from_str(&serde_json::to_string(&lit).unwrap()).unwrap();
     assert_eq!(back, lit);
 }
@@ -334,7 +327,7 @@ fn node_i_becomes_vertex_i() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = ids.faces;
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let intent = counts(&ids, [2, 3, 2]);
     let out = driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()).unwrap();
     let m = &out.finished.mesh;

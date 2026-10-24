@@ -2,7 +2,8 @@
 //! their contents.
 
 use crate::nurbs::NurbsCurve2;
-use crate::{Interval, Uv};
+use crate::store::{PERIODIC_DEGREE_FLAG, unitless_scale};
+use crate::{Interval, ModelTolerance, ShapeValue, Uv};
 
 /// A straight segment in parameter space: `(u, v) = origin + t * dir`, `t` in `range`.
 /// A periodic seam is expressed by two such pcurves, at `u = 0` and `u = period`, for the two
@@ -73,8 +74,66 @@ impl PCurve {
         }
     }
 
-    /// Visit every number of the curve in a fixed order, tagged as a parameter-space value. The
-    /// hash code in `sm-topo-api` uses this so pcurves are hashed by their contents.
+    /// Visit the hash words of the curve (W0g r2, frozen), after the caller's [`Self::tag`]:
+    /// a prefix-free sequence where every variable-length run is preceded by its count.
+    ///
+    /// - `Line2`: `Param` x6 (`origin.u, origin.v, dir.u, dir.v, range.lo, range.hi`).
+    /// - `Polyline2`: `Int(n)`, then `Param(u), Param(v)` per point.
+    /// - `Nurbs2`: `Int(degree | periodic << 32)`, `Int(knot count)`, `Int(control count)`,
+    ///   `Int(0)` without weights or `Int(1), Int(weight count)` with them; then the knots and
+    ///   the control `(u, v)` as `Param`, then the weights as `Unitless`.
+    ///
+    /// `sm-topo-api` hashes pcurves with this (`Param` at `parametric * 2^-10`, weights
+    /// scale-free relative to the largest weight, see [`Self::quantized_values`]).
+    pub fn for_each_word(&self, mut f: impl FnMut(ShapeValue)) {
+        let par = ShapeValue::Param;
+        match self {
+            Self::Line2(l) => {
+                for v in [l.origin.u, l.origin.v, l.dir.u, l.dir.v, l.range.lo, l.range.hi] {
+                    f(par(v));
+                }
+            }
+            Self::Polyline2(p) => {
+                f(ShapeValue::Int(p.len() as u64));
+                for q in p {
+                    f(par(q.u));
+                    f(par(q.v));
+                }
+            }
+            Self::Nurbs2(n) => {
+                f(ShapeValue::Int(n.degree as u64 | if n.periodic { PERIODIC_DEGREE_FLAG } else { 0 }));
+                f(ShapeValue::Int(n.knots.len() as u64));
+                f(ShapeValue::Int(n.control.len() as u64));
+                match &n.weights {
+                    None => f(ShapeValue::Int(0)),
+                    Some(w) => {
+                        f(ShapeValue::Int(1));
+                        f(ShapeValue::Int(w.len() as u64));
+                    }
+                }
+                n.knots.iter().for_each(|k| f(par(*k)));
+                for q in &n.control {
+                    f(par(q.u));
+                    f(par(q.v));
+                }
+                if let Some(w) = &n.weights {
+                    w.iter().for_each(|x| f(ShapeValue::Unitless(*x)));
+                }
+            }
+        }
+    }
+
+    /// The hash codes of [`Self::for_each_word`]: `Int` as is, `Param` through
+    /// [`ModelTolerance::quantize_param`], weights through
+    /// [`ModelTolerance::quantize_scale_free_in`] with the largest weight as the scale (the rule
+    /// `CurveDef::quantized_values` applies).
+    pub fn quantized_values(&self, tol: &ModelTolerance, mut f: impl FnMut(i64)) {
+        let scale = unitless_scale(|g| self.for_each_word(g));
+        self.for_each_word(|v| f(tol.quantize_shape_in(v, scale)));
+    }
+
+    /// Visit every number of the curve in a fixed order, untagged and without counts. Not
+    /// prefix-free: hashes use [`Self::for_each_word`] instead.
     pub fn for_each_value(&self, mut f: impl FnMut(f64)) {
         match self {
             Self::Line2(l) => {

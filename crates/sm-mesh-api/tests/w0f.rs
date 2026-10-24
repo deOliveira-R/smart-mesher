@@ -127,8 +127,9 @@ fn edit_side_sets_labels_and_hashes() {
 #[test]
 fn quantized_geometry_hash_ignores_sub_quantum_noise() {
     let q = 1e-6;
+    let quanta = HashQuanta::new(q, 1e-12);
     let m = hex_block([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
-    let base = geometry_hash_quantized(&m, q);
+    let base = geometry_hash_quantized(&m, &quanta);
     let moved = |dx: f64| {
         let mut m2 = m.clone();
         let p = m2.coords();
@@ -138,13 +139,15 @@ fn quantized_geometry_hash_ignores_sub_quantum_noise() {
     };
     // 0.3 of a step: same quantized hash, different raw hash.
     let small = moved(0.3 * q);
-    assert_eq!(geometry_hash_quantized(&small, q), base);
+    assert_eq!(geometry_hash_quantized(&small, &quanta), base);
     assert_ne!(geometry_hash(&small), geometry_hash(&m));
     // 5 steps: different.
-    assert_ne!(geometry_hash_quantized(&moved(5.0 * q), q), base);
-    // The quantum is part of the hash.
-    assert_ne!(geometry_hash_quantized(&m, 2.0 * q), base);
-    // Rounding rule: half away from zero, -0 folded, NaN marked, saturation.
+    assert_ne!(geometry_hash_quantized(&moved(5.0 * q), &quanta), base);
+    // Both quanta are part of the hash.
+    assert_ne!(geometry_hash_quantized(&m, &HashQuanta::new(2.0 * q, 1e-12)), base);
+    assert_ne!(geometry_hash_quantized(&m, &HashQuanta::new(q, 2e-12)), base);
+    // Rounding rule of the standalone helper: half away from zero, -0 folded, NaN marked,
+    // saturation (the hash itself never uses a saturated code).
     assert_eq!(quantize_word(2.5, 1.0), 3);
     assert_eq!(quantize_word(-2.5, 1.0), -3);
     assert_eq!(quantize_word(-0.0, 1.0), 0);
@@ -153,6 +156,44 @@ fn quantized_geometry_hash_ignores_sub_quantum_noise() {
     assert_eq!(quantize_word(1.0, 0.0), i64::MIN);
     assert_eq!(quantize_word(f64::INFINITY, 1.0), i64::MAX);
 }
+
+/// W0g r2 (`geometry-quantized.v2`): real tag values are quantized scale-free, so large values
+/// never saturate; out-of-range coordinates hash by raw bits instead of a saturated code.
+#[test]
+fn quantized_geometry_hash_large_values_and_golden() {
+    // Q2 quanta for linear = 1e-6, parametric = 1e-9.
+    let quanta = HashQuanta::new(1e-6 / 1024.0, 1e-9 / 1024.0);
+    let base = hex_block([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    let tagged = |v: f64| {
+        let mut m = base.clone();
+        MeshEdit::set_tag(&mut m, "temperature", MeshEntityKind::Cell, TagValues::F64(vec![v])).unwrap();
+        m
+    };
+    let h = |v: f64| geometry_hash_quantized(&tagged(v), &quanta);
+    // Under v1 (one length quantum, saturating codes) these two hashed equal.
+    assert_ne!(h(1e12), h(2e12));
+    assert_ne!(h(1e300), h(-1e300));
+    assert_ne!(h(f64::INFINITY), h(f64::MAX));
+    // Relative noise far below the 2^-40 step is invisible; signed zero folds; tiny real values do not.
+    assert_eq!(h(1e12), h(1e12 * (1.0 + 1e-15)));
+    assert_eq!(h(0.0), h(-0.0));
+    assert_ne!(h(1e-20), h(0.0));
+    assert_ne!(h(1e-24), h(1e-18));
+    assert_eq!(h(5e-324), h(0.0));
+    // Coordinates beyond the i64 code range: distinct, not saturated.
+    let far = |x: f64| {
+        let mut m = base.clone();
+        MeshEdit::set_point(&mut m, PointIx(0), Point3::new(x, 0.0, 0.0)).unwrap();
+        geometry_hash_quantized(&m, &quanta)
+    };
+    assert_ne!(far(1e20), far(2e20));
+    // Golden: the v2 encoding is frozen.
+    let got = (geometry_hash_quantized(&base, &quanta), h(1e12));
+    assert_eq!(got, (GOLDEN_PLAIN, GOLDEN_TAGGED), "got ({:#018x}, {:#018x})", got.0, got.1);
+}
+
+const GOLDEN_PLAIN: u64 = 0x8848f9b9f10893bd;
+const GOLDEN_TAGGED: u64 = 0x3b43766046757a10;
 
 #[test]
 fn non_exhaustive_enums_need_wildcards_downstream() {

@@ -66,7 +66,7 @@ fn mesh(s: &Split, sel: &[EntityId], threads: usize) -> sm_scheme_api::Meshed<sm
     let reg = stub_schemes::registry();
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
-    let input = MeshInput { topo: &s.overlay, model: &s.model, pieces: &DecompositionFaces, selection: sel };
+    let input = MeshInput::new(&s.overlay, &s.model, &DecompositionFaces, sel);
     let it = intent(s, [2, 2, 3]);
     if threads > 1 {
         driver.mesh(&input, &it, &ScopedThreads(threads), ReferenceBuilder::new(), &mut SerialAlloc::new()).expect("mesh")
@@ -138,7 +138,7 @@ fn the_whole_faces_resolver_refuses_cut_faces_with_a_clear_error() {
     let reg = stub_schemes::registry();
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
-    let input = MeshInput { topo: &s.overlay, model: &s.model, pieces: &WholeFaces, selection: &s.pieces };
+    let input = MeshInput::new(&s.overlay, &s.model, &WholeFaces, &s.pieces);
     match driver.plan(&input, &intent(&s, [2, 2, 3])) {
         Err(SchemeError::Input(r)) => assert!(r.contains("decomposition-overlay resolver"), "{r}"),
         other => panic!("expected an input error, got {:?}", other.map(|_| ())),

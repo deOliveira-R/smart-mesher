@@ -10,10 +10,13 @@ use std::collections::BTreeMap;
 /// tolerance (group closure must be stable).
 pub const GROUP_TOL: f64 = 1e-9;
 
-/// Geometric tolerances used by comparisons in this crate.
+/// Geometric tolerances used by comparisons in this crate. `#[non_exhaustive]` (W0g r4): build
+/// it with [`Tolerance::new`], `Default` or [`Tolerance::of`] and the `with_*` setters; fields
+/// added later are `#[serde(default)]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Tolerance {
     /// Absolute distance tolerance in model units.
     pub linear: f64,
@@ -26,6 +29,31 @@ pub struct Tolerance {
 impl Default for Tolerance {
     fn default() -> Self {
         Self { linear: 1e-8, angular: 1e-9, relative: 1e-9 }
+    }
+}
+
+impl Tolerance {
+    /// Tolerances with the given absolute `linear`, absolute `angular` and `relative` values.
+    pub fn new(linear: f64, angular: f64, relative: f64) -> Self {
+        Self { linear, angular, relative }
+    }
+
+    /// Replace the linear tolerance.
+    pub fn with_linear(mut self, linear: f64) -> Self {
+        self.linear = linear;
+        self
+    }
+
+    /// Replace the angular tolerance.
+    pub fn with_angular(mut self, angular: f64) -> Self {
+        self.angular = angular;
+        self
+    }
+
+    /// Replace the relative tolerance.
+    pub fn with_relative(mut self, relative: f64) -> Self {
+        self.relative = relative;
+        self
     }
 }
 

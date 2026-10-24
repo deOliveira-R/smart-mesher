@@ -135,17 +135,10 @@ impl MeshRead for Tampered<'_> {
         self.inner.index_of(id)
     }
     fn coords(&self) -> Coords<'_> {
-        Coords { x: &self.x, y: &self.y, z: &self.z }
+        Coords::new(&self.x, &self.y, &self.z)
     }
     fn columns(&self) -> TopologyColumns<'_> {
-        TopologyColumns {
-            face_vertex_offsets: &self.face_off,
-            face_vertices: &self.face_verts,
-            face_left: &self.face_left,
-            face_right: &self.face_right,
-            cell_face_offsets: &self.cell_off,
-            cell_faces: &self.cell_faces,
-        }
+        TopologyColumns::new(&self.face_off, &self.face_verts, &self.face_left, &self.face_right, &self.cell_off, &self.cell_faces)
     }
     fn face_vertices(&self, f: FaceIx) -> &[VertexIx] {
         &self.face_verts[self.face_off[f.get()] as usize..self.face_off[f.get() + 1] as usize]

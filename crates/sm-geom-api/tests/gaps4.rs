@@ -110,7 +110,9 @@ fn periodic_curve_wraps_and_validates() {
     // A clamped closed curve is fine non-periodic and rejected as periodic.
     let clamped = NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 2.0, 2.0], vec![Point3::default(), Point3::new(1.0, 0.0, 0.0), Point3::default()], None).unwrap();
     assert_eq!(clamped.domain().period, None);
-    assert!(NurbsCurve { periodic: true, ..clamped }.validate().is_err());
+    let mut flagged = clamped.clone();
+    flagged.periodic = true;
+    assert!(flagged.validate().is_err());
     // Linear periodic polygon: knots [0, 1, 2, 3, 4], 3 poles (first repeated).
     let tri = NurbsCurve::new_periodic(1, vec![0.0, 1.0, 2.0, 3.0, 4.0], vec![Point3::default(), Point3::new(1.0, 0.0, 0.0), Point3::default()], None).unwrap();
     assert_eq!(tri.domain().period, Some(2.0));
@@ -127,14 +129,19 @@ fn periodic_flag_changes_the_geometry_hash() {
         v
     };
     let p = codes(&CurveDef::Nurbs(c.clone()));
-    let np = codes(&CurveDef::Nurbs(NurbsCurve { periodic: false, ..c.clone() }));
+    let mut unflagged = c.clone();
+    unflagged.periodic = false;
+    let np = codes(&CurveDef::Nurbs(unflagged));
     assert_ne!(p, np);
     assert_eq!(p.len(), np.len());
     // Pcurves too.
-    let mk = |periodic| PCurve::Nurbs2(NurbsCurve2 { degree: 3, knots: c.knots.clone(), control: c.control.iter().map(|q| Uv::new(q.x, q.y)).collect(), weights: None, periodic });
+    let control2: Vec<Uv> = c.control.iter().map(|q| Uv::new(q.x, q.y)).collect();
+    let mk = |periodic: bool| {
+        PCurve::Nurbs2(if periodic { NurbsCurve2::new_periodic(3, c.knots.clone(), control2.clone(), None) } else { NurbsCurve2::new(3, c.knots.clone(), control2.clone(), None) }.unwrap())
+    };
     let vals = |pc: &PCurve| {
         let mut v = Vec::new();
-        pc.for_each_value(|x| v.push(x.to_bits()));
+        pc.for_each_word(|w| v.push(format!("{w:?}")));
         v
     };
     assert_ne!(vals(&mk(true)), vals(&mk(false)));
@@ -153,7 +160,7 @@ fn periodic_surface_wraps_in_u() {
         control.push(*q);
         control.push(*q + Vector3::new(0.0, 0.0, 2.0));
     }
-    let s = NurbsSurface { degree_u: 3, degree_v: 1, knots_u: c.knots.clone(), knots_v: vec![0.0, 0.0, 1.0, 1.0], nu, nv: 2, control, weights: None, periodic: [true, false] };
+    let s = NurbsSurface::new_periodic(3, 1, c.knots.clone(), vec![0.0, 0.0, 1.0, 1.0], nu, 2, control, None, [true, false]).unwrap();
     s.validate().unwrap();
     let d = s.domain();
     assert_eq!(d.u.period, Some(6.0));
@@ -169,5 +176,7 @@ fn periodic_surface_wraps_in_u() {
     let mut bad = s.clone();
     bad.control[2 * (nu - 1)] = Point3::new(5.0, 5.0, 5.0);
     assert!(bad.validate().is_err());
-    assert!(NurbsSurface { periodic: [true, true], ..s }.validate().is_err());
+    let mut both = s.clone();
+    both.periodic = [true, true];
+    assert!(both.validate().is_err());
 }

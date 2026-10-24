@@ -50,6 +50,7 @@ impl Interval {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Domain1 {
     /// The principal interval.
     pub range: Interval,
@@ -125,6 +126,7 @@ pub enum ParamAxis {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Singularity {
     /// The held-constant parameter.
     pub along: ParamAxis,
@@ -134,10 +136,18 @@ pub struct Singularity {
     pub point: Point3,
 }
 
+impl Singularity {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(along: ParamAxis, at: f64, point: Point3) -> Self {
+        Self { along, at, point }
+    }
+}
+
 /// Domain of a surface: two [`Domain1`] plus the singular iso-lines.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Domain2 {
     /// Domain of `u`.
     pub u: Domain1,
@@ -149,6 +159,10 @@ pub struct Domain2 {
 }
 
 impl Domain2 {
+    /// Construct with the given collapsed iso-lines (the type is `#[non_exhaustive]`).
+    pub fn new(u: Domain1, v: Domain1, singularities: impl IntoIterator<Item = Singularity>) -> Self {
+        Self { u, v, singularities: singularities.into_iter().collect() }
+    }
     /// A domain without singularities.
     pub fn regular(u: Domain1, v: Domain1) -> Self {
         Self { u, v, singularities: SmallVec::new() }

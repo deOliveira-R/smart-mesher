@@ -328,3 +328,36 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   after the overrides) only when there are any, and `Fill::Cluster` / `PathStep::Member` use the
   new tags 4 / 3, so models without clusters keep their words. A rotated lattice slot is a
   one-member cluster (no `Slot::at`).
+
+## 9. W0g freeze rules
+
+- **`#[non_exhaustive]` enums**: `Deck`, `InterfaceIntent`, `BoundaryKind`, `FaceRole`,
+  `FaceKindView`, `CutGeometry`, `PieceFace`, `PieceShape`, `Layout`, `Provenance`,
+  `CandidateKind`, `Verification`, and (W0g r3) `Domain` (edge colors may follow: sheet bodies
+  are allowed, W0e-5; `Volume` keeps tag 1, `Face` tag 2, a new domain takes tag 3). Serde shapes and `canonical_visit` tags are unchanged; a new
+  variant takes the next tag. Matches outside this crate need a wildcard arm (the planner's
+  `PieceShape` hint match has one: an unknown hint adds no candidate).
+- **Struct variants expected to grow are `#[non_exhaustive]`** and have constructors:
+  `Deck::Rotation` (`Deck::rotation(axis, angle)`), `InterfaceIntent::NonConformal`
+  (`InterfaceIntent::non_conformal(transform)`) and `PieceShape::Sweep`
+  (`PieceShape::sweep(source, target)`). Patterns outside the crate end in `..`.
+- **Row and input structs are `#[non_exhaustive]` with constructors** (fields stay `pub`):
+  `Slot::new(fill)`, `ClusterMember::new(fill, at)` and `InstanceRow::new(fill, at)` (each with
+  `with_recolor` / `with_clip`), `Lattice::new(layout, origin, outer, slots)`,
+  `Cluster::new(members)`, `Prototype::new(volumes)`, `PathOverride::new(prefix, recolor)`,
+  `Instancing::new()`, `FlatEntry::new(..)`, `FlatClip::new(..)`, `FlatModel::new(..)`,
+  `Piece::new(id, volume, faces, shape)` (+ `with_members`), `SplitRec::new(..)`,
+  `CutCells::new(..)`, `ColorRow::new(..)`, `GroupRow::new(..)`, `BoundaryRow::new(id, name,
+  kind)`, `CutSpec::new(deck, keep, origin)`, `CutPlan::new(..)`, `Symmetry::new(..)`,
+  `DetectionResult::new(..)`, `Issue::new(..)`, `Report::new(issues)`, and (W0g r4)
+  `UnfoldSpec::new(translation_repeats)` (+ `Default`) and `Tolerance::new(linear, angular,
+  relative)` (+ `Default`, `Tolerance::of`, `with_linear` / `with_angular` / `with_relative`).
+- **W0g r3: `ColorMap` is `#[non_exhaustive]`** (persisted in the `Slot` / `InstanceRow` /
+  `ClusterMember` / `PathOverride` recolor maps). Build it with `ColorMap::new()` / `Default`
+  plus `with_volume(map)` / `with_face(map)`; fields stay `pub`. **A per-domain field added later
+  (e.g. `edge`) is `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and enters
+  `canonical_visit` only when non-empty**, so stored models deserialize, reserialize and hash
+  exactly as before.
+- **Every field added to a persisted row after the freeze must be `#[serde(default)]`** (as
+  `Slot::clip`, `InstanceRow::clip` and `Instancing::clusters` already are), so stored models
+  still read. The same holds for fields added later to `UnfoldSpec` and `Tolerance`.

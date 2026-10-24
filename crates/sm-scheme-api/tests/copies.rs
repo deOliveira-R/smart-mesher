@@ -52,12 +52,7 @@ fn deck_sweep_matrix_row(a_is_source: bool) {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, sweep_z(&ids));
     let out = driver
@@ -138,12 +133,7 @@ fn redundant_copy_constraints_that_disagree_are_a_conflict() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, sweep_z(&ids));
     // A user copy of the target from the source by a half turn about the x axis: it maps the
@@ -220,12 +210,7 @@ fn an_imposition_on_a_copy_member_constrains_the_class_root() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(
         ids.volume,
@@ -318,13 +303,12 @@ impl Scheme for EdgeCopy {
         let shift = sm_scheme_api::geom::vertex_point(t, t.edge_ends(*e2).expect("ends").0)
             .expect("p")
             - sm_scheme_api::geom::vertex_point(t, t.edge_ends(*e1).expect("ends").0).expect("p");
-        out.copy(CopyConstraint {
-            source: Target::Curve(*e1),
-            target: Target::Curve(*e2),
-            transform: Transform::translation(shift),
-            vertex_map: Vec::new(),
-            reason: CopyReason::User,
-        });
+        out.copy(CopyConstraint::new(
+            Target::Curve(*e1),
+            Target::Curve(*e2),
+            Transform::translation(shift),
+            CopyReason::User,
+        ));
         out.vertex_rule(f, sm_scheme_api::VertexRule::Map);
         Ok(())
     }
@@ -359,12 +343,7 @@ fn copies_contributed_by_a_face_scheme_are_closed_and_classed() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     let face = ids.faces[4]; // -z: edges 0 and 1 run along x
     intent.set_scheme(ids.volume, SchemeChoice::new("mapvol", Firmness::Hard));
@@ -436,21 +415,10 @@ fn a_deck_copy_of_a_claimed_face_is_scheduled_after_the_group() {
     let driver = Driver::new(&reg, &solver, &picker);
     let mut sel: Vec<EntityId> = row.iter().map(|b| b.volume).collect();
     sel.push(d.volume);
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     let params = serde_json::json!({ "source": [row[0].faces[0]], "target": [row[2].faces[1]] });
-    intent.groups.push(MeshGroup {
-        id: GroupId(1),
-        members: row.iter().map(|b| b.volume).collect(),
-        scheme: Some(SchemeChoice::with_params("msweep", params, Firmness::Hard)),
-        fallbacks: vec![],
-        conversion: None,
-    });
+    intent.groups.push(MeshGroup::new(GroupId(1), row.iter().map(|b| b.volume).collect()).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
     intent.set_scheme(
         d.volume,
         SchemeChoice::with_params(

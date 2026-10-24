@@ -161,7 +161,8 @@ pub trait TopologyView: Send + Sync {
         let tol = *self.tolerance();
         let int = |f: &mut dyn FnMut(HashWord), v: u64| f(HashWord::Int(v));
         let len = |f: &mut dyn FnMut(HashWord), v: f64| f(HashWord::Float { raw: v, q: tol.quantize(v) });
-        let par = |f: &mut dyn FnMut(HashWord), v: f64| f(HashWord::Float { raw: v, q: tol.quantize_param(v) });
+        // Frozen: a ModelTolerance field added later is emitted only when it differs from its
+        // default, so existing hashes stay stable (sm-geom-api DESIGN.md, W0g freeze rules).
         for v in [tol.linear, tol.angular, tol.parametric, tol.linear_max] {
             int(f, v.to_bits());
         }
@@ -188,7 +189,7 @@ pub trait TopologyView: Send + Sync {
             for &id in cells {
                 int(f, id.to_raw());
                 int(f, self.born(id).map_or(u64::MAX, |o| o.0));
-                int(f, u64::from(self.flags(id).0));
+                int(f, self.flags(id).bits());
                 match self.tolerance_override(id) {
                     None => int(f, i64::MIN as u64),
                     Some(t) => len(f, t),
@@ -209,7 +210,7 @@ pub trait TopologyView: Send + Sync {
                     None => int(f, 0),
                     Some(pc) => {
                         int(f, pc.tag());
-                        pc.for_each_value(|x| par(f, x));
+                        shape_words(&tol, |g| pc.for_each_word(g), f);
                     }
                 }
             }
@@ -311,7 +312,9 @@ fn shape_words(tol: &ModelTolerance, visit: impl Fn(&mut dyn FnMut(ShapeValue)),
     });
     visit(&mut |v| match v {
         ShapeValue::Int(n) => f(HashWord::Int(n)),
-        ShapeValue::Length(x) | ShapeValue::Angle(x) | ShapeValue::Unitless(x) => f(HashWord::Float { raw: x, q: tol.quantize_shape_in(v, scale) }),
+        ShapeValue::Length(x) | ShapeValue::Angle(x) | ShapeValue::Unitless(x) | ShapeValue::Param(x) => f(HashWord::Float { raw: x, q: tol.quantize_shape_in(v, scale) }),
+        // A later value class: hashed by its code until it gets its own arm.
+        other => f(HashWord::Int(tol.quantize_shape_in(other, scale) as u64)),
     });
 }
 
@@ -451,7 +454,7 @@ mod tests {
             for &id in cells {
                 h.u64(id.to_raw());
                 h.u64(this.born(id).map_or(u64::MAX, |o| o.0));
-                h.u64(u64::from(this.flags(id).0));
+                h.u64(this.flags(id).bits());
                 h.i64(this.tolerance_override(id).map_or(i64::MIN, |t| tol.quantize(t)));
                 legacy_carrier(&mut h, &tol, this.carrier(id));
                 let row = this.boundary(id);
@@ -469,7 +472,7 @@ mod tests {
                     None => h.u64(0),
                     Some(pc) => {
                         h.u64(pc.tag());
-                        pc.for_each_value(|x| h.i64(tol.quantize_param(x)));
+                        pc.quantized_values(&tol, |c| h.i64(c));
                     }
                 }
             }
@@ -540,6 +543,25 @@ mod tests {
         assert_eq!(t.canonical_hash(), legacy_hash(&t));
         let e = CellComplex::new();
         assert_eq!(e.canonical_hash(), legacy_hash(&e));
+    }
+
+    #[test]
+    fn canonical_hash_agrees_with_legacy_for_polyline_and_nurbs_pcurves() {
+        use crate::TopologyEdit;
+        use sm_geom_api::NurbsCurve2;
+        let mut t = sample();
+        let keys: Vec<CoedgeKey> = t.cells(Dim::Face).to_vec().into_iter().flat_map(|f| t.coedges(f).map(|c| c.key).collect::<Vec<_>>()).collect();
+        assert!(keys.len() >= 2);
+        let poly = PCurve::Polyline2(vec![Uv::new(0.0, 0.0), Uv::new(2.0, 0.5), Uv::new(2.0, 4.0)]);
+        let ctrl = vec![Uv::new(0.0, 0.0), Uv::new(1.0, 2.0), Uv::new(3.0, 2.5), Uv::new(4.0, 0.0)];
+        let nurbs = NurbsCurve2::new(2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], ctrl, Some(vec![1.0, 2.0, 0.5, 1.0])).unwrap();
+        crate::fixtures::with_op(&mut t, OpId(7), |t| {
+            t.set_pcurve(keys[0], Some(poly))?;
+            t.set_pcurve(keys[1], Some(PCurve::Nurbs2(nurbs)))?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(t.canonical_hash(), legacy_hash(&t));
     }
 
     #[test]

@@ -102,13 +102,12 @@ fn half_disk(t: &mut CellComplex, z: f64, line_first: bool) -> Half {
 }
 
 fn copy_of(source: EntityId, target: EntityId, transform: Transform) -> CopyConstraint {
-    CopyConstraint {
-        source: Target::Surface(source),
-        target: Target::Surface(target),
+    CopyConstraint::new(
+        Target::Surface(source),
+        Target::Surface(target),
         transform,
-        vertex_map: Vec::new(),
-        reason: CopyReason::User,
-    }
+        CopyReason::User,
+    )
 }
 
 #[test]

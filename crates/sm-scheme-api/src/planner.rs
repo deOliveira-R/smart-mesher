@@ -556,13 +556,12 @@ impl<'a, 'r> Planner<'a, 'r> {
                 (_, sm_model_api::DeckSide::A, Some(m))
                     if self.region.faces.binary_search(&m).is_ok() =>
                 {
-                    let c = CopyConstraint {
-                        source: Target::Surface(f),
-                        target: Target::Surface(m),
-                        transform: deck.transform(),
-                        vertex_map: Vec::new(),
-                        reason: CopyReason::Deck { boundary },
-                    };
+                    let c = CopyConstraint::new(
+                        Target::Surface(f),
+                        Target::Surface(m),
+                        deck.transform(),
+                        CopyReason::Deck { boundary },
+                    );
                     self.p.push_copy(origin, c);
                 }
                 _ => {}
@@ -688,13 +687,8 @@ impl<'a, 'r> Planner<'a, 'r> {
             };
             self.p.push_copy(
                 Origin::Intent,
-                CopyConstraint {
-                    source: st,
-                    target: t,
-                    transform,
-                    vertex_map,
-                    reason: CopyReason::User,
-                },
+                CopyConstraint::new(st, t, transform, CopyReason::User)
+                    .with_vertex_map(vertex_map),
             );
         }
         Ok(())
@@ -762,13 +756,13 @@ impl<'a, 'r> Planner<'a, 'r> {
                     evm.dedup();
                     self.p.push_copy(
                         Origin::Driver,
-                        CopyConstraint {
-                            source: Target::Curve(e),
-                            target: Target::Curve(f),
-                            transform: c.transform,
-                            vertex_map: evm,
-                            reason: CopyReason::Closure { parent },
-                        },
+                        CopyConstraint::new(
+                            Target::Curve(e),
+                            Target::Curve(f),
+                            c.transform,
+                            CopyReason::Closure { parent },
+                        )
+                        .with_vertex_map(evm),
                     );
                 }
             }
@@ -1344,7 +1338,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             && let Some(piece) = self.input.model.decomposition().piece(c)
         {
             match &piece.shape {
-                PieceShape::Sweep { source, target: tg } => {
+                PieceShape::Sweep { source, target: tg, .. } => {
                     let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> {
                         v.iter()
                             .filter_map(|pf| {
@@ -1364,7 +1358,8 @@ impl<'a, 'r> Planner<'a, 'r> {
                     SchemeChoice::new("map", Firmness::Default),
                     Selection::PieceShape,
                 )),
-                PieceShape::Any => {}
+                // `PieceShape` is non-exhaustive: an unknown hint adds no candidate.
+                _ => {}
             }
         }
         let mut local: Vec<Attempt> = Vec::new();

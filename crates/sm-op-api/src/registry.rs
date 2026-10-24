@@ -174,7 +174,9 @@ pub trait Plugin {
 }
 
 /// Description of one registered op, for tool/help/stub generation.
+/// Built only by the [`Registry`]; it may gain fields.
 #[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
 pub struct OpInfo {
     /// Op name, e.g. `model.create_brick`.
     pub name: String,

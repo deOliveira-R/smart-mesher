@@ -69,7 +69,7 @@ fn high_order_meshes_carry_a_classified_edge_table() {
     assert!(matches!(MeshEdit::drop_edges(&mut m), Err(MeshError::State(_))));
     // MeshEdit refuses new high-order records on a dimension-3 mesh without a table.
     let mut lin = single_cell(CellShape::Hex, &mut SerialAlloc::new());
-    let rec = HighOrderCell { degree: 2, basis: Basis::Serendipity, nodes: vec![PointIx(0); 20] };
+    let rec = HighOrderCell::new(2, Basis::Serendipity, vec![PointIx(0); 20]);
     assert!(matches!(MeshEdit::set_high_order(&mut lin, CellIx(0), Some(rec)), Err(MeshError::State(_))));
     MeshEdit::drop_edges(&mut lin).unwrap();
 }

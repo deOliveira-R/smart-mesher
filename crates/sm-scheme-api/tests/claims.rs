@@ -133,12 +133,7 @@ fn a_hard_imposition_on_a_claimed_face_is_a_conflict() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids[0].volume, ids[1].volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     // A claims the shared face (tet-like caps); B is a hard mapvol that needs quad/structured there.
     intent.set_scheme(ids[0].volume, SchemeChoice::new("claimtet", Firmness::Hard));
@@ -187,12 +182,7 @@ fn soft_impositions_are_preferences() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, SchemeChoice::new("softpoly", Firmness::Hard));
     // No surface scheme is polygonal: the soft preference falls away instead of failing.

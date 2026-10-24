@@ -55,6 +55,7 @@ impl TransformId {
 /// Ordering (derived) is curves, surfaces, volumes, groups, then by id: this is also the
 /// generation order of independent work and the commit order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Target {
     /// An edge of the topology view.
     Curve(EntityId),
@@ -114,6 +115,7 @@ pub fn piece_of(id: EntityId) -> Option<PieceRef> {
 /// Ordering (derived) is generation jobs by [`Target`] order, then transforms by id. It is the
 /// tie-break of the scheduler and the merge order of patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Job {
     /// Run the scheme (or copy) of a target and merge its patch.
     Generate(Target),

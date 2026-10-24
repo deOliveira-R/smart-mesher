@@ -385,6 +385,7 @@ version = "0.0.0"
 dependencies = [
  "schemars",
  "serde",
+ "serde_json",
  "sm-core",
  "smallvec",
  "thiserror",
@@ -521,6 +522,7 @@ version = "0.0.0"
 dependencies = [
  "schemars",
  "serde",
+ "serde_json",
  "sm-core",
  "sm-geom-api",
  "smallvec",

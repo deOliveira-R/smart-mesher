@@ -44,8 +44,8 @@ fn split_into_two_sweep_pieces_preserves_colors_and_validates() {
     assert!(pn.faces.iter().any(|f| matches!(f, PieceFace::Cut { side: Keep::Negative, .. })));
     // Sweep from the -x face to the cut face, and from the cut face to the +x face.
     let cut = pn.faces.iter().find_map(|f| if let PieceFace::Cut { cut, .. } = f { Some(*cut) } else { None }).unwrap();
-    m.set_shape(n, PieceShape::Sweep { source: vec![PieceFace::Whole(b.faces[0])], target: vec![PieceFace::Cut { cut, side: Keep::Negative }] }).unwrap();
-    m.set_shape(p, PieceShape::Sweep { source: vec![PieceFace::Cut { cut, side: Keep::Positive }], target: vec![PieceFace::Whole(b.faces[1])] }).unwrap();
+    m.set_shape(n, PieceShape::sweep(vec![PieceFace::Whole(b.faces[0])], vec![PieceFace::Cut { cut, side: Keep::Negative }])).unwrap();
+    m.set_shape(p, PieceShape::sweep(vec![PieceFace::Cut { cut, side: Keep::Positive }], vec![PieceFace::Whole(b.faces[1])])).unwrap();
     // Colors: pieces read through the volume; nothing changed.
     assert_eq!(m.piece_color(PieceRef::Cell(n)), Some(mat));
     assert_eq!(m.piece_color(PieceRef::Cell(p)), Some(mat));
@@ -54,7 +54,7 @@ fn split_into_two_sweep_pieces_preserves_colors_and_validates() {
     let r = validate(&m, &t, Tolerance::default());
     assert!(r.is_ok(), "{:#?}", r.issues);
     // A sweep whose source and target share an edge is rejected.
-    m.set_shape(n, PieceShape::Sweep { source: vec![PieceFace::Whole(b.faces[0])], target: vec![PieceFace::Part { face: b.faces[2], piece: n }] }).unwrap();
+    m.set_shape(n, PieceShape::sweep(vec![PieceFace::Whole(b.faces[0])], vec![PieceFace::Part { face: b.faces[2], piece: n }])).unwrap();
     assert!(validate(&m, &t, Tolerance::default()).has(IssueCode::SweepSourceTargetAdjacent));
 }
 

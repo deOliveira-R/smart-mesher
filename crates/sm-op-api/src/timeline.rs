@@ -19,9 +19,12 @@ use crate::op::{OpRecord, TypedOp};
 pub const NODE_DOMAIN: &str = "smart-mesh/node/v1";
 
 /// Free-form node metadata. Part of the node hash, so callers supply `time` explicitly (the
-/// engine never reads a clock).
+/// engine never reads a clock). It may gain fields: build it with [`Meta::new`]. A field added
+/// later enters [`NodeBody::hash`] only when it differs from its default, so existing node
+/// hashes stay stable (see DESIGN.md).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Meta {
     /// Who issued the op (user, script, agent).
     pub author: String,
@@ -29,6 +32,13 @@ pub struct Meta {
     pub time: String,
     /// Optional human message.
     pub message: String,
+}
+
+impl Meta {
+    /// Metadata from author, caller-supplied time text and message.
+    pub fn new(author: impl Into<String>, time: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { author: author.into(), time: time.into(), message: message.into() }
+    }
 }
 
 /// The hashed part of a node: where it hangs, what it does, who did it. Serializes with the
@@ -50,6 +60,8 @@ impl NodeBody {
     pub fn hash(&self) -> Result<Hash256, CodecError> {
         use serde_json::json;
         // Hash the canonical form so a hand-built record hashes like the stored one.
+        // Freeze rule (DESIGN.md): a `Meta` field added later is inserted into "meta" only when
+        // it differs from its default, so existing node hashes stay stable.
         let mut params = self.op.params.clone();
         canonicalize(&mut params)?;
         let mut body = json!({
@@ -65,8 +77,10 @@ impl NodeBody {
 
 /// The recorded result of a node: not hashed, so the same op on another platform yields the
 /// same node even if float bits differ; replay compares it and reports `Diverged` on mismatch.
+/// It may gain fields: build it with [`Check::new`], [`Check::of`] or [`Check::of_with`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Check {
     /// `State::hash()` (quantized, platform independent) after applying the op.
     pub state: Hash256,
@@ -87,6 +101,10 @@ pub struct Check {
 }
 
 impl Check {
+    /// A check carrying only the state hash (no per-layer hashes, no versions).
+    pub fn new(state: Hash256) -> Self {
+        Self { state, ..Self::default() }
+    }
     /// The check of a state after applying `op`: its hash, its per-layer hashes and the
     /// implementation versions the engine's registry reports for those layers and for `op`
     /// (and the ops nested in a `core.batch`). Names the registry does not know are skipped.

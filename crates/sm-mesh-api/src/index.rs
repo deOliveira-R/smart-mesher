@@ -216,9 +216,13 @@ impl MeshDim {
 }
 
 /// Kind of mesh entity addressed by classification, sets and tags.
+///
+/// `#[non_exhaustive]` (W0g r3): the serde shape and hash discriminants are frozen; a new
+/// variant takes the next discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum MeshEntityKind {
     /// Vertex.
     Vertex,
@@ -235,6 +239,7 @@ pub enum MeshEntityKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum FaceKind {
     /// Two cells; `face_right` is present.
     #[default]
@@ -249,9 +254,13 @@ pub enum FaceKind {
 }
 
 /// A reference to one mesh entity by dense index.
+///
+/// `#[non_exhaustive]` (W0g r3): the serde shape and hash discriminants are frozen; a new
+/// variant takes the next discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum MeshEntity {
     /// A vertex.
     Vertex(VertexIx),
@@ -286,9 +295,13 @@ impl MeshEntity {
 
 /// An entity reference for builders, where edges do not have indices yet: an edge is named by
 /// its two end vertices (order irrelevant).
+///
+/// `#[non_exhaustive]` (W0g r3): the serde shape and hash discriminants are frozen; a new
+/// variant takes the next discriminant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum MeshEntityRef {
     /// A vertex.
     Vertex(VertexIx),

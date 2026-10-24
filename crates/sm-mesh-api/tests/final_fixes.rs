@@ -178,11 +178,7 @@ fn welding_a_non_conformal_seam_clears_the_kind() {
         .find(|&f| face_centroid(&m, f).x.abs() < 1e-12)
         .unwrap();
     MeshEdit::set_face_kind(&mut m, seam, FaceKind::NonConformal).unwrap();
-    let o = FlattenOptions {
-        weld_tol: Some(1e-9),
-        on_merge: Some(&|c: &MergeCtx| Ok(Classification::on(c.cells[0].entity))),
-        ..FlattenOptions::default()
-    };
+    let o = FlattenOptions::new().with_weld_tol(1e-9).with_on_merge(&|c: &MergeCtx| Ok(Classification::on(c.cells[0].entity)));
     let (u, map) = unfold(
         &m,
         &[mirror_x(0.0)],
@@ -279,32 +275,14 @@ mod serde_round_trips {
         rt(&cache);
         let e = hex_block_edges(&mut alloc);
         rt(e.edges().unwrap());
-        rt(&HighOrderCell {
-            degree: 2,
-            basis: Basis::LagrangeEquispaced,
-            nodes: vec![PointIx(0), PointIx(3)],
-        });
+        rt(&HighOrderCell::new(2, Basis::LagrangeEquispaced, vec![PointIx(0), PointIx(3)]));
         let v = validate(&m);
         assert!(v.is_empty());
-        let viol = Violation {
-            code: ViolationCode::FaceOrder,
-            entity: Some(MeshEntity::Face(FaceIx(2))),
-            detail: "x".into(),
-        };
+        let viol = Violation::new(ViolationCode::FaceOrder, Some(MeshEntity::Face(FaceIx(2))), "x");
         rt(&viol);
-        rt(&LossNote {
-            instance: id(EntityKind::MeshInstance, 4),
-            what: LossKind::Tag(MeshEntityKind::Cell, "t".into()),
-        });
-        let inst = Instance {
-            id: id(EntityKind::MeshInstance, 1),
-            prototype: id(EntityKind::Mesh, 1),
-            transform: mirror_x(1.0),
-        };
-        rt(&InstancedView {
-            id: id(EntityKind::MeshInstance, 2),
-            instances: vec![inst],
-        });
+        rt(&LossNote::new(id(EntityKind::MeshInstance, 4), LossKind::Tag(MeshEntityKind::Cell, "t".into())));
+        let inst = Instance::new(id(EntityKind::MeshInstance, 1), id(EntityKind::Mesh, 1), mirror_x(1.0));
+        rt(&InstancedView::new(id(EntityKind::MeshInstance, 2), vec![inst]));
     }
 
     #[test]

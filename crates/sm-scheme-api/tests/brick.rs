@@ -43,12 +43,7 @@ fn sweep_brick_is_analytic() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [2, 3, 4]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
 
@@ -178,12 +173,7 @@ fn equal_curve_nodes_are_analytic() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [2, 3, 4]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
     let out = driver
@@ -229,12 +219,7 @@ fn auto_selection_records_score_reason_and_losers() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let intent = counts_intent(&ids, [2, 2, 2]);
     let out = driver
         .mesh(
@@ -289,12 +274,7 @@ fn hard_pave_on_a_linking_face_conflicts_with_the_sweep() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [1, 1, 1]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
     intent.set_scheme(ids.faces[1], SchemeChoice::new("pave", Firmness::Hard));
@@ -355,12 +335,7 @@ fn hard_counts_that_break_map_sides_are_infeasible() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [2, 2, 2]);
     intent.set_intervals(ids.edges[1], Firm::hard(IntervalRequest::Count(3))); // another x-edge
     intent.set_scheme(ids.volume, sweep_z(&ids));
@@ -472,12 +447,7 @@ fn generation_failure_falls_back_and_replans() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [2, 2, 2]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
     let out = driver
@@ -538,12 +508,7 @@ fn translation_deck_pair_is_meshed_as_an_exact_copy() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [2, 3, 4]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
     let out = driver
@@ -630,12 +595,7 @@ fn boundary_layer_needs_a_capable_volume_scheme() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [1, 1, 1]);
     intent.entity_mut(ids.faces[2]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
     // No registered volume scheme has the capability: the intent is refused, with attempts.

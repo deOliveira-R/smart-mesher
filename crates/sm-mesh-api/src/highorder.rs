@@ -141,6 +141,7 @@ pub const fn face_node_count(loop_len: usize, degree: u8, basis: Basis) -> Optio
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct HighOrderCell {
     /// Polynomial degree (`>= 2` in a stored record).
     pub degree: u8,
@@ -148,6 +149,13 @@ pub struct HighOrderCell {
     pub basis: Basis,
     /// Node points, `smartmesh.nodes.v1` order.
     pub nodes: Vec<PointIx>,
+}
+
+impl HighOrderCell {
+    /// A record of `degree` and `basis` with its nodes in `smartmesh.nodes.v1` order.
+    pub fn new(degree: u8, basis: Basis, nodes: Vec<PointIx>) -> Self {
+        Self { degree, basis, nodes }
+    }
 }
 
 /// Borrowed curvature record of one face (the sparse side table of addendum 7.5).

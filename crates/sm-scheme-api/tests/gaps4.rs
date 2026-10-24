@@ -72,7 +72,7 @@ fn a_curve_scheme_reads_a_sibling_curve_patch() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     for (e, n) in [(0, 2u32), (4, 3), (8, 4)] {
         intent.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(n)));
@@ -99,7 +99,7 @@ fn reads_are_refused_for_self_ancestors_and_targets_outside_the_region() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     for bad in ["self", "parent", "outside"] {
         let mut intent = MeshIntent::default();
         intent.set_scheme(ids.edges[0], choice(serde_json::json!({ "bad": bad, "source": ids.edges[1] }), Firmness::Hard));
@@ -115,7 +115,7 @@ fn a_read_cycle_blames_the_reading_scheme_and_falls_back() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let (a, b) = (ids.edges[0], ids.edges[1]);
     let mut intent = MeshIntent::default();
     intent.set_scheme(a, choice(serde_json::json!({ "source": b }), Firmness::Soft));

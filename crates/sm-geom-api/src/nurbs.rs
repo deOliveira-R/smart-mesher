@@ -177,6 +177,7 @@ fn vec3(p: Point3) -> Vector3 {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct NurbsCurve {
     /// Polynomial degree `p` in `1..=15`.
     pub degree: usize,
@@ -316,6 +317,7 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct NurbsCurve2 {
     /// Polynomial degree in `1..=15`.
     pub degree: usize,
@@ -331,6 +333,21 @@ pub struct NurbsCurve2 {
 }
 
 impl NurbsCurve2 {
+    /// Build and validate a non-periodic curve (same checks as [`NurbsCurve::new`]).
+    pub fn new(degree: usize, knots: Vec<f64>, control: Vec<Uv>, weights: Option<Vec<f64>>) -> Result<Self, GeomError> {
+        let c = Self { degree, knots, control, weights, periodic: false };
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// Build and validate a periodic curve (`control` already repeats its first `degree` points
+    /// at the end; same checks as [`NurbsCurve::new_periodic`]).
+    pub fn new_periodic(degree: usize, knots: Vec<f64>, control: Vec<Uv>, weights: Option<Vec<f64>>) -> Result<Self, GeomError> {
+        let c = Self { degree, knots, control, weights, periodic: true };
+        c.validate()?;
+        Ok(c)
+    }
+
     /// Validate the data.
     pub fn validate(&self) -> Result<(), GeomError> {
         self.as_3d().validate()
@@ -359,6 +376,7 @@ impl NurbsCurve2 {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct NurbsSurface {
     /// Degree in `u`.
     pub degree_u: usize,
@@ -383,6 +401,21 @@ pub struct NurbsSurface {
 }
 
 impl NurbsSurface {
+    /// Build and validate a non-periodic surface (`control` is `u`-major, `nu * nv` points).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(degree_u: usize, degree_v: usize, knots_u: Vec<f64>, knots_v: Vec<f64>, nu: usize, nv: usize, control: Vec<Point3>, weights: Option<Vec<f64>>) -> Result<Self, GeomError> {
+        Self::new_periodic(degree_u, degree_v, knots_u, knots_v, nu, nv, control, weights, [false, false])
+    }
+
+    /// Build and validate a surface periodic in the directions flagged by `periodic` (`[u, v]`;
+    /// in a periodic direction the first `degree` rows / columns already repeat as the last).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_periodic(degree_u: usize, degree_v: usize, knots_u: Vec<f64>, knots_v: Vec<f64>, nu: usize, nv: usize, control: Vec<Point3>, weights: Option<Vec<f64>>, periodic: [bool; 2]) -> Result<Self, GeomError> {
+        let s = Self { degree_u, degree_v, knots_u, knots_v, nu, nv, control, weights, periodic };
+        s.validate()?;
+        Ok(s)
+    }
+
     /// Validate the data.
     pub fn validate(&self) -> Result<(), GeomError> {
         check_knots(&self.knots_u, self.nu, self.degree_u)?;

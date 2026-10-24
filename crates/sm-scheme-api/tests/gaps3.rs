@@ -126,7 +126,7 @@ fn sweep_walks_submapped_linking_faces_without_grids() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     for (e, n) in [(0, 2u32), (4, 3), (8, 4)] {
         intent.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(n)));

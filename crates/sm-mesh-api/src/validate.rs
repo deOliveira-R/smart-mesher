@@ -124,10 +124,12 @@ impl ViolationCode {
     }
 }
 
-/// One validation finding.
+/// One validation finding. `#[non_exhaustive]` (W0g r4): build it with [`Violation::new`];
+/// fields added later are `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Violation {
     /// Stable code.
     pub code: ViolationCode,
@@ -135,6 +137,17 @@ pub struct Violation {
     pub entity: Option<MeshEntity>,
     /// Human-readable detail.
     pub detail: String,
+}
+
+impl Violation {
+    /// A finding with `code`, the offending `entity` (if one can be named) and a `detail` text.
+    pub fn new(code: ViolationCode, entity: Option<MeshEntity>, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            entity,
+            detail: detail.into(),
+        }
+    }
 }
 
 impl core::fmt::Display for Violation {
@@ -150,11 +163,7 @@ impl core::fmt::Display for Violation {
 struct Sink(Vec<Violation>);
 impl Sink {
     fn add(&mut self, code: ViolationCode, entity: Option<MeshEntity>, detail: impl Into<String>) {
-        self.0.push(Violation {
-            code,
-            entity,
-            detail: detail.into(),
-        });
+        self.0.push(Violation::new(code, entity, detail));
     }
 }
 
@@ -953,8 +962,10 @@ fn validate_sets_tags_edges(
     }
 }
 
-/// Tolerances for [`validate_geometry`].
+/// Tolerances for [`validate_geometry`]. `#[non_exhaustive]` (W0g r4): build it with
+/// [`GeomTol::new`] / `Default` and the `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct GeomTol {
     /// Largest allowed distance of a face vertex from the face's best plane, relative to
     /// `sqrt(|area|)`.
@@ -969,6 +980,25 @@ impl Default for GeomTol {
             planarity: 1e-6,
             min_volume: 0.0,
         }
+    }
+}
+
+impl GeomTol {
+    /// The default tolerances (planarity `1e-6`, min volume `0`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the planarity tolerance.
+    pub fn with_planarity(mut self, planarity: f64) -> Self {
+        self.planarity = planarity;
+        self
+    }
+
+    /// Replace the minimum cell volume.
+    pub fn with_min_volume(mut self, min_volume: f64) -> Self {
+        self.min_volume = min_volume;
+        self
     }
 }
 
@@ -1013,11 +1043,11 @@ pub fn validate_geometry_with(m: &dyn MeshRead, tol: &GeomTol, normals: &dyn Fac
         let cen = cen * (1.0 / n as f64);
         let Some(nrm) = normals.normal(entity, Point3::new(cen.x, cen.y, cen.z)) else { continue };
         if area.dot(nrm) <= 0.0 {
-            out.push(Violation {
-                code: ViolationCode::GeomShellOrientation,
-                entity: Some(MeshEntity::Cell(ci)),
-                detail: format!("corner cycle is not right-handed about the normal of {entity}"),
-            });
+            out.push(Violation::new(
+                ViolationCode::GeomShellOrientation,
+                Some(MeshEntity::Cell(ci)),
+                format!("corner cycle is not right-handed about the normal of {entity}"),
+            ));
         }
     }
     out
@@ -1304,10 +1334,11 @@ pub fn topology_hash(m: &dyn MeshRead) -> u64 {
     h.0
 }
 
-/// Quantize one float for [`geometry_hash_quantized`]: `round(x / quantum)` (half away from
-/// zero, the W0c Q2 rule of `sm_geom_api::ModelTolerance::quantize_with` and the op layer's
-/// `Digest::f64_quantized`), `-0` folded to `0`, out-of-range and infinite values saturate, NaN
-/// (or a non-positive quantum) maps to `i64::MIN`.
+/// Quantize one float with an absolute step: `round(x / quantum)` (half away from zero, the
+/// W0c Q2 rule of `sm_geom_api::ModelTolerance::quantize_with`), `-0` folded to `0`,
+/// out-of-range and infinite values saturate, NaN (or a non-positive quantum) maps to
+/// `i64::MIN`. [`geometry_hash_quantized`] does not hash saturated codes: a value whose code
+/// is out of `i64` range is hashed by its raw bits behind a marker instead.
 pub fn quantize_word(x: f64, quantum: f64) -> i64 {
     if x.is_nan() || quantum.is_nan() || quantum <= 0.0 {
         return i64::MIN;
@@ -1316,29 +1347,106 @@ pub fn quantize_word(x: f64, quantum: f64) -> i64 {
     if r == 0.0 { 0 } else { r as i64 }
 }
 
-/// Cross-platform geometry hash (the W0c Q2 implementation for meshes): like
-/// [`geometry_hash`] (rule id, vertex and extra-node coordinates, every classification `Param`,
-/// real tag values) but every float is hashed as [`quantize_word`]`(x, quantum)` instead of its
-/// bits, so it is platform independent. Use `ModelTolerance::linear * 2^-10` as the quantum for
-/// the state identity; keep [`geometry_hash`] (exact bits) for cache keys.
-pub fn geometry_hash_quantized(m: &dyn MeshRead, quantum: f64) -> u64 {
-    let mut h = Hasher::new("smartmesh.geometry-quantized.v1");
-    let q = |x: f64| quantize_word(x, quantum) as u64;
+/// The quantization steps of [`geometry_hash_quantized`] (W0g r2). Both enter the hash.
+///
+/// For the state identity use `length = ModelTolerance::linear * 2^-10` and
+/// `param = ModelTolerance::parametric * 2^-10` (`quantum()` / `param_quantum()` in
+/// `sm-geom-api`, matching topology's length and parameter codes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct HashQuanta {
+    /// Absolute step for coordinates (vertices and extra nodes).
+    pub length: f64,
+    /// Absolute step for classification parameters (curve `t`, surface `(u, v)`). Tag values
+    /// are scale-free and do not use it.
+    pub param: f64,
+}
+
+impl HashQuanta {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(length: f64, param: f64) -> Self {
+        Self { length, param }
+    }
+}
+
+/// Word marking that a quantized code follows.
+const QW_CODE: u64 = 0;
+/// Word marking that the raw bits follow (non-finite value, code out of `i64` range, or an
+/// invalid quantum); NaN is canonicalized first.
+const QW_RAW: u64 = 1;
+
+fn raw_words(h: &mut Hasher, x: f64) {
+    h.u(QW_RAW);
+    h.u(if x.is_nan() { f64::NAN.to_bits() } else { x.to_bits() });
+}
+
+/// Absolute-step float: marker plus `round(x / q)` (`-0` folded), or marker plus raw bits.
+fn abs_words(h: &mut Hasher, x: f64, q: f64) {
+    if x.is_finite() && q.is_finite() && q > 0.0 {
+        let r = (x / q).round();
+        if r.abs() < 9.2e18 {
+            h.u(QW_CODE);
+            h.u(if r == 0.0 { 0 } else { r as i64 as u64 });
+            return;
+        }
+    }
+    raw_words(h, x);
+}
+
+/// Scale-free float (real tag values): subnormals and -0 hash as 0 (no absolute cutoff: user
+/// fields have arbitrary units); otherwise the
+/// mantissa is rounded to 40 bits (relative step about 1e-12) and packed with exponent and sign,
+/// the rule of `sm_geom_api::ModelTolerance::quantize_scale_free` (never out of range for finite
+/// input). Non-finite values hash by raw bits.
+fn scale_free_words(h: &mut Hasher, x: f64) {
+    if !x.is_finite() {
+        return raw_words(h, x);
+    }
+    let a = x.abs();
+    let code = if (a.to_bits() >> 52) == 0 {
+        0
+    } else {
+        // Round half up on the low 13 bits; a mantissa carry moves into the exponent.
+        let c = ((a.to_bits() + (1u64 << 12)) >> 13) as i64;
+        if x < 0.0 { -c } else { c }
+    };
+    h.u(QW_CODE);
+    h.u(code as u64);
+}
+
+/// Cross-platform geometry hash (the W0c Q2 implementation for meshes, `v2` since W0g r2): the
+/// content of [`geometry_hash`] (rule id, vertex and extra-node coordinates, every
+/// classification `Param`, real tag values) with every float quantized instead of hashed by its
+/// bits, so it is platform independent:
+///
+/// - coordinates: absolute step `q.length`;
+/// - classification parameters: absolute step `q.param`;
+/// - real tag values: scale-free (relative 40-bit mantissa, no absolute cutoff), so a large
+///   value never saturates.
+///
+/// Every float is a marker word then either its code or, when the code would be out of `i64`
+/// range (or the value is not finite), its raw bits, so the stream stays prefix-free and no two
+/// distinct large values share a saturated code. Both quanta enter the hash. Keep
+/// [`geometry_hash`] (exact bits) for cache keys.
+pub fn geometry_hash_quantized(m: &dyn MeshRead, q: &HashQuanta) -> u64 {
+    let mut h = Hasher::new("smartmesh.geometry-quantized.v2");
+    let (ql, qp) = (q.length, q.param);
     h.str(m.geometry_rule());
-    h.u(quantum.to_bits());
+    h.u(ql.to_bits());
+    h.u(qp.to_bits());
     let co = m.coords();
     h.u(co.len() as u64);
     for i in 0..co.len() {
-        h.u(q(co.x[i]));
-        h.u(q(co.y[i]));
-        h.u(q(co.z[i]));
+        abs_words(&mut h, co.x[i], ql);
+        abs_words(&mut h, co.y[i], ql);
+        abs_words(&mut h, co.z[i], ql);
     }
     let param = |h: &mut Hasher, c: Classification| {
         let [tag, a, b, cc] = c.param_bits();
         h.u(tag);
         for (k, bits) in [a, b, cc].into_iter().enumerate() {
             if (k as u64) < tag {
-                h.u(q(f64::from_bits(bits)));
+                abs_words(h, f64::from_bits(bits), qp);
             }
         }
     };
@@ -1361,8 +1469,9 @@ pub fn geometry_hash_quantized(m: &dyn MeshRead, quantum: f64) -> u64 {
         if let TagValues::F64(v) = &t.values {
             h.str(&t.name);
             h.u(t.target as u64);
+            h.u(v.len() as u64);
             for x in v {
-                h.u(q(*x));
+                scale_free_words(&mut h, *x);
             }
         }
     }

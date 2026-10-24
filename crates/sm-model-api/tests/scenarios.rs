@@ -46,7 +46,7 @@ fn two_materials_with_boundary_colors_and_an_uncolored_boundary_warning() {
     assert_eq!(m.color_faces(fuel, &[a.faces[0]]), Err(ModelError::ColorDomain(fuel)));
 
     // The touching faces are a non-conformal interface; everything else is response.
-    let iface = m.add_boundary("fuel/water", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let iface = m.add_boundary("fuel/water", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(iface, &[a.faces[1]], &[b.faces[0]]).unwrap();
     m.color_faces(seam, &[a.faces[1], b.faces[0]]).unwrap();
     let outer = m.add_boundary("outer", BoundaryKind::Response).unwrap();
@@ -66,7 +66,7 @@ fn uncolored_boundary_face_is_a_warning_not_an_error() {
     let seam = m.add_color(8, "seam", Domain::Face).unwrap();
     m.color_volumes(fuel, &[a.volume]).unwrap();
     m.color_volumes(water, &[b.volume]).unwrap();
-    let iface = m.add_boundary("fuel/water", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let iface = m.add_boundary("fuel/water", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(iface, &[a.faces[1]], &[b.faces[0]]).unwrap();
     m.color_faces(seam, &[a.faces[1], b.faces[0]]).unwrap();
     let outer = m.add_boundary("outer", BoundaryKind::Response).unwrap();
@@ -149,7 +149,7 @@ fn cut_cube() -> Cut {
     })
     .unwrap();
     let out = t.lineage().cut_outcome(OpId(2));
-    let spec = CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, keep: Keep::Negative, origin: p3(0.0, 0.0, 0.5) };
+    let spec = CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, Keep::Negative, p3(0.0, 0.0, 0.5));
     let plan = plan_cut(&spec).unwrap();
     let boundary = m.apply_cut(&plan, &out, Some(cap_color), &t).unwrap();
     Cut { keep: w.volumes[0], cap: w.cap, t, m, mat, cap_color, b, boundary }
@@ -255,7 +255,7 @@ fn apply_cut_rejects_outcomes_that_do_not_match_the_plan() {
     .unwrap();
     let out = t.lineage().cut_outcome(OpId(2));
     let mk = |offset: f64, keep: Keep| {
-        plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), offset).unwrap() }, keep, origin: p3(0.0, 0.0, offset) }).unwrap()
+        plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), offset).unwrap() }, keep, p3(0.0, 0.0, offset))).unwrap()
     };
     let mut probe = m.clone();
     assert!(matches!(probe.apply_cut(&mk(0.25, Keep::Negative), &out, None, &t), Err(ModelError::CutInvalid(s)) if s.contains("off the planned")));
@@ -293,7 +293,7 @@ fn a_mirror_cut_through_a_periodic_pair_repairs_the_split_mates() {
     })
     .unwrap();
     let out = t.lineage().cut_outcome(OpId(2));
-    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, keep: Keep::Negative, origin: p3(0.0, 0.0, 0.5) }).unwrap();
+    let plan = plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, Keep::Negative, p3(0.0, 0.0, 0.5))).unwrap();
     m.apply_cut(&plan, &out, None, &t).unwrap();
     let pairs: Vec<_> = m.boundary_faces(per).collect();
     assert_eq!(pairs.len(), 2, "one lower half on each side");
@@ -445,7 +445,7 @@ fn wedge_model(t: &CellComplex, p: &PrismIds, angle: Turns) -> (Model, EntityId)
     let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
     m.color_volumes(mat, &[p.volume]).unwrap();
     let axis = Axis::new(p3(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    let rot = m.add_boundary("rot", BoundaryKind::Deck(Deck::Rotation { axis, angle })).unwrap();
+    let rot = m.add_boundary("rot", BoundaryKind::Deck(Deck::rotation(axis, angle))).unwrap();
     m.assign_pairs(rot, &[(p.sides[0], p.sides[2])]).unwrap();
     finish_boundaries(&mut m, t, 7, true);
     (m, rot)
@@ -491,7 +491,7 @@ fn one_sixth_rotation_pair_with_order_consistency() {
 #[test]
 fn wedge_chamber_plan_has_two_planes_and_a_rotation_pair_of_caps() {
     let axis = Axis::new(p3(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    let spec = CutSpec { deck: Deck::Rotation { axis, angle: Turns::new(1, 6).unwrap() }, keep: Keep::Positive, origin: p3(1.0, 0.0, 0.0) };
+    let spec = CutSpec::new(Deck::rotation(axis, Turns::new(1, 6).unwrap()), Keep::Positive, p3(1.0, 0.0, 0.0));
     let plan = plan_cut(&spec).unwrap();
     assert_eq!(plan.half_spaces.len(), 2);
     assert_eq!(plan.roles.as_slice(), &[DeckSide::A, DeckSide::B]);
@@ -500,13 +500,13 @@ fn wedge_chamber_plan_has_two_planes_and_a_rotation_pair_of_caps() {
     let at = |deg: f64| p3(deg.to_radians().cos(), deg.to_radians().sin(), 0.0);
     assert!(inside(at(30.0)) && !inside(at(90.0)) && !inside(at(-30.0)) && inside(at(0.0)) && inside(at(60.0)));
     // Negative keeps the wedge clockwise from the start direction.
-    let neg = plan_cut(&CutSpec { keep: Keep::Negative, ..spec }).unwrap();
+    let neg = plan_cut(&CutSpec::new(spec.deck, Keep::Negative, spec.origin)).unwrap();
     let inside_n = |p: Point3| neg.half_spaces.iter().all(|h| h.signed_distance(p) >= -1e-12);
     assert!(inside_n(at(-30.0)) && !inside_n(at(30.0)));
     // A half turn or more cannot be a wedge.
-    assert!(plan_cut(&CutSpec { deck: Deck::Rotation { axis, angle: Turns::new(1, 2).unwrap() }, ..spec }).is_err());
+    assert!(plan_cut(&CutSpec::new(Deck::rotation(axis, Turns::new(1, 2).unwrap()), spec.keep, spec.origin)).is_err());
     // Slab: thickness |v|, caps A then B.
-    let slab = plan_cut(&CutSpec { deck: Deck::Translation { vector: Vector3::new(2.0, 0.0, 0.0) }, keep: Keep::Positive, origin: p3(1.0, 0.0, 0.0) }).unwrap();
+    let slab = plan_cut(&CutSpec::new(Deck::Translation { vector: Vector3::new(2.0, 0.0, 0.0) }, Keep::Positive, p3(1.0, 0.0, 0.0))).unwrap();
     let inside_s = |p: Point3| slab.half_spaces.iter().all(|h| h.signed_distance(p) >= -1e-12);
     assert!(inside_s(p3(2.0, 5.0, 5.0)) && !inside_s(p3(0.5, 0.0, 0.0)) && !inside_s(p3(3.5, 0.0, 0.0)));
 }
@@ -539,7 +539,7 @@ fn interface_between_colors_reads_coincident_faces_and_non_conformal_counts() {
     let c2 = m.add_color(2, "right", Domain::Volume).unwrap();
     m.color_volumes(c1, &[a.volume]).unwrap();
     m.color_volumes(c2, &[b1.volume, b2.volume]).unwrap();
-    let i = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b1.faces[0], b2.faces[0]]).unwrap();
     finish_boundaries(&mut m, &t, 7, true);
     // Without a recorded coincidence the faces have no counterpart, however close they are:
@@ -572,32 +572,32 @@ fn interface_faces_must_face_have_counterparts_and_not_be_merged() {
     };
     // Both faces point the same way: not facing.
     let mut m = base();
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b.faces[1]]).unwrap();
     assert!(validate(&m, &t, tol()).has(IssueCode::InterfaceNotFacing));
     // Missing side.
     let mut m = base();
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[]).unwrap();
     assert!(validate(&m, &t, tol()).has(IssueCode::InterfaceUnmatched));
     // Opposed normals but far apart: a face without a counterpart.
     let far = brick_at(&mut t, 2, [5.0, 5.0, 5.0], [1.0, 1.0, 1.0]);
     let mut m = base();
     m.color_volumes(m.color_by_name("right").unwrap(), &[far.volume]).unwrap();
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[far.faces[0]]).unwrap();
     assert!(validate(&m, &t, tol()).has(IssueCode::InterfaceUnmatched));
     // Same color on both sides warns; an explicit transform is intent and does not.
     let mut m = base();
     let c1 = m.color_by_name("left").unwrap();
     m.color_volumes(c1, &[b.volume]).unwrap();
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b.faces[0]]).unwrap();
     let r = validate(&m, &t, tol());
     assert!(r.warnings().any(|w| w.code == IssueCode::InterfaceSameColor));
     let mut m = base();
     m.color_volumes(c1, &[b.volume]).unwrap();
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: Some(Transform::IDENTITY) })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(Some(Transform::IDENTITY)))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b.faces[0]]).unwrap();
     assert!(!validate(&m, &t, tol()).has(IssueCode::InterfaceSameColor));
 }
@@ -621,7 +621,7 @@ fn merged_faces_derive_a_conformal_interface_and_reject_a_non_conformal_declarat
     m.color_volumes(c1, &[b.volume]).unwrap();
     assert_eq!(m.face_kind(a.faces[1], &t), Some(FaceKindView::Interior));
     // Declaring the merged face non-conformal is rejected.
-    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("i", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[]).unwrap();
     assert!(validate(&m, &t, tol()).has(IssueCode::InterfaceUnmatched));
     // Deck kinds on an interior face are rejected as well.
@@ -660,9 +660,9 @@ fn imported_geometry_already_cut_needs_only_the_caps() {
     finish_boundaries(&mut m, &t, 7, true);
     let cap_color = m.add_color(9, "reflect", Domain::Face).unwrap();
     let surface = EntityId::new(sm_core::EntityKind::Surface, 0).unwrap();
-    let out = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[5], from_surface: surface }] };
+    let out = CutOutcome::new(vec![], vec![CapFace { face: b.faces[5], from_surface: surface }]);
     // The +z face lies on z = 1; the face was already a response face, so tagging it fails cleanly.
-    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 1.0).unwrap() }, keep: Keep::Negative, origin: p3(0.0, 0.0, 1.0) }).unwrap();
+    let plan = plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 1.0).unwrap() }, Keep::Negative, p3(0.0, 0.0, 1.0))).unwrap();
     let mut probe = m.clone();
     assert_eq!(probe.apply_cut(&plan, &out, Some(cap_color), &t), Err(ModelError::Duplicate(b.faces[5])));
     assert_eq!(probe, m);

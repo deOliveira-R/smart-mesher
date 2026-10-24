@@ -261,3 +261,51 @@ All four requests were accepted (W0e decisions 1 to 4) and applied in W0f: `Clas
   scheme and falls back; otherwise it stays `SchemeError::Schedule`. Tested: a sibling read
   orders the waves and finds the source patch; self, parent and out-of-region reads are refused;
   a soft two-curve read cycle falls back, a hard one stays a schedule error.
+
+## W0g freeze rules
+
+- **Context structs are `#[non_exhaustive]` with constructors**, so scheme-crate tests and
+  sm-engine can build them while fields can still be added (a `control` field on `GenCtx` is
+  then additive): `MeshInput::new(topo, model, pieces, selection)`, `PlanCtx::new(input,
+  intent)`, `IntervalCtx::new(input, layouts, roles, targets)`, `GenCtx::new(input, plan,
+  patches, size)`; `DriverOptions::new()` / `Default` with `with_max_replans`,
+  `with_classify_edges`, `with_copy_tolerance`.
+- **Intent structs are `#[non_exhaustive]`**: `MeshIntent`, `EntityIntent`, `Defaults`,
+  `AutoPolicy`, `MeshGroup`, `TransformIntent`, `BoundaryLayerIntent`, `SchemeChoice`,
+  `CornerIntent`. Constructors: `SchemeChoice::new` / `with_params`,
+  `BoundaryLayerIntent::new`, `MeshIntent::new()`, `EntityIntent::new()` (+ `with_scheme`,
+  `with_fallbacks`, `with_intervals`, `with_boundary_layer`), `Defaults::new()` (+
+  `with_sizing`, `with_auto`), `AutoPolicy::new(curve, surface, volume)`, `MeshGroup::new(id,
+  members)` (+ `with_scheme`, `with_fallbacks`), `TransformIntent::new(id, targets,
+  transform)`, `CornerIntent::new(corner, vertex_type)`. Fields stay `pub`.
+- **Every field added to an intent or plan struct after the freeze must be `#[serde(default)]`**
+  (and omitted when default where the struct already does that), so stored intents and plans
+  still read. Existing optional fields keep their `serde(default)`.
+- **Implementer-built results are `#[non_exhaustive]` with constructors** (they are serialized
+  into `Plan`): `GenerateFailure::new` / `fallback` / `fatal`, `Infeasible::new(reason,
+  constraints, entities)` (sorts and dedups; the driver fills `blame`) and `Attempt::new(target,
+  scheme, phase, kind, message)`.
+- **W0g r2: the other implementer-built values are `#[non_exhaustive]` too.** `Patch` (the
+  return value of `Scheme::generate`) is built with `Patch::new(target)` plus `pub` field
+  assignment, or with `PatchBuilder`. `PatchNode::new(key, point, param)`. `FaceLayout` (the
+  return value of `CornerPicker::pick`, serialized into `Plan`) is built with
+  `FaceLayout::new(face, rule, corners, sides)`, `LogicalSide::new(coedges, dir)` and (W0g r3)
+  `CornerAssignment::new(corner, vertex_type, firmness, angle)`, which every external
+  `CornerPicker` needs to fill `FaceLayout::corners`. Fields stay `pub`. **Any field added later
+  to `FaceLayout`, `LogicalSide` or `CornerAssignment` must be `#[serde(default)]`**, so stored
+  plans still read.
+- **W0g r3: `CopyConstraint` is `#[non_exhaustive]`.** Implementers pass it by value to
+  `Requirements::copy` and it is persisted in `Plan.problem.copies`. Build it with
+  `CopyConstraint::new(source, target, transform, reason)` (empty `vertex_map`: derived from
+  `transform`) plus `with_vertex_map(pairs)` (sorted by source). Fields stay `pub`. **Any field
+  added later must be `#[serde(default)]`.**
+- **`#[non_exhaustive]` enums**: `FailureKind`, `Phase`, `SchemeError` (now like every other
+  contract error enum), `Target`, `Job`, `IntervalRequest`, `SizingSpec`, `Origin`,
+  `IntervalConstraint`, `Need`, `Role`, `CopyReason`, `Applicability`, `ElemShape`,
+  `VertexRule`. Serde shapes are unchanged. `FailureKind::Cancelled` can come later as an
+  additive variant. Of the struct variants only `Applicability::Applicable` / `NotApplicable`
+  are `#[non_exhaustive]` (build them with `Applicability::yes` / `no`): the others
+  (`IntervalConstraint::*`, `Role::*`, `Origin::*`, `CopyReason::*`, `SchemeError::*`) are
+  built by scheme implementations and users with literal syntax and have no constructors, so
+  marking them would break every implementer for no expected growth; a new field there would be
+  a new variant instead.

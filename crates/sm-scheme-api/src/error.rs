@@ -8,6 +8,7 @@ use sm_core::EntityId;
 
 /// Why a scheme attempt failed or was passed over, and what the driver may do about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FailureKind {
     /// The scheme does not apply to this input (reported by `applicability`).
     NotApplicable,
@@ -36,6 +37,7 @@ impl FailureKind {
 
 /// The driver phase an [`Attempt`] belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Phase {
     /// Scheme selection (applicability, impositions, auto scoring).
     Resolve,
@@ -59,6 +61,7 @@ pub enum Phase {
 
 /// One scheme candidate that was evaluated and did not win, or that failed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Attempt {
     /// The target.
     pub target: Target,
@@ -72,9 +75,17 @@ pub struct Attempt {
     pub message: String,
 }
 
+impl Attempt {
+    /// An attempt of `scheme` on `target` that was rejected or failed in `phase`.
+    pub fn new(target: Target, scheme: SchemeName, phase: Phase, kind: FailureKind, message: impl Into<String>) -> Self {
+        Self { target, scheme, phase, kind, message: message.into() }
+    }
+}
+
 /// A structured generation failure.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("{scheme} failed on {target:?} ({kind:?}): {reason}")]
+#[non_exhaustive]
 pub struct GenerateFailure {
     /// The target being generated.
     pub target: Target,
@@ -110,6 +121,7 @@ impl GenerateFailure {
 /// caller (or a UI) can show the conflict, and so the driver can re-plan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("infeasible: {reason} (constraints {constraints:?}, entities {entities:?})")]
+#[non_exhaustive]
 pub struct Infeasible {
     /// What could not be satisfied.
     pub reason: String,
@@ -124,8 +136,21 @@ pub struct Infeasible {
     pub blame: Option<(Target, SchemeName)>,
 }
 
+impl Infeasible {
+    /// An infeasibility over `constraints` and `entities` (sorted and deduplicated here); the
+    /// driver fills [`blame`](Self::blame).
+    pub fn new(reason: impl Into<String>, mut constraints: Vec<ConstraintId>, mut entities: Vec<EntityId>) -> Self {
+        constraints.sort_unstable();
+        constraints.dedup();
+        entities.sort_unstable();
+        entities.dedup();
+        Self { reason: reason.into(), constraints, entities, blame: None }
+    }
+}
+
 /// Errors of planning, generation and commit.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SchemeError {
     /// No scheme of this name is registered for the target's dimension.
     #[error("unknown scheme `{name}` for {target:?}")]

@@ -38,7 +38,7 @@ fn set_boundary_kind_keeps_compatible_roles_only() {
     m.assign_pairs(px, &[(a.faces[0], a.faces[1])]).unwrap();
     // Translation -> rotation keeps A/B pairs.
     let axis = Axis::new(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    m.set_boundary_kind(px, BoundaryKind::Deck(Deck::Rotation { axis, angle: Turns::new(1, 4).unwrap() })).unwrap();
+    m.set_boundary_kind(px, BoundaryKind::Deck(Deck::rotation(axis, Turns::new(1, 4).unwrap()))).unwrap();
     assert!(matches!(m.boundary(px).unwrap().kind, BoundaryKind::Deck(Deck::Rotation { .. })));
     // Pairs cannot become a mirror or a response.
     let mirror = BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.0).unwrap() });
@@ -88,7 +88,7 @@ fn remove_boundary_is_refused_while_faces_or_groups_refer_to_it() {
 // ------------------------------------------------------------------ instancing rows
 
 fn inst_row(of: Fill) -> InstanceRow {
-    InstanceRow { of, at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None }
+    InstanceRow::new(of, Transform::IDENTITY)
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn instance_prototype_and_lattice_rows_can_be_replaced_and_removed() {
     let pa = m.add_prototype(&[a.volume]).unwrap();
     let pb = m.add_prototype(&[b.volume]).unwrap();
     let lat = m
-        .add_lattice(Lattice { layout: Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 0.0, 0.0) }, origin: Transform::IDENTITY, outer: Fill::Prototype(pa), slots: BTreeMap::new() })
+        .add_lattice(Lattice::new(Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 0.0, 0.0) }, Transform::IDENTITY, Fill::Prototype(pa), BTreeMap::new()))
         .unwrap();
     let i = m.add_instance(inst_row(Fill::Lattice(lat))).unwrap();
     // Referenced rows cannot go.
@@ -113,7 +113,7 @@ fn instance_prototype_and_lattice_rows_can_be_replaced_and_removed() {
     m.remove_prototype(pa).unwrap();
     assert!(matches!(m.remove_prototype(pb), Err(ModelError::InUse(_))));
     // A path override names the instance.
-    m.add_path_override(PathOverride { prefix: [PathStep::Instance(i)].into_iter().collect(), recolor: ColorMap::default() }).unwrap();
+    m.add_path_override(PathOverride::new([PathStep::Instance(i)].into_iter().collect(), ColorMap::default())).unwrap();
     assert!(matches!(m.remove_instance(i), Err(ModelError::InUse(x)) if x == i));
     m.check_integrity().unwrap();
     let mut m2 = Model::new();
@@ -130,12 +130,12 @@ fn groups_and_slot_overrides_pin_lattices_and_prototypes() {
     let (_t, mut m, a, _) = two();
     let pa = m.add_prototype(&[a.volume]).unwrap();
     let lat = m
-        .add_lattice(Lattice { layout: Layout::Cartesian { n: [1, 1, 1], pitch: Vector3::new(1.0, 1.0, 1.0) }, origin: Transform::IDENTITY, outer: Fill::Void, slots: BTreeMap::new() })
+        .add_lattice(Lattice::new(Layout::Cartesian { n: [1, 1, 1], pitch: Vector3::new(1.0, 1.0, 1.0) }, Transform::IDENTITY, Fill::Void, BTreeMap::new()))
         .unwrap();
     let g = m.add_group("protos", &[pa]).unwrap();
     assert!(matches!(m.remove_prototype(pa), Err(ModelError::InUse(_))));
     m.remove_group(g).unwrap();
-    m.add_path_override(PathOverride { prefix: [PathStep::Slot { lattice: lat, ix: SlotIx::new(0, 0, 0) }].into_iter().collect(), recolor: ColorMap::default() }).unwrap();
+    m.add_path_override(PathOverride::new([PathStep::Slot { lattice: lat, ix: SlotIx::new(0, 0, 0) }].into_iter().collect(), ColorMap::default())).unwrap();
     assert!(matches!(m.remove_lattice(lat), Err(ModelError::InUse(_))));
     m.remove_prototype(pa).unwrap();
 }
@@ -153,21 +153,21 @@ fn clips_are_kind_checked_validated_and_flattened() {
     m.color_volumes(mat, &[pin.volume, barrel.volume, cell.volume]).unwrap();
     let p = m.add_prototype(&[pin.volume]).unwrap();
     // A clip must be a volume.
-    assert!(matches!(m.add_instance(InstanceRow { clip: Some(pin.faces[0]), ..inst_row(Fill::Prototype(p)) }), Err(ModelError::WrongKind { .. })));
+    assert!(matches!(m.add_instance(inst_row(Fill::Prototype(p)).with_clip(pin.faces[0])), Err(ModelError::WrongKind { .. })));
     let slot_ix = SlotIx::new(1, 0, 0);
-    let slots = BTreeMap::from([(slot_ix, Slot { fill: Fill::Prototype(p), recolor: ColorMap::default(), clip: Some(cell.volume) })]);
+    let slots = BTreeMap::from([(slot_ix, Slot::new(Fill::Prototype(p)).with_clip(cell.volume))]);
     let origin = Transform::translation(Vector3::new(0.0, 0.0, 3.0));
-    let lat = m.add_lattice(Lattice { layout: Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 2.0, 1.0) }, origin, outer: Fill::Prototype(p), slots }).unwrap();
-    let bad_slot = Slot { fill: Fill::Prototype(p), recolor: ColorMap::default(), clip: Some(pin.edges[0]) };
+    let lat = m.add_lattice(Lattice::new(Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 2.0, 1.0) }, origin, Fill::Prototype(p), slots)).unwrap();
+    let bad_slot = Slot::new(Fill::Prototype(p)).with_clip(pin.edges[0]);
     assert!(m.set_lattice_slot(lat, slot_ix, bad_slot).is_err());
     let at = Transform::translation(Vector3::new(100.0, 0.0, 0.0));
-    let i = m.add_instance(InstanceRow { of: Fill::Lattice(lat), at, recolor: ColorMap::default(), clip: Some(barrel.volume) }).unwrap();
+    let i = m.add_instance(InstanceRow::new(Fill::Lattice(lat), at).with_clip(barrel.volume)).unwrap();
     m.check_integrity().unwrap();
     let flat = flatten(&m).unwrap();
     assert_eq!(flat.entries.len(), 2);
     // The instance clip sits in the model frame; the slot clip in the lattice frame, nested in it.
     assert_eq!(flat.clips.len(), 2);
-    assert_eq!(flat.clips[0], FlatClip { volume: barrel.volume, placement: Placement::identity(), outer: None });
+    assert_eq!(flat.clips[0], FlatClip::new(barrel.volume, Placement::identity(), None));
     assert_eq!(flat.clips[1].volume, cell.volume);
     assert_eq!(flat.clips[1].outer, Some(0));
     assert_eq!(flat.clips[1].placement, Placement::of(at.compose(&origin)));
@@ -177,7 +177,7 @@ fn clips_are_kind_checked_validated_and_flattened() {
     assert_eq!(flat.entries[clipped.start].clip, Some(1));
     // Clips enter the fingerprint.
     let mut unclipped = m.clone();
-    unclipped.set_instance(i, InstanceRow { of: Fill::Lattice(lat), at, recolor: ColorMap::default(), clip: None }).unwrap();
+    unclipped.set_instance(i, InstanceRow::new(Fill::Lattice(lat), at)).unwrap();
     assert_ne!(flatten(&unclipped).unwrap().fingerprint(), flat.fingerprint());
     // validate: a dead clip volume is reported.
     assert!(validate(&m, &t, Tolerance::default()).with(IssueCode::UnknownEntity).next().is_none());
@@ -211,7 +211,7 @@ fn apply_transform_maps_decks_of_moved_volumes_and_refuses_straddles() {
     m.assign_self_paired(mz, &[a.faces[4]]).unwrap();
     let rb = m.add_boundary("rb", BoundaryKind::Deck(Deck::Translation { vector: Vector3::new(0.0, 1.0, 0.0) })).unwrap();
     m.assign_pairs(rb, &[(b.faces[2], b.faces[3])]).unwrap();
-    let slide = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: Some(Transform::translation(Vector3::new(0.0, 0.0, 1.0))) })).unwrap();
+    let slide = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::non_conformal(Some(Transform::translation(Vector3::new(0.0, 0.0, 1.0)))))).unwrap();
     m.assign_interface(slide, &[a.faces[2]], &[a.faces[3]]).unwrap();
     // A quarter turn about z through the origin, then up by 2.
     let x = Transform::translation(Vector3::new(0.0, 0.0, 2.0)).compose(&Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), std::f64::consts::FRAC_PI_2).unwrap());
@@ -222,7 +222,7 @@ fn apply_transform_maps_decks_of_moved_volumes_and_refuses_straddles() {
     assert!(close(plane.normal, Vector3::new(0.0, 0.0, 1.0)) && (plane.offset - 2.0).abs() < 1e-12, "{plane:?}");
     let BoundaryKind::Deck(Deck::Translation { vector }) = m.boundary(rb).unwrap().kind else { panic!() };
     assert_eq!(vector, Vector3::new(0.0, 1.0, 0.0), "B did not move");
-    let BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: Some(tr) }) = m.boundary(slide).unwrap().kind else { panic!() };
+    let BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: Some(tr), .. }) = m.boundary(slide).unwrap().kind else { panic!() };
     assert!(close(tr.t, Vector3::new(0.0, 0.0, 1.0)), "a pure z translation commutes with the motion");
     // A record with faces on both bricks straddles; nothing changes.
     let both = m.add_boundary("both", BoundaryKind::Response).unwrap();
@@ -240,13 +240,13 @@ fn apply_transform_maps_decks_of_moved_volumes_and_refuses_straddles() {
 fn mirror_decks_need_a_similarity_and_rotations_flip_under_reflection() {
     let (t, mut m, a, _) = two();
     let axis = Axis::new(Point3::new(0.5, 0.5, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    let r = m.add_boundary("r", BoundaryKind::Deck(Deck::Rotation { axis, angle: Turns::new(1, 4).unwrap() })).unwrap();
+    let r = m.add_boundary("r", BoundaryKind::Deck(Deck::rotation(axis, Turns::new(1, 4).unwrap()))).unwrap();
     m.assign_pairs(r, &[(a.faces[0], a.faces[2])]).unwrap();
     let stretch = Transform { m: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: Vector3::new(0.0, 0.0, 0.0) };
     assert!(matches!(m.apply_transform(&stretch, &[a.volume], &t), Err(ModelError::Invalid(_))));
     let flip = Transform::reflection(Vector3::new(1.0, 0.0, 0.0), 0.0).unwrap();
     m.apply_transform(&flip, &[a.volume], &t).unwrap();
-    let BoundaryKind::Deck(Deck::Rotation { axis, angle }) = m.boundary(r).unwrap().kind else { panic!() };
+    let BoundaryKind::Deck(Deck::Rotation { axis, angle, .. }) = m.boundary(r).unwrap().kind else { panic!() };
     assert!(close(axis.point - Point3::new(-0.5, 0.5, 0.0), Vector3::new(0.0, 0.0, 0.0)));
     assert!(close(axis.dir, Vector3::new(0.0, 0.0, -1.0)), "conjugation by a reflection reverses the sense");
     assert_eq!(angle, Turns::new(1, 4).unwrap());

@@ -248,11 +248,7 @@ fn violation_codes_are_stable_and_specific() {
     let mut b = Broken::of(m.clone());
     b.ho = Some((
         0,
-        HighOrderCell {
-            degree: 2,
-            basis: Basis::LagrangeEquispaced,
-            nodes: vec![PointIx(0); 8],
-        },
+        HighOrderCell::new(2, Basis::LagrangeEquispaced, vec![PointIx(0); 8]),
     ));
     expect(&b, ViolationCode::HighOrder);
 
@@ -301,20 +297,11 @@ fn violation_codes_are_stable_and_specific() {
     expect(&b, ViolationCode::Lineage);
 
     let mut b = Broken::of(m.clone());
-    b.sets = Some(vec![MeshSet {
-        id: id(EntityKind::MeshSet, 1),
-        name: "s".into(),
-        label: None,
-        members: SetMembers::Cells(vec![CellIx(1), CellIx(0)]),
-    }]);
+    b.sets = Some(vec![MeshSet::new(id(EntityKind::MeshSet, 1), "s", SetMembers::Cells(vec![CellIx(1), CellIx(0)]))]);
     expect(&b, ViolationCode::Set);
 
     let mut b = Broken::of(m.clone());
-    b.tags = Some(vec![TagColumn {
-        name: "t".into(),
-        target: MeshEntityKind::Cell,
-        values: TagValues::I64(vec![1]),
-    }]);
+    b.tags = Some(vec![TagColumn::new("t", MeshEntityKind::Cell, TagValues::I64(vec![1]))]);
     expect(&b, ViolationCode::Tag);
 
     let mut b = Broken::of(m.clone());
@@ -413,10 +400,7 @@ fn geometry_checks_report_volume_and_planarity() {
     );
     let loose = validate_geometry(
         &m,
-        &GeomTol {
-            planarity: 10.0,
-            min_volume: 0.0,
-        },
+        &GeomTol::new().with_planarity(10.0).with_min_volume(0.0),
     );
     assert!(loose.is_empty(), "{loose:?}");
     // A vertex pulled through the opposite face inverts the cell.
@@ -704,11 +688,7 @@ fn content_hashes_cover_all_stored_data() {
         if swap {
             nodes.swap(8, 9);
         }
-        let rec = HighOrderCell {
-            degree: 2,
-            basis: Basis::Serendipity,
-            nodes,
-        };
+        let rec = HighOrderCell::new(2, Basis::Serendipity, nodes);
         MeshEdit::set_high_order(m, CellIx(0), Some(rec)).unwrap();
     };
     let ho = edit(&|m| ho_rec(m, false, 0.0));
@@ -732,11 +712,7 @@ fn content_hashes_cover_all_stored_data() {
         for _ in 8..27 {
             nodes.push(MeshEdit::add_extra_node(m, Point3::new(0.5, 0.5, 0.5)).unwrap());
         }
-        let rec = HighOrderCell {
-            degree: 2,
-            basis: Basis::LagrangeEquispaced,
-            nodes,
-        };
+        let rec = HighOrderCell::new(2, Basis::LagrangeEquispaced, nodes);
         MeshEdit::set_high_order(m, CellIx(0), Some(rec)).unwrap();
     });
     assert_ne!(lag.1, ho.1, "basis/degree/node count are hashed");

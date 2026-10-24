@@ -19,6 +19,7 @@ pub struct ConstraintId(pub u32);
 
 /// Who contributed a constraint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Origin {
     /// The user's intent.
     Intent,
@@ -60,6 +61,7 @@ pub enum Rel {
 /// An interval constraint over curve interval counts (the IIA system).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum IntervalConstraint {
     /// The count of `edge` is `count` (hard: never changed; soft/default: a preferred value).
     Fixed {
@@ -184,6 +186,7 @@ impl IntervalConstraint {
 
 /// What a parent requires of a child entity's scheme.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Need {
     /// The child's scheme is one of these names (sorted). For the rare "exactly this
     /// algorithm" case; prefer [`Need::Caps`].
@@ -223,6 +226,7 @@ pub struct Claim {
 
 /// The role an entity plays for a parent scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Role {
     /// Source face of a sweep (any surface scheme; meshed first).
     SweepSource {
@@ -243,6 +247,7 @@ pub enum Role {
 
 /// Why a copy constraint exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CopyReason {
     /// A translation/rotation deck pair: the B face must carry exactly `g(mesh of A)`.
     Deck {
@@ -267,7 +272,12 @@ pub enum CopyReason {
 /// mapped through the vertex correspondence (edges follow from vertices). Copy constraints are
 /// **edges of an equivalence relation**: the driver groups them into classes and meshes each
 /// class from one root, so the direction written here is only the direction of `transform`.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`CopyConstraint::new`] (+
+/// [`CopyConstraint::with_vertex_map`]). It is persisted in `Plan.problem.copies`, so any field
+/// added later is `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CopyConstraint {
     /// Source entity.
     pub source: Target,
@@ -280,6 +290,23 @@ pub struct CopyConstraint {
     pub vertex_map: Vec<(EntityId, EntityId)>,
     /// Why.
     pub reason: CopyReason,
+}
+
+impl CopyConstraint {
+    /// A copy of `source` onto `target` under `transform`, with an empty vertex map (derived
+    /// geometrically from `transform`).
+    pub fn new(source: Target, target: Target, transform: Transform, reason: CopyReason) -> Self {
+        Self { source, target, transform, vertex_map: Vec::new(), reason }
+    }
+
+    /// With an explicit vertex correspondence `(source vertex, target vertex)`; it is sorted by
+    /// source here.
+    #[must_use]
+    pub fn with_vertex_map(mut self, mut vertex_map: Vec<(EntityId, EntityId)>) -> Self {
+        vertex_map.sort_unstable();
+        self.vertex_map = vertex_map;
+        self
+    }
 }
 
 /// Other (non-interval) constraints on the generated mesh. `#[non_exhaustive]` (W0f) so later

@@ -110,7 +110,9 @@ impl<Q: TypedQuery> QueryType for TypedQ<Q> {
 }
 
 /// Description of one registered query, for tool/help generation.
+/// Built only by the registry; it may gain fields.
 #[derive(Clone, Debug, Serialize)]
+#[non_exhaustive]
 pub struct QueryInfo {
     /// Query name.
     pub name: String,

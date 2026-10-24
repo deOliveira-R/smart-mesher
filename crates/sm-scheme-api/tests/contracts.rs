@@ -32,12 +32,7 @@ fn requirements_about_non_children_are_refused_with_a_typed_error() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids[0].volume, ids[1].volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     // A volume imposing on its sibling volume: not a strict sub-entity.
     intent.set_scheme(
@@ -132,12 +127,7 @@ fn scheduling_errors_are_typed_and_name_the_constraints() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids[0].volume, ids[1].volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(
         ids[0].volume,
@@ -200,12 +190,7 @@ fn a_child_without_a_scheme_blames_the_soft_parent_and_replanning_succeeds() {
     let (topo, ids, model) = brick_setup([1.0, 1.0, 1.0]);
     let (solver, picker) = parts();
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     // A registry without structured surface schemes: nothing can serve the linking faces of a
     // sweep (or the faces of a mapped volume), so their parents are blamed one after another.
     let mut reg = sm_scheme_api::SchemeRegistry::new();
@@ -229,13 +214,7 @@ fn a_child_without_a_scheme_blames_the_soft_parent_and_replanning_succeeds() {
             Err(e) => {
                 let (t, s) = e.blame().unwrap_or_else(|| panic!("no blame for {e}"));
                 blamed.push((t, s.as_str().to_owned()));
-                rej.insert(Attempt {
-                    target: t,
-                    scheme: s,
-                    phase: Phase::Resolve,
-                    kind: FailureKind::NotApplicable,
-                    message: e.to_string(),
-                });
+                rej.insert(Attempt::new(t, s, Phase::Resolve, FailureKind::NotApplicable, e.to_string()));
             }
         }
     };
@@ -267,12 +246,7 @@ fn a_polyhedral_cell_is_committed_through_add_polyhedron() {
     let (solver, picker) = parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, SchemeChoice::new("polyvol", Firmness::Hard));
     let out = driver

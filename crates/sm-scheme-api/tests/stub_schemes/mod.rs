@@ -1084,13 +1084,15 @@ impl Scheme for Sweep {
             .collect();
         let shift = mean(t, &vm.iter().map(|x| x.1).collect::<Vec<_>>())
             - mean(t, &vm.iter().map(|x| x.0).collect::<Vec<_>>());
-        out.copy(CopyConstraint {
-            source: Target::Surface(st.source),
-            target: Target::Surface(st.target),
-            transform: Transform::translation(shift),
-            vertex_map: vm,
-            reason: CopyReason::SweepTarget { volume: target },
-        });
+        out.copy(
+            CopyConstraint::new(
+                Target::Surface(st.source),
+                Target::Surface(st.target),
+                Transform::translation(shift),
+                CopyReason::SweepTarget { volume: target },
+            )
+            .with_vertex_map(vm),
+        );
         out.set_data(Params(
             serde_json::to_value(&st)
                 .map_err(|e| sm_scheme_api::SchemeError::Input(e.to_string()))?,

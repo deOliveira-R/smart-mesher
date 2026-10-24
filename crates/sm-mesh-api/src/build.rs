@@ -102,6 +102,7 @@ impl SerialAlloc {
 /// What `add_cell` / `add_polyhedron` / `add_cell_from_vertices` created or reused, so meshers
 /// do not need to call `find_face` again.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CellAdded {
     /// The new cell.
     pub cell: CellIx,
@@ -111,13 +112,28 @@ pub struct CellAdded {
     pub reused: SmallVec<[bool; 6]>,
 }
 
+impl CellAdded {
+    /// A result; implementers of [`MeshBuild::add_cell`] build it with this.
+    pub fn new(cell: CellIx, faces: SmallVec<[SignedFace; 6]>, reused: SmallVec<[bool; 6]>) -> Self {
+        Self { cell, faces, reused }
+    }
+}
+
 /// Result of [`MeshBuild::finish`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Finished<M> {
     /// The finished, canonical mesh.
     pub mesh: M,
     /// Provisional face handle -> final face index (`face_remap[provisional.get()]`).
     pub face_remap: Vec<FaceIx>,
+}
+
+impl<M> Finished<M> {
+    /// A result; implementers of [`MeshBuild::finish`] build it with this.
+    pub fn new(mesh: M, face_remap: Vec<FaceIx>) -> Self {
+        Self { mesh, face_remap }
+    }
 }
 
 /// Construct a new face-first mesh.

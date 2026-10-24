@@ -114,6 +114,7 @@ pub enum HexOrient {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Layout {
     /// `n[0] x n[1] x n[2]` slots, indices from 0.
     Cartesian {
@@ -255,9 +256,15 @@ pub enum Fill {
 /// A recoloring, typed by domain: `volume` maps volume colors (or single `TopoVolume`s) to volume
 /// colors; `face` maps face colors (or single `TopoFace`s) to face colors. A per-entity key beats
 /// a per-color key.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`ColorMap::new`] (or `Default`) plus
+/// [`ColorMap::with_volume`] / [`ColorMap::with_face`]. A per-domain field added later is
+/// `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and enters `canonical_visit`
+/// only when non-empty, so stored models and their hashes are unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ColorMap {
     /// Volume recoloring: key `TopoVolume` or volume `Color`; value volume `Color`.
     pub volume: BTreeMap<EntityId, EntityId>,
@@ -266,6 +273,25 @@ pub struct ColorMap {
 }
 
 impl ColorMap {
+    /// The empty recoloring.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// With the volume recoloring `volume`.
+    #[must_use]
+    pub fn with_volume(mut self, volume: BTreeMap<EntityId, EntityId>) -> Self {
+        self.volume = volume;
+        self
+    }
+
+    /// With the face recoloring `face`.
+    #[must_use]
+    pub fn with_face(mut self, face: BTreeMap<EntityId, EntityId>) -> Self {
+        self.face = face;
+        self
+    }
+
     /// True if the map recolors nothing.
     pub fn is_empty(&self) -> bool {
         self.volume.is_empty() && self.face.is_empty()
@@ -286,6 +312,7 @@ impl ColorMap {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Slot {
     /// The fill.
     pub fill: Fill,
@@ -299,10 +326,28 @@ pub struct Slot {
     pub clip: Option<EntityId>,
 }
 
+impl Slot {
+    /// A slot filled with `fill`, no recoloring, not clipped.
+    pub fn new(fill: Fill) -> Self {
+        Self { fill, recolor: ColorMap::default(), clip: None }
+    }
+    /// Set the recoloring.
+    pub fn with_recolor(mut self, recolor: ColorMap) -> Self {
+        self.recolor = recolor;
+        self
+    }
+    /// Clip the fill to a volume in the lattice frame.
+    pub fn with_clip(mut self, clip: EntityId) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+}
+
 /// A lattice: a layout plus a **sparse** slot table. In-range slots without an entry take `outer`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Lattice {
     /// Slot geometry.
     pub layout: Layout,
@@ -316,10 +361,18 @@ pub struct Lattice {
     pub slots: BTreeMap<SlotIx, Slot>,
 }
 
+impl Lattice {
+    /// A lattice with a layout, origin placement, outer fill and explicit slots.
+    pub fn new(layout: Layout, origin: Transform, outer: Fill, slots: BTreeMap<SlotIx, Slot>) -> Self {
+        Self { layout, origin, outer, slots }
+    }
+}
+
 /// One member of a [`Cluster`]: a fill at an explicit placement in the cluster frame.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ClusterMember {
     /// The fill.
     pub fill: Fill,
@@ -333,30 +386,64 @@ pub struct ClusterMember {
     pub clip: Option<EntityId>,
 }
 
+impl ClusterMember {
+    /// A member `fill` placed at `at`, no recoloring, not clipped.
+    pub fn new(fill: Fill, at: Transform) -> Self {
+        Self { fill, at, recolor: ColorMap::default(), clip: None }
+    }
+    /// Set the recoloring.
+    pub fn with_recolor(mut self, recolor: ColorMap) -> Self {
+        self.recolor = recolor;
+        self
+    }
+    /// Clip the fill to a volume in the cluster frame.
+    pub fn with_clip(mut self, clip: EntityId) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+}
+
 /// Irregular placements nested inside a fill (OpenMC/Serpent universes, the CSG front end):
 /// TRISO particles in a pebble, pebbles in a core, a rotated lattice slot (a one-member
 /// cluster). Members flatten in index order and their paths use [`PathStep::Member`].
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Cluster {
     /// The members, in flatten order.
     pub members: Vec<ClusterMember>,
+}
+
+impl Cluster {
+    /// A cluster of `members`, in flatten order.
+    pub fn new(members: Vec<ClusterMember>) -> Self {
+        Self { members }
+    }
 }
 
 /// A reusable definition: volumes of the topology (stored once, placed many times).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Prototype {
     /// The volumes.
     pub volumes: BTreeSet<EntityId>,
+}
+
+impl Prototype {
+    /// A prototype of `volumes`.
+    pub fn new(volumes: BTreeSet<EntityId>) -> Self {
+        Self { volumes }
+    }
 }
 
 /// A placement of a [`Fill`] at the top level.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct InstanceRow {
     /// What is placed.
     pub of: Fill,
@@ -371,11 +458,29 @@ pub struct InstanceRow {
     pub clip: Option<EntityId>,
 }
 
+impl InstanceRow {
+    /// An instance of `fill` placed at `at`, no recoloring, not clipped.
+    pub fn new(fill: Fill, at: Transform) -> Self {
+        Self { of: fill, at, recolor: ColorMap::default(), clip: None }
+    }
+    /// Set the recoloring.
+    pub fn with_recolor(mut self, recolor: ColorMap) -> Self {
+        self.recolor = recolor;
+        self
+    }
+    /// Clip the fill to a volume in the model frame.
+    pub fn with_clip(mut self, clip: EntityId) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+}
+
 /// A recoloring of every copy whose path starts with `prefix`. Reaches inner slots from an outer
 /// level (for example absorbers only in assembly #3).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct PathOverride {
     /// The path prefix.
     pub prefix: InstancePath,
@@ -383,10 +488,18 @@ pub struct PathOverride {
     pub recolor: ColorMap,
 }
 
+impl PathOverride {
+    /// Recolor every copy under `prefix`.
+    pub fn new(prefix: InstancePath, recolor: ColorMap) -> Self {
+        Self { prefix, recolor }
+    }
+}
+
 /// The instancing tables.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Instancing {
     /// Prototypes by `Prototype` id.
     pub prototypes: BTreeMap<EntityId, Prototype>,
@@ -407,6 +520,11 @@ const MAX_DEPTH: usize = 64;
 pub const MAX_FLAT_ENTRIES: usize = 1 << 24;
 
 impl Instancing {
+    /// Empty tables.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// The nested fills of a lattice or cluster (`None` for other ids or unknown rows).
     fn children_of(&self, id: EntityId) -> Option<Vec<Fill>> {
         if let Some(lat) = self.lattices.get(&id) {
@@ -660,6 +778,7 @@ impl Model {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct FlatEntry {
     /// Index into [`FlatModel::paths`].
     pub path: u32,
@@ -676,11 +795,19 @@ pub struct FlatEntry {
     pub clip: Option<u32>,
 }
 
+impl FlatEntry {
+    /// An entry of path `path` (index), placement index, prototype volume, color and innermost clip.
+    pub fn new(path: u32, placement: u32, volume: EntityId, color: EntityId, clip: Option<u32>) -> Self {
+        Self { path, placement, volume, color, clip }
+    }
+}
+
 /// One clip occurrence of a flattened model: an [`InstanceRow::clip`] or [`Slot::clip`] volume
 /// at the placement it has in the model frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct FlatClip {
     /// The clip volume (stored once, like prototype volumes).
     pub volume: EntityId,
@@ -691,11 +818,19 @@ pub struct FlatClip {
     pub outer: Option<u32>,
 }
 
+impl FlatClip {
+    /// A clip occurrence.
+    pub fn new(volume: EntityId, placement: Placement, outer: Option<u32>) -> Self {
+        Self { volume, placement, outer }
+    }
+}
+
 /// Result of [`flatten`]. Entries are in canonical order: instance id, slot `(k, j, i)` or
 /// cluster member index (nested), volume id. Paths are strictly increasing, so lookups by path are binary searches.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct FlatModel {
     /// One placement per path.
     pub placements: Vec<Placement>,
@@ -709,6 +844,11 @@ pub struct FlatModel {
 }
 
 impl FlatModel {
+    /// A flattened model from its columns.
+    pub fn new(placements: Vec<Placement>, paths: Vec<InstancePath>, entries: Vec<FlatEntry>, clips: Vec<FlatClip>) -> Self {
+        Self { placements, paths, entries, clips }
+    }
+
     /// The entries of the copy named `p`.
     pub fn find(&self, p: &[PathStep]) -> Option<std::ops::Range<usize>> {
         let ix = self.paths.binary_search_by(|q| q.as_slice().cmp(p)).ok()? as u32;

@@ -197,11 +197,7 @@ fn session() -> Session {
 }
 
 fn meta(msg: &str) -> Meta {
-    Meta {
-        author: "test".into(),
-        time: "2026-01-01T00:00:00Z".into(),
-        message: msg.into(),
-    }
+    Meta::new("test", "2026-01-01T00:00:00Z", msg)
 }
 
 fn apply(s: &mut Session, op: &dyn Op) -> (Hash256, Delta) {
@@ -1031,11 +1027,7 @@ fn golden_node_hash_is_stable() {
             serde_json::json!({"x": 1.0, "y": 2, "z": 3.5, "name": "g"}),
         )
         .unwrap(),
-        meta: Meta {
-            author: "golden".into(),
-            time: "2026-01-01T00:00:00Z".into(),
-            message: "m".into(),
-        },
+        meta: Meta::new("golden", "2026-01-01T00:00:00Z", "m"),
     };
     let h = body.hash().unwrap().to_hex();
     assert_eq!(
@@ -1119,10 +1111,7 @@ fn two_branches_created_independently_produce_disjoint_file_sets() {
         w.checkout(Rev::Node(base_tip), &c.control()).unwrap();
         w.branch(name).unwrap();
         for k in 0..3 {
-            let m = Meta {
-                author: author.into(),
-                ..meta("work")
-            };
+            let m = Meta::new(author, "2026-01-01T00:00:00Z", "work");
             w.apply(&brick(x0 + k as f64), m, &c.control()).unwrap();
         }
         w.timeline().to_files().unwrap()

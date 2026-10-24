@@ -25,6 +25,7 @@ impl Ray {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Crossing {
     /// The ray goes the way the hit normal points (`dir . normal > 0`): it leaves the region the
     /// normal points away from.
@@ -40,6 +41,7 @@ pub enum Crossing {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct RayHit {
     /// Ray parameter of the crossing.
     pub t: f64,
@@ -56,6 +58,11 @@ pub struct RayHit {
 }
 
 impl RayHit {
+    /// Construct (the type is `#[non_exhaustive]`; implementors of `ray_hits` build hits here).
+    pub const fn new(t: f64, point: Point3, normal: Vector3, uv: Option<Uv>, crossing: Crossing) -> Self {
+        Self { t, point, normal, uv, crossing }
+    }
+
     /// True if the ray crosses in the direction the normal points (`dir . normal > 0`) and is
     /// not tangent.
     pub fn leaving(&self, ray: &Ray) -> bool {

@@ -70,6 +70,7 @@ impl VertexType {
 /// What a surface scheme needs from the corners of its face. Contributed in the requirements
 /// phase and solved by the [`crate::CornerPicker`] before intervals are assembled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum VertexRule {
     /// No corner structure needed (pave, tri*). Types are still classified for reporting.
     Free,
@@ -82,7 +83,11 @@ pub enum VertexRule {
 }
 
 /// The solved type of one corner.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`CornerAssignment::new`]. It is serialized in
+/// `Plan.layouts`, so any field added later is `#[serde(default)]`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CornerAssignment {
     /// The corner (face, incoming coedge).
     pub corner: CornerKey,
@@ -92,6 +97,13 @@ pub struct CornerAssignment {
     pub firmness: Firmness,
     /// Measured interior angle (radians), used by the picker.
     pub angle: f64,
+}
+
+impl CornerAssignment {
+    /// A solved corner type.
+    pub const fn new(corner: CornerKey, vertex_type: VertexType, firmness: Firmness, angle: f64) -> Self {
+        Self { corner, vertex_type, firmness, angle }
+    }
 }
 
 /// Direction of a logical side in the face's (i, j) frame, from the cumulative quarter turns
@@ -140,6 +152,7 @@ impl SideDir {
 /// One logical side of a structured face: consecutive coedges between two logical corners
 /// (curves may be grouped, and a side may end mid-curve only after a virtual split).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogicalSide {
     /// Coedges in loop order.
     pub coedges: Vec<CoedgeKey>,
@@ -148,9 +161,17 @@ pub struct LogicalSide {
     pub dir: SideDir,
 }
 
+impl LogicalSide {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(coedges: Vec<CoedgeKey>, dir: SideDir) -> Self {
+        Self { coedges, dir }
+    }
+}
+
 /// Solved corner layout of one face: corner types in loop order and, for structured rules,
 /// the logical sides starting at the first logical corner.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct FaceLayout {
     /// The face.
     pub face: sm_core::EntityId,
@@ -160,4 +181,11 @@ pub struct FaceLayout {
     pub corners: Vec<CornerAssignment>,
     /// Logical sides (empty for [`VertexRule::Free`]).
     pub sides: Vec<LogicalSide>,
+}
+
+impl FaceLayout {
+    /// Construct (the type is `#[non_exhaustive]`; a [`crate::CornerPicker`] returns this).
+    pub fn new(face: sm_core::EntityId, rule: VertexRule, corners: Vec<CornerAssignment>, sides: Vec<LogicalSide>) -> Self {
+        Self { face, rule, corners, sides }
+    }
 }

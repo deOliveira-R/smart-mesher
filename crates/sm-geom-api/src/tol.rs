@@ -25,6 +25,7 @@ use sm_core::Point3;
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ModelTolerance {
     /// Model resolution: two points closer than this are the same point (model length units).
     pub linear: f64,
@@ -45,6 +46,37 @@ const SCALE_FREE_STEP: f64 = 1.0 / 1_099_511_627_776.0;
 impl ModelTolerance {
     /// Default policy: 1e-6 length, 1e-9 rad, 1e-9 parameter, cap 1e-3 (a unit-size model).
     pub const DEFAULT: Self = Self { linear: 1e-6, angular: 1e-9, parametric: 1e-9, linear_max: 1e-3 };
+
+    /// Construct from the four policy values (no validation; see [`Self::is_valid`]). The type
+    /// is `#[non_exhaustive]`: start from this, [`Self::DEFAULT`] or [`Self::for_extent`] and
+    /// adjust with the `with_*` setters.
+    pub const fn new(linear: f64, angular: f64, parametric: f64, linear_max: f64) -> Self {
+        Self { linear, angular, parametric, linear_max }
+    }
+
+    /// Copy with [`Self::linear`] replaced.
+    pub const fn with_linear(mut self, linear: f64) -> Self {
+        self.linear = linear;
+        self
+    }
+
+    /// Copy with [`Self::angular`] replaced.
+    pub const fn with_angular(mut self, angular: f64) -> Self {
+        self.angular = angular;
+        self
+    }
+
+    /// Copy with [`Self::parametric`] replaced.
+    pub const fn with_parametric(mut self, parametric: f64) -> Self {
+        self.parametric = parametric;
+        self
+    }
+
+    /// Copy with [`Self::linear_max`] replaced.
+    pub const fn with_linear_max(mut self, linear_max: f64) -> Self {
+        self.linear_max = linear_max;
+        self
+    }
 
     /// Policy scaled to a model of characteristic size `extent`: `linear = 1e-6 extent`,
     /// `linear_max = 1e-3 extent`. A non-positive or non-finite `extent` gives [`Self::DEFAULT`].
@@ -100,6 +132,7 @@ impl ModelTolerance {
             S::Length(x) => self.quantize(x),
             S::Angle(x) => Self::quantize_with(x, self.angular_quantum()),
             S::Unitless(x) => self.quantize_scale_free(x),
+            S::Param(x) => self.quantize_param(x),
         }
     }
 
@@ -172,11 +205,6 @@ impl ModelTolerance {
     /// Quantize a parameter-valued float.
     pub fn quantize_param(&self, x: f64) -> i64 {
         Self::quantize_with(x, self.param_quantum())
-    }
-
-    /// A copy with the linear tolerance replaced.
-    pub fn with_linear(self, linear: f64) -> Self {
-        Self { linear, ..self }
     }
 }
 

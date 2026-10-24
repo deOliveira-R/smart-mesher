@@ -41,6 +41,7 @@ pub struct ColorInvariant {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum CandidateKind {
     /// Mirror plane.
     Mirror(Plane),
@@ -70,6 +71,7 @@ pub enum Stage {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Verification {
     /// Not verified (invariants only).
     Unverified,
@@ -131,6 +133,7 @@ impl Candidate {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct DetectionResult {
     /// Per-color invariants, ascending by color id.
     pub invariants: Vec<ColorInvariant>,
@@ -146,6 +149,11 @@ pub struct DetectionResult {
 }
 
 impl DetectionResult {
+    /// A detection result (normally produced by detection).
+    pub fn new(invariants: Vec<ColorInvariant>, candidates: Vec<Candidate>, generators: Vec<usize>, group_order: u32, complete: bool) -> Self {
+        Self { invariants, candidates, generators, group_order, complete }
+    }
+
     /// Candidates that verified.
     pub fn verified(&self) -> impl Iterator<Item = &Candidate> {
         self.candidates.iter().filter(|c| c.is_verified())

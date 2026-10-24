@@ -179,10 +179,7 @@ fn rebaseline_rerecords_checks_in_place() {
 fn replace_check_keeps_the_body_and_hash() {
     let (mut t, a, b) = record(false);
     let body = t.get(b).unwrap().body.clone();
-    let new = Check {
-        state: Hash256::of(b"rebased"),
-        ..Check::default()
-    };
+    let new = Check::new(Hash256::of(b"rebased"));
     t.replace_check(b, new.clone()).unwrap();
     let n = t.get(b).unwrap();
     assert_eq!(n.check, new);

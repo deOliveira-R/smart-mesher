@@ -36,7 +36,7 @@ fn pipeline() -> Vec<u64> {
         Ok(())
     })
     .unwrap();
-    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, keep: Keep::Negative, origin: Point3::new(0.0, 0.0, 0.5) }).unwrap();
+    let plan = plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, Keep::Negative, Point3::new(0.0, 0.0, 0.5))).unwrap();
     m.apply_cut(&plan, &t.lineage().cut_outcome(OpId(2)), Some(cap_color), &t).unwrap();
     out.push(fnv(&format!("{m:?}")));
     out.push(fnv(&format!("{:?}", validate(&m, &t, Tolerance::default()))));
@@ -49,14 +49,9 @@ fn pipeline() -> Vec<u64> {
     let vol = *t.volumes_for_test().first().unwrap();
     let pin = m.add_prototype(&[vol]).unwrap();
     let lat = m
-        .add_lattice(Lattice {
-            layout: Layout::Hex { rings: 3, pitch: 1.0, orient: HexOrient::YRows, nz: 2, dz: 2.0 },
-            origin: Transform::IDENTITY,
-            outer: Fill::Prototype(pin),
-            slots: BTreeMap::from([(SlotIx::new(1, -1, 1), Slot { fill: Fill::Prototype(pin), recolor: ColorMap { volume: BTreeMap::from([(mat, other)]), face: BTreeMap::new() }, clip: None })]),
-        })
+        .add_lattice(Lattice::new(Layout::Hex { rings: 3, pitch: 1.0, orient: HexOrient::YRows, nz: 2, dz: 2.0 }, Transform::IDENTITY, Fill::Prototype(pin), BTreeMap::from([(SlotIx::new(1, -1, 1), Slot::new(Fill::Prototype(pin)).with_recolor(ColorMap::new().with_volume(BTreeMap::from([(mat, other)]))))])))
         .unwrap();
-    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::translation(Vector3::new(1.0, 2.0, 3.0)), recolor: ColorMap::default(), clip: None }).unwrap();
+    m.add_instance(InstanceRow::new(Fill::Lattice(lat), Transform::translation(Vector3::new(1.0, 2.0, 3.0)))).unwrap();
     let f = flatten(&m).unwrap();
     out.push(f.fingerprint());
     out.push(f.fingerprint_quantized(1e-8));

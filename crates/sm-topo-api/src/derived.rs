@@ -325,7 +325,7 @@ pub trait TopologyViewExt: TopologyView {
         let along_surface_normal = match hit.crossing {
             Crossing::AlongNormal => true,
             Crossing::AgainstNormal => false,
-            Crossing::Tangent => return None,
+            _ => return None, // Tangent, or a later crossing kind: no region entered
         };
         // The face normal points left -> right; moving along it enters the right region.
         let along_face_normal = along_surface_normal == (sc.sense == Sense::Forward);

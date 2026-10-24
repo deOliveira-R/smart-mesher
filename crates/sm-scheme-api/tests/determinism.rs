@@ -35,12 +35,7 @@ fn run(exec: &dyn Executor) -> Hashes {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Constant { size: 0.25 });
     intent.set_intervals(ids.edges[8], Firm::soft(IntervalRequest::Count(5)));
@@ -76,12 +71,7 @@ fn run_replan(exec: &dyn Executor) -> Hashes {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     for (e, n) in [(0, 3), (1, 2), (4, 2), (5, 2)] {
         intent.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(n)));
@@ -120,22 +110,11 @@ fn run_group(exec: &dyn Executor) -> Hashes {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel: Vec<_> = ids.iter().map(|b| b.volume).collect();
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Constant { size: 0.5 });
     let params = serde_json::json!({ "source": [ids[0].faces[0]], "target": [ids[2].faces[1]] });
-    intent.groups.push(MeshGroup {
-        id: GroupId(1),
-        members: sel.clone(),
-        scheme: Some(SchemeChoice::with_params("msweep", params, Firmness::Hard)),
-        fallbacks: Vec::new(),
-        conversion: None,
-    });
+    intent.groups.push(MeshGroup::new(GroupId(1), sel.clone()).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
     let out = driver
         .mesh(
             &input,

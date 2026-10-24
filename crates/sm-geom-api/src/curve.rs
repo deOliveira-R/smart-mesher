@@ -16,6 +16,7 @@ pub struct CurveJet {
 
 /// Result of projecting a point onto a curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CurveProjection {
     /// Parameter of the closest point (principal range if periodic).
     pub t: f64,
@@ -23,6 +24,13 @@ pub struct CurveProjection {
     pub point: Point3,
     /// Euclidean distance from the query point.
     pub distance: f64,
+}
+
+impl CurveProjection {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(t: f64, point: Point3, distance: f64) -> Self {
+        Self { t, point, distance }
+    }
 }
 
 /// An exact parametric curve `C: domain -> R^3`.

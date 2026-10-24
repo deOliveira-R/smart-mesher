@@ -43,10 +43,13 @@ pub(crate) fn inherited_colors(table: &BTreeMap<EntityId, EntityId>, t: &dyn Top
     out
 }
 
-/// What a color may be attached to.
+/// What a color may be attached to. `#[non_exhaustive]` (W0g r3): edge colors may follow (sheet
+/// bodies). The serde shape and the `canonical_visit` tags (`Volume` 1, `Face` 2) are frozen; a
+/// new variant takes tag 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Domain {
     /// Colors volumes (an abstract material).
     Volume,
@@ -58,6 +61,7 @@ pub enum Domain {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ColorRow {
     /// The `EntityKind::Color` id.
     pub id: EntityId,
@@ -67,6 +71,13 @@ pub struct ColorRow {
     pub name: String,
     /// What the color may label.
     pub domain: Domain,
+}
+
+impl ColorRow {
+    /// A color row.
+    pub fn new(id: EntityId, label: u32, name: impl Into<String>, domain: Domain) -> Self {
+        Self { id, label, name: name.into(), domain }
+    }
 }
 
 /// How [`Model::group_edit`] changes a group's members (Cubit `group ... add / remove / equals /
@@ -100,6 +111,7 @@ pub fn group_member_kind_ok(id: EntityId) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct GroupRow {
     /// The `EntityKind::Group` id.
     pub id: EntityId,
@@ -108,6 +120,13 @@ pub struct GroupRow {
     /// Members: topology cells of any rank, decomposition entities (`Partition*`), colors,
     /// nested groups and other model rows (see [`group_member_kind_ok`]).
     pub members: BTreeSet<EntityId>,
+}
+
+impl GroupRow {
+    /// A group row.
+    pub fn new(id: EntityId, name: impl Into<String>, members: BTreeSet<EntityId>) -> Self {
+        Self { id, name: name.into(), members }
+    }
 }
 
 impl Model {

@@ -64,7 +64,7 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 
 ## Hashes
 
-`connectivity_hash`: ids, counts, loops, left/right, face kinds, signed cell faces, shapes, corners, lineage (keys the geometry cache and level maps). `topology_hash`: connectivity plus class entities, the edge table and its classification, high-order and face-curve node indices, set members, integer tag values, real tag names. `geometry_hash`: coordinate bits (vertices and extra nodes), all `Param` bits, real tag values, rule id. The geometry cache is derived and excluded. `geometry_hash_quantized(m, quantum)` (W0f) is the **W0c Q2 implementation** for meshes: the same content with every float hashed as `quantize_word(x, quantum)` (`round(x / quantum)` half away from zero like `ModelTolerance::quantize_with` and `Digest::f64_quantized`, `-0` folded, saturating, NaN marked), the quantum included; use `linear * 2^-10` for state identity. The raw `geometry_hash` stays for cache keys. `topology_hash` covers set labels and the members variant.
+`connectivity_hash`: ids, counts, loops, left/right, face kinds, signed cell faces, shapes, corners, lineage (keys the geometry cache and level maps). `topology_hash`: connectivity plus class entities, the edge table and its classification, high-order and face-curve node indices, set members, integer tag values, real tag names. `geometry_hash`: coordinate bits (vertices and extra nodes), all `Param` bits, real tag values, rule id. The geometry cache is derived and excluded. `geometry_hash_quantized(m, &HashQuanta)` is the **W0c Q2 implementation** for meshes (domain `smartmesh.geometry-quantized.v2` since W0g r2; v1 took one length quantum for everything and saturated). `HashQuanta::new(length, param)` (`#[non_exhaustive]`, `Copy`) holds two absolute steps, both hashed: coordinates use `length` (`linear * 2^-10`), classification parameters (curve `t`, surface `uv`) use `param` (`parametric * 2^-10`, topology's `par` step), each `round(x / q)` half away from zero with `-0` folded. Real tag values are quantized scale-free (the `ModelTolerance::quantize_scale_free` rule: 40-bit mantissa packed with exponent and sign, no absolute cutoff; only subnormals and -0 fold to zero), so they never saturate. Every float is a marker word (`0` = code, `1` = raw bits) then its code, or, when the code would leave the `i64` range or the value is not finite, its raw bits (NaN canonicalized), as `Digest::f64_quantized` does; a saturated code is never hashed. The tag-value run carries its length. `quantize_word` stays as a standalone helper (it saturates; the hash does not use it). Golden test: `tests/w0f.rs` (`1e12` vs `2e12` tag values differ). The raw `geometry_hash` stays for cache keys. `topology_hash` covers set labels and the members variant.
 
 ## Tradeoffs and limits
 
@@ -72,7 +72,7 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 - A template cell built from loops gets *a* valid corner order (first match of a fixed search); symmetric shapes have several.
 - Face dedup in the builder is by vertex set + cyclic order; twisted duplicates are separate faces.
 - Dimension-2 (surface) meshes are modelled (above); 1D and RZ meshes are not. Dimension-3 faces need >= 3 vertices, dimension-2 facets exactly 2.
-- Adding `CellShape::{Tri, Quad, Polygon}` and `FaceShape::Segment` breaks exhaustive matches downstream (the enums are not `non_exhaustive`); `CellShape::is_general` and `CellShape::dim` cover most uses.
+- Adding `CellShape::{Tri, Quad, Polygon}` and `FaceShape::Segment` broke exhaustive matches downstream. Since W0g both enums are `#[non_exhaustive]` (see "W0g freeze rules"), so later shapes are additive; downstream matches need a wildcard arm, and `CellShape::is_general` and `CellShape::dim` cover most uses.
 - Inactive parents keep their faces; consumers filter by `cell_active` (the faces of a refined parent are not marked inactive).
 - Non-conformal interface records, partition-local views (ghosts) and refinement edits belong to later crates; only `FaceKind` slots and lineage columns are reserved.
 - No `rayon` here: all algorithms are sequential and deterministic (`BTreeMap`/sorted vectors, no hash-order dependence), so 1 thread and N threads are trivially identical.
@@ -136,3 +136,29 @@ A coarse mesh is an independent mesh over the same model; no classification equa
   is the product of the deck elements whose bits are set in `k`, in deck order, so callers can
   join images to model copy references. Tested: an R90 deck and a mirror + diagonal mirror are
   rejected (allocator untouched); orthogonal mirrors and a mirror + half turn unfold as before.
+
+## W0g freeze rules
+
+- **`#[non_exhaustive]` enums**: `FaceKind`, `TagValues`, `LossKind`, `Selector`, `CellShape`,
+  `FaceShape`, `Param` (joining `SetMembers`), and (W0g r3) `MeshEntityKind`, `MeshEntity`,
+  `MeshEntityRef` (persisted in `TagColumn.target` and `Violation.entity`). Serde shapes and hash
+  discriminants are unchanged; a new variant takes the next discriminant. `MeshEntityKind` is in
+  the required `MeshRead::count` / `MeshRead::id`: an implementation returns 0 from `count` for
+  every kind it does not store (wildcard arm), and `id` is never called for such a kind (callers
+  only ask for `ix < count(k)`). `MeshDim` stays exhaustive (1D/RZ would be a new
+  contract, not a variant).
+- **Implementer-built return structs are `#[non_exhaustive]` with constructors**, so implementors
+  of the required `MeshRead::coords` / `MeshRead::columns` and `MeshBuild::add_cell` /
+  `MeshBuild::finish` can build them while fields can still grow: `Coords::new(x, y, z)`,
+  `TopologyColumns::new(..6 slices)`, `CellAdded::new(cell, faces, reused)`,
+  `Finished::new(mesh, face_remap)`. Fields stay `pub` for reading.
+- **Persisted / option structs are `#[non_exhaustive]` with constructors**: `MeshSet::new(id,
+  name, members)` (+ `with_label`), `TagColumn::new(name, target, values)`,
+  `Instance::new(id, prototype, transform)`, `InstancedView::new(id, instances)`,
+  `LossNote::new(instance, what)`, `GeometryCache::new(rule, connectivity_hash,
+  coordinate_hash)` (value columns filled afterwards), `HighOrderCell::new(degree, basis, nodes)`,
+  `FlattenOptions::new()` / `Default` with `with_weld_tol`, `with_remap_class`,
+  `with_on_merge`, and (W0g r4) `Violation::new(code, entity, detail)` and `GeomTol::new()` /
+  `Default` with `with_planarity`, `with_min_volume`.
+- **Every field added to a persisted struct after the freeze must be `#[serde(default)]`**
+  (as `MeshSet::label` already is), so data written before it still reads.

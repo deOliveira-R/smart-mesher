@@ -22,6 +22,7 @@ pub struct SurfaceJet {
 
 /// Result of projecting a point onto a surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SurfaceProjection {
     /// Parameters of the closest point (principal range for periodic parameters).
     pub uv: Uv,
@@ -29,6 +30,13 @@ pub struct SurfaceProjection {
     pub point: Point3,
     /// Euclidean distance from the query point.
     pub distance: f64,
+}
+
+impl SurfaceProjection {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(uv: Uv, point: Point3, distance: f64) -> Self {
+        Self { uv, point, distance }
+    }
 }
 
 /// An exact parametric surface `S: domain -> R^3`.

@@ -55,8 +55,10 @@ pub enum SurfaceDef {
 }
 
 /// One number of a shape definition, tagged with how it is quantized for hashing (see
-/// [`crate::ModelTolerance`]). Produced by [`CurveDef::for_each_value`] and [`SurfaceDef::for_each_value`].
+/// [`crate::ModelTolerance`]). Produced by [`CurveDef::for_each_value`],
+/// [`SurfaceDef::for_each_value`] and [`crate::PCurve::for_each_word`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ShapeValue {
     /// A discriminant, count or degree: hashed as is.
     Int(u64),
@@ -68,6 +70,9 @@ pub enum ShapeValue {
     /// relatively (40-bit mantissa, never saturates), see
     /// [`crate::ModelTolerance::quantize_scale_free`].
     Unitless(f64),
+    /// A parameter-space value (pcurve coordinates and knots): `parametric * 2^-10`
+    /// ([`crate::ModelTolerance::quantize_param`]). Only pcurves emit it (W0g r2).
+    Param(f64),
 }
 
 fn frame_values(fr: &Frame, f: &mut impl FnMut(ShapeValue)) {
@@ -83,7 +88,7 @@ fn frame_values(fr: &Frame, f: &mut impl FnMut(ShapeValue)) {
 
 /// Bit set in a NURBS degree value when that direction is periodic: periodic data hashes apart
 /// from non-periodic data with the same numbers, and non-periodic hashes are unchanged.
-const PERIODIC_DEGREE_FLAG: u64 = 1 << 32;
+pub(crate) const PERIODIC_DEGREE_FLAG: u64 = 1 << 32;
 
 fn degree_value(degree: usize, periodic: bool) -> ShapeValue {
     ShapeValue::Int(degree as u64 | if periodic { PERIODIC_DEGREE_FLAG } else { 0 })
@@ -136,7 +141,7 @@ fn finite_pos(v: f64) -> bool {
 }
 
 /// Largest `|x|` of the scale-free values a definition visits.
-fn unitless_scale(visit: impl FnOnce(&mut dyn FnMut(ShapeValue))) -> f64 {
+pub(crate) fn unitless_scale(visit: impl FnOnce(&mut dyn FnMut(ShapeValue))) -> f64 {
     let mut m = 0.0f64;
     visit(&mut |v| {
         if let ShapeValue::Unitless(x) = v
@@ -373,11 +378,19 @@ pub struct MemoryStore {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct StoreData {
     /// Curve definitions, serial order.
     pub curves: Vec<CurveDef>,
     /// Surface definitions, serial order.
     pub surfaces: Vec<SurfaceDef>,
+}
+
+impl StoreData {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(curves: Vec<CurveDef>, surfaces: Vec<SurfaceDef>) -> Self {
+        Self { curves, surfaces }
+    }
 }
 
 impl From<StoreData> for MemoryStore {

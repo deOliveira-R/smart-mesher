@@ -211,11 +211,7 @@ fn high_order_counts_degrees_and_shapes_are_checked() {
     let r = MeshEdit::set_high_order(
         &mut m,
         cell,
-        Some(HighOrderCell {
-            degree: 2,
-            basis: Basis::Serendipity,
-            nodes: vec![PointIx(0); 15],
-        }),
+        Some(HighOrderCell::new(2, Basis::Serendipity, vec![PointIx(0); 15])),
     );
     assert!(r.is_err());
     // MeshEdit checks counts too.
