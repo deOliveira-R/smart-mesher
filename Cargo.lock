@@ -1030,6 +1030,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-layer-api"
+version = "0.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-op-api",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo",
+ "sm-topo-api",
+ "thiserror",
+]
+
+[[package]]
 name = "sm-math"
 version = "0.0.0"
 dependencies = [
