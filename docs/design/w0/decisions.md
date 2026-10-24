@@ -94,3 +94,56 @@ The freeze audit accepted 14, 5, 4 and 2 items in its four rounds (merged at the
 Residual: about 140 public types stay exhaustive by design (sides, senses, dims, keys, planes, axes, snapshot/node DTOs, derived views). Growing one of them is an orchestrator-coordinated change: an `api_change_request` plus a fix-up of all users in the same merge.
 
 **W0 is complete. The contract crates are frozen under the two-tier policy above.**
+
+# W1 orchestrator decisions (2026-10-24)
+
+W1 raised 79 ACR strings from eight implementation crates. After dedup there are 44 distinct items. Each claim was checked against the contract source at 1b5cca0. The three frozen-tier questions were settled by experiments in a scratch worktree (`.claude/worktrees/w1-acr-triage`), and nothing from those experiments is committed. Rulings follow the W0f/W0g two-tier policy.
+
+## Contract bugs (fix now; behavior fix, no signature change)
+1. **sm-topo-api `end_op` ignores `Undo::Flags`:** accepted as a bug. The `touched`/`check` seeds in `complex/ops.rs` cover only `Alloc|Row|State|Carrier`, so a flag-only op such as `set_flags(pole_edge, NONE)` commits states that `validate` rejects (`ShellOpen`, `EdgeEnds`). Fix: seed `Undo::Flags { id, .. }` into both sets. sm-topo copied the same omission (`lifecycle.rs:55`), so it gets the same fix in the same merge.
+2. **sm-op-api `Session` unborn-branch guard:** accepted as a bug. When `head == Head::Ref(name)` and `name` has no ref (after an undo to the root), `create_branch_at(name, h)` and `rename_branch(_, name)` create the ref while `position()` stays `None`, so the in-memory session disagrees with what a reopen produces. Fix: both calls return `TimelineError::HeadOnBranch(name)` in that case. Only an error path changes.
+
+## Open-tier additive changes (accept)
+3. **`sm_topo_api::check_cells` + `check_cells_with(open_shell)` public:** accepted. This removes the roughly 150-line copy in sm-topo. sm-topo's long-row `Inserted` optimization stays local.
+4. **`normalize_row` / `canonical_rotate` public:** accepted. Canonical rows determine the hashes, and every implementor needs them byte-identical.
+5. **`canonical_words` + doc that `canonical_visit`/`canonical_hash` may be overridden if the word stream is identical:** accepted. This is docs plus one helper.
+6. **`run_topology_conformance` in sm-testkit:** accepted, with a factory parameter instead of `Default` (the scenarios need `with_tolerance`). Both sm-topo-api and sm-topo run it, so the reference and the production store execute identical scenarios. This removes 8 copied test files (about 4,000 lines).
+7. **`LineageLog` dense `(kind, serial)` index:** accepted as perf-only with no signature change. Land it only with a benchmark showing the gain, and keep iteration order ascending by id.
+8. **`CellShape`/`FaceKind` `code()`/`from_code()` + `Basis::from_code()`:** accepted. The codes equal the declaration discriminants that `hash_connectivity` already hashes (`as u64`) and the `.smsh` tables (0..=7 and 0..=3). They are documented as frozen, and new variants append.
+9. **`validate_classification` / `validate_records` public:** accepted. `validate(m)` output must stay byte-identical (golden test). This removes the hand-mirrored `Validation::Fast` rules in sm-mesh, whose copy has already drifted (the face-curve node-range hole).
+10. **`ExtrusionMap::n_base()` / `n_extruded()` / `n_layers()`:** accepted. These are trivial accessors.
+11. **`MeshBuild::add_template_cells` + `reserve` (provided):** accepted. Defaults loop `add_cell_from_vertices` / do nothing. An override must produce the same `connectivity_hash` as the default.
+12. **`MeshRead::cell_normal` (dim-2, provided):** accepted, narrowly. It returns the Newell area normal of the corner cycle (sm-quality's `SurfaceNormals::Own`) and `None` for dim-3. The carrier-oriented normal stays with `FaceNormals`.
+13. **Optional `bytemuck` feature on the dense index types and `SignedFace`:** accepted. They are all `repr(transparent)` over `u32`, the feature is off by default, and the orphan rule plus `forbid(unsafe_code)` leave no downstream alternative.
+14. **`PCurve::d2`:** accepted. It returns zero for `Line2`/`Polyline2` and de Boor for `Nurbs2`.
+15. **`eval_many` provided on `ParametricCurve`/`ParametricSurface`:** accepted. Contract: `out[i] == eval(in[i])` bit-for-bit, equal lengths (panic otherwise), so a rayon override stays deterministic.
+16. **`ParametricSurface::ray_hits_tol` (new provided method, `tol: &ModelTolerance`):** accepted. It adds one `Crossing::Tangent` hit at a near-miss closest approach within `tol.linear`. `ray_hits` and its results are unchanged.
+17. **`sm_geom_api::roots` public (`Root`, `solve_quadratic`, `real_roots`):** accepted in sm-geom-api, not sm-math, because an API crate must not depend on an implementation crate. sm-geom drops its `quadratic`/`poly_roots` copies once a differential test shows they agree. `brent`, `horner` and `solve_dense` stay local.
+18. **`State::can_snapshot` via provided `LayerType::supports_snapshot() -> bool { false }`:** accepted. `CodecError` is a `String` newtype, so adding an error kind would change its shape.
+19. **`Session::trim_reflog(keep)`:** accepted.
+20. **`Session::open_with_policy(.., policy, ctl)`:** accepted. `open_with` stays strict. Under `Warn`/`Rebaseline` a mismatching seed is skipped with a warning, not an error.
+21. **`Engine::apply_record_canonical` public:** accepted. It exists today as `pub(crate)`.
+22. **`batch::is_reference(&str) -> bool` public:** accepted. sm-lang's `is_batch_ref` duplicates the contract grammar.
+23. **`sm_core::ENTITY_ID_PATTERN` const:** accepted, as a plain `pub const` (not feature-gated) that the `JsonSchema` impl uses. sm-lang's `ID_PATTERN` duplicates it.
+
+## Frozen-tier / behavior-changing (decided by experiment)
+24. **`EntityId` over `NonZeroU64`:** accepted. Kind byte 0 is never valid, so `new`/`from_raw` already guarantee a nonzero value. The experiment gave identical `to_raw`/`from_raw` bits for every kind at serials {0, 1, 42, MAX}, identical `Kind#serial` text with a round-trip, `from_raw(0) == None`, and `size_of::<Option<EntityId>>() == 8`. Derived `Ord`/`Hash` are unchanged. The workspace builds clean with all targets and all features, and every workspace test passes except one wall-clock test that fails without the change too (see 36). The persisted, wire and hash forms are byte-identical, so the frozen tier is untouched.
+25. **Tighten `check_knots` interior multiplicity to `<= degree`:** deferred. 4 sm-geom tests fail under the tighter rule: the `fix0_curves.rs` C^-1 interior-knot curve and surface tests, `plane_hits_of_repeated_knot_curves_are_on_the_plane` and `repeated_knots_and_high_degrees_match_the_reference`. They are W1 regressions that deliberately support C^-1 knots, so sm-geom already handles them. Revisit with STEP import.
+26. **Tolerance-aware tangency inside the reference `ray_hits`:** rejected in that form, because it would change reference results. Covered by 16.
+27. **`Point2`/`Vector2` in sm-core:** rejected. 2-D code uses `[f64; 2]` or `sm_geom_api::Uv`. A third 2-D type adds conversions without adding safety.
+28. **`Mat3` alias in sm-core:** rejected. An alias of `[[f64; 3]; 3]` names nothing new, and `Transform::m` already spells it.
+
+## Rejected / deferred (contract)
+29. **`CurveDef::Parabola` / `Hyperbola`:** deferred. `CurveDef` is `#[non_exhaustive]`, so the change is legal, but a rational quadratic NURBS already represents both conics exactly. New variants would add projection, hashing tags (`for_each_value` 5/6) and a `carrier_words` path to every implementor. Revisit when STEP import needs the native entities.
+30. **`cell_corners_into(&mut [VertexIx; 8])`:** rejected. Dim-2 polygons can have more than 8 corners, it is still a virtual call, and the requester reports the cost as small. A corner column in `TopologyColumns` is deferred until profiling shows a need.
+31. **Intersection trait / shared result types in sm-geom-api:** rejected. The request itself proposes nothing, and consumers depend on sm-geom.
+32. **`finish_with_ids`:** stays deferred (W0a mesh decision 5), with `.smsh` id-preserving import. Scheduled with mesh import.
+33. **`OpInfo` positional marker, output role names and cardinality:** deferred to a W2 design ACR, together with the `x-entity-kind` convention (35). `OpInfo` is `#[non_exhaustive]`, so the change is additive, but role declarations touch every op and need one design.
+34. **O(live) `State::entities_of`:** deferred. It is internal perf with no signature change, and the retired set is normally small relative to `next`. Needs a measurement first.
+
+## Not contract changes (routed to W2)
+35. **Routed:** the `topo.related` query (sm-topo / sm-engine registers it), `Host` over `Session`, `timeline.head()`, `session.*` script commands, the `x-entity-kind` schema convention, Deck → named face-set lowering, and the ARCHITECTURE §4 amendment.
+
+## Note
+36. **Pre-existing timing failure:** `sm-topo/tests/ref_reference.rs::building_many_bricks_is_near_linear` (release build, 10,000 bricks through the paranoid `Dual` twin) takes about 604 s against a 2 s budget. It fails on main without any contract change. Fix it in sm-topo: build through `TopoStore` without the twin, or turn paranoid mode off for the timing assertion.
+Merged: W1 crates (sm-meshio, sm-topo, sm-quality, sm-engine, sm-math, sm-geom, sm-mesh, sm-lang) at 1b5cca0; contract batch groups topo 2738c4f, mesh c52cb2f, geom afe2fa6, op ebf5a9c.
