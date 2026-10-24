@@ -1,0 +1,25 @@
+[package]
+name = "sm-sizing"
+description = "W2 skeleton: T3: interval matching, corner picking, size fields."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-math = { path = "../sm-math" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+
+[lints]
+workspace = true

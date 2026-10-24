@@ -1,0 +1,28 @@
+[package]
+name = "sm-model"
+description = "W2 skeleton: T1: primitives, transforms and topology queries."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-math = { path = "../sm-math" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-geom = { path = "../sm-geom" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-topo = { path = "../sm-topo" }
+sm-model-api = { path = "../sm-model-api" }
+sm-op-api = { path = "../sm-op-api" }
+sm-layer-api = { path = "../sm-layer-api" }
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+
+[lints]
+workspace = true

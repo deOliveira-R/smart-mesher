@@ -1,0 +1,33 @@
+[package]
+name = "sm-server"
+description = "W2 skeleton: T10: session host, protocol endpoint, transports, standard distribution."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-op-api = { path = "../sm-op-api" }
+sm-engine = { path = "../sm-engine" }
+sm-lang = { path = "../sm-lang" }
+sm-protocol = { path = "../sm-protocol" }
+sm-layer-api = { path = "../sm-layer-api" }
+sm-fem = { path = "../sm-fem" }
+sm-model = { path = "../sm-model" }
+sm-mesher = { path = "../sm-mesher" }
+sm-sizing = { path = "../sm-sizing" }
+sm-scheme-curve = { path = "../sm-scheme-curve" }
+sm-scheme-map = { path = "../sm-scheme-map" }
+sm-scheme-mapvol = { path = "../sm-scheme-mapvol" }
+sm-tess = { path = "../sm-tess" }
+serde_json = "1"
+sm-topo = { path = "../sm-topo" }
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[lints]
+workspace = true

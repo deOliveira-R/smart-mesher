@@ -54,6 +54,45 @@ impl TimelineCommand {
     }
 }
 
+/// A session command (`session.export(...)`, `session.save()`, ...): file output and session queries.
+///
+/// Like [`TimelineCommand`] these are statements, not registry ops. A host handles them in [`Host::session`].
+/// Parsing is not implemented yet (W2 T9); this is the stable shape hosts code against.
+/// The enum is `#[non_exhaustive]`, so hosts need a wildcard arm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SessionCommand {
+    /// Export a mesh to a file.
+    Export {
+        /// Destination path (relative paths are resolved by the host).
+        path: String,
+        /// `"smsh"` or `"vtu"`; the host infers it from the extension when absent.
+        format: Option<String>,
+        /// The mesh to export; the host picks one when absent.
+        mesh: Option<EntityId>,
+        /// Embed the timeline hash as provenance.
+        provenance: bool,
+    },
+    /// Save the project.
+    Save,
+    /// Report the state hash.
+    Hash,
+    /// Report the session status.
+    Status,
+}
+
+impl SessionCommand {
+    /// The statement verb: `export`, `save`, `hash` or `status`.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::Export { .. } => "export",
+            Self::Save => "save",
+            Self::Hash => "hash",
+            Self::Status => "status",
+        }
+    }
+}
+
 /// Where the timeline currently is, as `timeline.head()` reports it.
 ///
 /// Both fields are optional because the language has no null: a detached head has no `branch`, the empty state has no `node`
@@ -105,6 +144,12 @@ pub trait Host {
     /// `timeline-unsupported`. Never called when [`executes`](Self::executes) is false.
     fn timeline_head(&mut self) -> Result<TimelineHead, HostError> {
         Err(HostError { code: "timeline-unsupported".into(), message: "this host has no timeline: `timeline.head` is unavailable".into() })
+    }
+    /// Execute a session command (`session.export`, `session.save`, ...) and return its result.
+    /// Hosts without a session keep the default, which reports `session-unsupported`.
+    /// Never called when [`executes`](Self::executes) is false.
+    fn session(&mut self, cmd: &SessionCommand) -> Result<Json, HostError> {
+        Err(HostError { code: "session-unsupported".into(), message: format!("this host has no session: `session.{}` is unavailable", cmd.verb()) })
     }
     /// Text of an included file. The language performs no I/O itself.
     fn load(&mut self, path: &str) -> Result<String, String> {
@@ -270,5 +315,18 @@ impl Relations for QueryRelations<'_> {
         arr.iter()
             .map(|v| v.as_str().ok_or_else(|| "non-string id in query result".to_owned()).and_then(|s| s.parse::<EntityId>().map_err(|e| e.to_string())))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod session_stub_tests {
+    use super::*;
+
+    #[test]
+    fn default_session_is_unsupported() {
+        let reg = Registry::new();
+        let mut h = PlanHost::new(&reg, State::default());
+        let e = h.session(&SessionCommand::Hash).expect_err("unsupported");
+        assert_eq!(e.code, "session-unsupported");
     }
 }

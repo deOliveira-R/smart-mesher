@@ -1,0 +1,32 @@
+[package]
+name = "sm-mesher"
+description = "W2 skeleton: T7: the intent and meshes plugin, the mesh-driver node."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-model-api = { path = "../sm-model-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-mesh = { path = "../sm-mesh" }
+sm-scheme-api = { path = "../sm-scheme-api" }
+sm-op-api = { path = "../sm-op-api" }
+sm-layer-api = { path = "../sm-layer-api" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+sm-quality = { path = "../sm-quality" }
+
+[lints]
+workspace = true
