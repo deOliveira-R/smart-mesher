@@ -196,6 +196,12 @@ impl Request {
     }
 
     /// JSON Schema of the whole request, for client and tool generation.
+    ///
+    /// The schema is **stricter than the wire**: it describes the canonical form, so it requires
+    /// a `params` object for `session.hash` and `session.export` even though every field of
+    /// those is optional. [`Envelope::from_value`](crate::Envelope::from_value) accepts them
+    /// with `params` absent, `null`, `{}` or `[]` (and unit methods likewise). Validate wire
+    /// input with `Envelope::parse`, not with this schema.
     pub fn json_schema() -> Value {
         serde_json::to_value(schemars::schema_for!(Request)).unwrap_or(Value::Null)
     }

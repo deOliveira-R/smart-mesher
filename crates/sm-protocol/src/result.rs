@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sm_op_api::{Delta, Hash256, Head, OpInfo, QueryInfo};
+use sm_op_api::{Delta, Hash256, Head, OpInfoOwned, QueryInfoOwned};
 
 /// Result of `apply`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ApplyResult {
     /// The new timeline node.
     pub node: Hash256,
@@ -15,8 +16,16 @@ pub struct ApplyResult {
     pub delta: Delta,
 }
 
+impl ApplyResult {
+    /// Build a result.
+    pub fn new(node: Hash256, state: Hash256, delta: Delta) -> Self {
+        Self { node, state, delta }
+    }
+}
+
 /// Result of `session.hash`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HashResult {
     /// Quantized hash of the whole state.
     pub state: Hash256,
@@ -24,8 +33,16 @@ pub struct HashResult {
     pub layers: BTreeMap<String, Hash256>,
 }
 
+impl HashResult {
+    /// Build a result.
+    pub fn new(state: Hash256, layers: BTreeMap<String, Hash256>) -> Self {
+        Self { state, layers }
+    }
+}
+
 /// Result of `session.export`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ExportResult {
     /// File written, if any.
     pub path: Option<String>,
@@ -40,8 +57,34 @@ pub struct ExportResult {
     pub base64: Option<String>,
 }
 
+impl ExportResult {
+    /// Build a result without inline bytes; add them with [`with_base64`](Self::with_base64).
+    pub fn new(
+        path: Option<String>,
+        format: crate::ExportFormat,
+        bytes: u64,
+        sha256: Hash256,
+    ) -> Self {
+        Self {
+            path,
+            format,
+            bytes,
+            sha256,
+            base64: None,
+        }
+    }
+
+    /// Attach the base64-encoded bytes (for `inline` exports).
+    #[must_use]
+    pub fn with_base64(mut self, base64: impl Into<String>) -> Self {
+        self.base64 = Some(base64.into());
+        self
+    }
+}
+
 /// Result of `script.run`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ScriptResult {
     /// State hash after the script.
     pub state: Hash256,
@@ -53,9 +96,27 @@ pub struct ScriptResult {
     pub diagnostics: Value,
 }
 
+impl ScriptResult {
+    /// Build a result.
+    pub fn new(
+        state: Hash256,
+        output: impl Into<String>,
+        events: Vec<Value>,
+        diagnostics: Value,
+    ) -> Self {
+        Self {
+            state,
+            output: output.into(),
+            events,
+            diagnostics,
+        }
+    }
+}
+
 /// Snapshot of where the workspace stands. Mirrors `sm_engine::Status` field for field, built
 /// from contract types so this crate need not depend on `sm-engine`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StatusResult {
     /// HEAD (serializes like a `Rev`).
     pub head: Head,
@@ -77,19 +138,69 @@ pub struct StatusResult {
     pub project: Option<String>,
 }
 
-/// Result of `catalog`. Serialize-only: `OpInfo`, `QueryInfo` and `OutputRole` hold
-/// `&'static` data and do not implement `Deserialize`, so remote clients (`sm-mcp`, `sm-cli`)
-/// read the reply as a `serde_json::Value`; its exact shape is pinned by
-/// `golden/catalog.json` (`fixtures::CATALOG`). A typed client form needs an owned
-/// `Deserialize` form of those types in `sm-op-api` (orchestrator ACR).
-#[derive(Clone, Debug, Serialize)]
+impl StatusResult {
+    /// A status at `head` with state hash `state`; every other field starts empty/zero/false and
+    /// is set with the `with_*` methods.
+    pub fn new(head: Head, state: Hash256) -> Self {
+        Self {
+            head,
+            position: None,
+            depth: 0,
+            state,
+            nodes: 0,
+            branches: BTreeMap::new(),
+            redo: 0,
+            dirty: false,
+            project: None,
+        }
+    }
+    /// Set the current node and its depth.
+    #[must_use]
+    pub fn with_position(mut self, position: Option<Hash256>, depth: usize) -> Self {
+        self.position = position;
+        self.depth = depth;
+        self
+    }
+    /// Set the node count and the branch tips.
+    #[must_use]
+    pub fn with_branches(mut self, nodes: usize, branches: BTreeMap<String, Hash256>) -> Self {
+        self.nodes = nodes;
+        self.branches = branches;
+        self
+    }
+    /// Set the number of nodes `redo` can step through.
+    #[must_use]
+    pub fn with_redo(mut self, redo: usize) -> Self {
+        self.redo = redo;
+        self
+    }
+    /// Set the dirty flag.
+    #[must_use]
+    pub fn with_dirty(mut self, dirty: bool) -> Self {
+        self.dirty = dirty;
+        self
+    }
+    /// Set the project name.
+    #[must_use]
+    pub fn with_project(mut self, project: Option<String>) -> Self {
+        self.project = project;
+        self
+    }
+}
+
+/// Result of `catalog`. The op and query entries are the owned mirrors
+/// ([`OpInfoOwned`], [`QueryInfoOwned`]) of `sm_op_api::OpInfo` / `QueryInfo`: they serialize to
+/// exactly the same JSON (pinned by `golden/catalog.json`, `fixtures::CATALOG`) and also
+/// deserialize, so remote clients (`sm-mcp`, `sm-cli`) read the reply typed. Entries carry
+/// `tool_name`, the MCP-safe name; clients never recompute it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogResult {
     /// [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) of the endpoint.
     pub protocol: u32,
     /// Registered ops.
-    pub ops: Vec<OpInfo>,
+    pub ops: Vec<OpInfoOwned>,
     /// Registered queries.
-    pub queries: Vec<QueryInfo>,
+    pub queries: Vec<QueryInfoOwned>,
     /// Schema of the `core.batch` op.
     pub batch_schema: Value,
 }

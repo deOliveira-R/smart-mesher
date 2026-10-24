@@ -116,10 +116,37 @@ impl<Q: TypedQuery> QueryType for TypedQ<Q> {
 pub struct QueryInfo {
     /// Query name.
     pub name: String,
+    /// MCP-safe tool name (`name` with `.` mangled to `__`); clients never recompute it.
+    pub tool_name: String,
     /// Input schema; `title` is the query name.
     pub schema: Schema,
     /// Output schema.
     pub output_schema: Schema,
+}
+
+/// Owned, deserializable mirror of [`QueryInfo`] with the same JSON shape.
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct QueryInfoOwned {
+    /// Query name.
+    pub name: String,
+    /// MCP-safe tool name.
+    pub tool_name: String,
+    /// Input schema.
+    pub schema: Schema,
+    /// Output schema.
+    pub output_schema: Schema,
+}
+
+impl From<&QueryInfo> for QueryInfoOwned {
+    fn from(q: &QueryInfo) -> Self {
+        Self {
+            name: q.name.clone(),
+            tool_name: q.tool_name.clone(),
+            schema: q.schema.clone(),
+            output_schema: q.output_schema.clone(),
+        }
+    }
 }
 
 impl QueryInfo {

@@ -9,25 +9,26 @@
 //! | [`ModelLayer`] | topology host + [`Model`](sm_model_api::Model) tables + operation counter |
 //! | [`topo_txn`] + [`commit_topology`] | the one way an op edits topology: run, then adopt ids, roles, retirements, lineage |
 //! | [`model_txn`] | model-table edits (colors, groups, blocks): atomic, adopts minted ids |
-//! | [`MeshLayer`], [`MeshEntry`] | meshes by `Mesh` id with a quantized digest; [`adopt_minted`] |
+//! | [`MeshLayer`], [`MeshEntry`] | meshes by `Mesh` id with a quantized digest; [`insert_mesh`] (adopt + insert), [`retire_mesh`] (remove + retire all its ids) |
 //! | [`CoreLayers`] | the plugin that registers both layers (once) with a topology-host factory |
 //!
 //! Id authority: the topology store mints topology cell ids, [`Model`](sm_model_api::Model)
 //! mints color/group/boundary/... ids and the mesh builder mints mesh ids; the entity table
 //! adopts them in ascending `(kind, serial)` order. Curve and surface handles are not entities
-//! and are never adopted.
+//! and are never adopted (a confirmed deviation). The topology `OpId` of a transaction is
+//! `ops_run + 1`.
 //!
 //! Determinism: every map is a `BTreeMap`; ids are adopted in ascending order; digests use the
 //! W0c Q2 quantization, so state hashes are platform independent.
 
-mod plugin;
 mod error;
 mod host;
 mod mesh;
 mod model;
+mod plugin;
 
-pub use plugin::CoreLayers;
 pub use error::{LayerError, LayerResultExt};
 pub use host::{MeshHost, TopoHost};
-pub use mesh::{MeshEntry, MeshLayer, adopt_minted};
+pub use mesh::{MeshEntry, MeshLayer, adopt_minted, insert_mesh, retire_mesh};
 pub use model::{ModelLayer, TopoTxn, commit_topology, model_txn, topo_txn};
+pub use plugin::CoreLayers;

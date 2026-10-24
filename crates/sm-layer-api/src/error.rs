@@ -46,6 +46,15 @@ pub enum LayerError {
     /// layer's current one for this kind (serials are never reused).
     #[error("mesh serial allocator moved backwards for {0:?}")]
     AllocRegressed(EntityKind),
+    /// The `before` allocator given to [`insert_mesh`](crate::insert_mesh) is not the layer's
+    /// current allocator (the caller read it at the wrong time or cloned another one).
+    #[error("mesh allocator mismatch: {0}")]
+    AllocMismatch(String),
+    /// The ids minted between `before` and `after` are not exactly the ids the mesh holds
+    /// (a builder over-minted and discarded ids, or the mesh lost some): such ids would be
+    /// adopted but never retired.
+    #[error("minted ids do not match the mesh: {0}")]
+    MintedNotInMesh(String),
 }
 
 impl From<LayerError> for OpError {

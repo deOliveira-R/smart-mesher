@@ -18,6 +18,7 @@ pub const APPLICATION_ERROR: i64 = -32000;
 
 /// A JSON-RPC error object with the contract error code as `kind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RpcError {
     /// JSON-RPC code: one of the protocol constants ([`PARSE_ERROR`], ...,
     /// [`APPLICATION_ERROR`]).

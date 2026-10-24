@@ -8,6 +8,11 @@
 //!
 //! Wire shape of a call: `{"jsonrpc":"2.0","id":1,"method":"apply","params":{...}}`; the reply is
 //! a [`Response`] carrying either `result` or `error`.
+//!
+//! **Notifications are not supported.** A JSON-RPC request without an `id` is rejected by
+//! [`Envelope::parse`] with [`INVALID_REQUEST`], and the transport (`sm-server`) must still send
+//! that error reply, with `id: null`, instead of staying silent; [`Endpoint::handle_text`] does
+//! exactly this. A transport that parses with `Envelope::parse` itself must do the same.
 #![warn(missing_docs)]
 
 #[doc(hidden)]

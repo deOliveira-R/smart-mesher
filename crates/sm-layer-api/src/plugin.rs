@@ -24,7 +24,9 @@ pub struct CoreLayers {
 impl CoreLayers {
     /// A plugin whose fresh states get a topology host from `topo`.
     pub fn new(topo: impl Fn() -> Box<dyn TopoHost> + Send + Sync + 'static) -> Self {
-        Self { topo: Arc::new(topo) }
+        Self {
+            topo: Arc::new(topo),
+        }
     }
 }
 

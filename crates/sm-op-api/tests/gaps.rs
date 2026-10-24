@@ -238,6 +238,8 @@ impl TypedQuery for NeedsService {
 }
 
 static MAKES: AtomicUsize = AtomicUsize::new(0);
+/// Serializes the tests that count `CountedMake` applications.
+static MAKES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Counts applications, to check that seeded states skip replay.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -576,6 +578,7 @@ fn session_branch_management_is_logged() {
 
 #[test]
 fn seed_state_accepts_only_matching_states_and_open_with_uses_seeds() {
+    let _g = MAKES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut s = session();
     let mut tips = Vec::new();
     for _ in 0..6 {
@@ -907,6 +910,7 @@ fn unborn_head_branch_cannot_be_created_or_renamed_onto() {
 
 #[test]
 fn open_with_policy_skips_bad_seeds_unless_strict() {
+    let _g = MAKES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut s = session();
     let mut tips = Vec::new();
     for _ in 0..4 {

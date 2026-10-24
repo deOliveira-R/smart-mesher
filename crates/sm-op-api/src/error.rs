@@ -109,6 +109,22 @@ pub enum RegistryError {
         "bad op name '{0}': must be dotted lowercase segments like 'model.create_brick', without '__', at most 64 bytes as a tool name"
     )]
     BadOpName(String),
+    /// An output role name is not `[a-z_][a-z0-9_]*`.
+    #[error("op '{op}': bad output role name '{role}' (must match [a-z_][a-z0-9_]*)")]
+    BadOutputRole {
+        /// Op name.
+        op: String,
+        /// Offending role name.
+        role: String,
+    },
+    /// An op declares the same output role twice.
+    #[error("op '{op}': output role '{role}' is declared twice")]
+    DuplicateOutputRole {
+        /// Op name.
+        op: String,
+        /// Duplicated role name.
+        role: String,
+    },
     /// Two registrations used the same op name.
     #[error("op '{0}' is already registered")]
     DuplicateOp(String),
@@ -225,6 +241,8 @@ impl RegistryError {
             RegistryError::MissingMigration { .. } => "missing-migration",
             RegistryError::Decode { .. } => "decode",
             RegistryError::Schema { .. } => "schema",
+            RegistryError::BadOutputRole { .. } => "bad-output-role",
+            RegistryError::DuplicateOutputRole { .. } => "duplicate-output-role",
             RegistryError::Snapshot { .. } => "snapshot",
             RegistryError::DuplicateQuery(_) => "duplicate-query",
             RegistryError::UnknownQuery(_) => "unknown-query",

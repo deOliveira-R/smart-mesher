@@ -540,13 +540,13 @@ fn json_schema_of_all_registered_ops() {
         "{text}"
     );
     assert!(!text.contains("uint64"));
-    // A broken schema does not hide the rest.
-    r.register_dyn(Arc::new(BrokenSchema)).unwrap();
-    let cat = r.catalog();
-    assert!(cat.iter().any(
-        |i| matches!(i, Err(RegistryError::Schema { name, .. }) if name == "test.broken_schema")
+    // A broken schema is rejected at registration, so no op drops out of the catalog.
+    assert!(matches!(
+        r.register_dyn(Arc::new(BrokenSchema)).err(),
+        Some(RegistryError::Schema { name, .. }) if name == "test.broken_schema"
     ));
-    assert!(cat.iter().filter(|i| i.is_ok()).count() >= 7);
+    assert!(!r.op_names().contains(&"test.broken_schema"));
+    assert!(r.catalog().iter().all(|i| i.is_ok()));
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
