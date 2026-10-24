@@ -13,8 +13,12 @@ use sm_mesh_api::CellShape;
 /// extensions: pyramid `Condition`, `MaxAspectFrobenius`, `MeanAspectFrobenius`, `EdgeRatio`,
 /// `RelativeSizeSquared`, `ShapeAndSize`, `MinAngle`, `MaxAngle`; wedge `RelativeSizeSquared`
 /// and `ShapeAndSize`; tet `MaxAngle`/`MinAngle`; hex and wedge `MinAngle`/`MaxAngle`;
-/// `Sphericity`, `Starness` and every polygon/polyhedron metric. Known intentional deviations
-/// from Verdict are listed in `DESIGN.md` ("Deviations from Verdict").
+/// triangle `Jacobian` (`2A`, no Verdict counterpart), `Sphericity`, `Starness` and every
+/// polygon/polyhedron metric. Quad `EdgeRatio` is a Verdict metric (acceptable range
+/// `[1, 1.3]`), as is hex `EdgeRatio`, though Verdict's hex maximum covers edges 0-5 only (a
+/// Verdict index bug the crate does not replicate). Tet `MinAngle` is the true minimum dihedral,
+/// which differs from Verdict's. Known intentional deviations from Verdict are listed in
+/// `DESIGN.md` ("Deviations from Verdict").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Metric {

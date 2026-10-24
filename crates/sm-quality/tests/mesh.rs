@@ -192,3 +192,17 @@ fn face_normals_field_is_the_shell_orientation_rule() {
     let none = Options::default().with_normals(SurfaceNormals::Field(&NoCarrier));
     assert!(validity(&m, &none).unwrap().all_valid());
 }
+
+#[test]
+fn zero_or_non_finite_reference_normals_are_rejected() {
+    let m = surface_mesh(&[[0., 0.], [2., 0.], [2., 1.], [0., 1.]], &[vec![0, 1, 2, 3]]);
+    let bad_uniform = [[0., 0., 0.], [f64::NAN, 0., 1.], [0., f64::INFINITY, 1.]];
+    for n in bad_uniform {
+        let o = Options::default().with_normals(SurfaceNormals::Uniform(n));
+        assert!(matches!(compute(&m, Metric::Volume, &o), Err(QualityError::BadArgument(_))), "{n:?}");
+    }
+    let per = [[0., 0., 0.]];
+    let o = Options::default().with_normals(SurfaceNormals::PerCell(&per));
+    assert!(matches!(compute(&m, Metric::Volume, &o), Err(QualityError::BadArgument(_))));
+    assert!(matches!(validity(&m, &o), Err(QualityError::BadArgument(_))));
+}

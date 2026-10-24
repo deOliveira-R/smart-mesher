@@ -159,7 +159,10 @@ impl Prep<'_, '_> {
                 let k = 1.0 / pts.len().max(1) as f64;
                 let m = pts.iter().fold([0.0; 3], |s, q| [s[0] + q[0] * k, s[1] + q[1] * k, s[2] + q[2] * k]);
                 let class = self.mesh.classification(MeshEntityKind::Cell, c as u32);
-                f.normal(class.entity, Point3::new(m[0], m[1], m[2])).map(|v| [v.x, v.y, v.z])
+                f.normal(class.entity, Point3::new(m[0], m[1], m[2]))
+                    .map(|v| [v.x, v.y, v.z])
+                    // A zero or non-finite carrier normal is no normal: fall back to `Own`.
+                    .filter(|n| n.iter().all(|x| x.is_finite()) && n.iter().any(|x| *x != 0.0))
             }
         }
     }
@@ -263,6 +266,21 @@ fn prepare<'a, 'o>(mesh: &'a dyn MeshRead, metrics: &[Metric], opts: &'o Options
         && ns.len() != mesh.cell_count()
     {
         return Err(QualityError::BadArgument(format!("PerCell normals: {} given, mesh has {} cells", ns.len(), mesh.cell_count())));
+    }
+    let bad = |n: &V| !n.iter().all(|x| x.is_finite()) || n.iter().all(|x| *x == 0.0);
+    match opts.normals {
+        SurfaceNormals::Uniform(n) if bad(&n) => {
+            return Err(QualityError::BadArgument(format!("Uniform normal {n:?} is zero or non-finite")));
+        }
+        SurfaceNormals::PerCell(ns) => {
+            // Only 2-D cells use the normal, so a mixed mesh may carry zeros for its solids.
+            for (c, n) in ns.iter().enumerate() {
+                if bad(n) && mesh.cell_shape(CellIx::new(c)).dim() == sm_mesh_api::MeshDim::Two {
+                    return Err(QualityError::BadArgument(format!("PerCell normal of cell {c} ({n:?}) is zero or non-finite")));
+                }
+            }
+        }
+        _ => {}
     }
     let mut p = Prep { mesh, co: mesh.coords(), opts, ref_size: [f64::NAN; 8] };
     if metrics.iter().any(|m| needs_ref(*m)) {

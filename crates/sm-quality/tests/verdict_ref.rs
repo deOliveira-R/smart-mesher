@@ -135,3 +135,98 @@ fn quad_skew_of_a_degenerate_element_is_zero() {
     let q: Vec<V> = vec![[0., 0., 0.]; 4];
     assert_eq!(e(M::Skew, S::Quad, &q), 0.0);
 }
+
+// ---- fix round 1: cases found by a differential run against a real Verdict build. ----
+// Comments say what Verdict returns; where the crate deliberately differs the test pins the
+// crate value (see DESIGN.md, "Deviations from Verdict").
+
+#[test]
+fn mean_aspect_frobenius_is_the_sentinel_when_any_corner_is_degenerate() {
+    // Collapsed quad: Verdict 1e30 (the old crate averaged the sentinel to 5e29).
+    let q: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [1., 1., 0.]];
+    assert_eq!(e(M::MeanAspectFrobenius, S::Quad, &q), DBL_MAX);
+    assert_eq!(e(M::MaxAspectFrobenius, S::Quad, &q), DBL_MAX);
+    // Hex with one inverted corner: Verdict 1e30 (the old crate gave 2.5e29).
+    let mut h = hex();
+    h[6] = [0.1, 0.1, 0.1];
+    assert_eq!(e(M::MeanAspectFrobenius, S::Hex, &h), DBL_MAX);
+    // Wedge with an inverted corner sub-tet.
+    let mut w = wedge();
+    w[5] = [0.5, 0.2, 0.1];
+    assert_eq!(e(M::MeanAspectFrobenius, S::Wedge, &w), DBL_MAX);
+}
+
+#[test]
+fn collapsed_quad_shear_routes_to_the_triangle() {
+    let q: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 1., 0.]];
+    // Verdict 0.9238.
+    near(e(M::Shear, S::Quad, &q), 0.9238, 1e-4, "shear");
+    let rss = with_ref(M::RelativeSizeSquared, S::Quad, &q, 0.8);
+    near(with_ref(M::ShearAndSize, S::Quad, &q, 0.8), rss * e(M::Shear, S::Quad, &q), 1e-12, "shear and size");
+    // Verdict 0.3608.
+    near(with_ref(M::ShearAndSize, S::Quad, &q, 0.8), 0.3608, 1e-3, "shear and size literal");
+}
+
+#[test]
+fn pyramid_shape_with_a_non_planar_base_matches_verdict() {
+    // Apex height along the corner-0 normal, base shape with the quad's own normal: Verdict 0.8844
+    // (the old diagonal-normal formula gave 0.8189).
+    let p: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.4], [0., 1., 0.], [0.5, 0.5, 0.8]];
+    near(e(M::Shape, S::Pyramid, &p), 0.8844, 1e-4, "non-planar base");
+}
+
+#[test]
+fn pyramid_shape_does_not_replicate_the_largest_edge_bug() {
+    // Verdict seeds the longest edge with min(l0, l1) and reports 0.3311; the crate uses the true
+    // longest edge and pins 0.2208.
+    let p: Vec<V> = vec![[0., 0., 0.], [3., 0., 0.], [2.5, 1., 0.], [0.5, 1., 0.], [1.5, 0.5, 0.8]];
+    near(e(M::Shape, S::Pyramid, &p), 0.2208, 1e-3, "crate value");
+}
+
+#[test]
+fn hex_edge_ratio_covers_all_twelve_edges() {
+    // Verdict's maximum covers edges 0-5 only and reports 1; the crate reports the true 3.
+    near(e(M::EdgeRatio, S::Hex, &brick(1.0, 1.0, 3.0)), 3.0, 1e-12, "1x1x3 brick");
+}
+
+#[test]
+fn tet_min_angle_is_the_true_minimum_dihedral() {
+    // Verdict reports 60.37 (mixed face-normal orientation); the true minimum dihedral is 24.69.
+    let p: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [0.2, 0.3, 0.], [0.4, 0.1, 0.9]];
+    near(e(M::MinAngle, S::Tet, &p), 24.69, 1e-3, "min dihedral");
+    // An inverted tet reads reflex in the crate (Verdict: 54.7).
+    let inv: Vec<V> = vec![[0., 0., 0.], [0., 1., 0.], [1., 0., 0.], [0., 0., 1.]];
+    assert!(e(M::MaxAngle, S::Tet, &inv) > 180.0);
+}
+
+#[test]
+fn collapsed_quad_distortion_is_one() {
+    // Verdict's collapsed branch divides 2A by A and returns 2; the crate returns the triangle's 1.
+    let q: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [0.5, 1., 0.], [0.5, 1., 0.]];
+    near(e(M::Distortion, S::Quad, &q), 1.0, 1e-12, "collapsed");
+}
+
+#[test]
+fn mirrored_and_flat_hex_distortion() {
+    // Mirrored cube: crate -1 (|mean| denominator), Verdict +1. Zero volume: crate 0, Verdict 1e30.
+    let mirrored: Vec<V> = hex().iter().map(|q| [-q[0], q[1], q[2]]).collect();
+    near(e(M::Distortion, S::Hex, &mirrored), -1.0, 1e-12, "mirrored");
+    let flat: Vec<V> = hex().iter().map(|q| [q[0], q[1], 0.0]).collect();
+    assert_eq!(e(M::Distortion, S::Hex, &flat), 0.0);
+}
+
+#[test]
+fn mirrored_wedge_aspect_frobenius_is_the_sentinel() {
+    // Verdict squares the determinant (about 1.0); the crate flags the inversion.
+    let mirrored: Vec<V> = wedge().iter().map(|q| [-q[0], q[1], q[2]]).collect();
+    assert_eq!(e(M::MaxAspectFrobenius, S::Wedge, &mirrored), DBL_MAX);
+}
+
+#[test]
+fn warped_quad_uses_the_projected_formulation() {
+    // Verdict uses 3-D corner angles: MinAngle 78.463, Distortion 0.9047. The crate projects
+    // onto the reference normal: 78.023 and 0.8889.
+    let q: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.5], [0., 1., 0.]];
+    near(e(M::MinAngle, S::Quad, &q), 78.023, 1e-4, "min angle");
+    near(e(M::Distortion, S::Quad, &q), 0.8889, 1e-4, "distortion");
+}

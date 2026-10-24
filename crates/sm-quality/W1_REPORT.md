@@ -6,7 +6,7 @@
 
 Implemented per the task: scaled Jacobian, Jacobian, aspect ratio (tri/quad perimeter form, tet `beta` and `gamma`, Frobenius, radius ratio), skew, taper, warpage, stretch, condition number, shape, relative size, shape-and-size, min/max angle (interior angles in 2-D, dihedral in 3-D), edge ratio, max edge ratio, volume/area, plus Oddy, shear, shear-and-size, diagonal, dimension, distortion, collapse ratio, sphericity and star-shapedness; validity (valid / degenerate / inverted / skipped); summary statistics and histograms.
 
-**Verification status:** the first version was reconstructed from memory. A review then diffed it against the Verdict C++ sources and the 2007 manual, and fix round 0 (below) corrected the mismatches. `tests/verdict_ref.rs` pins Verdict reference values for distorted elements. Remaining deviations from Verdict are deliberate and listed in `DESIGN.md` ("Deviations from Verdict"); crate-only metrics are marked as extensions in `Metric`'s rustdoc and `DESIGN.md`.
+**Verification status:** the first version was reconstructed from memory. A review then diffed it against the Verdict C++ sources and the 2007 manual, fix round 0 corrected the mismatches, and a differential run against a real Verdict build drove fix round 1 (below). Not everything is Verdict-identical: tet `MinAngle`, hex `EdgeRatio`, pyramid `Shape` when the longest edge is edge 0-1 or 1-2, collapsed-quad `Distortion`, hex/quad/wedge behaviour on inverted or zero-volume elements, and the quad `MinAngle`/`MaxAngle`/`Max,MeanAspectFrobenius`/`Distortion` on non-planar quads differ from Verdict, deliberately and documented in `DESIGN.md` ("Deviations from Verdict"). `tests/verdict_ref.rs` pins Verdict values for distorted elements (hand-computed in round 0; probe values from the Verdict build in round 1). Crate-only metrics are marked as extensions in `Metric`'s rustdoc and `DESIGN.md`.
 
 ## Fix round 0 (review findings)
 
@@ -23,11 +23,31 @@ Fixed to match Verdict:
 
 Documented as deliberate deviations rather than changed (see `DESIGN.md`): signed/inverted conventions of tet metrics, tri/tet `Distortion` sign, quad Max/MeanAF signed `J`, zero-length-edge conventions (tet/hex `ScaledJacobian`, hex `Diagonal`, tri/quad angles), quad `MaxAngle` on non-convex quads, tet `CollapseRatio` (Verdict's index slip not replicated), the `DBL_MAX` sentinel in summary statistics.
 
-Not done: the missing Verdict metrics (equiangle skew, quad radius ratio, tet mean ratio / inradius / squish / equivolume skew, hex nodal Jacobian ratio, timestep, wedge max stretch), and a thresholds API; both are listed in Known gaps. The Verdict manual was not present in the worktree (`docs/VerdictUserManual2007` does not exist here), so the range corrections and reference numbers are taken from the review text, not re-read by me.
+Not done: the missing Verdict metrics (equiangle skew, quad radius ratio, tet mean ratio / inradius / squish / equivolume skew, hex nodal Jacobian ratio, timestep, wedge max stretch), and a thresholds API; both are listed in Known gaps. The Verdict manual is not in this repo (it lives in `sandialabs/verdict` under `docs/`); in round 1 the ranges were checked against it by the reviewer and the `(unchecked)` tags were removed.
+
+## Fix round 1 (differential review against a real Verdict build)
+
+Fixed:
+
+* `MeanAspectFrobenius` (quad, hex, wedge, also the tet/pyramid generic path) returns `DBL_MAX` when any corner is degenerate or inverted instead of averaging the 1e30 sentinel into e.g. 5e29.
+* Collapsed quad (`p3 == p2`): `Shear` and `ShearAndSize` route to the triangle (`max(0, tri SJ)`); probe 0.9238 / 0.3608.
+* Pyramid `Shape`: apex height along the corner-0 base normal `(p1-p0) x (p3-p0)` (Verdict's `distance_point_to_pyramid_base`), base quad shape with its own normal; non-planar-base probe now 0.8844 (was 0.8189). Verdict's `largest_pyramid_edge` bug (seed `fmin(l0, l1)`) is documented, not replicated (probe: Verdict 0.3311, crate 0.2208).
+* `prepare()` rejects zero or non-finite `Uniform` normals and zero/non-finite `PerCell` normals of 2-D cells with `BadArgument`; a zero/non-finite `Field` normal is treated as absent (falls back to `Own`).
+* Hex axes are computed lazily (only for the metrics that use them).
+* Docs: `TINY` is not Verdict's `VERDICT_DBL_MIN` (2.22e-15, scaled per element); wedge Frobenius normaliser corrected to 1.1647740 (3.4e-6 relative to Verdict's literal) and wedge `Distortion` exact 1/2 (1.2e-6); `(unchecked)` tags removed; manual reference fixed; quad `EdgeRatio` is a Verdict metric ([1, 1.3]) and triangle `Jacobian` is an extension; `Metric` rustdoc updated.
+
+Documented as deliberate deviations (new in `DESIGN.md`): tet `MinAngle` (true minimum dihedral; inverted tet reads reflex), hex `EdgeRatio` (all 12 edges), collapsed-quad `Distortion` (1 vs Verdict 2), hex/quad `Distortion` `|mean|` denominator and zero-volume value, quad reflex/zero-area `Distortion`, wedge Frobenius family on an inverted corner, non-planar quad `MinAngle`/`MaxAngle`/`Max,MeanAspectFrobenius`/`Distortion` (projection onto the reference normal, up to about 1%), tet `CollapseRatio` zero edge and wedge `ScaledJacobian` zero edge. The "Verified against the Verdict sources" claim in `DESIGN.md` was narrowed accordingly.
+
+Skipped, with reasons:
+
+* Scale-relative degenerate guard (SHOULD 1): documented only. Changing the guard touches every kernel and cannot be validated without the Verdict differential fixture.
+* Real Verdict differential fixture generator (SHOULD 2/10): no Verdict build is available in this environment; instead `tests/verdict_ref.rs` gained pinned cases for every mismatch class (mean-AF sentinel, collapsed-quad shear, non-planar-base pyramid, pyramid edge quirk, hex edge ratio, perturbed tet `MinAngle`, collapsed-quad `Distortion`, mirrored/flat hex `Distortion`, mirrored wedge AF, warped quad), using the probe values from the review. Verdict-side numbers are quoted in comments; where the crate deliberately differs the test pins the crate value.
+* `From<Point3>` convenience (SHOULD 11, optional): not added.
+* Not matched (documented instead): non-planar quad formulations, quad reflex/zero-area `Distortion`, tet `MinAngle`, hex `EdgeRatio`, collapsed-quad `Distortion`.
 
 ## Test summary
 
-All pass with default threads and with `RAYON_NUM_THREADS=1`: `cargo test -p sm-quality` (elements 2, distorted 18, verdict_ref 10, mesh 11, properties 5, stats 8, determinism 3), `cargo clippy -p sm-quality --all-targets --all-features -- -D warnings` clean, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-quality --no-deps` clean, `cargo build` clean. Analytic checks: every applicable metric on every ideal shape equals its ideal value (~70 checks); closed forms on distorted elements; fixture volumes vs exact values and vs `sm_mesh_api::cell_volume` (1e-12). Property tests use `sm-testkit` strategies with the pinned seed. Determinism test: bit hashes of all columns/summaries/histograms/validity for 1, 2, 3, 4 threads, repeated, concurrent, over all testkit fixtures and a perturbed 20^3 block. Bench: `benches/metrics.rs` (hex kernel ~160 ns, 64k-hex scaled Jacobian 4.6 ms on 4 cores).
+All pass with default threads and with `RAYON_NUM_THREADS=1`: `cargo test -p sm-quality` (elements 2, distorted 18, verdict_ref 20, mesh 12, properties 5, stats 8, determinism 3; counts as of round 1), `cargo clippy -p sm-quality --all-targets --all-features -- -D warnings` clean, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-quality --no-deps` clean, `cargo build` clean. Analytic checks: every applicable metric on every ideal shape equals its ideal value (~70 checks); closed forms on distorted elements; fixture volumes vs exact values and vs `sm_mesh_api::cell_volume` (1e-12). Property tests use `sm-testkit` strategies with the pinned seed. Determinism test: bit hashes of all columns/summaries/histograms/validity for 1, 2, 3, 4 threads, repeated, concurrent, over all testkit fixtures and a perturbed 20^3 block. Bench: `benches/metrics.rs` (hex kernel ~160 ns, 64k-hex scaled Jacobian 4.6 ms on 4 cores).
 
 ## Deviations from the contracts' intent
 
@@ -41,7 +61,7 @@ All pass with default threads and with `RAYON_NUM_THREADS=1`: `cargo test -p sm-
 
 ## Known gaps
 
-* No run against a real Verdict build; `tests/verdict_ref.rs` holds values computed by hand from the reviewed C++ formulas. Ranges not listed as corrected are marked "(unchecked)" in `DESIGN.md`.
+* There is no reproducible Verdict differential pipeline in the repo; `tests/verdict_ref.rs` holds hand-computed values plus the probe values quoted from the reviewer's Verdict build (round 1). A generated fixture is still wanted.
 * Missing Verdict metrics and thresholds API: see `DESIGN.md` Known gaps.
 * High-order cells are evaluated on their corner skeleton only; no curved-element Jacobian sampling.
 * Hex centre sample: Jacobian, scaled Jacobian and Oddy include it; shear and condition use corners only.

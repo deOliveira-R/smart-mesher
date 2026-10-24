@@ -207,15 +207,17 @@ fn wedge_distortion(p: &[V], vol: f64) -> f64 {
 /// Tet-style Frobenius aspect of the six corner tetrahedra of a wedge, over the value of the
 /// ideal wedge, floored at 1. Returns `(max, mean)`.
 fn wedge_aspect_frobenius(p: &[V]) -> (f64, f64) {
-    let (mut mx, mut sum) = (0.0f64, 0.0);
+    let (mut mx, mut sum, mut bad) = (0.0f64, 0.0, false);
     let ideal = wedge_af_ideal();
     for c in WEDGE_CORNERS {
         let a = corner_data(&frame(p, c), &TET_WI).aspect_frobenius();
         let v = if a >= DBL_MAX { DBL_MAX } else { a / ideal };
+        bad |= a >= DBL_MAX;
         mx = mx.max(v);
         sum += v;
     }
-    (mx.max(1.0), (sum / 6.0).clamp(1.0, DBL_MAX))
+    // Any sentinel corner makes the mean the sentinel too (Verdict), not a diluted average.
+    (mx.max(1.0), if bad { DBL_MAX } else { (sum / 6.0).clamp(1.0, DBL_MAX) })
 }
 
 /// Verdict wedge shape: minimum over corners of `3 (det 2/sqrt3)^(2/3) / sum |edge|^2`, capped at 1.
@@ -233,8 +235,13 @@ fn wedge_shape(p: &[V]) -> f64 {
 }
 
 /// Verdict pyramid shape: base quad shape x cosine of the apex offset angle x height/length balance.
+///
+/// The apex height `d` is measured along the corner-0 base normal `(p1-p0) x (p3-p0)` (Verdict's
+/// `distance_point_to_pyramid_base`); the base quad shape uses the quad's own Newell normal.
+/// Verdict's `largest_pyramid_edge` seeds its maximum with `min(l0, l1)` and so drops the longer
+/// of edges 0-1 and 1-2; that bug is deliberately not replicated.
 fn pyramid_shape(p: &[V]) -> f64 {
-    let n = unit(cross(sub(p[2], p[0]), sub(p[3], p[1])));
+    let n = unit(cross(sub(p[1], p[0]), sub(p[3], p[0])));
     let c = scale(add(add(p[0], p[1]), add(p[2], p[3])), 0.25);
     let up = sub(p[4], c);
     let (d, len) = (dot(up, n), norm(up));
@@ -247,7 +254,7 @@ fn pyramid_shape(p: &[V]) -> f64 {
     if cos <= 0.0 {
         return 0.0;
     }
-    let ctx = Context { normal: Some(n), ref_size: f64::NAN };
+    let ctx = Context { normal: None, ref_size: f64::NAN };
     let base = crate::planar::eval(Metric::Shape, CellShape::Quad, &p[..4], &ctx).unwrap_or(0.0);
     base * cos * (d / l).min(l / d)
 }
@@ -392,7 +399,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         raw(&mut |det, prod| sj = sj.min(if prod <= TINY { 0.0 } else { det / prod }));
         sj
     };
-    let hex = (shape == CellShape::Hex).then(|| hex_axes(p));
+    let hex_ax = || (shape == CellShape::Hex).then(|| hex_axes(p));
 
     let v = match m {
         Metric::Volume => vol_fn(),
@@ -405,7 +412,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         Metric::Jacobian => {
             let mut j = f64::INFINITY;
             raw(&mut |det, _| j = j.min(det));
-            if let Some(h) = &hex {
+            if let Some(h) = hex_ax() {
                 j = j.min(det3(h.x[0], h.x[1], h.x[2]) / 64.0);
             }
             j
@@ -413,7 +420,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         Metric::ScaledJacobian if shape == CellShape::Pyramid => pyramid_scaled_jacobian(p),
         Metric::ScaledJacobian => {
             let mut sj = corner_sj();
-            if let Some(h) = &hex {
+            if let Some(h) = hex_ax() {
                 let d = norm(h.x[0]) * norm(h.x[1]) * norm(h.x[2]);
                 sj = sj.min(if d <= TINY { 0.0 } else { det3(h.x[0], h.x[1], h.x[2]) / d });
             }
@@ -426,9 +433,13 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             mx
         }
         Metric::MeanAspectFrobenius if is_hex => {
-            let mut s = 0.0;
-            frames(&mut |c| s += c.condition());
-            cap(s / n_corners)
+            let (mut s, mut bad) = (0.0, false);
+            frames(&mut |c| {
+                let v = c.condition();
+                bad |= v >= DBL_MAX;
+                s += v;
+            });
+            if bad { DBL_MAX } else { cap(s / n_corners) }
         }
         // Wedges: tet-style AF of the six corner tetrahedra; Condition == MaxAspectFrobenius.
         Metric::AspectFrobenius | Metric::MaxAspectFrobenius | Metric::Condition if shape == CellShape::Wedge => {
@@ -441,9 +452,13 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             mx
         }
         Metric::MeanAspectFrobenius => {
-            let mut s = 0.0;
-            frames(&mut |c| s += c.aspect_frobenius());
-            cap(s / n_corners)
+            let (mut s, mut bad) = (0.0, false);
+            frames(&mut |c| {
+                let v = c.aspect_frobenius();
+                bad |= v >= DBL_MAX;
+                s += v;
+            });
+            if bad { DBL_MAX } else { cap(s / n_corners) }
         }
         Metric::Condition => {
             let mut mx = 0.0f64;
@@ -473,7 +488,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         Metric::Starness => faces::starness(p, faces),
         Metric::Dimension => hex_dimension(p),
         Metric::MaxEdgeRatio | Metric::Skew | Metric::Taper => {
-            let h = hex.as_ref()?;
+            let h = hex_ax()?;
             let l = [norm(h.x[0]), norm(h.x[1]), norm(h.x[2])];
             if l.iter().any(|&v| v <= TINY) {
                 return Some(DBL_MAX);
@@ -518,7 +533,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
                 let det = det3(f[0], f[1], f[2]);
                 if det <= TINY { DBL_MAX } else { (fro2 - tr * tr / 3.0) / det.powf(4.0 / 3.0) }
             };
-            let mut worst = hex.as_ref().map_or(0.0, |h| oddy(h.x));
+            let mut worst = hex_ax().map_or(0.0, |h| oddy(h.x));
             for cn in t.corners {
                 worst = worst.max(oddy(frame(p, cn)));
             }

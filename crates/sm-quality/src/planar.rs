@@ -63,6 +63,17 @@ fn quad_detj(p: &[V], xi: f64, eta: f64, nh: V) -> f64 {
 /// Tri/quad/polygon dispatcher. `p` has already been validated by [`crate::eval`].
 pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Option<f64> {
     // A collapsed quad (p3 == p2) is a triangle for these metrics, as in Verdict.
+    if shape == CellShape::Quad && p.len() == 4 && p[3] == p[2] && matches!(m, Metric::Shear | Metric::ShearAndSize) {
+        let sj = eval(Metric::ScaledJacobian, CellShape::Tri, &p[..3], ctx)?.max(0.0);
+        if m == Metric::Shear {
+            return Some(sj);
+        }
+        let nh = match ctx.normal {
+            Some(v) => unit(v),
+            None => unit(newell(&p[..3])),
+        };
+        return Some(relative_size_squared(area(&p[..3], nh), ctx.ref_size) * sj);
+    }
     if shape == CellShape::Quad
         && p.len() == 4
         && p[3] == p[2]
@@ -99,13 +110,15 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
     let shear = || scaled_jac().max(0.0);
     // Quad/tri per-corner Frobenius aspect (a.a + b.b) / (2 J), square weight.
     let af_quad = |mean: bool| {
-        let (mut mx, mut sum) = (0.0f64, 0.0);
+        let (mut mx, mut sum, mut bad) = (0.0f64, 0.0, false);
         corners(&mut |a, b, j| {
             let v = if j <= TINY { DBL_MAX } else { (norm2(a) + norm2(b)) / (2.0 * j) };
+            bad |= j <= TINY;
             mx = mx.max(v);
             sum += v;
         });
-        if mean { cap(sum / n as f64) } else { mx }
+        // A sentinel corner makes the mean the sentinel (Verdict), not a diluted average.
+        if mean { if bad { DBL_MAX } else { cap(sum / n as f64) } } else { mx }
     };
     let sum_l2 = || (0..n).map(|k| norm2(sub(p[(k + 1) % n], p[k]))).sum::<f64>();
     let perimeter = || (0..n).map(|k| edge_len(p, k)).sum::<f64>();

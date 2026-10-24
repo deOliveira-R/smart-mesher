@@ -5,7 +5,10 @@ pub type V = [f64; 3];
 
 /// Verdict's "large" sentinel: returned (instead of infinity) by metrics where large is bad.
 pub const DBL_MAX: f64 = 1.0e30;
-/// Verdict's "tiny" threshold: denominators at or below it are treated as degenerate.
+/// Absolute threshold below which a denominator is treated as degenerate. This is not Verdict's
+/// `VERDICT_DBL_MIN` (2.22e-15, `verdict.h`), which most Verdict kernels apply after per-element
+/// scaling and so act as a relative threshold. The crate's absolute 1e-30 makes cells with edges
+/// below about 1e-10 read as degenerate and keeps relatively near-flat cells finite.
 pub const TINY: f64 = 1.0e-30;
 
 #[inline]
