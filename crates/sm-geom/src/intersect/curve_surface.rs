@@ -503,7 +503,7 @@ fn nurbs_vs_implicit(c: &PreparedCurve, imp: &ImplicitDef, tol: &ModelTolerance,
         let mid = 0.5 * (bx[0] + bx[3]);
         let _ = mid;
         let gscale = imp.gradient(Point3::new(0.5 * (bx[0] + bx[3]), 0.5 * (bx[1] + bx[4]), 0.5 * (bx[2] + bx[5]))).norm();
-        let slack = tol.linear * gscale * 0.5;
+        let slack = tol.linear * gscale * 1.01;
         if flo > slack || fhi < -slack {
             continue;
         }

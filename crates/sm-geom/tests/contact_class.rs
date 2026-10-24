@@ -101,7 +101,7 @@ fn check_scene(sc: &Scene, g: f64) {
     check(&format!("{} nurbs/nurbs", sc.name), &hits(&sc.cn, None, &sc.sn), g, sc.p0);
 }
 
-const GAPS: [f64; 8] = [0.0, 1e-9, -1e-9, 5e-7, -5e-7, 1e-5, -1e-3, -2.5e-7];
+const GAPS: [f64; 14] = [0.0, 1e-9, -1e-9, 5e-7, -5e-7, 1e-5, -1e-3, -2.5e-7, 5.5e-7, 7e-7, 8e-7, 9e-7, 9.9e-7, -9e-7];
 
 /// Parameters on the seam (0), the knots of the 9-pole circle (multiples of pi / 2) and their
 /// +- 1e-9 and +- 3e-6 shifts, plus the seam from below.
@@ -129,6 +129,22 @@ fn contacts_at_seams_and_knots_agree_on_every_path() {
     }
 }
 
+/// Gaps inside the band `(-tol.linear, tol.linear)` near its edge, at knots and seam.
+#[test]
+fn band_edge_gaps_agree_on_every_path() {
+    let id = Transform::IDENTITY;
+    for kind in 0..4 {
+        for ell in [false, true] {
+            for t0 in special_angles() {
+                for g in [5.5e-7, 6e-7, 7e-7, 8e-7, 9e-7, 9.9e-7, -9.9e-7, -8e-7] {
+                    check_scene(&scene(kind, ell, g, t0, 0.7, &id), g);
+                    check_scene(&scene(kind, ell, g, t0, 0.0, &id), g);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn surface_seams_and_knots_agree_on_every_path() {
     let id = Transform::IDENTITY;
@@ -143,6 +159,13 @@ fn surface_seams_and_knots_agree_on_every_path() {
 
 proptest! {
     #![proptest_config(config(96))]
+
+    /// Gap drawn uniformly inside the tolerance band.
+    #[test]
+    fn random_in_band_gaps_agree(kind in 0usize..4, ell in any::<bool>(), g in -9.9e-7f64..9.9e-7, t0 in 0.0f64..TAU, special in 0usize..20, use_special in any::<bool>(), psi in 0.0f64..TAU, tf in proper_transform()) {
+        let t0 = if use_special { special_angles()[special] } else { t0 };
+        check_scene(&scene(kind, ell, g, t0, psi, &tf), g);
+    }
 
     #[test]
     fn random_contacts_agree_on_every_path(kind in 0usize..4, ell in any::<bool>(), gi in 0usize..GAPS.len(), t0 in 0.0f64..TAU, psi in 0.0f64..TAU, tf in proper_transform()) {

@@ -41,6 +41,40 @@ impl Gap<'_> {
         (self.f)(self.wrap(t))
     }
 
+    /// A raw hit inside the band stays; one outside is moved to the point of smallest `|s|`
+    /// within a window of `4 sqrt(h0)` (sampled, then refined by ternary search), or dropped.
+    fn polish(&self, (t, tan): (f64, bool)) -> Option<(f64, bool)> {
+        if self.at(t).abs() <= self.tol {
+            return Some((t, tan));
+        }
+        let w = 4.0 * self.h0.sqrt();
+        let n = 64usize;
+        let step = 2.0 * w / n as f64;
+        let mut best = (f64::INFINITY, t);
+        for i in 0..=n {
+            let u = t - w + step * i as f64;
+            if !self.closed && (u < self.lo || u > self.hi) {
+                continue;
+            }
+            let v = self.at(u).abs();
+            if v < best.0 {
+                best = (v, u);
+            }
+        }
+        let (mut a, mut b) = (best.1 - step, best.1 + step);
+        for _ in 0..60 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if !self.closed && (m1 < self.lo || m2 > self.hi) {
+                break;
+            }
+            if self.at(m1).abs() < self.at(m2).abs() { b = m2 } else { a = m1 }
+        }
+        let u = 0.5 * (a + b);
+        let (vu, vb) = (self.at(u).abs(), best.0);
+        let (v, u) = if vu <= vb { (vu, u) } else { (vb, best.1) };
+        (v <= self.tol).then_some((self.wrap(u), tan))
+    }
+
     /// One side of the stretch: distance from `t` to the band edge, and the side of the first
     /// sample outside the band (`None` if the curve ends, or the whole closed curve is inside).
     fn edge(&self, t: f64, dir: f64) -> (f64, Option<f64>) {
@@ -105,7 +139,9 @@ fn stretch(g: &Gap, (t, raw_tangent): Raw) -> Stretch {
 /// Merge `raw` hits into contacts: one hit per contact stretch, tangent decided by the sign
 /// rule, ascending by parameter. A tangent contact is reported at the middle of its stretch.
 pub(crate) fn merge_contacts(g: &Gap, raw: &[Raw]) -> Vec<Raw> {
-    let mut items: Vec<Stretch> = raw.iter().map(|h| stretch(g, (g.wrap(h.0), h.1))).collect();
+    // A raw hit outside the band has no stretch around it: move it to the best point nearby
+    // (smallest |s|) or drop it when none is in the band.
+    let mut items: Vec<Stretch> = raw.iter().filter_map(|h| g.polish((g.wrap(h.0), h.1))).map(|h| stretch(g, h)).collect();
     items.sort_by(|x, y| x.t.total_cmp(&y.t));
     // Groups of overlapping stretches: (a, b, tangent, first t, count).
     let mut groups: Vec<(f64, f64, bool, f64, usize)> = Vec::new();
