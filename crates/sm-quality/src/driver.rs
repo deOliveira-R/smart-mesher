@@ -6,6 +6,7 @@
 use crate::error::{QualityError, Result};
 use crate::metric::{Context, Metric, eval};
 use crate::polyhedron;
+use crate::solid;
 use crate::stats::{Acc, CHUNK, Summary, summarize};
 use crate::vec::{TINY, V};
 use rayon::prelude::*;
@@ -163,6 +164,17 @@ impl Prep<'_, '_> {
         }
     }
 
+    /// Gather the corner coordinates of `ci` into `buf`; false if the cell has no corner list.
+    fn gather(&self, ci: CellIx, buf: &mut SmallVec<[V; 8]>) -> bool {
+        let Some(corners) = self.mesh.cell_corners(ci) else { return false };
+        buf.clear();
+        buf.extend(corners.iter().map(|v| {
+            let i = v.get();
+            [self.co.x[i], self.co.y[i], self.co.z[i]]
+        }));
+        true
+    }
+
     /// Value of `metric` on cell `c` (`NaN` if not counted / undefined).
     fn value(&self, metric: Metric, c: usize, buf: &mut SmallVec<[V; 8]>, ref_size: Option<f64>) -> f64 {
         let ci = CellIx::new(c);
@@ -176,12 +188,9 @@ impl Prep<'_, '_> {
         if shape == CellShape::Polyhedron {
             return polyhedron::eval(self.mesh, ci, metric).unwrap_or(f64::NAN);
         }
-        let Some(corners) = self.mesh.cell_corners(ci) else { return f64::NAN };
-        buf.clear();
-        buf.extend(corners.iter().map(|v| {
-            let i = v.get();
-            [self.co.x[i], self.co.y[i], self.co.z[i]]
-        }));
+        if !self.gather(ci, buf) {
+            return f64::NAN;
+        }
         let ctx = Context { normal: self.normal(c, buf), ref_size: ref_size.unwrap_or(self.ref_size[shape_key(shape)]) };
         eval(metric, shape, buf, &ctx).unwrap_or(f64::NAN)
     }
@@ -263,16 +272,29 @@ fn prepare<'a, 'o>(mesh: &'a dyn MeshRead, metrics: &[Metric], opts: &'o Options
     Ok(p)
 }
 
-/// Is `metric` defined for at least one cell shape present in the mesh? (Deterministic scan.)
-fn supported(mesh: &dyn MeshRead, metric: Metric) -> bool {
-    (0..mesh.cell_count()).any(|c| metric.applies(mesh.cell_shape(CellIx::new(c))))
+/// Cell shapes present in the mesh (one sequential scan, shared by all requested metrics).
+fn shapes_present(mesh: &dyn MeshRead) -> Vec<CellShape> {
+    let mut seen = [None; 8];
+    for c in 0..mesh.cell_count() {
+        let s = mesh.cell_shape(CellIx::new(c));
+        seen[shape_key(s)] = Some(s);
+        if seen.iter().all(Option::is_some) {
+            break;
+        }
+    }
+    seen.iter().flatten().copied().collect()
+}
+
+/// Is `metric` defined for at least one of the `present` cell shapes?
+fn supported(present: &[CellShape], metric: Metric) -> bool {
+    present.iter().any(|&s| metric.applies(s))
 }
 
 /// Compute one metric for every cell (indexed by cell index; `NaN` where undefined).
 ///
 /// Errors with [`QualityError::Unsupported`] if the metric applies to no cell of the mesh.
 pub fn compute(mesh: &dyn MeshRead, metric: Metric, opts: &Options<'_>) -> Result<Vec<f64>> {
-    if !supported(mesh, metric) {
+    if !supported(&shapes_present(mesh), metric) {
         return Err(QualityError::Unsupported { metric });
     }
     Ok(prepare(mesh, &[metric], opts)?.column(metric))
@@ -280,7 +302,8 @@ pub fn compute(mesh: &dyn MeshRead, metric: Metric, opts: &Options<'_>) -> Resul
 
 /// Compute several metrics (one parallel pass each; the reference size is computed once).
 pub fn compute_many(mesh: &dyn MeshRead, metrics: &[Metric], opts: &Options<'_>) -> Result<QualityTable> {
-    if let Some(&metric) = metrics.iter().find(|m| !supported(mesh, **m)) {
+    let present = shapes_present(mesh);
+    if let Some(&metric) = metrics.iter().find(|m| !supported(&present, **m)) {
         return Err(QualityError::Unsupported { metric });
     }
     let p = prepare(mesh, metrics, opts)?;
@@ -381,7 +404,12 @@ pub fn validity(mesh: &dyn MeshRead, opts: &Options<'_>) -> Result<Validity> {
                     CellStatus::Valid
                 }
             } else {
-                let sj = p.value(Metric::ScaledJacobian, c, &mut buf, None);
+                let sj = if mesh.cell_shape(cell) == CellShape::Pyramid && p.gather(cell, &mut buf) && buf.len() == 5 {
+                    // The reported pyramid scaled Jacobian is floored at 0; classify on the signed one.
+                    if buf.iter().any(|q| q.iter().any(|x| !x.is_finite())) { f64::NAN } else { solid::pyramid_signed_sj(&buf) }
+                } else {
+                    p.value(Metric::ScaledJacobian, c, &mut buf, None)
+                };
                 let vol = p.value(Metric::Volume, c, &mut buf, None);
                 match classify(sj, tol) {
                     CellStatus::Valid if vol < 0.0 => CellStatus::Inverted,

@@ -56,7 +56,7 @@ fn trapezoid_taper() {
     let p: Vec<V> = vec![[0., 0., 0.], [2., 0., 0.], [1.5, 1., 0.], [0.5, 1., 0.]];
     near(e(M::Taper, S::Quad, &p), 0.5, "taper");
     near(e(M::Volume, S::Quad, &p), 1.5, "area");
-    assert!(e(M::Distortion, S::Quad, &p) < 1.0);
+    near(e(M::Distortion, S::Quad, &p), 2.0 / 3.0, "distortion = min nodal detJ / mean Gauss detJ = 0.25/0.375");
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn brick_1_2_4() {
     near(e(M::Diagonal, S::Hex, &p), 1.0, "diagonal");
     near(e(M::Skew, S::Hex, &p), 0.0, "skew");
     near(e(M::Taper, S::Hex, &p), 0.0, "taper");
-    near(e(M::Dimension, S::Hex, &p), 2.0, "dimension");
+    near(e(M::Dimension, S::Hex, &p), 8.0 / 84f64.sqrt(), "dimension = V / sqrt(sum of squared face areas)");
     near(e(M::Condition, S::Hex, &p), 21f64.sqrt() * (1.0 + 0.25 + 1.0 / 16.0f64).sqrt() / 3.0, "condition");
     near(e(M::Oddy, S::Hex, &p), (273.0 - 147.0) / 16.0, "oddy");
     near(e(M::Shape, S::Hex, &p), 12.0 / 21.0, "shape = 3 det^(2/3) / sum l^2");
@@ -216,7 +216,7 @@ fn right_wedge() {
 fn tall_pyramid() {
     let p: Vec<V> = vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0.5, 0.5, 1.0]];
     near(e(M::Volume, S::Pyramid, &p), 1.0 / 3.0, "volume");
-    near(e(M::ScaledJacobian, S::Pyramid, &p), 2f64.sqrt() / 1.5f64.sqrt(), "sj = sqrt2 * 1/|c|");
+    near(e(M::ScaledJacobian, S::Pyramid, &p), 2.0 - 2.0 / 1.5f64.powf(1.5), "sj = 2 - sqrt2 * min tet sj (folded: 1.089 > 1)");
     near(e(M::Jacobian, S::Pyramid, &p), 1.0, "jacobian");
 }
 

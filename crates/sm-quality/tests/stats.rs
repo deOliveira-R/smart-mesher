@@ -95,3 +95,10 @@ fn histogram_matches_a_naive_count_for_any_thread_count() {
         assert_eq!(pool(t, || histogram(&v, 0.0, 1.0, 10).unwrap()).counts, want);
     }
 }
+
+#[test]
+fn histogram_auto_survives_a_constant_sentinel_column() {
+    let h = sm_quality::histogram_auto(&[sm_quality::DBL_MAX; 5], 4).unwrap();
+    assert_eq!(h.total(), 5);
+    assert!(h.hi > h.lo);
+}

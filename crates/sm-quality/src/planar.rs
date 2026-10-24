@@ -62,6 +62,17 @@ fn quad_detj(p: &[V], xi: f64, eta: f64, nh: V) -> f64 {
 
 /// Tri/quad/polygon dispatcher. `p` has already been validated by [`crate::eval`].
 pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Option<f64> {
+    // A collapsed quad (p3 == p2) is a triangle for these metrics, as in Verdict.
+    if shape == CellShape::Quad
+        && p.len() == 4
+        && p[3] == p[2]
+        && matches!(
+            m,
+            Metric::Jacobian | Metric::ScaledJacobian | Metric::Condition | Metric::MinAngle | Metric::MaxAngle | Metric::Distortion
+        )
+    {
+        return eval(m, CellShape::Tri, &p[..3], ctx);
+    }
     let n = p.len();
     let nh = match ctx.normal {
         Some(v) => unit(v),
@@ -165,7 +176,8 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         }
         Metric::Skew => {
             let (l1, l2) = (norm(x1), norm(x2));
-            if l1 <= TINY || l2 <= TINY { DBL_MAX } else { (dot(x1, x2) / (l1 * l2)).abs() }
+            // Verdict returns 0 for a zero principal axis.
+            if l1 <= TINY || l2 <= TINY { 0.0 } else { (dot(x1, x2) / (l1 * l2)).abs() }
         }
         Metric::Taper => {
             let d = norm(x1).min(norm(x2));
@@ -206,13 +218,17 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
                 }
             } else {
                 let g = 1.0 / 3.0f64.sqrt();
+                // Minimum over the Gauss points and the four nodes (detJ_k = J_k / 4), normalised
+                // by the Gauss-integrated area, as in Verdict.
                 let mut det = [0.0; 4];
+                let mut min = f64::INFINITY;
                 for (i, d) in det.iter_mut().enumerate() {
-                    let (xi, eta) = (if i & 1 == 0 { -g } else { g }, if i & 2 == 0 { -g } else { g });
-                    *d = quad_detj(p, xi, eta, nh);
+                    let s = |v: f64| if i & 1 == 0 { -v } else { v };
+                    let t = |v: f64| if i & 2 == 0 { -v } else { v };
+                    *d = quad_detj(p, s(g), t(g), nh);
+                    min = min.min(*d).min(quad_detj(p, s(1.0), t(1.0), nh));
                 }
                 let mean = det.iter().sum::<f64>() / 4.0;
-                let min = det.iter().copied().fold(f64::INFINITY, f64::min);
                 if mean.abs() <= TINY { 0.0 } else { min / mean.abs() }
             }
         }

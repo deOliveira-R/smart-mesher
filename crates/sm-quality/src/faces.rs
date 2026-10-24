@@ -85,6 +85,15 @@ pub(crate) fn starness<I: Ix>(p: &[V], faces: &[&[I]]) -> f64 {
 /// `None` if no edge has a twin face.
 pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f64)> {
     let normals: SmallVec<[V; 16]> = faces.iter().map(|l| unit(face_area_vector(p, l).0)).collect();
+    // Directed edges (from, to, face), sorted: twin lookup is a binary search, not a face scan.
+    let mut directed: SmallVec<[(u32, u32, u32); 64]> = SmallVec::new();
+    for (f, lf) in faces.iter().enumerate() {
+        let n = lf.len();
+        for i in 0..n {
+            directed.push((lf[i].ix() as u32, lf[(i + 1) % n].ix() as u32, f as u32));
+        }
+    }
+    directed.sort_unstable();
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     for (f, lf) in faces.iter().enumerate() {
         let n = lf.len();
@@ -93,15 +102,13 @@ pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f
             if a >= b {
                 continue;
             }
-            // The twin face traverses b -> a.
-            let twin = faces.iter().enumerate().find_map(|(g, lg)| {
-                if g == f {
-                    return None;
-                }
-                let m = lg.len();
-                (0..m).any(|j| lg[j].ix() == b && lg[(j + 1) % m].ix() == a).then_some(g)
-            });
-            let Some(g) = twin else { continue };
+            // The twin face traverses b -> a (smallest face index first, via the sorted edge map).
+            let k = directed.partition_point(|&(x, y, _)| (x, y) < (b as u32, a as u32));
+            let Some(&(x, y, g)) = directed.get(k) else { continue };
+            if (x, y) != (b as u32, a as u32) {
+                continue;
+            }
+            let g = g as usize;
             let e = unit(sub(p[b], p[a]));
             let phi = dot(cross(normals[f], normals[g]), e).atan2(dot(normals[f], normals[g]));
             let interior = 180.0 - phi.to_degrees();

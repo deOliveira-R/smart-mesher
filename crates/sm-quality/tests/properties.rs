@@ -85,7 +85,12 @@ proptest! {
             let mirrored = map(&r, &p);
             // Without relabelling the cell is left-handed: every corner Jacobian flips sign.
             let sj = eval(Metric::ScaledJacobian, shape, &mirrored, &Context::default()).unwrap();
-            prop_assert!(sj < 0.0, "{shape:?}: sj {sj}");
+            // (The pyramid value is floored at 0, as in Verdict.)
+            if shape == sm_mesh_api::CellShape::Pyramid {
+                prop_assert!(sj == 0.0, "{shape:?}: sj {sj}");
+            } else {
+                prop_assert!(sj < 0.0, "{shape:?}: sj {sj}");
+            }
             // The reflect permutation restores a right-handed element congruent to the original.
             let perm = shape.reflect_permutation();
             let fixed: Vec<V> = perm.iter().map(|&i| mirrored[i as usize]).collect();
@@ -110,6 +115,7 @@ proptest! {
                     Metric::Shape | Metric::RelativeSizeSquared | Metric::ShapeAndSize | Metric::Shear | Metric::ShearAndSize
                     | Metric::Diagonal | Metric::Sphericity => prop_assert!((0.0..=1.0 + 1e-12).contains(&x), "{m:?} on {shape:?}: {x}"),
                     Metric::Skew => prop_assert!((0.0..=1.0 + 1e-12).contains(&x)),
+                    Metric::ScaledJacobian if shape == sm_mesh_api::CellShape::Pyramid => prop_assert!((0.0..=1.0 + 1e-12).contains(&x), "pyramid sj {x}"),
                     Metric::AspectRatio | Metric::EdgeRatio | Metric::MaxEdgeRatio => prop_assert!(x >= 1.0 - 1e-12, "{m:?} {x}"),
                     Metric::Condition | Metric::MaxAspectFrobenius | Metric::MeanAspectFrobenius | Metric::AspectFrobenius => {
                         prop_assert!(x >= 1.0 - 1e-9, "{m:?} on {shape:?}: {x}");

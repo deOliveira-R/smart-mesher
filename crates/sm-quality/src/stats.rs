@@ -217,6 +217,9 @@ pub fn histogram_auto(values: &[f64], bins: usize) -> Result<Histogram> {
     if s.count == 0 {
         return Err(QualityError::BadArgument("no finite values to histogram".into()));
     }
-    let (lo, hi) = if s.max > s.min { (s.min, s.max) } else { (s.min - 0.5, s.min + 0.5) };
+    // A constant column gets a range wide enough to survive rounding at large magnitudes
+    // (e.g. a column of the 1e30 sentinel).
+    let pad = 0.5f64.max(s.min.abs() * 1e-9);
+    let (lo, hi) = if s.max > s.min { (s.min, s.max) } else { (s.min - pad, s.min + pad) };
     histogram(values, lo, hi, bins)
 }

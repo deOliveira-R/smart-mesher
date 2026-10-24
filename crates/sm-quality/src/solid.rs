@@ -7,7 +7,7 @@
 
 use crate::faces;
 use crate::metric::{Context, Metric, relative_size_squared};
-use crate::vec::{DBL_MAX, TINY, V, add, cap, cross, det3, dot, norm, norm2, scale, sub};
+use crate::vec::{DBL_MAX, TINY, V, add, cap, cross, det3, dot, norm, norm2, scale, sub, unit};
 use sm_mesh_api::CellShape;
 
 const HEX_CORNERS: &[[u8; 4]] = &[
@@ -36,6 +36,12 @@ const WEDGE_WI: [[f64; 3]; 3] = [[1.0, -S3, 0.0], [0.0, 2.0 * S3, 0.0], [0.0, 0.
 /// `W^-1` of the square pyramid with all eight edges equal.
 const PYR_WI: [[f64; 3]; 3] =
     [[1.0, 0.0, -core::f64::consts::FRAC_1_SQRT_2], [0.0, 1.0, -core::f64::consts::FRAC_1_SQRT_2], [0.0, 0.0, core::f64::consts::SQRT_2]];
+
+/// Tet-style Frobenius aspect of the corner tetrahedra of the ideal wedge (unit edges). Verdict
+/// divides by the rounded literal 1.16477; the exact value makes the ideal wedge score exactly 1.
+fn wedge_af_ideal() -> f64 {
+    4.0 / (3.0 * 1.5f64.cbrt())
+}
 
 struct Tpl {
     corners: &'static [[u8; 4]],
@@ -124,64 +130,156 @@ const SX: [f64; 8] = [-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0];
 const SY: [f64; 8] = [-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0];
 const SZ: [f64; 8] = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0];
 
-fn hex_detj(p: &[V], xi: f64, eta: f64, zeta: f64) -> f64 {
+/// Columns `dx/dxi, dx/deta, dx/dzeta` of the trilinear map and the shape-function derivatives.
+fn hex_jac(p: &[V], xi: f64, eta: f64, zeta: f64) -> ([V; 3], [[f64; 3]; 8]) {
     let (mut gx, mut gy, mut gz) = ([0.0; 3], [0.0; 3], [0.0; 3]);
+    let mut dn = [[0.0; 3]; 8];
     for i in 0..8 {
         let (fx, fy, fz) = (1.0 + SX[i] * xi, 1.0 + SY[i] * eta, 1.0 + SZ[i] * zeta);
-        gx = add(gx, scale(p[i], SX[i] * fy * fz / 8.0));
-        gy = add(gy, scale(p[i], SY[i] * fx * fz / 8.0));
-        gz = add(gz, scale(p[i], SZ[i] * fx * fy / 8.0));
+        dn[i] = [SX[i] * fy * fz / 8.0, SY[i] * fx * fz / 8.0, SZ[i] * fx * fy / 8.0];
+        gx = add(gx, scale(p[i], dn[i][0]));
+        gy = add(gy, scale(p[i], dn[i][1]));
+        gz = add(gz, scale(p[i], dn[i][2]));
     }
+    ([gx, gy, gz], dn)
+}
+
+fn hex_detj(p: &[V], xi: f64, eta: f64, zeta: f64) -> f64 {
+    let ([gx, gy, gz], _) = hex_jac(p, xi, eta, zeta);
     det3(gx, gy, gz)
 }
 
-fn wedge_detj(p: &[V], xi: f64, eta: f64, zeta: f64) -> f64 {
-    let l = [1.0 - xi - eta, xi, eta];
-    let (dxi, deta) = ([-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]);
-    let (mut gx, mut gy, mut gz) = ([0.0; 3], [0.0; 3], [0.0; 3]);
-    for (i, q) in p.iter().enumerate().take(6) {
-        let (zf, dz) = if i < 3 { ((1.0 - zeta) / 2.0, -0.5) } else { ((1.0 + zeta) / 2.0, 0.5) };
-        gx = add(gx, scale(*q, dxi[i % 3] * zf));
-        gy = add(gy, scale(*q, deta[i % 3] * zf));
-        gz = add(gz, scale(*q, l[i % 3] * dz));
+/// Tet/linear-element distortion: the sign of the (constant) Jacobian. Verdict returns a
+/// constant 1; the sign is kept so inverted tets are visible (documented deviation).
+fn tet_distortion(p: &[V]) -> f64 {
+    let d = det3(sub(p[1], p[0]), sub(p[2], p[0]), sub(p[3], p[0]));
+    if d > TINY {
+        1.0
+    } else if d < -TINY {
+        -1.0
+    } else {
+        0.0
     }
-    det3(gx, gy, gz)
 }
 
-fn distortion(shape: CellShape, p: &[V]) -> f64 {
+/// Pronto characteristic length `sqrt(0.5 V^2 / sum_i |dV/dx_i|^2)` (`sqrt(3)/3` on the unit cube).
+/// `V` and the nodal volume gradients are integrated exactly with the 2x2x2 Gauss rule.
+fn hex_dimension(p: &[V]) -> f64 {
     let g = S3;
-    let mut det: [f64; 8] = [0.0; 8];
-    let n = match shape {
-        CellShape::Hex => {
-            for (i, d) in det.iter_mut().enumerate() {
-                let s = |bit: usize| if i & bit == 0 { -g } else { g };
-                *d = hex_detj(p, s(1), s(2), s(4));
-            }
-            8
+    let (mut vol, mut grad) = (0.0, [[0.0; 3]; 8]);
+    for k in 0..8 {
+        let s = |bit: usize| if k & bit == 0 { -g } else { g };
+        let ([gx, gy, gz], dn) = hex_jac(p, s(1), s(2), s(4));
+        vol += det3(gx, gy, gz);
+        let (cx, cy, cz) = (cross(gy, gz), cross(gz, gx), cross(gx, gy));
+        for i in 0..8 {
+            grad[i] = add(grad[i], add(add(scale(cx, dn[i][0]), scale(cy, dn[i][1])), scale(cz, dn[i][2])));
         }
-        CellShape::Wedge => {
-            let tri = [(1.0 / 6.0, 1.0 / 6.0), (2.0 / 3.0, 1.0 / 6.0), (1.0 / 6.0, 2.0 / 3.0)];
-            for (i, d) in det.iter_mut().take(6).enumerate() {
-                let (xi, eta) = tri[i % 3];
-                *d = wedge_detj(p, xi, eta, if i < 3 { -g } else { g });
-            }
-            6
-        }
-        _ => {
-            // Constant Jacobian: +1 for a positive element, -1 for an inverted one.
-            let d = det3(sub(p[1], p[0]), sub(p[2], p[0]), sub(p[3], p[0]));
-            return if d > TINY {
-                1.0
-            } else if d < -TINY {
-                -1.0
-            } else {
-                0.0
-            };
-        }
-    };
-    let mean = det[..n].iter().sum::<f64>() / n as f64;
-    let min = det[..n].iter().copied().fold(f64::INFINITY, f64::min);
+    }
+    let sum: f64 = grad.iter().map(|q| norm2(*q)).sum();
+    if sum <= TINY { 0.0 } else { (0.5 * vol * vol / sum).sqrt() }
+}
+
+/// Minimum Jacobian over the Gauss points *and* the nodes, over the mean Gauss Jacobian.
+fn hex_distortion(p: &[V]) -> f64 {
+    let g = S3;
+    let (mut sum, mut min) = (0.0, f64::INFINITY);
+    for k in 0..8 {
+        let s = |bit: usize, v: f64| if k & bit == 0 { -v } else { v };
+        let d = hex_detj(p, s(1, g), s(2, g), s(4, g));
+        sum += d;
+        min = min.min(d).min(hex_detj(p, s(1, 1.0), s(2, 1.0), s(4, 1.0)));
+    }
+    let mean = sum / 8.0;
     if mean.abs() <= TINY { 0.0 } else { min / mean.abs() }
+}
+
+/// Wedge distortion: minimum corner determinant over twice the volume (1 for an affine wedge).
+fn wedge_distortion(p: &[V], vol: f64) -> f64 {
+    let mut j = f64::INFINITY;
+    for c in WEDGE_CORNERS {
+        let f = frame(p, c);
+        j = j.min(det3(f[0], f[1], f[2]));
+    }
+    if vol.abs() <= TINY { 0.0 } else { j / (2.0 * vol.abs()) }
+}
+
+/// Tet-style Frobenius aspect of the six corner tetrahedra of a wedge, over the value of the
+/// ideal wedge, floored at 1. Returns `(max, mean)`.
+fn wedge_aspect_frobenius(p: &[V]) -> (f64, f64) {
+    let (mut mx, mut sum) = (0.0f64, 0.0);
+    let ideal = wedge_af_ideal();
+    for c in WEDGE_CORNERS {
+        let a = corner_data(&frame(p, c), &TET_WI).aspect_frobenius();
+        let v = if a >= DBL_MAX { DBL_MAX } else { a / ideal };
+        mx = mx.max(v);
+        sum += v;
+    }
+    (mx.max(1.0), (sum / 6.0).clamp(1.0, DBL_MAX))
+}
+
+/// Verdict wedge shape: minimum over corners of `3 (det 2/sqrt3)^(2/3) / sum |edge|^2`, capped at 1.
+fn wedge_shape(p: &[V]) -> f64 {
+    let mut s = 1.0f64;
+    for c in WEDGE_CORNERS {
+        let f = frame(p, c);
+        let det = det3(f[0], f[1], f[2]);
+        if det <= TINY {
+            return 0.0;
+        }
+        s = s.min(3.0 * (det * 2.0 * S3).powf(2.0 / 3.0) / (norm2(f[0]) + norm2(f[1]) + norm2(f[2])));
+    }
+    s
+}
+
+/// Verdict pyramid shape: base quad shape x cosine of the apex offset angle x height/length balance.
+fn pyramid_shape(p: &[V]) -> f64 {
+    let n = unit(cross(sub(p[2], p[0]), sub(p[3], p[1])));
+    let c = scale(add(add(p[0], p[1]), add(p[2], p[3])), 0.25);
+    let up = sub(p[4], c);
+    let (d, len) = (dot(up, n), norm(up));
+    let (_, lmax) = edge_extrema(CellShape::Pyramid, p);
+    let l = lmax * core::f64::consts::FRAC_1_SQRT_2;
+    if d <= TINY || len <= TINY || l <= TINY {
+        return 0.0;
+    }
+    let cos = d / len;
+    if cos <= 0.0 {
+        return 0.0;
+    }
+    let ctx = Context { normal: Some(n), ref_size: f64::NAN };
+    let base = crate::planar::eval(Metric::Shape, CellShape::Quad, &p[..4], &ctx).unwrap_or(0.0);
+    base * cos * (d / l).min(l / d)
+}
+
+/// Pyramid scaled Jacobian before flooring and folding: minimum tet scaled Jacobian over the
+/// four sub-tetrahedra times `sqrt2`. Negative for an inverted pyramid.
+pub(crate) fn pyramid_signed_sj(p: &[V]) -> f64 {
+    const SUBS: [[usize; 4]; 4] = [[0, 1, 2, 4], [0, 2, 3, 4], [0, 1, 3, 4], [1, 2, 3, 4]];
+    let mut m = f64::INFINITY;
+    for s in SUBS {
+        let q = [p[s[0]], p[s[1]], p[s[2]], p[s[3]]];
+        m = m.min(tet_eval(Metric::ScaledJacobian, &q).unwrap_or(0.0));
+    }
+    m * core::f64::consts::SQRT_2
+}
+
+/// Pyramid scaled Jacobian as Verdict reports it: floored at 0 and folded into `[0, 1]`.
+fn pyramid_scaled_jacobian(p: &[V]) -> f64 {
+    let x = pyramid_signed_sj(p).max(0.0);
+    if x > 1.0 { 2.0 - x } else { x }
+}
+
+/// Mean corner determinant of a hexahedron (Verdict's size measure for relative-size metrics).
+fn hex_mean_corner_det(p: &[V]) -> f64 {
+    let s: f64 = HEX_CORNERS
+        .iter()
+        .map(|c| {
+            let f = frame(p, c);
+            det3(f[0], f[1], f[2])
+        })
+        .sum();
+    s / 8.0
 }
 
 fn edge_extrema(shape: CellShape, p: &[V]) -> (f64, f64) {
@@ -270,11 +368,17 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         }
     };
     let n_corners = t.corners.len() as f64;
-    let rel = || relative_size_squared(vol_fn(), ctx.ref_size);
-    let shape_value = || {
-        let mut s = f64::INFINITY;
-        frames(&mut |c| s = s.min(c.shape()));
-        s
+    let is_hex = shape == CellShape::Hex;
+    // Verdict sizes a hex by its mean corner determinant, not by its volume.
+    let rel = || relative_size_squared(if is_hex { hex_mean_corner_det(p) } else { vol_fn() }, ctx.ref_size);
+    let shape_value = || match shape {
+        CellShape::Wedge => wedge_shape(p),
+        CellShape::Pyramid => pyramid_shape(p),
+        _ => {
+            let mut s = f64::INFINITY;
+            frames(&mut |c| s = s.min(c.shape()));
+            s
+        }
     };
     // Cheap raw-frame passes (no weighted matrix) for the Jacobian-type metrics.
     let raw = |f: &mut dyn FnMut(f64, f64)| {
@@ -306,6 +410,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             }
             j
         }
+        Metric::ScaledJacobian if shape == CellShape::Pyramid => pyramid_scaled_jacobian(p),
         Metric::ScaledJacobian => {
             let mut sj = corner_sj();
             if let Some(h) = &hex {
@@ -314,6 +419,22 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             }
             sj * t.sj_scale
         }
+        // Hexes: Verdict's `condition_comp / 3` per corner, so max AF == Condition.
+        Metric::AspectFrobenius | Metric::MaxAspectFrobenius | Metric::Condition if is_hex => {
+            let mut mx = 0.0f64;
+            frames(&mut |c| mx = mx.max(c.condition()));
+            mx
+        }
+        Metric::MeanAspectFrobenius if is_hex => {
+            let mut s = 0.0;
+            frames(&mut |c| s += c.condition());
+            cap(s / n_corners)
+        }
+        // Wedges: tet-style AF of the six corner tetrahedra; Condition == MaxAspectFrobenius.
+        Metric::AspectFrobenius | Metric::MaxAspectFrobenius | Metric::Condition if shape == CellShape::Wedge => {
+            wedge_aspect_frobenius(p).0
+        }
+        Metric::MeanAspectFrobenius if shape == CellShape::Wedge => wedge_aspect_frobenius(p).1,
         Metric::AspectFrobenius | Metric::MaxAspectFrobenius => {
             let mut mx = 0.0f64;
             frames(&mut |c| mx = mx.max(c.aspect_frobenius()));
@@ -335,7 +456,11 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             let s = corner_sj().max(0.0);
             if m == Metric::Shear { s } else { rel() * s }
         }
-        Metric::Distortion => distortion(shape, p),
+        Metric::Distortion => match shape {
+            CellShape::Hex => hex_distortion(p),
+            CellShape::Wedge => wedge_distortion(p, vol_fn()),
+            _ => tet_distortion(p),
+        },
         Metric::EdgeRatio => {
             let (lo, hi) = edge_extrema(shape, p);
             if lo <= TINY { DBL_MAX } else { cap(hi / lo) }
@@ -346,7 +471,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
         }
         Metric::Sphericity => faces::sphericity(p, faces),
         Metric::Starness => faces::starness(p, faces),
-        Metric::Dimension => vol_fn().max(0.0).cbrt(),
+        Metric::Dimension => hex_dimension(p),
         Metric::MaxEdgeRatio | Metric::Skew | Metric::Taper => {
             let h = hex.as_ref()?;
             let l = [norm(h.x[0]), norm(h.x[1]), norm(h.x[2])];
@@ -385,15 +510,17 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             if hi <= TINY { 0.0 } else { lo / hi }
         }
         Metric::Oddy => {
-            let mut worst = 0.0f64;
-            for cn in t.corners {
-                let f = frame(p, cn);
+            // Centre sample first (principal axes), then the 8 corners; DBL_MAX if any det <= TINY.
+            let oddy = |f: [V; 3]| {
                 let g = |i: usize, j: usize| dot(f[i], f[j]);
                 let fro2: f64 = (0..3).map(|i| (0..3).map(|j| g(i, j) * g(i, j)).sum::<f64>()).sum();
                 let tr = g(0, 0) + g(1, 1) + g(2, 2);
                 let det = det3(f[0], f[1], f[2]);
-                let o = if det.abs() <= TINY { DBL_MAX } else { (fro2 - tr * tr / 3.0) / det.abs().powf(4.0 / 3.0) };
-                worst = worst.max(o);
+                if det <= TINY { DBL_MAX } else { (fro2 - tr * tr / 3.0) / det.powf(4.0 / 3.0) }
+            };
+            let mut worst = hex.as_ref().map_or(0.0, |h| oddy(h.x));
+            for cn in t.corners {
+                worst = worst.max(oddy(frame(p, cn)));
             }
             cap(worst)
         }

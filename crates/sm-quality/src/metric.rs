@@ -8,6 +8,13 @@ use sm_mesh_api::CellShape;
 ///
 /// Not every metric is defined for every shape: see [`Metric::applies`]. In a 2-D mesh
 /// "volume" means area.
+///
+/// **Verdict status.** Metric/shape pairs that Verdict does not define are smart-mesh
+/// extensions: pyramid `Condition`, `MaxAspectFrobenius`, `MeanAspectFrobenius`, `EdgeRatio`,
+/// `RelativeSizeSquared`, `ShapeAndSize`, `MinAngle`, `MaxAngle`; wedge `RelativeSizeSquared`
+/// and `ShapeAndSize`; tet `MaxAngle`/`MinAngle`; hex and wedge `MinAngle`/`MaxAngle`;
+/// `Sphericity`, `Starness` and every polygon/polyhedron metric. Known intentional deviations
+/// from Verdict are listed in `DESIGN.md` ("Deviations from Verdict").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Metric {
@@ -16,14 +23,21 @@ pub enum Metric {
     /// Minimum corner Jacobian (unnormalised determinant of the corner edge vectors).
     Jacobian,
     /// Minimum corner Jacobian normalised by edge lengths (sine of the corner angle for a quad).
+    /// Pyramid: Verdict's minimum over the four sub-tetrahedra, floored at 0 and folded into
+    /// `[0, 1]` (`x > 1` becomes `2 - x`). Collapsed quads (`p3 == p2`) use the triangle formula.
     ScaledJacobian,
     /// Verdict aspect ratio: tri/quad/polygon perimeter form, tet `beta` form.
     AspectRatio,
     /// Frobenius aspect (triangle and tetrahedron; equals the condition number for a triangle).
+    /// For hexes and wedges it equals [`Metric::MaxAspectFrobenius`].
     AspectFrobenius,
-    /// Maximum over corners of the Frobenius aspect.
+    /// Maximum over corners of the Frobenius aspect. Hex: `||A|| ||adj A|| / (3 det A)` per corner
+    /// (equal to [`Metric::Condition`]); wedge: tet-style aspect of the six corner tetrahedra
+    /// over the ideal-wedge value, floored at 1 (equal to [`Metric::Condition`]); quad: `(|a|^2+|b|^2)/(2J)`.
+    /// Pyramid: smart-mesh extension (weighted base-corner frames).
     MaxAspectFrobenius,
-    /// Mean over corners of the Frobenius aspect (Verdict's "med").
+    /// Mean over corners of the Frobenius aspect (Verdict's "med"); same per-corner forms as
+    /// [`Metric::MaxAspectFrobenius`].
     MeanAspectFrobenius,
     /// Tetrahedron aspect `gamma` (rms edge cubed over volume).
     AspectGamma,
@@ -49,15 +63,22 @@ pub enum Metric {
     Oddy,
     /// Shortest over longest diagonal (hex).
     Diagonal,
-    /// Cube root of the volume (hex characteristic length).
+    /// Pronto characteristic length of a hex, `sqrt(0.5 V^2 / sum_i |dV/dx_i|^2)` (`sqrt(3)/3`
+    /// on the unit cube).
     Dimension,
     /// Condition number of the (weighted) corner Jacobian matrices, maximum over corners.
     Condition,
-    /// Minimum Jacobian over Gauss points over the mean Jacobian.
+    /// Minimum Jacobian over the Gauss points and the nodes, over the mean Gauss Jacobian (quad,
+    /// hex). Wedge: minimum corner determinant over twice the volume. Tri/tet: the sign of the
+    /// constant Jacobian (Verdict returns a constant 1).
     Distortion,
     /// Knupp shape metric (minimum over corners).
+    /// Wedge: Verdict's raw-edge form `3 (det 2/sqrt3)^(2/3) / sum |edge|^2`, minimum over corners
+    /// (capped at 1). Pyramid: base quad shape x cosine of the apex offset angle x
+    /// `min(d/L, L/d)` with `L = sqrt2/2` times the longest edge.
     Shape,
-    /// `min(V/Vref, Vref/V)^2`; `Vref` is the reference size of the mesh.
+    /// `min(t, 1/t)^2` with `t = V/Vref`; `Vref` is the reference size of the mesh. For hexes `V`
+    /// is the mean corner Jacobian determinant (Verdict), otherwise the cell size.
     RelativeSizeSquared,
     /// `RelativeSizeSquared * Shape`.
     ShapeAndSize,
