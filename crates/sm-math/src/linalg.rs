@@ -11,7 +11,8 @@
 //! - [`svd3`]: singular value decomposition by one-sided Jacobi (Hestenes), which never forms
 //!   `AᵀA`. Singular values are accurate to `O(EPSILON * ||A||)` absolute; values below that, or
 //!   more than about 1e300 below the largest entry, are not resolved (columns with squared norm
-//!   below `EPSILON² ||A||_F²` are flushed to zero).
+//!   below `EPSILON² ||A||_F² / 64` that still need a rotation are flushed to zero; small but
+//!   already-orthogonal columns are kept).
 //!
 //! All routines use a fixed sweep and pair order, so results are deterministic.
 
@@ -320,14 +321,26 @@ fn sym3_eigen_scaled(a: &Mat3) -> Result<SymEigen3, LinAlgError> {
     }
     let mut v = IDENTITY3;
     let fro2: f64 = m.iter().flatten().map(|x| x * x).sum();
+    let mut prev_off2 = f64::INFINITY;
     for _ in 0..64 {
         let off2 = 2.0 * (m[0][1] * m[0][1] + m[0][2] * m[0][2] + m[1][2] * m[1][2]);
         if off2 <= 1e-34 * fro2 || off2 == 0.0 {
             break;
         }
+        // Stall guard: at the rounding floor, further sweeps cannot reduce the off-diagonal.
+        if off2 >= prev_off2 && off2 <= 1e-28 * fro2 {
+            break;
+        }
+        prev_off2 = off2;
         for (p, q) in [(0usize, 1usize), (0, 2), (1, 2)] {
             let apq = m[p][q];
             if apq == 0.0 {
+                continue;
+            }
+            if apq.abs() <= f64::EPSILON * f64::EPSILON * (m[p][p].abs() + m[q][q].abs()) {
+                // Negligible against both diagonals: drop it instead of rotating.
+                m[p][q] = 0.0;
+                m[q][p] = 0.0;
                 continue;
             }
             let theta = (m[q][q] - m[p][p]) / (2.0 * apq);
@@ -339,6 +352,14 @@ fn sym3_eigen_scaled(a: &Mat3) -> Result<SymEigen3, LinAlgError> {
             // `signum` of +0.0 is 1.0, which is what we want when theta == 0.
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
+            if c == 1.0 && t.abs() <= f64::EPSILON {
+                // No-op rotation: it cannot change the eigenvectors, only zero `apq`.
+                m[p][p] -= t * apq;
+                m[q][q] += t * apq;
+                m[p][q] = 0.0;
+                m[q][p] = 0.0;
+                continue;
+            }
             let (app, aqq) = (m[p][p], m[q][q]);
             m[p][p] = app - t * apq;
             m[q][q] = aqq + t * apq;
@@ -424,7 +445,11 @@ fn unit(v: Vector3) -> Vector3 {
 ///
 /// # Errors
 /// [`LinAlgError::NonFinite`] for NaN/inf input, [`LinAlgError::NoConvergence`] if 60 sweeps
-/// do not suffice (not expected; identical-row and other rank-deficient inputs converge).
+/// do not suffice. The cap is unreachable for finite input: column pairs orthogonal to within
+/// `4 * EPSILON` (relative) are skipped, and a rotation that would leave the columns unchanged
+/// (`c == 1` and `|t| <= EPSILON`) counts as not performed, so rounding-floor sign flips cannot
+/// cycle. Columns with squared norm below `EPSILON² ||A||_F²` that still need a rotation are
+/// flushed to zero; small but orthogonal columns (e.g. `diag(1, 1, 1e-17)`) are kept exactly.
 pub fn svd3(a: &Mat3) -> Result<Svd3, LinAlgError> {
     if a.iter().flatten().any(|v| !v.is_finite()) {
         return Err(LinAlgError::NonFinite);
@@ -437,6 +462,9 @@ pub fn svd3(a: &Mat3) -> Result<Svd3, LinAlgError> {
     Ok(r)
 }
 
+/// Orthogonality skip tolerance (relative): a few ulps, above the error of a 3-term dot product.
+const SKIP_TOL: f64 = 4.0 * f64::EPSILON;
+
 fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
     // Columns of `w` start as the columns of A and are rotated until mutually orthogonal.
     let mut w = *a;
@@ -446,7 +474,7 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
     // flushed. Without it, parallel rounding-noise columns (e.g. identical rows) never satisfy
     // the orthogonality test.
     let fro2: f64 = w.iter().flatten().map(|v| v * v).sum();
-    let tiny = f64::EPSILON * f64::EPSILON * fro2;
+    let tiny = f64::EPSILON * f64::EPSILON * fro2 / 64.0;
     for _ in 0..60 {
         let mut rotated = false;
         for (p, q) in [(0usize, 1usize), (0, 2), (1, 2)] {
@@ -456,6 +484,11 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
                 beta += row[q] * row[q];
                 gamma += row[p] * row[q];
             }
+            // Already orthogonal to within rounding of the 3-term dot product: keep both
+            // columns (this must come before the flush so genuine small values survive).
+            if gamma == 0.0 || gamma.abs() <= SKIP_TOL * (alpha * beta).sqrt() {
+                continue;
+            }
             if alpha.min(beta) <= tiny {
                 let k = if alpha <= beta { p } else { q };
                 for row in w.iter_mut() {
@@ -463,10 +496,6 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
                 }
                 continue;
             }
-            if gamma == 0.0 || gamma.abs() <= f64::EPSILON * (alpha * beta).sqrt() {
-                continue;
-            }
-            rotated = true;
             let zeta = (beta - alpha) / (2.0 * gamma);
             let t = if zeta.abs() > 1e150 {
                 0.5 / zeta
@@ -475,6 +504,14 @@ fn svd3_scaled(a: &Mat3) -> Result<Svd3, LinAlgError> {
             };
             let c = 1.0 / (1.0 + t * t).sqrt();
             let s = c * t;
+            // A rotation that cannot change the result would only flip the sign of a gamma
+            // sitting at the rounding floor, forever. Treat it as not performed.
+            // The column ratio matters: the smaller column moves by `|t|` times the larger one.
+            if c == 1.0 && t.abs() * ((alpha / beta).sqrt() + (beta / alpha).sqrt()) <= f64::EPSILON
+            {
+                continue;
+            }
+            rotated = true;
             for m in [&mut w, &mut v] {
                 for row in m.iter_mut() {
                     let (xp, xq) = (row[p], row[q]);

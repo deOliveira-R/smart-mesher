@@ -455,3 +455,136 @@ fn near_degenerate_matches_expansion_oracle() {
         assert_eq!(incircle(q[0], q[1], q[2], q[3]), det_exact(&ml).sign());
     }
 }
+
+/// Range edge: lattice data scaled to the extremes of the documented `[2^-100, 2^100]`
+/// exactness range, through the checked `try_*` entry points, with one-unit nudges.
+#[test]
+fn range_edge_scaled_lattices() {
+    use sm_math::{try_incircle, try_insphere, try_orient2d, try_orient3d};
+    let ks: Vec<i32> = (-100..=-96).chain(92..=96).collect();
+    let mut rng = Rng(0xED6E);
+    let circ = [
+        (3, 4),
+        (4, 3),
+        (5, 0),
+        (0, 5),
+        (-3, 4),
+        (-4, -3),
+        (3, -4),
+        (0, -5),
+    ];
+    let sph = [
+        (3, 0, 0),
+        (0, 3, 0),
+        (0, 0, 3),
+        (-3, 0, 0),
+        (0, -3, 0),
+        (0, 0, -3),
+        (1, 2, 2),
+        (2, 1, -2),
+        (-2, 2, 1),
+        (2, -2, -1),
+    ];
+    let mut zeros = [0usize; 4];
+    for n in 0..4000 {
+        let k = ks[n % ks.len()];
+        let nudge = if n % 2 == 1 {
+            if n % 4 == 1 { 1 } else { -1 }
+        } else {
+            0
+        };
+        // Coordinates stay within +-15 so that 15 * 2^96 < 2^100 and a nudge to 16 = 2^4 is
+        // still in range; at k = -100 every nonzero coordinate is >= 2^-100.
+
+        // orient2d: collinear c = a + t d.
+        let a = [rng.int(4), rng.int(4)];
+        let d = [rng.int(2), rng.int(2)];
+        let t = rng.int(3);
+        let b = [a[0] + d[0], a[1] + d[1]];
+        let mut c = [a[0] + t * d[0], a[1] + t * d[1]];
+        c[(n / 2) % 2] += nudge;
+        let want = orient2d_i(a, b, c);
+        zeros[0] += usize::from(want == Sign::Zero);
+        assert_eq!(
+            try_orient2d(f2(a, k), f2(b, k), f2(c, k)),
+            Ok(want),
+            "k={k}"
+        );
+
+        // orient3d: coplanar d = a + s u + t v.
+        let a3 = [rng.int(3), rng.int(3), rng.int(3)];
+        let u = [rng.int(1), rng.int(1), rng.int(1)];
+        let v = [rng.int(1), rng.int(1), rng.int(1)];
+        let (s, t) = (rng.int(2), rng.int(2));
+        let add = |p: [i64; 3], q: [i64; 3]| [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
+        let (b3, c3) = (add(a3, u), add(a3, v));
+        let mut d3 = [
+            a3[0] + s * u[0] + t * v[0],
+            a3[1] + s * u[1] + t * v[1],
+            a3[2] + s * u[2] + t * v[2],
+        ];
+        d3[(n / 2) % 3] += nudge;
+        let want = orient3d_i(a3, b3, c3, d3);
+        zeros[1] += usize::from(want == Sign::Zero);
+        assert_eq!(
+            try_orient3d(f3(a3, k), f3(b3, k), f3(c3, k), f3(d3, k)),
+            Ok(want),
+            "k={k}"
+        );
+
+        // incircle: four lattice points on a radius-5 circle.
+        let ctr = [rng.int(4), rng.int(4)];
+        let mut q: Vec<[i64; 2]> = (0..4)
+            .map(|_| {
+                let (x, y) = circ[rng.below(circ.len())];
+                [ctr[0] + x, ctr[1] + y]
+            })
+            .collect();
+        q[3][n % 2] += nudge;
+        let want = incircle_i(q[0], q[1], q[2], q[3]);
+        zeros[2] += usize::from(want == Sign::Zero);
+        assert_eq!(
+            try_incircle(f2(q[0], k), f2(q[1], k), f2(q[2], k), f2(q[3], k)),
+            Ok(want),
+            "k={k}"
+        );
+
+        // insphere: five lattice points on a radius-3 sphere.
+        let c0 = [rng.int(4), rng.int(4), rng.int(4)];
+        let mut sp: Vec<[i64; 3]> = (0..5)
+            .map(|_| {
+                let o = sph[rng.below(sph.len())];
+                [c0[0] + o.0, c0[1] + o.1, c0[2] + o.2]
+            })
+            .collect();
+        sp[4][n % 3] += nudge;
+        let want = insphere_i(sp[0], sp[1], sp[2], sp[3], sp[4]);
+        zeros[3] += usize::from(want == Sign::Zero);
+        assert_eq!(
+            try_insphere(
+                f3(sp[0], k),
+                f3(sp[1], k),
+                f3(sp[2], k),
+                f3(sp[3], k),
+                f3(sp[4], k)
+            ),
+            Ok(want),
+            "k={k}"
+        );
+    }
+    assert!(
+        zeros.iter().all(|&z| z > 100),
+        "need exact degeneracies: {zeros:?}"
+    );
+}
+
+#[test]
+fn range_edge_just_outside_is_rejected() {
+    use sm_math::{PredicateError, try_orient2d};
+    for x in [2f64.powi(101), 2f64.powi(-101)] {
+        assert_eq!(
+            try_orient2d([0.0, 0.0], [x, 0.0], [0.0, 1.0]),
+            Err(PredicateError::OutOfRange)
+        );
+    }
+}

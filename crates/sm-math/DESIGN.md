@@ -56,7 +56,10 @@ Stages:
    scale and multiply are exact barring overflow/underflow, so the sign of the top component is the
    true sign. Stage B (exact determinant of the rounded differences, with bound B) sits between the
    filter and the full exact evaluation; Shewchuk's stages C/D are not implemented. So: A + B + full
-   exact, no C/D.
+   exact, no C/D. Consequence: near-degenerate inputs stage B cannot resolve pay the full
+   exact evaluation, and all exact fallbacks except `orient2d` (and the SoS tie-break) allocate on
+   the heap. This is a known performance gap, not a correctness one; TODO: benchmark against
+   `predicates.c` on near-degenerate workloads (see `W1_REPORT.md`).
    Measured cost (release, x86-64): 4 ns / 11 ns / 9 ns / 36 ns per filtered
    `orient2d` / `orient3d` / `incircle` / `insphere`; exactly degenerate inputs 0.2 / 0.4 / 0.8 / 3 us.
 

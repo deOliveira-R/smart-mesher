@@ -162,3 +162,40 @@ Skipped: none. Not done beyond the above: stages C/D, and enlarging the inline e
 
 Skipped: SHOULD FIX item 4 (Shewchuk stages C/D and keeping exact fallbacks off the heap) is a
 performance-only gap with no correctness impact; not attempted here.
+
+## polish0 (review round 3)
+
+1. BLOCKING: `svd3` still returned `NoConvergence` for ~3 in 1M finite inputs (generic full-rank
+   and identical-column). Cause: one pair settled at `|gamma|/sqrt(alpha*beta)` of 1.0-1.3
+   `EPSILON`, just above the skip threshold and inside the rounding error of the 3-term dot
+   product; the resulting rotation had `c == 1`, `|t| ~ 1e-16`, only flipped the sign of `gamma`,
+   and kept `rotated` true to the 60-sweep cap. Fix (class, not instance): the skip tolerance is now
+   `4*EPSILON` (relative), and a rotation that cannot change either column (`c == 1` and
+   `|t| * (sqrt(alpha/beta) + sqrt(beta/alpha)) <= EPSILON`; the column-ratio factor matters because the
+   smaller column moves by `t` times the larger one) counts as not performed. Tests in
+   `tests/polish0.rs`: the three reviewer matrices, a 50k default fuzz (full-rank, rank-1, rank-2,
+   identical columns, identical rows; scales 2^[-400,400]) and a 1M `#[ignore]` fuzz
+   (`cargo test --release -p sm-math --test polish0 -- --ignored`), all asserting no errors,
+   reconstruction and orthogonality.
+2. `svd3`: the flush ran before the orthogonality test and zeroed genuine small values of
+   already-orthogonal pairs (`diag(1,1,1e-17)` gave `s3 = 0`). Order is now: orthogonal-enough
+   -> keep both and continue; otherwise flush only if the pair needs a rotation and the smaller
+   column has squared norm `<= EPSILON^2 ||A||_F^2 / 64`. Tests: `diag(1,1,1e-17)`,
+   `diag(1,1e-9,1e-18)` return the diagonal to relative 1e-15 with finite `condition()`;
+   `[[1,0,.5],[0,1,.5],[0,0,1e-16]]` has `s3 > 0`. The identical-row fuzz is rerun.
+3. `tests/predicates.rs::range_edge_scaled_lattices`: collinear, coplanar, cocircular and
+   cospherical lattice data at `2^k`, `k` in {-100..-96, 92..96}, with one-unit nudges, through
+   `try_*` against the `i128` oracle (plus a just-outside rejection test).
+4. `sym3_eigen`: a rotation with `c == 1 && |t| <= EPSILON` only zeroes `a_pq` (no vector update);
+   `a_pq` negligible against both diagonals is dropped; a stall guard stops sweeping when the
+   off-diagonal norm stops decreasing at the rounding floor. Fuzzed like `svd3` (50k default, 1M ignored,
+   including near-repeated spectra).
+5. Performance gap (documentation only): Shewchuk stages C/D are still missing, and the exact
+   fallbacks (all but `orient2d`) plus the SoS tie-break allocate on the heap. See `DESIGN.md`
+   and the TODO below.
+
+TODO: benchmark the predicates against Shewchuk's `predicates.c` on near-degenerate workloads
+(nearly-cocircular/coplanar point sets, not only exactly degenerate ones) to decide whether stages
+C/D and an allocation-free exact path are worth implementing.
+
+Skipped: none.
