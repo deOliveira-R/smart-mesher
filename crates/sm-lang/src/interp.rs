@@ -13,12 +13,17 @@ use crate::diag::{Diagnostic, suggest};
 use crate::entity::{EntitySet, all_of, live_range};
 use crate::eval::{self, BUILTIN_NAMES, EvalErr};
 use crate::help::{self, Callable};
-use crate::host::{Host, TimelineCommand};
+use crate::host::{Host, SessionCommand, TimelineCommand};
 use crate::kinds;
 use crate::parser::{ParseLimits, parse_with};
 use crate::schema::{self, Issue, PathSeg, View};
 use crate::span::{SourceMap, Span};
 use crate::value::{Outcome, Sel, Val, fmt_num};
+
+/// The `session.*` verbs.
+const SESSION_VERBS: [&str; 4] = ["export", "save", "hash", "status"];
+/// The `session.*` verbs that have a value and may appear in expressions.
+const SESSION_VALUE_VERBS: [&str; 2] = ["hash", "status"];
 
 /// Interpreter limits.
 #[derive(Clone, Debug)]
@@ -89,6 +94,17 @@ pub enum Event {
         command: TimelineCommand,
         /// False in plan mode (nothing was done).
         applied: bool,
+    },
+    /// A session statement or query (`session.export(...)` and friends), handled by the host outside the op log.
+    Session {
+        /// Statement span.
+        span: Span,
+        /// The command.
+        command: SessionCommand,
+        /// False in plan mode (nothing was done).
+        applied: bool,
+        /// What the host returned; `None` in plan mode.
+        result: Option<Json>,
     },
     /// Output of `print`.
     Print {
@@ -204,6 +220,8 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     iter_events: u64,
     stmt_count: usize,
     plan_n: usize,
+    /// Op name of each plan-mode statement ordinal, for static role checks.
+    plan_ops: BTreeMap<usize, String>,
     callables: Option<BTreeMap<String, Arc<Callable>>>,
     saw_placeholder: bool,
     /// Spans that already got a `batch-snapshot` warning (an unrolled loop warns once per site).
@@ -233,6 +251,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             iter_events: 0,
             stmt_count: 0,
             plan_n: 0,
+            plan_ops: BTreeMap::new(),
             callables: None,
             saw_placeholder: false,
             snap_warned: BTreeSet::new(),
@@ -534,7 +553,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 return self.fail(d);
             }
         }
-        let namespaces: BTreeSet<String> = self.callable_map().keys().filter_map(|k| k.split_once('.').map(|(ns, _)| ns.to_owned())).chain(["timeline".to_owned()]).collect();
+        let namespaces: BTreeSet<String> = self.callable_map().keys().filter_map(|k| k.split_once('.').map(|(ns, _)| ns.to_owned())).chain(["timeline".to_owned(), "session".to_owned()]).collect();
         if namespaces.contains(&name.name) {
             let d = Diagnostic::warning("alias-confusing", name.span, format!("`{}` is also the name of a registry namespace (`{}.*`)", name.name, name.name))
                 .label("easily mistaken for the namespace")
@@ -802,6 +821,12 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     .help("write it as its own statement, without `let x =`");
                 return self.fail(d);
             }
+            if c.path.segs.len() == 2 && c.path.segs[0].name == "session" && !SESSION_VALUE_VERBS.contains(&c.path.segs[1].name.as_str()) && SESSION_VERBS.contains(&c.path.segs[1].name.as_str()) {
+                let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{}` is a statement and has no value", c.path.dotted()))
+                    .label("a session statement cannot be bound by `let` or `set`")
+                    .help("write it as its own statement, without `let x =`");
+                return self.fail(d);
+            }
             return self.exec_call(c, e.span);
         }
         self.eval(e)
@@ -815,6 +840,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let written = call.path.dotted();
         if call.path.segs.len() == 2 && call.path.segs[0].name == "timeline" {
             return self.exec_timeline(call, span);
+        }
+        if call.path.segs.len() == 2 && call.path.segs[0].name == "session" {
+            return self.exec_session(call, span);
         }
         let name = if call.path.segs.len() == 1 { self.aliases.get(&written).cloned().unwrap_or(written.clone()) } else { written.clone() };
         let Some(info) = self.lookup_callable(&name) else {
@@ -890,6 +918,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         if !self.host.executes() {
             self.events.push(Event::Op { span, record: rec, delta: None });
             self.plan_n += 1;
+            self.plan_ops.insert(self.plan_n, name.clone());
             return Ok(Val::Outcome(Outcome::Plan { n: self.plan_n }));
         }
         match self.host.apply(&rec) {
@@ -944,36 +973,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             "checkout" => &["ref", "node", "empty"],
             _ => &[],
         };
-        let mut args: Vec<(String, Val, Span)> = Vec::new();
-        let mut pos_seen = false;
-        for a in &call.args {
-            match a {
-                Arg::Named { name, value } => {
-                    if !allowed.contains(&name.name.as_str()) {
-                        let mut d = Diagnostic::error("unknown-argument", name.span, format!("`timeline.{verb}` has no parameter `{}`", name.name)).label("unknown");
-                        d = if allowed.is_empty() { d.help(format!("`timeline.{verb}` takes no arguments")) } else { d.help(format!("parameters: {}", allowed.join(", "))) };
-                        return self.fail(d);
-                    }
-                    if args.iter().any(|(k, ..)| *k == name.name) {
-                        return self.fail(Diagnostic::error("duplicate-argument", name.span, format!("argument `{}` is given twice", name.name)).label("given again here"));
-                    }
-                    let v = self.eval(value)?;
-                    args.push((name.name.clone(), v, value.span));
-                }
-                Arg::Pos(e) => {
-                    if allowed.is_empty() || pos_seen || args.iter().any(|(k, ..)| k == allowed[0]) {
-                        let d = Diagnostic::error("positional-ambiguous", e.span, "cannot tell which parameter this value is for")
-                            .label("write `name: value`")
-                            .help(format!("`timeline.{verb}` takes {}", if allowed.is_empty() { "no arguments".to_owned() } else { format!("one string: {}", allowed[0]) }));
-                        return self.fail(d);
-                    }
-                    pos_seen = true;
-                    let v = self.eval(e)?;
-                    args.push((allowed[0].to_owned(), v, e.span));
-                }
-                Arg::Spread(e) => return self.fail(Diagnostic::error("bad-arguments", e.span, "timeline commands do not take `...`").label("spread")),
-            }
-        }
+        let args = self.command_args("timeline", &verb, call, allowed)?;
         let want_str = |this: &mut Self, key: &str, args: &[(String, Val, Span)]| -> IR<Option<String>> {
             match args.iter().find(|(k, ..)| k == key) {
                 None => Ok(None),
@@ -1033,6 +1033,142 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             Err(e) => self.fail(Diagnostic::error("timeline-failed", span, format!("`timeline.{verb}` failed [{}]: {}", e.code, e.message)).label("this command had no effect")),
         }
+    }
+
+    /// `session.export(path, format?, mesh?, provenance?)`, `session.save()` (statements); `session.hash()`,
+    /// `session.status()` (expressions). Dispatched to [`Host::session`]; never recorded as ops.
+    fn exec_session(&mut self, call: &Call, span: Span) -> IR<Val> {
+        let verb = call.path.segs[1].name.clone();
+        if self.batch.is_some() {
+            let d = Diagnostic::error("session-in-batch", span, "session commands cannot be part of a batch")
+                .label("a batch is one timeline node")
+                .help("run the command before or after the batch");
+            return self.fail(d);
+        }
+        if !SESSION_VERBS.contains(&verb.as_str()) {
+            let mut d = Diagnostic::error("unknown-name", call.path.segs[1].span, format!("no session command `session.{verb}`")).label("not a session command");
+            d = match suggest(&verb, SESSION_VERBS) {
+                Some(s) => d.help(format!("did you mean `session.{s}`?")),
+                None => d.help("session commands: export(path, format, mesh, provenance), save(), hash(), status()"),
+            };
+            return self.fail(d);
+        }
+        let allowed: &[&str] = if verb == "export" { &["path", "format", "mesh", "provenance"] } else { &[] };
+        let args = self.command_args("session", &verb, call, allowed)?;
+        let get = |k: &str| args.iter().find(|(n, ..)| n == k);
+        let cmd = match verb.as_str() {
+            "export" => {
+                let Some((_, pv, psp)) = get("path") else {
+                    return self.fail(Diagnostic::error("missing-argument", call.args_span, "`session.export` needs the destination path").label("write `session.export(\"out.vtu\")`"));
+                };
+                let path = match pv {
+                    Val::Str(s) if !s.is_empty() => s.clone(),
+                    other => {
+                        return self.fail(Diagnostic::error("type-mismatch", *psp, format!("`path` needs a non-empty string, found {}", other.a_type())).label("not a path"));
+                    }
+                };
+                let format = match get("format") {
+                    None => None,
+                    Some((_, Val::Str(f), _)) if f == "smsh" || f == "vtu" => Some(f.clone()),
+                    Some((_, Val::Str(f), sp)) => {
+                        let mut d = Diagnostic::error("invalid-argument", *sp, format!("unknown export format {f:?}")).label("not a format").help("formats: \"smsh\", \"vtu\"");
+                        if let Some(sg) = suggest(f, ["smsh", "vtu"]) {
+                            d = d.help(format!("did you mean \"{sg}\"?"));
+                        }
+                        return self.fail(d);
+                    }
+                    Some((_, other, sp)) => return self.fail(Diagnostic::error("type-mismatch", *sp, format!("`format` needs a string, found {}", other.a_type())).label("not a format")),
+                };
+                let mesh = match get("mesh") {
+                    None => None,
+                    Some((_, Val::Ents(e), sp)) => match e.as_slice() {
+                        [id] => Some(*id),
+                        other => return self.fail(Diagnostic::error("expected-one-entity", *sp, format!("`mesh` needs exactly one entity, found {}", other.len())).label("pick one with `[0]`, or name a single id")),
+                    },
+                    Some((_, Val::Str(t), sp)) => match kinds::parse_user_entity_text(t) {
+                        Ok(id) => Some(id),
+                        Err(kinds::UserIdError::AmbiguousKind(m) | kinds::UserIdError::Invalid(m)) => return self.fail(Diagnostic::error("invalid-argument", *sp, m).label("not a mesh id")),
+                    },
+                    // Plan mode: the id is unknown; the host would pick (recorded as `None`, see LANGUAGE.md 4.7).
+                    Some((_, Val::Placeholder { .. }, _)) if !self.host.executes() => {
+                        self.saw_placeholder = true;
+                        None
+                    }
+                    Some((_, other, sp)) => return self.fail(Diagnostic::error("type-mismatch", *sp, format!("`mesh` needs a mesh id, found {}", other.a_type())).label("not an entity")),
+                };
+                if let (Some(id), Some((_, _, sp))) = (mesh, get("mesh"))
+                    && id.kind() != EntityKind::Mesh
+                {
+                    return self.fail(Diagnostic::error("wrong-kind", *sp, format!("`mesh` needs a Mesh, found {}", crate::value::fmt_id(id))).label("not a mesh").help("mesh ids look like `Mesh#1`"));
+                }
+                let provenance = match get("provenance") {
+                    None => false,
+                    Some((_, Val::Bool(b), _)) => *b,
+                    Some((_, other, sp)) => return self.fail(Diagnostic::error("type-mismatch", *sp, format!("`provenance` needs a bool, found {}", other.a_type())).label("not a bool")),
+                };
+                SessionCommand::Export { path, format, mesh, provenance }
+            }
+            "save" => SessionCommand::Save,
+            "hash" => SessionCommand::Hash,
+            _ => SessionCommand::Status,
+        };
+        let has_value = SESSION_VALUE_VERBS.contains(&verb.as_str());
+        if !self.host.executes() {
+            self.warn(Diagnostic::warning("plan-session", span, format!("`session.{verb}` is not simulated by a plan")).label("nothing is written or read"));
+            self.events.push(Event::Session { span, command: cmd, applied: false, result: None });
+            return Ok(if has_value { Val::Placeholder { n: self.plan_n, role: verb } } else { Val::obj(BTreeMap::new()) });
+        }
+        match self.host.session(&cmd) {
+            Ok(res) => {
+                let val = if has_value {
+                    match json_to_val(&res, None, self.opts.max_value_len) {
+                        Ok(v) => v,
+                        Err(m) => return self.fail(Diagnostic::error("null-value", span, format!("`session.{verb}` returned a value the language cannot hold: {m}")).label("this command")),
+                    }
+                } else {
+                    Val::obj(BTreeMap::new())
+                };
+                self.events.push(Event::Session { span, command: cmd, applied: true, result: Some(res) });
+                Ok(val)
+            }
+            Err(e) => self.fail(Diagnostic::error("session-failed", span, format!("`session.{verb}` failed [{}]: {}", e.code, e.message)).label("this command had no effect")),
+        }
+    }
+
+    /// Evaluate the arguments of a namespace command (`timeline.*`, `session.*`): named ones must be in `allowed`, one
+    /// positional value is taken as `allowed[0]`. Returns `(name, value, span)` in written order.
+    fn command_args(&mut self, ns: &str, verb: &str, call: &Call, allowed: &[&str]) -> IR<Vec<(String, Val, Span)>> {
+        let mut args: Vec<(String, Val, Span)> = Vec::new();
+        let mut pos_seen = false;
+        for a in &call.args {
+            match a {
+                Arg::Named { name, value } => {
+                    if !allowed.contains(&name.name.as_str()) {
+                        let mut d = Diagnostic::error("unknown-argument", name.span, format!("`{ns}.{verb}` has no parameter `{}`", name.name)).label("unknown");
+                        d = if allowed.is_empty() { d.help(format!("`{ns}.{verb}` takes no arguments")) } else { d.help(format!("parameters: {}", allowed.join(", "))) };
+                        return self.fail(d);
+                    }
+                    if args.iter().any(|(k, ..)| *k == name.name) {
+                        return self.fail(Diagnostic::error("duplicate-argument", name.span, format!("argument `{}` is given twice", name.name)).label("given again here"));
+                    }
+                    let v = self.eval(value)?;
+                    args.push((name.name.clone(), v, value.span));
+                }
+                Arg::Pos(e) => {
+                    if allowed.is_empty() || pos_seen || args.iter().any(|(k, ..)| k == allowed[0]) {
+                        let d = Diagnostic::error("positional-ambiguous", e.span, "cannot tell which parameter this value is for")
+                            .label("write `name: value`")
+                            .help(format!("`{ns}.{verb}` takes {}", if allowed.is_empty() { "no arguments".to_owned() } else { format!("one string: {}", allowed[0]) }));
+                        return self.fail(d);
+                    }
+                    pos_seen = true;
+                    let v = self.eval(e)?;
+                    args.push((allowed[0].to_owned(), v, e.span));
+                }
+                Arg::Spread(e) => return self.fail(Diagnostic::error("bad-arguments", e.span, format!("{ns} commands do not take `...`")).label("spread")),
+            }
+        }
+        Ok(args)
     }
 
     /// `timeline.head()`: the object `{branch, node}` (a field is absent when it does not exist: detached head, empty state).
@@ -1281,6 +1417,19 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let nn = view.map(View::non_null);
         let is_id = nn.is_some_and(View::is_entity_id);
         let id_items = nn.and_then(View::id_array_items);
+        // `x-entity-kind`: names this build does not know are ignored (a newer schema must not break an older language).
+        let want_kinds: Vec<EntityKind> = if is_id || id_items.is_some() {
+            view.and_then(View::entity_kind_names).map(|ns| ns.iter().filter_map(|n| n.parse::<EntityKind>().ok()).collect()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let kind_ok = |id: EntityId, path: &[PathSeg]| -> Result<(), Issue> {
+            if want_kinds.is_empty() || want_kinds.contains(&id.kind()) {
+                return Ok(());
+            }
+            let wanted = want_kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(" or ");
+            Err(Issue { path: path.to_vec(), code: "wrong-kind", message: format!("expected {wanted}, found {} ({})", crate::value::fmt_id(id), id.kind()) })
+        };
 
         // A reference or placeholder as a single id string.
         let ref_str = |this: &mut Self, v: &Val, array_elem: bool, path: &[PathSeg]| -> Option<Result<Json, Issue>> {
@@ -1299,6 +1448,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     let base = if base.is_empty() { "<result>" } else { base.as_str() };
                     let s = match sel {
                         Sel::All if array_elem => format!("${index}.{role}[*]"),
+                        Sel::All if this.batch.as_ref().and_then(|b| b.records.get(*index)).map(|r| r.name.clone()).and_then(|op| this.role_cardinality(&op, role)) == Some(sm_op_api::Cardinality::One) => {
+                            // A role declared `One` holds exactly one id, so the bare form is that id: `[0]`, by construction
+                            // the same bytes as writing `[0]`.
+                            format!("${index}.{role}[0]")
+                        }
                         Sel::All => {
                             // A batch cannot know how many ids a role holds, and the same statement outside a batch
                             // fails when it holds several; so a bare role is never silently the first id.
@@ -1335,9 +1489,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 }
             };
             return match v {
-                Val::Ents(s) => one_id(s, path),
+                Val::Ents(s) => {
+                    for id in s.iter() {
+                        kind_ok(*id, path)?;
+                    }
+                    one_id(s, path)
+                }
                 Val::Str(s) => match kinds::parse_user_entity_text(s) {
-                    Ok(id) => self.string_id(id, path),
+                    Ok(id) => {
+                        kind_ok(id, path)?;
+                        self.string_id(id, path)
+                    }
                     Err(kinds::UserIdError::AmbiguousKind(m)) => Err(issue(path, "ambiguous-kind", m)),
                     Err(kinds::UserIdError::Invalid(_)) if nn.is_some_and(|n| !n.alternatives().is_empty()) => Ok(Json::String(self.escape(s))),
                     Err(kinds::UserIdError::Invalid(m)) => Err(issue(path, "pattern-mismatch", m)),
@@ -1352,9 +1514,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let mut out = Vec::new();
             let push_elem = |this: &mut Self, el: &Val, path: &mut Vec<PathSeg>, out: &mut Vec<Json>| -> Result<(), Issue> {
                 match el {
-                    Val::Ents(s) => out.extend(s.iter().map(|i| Json::String(i.to_string()))),
+                    Val::Ents(s) => {
+                        for id in s.iter() {
+                            kind_ok(*id, path)?;
+                        }
+                        out.extend(s.iter().map(|i| Json::String(i.to_string())));
+                    }
                     Val::Str(s) => match kinds::parse_user_entity_text(s) {
-                        Ok(id) => out.push(this.string_id(id, path)?),
+                        Ok(id) => {
+                            kind_ok(id, path)?;
+                            out.push(this.string_id(id, path)?)
+                        }
                         Err(kinds::UserIdError::AmbiguousKind(m)) => return Err(issue(path, "ambiguous-kind", m)),
                         Err(kinds::UserIdError::Invalid(m)) => return Err(issue(path, "pattern-mismatch", m)),
                     },
@@ -1633,6 +1803,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 .help("write it as its own statement");
             return self.fail(d);
         }
+        if c.path.segs.len() == 2 && c.path.segs[0].name == "session" {
+            if SESSION_VALUE_VERBS.contains(&c.path.segs[1].name.as_str()) || !SESSION_VERBS.contains(&c.path.segs[1].name.as_str()) {
+                return self.exec_session(c, span);
+            }
+            let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is a statement, not a function"))
+                .label("this session command cannot be used inside expressions")
+                .help("write it as its own statement (`session.hash()` and `session.status()` do have values)");
+            return self.fail(d);
+        }
         if self.is_registry_call(c) {
             let full = if c.path.segs.len() == 1 { self.aliases.get(&name).cloned().unwrap_or(name.clone()) } else { name.clone() };
             // A query is read-only and deterministic for a given state, so it may appear inside an expression.
@@ -1710,12 +1889,44 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             },
             Val::Outcome(Outcome::Batch { batch, index }) => match name {
                 "created" | "removed" => self.eval_fail(("not-concrete", format!("`{name}` is only known after the batch is applied")), span),
-                _ => Ok(Val::Ref { batch, index, role: name.to_owned(), sel: Sel::All, base: String::new() }),
+                _ => {
+                    let op = self.batch.as_ref().filter(|b| b.id == batch).and_then(|b| b.records.get(index)).map(|r| r.name.clone());
+                    if let Some(op) = op
+                        && let Some(r) = self.role_check(&op, name, f.span, false)
+                    {
+                        return r;
+                    }
+                    Ok(Val::Ref { batch, index, role: name.to_owned(), sel: Sel::All, base: String::new() })
+                }
             },
-            Val::Outcome(Outcome::Plan { n }) => Ok(Val::Placeholder { n, role: name.to_owned() }),
+            Val::Outcome(Outcome::Plan { n }) => {
+                if let Some(op) = self.plan_ops.get(&n).cloned()
+                    && let Some(r) = self.role_check(&op, name, f.span, true)
+                {
+                    return r;
+                }
+                Ok(Val::Placeholder { n, role: name.to_owned() })
+            }
             Val::Placeholder { n, role } => Ok(Val::Placeholder { n, role: format!("{role}.{name}") }),
             other => self.fail(Diagnostic::error("type-mismatch", f.span, format!("{} has no fields", other.a_type())).label("field access")),
         }
+    }
+
+    /// Static role check from the op's declared `OUTPUTS`: `Some(Err)` (a diagnostic with did-you-mean) when the op
+    /// declares roles and `name` is not one of them. Ops that declare none are unchecked. `created`/`removed` are
+    /// accepted when `allow_delta` (plan mode, where the real result has them).
+    fn role_check(&mut self, op: &str, name: &str, span: Span, allow_delta: bool) -> Option<IR<Val>> {
+        let info = self.lookup_callable(op)?;
+        if info.outputs.is_empty() || info.outputs.iter().any(|r| r.name == name) || (allow_delta && (name == "created" || name == "removed")) {
+            return None;
+        }
+        let names: Vec<&str> = info.outputs.iter().map(|r| r.name).collect();
+        Some(self.no_output(name, span, names.into_iter()))
+    }
+
+    /// Declared cardinality of `role` of op `op`, if the op declares it.
+    fn role_cardinality(&mut self, op: &str, role: &str) -> Option<sm_op_api::Cardinality> {
+        self.lookup_callable(op)?.outputs.iter().find(|r| r.name == role).map(|r| r.cardinality)
     }
 
     fn no_output<'a>(&mut self, name: &str, span: Span, roles: impl Iterator<Item = &'a str>) -> IR<Val> {

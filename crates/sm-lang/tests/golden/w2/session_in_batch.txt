@@ -1,0 +1,6 @@
+error[session-in-batch]: session commands cannot be part of a batch
+ --> session_in_batch.smesh:2:3
+  |
+2 |   session.save()
+  |   ^^^^^^^^^^^^^^ a batch is one timeline node
+  = help: run the command before or after the batch

@@ -1,0 +1,2 @@
+model.create_brick(x: 1, y: 1, z: 1)
+session.export("a.vtu", mesh: Volume#1)

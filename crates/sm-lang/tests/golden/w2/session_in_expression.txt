@@ -1,0 +1,6 @@
+error[op-in-expression]: `session.export` is a statement, not a function
+ --> session_in_expression.smesh:1:7
+  |
+1 | print session.export("a.vtu")
+  |       ^^^^^^^^^^^^^^ this session command cannot be used inside expressions
+  = help: write it as its own statement (`session.hash()` and `session.status()` do have values)

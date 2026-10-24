@@ -1,0 +1,5 @@
+error[session-failed]: `session.save` failed [session-unsupported]: this host has no session: `session.save` is unavailable
+ --> session_unsupported.smesh:1:1
+  |
+1 | session.save()
+  | ^^^^^^^^^^^^^^ this command had no effect

@@ -1,0 +1,5 @@
+error[missing-argument]: `session.export` needs the destination path
+ --> export_missing_path.smesh:1:15
+  |
+1 | session.export(format: "vtu")
+  |               ^^^^^^^^^^^^^^^ write `session.export("out.vtu")`

@@ -1,0 +1,6 @@
+error[invalid-argument]: unknown export format "vut"
+ --> export_bad_format.smesh:1:33
+  |
+1 | session.export("a.vtu", format: "vut")
+  |                                 ^^^^^ not a format
+  = help: did you mean "vtu"?

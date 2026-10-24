@@ -1,0 +1,2 @@
+let b = w2.make()
+w2.use_volume(vol: b.faces[0])

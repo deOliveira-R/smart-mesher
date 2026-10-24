@@ -20,7 +20,7 @@ impl SchemaDoc {
 
     /// The root view.
     pub fn view(&self) -> View<'_> {
-        View { root: &self.root, node: &self.root }.resolve()
+        View { root: &self.root, node: &self.root, site: &self.root }.resolve()
     }
 
     /// The raw schema.
@@ -34,6 +34,8 @@ impl SchemaDoc {
 pub struct View<'a> {
     root: &'a Json,
     node: &'a Json,
+    /// The node as written, before `$ref` was followed: annotations such as `x-entity-kind` sit beside the `$ref`.
+    site: &'a Json,
 }
 
 /// One segment of a path into a value.
@@ -73,6 +75,8 @@ pub struct ParamInfo {
     pub choices: Vec<String>,
     /// True when the value is an entity id or an array of ids.
     pub is_entity: bool,
+    /// Entity kinds the id may have (`x-entity-kind`); empty when unrestricted or not an id.
+    pub kinds: Vec<sm_core::EntityKind>,
 }
 
 impl<'a> View<'a> {
@@ -82,13 +86,13 @@ impl<'a> View<'a> {
         for _ in 0..32 {
             let Some(r) = v.node.get("$ref").and_then(Json::as_str) else { break };
             let Some(target) = r.strip_prefix('#').and_then(|p| if p.is_empty() { Some(v.root) } else { v.root.pointer(p) }) else { break };
-            v = View { root: v.root, node: target };
+            v = View { root: v.root, node: target, site: v.site };
         }
         v
     }
 
     fn sub(self, node: &'a Json) -> View<'a> {
-        View { root: self.root, node }.resolve()
+        View { root: self.root, node, site: node }.resolve()
     }
 
     fn get(self, key: &str) -> Option<&'a Json> {
@@ -172,6 +176,14 @@ impl<'a> View<'a> {
         Vec::new()
     }
 
+    /// The `x-entity-kind` annotation of an id property, as written (canonical kind names). It sits on the property node;
+    /// for `Option<EntityId>` that is the wrapper, for `Vec<EntityId>` the array (the contract says it applies to the items).
+    pub fn entity_kind_names(self) -> Option<Vec<&'a str>> {
+        let from = |v: View<'a>| v.site.get(sm_op_api::X_ENTITY_KIND).or_else(|| v.get(sm_op_api::X_ENTITY_KIND)).and_then(Json::as_array).map(|a| a.iter().filter_map(Json::as_str).collect::<Vec<_>>());
+        let nn = self.non_null();
+        from(self).or_else(|| from(nn)).or_else(|| nn.items().and_then(from)).or_else(|| self.alternatives().into_iter().find_map(from))
+    }
+
     /// True if the schema is a single entity id (pattern or an alternative of ids).
     pub fn is_entity_id(self) -> bool {
         let v = self.non_null();
@@ -248,6 +260,7 @@ impl<'a> View<'a> {
                             default: node.get("default").cloned().or_else(|| nn.get("default").cloned()),
                             choices: nn.choices().iter().map(|c| c.to_string()).collect(),
                             is_entity: nn.is_entity_id() || nn.id_array_items().is_some(),
+                            kinds: pv.entity_kind_names().map(|ns| ns.iter().filter_map(|n| n.parse().ok()).collect()).unwrap_or_default(),
                         }
                     })
                     .collect()

@@ -1,0 +1,6 @@
+error[op-in-expression]: `session.save` is a statement and has no value
+ --> session_let.smesh:1:9
+  |
+1 | let x = session.save()
+  |         ^^^^^^^^^^^^ a session statement cannot be bound by `let` or `set`
+  = help: write it as its own statement, without `let x =`

@@ -1,0 +1,5 @@
+error[wrong-kind]: expected TopoVolume, found Face#1 (TopoFace)
+ --> wrong_kind_face_for_volume.smesh:2:20
+  |
+2 | w2.use_volume(vol: b.faces[0])
+  |                    ^^^^^^^^^^ here

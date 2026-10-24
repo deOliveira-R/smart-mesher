@@ -1,0 +1,4 @@
+batch {
+  let b = w2.make()
+  w2.use_volume(vol: b.voluem)
+}

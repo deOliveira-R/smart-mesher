@@ -1,0 +1,6 @@
+error[unknown-field]: the op result has no output `voluem`
+ --> plan_role_typo.smesh:2:22
+  |
+2 | w2.use_volume(vol: b.voluem)
+  |                      ^^^^^^ no such output
+  = help: did you mean `volume`?

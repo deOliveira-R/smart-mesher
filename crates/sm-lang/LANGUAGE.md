@@ -228,7 +228,9 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
   `"$i.role"`; `b.role[k]` becomes `"$i.role[k]"`; `b.role[*]` becomes `"$i.role[*]"`. The contract only accepts `[*]` as an **array element**,
   so the lowering is chosen by the schema of the parameter the value lands in. **Wrapping code in `batch` never changes what it means:** a scalar id
   parameter needs exactly one id, so a bare `b.role` there is `expected-one-entity` in a batch just as it is outside one when the role holds several ids
-  (a batch cannot know how many, so it never silently takes the first); write `b.role[0]`, which lowers to `"$i.role[0]"`. Array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`; inside an array literal a bare `b.role` is
+  (a batch cannot know how many, so it never silently takes the first); write `b.role[0]`, which lowers to `"$i.role[0]"`. **Exception (W2):** when the op *declares*
+  the role with cardinality `One` (`OpInfo.outputs`), a bare `b.role` is that one id and lowers to `"$i.role[0]"` — byte-identical `core.batch` to the explicit form, and the same state
+  as the top-level statement. Roles declared `Optional`/`Many`, and ops that declare no roles, keep the error. Array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`; inside an array literal a bare `b.role` is
   spliced as `"$i.role[*]"`. `b.role[*]` for a scalar parameter is an error; Symbolic values may only be used as op arguments (or list elements of them);
   arithmetic or set algebra on them is `not-concrete`;
 * a user string literal starting with `$` is emitted as `$$...` (the batch escape), so literals can never be mistaken
@@ -236,8 +238,8 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
 * two things work at top level but not in a batch, because the reference grammar (`REF_PATTERN`) cannot express them: `q.faces[-1]` (no negative index; write an
   explicit `[k]`) and `for f in q.faces` (a batch cannot know a role's cardinality; pass `q.faces` to an array parameter, or move the loop after the batch, where the
   output is concrete). Both are diagnosed with that reason;
-* a misspelled output role (`q.voluem[0]`) is only detected when the batch is applied (the registry does not list output roles); the failure is mapped back to the
-  argument that wrote the reference and reported there, not at the whole block (§7 request: static role checks once `OpInfo` lists roles);
+* a misspelled output role (`q.voluem`) is `unknown-field` with did-you-mean **at the field**, in a batch and under `PlanHost`, when the op declares its output roles (`OUTPUTS`, W2).
+  For an op that declares none the role is only checked when the batch is applied, and the failure is mapped back to the argument that wrote the reference;
 * queries, `include`, and nested `batch` are errors inside a batch (queries are not recorded; nested batches are rejected by the contract);
   `let`, `set`, `if`, `for`, `print`, `assert` evaluate normally (so a `for` loop unrolls into the batch);
 * a batch does not open a scope. When it has been applied, symbolic outcomes are re-bound to concrete `Ents` built from
@@ -277,6 +279,30 @@ becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timel
 later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
 so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
 resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
+The sibling namespace `session.*` (export, save, hash, status) follows the same argument rules and event/plan-mode conventions: see §4.7.
+
+### 4.7 Session commands
+
+`session.*` mirrors `timeline.*`: statements of the language that are **not** registry ops (they are not recorded in the timeline), dispatched to `Host::session(&SessionCommand)` (default: `session-failed` /
+`session-unsupported`). Every command becomes an `Event::Session { command, applied, result }`.
+
+```
+session.export("out.vtu")                                         // path is positional;         SessionCommand::Export
+session.export("out.smsh", format: "smsh", mesh: m.mesh, provenance: true)
+session.save()                                                    //                              SessionCommand::Save
+let h = session.hash()      print session.status().branch         // values, usable in expressions SessionCommand::Hash / Status
+```
+
+* `export(path: string, format?: "smsh" | "vtu", mesh?: id, provenance?: bool)`. `path` is a non-empty string; `format` is validated here (`invalid-argument` with did-you-mean at the argument; when absent the
+  host infers it from the extension); `mesh` is one id of kind `Mesh` (`wrong-kind` otherwise; when absent the host picks, or fails with its own `no-mesh` / `ambiguous-mesh`); `provenance` defaults to false.
+  The language does no I/O and does not resolve paths: the host does.
+* `export` and `save` are statements only (`op-in-expression` in an expression or on the right of `let`/`set`). `hash()` and `status()` have a value, the host's JSON converted like a query result
+  (an object becomes an object, a string a string), and may be used in expressions.
+* All four are errors inside a batch (`session-in-batch`: a batch is one timeline node and a session command is not an op).
+* A host failure is `session-failed` carrying the host's code and message; the failing statement had no effect.
+* Under `PlanHost` the host is never called: a `plan-session` warning, an `Event::Session` with `applied: false`, and `hash()`/`status()` give an unknown (placeholder) value. A `mesh:` that is itself unknown in a
+  plan is recorded as `None` in the event.
+* The namespace is reserved like `timeline.`: plugins must not register ops with the `session.` prefix.
 
 ## 5. Entity references and entity lists
 
@@ -389,7 +415,9 @@ adding predicates later cannot change the meaning of a valid v1 script. Until th
 Each op's params schema is `Registry::schema(name)` (JSON Schema 2020-12, `$ref`/`$defs` resolved locally; `core.batch` uses `Registry::batch_schema()`).
 The checker supports `type` (incl. type lists), `properties`, `required`, `additionalProperties: false`, `enum`, `const`, `items`/`prefixItems`,
 `minItems`/`maxItems`, `minimum`/`maximum`/`exclusiveMin|Max`, `minLength`/`maxLength`, `pattern` (only the contract's id and batch-ref patterns are interpreted,
-other patterns are left to the op's decoder), `anyOf`/`oneOf`/`allOf`. An entity-id parameter is recognized by the `EntityId` pattern. Issues map to spans:
+other patterns are left to the op's decoder), `anyOf`/`oneOf`/`allOf`. An entity-id parameter is recognized by the `EntityId` pattern. **`x-entity-kind`** (W2): a parameter annotated
+with canonical kind names (`["TopoVolume"]`, on the property node, the `Option` wrapper or the array) rejects an id of any other kind with `wrong-kind` at the argument (`expected TopoVolume, found Face#1`), before the
+op runs. Unknown kind names in a schema are ignored; unannotated parameters are unchanged. Issues map to spans:
 the offending argument's value, descending into list and object literals to the exact element. Missing required arguments are reported at the call.
 Unknown arguments suggest the closest property name. The checker never invents rules: anything it cannot interpret passes, and `Registry::decode` stays the authority.
 
@@ -401,7 +429,7 @@ Unknown arguments suggest the closest property name. The checker never invents r
 * `Interpreter::complete(source, cursor) -> Completion` returns the replaced byte range and candidates for the token at the cursor from a tolerant lexical scan (it works on incomplete input):
   statement start → op/query names, aliases, keywords; inside `name(` → unused parameter names (required first) ; after `param:` → enum values,
   `true/false`, kind names for entity parameters (`Volume#` and live ids), variables; after `var.` → known output roles; after a kind and `#` → live serials;
-  after `in` → kind keywords. Each candidate has a label, insert text, kind, and detail (the schema description).
+  after `in` → kind keywords. A parameter annotated with `x-entity-kind` is offered only the matching kinds (`Volume#`, `volumes`) and not entity variables that hold other kinds; `timeline.*` and `session.*` names and parameters (including `format:` values) complete too. Each candidate has a label, insert text, kind, and detail (the schema description).
 
 ## 8. Determinism
 
