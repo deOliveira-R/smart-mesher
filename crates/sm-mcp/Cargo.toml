@@ -1,6 +1,6 @@
 [package]
 name = "sm-mcp"
-description = "W2 skeleton: T11: MCP server over the protocol."
+description = "MCP server (stdio, JSON-RPC 2.0) over the smart-mesh protocol."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -10,10 +10,22 @@ license.workspace = true
 [lib]
 bench = false
 
+[features]
+default = []
+# Respell entity ids in the human-readable text content (`TopoFace#1` -> `Face#1`) with
+# `sm_lang::respell_json`. Off by default: the respelled form is not accepted by tool arguments.
+respell = ["dep:sm-lang"]
+
 [dependencies]
 sm-protocol = { path = "../sm-protocol" }
 sm-op-api = { path = "../sm-op-api" }
+sm-lang = { path = "../sm-lang", optional = true }
 serde_json = "1"
+
+[dev-dependencies]
+sm-core = { path = "../sm-core", features = ["serde", "schemars"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
 
 [lints]
 workspace = true
