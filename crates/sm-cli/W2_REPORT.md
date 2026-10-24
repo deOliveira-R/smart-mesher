@@ -7,7 +7,7 @@ and the real binary covers what the skeleton supports. The T10-dependent flows a
 `#[ignore = "W2 integration"]` in `tests/cli_full.rs`.
 
 Definition of done, all run on this tree: `cargo build --workspace`; `cargo test -p sm-cli
---all-features` (44 pass, 4 ignored) and with `RAYON_NUM_THREADS=1`; `cargo clippy -p sm-cli
+--all-features` (45 pass, 4 ignored) and with `RAYON_NUM_THREADS=1`; `cargo clippy -p sm-cli
 --all-targets --all-features -- -D warnings`; `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-cli
 --no-deps`.
 
@@ -48,6 +48,11 @@ All subcommands of plan §4.3/§4.4 are implemented: `new`, `run`, `apply`, `que
 5. **`serve --ws`** exits 1 with a message: there is no `ws` feature in sm-server to forward to.
 6. **Default project.** With neither `-p` nor `--memory`, the nearest enclosing directory with a
    `project.toml` is used, else memory (`new` and `help` never discover). The plan did not say.
+
+7. **Fake endpoint instead of demo plugins.** The task text suggested `sm_server` with demo plugins.
+   The skeleton `Server` rejects `apply`, `script.run` and `timeline.*` whatever plugins the builder
+   carries, so demo plugins would not make a single extra command testable. `tests/commands.rs`
+   therefore uses a recording `Endpoint`; the real server is exercised in `tests/binary.rs`.
 
 ## Known gaps / assumptions on other crates
 

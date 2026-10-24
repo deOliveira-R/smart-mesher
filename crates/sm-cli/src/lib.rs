@@ -8,7 +8,7 @@
 //!
 //! Exit codes: 0 success, 1 an op, script or server error, 2 a usage error. With `--json` the
 //! server's result is printed verbatim on stdout; a failure prints `{"error": {code, kind,
-//! message, data?}}` instead (usage errors detected by clap itself go to stderr as text).
+//! message, data?}}` instead, usage errors included (without `--json` they go to stderr as text).
 //!
 //! See `DESIGN.md` for positioning and the command table.
 #![warn(missing_docs)]
@@ -140,7 +140,13 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let want_json = args
+        .iter()
+        .skip(1)
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--json");
+    let cli = match Cli::try_parse_from(&args) {
         Ok(c) => c,
         Err(e) => {
             use clap::error::ErrorKind;
@@ -148,6 +154,12 @@ where
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
                     let _ = write!(io.stdout, "{e}");
                     0
+                }
+                _ if want_json => {
+                    let text = e.to_string();
+                    let err = RpcError::new(INVALID_PARAMS, "usage", text.trim_end());
+                    let _ = writeln!(io.stdout, "{}", serde_json::json!({ "error": err }));
+                    2
                 }
                 ErrorKind::MissingSubcommand => {
                     let _ = writeln!(io.stderr, "{}", usage());
