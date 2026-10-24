@@ -1,0 +1,13 @@
+error[expected-token]: expected `{`, found `in`
+ --> membership_with_in.smesh:2:13
+  |
+2 | if Volume#2 in s {
+  |             ^^ expected `{`
+  = help: `in` needs a plural kind keyword on its left (`volumes in Body#1`); to test membership write `contains(set, Volume#2)`
+
+error[expected-statement]: expected a statement, found `}`
+ --> membership_with_in.smesh:4:1
+  |
+4 | }
+  | ^ a statement cannot start here
+  = help: statements: a call `name(args)`, `let`, `set`, `alias`, `batch`, `if`, `for`, `include`, `print`, `assert`, `help`

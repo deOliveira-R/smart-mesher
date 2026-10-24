@@ -27,7 +27,7 @@ fn batch_lowers_to_one_core_batch_with_references() {
         batch {
             let p = model.create_brick(x: 1, y: 1, z: 1)
             intent.set_size(ids: p.faces, size: 0.25)
-            model.pick(p.body)
+            model.pick(p.body[0])
             model.pick(p.faces[2])
             intent.set_size(ids: [p.faces[0], p.faces[1]], size: 0.5)
             intent.set_size(ids: [p.faces[*], p.volume], size: 0.75)
@@ -48,7 +48,7 @@ fn batch_lowers_to_one_core_batch_with_references() {
         assert_eq!(o["version"], 1, "every member carries its own version");
     }
     assert_eq!(ops[1]["params"]["ids"], json!(["$0.faces[*]"]), "array parameter: [*] only as an element");
-    assert_eq!(ops[2]["params"]["id"], json!("$0.body"), "scalar parameter: bare form");
+    assert_eq!(ops[2]["params"]["id"], json!("$0.body[0]"), "scalar parameter: an explicit index");
     assert_eq!(ops[3]["params"]["id"], json!("$0.faces[2]"));
     assert_eq!(ops[4]["params"]["ids"], json!(["$0.faces[0]", "$0.faces[1]"]));
     assert_eq!(ops[5]["params"]["ids"], json!(["$0.faces[*]", "$0.volume[*]"]));
@@ -75,8 +75,8 @@ fn batch_lowers_to_one_core_batch_with_references() {
 
 #[test]
 fn batch_state_equals_sequential_state() {
-    let seq = run("let p = model.create_brick(x: 1, y: 2, z: 3)\nintent.set_size(ids: p.faces, size: 0.25)\nmodel.pick(p.body)\n").1;
-    let bat = run("batch {\nlet p = model.create_brick(x: 1, y: 2, z: 3)\nintent.set_size(ids: p.faces, size: 0.25)\nmodel.pick(p.body)\n}\n").1;
+    let seq = run("let p = model.create_brick(x: 1, y: 2, z: 3)\nintent.set_size(ids: p.faces, size: 0.25)\nmodel.pick(p.body[0])\n").1;
+    let bat = run("batch {\nlet p = model.create_brick(x: 1, y: 2, z: 3)\nintent.set_size(ids: p.faces, size: 0.25)\nmodel.pick(p.body[0])\n}\n").1;
     assert_eq!(seq.hash(), bat.hash(), "a batch is the same state transition as its members in order");
 }
 
@@ -102,7 +102,7 @@ fn for_loops_unroll_into_batch_indices() {
         batch {
             for i in range(1, 4) {
                 let b = model.create_brick(x: i, y: 1, z: 1)
-                model.pick(b.body)
+                model.pick(b.body[0])
             }
         }
         "#,
@@ -110,9 +110,9 @@ fn for_loops_unroll_into_batch_indices() {
     assert!(rep.ok(), "{}", render_all(&rep.diagnostics, &map));
     let ops = rep.records()[0].params["ops"].as_array().unwrap().clone();
     assert_eq!(ops.len(), 6);
-    assert_eq!(ops[1]["params"]["id"], "$0.body");
-    assert_eq!(ops[3]["params"]["id"], "$2.body");
-    assert_eq!(ops[5]["params"]["id"], "$4.body");
+    assert_eq!(ops[1]["params"]["id"], "$0.body[0]");
+    assert_eq!(ops[3]["params"]["id"], "$2.body[0]");
+    assert_eq!(ops[5]["params"]["id"], "$4.body[0]");
     assert_eq!(state.layer::<DemoModel>().unwrap().notes, ["TopoBody#1", "TopoBody#2", "TopoBody#3"]);
 }
 
@@ -153,11 +153,25 @@ fn plan_mode_batches_stay_symbolic_and_old_refs_are_stale() {
     let engine = engine();
     let mut h = PlanHost::new(engine.registry(), engine.registry().new_state());
     let mut it = Interpreter::new(&mut h, Options::default());
-    let rep = it.run_source("p", "batch {\nlet p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.body)\n}\n");
+    let rep = it.run_source("p", "batch {\nlet p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.body[0])\n}\n");
     assert!(rep.ok(), "{:?}", rep.diagnostics);
     assert_eq!(rep.records()[0].name, "core.batch");
     let rep = it.run_source("q", "batch {\nmodel.pick(p.body)\n}\n");
     assert_eq!(rep.diagnostics[0].code, "stale-reference");
     let rep = it.run_source("r", "model.pick(p.body)\n");
     assert_eq!(rep.diagnostics[0].code, "stale-reference");
+}
+
+#[test]
+fn a_bare_role_for_a_single_id_parameter_means_the_same_inside_and_outside_a_batch() {
+    // Outside a batch six faces cannot go to one id parameter; inside a batch the same statement must not silently pick the first.
+    let top = first_error("let p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.faces)\n");
+    assert_eq!(top.code, "expected-one-entity");
+    let inside = first_error("batch {\nlet p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.faces)\n}\n");
+    assert_eq!(inside.code, "expected-one-entity");
+    assert!(inside.message.contains("faces"), "{}", inside.message);
+    // With an explicit index both forms work and give the same state.
+    let seq = run("let p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.faces[3])\n").1;
+    let bat = run("batch {\nlet p = model.create_brick(x: 1, y: 1, z: 1)\nmodel.pick(p.faces[3])\n}\n").1;
+    assert_eq!(seq.hash(), bat.hash());
 }

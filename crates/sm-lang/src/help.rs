@@ -18,6 +18,8 @@ pub struct Callable {
     pub version: u32,
     /// Params schema.
     pub doc: SchemaDoc,
+    /// Result schema (queries only): lets entity-id results become entity sets.
+    pub out: Option<SchemaDoc>,
 }
 
 impl Callable {
@@ -43,10 +45,10 @@ impl Callable {
 pub fn callables(registry: &Registry) -> Vec<Callable> {
     let mut out = Vec::new();
     for info in registry.catalog().into_iter().flatten() {
-        out.push(Callable { name: info.name, is_query: false, version: info.version, doc: SchemaDoc::new(info.schema.as_value().clone()) });
+        out.push(Callable { name: info.name, is_query: false, version: info.version, doc: SchemaDoc::new(info.schema.as_value().clone()), out: None });
     }
     for info in registry.query_catalog().into_iter().flatten() {
-        out.push(Callable { name: info.name, is_query: true, version: 0, doc: SchemaDoc::new(info.schema.as_value().clone()) });
+        out.push(Callable { name: info.name, is_query: true, version: 0, doc: SchemaDoc::new(info.schema.as_value().clone()), out: Some(SchemaDoc::new(info.output_schema.as_value().clone())) });
     }
     out
 }

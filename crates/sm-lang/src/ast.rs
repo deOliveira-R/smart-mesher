@@ -64,15 +64,6 @@ pub struct Stmt {
     pub kind: StmtKind,
 }
 
-/// `else` part of an `if`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Else {
-    /// `else { ... }`
-    Block(Block),
-    /// `else if ...` (the boxed statement is an `If`).
-    If(Box<Stmt>),
-}
-
 /// Statement kinds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
@@ -101,14 +92,16 @@ pub enum StmtKind {
     Call(Call),
     /// `batch { ... }`
     Batch(Block),
-    /// `if cond { } else { }`
+    /// `if cond { } else if c2 { } else { }`; the `else if` chain is a flat list, so its length costs no nesting depth.
     If {
         /// Condition.
         cond: Expr,
         /// Then block.
         then: Block,
-        /// Optional else.
-        els: Option<Else>,
+        /// The `else if` branches in order.
+        elifs: Vec<(Expr, Block)>,
+        /// Optional final `else` block.
+        els: Option<Block>,
     },
     /// `for var in iter { }`
     For {
@@ -236,19 +229,20 @@ pub enum BinOp {
     Inter,
 }
 
-/// One element of an id specification.
+/// One element of an id specification. Serials are expressions (`Volume#[i + 1]`), evaluated to integers when the
+/// statement runs; a plain `Volume#3` holds an integer literal.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IdItem {
     /// A single serial.
-    One(u64, Span),
+    One(Expr),
     /// `lo..hi [by step]`, inclusive.
     Range {
         /// First serial.
-        lo: u64,
+        lo: Expr,
         /// Last serial (inclusive).
-        hi: u64,
-        /// Step (at least 1).
-        step: u64,
+        hi: Expr,
+        /// Step (at least 1) when given.
+        step: Option<Expr>,
         /// Span of the range text.
         span: Span,
     },
@@ -293,13 +287,15 @@ pub struct Expr {
     pub kind: ExprKind,
     /// Height of the tree below (1 for a leaf). Bounded by the parser so later phases can recurse safely.
     pub height: u32,
+    /// True for an expression the user wrapped in parentheses (needed to tell `(a - b) | c` from `a - b | c`).
+    pub paren: bool,
 }
 
 impl Expr {
     /// Build a node, computing its height from its children.
     pub fn new(span: Span, kind: ExprKind) -> Self {
         let height = 1 + kind.child_height();
-        Self { span, kind, height }
+        Self { span, kind, height, paren: false }
     }
 }
 
@@ -325,6 +321,14 @@ impl ExprKind {
             ExprKind::Unary(_, a) => a.height,
             ExprKind::Binary(_, a, b) => a.height.max(b.height),
             ExprKind::Entity(EntityExpr::In { within, .. }) => within.height,
+            ExprKind::Entity(EntityExpr::Ids { items, .. }) => items
+                .iter()
+                .map(|it| match it {
+                    IdItem::One(e) => e.height,
+                    IdItem::Range { lo, hi, step, .. } => lo.height.max(hi.height).max(step.as_ref().map_or(0, |s| s.height)),
+                })
+                .max()
+                .unwrap_or(0),
             _ => 0,
         }
     }

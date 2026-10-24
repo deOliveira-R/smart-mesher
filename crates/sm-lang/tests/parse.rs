@@ -22,8 +22,8 @@ fn sx(e: &Expr) -> String {
             let it: Vec<String> = items
                 .iter()
                 .map(|i| match i {
-                    IdItem::One(n, _) => n.to_string(),
-                    IdItem::Range { lo, hi, step, .. } => format!("{lo}..{hi}/{step}"),
+                    IdItem::One(n) => sx(n),
+                    IdItem::Range { lo, hi, step, .. } => format!("{}..{}/{}", sx(lo), sx(hi), step.as_ref().map_or("1".to_owned(), sx)),
                 })
                 .collect();
             format!("{}#[{}]", kind.name(), it.join(","))
@@ -79,8 +79,10 @@ fn precedence_and_associativity() {
     assert_eq!(e("2 ** 3 ** 2"), "(Pow 2 (Pow 3 2))");
     assert_eq!(e("2 ** -1"), "(Pow 2 (neg 1))");
     assert_eq!(e("a | b & c"), "(Union a (Inter b c))");
-    assert_eq!(e("a & b - c"), "(Inter a (Sub b c))");
-    assert_eq!(e("a except b | c"), "(Union (Except a b) c)");
+    // `-`/`except` next to `|`/`&` must be parenthesized (see `mixing_difference_with_union_is_rejected`).
+    assert_eq!(e("a & (b - c)"), "(Inter a (Sub b c))");
+    assert_eq!(e("(a except b) | c"), "(Union (Except a b) c)");
+    assert_eq!(e("a - b except c"), "(Except (Sub a b) c)");
     assert_eq!(e("not a and b or c"), "(Or (And (not a) b) c)");
     assert_eq!(e("1 + 2 == 3"), "(Eq (Add 1 2) 3)");
     assert_eq!(e("(1 + 2) * 3"), "(Mul (Add 1 2) 3)");
@@ -95,7 +97,9 @@ fn entity_forms() {
     assert_eq!(e("Node#2"), "MeshVertex#[2]");
     assert_eq!(e("all faces"), "all:TopoFace");
     assert_eq!(e("faces in Volume#2"), "(TopoFace-in TopoVolume#[2])");
-    assert_eq!(e("faces in Volume#2 - faces in Volume#3"), "(Sub (TopoFace-in TopoVolume#[2]) (TopoFace-in TopoVolume#[3]))");
+    assert_eq!(e("(faces in Volume#2) - (faces in Volume#3)"), "(Sub (TopoFace-in TopoVolume#[2]) (TopoFace-in TopoVolume#[3]))");
+    assert_eq!(e("all faces - faces in Volume#3"), "(Sub all:TopoFace (TopoFace-in TopoVolume#[3]))");
+    assert_eq!(e("all faces in Volume#2"), "(TopoFace-in TopoVolume#[2])", "`all <plural> in X` is `<plural> in X`");
     assert_eq!(e("faces in (Volume#2 | Volume#3)"), "(TopoFace-in (Union TopoVolume#[2] TopoVolume#[3]))");
     assert_eq!(e("edges in b.body[0]"), "(TopoEdge-in (idx (. b body) 0))");
     assert_eq!(e("all volumes except Volume#2"), "(Except all:TopoVolume TopoVolume#[2])");
@@ -158,7 +162,7 @@ help model.create_brick
                 assert_eq!(b.stmts.len(), 2);
                 "batch"
             }
-            StmtKind::If { els: Some(Else::If(_)), .. } => "if-elseif",
+            StmtKind::If { elifs, .. } if !elifs.is_empty() => "if-elseif",
             StmtKind::For { .. } => "for",
             StmtKind::Include { .. } => "include",
             StmtKind::Assert { msg: Some(_), .. } => "assert",
@@ -287,4 +291,80 @@ fn reserved_words_are_valid_name_segments_after_a_dot() {
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     // But a statement still cannot start with a reserved word that is not a statement keyword.
     assert!(parse(0, "all.thing(1)").has_errors());
+}
+
+fn first_error(src: &str) -> sm_lang::Diagnostic {
+    let out = parse(0, &format!("let _ = {src}"));
+    out.diagnostics.into_iter().find(|d| d.is_error()).unwrap_or_else(|| panic!("`{src}` parsed without an error"))
+}
+
+#[test]
+fn in_does_not_silently_swallow_a_following_set_operator() {
+    for src in ["faces in Volume#1 | Volume#2", "faces in Volume#1 & Volume#2", "faces in Volume#1 - Volume#2", "faces in Volume#1 except Volume#2", "all faces in Volume#1 | Volume#2", "faces in Volume#2 - faces in Volume#3"] {
+        assert_eq!(first_error(src).code, "ambiguous-in", "{src}");
+    }
+    // Both readings are available with parentheses.
+    assert_eq!(e("faces in (Volume#1 | Volume#2)"), "(TopoFace-in (Union TopoVolume#[1] TopoVolume#[2]))");
+    assert_eq!(e("(faces in Volume#1) | Face#2"), "(Union (TopoFace-in TopoVolume#[1]) TopoFace#[2])");
+}
+
+#[test]
+fn mixing_difference_with_union_is_rejected() {
+    for src in ["all faces - Face#1 | Face#2", "all volumes except Volume#1 | Volume#2", "a | b - c", "a & b except c", "a - b & c"] {
+        assert_eq!(first_error(src).code, "ambiguous-set-expression", "{src}");
+    }
+    assert_eq!(e("(all volumes except Volume#1) | Volume#2"), "(Union (Except all:TopoVolume TopoVolume#[1]) TopoVolume#[2])");
+    assert_eq!(e("all volumes except (Volume#1 | Volume#2)"), "(Except all:TopoVolume (Union TopoVolume#[1] TopoVolume#[2]))");
+}
+
+#[test]
+fn id_serials_can_be_computed() {
+    assert_eq!(e("Volume#[i]"), "TopoVolume#[i]");
+    assert_eq!(e("Volume#[i + 1, 5]"), "TopoVolume#[(Add i 1),5]");
+    assert_eq!(e("Volume#[a..b]"), "TopoVolume#[a..b/1]");
+    assert_eq!(e("Volume#[a..n * 2 by 2]"), "TopoVolume#[a..(Mul n 2)/2]");
+    assert_eq!(e("Volume#(k - 1)"), "TopoVolume#[(Sub k 1)]");
+    // The bare form stays literal, so `Volume#3 - Volume#2` is a set difference.
+    assert_eq!(e("Volume#3 - Volume#2"), "(Sub TopoVolume#[3] TopoVolume#[2])");
+    let d = parse(0, "let _ = Volume#i").diagnostics;
+    assert!(d.iter().any(|d| d.help.as_deref().is_some_and(|h| h.contains("Volume#[i]"))), "{d:?}");
+}
+
+#[test]
+fn reserved_predicate_words_follow_entities_only() {
+    for src in ["faces in Volume#1 where area > 2", "all faces with name", "volumes named \"fuel*\"", "Volume#1 where x"] {
+        assert_eq!(first_error(src).code, "not-yet-supported", "{src}");
+    }
+    // Everywhere else they are ordinary names.
+    let out = parse(0, "let where = 1\nlet named = where + 1\nprint with_x, named");
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}
+
+#[test]
+fn else_may_start_the_next_line_and_chains_are_flat() {
+    let out = parse(0, "if a {\n  print 1\n}\nelse if b {\n  print 2\n}\nelse {\n  print 3\n}\n");
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    let StmtKind::If { elifs, els, .. } = &out.script.stmts[0].kind else { panic!() };
+    assert_eq!((elifs.len(), els.is_some()), (1, true));
+    // A 300-branch chain costs no nesting depth and is accepted.
+    let mut src = String::from("if x == 0 { print 0 }");
+    for i in 1..300 {
+        src.push_str(&format!(" else if x == {i} {{ print {i} }}"));
+    }
+    src.push_str(" else { print -1 }");
+    let out = parse(0, &src);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>());
+    let StmtKind::If { elifs, .. } = &out.script.stmts[0].kind else { panic!() };
+    assert_eq!(elifs.len(), 299);
+    // A stray `else` is still an error.
+    assert!(parse(0, "print 1\nelse { print 2 }").has_errors());
+}
+
+#[test]
+fn in_without_a_plural_kind_explains_membership() {
+    for src in ["if Volume#2 in s { print 1 }", "let x = Volume#1 in Body#1", "print a in b"] {
+        let out = parse(0, src);
+        let d = out.diagnostics.iter().find(|d| d.is_error()).expect("error");
+        assert!(d.help.as_deref().is_some_and(|h| h.contains("contains(")), "{src}: {d:?}");
+    }
 }

@@ -16,6 +16,49 @@ pub struct HostError {
     pub message: String,
 }
 
+/// Which revision `timeline.checkout` moves to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimelineRev {
+    /// The empty state before any op (detached).
+    Empty,
+    /// A node by its hash text (detached).
+    Node(String),
+    /// A branch by name (attached).
+    Ref(String),
+}
+
+/// A timeline-control command (`timeline.branch(...)`, `timeline.checkout(...)`, `timeline.undo()`, `timeline.redo()`).
+///
+/// These are statements of the language but **not** registry ops: a fork or an undo is not itself a timeline node,
+/// so it cannot be recorded as one. A host handles them outside [`Host::apply`] (a session maps them to
+/// `Session::branch`, `checkout`, `undo`, `redo`). See `LANGUAGE.md` section 4.6.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimelineCommand {
+    /// Create a branch at the current position and attach to it (fork).
+    Branch {
+        /// The new branch name.
+        name: String,
+    },
+    /// Move to a revision.
+    Checkout(TimelineRev),
+    /// Step back one node.
+    Undo,
+    /// Step forward again after an undo.
+    Redo,
+}
+
+impl TimelineCommand {
+    /// The statement verb: `branch`, `checkout`, `undo` or `redo`.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::Branch { .. } => "branch",
+            Self::Checkout(_) => "checkout",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+        }
+    }
+}
+
 /// What the interpreter needs from its environment.
 ///
 /// Production hosts adapt a timeline `Session` (one node per applied record). sm-lang itself never
@@ -38,6 +81,11 @@ pub trait Host {
     fn apply(&mut self, rec: &OpRecord) -> Result<Delta, HostError>;
     /// Run a registered query.
     fn query(&mut self, name: &str, params: &Json) -> Result<Json, HostError>;
+    /// Execute a timeline-control command. Hosts without a timeline keep the default, which reports `timeline-unsupported`.
+    /// Never called when [`executes`](Self::executes) is false.
+    fn timeline(&mut self, cmd: &TimelineCommand) -> Result<(), HostError> {
+        Err(HostError { code: "timeline-unsupported".into(), message: format!("this host has no timeline: `timeline.{}` is unavailable", cmd.verb()) })
+    }
     /// Text of an included file. The language performs no I/O itself.
     fn load(&mut self, path: &str) -> Result<String, String> {
         Err(format!("this host cannot load {path:?}: includes are not available"))

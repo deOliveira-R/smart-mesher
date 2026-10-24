@@ -3,3 +3,4 @@ error[invalid-argument]: "quad" is not one of "map", "pave"
   |
 1 | mesh.run(targets: Volume#1, scheme: "quad")
   |                                     ^^^^^^ here
+  = help: allowed values: "map", "pave"

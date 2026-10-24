@@ -265,10 +265,16 @@ impl Lexer<'_> {
                 }
                 b'#' => {
                     self.i += 1;
+                    let after_name = out.last().is_some_and(|t: &Token| t.tok == Tok::Ident && t.span.hi as usize == lo);
+                    let help = if after_name {
+                        "an id serial after `#` is a number, `[...]` or `(...)`; to build an id from a variable write `Volume#[i]` or `Volume#(i + 1)`"
+                    } else {
+                        "write entity ids as `Volume#3` (no spaces); comments start with `//`"
+                    };
                     self.diags.push(
-                        Diagnostic::error("invalid-character", self.sp(lo, self.i), "`#` is only valid right after a kind name")
+                        Diagnostic::error("invalid-character", self.sp(lo, self.i), "`#` is only valid right after a kind name and before a serial")
                             .label("unexpected `#`")
-                            .help("write entity ids as `Volume#3` (no spaces); comments start with `//`"),
+                            .help(help),
                     );
                     Tok::Error
                 }
@@ -323,7 +329,7 @@ impl Lexer<'_> {
         while matches!(self.at(0), b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_') {
             self.i += 1;
         }
-        if self.at(0) == b'#' && (self.at(1).is_ascii_digit() || self.at(1) == b'[') {
+        if self.at(0) == b'#' && (self.at(1).is_ascii_digit() || self.at(1) == b'[' || self.at(1) == b'(') {
             self.i += 1;
             return Tok::EntityRef;
         }

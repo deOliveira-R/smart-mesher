@@ -48,7 +48,7 @@ fn a_script_builds_and_meshes_a_brick() {
     assert!(m.sizes.values().all(|s| *s == 1.0));
     assert_eq!(m.meshed.get(&id(EntityKind::TopoVolume, 1)).unwrap(), "Map/false/2");
     let Event::Print { text, .. } = rep.events.last().unwrap() else { panic!() };
-    assert_eq!(text, "6 {TopoBody#1}");
+    assert_eq!(text, "6 {Body#1}");
 }
 
 #[test]

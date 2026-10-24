@@ -3,4 +3,4 @@ error[positional-ambiguous]: cannot tell which parameter this value is for
   |
 1 | model.create_brick(1, 2, 3)
   |                    ^ write `name: value`
-  = help: positional arguments need an op with exactly one required parameter; `model.create_brick` has 3
+  = help: positional arguments need an op with exactly one required (or `x-positional`) parameter; `model.create_brick` has 3

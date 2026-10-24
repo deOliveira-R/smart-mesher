@@ -84,7 +84,7 @@ proptest! {
     }
 }
 
-const VALID: &str = "let w = 10\nlet b = model.create_brick(x: w, y: 2 * w, z: [1, 2][0], name: \"s\")\nbatch {\n  intent.set_size(ids: faces in Volume#2 - Face#[1, 3..5], size: 0.5)\n}\nfor i in range(0, 3) { print i }\nif w > 1 and not false { print all volumes } else { print 1 }\n";
+const VALID: &str = "let w = 10\nlet b = model.create_brick(x: w, y: 2 * w, z: [1, 2][0], name: \"s\")\nbatch {\n  intent.set_size(ids: (faces in Volume#2) - Face#[1, 3..5], size: 0.5)\n}\nfor i in range(0, 3) { print i }\nif w > 1 and not false { print all volumes } else { print 1 }\n";
 
 #[test]
 fn the_seed_program_is_valid() {
@@ -111,7 +111,7 @@ fn expr_strategy() -> impl Strategy<Value = String> {
                 .prop_map(|(a, b, op)| format!("({a} {op} {b})")),
             inner.clone().prop_map(|a| format!("-({a})")),
             proptest::collection::vec(inner.clone(), 0..4).prop_map(|v| format!("[{}]", v.join(", "))),
-            inner.clone().prop_map(|a| format!("faces in ({a})")),
+            inner.clone().prop_map(|a| format!("(faces in ({a}))")),
             (inner.clone(), inner).prop_map(|(a, b)| format!("min({a}, {b})")),
         ]
     })

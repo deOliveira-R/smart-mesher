@@ -89,6 +89,11 @@ struct P<'a> {
     aborted: bool,
 }
 
+const IN_HELP: &str = "`in` needs a plural kind keyword on its left (`volumes in Body#1`); to test membership write `contains(set, Volume#2)`";
+
+/// Words reserved for entity predicates (`faces in Volume#1 where area > 2`, `volumes named "fuel*"`); see `LANGUAGE.md` §5.5.
+const PREDICATE_WORDS: &[&str] = &["where", "named", "with"];
+
 fn is_stmt_kw(t: &Tok) -> bool {
     matches!(t, Tok::Let | Tok::Set | Tok::Alias | Tok::Batch | Tok::If | Tok::For | Tok::Include | Tok::Print | Tok::Assert)
 }
@@ -200,6 +205,10 @@ impl P<'_> {
 
     /// The `k`-th token after the current one (newlines skipped only when insensitive).
     fn nth(&self, k: usize) -> &Tok {
+        &self.toks[self.nth_idx(k)].tok
+    }
+
+    fn nth_idx(&self, k: usize) -> usize {
         let mut i = self.idx();
         for _ in 0..k {
             if self.toks[i].tok == Tok::Eof {
@@ -212,7 +221,7 @@ impl P<'_> {
                 }
             }
         }
-        &self.toks[i].tok
+        i
     }
 
     fn bump(&mut self) -> Token {
@@ -288,7 +297,11 @@ impl P<'_> {
         if t.tok != Tok::Error {
             let found = self.describe(&t);
             let at = self.blame(&t);
-            self.push(Diagnostic::error("expected-token", at, format!("expected {what}, found {found}")).label(format!("expected {what}")));
+            let mut d = Diagnostic::error("expected-token", at, format!("expected {what}, found {found}")).label(format!("expected {what}"));
+            if t.tok == Tok::In && (what == "`{`" || what.starts_with("`,` or")) {
+                d = d.help(IN_HELP);
+            }
+            self.push(d);
         }
         Err(())
     }
@@ -353,7 +366,9 @@ impl P<'_> {
                             let mut d = Diagnostic::error("expected-token", t.span, format!("expected end of statement, found {found}"))
                                 .label("statements end at a line break or `;`");
                             if t.tok == Tok::Else {
-                                d = d.help("put `else` on the same line as the closing `}` of the `if`");
+                                d = d.help("`else` must directly follow the `}` of an `if` (on the same line or the next)");
+                            } else if t.tok == Tok::In {
+                                d = d.help(IN_HELP);
                             }
                             self.push(d);
                         }
@@ -507,7 +522,7 @@ impl P<'_> {
                 self.push(
                     Diagnostic::error("expected-statement", span, "`else` without a matching `if`")
                         .label("no `if` to attach to")
-                        .help("`else` must follow the closing `}` of an `if` on the same line"),
+                        .help("`else` must directly follow the closing `}` of an `if` (on the same line or the next)"),
                 );
                 // Consume the dangling branch so its braces do not cascade into more errors.
                 self.bump();
@@ -532,25 +547,42 @@ impl P<'_> {
         Ok(Stmt { span: self.sp(lo), kind })
     }
 
+    /// Step over line breaks that precede an `else` (Allman style); leaves the position alone otherwise.
+    fn skip_nl_before_else(&mut self) {
+        let mut j = self.pos;
+        while self.toks[j].tok == Tok::Newline {
+            j += 1;
+        }
+        if self.toks[j].tok == Tok::Else {
+            self.pos = j;
+        }
+    }
+
+    /// `if c { } else if c2 { } else { }`, parsed in a loop so a long chain costs no nesting depth.
     fn if_stmt(&mut self) -> R<Stmt> {
         let lo = self.cur().span.lo;
         self.bump();
         let cond = self.expr()?;
         let then = self.block()?;
-        let els = if *self.tok() == Tok::Else {
+        let mut elifs = Vec::new();
+        let mut els = None;
+        loop {
+            self.skip_nl_before_else();
+            if *self.tok() != Tok::Else {
+                break;
+            }
             self.bump();
             if *self.tok() == Tok::If {
-                self.enter()?;
-                let r = self.if_stmt();
-                self.depth -= 1;
-                Some(Else::If(Box::new(r?)))
+                self.bump();
+                let c = self.expr()?;
+                let b = self.block()?;
+                elifs.push((c, b));
             } else {
-                Some(Else::Block(self.block()?))
+                els = Some(self.block()?);
+                break;
             }
-        } else {
-            None
-        };
-        Ok(Stmt { span: self.sp(lo), kind: StmtKind::If { cond, then, els } })
+        }
+        Ok(Stmt { span: self.sp(lo), kind: StmtKind::If { cond, then, elifs, els } })
     }
 
     fn block(&mut self) -> R<Block> {
@@ -801,12 +833,28 @@ impl P<'_> {
         Ok(l)
     }
 
+    /// `-`/`except` next to `|`/`&` without parentheses is rejected: `a - b | c` reads differently to different people
+    /// (and `all volumes except V#1 | V#2` means the opposite of its English), so the language makes the writer decide.
+    fn no_bare_difference(&mut self, e: &Expr) -> R<()> {
+        if matches!(e.kind, ExprKind::Binary(BinOp::Sub | BinOp::Except, ..)) && !e.paren {
+            self.push(
+                Diagnostic::error("ambiguous-set-expression", e.span, "`-`/`except` mixed with `|`/`&` needs parentheses")
+                    .label("add parentheses around this")
+                    .help("write `(a - b) | c` or `a - (b | c)`"),
+            );
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn union(&mut self) -> R<Expr> {
         let mut l = self.inter()?;
         while *self.tok() == Tok::Pipe {
+            self.no_bare_difference(&l)?;
             self.bump();
             self.skip_nl();
             let r = self.inter()?;
+            self.no_bare_difference(&r)?;
             l = self.bin(BinOp::Union, l, r)?;
         }
         Ok(l)
@@ -815,9 +863,11 @@ impl P<'_> {
     fn inter(&mut self) -> R<Expr> {
         let mut l = self.add()?;
         while *self.tok() == Tok::Amp {
+            self.no_bare_difference(&l)?;
             self.bump();
             self.skip_nl();
             let r = self.add()?;
+            self.no_bare_difference(&r)?;
             l = self.bin(BinOp::Inter, l, r)?;
         }
         Ok(l)
@@ -980,7 +1030,9 @@ impl P<'_> {
                 }
                 self.bump();
                 self.nl -= 1;
-                Ok(self.mk(lo, inner.kind))
+                let mut e = self.mk(lo, inner.kind);
+                e.paren = true;
+                Ok(e)
             }
             Tok::LBracket => self.list(t.span),
             Tok::LBrace => self.object(t.span),
@@ -992,7 +1044,14 @@ impl P<'_> {
                     let name = self.text_of(k.span).to_owned();
                     self.bump();
                     match kinds::kind_from_plural(&name) {
-                        Some(kind) => Ok(self.mk(lo, ExprKind::Entity(EntityExpr::All { kind, kind_span: k.span }))),
+                        Some(kind) => {
+                            if *self.tok() == Tok::In {
+                                // `all faces in Volume#1` is the same as `faces in Volume#1`.
+                                return self.in_tail(lo, kind, k.span);
+                            }
+                            self.no_predicate()?;
+                            Ok(self.mk(lo, ExprKind::Entity(EntityExpr::All { kind, kind_span: k.span })))
+                        }
                         None => {
                             let mut d = Diagnostic::error("unknown-entity-kind", k.span, format!("`{name}` is not an entity kind keyword"))
                                 .label("expected a plural kind like `faces` or `volumes`");
@@ -1009,16 +1068,16 @@ impl P<'_> {
             }
             Tok::Ident => {
                 let name = self.text_of(t.span).to_owned();
-                if *self.nth(1) == Tok::In
-                    && let Some(kind) = kinds::kind_from_plural(&name)
-                {
-                    self.bump();
-                    self.bump(); // `in`
-                    self.skip_nl();
-                    self.enter()?;
-                    let within = self.postfix();
-                    self.depth -= 1;
-                    return Ok(self.mk(lo, ExprKind::Entity(EntityExpr::In { kind, kind_span: t.span, within: Box::new(within?) })));
+                if let Some(kind) = kinds::kind_from_plural(&name) {
+                    if *self.nth(1) == Tok::In {
+                        self.bump();
+                        return self.in_tail(lo, kind, t.span);
+                    }
+                    if *self.nth(1) == Tok::Ident && PREDICATE_WORDS.contains(&self.text_of(self.toks[self.nth_idx(1)].span)) {
+                        self.bump();
+                        self.no_predicate()?;
+                        return Err(());
+                    }
                 }
                 if self.is_call_head() {
                     let path = self.path("a function name")?;
@@ -1036,6 +1095,44 @@ impl P<'_> {
                 Err(())
             }
         }
+    }
+
+    /// Reject the reserved predicate words right after an entity expression (`faces in V#1 where ...`).
+    fn no_predicate(&mut self) -> R<()> {
+        let t = self.cur().clone();
+        if t.tok == Tok::Ident && PREDICATE_WORDS.contains(&self.text_of(t.span)) {
+            let w = self.text_of(t.span).to_owned();
+            self.push(
+                Diagnostic::error("not-yet-supported", t.span, format!("`{w}` is reserved for entity predicates, which this version does not have"))
+                    .label("predicates are not implemented")
+                    .help("select by id (`Face#1..4`), by relation (`faces in Volume#1`), or run a query and pass `ents(result)`; the planned forms are in LANGUAGE.md section 5.5"),
+            );
+            return Err(());
+        }
+        Ok(())
+    }
+
+    /// After the plural keyword of `kind in X` (the current token is `in`): parse `X` (a postfix expression).
+    /// `in` binds tighter than every set operator, so a following `|`, `&`, `-` or `except` is rejected: the reader
+    /// must choose between `faces in (A | B)` and `(faces in A) | B`.
+    fn in_tail(&mut self, lo: u32, kind: sm_core::EntityKind, kind_span: Span) -> R<Expr> {
+        self.bump(); // `in`
+        self.skip_nl();
+        self.enter()?;
+        let within = self.postfix();
+        self.depth -= 1;
+        let within = within?;
+        let t = self.cur().clone();
+        if matches!(t.tok, Tok::Pipe | Tok::Amp | Tok::Minus | Tok::Plus | Tok::Except) {
+            self.push(
+                Diagnostic::error("ambiguous-in", t.span, "the operand of `in` needs parentheses before a set operator")
+                    .label("is this inside the `in` operand or outside it?")
+                    .help("write `faces in (A | B)` to combine the operand, or `(faces in A) | B` to combine the results"),
+            );
+            return Err(());
+        }
+        self.no_predicate()?;
+        Ok(self.mk(lo, ExprKind::Entity(EntityExpr::In { kind, kind_span, within: Box::new(within) })))
     }
 
     fn list(&mut self, open: Span) -> R<Expr> {
@@ -1118,30 +1215,32 @@ impl P<'_> {
             }
             self.push(d);
         }
-        // The lexer guarantees a digit or `[` follows.
+        // The lexer guarantees a digit, `[` or `(` follows.
         let mut items = Vec::new();
         let mut bad = kind.is_none();
-        if *self.tok() == Tok::LBracket {
+        if matches!(self.tok(), Tok::LBracket | Tok::LParen) {
+            let paren = *self.tok() == Tok::LParen;
+            let (closer, closer_text) = if paren { (Tok::RParen, "`)`") } else { (Tok::RBracket, "`]`") };
             let open = self.bump();
             self.nl += 1;
             loop {
-                if *self.tok() == Tok::RBracket {
+                if *self.tok() == closer {
                     break;
                 }
                 if *self.tok() == Tok::Eof || self.at_new_statement() {
-                    return self.unclosed(open.span, "`]`", "id list");
+                    return self.unclosed(open.span, closer_text, "id list");
                 }
-                match self.id_item() {
+                match self.id_item(true) {
                     Ok(Some(it)) => items.push(it),
                     Ok(None) => bad = true,
                     Err(()) => return Err(()),
                 }
                 match self.tok() {
-                    Tok::Comma => {
+                    Tok::Comma if !paren => {
                         self.bump();
                     }
-                    Tok::RBracket => break,
-                    _ => return self.expected("`,` or `]`"),
+                    t if *t == closer => break,
+                    _ => return self.expected(if paren { "`)`" } else { "`,` or `]`" }),
                 }
             }
             let close = self.bump();
@@ -1153,69 +1252,81 @@ impl P<'_> {
                 bad = true;
             }
         } else {
-            match self.id_item() {
+            match self.id_item(false) {
                 Ok(Some(it)) => items.push(it),
                 Ok(None) => bad = true,
                 Err(()) => return Err(()),
             }
         }
         match (kind, bad) {
-            (Some(kind), false) => Ok(self.mk(lo, ExprKind::Entity(EntityExpr::Ids { kind, kind_span, items }))),
+            (Some(kind), false) => {
+                self.no_predicate()?;
+                Ok(self.mk(lo, ExprKind::Entity(EntityExpr::Ids { kind, kind_span, items })))
+            }
             _ => Err(()),
         }
     }
 
-    /// One id or range. `Ok(None)`: a semantic problem was reported but tokens were consumed correctly.
-    fn id_item(&mut self) -> R<Option<IdItem>> {
+    /// One serial operand: any expression inside `[...]`/`(...)`, an integer literal in the bare `Kind#3` form
+    /// (so `Volume#3 - Volume#2` stays a set difference).
+    fn serial_operand(&mut self, computed: bool, what: &str) -> R<Expr> {
+        if computed {
+            return self.expr();
+        }
         let t = self.cur().clone();
-        let Tok::Int(lo_v) = t.tok else {
-            return self.expected("a serial number");
-        };
-        self.bump();
-        let lo = t.span.lo;
-        let mut item = Some(IdItem::One(lo_v as u64, t.span));
-        if *self.tok() == Tok::DotDot {
-            self.bump();
-            let h = self.cur().clone();
-            let Tok::Int(hi_v) = h.tok else {
-                return self.expected("the end of the range");
-            };
-            self.bump();
-            let mut step = 1u64;
-            let mut step_ok = true;
-            if *self.tok() == Tok::Ident && self.text_of(self.cur().span) == "by" {
+        match t.tok {
+            Tok::Int(v) => {
                 self.bump();
-                let s = self.cur().clone();
-                let Tok::Int(sv) = s.tok else {
-                    return self.expected("a step number");
-                };
-                self.bump();
-                if sv < 1 {
-                    self.push(Diagnostic::error("bad-id-range", s.span, "range step must be at least 1").label("step is zero"));
-                    step_ok = false;
-                }
-                step = sv.max(1) as u64;
+                Ok(self.mk(t.span.lo, ExprKind::Int(v)))
             }
-            let span = self.sp(lo);
-            if hi_v < lo_v {
+            _ => self.expected(what),
+        }
+    }
+
+    /// One id or range. `computed`: expressions are allowed (inside brackets or parentheses).
+    /// `Ok(None)`: a semantic problem was reported but tokens were consumed correctly.
+    fn id_item(&mut self, computed: bool) -> R<Option<IdItem>> {
+        let first = self.cur().clone();
+        let lo_e = self.serial_operand(computed, "a serial number")?;
+        let lo = first.span.lo;
+        if *self.tok() != Tok::DotDot {
+            if let ExprKind::Int(v) = lo_e.kind
+                && (v < 0 || (v as u64) > sm_core::EntityId::MAX_SERIAL)
+            {
+                self.push(Diagnostic::error("bad-id-range", lo_e.span, "serial too large").label("exceeds the 56-bit serial space"));
+                return Ok(None);
+            }
+            return Ok(Some(IdItem::One(lo_e)));
+        }
+        self.bump();
+        let hi_e = self.serial_operand(computed, "the end of the range")?;
+        let mut step = None;
+        if *self.tok() == Tok::Ident && self.text_of(self.cur().span) == "by" {
+            self.bump();
+            step = Some(self.serial_operand(computed, "a step number")?);
+        }
+        let span = self.sp(lo);
+        let lit = |e: &Expr| if let ExprKind::Int(v) = e.kind { Some(v) } else { None };
+        let mut ok = true;
+        if let Some(st) = step.as_ref().and_then(lit)
+            && st < 1
+        {
+            self.push(Diagnostic::error("bad-id-range", step.as_ref().map_or(span, |s| s.span), "range step must be at least 1").label("step is zero"));
+            ok = false;
+        }
+        if let (Some(l), Some(h)) = (lit(&lo_e), lit(&hi_e)) {
+            if h < l {
                 self.push(
                     Diagnostic::error("bad-id-range", span, "range start is greater than its end")
-                        .label(format!("{lo_v} > {hi_v}"))
+                        .label(format!("{l} > {h}"))
                         .help("ranges are inclusive and ascending: `Volume#1..5`"),
                 );
-                item = None;
-            } else if (hi_v as u64) > sm_core::EntityId::MAX_SERIAL {
+                ok = false;
+            } else if (h as u64) > sm_core::EntityId::MAX_SERIAL {
                 self.push(Diagnostic::error("bad-id-range", span, "serial too large").label("exceeds the 56-bit serial space"));
-                item = None;
-            } else if step_ok {
-                item = Some(IdItem::Range { lo: lo_v as u64, hi: hi_v as u64, step, span });
-            } else {
-                item = None;
+                ok = false;
             }
-        } else if (lo_v as u64) > sm_core::EntityId::MAX_SERIAL {
-            self.push(Diagnostic::error("bad-id-range", t.span, "serial too large").label("exceeds the 56-bit serial space"));
-            item = None;
         }
-        Ok(item)
+        Ok(ok.then_some(IdItem::Range { lo: lo_e, hi: hi_e, step, span }))
     }
 }

@@ -1,7 +1,7 @@
 //! The interpreter: evaluates statements, resolves entity lists against the host state, checks arguments against op
 //! schemas, lowers calls to op records (and `batch` blocks to `core.batch`) and executes them through a [`Host`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
@@ -13,12 +13,12 @@ use crate::diag::{Diagnostic, suggest};
 use crate::entity::{EntitySet, all_of, live_range};
 use crate::eval::{self, BUILTIN_NAMES, EvalErr};
 use crate::help::{self, Callable};
-use crate::host::Host;
+use crate::host::{Host, TimelineCommand, TimelineRev};
 use crate::kinds;
 use crate::parser::{ParseLimits, parse_with};
 use crate::schema::{self, Issue, PathSeg, View};
 use crate::span::{SourceMap, Span};
-use crate::value::{Outcome, Sel, Val};
+use crate::value::{Outcome, Sel, Val, fmt_num};
 
 /// Interpreter limits.
 #[derive(Clone, Debug)]
@@ -31,11 +31,16 @@ pub struct Options {
     pub max_range_len: u64,
     /// Deepest `include` nesting.
     pub max_include_depth: usize,
+    /// Longest string (bytes) or list (elements) a value may have; checked by `+`, `str`, `range` and query results.
+    pub max_value_len: usize,
+    /// Interactive sessions: let `let` rebind a name that is already bound at the top level (with a `shadowed` warning),
+    /// so a resent `let w = 10` is not an error. Inside blocks, and for scripts by default, rebinding stays an error.
+    pub allow_top_level_rebind: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { parse: ParseLimits::default(), max_loop_iterations: 1_000_000, max_range_len: 1_000_000, max_include_depth: 16 }
+        Self { parse: ParseLimits::default(), max_loop_iterations: 1_000_000, max_range_len: 1_000_000, max_include_depth: 16, max_value_len: 1_000_000, allow_top_level_rebind: false }
     }
 }
 
@@ -73,6 +78,15 @@ pub enum Event {
         /// Result; `None` in plan mode.
         result: Option<Json>,
     },
+    /// A timeline-control statement (`timeline.branch(...)` and friends), handled by the host outside the op log.
+    Timeline {
+        /// Statement span.
+        span: Span,
+        /// The command.
+        command: TimelineCommand,
+        /// False in plan mode (nothing was done).
+        applied: bool,
+    },
     /// Output of `print`.
     Print {
         /// Statement span.
@@ -106,6 +120,11 @@ impl RunReport {
         !self.diagnostics.iter().any(Diagnostic::is_error)
     }
 
+    /// Every diagnostic as machine-readable JSON (see [`Diagnostic::to_json`]), for an MCP tool result.
+    pub fn diagnostics_json(&self, map: &SourceMap) -> Json {
+        Json::Array(self.diagnostics.iter().map(|d| d.to_json(map)).collect())
+    }
+
     /// The op and batch records in the order they were applied (or planned).
     pub fn records(&self) -> Vec<&OpRecord> {
         self.events
@@ -130,6 +149,14 @@ struct BatchState {
 
 type IR<T> = Result<T, ()>;
 
+/// Where one argument of a call came from, so a failure can point at it.
+struct Site<'c> {
+    key: String,
+    expr: &'c Expr,
+    /// True when `expr` is the value itself (named or positional); false when it is an object spread into the call.
+    direct: bool,
+}
+
 /// Evaluates smesh scripts against a [`Host`].
 pub struct Interpreter<'h, H: Host + ?Sized> {
     pub(crate) host: &'h mut H,
@@ -147,6 +174,8 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     plan_n: usize,
     callables: Option<BTreeMap<String, Arc<Callable>>>,
     saw_placeholder: bool,
+    /// Spans that already got a `batch-snapshot` warning (an unrolled loop warns once per site).
+    snap_warned: BTreeSet<(u32, u32, u32)>,
     /// Set when the call being built contains a plan placeholder (so it cannot be decoded).
     tainted: bool,
 }
@@ -170,6 +199,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             plan_n: 0,
             callables: None,
             saw_placeholder: false,
+            snap_warned: BTreeSet::new(),
             tainted: false,
         }
     }
@@ -249,12 +279,14 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         self.diags.push(d);
     }
 
+    /// A state that cannot arise from any input; reported as a diagnostic instead of panicking.
+    fn internal<T>(&mut self, span: Span, what: &str) -> IR<T> {
+        self.fail(Diagnostic::error("internal-error", span, format!("internal error: {what}")).label("this is a bug in sm-lang"))
+    }
+
     pub(crate) fn callable_map(&mut self) -> &BTreeMap<String, Arc<Callable>> {
-        if self.callables.is_none() {
-            let m = help::callables(self.host.registry()).into_iter().map(|c| (c.name.clone(), Arc::new(c))).collect();
-            self.callables = Some(m);
-        }
-        self.callables.as_ref().expect("filled above")
+        let host = &*self.host;
+        self.callables.get_or_insert_with(|| help::callables(host.registry()).into_iter().map(|c| (c.name.clone(), Arc::new(c))).collect())
     }
 
     pub(crate) fn lookup_callable(&mut self, name: &str) -> Option<Arc<Callable>> {
@@ -285,7 +317,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 self.exec_call(c, s.span)?;
             }
             StmtKind::Batch(b) => self.exec_batch(b, s.span)?,
-            StmtKind::If { cond, then, els } => self.exec_if(cond, then, els.as_ref())?,
+            StmtKind::If { cond, then, elifs, els } => self.exec_if(cond, then, elifs, els.as_ref())?,
             StmtKind::For { var, iter, body } => self.exec_for(var, iter, body)?,
             StmtKind::Include { path, path_span } => self.exec_include(path, *path_span)?,
             StmtKind::Print(es) => {
@@ -334,16 +366,28 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     }
 
     fn bind(&mut self, name: &Ident, val: Val) -> IR<()> {
-        let top = self.scopes.last_mut().expect("scope stack is never empty");
-        if let Some(prev) = top.get(&name.name) {
-            let d = Diagnostic::error("rebind", name.span, format!("`{}` is already defined in this scope", name.name))
-                .label("defined again here")
-                .note(prev.span, "first defined here")
-                .help("use `set` to change its value");
-            return self.fail(d);
+        let prev = self.scopes.last().and_then(|top| top.get(&name.name)).map(|b| b.span);
+        if let Some(prev) = prev {
+            if self.opts.allow_top_level_rebind && self.scopes.len() == 1 {
+                let d = Diagnostic::warning("shadowed", name.span, format!("`{}` was already defined; its value is replaced", name.name))
+                    .label("rebound here")
+                    .note(prev, "previously defined here");
+                self.warn(d);
+            } else {
+                let d = Diagnostic::error("rebind", name.span, format!("`{}` is already defined in this scope", name.name))
+                    .label("defined again here")
+                    .note(prev, "first defined here")
+                    .help("use `set` to change its value");
+                return self.fail(d);
+            }
         }
-        top.insert(name.name.clone(), Binding { val, span: name.span });
-        Ok(())
+        match self.scopes.last_mut() {
+            Some(top) => {
+                top.insert(name.name.clone(), Binding { val, span: name.span });
+                Ok(())
+            }
+            None => self.internal(name.span, "no scope"),
+        }
     }
 
     fn rebind(&mut self, name: &Ident, val: Val) -> IR<()> {
@@ -381,20 +425,28 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         Ok(())
     }
 
-    fn exec_if(&mut self, cond: &Expr, then: &Block, els: Option<&Else>) -> IR<()> {
-        let c = self.eval(cond)?;
-        let Val::Bool(b) = c else {
-            let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found {}", c.a_type())).label("not a bool");
-            return self.fail(d);
-        };
-        if b {
-            self.exec_block(then)
-        } else {
-            match els {
-                Some(Else::Block(b)) => self.exec_block(b),
-                Some(Else::If(s)) => self.exec(s),
-                None => Ok(()),
+    fn cond_true(&mut self, cond: &Expr) -> IR<bool> {
+        match self.eval(cond)? {
+            Val::Bool(b) => Ok(b),
+            c => {
+                let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found {}", c.a_type())).label("not a bool");
+                self.fail(d)
             }
+        }
+    }
+
+    fn exec_if(&mut self, cond: &Expr, then: &Block, elifs: &[(Expr, Block)], els: Option<&Block>) -> IR<()> {
+        if self.cond_true(cond)? {
+            return self.exec_block(then);
+        }
+        for (c, b) in elifs {
+            if self.cond_true(c)? {
+                return self.exec_block(b);
+            }
+        }
+        match els {
+            Some(b) => self.exec_block(b),
+            None => Ok(()),
         }
     }
 
@@ -408,8 +460,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     fn exec_for(&mut self, var: &Ident, iter: &Expr, body: &Block) -> IR<()> {
         let v = self.eval(iter)?;
         let items: Vec<Val> = match v {
-            Val::List(l) => l,
+            Val::List(l) => Arc::try_unwrap(l).unwrap_or_else(|a| (*a).clone()),
             Val::Ents(s) => s.iter().map(|i| Val::Ents(EntitySet::single(*i))).collect(),
+            Val::Placeholder { n, role } => return self.exec_for_unknown(var, n, &role, iter.span, body),
             other => {
                 let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot iterate over {}", other.a_type())).label("expected a list or an entity set");
                 return self.fail(d);
@@ -429,6 +482,31 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             r?;
         }
         Ok(())
+    }
+
+    /// Plan mode: the loop's sequence is unknown without executing. The body is checked once with a placeholder
+    /// variable; a `plan-unresolved` error inside it ends that check as a warning instead of failing the plan.
+    fn exec_for_unknown(&mut self, var: &Ident, n: usize, role: &str, span: Span, body: &Block) -> IR<()> {
+        self.warn(
+            Diagnostic::warning("plan-unresolved", span, "the sequence of this loop is unknown without executing")
+                .label("its body is checked once, with a placeholder")
+                .help("the real run repeats the body once per element; wrap dependent statements in `batch { }` to lower them without executing"),
+        );
+        let mut scope = BTreeMap::new();
+        scope.insert(var.name.clone(), Binding { val: Val::Placeholder { n, role: format!("{role}[]") }, span: var.span });
+        self.scopes.push(scope);
+        let r = self.exec_stmts(&body.stmts);
+        self.scopes.pop();
+        if r.is_err()
+            && let Some(d) = self.diags.last_mut()
+            && d.code == "plan-unresolved"
+            && d.is_error()
+        {
+            d.severity = crate::diag::Severity::Warning;
+            d.message.push_str(" (the rest of the loop body was not checked)");
+            return Ok(());
+        }
+        r
     }
 
     fn exec_include(&mut self, path: &str, span: Span) -> IR<()> {
@@ -470,7 +548,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let id = self.batch_counter;
         self.batch = Some(BatchState { id, records: Vec::new() });
         let r = self.exec_stmts(&b.stmts);
-        let state = self.batch.take().expect("batch state set above");
+        let Some(state) = self.batch.take() else { return self.internal(span, "batch state missing") };
         r?;
         if state.records.is_empty() {
             self.warn(Diagnostic::warning("empty-batch", span, "the batch emitted no ops").label("nothing to apply"));
@@ -502,17 +580,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 match &b.val {
                     Val::Outcome(Outcome::Batch { batch, index }) if *batch == id => {
                         let prefix = format!("{index}.");
-                        let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), v.clone()))).collect();
+                        let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), EntitySet::from_ordered(v.clone())))).collect();
                         b.val = Val::Outcome(Outcome::Applied { outputs });
                     }
                     Val::Ref { batch, index, role, sel } if *batch == id => {
                         if let Some(ids) = delta.outputs.get(&format!("{index}.{role}")) {
                             let picked = match sel {
-                                Sel::All | Sel::Star => Some(ids.clone()),
-                                Sel::At(k) => ids.get(*k).map(|i| vec![*i]),
+                                Sel::All | Sel::Star => Some(EntitySet::from_ordered(ids.clone())),
+                                Sel::At(k) => ids.get(*k).map(|i| EntitySet::single(*i)),
                             };
                             if let Some(p) = picked {
-                                b.val = Val::Ents(EntitySet::from_vec(p));
+                                b.val = Val::Ents(p);
                             }
                         }
                     }
@@ -540,6 +618,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
 
     fn exec_call(&mut self, call: &Call, span: Span) -> IR<Val> {
         let written = call.path.dotted();
+        if call.path.segs.len() == 2 && call.path.segs[0].name == "timeline" {
+            return self.exec_timeline(call, span);
+        }
         let name = if call.path.segs.len() == 1 { self.aliases.get(&written).cloned().unwrap_or(written.clone()) } else { written.clone() };
         let Some(info) = self.lookup_callable(&name) else {
             let aliases: Vec<String> = self.aliases.keys().cloned().collect();
@@ -555,7 +636,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             return self.fail(d);
         };
         self.tainted = false;
-        let params = self.build_params(call, &info)?;
+        let (params, sites) = self.build_params(call, &info)?;
         let in_batch = self.batch.is_some();
         if info.is_query {
             if in_batch {
@@ -573,7 +654,8 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             return match self.host.query(&name, &pj) {
                 Ok(res) => {
-                    let val = match Val::from_json(&res) {
+                    let out_view = info.out.as_ref().map(|d| d.view());
+                    let val = match json_to_val(&res, out_view, self.opts.max_value_len) {
                         Ok(v) => v,
                         Err(m) => return self.fail(Diagnostic::error("null-value", span, format!("query `{name}` returned a value the language cannot hold: {m}")).label("this query")),
                     };
@@ -598,13 +680,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         }
         // Decode gate: the record is known to decode, and the stored form is the canonical re-encoding.
         // (A plan record holding placeholders cannot decode; it is reported as is.)
-        let rec = if self.tainted { rec } else { match self.host.registry().decode(&rec) {
-            Ok(op) => match OpRecord::of(op.as_ref()) {
-                Ok(c) => c,
-                Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode this op")),
-            },
-            Err(e) => return self.fail(Diagnostic::error("decode-failed", span, format!("the registry rejects these arguments [{}]: {e}", e.code())).label("this call")),
-        } };
+        let rec = if self.tainted {
+            rec
+        } else {
+            match self.host.registry().decode(&rec) {
+                Ok(op) => match OpRecord::of(op.as_ref()) {
+                    Ok(c) => c,
+                    Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode this op")),
+                },
+                Err(e) => return self.fail(Diagnostic::error("decode-failed", span, format!("the registry rejects these arguments [{}]: {e}", e.code())).label("this call")),
+            }
+        };
         if !self.host.executes() {
             self.events.push(Event::Op { span, record: rec, delta: None });
             self.plan_n += 1;
@@ -612,24 +698,151 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         }
         match self.host.apply(&rec) {
             Ok(delta) => {
-                let out = Val::Outcome(Outcome::Concrete { created: delta.created.clone(), removed: delta.removed.clone(), outputs: delta.outputs.clone() });
+                let out = Val::Outcome(Outcome::Concrete {
+                    created: EntitySet::from_ordered(delta.created.clone()),
+                    removed: EntitySet::from_ordered(delta.removed.clone()),
+                    outputs: delta.outputs.iter().map(|(k, v)| (k.clone(), EntitySet::from_ordered(v.clone()))).collect(),
+                });
                 self.events.push(Event::Op { span, record: rec, delta: Some(delta) });
                 Ok(out)
             }
-            Err(e) => self.fail(Diagnostic::error("op-failed", span, format!("`{name}` failed [{}]: {}", e.code, e.message)).label("this op was rejected and had no effect")),
+            Err(e) => {
+                let msg = e.message.strip_prefix(&format!("op '{name}' failed: ")).unwrap_or(&e.message).to_owned();
+                let mut d = Diagnostic::error("op-failed", span, format!("`{name}` failed [{}]: {msg}", e.code)).label("this op was rejected and had no effect");
+                // When the error names an entity, point at the argument that supplied it.
+                if let Some((sp, key)) = localize(&msg, &rec.params, &sites) {
+                    d.span = sp;
+                    d.label = Some("this argument supplied the entity".to_owned());
+                    if let Some(desc) = info.params().iter().find(|p| p.name == key).and_then(|p| p.description.clone()) {
+                        d = d.help(format!("parameter `{key}`: {}", desc.lines().next().unwrap_or("").trim()));
+                    }
+                }
+                self.fail(d)
+            }
         }
     }
 
+    /// `timeline.branch(name)`, `timeline.checkout(ref | node | empty)`, `timeline.undo()`, `timeline.redo()`.
+    fn exec_timeline(&mut self, call: &Call, span: Span) -> IR<Val> {
+        const VERBS: [&str; 4] = ["branch", "checkout", "undo", "redo"];
+        let verb = call.path.segs[1].name.clone();
+        if self.batch.is_some() {
+            let d = Diagnostic::error("timeline-in-batch", span, "timeline commands cannot be part of a batch")
+                .label("a batch is one timeline node")
+                .help("run the command before or after the batch");
+            return self.fail(d);
+        }
+        if !VERBS.contains(&verb.as_str()) {
+            let mut d = Diagnostic::error("unknown-name", call.path.segs[1].span, format!("no timeline command `timeline.{verb}`")).label("not a timeline command");
+            d = match suggest(&verb, VERBS) {
+                Some(s) => d.help(format!("did you mean `timeline.{s}`?")),
+                None => d.help("timeline commands: branch(name), checkout(ref | node | empty), undo(), redo()"),
+            };
+            return self.fail(d);
+        }
+        let allowed: &[&str] = match verb.as_str() {
+            "branch" => &["name"],
+            "checkout" => &["ref", "node", "empty"],
+            _ => &[],
+        };
+        let mut args: Vec<(String, Val, Span)> = Vec::new();
+        for a in &call.args {
+            match a {
+                Arg::Named { name, value } => {
+                    if !allowed.contains(&name.name.as_str()) {
+                        let mut d = Diagnostic::error("unknown-argument", name.span, format!("`timeline.{verb}` has no parameter `{}`", name.name)).label("unknown");
+                        d = if allowed.is_empty() { d.help(format!("`timeline.{verb}` takes no arguments")) } else { d.help(format!("parameters: {}", allowed.join(", "))) };
+                        return self.fail(d);
+                    }
+                    if args.iter().any(|(k, ..)| *k == name.name) {
+                        return self.fail(Diagnostic::error("duplicate-argument", name.span, format!("argument `{}` is given twice", name.name)).label("given again here"));
+                    }
+                    let v = self.eval(value)?;
+                    args.push((name.name.clone(), v, value.span));
+                }
+                Arg::Pos(e) => {
+                    if allowed.is_empty() || !args.is_empty() || call.args.len() != 1 {
+                        let d = Diagnostic::error("positional-ambiguous", e.span, "cannot tell which parameter this value is for")
+                            .label("write `name: value`")
+                            .help(format!("`timeline.{verb}` takes {}", if allowed.is_empty() { "no arguments".to_owned() } else { format!("one string: {}", allowed[0]) }));
+                        return self.fail(d);
+                    }
+                    let v = self.eval(e)?;
+                    args.push((allowed[0].to_owned(), v, e.span));
+                }
+                Arg::Spread(e) => return self.fail(Diagnostic::error("bad-arguments", e.span, "timeline commands do not take `...`").label("spread")),
+            }
+        }
+        let want_str = |this: &mut Self, key: &str, args: &[(String, Val, Span)]| -> IR<Option<String>> {
+            match args.iter().find(|(k, ..)| k == key) {
+                None => Ok(None),
+                Some((_, Val::Str(s), _)) if !s.is_empty() => Ok(Some(s.clone())),
+                Some((_, other, sp)) => {
+                    let d = Diagnostic::error("type-mismatch", *sp, format!("`{key}` needs a non-empty string, found {}", other.a_type())).label("not a name");
+                    this.fail(d)
+                }
+            }
+        };
+        let cmd = match verb.as_str() {
+            "branch" => match want_str(self, "name", &args)? {
+                Some(name) => TimelineCommand::Branch { name },
+                None => return self.fail(Diagnostic::error("missing-argument", call.args_span, "`timeline.branch` needs the new branch name").label("write `timeline.branch(\"name\")`")),
+            },
+            "checkout" => {
+                let r = want_str(self, "ref", &args)?;
+                let n = want_str(self, "node", &args)?;
+                let empty = match args.iter().find(|(k, ..)| k == "empty") {
+                    Some((_, Val::Bool(true), _)) => true,
+                    Some((_, _, sp)) => return self.fail(Diagnostic::error("type-mismatch", *sp, "`empty` must be `true`").label("only `empty: true` is meaningful")),
+                    None => false,
+                };
+                match (r, n, empty) {
+                    (Some(r), None, false) => TimelineCommand::Checkout(TimelineRev::Ref(r)),
+                    (None, Some(n), false) => TimelineCommand::Checkout(TimelineRev::Node(n)),
+                    (None, None, true) => TimelineCommand::Checkout(TimelineRev::Empty),
+                    _ => {
+                        let d = Diagnostic::error("missing-argument", call.args_span, "`timeline.checkout` needs exactly one of `ref`, `node`, `empty`")
+                            .label("which revision?")
+                            .help("`timeline.checkout(\"main\")` (a branch), `timeline.checkout(node: \"<hash>\")`, `timeline.checkout(empty: true)`");
+                        return self.fail(d);
+                    }
+                }
+            }
+            "undo" => TimelineCommand::Undo,
+            _ => TimelineCommand::Redo,
+        };
+        if !self.host.executes() {
+            self.warn(
+                Diagnostic::warning("plan-timeline", span, format!("`timeline.{verb}` is not simulated by a plan"))
+                    .label("later statements are checked against the state as it is now"),
+            );
+            self.events.push(Event::Timeline { span, command: cmd, applied: false });
+            return Ok(Val::obj(BTreeMap::new()));
+        }
+        match self.host.timeline(&cmd) {
+            Ok(()) => {
+                self.events.push(Event::Timeline { span, command: cmd, applied: true });
+                Ok(Val::obj(BTreeMap::new()))
+            }
+            Err(e) => self.fail(Diagnostic::error("timeline-failed", span, format!("`timeline.{verb}` failed [{}]: {}", e.code, e.message)).label("this command had no effect")),
+        }
+    }
+
+    fn is_defined(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains_key(name)) || eval::constant(name).is_some()
+    }
+
     /// Evaluate and convert the arguments, then check the resulting object against the schema.
-    fn build_params(&mut self, call: &Call, info: &Callable) -> IR<Map<String, Json>> {
+    fn build_params<'c>(&mut self, call: &'c Call, info: &Callable) -> IR<(Map<String, Json>, Vec<Site<'c>>)> {
         struct Entry<'a> {
             key: String,
             val: Val,
             expr: &'a Expr,
             name_span: Option<Span>,
+            direct: bool,
         }
         let view = info.doc.view();
-        let mut entries: Vec<Entry<'_>> = Vec::new();
+        let mut entries: Vec<Entry<'c>> = Vec::new();
         let mut named_seen: BTreeMap<String, Span> = BTreeMap::new();
         let mut positional: Vec<&Expr> = Vec::new();
         for arg in &call.args {
@@ -642,15 +855,25 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return self.fail(d);
                     }
                     named_seen.insert(name.name.clone(), name.span);
+                    // An enum value written without quotes: say that enum values are strings.
+                    if let ExprKind::Var(vn) = &value.kind
+                        && !self.is_defined(vn)
+                        && view.property(&name.name).is_some_and(|pv| pv.non_null().choices().iter().any(|c| c.as_str() == Some(vn.as_str())))
+                    {
+                        let d = Diagnostic::error("unknown-variable", value.span, format!("`{vn}` is not defined"))
+                            .label("an enum value, not a variable")
+                            .help(format!("enum values are strings: write `{}: \"{vn}\"`", name.name));
+                        return self.fail(d);
+                    }
                     let v = self.eval(value)?;
                     entries.retain(|e| e.key != name.name);
-                    entries.push(Entry { key: name.name.clone(), val: v, expr: value, name_span: Some(name.span) });
+                    entries.push(Entry { key: name.name.clone(), val: v, expr: value, name_span: Some(name.span), direct: true });
                 }
                 Arg::Spread(e) => match self.eval(e)? {
                     Val::Obj(m) => {
-                        for (k, v) in m {
-                            entries.retain(|x| x.key != k);
-                            entries.push(Entry { key: k, val: v, expr: e, name_span: None });
+                        for (k, v) in m.iter() {
+                            entries.retain(|x| x.key != *k);
+                            entries.push(Entry { key: k.clone(), val: v.clone(), expr: e, name_span: None, direct: false });
                         }
                     }
                     other => {
@@ -662,20 +885,30 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
         }
         if !positional.is_empty() {
+            // The positional parameter: the one marked `"x-positional": true` in the schema, else the only required one.
+            let marked: Vec<&str> = view
+                .properties()
+                .map(|m| m.iter().filter(|(_, v)| v.get("x-positional").and_then(Json::as_bool) == Some(true)).map(|(k, _)| k.as_str()).collect())
+                .unwrap_or_default();
             let required = view.required();
-            if required.len() != 1 || positional.len() != 1 {
-                let help = if required.len() == 1 { "only one positional argument is allowed".to_owned() } else { format!("positional arguments need an op with exactly one required parameter; `{}` has {}", info.name, required.len()) };
+            let target: Option<&str> = if marked.len() == 1 { Some(marked[0]) } else if required.len() == 1 { Some(required[0]) } else { None };
+            let Some(key) = target.filter(|_| positional.len() == 1) else {
+                let help = if target.is_some() {
+                    "only one positional argument is allowed".to_owned()
+                } else {
+                    format!("positional arguments need an op with exactly one required (or `x-positional`) parameter; `{}` has {}", info.name, required.len())
+                };
                 let d = Diagnostic::error("positional-ambiguous", positional[0].span, "cannot tell which parameter this value is for").label("write `name: value`").help(help);
                 return self.fail(d);
-            }
-            let key = required[0].to_owned();
+            };
+            let key = key.to_owned();
             if let Some(sp) = named_seen.get(&key) {
                 let d = Diagnostic::error("duplicate-argument", positional[0].span, format!("parameter `{key}` is also given by name")).label("given positionally").note(*sp, "given by name here");
                 return self.fail(d);
             }
             let v = self.eval(positional[0])?;
             entries.retain(|e| e.key != key);
-            entries.push(Entry { key, val: v, expr: positional[0], name_span: None });
+            entries.push(Entry { key, val: v, expr: positional[0], name_span: None, direct: true });
         }
         // Convert each entry, guided by its parameter schema.
         let mut params = Map::new();
@@ -689,7 +922,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     params.insert(e.key.clone(), j);
                 }
                 Err(issue) => {
-                    let sp = if e.name_span.is_some() { locate(e.expr, &issue.path) } else { locate_in_spread(e.expr, &e.key, &issue.path) };
+                    let sp = if e.direct { locate(e.expr, &issue.path) } else { locate_in_spread(e.expr, &e.key, &issue.path) };
                     self.diags.push(Diagnostic::error(issue_code(issue.code), sp, issue.message).label("here"));
                     failed = true;
                 }
@@ -706,6 +939,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         if failed {
             return Err(());
         }
+        let sites: Vec<Site<'c>> = entries.iter().map(|e| Site { key: e.key.clone(), expr: e.expr, direct: e.direct }).collect();
         // Check the whole object.
         let obj = Json::Object(params);
         let mut issues = Vec::new();
@@ -714,9 +948,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         } else {
             schema::check(view, &obj, true, &mut issues);
         }
-        let Json::Object(params) = obj else { unreachable!("built as an object") };
+        let Json::Object(params) = obj else { return self.internal(call.span, "arguments are not an object") };
         if issues.is_empty() {
-            return Ok(params);
+            return Ok((params, sites));
         }
         let pinfo = view.params();
         // A misspelled required parameter is reported once, as the unknown argument with its suggestion, not also as missing.
@@ -736,7 +970,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     let ent = entries.iter().find(|e| &e.key == k);
                     let span = match ent {
                         Some(e) if e.name_span.is_some() && iss.code == "unknown-property" => e.name_span.unwrap_or(call.span),
-                        Some(e) if e.name_span.is_some() => locate(e.expr, &iss.path[1..]),
+                        Some(e) if e.direct => locate(e.expr, &iss.path[1..]),
                         Some(e) => locate_in_spread(e.expr, k, &iss.path[1..]),
                         None => call.args_span,
                     };
@@ -769,6 +1003,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         });
                     }
                 }
+                "enum-violation" => {
+                    let bad = json_at(&params, &iss.path);
+                    let choices: Vec<String> = view_at(view, &iss.path).map(|v| v.non_null().choices().iter().filter_map(|c| c.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                    match (bad, choices.is_empty()) {
+                        (Some(Json::String(b)), false) => match suggest(b, choices.iter().map(String::as_str)) {
+                            Some(s) => d = d.help(format!("did you mean \"{s}\"?")),
+                            None => d = d.help(format!("allowed values: {}", choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", "))),
+                        },
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
             let _ = span;
@@ -795,7 +1040,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     }
                     let s = match sel {
                         Sel::All if array_elem => format!("${index}.{role}[*]"),
-                        Sel::All => format!("${index}.{role}"),
+                        Sel::All => {
+                            // A batch cannot know how many ids a role holds, and the same statement outside a batch
+                            // fails when it holds several; so a bare role is never silently the first id.
+                            return Some(Err(issue(
+                                path,
+                                "expected-one-entity",
+                                format!("`{role}` may hold several ids and a batch cannot know how many; write `<result>.{role}[0]` to take one (or `[k]`)"),
+                            )));
+                        }
                         Sel::At(k) => format!("${index}.{role}[{k}]"),
                         Sel::Star => {
                             if !array_elem {
@@ -871,6 +1124,13 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             Val::Bool(b) => Ok(Json::Bool(*b)),
             Val::Int(i) => {
                 if nn.is_some_and(View::is_float_only) {
+                    if i.unsigned_abs() > (1u64 << 53) {
+                        return Err(issue(
+                            path,
+                            "integer-precision",
+                            format!("the integer {i} is not exactly representable as a number (limit 2^53); write it as a float, e.g. `{}`", fmt_num(*i as f64)),
+                        ));
+                    }
                     serde_json::Number::from_f64(*i as f64).map(Json::Number).ok_or_else(|| issue(path, "non-finite", "not a finite number".into()))
                 } else {
                     Ok(Json::from(*i))
@@ -891,7 +1151,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             Val::Obj(m) => {
                 let mut out = Map::new();
-                for (k, el) in m {
+                for (k, el) in m.iter() {
                     let pv = nn.and_then(|n| n.property(k));
                     path.push(PathSeg::Key(k.clone()));
                     let r = self.conv(el, pv, path);
@@ -901,7 +1161,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Ok(Json::Object(out))
             }
             Val::Ents(s) => Ok(Json::Array(s.iter().map(|i| Json::String(i.to_string())).collect())),
-            other => match ref_str(self, other, false, path) {
+            other => match ref_str(self, other, true, path) {
                 Some(Ok(_)) | None => Err(issue(path, "type-mismatch", format!("{} can only be used where an entity id is expected", other.a_type()))),
                 Some(Err(e)) => Err(e),
             },
@@ -938,7 +1198,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             ExprKind::Num(v) => Ok(Val::Num(*v)),
             ExprKind::Str(s) => Ok(Val::Str(s.clone())),
             ExprKind::Bool(b) => Ok(Val::Bool(*b)),
-            ExprKind::List(items) => Ok(Val::List(items.iter().map(|i| self.eval(i)).collect::<IR<_>>()?)),
+            ExprKind::List(items) => Ok(Val::list(items.iter().map(|i| self.eval(i)).collect::<IR<Vec<_>>>()?)),
             ExprKind::Obj(items) => {
                 let mut m = BTreeMap::new();
                 for (k, v) in items {
@@ -948,7 +1208,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return self.fail(d);
                     }
                 }
-                Ok(Val::Obj(m))
+                Ok(Val::obj(m))
             }
             ExprKind::Var(n) => self.lookup_var(n, e.span),
             ExprKind::Field(b, f) => {
@@ -992,7 +1252,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             ExprKind::Binary(op, l, r) => {
                 let lv = self.eval(l)?;
                 let rv = self.eval(r)?;
-                match eval::binop(*op, &lv, &rv) {
+                match eval::binop_lim(*op, &lv, &rv, self.opts.max_value_len) {
                     Ok(v) => Ok(v),
                     Err(er) => self.eval_fail(er, e.span),
                 }
@@ -1004,9 +1264,26 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
 
     fn eval_builtin_call(&mut self, c: &Call, span: Span) -> IR<Val> {
         let name = c.path.dotted();
+        if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" {
+            let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is a statement, not a function"))
+                .label("timeline commands cannot be used inside expressions")
+                .help("write it as its own statement");
+            return self.fail(d);
+        }
         if self.is_registry_call(c) {
+            let full = if c.path.segs.len() == 1 { self.aliases.get(&name).cloned().unwrap_or(name.clone()) } else { name.clone() };
+            // A query is read-only and deterministic for a given state, so it may appear inside an expression.
+            if self.lookup_callable(&full).is_some_and(|i| i.is_query) {
+                let saved = (self.tainted, self.saw_placeholder);
+                let r = self.exec_call(c, span);
+                (self.tainted, self.saw_placeholder) = saved;
+                return match r? {
+                    Val::Outcome(Outcome::Plan { n }) => Ok(Val::Placeholder { n, role: "result".to_owned() }),
+                    v => Ok(v),
+                };
+            }
             let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is not a function"))
-                .label("ops and queries cannot be used inside expressions")
+                .label("ops cannot be used inside expressions (queries can)")
                 .help("call it as a statement, or as the whole right-hand side of `let`: `let r = op(...)`");
             return self.fail(d);
         }
@@ -1020,7 +1297,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Arg::Spread(e) => return self.fail(Diagnostic::error("bad-arguments", e.span, "builtin functions do not take `...`").label("spread")),
             }
         }
-        match eval::call_builtin(&name, &args, self.opts.max_range_len) {
+        match eval::call_builtin_lim(&name, &args, self.opts.max_range_len, self.opts.max_value_len) {
             Ok(v) => Ok(v),
             Err(er) => self.eval_fail(er, span),
         }
@@ -1041,17 +1318,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 }
             },
             Val::Outcome(Outcome::Concrete { created, removed, outputs }) => match name {
-                "created" => Ok(Val::Ents(EntitySet::from_vec(created))),
-                "removed" => Ok(Val::Ents(EntitySet::from_vec(removed))),
+                "created" => Ok(Val::Ents(created)),
+                "removed" => Ok(Val::Ents(removed)),
                 _ => match outputs.get(name) {
-                    Some(ids) => Ok(Val::Ents(EntitySet::from_vec(ids.clone()))),
+                    Some(ids) => Ok(Val::Ents(ids.clone())),
                     None => self.no_output(name, f.span, outputs.keys().map(String::as_str).chain(["created", "removed"])),
                 },
             },
             Val::Outcome(Outcome::Applied { outputs }) => match name {
                 "created" | "removed" => self.eval_fail(("not-concrete", format!("`{name}` is not available for an op that ran inside a batch (only its named outputs are)")), span),
                 _ => match outputs.get(name) {
-                    Some(ids) => Ok(Val::Ents(EntitySet::from_vec(ids.clone()))),
+                    Some(ids) => Ok(Val::Ents(ids.clone())),
                     None => self.no_output(name, f.span, outputs.keys().map(String::as_str)),
                 },
             },
@@ -1106,10 +1383,43 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let n = self.host.state().count_of(kind);
         let sing = kinds::singular_of(kind);
         if n == 0 {
-            return format!("there are no live {sing} entities");
+            let note = match kind {
+                EntityKind::Surface | EntityKind::Curve => {
+                    "; these are geometry carriers (Cubit's surfaces and curves are `faces` and `edges`)"
+                }
+                _ => "",
+            };
+            return format!("there are no live {sing} entities{note}");
         }
-        let first: Vec<String> = self.host.state().entities_of(kind).take(4).map(|i| i.to_string()).collect();
+        let first: Vec<String> = self.host.state().entities_of(kind).take(4).map(crate::value::fmt_id).collect();
         format!("{n} live {sing} entit{}: {}{}", if n == 1 { "y" } else { "ies" }, first.join(", "), if n > 4 { ", ..." } else { "" })
+    }
+
+    /// An id serial: an integer expression, at least 0 and within the 56-bit serial space.
+    fn eval_serial(&mut self, e: &Expr) -> IR<u64> {
+        match self.eval(e)? {
+            Val::Int(v) if (0..=EntityId::MAX_SERIAL as i64).contains(&v) => Ok(v as u64),
+            Val::Int(v) => {
+                let d = Diagnostic::error("bad-id-range", e.span, format!("the serial {v} is outside the id space (0 to 2^56 - 1)")).label("not a valid serial");
+                self.fail(d)
+            }
+            other => {
+                let d = Diagnostic::error("type-mismatch", e.span, format!("an id serial must be an integer, found {}", other.a_type())).label("not an integer");
+                self.fail(d)
+            }
+        }
+    }
+
+    /// Warn when a block resolves a selection after it already emitted ops: the selection sees the state at block entry.
+    fn warn_batch_snapshot(&mut self, span: Span) {
+        let emitted = self.batch.as_ref().is_some_and(|b| !b.records.is_empty());
+        if emitted && self.snap_warned.insert((span.file, span.lo, span.hi)) {
+            self.warn(
+                Diagnostic::warning("batch-snapshot", span, "this selection is resolved against the state at the start of the batch")
+                    .label("entities created by earlier statements of the block are not included")
+                    .help("name new entities through the op result, e.g. `p.body[0]`, or run the selection outside the batch"),
+            );
+        }
     }
 
     fn resolve_entities(&mut self, en: &EntityExpr, span: Span) -> IR<EntitySet> {
@@ -1119,19 +1429,35 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 let exec = self.host.executes();
                 for it in items {
                     match it {
-                        IdItem::One(serial, sp) => {
-                            let at = if items.len() == 1 { span } else { *sp };
-                            let Some(id) = EntityId::new(*kind, *serial) else {
+                        IdItem::One(e) => {
+                            let serial = self.eval_serial(e)?;
+                            let at = if items.len() == 1 { span } else { e.span };
+                            let Some(id) = EntityId::new(*kind, serial) else {
                                 return self.fail(Diagnostic::error("entity-not-found", at, "serial too large").label("exceeds the 56-bit serial space"));
                             };
                             if exec && !self.host.state().contains(id) {
-                                let d = Diagnostic::error("entity-not-found", at, format!("there is no live {id}")).label("not in the current state").help(self.describe_live(*kind));
+                                let mut d = Diagnostic::error("entity-not-found", at, format!("there is no live {}", crate::value::fmt_id(id))).label("not in the current state");
+                                d = if self.batch.is_some() {
+                                    d.help("a batch resolves ids against the state at its start, so ids created inside the block cannot be named; use the op result instead, e.g. `p.body[0]`")
+                                } else {
+                                    d.help(self.describe_live(*kind))
+                                };
                                 return self.fail(d);
                             }
                             ids.push(id);
                         }
                         IdItem::Range { lo, hi, step, span: rs } => {
-                            let set = live_range(self.host.state(), *kind, *lo, *hi, *step);
+                            self.warn_batch_snapshot(*rs);
+                            let (l, h) = (self.eval_serial(lo)?, self.eval_serial(hi)?);
+                            let st = match step {
+                                Some(s) => self.eval_serial(s)?,
+                                None => 1,
+                            };
+                            if h < l || st < 1 {
+                                let msg = if st < 1 { "range step must be at least 1".to_owned() } else { format!("range start {l} is greater than its end {h}") };
+                                return self.fail(Diagnostic::error("bad-id-range", *rs, msg).label("invalid range").help("ranges are inclusive and ascending: `Volume#1..5`"));
+                            }
+                            let set = live_range(self.host.state(), *kind, l, h, st);
                             if set.is_empty() {
                                 let h = self.describe_live(*kind);
                                 self.warn(Diagnostic::warning("empty-selection", *rs, "the range selects no live entity").label("empty").help(h));
@@ -1143,16 +1469,23 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Ok(EntitySet::from_vec(ids))
             }
             EntityExpr::All { kind, .. } => {
+                self.warn_batch_snapshot(span);
                 let set = all_of(self.host.state(), *kind);
                 if set.is_empty() {
-                    self.warn(Diagnostic::warning("empty-selection", span, format!("there are no live {} entities", kinds::singular_of(*kind))).label("empty"));
+                    let d = Diagnostic::warning("empty-selection", span, format!("there are no live {} entities", kinds::singular_of(*kind))).label("empty");
+                    let d = if matches!(kind, EntityKind::Surface | EntityKind::Curve) {
+                        d.help("geometry carriers (`geom_surfaces`, `geom_curves`) are not the Cubit surfaces and curves; those are `faces` and `edges`")
+                    } else {
+                        d
+                    };
+                    self.warn(d);
                 }
                 Ok(set)
             }
             EntityExpr::In { kind, within, .. } => {
                 let w = self.eval(within)?;
                 let set = match w {
-                    Val::Ents(s) => s,
+                    Val::Ents(s) => s.to_sorted(),
                     other => {
                         let er = match &other {
                             Val::Ref { .. } | Val::Outcome(_) | Val::Placeholder { .. } => eval::opaque_err(&other),
@@ -1161,6 +1494,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return self.eval_fail(er, within.span);
                     }
                 };
+                self.warn_batch_snapshot(span);
                 let Some(rel) = self.host.relations() else {
                     let d = Diagnostic::error("no-relations", span, "this host cannot resolve relations between entities")
                         .label("`in` needs topology")
@@ -1181,6 +1515,135 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 }
             }
         }
+    }
+}
+
+/// Entity ids (`Kind#serial`) written in a message.
+fn id_texts(msg: &str) -> Vec<String> {
+    let b = msg.as_bytes();
+    let mut out = Vec::new();
+    for (i, &c) in b.iter().enumerate() {
+        if c != b'#' {
+            continue;
+        }
+        let mut lo = i;
+        while lo > 0 && b[lo - 1].is_ascii_alphabetic() {
+            lo -= 1;
+        }
+        let mut hi = i + 1;
+        while hi < b.len() && b[hi].is_ascii_digit() {
+            hi += 1;
+        }
+        if lo < i && hi > i + 1 {
+            out.push(msg[lo..hi].to_owned());
+        }
+    }
+    out
+}
+
+fn find_str(j: &Json, want: &str, path: &mut Vec<PathSeg>) -> bool {
+    match j {
+        Json::String(s) => s == want,
+        Json::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                path.push(PathSeg::Idx(i));
+                if find_str(x, want, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        Json::Object(m) => {
+            for (k, x) in m {
+                path.push(PathSeg::Key(k.clone()));
+                if find_str(x, want, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// The argument (and the element inside it) that supplied an entity named by an op error: its span and parameter name.
+fn localize(msg: &str, params: &Json, sites: &[Site<'_>]) -> Option<(Span, String)> {
+    for cand in id_texts(msg) {
+        let mut path = Vec::new();
+        if !find_str(params, &cand, &mut path) {
+            continue;
+        }
+        let Some(PathSeg::Key(k)) = path.first() else { continue };
+        let Some(site) = sites.iter().find(|s| &s.key == k) else { continue };
+        let sp = if site.direct { locate(site.expr, &path[1..]) } else { locate_in_spread(site.expr, k, &path[1..]) };
+        return Some((sp, k.clone()));
+    }
+    None
+}
+
+fn json_at<'j>(params: &'j Map<String, Json>, path: &[PathSeg]) -> Option<&'j Json> {
+    let Some(PathSeg::Key(k)) = path.first() else { return None };
+    let mut cur = params.get(k)?;
+    for seg in &path[1..] {
+        cur = match (seg, cur) {
+            (PathSeg::Key(k), Json::Object(m)) => m.get(k)?,
+            (PathSeg::Idx(i), Json::Array(a)) => a.get(*i)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+fn view_at<'a>(view: View<'a>, path: &[PathSeg]) -> Option<View<'a>> {
+    let mut cur = view;
+    for seg in path {
+        cur = match seg {
+            PathSeg::Key(k) => cur.non_null().property(k)?,
+            PathSeg::Idx(_) => cur.non_null().items()?,
+        };
+    }
+    Some(cur)
+}
+
+/// A query result as a language value. Where the result schema says "entity id" or "array of entity ids" (the
+/// `EntityId` pattern), the strings become entity sets, so `bc.sideset(faces: geom.find_faces(...))` works.
+fn json_to_val(v: &Json, view: Option<View<'_>>, max_len: usize) -> Result<Val, String> {
+    if let Some(vw) = view {
+        let nn = vw.non_null();
+        if nn.is_entity_id()
+            && let Json::String(s) = v
+            && let Ok(id) = kinds::parse_entity_text(s)
+        {
+            return Ok(Val::Ents(EntitySet::single(id)));
+        }
+        if nn.id_array_items().is_some()
+            && let Json::Array(a) = v
+        {
+            if a.len() > max_len {
+                return Err(format!("a list of {} ids exceeds the limit of {max_len}", a.len()));
+            }
+            let ids: Option<Vec<EntityId>> = a.iter().map(|x| x.as_str().and_then(|s| kinds::parse_entity_text(s).ok())).collect();
+            if let Some(ids) = ids {
+                return Ok(Val::Ents(EntitySet::from_ordered(ids)));
+            }
+        }
+    }
+    match v {
+        Json::Array(a) => {
+            if a.len() > max_len {
+                return Err(format!("a list of {} elements exceeds the limit of {max_len}", a.len()));
+            }
+            let iv = view.and_then(|w| w.non_null().items());
+            Ok(Val::list(a.iter().map(|x| json_to_val(x, iv, max_len)).collect::<Result<_, _>>()?))
+        }
+        Json::Object(m) => Ok(Val::obj(
+            m.iter()
+                .map(|(k, x)| Ok((k.clone(), json_to_val(x, view.and_then(|w| w.non_null().property(k)), max_len)?)))
+                .collect::<Result<_, String>>()?,
+        )),
+        other => Val::from_json_limited(other, max_len),
     }
 }
 

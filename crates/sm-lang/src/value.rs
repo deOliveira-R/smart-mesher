@@ -2,10 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use serde_json::Value as Json;
 use sm_core::EntityId;
 
+use crate::kinds;
 use crate::entity::EntitySet;
 
 /// Which outputs of a symbolic batch member a reference selects.
@@ -24,17 +26,17 @@ pub enum Sel {
 pub enum Outcome {
     /// Executed: the op's `Delta`.
     Concrete {
-        /// Ids created, in order.
-        created: Vec<EntityId>,
-        /// Ids removed, in order.
-        removed: Vec<EntityId>,
-        /// Named outputs by role.
-        outputs: BTreeMap<String, Vec<EntityId>>,
+        /// Ids created, in the order the op reported them (an ordered list, not a sorted set).
+        created: EntitySet,
+        /// Ids removed, in the order the op reported them.
+        removed: EntitySet,
+        /// Named outputs by role, each in the op's order.
+        outputs: BTreeMap<String, EntitySet>,
     },
     /// An op inside a batch that has been applied: only the named outputs are known (`created`/`removed` are not).
     Applied {
-        /// Named outputs by role.
-        outputs: BTreeMap<String, Vec<EntityId>>,
+        /// Named outputs by role, each in the op's order.
+        outputs: BTreeMap<String, EntitySet>,
     },
     /// Member `index` of the batch being lowered (batch number `batch`); becomes `Concrete` after the batch applies.
     Batch {
@@ -61,11 +63,11 @@ pub enum Val {
     Num(f64),
     /// String.
     Str(String),
-    /// List.
-    List(Vec<Val>),
-    /// Object with string keys, ordered by key.
-    Obj(BTreeMap<String, Val>),
-    /// Entity set.
+    /// List (cheap to clone).
+    List(Arc<Vec<Val>>),
+    /// Object with string keys, ordered by key (cheap to clone).
+    Obj(Arc<BTreeMap<String, Val>>),
+    /// Entity set or ordered id list (cheap to clone).
     Ents(EntitySet),
     /// Result of an op statement.
     Outcome(Outcome),
@@ -90,6 +92,16 @@ pub enum Val {
 }
 
 impl Val {
+    /// A list value.
+    pub fn list(items: Vec<Val>) -> Val {
+        Val::List(Arc::new(items))
+    }
+
+    /// An object value.
+    pub fn obj(items: BTreeMap<String, Val>) -> Val {
+        Val::Obj(Arc::new(items))
+    }
+
     /// Short type name for messages.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -130,6 +142,11 @@ impl Val {
 
     /// Convert a JSON value (a query result) into a language value. `Err` for `null`.
     pub fn from_json(v: &Json) -> Result<Val, String> {
+        Self::from_json_limited(v, usize::MAX)
+    }
+
+    /// Like [`from_json`](Self::from_json), rejecting any string longer than `max_len` bytes or array longer than `max_len` elements.
+    pub fn from_json_limited(v: &Json, max_len: usize) -> Result<Val, String> {
         Ok(match v {
             Json::Null => return Err("null has no language value".into()),
             Json::Bool(b) => Val::Bool(*b),
@@ -137,11 +154,29 @@ impl Val {
                 Some(i) => Val::Int(i),
                 None => Val::Num(n.as_f64().ok_or("number out of range")?),
             },
+            Json::String(s) if s.len() > max_len => return Err(format!("a string of {} bytes exceeds the limit of {max_len}", s.len())),
             Json::String(s) => Val::Str(s.clone()),
-            Json::Array(a) => Val::List(a.iter().map(Val::from_json).collect::<Result<_, _>>()?),
-            Json::Object(m) => Val::Obj(m.iter().map(|(k, v)| Ok((k.clone(), Val::from_json(v)?))).collect::<Result<_, String>>()?),
+            Json::Array(a) if a.len() > max_len => return Err(format!("a list of {} elements exceeds the limit of {max_len}", a.len())),
+            Json::Array(a) => Val::list(a.iter().map(|x| Val::from_json_limited(x, max_len)).collect::<Result<_, _>>()?),
+            Json::Object(m) => Val::obj(m.iter().map(|(k, x)| Ok((k.clone(), Val::from_json_limited(x, max_len)?))).collect::<Result<_, String>>()?),
         })
     }
+}
+
+/// Format a float so it reads back as a float: shortest round-trip digits, a trailing `.0` for whole numbers,
+/// and an exponent for very large or small magnitudes (never hundreds of digits).
+pub fn fmt_num(n: f64) -> String {
+    let a = n.abs();
+    if a != 0.0 && !(1e-5..1e16).contains(&a) {
+        return format!("{n:e}");
+    }
+    let s = format!("{n}");
+    if s.contains('.') { s } else { format!("{s}.0") }
+}
+
+/// An entity id spelled the way scripts write it (`Face#3`, the preferred alias of its kind).
+pub fn fmt_id(id: EntityId) -> String {
+    format!("{}#{}", kinds::singular_of(id.kind()), id.serial())
 }
 
 impl fmt::Display for Val {
@@ -149,7 +184,7 @@ impl fmt::Display for Val {
         match self {
             Val::Bool(b) => write!(f, "{b}"),
             Val::Int(i) => write!(f, "{i}"),
-            Val::Num(n) => write!(f, "{n}"),
+            Val::Num(n) => f.write_str(&fmt_num(*n)),
             Val::Str(s) => f.write_str(s),
             Val::List(v) => {
                 f.write_str("[")?;
@@ -183,7 +218,7 @@ impl fmt::Display for Val {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    write!(f, "{id}")?;
+                    f.write_str(&fmt_id(*id))?;
                 }
                 f.write_str("}")
             }

@@ -3,6 +3,8 @@
 //! Errors are `(code, message)` pairs; the interpreter attaches the span. Every float result is
 //! checked finite (`non-finite`), so no `NaN`/`inf` can reach an op record.
 
+use std::cmp::Ordering;
+
 use crate::ast::{BinOp, UnOp};
 use crate::entity::EntitySet;
 use crate::value::Val;
@@ -15,7 +17,7 @@ pub type EvalRes<T> = Result<T, EvalErr>;
 /// Builtin function and constant names (not reserved, but cannot be op names, which are dotted).
 pub const BUILTIN_NAMES: &[&str] = &[
     "abs", "min", "max", "floor", "ceil", "round", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "ln", "log10", "pow", "int",
-    "float", "len", "count", "range", "str", "ents", "pi", "tau",
+    "float", "len", "count", "range", "str", "ents", "contains", "pi", "tau",
 ];
 
 fn finite(v: f64) -> EvalRes<Val> {
@@ -62,8 +64,35 @@ pub fn unop(op: UnOp, v: &Val) -> EvalRes<Val> {
     }
 }
 
-/// Binary operators except the short-circuit `and`/`or` (the interpreter evaluates those lazily).
+/// Binary operators except the short-circuit `and`/`or` (the interpreter evaluates those lazily). No size limit.
 pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
+    binop_lim(op, l, r, usize::MAX)
+}
+
+fn too_long(what: &str, len: usize, max: usize) -> EvalErr {
+    ("value-too-long", format!("{what} of {len} would exceed the limit of {max}"))
+}
+
+/// Exact order of an integer and a float (no rounding of the integer); `None` for NaN.
+pub fn cmp_int_num(i: i64, f: f64) -> Option<Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    if f >= 9.223_372_036_854_775_8e18 {
+        return Some(Ordering::Less);
+    }
+    if f < -9.223_372_036_854_775_8e18 {
+        return Some(Ordering::Greater);
+    }
+    let t = f.trunc();
+    Some(match i.cmp(&(t as i64)) {
+        Ordering::Equal => 0.0f64.partial_cmp(&(f - t)).unwrap_or(Ordering::Equal),
+        o => o,
+    })
+}
+
+/// Like [`binop`], refusing results where a string or list would be longer than `max_len`.
+pub fn binop_lim(op: BinOp, l: &Val, r: &Val, max_len: usize) -> EvalRes<Val> {
     for v in [l, r] {
         if opaque(v) {
             return Err(opaque_err(v));
@@ -73,8 +102,19 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
     match op {
         Add => match (l, r) {
             (Val::Int(a), Val::Int(b)) => a.checked_add(*b).map(Val::Int).ok_or(("overflow", "integer overflow in `+`".into())),
-            (Val::Str(a), Val::Str(b)) => Ok(Val::Str(format!("{a}{b}"))),
-            (Val::List(a), Val::List(b)) => Ok(Val::List(a.iter().chain(b).cloned().collect())),
+            (Val::Str(a), Val::Str(b)) => {
+                if a.len().saturating_add(b.len()) > max_len {
+                    return Err(too_long("a string", a.len().saturating_add(b.len()), max_len));
+                }
+                Ok(Val::Str(format!("{a}{b}")))
+            }
+            (Val::List(a), Val::List(b)) => {
+                if a.len().saturating_add(b.len()) > max_len {
+                    return Err(too_long("a list", a.len().saturating_add(b.len()), max_len));
+                }
+                Ok(Val::list(a.iter().chain(b.iter()).cloned().collect()))
+            }
+            (Val::Ents(_), Val::Ents(_)) => type_err("`+` is not defined for entity sets; use `|` for union (or `-` for difference)".into()),
             _ => num2(l, r, "+", |a, b| a + b),
         },
         Sub => match (l, r) {
@@ -130,8 +170,10 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
             let ord = match (l, r) {
                 (Val::Str(a), Val::Str(b)) => a.cmp(b),
                 (Val::Int(a), Val::Int(b)) => a.cmp(b),
-                _ => match (as_f64(l), as_f64(r)) {
-                    (Some(a), Some(b)) => a.partial_cmp(&b).ok_or(("non-finite", "cannot compare NaN".to_owned()))?,
+                (Val::Int(a), Val::Num(b)) => cmp_int_num(*a, *b).ok_or(("non-finite", "cannot compare NaN".to_owned()))?,
+                (Val::Num(a), Val::Int(b)) => cmp_int_num(*b, *a).ok_or(("non-finite", "cannot compare NaN".to_owned()))?.reverse(),
+                _ => match (l, r) {
+                    (Val::Num(a), Val::Num(b)) => a.partial_cmp(b).ok_or(("non-finite", "cannot compare NaN".to_owned()))?,
                     _ => return type_err(format!("cannot order {} and {}", l.a_type(), r.a_type())),
                 },
             };
@@ -161,7 +203,9 @@ fn num2(l: &Val, r: &Val, sym: &str, f: fn(f64, f64) -> f64) -> EvalRes<Val> {
 pub fn equal(l: &Val, r: &Val) -> EvalRes<bool> {
     Ok(match (l, r) {
         (Val::Int(a), Val::Int(b)) => a == b,
-        (Val::Int(_) | Val::Num(_), Val::Int(_) | Val::Num(_)) => as_f64(l) == as_f64(r),
+        (Val::Int(a), Val::Num(b)) => cmp_int_num(*a, *b) == Some(Ordering::Equal),
+        (Val::Num(a), Val::Int(b)) => cmp_int_num(*b, *a) == Some(Ordering::Equal),
+        (Val::Num(a), Val::Num(b)) => a == b,
         (Val::Bool(a), Val::Bool(b)) => a == b,
         (Val::Str(a), Val::Str(b)) => a == b,
         (Val::Ents(a), Val::Ents(b)) => a == b,
@@ -169,7 +213,7 @@ pub fn equal(l: &Val, r: &Val) -> EvalRes<bool> {
             if a.len() != b.len() {
                 return Ok(false);
             }
-            for (x, y) in a.iter().zip(b) {
+            for (x, y) in a.iter().zip(b.iter()) {
                 if !equal(x, y)? {
                     return Ok(false);
                 }
@@ -225,6 +269,11 @@ pub fn constant(name: &str) -> Option<Val> {
 
 /// Call a builtin function. `max_range` bounds `range`.
 pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
+    call_builtin_lim(name, args, max_range, usize::MAX)
+}
+
+/// Like [`call_builtin`], also bounding the length of strings and lists a builtin may build (`max_len`).
+pub fn call_builtin_lim(name: &str, args: &[Val], max_range: u64, max_len: usize) -> EvalRes<Val> {
     for a in args {
         if opaque(a) && !matches!(name, "str") {
             return Err(opaque_err(a));
@@ -244,26 +293,25 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
         }
         "min" | "max" => {
             let items: Vec<Val> = match args {
-                [Val::List(l)] => l.clone(),
+                [Val::List(l)] => l.to_vec(),
                 _ => args.to_vec(),
             };
             if items.is_empty() {
                 return Err(("bad-arguments", format!("`{name}` needs at least one value")));
             }
-            let all_int = items.iter().all(|v| matches!(v, Val::Int(_)));
+            if items.iter().all(|v| matches!(v, Val::Int(_))) {
+                let ints = items.iter().filter_map(|v| if let Val::Int(i) = v { Some(*i) } else { None });
+                let best = if name == "min" { ints.min() } else { ints.max() };
+                return best.map(Val::Int).ok_or(("bad-arguments", format!("`{name}` needs at least one value")));
+            }
             let mut best = want_num(name, &items[0])?;
-            let mut best_int = if let Val::Int(i) = &items[0] { *i } else { 0 };
             for v in &items[1..] {
                 let x = want_num(name, v)?;
-                let take = if name == "min" { x < best } else { x > best };
-                if take {
+                if (name == "min" && x < best) || (name != "min" && x > best) {
                     best = x;
-                    if let Val::Int(i) = v {
-                        best_int = *i;
-                    }
                 }
             }
-            Ok(if all_int { Val::Int(best_int) } else { Val::Num(best) })
+            Ok(Val::Num(best))
         }
         "floor" => {
             arity(name, args, 1)?;
@@ -366,25 +414,59 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
                 v.push(Val::Int(x));
                 x = x.wrapping_add(step);
             }
-            Ok(Val::List(v))
+            Ok(Val::list(v))
         }
         "str" => {
             arity(name, args, 1)?;
             match &args[0] {
                 v if opaque(v) => Err(opaque_err(v)),
-                v => Ok(Val::Str(v.to_string())),
+                v => {
+                    let s = v.to_string();
+                    if s.len() > max_len {
+                        return Err(too_long("a string", s.len(), max_len));
+                    }
+                    Ok(Val::Str(s))
+                }
+            }
+        }
+        "contains" => {
+            arity(name, args, 2)?;
+            match (&args[0], &args[1]) {
+                (Val::Ents(s), Val::Ents(x)) => Ok(Val::Bool(!x.is_empty() && x.iter().all(|i| s.contains(*i)))),
+                (Val::Ents(s), Val::Str(x)) => Ok(Val::Bool(crate::kinds::parse_entity_text(x).is_ok_and(|i| s.contains(i)))),
+                (Val::List(l), x) => {
+                    for y in l.iter() {
+                        if equal(y, x)? {
+                            return Ok(Val::Bool(true));
+                        }
+                    }
+                    Ok(Val::Bool(false))
+                }
+                (Val::Str(h), Val::Str(n)) => Ok(Val::Bool(h.contains(n.as_str()))),
+                (Val::Obj(m), Val::Str(k)) => Ok(Val::Bool(m.contains_key(k))),
+                (a, b) => type_err(format!("`contains` takes (entity set, entity set), (list, value), (string, string) or (object, key); found {} and {}", a.a_type(), b.a_type())),
             }
         }
         "ents" => {
             arity(name, args, 1)?;
-            let one = |v: &Val| match v {
-                Val::Str(s) => crate::kinds::parse_entity_text(s).map_err(|m| ("bad-arguments", m)),
-                v => type_err(format!("`ents` needs id strings, found {}", v.a_type())),
+            let one = |v: &Val, out: &mut Vec<sm_core::EntityId>| -> EvalRes<()> {
+                match v {
+                    Val::Str(s) => out.push(crate::kinds::parse_entity_text(s).map_err(|m| ("bad-arguments", m))?),
+                    Val::Ents(e) => out.extend_from_slice(e.as_slice()),
+                    v => return type_err(format!("`ents` needs id strings or entity sets, found {}", v.a_type())),
+                }
+                Ok(())
             };
+            let mut out = Vec::new();
             match &args[0] {
-                Val::List(l) => Ok(Val::Ents(EntitySet::from_vec(l.iter().map(one).collect::<EvalRes<Vec<_>>>()?))),
-                v => Ok(Val::Ents(EntitySet::single(one(v)?))),
+                Val::List(l) => {
+                    for v in l.iter() {
+                        one(v, &mut out)?;
+                    }
+                }
+                v => one(v, &mut out)?,
             }
+            Ok(Val::Ents(EntitySet::from_vec(out)))
         }
         _ => Err(("unknown-function", format!("unknown function `{name}`"))),
     }

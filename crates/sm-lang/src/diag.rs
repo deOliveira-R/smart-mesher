@@ -67,6 +67,33 @@ impl Diagnostic {
         self.severity == Severity::Error
     }
 
+    /// A machine-readable form for tools (an MCP server returns this): code, severity, message, location and the rest.
+    ///
+    /// `line` and `col` are 1-based (columns count characters); `lo`/`hi` are byte offsets into the file named `file`.
+    pub fn to_json(&self, map: &SourceMap) -> serde_json::Value {
+        use serde_json::json;
+        let loc = |sp: Span| {
+            let (file, line, col, end_line, end_col) = match map.get(sp.file) {
+                Some(src) => {
+                    let (l, c) = src.line_col(sp.lo);
+                    let (el, ec) = src.line_col(sp.hi);
+                    (src.name.clone(), l, c, el, ec)
+                }
+                None => (String::new(), 0, 0, 0, 0),
+            };
+            json!({ "file": file, "line": line, "col": col, "end_line": end_line, "end_col": end_col, "lo": sp.lo, "hi": sp.hi })
+        };
+        json!({
+            "code": self.code,
+            "severity": match self.severity { Severity::Error => "error", Severity::Warning => "warning" },
+            "message": self.message,
+            "span": loc(self.span),
+            "label": self.label,
+            "help": self.help,
+            "notes": self.notes.iter().map(|(sp, text)| json!({ "span": loc(*sp), "text": text })).collect::<Vec<_>>(),
+        })
+    }
+
     /// Render in a stable, rustc-like text form (used by the golden tests).
     pub fn render(&self, map: &SourceMap) -> String {
         let mut out = String::new();
