@@ -56,6 +56,9 @@ pub fn node_params(curve: &dyn ParametricCurve, cc: CurveCarrier, n: u32, spec: 
     if n == 1 {
         return Ok(Vec::new());
     }
+    if u64::from(n) > spacing::MAX_COUNT {
+        return Err(SpacingError::Unreachable(format!("interval count {n} exceeds the cap {}", spacing::MAX_COUNT)));
+    }
     let map = ArcMap::new(curve, cc)?;
     let len = map.length();
     let arc = match *spec {

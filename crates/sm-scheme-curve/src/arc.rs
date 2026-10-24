@@ -11,7 +11,15 @@ const GL_X: [f64; 5] = [0.0, -0.538_469_310_105_683_1, 0.538_469_310_105_683_1, 
 const GL_W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
 
 /// Initial uniform panels before local refinement.
-const MIN_PANELS: usize = 8;
+const MIN_PANELS: usize = 64;
+/// 5-point Gauss-Lobatto rule on [-1, 1]: includes both endpoints (exact to degree 7).
+const GLL_X: [f64; 5] = [-1.0, -0.654_653_670_707_977_1, 0.0, 0.654_653_670_707_977_1, 1.0];
+const GLL_W: [f64; 5] = [0.1, 0.544_444_444_444_444_4, 0.711_111_111_111_111_1, 0.544_444_444_444_444_4, 0.1];
+/// A panel is also refined while its Gauss-Legendre and Gauss-Lobatto estimates differ by more
+/// than this times the initial length estimate.
+const LOBATTO_TOL: f64 = 1e-13;
+/// Relative slack of the chord bound `|C(b) - C(a)| <= arc length`.
+const CHORD_TOL: f64 = 1e-12;
 /// Most panels the refinement may produce before the map is refused.
 const MAX_PANELS: usize = 1 << 16;
 /// A panel is accepted when its whole and split estimates differ by at most this times the
@@ -27,8 +35,14 @@ const UNIFORM_SPREAD: f64 = 1e-13;
 
 /// Arc length as a function of the edge fraction `tau` in `[0, 1]` (from the edge's start).
 ///
-/// Panels are refined locally where the speed is not smooth (repeated knots, kinks), so the map
-/// is accurate on non-uniformly parametrized NURBS without knowing the knots.
+/// Panels are refined locally where the speed is not smooth (repeated knots, kinks). A panel is
+/// accepted only if (1) its 5-point Gauss-Legendre estimate matches the sum over its halves,
+/// (2) it matches an endpoint-including Gauss-Lobatto estimate, and (3) the chord does not
+/// exceed the arc length. (2) and (3) see the outer ~5% of a panel that the Gauss-Legendre
+/// nodes miss. Limitation: the map does not know the knots. A knot span narrower than the
+/// initial panel width (1/64) that falls between nodes, has no speed contrast visible to the
+/// Lobatto rule and adds negligible displacement can still be missed; a full guarantee needs
+/// the knot breakpoints from the geometry API.
 pub(crate) struct ArcMap<'a> {
     curve: &'a dyn ParametricCurve,
     cc: CurveCarrier,
@@ -69,6 +83,7 @@ impl<'a> ArcMap<'a> {
             return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
         }
         let tol = PANEL_TOL * l0;
+        let scale = l0;
         // Depth-first refinement in a fixed order, so the result is deterministic.
         let mut out: Vec<Panel> = Vec::with_capacity(4 * MIN_PANELS);
         let mut stack: Vec<Panel> = init.into_iter().rev().collect();
@@ -79,7 +94,9 @@ impl<'a> ArcMap<'a> {
             if !diff.is_finite() {
                 return Err(SpacingError::Geometry("curve has non-finite speed".into()));
             }
-            if diff <= tol || p.b - p.a <= MIN_WIDTH {
+            let tiny = p.b - p.a <= MIN_WIDTH;
+            let bad = !tiny && (map.endpoint_bad(&p, scale) || map.endpoint_bad(&l, scale) || map.endpoint_bad(&r, scale));
+            if (diff <= tol && !bad) || tiny {
                 out.push(l);
                 out.push(r);
             } else {
@@ -139,6 +156,23 @@ impl<'a> ArcMap<'a> {
             hi = hi.max(v);
         }
         (s * h, lo, hi)
+    }
+
+    /// Endpoint-sensitive refinement tests for a panel: Lobatto vs Legendre estimate, and the
+    /// chord lower bound on the arc length.
+    fn endpoint_bad(&self, p: &Panel, scale: f64) -> bool {
+        let (h, mid) = (0.5 * (p.b - p.a), 0.5 * (p.a + p.b));
+        let mut s = 0.0;
+        for (x, w) in GLL_X.iter().zip(GLL_W) {
+            s += w * self.speed(mid + h * x);
+        }
+        if (s * h - p.i).abs() > LOBATTO_TOL * scale {
+            return true;
+        }
+        let (ca, cb) = (self.curve.eval(edge_param(&self.cc, p.a)), self.curve.eval(edge_param(&self.cc, p.b)));
+        let chord = (cb - ca).norm();
+        let slack = CHORD_TOL * p.i + 1e-15 * scale + 4.0 * f64::EPSILON * (ca.x.abs().max(ca.y.abs()).max(ca.z.abs()) + cb.x.abs().max(cb.y.abs()).max(cb.z.abs()));
+        chord.is_nan() || chord > p.i + slack
     }
 
     /// Edge fraction at arc length `s` from the start.

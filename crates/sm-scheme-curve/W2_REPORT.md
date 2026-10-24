@@ -2,7 +2,7 @@
 
 ## Summary
 
-All five schemes are implemented and registered by `sm_scheme_curve::register`: `equal`, `bias`, `dualbias`, `stretch`, `curvature`. `equal` is the first-class path (exact on lines, 1e-12 on arcs, 1e-9 on NURBS) and also the baseline the others reduce to. Spacing is computed in arc length and converted to parameter fractions by an adaptive Gauss-Legendre map with a monotone inverse; `GenCtx::curve_patch` owns keys and positions. Parameters are typed serde structs in `SchemeChoice::params`. No other crate was touched.
+All five schemes are implemented and registered by `sm_scheme_curve::register`: `equal`, `bias`, `dualbias`, `stretch`, `curvature`. `equal` is the first-class path (exact on lines, 1e-12 on arcs, 1e-9 on NURBS up to the knot-span limitation in Fix round 1) and also the baseline the others reduce to. Spacing is computed in arc length and converted to parameter fractions by an adaptive Gauss-Legendre map with a monotone inverse; `GenCtx::curve_patch` owns keys and positions. Parameters are typed serde structs in `SchemeChoice::params`. No other crate was touched.
 
 Definition of done (run on this tree): `cargo build --workspace`, `cargo test -p sm-scheme-curve --all-features` (45 tests), the same with `RAYON_NUM_THREADS=1`, `cargo clippy -p sm-scheme-curve --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-curve --no-deps`: all pass.
 
@@ -75,3 +75,21 @@ Should fix, all done:
 11. Determinism test runs Sequential vs `ScopedThreads(N)` and compares `check::mesh_hash` of the finished mesh plus the node distances.
 12. End-to-end test builds with `sm_mesh::MeshBuilder`. The `sm-mesh-api` dev-dependency stays: `MeshRead`, `SerialAlloc` and `validate` are only exported there (not re-exported by `sm-mesh` or `sm-scheme-api`).
 13. `sm-math` left declared, consistent with the skeleton (deviation 9).
+
+## Fix round 1 (review findings)
+
+Must fix 1 and 2 (arc map misses kinks near panel edges and short knot spans): `ArcMap::new` now starts from 64 panels and accepts a panel only if (a) whole vs halves agree (as before), (b) the 5-point Gauss-Legendre estimate agrees with a 5-point Gauss-Lobatto estimate within 1e-13 L (samples both panel endpoints), and (c) the chord `|C(b)-C(a)|` does not exceed the arc length (relative 1e-12 plus an absolute rounding slack). New tests in `tests/nurbs.rs` against a per-knot-span reference: case (a) double knots 0.3141/0.7183 with bias first-size and ratio/closure, case (b) degree-1 polyline with knots 0.123/0.456/0.789, case (c) double knot at 0.0013 (plus curvature sanity), short interior span [0.499, 0.501] for cubic C2 and C1 (with ratio closure), short end span at 0.002 (quadratic, and cubic C2 with {0.002, 0.3, 0.7}); all equal arc lengths within 1e-9, both senses.
+
+Remaining limitation (honest): the map is not given the knots. A knot span narrower than 1/64 of the edge that falls between quadrature nodes, with no visible speed contrast and negligible displacement, can still be missed without an error. DESIGN.md and the claims above are qualified accordingly. A full guarantee needs knot breakpoints.
+
+api_change_request (for the orchestrator, not done here): add `ParametricCurve::breakpoints(&self) -> Vec<f64>` (default empty; NURBS returns its distinct interior knots) so the arc map can split panels at them and integrate each smooth piece exactly.
+
+Should fix:
+1. Stretch ratio slack lowered from 1e-9 to 4 ulps (`max_ratio * (1 + 4 eps)`), covering only rounding of the computed ratio.
+2. `node_params` returns `Unreachable` for `n` above `MAX_COUNT` (2^22) before any allocation (test: `huge_interval_counts_are_refused_before_allocation`, Equal and Curvature).
+3. Not tightened: the 1e-12 ratio/closure bound is met on analytic curves (lines, arcs, ellipses). On rational NURBS with extreme weights (1, 30, 1, 0.05, 1 and a double knot) it is about 1e-12 to 1e-9; the NURBS bound is 1e-9 (Gauss-Legendre/Lobatto tolerances 1e-14/1e-13 of L and curve conditioning).
+4. Curvature samples at arc-length fractions through the corrected map; case (c) is covered by a well-formedness test (finite, strictly increasing nodes). Curvature spikes narrower than a panel are still limited by the sampling and by the knot limitation above.
+5. `sm-mesh-api` dev-dependency stays (MeshRead, SerialAlloc, validate are exported only there); the orchestrator should accept it explicitly or re-export from `sm-mesh`.
+6. `sm-math` stays declared but unused; note for cleanup.
+7. Cargo.lock at the repo root changed in the earlier round (serde, serde_json, thiserror, rayon); confirm at merge. Not touched here.
+8. NURBS accuracy claims in DESIGN.md and this report are qualified.

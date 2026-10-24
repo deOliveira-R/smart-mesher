@@ -12,7 +12,7 @@ use crate::error::{Result, SpacingError};
 /// Largest accepted `|ln ratio|` of a bias series.
 const LAMBDA_CAP: f64 = 700.0;
 /// Most intervals the fine/coarse count search considers.
-const MAX_COUNT: u64 = 1 << 22;
+pub(crate) const MAX_COUNT: u64 = 1 << 22;
 
 fn positive(what: &'static str, value: f64) -> Result<f64> {
     if value.is_finite() && value > 0.0 { Ok(value) } else { Err(SpacingError::BadValue { what, value }) }
@@ -278,7 +278,8 @@ pub fn stretch_fractions(n: u32, spec: &StretchSpec) -> Result<Vec<f64>> {
     if n == 1 {
         return Ok(Vec::new());
     }
-    let limit = max_ratio * (1.0 + 1e-9);
+    // A few ulps of slack for rounding in the computed ratio; no relaxation beyond that.
+    let limit = max_ratio * (1.0 + 4.0 * f64::EPSILON);
     let jump = |a: f64, b: f64| (a / b).max(b / a);
     let Some(last) = last else {
         let r = bias_ratio_from_first(n, first / length)?;
