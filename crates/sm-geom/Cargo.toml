@@ -7,11 +7,27 @@ version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Forward serde to the contract crate (store persistence).
+serde = ["sm-geom-api/serde"]
+
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 thiserror = "2"
+smallvec = "1"
+rayon = "1"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "hot_path"
+harness = false
 
 [lints]
 workspace = true
