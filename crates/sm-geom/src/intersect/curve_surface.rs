@@ -199,6 +199,11 @@ fn nurbs_plane(pc: &PreparedCurve, n: Vector3, p0: Point3, tol: &ModelTolerance,
 /// for implicit surfaces; for NURBS surfaces a coincident curve yields
 /// [`GeomError::NoConvergence`] (documented limit).
 ///
+/// A circle or ellipse against a quadric or torus treats a local extremum of the restriction
+/// that stays within `tol.linear` of the surface as one tangent contact (like the other closed
+/// forms); a NURBS surface merges neighbouring hits while the curve stays within `tol.linear`
+/// of it between them.
+///
 /// **Resolution limits.** NURBS curve against an implicit surface subdivides to `20 tol.linear`
 /// (contacts closer than a few `tol.linear`, or along a stretch that stays within `tol.linear`
 /// of the surface, merge into one hit). Against a NURBS surface the box search stops at 1e-3 of
@@ -269,6 +274,102 @@ fn trig_vs_implicit(f: &sm_geom_api::Frame, a: f64, b: f64, imp: &ImplicitDef, t
         ImplicitDef::Torus(_) => 4usize,
         _ => 2usize,
     };
+    let vals: Vec<f64> = (0..16).map(|k| g(TAU * k as f64 / 16.0)).collect();
+    let scale = vals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let on_surface = |t: f64| {
+        let p = at(t);
+        imp.value(p).abs() <= tol.linear * imp.gradient(p).norm().max(1e-300)
+    };
+    if (0..16).all(|k| on_surface(TAU * k as f64 / 16.0)) && on_surface(0.123) {
+        return None;
+    }
+    if scale == 0.0 {
+        return Some(Vec::new());
+    }
+    let gp = |t: f64| {
+        let (s, c) = t.sin_cos();
+        let p = at(t);
+        imp.gradient(p).dot(f.x * (-a * s) + f.y * (b * c))
+    };
+    let ts = trig_poly_roots(&g, d);
+    // Polish with Newton on the true restriction (the polynomial route loses a few digits).
+    let dist = |t: f64| {
+        let p = at(t);
+        g(t).abs() / imp.gradient(p).norm().max(1e-300)
+    };
+    let mut roots: Vec<(f64, bool)> = Vec::new();
+    for (t0, tan) in ts {
+        let mut t = t0;
+        if !tan {
+            for _ in 0..4 {
+                let (v, dv) = (g(t), gp(t));
+                if dv.abs() < 1e-300 {
+                    break;
+                }
+                let nt = t - v / dv;
+                if (g(nt)).abs() <= v.abs() {
+                    t = nt;
+                } else {
+                    break;
+                }
+            }
+        }
+        // Drop numerical roots that are not actually on the surface (conditioning of the
+        // polynomial route): require the residual to be within the tolerance.
+        if dist(t) <= if tan { 100.0 * tol.linear } else { 10.0 * tol.linear } {
+            roots.push((t.rem_euclid(TAU), tan));
+        }
+    }
+    // Near-tangent contacts: a local extremum of `g` that does not cross zero but lies within
+    // `tol.linear` of the surface is a contact, like the gap rule of the other closed forms.
+    // Roots on the same stretch (the curve stays within tolerance between them) collapse into it.
+    let mut crit = trig_poly_roots(&gp, d);
+    crit.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut contacts: Vec<f64> = Vec::new();
+    for (tc, _) in crit {
+        let mut t = tc;
+        for _ in 0..3 {
+            // Newton on g' with a central difference for g''.
+            let h = 1e-5;
+            let g2 = (gp(t + h) - gp(t - h)) / (2.0 * h);
+            if g2.abs() < 1e-300 {
+                break;
+            }
+            let nt = t - gp(t) / g2;
+            if (nt - t).abs() > 1e-3 {
+                break;
+            }
+            t = nt;
+        }
+        if dist(t) <= tol.linear {
+            contacts.push(t.rem_euclid(TAU));
+        }
+    }
+    let within = |t0: f64, t1: f64| {
+        // Shorter arc from t0 to t1; true when the curve stays within tolerance along it.
+        let mut dt = (t1 - t0).rem_euclid(TAU);
+        if dt > core::f64::consts::PI {
+            dt -= TAU;
+        }
+        (0..=8).all(|i| dist(t0 + dt * i as f64 / 8.0) <= tol.linear)
+    };
+    for &tc in &contacts {
+        roots.retain(|(t, _)| !within(tc, *t));
+    }
+    contacts.dedup_by(|a, b| within(*a, *b));
+    roots.extend(contacts.into_iter().map(|t| (t, true)));
+    let mut out = Vec::new();
+    for (w, tan) in roots {
+        for tt in periodic_in_range(w, TAU, r) {
+            out.push((tt, tan));
+        }
+    }
+    Some(out)
+}
+
+/// Real roots `(t, double)` in `[0, 2 pi)` of the trigonometric polynomial `g` of degree `d`
+/// (`x = tan(t/2)` and polynomial roots). Coefficients come from 16 equispaced samples.
+fn trig_poly_roots(g: &dyn Fn(f64) -> f64, d: usize) -> Vec<(f64, bool)> {
     // Exact trigonometric coefficients from 16 equispaced samples.
     const N: usize = 16;
     let vals: Vec<f64> = (0..N).map(|k| g(TAU * k as f64 / N as f64)).collect();
@@ -284,15 +385,8 @@ fn trig_vs_implicit(f: &sm_geom_api::Frame, a: f64, b: f64, imp: &ImplicitDef, t
             bm[m] += 2.0 / N as f64 * v * ang.sin();
         }
     }
-    let on_surface = |t: f64| {
-        let p = at(t);
-        imp.value(p).abs() <= tol.linear * imp.gradient(p).norm().max(1e-300)
-    };
-    if (0..N).all(|k| on_surface(TAU * k as f64 / N as f64)) && on_surface(0.123) {
-        return None;
-    }
     if scale == 0.0 {
-        return Some(Vec::new());
+        return Vec::new();
     }
     // P(x) = sum over harmonics of (1+x^2)^(d-m) * (a_m Re (1+ix)^(2m) + b_m Im (1+ix)^(2m)).
     let poly = |m: usize| -> (Vec<f64>, Vec<f64>) {
@@ -348,7 +442,7 @@ fn trig_vs_implicit(f: &sm_geom_api::Frame, a: f64, b: f64, imp: &ImplicitDef, t
             total[k] += am[m] * pr[k] + bm[m] * pi[k];
         }
     }
-    let mut ts: Vec<Raw> = Vec::new();
+    let mut ts: Vec<(f64, bool)> = Vec::new();
     for rt in poly_roots(&total, f64::NEG_INFINITY, f64::INFINITY) {
         ts.push((2.0 * rt.t.atan(), rt.double));
     }
@@ -358,42 +452,7 @@ fn trig_vs_implicit(f: &sm_geom_api::Frame, a: f64, b: f64, imp: &ImplicitDef, t
     if lead <= 1e-12 * tmax && g(core::f64::consts::PI).abs() <= 1e-9 * scale {
         ts.push((core::f64::consts::PI, false));
     }
-    // Polish with Newton on the true restriction (the polynomial route loses a few digits).
-    let gp = |t: f64| {
-        let (s, c) = t.sin_cos();
-        let p = at(t);
-        imp.gradient(p).dot(f.x * (-a * s) + f.y * (b * c))
-    };
-    let mut out = Vec::new();
-    for (t0, tan) in ts {
-        let mut t = t0;
-        if !tan {
-            for _ in 0..4 {
-                let (v, dv) = (g(t), gp(t));
-                if dv.abs() < 1e-300 {
-                    break;
-                }
-                let nt = t - v / dv;
-                if (g(nt)).abs() <= v.abs() {
-                    t = nt;
-                } else {
-                    break;
-                }
-            }
-        }
-        let w = t.rem_euclid(TAU);
-        for tt in periodic_in_range(w, TAU, r) {
-            out.push((tt, tan));
-        }
-    }
-    // Drop numerical roots that are not actually on the surface (conditioning of the
-    // polynomial route): require the residual to be within the tolerance.
-    out.retain(|(t, tan)| {
-        let p = at(*t);
-        let gn = imp.gradient(p).norm().max(1e-300);
-        g(*t).abs() / gn <= if *tan { 100.0 * tol.linear } else { 10.0 * tol.linear }
-    });
-    Some(out)
+    ts
 }
 
 // ---- NURBS curve against an implicit surface
@@ -681,7 +740,28 @@ pub(crate) fn pair_hits(c: &PreparedCurve, s: &PreparedSurface, cr: Interval, to
             None => out.push(h),
         }
     }
-    Ok(out)
+    // False crossings either side of a grazing contact: neighbouring hits are one contact when
+    // the curve stays within `tol.linear` of the surface all along between them.
+    out.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let near = |t: f64, uv: Uv| crate::nurbs::project::project_surface(s, c.eval(t), Some(uv)).distance <= tol.linear;
+    let mut merged: Vec<PairHit> = Vec::new();
+    for h in out {
+        match merged.last_mut() {
+            Some(l) if (l.point - h.point).norm() <= 1e-2 * scale && (1..8).all(|i| {
+                let f = i as f64 / 8.0;
+                near(l.t + (h.t - l.t) * f, Uv::new(l.uv.u + (h.uv.u - l.uv.u) * f, l.uv.v + (h.uv.v - l.uv.v) * f))
+            }) =>
+            {
+                // Keep the exact tangent hit when there is one, else the better-centred one.
+                if h.tangent && !l.tangent {
+                    *l = h;
+                }
+                l.tangent = true;
+            }
+            _ => merged.push(h),
+        }
+    }
+    Ok(merged)
 }
 
 /// Levenberg-Marquardt on `C(t) - S(u, v) = 0`.

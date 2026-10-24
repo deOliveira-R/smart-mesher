@@ -17,11 +17,11 @@ Branch: `claude/w1-sm-geom-86oupw`, the branch the session designated and the on
 
 ## Test summary
 
-`cargo test -p sm-geom`: 75 tests in 12 binaries, all passing (also with `RAYON_NUM_THREADS=1`); 4 proptest suites use the testkit's fixed seed (`config(64)` / `config(48)`).
+`cargo test -p sm-geom`: 83 tests in 13 binaries, all passing (also with `RAYON_NUM_THREADS=1`); 4 proptest suites use the testkit's fixed seed (`config(64)` / `config(48)`).
 
 | Binary | Tests | What |
 |---|---|---|
-| lib (unit) | 26 | roots (double roots, Brent), basis (partition of unity, FD), knot ops (open and periodic insertion, clamping, Bezier, de Casteljau), prepared curve/surface vs the reference evaluator, periodic surface editing and projection, periodic arc length, exact circle / ellipse / cylinder / sphere / torus / cone (implicit residual, curvature `K`, `H`, area by quadrature, length), pcurve helix, Bernstein roots, fit |
+| lib (unit) | 27 | roots (double roots, Brent), basis (partition of unity, FD), knot ops (open and periodic insertion, clamping, Bezier, de Casteljau), prepared curve/surface vs the reference evaluator, periodic surface editing and projection, periodic arc length, exact circle / ellipse / cylinder / sphere / torus / cone (implicit residual, curvature `K`, `H`, area by quadrature, length), pcurve helix, Bernstein roots (incl. even and odd roots at a split point), fit |
 | `curve_surface` | 6 | line / circle / ellipse / NURBS against planes; line, circle, ellipse, NURBS against sphere, cylinder, torus, cone nappe; NURBS circle against NURBS sphere; line against NURBS torus (hand values) |
 | `ssi_closed` | 5 | plane-plane / sphere / cylinder (circle, 45 deg ellipse `a = r sqrt 2`, lines, tangent) / cone (all conics, nappe, rays) / torus cuts / sphere-sphere / elliptic cylinder / ellipsoid |
 | `ssi_march` | 6 | perpendicular cylinders (two closed loops, length vs quadrature 2e-5), Steinmetz (coverage of the exact ellipses), oblique plane-torus (closed loops), sphere-cylinder, NURBS sphere-plane (length vs `2 pi rho`), NURBS-NURBS pair, determinism |
@@ -29,8 +29,9 @@ Branch: `claude/w1-sm-geom-86oupw`, the branch the session designated and the on
 | `nurbs_props` | 3 | random NURBS: prepared == reference, insertion / split keep shape, projection globally optimal vs dense scans. **Covers only clamped curves and surfaces with distinct interior knots and degree <= 5** (curves 1..5, surfaces 1..3); repeated knots, unclamped and periodic data are in `nurbs_props_general` (the original claim of exact periodic insertion rested on uniform-knot unit tests only) |
 | `nurbs_props_general` | 4 | repeated interior knots (multiplicity up to p + 1), unclamped non-periodic, degrees 8..15, non-uniform periodic curves with repeated knots and ulp-different period copies: prepared == reference, insertion / split keep shape, plane hits lie on the plane |
 | `fix0_curves` | 6 | C^-1 knot (curve and surface), NURBS contacts within tolerance, tiny spheres, circle / ellipse against NURBS plane and sphere over shifted and multi-period ranges (differential), periodic arc length over 1e6 periods |
-| `ssi_near_tangent` | 7 | near-equal perpendicular cylinders (dr 1e-2..1e-4), gaps within `tol.linear` for plane-sphere, plane-cylinder, sphere-sphere (external and internal), plane re-anchoring, sphere touched by a cylinder, parabola entering the window twice |
-| `store` | 4 | `KernelStore` vs `MemoryStore` (handles, defs, jets, domains, projections, replace, truncate, validation); testkit surface fixtures through the store (normals, `K`, `H`, closest points) |
+| `fix1_contact` | 3 | circle / ellipse against sphere, cylinder, torus: analytic, NURBS curve and NURBS surface paths agree at gaps 0, +-1e-9, 1e-8, +-5e-7 (one tangent hit) and 1e-5 (none); a 1e-3 penetration is two crossings |
+| `ssi_near_tangent` | 10 | near-equal perpendicular cylinders (dr 1e-2..1e-4; dr 1e-5..1e-9, negative dr and swapped order with default options; windows 3..30 x max_step 0.5..5), shallow sphere-cylinder penetration g = 0 .. -3e-2, gaps within `tol.linear` for plane-sphere, plane-cylinder, sphere-sphere (external and internal), plane re-anchoring, sphere touched by a cylinder, parabola entering the window twice |
+| `store` | 5 | `KernelStore` vs `MemoryStore` (handles, defs, jets, domains, projections, replace, truncate, validation; bit-exact jets for analytic handles); testkit surface fixtures through the store (normals, `K`, `H`, closest points) |
 | `misc` | 3 | NURBS ray hook vs analytic torus; marched pcurves, fitted NURBS; NURBS pcurve lifted onto a plane |
 | `determinism` | 1 | `check_f64_bits(2, 4, ..)` over batch eval/projection, marched and closed-form intersections, store; hash equal for 1, 3, 4 threads |
 
@@ -56,9 +57,11 @@ Definition of done: `cargo build`, `cargo test -p sm-geom`, `RAYON_NUM_THREADS=1
 - `eval_many` / `jet_many` assert equal buffer lengths: a caller-owned precondition, not data-reachable input.
 - `KernelStore::from(StoreData)` is infallible and silently leaves the prepared layer empty for an entry that fails validation (evaluation then uses the reference evaluator); `KernelStore::from_data` validates.
 - Tangent contacts are now decided by a distance compared with `tol.linear` (closed forms) and the marcher's singular threshold is `100 * tol.angular` (1e-7 by default). The 1e-10..1e-12 relative thresholds of the conic reduction that remain only classify the shape (parabola against ellipse, linear against quadratic part), not tangency.
-- Curve against a NURBS surface (`pair_hits`): box leaves stop at 1e-3 of the larger bounding diagonal and hits within `20 tol.linear` merge, so two contacts closer than a leaf in one box can come out as one (documented on `curve_surface`); `pair_hits` still deduplicates by scanning earlier hits (quadratic in the hit count, small in practice). `build_hits` merges by parameter within `1e-6 * span`, `trig_vs_implicit` flags the `t = pi` root as non-tangent, and `nurbs_plane` / `trig_vs_implicit` allocate small `Vec`s per segment or call. These are non-blocking and were left.
+- Curve against a NURBS surface (`pair_hits`): box leaves stop at 1e-3 of the larger bounding diagonal and hits within `20 tol.linear` merge, so two contacts closer than a leaf in one box can come out as one (documented on `curve_surface`); `pair_hits` still deduplicates by scanning earlier hits (quadratic in the hit count, small in practice). `build_hits` merges by parameter within `1e-6 * span`, the `t = pi` root of `trig_vs_implicit` (leading coefficient vanishing) is still flagged non-tangent unless it is also a near-tangent extremum, and `nurbs_plane` / `trig_vs_implicit` allocate small `Vec`s per segment or call. These are non-blocking and were left.
 - The isolated-tangent-point search runs only when the marcher found no curve and the other surface is implicit (not for NURBS against NURBS).
 - `insert_knot*` refuse the interval ends (the seam of a periodic direction); documented, not wrapped.
+- Marcher floor (see fix round 1): with default options perpendicular cylinders stay separated down to `dr = 1e-9` (branch gap 9e-5); `dr = 1e-10` (gap 2.8e-5) merges. The separation-aware chord tolerance exists only for an implicit second surface; for a NURBS second surface a branch gap under about `3 chord_tol` can still be bridged and run to `max_points` (`MarchEnd::Limit`); tighten `chord_tol` there. No separate oscillation detector was added: a non-closing branch is indistinguishable from a legitimately long one without extra state, and the cause is now removed where it can be measured.
+- Fixed thresholds that remain (documented, not tied to a tolerance): singular threshold `100 tol.angular`, the 1e-10 conic shape classification, `pair_hits`' box leaf at 1e-3 of the bounding diagonal. No boundary-pinning tests were added for them.
 - Not attributable to sm-geom: the contract ray hook used for line-sphere drops a tangent line at a 1e-10 gap (0 hits), so it shares the tolerance-blind tangency behaviour.
 
 ## Fix round 0 (review findings)
@@ -74,6 +77,20 @@ Fixed, each with a test:
 
 Should-fix items: (1) `nurbs_vs_implicit` leaves are `min(20 tol.linear, 1e-4 extent)` and hits merge when within `5 tol.linear` or when the curve stays within `tol.linear` of the surface between them (straight cubic through spheres of radius 3e-4 .. 1e-5: two hits; a 1e-7 sphere is one contact); `pair_hits` limits documented. (2) open conics: one curve per stretch inside the window, break parameters solved in closed form from the six window faces (no sampling). (3) sphere touched by a cylinder gives `Point`. (4) `nurbs_props_general`. (5) `PreparedCurve::length` collects, sorts and dedups cuts, and integrates whole periods once (1e6 periods in bounded time). (6) tangency decisions tied to `tol.linear` / `tol.angular` (see Known gaps for what stays fixed). (7) left, listed under Known gaps. (8) done as 4. (9) empty spans are skipped in `spans`. (10) documented. (11) done here and in DESIGN. (12) recorded under Known gaps.
 
+## Fix round 1 (review findings)
+
+Fixed, each with a test:
+
+1. **Analytic curve against analytic surface near tangency.** `trig_vs_implicit` now also finds the critical points of the restriction (the same trigonometric-polynomial solver applied to its derivative) and treats an extremum that stays within `tol.linear` of the surface as one tangent contact; real roots on the same stretch collapse into it. A circle or ellipse against a sphere, cylinder or torus now gives one tangent hit at gaps 0, 1e-9, 1e-8, +-5e-7 and none at 1e-5, the same as the NURBS curve and NURBS surface paths (`fix1_contact`, which compares all three).
+2. **Marcher near tangency (should-fix 1, 5).** The cause was that the jump guards allowed a deviation of `3 chord_tol` while the branch gap was `2.5..5 chord_tol`, and a step could also land on the far arm of the X formed by the branches. Now: (a) the chord tolerance is the minimum of `chord_tol` and a twelfth of the local branch separation, measured at the start, middle and end of the step (separation from the signed distance of `M` to the implicit `T` across the curve); (b) the step cap includes a distance-to-closest-approach estimate from the shrinking normal angle (`0.5 sin / rate`), so a step does not skip over the throat; (c) a loop closes only if the closing chord obeys the chord tolerance. Perpendicular cylinders with default options: two closed loops without z sign change for `dr` = 1e-2 .. 1e-9 (dr = 1e-6 and 3e-6 were a bridged branch and a 40001-point runaway), negative `dr` (loops split by x), swapped order, windows 3..30 and `max_step` 0.5..5. `dr = 1e-10` is the floor. The polyline chord midpoints stay within `chord_tol` of both surfaces.
+3. **Three hits for one tangent contact on a NURBS surface (should-fix 2).** `pair_hits` merges consecutive hits when the curve stays within `tol.linear` of the surface between them (projection at 7 interior samples), and marks the merged hit tangent. Circle against the exact NURBS sphere at g = 0 is one tangent hit.
+4. **Bernstein roots (should-fix 3).** Zero coefficients at a piece end are paired across a split point: the same sign on both sides is an even-multiplicity (tangent) root, opposite signs a crossing. `(s - .5)^2` and its negative are tangent; `(s - .5)^3`, `(s - .5)(s^2 + 1)` and linear stay crossings.
+5. **Sphere-cylinder shallow penetration (should-fix 7).** The isolated-contact search also takes local minima of the signed distance; a stationary point deeper than `tol.linear` inside `T` seeds a march (the zero of the signed distance is bracketed along a coordinate direction and bisected). g = 0, -1e-7, 5e-7 give `Point`, 1e-4 gives `Empty`, and -1e-5 .. -3e-2 each give one closed loop (both argument orders). This runs only when no curve was found and `T` is implicit.
+6. **spline1 (should-fix 8).** `insert_periodic` has a `debug_assert` that the order repair moves a knot by at most a few ulps; the `bezierized` doc describes C^-1 runs.
+7. **Store (should-fix 10).** A bit-exact test of jets of analytic curves and surfaces against `MemoryStore`.
+
+Not done (should-fix 4): no new tests pin the three fixed thresholds; they are listed in Known gaps. No oscillation detector for non-closing branches (reason in Known gaps).
+
 ## api_change_requests
 
 All additive and optional (`#[non_exhaustive]` enums / default methods); nothing blocks sm-geom.
@@ -86,4 +103,4 @@ All additive and optional (`#[non_exhaustive]` enums / default methods); nothing
 
 ## Commit
 
-Code complete at `9848cddb909961d9b81ffe7dfea54b4a1b991ce9`; this report fix is one commit on top of it (the HEAD of the branch, which is the merge target).
+The branch HEAD is the merge target; merge by SHA. Fix round 0 is `768960a`; fix round 1 is one commit on top of it (SHA reported by the orchestrator's task result, not recorded here because a commit cannot contain its own hash).

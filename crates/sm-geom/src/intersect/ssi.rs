@@ -123,6 +123,19 @@ pub enum SsiResult {
 /// rejects steps that jump between nearby branches (corrector displacement, corrected midpoint
 /// and a step proportional to the sine of the normal angle).
 ///
+/// **Near-tangent branches.** Where two branches of the intersection approach each other the
+/// tracer tightens its chord tolerance to a twelfth of their separation (read off the signed
+/// distance across the curve, implicit second surface only) and does not step over the closest
+/// approach. With the default options this separates the two loops of perpendicular cylinders
+/// (radius difference `dr`, branch gap `2 sqrt(2 dr)`) from `dr = 1e-2` down to `1e-9`, a gap of
+/// 9e-5 (0.09 `chord_tol`); `dr = 1e-10` (gap 2.8e-5, 28 `tol.linear`) merges the branches and
+/// is the floor. For a NURBS second surface there is no separation estimate: a branch gap of
+/// less than about `3 chord_tol` can still be bridged and the trace may run to `max_points`
+/// (`MarchEnd::Limit`); tighten `chord_tol` there. A component smaller than the seed grid is
+/// found only when it is an isolated contact or a loop against an implicit second surface that
+/// the contact search can locate (local minima of the signed distance on a 40 x 40 grid of the
+/// marching surface).
+///
 /// **Tangency.** Every closed form decides a tangent contact by a distance: a gap (or, for
 /// internal sphere contact, a nesting gap) of at most `tol.linear` is a contact (`Point`, or the
 /// tangent line), a larger gap is `Empty`. A marcher-found isolated contact is reported as

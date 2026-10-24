@@ -333,7 +333,7 @@ impl<'a> Engine<'a> {
     /// may not move the point farther from the straight prediction than the chord tolerance
     /// allows for the curvature the step control accepts, and the corrected midpoint of the
     /// step must lie within the chord tolerance of the chord.
-    fn step(&self, st: &State, tau: Vector3, h: f64) -> Step {
+    fn step(&self, st: &State, tau: Vector3, h: f64, chord: f64) -> Step {
         let new = match self.advance(st, tau, h) {
             Ok(n) => n,
             Err(true) => return Step::Singular,
@@ -344,28 +344,36 @@ impl<'a> Engine<'a> {
             return Step::Fail;
         }
         let checked = h > self.min_step * 1.01;
-        if checked && (new.p - (st.p + tau * h)).norm() > 3.0 * self.chord + 10.0 * self.opts.tol.linear {
-            return Step::Fail;
-        }
         if self.outside_m(new.mu) || self.outside_t(new.tu) || !in_box(&self.opts.window, new.p, self.opts.tol.linear) {
+            if checked && (new.p - (st.p + tau * h)).norm() > 3.0 * chord + 10.0 * self.opts.tol.linear {
+                return Step::Fail;
+            }
             return Step::Boundary(new);
         }
+        let tan_new = self.tangent_at(&new).map(|(t2, sn)| (if t2.dot(tau) < 0.0 { t2 * -1.0 } else { t2 }, sn));
         if checked {
+            // The tolerance for this step is the tightest local one over the step (start, middle,
+            // end): a pair of branches closing in anywhere along it must not be bridged.
+            let mut c = chord;
+            if let Some((t2, _)) = tan_new {
+                c = c.min(self.local_chord(&new, t2));
+            }
+            if (new.p - (st.p + tau * h)).norm() > 3.0 * c + 10.0 * self.opts.tol.linear {
+                return Step::Fail;
+            }
             match self.advance(st, tau, 0.5 * h) {
                 Ok(mid) => {
+                    c = c.min(self.local_chord(&mid, tau));
                     let chord_mid = Point3::new(0.5 * (st.p.x + new.p.x), 0.5 * (st.p.y + new.p.y), 0.5 * (st.p.z + new.p.z));
-                    if (mid.p - chord_mid).norm() > self.chord {
+                    if (mid.p - chord_mid).norm() > c || (new.p - (st.p + tau * h)).norm() > 3.0 * c + 10.0 * self.opts.tol.linear {
                         return Step::Fail;
                     }
                 }
                 Err(_) => return Step::Fail,
             }
         }
-        match self.tangent_at(&new) {
-            Some((t2, sn)) => {
-                let t2 = if t2.dot(tau) < 0.0 { t2 * -1.0 } else { t2 };
-                Step::Ok(new, t2, sn)
-            }
+        match tan_new {
+            Some((t2, sn)) => Step::Ok(new, t2, sn),
             None => Step::Singular,
         }
     }
@@ -379,7 +387,7 @@ impl<'a> Engine<'a> {
             if h <= self.opts.tol.linear * 0.01 {
                 break;
             }
-            match self.step(st, tau, h) {
+            match self.step(st, tau, h, self.chord) {
                 Step::Ok(s, _, _) => {
                     lo = h;
                     best = Some(s);
@@ -401,45 +409,52 @@ impl<'a> Engine<'a> {
     /// function over `M` that touch zero (no sign change, so no iso-curve seed finds them).
     /// Grid minima of the distance estimate are polished by Newton on the stationarity of
     /// `phi(u, v) = f(M(u, v))`. Used only when the marcher found no curve at all.
-    fn tangent_points(&self) -> Vec<Point3> {
-        let Some(imp) = self.t.imp.as_ref() else { return Vec::new() };
+    fn tangent_points(&self) -> (Vec<Point3>, Vec<State>) {
+        let Some(imp) = self.t.imp.as_ref() else { return (Vec::new(), Vec::new()) };
         if self.four {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         const N: usize = 40;
         let tol = self.opts.tol.linear;
         let (bu, bv) = (self.mbox[0], self.mbox[1]);
         let at = |i: usize, j: usize| Uv::new(bu.lo + bu.len() * i as f64 / N as f64, bv.lo + bv.len() * j as f64 / N as f64);
-        let dist_at = |q: Uv| {
+        let sdist_at = |q: Uv| {
             let p = self.mj(q).p;
-            imp.value(p).abs() / imp.gradient(p).norm().max(1e-300)
+            imp.value(p) / imp.gradient(p).norm().max(1e-300)
         };
-        let grid: Vec<f64> = (0..(N + 1) * (N + 1)).map(|k| dist_at(at(k / (N + 1), k % (N + 1)))).collect();
-        let g = |i: usize, j: usize| grid[i * (N + 1) + j];
-        let mut cands: Vec<(f64, Uv)> = Vec::new();
-        for i in 0..=N {
-            for j in 0..=N {
-                let v = g(i, j);
-                let mut is_min = true;
-                for (di, dj) in [(-1i64, -1i64), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)] {
-                    let (ni, nj) = (i as i64 + di, j as i64 + dj);
-                    if ni < 0 || nj < 0 || ni > N as i64 || nj > N as i64 {
-                        continue;
+        let sgrid: Vec<f64> = (0..(N + 1) * (N + 1)).map(|k| sdist_at(at(k / (N + 1), k % (N + 1)))).collect();
+        // Local minima of a grid function (ties go to the lower index so a plateau yields one).
+        let minima = |grid: &dyn Fn(usize, usize) -> f64| -> Vec<(f64, Uv)> {
+            let mut cands: Vec<(f64, Uv)> = Vec::new();
+            for i in 0..=N {
+                for j in 0..=N {
+                    let v = grid(i, j);
+                    let mut is_min = true;
+                    for (di, dj) in [(-1i64, -1i64), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)] {
+                        let (ni, nj) = (i as i64 + di, j as i64 + dj);
+                        if ni < 0 || nj < 0 || ni > N as i64 || nj > N as i64 {
+                            continue;
+                        }
+                        let w = grid(ni as usize, nj as usize);
+                        if w < v || (w == v && (ni, nj) < (i as i64, j as i64)) {
+                            is_min = false;
+                            break;
+                        }
                     }
-                    let w = g(ni as usize, nj as usize);
-                    // Ties go to the lower index so that a plateau yields one candidate.
-                    if w < v || (w == v && (ni, nj) < (i as i64, j as i64)) {
-                        is_min = false;
-                        break;
+                    if is_min {
+                        cands.push((v, at(i, j)));
                     }
-                }
-                if is_min {
-                    cands.push((v, at(i, j)));
                 }
             }
-        }
-        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
-        cands.truncate(32);
+            cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+            cands.truncate(32);
+            cands
+        };
+        let sg = |i: usize, j: usize| sgrid[i * (N + 1) + j];
+        // Minima of the distance (a touching contact) and of the signed distance (a loop
+        // that no seed line crossed).
+        let mut cands = minima(&|i, j| sg(i, j).abs());
+        cands.extend(minima(&sg));
         let (hu, hv) = (1e-6 * bu.len().max(1e-12), 1e-6 * bv.len().max(1e-12));
         // phi and its gradient (a, b) = (g . du, g . dv) at q.
         let eval = |q: Uv| {
@@ -448,6 +463,7 @@ impl<'a> Engine<'a> {
             (imp.value(j.p), gr.dot(j.du), gr.dot(j.dv), j.p)
         };
         let mut out: Vec<Point3> = Vec::new();
+        let mut seeds: Vec<State> = Vec::new();
         for (_, q0) in cands {
             let mut q = q0;
             let (mut f, mut a, mut b, mut p) = eval(q);
@@ -475,11 +491,83 @@ impl<'a> Engine<'a> {
                 }
             }
             let gn = imp.gradient(p).norm().max(1e-300);
-            if f.abs() / gn <= tol && in_box(&self.opts.window, p, tol) && !self.outside_m(q) && out.iter().all(|o| (*o - p).norm() > 20.0 * tol) {
-                out.push(p);
+            if self.outside_m(q) {
+                continue;
+            }
+            if f.abs() / gn <= tol {
+                if in_box(&self.opts.window, p, tol) && out.iter().all(|o| (*o - p).norm() > 20.0 * tol) {
+                    out.push(p);
+                }
+            } else if f / gn < -tol && a.hypot(b) <= 1e-6 * gn * (self.mj(q).du.norm() + self.mj(q).dv.norm()) {
+                // A penetration deeper than the tolerance: a small loop between the seed lines.
+                // Walk out of the negative region along a coordinate direction to find a point
+                // on its boundary, and seed the tracer there.
+                let seed = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)].iter().find_map(|&(du, dv)| {
+                    let at_s = |s: f64| Uv::new(q.u + du * s * cell.u, q.v + dv * s * cell.v);
+                    let (mut lo, mut hi) = (0.0, 0.0);
+                    let mut s = 0.125;
+                    while s <= 2.0 * N as f64 {
+                        if sdist_at(at_s(s)) >= 0.0 {
+                            hi = s;
+                            break;
+                        }
+                        lo = s;
+                        s *= 2.0;
+                    }
+                    if hi == 0.0 || self.outside_m(at_s(hi)) {
+                        return None;
+                    }
+                    for _ in 0..80 {
+                        let m = 0.5 * (lo + hi);
+                        if sdist_at(at_s(m)) >= 0.0 { hi = m } else { lo = m }
+                    }
+                    let mu = at_s(0.5 * (lo + hi));
+                    let sp = self.mj(mu).p;
+                    in_box(&self.opts.window, sp, tol).then_some(State { mu, tu: Uv::default(), p: sp })
+                });
+                if let Some(sd) = seed {
+                    seeds.push(sd);
+                }
             }
         }
-        out
+        (out, seeds)
+    }
+
+    /// Chord tolerance for steps from `st` along `tau`: `chord_tol`, reduced to a twelfth of the
+    /// distance to the neighbouring branch of the intersection when that is closer than about
+    /// `12 chord_tol`. The separation is read off the signed distance of `M` to `T` along the
+    /// in-surface direction across the curve (`F(s) ~ F' s + F'' s^2 / 2`, branches at `s = 0`
+    /// and `s = -2 F' / F''`). Only for an implicit `T`; with a NURBS `T` the tolerance is
+    /// unchanged (documented limit).
+    fn local_chord(&self, st: &State, tau: Vector3) -> f64 {
+        let Some(imp) = self.t.imp.as_ref() else { return self.chord };
+        if self.four {
+            return self.chord;
+        }
+        let j = self.mj(st.mu);
+        let Some(nm) = unit(j.du.cross(j.dv)) else { return self.chord };
+        let Some(w) = unit(nm.cross(tau)) else { return self.chord };
+        let (e, f, g) = (j.du.dot(j.du), j.du.dot(j.dv), j.dv.dot(j.dv));
+        let det = e * g - f * f;
+        if det <= 1e-24 * e.max(g).max(1e-300).powi(2) {
+            return self.chord;
+        }
+        let d = self.chord;
+        let (bu, bv) = (j.du.dot(w) * d, j.dv.dot(w) * d);
+        let (du, dv) = ((g * bu - f * bv) / det, (e * bv - f * bu) / det);
+        let val = |sgn: f64| {
+            let p = self.mj(Uv::new(st.mu.u + sgn * du, st.mu.v + sgn * dv)).p;
+            imp.value(p) / imp.gradient(p).norm().max(1e-300)
+        };
+        let (fp, fm) = (val(1.0), val(-1.0));
+        let f0 = imp.value(st.p) / imp.gradient(st.p).norm().max(1e-300);
+        let d1 = (fp - fm) / (2.0 * d);
+        let d2 = (fp + fm - 2.0 * f0) / (d * d);
+        if d2.abs() <= 1e-300 {
+            return self.chord;
+        }
+        let sep = 2.0 * d1.abs() / d2.abs();
+        self.chord.min(sep / 12.0).max(10.0 * self.opts.tol.linear.min(self.chord / 10.0))
     }
 
     /// Trace from `seed` in direction `dir` (+1/-1 relative to the seed tangent).
@@ -493,6 +581,10 @@ impl<'a> Engine<'a> {
         // Near tangency the branches of the intersection come close (about twice the normal
         // angle times the curvature radius): the step is proportional to sin(angle).
         let cap = |sn: f64| self.max_step * (4.0 * sn).min(1.0);
+        // The chord tolerance in force: tightened where the two branches of the intersection
+        // come close, so one step's deviation stays well under their separation.
+        let mut last_sn: Option<f64> = None;
+        let mut chord = self.local_chord(seed, tau);
         let mut hcap = self.tangent_at(seed).map_or(self.max_step, |(_, sn)| cap(sn));
         loop {
             guard += 1;
@@ -503,16 +595,23 @@ impl<'a> Engine<'a> {
             if allow_close && out.len() >= 4 {
                 let to_start = start - st.p;
                 if to_start.norm() <= 1.2 * h && to_start.dot(tau) > 0.0 {
-                    return (out, MarchEnd::Closed);
+                    // The closing chord obeys the chord tolerance like any other.
+                    let d = to_start.norm();
+                    let ok = h <= self.min_step * 1.01
+                        || self.advance(&st, tau, 0.5 * d).is_ok_and(|mid| (mid.p - (st.p + to_start * 0.5)).norm() <= chord);
+                    if ok {
+                        return (out, MarchEnd::Closed);
+                    }
+                    h = (h * 0.5).max(self.min_step);
                 }
             }
             h = h.min(hcap).max(self.min_step);
-            match self.step(&st, tau, h) {
+            match self.step(&st, tau, h, chord) {
                 Step::Ok(new, t2, sn) => {
                     // Chord control from the turning angle.
                     let cosang = tau.dot(t2).clamp(-1.0, 1.0);
                     let ang = cosang.acos();
-                    if h * ang > 4.0 * self.chord && h > self.min_step * 1.01 {
+                    if h * ang > 4.0 * chord && h > self.min_step * 1.01 {
                         h = (h * 0.5).max(self.min_step);
                         continue;
                     }
@@ -520,8 +619,19 @@ impl<'a> Engine<'a> {
                     st = new;
                     tau = t2;
                     hcap = cap(sn);
+                    // Approaching a near-tangency (the normals' angle shrinking): do not step
+                    // over it. The angle grows about linearly with distance from the closest
+                    // approach, so `sn / rate` estimates the distance left.
+                    if let Some(prev) = last_sn {
+                        let rate = (prev - sn) / h.max(1e-300);
+                        if rate > 0.0 {
+                            hcap = hcap.min(0.5 * sn / rate);
+                        }
+                    }
+                    last_sn = Some(sn);
+                    chord = self.local_chord(&new, t2);
                     let kappa = ang / h.max(1e-300);
-                    let want = if kappa > 0.0 { (8.0 * self.chord / kappa).sqrt() } else { f64::INFINITY };
+                    let want = if kappa > 0.0 { (8.0 * chord / kappa).sqrt() } else { f64::INFINITY };
                     h = (h * 2.0).min(want).min(self.max_step).max(self.min_step);
                 }
                 Step::Boundary(_) => {
@@ -541,6 +651,42 @@ impl<'a> Engine<'a> {
                 }
             }
         }
+    }
+}
+
+/// Trace a branch from each seed not already covered by a traced curve (`snap` apart).
+fn trace_seeds(engine: &Engine, seeds: Vec<State>, traced: &mut Traced, snap: f64, curves: &mut Vec<MarchedBranch>, isolated: &mut Vec<Point3>) {
+    for seed in seeds {
+        if traced.near(seed.p, snap) {
+            continue;
+        }
+        // Refine the seed onto both surfaces, then get its tangent.
+        let Some((tau0, _)) = engine.tangent_at(&seed) else {
+            isolated.push(seed.p);
+            continue;
+        };
+        let (fwd, fend) = engine.trace(&seed, tau0, 1.0, seed.p, true);
+        let mut branch: Vec<State>;
+        let (start_end, end_end, closed);
+        if fend == MarchEnd::Closed {
+            branch = std::iter::once(seed).chain(fwd).collect();
+            branch.push(seed);
+            closed = true;
+            start_end = MarchEnd::Closed;
+            end_end = MarchEnd::Closed;
+        } else {
+            let (bwd, bend) = engine.trace(&seed, tau0, -1.0, seed.p, false);
+            branch = bwd.into_iter().rev().chain(std::iter::once(seed)).chain(fwd).collect();
+            closed = false;
+            start_end = bend;
+            end_end = fend;
+        }
+        if branch.len() < 2 {
+            isolated.push(seed.p);
+            continue;
+        }
+        traced.add(branch.iter().map(|s| s.p).collect());
+        curves.push(MarchedBranch { states: branch, closed, start: start_end, end: end_end });
     }
 }
 
@@ -719,49 +865,24 @@ pub(crate) fn intersect_general(a: &SurfaceDef, b: &SurfaceDef, o: &SsiOptions) 
     let snap = chord + 20.0 * o.tol.linear;
     let mut curves: Vec<MarchedBranch> = Vec::new();
     let mut isolated: Vec<Point3> = Vec::new();
-    for seed in seeds {
-        if traced.near(seed.p, snap) {
-            continue;
-        }
-        // Refine the seed onto both surfaces, then get its tangent.
-        let Some((tau0, _)) = engine.tangent_at(&seed) else {
-            isolated.push(seed.p);
-            continue;
-        };
-        let (fwd, fend) = engine.trace(&seed, tau0, 1.0, seed.p, true);
-        let mut branch: Vec<State>;
-        let (start_end, end_end, closed);
-        if fend == MarchEnd::Closed {
-            branch = std::iter::once(seed).chain(fwd).collect();
-            branch.push(seed);
-            closed = true;
-            start_end = MarchEnd::Closed;
-            end_end = MarchEnd::Closed;
-        } else {
-            let (bwd, bend) = engine.trace(&seed, tau0, -1.0, seed.p, false);
-            branch = bwd.into_iter().rev().chain(std::iter::once(seed)).chain(fwd).collect();
-            closed = false;
-            start_end = bend;
-            end_end = fend;
-        }
-        if branch.len() < 2 {
-            isolated.push(seed.p);
-            continue;
-        }
-        traced.add(branch.iter().map(|s| s.p).collect());
-        curves.push(MarchedBranch { states: branch, closed, start: start_end, end: end_end });
-    }
+    trace_seeds(&engine, seeds, &mut traced, snap, &mut curves, &mut isolated);
 
-    let curves = join_boundary_pieces(curves, 20.0 * o.tol.linear);
+    let mut curves = join_boundary_pieces(curves, 20.0 * o.tol.linear);
     if curves.is_empty() {
         if isolated.is_empty() {
-            isolated = engine.tangent_points();
+            let (points, loops) = engine.tangent_points();
+            isolated = points;
+            // Loops between the seed lines (a penetration deeper than the tolerance).
+            trace_seeds(&engine, loops, &mut traced, snap, &mut curves, &mut isolated);
+            curves = join_boundary_pieces(curves, 20.0 * o.tol.linear);
         }
-        isolated.dedup_by(|a, b| (*a - *b).norm() <= 20.0 * o.tol.linear);
-        return Ok(match isolated.first() {
-            Some(p) if isolated.len() == 1 => SsiResult::Point(*p),
-            _ => SsiResult::Empty,
-        });
+        if curves.is_empty() {
+            isolated.dedup_by(|a, b| (*a - *b).norm() <= 20.0 * o.tol.linear);
+            return Ok(match isolated.first() {
+                Some(p) if isolated.len() == 1 => SsiResult::Point(*p),
+                _ => SsiResult::Empty,
+            });
+        }
     }
     // ---- assemble (uv of T by projection when T is analytic and was treated as implicit)
     let mut out = Vec::with_capacity(curves.len());

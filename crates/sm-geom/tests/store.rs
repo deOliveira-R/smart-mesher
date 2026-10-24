@@ -149,6 +149,53 @@ fn evaluation_matches_reference_store() {
     }
 }
 
+/// Analytic kinds go through the contract evaluators in both stores, so their results are
+/// bit-identical (only the prepared NURBS evaluator may differ in rounding).
+#[test]
+fn analytic_handles_are_bit_identical_to_the_reference_store() {
+    let (m, k, cs, ss) = both();
+    macro_rules! bits {
+        ($p:expr) => {{
+            let p = $p;
+            [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+        }};
+    }
+    let (mut nc, mut ns) = (0, 0);
+    for id in &cs {
+        if matches!(k.curve_def(*id), Some(CurveDef::Nurbs(_))) {
+            continue;
+        }
+        let (a, b) = (m.curve(*id).unwrap(), k.curve(*id).unwrap());
+        let d = a.domain().range;
+        let (lo, hi) = if d.is_bounded() { (d.lo, d.hi) } else { (-2.0, 3.0) };
+        for i in 0..=20 {
+            let t = lo + (hi - lo) * i as f64 / 20.0;
+            let (ja, jb) = (a.jet(t), b.jet(t));
+            assert_eq!((bits!(ja.p), bits!(ja.d1), bits!(ja.d2)), (bits!(jb.p), bits!(jb.d1), bits!(jb.d2)), "{id} t={t}");
+        }
+        nc += 1;
+    }
+    for id in &ss {
+        if matches!(k.surface_def(*id), Some(SurfaceDef::Nurbs(_))) {
+            continue;
+        }
+        let (Some(a), Some(b)) = (m.surface(*id), k.surface(*id)) else { continue };
+        let (da, db) = (a.domain(), b.domain());
+        let ur = if da.u.range.is_bounded() { da.u.range } else { Interval::new(-1.0, 2.0) };
+        let vr = if da.v.range.is_bounded() { da.v.range } else { Interval::new(-1.0, 2.0) };
+        assert_eq!(da.u, db.u);
+        for i in 1..6 {
+            for j in 1..6 {
+                let uv = Uv::new(ur.lo + ur.len() * i as f64 / 6.0, vr.lo + vr.len() * j as f64 / 6.0);
+                let (ja, jb) = (a.jet(uv), b.jet(uv));
+                assert_eq!((bits!(ja.p), bits!(ja.du), bits!(ja.dv), bits!(ja.duu)), (bits!(jb.p), bits!(jb.du), bits!(jb.dv), bits!(jb.duu)), "{id} {uv:?}");
+            }
+        }
+        ns += 1;
+    }
+    assert!(nc > 0 && ns > 0, "the fixtures must include analytic kinds");
+}
+
 #[test]
 fn replace_truncate_and_validation_match_reference() {
     let (mut m, mut k, cs, ss) = both();

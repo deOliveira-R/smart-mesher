@@ -123,6 +123,9 @@ impl Layout {
         let total = newp + p + 1;
         let mut kn: Vec<f64> = (0..total as isize).map(|i| b[(i - pi).rem_euclid(mp) as usize] + ((i - pi).div_euclid(mp)) as f64 * period).collect();
         for i in 1..kn.len() {
+            // Only the ulp-level disorder of the periodic extension is repaired; a larger
+            // adjustment would change the spline, so catch it in debug builds.
+            debug_assert!(kn[i - 1] - kn[i] <= 8.0 * f64::EPSILON * (kn[i].abs().max(kn[i - 1].abs()).max(period)), "periodic knot extension out of order beyond rounding");
             kn[i] = kn[i].max(kn[i - 1]);
         }
         Ok((Layout { degree: p, knots: kn, periodic: true }, q))
@@ -152,7 +155,9 @@ impl Layout {
     }
 
     /// Clamp (if needed) and raise every interior knot to multiplicity `degree`: the result is
-    /// a chain of Bezier segments sharing end poles (`segments * degree + 1` poles).
+    /// a chain of Bezier segments (`degree + 1` poles each). Segments share their end poles
+    /// where the knots are C^0 or smoother (`segments * degree + 1` poles in all); a C^-1 joint
+    /// (interior knot of multiplicity `degree + 1`) starts a new run with its own pole.
     pub(crate) fn bezierized(&self, poles: &[Hp]) -> Result<(Layout, Vec<Hp>), GeomError> {
         let p = self.degree;
         let k = &self.knots;

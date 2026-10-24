@@ -59,6 +59,56 @@ fn near_equal_perpendicular_cylinders_keep_two_separate_loops() {
     }
 }
 
+/// Branch gap `2 sqrt(2 dr)` of a few `chord_tol` and below: the step control follows the local
+/// branch separation, so the default options still give two loops (previously one bridged
+/// branch or a runaway at the point cap for dr = 1e-6 .. 3e-6).
+#[test]
+fn perpendicular_cylinders_with_a_gap_of_a_few_chord_tol_keep_two_loops() {
+    let x_axis = Frame::from_z(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
+    let o = SsiOptions::new(ModelTolerance::DEFAULT).with_window([-3.0, -3.0, -3.0, 3.0, 3.0, 3.0]);
+    let chord = 1000.0 * o.tol.linear;
+    for dr in [1e-5, 5e-6, 3e-6, 2e-6, 1e-6, 5e-7, 1e-7, 1e-8, 1e-9, -1e-6, -3e-6] {
+        for swap in [false, true] {
+            let (a, b) = (cyl(world(), 1.0), cyl(x_axis, 1.0 + dr));
+            let (a, b) = if swap { (b, a) } else { (a, b) };
+            let ms = marched(intersect_surfaces(&a, &b, &o).unwrap());
+            assert_eq!(ms.len(), 2, "dr={dr} swap={swap}: two loops, got {} ({:?})", ms.len(), ms.iter().map(|m| m.points.len()).collect::<Vec<_>>());
+            for m in &ms {
+                assert!(m.closed, "dr={dr} swap={swap}: loop closes");
+                assert!(m.points.len() < 20_000, "dr={dr} swap={swap}: runaway");
+                // With the x-cylinder larger the loops are the z > 0 and z < 0 halves; with it
+                // smaller they are the x > 0 and x < 0 halves.
+                let side = |f: fn(&Point3) -> f64| (m.points.iter().any(|p| f(p) > 1e-9), m.points.iter().any(|p| f(p) < -1e-9));
+                let (pos, neg) = if dr > 0.0 { side(|p| p.z) } else { side(|p| p.x) };
+                assert!(pos != neg, "dr={dr} swap={swap}: a loop must stay on one side of the splitting plane");
+                for w in m.points.windows(2) {
+                    let mid = Point3::new(0.5 * (w[0].x + w[1].x), 0.5 * (w[0].y + w[1].y), 0.5 * (w[0].z + w[1].z));
+                    assert!(dist(&a, mid) <= chord && dist(&b, mid) <= chord, "dr={dr} swap={swap}: chord midpoint off the curve");
+                }
+            }
+        }
+    }
+}
+
+/// The same holds for other windows and step caps.
+#[test]
+fn near_tangent_loops_are_robust_to_window_and_max_step() {
+    let x_axis = Frame::from_z(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
+    for w in [3.0, 10.0, 30.0] {
+        for max_step in [0.5, 5.0] {
+            for dr in [1e-4, 1e-6] {
+                let o = SsiOptions::new(ModelTolerance::DEFAULT).with_window([-w, -w, -w, w, w, w]).with_max_step(max_step);
+                let ms = marched(intersect_surfaces(&cyl(world(), 1.0), &cyl(x_axis, 1.0 + dr), &o).unwrap());
+                assert_eq!(ms.len(), 2, "w={w} max_step={max_step} dr={dr}: {} curves", ms.len());
+                for m in &ms {
+                    let (pos, neg) = (m.points.iter().any(|p| p.z > 1e-9), m.points.iter().any(|p| p.z < -1e-9));
+                    assert!(m.closed && pos != neg, "w={w} max_step={max_step} dr={dr}");
+                }
+            }
+        }
+    }
+}
+
 /// A sphere touched by a cylinder at one point: the marcher reports the point (and nothing when
 /// the gap is beyond the tolerance).
 #[test]
@@ -74,6 +124,36 @@ fn sphere_touching_cylinder_is_a_point() {
         assert_eq!(intersect_surfaces(&a, &b, &o).unwrap(), intersect_surfaces(&a, &b, &o).unwrap());
     }
     assert_eq!(intersect_surfaces(&sphere, &at(1.5 + 1e-4), &o).unwrap(), SsiResult::Empty);
+}
+
+/// A shallow penetration is continuous: contact within `tol.linear` is a point, a deeper one is
+/// a small closed loop even when it is smaller than the seed-line spacing, and a gap beyond the
+/// tolerance is empty.
+#[test]
+fn shallow_sphere_cylinder_penetration_is_continuous() {
+    let cylinder = cyl(world(), 1.0);
+    let o = SsiOptions::new(ModelTolerance::DEFAULT).with_window([-3.0, -3.0, -3.0, 3.0, 3.0, 3.0]);
+    for swap in [false, true] {
+        let run = |g: f64| {
+            let sphere = SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::new(1.5 + g, 0.0, 0.0)), 0.5).unwrap());
+            if swap { intersect_surfaces(&sphere, &cylinder, &o).unwrap() } else { intersect_surfaces(&cylinder, &sphere, &o).unwrap() }
+        };
+        for g in [0.0, -1e-7, 5e-7] {
+            assert!(matches!(run(g), SsiResult::Point(_)), "g={g} swap={swap}: {:?}", run(g));
+        }
+        assert_eq!(run(1e-4), SsiResult::Empty);
+        for g in [-1e-5, -1e-4, -1e-3, -1e-2, -3e-2] {
+            let ms = marched(run(g));
+            assert_eq!(ms.len(), 1, "g={g} swap={swap}");
+            assert!(ms[0].closed, "g={g} swap={swap}");
+            // The loop lies on both surfaces and has the size of the cap: half-width about
+            // sqrt(-g) in z and about sqrt(-g/3)-ish in y.
+            let sphere_c = Point3::new(1.5 + g, 0.0, 0.0);
+            for p in &ms[0].points {
+                assert!(((p.x * p.x + p.y * p.y).sqrt() - 1.0).abs() < 1e-6 && ((*p - sphere_c).norm() - 0.5).abs() < 1e-6, "g={g}: {p:?}");
+            }
+        }
+    }
 }
 
 /// A parabola that enters the window twice gives two curves, each inside the window, also when

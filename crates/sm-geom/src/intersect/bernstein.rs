@@ -67,6 +67,10 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
     // Monotone pieces that end within `eps` of zero without crossing: (parameter, sign). Two
     // pieces of the same sign meeting at a parameter form a grazing contact there.
     let mut weak: Vec<(f64, bool)> = Vec::new();
+    // Zero coefficients at a piece end without a sign change inside the piece: (parameter,
+    // piece lies to the right of the parameter, sign of the piece). A matching pair of the same
+    // sign on both sides of a split point is an even-multiplicity root.
+    let mut ends: Vec<(f64, bool, Option<bool>)> = Vec::new();
     let mut stack: Vec<(Coef, f64, f64, u32)> = vec![(c.iter().copied().collect(), 0.0, 1.0, 0)];
     while let Some((co, s0, s1, depth)) = stack.pop() {
         let k = sign_changes(&co);
@@ -80,13 +84,14 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
         };
         match k {
             0 => {
-                if first == 0.0 {
-                    push_unique(&mut out, s0, false);
-                }
-                if last == 0.0 {
-                    push_unique(&mut out, s1, false);
-                }
                 if first == 0.0 || last == 0.0 {
+                    let sign = co.iter().find(|v| **v != 0.0).map(|v| *v > 0.0);
+                    if first == 0.0 {
+                        ends.push((s0, true, sign));
+                    }
+                    if last == 0.0 {
+                        ends.push((s1, false, sign));
+                    }
                     continue;
                 }
                 let mn = co.iter().fold(f64::INFINITY, |m, v| m.min(v.abs()));
@@ -126,6 +131,24 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
                 }
             }
         }
+    }
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut i = 0;
+    while i < ends.len() {
+        let mut j = i + 1;
+        while j < ends.len() && (ends[j].0 - ends[i].0).abs() <= 1e-13 {
+            j += 1;
+        }
+        let grp = &ends[i..j];
+        let left = grp.iter().find(|e| !e.1).and_then(|e| e.2);
+        let right = grp.iter().find(|e| e.1).and_then(|e| e.2);
+        let tangent = matches!((left, right), (Some(a), Some(b)) if a == b);
+        if tangent {
+            out.push(BRoot { s: ends[i].0, tangent: true });
+        } else {
+            push_unique(&mut out, ends[i].0, false);
+        }
+        i = j;
     }
     weak.sort_by(|a, b| a.0.total_cmp(&b.0));
     for w in weak.windows(2) {
@@ -209,6 +232,23 @@ mod tests {
             assert!(r[0].tangent && (r[0].s - 0.5).abs() < 1e-3, "h={h}: {r:?}");
         }
         assert!(roots(&[1.0 + 1e-4, -1.0 / 3.0 + 1e-4, -1.0 / 3.0 + 1e-4, 1.0 + 1e-4], 1e-6).is_empty());
+    }
+
+    #[test]
+    fn double_root_at_a_split_point_is_tangent() {
+        for sgn in [1.0, -1.0] {
+            // sgn (s - 0.5)^2
+            let c: Vec<f64> = from_monomial(&[0.25, -1.0, 1.0]).into_iter().map(|v| sgn * v).collect();
+            let r = roots(&c, 1e-9);
+            assert_eq!(r.len(), 1, "{r:?}");
+            assert!(r[0].tangent && (r[0].s - 0.5).abs() < 1e-9, "{r:?}");
+        }
+        // Odd multiplicity at the split stays a crossing: (s-.5)^3, (s-.5)(s^2+1), linear.
+        for c in [from_monomial(&[-0.125, 0.75, -1.5, 1.0]), from_monomial(&[-0.5, 1.0, -0.5, 1.0]), from_monomial(&[-0.5, 1.0])] {
+            let r = roots(&c, 1e-9);
+            assert_eq!(r.len(), 1, "{r:?}");
+            assert!(!r[0].tangent && (r[0].s - 0.5).abs() < 1e-6, "{r:?}");
+        }
     }
 
     #[test]
