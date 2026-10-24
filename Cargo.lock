@@ -1533,14 +1533,18 @@ dependencies = [
 name = "sm-tess"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
  "sm-core",
- "sm-geom",
  "sm-geom-api",
  "sm-layer-api",
- "sm-math",
  "sm-op-api",
+ "sm-testkit",
  "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
