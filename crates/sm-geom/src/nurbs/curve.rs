@@ -1,6 +1,6 @@
 //! [`PreparedCurve`]: a NURBS curve compiled for fast evaluation, projection and editing.
 
-use super::basis::{ders, find_span};
+use super::basis::{ders_n, find_span, values_n};
 use super::project;
 use super::spline1::{Hp, Layout};
 use sm_core::{Point3, Vector3};
@@ -163,7 +163,20 @@ impl PreparedCurve {
     fn homogeneous(&self, t: f64) -> [Hp; 3] {
         let p = self.lay.degree;
         let span = find_span(self.poles.len(), p, t, &self.lay.knots);
-        let d = ders(span, t, p, &self.lay.knots);
+        // Scratch width by degree keeps the basis arrays small for the common low degrees.
+        if p < 4 {
+            self.homogeneous_n::<4>(t, span)
+        } else if p < 8 {
+            self.homogeneous_n::<8>(t, span)
+        } else {
+            self.homogeneous_n::<16>(t, span)
+        }
+    }
+
+    #[inline]
+    fn homogeneous_n<const N: usize>(&self, t: f64, span: usize) -> [Hp; 3] {
+        let p = self.lay.degree;
+        let d = ders_n::<N>(span, t, p, &self.lay.knots);
         let mut a = [[0.0f64; 4]; 3];
         for j in 0..=p {
             let h = self.poles[span - p + j];
@@ -268,6 +281,13 @@ impl PreparedCurve {
         Ok((left, right))
     }
 
+    /// Closest points of many query points, in parallel; result `i` belongs to `points[i]`
+    /// (order-preserving, so the output does not depend on the thread count).
+    pub fn project_many(&self, points: &[Point3]) -> Vec<CurveProjection> {
+        use rayon::prelude::*;
+        points.par_iter().map(|p| project::project_curve(self, *p, None)).collect()
+    }
+
     /// Evaluate at many parameters, in parallel with element-independent writes (the output is
     /// identical for any thread count).
     pub fn eval_many(&self, params: &[f64], out: &mut [Point3]) {
@@ -281,6 +301,24 @@ impl PreparedCurve {
     }
 }
 
+impl PreparedCurve {
+    #[inline]
+    fn point_n<const N: usize>(&self, t: f64, span: usize) -> Point3 {
+        let p = self.lay.degree;
+        let n = values_n::<N>(span, t, p, &self.lay.knots);
+        let mut a = [0.0f64; 4];
+        for j in 0..=p {
+            let h = self.poles[span - p + j];
+            a[0] += n[j] * h[0];
+            a[1] += n[j] * h[1];
+            a[2] += n[j] * h[2];
+            a[3] += n[j] * h[3];
+        }
+        let iw = 1.0 / a[3];
+        Point3::new(a[0] * iw, a[1] * iw, a[2] * iw)
+    }
+}
+
 impl ParametricCurve for PreparedCurve {
     fn domain(&self) -> Domain1 {
         if self.lay.periodic { Domain1::periodic(self.lo, self.hi - self.lo) } else { Domain1::open(self.lo, self.hi) }
@@ -288,6 +326,20 @@ impl ParametricCurve for PreparedCurve {
 
     fn jet(&self, t: f64) -> CurveJet {
         self.jet_at(self.fold(t))
+    }
+
+    /// Position only: skips the derivative basis.
+    fn eval(&self, t: f64) -> Point3 {
+        let t = self.fold(t);
+        let p = self.lay.degree;
+        let span = find_span(self.poles.len(), p, t, &self.lay.knots);
+        if p < 4 {
+            self.point_n::<4>(t, span)
+        } else if p < 8 {
+            self.point_n::<8>(t, span)
+        } else {
+            self.point_n::<16>(t, span)
+        }
     }
 
     fn project(&self, p: Point3, hint: Option<f64>) -> Result<CurveProjection, GeomError> {

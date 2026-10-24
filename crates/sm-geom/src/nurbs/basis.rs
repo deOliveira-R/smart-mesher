@@ -30,6 +30,26 @@ pub(crate) fn find_span(npoles: usize, p: usize, t: f64, k: &[f64]) -> usize {
     mid
 }
 
+/// Basis function values `N_{span-p+j,p}(t)`, `j = 0..=p` (A2.2). `N >= p + 1`.
+#[inline]
+pub(crate) fn values_n<const N: usize>(span: usize, t: f64, p: usize, k: &[f64]) -> [f64; N] {
+    let mut n = [0.0f64; N];
+    let (mut left, mut right) = ([0.0f64; N], [0.0f64; N]);
+    n[0] = 1.0;
+    for j in 1..=p {
+        left[j] = t - k[span + 1 - j];
+        right[j] = k[span + j] - t;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let temp = n[r] / (right[r + 1] + left[j - r]);
+            n[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        n[j] = saved;
+    }
+    n
+}
+
 /// `ders[d][j]` = d-th derivative (d = 0, 1, 2) of `N_{span-p+j,p}` at `t`.
 /// `N` is the scratch width and must be at least `p + 1`.
 pub(crate) fn ders_n<const N: usize>(span: usize, t: f64, p: usize, k: &[f64]) -> [[f64; N]; 3] {

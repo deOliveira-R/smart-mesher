@@ -1,6 +1,6 @@
 //! [`PreparedSurface`]: a NURBS surface compiled for fast evaluation, projection and editing.
 
-use super::basis::{ders, find_span};
+use super::basis::{ders, ders_n, find_span, values_n};
 use super::curve::{bbox_of, hp_from, hp_point};
 use super::project;
 use super::spline1::{Hp, Layout, multiplicity};
@@ -158,10 +158,37 @@ impl PreparedSurface {
     #[inline]
     fn jet_at(&self, uv: Uv) -> SurfaceJet {
         let (pu, pv) = (self.lu.degree, self.lv.degree);
+        let class = |p: usize| if p < 4 { 0 } else if p < 8 { 1 } else { 2 };
+        let a = match (class(pu), class(pv)) {
+            (0, 0) => self.homogeneous_n::<4, 4>(uv),
+            (0, 1) => self.homogeneous_n::<4, 8>(uv),
+            (0, _) => self.homogeneous_n::<4, 16>(uv),
+            (1, 0) => self.homogeneous_n::<8, 4>(uv),
+            (1, 1) => self.homogeneous_n::<8, 8>(uv),
+            (1, _) => self.homogeneous_n::<8, 16>(uv),
+            (_, 0) => self.homogeneous_n::<16, 4>(uv),
+            (_, 1) => self.homogeneous_n::<16, 8>(uv),
+            (_, _) => self.homogeneous_n::<16, 16>(uv),
+        };
+        let v3 = |k: usize, l: usize| Vector3::new(a[k][l][0], a[k][l][1], a[k][l][2]);
+        let w = |k: usize, l: usize| a[k][l][3];
+        let iw = 1.0 / w(0, 0);
+        let s = v3(0, 0) * iw;
+        let s_u = (v3(1, 0) - s * w(1, 0)) * iw;
+        let s_v = (v3(0, 1) - s * w(0, 1)) * iw;
+        let s_uu = (v3(2, 0) - s_u * (2.0 * w(1, 0)) - s * w(2, 0)) * iw;
+        let s_vv = (v3(0, 2) - s_v * (2.0 * w(0, 1)) - s * w(0, 2)) * iw;
+        let s_uv = (v3(1, 1) - s_u * w(0, 1) - s_v * w(1, 0) - s * w(1, 1)) * iw;
+        SurfaceJet { p: Point3::new(s.x, s.y, s.z), du: s_u, dv: s_v, duu: s_uu, duv: s_uv, dvv: s_vv }
+    }
+
+    #[inline]
+    fn homogeneous_n<const NU: usize, const NV: usize>(&self, uv: Uv) -> [[[f64; 4]; 3]; 3] {
+        let (pu, pv) = (self.lu.degree, self.lv.degree);
         let su = find_span(self.nu, pu, uv.u, &self.lu.knots);
         let sv = find_span(self.nv, pv, uv.v, &self.lv.knots);
-        let nd_u = ders(su, uv.u, pu, &self.lu.knots);
-        let nd_v = ders(sv, uv.v, pv, &self.lv.knots);
+        let nd_u = ders_n::<NU>(su, uv.u, pu, &self.lu.knots);
+        let nd_v = ders_n::<NV>(sv, uv.v, pv, &self.lv.knots);
         let mut a = [[[0.0f64; 4]; 3]; 3];
         for i in 0..=pu {
             let row = (su - pu + i) * self.nv + sv - pv;
@@ -180,16 +207,30 @@ impl PreparedSurface {
                 }
             }
         }
-        let v3 = |k: usize, l: usize| Vector3::new(a[k][l][0], a[k][l][1], a[k][l][2]);
-        let w = |k: usize, l: usize| a[k][l][3];
-        let iw = 1.0 / w(0, 0);
-        let s = v3(0, 0) * iw;
-        let s_u = (v3(1, 0) - s * w(1, 0)) * iw;
-        let s_v = (v3(0, 1) - s * w(0, 1)) * iw;
-        let s_uu = (v3(2, 0) - s_u * (2.0 * w(1, 0)) - s * w(2, 0)) * iw;
-        let s_vv = (v3(0, 2) - s_v * (2.0 * w(0, 1)) - s * w(0, 2)) * iw;
-        let s_uv = (v3(1, 1) - s_u * w(0, 1) - s_v * w(1, 0) - s * w(1, 1)) * iw;
-        SurfaceJet { p: Point3::new(s.x, s.y, s.z), du: s_u, dv: s_v, duu: s_uu, duv: s_uv, dvv: s_vv }
+        a
+    }
+
+    #[inline]
+    fn point_n<const NU: usize, const NV: usize>(&self, uv: Uv) -> Point3 {
+        let (pu, pv) = (self.lu.degree, self.lv.degree);
+        let su = find_span(self.nu, pu, uv.u, &self.lu.knots);
+        let sv = find_span(self.nv, pv, uv.v, &self.lv.knots);
+        let nu_ = values_n::<NU>(su, uv.u, pu, &self.lu.knots);
+        let nv_ = values_n::<NV>(sv, uv.v, pv, &self.lv.knots);
+        let mut a = [0.0f64; 4];
+        for i in 0..=pu {
+            let row = (su - pu + i) * self.nv + sv - pv;
+            for j in 0..=pv {
+                let h = self.poles[row + j];
+                let c = nu_[i] * nv_[j];
+                a[0] += c * h[0];
+                a[1] += c * h[1];
+                a[2] += c * h[2];
+                a[3] += c * h[3];
+            }
+        }
+        let iw = 1.0 / a[3];
+        Point3::new(a[0] * iw, a[1] * iw, a[2] * iw)
     }
 
     fn rebuild(&self, lu: Layout, lv: Layout, nu: usize, nv: usize, poles: Vec<Hp>) -> Result<Self, GeomError> {
@@ -290,6 +331,12 @@ impl PreparedSurface {
         });
     }
 
+    /// Closest points of many query points, in parallel; result `i` belongs to `points[i]`.
+    pub fn project_many(&self, points: &[Point3]) -> Vec<SurfaceProjection> {
+        use rayon::prelude::*;
+        points.par_iter().map(|p| project::project_surface(self, *p, None)).collect()
+    }
+
     /// Jets at many parameters, in parallel.
     pub fn jet_many(&self, uvs: &[Uv], out: &mut [SurfaceJet]) {
         use rayon::prelude::*;
@@ -346,6 +393,24 @@ impl ParametricSurface for PreparedSurface {
 
     fn jet(&self, uv: Uv) -> SurfaceJet {
         self.jet_at(self.fold(uv))
+    }
+
+    /// Position only: skips the derivative bases.
+    fn eval(&self, uv: Uv) -> Point3 {
+        let uv = self.fold(uv);
+        let (pu, pv) = (self.lu.degree, self.lv.degree);
+        let class = |p: usize| if p < 4 { 0 } else if p < 8 { 1 } else { 2 };
+        match (class(pu), class(pv)) {
+            (0, 0) => self.point_n::<4, 4>(uv),
+            (0, 1) => self.point_n::<4, 8>(uv),
+            (0, _) => self.point_n::<4, 16>(uv),
+            (1, 0) => self.point_n::<8, 4>(uv),
+            (1, 1) => self.point_n::<8, 8>(uv),
+            (1, _) => self.point_n::<8, 16>(uv),
+            (_, 0) => self.point_n::<16, 4>(uv),
+            (_, 1) => self.point_n::<16, 8>(uv),
+            (_, _) => self.point_n::<16, 16>(uv),
+        }
     }
 
     fn project(&self, p: Point3, hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {

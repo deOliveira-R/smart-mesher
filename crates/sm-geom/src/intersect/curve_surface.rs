@@ -5,7 +5,8 @@ use super::interval;
 use super::{CurveSurface, CurveSurfaceHit};
 use crate::nurbs::curve::{SegPoles, bbox_of, hp_point};
 use crate::nurbs::exact;
-use crate::nurbs::spline1::{Hp, bezier_split};
+use crate::nurbs::project::split_patch;
+use crate::nurbs::spline1::split_half_into;
 use crate::nurbs::surface::PatchPoles;
 use crate::nurbs::{PreparedCurve, PreparedSurface};
 use crate::roots::{poly_roots, solve_dense};
@@ -429,10 +430,11 @@ fn nurbs_vs_implicit(c: &PreparedCurve, imp: &ImplicitDef, tol: &ModelTolerance,
             }
             continue;
         }
-        let (l, rr) = bezier_split(&n.poles, 0.5);
+        let (mut l, mut rr) = (SegPoles::from_elem([0.0; 4], n.poles.len()), SegPoles::from_elem([0.0; 4], n.poles.len()));
+        split_half_into(&n.poles, &mut l, &mut rr);
         let m = 0.5 * (n.lo + n.hi);
-        stack.push(CNode { lo: m, hi: n.hi, poles: rr.into_iter().collect(), depth: n.depth + 1 });
-        stack.push(CNode { lo: n.lo, hi: m, poles: l.into_iter().collect(), depth: n.depth + 1 });
+        stack.push(CNode { lo: m, hi: n.hi, poles: rr, depth: n.depth + 1 });
+        stack.push(CNode { lo: n.lo, hi: m, poles: l, depth: n.depth + 1 });
     }
     if budget == 0 {
         // Too many candidate pieces: the curve runs along the surface or the bounds are loose.
@@ -578,29 +580,6 @@ fn diam(b: &[f64; 6]) -> f64 {
     ((b[3] - b[0]).powi(2) + (b[4] - b[1]).powi(2) + (b[5] - b[2]).powi(2)).sqrt()
 }
 
-fn split_pa(poles: &[Hp], pu: usize, pv: usize, along_u: bool) -> (PatchPoles, PatchPoles) {
-    let (nu, nv) = (pu + 1, pv + 1);
-    let mut l = PatchPoles::from_elem([0.0; 4], poles.len());
-    let mut r = PatchPoles::from_elem([0.0; 4], poles.len());
-    if along_u {
-        for j in 0..nv {
-            let col: smallvec::SmallVec<[Hp; 16]> = (0..nu).map(|i| poles[i * nv + j]).collect();
-            let (a, b) = bezier_split(&col, 0.5);
-            for i in 0..nu {
-                l[i * nv + j] = a[i];
-                r[i * nv + j] = b[i];
-            }
-        }
-    } else {
-        for i in 0..nu {
-            let (a, b) = bezier_split(&poles[i * nv..(i + 1) * nv], 0.5);
-            l[i * nv..(i + 1) * nv].copy_from_slice(&a);
-            r[i * nv..(i + 1) * nv].copy_from_slice(&b);
-        }
-    }
-    (l, r)
-}
-
 /// All intersections of the curve (restricted to `cr`) with the surface.
 pub(crate) fn pair_hits(c: &PreparedCurve, s: &PreparedSurface, cr: Interval, tol: &ModelTolerance) -> Result<Vec<PairHit>, GeomError> {
     let (pu, pv) = s.degrees();
@@ -632,17 +611,18 @@ pub(crate) fn pair_hits(c: &PreparedCurve, s: &PreparedSurface, cr: Interval, to
             continue;
         }
         if dc >= ds {
-            let (l, r) = bezier_split(&n.c_poles, 0.5);
+            let (mut l, mut r) = (SegPoles::from_elem([0.0; 4], n.c_poles.len()), SegPoles::from_elem([0.0; 4], n.c_poles.len()));
+            split_half_into(&n.c_poles, &mut l, &mut r);
             let m = 0.5 * (n.c_lo + n.c_hi);
             for (pl, lo, hi) in [(r, m, n.c_hi), (l, n.c_lo, m)] {
                 let bx = bbox_of(pl.iter().map(|h| hp_point(*h)));
                 if overlap(&bx, &n.s_box, pad) {
-                    stack.push(PairNode { c_lo: lo, c_hi: hi, c_poles: pl.into_iter().collect(), c_box: bx, u: n.u, v: n.v, s_poles: n.s_poles.clone(), s_box: n.s_box, depth: n.depth + 1 });
+                    stack.push(PairNode { c_lo: lo, c_hi: hi, c_poles: pl, c_box: bx, u: n.u, v: n.v, s_poles: n.s_poles.clone(), s_box: n.s_box, depth: n.depth + 1 });
                 }
             }
         } else {
             let along_u = n.depth % 2 == 0;
-            let (l, r) = split_pa(&n.s_poles, pu, pv, along_u);
+            let (l, r) = split_patch(&n.s_poles, pu, pv, along_u);
             let halves = if along_u {
                 let m = 0.5 * (n.u.lo + n.u.hi);
                 [(r, Interval::new(m, n.u.hi), n.v), (l, Interval::new(n.u.lo, m), n.v)]

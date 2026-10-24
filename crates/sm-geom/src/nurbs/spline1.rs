@@ -183,6 +183,25 @@ impl Layout {
     }
 }
 
+/// de Casteljau split at the middle of `poles` (`n <= 16` homogeneous poles) into `left` and
+/// `right` (both of length `n`), without allocation.
+pub(crate) fn split_half_into(poles: &[Hp], left: &mut [Hp], right: &mut [Hp]) {
+    let n = poles.len();
+    let mut work = [[0.0f64; 4]; 16];
+    work[..n].copy_from_slice(poles);
+    left[0] = work[0];
+    right[n - 1] = work[n - 1];
+    for level in 1..n {
+        for i in 0..n - level {
+            for c in 0..4 {
+                work[i][c] = 0.5 * (work[i][c] + work[i + 1][c]);
+            }
+        }
+        left[level] = work[0];
+        right[n - 1 - level] = work[n - 1 - level];
+    }
+}
+
 /// de Casteljau split of a homogeneous Bezier segment at `s` in `(0, 1)`: the left and right
 /// halves, each with the same number of poles.
 pub(crate) fn bezier_split(poles: &[Hp], s: f64) -> (Vec<Hp>, Vec<Hp>) {
