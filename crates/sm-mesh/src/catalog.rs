@@ -1,0 +1,126 @@
+//! Mesh catalog: the meshes of one model with their level maps, extrusion maps and instanced
+//! views (`MeshCatalog` / `CatalogEdit`).
+
+use sm_core::{EntityId, EntityKind};
+use sm_mesh_api::{
+    CatalogEdit, ExtrusionMap, InstancedView, LevelMap, MeshCatalog, MeshError, MeshRead, Result,
+};
+use std::collections::BTreeMap;
+
+/// In-memory [`MeshCatalog`] / [`CatalogEdit`] over boxed [`MeshRead`] meshes.
+///
+/// Maps are keyed by `(fine, coarse)` / `(base, extruded)` in ordered maps, so
+/// `maps_from`/`maps_to` answer with range scans in ascending id order.
+#[derive(Default)]
+pub struct Catalog {
+    ids: Vec<EntityId>,
+    meshes: BTreeMap<EntityId, Box<dyn MeshRead>>,
+    maps: BTreeMap<(EntityId, EntityId), LevelMap>,
+    views: Vec<InstancedView>,
+    extrusions: BTreeMap<(EntityId, EntityId), ExtrusionMap>,
+}
+
+impl Catalog {
+    /// An empty catalog.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl MeshCatalog for Catalog {
+    fn mesh_ids(&self) -> &[EntityId] {
+        &self.ids
+    }
+    fn mesh(&self, id: EntityId) -> Option<&dyn MeshRead> {
+        self.meshes.get(&id).map(|m| m.as_ref())
+    }
+    fn maps_from(&self, fine: EntityId) -> Vec<(EntityId, &LevelMap)> {
+        // Smallest possible id (kind byte 1, serial 0), so the scan starts at `(fine, *)`.
+        let lo = (fine, EntityId::new(EntityKind::TopoVertex, 0).unwrap_or(fine));
+        self.maps
+            .range(lo..)
+            .take_while(|((f, _), _)| *f == fine)
+            .map(|((_, c), m)| (*c, m))
+            .collect()
+    }
+    fn maps_to(&self, coarse: EntityId) -> Vec<(EntityId, &LevelMap)> {
+        let mut v: Vec<(EntityId, &LevelMap)> = self
+            .maps
+            .iter()
+            .filter(|((_, c), _)| *c == coarse)
+            .map(|((f, _), m)| (*f, m))
+            .collect();
+        v.sort_by_key(|(f, _)| *f);
+        v
+    }
+    fn views(&self) -> &[InstancedView] {
+        &self.views
+    }
+    fn extrusions_of(&self, mesh: EntityId) -> Vec<&ExtrusionMap> {
+        self.extrusions
+            .iter()
+            .filter(|((b, e), _)| *b == mesh || *e == mesh)
+            .map(|(_, m)| m)
+            .collect()
+    }
+}
+
+impl CatalogEdit for Catalog {
+    fn insert_mesh(&mut self, mesh: Box<dyn MeshRead>) -> Result<()> {
+        let id = mesh.mesh_id();
+        if id.kind() != EntityKind::Mesh || self.meshes.contains_key(&id) {
+            return Err(MeshError::Hierarchy(format!("mesh id {id:?} is not a new Mesh id")));
+        }
+        let at = self.ids.partition_point(|x| *x < id);
+        self.ids.insert(at, id);
+        self.meshes.insert(id, mesh);
+        Ok(())
+    }
+
+    fn link(&mut self, map: LevelMap) -> Result<()> {
+        let (f, c) = (map.fine_id(), map.coarse_id());
+        if f == c {
+            return Err(MeshError::Hierarchy("a mesh cannot be linked to itself".into()));
+        }
+        let fm = self.meshes.get(&f).ok_or(MeshError::UnknownMesh(f))?;
+        let cm = self.meshes.get(&c).ok_or(MeshError::UnknownMesh(c))?;
+        map.check_meshes(fm.as_ref(), cm.as_ref())?;
+        if self.maps.contains_key(&(f, c)) {
+            return Err(MeshError::Hierarchy("these meshes are already linked".into()));
+        }
+        self.maps.insert((f, c), map);
+        Ok(())
+    }
+
+    fn link_extrusion(&mut self, map: ExtrusionMap) -> Result<()> {
+        let (b, e) = (map.base_id(), map.extruded_id());
+        let bm = self.meshes.get(&b).ok_or(MeshError::UnknownMesh(b))?;
+        let em = self.meshes.get(&e).ok_or(MeshError::UnknownMesh(e))?;
+        map.check_meshes(bm.as_ref(), em.as_ref())?;
+        if self.extrusions.contains_key(&(b, e)) {
+            return Err(MeshError::Hierarchy("these meshes already have an extrusion map".into()));
+        }
+        self.extrusions.insert((b, e), map);
+        Ok(())
+    }
+
+    fn insert_view(&mut self, view: InstancedView) -> Result<()> {
+        if self.views.iter().any(|v| v.id == view.id) {
+            return Err(MeshError::Hierarchy(format!("view {:?} already present", view.id)));
+        }
+        if view.id.kind() != EntityKind::MeshInstance {
+            return Err(MeshError::Hierarchy("view id must be a MeshInstance id".into()));
+        }
+        let mut ids: Vec<EntityId> = view.instances.iter().map(|i| i.id).collect();
+        ids.sort_unstable();
+        if ids.windows(2).any(|w| w[0] == w[1]) || ids.iter().any(|i| i.kind() != EntityKind::MeshInstance) {
+            return Err(MeshError::Hierarchy("instance ids must be unique MeshInstance ids".into()));
+        }
+        if let Some(i) = view.instances.iter().find(|i| !self.meshes.contains_key(&i.prototype)) {
+            return Err(MeshError::UnknownMesh(i.prototype));
+        }
+        let at = self.views.partition_point(|v| v.id < view.id);
+        self.views.insert(at, view);
+        Ok(())
+    }
+}
