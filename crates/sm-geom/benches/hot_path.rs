@@ -1,3 +1,4 @@
+#![allow(missing_docs)] // criterion_group! generates an undocumented public function
 //! Hot paths: NURBS jets (prepared vs the contract's reference evaluator), closest-point
 //! projection, batched evaluation, and surface-surface intersection.
 

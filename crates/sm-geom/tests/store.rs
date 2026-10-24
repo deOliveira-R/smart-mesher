@@ -5,10 +5,9 @@ use core::f64::consts::TAU;
 use sm_core::{Point3, Vector3};
 use sm_geom::{KernelStore, exact};
 use sm_geom_api::{
-    Circle, Cone, CurveDef, Cylinder, Ellipse, EllipticCone, EllipticCylinder, Frame, GeomAppend, GeomStore, GeomStoreMut, ImplicitDef, ImplicitSurface, Interval, Line, MemoryStore, NurbsCurve, NurbsSurface, ParametricCurve,
-    ParametricSurface, Plane, Quadric, Sphere, StoreData, SurfaceDef, Torus, Uv,
+    Circle, Cone, CurveDef, Cylinder, Ellipse, EllipticCone, EllipticCylinder, GeomAppend, GeomStore, GeomStoreMut, ImplicitDef, Interval, Line, MemoryStore, NurbsCurve, NurbsSurface, Plane, Quadric, Sphere, StoreData, SurfaceDef, Torus, Uv,
 };
-use sm_testkit::geom::{SurfaceExpect, curvatures_from_jet, surface_fixtures, tilted_frame, world_frame};
+use sm_testkit::geom::{curvatures_from_jet, surface_fixtures, tilted_frame, world_frame};
 
 fn curve_defs() -> Vec<CurveDef> {
     let f = tilted_frame();

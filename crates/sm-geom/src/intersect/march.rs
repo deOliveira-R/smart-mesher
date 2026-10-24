@@ -306,17 +306,15 @@ impl<'a> Engine<'a> {
         let dv = (e * bv - f * bu) / det;
         let mut guess = *st;
         guess.mu = Uv::new(st.mu.u + du, st.mu.v + dv);
-        if self.four {
-            if self.t.par.is_some() {
-                let jt = self.tj(st.tu);
-                let (e2, f2, g2) = (jt.du.dot(jt.du), jt.du.dot(jt.dv), jt.dv.dot(jt.dv));
-                let det2 = e2 * g2 - f2 * f2;
-                if det2 <= 1e-24 * e2.max(g2).max(1e-300).powi(2) {
-                    return Step::Singular;
-                }
-                let (cu, cv) = (jt.du.dot(tau) * h, jt.dv.dot(tau) * h);
-                guess.tu = Uv::new(st.tu.u + (g2 * cu - f2 * cv) / det2, st.tu.v + (e2 * cv - f2 * cu) / det2);
+        if self.four && self.t.par.is_some() {
+            let jt = self.tj(st.tu);
+            let (e2, f2, g2) = (jt.du.dot(jt.du), jt.du.dot(jt.dv), jt.dv.dot(jt.dv));
+            let det2 = e2 * g2 - f2 * f2;
+            if det2 <= 1e-24 * e2.max(g2).max(1e-300).powi(2) {
+                return Step::Singular;
             }
+            let (cu, cv) = (jt.du.dot(tau) * h, jt.dv.dot(tau) * h);
+            guess.tu = Uv::new(st.tu.u + (g2 * cu - f2 * cv) / det2, st.tu.v + (e2 * cv - f2 * cu) / det2);
         }
         let Some(new) = self.correct(st, st.p, tau, h, guess) else { return Step::Fail };
         // Reject a corrector that jumped to a different branch.
@@ -399,10 +397,10 @@ impl<'a> Engine<'a> {
                     h = (h * 2.0).min(want).min(self.max_step).max(self.min_step);
                 }
                 Step::Boundary(_) => {
-                    if let Some(b) = self.to_boundary(&st, tau, h) {
-                        if (b.p - st.p).norm() > self.opts.tol.linear {
-                            out.push(b);
-                        }
+                    if let Some(b) = self.to_boundary(&st, tau, h)
+                        && (b.p - st.p).norm() > self.opts.tol.linear
+                    {
+                        out.push(b);
                     }
                     return (out, MarchEnd::Boundary);
                 }

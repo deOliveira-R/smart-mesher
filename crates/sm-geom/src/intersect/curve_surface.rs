@@ -603,10 +603,10 @@ pub(crate) fn pair_hits(c: &PreparedCurve, s: &PreparedSurface, cr: Interval, to
         budget -= 1;
         let (dc, ds) = (diam(&n.c_box), diam(&n.s_box));
         if (dc <= leaf && ds <= leaf) || n.depth >= 60 {
-            if let Some(h) = refine_pair(c, s, 0.5 * (n.c_lo + n.c_hi), Uv::new(0.5 * (n.u.lo + n.u.hi), 0.5 * (n.v.lo + n.v.hi)), tol) {
-                if cr.contains(h.t, 0.0) {
-                    found.push(h);
-                }
+            if let Some(h) = refine_pair(c, s, 0.5 * (n.c_lo + n.c_hi), Uv::new(0.5 * (n.u.lo + n.u.hi), 0.5 * (n.v.lo + n.v.hi)), tol)
+                && cr.contains(h.t, 0.0)
+            {
+                found.push(h);
             }
             continue;
         }

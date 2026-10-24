@@ -203,7 +203,8 @@ pub(crate) fn split_half_into(poles: &[Hp], left: &mut [Hp], right: &mut [Hp]) {
 }
 
 /// de Casteljau split of a homogeneous Bezier segment at `s` in `(0, 1)`: the left and right
-/// halves, each with the same number of poles.
+/// halves, each with the same number of poles (reference form used by the tests).
+#[cfg(test)]
 pub(crate) fn bezier_split(poles: &[Hp], s: f64) -> (Vec<Hp>, Vec<Hp>) {
     let n = poles.len();
     let mut work = poles.to_vec();

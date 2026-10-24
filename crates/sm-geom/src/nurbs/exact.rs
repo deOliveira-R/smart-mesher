@@ -10,7 +10,10 @@ use sm_geom_api::{Circle, Cone, Cylinder, Ellipse, Frame, GeomError, Line, Nurbs
 
 /// Poles of a unit-circle arc from angle `a0` to `a1` (`0 < a1 - a0 <= 2 pi`): local `(x, y)`,
 /// weight, and the clamped knot vector with the knot values equal to the angles at arc ends.
-fn unit_arc(a0: f64, a1: f64) -> Result<(Vec<(f64, f64, f64)>, Vec<f64>), GeomError> {
+/// Local `(x, y, weight)` poles of a unit-circle arc and its knot vector.
+type ArcPoles = (Vec<(f64, f64, f64)>, Vec<f64>);
+
+fn unit_arc(a0: f64, a1: f64) -> Result<ArcPoles, GeomError> {
     let theta = a1 - a0;
     if !(theta > 0.0 && theta <= TAU + 1e-12) {
         return Err(GeomError::Invalid("arc angle must be in (0, 2 pi]"));

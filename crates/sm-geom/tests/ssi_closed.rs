@@ -4,7 +4,7 @@
 use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use sm_core::{Point3, Vector3};
 use sm_geom::{CurveGeometry, IntersectionCurve, SsiOptions, SsiResult, intersect_surfaces};
-use sm_geom_api::{Circle, Cone, CurveDef, Cylinder, EllipticCylinder, Frame, ImplicitSurface, Interval, ModelTolerance, ParametricCurve, Plane, Quadric, Sphere, SurfaceDef, Torus};
+use sm_geom_api::{Circle, Cone, CurveDef, Cylinder, EllipticCylinder, Frame, ImplicitSurface, Interval, ModelTolerance, Plane, Quadric, Sphere, SurfaceDef, Torus};
 
 fn world() -> Frame {
     Frame::at(Point3::new(0.0, 0.0, 0.0))

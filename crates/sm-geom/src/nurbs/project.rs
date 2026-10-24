@@ -243,7 +243,6 @@ pub(crate) fn split_patch(poles: &[Hp], pu: usize, pv: usize, along_u: bool) -> 
     (l, r)
 }
 
-use smallvec::SmallVec;
 
 /// Closest point on a prepared surface (branch and bound on Bezier patches, then Newton).
 pub(crate) fn project_surface(s: &PreparedSurface, q: Point3, hint: Option<Uv>) -> SurfaceProjection {

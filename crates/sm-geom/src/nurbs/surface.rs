@@ -417,8 +417,8 @@ impl ParametricSurface for PreparedSurface {
         Ok(project::project_surface(self, p, hint))
     }
 
-    /// Intersect the ray with the surface (subdivision plus Newton, see
-    /// [`crate::intersect::ray_nurbs_surface`]).
+    /// Intersect the ray with the surface: pairwise Bezier box subdivision of the ray segment
+    /// and the patches, then damped Newton. Hits ascend in `t`.
     fn ray_hits(&self, ray: &sm_geom_api::Ray, range: Interval, out: &mut Vec<sm_geom_api::RayHit>) -> Result<(), GeomError> {
         crate::intersect::ray_nurbs_surface(self, ray, range, out)
     }
@@ -456,5 +456,56 @@ mod tests {
         }
         assert!(ins.to_def().unwrap().validate().is_ok());
         assert_eq!(ps.patch_count(), 2 * 2);
+    }
+
+    /// A surface periodic in `u` (cubic uniform, 6 unique rows) and clamped quadratic in `v`.
+    fn periodic_surface() -> NurbsSurface {
+        let (m, p) = (6usize, 3usize);
+        let ring = |i: usize| {
+            let a = core::f64::consts::TAU * (i % m) as f64 / m as f64;
+            (1.0 + 0.2 * (3.0 * a).sin(), a)
+        };
+        let mut control = Vec::new();
+        for i in 0..m + p {
+            let (r, a) = ring(i);
+            for j in 0..4 {
+                control.push(Point3::new(r * a.cos(), r * a.sin(), j as f64 * 0.7 + 0.1 * (i % 3) as f64));
+            }
+        }
+        let weights: Vec<f64> = (0..(m + p) * 4).map(|k| 1.0 + 0.1 * (((k / 4) % m + k % 4) % 3) as f64).collect();
+        let ku: Vec<f64> = (0..m + 2 * p + 1).map(|i| i as f64 - p as f64).collect();
+        NurbsSurface::new_periodic(p, 2, ku, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], m + p, 4, control, Some(weights), [true, false]).unwrap()
+    }
+
+    #[test]
+    fn periodic_direction_matches_reference_and_survives_editing() {
+        let s = periodic_surface();
+        let ps = PreparedSurface::new(&s).unwrap();
+        assert!(ps.domain().u.is_periodic() && !ps.domain().v.is_periodic());
+        let edited = ps.insert_knot_u(1.4, 1).unwrap().insert_knot_u(4.1, 2).unwrap().insert_knot_v(0.3, 1).unwrap();
+        let clamped = ps.clamped().unwrap();
+        assert!(edited.to_def().unwrap().validate().is_ok());
+        assert!(!clamped.domain().u.is_periodic());
+        for i in 0..=30 {
+            for j in 0..=8 {
+                // Parameters outside one period wrap.
+                let uv = Uv::new(-2.5 + 11.0 * i as f64 / 30.0, j as f64 / 8.0);
+                let (a, b) = (s.jet(uv), ps.jet(uv));
+                assert!((a.p - b.p).norm() < 1e-12 && (a.du - b.du).norm() < 1e-10 && (a.duv - b.duv).norm() < 1e-9, "{uv:?}");
+                assert!((edited.eval(uv) - a.p).norm() < 1e-11, "edited {uv:?}");
+                let inside = Uv::new(ps.ranges().0.lo + (uv.u - ps.ranges().0.lo).rem_euclid(ps.ranges().0.len()), uv.v);
+                assert!((clamped.eval(inside) - a.p).norm() < 1e-11, "clamped {inside:?}");
+            }
+        }
+        // Projection across the seam agrees with a dense scan.
+        let q = Point3::new(0.9, -0.2, 0.8);
+        let pr = ps.project(q, None).unwrap();
+        let mut best = f64::INFINITY;
+        for i in 0..400 {
+            for j in 0..=40 {
+                best = best.min((ps.eval(Uv::new(6.0 * i as f64 / 400.0, j as f64 / 40.0)) - q).norm());
+            }
+        }
+        assert!(pr.distance <= best + 1e-9, "{} vs {}", pr.distance, best);
     }
 }

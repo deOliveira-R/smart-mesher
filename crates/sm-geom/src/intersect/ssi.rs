@@ -38,6 +38,33 @@ pub struct MarchedCurve {
     pub end: MarchEnd,
 }
 
+impl MarchedCurve {
+    /// The polyline in the parameter space of the first surface as a pcurve (the parameter is
+    /// the vertex index). Periodic parameters are continuous along the branch, not wrapped.
+    /// `None` if the first surface has no parametrization.
+    pub fn pcurve_a(&self) -> Option<sm_geom_api::PCurve> {
+        (self.uv_a.len() == self.points.len() && self.uv_a.len() >= 2).then(|| sm_geom_api::PCurve::Polyline2(self.uv_a.clone()))
+    }
+
+    /// The polyline in the parameter space of the second surface (see [`Self::pcurve_a`]).
+    pub fn pcurve_b(&self) -> Option<sm_geom_api::PCurve> {
+        (self.uv_b.len() == self.points.len() && self.uv_b.len() >= 2).then(|| sm_geom_api::PCurve::Polyline2(self.uv_b.clone()))
+    }
+
+    /// Interpolating cubic NURBS through the traced points ([`crate::fit::interpolate_points`]).
+    /// Consecutive duplicate points (a closed loop's repeated end) are dropped first, then the
+    /// closing point is restored so the fitted curve is a closed, clamped curve.
+    pub fn to_nurbs(&self) -> Result<sm_geom_api::NurbsCurve, GeomError> {
+        let mut pts: Vec<Point3> = Vec::with_capacity(self.points.len());
+        for p in &self.points {
+            if pts.last().is_none_or(|l| (*p - *l).norm() > 0.0) {
+                pts.push(*p);
+            }
+        }
+        crate::fit::interpolate_points(&pts, 3)
+    }
+}
+
 /// Geometry of one intersection curve.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -222,7 +249,10 @@ fn plane_torus(p: &Plane, t: &sm_geom_api::Torus, o: &SsiOptions) -> Result<Opti
     Ok(Some(SsiResult::Curves(circles.into_iter().map(|c| IntersectionCurve::analytic(CurveDef::Circle(c), Interval::new(0.0, TAU), true)).collect())))
 }
 
-fn nappe_keep(s: &SurfaceDef, tol: f64) -> (Box<dyn Fn(Point3) -> bool>, Option<(Point3, Vector3)>) {
+/// Nappe predicate of a cone (all points for other surfaces) and its apex and axis.
+type Nappe = (Box<dyn Fn(Point3) -> bool>, Option<(Point3, Vector3)>);
+
+fn nappe_keep(s: &SurfaceDef, tol: f64) -> Nappe {
     match s {
         SurfaceDef::Cone(c) => {
             let (apex, axis) = (c.apex(), c.frame.z);

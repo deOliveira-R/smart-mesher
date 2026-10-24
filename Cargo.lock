@@ -630,10 +630,8 @@ dependencies = [
  "serde",
  "sm-core",
  "sm-geom-api",
- "sm-math",
  "sm-testkit",
  "smallvec",
- "thiserror",
 ]
 
 [[package]]

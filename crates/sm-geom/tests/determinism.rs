@@ -4,7 +4,7 @@
 use sm_core::{Point3, Vector3};
 use sm_geom::exact;
 use sm_geom::{CurveGeometry, KernelStore, PreparedCurve, PreparedSurface, SsiOptions, SsiResult, curve_surface, intersect_surfaces};
-use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, GeomAppend, GeomStore, ModelTolerance, ParametricSurface, Sphere, SurfaceDef, Torus, Uv};
+use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, GeomAppend, GeomStore, ModelTolerance, Sphere, SurfaceDef, Torus, Uv};
 use sm_testkit::determinism::{check_f64_bits, hash_f64_bits};
 
 fn pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {

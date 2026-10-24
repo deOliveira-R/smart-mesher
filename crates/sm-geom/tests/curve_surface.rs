@@ -131,7 +131,7 @@ fn circle_against_sphere_cylinder_torus_cone() {
     // A circle of radius 3 centred off-axis hits the torus four times.
     let off = CurveDef::Circle(Circle::new(Frame::at(Point3::new(3.0, 0.0, 0.0)), 3.0).unwrap());
     let h = pts(curve_surface(&off, None, &tor, &tol()).unwrap());
-    assert!(!h.is_empty() && h.len() % 2 == 0, "{h:?}");
+    assert!(!h.is_empty() && h.len().is_multiple_of(2), "{h:?}");
     for x in &h {
         let l = x.point;
         let rho = l.x.hypot(l.y);
