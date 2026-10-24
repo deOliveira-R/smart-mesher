@@ -1158,7 +1158,11 @@ dependencies = [
 name = "sm-mcp"
 version = "0.0.0"
 dependencies = [
+ "schemars",
+ "serde",
  "serde_json",
+ "sm-core",
+ "sm-lang",
  "sm-op-api",
  "sm-protocol",
 ]

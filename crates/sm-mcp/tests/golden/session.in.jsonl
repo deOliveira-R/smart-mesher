@@ -1,0 +1,16 @@
+{"id":0,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"t","version":"0"},"protocolVersion":"2025-06-18"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"id":2,"jsonrpc":"2.0","method":"tools/list"}
+{"id":3,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"x":10},"name":"model__create_brick"}}
+{"id":4,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"targets":["TopoVolume#1"]},"name":"mesh__run"}}
+{"id":5,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"demo__count"}}
+{"id":6,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"within":"TopoVolume#1"},"name":"topo__related"}}
+{"id":7,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"path":"out.smsh"},"name":"session_export"}}
+{"id":8,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"mesh":"Mesh#1","path":"out.smsh"},"name":"session_export"}}
+{"id":9,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"rev":"main"},"name":"timeline_checkout"}}
+{"id":10,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"text":"fail"},"name":"run_script"}}
+{"id":11,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"session_hash"}}
+{"id":"p","jsonrpc":"2.0","method":"ping"}
+{"id":12,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"nope"}}
+{"id":13,"jsonrpc":"2.0","method":"resources/list"}
+{broken
