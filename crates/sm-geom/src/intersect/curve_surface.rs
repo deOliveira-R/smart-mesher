@@ -464,7 +464,10 @@ fn trig_poly_roots(g: &dyn Fn(f64) -> f64, d: usize) -> Vec<(f64, bool)> {
     let lead = total[2 * d].abs();
     let tmax = total.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     if lead <= 1e-12 * tmax && g(core::f64::consts::PI).abs() <= 1e-9 * scale {
-        ts.push((core::f64::consts::PI, false));
+        // Even multiplicity (the restriction keeps its sign on both sides) is a contact.
+        let h = 1e-4;
+        let tangent = g(core::f64::consts::PI - h) * g(core::f64::consts::PI + h) > 0.0;
+        ts.push((core::f64::consts::PI, tangent));
     }
     ts
 }
@@ -940,4 +943,27 @@ pub(crate) fn ray_nurbs_surface(s: &PreparedSurface, ray: &Ray, range: Interval,
         out.push(RayHit::new(h.t, h.point, normal, Some(h.uv), crossing));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::f64::consts::PI;
+
+    #[test]
+    fn root_at_pi_from_a_vanishing_leading_coefficient_carries_its_multiplicity() {
+        // 1 + cos t = 2 / (1 + x^2) in x = tan(t / 2): the polynomial is constant, its leading
+        // coefficient vanishes, and t = pi is a double root (a contact).
+        let r = trig_poly_roots(&|t: f64| 1.0 + t.cos(), 1);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!((r[0].0 - PI).abs() < 1e-12 && r[0].1, "{r:?}");
+        // The same with the opposite sign and a degree-2 polynomial: (1 + cos t)^2.
+        let r = trig_poly_roots(&|t: f64| -(1.0 + t.cos()).powi(2), 2);
+        assert!(r.iter().any(|(t, tan)| (t - PI).abs() < 1e-12 && *tan), "{r:?}");
+        // sin t: simple roots at 0 and pi, both crossings.
+        let r = trig_poly_roots(&|t: f64| t.sin(), 1);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!(r.iter().all(|(_, tan)| !tan), "{r:?}");
+        assert!(r.iter().any(|(t, _)| (t - PI).abs() < 1e-12), "{r:?}");
+    }
 }

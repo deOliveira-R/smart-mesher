@@ -43,6 +43,21 @@ Closest point is branch and bound over the cached Bezier pieces: the lower bound
 
 No `HashMap`/`HashSet`; the spatial index of traced curves is a `BTreeMap`; heaps break ties on an insertion counter; parallel maps preserve order and write disjoint elements; there are no cross-thread reductions. `tests/determinism.rs` runs a workload (batch evaluation and projection, marched and closed-form intersections, store use) repeatedly, with 1 and 4 workers and from concurrent callers, and compares bit hashes (`sm_testkit::determinism::check_f64_bits`); `RAYON_NUM_THREADS=1 cargo test` is also green.
 
+### Curve-surface contacts
+
+Every curve/surface route (closed forms, NURBS curve against an implicit surface or a plane, anything against a NURBS surface) reports the same topology for a contact at any parameter. The rule (`intersect::contact`): the signed gap `s(t)` along the curve defines a *contact stretch*, the maximal run around a hit where `|s| <= tol.linear`. The contact is tangent when `s` leaves the band on the same side at both ends of the stretch, a crossing when the sides differ. Hits whose stretches overlap are one contact, also through the seam of a closed curve (`C(lo) = C(hi)` to `tol.linear`, or a periodic domain), and a tangent contact is reported at the middle of its stretch. The decision uses only the gap function, never where Newton stopped, a derivative angle, a knot or the position of the seam; `tests/contact_class.rs` checks it as a property over random contact angles, rigid motions and windows. The closed forms for circles and ellipses (`trig_vs_implicit`, `ellipse_plane`) apply the same rule through the extremum of the restriction.
+
+### Fixed thresholds
+
+These are not tolerances; each has a reason and a test.
+
+| Constant | Where | Why | Pinned by |
+|---|---|---|---|
+| `100 * tol.angular` (1e-7 rad by default) | marcher `tangent_at` | The direction `n_M x n_T` has relative error about `tol.linear / step`; below ~1e-7 rad the normals are parallel to within the position accuracy and the tangent direction is noise, so the branch ends as `Singular` instead of being continued. | not pinned at the boundary (rationale only); `tests/ssi_near_tangent.rs` covers the marcher near tangency |
+| `1e-10` relative | conic reduction (`l2 <= 1e-10 l1`) | Separates a parabola from a very eccentric ellipse. The smaller eigenvalue grows linearly with the angle off parallel, so the type flips near 1e-10 rad; the exact parabola is then returned as a rational NURBS in the window. | `tests/polish0.rs` bisects the flip: 9.2e-11 rad |
+| `1e-3` of the larger bounding diagonal | `pair_hits` box leaf | Boxes smaller than this are polished by Levenberg-Marquardt from the leaf centre; a leaf is small enough that LM converges to the one local contact, large enough to bound the subdivision count (depth about 10 per curve and per surface direction). Contacts closer than a leaf in one box can be reported as one. | `tests/polish0.rs` (crossings 1.8x a leaf apart are two hits) |
+| `1e-2` of the scale | `pair_hits` pre-merge window | A pre-merge in `pair_hits` (hits whose curve stays within `tol.linear` between them and lie within 1e-2 of the scale). The ray hook uses it as is; for curves the contact stretch rule runs afterwards and has no length limit, so the window only saves work. | not pinned (rationale only) |
+
 ### Tolerance and units
 
 All tolerances come from `ModelTolerance` (`linear` is the position accuracy of marched points and the coincidence threshold; `angular` decides parallel planes/lines). Root finding is relative. Tangent contacts of the closed forms are decided by a distance (the gap between the surfaces, first order `|q| / |grad q|` at the stationary point of the plane section, compared with `linear`); the marcher's singular threshold is `100 * angular` (1e-7 rad by default). The remaining fixed constants are the 1e-10..1e-12 shape classifications of the conic reduction (parabola against ellipse type), which are not tolerances.

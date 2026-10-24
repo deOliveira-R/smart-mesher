@@ -143,17 +143,13 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
         let left = grp.iter().find(|e| !e.1).and_then(|e| e.2);
         let right = grp.iter().find(|e| e.1).and_then(|e| e.2);
         let tangent = matches!((left, right), (Some(a), Some(b)) if a == b);
-        if tangent {
-            out.push(BRoot { s: ends[i].0, tangent: true });
-        } else {
-            push_unique(&mut out, ends[i].0, false);
-        }
+        push_unique(&mut out, ends[i].0, tangent);
         i = j;
     }
     weak.sort_by(|a, b| a.0.total_cmp(&b.0));
     for w in weak.windows(2) {
         if (w[0].0 - w[1].0).abs() <= 1e-12 && w[0].1 == w[1].1 {
-            out.push(BRoot { s: w[0].0, tangent: true });
+            push_unique(&mut out, w[0].0, true);
         }
     }
     // One contact per run of flat stretches.
@@ -166,7 +162,7 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
         }
     }
     for (a, b) in runs {
-        out.push(BRoot { s: 0.5 * (a + b), tangent: true });
+        push_unique(&mut out, 0.5 * (a + b), true);
     }
     out.sort_by(|a, b| a.s.total_cmp(&b.s));
     let mut merged: Vec<BRoot> = Vec::new();
@@ -183,11 +179,12 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
     merged
 }
 
+/// Add a root unless one already sits at `s`; an existing root becomes tangent if either is.
 fn push_unique(out: &mut Vec<BRoot>, s: f64, tangent: bool) {
-    if out.iter().any(|r| (r.s - s).abs() <= 1e-13) {
-        return;
+    match out.iter_mut().find(|r| (r.s - s).abs() <= 1e-13) {
+        Some(r) => r.tangent |= tangent,
+        None => out.push(BRoot { s, tangent }),
     }
-    out.push(BRoot { s, tangent });
 }
 
 #[cfg(test)]
@@ -249,6 +246,29 @@ mod tests {
             assert_eq!(r.len(), 1, "{r:?}");
             assert!(!r[0].tangent && (r[0].s - 0.5).abs() < 1e-6, "{r:?}");
         }
+    }
+
+    #[test]
+    fn higher_even_multiplicity_at_a_split_point_is_one_tangent_root() {
+        // (s - .5)^4 and its negative, (s - .5)^6, and (s - .5)^2 (s^2 + 1): one tangent root each.
+        let quartic = from_monomial(&[0.0625, -0.5, 1.5, -2.0, 1.0]);
+        let sextic = from_monomial(&[0.015625, -0.1875, 0.9375, -2.5, 3.75, -3.0, 1.0]);
+        let mixed = from_monomial(&[0.25, -1.0, 1.25, -1.0, 1.0]);
+        for (name, c) in [("quartic", quartic.clone()), ("-quartic", quartic.iter().map(|v| -v).collect()), ("sextic", sextic), ("(s-.5)^2 (s^2+1)", mixed)] {
+            for eps in [1e-9, 1e-12] {
+                let r = roots(&c, eps);
+                assert_eq!(r.len(), 1, "{name} eps={eps}: {r:?}");
+                assert!(r[0].tangent && (r[0].s - 0.5).abs() < 1e-3, "{name} eps={eps}: {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tangent_root_never_duplicates_a_root_at_the_same_parameter() {
+        let mut out = vec![BRoot { s: 0.5, tangent: false }];
+        push_unique(&mut out, 0.5, true);
+        push_unique(&mut out, 0.5 + 1e-15, false);
+        assert_eq!(out, vec![BRoot { s: 0.5, tangent: true }]);
     }
 
     #[test]

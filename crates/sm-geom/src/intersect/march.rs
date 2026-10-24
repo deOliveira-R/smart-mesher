@@ -533,6 +533,11 @@ impl<'a> Engine<'a> {
         (out, seeds)
     }
 
+    /// Gradient norm of `T` at the surface point displaced by `sgn * (du, dv)` in parameters.
+    fn grad_at(&self, imp: &ImplicitDef, mu: Uv, du: f64, dv: f64, sgn: f64) -> f64 {
+        imp.gradient(self.mj(Uv::new(mu.u + sgn * du, mu.v + sgn * dv)).p).norm()
+    }
+
     /// Chord tolerance for steps from `st` along `tau`: `chord_tol`, reduced to a twelfth of the
     /// distance to the neighbouring branch of the intersection when that is closer than about
     /// `12 chord_tol`. The separation is read off the signed distance of `M` to `T` along the
@@ -560,7 +565,14 @@ impl<'a> Engine<'a> {
             imp.value(p) / imp.gradient(p).norm().max(1e-300)
         };
         let (fp, fm) = (val(1.0), val(-1.0));
-        let f0 = imp.value(st.p) / imp.gradient(st.p).norm().max(1e-300);
+        // At a singular point of `T` (vanishing gradient, e.g. a cone's apex) the normalized
+        // value is undefined: no separation estimate, keep the plain chord tolerance instead of
+        // dividing by the 1e-300 floor.
+        let (g0, gp, gm) = (imp.gradient(st.p).norm(), self.grad_at(imp, st.mu, du, dv, 1.0), self.grad_at(imp, st.mu, du, dv, -1.0));
+        if g0 <= 1e-6 * gp.max(gm) {
+            return self.chord;
+        }
+        let f0 = imp.value(st.p) / g0;
         let d1 = (fp - fm) / (2.0 * d);
         let d2 = (fp + fm - 2.0 * f0) / (d * d);
         if d2.abs() <= 1e-300 {

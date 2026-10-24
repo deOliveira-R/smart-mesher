@@ -65,6 +65,22 @@ fn workload(threads: usize) -> Vec<f64> {
                 out.extend([x.t, x.point.x, x.point.y, x.point.z]);
             }
         }
+        // Near-tangent circle contacts at the seam, through every route.
+        let unit = Sphere::new(world(), 1.0).unwrap();
+        let sph = SurfaceDef::Sphere(unit);
+        let nsph = SurfaceDef::Nurbs(exact::sphere_to_nurbs(&unit).unwrap());
+        for g in [0.0, 5e-7, -5e-7, -1e-3] {
+            let c = Circle::new(Frame { origin: Point3::new(2.0 + g, 0.0, 0.0), x: Vector3::new(-1.0, 0.0, 0.0), y: Vector3::new(0.0, -1.0, 0.0), z: Vector3::new(0.0, 0.0, 1.0) }, 1.0).unwrap();
+            for cd in [CurveDef::Circle(c), CurveDef::Nurbs(exact::circle_to_nurbs(&c).unwrap())] {
+                for s in [&sph, &nsph] {
+                    if let sm_geom::CurveSurface::Points(h) = curve_surface(&cd, None, s, &ModelTolerance::DEFAULT).unwrap() {
+                        for x in h {
+                            out.extend([x.t, x.point.x, x.point.y, x.point.z, f64::from(x.tangent)]);
+                        }
+                    }
+                }
+            }
+        }
         // Store ids and prepared evaluation.
         let mut s = KernelStore::new();
         let id = s.add_surface(ns).unwrap();
