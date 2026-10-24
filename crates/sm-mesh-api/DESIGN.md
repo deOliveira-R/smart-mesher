@@ -140,8 +140,12 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 ## W0g freeze rules
 
 - **`#[non_exhaustive]` enums**: `FaceKind`, `TagValues`, `LossKind`, `Selector`, `CellShape`,
-  `FaceShape`, `Param` (joining `SetMembers`). Serde shapes and hash discriminants are unchanged;
-  a new variant takes the next discriminant. `MeshDim` stays exhaustive (1D/RZ would be a new
+  `FaceShape`, `Param` (joining `SetMembers`), and (W0g r3) `MeshEntityKind`, `MeshEntity`,
+  `MeshEntityRef` (persisted in `TagColumn.target` and `Violation.entity`). Serde shapes and hash
+  discriminants are unchanged; a new variant takes the next discriminant. `MeshEntityKind` is in
+  the required `MeshRead::count` / `MeshRead::id`: an implementation returns 0 from `count` for
+  every kind it does not store (wildcard arm), and `id` is never called for such a kind (callers
+  only ask for `ix < count(k)`). `MeshDim` stays exhaustive (1D/RZ would be a new
   contract, not a variant).
 - **Implementer-built return structs are `#[non_exhaustive]` with constructors**, so implementors
   of the required `MeshRead::coords` / `MeshRead::columns` and `MeshBuild::add_cell` /

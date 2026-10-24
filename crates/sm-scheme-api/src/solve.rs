@@ -481,18 +481,13 @@ impl CornerPicker for ReferenceCornerPicker {
                     }
                 }
                 match req {
-                    Some(r) => CornerAssignment {
-                        corner: c.key,
-                        vertex_type: r.value,
-                        firmness: r.firmness,
-                        angle: c.angle,
-                    },
-                    None => CornerAssignment {
-                        corner: c.key,
-                        vertex_type: VertexType::nearest(c.angle),
-                        firmness: Firmness::Default,
-                        angle: c.angle,
-                    },
+                    Some(r) => CornerAssignment::new(c.key, r.value, r.firmness, c.angle),
+                    None => CornerAssignment::new(
+                        c.key,
+                        VertexType::nearest(c.angle),
+                        Firmness::Default,
+                        c.angle,
+                    ),
                 }
             })
             .collect();

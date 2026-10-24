@@ -149,9 +149,13 @@ pub trait MeshRead: Send + Sync {
     fn dim(&self) -> MeshDim {
         MeshDim::Three
     }
-    /// Number of entities of kind `k` (edges: 0 without an edge table).
+    /// Number of entities of kind `k` (edges: 0 without an edge table). Returns 0 for any kind
+    /// the implementation does not store, including [`MeshEntityKind`] variants added after it
+    /// was written (the enum is `#[non_exhaustive]`; match it with a `_ => 0` arm).
     fn count(&self, k: MeshEntityKind) -> usize;
-    /// Stable id of entity `ix` of kind `k`; ids ascend with the dense index.
+    /// Stable id of entity `ix` of kind `k`; ids ascend with the dense index. Callers only ask
+    /// for `ix < self.count(k)`, so `id` is never called for a kind the implementation does not
+    /// store (its wildcard arm is unreachable and may panic).
     fn id(&self, k: MeshEntityKind, ix: u32) -> EntityId;
     /// Dense index of an entity id (`O(log n)`); `None` if the id is not in this mesh.
     fn index_of(&self, id: EntityId) -> Option<u32>;

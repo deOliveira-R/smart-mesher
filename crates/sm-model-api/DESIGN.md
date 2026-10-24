@@ -333,7 +333,8 @@ deserialization) checks member kinds, model-minted members, unique names and nes
 
 - **`#[non_exhaustive]` enums**: `Deck`, `InterfaceIntent`, `BoundaryKind`, `FaceRole`,
   `FaceKindView`, `CutGeometry`, `PieceFace`, `PieceShape`, `Layout`, `Provenance`,
-  `CandidateKind`, `Verification`. Serde shapes and `canonical_visit` tags are unchanged; a new
+  `CandidateKind`, `Verification`, and (W0g r3) `Domain` (edge colors may follow: sheet bodies
+  are allowed, W0e-5; `Volume` keeps tag 1, `Face` tag 2, a new domain takes tag 3). Serde shapes and `canonical_visit` tags are unchanged; a new
   variant takes the next tag. Matches outside this crate need a wildcard arm (the planner's
   `PieceShape` hint match has one: an unknown hint adds no candidate).
 - **Struct variants expected to grow are `#[non_exhaustive]`** and have constructors:
@@ -349,6 +350,12 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   `CutCells::new(..)`, `ColorRow::new(..)`, `GroupRow::new(..)`, `BoundaryRow::new(id, name,
   kind)`, `CutSpec::new(deck, keep, origin)`, `CutPlan::new(..)`, `Symmetry::new(..)`,
   `DetectionResult::new(..)`, `Issue::new(..)`, `Report::new(issues)`.
+- **W0g r3: `ColorMap` is `#[non_exhaustive]`** (persisted in the `Slot` / `InstanceRow` /
+  `ClusterMember` / `PathOverride` recolor maps). Build it with `ColorMap::new()` / `Default`
+  plus `with_volume(map)` / `with_face(map)`; fields stay `pub`. **A per-domain field added later
+  (e.g. `edge`) is `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and enters
+  `canonical_visit` only when non-empty**, so stored models deserialize, reserialize and hash
+  exactly as before.
 - **Every field added to a persisted row after the freeze must be `#[serde(default)]`** (as
   `Slot::clip`, `InstanceRow::clip` and `Instancing::clusters` already are), so stored models
   still read.

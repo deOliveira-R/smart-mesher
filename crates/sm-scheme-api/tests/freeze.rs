@@ -71,7 +71,7 @@ fn layout_and_patch_constructors_and_golden_json() {
     let ce = CoedgeKey { face: f, edge: e, side: Side::Left };
     let side = LogicalSide::new(vec![ce], SideDir::PlusI);
     assert_eq!((side.coedges.as_slice(), side.dir), (&[ce][..], SideDir::PlusI));
-    let corner = CornerAssignment { corner: CornerKey { face: f, incoming: ce }, vertex_type: VertexType::End, firmness: Firmness::Default, angle: 1.5 };
+    let corner = CornerAssignment::new(CornerKey { face: f, incoming: ce }, VertexType::End, Firmness::Default, 1.5);
     let layout = FaceLayout::new(f, VertexRule::Map, vec![corner], vec![side.clone()]);
     assert_eq!((layout.face, layout.rule, layout.corners.len(), layout.sides.len()), (f, VertexRule::Map, 1, 1));
     // Serde shapes are unchanged by the attribute.
@@ -85,4 +85,32 @@ fn layout_and_patch_constructors_and_golden_json() {
     let mut p = Patch::new(Target::Surface(f));
     p.nodes.push(n);
     assert_eq!(p.local_len(), 1);
+}
+
+#[test]
+fn copy_constraint_and_corner_constructors_and_golden_json() {
+    use sm_topo_api::{CoedgeKey, CornerKey, Side};
+    let (a, b) = (id(EntityKind::TopoEdge, 1), id(EntityKind::TopoEdge, 2));
+    let (v1, v2, v3) = (id(EntityKind::TopoVertex, 1), id(EntityKind::TopoVertex, 2), id(EntityKind::TopoVertex, 3));
+    let t = sm_core::Transform::IDENTITY;
+    let c = CopyConstraint::new(Target::Curve(a), Target::Curve(b), t, CopyReason::User);
+    assert_eq!((c.source, c.target, c.vertex_map.is_empty(), &c.reason), (Target::Curve(a), Target::Curve(b), true, &CopyReason::User));
+    let c = c.with_vertex_map(vec![(v2, v3), (v1, v2)]);
+    assert_eq!(c.vertex_map, vec![(v1, v2), (v2, v3)]);
+    // Serde shape (persisted in `Plan.problem.copies`) is unchanged by the attribute.
+    let cv = v(&c);
+    assert_eq!(
+        cv,
+        json!({"source": v(&Target::Curve(a)), "target": v(&Target::Curve(b)), "transform": v(&t), "vertex_map": [[v(&v1), v(&v2)], [v(&v2), v(&v3)]], "reason": "User"})
+    );
+    assert_eq!(serde_json::from_value::<CopyConstraint>(cv).unwrap(), c);
+
+    let f = id(EntityKind::TopoFace, 1);
+    let ce = CoedgeKey { face: f, edge: a, side: Side::Left };
+    let key = CornerKey { face: f, incoming: ce };
+    let ca = CornerAssignment::new(key, VertexType::Side, Firmness::Hard, 3.0);
+    assert_eq!((ca.corner, ca.vertex_type, ca.firmness, ca.angle), (key, VertexType::Side, Firmness::Hard, 3.0));
+    let cav = v(&ca);
+    assert_eq!(cav, json!({"corner": v(&key), "vertex_type": v(&VertexType::Side), "firmness": v(&Firmness::Hard), "angle": 3.0}));
+    assert_eq!(serde_json::from_value::<CornerAssignment>(cav).unwrap(), ca);
 }

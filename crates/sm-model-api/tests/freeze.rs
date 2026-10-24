@@ -61,3 +61,23 @@ fn row_constructors_fill_defaults() {
     let rep = Report::new(Vec::new());
     assert!(rep.is_ok());
 }
+
+#[test]
+fn color_domain_and_color_map_golden() {
+    use std::collections::BTreeMap;
+    assert_eq!(v(&Domain::Volume), json!("Volume"));
+    assert_eq!(v(&Domain::Face), json!("Face"));
+    let row = ColorRow::new(id(EntityKind::Color, 1), 3, "fuel", Domain::Face);
+    assert_eq!(serde_json::from_value::<ColorRow>(v(&row)).unwrap(), row);
+    let (vol, c1, c2, f, fc) = (id(EntityKind::TopoVolume, 1), id(EntityKind::Color, 1), id(EntityKind::Color, 2), id(EntityKind::TopoFace, 1), id(EntityKind::Color, 3));
+    assert_eq!(ColorMap::new(), ColorMap::default());
+    assert!(ColorMap::new().is_empty());
+    let m = ColorMap::new().with_volume(BTreeMap::from([(vol, c1), (c1, c2)])).with_face(BTreeMap::from([(f, fc)]));
+    assert_eq!((m.volume.len(), m.face.len()), (2, 1));
+    assert_eq!(m.apply_volume(vol, c2), c1);
+    // Serde shape (persisted in every recolor map) is unchanged by the attribute.
+    let mv = v(&m);
+    assert_eq!(mv.as_object().unwrap().keys().collect::<Vec<_>>(), ["face", "volume"]);
+    assert_eq!(serde_json::from_value::<ColorMap>(mv).unwrap(), m);
+    assert_eq!(v(&ColorMap::new()), json!({"volume": {}, "face": {}}));
+}

@@ -272,7 +272,12 @@ pub enum CopyReason {
 /// mapped through the vertex correspondence (edges follow from vertices). Copy constraints are
 /// **edges of an equivalence relation**: the driver groups them into classes and meshes each
 /// class from one root, so the direction written here is only the direction of `transform`.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`CopyConstraint::new`] (+
+/// [`CopyConstraint::with_vertex_map`]). It is persisted in `Plan.problem.copies`, so any field
+/// added later is `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CopyConstraint {
     /// Source entity.
     pub source: Target,
@@ -285,6 +290,23 @@ pub struct CopyConstraint {
     pub vertex_map: Vec<(EntityId, EntityId)>,
     /// Why.
     pub reason: CopyReason,
+}
+
+impl CopyConstraint {
+    /// A copy of `source` onto `target` under `transform`, with an empty vertex map (derived
+    /// geometrically from `transform`).
+    pub fn new(source: Target, target: Target, transform: Transform, reason: CopyReason) -> Self {
+        Self { source, target, transform, vertex_map: Vec::new(), reason }
+    }
+
+    /// With an explicit vertex correspondence `(source vertex, target vertex)`; it is sorted by
+    /// source here.
+    #[must_use]
+    pub fn with_vertex_map(mut self, mut vertex_map: Vec<(EntityId, EntityId)>) -> Self {
+        vertex_map.sort_unstable();
+        self.vertex_map = vertex_map;
+        self
+    }
 }
 
 /// Other (non-interval) constraints on the generated mesh. `#[non_exhaustive]` (W0f) so later

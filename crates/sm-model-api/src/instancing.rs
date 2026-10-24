@@ -256,9 +256,15 @@ pub enum Fill {
 /// A recoloring, typed by domain: `volume` maps volume colors (or single `TopoVolume`s) to volume
 /// colors; `face` maps face colors (or single `TopoFace`s) to face colors. A per-entity key beats
 /// a per-color key.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`ColorMap::new`] (or `Default`) plus
+/// [`ColorMap::with_volume`] / [`ColorMap::with_face`]. A per-domain field added later is
+/// `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and enters `canonical_visit`
+/// only when non-empty, so stored models and their hashes are unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ColorMap {
     /// Volume recoloring: key `TopoVolume` or volume `Color`; value volume `Color`.
     pub volume: BTreeMap<EntityId, EntityId>,
@@ -267,6 +273,25 @@ pub struct ColorMap {
 }
 
 impl ColorMap {
+    /// The empty recoloring.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// With the volume recoloring `volume`.
+    #[must_use]
+    pub fn with_volume(mut self, volume: BTreeMap<EntityId, EntityId>) -> Self {
+        self.volume = volume;
+        self
+    }
+
+    /// With the face recoloring `face`.
+    #[must_use]
+    pub fn with_face(mut self, face: BTreeMap<EntityId, EntityId>) -> Self {
+        self.face = face;
+        self
+    }
+
     /// True if the map recolors nothing.
     pub fn is_empty(&self) -> bool {
         self.volume.is_empty() && self.face.is_empty()

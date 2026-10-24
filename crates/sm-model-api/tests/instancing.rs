@@ -25,7 +25,7 @@ struct World {
 }
 
 fn recolor(from: EntityId, to: EntityId) -> ColorMap {
-    ColorMap { volume: BTreeMap::from([(from, to)]), face: BTreeMap::new() }
+    ColorMap::new().with_volume(BTreeMap::from([(from, to)]))
 }
 
 fn world() -> World {
@@ -135,14 +135,14 @@ fn recolor_order_is_inner_first_outer_last_and_per_entity_beats_per_color() {
     assert_eq!(both.apply_volume(EntityId::new(EntityKind::TopoVolume, 99).unwrap(), w.fuel), w.absorber);
     // Domain check: a volume color may only map to a volume color.
     let fc = w.m.add_color(50, "bc", Domain::Face).unwrap();
-    let bad = ColorMap { volume: BTreeMap::from([(w.fuel, fc)]), face: BTreeMap::new() };
+    let bad = ColorMap::new().with_volume(BTreeMap::from([(w.fuel, fc)]));
     assert_eq!(w.m.add_instance(InstanceRow::new(Fill::Void, Transform::IDENTITY).with_recolor(bad)), Err(ModelError::ColorDomain(fc)));
-    let bad_face = ColorMap { volume: BTreeMap::new(), face: BTreeMap::from([(fc, w.fuel)]) };
+    let bad_face = ColorMap::new().with_face(BTreeMap::from([(fc, w.fuel)]));
     assert!(w.m.add_instance(InstanceRow::new(Fill::Void, Transform::IDENTITY).with_recolor(bad_face)).is_err());
     // Face recolor resolves through the same chain.
     let face = w.t.faces()[0];
     let fc2 = w.m.add_color(51, "bc2", Domain::Face).unwrap();
-    let inst3 = w.m.add_instance(InstanceRow::new(Fill::Prototype(w.pin), Transform::IDENTITY).with_recolor(ColorMap { volume: BTreeMap::new(), face: BTreeMap::from([(face, fc2)]) })).unwrap();
+    let inst3 = w.m.add_instance(InstanceRow::new(Fill::Prototype(w.pin), Transform::IDENTITY).with_recolor(ColorMap::new().with_face(BTreeMap::from([(face, fc2)])))).unwrap();
     assert_eq!(w.m.resolve_face_color(&[PathStep::Instance(inst3)], face).unwrap(), Some(fc2));
     assert_eq!(w.m.resolve_face_color(&[PathStep::Instance(w.inst)], face).unwrap(), w.m.face_color(face));
 }

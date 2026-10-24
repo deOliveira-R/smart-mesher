@@ -8,7 +8,7 @@ use sm_topo_api::fixtures::{self, with_op};
 use std::collections::BTreeMap;
 
 fn recolor(from: EntityId, to: EntityId) -> ColorMap {
-    ColorMap { volume: BTreeMap::from([(from, to)]), face: BTreeMap::new() }
+    ColorMap::new().with_volume(BTreeMap::from([(from, to)]))
 }
 
 fn member(fill: Fill, at: Transform) -> ClusterMember {

@@ -44,4 +44,16 @@ fn golden_serde_shapes() {
     assert_eq!(serde_json::to_value(CellShape::Hex).unwrap(), json!("Hex"));
     assert_eq!(serde_json::to_value(FaceKind::Boundary).unwrap(), json!("Boundary"));
     assert_eq!(serde_json::to_value(TagValues::I64(vec![1])).unwrap(), json!({"I64": [1]}));
+    // W0g r3: the entity enums are non-exhaustive; their persisted shapes are unchanged.
+    assert_eq!(serde_json::to_value(MeshEntityKind::Cell).unwrap(), json!("Cell"));
+    assert_eq!(serde_json::to_value(MeshEntityKind::Vertex).unwrap(), json!("Vertex"));
+    assert_eq!(serde_json::to_value(MeshEntity::Face(FaceIx(4))).unwrap(), json!({"Face": 4}));
+    assert_eq!(serde_json::to_value(MeshEntityRef::Edge(VertexIx(1), VertexIx(2))).unwrap(), json!({"Edge": [1, 2]}));
+    let t = TagColumn::new("mat", MeshEntityKind::Cell, TagValues::I64(vec![1]));
+    let tv = serde_json::to_value(&t).unwrap();
+    assert_eq!(tv["target"], json!("Cell"));
+    assert_eq!(serde_json::from_value::<TagColumn>(tv).unwrap(), t);
+    for k in [MeshEntityKind::Vertex, MeshEntityKind::Edge, MeshEntityKind::Face, MeshEntityKind::Cell] {
+        assert_eq!(MeshEntity::from_parts(k, 3).kind(), k);
+    }
 }

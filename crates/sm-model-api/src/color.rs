@@ -43,10 +43,13 @@ pub(crate) fn inherited_colors(table: &BTreeMap<EntityId, EntityId>, t: &dyn Top
     out
 }
 
-/// What a color may be attached to.
+/// What a color may be attached to. `#[non_exhaustive]` (W0g r3): edge colors may follow (sheet
+/// bodies). The serde shape and the `canonical_visit` tags (`Volume` 1, `Face` 2) are frozen; a
+/// new variant takes tag 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Domain {
     /// Colors volumes (an abstract material).
     Volume,

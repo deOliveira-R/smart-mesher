@@ -49,7 +49,7 @@ fn pipeline() -> Vec<u64> {
     let vol = *t.volumes_for_test().first().unwrap();
     let pin = m.add_prototype(&[vol]).unwrap();
     let lat = m
-        .add_lattice(Lattice::new(Layout::Hex { rings: 3, pitch: 1.0, orient: HexOrient::YRows, nz: 2, dz: 2.0 }, Transform::IDENTITY, Fill::Prototype(pin), BTreeMap::from([(SlotIx::new(1, -1, 1), Slot::new(Fill::Prototype(pin)).with_recolor(ColorMap { volume: BTreeMap::from([(mat, other)]), face: BTreeMap::new() }))])))
+        .add_lattice(Lattice::new(Layout::Hex { rings: 3, pitch: 1.0, orient: HexOrient::YRows, nz: 2, dz: 2.0 }, Transform::IDENTITY, Fill::Prototype(pin), BTreeMap::from([(SlotIx::new(1, -1, 1), Slot::new(Fill::Prototype(pin)).with_recolor(ColorMap::new().with_volume(BTreeMap::from([(mat, other)]))))])))
         .unwrap();
     m.add_instance(InstanceRow::new(Fill::Lattice(lat), Transform::translation(Vector3::new(1.0, 2.0, 3.0)))).unwrap();
     let f = flatten(&m).unwrap();

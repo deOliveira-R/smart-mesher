@@ -83,7 +83,11 @@ pub enum VertexRule {
 }
 
 /// The solved type of one corner.
+///
+/// `#[non_exhaustive]` (W0g r3): build it with [`CornerAssignment::new`]. It is serialized in
+/// `Plan.layouts`, so any field added later is `#[serde(default)]`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CornerAssignment {
     /// The corner (face, incoming coedge).
     pub corner: CornerKey,
@@ -93,6 +97,13 @@ pub struct CornerAssignment {
     pub firmness: Firmness,
     /// Measured interior angle (radians), used by the picker.
     pub angle: f64,
+}
+
+impl CornerAssignment {
+    /// A solved corner type.
+    pub const fn new(corner: CornerKey, vertex_type: VertexType, firmness: Firmness, angle: f64) -> Self {
+        Self { corner, vertex_type, firmness, angle }
+    }
 }
 
 /// Direction of a logical side in the face's (i, j) frame, from the cumulative quarter turns

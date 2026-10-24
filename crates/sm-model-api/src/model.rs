@@ -195,7 +195,7 @@ impl Resolver {
             }
             out
         };
-        ColorMap { volume: keyed(&c.volume), face: keyed(&c.face) }
+        ColorMap::new().with_volume(keyed(&c.volume)).with_face(keyed(&c.face))
     }
 }
 

@@ -303,13 +303,12 @@ impl Scheme for EdgeCopy {
         let shift = sm_scheme_api::geom::vertex_point(t, t.edge_ends(*e2).expect("ends").0)
             .expect("p")
             - sm_scheme_api::geom::vertex_point(t, t.edge_ends(*e1).expect("ends").0).expect("p");
-        out.copy(CopyConstraint {
-            source: Target::Curve(*e1),
-            target: Target::Curve(*e2),
-            transform: Transform::translation(shift),
-            vertex_map: Vec::new(),
-            reason: CopyReason::User,
-        });
+        out.copy(CopyConstraint::new(
+            Target::Curve(*e1),
+            Target::Curve(*e2),
+            Transform::translation(shift),
+            CopyReason::User,
+        ));
         out.vertex_rule(f, sm_scheme_api::VertexRule::Map);
         Ok(())
     }
