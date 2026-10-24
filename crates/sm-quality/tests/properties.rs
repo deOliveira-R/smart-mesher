@@ -57,8 +57,9 @@ proptest! {
     }
 
     #[test]
-    fn uniform_scaling_only_changes_dimensional_metrics(s in 0.01f64..50.0, d in prop::collection::vec(-0.12f64..0.12, 24)) {
+    fn uniform_scaling_only_changes_dimensional_metrics(e in -12.0f64..12.0, d in prop::collection::vec(-0.12f64..0.12, 24)) {
         for (shape, base) in shapes() {
+            let s = 10f64.powf(e);
             let p = perturbed(&base, &d);
             let q = scaled(&p, s);
             let dim = if shape.dim() == sm_mesh_api::MeshDim::Two { 2 } else { 3 };

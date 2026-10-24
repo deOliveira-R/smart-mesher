@@ -8,7 +8,7 @@ use crate::metric::{Context, Metric, eval};
 use crate::polyhedron;
 use crate::solid;
 use crate::stats::{Acc, CHUNK, Summary, summarize};
-use crate::vec::{TINY, V};
+use crate::vec::V;
 use rayon::prelude::*;
 use sm_mesh_api::{CellIx, CellShape, Coords, FaceNormals, MeshRead, MeshEntityKind};
 use sm_core::Point3;
@@ -194,7 +194,9 @@ impl Prep<'_, '_> {
         if !self.gather(ci, buf) {
             return f64::NAN;
         }
-        let ctx = Context { normal: self.normal(c, buf), ref_size: ref_size.unwrap_or(self.ref_size[shape_key(shape)]) };
+        // Only 2-D cells use a reference normal (skips the classification lookup for solids).
+        let normal = if shape.dim() == sm_mesh_api::MeshDim::Two { self.normal(c, buf) } else { None };
+        let ctx = Context { normal, ref_size: ref_size.unwrap_or(self.ref_size[shape_key(shape)]) };
         eval(metric, shape, buf, &ctx).unwrap_or(f64::NAN)
     }
 
@@ -224,7 +226,7 @@ fn reference_sizes(mesh: &dyn MeshRead, volumes: &[f64], opts: &Options<'_>) -> 
         .map(|(vs, ks)| {
             let mut a = [(Acc::default(), 0u64); 8];
             for (&v, &k) in vs.iter().zip(ks) {
-                if v.is_finite() && v > TINY {
+                if v.is_finite() && v > 0.0 {
                     a[k as usize].0.add(v);
                     a[k as usize].1 += 1;
                 }
@@ -283,7 +285,10 @@ fn prepare<'a, 'o>(mesh: &'a dyn MeshRead, metrics: &[Metric], opts: &'o Options
         _ => {}
     }
     let mut p = Prep { mesh, co: mesh.coords(), opts, ref_size: [f64::NAN; 8] };
-    if metrics.iter().any(|m| needs_ref(*m)) {
+    // A fixed reference size needs no Volume column.
+    if let ReferenceSize::Fixed(v) = opts.reference_size {
+        p.ref_size = [v; 8];
+    } else if metrics.iter().any(|m| needs_ref(*m)) {
         let vols = p.column(Metric::Volume);
         p.ref_size = reference_sizes(mesh, &vols, opts);
     }

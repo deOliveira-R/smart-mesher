@@ -6,7 +6,7 @@
 
 use crate::faces;
 use crate::metric::Metric;
-use crate::vec::{DBL_MAX, TINY, V, cap, norm, sub};
+use crate::vec::{DBL_MAX, Scale, TINY, V, cap, norm, sub};
 use sm_mesh_api::{CellIx, MeshRead, Side};
 use smallvec::SmallVec;
 
@@ -44,10 +44,13 @@ impl Gathered {
         if self.pts.iter().any(|q| q.iter().any(|x| !x.is_finite())) {
             return Some(f64::NAN);
         }
-        let pts = &self.pts;
+        // Scale-relative degeneracy: work on coordinates normalised by a power of two.
+        let sc = Scale::of(&self.pts);
+        let scaled: SmallVec<[V; 32]> = sc.down(&self.pts);
+        let pts = &scaled;
         let loops: SmallVec<[&[u32]; 16]> = self.spans.iter().map(|&(s, n)| &self.local[s as usize..(s + n) as usize]).collect();
         let v = match metric {
-            Metric::Volume => faces::fan_volume(pts, &loops),
+            Metric::Volume => sc.up(faces::fan_volume(pts, &loops), 3),
             Metric::EdgeRatio => {
                 let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
                 for l in &loops {

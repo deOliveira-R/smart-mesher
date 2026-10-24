@@ -1,6 +1,7 @@
 //! The metric catalogue and the element-level dispatcher.
 
-use crate::vec::V;
+use crate::vec::{Scale, V};
+use smallvec::SmallVec;
 use crate::{planar, solid};
 use sm_mesh_api::CellShape;
 
@@ -22,7 +23,8 @@ use sm_mesh_api::CellShape;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Metric {
-    /// Cell volume (area in 2-D) under the mesh geometry rule `smartmesh.fan_vertex_mean.v1`.
+    /// Cell volume (area in 2-D) under the mesh geometry rule `smartmesh.fan_vertex_mean.v1`;
+    /// agrees with `sm_mesh_api::cell_volume` to rounding.
     Volume,
     /// Minimum corner Jacobian (unnormalised determinant of the corner edge vectors).
     Jacobian,
@@ -30,10 +32,12 @@ pub enum Metric {
     /// Pyramid: Verdict's minimum over the four sub-tetrahedra, floored at 0 and folded into
     /// `[0, 1]` (`x > 1` becomes `2 - x`). Collapsed quads (`p3 == p2`) use the triangle formula.
     ScaledJacobian,
-    /// Verdict aspect ratio: tri/quad/polygon perimeter form, tet `beta` form.
+    /// Verdict aspect ratio: tri/quad/polygon perimeter form; tet: Verdict's `tet_aspect_ratio`
+    /// (not Verdict's aspect "beta", which is this crate's [`Metric::RadiusRatio`]).
     AspectRatio,
-    /// Frobenius aspect (triangle and tetrahedron; equals the condition number for a triangle).
-    /// For hexes and wedges it equals [`Metric::MaxAspectFrobenius`].
+    /// Frobenius aspect (triangle and tetrahedron only; equals the condition number for a
+    /// triangle). Not defined for quads, hexes, wedges or pyramids: use
+    /// [`Metric::MaxAspectFrobenius`] there.
     AspectFrobenius,
     /// Maximum over corners of the Frobenius aspect. Hex: `||A|| ||adj A|| / (3 det A)` per corner
     /// (equal to [`Metric::Condition`]); wedge: tet-style aspect of the six corner tetrahedra
@@ -226,6 +230,10 @@ impl Metric {
     /// Value of the metric on the ideal element of `shape` (unit square/cube, equilateral
     /// triangle, regular tetrahedron, regular wedge with unit edges, regular square pyramid),
     /// or `None` if the metric is not defined for the shape or has no scale-free ideal.
+    ///
+    /// `Volume` and `Jacobian` are dimensional and have no ideal (`None`); hex `Dimension` is
+    /// `sqrt(3)/3` (the unit cube, `HexDimension.tex`), so it is the one dimensional metric
+    /// that reports an ideal, valid for unit edge length only.
     pub fn ideal(self, shape: CellShape) -> Option<f64> {
         use CellShape as S;
         use Metric as M;
@@ -236,7 +244,8 @@ impl Metric {
             return matches!(self, M::AspectRatio | M::EdgeRatio).then_some(1.0);
         }
         let v = match self {
-            M::Volume | M::Jacobian | M::Dimension => return None,
+            M::Volume | M::Jacobian => return None,
+            M::Dimension => 3.0f64.sqrt() / 3.0, // HexDimension.tex: unit cube
             M::ScaledJacobian
             | M::AspectRatio
             | M::AspectFrobenius
@@ -310,10 +319,25 @@ pub fn eval(metric: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Option<
     if p.iter().any(|q| q.iter().any(|x| !x.is_finite())) {
         return Some(f64::NAN);
     }
-    match shape {
+    // Scale-relative degeneracy: evaluate on coordinates normalised by a power of two, then
+    // restore the units of the dimensional metrics.
+    let sc = Scale::of(p);
+    let d = if matches!(shape, CellShape::Tri | CellShape::Quad | CellShape::Polygon) { 2 } else { 3 };
+    let run = |p: &[V], ctx: &Context| match shape {
         CellShape::Tri | CellShape::Quad | CellShape::Polygon => planar::eval(metric, shape, p, ctx),
         _ => solid::eval(metric, shape, p, ctx),
+    };
+    if sc.is_identity() {
+        return run(p, ctx);
     }
+    let q: SmallVec<[V; 16]> = sc.down(p);
+    let c = Context { normal: ctx.normal, ref_size: sc.dn(ctx.ref_size, d) };
+    let v = run(&q, &c)?;
+    Some(match metric {
+        Metric::Volume | Metric::Jacobian => sc.up(v, d),
+        Metric::Dimension => sc.up(v, 1),
+        _ => v,
+    })
 }
 
 /// `min(t, 1/t)^2` with `t = v / v_ref`; 0 for a non-positive size.

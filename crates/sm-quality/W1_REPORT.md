@@ -4,7 +4,7 @@
 
 `sm-quality` implements a large subset of the Verdict metric set (gaps listed in `DESIGN.md`) for every `CellShape` of `sm-mesh-api` (tri, quad, tet, hex, wedge, pyramid; polygons and polyhedra as documented generalizations), element-level (`eval`, pure, allocation free) and mesh-level (`compute`, `compute_many`, `report`, `validity`) through `&dyn MeshRead`, with deterministic parallel reductions (`summarize`, `histogram`). 30 metrics, shape-applicability table (`Metric::applies`), ideal values (`Metric::ideal`). Formulas, ranges and conventions are in `DESIGN.md`.
 
-Implemented per the task: scaled Jacobian, Jacobian, aspect ratio (tri/quad perimeter form, tet `beta` and `gamma`, Frobenius, radius ratio), skew, taper, warpage, stretch, condition number, shape, relative size, shape-and-size, min/max angle (interior angles in 2-D, dihedral in 3-D), edge ratio, max edge ratio, volume/area, plus Oddy, shear, shear-and-size, diagonal, dimension, distortion, collapse ratio, sphericity and star-shapedness; validity (valid / degenerate / inverted / skipped); summary statistics and histograms.
+Implemented per the task: scaled Jacobian, Jacobian, aspect ratio (tri/quad perimeter form, tet `tet_aspect_ratio` (Verdict's aspect "beta" is the crate's `RadiusRatio`) and `gamma`, Frobenius, radius ratio), skew, taper, warpage, stretch, condition number, shape, relative size, shape-and-size, min/max angle (interior angles in 2-D, dihedral in 3-D), edge ratio, max edge ratio, volume/area, plus Oddy, shear, shear-and-size, diagonal, dimension, distortion, collapse ratio, sphericity and star-shapedness; validity (valid / degenerate / inverted / skipped); summary statistics and histograms.
 
 **Verification status:** the first version was reconstructed from memory. A review then diffed it against the Verdict C++ sources and the 2007 manual, fix round 0 corrected the mismatches, and a differential run against a real Verdict build drove fix round 1 (below). Not everything is Verdict-identical: tet `MinAngle`, hex `EdgeRatio`, pyramid `Shape` when the longest edge is edge 0-1 or 1-2, collapsed-quad `Distortion`, hex/quad/wedge behaviour on inverted or zero-volume elements, and the quad `MinAngle`/`MaxAngle`/`Max,MeanAspectFrobenius`/`Distortion` on non-planar quads differ from Verdict, deliberately and documented in `DESIGN.md` ("Deviations from Verdict"). `tests/verdict_ref.rs` pins Verdict values for distorted elements (hand-computed in round 0; probe values from the Verdict build in round 1). Crate-only metrics are marked as extensions in `Metric`'s rustdoc and `DESIGN.md`.
 
@@ -40,10 +40,18 @@ Documented as deliberate deviations (new in `DESIGN.md`): tet `MinAngle` (true m
 
 Skipped, with reasons:
 
-* Scale-relative degenerate guard (SHOULD 1): documented only. Changing the guard touches every kernel and cannot be validated without the Verdict differential fixture.
+* Scale-relative degenerate guard (SHOULD 1): documented only in round 1; implemented in polish round 0 (below). Changing the guard touches every kernel and cannot be validated without the Verdict differential fixture.
 * Real Verdict differential fixture generator (SHOULD 2/10): no Verdict build is available in this environment; instead `tests/verdict_ref.rs` gained pinned cases for every mismatch class (mean-AF sentinel, collapsed-quad shear, non-planar-base pyramid, pyramid edge quirk, hex edge ratio, perturbed tet `MinAngle`, collapsed-quad `Distortion`, mirrored/flat hex `Distortion`, mirrored wedge AF, warped quad), using the probe values from the review. Verdict-side numbers are quoted in comments; where the crate deliberately differs the test pins the crate value.
 * `From<Point3>` convenience (SHOULD 11, optional): not added.
 * Not matched (documented instead): non-planar quad formulations, quad reflex/zero-area `Distortion`, tet `MinAngle`, hex `EdgeRatio`, collapsed-quad `Distortion`.
+
+## Polish round 0 (review items)
+
+* **Scale-relative degeneracy guard.** `eval` and the polyhedron path normalise coordinates by an exact power of two (`vec::Scale`, characteristic length in `[1, 2)`) before running the kernels, and scale `Volume`/`Jacobian` (`length^d`) and `Dimension` back; the relative-size reference is scaled down. Metrics are scale invariant over `1e-12 .. 1e12` (property test range extended; `tests/scale_flat.rs` and a tiny polyhedral mesh test pin a unit cube at `1e-12`: `Condition = ScaledJacobian = 1`). The driver's reference-size filter no longer uses the absolute `TINY` (`v > 0`).
+* **Dihedral extrema.** Edges next to a zero-area face are skipped; a cell with no valid edge (flat hex, collapsed tet) reads `MinAngle = 0`, `MaxAngle = 180` instead of 180/180 (tests in `tests/scale_flat.rs`).
+* `Metric::ideal(Dimension, Hex)` is now `sqrt(3)/3`; `Volume`/`Jacobian` documented as having no ideal. `AspectFrobenius` rustdoc corrected (tri/tet only) and the unreachable hex/wedge match arms removed.
+* `prepare()` skips the Volume column for `ReferenceSize::Fixed` and the `Field` normal lookup for 3-D cells.
+* Docs: tangled-quad `MinAngle`/`MaxAngle`, the degenerate-input residue (hex `Dimension`, quad `AspectRatio`, pyramid and wedge `ScaledJacobian`), tet `CollapseRatio` and tet inverted `DBL_MAX` sentinels in the "Not Verdict-identical" summary, pyramid `Shape` frequency (~25%), tet `AspectRatio` label, non-planar quad wording, `Volume` agrees with `cell_volume` to rounding.
 
 ## Test summary
 

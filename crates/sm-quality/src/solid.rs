@@ -262,6 +262,15 @@ fn pyramid_shape(p: &[V]) -> f64 {
 /// Pyramid scaled Jacobian before flooring and folding: minimum tet scaled Jacobian over the
 /// four sub-tetrahedra times `sqrt2`. Negative for an inverted pyramid.
 pub(crate) fn pyramid_signed_sj(p: &[V]) -> f64 {
+    let sc = crate::vec::Scale::of(p);
+    if sc.is_identity() {
+        return pyramid_signed_sj_unit(p);
+    }
+    pyramid_signed_sj_unit(&sc.down::<[V; 8]>(p))
+}
+
+/// [`pyramid_signed_sj`] on coordinates already normalised by [`crate::vec::Scale`].
+fn pyramid_signed_sj_unit(p: &[V]) -> f64 {
     const SUBS: [[usize; 4]; 4] = [[0, 1, 2, 4], [0, 2, 3, 4], [0, 1, 3, 4], [1, 2, 3, 4]];
     let mut m = f64::INFINITY;
     for s in SUBS {
@@ -273,7 +282,7 @@ pub(crate) fn pyramid_signed_sj(p: &[V]) -> f64 {
 
 /// Pyramid scaled Jacobian as Verdict reports it: floored at 0 and folded into `[0, 1]`.
 fn pyramid_scaled_jacobian(p: &[V]) -> f64 {
-    let x = pyramid_signed_sj(p).max(0.0);
+    let x = pyramid_signed_sj_unit(p).max(0.0);
     if x > 1.0 { 2.0 - x } else { x }
 }
 
@@ -427,7 +436,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             sj * t.sj_scale
         }
         // Hexes: Verdict's `condition_comp / 3` per corner, so max AF == Condition.
-        Metric::AspectFrobenius | Metric::MaxAspectFrobenius | Metric::Condition if is_hex => {
+        Metric::MaxAspectFrobenius | Metric::Condition if is_hex => {
             let mut mx = 0.0f64;
             frames(&mut |c| mx = mx.max(c.condition()));
             mx
@@ -442,7 +451,7 @@ pub(crate) fn eval(m: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Optio
             if bad { DBL_MAX } else { cap(s / n_corners) }
         }
         // Wedges: tet-style AF of the six corner tetrahedra; Condition == MaxAspectFrobenius.
-        Metric::AspectFrobenius | Metric::MaxAspectFrobenius | Metric::Condition if shape == CellShape::Wedge => {
+        Metric::MaxAspectFrobenius | Metric::Condition if shape == CellShape::Wedge => {
             wedge_aspect_frobenius(p).0
         }
         Metric::MeanAspectFrobenius if shape == CellShape::Wedge => wedge_aspect_frobenius(p).1,

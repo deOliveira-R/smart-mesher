@@ -83,6 +83,11 @@ pub(crate) fn starness<I: Ix>(p: &[V], faces: &[&[I]]) -> f64 {
 
 /// `(min, max)` interior dihedral angle in degrees over the edges that two faces share, or
 /// `None` if no edge has a twin face.
+///
+/// Edges next to a face with a zero area vector (collapsed face) have no defined dihedral angle
+/// and are skipped. If edges exist but none is valid (a flat hex, a collapsed tet), the cell has
+/// no meaningful angle: the result is `(0, 180)`, so it shows up as the worst cell for both
+/// `MinAngle` (0) and `MaxAngle` (180) instead of looking perfectly flat.
 pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f64)> {
     let normals: SmallVec<[V; 16]> = faces.iter().map(|l| unit(face_area_vector(p, l).0)).collect();
     // Directed edges (from, to, face), sorted: twin lookup is a binary search, not a face scan.
@@ -95,6 +100,7 @@ pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f
     }
     directed.sort_unstable();
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut degenerate_edges = false;
     for (f, lf) in faces.iter().enumerate() {
         let n = lf.len();
         for i in 0..n {
@@ -109,6 +115,10 @@ pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f
                 continue;
             }
             let g = g as usize;
+            if normals[f] == [0.0; 3] || normals[g] == [0.0; 3] {
+                degenerate_edges = true;
+                continue;
+            }
             let e = unit(sub(p[b], p[a]));
             let phi = dot(cross(normals[f], normals[g]), e).atan2(dot(normals[f], normals[g]));
             let interior = 180.0 - phi.to_degrees();
@@ -116,5 +126,9 @@ pub(crate) fn dihedral_extrema<I: Ix>(p: &[V], faces: &[&[I]]) -> Option<(f64, f
             hi = hi.max(interior);
         }
     }
-    (lo <= hi).then_some((lo, hi))
+    if lo <= hi {
+        Some((lo, hi))
+    } else {
+        degenerate_edges.then_some((0.0, 180.0))
+    }
 }

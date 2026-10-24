@@ -31,6 +31,16 @@ fn volumes_match_fixture_exact_values_and_mesh_geometry_rule() {
 }
 
 #[test]
+fn tiny_polyhedral_mesh_is_graded_like_the_unit_one() {
+    let fx = hexagonal_prism(1e-12, 1e-12).unwrap();
+    let t = compute_many(&fx.mesh, &[Metric::MinAngle, Metric::MaxAngle, Metric::Sphericity, Metric::Volume], &opts()).unwrap();
+    assert!((t.column(Metric::MinAngle).unwrap()[0] - 90.0).abs() < 1e-9);
+    assert!((t.column(Metric::MaxAngle).unwrap()[0] - 120.0).abs() < 1e-9);
+    assert!((t.column(Metric::Volume).unwrap()[0] / fx.volume - 1.0).abs() < 1e-9);
+    assert!(validity(&fx.mesh, &opts()).unwrap().all_valid());
+}
+
+#[test]
 fn polyhedral_metrics_on_fixtures() {
     // Regular-ish hexagonal prism: 8 faces, dihedrals 90 (top/bottom) and 120 (sides).
     let fx = hexagonal_prism(1.0, 1.0).unwrap();
