@@ -1158,6 +1158,7 @@ dependencies = [
  "sm-geom-api",
  "sm-mesh-api",
  "sm-model-api",
+ "sm-op-api",
  "sm-topo-api",
  "thiserror",
 ]

@@ -215,11 +215,43 @@ impl Session {
         reflog: Vec<ReflogEntry>,
         ctl: &Control<'_>,
     ) -> Result<Self, TimelineError> {
+        Self::open_with_policy(
+            engine,
+            timeline,
+            head,
+            seeds,
+            reflog,
+            ReplayPolicy::Strict,
+            ctl,
+        )
+    }
+
+    /// Like [`open_with`](Self::open_with), with the replay `policy` set before seeding and
+    /// replay. Under [`ReplayPolicy::Strict`] a mismatching seed is an error; under `Warn` and
+    /// `Rebaseline` it is skipped (the state is replayed instead) and reported in
+    /// [`take_warnings`](Self::take_warnings). The policy stays set on the session.
+    pub fn open_with_policy(
+        engine: Engine,
+        timeline: Timeline,
+        head: Head,
+        seeds: impl IntoIterator<Item = (Hash256, State)>,
+        reflog: Vec<ReflogEntry>,
+        policy: ReplayPolicy,
+        ctl: &Control<'_>,
+    ) -> Result<Self, TimelineError> {
         let target = Self::resolve_head(&timeline, &head)?;
         let mut s = Self::new(engine);
         s.timeline = timeline;
+        s.policy = policy;
         for (h, st) in seeds {
-            s.seed_state(h, st)?;
+            match s.seed_state(h, st) {
+                Ok(()) => {}
+                Err(e) if policy == ReplayPolicy::Strict => return Err(e),
+                Err(e @ (TimelineError::Diverged { .. } | TimelineError::Upgraded { .. })) => {
+                    s.warnings.push(e);
+                }
+                Err(e) => return Err(e),
+            }
         }
         s.reflog = reflog;
         s.state = s.state_at(target, ctl)?;
@@ -284,6 +316,14 @@ impl Session {
     /// call, in the order they were replayed (each once). Their node files need rewriting.
     pub fn take_rebaselined(&mut self) -> Vec<Hash256> {
         std::mem::take(&mut self.rebaselined)
+    }
+
+    /// Keep only the newest `keep` reflog entries, in order.
+    pub fn trim_reflog(&mut self, keep: usize) {
+        let n = self.reflog.len();
+        if n > keep {
+            self.reflog.drain(..n - keep);
+        }
     }
 
     /// The engine.
@@ -670,7 +710,10 @@ impl Session {
     }
 
     /// Create a branch at node `h` without moving HEAD.
+    /// Fails with [`TimelineError::HeadOnBranch`] if HEAD is attached to an unborn branch of
+    /// that name (creating it would move HEAD's position without updating the state).
     pub fn create_branch_at(&mut self, name: &str, h: Hash256) -> Result<(), TimelineError> {
+        self.check_unborn_head(name)?;
         self.timeline.create_ref(name, h)?;
         self.reflog.push(ReflogEntry {
             ref_name: Some(name.to_owned()),
@@ -679,6 +722,16 @@ impl Session {
             action: "branch".to_owned(),
         });
         Ok(())
+    }
+
+    /// Reject `name` when HEAD is attached to it but the branch does not exist (unborn).
+    fn check_unborn_head(&self, name: &str) -> Result<(), TimelineError> {
+        match &self.head {
+            Head::Ref(n) if n == name && !self.timeline.refs().contains_key(n) => {
+                Err(TimelineError::HeadOnBranch(n.clone()))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Delete a branch. Fails with [`TimelineError::HeadOnBranch`] if HEAD is attached to it.
@@ -698,7 +751,9 @@ impl Session {
     }
 
     /// Rename a branch. If HEAD is attached to it, HEAD follows. `to` must be a valid, unused
-    /// name (the file/directory rule ignores `from`, which goes away). On error nothing changes.
+    /// name (the file/directory rule ignores `from`, which goes away); it may not be the
+    /// unborn branch HEAD is attached to ([`TimelineError::HeadOnBranch`]). On error nothing
+    /// changes.
     pub fn rename_branch(&mut self, from: &str, to: &str) -> Result<(), TimelineError> {
         let h = *self
             .timeline
@@ -711,6 +766,7 @@ impl Session {
         if self.timeline.refs().contains_key(to) {
             return Err(TimelineError::RefExists(to.to_owned()));
         }
+        self.check_unborn_head(to)?;
         self.timeline.delete_ref(from)?;
         if let Err(e) = self.timeline.create_ref(to, h) {
             self.timeline.set_ref(from, h)?;

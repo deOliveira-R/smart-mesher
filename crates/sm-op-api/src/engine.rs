@@ -131,8 +131,11 @@ impl Engine {
         self.apply(state, op.as_ref(), ctl)
     }
 
-    /// [`apply_record`](Self::apply_record), also returning the op's canonical stored record.
-    pub(crate) fn apply_record_canonical(
+    /// [`apply_record`](Self::apply_record), also returning the op's canonical stored record
+    /// when the op supplied one (`core.batch` canonicalizes its nested records). Transactional
+    /// like [`apply`](Self::apply). Hosts that persist what ran should store the canonical
+    /// record when present, as [`crate::session::Session`] does.
+    pub fn apply_record_canonical(
         &self,
         state: &mut State,
         rec: &OpRecord,

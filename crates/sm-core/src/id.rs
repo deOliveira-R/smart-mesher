@@ -169,9 +169,14 @@ impl core::str::FromStr for EntityKind {
     }
 }
 
-/// A stable, never-reused entity id: 8-bit [`EntityKind`] + 56-bit serial.
+/// JSON-schema pattern of the text form of an [`EntityId`] (`Kind#serial`). Syntax only: the
+/// kind name and serial range are checked by parsing.
+pub const ENTITY_ID_PATTERN: &str = "^[A-Za-z]+#[0-9]+$";
+
+/// A stable, never-reused entity id: 8-bit [`EntityKind`] + 56-bit serial. Never zero (kind
+/// byte 0 is invalid), so `Option<EntityId>` is 8 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EntityId(u64);
+pub struct EntityId(core::num::NonZeroU64);
 
 impl EntityId {
     /// Largest serial that fits in 56 bits.
@@ -182,12 +187,15 @@ impl EntityId {
         if serial > Self::MAX_SERIAL {
             return None;
         }
-        Some(Self(((kind as u64) << 56) | serial))
+        match core::num::NonZeroU64::new(((kind as u64) << 56) | serial) {
+            Some(n) => Some(Self(n)),
+            None => None,
+        }
     }
 
     /// The entity kind.
     pub const fn kind(self) -> EntityKind {
-        match EntityKind::from_u8((self.0 >> 56) as u8) {
+        match EntityKind::from_u8((self.0.get() >> 56) as u8) {
             Some(k) => k,
             None => panic!("EntityId with invalid kind byte"),
         }
@@ -195,19 +203,19 @@ impl EntityId {
 
     /// The 56-bit serial.
     pub const fn serial(self) -> u64 {
-        self.0 & Self::MAX_SERIAL
+        self.0.get() & Self::MAX_SERIAL
     }
 
     /// Raw `u64` (on-disk form).
     pub const fn to_raw(self) -> u64 {
-        self.0
+        self.0.get()
     }
 
     /// Decode a raw `u64`. Returns `None` if the kind byte is unknown.
     pub const fn from_raw(raw: u64) -> Option<Self> {
-        match EntityKind::from_u8((raw >> 56) as u8) {
-            Some(_) => Some(Self(raw)),
-            None => None,
+        match (EntityKind::from_u8((raw >> 56) as u8), core::num::NonZeroU64::new(raw)) {
+            (Some(_), Some(n)) => Some(Self(n)),
+            _ => None,
         }
     }
 }
@@ -269,7 +277,7 @@ impl schemars::JsonSchema for EntityId {
         "EntityId".into()
     }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string", "pattern": "^[A-Za-z]+#[0-9]+$", "description": "Stable entity id `Kind#serial`" })
+        schemars::json_schema!({ "type": "string", "pattern": ENTITY_ID_PATTERN, "description": "Stable entity id `Kind#serial`" })
     }
 }
 
@@ -285,6 +293,24 @@ mod tests {
         assert_eq!(EntityId::from_raw(id.to_raw()), Some(id));
         assert!(EntityId::new(EntityKind::MeshCell, EntityId::MAX_SERIAL + 1).is_none());
         assert!(EntityId::from_raw(0).is_none());
+    }
+
+    #[test]
+    fn nonzero_layout_and_raw_bits() {
+        assert_eq!(core::mem::size_of::<Option<EntityId>>(), 8);
+        assert!(EntityId::from_raw(0).is_none());
+        for &k in EntityKind::ALL {
+            for serial in [0, 1, 42, EntityId::MAX_SERIAL] {
+                let id = EntityId::new(k, serial).unwrap();
+                assert_eq!(id.to_raw(), ((k as u64) << 56) | serial);
+                assert_eq!(id.kind(), k);
+                assert_eq!(id.serial(), serial);
+                assert_eq!(EntityId::from_raw(id.to_raw()), Some(id));
+                let text = format!("{}#{serial}", k.name());
+                assert_eq!(id.to_string(), text);
+                assert_eq!(text.parse::<EntityId>(), Ok(id));
+            }
+        }
     }
 
     #[test]

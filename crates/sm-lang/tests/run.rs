@@ -226,7 +226,7 @@ fn plan_mode_checks_without_applying_and_marks_unknowns() {
     assert!(rep.events.iter().all(|e| !matches!(e, Event::Op { delta: Some(_), .. })));
     let r = rep.records()[2];
     assert_eq!(r.params["ids"][0], "$plan.1.faces", "placeholders can never match REF_PATTERN");
-    assert!(!sm_lang::schema::is_batch_ref("$plan.1.faces"));
+    assert!(!sm_op_api::batch::is_reference("$plan.1.faces"));
     // Arithmetic on an unknown result is an error, not a silent guess.
     let rep = it.run_source("q", "let q2 = model.count()\nlet m = q2.count + 1");
     assert_eq!(rep.diagnostics[0].code, "plan-unresolved");

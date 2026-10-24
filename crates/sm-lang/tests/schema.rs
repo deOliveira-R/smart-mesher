@@ -3,7 +3,7 @@
 mod common;
 
 use serde_json::json;
-use sm_lang::schema::{PathSeg, SchemaDoc, check, check_in_batch, is_batch_ref, is_id_text};
+use sm_lang::schema::{PathSeg, SchemaDoc, check, check_in_batch, is_id_text};
 use sm_lang::{EngineHost, Interpreter, Options, QueryRelations};
 
 use common::*;
@@ -27,14 +27,14 @@ fn issues(name: &str, v: serde_json::Value) -> Vec<(String, &'static str)> {
 #[test]
 fn the_contract_patterns_are_pinned() {
     // These are the exact strings the checker reimplements by hand: if the contract changes them, this fails first.
-    assert_eq!(sm_lang::schema::ID_PATTERN, r"^[A-Za-z]+#[0-9]+$");
+    assert_eq!(sm_core::ENTITY_ID_PATTERN, r"^[A-Za-z]+#[0-9]+$");
     assert_eq!(sm_op_api::batch::REF_PATTERN, r"^\$[0-9]+\.[^\[\]]+(\[([0-9]+|\*)\])?$");
     assert_eq!(sm_op_api::batch::ESCAPED_LITERAL_PATTERN, r"^\$\$");
     for ok in ["$0.body", "$12.faces[3]", "$1.faces[*]", "$0.a.b", "$0.x y"] {
-        assert!(is_batch_ref(ok), "{ok}");
+        assert!(sm_op_api::batch::is_reference(ok), "{ok}");
     }
     for bad in ["", "$", "$.body", "$0", "$0.", "$a.body", "$0.body[]", "$0.body[x]", "$0.body[1", "$0.bo]dy", "0.body", "$0.body[*]x", "$$0.body", "$plan.1.body"] {
-        assert!(!is_batch_ref(bad), "{bad}");
+        assert!(!sm_op_api::batch::is_reference(bad), "{bad}");
     }
     assert!(is_id_text("TopoVolume#3") && is_id_text("Volume#0"));
     for bad in ["Volume#", "#3", "Vol1#3", "Volume#-1", "Volume #3", "Volume#3x", ""] {
@@ -48,7 +48,7 @@ fn the_contract_patterns_are_pinned() {
 fn the_id_pattern_is_what_sm_core_emits() {
     let schema = schemars::schema_for!(sm_core::EntityId);
     let v = serde_json::to_value(&schema).unwrap();
-    assert_eq!(v["pattern"], sm_lang::schema::ID_PATTERN, "{v}");
+    assert_eq!(v["pattern"], sm_core::ENTITY_ID_PATTERN, "{v}");
     assert_eq!(v["type"], "string");
 }
 

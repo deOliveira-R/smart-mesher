@@ -78,7 +78,7 @@ impl TimelineHead {
 ///
 /// Production hosts adapt a timeline `Session` (one node per applied record). sm-lang itself never
 /// builds a `Meta` (author/time are not its business), so [`EngineHost`] applies through
-/// `Engine::apply_record`, the documented replay path, and [`PlanHost`] applies nothing.
+/// `Engine::apply_record_canonical`, the documented replay path, and [`PlanHost`] applies nothing.
 pub trait Host {
     /// The op/query registry.
     fn registry(&self) -> &Registry;
@@ -114,7 +114,7 @@ pub trait Host {
 
 type Loader<'a> = Box<dyn Fn(&str) -> Result<String, String> + 'a>;
 
-/// A plain `Engine` + `State` host: applies records with `Engine::apply_record` and keeps a log.
+/// A plain `Engine` + `State` host: applies records with `Engine::apply_record_canonical` and logs the canonical stored forms.
 pub struct EngineHost<'a> {
     engine: &'a Engine,
     state: State,
@@ -174,9 +174,9 @@ impl Host for EngineHost<'_> {
 
     fn apply(&mut self, rec: &OpRecord) -> Result<Delta, HostError> {
         let q = QuietControl::new();
-        match self.engine.apply_record(&mut self.state, rec, &q.control()) {
-            Ok(d) => {
-                self.applied.push(rec.clone());
+        match self.engine.apply_record_canonical(&mut self.state, rec, &q.control()) {
+            Ok((d, canonical)) => {
+                self.applied.push(canonical.unwrap_or_else(|| rec.clone()));
                 Ok(d)
             }
             Err(e) => Err(HostError { code: e.code().to_owned(), message: e.to_string() }),

@@ -242,7 +242,7 @@ fn naming_a_branch_after_the_unborn_head_branch_is_refused() {
         ws.fork("b0", Some(n1)),
         ws.rename_branch("main", "b0"),
     ] {
-        assert_eq!(r.unwrap_err().code(), "bad-request");
+        assert_eq!(r.unwrap_err().code(), "head-on-branch");
     }
     ws.redo().unwrap();
     assert_eq!(total(&ws), 1);

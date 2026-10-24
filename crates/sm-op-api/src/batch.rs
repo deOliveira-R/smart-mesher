@@ -341,6 +341,13 @@ fn digits(s: &str) -> Option<usize> {
     s.parse().ok()
 }
 
+/// True iff `s` is a batch reference: exactly the [`REF_PATTERN`] grammar that `core.batch`
+/// parses (`$<i>.<role>`, `$<i>.<role>[<n>]` or `$<i>.<role>[*]`). A `$$` escape is not a
+/// reference.
+pub fn is_reference(s: &str) -> bool {
+    reference(s).is_some()
+}
+
 /// Parse a reference string; the grammar is exactly [`REF_PATTERN`].
 fn reference(s: &str) -> Option<Ref<'_>> {
     let rest = s.strip_prefix('$')?;
@@ -490,6 +497,16 @@ mod tests {
             "$1.a[0][1]",
         ] {
             assert_eq!(reference(lit), None, "{lit}");
+        }
+    }
+
+    #[test]
+    fn is_reference_follows_the_grammar() {
+        for ok in ["$0.price", "$12.a.b", "$0.x[3]", "$0.x[*]"] {
+            assert!(is_reference(ok), "{ok}");
+        }
+        for bad in ["", "$", "$0", "$0.", "$.x", "$a.x", "$0.x[]", "$0.x[a]", "$0.x]", "$0.[1]", "$$0.x", "0.x", "$0.x[1]y"] {
+            assert!(!is_reference(bad), "{bad}");
         }
     }
 

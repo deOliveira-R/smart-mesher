@@ -346,6 +346,9 @@ impl LayerType for TetLayer {
     fn is_empty(&self) -> bool {
         self.tets.is_empty()
     }
+    fn supports_snapshot(&self) -> bool {
+        true
+    }
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         Ok(Some(canonical_bytes(&to_value(&self.tets)?)))
     }
@@ -1785,6 +1788,8 @@ fn persisted_snapshot_hook_defaults_to_none_and_round_trips_when_implemented() {
             .is_none()
     );
     assert!(ModelLayer::restore(&[]).is_err());
+    assert!(!LayerType::supports_snapshot(&ModelLayer::default()));
+    assert!(!s.state().can_snapshot());
     assert!(
         s.state().snapshot().is_err(),
         "a non-empty layer without the hook cannot be snapshotted"
@@ -1800,6 +1805,9 @@ fn persisted_snapshot_hook_defaults_to_none_and_round_trips_when_implemented() {
         }
         fn is_empty(&self) -> bool {
             self.0.is_empty()
+        }
+        fn supports_snapshot(&self) -> bool {
+            true
         }
         fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
             Ok(Some(
@@ -1850,6 +1858,8 @@ fn persisted_snapshot_hook_defaults_to_none_and_round_trips_when_implemented() {
     r.register::<Fill>().unwrap();
     let mut s = Session::new(engine_with(r.clone(), Services::new()));
     apply(&mut s, &Fill { n: 100 });
+    assert!(s.state().can_snapshot());
+    assert!(Layer::supports_snapshot(&Big::default()));
     let snap = s.state().snapshot().unwrap();
     assert_eq!(snap.layers.len(), 1);
     let restored = r.restore(&snap).unwrap();

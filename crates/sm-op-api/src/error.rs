@@ -362,7 +362,10 @@ pub enum TimelineError {
     /// Nothing to redo.
     #[error("nothing to redo")]
     NothingToRedo,
-    /// The branch cannot be deleted because HEAD is attached to it.
+    /// The branch cannot be deleted (or created or renamed onto) because HEAD is attached to
+    /// it: either HEAD is on the branch being deleted, or HEAD is attached to a branch that
+    /// does not exist yet (unborn, e.g. after undoing to the root) and the operation would
+    /// create a ref of that name, which would silently move HEAD's position.
     #[error("HEAD is attached to branch '{0}'")]
     HeadOnBranch(String),
     /// Applying an op during replay or append failed.

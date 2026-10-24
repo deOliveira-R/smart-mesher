@@ -429,22 +429,15 @@ impl WorkspaceBuilder {
             }
         }
         let refs_on_disk = timeline.refs().clone();
-        let mut session = if self.replay == ReplayPolicy::Strict || target.is_none() {
-            Session::open_with(engine, timeline, head.clone(), seeds, reflog, ctl)?
-        } else {
-            // `Session::open_with` replays under the strict policy, so open at the empty state,
-            // choose the policy, then check out HEAD (one extra reflog entry).
-            let mut s =
-                Session::open_with(engine, timeline, Head::Detached(None), seeds, reflog, ctl)?;
-            s.set_replay_policy(self.replay);
-            let rev = match &head {
-                Head::Ref(n) => Rev::Ref(n.clone()),
-                Head::Detached(Some(h)) => Rev::Node(*h),
-                Head::Detached(None) => Rev::Empty,
-            };
-            s.checkout(rev, ctl)?;
-            s
-        };
+        let mut session = Session::open_with_policy(
+            engine,
+            timeline,
+            head.clone(),
+            seeds,
+            reflog,
+            self.replay,
+            ctl,
+        )?;
         let rebaselined = session.take_rebaselined();
         for w in session.take_warnings() {
             report.warnings.push(format!("replay: {w}"));
@@ -626,6 +619,11 @@ impl Workspace {
             cache::append_reflog(&p.layout, &log[p.reflog_persisted..])?;
             p.reflog_persisted = log.len();
         }
+        let limit = self.s.reflog_limit;
+        if p.reflog_persisted > limit {
+            self.session.trim_reflog(limit);
+            p.reflog_persisted = self.session.reflog().len();
+        }
         Ok(())
     }
 
@@ -729,6 +727,12 @@ impl Workspace {
             return Ok(false);
         };
         let state = self.session.state();
+        if !state.can_snapshot() {
+            self.warnings.push(format!(
+                "no snapshot at {node}: a non-empty layer has no persisted snapshot support"
+            ));
+            return Ok(false);
+        }
         let recorded = self.session.timeline().get(node).map(|n| n.check.state);
         if recorded != Some(state.hash()) {
             self.warnings.push(format!(
@@ -939,23 +943,9 @@ impl Workspace {
         self.autosave(None)
     }
 
-    /// A branch HEAD is attached to but that has no tip (undone to its root) must not be created
-    /// by name: the session would keep its empty position while HEAD names a born branch.
-    fn guard_unborn_head(&self, name: &str) -> Result<()> {
-        match self.session.head() {
-            Head::Ref(n) if n == name && !self.timeline().refs().contains_key(n) => {
-                Err(EngineError::BadRequest(format!(
-                    "'{name}' is the branch HEAD is on and it has no tip; redo or check out another revision first"
-                )))
-            }
-            _ => Ok(()),
-        }
-    }
-
     /// Create branch `name` at `at` (default: the current node) without moving HEAD.
     pub fn create_branch(&mut self, name: &str, at: Option<Hash256>) -> Result<()> {
         self.writable()?;
-        self.guard_unborn_head(name)?;
         let at = at
             .or(self.session.position())
             .ok_or(TimelineError::EmptyPosition)?;
@@ -973,7 +963,6 @@ impl Workspace {
     /// branch is removed again.
     pub fn fork_with(&mut self, name: &str, at: Option<Hash256>, ctl: &Control<'_>) -> Result<()> {
         self.writable()?;
-        self.guard_unborn_head(name)?;
         let at = at
             .or(self.session.position())
             .ok_or(TimelineError::EmptyPosition)?;
@@ -997,7 +986,6 @@ impl Workspace {
     /// Rename a branch; HEAD follows.
     pub fn rename_branch(&mut self, from: &str, to: &str) -> Result<()> {
         self.writable()?;
-        self.guard_unborn_head(to)?;
         self.session.rename_branch(from, to)?;
         self.autosave(None)
     }
