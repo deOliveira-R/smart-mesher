@@ -38,7 +38,26 @@ the same operators, ids, lineage, `OpInvalid` payloads and canonical hashes as t
 Workload: the top face of a brick refined by `n` splits (edge subdivision + chord, breadth first),
 so one volume ends with `n + 6` faces.
 
-BENCH_TABLE
+Criterion medians (`cargo bench -p sm-topo --bench scaling`):
+
+| Workload (n splits / bricks) | reference | sm-topo | speedup |
+|---|---|---|---|
+| refine, one op, n = 1 000 | 96 ms | 10.1 ms | 9.5x |
+| refine, one op, n = 4 000 | 1.30 s | 41.8 ms | 31x |
+| refine, one op, n = 16 000 | (not run) | 272 ms | |
+| refine, one op, n = 100 000 | (not run) | 4.6 s (46 us/split) | |
+| refine, op per split, n = 1 000 | 313 ms | 13.0 ms | 24x |
+| refine, op per split, n = 4 000 | 4.99 s | 52.8 ms | 95x |
+| refine, op per split, n = 16 000 | (not run) | 299 ms | |
+| refine, op per split, n = 100 000 | (not run) | 4.9 s (49 us/split) | |
+| assembly of 250 / 1 000 / 4 000 webcut bricks (2 ops each) | 17.0 / 69.6 / 337 ms | 17.0 / 73.4 / 342 ms | **1.0x (no gain)** |
+| `canonical_hash` (per face) | 4.3 ms / 4 006 faces = 1.07 us | 9.8 ms / 16 006 faces = 0.61 us | 1.8x |
+| full validation, 16 006 faces | `validate` 83 ms | `validate_par` 34 ms | 2.4x |
+
+The win is on large cells: the reference rewrites, re-sorts and re-checks the whole volume row on every
+split. **For many small solids (short rows) the store is on par with the reference, not faster**; the
+benchmark `assembly_of_webcut_bricks` shows this. Operator cost there is dominated by the shared
+`LineageLog` and geometry store, which this crate does not own.
 
 At 10^5 faces the reference does not finish in reasonable time (it is quadratic: it was 5 s at
 4 000 per-op splits and the cost per split grows with the volume row), so it is benchmarked only
@@ -66,8 +85,8 @@ The random driver's tally (valid/invalid calls per operator) is printed with
 `cargo test -p sm-topo --test random -- --nocapture`; it asserts that 12 key operators succeed at
 least once (brick, split_edge, split_face, merge_vertices, unmerge_face, kill_cascade, reverse,
 remove_face_use, make_inner_loop, imprint, sheet, tetra) and that the positional parent rewrite
-ran. A typical run: about 20 % of `end_op`s fail validation and roll back (compared exactly), every
-unmerge/merge/bridge/pole/embed/tolerance operator succeeds several times.
+ran. A typical run: about 20 % of `end_op`s fail validation and roll back (compared exactly), unmerge, merge, bridge, embed and
+tolerance operators each succeed several times (pole splits are covered by `differential.rs`).
 
 Commands (all clean): `cargo build`; `cargo test -p sm-topo`; `RAYON_NUM_THREADS=1 cargo test -p
 sm-topo`; `cargo clippy -p sm-topo --all-targets --all-features -- -D warnings`;
