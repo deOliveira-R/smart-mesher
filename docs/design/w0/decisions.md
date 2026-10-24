@@ -87,3 +87,10 @@ W0f applied the W0e batch plus 58 accepted gap fixes over four critique rounds (
 - **Open** (through `api_change_request` during waves, batched by the orchestrator): additive methods, new variants behind `#[non_exhaustive]`, new provided trait methods, docs.
 
 Known correctness restriction: sm-mesh-api `unfold` accepts only commuting involutions (mirrors, half turns) and returns `Unsupported` for other deck groups instead of a wrong result. Whether rotational sectors need a group-description input is decided by the W0g audit.
+
+## W0g result: contracts frozen (2026-10-24)
+The freeze audit accepted 14, 5, 4 and 2 items in its four rounds (merged at the commit after f01249d). Apart from two hash-framing fixes (prefix-free pcurve hashing, per-quantity quanta in the mesh quantized hash), all were `#[non_exhaustive]` markers with constructors. The semantic-breaking lens found nothing after round 1. Rotational/dihedral unfold is additive (a new group-based entry point next to `unfold`) and is scheduled with the tracking/export work.
+
+Residual: about 140 public types stay exhaustive by design (sides, senses, dims, keys, planes, axes, snapshot/node DTOs, derived views). Growing one of them is an orchestrator-coordinated change: an `api_change_request` plus a fix-up of all users in the same merge.
+
+**W0 is complete. The contract crates are frozen under the two-tier policy above.**
