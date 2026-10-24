@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
 use sm_core::{EntityId, EntityKind};
-use sm_op_api::{Batch, Delta, OpRecord};
+use sm_op_api::{Batch, Delta, Hash256, OpRecord, Rev};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, suggest};
 use crate::entity::{EntitySet, all_of, live_range};
 use crate::eval::{self, BUILTIN_NAMES, EvalErr};
 use crate::help::{self, Callable};
-use crate::host::{Host, TimelineCommand, TimelineRev};
+use crate::host::{Host, TimelineCommand};
 use crate::kinds;
 use crate::parser::{ParseLimits, parse_with};
 use crate::schema::{self, Issue, PathSeg, View};
@@ -46,6 +46,7 @@ impl Default for Options {
 
 /// Something that happened while running a script, in order.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Event {
     /// A top-level op statement (applied unless the host plans only).
     Op {
@@ -145,6 +146,32 @@ pub(crate) struct Binding {
 struct BatchState {
     id: u64,
     records: Vec<OpRecord>,
+    /// Per member, where each argument came from (for pointing a batch failure at the offending argument).
+    sites: Vec<Vec<OwnedSite>>,
+}
+
+/// An argument's source, owned so it can outlive the call that built it. Only list and object literals keep their
+/// expression (to descend into elements); anything else needs just its span.
+struct OwnedSite {
+    key: String,
+    span: Span,
+    expr: Option<Expr>,
+    direct: bool,
+}
+
+impl OwnedSite {
+    fn of(s: &Site<'_>) -> Self {
+        let keep = matches!(s.expr.kind, ExprKind::List(_) | ExprKind::Obj(_));
+        Self { key: s.key.clone(), span: s.expr.span, expr: keep.then(|| s.expr.clone()), direct: s.direct }
+    }
+
+    fn locate(&self, rest: &[PathSeg]) -> Span {
+        match &self.expr {
+            Some(e) if self.direct => locate(e, rest),
+            Some(e) => locate_in_spread(e, &self.key, rest),
+            None => self.span,
+        }
+    }
 }
 
 type IR<T> = Result<T, ()>;
@@ -272,7 +299,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
 
     fn eval_fail<T>(&mut self, e: EvalErr, span: Span) -> IR<T> {
         let (code, msg) = e;
-        self.fail(Diagnostic::error(code, span, msg).label("here"))
+        let mut d = Diagnostic::error(code, span, msg).label("here");
+        if code == "ambiguous-kind" {
+            d = d.help(kinds::UserIdError::AMBIGUOUS_HELP);
+        }
+        self.fail(d)
     }
 
     fn warn(&mut self, d: Diagnostic) {
@@ -463,6 +494,12 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             Val::List(l) => Arc::try_unwrap(l).unwrap_or_else(|a| (*a).clone()),
             Val::Ents(s) => s.iter().map(|i| Val::Ents(EntitySet::single(*i))).collect(),
             Val::Placeholder { n, role } => return self.exec_for_unknown(var, n, &role, iter.span, body),
+            Val::Ref { role, .. } => {
+                let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot loop over the batch output `{role}`"))
+                    .label("its length is unknown")
+                    .help("a batch cannot know how many ids a role holds: pass `x.role` to an array parameter, or move the loop after the batch, where the output is concrete");
+                return self.fail(d);
+            }
             other => {
                 let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot iterate over {}", other.a_type())).label("expected a list or an entity set");
                 return self.fail(d);
@@ -546,7 +583,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         }
         self.batch_counter += 1;
         let id = self.batch_counter;
-        self.batch = Some(BatchState { id, records: Vec::new() });
+        self.batch = Some(BatchState { id, records: Vec::new(), sites: Vec::new() });
         let r = self.exec_stmts(&b.stmts);
         let Some(state) = self.batch.take() else { return self.internal(span, "batch state missing") };
         r?;
@@ -555,7 +592,8 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             return Ok(());
         }
         let members = state.records.len();
-        let rec = match OpRecord::of(&Batch { ops: state.records }) {
+        let batch_rec = Batch { ops: state.records };
+        let rec = match OpRecord::of(&batch_rec) {
             Ok(r) => r,
             Err(e) => return self.fail(Diagnostic::error("encode-failed", span, e.to_string()).label("cannot encode the batch")),
         };
@@ -569,7 +607,19 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 self.events.push(Event::Batch { span, record: rec, members, delta: Some(delta) });
                 Ok(())
             }
-            Err(e) => self.fail(Diagnostic::error("op-failed", span, format!("batch failed [{}]: {}", e.code, e.message)).label("this batch was rejected and had no effect")),
+            Err(e) => {
+                let mut d = Diagnostic::error("op-failed", span, format!("batch failed [{}]: {}", e.code, respell(&e.message))).label("this batch was rejected and had no effect");
+                // A bad reference (`'$0.voluem[0]'`) points at the argument that wrote it, not at the whole block.
+                if let Some(r) = quoted_batch_ref(&e.message)
+                    && let Some((sp, key, op)) = batch_site(&r, &batch_rec.ops, &state.sites)
+                {
+                    d.span = sp;
+                    d.label = Some(format!("this reference names an output that `{op}` did not produce (argument `{key}`)"));
+                    d.notes.push((span, "in this batch, which was rejected as a whole".to_owned()));
+                    d = d.help("check the output name against the op's outputs (`help <op>`)");
+                }
+                self.fail(d)
+            }
         }
     }
 
@@ -577,24 +627,8 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     fn export_batch(&mut self, id: u64, delta: &Delta) {
         for scope in &mut self.scopes {
             for b in scope.values_mut() {
-                match &b.val {
-                    Val::Outcome(Outcome::Batch { batch, index }) if *batch == id => {
-                        let prefix = format!("{index}.");
-                        let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), EntitySet::from_ordered(v.clone())))).collect();
-                        b.val = Val::Outcome(Outcome::Applied { outputs });
-                    }
-                    Val::Ref { batch, index, role, sel } if *batch == id => {
-                        if let Some(ids) = delta.outputs.get(&format!("{index}.{role}")) {
-                            let picked = match sel {
-                                Sel::All | Sel::Star => Some(EntitySet::from_ordered(ids.clone())),
-                                Sel::At(k) => ids.get(*k).map(|i| EntitySet::single(*i)),
-                            };
-                            if let Some(p) = picked {
-                                b.val = Val::Ents(p);
-                            }
-                        }
-                    }
-                    _ => {}
+                if mentions_batch(&b.val, id) {
+                    rebind_val(&mut b.val, id, delta);
                 }
             }
         }
@@ -607,6 +641,12 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         if let ExprKind::Call(c) = &e.kind
             && self.is_registry_call(c)
         {
+            if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" {
+                let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{}` is a statement and has no value", c.path.dotted()))
+                    .label("a timeline command cannot be bound by `let` or `set`")
+                    .help("write it as its own statement, without `let x =`");
+                return self.fail(d);
+            }
             return self.exec_call(c, e.span);
         }
         self.eval(e)
@@ -662,7 +702,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     self.events.push(Event::Query { span, name, params: pj, result: Some(res) });
                     Ok(val)
                 }
-                Err(e) => self.fail(Diagnostic::error("query-failed", span, format!("query `{name}` failed [{}]: {}", e.code, e.message)).label("this query")),
+                Err(e) => self.fail(Diagnostic::error("query-failed", span, format!("query `{name}` failed [{}]: {}", e.code, respell(&e.message))).label("this query")),
             };
         }
         let rec = match OpRecord::new(&name, self.host.registry().op_version(&name).unwrap_or(info.version), Json::Object(params)) {
@@ -676,6 +716,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let index = b.records.len();
             let batch = b.id;
             b.records.push(rec);
+            b.sites.push(sites.iter().map(OwnedSite::of).collect());
             return Ok(Val::Outcome(Outcome::Batch { batch, index }));
         }
         // Decode gate: the record is known to decode, and the stored form is the canonical re-encoding.
@@ -708,7 +749,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             Err(e) => {
                 let msg = e.message.strip_prefix(&format!("op '{name}' failed: ")).unwrap_or(&e.message).to_owned();
-                let mut d = Diagnostic::error("op-failed", span, format!("`{name}` failed [{}]: {msg}", e.code)).label("this op was rejected and had no effect");
+                let mut d = Diagnostic::error("op-failed", span, format!("`{name}` failed [{}]: {}", e.code, respell(&msg))).label("this op was rejected and had no effect");
                 // When the error names an entity, point at the argument that supplied it.
                 if let Some((sp, key)) = localize(&msg, &rec.params, &sites) {
                     d.span = sp;
@@ -741,11 +782,12 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             return self.fail(d);
         }
         let allowed: &[&str] = match verb.as_str() {
-            "branch" => &["name"],
+            "branch" => &["name", "at"],
             "checkout" => &["ref", "node", "empty"],
             _ => &[],
         };
         let mut args: Vec<(String, Val, Span)> = Vec::new();
+        let mut pos_seen = false;
         for a in &call.args {
             match a {
                 Arg::Named { name, value } => {
@@ -761,12 +803,13 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     args.push((name.name.clone(), v, value.span));
                 }
                 Arg::Pos(e) => {
-                    if allowed.is_empty() || !args.is_empty() || call.args.len() != 1 {
+                    if allowed.is_empty() || pos_seen || args.iter().any(|(k, ..)| k == allowed[0]) {
                         let d = Diagnostic::error("positional-ambiguous", e.span, "cannot tell which parameter this value is for")
                             .label("write `name: value`")
                             .help(format!("`timeline.{verb}` takes {}", if allowed.is_empty() { "no arguments".to_owned() } else { format!("one string: {}", allowed[0]) }));
                         return self.fail(d);
                     }
+                    pos_seen = true;
                     let v = self.eval(e)?;
                     args.push((allowed[0].to_owned(), v, e.span));
                 }
@@ -785,7 +828,13 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         };
         let cmd = match verb.as_str() {
             "branch" => match want_str(self, "name", &args)? {
-                Some(name) => TimelineCommand::Branch { name },
+                Some(name) => {
+                    let at = match want_str(self, "at", &args)? {
+                        Some(h) => Some(self.parse_hash("at", &h, &args)?),
+                        None => None,
+                    };
+                    TimelineCommand::Branch { name, at }
+                }
                 None => return self.fail(Diagnostic::error("missing-argument", call.args_span, "`timeline.branch` needs the new branch name").label("write `timeline.branch(\"name\")`")),
             },
             "checkout" => {
@@ -797,9 +846,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     None => false,
                 };
                 match (r, n, empty) {
-                    (Some(r), None, false) => TimelineCommand::Checkout(TimelineRev::Ref(r)),
-                    (None, Some(n), false) => TimelineCommand::Checkout(TimelineRev::Node(n)),
-                    (None, None, true) => TimelineCommand::Checkout(TimelineRev::Empty),
+                    (Some(r), None, false) => TimelineCommand::Checkout(Rev::Ref(r)),
+                    (None, Some(n), false) => TimelineCommand::Checkout(Rev::Node(self.parse_hash("node", &n, &args)?)),
+                    (None, None, true) => TimelineCommand::Checkout(Rev::Empty),
                     _ => {
                         let d = Diagnostic::error("missing-argument", call.args_span, "`timeline.checkout` needs exactly one of `ref`, `node`, `empty`")
                             .label("which revision?")
@@ -825,6 +874,20 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Ok(Val::obj(BTreeMap::new()))
             }
             Err(e) => self.fail(Diagnostic::error("timeline-failed", span, format!("`timeline.{verb}` failed [{}]: {}", e.code, e.message)).label("this command had no effect")),
+        }
+    }
+
+    /// A node hash given as a string argument: 64 lowercase hex characters, else a diagnostic at the argument.
+    fn parse_hash(&mut self, key: &str, text: &str, args: &[(String, Val, Span)]) -> IR<Hash256> {
+        match text.parse::<Hash256>() {
+            Ok(h) => Ok(h),
+            Err(e) => {
+                let sp = args.iter().find(|(k, ..)| k == key).map_or(Span::new(0, 0, 0), |(_, _, sp)| *sp);
+                let d = Diagnostic::error("invalid-argument", sp, format!("`{key}` is not a node hash: {e}"))
+                    .label("not a hash")
+                    .help("a node is named by its 64-character lowercase hex hash, as the timeline log prints it");
+                self.fail(d)
+            }
         }
     }
 
@@ -923,7 +986,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 }
                 Err(issue) => {
                     let sp = if e.direct { locate(e.expr, &issue.path) } else { locate_in_spread(e.expr, &e.key, &issue.path) };
-                    self.diags.push(Diagnostic::error(issue_code(issue.code), sp, issue.message).label("here"));
+                    let mut d = Diagnostic::error(issue_code(issue.code), sp, issue.message).label("here");
+                    if issue.code == "ambiguous-kind" {
+                        d = d.help(kinds::UserIdError::AMBIGUOUS_HELP);
+                    }
+                    self.diags.push(d);
                     failed = true;
                 }
             }
@@ -1033,10 +1100,18 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         // A reference or placeholder as a single id string.
         let ref_str = |this: &mut Self, v: &Val, array_elem: bool, path: &[PathSeg]| -> Option<Result<Json, Issue>> {
             match v {
-                Val::Ref { batch, index, role, sel } => {
+                Val::Ref { batch, index, role, sel, base } => {
                     if Some(*batch) != batch_id {
-                        return Some(Err(issue(path, "stale-reference", "this output belongs to a batch that is not the one being built".into())));
+                        let why = if batch_id.is_some() {
+                            "this output belongs to a different batch than the one being built".to_owned()
+                        } else if !this.host.executes() {
+                            "this output belongs to a batch, and a plan does not apply batches, so its ids are unknown".to_owned()
+                        } else {
+                            format!("the batch has been applied but produced no output `{role}[{}]`", if let Sel::At(k) = sel { k.to_string() } else { "*".to_owned() })
+                        };
+                        return Some(Err(issue(path, "stale-reference", why)));
                     }
+                    let base = if base.is_empty() { "<result>" } else { base.as_str() };
                     let s = match sel {
                         Sel::All if array_elem => format!("${index}.{role}[*]"),
                         Sel::All => {
@@ -1045,7 +1120,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                             return Some(Err(issue(
                                 path,
                                 "expected-one-entity",
-                                format!("`{role}` may hold several ids and a batch cannot know how many; write `<result>.{role}[0]` to take one (or `[k]`)"),
+                                format!("`{role}` may hold several ids and a batch cannot know how many; write `{base}.{role}[0]` to take one (or `[k]`)"),
                             )));
                         }
                         Sel::At(k) => format!("${index}.{role}[{k}]"),
@@ -1076,13 +1151,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             };
             return match v {
                 Val::Ents(s) => one_id(s, path),
-                Val::Str(s) => match kinds::parse_entity_text(s) {
-                    Ok(id) => Ok(Json::String(id.to_string())),
-                    Err(m) if nn.is_some_and(|n| !n.alternatives().is_empty()) => {
-                        let _ = m;
-                        Ok(Json::String(self.escape(s)))
-                    }
-                    Err(m) => Err(issue(path, "pattern-mismatch", m)),
+                Val::Str(s) => match kinds::parse_user_entity_text(s) {
+                    Ok(id) => self.string_id(id, path),
+                    Err(kinds::UserIdError::AmbiguousKind(m)) => Err(issue(path, "ambiguous-kind", m)),
+                    Err(kinds::UserIdError::Invalid(_)) if nn.is_some_and(|n| !n.alternatives().is_empty()) => Ok(Json::String(self.escape(s))),
+                    Err(kinds::UserIdError::Invalid(m)) => Err(issue(path, "pattern-mismatch", m)),
                 },
                 other => match ref_str(self, other, false, path) {
                     Some(r) => r,
@@ -1095,9 +1168,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let push_elem = |this: &mut Self, el: &Val, path: &mut Vec<PathSeg>, out: &mut Vec<Json>| -> Result<(), Issue> {
                 match el {
                     Val::Ents(s) => out.extend(s.iter().map(|i| Json::String(i.to_string()))),
-                    Val::Str(s) => match kinds::parse_entity_text(s) {
-                        Ok(id) => out.push(Json::String(id.to_string())),
-                        Err(m) => return Err(issue(path, "pattern-mismatch", m)),
+                    Val::Str(s) => match kinds::parse_user_entity_text(s) {
+                        Ok(id) => out.push(this.string_id(id, path)?),
+                        Err(kinds::UserIdError::AmbiguousKind(m)) => return Err(issue(path, "ambiguous-kind", m)),
+                        Err(kinds::UserIdError::Invalid(m)) => return Err(issue(path, "pattern-mismatch", m)),
                     },
                     other => match ref_str(this, other, true, path) {
                         Some(r) => out.push(r?),
@@ -1167,6 +1241,14 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         }
     }
 
+    /// An id named by a string: it must be live, like a bare id (`entity-not-found` otherwise), when the host executes.
+    fn string_id(&self, id: EntityId, path: &[PathSeg]) -> Result<Json, Issue> {
+        if self.host.executes() && !self.host.state().contains(id) {
+            return Err(Issue { path: path.to_vec(), code: "entity-not-found", message: format!("there is no live {} ({})", crate::value::fmt_id(id), self.describe_live(id.kind())) });
+        }
+        Ok(Json::String(id.to_string()))
+    }
+
     /// Inside a batch, a literal string starting with `$` is written `$$...` so it is never read as a reference.
     fn escape(&self, s: &str) -> String {
         if self.batch.is_some() && s.starts_with('$') { format!("${s}") } else { s.to_owned() }
@@ -1212,7 +1294,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             ExprKind::Var(n) => self.lookup_var(n, e.span),
             ExprKind::Field(b, f) => {
                 let v = self.eval(b)?;
-                self.field(v, f, e.span)
+                let mut r = self.field(v, f, e.span)?;
+                if let (Val::Ref { base, .. }, ExprKind::Var(n)) = (&mut r, &b.kind) {
+                    base.clone_from(n);
+                }
+                Ok(r)
             }
             ExprKind::Index(b, idx) => {
                 let v = self.eval(b)?;
@@ -1297,7 +1383,20 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
         }
         match eval::call_builtin_lim(&name, &args, self.opts.max_range_len, self.opts.max_value_len) {
-            Ok(v) => Ok(v),
+            Ok(v) => {
+                // Ids named by strings must be live, exactly like bare ids (`Volume#7`).
+                if name == "ents"
+                    && self.host.executes()
+                    && let Val::Ents(set) = &v
+                    && let Some(dead) = set.iter().find(|i| !self.host.state().contains(**i))
+                {
+                    let d = Diagnostic::error("entity-not-found", span, format!("there is no live {}", crate::value::fmt_id(*dead)))
+                        .label("not in the current state")
+                        .help(self.describe_live(dead.kind()));
+                    return self.fail(d);
+                }
+                Ok(v)
+            }
             Err(er) => self.eval_fail(er, span),
         }
     }
@@ -1333,7 +1432,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             },
             Val::Outcome(Outcome::Batch { batch, index }) => match name {
                 "created" | "removed" => self.eval_fail(("not-concrete", format!("`{name}` is only known after the batch is applied")), span),
-                _ => Ok(Val::Ref { batch, index, role: name.to_owned(), sel: Sel::All }),
+                _ => Ok(Val::Ref { batch, index, role: name.to_owned(), sel: Sel::All, base: String::new() }),
             },
             Val::Outcome(Outcome::Plan { n }) => Ok(Val::Placeholder { n, role: name.to_owned() }),
             Val::Placeholder { n, role } => Ok(Val::Placeholder { n, role: format!("{role}.{name}") }),
@@ -1367,8 +1466,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Some(x) => Ok(x.clone()),
                 None => self.eval_fail(("unknown-field", format!("the object has no key {k:?}")), span),
             },
-            (Val::Ref { batch, index, role, sel: Sel::All }, Some(Val::Int(k))) if k >= 0 => Ok(Val::Ref { batch, index, role, sel: Sel::At(k as usize) }),
-            (Val::Ref { batch, index, role, sel: Sel::All }, None) => Ok(Val::Ref { batch, index, role, sel: Sel::Star }),
+            (Val::Ref { batch, index, role, sel: Sel::All, base }, Some(Val::Int(k))) if k >= 0 => Ok(Val::Ref { batch, index, role, sel: Sel::At(k as usize), base }),
+            (Val::Ref { batch, index, role, sel: Sel::All, base }, None) => Ok(Val::Ref { batch, index, role, sel: Sel::Star, base }),
+            (Val::Ref { sel: Sel::All, .. }, Some(Val::Int(k))) => self.eval_fail(
+                (
+                    "type-mismatch",
+                    format!("a batch reference cannot be indexed from the end (`[{k}]`): the reference grammar has no negative index and a batch cannot know how many ids a role holds; write an explicit `[k]` such as `[0]`"),
+                ),
+                span,
+            ),
             (Val::Ref { .. }, _) => self.eval_fail(("type-mismatch", "a batch output can be indexed once, with a non-negative integer or `*`".into()), span),
             (Val::Placeholder { n, role }, _) => Ok(Val::Placeholder { n, role }),
             (other, Some(i)) => self.eval_fail(("type-mismatch", format!("cannot index {} with {}", other.a_type(), i.a_type())), span),
@@ -1515,6 +1621,105 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
         }
     }
+}
+
+/// True if `v` is, or holds in a list or object, a symbolic value of batch `id`.
+fn mentions_batch(v: &Val, id: u64) -> bool {
+    match v {
+        Val::Outcome(Outcome::Batch { batch, .. }) | Val::Ref { batch, .. } => *batch == id,
+        Val::List(l) => l.iter().any(|x| mentions_batch(x, id)),
+        Val::Obj(m) => m.values().any(|x| mentions_batch(x, id)),
+        _ => false,
+    }
+}
+
+/// Replace the symbolic values of batch `id` inside `v` (also nested in lists and objects) by what the batch produced.
+/// A selection past the end of a role stays a reference; using it reports that the batch has no such output.
+fn rebind_val(v: &mut Val, id: u64, delta: &Delta) {
+    match v {
+        Val::Outcome(Outcome::Batch { batch, index }) if *batch == id => {
+            let prefix = format!("{index}.");
+            let outputs = delta.outputs.iter().filter_map(|(k, o)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), EntitySet::from_ordered(o.clone())))).collect();
+            *v = Val::Outcome(Outcome::Applied { outputs });
+        }
+        Val::Ref { batch, index, role, sel, .. } if *batch == id => {
+            if let Some(ids) = delta.outputs.get(&format!("{index}.{role}")) {
+                let picked = match sel {
+                    Sel::All | Sel::Star => Some(EntitySet::from_ordered(ids.clone())),
+                    Sel::At(k) => ids.get(*k).map(|i| EntitySet::single(*i)),
+                };
+                if let Some(p) = picked {
+                    *v = Val::Ents(p);
+                }
+            }
+        }
+        Val::List(l) => {
+            for x in Arc::make_mut(l).iter_mut() {
+                rebind_val(x, id, delta);
+            }
+        }
+        Val::Obj(m) => {
+            for x in Arc::make_mut(m).values_mut() {
+                rebind_val(x, id, delta);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rewrite canonical ids in a host message (`TopoFace#1`, `Surface#7`) into the spelling scripts use (`Face#1`,
+/// `GeomSurface#7`), so an id copied out of an error can be pasted into a script.
+fn respell(msg: &str) -> String {
+    let b = msg.as_bytes();
+    let mut out = String::with_capacity(msg.len());
+    let mut last = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'#' {
+            i += 1;
+            continue;
+        }
+        let mut lo = i;
+        while lo > last && b[lo - 1].is_ascii_alphabetic() {
+            lo -= 1;
+        }
+        let mut hi = i + 1;
+        while hi < b.len() && b[hi].is_ascii_digit() {
+            hi += 1;
+        }
+        if lo < i
+            && hi > i + 1
+            && let Ok(id) = msg[lo..hi].parse::<EntityId>()
+        {
+            out.push_str(&msg[last..lo]);
+            out.push_str(&crate::value::fmt_id(id));
+            last = hi;
+        }
+        i = hi.max(i + 1);
+    }
+    out.push_str(&msg[last..]);
+    out
+}
+
+/// The batch reference an error message quotes (`batch reference '$0.voluem[0]': no such output`).
+fn quoted_batch_ref(msg: &str) -> Option<String> {
+    let lo = msg.find("'$")? + 1;
+    let len = msg[lo..].find('\'')?;
+    Some(msg[lo..lo + len].to_owned())
+}
+
+/// The member argument that wrote reference string `r`: its span, parameter name and the op that holds it.
+fn batch_site<'r>(r: &str, ops: &'r [OpRecord], sites: &[Vec<OwnedSite>]) -> Option<(Span, String, &'r str)> {
+    for (op, member) in ops.iter().zip(sites) {
+        let mut path = Vec::new();
+        if !find_str(&op.params, r, &mut path) {
+            continue;
+        }
+        let Some(PathSeg::Key(k)) = path.first() else { continue };
+        let Some(site) = member.iter().find(|s| &s.key == k) else { continue };
+        return Some((site.locate(&path[1..]), k.clone(), op.name.as_str()));
+    }
+    None
 }
 
 /// Entity ids (`Kind#serial`) written in a message.

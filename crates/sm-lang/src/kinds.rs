@@ -106,3 +106,43 @@ pub fn parse_entity_text(s: &str) -> Result<sm_core::EntityId, String> {
     let serial: u64 = n.parse().map_err(|_| format!("`{n}` is not a valid serial number"))?;
     sm_core::EntityId::new(kind, serial).ok_or_else(|| format!("serial {serial} is too large"))
 }
+
+/// Why a user-written string is not an entity id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserIdError {
+    /// `Surface#n` or `Curve#n`: in source these are Cubit's face and edge, but `sm-core` prints the geometry carriers
+    /// with the same names, so a string with this prefix could mean either. The language refuses to guess.
+    AmbiguousKind(String),
+    /// Not an id at all (message as [`parse_entity_text`]).
+    Invalid(String),
+}
+
+impl UserIdError {
+    /// The message.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::AmbiguousKind(m) | Self::Invalid(m) => m,
+        }
+    }
+
+    /// The help line of an ambiguous kind.
+    pub const AMBIGUOUS_HELP: &'static str = "write `Face#n` (or `Edge#n`) for the topology entity, or `GeomSurface#n` (or `GeomCurve#n`) for the geometry carrier";
+}
+
+/// Parse an id from a string a *user wrote* (a string literal, `ents("...")`, a string argument). Like
+/// [`parse_entity_text`], except that the prefixes `Surface#` and `Curve#` are an error: `sm-core` prints the geometry
+/// carriers that way while bare source `Surface#5` is a face, so the same text would silently mean two entities.
+/// Ids inside query results are wire form and go through [`parse_entity_text`] instead.
+pub fn parse_user_entity_text(s: &str) -> Result<sm_core::EntityId, UserIdError> {
+    if let Some((k, n)) = s.split_once('#')
+        && (k == "Surface" || k == "Curve")
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+    {
+        let (face, carrier) = if k == "Surface" { ("Face", "GeomSurface") } else { ("Edge", "GeomCurve") };
+        return Err(UserIdError::AmbiguousKind(format!(
+            "`{s}` is ambiguous: `{k}` names the {face} in scripts but the geometry carrier {carrier} in canonical text"
+        )));
+    }
+    parse_entity_text(s).map_err(UserIdError::Invalid)
+}

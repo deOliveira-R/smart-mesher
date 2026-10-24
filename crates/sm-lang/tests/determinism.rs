@@ -59,6 +59,7 @@ fn large_entity_lists_lower_identically_on_every_run_and_thread_count() {
     assert_ne!(h, 0);
     // And against the sequential oracle: the same script on a single worker is the baseline `check` already compared.
     assert_eq!(h, run_hashed(1));
+    assert_eq!(h, run_hashed(8));
 }
 
 #[test]

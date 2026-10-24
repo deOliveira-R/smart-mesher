@@ -124,6 +124,10 @@ pub struct Token {
     pub span: Span,
 }
 
+/// Words reserved for user functions and loops in a later version. They are errors as names today so that adding the
+/// syntax later cannot change the meaning of a valid script (`return (x)` would otherwise already parse as a call).
+pub const FUTURE_WORDS: [&str; 7] = ["fn", "def", "return", "while", "break", "continue", "import"];
+
 fn keyword(s: &str) -> Option<Tok> {
     Some(match s {
         "let" => Tok::Let,
@@ -333,7 +337,19 @@ impl Lexer<'_> {
             self.i += 1;
             return Tok::EntityRef;
         }
-        keyword(&self.text[lo..self.i]).unwrap_or(Tok::Ident)
+        let word = &self.text[lo..self.i];
+        if FUTURE_WORDS.contains(&word) {
+            // After a single `.` any word is a valid path segment (`b.return`).
+            let dotted = lo >= 1 && self.b[lo - 1] == b'.' && !(lo >= 2 && self.b[lo - 2] == b'.');
+            if !dotted {
+                self.diags.push(
+                    Diagnostic::error("reserved-word", self.sp(lo, self.i), format!("`{word}` is reserved for a future version of the language"))
+                        .label("cannot be used as a name")
+                        .help("choose another name; an object key can be quoted (`{ \"return\": 1 }`)"),
+                );
+            }
+        }
+        keyword(word).unwrap_or(Tok::Ident)
     }
 
     fn number(&mut self) -> Tok {
@@ -432,6 +448,33 @@ impl Lexer<'_> {
                             continue;
                         }
                     }
+                    self.i += 1;
+                }
+                b'$' if self.at(1) == b'{' => {
+                    self.diags.push(
+                        Diagnostic::error("reserved-interpolation", self.sp(self.i, self.i + 2), "`${` in a string is reserved")
+                            .label("reserved for string interpolation")
+                            .help("strings are literal text; write `\\${` for a literal `${`, or build the text with `\"pin_\" + str(i)`"),
+                    );
+                    s.push('$');
+                    self.i += 1;
+                }
+                b'{' => {
+                    // `"fuel_{i}"` is literal text in v1 (and stays so); warn, since it is almost certainly meant as interpolation.
+                    let mut j = self.i + 1;
+                    if matches!(self.b.get(j), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')) {
+                        while matches!(self.b.get(j), Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')) {
+                            j += 1;
+                        }
+                        if self.b.get(j) == Some(&b'}') {
+                            self.diags.push(
+                                Diagnostic::warning("literal-braces", self.sp(self.i, j + 1), "this string contains `{name}`, which is literal text, not interpolation")
+                                    .label("printed as written")
+                                    .help("strings never interpolate; build the text with `+ str(...)`, e.g. `\"fuel_\" + str(i)`"),
+                            );
+                        }
+                    }
+                    s.push('{');
                     self.i += 1;
                 }
                 _ => {

@@ -1,4 +1,4 @@
-error[op-failed]: `model.scale_brick` failed [wrong-kind]: entity TopoVolume#1 is not a TopoBody
+error[op-failed]: `model.scale_brick` failed [wrong-kind]: entity Volume#1 is not a TopoBody
  --> op_failed_wrong_kind.smesh:1:23
   |
 1 | model.scale_brick(id: Volume#1, factor: 2)

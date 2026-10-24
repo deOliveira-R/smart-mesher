@@ -81,6 +81,8 @@ pub enum Val {
         role: String,
         /// Selection.
         sel: Sel,
+        /// The variable the reference was read from (`p` in `p.faces`), for messages; empty when it was not a plain variable.
+        base: String,
     },
     /// A plan-mode stand-in for an output that is unknown without executing (`"$plan.n.role"`).
     Placeholder {
@@ -212,16 +214,7 @@ impl fmt::Display for Val {
                 }
                 f.write_str("}")
             }
-            Val::Ents(s) => {
-                f.write_str("{")?;
-                for (i, id) in s.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    f.write_str(&fmt_id(*id))?;
-                }
-                f.write_str("}")
-            }
+            Val::Ents(s) => fmt_ents(s, f),
             Val::Outcome(_) => f.write_str("<op result>"),
             Val::Ref { index, role, sel, .. } => match sel {
                 Sel::All => write!(f, "${index}.{role}"),
@@ -231,4 +224,67 @@ impl fmt::Display for Val {
             Val::Placeholder { n, role } => write!(f, "$plan.{n}.{role}"),
         }
     }
+}
+
+/// Print an entity collection in source form, so a printed value can be pasted back into a script.
+///
+/// A sorted set prints as set algebra with consecutive serials compressed per kind: `Face#[1..6, 9] | Volume#2`
+/// (one id is `Face#5`). An ordered op-output list keeps its order and prints as a list of ids:
+/// `[Body#1, Volume#1, Face#1]`. The empty set has no source literal and prints as `<no entities>`.
+fn fmt_ents(s: &EntitySet, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if s.is_empty() {
+        return f.write_str("<no entities>");
+    }
+    if !s.is_sorted() {
+        f.write_str("[")?;
+        for (i, id) in s.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(&fmt_id(*id))?;
+        }
+        return f.write_str("]");
+    }
+    let ids = s.as_slice();
+    let mut i = 0;
+    let mut first_group = true;
+    while i < ids.len() {
+        let kind = ids[i].kind();
+        let mut j = i;
+        while j < ids.len() && ids[j].kind() == kind {
+            j += 1;
+        }
+        if !first_group {
+            f.write_str(" | ")?;
+        }
+        first_group = false;
+        let group = &ids[i..j];
+        let name = kinds::singular_of(kind);
+        if group.len() == 1 {
+            write!(f, "{name}#{}", group[0].serial())?;
+        } else {
+            write!(f, "{name}#[")?;
+            let mut a = 0;
+            let mut first = true;
+            while a < group.len() {
+                let mut b = a;
+                while b + 1 < group.len() && group[b + 1].serial() == group[b].serial() + 1 {
+                    b += 1;
+                }
+                if !first {
+                    f.write_str(", ")?;
+                }
+                first = false;
+                match b - a {
+                    0 => write!(f, "{}", group[a].serial())?,
+                    1 => write!(f, "{}, {}", group[a].serial(), group[b].serial())?,
+                    _ => write!(f, "{}..{}", group[a].serial(), group[b].serial())?,
+                }
+                a = b + 1;
+            }
+            f.write_str("]")?;
+        }
+        i = j;
+    }
+    Ok(())
 }

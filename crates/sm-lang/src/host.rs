@@ -2,7 +2,7 @@
 
 use serde_json::Value as Json;
 use sm_core::{EntityId, EntityKind};
-use sm_op_api::{Delta, Engine, OpRecord, QuietControl, Registry, State};
+use sm_op_api::{Delta, Engine, Hash256, OpRecord, QuietControl, Registry, Rev, State};
 
 use crate::entity::Relations;
 
@@ -16,31 +16,26 @@ pub struct HostError {
     pub message: String,
 }
 
-/// Which revision `timeline.checkout` moves to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TimelineRev {
-    /// The empty state before any op (detached).
-    Empty,
-    /// A node by its hash text (detached).
-    Node(String),
-    /// A branch by name (attached).
-    Ref(String),
-}
-
 /// A timeline-control command (`timeline.branch(...)`, `timeline.checkout(...)`, `timeline.undo()`, `timeline.redo()`).
 ///
 /// These are statements of the language but **not** registry ops: a fork or an undo is not itself a timeline node,
 /// so it cannot be recorded as one. A host handles them outside [`Host::apply`] (a session maps them to
 /// `Session::branch`, `checkout`, `undo`, `redo`). See `LANGUAGE.md` section 4.6.
+///
+/// The enum is `#[non_exhaustive]`: new verbs (`tag`, `log`, `reset`, ...) will be added, so hosts need a wildcard arm.
+/// The revision type is the contract's [`Rev`]; the interpreter parses a node hash before the host sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TimelineCommand {
-    /// Create a branch at the current position and attach to it (fork).
+    /// Create a branch and attach to it (fork), at the current position or at an earlier node.
     Branch {
         /// The new branch name.
         name: String,
+        /// Fork at this node instead of the current position (`Workspace::fork(.., at)`).
+        at: Option<Hash256>,
     },
     /// Move to a revision.
-    Checkout(TimelineRev),
+    Checkout(Rev),
     /// Step back one node.
     Undo,
     /// Step forward again after an undo.

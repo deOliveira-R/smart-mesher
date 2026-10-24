@@ -4,6 +4,7 @@ use crate::span::{SourceMap, Span};
 
 /// How serious a [`Diagnostic`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Severity {
     /// Stops the script.
     Error,

@@ -1,6 +1,6 @@
 # sm-lang: W1 report
 
-Status: **done**, revised by **fix0** (review findings; see the "fix0" section, which supersedes the older text below where they differ). Definition of done passes; see "Test summary". Commit: the tip of `claude/w1-sm-lang-96bwd7`; the SHA is reported in the session's final message.
+Status: **done**, revised by **fix0** and **fix1** (review findings; see the "fix0" and "fix1" sections, which supersede the older text below where they differ). Definition of done passes; see "Test summary". Commit: the tip of `claude/w1-sm-lang-96bwd7`; the SHA is reported in the session's final message.
 
 Branch: the session designated `claude/w1-sm-lang-96bwd7`, and the work was developed and pushed there. The task text names
 `claude/w1-sm-lang`; the orchestrator should merge by SHA as CLAUDE.md prescribes, so the name does not matter, but it is not the name the task text gave.
@@ -30,7 +30,7 @@ ignore them; explicit op names only (no suffix resolution, `alias` instead).
 
 ## Test summary
 
-`cargo test -p sm-lang`: **116 tests, all passing** (80 before fix0), and identical under `RAYON_NUM_THREADS=1`.
+`cargo test -p sm-lang`: **136 tests, all passing** (116 after fix0, 80 before; fix1 adds `tests/fix1.rs` with 20), and identical under `RAYON_NUM_THREADS=1`.
 
 | File | Tests | What |
 |---|---|---|
@@ -42,7 +42,7 @@ ignore them; explicit op names only (no suffix resolution, `alias` instead).
 | `batch.rs` | 7 | `core.batch` lowering and reference forms, escapes, equals sequential state hash, snapshot semantics, loops unrolled, misuse, atomic failure, stale references |
 | `schema.rs` | 7 | contract patterns pinned, checker against real op schemas and `Registry::batch_schema`, `QueryRelations` vs direct resolver, aliases, script statement == hand-built `OpRecord` |
 | `entity.rs` | 4 | chunked set algebra vs `BTreeSet` oracle for chunk sizes {1,2,3,7,64,seq}, `live_range` vs filter, retired entities, clipping of huge ranges |
-| `determinism.rs` | 3 | 200,000-entity script on 1/4/8 rayon workers + concurrent runs: hash of every record's `canonical_bytes` and of the state hash identical (via `sm_testkit::determinism::check`); `parse_many` parallel == sequential |
+| `determinism.rs` | 3 | 200,000-entity script through `check(2, 4, ..)` (1 and 4 rayon workers, 4 concurrent calls) and again on 1 and 8 workers: hash of every record's `canonical_bytes` and of the state hash identical (via `sm_testkit::determinism::check`); `parse_many` parallel == sequential |
 | `interp_fuzz.rs` | 4 | interpreter (execute and plan hosts) and completion never panic on token soup / arbitrary text, deterministic; `core.batch` callable directly |
 | `help.rs`, `complete.rs` | 6 + 8 | generated help text, did-you-mean, completion contexts, totality over every prefix |
 
@@ -70,7 +70,7 @@ the demo layer, ops, queries and relations in `tests/common/mod.rs` follow the p
 ## Known gaps
 
 * No user-defined functions, no `where`/attribute predicates in entity lists (reserved and specified in `LANGUAGE.md` §5.5, rejected with `not-yet-supported`).
-* A batch reference stored inside a list/object variable is not rebound to concrete ids after the batch applies (using it afterwards is `stale-reference`).
+* (closed in fix1) References inside lists and objects are rebound after a batch.
 * Completion is lexical (no expression type inference); fields only for variables holding op results or objects.
 * `kind in X` has no production resolver yet (needs the topology plugin, request 1); with a host without one the error is `no-relations`.
 * No `Session`-backed host: it belongs in sm-engine/sm-cli because sm-lang must not manufacture `Meta` (author/time). `EngineHost` demonstrates the replay path.
@@ -139,3 +139,49 @@ spellings and `5.0` for floats; `ents(r.ids)` accepts entity sets as well as str
 4. **sm-core / sm-op-api**: let the `EntityId` JSON schema carry the expected kind (for example `x-entity-kind`), so sm-lang can reject `mesh.run(targets: faces in Volume#1)` at the argument span (SHOULD 14) and offer kind-aware completion.
 5. **sm-op-api**: a first-class positional marker in op schemas (sm-lang already honours `"x-positional": true`), and per-role output cardinality in `OpInfo` (so a batch could accept a bare `b.role` where a role is known to hold exactly one id, MUST 1).
 6. **sm-op-api**: export `batch::reference`/`REF_PATTERN` matching as a public function so `schema::is_batch_ref` can be deleted.
+
+## fix1: review findings
+
+Started from `e8a56be`. Everything is inside `crates/sm-lang`. New tests: `tests/fix1.rs` (20), plus changes to `fix0.rs`, `run.rs`, `determinism.rs` and one golden
+(`op_failed_wrong_kind`, ids now in source spelling). Checks: `cargo test -p sm-lang` (also with `RAYON_NUM_THREADS=1`), `cargo clippy -p sm-lang --all-targets -- -D warnings`,
+`RUSTDOCFLAGS="-D warnings" cargo doc -p sm-lang --no-deps`. `Cargo.lock` is unchanged.
+
+### MUST FIX
+
+| # | Decision | Where |
+|---|---|---|
+| 1 | **Strings are literal forever.** `"fuel_{i}"` prints `fuel_{i}`; any future interpolation uses a prefixed literal (`f"..."`), which is a syntax error today. A plain string containing `{name}` gets the `literal-braces` warning (help: `+ str(...)`). Pinned by `braces_in_a_string_are_literal_text_forever`. | LANGUAGE §2 |
+| 2 | **`Surface#n`/`Curve#n` in a user-written string is the error `ambiguous-kind`** (help: write `Face#n` or `GeomSurface#n`): string-to-id parameters (single and array), `ents()` and `contains()`. New `kinds::parse_user_entity_text`; `parse_entity_text` (wire form, canonical-first) is unchanged and still used for query results, which stay canonical-first through `json_to_val`. Includes `"Surface#" + str(i)`. | §5.1 |
+| 3 | **`TimelineRev` is gone**: `TimelineCommand::Checkout(sm_op_api::Rev)`. The interpreter parses the hash (`Hash256::from_str`); a malformed `node:` is `invalid-argument` at the argument span and never reaches the host. | §4.6 |
+| 4 | **`${` in a string is a parse error** (`reserved-interpolation`, help: `\${` or `+ str(x)`); `\${` is a literal `${`. A lone `$` is unaffected (batch references still work). | §2 |
+
+### SHOULD FIX
+
+Done: 1 and 12a (a timeline command on the right of `let`/`set` is `op-in-expression`), 2a (a failing batch is mapped back to the member argument that wrote the bad reference, including the element in a
+list literal; the batch span is a note; 2b is not possible, see below), 3 (negative-index and loop-over-batch-output messages say why, listed in §4.4), 4 (`ambiguous-in` help echoes the operator;
+`expected-one-entity` in a batch names the written variable, `p.faces[0]`, via a `base` field on `Val::Ref`), 5 (line-start operator and `Volume#1..n` help), 6 (references inside lists and objects, at any depth, are rebound after a batch; a
+selection past the end of a role reports the real reason, and the plan-mode and "different batch" cases have their own messages), 7 and 11 (`#[non_exhaustive]` on `TimelineCommand`, `Event`, `CandidateKind`, `Severity`;
+`TimelineRev` is deleted), 8 (the words `fn def return while break continue import` are reserved: `reserved-word` as names; still valid after `.` and as quoted object keys), 9 (ids in `op-failed`, `query-failed` and batch messages are rewritten to
+source spelling, `TopoFace#1` becomes `Face#1`, canonical `Surface#7` becomes `GeomSurface#7`; localization still uses the canonical text), 12c (`timeline.branch("x", at: "<hash>")`, `TimelineCommand::Branch { name, at }`), 13 (ids named by strings are checked for liveness like bare
+ids: `entity-not-found` for `ents("Volume#9")` and `model.pick("Face#99")`; the "did you mean" for a dead carrier is unnecessary because `Surface#n` in a string is now an error), 14 (entity sets print in source form with compressed ranges,
+`Face#[1..6] | Volume#2`; ordered lists print `[Body#1, Volume#1]`; empty is `<no entities>`), 15 (determinism wording fixed in `DESIGN.md` and here, and the 8-worker run is added to the test), 16 (operator echo, juxtaposition help
+`Volume#1 | Volume#2` / `Volume#[1, 2]`), 17 (vocabulary note in §5.1; `hexes tets quads tris` reserved as `not-yet-supported` after `all` / before `in`), 18 (recorded in §5.5 as the first planned language feature).
+
+Skipped or only partly done, with reasons:
+
+* **2b** static role checks: `OpInfo` exposes no output role names. Still open (api_change_request 5, below).
+* **10** (O(live) iteration) is a note for the orchestrator: `all <kind>` (`all_of` to `live_range`) and `State::entities_of` scan every serial ever allocated; an O(live) iterator has to come from `sm_op_api::State`.
+* **12b** `timeline.head()`: a script still cannot read the current branch. It needs a return channel on `Host` (a value from `timeline`), which is best decided with the `sm-engine` implementor. Left open; documented in §4.6.
+* **19** `schema::is_batch_ref` stays: `sm_op_api::batch::reference` is still private. Delete it once the contract exports it (request 6).
+
+### Behaviour changes that break scripts (all were silently wrong or unspecified before)
+
+`"Surface#n"` / `"Curve#n"` strings (error; write `Face#n` or `GeomSurface#n`); `${` inside a string (error); `fn def return while break continue import` as variable names (error);
+`let x = timeline.undo()` (error); `ents("...")` and string ids that are not live (error); printed output of entity sets (`Face#[1..6]` instead of `{Face#1, ...}`); `all hexes`/`tets`/`quads`/`tris` (reserved).
+Downstream: `Host::timeline` implementors get `Rev` (not a string) and must match `TimelineCommand` with a wildcard arm.
+
+### More api_change_requests
+
+5 (extended). **sm-op-api**: per-role output names in `OpInfo` (so sm-lang can reject `q.voluem` statically, with did-you-mean, in a batch and in plan mode), and optionally cardinality.
+6. unchanged: export the batch reference matcher so `schema::is_batch_ref` can be deleted.
+7. **sm-op-api State (orchestrator note, SHOULD 10)**: an O(live) entity iterator for `all <kind>`.

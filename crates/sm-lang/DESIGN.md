@@ -79,8 +79,8 @@ text ──lex──► tokens ──parse──► AST (+ diagnostics, recovery
   algebra splits the left operand into fixed 16,384-element chunks and cuts the right operand at the same *values*, so the result is the same for
   any chunk size and thread count (tested against a `BTreeSet` oracle for chunk sizes 1, 2, 3, 7, 64 and sequential); ranges and `parse_many` use
   indexed parallel iterators, which collect in order.
-* Tests: `tests/determinism.rs` runs a script over 200,000 entities on 1, 4 and 8 rayon workers and 8 concurrent runs (via
-  `sm_testkit::determinism::check`) and compares a hash of every record (`canonical_bytes` of the params) and of the final state; the whole suite is also
+* Tests: `tests/determinism.rs` runs a script over 200,000 entities through `sm_testkit::determinism::check(2, 4, ..)` (1 and 4 rayon workers, plus 4 concurrent calls) and
+  separately on 1 and 8 workers and compares a hash of every record (`canonical_bytes` of the params) and of the final state; the whole suite is also
   run with `RAYON_NUM_THREADS=1`.
 * Floats: results are exactly what `f64` arithmetic and libm give; they are written into records, so replay never re-evaluates the script. Transcendental
   functions may differ in the last bit across platforms (the same caveat as the rest of the project); re-running a script on another platform can

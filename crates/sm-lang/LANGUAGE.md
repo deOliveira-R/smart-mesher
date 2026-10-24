@@ -1,6 +1,6 @@
 # The smart-mesh command language (`smesh`), v1
 
-Status: design for W1 (revision `fix0`: the semantic decisions below are binding because scripts will depend on them), implemented by this crate. Binding facts come from the frozen contracts in
+Status: design for W1 (revision `fix1`: the semantic decisions below are binding because scripts will depend on them), implemented by this crate. Binding facts come from the frozen contracts in
 `sm-core` (entity ids) and `sm-op-api` (op/query registry, JSON schemas, `core.batch`).
 
 A script is plain UTF-8 text, conventionally `*.smesh`. It is **not** Cubit-journal compatible and does
@@ -42,13 +42,24 @@ completion and validation cannot drift from the ops because they are generated f
 * **Entity references** are a single token: an identifier *immediately* followed by `#` and then a digit, `[` or `(` (`Volume#3`, `Volume#[1,2]`,
   `Volume#(n + 1)`) lexes as `EntityRef(kind-name)` and the parser then reads the id spec (§5.2). No spaces are allowed around `#`; one span
   covers `Volume#`, so entity diagnostics point at it. A `#` anywhere else is an error (`Volume#i` explains that a variable goes in brackets: `Volume#[i]`).
-* **Strings**: `"..."`, escapes `\n \t \r \" \\ \$ \u{HEX}`; may not contain a raw newline.
+* **Strings**: `"..."`, escapes `\n \t \r \" \\ \$ \u{HEX}`; may not contain a raw newline. **A string literal is literal text, forever.**
+  `{`, `}` and `$` mean nothing inside a plain string, so `let i = 3; print "fuel_{i}"` prints `fuel_{i}`. The language does not interpolate: build names with
+  `"fuel_" + str(i)`. If interpolation is ever added it will use a **prefixed** literal (`f"fuel_{i}"`), which cannot change the meaning of a v1 script;
+  `f"..."` is a syntax error today, and the prefix is reserved for that. Two guards keep the decision honest:
+  a plain string that contains `{name}` gets the warning `literal-braces` (help: `+ str(...)`), and an unescaped `${` is the parse error
+  `reserved-interpolation` (help: write `\${` for a literal `${`, or use `+ str(x)`), so the APREPRO spelling `"pin_${i}"` can never silently mean
+  something else later. A lone `$` (as in the batch reference text `"$0.body"`, or `"cost $5"`) is ordinary.
 * **Punctuation / operators**: `( ) [ ] { } , ; : = . .. ... #`, `+ - * / % **`, `== != < <= > >=`, `| &`.
-* **Reserved words**: `let set alias batch if else for in include print assert true false and or not all except`. `help`, `by` and the plural
+* **Reserved words**: `let set alias batch if else for in include print assert true false and or not all except`, plus the **future words**
+  `fn def return while break continue import` (user functions and loops are the obvious next features; using one as a name is the error `reserved-word`, so
+  adding the syntax later cannot change a valid script: `return (x)` would already parse as a call). After a `.` they are still valid path segments
+  (`b.return`), and quoted as object keys (`{ "return": 1 }`). `help`, `by` and the plural
   entity keywords (`faces`, `volumes`, ... §5) are *contextual*: they are keywords only directly after `all` or directly before `in`, so
   they remain usable as variable names elsewhere. `where`, `named` and `with` are contextual too, and reserved for entity predicates (§5.5):
   directly after an entity expression they are a `not-yet-supported` error, everywhere else they are ordinary names.
   The name `timeline` followed by `.` is a reserved namespace for timeline control (§4.6); it is not a registry namespace.
+  The Cubit element-type words `hexes tets quads tris` are contextual and reserved as future plural selectors (§5.1): directly after `all` or before `in` they are a
+  `not-yet-supported` error, elsewhere ordinary names.
 * There is no `null`: absent optional parameters are omitted (the op-api params model has no null).
 
 ## 3. Values and expressions (APREPRO replacement)
@@ -78,7 +89,7 @@ Turning an error into a meaning later is compatible; changing a meaning is not. 
   len count range str ents`, constants `pi`, `tau`. `floor`/`ceil`/`round`/`int` return `Int` (checked); `round` is **half away from zero** (`round(-2.5) == -3`, Python rounds to even) and `int`
   truncates toward zero (`int(-0.5) == 0`); `contains(set, id)` / `contains(list, v)` / `contains(str, sub)` / `contains(obj, key)` is the membership test
   (there is no `x in set` operator: `in` needs a plural kind on its left); `ents("Volume#3")` /
-  `ents([..])` turns id strings (for example from a query result) into an entity set (strings are wire form, §5.1), and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
+  `ents([..])` turns id strings (for example from a query result) into an entity set (§5.1: `Surface#`/`Curve#` in a string is ambiguous), and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
   randomness must be seeded from op parameters. `range(a, b[, step])` is half-open and capped (§9). Half-open is spelled `range` and nothing else: `..` exists **only inside id specs** (§5.2), where it is
   inclusive; there is no `a..b` expression, and if one is ever added it will be inclusive like every other `..`, never half-open.
   Transcendental functions use the platform libm; the value written into an op record is what is replayed, so
@@ -89,8 +100,11 @@ Turning an error into a meaning later is compatible; changing a meaning is not. 
   existing binding of any enclosing scope. Names resolve lexically; there is no implicit global mutation.
 * Control flow: `if cond { } else { }`, `for i in list_or_set { }`. Loops are bounded (§9). No user functions in v1.
 * `print e1, e2` emits text; `assert cond[, "message"]` fails the script with a span if `cond` is false. Printing is meant to be pasted back:
-  floats always read as floats (`5.0`, `1e300`, `1.5e-7`; shortest round-trip digits, never hundreds of digits), entity sets use the preferred alias of
-  each kind in braces (`{Face#1, Volume#2}`; the recorded ops stay canonical).
+  floats always read as floats (`5.0`, `1e300`, `1.5e-7`; shortest round-trip digits, never hundreds of digits). **Entity sets print in source form** with the
+  preferred alias of each kind and consecutive serials compressed per kind: `Face#[1..6] | Volume#2` (a single id is `Face#5`; a 200,000-id range stays short). An
+  **ordered op-output list** (§4.3) prints as a list in its own order, `[Body#1, Volume#1, Face#1]`, so it is visibly not a sorted set (a list whose order happens to be
+  sorted is a sorted set and prints as one). The empty set has no source literal and prints as `<no entities>`, the one text that does not paste back. The recorded
+  ops stay canonical. Op error messages are rewritten the same way (`Volume#1`, not `TopoVolume#1`), so an id copied from an error pastes into a script.
 * Value sizes are bounded (`max_value_len`, §9) for strings and lists built by `+`, `str`, `range` and query results.
 
 ## 4. Statements and their meaning
@@ -144,7 +158,7 @@ registry name, and its target must exist when the alias is defined).
    them: a typo must not turn into a default.
 
 An op call is a statement, or the whole right-hand side of `let`/`set`; inside a larger expression it is `op-in-expression` (ops change the
-state). A **query** is read-only and deterministic for a given state, so it may also appear inside expressions (`assert model.count().count == 6`,
+state). A **timeline command** (§4.6) is a statement only: it has no value, so `let x = timeline.undo()` is also `op-in-expression`. A **query** is read-only and deterministic for a given state, so it may also appear inside expressions (`assert model.count().count == 6`,
 `intent.set_size(ids: topo.related(...), size: 1)`), but not inside a `batch` (`query-in-batch`).
 
 ### 4.3 Execution model, ids and results
@@ -193,12 +207,17 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
   arithmetic or set algebra on them is `not-concrete`;
 * a user string literal starting with `$` is emitted as `$$...` (the batch escape), so literals can never be mistaken
   for references; reference strings are validated against `sm_op_api::batch::REF_PATTERN`;
+* two things work at top level but not in a batch, because the reference grammar (`REF_PATTERN`) cannot express them: `q.faces[-1]` (no negative index; write an
+  explicit `[k]`) and `for f in q.faces` (a batch cannot know a role's cardinality; pass `q.faces` to an array parameter, or move the loop after the batch, where the
+  output is concrete). Both are diagnosed with that reason;
+* a misspelled output role (`q.voluem[0]`) is only detected when the batch is applied (the registry does not list output roles); the failure is mapped back to the
+  argument that wrote the reference and reported there, not at the whole block (§7 request: static role checks once `OpInfo` lists roles);
 * queries, `include`, and nested `batch` are errors inside a batch (queries are not recorded; nested batches are rejected by the contract);
   `let`, `set`, `if`, `for`, `print`, `assert` evaluate normally (so a `for` loop unrolls into the batch);
 * a batch does not open a scope. When it has been applied, symbolic outcomes are re-bound to concrete `Ents` built from
   the batch `Delta.outputs` (`"<i>.<role>"`); `b.created`/`b.removed` are unavailable for them (`not-concrete`).
-  Under `PlanHost` they stay symbolic. Known gap: only variables that hold a reference directly (`let f = p.faces`) are rebound after the batch;
-  a reference stored inside a list or object (`let l = [p.body]`) is not, and using it afterwards is `stale-reference`.
+  Under `PlanHost` they stay symbolic. References held directly (`let f = p.faces`) and inside lists and objects, at any depth (`let l = [p.body[0]]`), are rebound.
+  A selection past the end of a role (`p.body[5]`) cannot be rebound; using it afterwards is `stale-reference` with the reason ("the batch produced no output").
 
 ### 4.5 Scripts and includes
 
@@ -221,8 +240,11 @@ timeline.checkout(empty: true)       // the empty state                         
 timeline.undo()    timeline.redo()                                                                          (Session::undo / redo)
 ```
 
-One string may be positional (`branch(name)`, `checkout(ref)`). They are statements only (`op-in-expression` inside an expression, `timeline-in-batch`
-inside a batch: a batch is one timeline node). Each becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timeline` warning says
+`timeline.branch("x", at: "<hash>")` forks at an earlier node instead of the current position (`Workspace::fork(.., at)`).
+Revisions are the contract's `sm_op_api::Rev`: the interpreter parses the hash text, so a malformed `node:` or `at:` is `invalid-argument` at that argument and never
+reaches the host. `TimelineCommand` is `#[non_exhaustive]` (new verbs such as `tag` or `log` will be added). One string may be positional (`branch(name)`, `checkout(ref)`).
+They are statements only and have no value (`op-in-expression` inside an expression or on the right of `let`/`set`; `timeline-in-batch`
+inside a batch: a batch is one timeline node). There is no `timeline.head()` yet: a script cannot read the current branch (it needs a return channel on `Host`; open). Each becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timeline` warning says
 later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
 so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
 resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
@@ -254,9 +276,18 @@ Every other kind name is also its own alias, and has a snake_case plural keyword
 `Boundary`/`boundaries`, `PartitionCell`/`partition_cells`, `Mesh`/`meshes`, `MeshFace`/`mesh_faces`, `Symmetry`/`symmetries`, ...; the full table
 is `kinds::KIND_TABLE`, tested to cover `EntityKind::ALL`). Unknown kinds are `unknown-entity-kind` with a did-you-mean.
 
-**Strings are wire form.** An id inside a string (`ents("Face#3")`, `model.pick("TopoFace#3")`, ids from a query result) is read canonical-first, exactly as
-`sm-core` prints it, so `"Surface#7"` in a string is the geometry carrier an op or query reported; only if that fails are the aliases tried
-(`"Face#3"`, `"Volume#3"`). Bare source (`Surface#7`) is the Cubit reading above.
+**Strings: `Surface#n` and `Curve#n` are ambiguous, so they are an error.** `sm-core` prints the geometry carriers as `Surface#7`/`Curve#7`, and the same text is
+a face/edge in bare source. In a string a *user wrote* (a string argument for an id parameter, the argument of `ents()` and `contains()`) these two prefixes are the
+error `ambiguous-kind` (help: write `Face#n` or `GeomSurface#n`), including an id built as `"Surface#" + str(i)`. Everything else is accepted: `"Face#3"`,
+`"Volume#3"`, `"GeomSurface#3"` and the canonical names (`"TopoFace#3"`). This is an error today so that it can be relaxed into a meaning later. Ids
+inside **query results** are wire form: where the result schema says "entity id" they become `Ents` read canonical-first, so a carrier id an op or query reported is
+still the carrier. The canonical text `Surface#n` also appears in records and JSON events; those are not scripts. Ids named by strings are checked for liveness like
+bare ids: `ents("Volume#9")` and `model.pick("Face#99")` are `entity-not-found`.
+
+**Vocabulary differs from Cubit.** In Cubit, `face`, `edge` and `node` used as mesh-entity words mean mesh faces, mesh edges and mesh nodes, and `hex`, `tet`,
+`quad` and `tri` are element types. Here `Face` and `Edge` are **topology** (the boundary of a volume, a curve of the model), mesh faces and edges are `MeshFace` and
+`MeshEdge`, mesh nodes are `Node`, cells are `Element`. `hexes`, `tets`, `quads` and `tris` are reserved as future element-type selectors (`all hexes`,
+`hexes in Volume#1`), currently the error `not-yet-supported`.
 
 ### 5.2 Forms
 
@@ -314,6 +345,8 @@ volumes named "fuel*"                              // selection by the name give
 all faces with name "inlet"                        // `with` is an alias of `where` for attribute-equality (reserved)
 ```
 
+Name-based selection and attribute predicates are the **first language feature planned** once the geometry layer exists: for blocks, sidesets and sweep source/target
+selection a script currently works only through queries plus `ents()`, which is the biggest readability gap against Cubit's `with name`/`at`.
 Today each of them is a `not-yet-supported` parse error that points at the word. Elsewhere `where`, `named` and `with` remain ordinary variable names, and
 adding predicates later cannot change the meaning of a valid v1 script. Until then a script that must find entities by property runs a query and passes
 `ents(result)` (or the query result directly: §4.2.5).

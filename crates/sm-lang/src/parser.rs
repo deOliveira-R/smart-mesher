@@ -92,6 +92,8 @@ struct P<'a> {
 const IN_HELP: &str = "`in` needs a plural kind keyword on its left (`volumes in Body#1`); to test membership write `contains(set, Volume#2)`";
 
 /// Words reserved for entity predicates (`faces in Volume#1 where area > 2`, `volumes named "fuel*"`); see `LANGUAGE.md` §5.5.
+/// Cubit's element-type words, reserved as future plural selectors (`all hexes`, `hexes in Volume#1`).
+const ELEMENT_WORDS: &[&str] = &["hexes", "tets", "quads", "tris"];
 const PREDICATE_WORDS: &[&str] = &["where", "named", "with"];
 
 fn is_stmt_kw(t: &Tok) -> bool {
@@ -300,6 +302,8 @@ impl P<'_> {
             let mut d = Diagnostic::error("expected-token", at, format!("expected {what}, found {found}")).label(format!("expected {what}"));
             if t.tok == Tok::In && (what == "`{`" || what.starts_with("`,` or")) {
                 d = d.help(IN_HELP);
+            } else if t.tok == Tok::Ident && matches!(what, "the end of the range" | "a serial number" | "a step number") {
+                d = d.help("a variable in an id goes inside brackets or parentheses: `Volume#[1..n]`, `Volume#[i]`, `Volume#(n + 1)`");
             }
             self.push(d);
         }
@@ -369,6 +373,8 @@ impl P<'_> {
                                 d = d.help("`else` must directly follow the `}` of an `if` (on the same line or the next)");
                             } else if t.tok == Tok::In {
                                 d = d.help(IN_HELP);
+                            } else if t.tok == Tok::EntityRef {
+                                d = d.help("to combine entities write `Volume#1 | Volume#2` or `Volume#[1, 2]`; values are not separated by spaces");
                             }
                             self.push(d);
                         }
@@ -536,11 +542,16 @@ impl P<'_> {
             Tok::Error => return Err(()),
             _ => {
                 let found = self.describe(&start);
-                self.push(
-                    Diagnostic::error("expected-statement", start.span, format!("expected a statement, found {found}"))
-                        .label("a statement cannot start here")
-                        .help("statements: a call `name(args)`, `let`, `set`, `alias`, `batch`, `if`, `for`, `include`, `print`, `assert`, `help`"),
+                let is_op = matches!(
+                    start.tok,
+                    Tok::Plus | Tok::Minus | Tok::Pipe | Tok::Amp | Tok::Star | Tok::Slash | Tok::Percent | Tok::StarStar | Tok::Except | Tok::And | Tok::Or | Tok::EqEq | Tok::NotEq | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge
                 );
+                let help = if is_op {
+                    "a line break ends a statement: put the operator at the end of the previous line, or wrap the whole expression in parentheses"
+                } else {
+                    "statements: a call `name(args)`, `let`, `set`, `alias`, `batch`, `if`, `for`, `include`, `print`, `assert`, `help`"
+                };
+                self.push(Diagnostic::error("expected-statement", start.span, format!("expected a statement, found {found}")).label("a statement cannot start here").help(help));
                 return Err(());
             }
         };
@@ -1052,6 +1063,10 @@ impl P<'_> {
                             self.no_predicate()?;
                             Ok(self.mk(lo, ExprKind::Entity(EntityExpr::All { kind, kind_span: k.span })))
                         }
+                        None if ELEMENT_WORDS.contains(&name.as_str()) => {
+                            self.element_word(k.span, &name);
+                            Err(())
+                        }
                         None => {
                             let mut d = Diagnostic::error("unknown-entity-kind", k.span, format!("`{name}` is not an entity kind keyword"))
                                 .label("expected a plural kind like `faces` or `volumes`");
@@ -1068,6 +1083,10 @@ impl P<'_> {
             }
             Tok::Ident => {
                 let name = self.text_of(t.span).to_owned();
+                if ELEMENT_WORDS.contains(&name.as_str()) && *self.nth(1) == Tok::In {
+                    self.element_word(t.span, &name);
+                    return Err(());
+                }
                 if let Some(kind) = kinds::kind_from_plural(&name) {
                     if *self.nth(1) == Tok::In {
                         self.bump();
@@ -1097,6 +1116,14 @@ impl P<'_> {
         }
     }
 
+    fn element_word(&mut self, span: Span, name: &str) {
+        self.push(
+            Diagnostic::error("not-yet-supported", span, format!("`{name}` is reserved for element-type selectors, which this version does not have"))
+                .label("not implemented")
+                .help("select mesh elements with `all elements` or `elements in <entities>`; `Face` and `Edge` here are topology, not mesh faces and edges (LANGUAGE.md section 5.1)"),
+        );
+    }
+
     /// Reject the reserved predicate words right after an entity expression (`faces in V#1 where ...`).
     fn no_predicate(&mut self) -> R<()> {
         let t = self.cur().clone();
@@ -1124,10 +1151,11 @@ impl P<'_> {
         let within = within?;
         let t = self.cur().clone();
         if matches!(t.tok, Tok::Pipe | Tok::Amp | Tok::Minus | Tok::Plus | Tok::Except) {
+            let op = self.text_of(t.span).to_owned();
             self.push(
                 Diagnostic::error("ambiguous-in", t.span, "the operand of `in` needs parentheses before a set operator")
                     .label("is this inside the `in` operand or outside it?")
-                    .help("write `faces in (A | B)` to combine the operand, or `(faces in A) | B` to combine the results"),
+                    .help(format!("write `faces in (A {op} B)` to combine the operand, or `(faces in A) {op} B` to combine the results")),
             );
             return Err(());
         }

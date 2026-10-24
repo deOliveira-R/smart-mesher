@@ -6,9 +6,13 @@ mod common;
 use serde_json::json;
 use sm_core::{EntityId, EntityKind};
 use sm_lang::diag::render_all;
-use sm_lang::{EngineHost, Event, Host, HostError, Interpreter, Options, PlanHost, RunReport, SourceMap, TimelineCommand, TimelineRev};
+use sm_lang::{EngineHost, Event, Host, HostError, Interpreter, Options, PlanHost, RunReport, SourceMap, TimelineCommand};
+use sm_op_api::Rev;
 
 use common::*;
+
+/// A node hash as the timeline prints it: 64 lowercase hex characters.
+const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn run_with(src: &str, opts: Options) -> (RunReport, sm_op_api::State, SourceMap) {
     let engine = engine();
@@ -71,7 +75,7 @@ fn indexing_a_mixed_kind_role_is_the_same_inside_and_outside_a_batch() {
 #[test]
 fn set_algebra_returns_sorted_sets_while_roles_stay_ordered() {
     let (rep, _) = ok("let m = test.mixed()\nprint m.mix\nprint m.mix | m.mix\nassert m.mix == (m.mix | m.mix)\nassert count(m.mix) == 3\n");
-    assert_eq!(prints(&rep), ["{Face#1, Body#1, Volume#1}", "{Face#1, Volume#1, Body#1}"]);
+    assert_eq!(prints(&rep), ["[Face#1, Body#1, Volume#1]", "Face#1 | Volume#1 | Body#1"]);
 }
 
 // ---- MUST 4 / SHOULD 5: computed ids ---------------------------------------------------------
@@ -86,7 +90,7 @@ fn ids_can_be_built_from_variables() {
          print Volume#[1, n + 1], Volume#[1..n], Volume#[1..n * 2 by 2]\n",
     );
     assert_eq!(notes(&st), ["TopoVolume#1", "TopoVolume#2", "TopoVolume#3", "TopoBody#3"]);
-    assert_eq!(prints(&rep), ["{Volume#1, Volume#3} {Volume#1, Volume#2} {Volume#1, Volume#3}"]);
+    assert_eq!(prints(&rep), ["Volume#[1, 3] Volume#[1, 2] Volume#[1, 3]"]);
 }
 
 #[test]
@@ -103,7 +107,7 @@ fn computed_serials_are_checked_when_they_are_evaluated() {
 #[test]
 fn surface_and_curve_mean_faces_and_edges() {
     let (rep, _) = ok("model.create_brick(x: 1, y: 1, z: 1)\nassert Surface#1 == Face#1\nassert all surfaces == all faces\nassert surfaces in Volume#1 == faces in Volume#1\nassert all curves == all edges\nprint Surface#3\n");
-    assert_eq!(prints(&rep), ["{Face#3}"]);
+    assert_eq!(prints(&rep), ["Face#3"]);
 }
 
 #[test]
@@ -158,18 +162,18 @@ fn timeline_statements_are_dispatched_to_the_host_outside_the_op_log() {
         let mut it = Interpreter::new(&mut h, Options::default());
         it.run_source(
             "t",
-            "model.create_brick(x: 1, y: 1, z: 1)\ntimeline.branch(\"alt\")\ntimeline.branch(name: \"b2\")\ntimeline.checkout(\"main\")\ntimeline.checkout(node: \"abc\")\ntimeline.checkout(empty: true)\ntimeline.undo()\ntimeline.redo()\n",
+            &format!("model.create_brick(x: 1, y: 1, z: 1)\ntimeline.branch(\"alt\")\ntimeline.branch(name: \"b2\")\ntimeline.checkout(\"main\")\ntimeline.checkout(node: \"{HASH}\")\ntimeline.checkout(empty: true)\ntimeline.undo()\ntimeline.redo()\n"),
         )
     };
     assert!(rep.ok(), "{:?}", rep.diagnostics);
     assert_eq!(
         h.cmds,
         [
-            TimelineCommand::Branch { name: "alt".into() },
-            TimelineCommand::Branch { name: "b2".into() },
-            TimelineCommand::Checkout(TimelineRev::Ref("main".into())),
-            TimelineCommand::Checkout(TimelineRev::Node("abc".into())),
-            TimelineCommand::Checkout(TimelineRev::Empty),
+            TimelineCommand::Branch { name: "alt".into(), at: None },
+            TimelineCommand::Branch { name: "b2".into(), at: None },
+            TimelineCommand::Checkout(Rev::Ref("main".into())),
+            TimelineCommand::Checkout(Rev::Node(HASH.parse().unwrap())),
+            TimelineCommand::Checkout(Rev::Empty),
             TimelineCommand::Undo,
             TimelineCommand::Redo,
         ]
@@ -310,7 +314,7 @@ fn growing_values_hit_a_limit() {
 #[test]
 fn print_shows_floats_as_floats_and_ids_as_written() {
     let (rep, _) = ok("model.create_brick(x: 1, y: 1, z: 1)\nprint 10 / 2, 2.0, 1e300, 1.5e-7, 0.1 + 0.2, 7, Face#1, Volume#1, [Body#1]\nprint str(1e300)\n");
-    assert_eq!(prints(&rep), ["5.0 2.0 1e300 1.5e-7 0.30000000000000004 7 {Face#1} {Volume#1} [{Body#1}]", "1e300"]);
+    assert_eq!(prints(&rep), ["5.0 2.0 1e300 1.5e-7 0.30000000000000004 7 Face#1 Volume#1 [Body#1]", "1e300"]);
 }
 
 // ---- SHOULD 12 and 19: batch snapshots ----------------------------------------------------------

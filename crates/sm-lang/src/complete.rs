@@ -14,6 +14,7 @@ use crate::value::{Outcome, Val};
 
 /// What a candidate is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum CandidateKind {
     /// A parameter name of the enclosing call.
     Param,

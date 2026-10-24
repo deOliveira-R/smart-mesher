@@ -434,7 +434,11 @@ pub fn call_builtin_lim(name: &str, args: &[Val], max_range: u64, max_len: usize
             arity(name, args, 2)?;
             match (&args[0], &args[1]) {
                 (Val::Ents(s), Val::Ents(x)) => Ok(Val::Bool(!x.is_empty() && x.iter().all(|i| s.contains(*i)))),
-                (Val::Ents(s), Val::Str(x)) => Ok(Val::Bool(crate::kinds::parse_entity_text(x).is_ok_and(|i| s.contains(i)))),
+                (Val::Ents(s), Val::Str(x)) => match crate::kinds::parse_user_entity_text(x) {
+                    Ok(i) => Ok(Val::Bool(s.contains(i))),
+                    Err(crate::kinds::UserIdError::AmbiguousKind(m)) => Err(("ambiguous-kind", m)),
+                    Err(crate::kinds::UserIdError::Invalid(_)) => Ok(Val::Bool(false)),
+                },
                 (Val::List(l), x) => {
                     for y in l.iter() {
                         if equal(y, x)? {
@@ -452,7 +456,10 @@ pub fn call_builtin_lim(name: &str, args: &[Val], max_range: u64, max_len: usize
             arity(name, args, 1)?;
             let one = |v: &Val, out: &mut Vec<sm_core::EntityId>| -> EvalRes<()> {
                 match v {
-                    Val::Str(s) => out.push(crate::kinds::parse_entity_text(s).map_err(|m| ("bad-arguments", m))?),
+                    Val::Str(s) => out.push(crate::kinds::parse_user_entity_text(s).map_err(|e| match e {
+                        crate::kinds::UserIdError::AmbiguousKind(m) => ("ambiguous-kind", m),
+                        crate::kinds::UserIdError::Invalid(m) => ("bad-arguments", m),
+                    })?),
                     Val::Ents(e) => out.extend_from_slice(e.as_slice()),
                     v => return type_err(format!("`ents` needs id strings or entity sets, found {}", v.a_type())),
                 }
