@@ -7,7 +7,8 @@ use sm_op_api::{Delta, Engine, OpRecord, QuietControl, Registry, State};
 use crate::entity::Relations;
 
 /// A failure reported by the host: the contract's stable error code plus its message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("[{code}] {message}")]
 pub struct HostError {
     /// Stable kebab-case code (`ApplyError::code`, `RegistryError::code`, ...).
     pub code: String,

@@ -647,7 +647,6 @@ name = "sm-lang"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "indexmap",
  "proptest",
  "rayon",
  "schemars",

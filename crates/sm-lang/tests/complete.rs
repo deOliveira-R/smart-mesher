@@ -44,6 +44,15 @@ fn statement_start_offers_ops_queries_keywords_and_aliases() {
 }
 
 #[test]
+fn dotted_names_with_reserved_segments_complete_as_one_word() {
+    let c = at("", "core.ba|");
+    assert_eq!(labels(&c), ["core.batch"]);
+    assert_eq!((c.start, c.end), (0, 7));
+    let c = at("", "core.batch|");
+    assert!(labels(&c).contains(&"core.batch"));
+}
+
+#[test]
 fn inside_a_call_unused_parameters_come_first_required_before_optional() {
     let c = at("", "model.create_brick(|");
     assert_eq!(labels(&c), ["x", "y", "z", "name"]);

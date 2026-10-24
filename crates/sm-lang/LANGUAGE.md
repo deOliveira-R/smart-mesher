@@ -34,7 +34,8 @@ completion and validation cannot drift from the ops because they are generated f
 * **Separators**: newline or `;` (empty statements allowed).
 * **Comments**: `// to end of line`, and `/* block */` (nests; unterminated is an error). `#` is *not* a comment:
   it is the entity-id sigil (`Volume#3`), matching the `Kind#serial` text form of `sm-core`.
-* **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`. Dotted names (`model.create_brick`) are parsed as identifier paths.
+* **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`. Dotted names (`model.create_brick`) are parsed as identifier paths; after a `.` any word,
+  reserved or not, is a valid segment (`core.batch`, `b.all`), because op and output names are not ours to choose.
 * **Numbers**: `123`, `1_000`, `1.5`, `2e-3`, `1.5E+2`. Maximal munch: a `.` belongs to a number only when a digit follows it, so `1.` and `.5` are
   not floats (write `1.0`, `0.5`) and `1..5` lexes as `Int(1)` `..` `Int(5)`. Integers are `i64` (overflow is an error); anything with `.` or an
   exponent is `f64`. No `NaN`/`inf` literals.

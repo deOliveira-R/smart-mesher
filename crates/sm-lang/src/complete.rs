@@ -151,7 +151,7 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
         // variable, in which case it is a field access (`b.bo`).
         let adjacent = |a: &Token, b: &Token| a.span.hi == b.span.lo;
         let tail = match word_idx {
-            Some(i) if toks[i].tok == Tok::Ident => Some(i),
+            Some(i) if is_word(&toks[i].tok) => Some(i),
             Some(_) => None,
             None => toks.len().checked_sub(1).filter(|&k| toks[k].tok == Tok::Dot && toks[k].span.hi as usize == cursor).map(|k| k + 1),
         };
@@ -161,7 +161,7 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
             let mut k = if word_idx.is_some() { t } else { t - 1 };
             if word_idx.is_none() {
                 // Trailing dot at k: the chain's last identifier is k - 1.
-                if k >= 1 && toks[k - 1].tok == Tok::Ident && adjacent(&toks[k - 1], &toks[k]) {
+                if k >= 1 && is_word(&toks[k - 1].tok) && adjacent(&toks[k - 1], &toks[k]) {
                     k -= 1;
                     j = k;
                 } else {
@@ -169,7 +169,7 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
                 }
             }
             if j != usize::MAX {
-                while j >= 2 && toks[j - 1].tok == Tok::Dot && adjacent(&toks[j - 2], &toks[j - 1]) && toks[j - 1].span.hi == toks[j].span.lo && toks[j - 2].tok == Tok::Ident {
+                while j >= 2 && toks[j - 1].tok == Tok::Dot && adjacent(&toks[j - 2], &toks[j - 1]) && toks[j - 1].span.hi == toks[j].span.lo && is_word(&toks[j - 2].tok) {
                     j -= 2;
                 }
                 let chained = j < k || word_idx.is_none();

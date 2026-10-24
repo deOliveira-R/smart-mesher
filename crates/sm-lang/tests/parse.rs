@@ -276,3 +276,15 @@ fn oversized_sources_are_rejected_before_scanning() {
     assert_eq!(out.diagnostics[0].code, "source-too-large");
     assert!(out.script.stmts.is_empty());
 }
+
+#[test]
+fn reserved_words_are_valid_name_segments_after_a_dot() {
+    // `core.batch` is a registry op; ops and fields may use any word as a later segment.
+    assert_eq!(e("core.batch(1)"), "(call core.batch 1)");
+    assert_eq!(e("b.all[0]"), "(idx (. b all) 0)");
+    assert_eq!(e("b.in.set"), "(. (. b in) set)");
+    let out = parse(0, "core.batch(ops: [])\nmodel.set(x: 1)\nmodel.if.for(y: 2)\n");
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    // But a statement still cannot start with a reserved word that is not a statement keyword.
+    assert!(parse(0, "all.thing(1)").has_errors());
+}

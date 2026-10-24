@@ -93,6 +93,32 @@ fn is_stmt_kw(t: &Tok) -> bool {
     matches!(t, Tok::Let | Tok::Set | Tok::Alias | Tok::Batch | Tok::If | Tok::For | Tok::Include | Tok::Print | Tok::Assert)
 }
 
+/// Tokens that can be a segment after a `.`: identifiers and reserved words, so `core.batch` and `b.all` parse.
+fn is_segment(t: &Tok) -> bool {
+    matches!(
+        t,
+        Tok::Ident
+            | Tok::Let
+            | Tok::Set
+            | Tok::Alias
+            | Tok::Batch
+            | Tok::If
+            | Tok::Else
+            | Tok::For
+            | Tok::In
+            | Tok::Include
+            | Tok::Print
+            | Tok::Assert
+            | Tok::True
+            | Tok::False
+            | Tok::And
+            | Tok::Or
+            | Tok::Not
+            | Tok::All
+            | Tok::Except
+    )
+}
+
 fn tok_name(t: &Tok) -> String {
     let s = match t {
         Tok::Ident => return "identifier".into(),
@@ -558,13 +584,23 @@ impl P<'_> {
         Ok(Block { span: self.sp(open.span.lo), stmts })
     }
 
+    /// An identifier, or after a `.` any reserved word too (`core.batch`).
+    fn expect_segment(&mut self, what: &str) -> R<Ident> {
+        if is_segment(self.tok()) {
+            let t = self.bump();
+            Ok(Ident { name: self.text_of(t.span).to_owned(), span: t.span })
+        } else {
+            self.expected(what)
+        }
+    }
+
     fn path(&mut self, what: &str) -> R<Path> {
         let first = self.expect_ident(what)?;
         let lo = first.span.lo;
         let mut segs = vec![first];
-        while *self.tok() == Tok::Dot && *self.nth(1) == Tok::Ident {
+        while *self.tok() == Tok::Dot && is_segment(self.nth(1)) {
             self.bump();
-            segs.push(self.expect_ident(what)?);
+            segs.push(self.expect_segment(what)?);
         }
         Ok(Path { segs, span: self.sp(lo) })
     }
@@ -853,7 +889,7 @@ impl P<'_> {
             match self.tok() {
                 Tok::Dot => {
                     self.bump();
-                    let f = self.expect_ident("a field name")?;
+                    let f = self.expect_segment("a field name")?;
                     e = self.mk(lo, ExprKind::Field(Box::new(e), f));
                     e = self.check_height(e)?;
                 }
@@ -902,7 +938,7 @@ impl P<'_> {
             let n = next(i);
             if self.toks[n].tok == Tok::Dot {
                 let m = next(n);
-                if self.toks[m].tok == Tok::Ident {
+                if is_segment(&self.toks[m].tok) {
                     i = m;
                     continue;
                 }
