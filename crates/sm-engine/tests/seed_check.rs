@@ -8,8 +8,13 @@ use std::sync::atomic::Ordering;
 
 use common::*;
 
-use sm_engine::{EngineError, ProjectConfig};
-use sm_op_api::{Hash256, ReplayPolicy};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use sm_core::{EntityId, EntityKind};
+use sm_engine::{EngineError, FixedClock, ProjectConfig, Workspace};
+use sm_op_api::{
+    ApplyCtx, Hash256, OpError, Plugin, Registry, RegistryError, ReplayPolicy, Services, TypedOp,
+};
 
 fn cfg() -> ProjectConfig {
     ProjectConfig::new("demo")
@@ -127,4 +132,101 @@ fn reflog_bad_line_does_not_drop_newer_entries() {
     let ws = b.open(&p).unwrap();
     ws.close().unwrap();
     assert_eq!(fs::read_to_string(&f).unwrap().lines().count(), n - 1);
+}
+
+/// Same name and params as `counter.add`, but a new implementation version.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct AddV2 {
+    id: EntityId,
+    delta: i64,
+}
+
+impl TypedOp for AddV2 {
+    const NAME: &'static str = "counter.add";
+    const IMPL_VERSION: u32 = 2;
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let id = ctx.resolve_kind(self.id, EntityKind::TopoBody)?;
+        let c = ctx
+            .layer_mut::<CounterLayer>()?
+            .counters
+            .get_mut(id)
+            .ok_or(OpError::UnknownEntity(id))?;
+        c.value += self.delta;
+        Ok(())
+    }
+}
+
+struct V2Plugin;
+
+impl Plugin for V2Plugin {
+    fn id(&self) -> &str {
+        "demo.counter.v2"
+    }
+    fn register(&self, r: &mut Registry) -> Result<(), RegistryError> {
+        r.register_layer::<CounterLayer>()?;
+        r.register::<Create>()?;
+        r.register::<AddV2>()?;
+        r.register_query::<Total>()?;
+        Ok(())
+    }
+}
+
+#[test]
+fn snapshot_with_a_changed_op_impl_version_is_not_used() {
+    let dir = TempDir::new("snapversion");
+    let p = dir.project("p.smesh");
+    let (b, _) = builder();
+    let mut ws = b.create(&p, cfg()).unwrap();
+    let id = create(&mut ws, "a", 0);
+    let shallow = ws.status().position.unwrap(); // only counter.create on its path
+    assert!(ws.snapshot_now().unwrap());
+    for _ in 0..3 {
+        add(&mut ws, id, 1);
+    }
+    let tip = ws.status().position.unwrap();
+    assert!(ws.snapshot_now().unwrap());
+    ws.close().unwrap();
+
+    // Unchanged registry: the deepest snapshot seeds the replay.
+    let (b, _) = builder();
+    let ws = b.open(&p).unwrap();
+    assert_eq!(ws.open_report().seeded_from, Some(tip));
+    ws.close().unwrap();
+
+    // `counter.add` changed implementation: the tip snapshot depends on it and is skipped,
+    // the older one (create only) is still valid.
+    let v2 = || {
+        Workspace::builder()
+            .plugin(V2Plugin)
+            .services(
+                Services::new()
+                    .with(common::ApplyCount::default())
+                    .with(common::Flaky::default()),
+            )
+            .clock(FixedClock(TIME.to_owned()))
+            .author("tester")
+    };
+    let ws = v2().open(&p).unwrap();
+    assert_eq!(ws.open_report().seeded_from, Some(shallow));
+    assert!(
+        ws.open_report()
+            .warnings
+            .iter()
+            .any(|w| w.contains(&tip.to_string()) && w.contains("versions")),
+        "{:?}",
+        ws.open_report().warnings
+    );
+    assert_eq!(total(&ws), 3);
+    ws.close().unwrap();
+    // Without the older snapshot there is nothing valid left: full replay from the root.
+    fs::remove_file(p.join(format!(".cache/snapshots/{shallow}.snap"))).unwrap();
+    let ws = v2().open(&p).unwrap();
+    assert_eq!(ws.open_report().seeded_from, None);
+    assert_eq!(total(&ws), 3);
+    ws.close().unwrap();
+
+    // The stale file was kept, so restoring the old registry makes it usable again.
+    let (b, _) = builder();
+    let ws = b.open(&p).unwrap();
+    assert_eq!(ws.open_report().seeded_from, Some(tip));
 }

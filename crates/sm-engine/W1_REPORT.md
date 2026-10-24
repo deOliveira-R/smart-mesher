@@ -18,7 +18,7 @@ Delivered:
   with order-independent results and errors.
 - **Incremental autosave** after every mutating call: one node file, one ref file, one reflog line.
 - **Open** with the snapshot hook (`Registry::restore` + `Session::open_with` seeds), reflog and redo
-  restoration, `Strict`/`Warn`/`Rebaseline` replay policies, tolerant handling of any damaged cache (snapshot seeds are validated against the node's recorded check, so a stale snapshot is deleted with a warning and cannot block `Warn`/`Rebaseline`).
+  restoration, `Strict`/`Warn`/`Rebaseline` replay policies, tolerant handling of any damaged cache (snapshot seeds are validated against the node's recorded check, so a stale snapshot is dropped with a warning and cannot block `Warn`/`Rebaseline`).
 - **Undo/redo persistence**, **branch create / delete / rename / reset / checkout / fork**, detached HEAD.
 - **Diagnostics policy**: verbosity, suppression, stop-on-warning (nothing recorded), per-call override.
 - **Facade** `Workspace`: plugins (layers, ops, queries), services, `apply` / `apply_json` / `query` /
@@ -28,7 +28,7 @@ Delivered:
 
 ## Test summary
 
-`cargo test -p sm-engine`: **66 tests, all passing**; also with `RAYON_NUM_THREADS=1`.
+`cargo test -p sm-engine`: **72 tests, all passing**; also with `RAYON_NUM_THREADS=1`.
 `cargo build`, `cargo clippy -p sm-engine --all-targets --all-features -- -D warnings` and
 `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-engine --no-deps` are clean; library code has no
 `unwrap`/`expect`/`panic`. `cargo bench -p sm-engine` runs (criterion, `benches/engine.rs`).
@@ -37,8 +37,9 @@ Delivered:
 |---|---|---|
 | unit | 13 | snapshot codec survives every truncation and every single-bit flip; atomic write at each crash point |
 | `timeline` | 10 | fork at node 3 of 10 and back, every node by checkout and by cold replay from the root, derived cache disabled, JSON vs typed node identity |
+| `seed_check` | 5 | seed validated against the node's recorded check (dropped, survivable under `Warn`/`Rebaseline`), prune keeps the fresh snapshot, reflog bad line keeps newer entries, op impl-version change invalidates a snapshot (older valid one used, else root; file kept) |
 | `persistence` | 20 | layout, incremental I/O count, snapshots skip replay (counted), stale snapshot rejected, lock, tamper to `Diverged`, re-baseline rewrite |
-| `crash` | 8 | exhaustive: killed at every write/delete point of apply, fork, rename/delete, undo/redo, attached-branch rename, shape change, project creation |
+| `crash` | 9 | exhaustive: killed at every write/delete point of apply, fork, rename/delete, undo/redo, attached-branch rename, shape change, project creation |
 | `git` | 5 | real git: commit, clone, clone with `autocrlf=true`, merge of independent branches, conflict confined to one ref file, older checkout under stale cache |
 | `policy` | 6 | |
 | `determinism` | 3 | `sm_testkit::determinism::check` (repeat, 1 vs 4 rayon threads, concurrent), file-tree hash, scheduling-independent errors |
@@ -141,3 +142,15 @@ Branch `claude/w1-sm-engine-u0sels` (the branch this session was assigned) and
   unparsable line instead of truncating; seed search lists `.cache/snapshots` once;
   `save_timeline` uses a set; `save_as` unbinds the project (and drops the lock) if any step,
   including the final `project.toml` write, fails.
+
+## Polish round 0
+
+- Snapshots record the `op:`/`layer:` implementation versions they depend on (container
+  `SMSNAP02`); at open a snapshot whose versions differ from the registry is ignored (kept on
+  disk, warning) and the search falls back to an older valid one or the root. DESIGN.md now states
+  the real guarantee: hashes verified from the nearest valid snapshot (or root) on every open,
+  snapshots trusted up to their node.
+- `save_as` removes what it wrote on failure (deletes the directory, or empties it if it
+  pre-existed) so a retry to the same path works; tested at every injected failure point.
+- `read_reflog` docs match the skip-bad-line behaviour. DESIGN.md documents how `project.toml`
+  tolerances map onto `sm_model_api::Tolerance` (relative stays at the default).

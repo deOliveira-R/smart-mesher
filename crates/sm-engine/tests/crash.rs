@@ -290,6 +290,17 @@ fn crash_while_creating_a_project_leaves_no_half_project() {
             ws.save_as(&p, ProjectConfig::new("c")).is_err(),
             "point {k}"
         );
+        // The failed save cleaned up after itself: the path is absent, and a retry works.
+        assert!(!p.exists(), "point {k}: leftovers after failed save_as");
+        ws.save_as(&p, ProjectConfig::new("c"))
+            .unwrap_or_else(|e| panic!("point {k}: retry failed: {e}"));
+        drop(ws);
+        let (b, _) = builder();
+        b.open(&p).unwrap_or_else(|e| panic!("point {k}: {e}"));
+        let p = dir.project(&format!("d{k}"));
+        let inj = FaultInjector::fail_at(k);
+        let mut ws = build(Some(inj));
+        assert!(ws.save_as(&p, ProjectConfig::new("c")).is_err());
         drop(ws);
         let (b, _) = builder();
         match b.open(&p) {
@@ -325,4 +336,18 @@ fn a_failed_save_can_be_retried_and_nothing_is_written_twice_wrongly() {
     let ws = b.open(&p).unwrap();
     assert_eq!(ws.status().state, st.state);
     assert_ne!(ws.timeline().refs()["main"], base["main"]);
+}
+
+#[test]
+fn failed_save_as_into_an_existing_empty_directory_empties_it_again() {
+    let dir = TempDir::new("emptydir");
+    let p = dir.project("empty");
+    std::fs::create_dir_all(&p).unwrap();
+    let (b, _) = builder();
+    let mut ws = b.fault(FaultInjector::fail_at(1)).memory().unwrap();
+    create(&mut ws, "a", 0);
+    assert!(ws.save_as(&p, ProjectConfig::new("c")).is_err());
+    assert!(p.is_dir());
+    assert_eq!(std::fs::read_dir(&p).unwrap().count(), 0);
+    ws.save_as(&p, ProjectConfig::new("c")).unwrap();
 }

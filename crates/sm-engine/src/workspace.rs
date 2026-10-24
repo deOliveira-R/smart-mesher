@@ -393,6 +393,13 @@ impl WorkspaceBuilder {
             for h in path_to_root.into_iter().filter(|h| have.contains(h)) {
                 match cache::read_snapshot(&layout, h) {
                     Ok(None) => continue,
+                    Ok(Some(f)) if !versions_current(engine.registry(), &f.versions) => {
+                        // Not damaged, just written by other code: ignore, keep the file.
+                        report.warnings.push(format!(
+                            "snapshot of {h} was written with other op or layer versions; ignored"
+                        ));
+                        continue;
+                    }
                     Ok(Some(f)) => match engine.registry().restore(&f.snap) {
                         // A seed must agree with itself and with the node's recorded check.
                         Ok(state)
@@ -633,6 +640,10 @@ impl Workspace {
     /// Bind an in-memory workspace to a new project directory and write everything. The
     /// directory must be absent or empty. Also writes `project.toml` and a `.gitignore` that
     /// ignores `.cache/`.
+    ///
+    /// On failure, everything written is removed again (the directory is deleted if it did not
+    /// exist before, emptied otherwise), so the same path can be retried. The cleanup is safe
+    /// because the directory was verified empty and is locked by this call.
     pub fn save_as(&mut self, path: impl AsRef<Path>, config: ProjectConfig) -> Result<()> {
         self.writable()?;
         if self.project.is_some() {
@@ -640,9 +651,13 @@ impl Workspace {
         }
         let layout = Layout::new(path.as_ref());
         let root = layout.root();
+        let mut existed = true;
         let non_empty = match std::fs::read_dir(root) {
             Ok(mut rd) => rd.next().is_some(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                existed = false;
+                false
+            }
             Err(e) => return Err(EngineError::io(root, e)),
         };
         if non_empty {
@@ -650,7 +665,6 @@ impl Workspace {
         }
         let toml = config.to_toml()?;
         let lock = ProjectLock::acquire(root, &layout.cache_dir())?;
-        self.s.ctx().write(&layout.gitignore(), b"/.cache/\n")?;
         // `project.toml` last: a half-created project is not a project.
         let dirty: BTreeSet<Hash256> = self.session.timeline().nodes().map(|(h, _)| h).collect();
         self.project = Some(Project {
@@ -663,14 +677,28 @@ impl Workspace {
             redo_on_disk: Vec::new(),
             reflog_persisted: 0,
         });
-        let r = self.persist().and_then(|()| {
-            self.s
-                .ctx()
-                .write(&layout.project_toml(), toml.as_bytes())
-        });
+        let r = self
+            .s
+            .ctx()
+            .write(&layout.gitignore(), b"/.cache/\n")
+            .and_then(|()| self.persist())
+            .and_then(|()| self.s.ctx().write(&layout.project_toml(), toml.as_bytes()));
         if r.is_err() {
-            // Unbind (and unlock): a directory without `project.toml` is not a project.
+            // Unbind (and unlock), then undo our writes so a retry finds an empty directory.
             self.project = None;
+            if let Ok(rd) = std::fs::read_dir(root) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let _ = if p.is_dir() {
+                        std::fs::remove_dir_all(&p)
+                    } else {
+                        std::fs::remove_file(&p)
+                    };
+                }
+            }
+            if !existed {
+                let _ = std::fs::remove_dir(root);
+            }
         }
         r
     }
@@ -713,7 +741,13 @@ impl Workspace {
                 return Ok(false);
             }
         };
-        cache::write_snapshot(&p.layout, node, state.hash(), &snap, ctx)?;
+        let versions = snapshot_versions(
+            self.session.engine().registry(),
+            self.session.timeline(),
+            node,
+            &snap,
+        )?;
+        cache::write_snapshot(&p.layout, node, state.hash(), &versions, &snap, ctx)?;
         cache::prune_snapshots(&p.layout, self.session.timeline(), keep, Some(node), ctx)?;
         Ok(true)
     }
@@ -1066,4 +1100,48 @@ impl Workspace {
         let q = QuietControl::new();
         Ok(self.session.state_at_from_root(h, &q.control())?)
     }
+}
+
+/// The implementation versions a snapshot at `node` depends on: `layer:<name>` for each layer in
+/// `snap` and `op:<name>` for each op on the path from the root to `node` (nested batch ops
+/// included), as the current registry reports them.
+fn snapshot_versions(
+    registry: &sm_op_api::Registry,
+    tl: &Timeline,
+    node: Hash256,
+    snap: &sm_op_api::StateSnapshot,
+) -> Result<BTreeMap<String, u32>> {
+    let mut v = BTreeMap::new();
+    for name in snap.layers.keys() {
+        if let Some(ver) = registry.layer_digest_version(name) {
+            v.insert(format!("layer:{name}"), ver);
+        }
+    }
+    for h in tl.path_to_root(node)? {
+        let Some(n) = tl.get(h) else { continue };
+        let names = std::iter::once(n.body.op.name.clone()).chain(
+            n.check
+                .versions
+                .keys()
+                .filter_map(|k| k.strip_prefix("op:").map(str::to_owned)),
+        );
+        for name in names {
+            if let Some(ver) = registry.op_impl_version(&name) {
+                v.insert(format!("op:{name}"), ver);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// Whether every recorded version still equals the registry's (unknown names count as changed).
+fn versions_current(registry: &sm_op_api::Registry, recorded: &BTreeMap<String, u32>) -> bool {
+    recorded.iter().all(|(k, ver)| {
+        let now = match k.split_once(':') {
+            Some(("op", n)) => registry.op_impl_version(n),
+            Some(("layer", n)) => registry.layer_digest_version(n),
+            _ => None,
+        };
+        now == Some(*ver)
+    })
 }

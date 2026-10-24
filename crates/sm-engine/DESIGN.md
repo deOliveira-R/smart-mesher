@@ -9,7 +9,9 @@ project stores the **op DAG itself**, each node carrying the hash of the state i
 saves **after every action** with crash-safe incremental writes, not on an explicit "save" or by
 appending to one linear journal file. That gives:
 
-- fork, checkout, undo and replay that reproduce state hashes bit-for-bit, verified on every open;
+- fork, checkout, undo and replay that reproduce state hashes bit-for-bit; every open replays and
+  verifies each node's recorded hash from the nearest valid snapshot (or from the root when there
+  is none), where snapshots are trusted up to their own node (see Open);
 - project files that git merges without conflicts when independent branches are added (node files
   are never rewritten, each branch owns one ref file; the only possible text conflict is two
   writers moving the same branch);
@@ -102,14 +104,36 @@ node). The default is `Full`.
    only for an empty project or when the redo stack shows the branch was undone to its root;
 4. reflog (a torn tail is tolerated and the file rewritten), redo stack (dropped with a warning if
    it no longer chains to the position);
-5. snapshot seed: the nearest ancestor of HEAD that has a snapshot file; it is restored with
-   `Registry::restore`, must match both its own stored hash and the node's recorded `check.state` (our
-   check, before `Session::seed_state`, so it holds under every replay policy), otherwise it is deleted and a warning is recorded, never used;
+5. snapshot seed: the nearest ancestor of HEAD that has a *valid* snapshot file. A snapshot is
+   valid when (a) it decodes (SHA-256 trailer), (b) every `op:<name>` / `layer:<name>` version
+   recorded with it still equals the registry's current `impl_version` / `DIGEST_VERSION` (the
+   recorded ops are those on the path from the root to the snapshot's node, nested batch ops
+   included; the layers are those in the snapshot), (c) `Registry::restore` succeeds and the
+   restored state matches both its stored hash and the node's recorded `check.state` (our check,
+   before `Session::seed_state`, so it holds under every replay policy). A snapshot failing (b) was
+   written by other code, not damaged: it is ignored with a warning and kept on disk, and the search
+   continues with an older ancestor, else the root. One failing (a) or (c) is deleted with a warning.
+   Snapshot files carry the magic `SMSNAP02`; older containers fail (a) and are dropped;
 6. `Session::open_with` replays from the seed, strictly by default (`Diverged` / `Upgraded` stop
    the open). `ReplayPolicy::Warn` / `Rebaseline` are available through the builder; re-baselined
    node files are rewritten.
 
+Verification guarantee: ops after the seed are replayed and each node's hash is compared with
+its recorded check, so every node *after* the seed is verified on every open. Nodes up to the seed
+are not replayed: the snapshot is trusted up to its own node, checked only against that node's
+recorded `check.state`. A full re-verification is a replay from the root (delete `.cache/snapshots`).
+
 A missing or garbage `.cache/` is always survivable: nothing there is authoritative.
+
+## Project tolerances
+
+`project.toml` `[tolerances]` (`linear` in project units, `angular` in radians) is an
+engine-level *default* recorded with the project; the engine itself never reads it for replay and
+it is not part of any hash. A consumer that needs a `sm_model_api::Tolerance` builds it as
+`Tolerance { linear: t.linear, angular: t.angular, relative: Tolerance::default().relative }`:
+`linear` and `angular` map one to one and the relative tolerance is not stored, so it keeps the
+`sm_model_api` default (1e-9). With no `[tolerances]` table the whole `Tolerance::default()` applies.
+Ops that carry their own tolerance parameter override it.
 
 ## Branches, undo, redo
 

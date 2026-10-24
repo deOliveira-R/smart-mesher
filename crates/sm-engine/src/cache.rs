@@ -5,6 +5,7 @@
 //! `Timeline::default_head`, the reflog and redo stack start empty, and a snapshot that fails
 //! its checks is ignored.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -46,8 +47,9 @@ pub(crate) fn write_head(layout: &Layout, head: &Head, ctx: WriteCtx<'_>) -> Res
     ctx.write(&layout.head_file(), s.as_bytes())
 }
 
-/// The newest `limit` reflog entries. A torn last line or any unparsable line ends the read;
-/// the second value says whether the file should be rewritten (torn, or longer than `2 * limit`).
+/// The newest `limit` reflog entries. An unparsable line (a torn last line, say) is skipped and
+/// later entries are kept; the second value says whether the file should be rewritten (a bad
+/// line or torn end was seen, or it is longer than `2 * limit`).
 pub(crate) fn read_reflog(layout: &Layout, limit: usize) -> (Vec<ReflogEntry>, bool) {
     let Ok(text) = fs::read_to_string(layout.reflog_file()) else {
         return (Vec::new(), false);
@@ -130,12 +132,14 @@ pub(crate) fn write_redo(layout: &Layout, redo: &[Hash256], ctx: WriteCtx<'_>) -
 
 // ------------------------------------------------------------------ snapshots
 
-const MAGIC: &[u8; 8] = b"SMSNAP01";
+const MAGIC: &[u8; 8] = b"SMSNAP02";
 
 /// A decoded snapshot file.
 pub(crate) struct SnapshotFile {
     pub(crate) node: Hash256,
     pub(crate) state: Hash256,
+    /// `op:<name>` / `layer:<name>` implementation versions in force when it was written.
+    pub(crate) versions: BTreeMap<String, u32>,
     pub(crate) snap: StateSnapshot,
 }
 
@@ -145,19 +149,23 @@ fn put_u32(buf: &mut Vec<u8>, v: usize) -> Result<()> {
     Ok(())
 }
 
-/// Binary container: magic, node hash, state hash, kinds (JSON), layers (name + bytes), then a
+/// Binary container: magic, node hash, state hash, versions (JSON), kinds (JSON), layers (name + bytes), then a
 /// SHA-256 of everything before it.
 pub(crate) fn encode_snapshot(
     node: Hash256,
     state: Hash256,
+    versions: &BTreeMap<String, u32>,
     snap: &StateSnapshot,
 ) -> Result<Vec<u8>> {
+    let vers = serde_json::to_vec(versions).map_err(|e| EngineError::Format(e.to_string()))?;
     let kinds = serde_json::to_vec(&snap.kinds).map_err(|e| EngineError::Format(e.to_string()))?;
     let mut buf =
         Vec::with_capacity(128 + kinds.len() + snap.layers.values().map(Vec::len).sum::<usize>());
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&node.0);
     buf.extend_from_slice(&state.0);
+    put_u32(&mut buf, vers.len())?;
+    buf.extend_from_slice(&vers);
     put_u32(&mut buf, kinds.len())?;
     buf.extend_from_slice(&kinds);
     put_u32(&mut buf, snap.layers.len())?;
@@ -215,10 +223,13 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotFile> {
     let node = Hash256(r.array()?);
     let state = Hash256(r.array()?);
     let n = r.u32()?;
+    let versions: BTreeMap<String, u32> = serde_json::from_slice(r.take(n)?)
+        .map_err(|e| EngineError::Format(format!("snapshot versions: {e}")))?;
+    let n = r.u32()?;
     let kinds: Vec<KindSnapshot> = serde_json::from_slice(r.take(n)?)
         .map_err(|e| EngineError::Format(format!("snapshot kinds: {e}")))?;
     let count = r.u32()?;
-    let mut layers = std::collections::BTreeMap::new();
+    let mut layers = BTreeMap::new();
     for _ in 0..count {
         let n = r.u32()?;
         let name = std::str::from_utf8(r.take(n)?)
@@ -233,6 +244,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotFile> {
     Ok(SnapshotFile {
         node,
         state,
+        versions,
         snap: StateSnapshot { kinds, layers },
     })
 }
@@ -241,10 +253,11 @@ pub(crate) fn write_snapshot(
     layout: &Layout,
     node: Hash256,
     state: Hash256,
+    versions: &BTreeMap<String, u32>,
     snap: &StateSnapshot,
     ctx: WriteCtx<'_>,
 ) -> Result<()> {
-    let bytes = encode_snapshot(node, state, snap)?;
+    let bytes = encode_snapshot(node, state, versions, snap)?;
     ctx.write(&layout.snapshot_file(node), &bytes)
 }
 
@@ -317,6 +330,10 @@ mod tests {
     use super::*;
     use sm_core::EntityKind;
 
+    fn vers() -> BTreeMap<String, u32> {
+        BTreeMap::from([("op:a".to_owned(), 2), ("layer:model".to_owned(), 1)])
+    }
+
     fn sample() -> (Hash256, Hash256, StateSnapshot) {
         let mut layers = std::collections::BTreeMap::new();
         layers.insert("counter".to_owned(), vec![1, 2, 3, 4, 5]);
@@ -335,16 +352,17 @@ mod tests {
     #[test]
     fn snapshot_round_trips() {
         let (n, s, snap) = sample();
-        let bytes = encode_snapshot(n, s, &snap).unwrap();
+        let bytes = encode_snapshot(n, s, &vers(), &snap).unwrap();
         let f = decode_snapshot(&bytes).unwrap();
         assert_eq!((f.node, f.state), (n, s));
+        assert_eq!(f.versions, vers());
         assert_eq!(f.snap, snap);
     }
 
     #[test]
     fn damaged_snapshots_are_errors_never_panics() {
         let (n, s, snap) = sample();
-        let bytes = encode_snapshot(n, s, &snap).unwrap();
+        let bytes = encode_snapshot(n, s, &vers(), &snap).unwrap();
         for len in 0..bytes.len() {
             assert!(
                 decode_snapshot(&bytes[..len]).is_err(),
@@ -358,10 +376,7 @@ mod tests {
         }
         // A forged length with a valid checksum must not read out of bounds either.
         let mut forged = bytes[..bytes.len() - 32].to_vec();
-        forged[8 + 64] = 0xff;
-        forged[8 + 65] = 0xff;
-        forged[8 + 66] = 0xff;
-        forged[8 + 67] = 0x7f;
+        forged[8 + 64..8 + 68].copy_from_slice(&[0xff, 0xff, 0xff, 0x7f]);
         let sum = Hash256::of(&forged);
         forged.extend_from_slice(&sum.0);
         assert!(decode_snapshot(&forged).is_err());
