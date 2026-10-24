@@ -14,4 +14,4 @@ mod radial;
 mod rows;
 mod store;
 
-pub use store::TopoStore;
+pub use store::{Counters, TopoStore};

@@ -144,6 +144,7 @@ impl TopoStore {
         let summary = OpSummary::new(st.op, created, retired, st.start.lineage, self.lineage.len() - st.start.lineage);
         self.open = None;
         self.ops_run += 1;
+        self.counters.ops_committed += 1;
         self.journal.clear();
         self.jdata.clear();
         Ok(summary)

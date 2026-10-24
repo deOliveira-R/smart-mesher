@@ -128,12 +128,14 @@ impl TopoStore {
             let Some((pdim, _)) = self.locate(parent) else { continue };
             let long = matches!(pdim, Dim::Volume | Dim::Body) && self.row(parent).len() >= SORTED_ROW_MIN;
             if long {
+                self.counters.sorted_parent_rewrites += 1;
                 let expected = self.paranoid.then(|| self.generic_replaced(parent, pdim, old, &f));
                 self.replace_sorted(parent, pdim, old, &f)?;
                 if let Some(expected) = expected {
                     assert_eq!(self.row(parent), expected.as_slice(), "sorted parent rewrite differs from the full rewrite");
                 }
             } else {
+                self.counters.full_parent_rewrites += 1;
                 let new = self.generic_replaced(parent, pdim, old, &f);
                 self.set_row(parent, &new)?;
             }

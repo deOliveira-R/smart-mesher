@@ -139,6 +139,17 @@ pub(crate) struct OpState {
     pub(crate) start: Mark,
 }
 
+/// Diagnostic counters of the shortcuts a [`TopoStore`] has taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    /// Parent rows (long volume/body rows) rewritten by position.
+    pub sorted_parent_rewrites: u64,
+    /// Parent rows rewritten whole.
+    pub full_parent_rewrites: u64,
+    /// Operations committed with the incremental shell-closure check.
+    pub ops_committed: u64,
+}
+
 /// The production cellular non-manifold complex.
 ///
 /// Implements [`TopologyView`] and [`sm_topo_api::TopologyEdit`] with the same observable
@@ -171,6 +182,7 @@ pub struct TopoStore {
     pub(crate) closure_edges: Marks,
     /// Cross-check the incremental `end_op` shortcuts against the full reference algorithms.
     pub(crate) paranoid: bool,
+    pub(crate) counters: Counters,
 }
 
 impl Default for TopoStore {
@@ -207,6 +219,7 @@ impl TopoStore {
             orient_dirty: Marks::default(),
             closure_edges: Marks::default(),
             paranoid: false,
+            counters: Counters::default(),
         }
     }
 
@@ -218,6 +231,11 @@ impl TopoStore {
     /// The operation currently open, if any.
     pub fn open_op(&self) -> Option<OpId> {
         self.open.as_ref().map(|o| o.op)
+    }
+
+    /// Diagnostic counters (how often each shortcut ran).
+    pub fn counters(&self) -> Counters {
+        self.counters
     }
 
     /// When on, `end_op` also runs the full reference algorithms (whole-shell closure walks,
