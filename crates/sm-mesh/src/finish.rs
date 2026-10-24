@@ -259,7 +259,16 @@ fn ids(alloc: &mut SerialAlloc, kind: EntityKind, n: usize) -> Result<IdRange> {
 /// order, orientation, incidence, shape tags, edge table) holds by construction in `finish`.
 /// `false` means "suspicious": the caller then runs the full validator, which produces the report.
 fn fast_checks(m: &Mesh) -> bool {
-    sm_mesh_api::validate_classification(m).is_empty() && sm_mesh_api::validate_records(m).is_empty()
+    let nf = sm_mesh_api::MeshRead::count(m, MeshEntityKind::Face);
+    let loops_ok: Vec<bool> = (0..nf)
+        .into_par_iter()
+        .map(|f| sm_mesh_api::face_loop_ok(m, FaceIx::new(f)))
+        .collect();
+    let (a, b) = rayon::join(
+        || sm_mesh_api::validate_classification_with(m, &loops_ok).is_empty(),
+        || sm_mesh_api::validate_records_with(m, &loops_ok).is_empty(),
+    );
+    a && b
 }
 
 pub(crate) fn finish(b: MeshBuilder, alloc: &mut SerialAlloc) -> Result<Finished<Mesh>> {

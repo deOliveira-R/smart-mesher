@@ -16,6 +16,7 @@ use crate::read::MeshRead;
 use crate::sets::{SetMembers, TagValues};
 use crate::shape::{CellShape, LoopRelation, derive_corners, loop_relation, polygon_cycle};
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable machine-readable code of a [`Violation`]; [`ViolationCode::as_str`] never changes.
@@ -418,29 +419,32 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
     s.0
 }
 
-/// Per-face flag: the loop is valid for the mesh dimension and the face's cells exist. Mirrors
-/// the flags `validate` derives while checking faces (without reporting).
+/// Whether face `f`'s loop is valid for the mesh dimension (length, no repeated vertex, vertices
+/// in range) and the face's cells exist. Mirrors the flag `validate` derives while checking
+/// faces (without reporting). Allocation-free for loops up to 16 vertices and read-only, so
+/// callers may evaluate it for all faces in parallel and pass the flags to
+/// [`validate_classification_with`] and [`validate_records_with`].
+pub fn face_loop_ok(m: &dyn MeshRead, f: FaceIx) -> bool {
+    let l = m.face_vertices(f);
+    let nv = m.count(MeshEntityKind::Vertex);
+    let nc = m.count(MeshEntityKind::Cell);
+    // Distinct check without sorting: pairwise for short loops, sort a stack copy otherwise.
+    let distinct = if l.len() <= 8 {
+        (1..l.len()).all(|i| !l[..i].contains(&l[i]))
+    } else {
+        let mut t: SmallVec<[VertexIx; 16]> = SmallVec::from_slice(l);
+        t.sort_unstable();
+        t.windows(2).all(|w| w[0] != w[1])
+    };
+    m.dim().facet_len_ok(l.len())
+        && distinct
+        && l.iter().all(|v| v.get() < nv)
+        && m.face_left(f).get() < nc
+        && m.face_right(f).is_none_or(|r| r.get() < nc)
+}
+
 fn loops_ok_of(m: &dyn MeshRead) -> Vec<bool> {
-    let dim = m.dim();
-    let (nv, nf, nc) = (
-        m.count(MeshEntityKind::Vertex),
-        m.count(MeshEntityKind::Face),
-        m.count(MeshEntityKind::Cell),
-    );
-    (0..nf)
-        .map(|f| {
-            let fi = FaceIx::new(f);
-            let l = m.face_vertices(fi);
-            let mut sorted = l.to_vec();
-            sorted.sort_unstable();
-            sorted.dedup();
-            dim.facet_len_ok(l.len())
-                && sorted.len() == l.len()
-                && l.iter().all(|v| v.get() < nv)
-                && m.face_left(fi).get() < nc
-                && m.face_right(fi).is_none_or(|r| r.get() < nc)
-        })
-        .collect()
+    (0..m.count(MeshEntityKind::Face)).map(|f| face_loop_ok(m, FaceIx::new(f))).collect()
 }
 
 /// The classification rules of [`validate`] (kinds, parameters, dimension order including edges,
@@ -454,14 +458,23 @@ fn loops_ok_of(m: &dyn MeshRead) -> Vec<bool> {
 /// exactly the classification and lineage subset of the violations [`validate`] reports, in
 /// the same order. Builders use it to re-check what their input can break.
 pub fn validate_classification(m: &dyn MeshRead) -> Vec<Violation> {
+    validate_classification_with(m, &loops_ok_of(m))
+}
+
+/// [`validate_classification`] with the per-face loop flags supplied (one [`face_loop_ok`] per
+/// face, in face order), so a caller that also runs [`validate_records_with`] computes them once.
+/// Returns an empty list if `loops_ok.len()` is not the face count.
+pub fn validate_classification_with(m: &dyn MeshRead, loops_ok: &[bool]) -> Vec<Violation> {
     let mut s = Sink(Vec::new());
+    if loops_ok.len() != m.count(MeshEntityKind::Face) {
+        return s.0;
+    }
     let (nv, nf, nc) = (
         m.count(MeshEntityKind::Vertex),
         m.count(MeshEntityKind::Face),
         m.count(MeshEntityKind::Cell),
     );
-    let loops_ok = loops_ok_of(m);
-    classification_rules(m, nv, nf, nc, &loops_ok, &mut s);
+    classification_rules(m, nv, nf, nc, loops_ok, &mut s);
     lineage_rules(m, nc, &mut s);
     s.0
 }
@@ -475,7 +488,17 @@ pub fn validate_classification(m: &dyn MeshRead) -> Vec<Violation> {
 /// pass. Violations are reported cell by cell, then face curves, then sets and tags (a
 /// different order than [`validate`], which interleaves them with the cell checks).
 pub fn validate_records(m: &dyn MeshRead) -> Vec<Violation> {
+    validate_records_with(m, &loops_ok_of(m))
+}
+
+/// [`validate_records`] with the per-face loop flags supplied (see
+/// [`validate_classification_with`]). Returns an empty list if `loops_ok.len()` is not the face
+/// count.
+pub fn validate_records_with(m: &dyn MeshRead, loops_ok: &[bool]) -> Vec<Violation> {
     let mut s = Sink(Vec::new());
+    if loops_ok.len() != m.count(MeshEntityKind::Face) {
+        return s.0;
+    }
     let (nv, nf, nc) = (
         m.count(MeshEntityKind::Vertex),
         m.count(MeshEntityKind::Face),
@@ -485,7 +508,7 @@ pub fn validate_records(m: &dyn MeshRead) -> Vec<Violation> {
     for c in 0..nc {
         validate_high_order(m, CellIx::new(c), np, &mut s);
     }
-    face_curve_rules(m, np, &loops_ok_of(m), &mut s);
+    face_curve_rules(m, np, loops_ok, &mut s);
     ho_needs_edge_table_rule(m, nf, nc, &mut s);
     set_tag_rules(m, nv, nf, nc, &mut s);
     s.0
@@ -801,6 +824,8 @@ fn classification_rules(
         .map(|i| check(MeshEntityKind::Vertex, i, s))
         .collect();
     let fdim: Vec<Option<u8>> = (0..nf).map(|i| check(MeshEntityKind::Face, i, s)).collect();
+    // Faces at least as high-dimensional as every vertex need no per-vertex scan.
+    let vmax = vdim.iter().flatten().copied().max().unwrap_or(0);
     for c in 0..nc {
         let cl = m.classification(MeshEntityKind::Cell, c as u32);
         let _ = check(MeshEntityKind::Cell, c, s);
@@ -817,8 +842,9 @@ fn classification_rules(
     }
     for f in 0..nf {
         let fi = FaceIx::new(f);
-        let k = m.face_class(fi).entity.kind();
-        if m.face_class(fi).dim().is_none() {
+        let fc = m.face_class(fi);
+        let k = fc.entity.kind();
+        if fc.dim().is_none() {
             continue;
         }
         if !dim.accepts_facet(m.face_kind(fi), k) {
@@ -830,6 +856,7 @@ fn classification_rules(
         }
         if loops_ok[f]
             && let Some(fd) = fdim[f]
+            && fd < vmax
             && m.face_vertices(fi)
                 .iter()
                 .any(|v| vdim[v.get()].is_some_and(|d| d > fd))
@@ -896,29 +923,31 @@ fn classification_rules(
     }
     // Reverse index must equal the recomputed one.
     let mut want: BTreeMap<EntityId, ClassSet> = BTreeMap::new();
-    for i in 0..nv {
-        want.entry(m.vertex_class(VertexIx::new(i)).entity)
-            .or_default()
-            .vertices
-            .push(VertexIx::new(i));
+    // Consecutive entities usually share a class: look the map up only when it changes.
+    macro_rules! group {
+        ($n:expr, $ent:expr, $field:ident, $ix:ident) => {{
+            let mut last: Option<EntityId> = None;
+            let mut cur: Option<&mut ClassSet> = None;
+            for i in 0..$n {
+                let e: EntityId = $ent(i);
+                if last != Some(e) {
+                    last = Some(e);
+                    cur = Some(want.entry(e).or_default());
+                }
+                if let Some(c) = cur.as_deref_mut() {
+                    c.$field.push($ix::new(i));
+                }
+            }
+        }};
     }
+    group!(nv, |i| m.vertex_class(VertexIx::new(i)).entity, vertices, VertexIx);
     if let Some(t) = m.edges() {
         for (i, c) in t.class.iter().enumerate() {
             want.entry(c.entity).or_default().edges.push(EdgeIx::new(i));
         }
     }
-    for i in 0..nf {
-        want.entry(m.face_class(FaceIx::new(i)).entity)
-            .or_default()
-            .faces
-            .push(FaceIx::new(i));
-    }
-    for i in 0..nc {
-        want.entry(m.cell_class(CellIx::new(i)).entity)
-            .or_default()
-            .cells
-            .push(CellIx::new(i));
-    }
+    group!(nf, |i| m.face_class(FaceIx::new(i)).entity, faces, FaceIx);
+    group!(nc, |i| m.cell_class(CellIx::new(i)).entity, cells, CellIx);
     let ents: Vec<EntityId> = want.keys().copied().collect();
     if m.classified_entities() != ents.as_slice()
         || want.iter().any(|(k, v)| m.classified_on(*k) != Some(v))

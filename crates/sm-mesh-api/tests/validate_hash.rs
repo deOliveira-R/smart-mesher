@@ -981,3 +981,44 @@ fn shared_rule_sets_are_subsets_of_validate() {
     assert!(validate_classification(&by_name("valid")).is_empty());
     assert!(validate_records(&by_name("valid")).is_empty());
 }
+
+/// `face_loop_ok` flags exactly the faces `validate` reports as `LoopInvalid` or out-of-range
+/// cells, for short loops (pairwise path) and long loops (sorted path); the `_with` variants
+/// match the plain ones; a wrong-length flag slice yields nothing instead of panicking.
+#[test]
+fn face_loop_ok_and_with_variants() {
+    use ViolationCode::*;
+    for (name, b) in &broken_cases() {
+        let nf = b.count(MeshEntityKind::Face);
+        let flags: Vec<bool> = (0..nf).map(|f| face_loop_ok(b, FaceIx::new(f))).collect();
+        if !matches!(*name, "left-range" | "id-order") {
+            assert_eq!(validate_classification_with(b, &flags), validate_classification(b), "{name}");
+            assert_eq!(validate_records_with(b, &flags), validate_records(b), "{name}");
+        }
+        let bad: Vec<usize> = validate(b)
+            .iter()
+            .filter(|v| matches!(v.code, LoopInvalid | IndexRange))
+            .filter_map(|v| match v.entity {
+                Some(MeshEntity::Face(f)) => Some(f.get()),
+                _ => None,
+            })
+            .collect();
+        for (f, ok) in flags.iter().enumerate() {
+            assert_eq!(*ok, !bad.contains(&f), "{name} face {f}");
+        }
+        assert!(validate_classification_with(b, &flags[..nf.saturating_sub(1)]).is_empty());
+        assert!(validate_records_with(b, &[]).is_empty());
+    }
+    // Long loops (more than 8 vertices) take the sorted path.
+    let m = base();
+    let bf = (0..m.face_count()).map(FaceIx::new).find(|&f| m.face_kind(f) == FaceKind::Boundary).unwrap();
+    assert!(m.vertex_count() >= 10);
+    let distinct: Vec<VertexIx> = (0..10).map(VertexIx).collect();
+    let mut repeat = distinct.clone();
+    repeat[9] = repeat[2];
+    for (l, want) in [(distinct, true), (repeat, false)] {
+        let mut b = Broken::of(m.clone());
+        b.loop_of = Some((bf.0, l));
+        assert_eq!(face_loop_ok(&b, bf), want);
+    }
+}

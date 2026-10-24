@@ -112,3 +112,12 @@ Skipped: 9 (retire `tests/contract_*.rs`): the contract suite is not generic ove
 * `FaceIndex::grow`: documented the load-factor invariant (at most 1/2, so a non-empty table always has an empty slot) and added `debug_assert`s; the `unwrap_or(0)` fallback only covers the initial empty table.
 * Timings re-measured on an Apple M1 Max, 10 threads (and 1 thread), release, median of 3; DESIGN.md and this report now use the same table. Old numbers came from a 4 vCPU shared machine and are superseded. The reviewer's figures (0.85 s incremental, 0.29 s bulk, 3.5 s reference at 10^6 on 10 threads) agree with the new ones (0.83 s, 0.30 s, 3.6 s).
 * Deviation 8 stays accurate: `tests/contract_*.rs` still duplicates the `sm-mesh-api` contract tests (87 with `serde`, 81 without), copied unchanged behind a shim, until the contract offers tests generic over an implementation. Left as is, per review.
+
+## Timing note: `Validation::Fast` finish (release, 100^3 hexes via `examples/timing`)
+
+`fast_checks` computes the per-face loop flags once, in parallel, with the allocation-free
+`sm_mesh_api::face_loop_ok`, then runs `validate_classification_with` and `validate_records_with`
+concurrently (`rayon::join`). Before: bulk build + finish about 560 ms (two serial passes, each
+sorting a copy of every loop); origin/main (single parallel pass) 261-298 ms; now about 315 ms
+(classification 77 ms, records 17 ms, loop flags 5 ms on the finished mesh). The classification
+reverse-index build groups runs of equal classes instead of one map lookup per entity.
