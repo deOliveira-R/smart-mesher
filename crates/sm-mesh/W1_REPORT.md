@@ -1,6 +1,6 @@
 # W1 report: sm-mesh
 
-Branch `claude/w1-sm-mesh-icdwyq` (the session's designated branch; the task text names `claude/w1-sm-mesh`, the same commit is pushed to both). The orchestrator merges by SHA.
+Pushed to `claude/w1-sm-mesh-icdwyq`, the session's designated branch (the task text names `claude/w1-sm-mesh`; the harness only permits the designated branch, so that name was not pushed and the orchestrator can create it from the SHA). The orchestrator merges by SHA; the final HEAD SHA is in the hand-off message.
 
 ## Summary
 
@@ -36,7 +36,7 @@ What is tested:
 
 * **Contract suite against the new store**: all 87 tests of `sm-mesh-api/tests` (81 without `serde`) copied into `tests/contract_*.rs` and run unchanged except for a shim that maps `ReferenceBuilder`/`ReferenceMesh`/`ReferenceCatalog`/`hex_block` to `sm-mesh` (counting-allocator zero-allocation tests, orientation, sets, instances/flatten/unfold, level and extrusion maps, hashes, validation negatives, surface meshes, high order).
 * **Differential, every sm-testkit mesh fixture** (`tests/differential.rs`): replayed through `add_face`+`add_cell` and through `add_polyhedron_with_corners`; every accessor, id, `index_of`, class sets, edge table, sets, tags, `connectivity_hash`, `topology_hash`, `geometry_hash`, quantized hash, `face_remap`, `validate` identical to the reference. The harness is checked first by replaying into the reference itself.
-* **State-machine differential** (`tests/builder_ops.rs`, 400 cases): random valid and invalid builder call sequences; every return value and error, the `finish` outcome and the allocator state agree with the reference.
+* **State-machine differential** (`tests/builder_ops.rs`, 600 cases): random valid and invalid builder call sequences; every return value and error, the `finish` outcome and the allocator state agree with the reference.
 * **Bulk equals incremental equals reference** (`tests/bulk.rs`, `properties.rs`): hex blocks, random mixed hex/wedge meshes, random Tri/Quad surface meshes; same provisional face numbering, same errors for the lowest offending cell, builder unchanged on error.
 * **Property tests with the testkit checkers** (`mesh_valid`, `orientation_rule`, `closed_cells`, `positive_volumes`, `watertight`, `classification_complete`, Euler, `conformity`) plus exact volume and boundary area of random blocks.
 * **Fault injection** (`properties.rs`): eleven classes of classification/lineage/open-cell faults; reference, `Validation::Fast` and `Validation::Full` give the same outcome, including the complete violation lists. Mutating a fast check makes the property fail (checked by hand).
@@ -46,7 +46,7 @@ What is tested:
 
 ## Deviations from the contracts' intent
 
-1. **`finish` validates in `Validation::Fast` mode by default.** The reference runs the whole sequential `validate` (2.3 s at 10^6 cells, more than the entire bulk build). `Fast` checks in parallel only the rules builder input can break (face kind vs class, dimension order for vertices/faces/edges, lineage, open cells); on any hit it runs the contract `validate` and returns its report, so errors equal the reference's. `Validation::Full` (`MeshBuilder::with_validation`) runs `validate` always. Coupling: a new `validate` rule that user input can break must be mirrored in `fast_checks` (see request 3).
+1. **`finish` validates in `Validation::Fast` mode by default.** The reference runs the whole sequential `validate` (2.3 s at 10^6 cells, more than the entire bulk build). `Fast` checks in parallel only the rules builder input can break (face kind vs class, dimension order for vertices/faces/edges, lineage, open cells); on any hit it runs the contract `validate` and returns its report, so errors equal the reference's. Evidence that nothing is missed, independent of how the checks were designed: `tests/builder_ops.rs` compares the `finish` outcome of 600 random call sequences against the reference builder (a hole in `fast_checks` would show as `Ok` here and `Err(Invalid)` there), the fault-injection property compares `Fast`, `Full` and the reference on eleven fault classes, and every contract negative test (validate_hash, surface, highorder, final_fixes) runs through `Fast`. `Validation::Full` (`MeshBuilder::with_validation`) runs `validate` always. Coupling: a new `validate` rule that user input can break must be mirrored in `fast_checks` (see request 3).
 2. **No `unsafe`, so the typed index columns have no byte view.** `RawColumns` covers coordinates, offsets, `face_right`, `cell_parent`; `face_vertices`, `face_left` and `cell_faces` (`VertexIx`, `CellIx`, `SignedFace`, all `repr(transparent)` over `u32`) need request 1.
 3. **Extra public API beyond the traits**: `Validation`, bulk methods, `Csr` and the five adjacency methods, `memory_bytes`, `generate`, `RawColumns`/`as_bytes`, `Catalog` (the reference calls it `ReferenceCatalog`).
 4. The builder's lazy face index and vertex grid sit behind `Mutex` (uncontended) so `&MeshBuilder` is `Sync` for the parallel `finish`.
@@ -54,7 +54,7 @@ What is tested:
 6. Ids are stored as a first id and a count per kind (consecutive by contract), not as a column.
 7. Dependencies: `rayon`, `smallvec`, `indexmap`, `bytemuck` (all on the allowed list); dev: `proptest`, `criterion` (default features off), `serde`/`serde_json` (contract serde tests), `sm-testkit`. `Cargo.lock` changed (rayon, criterion and their trees were not in it); the orchestrator regenerates it at merge.
 8. The contract test files were copied into this crate (maintenance duplicate until the contract tests become generic over an implementation).
-9. Branch name: designated `claude/w1-sm-mesh-icdwyq` vs the task's `claude/w1-sm-mesh`; both pushed.
+9. Branch name: pushed only to the designated `claude/w1-sm-mesh-icdwyq`, not to the task's `claude/w1-sm-mesh` (see the top).
 
 ## Known gaps
 

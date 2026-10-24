@@ -60,7 +60,7 @@ No `HashMap` iteration reaches an output (the face index and vertex grid are use
 
 * `tests/contract_*.rs`: the 87 tests of the `sm-mesh-api` suite (81 without the `serde` feature), copied and run unchanged against this store (a shim maps `ReferenceBuilder`/`ReferenceMesh`/`ReferenceCatalog`/`hex_block` to `sm-mesh`), including the zero-allocation accessor tests and (feature `serde`) the serde round trips.
 * `tests/differential.rs`: every `sm-testkit` fixture replayed through `add_face`/`add_cell` and through `add_polyhedron_with_corners`, compared on every accessor, id, `index_of`, class set, hash (connectivity, topology, geometry, quantized), `face_remap`, validity.
-* `tests/builder_ops.rs`: random sequences of builder calls (valid and invalid) applied to the reference and to `MeshBuilder`; every return value, error, the `finish` outcome and the allocator state agree.
+* `tests/builder_ops.rs` (600 cases): random sequences of builder calls (valid and invalid) applied to the reference and to `MeshBuilder`; every return value, error, the `finish` outcome and the allocator state agree.
 * `tests/bulk.rs`, `tests/edges_adjacency.rs`, `tests/determinism.rs`, `tests/properties.rs` (random blocks with the testkit checkers and analytic volume/area, random hex/wedge meshes, random surface meshes, fault injection).
 
 ## Performance (4 vCPU, release; see `benches/build.rs`, `examples/timing.rs`)

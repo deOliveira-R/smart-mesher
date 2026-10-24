@@ -4,7 +4,7 @@ use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::MeshError;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 /// Items per parallel chunk for per-entity stages.
 pub(crate) const CHUNK: usize = 4096;
@@ -102,12 +102,10 @@ pub(crate) struct ErrSink(Mutex<Vec<(usize, MeshError)>>);
 
 impl ErrSink {
     pub(crate) fn push(&self, at: usize, e: MeshError) {
-        if let Ok(mut g) = self.0.lock() {
-            g.push((at, e));
-        }
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).push((at, e));
     }
     pub(crate) fn take_first(self) -> Option<MeshError> {
-        let v = self.0.into_inner().unwrap_or_default();
+        let v = self.0.into_inner().unwrap_or_else(PoisonError::into_inner);
         v.into_iter().min_by_key(|(i, _)| *i).map(|(_, e)| e)
     }
 }

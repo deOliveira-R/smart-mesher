@@ -42,9 +42,9 @@ fn op() -> impl Strategy<Value = Op> {
         6 => (0u8..5, prop::collection::vec(ix.clone(), 3..9)).prop_map(|(s, v)| Op::AddTemplate(s, v)),
         2 => prop::collection::vec(prop::collection::vec(ix.clone(), 2..5), 3..6).prop_map(Op::AddPoly),
         1 => (0u8..16).prop_map(Op::Truncate),
-        3 => (ix.clone(), 0u8..8).prop_map(|(v, c)| Op::ClassV(v, c)),
-        3 => (0u8..16, 0u8..8).prop_map(|(f, c)| Op::ClassF(f, c)),
-        3 => (0u8..8, 0u8..8).prop_map(|(c, k)| Op::ClassC(c, k)),
+        5 => (ix.clone(), 0u8..8).prop_map(|(v, c)| Op::ClassV(v, c)),
+        5 => (0u8..16, 0u8..8).prop_map(|(f, c)| Op::ClassF(f, c)),
+        4 => (0u8..8, 0u8..8).prop_map(|(c, k)| Op::ClassC(c, k)),
         1 => (ix.clone(), ix.clone(), 0u8..8).prop_map(|(a, b, c)| Op::ClassE(a, b, c)),
         1 => (0u8..16, 0u8..4).prop_map(|(f, k)| Op::FaceKind(f, k)),
         1 => (0u8..8, 0u8..8).prop_map(|(c, p)| Op::Parent(c, p)),
@@ -181,7 +181,7 @@ fn classify_rest<B: MeshBuild>(b: &mut B, all: bool) {
 }
 
 proptest! {
-    #![proptest_config(config(400))]
+    #![proptest_config(config(600))]
 
     #[test]
     fn builder_state_machine_matches_the_reference(
