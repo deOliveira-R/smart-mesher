@@ -154,3 +154,12 @@ Branch `claude/w1-sm-engine-u0sels` (the branch this session was assigned) and
   pre-existed) so a retry to the same path works; tested at every injected failure point.
 - `read_reflog` docs match the skip-bad-line behaviour. DESIGN.md documents how `project.toml`
   tolerances map onto `sm_model_api::Tolerance` (relative stays at the default).
+
+## Polish round 1
+
+- Snapshot invalidation now also covers `service:<name>` versions: `snapshot_versions` records
+  every versioned service found in the checks on the root-to-node path (current version, or the
+  recorded one if the service is gone), and `versions_current` compares them with the engine's
+  `Services::versions()`. A snapshot written with a service at v1 is ignored (kept, warning) when
+  reopened with v2 or without it; the search falls back to an older snapshot or the root. DESIGN.md
+  step 5(b) updated; test `snapshot_is_ignored_when_a_versioned_service_changes`.

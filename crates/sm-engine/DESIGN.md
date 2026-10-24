@@ -105,10 +105,11 @@ node). The default is `Full`.
 4. reflog (a torn tail is tolerated and the file rewritten), redo stack (dropped with a warning if
    it no longer chains to the position);
 5. snapshot seed: the nearest ancestor of HEAD that has a *valid* snapshot file. A snapshot is
-   valid when (a) it decodes (SHA-256 trailer), (b) every `op:<name>` / `layer:<name>` version
-   recorded with it still equals the registry's current `impl_version` / `DIGEST_VERSION` (the
-   recorded ops are those on the path from the root to the snapshot's node, nested batch ops
-   included; the layers are those in the snapshot), (c) `Registry::restore` succeeds and the
+   valid when (a) it decodes (SHA-256 trailer), (b) every `op:<name>` / `layer:<name>` / `service:<name>` version
+   recorded with it still equals the current `impl_version` / `DIGEST_VERSION` / injected
+   `Services::versions()` entry (the recorded ops and services are those in the checks on the path
+   from the root to the snapshot's node, nested batch ops included; the layers are those in the
+   snapshot; a service no longer injected counts as changed), (c) `Registry::restore` succeeds and the
    restored state matches both its stored hash and the node's recorded `check.state` (our check,
    before `Session::seed_state`, so it holds under every replay policy). A snapshot failing (b) was
    written by other code, not damaged: it is ignored with a warning and kept on disk, and the search

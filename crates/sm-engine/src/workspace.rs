@@ -393,10 +393,12 @@ impl WorkspaceBuilder {
             for h in path_to_root.into_iter().filter(|h| have.contains(h)) {
                 match cache::read_snapshot(&layout, h) {
                     Ok(None) => continue,
-                    Ok(Some(f)) if !versions_current(engine.registry(), &f.versions) => {
+                    Ok(Some(f))
+                        if !versions_current(engine.registry(), engine.services(), &f.versions) =>
+                    {
                         // Not damaged, just written by other code: ignore, keep the file.
                         report.warnings.push(format!(
-                            "snapshot of {h} was written with other op or layer versions; ignored"
+                            "snapshot of {h} was written with other op, layer or service versions; ignored"
                         ));
                         continue;
                     }
@@ -743,6 +745,7 @@ impl Workspace {
         };
         let versions = snapshot_versions(
             self.session.engine().registry(),
+            self.session.engine().services(),
             self.session.timeline(),
             node,
             &snap,
@@ -1104,9 +1107,11 @@ impl Workspace {
 
 /// The implementation versions a snapshot at `node` depends on: `layer:<name>` for each layer in
 /// `snap` and `op:<name>` for each op on the path from the root to `node` (nested batch ops
-/// included), as the current registry reports them.
+/// included), as the current registry reports them, plus `service:<name>` for each versioned
+/// service recorded in the checks on that path, as the current services report them.
 fn snapshot_versions(
     registry: &sm_op_api::Registry,
+    services: &Services,
     tl: &Timeline,
     node: Hash256,
     snap: &sm_op_api::StateSnapshot,
@@ -1119,6 +1124,14 @@ fn snapshot_versions(
     }
     for h in tl.path_to_root(node)? {
         let Some(n) = tl.get(h) else { continue };
+        for (k, recorded) in &n.check.versions {
+            if let Some(name) = k.strip_prefix("service:") {
+                // A service no longer injected keeps its recorded version, which can never
+                // match at open, so the snapshot is ignored.
+                let now = services.versions().find(|(sn, _)| *sn == name);
+                v.insert(k.clone(), now.map_or(*recorded, |(_, ver)| ver));
+            }
+        }
         let names = std::iter::once(n.body.op.name.clone()).chain(
             n.check
                 .versions
@@ -1134,12 +1147,17 @@ fn snapshot_versions(
     Ok(v)
 }
 
-/// Whether every recorded version still equals the registry's (unknown names count as changed).
-fn versions_current(registry: &sm_op_api::Registry, recorded: &BTreeMap<String, u32>) -> bool {
+/// Whether every recorded version still equals the current one (unknown names count as changed).
+fn versions_current(
+    registry: &sm_op_api::Registry,
+    services: &Services,
+    recorded: &BTreeMap<String, u32>,
+) -> bool {
     recorded.iter().all(|(k, ver)| {
         let now = match k.split_once(':') {
             Some(("op", n)) => registry.op_impl_version(n),
             Some(("layer", n)) => registry.layer_digest_version(n),
+            Some(("service", n)) => services.versions().find(|(sn, _)| *sn == n).map(|(_, v)| v),
             _ => None,
         };
         now == Some(*ver)

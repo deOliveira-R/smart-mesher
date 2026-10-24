@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use common::*;
 use serde_json::json;
 use sm_engine::{EngineError, FaultInjector, ProjectConfig, Workspace};
-use sm_op_api::{Head, ReplayPolicy, Rev};
+use sm_op_api::{Head, ReplayPolicy, Rev, Services};
 
 fn cfg() -> ProjectConfig {
     ProjectConfig::new("demo")
@@ -615,4 +615,53 @@ fn head_on_a_branch_that_vanished_falls_back_but_unborn_after_undo_is_kept() {
     ws.close().unwrap();
     let (b, _) = builder();
     assert_eq!(b.open(&p).unwrap().status(), st);
+}
+
+struct Kernel;
+
+fn builder_with_kernel(version: Option<u32>) -> sm_engine::WorkspaceBuilder {
+    let (b, _) = builder();
+    let s = Services::new()
+        .with(ApplyCount::default())
+        .with(Flaky::default());
+    let s = match version {
+        Some(v) => s.with_versioned("kernel", v, Kernel),
+        None => s,
+    };
+    b.services(s)
+}
+
+#[test]
+fn snapshot_is_ignored_when_a_versioned_service_changes() {
+    let dir = TempDir::new("svcver");
+    let p = dir.project("p.smesh");
+    let mut ws = builder_with_kernel(Some(1)).create(&p, cfg()).unwrap();
+    let id = create(&mut ws, "a", 0);
+    add(&mut ws, id, 1);
+    ws.snapshot_now().unwrap();
+    let n = ws.status().position.unwrap();
+    ws.close().unwrap();
+    let snap = p.join(format!(".cache/snapshots/{n}.snap"));
+    assert!(snap.exists());
+
+    // Same service version: the snapshot seeds the open.
+    let ws = builder_with_kernel(Some(1)).open(&p).unwrap();
+    assert_eq!(ws.open_report().seeded_from, Some(n));
+    drop(ws);
+
+    // Service upgraded (or removed): the snapshot is not used, but kept.
+    for v in [Some(2), None] {
+        let ws = builder_with_kernel(v).open(&p).unwrap();
+        assert_eq!(ws.open_report().seeded_from, None, "service {v:?}");
+        assert!(
+            ws.open_report()
+                .warnings
+                .iter()
+                .any(|w| w.contains("service versions")),
+            "{:?}",
+            ws.open_report().warnings
+        );
+        drop(ws);
+        assert!(snap.exists(), "snapshot kept");
+    }
 }
