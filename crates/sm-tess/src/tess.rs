@@ -179,7 +179,7 @@ fn first_error<T>(results: Vec<Result<T, TessError>>) -> Result<Vec<T>, TessErro
     results.into_iter().collect()
 }
 
-fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extra_edges: &[EntityId], opts: &TessOptions) -> Result<Tessellation, TessError> {
+pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extra_edges: &[EntityId], opts: &TessOptions) -> Result<Tessellation, TessError> {
     opts.validate()?;
     let mut faces: Vec<EntityId> = faces.to_vec();
     faces.sort_unstable();
@@ -216,7 +216,7 @@ fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extra_edges: &[
     for &v in &vertices {
         match view.carrier(v) {
             Carrier::Point(p) => vertex_pos.push([p.x, p.y, p.z]),
-            _ => return Err(TessError::edge(v, "vertex has no point carrier")),
+            _ => return Err(TessError::Vertex { vertex: v, reason: "vertex has no point carrier".into() }),
         }
     }
 

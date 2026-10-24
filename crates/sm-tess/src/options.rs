@@ -73,6 +73,14 @@ pub enum TessError {
         /// What went wrong.
         reason: String,
     },
+    /// A vertex has no position.
+    #[error("vertex {vertex:?}: {reason}")]
+    Vertex {
+        /// The vertex.
+        vertex: EntityId,
+        /// What went wrong.
+        reason: String,
+    },
     /// A face could not be triangulated.
     #[error("face {face:?}: {reason}")]
     Face {

@@ -6,7 +6,7 @@ use sm_core::EntityId;
 use sm_layer_api::ModelLayer;
 use sm_op_api::{OpError, QueryCtx, State, TypedQuery, names};
 
-use crate::options::TessOptions;
+use crate::options::{TessError, TessOptions};
 use crate::tess::{self, Tessellation};
 
 /// Chord tolerance used when none is given, relative to the scene's bounding-box diagonal.
@@ -107,7 +107,7 @@ impl TypedQuery for TessellateQuery {
         let model = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer(names::MODEL.to_owned()))?;
         let view = model.topo();
         cx.step(0, 2, "expanding entities")?;
-        let (faces, edges) = tess::expand(view, &self.entities).map_err(|e| OpError::Invalid(e.to_string()))?;
+        let (faces, edges) = tess::expand(view, &self.entities).map_err(op_error)?;
         let mut opts = TessOptions::default();
         opts.chord_tol = match self.chord_tol {
             Some(c) => c,
@@ -123,8 +123,16 @@ impl TypedQuery for TessellateQuery {
             opts.max_edge = m;
         }
         cx.step(1, 2, "tessellating")?;
-        let t = tess::tessellate_entities(view, &self.entities, &opts).map_err(|e| OpError::Invalid(e.to_string()))?;
+        let t = tess::tessellate_parts(view, &faces, &edges, &opts).map_err(op_error)?;
         Ok(TessellateReply::new(&t, &opts))
+    }
+}
+
+/// Parameter mistakes are `Invalid`; failures while sampling or triangulating are `Failed`.
+fn op_error(e: TessError) -> OpError {
+    match e {
+        TessError::BadOptions(_) | TessError::NotAFace(_) | TessError::NotAnEdge(_) | TessError::BadEntity(_) => OpError::Invalid(e.to_string()),
+        _ => OpError::Failed(e.to_string()),
     }
 }
 
