@@ -2,13 +2,9 @@
 //! `mesh.run`-shaped op), then the orchestrator tests that gate freezing the crate.
 //!
 //! The sketches are what W2's sm-model and sm-mesher bodies look like. The mesh sketch drives
-//! the real `Driver` with the stub schemes of `sm-scheme-api`'s integration tests (included by
-//! path until ACR-1 moves them behind the `stubs` feature; then replace the `#[path]` module
-//! with `sm_scheme_api::stubs`).
+//! the real `Driver` with the stub schemes in `sm_scheme_api::stubs`.
 
-#[allow(dead_code, clippy::all)]
-#[path = "../../sm-scheme-api/tests/stub_schemes/mod.rs"]
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use std::sync::Arc;
 

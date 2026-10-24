@@ -156,6 +156,8 @@
         "title": "Delta",
         "type": "object"
       },
+      "outputs": [],
+      "positional": null,
       "schema": {
         "$defs": {
           "BatchEntityId": {

@@ -18,6 +18,7 @@ sm-scheme-api = { path = "../sm-scheme-api" }
 thiserror = "2"
 
 [dev-dependencies]
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-topo = { path = "../sm-topo" }
 sm-mesh = { path = "../sm-mesh" }
 sm-testkit = { path = "../sm-testkit" }
