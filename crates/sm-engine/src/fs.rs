@@ -11,7 +11,7 @@
 //! The text of every node and ref comes from `Timeline::node_file` / `ref_file`, so what is
 //! written here is exactly what `Timeline::to_files` produces.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -286,6 +286,7 @@ pub fn save_timeline(
         durability,
         fault: None,
     };
+    let rewrite: BTreeSet<Hash256> = rewrite.iter().copied().collect();
     let mut todo: Vec<Hash256> = tl
         .nodes()
         .map(|(h, _)| h)

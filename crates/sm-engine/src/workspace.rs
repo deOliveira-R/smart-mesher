@@ -388,16 +388,25 @@ impl WorkspaceBuilder {
         if let Some(t) = target {
             let mut path_to_root = timeline.path_to_root(t)?;
             path_to_root.reverse(); // nearest first
-            for h in path_to_root {
+            // One directory listing instead of a failed open per ancestor.
+            let have: BTreeSet<Hash256> = cache::snapshot_nodes(&layout).into_iter().collect();
+            for h in path_to_root.into_iter().filter(|h| have.contains(h)) {
                 match cache::read_snapshot(&layout, h) {
                     Ok(None) => continue,
                     Ok(Some(f)) => match engine.registry().restore(&f.snap) {
-                        Ok(state) if state.hash() == f.state => {
+                        // A seed must agree with itself and with the node's recorded check.
+                        Ok(state)
+                            if state.hash() == f.state
+                                && timeline.get(h).is_some_and(|n| n.check.state == f.state) =>
+                        {
                             seeds.push((h, state));
                             report.seeded_from = Some(h);
                             break;
                         }
-                        _ => report
+                        Ok(_) => report.warnings.push(format!(
+                            "snapshot of {h} does not match the node's recorded state; ignored"
+                        )),
+                        Err(_) => report
                             .warnings
                             .push(format!("snapshot of {h} does not restore; ignored")),
                     },
@@ -654,13 +663,14 @@ impl Workspace {
             redo_on_disk: Vec::new(),
             reflog_persisted: 0,
         });
-        let r = self.persist();
-        if r.is_ok() {
+        let r = self.persist().and_then(|()| {
             self.s
                 .ctx()
-                .write(&layout.project_toml(), toml.as_bytes())?;
-        } else if let Some(p) = self.project.take() {
-            drop(p);
+                .write(&layout.project_toml(), toml.as_bytes())
+        });
+        if r.is_err() {
+            // Unbind (and unlock): a directory without `project.toml` is not a project.
+            self.project = None;
         }
         r
     }
@@ -689,6 +699,13 @@ impl Workspace {
             return Ok(false);
         };
         let state = self.session.state();
+        let recorded = self.session.timeline().get(node).map(|n| n.check.state);
+        if recorded != Some(state.hash()) {
+            self.warnings.push(format!(
+                "no snapshot at {node}: state does not match the node's recorded state"
+            ));
+            return Ok(false);
+        }
         let snap = match state.snapshot() {
             Ok(s) => s,
             Err(e) => {
@@ -697,7 +714,7 @@ impl Workspace {
             }
         };
         cache::write_snapshot(&p.layout, node, state.hash(), &snap, ctx)?;
-        cache::prune_snapshots(&p.layout, self.session.timeline(), keep, ctx)?;
+        cache::prune_snapshots(&p.layout, self.session.timeline(), keep, Some(node), ctx)?;
         Ok(true)
     }
 

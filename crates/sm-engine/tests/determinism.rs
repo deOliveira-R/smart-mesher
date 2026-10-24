@@ -7,7 +7,7 @@ mod common;
 use std::fs;
 
 use common::*;
-use sm_engine::{Durability, ProjectConfig, Workspace};
+use sm_engine::{Durability, ProjectConfig};
 use sm_op_api::{Hash256, Rev};
 use sm_testkit::determinism;
 
@@ -110,7 +110,6 @@ fn read_errors_do_not_depend_on_scheduling() {
     let msg = |threads: usize| {
         in_pool(threads, || {
             let (b, _) = builder();
-            Workspace::builder();
             b.open(&p).err().expect("must fail").to_string()
         })
     };

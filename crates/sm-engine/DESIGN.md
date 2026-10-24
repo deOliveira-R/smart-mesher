@@ -103,8 +103,8 @@ node). The default is `Full`.
 4. reflog (a torn tail is tolerated and the file rewritten), redo stack (dropped with a warning if
    it no longer chains to the position);
 5. snapshot seed: the nearest ancestor of HEAD that has a snapshot file; it is restored with
-   `Registry::restore`, must match the node's recorded state hash (`Session::seed_state` and our
-   own check), otherwise it is deleted and a warning is recorded, never used;
+   `Registry::restore`, must match both its own stored hash and the node's recorded `check.state` (our
+   check, before `Session::seed_state`, so it holds under every replay policy), otherwise it is deleted and a warning is recorded, never used;
 6. `Session::open_with` replays from the seed, strictly by default (`Diverged` / `Upgraded` stop
    the open). `ReplayPolicy::Warn` / `Rebaseline` are available through the builder; re-baselined
    node files are rewritten.

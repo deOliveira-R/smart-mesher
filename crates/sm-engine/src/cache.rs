@@ -57,10 +57,7 @@ pub(crate) fn read_reflog(layout: &Layout, limit: usize) -> (Vec<ReflogEntry>, b
     for line in text.lines() {
         match serde_json::from_str::<ReflogEntry>(line) {
             Ok(e) => entries.push(e),
-            Err(_) => {
-                clean = false;
-                break;
-            }
+            Err(_) => clean = false, // skip the bad line, keep the newer entries
         }
     }
     let too_long = entries.len() > limit.saturating_mul(2);
@@ -283,11 +280,13 @@ pub(crate) fn snapshot_nodes(layout: &Layout) -> Vec<Hash256> {
 }
 
 /// Keep the `keep` deepest snapshots (ties broken by hash) and delete the rest, including
-/// snapshots of nodes that are not in the timeline.
+/// snapshots of nodes that are not in the timeline. `protect` (the snapshot just written) is
+/// always kept and counts toward `keep`.
 pub(crate) fn prune_snapshots(
     layout: &Layout,
     tl: &Timeline,
     keep: usize,
+    protect: Option<Hash256>,
     ctx: WriteCtx<'_>,
 ) -> Result<()> {
     let mut known = Vec::new();
@@ -298,6 +297,10 @@ pub(crate) fn prune_snapshots(
         }
     }
     known.sort();
+    if let Some(p) = protect {
+        known.retain(|(_, h)| *h != p);
+    }
+    let keep = keep.saturating_sub(usize::from(protect.is_some()));
     for (_, h) in known.into_iter().skip(keep) {
         ctx.remove(&layout.snapshot_file(h))?;
     }

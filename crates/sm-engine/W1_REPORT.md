@@ -18,7 +18,7 @@ Delivered:
   with order-independent results and errors.
 - **Incremental autosave** after every mutating call: one node file, one ref file, one reflog line.
 - **Open** with the snapshot hook (`Registry::restore` + `Session::open_with` seeds), reflog and redo
-  restoration, `Strict`/`Warn`/`Rebaseline` replay policies, tolerant handling of any damaged cache.
+  restoration, `Strict`/`Warn`/`Rebaseline` replay policies, tolerant handling of any damaged cache (snapshot seeds are validated against the node's recorded check, so a stale snapshot is deleted with a warning and cannot block `Warn`/`Rebaseline`).
 - **Undo/redo persistence**, **branch create / delete / rename / reset / checkout / fork**, detached HEAD.
 - **Diagnostics policy**: verbosity, suppression, stop-on-warning (nothing recorded), per-call override.
 - **Facade** `Workspace`: plugins (layers, ops, queries), services, `apply` / `apply_json` / `query` /
@@ -78,7 +78,7 @@ demonstrated on tmpfs.
   decision 2), `rayon`, `thiserror`. Dev: `sm-testkit` (determinism harness), `proptest`, `criterion`
   0.7 without default features, `schemars` (derive `JsonSchema` on test ops; already in the tree),
   `sm-core` (ids in tests). No other crates; temp dirs are hand-rolled to avoid `tempfile`.
-- `Cargo.lock` changes (new direct dependencies) are not committed; the orchestrator regenerates it.
+- `Cargo.lock` is committed (the new direct dependencies are locked in a separate commit).
 
 ## Known gaps
 
@@ -87,8 +87,8 @@ demonstrated on tmpfs.
 - **Single writer.** One engine per project (advisory lock). A `Workspace` does not notice external
   changes (`git checkout` while open); there is no `reload()`.
 - **File/directory ref shape change is not crash-atomic** (`a` to `a/b`): a crash can lose that branch
-  name, never its nodes. Case-only renames are ordered correctly but were tested logically, not on a
-  real case-insensitive file system. Windows and macOS were not exercised (CI is Linux only).
+  name, never its nodes. Case-only renames are ordered correctly; the full gate was also run on macOS
+  (case-insensitive APFS) in review and passed. Windows was not exercised (CI is Linux only).
 - **No garbage collection** of abandoned nodes; only snapshots are pruned (deepest 4 kept).
 - Reflog is capped only when read (newest 10 000 at open, file rewritten when it exceeds twice that);
   the in-memory reflog of a very long session is unbounded.
@@ -131,3 +131,13 @@ All additive; none blocks W1.
 
 Branch `claude/w1-sm-engine-u0sels` (the branch this session was assigned) and
 `claude/w1-sm-engine` (the name the task asked for) point at the same commit; the SHA is what to merge.
+
+## Fix round 0
+
+- Seeds are checked against `check.state` of the node before use; a mismatch warns and deletes the
+  snapshot, so `Warn` and `Rebaseline` open (tests in `tests/seed_check.rs`). `snapshot_now` refuses
+  (with a warning) when the live state differs from the node's recorded state.
+- `snapshot_now` protects the snapshot it just wrote from pruning; the reflog reader skips an
+  unparsable line instead of truncating; seed search lists `.cache/snapshots` once;
+  `save_timeline` uses a set; `save_as` unbinds the project (and drops the lock) if any step,
+  including the final `project.toml` write, fails.
