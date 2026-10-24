@@ -291,8 +291,9 @@ fn falls_back_to_the_reference_solver_beyond_the_limits() {
     let fb = tiny.solve(&edges, &cs).expect("fallback");
     assert_eq!(first_violation(&edges, &cs, &counts(&fb)), None);
     let reference = ReferenceIntervalSolver::default().solve(&edges, &cs).expect("reference");
-    assert_eq!(fb.len(), reference.len());
-    // The fallback may be worse than the optimum, never infeasible.
+    assert_eq!(counts(&fb), counts(&reference));
+    // The fallback may be worse than the optimum, never infeasible; the exact solve is feasible.
+    assert_eq!(first_violation(&edges, &cs, &counts(&exact)), None);
     assert_eq!(exact.len(), fb.len());
     // A truly infeasible problem stays infeasible through the fallback.
     let e: Vec<_> = (1..=2).map(edge).collect();
@@ -322,10 +323,10 @@ fn large_counts_with_unbounded_domains_stay_fast_and_exact() {
     assert_eq!(first_violation(&e, &cs, &counts(&out)), None);
     let total: u32 = counts(&out)[..3].iter().sum();
     assert_eq!(total, 3001);
-    // The best split of 3001 over three goals of 1000 is 1000/1000/1001 (max deviation 0.001),
-    // with the lexicographically smallest vector putting the extra count last; x2 must be even
-    // together with x3 = 778 (nearest to 777.7), so x2 = 1000 is not allowed: parity decides.
-    assert_eq!((counts(&out)[2] + counts(&out)[3]) % 2, 0);
+    // The best split of 3001 over three goals of 1000 is 1000/1000/1001 or a permutation (max
+    // deviation 0.001); x3 = 778 (nearest to 777.7) needs x2 even, so the extra count goes to x1
+    // and the smallest vector is [1000, 1001, 1000, 778].
+    assert_eq!(counts(&out), vec![1000, 1001, 1000, 778]);
 }
 
 /// Regression: the fallback must keep a row whose cancelling terms name edges of another class

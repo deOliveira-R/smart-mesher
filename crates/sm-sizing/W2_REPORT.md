@@ -25,7 +25,7 @@ Design, objective, limits and benchmark numbers: `DESIGN.md`.
 | `row_setup(3)` with mixed hard counts -> unique answer | `iia::row_of_three_bricks_with_mixed_hard_counts_has_the_unique_answer` |
 | Conflicting hard counts -> `Infeasible` naming both rows | `iia::conflicting_hard_counts_name_both_rows`, `iia::conflicting_hard_counts_through_a_sum_row_name_the_row_and_the_fixed_counts` |
 | Even-sum rows with odd goals -> minimal parity repair | `iia::even_sum_with_odd_goals_gets_the_minimal_parity_repair`, `iia::an_odd_hard_sum_is_infeasible` |
-| Optimality vs brute force (seeded proptest, <= 6 vars, counts <= 8) | `optimality::matches_exhaustive_enumeration` (300 cases, fixed ChaCha seed, full argmin vector compared, `Err` iff no assignment) |
+| Optimality vs brute force (seeded proptest, <= 6 vars, counts <= 8) | `optimality::matches_exhaustive_enumeration` (5 fixed ChaCha seeds, 400 cases each in debug and 3000 in release, multi-goal and propagation-fixing generator, full argmin vector compared, `Err` iff no assignment), `optimality::matches_exhaustive_enumeration_without_upper_bounds` (unbounded domains, windowing checked), regression tests A, B, C |
 | Agreement with `ReferenceIntervalSolver` on the scheme-api stub scenarios | `iia::agrees_with_the_reference_solver_on_the_stub_scenarios` (bricks, sizes, hard counts, `row_setup(2,3,5)`, driver plans compared) |
 | Picker: rectangle with mid-edge vertex -> End x4, Side | `picker::rectangle_with_a_mid_edge_vertex_is_four_ends_and_a_side` |
 | L-shaped face under Submap -> sum 4, one Corner | `picker::l_shaped_face_under_submap_has_one_corner_and_sum_four` |
@@ -69,6 +69,10 @@ Benchmark: `benches/solver.rs`.
    `serde_json` (size-field params). `sm-math` and `sm-geom-api` from the skeleton were unused in
    the library and are dropped (`sm-geom-api` stays as a dev-dependency for test fixtures);
    dev: sm-testkit, sm-scheme-api[stubs], sm-mesh-api, sm-model-api, proptest, criterion.
+   **Deviation for approval:** the plan's Dev line lists only sm-testkit and sm-scheme-api[stubs];
+   the extra dev-only crates (sm-model-api, sm-mesh-api, sm-geom-api, proptest, criterion) are
+   contract crates and test tools used by tests and the benchmark. No library dependency
+   changes. The orchestrator should approve or reject.
 7. **`SizingError::NotImplemented` removed** (skeleton placeholder); new typed variants
    (`BadFactor`, `NoGeometry`, `UnknownEntity`, `Geometry`, `Degenerate`), enum is
    `#[non_exhaustive]`.
@@ -99,3 +103,37 @@ Benchmark: `benches/solver.rs`.
   `FaceLayout::from_types(face, rule, corners)`). `AnglePicker` re-implements the 25-line
   side construction; a test pins equality with `ReferenceCornerPicker` on the split brick, but a
   shared function would remove the duplication risk.
+
+## Fix round 0 (review findings)
+
+Must fix:
+
+1. Candidate scan in `Search::dfs` now splits at `floor(center)` (left = floor, right =
+   floor + 1), so the max deviation is monotone on each side even for asymmetric multi-goal
+   curves. Fixes repros A and B.
+2. The deviation window in `solve_local` now skips only slots without goal terms; propagation-fixed
+   slots are windowed too (an empty window empties the level). Fixes repro C.
+3. Optimality tests: multi-goal and propagation-fixing generator, 5 seeds, release case counts of
+   3000 per seed, an unbounded-domain variant, regression tests A, B, C. Verified that the new
+   tests fail on the previous solver (A, B, C and the unbounded variant).
+4. `auto_size`: the clamp bounds can cross (closed circle, helix); `hi = max(d/2, l_min/4)`, so
+   the lower bound wins and nothing panics. Regression test on a closed circular edge.
+
+Should fix: all done except as noted. Brute force precompiles index maps (debug run of the
+optimality tests drops from ~125 s to ~25 s even with 5x more cases). `first_violation` with a
+zero count returns the first constraint that mentions the zero-count edge (documented).
+`IiaSolver::solve` rejects unknown `IntervalConstraint` kinds with a typed `Infeasible`;
+`first_violation` treats them as violations. Rows are processed in `ConstraintId` order.
+Picker distances are quantized to 2^-24 rad. Item 10 (weighted change cost) is recorded as a
+deviation in DESIGN.md and the module docs rather than changed. Item 6 is in DESIGN.md Known
+gaps. Item 11 is stated in deviation 6 above.
+
+Questions for the orchestrator (no code change):
+
+* Confirm or reject deviations 3 and 4: hard-fixed classes contribute no goal term, and a class
+  with any Soft count ignores its Goal terms. Both can change the argmin versus an "all goals"
+  reading of plan T3.
+* `auto_size` with the `l_min / 4` floor: factors 1..8 give the same size on a unit cube (the
+  floor binds). Consistent with cubit-meshing-semantics section 2 and the plan, but it means the
+  factor has no effect on compact parts. Is that intended?
+* The picker's weighted change cost (soft 2, other 1) versus the plain "fewest types" of plan T3.

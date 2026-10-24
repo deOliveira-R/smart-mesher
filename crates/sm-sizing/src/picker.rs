@@ -21,8 +21,11 @@
 //! `Hard` request: it never changes). An exact dynamic program over the corner sum then picks the
 //! final types minimizing, lexicographically, (1) the total change cost, (2) the total angular
 //! distance `|theta - nominal(type)|`. Remaining ties go to the lowest vertex id (that corner is
-//! the one adjusted), then to the type order `End < Side < Corner < Reversal`. So the picker
-//! changes the fewest types, and among equal repairs the least confident corner moves first.
+//! the one adjusted; distances are quantized to 2^-24 rad so float noise cannot flip symmetric
+//! ties), then to the type order `End < Side < Corner < Reversal`. So the picker
+//! changes the fewest types, up to the weighting above (soft 2, other 1: the repair may change
+//! two unrequested corners rather than one soft corner; see DESIGN.md), and among equal repairs
+//! the least confident corner moves first.
 //! A hard request wins over the rule; a hard type the rule forbids, or a rule that cannot be
 //! met, is a [`SchemeError`] naming the face, the constraint ids and the hard requests.
 //!
@@ -57,7 +60,8 @@ pub fn classify_angle(angle: f64) -> VertexType {
 pub struct AnglePicker;
 
 /// Angular distance scale for the integer tie-break cost.
-const DIST_SCALE: f64 = 1_073_741_824.0;
+/// (2^24 per radian: coarse enough that float noise in corner angles cannot flip a tie.)
+const DIST_SCALE: f64 = 16_777_216.0;
 type Cost = (u64, u64);
 const INF: Cost = (u64::MAX, u64::MAX);
 

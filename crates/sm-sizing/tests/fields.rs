@@ -163,3 +163,15 @@ fn auto_size_counts_the_bulge_of_curved_edges() {
     let want = (0.01 * d * 2f64.powf(4.5)).clamp(4.0 / 4.0, d / 2.0);
     assert!((h - want).abs() < 2e-2 * want, "{h} vs {want}");
 }
+
+/// A lone closed circular edge has length 2 pi r > 2 d (d is about 2.83 r): the clamp bounds
+/// cross. This used to panic; the lower bound `l_min / 4` now wins.
+#[test]
+fn auto_size_on_a_closed_circular_edge_does_not_panic() {
+    let mut topo = sm_topo_api::CellComplex::new();
+    let cyl = sm_topo_api::fixtures::with_op(&mut topo, sm_topo_api::OpId(1), |t| sm_topo_api::fixtures::cylinder(t, 1.0, 4.0)).expect("cylinder");
+    for factor in 1..=10 {
+        let h = auto_size(&topo, &[cyl.edges[0]], factor).expect("size");
+        assert!((h - std::f64::consts::PI / 2.0).abs() < 1e-6, "factor {factor}: {h}");
+    }
+}

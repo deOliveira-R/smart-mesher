@@ -77,6 +77,12 @@ then to the type order. A hard type forbidden by the rule, or an unreachable sum
 `Infeasible` carrying the face, the constraint ids and the hard requests. Logical sides are cut
 and oriented exactly as the reference picker does; a test pins equality with it.
 
+Weighting deviation from plan T3 ("changes the fewest types"): the primary key is the *weighted*
+change cost (soft request 2, others 1), not the plain number of changed types. A repair may
+therefore change two unrequested corners (cost 2) instead of one soft corner (cost 2) when the
+angular tie-break prefers it. Distances are quantized to 2^-24 rad so float noise cannot flip
+ties on symmetric faces.
+
 ## Size fields and auto size
 
 `size_field`: `Constant` through the contract builder; `"linear"` and `"geometric"` interpolate
@@ -103,7 +109,23 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
 
 ## Tests
 
-* `tests/optimality.rs`: seeded proptest against exhaustive enumeration (up to 6 variables,
-  counts up to 8), and a larger-system property against the reference solver.
+* `tests/optimality.rs`: seeded proptests (5 seeds; 400 cases each in debug, 3000 in release)
+  against exhaustive enumeration, with a generator that makes multi-goal classes (pair merges,
+  Goal plus Fixed on one edge) and single-variable rows that let propagation fix variables:
+  bounded (up to 5 variables, counts up to 8) and unbounded (up to 4 variables, enumeration
+  limit 20, kept only where that box provably holds the optimum); regression tests for three
+  optimality bugs; and a larger-system property against the reference solver.
 * `tests/iia.rs`: acceptance rows, stub-scenario agreement with the reference, determinism.
 * `tests/picker.rs`, `tests/fields.rs`: analytic checks.
+
+## Known gaps
+
+* A component beyond 512 classes or 400 000 nodes is solved heuristically. Its maximum deviation
+  can be larger than the true optimum, and that inflated global `D*` relaxes the sum
+  minimization of every other component in phase 2. The result is still feasible and verified,
+  but the exact components are then optimal only for the `D*` the heuristic one induced.
+* Hard-fixed classes contribute no goal term, and a class with any Soft count ignores its Goal
+  terms (see the module docs); both can change the argmin compared with an "all goals" reading.
+* The picker weights a soft change 2 and other changes 1 (see above).
+* With the `l_min / 4` floor, `auto_size` factors 1..8 give the same size on a unit cube (the
+  floor binds), as cubit-meshing-semantics section 2 implies.

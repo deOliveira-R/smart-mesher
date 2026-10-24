@@ -10,7 +10,9 @@
 //! 3. then the lexicographically smallest count vector in ascending edge order.
 //!
 //! The objective has a unique minimizer, so the answer never depends on search order, thread
-//! count or the order of the constraint list.
+//! count or the order of the constraint list. Rows are also processed in `ConstraintId` order,
+//! so even when the node budget runs out (and a heuristic answer is returned) the result does
+//! not depend on how the caller ordered the list.
 //!
 //! # Goal terms
 //!
@@ -23,7 +25,8 @@
 //! * else one term per [`IntervalConstraint::Goal`] and default-firmness `Fixed` count;
 //! * else the single implicit term `g = 1`.
 //!
-//! Non-positive or non-finite goals are ignored.
+//! Non-positive or non-finite goals are ignored. A constraint kind this crate does not know is
+//! rejected with a typed [`Infeasible`] rather than ignored.
 //!
 //! # Exactness
 //!
@@ -80,7 +83,10 @@ fn key_f(x: f64, g: f64) -> u128 {
 
 /// The first constraint (in list order) that `counts` violates, or `None` when every
 /// constraint holds. Exact integer arithmetic; `Goal` rows never fail. `counts` must be aligned
-/// with `edges` (ascending); an unknown edge or a count of 0 counts as a violation.
+/// with `edges` (ascending); an unknown edge, a constraint kind this crate does not know, or a
+/// count of 0 counts as a violation. A zero count is reported as the first constraint that
+/// mentions that edge (counts are at least 1 by definition, so no row states the rule itself);
+/// if none mentions it, the first constraint, or `ConstraintId(0)` for an empty list.
 pub fn first_violation(
     edges: &[EntityId],
     constraints: &[Record<IntervalConstraint>],
@@ -125,14 +131,31 @@ pub fn first_violation(
                 }
                 known && sum % 2 == 0
             }
-            _ => true,
+            // Unknown (future) kinds cannot be checked, so they never pass.
+            _ => false,
         };
         if !ok {
             return Some(r.id);
         }
     }
-    if counts.contains(&0) {
-        return constraints.first().map(|r| r.id).or(Some(ConstraintId(0)));
+    if let Some(z) = counts.iter().position(|&c| c == 0) {
+        // Name a constraint that mentions the zero-count edge; with none, the first constraint
+        // (or `ConstraintId(0)` for an empty list) stands in for the implicit "count >= 1" rule.
+        let e = edges.get(z);
+        let mentions = |item: &IntervalConstraint| match item {
+            IntervalConstraint::Fixed { edge, .. }
+            | IntervalConstraint::Goal { edge, .. }
+            | IntervalConstraint::Range { edge, .. } => Some(edge) == e,
+            IntervalConstraint::Linear { terms, .. } => terms.iter().any(|t| Some(&t.0) == e),
+            IntervalConstraint::EvenSum { edges: es } => es.iter().any(|x| Some(x) == e),
+            _ => false,
+        };
+        return constraints
+            .iter()
+            .find(|r| mentions(&r.item))
+            .or(constraints.first())
+            .map(|r| r.id)
+            .or(Some(ConstraintId(0)));
     }
     None
 }
@@ -434,7 +457,9 @@ impl<'a> Search<'a> {
         }
         // Candidate values, outward from the minimizer of the max deviation.
         let (lo, hi) = dom[v];
-        let c = (p.center[v].round() as i64).clamp(lo, hi);
+        // Split at floor(center): the max deviation is monotone on each side of it, even when
+        // the curve is asymmetric (several goal terms with different slopes).
+        let c = (p.center[v].floor() as i64).clamp(lo - 1, hi);
         let (mut left, mut right) = (c, c + 1);
         let (mut left_live, mut right_live) = (true, right <= hi);
         loop {
@@ -676,7 +701,7 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
         if let Some((d, capq)) = level {
             let mut empty = false;
             for (v, slot) in dom.iter_mut().enumerate() {
-                if slot.0 == slot.1 {
+                if p.terms(v).is_empty() {
                     continue;
                 }
                 let (wl, wh) = window_of(p.terms(v), slot.0, slot.1, d, capq);
@@ -790,6 +815,29 @@ impl IntervalSolver for IiaSolver {
     ) -> Result<Vec<(EntityId, u32)>, Infeasible> {
         if edges.is_empty() && constraints.is_empty() {
             return Ok(Vec::new());
+        }
+        // Canonical row order (by id), so node budgets and the fallback path do not depend on
+        // the order the caller listed the constraints in.
+        let sorted: Vec<Record<IntervalConstraint>>;
+        let constraints = if constraints.windows(2).all(|w| w[0].id <= w[1].id) {
+            constraints
+        } else {
+            let mut v = constraints.to_vec();
+            v.sort_by_key(|r| r.id);
+            sorted = v;
+            &sorted[..]
+        };
+        for r in constraints {
+            if !matches!(
+                r.item,
+                IntervalConstraint::Fixed { .. }
+                    | IntervalConstraint::Goal { .. }
+                    | IntervalConstraint::Range { .. }
+                    | IntervalConstraint::Linear { .. }
+                    | IntervalConstraint::EvenSum { .. }
+            ) {
+                return Err(Infeasible::new("unsupported interval constraint kind", vec![r.id], Vec::new()));
+            }
         }
         let n = edges.len();
         let unknown = |e: &EntityId, id: ConstraintId| {

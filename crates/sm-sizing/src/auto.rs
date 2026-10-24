@@ -9,7 +9,7 @@
 //!
 //! (cubit-meshing-semantics §2): about `d/100` at `f = 1`, `d/25` at `f = 5`, `d/4.4` at
 //! `f = 10`, never finer than a quarter of the shortest edge and never coarser than half the
-//! diagonal. The expression is non-decreasing in `f` (a clamp of an increasing function).
+//! diagonal (when the two bounds cross, the lower bound `l_min / 4` wins). The expression is non-decreasing in `f` (a clamp of an increasing function).
 //!
 //! Selection: volumes contribute their face edges, faces their edges, edges themselves;
 //! vertices and other kinds are ignored; an empty selection means every live edge of the model.
@@ -109,5 +109,9 @@ pub fn auto_size(
         return Err(SizingError::Degenerate { diagonal, shortest });
     }
     let raw = 0.01 * diagonal * 2f64.powf((f64::from(factor) - 1.0) * 0.5);
-    Ok(raw.clamp(shortest / 4.0, diagonal / 2.0))
+    // A long closed or winding edge can have l_min/4 > d/2 (a full circle: 2*pi*r vs ~2.83*r);
+    // f64::clamp would panic, so the floor l_min/4 wins.
+    let lo = shortest / 4.0;
+    let hi = (diagonal / 2.0).max(lo);
+    Ok(raw.max(lo).min(hi))
 }

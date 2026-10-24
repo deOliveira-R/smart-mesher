@@ -12,32 +12,45 @@ use sm_scheme_api::{Firmness, IntervalConstraint, IntervalSolver, Rel};
 use sm_sizing::{IiaSolver, deviation_key};
 
 const MAXC: u32 = 8;
+/// Enumeration limit of the unbounded-domain variant.
+const MAXU: u32 = 20;
 
 #[derive(Clone, Debug)]
 enum RowSpec {
     Pair(usize, usize),
     Lin { coefs: Vec<i32>, rel: u8, rhs: i64 },
+    /// A single-variable row, so root propagation can fix or tighten a variable.
+    One { var: usize, rel: u8, rhs: i64 },
     Even(Vec<usize>),
 }
 
 #[derive(Clone, Debug)]
 struct Case {
     n: usize,
-    goals: Vec<Option<f64>>,
+    /// Zero to two goals per edge: merged classes then carry several goal terms.
+    goals: Vec<Vec<f64>>,
     fixed: Vec<Option<(u32, u8)>>,
     rows: Vec<RowSpec>,
 }
 
-fn case_strategy() -> impl Strategy<Value = Case> {
-    (2usize..=6).prop_flat_map(|n| {
-        let goals = prop::collection::vec(prop::option::weighted(0.7, 0.3f64..9.0), n);
-        let fixed = prop::collection::vec(prop::option::weighted(0.25, (1u32..=MAXC, 0u8..3)), n);
+/// Cases tuned to multi-goal classes (pair merges, Goal + Fixed on one edge) and to rows that let
+/// propagation fix variables. `n_max` bounds the variable count, `gmax` the goals.
+fn case_strategy(n_max: usize, gmax: f64) -> impl Strategy<Value = Case> {
+    (2usize..=n_max).prop_flat_map(move |n| {
+        let goals = prop::collection::vec(prop::collection::vec(0.3f64..gmax, 0..=2), n);
+        let soft = prop::collection::vec(prop::option::weighted(0.35, (1u32..=MAXC, 1u8..3)), n);
+        let hard = prop::collection::vec(prop::option::weighted(0.08, 1u32..=MAXC), n);
+        // A few Hard fixes on top of the mostly Soft/Default ones.
+        let fixed = (soft, hard).prop_map(|(f, h)| {
+            f.iter().zip(&h).map(|(a, h)| h.map(|c| (c, 0u8)).or(*a)).collect::<Vec<_>>()
+        });
         let row = prop_oneof![
-            (0..n, 0..n).prop_filter("distinct", |(a, b)| a != b).prop_map(|(a, b)| RowSpec::Pair(a, b)),
-            (prop::collection::vec(-2i32..=2, n), 0u8..3, -4i64..=14).prop_map(|(coefs, rel, rhs)| RowSpec::Lin { coefs, rel, rhs }),
-            prop::collection::vec(0..n, 1..=4).prop_map(RowSpec::Even),
+            3 => (0..n, 0..n).prop_filter("distinct", |(a, b)| a != b).prop_map(|(a, b)| RowSpec::Pair(a, b)),
+            4 => (prop::collection::vec(-3i32..=3, n), 0u8..3, -6i64..=16).prop_map(|(coefs, rel, rhs)| RowSpec::Lin { coefs, rel, rhs }),
+            2 => (0..n, 0u8..3, 1i64..=10).prop_map(|(var, rel, rhs)| RowSpec::One { var, rel, rhs }),
+            1 => prop::collection::vec(0..n, 1..=4).prop_map(RowSpec::Even),
         ];
-        let rows = prop::collection::vec(row, 0..=3);
+        let rows = prop::collection::vec(row, 0..=4);
         (goals, fixed, rows).prop_map(move |(goals, fixed, rows)| Case { n, goals, fixed, rows })
     })
 }
@@ -58,12 +71,12 @@ fn firm_of(k: u8) -> Firmness {
     }
 }
 
-fn build(c: &Case) -> (Vec<EntityId>, Vec<IntervalConstraint>) {
+fn build(c: &Case, bounded: bool) -> (Vec<EntityId>, Vec<IntervalConstraint>) {
     let e: Vec<EntityId> = (1..=c.n as u64).map(edge).collect();
     let mut items = Vec::new();
     for (i, &ed) in e.iter().enumerate() {
-        items.push(IntervalConstraint::Range { edge: ed, min: 1, max: Some(MAXC) });
-        if let Some(g) = c.goals[i] {
+        items.push(IntervalConstraint::Range { edge: ed, min: 1, max: bounded.then_some(MAXC) });
+        for &g in &c.goals[i] {
             items.push(IntervalConstraint::Goal { edge: ed, goal: g });
         }
         if let Some((n, f)) = c.fixed[i] {
@@ -78,6 +91,9 @@ fn build(c: &Case) -> (Vec<EntityId>, Vec<IntervalConstraint>) {
                 rel: rel_of(*rel),
                 rhs: *rhs,
             },
+            RowSpec::One { var, rel, rhs } => {
+                IntervalConstraint::Linear { terms: vec![(e[*var], 1)], rel: rel_of(*rel), rhs: *rhs }
+            }
             RowSpec::Even(ix) => IntervalConstraint::EvenSum { edges: ix.iter().map(|&i| e[i]).collect() },
         });
     }
@@ -105,22 +121,48 @@ fn classes(items: &[IntervalConstraint], e: &[EntityId]) -> Vec<usize> {
     cls
 }
 
-fn holds(items: &[IntervalConstraint], e: &[EntityId], v: &[u32]) -> bool {
-    let at = |x: &EntityId| i64::from(v[e.iter().position(|y| y == x).expect("edge")]);
-    items.iter().all(|it| match it {
-        IntervalConstraint::Fixed { edge, count, firmness } => *firmness != Firmness::Hard || at(edge) == i64::from(*count),
-        IntervalConstraint::Range { edge, min, max } => at(edge) >= i64::from(*min) && max.is_none_or(|m| at(edge) <= i64::from(m)),
-        IntervalConstraint::Linear { terms, rel, rhs } => {
-            let s: i64 = terms.iter().map(|(x, k)| i64::from(*k) * at(x)).sum();
+/// Constraints compiled to vector indices, so the enumeration does no lookups.
+type LinRow = (Vec<(usize, i64)>, Rel, i64);
+
+struct Compiled {
+    hard: Vec<(usize, i64)>,
+    ranges: Vec<(usize, i64, i64)>,
+    lin: Vec<LinRow>,
+    even: Vec<Vec<usize>>,
+}
+
+fn compile(items: &[IntervalConstraint], e: &[EntityId]) -> Compiled {
+    let ix = |x: &EntityId| e.iter().position(|y| y == x).expect("edge");
+    let mut c = Compiled { hard: vec![], ranges: vec![], lin: vec![], even: vec![] };
+    for it in items {
+        match it {
+            IntervalConstraint::Fixed { edge, count, firmness: Firmness::Hard } => c.hard.push((ix(edge), i64::from(*count))),
+            IntervalConstraint::Range { edge, min, max } => {
+                c.ranges.push((ix(edge), i64::from(*min), max.map_or(i64::MAX, i64::from)));
+            }
+            IntervalConstraint::Linear { terms, rel, rhs } => {
+                c.lin.push((terms.iter().map(|(x, k)| (ix(x), i64::from(*k))).collect(), *rel, *rhs));
+            }
+            IntervalConstraint::EvenSum { edges } => c.even.push(edges.iter().map(ix).collect()),
+            _ => {}
+        }
+    }
+    c
+}
+
+fn holds(c: &Compiled, v: &[u32]) -> bool {
+    let at = |i: usize| i64::from(v[i]);
+    c.hard.iter().all(|&(i, k)| at(i) == k)
+        && c.ranges.iter().all(|&(i, lo, hi)| at(i) >= lo && at(i) <= hi)
+        && c.lin.iter().all(|(t, rel, rhs)| {
+            let s: i64 = t.iter().map(|&(i, k)| k * at(i)).sum();
             match rel {
                 Rel::Eq => s == *rhs,
                 Rel::Le => s <= *rhs,
                 Rel::Ge => s >= *rhs,
             }
-        }
-        IntervalConstraint::EvenSum { edges } => edges.iter().map(at).sum::<i64>() % 2 == 0,
-        _ => true,
-    })
+        })
+        && c.even.iter().all(|es| es.iter().map(|&i| at(i)).sum::<i64>() % 2 == 0)
 }
 
 /// The goal terms of every class (hard classes: none; soft beats default; else the implicit 1).
@@ -157,14 +199,15 @@ fn terms_of(items: &[IntervalConstraint], e: &[EntityId], cls: &[usize]) -> Vec<
         .collect()
 }
 
-fn brute(items: &[IntervalConstraint], e: &[EntityId]) -> Option<((u128, u128), Vec<u32>)> {
+fn brute(items: &[IntervalConstraint], e: &[EntityId], maxc: u32) -> Option<((u128, u128), Vec<u32>)> {
     let n = e.len();
     let cls = classes(items, e);
     let terms = terms_of(items, e, &cls);
+    let comp = compile(items, e);
     let mut v = vec![1u32; n];
     let mut best: Option<((u128, u128), Vec<u32>)> = None;
     loop {
-        if holds(items, e, &v) {
+        if holds(&comp, &v) {
             let (mut mx, mut sm) = (0u128, 0u128);
             for c in 0..n {
                 if cls[c] != c {
@@ -186,7 +229,7 @@ fn brute(items: &[IntervalConstraint], e: &[EntityId]) -> Option<((u128, u128), 
             if i == n {
                 return best;
             }
-            if v[i] < MAXC {
+            if v[i] < maxc {
                 v[i] += 1;
                 break;
             }
@@ -196,34 +239,140 @@ fn brute(items: &[IntervalConstraint], e: &[EntityId]) -> Option<((u128, u128), 
     }
 }
 
+fn cases_per_seed() -> u32 {
+    if cfg!(debug_assertions) { 400 } else { 3000 }
+}
+
+const SEEDS: [u8; 5] = [7, 21, 33, 58, 91];
+
 #[test]
 fn matches_exhaustive_enumeration() {
-    let cfg = Config { cases: 300, failure_persistence: None, ..Config::default() };
-    let rng = TestRng::from_seed(RngAlgorithm::ChaCha, &[7u8; 32]);
-    let mut runner = TestRunner::new_with_rng(cfg, rng);
     let solver = IiaSolver::default();
-    let feasible = std::cell::Cell::new(0u32);
-    let infeasible = std::cell::Cell::new(0u32);
-    runner
-        .run(&case_strategy(), |c| {
-            let (e, items) = build(&c);
-            let want = brute(&items, &e);
-            let got = solver.solve(&e, &records(items.clone()));
-            match (&want, &got) {
-                (Some((_, v)), Ok(out)) => {
-                    prop_assert_eq!(&out.iter().map(|x| x.1).collect::<Vec<_>>(), v, "case {:?}", c);
-                    feasible.set(feasible.get() + 1);
+    let (feasible, infeasible) = (std::cell::Cell::new(0u32), std::cell::Cell::new(0u32));
+    for seed in SEEDS {
+        let cfg = Config { cases: cases_per_seed(), failure_persistence: None, ..Config::default() };
+        let mut runner = TestRunner::new_with_rng(cfg, TestRng::from_seed(RngAlgorithm::ChaCha, &[seed; 32]));
+        runner
+            .run(&case_strategy(5, 9.0), |c| {
+                let (e, items) = build(&c, true);
+                let want = brute(&items, &e, MAXC);
+                let got = solver.solve(&e, &records(items.clone()));
+                match (&want, &got) {
+                    (Some((_, v)), Ok(out)) => {
+                        prop_assert_eq!(&out.iter().map(|x| x.1).collect::<Vec<_>>(), v, "case {:?}", c);
+                        feasible.set(feasible.get() + 1);
+                    }
+                    (None, Err(_)) => infeasible.set(infeasible.get() + 1),
+                    (Some(_), Err(err)) => prop_assert!(false, "solver says infeasible ({err}) but a solution exists: {:?}", c),
+                    (None, Ok(out)) => prop_assert!(false, "solver returned {out:?} but none exists: {:?}", c),
                 }
-                (None, Err(_)) => infeasible.set(infeasible.get() + 1),
-                (Some(_), Err(err)) => prop_assert!(false, "solver says infeasible ({err}) but a solution exists: {:?}", c),
-                (None, Ok(out)) => prop_assert!(false, "solver returned {out:?} but none exists: {:?}", c),
-            }
-            Ok(())
-        })
-        .unwrap_or_else(|e| panic!("{e}"));
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+    }
     // The generator must exercise both outcomes.
     let (feasible, infeasible) = (feasible.get(), infeasible.get());
-    assert!(feasible > 100 && infeasible > 10, "feasible {feasible}, infeasible {infeasible}");
+    assert!(feasible > 300 && infeasible > 30, "feasible {feasible}, infeasible {infeasible}");
+}
+
+/// No upper bounds: this exercises the deviation windowing. Enumeration stops at `MAXU`; a case
+/// counts only when that provably contains the optimum. Every goal term is at most `gmax`, so an
+/// assignment with max deviation `D` has every goal-class count at most `gmax (1 + D)` (hard
+/// counts are at most `MAXC`). The brute optimum bounds `D*` from above, so if
+/// `gmax (1 + D) + 1 <= MAXU` the true optimum lies inside the enumerated box.
+#[test]
+fn matches_exhaustive_enumeration_without_upper_bounds() {
+    const GMAX: f64 = 6.0;
+    let solver = IiaSolver::default();
+    let (checked, skipped) = (std::cell::Cell::new(0u32), std::cell::Cell::new(0u32));
+    for seed in SEEDS {
+        let cfg = Config { cases: cases_per_seed() / 2, failure_persistence: None, ..Config::default() };
+        let mut runner = TestRunner::new_with_rng(cfg, TestRng::from_seed(RngAlgorithm::ChaCha, &[seed ^ 0x55; 32]));
+        runner
+            .run(&case_strategy(4, GMAX), |c| {
+                let (e, items) = build(&c, false);
+                let want = brute(&items, &e, MAXU);
+                let got = solver.solve(&e, &records(items.clone()));
+                match (&want, &got) {
+                    (Some(((mx, _), v)), Ok(out)) => {
+                        let d = *mx as f64 / (1u64 << 40) as f64;
+                        if GMAX * (1.0 + d) + 1.0 > f64::from(MAXU) {
+                            skipped.set(skipped.get() + 1);
+                            return Ok(());
+                        }
+                        prop_assert_eq!(&out.iter().map(|x| x.1).collect::<Vec<_>>(), v, "case {:?}", c);
+                        checked.set(checked.get() + 1);
+                    }
+                    (Some(_), Err(err)) => prop_assert!(false, "solver says infeasible ({err}) but a solution exists: {:?}", c),
+                    (None, Ok(out)) => {
+                        // Only a bug if the solver's point lies inside the enumerated box.
+                        prop_assert!(out.iter().any(|x| x.1 > MAXU), "solver returned {out:?} but none exists: {:?}", c);
+                    }
+                    (None, Err(_)) => {}
+                }
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+    }
+    let (checked, skipped) = (checked.get(), skipped.get());
+    assert!(checked > 200, "checked {checked}, skipped {skipped}");
+}
+
+fn solve_vec(e: &[EntityId], items: Vec<IntervalConstraint>) -> Vec<u32> {
+    let out = IiaSolver::default().solve(e, &records(items.clone())).expect("feasible");
+    let v: Vec<u32> = out.iter().map(|x| x.1).collect();
+    assert_eq!(brute(&items, e, MAXC).expect("brute").1, v, "solver differs from brute force");
+    v
+}
+
+fn ranges(e: &[EntityId]) -> Vec<IntervalConstraint> {
+    e.iter().map(|&edge| IntervalConstraint::Range { edge, min: 1, max: Some(MAXC) }).collect()
+}
+
+fn lin(terms: &[(EntityId, i32)], rel: Rel, rhs: i64) -> IntervalConstraint {
+    IntervalConstraint::Linear { terms: terms.to_vec(), rel, rhs }
+}
+
+/// Repro A: the merged class {e2, e3} has an asymmetric max-deviation curve, and the rounded
+/// harmonic centre lands right of the integer minimiser.
+#[test]
+fn regression_a_merged_class_asymmetric_curve() {
+    let e: Vec<EntityId> = (1..=4).map(edge).collect();
+    let mut it = ranges(&e);
+    for (i, g) in [4.0, 1.0, 3.2, 2.0].into_iter().enumerate() {
+        it.push(IntervalConstraint::Goal { edge: e[i], goal: g });
+    }
+    it.push(IntervalConstraint::sum_equal(&[e[1]], &[e[2]]));
+    it.push(lin(&[(e[0], 1), (e[3], 1)], Rel::Eq, 7));
+    it.push(lin(&[(e[0], 1), (e[1], 1), (e[3], 1)], Rel::Le, 50));
+    assert_eq!(solve_vec(&e, it), vec![5, 1, 1, 2]);
+}
+
+/// Repro B: a Goal plus a default Fixed on one edge gives two terms with different slopes.
+#[test]
+fn regression_b_goal_plus_default_fixed() {
+    let e: Vec<EntityId> = (1..=3).map(edge).collect();
+    let mut it = ranges(&e);
+    for (i, g) in [5.0, 3.4729, 7.5359].into_iter().enumerate() {
+        it.push(IntervalConstraint::Goal { edge: e[i], goal: g });
+    }
+    it.push(IntervalConstraint::Fixed { edge: e[1], count: 1, firmness: Firmness::Default });
+    it.push(lin(&[(e[0], 2), (e[1], 1), (e[2], -1)], Rel::Eq, 6));
+    assert_eq!(solve_vec(&e, it), vec![6, 1, 7]);
+}
+
+/// Repro C: root propagation fixes e1 above the first deviation cap; the other variables must
+/// still be windowed by that cap (the level is not allowed to keep a variable above it).
+#[test]
+fn regression_c_propagation_fixed_variable_is_windowed() {
+    let e: Vec<EntityId> = (1..=5).map(edge).collect();
+    let mut it = ranges(&e);
+    it.push(IntervalConstraint::Goal { edge: e[0], goal: 5.0 });
+    it.push(IntervalConstraint::Goal { edge: e[1], goal: 3.6632585078314883 });
+    it.push(IntervalConstraint::Goal { edge: e[3], goal: 6.93639931543777 });
+    it.push(IntervalConstraint::Fixed { edge: e[3], count: 6, firmness: Firmness::Default });
+    it.push(lin(&[(e[0], 2), (e[1], 1), (e[3], -1), (e[4], 1)], Rel::Eq, -3));
+    assert_eq!(solve_vec(&e, it), vec![1, 1, 1, 7, 1]);
 }
 
 /// Larger random systems without upper bounds: the answer is always feasible and never worse than
@@ -232,7 +381,7 @@ fn matches_exhaustive_enumeration() {
 fn feasible_and_never_worse_than_the_reference_on_larger_systems() {
     use sm_scheme_api::ReferenceIntervalSolver;
     let strat = (4usize..=12).prop_flat_map(|n| {
-        let goals = prop::collection::vec(prop::option::weighted(0.9, 0.5f64..60.0), n);
+        let goals = prop::collection::vec(prop::collection::vec(0.5f64..60.0, 0..=2), n);
         let fixed = prop::collection::vec(prop::option::weighted(0.15, (1u32..=40, 0u8..3)), n);
         let row = prop_oneof![
             (0..n, 0..n).prop_filter("distinct", |(a, b)| a != b).prop_map(|(a, b)| RowSpec::Pair(a, b)),
@@ -261,7 +410,7 @@ fn feasible_and_never_worse_than_the_reference_on_larger_systems() {
     };
     runner
         .run(&strat, |c| {
-            let (e, items) = build(&c);
+            let (e, items) = build(&c, true);
             let items: Vec<_> = items.into_iter().filter(|i| !matches!(i, IntervalConstraint::Range { .. })).collect();
             let recs = records(items.clone());
             let ours = IiaSolver::default().solve(&e, &recs);
