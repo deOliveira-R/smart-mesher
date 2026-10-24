@@ -10,5 +10,5 @@ mod store;
 
 pub use nurbs::{BezierSegment, PreparedCurve, PreparedSurface, exact};
 pub use pcurve::CurveOnSurface;
-pub use intersect::{CurveSurface, CurveSurfaceHit, curve_plane, curve_prepared_surface, curve_surface};
+pub use intersect::{CurveGeometry, CurveSurface, CurveSurfaceHit, IntersectionCurve, MarchEnd, MarchedCurve, SsiOptions, SsiResult, curve_plane, curve_prepared_surface, curve_surface, intersect_surfaces};
 pub use store::KernelStore;

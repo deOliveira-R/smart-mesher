@@ -7,11 +7,15 @@
 //! [`crate::SsiOptions`] for its documented limits.
 
 mod bernstein;
+mod conic;
 mod curve_surface;
 mod interval;
+mod march;
+mod ssi;
 
 pub use curve_surface::{curve_plane, curve_prepared_surface, curve_surface};
 pub(crate) use curve_surface::ray_nurbs_surface;
+pub use ssi::{CurveGeometry, IntersectionCurve, MarchEnd, MarchedCurve, SsiOptions, SsiResult, intersect_surfaces};
 
 use sm_core::Point3;
 use sm_geom_api::Uv;
