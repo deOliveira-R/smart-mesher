@@ -1,6 +1,6 @@
 [package]
 name = "sm-model"
-description = "W2 skeleton: T1: primitives, transforms and topology queries."
+description = "W2 T1: model primitives (brick, cylinder, sphere), rigid and similarity transforms, delete, and topology queries (topo.related, model.list, model.measure)."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -12,17 +12,21 @@ bench = false
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
-sm-geom = { path = "../sm-geom" }
 sm-topo-api = { path = "../sm-topo-api" }
-sm-topo = { path = "../sm-topo" }
 sm-model-api = { path = "../sm-model-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+thiserror = "2"
 
 [dev-dependencies]
+sm-topo = { path = "../sm-topo" }
 sm-testkit = { path = "../sm-testkit" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+serde_json = "1"
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
