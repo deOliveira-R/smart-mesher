@@ -1,7 +1,7 @@
 //! Surface-only meshes (W0e decision 5): a selection of faces is meshed into a dimension-2
 //! builder; plus the curve rule on claimed edges and the sizing-function error.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::EntityId;
 use sm_mesh_api::reference::ReferenceBuilder;

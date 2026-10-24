@@ -16,6 +16,9 @@ default = []
 # tool schemas. Enables the upstream schemars features.
 schemars = ["dep:schemars", "sm-core/schemars", "sm-geom-api/schemars", "sm-topo-api/schemars", "sm-model-api/schemars", "sm-mesh-api/schemars"]
 
+# Stub schemes and fixtures (`sm_scheme_api::stubs`) for tests of this and downstream crates.
+stubs = []
+
 [dependencies]
 sm-core = { path = "../sm-core", features = ["serde"] }
 sm-geom-api = { path = "../sm-geom-api", features = ["serde"] }
@@ -28,3 +31,6 @@ serde_json = "1"
 thiserror = "2"
 smallvec = "1"
 schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+sm-scheme-api = { path = ".", features = ["stubs"] }

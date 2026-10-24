@@ -1,7 +1,7 @@
 //! Impositions on claimed children are checked against what the claimer writes there, and
 //! imposition firmness is honoured (soft = preference, hard = requirement).
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_scheme_api::{
     Applicability, Caps, Driver, FailureKind, Firmness, GenCtx, GenerateFailure, MeshInput,

@@ -1,7 +1,7 @@
 //! W0f gaps3: `Caps::BLOCK_STRUCTURED` and `Patch::strip_from` (an L-shaped submapped face
 //! with no grid), and the stub sweep walking submapped (grid-less) linking faces.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_mesh_api::reference::ReferenceBuilder;

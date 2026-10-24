@@ -3,7 +3,7 @@
 //! `DecompositionFaces` resolver. Mesh entities on the cut are classified on the overlay's
 //! `Partition*` cells and the cells on the pieces (W0e decisions 1 and 2).
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;

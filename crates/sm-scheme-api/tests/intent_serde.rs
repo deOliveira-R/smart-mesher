@@ -1,7 +1,7 @@
 //! Intent and plan are serde data (they live in an Op and in git), and TOML-safe through the
 //! Op codec.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, EntityKind};
 use sm_scheme_api::{

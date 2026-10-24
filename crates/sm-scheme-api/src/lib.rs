@@ -41,6 +41,10 @@ mod schedule;
 pub mod scheme;
 pub mod sizing;
 pub mod solve;
+/// Stub scheme implementors and fixtures for tests (feature `stubs`).
+#[cfg(feature = "stubs")]
+#[doc(hidden)]
+pub mod stubs;
 pub mod target;
 pub mod vertex;
 

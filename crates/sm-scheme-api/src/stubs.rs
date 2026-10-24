@@ -6,16 +6,16 @@
 //! through interior vertices, so it also meshes a composite piece), `msweep` (a group of stacked
 //! volumes swept as one; it claims the interface faces and the target), plus plan-level
 //! `mapvol`, `tetvol`, `polyvol`. Transforms: `noop`, `boom`. Fixtures: bricks and a row of
-//! merged bricks. Shared by several test binaries.
-#![allow(dead_code, clippy::needless_range_loop)]
+//! merged bricks. Behind feature `stubs`; test-only code, so `expect` is allowed.
+#![allow(missing_docs, clippy::needless_range_loop)]
 
 use core::f64::consts::FRAC_PI_2;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_mesh_api::{CellShape, Param};
 use sm_model_api::Model;
-use sm_scheme_api::geom;
-use sm_scheme_api::{
+use crate::geom;
+use crate::{
     Applicability, Caps, CopyConstraint, CopyReason, ElemShape, FailureKind, Firmness, GenCtx,
     GenerateFailure, IntervalCtx, IntervalSink, MeshInput, MeshTransform, NodeGrid, NodeKey,
     Params, Patch, PatchBuilder, PlanCtx, Requirements, Role, Scheme, SchemeDim, SchemeRegistry,
@@ -210,7 +210,7 @@ impl Scheme for Map {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Map);
         }
@@ -222,15 +222,15 @@ impl Scheme for Map {
         target: Target,
         _p: &Params,
         out: &mut IntervalSink<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let Target::Surface(f) = target else {
             return Ok(());
         };
         let layout = cx.layout(f).ok_or_else(|| {
-            sm_scheme_api::SchemeError::Input(format!("map face {f} has no layout"))
+            crate::SchemeError::Input(format!("map face {f} has no layout"))
         })?;
         if layout.sides.len() != 4 {
-            return Err(sm_scheme_api::SchemeError::Input(format!(
+            return Err(crate::SchemeError::Input(format!(
                 "map face {f}: {} sides",
                 layout.sides.len()
             )));
@@ -279,7 +279,7 @@ impl Scheme for Submap {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Submap);
         }
@@ -291,12 +291,12 @@ impl Scheme for Submap {
         target: Target,
         _p: &Params,
         out: &mut IntervalSink<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let Target::Surface(f) = target else {
             return Ok(());
         };
         let layout = cx.layout(f).ok_or_else(|| {
-            sm_scheme_api::SchemeError::Input(format!("submap face {f} has no layout"))
+            crate::SchemeError::Input(format!("submap face {f} has no layout"))
         })?;
         let edges = |d: SideDir| -> Vec<EntityId> {
             layout
@@ -396,7 +396,7 @@ impl Scheme for Pave {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Free);
         }
@@ -408,7 +408,7 @@ impl Scheme for Pave {
         target: Target,
         _p: &Params,
         out: &mut IntervalSink<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let Target::Surface(f) = target else {
             return Ok(());
         };
@@ -454,7 +454,7 @@ impl Scheme for Tri {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         if let Target::Surface(f) = target {
             out.vertex_rule(f, VertexRule::Free);
         }
@@ -712,12 +712,12 @@ fn stack_of(cx: &GenCtx<'_>, target: Target, name: &str) -> GResult<Stack> {
         .map_err(|e| GenerateFailure::fatal(target, name, e.to_string()))
 }
 
-fn stack_of_ic(cx: &IntervalCtx<'_>, target: Target) -> sm_scheme_api::Result<Stack> {
+fn stack_of_ic(cx: &IntervalCtx<'_>, target: Target) -> crate::Result<Stack> {
     let d = cx
         .data(target)
-        .ok_or_else(|| sm_scheme_api::SchemeError::Input("no stack data".into()))?;
+        .ok_or_else(|| crate::SchemeError::Input("no stack data".into()))?;
     serde_json::from_value(d.0.clone())
-        .map_err(|e| sm_scheme_api::SchemeError::Input(e.to_string()))
+        .map_err(|e| crate::SchemeError::Input(e.to_string()))
 }
 
 /// Interval rows shared by both sweeps: every column has the same layer counts.
@@ -1052,11 +1052,11 @@ impl Scheme for Sweep {
         target: Target,
         p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let st = single_stack(cx.input, target, p).map_err(|e| {
-            sm_scheme_api::SchemeError::NotApplicable {
+            crate::SchemeError::NotApplicable {
                 target,
-                scheme: sm_scheme_api::SchemeName::new("sweep"),
+                scheme: crate::SchemeName::new("sweep"),
                 reason: e,
             }
         })?;
@@ -1095,7 +1095,7 @@ impl Scheme for Sweep {
         );
         out.set_data(Params(
             serde_json::to_value(&st)
-                .map_err(|e| sm_scheme_api::SchemeError::Input(e.to_string()))?,
+                .map_err(|e| crate::SchemeError::Input(e.to_string()))?,
         ));
         Ok(())
     }
@@ -1105,7 +1105,7 @@ impl Scheme for Sweep {
         target: Target,
         _p: &Params,
         out: &mut IntervalSink<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         column_equalities(&stack_of_ic(cx, target)?, out);
         Ok(())
     }
@@ -1179,11 +1179,11 @@ impl Scheme for MSweep {
         target: Target,
         p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let st = group_stack(cx.input, cx, target, p).map_err(|e| {
-            sm_scheme_api::SchemeError::NotApplicable {
+            crate::SchemeError::NotApplicable {
                 target,
-                scheme: sm_scheme_api::SchemeName::new("msweep"),
+                scheme: crate::SchemeName::new("msweep"),
                 reason: e,
             }
         })?;
@@ -1209,7 +1209,7 @@ impl Scheme for MSweep {
         }
         out.set_data(Params(
             serde_json::to_value(&st)
-                .map_err(|e| sm_scheme_api::SchemeError::Input(e.to_string()))?,
+                .map_err(|e| crate::SchemeError::Input(e.to_string()))?,
         ));
         Ok(())
     }
@@ -1219,14 +1219,14 @@ impl Scheme for MSweep {
         target: Target,
         p: &Params,
         out: &mut IntervalSink<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         let st = stack_of_ic(cx, target)?;
         column_equalities(&st, out);
         if let Some(total) = p.get::<i64>("msweep", "layers")?
             && let Some((_, path)) = st.columns.first()
         {
             let terms: Vec<(EntityId, i32)> = path.iter().map(|(e, _)| (*e, 1)).collect();
-            out.linear(&terms, sm_scheme_api::Rel::Eq, total);
+            out.linear(&terms, crate::Rel::Eq, total);
         }
         Ok(())
     }
@@ -1274,7 +1274,7 @@ impl Scheme for MapVol {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         for f in cx.input.piece_faces(target)? {
             out.require_caps(
                 Target::Surface(f),
@@ -1342,7 +1342,7 @@ impl Scheme for PolyVol {
         target: Target,
         _p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         for f in cx.input.piece_faces(target)? {
             out.require_caps(
                 Target::Surface(f),
@@ -1414,7 +1414,7 @@ impl Scheme for BadReq {
         _target: Target,
         p: &Params,
         out: &mut Requirements<'_>,
-    ) -> sm_scheme_api::Result<()> {
+    ) -> crate::Result<()> {
         // A sibling volume, or (param `face`) a face of another model: neither is a sub-entity.
         let other = p
             .get::<EntityId>("badreq", "other")?

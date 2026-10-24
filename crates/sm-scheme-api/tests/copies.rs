@@ -2,7 +2,7 @@
 //! disagree, capability impositions through `copy`, copies contributed late, and the
 //! "face after volume" schedule.
 
-mod stub_schemes;
+use sm_scheme_api::stubs as stub_schemes;
 
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_mesh_api::reference::ReferenceBuilder;
