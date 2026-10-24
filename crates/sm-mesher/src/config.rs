@@ -25,7 +25,11 @@ pub struct MesherConfig {
     picker: Arc<dyn CornerPicker>,
     size_fields: Option<SizeFieldFn>,
     auto_size: Option<AutoSizeFn>,
+    max_cells: u64,
 }
+
+/// Default cell budget of [`MesherConfig::max_cells`].
+pub const DEFAULT_MAX_CELLS: u64 = 20_000_000;
 
 impl MesherConfig {
     /// A config over `registry` with the reference solver and picker and no sizing hooks.
@@ -36,7 +40,21 @@ impl MesherConfig {
             picker: Arc::new(ReferenceCornerPicker),
             size_fields: None,
             auto_size: None,
+            max_cells: DEFAULT_MAX_CELLS,
         }
+    }
+
+    /// Set the cell budget: `mesh.run` refuses a plan estimated above it (default
+    /// [`DEFAULT_MAX_CELLS`]).
+    #[must_use]
+    pub fn with_max_cells(mut self, max_cells: u64) -> Self {
+        self.max_cells = max_cells;
+        self
+    }
+
+    /// The cell budget of `mesh.run`.
+    pub fn max_cells(&self) -> u64 {
+        self.max_cells
     }
 
     /// Replace the interval solver.

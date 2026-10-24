@@ -49,6 +49,16 @@ fn failed(e: SchemeError) -> OpError {
     }
 }
 
+/// Rough cell count: per volume, the cube of the mean solved interval count of the plan's edges.
+/// Only used to catch absurd requests, so over- or under-shooting by a small factor is fine.
+fn estimate_cells(intervals: &[(EntityId, u32)], volumes: usize) -> f64 {
+    if intervals.is_empty() {
+        return 0.0;
+    }
+    let mean = intervals.iter().map(|p| f64::from(p.1)).sum::<f64>() / intervals.len() as f64;
+    mean.powi(3) * volumes as f64
+}
+
 impl TypedOp for MeshRun {
     const NAME: &'static str = "mesh.run";
     const OUTPUTS: &'static [OutputRole] = RUN_OUTPUTS;
@@ -96,6 +106,17 @@ impl TypedOp for MeshRun {
         driver.size = field.as_deref();
         driver.options = DriverOptions::new();
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
+        // Refuse absurd requests before generating anything.
+        if let Ok(plan) = driver.plan(&input, &intent) {
+            let est = estimate_cells(&plan.intervals, targets.len());
+            if est > cfg.max_cells() as f64 {
+                return Err(OpError::Invalid(format!(
+                    "the plan needs about {est:.3e} cells, above the budget of {} \
+                     (MesherConfig::with_max_cells); use a larger size",
+                    cfg.max_cells()
+                )));
+            }
+        }
         // Work on a copy of the allocator; the layer only advances on success.
         let mut alloc = alloc0.clone();
         let out = driver

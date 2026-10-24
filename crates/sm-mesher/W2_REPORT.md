@@ -11,7 +11,9 @@ named `claude/w2-sm-mesher`. The session branch was used).
 `Driver`. It depends on no scheme crate and no sizing crate. All skeleton entry points
 (`MeshPlugin`, `MesherConfig` and its builders) keep their signatures.
 
-Additions beyond the plan text (both small, both justified):
+Additions beyond the plan text (both small, both justified; **orchestrator ruling needed on
+`mesh.default_size`**: it enters the public catalog (sm-lang, MCP, protocol), so keep it or drop
+it until W3):
 * `mesh.default_size {size | function, params}`: the plan lists the `with_size_fields` hook but
   no op that could ever produce a `SizingSpec::Function`; this op sets `defaults.sizing`.
 * `FirmnessArg` (`"default" | "soft" | "hard"`), the op-level spelling of firmness, and the
@@ -34,6 +36,7 @@ Additions beyond the plan text (both small, both justified):
 | OUTPUTS and `x-entity-kind` declared | `ops::registered_schemas_carry_entity_kinds_and_declared_outputs` |
 | intent pruned on retirement | `intent_layer::tests::*`, `ops::intent_requests_on_deleted_entities_are_dropped` |
 | input validation, firmness ladder, scoping, missing service | `ops::bad_intent_requests_*`, `firmness_ladder_*`, `the_intent_of_other_volumes_*`, `a_missing_service_*` |
+| later `mesh.size` replaces a soft count; cell budget; stale-mesh delete; user `fallbacks`; infeasible request on another volume | `ops::a_later_size_replaces_*`, `an_absurd_size_is_refused_*`, `a_stale_mesh_can_be_deleted_*`, `user_fallbacks_are_tried_*`, `an_infeasible_hard_request_on_another_volume_*` |
 | Benchmark 100^3 | `benches/commit.rs`; numbers in DESIGN.md |
 
 ## Deviations
@@ -46,7 +49,30 @@ Additions beyond the plan text (both small, both justified):
   `plan_with(rejections)`). Tests assert both.
 * **Stub volume scheme**: plan says `"sweep"` with `source/target` params; that is what the tests
   use. (`"mapvol"` of the stubs only plans.)
+* **`mesh.run` neighbour guard** (not in the plan): a volume that shares a face with a meshed
+  volume outside `targets` is refused (conformity). Previously listed only under Known gaps.
+* **Cell budget** (not in the plan): `mesh.run` refuses a plan estimated above
+  `MesherConfig::max_cells` (default 20 M cells) with `OpError::Invalid`; the alternative is a
+  driver cell-budget ACR. See DESIGN.md.
+* **Firmness comparison**: `mesh.size` without explicit firmness is stored as `default` but
+  compared at `soft`, so it replaces an earlier soft `mesh.intervals` (Cubit: most recent wins
+  at the same level). `hard` is still kept.
 * **Bench** uses the stub schemes, so its generate numbers are those of reference code.
+
+## Benchmark (100^3 = 10^6 hexes, stub schemes, 4-core VM, release; full text in DESIGN.md)
+
+| Phase | Time | Cells/s |
+|---|---|---|
+| plan | 0.11 ms | n/a |
+| generate (rayon) | 1.62 s | 0.62 M |
+| commit into `MeshBuilder` | 2.74 s | 0.37 M |
+| plan + generate + commit (`Driver::mesh`) | 4.72 s | 0.21 M |
+| `mesh.run` + `mesh.delete` op pair | 10.6 s | 0.094 M |
+
+Plan section 5 risk 3 is **partly triggered**: the op layer adds about 6 s on top of the driver
+(adoption/retirement of 2.4 M ids, quantized digest). No ACR was raised. **Orchestrator decision
+needed**: a bulk commit ACR (`MeshBuild::add_template_cells`, would cut the 2.7 s commit) and/or
+bulk adopt/retire in `sm-layer-api`, or a profile task before W3. Not blocking W2.
 
 ## Known gaps
 
@@ -60,7 +86,8 @@ None.
 ## Definition of done
 
 * `cargo build --workspace`: ok
-* `cargo test -p sm-mesher --all-features`: 4 unit + 19 integration pass; also with `RAYON_NUM_THREADS=1`
+* `cargo test -p sm-mesher --all-features`: 4 unit + 24 integration pass; also with `RAYON_NUM_THREADS=1`
 * `cargo clippy -p sm-mesher --all-targets --all-features -- -D warnings`: clean
 * `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-mesher --no-deps`: clean
+* sm-quality dev-dependency dropped (unused); serde_json moved to dev-dependencies.
 * criterion bench run at 100^3 (4-core VM): see DESIGN.md. Stub-scheme caveat applies.

@@ -79,12 +79,21 @@ fn scheme_err(e: sm_scheme_api::SchemeError) -> OpError {
 }
 
 /// Install `req` on `id` unless a firmer request is already there. Returns whether it applied.
-fn set_intervals(layer: &mut IntentLayer, id: EntityId, req: Firm<IntervalRequest>) -> bool {
+///
+/// `level` is the firmness the request is compared at (normally `req.firmness`). A `mesh.size`
+/// without explicit firmness is stored as `default` but compared at `soft`, so it replaces a
+/// `soft` count (the most recent command wins at the same level).
+fn set_intervals(
+    layer: &mut IntentLayer,
+    id: EntityId,
+    req: Firm<IntervalRequest>,
+    level: Firmness,
+) -> bool {
     let i = layer.intent_mut();
     if i.entities
         .get(&id)
         .and_then(|e| e.intervals)
-        .is_some_and(|old| old.firmness > req.firmness)
+        .is_some_and(|old| old.firmness > level)
     {
         return false;
     }
@@ -112,7 +121,8 @@ fn warn_kept(ctx: &mut ApplyCtx<'_>, op: &str, kept: &[EntityId]) {
 ///
 /// Recorded as `IntervalRequest::Size` on each target. On a volume or face it applies to every
 /// edge of it; an edge's own request wins over a face's, a face's over a volume's. Default
-/// firmness is `default`: the size is a real goal `length / size` that the interval solver
+/// firmness is `default` (compared with existing requests at the `soft` level, so a later size
+/// replaces an earlier soft count): the size is a real goal `length / size` that the interval solver
 /// approaches while matching opposite sides. `soft` and `hard` fix the count
 /// `max(1, round(length / size))` instead. `auto` (1 fine .. 10 coarse) is resolved *now* through
 /// the configured auto-size hook and recorded as a plain size, so replay never re-runs it.
@@ -163,6 +173,8 @@ impl TypedOp for MeshSize {
             )));
         }
         let firmness = self.firmness.map_or(Firmness::Default, Firmness::from);
+        // Stored as given, but an implicit `default` competes at the `soft` level.
+        let level = firmness.max(Firmness::Soft);
         let layer = ctx.layer_mut::<IntentLayer>()?;
         let mut kept = Vec::new();
         for &t in &targets {
@@ -170,7 +182,7 @@ impl TypedOp for MeshSize {
                 value: IntervalRequest::Size(size),
                 firmness,
             };
-            if !set_intervals(layer, t, req) {
+            if !set_intervals(layer, t, req, level) {
                 kept.push(t);
             }
         }
@@ -222,7 +234,7 @@ impl TypedOp for MeshIntervals {
                 value: IntervalRequest::Count(self.count),
                 firmness,
             };
-            if !set_intervals(layer, t, req) {
+            if !set_intervals(layer, t, req, firmness) {
                 kept.push(t);
             }
         }

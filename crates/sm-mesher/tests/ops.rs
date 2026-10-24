@@ -6,7 +6,7 @@ use common::*;
 use serde_json::json;
 use sm_core::EntityKind;
 use sm_layer_api::{MeshLayer, ModelLayer};
-use sm_op_api::{DerivedCache, LayerType, QuietControl};
+use sm_op_api::{DerivedCache, LayerType, QuietControl, Session};
 use sm_scheme_api::stubs;
 
 #[test]
@@ -124,9 +124,9 @@ fn infeasible_hard_intent_fails_atomically() {
 #[test]
 fn mesh_delete_restores_the_live_counts() {
     let mut s = brick_session([4.0; 3], 1.0);
-    let (_, base_count, base_hash) = {
+    let (base_count, base_hash) = {
         let st = s.state();
-        ((), st.entity_count(), st.layer_hash("meshes").ok())
+        (st.entity_count(), st.layer_hash("meshes").ok())
     };
     let (_, d) = mesh_run(&mut s).expect("run");
     let mid = d.outputs["mesh"][0];
@@ -145,7 +145,10 @@ fn mesh_delete_restores_the_live_counts() {
     }
     assert_eq!(s.state().entity_count(), base_count);
     assert!(!s.state().contains(mid));
-    let _ = base_hash;
+    // The layer is empty again, but its hash is not the pre-run one: the allocator's serial
+    // counters advanced and are never rewound (ids are never reused).
+    assert!(s.state().layer::<MeshLayer>().expect("layer").is_empty());
+    assert_ne!(s.state().layer_hash("meshes").ok(), base_hash);
     // Deleting again fails; so does naming both or neither selector.
     assert!(run_json(&mut s, "mesh.delete", json!({"meshes": [mid.to_string()]})).is_err());
     assert!(run_json(&mut s, "mesh.delete", json!({})).is_err());
@@ -758,4 +761,149 @@ fn state_and_mesh_are_bit_identical_across_threads_for_a_20_cubed_brick() {
     mesh_run(&mut s).expect("run");
     assert_eq!(s.state().hash(), state);
     assert_eq!(s.state().count_of(EntityKind::MeshCell), 8000);
+}
+
+// ------------------------------------------------------------------ review fixes
+
+#[test]
+fn a_later_size_replaces_an_earlier_soft_interval_count() {
+    let mut s = session();
+    run(&mut s, &brick_op([10.0; 3])).expect("brick");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoVolume#1"], "scheme": "sweep",
+               "params": {"source": ["TopoFace#5"], "target": ["TopoFace#6"]}}),
+    )
+    .expect("scheme");
+    run_json(
+        &mut s,
+        "mesh.intervals",
+        json!({"targets": ["TopoVolume#1"], "count": 5}),
+    )
+    .expect("count");
+    let (_, d) = run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("size");
+    assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
+    mesh_run(&mut s).expect("run");
+    assert_eq!(s.state().count_of(EntityKind::MeshCell), 1000);
+}
+
+#[test]
+fn an_absurd_size_is_refused_before_generating() {
+    let mut s = brick_session([10.0; 3], 1e-6);
+    let hash = s.state().hash();
+    let e = err_text(mesh_run(&mut s));
+    assert!(e.contains("budget"), "{e}");
+    assert_eq!(s.state().hash(), hash);
+    // The budget is a config matter: 1000 cells pass under the default, fail under 100.
+    let cfg = sm_mesher::MesherConfig::new(stubs::registry()).with_max_cells(100);
+    let mut s = Session::new(engine_cfg(cfg, DerivedCache::default()));
+    run(&mut s, &brick_op([10.0; 3])).expect("brick");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("size");
+    assert!(err_text(mesh_run(&mut s)).contains("budget"));
+}
+
+#[test]
+fn a_stale_mesh_can_be_deleted_by_target_and_by_id() {
+    for by_target in [true, false] {
+        let mut s = brick_session([2.0; 3], 1.0);
+        let (_, d) = mesh_run(&mut s).expect("run");
+        let mid = d.outputs["mesh"][0];
+        run(&mut s, &DeleteVolume { volume: vol(1) }).expect("delete volume");
+        assert_eq!(s.state().count_of(EntityKind::MeshCell), 8, "mesh outlives it");
+        let params = if by_target {
+            json!({"targets": ["TopoVolume#1"]})
+        } else {
+            json!({"meshes": [mid.to_string()]})
+        };
+        run_json(&mut s, "mesh.delete", params).expect("delete stale mesh");
+        for k in [
+            EntityKind::Mesh,
+            EntityKind::MeshCell,
+            EntityKind::MeshFace,
+            EntityKind::MeshVertex,
+        ] {
+            assert_eq!(s.state().count_of(k), 0, "{k:?} (by_target {by_target})");
+        }
+    }
+}
+
+#[test]
+fn user_fallbacks_are_tried_through_mesh_run() {
+    let mut reg = stubs::registry();
+    reg.register(Box::new(stubs::AlwaysFail))
+        .expect("always_fail");
+    let mut s = Session::new(engine_with(reg, DerivedCache::default()));
+    run(&mut s, &brick_op([2.0; 3])).expect("brick");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("size");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoVolume#1"], "scheme": "sweep",
+               "params": {"source": ["TopoFace#5"], "target": ["TopoFace#6"]}}),
+    )
+    .expect("volume scheme");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoFace#5"], "scheme": "always_fail", "fallbacks": ["map"]}),
+    )
+    .expect("face scheme");
+    mesh_run(&mut s).expect("the fallback recovers");
+    let layer = s.state().layer::<MeshLayer>().expect("layer");
+    let (_, e) = layer.meshes().next().expect("mesh");
+    let plan = e.plan.as_ref().expect("plan");
+    assert_eq!(plan.rejections.len(), 1, "always_fail was rejected once");
+    assert_eq!(
+        plan.rejections.attempts().next().expect("one").scheme.as_str(),
+        "always_fail"
+    );
+    assert_eq!(e.mesh().cell_count(), 8);
+}
+
+#[test]
+fn an_infeasible_hard_request_on_another_volume_does_not_break_a_run() {
+    let mut s = session();
+    run(&mut s, &brick_op([4.0; 3])).expect("a");
+    run(
+        &mut s,
+        &CreateBrick {
+            origin: [10.0, 0.0, 0.0],
+            size: [4.0; 3],
+        },
+    )
+    .expect("b");
+    for (e, n) in [("TopoEdge#13", 3), ("TopoEdge#15", 5)] {
+        run_json(&mut s, "mesh.intervals", json!({"targets": [e], "count": n})).expect("b edge");
+    }
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("a size");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoVolume#1"], "scheme": "sweep",
+               "params": {"source": ["TopoFace#5"], "target": ["TopoFace#6"]}}),
+    )
+    .expect("a scheme");
+    run_json(&mut s, "mesh.run", json!({"targets": ["TopoVolume#1"]})).expect("a only");
+    assert_eq!(s.state().count_of(EntityKind::MeshCell), 64);
 }

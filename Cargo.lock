@@ -1209,7 +1209,6 @@ dependencies = [
  "sm-mesh-api",
  "sm-model-api",
  "sm-op-api",
- "sm-quality",
  "sm-scheme-api",
  "sm-testkit",
  "sm-topo-api",

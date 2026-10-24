@@ -53,9 +53,12 @@ fields arrive through the `MesherConfig` service, so this crate names no scheme 
 | `mesh.scheme` | `hard` (the user named it); fallbacks are `soft` and carry no parameters |
 
 *Deviation from Cubit's manual*: a count derived from a size is *soft* in Cubit. We default to a
-`default`-firmness goal instead. It is the same "this is not a requirement" level, and it lets the
-solver minimize deviation instead of picking an arbitrary soft count; `firmness: "soft"` gives
-the Cubit reading. A request never overwrites a firmer one on the same entity: the op keeps the
+`default`-firmness goal instead, which lets the solver minimize deviation instead of picking an
+arbitrary soft count; `firmness: "soft"` gives the Cubit reading. In the code `Default < Soft`,
+so for the "firmer request wins" check an implicit-firmness `mesh.size` is *compared* at the
+`soft` level (it is still stored as `default`): a later `mesh.size` replaces an earlier soft
+`mesh.intervals` on the same entity (the most recent command wins at the same level), and a
+`hard` request is still kept. A request never overwrites a firmer one on the same entity: the op keeps the
 firmer request and emits a `mesh.firmness_kept` warning. Requests cascade volume, face, edge
 inside the planner (an edge's own request wins).
 
@@ -83,6 +86,15 @@ The stored plan is exactly the driver's: failures that caused a re-plan are in
 `plan.rejections`, candidates passed over by the final plan in `plan.attempts`. The plan is not
 hashed.
 
+### mesh.run cell budget
+
+Before generating, `mesh.run` plans once (`Driver::plan`) and estimates the cells as
+`volumes * mean(edge intervals)^3`. Above `MesherConfig::max_cells` (default
+`DEFAULT_MAX_CELLS` = 20 million) it fails with `OpError::Invalid` and changes nothing. This
+guards against e.g. `size 1e-6` on a 10-unit brick (about 10^21 cells). The estimate is crude
+(anisotropic meshes are estimated by their mean count); it only catches absurd requests. The
+plan is computed twice on an accepted run (cheap: 0.11 ms at 10^6 cells).
+
 ### mesh.delete
 
 `meshes` xor `targets` (volumes); `retire_mesh` per mesh, sorted. Any error fails the op.
@@ -91,7 +103,8 @@ hashed.
 
 * `RayonExec` only decides *where* a job runs; the driver gives each job its own slot and merges
   in job order. Tests compare the state hash and the exact (bit-for-bit) `meshes` layer hash on
-  pools of 1, 2 and 4 threads, plus concurrent runs, plus the default pool.
+  `determinism::check(2, 4, ..)` (1 thread against 4, twice), 4 concurrent 1-thread runs, and
+  the default pool.
 * `mesh.info` volume is summed in fixed chunks of 4096 cells, then in chunk order.
 * Maps are `BTreeMap`; targets are sorted before use.
 
@@ -120,6 +133,11 @@ predict production schemes.
 ## Known gaps
 
 * No `on_succession` for the intent layer.
+* Scheme `params` that name entities (sweep `source`/`target` faces, ...) are opaque JSON owned
+  by the scheme, so `IntentLayer::on_retired` does not prune them. A scheme on volume 2 whose
+  params name faces of a deleted volume 1 survives, and `mesh.run` then fails with "not
+  applicable". Fix by re-issuing `mesh.scheme`; a typed-reference convention for params is a
+  W3 item.
 * `fallbacks` carry names only (no parameters).
 * Whole volumes only (`PieceRef::Whole`); no decomposition pieces, no surface-only `mesh.run`.
 * Neighbour guard is per face adjacency to *meshed* volumes; it does not look through

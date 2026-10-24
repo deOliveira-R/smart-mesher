@@ -24,7 +24,7 @@ mod intent_layer;
 mod intent_ops;
 mod mesh_ops;
 
-pub use config::{AutoSizeFn, MesherConfig, SizeFieldFn};
+pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
 pub use info::{MeshInfo, MeshInfoQuery};
 pub use intent_layer::IntentLayer;

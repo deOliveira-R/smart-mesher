@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::EntityId;
 use sm_layer_api::MeshLayer;
 use sm_mesh_api::{
-    CellIx, MeshEntityKind, MeshRead, cell_volume, geometry_hash_quantized, topology_hash,
+    CellIx, CellShape, MeshEntityKind, MeshRead, cell_volume, geometry_hash_quantized, topology_hash,
 };
 use sm_op_api::{OpError, QueryCtx, State, TypedQuery};
 
@@ -81,12 +81,15 @@ impl TypedQuery for MeshInfoQuery {
             .get(self.mesh)
             .ok_or(OpError::UnknownEntity(self.mesh))?;
         let m = e.mesh();
-        let mut shapes: BTreeMap<String, usize> = BTreeMap::new();
+        // Count per shape without allocating per cell; stringify once at the end.
+        let mut by_shape: BTreeMap<CellShape, usize> = BTreeMap::new();
         for i in 0..m.count(MeshEntityKind::Cell) {
-            *shapes
-                .entry(format!("{:?}", m.cell_shape(CellIx(i as u32))))
-                .or_default() += 1;
+            *by_shape.entry(m.cell_shape(CellIx(i as u32))).or_default() += 1;
         }
+        let shapes: BTreeMap<String, usize> = by_shape
+            .into_iter()
+            .map(|(k, v)| (format!("{k:?}"), v))
+            .collect();
         Ok(MeshInfo {
             mesh: self.mesh,
             selection: e.selection.clone(),

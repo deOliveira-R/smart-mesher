@@ -21,13 +21,12 @@ sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 schemars = "1"
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs", "schemars"] }
-sm-quality = { path = "../sm-quality" }
+serde_json = "1"
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]

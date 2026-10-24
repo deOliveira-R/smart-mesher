@@ -21,6 +21,12 @@ use sm_scheme_api::MeshIntent;
 /// [`on_retired`](LayerType::on_retired) drops every request on a retired entity: entity rows,
 /// corner overrides on a retired face, retired group members and transform targets (a group or
 /// transform left empty is dropped) and interval rows naming a retired edge.
+///
+/// # Known gap
+/// Scheme parameters that name entities (for example sweep source and target faces) are opaque
+/// JSON owned by the scheme and are **not** pruned. A scheme choice on a live volume whose params
+/// name faces of a deleted volume survives, and `mesh.run` then fails with "not applicable"
+/// until `mesh.scheme` is issued again.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IntentLayer {
     intent: MeshIntent,
