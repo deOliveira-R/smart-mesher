@@ -2,11 +2,11 @@
 //! its stdout/stderr, and its exit code. The endpoint is a fake because this crate must stay
 //! testable independent of the server crates' progress; the real binary is covered in
 //! `tests/binary.rs` and `tests/cli_full.rs`.
-mod fake;
+mod common;
 
 use std::path::PathBuf;
 
-use fake::{Outcome, canned, go, go_with, h, status_value};
+use common::{Outcome, canned, go, go_with, h, status_value};
 use serde_json::{Value, json};
 use sm_cli::{Settings, discover_project};
 use sm_op_api::Rev;
@@ -166,6 +166,70 @@ fn project_sessions_open_first_and_save_after_changes_only() {
 }
 
 #[test]
+fn run_under_p_creates_a_missing_project_and_others_do_not() {
+    let dir = tmp("runcreate");
+    let s = dir.join("a.smesh");
+    std::fs::write(&s, "print 1\n").unwrap();
+    let o = go(&["run", s.to_str().unwrap(), "-p", "fresh/dir"]);
+    assert_eq!(methods(&o), ["session.open", "script.run", "session.save"]);
+    assert_eq!(
+        o.requests[0],
+        Request::Open {
+            path: "fresh/dir".into(),
+            create: true
+        }
+    );
+    let o = go(&["fork", "alt", "-p", "fresh/dir"]);
+    assert_eq!(
+        o.requests[0],
+        Request::Open {
+            path: "fresh/dir".into(),
+            create: false
+        }
+    );
+}
+
+#[test]
+fn new_with_a_different_project_flag_is_a_usage_error() {
+    let o = go(&["new", "d", "-p", "other"]);
+    assert_eq!((o.code, o.requests.len()), (2, 0));
+}
+
+#[test]
+fn failed_save_prints_only_the_error_object() {
+    let reply = |r: &Request| match r {
+        Request::Save => Err(RpcError::application("io", "disk full")),
+        r => canned(r),
+    };
+    let o = go_with(
+        &[
+            "--json",
+            "apply",
+            "model.create_brick",
+            r#"{"x":10}"#,
+            "-p",
+            "proj",
+        ],
+        "",
+        Box::new(reply),
+    );
+    assert_eq!(o.code, 1);
+    assert_eq!(o.out.lines().count(), 1, "{}", o.out);
+    assert_eq!(o.json()["error"]["message"], "disk full");
+}
+
+#[test]
+fn log_tolerates_non_ascii_node_strings() {
+    let reply = |r: &Request| match r {
+        Request::Log { .. } => Ok(json!([{"node": "ééééééééééééé", "op": "x"}])),
+        r => canned(r),
+    };
+    let o = go_with(&["log", "--memory"], "", Box::new(reply));
+    assert_eq!(o.code, 0);
+    assert!(o.out.contains("éééééééééééé x"), "{}", o.out);
+}
+
+#[test]
 fn project_and_memory_are_mutually_exclusive() {
     assert_eq!(go(&["status", "-p", "d", "--memory"]).code, 2);
 }
@@ -190,6 +254,12 @@ fn author_and_fixed_time_reach_the_connector_and_are_validated() {
         "2026-10-24 00:00:00",
         "2026-10-24T00:00:00",
         "2026-10-24T00:00:00+01:00",
+        "2026-99-99T99:99:99Z",
+        "2026-02-29T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-10-24T24:00:00Z",
+        "2026-10-24T00:60:00Z",
+        "2026-00-10T00:00:00Z",
     ] {
         let o = go(&["hash", "--memory", "--fixed-time", bad]);
         assert_eq!(o.code, 2, "{bad}");
@@ -691,7 +761,7 @@ fn serve_defaults_to_stdio_and_ws_is_reported_unavailable() {
     );
     assert_eq!((o.code, o.out.lines().count()), (0, 1));
     let o = go(&["serve", "--ws", "127.0.0.1:0", "--memory"]);
-    assert_eq!(o.code, 1);
+    assert_eq!(o.code, 2);
     assert!(o.err.contains("WebSocket"), "{}", o.err);
     assert_eq!(go(&["serve", "--stdio", "--ws", "x", "--memory"]).code, 2);
 }

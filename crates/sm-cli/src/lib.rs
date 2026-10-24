@@ -193,19 +193,45 @@ fn settings_of(cli: &Cli) -> Res<Settings> {
     })
 }
 
+/// `YYYY-MM-DDTHH:MM:SSZ` with every field in range (day checked against the month and leap years).
 fn is_rfc3339_utc(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 20
+    let shape = b.len() == 20
         && b.iter().enumerate().all(|(i, c)| match i {
             4 | 7 => *c == b'-',
             10 => *c == b'T',
             13 | 16 => *c == b':',
             19 => *c == b'Z',
             _ => c.is_ascii_digit(),
-        })
+        });
+    if !shape {
+        return false;
+    }
+    let n = |r: std::ops::Range<usize>| s[r].parse::<u32>().unwrap_or(u32::MAX);
+    let (y, mo, d) = (n(0..4), n(5..7), n(8..10));
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim = match mo {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=dim).contains(&d) && n(11..13) < 24 && n(14..16) < 60 && n(17..19) < 60
 }
 
 fn execute(cli: &Cli, connect: &mut Connect<'_>, io: &mut Io<'_>) -> Res<()> {
+    if let (Command::New { .. }, Some(p)) = (&cli.command, &cli.global.project) {
+        return Err(Failure::usage(format!(
+            "`new` takes the directory as its argument; -p {} would be ignored",
+            p.display()
+        )));
+    }
+    if let Command::Serve { ws: Some(addr), .. } = &cli.command {
+        return Err(Failure::usage(format!(
+            "--ws {addr}: this build has no WebSocket transport (sm-server's `ws` feature); use --stdio"
+        )));
+    }
     let settings = settings_of(cli)?;
     let mut ep = connect(&settings).map_err(Failure::local)?;
     let ep: &mut dyn Endpoint = &mut *ep;
@@ -221,17 +247,35 @@ fn execute(cli: &Cli, connect: &mut Connect<'_>, io: &mut Io<'_>) -> Res<()> {
             )?;
             opened = true;
         }
-        (_, Some(dir)) => {
+        (cmd, Some(dir)) => {
+            // `run` builds a project from nothing (plan §4.3), so it may create the directory.
             call(
                 ep,
                 Request::Open {
                     path: path_str(dir),
-                    create: false,
+                    create: matches!(cmd, Command::Run { .. }),
                 },
             )?;
             opened = true;
         }
         _ => {}
+    }
+    let streams = matches!(cli.command, Command::Serve { .. } | Command::Mcp);
+    if opened && cli.command.mutates_or_creates() && !streams {
+        // Save before anything reaches stdout, so a failed save never leaves a result line
+        // followed by an error object (`--json` is exactly one line).
+        let mut buf = Vec::new();
+        {
+            let mut inner = Io {
+                stdin: &mut *io.stdin,
+                stdout: &mut buf,
+                stderr: &mut *io.stderr,
+            };
+            dispatch(cli, ep, &mut inner)?;
+        }
+        call(ep, Request::Save)?;
+        let _ = io.stdout.write_all(&buf);
+        return Ok(());
     }
     dispatch(cli, ep, io)?;
     if opened && cli.command.mutates_or_creates() {
@@ -472,11 +516,7 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             Ok(())
         }
         Command::Serve { stdio: _, ws } => {
-            if let Some(addr) = ws {
-                return Err(Failure::local(format!(
-                    "--ws {addr}: this build has no WebSocket transport (sm-server's `ws` feature); use --stdio"
-                )));
-            }
+            debug_assert!(ws.is_none(), "rejected in execute");
             serve_stdio(ep, io)
         }
         Command::Mcp => sm_mcp::run_stdio(ep, &mut *io.stdin, &mut *io.stdout)
@@ -515,7 +555,9 @@ fn serve_stdio(ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
 
 /// The files a script pulls in with `include "path"`, read from disk next to the script so that
 /// an in-memory session can resolve them (a project session also finds them in its directory).
-/// Keys are the paths as written. Unreadable files are left out: the server reports them with
+/// Keys are the paths as written, and every include (nested ones too) is resolved against the
+/// top script's directory, not the including file's: the server looks an include up by the key as
+/// written, so one key must name one file (LANGUAGE.md §4.5 does not say otherwise). Unreadable files are left out: the server reports them with
 /// the language's own diagnostic. Depth is capped at the language's include limit.
 fn includes_of(script: &Path, text: &str) -> BTreeMap<String, String> {
     fn scan(dir: &Path, text: &str, depth: usize, out: &mut BTreeMap<String, String>) {

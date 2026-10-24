@@ -72,3 +72,32 @@ All subcommands of plan §4.3/§4.4 are implemented: `new`, `run`, `apply`, `que
    fixed_time: Option<String>) -> WorkspaceBuilder` (or re-export `sm_engine::{FixedClock, Clock}`),
    so the CLI need not depend on sm-engine. Also: a `ws` cargo feature, which `smesh serve --ws` will
    forward to when it exists.
+
+## Review fixes (fix0)
+
+Fixed in sm-cli:
+- **Must 1.** `run -p DIR` now sends `session.open{create:true}` (plan §4.3 runs `fork.smesh -p $T/fork`
+  without `new`); every other `-p` command still sends `create:false`. Pinned by
+  `run_under_p_creates_a_missing_project_and_others_do_not`; ignored flow
+  `cli_full::run_fork_script_in_a_fresh_project_without_new`.
+- **Should 1.** For project sessions the command's output is buffered and `session.save` runs first, so a
+  failed save prints only the `{error}` object (`failed_save_prints_only_the_error_object`). `serve`/`mcp`
+  stream directly.
+- **Should 3.** `--fixed-time` is range-checked (month, day per month and leap year, hour, minute, second).
+- **Should 4/11.** `serve --ws ADDR` is a usage error (exit 2), checked before connecting.
+- **Should 5.** Added the negative half `cli_full::unpinned_runs_differ_in_node_hashes_but_not_in_state`
+  (ignored, needs T10).
+- **Should 6/10.** `includes_of` keeps resolving against the top script's directory; the choice and reason
+  (the server looks includes up by key as written) are in its rustdoc.
+- **Should 7.** `log` truncates the node string by chars.
+- **Should 9.** `new <dir> -p other` is a usage error (exit 2).
+- **Should 13.** `tests/fake.rs` moved to `tests/common/mod.rs`.
+
+Not done:
+- **Must 2 (drop `sm-engine`).** Needs sm-server (T10) to expose the clock (`standard_with(author,
+  fixed_time)` or a re-export of `FixedClock`/`Clock`); sm-cli may not edit sm-server. Route to T10, or the
+  orchestrator accepts the deviation. Once it lands, only `connect_standard` changes.
+- **Should 2/8.** `sm-op-api`, `sm-core`, `serde` stay until sm-protocol re-exports the types (ACR 1).
+- **Should 12.** Implicit project discovery is unchanged; needs an orchestrator decision (default to memory?).
+- **Should 14.** A `run --memory --print-hash` 1-vs-N-thread determinism check belongs to the integration
+  phase (needs T10).

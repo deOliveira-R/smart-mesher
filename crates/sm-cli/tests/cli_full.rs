@@ -118,6 +118,46 @@ fn fixed_time_and_author_make_node_hashes_reproducible() {
 
 #[test]
 #[ignore = "W2 integration"]
+fn run_fork_script_in_a_fresh_project_without_new() {
+    let d = tmp("forkfresh");
+    let p = d.join("fork");
+    let p = p.to_str().expect("utf8");
+    let r = ok_json(&["run", &data("fork.smesh"), "-p", p, "--json"], None);
+    assert!(r["state"].is_string());
+    assert!(d.join("fork/project.toml").is_file());
+}
+
+#[test]
+#[ignore = "W2 integration"]
+fn unpinned_runs_differ_in_node_hashes_but_not_in_state() {
+    let d = tmp("unpinned");
+    let mut out = Vec::new();
+    for n in ["a", "b"] {
+        let p = d.join(n);
+        let p = p.to_str().expect("utf8");
+        assert_eq!(smesh(&["new", p], None).status.code(), Some(0));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        out.push(ok_json(
+            &[
+                "apply",
+                "model.create_brick",
+                r#"{"x":10}"#,
+                "-p",
+                p,
+                "--json",
+            ],
+            None,
+        ));
+    }
+    assert_eq!(out[0]["state"], out[1]["state"]);
+    assert_ne!(
+        out[0]["node"], out[1]["node"],
+        "the pin is what makes nodes equal"
+    );
+}
+
+#[test]
+#[ignore = "W2 integration"]
 fn run_exports_and_hash_agree_with_print_hash() {
     let d = tmp("run");
     let mut args = vec![

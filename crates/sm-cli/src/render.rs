@@ -202,7 +202,7 @@ pub(crate) fn log(
         };
         let text = format!(
             "{} {}{tag}  {}  {} {}",
-            &hash[..hash.len().min(12)],
+            hash.chars().take(12).collect::<String>(),
             n["op"].as_str().unwrap_or(""),
             n["author"].as_str().unwrap_or(""),
             n["time"].as_str().unwrap_or(""),
