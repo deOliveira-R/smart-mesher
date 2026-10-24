@@ -236,3 +236,11 @@ fn reversed_mirrors_the_edges() {
         assert_close(er[k], e[8 - k], 1e-14, "reversed");
     }
 }
+
+#[test]
+fn bias_root_between_512_and_the_cap_is_reachable() {
+    // n = 2: alpha = 1 / (1 + r), so ln r = 600 needs alpha = e^-600 (the bracket must clamp at the cap, not skip it).
+    let alpha = 1.0 / (1.0 + 600.0f64.exp());
+    let r = bias_ratio_from_first(2, alpha).unwrap();
+    assert_close(r.ln(), 600.0, 1e-6, "ln ratio");
+}

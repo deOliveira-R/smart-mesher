@@ -38,7 +38,7 @@ The cold replay from root (`Session::state_at_from_root`) does not apply: this c
 5. **`bias {first_size, last_size}` with a given count** pins `first_size` and lets the last edge follow (the count is the part `last_size` controls). `stretch {first, last}` pins both end edges for 3 or more intervals; with 2 intervals the second edge is `L - first`.
 6. **`stretch` default `max_ratio` = 2.0** (my choice; the plan leaves the default open). A first-size-only stretch is a geometric series and is subject to the same limit.
 7. **One interval = no interior nodes**: with `n = 1` every scheme returns no interior fractions without validating sizes.
-8. **Arc-length convergence tolerance 1e-13** (cap 16384 panels), not machine precision: reference NURBS curves converge algebraically at knots. Measured against an independent 4000-panel rule the NURBS test passes at 1e-9.
+8. **Arc-length map is locally adaptive** (see fix round 0): per-panel tolerance 1e-14 of the initial length, up to 2^16 panels, `Geometry` error beyond that.
 9. The skeleton's `sm-math` dependency is kept but unused.
 10. **No criterion bench**: the task names none.
 
@@ -57,3 +57,21 @@ None blocking. Suggestion (non-blocking): `IntervalSink::goal(edge, real)` expos
 ## Delivery notes
 
 Branch `claude/w2-sm-scheme-curve-52efyt` (the session's designated branch) and `claude/w2-sm-scheme-curve` (the name in the task) point at the same commit. The final commit subject starts with "w2 sm-scheme-curve: done".
+
+## Fix round 0 (review findings)
+
+Must fix 1: `ArcMap` now refines panels locally (bisect while whole vs split estimates differ by more than 1e-14 L; non-uniform breakpoints kept in `tb`/`cum`; inversion runs in the refined panel; budget overrun is a `Geometry` error). New `tests/nurbs.rs`: double knot (quadratic) and triple knot (cubic) at 0.37, equal arc lengths within 1e-9 (both senses), and a bias `first_size` closure on the same curve.
+
+Should fix, all done:
+1. Line test asserts fractions are bit-exactly `(i+1)/n`; position check rescaled to `16 eps L`.
+2. Curvature samples with zero/non-finite speed or curvature give `Geometry` (test: cusp).
+3, 9. `spacing::stretch_count_from_sizes` caps the derived count at `MAX_COUNT`, now lowered to 2^22 for all count paths (typed `Unreachable`).
+4. Dualbias `first_size` must be strictly below L/2 (no 1e-12 slack), matching `dualbias_ratio_from_first` for n >= 3. Side effect: `first_size = L/2` with n = 2 is refused at applicability.
+5. `resolve` takes lengths from the same `ArcMap` as `node_params` (`engine::arc_length`).
+6. `monotone_root` clamps the last bracket step to the cap (test: ln ratio = 600).
+7. Stretch ratio test asserts the Constraint kind and the ratio-limit reason.
+8. Curvature samples kappa at arc-length fractions through `ArcMap::taus`, integrates in arc length, inverts, then maps. Tests: NURBS quarter circle and non-uniform NURBS line match equal within 1e-12.
+10. `applicability` derives counts (`want_count = true`). Note: the review's example `{ratio 0.5, first_size 0.9}` is reachable on a unit edge (first/(1-r) = 1.8); the test uses `first_size 0.4` (0.8 < L).
+11. Determinism test runs Sequential vs `ScopedThreads(N)` and compares `check::mesh_hash` of the finished mesh plus the node distances.
+12. End-to-end test builds with `sm_mesh::MeshBuilder`. The `sm-mesh-api` dev-dependency stays: `MeshRead`, `SerialAlloc` and `validate` are only exported there (not re-exported by `sm-mesh` or `sm-scheme-api`).
+13. `sm-math` left declared, consistent with the skeleton (deviation 9).

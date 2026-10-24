@@ -64,8 +64,9 @@ impl CurveScheme {
     fn resolve(&self, topo: &dyn TopologyView, edge: EntityId, params: &Params, want_count: bool) -> Result<Resolved, String> {
         let (a, b) = topo.edge_ends(edge).ok_or_else(|| format!("edge {edge} has no ends"))?;
         let closed = a == b;
-        geom::edge_curve(topo, edge).map_err(|e| e.to_string())?;
-        let length = || geom::edge_length(topo, edge).map_err(|e| e.to_string());
+        let (curve, cc) = geom::edge_curve(topo, edge).map_err(|e| e.to_string())?;
+        // One length source for validation and spacing: the arc-length map `node_params` uses.
+        let length = || crate::engine::arc_length(curve, cc).map_err(|e| e.to_string());
         let below = |what: &str, size: f64, limit: f64| if size < limit { Ok(()) } else { Err(format!("{what} {size} must be below {limit}")) };
         let count = |r: crate::error::Result<u32>| r.map_err(|e| e.to_string());
         match self.kind {
@@ -107,7 +108,8 @@ impl CurveScheme {
                 let p: DualbiasParams = parse(params)?;
                 let mode = p.mode()?;
                 if let DualMode::First(f) = mode {
-                    below("first_size (end edges of a mirrored series, half the length at most)", f, length()? / 2.0 * (1.0 + 1e-12))?;
+                    // Strictly below half: `dualbias_ratio_from_first` needs alpha < 0.5 for n >= 3.
+                    below("first_size (end edges of a mirrored series, under half the length)", f, length()? / 2.0)?;
                 }
                 Ok(Resolved { spec: Spec::Dualbias(mode), count: None })
             }
@@ -123,7 +125,7 @@ impl CurveScheme {
                 if let Some(l) = last {
                     below("last_size", l, len)?;
                     if want_count {
-                        n = Some(((2.0 * len / (first + l)).round_ties_even().max(1.0)) as u32);
+                        n = Some(count(spacing::stretch_count_from_sizes(len, first, l))?);
                     }
                 }
                 Ok(Resolved { spec: Spec::Stretch { first, last, max_ratio }, count: n })
@@ -156,7 +158,7 @@ impl Scheme for CurveScheme {
         let Target::Curve(e) = target else {
             return Applicability::no("not a curve");
         };
-        match self.resolve(cx.input.topo, e, params, false) {
+        match self.resolve(cx.input.topo, e, params, true) {
             Ok(_) if self.kind == CurveKind::Equal => Applicability::yes(50, "uniform in arc length"),
             Ok(_) => Applicability::yes(40, format!("{} spacing", self.kind.name())),
             Err(r) => Applicability::no(r),

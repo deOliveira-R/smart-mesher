@@ -12,7 +12,7 @@ use crate::error::{Result, SpacingError};
 /// Largest accepted `|ln ratio|` of a bias series.
 const LAMBDA_CAP: f64 = 700.0;
 /// Most intervals the fine/coarse count search considers.
-const MAX_COUNT: u64 = 1 << 26;
+const MAX_COUNT: u64 = 1 << 22;
 
 fn positive(what: &'static str, value: f64) -> Result<f64> {
     if value.is_finite() && value > 0.0 { Ok(value) } else { Err(SpacingError::BadValue { what, value }) }
@@ -51,19 +51,19 @@ fn monotone_root(f: impl Fn(f64) -> f64, cap: f64) -> Result<f64> {
     while flo > 0.0 {
         hi = lo;
         fhi = flo;
-        lo *= 2.0;
-        if lo.abs() > cap {
+        if lo.abs() >= cap {
             return Err(unreachable());
         }
+        lo = (lo * 2.0).max(-cap);
         flo = f(lo);
     }
     while fhi < 0.0 {
         lo = hi;
         flo = fhi;
-        hi *= 2.0;
-        if hi > cap {
+        if hi >= cap {
             return Err(unreachable());
         }
+        hi = (hi * 2.0).min(cap);
         fhi = f(hi);
     }
     if !(flo.is_finite() && fhi.is_finite()) {
@@ -163,6 +163,17 @@ pub fn bias_count_from_ratio(length: f64, first: f64, ratio: f64) -> Result<u32>
         }
         x.ln_1p() / lam
     };
+    if !(n.is_finite() && n < MAX_COUNT as f64) {
+        return Err(SpacingError::Unreachable("interval count out of range".into()));
+    }
+    Ok(n.round_ties_even().max(1.0) as u32)
+}
+
+/// The interval count of a stretched spacing with end edges `first` and `last` on `length`:
+/// `2 L / (first + last)` rounded half-to-even, at least 1; errors beyond the count cap.
+pub fn stretch_count_from_sizes(length: f64, first: f64, last: f64) -> Result<u32> {
+    let (length, first, last) = (positive("length", length)?, positive("first size", first)?, positive("last size", last)?);
+    let n = 2.0 * length / (first + last);
     if !(n.is_finite() && n < MAX_COUNT as f64) {
         return Err(SpacingError::Unreachable("interval count out of range".into()));
     }

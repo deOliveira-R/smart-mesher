@@ -81,9 +81,16 @@ pub fn node_params(curve: &dyn ParametricCurve, cc: CurveCarrier, n: u32, spec: 
     Ok(map.taus(&arc))
 }
 
+/// Total arc length of the edge, from the same arc-length map the spacing uses.
+pub fn arc_length(curve: &dyn ParametricCurve, cc: CurveCarrier) -> Result<f64> {
+    Ok(ArcMap::new(curve, cc)?.length())
+}
+
 /// Curvature-adapted nodes: equal integrals of `rho = (1 + |c| L k)^sign(c)` between nodes
-/// (`k` the curvature, `L` the length), by trapezoid cumulative integration over the edge
-/// fraction and linear monotone inversion.
+/// (`k` the curvature, `L` the length). `k` is sampled at equal **arc-length** fractions (through
+/// the arc map), `rho` is integrated over arc length by the trapezoid rule and inverted linearly,
+/// and the resulting arc fractions go through the arc map. A constant `k` therefore gives equal
+/// spacing on any parametrization.
 fn curvature_params(map: &ArcMap<'_>, n: u32, factor: f64) -> Result<Vec<f64>> {
     if !factor.is_finite() {
         return Err(SpacingError::BadValue { what: "factor", value: factor });
@@ -91,22 +98,32 @@ fn curvature_params(map: &ArcMap<'_>, n: u32, factor: f64) -> Result<Vec<f64>> {
     let (curve, cc) = map.curve();
     let len = map.length();
     let m = (SAMPLES_PER_INTERVAL * n as usize).max(MIN_CURVATURE_SAMPLES);
-    let sample = |i: usize| -> (f64, f64) {
-        let j = curve.jet(edge_param(&cc, i as f64 / m as f64));
+    let arc: Vec<f64> = (0..=m).map(|i| i as f64 / m as f64).collect();
+    let taus = map.taus(&arc);
+    let sample = |i: usize| -> Result<f64> {
+        let j = curve.jet(edge_param(&cc, taus[i]));
         let speed = j.d1.norm();
-        (map.speed(i as f64 / m as f64), j.d1.cross(j.d2).norm() / (speed * speed * speed))
+        let k = j.d1.cross(j.d2).norm() / (speed * speed * speed);
+        if !(speed.is_finite() && speed > 0.0 && k.is_finite()) {
+            return Err(SpacingError::Geometry(format!(
+                "curvature is undefined near edge fraction {} (zero or non-finite speed or curvature)",
+                taus[i]
+            )));
+        }
+        Ok(k)
     };
-    let samples: Vec<(f64, f64)> = if m >= PAR_SAMPLES { (0..=m).into_par_iter().map(sample).collect() } else { (0..=m).map(sample).collect() };
-    let kmax = samples.iter().fold(0.0f64, |a, s| a.max(s.1));
-    if !kmax.is_finite() || factor.abs() * len * kmax > MAX_DENSITY_EXPONENT {
+    let ks: Result<Vec<f64>> = if m >= PAR_SAMPLES { (0..=m).into_par_iter().map(sample).collect() } else { (0..=m).map(sample).collect() };
+    let ks = ks?;
+    let kmax = ks.iter().fold(0.0f64, |a, &k| a.max(k));
+    if factor.abs() * len * kmax > MAX_DENSITY_EXPONENT {
         return Err(SpacingError::Unreachable(format!("|factor| * length * max curvature = {} exceeds {MAX_DENSITY_EXPONENT}", factor.abs() * len * kmax)));
     }
     let c = factor.abs() * len;
-    let w: Vec<f64> = samples
+    let w: Vec<f64> = ks
         .iter()
-        .map(|&(g, k)| {
+        .map(|&k| {
             let base = 1.0 + c * k;
-            g * if factor >= 0.0 { base } else { 1.0 / base }
+            if factor >= 0.0 { base } else { 1.0 / base }
         })
         .collect();
     let mut cum = Vec::with_capacity(m + 1);
@@ -117,9 +134,9 @@ fn curvature_params(map: &ArcMap<'_>, n: u32, factor: f64) -> Result<Vec<f64>> {
         cum.push(acc);
     }
     if !(acc.is_finite() && acc > 0.0) {
-        return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
+        return Err(SpacingError::Geometry("curvature density is not finite".into()));
     }
-    let out: Vec<f64> = (1..n)
+    let nodes: Vec<f64> = (1..n)
         .map(|k| {
             let target = acc * f64::from(k) / f64::from(n);
             let j = cum.partition_point(|c| *c <= target).saturating_sub(1).min(m - 1);
@@ -127,6 +144,7 @@ fn curvature_params(map: &ArcMap<'_>, n: u32, factor: f64) -> Result<Vec<f64>> {
             (j as f64 + t) / m as f64
         })
         .collect();
+    let out = map.taus(&nodes);
     let mut prev = 0.0;
     for &x in &out {
         if !(x > prev && x < 1.0) {

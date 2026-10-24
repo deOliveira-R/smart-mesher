@@ -1,4 +1,4 @@
-//! Arc-length parametrization of an edge: adaptive composite Gauss-Legendre plus a monotone
+//! Arc-length parametrization of an edge: locally adaptive Gauss-Legendre plus a monotone
 //! inverse (safeguarded Newton inside one panel).
 
 use crate::error::{Result, SpacingError};
@@ -10,24 +10,43 @@ use sm_topo_api::CurveCarrier;
 const GL_X: [f64; 5] = [0.0, -0.538_469_310_105_683_1, 0.538_469_310_105_683_1, -0.906_179_845_938_664, 0.906_179_845_938_664];
 const GL_W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
 
+/// Initial uniform panels before local refinement.
 const MIN_PANELS: usize = 8;
-const MAX_PANELS: usize = 1 << 14;
-/// Panel count from which panels are integrated in parallel (results are order-independent).
-const PAR_PANELS: usize = 1 << 11;
+/// Most panels the refinement may produce before the map is refused.
+const MAX_PANELS: usize = 1 << 16;
+/// A panel is accepted when its whole and split estimates differ by at most this times the
+/// initial length estimate.
+const PANEL_TOL: f64 = 1e-14;
+/// Panels narrower than this (in edge fraction) are accepted as they are: a kink cannot be
+/// resolved further in double precision.
+const MIN_WIDTH: f64 = 1e-13;
 /// Node count from which the inverse is evaluated in parallel.
 const PAR_NODES: usize = 1 << 11;
-const CONVERGED: f64 = 1e-13;
 /// Relative speed spread below which the parametrization counts as arc-length proportional.
 const UNIFORM_SPREAD: f64 = 1e-13;
 
 /// Arc length as a function of the edge fraction `tau` in `[0, 1]` (from the edge's start).
+///
+/// Panels are refined locally where the speed is not smooth (repeated knots, kinks), so the map
+/// is accurate on non-uniformly parametrized NURBS without knowing the knots.
 pub(crate) struct ArcMap<'a> {
     curve: &'a dyn ParametricCurve,
     cc: CurveCarrier,
     span: f64,
+    /// Panel breakpoints in the edge fraction (`0 ..= 1`).
+    tb: Vec<f64>,
+    /// Arc length at each breakpoint.
     cum: Vec<f64>,
     total: f64,
     uniform: bool,
+}
+
+/// One panel `[a, b]` and its 5-point integral.
+#[derive(Clone, Copy)]
+struct Panel {
+    a: f64,
+    b: f64,
+    i: f64,
 }
 
 impl<'a> ArcMap<'a> {
@@ -36,42 +55,59 @@ impl<'a> ArcMap<'a> {
         if !(cc.range.lo.is_finite() && cc.range.hi.is_finite() && span > 0.0) {
             return Err(SpacingError::Geometry("unbounded or empty curve range".into()));
         }
-        let mut map = ArcMap { curve, cc, span, cum: Vec::new(), total: 0.0, uniform: false };
-        let panels = |p: usize| -> Vec<(f64, f64, f64)> {
-            let one = |j: usize| map.gl(j as f64 / p as f64, (j + 1) as f64 / p as f64);
-            if p >= PAR_PANELS { (0..p).into_par_iter().map(one).collect() } else { (0..p).map(one).collect() }
-        };
-        let sum = |v: &[(f64, f64, f64)]| v.iter().map(|t| t.0).sum::<f64>();
-        let mut p = MIN_PANELS;
-        let mut cur = panels(p);
-        let mut tot = sum(&cur);
-        while p < MAX_PANELS {
-            let next = panels(2 * p);
-            let tot2 = sum(&next);
-            let done = (tot2 - tot).abs() <= CONVERGED * tot2.abs();
-            p *= 2;
-            cur = next;
-            tot = tot2;
-            if done {
-                break;
-            }
-        }
+        let mut map = ArcMap { curve, cc, span, tb: Vec::new(), cum: Vec::new(), total: 0.0, uniform: false };
         let (mut smin, mut smax) = (f64::INFINITY, 0.0f64);
-        for t in &cur {
-            smin = smin.min(t.1);
-            smax = smax.max(t.2);
-        }
-        if !(tot.is_finite() && tot > 0.0 && smin.is_finite() && smin > 0.0 && smax.is_finite()) {
+        let mut eval = |map: &ArcMap<'_>, a: f64, b: f64| -> Panel {
+            let (i, lo, hi) = map.gl(a, b);
+            smin = smin.min(lo);
+            smax = smax.max(hi);
+            Panel { a, b, i }
+        };
+        let init: Vec<Panel> = (0..MIN_PANELS).map(|j| eval(&map, j as f64 / MIN_PANELS as f64, (j + 1) as f64 / MIN_PANELS as f64)).collect();
+        let l0: f64 = init.iter().map(|p| p.i).sum();
+        if !(l0.is_finite() && l0 > 0.0) {
             return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
         }
-        let mut cum = Vec::with_capacity(cur.len() + 1);
+        let tol = PANEL_TOL * l0;
+        // Depth-first refinement in a fixed order, so the result is deterministic.
+        let mut out: Vec<Panel> = Vec::with_capacity(4 * MIN_PANELS);
+        let mut stack: Vec<Panel> = init.into_iter().rev().collect();
+        while let Some(p) = stack.pop() {
+            let m = 0.5 * (p.a + p.b);
+            let (l, r) = (eval(&map, p.a, m), eval(&map, m, p.b));
+            let diff = (p.i - (l.i + r.i)).abs();
+            if !diff.is_finite() {
+                return Err(SpacingError::Geometry("curve has non-finite speed".into()));
+            }
+            if diff <= tol || p.b - p.a <= MIN_WIDTH {
+                out.push(l);
+                out.push(r);
+            } else {
+                stack.push(r);
+                stack.push(l);
+            }
+            if out.len() + stack.len() > MAX_PANELS {
+                return Err(SpacingError::Geometry("arc length did not converge: speed is not integrable to double precision on this curve".into()));
+            }
+        }
+        if !(smin.is_finite() && smin > 0.0 && smax.is_finite()) {
+            return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
+        }
+        let mut tb = Vec::with_capacity(out.len() + 1);
+        let mut cum = Vec::with_capacity(out.len() + 1);
         let mut acc = 0.0;
+        tb.push(0.0);
         cum.push(0.0);
-        for t in &cur {
-            acc += t.0;
+        for p in &out {
+            acc += p.i;
+            tb.push(p.b);
             cum.push(acc);
         }
+        if !(acc.is_finite() && acc > 0.0) {
+            return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
+        }
         map.total = acc;
+        map.tb = tb;
         map.cum = cum;
         map.uniform = smax - smin <= UNIFORM_SPREAD * smax;
         Ok(map)
@@ -92,7 +128,7 @@ impl<'a> ArcMap<'a> {
         (self.curve, self.cc)
     }
 
-    /// Composite 5-point rule on `[a, b]`: `(integral, min speed, max speed)`.
+    /// 5-point rule on `[a, b]`: `(integral, min speed, max speed)`.
     fn gl(&self, a: f64, b: f64) -> (f64, f64, f64) {
         let (h, mid) = (0.5 * (b - a), 0.5 * (a + b));
         let (mut s, mut lo, mut hi) = (0.0, f64::INFINITY, 0.0f64);
@@ -109,7 +145,7 @@ impl<'a> ArcMap<'a> {
     fn tau_at(&self, s: f64) -> f64 {
         let p = self.cum.len() - 1;
         let j = self.cum.partition_point(|c| *c <= s).saturating_sub(1).min(p - 1);
-        let (lo, hi) = (j as f64 / p as f64, (j + 1) as f64 / p as f64);
+        let (lo, hi) = (self.tb[j], self.tb[j + 1]);
         let target = s - self.cum[j];
         let cell = self.cum[j + 1] - self.cum[j];
         if target <= 0.0 {

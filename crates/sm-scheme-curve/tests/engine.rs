@@ -90,9 +90,12 @@ fn equal_on_a_line_is_i_l_over_n_to_an_ulp() {
             let start = if sense == Sense::Forward { 1.0 } else { 1.0 + l };
             let dir = if sense == Sense::Forward { 1.0 } else { -1.0 };
             for (i, f) in fr.iter().enumerate() {
+                // What the crate controls: uniform curves give the exact fractions (i+1)/n.
+                assert_eq!(*f, (i as f64 + 1.0) / n as f64, "n={n} i={i}");
+                // Positions also carry the rounding of edge_param/Line::eval (outside this crate).
                 let x = line.eval(param(&cc, *f)).x;
                 let want = start + dir * (i as f64 + 1.0) * l / n as f64;
-                assert!((x - want).abs() <= 2.0 * f64::EPSILON * (1.0 + l), "n={n} i={i}: {x} vs {want}");
+                assert!((x - want).abs() <= 16.0 * f64::EPSILON * l, "n={n} i={i}: {x} vs {want}");
             }
         }
     }

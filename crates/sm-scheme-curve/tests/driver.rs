@@ -2,12 +2,12 @@
 //! applicability and registration checks.
 
 use sm_core::{EntityId, Point3};
-use sm_mesh_api::reference::ReferenceBuilder;
+use sm_mesh::MeshBuilder;
 use sm_mesh_api::{MeshRead, SerialAlloc, validate};
 use sm_scheme_api::stubs::{self as stub, brick_setup};
 use sm_scheme_api::{
-    Applicability, Driver, Firm, Firmness, IntervalRequest, MeshInput, MeshIntent, Params, PlanCtx, ReferenceCornerPicker, ReferenceIntervalSolver,
-    SchemeChoice, SchemeDim, SchemeRegistry, Sequential, Target, WholeFaces,
+    Applicability, Driver, Executor, Firm, Firmness, IntervalRequest, MeshInput, MeshIntent, Params, PlanCtx, ReferenceCornerPicker, ReferenceIntervalSolver,
+    SchemeChoice, SchemeDim, SchemeRegistry, ScopedThreads, Sequential, Target, WholeFaces,
 };
 use sm_scheme_curve::spacing;
 use sm_topo_api::fixtures::{BrickIds, cylinder, with_op};
@@ -52,9 +52,14 @@ struct Run {
     n: u32,
     vertices_on_edge: usize,
     valid: bool,
+    mesh_hash: u64,
 }
 
 fn run_on(edge_ix: usize, scheme: Option<SchemeChoice>, count: Count) -> Result<Run, String> {
+    run_on_with(edge_ix, scheme, count, &Sequential)
+}
+
+fn run_on_with(edge_ix: usize, scheme: Option<SchemeChoice>, count: Count, exec: &dyn Executor) -> Result<Run, String> {
     let (topo, ids, model) = brick_setup([1.0, 1.5, 2.0]);
     let reg = registry();
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
@@ -78,7 +83,7 @@ fn run_on(edge_ix: usize, scheme: Option<SchemeChoice>, count: Count) -> Result<
     if let Some(s) = scheme {
         intent.set_scheme(e, s);
     }
-    let out = driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new()).map_err(|e| e.to_string())?;
+    let out = driver.mesh(&input, &intent, exec, MeshBuilder::new(), &mut SerialAlloc::new()).map_err(|e| e.to_string())?;
     let (a, _) = topo.edge_ends(e).unwrap();
     let p0 = match topo.carrier(a) {
         sm_topo_api::Carrier::Point(p) => *p,
@@ -92,6 +97,7 @@ fn run_on(edge_ix: usize, scheme: Option<SchemeChoice>, count: Count) -> Result<
         n: out.plan.intervals(e).unwrap(),
         vertices_on_edge: m.classified_on(e).map_or(0, |s| s.vertices.len()),
         valid: validate(m).is_empty(),
+        mesh_hash: sm_testkit::check::mesh_hash(m),
     })
 }
 
@@ -219,7 +225,9 @@ fn stretch_pins_the_first_edge_and_derives_the_count() {
 #[test]
 fn stretch_beyond_max_ratio_fails_instead_of_relaxing() {
     let res = run_on(X, Some(choice("stretch", serde_json::json!({ "first_size": 0.01, "max_ratio": 1.2 }))), Count::Hard(5));
-    assert!(res.is_err(), "a hard stretch that needs more than max_ratio is an error");
+    let err = res.err().expect("a hard stretch that needs more than max_ratio is an error");
+    assert!(err.contains("Constraint") || err.contains("onstraint"), "failure kind: {err}");
+    assert!(err.contains("segment ratio") && err.contains("allowed maximum"), "reason names the ratio limit: {err}");
 }
 
 #[test]
@@ -273,6 +281,11 @@ fn invalid_params_are_not_applicable_with_a_reason() {
         ("dualbias", serde_json::json!({})),
         ("dualbias", serde_json::json!({ "ratio": 1.1, "first_size": 0.1 })),
         ("dualbias", serde_json::json!({ "first_size": 0.6 })),
+        // Exactly half cannot be met for n >= 3.
+        ("dualbias", serde_json::json!({ "first_size": 0.5 })),
+        // Derived counts that are unreachable or absurd are reasons, not hard errors.
+        ("bias", serde_json::json!({ "ratio": 0.5, "first_size": 0.4 })),
+        ("stretch", serde_json::json!({ "first_size": 1e-300, "last_size": 1e-300 })),
         ("stretch", serde_json::json!({})),
         ("stretch", serde_json::json!({ "last_size": 0.1 })),
         ("stretch", serde_json::json!({ "first_size": 0.1, "max_ratio": 0.5 })),
@@ -329,26 +342,31 @@ fn equal_outscores_the_other_schemes_and_closed_curves_refuse_stretch_and_curvat
 
 #[test]
 fn driver_output_is_bit_identical_across_executors_and_runs() {
-    use sm_testkit::determinism::hash_f64_bits;
+    // One thread runs the Sequential executor, N threads run ScopedThreads; the finished meshes
+    // (connectivity, topology, geometry) must hash equal, run after run.
     let run = |threads: usize| {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
         pool.install(|| {
-            let mut bits = Vec::new();
+            let mut hashes = Vec::new();
             for (ix, s, c) in [
                 (X, choice("bias", serde_json::json!({ "first_size": 0.03 })), Count::Hard(30)),
                 (Y, choice("dualbias", serde_json::json!({ "ratio": 1.1 })), Count::Hard(25)),
                 (Z, choice("curvature", serde_json::json!({ "factor": 2.0 })), Count::Std),
             ] {
-                let r = run_on(ix, Some(s), c).unwrap();
-                bits.extend(r.dist);
-                bits.push(f64::from(r.n));
+                let r = if threads == 1 { run_on_with(ix, Some(s), c, &Sequential) } else { run_on_with(ix, Some(s), c, &ScopedThreads(threads)) }.unwrap();
+                hashes.push(r.mesh_hash);
+                hashes.push(f64_hash(&r.dist));
             }
-            bits
+            hashes
         })
     };
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().max(2));
-    let bits = sm_testkit::determinism::check_f64_bits(2, threads, run).unwrap();
-    assert_ne!(hash_f64_bits(&bits), 0);
+    let hashes = sm_testkit::determinism::check(2, threads, run).unwrap();
+    assert!(hashes.iter().all(|h| *h != 0));
     // Silence: the points type is part of the public API surface used above.
     let _ = Point3::new(0.0, 0.0, 0.0);
+}
+
+fn f64_hash(v: &[f64]) -> u64 {
+    sm_testkit::determinism::hash_f64_bits(v)
 }
