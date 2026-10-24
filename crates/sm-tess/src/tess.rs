@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use rayon::prelude::*;
 use sm_core::EntityId;
+use sm_geom_api::{CurveDef, SurfaceDef};
 use sm_topo_api::{Carrier, CellFlags, Dim, TopologyView, TopologyViewExt};
 
 use crate::edges::{self, EdgeSamples};
@@ -179,18 +180,37 @@ pub(crate) fn scene_diagonal(view: &dyn TopologyView, faces: &[EntityId], extra_
     (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt()
 }
 
-/// Sampling options of one edge: halved chord if any adjacent face is on a doubly curved surface.
-fn edge_options(view: &dyn TopologyView, edge: EntityId, o: &TessOptions) -> TessOptions {
+/// Sampling rule of one edge: the options (halved chord if any adjacent face is on a doubly
+/// curved surface) and, for a circle next to a cone, the largest ring radius of that cone.
+///
+/// A cone is sampled well only if all its rings have the same point count: then every triangle
+/// of the grid is a planar quad half spanned by two generators through the apex, and its sag is
+/// the circle rule at the largest ring. With different counts a triangle edge joins two rings at
+/// different angles, is not a generator and cuts across the whole slant. So each circle next to a
+/// cone is sampled as if it had the radius of the largest circle on that cone.
+fn edge_rule(view: &dyn TopologyView, edge: EntityId, o: &TessOptions) -> (TessOptions, Option<f64>) {
     let shapes = view.shapes();
+    let mut opts = *o;
+    let mut ring_radius: Option<f64> = None;
+    let mut halved = false;
     for inc in view.coboundary(edge) {
-        if let Carrier::Surface(sc) = view.carrier(inc.cell)
-            && let Some(def) = shapes.surface_def(sc.surface)
-            && sample::is_doubly_curved(def)
-        {
-            return sample::grid_opts(def, o);
+        let Carrier::Surface(sc) = view.carrier(inc.cell) else { continue };
+        let Some(def) = shapes.surface_def(sc.surface) else { continue };
+        if sample::is_doubly_curved(def) && !halved {
+            opts = sample::grid_opts(def, o);
+            halved = true;
+        }
+        if matches!(def, SurfaceDef::Cone(_)) {
+            for e in view.face_edges(inc.cell) {
+                if let Carrier::Curve(cc) = view.carrier(*e)
+                    && let Some(CurveDef::Circle(c)) = shapes.curve_def(cc.curve)
+                {
+                    ring_radius = Some(ring_radius.map_or(c.radius, |r: f64| r.max(c.radius)));
+                }
+            }
         }
     }
-    *o
+    (opts, ring_radius)
 }
 
 fn first_error<T>(results: Vec<Result<T, TessError>>) -> Result<Vec<T>, TessError> {
@@ -250,8 +270,8 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
     // Edges next to a doubly curved face use half the chord budget (the face's rows get the other
     // half). The rule looks at all faces of the model, not only the requested ones, so an edge's
     // polyline never depends on which faces were asked for.
-    let edge_opts: Vec<TessOptions> = edges.iter().map(|&e| edge_options(view, e, opts)).collect();
-    let sampled: Vec<Result<EdgeSamples, TessError>> = edges.par_iter().zip(ends.par_iter()).zip(edge_opts.par_iter()).map(|((&e, &(a, b)), o)| edges::sample_edge(view, e, a == b, o)).collect();
+    let edge_opts: Vec<(TessOptions, Option<f64>)> = edges.iter().map(|&e| edge_rule(view, e, opts)).collect();
+    let sampled: Vec<Result<EdgeSamples, TessError>> = edges.par_iter().zip(ends.par_iter()).zip(edge_opts.par_iter()).map(|((&e, &(a, b)), (o, ring))| edges::sample_edge(view, e, a == b, o, *ring)).collect();
     let sampled = first_error(sampled)?;
 
     // Stage B (serial): number vertices, then edge interiors in edge order.
@@ -270,8 +290,8 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
         edge_pos.push(vertex_pos[a]);
         edge_t.push(ta);
         for (i, p) in s.interior.iter().enumerate() {
-            if next >= u32::MAX as usize - 1 {
-                return Err(TessError::TooLarge("more than 2^32 vertices".into()));
+            if next >= sample::MAX_VERTICES {
+                return Err(TessError::TooLarge(format!("more than {} vertices on the edges alone (raise chord_tol)", sample::MAX_VERTICES)));
             }
             edge_g.push(next as u32);
             next += 1;
@@ -287,7 +307,8 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
     let g_count = next as u32;
 
     // Stage C: triangulate faces (parallel, results kept in face order).
-    let sh = Shared { view, opts, edges: &edges, edge_off: &edge_off, edge_g: &edge_g, edge_pos: &edge_pos, edge_t: &edge_t, vertices: &vertices, g_count };
+    let budget = std::sync::atomic::AtomicUsize::new(0);
+    let sh = Shared { view, opts, edges: &edges, edge_off: &edge_off, edge_g: &edge_g, edge_pos: &edge_pos, edge_t: &edge_t, vertices: &vertices, g_count, budget: &budget };
     let outs: Vec<Result<FaceOut, TessError>> = faces.par_iter().map(|&f| face::tessellate_face(&sh, f)).collect();
     let outs = first_error(outs)?;
 
@@ -296,8 +317,8 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
     let mut face_ranges = Vec::with_capacity(faces.len());
     for (&f, out) in faces.iter().zip(&outs) {
         let offset = positions.len() / 3;
-        if offset + out.steiner.len() >= u32::MAX as usize - 1 || indices.len() + 3 * out.tris.len() >= u32::MAX as usize {
-            return Err(TessError::TooLarge("more than 2^32 vertices or indices".into()));
+        if offset + out.steiner.len() > sample::MAX_VERTICES || indices.len() + 3 * out.tris.len() >= u32::MAX as usize {
+            return Err(TessError::TooLarge(format!("more than {} vertices or 2^32 indices (raise chord_tol)", sample::MAX_VERTICES)));
         }
         for p in &out.steiner {
             positions.extend(p.iter().map(|&x| x as f32));

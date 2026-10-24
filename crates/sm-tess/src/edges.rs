@@ -19,7 +19,8 @@ pub(crate) struct EdgeSamples {
     pub interior: Vec<P3>,
 }
 
-pub(crate) fn sample_edge(view: &dyn TopologyView, edge: EntityId, closed: bool, o: &TessOptions) -> Result<EdgeSamples, TessError> {
+/// `ring_radius`: radius to sample a circle with if larger than its own (see `tess::edge_rule`).
+pub(crate) fn sample_edge(view: &dyn TopologyView, edge: EntityId, closed: bool, o: &TessOptions, ring_radius: Option<f64>) -> Result<EdgeSamples, TessError> {
     let Carrier::Curve(cc) = view.carrier(edge) else {
         return Ok(EdgeSamples { params: Vec::new(), interior: Vec::new() });
     };
@@ -43,7 +44,7 @@ pub(crate) fn sample_edge(view: &dyn TopologyView, edge: EntityId, closed: bool,
         Some(CurveDef::Circle(c)) => {
             let span = hi - lo;
             let full = (span - core::f64::consts::TAU).abs() < 1e-9 || closed;
-            sample::uniform(lo, hi, sample::circle_segments(span, c.radius, full, o).map_err(map_err)?)
+            sample::uniform(lo, hi, sample::circle_segments(span, c.radius.max(ring_radius.unwrap_or(0.0)), full, o).map_err(map_err)?)
         }
         _ => sample::adaptive_params(&eval, lo, hi, o).map_err(map_err)?,
     };

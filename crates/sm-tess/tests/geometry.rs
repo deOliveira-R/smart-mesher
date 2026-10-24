@@ -223,3 +223,14 @@ fn empty_input_is_an_empty_tessellation() {
     let t = tessellate(&c, &[], &TessOptions::default()).unwrap();
     assert_eq!((t.vertex_count(), t.triangle_count(), t.faces.len(), t.edges.len()), (0, 0, 0, 0));
 }
+
+#[test]
+fn tiny_chord_tol_is_too_large_not_an_abort() {
+    // About 1e5 segments per direction, each under the per-curve cap, but 1e10 grid points.
+    let (c, _) = build(|t| sphere(t, 1.0));
+    let o = TessOptions { chord_tol: 1e-9, angle_tol: 3.0, max_edge: f64::INFINITY };
+    let started = std::time::Instant::now();
+    let r = tessellate(&c, &all_faces(&c), &o);
+    assert!(matches!(r, Err(TessError::TooLarge(_))), "{:?}", r.map(|t| t.vertex_count()));
+    assert!(started.elapsed().as_secs() < 20);
+}

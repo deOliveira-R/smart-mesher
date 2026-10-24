@@ -55,6 +55,16 @@ Branch: the task text says `claude/w2-sm-tess`; this session was assigned `claud
 - **SHOULD 7.** Dependencies unchanged; the orchestrator should amend the T2 Deps line to include `thiserror`, `serde`, `schemars` (not edited here, outside the crate).
 - **SHOULD 10.** Done in DESIGN.md ("Sag bound on grid faces"); the edge-sagitta theorem is now stated as edge-only.
 
+## Fix round 1 (review findings)
+
+- **MUST 1 (frustum sag).** Cause confirmed: rings with different radii got different counts, and the zipper's cross-ring edges (not generators) cut across the slant (2.0-2.5x at ring ratio 20, 1.9-2.2x at half angle 0.05). Fix (option b, at the edge level): `tess::edge_rule` samples every circle next to a cone with the radius of the largest circle on that cone, so all rings have equal counts and parameters and the strips are planar quads; interior rows are never finer than that. No change to `grid_face`'s zipper. Measured now (`angle_tol = 3`, chord 1e-2/1e-3/1e-4): 0.36-0.99x over cone sweep `(a, vb, vt)` = (0.5,4,-), (0.5,6,1.5), (0.5,10,0.5), (0.2,10,0.5), (0.05,10,1), (0.5,10,2), (0.05,10,5), (0.05,10,0.5), (1.2,10,0.2); with `max_edge` 1.0 and 0.7 also within `chord_tol`. Tests: `shapes::cone_and_frustum_sag_is_within_chord_tol` (extended, all nine cases, also structure and normals), `shapes::frustum_rings_get_one_common_point_count` (replaces `frustum_with_unequal_rings_is_merge_triangulated`, which asserted the old unequal counts), `shapes::frustum_rings_share_one_point_count_and_max_edge_cones_stay_in_tolerance`. DESIGN.md, `TessOptions`, `grid_opts`/`is_doubly_curved` and the crate docs are corrected. Cost: the small ring of a frustum has the big ring's point count. Not taken: cone budget halving (unnecessary once the strips are planar).
+- **SHOULD 1 (size budget).** Done: `TessError::TooLarge` above 2^24 vertices per tessellation, checked before allocation (edge numbering; grid faces sum rows x points first and reserve from a shared atomic counter). The `u32` overflow in `g_count + steiner.len()` can no longer occur. Test `geometry::tiny_chord_tol_is_too_large_not_an_abort` (unit sphere, `chord_tol = 1e-9`). Documented in `TessOptions`, `TessError::TooLarge`, crate docs and DESIGN.md.
+- **SHOULD 2.** Done: f32 rounding term stated in the `TessOptions` rustdoc and DESIGN.md.
+- **SHOULD 3.** Done: `shapes::sphere_band_across_the_equator_is_within_chord_tol` (bands `|v| <= 0.4, 0.8, 1.2`; measured 0.97-1.00x; with the per-row own count disabled it fails at 1.005x).
+- **SHOULD 4, 5 (Deps line).** Not a crate change. Orchestrator action: amend the T2 Deps line in `docs/design/w2/plan.md` to add `thiserror`, `serde`, `schemars` and drop `sm-math`, `sm-geom`. The crate's `Cargo.toml` is unchanged.
+- **SHOULD 6.** Noted in DESIGN.md (an edge between a cylinder or cone and a doubly curved face refines the developable side too).
+- **SHOULD 7.** Skipped on purpose: the 0.5 split is the derived bound, and the measured 0.99x is that bound, not an unexplained margin; the only excess comes from `f32` rounding, which is now documented. A factor of 0.45 would add about 5% points per direction and change no guarantee. Reasoning in DESIGN.md.
+
 ## api_change_requests
 
 None.

@@ -12,7 +12,9 @@
 //!    surfaces the chord budget is split: edges next to such a face are sampled with
 //!    `chord_tol / 2` (see `tess.rs`) and rows use `chord_tol / 2` too, so a triangle's sag,
 //!    about `sag_u + sag_v`, stays within `chord_tol`.
-//!    Adjacent rows are joined by a merge ("zipper") triangulation, so unequal counts work.
+//!    Adjacent rows are joined by a merge ("zipper") triangulation, so unequal counts work. Cone
+//!    rings are given equal counts by the edge sampler (`tess::edge_rule`); with unequal counts
+//!    the zipper's cross-ring edges are not generators and the cone sags far beyond `chord_tol`.
 //!    Pole rows collapse to the single pole vertex and the wedges that degenerate are dropped.
 //! 2. **Polygon** (planar faces, and any other face): ear clipping of the loops in a 2-D frame
 //!    (`Plane` frame, pcurves, or a best-fit Newell frame for faces without a surface). Only
@@ -42,6 +44,8 @@ pub(crate) struct Shared<'a> {
     pub vertices: &'a [EntityId],
     /// Number of global (vertex + edge-interior) mesh vertices; face-local points are `>= g_count`.
     pub g_count: u32,
+    /// Face-interior points reserved so far by all face jobs (size budget, see `MAX_VERTICES`).
+    pub budget: &'a std::sync::atomic::AtomicUsize,
 }
 
 /// Face-local result: extra points and triangles. Indices `>= g_count` address `steiner`.
@@ -83,6 +87,10 @@ fn build_chain<'a>(sh: &Shared<'a>, face: EntityId, e: &Incidence) -> Result<Cha
         s.reverse();
     }
     Ok(Chain { pole: None, pcurve, reversed: false, s })
+}
+
+fn too_large(rows: usize, per_row: usize) -> TessError {
+    TessError::TooLarge(format!("a grid face needs about {rows} rows of {per_row} points; the limit is {} vertices in total (raise chord_tol)", sample::MAX_VERTICES))
 }
 
 pub(crate) fn tessellate_face(sh: &Shared<'_>, face: EntityId) -> Result<FaceOut, TessError> {
@@ -265,13 +273,27 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
     let mut row_u: Vec<Vec<f64>> = Vec::with_capacity(rows + 1);
     row_g.push(s.g.clone());
     row_u.push(s.c.clone());
+    // Row counts first, with the size budget checked before anything is allocated.
+    let mut counts: Vec<usize> = Vec::with_capacity(rows.saturating_sub(1));
+    let mut total = 0usize;
+    for j in 1..rows {
+        let interp = ((a + (b - a) * (j as f64 / rows as f64)).round() as usize).max(1);
+        // The row's own iso-v curve may need more points than the linear blend (bulging patches).
+        let own = row_u_count(surf, def, (ulo, uhi), w.c[j], o).map_err(|r| TessError::face(face, r))?;
+        let k = interp.max(own).max(1);
+        total += k - 1;
+        if total > sample::MAX_VERTICES {
+            return Err(too_large(rows, k));
+        }
+        counts.push(k);
+    }
+    if sh.budget.fetch_add(total, std::sync::atomic::Ordering::Relaxed) + total > sample::MAX_VERTICES {
+        return Err(too_large(rows, total / rows.max(1)));
+    }
     let mut uvs: Vec<Uv> = Vec::new();
     for j in 1..rows {
         let v = w.c[j];
-        let interp = ((a + (b - a) * (j as f64 / rows as f64)).round() as usize).max(1);
-        // The row's own iso-v curve may need more points than the linear blend (bulging patches).
-        let own = row_u_count(surf, def, (ulo, uhi), v, o).map_err(|r| TessError::face(face, r))?;
-        let k = interp.max(own).max(1);
+        let k = counts[j - 1];
         let mut g = Vec::with_capacity(k + 1);
         let mut u = Vec::with_capacity(k + 1);
         g.push(w.g[j]);

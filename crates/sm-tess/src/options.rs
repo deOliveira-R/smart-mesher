@@ -11,11 +11,17 @@ use sm_core::EntityId;
 ///   included: on doubly curved surfaces the budget is split in half between the two directions.
 ///   Faces that are not parameter rectangles are resolved at their boundary only (flagged by
 ///   `FaceRange::boundary_only`), and freeform grid faces get their `v` resolution from the
-///   side edges (see the crate docs);
+///   side edges (see the crate docs). The bound is on the `f64` surface points: positions are
+///   stored as `f32`, so the distance of the output to the surface is at most
+///   `chord_tol + 4 * f32::EPSILON * scale` (`scale` = coordinate magnitude). For a large model
+///   with a tight tolerance the rounding term dominates (torus `R = 10`, `r = 1`, `chord_tol =
+///   1e-4` measures 1.002x);
 /// - `angle_tol`: largest turning angle (radians) between neighbouring segments of a curved edge
 ///   and between neighbouring points of every grid row of a grid-meshed face (the angle between
 ///   grid lines across rows is not controlled);
 /// - `max_edge`: longest segment of an edge polyline or grid line (`f64::INFINITY` disables it).
+///
+/// A result holds at most 2^24 vertices; a smaller `chord_tol` gives [`TessError::TooLarge`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TessOptions {
     /// Chord (sagitta) tolerance, model length units. Must be positive and finite.
@@ -94,7 +100,8 @@ pub enum TessError {
         /// What went wrong.
         reason: String,
     },
-    /// The result would not fit `u32` indices or the sampling cap.
+    /// The result would exceed the sampling cap of one curve or row (2^20 segments) or the limit
+    /// of 2^24 vertices per tessellation (checked before allocation; raise `chord_tol`).
     #[error("tessellation too large: {0}")]
     TooLarge(String),
 }

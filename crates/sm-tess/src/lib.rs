@@ -18,13 +18,23 @@
 //!   (everything but plane, cylinder, cone) a triangle sags about `sag_u + sag_v`, so the edges
 //!   next to such a face and its rows each use `chord_tol / 2`: the mesh stays within
 //!   `chord_tol` of the surface everywhere (measured at most 0.99 `chord_tol` on sphere and
-//!   torus; cylinder and cone are developable and meet it with one direction's budget). The `v`
+//!   torus; cylinder and cone are developable and meet it with one direction's budget). A cone
+//!   needs one more rule: every circle next to a cone is sampled with the radius of the
+//!   largest circle on that cone, so all rings have the same point count and every strip quad
+//!   is planar (two generators); rings with different counts would join through triangle edges
+//!   that are not generators and cut across the slant (up to 2.5x `chord_tol` before). The `v`
 //!   resolution of a grid face is that of its side edges, so a freeform patch whose side edges
 //!   are straight lines is not refined across `v`.
 //! - **All other faces** are ear-clipped from their boundary points only (planar faces are exact
 //!   this way). A curved face that is not a parameter rectangle is therefore resolved at its
 //!   boundary only: its interior chord error is not controlled. Such faces are flagged with
 //!   [`FaceRange::boundary_only`] (and `boundary_only` in the query reply). See `DESIGN.md`.
+//!
+//! # Limits
+//!
+//! A tessellation holds at most 2^24 vertices (edge samples plus face-interior points). The
+//! grid size is estimated before anything is allocated; above the limit the call returns
+//! [`TessError::TooLarge`] (a tiny `chord_tol` is the usual cause).
 //!
 //! # Determinism
 //!

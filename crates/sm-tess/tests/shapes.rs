@@ -8,7 +8,7 @@ use core::f64::consts::{PI, TAU};
 
 use common::*;
 use sm_core::{EntityId, Point3, Vector3};
-use sm_geom_api::{Circle, Cone, CurveDef, Frame, Interval, Line, Line2, PCurve, Plane, SurfaceDef, Torus, Uv};
+use sm_geom_api::{Circle, Cone, CurveDef, Frame, Interval, Line, Line2, PCurve, Plane, SurfaceDef, Sphere, Torus, Uv};
 use sm_tess::{TessOptions, tessellate};
 use sm_topo_api::fixtures::FixtureError;
 use sm_topo_api::{CellFlags, CellComplex, CoedgeKey, CoedgeSpec, CurveCarrier, Sense, Side, SurfaceCarrier, TopologyEdit};
@@ -155,23 +155,67 @@ fn cone_with_apex_collapses_the_pole_row() {
 }
 
 #[test]
-fn frustum_with_unequal_rings_is_merge_triangulated() {
+fn frustum_rings_get_one_common_point_count() {
     let (a, vb, vt) = (0.4, 6.0, 1.5);
     let (c, f, [base, top, _]) = cone_sheet(a, vb, Some(vt));
     let o = opts(2e-3);
     let t = tessellate(&c, &[f], &o).unwrap();
     let nb = t.edge_polyline(base.unwrap()).unwrap().len() - 1;
     let nt = t.edge_polyline(top.unwrap()).unwrap().len() - 1;
-    assert!(nb > nt, "the larger ring gets more segments ({nb} vs {nt})");
-    // Strip between two rings with nb and nt segments: nb + nt triangles.
-    assert_eq!(t.triangle_count(), nb + nt);
+    // The small ring is sampled like the large one, so every strip quad is planar (two generators).
+    assert_eq!(nb, nt);
+    assert_eq!(t.triangle_count(), 2 * nb);
     let (rb, rt) = (vb * a.sin(), vt * a.sin());
     let exact = PI * (rb + rt) * (vb - vt);
-    let theta_max = TAU / nt as f64;
+    let theta = TAU / nb as f64;
     let area = face_area(&t, f);
-    assert!(area <= exact * (1.0 + 1e-5) && area >= exact * theta_max.cos(), "{area} vs {exact}");
+    assert!(area <= exact * (1.0 + 1e-5) && area >= exact * (theta / 2.0).cos(), "{area} vs {exact}");
     check_face_structure(&c, &t, f);
     check_normal_signs(&c, &t, f);
+}
+
+/// Sphere band `|v| <= b` (crossing the equator): a ring at each end, one meridian seam.
+fn sphere_band(r: f64, b: f64) -> (CellComplex, EntityId) {
+    build(|t| {
+        let (sb, cb) = b.sin_cos();
+        let v_lo = t.make_vertex(Point3::new(r * cb, 0.0, -r * sb))?;
+        let v_hi = t.make_vertex(Point3::new(r * cb, 0.0, r * sb))?;
+        let z = Vector3::new(0.0, 0.0, 1.0);
+        let x = Vector3::new(1.0, 0.0, 0.0);
+        let ring = |t: &mut CellComplex, zz: f64| add_curve(t, CurveDef::Circle(Circle::new(Frame::from_zx(Point3::new(0.0, 0.0, zz), z, x)?, r * cb)?));
+        let (c_lo, c_hi) = (ring(t, -r * sb)?, ring(t, r * sb)?);
+        let full = Interval::new(0.0, TAU);
+        let e_lo = t.make_edge(v_lo, v_lo, Some(CurveCarrier { curve: c_lo, range: full, sense: Sense::Forward }))?;
+        let e_hi = t.make_edge(v_hi, v_hi, Some(CurveCarrier { curve: c_hi, range: full, sense: Sense::Forward }))?;
+        let mer = add_curve(t, CurveDef::Circle(Circle::new(Frame::from_zx(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0), x)?, r)?))?;
+        let e_seam = t.make_edge(v_lo, v_hi, Some(CurveCarrier { curve: mer, range: Interval::new(-b, b), sense: Sense::Forward }))?;
+        let surf = add_surface(t, SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), r)?))?;
+        let f = t.make_face(&[&[fwd(e_lo), fwd(e_seam), rev(e_hi), rev(e_seam)]], Some(SurfaceCarrier { surface: surf, sense: Sense::Forward }))?;
+        let key = |edge, side| CoedgeKey { face: f, edge, side };
+        t.set_pcurve(key(e_lo, Side::Left), Some(line2((0.0, -b), (1.0, 0.0), full)))?;
+        t.set_pcurve(key(e_seam, Side::Left), Some(line2((TAU, 0.0), (0.0, 1.0), Interval::new(-b, b))))?;
+        t.set_pcurve(key(e_hi, Side::Right), Some(line2((0.0, b), (1.0, 0.0), full)))?;
+        t.set_pcurve(key(e_seam, Side::Right), Some(line2((0.0, 0.0), (0.0, 1.0), Interval::new(-b, b))))?;
+        Ok(f)
+    })
+}
+
+#[test]
+fn sphere_band_across_the_equator_is_within_chord_tol() {
+    // Both end rings sit below the equator's radius: the blend of their counts undersamples the
+    // bulge, so interior rows need their own count (per-row circle rule).
+    for (r, b) in [(1.0, 0.4), (3.0, 0.8), (1.0, 1.2)] {
+        for chord in [1e-2, 1e-3] {
+            let (c, f) = sphere_band(r, b);
+            let o = TessOptions { chord_tol: chord, angle_tol: 3.0, max_edge: f64::INFINITY };
+            let t = tessellate(&c, &[f], &o).unwrap();
+            let dev = max_deviation(&t, f, |p| (norm(p) - r).abs());
+            eprintln!("sphere band r={r} b={b} chord={chord}: max deviation {:.3}x chord_tol", dev / chord);
+            assert!(dev <= chord + f32_slack(r), "r={r} b={b} chord={chord}: deviation {dev} is {:.3}x chord_tol", dev / chord);
+            check_face_structure(&c, &t, f);
+            check_normal_signs(&c, &t, f);
+        }
+    }
 }
 
 /// Torus face covering the whole surface, seamed at `v0` = 0 (outer equator) or `pi` (inner equator).
@@ -238,17 +282,49 @@ fn torus_sag_is_within_chord_tol_for_both_seams() {
 
 #[test]
 fn cone_and_frustum_sag_is_within_chord_tol() {
-    let a: f64 = 0.5;
-    let dist = move |p: [f64; 3]| ((p[0] * p[0] + p[1] * p[1]).sqrt() * a.cos() - p[2] * a.sin()).abs();
-    for (vb, vt) in [(4.0, None), (6.0, Some(1.5))] {
-        for chord in [1e-2, 1e-3] {
+    // (half angle, base slant, top slant): benign cases, strongly unequal rings (ratio 20, 10, 2),
+    // nearly cylindrical frusta, and an apex cone. Rings of unequal radius must be sampled with a
+    // common count, else a triangle edge joining the rings is not a generator and cuts the cone.
+    let cases: [(f64, f64, Option<f64>); 9] = [
+        (0.5, 4.0, None),
+        (0.5, 6.0, Some(1.5)),
+        (0.5, 10.0, Some(0.5)),
+        (0.2, 10.0, Some(0.5)),
+        (0.05, 10.0, Some(1.0)),
+        (0.5, 10.0, Some(2.0)),
+        (0.05, 10.0, Some(5.0)),
+        (0.05, 10.0, Some(0.5)),
+        (1.2, 10.0, Some(0.2)),
+    ];
+    for (a, vb, vt) in cases {
+        let dist = move |p: [f64; 3]| ((p[0] * p[0] + p[1] * p[1]).sqrt() * a.cos() - p[2] * a.sin()).abs();
+        for chord in [1e-2, 1e-3, 1e-4] {
             let (c, f, _) = cone_sheet(a, vb, vt);
             let o = TessOptions { chord_tol: chord, angle_tol: 3.0, max_edge: f64::INFINITY };
             let t = tessellate(&c, &[f], &o).unwrap();
             let dev = max_deviation(&t, f, dist);
-            eprintln!("cone vb={vb} chord={chord}: max deviation {:.3}x chord_tol", dev / chord);
-            assert!(dev <= chord + f32_slack(vb), "cone vb={vb} chord={chord}: deviation {dev} is {:.3}x chord_tol", dev / chord);
+            eprintln!("cone a={a} vb={vb} vt={vt:?} chord={chord}: max deviation {:.3}x chord_tol", dev / chord);
+            assert!(dev <= chord + f32_slack(vb), "cone a={a} vb={vb} vt={vt:?} chord={chord}: deviation {dev} is {:.3}x chord_tol", dev / chord);
+            check_face_structure(&c, &t, f);
+            check_normal_signs(&c, &t, f);
         }
+    }
+}
+
+#[test]
+fn frustum_rings_share_one_point_count_and_max_edge_cones_stay_in_tolerance() {
+    let (a, vb, vt) = (0.3, 10.0, 0.5);
+    let (c, f, [base, top, _]) = cone_sheet(a, vb, Some(vt));
+    let t = tessellate(&c, &[f], &TessOptions::with_chord(1e-3)).unwrap();
+    assert_eq!(t.edge_polyline(base.unwrap()).unwrap().len(), t.edge_polyline(top.unwrap()).unwrap().len());
+    // With max_edge the seam is split and interior rows exist; the bound still holds.
+    let dist = move |p: [f64; 3]| ((p[0] * p[0] + p[1] * p[1]).sqrt() * a.cos() - p[2] * a.sin()).abs();
+    for max_edge in [1.0, 0.7] {
+        let o = TessOptions { chord_tol: 1e-3, angle_tol: 3.0, max_edge };
+        let (c, f, _) = cone_sheet(a, vb, Some(vt));
+        let t = tessellate(&c, &[f], &o).unwrap();
+        let dev = max_deviation(&t, f, dist);
+        assert!(dev <= 1e-3 + f32_slack(vb), "max_edge={max_edge}: {:.3}x chord_tol", dev / 1e-3);
     }
 }
 

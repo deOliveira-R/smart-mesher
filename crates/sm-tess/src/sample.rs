@@ -11,6 +11,10 @@ use crate::options::TessOptions;
 
 /// Hard cap on segments per curve (keeps `u32` indices and memory in range).
 pub(crate) const MAX_SEGMENTS: usize = 1 << 20;
+
+/// Cap on the vertices of one tessellation (edge samples plus face-interior points), 2^24.
+/// Checked before the points are allocated, so a tiny `chord_tol` gives `TessError::TooLarge`.
+pub(crate) const MAX_VERTICES: usize = 1 << 24;
 const MAX_DEPTH: u32 = 22;
 
 pub(crate) type P3 = [f64; 3];
@@ -37,13 +41,15 @@ fn dist_to_segment(p: P3, a: P3, b: P3) -> f64 {
 }
 
 /// Surfaces whose triangles sag in both parametric directions (everything but planes, cylinders
-/// and cones, which are developable: a triangle sags only along the curved direction).
+/// and cones, which are developable: a triangle sags only along the curved direction). For the
+/// cone this holds only because the rings share one point count (see `tess::edge_rule`).
 pub(crate) fn is_doubly_curved(def: &SurfaceDef) -> bool {
     !matches!(def, SurfaceDef::Plane(_) | SurfaceDef::Cylinder(_) | SurfaceDef::Cone(_))
 }
 
 /// Options for sampling a grid face and the edges next to a doubly curved face: the chord budget
 /// is split evenly between the two directions, since a triangle sags about `sag_u + sag_v`.
+/// Developable surfaces keep the whole budget.
 pub(crate) fn grid_opts(def: &SurfaceDef, o: &TessOptions) -> TessOptions {
     if is_doubly_curved(def) { TessOptions { chord_tol: 0.5 * o.chord_tol, ..*o } } else { *o }
 }
