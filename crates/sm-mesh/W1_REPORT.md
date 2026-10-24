@@ -13,22 +13,22 @@ Pushed to `claude/w1-sm-mesh-icdwyq`, the session's designated branch (the task 
 * `RawColumns`/`as_bytes`: zero-copy byte views of the primitive columns.
 * `generate::{hex_block, hex_block_bulk}`: structured block generators (same classification as `reference::hex_block`) for tests and benchmarks.
 
-Build time, 4 vCPU shared machine, release (criterion medians; `examples/timing.rs` for the 10^6 case):
+Build time, Apple M1 Max (10 threads), release, `examples/timing.rs` with `WITH_REFERENCE=1`, median of 3 runs each (run-to-run spread under 5%):
 
 | hex block | bulk | incremental | reference |
 |---|---|---|---|
-| 32^3 (33 k) | 37 ms | 47 ms | 191 ms |
-| 64^3 (262 k) | 305 ms | 514 ms | 1.70 s |
-| 100^3 (10^6) | 1.0-1.4 s | 2.1 s | 7.1 s |
+| 32^3 (33 k) | 17 ms | 22 ms | 108 ms |
+| 64^3 (262 k) | 88 ms | 200 ms | 910 ms |
+| 100^3 (10^6) | 0.30 s | 0.83 s | 3.6 s |
 
-Bulk 64^3 on 1/2/4 threads: 511/335/229 ms. The 10^6 bulk mesh is bit-identical for 1 and N threads.
+Bulk 64^3 on 1/2/4/10 threads: 277/153/101/88 ms. At 10^6 cells on 1 thread: bulk 1.06 s, incremental 1.03 s, reference 3.5 s. Single-threaded, bulk is no faster than incremental (the sequential sort/scatter stages dominate), so bulk only pays off with more threads. The 10^6 bulk mesh is bit-identical for 1 and N threads. (The earlier 4 vCPU shared-machine figures, e.g. 1.0-1.4 s bulk and 2.1 s incremental at 10^6, are superseded.)
 
 ## Test summary
 
 Definition of done, all run on this branch:
 
 * `cargo build` (workspace): ok.
-* `cargo test -p sm-mesh`: 109 passed; `--all-features`: 115 passed; `RAYON_NUM_THREADS=1 cargo test -p sm-mesh --all-features`: 115 passed.
+* `cargo test -p sm-mesh`: 124 passed; `--all-features`: 130 passed; `RAYON_NUM_THREADS=1 cargo test -p sm-mesh --all-features`: 130 passed.
 * `cargo clippy -p sm-mesh --all-targets --all-features -- -D warnings`: clean.
 * `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-mesh --no-deps`: clean. `#![forbid(unsafe_code)]`; no `unwrap`/`expect` in library code (one `unreachable!` on a constant that is provably in range: the "unset" classification sentinel).
 
@@ -58,7 +58,7 @@ Should fix, done:
 5. `IdRange::id` panics for `ix >= n` like indexing the reference id column (`MeshRead::id` out of range: test `id_of_an_out_of_range_index_panics_like_the_reference`).
 6. `add_vertices_with` allows the same total as `add_vertex` (one more vertex); the per-cell `format!` in bulk validation is gone (see Must fix 2).
 8. Chosen: document the coupling (rustdoc on `MeshBuilder` and `Validation::Fast`) and keep `Fast` as the default; the curves bug is closed by routing all curve/high-order meshes to the full validator.
-10. 10^6 bulk time is "1.0-1.4 s" in both this report and `DESIGN.md`.
+10. 10^6 bulk time is 0.30 s (10 threads, Apple M1 Max) in both this report and `DESIGN.md`; see Performance.
 
 Skipped: 9 (retire `tests/contract_*.rs`): the contract suite is not generic over an implementation yet, so the copies stay; this is already in the deviations list.
 
@@ -102,7 +102,13 @@ Skipped: 9 (retire `tests/contract_*.rs`): the contract suite is not generic ove
 * `MeshRead::id(Edge, ix)` without an edge table now indexes an empty slice and panics, like the reference.
 * `cell_problem`: dropped the unreachable unknown-vertex part of the Corners check (commented why).
 * New `tests/flatten_diff.rs`: property differential of `unfold` (decks of 0 to 2 mirrors, welded and unwelded) and catalog `flatten` against the reference on decorated meshes (sets, side sets, labels, cell/face tags, face classes, reclassification through `on_merge`); results, errors, `FlattenMap` and allocator state agree.
-* DESIGN.md notes that single-threaded bulk (1.01 s at 10^6) is slower than incremental (0.90 s); bulk pays off with threads. The sequential sort/scatter stages were not changed.
+* DESIGN.md notes that single-threaded bulk is no faster than incremental; bulk pays off with threads. The sequential sort/scatter stages were not changed. (Numbers re-measured in polish0, see the Performance table.)
 * `replay_error` now documents that it relies on `add_cells_bulk` requiring an empty builder (O(cv) cost only on the error path).
 * `Cargo.lock` is the only file changed outside `crates/sm-mesh` in the original W1 commit; the orchestrator regenerates it at merge. This fix touches nothing outside the crate.
 * Not done: retiring `tests/contract_*.rs` copies; this waits for contract tests generic over an implementation (deviation 8).
+
+## polish0
+
+* `FaceIndex::grow`: documented the load-factor invariant (at most 1/2, so a non-empty table always has an empty slot) and added `debug_assert`s; the `unwrap_or(0)` fallback only covers the initial empty table.
+* Timings re-measured on an Apple M1 Max, 10 threads (and 1 thread), release, median of 3; DESIGN.md and this report now use the same table. Old numbers came from a 4 vCPU shared machine and are superseded. The reviewer's figures (0.85 s incremental, 0.29 s bulk, 3.5 s reference at 10^6 on 10 threads) agree with the new ones (0.83 s, 0.30 s, 3.6 s).
+* Deviation 8 stays accurate: `tests/contract_*.rs` still duplicates the `sm-mesh-api` contract tests (87 with `serde`, 81 without), copied unchanged behind a shim, until the contract offers tests generic over an implementation. Left as is, per review.

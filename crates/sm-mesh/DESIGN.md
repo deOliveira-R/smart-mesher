@@ -4,7 +4,7 @@
 
 ## Positioning
 
-Similar to OpenFOAM's `polyMesh` and CGNS NGON/NFACE (face-first storage: face -> vertex loop, face -> (owner, neighbour), cell -> signed faces) and to the `sm-mesh-api` reference implementation, differs in how it is built and stored: flat structure-of-arrays/CSR columns with implicit ids and a compact classification column, a face table constructed by a deterministic parallel sort instead of one hash insertion per face, a parallel `finish` with fixed tie-breaks and error selection, a parallel edge table, adjacency tables (vertex -> cells, cell -> neighbours, edge -> faces) built on demand and cached, and a validation mode that only re-checks what user input can break, giving a 10^6-hexahedron mesh in 1.0-1.4 s on four cores (7.1 s for the reference), bit-identical for 1 and N threads, in about 260 bytes per cell, with primitive columns exposed as byte slices for zero-copy export.
+Similar to OpenFOAM's `polyMesh` and CGNS NGON/NFACE (face-first storage: face -> vertex loop, face -> (owner, neighbour), cell -> signed faces) and to the `sm-mesh-api` reference implementation, differs in how it is built and stored: flat structure-of-arrays/CSR columns with implicit ids and a compact classification column, a face table constructed by a deterministic parallel sort instead of one hash insertion per face, a parallel `finish` with fixed tie-breaks and error selection, a parallel edge table, adjacency tables (vertex -> cells, cell -> neighbours, edge -> faces) built on demand and cached, and a validation mode that only re-checks what user input can break, giving a 10^6-hexahedron mesh in 0.30 s bulk or 0.83 s incremental on 10 threads of an Apple M1 Max (3.6 s for the reference), bit-identical for 1 and N threads, in about 260 bytes per cell, with primitive columns exposed as byte slices for zero-copy export.
 
 ## Layout
 
@@ -63,15 +63,15 @@ No `HashMap` iteration reaches an output (the face index and vertex grid are use
 * `tests/builder_ops.rs` (600 cases): random sequences of builder calls (valid and invalid) applied to the reference and to `MeshBuilder`; every return value, error, the `finish` outcome and the allocator state agree.
 * `tests/bulk.rs`, `tests/edges_adjacency.rs`, `tests/determinism.rs`, `tests/properties.rs` (random blocks with the testkit checkers and analytic volume/area, random hex/wedge meshes, random surface meshes, fault injection).
 
-## Performance (4 vCPU, release; see `benches/build.rs`, `examples/timing.rs`)
+## Performance (Apple M1 Max, 10 threads, release; see `benches/build.rs`, `examples/timing.rs`)
 
 | structured hex block | cells | bulk | incremental | reference |
 |---|---|---|---|---|
-| 32^3 | 33 k | 37 ms | 47 ms | 191 ms |
-| 64^3 | 262 k | 305 ms | 514 ms | 1.70 s |
-| 100^3 | 1 M | 1.0-1.4 s | 2.1 s | 7.1 s |
+| 32^3 | 33 k | 17 ms | 22 ms | 108 ms |
+| 64^3 | 262 k | 88 ms | 200 ms | 910 ms |
+| 100^3 | 1 M | 0.30 s | 0.83 s | 3.6 s |
 
-Bulk 64^3 on 1, 2, 4 threads: 511, 335, 229 ms. Queries on 64^3: `vertex_cells` 59 ms, `cell_neighbors` 18 ms; edge table of a 32^3 block 44 ms. Single-threaded, bulk (1.01 s at 10^6 cells) is not faster than incremental (0.90 s): the sequential sort/scatter stages dominate, so bulk only pays off with more threads. Timings on this shared machine vary by up to 2x between runs; the table shows the criterion medians.
+Medians of 3 runs of `examples/timing.rs` (`WITH_REFERENCE=1`), spread under 5%. Bulk 64^3 on 1, 2, 4, 10 threads: 277, 153, 101, 88 ms. At 10^6 cells on 1 thread: bulk 1.06 s, incremental 1.03 s, reference 3.5 s; single-threaded, bulk is no faster than incremental (the sequential sort/scatter stages dominate), so bulk only pays off with more threads. Older figures from a 4 vCPU shared machine are superseded. Queries on 64^3 (earlier machine, not re-measured): `vertex_cells` 59 ms, `cell_neighbors` 18 ms; edge table of a 32^3 block 44 ms.
 
 ## Limits
 

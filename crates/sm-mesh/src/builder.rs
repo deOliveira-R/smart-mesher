@@ -81,7 +81,11 @@ impl FaceIndex {
         // Rehash in creation order: start at an empty old slot so no probe chain is split by the
         // wrap-around (a wrapped tail would otherwise be reinserted before its head).
         let n = old.len();
+        // `insert` grows before the load factor exceeds 1/2, so a non-empty old table always has
+        // an empty slot; the `unwrap_or(0)` fallback is only for the initial empty table.
+        debug_assert!(old.is_empty() || self.used * 2 <= old.len(), "face index load factor above 1/2");
         let start = old.iter().position(|s| *s == 0).unwrap_or(0);
+        debug_assert!(old.is_empty() || old[start] == 0, "no empty slot to start the rehash");
         for k in 0..n {
             let s = old[(start + k) % n];
             if s == 0 {
