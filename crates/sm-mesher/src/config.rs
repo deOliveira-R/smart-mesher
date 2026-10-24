@@ -1,0 +1,134 @@
+//! The mesher service injected by the distribution.
+
+use std::sync::Arc;
+
+use sm_core::EntityId;
+use sm_scheme_api::{
+    CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeError,
+    SchemeRegistry, SizeField, SizingSpec,
+};
+use sm_topo_api::TopologyView;
+
+/// Builds a size field from a sizing spec (`None` for no field).
+pub type SizeFieldFn =
+    Arc<dyn Fn(&SizingSpec) -> Result<Option<Box<dyn SizeField>>, SchemeError> + Send + Sync>;
+
+/// Resolves `mesh.size {auto}` to a size for the targets at a factor (1..=10).
+pub type AutoSizeFn =
+    Arc<dyn Fn(&dyn TopologyView, &[EntityId], u32) -> Result<f64, String> + Send + Sync>;
+
+/// The mesher service: scheme registry, solvers and sizing hooks, injected by the distribution.
+#[derive(Clone)]
+pub struct MesherConfig {
+    registry: Arc<SchemeRegistry>,
+    solver: Arc<dyn IntervalSolver>,
+    picker: Arc<dyn CornerPicker>,
+    size_fields: Option<SizeFieldFn>,
+    auto_size: Option<AutoSizeFn>,
+    max_cells: u64,
+}
+
+/// Default cell budget of [`MesherConfig::max_cells`].
+pub const DEFAULT_MAX_CELLS: u64 = 20_000_000;
+
+impl MesherConfig {
+    /// A config over `registry` with the reference solver and picker and no sizing hooks.
+    pub fn new(registry: SchemeRegistry) -> Self {
+        Self {
+            registry: Arc::new(registry),
+            solver: Arc::new(ReferenceIntervalSolver::default()),
+            picker: Arc::new(ReferenceCornerPicker),
+            size_fields: None,
+            auto_size: None,
+            max_cells: DEFAULT_MAX_CELLS,
+        }
+    }
+
+    /// Set the cell budget: `mesh.run` refuses a plan estimated above it (default
+    /// [`DEFAULT_MAX_CELLS`]).
+    #[must_use]
+    pub fn with_max_cells(mut self, max_cells: u64) -> Self {
+        self.max_cells = max_cells;
+        self
+    }
+
+    /// The cell budget of `mesh.run`.
+    pub fn max_cells(&self) -> u64 {
+        self.max_cells
+    }
+
+    /// Replace the interval solver.
+    #[must_use]
+    pub fn with_solver(mut self, solver: Box<dyn IntervalSolver>) -> Self {
+        self.solver = Arc::from(solver);
+        self
+    }
+
+    /// Replace the corner picker.
+    #[must_use]
+    pub fn with_picker(mut self, picker: Box<dyn CornerPicker>) -> Self {
+        self.picker = Arc::from(picker);
+        self
+    }
+
+    /// Set the size-field builder.
+    #[must_use]
+    pub fn with_size_fields(mut self, f: SizeFieldFn) -> Self {
+        self.size_fields = Some(f);
+        self
+    }
+
+    /// Set the automatic-size hook.
+    #[must_use]
+    pub fn with_auto_size(mut self, f: AutoSizeFn) -> Self {
+        self.auto_size = Some(f);
+        self
+    }
+
+    /// The scheme registry.
+    pub fn registry(&self) -> &SchemeRegistry {
+        &self.registry
+    }
+
+    /// The interval solver.
+    pub fn solver(&self) -> &dyn IntervalSolver {
+        &*self.solver
+    }
+
+    /// The corner picker.
+    pub fn picker(&self) -> &dyn CornerPicker {
+        &*self.picker
+    }
+
+    /// The size-field builder, if set.
+    pub fn size_fields(&self) -> Option<&SizeFieldFn> {
+        self.size_fields.as_ref()
+    }
+
+    /// The automatic-size hook, if set.
+    pub fn auto_size(&self) -> Option<&AutoSizeFn> {
+        self.auto_size.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_builders_replace_the_defaults() {
+        let cfg = MesherConfig::new(sm_scheme_api::stubs::registry());
+        assert!(cfg.size_fields().is_none() && cfg.auto_size().is_none());
+        let cfg = cfg
+            .with_solver(Box::new(ReferenceIntervalSolver::default()))
+            .with_picker(Box::new(ReferenceCornerPicker))
+            .with_size_fields(Arc::new(|_| Ok(None)))
+            .with_auto_size(Arc::new(|_, _, _| Ok(1.0)));
+        assert!(cfg.size_fields().is_some() && cfg.auto_size().is_some());
+        assert!(cfg.solver().solve(&[], &[]).is_ok());
+        assert!(cfg.registry().auto(sm_scheme_api::SchemeDim::Volume).len() <= 16);
+        // Cheap to clone and to share across threads.
+        fn assert_service<T: Clone + Send + Sync + 'static>(_: &T) {}
+        assert_service(&cfg);
+    }
+}
