@@ -14,7 +14,7 @@ use crate::codec::{CodecError, Value, canonicalize, to_params};
 use crate::error::OpError;
 use crate::layer::{LayerType, Successors};
 use crate::progress::{CancelToken, Control, Progress};
-use crate::registry::Registry;
+use crate::registry::{OutputRole, Registry};
 use crate::services::Services;
 use crate::state::State;
 
@@ -50,6 +50,13 @@ pub trait TypedOp:
     /// the node hash; recorded in every node's `Check::versions` as `op:<NAME>`, so replay of
     /// an older node reports `TimelineError::Upgraded` instead of a bare `Diverged`.
     const IMPL_VERSION: u32 = 1;
+    /// Declared output roles (default none). When non-empty the engine rejects, after the op
+    /// body, any `alloc_as`/`adopt_as` role not declared and any cardinality or kind violation
+    /// with [`OpError::Invalid`]. Not hashed.
+    const OUTPUTS: &'static [OutputRole] = &[];
+    /// Params property that front ends may pass positionally (default none). The registry
+    /// marks it `x-positional` in the published schema. Not hashed.
+    const POSITIONAL: Option<&'static str> = None;
     /// Apply this op.
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError>;
 }
@@ -284,6 +291,11 @@ impl<'a> ApplyCtx<'a> {
 
     pub(crate) fn take_canonical(&mut self) -> Option<OpRecord> {
         self.canonical.take()
+    }
+
+    /// Validate the roles recorded so far against `declared` (no-op when empty).
+    pub(crate) fn check_declared_outputs(&self, declared: &[OutputRole]) -> Result<(), OpError> {
+        check_outputs(declared, &self.outputs)
     }
 
     pub(crate) fn finish(&mut self) -> Result<Delta, OpError> {
@@ -559,6 +571,7 @@ impl<'a> ApplyCtx<'a> {
         self.scope = outer;
         let sub = std::mem::replace(&mut self.outputs, saved);
         r?;
+        check_outputs(self.registry.op_outputs(&rec.name), &sub)?;
         // Layers react after each nested op, so later sub-ops never see references to ids an
         // earlier sub-op retired.
         self.flush_reactions();
@@ -570,4 +583,38 @@ impl<'a> ApplyCtx<'a> {
         }
         Ok((sub, canonical))
     }
+}
+
+/// Check recorded output roles against an op's declaration. An empty declaration accepts anything.
+fn check_outputs(
+    declared: &[OutputRole],
+    got: &BTreeMap<String, Vec<EntityId>>,
+) -> Result<(), OpError> {
+    if declared.is_empty() {
+        return Ok(());
+    }
+    for (role, ids) in got {
+        let Some(d) = declared.iter().find(|d| d.name == role) else {
+            return Err(OpError::Invalid(format!("undeclared output role `{role}`")));
+        };
+        if let Some(bad) = ids
+            .iter()
+            .find(|i| !d.kinds.is_empty() && !d.kinds.contains(&i.kind()))
+        {
+            return Err(OpError::Invalid(format!(
+                "output role `{role}` holds {bad}, expected kind in {:?}",
+                d.kinds
+            )));
+        }
+    }
+    for d in declared {
+        let n = got.get(d.name).map_or(0, Vec::len);
+        if !d.cardinality.allows(n) {
+            return Err(OpError::Invalid(format!(
+                "output role `{}` has {n} ids, declared {:?}",
+                d.name, d.cardinality
+            )));
+        }
+    }
+    Ok(())
 }

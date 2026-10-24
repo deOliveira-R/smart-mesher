@@ -10,6 +10,7 @@ use crate::codec::{CodecError, Value, from_value};
 use crate::error::RegistryError;
 use crate::layer::{Layer, LayerRole, LayerType};
 use crate::op::{Delta, Op, OpRecord, TypedOp};
+use sm_core::EntityKind;
 use crate::query::{QueryCtx, QueryInfo, QueryType, TypedQ, TypedQuery};
 use crate::state::{State, StateSnapshot};
 
@@ -35,7 +36,13 @@ mod batch_schema {
                 let inline_id = m.get("type").and_then(Value::as_str) == Some("string")
                     && m.get("pattern").and_then(Value::as_str) == Some(ENTITY_PATTERN);
                 if inline_id {
-                    *v = json!({ "$ref": format!("#/$defs/{BATCH_ENTITY_ID}") });
+                    // Keep `x-*` annotations (`x-entity-kind`, `x-positional`) on the property.
+                    let mut r = Map::new();
+                    r.insert("$ref".to_owned(), json!(format!("#/$defs/{BATCH_ENTITY_ID}")));
+                    for (k, x) in m.iter().filter(|(k, _)| k.starts_with("x-")) {
+                        r.insert(k.clone(), x.clone());
+                    }
+                    *v = Value::Object(r);
                     return;
                 }
                 if let Some(Value::String(r)) = m.get_mut("$ref")
@@ -124,6 +131,71 @@ mod batch_schema {
     }
 }
 
+/// How many ids an op output role holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Cardinality {
+    /// Exactly one id.
+    One,
+    /// Zero or one id.
+    Optional,
+    /// Any number of ids, including none.
+    Many,
+}
+
+impl Cardinality {
+    /// Whether `n` ids satisfy this cardinality.
+    pub fn allows(self, n: usize) -> bool {
+        match self {
+            Self::One => n == 1,
+            Self::Optional => n <= 1,
+            Self::Many => true,
+        }
+    }
+}
+
+/// Declaration of one named output role of an op (`ApplyCtx::alloc_as` / `adopt_as`).
+/// Read by the engine (validation), sm-lang (static role checks), MCP and stub generators.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub struct OutputRole {
+    /// Role name, as passed to `alloc_as` / `adopt_as` and used in `$i.role` references.
+    pub name: &'static str,
+    /// Allowed entity kinds; empty means any kind.
+    pub kinds: &'static [EntityKind],
+    /// How many ids the role holds.
+    pub cardinality: Cardinality,
+    /// One-line description.
+    pub doc: &'static str,
+}
+
+impl OutputRole {
+    /// Declare a role.
+    pub const fn new(
+        name: &'static str,
+        kinds: &'static [EntityKind],
+        cardinality: Cardinality,
+        doc: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            kinds,
+            cardinality,
+            doc,
+        }
+    }
+}
+
+/// Schema annotation on an id property (or, on an array, its items): the list of canonical
+/// [`EntityKind`] names (as serialized, e.g. `"TopoVolume"`) the id may have. Write it with
+/// `#[schemars(extend("x-entity-kind" = ["TopoVolume", "TopoFace"]))]` on the field.
+pub const X_ENTITY_KIND: &str = "x-entity-kind";
+
+/// Schema annotation `true` on the params property that a front end may pass positionally
+/// (injected by the registry from `TypedOp::POSITIONAL`).
+pub const X_POSITIONAL: &str = "x-positional";
+
 /// Type-erased registration of one op payload type.
 pub trait OpType: Send + Sync {
     /// Registry name.
@@ -137,6 +209,14 @@ pub trait OpType: Send + Sync {
     /// Implementation version (see `TypedOp::IMPL_VERSION`). Default 1.
     fn impl_version(&self) -> u32 {
         1
+    }
+    /// Declared output roles (see `TypedOp::OUTPUTS`). Default: none declared.
+    fn outputs(&self) -> &'static [OutputRole] {
+        &[]
+    }
+    /// Name of the positional params property (see `TypedOp::POSITIONAL`). Default: none.
+    fn positional(&self) -> Option<&'static str> {
+        None
     }
 }
 
@@ -159,6 +239,12 @@ impl<T: TypedOp> OpType for Typed<T> {
     }
     fn impl_version(&self) -> u32 {
         T::IMPL_VERSION
+    }
+    fn outputs(&self) -> &'static [OutputRole] {
+        T::OUTPUTS
+    }
+    fn positional(&self) -> Option<&'static str> {
+        T::POSITIONAL
     }
 }
 
@@ -186,6 +272,10 @@ pub struct OpInfo {
     pub schema: Schema,
     /// Schema of the result (`Delta`: created, removed, named outputs, touched layers).
     pub output_schema: Schema,
+    /// Declared output roles; empty when the op declares none (then roles are unchecked).
+    pub outputs: Vec<OutputRole>,
+    /// Params property that may be given positionally (also marked `x-positional` in `schema`).
+    pub positional: Option<String>,
 }
 
 impl OpInfo {
@@ -470,6 +560,11 @@ impl Registry {
         self.layers.get(name).map(|e| e.digest_version)
     }
 
+    /// Declared output roles of a registered op (empty if unknown or undeclared).
+    pub fn op_outputs(&self, name: &str) -> &'static [OutputRole] {
+        self.ops.get(name).map_or(&[], |t| t.outputs())
+    }
+
     /// Implementation version of a registered op (`OpType::impl_version`).
     pub fn op_impl_version(&self, name: &str) -> Option<u32> {
         self.ops.get(name).map(|t| t.impl_version())
@@ -527,7 +622,7 @@ impl Registry {
 
     fn info(t: &dyn OpType) -> Result<OpInfo, RegistryError> {
         let name = t.name().to_owned();
-        let schema = t.schema().map_err(|reason| RegistryError::Schema {
+        let mut schema = t.schema().map_err(|reason| RegistryError::Schema {
             name: name.clone(),
             reason,
         })?;
@@ -537,11 +632,27 @@ impl Registry {
                 reason: "schema is not an object".to_owned(),
             });
         }
+        if let Some(p) = t.positional() {
+            let prop = schema
+                .get_mut("properties")
+                .and_then(|v| v.as_object_mut())
+                .and_then(|m| m.get_mut(p))
+                .and_then(|v| v.as_object_mut());
+            let Some(prop) = prop else {
+                return Err(RegistryError::Schema {
+                    name,
+                    reason: format!("positional property `{p}` is not in the params schema"),
+                });
+            };
+            prop.insert(X_POSITIONAL.to_owned(), true.into());
+        }
         Ok(OpInfo {
             name,
             version: t.version(),
             schema,
             output_schema: schema_for!(Delta),
+            outputs: t.outputs().to_vec(),
+            positional: t.positional().map(str::to_owned),
         })
     }
 
