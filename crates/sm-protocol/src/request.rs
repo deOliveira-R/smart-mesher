@@ -44,9 +44,14 @@ fn is_null(v: &Value) -> bool {
 
 /// One call. Serializes as `{"method": "...", "params": {...}}` (no `params` for unit
 /// variants), the method/params part of a JSON-RPC request. Unset optional fields are omitted
-/// on output and accepted missing or `null` on input.
+/// on output and accepted missing or `null` on input. Unknown params fields are rejected
+/// (`INVALID_PARAMS`) so a typo such as `creat` never silently changes meaning.
+///
+/// Plain serde parsing of `Request` is strict about the `params` key itself. The lenient shapes
+/// real clients send are normalized by [`Envelope::from_value`](crate::Envelope::from_value),
+/// the entry point for wire input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "method", content = "params")]
+#[serde(tag = "method", content = "params", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum Request {
     /// List ops, queries and the batch schema: result is a [`CatalogResult`](crate::CatalogResult).
@@ -179,6 +184,15 @@ impl Request {
             Request::Save => "session.save",
             Request::Open { .. } => "session.open",
         }
+    }
+
+    /// True for methods without params (`catalog`, `timeline.status`, `timeline.undo`,
+    /// `timeline.redo`, `session.save`). Their wire `params` may be absent, `null`, `{}` or `[]`.
+    pub fn is_unit_method(method: &str) -> bool {
+        matches!(
+            method,
+            "catalog" | "timeline.status" | "timeline.undo" | "timeline.redo" | "session.save"
+        )
     }
 
     /// JSON Schema of the whole request, for client and tool generation.

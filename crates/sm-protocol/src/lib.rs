@@ -10,6 +10,8 @@
 //! a [`Response`] carrying either `result` or `error`.
 #![warn(missing_docs)]
 
+#[doc(hidden)]
+pub mod fixtures;
 mod envelope;
 mod error;
 mod request;

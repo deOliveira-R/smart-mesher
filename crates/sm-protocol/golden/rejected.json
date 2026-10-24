@@ -1,0 +1,57 @@
+[
+  {
+    "input": "{not json",
+    "code": -32700,
+    "kind": "parse-error"
+  },
+  {
+    "input": "[1]",
+    "code": -32600,
+    "kind": "invalid-request"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"method\":\"catalog\"}",
+    "code": -32600,
+    "kind": "invalid-request"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":{\"a\":1},\"method\":\"catalog\"}",
+    "code": -32600,
+    "kind": "invalid-request"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"catalog\"}",
+    "code": -32600,
+    "kind": "invalid-request"
+  },
+  {
+    "input": "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"catalog\"}",
+    "code": -32600,
+    "kind": "invalid-request"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"nope.nothing\"}",
+    "code": -32601,
+    "kind": "method-not-found"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.open\",\"params\":{\"path\":\"p\",\"creat\":true}}",
+    "code": -32602,
+    "kind": "invalid-params"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.open\"}",
+    "code": -32602,
+    "kind": "invalid-params"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"timeline.log\",\"params\":{}}",
+    "code": -32602,
+    "kind": "invalid-params"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"catalog\",\"params\":{\"x\":1}}",
+    "code": -32602,
+    "kind": "invalid-params"
+  }
+]

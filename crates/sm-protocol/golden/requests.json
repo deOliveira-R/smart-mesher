@@ -1,0 +1,121 @@
+{
+  "apply.full": {
+    "method": "apply",
+    "params": {
+      "op": "model.create_brick",
+      "params": {
+        "size": [
+          1,
+          2,
+          3
+        ]
+      },
+      "version": 1
+    }
+  },
+  "apply.minimal": {
+    "method": "apply",
+    "params": {
+      "op": "model.delete",
+      "params": {}
+    }
+  },
+  "catalog": {
+    "method": "catalog"
+  },
+  "query.full": {
+    "method": "query",
+    "params": {
+      "at": {
+        "ref": "main"
+      },
+      "input": {
+        "k": 1
+      },
+      "name": "model.volumes"
+    }
+  },
+  "query.minimal": {
+    "method": "query",
+    "params": {
+      "name": "model.volumes"
+    }
+  },
+  "script.run": {
+    "method": "script.run",
+    "params": {
+      "includes": {
+        "b.sm": "mesh all"
+      },
+      "path": "a.sm",
+      "text": "brick x 1"
+    }
+  },
+  "session.export.full": {
+    "method": "session.export",
+    "params": {
+      "format": "vtu",
+      "inline": true,
+      "mesh": "TopoVolume#7",
+      "path": "out.vtu",
+      "provenance": true
+    }
+  },
+  "session.export.minimal": {
+    "method": "session.export",
+    "params": {
+      "format": "smsh"
+    }
+  },
+  "session.hash.at_empty": {
+    "method": "session.hash",
+    "params": {
+      "at": "empty"
+    }
+  },
+  "session.hash.default": {
+    "method": "session.hash",
+    "params": {}
+  },
+  "session.open": {
+    "method": "session.open",
+    "params": {
+      "create": true,
+      "path": "proj"
+    }
+  },
+  "session.save": {
+    "method": "session.save"
+  },
+  "timeline.branch": {
+    "method": "timeline.branch",
+    "params": {
+      "at": "0303030303030303030303030303030303030303030303030303030303030303",
+      "name": "alt"
+    }
+  },
+  "timeline.checkout": {
+    "method": "timeline.checkout",
+    "params": {
+      "rev": {
+        "node": "0202020202020202020202020202020202020202020202020202020202020202"
+      }
+    }
+  },
+  "timeline.log": {
+    "method": "timeline.log",
+    "params": {
+      "from": "0101010101010101010101010101010101010101010101010101010101010101",
+      "limit": 10
+    }
+  },
+  "timeline.redo": {
+    "method": "timeline.redo"
+  },
+  "timeline.status": {
+    "method": "timeline.status"
+  },
+  "timeline.undo": {
+    "method": "timeline.undo"
+  }
+}

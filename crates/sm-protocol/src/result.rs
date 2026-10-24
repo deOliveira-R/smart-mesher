@@ -77,8 +77,11 @@ pub struct StatusResult {
     pub project: Option<String>,
 }
 
-/// Result of `catalog`. Serialize-only: `OpInfo` and `QueryInfo` are built by the registry and
-/// do not implement `Deserialize`; clients read the reply as a `serde_json::Value`.
+/// Result of `catalog`. Serialize-only: `OpInfo`, `QueryInfo` and `OutputRole` hold
+/// `&'static` data and do not implement `Deserialize`, so remote clients (`sm-mcp`, `sm-cli`)
+/// read the reply as a `serde_json::Value`; its exact shape is pinned by
+/// `golden/catalog.json` (`fixtures::CATALOG`). A typed client form needs an owned
+/// `Deserialize` form of those types in `sm-op-api` (orchestrator ACR).
 #[derive(Clone, Debug, Serialize)]
 pub struct CatalogResult {
     /// [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) of the endpoint.

@@ -94,6 +94,10 @@ fn cases() -> Vec<(Request, Value)> {
             json!({"method": "session.hash", "params": {"at": "empty"}}),
         ),
         (
+            Request::Hash { at: None },
+            json!({"method": "session.hash", "params": {}}),
+        ),
+        (
             Request::Export {
                 path: Some("out.vtu".into()),
                 format: Some(ExportFormat::Vtu),
@@ -122,6 +126,125 @@ fn cases() -> Vec<(Request, Value)> {
             json!({"method": "session.open", "params": {"path": "proj", "create": true}}),
         ),
     ]
+}
+
+/// Fixture names, parallel to [`cases`].
+const NAMES: &[&str] = &[
+    "catalog",
+    "apply.full",
+    "apply.minimal",
+    "query.full",
+    "query.minimal",
+    "script.run",
+    "timeline.status",
+    "timeline.log",
+    "timeline.checkout",
+    "timeline.branch",
+    "timeline.undo",
+    "timeline.redo",
+    "session.hash.at_empty",
+    "session.hash.default",
+    "session.export.full",
+    "session.export.minimal",
+    "session.save",
+    "session.open",
+];
+
+fn golden_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("golden")
+        .join(name)
+}
+
+fn bless() -> bool {
+    std::env::var_os("SM_PROTOCOL_BLESS").is_some()
+}
+
+/// Compare `actual` with the shipped fixture text (parsed), or rewrite the file when blessing.
+fn check_fixture(file: &str, shipped: &str, actual: &Value) {
+    if bless() {
+        let text = serde_json::to_string_pretty(actual).unwrap() + "\n";
+        std::fs::write(golden_path(file), text).unwrap();
+        return;
+    }
+    let want: Value = serde_json::from_str(shipped).unwrap();
+    assert_eq!(&want, actual, "fixture {file} is stale (SM_PROTOCOL_BLESS=1 regenerates)");
+}
+
+#[test]
+fn shipped_request_fixtures_match() {
+    let cs = cases();
+    assert_eq!(NAMES.len(), cs.len());
+    let map: serde_json::Map<String, Value> = NAMES
+        .iter()
+        .zip(cs)
+        .map(|(n, (_, g))| ((*n).to_string(), g))
+        .collect();
+    check_fixture("requests.json", fixtures::REQUESTS, &Value::Object(map));
+}
+
+#[test]
+fn lenient_params_parse_to_canonical_requests() {
+    let table: Vec<Value> = serde_json::from_str(fixtures::LENIENT).unwrap();
+    assert!(table.len() >= 20);
+    for case in table {
+        let env = Envelope::from_value(case["input"].clone())
+            .unwrap_or_else(|e| panic!("{}: {e}", case["input"]));
+        let want: Request = serde_json::from_value(case["request"].clone()).unwrap();
+        assert_eq!(env.request, want, "{}", case["input"]);
+    }
+}
+
+#[test]
+fn lenient_covers_every_unit_method_and_all_optional_method() {
+    let table: Vec<Value> = serde_json::from_str(fixtures::LENIENT).unwrap();
+    for m in METHODS.iter().filter(|m| Request::is_unit_method(m)) {
+        for shape in ["absent", "null", "{}", "[]"] {
+            assert!(
+                table.iter().any(|c| c["input"]["method"] == *m && c["shape"] == shape),
+                "{m} {shape}"
+            );
+        }
+    }
+    for m in ["session.hash", "session.export"] {
+        assert!(table.iter().any(|c| c["input"]["method"] == m && c["shape"] == "absent"));
+    }
+}
+
+#[test]
+fn rejected_inputs_map_to_codes() {
+    let table: Vec<Value> = serde_json::from_str(fixtures::REJECTED).unwrap();
+    for case in table {
+        let text = case["input"].as_str().unwrap();
+        let e = Envelope::parse(text).unwrap_err();
+        assert_eq!(json!(e.code), case["code"], "{text}");
+        assert_eq!(json!(e.kind), case["kind"], "{text}");
+    }
+}
+
+#[test]
+fn unit_methods_still_reject_real_params() {
+    let e = Envelope::parse(r#"{"jsonrpc":"2.0","id":1,"method":"catalog","params":{"x":1}}"#)
+        .unwrap_err();
+    assert_eq!(e.code, INVALID_PARAMS);
+    let e = Envelope::parse(r#"{"jsonrpc":"2.0","id":1,"method":"session.save","params":[1]}"#)
+        .unwrap_err();
+    assert_eq!(e.code, INVALID_PARAMS);
+}
+
+#[test]
+fn non_notification_id_types() {
+    for id in ["1", "\"a\"", "null", "1.5"] {
+        let t = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"catalog"}}"#);
+        assert!(Envelope::parse(&t).is_ok(), "{t}");
+    }
+    for id in [r#"{"a":1}"#, "[1]", "true"] {
+        let t = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"catalog"}}"#);
+        let e = Envelope::parse(&t).unwrap_err();
+        assert_eq!(e.code, INVALID_REQUEST, "{t}");
+        // The reply never echoes an ill-typed id.
+        assert_eq!(Fake.handle_text(&t).id, Value::Null);
+    }
 }
 
 #[test]
@@ -302,10 +425,13 @@ fn rpc_error_data_round_trip() {
     assert!(e.to_string().contains("op-invalid"));
 }
 
-fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(
+fn rt<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(
+    m: &mut serde_json::Map<String, Value>,
+    name: &str,
     t: &T,
     golden: Value,
 ) {
+    m.insert(name.into(), golden.clone());
     let v = serde_json::to_value(t).unwrap();
     assert_eq!(v, golden);
     assert_eq!(&serde_json::from_value::<T>(golden).unwrap(), t);
@@ -313,6 +439,7 @@ fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Deb
 
 #[test]
 fn result_golden_and_round_trip() {
+    let mut m = serde_json::Map::new();
     let mut delta = Delta::default();
     delta.created.push(eid(1));
     delta.outputs.insert("volume".into(), vec![eid(1)]);
@@ -323,19 +450,17 @@ fn result_golden_and_round_trip() {
         delta,
     };
     let dv = serde_json::to_value(&a.delta).unwrap();
-    round_trip(&a, json!({"node": hs(1), "state": hs(2), "delta": dv}));
+    rt(&mut m, "apply", &a, json!({"node": hs(1), "state": hs(2), "delta": dv}));
     assert_eq!(dv["created"], json!(["TopoVolume#1"]));
 
-    round_trip(
-        &HashResult {
+    rt(&mut m, "hash", &HashResult {
             state: h(4),
             layers: BTreeMap::from([("model".into(), h(5)), ("a".into(), h(6))]),
         },
         json!({"state": hs(4), "layers": {"a": hs(6), "model": hs(5)}}),
     );
 
-    round_trip(
-        &ExportResult {
+    rt(&mut m, "export.path", &ExportResult {
             path: Some("o.smsh".into()),
             format: ExportFormat::Smsh,
             bytes: 12,
@@ -344,8 +469,7 @@ fn result_golden_and_round_trip() {
         },
         json!({"path": "o.smsh", "format": "smsh", "bytes": 12, "sha256": hs(7)}),
     );
-    round_trip(
-        &ExportResult {
+    rt(&mut m, "export.inline", &ExportResult {
             path: None,
             format: ExportFormat::Vtu,
             bytes: 3,
@@ -355,8 +479,7 @@ fn result_golden_and_round_trip() {
         json!({"path": null, "format": "vtu", "bytes": 3, "sha256": hs(8), "base64": "AAEC"}),
     );
 
-    round_trip(
-        &ScriptResult {
+    rt(&mut m, "script", &ScriptResult {
             state: h(9),
             output: "ok\n".into(),
             events: vec![json!({"cmd": "brick"})],
@@ -365,8 +488,7 @@ fn result_golden_and_round_trip() {
         json!({"state": hs(9), "output": "ok\n", "events": [{"cmd": "brick"}], "diagnostics": []}),
     );
 
-    round_trip(
-        &StatusResult {
+    rt(&mut m, "status.attached", &StatusResult {
             head: Head::Ref("main".into()),
             position: Some(h(1)),
             depth: 2,
@@ -380,8 +502,7 @@ fn result_golden_and_round_trip() {
         json!({"head": {"ref": "main"}, "position": hs(1), "depth": 2, "state": hs(2), "nodes": 3,
                "branches": {"main": hs(1)}, "redo": 1, "dirty": true, "project": "demo"}),
     );
-    round_trip(
-        &StatusResult {
+    rt(&mut m, "status.empty", &StatusResult {
             head: Head::Detached(None),
             position: None,
             depth: 0,
@@ -395,6 +516,7 @@ fn result_golden_and_round_trip() {
         json!({"head": "empty", "position": null, "depth": 0, "state": hs(0), "nodes": 0,
                "branches": {}, "redo": 0, "dirty": false, "project": null}),
     );
+    check_fixture("results.json", fixtures::RESULTS, &Value::Object(m));
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -425,6 +547,7 @@ fn catalog_result_serializes_registry_infos() {
         batch_schema,
     };
     let v = serde_json::to_value(&c).unwrap();
+    check_fixture("catalog.json", fixtures::CATALOG, &v);
     assert_eq!(v["protocol"], json!(0));
     assert_eq!(v["ops"][0]["name"], json!("core.batch"));
     assert_eq!(v["queries"][0]["name"], json!("demo.count"));
