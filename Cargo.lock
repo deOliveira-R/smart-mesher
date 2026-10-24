@@ -1385,12 +1385,18 @@ dependencies = [
 name = "sm-sizing"
 version = "0.0.0"
 dependencies = [
+ "criterion 0.5.1",
+ "proptest",
+ "rayon",
+ "serde_json",
  "sm-core",
  "sm-geom-api",
- "sm-math",
+ "sm-mesh-api",
+ "sm-model-api",
  "sm-scheme-api",
  "sm-testkit",
  "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
