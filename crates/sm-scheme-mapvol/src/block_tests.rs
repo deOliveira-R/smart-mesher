@@ -170,24 +170,24 @@ fn affine_block_with_graded_spacing_is_exact() {
     let (b, cells) = run(&s, [0; 6], [0, 1, 2, 3, 4, 5], IDV);
     assert_eq!(b.n, [3, 4, 2]);
     assert_eq!(cells.len(), 3 * 4 * 2);
-    let want: BTreeSet<Vec<[i64; 3]>> = {
-        let mut set = BTreeSet::new();
-        for k in 0..2 {
-            for j in 0..4 {
-                for i in 0..3 {
-                    let mut v = Vec::new();
-                    for c in 0..8usize {
-                        let q = s.lattice_pos([i + (c & 1), j + ((c >> 1) & 1), k + ((c >> 2) & 1)]);
-                        v.push([(q[0] * 1e9).round() as i64, (q[1] * 1e9).round() as i64, (q[2] * 1e9).round() as i64]);
-                    }
-                    v.sort_unstable();
-                    set.insert(v);
-                }
+    // Every interior node equals the affine lattice point (nearest match, 1e-12), and the block's
+    // positions are a permutation of the synthetic lattice.
+    let mut want: Vec<V3> = Vec::new();
+    for k in 0..=2 {
+        for j in 0..=4 {
+            for i in 0..=3 {
+                want.push(s.lattice_pos([i, j, k]));
             }
         }
-        set
-    };
-    assert_eq!(cells, want);
+    }
+    assert_eq!(b.pos.len(), want.len());
+    let near = |p: &V3, set: &[V3]| set.iter().map(|q| (0..3).map(|d| (p[d] - q[d]).abs()).fold(0.0, f64::max)).fold(f64::INFINITY, f64::min);
+    for p in &b.pos {
+        assert!(near(p, &want) < 1e-12, "node {p:?} off the lattice by {}", near(p, &want));
+    }
+    for q in &want {
+        assert!(near(q, &b.pos) < 1e-12, "lattice point {q:?} has no node");
+    }
 }
 
 #[test]

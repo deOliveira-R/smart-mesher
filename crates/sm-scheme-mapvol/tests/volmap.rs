@@ -56,7 +56,31 @@ fn volume(m: &ReferenceMesh) -> f64 {
 }
 
 fn min_scaled_jacobian(m: &ReferenceMesh) -> f64 {
+    min_scaled_jacobian_of(m)
+}
+
+fn min_scaled_jacobian_of(m: &dyn MeshRead) -> f64 {
     compute(m, Metric::ScaledJacobian, &Options::default()).expect("quality").into_iter().fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn brick_through_the_production_mesh_builder_matches_the_reference() {
+    let (topo, ids, model) = brick_setup([10.0, 10.0, 10.0]);
+    let mut intent = map_intent(ids.volume);
+    intent.defaults.sizing = Some(SizingSpec::Constant { size: 1.0 });
+    let r = reg();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&r, &solver, &picker);
+    let sel = [ids.volume];
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+    let out = driver.mesh(&input, &intent, &Sequential, sm_mesh::MeshBuilder::new(), &mut SerialAlloc::new()).expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert_eq!(m.count(MeshEntityKind::Cell), 1000);
+    assert_eq!(m.count(MeshEntityKind::Vertex), 1331);
+    assert!((min_scaled_jacobian_of(m) - 1.0).abs() < 1e-12);
+    let reference = mesh_with(&topo, &model, &intent, ids.volume, &Sequential).expect("reference mesh");
+    assert_eq!(sm_testkit::check::mesh_hash(m), sm_testkit::check::mesh_hash(&reference.finished.mesh));
 }
 
 #[test]
@@ -203,23 +227,28 @@ fn parallelepiped_is_affine_exact() {
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     assert_eq!(m.count(MeshEntityKind::Cell), 60);
-    // Equal spacing along straight edges: every node is the lattice point of the affine map.
-    let mut want: Vec<[i64; 3]> = Vec::new();
+    // Equal spacing along straight edges: every node is a lattice point of the affine map, and
+    // every lattice point is a node (nearest match within 1e-12 per component).
+    let mut want: Vec<[f64; 3]> = Vec::new();
     for k in 0..=5 {
         for j in 0..=4 {
             for i in 0..=3 {
                 let (x, y, z) = (i as f64 / 3.0, j as f64 / 4.0, k as f64 / 5.0);
-                let p: Vec<f64> = (0..3).map(|d| o[d] + x * a[d] + y * b[d] + z * c[d]).collect();
-                want.push([(p[0] * 1e9).round() as i64, (p[1] * 1e9).round() as i64, (p[2] * 1e9).round() as i64]);
+                want.push(std::array::from_fn(|d| o[d] + x * a[d] + y * b[d] + z * c[d]));
             }
         }
     }
-    let mut got: Vec<[i64; 3]> = coords(m).iter().map(|p| [(p[0] * 1e9).round() as i64, (p[1] * 1e9).round() as i64, (p[2] * 1e9).round() as i64]).collect();
-    want.sort_unstable();
-    got.sort_unstable();
-    assert_eq!(got, want);
+    let got = coords(m);
+    assert_eq!(got.len(), want.len());
+    let near = |p: &[f64; 3], set: &[[f64; 3]]| set.iter().map(|q| (0..3).map(|d| (p[d] - q[d]).abs()).fold(0.0, f64::max)).fold(f64::INFINITY, f64::min);
+    for p in &got {
+        assert!(near(p, &want) < 1e-12, "node {p:?} is off the affine lattice by {}", near(p, &want));
+    }
+    for q in &want {
+        assert!(near(q, &got) < 1e-12, "lattice point {q:?} has no node");
+    }
     let det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
-    assert!((volume(m) - det).abs() < 1e-10);
+    assert!((volume(m) - det).abs() < 1e-12 * det.abs().max(1.0), "{} vs {det}", volume(m));
 }
 
 fn geometric_cells(m: &ReferenceMesh) -> Vec<Vec<[i64; 3]>> {

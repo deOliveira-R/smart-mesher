@@ -30,7 +30,9 @@ keys `(volume, 0..)` that the committer sorts without help from the scheme.
   Union-find over "opposite sides of a face" gives three classes of four. One
   `IntervalSink::equal(first, other)` row per further member (sums over chains, so a logical side
   made of several edges is handled). Anything else (not 12 shared sides, not 3x4 classes) is
-  `NotApplicable`, so the driver falls back.
+  `NotApplicable`. The planner propagates an `Err` from this phase (`planner.rs`: `?` on
+  `interval_constraints`), so this is a backstop that aborts the run with a clear reason, not a
+  fallback; the fallback-capable checks are `applicability` and `generate`.
 * **generate**: `GenCtx::grid` of the six faces, then `block::assemble` and `block::patch`.
 
 ## Orientation (`block.rs`)
