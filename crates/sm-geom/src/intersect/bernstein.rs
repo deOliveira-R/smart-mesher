@@ -64,6 +64,9 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
     let mut out: Vec<BRoot> = Vec::new();
     // Stretches where the polynomial stays within `eps` of zero without crossing it.
     let mut flat: Vec<(f64, f64)> = Vec::new();
+    // Monotone pieces that end within `eps` of zero without crossing: (parameter, sign). Two
+    // pieces of the same sign meeting at a parameter form a grazing contact there.
+    let mut weak: Vec<(f64, bool)> = Vec::new();
     let mut stack: Vec<(Coef, f64, f64, u32)> = vec![(c.iter().copied().collect(), 0.0, 1.0, 0)];
     while let Some((co, s0, s1, depth)) = stack.pop() {
         let k = sign_changes(&co);
@@ -94,7 +97,14 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
                 // derivative's control polygon says whether there is one.
                 let dco: Coef = co.windows(2).map(|w| w[1] - w[0]).collect();
                 if sign_changes(&dco) == 0 {
-                    continue; // monotone: any root belongs to the neighbouring piece
+                    // Monotone: a crossing belongs to the neighbouring piece. A minimum of |c|
+                    // at an end within `eps` is a candidate contact, kept if the neighbour
+                    // approaches it from the same side (decided after the loop).
+                    let (at, v) = if first.abs() <= last.abs() { (s0, first) } else { (s1, last) };
+                    if v.abs() <= eps {
+                        weak.push((at, v > 0.0));
+                    }
+                    continue;
                 }
                 let mx = co.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                 if mx <= 4.0 * eps || width <= 1e-9 || depth >= 60 {
@@ -115,6 +125,12 @@ pub(crate) fn roots(c: &[f64], eps: f64) -> Vec<BRoot> {
                     subdivide(&co, &mut stack);
                 }
             }
+        }
+    }
+    weak.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for w in weak.windows(2) {
+        if (w[0].0 - w[1].0).abs() <= 1e-12 && w[0].1 == w[1].1 {
+            out.push(BRoot { s: w[0].0, tangent: true });
         }
     }
     // One contact per run of flat stretches.
@@ -181,6 +197,18 @@ mod tests {
         let r = roots(&c, 1e-9);
         assert_eq!(r.len(), 1, "{r:?}");
         assert!(r[0].tangent && (r[0].s - 0.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn touching_cubic_and_near_misses() {
+        // Bernstein [1, -1/3, -1/3, 1] + h touches (h = 0) or just misses zero at s = 1/2.
+        for h in [0.0, 1e-9, 1e-7, 5e-7] {
+            let c = [1.0 + h, -1.0 / 3.0 + h, -1.0 / 3.0 + h, 1.0 + h];
+            let r = roots(&c, 1e-6);
+            assert_eq!(r.len(), 1, "h={h}: {r:?}");
+            assert!(r[0].tangent && (r[0].s - 0.5).abs() < 1e-3, "h={h}: {r:?}");
+        }
+        assert!(roots(&[1.0 + 1e-4, -1.0 / 3.0 + 1e-4, -1.0 / 3.0 + 1e-4, 1.0 + 1e-4], 1e-6).is_empty());
     }
 
     #[test]

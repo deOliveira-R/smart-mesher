@@ -119,7 +119,17 @@ pub enum SsiResult {
 /// as branches that end at a `Singular` point, never continued through; branches that cross at
 /// a singular point are traced as separate pieces; and implicit-only against implicit-only
 /// pairs are `Unsupported`. Within those limits every returned point satisfies both surfaces to
-/// `tol.linear` and the polyline deviates from the true curve by at most `chord_tol`.
+/// `tol.linear` and the polyline deviates from the true curve by at most `chord_tol`; the tracer
+/// rejects steps that jump between nearby branches (corrector displacement, corrected midpoint
+/// and a step proportional to the sine of the normal angle).
+///
+/// **Tangency.** Every closed form decides a tangent contact by a distance: a gap (or, for
+/// internal sphere contact, a nesting gap) of at most `tol.linear` is a contact (`Point`, or the
+/// tangent line), a larger gap is `Empty`. A marcher-found isolated contact is reported as
+/// `Point` only when it is the whole result and the marching surface meets an implicit one.
+/// Pairs whose normals are within `100 tol.angular` (1e-7 rad by default) end a branch as
+/// `Singular`. The conic type thresholds (1e-10 relative, parabola against ellipse) are shape
+/// classifications, not tolerances.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct SsiOptions {
@@ -195,13 +205,28 @@ fn sphere_sphere(a: &Sphere, b: &Sphere, o: &SsiOptions) -> Result<SsiResult, Ge
         return Ok(if (a.radius - b.radius).abs() <= o.tol.linear { SsiResult::Coincident } else { SsiResult::Empty });
     }
     let u = c * (1.0 / d);
-    let h = (d * d + a.radius * a.radius - b.radius * b.radius) / (2.0 * d);
-    let rho2 = a.radius * a.radius - h * h;
-    let center = a.frame.origin + u * h;
-    let scale = a.radius.max(b.radius);
-    if rho2 < 0.0 {
-        return Ok(if (-rho2).sqrt() <= o.tol.linear && rho2 > -(o.tol.linear * scale) { SsiResult::Point(center) } else { SsiResult::Empty });
+    let (ra, rb) = (a.radius, b.radius);
+    // Tangent contacts by the gap between the surfaces, compared with the linear tolerance.
+    let ext = d - (ra + rb);
+    let int = (ra - rb).abs() - d;
+    if ext > 0.0 || int > 0.0 {
+        let gap = ext.max(int);
+        if gap > o.tol.linear {
+            return Ok(SsiResult::Empty);
+        }
+        // Midpoint of the two nearest surface points on the line of centres.
+        let p = if ext > 0.0 {
+            a.frame.origin + u * (ra + 0.5 * gap)
+        } else if ra >= rb {
+            a.frame.origin + u * (ra - 0.5 * gap)
+        } else {
+            a.frame.origin + u * -(ra + 0.5 * gap)
+        };
+        return Ok(SsiResult::Point(p));
     }
+    let h = (d * d + ra * ra - rb * rb) / (2.0 * d);
+    let rho2 = (ra * ra - h * h).max(0.0);
+    let center = a.frame.origin + u * h;
     let rho = rho2.sqrt();
     if rho <= o.tol.linear {
         return Ok(SsiResult::Point(center));
@@ -291,7 +316,7 @@ pub fn intersect_surfaces(a: &SurfaceDef, b: &SurfaceDef, options: &SsiOptions) 
                 SurfaceDef::Nurbs(_) => {}
                 _ => {
                     if let Some(ImplicitDef::Quadric(q)) = other.implicit_def() {
-                        let sec = plane_quadric(p, &q);
+                        let sec = plane_quadric(p, &q, tol);
                         let (keep, ray) = nappe_keep(other, tol.linear);
                         return section_to_result(&sec, tol, options.window.as_ref(), &*keep, ray);
                     }

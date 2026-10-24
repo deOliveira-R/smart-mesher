@@ -217,7 +217,10 @@ impl PreparedCurve {
     }
 
     /// Insert the knot `t` `times` times (keeps the shape; a periodic curve keeps its period
-    /// copies). Fails if the multiplicity would exceed the degree.
+    /// copies). `t` must lie in the open parameter interval: the ends, including the seam of a
+    /// periodic curve, are refused with [`GeomError::OutOfDomain`] (a knot already sits there;
+    /// wrap `t` into the interior if a seam knot is wanted). Fails if the multiplicity would
+    /// exceed the degree.
     pub fn insert_knot(&self, t: f64, times: usize) -> Result<PreparedCurve, GeomError> {
         let (lo, hi) = (self.lo, self.hi);
         if !(t > lo && t < hi) {
@@ -347,31 +350,55 @@ impl ParametricCurve for PreparedCurve {
     }
 
     /// Composite Gauss-Legendre per knot span (the integrand is smooth inside a span), refined
-    /// until the estimate is stable to `tol`.
+    /// until the estimate is stable to `tol`. On a periodic curve, whole periods inside the range
+    /// are not integrated again: the length of one period is multiplied by their count, so the
+    /// cost does not depend on how many periods the range spans.
     fn length(&self, range: Interval, tol: f64) -> Result<f64, GeomError> {
         if !(range.is_valid() && range.is_bounded()) {
             return Err(GeomError::Invalid("arc length needs a bounded, ordered range"));
         }
-        let mut cuts: Vec<f64> = vec![range.lo];
+        if !self.lay.periodic {
+            return self.length_pieces(range, tol);
+        }
+        let period = self.hi - self.lo;
+        let j0 = ((range.lo - self.lo) / period).floor();
+        let j1 = ((range.hi - self.lo) / period).floor();
+        if (j1 - j0).is_nan() || j1 - j0 < 2.0 {
+            return self.length_pieces(range, tol);
+        }
+        let nfull = j1 - j0 - 1.0;
+        let first_end = self.lo + (j0 + 1.0) * period;
+        let last_start = self.lo + j1 * period;
+        let one = self.length_pieces(Interval::new(self.lo, self.hi), tol / nfull.max(1.0))?;
+        Ok(self.length_pieces(Interval::new(range.lo, first_end), tol)? + nfull * one + self.length_pieces(Interval::new(last_start, range.hi), tol)?)
+    }
+}
+
+impl PreparedCurve {
+    /// Arc length over `range`, which touches at most two periods of a periodic curve: cuts at
+    /// every knot value (collected, then sorted and deduplicated), Gauss quadrature per piece.
+    fn length_pieces(&self, range: Interval, tol: f64) -> Result<f64, GeomError> {
         let per = self.lay.periodic;
         let period = self.hi - self.lo;
-        // Distinct interior knot values, replicated over the periods the range touches.
         let k0 = if per { ((range.lo - self.lo) / period).floor() as i64 } else { 0 };
         let k1 = if per { ((range.hi - self.lo) / period).floor() as i64 } else { 0 };
+        let mut cuts: Vec<f64> = vec![range.lo, range.hi];
         for k in k0..=k1 {
             for s in &self.segs {
                 for v in [s.lo, s.hi] {
                     let v = v + k as f64 * period;
-                    if v > range.lo && v < range.hi && cuts.last() != Some(&v) && cuts.iter().all(|c| *c != v) {
+                    if v > range.lo && v < range.hi {
                         cuts.push(v);
                     }
                 }
             }
         }
-        cuts.push(range.hi);
         cuts.sort_by(f64::total_cmp);
         cuts.dedup();
-        let pieces = (cuts.len() - 1).max(1) as f64;
+        if cuts.len() < 2 {
+            return Ok(0.0);
+        }
+        let pieces = (cuts.len() - 1) as f64;
         let mut total = 0.0;
         for w in cuts.windows(2) {
             total += project::gauss_adaptive(&|t| self.jet_at(self.fold(t)).d1.norm(), w[0], w[1], tol / pieces)?;

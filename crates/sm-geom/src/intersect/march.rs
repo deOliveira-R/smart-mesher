@@ -191,7 +191,9 @@ struct State {
 }
 
 enum Step {
-    Ok(State, Vector3),
+    /// New state, its unit tangent (oriented along the travel direction) and `sin` of the angle
+    /// between the surface normals there.
+    Ok(State, Vector3, f64),
     Boundary(State),
     Singular,
     Fail,
@@ -224,8 +226,8 @@ impl<'a> Engine<'a> {
         };
         let c = nm.cross(nt);
         let s = c.norm();
-        // Surfaces tangent to within ~1e-6 rad are treated as singular.
-        if s < 1e-7 { None } else { Some((c * (1.0 / s), s)) }
+        // Surfaces tangent to within ~100 `tol.angular` (1e-7 rad by default) are singular.
+        if s < (100.0 * self.opts.tol.angular).max(1e-12) { None } else { Some((c * (1.0 / s), s)) }
     }
 
     fn outside_m(&self, q: Uv) -> bool {
@@ -297,14 +299,15 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// One predictor-corrector step of length about `h` along `tau`.
-    fn step(&self, st: &State, tau: Vector3, h: f64) -> Step {
+    /// Predictor (least-squares in-plane displacement) and Newton corrector for a move of
+    /// length `h` along `tau`, without any branch or boundary checks. `Err(true)` = a
+    /// parametrization is singular here, `Err(false)` = the corrector failed.
+    fn advance(&self, st: &State, tau: Vector3, h: f64) -> Result<State, bool> {
         let j = self.mj(st.mu);
-        // Least-squares in-plane displacement for the move h * tau.
         let (e, f, g) = (j.du.dot(j.du), j.du.dot(j.dv), j.dv.dot(j.dv));
         let det = e * g - f * f;
         if det <= 1e-24 * e.max(g).max(1e-300).powi(2) {
-            return Step::Singular;
+            return Err(true);
         }
         let (bu, bv) = (j.du.dot(tau) * h, j.dv.dot(tau) * h);
         let du = (g * bu - f * bv) / det;
@@ -316,23 +319,52 @@ impl<'a> Engine<'a> {
             let (e2, f2, g2) = (jt.du.dot(jt.du), jt.du.dot(jt.dv), jt.dv.dot(jt.dv));
             let det2 = e2 * g2 - f2 * f2;
             if det2 <= 1e-24 * e2.max(g2).max(1e-300).powi(2) {
-                return Step::Singular;
+                return Err(true);
             }
             let (cu, cv) = (jt.du.dot(tau) * h, jt.dv.dot(tau) * h);
             guess.tu = Uv::new(st.tu.u + (g2 * cu - f2 * cv) / det2, st.tu.v + (e2 * cv - f2 * cu) / det2);
         }
-        let Some(new) = self.correct(st, st.p, tau, h, guess) else { return Step::Fail };
+        self.correct(st, st.p, tau, h, guess).ok_or(false)
+    }
+
+    /// One predictor-corrector step of length about `h` along `tau`.
+    ///
+    /// Branch jumps near tangency are rejected (`Fail`, the caller halves `h`): the corrector
+    /// may not move the point farther from the straight prediction than the chord tolerance
+    /// allows for the curvature the step control accepts, and the corrected midpoint of the
+    /// step must lie within the chord tolerance of the chord.
+    fn step(&self, st: &State, tau: Vector3, h: f64) -> Step {
+        let new = match self.advance(st, tau, h) {
+            Ok(n) => n,
+            Err(true) => return Step::Singular,
+            Err(false) => return Step::Fail,
+        };
         // Reject a corrector that jumped to a different branch.
         if (new.p - st.p).norm() > 3.0 * h + 10.0 * self.opts.tol.linear {
+            return Step::Fail;
+        }
+        let checked = h > self.min_step * 1.01;
+        if checked && (new.p - (st.p + tau * h)).norm() > 3.0 * self.chord + 10.0 * self.opts.tol.linear {
             return Step::Fail;
         }
         if self.outside_m(new.mu) || self.outside_t(new.tu) || !in_box(&self.opts.window, new.p, self.opts.tol.linear) {
             return Step::Boundary(new);
         }
+        if checked {
+            match self.advance(st, tau, 0.5 * h) {
+                Ok(mid) => {
+                    let chord_mid = Point3::new(0.5 * (st.p.x + new.p.x), 0.5 * (st.p.y + new.p.y), 0.5 * (st.p.z + new.p.z));
+                    if (mid.p - chord_mid).norm() > self.chord {
+                        return Step::Fail;
+                    }
+                }
+                Err(_) => return Step::Fail,
+            }
+        }
         match self.tangent_at(&new) {
-            Some((t2, _)) => {
+            Some((t2, sn)) => {
                 let t2 = if t2.dot(tau) < 0.0 { t2 * -1.0 } else { t2 };
-                Step::Ok(new, t2)
+                Step::Ok(new, t2, sn)
             }
             None => Step::Singular,
         }
@@ -348,7 +380,7 @@ impl<'a> Engine<'a> {
                 break;
             }
             match self.step(st, tau, h) {
-                Step::Ok(s, _) => {
+                Step::Ok(s, _, _) => {
                     lo = h;
                     best = Some(s);
                 }
@@ -365,6 +397,91 @@ impl<'a> Engine<'a> {
         best
     }
 
+    /// Isolated tangent contacts of `M` with an implicit `T`: local extrema of `T`'s implicit
+    /// function over `M` that touch zero (no sign change, so no iso-curve seed finds them).
+    /// Grid minima of the distance estimate are polished by Newton on the stationarity of
+    /// `phi(u, v) = f(M(u, v))`. Used only when the marcher found no curve at all.
+    fn tangent_points(&self) -> Vec<Point3> {
+        let Some(imp) = self.t.imp.as_ref() else { return Vec::new() };
+        if self.four {
+            return Vec::new();
+        }
+        const N: usize = 40;
+        let tol = self.opts.tol.linear;
+        let (bu, bv) = (self.mbox[0], self.mbox[1]);
+        let at = |i: usize, j: usize| Uv::new(bu.lo + bu.len() * i as f64 / N as f64, bv.lo + bv.len() * j as f64 / N as f64);
+        let dist_at = |q: Uv| {
+            let p = self.mj(q).p;
+            imp.value(p).abs() / imp.gradient(p).norm().max(1e-300)
+        };
+        let grid: Vec<f64> = (0..(N + 1) * (N + 1)).map(|k| dist_at(at(k / (N + 1), k % (N + 1)))).collect();
+        let g = |i: usize, j: usize| grid[i * (N + 1) + j];
+        let mut cands: Vec<(f64, Uv)> = Vec::new();
+        for i in 0..=N {
+            for j in 0..=N {
+                let v = g(i, j);
+                let mut is_min = true;
+                for (di, dj) in [(-1i64, -1i64), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)] {
+                    let (ni, nj) = (i as i64 + di, j as i64 + dj);
+                    if ni < 0 || nj < 0 || ni > N as i64 || nj > N as i64 {
+                        continue;
+                    }
+                    let w = g(ni as usize, nj as usize);
+                    // Ties go to the lower index so that a plateau yields one candidate.
+                    if w < v || (w == v && (ni, nj) < (i as i64, j as i64)) {
+                        is_min = false;
+                        break;
+                    }
+                }
+                if is_min {
+                    cands.push((v, at(i, j)));
+                }
+            }
+        }
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+        cands.truncate(32);
+        let (hu, hv) = (1e-6 * bu.len().max(1e-12), 1e-6 * bv.len().max(1e-12));
+        // phi and its gradient (a, b) = (g . du, g . dv) at q.
+        let eval = |q: Uv| {
+            let j = self.mj(q);
+            let gr = imp.gradient(j.p);
+            (imp.value(j.p), gr.dot(j.du), gr.dot(j.dv), j.p)
+        };
+        let mut out: Vec<Point3> = Vec::new();
+        for (_, q0) in cands {
+            let mut q = q0;
+            let (mut f, mut a, mut b, mut p) = eval(q);
+            let cell = Uv::new(bu.len() / N as f64, bv.len() / N as f64);
+            for _ in 0..40 {
+                if a == 0.0 && b == 0.0 {
+                    break;
+                }
+                let (_, a1, b1, _) = eval(Uv::new(q.u + hu, q.v));
+                let (_, a2, b2, _) = eval(Uv::new(q.u, q.v + hv));
+                let h = [[(a1 - a) / hu, (a2 - a) / hv], [(b1 - b) / hu, (b2 - b) / hv]];
+                let Some(d) = solve_dense(h, [-a, -b]) else { break };
+                let (du, dv) = (d[0].clamp(-cell.u, cell.u), d[1].clamp(-cell.v, cell.v));
+                let nq = Uv::new(q.u + du, q.v + dv);
+                let (nf, na, nb, np) = eval(nq);
+                // Accept steps that reduce the stationarity residual.
+                if na * na + nb * nb < a * a + b * b {
+                    q = nq;
+                    (f, a, b, p) = (nf, na, nb, np);
+                } else {
+                    break;
+                }
+                if du.abs() <= 1e-14 * bu.len() && dv.abs() <= 1e-14 * bv.len() {
+                    break;
+                }
+            }
+            let gn = imp.gradient(p).norm().max(1e-300);
+            if f.abs() / gn <= tol && in_box(&self.opts.window, p, tol) && !self.outside_m(q) && out.iter().all(|o| (*o - p).norm() > 20.0 * tol) {
+                out.push(p);
+            }
+        }
+        out
+    }
+
     /// Trace from `seed` in direction `dir` (+1/-1 relative to the seed tangent).
     /// Returns the points after the seed and how the branch ended.
     fn trace(&self, seed: &State, tau0: Vector3, dir: f64, start: Point3, allow_close: bool) -> (Vec<State>, MarchEnd) {
@@ -373,6 +490,10 @@ impl<'a> Engine<'a> {
         let mut tau = tau0 * dir;
         let mut h = (self.max_step * 0.25).max(self.min_step);
         let mut guard = 0usize;
+        // Near tangency the branches of the intersection come close (about twice the normal
+        // angle times the curvature radius): the step is proportional to sin(angle).
+        let cap = |sn: f64| self.max_step * (4.0 * sn).min(1.0);
+        let mut hcap = self.tangent_at(seed).map_or(self.max_step, |(_, sn)| cap(sn));
         loop {
             guard += 1;
             if out.len() >= self.opts.max_points || guard > 8 * self.opts.max_points {
@@ -385,8 +506,9 @@ impl<'a> Engine<'a> {
                     return (out, MarchEnd::Closed);
                 }
             }
+            h = h.min(hcap).max(self.min_step);
             match self.step(&st, tau, h) {
-                Step::Ok(new, t2) => {
+                Step::Ok(new, t2, sn) => {
                     // Chord control from the turning angle.
                     let cosang = tau.dot(t2).clamp(-1.0, 1.0);
                     let ang = cosang.acos();
@@ -397,6 +519,7 @@ impl<'a> Engine<'a> {
                     out.push(new);
                     st = new;
                     tau = t2;
+                    hcap = cap(sn);
                     let kappa = ang / h.max(1e-300);
                     let want = if kappa > 0.0 { (8.0 * self.chord / kappa).sqrt() } else { f64::INFINITY };
                     h = (h * 2.0).min(want).min(self.max_step).max(self.min_step);
@@ -631,6 +754,10 @@ pub(crate) fn intersect_general(a: &SurfaceDef, b: &SurfaceDef, o: &SsiOptions) 
 
     let curves = join_boundary_pieces(curves, 20.0 * o.tol.linear);
     if curves.is_empty() {
+        if isolated.is_empty() {
+            isolated = engine.tangent_points();
+        }
+        isolated.dedup_by(|a, b| (*a - *b).norm() <= 20.0 * o.tol.linear);
         return Ok(match isolated.first() {
             Some(p) if isolated.len() == 1 => SsiResult::Point(*p),
             _ => SsiResult::Empty,

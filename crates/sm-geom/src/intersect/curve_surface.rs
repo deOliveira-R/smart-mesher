@@ -198,6 +198,12 @@ fn nurbs_plane(pc: &PreparedCurve, n: Vector3, p0: Point3, tol: &ModelTolerance,
 /// Coincidence (the curve running along the surface) is detected for planes and, by sampling,
 /// for implicit surfaces; for NURBS surfaces a coincident curve yields
 /// [`GeomError::NoConvergence`] (documented limit).
+///
+/// **Resolution limits.** NURBS curve against an implicit surface subdivides to `20 tol.linear`
+/// (contacts closer than a few `tol.linear`, or along a stretch that stays within `tol.linear`
+/// of the surface, merge into one hit). Against a NURBS surface the box search stops at 1e-3 of
+/// the larger bounding-box diagonal before the Newton polish, and hits within `20 tol.linear`
+/// merge: two contacts closer than about that leaf size in one box may be reported as one.
 pub fn curve_surface(curve: &CurveDef, range: Option<Interval>, surface: &SurfaceDef, tol: &ModelTolerance) -> Result<CurveSurface, GeomError> {
     match surface {
         SurfaceDef::Plane(p) => return curve_plane(curve, range, p, tol),
@@ -403,7 +409,10 @@ struct CNode {
 fn nurbs_vs_implicit(c: &PreparedCurve, imp: &ImplicitDef, tol: &ModelTolerance, r: Interval) -> Result<Option<Vec<Raw>>, GeomError> {
     let bb = c.control_bbox();
     let scale = ((bb[3] - bb[0]).powi(2) + (bb[4] - bb[1]).powi(2) + (bb[5] - bb[2]).powi(2)).sqrt().max(1e-300);
-    let leaf = 1e-4 * scale;
+    // Leaves are fixed by geometry, not by the curve's extent: small enough to separate two
+    // contacts a few `tol.linear` apart, never finer than that (a coarser start for long
+    // curves only costs depth, one level per halving).
+    let leaf = (20.0 * tol.linear).min(1e-4 * scale).max(1e-12 * scale);
     let mut found: Vec<Raw> = Vec::new();
     let mut stack: Vec<CNode> = c.segs.iter().rev().filter(|s| s.hi >= r.lo && s.lo <= r.hi).map(|s| CNode { lo: s.lo, hi: s.hi, poles: s.poles.clone(), depth: 0 }).collect();
     let mut budget = 200_000usize;
@@ -447,13 +456,30 @@ fn nurbs_vs_implicit(c: &PreparedCurve, imp: &ImplicitDef, tol: &ModelTolerance,
         return if on { Ok(None) } else { Err(GeomError::NoConvergence("curve/surface subdivision budget exhausted")) };
     }
     let _ = leaves;
-    // Merge duplicates produced by neighbouring leaves.
+    // Merge duplicates produced by neighbouring leaves. Two consecutive hits are one contact
+    // when they coincide to rounding, lie within a few `tol.linear` of each other, or the curve
+    // stays within `tol.linear` of the surface all along between them (a tangent stretch).
     found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let near = |t: f64| {
+        let p = c.eval(t);
+        imp.value(p).abs() / imp.gradient(p).norm().max(1e-300) <= tol.linear
+    };
     let mut merged: Vec<Raw> = Vec::new();
     for h in found {
-        match merged.last_mut() {
-            Some(l) if (h.0 - l.0).abs() <= 1e-7 * (1.0 + h.0.abs()) + 4.0 * leaf / scale * c.range().len() => l.1 |= h.1,
-            _ => merged.push(h),
+        let same = match merged.last() {
+            Some(l) => {
+                (h.0 - l.0).abs() <= 1e-12 * (1.0 + h.0.abs())
+                    || (c.eval(h.0) - c.eval(l.0)).norm() <= 5.0 * tol.linear
+                    || (near(h.0) && near(l.0) && (1..8).all(|i| near(l.0 + (h.0 - l.0) * i as f64 / 8.0)))
+            }
+            None => false,
+        };
+        if same {
+            if let Some(l) = merged.last_mut() {
+                l.1 |= h.1;
+            }
+        } else {
+            merged.push(h);
         }
     }
     Ok(Some(merged))
@@ -518,12 +544,20 @@ pub fn curve_prepared_surface(curve: &CurveDef, range: Option<Interval>, ps: &Pr
     let hits = pair_hits(&pc, ps, if remap.is_some() || matches!(curve, CurveDef::Line(_)) { pc.range() } else { r }, tol)?;
     let mut out: Vec<CurveSurfaceHit> = Vec::new();
     for h in hits {
-        let t = match remap {
-            Some(a) => a.project(h.point, None).map(|p| p.t).unwrap_or(h.t),
-            None => h.t,
-        };
-        if r.contains(t, 0.0) {
-            out.push(CurveSurfaceHit { t, point: h.point, uv: Some(h.uv), tangent: h.tangent });
+        match remap {
+            // The search ran over the principal period: replicate each hit over every period
+            // that meets the caller's range (as `trig_vs_implicit` and `ellipse_plane` do).
+            Some(a) => {
+                let t = a.project(h.point, None).map(|p| p.t).unwrap_or(h.t).rem_euclid(TAU);
+                for tt in periodic_in_range(t, TAU, r) {
+                    out.push(CurveSurfaceHit { t: tt, point: h.point, uv: Some(h.uv), tangent: h.tangent });
+                }
+            }
+            None => {
+                if r.contains(h.t, 0.0) {
+                    out.push(CurveSurfaceHit { t: h.t, point: h.point, uv: Some(h.uv), tangent: h.tangent });
+                }
+            }
         }
     }
     out.sort_by(|a, b| a.t.total_cmp(&b.t));

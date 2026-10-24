@@ -85,9 +85,12 @@ impl Layout {
         let t = lo + (t - lo).rem_euclid(period);
         let t = if t >= hi { lo } else { t };
         let k = &self.knots;
+        // Stored knots inside the window [p, p+m) are read as is; period shifts apply only
+        // outside it, so a window that is sorted in storage stays sorted.
         let kn_at = |i: isize| -> f64 {
             let mi = m as isize;
-            k[i.rem_euclid(mi) as usize] + (i.div_euclid(mi)) as f64 * period
+            let r = i - p as isize;
+            k[p + r.rem_euclid(mi) as usize] + (r.div_euclid(mi)) as f64 * period
         };
         let pole_at = |i: isize| -> Hp { poles[i.rem_euclid(m as isize) as usize] };
         // Span s in [p, p+m) with kn(s) <= t < kn(s+1).
@@ -118,7 +121,10 @@ impl Layout {
         let pos = b.partition_point(|x| *x <= t);
         b.insert(pos, t);
         let total = newp + p + 1;
-        let kn: Vec<f64> = (0..total as isize).map(|i| b[(i - pi).rem_euclid(mp) as usize] + ((i - pi).div_euclid(mp)) as f64 * period).collect();
+        let mut kn: Vec<f64> = (0..total as isize).map(|i| b[(i - pi).rem_euclid(mp) as usize] + ((i - pi).div_euclid(mp)) as f64 * period).collect();
+        for i in 1..kn.len() {
+            kn[i] = kn[i].max(kn[i - 1]);
+        }
         Ok((Layout { degree: p, knots: kn, periodic: true }, q))
     }
 
@@ -168,18 +174,22 @@ impl Layout {
         Ok((l, cur))
     }
 
+    /// Non-empty knot spans of a clamped, Bezierized layout: `(lo, hi, first_pole)`, where the
+    /// span's `degree + 1` poles start at `first_pole`. Handles interior knots of multiplicity
+    /// `degree` (C^0) and `degree + 1` (C^-1, the pole run is split) alike; empty spans
+    /// (`hi <= lo`) are skipped.
+    pub(crate) fn spans(&self) -> Vec<(f64, f64, usize)> {
+        let p = self.degree;
+        let k = &self.knots;
+        (p..self.npoles()).filter(|&s| k[s + 1] > k[s]).map(|s| (k[s], k[s + 1], s - p)).collect()
+    }
+
     /// Bezier extraction: for each non-empty knot span, its parameter interval and the `p + 1`
     /// homogeneous poles of the segment.
     pub(crate) fn bezier(&self, poles: &[Hp]) -> Result<Vec<(f64, f64, Vec<Hp>)>, GeomError> {
         let p = self.degree;
         let (l, cur) = self.bezierized(poles)?;
-        let nseg = (cur.len() - 1) / p;
-        let mut out = Vec::with_capacity(nseg);
-        for s in 0..nseg {
-            let (a, b) = (l.knots[(s + 1) * p], l.knots[(s + 1) * p + 1]);
-            out.push((a, b, cur[s * p..=(s + 1) * p].to_vec()));
-        }
-        Ok(out)
+        Ok(l.spans().into_iter().map(|(a, b, i0)| (a, b, cur[i0..=i0 + p].to_vec())).collect())
     }
 }
 

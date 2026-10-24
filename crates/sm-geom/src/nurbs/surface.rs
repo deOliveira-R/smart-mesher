@@ -97,15 +97,15 @@ impl PreparedSurface {
         let (bv, net2) = apply_v(lv, &net1, nu1, nv, |l, c| l.bezierized(c))?;
         let nv2 = bv.npoles();
         let (pu, pv) = (lu.degree, lv.degree);
-        let (su, sv) = ((nu1 - 1) / pu, (nv2 - 1) / pv);
-        let mut patches = Vec::with_capacity(su * sv);
+        let (spu, spv) = (bu.spans(), bv.spans());
+        let mut patches = Vec::with_capacity(spu.len() * spv.len());
         let mut total = [f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-        for i in 0..su {
-            for j in 0..sv {
+        for &(ua, ub, i0) in &spu {
+            for &(va, vb, j0) in &spv {
                 let mut pp = PatchPoles::new();
                 for a in 0..=pu {
                     for b in 0..=pv {
-                        pp.push(net2[(i * pu + a) * nv2 + j * pv + b]);
+                        pp.push(net2[(i0 + a) * nv2 + j0 + b]);
                     }
                 }
                 let bbox = bbox_of(pp.iter().map(|h| hp_point(*h)));
@@ -113,12 +113,7 @@ impl PreparedSurface {
                     total[k] = total[k].min(bbox[k]);
                     total[k + 3] = total[k + 3].max(bbox[k + 3]);
                 }
-                patches.push(Patch {
-                    u: Interval::new(bu.knots[(i + 1) * pu], bu.knots[(i + 1) * pu + 1]),
-                    v: Interval::new(bv.knots[(j + 1) * pv], bv.knots[(j + 1) * pv + 1]),
-                    poles: pp,
-                    bbox,
-                });
+                patches.push(Patch { u: Interval::new(ua, ub), v: Interval::new(va, vb), poles: pp, bbox });
             }
         }
         Ok((patches, total))
@@ -237,7 +232,9 @@ impl PreparedSurface {
         Self::from_parts(lu, lv, nu, nv, poles, self.rational)
     }
 
-    /// Insert the `u` knot `t` `times` times (shape preserved).
+    /// Insert the `u` knot `t` `times` times (shape preserved). `t` must lie in the open parameter
+    /// interval: the ends (the seam of a periodic direction) are refused with
+    /// [`GeomError::OutOfDomain`] because a knot there is already present.
     pub fn insert_knot_u(&self, t: f64, times: usize) -> Result<PreparedSurface, GeomError> {
         if !(t > self.du.lo && t < self.du.hi) {
             return Err(GeomError::OutOfDomain(t));
@@ -257,7 +254,8 @@ impl PreparedSurface {
         self.rebuild(lu, self.lv.clone(), nu, self.nv, poles)
     }
 
-    /// Insert the `v` knot `t` `times` times (shape preserved).
+    /// Insert the `v` knot `t` `times` times (shape preserved); same domain rule as
+    /// [`Self::insert_knot_u`].
     pub fn insert_knot_v(&self, t: f64, times: usize) -> Result<PreparedSurface, GeomError> {
         if !(t > self.dv.lo && t < self.dv.hi) {
             return Err(GeomError::OutOfDomain(t));

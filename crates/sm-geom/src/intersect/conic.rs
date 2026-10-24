@@ -4,9 +4,10 @@
 
 use super::ssi::{IntersectionCurve, SsiResult};
 use crate::nurbs::exact::conic_arc;
+use crate::roots::quadratic;
 use core::f64::consts::TAU;
 use sm_core::{Point3, Vector3};
-use sm_geom_api::{Circle, CurveDef, Ellipse, Frame, GeomError, Interval, Line, ModelTolerance, NurbsCurve, Plane, Quadric};
+use sm_geom_api::{Circle, CurveDef, Ellipse, Frame, GeomError, ImplicitSurface, Interval, Line, ModelTolerance, NurbsCurve, Plane, Quadric};
 
 /// Classified conic in 3D.
 #[derive(Clone, Debug)]
@@ -31,7 +32,14 @@ fn quad_form(q: &[[f64; 3]; 3], a: Vector3, b: Vector3) -> f64 {
 }
 
 /// Classify `plane ∩ {q = 0}`.
-pub(crate) fn plane_quadric(plane: &Plane, q: &Quadric) -> Section {
+///
+/// Tangent contacts are decided by a distance: the gap between the plane and the quadric at the
+/// stationary point of the restriction (`|q| / |grad q|`, first order) is compared with
+/// `tol.linear`. The stationary values are evaluated on the quadric itself at world points, not
+/// from the plane-origin-relative expansion, so re-anchoring the plane origin does not change
+/// the classification.
+pub(crate) fn plane_quadric(plane: &Plane, q: &Quadric, tol: &ModelTolerance) -> Section {
+    let gap_at = |p: Point3| q.value(p).abs() / q.gradient(p).norm().max(1e-300);
     let [a, b, c, d, e, f, g, h, j, k] = q.coeffs;
     let qm = [[a, d / 2.0, f / 2.0], [d / 2.0, b, e / 2.0], [f / 2.0, e / 2.0, c]];
     let l = Vector3::new(g, h, j);
@@ -79,43 +87,47 @@ pub(crate) fn plane_quadric(plane: &Plane, q: &Quadric) -> Section {
     let at_vec = |up: f64, wp: f64| -> Vector3 { e1 * up + e2 * wp };
     if l2.abs() <= 1e-10 * l1.abs() {
         // Parabolic type.
-        let gg = ff - dp * dp / (4.0 * l1);
-        let reference = dp.abs().max(ep.abs()).max(l1.abs()).max((ff.abs() * l1.abs()).sqrt());
+        let xi0 = -dp / (2.0 * l1);
+        let on_line = at(xi0, 0.0);
+        // Restriction value at (xi0, 0), evaluated on the quadric (no cancellation with ff).
+        let gg = q.value(on_line);
+        let reference = dp.abs().max(ep.abs()).max(l1.abs());
         if ep.abs() > 1e-9 * reference {
             let kappa = -l1 / ep;
-            let vertex = at(-dp / (2.0 * l1), -gg / ep);
+            let vertex = at(xi0, -gg / ep);
             // eta' - eta_v = kappa * xi''^2 -> opens toward sign(kappa) * e2.
             let axis = if kappa > 0.0 { e2 } else { e2 * -1.0 };
             let focal = 1.0 / (4.0 * kappa.abs());
             return Section::Parabola { vertex, perp: e1, axis, focal };
         }
         let r2 = -gg / l1;
-        let xi0 = -dp / (2.0 * l1);
-        let scale = (gg.abs() / l1.abs()).max(xi0 * xi0).max(1e-300);
-        if r2.abs() <= 1e-12 * scale {
-            return Section::Lines(vec![(at(xi0, 0.0), e2)]);
+        if r2 < 0.0 {
+            // Plane and quadric do not meet: tangent when the gap is within tolerance.
+            return if gap_at(on_line) <= tol.linear { Section::Lines(vec![(on_line, e2)]) } else { Section::Empty };
         }
-        if r2 > 0.0 {
-            let s = r2.sqrt();
-            return Section::Lines(vec![(at(xi0 - s, 0.0), e2), (at(xi0 + s, 0.0), e2)]);
+        let s = r2.sqrt();
+        if s <= tol.linear {
+            return Section::Lines(vec![(on_line, e2)]);
         }
-        return Section::Empty;
+        return Section::Lines(vec![(at(xi0 - s, 0.0), e2), (at(xi0 + s, 0.0), e2)]);
     }
     let (uc, wc) = (-dp / (2.0 * l1), -ep / (2.0 * l2));
-    let fp = ff - dp * dp / (4.0 * l1) - ep * ep / (4.0 * l2);
-    let fscale = ff.abs().max((dp * dp / (4.0 * l1)).abs()).max((ep * ep / (4.0 * l2)).abs()).max(1e-300);
     let center = at(uc, wc);
-    let zero = fp.abs() <= 1e-10 * fscale;
+    // Restriction value at the centre, evaluated on the quadric itself.
+    let fp = q.value(center);
+    let gap = gap_at(center);
     if l1 * l2 > 0.0 {
-        if zero {
-            return Section::Point(center);
-        }
         if -fp / l1 > 0.0 {
-            return Section::Ellipse { center, x: dir(co, s), y: dir(-s, co), a: (-fp / l1).sqrt(), b: (-fp / l2).sqrt() };
+            let (a, b) = ((-fp / l1).sqrt(), (-fp / l2).sqrt());
+            if a.max(b) <= tol.linear {
+                return Section::Point(center);
+            }
+            return Section::Ellipse { center, x: dir(co, s), y: dir(-s, co), a, b };
         }
-        return Section::Empty;
+        // Imaginary ellipse: the plane misses the quadric; tangent if the gap is within tolerance.
+        return if gap <= tol.linear { Section::Point(center) } else { Section::Empty };
     }
-    if zero {
+    if gap <= tol.linear {
         // Two lines through the centre: l1 u^2 + l2 w^2 = 0.
         let k = (-l1 / l2).sqrt();
         return Section::Lines(vec![(center, at_vec(1.0, k)), (center, at_vec(1.0, -k))]);
@@ -145,28 +157,50 @@ fn box_radius(w: &[f64; 6], from: Point3) -> f64 {
     m
 }
 
-/// Sub-range of `[lo, hi]` where `pt(t)` lies in the window: the hull of the inside samples,
-/// ends refined by bisection. `None` if no sample is inside.
-fn window_range(pt: &dyn Fn(f64) -> Point3, lo: f64, hi: f64, w: &[f64; 6], pad: f64) -> Option<(f64, f64)> {
-    const N: usize = 4000;
-    let ts: Vec<f64> = (0..=N).map(|i| lo + (hi - lo) * i as f64 / N as f64).collect();
-    let inside: Vec<bool> = ts.iter().map(|t| in_box(w, pt(*t), pad)).collect();
-    let first = inside.iter().position(|b| *b)?;
-    let last = inside.iter().rposition(|b| *b)?;
-    let refine = |mut out: f64, mut inn: f64| -> f64 {
-        for _ in 0..60 {
-            let m = 0.5 * (out + inn);
-            if in_box(w, pt(m), pad) {
-                inn = m;
-            } else {
-                out = m;
+/// Maximal sub-intervals of `[lo, hi]` where `pt(t)` lies in the window (padded by `pad`), in
+/// ascending order. `breaks` are the parameters where a coordinate crosses a window face (found
+/// in closed form by the caller); the curve is inside or outside between consecutive breaks,
+/// which a midpoint test decides. Adjacent inside pieces are merged.
+fn window_ranges(pt: &dyn Fn(f64) -> Point3, mut breaks: Vec<f64>, lo: f64, hi: f64, w: &[f64; 6], pad: f64) -> Vec<(f64, f64)> {
+    breaks.retain(|t| t.is_finite() && *t > lo && *t < hi);
+    breaks.push(lo);
+    breaks.push(hi);
+    breaks.sort_by(|a, b| a.total_cmp(b));
+    breaks.dedup();
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for pair in breaks.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if b > a && in_box(w, pt(0.5 * (a + b)), pad) {
+            match out.last_mut() {
+                Some(l) if l.1 >= a => l.1 = b,
+                _ => out.push((a, b)),
             }
         }
-        inn
-    };
-    let a = if first == 0 { ts[0] } else { refine(ts[first - 1], ts[first]) };
-    let b = if last == N { ts[N] } else { refine(ts[last + 1], ts[last]) };
-    Some((a, b))
+    }
+    out
+}
+
+/// Face-crossing parameters of the polynomial coordinates `c0 + c1 t + c2 t^2` against the
+/// padded window (`k`-th coordinate between `w[k]` and `w[k + 3]`).
+fn quad_breaks(coef: [[f64; 3]; 3], w: &[f64; 6], pad: f64) -> Vec<f64> {
+    let mut v = Vec::new();
+    for k in 0..3 {
+        for val in [w[k] - pad, w[k + 3] + pad] {
+            v.extend(quadratic(coef[k][2], coef[k][1], coef[k][0] - val).iter().map(|r| r.t));
+        }
+    }
+    v
+}
+
+/// Same for `c0 + A cosh t + B sinh t`, with `z = e^t`: `(A+B)/2 z^2 + (c0 - val) z + (A-B)/2`.
+fn hyper_breaks(c: [f64; 3], a: [f64; 3], b: [f64; 3], w: &[f64; 6], pad: f64) -> Vec<f64> {
+    let mut v = Vec::new();
+    for k in 0..3 {
+        for val in [w[k] - pad, w[k + 3] + pad] {
+            v.extend(quadratic(0.5 * (a[k] + b[k]), c[k] - val, 0.5 * (a[k] - b[k])).iter().filter(|r| r.t > 0.0).map(|r| r.t.ln()));
+        }
+    }
+    v
 }
 
 fn nurbs_chain(arcs: Vec<NurbsCurve>) -> Result<NurbsCurve, GeomError> {
@@ -262,13 +296,16 @@ pub(crate) fn section_to_result(sec: &Section, tol: &ModelTolerance, window: Opt
             let pt = |t: f64| *vertex + *perp * t + *axis * (t * t / (4.0 * focal));
             let reach = box_radius(w, *vertex);
             let tmax = 2.0 * reach + 1.0;
-            let Some((t0, t1)) = window_range(&pt, -tmax, tmax, w, tol.linear) else { return Ok(SsiResult::Empty) };
-            if t1 <= t0 {
-                return Ok(SsiResult::Empty);
+            let (v, p, ax) = ([vertex.x, vertex.y, vertex.z], [perp.x, perp.y, perp.z], [axis.x, axis.y, axis.z]);
+            let coef = [0, 1, 2].map(|k| [v[k], p[k], ax[k] / (4.0 * focal)]);
+            // One arc per stretch inside the window (a parabola can enter the box several times).
+            let mut out = Vec::new();
+            for (t0, t1) in window_ranges(&pt, quad_breaks(coef, w, tol.linear), -tmax, tmax, w, tol.linear) {
+                let p1 = *vertex + *perp * (0.5 * (t0 + t1)) + *axis * (t0 * t1 / (4.0 * focal));
+                let arc = NurbsCurve::new(2, vec![t0, t0, t0, t1, t1, t1], vec![pt(t0), p1, pt(t1)], None)?;
+                out.push(IntersectionCurve::analytic(CurveDef::Nurbs(arc), Interval::new(t0, t1), false));
             }
-            let p1 = *vertex + *perp * (0.5 * (t0 + t1)) + *axis * (t0 * t1 / (4.0 * focal));
-            let arc = NurbsCurve::new(2, vec![t0, t0, t0, t1, t1, t1], vec![pt(t0), p1, pt(t1)], None)?;
-            Ok(curves(vec![IntersectionCurve::analytic(CurveDef::Nurbs(arc), Interval::new(t0, t1), false)]))
+            Ok(curves(out))
         }
         Section::Hyperbola { center, main, other, a, b } => {
             let w = window.ok_or(GeomError::Invalid("an open conic section needs a window"))?;
@@ -280,24 +317,23 @@ pub(crate) fn section_to_result(sec: &Section, tol: &ModelTolerance, window: Opt
                 if !keep(pt(0.0)) {
                     continue;
                 }
-                let Some((t0, t1)) = window_range(&pt, -tau_max, tau_max, w, tol.linear) else { continue };
-                if t1 <= t0 {
-                    continue;
+                let (c, am, bm) = ([center.x, center.y, center.z], [main.x * sgn * a, main.y * sgn * a, main.z * sgn * a], [other.x * b, other.y * b, other.z * b]);
+                for (t0, t1) in window_ranges(&pt, hyper_breaks(c, am, bm, w, tol.linear), -tau_max, tau_max, w, tol.linear) {
+                    let n = (((t1 - t0) / 1.5).ceil() as usize).max(1);
+                    let mut arcs = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let (ta, tb) = (t0 + (t1 - t0) * i as f64 / n as f64, t0 + (t1 - t0) * (i + 1) as f64 / n as f64);
+                        let (m, half) = (0.5 * (ta + tb), 0.5 * (tb - ta));
+                        let ch = half.cosh();
+                        let p1 = *center + *main * (sgn * a * m.cosh() / ch) + *other * (b * m.sinh() / ch);
+                        let arc = conic_arc(pt(ta), p1, pt(tb), ch)?;
+                        // Re-knot so the chain's knots are the conic parameter at the arc ends.
+                        let reknot = NurbsCurve::new(2, vec![ta, ta, ta, tb, tb, tb], arc.control.clone(), arc.weights.clone())?;
+                        arcs.push(reknot);
+                    }
+                    let chain = nurbs_chain(arcs)?;
+                    out.push(IntersectionCurve::analytic(CurveDef::Nurbs(chain), Interval::new(t0, t1), false));
                 }
-                let n = (((t1 - t0) / 1.5).ceil() as usize).max(1);
-                let mut arcs = Vec::with_capacity(n);
-                for i in 0..n {
-                    let (ta, tb) = (t0 + (t1 - t0) * i as f64 / n as f64, t0 + (t1 - t0) * (i + 1) as f64 / n as f64);
-                    let (m, half) = (0.5 * (ta + tb), 0.5 * (tb - ta));
-                    let ch = half.cosh();
-                    let p1 = *center + *main * (sgn * a * m.cosh() / ch) + *other * (b * m.sinh() / ch);
-                    let arc = conic_arc(pt(ta), p1, pt(tb), ch)?;
-                    // Re-knot so the chain's knots are the conic parameter at the arc ends.
-                    let reknot = NurbsCurve::new(2, vec![ta, ta, ta, tb, tb, tb], arc.control.clone(), arc.weights.clone())?;
-                    arcs.push(reknot);
-                }
-                let chain = nurbs_chain(arcs)?;
-                out.push(IntersectionCurve::analytic(CurveDef::Nurbs(chain), Interval::new(t0, t1), false));
             }
             Ok(curves(out))
         }

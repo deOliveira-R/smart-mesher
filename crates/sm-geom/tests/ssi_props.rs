@@ -68,6 +68,30 @@ proptest! {
         }
     }
 
+    /// Re-anchoring the plane's frame origin inside the plane does not change the section.
+    #[test]
+    fn plane_quadric_sections_do_not_depend_on_the_plane_origin(kind in 0u8..4, size in 0.5f64..2.0, offset in -0.4f64..0.4, tilt in -0.6f64..0.6, a in -1e6f64..1e6, b in -1e6f64..1e6) {
+        let (pa, sa) = base_pair(kind, size, offset, tilt);
+        let SurfaceDef::Plane(plane) = &pa else { unreachable!() };
+        let f = plane.frame;
+        let moved = SurfaceDef::Plane(Plane { frame: Frame { origin: f.origin + f.x * a + f.y * b, ..f } });
+        let o = SsiOptions::new(ModelTolerance::DEFAULT).with_window([-12.0, -12.0, -12.0, 12.0, 12.0, 12.0]).with_seed_lines(32);
+        let before = intersect_surfaces(&pa, &sa, &o).unwrap();
+        let after = intersect_surfaces(&moved, &sa, &o).unwrap();
+        match (&before, &after) {
+            (SsiResult::Curves(x), SsiResult::Curves(y)) => {
+                prop_assert_eq!(x.len(), y.len());
+                for c in y {
+                    for p in points(c) {
+                        prop_assert!(dist(&moved, p) < 1e-6 && dist(&sa, p) < 1e-6, "{p:?}: {} {}", dist(&moved, p), dist(&sa, p));
+                    }
+                }
+            }
+            (SsiResult::Empty, SsiResult::Empty) | (SsiResult::Point(_), SsiResult::Point(_)) => {}
+            (x, y) => prop_assert!(false, "different result kinds: {x:?} vs {y:?}"),
+        }
+    }
+
     #[test]
     fn marched_cylinder_pair_is_frame_independent(r2 in 0.3f64..0.8, t in proper_transform()) {
         let a = SurfaceDef::Cylinder(Cylinder::new(world(), 1.0).unwrap());
