@@ -1,6 +1,6 @@
 [package]
 name = "sm-scheme-mapvol"
-description = "W2 skeleton: T6: volume map scheme."
+description = "Volume map scheme: six structured faces, 3-D transfinite interpolation, hexahedra."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -16,12 +16,18 @@ sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+# Contract crate, already a dependency of sm-scheme-api: `CellShape::Hex` for the patch elements.
+sm-mesh-api = { path = "../sm-mesh-api" }
+rayon = "1"
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-mesh = { path = "../sm-mesh" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["serde"] }
+sm-model-api = { path = "../sm-model-api" }
 sm-quality = { path = "../sm-quality" }
+serde_json = "1"
 
 [lints]
 workspace = true
