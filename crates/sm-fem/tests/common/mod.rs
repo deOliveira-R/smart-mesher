@@ -12,7 +12,7 @@ use sm_layer_api::{
     CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, commit_topology, insert_mesh,
     retire_mesh, topo_txn,
 };
-use sm_model_api::{CutSpec, Deck, Domain, Keep, Plane, plan_cut};
+use sm_model_api::{BoundaryKind, CutSpec, Deck, Domain, Keep, Plane, plan_cut};
 use sm_op_api::{
     ApplyCtx, Delta, DerivedCache, Engine, Hash256, Meta, OpError, QuietControl, Registry,
     Services, Session, State, TypedOp,
@@ -22,8 +22,8 @@ use sm_scheme_api::{
     Driver, Firmness, MeshInput, MeshIntent, ReferenceCornerPicker, ReferenceIntervalSolver,
     SchemeChoice, Sequential, SizingSpec, WholeFaces,
 };
-use sm_topo_api::fixtures::{brick, merge_touching_bricks, webcut_brick};
-use sm_topo_api::{Coincidence, OpId};
+use sm_topo_api::fixtures::{BrickIds, brick, merge_touching_bricks, webcut_brick};
+use sm_topo_api::{Coincidence, Dim, OpId};
 
 /// Bricks `size` at each origin; roles `volume` and `faces` (six per brick, `-x +x -y +y -z +z`).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -79,6 +79,70 @@ impl TypedOp for Row {
         })?;
         let vols: Vec<EntityId> = ids.iter().map(|b| b.volume).collect();
         commit_topology(ctx, &txn, &[("volume", &vols)])
+    }
+}
+
+/// Webcut the unit brick at the origin built by `test.bricks` (a single brick of size 1) at
+/// `z = 1/2`; `faces` is that op's `faces` role. Splits the four side faces and the volume.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Webcut {
+    pub volume: EntityId,
+    pub faces: Vec<EntityId>,
+}
+
+impl TypedOp for Webcut {
+    const NAME: &'static str = "test.webcut";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let (_, txn) = topo_txn(ctx, |topo, _| {
+            // Fixture ids come in creation order, so the live cells in order are the brick's arrays.
+            let bad = |what: &str| OpError::Invalid(what.into());
+            let vertices = topo.cells(Dim::Vertex).to_vec();
+            let edges = topo.cells(Dim::Edge).to_vec();
+            let body = topo.cells(Dim::Body)[0];
+            let b = BrickIds {
+                min: Point3::new(0.0, 0.0, 0.0),
+                size: [1.0; 3],
+                vertices: vertices.try_into().map_err(|_| bad("8 vertices"))?,
+                edges: edges.try_into().map_err(|_| bad("12 edges"))?,
+                faces: self.faces.clone().try_into().map_err(|_| bad("6 faces"))?,
+                volume: self.volume,
+                body,
+            };
+            webcut_brick(topo, &b, 0.5).or_op()?;
+            Ok(())
+        })?;
+        commit_topology(ctx, &txn, &[])
+    }
+}
+
+/// A translation deck `vector` pairing face `a` (side A) with face `b` (side B).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PairDeck {
+    pub a: EntityId,
+    pub b: EntityId,
+    pub vector: [f64; 3],
+}
+
+impl TypedOp for PairDeck {
+    const NAME: &'static str = "test.pair_deck";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let (a, b, v) = (self.a, self.b, self.vector);
+        sm_layer_api::model_txn(
+            ctx,
+            |model, _| {
+                let deck = Deck::Translation {
+                    vector: Vector3::new(v[0], v[1], v[2]),
+                };
+                let id = model
+                    .add_boundary("pair", BoundaryKind::Deck(deck))
+                    .or_op()?;
+                model.assign_pairs(id, &[(a, b)]).or_op()?;
+                Ok(())
+            },
+            |_, _| vec![],
+        )
     }
 }
 
@@ -205,6 +269,8 @@ pub fn registry(fem: bool) -> Registry {
     reg.register::<Row>().expect("row");
     reg.register::<Bricks>().expect("bricks");
     reg.register::<MirrorChamber>().expect("mirror");
+    reg.register::<Webcut>().expect("webcut");
+    reg.register::<PairDeck>().expect("pair");
     reg.register::<MeshIt>().expect("mesh_it");
     reg.register::<DropMesh>().expect("drop_mesh");
     reg.register::<KillVolume>().expect("kill");

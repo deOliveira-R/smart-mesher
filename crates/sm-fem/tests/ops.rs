@@ -151,6 +151,15 @@ fn block_element_type_is_stored_and_validated() {
             .expect_err("higher order");
         assert!(e.contains("unsupported"), "{e}");
     }
+    for shell in [ElementType::Quad4, ElementType::Tri3] {
+        let e = r
+            .try_apply(BlockElementType {
+                block: 1,
+                element_type: shell,
+            })
+            .expect_err("shell type");
+        assert!(e.contains("shell blocks"), "{e}");
+    }
     assert!(
         r.try_apply(BlockElementType {
             block: 9,

@@ -36,6 +36,8 @@ fn is_empty<T>(v: &[T]) -> bool {
     v.is_empty()
 }
 
+const SHELL_REFUSED: &str = "shell blocks (faces) are not supported: W2 meshes hold volume cells only";
+
 const BLOCK_OUT: &[OutputRole] = &[OutputRole::new(
     "block",
     &[EntityKind::Color],
@@ -83,9 +85,7 @@ impl TypedOp for BlockAdd {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !self.faces.is_empty() {
-            return Err(OpError::Invalid(
-                "shell blocks (faces) are not supported: W2 meshes hold volume cells only".into(),
-            ));
+            return Err(OpError::Invalid(SHELL_REFUSED.into()));
         }
         let vols = resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         let (label, name) = (self.block, self.name.clone());
@@ -152,6 +152,7 @@ pub struct BlockRemove {
 
 impl TypedOp for BlockRemove {
     const NAME: &'static str = "fem.block_remove";
+    const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
@@ -176,7 +177,9 @@ impl TypedOp for BlockRemove {
 
 /// `fem.block_element_type`: declare the element type of block `block`.
 ///
-/// Higher-order types are refused until degree elevation exists. The declaration is checked
+/// Higher-order types are refused until degree elevation exists, and so are the shell types
+/// (`QUAD4`, `TRI3`): shell blocks are unsupported, so such a block could never pass the shape
+/// check at export. The declaration is checked
 /// against the cell shapes when the mesh is lowered (export), not here, because the block may be
 /// meshed later.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -190,6 +193,7 @@ pub struct BlockElementType {
 
 impl TypedOp for BlockElementType {
     const NAME: &'static str = "fem.block_element_type";
+    const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
@@ -198,6 +202,9 @@ impl TypedOp for BlockElementType {
                 "unsupported element type {}: higher-order elements need degree elevation",
                 self.element_type
             )));
+        }
+        if matches!(self.element_type, ElementType::Quad4 | ElementType::Tri3) {
+            return Err(OpError::Invalid(SHELL_REFUSED.into()));
         }
         let color = ctx
             .layer::<ModelLayer>()?
@@ -257,8 +264,9 @@ impl TypedOp for SidesetAdd {
                     }
                 }
                 if let Some(v) = wrt {
-                    let of_v = topo.volume_faces(v);
-                    if let Some(f) = faces.iter().find(|f| !of_v.contains(f)) {
+                    let mut of_v = topo.volume_faces(v).to_vec();
+                    of_v.sort_unstable();
+                    if let Some(f) = faces.iter().find(|f| of_v.binary_search(f).is_err()) {
                         return Err(OpError::Invalid(format!("{f} is not a face of {v}")));
                     }
                 }

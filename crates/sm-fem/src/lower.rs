@@ -3,18 +3,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rayon::prelude::*;
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshHost, ModelLayer};
 use sm_mesh_api::{CellIx, FaceIx, MeshRead, SerialAlloc, SetMembers, Side, SignedFace};
 use sm_meshio::DeckRecord;
 use sm_model_api::{BoundaryKind, DeckSide, Domain, FaceRole};
+use sm_topo_api::TopologyView;
 
 use crate::error::FemError;
 use crate::layer::FemLayer;
-
-/// Below this many cells the shape check runs sequentially.
-const PAR_MIN: usize = 1 << 14;
 
 /// Where a lowered set came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +82,15 @@ struct Pending {
 /// | face color (sideset) `c` | `SetMembers::Sides` named like `c`, label `c.label`: for each colored `TopoFace`, the sides of the mesh faces classified on it |
 /// | deck boundary `b` | `SetMembers::Faces` `deck_<b>_a` (side A, or the self-paired mirror faces) and `deck_<b>_b` (side B), plus a [`DeckRecord`] naming them |
 ///
+/// Blocks, sidesets and decks are all lowered from the **model** tables, whether or not the state
+/// has a `fem` layer: the layer only adds declared element types and `wrt` preferences. So a
+/// state without it still exports its volume colors, face colors and deck boundaries as sets,
+/// and exports no sets only when the model holds none.
+///
+/// Colors and deck faces are found through the mesh classification, including overlay pieces: a
+/// color on a hidden host face or volume reaches the mesh faces and cells classified on the live
+/// `PartitionFace`/`PartitionCell` pieces that cover it.
+///
 /// A sideset face takes the side of the volume it was added `wrt`; without one, a boundary face
 /// gives its only (`Left`) side and an interior face gives both sides. Empty sets are not
 /// emitted. Colors are lowered in ascending id order, so output order never depends on
@@ -96,6 +102,7 @@ struct Pending {
 /// # Errors
 /// - [`FemError::ElementMismatch`] when a block's declared element type does not match the shape
 ///   of its cells (only declared types are checked);
+/// - [`FemError::Unsupported`] when a sideset `wrt` volume is gone and covered by no live cell;
 /// - [`FemError::Mesh`] when the mesh already has a set of the same name as a color or deck;
 /// - [`FemError::Meshio`] for a deck the file format cannot describe.
 pub fn lower(
@@ -107,7 +114,7 @@ pub fn lower(
     let m = mesh.mesh();
     let mut pending: Vec<Pending> = Vec::new();
     blocks(model, m, fem, &mut pending)?;
-    sidesets(model, m, fem, &mut pending);
+    sidesets(model, m, fem, &mut pending)?;
     let decks = deck_sets(model, m, &mut pending);
 
     if pending.is_empty() {
@@ -180,12 +187,7 @@ fn blocks(
             }
             let want = ty.shape();
             let bad = |c: &CellIx| m.cell_shape(*c) != want;
-            let at = if cells.len() >= PAR_MIN {
-                cells.par_iter().position_first(bad)
-            } else {
-                cells.iter().position(bad)
-            };
-            if let Some(i) = at {
+            if let Some(i) = cells.iter().position(bad) {
                 return Err(FemError::ElementMismatch {
                     block: row.name.clone(),
                     declared: ty,
@@ -204,24 +206,53 @@ fn blocks(
     Ok(())
 }
 
-fn sidesets(model: &ModelLayer, m: &dyn MeshRead, fem: &FemLayer, out: &mut Vec<Pending>) {
-    let md = model.model();
-    let mut by_color: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
-    for (face, color) in md.face_coloring() {
-        by_color.entry(color).or_default().push(face);
+fn sidesets(
+    model: &ModelLayer,
+    m: &dyn MeshRead,
+    fem: &FemLayer,
+    out: &mut Vec<Pending>,
+) -> Result<(), FemError> {
+    let (md, topo) = (model.model(), model.topo());
+    // Live piece -> hidden host face carrying a `wrt` (lowest host wins, as in `live_face_color`).
+    let mut host_of: BTreeMap<EntityId, EntityId> = BTreeMap::new();
+    let mut last = None;
+    for (face, _) in fem.side_prefs() {
+        if last.replace(face) != Some(face) && !topo.is_alive(face) {
+            for x in topo.live_cover(face) {
+                host_of.entry(x).or_insert(face);
+            }
+        }
     }
-    for (color, faces) in by_color {
+    let mut by_color: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
+    for &ent in m.classified_entities() {
+        if !matches!(
+            ent.kind(),
+            EntityKind::TopoFace | EntityKind::PartitionFace
+        ) {
+            continue;
+        }
+        if let Some(c) = md.live_face_color(ent, topo) {
+            by_color.entry(c).or_default().push(ent);
+        }
+    }
+    for (color, ents) in by_color {
         let Some(row) = md.color(color).filter(|r| r.domain == Domain::Face) else {
             continue;
         };
         let mut sides: Vec<SignedFace> = Vec::new();
-        for face in faces {
-            let Some(set) = m.classified_on(face) else {
+        for ent in ents {
+            let Some(set) = m.classified_on(ent) else {
                 continue;
             };
-            let wrt = fem.side_wrt(face);
+            let mut prefs = fem.side_wrt(ent);
+            if prefs.is_empty()
+                && let Some(h) = host_of.get(&ent)
+            {
+                prefs = fem.side_wrt(*h);
+            }
+            let wrt = wrt_cells(topo, ent, prefs)?;
             for &f in &set.faces {
-                push_sides(m, f, wrt, &mut sides);
+                push_sides(m, f, wrt.as_deref(), &mut sides);
             }
         }
         if sides.is_empty() {
@@ -236,16 +267,48 @@ fn sidesets(model: &ModelLayer, m: &dyn MeshRead, fem: &FemLayer, out: &mut Vec<
             origin: SetOrigin::Sideset,
         });
     }
+    Ok(())
 }
 
-fn push_sides(m: &dyn MeshRead, f: FaceIx, wrt: Option<EntityId>, out: &mut Vec<SignedFace>) {
+/// The model entities a cell may be classified on to count as one of the `wrt` volumes: the
+/// volume itself, or the live pieces covering it when it is a hidden overlay host. Sorted;
+/// `None` when no preference was given.
+fn wrt_cells(
+    topo: &dyn TopologyView,
+    face: EntityId,
+    wrt: &[EntityId],
+) -> Result<Option<Vec<EntityId>>, FemError> {
+    if wrt.is_empty() {
+        return Ok(None);
+    }
+    let mut ents = Vec::with_capacity(wrt.len());
+    for &v in wrt {
+        if topo.is_alive(v) {
+            ents.push(v);
+            continue;
+        }
+        let cover = topo.live_cover(v);
+        if cover.is_empty() {
+            return Err(FemError::Unsupported(format!(
+                "sideset face {face} is taken wrt {v}, which has no live cells"
+            )));
+        }
+        ents.extend(cover);
+    }
+    ents.sort_unstable();
+    ents.dedup();
+    Ok(Some(ents))
+}
+
+fn push_sides(m: &dyn MeshRead, f: FaceIx, wrt: Option<&[EntityId]>, out: &mut Vec<SignedFace>) {
     let (left, right) = (m.face_left(f), m.face_right(f));
     match wrt {
         Some(v) => {
-            if m.cell_class(left).entity == v {
+            let is_wrt = |c: CellIx| v.binary_search(&m.cell_class(c).entity).is_ok();
+            if is_wrt(left) {
                 out.push(SignedFace::new(f, Side::Left));
             }
-            if right.is_some_and(|r| m.cell_class(r).entity == v) {
+            if right.is_some_and(is_wrt) {
                 out.push(SignedFace::new(f, Side::Right));
             }
         }
@@ -266,7 +329,7 @@ struct DeckPlan {
 }
 
 fn deck_sets(model: &ModelLayer, m: &dyn MeshRead, out: &mut Vec<Pending>) -> Vec<DeckPlan> {
-    let md = model.model();
+    let (md, topo) = (model.model(), model.topo());
     let mut plans = Vec::new();
     for row in md.boundaries() {
         let BoundaryKind::Deck(deck) = row.kind else {
@@ -277,12 +340,19 @@ fn deck_sets(model: &ModelLayer, m: &dyn MeshRead, out: &mut Vec<Pending>) -> Ve
             let FaceRole::Deck { side, .. } = fb.role else {
                 continue;
             };
-            let Some(set) = m.classified_on(face) else {
-                continue;
+            // A hidden host face reaches the mesh through the pieces that cover it.
+            let own = m.classified_on(face);
+            let cover = if own.is_none() && !topo.is_alive(face) {
+                topo.live_cover(face)
+            } else {
+                Vec::new()
             };
-            match side {
-                DeckSide::A | DeckSide::SelfPaired => a.extend(set.faces.iter().copied()),
-                DeckSide::B => b.extend(set.faces.iter().copied()),
+            let target = match side {
+                DeckSide::A | DeckSide::SelfPaired => &mut a,
+                DeckSide::B => &mut b,
+            };
+            for set in own.into_iter().chain(cover.iter().filter_map(|x| m.classified_on(*x))) {
+                target.extend(set.faces.iter().copied());
             }
         }
         if a.is_empty() && b.is_empty() {

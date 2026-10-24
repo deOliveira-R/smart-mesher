@@ -587,3 +587,224 @@ fn nothing_to_lower_shares_the_stored_mesh() {
     assert!(std::sync::Arc::ptr_eq(&low.mesh, &entry.mesh));
     assert!(low.sets.is_empty() && low.decks.is_empty());
 }
+
+// ---- Review fixes: succession, fem-less model colors, pair decks, round trips, clashes
+
+fn mirror_meshed(r: &mut Rig) {
+    r.apply(MirrorChamber {});
+    let v = r
+        .state()
+        .layer::<ModelLayer>()
+        .expect("model")
+        .topo()
+        .cells(sm_topo_api::Dim::Volume)
+        .to_vec();
+    r.apply(MeshIt {
+        volumes: v,
+        size: 0.5,
+    });
+}
+
+#[test]
+fn sideset_wrt_follows_a_face_and_volume_split() {
+    let mut r = Rig::new();
+    let d = r.apply(Bricks {
+        origins: vec![[0.0; 3]],
+        size: [1.0; 3],
+    });
+    let (v, f) = (role(&d, "volume"), role(&d, "faces"));
+    r.apply(SidesetAdd {
+        sideset: 1,
+        faces: vec![f[1]],
+        wrt: Some(v[0]),
+        name: None,
+    });
+    r.apply(Webcut {
+        volume: v[0],
+        faces: f.clone(),
+    });
+    {
+        let st = r.state();
+        let (model, fem) = (
+            st.layer::<ModelLayer>().expect("model"),
+            st.layer::<FemLayer>().expect("fem"),
+        );
+        let topo = model.topo();
+        let colored: Vec<_> = model.model().face_coloring().map(|(f, _)| f).collect();
+        assert_eq!(colored.len(), 2, "both halves of the +x face are colored");
+        let prefs: Vec<_> = fem.side_prefs().collect();
+        assert!(
+            prefs
+                .iter()
+                .all(|(f, w)| colored.contains(f) && topo.is_alive(*w))
+        );
+        for face in colored {
+            let w = fem.side_wrt(face);
+            assert!(!w.is_empty(), "{face} lost its wrt");
+            assert!(
+                w.iter().any(|vol| topo.volume_faces(*vol).contains(&face)),
+                "{face} borders none of {w:?}"
+            );
+        }
+    }
+    let vols = r
+        .state()
+        .layer::<ModelLayer>()
+        .expect("model")
+        .topo()
+        .cells(sm_topo_api::Dim::Volume)
+        .to_vec();
+    assert_eq!(vols.len(), 2);
+    r.apply(MeshIt {
+        volumes: vols,
+        size: 0.5,
+    });
+    let (buf, _) = smsh(&r);
+    let m = decode(&buf);
+    let set = m.sets.iter().find(|s| s.name == "sideset_1").expect("set");
+    let SetMembers::Sides(sides) = &set.members else {
+        panic!("sides")
+    };
+    assert_eq!(sides.len(), 4, "2x2 faces on x = 1, one side each");
+    assert!(sides.iter().all(|s| s.side() == Side::Left));
+}
+
+#[test]
+fn fem_less_export_still_lowers_the_models_colors_and_decks() {
+    // Blocks, sidesets and decks are model data: the `fem` layer only adds declared element
+    // types and `wrt`. So a state without it exports exactly the colors the model holds.
+    let mut r = Rig::without_fem();
+    mirror_meshed(&mut r);
+    let (buf, rep) = smsh(&r);
+    let names: Vec<_> = rep.sets.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"mat") && names.contains(&"cap"),
+        "{names:?}"
+    );
+    assert!(rep.sets.iter().any(|s| s.origin == SetOrigin::DeckFace));
+    assert_eq!(decode(&buf).header.decks.len(), 1);
+}
+
+#[test]
+fn translation_pair_deck_has_two_face_sets_and_a_mate() {
+    let mut r = Rig::new();
+    let d = r.apply(Bricks {
+        origins: vec![[0.0; 3], [3.0, 0.0, 0.0]],
+        size: [1.0; 3],
+    });
+    let (v, f) = (role(&d, "volume"), role(&d, "faces"));
+    r.apply(PairDeck {
+        a: f[1],
+        b: f[6],
+        vector: [2.0, 0.0, 0.0],
+    });
+    r.apply(MeshIt {
+        volumes: v,
+        size: 0.5,
+    });
+    let (buf, rep) = smsh(&r);
+    for n in ["deck_pair_a", "deck_pair_b"] {
+        let s = rep.sets.iter().find(|s| s.name == n).expect(n);
+        assert_eq!((s.origin, s.len), (SetOrigin::DeckFace, 4));
+    }
+    let file = SmshFile::parse(&buf).expect("parse");
+    let rec = &file.header().decks[0];
+    assert_eq!(rec.name, "pair");
+    assert_eq!(rec.face_set.as_deref(), Some("deck_pair_a"));
+    assert_eq!(rec.mate_set.as_deref(), Some("deck_pair_b"));
+    assert!(!rec.improper);
+    let m = file.decode().expect("decode");
+    for (n, x) in [("deck_pair_a", 1.0), ("deck_pair_b", 3.0)] {
+        let set = m.sets.iter().find(|s| s.name == n).expect(n);
+        let SetMembers::Faces(faces) = &set.members else {
+            panic!("faces")
+        };
+        for fc in faces {
+            for &vtx in m.face_loop(fc.0 as usize) {
+                assert!((m.x[vtx as usize] - x).abs() <= 1e-12, "{n}");
+            }
+        }
+    }
+}
+
+#[test]
+fn sideset_round_trip_decodes_left_sides_on_the_face() {
+    let (mut r, _, f) = meshed_brick(10.0);
+    r.apply(SidesetAdd {
+        sideset: 1,
+        faces: vec![f[1]],
+        wrt: None,
+        name: None,
+    });
+    let (buf, _) = smsh(&r);
+    let m = decode(&buf);
+    let set = m.sets.iter().find(|s| s.name == "sideset_1").expect("set");
+    assert_eq!(set.label, Some(1));
+    let SetMembers::Sides(sides) = &set.members else {
+        panic!("sides")
+    };
+    assert_eq!(sides.len(), 100);
+    for s in sides {
+        assert_eq!(s.side(), Side::Left);
+        for &vtx in m.face_loop(s.face().0 as usize) {
+            assert!((m.x[vtx as usize] - 10.0).abs() <= 1e-12);
+        }
+    }
+}
+
+#[test]
+fn vtu_carries_cell_sets_only_not_side_or_face_sets() {
+    // sm-meshio writes cell and vertex sets as indicators; side and face sets exist only in
+    // `.smsh`. Pin that the lowering does not leak them into the VTU. (There is no VTU reader in
+    // sm-meshio, so this parses the appended arrays by hand.)
+    let mut r = Rig::new();
+    mirror_meshed(&mut r);
+    let mut buf = Vec::new();
+    let rep = export(r.state(), &ExportRequest::new(ExportFormat::Vtu), &mut buf).expect("vtu");
+    assert!(rep.sets.iter().any(|s| s.origin == SetOrigin::Sideset));
+    assert!(rep.sets.iter().any(|s| s.origin == SetOrigin::DeckFace));
+    let a = raw_arrays(&buf);
+    let keys: Vec<_> = a.keys().map(String::as_str).collect();
+    let (ty, flags) = &a["CellData/set:mat"];
+    assert_eq!(ty, "UInt8");
+    assert!(flags.iter().all(|f| *f == 1) && flags.len() == 4);
+    assert!(keys.contains(&"CellData/region"), "{keys:?}");
+    assert!(
+        keys.iter()
+            .all(|k| !k.contains("set:cap") && !k.contains("deck_")),
+        "{keys:?}"
+    );
+}
+
+#[test]
+fn a_set_name_clash_is_a_mesh_error() {
+    let mut r = Rig::new();
+    mirror_meshed(&mut r);
+    let deck = {
+        let model = r.state().layer::<ModelLayer>().expect("model");
+        model
+            .model()
+            .boundaries()
+            .next()
+            .expect("deck")
+            .name
+            .clone()
+    };
+    let v = r
+        .state()
+        .layer::<ModelLayer>()
+        .expect("model")
+        .topo()
+        .cells(sm_topo_api::Dim::Volume)
+        .to_vec();
+    r.apply(BlockAdd {
+        block: 2,
+        volumes: v,
+        faces: vec![],
+        name: Some(format!("deck_{deck}_a")),
+    });
+    let mut sink = Vec::new();
+    let e = export(r.state(), &ExportRequest::new(ExportFormat::Smsh), &mut sink)
+        .expect_err("clash");
+    assert!(matches!(e, FemError::Mesh(_)) && e.code() == "mesh", "{e:?}");
+}

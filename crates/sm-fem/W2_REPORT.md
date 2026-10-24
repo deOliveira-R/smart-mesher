@@ -9,7 +9,7 @@ deck boundaries to mesh sets and `DeckRecord`s) and `export` (`.smsh` / VTU, pur
 `thiserror` enum with stable `code()` strings. Design and rules: `DESIGN.md`.
 
 Definition of done, all run on this tree: `cargo build --workspace`;
-`cargo test -p sm-fem --all-features` and with `RAYON_NUM_THREADS=1` (26 tests); `cargo clippy -p
+`cargo test -p sm-fem --all-features` and with `RAYON_NUM_THREADS=1` (34 tests); `cargo clippy -p
 sm-fem --all-targets --all-features -- -D warnings`; `RUSTDOCFLAGS="-D warnings" cargo doc -p
 sm-fem --no-deps`. No benchmark: T8 names none.
 
@@ -36,6 +36,37 @@ All in `crates/sm-fem/tests/`.
 | Mesh selection rule (decision 8) | `acceptance::mesh_selection_errors_are_typed` |
 | Lowering is export-time only (layer untouched, mesh shared when nothing to add) | `acceptance::smsh_has_cell_set_...` (stored mesh has no sets), `acceptance::nothing_to_lower_shares_the_stored_mesh` |
 
+Review fixes (fix0), each with a test unless noted:
+
+- `FemLayer::on_succession`: `side_wrt` follows face splits (children inherit) and volume splits
+  (all pieces become candidates; the lowering resolves which piece a face borders).
+  `acceptance::sideset_wrt_follows_a_face_and_volume_split` (real webcut), `layer::tests`.
+  `side_wrt(face)` now returns `&[EntityId]` (empty = none); `side_prefs()` still yields pairs.
+- Sideset and deck lowering go through `live_face_color` / `live_cover`, and `wrt` is matched
+  through `live_cover` of a hidden host volume. A `wrt` volume that is gone and covered by
+  nothing is `FemError::Unsupported`. **Not tested end to end:** no W2 op builds an overlay in a
+  state, so the overlay branches follow the `Model`/`TopologyView` contract only.
+- Model colors lower without a `fem` layer by design
+  (`acceptance::fem_less_export_still_lowers_the_models_colors_and_decks`);
+  `export_without_a_fem_layer_writes_no_sets` holds because that model has no colors. Wording
+  fixed in DESIGN and in the rustdoc of `lower`.
+- New tests: translation pair deck with `deck_pair_a/_b` and `mate_set` Some
+  (`translation_pair_deck_has_two_face_sets_and_a_mate`); sideset `.smsh` round trip checks Left
+  sides on x = 10; VTU carries cell sets and `region` only, no side/face sets
+  (`vtu_carries_cell_sets_only_not_side_or_face_sets`); a set-name clash is `FemError::Mesh`.
+- `references_any` builds one sorted id list; `SidesetAdd` binary-searches a sorted face list.
+- `fem.block_remove` and `fem.block_element_type` declare `OUTPUTS = &[]` explicitly.
+  `fem.block_element_type` refuses QUAD4/TRI3 with the "shell blocks" message.
+- The mirror acceptance test builds the model with an in-test op (`test.mirror_chamber`), not
+  `sm_testkit::topo::mirror_chamber()`: that fixture returns a bare `CellComplex` + `Model`, and
+  `ModelLayer` has no constructor taking a `Model`, so it cannot be loaded into a `State`.
+  The in-test op replays the same construction through `topo_txn`/`commit_topology`.
+- sm-meshio has no VTU reader, so VTU checks parse the appended arrays by hand. The `.smsh`
+  checks go through `SmshFile::parse/decode`.
+- Not done: lowering still clones the mesh when it adds sets (O(mesh) per export, not measured
+  at 1e6 cells). Avoiding it needs an overlay `MeshRead` in sm-meshio/sm-mesh-api, outside this
+  crate; the identity path stays zero-copy.
+
 Extra coverage: interior-face sidesets with and without `wrt`
 (`acceptance::interior_face_sideset_takes_both_sides_or_the_side_of_wrt`), bad input to every op,
 retirement cleaning of `FemLayer`, layer digest, empty layer invisible to the state hash.
@@ -61,17 +92,24 @@ retirement cleaning of `FemLayer`, layer digest, empty layer invisible to the st
 9. **`ExportReport` gained `sets: Vec<SetSummary>`** (it is `#[non_exhaustive]`; the skeleton fields
    are unchanged). `FemError` gained variants (`AmbiguousMesh`, `StaleMesh`, `ElementMismatch`,
    `Unsupported`, `Mesh`) and `code()`.
-10. **Dependencies:** added `thiserror` and `rayon` (both on the allowed list); dev-dep `serde_json`.
-    `Cargo.lock` changed by the three new `sm-fem` dependency lines only (cargo does this
-    automatically; the root `Cargo.toml` is untouched).
+10. **Dependencies:** added `thiserror`, which the common rule (typed errors) requires. `rayon`
+    is **not** on the T8 Deps line and is not a dependency of the library: the first version used
+    it for one parallel `position_first` in the element-shape check, which was removed in the
+    review fix (a sequential scan costs microseconds even at 1e6 cells). It remains a
+    **dev-dependency** only, because the determinism tests build explicit thread pools. Also
+    dev-dep `serde_json`. The earlier wording that `rayon` was "on the allowed list" was wrong.
+    `Cargo.lock` changed outside the crate by `sm-fem`'s dependency lines only (cargo does this
+    automatically; the root `Cargo.toml` is untouched); the orchestrator should take it in the
+    merge.
 11. The plan's wording for the stub volume scheme in some places is `mapvol`; the stub `mapvol`
     cannot generate. Tests use `sweep` with automatic source/target discovery.
 
 ## Known gaps
 
 - No face (shell) blocks, no higher-order element types, no overlapping blocks (all by W2 rulings).
-- Sidesets cannot be defined on overlay `PartitionFace` keys through the ops (the lowering handles
-  whatever `Model::face_coloring` holds, but the ops accept `TopoFace` only).
+- Sidesets cannot be defined on overlay `PartitionFace` keys through the ops (the ops accept
+  `TopoFace` only). The lowering resolves colors inherited from hidden host faces/volumes through
+  `live_face_color` and `live_cover`, but this is untested end to end (see fix0 above).
 - A block color created by another plugin lowers as a block too; it has no declared element type.
 - Lowering clones the mesh when it adds sets (O(mesh) per export); a 10^6-cell timing was not
   measured. The identity path shares the stored mesh.
