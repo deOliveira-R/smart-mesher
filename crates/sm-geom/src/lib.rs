@@ -2,8 +2,13 @@
 //!
 //! Skeleton created in W0; implemented in W1 against the frozen `*-api` contracts.
 
-mod intersect;
+pub mod intersect;
 mod nurbs;
+mod pcurve;
 mod roots;
+mod store;
 
-pub use nurbs::{BezierSegment, PreparedCurve, PreparedSurface};
+pub use nurbs::{BezierSegment, PreparedCurve, PreparedSurface, exact};
+pub use pcurve::CurveOnSurface;
+pub use intersect::{CurveSurface, CurveSurfaceHit, curve_plane, curve_prepared_surface, curve_surface};
+pub use store::KernelStore;

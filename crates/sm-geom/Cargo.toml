@@ -10,7 +10,7 @@ license.workspace = true
 [features]
 default = []
 # Forward serde to the contract crate (store persistence).
-serde = ["sm-geom-api/serde"]
+serde = ["sm-geom-api/serde", "dep:serde"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
@@ -19,6 +19,7 @@ sm-geom-api = { path = "../sm-geom-api" }
 thiserror = "2"
 smallvec = "1"
 rayon = "1"
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }

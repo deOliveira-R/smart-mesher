@@ -2,6 +2,7 @@
 
 pub(crate) mod basis;
 pub(crate) mod curve;
+pub mod exact;
 pub(crate) mod project;
 pub(crate) mod spline1;
 pub(crate) mod surface;

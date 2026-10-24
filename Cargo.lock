@@ -627,6 +627,7 @@ dependencies = [
  "criterion",
  "proptest",
  "rayon",
+ "serde",
  "sm-core",
  "sm-geom-api",
  "sm-math",

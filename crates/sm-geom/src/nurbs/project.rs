@@ -44,7 +44,7 @@ pub(crate) fn project_curve(c: &PreparedCurve, q: Point3, hint: Option<f64>) -> 
     let leaf = 1e-3 * scale;
     let mut best_t = c.range().lo;
     let mut best_d = f64::INFINITY;
-    let mut consider = |t: f64, best_t: &mut f64, best_d: &mut f64| {
+    let consider = |t: f64, best_t: &mut f64, best_d: &mut f64| {
         let d = (c.eval(t) - q).norm();
         if d < *best_d {
             *best_d = d;
@@ -181,8 +181,6 @@ use sm_geom_api::{Interval, ParametricSurface, SurfaceProjection, Uv};
 struct PNode {
     u: Interval,
     v: Interval,
-    pu: usize,
-    pv: usize,
     poles: PatchPoles,
     depth: u32,
 }
@@ -242,7 +240,7 @@ pub(crate) fn project_surface(s: &PreparedSurface, q: Point3, hint: Option<Uv>) 
     for p in &s.patches {
         let lb = box_dist(&p.bbox, q);
         if lb < best_d - prune {
-            store.push(PNode { u: p.u, v: p.v, pu, pv, poles: p.poles.clone(), depth: 0 });
+            store.push(PNode { u: p.u, v: p.v, poles: p.poles.clone(), depth: 0 });
             heap.push((Key(lb, seq), store.len() - 1));
             seq += 1;
         }
@@ -277,7 +275,7 @@ pub(crate) fn project_surface(s: &PreparedSurface, q: Point3, hint: Option<Uv>) 
             consider(Uv::new(0.5 * (cu.lo + cu.hi), 0.5 * (cv.lo + cv.hi)), &mut best, &mut best_d);
             let lb = box_dist(&bx, q);
             if lb < best_d - prune {
-                store.push(PNode { u: cu, v: cv, pu, pv, poles: pl, depth: depth + 1 });
+                store.push(PNode { u: cu, v: cv, poles: pl, depth: depth + 1 });
                 heap.push((Key(lb, seq), store.len() - 1));
                 seq += 1;
             }
