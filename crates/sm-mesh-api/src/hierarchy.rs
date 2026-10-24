@@ -424,6 +424,14 @@ impl ExtrusionMap {
     pub fn n_layers(&self) -> usize {
         self.z.len() - 1
     }
+    /// Number of base cells (`cell_at.len() / n_layers`).
+    pub fn n_base(&self) -> usize {
+        self.cell_at.len() / self.n_layers()
+    }
+    /// Number of extruded cells (`n_base * n_layers`): the valid range of [`Self::cell_of`].
+    pub fn n_extruded(&self) -> usize {
+        self.cell_of.len()
+    }
     /// `(base cell, layer)` of an extruded cell. Panics if out of range.
     pub fn cell_of(&self, c: CellIx) -> (CellIx, u32) {
         self.cell_of[c.get()]

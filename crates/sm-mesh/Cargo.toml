@@ -14,7 +14,7 @@ serde = ["sm-mesh-api/serde"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-mesh-api = { path = "../sm-mesh-api" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["bytemuck"] }
 rayon = "1"
 smallvec = "1"
 indexmap = "2"

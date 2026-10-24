@@ -152,7 +152,8 @@ impl Prep<'_, '_> {
 
     fn normal(&self, c: usize, pts: &[V]) -> Option<V> {
         match self.opts.normals {
-            SurfaceNormals::Own => None,
+            // The mesh's own Newell vector of the corner cycle (`MeshRead::cell_normal`).
+            SurfaceNormals::Own => self.mesh.cell_normal(CellIx::new(c)).map(|v| [v.x, v.y, v.z]),
             SurfaceNormals::Uniform(n) => Some(n),
             SurfaceNormals::PerCell(ns) => Some(ns[c]),
             SurfaceNormals::Field(f) => {

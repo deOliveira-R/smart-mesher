@@ -42,6 +42,16 @@ impl Basis {
             Basis::Serendipity => 2,
         }
     }
+
+    /// Inverse of [`Basis::code`]; `None` for an unknown code.
+    pub const fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            0 => Basis::LagrangeEquispaced,
+            1 => Basis::LagrangeGll,
+            2 => Basis::Serendipity,
+            _ => return None,
+        })
+    }
 }
 
 /// Geometric order of one cell.

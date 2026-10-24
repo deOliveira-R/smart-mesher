@@ -216,3 +216,24 @@ fn zero_or_non_finite_reference_normals_are_rejected() {
     assert!(matches!(compute(&m, Metric::Volume, &o), Err(QualityError::BadArgument(_))));
     assert!(matches!(validity(&m, &o), Err(QualityError::BadArgument(_))));
 }
+
+#[test]
+fn own_normals_come_from_the_mesh_cell_normal() {
+    // A tilted, slightly warped mesh: Own must equal PerCell fed with MeshRead::cell_normal.
+    let m = surface_mesh(
+        &[[0., 0.], [2., 0.], [2., 1.], [0., 1.], [3., 0.5]],
+        &[vec![0, 1, 2, 3], vec![1, 4, 2]],
+    );
+    let per: Vec<[f64; 3]> = (0..m.cell_count())
+        .map(|c| {
+            let n = m.cell_normal(CellIx::new(c)).unwrap();
+            [n.x, n.y, n.z]
+        })
+        .collect();
+    let metrics = [Metric::Volume, Metric::ScaledJacobian, Metric::MinAngle, Metric::Condition];
+    let own = compute_many(&m, &metrics, &opts()).unwrap();
+    let explicit = compute_many(&m, &metrics, &Options::default().with_normals(SurfaceNormals::PerCell(&per))).unwrap();
+    for metric in metrics {
+        assert_eq!(own.column(metric), explicit.column(metric), "{metric:?}");
+    }
+}

@@ -373,3 +373,51 @@ fn classification_onto_decomposition_entities() {
     assert!(m.is_boundary_face(f0.faces[0]));
     assert_eq!(m.classified_on(id(EntityKind::PartitionCell, 7)).unwrap().cells.len(), 1);
 }
+
+#[test]
+fn cell_normal_is_the_unnormalised_newell_vector_of_the_corner_cycle() {
+    let (m, _) = build();
+    // Twice the area, along +z for counter-clockwise cycles: quad 1, quad 1, triangle 0.5.
+    for (c, area) in [(0, 1.0), (1, 1.0), (2, 0.5)] {
+        let n = m.cell_normal(CellIx(c)).unwrap();
+        assert!(n.x.abs() < TOL && n.y.abs() < TOL, "{n:?}");
+        assert!((n.z - 2.0 * area).abs() < TOL, "cell {c}: {n:?}");
+    }
+    // A dimension-3 mesh has no own normal.
+    let h = hex_block([1, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    assert!(h.cell_normal(CellIx(0)).is_none());
+}
+
+/// One polygon cell on `pts`, classified so that it finishes.
+fn single_polygon(pts: &[[f64; 3]]) -> ReferenceMesh {
+    let mut b = ReferenceBuilder::surface();
+    let vs: Vec<VertexIx> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let v = b.add_vertex(Point3::new(p[0], p[1], p[2])).unwrap();
+            b.set_class(MeshEntityRef::Vertex(v), on(EntityKind::TopoVertex, 1 + i as u64)).unwrap();
+            v
+        })
+        .collect();
+    let c = b.add_polygon(&vs).unwrap().cell;
+    b.set_class(MeshEntityRef::Cell(c), on(EntityKind::TopoFace, 1)).unwrap();
+    for f in 0..b.face_count() {
+        b.set_class(MeshEntityRef::Face(FaceIx::new(f)), on(EntityKind::TopoEdge, 1 + f as u64)).unwrap();
+    }
+    b.finish(&mut SerialAlloc::new()).unwrap().mesh
+}
+
+#[test]
+fn cell_normal_follows_the_vertex_order_and_the_plane() {
+    // A unit square in the plane x = 1 (normal +x); reversing the cycle flips the sign.
+    let sq = [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]];
+    let n = single_polygon(&sq).cell_normal(CellIx(0)).unwrap();
+    assert!((n.x - 2.0).abs() < TOL && n.y.abs() < TOL && n.z.abs() < TOL, "{n:?}");
+    let rev = [sq[3], sq[2], sq[1], sq[0]];
+    let n = single_polygon(&rev).cell_normal(CellIx(0)).unwrap();
+    assert!((n.x + 2.0).abs() < TOL && n.y.abs() < TOL && n.z.abs() < TOL, "{n:?}");
+    // A collinear (collapsed) cell gives the zero vector, not None.
+    let line = [[0., 0., 0.], [1., 0., 0.], [2., 0., 0.]];
+    assert_eq!(single_polygon(&line).cell_normal(CellIx(0)), Some(Vector3::new(0.0, 0.0, 0.0)));
+}

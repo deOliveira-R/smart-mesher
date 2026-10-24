@@ -16,6 +16,7 @@ macro_rules! dense_index {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        #[cfg_attr(feature = "bytemuck", derive(bytemuck::Pod, bytemuck::Zeroable))]
         #[repr(transparent)]
         pub struct $name(pub u32);
         impl $name {
@@ -102,6 +103,7 @@ impl Side {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "bytemuck", derive(bytemuck::Pod, bytemuck::Zeroable))]
 #[repr(transparent)]
 pub struct SignedFace(u32);
 
@@ -251,6 +253,31 @@ pub enum FaceKind {
     NonConformal,
     /// Cut between partitions. One cell; reserved, partition-local views are not [`crate::MeshRead`].
     PartitionCut,
+}
+
+impl FaceKind {
+    /// Frozen code table: `Interior=0, Boundary=1, NonConformal=2, PartitionCut=3`. Equal to
+    /// the declaration discriminant that `hash_connectivity` hashes via `as u64`; new variants
+    /// append. Used by codecs (`.smsh` `face_kind`).
+    pub const fn code(self) -> u8 {
+        match self {
+            FaceKind::Interior => 0,
+            FaceKind::Boundary => 1,
+            FaceKind::NonConformal => 2,
+            FaceKind::PartitionCut => 3,
+        }
+    }
+
+    /// Inverse of [`FaceKind::code`]; `None` for an unknown code.
+    pub const fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            0 => FaceKind::Interior,
+            1 => FaceKind::Boundary,
+            2 => FaceKind::NonConformal,
+            3 => FaceKind::PartitionCut,
+            _ => return None,
+        })
+    }
 }
 
 /// A reference to one mesh entity by dense index.

@@ -96,6 +96,37 @@ const PYR_FACES: &[&[u8]] = &[
 ];
 
 impl CellShape {
+    /// Frozen code table: `Tet=0, Hex=1, Wedge=2, Pyramid=3, Polyhedron=4, Tri=5, Quad=6,
+    /// Polygon=7`. Equal to the declaration discriminant that `hash_connectivity` hashes via
+    /// `as u64`; new variants append. Used by codecs (`.smsh` `cell_shape`).
+    pub const fn code(self) -> u8 {
+        match self {
+            CellShape::Tet => 0,
+            CellShape::Hex => 1,
+            CellShape::Wedge => 2,
+            CellShape::Pyramid => 3,
+            CellShape::Polyhedron => 4,
+            CellShape::Tri => 5,
+            CellShape::Quad => 6,
+            CellShape::Polygon => 7,
+        }
+    }
+
+    /// Inverse of [`CellShape::code`]; `None` for an unknown code.
+    pub const fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            0 => CellShape::Tet,
+            1 => CellShape::Hex,
+            2 => CellShape::Wedge,
+            3 => CellShape::Pyramid,
+            4 => CellShape::Polyhedron,
+            5 => CellShape::Tri,
+            6 => CellShape::Quad,
+            7 => CellShape::Polygon,
+            _ => return None,
+        })
+    }
+
     /// Number of vertices of a fast-path shape; `None` for [`CellShape::Polyhedron`] and
     /// [`CellShape::Polygon`].
     pub const fn vertex_count(self) -> Option<usize> {

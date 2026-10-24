@@ -157,15 +157,13 @@ pub(crate) fn check_loop_in(dim: MeshDim, nv: usize, l: &[VertexIx]) -> Result<(
 /// How much checking `finish` does after building the mesh.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Validation {
-    /// Check, in parallel, the rules that the builder input can break (classification kinds and
-    /// dimension order, open cells, lineage) and run the full contract validator only when one
-    /// fails, to produce its report. Everything else holds by construction. The default.
+    /// Check the rules that the builder input can break (open cells, then the contract's
+    /// `sm_mesh_api::validate_classification` and `sm_mesh_api::validate_records`) and run the
+    /// full contract validator only when one fails, to produce its report. Everything else holds
+    /// by construction. The default.
     ///
-    /// **Coupling.** `fast_checks` (in `finish.rs`) mirrors the classification, dimension-order,
-    /// lineage and open-cell rules of the frozen `sm_mesh_api::validate`, and sends any mesh with
-    /// high-order cells or face curves to the full validator. A new `validate` rule that builder
-    /// input can break must be added to `fast_checks` too (or use [`Validation::Full`]) until
-    /// the contract exposes the classification rules (api_change_request 3 in `W1_REPORT.md`).
+    /// The rules are the contract's own, so they cannot drift; a new `validate` rule that
+    /// builder input can break belongs in one of those two functions.
     #[default]
     Fast,
     /// Always run the full sequential `sm_mesh_api::validate` (what the reference builder does).
@@ -184,8 +182,8 @@ pub(crate) const FLAG_TEMPLATE: u8 = 1;
 /// [`MeshBuilder::surface`] dimension-2 meshes. For large template meshes,
 /// [`MeshBuilder::add_cells_bulk`] builds the face table in parallel.
 ///
-/// `finish` validates in [`Validation::Fast`] mode by default, which duplicates some private
-/// rules of `sm_mesh_api::validate`; see [`Validation::Fast`] for the coupling.
+/// `finish` validates in [`Validation::Fast`] mode by default, which runs the contract's shared
+/// rule functions; see [`Validation::Fast`].
 #[derive(Default)]
 pub struct MeshBuilder {
     pub(crate) dim: MeshDim,
@@ -441,6 +439,37 @@ impl MeshBuild for MeshBuilder {
 
     fn dim(&self) -> MeshDim {
         self.dim
+    }
+    /// Parallel [`MeshBuilder::add_cells_bulk`] while the builder holds no faces or cells,
+    /// the default loop otherwise. Same cells, face numbering and errors as the default; if the
+    /// bulk path fails (it leaves the builder unchanged) the loop is replayed so the error and
+    /// the cells kept before it are exactly the default's.
+    fn add_template_cells(
+        &mut self,
+        shapes: &[CellShape],
+        offsets: &[u64],
+        verts: &[VertexIx],
+    ) -> Result<std::ops::Range<usize>> {
+        if self.nfaces() == 0
+            && self.ncells() == 0
+            && let Ok(r) = self.add_cells_bulk(shapes, offsets, verts)
+        {
+            return Ok(r);
+        }
+        sm_mesh_api::add_template_cells_sequential(self, shapes, offsets, verts)
+    }
+    fn reserve(&mut self, vertices: usize, cells: usize) {
+        self.x.reserve(vertices);
+        self.y.reserve(vertices);
+        self.z.reserve(vertices);
+        self.vclass.ent.reserve(vertices);
+        self.vcell.reserve(vertices);
+        self.cell_off.reserve(cells);
+        self.corner_off.reserve(cells);
+        self.cell_flag.reserve(cells);
+        self.cclass.ent.reserve(cells);
+        self.parent.reserve(cells);
+        self.active.reserve(cells);
     }
     fn add_vertex(&mut self, p: Point3) -> Result<VertexIx> {
         if self.x.len() + self.extra.len() >= u32::MAX as usize - 1 {

@@ -340,6 +340,35 @@ pub trait MeshBuild {
         let refs: SmallVec<[&[VertexIx]; 6]> = loops.iter().map(|l| l.as_slice()).collect();
         self.add_polyhedron_with_corners(&refs, Some(verts))
     }
+
+    /// Add many template cells: cell `c` has shape `shapes[c]` and vertices
+    /// `verts[offsets[c]..offsets[c + 1]]` in the template order of its shape. `offsets` is a CSR
+    /// array over `verts` (`offsets.len() == shapes.len() + 1`, starts at 0, non-decreasing, ends
+    /// at `verts.len()`), otherwise `MeshError::State`. Returns the range of new cell indices.
+    ///
+    /// The default is [`add_template_cells_sequential`]: a loop of
+    /// [`add_cell_from_vertices`](Self::add_cell_from_vertices). Errors stop at the first bad
+    /// cell; the cells before it stay added.
+    ///
+    /// **Contract for overrides.** A faster (e.g. parallel) override must produce the same cells,
+    /// the same face numbering and so the same `connectivity_hash` as the default on success, and
+    /// the same error for the first offending cell. Which cells survive an error is up to the
+    /// implementation unless it matches the default. `sm_testkit::check::template_cells_match_default`
+    /// checks it.
+    fn add_template_cells(
+        &mut self,
+        shapes: &[CellShape],
+        offsets: &[u64],
+        verts: &[VertexIx],
+    ) -> Result<core::ops::Range<usize>> {
+        add_template_cells_sequential(self, shapes, offsets, verts)
+    }
+
+    /// Hint that about `vertices` more vertices and `cells` more cells will be added. Never
+    /// changes results; the default does nothing.
+    fn reserve(&mut self, vertices: usize, cells: usize) {
+        let _ = (vertices, cells);
+    }
 }
 
 fn add_poly<B: MeshBuild + ?Sized>(
@@ -386,6 +415,33 @@ fn add_poly<B: MeshBuild + ?Sized>(
             Err(e)
         }
     }
+}
+
+/// The default of [`MeshBuild::add_template_cells`]: validate the CSR `offsets`, then call
+/// [`MeshBuild::add_cell_from_vertices`] for each cell in order. Public so an override can fall
+/// back to it (for example to reproduce the exact error and partial state after a fast path
+/// failed).
+pub fn add_template_cells_sequential<B: MeshBuild + ?Sized>(
+    b: &mut B,
+    shapes: &[CellShape],
+    offsets: &[u64],
+    verts: &[VertexIx],
+) -> Result<core::ops::Range<usize>> {
+    let n = shapes.len();
+    if offsets.len() != n + 1
+        || offsets[0] != 0
+        || offsets[n] != verts.len() as u64
+        || offsets.windows(2).any(|w| w[0] > w[1])
+    {
+        return Err(MeshError::State(
+            "offsets must be a CSR array over `verts`".into(),
+        ));
+    }
+    let start = b.cell_count();
+    for (c, shape) in shapes.iter().enumerate() {
+        b.add_cell_from_vertices(*shape, &verts[offsets[c] as usize..offsets[c + 1] as usize])?;
+    }
+    Ok(start..start + n)
 }
 
 /// Topology-preserving edits of a finished mesh.

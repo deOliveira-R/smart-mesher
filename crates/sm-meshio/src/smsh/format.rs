@@ -331,36 +331,3 @@ impl Header {
 pub(crate) fn hex(h: u64) -> String {
     format!("{h:016x}")
 }
-
-/// Largest valid `cell_shape` code (the table below has codes `0..=7`).
-pub(crate) const MAX_SHAPE_CODE: u8 = 7;
-/// Largest valid `face_kind` code (codes `0..=3`).
-pub(crate) const MAX_FACE_KIND_CODE: u8 = 3;
-
-/// Cell shape code table (`cell_shape` array).
-pub(crate) fn shape_code(s: sm_mesh_api::CellShape) -> Option<u8> {
-    use sm_mesh_api::CellShape::*;
-    Some(match s {
-        Tet => 0,
-        Hex => 1,
-        Wedge => 2,
-        Pyramid => 3,
-        Polyhedron => 4,
-        Tri => 5,
-        Quad => 6,
-        Polygon => 7,
-        _ => return None,
-    })
-}
-
-/// Face kind code table (`face_kind` array).
-pub(crate) fn face_kind_code(k: sm_mesh_api::FaceKind) -> Option<u8> {
-    use sm_mesh_api::FaceKind::*;
-    Some(match k {
-        Interior => 0,
-        Boundary => 1,
-        NonConformal => 2,
-        PartitionCut => 3,
-        _ => return None,
-    })
-}

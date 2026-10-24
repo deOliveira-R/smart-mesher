@@ -31,7 +31,7 @@ pub mod sets;
 pub mod shape;
 pub mod validate;
 
-pub use build::{CellAdded, Finished, MeshBuild, MeshEdit, SerialAlloc};
+pub use build::{CellAdded, Finished, MeshBuild, MeshEdit, SerialAlloc, add_template_cells_sequential};
 pub use classify::{ClassSet, Classification, Param, entity_dim};
 pub use edges::{EdgeTable, FaceEdge};
 pub use error::{MeshError, Result};
@@ -59,5 +59,6 @@ pub use shape::{CellShape, FaceShape, LoopRelation, derive_corners, loop_relatio
 pub use validate::{
     FaceNormals, GeomTol, HashQuanta, Violation, ViolationCode, connectivity_hash, coordinate_hash,
     geometry_hash, geometry_hash_quantized, quantize_word, topology_hash, validate, validate_geometry,
-    validate_geometry_with,
+    face_loop_ok, validate_classification, validate_classification_with, validate_geometry_with,
+    validate_records, validate_records_with,
 };

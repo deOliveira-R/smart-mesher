@@ -5,10 +5,9 @@
 //! them into a byte slice without copying.
 //!
 //! The index columns whose element type lives in `sm-mesh-api` (`face_vertices`, `face_left`,
-//! `cell_faces`, ...) are `repr(transparent)` over `u32`, but that crate does not implement
-//! `bytemuck::Pod` for them and this crate cannot (orphan rule), so their byte views need the
-//! `api_change_request` in `W1_REPORT.md`. Until then, `MeshRead::columns` exposes them typed and
-//! a writer converts element by element (`.0` / `SignedFace::to_raw`).
+//! `cell_faces`, `corners`) are `repr(transparent)` over `u32` and implement `bytemuck::Pod`
+//! (the `bytemuck` feature of `sm-mesh-api`, always on here), so [`RawColumns`] lends them as
+//! `&[u32]` with no copy; `cell_faces` holds the packed `SignedFace::to_raw` words.
 
 use crate::Mesh;
 use bytemuck::Pod;
@@ -26,12 +25,20 @@ pub struct RawColumns<'a> {
     pub z: &'a [f64],
     /// CSR offsets into the face-vertex loops (`n_faces + 1`).
     pub face_vertex_offsets: &'a [u64],
+    /// Concatenated face loops (`VertexIx` words).
+    pub face_vertices: &'a [u32],
+    /// Left cell of every face (`CellIx` words).
+    pub face_left: &'a [u32],
     /// Right cell of every face, `NO_CELL` if none.
     pub face_right: &'a [u32],
     /// CSR offsets into the signed cell->face lists (`n_cells + 1`).
     pub cell_face_offsets: &'a [u64],
+    /// Concatenated signed cell->face lists (`SignedFace::to_raw` words).
+    pub cell_faces: &'a [u32],
     /// CSR offsets into the template corner lists (`n_cells + 1`; equal neighbours = no corners).
     pub corner_offsets: &'a [u64],
+    /// Concatenated template corner lists (`VertexIx` words), indexed by `corner_offsets`.
+    pub corners: &'a [u32],
     /// Refinement parent of every cell, `NO_CELL` for roots.
     pub cell_parent: &'a [u32],
 }
@@ -49,9 +56,13 @@ impl Mesh {
             y: &self.y,
             z: &self.z,
             face_vertex_offsets: &self.face_off,
+            face_vertices: bytemuck::cast_slice(&self.face_verts),
+            face_left: bytemuck::cast_slice(&self.face_left),
             face_right: &self.face_right,
             cell_face_offsets: &self.cell_off,
+            cell_faces: bytemuck::cast_slice(&self.cell_faces),
             corner_offsets: &self.corner_off,
+            corners: bytemuck::cast_slice(&self.corners),
             cell_parent: &self.cell_parent,
         }
     }

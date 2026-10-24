@@ -200,13 +200,7 @@ pub fn assert_matches(m: &dyn MeshRead, d: &SmshMesh) {
     assert_eq!(d.cell_faces, cols.cell_faces.iter().map(|s| s.to_raw()).collect::<Vec<_>>());
     for f in 0..nf {
         let fi = FaceIx::new(f);
-        let kind = match m.face_kind(fi) {
-            FaceKind::Interior => 0,
-            FaceKind::Boundary => 1,
-            FaceKind::NonConformal => 2,
-            FaceKind::PartitionCut => 3,
-            _ => unreachable!(),
-        };
+        let kind = m.face_kind(fi).code();
         assert_eq!(d.face_kind[f], kind);
         assert_eq!(d.face_class[f], m.face_class(fi));
     }
@@ -221,17 +215,7 @@ pub fn assert_matches(m: &dyn MeshRead, d: &SmshMesh) {
         assert_eq!(&d.cell_corners[a], want.as_slice());
         assert_eq!(d.cell_parent[c], m.cell_parent(ci).map_or(NO_CELL, |p| p.0));
         assert_eq!(d.cell_active[c], m.cell_active(ci));
-        let code = match m.cell_shape(ci) {
-            CellShape::Tet => 0,
-            CellShape::Hex => 1,
-            CellShape::Wedge => 2,
-            CellShape::Pyramid => 3,
-            CellShape::Polyhedron => 4,
-            CellShape::Tri => 5,
-            CellShape::Quad => 6,
-            CellShape::Polygon => 7,
-            _ => unreachable!(),
-        };
+        let code = m.cell_shape(ci).code();
         assert_eq!(d.cell_shape[c], code);
     }
     assert!(d.class_entities.windows(2).all(|w| w[0] < w[1]));

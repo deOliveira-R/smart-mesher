@@ -54,6 +54,17 @@ pub(crate) fn f64_bytes(s: &[f64]) -> Cow<'_, [u8]> {
     if cfg!(target_endian = "little") { Cow::Borrowed(bytemuck::cast_slice(s)) } else { Cow::Owned(pack_slice(s)) }
 }
 
+/// A column of `repr(transparent)` `u32` index words (`VertexIx`, `CellIx`, `SignedFace`,
+/// `[VertexIx; 2]`, ...) as little-endian bytes, borrowed on little-endian hosts.
+pub(crate) fn index_bytes<T: bytemuck::Pod>(s: &[T]) -> Cow<'_, [u8]> {
+    debug_assert_eq!(core::mem::size_of::<T>() % 4, 0);
+    if cfg!(target_endian = "little") {
+        Cow::Borrowed(bytemuck::cast_slice(s))
+    } else {
+        Cow::Owned(pack_slice(bytemuck::cast_slice::<T, u32>(s)))
+    }
+}
+
 /// Cells per block of a CSR fill.
 const BLOCK: usize = 4096;
 
@@ -122,6 +133,20 @@ mod tests {
         assert_eq!(decode::<u32>(&data).as_ref(), flat.as_slice());
         assert_eq!(off.len(), rows.len() + 1);
         assert_eq!(*off.last().unwrap() as usize, flat.len());
+    }
+
+    #[test]
+    fn index_columns_pack_like_their_words() {
+        use sm_mesh_api::{CellIx, FaceIx, Side, SignedFace, VertexIx};
+        let v = [VertexIx(3), VertexIx(0), VertexIx(70_000)];
+        assert_eq!(index_bytes(&v).as_ref(), pack(3, |i| v[i].0).as_slice());
+        let c = [CellIx(1), CellIx(2)];
+        assert_eq!(index_bytes(&c).as_ref(), pack(2, |i| c[i].0).as_slice());
+        let sf = [SignedFace::new(FaceIx(5), Side::Right), SignedFace::new(FaceIx(9), Side::Left)];
+        assert_eq!(index_bytes(&sf).as_ref(), pack(2, |i| sf[i].to_raw()).as_slice());
+        let e = [[VertexIx(1), VertexIx(2)], [VertexIx(3), VertexIx(4)]];
+        assert_eq!(index_bytes(&e).as_ref(), pack(4, |i| e[i / 2][i % 2].0).as_slice());
+        assert!(matches!(index_bytes(&v), Cow::Borrowed(_)) == cfg!(target_endian = "little"));
     }
 
     #[test]
