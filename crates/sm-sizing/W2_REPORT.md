@@ -36,7 +36,7 @@ Design, objective, limits and benchmark numbers: `DESIGN.md`.
 
 Additional tests: hard-picker requests/soft requests/threshold table, sides equal to the
 reference picker on the split brick (`picker::layouts_equal_the_reference_picker_where_the_choice_is_forced`),
-reference-fallback regression (`iia::fallback_keeps_rows_whose_terms_cancel`), large unbounded
+side cutting with a real Corner turn equal to the reference (`picker::submap_sides_on_the_l_face_equal_the_reference_picker`), reference-fallback regression (`iia::fallback_keeps_rows_whose_terms_cancel`), large unbounded
 counts (`iia::large_counts_with_unbounded_domains_stay_fast_and_exact`), larger random systems
 never worse than the reference (`optimality::feasible_and_never_worse_than_the_reference_on_larger_systems`),
 field parameter validation, bias/geometric analytics, auto size selection rules and curved edges.
@@ -68,7 +68,7 @@ Benchmark: `benches/solver.rs`.
 6. **Dependencies.** Used: sm-core, sm-topo-api, sm-scheme-api + `rayon`, `thiserror`,
    `serde_json` (size-field params). `sm-math` and `sm-geom-api` from the skeleton were unused in
    the library and are dropped (`sm-geom-api` stays as a dev-dependency for test fixtures);
-   dev: sm-testkit, sm-scheme-api[stubs], sm-mesh-api, sm-model-api, proptest, criterion.
+   dev: sm-testkit, sm-scheme-api[stubs], sm-mesh-api, sm-model-api, proptest, criterion. `sm-mesh-api` and `sm-model-api` are needed only to drive `Driver::mesh` in tests (`brick_setup` returns a `Model`; `ReferenceBuilder` and `SerialAlloc` come from sm-mesh-api); both are contract crates below L2, so there is no layering issue.
 7. **`SizingError::NotImplemented` removed** (skeleton placeholder); new typed variants
    (`BadFactor`, `NoGeometry`, `UnknownEntity`, `Geometry`, `Degenerate`), enum is
    `#[non_exhaustive]`.
@@ -90,6 +90,7 @@ Benchmark: `benches/solver.rs`.
 * `bias`/`geometric`/`linear` fields are not tested against Cubit numerically (no Cubit here).
 * Phase 2 of a component whose search ran out of budget keeps the best candidate found, not a
   proven optimum.
+* The content of an `Infeasible` from a propagation failure (which row is blamed, hence `constraints:` and `entities:`) can depend on the order of the constraint list; the solution of a feasible problem never does. The driver's contribution order is fixed, so this is harmless in production, but do not run `determinism::check` on an infeasible case and file the difference as a bug.
 * The picker has no weights for "turn" and "interval change" (Cubit's picker weights); only
   angle and request firmness.
 
