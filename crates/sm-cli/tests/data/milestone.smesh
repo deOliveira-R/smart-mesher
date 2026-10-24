@@ -1,0 +1,13 @@
+// brick -> size -> map -> block -> export
+let b = model.create_brick(x: 10.0, y: 10.0, z: 10.0)
+assert count(b.volume) == 1
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+let m = mesh.run(targets: b.volume)
+let info = mesh.info(mesh: m.mesh[0])
+assert info.cells == 1000
+assert info.vertices == 1331
+fem.block_add(block: 1, volumes: b.volume)
+session.export(path: "out.smsh")
+session.export(path: "out.vtu")
+print session.hash()
