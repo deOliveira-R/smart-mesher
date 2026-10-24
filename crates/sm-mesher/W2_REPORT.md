@@ -74,6 +74,30 @@ Plan section 5 risk 3 is **partly triggered**: the op layer adds about 6 s on to
 needed**: a bulk commit ACR (`MeshBuild::add_template_cells`, would cut the 2.7 s commit) and/or
 bulk adopt/retire in `sm-layer-api`, or a profile task before W3. Not blocking W2.
 
+## fix1 (review round 2)
+
+* **Cell budget estimate** now per volume: cube of the geometric mean of the interval counts of
+  that volume's edges (exact for a hex brick, `a*b*c`). Slender 1x1x1000 at size 1 gives 1000
+  cells, 1x1x100 at 0.1 gives 100000, a 100x100x1 plate at 1 gives 10000, all under the default
+  budget; the absurd-size test is kept. Test: `elongated_bricks_are_not_refused_by_the_budget`.
+* **Subnormal sizes** are rejected by `mesh.size` and `mesh.default_size` (`is_normal()`), test
+  `a_subnormal_size_is_rejected_when_set`.
+* **Injected size-field test** now uses a fresh model with no explicit `mesh.size`, so the field
+  alone decides the 64 cells.
+* **Firmness docs** fixed (code unchanged): any `default`-firmness `mesh.size`, implicit or an
+  explicit `"default"`, is compared at `soft` (Cubit: any interval command raises a curve to at
+  least soft). Comments, rustdoc and DESIGN.md agree.
+* **mesh.run plans twice** (`Driver::plan` for the budget, then `Driver::mesh`). The Driver API
+  has no way to reuse a plan; cost is 0.11 ms with the reference solver but would double
+  planning with the production IIA solver on large models. **W3 item**: `Driver::mesh_from_plan`
+  or a driver-side cell budget (ACR). The `if let Ok(plan)` hides plan errors only until the
+  second call, which reports them.
+* **Neighbour guard** is a deviation from the plan and blocks Cubit-style sequential meshing of
+  adjacent volumes. Acceptable for W2 single-brick milestones. **Orchestrator ruling needed**,
+  and **W3 item**: conformal meshing against an existing neighbour mesh.
+* **Still open for the orchestrator**: whether `mesh.default_size` enters the public catalog, and
+  the bench finding that plan risk 3 is partly triggered (bulk commit / bulk adopt-retire ACR).
+
 ## Known gaps
 
 See DESIGN.md "Known gaps": no `on_succession` for the intent layer, fallbacks without

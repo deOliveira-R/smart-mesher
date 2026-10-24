@@ -472,20 +472,29 @@ fn auto_size_and_size_fields_come_from_the_injected_hooks() {
         intent.entities[&vol(1)].intervals.expect("set").value,
         sm_scheme_api::IntervalRequest::Size(2.0)
     );
-    // A named function is validated when set and used by mesh.run: size 2.5 -> 4 per edge.
+    // A named function is validated when set and used by mesh.run: size 2.5 -> 4 per edge. A
+    // fresh model carries no explicit size, so the injected field alone decides the count.
     assert!(run_json(&mut s, "mesh.default_size", json!({"function": "bogus"})).is_err());
+    let cfg2 =
+        sm_mesher::MesherConfig::new(stubs::registry()).with_size_fields(Arc::new(
+            |spec| match spec {
+                sm_scheme_api::SizingSpec::Function { name, params } if name == "const" => {
+                    let h = params.get("const", "size")?.unwrap_or(1.0);
+                    Ok(Some(Box::new(sm_scheme_api::ConstantSize(h))))
+                }
+                _ => Err(sm_scheme_api::SchemeError::Input(
+                    "unknown sizing function".into(),
+                )),
+            },
+        ));
+    let mut s = sm_op_api::Session::new(engine_cfg(cfg2, DerivedCache::default()));
+    run(&mut s, &brick_op([10.0; 3])).expect("brick");
     run_json(
         &mut s,
         "mesh.default_size",
         json!({"function": "const", "params": {"size": 2.5}}),
     )
     .expect("fn");
-    run_json(
-        &mut s,
-        "mesh.size",
-        json!({"targets": ["TopoVolume#1"], "size": 2.5}),
-    )
-    .expect("size");
     run_json(
         &mut s,
         "mesh.scheme",
@@ -820,7 +829,11 @@ fn a_stale_mesh_can_be_deleted_by_target_and_by_id() {
         let (_, d) = mesh_run(&mut s).expect("run");
         let mid = d.outputs["mesh"][0];
         run(&mut s, &DeleteVolume { volume: vol(1) }).expect("delete volume");
-        assert_eq!(s.state().count_of(EntityKind::MeshCell), 8, "mesh outlives it");
+        assert_eq!(
+            s.state().count_of(EntityKind::MeshCell),
+            8,
+            "mesh outlives it"
+        );
         let params = if by_target {
             json!({"targets": ["TopoVolume#1"]})
         } else {
@@ -870,7 +883,12 @@ fn user_fallbacks_are_tried_through_mesh_run() {
     let plan = e.plan.as_ref().expect("plan");
     assert_eq!(plan.rejections.len(), 1, "always_fail was rejected once");
     assert_eq!(
-        plan.rejections.attempts().next().expect("one").scheme.as_str(),
+        plan.rejections
+            .attempts()
+            .next()
+            .expect("one")
+            .scheme
+            .as_str(),
         "always_fail"
     );
     assert_eq!(e.mesh().cell_count(), 8);
@@ -889,7 +907,12 @@ fn an_infeasible_hard_request_on_another_volume_does_not_break_a_run() {
     )
     .expect("b");
     for (e, n) in [("TopoEdge#13", 3), ("TopoEdge#15", 5)] {
-        run_json(&mut s, "mesh.intervals", json!({"targets": [e], "count": n})).expect("b edge");
+        run_json(
+            &mut s,
+            "mesh.intervals",
+            json!({"targets": [e], "count": n}),
+        )
+        .expect("b edge");
     }
     run_json(
         &mut s,
@@ -906,4 +929,38 @@ fn an_infeasible_hard_request_on_another_volume_does_not_break_a_run() {
     .expect("a scheme");
     run_json(&mut s, "mesh.run", json!({"targets": ["TopoVolume#1"]})).expect("a only");
     assert_eq!(s.state().count_of(EntityKind::MeshCell), 64);
+}
+
+#[test]
+fn elongated_bricks_are_not_refused_by_the_budget() {
+    // Estimate is per volume from the geometric mean of its edge counts: exact for a brick.
+    for (dims, h, cells) in [
+        ([1.0, 1.0, 1000.0], 1.0, 1000),
+        ([1.0, 1.0, 100.0], 0.1, 100_000),
+        ([100.0, 100.0, 1.0], 1.0, 10_000),
+    ] {
+        let mut s = brick_session(dims, h);
+        let r = mesh_run(&mut s);
+        assert!(
+            r.is_ok(),
+            "{dims:?}: {}",
+            r.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+        assert_eq!(s.state().count_of(EntityKind::MeshCell), cells, "{dims:?}");
+    }
+}
+
+#[test]
+fn a_subnormal_size_is_rejected_when_set() {
+    let mut s = session();
+    run(&mut s, &brick_op([1.0; 3])).expect("brick");
+    for size in [5e-324, 0.0, -1.0] {
+        let r = run_json(
+            &mut s,
+            "mesh.size",
+            json!({"targets": ["TopoVolume#1"], "size": size}),
+        );
+        assert!(r.is_err(), "mesh.size {size}");
+    }
+    assert!(run_json(&mut s, "mesh.default_size", json!({"size": 5e-324})).is_err());
 }

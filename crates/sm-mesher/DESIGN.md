@@ -55,7 +55,7 @@ fields arrive through the `MesherConfig` service, so this crate names no scheme 
 *Deviation from Cubit's manual*: a count derived from a size is *soft* in Cubit. We default to a
 `default`-firmness goal instead, which lets the solver minimize deviation instead of picking an
 arbitrary soft count; `firmness: "soft"` gives the Cubit reading. In the code `Default < Soft`,
-so for the "firmer request wins" check an implicit-firmness `mesh.size` is *compared* at the
+so for the "firmer request wins" check any `default`-firmness `mesh.size` (implicit or an explicit `"default"`) is *compared* at the
 `soft` level (it is still stored as `default`): a later `mesh.size` replaces an earlier soft
 `mesh.intervals` on the same entity (the most recent command wins at the same level), and a
 `hard` request is still kept. A request never overwrites a firmer one on the same entity: the op keeps the

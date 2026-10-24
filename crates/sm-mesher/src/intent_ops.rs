@@ -81,7 +81,7 @@ fn scheme_err(e: sm_scheme_api::SchemeError) -> OpError {
 /// Install `req` on `id` unless a firmer request is already there. Returns whether it applied.
 ///
 /// `level` is the firmness the request is compared at (normally `req.firmness`). A `mesh.size`
-/// without explicit firmness is stored as `default` but compared at `soft`, so it replaces a
+/// of `default` firmness (implicit or explicit) is stored as `default` but compared at `soft`, so it replaces a
 /// `soft` count (the most recent command wins at the same level).
 fn set_intervals(
     layer: &mut IntentLayer,
@@ -121,7 +121,7 @@ fn warn_kept(ctx: &mut ApplyCtx<'_>, op: &str, kept: &[EntityId]) {
 ///
 /// Recorded as `IntervalRequest::Size` on each target. On a volume or face it applies to every
 /// edge of it; an edge's own request wins over a face's, a face's over a volume's. Default
-/// firmness is `default` (compared with existing requests at the `soft` level, so a later size
+/// firmness is `default` (compared with existing requests at the `soft` level, whether or not the firmness is spelled out, so a later size
 /// replaces an earlier soft count): the size is a real goal `length / size` that the interval solver
 /// approaches while matching opposite sides. `soft` and `hard` fix the count
 /// `max(1, round(length / size))` instead. `auto` (1 fine .. 10 coarse) is resolved *now* through
@@ -167,13 +167,14 @@ impl TypedOp for MeshSize {
                 ));
             }
         };
-        if !(size.is_finite() && size > 0.0) {
+        if !(size.is_normal() && size > 0.0) {
             return Err(OpError::Invalid(format!(
-                "size {size} must be positive and finite"
+                "size {size} must be a positive, normal (not subnormal) finite number"
             )));
         }
         let firmness = self.firmness.map_or(Firmness::Default, Firmness::from);
-        // Stored as given, but an implicit `default` competes at the `soft` level.
+        // Stored as given, but any `default`-firmness size (implicit or explicit) competes at
+        // `soft`: in Cubit any interval command raises the curve to at least soft.
         let level = firmness.max(Firmness::Soft);
         let layer = ctx.layer_mut::<IntentLayer>()?;
         let mut kept = Vec::new();
@@ -348,9 +349,9 @@ impl TypedOp for MeshDefaultSize {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let spec = match (self.size, &self.function) {
             (Some(size), None) => {
-                if !(size.is_finite() && size > 0.0) {
+                if !(size.is_normal() && size > 0.0) {
                     return Err(OpError::Invalid(format!(
-                        "size {size} must be positive and finite"
+                        "size {size} must be a positive, normal (not subnormal) finite number"
                     )));
                 }
                 SizingSpec::Constant { size }

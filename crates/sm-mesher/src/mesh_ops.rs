@@ -6,8 +6,8 @@ use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
 use sm_mesh::MeshBuilder;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_scheme_api::{Driver, DriverOptions, MeshInput, SchemeError, WholeFaces};
-use sm_topo_api::Dim;
+use sm_scheme_api::{Driver, DriverOptions, MeshInput, Plan, SchemeError, WholeFaces};
+use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
 
 use crate::config::MesherConfig;
 use crate::exec::RayonExec;
@@ -49,14 +49,33 @@ fn failed(e: SchemeError) -> OpError {
     }
 }
 
-/// Rough cell count: per volume, the cube of the mean solved interval count of the plan's edges.
-/// Only used to catch absurd requests, so over- or under-shooting by a small factor is fine.
-fn estimate_cells(intervals: &[(EntityId, u32)], volumes: usize) -> f64 {
-    if intervals.is_empty() {
-        return 0.0;
+/// Rough cell count: per volume, the cube of the geometric mean of the solved interval counts of
+/// its edges (exact for a structured hex brick: `a*b*c`). Edges that are not in the plan are
+/// skipped; a volume with none falls back to the mean over the whole plan. Only used to catch
+/// absurd requests, so over- or under-shooting by a small factor is fine.
+fn estimate_cells(plan: &Plan, view: &dyn TopologyView, targets: &[EntityId]) -> f64 {
+    let geo = |counts: &mut dyn Iterator<Item = u32>| -> Option<f64> {
+        let (mut sum, mut n) = (0.0_f64, 0usize);
+        for c in counts {
+            sum += f64::from(c.max(1)).ln();
+            n += 1;
+        }
+        (n > 0).then(|| (sum / n as f64).exp().powi(3))
+    };
+    let mut total = 0.0;
+    for &t in targets {
+        let mut edges: Vec<EntityId> = view
+            .volume_faces(t)
+            .iter()
+            .flat_map(|&f| view.coedges(f).map(|c| c.key.edge))
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        let est = geo(&mut edges.iter().filter_map(|&e| plan.intervals(e)))
+            .or_else(|| geo(&mut plan.intervals.iter().map(|p| p.1)));
+        total += est.unwrap_or(0.0);
     }
-    let mean = intervals.iter().map(|p| f64::from(p.1)).sum::<f64>() / intervals.len() as f64;
-    mean.powi(3) * volumes as f64
+    total
 }
 
 impl TypedOp for MeshRun {
@@ -106,9 +125,10 @@ impl TypedOp for MeshRun {
         driver.size = field.as_deref();
         driver.options = DriverOptions::new();
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
-        // Refuse absurd requests before generating anything.
+        // Refuse absurd requests before generating anything. This plans a second time inside
+        // `Driver::mesh` (no plan-reuse API yet: W3 item); plan errors surface from that call.
         if let Ok(plan) = driver.plan(&input, &intent) {
-            let est = estimate_cells(&plan.intervals, targets.len());
+            let est = estimate_cells(&plan, model.topo(), &targets);
             if est > cfg.max_cells() as f64 {
                 return Err(OpError::Invalid(format!(
                     "the plan needs about {est:.3e} cells, above the budget of {} \
