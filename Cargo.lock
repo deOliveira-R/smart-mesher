@@ -784,11 +784,15 @@ dependencies = [
 name = "sm-topo"
 version = "0.0.0"
 dependencies = [
+ "criterion",
+ "proptest",
+ "rayon",
+ "serde_json",
  "sm-core",
  "sm-geom-api",
- "sm-math",
+ "sm-testkit",
  "sm-topo-api",
- "thiserror",
+ "smallvec",
 ]
 
 [[package]]
