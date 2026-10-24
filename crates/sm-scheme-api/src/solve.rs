@@ -569,12 +569,7 @@ impl CornerPicker for ReferenceCornerPicker {
         } else {
             Vec::new()
         };
-        Ok(FaceLayout {
-            face,
-            rule,
-            corners: out,
-            sides,
-        })
+        Ok(FaceLayout::new(face, rule, out, sides))
     }
 }
 
@@ -601,10 +596,7 @@ fn sides_of(corners: &[CornerAssignment], any_turn: bool) -> Vec<LogicalSide> {
         let i = (first + s) % n;
         cur.push(corners[i].corner.incoming);
         if is_break(&corners[i]) {
-            sides.push(LogicalSide {
-                coedges: std::mem::take(&mut cur),
-                dir,
-            });
+            sides.push(LogicalSide::new(std::mem::take(&mut cur), dir));
             // Non-break corners turn nothing (Map/Ends rules keep them as Side).
             dir = dir.turned(if any_turn {
                 corners[i].vertex_type.submap_weight()

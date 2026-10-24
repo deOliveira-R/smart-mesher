@@ -61,3 +61,28 @@ fn implementer_results_have_constructors() {
     assert_eq!((d.max_replans, d.classify_edges, d.copy_tolerance), (16, false, None));
     assert!(matches!(Applicability::yes(10, "ok"), Applicability::Applicable { score: 10, .. }));
 }
+
+/// W0g r2: implementer-built `Patch`, `PatchNode`, `FaceLayout`, `LogicalSide`.
+#[test]
+fn layout_and_patch_constructors_and_golden_json() {
+    use sm_topo_api::{CoedgeKey, CornerKey, Side};
+    let f = id(EntityKind::TopoFace, 1);
+    let e = id(EntityKind::TopoEdge, 2);
+    let ce = CoedgeKey { face: f, edge: e, side: Side::Left };
+    let side = LogicalSide::new(vec![ce], SideDir::PlusI);
+    assert_eq!((side.coedges.as_slice(), side.dir), (&[ce][..], SideDir::PlusI));
+    let corner = CornerAssignment { corner: CornerKey { face: f, incoming: ce }, vertex_type: VertexType::End, firmness: Firmness::Default, angle: 1.5 };
+    let layout = FaceLayout::new(f, VertexRule::Map, vec![corner], vec![side.clone()]);
+    assert_eq!((layout.face, layout.rule, layout.corners.len(), layout.sides.len()), (f, VertexRule::Map, 1, 1));
+    // Serde shapes are unchanged by the attribute.
+    assert_eq!(v(&side), json!({"coedges": [v(&ce)], "dir": "PlusI"}));
+    let lv = v(&layout);
+    assert_eq!(lv.as_object().unwrap().keys().collect::<Vec<_>>(), ["corners", "face", "rule", "sides"]);
+    assert_eq!(serde_json::from_value::<FaceLayout>(lv).unwrap(), layout);
+    let key = NodeKey::new(f, 0);
+    let n = PatchNode::new(key, sm_core::Point3::new(1.0, 2.0, 3.0), sm_mesh_api::Param::None);
+    assert_eq!((n.key, n.point), (key, sm_core::Point3::new(1.0, 2.0, 3.0)));
+    let mut p = Patch::new(Target::Surface(f));
+    p.nodes.push(n);
+    assert_eq!(p.local_len(), 1);
+}

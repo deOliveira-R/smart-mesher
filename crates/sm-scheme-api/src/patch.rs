@@ -153,6 +153,7 @@ impl Elements {
 
 /// A new node created by a patch.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct PatchNode {
     /// Canonical key (its owner must be the target entity, a group member, or a child the
     /// target claims).
@@ -161,6 +162,13 @@ pub struct PatchNode {
     pub point: Point3,
     /// Parameter on the owner (must fit the owner's kind, see [`Param::fits`]).
     pub param: Param,
+}
+
+impl PatchNode {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(key: NodeKey, point: Point3, param: Param) -> Self {
+        Self { key, point, param }
+    }
 }
 
 /// Structured view of a mapped surface patch: `ni x nj` node keys, row-major (`j * ni + i`).
@@ -262,6 +270,7 @@ impl NodeGrid {
 /// Element indices `i < nodes.len()` name `nodes[i]`; otherwise they name
 /// `refs[i - nodes.len()]`.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Patch {
     /// The target.
     pub target: Target,
@@ -425,7 +434,7 @@ impl PatchBuilder {
 
     /// Add a node the patch creates; returns its builder index.
     pub fn node(&mut self, key: NodeKey, point: Point3, param: Param) -> u32 {
-        self.nodes.push(PatchNode { key, point, param });
+        self.nodes.push(PatchNode::new(key, point, param));
         (self.nodes.len() - 1) as u32
     }
 

@@ -322,11 +322,7 @@ pub fn copy_patch(
     let mut out = Patch::new(target);
     out.nodes.reserve(src.nodes.len());
     for n in &src.nodes {
-        out.nodes.push(PatchNode {
-            key: km.map(n.key)?,
-            point: transform.apply_point(n.point),
-            param: Param::None,
-        });
+        out.nodes.push(PatchNode::new(km.map(n.key)?, transform.apply_point(n.point), Param::None));
     }
     out.refs.reserve(src.refs.len());
     for r in &src.refs {

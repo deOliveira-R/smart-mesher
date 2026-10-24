@@ -141,6 +141,7 @@ impl SideDir {
 /// One logical side of a structured face: consecutive coedges between two logical corners
 /// (curves may be grouped, and a side may end mid-curve only after a virtual split).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogicalSide {
     /// Coedges in loop order.
     pub coedges: Vec<CoedgeKey>,
@@ -149,9 +150,17 @@ pub struct LogicalSide {
     pub dir: SideDir,
 }
 
+impl LogicalSide {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(coedges: Vec<CoedgeKey>, dir: SideDir) -> Self {
+        Self { coedges, dir }
+    }
+}
+
 /// Solved corner layout of one face: corner types in loop order and, for structured rules,
 /// the logical sides starting at the first logical corner.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct FaceLayout {
     /// The face.
     pub face: sm_core::EntityId,
@@ -161,4 +170,11 @@ pub struct FaceLayout {
     pub corners: Vec<CornerAssignment>,
     /// Logical sides (empty for [`VertexRule::Free`]).
     pub sides: Vec<LogicalSide>,
+}
+
+impl FaceLayout {
+    /// Construct (the type is `#[non_exhaustive]`; a [`crate::CornerPicker`] returns this).
+    pub fn new(face: sm_core::EntityId, rule: VertexRule, corners: Vec<CornerAssignment>, sides: Vec<LogicalSide>) -> Self {
+        Self { face, rule, corners, sides }
+    }
 }

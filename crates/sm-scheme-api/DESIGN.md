@@ -285,6 +285,13 @@ All four requests were accepted (W0e decisions 1 to 4) and applied in W0f: `Clas
   into `Plan`): `GenerateFailure::new` / `fallback` / `fatal`, `Infeasible::new(reason,
   constraints, entities)` (sorts and dedups; the driver fills `blame`) and `Attempt::new(target,
   scheme, phase, kind, message)`.
+- **W0g r2: the other implementer-built values are `#[non_exhaustive]` too.** `Patch` (the
+  return value of `Scheme::generate`) is built with `Patch::new(target)` plus `pub` field
+  assignment, or with `PatchBuilder`. `PatchNode::new(key, point, param)`. `FaceLayout` (the
+  return value of `CornerPicker::pick`, serialized into `Plan`) is built with
+  `FaceLayout::new(face, rule, corners, sides)` and `LogicalSide::new(coedges, dir)`. Fields
+  stay `pub`. **Any field added later to `FaceLayout` or `LogicalSide` must be
+  `#[serde(default)]`**, so stored plans still read.
 - **`#[non_exhaustive]` enums**: `FailureKind`, `Phase`, `SchemeError` (now like every other
   contract error enum), `Target`, `Job`, `IntervalRequest`, `SizingSpec`, `Origin`,
   `IntervalConstraint`, `Need`, `Role`, `CopyReason`, `Applicability`, `ElemShape`,

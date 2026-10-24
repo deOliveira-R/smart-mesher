@@ -139,7 +139,7 @@ fn two_bricks_imprinted_and_merged_share_one_face() {
     // Ray tracking helper: crossing the shared face along +x enters B; along -x enters A.
     let Carrier::Surface(sc) = t.carrier(shared) else { panic!() };
     let n = t.shapes().surface(sc.surface).unwrap().normal(Uv::new(0.0, 0.0)).unwrap();
-    let hit = |crossing| RayHit { t: 1.0, point: Point3::new(1.0, 0.5, 0.5), normal: n, uv: None, crossing };
+    let hit = |crossing| RayHit::new(1.0, Point3::new(1.0, 0.5, 0.5), n, None, crossing);
     assert_eq!(t.entered_region(shared, &hit(Crossing::AlongNormal)), Some(Region::Volume(b.volume)));
     assert_eq!(t.entered_region(shared, &hit(Crossing::AgainstNormal)), Some(Region::Volume(a.volume)));
     assert_eq!(t.entered_region(shared, &hit(Crossing::Tangent)), None);

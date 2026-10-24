@@ -161,7 +161,8 @@ pub trait TopologyView: Send + Sync {
         let tol = *self.tolerance();
         let int = |f: &mut dyn FnMut(HashWord), v: u64| f(HashWord::Int(v));
         let len = |f: &mut dyn FnMut(HashWord), v: f64| f(HashWord::Float { raw: v, q: tol.quantize(v) });
-        let par = |f: &mut dyn FnMut(HashWord), v: f64| f(HashWord::Float { raw: v, q: tol.quantize_param(v) });
+        // Frozen: a ModelTolerance field added later is emitted only when it differs from its
+        // default, so existing hashes stay stable (sm-geom-api DESIGN.md, W0g freeze rules).
         for v in [tol.linear, tol.angular, tol.parametric, tol.linear_max] {
             int(f, v.to_bits());
         }
@@ -209,7 +210,7 @@ pub trait TopologyView: Send + Sync {
                     None => int(f, 0),
                     Some(pc) => {
                         int(f, pc.tag());
-                        pc.for_each_value(|x| par(f, x));
+                        shape_words(&tol, |g| pc.for_each_word(g), f);
                     }
                 }
             }
@@ -311,7 +312,9 @@ fn shape_words(tol: &ModelTolerance, visit: impl Fn(&mut dyn FnMut(ShapeValue)),
     });
     visit(&mut |v| match v {
         ShapeValue::Int(n) => f(HashWord::Int(n)),
-        ShapeValue::Length(x) | ShapeValue::Angle(x) | ShapeValue::Unitless(x) => f(HashWord::Float { raw: x, q: tol.quantize_shape_in(v, scale) }),
+        ShapeValue::Length(x) | ShapeValue::Angle(x) | ShapeValue::Unitless(x) | ShapeValue::Param(x) => f(HashWord::Float { raw: x, q: tol.quantize_shape_in(v, scale) }),
+        // A later value class: hashed by its code until it gets its own arm.
+        other => f(HashWord::Int(tol.quantize_shape_in(other, scale) as u64)),
     });
 }
 
@@ -469,7 +472,7 @@ mod tests {
                     None => h.u64(0),
                     Some(pc) => {
                         h.u64(pc.tag());
-                        pc.for_each_value(|x| h.i64(tol.quantize_param(x)));
+                        pc.quantized_values(&tol, |c| h.i64(c));
                     }
                 }
             }

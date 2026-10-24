@@ -1,4 +1,4 @@
-# sm-geom-api: final design (frozen after W0c)
+# sm-geom-api: final design (frozen in two tiers since W0g, see "W0g freeze rules")
 
 Exact-shape contract. Depends on `sm-core` (points, vectors, `EntityId`), `thiserror`, `smallvec`; `serde` behind the `serde` feature (which also turns on `sm-core/serde` and `smallvec/serde`). Base: panel candidate `cellcomplex`, with the grafts and must-fix items of `docs/design/w0/geomtopo-recommendation.md` and the W0c decisions in `docs/design/w0/decisions.md`.
 
@@ -91,3 +91,43 @@ last column reports one V singularity; a fully collapsed net reports all four.
 ## W0f gaps 2: elliptic quadrics
 
 `SurfaceDef::EllipticCylinder(EllipticCylinder { frame, a, b })` (`o + a cos u x + b sin u y + v z`) and `SurfaceDef::EllipticCone(EllipticCone { frame, a, b, half_angle })` (`o + k(v)(a cos u x + b sin u y) + v cos h z`, `k = 1 + v sin h / a`: the `v = 0` section is the ellipse `(a, b)`, `h` is the half-angle in the `x`-`z` plane, apex at `v = -a / sin h`; one nappe, like `Cone`). Both implement `ParametricSurface` (outward `du x dv` in a right-handed frame, exact normal at the cone apex since the normal is constant along a generator) and `implicit()` (quadric, negative inside; the cone's is the double cone and `ray_hits` keeps the `+z` nappe). `EllipticCylinder::project` is exact (closest point on the section ellipse by bisection, Eberly); `EllipticCone::project` is numeric (gaps4: each generator is a ray from the apex, so the distance to it is closed form; the angle is found by dense sampling and a golden-section refinement, apex included), and `Ellipse::project` reuses the cylinder section code (gaps4). They are the elliptic frustum primitive of PARITY B and the images of non-uniformly scaled cylinders and cones in `SurfaceDef::transformed`, which no longer returns a parameterless `Implicit` for those (spheres still do; tori stay `Unsupported`). Hash tags 8 and 9 in `for_each_value`. This changes `transformed()` output, so it lands before W1 pins geometry hashes. Tested: points on the quadric, outward normals, finite-difference derivatives, `a = b` against `Cylinder` / `Cone`, projection minimality against dense sampling, ray hits, the Jacobi eigen-solver, and analytic images (stretched cylinder `a = 2, b = 1`, sheared cylinder axis and section, stretched 45° cone half-angles `atan 2` and 45°).
+
+## W0g freeze rules
+
+The contract freezes in two tiers (`docs/design/w0/decisions.md`): the frozen tier below cannot
+change without breaking stored projects or implementers; additive methods, new variants behind
+`#[non_exhaustive]` and docs stay open through `api_change_request`.
+
+- **Implementer-returned records are `#[non_exhaustive]` with constructors** (fields stay `pub`
+  for reading): `RayHit::new(t, point, normal, uv, crossing)`, `CurveProjection::new(t, point,
+  distance)`, `SurfaceProjection::new(uv, point, distance)`, `Singularity::new(along, at,
+  point)`, `Domain2::new(u, v, singularities)` (and `regular`), `Domain1` (`open`,
+  `periodic`). Implementers return them from `ParametricCurve::project` / `domain`,
+  `ParametricSurface::project` / `domain` and `ray_hits`, so a field can be added later without
+  breaking them. `CurveJet` and `SurfaceJet` stay exhaustive: order 2 is fixed by design.
+- **Persisted records are `#[non_exhaustive]` with constructors**: `NurbsCurve::new` /
+  `new_periodic`, `NurbsCurve2::new` / `new_periodic`, `NurbsSurface::new` / `new_periodic`
+  (all validating), `ModelTolerance::new(linear, angular, parametric, linear_max)` with
+  `with_linear` / `with_angular` / `with_parametric` / `with_linear_max` (`DEFAULT` and
+  `for_extent` stay), `StoreData::new(curves, surfaces)`. Struct-update syntax
+  (`..ModelTolerance::DEFAULT`) is no longer available downstream; use the setters.
+- **Any field added after the freeze to a persisted geom struct (NURBS records,
+  `ModelTolerance`, `StoreData`, `Domain1` / `Domain2` / `Singularity`, `RayHit`) must be
+  `#[serde(default)]`**, so stored projects still read.
+- **`ModelTolerance` in hashes.** `sm-topo-api` emits its four fields as `Int` bit patterns. A
+  field added later enters `canonical_visit` / `canonical_hash` **only when it differs from its
+  default**, so existing topology hashes stay stable.
+- **`#[non_exhaustive]` enums**: `Crossing` (a later crossing kind is additive; matches need a
+  wildcard) and `ShapeValue` (hash value classes). `ParamAxis` stays exhaustive (two
+  parameters by definition).
+- **Pcurve hash words (frozen).** `ShapeValue::Param` (parameter quantum) is new.
+  `PCurve::for_each_word` emits a prefix-free sequence: `Line2` = six `Param`; `Polyline2` =
+  `Int(n)` then the points; `Nurbs2` = `Int(degree | periodic << 32)`, `Int(knot count)`,
+  `Int(control count)`, `Int(0)` or `Int(1), Int(weight count)`, then knots and controls as
+  `Param`, then weights as `Unitless` (scale-free relative to the largest weight, through
+  `PCurve::quantized_values` / `quantize_scale_free_in`). `PCurve::for_each_value` stays but is
+  not prefix-free and is not used for hashing. The topology encoding is documented in
+  `sm-topo-api` DESIGN.md.
+
+Tests: `tests/freeze.rs` (constructors, serde round trips of the persisted records, pcurve
+words).
