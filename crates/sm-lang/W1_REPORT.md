@@ -185,3 +185,44 @@ Downstream: `Host::timeline` implementors get `Rev` (not a string) and must matc
 5 (extended). **sm-op-api**: per-role output names in `OpInfo` (so sm-lang can reject `q.voluem` statically, with did-you-mean, in a batch and in plan mode), and optionally cardinality.
 6. unchanged: export the batch reference matcher so `schema::is_batch_ref` can be deleted.
 7. **sm-op-api State (orchestrator note, SHOULD 10)**: an O(live) entity iterator for `all <kind>`.
+
+## polish0: review items
+
+Started from `9ff1ee8`. Everything is inside `crates/sm-lang`; no frozen contract changed (contract changes are batched by the orchestrator). New tests: `tests/polish0.rs` (23),
+plus changes in `tests/parse.rs` (chains). Checks: `cargo test -p sm-lang` (also `--all-features`, `RAYON_NUM_THREADS=1`, `--release`), `cargo clippy -p sm-lang --all-targets --all-features -- -D warnings`,
+`RUSTDOCFLAGS="-D warnings" cargo doc -p sm-lang --no-deps`.
+
+| # | Result | Where |
+|---|---|---|
+| 1 | **Done.** `set x = x + a [+ b ...]` on a list or string appends in place (`Arc::make_mut` / `push_str` on the binding itself; operands are evaluated and length-checked first, so a failing statement leaves `x` untouched). Flat `+` chains append in place too. The whole `polish0` test file, including 200,000 appends, runs in 0.2 s in release (the loop took 103 s before). Timing tests are bounded at 1 s (release) / 30 s (debug). No `push` builtin: builtins are pure functions here and the in-place path makes it unnecessary. | `interp.rs` `try_append`, `eval.rs` |
+| 2 | **Done.** `null` is a keyword. `let null` / `for null` is `reserved-word`; `null` in an expression is `no-null` (help: leave the argument out); `key: null` as an object-literal value (also in a `...{}` spread) omits the field; duplicate keys are still checked. | LANGUAGE §2 |
+| 3 | **Done.** `if c { a } else { b }` expression, `else` required (`missing-else`), `else if` chains, lazy. | §3 |
+| 4 | **Done.** Block `let` hiding an outer binding: `shadowed` warning, help "use `set` to change the outer variable". Loop variables do not warn. | §3 |
+| 5 | **Done (parser level).** `x = 2` help: `set x = 2` when an earlier `let`/`for` of the same source bound `x`, otherwise both `let y = 2` and `set y = 2`. The parser cannot see bindings from earlier inputs of an interactive session, so that case gets the two-way help. | `parser.rs` |
+| 6 | **Done.** `reserved-prefix` error for an identifier glued to a string (`f"x"`); keywords (`print"hi"`) are unaffected. | lexer |
+| 7 | **Done.** `literal-braces` is quiet after `\$` and for the `{` of an already reported `${`. | lexer |
+| 8 | **Done.** `invalid-number` for `1.e5`, `1.`, `1_`, `1__0`, `1_.5`, `1e`, `1e+`, each with the fix as help. | lexer |
+| 9 | **Done.** `==`/`!=` across types (except Int/Num) is `type-mismatch` with help (`ents(...)` / `str(...)`). Nested values and `contains(list, v)` keep the lenient structural equality. | `eval.rs` |
+| 10 | **Done.** `ExprKind::Chain(op, Vec<Expr>)` for runs of one left-associative operator (all binary operators except `**` and comparisons); a parenthesized left operand stays separate. A 5000-term union is tested and 100,000-term chains parse. Nesting depth and operator-alternating chains still hit `too-deep` / `expression-too-long`. | `parser.rs`, `ast.rs` |
+| 11 | **Done.** Defining an alias twice is `rebind` (`shadowed` warning in `allow_top_level_rebind` sessions); `alias-confusing` warning when the name is a registry namespace or an existing variable. | §4.1 |
+| 12 | **Done.** `print b` / `str(b)` show roles, alphabetical (the op's own order is not kept in `Outcome`): `{body: Body#1, faces: Face#[1..6], volume: Volume#1}`. | §3 |
+| 13 | **Decision: innermost body executions are charged** (an iteration during which no nested iteration started). Safe: every uncharged iteration has a charged descendant at most nesting-depth levels below. 1000 x 1000 works with the default 1,000,000 budget (tested); an empty inner loop still charges the outer body. Error text: "more than N loop-body executions". | §9 |
+| 14 | **Done.** An `if` whose condition is, or depends on, a placeholder: `plan-unresolved` warning and every branch is checked once (a `plan-unresolved` error inside becomes a warning). `and`/`or` on placeholders now report `plan-unresolved` instead of `type-mismatch`. | §4.3 |
+| 15 | **Done in sm-lang, no other crate touched.** `Host::timeline_head(&mut self) -> Result<TimelineHead, HostError>` is a defaulted method (default `timeline-unsupported`), so existing implementors compile unchanged. `timeline.head()` returns `{branch, node}` with absent fields omitted and can be used in expressions. **Request for the sm-engine `Host` implementor**: override `timeline_head` with the session's branch name and head node hash (64 lowercase hex). | §4.6 |
+| 16 | **Done.** DESIGN.md "Known gaps" updated (and the robustness paragraph on the height limit). | DESIGN |
+| 17 | **Decision: keep the one-space join**, documented with an example (`print "x =", 5` prints `x = 5`). | §3 |
+| 18 | **Partly, by design.** Records and `Event::Query.params/result` are wire form on purpose (rewriting would change what is applied and hashed), and `diagnostics_json` messages are already in source spelling. New `sm_lang::respell_json(&Json)` returns a display copy with canonical ids rewritten; documented in §5.1 so the MCP layer applies it to what it shows. | §5.1 |
+| 19 | **Done.** `a..b` inclusive range expression (loosest operator: `1..n + 1` is `1..(n + 1)`, a comparison needs parentheses); `range(a, b)` stays half-open; id specs keep their own `..`. | §3 |
+| 20 | **Done (doc only).** `named` / `where` stay the first planned feature in §5.5. | §5.5 |
+
+### Behaviour changes that break scripts
+
+`null` as a name or value; `==`/`!=` across types; an alias defined twice; an identifier glued to a string literal; `1.`, `1_`, `1e` as numbers (parse errors of another kind before); printed op
+results (were `<op result>`). The loop budget is more permissive for nested loops. Embedders: `ExprKind` has four new variants (`Chain`, `If`, `Range`, `Null`; the AST is public and not `#[non_exhaustive]`),
+`Tok` has `Null`, `Host` has a defaulted `timeline_head`.
+
+### Known limits left
+
+* An `if` expression on its own line inside `(`, `[` or a call argument list is read as an unclosed bracket (a line starting with a statement keyword ends the bracket); start it on the line of the bracket or comma.
+* Plan mode evaluates every branch of an unknown `if`, so a `set` of an outer variable inside a branch applies for all of them.
+* The `x = 2` help cannot know about bindings from earlier inputs of an interactive session.

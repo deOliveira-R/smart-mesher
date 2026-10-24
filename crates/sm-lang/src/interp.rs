@@ -25,7 +25,9 @@ use crate::value::{Outcome, Sel, Val, fmt_num};
 pub struct Options {
     /// Parser limits (also applied to included files).
     pub parse: ParseLimits,
-    /// Total loop iterations allowed per interpreter (denial-of-service guard).
+    /// Budget of loop-body executions per run (denial-of-service guard). Only **innermost** executions are charged: an
+    /// iteration whose body ran no nested loop iteration costs 1, an iteration that ran inner iterations costs nothing
+    /// itself (they paid). So a 1000 x 1000 nested loop costs 1,000,000, not 1,001,000.
     pub max_loop_iterations: u64,
     /// Longest list `range` may build.
     pub max_range_len: u64,
@@ -74,9 +76,9 @@ pub enum Event {
         span: Span,
         /// Query name.
         name: String,
-        /// Input parameters.
+        /// Input parameters (wire form: canonical ids such as `TopoFace#1`; see [`respell_json`] for a display copy).
         params: Json,
-        /// Result; `None` in plan mode.
+        /// Result in wire form, as the host returned it; `None` in plan mode. [`respell_json`] gives the source spelling.
         result: Option<Json>,
     },
     /// A timeline-control statement (`timeline.branch(...)` and friends), handled by the host outside the op log.
@@ -190,6 +192,7 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     opts: Options,
     pub(crate) scopes: Vec<BTreeMap<String, Binding>>,
     pub(crate) aliases: BTreeMap<String, String>,
+    alias_spans: BTreeMap<String, Span>,
     map: SourceMap,
     events: Vec<Event>,
     diags: Vec<Diagnostic>,
@@ -197,6 +200,8 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     batch_counter: u64,
     includes: Vec<String>,
     loop_count: u64,
+    /// Every loop iteration started so far (charged or not); see `exec_for`.
+    iter_events: u64,
     stmt_count: usize,
     plan_n: usize,
     callables: Option<BTreeMap<String, Arc<Callable>>>,
@@ -215,6 +220,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             opts,
             scopes: vec![BTreeMap::new()],
             aliases: BTreeMap::new(),
+            alias_spans: BTreeMap::new(),
             map: SourceMap::new(),
             events: Vec::new(),
             diags: Vec::new(),
@@ -222,6 +228,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             batch_counter: 0,
             includes: Vec::new(),
             loop_count: 0,
+            iter_events: 0,
             stmt_count: 0,
             plan_n: 0,
             callables: None,
@@ -340,8 +347,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 self.bind(name, v)?;
             }
             StmtKind::Set { name, value } => {
-                let v = self.eval_stmt_value(value)?;
-                self.rebind(name, v)?;
+                if !self.try_append(name, value)? {
+                    let v = self.eval_stmt_value(value)?;
+                    self.rebind(name, v)?;
+                }
             }
             StmtKind::Alias { name, target } => self.exec_alias(name, target)?,
             StmtKind::Call(c) => {
@@ -412,6 +421,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 return self.fail(d);
             }
         }
+        // A `let` in a block that hides a binding of an enclosing scope: usually a `set` was meant.
+        if prev.is_none() && self.scopes.len() > 1 {
+            let outer = self.scopes[..self.scopes.len() - 1].iter().rev().find_map(|sc| sc.get(&name.name)).map(|b| b.span);
+            if let Some(outer) = outer {
+                let d = Diagnostic::warning("shadowed", name.span, format!("`{}` shadows a variable of an enclosing scope", name.name))
+                    .label("a new variable, not a change to the outer one")
+                    .note(outer, "outer binding defined here")
+                    .help("use `set` to change the outer variable");
+                self.warn(d);
+            }
+        }
         match self.scopes.last_mut() {
             Some(top) => {
                 top.insert(name.name.clone(), Binding { val, span: name.span });
@@ -419,6 +439,50 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             None => self.internal(name.span, "no scope"),
         }
+    }
+
+    /// `set x = x + a [+ b ...]` on a list or string: append in place instead of copying `x` for every `+`, which made
+    /// building a list in a loop quadratic. Returns `Ok(false)` when the statement does not have that shape (the general
+    /// path then handles it). The new operands are evaluated and checked before `x` changes, so an error leaves it untouched.
+    fn try_append(&mut self, name: &Ident, value: &Expr) -> IR<bool> {
+        let (head, rest): (&Expr, Vec<(&Expr, Span)>) = match &value.kind {
+            ExprKind::Binary(BinOp::Add, l, r) => (l, vec![(r, value.span)]),
+            ExprKind::Chain(BinOp::Add, items) if items.len() >= 2 => (&items[0], items[1..].iter().map(|it| (it, items[0].span.to(it.span))).collect()),
+            _ => return Ok(false),
+        };
+        let ExprKind::Var(n) = &head.kind else { return Ok(false) };
+        if *n != name.name {
+            return Ok(false);
+        }
+        let Some(si) = self.scopes.iter().rposition(|sc| sc.contains_key(n)) else { return Ok(false) };
+        if !matches!(self.scopes[si][n].val, Val::List(_) | Val::Str(_)) {
+            return Ok(false);
+        }
+        let mut rvs = Vec::with_capacity(rest.len());
+        for (e, _) in &rest {
+            rvs.push(self.eval(e)?);
+        }
+        let max = self.opts.max_value_len;
+        let mut len = eval::seq_len(&self.scopes[si][n].val);
+        for ((_, span), rv) in rest.iter().zip(&rvs) {
+            if !eval::can_append(&self.scopes[si][n].val, rv) {
+                let acc = self.scopes[si][n].val.clone();
+                return match eval::binop_lim(BinOp::Add, &acc, rv, max) {
+                    Err(er) => self.eval_fail(er, *span),
+                    Ok(_) => self.internal(*span, "append of mismatched values succeeded"),
+                };
+            }
+            len = len.saturating_add(eval::seq_len(rv));
+            if len > max {
+                let what = if matches!(rv, Val::Str(_)) { "a string" } else { "a list" };
+                return self.eval_fail(eval::too_long(what, len, max), *span);
+            }
+        }
+        let Some(b) = self.scopes[si].get_mut(n) else { return Ok(false) };
+        for rv in &rvs {
+            eval::append_in_place(&mut b.val, rv);
+        }
+        Ok(true)
     }
 
     fn rebind(&mut self, name: &Ident, val: Val) -> IR<()> {
@@ -452,30 +516,114 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let d = Diagnostic::error("alias-shadows", name.span, format!("`{}` is already a registry or builtin name", name.name)).label("choose another alias");
             return self.fail(d);
         }
+        // Same rule as `let`: a name is bound once per scope (aliases are script-wide, so once per script).
+        if let Some(prev) = self.alias_spans.get(&name.name).copied() {
+            if self.opts.allow_top_level_rebind && self.scopes.len() == 1 {
+                let d = Diagnostic::warning("shadowed", name.span, format!("alias `{}` was already defined; it now stands for `{full}`", name.name))
+                    .label("rebound here")
+                    .note(prev, "previously defined here");
+                self.warn(d);
+            } else {
+                let d = Diagnostic::error("rebind", name.span, format!("alias `{}` is already defined", name.name))
+                    .label("defined again here")
+                    .note(prev, "first defined here")
+                    .help("an alias is bound once, like `let`; choose another name");
+                return self.fail(d);
+            }
+        }
+        let namespaces: BTreeSet<String> = self.callable_map().keys().filter_map(|k| k.split_once('.').map(|(ns, _)| ns.to_owned())).chain(["timeline".to_owned()]).collect();
+        if namespaces.contains(&name.name) {
+            let d = Diagnostic::warning("alias-confusing", name.span, format!("`{}` is also the name of a registry namespace (`{}.*`)", name.name, name.name))
+                .label("easily mistaken for the namespace")
+                .help("choose an alias that is not a namespace name, e.g. `brick` for `model.create_brick`");
+            self.warn(d);
+        } else if self.is_defined(&name.name) {
+            let d = Diagnostic::warning("alias-confusing", name.span, format!("`{}` is also the name of a variable", name.name))
+                .label("the alias and the variable share a name")
+                .help("a call `name(...)` uses the alias and an expression `name` the variable; choose a distinct alias");
+            self.warn(d);
+        }
+        self.alias_spans.insert(name.name.clone(), name.span);
         self.aliases.insert(name.name.clone(), full);
         Ok(())
     }
 
-    fn cond_true(&mut self, cond: &Expr) -> IR<bool> {
-        match self.eval(cond)? {
-            Val::Bool(b) => Ok(b),
-            c => {
+    /// Turn the `plan-unresolved` error just reported (if any, after diagnostic `mark`) into a warning. True if it did.
+    fn downgrade_plan_error(&mut self, mark: usize, extra: &str) -> bool {
+        if self.diags.len() > mark
+            && let Some(d) = self.diags.last_mut()
+            && d.code == "plan-unresolved"
+            && d.is_error()
+        {
+            d.severity = crate::diag::Severity::Warning;
+            d.message.push_str(extra);
+            return true;
+        }
+        false
+    }
+
+    /// The value of a condition: `Some(bool)`, or `None` when it depends on a plan placeholder (unknown without executing),
+    /// which is reported as a warning so the caller can check every branch instead of failing the plan.
+    fn cond_known(&mut self, cond: &Expr) -> IR<Option<bool>> {
+        let mark = self.diags.len();
+        match self.eval(cond) {
+            Ok(Val::Bool(b)) => Ok(Some(b)),
+            Ok(Val::Placeholder { .. }) => {
+                self.warn(
+                    Diagnostic::warning("plan-unresolved", cond.span, "this condition is unknown without executing")
+                        .label("every branch is checked once")
+                        .help("the real run takes one branch; wrap dependent statements in `batch { }` to lower them without executing"),
+                );
+                Ok(None)
+            }
+            Ok(c) => {
                 let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found {}", c.a_type())).label("not a bool");
                 self.fail(d)
+            }
+            Err(()) => {
+                if self.downgrade_plan_error(mark, " (so every branch of this `if` is checked instead)") {
+                    Ok(None)
+                } else {
+                    Err(())
+                }
+            }
+        }
+    }
+
+    /// Plan mode, unknown condition: run a branch for its checks only; a `plan-unresolved` error inside ends the check as a warning.
+    fn check_branch(&mut self, b: &Block) -> IR<()> {
+        let mark = self.diags.len();
+        match self.exec_block(b) {
+            Ok(()) => Ok(()),
+            Err(()) => {
+                if self.downgrade_plan_error(mark, " (the rest of this branch was not checked)") {
+                    Ok(())
+                } else {
+                    Err(())
+                }
             }
         }
     }
 
     fn exec_if(&mut self, cond: &Expr, then: &Block, elifs: &[(Expr, Block)], els: Option<&Block>) -> IR<()> {
-        if self.cond_true(cond)? {
-            return self.exec_block(then);
-        }
-        for (c, b) in elifs {
-            if self.cond_true(c)? {
-                return self.exec_block(b);
+        let mut unknown = false;
+        for (c, b) in std::iter::once((cond, then)).chain(elifs.iter().map(|(c, b)| (c, b))) {
+            if unknown {
+                self.cond_known(c)?;
+                self.check_branch(b)?;
+                continue;
+            }
+            match self.cond_known(c)? {
+                Some(true) => return self.exec_block(b),
+                Some(false) => {}
+                None => {
+                    unknown = true;
+                    self.check_branch(b)?;
+                }
             }
         }
         match els {
+            Some(b) if unknown => self.check_branch(b),
             Some(b) => self.exec_block(b),
             None => Ok(()),
         }
@@ -506,17 +654,26 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
         };
         for item in items {
-            self.loop_count += 1;
-            if self.loop_count > self.opts.max_loop_iterations {
-                let d = Diagnostic::error("loop-limit", iter.span, format!("more than {} loop iterations", self.opts.max_loop_iterations)).label("this loop");
-                return self.fail(d);
-            }
+            // Budget: only innermost body executions are charged (an iteration during which no nested iteration started).
+            // Outer iterations are paid for by the inner ones they contain, and every uncharged iteration has a charged
+            // descendant at most `max_depth` levels down, so total work stays bounded by 64 times the budget.
+            self.iter_events += 1;
+            let before = self.iter_events;
             let mut scope = BTreeMap::new();
             scope.insert(var.name.clone(), Binding { val: item, span: var.span });
             self.scopes.push(scope);
             let r = self.exec_stmts(&body.stmts);
             self.scopes.pop();
             r?;
+            if self.iter_events == before {
+                self.loop_count += 1;
+                if self.loop_count > self.opts.max_loop_iterations {
+                    let d = Diagnostic::error("loop-limit", iter.span, format!("more than {} loop-body executions", self.opts.max_loop_iterations))
+                        .label("this loop")
+                        .help("only the innermost body of nested loops is counted; the budget is `Options::max_loop_iterations`");
+                    return self.fail(d);
+                }
+            }
         }
         Ok(())
     }
@@ -532,15 +689,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let mut scope = BTreeMap::new();
         scope.insert(var.name.clone(), Binding { val: Val::Placeholder { n, role: format!("{role}[]") }, span: var.span });
         self.scopes.push(scope);
+        let mark = self.diags.len();
         let r = self.exec_stmts(&body.stmts);
         self.scopes.pop();
-        if r.is_err()
-            && let Some(d) = self.diags.last_mut()
-            && d.code == "plan-unresolved"
-            && d.is_error()
-        {
-            d.severity = crate::diag::Severity::Warning;
-            d.message.push_str(" (the rest of the loop body was not checked)");
+        if r.is_err() && self.downgrade_plan_error(mark, " (the rest of the loop body was not checked)") {
             return Ok(());
         }
         r
@@ -641,7 +793,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         if let ExprKind::Call(c) = &e.kind
             && self.is_registry_call(c)
         {
-            if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" {
+            if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" && c.path.segs[1].name != "head" {
                 let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{}` is a statement and has no value", c.path.dotted()))
                     .label("a timeline command cannot be bound by `let` or `set`")
                     .help("write it as its own statement, without `let x =`");
@@ -765,7 +917,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
 
     /// `timeline.branch(name)`, `timeline.checkout(ref | node | empty)`, `timeline.undo()`, `timeline.redo()`.
     fn exec_timeline(&mut self, call: &Call, span: Span) -> IR<Val> {
-        const VERBS: [&str; 4] = ["branch", "checkout", "undo", "redo"];
+        const VERBS: [&str; 5] = ["branch", "checkout", "undo", "redo", "head"];
         let verb = call.path.segs[1].name.clone();
         if self.batch.is_some() {
             let d = Diagnostic::error("timeline-in-batch", span, "timeline commands cannot be part of a batch")
@@ -777,9 +929,12 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let mut d = Diagnostic::error("unknown-name", call.path.segs[1].span, format!("no timeline command `timeline.{verb}`")).label("not a timeline command");
             d = match suggest(&verb, VERBS) {
                 Some(s) => d.help(format!("did you mean `timeline.{s}`?")),
-                None => d.help("timeline commands: branch(name), checkout(ref | node | empty), undo(), redo()"),
+                None => d.help("timeline commands: branch(name), checkout(ref | node | empty), undo(), redo(), head()"),
             };
             return self.fail(d);
+        }
+        if verb == "head" {
+            return self.timeline_head_value(call, span);
         }
         let allowed: &[&str] = match verb.as_str() {
             "branch" => &["name", "at"],
@@ -874,6 +1029,33 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 Ok(Val::obj(BTreeMap::new()))
             }
             Err(e) => self.fail(Diagnostic::error("timeline-failed", span, format!("`timeline.{verb}` failed [{}]: {}", e.code, e.message)).label("this command had no effect")),
+        }
+    }
+
+    /// `timeline.head()`: the object `{branch, node}` (a field is absent when it does not exist: detached head, empty state).
+    fn timeline_head_value(&mut self, call: &Call, span: Span) -> IR<Val> {
+        if let Some(a) = call.args.first() {
+            let sp = match a {
+                Arg::Named { name, .. } => name.span,
+                Arg::Spread(e) | Arg::Pos(e) => e.span,
+            };
+            return self.fail(Diagnostic::error("unknown-argument", sp, "`timeline.head` takes no arguments").label("unexpected argument"));
+        }
+        if !self.host.executes() {
+            return Ok(Val::Placeholder { n: self.plan_n, role: "head".to_owned() });
+        }
+        match self.host.timeline_head() {
+            Ok(h) => {
+                let mut m = BTreeMap::new();
+                if let Some(b) = h.branch {
+                    m.insert("branch".to_owned(), Val::Str(b));
+                }
+                if let Some(n) = h.node {
+                    m.insert("node".to_owned(), Val::Str(n));
+                }
+                Ok(Val::obj(m))
+            }
+            Err(e) => self.fail(Diagnostic::error("timeline-failed", span, format!("`timeline.head` failed [{}]: {}", e.code, e.message)).label("this command failed")),
         }
     }
 
@@ -1282,15 +1464,29 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             ExprKind::List(items) => Ok(Val::list(items.iter().map(|i| self.eval(i)).collect::<IR<Vec<_>>>()?)),
             ExprKind::Obj(items) => {
                 let mut m = BTreeMap::new();
+                let mut seen = BTreeSet::new();
                 for (k, v) in items {
-                    let val = self.eval(v)?;
-                    if m.insert(k.name.clone(), val).is_some() {
+                    if !seen.insert(k.name.as_str()) {
                         let d = Diagnostic::error("duplicate-key", k.span, format!("key `{}` appears twice in this object", k.name)).label("duplicate");
                         return self.fail(d);
                     }
+                    // `key: null` omits the field.
+                    if matches!(v.kind, ExprKind::Null) {
+                        continue;
+                    }
+                    let val = self.eval(v)?;
+                    m.insert(k.name.clone(), val);
                 }
                 Ok(Val::obj(m))
             }
+            ExprKind::Null => self.internal(e.span, "`null` outside an object literal"),
+            ExprKind::Chain(op, items) => self.eval_chain(*op, items),
+            ExprKind::If(c, t, f) => match self.cond_known(c)? {
+                Some(true) => self.eval(t),
+                Some(false) => self.eval(f),
+                None => Ok(Val::Placeholder { n: self.plan_n, role: "if".to_owned() }),
+            },
+            ExprKind::Range(lo, hi) => self.eval_range(lo, hi, e.span),
             ExprKind::Var(n) => self.lookup_var(n, e.span),
             ExprKind::Field(b, f) => {
                 let v = self.eval(b)?;
@@ -1318,6 +1514,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), l, r) => {
                 let lv = self.eval(l)?;
+                if matches!(lv, Val::Outcome(_) | Val::Ref { .. } | Val::Placeholder { .. }) {
+                    return self.eval_fail(eval::opaque_err(&lv), l.span);
+                }
                 let Val::Bool(lb) = lv else {
                     let d = Diagnostic::error("type-mismatch", l.span, format!("`and`/`or` need bools, found {}", lv.a_type())).label("not a bool");
                     return self.fail(d);
@@ -1326,6 +1525,9 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     return Ok(Val::Bool(lb));
                 }
                 let rv = self.eval(r)?;
+                if matches!(rv, Val::Outcome(_) | Val::Ref { .. } | Val::Placeholder { .. }) {
+                    return self.eval_fail(eval::opaque_err(&rv), r.span);
+                }
                 match rv {
                     Val::Bool(b) => Ok(Val::Bool(b)),
                     other => {
@@ -1339,6 +1541,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 let rv = self.eval(r)?;
                 match eval::binop_lim(*op, &lv, &rv, self.opts.max_value_len) {
                     Ok(v) => Ok(v),
+                    Err(er) if matches!(op, BinOp::Eq | BinOp::Ne) && er.0 == "type-mismatch" => {
+                        let d = Diagnostic::error(er.0, e.span, er.1).label("different types").help(eval::eq_mismatch_help(&lv, &rv));
+                        self.fail(d)
+                    }
                     Err(er) => self.eval_fail(er, e.span),
                 }
             }
@@ -1347,8 +1553,77 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         }
     }
 
+    /// A flat left-associative chain: `and`/`or` short-circuit; the rest fold left, appending to lists and strings in place.
+    fn eval_chain(&mut self, op: BinOp, items: &[Expr]) -> IR<Val> {
+        let Some(first) = items.first() else { return self.internal(Span::new(0, 0, 0), "empty operator chain") };
+        if matches!(op, BinOp::And | BinOp::Or) {
+            for it in items {
+                let v = self.eval(it)?;
+                if matches!(v, Val::Outcome(_) | Val::Ref { .. } | Val::Placeholder { .. }) {
+                    return self.eval_fail(eval::opaque_err(&v), it.span);
+                }
+                let Val::Bool(b) = v else {
+                    let d = Diagnostic::error("type-mismatch", it.span, format!("`and`/`or` need bools, found {}", v.a_type())).label("not a bool");
+                    return self.fail(d);
+                };
+                if (op == BinOp::And && !b) || (op == BinOp::Or && b) {
+                    return Ok(Val::Bool(b));
+                }
+            }
+            return Ok(Val::Bool(op == BinOp::And));
+        }
+        let max = self.opts.max_value_len;
+        let mut acc = self.eval(first)?;
+        for it in &items[1..] {
+            let rv = self.eval(it)?;
+            let span = first.span.to(it.span);
+            if op == BinOp::Add && eval::can_append(&acc, &rv) {
+                let len = eval::seq_len(&acc).saturating_add(eval::seq_len(&rv));
+                if len > max {
+                    let what = if matches!(rv, Val::Str(_)) { "a string" } else { "a list" };
+                    return self.eval_fail(eval::too_long(what, len, max), span);
+                }
+                eval::append_in_place(&mut acc, &rv);
+                continue;
+            }
+            acc = match eval::binop_lim(op, &acc, &rv, max) {
+                Ok(v) => v,
+                Err(er) => return self.eval_fail(er, span),
+            };
+        }
+        Ok(acc)
+    }
+
+    /// `lo..hi`: the inclusive list of integers (empty when `hi < lo`).
+    fn eval_range(&mut self, lo: &Expr, hi: &Expr, span: Span) -> IR<Val> {
+        let l = self.eval(lo)?;
+        let h = self.eval(hi)?;
+        for v in [&l, &h] {
+            if matches!(v, Val::Outcome(_) | Val::Ref { .. } | Val::Placeholder { .. }) {
+                return self.eval_fail(eval::opaque_err(v), span);
+            }
+        }
+        let (Val::Int(a), Val::Int(b)) = (&l, &h) else {
+            let d = Diagnostic::error("type-mismatch", span, format!("a range `a..b` needs integers, found {} and {}", l.a_type(), h.a_type()))
+                .label("not integers")
+                .help("use `range(a, b)` / `floor(x)` / `int(x)` to get integers");
+            return self.fail(d);
+        };
+        if b < a {
+            return Ok(Val::list(Vec::new()));
+        }
+        let len = (i128::from(*b) - i128::from(*a) + 1) as u128;
+        if len > u128::from(self.opts.max_range_len) {
+            return self.eval_fail(("range-too-long", format!("range has {len} elements, the limit is {}", self.opts.max_range_len)), span);
+        }
+        Ok(Val::list((*a..=*b).map(Val::Int).collect()))
+    }
+
     fn eval_builtin_call(&mut self, c: &Call, span: Span) -> IR<Val> {
         let name = c.path.dotted();
+        if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" && c.path.segs[1].name == "head" {
+            return self.exec_timeline(c, span);
+        }
         if c.path.segs.len() == 2 && c.path.segs[0].name == "timeline" {
             let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is a statement, not a function"))
                 .label("timeline commands cannot be used inside expressions")
@@ -1699,6 +1974,19 @@ fn respell(msg: &str) -> String {
     }
     out.push_str(&msg[last..]);
     out
+}
+
+/// A copy of `json` with canonical entity ids written the way scripts spell them (`TopoFace#1` becomes `Face#1`, the
+/// geometry carrier `Surface#7` becomes `GeomSurface#7`), in every string, at any depth. Op error messages get the same
+/// treatment. [`Event`] records, query parameters and query results stay in wire form (they are what the host applied,
+/// stored and hashed); this is for showing them to a person or a model next to the script's own spelling.
+pub fn respell_json(json: &Json) -> Json {
+    match json {
+        Json::String(s) => Json::String(respell(s)),
+        Json::Array(a) => Json::Array(a.iter().map(respell_json).collect()),
+        Json::Object(m) => Json::Object(m.iter().map(|(k, v)| (k.clone(), respell_json(v))).collect()),
+        other => other.clone(),
+    }
 }
 
 /// The batch reference an error message quotes (`batch reference '$0.voluem[0]': no such output`).

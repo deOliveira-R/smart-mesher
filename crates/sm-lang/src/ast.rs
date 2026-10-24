@@ -321,7 +321,9 @@ impl ExprKind {
             ExprKind::Index(b, Index::At(i)) => b.height.max(i.height),
             ExprKind::Call(c) => call(c),
             ExprKind::Unary(_, a) => a.height,
-            ExprKind::Binary(_, a, b) => a.height.max(b.height),
+            ExprKind::Binary(_, a, b) | ExprKind::Range(a, b) => a.height.max(b.height),
+            ExprKind::Chain(_, v) => v.iter().map(|e| e.height).max().unwrap_or(0),
+            ExprKind::If(c, t, e) => c.height.max(t.height).max(e.height),
             ExprKind::Entity(EntityExpr::In { within, .. }) => within.height,
             ExprKind::Entity(EntityExpr::Ids { items, .. }) => items
                 .iter()
@@ -363,6 +365,15 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     /// Binary operation.
     Binary(BinOp, Box<Expr>, Box<Expr>),
+    /// A left-associative chain of one operator with three or more operands (`a | b | c`), evaluated as a left fold.
+    /// Flat on purpose: generated scripts chain thousands of terms, and a left-leaning tree that deep would overflow the stack.
+    Chain(BinOp, Vec<Expr>),
+    /// `if cond { a } else { b }` as an expression; `else` is required.
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `lo..hi`, the inclusive list of integers from `lo` to `hi`.
+    Range(Box<Expr>, Box<Expr>),
+    /// `null`, only valid as an object-literal value, where it means "omit this field".
+    Null,
     /// An entity-list primary.
     Entity(EntityExpr),
     /// An expression that failed to parse.

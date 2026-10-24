@@ -89,8 +89,8 @@ text ──lex──► tokens ──parse──► AST (+ diagnostics, recovery
 ## Robustness
 
 * The lexer and parser never panic and always terminate (proptest over arbitrary text, token soup, truncations and mutations of a valid script,
-  with pinned seeds). Hostile input is bounded: source size 16 MiB, nesting 64, expression height 256 (a long `a + a + ...` chain would otherwise build
-  a left-leaning tree as deep as it is long and overflow the stack on drop), 100 errors per source, 1,000,000 loop iterations, `range` capped. A
+  with pinned seeds). Hostile input is bounded: source size 16 MiB, nesting 64, expression height 256 (a left-leaning tree as deep as the chain is long would overflow the stack on drop; since polish0 a run of one
+  left-associative operator is a flat `ExprKind::Chain`, so generated scripts may chain thousands of terms and only nesting and operator-alternating chains hit the limit), 100 errors per source, 1,000,000 loop iterations, `range` capped. A
   linear-time lookahead for `a.b.c(` was needed to keep pathological `x.a.a.a...` chains linear (found by a test).
 * Error recovery is statement-level (resynchronize at a separator outside brackets, or at a statement keyword at the start of a line, so one
   unclosed `(` does not swallow the rest of the file) and argument-level (skip to the next `,`/`)`), so one run reports many errors; if any exist,
@@ -110,7 +110,8 @@ Union gains nothing from chunking at this size; it is kept chunked only so that 
 ## Known gaps and non-goals (v1)
 
 * No user-defined functions, no `where`/`named` predicates (reserved, `LANGUAGE.md` §5.5), no dictionaries of ops.
-* A batch reference stored inside a list or object variable is not rebound after the batch applies (documented in `LANGUAGE.md` §4.4).
+* A batch reference inside a list or object variable, at any depth, *is* rebound after the batch applies (fix1); what stays unavailable is `created`/`removed` and a
+  selection past the end of a role (`LANGUAGE.md` §4.4).
 * `Event::Batch.record` is the record the client built; the canonical stored form comes from the engine/session (see `W1_REPORT.md`).
 * Completion is lexical: it does not infer the types of expressions beyond the enclosing call parameter; fields are offered only for variables that
   hold an op result or an object.

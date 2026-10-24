@@ -3,6 +3,8 @@
 //! Every syntax error is reported with a span; the parser then resynchronizes and keeps going, so
 //! one run finds many errors. The tree it returns always exists (broken nodes are `Error`).
 
+use std::collections::BTreeSet;
+
 use crate::ast::*;
 use crate::diag::{Diagnostic, suggest};
 use crate::kinds;
@@ -58,7 +60,7 @@ pub fn parse_with(file: u32, text: &str, limits: ParseLimits) -> ParseOutput {
     }
     let mut diags = Vec::new();
     let toks = lex(file, text, &mut diags);
-    let mut p = P { toks, pos: 0, text, file, diags, nl: 0, depth: 0, limits, last_hi: 0, aborted: false };
+    let mut p = P { toks, pos: 0, text, file, diags, nl: 0, depth: 0, limits, last_hi: 0, aborted: false, declared: BTreeSet::new() };
     if p.diags.len() >= limits.max_errors {
         p.aborted = true;
     }
@@ -87,6 +89,8 @@ struct P<'a> {
     limits: ParseLimits,
     last_hi: u32,
     aborted: bool,
+    /// Names bound by `let` or `for` earlier in this source (to tell `x = 2` on a bound name from a new one).
+    declared: BTreeSet<String>,
 }
 
 const IN_HELP: &str = "`in` needs a plural kind keyword on its left (`volumes in Body#1`); to test membership write `contains(set, Volume#2)`";
@@ -123,6 +127,7 @@ fn is_segment(t: &Tok) -> bool {
             | Tok::Not
             | Tok::All
             | Tok::Except
+            | Tok::Null
     )
 }
 
@@ -150,6 +155,7 @@ fn tok_name(t: &Tok) -> String {
         Tok::Not => "not",
         Tok::All => "all",
         Tok::Except => "except",
+        Tok::Null => "null",
         Tok::LParen => "(",
         Tok::RParen => ")",
         Tok::LBracket => "[",
@@ -318,6 +324,14 @@ impl P<'_> {
         if *self.tok() == Tok::Ident {
             let t = self.bump();
             Ok(Ident { name: self.text_of(t.span).to_owned(), span: t.span })
+        } else if *self.tok() == Tok::Null {
+            let span = self.cur().span;
+            self.push(
+                Diagnostic::error("reserved-word", span, "`null` is a reserved word")
+                    .label("cannot be used as a name")
+                    .help("choose another name; the language has no null (leave an optional argument out, or write `key: null` in an object to omit that field)"),
+            );
+            Err(())
         } else {
             self.expected(what)
         }
@@ -443,7 +457,12 @@ impl P<'_> {
                 let name = self.expect_ident("a variable name")?;
                 self.expect(Tok::Assign, "`=`")?;
                 let value = self.expr()?;
-                if start.tok == Tok::Let { StmtKind::Let { name, value } } else { StmtKind::Set { name, value } }
+                if start.tok == Tok::Let {
+                    self.declared.insert(name.name.clone());
+                    StmtKind::Let { name, value }
+                } else {
+                    StmtKind::Set { name, value }
+                }
             }
             Tok::Alias => {
                 self.bump();
@@ -460,6 +479,7 @@ impl P<'_> {
             Tok::For => {
                 self.bump();
                 let var = self.expect_ident("a loop variable name")?;
+                self.declared.insert(var.name.clone());
                 self.expect(Tok::In, "`in`")?;
                 let iter = self.expr()?;
                 let body = self.block()?;
@@ -513,9 +533,18 @@ impl P<'_> {
                         let t = self.cur().clone();
                         let found = self.describe(&t);
                         if t.tok != Tok::Error {
-                            let d = Diagnostic::error("expected-token", t.span, format!("expected `(` after `{}`, found {found}", path.dotted()))
+                            let mut d = Diagnostic::error("expected-token", t.span, format!("expected `(` after `{}`, found {found}", path.dotted()))
                                 .label("a statement is a call `name(args)` or a keyword statement")
                                 .help("calls look like `model.create_brick(x: 1, y: 1, z: 1)`; variables are bound with `let`");
+                            if t.tok == Tok::Assign && path.segs.len() == 1 {
+                                let n = &path.segs[0].name;
+                                let v = self.rest_of_line_text();
+                                d = d.help(if self.declared.contains(n) {
+                                    format!("`{n}` is already defined: to change its value write `set {n} = {v}`")
+                                } else {
+                                    format!("to define a new variable write `let {n} = {v}`; to change an existing one write `set {n} = {v}`")
+                                });
+                            }
                             self.push(d);
                         }
                         return Err(());
@@ -594,6 +623,20 @@ impl P<'_> {
             }
         }
         Ok(Stmt { span: self.sp(lo), kind: StmtKind::If { cond, then, elifs, els } })
+    }
+
+    /// Source text after the current token up to the end of the statement (for suggestions), shortened if long.
+    fn rest_of_line_text(&self) -> String {
+        let mut j = self.pos + 1;
+        let first = j;
+        while !matches!(self.toks[j].tok, Tok::Newline | Tok::Semi | Tok::Eof) {
+            j += 1;
+        }
+        if j == first {
+            return "<value>".to_owned();
+        }
+        let text = self.text_of(Span::new(self.file, self.toks[first].span.lo, self.toks[j - 1].span.hi)).trim();
+        if text.chars().count() > 40 { format!("{}...", text.chars().take(37).collect::<String>()) } else { text.to_owned() }
     }
 
     fn block(&mut self) -> R<Block> {
@@ -751,9 +794,33 @@ impl P<'_> {
 
     fn expr(&mut self) -> R<Expr> {
         self.enter()?;
-        let r = self.or();
+        let r = self.range();
         self.depth -= 1;
         r
+    }
+
+    /// `lo..hi`: the loosest operator, so `1..n + 1` is `1..(n + 1)`. Id specs (`Volume#[a..b]`) parse their operands
+    /// below this level (see `serial_operand`), so their `..` is never read as a range expression.
+    fn range(&mut self) -> R<Expr> {
+        let lo = self.cur().span.lo;
+        let l = self.or()?;
+        if *self.tok() != Tok::DotDot {
+            return Ok(l);
+        }
+        self.bump();
+        self.skip_nl();
+        let r = self.or()?;
+        if *self.tok() == Tok::DotDot {
+            let span = self.cur().span;
+            self.push(
+                Diagnostic::error("chained-range", span, "ranges cannot be chained")
+                    .label("a second `..`")
+                    .help("a range has two ends: `1..n`; for a step use `range(a, b, step)`"),
+            );
+            return Err(());
+        }
+        let e = self.mk(lo, ExprKind::Range(Box::new(l), Box::new(r)));
+        self.check_height(e)
     }
 
     fn mk(&self, lo: u32, kind: ExprKind) -> Expr {
@@ -773,8 +840,27 @@ impl P<'_> {
         Ok(e)
     }
 
-    fn bin(&mut self, op: BinOp, l: Expr, r: Expr) -> R<Expr> {
+    fn bin(&mut self, op: BinOp, mut l: Expr, r: Expr) -> R<Expr> {
         let span = l.span.to(r.span);
+        // A left-associative run of one operator is stored flat (`ExprKind::Chain`): `a | b | c | ...` must not build a tree as
+        // deep as it is long. A parenthesized left operand is its own unit and stays a separate node.
+        if !l.paren && !matches!(op, BinOp::Pow | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+            match &mut l.kind {
+                ExprKind::Chain(o, v) if *o == op => {
+                    let height = l.height.max(1 + r.height);
+                    v.push(r);
+                    let kind = std::mem::replace(&mut l.kind, ExprKind::Error);
+                    return self.check_height(Expr { span, kind, height, paren: false });
+                }
+                ExprKind::Binary(o, ..) if *o == op => {
+                    let kind = std::mem::replace(&mut l.kind, ExprKind::Error);
+                    let ExprKind::Binary(_, a, b) = kind else { return Err(()) };
+                    let height = 1 + a.height.max(b.height).max(r.height);
+                    return self.check_height(Expr { span, kind: ExprKind::Chain(op, vec![*a, *b, r]), height, paren: false });
+                }
+                _ => {}
+            }
+        }
         self.check_height(Expr::new(span, ExprKind::Binary(op, Box::new(l), Box::new(r))))
     }
 
@@ -847,7 +933,7 @@ impl P<'_> {
     /// `-`/`except` next to `|`/`&` without parentheses is rejected: `a - b | c` reads differently to different people
     /// (and `all volumes except V#1 | V#2` means the opposite of its English), so the language makes the writer decide.
     fn no_bare_difference(&mut self, e: &Expr) -> R<()> {
-        if matches!(e.kind, ExprKind::Binary(BinOp::Sub | BinOp::Except, ..)) && !e.paren {
+        if matches!(e.kind, ExprKind::Binary(BinOp::Sub | BinOp::Except, ..) | ExprKind::Chain(BinOp::Sub | BinOp::Except, _)) && !e.paren {
             self.push(
                 Diagnostic::error("ambiguous-set-expression", e.span, "`-`/`except` mixed with `|`/`&` needs parentheses")
                     .label("add parentheses around this")
@@ -1045,6 +1131,15 @@ impl P<'_> {
                 e.paren = true;
                 Ok(e)
             }
+            Tok::If => self.if_expr(),
+            Tok::Null => {
+                self.push(
+                    Diagnostic::error("no-null", t.span, "`null` is not a value in this language")
+                        .label("there is no null")
+                        .help("leave an optional argument out instead of passing null; inside an object literal or a `...{...}` spread, `key: null` omits that field"),
+                );
+                Err(())
+            }
             Tok::LBracket => self.list(t.span),
             Tok::LBrace => self.object(t.span),
             Tok::EntityRef => self.entity_ref(),
@@ -1114,6 +1209,51 @@ impl P<'_> {
                 Err(())
             }
         }
+    }
+
+    /// `if cond { a } else { b }` as an expression; the `else` is required.
+    fn if_expr(&mut self) -> R<Expr> {
+        let lo = self.cur().span.lo;
+        self.bump();
+        self.enter()?;
+        let r = self.if_expr_tail(lo);
+        self.depth -= 1;
+        r
+    }
+
+    fn if_expr_tail(&mut self, lo: u32) -> R<Expr> {
+        let cond = self.expr()?;
+        let then = self.branch_expr()?;
+        self.skip_nl_before_else();
+        if *self.tok() != Tok::Else {
+            let at = self.after_last();
+            self.push(
+                Diagnostic::error("missing-else", at, "an `if` expression needs an `else` branch")
+                    .label("expected `else`")
+                    .help("an expression has a value on both paths: `if c { a } else { b }`; to run statements conditionally use an `if` statement"),
+            );
+            return Err(());
+        }
+        self.bump();
+        let els = if *self.tok() == Tok::If { self.if_expr()? } else { self.branch_expr()? };
+        let e = self.mk(lo, ExprKind::If(Box::new(cond), Box::new(then), Box::new(els)));
+        self.check_height(e)
+    }
+
+    /// `{ expr }`: the branch of an `if` expression.
+    fn branch_expr(&mut self) -> R<Expr> {
+        let open = self.expect(Tok::LBrace, "`{`")?;
+        self.nl += 1;
+        let e = self.expr()?;
+        if *self.tok() != Tok::RBrace {
+            if *self.tok() == Tok::Eof || self.at_new_statement() {
+                return self.unclosed(open.span, "`}`", "branch");
+            }
+            return self.expected("`}`");
+        }
+        self.bump();
+        self.nl -= 1;
+        Ok(e)
     }
 
     fn element_word(&mut self, span: Span, name: &str) {
@@ -1209,7 +1349,13 @@ impl P<'_> {
             };
             self.bump();
             self.expect(Tok::Colon, "`:` after the object key")?;
-            let v = self.expr()?;
+            let v = if *self.tok() == Tok::Null && matches!(self.nth(1), Tok::Comma | Tok::RBrace) {
+                // `key: null` omits the field (the op-api params model has no null).
+                let t = self.bump();
+                Expr::new(t.span, ExprKind::Null)
+            } else {
+                self.expr()?
+            };
             items.push((key, v));
             match self.tok() {
                 Tok::Comma => {
@@ -1299,7 +1445,11 @@ impl P<'_> {
     /// (so `Volume#3 - Volume#2` stays a set difference).
     fn serial_operand(&mut self, computed: bool, what: &str) -> R<Expr> {
         if computed {
-            return self.expr();
+            // Below the range level: the `..` of an id range is not a range expression.
+            self.enter()?;
+            let e = self.or();
+            self.depth -= 1;
+            return e;
         }
         let t = self.cur().clone();
         match t.tok {

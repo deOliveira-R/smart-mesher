@@ -4,6 +4,7 @@
 //! checked finite (`non-finite`), so no `NaN`/`inf` can reach an op record.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use crate::ast::{BinOp, UnOp};
 use crate::entity::EntitySet;
@@ -69,7 +70,8 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
     binop_lim(op, l, r, usize::MAX)
 }
 
-fn too_long(what: &str, len: usize, max: usize) -> EvalErr {
+/// Length error of a string or list that would exceed the limit.
+pub fn too_long(what: &str, len: usize, max: usize) -> EvalErr {
     ("value-too-long", format!("{what} of {len} would exceed the limit of {max}"))
 }
 
@@ -165,8 +167,13 @@ pub fn binop_lim(op: BinOp, l: &Val, r: &Val, max_len: usize) -> EvalRes<Val> {
                 _ => type_err(format!("cannot raise {} to {}", l.a_type(), r.a_type())),
             },
         },
-        Eq => Ok(Val::Bool(equal(l, r)?)),
-        Ne => Ok(Val::Bool(!equal(l, r)?)),
+        Eq | Ne => {
+            if eq_class(l) != eq_class(r) {
+                return type_err(format!("cannot compare {} with {}: values of different types are never equal, so this is almost certainly a mistake", l.a_type(), r.a_type()));
+            }
+            let e = equal(l, r)?;
+            Ok(Val::Bool(if op == Eq { e } else { !e }))
+        }
         Lt | Le | Gt | Ge => {
             let ord = match (l, r) {
                 (Val::Str(a), Val::Str(b)) => a.cmp(b),
@@ -190,6 +197,53 @@ pub fn binop_lim(op: BinOp, l: &Val, r: &Val, max_len: usize) -> EvalRes<Val> {
             _ => type_err(format!("`{}` needs two entity sets, found {} and {}", if op == Union { "|" } else { "&" }, l.a_type(), r.a_type())),
         },
         And | Or => type_err("`and`/`or` are evaluated lazily".into()),
+    }
+}
+
+/// Types that `==` may compare: an int and a float compare numerically, everything else only with its own type.
+fn eq_class(v: &Val) -> u8 {
+    match v {
+        Val::Bool(_) => 0,
+        Val::Int(_) | Val::Num(_) => 1,
+        Val::Str(_) => 2,
+        Val::List(_) => 3,
+        Val::Obj(_) => 4,
+        Val::Ents(_) => 5,
+        _ => 6,
+    }
+}
+
+/// Help text for the `type-mismatch` of `==`/`!=` between values of different types.
+pub fn eq_mismatch_help(l: &Val, r: &Val) -> String {
+    match (l, r) {
+        (Val::Ents(_), Val::Str(_)) | (Val::Str(_), Val::Ents(_)) => {
+            "to compare an entity set with an id string write `x == ents(\"Face#1\")`; to compare text write `str(x) == \"Face#1\"`".to_owned()
+        }
+        _ => "convert one side so both have the same type: `str(x)`, `int(x)`, `float(x)` or `ents(x)`".to_owned(),
+    }
+}
+
+/// True when [`append_in_place`] applies: both values are lists, or both are strings.
+pub fn can_append(acc: &Val, r: &Val) -> bool {
+    matches!((acc, r), (Val::List(_), Val::List(_)) | (Val::Str(_), Val::Str(_)))
+}
+
+/// Length of a list or string (0 for anything else).
+pub fn seq_len(v: &Val) -> usize {
+    match v {
+        Val::List(l) => l.len(),
+        Val::Str(s) => s.len(),
+        _ => 0,
+    }
+}
+
+/// `acc = acc + r` without copying `acc` when it is uniquely held (the `set x = x + ...` pattern). Only call it when
+/// [`can_append`] holds and the length limit was checked; any other pair is left unchanged.
+pub fn append_in_place(acc: &mut Val, r: &Val) {
+    match (acc, r) {
+        (Val::List(a), Val::List(b)) => Arc::make_mut(a).extend(b.iter().cloned()),
+        (Val::Str(a), Val::Str(b)) => a.push_str(b),
+        _ => {}
     }
 }
 
@@ -420,7 +474,7 @@ pub fn call_builtin_lim(name: &str, args: &[Val], max_range: u64, max_len: usize
         "str" => {
             arity(name, args, 1)?;
             match &args[0] {
-                v if opaque(v) => Err(opaque_err(v)),
+                v if opaque(v) && !matches!(v, Val::Outcome(crate::value::Outcome::Concrete { .. } | crate::value::Outcome::Applied { .. })) => Err(opaque_err(v)),
                 v => {
                     let s = v.to_string();
                     if s.len() > max_len {

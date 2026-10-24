@@ -1,6 +1,6 @@
 # The smart-mesh command language (`smesh`), v1
 
-Status: design for W1 (revision `fix1`: the semantic decisions below are binding because scripts will depend on them), implemented by this crate. Binding facts come from the frozen contracts in
+Status: design for W1 (revision `polish0`: the semantic decisions below are binding because scripts will depend on them), implemented by this crate. Binding facts come from the frozen contracts in
 `sm-core` (entity ids) and `sm-op-api` (op/query registry, JSON schemas, `core.batch`).
 
 A script is plain UTF-8 text, conventionally `*.smesh`. It is **not** Cubit-journal compatible and does
@@ -38,19 +38,21 @@ completion and validation cannot drift from the ops because they are generated f
   reserved or not, is a valid segment (`core.batch`, `b.all`), because op and output names are not ours to choose.
 * **Numbers**: `123`, `1_000`, `1.5`, `2e-3`, `1.5E+2`. Maximal munch: a `.` belongs to a number only when a digit follows it, so `1.` and `.5` are
   not floats (write `1.0`, `0.5`) and `1..5` lexes as `Int(1)` `..` `Int(5)`. Integers are `i64` (overflow is an error); anything with `.` or an
-  exponent is `f64`. No `NaN`/`inf` literals.
+  exponent is `f64`. No `NaN`/`inf` literals. Malformed numbers get one targeted `invalid-number` error with the fix in its help: `1.e5` and `1.` (write `1.0e5`,
+  `1.0`), `1_`, `1__0`, `1_.5` (a `_` separates digits, one at a time: `1_000`), `1e`, `1e+` (an exponent needs digits: `1e5`).
 * **Entity references** are a single token: an identifier *immediately* followed by `#` and then a digit, `[` or `(` (`Volume#3`, `Volume#[1,2]`,
   `Volume#(n + 1)`) lexes as `EntityRef(kind-name)` and the parser then reads the id spec (§5.2). No spaces are allowed around `#`; one span
   covers `Volume#`, so entity diagnostics point at it. A `#` anywhere else is an error (`Volume#i` explains that a variable goes in brackets: `Volume#[i]`).
 * **Strings**: `"..."`, escapes `\n \t \r \" \\ \$ \u{HEX}`; may not contain a raw newline. **A string literal is literal text, forever.**
   `{`, `}` and `$` mean nothing inside a plain string, so `let i = 3; print "fuel_{i}"` prints `fuel_{i}`. The language does not interpolate: build names with
   `"fuel_" + str(i)`. If interpolation is ever added it will use a **prefixed** literal (`f"fuel_{i}"`), which cannot change the meaning of a v1 script;
-  `f"..."` is a syntax error today, and the prefix is reserved for that. Two guards keep the decision honest:
+  `f"..."` is the error `reserved-prefix` today (an identifier directly followed by a string literal; help: `"..." + str(...)`), and the prefix is reserved for that. Two guards keep the decision honest:
   a plain string that contains `{name}` gets the warning `literal-braces` (help: `+ str(...)`), and an unescaped `${` is the parse error
   `reserved-interpolation` (help: write `\${` for a literal `${`, or use `+ str(x)`), so the APREPRO spelling `"pin_${i}"` can never silently mean
-  something else later. A lone `$` (as in the batch reference text `"$0.body"`, or `"cost $5"`) is ordinary.
+  something else later. A lone `$` (as in the batch reference text `"$0.body"`, or `"cost $5"`) is ordinary. `literal-braces` stays quiet for a `{name}` that follows
+  an escaped `\$` (`"cost \${name}"`, the writer already said it is literal) and for the `{` of a `${` that was already reported as `reserved-interpolation`.
 * **Punctuation / operators**: `( ) [ ] { } , ; : = . .. ... #`, `+ - * / % **`, `== != < <= > >=`, `| &`.
-* **Reserved words**: `let set alias batch if else for in include print assert true false and or not all except`, plus the **future words**
+* **Reserved words**: `let set alias batch if else for in include print assert true false and or not all except null`, plus the **future words**
   `fn def return while break continue import` (user functions and loops are the obvious next features; using one as a name is the error `reserved-word`, so
   adding the syntax later cannot change a valid script: `return (x)` would already parse as a call). After a `.` they are still valid path segments
   (`b.return`), and quoted as object keys (`{ "return": 1 }`). `help`, `by` and the plural
@@ -60,7 +62,10 @@ completion and validation cannot drift from the ops because they are generated f
   The name `timeline` followed by `.` is a reserved namespace for timeline control (§4.6); it is not a registry namespace.
   The Cubit element-type words `hexes tets quads tris` are contextual and reserved as future plural selectors (§5.1): directly after `all` or before `in` they are a
   `not-yet-supported` error, elsewhere ordinary names.
-* There is no `null`: absent optional parameters are omitted (the op-api params model has no null).
+* **`null` is a reserved word, and not a value.** The op-api params model has no null: an absent optional parameter is simply omitted. `let null = 1` is the error
+  `reserved-word`; `null` in an expression is the error `no-null`, whose help says to leave the argument out. The one place it is accepted is as the **value of an
+  object-literal field**, including an object literal spread into a call, where `key: null` means "omit this field": `model.create_brick(...{ x: 1, y: 1, z: 1, name: null })`
+  is the call without `name`. Only the literal token `null` directly as the value counts; `{ name: if c { "a" } else { null } }` is an error. A duplicate key is still `duplicate-key`, null or not. After a `.` it is an ordinary path segment, like every reserved word.
 
 ## 3. Values and expressions (APREPRO replacement)
 
@@ -68,7 +73,7 @@ Values: `Bool`, `Int(i64)`, `Num(f64)`, `Str`, `List`, `Obj` (string keys), `Ent
 and `Outcome` (the result of an op, §4). Expressions are evaluated eagerly, left to right, with no side
 effects, so a script's lowered form is a pure function of (script text, registry, state).
 
-Precedence, loosest to tightest: `or`; `and`; `not`; comparison (non-associative); `|` (set union);
+Precedence, loosest to tightest: `a..b` (inclusive range); `or`; `and`; `not`; comparison (non-associative); `|` (set union);
 `&` (set intersection); `+ - except`; `* / %`; unary `-`; `**` (right-associative); postfix `.field`,
 `[index]`. `-` and `except` are difference on `Ents`; `+` concatenates strings and lists (on entity sets use `|`; `+` there is an error that says so).
 
@@ -81,6 +86,9 @@ Turning an error into a meaning later is compatible; changing a meaning is not. 
   mixed arithmetic promotes to `Num`. Division or modulo by zero is an error (never `inf`/`NaN`). `%` is the **truncated remainder** (sign of
   the left operand, like C and Rust): `-7 % 3 == -1`, not Python's `2`. `**` with a negative integer exponent is a `Num` (`2 ** -1 == 0.5`);
   `2 ** 63` overflows.
+* **`==` and `!=` between different types are an error** (`type-mismatch`), except `Int` with `Num`, which compare numerically: `Face#1 == "Face#1"` is a mistake, not
+  `false`, and its help names the conversions (`ents("Face#1")` to compare entities, `str(Face#1)` to compare text). Same-type comparison is structural; a list or object
+  that merely *contains* mixed types compares element by element and is unequal where the types differ (`[1] != ["a"]`), and `contains(list, v)` is unaffected.
 * Comparison of an `Int` and a `Num` is **exact** (no rounding of the integer through `f64`): `9007199254740993 == 9007199254740992.0` is false.
   `min`/`max` of all-`Int` arguments are exact `Int`s. Passing an `Int` to a `number` parameter converts it to a float only when that is exact
   (|n| at most 2^53), else `integer-precision` (write it as a float if the rounding is intended).
@@ -91,15 +99,29 @@ Turning an error into a meaning later is compatible; changing a meaning is not. 
   (there is no `x in set` operator: `in` needs a plural kind on its left); `ents("Volume#3")` /
   `ents([..])` turns id strings (for example from a query result) into an entity set (§5.1: `Surface#`/`Curve#` in a string is ambiguous), and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
   randomness must be seeded from op parameters. `range(a, b[, step])` is half-open and capped (§9). Half-open is spelled `range` and nothing else: `..` exists **only inside id specs** (§5.2), where it is
-  inclusive; there is no `a..b` expression, and if one is ever added it will be inclusive like every other `..`, never half-open.
+  inclusive, and so is the **range expression** `a..b`: the list `a, a+1, ..., b` (empty when `b < a`; both ends must be integers, `range-too-long` beyond `max_range_len`),
+  written for loops: `for i in 1..n { ... }` is `for i in range(1, n + 1)`. `range(a, b)` stays half-open. The range is the loosest operator, so `1..n + 1` is `1..(n + 1)` and
+  a comparison needs parentheses (`(1..3) == [1, 2, 3]`); `1..2..3` is `chained-range`. Inside an id spec the `..` is the id range: `Volume#[1..n]` selects ids, it is not this list.
   Transcendental functions use the platform libm; the value written into an op record is what is replayed, so
   cross-platform last-digit differences affect only *re-evaluating the script*, never replay of a timeline.
 * Lists `[1, 2, 3]`, objects `{ x: 1, "y z": 2 }`, indexing `l[0]`, `l[-1]` (negative from the end),
   `len(l)`; `count(set)` is the number of entities of an `Ents`.
+* **Conditional expression**: `if cond { a } else { b }` is an expression (`let r = if shifted { 0.6 } else { 0.475 }`). The `else` is required (`missing-else`; use the
+  `if` statement for a conditional action), `else if` chains, the condition must be a bool, and only the chosen branch is evaluated. Each branch is one expression in braces
+  (an object result is `{ {a: 1} }`). A line that starts with `if` is always the statement; inside `(`, `[` or a call, start the `if` on the line of the bracket or comma (a
+  new line starting with a statement keyword there reads as an unclosed bracket).
+* **Long chains.** `a | b | c | ...`, `a + b + ...` and every other run of one left-associative operator is stored flat, so a generated script may chain thousands of terms
+  (`Face#1 | Face#2 | ... | Face#5000` parses and runs). The expression-height limit (§9) applies to nesting and to mixed-operator chains, never to a run of one operator.
+  A parenthesized operand stays its own unit. List and string `+` chains append in place.
 * Variables: `let x = expr` binds once per scope (rebinding in the same scope is an error); `set x = expr` rebinds an
-  existing binding of any enclosing scope. Names resolve lexically; there is no implicit global mutation.
-* Control flow: `if cond { } else { }`, `for i in list_or_set { }`. Loops are bounded (§9). No user functions in v1.
-* `print e1, e2` emits text; `assert cond[, "message"]` fails the script with a span if `cond` is false. Printing is meant to be pasted back:
+  existing binding of any enclosing scope. Names resolve lexically; there is no implicit global mutation. A `let` inside a block that hides a variable of an enclosing scope
+  is allowed but gets the warning `shadowed` (help: use `set` to change the outer variable). `x = 2` is not an assignment: the error says `set x = 2` (or `let x = 2` for a new name).
+  `set x = x + ...` on a list or string appends in place when nothing else holds the value, so building a list or string in a loop is linear (200,000 appends take milliseconds);
+  the value is still copied if another variable holds it.
+* Control flow: `if cond { } else { }` (statement), `for i in list_or_set { }` (also `for i in 1..n { }`). Loops are bounded (§9). No user functions in v1.
+* `print e1, e2` emits text; the items are joined with **one space**, as in Python, with no trailing space (`print "x =", 5` prints `x = 5`; `print "a", ""` prints `a `). Write the
+  separator you want yourself with `+`: `print "x=" + str(5)`. Printing (or `str()`) of an **op result** shows its roles, `{body: Body#1, faces: Face#[1..6], volume: Volume#1}`
+  (alphabetical, not the op's order; a result from inside a batch shows only the named outputs). `assert cond[, "message"]` fails the script with a span if `cond` is false. Printing is meant to be pasted back:
   floats always read as floats (`5.0`, `1e300`, `1.5e-7`; shortest round-trip digits, never hundreds of digits). **Entity sets print in source form** with the
   preferred alias of each kind and consecutive serials compressed per kind: `Face#[1..6] | Volume#2` (a single id is `Face#5`; a 200,000-id range stays short). An
   **ordered op-output list** (§4.3) prints as a list in its own order, `[Body#1, Volume#1, Face#1]`, so it is visibly not a sorted set (a list whose order happens to be
@@ -130,7 +152,9 @@ one namespace in the registry, so the name decides: in `Registry::op_names()` it
 `query_names()` a query. Unknown names get a did-you-mean from both lists. Names are always written in full: a script's
 meaning must not depend on which plugins happen to be installed (a replayable log, and an LLM caller, want explicit names).
 The only sugar is `alias brick = model.create_brick`, a script-scope pure rewrite applied before lookup (an alias never shadows a
-registry name, and its target must exist when the alias is defined).
+registry name, and its target must exist when the alias is defined). **An alias follows the rebind rule of `let`**: defining the same alias twice is the error `rebind`
+(a session with `allow_top_level_rebind` gets the `shadowed` warning instead). An alias whose name equals a registry namespace (`alias model = ...`, easily mistaken for
+`model.*`) or an existing variable gets the warning `alias-confusing`.
 
 ### 4.2 Arguments to params
 
@@ -187,7 +211,9 @@ collected). Using `b.role` as an argument produces a `plan-unresolved` warning a
 **not** valid in a record; plan output is for validation, completion and review, not for application. Wrap dependent
 statements in `batch { }` to get a fully lowered, applicable form without executing anything. A `for` loop over an unknown sequence
 (`for f in b.faces { ... }`) does not fail the plan: its body is checked **once** with a placeholder loop variable under a `plan-unresolved`
-warning, and a `plan-unresolved` error inside that check is downgraded to a warning and ends it. A query used in an expression yields a placeholder too.
+warning, and a `plan-unresolved` error inside that check is downgraded to a warning and ends it. An **`if` whose condition depends on a placeholder** (`if r.count > 3`)
+gets the same treatment: the `plan-unresolved` error becomes a warning and **every branch is checked once** (a `then`, each `else if`, the `else`), so a plan may list the ops of
+branches the real run will not take; a condition that is known takes its one branch as usual. An `if` *expression* on a placeholder yields a placeholder. A query used in an expression yields a placeholder too.
 
 ### 4.4 `batch { ... }` is `core.batch`
 
@@ -244,7 +270,10 @@ timeline.undo()    timeline.redo()                                              
 Revisions are the contract's `sm_op_api::Rev`: the interpreter parses the hash text, so a malformed `node:` or `at:` is `invalid-argument` at that argument and never
 reaches the host. `TimelineCommand` is `#[non_exhaustive]` (new verbs such as `tag` or `log` will be added). One string may be positional (`branch(name)`, `checkout(ref)`).
 They are statements only and have no value (`op-in-expression` inside an expression or on the right of `let`/`set`; `timeline-in-batch`
-inside a batch: a batch is one timeline node). There is no `timeline.head()` yet: a script cannot read the current branch (it needs a return channel on `Host`; open). Each becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timeline` warning says
+inside a batch: a batch is one timeline node). `timeline.head()` is the one command with a value: it returns the object `{branch, node}` (the attached branch, absent when detached; the current node hash, absent in the empty
+state; the language has no null, so an absent field is missing) and may be used in expressions (`print timeline.head().branch`, `assert timeline.head().branch == "main"`). It
+comes from the defaulted `Host::timeline_head` (default: `timeline-failed` / `timeline-unsupported`), so existing hosts compile unchanged; under `PlanHost` it is a placeholder. Every other command
+becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timeline` warning says
 later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
 so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
 resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
@@ -281,7 +310,11 @@ a face/edge in bare source. In a string a *user wrote* (a string argument for an
 error `ambiguous-kind` (help: write `Face#n` or `GeomSurface#n`), including an id built as `"Surface#" + str(i)`. Everything else is accepted: `"Face#3"`,
 `"Volume#3"`, `"GeomSurface#3"` and the canonical names (`"TopoFace#3"`). This is an error today so that it can be relaxed into a meaning later. Ids
 inside **query results** are wire form: where the result schema says "entity id" they become `Ents` read canonical-first, so a carrier id an op or query reported is
-still the carrier. The canonical text `Surface#n` also appears in records and JSON events; those are not scripts. Ids named by strings are checked for liveness like
+still the carrier. The canonical text `Surface#n` also appears in records and JSON events; those are not scripts. **JSON events stay in wire form on purpose**: `Event::Op.record`, the
+`params` and `result` of `Event::Query` are exactly what the host applied, stored and hashed (rewriting a record would change its hash), so a geometry carrier shows there as
+`Surface#7`, not `GeomSurface#7`, and a face as `TopoFace#1`. Messages are different: op, query and batch errors, and therefore `diagnostics_json`, are already in source
+spelling. For a person or a model that reads events next to the script, `sm_lang::respell_json(&json)` returns a display copy with every canonical id in a string rewritten
+(`TopoFace#1` to `Face#1`, `Surface#7` to `GeomSurface#7`); the MCP layer should apply it to what it shows, never to what it stores. Ids named by strings are checked for liveness like
 bare ids: `ents("Volume#9")` and `model.pick("Face#99")` are `entity-not-found`.
 
 **Vocabulary differs from Cubit.** In Cubit, `face`, `edge` and `node` used as mesh-entity words mean mesh faces, mesh edges and mesh nodes, and `hex`, `tet`,
@@ -345,7 +378,7 @@ volumes named "fuel*"                              // selection by the name give
 all faces with name "inlet"                        // `with` is an alias of `where` for attribute-equality (reserved)
 ```
 
-Name-based selection and attribute predicates are the **first language feature planned** once the geometry layer exists: for blocks, sidesets and sweep source/target
+Name-based selection (`named`) and attribute predicates (`where`) are the **first language feature planned** once the geometry layer exists: for blocks, sidesets and sweep source/target
 selection a script currently works only through queries plus `ents()`, which is the biggest readability gap against Cubit's `with name`/`at`.
 Today each of them is a `not-yet-supported` parse error that points at the word. Elsewhere `where`, `named` and `with` remain ordinary variable names, and
 adding predicates later cannot change the meaning of a valid v1 script. Until then a script that must find entities by property runs a query and passes
@@ -378,8 +411,10 @@ yields the same records; tests compare hashes across runs and thread counts.
 
 ## 9. Limits (denial-of-service guards, configurable in `Options`)
 
-Source size 16 MiB, nesting depth 64, expression height 256 (nesting plus operator chains such as `1 + 1 + ...`; `expression-too-long`),
-loop iterations 1,000,000 per run, `range` length 1,000,000, string bytes / list length of any built value (`max_value_len`) 1,000,000 (checked in `+`, `str`, `range` and query
+Source size 16 MiB, nesting depth 64, expression height 256 (nesting and chains that alternate operators; `expression-too-long`; a run of one operator such as `1 + 1 + ...` or `a | b | ...` is flat and unlimited, §3),
+loop-body executions 1,000,000 per run (only **innermost** bodies are charged: an iteration during which no nested iteration started costs 1, an iteration that contained inner
+iterations costs nothing itself, so a 1000 x 1000 nested loop costs 1,000,000 and works, an empty inner loop still charges the outer body, and total work stays within a factor of the
+nesting depth of the budget), `range` length 1,000,000, string bytes / list length of any built value (`max_value_len`) 1,000,000 (checked in `+`, `str`, `range` and query
 results, so `set l = l + l` in a loop stops at `value-too-long` instead of exhausting memory), include depth 16, errors reported per source 100. All are fields of `ParseLimits` / `Options`.
 An `else if` chain is flat and costs no nesting depth. `Options::allow_top_level_rebind` lets an interactive session re-send `let w = 10` (a `shadowed` warning).
 

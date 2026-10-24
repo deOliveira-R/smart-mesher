@@ -53,6 +53,8 @@ pub enum Tok {
     All,
     /// `except`
     Except,
+    /// `null` (reserved)
+    Null,
     /// `(`
     LParen,
     /// `)`
@@ -148,6 +150,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "not" => Tok::Not,
         "all" => Tok::All,
         "except" => Tok::Except,
+        "null" => Tok::Null,
         _ => return None,
     })
 }
@@ -349,13 +352,46 @@ impl Lexer<'_> {
                 );
             }
         }
-        keyword(word).unwrap_or(Tok::Ident)
+        let kw = keyword(word);
+        // `f"x"`: an identifier glued to a string literal is a prefixed string, reserved for a future interpolation syntax.
+        if kw.is_none() && self.at(0) == b'"' {
+            self.diags.push(
+                Diagnostic::error("reserved-prefix", self.sp(lo, self.i), format!("`{word}\"...\"`: prefixed string literals are reserved"))
+                    .label("a string prefix is not part of the language")
+                    .help(format!("strings are plain text and never interpolate; build the text with `\"...\" + str(...)`, e.g. `\"fuel_\" + str(i)` instead of `{word}\"fuel_{{i}}\"`")),
+            );
+            return Tok::Error;
+        }
+        kw.unwrap_or(Tok::Ident)
     }
 
     fn number(&mut self) -> Tok {
         let lo = self.i;
         while self.at(0).is_ascii_digit() || (self.at(0) == b'_' && self.at(1).is_ascii_digit()) {
             self.i += 1;
+        }
+        let int_end = self.i;
+        // `1.e5`, `1.`: a `.` after the integer part needs a digit (`1..5` is a range and `1.max` a field access).
+        if self.at(0) == b'.' && !self.at(1).is_ascii_digit() && self.at(1) != b'.' && (!(self.at(1).is_ascii_alphabetic() || self.at(1) == b'_') || self.exp_after_dot()) {
+            self.i += 1;
+            let exp_lo = self.i;
+            if matches!(self.at(0), b'e' | b'E') {
+                self.i += 1;
+                if matches!(self.at(0), b'+' | b'-') {
+                    self.i += 1;
+                }
+                while self.at(0).is_ascii_digit() {
+                    self.i += 1;
+                }
+            }
+            let int = &self.text[lo..int_end];
+            let exp = &self.text[exp_lo..self.i];
+            self.diags.push(
+                Diagnostic::error("invalid-number", self.sp(lo, self.i), "a float needs a digit after the `.`")
+                    .label("no digit after `.`")
+                    .help(format!("write `{int}.0{exp}`")),
+            );
+            return Tok::Error;
         }
         let mut float = false;
         if self.at(0) == b'.' && self.at(1).is_ascii_digit() {
@@ -365,14 +401,36 @@ impl Lexer<'_> {
                 self.i += 1;
             }
         }
-        if matches!(self.at(0), b'e' | b'E')
-            && (self.at(1).is_ascii_digit() || (matches!(self.at(1), b'+' | b'-') && self.at(2).is_ascii_digit()))
-        {
-            float = true;
-            self.i += 2;
-            while self.at(0).is_ascii_digit() {
+        if matches!(self.at(0), b'e' | b'E') {
+            if self.at(1).is_ascii_digit() || (matches!(self.at(1), b'+' | b'-') && self.at(2).is_ascii_digit()) {
+                float = true;
+                self.i += 2;
+                while self.at(0).is_ascii_digit() {
+                    self.i += 1;
+                }
+            } else if !(self.at(1).is_ascii_alphanumeric() || self.at(1) == b'_') || (matches!(self.at(1), b'+' | b'-') && !self.at(2).is_ascii_digit()) {
+                // `1e`, `1e+`: an exponent marker with no digits.
+                let sign = matches!(self.at(1), b'+' | b'-');
+                self.i += if sign { 2 } else { 1 };
+                self.diags.push(
+                    Diagnostic::error("invalid-number", self.sp(lo, self.i), "an exponent needs digits")
+                        .label("no digits after the exponent marker")
+                        .help("write the exponent digits, e.g. `1e5`, `1.5e-3`"),
+                );
+                return Tok::Error;
+            }
+        }
+        // `1_`, `1__0`, `1_.5`: a digit separator must sit between two digits.
+        if self.at(0) == b'_' {
+            while self.at(0).is_ascii_alphanumeric() || self.at(0) == b'_' {
                 self.i += 1;
             }
+            self.diags.push(
+                Diagnostic::error("invalid-number", self.sp(lo, self.i), "`_` must separate digits, one at a time")
+                    .label("misplaced digit separator")
+                    .help("group digits like `1_000` (an underscore between two digits, never doubled or trailing)"),
+            );
+            return Tok::Error;
         }
         let clean: String = self.text[lo..self.i].chars().filter(|&c| c != '_').collect();
         let span = self.sp(lo, self.i);
@@ -399,10 +457,17 @@ impl Lexer<'_> {
         }
     }
 
+    /// At a `.` after an integer: does an exponent (`e5`, `E+5`) follow, as in `1.e5`?
+    fn exp_after_dot(&self) -> bool {
+        matches!(self.at(1), b'e' | b'E') && (self.at(2).is_ascii_digit() || (matches!(self.at(2), b'+' | b'-') && self.at(3).is_ascii_digit()))
+    }
+
     fn string(&mut self) -> Tok {
         let lo = self.i;
         self.i += 1;
         let mut s = String::new();
+        // Index of a `{` that must not get the `literal-braces` warning (it follows `\$` or an already reported `${`).
+        let mut quiet_brace = usize::MAX;
         loop {
             if self.i >= self.b.len() || self.b[self.i] == b'\n' {
                 self.diags.push(
@@ -426,7 +491,10 @@ impl Lexer<'_> {
                         b'r' => s.push('\r'),
                         b'"' => s.push('"'),
                         b'\\' => s.push('\\'),
-                        b'$' => s.push('$'),
+                        b'$' => {
+                            s.push('$');
+                            quiet_brace = self.i + 1;
+                        }
                         b'u' => {
                             let ok = self.unicode_escape(&mut s);
                             if !ok {
@@ -457,6 +525,7 @@ impl Lexer<'_> {
                             .help("strings are literal text; write `\\${` for a literal `${`, or build the text with `\"pin_\" + str(i)`"),
                     );
                     s.push('$');
+                    quiet_brace = self.i + 1;
                     self.i += 1;
                 }
                 b'{' => {
@@ -466,7 +535,7 @@ impl Lexer<'_> {
                         while matches!(self.b.get(j), Some(b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')) {
                             j += 1;
                         }
-                        if self.b.get(j) == Some(&b'}') {
+                        if self.b.get(j) == Some(&b'}') && self.i != quiet_brace {
                             self.diags.push(
                                 Diagnostic::warning("literal-braces", self.sp(self.i, j + 1), "this string contains `{name}`, which is literal text, not interpolation")
                                     .label("printed as written")

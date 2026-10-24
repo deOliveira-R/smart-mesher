@@ -54,6 +54,26 @@ impl TimelineCommand {
     }
 }
 
+/// Where the timeline currently is, as `timeline.head()` reports it.
+///
+/// Both fields are optional because the language has no null: a detached head has no `branch`, the empty state has no `node`
+/// (an absent field is simply missing from the script's object).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TimelineHead {
+    /// The attached branch, if any.
+    pub branch: Option<String>,
+    /// The current node as 64 lowercase hex characters, if any.
+    pub node: Option<String>,
+}
+
+impl TimelineHead {
+    /// A head at `node`, attached to `branch` when given.
+    pub fn new(branch: Option<String>, node: Option<String>) -> Self {
+        Self { branch, node }
+    }
+}
+
 /// What the interpreter needs from its environment.
 ///
 /// Production hosts adapt a timeline `Session` (one node per applied record). sm-lang itself never
@@ -80,6 +100,11 @@ pub trait Host {
     /// Never called when [`executes`](Self::executes) is false.
     fn timeline(&mut self, cmd: &TimelineCommand) -> Result<(), HostError> {
         Err(HostError { code: "timeline-unsupported".into(), message: format!("this host has no timeline: `timeline.{}` is unavailable", cmd.verb()) })
+    }
+    /// Where the timeline is now (`timeline.head()`). Hosts without a timeline keep the default, which reports
+    /// `timeline-unsupported`. Never called when [`executes`](Self::executes) is false.
+    fn timeline_head(&mut self) -> Result<TimelineHead, HostError> {
+        Err(HostError { code: "timeline-unsupported".into(), message: "this host has no timeline: `timeline.head` is unavailable".into() })
     }
     /// Text of an included file. The language performs no I/O itself.
     fn load(&mut self, path: &str) -> Result<String, String> {

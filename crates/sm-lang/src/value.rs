@@ -215,6 +215,17 @@ impl fmt::Display for Val {
                 f.write_str("}")
             }
             Val::Ents(s) => fmt_ents(s, f),
+            Val::Outcome(Outcome::Concrete { outputs, .. } | Outcome::Applied { outputs }) => {
+                f.write_str("{")?;
+                for (i, (role, ids)) in outputs.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{role}: ")?;
+                    fmt_ents(ids, f)?;
+                }
+                f.write_str("}")
+            }
             Val::Outcome(_) => f.write_str("<op result>"),
             Val::Ref { index, role, sel, .. } => match sel {
                 Sel::All => write!(f, "${index}.{role}"),

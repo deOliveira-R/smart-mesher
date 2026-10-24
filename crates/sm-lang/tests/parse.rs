@@ -30,6 +30,11 @@ fn sx(e: &Expr) -> String {
         }
         ExprKind::Entity(EntityExpr::All { kind, .. }) => format!("all:{}", kind.name()),
         ExprKind::Entity(EntityExpr::In { kind, within, .. }) => format!("({}-in {})", kind.name(), sx(within)),
+        // A flat chain reads as the left-nested tree it stands for, so the expectations are about meaning, not storage.
+        ExprKind::Chain(op, items) => items[1..].iter().fold(sx(&items[0]), |acc, e| format!("({op:?} {acc} {})", sx(e))),
+        ExprKind::If(c, t, e) => format!("(if {} {} {})", sx(c), sx(t), sx(e)),
+        ExprKind::Range(a, b) => format!("(range {} {})", sx(a), sx(b)),
+        ExprKind::Null => "null".into(),
         ExprKind::Error => "<err>".into(),
     }
 }
@@ -254,11 +259,9 @@ fn crlf_and_unicode_do_not_break_spans() {
 fn long_operator_and_postfix_chains_are_diagnostics_not_aborts() {
     // Left-leaning trees would otherwise be as deep as the chain is long and overflow on drop or recursion.
     for src in [
-        format!("let x = {}1", "1 + ".repeat(100_000)),
+        format!("let x = {}1", "1 + 1 - ".repeat(100_000)),
         format!("let x = x{}", ".a".repeat(100_000)),
         format!("let x = x{}", "[0]".repeat(100_000)),
-        format!("let x = {}b", "a | ".repeat(100_000)),
-        format!("let x = {}b", "a and ".repeat(100_000)),
         format!("let x = {}b", "a ** ".repeat(100_000)),
         format!("let x = {}b", "not ".repeat(100_000)),
         format!("let x = {}b", "- ".repeat(100_000)),
@@ -271,6 +274,26 @@ fn long_operator_and_postfix_chains_are_diagnostics_not_aborts() {
     // A moderately long chain is fine.
     let ok = format!("let x = {}1", "1 + ".repeat(200));
     assert!(parse(0, &ok).diagnostics.is_empty());
+}
+
+#[test]
+fn a_chain_of_one_operator_is_flat_and_has_no_length_limit() {
+    // Generated scripts chain thousands of terms: the chain is one flat node, so nothing recurses or overflows.
+    for (op, n) in [("+", 100_000), ("|", 100_000), ("&", 5000), ("and", 5000), ("or", 5000), ("*", 5000), ("-", 5000)] {
+        let src = format!("let x = {}b", format!("a {op} ").repeat(n));
+        let out = parse(0, &src);
+        assert!(out.diagnostics.is_empty(), "{op}: {:?}", out.diagnostics.first());
+        let sm_lang::ast::StmtKind::Let { value, .. } = &out.script.stmts[0].kind else { panic!("not a let") };
+        assert!(matches!(&value.kind, sm_lang::ast::ExprKind::Chain(_, v) if v.len() == n + 1), "{op}");
+        assert_eq!(value.height, 2);
+        drop(out);
+    }
+    // Mixed operators keep their precedence, and a parenthesized operand stays its own node.
+    assert_eq!(e("a + b + c * d + e"), "(Add (Add (Add a b) (Mul c d)) e)");
+    assert_eq!(e("(a + b) + c"), "(Add (Add a b) c)");
+    // Nesting is still limited.
+    let deep = format!("let x = {}1{}", "(".repeat(300), ")".repeat(300));
+    assert!(parse(0, &deep).diagnostics.iter().any(|d| d.code == "too-deep"));
 }
 
 #[test]

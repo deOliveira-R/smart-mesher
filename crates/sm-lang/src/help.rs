@@ -100,8 +100,10 @@ pub fn language_summary() -> &'static str {
   entities    Volume#3  Volume#1..5  Volume#[1, 3, 5..7]  Volume#[i]  Volume#(n + 1)  all faces  faces in Volume#2
               (Cubit words: surfaces = faces, curves = edges; contains(set, Face#2) tests membership)
   batch       batch { ... }   one atomic node; outputs referenced as $i.role
-  control     if c { } else { }   for i in range(0, 3) { }   include \"file.smesh\"
+  control     if c { } else { }   for i in range(0, 3) { }   for i in 1..n { }   include \"file.smesh\"
+              (`if c { a } else { b }` is also an expression; `1..n` is the inclusive list 1, 2, ..., n)
   timeline    timeline.branch(\"name\")  timeline.checkout(\"name\")  timeline.undo()  timeline.redo()   (statements, not ops)
+              (`timeline.head()` returns {branch, node} and may be used in expressions)
   other       print e, ...   assert cond, \"msg\"   alias short = model.create_brick   help [name]
   comments    // line   /* block */
 "
@@ -118,7 +120,8 @@ pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
             "checkout" => Ok("timeline.checkout(ref | node | empty)  (timeline command, not an op)\nMove to a branch (`ref`, or the single positional string), a node by hash (`node`), or the empty state (`empty: true`).\n".to_owned()),
             "undo" => Ok("timeline.undo()  (timeline command, not an op)\nStep back one node; the undone node stays reachable by `checkout`.\n".to_owned()),
             "redo" => Ok("timeline.redo()  (timeline command, not an op)\nStep forward again after an undo.\n".to_owned()),
-            _ => Err(format!("no timeline command `{name}`; timeline commands: branch, checkout, undo, redo")),
+            "head" => Ok("timeline.head()  (timeline command, not an op)\nReturns the object {branch, node}: the attached branch (absent when detached) and the current node hash (absent in the empty state). May be used in expressions.\n".to_owned()),
+            _ => Err(format!("no timeline command `{name}`; timeline commands: branch, checkout, undo, redo, head")),
         };
     }
     let all = callables(registry);
