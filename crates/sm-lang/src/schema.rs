@@ -317,14 +317,21 @@ fn pattern_matches(pat: &str, s: &str) -> Option<bool> {
 /// when the schema does not set `additionalProperties: false` (typo protection for call arguments).
 pub fn check(view: View<'_>, value: &Json, top: bool, out: &mut Vec<Issue>) {
     let mut path = Vec::new();
-    check_at(view, value, top, &mut path, out, 0);
+    check_at(view, value, top, false, &mut path, out, 0);
+}
+
+/// Like [`check`] for a member of a `core.batch`: wherever the schema wants an entity id, a batch reference
+/// (`$i.role`, `$i.role[k]`, `$i.role[*]`) is accepted too, as `Registry::batch_schema` allows.
+pub fn check_in_batch(view: View<'_>, value: &Json, top: bool, out: &mut Vec<Issue>) {
+    let mut path = Vec::new();
+    check_at(view, value, top, true, &mut path, out, 0);
 }
 
 fn push(out: &mut Vec<Issue>, path: &[PathSeg], code: &'static str, message: String) {
     out.push(Issue { path: path.to_vec(), code, message });
 }
 
-fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, out: &mut Vec<Issue>, depth: usize) {
+fn check_at(view: View<'_>, value: &Json, top: bool, batch: bool, path: &mut Vec<PathSeg>, out: &mut Vec<Issue>, depth: usize) {
     if depth > 64 {
         return;
     }
@@ -354,7 +361,7 @@ fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, ou
                 continue;
             }
             let mut sub = Vec::new();
-            check_at(*a, value, top, path, &mut sub, depth + 1);
+            check_at(*a, value, top, batch, path, &mut sub, depth + 1);
             if sub.is_empty() {
                 return;
             }
@@ -370,7 +377,7 @@ fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, ou
     }
     if let Some(all) = nn.get("allOf").and_then(Json::as_array) {
         for a in all {
-            check_at(nn.sub(a), value, top, path, out, depth + 1);
+            check_at(nn.sub(a), value, top, batch, path, out, depth + 1);
         }
     }
     if let Some(c) = nn.get("const")
@@ -418,6 +425,7 @@ fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, ou
             }
             if let Some(pat) = nn.get("pattern").and_then(Json::as_str)
                 && pattern_matches(pat, s) == Some(false)
+                && !(batch && pat == ID_PATTERN && (is_batch_ref(s) || s.starts_with("$$")))
             {
                 let msg = if pat == ID_PATTERN { format!("{s:?} is not an entity id (expected `Kind#serial`)") } else { format!("{s:?} does not match {pat}") };
                 push(out, path, "pattern-mismatch", msg);
@@ -435,9 +443,9 @@ fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, ou
             for (i, el) in a.iter().enumerate() {
                 path.push(PathSeg::Idx(i));
                 if let Some(p) = prefix.and_then(|p| p.get(i)) {
-                    check_at(nn.sub(p), el, false, path, out, depth + 1);
+                    check_at(nn.sub(p), el, false, batch, path, out, depth + 1);
                 } else if let Some(items) = nn.items() {
-                    check_at(items, el, false, path, out, depth + 1);
+                    check_at(items, el, false, batch, path, out, depth + 1);
                 }
                 path.pop();
             }
@@ -453,11 +461,11 @@ fn check_at(view: View<'_>, value: &Json, top: bool, path: &mut Vec<PathSeg>, ou
             for (k, el) in m {
                 path.push(PathSeg::Key(k.clone()));
                 if let Some(node) = props.and_then(|p| p.get(k)) {
-                    check_at(nn.sub(node), el, false, path, out, depth + 1);
+                    check_at(nn.sub(node), el, false, batch, path, out, depth + 1);
                 } else if closed {
                     push(out, path, "unknown-property", format!("unknown field `{k}`"));
                 } else if let Some(ap) = nn.get("additionalProperties").filter(|a| a.is_object()) {
-                    check_at(nn.sub(ap), el, false, path, out, depth + 1);
+                    check_at(nn.sub(ap), el, false, batch, path, out, depth + 1);
                 }
                 path.pop();
             }

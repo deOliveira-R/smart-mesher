@@ -696,7 +696,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         // Check the whole object.
         let obj = Json::Object(params);
         let mut issues = Vec::new();
-        schema::check(view, &obj, true, &mut issues);
+        if self.batch.is_some() {
+            schema::check_in_batch(view, &obj, true, &mut issues);
+        } else {
+            schema::check(view, &obj, true, &mut issues);
+        }
         let Json::Object(params) = obj else { unreachable!("built as an object") };
         if issues.is_empty() {
             return Ok(params);
@@ -766,6 +770,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return Some(Err(issue(path, "stale-reference", "this output belongs to a batch that is not the one being built".into())));
                     }
                     let s = match sel {
+                        Sel::All if array_elem => format!("${index}.{role}[*]"),
                         Sel::All => format!("${index}.{role}"),
                         Sel::At(k) => format!("${index}.{role}[{k}]"),
                         Sel::Star => {

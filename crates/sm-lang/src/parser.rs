@@ -876,13 +876,33 @@ impl P<'_> {
         Ok(e)
     }
 
-    /// Is the current identifier the head of `a.b.c(`?
+    /// Is the current identifier the head of `a.b.c(`? Walks the tokens once (linear in the path length).
     fn is_call_head(&self) -> bool {
-        let mut k = 1;
-        while *self.nth(k) == Tok::Dot && *self.nth(k + 1) == Tok::Ident {
-            k += 2;
+        let next = |i: usize| -> usize {
+            let mut j = i + 1;
+            if self.nl > 0 {
+                while self.toks[j].tok == Tok::Newline {
+                    j += 1;
+                }
+            }
+            j
+        };
+        let mut i = self.idx();
+        loop {
+            if self.toks[i].tok == Tok::Eof {
+                return false;
+            }
+            let n = next(i);
+            if self.toks[n].tok == Tok::Dot {
+                let m = next(n);
+                if self.toks[m].tok == Tok::Ident {
+                    i = m;
+                    continue;
+                }
+                return false;
+            }
+            return self.toks[n].tok == Tok::LParen;
         }
-        *self.nth(k) == Tok::LParen
     }
 
     fn primary(&mut self) -> R<Expr> {
