@@ -1,6 +1,6 @@
 [package]
 name = "sm-scheme-map"
-description = "W2 skeleton: T5: surface map scheme."
+description = "Surface map scheme: transfinite (Coons) interpolation in the face parameter space."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -16,12 +16,16 @@ sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+thiserror = "2"
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-mesh = { path = "../sm-mesh" }
 sm-quality = { path = "../sm-quality" }
+sm-model-api = { path = "../sm-model-api" }
+serde_json = "1"
 
 [lints]
 workspace = true
