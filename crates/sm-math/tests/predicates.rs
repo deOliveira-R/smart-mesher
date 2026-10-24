@@ -611,11 +611,15 @@ fn range_edge_ulp_nudged_lattices() {
     ];
     let mut rng = Rng(0xA1B2);
     let (mut tested, mut skipped, mut flips) = (0usize, 0usize, 0usize);
+    let mut per = vec![[0usize; 4]; ks.len()];
     for n in 0..6000 {
-        let k = ks[n % ks.len()];
-        let delta = deltas[(n / ks.len()) % 4];
-        let dim3 = n % 2 == 1;
-        let kind = (n / 2) % 2; // 0: orient, 1: incircle/insphere
+        // Independent indices: every (k, predicate, delta) triple is visited.
+        let pred = n % 4;
+        let ki = (n / 4) % ks.len();
+        let k = ks[ki];
+        let delta = deltas[(n / (4 * ks.len())) % 4];
+        let dim3 = pred % 2 == 1;
+        let kind = pred / 2; // 0: orient, 1: incircle/insphere
         let npts = match (dim3, kind) {
             (false, 0) => 3,
             (false, _) => 4,
@@ -694,7 +698,15 @@ fn range_edge_ulp_nudged_lattices() {
         assert!(want.is_ok(), "unscaled reference must be in range");
         assert_eq!(run(s), want, "k={k} delta={delta} n={n}");
         tested += 1;
+        per[ki][pred] += 1;
         flips += usize::from(want != Ok(Sign::Zero));
+    }
+    for (ki, c) in per.iter().enumerate() {
+        assert!(
+            c.iter().all(|&x| x >= 20),
+            "k={} per-predicate coverage {c:?}",
+            ks[ki]
+        );
     }
     assert!(
         tested > 2000 && flips > 500,
