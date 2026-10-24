@@ -8,6 +8,7 @@
 
 mod bernstein;
 mod conic;
+mod contact;
 mod curve_surface;
 mod interval;
 mod march;

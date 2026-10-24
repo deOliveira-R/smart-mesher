@@ -1,6 +1,7 @@
 //! Curve-plane and curve-surface intersection.
 
 use super::bernstein;
+use super::contact::{Gap, merge_contacts};
 use super::interval;
 use super::{CurveSurface, CurveSurfaceHit};
 use crate::nurbs::curve::{SegPoles, bbox_of, hp_point};
@@ -101,13 +102,22 @@ pub fn curve_plane(curve: &CurveDef, range: Option<Interval>, plane: &Plane, tol
             match nurbs_plane(&pc, n, p0, tol, r) {
                 // A contact at a knot or end is found by the tolerance rule, not a sign change:
                 // the angle between the tangent and the plane decides whether it grazes.
-                Some(v) => v
-                    .into_iter()
-                    .map(|(t, tan)| {
-                        let d1 = pc.jet(t).d1;
-                        (t, tan || n.dot(d1).abs() <= 1e-6 * d1.norm())
-                    })
-                    .collect(),
+                Some(v) => {
+                    let raw: Vec<Raw> = v
+                        .into_iter()
+                        .map(|(t, tan)| {
+                            let d1 = pc.jet(t).d1;
+                            (t, tan || n.dot(d1).abs() <= 1e-6 * d1.norm())
+                        })
+                        .collect();
+                    // One hit per contact stretch, tangent by the sign rule (see `contact`).
+                    let (lo, hi) = (pc.range().lo, pc.range().hi);
+                    let closed = pc.domain().is_periodic() || (pc.eval(lo) - pc.eval(hi)).norm() <= tol.linear;
+                    let signed = |t: f64| n.dot(pc.eval(t) - p0);
+                    let h0 = raw.first().map_or(1.0, |h| 0.5 * tol.linear / pc.jet(h.0).d1.norm().max(1e-300));
+                    let gap = Gap { f: &signed, lo, hi, closed, tol: tol.linear, h0 };
+                    merge_contacts(&gap, &raw).into_iter().filter(|h| r.contains(h.0, 0.0)).collect()
+                }
                 None => return Ok(CurveSurface::Coincident),
             }
         }
@@ -132,6 +142,10 @@ fn ellipse_plane(f: &sm_geom_api::Frame, a: f64, b: f64, n: Vector3, p0: Point3,
         if c.abs() - amp <= tol.linear {
             roots.push((phi + if k > 0.0 { 0.0 } else { core::f64::consts::PI }, true));
         }
+    } else if amp - c.abs() <= tol.linear {
+        // Cut by less than `tol.linear`: the curve stays within tolerance of the plane between
+        // the two roots, which is one grazing contact (the same rule as for `|k| > 1`).
+        roots.push((phi + if k > 0.0 { 0.0 } else { core::f64::consts::PI }, true));
     } else if 1.0 - k.abs() < 1e-12 {
         roots.push((phi + if k > 0.0 { 0.0 } else { core::f64::consts::PI }, true));
     } else {
@@ -515,32 +529,18 @@ fn nurbs_vs_implicit(c: &PreparedCurve, imp: &ImplicitDef, tol: &ModelTolerance,
         return if on { Ok(None) } else { Err(GeomError::NoConvergence("curve/surface subdivision budget exhausted")) };
     }
     let _ = leaves;
-    // Merge duplicates produced by neighbouring leaves. Two consecutive hits are one contact
-    // when they coincide to rounding, lie within a few `tol.linear` of each other, or the curve
-    // stays within `tol.linear` of the surface all along between them (a tangent stretch).
-    found.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let near = |t: f64| {
+    // One hit per contact stretch (see `contact`): independent of where Newton stopped, of
+    // knots and of the seam of a closed curve.
+    let signed = |t: f64| {
         let p = c.eval(t);
-        imp.value(p).abs() / imp.gradient(p).norm().max(1e-300) <= tol.linear
+        imp.value(p) / imp.gradient(p).norm().max(1e-300)
     };
-    let mut merged: Vec<Raw> = Vec::new();
-    for h in found {
-        let same = match merged.last() {
-            Some(l) => {
-                (h.0 - l.0).abs() <= 1e-12 * (1.0 + h.0.abs())
-                    || (c.eval(h.0) - c.eval(l.0)).norm() <= 5.0 * tol.linear
-                    || (near(h.0) && near(l.0) && (1..8).all(|i| near(l.0 + (h.0 - l.0) * i as f64 / 8.0)))
-            }
-            None => false,
-        };
-        if same {
-            if let Some(l) = merged.last_mut() {
-                l.1 |= h.1;
-            }
-        } else {
-            merged.push(h);
-        }
-    }
+    let (lo, hi) = (c.range().lo, c.range().hi);
+    let closed = c.domain().is_periodic() || (c.eval(lo) - c.eval(hi)).norm() <= tol.linear;
+    let h0 = |t: f64| 0.5 * tol.linear / c.jet(t).d1.norm().max(1e-300);
+    let seed = found.first().map_or(lo, |h| h.0);
+    let gap = Gap { f: &signed, lo, hi, closed, tol: tol.linear, h0: h0(seed) };
+    let merged: Vec<Raw> = merge_contacts(&gap, &found).into_iter().filter(|h| r.contains(h.0, 0.0)).collect();
     Ok(Some(merged))
 }
 
@@ -601,6 +601,8 @@ pub fn curve_prepared_surface(curve: &CurveDef, range: Option<Interval>, ps: &Pr
         _ => return Err(GeomError::Unsupported("curve kind")),
     };
     let hits = pair_hits(&pc, ps, if remap.is_some() || matches!(curve, CurveDef::Line(_)) { pc.range() } else { r }, tol)?;
+    // One hit per contact stretch, before any periodic replication.
+    let hits = classify_pair_hits(&pc, ps, hits, tol);
     let mut out: Vec<CurveSurfaceHit> = Vec::new();
     for h in hits {
         match remap {
@@ -621,6 +623,83 @@ pub fn curve_prepared_surface(curve: &CurveDef, range: Option<Interval>, ps: &Pr
     }
     out.sort_by(|a, b| a.t.total_cmp(&b.t));
     Ok(CurveSurface::Points(out))
+}
+
+/// Signed gap from `q` (near the surface) to `s` along the surface normal, and the foot's
+/// parameters. Local Gauss-Newton from `seed`, global projection if that does not converge.
+fn signed_gap_surface(s: &PreparedSurface, q: Point3, seed: Uv) -> (Uv, f64) {
+    let dom = s.domain();
+    let fixu = |q: Uv| {
+        let f = |d: &sm_geom_api::Domain1, x: f64| if d.is_periodic() { d.wrap(x) } else { d.range.clamp(x) };
+        Uv::new(f(&dom.u, q.u), f(&dom.v, q.v))
+    };
+    let scale = diam(&s.control_bbox()).max(1e-300);
+    let mut uv = fixu(seed);
+    let mut ok = false;
+    for _ in 0..16 {
+        let j = s.jet(uv);
+        let r = j.p - q;
+        let (a, b, c) = (j.du.dot(j.du), j.du.dot(j.dv), j.dv.dot(j.dv));
+        let (gu, gv) = (-r.dot(j.du), -r.dot(j.dv));
+        let damp = 1e-12 * (a + c).max(1e-300);
+        let det = (a + damp) * (c + damp) - b * b;
+        if det.abs() < 1e-300 {
+            break;
+        }
+        let (du, dv) = ((gu * (c + damp) - gv * b) / det, (gv * (a + damp) - gu * b) / det);
+        let nuv = fixu(Uv::new(uv.u + du, uv.v + dv));
+        let moved = (nuv.u - uv.u).abs() + (nuv.v - uv.v).abs();
+        uv = nuv;
+        if moved <= 1e-14 * (1.0 + uv.u.abs() + uv.v.abs()) {
+            ok = true;
+            break;
+        }
+    }
+    let j = s.jet(uv);
+    let r = q - j.p;
+    // Converged to a foot point, near the query (a far result may be another sheet).
+    let good = ok && r.norm() <= 1e-3 * scale && r.dot(j.du).abs() <= 1e-7 * r.norm().max(1e-12 * scale) * j.du.norm() + 1e-14 * scale * j.du.norm() && r.dot(j.dv).abs() <= 1e-7 * r.norm().max(1e-12 * scale) * j.dv.norm() + 1e-14 * scale * j.dv.norm();
+    let (uv, j, r) = if good {
+        (uv, j, r)
+    } else {
+        let pr = crate::nurbs::project::project_surface(s, q, Some(seed));
+        let j = s.jet(pr.uv);
+        (pr.uv, j, q - j.p)
+    };
+    let n = j.du.cross(j.dv);
+    let nn = n.norm();
+    let sd = if nn > 0.0 { r.dot(n) / nn } else { r.norm() };
+    (uv, sd)
+}
+
+/// Replace the hits of `pair_hits` by one hit per contact stretch (see `contact`).
+fn classify_pair_hits(c: &PreparedCurve, s: &PreparedSurface, hits: Vec<PairHit>, tol: &ModelTolerance) -> Vec<PairHit> {
+    if hits.is_empty() {
+        return hits;
+    }
+    let (lo, hi) = (c.range().lo, c.range().hi);
+    let closed = c.domain().is_periodic() || (c.eval(lo) - c.eval(hi)).norm() <= tol.linear;
+    let span = hi - lo;
+    // Seed each gap evaluation from the nearest hit (circularly on a closed curve).
+    let nearest = |t: f64| {
+        let d = |h: &PairHit| {
+            let x = (h.t - t).abs();
+            if closed { x.min(span - x) } else { x }
+        };
+        hits.iter().min_by(|a, b| d(a).total_cmp(&d(b))).map_or(Uv::new(0.0, 0.0), |h| h.uv)
+    };
+    let signed = |t: f64| signed_gap_surface(s, c.eval(t), nearest(t)).1;
+    let h0 = 0.5 * tol.linear / c.jet(hits[0].t).d1.norm().max(1e-300);
+    let gap = Gap { f: &signed, lo, hi, closed, tol: tol.linear, h0 };
+    let raw: Vec<Raw> = hits.iter().map(|h| (h.t, h.tangent)).collect();
+    merge_contacts(&gap, &raw)
+        .into_iter()
+        .map(|(t, tangent)| {
+            let point = c.eval(t);
+            let (uv, _) = signed_gap_surface(s, point, nearest(t));
+            PairHit { t, uv, point, tangent }
+        })
+        .collect()
 }
 
 /// Slab clip of `origin + t dir` against a box inflated by `pad`; `None` if empty or unbounded
@@ -678,7 +757,7 @@ pub(crate) fn pair_hits(c: &PreparedCurve, s: &PreparedSurface, cr: Interval, to
     let (pu, pv) = s.degrees();
     let scale = diam(&s.control_bbox()).max(diam(&c.control_bbox())).max(1e-300);
     let leaf = 1e-3 * scale;
-    let pad = 0.5 * tol.linear;
+    let pad = 1.01 * tol.linear;
     let mut stack: Vec<PairNode> = Vec::new();
     for cs in c.segs.iter().rev().filter(|x| x.hi >= cr.lo && x.lo <= cr.hi) {
         for p in s.patches.iter().rev() {

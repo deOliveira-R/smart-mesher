@@ -80,7 +80,8 @@ fn nurbs_curve_plane() {
     let py = Plane { frame: Frame::from_z(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0)).unwrap() };
     let h = pts(curve_plane(&CurveDef::Nurbs(full), None, &py, &tol()).unwrap());
     let xs: Vec<f64> = h.iter().map(|x| x.point.x).collect();
-    assert_eq!(h.len(), 3, "start, middle and end of the knot range: {xs:?}");
+    assert_eq!(h.len(), 2, "the seam is one hit, not the start and the end of the knot range: {xs:?}");
+    assert!(h.iter().all(|x| !x.tangent), "{h:?}");
     // Tangent: plane y = 2.
     let full = exact::circle_to_nurbs(&Circle::new(world(), 2.0).unwrap()).unwrap();
     let pt = Plane { frame: Frame::from_z(Point3::new(0.0, 2.0, 0.0), Vector3::new(0.0, 1.0, 0.0)).unwrap() };
