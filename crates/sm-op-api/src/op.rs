@@ -131,7 +131,8 @@ pub struct Delta {
     /// Ids retired, in call order.
     #[serde(default)]
     pub removed: Vec<EntityId>,
-    /// Ids allocated through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`], by role.
+    /// Ids placed in output roles through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`] (new
+    /// ids) or [`ApplyCtx::record_role`] (surviving ids), by role.
     #[serde(default)]
     pub outputs: BTreeMap<String, Vec<EntityId>>,
     /// Names of layers mutably accessed (including by `on_succession` / `on_retired`), sorted.

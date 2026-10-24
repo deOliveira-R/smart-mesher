@@ -156,4 +156,21 @@ Plan: `docs/design/w2/plan.md` (task specs T1–T13, stage-0 contract changes AC
 2. **Meshed volumes are not transformed in W2.** `model.move/rotate/scale/reflect` on a meshed volume fails with "mesh.delete first". Meshes on deleted volumes are marked `stale`, not deleted. Moving the mesh with its geometry is W3.
 3. **Export is not an op.** It is the protocol method `session.export` and the script command `session.export(...)`, a pure function of the state (`sm_fem::export`).
 4. **Stage 0 before workers:** ACR-1 (scheme stubs behind the `stubs` feature, clippy-clean, since CI runs `--all-features`), ACR-2 (`OpInfo` output roles, cardinality, positional marker, `x-entity-kind`), ACR-3 (new contract crate `sm-layer-api`; frozen only after compiling `create_brick` and `mesh.run` sketches pass in its tests), ACR-4 (new crate `sm-protocol`, v0, unstable until W3), then ACR-5 (skeleton crates with fixed entry points, plus the defaulted `Host::session`).
-5. **Stage 1 runs on Anthropic Cloud** (all tasks at once, no local 8-worker cap). Cloud sessions have no network, so the tasks that depend on external specs (sm-mcp: MCP 2025-06-18; sm-scheme-curve and sm-sizing: Cubit semantics) carry the needed spec excerpts in their task text, and the local Opus reviewers check against the real sources.
+5. **Stage 1 runs on Anthropic Cloud** (all tasks at once, no local 8-worker cap). Cloud sessions have no general internet, so the tasks that depend on external specs get them as repo docs (decision 6), and the local Opus reviewers check against the real sources.
+6. **External specs are in the repo, not in task text.** `docs/research/mcp-2025-06-18.md` (MCP server excerpt) and `docs/research/cubit-meshing-semantics.md` (Cubit curve schemes, intervals, matching, map and vertex types, paraphrased). The second also fills Cubit's unpublished parts (auto size formula, size→count rounding, dualbias with odd n, the curvature density) with binding `[Ours]` decisions. Where the plan fixes something, the plan wins.
+7. **Stage 0b (review follow-ups, before freezing):**
+   - `ApplyCtx::record_role` reports surviving ids in output roles. POSITIONAL and OUTPUTS are validated at registration.
+   - The catalog is owned and deserializable (`OpInfoOwned`/`QueryInfoOwned`, including `tool_name`). The `sm-protocol` result types are `#[non_exhaustive]` and have constructors.
+   - In `sm-layer-api`:
+     - `insert_mesh` and `retire_mesh` are the only valid mesh lifecycle path. The minted set must equal the mesh's ids exactly.
+     - `model_txn` retires removed record ids.
+     - `topo_txn` can report survivors in roles.
+     - Retired-id lookups are sorted and binary-searched.
+   - Binding worker notes are in plan §3 "Stage-0b notes".
+8. **Export with no mesh named:**
+   - Exactly one mesh is exported.
+   - No mesh is a `no-mesh` error.
+   - Several meshes is an `ambiguous-mesh` error.
+   
+   The `Request::Export` doc is updated to match.
+Merged: stage 0 at f001d6d (ACR-1 029c6d5, ACR-2 f4ee040, ACR-3 59e0fdc, ACR-4 75dd25d); stage 0b at e29d8ba (polish 2701085, skeletons 6ae9cde).

@@ -11,7 +11,7 @@ use sm_engine::{EngineError, Workspace, WorkspaceBuilder};
 use sm_layer_api::CoreLayers;
 use sm_mesher::{MeshPlugin, MesherConfig};
 use sm_model::ModelPlugin;
-use sm_op_api::Services;
+use sm_op_api::{OpInfoOwned, QueryInfoOwned, Services};
 use sm_protocol::{CatalogResult, Endpoint, HashResult, METHOD_NOT_FOUND, PROTOCOL_VERSION, Request, RpcError};
 use sm_scheme_api::{SchemeDim, SchemeRegistry};
 use sm_sizing::{AnglePicker, IiaSolver};
@@ -90,6 +90,8 @@ impl Endpoint for Server {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| RpcError::internal(e.to_string()))?;
                 let batch_schema = to_value!(&reg.batch_schema().map_err(|e| RpcError::internal(e.to_string()))?)?;
+                let ops = ops.iter().map(OpInfoOwned::from).collect();
+                let queries = queries.iter().map(QueryInfoOwned::from).collect();
                 to_value!(&CatalogResult { protocol: PROTOCOL_VERSION, ops, queries, batch_schema })
             }
             Request::Hash { at } => {
@@ -97,7 +99,7 @@ impl Endpoint for Server {
                     None => self.ws.state().clone(),
                     Some(rev) => self.ws.state_at(&rev).map_err(|e| engine_err(&e))?,
                 };
-                to_value!(&HashResult { state: state.hash(), layers: state.layer_hashes() })
+                to_value!(&HashResult::new(state.hash(), state.layer_hashes()))
             }
             other => Err(RpcError::new(
                 METHOD_NOT_FOUND,

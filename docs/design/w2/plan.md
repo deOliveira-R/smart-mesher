@@ -315,7 +315,7 @@ Rules common to every task:
 - **Must NOT:** do file I/O; implement any Host; change existing meanings (only error → meaning relaxations).
 
 ### T10. `sm-server` (L5, new): session host, protocol endpoint, transports, standard distribution
-- **Deps:** sm-core, sm-op-api, sm-engine, sm-lang, sm-protocol, sm-layer-api, sm-fem, sm-model, sm-mesher, sm-sizing, sm-scheme-curve, sm-scheme-map, sm-scheme-mapvol, sm-tess, serde_json. Optional feature `ws` (tungstenite).
+- **Deps:** sm-core, sm-op-api, sm-engine, sm-lang, sm-protocol, sm-layer-api, sm-fem, sm-model, sm-mesher, sm-sizing, sm-scheme-curve, sm-scheme-map, sm-scheme-mapvol, sm-tess, sm-topo (the `TopoStore` factory for `CoreLayers`), sm-scheme-api (`SchemeRegistry`), serde_json. Optional feature `ws` (tungstenite).
 - **Scope:**
   - `SessionHost<'w>: sm_lang::Host` over `&mut sm_engine::Workspace` (W1 lang request 3, decision 35):
     - `apply` = `Workspace::apply_json(rec.name, rec.params, version)`;
@@ -571,6 +571,31 @@ pub const PROTOCOL_VERSION: u32 = 0;
   - the defaulted `Host::session(&mut self, cmd: &SessionCommand) -> Result<Json, HostError>` (default `session-unsupported`);
   - `#[non_exhaustive] pub enum SessionCommand { Export { path: String, format: Option<String>, mesh: Option<EntityId>, provenance: bool }, Save, Hash, Status }`.
   - T9 does the parsing; T10 implements the trait method from day one.
+
+### Stage-0b notes (binding for stage-1 workers)
+These came out of the stage-0b reviews and are now on main.
+
+- **Ids in output roles.**
+  - `ApplyCtx::record_role(role, ids)` reports surviving ids. Examples: moved volumes from `model.move`, and imprint survivors.
+  - Do not retire an id after recording it in a role.
+  - Ids are sorted within each call. Across calls they come out in call order. `topo_txn`/`commit_topology` roles are different: they are merged ascending across the whole transaction.
+- **Mesh lifecycle.**
+  - Insert meshes only through `sm_layer_api::insert_mesh`. Its minted-id set must equal the mesh's ids exactly, so any `MeshEdit` builder must assign ids only in `finish`.
+  - Delete meshes only through `retire_mesh`. Calling `ctx.retire` on a `Mesh` id leaks its children.
+  - `mesh.delete` over several meshes loops `retire_mesh` inside one op. Any error fails the whole op.
+- **Model records.** `model_txn` retires the record ids that `f` removed (colors, groups, boundaries). Ops never retire them by hand.
+- **Export with `mesh = None` (T8 and T10).**
+  - If the state has exactly one mesh, export it.
+  - If it has none, return a typed `no-mesh` error.
+  - If it has several, return a typed `ambiguous-mesh` error.
+  - The `Request::Export` doc on main already states this rule. T8 implements it, and T10 maps the errors.
+- **T10.**
+  - `standard()` must not discard scheme `register` errors. A fallible `try_standard() -> Result<WorkspaceBuilder, _>` plus a panicking `standard()` is fine.
+  - Set the auto scheme lists strictly.
+  - Add a project-backed constructor, such as `Server::open(builder, dir)` or `Server::from_workspace(Workspace)`, for `smesh -p dir`.
+  - `Server::new` stays in-memory.
+- **T11.** A malformed JSON line gets a -32700 reply with `id: null` (the skeleton skips it silently).
+- **T2.** The query is `view.tessellate`; fix the skeleton's rustdoc.
 
 **Orchestrator docs (no worker):** amend ARCHITECTURE §4 (`.cache/HEAD`, `.gitignore`, `project.toml` keys; decision 35); add the `sm-layer-api` and `sm-protocol` nodes to `docs/graph/concepts.yaml`.
 

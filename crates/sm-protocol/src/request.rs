@@ -141,7 +141,8 @@ pub enum Request {
         /// Format; inferred from the path extension when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<ExportFormat>,
-        /// Mesh to export; all meshes when absent.
+        /// Mesh to export. When absent, the only mesh in the state is exported; no mesh or several
+        /// meshes is an error (`no-mesh` / `ambiguous-mesh`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mesh: Option<EntityId>,
         /// Include provenance data.

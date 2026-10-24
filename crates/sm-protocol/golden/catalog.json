@@ -119,7 +119,7 @@
               "type": "array"
             },
             "default": {},
-            "description": "Ids allocated through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`], by role.",
+            "description": "Ids placed in output roles through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`] (new\nids) or [`ApplyCtx::record_role`] (surviving ids), by role.",
             "type": "object"
           },
           "removed": {

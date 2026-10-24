@@ -255,6 +255,10 @@ impl LayerType for MeshLayer {
     /// `Mesh*` ids, which stay live until `mesh.delete`), and drops entries whose own `Mesh` id
     /// was retired. The ids are sorted once and binary-searched, so the cost is
     /// O((ids + entries x selection) log ids).
+    ///
+    /// Retiring a `Mesh` id directly with `ctx.retire` drops the entry here but leaves its
+    /// child ids live, and they can no longer be cleaned up: always delete meshes through
+    /// [`retire_mesh`].
     fn on_retired(&mut self, ids: &[EntityId]) {
         let set = SortedIds::new(ids);
         self.entries.retain(|k, _| !set.contains(*k));
@@ -441,6 +445,9 @@ fn mesh_ids(mesh_id: EntityId, m: &dyn MeshRead) -> Vec<EntityId> {
 ///
 /// Atomic: fails with [`OpError::UnknownEntity`] when `mesh` is not in the layer, or when any of
 /// its ids is no longer live (e.g. an op retired one cell of it), and then changes nothing.
+///
+/// This is the only valid way to delete a mesh. Calling `ctx.retire` on the `Mesh` id leaks
+/// every child id.
 pub fn retire_mesh(ctx: &mut ApplyCtx<'_>, mesh: EntityId) -> Result<(), OpError> {
     let ids = {
         let entry = ctx
