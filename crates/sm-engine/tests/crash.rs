@@ -44,7 +44,10 @@ fn base_project(path: &Path) -> BTreeMap<String, Hash256> {
 
 fn no_leftover_temp_files(root: &Path) {
     for k in tree(root, false).keys() {
-        assert!(!(k.ends_with(".lock") && !k.ends_with("/lock")), "temp file left behind: {k}");
+        assert!(
+            !(k.ends_with(".lock") && !k.ends_with("/lock")),
+            "temp file left behind: {k}"
+        );
     }
 }
 
@@ -53,13 +56,23 @@ fn no_leftover_temp_files(root: &Path) {
 struct Expect {
     tips: BTreeMap<String, Vec<Hash256>>,
     always: Vec<String>,
+    heads: Vec<sm_op_api::Head>,
 }
 
 impl Expect {
     fn new(base: &BTreeMap<String, Hash256>) -> Self {
-        let mut e = Self { tips: BTreeMap::new(), always: base.keys().cloned().collect() };
+        let mut e = Self {
+            tips: BTreeMap::new(),
+            always: base.keys().cloned().collect(),
+            heads: vec![sm_op_api::Head::Ref("main".into())],
+        };
         e.record(base, false);
         e
+    }
+    fn record_head(&mut self, h: &sm_op_api::Head) {
+        if !self.heads.contains(h) {
+            self.heads.push(h.clone());
+        }
     }
     fn record(&mut self, refs: &BTreeMap<String, Hash256>, prune: bool) {
         for (n, h) in refs {
@@ -77,22 +90,45 @@ impl Expect {
 /// Reopen after the crash and check every invariant.
 fn verify(root: &Path, expect: &Expect, k: usize) {
     let (b, _) = builder();
-    let mut ws = b.open(root).unwrap_or_else(|e| panic!("point {k}: project does not open: {e}"));
+    let mut ws = b
+        .open(root)
+        .unwrap_or_else(|e| panic!("point {k}: project does not open: {e}"));
     no_leftover_temp_files(root);
+    let warned = ws
+        .open_report()
+        .warnings
+        .iter()
+        .any(|w| w.contains("HEAD names"));
+    assert!(
+        !warned,
+        "point {k}: HEAD dangled and fell back: {:?}",
+        ws.open_report().warnings
+    );
+    assert!(
+        expect.heads.contains(ws.session().head()),
+        "point {k}: HEAD is {:?}",
+        ws.session().head()
+    );
     for (name, tip) in ws.timeline().refs().clone() {
         let ok = expect.tips.get(&name).is_some_and(|v| v.contains(&tip));
         assert!(ok, "point {k}: branch {name} at unexpected node {tip}");
-        let cold = ws.state_from_root(tip).unwrap_or_else(|e| panic!("point {k}: replay of {name}: {e}"));
+        let cold = ws
+            .state_from_root(tip)
+            .unwrap_or_else(|e| panic!("point {k}: replay of {name}: {e}"));
         ws.checkout(Rev::Ref(name.clone())).unwrap();
         assert_eq!(ws.state_hash(), cold.hash(), "point {k}: {name}");
     }
     for name in &expect.always {
-        assert!(ws.timeline().refs().contains_key(name), "point {k}: branch {name} lost");
+        assert!(
+            ws.timeline().refs().contains_key(name),
+            "point {k}: branch {name} lost"
+        );
     }
     // Usable afterwards: record another op and reopen.
     let first = ws.state().entities_of(sm_core::EntityKind::TopoBody).next();
     if let Some(id) = first {
-        ws.apply(&Add { id, delta: 1 }, &opts()).unwrap_or_else(|e| panic!("point {k}: {e}"));
+        ws.apply(&Add { id, delta: 1 }, &opts())
+            .unwrap_or_else(|e| panic!("point {k}: {e}"));
         let st = ws.status();
         ws.close().unwrap();
         let (b, _) = builder();
@@ -115,8 +151,13 @@ fn sweep(tag: &str, act: &Act) {
     let (b, _) = builder();
     let mut ws = b.fault(inj.clone()).open(&counted).unwrap();
     let mut expect = Expect::new(&base);
-    act(&mut ws, &mut |w| expect.record(w.timeline().refs(), true)).unwrap();
+    act(&mut ws, &mut |w| {
+        expect.record(w.timeline().refs(), true);
+        expect.record_head(w.session().head());
+    })
+    .unwrap();
     expect.record(ws.timeline().refs(), true);
+    expect.record_head(ws.session().head());
     ws.close().unwrap();
     let points = inj.points();
     assert!(points >= 4, "scenario should write something ({points})");
@@ -129,7 +170,10 @@ fn sweep(tag: &str, act: &Act) {
         let mut ws = b.fault(inj.clone()).open(&work).unwrap();
         let r = act(&mut ws, &mut |_| {});
         assert!(inj.tripped(), "point {k} of {points} never reached");
-        assert!(r.is_err(), "point {k}: injected crash must surface as an error");
+        assert!(
+            r.is_err(),
+            "point {k}: injected crash must surface as an error"
+        );
         drop(ws); // the process is dead: nothing else gets written
         verify(&work, &expect, k);
     }
@@ -138,7 +182,10 @@ fn sweep(tag: &str, act: &Act) {
 }
 
 fn first_counter(ws: &Workspace) -> sm_core::EntityId {
-    ws.state().entities_of(sm_core::EntityKind::TopoBody).next().expect("a counter")
+    ws.state()
+        .entities_of(sm_core::EntityKind::TopoBody)
+        .next()
+        .expect("a counter")
 }
 
 #[test]
@@ -172,6 +219,17 @@ fn crash_while_renaming_and_deleting_branches() {
         ws.rename_branch("side", "renamed/x")?;
         step(ws);
         ws.delete_branch("old")?;
+        step(ws);
+        Ok(())
+    });
+}
+
+#[test]
+fn crash_while_renaming_the_attached_branch_never_orphans_head() {
+    sweep("head", &|ws, step| {
+        ws.checkout(Rev::Ref("side".into()))?;
+        step(ws);
+        ws.rename_branch("side", "side2")?;
         step(ws);
         Ok(())
     });
@@ -220,19 +278,27 @@ fn crash_while_creating_a_project_leaves_no_half_project() {
     };
     let inj = FaultInjector::counting();
     let mut ws = build(Some(inj.clone()));
-    ws.save_as(dir.project("count"), ProjectConfig::new("c")).unwrap();
+    ws.save_as(dir.project("count"), ProjectConfig::new("c"))
+        .unwrap();
     let points = inj.points();
     let tips = ws.timeline().refs().clone();
     for k in 0..points {
         let p = dir.project(&format!("c{k}"));
         let inj = FaultInjector::fail_at(k);
         let mut ws = build(Some(inj));
-        assert!(ws.save_as(&p, ProjectConfig::new("c")).is_err(), "point {k}");
+        assert!(
+            ws.save_as(&p, ProjectConfig::new("c")).is_err(),
+            "point {k}"
+        );
         drop(ws);
         let (b, _) = builder();
         match b.open(&p) {
             Err(EngineError::NotAProject(_)) => {} // project.toml is written last
-            Ok(ws) => assert_eq!(ws.timeline().refs(), &tips, "point {k}: a project that opens is complete"),
+            Ok(ws) => assert_eq!(
+                ws.timeline().refs(),
+                &tips,
+                "point {k}: a project that opens is complete"
+            ),
             Err(e) => panic!("point {k}: {e}"),
         }
     }

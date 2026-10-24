@@ -38,18 +38,35 @@ fn create_writes_the_documented_layout() {
     assert_eq!(files[".gitignore"], b"/.cache/\n");
     assert!(names.contains(&"timeline/refs/heads/main"));
     assert!(names.contains(&"timeline/refs/heads/try"));
-    assert_eq!(names.iter().filter(|n| n.starts_with("timeline/ops/") && n.ends_with(".toml")).count(), 6);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|n| n.starts_with("timeline/ops/") && n.ends_with(".toml"))
+            .count(),
+        6
+    );
     assert!(names.contains(&".cache/HEAD"));
     assert!(names.contains(&".cache/reflog.jsonl"));
     // No temp files survive successful writes.
-    assert!(!names.iter().any(|n| n.ends_with(".lock") && !n.ends_with("/lock")));
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.ends_with(".lock") && !n.ends_with("/lock"))
+    );
     // Ref files hold exactly the tip hash.
     let tip = ws.timeline().refs()["try"];
-    assert_eq!(files["timeline/refs/heads/try"], format!("{tip}\n").into_bytes());
+    assert_eq!(
+        files["timeline/refs/heads/try"],
+        format!("{tip}\n").into_bytes()
+    );
     // The files are what Timeline::to_files produces.
     let expect = ws.timeline().to_files().unwrap();
     for (rel, text) in expect {
-        assert_eq!(files[&format!("timeline/{rel}")], text.into_bytes(), "{rel}");
+        assert_eq!(
+            files[&format!("timeline/{rel}")],
+            text.into_bytes(),
+            "{rel}"
+        );
     }
     let toml = String::from_utf8(files["project.toml"].clone()).unwrap();
     assert!(toml.contains("format = 1") && toml.contains("name = \"demo\""));
@@ -213,14 +230,25 @@ fn damaged_cache_files_are_ignored() {
     ws.close().unwrap();
     fs::write(p.join(".cache/HEAD"), "{{{{").unwrap();
     fs::write(p.join(".cache/redo.json"), "nonsense").unwrap();
-    fs::write(p.join(".cache/reflog.jsonl"), "{\"ref_name\":\"main\"}\nnot json").unwrap();
+    fs::write(
+        p.join(".cache/reflog.jsonl"),
+        "{\"ref_name\":\"main\"}\nnot json",
+    )
+    .unwrap();
     for e in fs::read_dir(p.join(".cache/snapshots")).unwrap() {
         fs::write(e.unwrap().path(), b"garbage").unwrap();
     }
     let (b, _) = builder();
     let ws = b.open(&p).unwrap();
     assert_eq!(ws.status().state, st.state);
-    assert!(ws.open_report().warnings.iter().any(|w| w.contains("snapshot")), "{:?}", ws.open_report());
+    assert!(
+        ws.open_report()
+            .warnings
+            .iter()
+            .any(|w| w.contains("snapshot")),
+        "{:?}",
+        ws.open_report()
+    );
 }
 
 #[test]
@@ -228,7 +256,11 @@ fn snapshots_seed_open_and_skip_replay() {
     let dir = TempDir::new("snap");
     let p = dir.project("p.smesh");
     let (b, counter) = builder();
-    let mut ws = b.snapshot_every(Some(10)).keep_snapshots(2).create(&p, cfg()).unwrap();
+    let mut ws = b
+        .snapshot_every(Some(10))
+        .keep_snapshots(2)
+        .create(&p, cfg())
+        .unwrap();
     let id = create(&mut ws, "a", 0);
     for _ in 0..24 {
         add(&mut ws, id, 1);
@@ -237,14 +269,22 @@ fn snapshots_seed_open_and_skip_replay() {
     assert!(counter.load(Ordering::SeqCst) >= 25);
     ws.close().unwrap();
     let snaps: Vec<_> = fs::read_dir(p.join(".cache/snapshots")).unwrap().collect();
-    assert_eq!(snaps.len(), 2, "pruned to the two deepest (depth 10 and 20)");
+    assert_eq!(
+        snaps.len(),
+        2,
+        "pruned to the two deepest (depth 10 and 20)"
+    );
 
     let (b, counter) = builder();
     let ws = b.open(&p).unwrap();
     assert_eq!(ws.status().state, st.state);
     let seeded = ws.open_report().seeded_from.expect("seeded");
     assert_eq!(ws.timeline().depth(seeded), Some(20));
-    assert_eq!(counter.load(Ordering::SeqCst), 5, "only depth 21..=25 replayed");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        5,
+        "only depth 21..=25 replayed"
+    );
 }
 
 #[test]
@@ -256,7 +296,10 @@ fn stale_snapshot_is_never_used() {
     let mut ws = b.create(&p, cfg()).unwrap();
     let id = create(&mut ws, "a", 0);
     add(&mut ws, id, 1);
-    let n1 = ws.timeline().path_to_root(ws.status().position.unwrap()).unwrap()[0];
+    let n1 = ws
+        .timeline()
+        .path_to_root(ws.status().position.unwrap())
+        .unwrap()[0];
     ws.snapshot_now().unwrap(); // snapshot of node 2
     let n2 = ws.status().position.unwrap();
     ws.close().unwrap();
@@ -312,11 +355,20 @@ fn create_refuses_existing_content_and_open_refuses_non_projects() {
     let ws = b.create(&p, cfg()).unwrap();
     ws.close().unwrap();
     let (b, _) = builder();
-    assert!(matches!(b.create(&p, cfg()), Err(EngineError::AlreadyExists(_))));
+    assert!(matches!(
+        b.create(&p, cfg()),
+        Err(EngineError::AlreadyExists(_))
+    ));
     let (b, _) = builder();
-    assert!(matches!(b.open(dir.path()), Err(EngineError::NotAProject(_))));
+    assert!(matches!(
+        b.open(dir.path()),
+        Err(EngineError::NotAProject(_))
+    ));
     let (b, _) = builder();
-    assert!(matches!(b.open(dir.project("missing")), Err(EngineError::NotAProject(_))));
+    assert!(matches!(
+        b.open(dir.project("missing")),
+        Err(EngineError::NotAProject(_))
+    ));
 }
 
 #[test]
@@ -333,7 +385,10 @@ fn project_lock_and_read_only() {
     let (b, _) = builder();
     let mut ro = b.read_only(true).open(&p).unwrap();
     assert_eq!(ro.status().state, ws.status().state);
-    assert!(matches!(ro.apply_json("counter.add_all", json!({"delta": 1}), &opts()), Err(EngineError::ReadOnly)));
+    assert!(matches!(
+        ro.apply_json("counter.add_all", json!({"delta": 1}), &opts()),
+        Err(EngineError::ReadOnly)
+    ));
     assert!(matches!(ro.undo(), Err(EngineError::ReadOnly)));
     ro.checkout(Rev::Empty).unwrap();
     assert_eq!(total(&ro), 0);
@@ -351,22 +406,36 @@ fn project_toml_round_trips_unknown_keys_and_rejects_newer_formats() {
     let (b, _) = builder();
     let mut c = cfg();
     c.units = Some("cm".into());
-    c.tolerances = Some(sm_engine::Tolerances { linear: 1e-6, angular: 1e-9 });
+    c.tolerances = Some(sm_engine::Tolerances {
+        linear: 1e-6,
+        angular: 1e-9,
+    });
     c.metadata.insert("owner".into(), "inl".into());
     b.create(&p, c).unwrap().close().unwrap();
     let text = fs::read_to_string(p.join("project.toml")).unwrap();
-    fs::write(p.join("project.toml"), format!("future_key = \"keep me\"\n{text}")).unwrap();
+    fs::write(
+        p.join("project.toml"),
+        format!("future_key = \"keep me\"\n{text}"),
+    )
+    .unwrap();
     let (b, _) = builder();
     let mut ws = b.open(&p).unwrap();
     let got = ws.config().unwrap().clone();
     assert_eq!(got.units.as_deref(), Some("cm"));
     assert!(got.extra.contains_key("future_key"));
     ws.set_config(got).unwrap();
-    assert!(fs::read_to_string(p.join("project.toml")).unwrap().contains("future_key"));
+    assert!(
+        fs::read_to_string(p.join("project.toml"))
+            .unwrap()
+            .contains("future_key")
+    );
     ws.close().unwrap();
     fs::write(p.join("project.toml"), "format = 99\nname = \"x\"\n").unwrap();
     let (b, _) = builder();
-    assert!(matches!(b.open(&p), Err(EngineError::UnsupportedFormat { found: 99, .. })));
+    assert!(matches!(
+        b.open(&p),
+        Err(EngineError::UnsupportedFormat { found: 99, .. })
+    ));
     // Control characters would not survive a CRLF checkout.
     let mut bad = cfg();
     bad.description = Some("two\nlines".into());
@@ -386,13 +455,26 @@ fn tampered_result_hash_is_diverged_and_rebaseline_rewrites_the_node() {
     // `check.state` is not part of the node hash: flip a nibble in it.
     let f = p.join(format!("timeline/ops/{victim}.toml"));
     let text = fs::read_to_string(&f).unwrap();
-    let line = text.lines().find(|l| l.starts_with("state = ")).unwrap().to_owned();
-    let flipped = line.replace(&line[line.len() - 3..line.len() - 2], if line.as_bytes()[line.len() - 3] == b'0' { "1" } else { "0" });
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("state = "))
+        .unwrap()
+        .to_owned();
+    let flipped = line.replace(
+        &line[line.len() - 3..line.len() - 2],
+        if line.as_bytes()[line.len() - 3] == b'0' {
+            "1"
+        } else {
+            "0"
+        },
+    );
     fs::write(&f, text.replace(&line, &flipped)).unwrap();
 
     let (b, _) = builder();
     match b.open(&p) {
-        Err(EngineError::Timeline(sm_op_api::TimelineError::Diverged { node, .. })) => assert_eq!(node, victim),
+        Err(EngineError::Timeline(sm_op_api::TimelineError::Diverged { node, .. })) => {
+            assert_eq!(node, victim)
+        }
         other => panic!("expected Diverged, got {:?}", other.err()),
     }
     let (b, _) = builder();
@@ -400,7 +482,11 @@ fn tampered_result_hash_is_diverged_and_rebaseline_rewrites_the_node() {
     assert_eq!(ws.open_report().rebaselined, vec![victim]);
     assert!(!ws.open_report().warnings.is_empty());
     ws.close().unwrap();
-    assert_ne!(fs::read_to_string(&f).unwrap(), text.replace(&line, &flipped), "node file was rewritten");
+    assert_ne!(
+        fs::read_to_string(&f).unwrap(),
+        text.replace(&line, &flipped),
+        "node file was rewritten"
+    );
     let (b, _) = builder();
     b.open(&p).unwrap(); // strict open works again
 }
@@ -419,7 +505,7 @@ fn flaky_op_is_reported_as_diverged_on_reopen() {
     // is fine (n = 0 as recorded), the second gets n = 1 as recorded; both agree. Replaying
     // the same nodes again in the same process does not.
     let (b, _) = builder();
-    let mut ws = b.open(&p).unwrap();
+    let ws = b.open(&p).unwrap();
     let tip = *ws.timeline().refs().get("main").unwrap();
     match ws.state_from_root(tip) {
         Err(EngineError::Timeline(sm_op_api::TimelineError::Diverged { .. })) => {}
@@ -447,7 +533,12 @@ fn stray_and_junk_files_do_not_break_open() {
     assert_eq!(ws.status(), st);
     assert!(!ops.join("0123.toml.77-1.lock").exists(), "swept");
     assert!(!heads.join("main.99-3.lock").exists(), "swept");
-    assert!(ws.open_report().warnings.iter().any(|w| w.contains(".DS_Store")));
+    assert!(
+        ws.open_report()
+            .warnings
+            .iter()
+            .any(|w| w.contains(".DS_Store"))
+    );
 }
 
 #[test]
@@ -465,4 +556,63 @@ fn corrupt_node_file_is_a_typed_error() {
     let (b, _) = builder();
     let e = b.open(&p).err().expect("must fail");
     assert!(matches!(e.code(), "format" | "hash-mismatch"), "{e}");
+}
+
+#[test]
+fn head_on_a_branch_that_vanished_falls_back_but_unborn_after_undo_is_kept() {
+    let dir = TempDir::new("head");
+    let p = dir.project("p.smesh");
+    let (b, _) = builder();
+    let mut ws = b.create(&p, cfg()).unwrap();
+    populate(&mut ws);
+    ws.fork("gone", None).unwrap();
+    ws.close().unwrap();
+    // A pull deleted the branch HEAD was on.
+    fs::remove_file(p.join("timeline/refs/heads/gone")).unwrap();
+    let (b, _) = builder();
+    let ws = b.open(&p).unwrap();
+    assert_eq!(ws.status().head, Head::Ref("main".into()));
+    assert_eq!(total(&ws), 11, "not an empty state");
+    assert!(
+        ws.open_report()
+            .warnings
+            .iter()
+            .any(|w| w.contains("HEAD names"))
+    );
+    ws.close().unwrap();
+
+    // Undoing a branch to its root leaves it unborn on purpose; that survives a restart.
+    let dir = TempDir::new("head2");
+    let p = dir.project("p.smesh");
+    let (b, _) = builder();
+    let mut ws = b.create(&p, cfg()).unwrap();
+    let id = create(&mut ws, "a", 1);
+    add(&mut ws, id, 1);
+    ws.undo().unwrap();
+    ws.undo().unwrap();
+    assert_eq!(total(&ws), 0);
+    ws.close().unwrap();
+    let (b, _) = builder();
+    let mut ws = b.open(&p).unwrap();
+    assert_eq!(ws.status().head, Head::Ref("main".into()));
+    assert_eq!(ws.status().position, None);
+    ws.redo().unwrap();
+    ws.redo().unwrap();
+    assert_eq!(total(&ws), 2);
+
+    // Same with another branch alive: the unborn HEAD must not be mistaken for a vanished one.
+    let dir = TempDir::new("head3");
+    let p = dir.project("p.smesh");
+    let (b, _) = builder();
+    let mut ws = b.create(&p, cfg()).unwrap();
+    let id = create(&mut ws, "a", 1);
+    ws.fork("work", None).unwrap();
+    add(&mut ws, id, 1);
+    ws.undo().unwrap();
+    ws.undo().unwrap();
+    let st = ws.status();
+    assert_eq!((st.position, st.redo), (None, 2));
+    ws.close().unwrap();
+    let (b, _) = builder();
+    assert_eq!(b.open(&p).unwrap().status(), st);
 }

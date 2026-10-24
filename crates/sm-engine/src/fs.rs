@@ -96,7 +96,11 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) -> io::Result<(
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let name = e.file_name().to_string_lossy().into_owned();
-        let rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+        let rel = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
         if e.file_type()?.is_dir() {
             walk(&e.path(), &rel, out)?;
         } else {
@@ -111,7 +115,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) -> io::Result<(
 pub fn read_timeline_files(layout: &Layout) -> Result<(BTreeMap<String, String>, LoadReport)> {
     let mut report = LoadReport::default();
     let mut wanted: Vec<(String, PathBuf)> = Vec::new();
-    for (sub, prefix) in [(layout.ops_dir(), "ops"), (layout.heads_dir(), "refs/heads")] {
+    for (sub, prefix) in [
+        (layout.ops_dir(), "ops"),
+        (layout.heads_dir(), "refs/heads"),
+    ] {
         let mut found = Vec::new();
         walk(&sub, prefix, &mut found).map_err(|e| EngineError::io(&sub, e))?;
         for (rel, path) in found {
@@ -169,7 +176,8 @@ pub(crate) struct WriteCtx<'a> {
 
 impl WriteCtx<'_> {
     pub(crate) fn write(&self, path: &Path, data: &[u8]) -> Result<()> {
-        fsio::atomic_write(path, data, self.durability, self.fault).map_err(|e| EngineError::io(path, e))
+        fsio::atomic_write(path, data, self.durability, self.fault)
+            .map_err(|e| EngineError::io(path, e))
     }
     pub(crate) fn remove(&self, path: &Path) -> Result<()> {
         fsio::remove_file(path, self.fault).map_err(|e| EngineError::io(path, e))
@@ -217,17 +225,27 @@ fn conflicts(a: &str, b: &str) -> bool {
 
 /// Bring the ref files in line with `now`, given what is `on_disk`: refs that clash by
 /// file-versus-directory or by case with a ref being written are deleted first, then new and
-/// moved refs are written, then the remaining deleted refs are removed. A crash between steps
+/// moved refs are written, then `mid` runs (HEAD is written there, so it never names a branch
+/// that is already gone), then the remaining deleted refs are removed. A crash between steps
 /// leaves refs pointing at existing nodes (the node files were written before this).
 pub(crate) fn sync_refs(
     layout: &Layout,
     tl: &Timeline,
     on_disk: &mut BTreeMap<String, Hash256>,
     ctx: WriteCtx<'_>,
+    mid: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
     let now = tl.refs();
-    let changed: Vec<&String> = now.iter().filter(|(n, h)| on_disk.get(*n) != Some(h)).map(|(n, _)| n).collect();
-    let gone: Vec<String> = on_disk.keys().filter(|n| !now.contains_key(*n)).cloned().collect();
+    let changed: Vec<&String> = now
+        .iter()
+        .filter(|(n, h)| on_disk.get(*n) != Some(h))
+        .map(|(n, _)| n)
+        .collect();
+    let gone: Vec<String> = on_disk
+        .keys()
+        .filter(|n| !now.contains_key(*n))
+        .cloned()
+        .collect();
     let remove = |name: &str, on_disk: &mut BTreeMap<String, Hash256>| -> Result<()> {
         let path = layout.timeline_file(&format!("refs/heads/{name}"));
         ctx.remove(&path)?;
@@ -249,6 +267,7 @@ pub(crate) fn sync_refs(
             on_disk.insert(name.clone(), now[name]);
         }
     }
+    mid()?;
     for g in &late {
         remove(g, on_disk)?;
     }
@@ -263,7 +282,10 @@ pub fn save_timeline(
     rewrite: &[Hash256],
     durability: Durability,
 ) -> Result<()> {
-    let ctx = WriteCtx { durability, fault: None };
+    let ctx = WriteCtx {
+        durability,
+        fault: None,
+    };
     let mut todo: Vec<Hash256> = tl
         .nodes()
         .map(|(h, _)| h)
@@ -272,16 +294,20 @@ pub fn save_timeline(
     todo.sort();
     write_nodes(layout, tl, &todo, ctx, |_| {})?;
     let mut disk = read_refs_on_disk(layout)?;
-    sync_refs(layout, tl, &mut disk, ctx)
+    sync_refs(layout, tl, &mut disk, ctx, &mut || Ok(()))
 }
 
 /// The refs currently stored under `timeline/refs/heads`.
 pub(crate) fn read_refs_on_disk(layout: &Layout) -> Result<BTreeMap<String, Hash256>> {
     let mut found = Vec::new();
-    walk(&layout.heads_dir(), "", &mut found).map_err(|e| EngineError::io(layout.heads_dir(), e))?;
+    walk(&layout.heads_dir(), "", &mut found)
+        .map_err(|e| EngineError::io(layout.heads_dir(), e))?;
     let mut out = BTreeMap::new();
     for (rel, path) in found {
-        if rel.ends_with(TMP_SUFFIX) || JUNK.contains(&rel.rsplit('/').next().unwrap_or("")) || !valid_ref_name(&rel) {
+        if rel.ends_with(TMP_SUFFIX)
+            || JUNK.contains(&rel.rsplit('/').next().unwrap_or(""))
+            || !valid_ref_name(&rel)
+        {
             continue;
         }
         let text = fs::read_to_string(&path).map_err(|e| EngineError::io(&path, e))?;
@@ -290,4 +316,29 @@ pub(crate) fn read_refs_on_disk(layout: &Layout) -> Result<BTreeMap<String, Hash
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflict_rule_covers_case_and_file_directory_clashes() {
+        assert!(conflicts("a", "a/b"));
+        assert!(conflicts("a/b", "a"));
+        assert!(conflicts("Feat", "feat"));
+        assert!(conflicts("Feat/x", "feat"));
+        assert!(!conflicts("a", "ab"));
+        assert!(!conflicts("a/b", "a/c"));
+    }
+
+    #[test]
+    fn layout_maps_timeline_relative_names() {
+        let l = Layout::new("/p");
+        assert_eq!(
+            l.timeline_file("refs/heads/feat/x"),
+            PathBuf::from("/p/timeline/refs/heads/feat/x")
+        );
+        assert_eq!(l.cache_dir(), PathBuf::from("/p/.cache"));
+    }
 }

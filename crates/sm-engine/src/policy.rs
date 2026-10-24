@@ -132,7 +132,11 @@ mod tests {
 
     #[test]
     fn policy_filters_and_blocks() {
-        let all = [d(Severity::Info, "a.info"), d(Severity::Warning, "a.warn"), d(Severity::Warning, "b.warn")];
+        let all = [
+            d(Severity::Info, "a.info"),
+            d(Severity::Warning, "a.warn"),
+            d(Severity::Warning, "b.warn"),
+        ];
         let mut p = DiagnosticPolicy::default();
         assert_eq!(p.report(&all).0.len(), 2);
         assert!(p.blockers(&all).is_empty());

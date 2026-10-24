@@ -64,7 +64,9 @@ impl ProjectConfig {
     pub fn validate(&self) -> Result<()> {
         let plain = |what: &str, s: &str| {
             if s.chars().any(char::is_control) {
-                Err(EngineError::Format(format!("{what} contains a control character")))
+                Err(EngineError::Format(format!(
+                    "{what} contains a control character"
+                )))
             } else {
                 Ok(())
             }
@@ -83,7 +85,9 @@ impl ProjectConfig {
         if let Some(t) = &self.tolerances
             && !(t.linear.is_finite() && t.linear > 0.0 && t.angular.is_finite() && t.angular > 0.0)
         {
-            return Err(EngineError::Format("tolerances must be finite and positive".into()));
+            return Err(EngineError::Format(
+                "tolerances must be finite and positive".into(),
+            ));
         }
         Ok(())
     }
@@ -106,5 +110,52 @@ impl ProjectConfig {
         }
         cfg.validate()?;
         Ok(cfg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_is_stable_text() {
+        let mut c = ProjectConfig::new("reactor");
+        c.units = Some("cm".into());
+        c.tolerances = Some(Tolerances {
+            linear: 1e-7,
+            angular: 1e-9,
+        });
+        c.metadata.insert("b".into(), "2".into());
+        c.metadata.insert("a".into(), "1".into());
+        let t = c.to_toml().unwrap();
+        assert_eq!(ProjectConfig::from_toml(&t).unwrap(), c);
+        assert_eq!(ProjectConfig::from_toml(&t).unwrap().to_toml().unwrap(), t);
+        assert!(
+            t.find("a = ").unwrap() < t.find("b = ").unwrap(),
+            "metadata is key-sorted"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_values() {
+        let mut c = ProjectConfig::new("x");
+        c.tolerances = Some(Tolerances {
+            linear: f64::NAN,
+            angular: 1.0,
+        });
+        assert!(c.to_toml().is_err());
+        c.tolerances = Some(Tolerances {
+            linear: 0.0,
+            angular: 1.0,
+        });
+        assert!(c.validate().is_err());
+        assert!(ProjectConfig::from_toml("name = 3").is_err());
+        assert!(matches!(
+            ProjectConfig::from_toml("format = 2\nname = \"n\""),
+            Err(EngineError::UnsupportedFormat {
+                found: 2,
+                supported: 1
+            })
+        ));
     }
 }

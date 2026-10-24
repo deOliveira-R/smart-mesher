@@ -48,7 +48,9 @@ impl LayerType for CounterLayer {
     }
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         let v: Vec<(EntityId, &Counter)> = self.counters.iter().collect();
-        serde_json::to_vec(&v).map(Some).map_err(|e| CodecError::new(e.to_string()))
+        serde_json::to_vec(&v)
+            .map(Some)
+            .map_err(|e| CodecError::new(e.to_string()))
     }
     fn restore(bytes: &[u8]) -> Result<Self, CodecError> {
         let v: Vec<(EntityId, Counter)> =
@@ -72,7 +74,9 @@ pub struct ApplyCount(pub Arc<AtomicUsize>);
 pub struct Flaky(pub AtomicU64);
 
 fn tick(ctx: &ApplyCtx<'_>) -> Result<(), OpError> {
-    ctx.service::<ApplyCount>()?.0.fetch_add(1, Ordering::SeqCst);
+    ctx.service::<ApplyCount>()?
+        .0
+        .fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
@@ -90,7 +94,11 @@ impl TypedOp for Create {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         tick(ctx)?;
         let id = ctx.alloc_as("counter", EntityKind::TopoBody)?;
-        let c = Counter { name: self.name.clone(), value: self.initial, gain: self.gain.unwrap_or(1.0) };
+        let c = Counter {
+            name: self.name.clone(),
+            value: self.initial,
+            gain: self.gain.unwrap_or(1.0),
+        };
         ctx.layer_mut::<CounterLayer>()?.counters.insert(id, c);
         Ok(())
     }
@@ -107,7 +115,11 @@ impl TypedOp for Add {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         tick(ctx)?;
         let id = ctx.resolve_kind(self.id, EntityKind::TopoBody)?;
-        let c = ctx.layer_mut::<CounterLayer>()?.counters.get_mut(id).ok_or(OpError::UnknownEntity(id))?;
+        let c = ctx
+            .layer_mut::<CounterLayer>()?
+            .counters
+            .get_mut(id)
+            .ok_or(OpError::UnknownEntity(id))?;
         c.value += self.delta;
         Ok(())
     }
@@ -122,7 +134,12 @@ impl TypedOp for AddAll {
     const NAME: &'static str = "counter.add_all";
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         tick(ctx)?;
-        let ids: Vec<EntityId> = ctx.layer::<CounterLayer>()?.counters.iter().map(|(i, _)| i).collect();
+        let ids: Vec<EntityId> = ctx
+            .layer::<CounterLayer>()?
+            .counters
+            .iter()
+            .map(|(i, _)| i)
+            .collect();
         let layer = ctx.layer_mut::<CounterLayer>()?;
         for id in ids {
             if let Some(c) = layer.counters.get_mut(id) {
@@ -147,7 +164,11 @@ impl TypedOp for ScaleGain {
             return Err(OpError::Invalid("factor must be finite".into()));
         }
         let id = ctx.resolve_kind(self.id, EntityKind::TopoBody)?;
-        let c = ctx.layer_mut::<CounterLayer>()?.counters.get_mut(id).ok_or(OpError::UnknownEntity(id))?;
+        let c = ctx
+            .layer_mut::<CounterLayer>()?
+            .counters
+            .get_mut(id)
+            .ok_or(OpError::UnknownEntity(id))?;
         c.gain *= self.factor;
         Ok(())
     }
@@ -177,7 +198,11 @@ impl TypedOp for Warn {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         tick(ctx)?;
         let id = ctx.resolve_kind(self.id, EntityKind::TopoBody)?;
-        let c = ctx.layer_mut::<CounterLayer>()?.counters.get_mut(id).ok_or(OpError::UnknownEntity(id))?;
+        let c = ctx
+            .layer_mut::<CounterLayer>()?
+            .counters
+            .get_mut(id)
+            .ok_or(OpError::UnknownEntity(id))?;
         c.value += 1;
         ctx.warn("demo.note", "value is odd", &[id]);
         ctx.info("demo.fyi", "for your information", &[id]);
@@ -193,7 +218,14 @@ impl TypedOp for Fail {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         tick(ctx)?;
         let id = ctx.alloc(EntityKind::TopoBody)?;
-        ctx.layer_mut::<CounterLayer>()?.counters.insert(id, Counter { name: "ghost".into(), value: 9, gain: 1.0 });
+        ctx.layer_mut::<CounterLayer>()?.counters.insert(
+            id,
+            Counter {
+                name: "ghost".into(),
+                value: 9,
+                gain: 1.0,
+            },
+        );
         Err(OpError::Failed("boom".into()))
     }
 }
@@ -208,7 +240,14 @@ impl TypedOp for FlakyOp {
         tick(ctx)?;
         let n = ctx.service::<Flaky>()?.0.fetch_add(1, Ordering::SeqCst);
         let id = ctx.alloc(EntityKind::TopoBody)?;
-        ctx.layer_mut::<CounterLayer>()?.counters.insert(id, Counter { name: "flaky".into(), value: n as i64, gain: 1.0 });
+        ctx.layer_mut::<CounterLayer>()?.counters.insert(
+            id,
+            Counter {
+                name: "flaky".into(),
+                value: n as i64,
+                gain: 1.0,
+            },
+        );
         Ok(())
     }
 }
@@ -228,8 +267,13 @@ impl TypedQuery for Total {
     const NAME: &'static str = "counter.total";
     type Output = TotalOut;
     fn run(&self, state: &State, _: &QueryCtx<'_>) -> Result<TotalOut, OpError> {
-        let l = state.layer::<CounterLayer>().ok_or_else(|| OpError::MissingLayer("counter".into()))?;
-        Ok(TotalOut { total: l.counters.iter().map(|(_, c)| c.value).sum(), count: l.counters.len() })
+        let l = state
+            .layer::<CounterLayer>()
+            .ok_or_else(|| OpError::MissingLayer("counter".into()))?;
+        Ok(TotalOut {
+            total: l.counters.iter().map(|(_, c)| c.value).sum(),
+            count: l.counters.len(),
+        })
     }
 }
 
@@ -242,8 +286,13 @@ impl TypedQuery for GetGain {
     const NAME: &'static str = "counter.gain";
     type Output = f64;
     fn run(&self, state: &State, _: &QueryCtx<'_>) -> Result<f64, OpError> {
-        let l = state.layer::<CounterLayer>().ok_or_else(|| OpError::MissingLayer("counter".into()))?;
-        l.counters.get(self.id).map(|c| c.gain).ok_or(OpError::UnknownEntity(self.id))
+        let l = state
+            .layer::<CounterLayer>()
+            .ok_or_else(|| OpError::MissingLayer("counter".into()))?;
+        l.counters
+            .get(self.id)
+            .map(|c| c.gain)
+            .ok_or(OpError::UnknownEntity(self.id))
     }
 }
 
@@ -309,7 +358,14 @@ pub fn opts() -> ApplyOptions {
 /// Create a counter and return its id.
 pub fn create(ws: &mut Workspace, name: &str, initial: i64) -> EntityId {
     let r = ws
-        .apply(&Create { name: name.into(), initial, gain: None }, &opts())
+        .apply(
+            &Create {
+                name: name.into(),
+                initial,
+                gain: None,
+            },
+            &opts(),
+        )
         .expect("create");
     r.delta.outputs["counter"][0]
 }
@@ -320,7 +376,10 @@ pub fn add(ws: &mut Workspace, id: EntityId, delta: i64) -> Hash256 {
 
 /// Total of all counters at the current state, through the JSON query path.
 pub fn total(ws: &Workspace) -> i64 {
-    ws.query("counter.total", &serde_json::json!({})).expect("query")["total"].as_i64().expect("i64")
+    ws.query("counter.total", &serde_json::json!({}))
+        .expect("query")["total"]
+        .as_i64()
+        .expect("i64")
 }
 
 // ------------------------------------------------------------------ temp dirs
@@ -331,8 +390,13 @@ pub struct TempDir(pub PathBuf);
 
 impl TempDir {
     pub fn new(tag: &str) -> Self {
-        let base = option_env!("CARGO_TARGET_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
-        let p = base.join(format!("sm-engine-{tag}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+        let base =
+            option_env!("CARGO_TARGET_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        let p = base.join(format!(
+            "sm-engine-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("mkdir");
         Self(p)
@@ -356,14 +420,21 @@ impl Drop for TempDir {
 /// and `.git`.
 pub fn tree(root: &Path, skip_cache: bool) -> BTreeMap<String, Vec<u8>> {
     fn go(dir: &Path, rel: &str, skip: bool, out: &mut BTreeMap<String, Vec<u8>>) {
-        let mut es: Vec<_> = std::fs::read_dir(dir).expect("read_dir").map(|e| e.expect("entry")).collect();
+        let mut es: Vec<_> = std::fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| e.expect("entry"))
+            .collect();
         es.sort_by_key(|e| e.file_name());
         for e in es {
             let name = e.file_name().to_string_lossy().into_owned();
             if name == ".git" || (skip && name == ".cache") {
                 continue;
             }
-            let rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let rel = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
             if e.file_type().expect("type").is_dir() {
                 go(&e.path(), &rel, skip, out);
             } else {

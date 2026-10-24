@@ -62,7 +62,9 @@ impl FaultInjector {
     pub(crate) fn hit(&self, what: &str) -> io::Result<()> {
         let i = self.seen.fetch_add(1, Ordering::SeqCst);
         if i == self.fail_at {
-            return Err(io::Error::other(format!("injected crash at point {i} ({what})")));
+            return Err(io::Error::other(format!(
+                "injected crash at point {i} ({what})"
+            )));
         }
         Ok(())
     }
@@ -79,7 +81,10 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 pub(crate) const TMP_SUFFIX: &str = ".lock";
 
 fn tmp_path(path: &Path) -> PathBuf {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     path.with_file_name(format!("{name}.{}-{n}{TMP_SUFFIX}", std::process::id()))
 }
@@ -168,6 +173,9 @@ pub(crate) fn sweep_tmp(dir: &Path) -> io::Result<usize> {
     Ok(n)
 }
 
+const LOCK_ATTEMPTS: u32 = 25;
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(4);
+
 /// Exclusive advisory lock on `<cache>/lock`, released on drop.
 #[derive(Debug)]
 pub(crate) struct ProjectLock {
@@ -184,14 +192,116 @@ impl ProjectLock {
             .write(true)
             .open(&path)
             .map_err(|e| EngineError::io(&path, e))?;
-        match f.try_lock() {
-            Ok(()) => Ok(Self { _file: Some(f) }),
-            Err(fs::TryLockError::WouldBlock) => Err(EngineError::Locked(root.to_owned())),
-            // File systems without locking: proceed unlocked rather than refuse to open.
-            Err(fs::TryLockError::Error(e)) if e.kind() == io::ErrorKind::Unsupported => {
-                Ok(Self { _file: None })
+        // A lock that was just released can still look held for a moment (a child process
+        // forked by another thread holds a copy of the descriptor until it execs), so wait
+        // briefly before reporting contention.
+        for attempt in 0..LOCK_ATTEMPTS {
+            match f.try_lock() {
+                Ok(()) => return Ok(Self { _file: Some(f) }),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if attempt + 1 < LOCK_ATTEMPTS {
+                        std::thread::sleep(LOCK_RETRY);
+                    }
+                }
+                // File systems without locking: proceed unlocked rather than refuse to open.
+                Err(fs::TryLockError::Error(e)) if e.kind() == io::ErrorKind::Unsupported => {
+                    return Ok(Self { _file: None });
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(EngineError::io(&path, e)),
             }
-            Err(fs::TryLockError::Error(e)) => Err(EngineError::io(&path, e)),
         }
+        Err(EngineError::Locked(root.to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("sm-engine-unit-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn files(d: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_temp_file() {
+        let d = dir("replace");
+        let f = d.join("a.txt");
+        atomic_write(&f, b"one", Durability::Full, None).unwrap();
+        atomic_write(&f, b"two two", Durability::Fast, None).unwrap();
+        assert_eq!(fs::read(&f).unwrap(), b"two two");
+        assert_eq!(files(&d), ["a.txt"]);
+        atomic_write(&d.join("sub/dir/b.txt"), b"", Durability::Fast, None).unwrap();
+        assert!(d.join("sub/dir/b.txt").is_file());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_crash_at_every_point_leaves_old_or_new_content_never_a_mixture() {
+        for point in 0..3 {
+            let d = dir(&format!("crash{point}"));
+            let f = d.join("a.txt");
+            atomic_write(&f, b"old old old", Durability::Fast, None).unwrap();
+            let inj = FaultInjector::fail_at(point);
+            let r = atomic_write(&f, b"brand new content", Durability::Fast, Some(&inj));
+            assert!(r.is_err() && inj.tripped());
+            let now = fs::read(&f).unwrap();
+            let expect: &[u8] = if point == 2 {
+                b"brand new content"
+            } else {
+                b"old old old"
+            };
+            assert_eq!(now, expect, "point {point}");
+            // The dead writer's temp file is recognizable and swept.
+            assert_eq!(sweep_tmp(&d).unwrap(), usize::from(point < 2));
+            assert_eq!(files(&d), ["a.txt"]);
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn counting_injector_never_fails() {
+        let d = dir("count");
+        let inj = FaultInjector::counting();
+        atomic_write(&d.join("x"), b"x", Durability::Fast, Some(&inj)).unwrap();
+        remove_file(&d.join("x"), Some(&inj)).unwrap();
+        remove_file(&d.join("x"), Some(&inj)).unwrap(); // missing is fine
+        assert_eq!(inj.points(), 3 + 1 + 1);
+        assert!(!inj.tripped());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn lock_is_exclusive_and_released_on_drop() {
+        let d = dir("lock");
+        let cache = d.join(".cache");
+        let a = ProjectLock::acquire(&d, &cache).unwrap();
+        assert!(matches!(
+            ProjectLock::acquire(&d, &cache),
+            Err(EngineError::Locked(_))
+        ));
+        drop(a);
+        ProjectLock::acquire(&d, &cache).unwrap();
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn prune_empty_dirs_stops_at_the_boundary() {
+        let d = dir("prune");
+        fs::create_dir_all(d.join("heads/a/b")).unwrap();
+        prune_empty_dirs(&d.join("heads/a/b"), &d.join("heads"));
+        assert!(d.join("heads").is_dir() && !d.join("heads/a").exists());
+        fs::remove_dir_all(d).unwrap();
     }
 }

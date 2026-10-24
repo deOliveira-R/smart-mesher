@@ -8,7 +8,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-sm-core = { path = "../sm-core", features = ["serde"] }
 sm-op-api = { path = "../sm-op-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -17,6 +16,7 @@ thiserror = "2"
 rayon = "1.12"
 
 [dev-dependencies]
+sm-core = { path = "../sm-core", features = ["serde"] }
 sm-testkit = { path = "../sm-testkit" }
 schemars = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }

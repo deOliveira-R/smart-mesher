@@ -71,7 +71,11 @@ pub(crate) fn read_reflog(layout: &Layout, limit: usize) -> (Vec<ReflogEntry>, b
 }
 
 /// Replace the reflog file with exactly `entries`.
-pub(crate) fn rewrite_reflog(layout: &Layout, entries: &[ReflogEntry], ctx: WriteCtx<'_>) -> Result<()> {
+pub(crate) fn rewrite_reflog(
+    layout: &Layout,
+    entries: &[ReflogEntry],
+    ctx: WriteCtx<'_>,
+) -> Result<()> {
     let mut buf = String::new();
     for e in entries {
         buf.push_str(&serde_json::to_string(e).map_err(|e| EngineError::Format(e.to_string()))?);
@@ -146,9 +150,14 @@ fn put_u32(buf: &mut Vec<u8>, v: usize) -> Result<()> {
 
 /// Binary container: magic, node hash, state hash, kinds (JSON), layers (name + bytes), then a
 /// SHA-256 of everything before it.
-pub(crate) fn encode_snapshot(node: Hash256, state: Hash256, snap: &StateSnapshot) -> Result<Vec<u8>> {
+pub(crate) fn encode_snapshot(
+    node: Hash256,
+    state: Hash256,
+    snap: &StateSnapshot,
+) -> Result<Vec<u8>> {
     let kinds = serde_json::to_vec(&snap.kinds).map_err(|e| EngineError::Format(e.to_string()))?;
-    let mut buf = Vec::with_capacity(128 + kinds.len() + snap.layers.values().map(Vec::len).sum::<usize>());
+    let mut buf =
+        Vec::with_capacity(128 + kinds.len() + snap.layers.values().map(Vec::len).sum::<usize>());
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&node.0);
     buf.extend_from_slice(&state.0);
@@ -209,8 +218,8 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotFile> {
     let node = Hash256(r.array()?);
     let state = Hash256(r.array()?);
     let n = r.u32()?;
-    let kinds: Vec<KindSnapshot> =
-        serde_json::from_slice(r.take(n)?).map_err(|e| EngineError::Format(format!("snapshot kinds: {e}")))?;
+    let kinds: Vec<KindSnapshot> = serde_json::from_slice(r.take(n)?)
+        .map_err(|e| EngineError::Format(format!("snapshot kinds: {e}")))?;
     let count = r.u32()?;
     let mut layers = std::collections::BTreeMap::new();
     for _ in 0..count {
@@ -275,7 +284,12 @@ pub(crate) fn snapshot_nodes(layout: &Layout) -> Vec<Hash256> {
 
 /// Keep the `keep` deepest snapshots (ties broken by hash) and delete the rest, including
 /// snapshots of nodes that are not in the timeline.
-pub(crate) fn prune_snapshots(layout: &Layout, tl: &Timeline, keep: usize, ctx: WriteCtx<'_>) -> Result<()> {
+pub(crate) fn prune_snapshots(
+    layout: &Layout,
+    tl: &Timeline,
+    keep: usize,
+    ctx: WriteCtx<'_>,
+) -> Result<()> {
     let mut known = Vec::new();
     for h in snapshot_nodes(layout) {
         match tl.depth(h) {
@@ -293,4 +307,60 @@ pub(crate) fn prune_snapshots(layout: &Layout, tl: &Timeline, keep: usize, ctx: 
 /// Delete one snapshot (a stale or damaged one).
 pub(crate) fn remove_snapshot(layout: &Layout, node: Hash256, ctx: WriteCtx<'_>) -> Result<()> {
     ctx.remove(&layout.snapshot_file(node))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::EntityKind;
+
+    fn sample() -> (Hash256, Hash256, StateSnapshot) {
+        let mut layers = std::collections::BTreeMap::new();
+        layers.insert("counter".to_owned(), vec![1, 2, 3, 4, 5]);
+        layers.insert("model".to_owned(), Vec::new());
+        let snap = StateSnapshot {
+            kinds: vec![KindSnapshot {
+                kind: EntityKind::TopoBody,
+                next: 7,
+                retired: vec![2, 5],
+            }],
+            layers,
+        };
+        (Hash256::of(b"node"), Hash256::of(b"state"), snap)
+    }
+
+    #[test]
+    fn snapshot_round_trips() {
+        let (n, s, snap) = sample();
+        let bytes = encode_snapshot(n, s, &snap).unwrap();
+        let f = decode_snapshot(&bytes).unwrap();
+        assert_eq!((f.node, f.state), (n, s));
+        assert_eq!(f.snap, snap);
+    }
+
+    #[test]
+    fn damaged_snapshots_are_errors_never_panics() {
+        let (n, s, snap) = sample();
+        let bytes = encode_snapshot(n, s, &snap).unwrap();
+        for len in 0..bytes.len() {
+            assert!(
+                decode_snapshot(&bytes[..len]).is_err(),
+                "truncated to {len}"
+            );
+        }
+        for i in 0..bytes.len() {
+            let mut b = bytes.clone();
+            b[i] ^= 0x40;
+            assert!(decode_snapshot(&b).is_err(), "bit flip at {i}");
+        }
+        // A forged length with a valid checksum must not read out of bounds either.
+        let mut forged = bytes[..bytes.len() - 32].to_vec();
+        forged[8 + 64] = 0xff;
+        forged[8 + 65] = 0xff;
+        forged[8 + 66] = 0xff;
+        forged[8 + 67] = 0x7f;
+        let sum = Hash256::of(&forged);
+        forged.extend_from_slice(&sum.0);
+        assert!(decode_snapshot(&forged).is_err());
+    }
 }

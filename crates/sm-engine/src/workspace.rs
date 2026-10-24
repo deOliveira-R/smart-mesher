@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sm_op_api::{
-    Control, DerivedCache, Engine, Delta, Hash256, Head, Meta, Op, OpRecord, Plugin,
-    QuietControl, Registry, ReplayPolicy, Rev, Services, Session, State, Timeline, TimelineError,
-    TypedOp, Value, valid_ref_name,
+    Control, Delta, DerivedCache, Engine, Hash256, Head, Meta, Op, OpRecord, Plugin, PrepareBase,
+    Prepared, QuietControl, Registry, ReplayPolicy, Rev, Services, Session, State, Timeline,
+    TimelineError, TypedOp, Value, valid_ref_name,
 };
 
 use crate::cache;
@@ -271,7 +271,11 @@ impl WorkspaceBuilder {
             reg.install(p.as_ref())?;
         }
         let cache = self.cache.clone().unwrap_or_default();
-        Ok(Engine::new(Arc::new(reg), std::mem::take(&mut self.services), cache)?)
+        Ok(Engine::new(
+            Arc::new(reg),
+            std::mem::take(&mut self.services),
+            cache,
+        )?)
     }
 
     fn finish(self, session: Session, project: Option<Project>, report: OpenReport) -> Workspace {
@@ -332,17 +336,37 @@ impl WorkspaceBuilder {
             }
         }
         let (timeline, loaded) = fs::load_timeline(&layout)?;
-        report
-            .warnings
-            .extend(loaded.ignored.iter().map(|r| format!("ignored file timeline/{r}")));
+        report.warnings.extend(
+            loaded
+                .ignored
+                .iter()
+                .map(|r| format!("ignored file timeline/{r}")),
+        );
 
         let head_on_disk = cache::read_head(&layout);
+        let redo = cache::read_redo(&layout);
+        // An unborn branch is a legitimate HEAD in an empty project and after undoing a branch
+        // to its root (the top of the redo stack is then a root node). Otherwise a HEAD naming a
+        // branch that no longer exists (deleted by a pull, say) must not open as an empty state.
+        let undone_to_root = redo
+            .last()
+            .and_then(|h| timeline.get(*h))
+            .is_some_and(|n| n.body.parent.is_none());
         let head = match &head_on_disk {
-            Some(Head::Ref(n)) if timeline.check_ref_name(n).is_ok() => Head::Ref(n.clone()),
+            Some(Head::Ref(n))
+                if timeline.check_ref_name(n).is_ok()
+                    && (timeline.refs().contains_key(n)
+                        || timeline.refs().is_empty()
+                        || undone_to_root) =>
+            {
+                Head::Ref(n.clone())
+            }
             Some(Head::Detached(Some(h))) if timeline.get(*h).is_some() => Head::Detached(Some(*h)),
             Some(Head::Detached(None)) => Head::Detached(None),
             Some(_) => {
-                report.warnings.push("HEAD names an unknown branch or node; using the default".into());
+                report
+                    .warnings
+                    .push("HEAD names an unknown branch or node; using the default".into());
                 timeline.default_head()
             }
             None => timeline.default_head(),
@@ -373,9 +397,13 @@ impl WorkspaceBuilder {
                             report.seeded_from = Some(h);
                             break;
                         }
-                        _ => report.warnings.push(format!("snapshot of {h} does not restore; ignored")),
+                        _ => report
+                            .warnings
+                            .push(format!("snapshot of {h} does not restore; ignored")),
                     },
-                    Err(e) => report.warnings.push(format!("snapshot of {h} unreadable ({e}); ignored")),
+                    Err(e) => report
+                        .warnings
+                        .push(format!("snapshot of {h} unreadable ({e}); ignored")),
                 }
                 if !ro {
                     let _ = cache::remove_snapshot(&layout, h, ctx_owned);
@@ -388,7 +416,8 @@ impl WorkspaceBuilder {
         } else {
             // `Session::open_with` replays under the strict policy, so open at the empty state,
             // choose the policy, then check out HEAD (one extra reflog entry).
-            let mut s = Session::open_with(engine, timeline, Head::Detached(None), seeds, reflog, ctl)?;
+            let mut s =
+                Session::open_with(engine, timeline, Head::Detached(None), seeds, reflog, ctl)?;
             s.set_replay_policy(self.replay);
             let rev = match &head {
                 Head::Ref(n) => Rev::Ref(n.clone()),
@@ -403,10 +432,11 @@ impl WorkspaceBuilder {
             report.warnings.push(format!("replay: {w}"));
         }
         report.rebaselined = rebaselined.clone();
-        let redo = cache::read_redo(&layout);
         let redo_on_disk = redo.clone();
         if !redo.is_empty() && session.set_redo_stack(redo).is_err() {
-            report.warnings.push("redo stack does not match HEAD; dropped".into());
+            report
+                .warnings
+                .push("redo stack does not match HEAD; dropped".into());
         }
         let project = Project {
             layout,
@@ -420,7 +450,10 @@ impl WorkspaceBuilder {
         };
         let mut ws = self.finish(session, Some(project), report);
         if ws.s.autosave && !ro {
-            ws.persist().map_err(|e| EngineError::NotPersisted { node: None, source: Box::new(e) })?;
+            ws.persist().map_err(|e| EngineError::NotPersisted {
+                node: None,
+                source: Box::new(e),
+            })?;
         }
         Ok(ws)
     }
@@ -496,7 +529,11 @@ impl Workspace {
     }
 
     fn writable(&self) -> Result<()> {
-        if self.s.read_only { Err(EngineError::ReadOnly) } else { Ok(()) }
+        if self.s.read_only {
+            Err(EngineError::ReadOnly)
+        } else {
+            Ok(())
+        }
     }
 
     fn note_replay(&mut self) {
@@ -513,7 +550,9 @@ impl Workspace {
 
     /// True when something recorded or moved is not on disk yet (always false without a project).
     pub fn dirty(&self) -> bool {
-        let Some(p) = &self.project else { return false };
+        let Some(p) = self.project.as_ref().filter(|_| !self.s.read_only) else {
+            return false;
+        };
         !p.dirty.is_empty()
             || p.refs_on_disk != *self.session.timeline().refs()
             || p.head_on_disk.as_ref() != Some(self.session.head())
@@ -540,7 +579,9 @@ impl Workspace {
         }
         self.note_replay();
         let ctx = self.s.ctx();
-        let Some(p) = self.project.as_mut() else { return Ok(()) };
+        let Some(p) = self.project.as_mut() else {
+            return Ok(());
+        };
         let tl = self.session.timeline();
         let list: Vec<Hash256> = p.dirty.iter().copied().collect();
         let mut done = Vec::new();
@@ -549,11 +590,15 @@ impl Workspace {
             p.dirty.remove(&h);
         }
         r?;
-        fs::sync_refs(&p.layout, tl, &mut p.refs_on_disk, ctx)?;
-        if p.head_on_disk.as_ref() != Some(self.session.head()) {
-            cache::write_head(&p.layout, self.session.head(), ctx)?;
-            p.head_on_disk = Some(self.session.head().clone());
-        }
+        let head = self.session.head();
+        let (layout, head_on_disk) = (&p.layout, &mut p.head_on_disk);
+        fs::sync_refs(layout, tl, &mut p.refs_on_disk, ctx, &mut || {
+            if head_on_disk.as_ref() != Some(head) {
+                cache::write_head(layout, head, ctx)?;
+                *head_on_disk = Some(head.clone());
+            }
+            Ok(())
+        })?;
         if p.redo_on_disk != self.session.redo_stack() {
             cache::write_redo(&p.layout, self.session.redo_stack(), ctx)?;
             p.redo_on_disk = self.session.redo_stack().to_vec();
@@ -568,8 +613,10 @@ impl Workspace {
 
     fn autosave(&mut self, node: Option<Hash256>) -> Result<()> {
         if self.s.autosave && self.project.is_some() {
-            self.persist()
-                .map_err(|e| EngineError::NotPersisted { node, source: Box::new(e) })?;
+            self.persist().map_err(|e| EngineError::NotPersisted {
+                node,
+                source: Box::new(e),
+            })?;
         }
         Ok(())
     }
@@ -609,7 +656,9 @@ impl Workspace {
         });
         let r = self.persist();
         if r.is_ok() {
-            self.s.ctx().write(&layout.project_toml(), toml.as_bytes())?;
+            self.s
+                .ctx()
+                .write(&layout.project_toml(), toml.as_bytes())?;
         } else if let Some(p) = self.project.take() {
             drop(p);
         }
@@ -633,8 +682,12 @@ impl Workspace {
         self.writable()?;
         let ctx = self.s.ctx();
         let keep = self.s.snapshot_keep;
-        let Some(p) = self.project.as_ref() else { return Err(EngineError::NoProject) };
-        let Some(node) = self.session.position() else { return Ok(false) };
+        let Some(p) = self.project.as_ref() else {
+            return Err(EngineError::NoProject);
+        };
+        let Some(node) = self.session.position() else {
+            return Ok(false);
+        };
         let state = self.session.state();
         let snap = match state.snapshot() {
             Ok(s) => s,
@@ -666,10 +719,17 @@ impl Workspace {
         )
     }
 
-    fn commit(&mut self, prepared: sm_op_api::Prepared, op: &str, o: &ApplyOptions) -> Result<ApplyReport> {
+    fn commit(
+        &mut self,
+        prepared: sm_op_api::Prepared,
+        op: &str,
+        o: &ApplyOptions,
+    ) -> Result<ApplyReport> {
         let blockers = self.s.policy.blockers(&prepared.delta().diagnostics);
         if !blockers.is_empty() && !o.accept_warnings {
-            return Err(EngineError::StoppedOnWarning { diagnostics: blockers });
+            return Err(EngineError::StoppedOnWarning {
+                diagnostics: blockers,
+            });
         }
         let meta = self.meta(op, o);
         let (node, mut delta) = self.session.commit(prepared, meta)?;
@@ -681,10 +741,17 @@ impl Workspace {
         self.autosave(Some(node))?;
         if let Some(n) = self.s.snapshot_every
             && self.project.is_some()
-            && self.session.timeline().depth(node).is_some_and(|d| d % n == 0)
+            && self
+                .session
+                .timeline()
+                .depth(node)
+                .is_some_and(|d| d % n == 0)
         {
-            self.snapshot_now()
-                .map_err(|e| EngineError::NotPersisted { node: Some(node), source: Box::new(e) })?;
+            // The op is recorded and saved; a snapshot is only an accelerator.
+            if let Err(e) = self.snapshot_now() {
+                self.warnings
+                    .push(format!("snapshot at {node} failed: {e}"));
+            }
         }
         Ok(ApplyReport {
             node,
@@ -700,7 +767,12 @@ impl Workspace {
     }
 
     /// Apply a decoded op and record it.
-    pub fn apply_dyn(&mut self, op: &dyn Op, o: &ApplyOptions, ctl: &Control<'_>) -> Result<ApplyReport> {
+    pub fn apply_dyn(
+        &mut self,
+        op: &dyn Op,
+        o: &ApplyOptions,
+        ctl: &Control<'_>,
+    ) -> Result<ApplyReport> {
         self.writable()?;
         let prepared = self.session.prepare(op, ctl)?;
         self.commit(prepared, op.name(), o)
@@ -727,11 +799,24 @@ impl Workspace {
             None => self.registry().op_version(op)?,
         };
         let rec = OpRecord::new(op, version, params).map_err(TimelineError::from)?;
-        let prepared = self
-            .session
-            .prepare_base()
-            .prepare_record(rec, ctl)?;
+        let prepared = self.session.prepare_base().prepare_record(rec, ctl)?;
         self.commit(prepared, op, o)
+    }
+
+    /// An owned copy of the current state and position, to run an op on a worker thread while
+    /// the workspace stays usable: `base.prepare(&op, &ctl)` there, then
+    /// [`commit_prepared`](Self::commit_prepared) here.
+    pub fn prepare_base(&self) -> PrepareBase {
+        self.session.prepare_base()
+    }
+
+    /// Record an op prepared with [`prepare_base`](Self::prepare_base), subject to the same
+    /// policy, autosave and snapshot rules as [`apply`](Self::apply). Fails with
+    /// `stale-base` if the position moved since the base was taken; nothing is recorded then.
+    pub fn commit_prepared(&mut self, p: Prepared, o: &ApplyOptions) -> Result<ApplyReport> {
+        self.writable()?;
+        let name = p.record().name.clone();
+        self.commit(p, &name, o)
     }
 
     /// Run a registered query against the current state. Nothing is recorded.
@@ -741,14 +826,20 @@ impl Workspace {
 
     /// [`query`](Self::query) with progress and cancellation.
     pub fn query_with(&self, name: &str, input: &Value, ctl: &Control<'_>) -> Result<Value> {
-        Ok(self.session.engine().run_query(self.session.state(), name, input, ctl)?)
+        Ok(self
+            .session
+            .engine()
+            .run_query(self.session.state(), name, input, ctl)?)
     }
 
     /// Run a query against the state at `rev` without moving HEAD.
     pub fn query_at(&mut self, rev: &Rev, name: &str, input: &Value) -> Result<Value> {
         let state = self.state_at(rev)?;
         let q = QuietControl::new();
-        Ok(self.session.engine().run_query(&state, name, input, &q.control())?)
+        Ok(self
+            .session
+            .engine()
+            .run_query(&state, name, input, &q.control())?)
     }
 
     /// The state at `rev`, reconstructed by replay (cached states and snapshots speed it up).
@@ -794,10 +885,26 @@ impl Workspace {
         self.autosave(None)
     }
 
+    /// A branch HEAD is attached to but that has no tip (undone to its root) must not be created
+    /// by name: the session would keep its empty position while HEAD names a born branch.
+    fn guard_unborn_head(&self, name: &str) -> Result<()> {
+        match self.session.head() {
+            Head::Ref(n) if n == name && !self.timeline().refs().contains_key(n) => {
+                Err(EngineError::BadRequest(format!(
+                    "'{name}' is the branch HEAD is on and it has no tip; redo or check out another revision first"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Create branch `name` at `at` (default: the current node) without moving HEAD.
     pub fn create_branch(&mut self, name: &str, at: Option<Hash256>) -> Result<()> {
         self.writable()?;
-        let at = at.or(self.session.position()).ok_or(TimelineError::EmptyPosition)?;
+        self.guard_unborn_head(name)?;
+        let at = at
+            .or(self.session.position())
+            .ok_or(TimelineError::EmptyPosition)?;
         self.session.create_branch_at(name, at)?;
         self.autosave(None)
     }
@@ -812,7 +919,10 @@ impl Workspace {
     /// branch is removed again.
     pub fn fork_with(&mut self, name: &str, at: Option<Hash256>, ctl: &Control<'_>) -> Result<()> {
         self.writable()?;
-        let at = at.or(self.session.position()).ok_or(TimelineError::EmptyPosition)?;
+        self.guard_unborn_head(name)?;
+        let at = at
+            .or(self.session.position())
+            .ok_or(TimelineError::EmptyPosition)?;
         self.session.create_branch_at(name, at)?;
         let r = self.session.checkout(Rev::Ref(name.to_owned()), ctl);
         self.note_replay();
@@ -833,6 +943,7 @@ impl Workspace {
     /// Rename a branch; HEAD follows.
     pub fn rename_branch(&mut self, from: &str, to: &str) -> Result<()> {
         self.writable()?;
+        self.guard_unborn_head(to)?;
         self.session.rename_branch(from, to)?;
         self.autosave(None)
     }
@@ -873,7 +984,11 @@ impl Workspace {
         Status {
             head: self.session.head().clone(),
             position: self.session.position(),
-            depth: self.session.position().and_then(|h| tl.depth(h)).unwrap_or(0),
+            depth: self
+                .session
+                .position()
+                .and_then(|h| tl.depth(h))
+                .unwrap_or(0),
             state: self.session.state().hash(),
             nodes: tl.len(),
             branches: tl.refs().clone(),
@@ -911,21 +1026,16 @@ impl Workspace {
     /// Op and query catalogs as JSON (`{"ops": [...], "queries": [...]}`); an entry whose schema
     /// failed is `{"error": "<code>"}`.
     pub fn catalog_json(&self) -> Value {
-        let conv = |r: std::result::Result<Value, sm_op_api::RegistryError>| match r {
-            Ok(v) => v,
-            Err(e) => serde_json::json!({ "error": e.code() }),
-        };
+        fn entry<T: Serialize>(r: std::result::Result<T, sm_op_api::RegistryError>) -> Value {
+            match r {
+                Ok(v) => serde_json::to_value(v)
+                    .unwrap_or_else(|_| serde_json::json!({ "error": "serialize" })),
+                Err(e) => serde_json::json!({ "error": e.code() }),
+            }
+        }
         let reg = self.registry();
-        let ops: Vec<Value> = reg
-            .catalog()
-            .into_iter()
-            .map(|r| conv(r.and_then(|i| serde_json::to_value(i).map_err(|_| sm_op_api::RegistryError::Schema { name: String::new(), reason: "serialize".into() }))))
-            .collect();
-        let queries: Vec<Value> = reg
-            .query_catalog()
-            .into_iter()
-            .map(|r| conv(r.and_then(|i| serde_json::to_value(i).map_err(|_| sm_op_api::RegistryError::Schema { name: String::new(), reason: "serialize".into() }))))
-            .collect();
+        let ops: Vec<Value> = reg.catalog().into_iter().map(entry).collect();
+        let queries: Vec<Value> = reg.query_catalog().into_iter().map(entry).collect();
         serde_json::json!({ "ops": ops, "queries": queries })
     }
 
