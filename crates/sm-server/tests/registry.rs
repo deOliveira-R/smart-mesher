@@ -21,6 +21,7 @@ const NO_OUTPUT_OPS: &[&str] = &[
     "demo.rename",
     "fem.block_element_type",
     "fem.block_remove",
+    "mesh.default_size",
     "mesh.delete",
     "mesh.intervals",
     "mesh.scheme",

@@ -174,3 +174,20 @@ Plan: `docs/design/w2/plan.md` (task specs T1–T13, stage-0 contract changes AC
    
    The `Request::Export` doc is updated to match.
 Merged: stage 0 at f001d6d (ACR-1 029c6d5, ACR-2 f4ee040, ACR-3 59e0fdc, ACR-4 75dd25d); stage 0b at e29d8ba (polish 2701085, skeletons 6ae9cde).
+9. **Stage-1 review rulings:**
+   - **`mesh.run` neighbour guard** (refusing a volume that shares a face with a meshed volume outside the targets): kept for W2, because it is a conformity safety net. Meshing against an existing neighbour mesh, Cubit's sequential meshing, is W3.
+   - **`mesh.default_size`:** accepted into the catalog.
+   - **Size→count rounding:** the frozen `sm-scheme-api` `size_count` rounds half away from zero (L=10, size=4 → 3). `docs/research/cubit-meshing-semantics.md` is amended to match. Cubit publishes no rule.
+   - **10⁶-cell `mesh.run`+`mesh.delete`:** 10.6 s against 4.7 s for `Driver::mesh`, from id adoption, retirement and the digest. Plan risk 3 is partly realized. A bulk adopt/retire path and `MeshBuild::add_template_cells` commit are W3 items.
+   - **Dependencies outside the plan's per-task Deps lines:** serde, schemars, thiserror and rayon (required by the common rules), plus test-only crates. Accepted for all W2 crates. The Deps lines are upper bounds on internal crates only.
+   - **Planner firmness cascade** (edge requests always beat volume requests regardless of firmness, against Cubit's rule) and `Driver::mesh_from_plan` (no double planning): queued as a `sm-scheme-api` ACR for W3.
+   - **Queued contract requests for the post-integration batch:**
+     - `Model::uncolor_volumes`
+     - optional `OpError::Unsupported`
+     - `face_moments` on pole surfaces (CR-1) and the `FaceMoments::plane` centroid fix (CR-2)
+     - an explicit no-outputs marker (CR-4)
+     - normalization overflow in `Transform::rotation`/`reflection`
+     - `IntervalSink::goal`
+     - re-exports of `Rev`/`Hash256`/`EntityId` from `sm-protocol`
+     - the failure form of `Request::ScriptRun`
+   - **`ParametricCurve::breakpoints`** is done right away. Without it the curve arc-length map misses 1e-9 on NURBS with very short, high-contrast knot spans, the only open finding of T4.

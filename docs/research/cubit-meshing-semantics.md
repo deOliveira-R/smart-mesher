@@ -67,7 +67,7 @@ This is an offline reference for T3 (sm-sizing), T4 (sm-scheme-curve), T5/T6 (ma
 
 ### Size to count
 - [Cubit] Count = arc length / size. The manual does not give the rounding.
-- [Ours] `n = max(1, round_half_even(L/size))`.
+- [Ours] `n = max(1, round(L/size))`, with half away from zero (`f64::round`). This is what the frozen `sm_scheme_api` `size_count` does (decision W2-9).
 
 ### Size inheritance
 - [Cubit] A curve with no explicit size takes the average of its parents' sizes. Example: two volumes with sizes 1 and 3 give the shared face and its curves size 2. With no parents it uses auto size, and with auto off it uses 1.0.
