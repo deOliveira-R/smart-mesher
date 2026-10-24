@@ -22,12 +22,24 @@ use crate::host::TopoHost;
 /// edits), which keep the entity table, the lineage and the model tables in step.
 ///
 /// # Digest (version 1)
-/// The [`TopologyView::canonical_visit`] stream (`HashWord::Int` as `Digest::u64`,
-/// `HashWord::Float { raw, q }` as `Digest::f64_with(raw, q)`), then
-/// [`Model::canonical_visit`] under the topology tolerance with the same mapping, then
-/// `next_op`. The identity hash is therefore quantized (W0c Q2) and the exact hash bit-for-bit.
+/// In order: the stream tag `1` (`Digest::u64`), the [`TopologyView::canonical_visit`] stream
+/// (`HashWord::Int` as `Digest::u64`, `HashWord::Float { raw, q }` as
+/// `Digest::f64_with(raw, q)`), the stream tag `2`, [`Model::canonical_visit`] under the
+/// topology tolerance with the same word mapping, then `next_op` (`Digest::u64`). While a
+/// [`topo_txn`] has not been committed (the `pending` flag) one more `Digest::u64(u64::MAX)`
+/// marker follows, so a forgotten [`commit_topology`] changes the hash; committed states never
+/// carry it. The identity hash is therefore quantized (W0c Q2) and the exact hash bit-for-bit.
 /// Two hosts that emit the same word stream (the reference and the production store) give the
 /// same layer hash.
+///
+/// # Known deviations
+/// - Curve and surface store handles (`shapes_mut`) are shape handles, not entities: they are
+///   never adopted into the entity table and never appear in a `Delta`.
+/// - The topology operation id is `OpId(ops_run + 1)`: it counts committed topology
+///   transactions of this layer, not entity-table serials.
+/// - [`topo_txn`] and [`model_txn`] deep-clone the topology host / [`Model`] when the state is
+///   shared with another state (copy-on-write at whole-store granularity); a persistent
+///   structure is a known W3 item.
 #[derive(Clone)]
 pub struct ModelLayer {
     topo: Arc<dyn TopoHost>,
@@ -154,6 +166,44 @@ pub struct TopoTxn {
     /// Ids minted by the model tables inside the transaction (colors, groups, boundaries, ...),
     /// ascending by `(kind, serial)`.
     pub model_created: Vec<EntityId>,
+    /// Ids of model-table records (colors, groups, boundaries, ...) that `f` removed, ascending.
+    /// [`commit_topology`] retires them like the cells in `summary.retired`.
+    pub model_removed: Vec<EntityId>,
+}
+
+/// Every id of the records the model tables hold (colors, groups, boundaries, prototypes,
+/// lattices, instances, clusters, partition cells), ascending and distinct.
+fn live_model_ids(m: &Model) -> Vec<EntityId> {
+    let ins = m.instancing();
+    let mut v: Vec<EntityId> = m
+        .colors()
+        .map(|r| r.id)
+        .chain(m.groups().map(|r| r.id))
+        .chain(m.boundaries().map(|r| r.id))
+        .chain(ins.prototypes.keys().copied())
+        .chain(ins.lattices.keys().copied())
+        .chain(ins.instances.keys().copied())
+        .chain(ins.clusters.keys().copied())
+        .chain(m.decomposition().cells().map(|p| p.id))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Ids that existed before (`before`, sorted) or were minted (`minted`) and are no longer in
+/// the model, ascending.
+fn removed_ids(before: &[EntityId], minted: &[EntityId], after: &Model) -> Vec<EntityId> {
+    let now = live_model_ids(after);
+    let mut out: Vec<EntityId> = before
+        .iter()
+        .chain(minted)
+        .copied()
+        .filter(|id| now.binary_search(id).is_err())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Ids minted between two allocator states, ascending by `(kind, serial)`.
@@ -184,6 +234,10 @@ fn pending_error() -> OpError {
 ///
 /// Curve and surface handles minted through `shapes_mut` are shape handles, not entities: they
 /// are not adopted and do not appear in the [`Delta`](sm_op_api::Delta).
+///
+/// Copy-on-write cost: when the topology host or the model tables are shared with another state
+/// (every state that was cloned from this one), the whole store is deep-cloned before `f` runs.
+/// That is O(model size) per transaction on a shared state, a known W3 item.
 pub fn topo_txn<R>(
     ctx: &mut ApplyCtx<'_>,
     f: impl FnOnce(&mut dyn TopoHost, &mut Model) -> Result<R, OpError>,
@@ -195,6 +249,7 @@ pub fn topo_txn<R>(
     let op = OpId(layer.next_op + 1);
     let saved = Arc::clone(&layer.model);
     let ids_before = saved.ids().clone();
+    let live_before = live_model_ids(&saved);
     let ran = (|| {
         let host = host_mut(&mut layer.topo).or_op()?;
         host.begin_op(op).or_op()?;
@@ -219,7 +274,8 @@ pub fn topo_txn<R>(
             layer.next_op += 1;
             layer.pending = true;
             let model_created = minted(&ids_before, layer.model.ids());
-            Ok((r, TopoTxn { summary, model_created }))
+            let model_removed = removed_ids(&live_before, &model_created, &layer.model);
+            Ok((r, TopoTxn { summary, model_created, model_removed }))
         }
         Err(e) => {
             layer.model = saved;
@@ -229,7 +285,7 @@ pub fn topo_txn<R>(
 }
 
 /// Every id of `ids` (ascending, distinct kinds are consecutive per kind) must be what the
-/// entity table would allocate next, in order; roles must name ids of `ids`, once.
+/// entity table would allocate next, in order; roles must name ids of `ids` or live ids, once.
 fn check_adoption(
     state: &State,
     ids: &[EntityId],
@@ -253,8 +309,9 @@ fn check_adoption(
             return Err(LayerError::Txn("empty role name".into()).into());
         }
         for m in *members {
-            if ids.binary_search(m).is_err() {
-                return Err(LayerError::Txn(format!("role '{role}' lists {m}, which this transaction did not create")).into());
+            // An id this transaction did not create must already be live (a surviving id).
+            if ids.binary_search(m).is_err() && !state.contains(*m) {
+                return Err(LayerError::Txn(format!("role '{role}' lists {m}, which is neither created by this transaction nor live")).into());
             }
             if !seen.insert(*m) {
                 return Err(LayerError::Txn(format!("{m} is listed in more than one role (or twice)")).into());
@@ -271,8 +328,11 @@ fn adopt_all(
     ids: &[EntityId],
     roles: &[(&str, &[EntityId])],
 ) -> Result<(), OpError> {
-    let role_of: std::collections::BTreeMap<EntityId, &str> =
-        roles.iter().flat_map(|(r, ms)| ms.iter().map(move |m| (*m, *r))).collect();
+    let role_of: std::collections::BTreeMap<EntityId, &str> = roles
+        .iter()
+        .flat_map(|(r, ms)| ms.iter().map(move |m| (*m, *r)))
+        .filter(|(m, _)| ids.binary_search(m).is_ok())
+        .collect();
     let mut start = 0;
     while start < ids.len() {
         let role = role_of.get(&ids[start]).copied();
@@ -286,6 +346,14 @@ fn adopt_all(
         }
         start = end;
     }
+    // Surviving ids: reported after the created ones of the same role.
+    for (role, members) in roles {
+        let surviving: Vec<EntityId> =
+            members.iter().copied().filter(|m| ids.binary_search(m).is_err()).collect();
+        if !surviving.is_empty() {
+            ctx.record_role(role, &surviving)?;
+        }
+    }
     Ok(())
 }
 
@@ -297,12 +365,14 @@ fn adopt_all(
 ///    the new cells and model ids;
 /// 2. ids listed in `roles` are recorded under their role in [`Delta::outputs`](sm_op_api::Delta::outputs)
 ///    (in adoption order, which is ascending id order, not the order of the slices; an id may
-///    appear in at most one role);
+///    appear in at most one role). A listed id that this transaction did not create must be
+///    live (a surviving id, e.g. a moved volume); it is recorded with
+///    [`ApplyCtx::record_role`] after the created ids of the same role, in ascending order;
 /// 3. successors from the operation's split and merge lineage are recorded
 ///    ([`ApplyCtx::record_successors`]), skipping successors retired again in the same
 ///    transaction;
-/// 4. `summary.retired` is retired (`on_retired` reactions of other layers run when the op
-///    body returns).
+/// 4. `summary.retired` and `model_removed` are retired in ascending `(kind, serial)` order
+///    (`on_retired` reactions of other layers run when the op body returns).
 ///
 /// The model tables are re-keyed through the operation's lineage ([`Model::apply_lineage`])
 /// before any id is adopted. The adoption and role checks run before anything is changed; a
@@ -337,7 +407,11 @@ pub fn commit_topology(
             ctx.record_successors(row.old, &live)?;
         }
     }
-    for &id in &txn.summary.retired {
+    let mut gone: Vec<EntityId> =
+        txn.summary.retired.iter().chain(&txn.model_removed).copied().collect();
+    gone.sort_unstable();
+    gone.dedup();
+    for id in gone {
         ctx.retire(id)?;
     }
     Ok(())
@@ -350,6 +424,14 @@ pub fn commit_topology(
 /// `roles(&result, &new_ids)` names the roles (an id in at most one role, recorded in
 /// adoption order). Atomic: on `Err` from `f`, or from an invalid role list or adoption
 /// mismatch, the model tables are restored and nothing is adopted.
+///
+/// Records `f` removed (colors, groups, boundaries, ...) are retired in ascending
+/// `(kind, serial)` order after the adoption, like [`commit_topology`] does for cells; an id that
+/// `f` both minted and removed is adopted and retired again. Roles may name surviving live ids
+/// (see [`commit_topology`]).
+///
+/// Copy-on-write cost: a model shared with another state is deep-cloned before `f` runs (a known
+/// W3 item).
 pub fn model_txn<R>(
     ctx: &mut ApplyCtx<'_>,
     f: impl FnOnce(&mut Model, &dyn TopologyView) -> Result<R, OpError>,
@@ -362,17 +444,31 @@ pub fn model_txn<R>(
         }
         let saved = Arc::clone(&layer.model);
         let ids_before = saved.ids().clone();
-        let ran = f(Arc::make_mut(&mut layer.model), (*layer.topo).as_view())
-            .map(|r| (r, minted(&ids_before, layer.model.ids())));
+        let live_before = live_model_ids(&saved);
+        let ran = f(Arc::make_mut(&mut layer.model), (*layer.topo).as_view()).map(|r| {
+            let new_ids = minted(&ids_before, layer.model.ids());
+            let removed = removed_ids(&live_before, &new_ids, &layer.model);
+            (r, new_ids, removed)
+        });
         if ran.is_err() {
             layer.model = Arc::clone(&saved);
         }
         (saved, ran)
     };
-    let (r, new_ids) = ran?;
+    let (r, new_ids, removed) = ran?;
     let role_list = roles(&r, &new_ids);
     let role_refs: Vec<(&str, &[EntityId])> = role_list.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-    let adopted = check_adoption(ctx.state(), &new_ids, &role_refs).and_then(|()| adopt_all(ctx, &new_ids, &role_refs));
+    let adopted = check_adoption(ctx.state(), &new_ids, &role_refs)
+        .and_then(|()| adopt_all(ctx, &new_ids, &role_refs))
+        .and_then(|()| {
+            for id in removed {
+                // Ids the entity table never adopted (none are expected) are skipped.
+                if ctx.state().contains(id) {
+                    ctx.retire(id)?;
+                }
+            }
+            Ok(())
+        });
     match adopted {
         Ok(()) => Ok(r),
         Err(e) => {

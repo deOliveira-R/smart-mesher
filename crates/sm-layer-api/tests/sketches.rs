@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sm_core::{EntityId, EntityKind, Point3};
+use sm_core::{EntityId, EntityKind, Point3, Transform, Vector3};
 use sm_layer_api::{
-    CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, TopoHost, adopt_minted,
+    CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, TopoHost, insert_mesh, retire_mesh,
     commit_topology, model_txn, topo_txn,
 };
 use sm_mesh_api::{MeshEdit, MeshRead, PointIx, SerialAlloc};
@@ -95,11 +95,98 @@ impl TypedOp for MeshRun {
             .mesh(&input, &intent, &Sequential, sm_mesh::MeshBuilder::new(), &mut alloc)
             .map_err(|e| OpError::Failed(e.to_string()))?;
         let mesh = out.finished.mesh;
-        let id = mesh.mesh_id();
-        adopt_minted(ctx, &alloc0, &alloc, "mesh")?;
         let entry = MeshEntry::new(Box::new(mesh), targets.to_vec(), Some(out.plan), model.hash_quanta());
-        ctx.layer_mut::<MeshLayer>()?.insert(id, entry, alloc)?;
-        Ok(())
+        insert_mesh(ctx, entry, &alloc0, alloc, "mesh")
+    }
+}
+
+/// `mesh.delete`: removes a mesh and retires all its ids.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MeshDelete {
+    mesh: EntityId,
+}
+
+impl TypedOp for MeshDelete {
+    const NAME: &'static str = "mesh.delete";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        retire_mesh(ctx, self.mesh)
+    }
+}
+
+/// Inserts a generated hex block (no selection): the large-mesh path.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct HexBlock {
+    n: [u32; 3],
+}
+
+impl TypedOp for HexBlock {
+    const NAME: &'static str = "test.hex_block";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let q = ctx.layer::<ModelLayer>()?.hash_quanta();
+        let before = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mut alloc = before.clone();
+        let mesh = sm_mesh::generate::hex_block_bulk(self.n, [1.0; 3], &mut alloc)
+            .map_err(|e| OpError::Failed(e.to_string()))?
+            .mesh;
+        insert_mesh(ctx, MeshEntry::new(Box::new(mesh), vec![], None, q), &before, alloc, "mesh")
+    }
+}
+
+/// `fem.block_remove`-shaped: adds a volume color in role `block`, or removes a color.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Block {
+    /// Remove this color instead of adding one.
+    remove: Option<EntityId>,
+}
+
+impl TypedOp for Block {
+    const NAME: &'static str = "fem.block";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        match self.remove {
+            None => model_txn(
+                ctx,
+                |model, _| model.add_color(7, "block", Domain::Volume).or_op(),
+                |c, _| vec![("block", vec![*c])],
+            )
+            .map(|_| ()),
+            Some(c) => model_txn(ctx, |model, _| model.remove_color(c).or_op(), |_, _| vec![]),
+        }
+    }
+}
+
+/// `model.move`-shaped: translates every vertex and reports the pre-existing volume in `volumes`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MoveVolume {
+    volume: EntityId,
+    dx: f64,
+    /// Also list a retired id (must be refused).
+    #[serde(default)]
+    bad_role: bool,
+}
+
+impl TypedOp for MoveVolume {
+    const NAME: &'static str = "model.move_volume";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.resolve_kind(self.volume, EntityKind::TopoVolume)?;
+        let x = Transform::translation(Vector3::new(self.dx, 0.0, 0.0));
+        let ((), txn) = topo_txn(ctx, |topo, model| {
+            let verts: Vec<EntityId> = topo.cells(sm_topo_api::Dim::Vertex).to_vec();
+            for v in verts {
+                if let sm_topo_api::Carrier::Point(p) = topo.carrier(v).clone() {
+                    topo.set_vertex_point(v, x.apply_point(p)).or_op()?;
+                }
+            }
+            model.apply_transform(&x, &[self.volume], topo.as_view()).or_op()
+        })?;
+        let ghost = id(EntityKind::TopoVolume, 99);
+        if self.bad_role {
+            return commit_topology(ctx, &txn, &[("volumes", &[self.volume, ghost])]);
+        }
+        commit_topology(ctx, &txn, &[("volumes", &[self.volume])])
     }
 }
 
@@ -140,8 +227,8 @@ impl TypedOp for AddVolumeColor {
             },
             |c, _new| {
                 if self.bad_role {
-                    // An id the transaction did not create.
-                    vec![("color", vec![*c, self.volume])]
+                    // An id that is neither created by the transaction nor live.
+                    vec![("color", vec![*c, id(EntityKind::TopoVolume, 99)])]
                 } else {
                     vec![("color", vec![*c])]
                 }
@@ -270,6 +357,10 @@ fn engine(factory: Factory, cache: DerivedCache) -> Engine {
     reg.register::<Misuse>().expect("misuse");
     reg.register::<Webcut>().expect("webcut");
     reg.register::<DeleteVolume>().expect("delete");
+    reg.register::<MeshDelete>().expect("mesh.delete");
+    reg.register::<HexBlock>().expect("hex");
+    reg.register::<Block>().expect("block");
+    reg.register::<MoveVolume>().expect("move");
     Engine::new(Arc::new(reg), Services::new(), Arc::new(cache)).expect("engine")
 }
 
@@ -496,7 +587,7 @@ fn model_txn_adds_a_volume_color_atomically() {
     };
     assert!(run(&mut s, &bad(2, "clad", false, false, true)).is_err());
     assert_eq!(s.state().hash(), hash);
-    // A role naming an id the transaction did not create is rejected before anything is adopted.
+    // A role naming an id that is neither created nor live is rejected before anything is adopted.
     assert!(run(&mut s, &bad(2, "clad", false, true, false)).is_err());
     assert_eq!(s.state().hash(), hash);
     // An op that swallows the error still sees the model restored and nothing adopted.
@@ -638,4 +729,98 @@ fn core_layers_register_once_and_conflict_on_a_second_install() {
     let st = reg.new_state();
     assert!(st.layer::<ModelLayer>().is_some() && st.layer::<MeshLayer>().is_some());
     assert_eq!(reg.layer_order().expect("order"), vec!["model", "meshes"]);
+}
+
+// ------------------------------------------------------------------ polish: delete, remove, move
+
+#[test]
+fn mesh_delete_restores_counts_and_replays_clean() {
+    for factory in [cell_complex as Factory, topo_store] {
+        let mut s = Session::new(engine(factory, DerivedCache::disabled()));
+        let vol = id(EntityKind::TopoVolume, 1);
+        run(&mut s, &brick_op()).expect("brick");
+        let pre_count = s.state().entity_count();
+        let pre_len = s.state().layer::<MeshLayer>().expect("layer").len();
+        let (_, d) = run(&mut s, &MeshRun { volume: vol, size: 0.5 }).expect("mesh");
+        let mid = d.outputs["mesh"][0];
+        assert!(s.state().entity_count() > pre_count);
+        assert_eq!(s.state().layer::<MeshLayer>().expect("layer").len(), pre_len + 1);
+
+        let (h_del, d) = run(&mut s, &MeshDelete { mesh: mid }).expect("mesh.delete");
+        assert_eq!(s.state().entity_count(), pre_count, "all mesh ids retired");
+        assert_eq!(s.state().layer::<MeshLayer>().expect("layer").len(), pre_len);
+        assert!(!s.state().contains(mid));
+        assert!(d.removed.windows(2).all(|w| w[0] < w[1]), "retired in ascending order");
+        assert!(d.removed.contains(&mid));
+        // Deleting again fails.
+        assert!(run(&mut s, &MeshDelete { mesh: mid }).is_err());
+
+        let full = s.state().hash();
+        let q = QuietControl::new();
+        assert_eq!(s.state_at_from_root(h_del, &q.control()).expect("cold replay").hash(), full);
+        s.undo().expect("undo");
+        assert_eq!(s.state().layer::<MeshLayer>().expect("layer").len(), pre_len + 1);
+        s.redo().expect("redo");
+        assert_eq!(s.state().hash(), full);
+    }
+}
+
+#[test]
+fn large_mesh_insert_and_retire_complete() {
+    // 47 x 47 x 46 = 101 614 hexahedra: exercises the sorted-id paths of on_retired.
+    let mut s = Session::new(engine(cell_complex, DerivedCache::disabled()));
+    let (_, d) = run(&mut s, &HexBlock { n: [47, 47, 46] }).expect("hex");
+    let mid = d.outputs["mesh"][0];
+    assert!(d.created.len() > 100_000);
+    let (_, d) = run(&mut s, &MeshDelete { mesh: mid }).expect("delete");
+    assert!(d.removed.len() > 100_000);
+    assert_eq!(s.state().entity_count(), 0);
+}
+
+#[test]
+fn model_txn_retires_removed_records() {
+    let mut s = Session::new(engine(cell_complex, DerivedCache::disabled()));
+    run(&mut s, &brick_op()).expect("brick");
+    let base = s.state().entity_count();
+    let (_, d) = run(&mut s, &Block { remove: None }).expect("add");
+    let color = d.outputs["block"][0];
+    assert!(s.state().contains(color));
+    assert_eq!(s.state().entity_count(), base + 1);
+    let (h, d) = run(&mut s, &Block { remove: Some(color) }).expect("remove");
+    assert_eq!(d.removed, vec![color]);
+    assert!(!s.state().contains(color));
+    assert_eq!(s.state().entity_count(), base);
+    assert!(s.state().layer::<ModelLayer>().expect("layer").model().color(color).is_none());
+    // Serials are never reused.
+    let (_, d) = run(&mut s, &Block { remove: None }).expect("add again");
+    assert_eq!(d.outputs["block"], vec![id(EntityKind::Color, 2)]);
+    let full = s.state().hash();
+    let q = QuietControl::new();
+    s.undo().expect("undo");
+    s.redo().expect("redo");
+    assert_eq!(s.state().hash(), full);
+    s.state_at_from_root(h, &q.control()).expect("cold replay");
+    // Removing an unknown color fails and changes nothing.
+    assert!(run(&mut s, &Block { remove: Some(color) }).is_err());
+    assert_eq!(s.state().hash(), full);
+}
+
+#[test]
+fn surviving_ids_can_be_reported_in_roles() {
+    for factory in [cell_complex as Factory, topo_store] {
+        let mut s = Session::new(engine(factory, DerivedCache::disabled()));
+        let vol = id(EntityKind::TopoVolume, 1);
+        run(&mut s, &brick_op()).expect("brick");
+        let before = s.state().hash();
+        let (h, d) = run(&mut s, &MoveVolume { volume: vol, dx: 5.0, bad_role: false }).expect("move");
+        assert_eq!(d.outputs["volumes"], vec![vol], "pre-existing id reported");
+        assert!(d.created.is_empty() && d.removed.is_empty());
+        assert_ne!(s.state().hash(), before, "geometry moved");
+        // A role naming a dead id is refused and leaves the state alone.
+        let now = s.state().hash();
+        assert!(run(&mut s, &MoveVolume { volume: vol, dx: 1.0, bad_role: true }).is_err());
+        assert_eq!(s.state().hash(), now);
+        let q = QuietControl::new();
+        assert_eq!(s.state_at_from_root(h, &q.control()).expect("replay").hash(), now);
+    }
 }

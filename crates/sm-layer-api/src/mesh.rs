@@ -227,20 +227,39 @@ impl LayerType for MeshLayer {
 
     /// Marks the entries whose selection names a retired entity as stale (they keep their
     /// `Mesh*` ids, which stay live until `mesh.delete`), and drops entries whose own `Mesh` id
-    /// was retired.
+    /// was retired. The ids are sorted once and binary-searched, so the cost is
+    /// O((ids + entries x selection) log ids).
     fn on_retired(&mut self, ids: &[EntityId]) {
-        self.entries.retain(|k, _| !ids.contains(k));
+        let set = SortedIds::new(ids);
+        self.entries.retain(|k, _| !set.contains(*k));
         for e in self.entries.values_mut() {
-            if !e.stale && e.selection.iter().any(|s| ids.contains(s)) {
+            if !e.stale && e.selection.iter().any(|s| set.contains(*s)) {
                 e.stale = true;
             }
         }
     }
 
     fn references_any(&self, ids: &[EntityId]) -> bool {
+        let set = SortedIds::new(ids);
         self.entries.iter().any(|(k, e)| {
-            ids.contains(k) || (!e.stale && e.selection.iter().any(|s| ids.contains(s)))
+            set.contains(*k) || (!e.stale && e.selection.iter().any(|s| set.contains(*s)))
         })
+    }
+}
+
+/// A sorted, deduplicated copy of an id slice for repeated membership tests.
+struct SortedIds(Vec<EntityId>);
+
+impl SortedIds {
+    fn new(ids: &[EntityId]) -> Self {
+        let mut v = ids.to_vec();
+        v.sort_unstable();
+        v.dedup();
+        Self(v)
+    }
+
+    fn contains(&self, id: EntityId) -> bool {
+        self.0.binary_search(&id).is_ok()
     }
 }
 
@@ -267,6 +286,56 @@ pub fn adopt_minted(
             let first_id = EntityId::new(kind, first).ok_or(OpError::IdExhausted)?;
             ctx.adopt_range(first_id, n)?;
         }
+    }
+    Ok(())
+}
+
+/// Insert a freshly built mesh: [`adopt_minted`] then [`MeshLayer::insert`] in one call, so an
+/// entry can never be inserted without its ids being adopted.
+///
+/// `before` is [`MeshLayer::alloc`] as read before building, `after` the advanced clone; the
+/// entry's mesh id is the id inserted. The `Mesh` id is recorded under `mesh_role`. Adoption
+/// runs first; if the insert is then refused the op must fail as a whole (the engine discards
+/// the scratch state).
+pub fn insert_mesh(
+    ctx: &mut ApplyCtx<'_>,
+    entry: MeshEntry,
+    before: &SerialAlloc,
+    after: SerialAlloc,
+    mesh_role: &str,
+) -> Result<(), OpError> {
+    let id = entry.mesh().mesh_id();
+    adopt_minted(ctx, before, &after, mesh_role)?;
+    ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;
+    Ok(())
+}
+
+/// Every id that belongs to a mesh: the `Mesh` id, its vertices, edges, faces, cells and sets,
+/// ascending by `(kind, serial)`.
+fn mesh_ids(mesh_id: EntityId, m: &dyn MeshRead) -> Vec<EntityId> {
+    let mut ids = vec![mesh_id];
+    for kind in [MeshEntityKind::Vertex, MeshEntityKind::Edge, MeshEntityKind::Face, MeshEntityKind::Cell] {
+        ids.extend((0..m.count(kind)).map(|i| m.id(kind, i as u32)));
+    }
+    ids.extend(m.sets().iter().map(|s| s.id));
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Delete a mesh: remove its [`MeshEntry`] and retire every id belonging to it (the `Mesh` id,
+/// all vertex, edge, face and cell ids and all set ids) in ascending `(kind, serial)` order, so
+/// the entity count returns to its pre-insert value and `on_retired` hooks of downstream layers
+/// fire. Serials are never reused: the allocator keeps its counters.
+///
+/// Fails with [`OpError::UnknownEntity`] when `mesh` is not in the layer.
+pub fn retire_mesh(ctx: &mut ApplyCtx<'_>, mesh: EntityId) -> Result<(), OpError> {
+    let entry = ctx
+        .layer_mut::<MeshLayer>()?
+        .remove(mesh)
+        .ok_or(OpError::UnknownEntity(mesh))?;
+    for id in mesh_ids(mesh, entry.mesh()) {
+        ctx.retire(id)?;
     }
     Ok(())
 }
