@@ -430,4 +430,21 @@ mod tests {
         assert!(l.to_def().is_ok() && r.to_def().is_ok());
         assert!(pc.insert_knot(2.0, 3).is_err(), "multiplicity beyond the degree");
     }
+
+    #[test]
+    fn periodic_length_matches_brute_force_over_shifted_ranges() {
+        let u = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.5, 0.2), Point3::new(3.0, 2.0, -0.3), Point3::new(1.5, 3.0, 0.4), Point3::new(-0.5, 2.0, 0.0), Point3::new(-1.0, 0.7, 0.1)];
+        let c = NurbsCurve::new_periodic(3, (0..13).map(|i| i as f64 - 3.0).collect(), (0..9).map(|i| u[i % 6]).collect(), None).unwrap();
+        let pc = PreparedCurve::new(&c).unwrap();
+        let brute = |a: f64, b: f64| {
+            let n = 40_000;
+            let h = (b - a) / n as f64;
+            (0..n).map(|i| pc.d1(a + (i as f64 + 0.5) * h).norm() * h).sum::<f64>()
+        };
+        for (a, b) in [(0.0, 6.0), (-0.7, 6.9), (2.5, 14.1), (-8.0, -1.25)] {
+            let got = pc.length(Interval::new(a, b), 1e-9).unwrap();
+            let want = brute(a, b);
+            assert!((got - want).abs() < 1e-7, "[{a}, {b}]: {got} vs {want}");
+        }
+    }
 }

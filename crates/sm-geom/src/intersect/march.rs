@@ -167,8 +167,11 @@ fn uv_extent(s: &Surf, window: &Option<[f64; 6]>) -> Result<[Interval; 2], GeomE
 // ------------------------------------------------------------------ marching engine
 
 struct Engine<'a> {
-    m: &'a Surf<'a>,
     t: &'a Surf<'a>,
+    /// `M` as a parametric surface (checked when the engine is built).
+    mp: &'a dyn ParametricSurface,
+    /// `T` as a parametric surface and its domain (present when marching in four unknowns).
+    tp: Option<(&'a dyn ParametricSurface, Domain2)>,
     /// Marching in four unknowns (T is a NURBS surface) instead of two.
     four: bool,
     opts: &'a SsiOptions,
@@ -196,7 +199,7 @@ enum Step {
 
 impl<'a> Engine<'a> {
     fn mpar(&self) -> &dyn ParametricSurface {
-        self.m.par.expect("marching surface is parametric")
+        self.mp
     }
 
     /// Jet of `M` with a first-order extension beyond a bounded parameter range, so Newton can
@@ -206,8 +209,10 @@ impl<'a> Engine<'a> {
     }
 
     fn tj(&self, uv: Uv) -> sm_geom_api::SurfaceJet {
-        let d = self.t.dom.as_ref().expect("t domain");
-        extended_jet(self.t.par.expect("t parametric"), d, uv)
+        match &self.tp {
+            Some((p, d)) => extended_jet(*p, d, uv),
+            None => self.mj(uv),
+        }
     }
 
     fn tangent_at(&self, st: &State) -> Option<(Vector3, f64)> {
@@ -232,7 +237,7 @@ impl<'a> Engine<'a> {
         if !self.four {
             return false;
         }
-        let d = self.t.dom.as_ref().expect("t domain");
+        let Some((_, d)) = &self.tp else { return false };
         let lim = |d: &Domain1, iv: Interval, x: f64| !d.is_periodic() && (x < iv.lo - 1e-12 || x > iv.hi + 1e-12);
         lim(&d.u, self.tbox[0], q.u) || lim(&d.v, self.tbox[1], q.v)
     }
@@ -532,7 +537,12 @@ pub(crate) fn intersect_general(a: &SurfaceDef, b: &SurfaceDef, o: &SsiOptions) 
     };
     let chord = o.chord_tol.unwrap_or(1000.0 * o.tol.linear).max(10.0 * o.tol.linear);
     let max_step = o.max_step.unwrap_or(size / 20.0).max(1e-9 * size);
-    let engine = Engine { m, t, four, opts: o, mdom: mdom.clone(), mbox, tbox, chord, max_step, min_step: (10.0 * o.tol.linear).min(max_step) };
+    let mp = m.par.ok_or(GeomError::Unsupported("surface has no parametrization"))?;
+    let tp = if four { t.par.zip(t.dom.clone()) } else { None };
+    if four && tp.is_none() {
+        return Err(GeomError::Unsupported("surface has neither a parametrization nor an implicit form"));
+    }
+    let engine = Engine { t, mp, tp, four, opts: o, mdom: mdom.clone(), mbox, tbox, chord, max_step, min_step: (10.0 * o.tol.linear).min(max_step) };
 
     // ---- seeds from iso-curves of M against T
     let nlines = o.seed_lines.max(2);
