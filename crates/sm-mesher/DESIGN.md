@@ -100,7 +100,19 @@ hashed.
 `cargo bench -p sm-mesher --bench commit` (`SM_BENCH_N=50,100` selects sizes). Stub schemes
 (`sweep` + `map` + `equal` of `sm_scheme_api::stubs`), 4-core VM, release profile.
 
-BENCH_TABLE
+| Phase (100^3 = 10^6 hexes, 1 030 301 vertices) | Time | Cells/s |
+|---|---|---|
+| plan | 0.11 ms | n/a (size independent) |
+| generate (rayon) | 1.62 s | 0.62 M |
+| commit into `MeshBuilder` | 2.74 s | 0.37 M |
+| plan + generate + commit (`Driver::mesh`) | 4.72 s | 0.21 M |
+| `mesh.run` + `mesh.delete` op pair (adoption of 2.4 M ids, layer insert, state hash, retire) | 10.6 s | 0.094 M |
+
+Reading: commit is the largest driver phase (58% of generate+commit) and the op layer adds about
+6 s on top of the driver at 10^6 cells (id adoption/retirement and the quantized digest of the
+mesh), so plan section 5 risk 3 is **partly triggered**: a 10^6-cell run is seconds, not
+milliseconds. It is workable for W2; a bulk commit path (`MeshBuild::add_template_cells`) would
+cut the 2.7 s, and the op overhead needs a profile before W3. No ACR is raised now.
 
 The stub schemes are reference code; the numbers bound the driver and commit path, they do not
 predict production schemes.

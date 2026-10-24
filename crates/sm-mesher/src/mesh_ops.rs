@@ -42,9 +42,9 @@ const RUN_OUTPUTS: &[OutputRole] = &[OutputRole::new(
 
 fn failed(e: SchemeError) -> OpError {
     match e {
-        SchemeError::Input(_) | SchemeError::BadParams { .. } | SchemeError::UnknownScheme { .. } => {
-            OpError::Invalid(e.to_string())
-        }
+        SchemeError::Input(_)
+        | SchemeError::BadParams { .. }
+        | SchemeError::UnknownScheme { .. } => OpError::Invalid(e.to_string()),
         other => OpError::Failed(other.to_string()),
     }
 }
@@ -149,9 +149,11 @@ impl TypedOp for MeshDelete {
                 let layer = ctx.layer::<MeshLayer>()?;
                 let mut v = Vec::with_capacity(ts.len());
                 for &t in ts {
-                    v.push(layer.mesh_of(t).ok_or_else(|| {
-                        OpError::Invalid(format!("{t} has no mesh"))
-                    })?);
+                    v.push(
+                        layer
+                            .mesh_of(t)
+                            .ok_or_else(|| OpError::Invalid(format!("{t} has no mesh")))?,
+                    );
                 }
                 v
             }

@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::ModelLayer;
 use sm_op_api::{ApplyCtx, OpError, TypedOp};
-use sm_scheme_api::{
-    Firm, Firmness, IntervalRequest, Params, SchemeChoice, SchemeDim, SizingSpec,
-};
+use sm_scheme_api::{Firm, Firmness, IntervalRequest, Params, SchemeChoice, SchemeDim, SizingSpec};
 
 use crate::config::MesherConfig;
 use crate::intent_layer::IntentLayer;
@@ -362,7 +360,9 @@ impl TypedOp for MeshDefaultSize {
                 .size_fields()
                 .ok_or_else(|| OpError::Invalid("no size-field builder is configured".into()))?;
             if build(&spec).map_err(scheme_err)?.is_none() {
-                return Err(OpError::Invalid("the sizing function builds no field".into()));
+                return Err(OpError::Invalid(
+                    "the sizing function builds no field".into(),
+                ));
             }
         }
         let layer = ctx.layer_mut::<IntentLayer>()?;

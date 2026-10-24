@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::EntityId;
 use sm_layer_api::MeshLayer;
-use sm_mesh_api::{CellIx, MeshEntityKind, MeshRead, cell_volume, geometry_hash_quantized, topology_hash};
+use sm_mesh_api::{
+    CellIx, MeshEntityKind, MeshRead, cell_volume, geometry_hash_quantized, topology_hash,
+};
 use sm_op_api::{OpError, QueryCtx, State, TypedQuery};
 
 /// `mesh.info`: counts, hashes and total measure of one mesh.

@@ -42,9 +42,15 @@ impl IntentLayer {
         let i = &self.intent;
         i.entities.keys().any(|k| ids.has(*k))
             || i.corners.iter().any(|c| ids.has(c.corner.face))
-            || i.groups.iter().any(|g| g.members.iter().any(|m| ids.has(*m)))
-            || i.transforms.iter().any(|t| t.targets.iter().any(|m| ids.has(*m)))
-            || i.intervals.iter().any(|r| r.edges().into_iter().any(|e| ids.has(e)))
+            || i.groups
+                .iter()
+                .any(|g| g.members.iter().any(|m| ids.has(*m)))
+            || i.transforms
+                .iter()
+                .any(|t| t.targets.iter().any(|m| ids.has(*m)))
+            || i.intervals
+                .iter()
+                .any(|r| r.edges().into_iter().any(|e| ids.has(e)))
     }
 
     /// Remove every request that names a retired entity.
@@ -110,8 +116,8 @@ mod tests {
     use super::*;
     use sm_core::EntityKind;
     use sm_scheme_api::{
-        Firm, GroupId, IntervalConstraint, IntervalRequest, MeshGroup, SchemeChoice,
-        TransformId, TransformIntent, Firmness,
+        Firm, Firmness, GroupId, IntervalConstraint, IntervalRequest, MeshGroup, SchemeChoice,
+        TransformId, TransformIntent,
     };
 
     fn id(kind: EntityKind, n: u64) -> EntityId {
@@ -122,21 +128,33 @@ mod tests {
         let mut l = IntentLayer::default();
         let i = l.intent_mut();
         for n in 1..=4 {
-            i.set_intervals(id(EntityKind::TopoEdge, n), Firm::hard(IntervalRequest::Count(3)));
+            i.set_intervals(
+                id(EntityKind::TopoEdge, n),
+                Firm::hard(IntervalRequest::Count(3)),
+            );
         }
-        i.set_scheme(id(EntityKind::TopoVolume, 1), SchemeChoice::new("map", Firmness::Hard));
+        i.set_scheme(
+            id(EntityKind::TopoVolume, 1),
+            SchemeChoice::new("map", Firmness::Hard),
+        );
         i.groups.push(MeshGroup::new(
             GroupId(1),
             vec![id(EntityKind::TopoVolume, 1), id(EntityKind::TopoVolume, 2)],
         ));
-        i.groups.push(MeshGroup::new(GroupId(2), vec![id(EntityKind::TopoVolume, 3)]));
+        i.groups.push(MeshGroup::new(
+            GroupId(2),
+            vec![id(EntityKind::TopoVolume, 3)],
+        ));
         i.transforms.push(TransformIntent::new(
             TransformId(1),
             vec![id(EntityKind::TopoFace, 1)],
             SchemeChoice::new("noop", Firmness::Soft),
         ));
         i.intervals.push(IntervalConstraint::Linear {
-            terms: vec![(id(EntityKind::TopoEdge, 1), 1), (id(EntityKind::TopoEdge, 2), -1)],
+            terms: vec![
+                (id(EntityKind::TopoEdge, 1), 1),
+                (id(EntityKind::TopoEdge, 2), -1),
+            ],
             rel: sm_scheme_api::Rel::Eq,
             rhs: 0,
         });
@@ -183,7 +201,11 @@ mod tests {
             ],
         );
         let i = l.intent();
-        assert_eq!(i.entities.len(), 3, "edges 1, 3, 4 remain; volume 1 is gone");
+        assert_eq!(
+            i.entities.len(),
+            3,
+            "edges 1, 3, 4 remain; volume 1 is gone"
+        );
         assert_eq!(i.groups.len(), 1);
         assert_eq!(i.groups[0].members, vec![id(EntityKind::TopoVolume, 2)]);
         assert!(i.transforms.is_empty(), "its only target was retired");
@@ -191,7 +213,10 @@ mod tests {
         assert!(!LayerType::is_empty(&l));
         LayerType::on_retired(
             &mut l,
-            &(1..=4).map(|n| id(EntityKind::TopoEdge, n)).chain([id(EntityKind::TopoVolume, 2)]).collect::<Vec<_>>(),
+            &(1..=4)
+                .map(|n| id(EntityKind::TopoEdge, n))
+                .chain([id(EntityKind::TopoVolume, 2)])
+                .collect::<Vec<_>>(),
         );
         assert!(LayerType::is_empty(&l));
     }

@@ -19,7 +19,22 @@ Additions beyond the plan text (both small, both justified):
 
 ## Acceptance bullet -> test
 
-ACCEPTANCE_TABLE
+| Acceptance bullet | Test |
+|---|---|
+| stub `sweep`, brick 10, size 1 -> 1000 cells, 1331 vertices; `count_of`; `Delta.created` = adopted ranges; `outputs.mesh = [Mesh#1]` | `ops::stub_sweep_brick_10_size_1_gives_1000_cells_and_1331_vertices` |
+| failing scheme -> re-plan/fallback recorded in `plan.attempts` | `ops::failing_scheme_replans_and_is_recorded_in_the_plan_attempts` |
+| atomic failure on hard infeasible intent | `ops::infeasible_hard_intent_fails_atomically` |
+| `mesh.delete` restores live counts | `ops::mesh_delete_restores_the_live_counts` |
+| intent digest order-independent; repeated `mesh.size` replaces | `ops::intent_is_independent_of_op_order_and_replaces_repeats`, `intent_layer::tests::digest_depends_on_content_only` |
+| undo/redo and cold replay, no `Diverged` | `ops::undo_redo_and_cold_replay_do_not_diverge` |
+| 1 thread vs N threads, 20^3 brick (state hash and exact mesh hash) | `ops::state_and_mesh_are_bit_identical_across_threads_for_a_20_cubed_brick` (also run with `RAYON_NUM_THREADS=1`) |
+| refused on already meshed volume | `ops::an_already_meshed_volume_is_refused`, `a_neighbour_of_a_meshed_volume_is_refused` |
+| `mesh.info` | `ops::mesh_info_reports_counts_hashes_and_volume`, `the_mesh_is_a_valid_unit_lattice` |
+| auto size / size-field hooks, `mesh.default_size` | `ops::auto_size_and_size_fields_come_from_the_injected_hooks`, `default_size_applies_where_no_request_reaches` |
+| OUTPUTS and `x-entity-kind` declared | `ops::registered_schemas_carry_entity_kinds_and_declared_outputs` |
+| intent pruned on retirement | `intent_layer::tests::*`, `ops::intent_requests_on_deleted_entities_are_dropped` |
+| input validation, firmness ladder, scoping, missing service | `ops::bad_intent_requests_*`, `firmness_ladder_*`, `the_intent_of_other_volumes_*`, `a_missing_service_*` |
+| Benchmark 100^3 | `benches/commit.rs`; numbers in DESIGN.md |
 
 ## Deviations
 
@@ -44,4 +59,8 @@ None.
 
 ## Definition of done
 
-DOD_TABLE
+* `cargo build --workspace`: ok
+* `cargo test -p sm-mesher --all-features`: 4 unit + 19 integration pass; also with `RAYON_NUM_THREADS=1`
+* `cargo clippy -p sm-mesher --all-targets --all-features -- -D warnings`: clean
+* `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-mesher --no-deps`: clean
+* criterion bench run at 100^3 (4-core VM): see DESIGN.md. Stub-scheme caveat applies.

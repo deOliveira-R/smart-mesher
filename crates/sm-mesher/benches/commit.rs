@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_layer_api::{CoreLayers, LayerResultExt, commit_topology, topo_txn};
 use sm_mesh::MeshBuilder;
+use sm_mesh_api::SerialAlloc;
 use sm_mesher::{MeshPlugin, MesherConfig, RayonExec};
 use sm_op_api::{
     ApplyCtx, DerivedCache, Engine, Meta, OpError, OpRecord, QuietControl, Registry, Services,
@@ -25,7 +26,6 @@ use sm_scheme_api::{
     Driver, Firm, Firmness, IntervalRequest, MeshInput, MeshIntent, ReferenceCornerPicker,
     ReferenceIntervalSolver, SchemeChoice, WholeFaces, stubs,
 };
-use sm_mesh_api::SerialAlloc;
 use sm_topo_api::fixtures::brick;
 
 fn sizes() -> Vec<usize> {
@@ -68,9 +68,15 @@ fn driver_phases(c: &mut Criterion) {
         });
         let plan = driver.plan(&input, &intent).expect("plan");
         g.bench_with_input(BenchmarkId::new("generate", n), &n, |b, _| {
-            b.iter(|| driver.generate(&input, &plan, &RayonExec).expect("generate"));
+            b.iter(|| {
+                driver
+                    .generate(&input, &plan, &RayonExec)
+                    .expect("generate")
+            });
         });
-        let patches = driver.generate(&input, &plan, &RayonExec).expect("generate");
+        let patches = driver
+            .generate(&input, &plan, &RayonExec)
+            .expect("generate");
         g.bench_with_input(BenchmarkId::new("commit", n), &n, |b, _| {
             b.iter(|| {
                 let mut alloc = SerialAlloc::new();
@@ -130,10 +136,19 @@ fn mesh_run_op(c: &mut Criterion) {
         let apply = |s: &mut Session, name: &str, p: serde_json::Value| {
             let rec = OpRecord::new(name, 1, p).expect("record");
             let op = s.engine().registry().decode(&rec).expect("decode");
-            s.apply(op.as_ref(), Meta::new("bench", "", ""), &ctl).expect(name)
+            s.apply(op.as_ref(), Meta::new("bench", "", ""), &ctl)
+                .expect(name)
         };
-        apply(&mut s, "bench.create_brick", serde_json::json!({"size": n as f64}));
-        apply(&mut s, "mesh.size", serde_json::json!({"targets": ["TopoVolume#1"], "size": 1.0, "firmness": "hard"}));
+        apply(
+            &mut s,
+            "bench.create_brick",
+            serde_json::json!({"size": n as f64}),
+        );
+        apply(
+            &mut s,
+            "mesh.size",
+            serde_json::json!({"targets": ["TopoVolume#1"], "size": 1.0, "firmness": "hard"}),
+        );
         apply(
             &mut s,
             "mesh.scheme",
@@ -143,8 +158,16 @@ fn mesh_run_op(c: &mut Criterion) {
         g.throughput(Throughput::Elements((n * n * n) as u64));
         g.bench_with_input(BenchmarkId::new("mesh.run+delete", n), &n, |b, _| {
             b.iter(|| {
-                apply(&mut s, "mesh.run", serde_json::json!({"targets": ["TopoVolume#1"]}));
-                apply(&mut s, "mesh.delete", serde_json::json!({"targets": ["TopoVolume#1"]}));
+                apply(
+                    &mut s,
+                    "mesh.run",
+                    serde_json::json!({"targets": ["TopoVolume#1"]}),
+                );
+                apply(
+                    &mut s,
+                    "mesh.delete",
+                    serde_json::json!({"targets": ["TopoVolume#1"]}),
+                );
             });
         });
     }

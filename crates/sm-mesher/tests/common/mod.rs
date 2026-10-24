@@ -8,9 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_layer_api::{CoreLayers, LayerResultExt, TopoHost, commit_topology, topo_txn};
-use sm_mesher::{MesherConfig, MeshPlugin};
+use sm_mesher::{MeshPlugin, MesherConfig};
 use sm_op_api::{
-    ApplyCtx, DerivedCache, Delta, Engine, Hash256, Meta, Op, OpError, QuietControl, Registry,
+    ApplyCtx, Delta, DerivedCache, Engine, Hash256, Meta, Op, OpError, QuietControl, Registry,
     Services, Session, TypedOp,
 };
 use sm_scheme_api::{SchemeRegistry, stubs};
@@ -35,7 +35,11 @@ impl TypedOp for CreateBrick {
         commit_topology(
             ctx,
             &txn,
-            &[("volume", &[ids.volume]), ("faces", &ids.faces), ("edges", &ids.edges)],
+            &[
+                ("volume", &[ids.volume]),
+                ("faces", &ids.faces),
+                ("edges", &ids.edges),
+            ],
         )
     }
 }
@@ -110,7 +114,8 @@ pub fn engine_with(schemes: SchemeRegistry, cache: DerivedCache) -> Engine {
 
 pub fn engine_cfg(cfg: MesherConfig, cache: DerivedCache) -> Engine {
     let mut reg = Registry::new();
-    reg.install(&CoreLayers::new(cell_complex)).expect("core layers");
+    reg.install(&CoreLayers::new(cell_complex))
+        .expect("core layers");
     reg.install(&MeshPlugin).expect("mesher");
     reg.register::<CreateBrick>().expect("brick");
     reg.register::<Webcut>().expect("webcut");
@@ -182,5 +187,9 @@ pub fn brick_session(size: [f64; 3], h: f64) -> Session {
 }
 
 pub fn mesh_run(s: &mut Session) -> Result<(Hash256, Delta), sm_op_api::TimelineError> {
-    run_json(s, "mesh.run", serde_json::json!({"targets": ["TopoVolume#1"]}))
+    run_json(
+        s,
+        "mesh.run",
+        serde_json::json!({"targets": ["TopoVolume#1"]}),
+    )
 }

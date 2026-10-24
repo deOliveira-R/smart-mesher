@@ -6,7 +6,6 @@ use common::*;
 use serde_json::json;
 use sm_core::EntityKind;
 use sm_layer_api::{MeshLayer, ModelLayer};
-use sm_mesh_api::MeshRead;
 use sm_op_api::{DerivedCache, LayerType, QuietControl};
 use sm_scheme_api::stubs;
 
@@ -49,10 +48,16 @@ fn err_text<T>(r: Result<T, sm_op_api::TimelineError>) -> String {
 #[test]
 fn failing_scheme_replans_and_is_recorded_in_the_plan_attempts() {
     let mut reg = stubs::registry();
-    reg.register(Box::new(stubs::AlwaysFail)).expect("always_fail");
+    reg.register(Box::new(stubs::AlwaysFail))
+        .expect("always_fail");
     let mut s = sm_op_api::Session::new(engine_with(reg, DerivedCache::default()));
     run(&mut s, &brick_op([2.0; 3])).expect("brick");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1"], "size": 1.0})).expect("size");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("size");
     run_json(
         &mut s,
         "mesh.scheme",
@@ -73,7 +78,9 @@ fn failing_scheme_replans_and_is_recorded_in_the_plan_attempts() {
         ("always_fail", sm_scheme_api::Phase::Generate)
     );
     assert!(
-        plan.attempts.iter().any(|a| a.scheme.as_str() == "always_fail"),
+        plan.attempts
+            .iter()
+            .any(|a| a.scheme.as_str() == "always_fail"),
         "the failed candidate is recorded in plan.attempts"
     );
     assert_eq!(e.mesh().cell_count(), 8);
@@ -84,8 +91,18 @@ fn failing_scheme_replans_and_is_recorded_in_the_plan_attempts() {
 #[test]
 fn infeasible_hard_intent_fails_atomically() {
     let mut s = brick_session([10.0; 3], 1.0);
-    run_json(&mut s, "mesh.intervals", json!({"targets": ["TopoEdge#1"], "count": 3})).expect("3");
-    run_json(&mut s, "mesh.intervals", json!({"targets": ["TopoEdge#3"], "count": 5})).expect("5");
+    run_json(
+        &mut s,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#1"], "count": 3}),
+    )
+    .expect("3");
+    run_json(
+        &mut s,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#3"], "count": 5}),
+    )
+    .expect("5");
     let hash = s.state().hash();
     let n = s.state().entity_count();
     let layers = s.state().layer_hashes();
@@ -114,10 +131,16 @@ fn mesh_delete_restores_the_live_counts() {
     let (_, d) = mesh_run(&mut s).expect("run");
     let mid = d.outputs["mesh"][0];
     assert_eq!(s.state().count_of(EntityKind::MeshCell), 64);
-    let (_, dd) = run_json(&mut s, "mesh.delete", json!({"meshes": [mid.to_string()]})).expect("delete");
+    let (_, dd) =
+        run_json(&mut s, "mesh.delete", json!({"meshes": [mid.to_string()]})).expect("delete");
     assert_eq!(dd.removed.len(), d.created.len());
     assert!(dd.removed.windows(2).all(|w| w[0] < w[1]));
-    for k in [EntityKind::Mesh, EntityKind::MeshCell, EntityKind::MeshFace, EntityKind::MeshVertex] {
+    for k in [
+        EntityKind::Mesh,
+        EntityKind::MeshCell,
+        EntityKind::MeshFace,
+        EntityKind::MeshVertex,
+    ] {
         assert_eq!(s.state().count_of(k), 0, "{k:?}");
     }
     assert_eq!(s.state().entity_count(), base_count);
@@ -167,19 +190,48 @@ fn a_neighbour_of_a_meshed_volume_is_refused() {
         .cells(sm_topo_api::Dim::Volume)
         .to_vec();
     assert_eq!(vols.len(), 2);
-    run_json(&mut s, "mesh.size", json!({"targets": [vols[0].to_string(), vols[1].to_string()], "size": 1.0})).expect("size");
-    run_json(&mut s, "mesh.run", json!({"targets": [vols[0].to_string()]})).expect("first half");
-    let e = err_text(run_json(&mut s, "mesh.run", json!({"targets": [vols[1].to_string()]})));
-    assert!(e.contains("shares") && e.contains("mesh.delete first"), "{e}");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": [vols[0].to_string(), vols[1].to_string()], "size": 1.0}),
+    )
+    .expect("size");
+    run_json(
+        &mut s,
+        "mesh.run",
+        json!({"targets": [vols[0].to_string()]}),
+    )
+    .expect("first half");
+    let e = err_text(run_json(
+        &mut s,
+        "mesh.run",
+        json!({"targets": [vols[1].to_string()]}),
+    ));
+    assert!(
+        e.contains("shares") && e.contains("mesh.delete first"),
+        "{e}"
+    );
     // Meshing the two together is a separate run: delete, then mesh both.
-    run_json(&mut s, "mesh.delete", json!({"targets": [vols[0].to_string()]})).expect("delete");
-    run_json(&mut s, "mesh.run", json!({"targets": [vols[0].to_string(), vols[1].to_string()]})).expect("together");
+    run_json(
+        &mut s,
+        "mesh.delete",
+        json!({"targets": [vols[0].to_string()]}),
+    )
+    .expect("delete");
+    run_json(
+        &mut s,
+        "mesh.run",
+        json!({"targets": [vols[0].to_string(), vols[1].to_string()]}),
+    )
+    .expect("together");
 }
 
 // ------------------------------------------------------------------ intent layer
 
 fn intent_hash(s: &sm_op_api::Session) -> sm_op_api::Hash256 {
-    s.state().layer_hash("intent").expect("intent layer is non-empty")
+    s.state()
+        .layer_hash("intent")
+        .expect("intent layer is non-empty")
 }
 
 #[test]
@@ -187,7 +239,14 @@ fn intent_is_independent_of_op_order_and_replaces_repeats() {
     let two_bricks = || {
         let mut s = session();
         run(&mut s, &brick_op([4.0; 3])).expect("a");
-        run(&mut s, &CreateBrick { origin: [10.0, 0.0, 0.0], size: [2.0; 3] }).expect("b");
+        run(
+            &mut s,
+            &CreateBrick {
+                origin: [10.0, 0.0, 0.0],
+                size: [2.0; 3],
+            },
+        )
+        .expect("b");
         s
     };
     let size = |s: &mut sm_op_api::Session, t: &str, h: f64| {
@@ -196,12 +255,26 @@ fn intent_is_independent_of_op_order_and_replaces_repeats() {
     let mut a = two_bricks();
     size(&mut a, "TopoVolume#1", 1.0);
     size(&mut a, "TopoVolume#2", 0.5);
-    run_json(&mut a, "mesh.intervals", json!({"targets": ["TopoEdge#1"], "count": 3})).expect("n");
+    run_json(
+        &mut a,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#1"], "count": 3}),
+    )
+    .expect("n");
     let mut b = two_bricks();
-    run_json(&mut b, "mesh.intervals", json!({"targets": ["TopoEdge#1"], "count": 3})).expect("n");
+    run_json(
+        &mut b,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#1"], "count": 3}),
+    )
+    .expect("n");
     size(&mut b, "TopoVolume#2", 0.5);
     size(&mut b, "TopoVolume#1", 1.0);
-    assert_eq!(a.state().hash(), b.state().hash(), "request order does not matter");
+    assert_eq!(
+        a.state().hash(),
+        b.state().hash(),
+        "request order does not matter"
+    );
 
     // Repeated mesh.size replaces; it does not accumulate.
     let mut c = two_bricks();
@@ -211,13 +284,27 @@ fn intent_is_independent_of_op_order_and_replaces_repeats() {
     assert_ne!(intent_hash(&c), once, "the digest sees the value");
     size(&mut c, "TopoVolume#1", 2.0);
     assert_eq!(intent_hash(&c), once);
-    let intent = c.state().layer::<sm_mesher::IntentLayer>().expect("layer").intent();
+    let intent = c
+        .state()
+        .layer::<sm_mesher::IntentLayer>()
+        .expect("layer")
+        .intent();
     assert_eq!(intent.entities.len(), 1);
     // A target list in another order or with a duplicate is the same request.
     let mut d = two_bricks();
-    run_json(&mut d, "mesh.size", json!({"targets": ["TopoVolume#2", "TopoVolume#1", "TopoVolume#2"], "size": 2.0})).expect("both");
+    run_json(
+        &mut d,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#2", "TopoVolume#1", "TopoVolume#2"], "size": 2.0}),
+    )
+    .expect("both");
     let mut e = two_bricks();
-    run_json(&mut e, "mesh.size", json!({"targets": ["TopoVolume#1", "TopoVolume#2"], "size": 2.0})).expect("both");
+    run_json(
+        &mut e,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1", "TopoVolume#2"], "size": 2.0}),
+    )
+    .expect("both");
     assert_eq!(d.state().hash(), e.state().hash());
 }
 
@@ -225,14 +312,29 @@ fn intent_is_independent_of_op_order_and_replaces_repeats() {
 fn firmness_ladder_keeps_the_firmer_request_and_warns() {
     let mut s = session();
     run(&mut s, &brick_op([4.0; 3])).expect("brick");
-    run_json(&mut s, "mesh.intervals", json!({"targets": ["TopoEdge#1"], "count": 5})).expect("hard");
+    run_json(
+        &mut s,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#1"], "count": 5}),
+    )
+    .expect("hard");
     let h = s.state().hash();
-    let (_, d) = run_json(&mut s, "mesh.size", json!({"targets": ["TopoEdge#1"], "size": 1.0})).expect("size");
+    let (_, d) = run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoEdge#1"], "size": 1.0}),
+    )
+    .expect("size");
     assert_eq!(s.state().hash(), h, "the hard count stays");
     assert_eq!(d.diagnostics.len(), 1);
     assert_eq!(d.diagnostics[0].code, "mesh.firmness_kept");
     // An equal or higher firmness replaces it.
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoEdge#1"], "size": 1.0, "firmness": "hard"})).expect("hard size");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoEdge#1"], "size": 1.0, "firmness": "hard"}),
+    )
+    .expect("hard size");
     assert_ne!(s.state().hash(), h);
 }
 
@@ -240,13 +342,34 @@ fn firmness_ladder_keeps_the_firmer_request_and_warns() {
 fn intent_requests_on_deleted_entities_are_dropped() {
     let mut s = session();
     run(&mut s, &brick_op([4.0; 3])).expect("a");
-    run(&mut s, &CreateBrick { origin: [10.0, 0.0, 0.0], size: [2.0; 3] }).expect("b");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1", "TopoVolume#2"], "size": 1.0})).expect("size");
+    run(
+        &mut s,
+        &CreateBrick {
+            origin: [10.0, 0.0, 0.0],
+            size: [2.0; 3],
+        },
+    )
+    .expect("b");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1", "TopoVolume#2"], "size": 1.0}),
+    )
+    .expect("size");
     run(&mut s, &DeleteVolume { volume: vol(1) }).expect("delete");
-    let intent = s.state().layer::<sm_mesher::IntentLayer>().expect("layer").intent();
-    assert_eq!(intent.entities.keys().copied().collect::<Vec<_>>(), vec![vol(2)]);
+    let intent = s
+        .state()
+        .layer::<sm_mesher::IntentLayer>()
+        .expect("layer")
+        .intent();
+    assert_eq!(
+        intent.entities.keys().copied().collect::<Vec<_>>(),
+        vec![vol(2)]
+    );
     run(&mut s, &DeleteVolume { volume: vol(2) }).expect("delete");
-    assert!(LayerType::is_empty(s.state().layer::<sm_mesher::IntentLayer>().expect("layer")));
+    assert!(LayerType::is_empty(
+        s.state().layer::<sm_mesher::IntentLayer>().expect("layer")
+    ));
 }
 
 #[test]
@@ -256,17 +379,44 @@ fn bad_intent_requests_are_rejected_and_change_nothing() {
     let h = s.state().hash();
     let bad = [
         ("mesh.size", json!({"targets": ["TopoVolume#1"]})),
-        ("mesh.size", json!({"targets": ["TopoVolume#1"], "size": 1.0, "auto": 3})),
-        ("mesh.size", json!({"targets": ["TopoVolume#1"], "size": -1.0})),
+        (
+            "mesh.size",
+            json!({"targets": ["TopoVolume#1"], "size": 1.0, "auto": 3}),
+        ),
+        (
+            "mesh.size",
+            json!({"targets": ["TopoVolume#1"], "size": -1.0}),
+        ),
         ("mesh.size", json!({"targets": ["TopoVolume#1"], "auto": 3})), // no auto hook
-        ("mesh.size", json!({"targets": ["TopoVolume#1"], "auto": 11})),
+        (
+            "mesh.size",
+            json!({"targets": ["TopoVolume#1"], "auto": 11}),
+        ),
         ("mesh.size", json!({"targets": [], "size": 1.0})),
-        ("mesh.size", json!({"targets": ["TopoVolume#9"], "size": 1.0})),
-        ("mesh.size", json!({"targets": ["TopoVertex#1"], "size": 1.0})),
-        ("mesh.intervals", json!({"targets": ["TopoEdge#1"], "count": 0})),
-        ("mesh.scheme", json!({"targets": ["TopoVolume#1"], "scheme": "nope"})),
-        ("mesh.scheme", json!({"targets": ["TopoVolume#1"], "scheme": "equal"})), // a curve scheme
-        ("mesh.scheme", json!({"targets": ["TopoEdge#1"], "scheme": "equal", "fallbacks": ["nope"]})),
+        (
+            "mesh.size",
+            json!({"targets": ["TopoVolume#9"], "size": 1.0}),
+        ),
+        (
+            "mesh.size",
+            json!({"targets": ["TopoVertex#1"], "size": 1.0}),
+        ),
+        (
+            "mesh.intervals",
+            json!({"targets": ["TopoEdge#1"], "count": 0}),
+        ),
+        (
+            "mesh.scheme",
+            json!({"targets": ["TopoVolume#1"], "scheme": "nope"}),
+        ),
+        (
+            "mesh.scheme",
+            json!({"targets": ["TopoVolume#1"], "scheme": "equal"}),
+        ), // a curve scheme
+        (
+            "mesh.scheme",
+            json!({"targets": ["TopoEdge#1"], "scheme": "equal", "fallbacks": ["nope"]}),
+        ),
         ("mesh.default_size", json!({})),
         ("mesh.default_size", json!({"function": "linear"})), // no builder
         ("mesh.run", json!({"targets": ["TopoFace#1"]})),
@@ -276,7 +426,12 @@ fn bad_intent_requests_are_rejected_and_change_nothing() {
         assert!(run_json(&mut s, op, p.clone()).is_err(), "{op} {p}");
         assert_eq!(s.state().hash(), h, "{op} {p}");
     }
-    run_json(&mut s, "mesh.scheme", json!({"targets": ["TopoEdge#1"], "scheme": "equal", "fallbacks": []})).expect("a curve scheme on a curve");
+    run_json(
+        &mut s,
+        "mesh.scheme",
+        json!({"targets": ["TopoEdge#1"], "scheme": "equal", "fallbacks": []}),
+    )
+    .expect("a curve scheme on a curve");
 }
 
 #[test]
@@ -292,21 +447,42 @@ fn auto_size_and_size_fields_come_from_the_injected_hooks() {
                 let h = params.get("const", "size")?.unwrap_or(1.0);
                 Ok(Some(Box::new(sm_scheme_api::ConstantSize(h))))
             }
-            _ => Err(sm_scheme_api::SchemeError::Input("unknown sizing function".into())),
+            _ => Err(sm_scheme_api::SchemeError::Input(
+                "unknown sizing function".into(),
+            )),
         }));
     let mut s = sm_op_api::Session::new(engine_cfg(cfg, DerivedCache::default()));
     run(&mut s, &brick_op([10.0; 3])).expect("brick");
     // auto is resolved to a plain size when applied.
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1"], "auto": 4})).expect("auto");
-    let intent = s.state().layer::<sm_mesher::IntentLayer>().expect("layer").intent();
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "auto": 4}),
+    )
+    .expect("auto");
+    let intent = s
+        .state()
+        .layer::<sm_mesher::IntentLayer>()
+        .expect("layer")
+        .intent();
     assert_eq!(
         intent.entities[&vol(1)].intervals.expect("set").value,
         sm_scheme_api::IntervalRequest::Size(2.0)
     );
     // A named function is validated when set and used by mesh.run: size 2.5 -> 4 per edge.
     assert!(run_json(&mut s, "mesh.default_size", json!({"function": "bogus"})).is_err());
-    run_json(&mut s, "mesh.default_size", json!({"function": "const", "params": {"size": 2.5}})).expect("fn");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1"], "size": 2.5})).expect("size");
+    run_json(
+        &mut s,
+        "mesh.default_size",
+        json!({"function": "const", "params": {"size": 2.5}}),
+    )
+    .expect("fn");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 2.5}),
+    )
+    .expect("size");
     run_json(
         &mut s,
         "mesh.scheme",
@@ -338,10 +514,32 @@ fn default_size_applies_where_no_request_reaches() {
 fn the_intent_of_other_volumes_does_not_disturb_a_run() {
     let mut s = session();
     run(&mut s, &brick_op([4.0; 3])).expect("a");
-    run(&mut s, &CreateBrick { origin: [10.0, 0.0, 0.0], size: [2.0; 3] }).expect("b");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1"], "size": 1.0})).expect("a size");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#2"], "size": 0.5})).expect("b size");
-    run_json(&mut s, "mesh.intervals", json!({"targets": ["TopoEdge#13"], "count": 7})).expect("b edge");
+    run(
+        &mut s,
+        &CreateBrick {
+            origin: [10.0, 0.0, 0.0],
+            size: [2.0; 3],
+        },
+    )
+    .expect("b");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("a size");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#2"], "size": 0.5}),
+    )
+    .expect("b size");
+    run_json(
+        &mut s,
+        "mesh.intervals",
+        json!({"targets": ["TopoEdge#13"], "count": 7}),
+    )
+    .expect("b edge");
     run_json(
         &mut s,
         "mesh.scheme",
@@ -372,7 +570,12 @@ fn mesh_info_reports_counts_hashes_and_volume() {
     let q = QuietControl::new();
     let info = s
         .engine()
-        .run_query(s.state(), "mesh.info", &json!({"mesh": mid.to_string()}), &q.control())
+        .run_query(
+            s.state(),
+            "mesh.info",
+            &json!({"mesh": mid.to_string()}),
+            &q.control(),
+        )
         .expect("query");
     assert_eq!(info["cells"], 1000);
     assert_eq!(info["vertices"], 1331);
@@ -386,11 +589,25 @@ fn mesh_info_reports_counts_hashes_and_volume() {
     run(&mut s, &DeleteVolume { volume: vol(1) }).expect("delete");
     let info2 = s
         .engine()
-        .run_query(s.state(), "mesh.info", &json!({"mesh": mid.to_string()}), &q.control())
+        .run_query(
+            s.state(),
+            "mesh.info",
+            &json!({"mesh": mid.to_string()}),
+            &q.control(),
+        )
         .expect("query");
     assert_eq!(info2["stale"], true);
     assert_eq!(info2["topology_hash"], info["topology_hash"]);
-    assert!(s.engine().run_query(s.state(), "mesh.info", &json!({"mesh": "Mesh#9"}), &q.control()).is_err());
+    assert!(
+        s.engine()
+            .run_query(
+                s.state(),
+                "mesh.info",
+                &json!({"mesh": "Mesh#9"}),
+                &q.control()
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -404,7 +621,10 @@ fn the_mesh_is_a_valid_unit_lattice() {
     let co = m.coords();
     for i in 0..co.len() {
         for c in [co.x[i], co.y[i], co.z[i]] {
-            assert!((c - c.round()).abs() < 1e-12 && (0.0..=10.0).contains(&c), "{c}");
+            assert!(
+                (c - c.round()).abs() < 1e-12 && (0.0..=10.0).contains(&c),
+                "{c}"
+            );
         }
     }
 }
@@ -413,7 +633,14 @@ fn the_mesh_is_a_valid_unit_lattice() {
 fn registered_schemas_carry_entity_kinds_and_declared_outputs() {
     let eng = engine();
     let reg = eng.registry();
-    for name in ["mesh.size", "mesh.intervals", "mesh.scheme", "mesh.run", "mesh.delete", "mesh.default_size"] {
+    for name in [
+        "mesh.size",
+        "mesh.intervals",
+        "mesh.scheme",
+        "mesh.run",
+        "mesh.delete",
+        "mesh.default_size",
+    ] {
         let schema = serde_json::to_value(reg.schema(name).expect("schema")).expect("json");
         let props = schema["properties"].as_object().expect("properties");
         for key in ["targets", "meshes"] {
@@ -426,7 +653,15 @@ fn registered_schemas_carry_entity_kinds_and_declared_outputs() {
     assert_eq!(outs.len(), 1);
     assert_eq!(outs[0].name, "mesh");
     assert!(reg.query_names().contains(&"mesh.info"));
-    let q = serde_json::to_value(reg.query_catalog().into_iter().next().expect("query").expect("info").schema).expect("json");
+    let q = serde_json::to_value(
+        reg.query_catalog()
+            .into_iter()
+            .next()
+            .expect("query")
+            .expect("info")
+            .schema,
+    )
+    .expect("json");
     assert!(q["properties"]["mesh"].get("x-entity-kind").is_some());
 }
 
@@ -434,10 +669,16 @@ fn registered_schemas_carry_entity_kinds_and_declared_outputs() {
 fn a_missing_service_is_a_typed_error_and_changes_nothing() {
     use std::sync::Arc;
     let mut reg = sm_op_api::Registry::new();
-    reg.install(&sm_layer_api::CoreLayers::new(cell_complex)).expect("core");
+    reg.install(&sm_layer_api::CoreLayers::new(cell_complex))
+        .expect("core");
     reg.install(&sm_mesher::MeshPlugin).expect("mesher");
     reg.register::<CreateBrick>().expect("brick");
-    let eng = sm_op_api::Engine::new(Arc::new(reg), sm_op_api::Services::new(), Arc::new(DerivedCache::default())).expect("engine");
+    let eng = sm_op_api::Engine::new(
+        Arc::new(reg),
+        sm_op_api::Services::new(),
+        Arc::new(DerivedCache::default()),
+    )
+    .expect("engine");
     let mut s = sm_op_api::Session::new(eng);
     run(&mut s, &brick_op([1.0; 3])).expect("brick");
     let h = s.state().hash();
@@ -452,7 +693,12 @@ fn undo_redo_and_cold_replay_do_not_diverge() {
     let eng = engine_with(stubs::registry(), DerivedCache::disabled());
     let mut s = sm_op_api::Session::new(eng);
     run(&mut s, &brick_op([4.0; 3])).expect("brick");
-    run_json(&mut s, "mesh.size", json!({"targets": ["TopoVolume#1"], "size": 1.0})).expect("size");
+    run_json(
+        &mut s,
+        "mesh.size",
+        json!({"targets": ["TopoVolume#1"], "size": 1.0}),
+    )
+    .expect("size");
     run_json(
         &mut s,
         "mesh.scheme",
@@ -462,11 +708,22 @@ fn undo_redo_and_cold_replay_do_not_diverge() {
     .expect("scheme");
     let (h_run, _) = mesh_run(&mut s).expect("run");
     let after_run = s.state().hash();
-    let (h_del, _) = run_json(&mut s, "mesh.delete", json!({"targets": ["TopoVolume#1"]})).expect("delete");
+    let (h_del, _) =
+        run_json(&mut s, "mesh.delete", json!({"targets": ["TopoVolume#1"]})).expect("delete");
     let full = s.state().hash();
     let q = QuietControl::new();
-    assert_eq!(s.state_at_from_root(h_run, &q.control()).expect("cold replay").hash(), after_run);
-    assert_eq!(s.state_at_from_root(h_del, &q.control()).expect("cold replay").hash(), full);
+    assert_eq!(
+        s.state_at_from_root(h_run, &q.control())
+            .expect("cold replay")
+            .hash(),
+        after_run
+    );
+    assert_eq!(
+        s.state_at_from_root(h_del, &q.control())
+            .expect("cold replay")
+            .hash(),
+        full
+    );
     s.undo().expect("undo");
     assert_eq!(s.state().hash(), after_run);
     assert_eq!(s.state().count_of(EntityKind::MeshCell), 64);
@@ -480,7 +737,10 @@ fn undo_redo_and_cold_replay_do_not_diverge() {
 /// Mesh a brick of `n` cells per side on a rayon pool of `threads`; state hash plus the exact
 /// (bit-for-bit) hash of the meshes layer.
 fn flow(n: u32, threads: usize) -> (sm_op_api::Hash256, sm_op_api::Hash256) {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("pool");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("pool");
     pool.install(|| {
         let mut s = brick_session([f64::from(n); 3], 1.0);
         mesh_run(&mut s).expect("run");
