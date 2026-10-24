@@ -2,7 +2,7 @@
 //! in parallel; stage order, tie-breaks and error selection are fixed, so the result and the
 //! reported error are independent of the thread count.
 
-use crate::builder::{FLAG_TEMPLATE, MeshBuilder};
+use crate::builder::{FLAG_TEMPLATE, MeshBuilder, Validation};
 use crate::class::ClassCol;
 use crate::store::{IdRange, Mesh};
 use crate::util::{CHUNK, ErrSink, chunk_bounds, nil, prefix, range, split_by_offsets};
@@ -11,7 +11,7 @@ use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::{
     Basis, CellIx, CellShape, FaceIx, FaceKind, Finished, HighOrderCell, LoopRelation,
     MeshDim, MeshEntity, MeshEntityKind, MeshError, NodeRef, PointIx, Result, SerialAlloc, SetMembers,
-    Side, SignedFace, TagColumn, TagValues, VertexIx, derive_corners, loop_relation, shape::polygon_cycle,
+    Side, SignedFace, TagColumn, TagValues, VertexIx, derive_corners, entity_dim, loop_relation, shape::polygon_cycle,
 };
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -92,6 +92,8 @@ fn cmp_loops(b: &MeshBuilder, meta: &[FaceMeta], x: u32, y: u32) -> Ordering {
 /// Output of one chunk of cells.
 #[derive(Default)]
 struct CellChunk {
+    /// A cell built from loops whose directed edges do not cancel (not a closed surface).
+    open: bool,
     faces: Vec<SignedFace>,
     shapes: Vec<CellShape>,
     corner_len: Vec<u32>,
@@ -165,6 +167,9 @@ impl CellCtx<'_> {
         vs.dedup();
         let sizes: SmallVec<[usize; 6]> = loops.iter().map(SmallVec::len).collect();
         let mut shape = CellShape::detect(vs.len(), &sizes);
+        if self.b.dim == MeshDim::Three && !is_closed(&loops) {
+            out.open = true;
+        }
         let refs: SmallVec<[&[VertexIx]; 6]> = loops.iter().map(SmallVec::as_slice).collect();
         let cs: Option<SmallVec<[VertexIx; 8]>> = if self.b.dim == MeshDim::Two {
             let cyc = polygon_cycle(&refs).ok_or_else(|| {
@@ -227,6 +232,18 @@ impl CellCtx<'_> {
     }
 }
 
+/// The outward loops of a dimension-3 cell form a closed oriented surface: every directed edge
+/// occurs once and its reverse occurs too.
+fn is_closed(loops: &[SmallVec<[VertexIx; 4]>]) -> bool {
+    let mut dir: SmallVec<[(u32, u32); 32]> = SmallVec::new();
+    for l in loops {
+        let n = l.len();
+        dir.extend((0..n).map(|i| (l[i].0, l[(i + 1) % n].0)));
+    }
+    dir.sort_unstable();
+    dir.windows(2).all(|w| w[0] != w[1]) && dir.iter().all(|&(a, b)| dir.binary_search(&(b, a)).is_ok())
+}
+
 fn ids(alloc: &mut SerialAlloc, kind: EntityKind, n: usize) -> Result<IdRange> {
     let first = alloc.take(kind, n)?;
     let first_id = EntityId::new(kind, first).ok_or(MeshError::SerialOverflow)?;
@@ -234,6 +251,41 @@ fn ids(alloc: &mut SerialAlloc, kind: EntityKind, n: usize) -> Result<IdRange> {
         EntityId::new(kind, first + n as u64 - 1).ok_or(MeshError::SerialOverflow)?;
     }
     Ok(IdRange { first: first_id, n })
+}
+
+/// Parallel check of exactly the `validate` rules that user input can break; everything else
+/// `validate` tests (canonical order, orientation, incidence, shape tags, reverse class index,
+/// edge table, set and tag shape) holds by construction in `finish`. `false` means "suspicious":
+/// the caller then runs the full contract validator, which produces the report.
+fn fast_checks(m: &Mesh) -> bool {
+    let dim_of = |e: EntityId| entity_dim(e.kind()).unwrap_or(u8::MAX);
+    let vdim: Vec<u8> = m.vclass.ent.par_iter().map(|e| dim_of(*e)).collect();
+    let faces_ok = (0..m.n_faces()).into_par_iter().all(|f| {
+        let k = m.fclass.ent[f].kind();
+        let fd = dim_of(m.fclass.ent[f]);
+        m.dim.accepts_facet(m.face_kind[f], k)
+            && m.face_verts[range(&m.face_off, f)].iter().all(|v| vdim[v.get()] <= fd)
+    });
+    if !faces_ok {
+        return false;
+    }
+    if let Some(t) = &m.edges {
+        let edim: Vec<u8> = t.class.par_iter().map(|c| dim_of(c.entity)).collect();
+        let edges_ok = (0..t.len()).into_par_iter().all(|e| {
+            let [a, b] = t.vertices[e];
+            edim[e] != u8::MAX && vdim[a.get()] <= edim[e] && vdim[b.get()] <= edim[e]
+        }) && (0..m.n_faces()).into_par_iter().all(|f| {
+            let fd = dim_of(m.fclass.ent[f]);
+            t.of_face(FaceIx::new(f)).iter().all(|fe| edim[fe.edge.get()] <= fd)
+        });
+        if !edges_ok {
+            return false;
+        }
+    }
+    (0..m.n_cells()).into_par_iter().all(|c| {
+        let p = m.cell_parent[c];
+        p == CellIx::NONE || !(m.cell_active[c] && m.cell_active[p as usize])
+    })
 }
 
 pub(crate) fn finish(b: MeshBuilder, alloc: &mut SerialAlloc) -> Result<Finished<Mesh>> {
@@ -347,8 +399,10 @@ pub(crate) fn finish(b: MeshBuilder, alloc: &mut SerialAlloc) -> Result<Finished
     let mut cell_shape = Vec::with_capacity(nc);
     let mut corner_len: Vec<u32> = Vec::with_capacity(nc);
     let mut corners = Vec::new();
+    let mut open_cells = false;
     for ch in chunks {
         let ch = ch.map_err(|(_, e)| e)?;
+        open_cells |= ch.open;
         cell_faces.extend_from_slice(&ch.faces);
         cell_shape.extend_from_slice(&ch.shapes);
         corner_len.extend_from_slice(&ch.corner_len);
@@ -553,9 +607,11 @@ pub(crate) fn finish(b: MeshBuilder, alloc: &mut SerialAlloc) -> Result<Finished
         mesh.edges = Some(t);
     }
     mesh.rebuild_class_index();
-    let v = sm_mesh_api::validate(&mesh);
-    if !v.is_empty() {
-        return Err(MeshError::Invalid(v));
+    if b.validation == Validation::Full || open_cells || !fast_checks(&mesh) {
+        let v = sm_mesh_api::validate(&mesh);
+        if !v.is_empty() {
+            return Err(MeshError::Invalid(v));
+        }
     }
     Ok(Finished::new(mesh, new_of_old.into_iter().map(FaceIx).collect()))
 }

@@ -5,15 +5,19 @@
 
 mod adjacency;
 mod builder;
+mod bulk;
 mod catalog;
 mod class;
 mod edges;
 mod edit;
+mod export;
 mod finish;
+pub mod generate;
 mod store;
 mod util;
 
 pub use adjacency::Csr;
-pub use builder::MeshBuilder;
+pub use builder::{MeshBuilder, Validation};
 pub use store::Mesh;
 pub use catalog::Catalog;
+pub use export::{RawColumns, as_bytes};

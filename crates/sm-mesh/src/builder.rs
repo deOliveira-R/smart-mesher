@@ -82,6 +82,18 @@ pub(crate) fn check_class(c: &Classification) -> Result<()> {
     Ok(())
 }
 
+/// How much checking `finish` does after building the mesh.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Validation {
+    /// Check, in parallel, the rules that the builder input can break (classification kinds and
+    /// dimension order, open cells, lineage) and run the full contract validator only when one
+    /// fails, to produce its report. Everything else holds by construction. The default.
+    #[default]
+    Fast,
+    /// Always run the full sequential `sm_mesh_api::validate` (what the reference builder does).
+    Full,
+}
+
 /// Cells built from their shape template: corners and faces agree by construction.
 pub(crate) const FLAG_TEMPLATE: u8 = 1;
 
@@ -122,6 +134,7 @@ pub struct MeshBuilder {
     pub(crate) sets: IndexMap<String, SetMembers>,
     pub(crate) set_labels: BTreeMap<String, i64>,
     pub(crate) tags: IndexMap<(MeshEntityKind, String), TagValues>,
+    pub(crate) validation: Validation,
     face_index: Mutex<FaceIndex>,
     grid: Mutex<Grid>,
 }
@@ -142,6 +155,12 @@ impl MeshBuilder {
         Self { dim, face_off: vec![0], cell_off: vec![0], corner_off: vec![0], ..Self::default() }
     }
 
+    /// Choose how thoroughly `finish` validates (default [`Validation::Fast`]).
+    pub fn with_validation(mut self, v: Validation) -> Self {
+        self.validation = v;
+        self
+    }
+
     pub(crate) fn nfaces(&self) -> usize {
         self.face_off.len().saturating_sub(1)
     }
@@ -157,6 +176,11 @@ impl MeshBuilder {
     pub(crate) fn corners_of(&self, c: usize) -> Option<&[VertexIx]> {
         let s = &self.corner_v[range(&self.corner_off, c)];
         (!s.is_empty()).then_some(s)
+    }
+
+    /// Forget the lazily built face index (after the face table was replaced wholesale).
+    pub(crate) fn reset_face_index(&self) {
+        *self.face_index.lock().unwrap_or_else(PoisonError::into_inner) = FaceIndex::default();
     }
 
     fn tag_of(l: &[VertexIx]) -> u32 {
