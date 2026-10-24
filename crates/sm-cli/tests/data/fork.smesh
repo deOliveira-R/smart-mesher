@@ -1,0 +1,21 @@
+let b = model.create_brick(10.0)                 // single required param: positional
+let h0 = timeline.head().node
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+mesh.run(targets: b.volume)
+fem.block_add(block: 1, volumes: b.volume)
+let main_hash = session.hash()
+timeline.branch("alt", at: h0)                  // fork at the brick, re-apply the same ops
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+mesh.run(targets: b.volume)
+fem.block_add(block: 1, volumes: b.volume)
+assert session.hash() == main_hash
+timeline.branch("coarse", at: h0)
+mesh.size(targets: b.volume, size: 2.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+let c = mesh.run(targets: b.volume)
+assert mesh.info(mesh: c.mesh[0]).cells == 125
+assert session.hash() != main_hash
+timeline.checkout("main")
+assert session.hash() == main_hash
