@@ -367,3 +367,82 @@ pub fn engine() -> Engine {
 pub fn host(engine: &Engine) -> EngineHost<'_> {
     EngineHost::new(engine, engine.registry().new_state()).with_relations(DemoRelations)
 }
+
+// ---- W2 demo ops: declared OUTPUTS and `x-entity-kind` ------------------------------------------
+
+/// Make a body, a volume and faces with declared output roles.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct W2Make {
+    /// Unused.
+    pub n: Option<u32>,
+}
+
+impl TypedOp for W2Make {
+    const NAME: &'static str = "w2.make";
+    const OUTPUTS: &'static [OutputRole] = &[
+        OutputRole::new("body", &[EntityKind::TopoBody], Cardinality::One, "the body"),
+        OutputRole::new("volume", &[EntityKind::TopoVolume], Cardinality::One, "the volume"),
+        OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "the faces"),
+    ];
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.alloc_as("body", EntityKind::TopoBody)?;
+        ctx.alloc_as("volume", EntityKind::TopoVolume)?;
+        for _ in 0..3 {
+            ctx.alloc_as("faces", EntityKind::TopoFace)?;
+        }
+        Ok(())
+    }
+}
+
+/// Make a mesh id (a stand-in for `mesh.run`).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct W2MakeMesh {
+    /// Unused.
+    pub n: Option<u32>,
+}
+
+impl TypedOp for W2MakeMesh {
+    const NAME: &'static str = "w2.make_mesh";
+    const OUTPUTS: &'static [OutputRole] = &[OutputRole::new("mesh", &[EntityKind::Mesh], Cardinality::One, "the mesh")];
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.alloc_as("mesh", EntityKind::Mesh)?;
+        Ok(())
+    }
+}
+
+/// Takes volumes through `x-entity-kind` annotated parameters (single, optional, array).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct W2UseVolume {
+    /// A volume.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    pub vol: EntityId,
+    /// An optional volume.
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    pub maybe: Option<EntityId>,
+    /// Several volumes or bodies.
+    #[serde(default)]
+    #[schemars(extend("x-entity-kind" = ["TopoVolume", "TopoBody"]))]
+    pub many: Vec<EntityId>,
+}
+
+impl TypedOp for W2UseVolume {
+    const NAME: &'static str = "w2.use_volume";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.require(self.vol)?;
+        ctx.layer_mut::<DemoModel>()?.notes.push(self.vol.to_string());
+        Ok(())
+    }
+}
+
+/// [`registry`] plus the W2 demo ops.
+pub fn registry_w2() -> Registry {
+    let mut r = registry();
+    r.register::<W2Make>().unwrap();
+    r.register::<W2MakeMesh>().unwrap();
+    r.register::<W2UseVolume>().unwrap();
+    r
+}
+
+pub fn engine_w2() -> Engine {
+    Engine::new(Arc::new(registry_w2()), Services::new(), Arc::new(DerivedCache::default())).unwrap()
+}

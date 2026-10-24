@@ -64,6 +64,48 @@ pub struct Completion {
     pub items: Vec<Candidate>,
 }
 
+/// Language commands outside the registry (`timeline.*`, `session.*`), with a one-line description.
+const COMMANDS: &[(&str, &str)] = &[
+    ("session.export", "write a mesh to a file"),
+    ("session.hash", "the state hash (a value)"),
+    ("session.save", "save the project"),
+    ("session.status", "the session status (a value)"),
+    ("timeline.branch", "fork a branch at the current position"),
+    ("timeline.checkout", "move to a branch, node or the empty state"),
+    ("timeline.head", "the attached branch and current node (a value)"),
+    ("timeline.redo", "step forward after an undo"),
+    ("timeline.undo", "step back one node"),
+];
+
+/// Parameters of the commands that take any (`(name, type, detail, choices)`).
+fn command_params(name: &str) -> Option<Vec<ParamInfo>> {
+    let p = |n: &str, required: bool, ty: &str, d: &str, choices: &[&str], is_entity: bool, kinds: Vec<EntityKind>| ParamInfo {
+        name: n.to_owned(),
+        required,
+        ty: ty.to_owned(),
+        description: Some(d.to_owned()),
+        default: None,
+        choices: choices.iter().map(|c| format!("{c:?}")).collect(),
+        is_entity,
+        kinds,
+    };
+    Some(match name {
+        "session.export" => vec![
+            p("path", true, "string", "destination file", &[], false, vec![]),
+            p("format", false, "\"smsh\" | \"vtu\"", "output format (default: from the extension)", &["smsh", "vtu"], false, vec![]),
+            p("mesh", false, "id", "the mesh to export (default: the only one)", &[], true, vec![EntityKind::Mesh]),
+            p("provenance", false, "bool", "embed the timeline hash", &[], false, vec![]),
+        ],
+        "timeline.branch" => vec![p("name", true, "string", "new branch name", &[], false, vec![]), p("at", false, "string", "fork at this node hash", &[], false, vec![])],
+        "timeline.checkout" => vec![
+            p("ref", false, "string", "branch name", &[], false, vec![]),
+            p("node", false, "string", "node hash", &[], false, vec![]),
+            p("empty", false, "bool", "the empty state", &[], false, vec![]),
+        ],
+        _ => return None,
+    })
+}
+
 const STATEMENT_KEYWORDS: &[&str] = &["alias", "assert", "batch", "for", "help", "if", "include", "let", "print", "set"];
 /// Cap on live-entity candidates.
 const MAX_ENTITIES: usize = 50;
@@ -370,7 +412,8 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
     }
 
     fn op_name_candidates_calls(&mut self) -> Vec<Candidate> {
-        self.callable_map()
+        let mut cmds: Vec<Candidate> = COMMANDS.iter().map(|(n, d)| cand(*n, format!("{n}("), CandidateKind::Op, Some((*d).to_owned()))).collect();
+        cmds.extend(self.callable_map()
             .values()
             .map(|c| {
                 cand(
@@ -380,11 +423,14 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
                     c.description().map(|d| first_line(&d)),
                 )
             })
-            .collect()
+            );
+        cmds
     }
 
     fn op_name_candidates(&mut self) -> Vec<Candidate> {
-        self.callable_map().values().map(|c| cand(c.name.clone(), c.name.clone(), if c.is_query { CandidateKind::Query } else { CandidateKind::Op }, c.description().map(|d| first_line(&d)))).collect()
+        let mut cmds: Vec<Candidate> = COMMANDS.iter().map(|(n, d)| cand(*n, *n, CandidateKind::Op, Some((*d).to_owned()))).collect();
+        cmds.extend(self.callable_map().values().map(|c| cand(c.name.clone(), c.name.clone(), if c.is_query { CandidateKind::Query } else { CandidateKind::Op }, c.description().map(|d| first_line(&d)))));
+        cmds
     }
 
     fn variable_candidates(&self) -> Vec<Candidate> {
@@ -416,7 +462,16 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
                 out.push(cand("false", "false", CandidateKind::Value, None));
             }
         }
-        out.extend(self.variable_candidates());
+        // `x-entity-kind`: offer only kinds the parameter accepts, and drop entity variables that hold something else.
+        let allowed: &[EntityKind] = hint.map_or(&[], |p| p.kinds.as_slice());
+        let mut vars = self.variable_candidates();
+        if !allowed.is_empty() {
+            let holds_other = |name: &str, this: &Self| {
+                this.scopes.iter().rev().find_map(|s| s.get(name)).is_some_and(|b| matches!(&b.val, Val::Ents(e) if e.iter().any(|id| !allowed.contains(&id.kind()))))
+            };
+            vars.retain(|c| !holds_other(&c.label, self));
+        }
+        out.extend(vars);
         out.push(cand("true", "true", CandidateKind::Keyword, None));
         out.push(cand("false", "false", CandidateKind::Keyword, None));
         out.push(cand("not", "not ", CandidateKind::Keyword, None));
@@ -425,10 +480,11 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
             let insert = if matches!(*b, "pi" | "tau") { (*b).to_owned() } else { format!("{b}(") };
             out.push(cand(*b, insert, CandidateKind::Function, None));
         }
-        for s in kinds::KIND_TABLE.iter().map(|r| r.singular) {
-            out.push(cand(format!("{s}#"), format!("{s}#"), CandidateKind::Kind, None));
+        for r in kinds::KIND_TABLE.iter().filter(|r| allowed.is_empty() || allowed.contains(&r.kind)) {
+            out.push(cand(format!("{}#", r.singular), format!("{}#", r.singular), CandidateKind::Kind, None));
         }
-        out.extend(self.plural_candidates(true));
+        let plurals = self.plural_candidates(true);
+        out.extend(plurals.into_iter().filter(|c| allowed.is_empty() || c.detail.as_deref().is_some_and(|d| allowed.iter().any(|k| k.name() == d))));
         out
     }
 
@@ -452,8 +508,10 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
         segs.reverse();
         let written = segs.join(".");
         let name = if segs.len() == 1 { self.aliases.get(&written).cloned().unwrap_or(written) } else { written };
-        let info = self.lookup_callable(&name)?;
-        let params = info.params();
+        let params = match command_params(&name) {
+            Some(p) => p,
+            None => self.lookup_callable(&name)?.params(),
+        };
 
         // Split the arguments typed so far at depth-0 commas.
         let args = &ctx[open + 1..];

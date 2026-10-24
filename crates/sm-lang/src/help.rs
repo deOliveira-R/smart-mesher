@@ -20,6 +20,8 @@ pub struct Callable {
     pub doc: SchemaDoc,
     /// Result schema (queries only): lets entity-id results become entity sets.
     pub out: Option<SchemaDoc>,
+    /// Declared output roles (ops only); empty when the op declares none, in which case roles are not checked statically.
+    pub outputs: Vec<sm_op_api::OutputRole>,
 }
 
 impl Callable {
@@ -45,10 +47,10 @@ impl Callable {
 pub fn callables(registry: &Registry) -> Vec<Callable> {
     let mut out = Vec::new();
     for info in registry.catalog().into_iter().flatten() {
-        out.push(Callable { name: info.name, is_query: false, version: info.version, doc: SchemaDoc::new(info.schema.as_value().clone()), out: None });
+        out.push(Callable { name: info.name, is_query: false, version: info.version, doc: SchemaDoc::new(info.schema.as_value().clone()), out: None, outputs: info.outputs });
     }
     for info in registry.query_catalog().into_iter().flatten() {
-        out.push(Callable { name: info.name, is_query: true, version: 0, doc: SchemaDoc::new(info.schema.as_value().clone()), out: Some(SchemaDoc::new(info.output_schema.as_value().clone())) });
+        out.push(Callable { name: info.name, is_query: true, version: 0, doc: SchemaDoc::new(info.schema.as_value().clone()), out: Some(SchemaDoc::new(info.output_schema.as_value().clone())), outputs: Vec::new() });
     }
     out
 }
@@ -104,6 +106,8 @@ pub fn language_summary() -> &'static str {
               (`if c { a } else { b }` is also an expression; `1..n` is the inclusive list 1, 2, ..., n)
   timeline    timeline.branch(\"name\")  timeline.checkout(\"name\")  timeline.undo()  timeline.redo()   (statements, not ops)
               (`timeline.head()` returns {branch, node} and may be used in expressions)
+  session     session.export(\"out.vtu\", format: \"vtu\", mesh: Mesh#1)  session.save()   (statements, not ops)
+              (`session.hash()` and `session.status()` return values and may be used in expressions)
   other       print e, ...   assert cond, \"msg\"   alias short = model.create_brick   help [name]
   comments    // line   /* block */
 "
@@ -122,6 +126,15 @@ pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
             "redo" => Ok("timeline.redo()  (timeline command, not an op)\nStep forward again after an undo.\n".to_owned()),
             "head" => Ok("timeline.head()  (timeline command, not an op)\nReturns the object {branch, node}: the attached branch (absent when detached) and the current node hash (absent in the empty state). May be used in expressions.\n".to_owned()),
             _ => Err(format!("no timeline command `{name}`; timeline commands: branch, checkout, undo, redo, head")),
+        };
+    }
+    if let Some(verb) = name.strip_prefix("session.") {
+        return match verb {
+            "export" => Ok("session.export(path: string, format?: \"smsh\" | \"vtu\", mesh?: id, provenance?: bool)  (session command, not an op)\nWrite a mesh to a file. `path` may be positional; a relative path is resolved by the host. `format` defaults to the file extension; `mesh` defaults to the only mesh; `provenance` embeds the timeline hash.\n".to_owned()),
+            "save" => Ok("session.save()  (session command, not an op)\nSave the project.\n".to_owned()),
+            "hash" => Ok("session.hash()  (session command, not an op)\nReturns the state hash. May be used in expressions.\n".to_owned()),
+            "status" => Ok("session.status()  (session command, not an op)\nReturns the session status object. May be used in expressions.\n".to_owned()),
+            _ => Err(format!("no session command `{name}`; session commands: export, save, hash, status")),
         };
     }
     let all = callables(registry);

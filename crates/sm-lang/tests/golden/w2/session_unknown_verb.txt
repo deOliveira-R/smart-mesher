@@ -1,0 +1,6 @@
+error[unknown-name]: no session command `session.explode`
+ --> session_unknown_verb.smesh:1:9
+  |
+1 | session.explode()
+  |         ^^^^^^^ not a session command
+  = help: session commands: export(path, format, mesh, provenance), save(), hash(), status()

@@ -107,6 +107,13 @@ text ──lex──► tokens ──parse──► AST (+ diagnostics, recovery
 
 Union gains nothing from chunking at this size; it is kept chunked only so that all three operations share one code path.
 
+## W2 delta
+
+* `session.*` is a second reserved command namespace beside `timeline.*`, sharing its argument reader (`command_args`) and event/plan-mode conventions; the host contract is the defaulted `Host::session`.
+* Static checks read the registry's metadata instead of guessing: `x-entity-kind` (kept as a sibling of `$ref`, so `View` remembers the node as written) gives `wrong-kind`; `OpInfo.outputs` gives role did-you-mean in batch and plan
+  mode and lets a bare `One` role lower to `$i.role[0]`. Ops that declare nothing behave exactly as in W1.
+* Per-statement cost is unchanged (one extra map lookup per field access on a batch/plan result).
+
 ## Known gaps and non-goals (v1)
 
 * No user-defined functions, no `where`/`named` predicates (reserved, `LANGUAGE.md` §5.5), no dictionaries of ops.

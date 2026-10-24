@@ -1,0 +1,5 @@
+warning[plan-session]: `session.save` is not simulated by a plan
+ --> plan_session_warning.smesh:2:1
+  |
+2 | session.save()
+  | ^^^^^^^^^^^^^^ nothing is written or read

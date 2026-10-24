@@ -1,0 +1,6 @@
+error[wrong-kind]: `mesh` needs a Mesh, found TopoVolume#1
+ --> export_wrong_kind_mesh.smesh:2:31
+  |
+2 | session.export("a.vtu", mesh: Volume#1)
+  |                               ^^^^^^^^ not a mesh
+  = help: mesh ids look like `Mesh#1`
