@@ -446,10 +446,13 @@ fn unit(v: Vector3) -> Vector3 {
 /// # Errors
 /// [`LinAlgError::NonFinite`] for NaN/inf input, [`LinAlgError::NoConvergence`] if 60 sweeps
 /// do not suffice. The cap is unreachable for finite input: column pairs orthogonal to within
-/// `4 * EPSILON` (relative) are skipped, and a rotation that would leave the columns unchanged
-/// (`c == 1` and `|t| <= EPSILON`) counts as not performed, so rounding-floor sign flips cannot
-/// cycle. Columns with squared norm below `EPSILON² ||A||_F²` that still need a rotation are
-/// flushed to zero; small but orthogonal columns (e.g. `diag(1, 1, 1e-17)`) are kept exactly.
+/// `4 * EPSILON` (relative) are skipped, and that skip is the main guard. As a backstop, a
+/// rotation counts as not performed when `c == 1` and
+/// `|t| * (sqrt(alpha / beta) + sqrt(beta / alpha)) <= EPSILON` (it would leave both columns
+/// unchanged), so rounding-floor sign flips cannot cycle; with the skip in place this check
+/// almost never fires. Columns with squared norm below `EPSILON² ||A||_F² / 64` that still need
+/// a rotation are flushed to zero; small but orthogonal columns (e.g. `diag(1, 1, 1e-17)`) are
+/// kept exactly.
 pub fn svd3(a: &Mat3) -> Result<Svd3, LinAlgError> {
     if a.iter().flatten().any(|v| !v.is_finite()) {
         return Err(LinAlgError::NonFinite);

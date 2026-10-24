@@ -185,7 +185,13 @@ performance-only gap with no correctness impact; not attempted here.
    `[[1,0,.5],[0,1,.5],[0,0,1e-16]]` has `s3 > 0`. The identical-row fuzz is rerun.
 3. `tests/predicates.rs::range_edge_scaled_lattices`: collinear, coplanar, cocircular and
    cospherical lattice data at `2^k`, `k` in {-100..-96, 92..96}, with one-unit nudges, through
-   `try_*` against the `i128` oracle (plus a just-outside rejection test).
+   `try_*` against the `i128` oracle (plus a just-outside rejection test). These nudge by one
+   lattice unit (`2^k`), not by ulps, because the `i128` oracle cannot hold degree-5 terms at ulp
+   resolution. Polish1 adds `range_edge_ulp_nudged_lattices`: +-1/+-2 ulp nudges (via `to_bits`)
+   of one coordinate of degenerate data at the same `k`, checked against the same data through
+   `try_*` at `k = 0` (power-of-two scaling is exact, so the sign must match). Coordinates that
+   leave `[2^-100, 2^100]` are skipped (`try_*` rejects them). svd3 rustdoc `# Errors` now matches
+   the code (`|t|*(sqrt(a/b)+sqrt(b/a))` no-op test, `tiny = EPSILON² ||A||_F² / 64`).
 4. `sym3_eigen`: a rotation with `c == 1 && |t| <= EPSILON` only zeroes `a_pq` (no vector update);
    `a_pq` negligible against both diagonals is dropped; a stall guard stops sweeping when the
    off-diagonal norm stops decreasing at the rounding floor. Fuzzed like `svd3` (50k default, 1M ignored,

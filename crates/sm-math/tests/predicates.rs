@@ -578,6 +578,130 @@ fn range_edge_scaled_lattices() {
     );
 }
 
+/// Range edge with ulp nudges: degenerate lattice data, one coordinate moved by +-1 or +-2 ulp,
+/// scaled by `2^k`. Scaling by a power of two is exact, so the oracle is the same nudged data
+/// through `try_*` at `k = 0` (the i128 oracle cannot hold degree-5 terms at ulp resolution).
+/// Cases with a scaled coordinate outside `[2^-100, 2^100]` are skipped (rejected by `try_*`).
+#[test]
+fn range_edge_ulp_nudged_lattices() {
+    use sm_math::{try_incircle, try_insphere, try_orient2d, try_orient3d};
+    let ks: Vec<i32> = (-100..=-96).chain(92..=96).collect();
+    let deltas: [i64; 4] = [-2, -1, 1, 2];
+    let circ = [
+        (3, 4),
+        (4, 3),
+        (5, 0),
+        (0, 5),
+        (-3, 4),
+        (-4, -3),
+        (3, -4),
+        (0, -5),
+    ];
+    let sph = [
+        (3, 0, 0),
+        (0, 3, 0),
+        (0, 0, 3),
+        (-3, 0, 0),
+        (0, -3, 0),
+        (0, 0, -3),
+        (1, 2, 2),
+        (2, 1, -2),
+        (-2, 2, 1),
+        (2, -2, -1),
+    ];
+    let mut rng = Rng(0xA1B2);
+    let (mut tested, mut skipped, mut flips) = (0usize, 0usize, 0usize);
+    for n in 0..6000 {
+        let k = ks[n % ks.len()];
+        let delta = deltas[(n / ks.len()) % 4];
+        let dim3 = n % 2 == 1;
+        let kind = (n / 2) % 2; // 0: orient, 1: incircle/insphere
+        let npts = match (dim3, kind) {
+            (false, 0) => 3,
+            (false, _) => 4,
+            (true, 0) => 4,
+            (true, _) => 5,
+        };
+        // Degenerate lattice points as flat coordinate rows (dimension 2 or 3).
+        let d = if dim3 { 3 } else { 2 };
+        let mut pts: Vec<Vec<f64>> = Vec::new();
+        if kind == 0 {
+            let a: Vec<i64> = (0..d).map(|_| rng.int(3)).collect();
+            let us: Vec<Vec<i64>> = (0..d - 1)
+                .map(|_| (0..d).map(|_| rng.int(1)).collect())
+                .collect();
+            pts.push(a.iter().map(|&v| v as f64).collect());
+            for u in &us {
+                pts.push((0..d).map(|i| (a[i] + u[i]) as f64).collect());
+            }
+            let co: Vec<i64> = (0..d - 1).map(|_| rng.int(2)).collect();
+            pts.push(
+                (0..d)
+                    .map(|i| (a[i] + (0..d - 1).map(|j| co[j] * us[j][i]).sum::<i64>()) as f64)
+                    .collect(),
+            );
+        } else {
+            let c: Vec<i64> = (0..d).map(|_| rng.int(4)).collect();
+            for _ in 0..npts {
+                if dim3 {
+                    let o = sph[rng.below(sph.len())];
+                    pts.push(vec![
+                        (c[0] + o.0) as f64,
+                        (c[1] + o.1) as f64,
+                        (c[2] + o.2) as f64,
+                    ]);
+                } else {
+                    let o = circ[rng.below(circ.len())];
+                    pts.push(vec![(c[0] + o.0) as f64, (c[1] + o.1) as f64]);
+                }
+            }
+        }
+        // Nudge a nonzero coordinate of the last point by `delta` ulps.
+        let last = npts - 1;
+        let Some(ci) = (0..d).map(|i| (i + n) % d).find(|&i| pts[last][i] != 0.0) else {
+            skipped += 1;
+            continue;
+        };
+        let bits =
+            pts[last][ci].to_bits() as i64 + if pts[last][ci] > 0.0 { delta } else { -delta };
+        pts[last][ci] = f64::from_bits(bits as u64);
+
+        let s = 2f64.powi(k);
+        let in_range = pts.iter().flatten().all(|&v| {
+            v == 0.0 || ((v * s).abs() >= 2f64.powi(-100) && (v * s).abs() <= 2f64.powi(100))
+        });
+        if !in_range {
+            skipped += 1;
+            continue;
+        }
+        let sc = |p: &Vec<f64>, s: f64| -> (Vec<f64>, sm_math::Point3) {
+            let v: Vec<f64> = p.iter().map(|x| x * s).collect();
+            let p3 = sm_math::Point3::new(v[0], v[1], *v.get(2).unwrap_or(&0.0));
+            (v, p3)
+        };
+        let run = |s: f64| {
+            let q: Vec<_> = pts.iter().map(|p| sc(p, s)).collect();
+            let a2 = |i: usize| [q[i].0[0], q[i].0[1]];
+            let a3 = |i: usize| q[i].1;
+            match (dim3, kind) {
+                (false, 0) => try_orient2d(a2(0), a2(1), a2(2)),
+                (false, _) => try_incircle(a2(0), a2(1), a2(2), a2(3)),
+                (true, 0) => try_orient3d(a3(0), a3(1), a3(2), a3(3)),
+                (true, _) => try_insphere(a3(0), a3(1), a3(2), a3(3), a3(4)),
+            }
+        };
+        let want = run(1.0);
+        assert!(want.is_ok(), "unscaled reference must be in range");
+        assert_eq!(run(s), want, "k={k} delta={delta} n={n}");
+        tested += 1;
+        flips += usize::from(want != Ok(Sign::Zero));
+    }
+    assert!(
+        tested > 2000 && flips > 500,
+        "coverage: tested={tested} skipped={skipped} nonzero={flips}"
+    );
+}
+
 #[test]
 fn range_edge_just_outside_is_rejected() {
     use sm_math::{PredicateError, try_orient2d};
