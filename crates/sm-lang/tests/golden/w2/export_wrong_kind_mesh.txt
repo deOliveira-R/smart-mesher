@@ -1,4 +1,4 @@
-error[wrong-kind]: `mesh` needs a Mesh, found TopoVolume#1
+error[wrong-kind]: `mesh` needs a Mesh, found Volume#1
  --> export_wrong_kind_mesh.smesh:2:31
   |
 2 | session.export("a.vtu", mesh: Volume#1)

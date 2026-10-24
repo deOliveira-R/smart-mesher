@@ -279,6 +279,7 @@ becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timel
 later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
 so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
 resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
+The sibling namespace `session.*` (export, save, hash, status) follows the same argument rules and event/plan-mode conventions: see §4.7.
 
 ### 4.7 Session commands
 

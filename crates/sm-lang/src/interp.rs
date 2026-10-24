@@ -1099,7 +1099,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 if let (Some(id), Some((_, _, sp))) = (mesh, get("mesh"))
                     && id.kind() != EntityKind::Mesh
                 {
-                    return self.fail(Diagnostic::error("wrong-kind", *sp, format!("`mesh` needs a Mesh, found {id}")).label("not a mesh").help("mesh ids look like `Mesh#1`"));
+                    return self.fail(Diagnostic::error("wrong-kind", *sp, format!("`mesh` needs a Mesh, found {}", crate::value::fmt_id(id))).label("not a mesh").help("mesh ids look like `Mesh#1`"));
                 }
                 let provenance = match get("provenance") {
                     None => false,
