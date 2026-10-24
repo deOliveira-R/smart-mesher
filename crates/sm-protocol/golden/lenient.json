@@ -1,0 +1,354 @@
+[
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "catalog"
+    },
+    "request": {
+      "method": "catalog"
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "catalog",
+      "params": null
+    },
+    "request": {
+      "method": "catalog"
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "catalog",
+      "params": {}
+    },
+    "request": {
+      "method": "catalog"
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "catalog",
+      "params": []
+    },
+    "request": {
+      "method": "catalog"
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.status"
+    },
+    "request": {
+      "method": "timeline.status"
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.status",
+      "params": null
+    },
+    "request": {
+      "method": "timeline.status"
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.status",
+      "params": {}
+    },
+    "request": {
+      "method": "timeline.status"
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.status",
+      "params": []
+    },
+    "request": {
+      "method": "timeline.status"
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.undo"
+    },
+    "request": {
+      "method": "timeline.undo"
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.undo",
+      "params": null
+    },
+    "request": {
+      "method": "timeline.undo"
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.undo",
+      "params": {}
+    },
+    "request": {
+      "method": "timeline.undo"
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.undo",
+      "params": []
+    },
+    "request": {
+      "method": "timeline.undo"
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.redo"
+    },
+    "request": {
+      "method": "timeline.redo"
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.redo",
+      "params": null
+    },
+    "request": {
+      "method": "timeline.redo"
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.redo",
+      "params": {}
+    },
+    "request": {
+      "method": "timeline.redo"
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "timeline.redo",
+      "params": []
+    },
+    "request": {
+      "method": "timeline.redo"
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "session.save"
+    },
+    "request": {
+      "method": "session.save"
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "session.save",
+      "params": null
+    },
+    "request": {
+      "method": "session.save"
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "session.save",
+      "params": {}
+    },
+    "request": {
+      "method": "session.save"
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "session.save",
+      "params": []
+    },
+    "request": {
+      "method": "session.save"
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.hash"
+    },
+    "request": {
+      "method": "session.hash",
+      "params": {}
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.hash",
+      "params": null
+    },
+    "request": {
+      "method": "session.hash",
+      "params": {}
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.hash",
+      "params": {}
+    },
+    "request": {
+      "method": "session.hash",
+      "params": {}
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.hash",
+      "params": []
+    },
+    "request": {
+      "method": "session.hash",
+      "params": {}
+    }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.export"
+    },
+    "request": {
+      "method": "session.export",
+      "params": {}
+    }
+  },
+  {
+    "shape": "null",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.export",
+      "params": null
+    },
+    "request": {
+      "method": "session.export",
+      "params": {}
+    }
+  },
+  {
+    "shape": "{}",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.export",
+      "params": {}
+    },
+    "request": {
+      "method": "session.export",
+      "params": {}
+    }
+  },
+  {
+    "shape": "[]",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "c",
+      "method": "session.export",
+      "params": []
+    },
+    "request": {
+      "method": "session.export",
+      "params": {}
+    }
+  },
+  {
+    "shape": "null-field",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "session.hash",
+      "params": {
+        "at": null
+      }
+    },
+    "request": {
+      "method": "session.hash",
+      "params": {}
+    }
+  }
+]

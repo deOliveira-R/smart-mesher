@@ -1,0 +1,216 @@
+{
+  "batch_schema": {
+    "$defs": {
+      "BatchEntityId": {
+        "anyOf": [
+          {
+            "pattern": "^[A-Za-z]+#[0-9]+$",
+            "type": "string"
+          },
+          {
+            "pattern": "^\\$[0-9]+\\.[^\\[\\]]+(\\[([0-9]+|\\*)\\])?$",
+            "type": "string"
+          },
+          {
+            "pattern": "^\\$\\$",
+            "type": "string"
+          }
+        ],
+        "description": "Entity id `Kind#serial`, a batch reference `$i.role` / `$i.role[k]` / `$i.role[*]` (`[*]` only as an array element), or a `$$`-escaped literal"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Several ops applied atomically as one node; later ops may reference ids allocated by earlier ones (`$i.role`).",
+    "properties": {
+      "ops": {
+        "items": {
+          "oneOf": []
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "ops"
+    ],
+    "title": "core.batch",
+    "type": "object"
+  },
+  "ops": [
+    {
+      "name": "core.batch",
+      "output_schema": {
+        "$defs": {
+          "Diagnostic": {
+            "description": "A non-fatal message from an op. Never part of a state or node hash.",
+            "properties": {
+              "code": {
+                "description": "Stable machine-readable code, e.g. `\"mesh.inverted_cells\"`.",
+                "type": "string"
+              },
+              "entities": {
+                "default": [],
+                "description": "Entities the message is about.",
+                "items": {
+                  "$ref": "#/$defs/EntityId"
+                },
+                "type": "array"
+              },
+              "message": {
+                "description": "Human-readable message.",
+                "type": "string"
+              },
+              "severity": {
+                "$ref": "#/$defs/Severity",
+                "description": "Severity."
+              }
+            },
+            "required": [
+              "severity",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "EntityId": {
+            "description": "Stable entity id `Kind#serial`",
+            "pattern": "^[A-Za-z]+#[0-9]+$",
+            "type": "string"
+          },
+          "Severity": {
+            "description": "Severity of a [`Diagnostic`]. Errors are not diagnostics: they fail the op.",
+            "oneOf": [
+              {
+                "const": "info",
+                "description": "Informational note.",
+                "type": "string"
+              },
+              {
+                "const": "warning",
+                "description": "Something the user should look at; the op still succeeded.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "What an applied op changed. Deterministic order throughout. Not part of any state or node\nhash; it is the op's reply to the caller (and the output schema of every op tool).",
+        "properties": {
+          "created": {
+            "default": [],
+            "description": "Ids allocated or adopted, in allocation order.",
+            "items": {
+              "$ref": "#/$defs/EntityId"
+            },
+            "type": "array"
+          },
+          "diagnostics": {
+            "default": [],
+            "description": "Warnings and notes emitted with [`ApplyCtx::warn`] / [`ApplyCtx::info`], in call order.\nVerbosity, suppression and stop-on-warning are front-end policy.",
+            "items": {
+              "$ref": "#/$defs/Diagnostic"
+            },
+            "type": "array"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/$defs/EntityId"
+              },
+              "type": "array"
+            },
+            "default": {},
+            "description": "Ids allocated through [`ApplyCtx::alloc_as`] / [`ApplyCtx::adopt_as`], by role.",
+            "type": "object"
+          },
+          "removed": {
+            "default": [],
+            "description": "Ids retired, in call order.",
+            "items": {
+              "$ref": "#/$defs/EntityId"
+            },
+            "type": "array"
+          },
+          "successors": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "Successor map recorded with [`ApplyCtx::record_successors`]: old id to its successors\n(a copy is `A -> [A, A']`).",
+            "patternProperties": {
+              "^[A-Za-z]+#[0-9]+$": {
+                "items": {
+                  "$ref": "#/$defs/EntityId"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "touched_layers": {
+            "default": [],
+            "description": "Names of layers mutably accessed (including by `on_succession` / `on_retired`), sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "title": "Delta",
+        "type": "object"
+      },
+      "schema": {
+        "$defs": {
+          "BatchEntityId": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z]+#[0-9]+$",
+                "type": "string"
+              },
+              {
+                "pattern": "^\\$[0-9]+\\.[^\\[\\]]+(\\[([0-9]+|\\*)\\])?$",
+                "type": "string"
+              },
+              {
+                "pattern": "^\\$\\$",
+                "type": "string"
+              }
+            ],
+            "description": "Entity id `Kind#serial`, a batch reference `$i.role` / `$i.role[k]` / `$i.role[*]` (`[*]` only as an array element), or a `$$`-escaped literal"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Several ops applied atomically as one node; later ops may reference ids allocated by earlier ones (`$i.role`).",
+        "properties": {
+          "ops": {
+            "items": {
+              "oneOf": []
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ops"
+        ],
+        "title": "core.batch",
+        "type": "object"
+      },
+      "version": 1
+    }
+  ],
+  "protocol": 0,
+  "queries": [
+    {
+      "name": "demo.count",
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "format": "uint32",
+        "minimum": 0,
+        "title": "uint32",
+        "type": "integer"
+      },
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "demo.count",
+        "type": "object"
+      }
+    }
+  ]
+}

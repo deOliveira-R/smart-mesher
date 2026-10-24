@@ -1139,6 +1139,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-protocol"
+version = "0.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-op-api",
+]
+
+[[package]]
 name = "sm-quality"
 version = "0.0.0"
 dependencies = [
