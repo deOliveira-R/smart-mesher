@@ -1235,16 +1235,20 @@ dependencies = [
 name = "sm-model"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
  "sm-core",
- "sm-geom",
  "sm-geom-api",
  "sm-layer-api",
- "sm-math",
+ "sm-mesh-api",
  "sm-model-api",
  "sm-op-api",
  "sm-testkit",
  "sm-topo",
  "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
