@@ -104,3 +104,110 @@ impl LayerType for IntentLayer {
         self.affected(&Ids::new(ids))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::EntityKind;
+    use sm_scheme_api::{
+        Firm, GroupId, IntervalConstraint, IntervalRequest, MeshGroup, SchemeChoice,
+        TransformId, TransformIntent, Firmness,
+    };
+
+    fn id(kind: EntityKind, n: u64) -> EntityId {
+        EntityId::new(kind, n).expect("id")
+    }
+
+    fn sample() -> IntentLayer {
+        let mut l = IntentLayer::default();
+        let i = l.intent_mut();
+        for n in 1..=4 {
+            i.set_intervals(id(EntityKind::TopoEdge, n), Firm::hard(IntervalRequest::Count(3)));
+        }
+        i.set_scheme(id(EntityKind::TopoVolume, 1), SchemeChoice::new("map", Firmness::Hard));
+        i.groups.push(MeshGroup::new(
+            GroupId(1),
+            vec![id(EntityKind::TopoVolume, 1), id(EntityKind::TopoVolume, 2)],
+        ));
+        i.groups.push(MeshGroup::new(GroupId(2), vec![id(EntityKind::TopoVolume, 3)]));
+        i.transforms.push(TransformIntent::new(
+            TransformId(1),
+            vec![id(EntityKind::TopoFace, 1)],
+            SchemeChoice::new("noop", Firmness::Soft),
+        ));
+        i.intervals.push(IntervalConstraint::Linear {
+            terms: vec![(id(EntityKind::TopoEdge, 1), 1), (id(EntityKind::TopoEdge, 2), -1)],
+            rel: sm_scheme_api::Rel::Eq,
+            rhs: 0,
+        });
+        i.canonicalize();
+        l
+    }
+
+    /// `references_any` must hold exactly when `on_retired` changes the layer.
+    #[test]
+    fn references_any_matches_on_retired() {
+        let all: Vec<EntityId> = (1..=4)
+            .map(|n| id(EntityKind::TopoEdge, n))
+            .chain((1..=3).map(|n| id(EntityKind::TopoVolume, n)))
+            .chain([id(EntityKind::TopoFace, 1), id(EntityKind::TopoFace, 9)])
+            .collect();
+        // Every subset of the candidate ids (2^9 of them), in a scrambled order.
+        for mask in 0u32..(1 << all.len()) {
+            let mut ids: Vec<EntityId> = (0..all.len())
+                .filter(|b| mask >> b & 1 == 1)
+                .map(|b| all[b])
+                .collect();
+            ids.reverse();
+            let base = sample();
+            let mut after = base.clone();
+            LayerType::on_retired(&mut after, &ids);
+            assert_eq!(
+                LayerType::references_any(&base, &ids),
+                after != base,
+                "mask {mask:#b}"
+            );
+        }
+    }
+
+    #[test]
+    fn retirement_prunes_every_kind_of_reference() {
+        let mut l = sample();
+        LayerType::on_retired(
+            &mut l,
+            &[
+                id(EntityKind::TopoVolume, 1),
+                id(EntityKind::TopoVolume, 3),
+                id(EntityKind::TopoFace, 1),
+                id(EntityKind::TopoEdge, 2),
+            ],
+        );
+        let i = l.intent();
+        assert_eq!(i.entities.len(), 3, "edges 1, 3, 4 remain; volume 1 is gone");
+        assert_eq!(i.groups.len(), 1);
+        assert_eq!(i.groups[0].members, vec![id(EntityKind::TopoVolume, 2)]);
+        assert!(i.transforms.is_empty(), "its only target was retired");
+        assert!(i.intervals.is_empty(), "the row named edge 2");
+        assert!(!LayerType::is_empty(&l));
+        LayerType::on_retired(
+            &mut l,
+            &(1..=4).map(|n| id(EntityKind::TopoEdge, n)).chain([id(EntityKind::TopoVolume, 2)]).collect::<Vec<_>>(),
+        );
+        assert!(LayerType::is_empty(&l));
+    }
+
+    #[test]
+    fn digest_depends_on_content_only() {
+        use sm_op_api::Layer;
+        let (a, b) = (sample(), sample());
+        assert_eq!(a.content_hash(), b.content_hash());
+        assert_eq!(a.exact_hash(), b.exact_hash());
+        let mut c = sample();
+        c.intent_mut().set_intervals(
+            id(EntityKind::TopoEdge, 1),
+            Firm::hard(IntervalRequest::Count(4)),
+        );
+        assert_ne!(a.content_hash(), c.content_hash());
+        assert_ne!(IntentLayer::default().content_hash(), a.content_hash());
+    }
+}

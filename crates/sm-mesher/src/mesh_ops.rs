@@ -98,18 +98,11 @@ impl TypedOp for MeshRun {
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
         // Work on a copy of the allocator; the layer only advances on success.
         let mut alloc = alloc0.clone();
-        let mut out = driver
+        let out = driver
             .mesh(&input, &intent, &RayonExec, MeshBuilder::new(), &mut alloc)
             .map_err(failed)?;
         ctx.step(2, 3, "committing")?;
 
-        // `plan.attempts` already lists the candidates passed over by the final plan; add the
-        // failures that caused re-plans so the stored plan tells the whole story.
-        for a in std::mem::take(&mut out.attempts) {
-            if !out.plan.attempts.contains(&a) {
-                out.plan.attempts.push(a);
-            }
-        }
         let entry = MeshEntry::new(
             Box::new(out.finished.mesh),
             targets,

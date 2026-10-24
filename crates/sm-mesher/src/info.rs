@@ -44,8 +44,10 @@ pub struct MeshInfo {
     pub geometry_hash: String,
     /// Total volume of the cells (area for a surface mesh), summed in a fixed order.
     pub volume: f64,
-    /// Candidates the final plan passed over or that failed and caused a re-plan.
+    /// Candidates the final plan evaluated and passed over (`plan.attempts`).
     pub attempts: usize,
+    /// Failures that caused a re-plan (`plan.rejections`).
+    pub rejections: usize,
 }
 
 /// Cells per summation chunk: the chunking is fixed, so the sum does not depend on thread count.
@@ -96,6 +98,7 @@ impl TypedQuery for MeshInfoQuery {
             geometry_hash: format!("{:016x}", geometry_hash_quantized(m, &e.quanta)),
             volume: total_volume(m),
             attempts: e.plan.as_ref().map_or(0, |p| p.attempts.len()),
+            rejections: e.plan.as_ref().map_or(0, |p| p.rejections.len()),
         })
     }
 }

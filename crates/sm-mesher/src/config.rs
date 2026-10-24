@@ -92,3 +92,25 @@ impl MesherConfig {
         self.auto_size.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_builders_replace_the_defaults() {
+        let cfg = MesherConfig::new(sm_scheme_api::stubs::registry());
+        assert!(cfg.size_fields().is_none() && cfg.auto_size().is_none());
+        let cfg = cfg
+            .with_solver(Box::new(ReferenceIntervalSolver::default()))
+            .with_picker(Box::new(ReferenceCornerPicker))
+            .with_size_fields(Arc::new(|_| Ok(None)))
+            .with_auto_size(Arc::new(|_, _, _| Ok(1.0)));
+        assert!(cfg.size_fields().is_some() && cfg.auto_size().is_some());
+        assert!(cfg.solver().solve(&[], &[]).is_ok());
+        assert!(cfg.registry().auto(sm_scheme_api::SchemeDim::Volume).len() <= 16);
+        // Cheap to clone and to share across threads.
+        fn assert_service<T: Clone + Send + Sync + 'static>(_: &T) {}
+        assert_service(&cfg);
+    }
+}
