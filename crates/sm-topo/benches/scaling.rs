@@ -37,6 +37,31 @@ fn refine(c: &mut Criterion) {
     }
 }
 
+/// Many small solids, one operation each: a brick webcut in two (11 faces, 2 volumes). Rows stay
+/// short, so this shows the part of the win that does not come from long volume rows.
+fn assembly<E: TopologyEdit + Default>(n: usize) -> E {
+    use sm_core::Point3;
+    use sm_topo_api::OpId;
+    use sm_topo_api::fixtures::{self, with_op};
+    let mut t = E::default();
+    for i in 0..n {
+        let b = with_op(&mut t, OpId(2 * i as u64 + 1), |t| fixtures::brick(t, Point3::new(3.0 * i as f64, 0.0, 0.0), [1.0; 3])).expect("brick");
+        with_op(&mut t, OpId(2 * i as u64 + 2), |t| fixtures::webcut_brick(t, &b, 0.4)).expect("webcut");
+    }
+    t
+}
+
+fn assemblies(c: &mut Criterion) {
+    let mut g = c.benchmark_group("assembly_of_webcut_bricks");
+    g.sample_size(10);
+    for n in [250usize, 1_000, 4_000] {
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::new("sm-topo", n), &n, |b, &n| b.iter(|| black_box(assembly::<TopoStore>(n))));
+        g.bench_with_input(BenchmarkId::new("reference", n), &n, |b, &n| b.iter(|| black_box(assembly::<CellComplex>(n))));
+    }
+    g.finish();
+}
+
 fn queries(c: &mut Criterion) {
     let t: TopoStore = run(16_000, false);
     let r: CellComplex = run(4_000, false);
@@ -49,5 +74,5 @@ fn queries(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, refine, queries);
+criterion_group!(benches, refine, assemblies, queries);
 criterion_main!(benches);

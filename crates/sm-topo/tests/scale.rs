@@ -25,6 +25,23 @@ fn refinement_matches_the_reference_in_one_op_and_per_op() {
     }
 }
 
+/// The shipped configuration: default row thresholds (positional rewrites from 24 entries,
+/// incremental row checks from 128), paranoid cross-checks on, volume rows growing past both.
+#[test]
+fn refinement_at_production_thresholds_matches_the_reference() {
+    for per_op in [false, true] {
+        let mut a = CellComplex::new();
+        let mut b = TopoStore::new();
+        b.set_paranoid(true);
+        let (ba, bb) = (scenario::setup(&mut a), scenario::setup(&mut b));
+        let (pa, pb) = (scenario::refine(&mut a, &ba, 700, per_op), scenario::refine(&mut b, &bb, 700, per_op));
+        assert_eq!(pa, pb);
+        same_state(&a, &b, &format!("production thresholds, per_op={per_op}"));
+        assert!(b.counters().sorted_parent_rewrites > 500, "{:?}", b.counters());
+        assert!(b.volume_faces(bb.volume).len() > 700);
+    }
+}
+
 #[test]
 #[ignore = "timing: run with --release --ignored --nocapture"]
 fn timing_report() {
