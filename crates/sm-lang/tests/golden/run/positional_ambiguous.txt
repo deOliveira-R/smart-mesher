@@ -1,0 +1,6 @@
+error[positional-ambiguous]: cannot tell which parameter this value is for
+ --> positional_ambiguous.smesh:1:20
+  |
+1 | model.create_brick(1, 2, 3)
+  |                    ^ write `name: value`
+  = help: positional arguments need an op with exactly one required parameter; `model.create_brick` has 3

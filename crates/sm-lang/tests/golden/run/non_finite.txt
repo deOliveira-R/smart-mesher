@@ -1,0 +1,5 @@
+error[non-finite]: the result is not a finite number
+ --> non_finite.smesh:1:9
+  |
+1 | let x = exp(1000)
+  |         ^^^^^^^^^ here

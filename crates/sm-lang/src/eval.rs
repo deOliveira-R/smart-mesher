@@ -57,8 +57,8 @@ pub fn unop(op: UnOp, v: &Val) -> EvalRes<Val> {
         (UnOp::Neg, Val::Num(n)) => Ok(Val::Num(-n)),
         (UnOp::Not, Val::Bool(b)) => Ok(Val::Bool(!b)),
         (_, v) if opaque(v) => Err(opaque_err(v)),
-        (UnOp::Neg, v) => type_err(format!("cannot negate a {}", v.type_name())),
-        (UnOp::Not, v) => type_err(format!("`not` needs a bool, found a {}", v.type_name())),
+        (UnOp::Neg, v) => type_err(format!("cannot negate {}", v.a_type())),
+        (UnOp::Not, v) => type_err(format!("`not` needs a bool, found {}", v.a_type())),
     }
 }
 
@@ -84,24 +84,34 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
         },
         Except => match (l, r) {
             (Val::Ents(a), Val::Ents(b)) => Ok(Val::Ents(a.difference(b))),
-            _ => type_err(format!("`except` needs two entity sets, found {} and {}", l.type_name(), r.type_name())),
+            _ => type_err(format!("`except` needs two entity sets, found {} and {}", l.a_type(), r.a_type())),
         },
         Mul => match (l, r) {
             (Val::Int(a), Val::Int(b)) => a.checked_mul(*b).map(Val::Int).ok_or(("overflow", "integer overflow in `*`".into())),
             _ => num2(l, r, "*", |a, b| a * b),
         },
         Div => match (as_f64(l), as_f64(r)) {
-            (Some(_), Some(b)) if b == 0.0 => Err(("division-by-zero", "division by zero".into())),
-            (Some(a), Some(b)) => finite(a / b),
-            _ => type_err(format!("cannot divide a {} by a {}", l.type_name(), r.type_name())),
+            (Some(a), Some(b)) => {
+                if b == 0.0 {
+                    Err(("division-by-zero", "division by zero".into()))
+                } else {
+                    finite(a / b)
+                }
+            }
+            _ => type_err(format!("cannot divide {} by {}", l.a_type(), r.a_type())),
         },
         Rem => match (l, r) {
             (Val::Int(_), Val::Int(0)) => Err(("division-by-zero", "remainder by zero".into())),
             (Val::Int(a), Val::Int(b)) => a.checked_rem(*b).map(Val::Int).ok_or(("overflow", "integer overflow in `%`".into())),
             _ => match (as_f64(l), as_f64(r)) {
-                (Some(_), Some(b)) if b == 0.0 => Err(("division-by-zero", "remainder by zero".into())),
-                (Some(a), Some(b)) => finite(a % b),
-                _ => type_err(format!("cannot take a {} modulo a {}", l.type_name(), r.type_name())),
+                (Some(a), Some(b)) => {
+                    if b == 0.0 {
+                        Err(("division-by-zero", "remainder by zero".into()))
+                    } else {
+                        finite(a % b)
+                    }
+                }
+                _ => type_err(format!("cannot take {} modulo {}", l.a_type(), r.a_type())),
             },
         },
         Pow => match (l, r) {
@@ -111,7 +121,7 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
             }
             _ => match (as_f64(l), as_f64(r)) {
                 (Some(a), Some(b)) => finite(a.powf(b)),
-                _ => type_err(format!("cannot raise a {} to a {}", l.type_name(), r.type_name())),
+                _ => type_err(format!("cannot raise {} to {}", l.a_type(), r.a_type())),
             },
         },
         Eq => Ok(Val::Bool(equal(l, r)?)),
@@ -122,7 +132,7 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
                 (Val::Int(a), Val::Int(b)) => a.cmp(b),
                 _ => match (as_f64(l), as_f64(r)) {
                     (Some(a), Some(b)) => a.partial_cmp(&b).ok_or(("non-finite", "cannot compare NaN".to_owned()))?,
-                    _ => return type_err(format!("cannot order a {} and a {}", l.type_name(), r.type_name())),
+                    _ => return type_err(format!("cannot order {} and {}", l.a_type(), r.a_type())),
                 },
             };
             Ok(Val::Bool(match op {
@@ -134,7 +144,7 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
         }
         Union | Inter => match (l, r) {
             (Val::Ents(a), Val::Ents(b)) => Ok(Val::Ents(if op == Union { a.union(b) } else { a.intersection(b) })),
-            _ => type_err(format!("`{}` needs two entity sets, found {} and {}", if op == Union { "|" } else { "&" }, l.type_name(), r.type_name())),
+            _ => type_err(format!("`{}` needs two entity sets, found {} and {}", if op == Union { "|" } else { "&" }, l.a_type(), r.a_type())),
         },
         And | Or => type_err("`and`/`or` are evaluated lazily".into()),
     }
@@ -143,7 +153,7 @@ pub fn binop(op: BinOp, l: &Val, r: &Val) -> EvalRes<Val> {
 fn num2(l: &Val, r: &Val, sym: &str, f: fn(f64, f64) -> f64) -> EvalRes<Val> {
     match (as_f64(l), as_f64(r)) {
         (Some(a), Some(b)) => finite(f(a, b)),
-        _ => type_err(format!("`{sym}` is not defined for a {} and a {}", l.type_name(), r.type_name())),
+        _ => type_err(format!("`{sym}` is not defined for {} and {}", l.a_type(), r.a_type())),
     }
 }
 
@@ -188,7 +198,7 @@ fn want_num(name: &str, v: &Val) -> EvalRes<f64> {
         Val::Int(i) => Ok(*i as f64),
         Val::Num(n) => Ok(*n),
         o if opaque(o) => Err(opaque_err(o)),
-        o => type_err(format!("`{name}` needs a number, found a {}", o.type_name())),
+        o => type_err(format!("`{name}` needs a number, found {}", o.a_type())),
     }
 }
 
@@ -197,7 +207,7 @@ fn arity(name: &str, args: &[Val], n: usize) -> EvalRes<()> {
 }
 
 fn f2i(v: f64) -> EvalRes<Val> {
-    if v.is_finite() && v >= -9.223_372_036_854_775e18 && v <= 9.223_372_036_854_775e18 {
+    if v.is_finite() && (-9.223_372_036_854_775e18..=9.223_372_036_854_775e18).contains(&v) {
         Ok(Val::Int(v as i64))
     } else {
         Err(("overflow", "the value does not fit in an integer".into()))
@@ -283,7 +293,7 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
                 Val::Num(n) => f2i(n.trunc()),
                 Val::Bool(b) => Ok(Val::Int(i64::from(*b))),
                 Val::Str(s) => s.trim().parse::<i64>().map(Val::Int).map_err(|_| ("bad-arguments", format!("cannot convert {s:?} to an integer"))),
-                v => type_err(format!("`int` cannot convert a {}", v.type_name())),
+                v => type_err(format!("`int` cannot convert {}", v.a_type())),
             }
         }
         "float" => {
@@ -318,14 +328,14 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
                 Val::Str(s) => s.chars().count(),
                 Val::Obj(o) => o.len(),
                 Val::Ents(e) => e.len(),
-                v => return type_err(format!("`len` needs a list, string, object or entity set, found a {}", v.type_name())),
+                v => return type_err(format!("`len` needs a list, string, object or entity set, found {}", v.a_type())),
             } as i64))
         }
         "count" => {
             arity(name, args, 1)?;
             match &args[0] {
                 Val::Ents(e) => Ok(Val::Int(e.len() as i64)),
-                v => type_err(format!("`count` needs an entity set, found a {}", v.type_name())),
+                v => type_err(format!("`count` needs an entity set, found {}", v.a_type())),
             }
         }
         "range" => {
@@ -334,7 +344,7 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
             }
             let int = |v: &Val| match v {
                 Val::Int(i) => Ok(*i),
-                v => type_err(format!("`range` needs integers, found a {}", v.type_name())),
+                v => type_err(format!("`range` needs integers, found {}", v.a_type())),
             };
             let (a, b) = (int(&args[0])?, int(&args[1])?);
             let step = if args.len() == 3 { int(&args[2])? } else { 1 };
@@ -369,7 +379,7 @@ pub fn call_builtin(name: &str, args: &[Val], max_range: u64) -> EvalRes<Val> {
             arity(name, args, 1)?;
             let one = |v: &Val| match v {
                 Val::Str(s) => crate::kinds::parse_entity_text(s).map_err(|m| ("bad-arguments", m)),
-                v => type_err(format!("`ents` needs id strings, found a {}", v.type_name())),
+                v => type_err(format!("`ents` needs id strings, found {}", v.a_type())),
             };
             match &args[0] {
                 Val::List(l) => Ok(Val::Ents(EntitySet::from_vec(l.iter().map(one).collect::<EvalRes<Vec<_>>>()?))),

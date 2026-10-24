@@ -1,0 +1,1 @@
+model.create_brick(1, 2, 3)

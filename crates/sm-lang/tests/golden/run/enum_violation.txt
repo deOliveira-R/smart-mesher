@@ -1,0 +1,5 @@
+error[invalid-argument]: "quad" is not one of "map", "pave"
+ --> enum_violation.smesh:1:37
+  |
+1 | mesh.run(targets: Volume#1, scheme: "quad")
+  |                                     ^^^^^^ here

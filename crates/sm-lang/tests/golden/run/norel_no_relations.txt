@@ -1,0 +1,6 @@
+error[no-relations]: this host cannot resolve relations between entities
+ --> norel_no_relations.smesh:1:22
+  |
+1 | intent.set_size(ids: faces in Volume#1, size: 1)
+  |                      ^^^^^^^^^^^^^^^^^ `in` needs topology
+  = help: the host must provide a `Relations` resolver (see `LANGUAGE.md` §5.3)

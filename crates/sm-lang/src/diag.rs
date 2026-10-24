@@ -123,18 +123,24 @@ pub fn render_all(diags: &[Diagnostic], map: &SourceMap) -> String {
     s
 }
 
-/// Edit (Levenshtein) distance on chars, capped work for short identifiers.
+/// Edit distance on chars with adjacent transpositions (optimal string alignment): `widht` is one edit from `width`.
 pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
+    let mut prev2: Vec<usize> = vec![0; b.len() + 1];
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0; b.len() + 1];
     for i in 1..=a.len() {
         cur[0] = i;
         for j in 1..=b.len() {
             let sub = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+            let mut d = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d = d.min(prev2[j - 2] + 1);
+            }
+            cur[j] = d;
         }
+        std::mem::swap(&mut prev2, &mut prev);
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]

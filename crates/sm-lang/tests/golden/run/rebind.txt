@@ -1,0 +1,10 @@
+error[rebind]: `a` is already defined in this scope
+ --> rebind.smesh:2:5
+  |
+2 | let a = 2
+  |     ^ defined again here
+ ..> rebind.smesh:1:5
+  |
+1 | let a = 1
+  |     - first defined here
+  = help: use `set` to change its value

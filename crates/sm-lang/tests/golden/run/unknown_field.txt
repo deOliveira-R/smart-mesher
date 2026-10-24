@@ -1,0 +1,6 @@
+error[unknown-field]: the op result has no output `bodyy`
+ --> unknown_field.smesh:2:14
+  |
+2 | model.pick(b.bodyy)
+  |              ^^^^^ no such output
+  = help: did you mean `body`?

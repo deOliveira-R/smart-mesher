@@ -219,7 +219,7 @@ fn nesting_limit_is_an_error_not_a_stack_overflow() {
     assert!(parse(0, &deep).has_errors());
     let deep = format!("let _ = {}x", "-".repeat(5000));
     assert!(parse(0, &deep).has_errors());
-    let deep = format!("{}", "if x { ".repeat(5000));
+    let deep = "if x { ".repeat(5000);
     assert!(parse(0, &deep).has_errors());
 }
 

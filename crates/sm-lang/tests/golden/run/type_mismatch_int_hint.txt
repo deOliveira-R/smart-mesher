@@ -1,0 +1,5 @@
+error[type-mismatch]: expected integer, found number (use `int(..)`, `round(..)` or an integer literal)
+ --> type_mismatch_int_hint.smesh:1:51
+  |
+1 | mesh.run(targets: Volume#1, scheme: "map", order: 3 / 2)
+  |                                                   ^^^^^ here

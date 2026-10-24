@@ -1,0 +1,5 @@
+error[type-mismatch]: `|` needs two entity sets, found an entity set and an int
+ --> mixed_set_types.smesh:1:9
+  |
+1 | let x = Volume#1 | 3
+  |         ^^^^^^^^^^^^ here

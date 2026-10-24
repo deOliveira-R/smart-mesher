@@ -1,0 +1,6 @@
+warning[empty-selection]: the range selects no live entity
+ --> empty_selection_warning.smesh:2:19
+  |
+2 | let none = Volume#50..60
+  |                   ^^^^^^ empty
+  = help: 2 live Volume entities: TopoVolume#1, TopoVolume#2

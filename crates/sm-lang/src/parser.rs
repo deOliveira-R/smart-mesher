@@ -66,6 +66,13 @@ pub fn parse_with(file: u32, text: &str, limits: ParseLimits) -> ParseOutput {
     ParseOutput { script: Script { file, stmts }, diagnostics: p.diags }
 }
 
+/// Parse several sources in parallel. Source `i` gets file index `i`; results come back in input order, so the
+/// output never depends on scheduling or thread count.
+pub fn parse_many(texts: &[&str], limits: ParseLimits) -> Vec<ParseOutput> {
+    use rayon::prelude::*;
+    texts.par_iter().enumerate().map(|(i, t)| parse_with(i as u32, t, limits)).collect()
+}
+
 type R<T> = Result<T, ()>;
 
 struct P<'a> {

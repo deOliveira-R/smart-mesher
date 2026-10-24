@@ -1,0 +1,2 @@
+let b = model.create_brick(x: 1, y: 1, z: 1)
+model.pick(b.body)

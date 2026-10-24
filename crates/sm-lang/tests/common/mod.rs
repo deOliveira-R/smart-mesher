@@ -220,6 +220,25 @@ impl TypedOp for MeshRun {
     }
 }
 
+/// Allocate `n` entities of a kind in bulk (scale tests).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AllocMany {
+    /// Entity kind name, e.g. `TopoFace`.
+    pub kind: String,
+    /// How many.
+    pub n: u64,
+}
+
+impl TypedOp for AllocMany {
+    const NAME: &'static str = "test.alloc_many";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let kind = self.kind.parse::<EntityKind>().map_err(|e| OpError::Invalid(e.to_string()))?;
+        let keys: Vec<u64> = (0..self.n).collect();
+        ctx.alloc_sorted(kind, &keys)?;
+        Ok(())
+    }
+}
+
 /// Count entities (optionally of one kind).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Count {
@@ -298,6 +317,7 @@ pub fn registry() -> Registry {
     r.register::<Note>().unwrap();
     r.register::<SetSize>().unwrap();
     r.register::<MeshRun>().unwrap();
+    r.register::<AllocMany>().unwrap();
     r.register_query::<Count>().unwrap();
     r.register_query::<Related>().unwrap();
     r

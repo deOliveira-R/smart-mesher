@@ -1,0 +1,9 @@
+error[duplicate-argument]: argument `x` is given twice
+ --> duplicate_argument.smesh:1:26
+  |
+1 | model.create_brick(x: 1, x: 2, y: 1, z: 1)
+  |                          ^ given again here
+ ..> duplicate_argument.smesh:1:20
+  |
+1 | model.create_brick(x: 1, x: 2, y: 1, z: 1)
+  |                    - first given here

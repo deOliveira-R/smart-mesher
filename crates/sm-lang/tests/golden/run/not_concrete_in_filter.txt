@@ -1,0 +1,5 @@
+error[not-concrete]: a batch output is only known after the batch is applied; it can only be passed to an op argument
+ --> not_concrete_in_filter.smesh:3:23
+  |
+3 |   model.pick(faces in p.volume)
+  |                       ^^^^^^^^ here

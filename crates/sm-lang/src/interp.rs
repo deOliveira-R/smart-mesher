@@ -118,8 +118,8 @@ impl RunReport {
     }
 }
 
-struct Binding {
-    val: Val,
+pub(crate) struct Binding {
+    pub(crate) val: Val,
     span: Span,
 }
 
@@ -132,10 +132,10 @@ type IR<T> = Result<T, ()>;
 
 /// Evaluates smesh scripts against a [`Host`].
 pub struct Interpreter<'h, H: Host + ?Sized> {
-    host: &'h mut H,
+    pub(crate) host: &'h mut H,
     opts: Options,
-    scopes: Vec<BTreeMap<String, Binding>>,
-    aliases: BTreeMap<String, String>,
+    pub(crate) scopes: Vec<BTreeMap<String, Binding>>,
+    pub(crate) aliases: BTreeMap<String, String>,
     map: SourceMap,
     events: Vec<Event>,
     diags: Vec<Diagnostic>,
@@ -221,6 +221,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     /// Run an already parsed script (parsed through [`parse_source`](Self::parse_source) of this interpreter).
     pub fn run_parsed(&mut self, script: &Script) -> RunReport {
         self.batch = None;
+        self.loop_count = 0;
         self.scopes.truncate(1);
         let _ = self.exec_stmts(&script.stmts);
         self.batch = None;
@@ -248,7 +249,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         self.diags.push(d);
     }
 
-    fn callable_map(&mut self) -> &BTreeMap<String, Rc<Callable>> {
+    pub(crate) fn callable_map(&mut self) -> &BTreeMap<String, Rc<Callable>> {
         if self.callables.is_none() {
             let m = help::callables(self.host.registry()).into_iter().map(|c| (c.name.clone(), Rc::new(c))).collect();
             self.callables = Some(m);
@@ -256,7 +257,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         self.callables.as_ref().expect("filled above")
     }
 
-    fn lookup_callable(&mut self, name: &str) -> Option<Rc<Callable>> {
+    pub(crate) fn lookup_callable(&mut self, name: &str) -> Option<Rc<Callable>> {
         self.callable_map().get(name).cloned()
     }
 
@@ -307,7 +308,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return self.fail(Diagnostic::error("assert-failed", cond.span, text).label("this condition is false"));
                     }
                     other => {
-                        let d = Diagnostic::error("type-mismatch", cond.span, format!("`assert` needs a bool, found a {}", other.type_name())).label("not a bool");
+                        let d = Diagnostic::error("type-mismatch", cond.span, format!("`assert` needs a bool, found {}", other.a_type())).label("not a bool");
                         return self.fail(d);
                     }
                 }
@@ -383,7 +384,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     fn exec_if(&mut self, cond: &Expr, then: &Block, els: Option<&Else>) -> IR<()> {
         let c = self.eval(cond)?;
         let Val::Bool(b) = c else {
-            let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found a {}", c.type_name())).label("not a bool");
+            let d = Diagnostic::error("type-mismatch", cond.span, format!("`if` needs a bool, found {}", c.a_type())).label("not a bool");
             return self.fail(d);
         };
         if b {
@@ -410,7 +411,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             Val::List(l) => l,
             Val::Ents(s) => s.iter().map(|i| Val::Ents(EntitySet::single(*i))).collect(),
             other => {
-                let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot iterate over a {}", other.type_name())).label("expected a list or an entity set");
+                let d = Diagnostic::error("type-mismatch", iter.span, format!("cannot iterate over {}", other.a_type())).label("expected a list or an entity set");
                 return self.fail(d);
             }
         };
@@ -498,12 +499,24 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     fn export_batch(&mut self, id: u64, delta: &Delta) {
         for scope in &mut self.scopes {
             for b in scope.values_mut() {
-                if let Val::Outcome(Outcome::Batch { batch, index }) = &b.val
-                    && *batch == id
-                {
-                    let prefix = format!("{index}.");
-                    let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), v.clone()))).collect();
-                    b.val = Val::Outcome(Outcome::Applied { outputs });
+                match &b.val {
+                    Val::Outcome(Outcome::Batch { batch, index }) if *batch == id => {
+                        let prefix = format!("{index}.");
+                        let outputs = delta.outputs.iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|r| (r.to_owned(), v.clone()))).collect();
+                        b.val = Val::Outcome(Outcome::Applied { outputs });
+                    }
+                    Val::Ref { batch, index, role, sel } if *batch == id => {
+                        if let Some(ids) = delta.outputs.get(&format!("{index}.{role}")) {
+                            let picked = match sel {
+                                Sel::All | Sel::Star => Some(ids.clone()),
+                                Sel::At(k) => ids.get(*k).map(|i| vec![*i]),
+                            };
+                            if let Some(p) = picked {
+                                b.val = Val::Ents(EntitySet::from_vec(p));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -641,7 +654,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         }
                     }
                     other => {
-                        let d = Diagnostic::error("type-mismatch", e.span, format!("`...` spreads an object, found a {}", other.type_name())).label("not an object");
+                        let d = Diagnostic::error("type-mismatch", e.span, format!("`...` spreads an object, found {}", other.a_type())).label("not an object");
                         return self.fail(d);
                     }
                 },
@@ -706,6 +719,17 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             return Ok(params);
         }
         let pinfo = view.params();
+        // A misspelled required parameter is reported once, as the unknown argument with its suggestion, not also as missing.
+        let suggested: Vec<&str> = issues
+            .iter()
+            .filter(|i| i.code == "unknown-property")
+            .filter_map(|i| match i.path.first() {
+                Some(PathSeg::Key(k)) => suggest(k, pinfo.iter().map(|p| p.name.as_str())),
+                _ => None,
+            })
+            .collect();
+        issues.retain(|i| i.code != "missing-property" || !i.message.split('`').nth(1).is_some_and(|n| suggested.contains(&n)));
+        issues.sort_by_key(|i| i.code != "unknown-property"); // stable: unknown arguments first
         for iss in issues {
             let (span, mut d) = match iss.path.first() {
                 Some(PathSeg::Key(k)) => {
@@ -739,10 +763,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         && let Some(p) = pinfo.iter().find(|p| p.name == name)
                     {
                         d.message = format!("missing required argument `{name}` for `{}`", info.name);
-                        d.label = Some(format!("`{name}: {}` is required", p.ty));
-                        if let Some(desc) = &p.description {
-                            d = d.help(desc.clone());
-                        }
+                        d.label = Some(match &p.description {
+                            Some(desc) => format!("`{name}: {}` is required: {}", p.ty, desc.lines().next().unwrap_or("").trim()),
+                            None => format!("`{name}: {}` is required", p.ty),
+                        });
                     }
                 }
                 _ => {}
@@ -795,7 +819,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let one_id = |s: &EntitySet, path: &[PathSeg]| -> Result<Json, Issue> {
                 match s.as_slice() {
                     [id] => Ok(Json::String(id.to_string())),
-                    other => Err(issue(path, "expected-one-entity", format!("expected exactly one entity, found {}", other.len()))),
+                    other => Err(issue(path, "expected-one-entity", format!("expected exactly one entity, found {} (pick one with `[0]`, or name a single id)", other.len()))),
                 }
             };
             return match v {
@@ -810,7 +834,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 },
                 other => match ref_str(self, other, false, path) {
                     Some(r) => r,
-                    None => Err(issue(path, "type-mismatch", format!("expected an entity id, found a {}", other.type_name()))),
+                    None => Err(issue(path, "type-mismatch", format!("expected an entity id, found {}", other.a_type()))),
                 },
             };
         }
@@ -825,7 +849,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     },
                     other => match ref_str(this, other, true, path) {
                         Some(r) => out.push(r?),
-                        None => return Err(issue(path, "type-mismatch", format!("expected an entity id, found a {}", other.type_name()))),
+                        None => return Err(issue(path, "type-mismatch", format!("expected an entity id, found {}", other.a_type()))),
                     },
                 }
                 Ok(())
@@ -878,7 +902,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             Val::Ents(s) => Ok(Json::Array(s.iter().map(|i| Json::String(i.to_string())).collect())),
             other => match ref_str(self, other, false, path) {
-                Some(Ok(_)) | None => Err(issue(path, "type-mismatch", format!("a {} can only be used where an entity id is expected", other.type_name()))),
+                Some(Ok(_)) | None => Err(issue(path, "type-mismatch", format!("{} can only be used where an entity id is expected", other.a_type()))),
                 Some(Err(e)) => Err(e),
             },
         }
@@ -950,7 +974,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), l, r) => {
                 let lv = self.eval(l)?;
                 let Val::Bool(lb) = lv else {
-                    let d = Diagnostic::error("type-mismatch", l.span, format!("`and`/`or` need bools, found a {}", lv.type_name())).label("not a bool");
+                    let d = Diagnostic::error("type-mismatch", l.span, format!("`and`/`or` need bools, found {}", lv.a_type())).label("not a bool");
                     return self.fail(d);
                 };
                 if (*op == BinOp::And && !lb) || (*op == BinOp::Or && lb) {
@@ -960,7 +984,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 match rv {
                     Val::Bool(b) => Ok(Val::Bool(b)),
                     other => {
-                        let d = Diagnostic::error("type-mismatch", r.span, format!("`and`/`or` need bools, found a {}", other.type_name())).label("not a bool");
+                        let d = Diagnostic::error("type-mismatch", r.span, format!("`and`/`or` need bools, found {}", other.a_type())).label("not a bool");
                         self.fail(d)
                     }
                 }
@@ -1037,7 +1061,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             },
             Val::Outcome(Outcome::Plan { n }) => Ok(Val::Placeholder { n, role: name.to_owned() }),
             Val::Placeholder { n, role } => Ok(Val::Placeholder { n, role: format!("{role}.{name}") }),
-            other => self.fail(Diagnostic::error("type-mismatch", f.span, format!("a {} has no fields", other.type_name())).label("field access")),
+            other => self.fail(Diagnostic::error("type-mismatch", f.span, format!("{} has no fields", other.a_type())).label("field access")),
         }
     }
 
@@ -1071,8 +1095,8 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             (Val::Ref { batch, index, role, sel: Sel::All }, None) => Ok(Val::Ref { batch, index, role, sel: Sel::Star }),
             (Val::Ref { .. }, _) => self.eval_fail(("type-mismatch", "a batch output can be indexed once, with a non-negative integer or `*`".into()), span),
             (Val::Placeholder { n, role }, _) => Ok(Val::Placeholder { n, role }),
-            (other, Some(i)) => self.eval_fail(("type-mismatch", format!("cannot index a {} with a {}", other.type_name(), i.type_name())), span),
-            (other, None) => self.eval_fail(("type-mismatch", format!("`[*]` does not apply to a {}", other.type_name())), span),
+            (other, Some(i)) => self.eval_fail(("type-mismatch", format!("cannot index {} with {}", other.a_type(), i.a_type())), span),
+            (other, None) => self.eval_fail(("type-mismatch", format!("`[*]` does not apply to {}", other.a_type())), span),
         }
     }
 
@@ -1132,7 +1156,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     other => {
                         let er = match &other {
                             Val::Ref { .. } | Val::Outcome(_) | Val::Placeholder { .. } => eval::opaque_err(&other),
-                            _ => ("type-mismatch", format!("`in` needs an entity set on its right, found a {}", other.type_name())),
+                            _ => ("type-mismatch", format!("`in` needs an entity set on its right, found {}", other.a_type())),
                         };
                         return self.eval_fail(er, within.span);
                     }

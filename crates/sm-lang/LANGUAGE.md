@@ -62,7 +62,8 @@ Precedence, loosest to tightest: `or`; `and`; `not`; comparison (non-associative
   mixed promotes to `Num`. Division or modulo by zero is an error (never `inf`/`NaN`).
 * Builtins (pure, deterministic; names are not reserved but cannot be called as ops):
   `abs min max floor ceil round sqrt sin cos tan asin acos atan atan2 exp ln log10 pow int float
-  len count range str`, constants `pi`, `tau`. There is deliberately **no random** function: any future
+  len count range str ents`, constants `pi`, `tau`. `floor`/`ceil`/`round`/`int` return `Int` (checked), `ents("Volume#3")` /
+  `ents([..])` turns id strings (for example from a query result) into an entity set, and every float result is checked finite (`non-finite`). There is deliberately **no random** function: any future
   randomness must be seeded from op parameters. `range(a, b[, step])` is half-open and capped (§9).
   Transcendental functions use the platform libm; the value written into an op record is what is replayed, so
   cross-platform last-digit differences affect only *re-evaluating the script*, never replay of a timeline.
@@ -100,8 +101,9 @@ registry name, and its target must exist when the alias is defined).
 
 ### 4.2 Arguments to params
 
-1. Arguments are collected into one JSON object, **in this order**: spreads, then named args (a later
-   source overrides an earlier one; a named argument given twice is `duplicate-argument`).
+1. Arguments are collected into one JSON object **in source order**; a later source overrides an earlier one, so
+   `f(...base, x: 5)` overrides `x` from `base`, while `f(x: 1, ...{x: 2})` gives `x = 2`. A *named* argument written twice is
+   `duplicate-argument`.
 2. **One positional argument** is allowed when the op has exactly one *required* property: it binds to that property.
    Any other positional use is `positional-ambiguous`.
 3. Each value is converted to JSON under the guidance of the parameter's schema (§6): an `Ents` becomes an id string or an
@@ -112,6 +114,11 @@ registry name, and its target must exist when the alias is defined).
    Top-level records are also decoded with `Registry::decode` as a last gate, so the statement is known to apply before it is sent
    (batch members cannot be decoded early because their params may hold `$` references).
 5. A **query** is the same, but its record is never stored; its JSON result is the value of the call.
+6. Unknown argument names are an error (`unknown-argument`, with a did-you-mean), even where the op's decoder would silently ignore
+   them: a typo must not turn into a default.
+
+An op or query call is a statement, or the whole right-hand side of `let`/`set`. Inside a larger expression it is `op-in-expression`:
+expressions are pure, calls to the registry are not.
 
 ### 4.3 Execution model, ids and results
 
@@ -139,7 +146,8 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
 * `let b = op(...)` binds a **symbolic** outcome of batch index `i`. `b.role` becomes the reference string
   `"$i.role"`; `b.role[k]` becomes `"$i.role[k]"`; `b.role[*]` becomes `"$i.role[*]"`. The contract only accepts `[*]` as an **array element**,
   so the lowering is chosen by the schema of the parameter the value lands in: scalar id parameter, `b.role` → `"$i.role"` (the bare form, alias of `[0]`);
-  array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`. `b.role[*]` for a scalar parameter is an error; Symbolic values may only be used as op arguments (or list elements of them);
+  array-of-id parameter, `b.role` or `b.role[*]` → `["$i.role[*]"]`; `[b.role[0]]` → `["$i.role[0]"]`; inside an array literal a bare `b.role` is
+  spliced as `"$i.role[*]"`. `b.role[*]` for a scalar parameter is an error; Symbolic values may only be used as op arguments (or list elements of them);
   arithmetic or set algebra on them is `not-concrete`;
 * a user string literal starting with `$` is emitted as `$$...` (the batch escape), so literals can never be mistaken
   for references; reference strings are validated against `sm_op_api::batch::REF_PATTERN`;
@@ -147,7 +155,8 @@ A `batch` block lowers to **one** `core.batch` record (one atomic timeline node,
   `let`, `set`, `if`, `for`, `print`, `assert` evaluate normally (so a `for` loop unrolls into the batch);
 * a batch does not open a scope. When it has been applied, symbolic outcomes are re-bound to concrete `Ents` built from
   the batch `Delta.outputs` (`"<i>.<role>"`); `b.created`/`b.removed` are unavailable for them (`not-concrete`).
-  Under `PlanHost` they stay symbolic.
+  Under `PlanHost` they stay symbolic. Known gap: only variables that hold a reference directly (`let f = p.faces`) are rebound after the batch;
+  a reference stored inside a list or object (`let l = [p.body]`) is not, and using it afterwards is `stale-reference`.
 
 ### 4.5 Scripts and includes
 
@@ -197,7 +206,8 @@ a | b    a & b    a - b   union, intersection, difference ('-' may be written 'e
 ### 5.3 Liveness and relations
 
 * A single explicit id (`Volume#3`) and the elements of an id list must be **live** in the host state (`State::contains`), else `entity-not-found` at that id's
-  span (checked in run and plan modes against the state the host reports; never inside the id's own batch).
+  span. This is checked whenever the host executes (including inside a `batch`, against the block-entry state: a batch cannot name ids it creates;
+  it uses references). A plan host (`executes() == false`) does not check explicit ids, because earlier statements were not applied.
 * Ranges and `all` select live members only. An empty result is a *warning* (`empty-selection`), not an error: the op decides whether an empty
   set is acceptable.
 * `kind in X` needs adjacency, which lives in the topology/mesh layers, not in `State`'s entity table. sm-lang therefore asks a host-supplied
@@ -227,7 +237,7 @@ Unknown arguments suggest the closest property name. The checker never invents r
 * `help` lists every op and query grouped by namespace with a one-line summary; `help model.create_brick` prints a signature
   (`model.create_brick(x: number, y: number, z: number, name?: string)`), the description, one line per parameter (type, required/optional,
   default, enum values, description), and the version. All of it comes from the schema; ops written with doc comments are self-documenting.
-* `complete(source, cursor)` returns candidates for the token at the cursor from a tolerant lexical scan (it works on incomplete input):
+* `Interpreter::complete(source, cursor) -> Completion` returns the replaced byte range and candidates for the token at the cursor from a tolerant lexical scan (it works on incomplete input):
   statement start → op/query names, aliases, keywords; inside `name(` → unused parameter names (required first) ; after `param:` → enum values,
   `true/false`, kind names for entity parameters (`Volume#` and live ids), variables; after `var.` → known output roles; after a kind and `#` → live serials;
   after `in` → kind keywords. Each candidate has a label, insert text, kind, and detail (the schema description).
@@ -240,7 +250,8 @@ yields the same records; tests compare hashes across runs and thread counts.
 
 ## 9. Limits (denial-of-service guards, configurable in `Options`)
 
-Source size 16 MiB, nesting depth 64, loop iterations 1,000,000 per run, `range` length 1,000,000, include depth 16, errors reported per source 100.
+Source size 16 MiB, nesting depth 64, expression height 256 (nesting plus operator chains such as `1 + 1 + ...`; `expression-too-long`),
+loop iterations 1,000,000 per run, `range` length 1,000,000, include depth 16, errors reported per source 100. All are fields of `ParseLimits` / `Options`.
 
 ## 10. Examples
 

@@ -1,0 +1,6 @@
+error[op-in-expression]: `model.count` is not a function
+ --> op_in_expression.smesh:1:13
+  |
+1 | let x = 1 + model.count()
+  |             ^^^^^^^^^^^ ops and queries cannot be used inside expressions
+  = help: call it as a statement, or as the whole right-hand side of `let`: `let r = op(...)`

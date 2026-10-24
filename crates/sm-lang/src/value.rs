@@ -106,6 +106,13 @@ impl Val {
         }
     }
 
+    /// The type name with its indefinite article ("an int", "a string").
+    pub fn a_type(&self) -> String {
+        let n = self.type_name();
+        let art = if n.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+        format!("{art} {n}")
+    }
+
     /// Plain JSON, without schema guidance (entity sets become arrays of id strings). `None` for values that have no
     /// JSON form (op results, references, placeholders) or non-finite floats.
     pub fn to_json_plain(&self) -> Option<Json> {

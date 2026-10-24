@@ -1,0 +1,6 @@
+error[unknown-variable]: `widht` is not defined
+ --> unknown_variable.smesh:2:23
+  |
+2 | model.create_brick(x: widht, y: 1, z: 1)
+  |                       ^^^^^ unknown name
+  = help: did you mean `width`?

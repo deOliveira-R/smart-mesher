@@ -219,7 +219,7 @@ pub fn live_range(state: &State, kind: EntityKind, lo: u64, hi: u64, step: u64) 
     }
     let step = step.max(1);
     let live = |s: u64| -> Option<EntityId> {
-        if (s - lo) % step != 0 {
+        if !(s - lo).is_multiple_of(step) {
             return None;
         }
         EntityId::new(kind, s).filter(|id| state.contains(*id))

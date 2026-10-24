@@ -419,7 +419,7 @@ impl Lexer<'_> {
                             let ch = self.text.get(self.i..).and_then(|t| t.chars().next());
                             let w = ch.map_or(0, char::len_utf8);
                             self.diags.push(
-                                Diagnostic::error("invalid-escape", self.sp(esc, self.i + w.max(0)), "unknown escape sequence")
+                                Diagnostic::error("invalid-escape", self.sp(esc, self.i + w), "unknown escape sequence")
                                     .label("valid escapes: \\n \\t \\r \\\" \\\\ \\$ \\u{..}"),
                             );
                             self.i += w;

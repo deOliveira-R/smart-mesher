@@ -1,0 +1,5 @@
+error[type-mismatch]: `if` needs a bool, found an int
+ --> condition_not_bool.smesh:1:4
+  |
+1 | if 1 { print 1 }
+  |    ^ not a bool
