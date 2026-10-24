@@ -210,6 +210,27 @@ as amended by `docs/design/w0/decisions.md`.
   `Model::canonical_visit` (`HashWord::Float { raw, q }` -> `f64_with(raw, q)`).
 - **Portable ref names** and the **shared op/query namespace**: see above.
 
+## W0g freeze rules
+
+The contract freezes in two tiers (docs/design/w0/decisions.md). These rules keep the frozen
+on-disk format extensible:
+
+- **Growable records are `#[non_exhaustive]`**: `Meta`, `Check`, `Control`, `OpInfo`,
+  `QueryInfo`, `Rev`, `ReplayPolicy`. Fields stay `pub` for reading. Build `Meta` with
+  `Meta::new(author, time, message)`, `Check` with `Check::new(state)` / `Check::of` /
+  `Check::of_with`, `Control` with `Control::new` or `QuietControl::control`. `OpInfo` and
+  `QueryInfo` are built only by the registry. The serde shapes of `Rev` (externally tagged,
+  lowercase) and of `Meta`/`Check` are unchanged.
+- **Rule 1, Meta fields and the node hash**: `NodeBody::hash` hashes `author`, `time` and
+  `message` always. A field added to `Meta` after the freeze enters the hashed body **only when
+  it differs from its default** (and is written with `serde(default, skip_serializing_if =
+  "<is default>")`), so every existing node keeps its hash and file name. The golden node-hash
+  test (`tests/api.rs::golden_node_hash_is_stable`) pins this.
+- **Rule 2, node-file format key**: any later top-level `format` key of a node file reads as
+  `1` when absent. Adding that key, and relaxing `deny_unknown_fields` on `Meta`/`Check`, can
+  therefore happen later without rewriting stored nodes. Fields added to `Check` are
+  `serde(default)` and omitted when default, as `layers` and `versions` already are.
+
 ## Determinism
 
 Everything observable is ordered (`BTreeMap`, sorted keys, fixed chunking in the sample op). The test

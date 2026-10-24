@@ -348,7 +348,7 @@ fn run(fx: &Fixture, topo: &CellComplex) -> sm_scheme_api::Meshed<sm_mesh_api::r
     let driver = Driver::new(&reg, &solver, &picker);
     let model = Model::new();
     let sel = [fx.volume];
-    let input = MeshInput { topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     for (e, n) in fx.edges.iter().zip([2u32, 2, 3]) {
         intent.set_intervals(*e, Firm::hard(IntervalRequest::Count(n)));

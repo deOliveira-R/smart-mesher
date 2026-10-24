@@ -32,23 +32,18 @@ fn model_and_results_round_trip() {
         Ok(())
     })
     .unwrap();
-    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, keep: Keep::Negative, origin: Point3::new(0.0, 0.0, 0.5) }).unwrap();
+    let plan = plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5).unwrap() }, Keep::Negative, Point3::new(0.0, 0.0, 0.5))).unwrap();
     rt(&plan);
     m.apply_cut(&plan, &t.lineage().cut_outcome(OpId(2)), Some(cap_color), &t).unwrap();
     let vol = sm_topo_api::TopologyViewExt::volumes(&t)[0];
     let pin = m.add_prototype(&[vol]).unwrap();
     let lat = m
-        .add_lattice(Lattice {
-            layout: Layout::Hex { rings: 2, pitch: 1.0, orient: HexOrient::XRows, nz: 1, dz: 0.0 },
-            origin: Transform::IDENTITY,
-            outer: Fill::Prototype(pin),
-            slots: BTreeMap::from([(SlotIx::new(1, 0, 0), Slot { fill: Fill::Void, recolor: ColorMap::default(), clip: None })]),
-        })
+        .add_lattice(Lattice::new(Layout::Hex { rings: 2, pitch: 1.0, orient: HexOrient::XRows, nz: 1, dz: 0.0 }, Transform::IDENTITY, Fill::Prototype(pin), BTreeMap::from([(SlotIx::new(1, 0, 0), Slot::new(Fill::Void))])))
         .unwrap();
-    let inst = m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None }).unwrap();
+    let inst = m.add_instance(InstanceRow::new(Fill::Lattice(lat), Transform::IDENTITY)).unwrap();
     let faces = sm_topo_api::TopologyViewExt::faces(&t).to_vec();
     m.split(PieceRef::Whole(vol), CutGeometry::Plane(Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.5).unwrap()), &faces, &faces, &t).unwrap();
-    m.add_path_override(PathOverride { prefix: [PathStep::Instance(inst)].into_iter().collect(), recolor: ColorMap::default() }).unwrap();
+    m.add_path_override(PathOverride::new([PathStep::Instance(inst)].into_iter().collect(), ColorMap::default())).unwrap();
     rt(&m);
     rt(&validate(&m, &t, Tolerance::default()));
     rt(&unfold(&m, &t, &UnfoldSpec::default()).unwrap());

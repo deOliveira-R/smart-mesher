@@ -184,6 +184,7 @@ impl VirtualOp {
 /// counters. Replayed against the host by [`Overlay::from_data`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct OverlayData {
     /// Revision of the host the overlay was built on.
     pub host_revision: OpId,
@@ -191,6 +192,13 @@ pub struct OverlayData {
     pub ops: Vec<VirtualOp>,
     /// Next unused serial per virtual rank (vertex, edge, face); starts at 1.
     pub next_serial: [u64; 3],
+}
+
+impl OverlayData {
+    /// Persisted overlay data from its parts.
+    pub fn new(host_revision: OpId, ops: Vec<VirtualOp>, next_serial: [u64; 3]) -> Self {
+        Self { host_revision, ops, next_serial }
+    }
 }
 
 /// Host store plus the overlay's own curves, behind one [`GeomStore`].

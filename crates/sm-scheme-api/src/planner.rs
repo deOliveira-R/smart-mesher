@@ -1344,7 +1344,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             && let Some(piece) = self.input.model.decomposition().piece(c)
         {
             match &piece.shape {
-                PieceShape::Sweep { source, target: tg } => {
+                PieceShape::Sweep { source, target: tg, .. } => {
                     let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> {
                         v.iter()
                             .filter_map(|pf| {
@@ -1364,7 +1364,8 @@ impl<'a, 'r> Planner<'a, 'r> {
                     SchemeChoice::new("map", Firmness::Default),
                     Selection::PieceShape,
                 )),
-                PieceShape::Any => {}
+                // `PieceShape` is non-exhaustive: an unknown hint adds no candidate.
+                _ => {}
             }
         }
         let mut local: Vec<Attempt> = Vec::new();

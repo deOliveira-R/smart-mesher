@@ -19,6 +19,7 @@ pub struct ConstraintId(pub u32);
 
 /// Who contributed a constraint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Origin {
     /// The user's intent.
     Intent,
@@ -60,6 +61,7 @@ pub enum Rel {
 /// An interval constraint over curve interval counts (the IIA system).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum IntervalConstraint {
     /// The count of `edge` is `count` (hard: never changed; soft/default: a preferred value).
     Fixed {
@@ -184,6 +186,7 @@ impl IntervalConstraint {
 
 /// What a parent requires of a child entity's scheme.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Need {
     /// The child's scheme is one of these names (sorted). For the rare "exactly this
     /// algorithm" case; prefer [`Need::Caps`].
@@ -223,6 +226,7 @@ pub struct Claim {
 
 /// The role an entity plays for a parent scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Role {
     /// Source face of a sweep (any surface scheme; meshed first).
     SweepSource {
@@ -243,6 +247,7 @@ pub enum Role {
 
 /// Why a copy constraint exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CopyReason {
     /// A translation/rotation deck pair: the B face must carry exactly `g(mesh of A)`.
     Deck {

@@ -35,6 +35,7 @@ use std::ops::Range;
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Instance {
     /// Stable id (`EntityKind::MeshInstance`, minted by the mesh layer); flatten order is
     /// ascending id.
@@ -45,15 +46,30 @@ pub struct Instance {
     pub transform: Transform,
 }
 
+impl Instance {
+    /// A placement of `prototype`.
+    pub fn new(id: EntityId, prototype: EntityId, transform: Transform) -> Self {
+        Self { id, prototype, transform }
+    }
+}
+
 /// An instanced view: prototypes live in the catalog, the view only lists placements.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct InstancedView {
     /// Stable id of the view (`EntityKind::MeshInstance`).
     pub id: EntityId,
     /// Placements.
     pub instances: Vec<Instance>,
+}
+
+impl InstancedView {
+    /// A view listing `instances`.
+    pub fn new(id: EntityId, instances: Vec<Instance>) -> Self {
+        Self { id, instances }
+    }
 }
 
 /// Context handed to [`FlattenOptions::on_merge`] when two classifications must become one.
@@ -74,6 +90,7 @@ pub type MergeRule<'a> = &'a dyn Fn(&MergeCtx) -> Result<Classification>;
 
 /// Options for [`append_transformed`], [`flatten`] and [`unfold`].
 #[derive(Default)]
+#[non_exhaustive]
 pub struct FlattenOptions<'a> {
     /// Weld boundary vertices of an instance to vertices of earlier instances within this
     /// Chebyshev distance. `None` keeps instances disjoint.
@@ -97,10 +114,33 @@ pub struct FlattenOptions<'a> {
     pub on_merge: Option<MergeRule<'a>>,
 }
 
+impl<'a> FlattenOptions<'a> {
+    /// Default options (no welding, identity classification, default merge rule).
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Weld within this Chebyshev distance.
+    pub fn with_weld_tol(mut self, tol: f64) -> Self {
+        self.weld_tol = Some(tol);
+        self
+    }
+    /// Remap classifications through `f`.
+    pub fn with_remap_class(mut self, f: &'a dyn Fn(EntityId, Classification) -> Classification) -> Self {
+        self.remap_class = Some(f);
+        self
+    }
+    /// Resolve classification merges with `rule`.
+    pub fn with_on_merge(mut self, rule: MergeRule<'a>) -> Self {
+        self.on_merge = Some(rule);
+        self
+    }
+}
+
 /// What a flatten or append could not carry over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum LossKind {
     /// A named set was dropped.
     Set(String),
@@ -116,11 +156,19 @@ pub enum LossKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct LossNote {
     /// Instance whose prototype held the item.
     pub instance: EntityId,
     /// What was dropped.
     pub what: LossKind,
+}
+
+impl LossNote {
+    /// A note that `what` from `instance` was dropped.
+    pub fn new(instance: EntityId, what: LossKind) -> Self {
+        Self { instance, what }
+    }
 }
 
 /// A welded vertex awaiting its final classification (see [`finalize_welds`]).

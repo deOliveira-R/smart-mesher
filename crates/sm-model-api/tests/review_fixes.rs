@@ -36,7 +36,7 @@ fn colored_brick() -> (CellComplex, Model, fixtures::BrickIds) {
 }
 
 fn mirror_z(offset: f64, keep: Keep) -> CutPlan {
-    plan_cut(&CutSpec { deck: Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), offset).unwrap() }, keep, origin: p3(0.0, 0.0, offset) }).unwrap()
+    plan_cut(&CutSpec::new(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), offset).unwrap() }, keep, p3(0.0, 0.0, offset))).unwrap()
 }
 
 // ------------------------------------------------------------- must fix 1: closure on cuts
@@ -44,8 +44,8 @@ fn mirror_z(offset: f64, keep: Keep) -> CutPlan {
 #[test]
 fn two_parallel_mirror_cuts_are_refused_like_two_parallel_mirror_declarations() {
     let (t, mut m, b) = colored_brick();
-    let cap_lo = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[4], from_surface: surface0() }] };
-    let cap_hi = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[5], from_surface: surface0() }] };
+    let cap_lo = CutOutcome::new(vec![], vec![CapFace { face: b.faces[4], from_surface: surface0() }]);
+    let cap_hi = CutOutcome::new(vec![], vec![CapFace { face: b.faces[5], from_surface: surface0() }]);
     m.apply_cut(&mirror_z(0.0, Keep::Positive), &cap_lo, None, &t).unwrap();
     let before = m.clone();
     // A second mirror parallel to the first composes to a translation: no finite group.
@@ -89,22 +89,22 @@ fn hostile_turns_and_plans_are_errors_not_panics() {
         Turns { num: 1, den: 0 },
         Turns { num: 1, den: 1_000_000 },
     ] {
-        let deck = Deck::Rotation { axis, angle };
+        let deck = Deck::rotation(axis, angle);
         assert!(deck.check().is_err(), "{angle:?}");
-        assert!(plan_cut(&CutSpec { deck, keep: Keep::Positive, origin: p3(1.0, 0.0, 0.0) }).is_err(), "{angle:?}");
+        assert!(plan_cut(&CutSpec::new(deck, Keep::Positive, p3(1.0, 0.0, 0.0))).is_err(), "{angle:?}");
         assert!(Model::new().add_boundary("r", BoundaryKind::Deck(deck)).is_err(), "{angle:?}");
     }
-    assert!(Deck::Rotation { axis, angle: Turns::new(1, 6).unwrap() }.check().is_ok());
+    assert!(Deck::rotation(axis, Turns::new(1, 6).unwrap()).check().is_ok());
 }
 
 #[test]
 fn a_hand_built_cut_plan_with_the_wrong_shape_is_refused() {
     let (t, mut m, b) = colored_brick();
-    let spec = CutSpec { deck: Deck::Translation { vector: Vector3::new(0.0, 0.0, 1.0) }, keep: Keep::Positive, origin: p3(0.0, 0.0, 0.0) };
+    let spec = CutSpec::new(Deck::Translation { vector: Vector3::new(0.0, 0.0, 1.0) }, Keep::Positive, p3(0.0, 0.0, 0.0));
     let mut plan = plan_cut(&spec).unwrap();
     plan.half_spaces.pop();
     plan.roles.pop();
-    let out = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[4], from_surface: surface0() }] };
+    let out = CutOutcome::new(vec![], vec![CapFace { face: b.faces[4], from_surface: surface0() }]);
     let before = m.clone();
     assert!(matches!(m.apply_cut(&plan, &out, None, &t), Err(ModelError::Invalid(_))));
     // A mirror plan with a pair of half-spaces is refused as well.
@@ -143,7 +143,7 @@ fn bounds_never_stand_in_for_a_recorded_coincidence_without_a_transform() {
     let c2 = m.add_color(2, "right", Domain::Volume).unwrap();
     m.color_volumes(c1, &[a.volume]).unwrap();
     m.color_volumes(c2, &[b.volume]).unwrap();
-    let i = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::NonConformal { transform: None })).unwrap();
+    let i = m.add_boundary("slide", BoundaryKind::Interface(InterfaceIntent::non_conformal(None))).unwrap();
     m.assign_interface(i, &[a.faces[1]], &[b.faces[0]]).unwrap();
     finish_boundaries(&mut m, &t, 7, true);
     assert_eq!(validate(&m, &t, tol()).with(IssueCode::InterfaceUnmatched).count(), 2, "touching but unrecorded");
@@ -197,7 +197,7 @@ fn a_cut_face_that_straddles_a_later_cut_gets_distinct_part_keys() {
 fn a_volume_the_kernel_failed_to_cut_is_caught_by_its_corners() {
     let (t, mut m, _b) = colored_brick();
     // The centroid z = 0.5 is inside z >= 0.3, but the volume reaches down to z = 0.
-    let out = CutOutcome { lineage: vec![], caps: vec![] };
+    let out = CutOutcome::new(vec![], vec![]);
     let before = m.clone();
     let r = m.apply_cut(&mirror_z(0.3, Keep::Positive), &out, None, &t);
     assert!(matches!(r, Err(ModelError::CutInvalid(ref s)) if s.contains("corner")), "{r:?}");
@@ -224,7 +224,7 @@ fn a_changed_face_of_a_decomposed_volume_is_refused_even_if_the_volume_stays() {
 fn quantized_fingerprint_ignores_noise_below_the_step_and_the_raw_one_does_not() {
     let (_t, mut m, b) = colored_brick();
     let proto = m.add_prototype(&[b.volume]).unwrap();
-    m.add_instance(InstanceRow { of: Fill::Prototype(proto), at: Transform::translation(Vector3::new(0.5, 0.0, 0.0)), recolor: ColorMap::default(), clip: None }).unwrap();
+    m.add_instance(InstanceRow::new(Fill::Prototype(proto), Transform::translation(Vector3::new(0.5, 0.0, 0.0)))).unwrap();
     let flat = flatten(&m).unwrap();
     let mut noisy = flat.clone();
     noisy.placements[0].transform.t.x += 1e-15;
@@ -240,7 +240,7 @@ fn quantized_fingerprint_ignores_noise_below_the_step_and_the_raw_one_does_not()
 fn unbounded_layouts_are_refused() {
     let (_t, mut m, b) = colored_brick();
     let proto = m.add_prototype(&[b.volume]).unwrap();
-    let lat = |layout| Lattice { layout, origin: Transform::IDENTITY, outer: Fill::Prototype(proto), slots: Default::default() };
+    let lat = |layout| Lattice::new(layout, Transform::IDENTITY, Fill::Prototype(proto), Default::default());
     let huge = Layout::Cartesian { n: [u32::MAX; 3], pitch: Vector3::new(1.0, 1.0, 1.0) };
     assert!(m.add_lattice(lat(huge)).is_err());
     assert_eq!(huge.slot_count(), usize::MAX, "saturates instead of overflowing");
@@ -276,9 +276,9 @@ fn a_cut_that_deletes_one_face_of_a_translation_pair_says_so() {
 #[test]
 fn a_slab_cut_tags_a_translation_pair_of_caps() {
     let (t, mut m, b) = colored_brick();
-    let spec = CutSpec { deck: Deck::Translation { vector: Vector3::new(0.0, 0.0, 1.0) }, keep: Keep::Positive, origin: p3(0.0, 0.0, 0.0) };
+    let spec = CutSpec::new(Deck::Translation { vector: Vector3::new(0.0, 0.0, 1.0) }, Keep::Positive, p3(0.0, 0.0, 0.0));
     let plan = plan_cut(&spec).unwrap();
-    let out = CutOutcome { lineage: vec![], caps: vec![CapFace { face: b.faces[4], from_surface: surface0() }, CapFace { face: b.faces[5], from_surface: surface0() }] };
+    let out = CutOutcome::new(vec![], vec![CapFace { face: b.faces[4], from_surface: surface0() }, CapFace { face: b.faces[5], from_surface: surface0() }]);
     let cap_color = m.add_color(9, "cap", Domain::Face).unwrap();
     let deck = m.apply_cut(&plan, &out, Some(cap_color), &t).unwrap();
     assert_eq!(m.face_boundary(b.faces[4]).unwrap().role, FaceRole::Deck { side: DeckSide::A, mate: Some(b.faces[5]) });
@@ -295,8 +295,8 @@ fn a_slab_cut_tags_a_translation_pair_of_caps() {
     assert!(validate_unfolded(&u, &m, &t, tol()).is_ok());
     // Caps on the wrong planes are refused.
     let (t2, mut m2, b2) = colored_brick();
-    let shifted = CutSpec { origin: p3(0.0, 0.0, 0.25), ..spec };
-    let bad = m2.apply_cut(&plan_cut(&shifted).unwrap(), &CutOutcome { lineage: vec![], caps: out.caps.iter().map(|c| CapFace { face: if c.face == b.faces[4] { b2.faces[4] } else { b2.faces[5] }, ..*c }).collect() }, None, &t2);
+    let shifted = CutSpec::new(spec.deck, spec.keep, p3(0.0, 0.0, 0.25));
+    let bad = m2.apply_cut(&plan_cut(&shifted).unwrap(), &CutOutcome::new(vec![], out.caps.iter().map(|c| CapFace { face: if c.face == b.faces[4] { b2.faces[4] } else { b2.faces[5] }, ..*c }).collect()), None, &t2);
     assert!(matches!(bad, Err(ModelError::CutInvalid(_))), "{bad:?}");
 }
 
@@ -308,9 +308,9 @@ fn a_wedge_cut_tags_a_rotation_pair_of_caps() {
     let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
     m.color_volumes(mat, &[p.volume]).unwrap();
     let axis = Axis::new(p3(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    let spec = CutSpec { deck: Deck::Rotation { axis, angle: Turns::new(1, 6).unwrap() }, keep: Keep::Positive, origin: p3(1.0, 0.0, 0.0) };
+    let spec = CutSpec::new(Deck::rotation(axis, Turns::new(1, 6).unwrap()), Keep::Positive, p3(1.0, 0.0, 0.0));
     let plan = plan_cut(&spec).unwrap();
-    let out = CutOutcome { lineage: vec![], caps: vec![CapFace { face: p.sides[0], from_surface: surface0() }, CapFace { face: p.sides[2], from_surface: surface0() }] };
+    let out = CutOutcome::new(vec![], vec![CapFace { face: p.sides[0], from_surface: surface0() }, CapFace { face: p.sides[2], from_surface: surface0() }]);
     let deck = m.apply_cut(&plan, &out, None, &t).unwrap();
     assert_eq!(m.face_boundary(p.sides[0]).unwrap().role, FaceRole::Deck { side: DeckSide::A, mate: Some(p.sides[2]) });
     finish_boundaries(&mut m, &t, 7, true);

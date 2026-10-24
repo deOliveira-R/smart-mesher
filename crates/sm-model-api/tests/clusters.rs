@@ -12,7 +12,7 @@ fn recolor(from: EntityId, to: EntityId) -> ColorMap {
 }
 
 fn member(fill: Fill, at: Transform) -> ClusterMember {
-    ClusterMember { fill, at, recolor: ColorMap::default(), clip: None }
+    ClusterMember::new(fill, at)
 }
 
 fn rot_z(deg: f64) -> Transform {
@@ -39,13 +39,13 @@ fn nested_clusters_flatten_in_member_order() {
     let mut odd = member(Fill::Prototype(triso), tr(2.0));
     odd.recolor = recolor(fuel, poison);
     let pebble = m
-        .add_cluster(Cluster { members: vec![member(Fill::Prototype(triso), tr(1.0)), odd, member(Fill::Void, tr(9.0)), member(Fill::Prototype(triso), tr(3.0))] })
+        .add_cluster(Cluster::new(vec![member(Fill::Prototype(triso), tr(1.0)), odd, member(Fill::Void, tr(9.0)), member(Fill::Prototype(triso), tr(3.0))]))
         .unwrap();
     assert_eq!(pebble.kind(), EntityKind::Cluster);
     let core = m
-        .add_cluster(Cluster { members: vec![member(Fill::Cluster(pebble), Transform::translation(Vector3::new(0.0, 10.0, 0.0))), member(Fill::Cluster(pebble), rot_z(90.0))] })
+        .add_cluster(Cluster::new(vec![member(Fill::Cluster(pebble), Transform::translation(Vector3::new(0.0, 10.0, 0.0))), member(Fill::Cluster(pebble), rot_z(90.0))]))
         .unwrap();
-    let inst = m.add_instance(InstanceRow { of: Fill::Cluster(core), at: Transform::translation(Vector3::new(0.0, 0.0, 5.0)), recolor: ColorMap::default(), clip: None }).unwrap();
+    let inst = m.add_instance(InstanceRow::new(Fill::Cluster(core), Transform::translation(Vector3::new(0.0, 0.0, 5.0)))).unwrap();
     let flat = flatten(&m).unwrap();
     assert_eq!(flat.entries.len(), 6, "2 pebbles x 3 particles (the void member is skipped)");
     let mut sorted = flat.paths.clone();
@@ -70,7 +70,7 @@ fn nested_clusters_flatten_in_member_order() {
     let flat = flatten(&m).unwrap();
     assert_eq!((color(&flat, &p(0, 1)), color(&flat, &p(1, 1))), (poison, fuel));
     // A path override reaches a member.
-    m.add_path_override(PathOverride { prefix: path(&[PathStep::Instance(inst), PathStep::Member { cluster: core, ix: 0 }]), recolor: recolor(fuel, poison) }).unwrap();
+    m.add_path_override(PathOverride::new(path(&[PathStep::Instance(inst), PathStep::Member { cluster: core, ix: 0 }]), recolor(fuel, poison))).unwrap();
     let flat = flatten(&m).unwrap();
     assert_eq!(color(&flat, &p(0, 0)), poison);
     assert_eq!(m.resolve_face_color(&p(0, 0), kernel.faces[0]).unwrap(), None);
@@ -89,31 +89,26 @@ fn clusters_reject_cycles_and_refuse_removal_while_used() {
     let mat = m.add_color(1, "mat", Domain::Volume).unwrap();
     m.color_volumes(mat, &[b.volume]).unwrap();
     let proto = m.add_prototype(&[b.volume]).unwrap();
-    let inner = m.add_cluster(Cluster { members: vec![member(Fill::Prototype(proto), Transform::IDENTITY)] }).unwrap();
-    let outer = m.add_cluster(Cluster { members: vec![member(Fill::Cluster(inner), Transform::IDENTITY)] }).unwrap();
+    let inner = m.add_cluster(Cluster::new(vec![member(Fill::Prototype(proto), Transform::IDENTITY)])).unwrap();
+    let outer = m.add_cluster(Cluster::new(vec![member(Fill::Cluster(inner), Transform::IDENTITY)])).unwrap();
     // A rotated lattice slot is a one-member cluster.
     let lat = m
-        .add_lattice(Lattice {
-            layout: Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 2.0, 2.0) },
-            origin: Transform::IDENTITY,
-            outer: Fill::Prototype(proto),
-            slots: BTreeMap::from([(SlotIx::new(1, 0, 0), Slot { fill: Fill::Cluster(inner), recolor: ColorMap::default(), clip: None })]),
-        })
+        .add_lattice(Lattice::new(Layout::Cartesian { n: [2, 1, 1], pitch: Vector3::new(2.0, 2.0, 2.0) }, Transform::IDENTITY, Fill::Prototype(proto), BTreeMap::from([(SlotIx::new(1, 0, 0), Slot::new(Fill::Cluster(inner)))])))
         .unwrap();
     // inner -> outer -> inner is a cycle, and so is inner -> lattice -> inner.
-    assert!(matches!(m.set_cluster(inner, Cluster { members: vec![member(Fill::Cluster(outer), Transform::IDENTITY)] }), Err(ModelError::Cycle(_))));
-    assert!(matches!(m.set_cluster(inner, Cluster { members: vec![member(Fill::Lattice(lat), Transform::IDENTITY)] }), Err(ModelError::Cycle(_))));
+    assert!(matches!(m.set_cluster(inner, Cluster::new(vec![member(Fill::Cluster(outer), Transform::IDENTITY)])), Err(ModelError::Cycle(_))));
+    assert!(matches!(m.set_cluster(inner, Cluster::new(vec![member(Fill::Lattice(lat), Transform::IDENTITY)])), Err(ModelError::Cycle(_))));
     assert_eq!(m.instancing().clusters[&inner].members[0].fill, Fill::Prototype(proto), "unchanged on error");
     // Unknown fills, wrong clip kinds and non-finite placements are refused.
-    assert!(m.add_cluster(Cluster { members: vec![member(Fill::Cluster(EntityId::new(EntityKind::Cluster, 99).unwrap()), Transform::IDENTITY)] }).is_err());
+    assert!(m.add_cluster(Cluster::new(vec![member(Fill::Cluster(EntityId::new(EntityKind::Cluster, 99).unwrap()), Transform::IDENTITY)])).is_err());
     let mut bad = member(Fill::Prototype(proto), Transform::IDENTITY);
     bad.clip = Some(proto);
-    assert!(m.add_cluster(Cluster { members: vec![bad] }).is_err());
-    assert!(m.add_cluster(Cluster { members: vec![member(Fill::Prototype(proto), Transform::translation(Vector3::new(f64::NAN, 0.0, 0.0)))] }).is_err());
+    assert!(m.add_cluster(Cluster::new(vec![bad])).is_err());
+    assert!(m.add_cluster(Cluster::new(vec![member(Fill::Prototype(proto), Transform::translation(Vector3::new(f64::NAN, 0.0, 0.0)))])).is_err());
     // In use: the prototype by a member, inner by outer and by the lattice slot.
     assert!(matches!(m.remove_prototype(proto), Err(ModelError::InUse(_))));
     assert!(matches!(m.remove_cluster(inner), Err(ModelError::InUse(_))));
-    let inst = m.add_instance(InstanceRow { of: Fill::Cluster(outer), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None }).unwrap();
+    let inst = m.add_instance(InstanceRow::new(Fill::Cluster(outer), Transform::IDENTITY)).unwrap();
     assert!(matches!(m.remove_cluster(outer), Err(ModelError::InUse(_))));
     assert_eq!(flatten(&m).unwrap().entries.len(), 1);
     m.remove_instance(inst).unwrap();
@@ -126,7 +121,7 @@ fn clusters_reject_cycles_and_refuse_removal_while_used() {
     let proto = m.add_prototype(&[b.volume]).unwrap();
     let mut clipped = member(Fill::Prototype(proto), Transform::IDENTITY);
     clipped.clip = Some(EntityId::new(EntityKind::TopoVolume, 77).unwrap());
-    let c = m.add_cluster(Cluster { members: vec![clipped] }).unwrap();
+    let c = m.add_cluster(Cluster::new(vec![clipped])).unwrap();
     let r = validate(&m, &t, Tolerance::default());
     assert!(r.issues.iter().any(|i| i.code == IssueCode::UnknownEntity && i.entities.contains(&c)), "{:#?}", r.issues);
 }
@@ -156,8 +151,8 @@ fn clusters_are_hashed_only_when_present() {
 #[test]
 fn clusters_round_trip_and_old_instancing_still_loads() {
     let mut m = Model::new();
-    let c = m.add_cluster(Cluster { members: vec![member(Fill::Void, rot_z(30.0))] }).unwrap();
-    m.add_instance(InstanceRow { of: Fill::Cluster(c), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None }).unwrap();
+    let c = m.add_cluster(Cluster::new(vec![member(Fill::Void, rot_z(30.0))])).unwrap();
+    m.add_instance(InstanceRow::new(Fill::Cluster(c), Transform::IDENTITY)).unwrap();
     let ins = m.instancing().clone();
     let s = serde_json::to_string(&ins).unwrap();
     let back: Instancing = serde_json::from_str(&s).unwrap();

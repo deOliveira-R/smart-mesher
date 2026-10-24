@@ -72,7 +72,7 @@ A coarse mesh is an independent mesh over the same model; no classification equa
 - A template cell built from loops gets *a* valid corner order (first match of a fixed search); symmetric shapes have several.
 - Face dedup in the builder is by vertex set + cyclic order; twisted duplicates are separate faces.
 - Dimension-2 (surface) meshes are modelled (above); 1D and RZ meshes are not. Dimension-3 faces need >= 3 vertices, dimension-2 facets exactly 2.
-- Adding `CellShape::{Tri, Quad, Polygon}` and `FaceShape::Segment` breaks exhaustive matches downstream (the enums are not `non_exhaustive`); `CellShape::is_general` and `CellShape::dim` cover most uses.
+- Adding `CellShape::{Tri, Quad, Polygon}` and `FaceShape::Segment` broke exhaustive matches downstream. Since W0g both enums are `#[non_exhaustive]` (see "W0g freeze rules"), so later shapes are additive; downstream matches need a wildcard arm, and `CellShape::is_general` and `CellShape::dim` cover most uses.
 - Inactive parents keep their faces; consumers filter by `cell_active` (the faces of a refined parent are not marked inactive).
 - Non-conformal interface records, partition-local views (ghosts) and refinement edits belong to later crates; only `FaceKind` slots and lineage columns are reserved.
 - No `rayon` here: all algorithms are sequential and deterministic (`BTreeMap`/sorted vectors, no hash-order dependence), so 1 thread and N threads are trivially identical.
@@ -136,3 +136,24 @@ A coarse mesh is an independent mesh over the same model; no classification equa
   is the product of the deck elements whose bits are set in `k`, in deck order, so callers can
   join images to model copy references. Tested: an R90 deck and a mirror + diagonal mirror are
   rejected (allocator untouched); orthogonal mirrors and a mirror + half turn unfold as before.
+
+## W0g freeze rules
+
+- **`#[non_exhaustive]` enums**: `FaceKind`, `TagValues`, `LossKind`, `Selector`, `CellShape`,
+  `FaceShape`, `Param` (joining `SetMembers`). Serde shapes and hash discriminants are unchanged;
+  a new variant takes the next discriminant. `MeshDim` stays exhaustive (1D/RZ would be a new
+  contract, not a variant).
+- **Implementer-built return structs are `#[non_exhaustive]` with constructors**, so implementors
+  of the required `MeshRead::coords` / `MeshRead::columns` and `MeshBuild::add_cell` /
+  `MeshBuild::finish` can build them while fields can still grow: `Coords::new(x, y, z)`,
+  `TopologyColumns::new(..6 slices)`, `CellAdded::new(cell, faces, reused)`,
+  `Finished::new(mesh, face_remap)`. Fields stay `pub` for reading.
+- **Persisted / option structs are `#[non_exhaustive]` with constructors**: `MeshSet::new(id,
+  name, members)` (+ `with_label`), `TagColumn::new(name, target, values)`,
+  `Instance::new(id, prototype, transform)`, `InstancedView::new(id, instances)`,
+  `LossNote::new(instance, what)`, `GeometryCache::new(rule, connectivity_hash,
+  coordinate_hash)` (value columns filled afterwards), `HighOrderCell::new(degree, basis, nodes)`,
+  and `FlattenOptions::new()` / `Default` with `with_weld_tol`, `with_remap_class`,
+  `with_on_merge`.
+- **Every field added to a persisted struct after the freeze must be `#[serde(default)]`**
+  (as `MeshSet::label` already is), so data written before it still reads.

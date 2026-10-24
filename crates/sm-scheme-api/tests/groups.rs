@@ -31,13 +31,7 @@ fn group_intent(ids: &[sm_topo_api::fixtures::BrickIds], extra: serde_json::Valu
         p.extend(e.clone());
     }
     let mut intent = MeshIntent::default();
-    intent.groups.push(MeshGroup {
-        id: GroupId(1),
-        members: sel,
-        scheme: Some(SchemeChoice::with_params("msweep", params, Firmness::Hard)),
-        fallbacks: Vec::new(),
-        conversion: None,
-    });
+    intent.groups.push(MeshGroup::new(GroupId(1), sel).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
     intent
 }
 
@@ -60,12 +54,7 @@ fn many_to_one_sweep_matches_intervals_across_three_volumes() {
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel: Vec<EntityId> = ids.iter().map(|b| b.volume).collect();
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = group_intent(&ids, serde_json::json!({ "layers": 8 }));
     counted(&ids, &mut intent, [2, 3]);
     let out = driver
@@ -159,12 +148,7 @@ fn infeasible_path_sum_names_the_group_scheme() {
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel: Vec<EntityId> = ids.iter().map(|b| b.volume).collect();
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = group_intent(&ids, serde_json::json!({ "layers": 4 }));
     counted(&ids, &mut intent, [2, 3]); // 2 + 3 > 4: impossible for any positive middle count
     match driver.plan(&input, &intent) {
@@ -189,12 +173,7 @@ fn failing_group_leaves_the_allocator_and_later_meshes_untouched() {
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel: Vec<EntityId> = ids.iter().map(|b| b.volume).collect();
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let state = |a: &SerialAlloc| a.state().collect::<Vec<_>>();
     let good = {
         let mut intent = group_intent(&ids, serde_json::json!({}));
@@ -303,12 +282,7 @@ fn a_mesh_that_fails_verification_is_rejected_and_replanned() {
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel: Vec<EntityId> = ids.iter().map(|b| b.volume).collect();
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = group_intent(&ids, serde_json::json!({}));
     counted(&ids, &mut intent, [1, 1]);
     let out = driver
@@ -400,12 +374,7 @@ fn standalone_transforms_run_after_their_writers_and_commit_atomically() {
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, brick_sweep(&ids));
     intent.set_intervals(ids.edges[8], Firm::hard(IntervalRequest::Count(2)));
@@ -427,11 +396,7 @@ fn standalone_transforms_run_after_their_writers_and_commit_atomically() {
         )
     };
     // A transform job is scheduled after the volume and a no-op leaves the mesh bit-identical.
-    intent.transforms.push(TransformIntent {
-        id: TransformId(1),
-        targets: vec![ids.volume],
-        transform: SchemeChoice::new("noop", Firmness::Hard),
-    });
+    intent.transforms.push(TransformIntent::new(TransformId(1), vec![ids.volume], SchemeChoice::new("noop", Firmness::Hard)));
     let noop = driver
         .mesh(
             &input,
@@ -519,22 +484,14 @@ fn a_decomposition_piece_is_meshed_and_classified_on_its_cell() {
     model
         .set_shape(
             cell,
-            PieceShape::Sweep {
-                source: vec![PieceFace::Whole(ids[0].faces[0])],
-                target: vec![PieceFace::Whole(ids[1].faces[1])],
-            },
+            PieceShape::sweep(vec![PieceFace::Whole(ids[0].faces[0])], vec![PieceFace::Whole(ids[1].faces[1])]),
         )
         .expect("shape");
     let reg = registry();
     let (solver, picker) = solver_parts();
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [cell];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     assert_eq!(
         input
             .piece_faces(Target::Volume(cell))

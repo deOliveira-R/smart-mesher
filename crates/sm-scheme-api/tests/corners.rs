@@ -76,12 +76,7 @@ fn map_picks_vertex_types_per_face_use() {
     let driver = Driver::new(&reg, &solver, &picker);
     let model = Model::new();
     let sel = [f.ids.volume];
-    let input = MeshInput {
-        topo: &f.topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&f.topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(f.ids.volume, SchemeChoice::new("mapvol", Firmness::Hard));
     let plan = driver.plan(&input, &intent).expect("plan");
@@ -171,12 +166,7 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
     let driver = Driver::new(&reg, &solver, &picker);
     let model = Model::new();
     let sel = [f.ids.volume];
-    let input = MeshInput {
-        topo: &f.topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&f.topo, &model, &WholeFaces, &sel);
     let face = f.ids.faces[4];
     // Only this face constrains its edges: the others are triangulated, the volume imposes nothing.
     let mut intent = MeshIntent::default();
@@ -200,14 +190,8 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
     // Override: the geometric corner at the origin becomes a Side and the middle vertex an End.
     let x = corner_at(&f, face, f.ids.vertices[0]);
     let m = corner_at(&f, face, f.mid);
-    intent.corners.push(CornerIntent {
-        corner: x,
-        vertex_type: Firm::hard(VertexType::Side),
-    });
-    intent.corners.push(CornerIntent {
-        corner: m,
-        vertex_type: Firm::hard(VertexType::End),
-    });
+    intent.corners.push(CornerIntent::new(x, Firm::hard(VertexType::Side)));
+    intent.corners.push(CornerIntent::new(m, Firm::hard(VertexType::End)));
     let plan = driver.plan(&input, &intent).expect("plan with overrides");
     let layout = plan.layout(face).expect("layout");
     let get = |k: CornerKey| {

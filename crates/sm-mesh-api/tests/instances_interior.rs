@@ -9,10 +9,7 @@ use sm_mesh_api::*;
 fn welded_vertices_that_become_interior_are_reclassified_on_the_volume() {
     let mut alloc = SerialAlloc::new();
     let m = hex_block([1, 1, 2], [1.0; 3], &mut alloc).unwrap();
-    let opts = FlattenOptions {
-        weld_tol: Some(1e-9),
-        ..FlattenOptions::default()
-    };
+    let opts = FlattenOptions::new().with_weld_tol(1e-9);
     let (u, _) = unfold(
         &m,
         &[mirror_x(0.0), mirror_y(0.0)],

@@ -210,7 +210,7 @@ mod serde_checks {
         assert_eq!(format!("{:?}", back.decomposition()), format!("{:?}", m.decomposition()));
         assert_eq!(back.decomposition().piece_face_cells(&PieceFace::Part { face: b.faces[2], piece: p }, &ov), m.decomposition().piece_face_cells(&PieceFace::Part { face: b.faces[2], piece: p }, &ov));
         // A sweep hint naming a cut id that was never issued is rejected on load.
-        m.set_shape(n, PieceShape::Sweep { source: vec![PieceFace::Whole(b.faces[0])], target: vec![PieceFace::Cut { cut: CutId(41), side: Keep::Negative }] }).unwrap();
+        m.set_shape(n, PieceShape::sweep(vec![PieceFace::Whole(b.faces[0])], vec![PieceFace::Cut { cut: CutId(41), side: Keep::Negative }])).unwrap();
         let s = serde_json::to_string(&m).unwrap();
         let e = serde_json::from_str::<Model>(&s).unwrap_err().to_string();
         assert!(e.contains("cut serial"), "{e}");

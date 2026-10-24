@@ -20,6 +20,7 @@ use std::sync::Arc;
 /// `"empty"`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Rev {
     /// The empty state, before any op (detached).
     Empty,
@@ -31,6 +32,7 @@ pub enum Rev {
 
 /// What replay does when a node's recorded result hash differs from the recomputed one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReplayPolicy {
     /// Fail with [`TimelineError::Diverged`]. Determinism is a binding rule, so this is the default.
     #[default]

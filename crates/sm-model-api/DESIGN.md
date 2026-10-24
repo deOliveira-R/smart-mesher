@@ -328,3 +328,27 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   after the overrides) only when there are any, and `Fill::Cluster` / `PathStep::Member` use the
   new tags 4 / 3, so models without clusters keep their words. A rotated lattice slot is a
   one-member cluster (no `Slot::at`).
+
+## 9. W0g freeze rules
+
+- **`#[non_exhaustive]` enums**: `Deck`, `InterfaceIntent`, `BoundaryKind`, `FaceRole`,
+  `FaceKindView`, `CutGeometry`, `PieceFace`, `PieceShape`, `Layout`, `Provenance`,
+  `CandidateKind`, `Verification`. Serde shapes and `canonical_visit` tags are unchanged; a new
+  variant takes the next tag. Matches outside this crate need a wildcard arm (the planner's
+  `PieceShape` hint match has one: an unknown hint adds no candidate).
+- **Struct variants expected to grow are `#[non_exhaustive]`** and have constructors:
+  `Deck::Rotation` (`Deck::rotation(axis, angle)`), `InterfaceIntent::NonConformal`
+  (`InterfaceIntent::non_conformal(transform)`) and `PieceShape::Sweep`
+  (`PieceShape::sweep(source, target)`). Patterns outside the crate end in `..`.
+- **Row and input structs are `#[non_exhaustive]` with constructors** (fields stay `pub`):
+  `Slot::new(fill)`, `ClusterMember::new(fill, at)` and `InstanceRow::new(fill, at)` (each with
+  `with_recolor` / `with_clip`), `Lattice::new(layout, origin, outer, slots)`,
+  `Cluster::new(members)`, `Prototype::new(volumes)`, `PathOverride::new(prefix, recolor)`,
+  `Instancing::new()`, `FlatEntry::new(..)`, `FlatClip::new(..)`, `FlatModel::new(..)`,
+  `Piece::new(id, volume, faces, shape)` (+ `with_members`), `SplitRec::new(..)`,
+  `CutCells::new(..)`, `ColorRow::new(..)`, `GroupRow::new(..)`, `BoundaryRow::new(id, name,
+  kind)`, `CutSpec::new(deck, keep, origin)`, `CutPlan::new(..)`, `Symmetry::new(..)`,
+  `DetectionResult::new(..)`, `Issue::new(..)`, `Report::new(issues)`.
+- **Every field added to a persisted row after the freeze must be `#[serde(default)]`** (as
+  `Slot::clip`, `InstanceRow::clip` and `Instancing::clusters` already are), so stored models
+  still read.

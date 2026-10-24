@@ -24,6 +24,7 @@ use std::sync::Mutex;
 
 /// Driver options.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct DriverOptions {
     /// Maximum number of re-plans after failures a different scheme could avoid.
     pub max_replans: usize,
@@ -32,6 +33,28 @@ pub struct DriverOptions {
     /// Tolerance of copy redundancy checks and verification (default: the model's linear
     /// tolerance).
     pub copy_tolerance: Option<f64>,
+}
+
+impl DriverOptions {
+    /// The defaults (16 re-plans, no edge classification, model tolerance for copies).
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set the maximum number of re-plans.
+    pub fn with_max_replans(mut self, n: usize) -> Self {
+        self.max_replans = n;
+        self
+    }
+    /// Classify mesh edges on curves (or not).
+    pub fn with_classify_edges(mut self, on: bool) -> Self {
+        self.classify_edges = on;
+        self
+    }
+    /// Set the copy tolerance.
+    pub fn with_copy_tolerance(mut self, tol: f64) -> Self {
+        self.copy_tolerance = Some(tol);
+        self
+    }
 }
 
 impl Default for DriverOptions {

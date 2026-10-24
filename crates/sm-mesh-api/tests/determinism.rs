@@ -13,10 +13,7 @@ fn build() -> (ReferenceMesh, u64, u64) {
         &m,
         &[mirror_x(0.0), mirror_y(0.0)],
         ReferenceBuilder::new(),
-        &FlattenOptions {
-            weld_tol: Some(1e-9),
-            ..FlattenOptions::default()
-        },
+        &FlattenOptions::new().with_weld_tol(1e-9),
         &mut alloc,
     )
     .unwrap();

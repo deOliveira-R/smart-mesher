@@ -36,7 +36,7 @@ fn plan_with(size: [f64; 3], f: impl FnOnce(&sm_topo_api::fixtures::BrickIds, &m
     let mut driver = Driver::new(&reg, &solver, &picker);
     driver.size = field;
     let sel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, sweep_z(&ids));
     f(&ids, &mut intent);

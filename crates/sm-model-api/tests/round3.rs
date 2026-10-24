@@ -25,13 +25,14 @@ fn plane_x(x: f64) -> CutGeometry {
 #[test]
 fn a_wedge_must_be_a_primitive_one_over_n_turn() {
     let axis = Axis::new(p3(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-    let rot = |n, d| CutSpec { deck: Deck::Rotation { axis, angle: Turns::new(n, d).unwrap() }, keep: Keep::Positive, origin: p3(1.0, 0.0, 0.0) };
+    let rot = |n, d| CutSpec::new(Deck::rotation(axis, Turns::new(n, d).unwrap()), Keep::Positive, p3(1.0, 0.0, 0.0));
     assert!(matches!(plan_cut(&rot(2, 5)), Err(ModelError::Invalid(_))));
     assert!(plan_cut(&rot(1, 5)).is_ok());
     // A hand-built plan for the bad deck is refused by apply_cut.
-    let forged = CutPlan { spec: rot(2, 5), ..plan_cut(&rot(1, 5)).unwrap() };
+    let mut forged = plan_cut(&rot(1, 5)).unwrap();
+    forged.spec = rot(2, 5);
     let (t, mut m, _b) = colored_brick([1.0; 3]);
-    let out = CutOutcome { lineage: vec![], caps: vec![] };
+    let out = CutOutcome::default();
     assert!(matches!(m.apply_cut(&forged, &out, None, &t), Err(ModelError::Invalid(_))));
 }
 
@@ -88,7 +89,7 @@ mod serde_tamper {
     fn a_stored_deck_that_fails_its_check_is_refused_on_load() {
         let (_t, mut m, _b) = split_model();
         let axis = Axis::new(p3(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
-        m.add_boundary("r", BoundaryKind::Deck(Deck::Rotation { axis, angle: Turns::new(1, 6).unwrap() })).unwrap();
+        m.add_boundary("r", BoundaryKind::Deck(Deck::rotation(axis, Turns::new(1, 6).unwrap()))).unwrap();
         let s = serde_json::to_string(&m).unwrap();
         assert!(serde_json::from_str::<Model>(&s).is_ok());
         let bad = s.replace("\"den\":6", &format!("\"den\":{}", u32::MAX));

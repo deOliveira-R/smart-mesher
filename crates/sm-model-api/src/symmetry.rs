@@ -39,6 +39,7 @@ pub enum Keep {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct CutSpec {
     /// The deck of the cut: a mirror plane, a translation (slab) or a rotation (wedge).
     pub deck: Deck,
@@ -49,10 +50,18 @@ pub struct CutSpec {
     pub origin: Point3,
 }
 
+impl CutSpec {
+    /// A cut-and-keep request.
+    pub fn new(deck: Deck, keep: Keep, origin: Point3) -> Self {
+        Self { deck, keep, origin }
+    }
+}
+
 /// The geometry the kernel must produce, derived purely from a [`CutSpec`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct CutPlan {
     /// Half-spaces whose intersection is the kept chamber. Each plane's normal points **into**
     /// the kept region (kept: `n . x >= offset`).
@@ -62,6 +71,13 @@ pub struct CutPlan {
     pub roles: SmallVec<[DeckSide; 2]>,
     /// The request.
     pub spec: CutSpec,
+}
+
+impl CutPlan {
+    /// A cut plan (normally produced by [`plan_cut`]).
+    pub fn new(half_spaces: SmallVec<[Plane; 2]>, roles: SmallVec<[DeckSide; 2]>, spec: CutSpec) -> Self {
+        Self { half_spaces, roles, spec }
+    }
 }
 
 /// Plan a cut. Mirror: one half-space. Translation: a slab of thickness `|vector|`. Rotation: a
@@ -137,6 +153,7 @@ fn check_plan_shape(plan: &CutPlan) -> Result<()> {
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Symmetry {
     /// Generators: `Boundary` ids whose kind is a deck, in declaration order.
     pub generators: Vec<EntityId>,
@@ -144,10 +161,18 @@ pub struct Symmetry {
     pub domain: BTreeSet<EntityId>,
 }
 
+impl Symmetry {
+    /// A symmetry record.
+    pub fn new(generators: Vec<EntityId>, domain: BTreeSet<EntityId>) -> Self {
+        Self { generators, domain }
+    }
+}
+
 /// How a symmetry statement entered the model. The log is append-only.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Provenance {
     /// Stated by the user.
     Declared,

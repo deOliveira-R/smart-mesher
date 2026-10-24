@@ -70,6 +70,7 @@ impl VertexType {
 /// What a surface scheme needs from the corners of its face. Contributed in the requirements
 /// phase and solved by the [`crate::CornerPicker`] before intervals are assembled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum VertexRule {
     /// No corner structure needed (pave, tri*). Types are still classified for reporting.
     Free,

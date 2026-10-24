@@ -105,7 +105,7 @@ fn rot_z90() -> Transform {
 fn unfold_rejects_decks_that_are_not_commuting_involutions() {
     let mut alloc = SerialAlloc::new();
     let m = hex_block([1, 1, 1], [1.0; 3], &mut alloc).unwrap();
-    let o = FlattenOptions { weld_tol: Some(1e-9), ..FlattenOptions::default() };
+    let o = FlattenOptions::new().with_weld_tol(1e-9);
     let before = alloc.clone();
     // A quarter turn is not an involution.
     let r = unfold(&m, &[rot_z90()], ReferenceBuilder::new(), &o, &mut alloc);

@@ -18,16 +18,20 @@ use std::collections::BTreeMap;
 
 /// Whether a scheme can mesh a target, with a score for automatic selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Applicability {
     /// Applicable. Higher scores win auto selection (ties: auto-list order, then name).
     /// Convention: 100 = exact fit (map on a 4-sided face), 50 = workable, 10 = last resort.
+    /// Build it with [`Applicability::yes`]; it may gain fields.
+    #[non_exhaustive]
     Applicable {
         /// Score.
         score: u32,
         /// Why (shown in the plan).
         reason: String,
     },
-    /// Not applicable.
+    /// Not applicable. Build it with [`Applicability::no`]; it may gain fields.
+    #[non_exhaustive]
     NotApplicable {
         /// Why not.
         reason: String,
@@ -175,6 +179,7 @@ impl PieceResolver for WholeFaces {
 /// Everything the driver meshes from: topology (possibly a decomposition overlay), the
 /// model (colors, decks, pieces) and the selected pieces.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct MeshInput<'a> {
     /// The topology view.
     pub topo: &'a dyn TopologyView,
@@ -188,7 +193,12 @@ pub struct MeshInput<'a> {
     pub selection: &'a [EntityId],
 }
 
-impl MeshInput<'_> {
+impl<'a> MeshInput<'a> {
+    /// The input of one meshing run.
+    pub fn new(topo: &'a dyn TopologyView, model: &'a Model, pieces: &'a dyn PieceResolver, selection: &'a [EntityId]) -> Self {
+        Self { topo, model, pieces, selection }
+    }
+
     /// Faces of a volume target (via the resolver).
     pub fn piece_faces(&self, t: Target) -> Result<Vec<EntityId>> {
         let p = t
@@ -246,6 +256,7 @@ impl MeshInput<'_> {
 }
 
 /// Context of the applicability and requirements phases.
+#[non_exhaustive]
 pub struct PlanCtx<'a> {
     /// The input.
     pub input: &'a MeshInput<'a>,
@@ -253,7 +264,15 @@ pub struct PlanCtx<'a> {
     pub intent: &'a MeshIntent,
 }
 
+impl<'a> PlanCtx<'a> {
+    /// The applicability/requirements context.
+    pub fn new(input: &'a MeshInput<'a>, intent: &'a MeshIntent) -> Self {
+        Self { input, intent }
+    }
+}
+
 /// Context of the interval phase: corner layouts and roles are solved.
+#[non_exhaustive]
 pub struct IntervalCtx<'a> {
     /// The input.
     pub input: &'a MeshInput<'a>,
@@ -266,7 +285,11 @@ pub struct IntervalCtx<'a> {
     pub targets: &'a [TargetPlan],
 }
 
-impl IntervalCtx<'_> {
+impl<'a> IntervalCtx<'a> {
+    /// The interval-phase context.
+    pub fn new(input: &'a MeshInput<'a>, layouts: &'a [FaceLayout], roles: &'a [(Target, Role)], targets: &'a [TargetPlan]) -> Self {
+        Self { input, layouts, roles, targets }
+    }
     /// Layout of `face`.
     pub fn layout(&self, face: EntityId) -> Option<&FaceLayout> {
         self.layouts
@@ -317,6 +340,7 @@ pub struct BoundaryLoop {
 
 /// Context of the generation phase: the solved plan and every patch of earlier waves.
 /// Read-only; a scheme returns its patch and never touches the mesh.
+#[non_exhaustive]
 pub struct GenCtx<'a> {
     /// The input.
     pub input: &'a MeshInput<'a>,
@@ -330,7 +354,12 @@ pub struct GenCtx<'a> {
     pub size: Option<&'a dyn SizeField>,
 }
 
-impl GenCtx<'_> {
+impl<'a> GenCtx<'a> {
+    /// The generation-phase context.
+    pub fn new(input: &'a MeshInput<'a>, plan: &'a Plan, patches: &'a PatchSet, size: Option<&'a dyn SizeField>) -> Self {
+        Self { input, plan, patches, size }
+    }
+
     /// Solved interval count of `edge`.
     pub fn intervals(&self, edge: EntityId) -> Option<u32> {
         self.plan.intervals(edge)

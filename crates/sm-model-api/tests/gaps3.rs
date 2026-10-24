@@ -44,12 +44,7 @@ fn group_of_a_hidden_top_face_yields_live_overlay_faces_and_chord_vertices() {
 
 fn lattice_model(pitch: f64, offset: f64) -> Model {
     let mut m = Model::new();
-    m.add_lattice(Lattice {
-        layout: Layout::Hex { rings: 2, pitch, orient: HexOrient::XRows, nz: 1, dz: 1.0 },
-        origin: sm_core::Transform::translation(Vector3::new(offset, 0.0, 0.0)),
-        outer: Fill::Void,
-        slots: Default::default(),
-    })
+    m.add_lattice(Lattice::new(Layout::Hex { rings: 2, pitch, orient: HexOrient::XRows, nz: 1, dz: 1.0 }, sm_core::Transform::translation(Vector3::new(offset, 0.0, 0.0)), Fill::Void, Default::default()))
     .unwrap();
     m.add_boundary("mirror", BoundaryKind::Deck(Deck::Mirror { plane: Plane::new(Vector3::new(0.0, 0.0, 1.0), offset).unwrap() })).unwrap();
     m.add_group("named", &[]).unwrap();

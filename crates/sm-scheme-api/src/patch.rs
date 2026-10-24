@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 
 /// Shape of one patch element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum ElemShape {
     /// Two nodes (curve patches).
     Segment,

@@ -48,6 +48,7 @@ pub enum PieceRef {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum CutGeometry {
     /// A plane.
     Plane(Plane),
@@ -67,6 +68,7 @@ pub struct CutId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum PieceFace {
     /// A model face wholly on this piece's boundary.
     Whole(EntityId),
@@ -111,11 +113,14 @@ impl PieceFace {
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum PieceShape {
     /// No assertion; the mesher decides.
     #[default]
     Any,
-    /// Sweepable between source and target faces (which must not share an edge).
+    /// Sweepable between source and target faces (which must not share an edge). Build it with
+    /// [`PieceShape::sweep`]; it may gain fields.
+    #[non_exhaustive]
     Sweep {
         /// Source faces (meshed first).
         source: Vec<PieceFace>,
@@ -126,10 +131,18 @@ pub enum PieceShape {
     Map,
 }
 
+impl PieceShape {
+    /// A sweep from `source` to `target` faces.
+    pub fn sweep(source: Vec<PieceFace>, target: Vec<PieceFace>) -> Self {
+        PieceShape::Sweep { source, target }
+    }
+}
+
 /// Row of the piece table. There is no color field.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Piece {
     /// The `PartitionCell` id.
     pub id: EntityId,
@@ -143,10 +156,23 @@ pub struct Piece {
     pub members: Vec<PieceRef>,
 }
 
+impl Piece {
+    /// A piece row of `volume` with its bounding faces and shape class (no composite members).
+    pub fn new(id: EntityId, volume: EntityId, faces: Vec<PieceFace>, shape: PieceShape) -> Self {
+        Self { id, volume, faces, shape, members: Vec::new() }
+    }
+    /// Set the composite members.
+    pub fn with_members(mut self, members: Vec<PieceRef>) -> Self {
+        self.members = members;
+        self
+    }
+}
+
 /// A recorded split.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct SplitRec {
     /// `[negative side, positive side]`, the negative one with the lower id.
     pub children: [EntityId; 2],
@@ -156,10 +182,18 @@ pub struct SplitRec {
     pub geometry: CutGeometry,
 }
 
+impl SplitRec {
+    /// A split record.
+    pub fn new(children: [EntityId; 2], cut: CutId, geometry: CutGeometry) -> Self {
+        Self { children, cut, geometry }
+    }
+}
+
 /// The topology-overlay cells a realized cut created or changed (see [`Model::split_realized`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct CutCells {
     /// The virtual cut face(s) (`PartitionFace`; one for a plane cut).
     pub faces: Vec<EntityId>,
@@ -172,6 +206,19 @@ pub struct CutCells {
     pub split_faces: Vec<(EntityId, [EntityId; 2])>,
     /// Edges the cut partitioned: `(edge, new virtual vertex, halves in edge order)`.
     pub split_edges: Vec<(EntityId, EntityId, [EntityId; 2])>,
+}
+
+impl CutCells {
+    /// The cells of a realized cut.
+    pub fn new(
+        faces: Vec<EntityId>,
+        edges: Vec<EntityId>,
+        vertices: Vec<EntityId>,
+        split_faces: Vec<(EntityId, [EntityId; 2])>,
+        split_edges: Vec<(EntityId, EntityId, [EntityId; 2])>,
+    ) -> Self {
+        Self { faces, edges, vertices, split_faces, split_edges }
+    }
 }
 
 /// The piece tables (part of the [`Model`], serializable).

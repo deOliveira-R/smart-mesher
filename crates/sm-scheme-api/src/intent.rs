@@ -116,6 +116,7 @@ impl Params {
 /// A scheme request: name, parameters and firmness.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct SchemeChoice {
     /// Scheme name.
     pub name: SchemeName,
@@ -150,6 +151,7 @@ impl SchemeChoice {
 /// An interval request on a curve.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum IntervalRequest {
     /// Exactly this many intervals (`Hard`: fixed; `Soft` / `Default`: a preferred count).
     Count(u32),
@@ -162,6 +164,7 @@ pub enum IntervalRequest {
 /// anything that is not a face (curve boundary layers do not exist yet).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct BoundaryLayerIntent {
     /// First layer thickness.
     pub first: f64,
@@ -194,6 +197,7 @@ impl BoundaryLayerIntent {
 /// Everything asked for one entity (edge, face, volume or piece).
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct EntityIntent {
     /// The scheme, if chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,9 +213,37 @@ pub struct EntityIntent {
     pub boundary_layer: Option<BoundaryLayerIntent>,
 }
 
+impl EntityIntent {
+    /// An empty request.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set the scheme.
+    pub fn with_scheme(mut self, choice: SchemeChoice) -> Self {
+        self.scheme = Some(choice);
+        self
+    }
+    /// Set the fallback chain.
+    pub fn with_fallbacks(mut self, fallbacks: Vec<SchemeChoice>) -> Self {
+        self.fallbacks = fallbacks;
+        self
+    }
+    /// Set the interval request.
+    pub fn with_intervals(mut self, req: Firm<IntervalRequest>) -> Self {
+        self.intervals = Some(req);
+        self
+    }
+    /// Set the boundary-layer request.
+    pub fn with_boundary_layer(mut self, bl: BoundaryLayerIntent) -> Self {
+        self.boundary_layer = Some(bl);
+        self
+    }
+}
+
 /// A user vertex-type override on one face corner.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct CornerIntent {
     /// The corner.
     pub corner: CornerKey,
@@ -219,10 +251,18 @@ pub struct CornerIntent {
     pub vertex_type: Firm<VertexType>,
 }
 
+impl CornerIntent {
+    /// A vertex-type override on `corner`.
+    pub fn new(corner: CornerKey, vertex_type: Firm<VertexType>) -> Self {
+        Self { corner, vertex_type }
+    }
+}
+
 /// Volumes meshed together by one scheme invocation and committed all-or-nothing:
 /// multisweep, polyhedral assemblies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct MeshGroup {
     /// Group id (unique within the intent).
     pub id: GroupId,
@@ -243,6 +283,23 @@ pub struct MeshGroup {
     pub conversion: Option<SchemeChoice>,
 }
 
+impl MeshGroup {
+    /// A group of `members` with no scheme chosen yet.
+    pub fn new(id: GroupId, members: Vec<EntityId>) -> Self {
+        Self { id, members, scheme: None, fallbacks: Vec::new(), conversion: None }
+    }
+    /// Set the group scheme.
+    pub fn with_scheme(mut self, choice: SchemeChoice) -> Self {
+        self.scheme = Some(choice);
+        self
+    }
+    /// Set the fallback chain.
+    pub fn with_fallbacks(mut self, fallbacks: Vec<SchemeChoice>) -> Self {
+        self.fallbacks = fallbacks;
+        self
+    }
+}
+
 /// A standalone mesh transform: a **topology-preserving patch edit** (smoothing, node
 /// snapping, reclassification of a generated patch) through a registered
 /// [`crate::MeshTransform`]. Targets are pieces and, W0f gaps 2, faces and curves inside the
@@ -255,6 +312,7 @@ pub struct MeshGroup {
 /// transforms: they are IR -> IR passes over `MeshRead -> MeshBuild` (see `DESIGN.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct TransformIntent {
     /// Id (unique within the intent, below [`TransformId::GROUP_BASE`]).
     pub id: TransformId,
@@ -266,10 +324,18 @@ pub struct TransformIntent {
     pub transform: SchemeChoice,
 }
 
+impl TransformIntent {
+    /// A transform over `targets`.
+    pub fn new(id: TransformId, targets: Vec<EntityId>, transform: SchemeChoice) -> Self {
+        Self { id, targets, transform }
+    }
+}
+
 /// A sizing function (Cubit: constant, curvature, linear, interval, inverse, super, bias,
 /// field-from-file, geometry-adaptive). Built into a [`crate::SizeField`] by the sizing layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum SizingSpec {
     /// The same size everywhere.
     Constant {
@@ -292,6 +358,7 @@ pub enum SizingSpec {
 /// dimension".
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct AutoPolicy {
     /// Curve candidates.
     #[serde(default)]
@@ -304,9 +371,17 @@ pub struct AutoPolicy {
     pub volume: Vec<SchemeName>,
 }
 
+impl AutoPolicy {
+    /// Candidate lists per dimension (empty = registry auto list).
+    pub fn new(curve: Vec<SchemeName>, surface: Vec<SchemeName>, volume: Vec<SchemeName>) -> Self {
+        Self { curve, surface, volume }
+    }
+}
+
 /// Model-wide defaults.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Defaults {
     /// Default sizing (none: every curve gets a goal of one interval).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,6 +389,23 @@ pub struct Defaults {
     /// Auto-selection candidates (a non-empty list overrides the registry's auto list).
     #[serde(default)]
     pub auto: AutoPolicy,
+}
+
+impl Defaults {
+    /// No sizing, registry auto lists.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set the default sizing.
+    pub fn with_sizing(mut self, sizing: SizingSpec) -> Self {
+        self.sizing = Some(sizing);
+        self
+    }
+    /// Set the auto-selection candidates.
+    pub fn with_auto(mut self, auto: AutoPolicy) -> Self {
+        self.auto = auto;
+        self
+    }
 }
 
 /// The whole meshing intent of a model (the Intent layer of `docs/design/ir.md` section 5).
@@ -324,6 +416,7 @@ pub struct Defaults {
 /// of the intent; it is stored in the `Plan`.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct MeshIntent {
     /// Per-entity requests.
     #[serde(default)]
@@ -349,6 +442,11 @@ pub struct MeshIntent {
 }
 
 impl MeshIntent {
+    /// An empty intent.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// The request for `id`, creating an empty one.
     pub fn entity_mut(&mut self, id: EntityId) -> &mut EntityIntent {
         self.entities.entry(id).or_default()

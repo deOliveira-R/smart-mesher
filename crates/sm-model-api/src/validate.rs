@@ -105,6 +105,7 @@ impl IssueCode {
 /// One finding.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct Issue {
     /// What kind of issue.
     pub code: IssueCode,
@@ -116,15 +117,28 @@ pub struct Issue {
     pub detail: String,
 }
 
+impl Issue {
+    /// An issue.
+    pub fn new(code: IssueCode, severity: Severity, entities: SmallVec<[EntityId; 2]>, detail: impl Into<String>) -> Self {
+        Self { code, severity, entities, detail: detail.into() }
+    }
+}
+
 /// The findings of a validation, sorted by `(code, entities, detail)`.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct Report {
     /// The issues.
     pub issues: Vec<Issue>,
 }
 
 impl Report {
+    /// A report of `issues` (kept in the given order).
+    pub fn new(issues: Vec<Issue>) -> Self {
+        Self { issues }
+    }
+
     /// True if there is no error (warnings are allowed).
     pub fn is_ok(&self) -> bool {
         self.issues.iter().all(|i| i.severity != Severity::Error)

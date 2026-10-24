@@ -111,6 +111,7 @@ impl SetMembers {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct MeshSet {
     /// Stable id (`EntityKind::MeshSet`, minted by the mesh layer).
     pub id: EntityId,
@@ -124,10 +125,23 @@ pub struct MeshSet {
     pub members: SetMembers,
 }
 
+impl MeshSet {
+    /// A set without a label.
+    pub fn new(id: EntityId, name: impl Into<String>, members: SetMembers) -> Self {
+        Self { id, name: name.into(), label: None, members }
+    }
+    /// Set the integer label.
+    pub fn with_label(mut self, label: i64) -> Self {
+        self.label = Some(label);
+        self
+    }
+}
+
 /// Values of a tag column: one per entity, in dense index order.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum TagValues {
     /// Integer values (material ids, block ids, flags).
     I64(Vec<i64>),
@@ -168,6 +182,7 @@ impl TagValues {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct TagColumn {
     /// Name, unique per target kind.
     pub name: String,
@@ -175,4 +190,11 @@ pub struct TagColumn {
     pub target: MeshEntityKind,
     /// One value per entity of `target`, in dense index order.
     pub values: TagValues,
+}
+
+impl TagColumn {
+    /// A column over the entities of `target`.
+    pub fn new(name: impl Into<String>, target: MeshEntityKind, values: TagValues) -> Self {
+        Self { name: name.into(), target, values }
+    }
 }

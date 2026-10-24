@@ -10,7 +10,7 @@
 use core::f64::consts::PI;
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_model_api::{
-    BoundaryKind, ColorMap, CutSpec, Deck, Domain, Fill, InstanceRow, Keep, Lattice, Layout, Model, ModelError, Plane, Tolerance, plan_cut,
+    BoundaryKind, CutSpec, Deck, Domain, Fill, InstanceRow, Keep, Lattice, Layout, Model, ModelError, Plane, Tolerance, plan_cut,
 };
 use sm_topo_api::fixtures::{self, FixtureError, with_op};
 use sm_topo_api::{CellComplex, OpId, TopologyEdit, TopologyView, TopologyViewExt};
@@ -160,13 +160,8 @@ pub fn pin_lattice_stub() -> Result<ModelFixture, BuildError> {
     m.color_volumes(clad, &[clad_v.volume])?;
     finish_boundaries(&mut m, &t, 7)?;
     let pin = m.add_prototype(&[clad_v.volume, fuel_v.volume])?;
-    let lat = m.add_lattice(Lattice {
-        layout: Layout::Cartesian { n: [3, 3, 1], pitch: Vector3::new(1.26, 1.26, 0.0) },
-        origin: Transform::IDENTITY,
-        outer: Fill::Prototype(pin),
-        slots: BTreeMap::new(),
-    })?;
-    m.add_instance(InstanceRow { of: Fill::Lattice(lat), at: Transform::IDENTITY, recolor: ColorMap::default(), clip: None })?;
+    let lat = m.add_lattice(Lattice::new(Layout::Cartesian { n: [3, 3, 1], pitch: Vector3::new(1.26, 1.26, 0.0) }, Transform::IDENTITY, Fill::Prototype(pin), BTreeMap::new()))?;
+    m.add_instance(InstanceRow::new(Fill::Lattice(lat), Transform::IDENTITY))?;
     Ok(ModelFixture { name: "pin_lattice_stub", complex: t, model: m, flat_paths: 9, flat_entries: 18, deck_faces: 0, volume: 2.0 * 0.4 * 0.4 })
 }
 
@@ -188,7 +183,7 @@ pub fn mirror_chamber() -> Result<ModelFixture, BuildError> {
         Ok(())
     })?;
     let plane = Plane::new(Vector3::new(0.0, 0.0, 1.0), 0.5)?;
-    let plan = plan_cut(&CutSpec { deck: Deck::Mirror { plane }, keep: Keep::Negative, origin: Point3::new(0.0, 0.0, 0.5) })?;
+    let plan = plan_cut(&CutSpec::new(Deck::Mirror { plane }, Keep::Negative, Point3::new(0.0, 0.0, 0.5)))?;
     m.apply_cut(&plan, &t.lineage().cut_outcome(OpId(2)), Some(cap_color), &t)?;
     let deck_faces = m.deck_faces().count();
     Ok(ModelFixture { name: "mirror_chamber", complex: t, model: m, flat_paths: 0, flat_entries: 0, deck_faces, volume: 0.5 })

@@ -51,6 +51,7 @@ pub enum Severity {
 /// One broken invariant.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct TopoIssue {
     /// The offending cell.
     pub cell: EntityId,
@@ -60,6 +61,13 @@ pub struct TopoIssue {
     pub severity: Severity,
     /// Human-readable detail.
     pub message: String,
+}
+
+impl TopoIssue {
+    /// An issue from its parts.
+    pub fn new(cell: EntityId, rule: Rule, severity: Severity, message: impl Into<String>) -> Self {
+        Self { cell, rule, severity, message: message.into() }
+    }
 }
 
 fn v(cell: EntityId, rule: Rule, message: impl Into<String>) -> TopoIssue {

@@ -47,12 +47,7 @@ fn soft_counts_are_repaired_to_an_even_sum_and_pave_meshes_the_source() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let intent = odd_loop(&ids, Firm::soft);
     let out = driver
         .mesh(
@@ -89,12 +84,7 @@ fn hard_odd_counts_blame_pave_and_the_driver_falls_back_to_tri() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = odd_loop(&ids, Firm::hard);
     intent.entity_mut(ids.faces[4]).fallbacks = vec![SchemeChoice::new("tri", Firmness::Default)];
     // Planning alone reports the blame: the even-sum constraint is pave's.
@@ -161,12 +151,7 @@ fn registry_fallback_chains_follow_the_last_intent_choice() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let intent = odd_loop(&ids, Firm::hard);
     let out = driver
         .mesh(
@@ -207,12 +192,7 @@ fn registry_auto_lists_and_intent_auto_lists_override_the_default() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.volume];
-    let input = MeshInput {
-        topo: &topo,
-        model: &model,
-        pieces: &WholeFaces,
-        selection: &sel,
-    };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_scheme(ids.volume, sweep_z(&ids));
     // The registry list restricts auto selection of the (unimposed) source face to tri/pave: pave scores higher.

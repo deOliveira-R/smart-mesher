@@ -143,3 +143,19 @@ FNV-1a over little-endian words; no geometry float ever enters as raw bits (only
   `linear_max`, and removes an override that falls to the model linear tolerance (so a scaled
   model hashes like one that never had it); journaled, `Modified(Tolerance)` per changed cell.
   No topology transform operator exists, so it is a separate method.
+
+## W0g freeze rules
+
+- **`#[non_exhaustive]` records** (fields stay `pub` for reading): `OpSummary` (returned by the
+  implementer method `TopologyEdit::end_op`; build with `OpSummary::new`), `FacePair`
+  (`FacePair::new`, taken as given: the `a`/`b` convention is the caller's), `CutOutcome`
+  (`CutOutcome::new` or `Default`), `OverlayData` (`OverlayData::new`) and `TopoIssue`
+  (`TopoIssue::new`). Any field added to one of these persisted records after the freeze must be
+  `#[serde(default)]`, so data written before it still reads.
+- **`#[non_exhaustive]` enums**: `EntityState` and `Coincidence`. Their integer hash
+  discriminants and serde shapes are unchanged; a new variant takes the next discriminant.
+- **`CellFlags` storage is private**: read with `bits() -> u64`, build with
+  `from_bits(u64) -> Option<CellFlags>` (`None` if the bits do not fit the current storage) and
+  the named constants, test with `contains`. Serde is a bare integer (`serde(transparent)`) and
+  the canonical hash feeds `bits()` as one `u64` word, so the storage can be widened later
+  without changing stored data or hashes. Golden test: `tests/freeze.rs`.

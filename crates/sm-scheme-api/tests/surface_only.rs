@@ -33,7 +33,7 @@ fn the_faces_of_a_brick_mesh_as_one_closed_surface() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = ids.faces;
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let out = driver
         .mesh(&input, &counts(&ids, [2, 3, 4]), &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new())
         .expect("surface mesh");
@@ -83,7 +83,7 @@ fn one_face_is_an_open_surface_and_selections_cannot_mix() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.faces[4]];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let out = driver
         .mesh(&input, &counts(&ids, [2, 3, 4]), &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new())
         .expect("one face");
@@ -96,11 +96,11 @@ fn one_face_is_an_open_surface_and_selections_cannot_mix() {
     assert!((area - 1.5).abs() < 1e-12);
     // Faces and pieces cannot be mixed.
     let mixed = [ids.faces[4], ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &mixed };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &mixed);
     assert!(matches!(driver.plan(&input, &counts(&ids, [2, 3, 4])), Err(SchemeError::Input(_))));
     // A volume selection cannot be committed into a dimension-2 builder.
     let vsel = [ids.volume];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &vsel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &vsel);
     let mut it = counts(&ids, [2, 3, 4]);
     it.set_scheme(ids.volume, SchemeChoice::with_params("sweep", serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }), Firmness::Hard));
     match driver.mesh(&input, &it, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()) {
@@ -116,7 +116,7 @@ fn a_sizing_function_without_a_size_field_is_an_error() {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
     let sel = [ids.faces[4]];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Function { name: "curvature".into(), params: Params::default() });
     match driver.plan(&input, &intent) {
@@ -206,7 +206,7 @@ fn a_claimed_edge_is_split_out_and_checked_against_the_curve_rule() {
     let face = ids.faces[4];
     let e = claimed_edge(&topo, face);
     let sel = [face];
-    let input = MeshInput { topo: &topo, model: &model, pieces: &WholeFaces, selection: &sel };
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     intent.set_intervals(e, Firm::hard(IntervalRequest::Count(3)));
     intent.set_scheme(face, SchemeChoice::new("claimedge", Firmness::Hard));

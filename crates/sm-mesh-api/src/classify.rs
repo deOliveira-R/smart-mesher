@@ -33,6 +33,7 @@ pub const fn entity_dim(k: EntityKind) -> Option<u8> {
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Param {
     /// No parametric information (always allowed).
     #[default]

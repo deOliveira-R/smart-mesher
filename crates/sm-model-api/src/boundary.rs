@@ -22,6 +22,7 @@ use sm_topo_api::{Dim, FaceClass, Region, TopologyView, TopologyViewExt};
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum Deck {
     /// Reflection in a plane (improper). Self-paired: the faces lie on the plane.
     Mirror {
@@ -34,6 +35,8 @@ pub enum Deck {
         vector: Vector3,
     },
     /// Pair `A <-> B = R(A)`, `R` a rotation by `angle` (a rational number of turns) about `axis`.
+    /// Build it with [`Deck::rotation`]; it may gain fields.
+    #[non_exhaustive]
     Rotation {
         /// Rotation axis (direction gives the sense).
         axis: Axis,
@@ -43,6 +46,11 @@ pub enum Deck {
 }
 
 impl Deck {
+    /// A rotation deck by `angle` about `axis` (not yet checked; see [`Deck::check`]).
+    pub fn rotation(axis: Axis, angle: Turns) -> Self {
+        Deck::Rotation { axis, angle }
+    }
+
     /// The transform taking side A to side B (for a mirror: the reflection itself). Decks that
     /// passed [`Deck::check`] (all decks stored in a [`Model`]) never fall back; a degenerate
     /// deck yields the identity.
@@ -101,21 +109,32 @@ impl Deck {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum InterfaceIntent {
     /// A shared (merged) face between volumes of different colors.
     Conformal,
     /// Explicitly non-conformal: two face sets facing each other (sliding, mortar, different
-    /// refinement), optionally related by a transform `B = T(A)`.
+    /// refinement), optionally related by a transform `B = T(A)`. Build it with
+    /// [`InterfaceIntent::non_conformal`]; it may gain fields.
+    #[non_exhaustive]
     NonConformal {
         /// Relative motion/placement of B with respect to A, if any.
         transform: Option<Transform>,
     },
 }
 
+impl InterfaceIntent {
+    /// A non-conformal interface, optionally related by `B = T(A)`.
+    pub fn non_conformal(transform: Option<Transform>) -> Self {
+        InterfaceIntent::NonConformal { transform }
+    }
+}
+
 /// What a boundary record means for meshing and tracking.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum BoundaryKind {
     /// Deck transformation boundary (mirror / translation / rotation).
     Deck(Deck),
@@ -140,6 +159,7 @@ impl BoundaryKind {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct BoundaryRow {
     /// The `EntityKind::Boundary` id.
     pub id: EntityId,
@@ -147,6 +167,13 @@ pub struct BoundaryRow {
     pub name: String,
     /// The kind.
     pub kind: BoundaryKind,
+}
+
+impl BoundaryRow {
+    /// A boundary row.
+    pub fn new(id: EntityId, name: impl Into<String>, kind: BoundaryKind) -> Self {
+        Self { id, name: name.into(), kind }
+    }
 }
 
 /// Which side of a pairing a face is on. `A` is the mesh here, `B` is the copy of the mesh under
@@ -167,6 +194,7 @@ pub enum DeckSide {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum FaceRole {
     /// Deck face. `mate` is `None` exactly when `side` is [`DeckSide::SelfPaired`].
     Deck {
@@ -199,6 +227,7 @@ pub struct FaceBoundary {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub enum FaceKindView {
     /// Deck face.
     Deck {

@@ -280,14 +280,25 @@ pub enum Carrier {
     Composite(SmallVec<[EntityId; 4]>),
 }
 
-/// Per-cell flag bits.
+/// Per-cell flag bits. The storage width is private so it can be widened later: serde writes
+/// a bare integer and the state hash feeds [`bits`](Self::bits) as one `u64` word, so neither
+/// changes when the storage grows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CellFlags(pub u8);
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct CellFlags(u8);
 
 impl CellFlags {
     /// No flags.
     pub const NONE: CellFlags = CellFlags(0);
+    /// The raw bits, widened to the hash word.
+    pub const fn bits(self) -> u64 {
+        self.0 as u64
+    }
+    /// Flags from raw bits; `None` if `bits` does not fit the current storage width.
+    pub const fn from_bits(bits: u64) -> Option<CellFlags> {
+        if bits > u8::MAX as u64 { None } else { Some(CellFlags(bits as u8)) }
+    }
     /// A collapsed edge (zero length) at a sphere pole or cone apex. It has a vertex row but no
     /// curve; its coedges are [`CoedgeKind::Pole`], excluded from Euler counts, shell closure
     /// and radial rings.
@@ -322,6 +333,7 @@ pub struct OpId(pub u64);
 /// retired them, so old references can be followed through the lineage log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum EntityState {
     /// Alive.
     Live,
@@ -348,6 +360,7 @@ pub enum ShellKind {
 /// Imprint/merge state of a coincident face pair (docs/design/ir.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Coincidence {
     /// One shared face with two sides. The record names the survivor and the absorbed (dead) face.
     Merged,
@@ -362,6 +375,7 @@ pub enum Coincidence {
 /// A recorded relation between two faces. `a < b` by id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct FacePair {
     /// Lower id.
     pub a: EntityId,
@@ -374,6 +388,10 @@ pub struct FacePair {
 }
 
 impl FacePair {
+    /// A pair record, taken as given (the caller keeps the documented `a`/`b` convention).
+    pub fn new(a: EntityId, b: EntityId, status: Coincidence, op: OpId) -> Self {
+        Self { a, b, status, op }
+    }
     /// The other member of the pair, if `f` is one of them.
     pub fn other(&self, f: EntityId) -> Option<EntityId> {
         if f == self.a {
@@ -482,11 +500,19 @@ pub struct CapFace {
 /// faces are caps (generated on a tool surface) in that operation.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct CutOutcome {
     /// Successions, in log order.
     pub lineage: Vec<Lineage>,
     /// Cap faces, in log order.
     pub caps: Vec<CapFace>,
+}
+
+impl CutOutcome {
+    /// An outcome from its lineage records and cap faces.
+    pub fn new(lineage: Vec<Lineage>, caps: Vec<CapFace>) -> Self {
+        Self { lineage, caps }
+    }
 }
 
 /// Input to face construction: one coedge of a loop.
@@ -607,6 +633,7 @@ pub enum ShellAssign<'a> {
 /// Summary of a committed operation.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct OpSummary {
     /// The operation.
     pub op: OpId,
@@ -618,6 +645,13 @@ pub struct OpSummary {
     pub lineage_start: usize,
     /// Number of lineage records of the operation.
     pub lineage_len: usize,
+}
+
+impl OpSummary {
+    /// A summary; implementers of `TopologyEdit::end_op` build it with this.
+    pub fn new(op: OpId, created: Vec<EntityId>, retired: Vec<EntityId>, lineage_start: usize, lineage_len: usize) -> Self {
+        Self { op, created, retired, lineage_start, lineage_len }
+    }
 }
 
 /// The id given to a typed wrapper has the wrong entity kind.

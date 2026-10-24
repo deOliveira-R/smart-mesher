@@ -63,7 +63,9 @@ impl Progress for RecordingProgress {
 }
 
 /// Progress sink plus cancellation token, passed together to every long operation.
+/// Build it with [`Control::new`] or [`QuietControl::control`]; it may gain fields.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct Control<'a> {
     /// Where progress goes.
     pub progress: &'a dyn Progress,

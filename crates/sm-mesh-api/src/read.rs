@@ -36,6 +36,7 @@ use sm_core::{EntityId, Point3, Vector3};
 
 /// Borrowed structure-of-arrays coordinates. The first `n_vertices` points are the vertices.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Coords<'a> {
     /// x coordinates.
     pub x: &'a [f64],
@@ -45,7 +46,11 @@ pub struct Coords<'a> {
     pub z: &'a [f64],
 }
 
-impl Coords<'_> {
+impl<'a> Coords<'a> {
+    /// Borrow three coordinate columns of equal length.
+    pub fn new(x: &'a [f64], y: &'a [f64], z: &'a [f64]) -> Self {
+        Self { x, y, z }
+    }
     /// Number of points (vertices plus high-order extras).
     pub fn len(&self) -> usize {
         self.x.len()
@@ -63,6 +68,7 @@ impl Coords<'_> {
 /// The raw face-first arrays (addendum 7.7 item 2) as whole slices, so hot loops can avoid
 /// per-call dynamic dispatch. Offsets are `u64` (the on-disk width).
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct TopologyColumns<'a> {
     /// CSR offsets into `face_vertices`, length `n_faces + 1`.
     pub face_vertex_offsets: &'a [u64],
@@ -78,11 +84,26 @@ pub struct TopologyColumns<'a> {
     pub cell_faces: &'a [SignedFace],
 }
 
+impl<'a> TopologyColumns<'a> {
+    /// Bundle the face-first arrays; implementers of [`MeshRead::columns`] build it with this.
+    pub fn new(
+        face_vertex_offsets: &'a [u64],
+        face_vertices: &'a [VertexIx],
+        face_left: &'a [CellIx],
+        face_right: &'a [u32],
+        cell_face_offsets: &'a [u64],
+        cell_faces: &'a [SignedFace],
+    ) -> Self {
+        Self { face_vertex_offsets, face_vertices, face_left, face_right, cell_face_offsets, cell_faces }
+    }
+}
+
 /// Cached face and cell geometry under a rule id (addendum 7.5 and 7.7 item 5). Derived data:
 /// excluded from both content hashes and checked by `validate` against the mesh.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct GeometryCache {
     /// Geometry rule id the values were computed under.
     pub rule: String,
@@ -100,6 +121,23 @@ pub struct GeometryCache {
     pub cell_volume: Vec<f64>,
     /// Cell centroids.
     pub cell_centroid: Vec<Point3>,
+}
+
+impl GeometryCache {
+    /// An empty cache for a rule and the hashes of the mesh it is computed for; fill the value
+    /// columns afterwards.
+    pub fn new(rule: impl Into<String>, connectivity_hash: u64, coordinate_hash: u64) -> Self {
+        Self {
+            rule: rule.into(),
+            connectivity_hash,
+            coordinate_hash,
+            face_area: Vec::new(),
+            face_centroid: Vec::new(),
+            face_apex: Vec::new(),
+            cell_volume: Vec::new(),
+            cell_centroid: Vec::new(),
+        }
+    }
 }
 
 /// Read-only access to one mesh. Object safe; all hot-path accessors return borrowed slices or

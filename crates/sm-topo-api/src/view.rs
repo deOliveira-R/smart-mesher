@@ -188,7 +188,7 @@ pub trait TopologyView: Send + Sync {
             for &id in cells {
                 int(f, id.to_raw());
                 int(f, self.born(id).map_or(u64::MAX, |o| o.0));
-                int(f, u64::from(self.flags(id).0));
+                int(f, self.flags(id).bits());
                 match self.tolerance_override(id) {
                     None => int(f, i64::MIN as u64),
                     Some(t) => len(f, t),
@@ -451,7 +451,7 @@ mod tests {
             for &id in cells {
                 h.u64(id.to_raw());
                 h.u64(this.born(id).map_or(u64::MAX, |o| o.0));
-                h.u64(u64::from(this.flags(id).0));
+                h.u64(this.flags(id).bits());
                 h.i64(this.tolerance_override(id).map_or(i64::MIN, |t| tol.quantize(t)));
                 legacy_carrier(&mut h, &tol, this.carrier(id));
                 let row = this.boundary(id);

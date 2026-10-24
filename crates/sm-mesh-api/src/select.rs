@@ -10,6 +10,7 @@ use sm_core::EntityId;
 
 /// A predicate over entities of one kind.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Selector {
     /// Every entity.
     All,
