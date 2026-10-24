@@ -71,6 +71,10 @@ const INLINE: usize = 24;
 /// An exact real number stored as non-overlapping `f64` components, smallest magnitude first.
 ///
 /// The value is the sum of the components. The zero expansion has no components.
+///
+/// `PartialEq` compares component lists, not values: two expansions with equal value but a
+/// different split into components compare unequal. To test value equality, check
+/// `a.sub(&b).is_zero()`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Expansion {
     c: SmallVec<[f64; INLINE]>,

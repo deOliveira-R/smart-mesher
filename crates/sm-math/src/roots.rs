@@ -11,6 +11,11 @@
 pub struct RootOptions {
     /// Absolute tolerance on the root location. The effective tolerance is
     /// `x_tol + 2 * EPSILON * |x|`, so it never asks for more precision than `f64` has.
+    ///
+    /// `0.0` (the default) means "automatic": `4 * EPSILON * max(|a|, |b|)` of the initial
+    /// bracket. A purely relative tolerance cannot resolve a root at exactly zero (the iterates
+    /// would have to collapse through the subnormals), so a nonzero absolute floor is always
+    /// applied; pass a smaller explicit value if the root is known to be tiny.
     pub x_tol: f64,
     /// Maximum number of function evaluations after the two initial ones.
     pub max_iter: u32,
@@ -62,6 +67,15 @@ fn valid(a: f64, b: f64, o: &RootOptions) -> bool {
     a.is_finite() && b.is_finite() && o.x_tol.is_finite() && o.x_tol >= 0.0
 }
 
+/// The absolute tolerance to use: the caller's, or `4 * EPSILON * max(|a|, |b|)` if automatic.
+fn effective_x_tol(a: f64, b: f64, o: &RootOptions) -> f64 {
+    if o.x_tol == 0.0 {
+        4.0 * f64::EPSILON * a.abs().max(b.abs())
+    } else {
+        o.x_tol
+    }
+}
+
 fn same_strict_sign(x: f64, y: f64) -> bool {
     (x > 0.0 && y > 0.0) || (x < 0.0 && y < 0.0)
 }
@@ -81,6 +95,7 @@ pub fn brent(
     if !valid(a, b, &opts) {
         return Err(RootError::NonFinite);
     }
+    let x_tol = effective_x_tol(a, b, &opts);
     let (mut a, mut b) = (a, b);
     let mut fa = f(a);
     let mut fb = f(b);
@@ -122,7 +137,7 @@ pub fn brent(
             fb = fc;
             fc = fa;
         }
-        let tol = 2.0 * f64::EPSILON * b.abs() + 0.5 * opts.x_tol;
+        let tol = 2.0 * f64::EPSILON * b.abs() + 0.5 * x_tol;
         let xm = 0.5 * (c - b);
         if xm.abs() <= tol || fb == 0.0 {
             return Ok(Root {
@@ -195,6 +210,7 @@ pub fn newton_bisect(
     if !valid(a, b, &opts) {
         return Err(RootError::NonFinite);
     }
+    let x_tol = effective_x_tol(a, b, &opts);
     let (fa, _) = fdf(a);
     let (fb, _) = fdf(b);
     if !fa.is_finite() || !fb.is_finite() {
@@ -255,7 +271,7 @@ pub fn newton_bisect(
             dx = fx / dfx;
             x -= dx;
         }
-        let tol = opts.x_tol + 2.0 * f64::EPSILON * x.abs();
+        let tol = x_tol + 2.0 * f64::EPSILON * x.abs();
         if x == prev || dx.abs() <= tol || (hi - lo).abs() <= tol {
             let (fx_end, _) = fdf(x);
             return Ok(Root {

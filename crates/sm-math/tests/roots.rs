@@ -117,3 +117,19 @@ fn newton_bisect_converges_quickly_and_safely() {
     let r = newton_bisect(|x| (x.cos() - x, -x.sin() - 1.0), 0.0, 1.0, None, opts()).unwrap();
     assert!((r.x - 0.739_085_133_215_160_6).abs() < 1e-15);
 }
+
+#[test]
+fn default_options_resolve_a_root_at_zero() {
+    // A relative-only tolerance would need ~1000 halvings to reach 0; the automatic absolute
+    // floor makes this converge immediately.
+    let step = |x: f64| if x < 0.0 { -1.0 } else { 1.0 };
+    let r = brent(step, -1.0, 2.0, RootOptions::default()).unwrap();
+    assert!(r.x.abs() <= 1e-15 && r.iterations < 80, "{r:?}");
+    let r = brent(|x| x * x * x, -1.0, 2.0, RootOptions::default()).unwrap();
+    assert!(r.x.abs() <= 1e-4, "{r:?}");
+    let r = newton_bisect(|x| (step(x), 0.0), -1.0, 2.0, None, RootOptions::default()).unwrap();
+    assert!(r.x.abs() <= 1e-15 && r.iterations < 80, "{r:?}");
+    // Tiny-scale roots still work with the automatic tolerance (it scales with the bracket).
+    let r = brent(|x| x - 3e-20, -1e-19, 1e-19, RootOptions::default()).unwrap();
+    assert!((r.x - 3e-20).abs() <= 1e-34, "{r:?}");
+}

@@ -12,7 +12,8 @@ Implemented `crates/sm-math` per the task:
   across all four, point ids supplied by caller).
 - `interval`: `Interval` with exact-error-term directed bounds for `+ - *`, one-ulp widening for
   `/` and `sqrt`.
-- `roots`: `brent`, `newton_bisect`.
+- `roots`: `brent`, `newton_bisect` (default tolerance is bracket-relative with an absolute floor, so
+  roots at exactly 0 converge).
 - `linalg`: `solve3`/`solve4`/`inverse3`/`det3`/`det4`, `sym3_eigen` (Jacobi), `svd3` (one-sided Jacobi).
 - `sum`: `KahanSum`, `NeumaierSum`, deterministic `par_sum*`/`par_reduce` helpers.
 - `DESIGN.md` (positioning + design), `benches/kernels.rs` (criterion).
@@ -25,7 +26,7 @@ All pass in debug, with `RAYON_NUM_THREADS=1`, and clippy/doc are clean:
 
 ```
 cargo build
-cargo test -p sm-math                          # 57 tests across 9 integration files
+cargo test -p sm-math                          # 58 tests across 9 integration files
 RAYON_NUM_THREADS=1 cargo test -p sm-math
 cargo clippy -p sm-math --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -p sm-math --no-deps
@@ -58,8 +59,11 @@ Benchmarks (release, this container; `cargo bench -p sm-math --bench kernels`): 
 - **Exact stage is filter + full exact, not Shewchuk's four-stage adaptive scheme.** Stages B-D
   (progressively tighter bounds reusing partial results) are not implemented. Correctness is
   identical; near-degenerate-but-nonzero inputs that stage B would resolve cheaply instead pay the
-  full exact evaluation (0.2-3 us). Expansions live in `SmallVec` (24 inline components), so the
-  exact path allocates only for the largest `insphere` cases.
+  full exact evaluation (0.2-3 us). Allocation: the filter path is allocation-free. The exact
+  fallback of `orient2d` fits the 24-component inline `SmallVec` of `Expansion`, but every other
+  exact fallback (`orient3d`, `incircle`, `insphere`) spills to the heap (intermediate products have
+  tens to hundreds of components), and so does the SoS tie-break (`Vec<Vec<Expansion>>`). Fine for
+  the rare exact path, not for tight per-element loops that hit exact degeneracy constantly.
 - **Documented input range** for exactness: coordinates `0` or `2^-100 <= |x| <= 2^100`.
 - **SoS lifted coordinate** is perturbed independently (infinitesimal weights), not along the
   paraboloid as in the original Edelsbrunner-Mücke incircle derivation. Consequence: a regular
