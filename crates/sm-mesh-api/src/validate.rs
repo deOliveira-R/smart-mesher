@@ -377,66 +377,15 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
         validate_cell(m, CellIx::new(c), np, &mut s);
     }
 
-    // face curves
-    for f in 0..nf {
-        if !loops_ok[f] {
-            continue;
-        }
-        let fi = FaceIx::new(f);
-        if let Some(fc) = m.face_curve(fi) {
-            let l = m.face_vertices(fi);
-            let e = Some(MeshEntity::Face(fi));
-            if face_node_count(l.len(), fc.degree, fc.basis) != Some(fc.nodes.len()) {
-                s.add(
-                    ViolationCode::FaceCurve,
-                    e,
-                    "node count does not match (loop length, degree, basis)",
-                );
-            } else if fc.nodes.iter().any(|n| n.get() >= np) {
-                s.add(ViolationCode::FaceCurve, e, "node out of range");
-            } else if fc.nodes.iter().zip(l).any(|(n, v)| n.get() != v.get()) {
-                s.add(
-                    ViolationCode::FaceCurve,
-                    e,
-                    "curve nodes must start with the loop vertices in loop order",
-                );
-            }
-        }
-    }
+    face_curve_rules(m, np, &loops_ok, &mut s);
 
-    validate_classification(m, nv, nf, nc, &loops_ok, &mut s);
+    classification_rules(m, nv, nf, nc, &loops_ok, &mut s);
 
-    // lineage
-    for c in 0..nc {
-        let ci = CellIx::new(c);
-        if let Some(p) = m.cell_parent(ci) {
-            let e = Some(MeshEntity::Cell(ci));
-            if p.get() >= c {
-                s.add(
-                    ViolationCode::Lineage,
-                    e,
-                    "parent must exist and have a lower index than its child",
-                );
-            } else if m.cell_active(ci) && m.cell_active(p) {
-                s.add(
-                    ViolationCode::Lineage,
-                    e,
-                    "an active cell's parent must be inactive",
-                );
-            }
-        }
-    }
+    lineage_rules(m, nc, &mut s);
 
-    // A dimension-3 mesh with edge-slot nodes needs a (fully classified) edge table, so every
-    // extra node's class follows from its slot owner (`MeshRead::point_class`).
-    if dim == MeshDim::Three && m.edges().is_none() {
-        let cell = (0..nc).find(|c| m.high_order_cell(CellIx::new(*c)).is_some()).map(|c| MeshEntity::Cell(CellIx::new(c)));
-        let face = (0..nf).find(|f| m.face_curve(FaceIx::new(*f)).is_some()).map(|f| MeshEntity::Face(FaceIx::new(f)));
-        if let Some(e) = cell.or(face) {
-            s.add(ViolationCode::HighOrder, Some(e), "high-order cells and face curves need an edge table (their edge nodes take the class of their edge)");
-        }
-    }
-    validate_sets_tags_edges(m, nv, nf, nc, &loops_ok, &mut s);
+    ho_needs_edge_table_rule(m, nf, nc, &mut s);
+    set_tag_rules(m, nv, nf, nc, &mut s);
+    edge_table_rules(m, nf, &loops_ok, &mut s);
 
     if let Some(g) = m.geometry_cache() {
         let ok = g.rule == m.geometry_rule()
@@ -466,6 +415,79 @@ pub fn validate(m: &dyn MeshRead) -> Vec<Violation> {
         }
     }
     let _ = ne;
+    s.0
+}
+
+/// Per-face flag: the loop is valid for the mesh dimension and the face's cells exist. Mirrors
+/// the flags `validate` derives while checking faces (without reporting).
+fn loops_ok_of(m: &dyn MeshRead) -> Vec<bool> {
+    let dim = m.dim();
+    let (nv, nf, nc) = (
+        m.count(MeshEntityKind::Vertex),
+        m.count(MeshEntityKind::Face),
+        m.count(MeshEntityKind::Cell),
+    );
+    (0..nf)
+        .map(|f| {
+            let fi = FaceIx::new(f);
+            let l = m.face_vertices(fi);
+            let mut sorted = l.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            dim.facet_len_ok(l.len())
+                && sorted.len() == l.len()
+                && l.iter().all(|v| v.get() < nv)
+                && m.face_left(fi).get() < nc
+                && m.face_right(fi).is_none_or(|r| r.get() < nc)
+        })
+        .collect()
+}
+
+/// The classification rules of [`validate`] (kinds, parameters, dimension order including edges,
+/// reverse index) plus the lineage rule, without the rest of the checks.
+///
+/// **Precondition.** The structural checks of [`validate`] pass: column sizes agree with the
+/// counts, indices are in range, the id tables are sound. The function computes its own
+/// per-face "loop is valid" flags (so a bad loop only skips the dimension-order test of that
+/// face) but does not otherwise defend against a structurally broken view; run [`validate`]
+/// when the input is untrusted. For a mesh that passes the structural checks the result is
+/// exactly the classification and lineage subset of the violations [`validate`] reports, in
+/// the same order. Builders use it to re-check what their input can break.
+pub fn validate_classification(m: &dyn MeshRead) -> Vec<Violation> {
+    let mut s = Sink(Vec::new());
+    let (nv, nf, nc) = (
+        m.count(MeshEntityKind::Vertex),
+        m.count(MeshEntityKind::Face),
+        m.count(MeshEntityKind::Cell),
+    );
+    let loops_ok = loops_ok_of(m);
+    classification_rules(m, nv, nf, nc, &loops_ok, &mut s);
+    lineage_rules(m, nc, &mut s);
+    s.0
+}
+
+/// The record rules of [`validate`]: high-order cell records (count, node range, corner
+/// prefix), face-curve records (count, node range, loop prefix), the edge table that
+/// edge-slot nodes need, and the shape rules of sets and tags (ids, order, member range,
+/// lengths).
+///
+/// Same precondition as [`validate_classification`]: the structural checks of [`validate`]
+/// pass. Violations are reported cell by cell, then face curves, then sets and tags (a
+/// different order than [`validate`], which interleaves them with the cell checks).
+pub fn validate_records(m: &dyn MeshRead) -> Vec<Violation> {
+    let mut s = Sink(Vec::new());
+    let (nv, nf, nc) = (
+        m.count(MeshEntityKind::Vertex),
+        m.count(MeshEntityKind::Face),
+        m.count(MeshEntityKind::Cell),
+    );
+    let np = m.coords().len();
+    for c in 0..nc {
+        validate_high_order(m, CellIx::new(c), np, &mut s);
+    }
+    face_curve_rules(m, np, &loops_ok_of(m), &mut s);
+    ho_needs_edge_table_rule(m, nf, nc, &mut s);
+    set_tag_rules(m, nv, nf, nc, &mut s);
     s.0
 }
 
@@ -678,7 +700,72 @@ fn validate_high_order(m: &dyn MeshRead, ci: CellIx, np: usize, s: &mut Sink) {
     }
 }
 
-fn validate_classification(
+/// Face-curve rules: node count, node range, loop-vertex prefix.
+fn face_curve_rules(m: &dyn MeshRead, np: usize, loops_ok: &[bool], s: &mut Sink) {
+    for f in 0..loops_ok.len() {
+        if !loops_ok[f] {
+            continue;
+        }
+        let fi = FaceIx::new(f);
+        if let Some(fc) = m.face_curve(fi) {
+            let l = m.face_vertices(fi);
+            let e = Some(MeshEntity::Face(fi));
+            if face_node_count(l.len(), fc.degree, fc.basis) != Some(fc.nodes.len()) {
+                s.add(
+                    ViolationCode::FaceCurve,
+                    e,
+                    "node count does not match (loop length, degree, basis)",
+                );
+            } else if fc.nodes.iter().any(|n| n.get() >= np) {
+                s.add(ViolationCode::FaceCurve, e, "node out of range");
+            } else if fc.nodes.iter().zip(l).any(|(n, v)| n.get() != v.get()) {
+                s.add(
+                    ViolationCode::FaceCurve,
+                    e,
+                    "curve nodes must start with the loop vertices in loop order",
+                );
+            }
+        }
+    }
+}
+
+/// Lineage rules: parent exists with a lower index; an active cell's parent is inactive.
+fn lineage_rules(m: &dyn MeshRead, nc: usize, s: &mut Sink) {
+    for c in 0..nc {
+        let ci = CellIx::new(c);
+        if let Some(p) = m.cell_parent(ci) {
+            let e = Some(MeshEntity::Cell(ci));
+            if p.get() >= c {
+                s.add(
+                    ViolationCode::Lineage,
+                    e,
+                    "parent must exist and have a lower index than its child",
+                );
+            } else if m.cell_active(ci) && m.cell_active(p) {
+                s.add(
+                    ViolationCode::Lineage,
+                    e,
+                    "an active cell's parent must be inactive",
+                );
+            }
+        }
+    }
+}
+
+/// A dimension-3 mesh with edge-slot nodes needs a (fully classified) edge table, so every
+/// extra node's class follows from its slot owner (`MeshRead::point_class`).
+fn ho_needs_edge_table_rule(m: &dyn MeshRead, nf: usize, nc: usize, s: &mut Sink) {
+    let dim = m.dim();
+    if dim == MeshDim::Three && m.edges().is_none() {
+        let cell = (0..nc).find(|c| m.high_order_cell(CellIx::new(*c)).is_some()).map(|c| MeshEntity::Cell(CellIx::new(c)));
+        let face = (0..nf).find(|f| m.face_curve(FaceIx::new(*f)).is_some()).map(|f| MeshEntity::Face(FaceIx::new(f)));
+        if let Some(e) = cell.or(face) {
+            s.add(ViolationCode::HighOrder, Some(e), "high-order cells and face curves need an edge table (their edge nodes take the class of their edge)");
+        }
+    }
+}
+
+fn classification_rules(
     m: &dyn MeshRead,
     nv: usize,
     nf: usize,
@@ -844,14 +931,7 @@ fn validate_classification(
     }
 }
 
-fn validate_sets_tags_edges(
-    m: &dyn MeshRead,
-    nv: usize,
-    nf: usize,
-    nc: usize,
-    loops_ok: &[bool],
-    s: &mut Sink,
-) {
+fn set_tag_rules(m: &dyn MeshRead, nv: usize, nf: usize, nc: usize, s: &mut Sink) {
     let sets = m.sets();
     let np = m.coords().len();
     for (i, st) in sets.iter().enumerate() {
@@ -906,6 +986,9 @@ fn validate_sets_tags_edges(
             );
         }
     }
+}
+
+fn edge_table_rules(m: &dyn MeshRead, nf: usize, loops_ok: &[bool], s: &mut Sink) {
     if m.edges().is_some() && m.dim() == MeshDim::Two {
         s.add(
             ViolationCode::EdgeTable,
@@ -1191,7 +1274,7 @@ fn hash_connectivity(h: &mut Hasher, m: &dyn MeshRead) {
         h.u(m.id(MeshEntityKind::Face, f as u32).to_raw());
         h.u(m.face_left(fi).0.into());
         h.u(m.face_right(fi).map_or(u64::MAX, |c| c.0.into()));
-        h.u(m.face_kind(fi) as u64);
+        h.u(u64::from(m.face_kind(fi).code()));
         let l = m.face_vertices(fi);
         h.u(l.len() as u64);
         for v in l {
@@ -1201,7 +1284,7 @@ fn hash_connectivity(h: &mut Hasher, m: &dyn MeshRead) {
     for c in 0..nc {
         let ci = CellIx::new(c);
         h.u(m.id(MeshEntityKind::Cell, c as u32).to_raw());
-        h.u(m.cell_shape(ci) as u64);
+        h.u(u64::from(m.cell_shape(ci).code()));
         h.u(m.cell_parent(ci).map_or(u64::MAX, |p| p.0.into()));
         h.u(u64::from(m.cell_active(ci)));
         let fs = m.cell_faces(ci);

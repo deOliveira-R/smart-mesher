@@ -3,7 +3,7 @@
 use super::format::*;
 use crate::crc::crc32;
 use crate::error::{MeshioError, Result};
-use crate::le::{self, f64_bytes, pack, pack_slice};
+use crate::le::{self, f64_bytes, index_bytes, pack, pack_slice};
 use rayon::prelude::*;
 use sm_mesh_api::{
     CellIx, Classification, ExtrusionMap, FaceIx, LevelMap, MeshDim, MeshEntityKind, MeshRead, NO_CELL, Param, SetMembers, TagValues,
@@ -151,24 +151,18 @@ impl<'a> SmshWriter<'a> {
         // Face-first topology.
         push("face_offsets", Dtype::U64, n1(nf + 1), pack_slice(cols.face_vertex_offsets).into());
         let fv = cols.face_vertices;
-        push("face_vertices", Dtype::U32, n1(fv.len()), pack(fv.len(), |i| fv[i].0).into());
+        push("face_vertices", Dtype::U32, n1(fv.len()), index_bytes(fv));
         let fl = cols.face_left;
-        push("face_left", Dtype::U32, n1(nf), pack(nf, |i| fl[i].0).into());
+        push("face_left", Dtype::U32, n1(nf), index_bytes(fl));
         push("face_right", Dtype::U32, n1(nf), pack_slice(cols.face_right).into());
-        let kinds = pack(nf, |i| face_kind_code(m.face_kind(FaceIx::new(i))).unwrap_or(255));
-        if kinds.contains(&255) {
-            return Err(MeshioError::Unsupported("face kind not known to this format version".into()));
-        }
+        let kinds = pack(nf, |i| m.face_kind(FaceIx::new(i)).code());
         push("face_kind", Dtype::U8, n1(nf), kinds.into());
         push("cell_face_offsets", Dtype::U64, n1(nc + 1), pack_slice(cols.cell_face_offsets).into());
         let cf = cols.cell_faces;
-        push("cell_faces", Dtype::U32, n1(cf.len()), pack(cf.len(), |i| cf[i].to_raw()).into());
+        push("cell_faces", Dtype::U32, n1(cf.len()), index_bytes(cf));
 
         // Cells: shape tags, template corners, lineage.
-        let shapes = pack(nc, |c| shape_code(m.cell_shape(CellIx::new(c))).unwrap_or(255));
-        if shapes.contains(&255) {
-            return Err(MeshioError::Unsupported("cell shape not known to this format version".into()));
-        }
+        let shapes = pack(nc, |c| m.cell_shape(CellIx::new(c)).code());
         push("cell_shape", Dtype::U8, n1(nc), shapes.into());
         let (off, data) = le::csr(nc, |c| m.cell_corners(CellIx::new(c)).unwrap_or(&[]), |v| v.0);
         push("cell_corner_offsets", Dtype::U64, n1(nc + 1), pack_slice(&off).into());
@@ -197,7 +191,7 @@ impl<'a> SmshWriter<'a> {
                 return Err(bad("edge table disagrees with the edge count".into()));
             }
             push("edge_ids", Dtype::U64, n1(ne), pack(ne, |i| t.ids[i].to_raw()).into());
-            push("edge_vertices", Dtype::U32, vec![ne as u64, 2], pack(2 * ne, |i| t.vertices[i / 2][i % 2].0).into());
+            push("edge_vertices", Dtype::U32, vec![ne as u64, 2], index_bytes(&t.vertices));
             class_arrays(&mut push, "edge", ecls, &table)?;
             push("edge_face_offsets", Dtype::U64, n1(nf + 1), pack_slice(&t.face_off).into());
             let fe = &t.face_edges;
@@ -324,15 +318,16 @@ impl<'a> SmshWriter<'a> {
         }
         let mut extrusions = Vec::new();
         for (i, x) in self.extrusions.iter().enumerate() {
-            let (own_hash, n_ext) = if id == x.extruded_id() {
-                (x.extruded_hash(), nc)
+            let own_hash = if id == x.extruded_id() {
+                x.extruded_hash()
             } else if id == x.base_id() {
-                (x.base_hash(), nc.saturating_mul(x.n_layers()))
+                x.base_hash()
             } else {
                 return Err(bad(format!("extrusion map {i} is not attached to mesh {id}")));
             };
-            // The map holds one entry per extruded cell of the mesh state it hashed; the
-            // contract has no length accessor, so the hash is what makes `cell_of(0..n_ext)` safe.
+            // The map holds one entry per extruded cell; the hash check keeps it paired with
+            // this mesh state.
+            let n_ext = x.n_extruded();
             if hash != Some(own_hash) {
                 return Err(stale(format!("extrusion map {i}")));
             }

@@ -49,6 +49,8 @@ fn extrusion_map_links_base_cells_and_layers() {
     let z = vec![0.0, 1.0, 2.0, 3.0];
     let map = ExtrusionMap::new(&base, &ext, z.clone(), cell_of(&ext)).unwrap();
     assert_eq!(map.n_layers(), 3);
+    assert_eq!((map.n_base(), map.n_extruded()), (base.cell_count(), ext.cell_count()));
+    assert_eq!(map.n_base() * map.n_layers(), map.n_extruded());
     assert_eq!((map.base_id(), map.extruded_id()), (base.mesh_id(), ext.mesh_id()));
     for c in 0..ext.cell_count() {
         let (b, k) = map.cell_of(CellIx::new(c));

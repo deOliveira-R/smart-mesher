@@ -11,7 +11,7 @@ use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::{
     Basis, CellIx, CellShape, FaceIx, FaceKind, Finished, HighOrderCell, LoopRelation,
     MeshDim, MeshEntity, MeshEntityKind, MeshError, NodeRef, PointIx, Result, SerialAlloc, SetMembers,
-    Side, SignedFace, TagColumn, TagValues, VertexIx, derive_corners, entity_dim, loop_relation, shape::polygon_cycle,
+    Side, SignedFace, TagColumn, TagValues, VertexIx, derive_corners, loop_relation, shape::polygon_cycle,
 };
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -253,44 +253,13 @@ fn ids(alloc: &mut SerialAlloc, kind: EntityKind, n: usize) -> Result<IdRange> {
     Ok(IdRange { first: first_id, n })
 }
 
-/// Parallel check of exactly the `validate` rules that user input can break; everything else
-/// `validate` tests (canonical order, orientation, incidence, shape tags, reverse class index,
-/// edge table, set and tag shape) holds by construction in `finish`. `false` means "suspicious":
-/// the caller then runs the full contract validator, which produces the report.
+/// The `validate` rules that builder input can break, taken from the contract's shared
+/// functions: classification (kinds, dimension order, reverse index), lineage, and the
+/// high-order, face-curve, set and tag records. Everything else `validate` tests (canonical
+/// order, orientation, incidence, shape tags, edge table) holds by construction in `finish`.
+/// `false` means "suspicious": the caller then runs the full validator, which produces the report.
 fn fast_checks(m: &Mesh) -> bool {
-    // High-order cells and face curves carry rules (node range, degree, edge table) that the
-    // builder does not fully enforce: always let the full validator judge them.
-    if !m.ho.is_empty() || !m.fcurve.is_empty() {
-        return false;
-    }
-    let dim_of = |e: EntityId| entity_dim(e.kind()).unwrap_or(u8::MAX);
-    let vdim: Vec<u8> = m.vclass.ent.par_iter().map(|e| dim_of(*e)).collect();
-    let faces_ok = (0..m.n_faces()).into_par_iter().all(|f| {
-        let k = m.fclass.ent[f].kind();
-        let fd = dim_of(m.fclass.ent[f]);
-        m.dim.accepts_facet(m.face_kind[f], k)
-            && m.face_verts[range(&m.face_off, f)].iter().all(|v| vdim[v.get()] <= fd)
-    });
-    if !faces_ok {
-        return false;
-    }
-    if let Some(t) = &m.edges {
-        let edim: Vec<u8> = t.class.par_iter().map(|c| dim_of(c.entity)).collect();
-        let edges_ok = (0..t.len()).into_par_iter().all(|e| {
-            let [a, b] = t.vertices[e];
-            edim[e] != u8::MAX && vdim[a.get()] <= edim[e] && vdim[b.get()] <= edim[e]
-        }) && (0..m.n_faces()).into_par_iter().all(|f| {
-            let fd = dim_of(m.fclass.ent[f]);
-            t.of_face(FaceIx::new(f)).iter().all(|fe| edim[fe.edge.get()] <= fd)
-        });
-        if !edges_ok {
-            return false;
-        }
-    }
-    (0..m.n_cells()).into_par_iter().all(|c| {
-        let p = m.cell_parent[c];
-        p == CellIx::NONE || !(m.cell_active[c] && m.cell_active[p as usize])
-    })
+    sm_mesh_api::validate_classification(m).is_empty() && sm_mesh_api::validate_records(m).is_empty()
 }
 
 pub(crate) fn finish(b: MeshBuilder, alloc: &mut SerialAlloc) -> Result<Finished<Mesh>> {

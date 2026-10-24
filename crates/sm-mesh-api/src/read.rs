@@ -286,6 +286,34 @@ pub trait MeshRead: Send + Sync {
     fn point(&self, i: usize) -> Point3 {
         self.coords().get(i)
     }
+    /// The cell's own area normal in a dimension-2 mesh: the Newell vector of its corner cycle
+    /// (`cell_corners(c)`, boundary order), summed as a fan about the first corner. It is NOT
+    /// normalised: its length is twice the polygon area, so callers keep the area and choose
+    /// their own zero tolerance; a degenerate cell gives the zero vector. `None` for a
+    /// dimension-3 mesh and for a cell without a corner list.
+    ///
+    /// This is the orientation the cell's vertex order implies. The oriented normal of the model
+    /// face the cell lies on (the carrier) is [`FaceNormals`](crate::FaceNormals), not this.
+    fn cell_normal(&self, c: CellIx) -> Option<Vector3> {
+        if self.dim() != MeshDim::Two {
+            return None;
+        }
+        let corners = self.cell_corners(c)?;
+        let co = self.coords();
+        let p0 = *corners.first()?;
+        let p0 = co.get(p0.get());
+        let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+        for w in corners[1..].windows(2) {
+            let a = co.get(w[0].get());
+            let b = co.get(w[1].get());
+            let (ax, ay, az) = (a.x - p0.x, a.y - p0.y, a.z - p0.z);
+            let (bx, by, bz) = (b.x - p0.x, b.y - p0.y, b.z - p0.z);
+            x += ay * bz - az * by;
+            y += az * bx - ax * bz;
+            z += ax * by - ay * bx;
+        }
+        Some(Vector3::new(x, y, z))
+    }
     /// Number of vertices.
     fn vertex_count(&self) -> usize {
         self.count(MeshEntityKind::Vertex)

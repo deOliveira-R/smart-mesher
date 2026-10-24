@@ -1,0 +1,40 @@
+== single_hex
+== single_tet
+== single_wedge
+== single_pyramid
+== truncated_octahedron
+== hexagonal_prism
+== split_face_cube
+== hex_block_2x2x2
+== mixed_transition
+== dual_patch
+== swap
+[face.left_right] Face(FaceIx(0)): left cell is not lower than right
+[face.order] Face(FaceIx(1)): faces are not strictly ascending by (left, right, loop)
+[cell.side] Cell(CellIx(0)): sign for face FaceIx(0) disagrees with face_left
+[cell.side] Cell(CellIx(1)): sign for face FaceIx(0) disagrees with face_left
+[cell.incidence] Face(FaceIx(0)): cell incidence does not match cell_faces
+== reverse
+[loop.canonical] Face(FaceIx(0)): loop does not start at its smallest vertex
+[cell.closed] Cell(CellIx(0)): directed loop edges do not cancel: not a closed oriented surface
+[shape.corners] Cell(CellIx(0)): template face [1, 2, 6, 5] not found with outward orientation
+[cell.closed] Cell(CellIx(1)): directed loop edges do not cancel: not a closed oriented surface
+[shape.corners] Cell(CellIx(1)): template face [3, 0, 4, 7] not found with outward orientation
+== move
+== remove
+[cell.incidence] Face(FaceIx(0)): cell incidence does not match cell_faces
+[cell.closed] Cell(CellIx(0)): directed loop edges do not cancel: not a closed oriented surface
+[shape.tag] Cell(CellIx(0)): tag Hex but topology is Polyhedron
+[shape.corners] Cell(CellIx(0)): template face [1, 2, 6, 5] not found with outward orientation
+== right
+[face.order] Face(FaceIx(1)): faces are not strictly ascending by (left, right, loop)
+[cell.incidence] Face(FaceIx(0)): cell incidence does not match cell_faces
+== declassify-Vertex
+[class.entity] Vertex(VertexIx(0)): classified on MeshVertex, not a model/partition entity
+[class.index] reverse classification index disagrees with the per-entity classifications
+== declassify-Face
+[class.entity] Face(FaceIx(0)): classified on MeshVertex, not a model/partition entity
+[class.index] reverse classification index disagrees with the per-entity classifications
+== declassify-Cell
+[class.entity] Cell(CellIx(0)): classified on MeshVertex, not a model/partition entity
+[class.index] reverse classification index disagrees with the per-entity classifications

@@ -4,12 +4,13 @@
 //! Mesh checks: [`mesh_valid`], [`orientation_rule`], [`closed_cells`], [`positive_volumes`],
 //! [`watertight`], [`classification_complete`], [`check_mesh_euler`], [`conformity`].
 //! Topology checks: [`topo_valid`], [`check_topo_euler`], [`manifold_edges`], [`model_valid`].
+//! Builder contract: [`template_cells_match_default`].
 //! Hashes: [`mesh_hash`], [`topo_hash`].
 
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::{Frame, Line, ParametricCurve, ParametricSurface, Plane};
 use sm_mesh_api::{
-    CellIx, FaceIx, FaceKind, GeomTol, MeshEntityKind, MeshRead, Side, ViolationCode, cell_volume, cell_volume_centroid, connectivity_hash,
+    MeshBuild, VertexIx, add_template_cells_sequential, CellIx, FaceIx, FaceKind, GeomTol, MeshEntityKind, MeshRead, Side, ViolationCode, cell_volume, cell_volume_centroid, connectivity_hash,
     face_area_vector, face_centroid, geometry_hash, topology_hash, validate, validate_geometry,
 };
 use sm_model_api::{Model, Tolerance};
@@ -42,6 +43,65 @@ fn faces(m: &dyn MeshRead) -> impl Iterator<Item = FaceIx> {
 }
 
 // ------------------------------------------------------------------------------- mesh checks
+
+/// Contract rule of `MeshBuild::add_template_cells`: an override gives the same result as the
+/// default loop. `make` returns a fresh empty builder (called twice); the points become its
+/// vertices. Both paths must return the same `Result` (range, or error text), and on success
+/// build the same face table (loops, left/right cells) and the same cell face lists, which is
+/// everything `connectivity_hash` reads from topology. After an error both must hold the same
+/// number of cells.
+pub fn template_cells_match_default<B: MeshBuild>(
+    make: impl Fn() -> B,
+    points: &[[f64; 3]],
+    shapes: &[sm_mesh_api::CellShape],
+    offsets: &[u64],
+    verts: &[VertexIx],
+) -> CheckResult {
+    let fill = |b: &mut B| -> Result<(), String> {
+        for p in points {
+            b.add_vertex(Point3::new(p[0], p[1], p[2])).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    let (mut a, mut d) = (make(), make());
+    if let Err(e) = fill(&mut a).and_then(|()| fill(&mut d)) {
+        return done("template_cells_match_default", vec![format!("could not add points: {e}")]);
+    }
+    let ra = a.add_template_cells(shapes, offsets, verts);
+    let rd = add_template_cells_sequential(&mut d, shapes, offsets, verts);
+    let mut problems = Vec::new();
+    match (&ra, &rd) {
+        (Ok(x), Ok(y)) if x == y => {}
+        (Err(x), Err(y)) if x.to_string() == y.to_string() => {}
+        _ => problems.push(format!("results differ: override {ra:?}, default {rd:?}")),
+    }
+    if a.cell_count() != d.cell_count() {
+        problems.push(format!("cell counts differ: {} vs {}", a.cell_count(), d.cell_count()));
+    }
+    if ra.is_ok() && rd.is_ok() && problems.is_empty() {
+        if a.face_count() != d.face_count() {
+            problems.push(format!("face counts differ: {} vs {}", a.face_count(), d.face_count()));
+        } else {
+            for f in 0..a.face_count() {
+                let fi = FaceIx::new(f);
+                if a.face_loop(fi) != d.face_loop(fi)
+                    || a.face_cell(fi, Side::Left) != d.face_cell(fi, Side::Left)
+                    || a.face_cell(fi, Side::Right) != d.face_cell(fi, Side::Right)
+                {
+                    problems.push(format!("face {f} differs"));
+                    break;
+                }
+            }
+            for c in 0..a.cell_count() {
+                if a.cell_faces(CellIx::new(c)) != d.cell_faces(CellIx::new(c)) {
+                    problems.push(format!("cell {c} face list differs"));
+                    break;
+                }
+            }
+        }
+    }
+    done("template_cells_match_default", problems)
+}
 
 /// `sm_mesh_api::validate` and `validate_geometry` (default tolerance) are both empty.
 pub fn mesh_valid(m: &dyn MeshRead) -> CheckResult {

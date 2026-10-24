@@ -829,3 +829,155 @@ fn ensure_all_edges(m: &mut ReferenceMesh) {
     let explicit: Vec<(VertexIx, VertexIx, Classification)> = pairs.into_iter().enumerate().map(|(k, (a, b))| (a, b, on(EntityKind::TopoEdge, 900 + k as u64))).collect();
     MeshEdit::ensure_edges(m, &mut SerialAlloc::new(), &explicit).unwrap();
 }
+
+/// Compare `got` with the golden file (`UPDATE_GOLDEN=1` rewrites it).
+fn check_golden(name: &str, got: &str) {
+    let path = format!("{}/tests/golden/{name}", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, got).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(got, want, "golden {name} differs");
+}
+
+/// All corrupted views used by the golden and the shared-rule tests.
+fn broken_cases() -> Vec<(&'static str, Broken)> {
+    let m = base();
+    let bf = (0..m.face_count()).map(FaceIx::new).find(|&f| m.face_kind(f) == FaceKind::Boundary).unwrap();
+    let inner = interior_faces(&m)[0];
+    let mut cases: Vec<(&str, Broken)> = Vec::new();
+    cases.push(("valid", Broken::of(m.clone())));
+    let mut b = Broken::of(m.clone());
+    b.face_kind = Some((bf.0, FaceKind::Interior));
+    cases.push(("kind-interior-no-right", b));
+    let mut b = Broken::of(m.clone());
+    b.face_kind = Some((inner.0, FaceKind::Boundary));
+    cases.push(("kind-boundary-two-cells", b));
+    let mut b = Broken::of(m.clone());
+    let mut l = m.face_vertices(bf).to_vec();
+    l[1] = l[0];
+    b.loop_of = Some((bf.0, l));
+    cases.push(("loop-repeat", b));
+    let mut b = Broken::of(m.clone());
+    b.face_left = Some((inner.0, 1));
+    cases.push(("left-right", b));
+    let mut b = Broken::of(m.clone());
+    b.face_left = Some((0, 99));
+    cases.push(("left-range", b));
+    let mut b = Broken::of(m.clone());
+    b.ho = Some((0, HighOrderCell::new(2, Basis::LagrangeEquispaced, vec![PointIx(0); 8])));
+    cases.push(("ho-count", b));
+    let mut b = Broken::of(m.clone());
+    b.ho = Some((0, HighOrderCell::new(2, Basis::LagrangeEquispaced, vec![PointIx(0); 27])));
+    cases.push(("ho-prefix", b));
+    let mut b = Broken::of(m.clone());
+    b.ho = Some((0, HighOrderCell::new(2, Basis::Serendipity, vec![PointIx(9999); 20])));
+    cases.push(("ho-range", b));
+    let mut b = Broken::of(m.clone());
+    b.curve = Some((0, vec![PointIx(0); 9]));
+    cases.push(("curve-prefix-zero", b));
+    let mut b = Broken::of(m.clone());
+    b.curve = Some((0, vec![PointIx(9999); 4]));
+    cases.push(("curve-count-short", b));
+    let mut ok: Vec<PointIx> = m.face_vertices(FaceIx(0)).iter().map(|v| PointIx(v.0)).collect();
+    ok.resize(9, PointIx(9999));
+    let mut b = Broken::of(m.clone());
+    b.curve = Some((0, ok.clone()));
+    cases.push(("curve-range", b));
+    ok.truncate(4);
+    ok.reverse();
+    ok.resize(9, PointIx(0));
+    let mut b = Broken::of(m.clone());
+    b.curve = Some((0, ok));
+    cases.push(("curve-prefix", b));
+    for (name, kind, ix, c) in [
+        ("class-cell-as-vertex", MeshEntityKind::Vertex, 0, Classification::on(m.cell_id(CellIx(0)))),
+        (
+            "class-param",
+            MeshEntityKind::Vertex,
+            0,
+            Classification { entity: id(EntityKind::TopoVertex, 1), param: Param::Surface([0.0, 1.0]) },
+        ),
+        ("class-face-kind", MeshEntityKind::Face, bf.0, vol()),
+        ("class-cell-kind", MeshEntityKind::Cell, 0, on(EntityKind::TopoFace, 1)),
+        ("class-index", MeshEntityKind::Cell, 0, on(EntityKind::TopoVolume, 99)),
+        ("class-dim-order", MeshEntityKind::Face, bf.0, on(EntityKind::TopoVertex, 1)),
+    ] {
+        let mut b = Broken::of(m.clone());
+        b.class = Some((kind, ix, c));
+        cases.push((name, b));
+    }
+    let mut b = Broken::of(m.clone());
+    b.parent = Some((1, 1));
+    cases.push(("lineage-order", b));
+    let mut b = Broken::of(m.clone());
+    b.parent = Some((0, 1));
+    cases.push(("lineage-active", b));
+    let mut b = Broken::of(m.clone());
+    b.sets = Some(vec![MeshSet::new(id(EntityKind::MeshSet, 1), "s", SetMembers::Cells(vec![CellIx(1), CellIx(0)]))]);
+    cases.push(("set-order", b));
+    let mut b = Broken::of(m.clone());
+    b.sets = Some(vec![MeshSet::new(id(EntityKind::MeshSet, 1), "s", SetMembers::Cells(vec![CellIx(7)]))]);
+    cases.push(("set-range", b));
+    let mut b = Broken::of(m.clone());
+    b.tags = Some(vec![TagColumn::new("t", MeshEntityKind::Cell, TagValues::I64(vec![1]))]);
+    cases.push(("tag-length", b));
+    let mut b = Broken::of(m.clone());
+    b.tags = Some(vec![TagColumn::new("t", MeshEntityKind::Edge, TagValues::I64(vec![]))]);
+    cases.push(("tag-edge-no-table", b));
+    let mut b = Broken::of(m.clone());
+    b.id = Some((MeshEntityKind::Cell, 1, m.cell_id(CellIx(0))));
+    cases.push(("id-order", b));
+    cases.push(("edges-valid", Broken::of(hex_block_with_edges([2, 2, 2], [1.0; 3], &mut SerialAlloc::new()).unwrap())));
+    cases
+}
+
+/// `validate` output over corrupted views is byte-identical to the recorded one, so the shared
+/// rule internals cannot drift from the contract.
+#[test]
+fn validate_output_is_golden_over_broken_views() {
+    let mut out = String::new();
+    for (name, b) in &broken_cases() {
+        out.push_str(&format!("== {name}\n"));
+        for v in validate(b) {
+            out.push_str(&format!("{v}\n"));
+        }
+    }
+    check_golden("validate_broken.txt", &out);
+}
+
+/// `validate_classification` and `validate_records` report exactly their subset of what
+/// `validate` reports (classification and lineage in order; records as a multiset).
+#[test]
+fn shared_rule_sets_are_subsets_of_validate() {
+    use ViolationCode::*;
+    let class_codes = [ClassEntity, ClassParam, ClassKind, ClassDimOrder, ClassIndex, Lineage];
+    let record_codes = [HighOrder, FaceCurve, Set, Tag];
+    for (name, b) in &broken_cases() {
+        // Structural breakage is outside the documented precondition.
+        if matches!(*name, "left-range" | "id-order") {
+            continue;
+        }
+        let all = validate(b);
+        let pick = |codes: &[ViolationCode]| -> Vec<String> {
+            all.iter().filter(|v| codes.contains(&v.code)).map(|v| v.to_string()).collect()
+        };
+        let got: Vec<String> = validate_classification(b).iter().map(|v| v.to_string()).collect();
+        assert_eq!(got, pick(&class_codes), "classification subset of {name}");
+        let mut got: Vec<String> = validate_records(b).iter().map(|v| v.to_string()).collect();
+        let mut want = pick(&record_codes);
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "record subset of {name}");
+    }
+    // Spot checks: the rules fire through the public functions.
+    let by_name = |n: &str| broken_cases().into_iter().find(|(k, _)| *k == n).unwrap().1;
+    assert!(validate_classification(&by_name("lineage-active")).iter().any(|v| v.code == Lineage));
+    assert!(validate_classification(&by_name("class-dim-order")).iter().any(|v| v.code == ClassDimOrder));
+    assert!(validate_records(&by_name("curve-range")).iter().any(|v| v.code == FaceCurve));
+    assert!(validate_records(&by_name("ho-range")).iter().any(|v| v.code == HighOrder));
+    assert!(validate_records(&by_name("set-order")).iter().any(|v| v.code == Set));
+    assert!(validate_records(&by_name("tag-length")).iter().any(|v| v.code == Tag));
+    assert!(validate_classification(&by_name("valid")).is_empty());
+    assert!(validate_records(&by_name("valid")).is_empty());
+}

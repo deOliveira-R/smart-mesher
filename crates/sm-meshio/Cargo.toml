@@ -14,7 +14,7 @@ mmap = ["dep:memmap2"]
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-mesh-api = { path = "../sm-mesh-api" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["bytemuck"] }
 sm-model-api = { path = "../sm-model-api" }
 thiserror = "2"
 rayon = "1"

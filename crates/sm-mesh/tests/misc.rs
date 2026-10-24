@@ -27,6 +27,15 @@ fn raw_columns_are_zero_copy_views_of_the_store() {
     assert_eq!(raw.cell_face_offsets.as_ptr(), cols.cell_face_offsets.as_ptr());
     assert_eq!(raw.face_right.as_ptr(), cols.face_right.as_ptr());
     assert_eq!(raw.x.as_ptr(), m.coords().x.as_ptr());
+    // Index columns are borrowed as u32 words from the typed ones (no copy).
+    assert_eq!(raw.face_vertices.as_ptr() as usize, cols.face_vertices.as_ptr() as usize);
+    assert_eq!(raw.face_vertices.len(), cols.face_vertices.len());
+    assert!(raw.face_vertices.iter().zip(cols.face_vertices).all(|(r, v)| *r == v.0));
+    assert!(raw.face_left.iter().zip(cols.face_left).all(|(r, c)| *r == c.0));
+    assert!(raw.cell_faces.iter().zip(cols.cell_faces).all(|(r, sf)| *r == sf.to_raw()));
+    assert_eq!(raw.cell_faces.as_ptr() as usize, cols.cell_faces.as_ptr() as usize);
+    assert_eq!(*raw.corner_offsets.last().unwrap() as usize, raw.corners.len());
+    assert_eq!(as_bytes(raw.cell_faces).len(), 4 * cols.cell_faces.len());
     // Byte views have the on-disk widths and round-trip.
     assert_eq!(as_bytes(raw.x).len(), 8 * m.coords().len());
     assert_eq!(as_bytes(raw.face_vertex_offsets).len(), 8 * (m.face_count() + 1));

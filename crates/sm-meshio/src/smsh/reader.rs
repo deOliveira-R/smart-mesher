@@ -8,7 +8,7 @@ use crate::le::{Le, decode};
 use rayon::prelude::*;
 use sm_core::EntityId;
 use sm_mesh_api::{
-    Basis, CellIx, Classification, EdgeIx, EdgeTable, FaceEdge, FaceIx, GeometryCache, HighOrderCell, MeshDim, MeshEntityKind, MeshSet, NO_CELL, Param,
+    Basis, CellIx, CellShape, Classification, EdgeIx, EdgeTable, FaceEdge, FaceIx, FaceKind, GeometryCache, HighOrderCell, MeshDim, MeshEntityKind, MeshSet, NO_CELL, Param,
     PointIx, SetMembers, SignedFace, TagColumn, TagValues, VertexIx,
 };
 use std::borrow::Cow;
@@ -320,10 +320,7 @@ fn ascending_below(name: &str, v: &[u32], n: usize) -> Result<()> {
 }
 
 fn basis_of(code: u8) -> Result<Basis> {
-    [Basis::LagrangeEquispaced, Basis::LagrangeGll, Basis::Serendipity]
-        .into_iter()
-        .find(|b| b.code() == code)
-        .map_or_else(|| bad(format!("unknown basis code {code}")), Ok)
+    Basis::from_code(code).map_or_else(|| bad(format!("unknown basis code {code}")), Ok)
 }
 
 fn class_of(f: &SmshFile, prefix: &str, n: usize, table: &[EntityId]) -> Result<Vec<Classification>> {
@@ -408,10 +405,10 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
     below("face_left", &face_left, nc)?;
     below_or_none("face_right", &face_right, nc)?;
     below_or_none("cell_parent", &cell_parent, nc)?;
-    if let Some(i) = face_kind.iter().position(|k| *k > MAX_FACE_KIND_CODE) {
+    if let Some(i) = face_kind.iter().position(|k| FaceKind::from_code(*k).is_none()) {
         return bad(format!("face_kind[{i}] = {} is not a known face kind code", face_kind[i]));
     }
-    if let Some(i) = cell_shape.iter().position(|k| *k > MAX_SHAPE_CODE) {
+    if let Some(i) = cell_shape.iter().position(|k| CellShape::from_code(*k).is_none()) {
         return bad(format!("cell_shape[{i}] = {} is not a known cell shape code", cell_shape[i]));
     }
 

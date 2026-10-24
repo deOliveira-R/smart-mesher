@@ -1,0 +1,70 @@
+== valid
+== kind-interior-no-right
+[face.left_right] Face(FaceIx(1)): Interior face has no right cell
+== kind-boundary-two-cells
+[face.left_right] Face(FaceIx(0)): Boundary face must have exactly one cell
+[class.kind] Face(FaceIx(0)): Boundary face classified on TopoVolume
+== loop-repeat
+[loop.invalid] Face(FaceIx(1)): loop has the wrong number of vertices for the mesh dimension (< 3, or not 2 in dimension 2), repeats a vertex, or names a missing vertex
+== left-right
+[face.left_right] Face(FaceIx(0)): left cell is not lower than right
+[face.order] Face(FaceIx(1)): faces are not strictly ascending by (left, right, loop)
+[cell.side] Cell(CellIx(0)): sign for face FaceIx(0) disagrees with face_left
+[cell.side] Cell(CellIx(1)): sign for face FaceIx(0) disagrees with face_left
+[cell.incidence] Face(FaceIx(0)): cell incidence does not match cell_faces
+== left-range
+[index.range] Face(FaceIx(0)): face cell out of range
+[cell.side] Cell(CellIx(0)): sign for face FaceIx(0) disagrees with face_left
+== ho-count
+[highorder.cell] Cell(CellIx(0)): expected 27 nodes, found 8
+[highorder.cell] Cell(CellIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== ho-prefix
+[highorder.cell] Cell(CellIx(0)): first nodes must equal the cell corners
+[highorder.cell] Cell(CellIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== ho-range
+[highorder.cell] Cell(CellIx(0)): node out of range
+[highorder.cell] Cell(CellIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== curve-prefix-zero
+[highorder.face_curve] Face(FaceIx(0)): curve nodes must start with the loop vertices in loop order
+[highorder.cell] Face(FaceIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== curve-count-short
+[highorder.face_curve] Face(FaceIx(0)): node count does not match (loop length, degree, basis)
+[highorder.cell] Face(FaceIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== curve-range
+[highorder.face_curve] Face(FaceIx(0)): node out of range
+[highorder.cell] Face(FaceIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== curve-prefix
+[highorder.face_curve] Face(FaceIx(0)): curve nodes must start with the loop vertices in loop order
+[highorder.cell] Face(FaceIx(0)): high-order cells and face curves need an edge table (their edge nodes take the class of their edge)
+== class-cell-as-vertex
+[class.entity] Vertex(VertexIx(0)): classified on MeshCell, not a model/partition entity
+[class.index] reverse classification index disagrees with the per-entity classifications
+== class-param
+[class.param] Vertex(VertexIx(0)): parameter Surface([0.0, 1.0]) does not fit TopoVertex
+== class-face-kind
+[class.kind] Face(FaceIx(1)): Boundary face classified on TopoVolume
+[class.index] reverse classification index disagrees with the per-entity classifications
+== class-cell-kind
+[class.kind] Cell(CellIx(0)): cells of a Three mesh must be classified on an entity of that dimension, not TopoFace
+[class.index] reverse classification index disagrees with the per-entity classifications
+== class-index
+[class.index] reverse classification index disagrees with the per-entity classifications
+== class-dim-order
+[class.kind] Face(FaceIx(1)): Boundary face classified on TopoVertex
+[class.dim_order] Face(FaceIx(1)): a face vertex is classified on a higher-dimensional entity than the face
+[class.index] reverse classification index disagrees with the per-entity classifications
+== lineage-order
+[lineage] Cell(CellIx(1)): parent must exist and have a lower index than its child
+== lineage-active
+[lineage] Cell(CellIx(0)): parent must exist and have a lower index than its child
+== set-order
+[set] set 's' is invalid (id kind/order, duplicate name, or members not ascending/in range)
+== set-range
+[set] set 's' is invalid (id kind/order, duplicate name, or members not ascending/in range)
+== tag-length
+[tag] tag 't' has wrong length, is duplicated, or is out of order
+== tag-edge-no-table
+[tag] edge tag 't' without an edge table
+== id-order
+[ids.order] Cell(CellIx(1)): MeshCell id is wrong kind, not ascending, or not found by index_of
+== edges-valid

@@ -142,6 +142,7 @@ pub fn hex_block_bulk(n: [u32; 3], h: [f64; 3], alloc: &mut SerialAlloc) -> Resu
     let n = check(n)?;
     let m = [n[0] + 1, n[1] + 1, n[2] + 1];
     let mut b = MeshBuilder::new();
+    b.reserve(m[0] * m[1] * m[2], 0);
     b.add_vertices_with(m[0] * m[1] * m[2], |v| {
         let (i, j, k) = (v % m[0], (v / m[0]) % m[1], v / (m[0] * m[1]));
         Point3::new(i as f64 * h[0], j as f64 * h[1], k as f64 * h[2])
@@ -151,7 +152,10 @@ pub fn hex_block_bulk(n: [u32; 3], h: [f64; 3], alloc: &mut SerialAlloc) -> Resu
         .into_par_iter()
         .flat_map_iter(|c| cell_verts(m, c % n[0], (c / n[0]) % n[1], c / (n[0] * n[1])))
         .collect();
-    b.add_uniform_cells(CellShape::Hex, &verts)?;
+    b.reserve(0, nc);
+    let shapes = vec![CellShape::Hex; nc];
+    let offsets: Vec<u64> = (0..=nc as u64).map(|i| i * 8).collect();
+    b.add_template_cells(&shapes, &offsets, &verts)?;
     b.classify_vertices_with(|v| class_of(n, [Some(v % m[0]), Some((v / m[0]) % m[1]), Some(v / (m[0] * m[1]))]))?;
     let vol = model(EntityKind::TopoVolume, 1);
     b.classify_cells_with(|_| vol)?;
