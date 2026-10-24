@@ -284,6 +284,10 @@ fn invalid_requests_are_refused_without_changing_the_state() {
         Box::new(Scale { entities: vec![vol1()], factor: 0.0, origin: None }),
         Box::new(Scale { entities: vec![vol1()], factor: -2.0, origin: None }),
         Box::new(Reflect { entities: vec![vol1()], normal: [0.0; 3], origin: None }),
+        // Overflow while the transform is built: classified as bad parameters.
+        Box::new(Scale { entities: vec![vol1()], factor: 1e200, origin: None }),
+        Box::new(Scale { entities: vec![vol1()], factor: 1e-200, origin: None }),
+        Box::new(Reflect { entities: vec![vol1()], normal: [1.0, 1.0, 0.0], origin: Some([f64::MAX, f64::MAX, 0.0]) }),
         Box::new(Reflect { entities: vec![vol1()], normal: [f64::NAN, 0.0, 1.0], origin: None }),
         Box::new(Rotate { entities: vec![vol1()], axis: [f64::INFINITY, 0.0, 0.0], angle_deg: 10.0, origin: None }),
         Box::new(Move { entities: vec![id(EntityKind::TopoFace, 1)], delta: [1.0, 0.0, 0.0] }),
@@ -401,4 +405,21 @@ fn a_shared_face_refuses_a_partial_move_but_allows_the_whole_assembly() {
     run(&mut s, &Reflect { entities: vec![v1, v2], normal: [0.0, 1.0, 0.0], origin: None }).expect("reflect both");
     assert_eq!(issues(&s), Vec::<String>::new());
     assert!(worst_outwardness(&s) > 0.0);
+}
+
+#[test]
+fn overflowing_transform_inputs_are_invalid_not_failed() {
+    let mut s = session(cell_complex);
+    run(&mut s, &brick10()).expect("brick");
+    let before = s.state().hash();
+    let ops: Vec<Box<dyn Op>> = vec![
+        Box::new(Scale { entities: vec![vol1()], factor: 1e200, origin: None }),
+        Box::new(Scale { entities: vec![vol1()], factor: 1e-200, origin: None }),
+        Box::new(Reflect { entities: vec![vol1()], normal: [1.0, 1.0, 0.0], origin: Some([f64::MAX, f64::MAX, 0.0]) }),
+    ];
+    for op in &ops {
+        let msg = format!("{:?}", run(&mut s, op.as_ref()).expect_err("refused"));
+        assert!(!msg.contains("op failed") && !msg.contains("not a similarity"), "{op:?}: {msg}");
+        assert_eq!(s.state().hash(), before);
+    }
 }

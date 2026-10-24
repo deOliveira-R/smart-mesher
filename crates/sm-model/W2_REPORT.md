@@ -151,6 +151,15 @@ All in `crates/sm-model/tests/` unless noted.
   check exempt ops whose doc says they produce no ids, or add an explicit marker (for example
   `const NO_OUTPUTS: bool`).
 
+## Fix round 1 (review findings)
+
+- Gate: the host disk was full (environment, not code); the gate was re-run after freeing space.
+- `model.scale` refuses a factor whose square is not finite and non-zero, and every transform refuses a non-finite translation (for example `model.reflect` with a huge `origin`), both as `Invalid`/`BadParam` instead of `Failed`.
+- The `check_similarity` message formats the factor with `{:e}`.
+- New tests: overflow cases in `invalid_requests_are_refused_without_changing_the_state` and `overflowing_transform_inputs_are_invalid_not_failed` (state hash unchanged).
+- Orchestrator decisions, no code change: amend plan section 2 T1 Deps or accept the deviation (adds serde, schemars, thiserror; dev proptest, serde_json, sm-mesh-api; sm-topo dev-only; sm-math and sm-geom dropped, a valid subset).
+- Conditional acceptance: sphere volume "within quadrature tolerance" is met only by the test-side divergence integral in `tests/common::check_sphere` (`model.measure` is closed-form until CR-1); the mirror-deck test runs at `Tolerance::with_linear(1e-6)` until CR-2.
+
 ## Notes for the orchestrator
 
 - `Cargo.lock` changed (new `proptest` dev-dependency edge for `sm-model`); it is the only file touched

@@ -110,7 +110,7 @@ impl Xf {
             }
             ok &= self.t.is_improper() == self.improper;
         }
-        if ok { Ok(()) } else { Err(XformError::Unsupported(format!("the transform is not a similarity of factor {} (linear part {m:?})", self.scale))) }
+        if ok { Ok(()) } else { Err(XformError::Unsupported(format!("the transform is not a similarity of factor {:e} (linear part {m:?})", self.scale))) }
     }
 }
 
@@ -210,6 +210,10 @@ impl TypedOp for Scale {
         if !(f.is_finite() && f > 0.0) {
             return Err(XformError::BadParam(format!("`factor` must be finite and positive, got {f}")).into());
         }
+        let s2 = f * f;
+        if !(s2.is_finite() && s2 > 0.0) {
+            return Err(XformError::BadParam(format!("`factor` {f:e} is too large or small: its square must be finite and non-zero")).into());
+        }
         let o = origin_of(self.origin)?;
         let ov = Vector3::new(o.x, o.y, o.z);
         let t = Transform { m: [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, f]], t: ov * (1.0 - f) };
@@ -303,6 +307,10 @@ fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Selection, OpErro
 }
 
 fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf: Xf) -> Result<(), OpError> {
+    let tr = xf.t.t;
+    if !(tr.x.is_finite() && tr.y.is_finite() && tr.z.is_finite()) {
+        return Err(XformError::BadParam("the translation overflows: `origin` is too large for this transform".into()).into());
+    }
     xf.check_similarity()?;
     let sel = select(ctx, entities)?;
     let ((), txn) = topo_txn(ctx, |topo, model| {
