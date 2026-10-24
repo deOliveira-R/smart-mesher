@@ -85,6 +85,40 @@ impl Mesh {
         self.cids.n
     }
 
+    /// Heap bytes held by the topology, coordinate and classification columns, the edge table and
+    /// the reverse class index (lengths, not capacities; the lazily built adjacency tables, sets,
+    /// tags and high-order records are not counted). A density figure for reports and budgets.
+    pub fn memory_bytes(&self) -> usize {
+        use std::mem::size_of_val as sz;
+        let class = |c: &ClassCol| sz(&c.ent[..]) + c.param.len() * 40;
+        let edges = self.edges.as_ref().map_or(0, |t| {
+            sz(&t.ids[..]) + sz(&t.vertices[..]) + sz(&t.face_off[..]) + sz(&t.face_edges[..]) + sz(&t.class[..])
+        });
+        let index: usize = self
+            .class_index
+            .values()
+            .map(|c| 4 * (c.vertices.len() + c.edges.len() + c.faces.len() + c.cells.len()))
+            .sum();
+        sz(&self.x[..]) * 3
+            + sz(&self.face_off[..])
+            + sz(&self.face_verts[..])
+            + sz(&self.face_left[..])
+            + sz(&self.face_right[..])
+            + sz(&self.face_kind[..])
+            + sz(&self.cell_off[..])
+            + sz(&self.cell_faces[..])
+            + sz(&self.cell_shape[..])
+            + sz(&self.corner_off[..])
+            + sz(&self.corners[..])
+            + sz(&self.cell_parent[..])
+            + sz(&self.cell_active[..])
+            + class(&self.vclass)
+            + class(&self.fclass)
+            + class(&self.cclass)
+            + edges
+            + index
+    }
+
     /// Recompute the reverse classification index (after classification or edge-table edits).
     pub(crate) fn rebuild_class_index(&mut self) {
         let (idx, ents) = build_index(&self.vclass, &self.fclass, &self.cclass, self.edges.as_ref());

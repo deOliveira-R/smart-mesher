@@ -24,6 +24,12 @@ fn main() {
     let t = Instant::now();
     let inc = hex_block(MeshBuilder::new(), n, [1.0; 3], false, &mut SerialAlloc::new());
     println!("incremental build + finish: {:?} ok={}", t.elapsed(), inc.is_ok());
+    println!("memory: {} MB = {:.1} bytes per cell", m.memory_bytes() >> 20, m.memory_bytes() as f64 / m.cell_count() as f64);
+    if std::env::var_os("WITH_REFERENCE").is_some() {
+        let t = Instant::now();
+        let r = sm_mesh_api::reference::hex_block(n, [1.0; 3], &mut SerialAlloc::new());
+        println!("reference build + finish: {:?} ok={}", t.elapsed(), r.is_ok());
+    }
     let t = Instant::now();
     let vc = m.vertex_cells().indices().len();
     println!("vertex_cells: {:?} ({vc} entries)", t.elapsed());

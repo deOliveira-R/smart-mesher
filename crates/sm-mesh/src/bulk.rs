@@ -303,12 +303,11 @@ impl MeshBuilder {
             }
         }
         let cell_of = |r: u32| rbase.partition_point(|&b| b <= r) - 1;
+        let head_c: Vec<u32> = head_r.par_iter().map(|&r| cell_of(r) as u32).collect();
         let lens: Vec<u32> = head_r
             .par_iter()
-            .map(|&r| {
-                let c = cell_of(r);
-                shapes[c].local_faces()[(r - rbase[c]) as usize].len() as u32
-            })
+            .zip(&head_c)
+            .map(|(&r, &c)| shapes[c as usize].local_faces()[(r - rbase[c as usize]) as usize].len() as u32)
             .collect();
         let face_off = prefix(&lens);
         let mut face_verts = vec![VertexIx(0); face_off[nfaces] as usize];
@@ -320,8 +319,7 @@ impl MeshBuilder {
                 .for_each(|(s, w)| {
                     let base = face_off[w[0]] as usize;
                     for j in w[0]..w[1] {
-                        let r = head_r[j];
-                        let c = cell_of(r);
+                        let (r, c) = (head_r[j], head_c[j] as usize);
                         let lf = shapes[c].local_faces()[(r - rbase[c]) as usize];
                         let vs = &verts[range(offsets, c)];
                         let at = face_off[j] as usize - base;
@@ -331,21 +329,19 @@ impl MeshBuilder {
                     }
                 });
         }
-        let mut face_cells = vec![[CellIx::NONE; 2]; nfaces];
-        let mut face_sides = vec![1u8; nfaces];
-        for (j, &r) in head_r.iter().enumerate() {
-            face_cells[j][0] = cell_of(r) as u32;
-        }
-        for (i, rec) in recs.iter().enumerate() {
-            if !is_head(i) {
-                let j = rank(hd[i] >> 1) as usize;
-                // The second record sits on the head's left or right (builder sides are relative
-                // to the head's loop; `finish` normalises them).
-                let side = (hd[i] & 1) as usize;
-                face_cells[j][side] = rec.c;
-                face_sides[j] |= if side == 0 { 1 } else { 2 };
-            }
-        }
+        // Face cells: the head's cell on the left; a second record sits on the head's left or
+        // right (builder sides are relative to the head's loop; `finish` normalises them).
+        let cells_of_face: Vec<AtomicU32> = (0..2 * nfaces).map(|_| AtomicU32::new(CellIx::NONE)).collect();
+        head_c.par_iter().enumerate().for_each(|(j, &c)| cells_of_face[2 * j].store(c, Relaxed));
+        (0..nr).into_par_iter().filter(|&i| !is_head(i)).for_each(|i| {
+            let j = rank(hd[i] >> 1) as usize;
+            cells_of_face[2 * j + (hd[i] & 1) as usize].store(recs[i].c, Relaxed);
+        });
+        let face_cells: Vec<[u32; 2]> = (0..nfaces)
+            .into_par_iter()
+            .map(|j| [cells_of_face[2 * j].load(Relaxed), cells_of_face[2 * j + 1].load(Relaxed)])
+            .collect();
+        let face_sides: Vec<u8> = face_cells.par_iter().map(|c| 1 | if c[1] != CellIx::NONE { 2 } else { 0 }).collect();
         // First cell using each vertex.
         let first: Vec<AtomicU32> = (0..nv).map(|_| AtomicU32::new(CellIx::NONE)).collect();
         (0..n).into_par_iter().for_each(|c| {
