@@ -1174,8 +1174,10 @@ dependencies = [
 name = "sm-fem"
 version = "0.0.0"
 dependencies = [
+ "rayon",
  "schemars",
  "serde",
+ "serde_json",
  "sm-core",
  "sm-layer-api",
  "sm-mesh",
@@ -1186,6 +1188,7 @@ dependencies = [
  "sm-scheme-api",
  "sm-testkit",
  "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
