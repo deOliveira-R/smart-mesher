@@ -9,10 +9,8 @@ license.workspace = true
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
-thiserror = "2"
 smallvec = "1"
 rayon = "1"
 

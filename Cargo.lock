@@ -766,11 +766,9 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-geom-api",
- "sm-math",
  "sm-testkit",
  "sm-topo-api",
  "smallvec",
- "thiserror",
 ]
 
 [[package]]
