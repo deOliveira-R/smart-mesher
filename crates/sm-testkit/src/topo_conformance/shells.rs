@@ -1,23 +1,21 @@
-//! Shell-ring cleanup: `end_op` drops the kinds of emptied non-outer shells and shifts the
-//! higher rings down; `remove_shell` removes one shell.
+//! Conformance scenarios: Shell rings, internal shells and their compaction.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
 
-// Scenario copied from sm-topo-api/tests/shells.rs and run against the production store (the
-// reference's name is rebound so the assertions are untouched).
-mod common;
-use common::Dual as CellComplex;
+
 use sm_core::EntityId;
 use sm_topo_api::fixtures::{self, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 
 type Ring = (u16, Option<ShellKind>, Vec<EntityId>);
 
-fn rings(t: &CellComplex, v: EntityId) -> Vec<Ring> {
+fn rings<E: Sys>(t: &E, v: EntityId) -> Vec<Ring> {
     t.shells(v).map(|s| (s.ring, t.shell_kind(v, s.ring), s.entries.iter().map(|e| e.cell).collect())).collect()
 }
 
 /// Brick with the baffle in ring 1 and a second sheet on the same edges in ring 2.
-fn two_internal_shells() -> (CellComplex, EntityId, EntityId, EntityId) {
-    let mut t = CellComplex::new();
+fn two_internal_shells<E: Sys>(make: &Mk<E>) -> (E, EntityId, EntityId, EntityId) {
+    let mut t = make(None);
     let (b, f) = with_op(&mut t, OpId(1), fixtures::brick_with_baffle).unwrap();
     t.begin_op(OpId(2)).unwrap();
     let lp: Vec<CoedgeSpec> = f.edges.iter().map(|&edge| CoedgeSpec { edge, sense: Sense::Forward }).collect();
@@ -29,9 +27,8 @@ fn two_internal_shells() -> (CellComplex, EntityId, EntityId, EntityId) {
     (t, b.volume, f.face, sheet)
 }
 
-#[test]
-fn emptied_shell_loses_its_kind_and_higher_rings_shift_down() {
-    let (mut t, v, baffle, sheet) = two_internal_shells();
+pub(super) fn emptied_shell_loses_its_kind_and_higher_rings_shift_down<E: Sys>(make: &Mk<E>) {
+    let (mut t, v, baffle, sheet) = two_internal_shells(make);
     assert_eq!(rings(&t, v).len(), 3);
     t.begin_op(OpId(3)).unwrap();
     t.remove_face_use(v, baffle, Side::Both).unwrap();
@@ -48,9 +45,8 @@ fn emptied_shell_loses_its_kind_and_higher_rings_shift_down() {
     t.end_op().unwrap();
 }
 
-#[test]
-fn removing_the_last_use_of_the_only_inner_shell_drops_it() {
-    let mut t = CellComplex::new();
+pub(super) fn removing_the_last_use_of_the_only_inner_shell_drops_it<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (b, f) = with_op(&mut t, OpId(1), fixtures::brick_with_baffle).unwrap();
     t.begin_op(OpId(2)).unwrap();
     t.remove_face_use(b.volume, f.face, Side::Both).unwrap();
@@ -63,10 +59,9 @@ fn removing_the_last_use_of_the_only_inner_shell_drops_it() {
     t.end_op().unwrap();
 }
 
-#[test]
-fn remove_shell_matches_removing_its_uses() {
-    let (mut a, v, baffle, _) = two_internal_shells();
-    let (mut b, _, _, _) = two_internal_shells();
+pub(super) fn remove_shell_matches_removing_its_uses<E: Sys>(make: &Mk<E>) {
+    let (mut a, v, baffle, _) = two_internal_shells(make);
+    let (mut b, _, _, _) = two_internal_shells(make);
     a.begin_op(OpId(3)).unwrap();
     a.remove_face_use(v, baffle, Side::Both).unwrap();
     a.end_op().unwrap();
@@ -79,9 +74,8 @@ fn remove_shell_matches_removing_its_uses() {
     assert_eq!(a.canonical_hash(), b.canonical_hash(), "equal shapes hash equal");
 }
 
-#[test]
-fn an_aborted_op_restores_shell_kinds() {
-    let (mut t, v, _, _) = two_internal_shells();
+pub(super) fn an_aborted_op_restores_shell_kinds<E: Sys>(make: &Mk<E>) {
+    let (mut t, v, _, _) = two_internal_shells(make);
     let before = t.canonical_hash();
     t.begin_op(OpId(3)).unwrap();
     t.remove_shell(v, 1).unwrap();
@@ -90,20 +84,18 @@ fn an_aborted_op_restores_shell_kinds() {
     assert_eq!(rings(&t, v).len(), 3);
 }
 
-#[test]
-fn split_and_loop_assignments_stay_constructible() {
+pub(super) fn split_and_loop_assignments_stay_constructible<E: Sys>(_make: &Mk<E>) {
     // `#[non_exhaustive]` only forbids exhaustive matches outside the crate.
     let a = ShellAssign::Explicit(&[(1, 0)]);
     assert_ne!(a, ShellAssign::None);
     assert_ne!(InnerLoopAssign::ByPointTest, InnerLoopAssign::None);
 }
 
-#[test]
-fn virtual_op_created_lists_the_ids_remove_retires() {
+pub(super) fn virtual_op_created_lists_the_ids_remove_retires<E: Sys>(make: &Mk<E>) {
     use sm_core::{EntityKind, Point3, Vector3};
     use sm_geom_api::{CurveDef, Interval, Line};
     use std::sync::Arc;
-    let mut t = CellComplex::new();
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let [f0, f1] = with_op(&mut t, OpId(2), |t| {
         let line = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
@@ -121,4 +113,15 @@ fn virtual_op_created_lists_the_ids_remove_retires() {
     ov.remove(ids[0]).unwrap();
     assert!(ids.iter().all(|i| !ov.is_alive(*i)));
     assert!(ov.ops().iter().all(|o| !o.created().contains(&vf)));
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("emptied_shell_loses_its_kind_and_higher_rings_shift_down", emptied_shell_loses_its_kind_and_higher_rings_shift_down::<E>),
+        ("removing_the_last_use_of_the_only_inner_shell_drops_it", removing_the_last_use_of_the_only_inner_shell_drops_it::<E>),
+        ("remove_shell_matches_removing_its_uses", remove_shell_matches_removing_its_uses::<E>),
+        ("an_aborted_op_restores_shell_kinds", an_aborted_op_restores_shell_kinds::<E>),
+        ("split_and_loop_assignments_stay_constructible", split_and_loop_assignments_stay_constructible::<E>),
+        ("virtual_op_created_lists_the_ids_remove_retires", virtual_op_created_lists_the_ids_remove_retires::<E>),
+    ]
 }

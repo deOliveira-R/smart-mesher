@@ -47,12 +47,12 @@ impl TopoStore {
         }
     }
 
-    /// Ids named by journal records of kinds Alloc / Splice / State / Carrier, ascending.
+    /// Ids named by journal records of kinds Alloc / Splice / State / Carrier / Flags, ascending.
     fn touched_ids(&self) -> Vec<EntityId> {
         let mut v: Vec<EntityId> = Vec::new();
         for u in &self.journal {
             match u {
-                Undo::Alloc(id) | Undo::Splice { id, .. } | Undo::State { id, .. } | Undo::Carrier { id, .. } => v.push(*id),
+                Undo::Alloc(id) | Undo::Splice { id, .. } | Undo::State { id, .. } | Undo::Carrier { id, .. } | Undo::Flags { id, .. } => v.push(*id),
                 _ => {}
             }
         }
@@ -103,9 +103,9 @@ impl TopoStore {
         check.retain(|id| self.state(*id) == Some(EntityState::Live));
         let (open, carry) = self.open_shells();
         let ins = self.inserted_entries();
-        let issues = self.check_local(&check, &open, &ins);
+        let issues = crate::check::check_local(self, &check, &open, &ins);
         if self.paranoid {
-            let full = crate::check::check_cells(self, &check, None, None);
+            let full = sm_topo_api::check_cells(self, &check);
             assert_eq!(issues, full, "incremental end_op checks differ from the full reference checks");
         }
         if !issues.is_empty() {

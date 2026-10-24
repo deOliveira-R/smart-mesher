@@ -4,7 +4,8 @@
 //! (that is what keeps ids, lineage and hashes identical); what differs is the storage they run
 //! on and the bookkeeping around them (delta row edits, incremental end-of-op checks).
 
-use crate::norm::{canonical_rotate, lt, normalize};
+use crate::norm::lt;
+use sm_topo_api::{canonical_rotate, normalize_row};
 use crate::store::{TopoStore, Undo};
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::{CurveDef, GeomAppend, GeomStore, GeomStoreMut, Interval, ModelTolerance, PCurve, SurfaceDef};
@@ -151,7 +152,7 @@ impl TopoStore {
             new.extend(with_ring(src, idx as u16));
         }
         new.extend(embedded.into_iter().filter(|e| e.cell != edge));
-        normalize(Dim::Face, &mut new);
+        normalize_row(Dim::Face, &mut new);
         self.set_row(face, &new)?;
         self.mark_dirty_around(face);
         self.note(face, LineageKind::Modified(ModKind::InnerLoop));
@@ -474,7 +475,7 @@ impl TopoStore {
             for e in r.iter_mut() {
                 e.ring = 0;
             }
-            normalize(Dim::Face, r);
+            normalize_row(Dim::Face, r);
         }
         self.set_row(f1, &o1)?;
         self.set_row(f2, &o2)?;
@@ -498,8 +499,8 @@ impl TopoStore {
             rows[0].extend(r);
         }
         let [mut r1, mut r2] = rows;
-        normalize(Dim::Face, &mut r1);
-        normalize(Dim::Face, &mut r2);
+        normalize_row(Dim::Face, &mut r1);
+        normalize_row(Dim::Face, &mut r2);
         self.set_row(f1, &r1)?;
         self.set_row(f2, &r2)?;
         self.inherit(face, f1);
@@ -671,7 +672,7 @@ impl TopoStore {
         let v0 = self.alloc(Dim::Volume, Carrier::None)?;
         let v1 = self.alloc(Dim::Volume, Carrier::None)?;
         for (v, (mut r, ks)) in [v0, v1].into_iter().zip(rows.into_iter().zip(kinds)) {
-            normalize(Dim::Volume, &mut r);
+            normalize_row(Dim::Volume, &mut r);
             self.set_row(v, &r)?;
             for (i, k) in ks.into_iter().enumerate() {
                 self.set_shell_raw((v, i as u16), Some(k));
@@ -787,7 +788,7 @@ impl TopologyEdit for TopoStore {
                 return Err(TopoError::InvalidParameter("an (edge, side) may appear at most once per face"));
             }
             let id = s.alloc(Dim::Face, surface.map_or(Carrier::None, Carrier::Surface))?;
-            normalize(Dim::Face, &mut row);
+            normalize_row(Dim::Face, &mut row);
             s.set_row(id, &row)?;
             Ok(id)
         })
@@ -814,7 +815,7 @@ impl TopologyEdit for TopoStore {
             s.check_occupancy(&uses)?;
             let id = s.alloc(Dim::Volume, Carrier::None)?;
             let mut row: Row = shells.iter().enumerate().flat_map(|(ri, sh)| sh.uses.iter().map(move |u| Incidence::new(u.face, u.side, ri as u16))).collect();
-            normalize(Dim::Volume, &mut row);
+            normalize_row(Dim::Volume, &mut row);
             s.set_row(id, &row)?;
             for (ri, sh) in shells.iter().enumerate() {
                 s.set_shell_raw((id, ri as u16), Some(sh.kind));
@@ -833,7 +834,7 @@ impl TopologyEdit for TopoStore {
             }
             let id = s.alloc(Dim::Body, Carrier::None)?;
             let mut row: Row = members.iter().map(|&m| Incidence::new(m, Side::Both, 0)).collect();
-            normalize(Dim::Body, &mut row);
+            normalize_row(Dim::Body, &mut row);
             s.set_row(id, &row)?;
             Ok(id)
         })
@@ -861,7 +862,7 @@ impl TopologyEdit for TopoStore {
             s.check_occupancy(&uses)?;
             let mut row = s.row(volume).to_vec();
             row.extend(shell.uses.iter().map(|u| Incidence::new(u.face, u.side, ring)));
-            normalize(Dim::Volume, &mut row);
+            normalize_row(Dim::Volume, &mut row);
             s.set_row(volume, &row)?;
             s.set_shell_raw((volume, ring), Some(shell.kind));
             Ok(ring)
@@ -879,7 +880,7 @@ impl TopologyEdit for TopoStore {
             s.check_occupancy(&[(use_.face, use_.side)])?;
             let mut row = s.row(volume).to_vec();
             row.push(Incidence::new(use_.face, use_.side, ring));
-            normalize(Dim::Volume, &mut row);
+            normalize_row(Dim::Volume, &mut row);
             s.set_row(volume, &row)
         })
     }
@@ -927,7 +928,7 @@ impl TopologyEdit for TopoStore {
             let ring = if pd == Dim::Body { 0 } else { Incidence::EMBEDDED };
             let mut row = s.row(parent).to_vec();
             row.push(Incidence::new(child, Side::Both, ring));
-            normalize(pd, &mut row);
+            normalize_row(pd, &mut row);
             s.set_row(parent, &row)
         })
     }
@@ -1020,7 +1021,7 @@ impl TopologyEdit for TopoStore {
             }
             let mut new = row;
             new.extend(entries);
-            normalize(Dim::Face, &mut new);
+            normalize_row(Dim::Face, &mut new);
             s.set_row(face, &new)?;
             s.note(face, LineageKind::Modified(ModKind::InnerLoop));
             Ok(ring as u16)
@@ -1048,7 +1049,7 @@ impl TopologyEdit for TopoStore {
             // Pcurves of the removed loop's coedges go with it.
             let gone: Row = row.iter().copied().filter(|e| e.ring == ring).collect();
             s.drop_face_pcurves(face, &gone);
-            normalize(Dim::Face, &mut new);
+            normalize_row(Dim::Face, &mut new);
             s.set_row(face, &new)?;
             s.note(face, LineageKind::Modified(ModKind::InnerLoop));
             Ok(())
@@ -1169,7 +1170,7 @@ impl TopologyEdit for TopoStore {
             if d_emb.iter().any(|d| !k_emb.contains(d)) {
                 let mut row = krow.clone();
                 row.extend(d_emb.iter().copied().filter(|d| !k_emb.contains(d)));
-                normalize(Dim::Face, &mut row);
+                normalize_row(Dim::Face, &mut row);
                 s.set_row(keep, &row)?;
             }
             // Other coincidence records of the dropped face now belong to the survivor.
@@ -1250,7 +1251,7 @@ impl TopologyEdit for TopoStore {
                     s.move_pcurve(CoedgeKey { face: f, edge, side: i.side }, CoedgeKey { face: f, edge: copy, side: i.side });
                 }
                 let mut new: Row = old.iter().map(|i| if i.cell == edge && i.ring != Incidence::EMBEDDED { Incidence { cell: copy, ..*i } } else { *i }).collect();
-                normalize(Dim::Face, &mut new);
+                normalize_row(Dim::Face, &mut new);
                 s.set_row(f, &new)?;
             }
             s.mark_dirty_around(edge);
@@ -1286,7 +1287,7 @@ impl TopologyEdit for TopoStore {
                 }
             }
             let mut vrow: Row = s.row(u.cell).iter().map(|i| if i.cell == face && i.side == side && i.ring == u.ring { Incidence { cell: new, ..*i } } else { *i }).collect();
-            normalize(Dim::Volume, &mut vrow);
+            normalize_row(Dim::Volume, &mut vrow);
             s.set_row(u.cell, &vrow)?;
             // The merge record no longer describes this face.
             let stale: Vec<FacePair> = s.pairs_of_face(face).iter().copied().filter(|p| p.status == Coincidence::Merged && p.other(face).is_some_and(|o| s.state(o) != Some(EntityState::Live))).collect();

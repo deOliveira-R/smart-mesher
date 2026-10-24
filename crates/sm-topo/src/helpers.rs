@@ -1,6 +1,6 @@
 //! Shared operator machinery: retirement, parent rewrites, orientation, shell compaction.
 
-use crate::norm::{normalize, sort_merge};
+use sm_topo_api::normalize_row;
 use crate::store::{TopoStore, Undo};
 use smallvec::SmallVec;
 use sm_core::{EntityId, EntityKind};
@@ -109,7 +109,7 @@ impl TopoStore {
                     None => *e,
                 })
                 .collect();
-            normalize(Dim::Volume, &mut row);
+            normalize_row(Dim::Volume, &mut row);
             if row.as_slice() != self.row(v) {
                 self.set_row(v, &row)?;
             }
@@ -150,7 +150,7 @@ impl TopoStore {
                 new.push(*e);
             }
         }
-        normalize(pdim, &mut new);
+        normalize_row(pdim, &mut new);
         new
     }
 
@@ -174,7 +174,8 @@ impl TopoStore {
             cand.extend(pos[before..].iter().map(|&p| row[p]));
         }
         cand.extend(news);
-        sort_merge(pdim, &mut cand);
+        debug_assert!(matches!(pdim, Dim::Volume | Dim::Body), "sorted parents are volume or body rows");
+        normalize_row(pdim, &mut cand);
         pos.sort_unstable();
         pos.dedup();
         // Remove in descending position order, merging consecutive runs into one splice.
@@ -248,7 +249,7 @@ impl TopoStore {
                 out.extend(g.iter().rev().map(|e| Incidence { side: e.side.flip(), ..*e }));
             }
         }
-        normalize(Dim::Face, &mut out);
+        normalize_row(Dim::Face, &mut out);
         // Re-key pcurves (the uv curve of an edge does not change when the loop is reversed).
         let mut moved: Vec<(CoedgeKey, sm_geom_api::PCurve)> = Vec::new();
         for e in &row {

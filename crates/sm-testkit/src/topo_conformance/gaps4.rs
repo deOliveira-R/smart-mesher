@@ -1,14 +1,12 @@
-//! W0f gaps4: unmerge operators, corner-named face cuts and pole-edge splits (meridian cut of a
-//! sphere), measured merge gaps, tolerance scaling.
+//! Conformance scenarios: Face and volume geometry corner cases (spherical faces, pcurves, signatures).
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
 
-// Scenario copied from sm-topo-api/tests/gaps4.rs and run against the production store (the
-// reference's name is rebound so the assertions are untouched).
-mod common;
-use common::Dual as CellComplex;
+
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{Circle, CurveDef, Ellipse, Frame, Interval, Line2, PCurve, Uv};
 use sm_topo_api::fixtures::{self, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 
 fn assert_valid(v: &dyn TopologyView) {
@@ -21,7 +19,7 @@ fn assert_valid(v: &dyn TopologyView) {
 /// An id-free structural signature: cell counts, sorted vertex positions, sorted face
 /// (loop sizes, area, centroid), sorted volume (face count, volume, centroid), coincidence
 /// statuses and tolerance overrides.
-fn signature(t: &CellComplex) -> Vec<String> {
+fn signature<E: Sys>(t: &E) -> Vec<String> {
     let q = |x: f64| (x * 1e9).round() as i64;
     let mut out = vec![format!("{:?}", Dim::ALL.map(|d| t.cells(d).len()))];
     let mut vs: Vec<String> = t
@@ -64,10 +62,9 @@ fn signature(t: &CellComplex) -> Vec<String> {
     out
 }
 
-#[test]
-fn merge_then_unmerge_gives_the_never_merged_bricks() {
+pub(super) fn merge_then_unmerge_gives_the_never_merged_bricks<E: Sys>(make: &Mk<E>) {
     // Never merged: two touching bricks, imprinted, not merged.
-    let mut plain = CellComplex::new();
+    let mut plain = make(None);
     with_op(&mut plain, OpId(1), |t| {
         let (a, b) = fixtures::two_bricks(t)?;
         t.record_coincidence(a.faces[1], b.faces[0], Coincidence::ImprintedNotMerged)?;
@@ -75,7 +72,7 @@ fn merge_then_unmerge_gives_the_never_merged_bricks() {
     })
     .unwrap();
 
-    let mut t = CellComplex::new();
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     assert_ne!(signature(&t), signature(&plain));
@@ -83,7 +80,7 @@ fn merge_then_unmerge_gives_the_never_merged_bricks() {
     let nf = with_op(&mut t, OpId(3), |t| {
         let nf = t.unmerge_face(shared, Side::Right)?;
         // Edges: B's side (the new face and B's other faces) gets a copy.
-        let b_faces = |t: &CellComplex| -> Vec<EntityId> { t.volume_faces(b.volume).to_vec() };
+        let b_faces = |t: &E| -> Vec<EntityId> { t.volume_faces(b.volume).to_vec() };
         for e in t.face_edges(shared).to_vec() {
             let bf = b_faces(t);
             let mut fs: Vec<EntityId> = t.coboundary(e).iter().map(|i| i.cell).filter(|f| bf.contains(f)).collect();
@@ -114,9 +111,8 @@ fn merge_then_unmerge_gives_the_never_merged_bricks() {
     assert!(t.volume_faces(b.volume).contains(&nf) && !t.volume_faces(b.volume).contains(&shared));
 }
 
-#[test]
-fn unmerge_operators_check_their_inputs() {
-    let mut t = CellComplex::new();
+pub(super) fn unmerge_operators_check_their_inputs<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     let before = t.canonical_hash();
     t.begin_op(OpId(2)).unwrap();
@@ -134,7 +130,7 @@ fn unmerge_operators_check_their_inputs() {
 
 /// `∮` over the face's pcurve loops of `L(u, v) du` (Green: `∬ -dL/dv du dv`), with `L` chosen
 /// so the integrand is the sphere's area element (`k = 0`) or `y dA` (`k = 1`).
-fn sphere_integral(t: &CellComplex, f: EntityId, r: f64, k: usize) -> f64 {
+fn sphere_integral<E: Sys>(t: &E, f: EntityId, r: f64, k: usize) -> f64 {
     let l = |u: f64, v: f64| match k {
         0 => -r * r * v.sin(),
         _ => -r * r * r * u.sin() * (v / 2.0 + (2.0 * v).sin() / 4.0),
@@ -159,10 +155,9 @@ fn sphere_integral(t: &CellComplex, f: EntityId, r: f64, k: usize) -> f64 {
     acc
 }
 
-#[test]
-fn meridian_cut_of_a_sphere_gives_two_hemispheres() {
+pub(super) fn meridian_cut_of_a_sphere_gives_two_hemispheres<E: Sys>(make: &Mk<E>) {
     let r = 2.0;
-    let mut t = CellComplex::new();
+    let mut t = make(None);
     let s = with_op(&mut t, OpId(1), |t| fixtures::sphere(t, r)).unwrap();
     let whole = sphere_integral(&t, s.face, r, 0);
     assert!((whole - 4.0 * PI * r * r).abs() < 1e-6, "{whole}");
@@ -205,9 +200,8 @@ fn meridian_cut_of_a_sphere_gives_two_hemispheres() {
     assert!((y1.abs() - PI * r.powi(3)).abs() < 1e-5 && (y1 + y2).abs() < 1e-9, "{y1} {y2}");
 }
 
-#[test]
-fn degenerate_split_checks_its_inputs() {
-    let mut t = CellComplex::new();
+pub(super) fn degenerate_split_checks_its_inputs<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let s = with_op(&mut t, OpId(1), |t| fixtures::sphere(t, 1.0)).unwrap();
     t.begin_op(OpId(2)).unwrap();
     assert!(matches!(t.split_degenerate_edge(s.edges[1], 0.0), Err(TopoError::InvalidParameter(_))), "seam is not degenerate");
@@ -222,9 +216,8 @@ fn degenerate_split_checks_its_inputs() {
     assert_valid(&t);
 }
 
-#[test]
-fn merge_gaps_are_measured_or_refused() {
-    let mut t = CellComplex::new();
+pub(super) fn merge_gaps_are_measured_or_refused<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     t.begin_op(OpId(1)).unwrap();
     let v0 = t.make_vertex(Point3::new(2.0, 0.0, 0.0)).unwrap();
     let v1 = t.make_vertex(Point3::new(-2.0, 0.0, 0.0)).unwrap();
@@ -247,9 +240,8 @@ fn merge_gaps_are_measured_or_refused() {
     t.end_op().unwrap();
 }
 
-#[test]
-fn scale_tolerances_shrinks_merge_overrides() {
-    let mut t = CellComplex::new();
+pub(super) fn scale_tolerances_shrinks_merge_overrides<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     // Merge with a gap so the survivors get tolerance overrides.
     with_op(&mut t, OpId(2), |t| {
@@ -274,4 +266,15 @@ fn scale_tolerances_shrinks_merge_overrides() {
     assert_eq!(t.tolerance_override(v), None);
     t.end_op().unwrap();
     assert!(t.lineage().of(v).filter(|r| r.kind == LineageKind::Modified(ModKind::Tolerance)).count() >= 3);
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("merge_then_unmerge_gives_the_never_merged_bricks", merge_then_unmerge_gives_the_never_merged_bricks::<E>),
+        ("unmerge_operators_check_their_inputs", unmerge_operators_check_their_inputs::<E>),
+        ("meridian_cut_of_a_sphere_gives_two_hemispheres", meridian_cut_of_a_sphere_gives_two_hemispheres::<E>),
+        ("degenerate_split_checks_its_inputs", degenerate_split_checks_its_inputs::<E>),
+        ("merge_gaps_are_measured_or_refused", merge_gaps_are_measured_or_refused::<E>),
+        ("scale_tolerances_shrinks_merge_overrides", scale_tolerances_shrinks_merge_overrides::<E>),
+    ]
 }

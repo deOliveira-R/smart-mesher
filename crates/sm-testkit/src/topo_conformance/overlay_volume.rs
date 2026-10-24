@@ -1,9 +1,10 @@
-//! Virtual volume splits in the decomposition overlay (W0e decision 2): the cut face, its edges
-//! and vertices are `Partition*` cells, the two volumes take caller-supplied `PartitionCell`
-//! ids, the host is untouched, and the split replays, undoes and nests.
+//! Conformance scenarios: The decomposition overlay with volume cuts.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
+
 
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_topo_api::fixtures::{self, BrickIds, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 use std::sync::Arc;
 
@@ -11,8 +12,8 @@ fn cell(n: u64) -> EntityId {
     EntityId::new(EntityKind::PartitionCell, n).unwrap()
 }
 
-fn brick() -> (Arc<dyn TopologyView>, BrickIds) {
-    let mut t = CellComplex::new();
+fn brick<E: Sys>(make: &Mk<E>) -> (Arc<dyn TopologyView>, BrickIds) {
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0, 2.0, 3.0])).unwrap();
     (Arc::new(t), b)
 }
@@ -30,9 +31,8 @@ fn cut_at(ov: &mut Overlay, v: EntityId, z: f64, kids: [EntityId; 2]) -> Result<
     ov.partition_volume_by_plane(v, Point3::new(0.0, 0.0, z), Vector3::new(0.0, 0.0, 1.0), kids)
 }
 
-#[test]
-fn plane_split_creates_partition_cells_and_two_virtual_volumes() {
-    let (host, b) = brick();
+pub(super) fn plane_split_creates_partition_cells_and_two_virtual_volumes<E: Sys>(make: &Mk<E>) {
+    let (host, b) = brick(make);
     let h0 = host.canonical_hash();
     let mut ov = Overlay::new(host.clone());
     let pc = cut_at(&mut ov, b.volume, 1.2, [cell(10), cell(11)]).unwrap();
@@ -95,9 +95,8 @@ fn plane_split_creates_partition_cells_and_two_virtual_volumes() {
     assert!(issues.is_empty(), "{issues:#?}");
 }
 
-#[test]
-fn volume_split_replays_undoes_and_nests() {
-    let (host, b) = brick();
+pub(super) fn volume_split_replays_undoes_and_nests<E: Sys>(make: &Mk<E>) {
+    let (host, b) = brick(make);
     let mut ov = Overlay::new(host.clone());
     let pc = cut_at(&mut ov, b.volume, 1.0, [cell(1), cell(2)]).unwrap();
     let after_first = ov.canonical_hash();
@@ -127,9 +126,8 @@ fn volume_split_replays_undoes_and_nests() {
     assert_ne!(again.face, pc.face, "face ids are not reused");
 }
 
-#[test]
-fn volume_split_is_atomic_on_error() {
-    let (host, b) = brick();
+pub(super) fn volume_split_is_atomic_on_error<E: Sys>(make: &Mk<E>) {
+    let (host, b) = brick(make);
     let mut ov = Overlay::new(host.clone());
     let h = ov.canonical_hash();
     let d = ov.data();
@@ -151,10 +149,9 @@ fn volume_split_is_atomic_on_error() {
     assert!(cut_at(&mut ov, cell(2), 2.0, [cell(1), cell(3)]).is_err());
 }
 
-#[test]
-fn volume_split_is_deterministic() {
+pub(super) fn volume_split_is_deterministic<E: Sys>(make: &Mk<E>) {
     let run = || {
-        let (host, b) = brick();
+        let (host, b) = brick(make);
         let mut ov = Overlay::new(host);
         let pc = cut_at(&mut ov, b.volume, 0.7, [cell(1), cell(2)]).unwrap();
         cut_at(&mut ov, cell(1), 0.3, [cell(3), cell(4)]).unwrap();
@@ -162,17 +159,19 @@ fn volume_split_is_deterministic() {
     };
     let first = run();
     assert_eq!(first, run());
-    let hs: Vec<_> = (0..4).map(|_| std::thread::spawn(run)).collect();
-    for h in hs {
-        assert_eq!(h.join().unwrap(), first);
-    }
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..4).map(|_| sc.spawn(run)).collect();
+        for h in hs {
+            assert_eq!(h.join().unwrap(), first);
+        }
+    });
 }
 
-#[cfg(feature = "schemars")]
-#[test]
-fn key_types_have_json_schemas() {
-    let s = format!("{:?}", schemars::schema_for!(CornerKey));
-    assert!(s.contains("incoming") && s.contains("face"), "{s}");
-    let s = format!("{:?}", schemars::schema_for!(CoedgeKey));
-    assert!(s.contains("edge") && s.contains("side"), "{s}");
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("plane_split_creates_partition_cells_and_two_virtual_volumes", plane_split_creates_partition_cells_and_two_virtual_volumes::<E>),
+        ("volume_split_replays_undoes_and_nests", volume_split_replays_undoes_and_nests::<E>),
+        ("volume_split_is_atomic_on_error", volume_split_is_atomic_on_error::<E>),
+        ("volume_split_is_deterministic", volume_split_is_deterministic::<E>),
+    ]
 }

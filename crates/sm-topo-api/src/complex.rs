@@ -647,58 +647,12 @@ impl CellComplex {
                 Some(n) => Incidence { ring: *n, ..*e },
                 None => *e,
             }).collect();
-            Self::normalize(Dim::Volume, &mut row);
+            normalize_row(Dim::Volume, &mut row);
             if row.as_slice() != self.row(v) {
                 self.set_row(v, &row)?;
             }
         }
         Ok(())
-    }
-
-    /// Normalize a row into canonical form for its rank.
-    fn normalize(dim: Dim, row: &mut Vec<Incidence>) {
-        match dim {
-            Dim::Vertex => {}
-            Dim::Edge => {
-                let merged = match row.as_slice() {
-                    [a, b] if a.cell == b.cell && a.side != Side::Both => Some(a.cell),
-                    _ => None,
-                };
-                if let Some(cell) = merged {
-                    *row = vec![Incidence::new(cell, Side::Both, 0)];
-                }
-            }
-            Dim::Face => {
-                let mut out = Vec::with_capacity(row.len());
-                let mut embedded: Vec<Incidence> = Vec::new();
-                for g in row.chunk_by(|a, b| a.ring == b.ring) {
-                    if g[0].ring == Incidence::EMBEDDED {
-                        embedded.extend_from_slice(g);
-                    } else {
-                        let mut ring = g.to_vec();
-                        canonical_rotate(&mut ring);
-                        out.extend(ring);
-                    }
-                }
-                embedded.sort();
-                embedded.dedup();
-                out.extend(embedded);
-                *row = out;
-            }
-            Dim::Volume | Dim::Body => {
-                row.sort_by_key(|e| (e.ring, e.cell, e.side));
-                row.dedup();
-                // Left + Right of the same face in one shell is a baffle.
-                let mut out: Vec<Incidence> = Vec::with_capacity(row.len());
-                for e in row.iter() {
-                    match out.last_mut() {
-                        Some(l) if l.cell == e.cell && l.ring == e.ring && l.side != e.side && dim == Dim::Volume => l.side = Side::Both,
-                        _ => out.push(*e),
-                    }
-                }
-                *row = out;
-            }
-        }
     }
 
     /// Rewrite every parent row of `old`, replacing each entry that references it with `f(entry)`.
@@ -715,7 +669,7 @@ impl CellComplex {
                     new.push(*e);
                 }
             }
-            Self::normalize(pdim, &mut new);
+            normalize_row(pdim, &mut new);
             self.set_row(parent, &new)?;
         }
         Ok(())
@@ -776,7 +730,7 @@ impl CellComplex {
                 out.extend(g.iter().rev().map(|e| Incidence { side: e.side.flip(), ..*e }));
             }
         }
-        Self::normalize(Dim::Face, &mut out);
+        normalize_row(Dim::Face, &mut out);
         // Re-key pcurves (the uv curve of an edge does not change when the loop is reversed).
         let mut moved: Vec<(CoedgeKey, PCurve)> = Vec::new();
         for e in &row {
@@ -846,9 +800,65 @@ pub(crate) fn lt(a: f64, b: f64) -> bool {
     a.partial_cmp(&b) == Some(core::cmp::Ordering::Less)
 }
 
+/// Normalize an incidence row into the canonical form of its rank (what every operator leaves
+/// behind, and what [`TopologyView::boundary`] shows).
+///
+/// - Edge: `Left` + `Right` entries of one vertex fuse to a single `Both` (a closed edge).
+/// - Face: each loop ring is rotated to start at its smallest `(edge, side)` (see
+///   [`canonical_rotate`]); the embedded entries come last, sorted and deduplicated.
+/// - Volume and body: sorted by `(ring, cell, side)`, duplicates dropped, and for volumes `Left` +
+///   `Right` of one face in one shell fuse to `Both` (a baffle).
+/// - Vertex: unchanged.
+///
+/// Idempotent. The reference implementation and `sm-topo` both call this, so rows agree.
+pub fn normalize_row(dim: Dim, row: &mut Vec<Incidence>) {
+    match dim {
+        Dim::Vertex => {}
+        Dim::Edge => {
+            let merged = match row.as_slice() {
+                [a, b] if a.cell == b.cell && a.side != Side::Both => Some(a.cell),
+                _ => None,
+            };
+            if let Some(cell) = merged {
+                *row = vec![Incidence::new(cell, Side::Both, 0)];
+            }
+        }
+        Dim::Face => {
+            let mut out = Vec::with_capacity(row.len());
+            let mut embedded: Vec<Incidence> = Vec::new();
+            for g in row.chunk_by(|a, b| a.ring == b.ring) {
+                if g[0].ring == Incidence::EMBEDDED {
+                    embedded.extend_from_slice(g);
+                } else {
+                    let mut ring = g.to_vec();
+                    canonical_rotate(&mut ring);
+                    out.extend(ring);
+                }
+            }
+            embedded.sort();
+            embedded.dedup();
+            out.extend(embedded);
+            *row = out;
+        }
+        Dim::Volume | Dim::Body => {
+            row.sort_by_key(|e| (e.ring, e.cell, e.side));
+            row.dedup();
+            // Left + Right of the same face in one shell is a baffle.
+            let mut out: Vec<Incidence> = Vec::with_capacity(row.len());
+            for e in row.iter() {
+                match out.last_mut() {
+                    Some(l) if l.cell == e.cell && l.ring == e.ring && l.side != e.side && dim == Dim::Volume => l.side = Side::Both,
+                    _ => out.push(*e),
+                }
+            }
+            *row = out;
+        }
+    }
+}
+
 /// Rotate a cyclic ring so it starts at its smallest `(edge, side)`; ties are broken by comparing
 /// the whole rotated sequences, so the result is unique.
-pub(crate) fn canonical_rotate(ring: &mut [Incidence]) {
+pub fn canonical_rotate(ring: &mut [Incidence]) {
     let n = ring.len();
     if n < 2 {
         return;

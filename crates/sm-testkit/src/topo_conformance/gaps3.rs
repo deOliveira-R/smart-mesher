@@ -1,18 +1,16 @@
-//! W0f gaps3: `record_merged`, `live_cover` on the complex and the overlay, `canonical_visit`.
+//! Conformance scenarios: Merge gap recording, overlay replay and tolerance-insensitive hashes.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
 
-// Scenario copied from sm-topo-api/tests/gaps3.rs and run against the production store (the
-// reference's name is rebound so the assertions are untouched).
-mod common;
-use common::Dual as CellComplex;
+
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{CurveDef, Interval, Line};
 use sm_topo_api::fixtures::{self, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 use std::sync::Arc;
 
-#[test]
-fn record_merged_marks_a_retired_cell_merged_into_a_live_survivor() {
-    let mut t = CellComplex::new();
+pub(super) fn record_merged_marks_a_retired_cell_merged_into_a_live_survivor<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let [a, b, c] = with_op(&mut t, OpId(1), |t| {
         Ok([t.make_vertex(Point3::new(0.0, 0.0, 0.0))?, t.make_vertex(Point3::new(1.0, 0.0, 0.0))?, t.make_vertex(Point3::new(2.0, 0.0, 0.0))?])
     })
@@ -38,9 +36,8 @@ fn record_merged_marks_a_retired_cell_merged_into_a_live_survivor() {
     assert_eq!(t.live_cover(a), vec![a]);
 }
 
-#[test]
-fn live_cover_on_the_complex_follows_splits() {
-    let mut t = CellComplex::new();
+pub(super) fn live_cover_on_the_complex_follows_splits<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let w = with_op(&mut t, OpId(2), |t| fixtures::webcut_brick(t, &b, 0.5)).unwrap();
     let _ = w;
@@ -51,9 +48,8 @@ fn live_cover_on_the_complex_follows_splits() {
     assert!(cover.windows(2).all(|p| p[0] < p[1]));
 }
 
-#[test]
-fn live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece() {
-    let mut t = CellComplex::new();
+pub(super) fn live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let host: Arc<dyn TopologyView> = Arc::new(t);
     let mut ov = Overlay::new(host.clone());
@@ -95,15 +91,14 @@ fn live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece() {
     assert_eq!(replayed.live_cover(y_edge), ov.live_cover(y_edge));
 }
 
-#[test]
-fn canonical_visit_folds_to_canonical_hash_and_separates_sub_quantum_changes() {
+pub(super) fn canonical_visit_folds_to_canonical_hash_and_separates_sub_quantum_changes<E: Sys>(make: &Mk<E>) {
     let build = |dx: f64| {
-        let mut t = CellComplex::new();
+        let mut t = make(None);
         with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(dx, 0.0, 0.0), [1.0; 3])).unwrap();
         t
     };
     let (a, b) = (build(0.0), build(1e-12));
-    let words = |t: &CellComplex| {
+    let words = |t: &E| {
         let mut v: Vec<HashWord> = Vec::new();
         t.canonical_visit(&mut |w| v.push(w));
         v
@@ -120,4 +115,13 @@ fn canonical_visit_folds_to_canonical_hash_and_separates_sub_quantum_changes() {
     assert!(wa.iter().zip(&wb).all(|(x, y)| q(x) == q(y)));
     assert!(wa.iter().zip(&wb).any(|(x, y)| x != y), "sub-quantum shift is visible in raw floats");
     assert_eq!(a.canonical_hash(), b.canonical_hash());
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("record_merged_marks_a_retired_cell_merged_into_a_live_survivor", record_merged_marks_a_retired_cell_merged_into_a_live_survivor::<E>),
+        ("live_cover_on_the_complex_follows_splits", live_cover_on_the_complex_follows_splits::<E>),
+        ("live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece", live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece::<E>),
+        ("canonical_visit_folds_to_canonical_hash_and_separates_sub_quantum_changes", canonical_visit_folds_to_canonical_hash_and_separates_sub_quantum_changes::<E>),
+    ]
 }

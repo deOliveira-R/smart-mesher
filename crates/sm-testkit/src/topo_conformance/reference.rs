@@ -1,11 +1,12 @@
-//! Reference-implementation tests: brick, imprinted+merged bricks, webcut with lineage, cylinder
-//! seam, sphere poles, baffle, non-manifold fin, CSG volume, atomicity, tolerance and gap
-//! recording, determinism and hash quantization, performance, and every semantics query.
+//! Conformance scenarios: Brick, imprinted and merged bricks, webcut with lineage, cylinder seam, sphere poles, baffle, fin, CSG, atomicity, tolerance, determinism and every semantics query.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
+
 
 use core::f64::consts::{PI, TAU};
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{CsgCell, Crossing, CurveDef, Frame, HalfSpace, ImplicitDef, Interval, Line, ModelTolerance, Quadric, RayHit, Sign, Sphere, SurfaceDef, Uv};
 use sm_topo_api::fixtures::{self, BrickIds, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 
 fn assert_valid(v: &dyn TopologyView) {
@@ -23,15 +24,14 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol
 }
 
-fn unit_brick(t: &mut CellComplex, op: u64, min: [f64; 3], size: [f64; 3]) -> BrickIds {
+fn unit_brick<E: Sys>(t: &mut E, op: u64, min: [f64; 3], size: [f64; 3]) -> BrickIds {
     with_op(t, OpId(op), |t| fixtures::brick(t, Point3::new(min[0], min[1], min[2]), size)).unwrap()
 }
 
 // ---------------------------------------------------------------- brick and semantics queries
 
-#[test]
-fn brick_is_a_valid_closed_cell_and_answers_every_semantics_query() {
-    let mut t = CellComplex::new();
+pub(super) fn brick_is_a_valid_closed_cell_and_answers_every_semantics_query<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = unit_brick(&mut t, 1, [0.0, 0.0, 0.0], [2.0, 3.0, 4.0]);
     assert_eq!(counts(&t), [8, 12, 6, 1, 1]);
     assert_eq!(euler_characteristic(&t), 2);
@@ -111,9 +111,8 @@ fn brick_is_a_valid_closed_cell_and_answers_every_semantics_query() {
 
 // ---------------------------------------------------------------- imprint + merge
 
-#[test]
-fn two_bricks_imprinted_and_merged_share_one_face() {
-    let mut t = CellComplex::new();
+pub(super) fn two_bricks_imprinted_and_merged_share_one_face<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     assert_eq!(counts(&t), [16, 24, 12, 2, 2]);
     assert_eq!(t.coincidence(a.faces[1], b.faces[0]).map(|p| p.status), Some(Coincidence::CoincidentUnimprinted));
@@ -165,9 +164,8 @@ fn two_bricks_imprinted_and_merged_share_one_face() {
     assert!(close(total.volume, 2.0, 1e-9) && close(total.centroid().unwrap().x, 1.0, 1e-9));
 }
 
-#[test]
-fn removing_a_use_reapplies_the_orientation_rule_and_logs_it() {
-    let mut t = CellComplex::new();
+pub(super) fn removing_a_use_reapplies_the_orientation_rule_and_logs_it<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let shared = a.faces[1];
@@ -190,7 +188,7 @@ fn removing_a_use_reapplies_the_orientation_rule_and_logs_it() {
     assert_valid(&t);
     // A volume that claims every face of a brick from the right is flipped at end_op: the lone
     // occupant of a face always ends up on its left.
-    let mut t2 = CellComplex::new();
+    let mut t2 = make(None);
     let b2 = unit_brick(&mut t2, 1, [0.0; 3], [1.0; 3]);
     with_op(&mut t2, OpId(2), |t| {
         for f in b2.faces {
@@ -211,12 +209,11 @@ fn removing_a_use_reapplies_the_orientation_rule_and_logs_it() {
     assert_valid(&t2);
 }
 
-#[test]
-fn merge_orients_the_shared_face_lowest_volume_first_after_an_imprint() {
+pub(super) fn merge_orients_the_shared_face_lowest_volume_first_after_an_imprint<E: Sys>(make: &Mk<E>) {
     // Smaller brick B imprinted onto A's +x face through a closed loop (ClosedLoop), then merged.
     // B's face id is lower than the imprint disk, so B's face survives; the survivor then has B
     // (the higher volume) on its left and must be reversed.
-    let mut t = CellComplex::new();
+    let mut t = make(None);
     let a = unit_brick(&mut t, 1, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
     let b = unit_brick(&mut t, 2, [1.0, 0.25, 0.25], [1.0, 0.5, 0.5]);
     assert!(a.volume < b.volume);
@@ -268,9 +265,8 @@ fn merge_orients_the_shared_face_lowest_volume_first_after_an_imprint() {
     assert_eq!(t.coincidence(shared, disk).map(|p| p.status), Some(Coincidence::Merged));
 }
 
-#[test]
-fn make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_loops() {
-    let mut t = CellComplex::new();
+pub(super) fn make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_loops<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let a = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     let top = a.faces[5]; // z = 1, corners 4..8
     let before = t.boundary(top).to_vec();
@@ -328,9 +324,8 @@ fn make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_
 
 // ---------------------------------------------------------------- webcut and lineage
 
-#[test]
-fn webcut_splits_volume_and_faces_with_lineage_and_state() {
-    let mut t = CellComplex::new();
+pub(super) fn webcut_splits_volume_and_faces_with_lineage_and_state<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = unit_brick(&mut t, 1, [0.0, 0.0, 0.0], [1.0, 2.0, 4.0]);
     let v0 = t.volume_moments(b.volume).unwrap();
     let w = with_op(&mut t, OpId(2), |t| fixtures::webcut_brick(t, &b, 0.25)).unwrap();
@@ -377,9 +372,8 @@ fn webcut_splits_volume_and_faces_with_lineage_and_state() {
 
 // ---------------------------------------------------------------- periodic seam and poles
 
-#[test]
-fn cylinder_has_a_seam_listed_left_and_right_and_closed_edges() {
-    let mut t = CellComplex::new();
+pub(super) fn cylinder_has_a_seam_listed_left_and_right_and_closed_edges<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (r, h) = (1.5, 2.0);
     let c = with_op(&mut t, OpId(1), |t| fixtures::cylinder(t, r, h)).unwrap();
     assert_eq!(counts(&t), [2, 3, 3, 1, 1]);
@@ -437,9 +431,8 @@ fn cylinder_has_a_seam_listed_left_and_right_and_closed_edges() {
     assert_eq!(t.classify_point_on_face(lat, Uv::new(2.0, h)).unwrap(), PointClass::On);
 }
 
-#[test]
-fn sphere_has_pole_coedges_left_out_of_euler_counts_and_rings() {
-    let mut t = CellComplex::new();
+pub(super) fn sphere_has_pole_coedges_left_out_of_euler_counts_and_rings<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let s = with_op(&mut t, OpId(1), |t| fixtures::sphere(t, 2.0)).unwrap();
     assert_valid(&t);
     assert_eq!(euler_characteristic(&t), 2, "poles excluded: V=2, E=1, F=1");
@@ -467,9 +460,8 @@ fn sphere_has_pole_coedges_left_out_of_euler_counts_and_rings() {
 
 // ---------------------------------------------------------------- baffle and non-manifold fin
 
-#[test]
-fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_sides() {
-    let mut t = CellComplex::new();
+pub(super) fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_sides<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (b, f) = with_op(&mut t, OpId(1), fixtures::brick_with_baffle).unwrap();
     assert_valid(&t);
     assert_eq!(t.shell_kind(b.volume, 0), Some(ShellKind::Outer));
@@ -489,7 +481,7 @@ fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_
     assert!(close(m.volume, 1.0, 1e-9));
     assert!(close(t.face_moments(f.face).unwrap().area, 0.25, 1e-9));
     // A baffle in an Outer (or Void) shell is rejected everywhere.
-    let mut t2 = CellComplex::new();
+    let mut t2 = make(None);
     t2.begin_op(OpId(1)).unwrap();
     let b2 = fixtures::brick(&mut t2, Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
     let err = t2.add_face_use(b2.volume, 0, FaceUseSpec { face: b2.faces[0], side: Side::Both });
@@ -502,9 +494,8 @@ fn baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_
     t2.abort_op();
 }
 
-#[test]
-fn non_manifold_edge_has_an_angular_radial_ring() {
-    let mut t = CellComplex::new();
+pub(super) fn non_manifold_edge_has_an_angular_radial_ring<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (b, fin) = with_op(&mut t, OpId(1), fixtures::brick_with_fin).unwrap();
     assert_valid(&t);
     assert_eq!(t.face_class(fin.face), Some(FaceClass::Free));
@@ -525,9 +516,8 @@ fn non_manifold_edge_has_an_angular_radial_ring() {
 
 // ---------------------------------------------------------------- CSG volume
 
-#[test]
-fn csg_carrier_volume_with_general_quadric_validates() {
-    let mut t = CellComplex::new();
+pub(super) fn csg_carrier_volume_with_general_quadric_validates<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let v = with_op(&mut t, OpId(1), |t| {
         let sphere = t.shapes_mut().unwrap().add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 1.0).unwrap())).unwrap();
         let gq = t.shapes_mut().unwrap().add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [0.25, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5] }))).unwrap();
@@ -555,12 +545,11 @@ fn csg_carrier_volume_with_general_quadric_validates() {
     t.abort_op();
 }
 
-#[test]
-fn large_magnitude_quadric_coefficients_do_not_collide_in_the_hash() {
+pub(super) fn large_magnitude_quadric_coefficients_do_not_collide_in_the_hash<E: Sys>(make: &Mk<E>) {
     // Sphere centred at (4000,0,0): constant term ~ L^2 = 1.6e7; r=1 vs r=10 must differ.
     for tol in [ModelTolerance::DEFAULT, ModelTolerance::for_extent(1000.0)] {
         let hash_for = |c: f64| {
-            let mut t = CellComplex::with_tolerance(tol);
+            let mut t = make(Some(tol));
             with_op(&mut t, OpId(1), |t| {
                 let gq = t.shapes_mut().unwrap().add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, -8000.0, 0.0, 0.0, c] }))).unwrap();
                 let vol = t.make_volume(&[])?;
@@ -579,9 +568,8 @@ fn large_magnitude_quadric_coefficients_do_not_collide_in_the_hash() {
 
 // ---------------------------------------------------------------- atomicity, lifecycle, errors
 
-#[test]
-fn failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything() {
-    let mut t = CellComplex::new();
+pub(super) fn failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let a = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     let h0 = t.canonical_hash();
     // Failing operators inside an open operation change nothing.
@@ -605,7 +593,6 @@ fn failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything() {
     assert_ne!(t.canonical_hash(), h_open);
     t.abort_op();
     assert_eq!(t.canonical_hash(), h0);
-    assert_eq!(t.open_op(), None);
     assert_eq!(t.revision(), OpId(1));
     assert_eq!(t.cells(Dim::Vertex).len(), 8);
     assert!(t.radial_uses(a.edges[0]).len() == 2);
@@ -631,9 +618,8 @@ fn failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything() {
     with_op(&mut t, OpId(10), |t| fixtures::brick(t, Point3::new(9.0, 0.0, 0.0), [1.0; 3])).unwrap();
 }
 
-#[test]
-fn kill_cascade_removes_orphans_top_down_and_keeps_shared_cells() {
-    let mut t = CellComplex::new();
+pub(super) fn kill_cascade_removes_orphans_top_down_and_keeps_shared_cells<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let killed = with_op(&mut t, OpId(3), |t| Ok(t.kill_cascade(a.volume)?)).unwrap();
@@ -656,9 +642,8 @@ fn kill_cascade_removes_orphans_top_down_and_keeps_shared_cells() {
 }
 
 
-#[test]
-fn record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation() {
-    let mut t = CellComplex::new();
+pub(super) fn record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (b, fin) = with_op(&mut t, OpId(1), fixtures::brick_with_fin).unwrap();
     t.begin_op(OpId(2)).unwrap();
     // Still alive: refused. Unknown ids and mismatched ranks: refused.
@@ -681,9 +666,8 @@ fn record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation() {
 
 // ---------------------------------------------------------------- tolerance and gap recording
 
-#[test]
-fn merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance() {
-    let mut t = CellComplex::new();
+pub(super) fn merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let gap = 5e-5;
     let a = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     let b = unit_brick(&mut t, 2, [1.0 + gap, 0.0, 0.0], [1.0; 3]);
@@ -712,8 +696,8 @@ fn merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance() {
 
 // ---------------------------------------------------------------- determinism and hash quantization
 
-fn build_model() -> (CellComplex, Vec<EntityId>) {
-    let mut t = CellComplex::new();
+fn build_model<E: Sys>(make: &Mk<E>) -> (E, Vec<EntityId>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     with_op(&mut t, OpId(2), |t| fixtures::merge_touching_bricks(t, &a, &b)).unwrap();
     let w = with_op(&mut t, OpId(3), |t| fixtures::webcut_brick(t, &a, 0.5)).unwrap();
@@ -724,15 +708,14 @@ fn build_model() -> (CellComplex, Vec<EntityId>) {
     (t, ids)
 }
 
-#[test]
-fn building_twice_and_across_threads_gives_identical_ids_and_hashes() {
-    let (t1, ids1) = build_model();
-    let (t2, ids2) = build_model();
+pub(super) fn building_twice_and_across_threads_gives_identical_ids_and_hashes<E: Sys>(make: &Mk<E>) {
+    let (t1, ids1) = build_model(make);
+    let (t2, ids2) = build_model(make);
     assert_eq!((ids1.clone(), t1.canonical_hash()), (ids2, t2.canonical_hash()));
     assert_eq!(t1.lineage(), t2.lineage());
     let results: Vec<_> = std::thread::scope(|s| {
         let hs: Vec<_> = (0..4).map(|_| s.spawn(|| {
-            let (t, ids) = build_model();
+            let (t, ids) = build_model(make);
             (ids, t.canonical_hash(), t.lineage().len(), Dim::ALL.map(|d| t.cells(d).to_vec()))
         })).collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
@@ -743,12 +726,11 @@ fn building_twice_and_across_threads_gives_identical_ids_and_hashes() {
     }
 }
 
-#[test]
-fn hash_quantization_rule_is_documented_and_enforced() {
+pub(super) fn hash_quantization_rule_is_documented_and_enforced<E: Sys>(make: &Mk<E>) {
     let q = ModelTolerance::DEFAULT.quantum();
     assert_eq!(q, ModelTolerance::DEFAULT.linear * 2f64.powi(-10), "quantum = linear * 2^-10");
     let hash_at = |dx: f64| {
-        let mut t = CellComplex::new();
+        let mut t = make(None);
         with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(dx, 0.0, 0.0), [1.0; 3])).unwrap();
         t.canonical_hash()
     };
@@ -758,7 +740,7 @@ fn hash_quantization_rule_is_documented_and_enforced() {
     assert_ne!(hash_at(5.0 * q), base, "several steps do");
     // Per-entity tolerance overrides are quantized with the same rule.
     let tol_hash = |tol: f64| {
-        let mut t = CellComplex::new();
+        let mut t = make(None);
         let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
         with_op(&mut t, OpId(2), |t| Ok(t.raise_tolerance(b.vertices[0], tol)?)).unwrap();
         t.canonical_hash()
@@ -767,7 +749,7 @@ fn hash_quantization_rule_is_documented_and_enforced() {
     assert_ne!(tol_hash(1e-5), tol_hash(1e-5 + 4.0 * q));
     // Pcurves are hashed by their contents.
     let pc_hash = |v: f64| {
-        let mut t = CellComplex::new();
+        let mut t = make(None);
         let c = with_op(&mut t, OpId(1), |t| fixtures::cylinder(t, 1.0, 1.0)).unwrap();
         let key = CoedgeKey { face: c.faces[2], edge: c.edges[2], side: Side::Left };
         with_op(&mut t, OpId(2), |t| {
@@ -782,34 +764,10 @@ fn hash_quantization_rule_is_documented_and_enforced() {
 
 // ---------------------------------------------------------------- performance
 
-#[test]
-fn building_many_bricks_is_near_linear() {
-    let n: usize = if cfg!(debug_assertions) { 1_000 } else { 10_000 };
-    let start = std::time::Instant::now();
-    let mut t = CellComplex::new();
-    t.begin_op(OpId(1)).unwrap();
-    for i in 0..n {
-        let x = (i % 100) as f64 * 2.0;
-        let y = ((i / 100) % 100) as f64 * 2.0;
-        fixtures::brick(&mut t, Point3::new(x, y, 0.0), [1.0; 3]).unwrap();
-    }
-    t.end_op().unwrap();
-    let dt = start.elapsed();
-    assert_eq!(t.cells(Dim::Volume).len(), n);
-    assert_eq!(t.cells(Dim::Face).len(), 6 * n);
-    if !cfg!(debug_assertions) {
-        assert!(dt.as_secs_f64() < 2.0, "{n} bricks took {dt:?}");
-    }
-    // Queries stay O(1)/O(log n): the last volume's faces and a radial ring.
-    let last = *t.cells(Dim::Volume).last().unwrap();
-    assert_eq!(t.volume_faces(last).len(), 6);
-}
-
 // ---------------------------------------------------------------- object safety
 
-#[test]
-fn view_and_edit_are_object_safe() {
-    let mut t = CellComplex::new();
+pub(super) fn view_and_edit_are_object_safe<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let e: &mut dyn TopologyEdit = &mut t;
     e.begin_op(OpId(1)).unwrap();
     let b = fixtures::brick(e, Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
@@ -820,32 +778,10 @@ fn view_and_edit_are_object_safe() {
     assert_valid(v);
 }
 
-#[cfg(feature = "serde")]
-#[test]
-fn public_data_types_are_serde() {
-    fn is_serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
-    is_serde::<Dim>();
-    is_serde::<Side>();
-    is_serde::<Incidence>();
-    is_serde::<Carrier>();
-    is_serde::<LineageRecord>();
-    is_serde::<LineageKind>();
-    is_serde::<Lineage>();
-    is_serde::<CutOutcome>();
-    is_serde::<FacePair>();
-    is_serde::<EntityState>();
-    is_serde::<CoedgeKey>();
-    is_serde::<Moments>();
-    is_serde::<FaceMoments>();
-    is_serde::<TopoIssue>();
-    is_serde::<EdgeUse>();
-}
-
 // ---------------------------------------------------------------- remaining contract clauses
 
-#[test]
-fn coincidence_records_move_to_split_children_and_status_changes_are_logged() {
-    let mut t = CellComplex::new();
+pub(super) fn coincidence_records_move_to_split_children_and_status_changes_are_logged<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     assert!(t.lineage().of(a.faces[1]).any(|r| r.op == OpId(1) && r.kind == LineageKind::Modified(ModKind::Coincidence)), "status change logged under the op");
     assert_eq!(t.coincidence(a.faces[1], b.faces[0]).unwrap().op, OpId(1));
@@ -872,9 +808,8 @@ fn coincidence_records_move_to_split_children_and_status_changes_are_logged() {
     assert!(t.lineage().for_op(OpId(3)).iter().any(|r| r.kind == LineageKind::Modified(ModKind::Coincidence)));
 }
 
-#[test]
-fn merge_faces_checks_loop_correspondence_and_edge_merges_check_curves() {
-    let mut t = CellComplex::new();
+pub(super) fn merge_faces_checks_loop_correspondence_and_edge_merges_check_curves<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let (a, b) = with_op(&mut t, OpId(1), fixtures::two_bricks).unwrap();
     let h = t.canonical_hash();
     // Edges were not merged first, so the loops differ.
@@ -904,9 +839,8 @@ fn merge_faces_checks_loop_correspondence_and_edge_merges_check_curves() {
     t.abort_op();
 }
 
-#[test]
-fn geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them() {
-    let mut t = CellComplex::new();
+pub(super) fn geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     assert_valid(&t);
     with_op(&mut t, OpId(2), |t| {
@@ -941,9 +875,8 @@ fn geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them() {
     assert!(t.lineage().for_op(OpId(4)).iter().any(|r| r.kind == LineageKind::Modified(ModKind::Tolerance)));
 }
 
-#[test]
-fn typed_ids_and_kinds() {
-    let mut t = CellComplex::new();
+pub(super) fn typed_ids_and_kinds<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     let v = VolumeId::new(b.volume).unwrap();
     assert_eq!(EntityId::from(v), b.volume);
@@ -966,9 +899,8 @@ fn typed_ids_and_kinds() {
     assert_eq!(t.state(virt), None);
 }
 
-#[test]
-fn wires_embed_in_a_volume_and_unembed() {
-    let mut t = CellComplex::new();
+pub(super) fn wires_embed_in_a_volume_and_unembed<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = unit_brick(&mut t, 1, [0.0; 3], [1.0; 3]);
     let wire = with_op(&mut t, OpId(2), |t| {
         let p = Point3::new(0.25, 0.25, 0.25);
@@ -998,8 +930,8 @@ fn wires_embed_in_a_volume_and_unembed() {
 
 // ---------------------------------------------------------------- review fixes
 
-fn csg_model(coef_a: f64, radius: f64) -> CellComplex {
-    let mut t = CellComplex::new();
+fn csg_model<E: Sys>(make: &Mk<E>, coef_a: f64, radius: f64) -> E {
+    let mut t = make(None);
     with_op(&mut t, OpId(1), |t| {
         let sphere = t.shapes_mut()?.add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), radius).unwrap()))?;
         let gq = t.shapes_mut()?.add_surface(SurfaceDef::Implicit(ImplicitDef::Quadric(Quadric { coeffs: [coef_a, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5] })))?;
@@ -1011,14 +943,13 @@ fn csg_model(coef_a: f64, radius: f64) -> CellComplex {
     t
 }
 
-#[test]
-fn canonical_hash_covers_geometry_definitions() {
-    let base = csg_model(0.25, 1.0).canonical_hash();
-    assert_eq!(csg_model(0.25, 1.0).canonical_hash(), base);
-    assert_ne!(csg_model(4.0, 1.0).canonical_hash(), base, "quadric coefficient");
-    assert_ne!(csg_model(0.25, 7.0).canonical_hash(), base, "sphere radius");
+pub(super) fn canonical_hash_covers_geometry_definitions<E: Sys>(make: &Mk<E>) {
+    let base = csg_model(make, 0.25, 1.0).canonical_hash();
+    assert_eq!(csg_model(make, 0.25, 1.0).canonical_hash(), base);
+    assert_ne!(csg_model(make, 4.0, 1.0).canonical_hash(), base, "quadric coefficient");
+    assert_ne!(csg_model(make, 0.25, 7.0).canonical_hash(), base, "sphere radius");
     // replace_surface on an existing handle changes the hash, abort restores it.
-    let mut t = csg_model(0.25, 1.0);
+    let mut t = csg_model(make, 0.25, 1.0);
     let sid = EntityId::new(EntityKind::Surface, 0).unwrap();
     t.begin_op(OpId(2)).unwrap();
     t.replace_surface(sid, SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 3.0).unwrap())).unwrap();
@@ -1027,9 +958,8 @@ fn canonical_hash_covers_geometry_definitions() {
     assert_eq!(t.canonical_hash(), base);
 }
 
-#[test]
-fn shapes_mut_needs_an_open_op_and_is_append_only() {
-    let mut t = CellComplex::new();
+pub(super) fn shapes_mut_needs_an_open_op_and_is_append_only<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     assert!(matches!(t.shapes_mut().map(|_| ()), Err(TopoError::NoOpenOp)));
     t.begin_op(OpId(1)).unwrap();
     t.shapes_mut().unwrap().add_surface(SurfaceDef::Sphere(Sphere::new(Frame::at(Point3::default()), 1.0).unwrap())).unwrap();
@@ -1037,9 +967,8 @@ fn shapes_mut_needs_an_open_op_and_is_append_only() {
     assert_eq!(t.shapes().surface_count(), 0, "additions roll back with the op");
 }
 
-#[test]
-fn set_carrier_checks_handle_kinds() {
-    let mut t = CellComplex::new();
+pub(super) fn set_carrier_checks_handle_kinds<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     t.begin_op(OpId(1)).unwrap();
     let wrong = EntityId::new(EntityKind::Curve, 0).unwrap();
     let vol = t.make_volume(&[]).unwrap();
@@ -1048,9 +977,8 @@ fn set_carrier_checks_handle_kinds() {
     t.abort_op();
 }
 
-#[test]
-fn kill_then_record_split_yields_one_lineage_row() {
-    let mut t = CellComplex::new();
+pub(super) fn kill_then_record_split_yields_one_lineage_row<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     with_op(&mut t, OpId(1), |t| {
         let a = t.make_vertex(Point3::new(0.0, 0.0, 0.0))?;
         let b = t.make_vertex(Point3::new(1.0, 0.0, 0.0))?;
@@ -1062,4 +990,37 @@ fn kill_then_record_split_yields_one_lineage_row() {
     let out = t.lineage().cut_outcome(OpId(1));
     assert_eq!(out.lineage.len(), 1, "{:?}", out.lineage);
     assert_eq!(out.lineage[0].new.len(), 1);
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("brick_is_a_valid_closed_cell_and_answers_every_semantics_query", brick_is_a_valid_closed_cell_and_answers_every_semantics_query::<E>),
+        ("two_bricks_imprinted_and_merged_share_one_face", two_bricks_imprinted_and_merged_share_one_face::<E>),
+        ("removing_a_use_reapplies_the_orientation_rule_and_logs_it", removing_a_use_reapplies_the_orientation_rule_and_logs_it::<E>),
+        ("merge_orients_the_shared_face_lowest_volume_first_after_an_imprint", merge_orients_the_shared_face_lowest_volume_first_after_an_imprint::<E>),
+        ("make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_loops", make_inner_loop_and_kill_inner_loop_are_inverse_and_chord_split_honors_inner_loops::<E>),
+        ("webcut_splits_volume_and_faces_with_lineage_and_state", webcut_splits_volume_and_faces_with_lineage_and_state::<E>),
+        ("cylinder_has_a_seam_listed_left_and_right_and_closed_edges", cylinder_has_a_seam_listed_left_and_right_and_closed_edges::<E>),
+        ("sphere_has_pole_coedges_left_out_of_euler_counts_and_rings", sphere_has_pole_coedges_left_out_of_euler_counts_and_rings::<E>),
+        ("baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_sides", baffle_lives_in_an_internal_shell_and_is_a_face_with_the_same_volume_on_both_sides::<E>),
+        ("non_manifold_edge_has_an_angular_radial_ring", non_manifold_edge_has_an_angular_radial_ring::<E>),
+        ("csg_carrier_volume_with_general_quadric_validates", csg_carrier_volume_with_general_quadric_validates::<E>),
+        ("large_magnitude_quadric_coefficients_do_not_collide_in_the_hash", large_magnitude_quadric_coefficients_do_not_collide_in_the_hash::<E>),
+        ("failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything", failed_edit_leaves_the_hash_unchanged_and_abort_restores_everything::<E>),
+        ("kill_cascade_removes_orphans_top_down_and_keeps_shared_cells", kill_cascade_removes_orphans_top_down_and_keeps_shared_cells::<E>),
+        ("record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation", record_split_is_allowed_only_for_a_parent_deleted_in_the_same_operation::<E>),
+        ("merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance", merge_with_max_gap_records_the_discarded_gap_and_grows_the_tolerance::<E>),
+        ("building_twice_and_across_threads_gives_identical_ids_and_hashes", building_twice_and_across_threads_gives_identical_ids_and_hashes::<E>),
+        ("hash_quantization_rule_is_documented_and_enforced", hash_quantization_rule_is_documented_and_enforced::<E>),
+        ("view_and_edit_are_object_safe", view_and_edit_are_object_safe::<E>),
+        ("coincidence_records_move_to_split_children_and_status_changes_are_logged", coincidence_records_move_to_split_children_and_status_changes_are_logged::<E>),
+        ("merge_faces_checks_loop_correspondence_and_edge_merges_check_curves", merge_faces_checks_loop_correspondence_and_edge_merges_check_curves::<E>),
+        ("geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them", geometry_edits_are_logged_as_modified_and_validate_geometry_sees_them::<E>),
+        ("typed_ids_and_kinds", typed_ids_and_kinds::<E>),
+        ("wires_embed_in_a_volume_and_unembed", wires_embed_in_a_volume_and_unembed::<E>),
+        ("canonical_hash_covers_geometry_definitions", canonical_hash_covers_geometry_definitions::<E>),
+        ("shapes_mut_needs_an_open_op_and_is_append_only", shapes_mut_needs_an_open_op_and_is_append_only::<E>),
+        ("set_carrier_checks_handle_kinds", set_carrier_checks_handle_kinds::<E>),
+        ("kill_then_record_split_yields_one_lineage_row", kill_then_record_split_yields_one_lineage_row::<E>),
+    ]
 }

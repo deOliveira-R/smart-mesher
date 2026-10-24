@@ -319,68 +319,61 @@ fn pcurve_variants_emit_identical_canonical_words() {
     .unwrap();
 }
 
-/// Flag-only edits are never checked by the reference `end_op`, so a pole edge can lose
-/// DEGENERATE and commit an open shell; the next op touching the volume must report it on both.
-/// The closure marks must survive the op that recorded them (production and paranoid settings).
-fn pole_flag_then_touch(prod: bool, touch: u8) {
-    let mut tw = Twin::new();
-    if prod {
-        tw = Twin::production();
-    }
+/// A DEGENERATE toggle is checked at `end_op` (the edge, its faces and volumes), so a pole edge
+/// cannot lose its flag and commit an open shell: the clearing op fails identically on both,
+/// rolls back, and later ops (touching the face or volume, or the flag again) all pass.
+fn pole_flag_clear_then_touch(prod: bool, touch: u8) {
+    let mut tw = if prod { Twin::production() } else { Twin::new() };
     let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
-    tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
-    assert!(!validate(&tw.a).is_empty(), "the committed state is invalid");
+    let before = tw.a.canonical_hash();
+    let r = tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE));
+    assert!(matches!(r, Err(TopoError::OpInvalid(_))), "{r:?}");
+    assert_eq!(tw.a.canonical_hash(), before, "rolled back");
+    assert_eq!(tw.b.canonical_hash(), before, "rolled back (store)");
+    assert!(validate(&tw.a).is_empty(), "the committed state stays valid");
     assert_eq!(tw.b.validate_par(), validate(&tw.b));
-    // An unrelated op must not consume the pending closure.
     tw.op("unrelated", 3, |t| t.make_vertex(Point3::new(9.0, 9.0, 9.0)).map(|_| ())).unwrap();
-    let r = tw.op("touch", 4, |t| match touch {
+    tw.op("touch", 4, |t| match touch {
         0 => {
             let c = t.carrier(s.face).clone();
             t.set_carrier(s.face, c)
         }
         1 => t.set_carrier(s.volume, Carrier::None),
-        _ => t.set_flags(s.edges[0], CellFlags::NONE),
-    });
-    if touch < 2 {
-        assert!(matches!(r, Err(TopoError::OpInvalid(_))), "{r:?}");
-    }
+        _ => t.set_flags(s.edges[0], CellFlags::DEGENERATE),
+    })
+    .unwrap();
     assert_eq!(tw.b.validate_par(), validate(&tw.b));
 }
 
 #[test]
-fn committed_open_shell_is_reported_by_a_later_touch() {
+fn a_rejected_pole_flag_clear_leaves_no_trace_for_later_ops() {
     for prod in [false, true] {
         for touch in 0..3 {
-            pole_flag_then_touch(prod, touch);
+            pole_flag_clear_then_touch(prod, touch);
         }
     }
 }
 
-/// Re-setting the flag restores a closed state; the carried-over closure must then drop.
+/// Restoring the flag after a rejected clear is a plain no-op edit.
 #[test]
-fn pole_flag_restored_closes_the_carry_over() {
+fn pole_flag_restored_after_a_rejected_clear_commits() {
     let mut tw = Twin::new();
     let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
-    tw.op("clear", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+    assert!(tw.op("clear", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).is_err());
     tw.op("restore", 3, |t| t.set_flags(s.edges[0], CellFlags::DEGENERATE)).unwrap();
     assert!(validate(&tw.a).is_empty());
     tw.op("touch", 4, |t| t.set_carrier(s.volume, Carrier::None)).unwrap();
 }
 
-/// What the reference guarantees at commit: local checks on the touched cells and their parents
-/// only, flag-only edits unchecked. So a committed state may be invalid (an open shell after a
-/// DEGENERATE flag is cleared). Every incremental shortcut (shell closure, orientation
-/// re-examination, long-row checks, small thresholds here) must then still agree with the
-/// reference on any later op, accepted or rejected. Each case starts from the same invalid
-/// committed state.
+/// Adversarial ops, with the long-row paths forced on the sphere's one-entry volume row, agree
+/// with the reference whether accepted or rejected, after a rejected flag clear.
 #[test]
-fn ops_on_a_committed_invalid_state_agree_with_the_reference() {
+fn ops_after_a_rejected_flag_clear_agree_with_the_reference() {
     for case in 0..8u8 {
         let mut tw = Twin::new();
-        // The sphere's volume row has a single entry: force the long-row paths on it too.
         tw.b.set_row_thresholds(1, 1);
         let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
-        tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+        assert!(tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).is_err());
         let r = tw.op("adversarial", 3, |t| match case {
             0 => t.reverse_face(s.face),
             1 => t.kill_cascade(s.volume).map(|_| ()),
@@ -395,7 +388,7 @@ fn ops_on_a_committed_invalid_state_agree_with_the_reference() {
             }
         });
         eprintln!("case {case}: {:?}", r.map(|_| ()));
-        // The next op on the (possibly still invalid) state also agrees.
+        // The next op on the (possibly changed) state also agrees.
         let r = tw.op("touch volume", 4, |t| {
             let c = t.carrier(s.volume).clone();
             t.set_carrier(s.volume, c)
@@ -422,12 +415,13 @@ fn is_open_shell(r: &Result<(), TopoError>) -> bool {
     matches!(r, Err(TopoError::OpInvalid(_)))
 }
 
-/// (a) An open shell survives an aborted touch, two failing touches and six unrelated commits.
+/// (a) A rejected clear leaves nothing behind: an aborted touch, further touches and six
+/// unrelated commits all behave as on a never-modified sphere.
 #[test]
-fn open_shell_persists_across_aborts_failed_touches_and_unrelated_commits() {
+fn rejected_clear_survives_aborts_touches_and_unrelated_commits() {
     for (setting, mut tw) in twins() {
         let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
-        tw.op("open", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+        assert!(is_open_shell(&tw.op("open", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE))), "{setting}");
         // Aborted touch (the edit succeeds, the op is abandoned).
         tw.run(setting, |t| t.begin_op(OpId(3))).unwrap();
         tw.run(setting, |t| {
@@ -437,45 +431,49 @@ fn open_shell_persists_across_aborts_failed_touches_and_unrelated_commits() {
         .unwrap();
         tw.run(setting, |t| t.abort_op());
         tw.same(setting);
-        assert!(is_open_shell(&touch_volume(&mut tw, 4, s.volume)), "{setting}: first failing touch");
-        assert!(is_open_shell(&touch_volume(&mut tw, 5, s.volume)), "{setting}: second failing touch");
+        touch_volume(&mut tw, 4, s.volume).unwrap_or_else(|e| panic!("{setting}: first touch: {e:?}"));
         for n in 0..6u64 {
-            tw.op("unrelated", 6 + n, |t| t.make_vertex(Point3::new(9.0 + n as f64, 0.0, 0.0)).map(|_| ())).unwrap();
+            tw.op("unrelated", 5 + n, |t| t.make_vertex(Point3::new(9.0 + n as f64, 0.0, 0.0)).map(|_| ())).unwrap();
         }
-        assert!(is_open_shell(&touch_volume(&mut tw, 12, s.volume)), "{setting}: touch after unrelated commits");
-        assert!(!validate(&tw.a).is_empty(), "{setting}: still invalid");
+        touch_volume(&mut tw, 11, s.volume).unwrap_or_else(|e| panic!("{setting}: touch after unrelated commits: {e:?}"));
+        assert!(validate(&tw.a).is_empty(), "{setting}: valid");
     }
 }
 
-/// (b) Both poles cleared in separate ops: restoring one leaves the other open.
+/// (b) Clearing either pole alone, or both in one op, is rejected; restoring flags that are
+/// already set commits.
 #[test]
-fn two_open_poles_restored_one_at_a_time() {
+fn clearing_either_or_both_poles_is_rejected() {
     for (setting, mut tw) in twins() {
         let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
         let (p0, p1) = (s.edges[0], s.edges[2]);
-        tw.op("clear 0", 2, |t| t.set_flags(p0, CellFlags::NONE)).unwrap();
-        tw.op("clear 1", 3, |t| t.set_flags(p1, CellFlags::NONE)).unwrap();
-        tw.op("restore 0", 4, |t| t.set_flags(p0, CellFlags::DEGENERATE)).unwrap();
-        assert!(is_open_shell(&touch_volume(&mut tw, 5, s.volume)), "{setting}: the other pole is still open");
+        assert!(is_open_shell(&tw.op("clear 0", 2, |t| t.set_flags(p0, CellFlags::NONE))), "{setting}");
+        assert!(is_open_shell(&tw.op("clear 1", 3, |t| t.set_flags(p1, CellFlags::NONE))), "{setting}");
+        let both = tw.op("clear both", 4, |t| {
+            t.set_flags(p0, CellFlags::NONE)?;
+            t.set_flags(p1, CellFlags::NONE)
+        });
+        assert!(is_open_shell(&both), "{setting}");
+        tw.op("restore 0", 5, |t| t.set_flags(p0, CellFlags::DEGENERATE)).unwrap();
         tw.op("restore 1", 6, |t| t.set_flags(p1, CellFlags::DEGENERATE)).unwrap();
         assert!(validate(&tw.a).is_empty(), "{setting}");
-        touch_volume(&mut tw, 7, s.volume).unwrap_or_else(|e| panic!("{setting}: closed again, touch must pass: {e:?}"));
+        touch_volume(&mut tw, 7, s.volume).unwrap_or_else(|e| panic!("{setting}: touch must pass: {e:?}"));
     }
 }
 
-/// (c) An open shell on sphere 1 persists while sphere 2 is touched, opened and kill_cascaded.
+/// (c) A rejected clear on sphere 1 does not disturb edits of sphere 2, which is itself rejected
+/// when opened and can be kill_cascaded.
 #[test]
-fn open_shell_on_one_sphere_persists_through_edits_of_another() {
+fn rejected_clears_on_two_spheres_are_independent() {
     for (setting, mut tw) in twins() {
         let s1 = tw.op("sphere 1", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
         let s2 = tw.op("sphere 2", 2, |t| fx(fixtures::sphere(t, 2.0))).unwrap();
-        tw.op("open 1", 3, |t| t.set_flags(s1.edges[0], CellFlags::NONE)).unwrap();
+        assert!(is_open_shell(&tw.op("open 1", 3, |t| t.set_flags(s1.edges[0], CellFlags::NONE))), "{setting}");
         touch_volume(&mut tw, 4, s2.volume).unwrap_or_else(|e| panic!("{setting}: sphere 2 touch: {e:?}"));
-        assert!(is_open_shell(&touch_volume(&mut tw, 5, s1.volume)), "{setting}: after touching sphere 2");
-        tw.op("open 2", 6, |t| t.set_flags(s2.edges[0], CellFlags::NONE)).unwrap();
-        assert!(is_open_shell(&touch_volume(&mut tw, 7, s1.volume)), "{setting}: after opening sphere 2");
-        tw.op("kill 2", 8, |t| t.kill_cascade(s2.volume).map(|_| ())).unwrap();
-        assert!(is_open_shell(&touch_volume(&mut tw, 9, s1.volume)), "{setting}: after killing sphere 2");
+        touch_volume(&mut tw, 5, s1.volume).unwrap_or_else(|e| panic!("{setting}: sphere 1 touch: {e:?}"));
+        assert!(is_open_shell(&tw.op("open 2", 6, |t| t.set_flags(s2.edges[0], CellFlags::NONE))), "{setting}");
+        tw.op("kill 2", 7, |t| t.kill_cascade(s2.volume).map(|_| ())).unwrap();
+        touch_volume(&mut tw, 8, s1.volume).unwrap_or_else(|e| panic!("{setting}: after killing sphere 2: {e:?}"));
     }
 }
 
