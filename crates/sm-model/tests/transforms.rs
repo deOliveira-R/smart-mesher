@@ -131,10 +131,25 @@ fn scale_brick_cylinder_and_sphere_about_a_point() {
         assert!(worst_outwardness(&s) > 0.0);
         assert_eq!(issues(&s), Vec::<String>::new());
     }
-    let mut s = session(cell_complex);
-    run(&mut s, &CreateSphere { radius: 1.0, center: None }).expect("sphere");
-    run(&mut s, &Scale { entities: vec![vol1()], factor: 2.0, origin: None }).expect("scale sphere");
-    assert_eq!(issues(&s), Vec::<String>::new());
+    for factory in hosts() {
+        let mut s = session(factory);
+        run(&mut s, &CreateSphere { radius: 1.0, center: Some([1.0, 0.0, 0.0]) }).expect("sphere");
+        run(&mut s, &Scale { entities: vec![vol1()], factor: 2.0, origin: Some([0.0, 1.0, 0.0]) }).expect("scale sphere");
+        assert_eq!(issues(&s), Vec::<String>::new());
+        // The centre maps to (2, -1, 0) and the radius doubles.
+        let m = measure(&s, vol1());
+        let want = 4.0 / 3.0 * PI * 8.0;
+        assert!((m.volume.expect("v") - want).abs() < 1e-12 * want);
+        assert!((m.area.expect("a") - 16.0 * PI).abs() < 1e-12 * 16.0 * PI);
+        let c = m.centroid.expect("c");
+        for (g, w) in c.iter().zip([2.0, -1.0, 0.0]) {
+            assert!((g - w).abs() < 1e-12, "{c:?}");
+        }
+        for k in 0..3 {
+            assert!((m.bbox.lo[k] - ([2.0, -1.0, 0.0][k] - 2.0)).abs() < 1e-12 && (m.bbox.hi[k] - ([2.0, -1.0, 0.0][k] + 2.0)).abs() < 1e-12, "{:?}", m.bbox);
+        }
+        check_sphere(&s, [2.0, -1.0, 0.0], 2.0);
+    }
 }
 
 #[test]
@@ -185,6 +200,73 @@ fn reflect_cylinder_and_sphere_keep_pcurves_and_orientation() {
         run(&mut s, &CreateSphere { radius: 1.0, center: Some([1.0, 0.0, 0.0]) }).expect("sphere");
         run(&mut s, &Reflect { entities: vec![vol1()], normal: [1.0, 0.0, 0.0], origin: None }).expect("reflect sphere");
         assert_eq!(issues(&s), Vec::<String>::new());
+        // `worst_outwardness` needs `face_moments`, which refuses pole surfaces (CR-1), so the
+        // orientation is checked from the geometry: sense stays Forward, the face normal is
+        // radial, the divergence integral is +4/3 pi r^3, and the loop winding agrees.
+        let m = measure(&s, vol1());
+        let want = 4.0 / 3.0 * PI;
+        assert!((m.volume.expect("v") - want).abs() < 1e-12 * want);
+        let c = m.centroid.expect("c");
+        for (g, w) in c.iter().zip([-1.0, 0.0, 0.0]) {
+            assert!((g - w).abs() < 1e-12, "{c:?}");
+        }
+        assert_eq!(m.bbox.lo, [-2.0, -1.0, -1.0]);
+        assert_eq!(m.bbox.hi, [0.0, 1.0, 1.0]);
+        check_sphere(&s, [-1.0, 0.0, 0.0], 1.0);
+        // A diagonal mirror (tilted frame).
+        run(&mut s, &Reflect { entities: vec![vol1()], normal: [1.0, 1.0, 1.0], origin: Some([0.0, 0.0, 1.0]) }).expect("reflect sphere diag");
+        assert_eq!(issues(&s), Vec::<String>::new());
+        // c' = c - 2 (n.(c - o)) n, n = (1,1,1)/sqrt3, o = (0,0,1): n.(c-o) = -2/sqrt3.
+        let k = 4.0 / 3.0;
+        check_sphere(&s, [-1.0 + k, k, k], 1.0);
+    }
+}
+
+/// Direction vectors with a norm that overflows (or underflows) when squared must give the same
+/// transform as their unit versions: `sm_core::Transform` takes `sqrt(dot)` of the raw vector.
+#[test]
+fn huge_and_tiny_direction_vectors_act_like_their_unit_directions() {
+    for factory in hosts() {
+        let rot = |axis: [f64; 3]| {
+            let mut s = session(factory);
+            run(&mut s, &brick10()).expect("brick");
+            run(&mut s, &Rotate { entities: vec![vol1()], axis, angle_deg: 60.0, origin: None }).expect("rotate");
+            s
+        };
+        let want = rot([1.0, 0.0, 0.0]);
+        for axis in [[1e200, 0.0, 0.0], [1e-300, 0.0, 0.0], [f64::MAX, 0.0, 0.0], [5e-324, 0.0, 0.0]] {
+            let s = rot(axis);
+            for (a, b) in vertex_points(&s).iter().zip(vertex_points(&want).iter()) {
+                for k in 0..3 {
+                    assert!((a[k] - b[k]).abs() < 1e-12, "axis {axis:?}: {a:?} vs {b:?}");
+                }
+            }
+            assert!((volume_of(&s) - 1000.0).abs() < 1e-9 * 1000.0, "axis {axis:?}: volume {}", volume_of(&s));
+            assert_eq!(issues(&s), Vec::<String>::new(), "axis {axis:?}");
+            assert!(worst_outwardness(&s) > 0.0);
+        }
+        let (a, b) = (rot([1e300, 1e300, 0.0]), rot([1.0, 1.0, 0.0]));
+        for (p, q) in vertex_points(&a).iter().zip(vertex_points(&b).iter()) {
+            for k in 0..3 {
+                assert!((p[k] - q[k]).abs() < 1e-12, "{p:?} vs {q:?}");
+            }
+        }
+
+        let refl = |normal: [f64; 3]| {
+            let mut s = session(factory);
+            run(&mut s, &CreateBrick { x: 2.0, y: Some(4.0), z: Some(6.0), center: Some([3.0, 1.0, -2.0]) }).expect("brick");
+            run(&mut s, &Reflect { entities: vec![vol1()], normal, origin: Some([1.0, 0.0, 0.0]) }).expect("reflect");
+            s
+        };
+        let want = refl([1.0, 0.0, 0.0]);
+        for normal in [[1e200, 0.0, 0.0], [1e-300, 0.0, 0.0], [-f64::MAX, 0.0, 0.0]] {
+            let s = refl(normal);
+            // x -> 2 - x about the plane x = 1: the box 2..4 maps to -2..0.
+            assert_eq!(vertex_points(&s), vertex_points(&want), "normal {normal:?}");
+            assert!(vertex_points(&s).iter().all(|p| p[0] <= 1e-12), "normal {normal:?} must move the model");
+            assert!(worst_outwardness(&s) > 0.0);
+            assert_eq!(issues(&s), Vec::<String>::new());
+        }
     }
 }
 
@@ -202,6 +284,8 @@ fn invalid_requests_are_refused_without_changing_the_state() {
         Box::new(Scale { entities: vec![vol1()], factor: 0.0, origin: None }),
         Box::new(Scale { entities: vec![vol1()], factor: -2.0, origin: None }),
         Box::new(Reflect { entities: vec![vol1()], normal: [0.0; 3], origin: None }),
+        Box::new(Reflect { entities: vec![vol1()], normal: [f64::NAN, 0.0, 1.0], origin: None }),
+        Box::new(Rotate { entities: vec![vol1()], axis: [f64::INFINITY, 0.0, 0.0], angle_deg: 10.0, origin: None }),
         Box::new(Move { entities: vec![id(EntityKind::TopoFace, 1)], delta: [1.0, 0.0, 0.0] }),
         Box::new(Move { entities: vec![id(EntityKind::TopoVolume, 99)], delta: [1.0, 0.0, 0.0] }),
     ];
@@ -257,6 +341,9 @@ fn deck_plane(s: &Session) -> (sm_core::Vector3, f64) {
 
 #[test]
 fn mirror_deck_stays_consistent_through_every_transform() {
+    // NOTE: `model_errors` validates with `Tolerance::with_linear(1e-6)` because of the
+    // `FaceMoments::plane` cancellation (CR-2). Once CR-2 is fixed, switch it back to
+    // `Tolerance::default()`: the acceptance is about the default tolerance.
     let top = id(EntityKind::TopoFace, 6);
     let mk = || {
         let mut s = session(topo_store);

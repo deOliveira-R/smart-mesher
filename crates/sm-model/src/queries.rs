@@ -1,7 +1,7 @@
 //! Read-only queries: `topo.related`, `model.list`, `model.measure`.
 
 use core::f64::consts::{PI, TAU};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,8 @@ pub struct Measurement {
     /// Arc length (edges).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<f64>,
-    /// Area: of a face; the boundary area of a volume or body.
+    /// Area: of a face; the boundary area of a volume or body. Faces internal to the measured
+    /// set (shared by two member volumes, or a baffle) are not counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<f64>,
     /// Volume (volumes, bodies).
@@ -318,25 +319,36 @@ impl TypedQuery for ModelMeasure {
                 } else {
                     topo.boundary(e).iter().map(|i| i.cell).filter(|c| c.kind() == EntityKind::TopoVolume).collect()
                 };
-                let (mut vol, mut area, mut first) = (0.0, 0.0, [0.0; 3]);
-                let mut bb = Aabb::empty();
+                let (mut vol, mut weighted, mut first) = (0.0, 0.0, [0.0; 3]);
+                // Face uses over the member volumes (a `Both` use counts twice): a face with
+                // exactly one use is on the boundary; an interface or baffle is internal.
+                let mut uses: BTreeMap<EntityId, u32> = BTreeMap::new();
                 for &v in &volumes {
                     let (vv, c) = volume_value(topo, v)?;
                     vol += vv;
+                    // A volume without a centroid stays out of the centroid average.
                     if let Some(c) = c {
+                        weighted += vv;
                         for (k, x) in arr(c).iter().enumerate() {
                             first[k] += vv * x;
                         }
                     }
-                    for &f in topo.volume_faces(v) {
+                    for i in topo.boundary(v) {
+                        *uses.entry(i.cell).or_default() += if i.side == Side::Both { 2 } else { 1 };
+                    }
+                }
+                let mut area = 0.0;
+                let mut bb = Aabb::empty();
+                for (&f, &n) in &uses {
+                    if n == 1 {
                         area += face_area(topo, f)?.0;
                         bb = bb.union(&face_bbox(topo, f));
                     }
                 }
                 out.volume = Some(vol);
                 out.area = Some(area);
-                if vol.abs() > 0.0 {
-                    out.centroid = Some(first.map(|x| x / vol));
+                if weighted.abs() > 0.0 {
+                    out.centroid = Some(first.map(|x| x / weighted));
                 }
                 bb
             }

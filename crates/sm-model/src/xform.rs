@@ -84,11 +84,33 @@ impl From<XformError> for OpError {
 struct Xf {
     t: Transform,
     scale: f64,
+    /// Whether the op is meant to reverse handedness (only `model.reflect`).
+    improper: bool,
 }
 
 impl Xf {
     fn improper(&self) -> bool {
-        self.t.is_improper()
+        self.improper
+    }
+
+    /// Checks that the linear part is the similarity the op claims: `M^T M = scale^2 I` and
+    /// the determinant sign matches `improper`. Guards against a degenerate matrix built from
+    /// an overflowing intermediate.
+    fn check_similarity(&self) -> Result<(), XformError> {
+        let (m, s2) = (&self.t.m, self.scale * self.scale);
+        let finite = m.iter().flatten().all(|c| c.is_finite()) && self.t.t.x.is_finite() && self.t.t.y.is_finite() && self.t.t.z.is_finite();
+        let mut ok = finite && s2.is_finite() && s2 > 0.0;
+        if ok {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let g: f64 = (0..3).map(|k| m[k][i] * m[k][j]).sum();
+                    let want = if i == j { s2 } else { 0.0 };
+                    ok &= (g - want).abs() <= 1e-9 * s2;
+                }
+            }
+            ok &= self.t.is_improper() == self.improper;
+        }
+        if ok { Ok(()) } else { Err(XformError::Unsupported(format!("the transform is not a similarity of factor {} (linear part {m:?})", self.scale))) }
     }
 }
 
@@ -96,9 +118,18 @@ fn finite_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
     if v.iter().all(|c| c.is_finite()) { Ok(Vector3::new(v[0], v[1], v[2])) } else { Err(XformError::BadParam(format!("`{name}` must be finite, got {v:?}"))) }
 }
 
+/// A finite, non-zero direction, divided by its largest absolute component so that every
+/// component is in `[-1, 1]` and its norm in `[1, sqrt 3]`. `sm_core::Transform::rotation` and
+/// `reflection` take `sqrt(dot)` of the raw vector, which overflows for `|v| > ~1e154` and
+/// would build a wrong matrix; it also underflows for tiny vectors that are perfectly valid.
 fn nonzero_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
-    let w = finite_vec(name, v)?;
-    if w.norm() > 0.0 { Ok(w) } else { Err(XformError::BadParam(format!("`{name}` must be non-zero"))) }
+    finite_vec(name, v)?;
+    let m = v.iter().fold(0.0f64, |a, c| a.max(c.abs()));
+    if m == 0.0 {
+        return Err(XformError::BadParam(format!("`{name}` must be non-zero")));
+    }
+    let u = Vector3::new(v[0] / m, v[1] / m, v[2] / m);
+    if u.norm().is_finite() { Ok(u) } else { Err(XformError::BadParam(format!("`{name}` cannot be normalised, got {v:?}"))) }
 }
 
 fn origin_of(o: Option<[f64; 3]>) -> Result<Point3, XformError> {
@@ -122,7 +153,7 @@ impl TypedOp for Move {
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let d = finite_vec("delta", self.delta)?;
-        apply_similarity(ctx, &self.entities, Xf { t: Transform::translation(d), scale: 1.0 })
+        apply_similarity(ctx, &self.entities, Xf { t: Transform::translation(d), scale: 1.0, improper: false })
     }
 }
 
@@ -153,7 +184,7 @@ impl TypedOp for Rotate {
         }
         let o = origin_of(self.origin)?;
         let t = Transform::rotation(o, axis, self.angle_deg.to_radians()).ok_or_else(|| XformError::BadParam("`axis` must be non-zero".into()))?;
-        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0 })
+        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0, improper: false })
     }
 }
 
@@ -182,7 +213,7 @@ impl TypedOp for Scale {
         let o = origin_of(self.origin)?;
         let ov = Vector3::new(o.x, o.y, o.z);
         let t = Transform { m: [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, f]], t: ov * (1.0 - f) };
-        apply_similarity(ctx, &self.entities, Xf { t, scale: f })
+        apply_similarity(ctx, &self.entities, Xf { t, scale: f, improper: false })
     }
 }
 
@@ -211,7 +242,7 @@ impl TypedOp for Reflect {
         // `Transform::reflection(n, d)` takes the offset in the scale of the unnormalized `n`.
         let d = n.dot(Vector3::new(o.x, o.y, o.z));
         let t = Transform::reflection(n, d).ok_or_else(|| XformError::BadParam("`normal` must be non-zero".into()))?;
-        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0 })
+        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0, improper: true })
     }
 }
 
@@ -272,6 +303,7 @@ fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Selection, OpErro
 }
 
 fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf: Xf) -> Result<(), OpError> {
+    xf.check_similarity()?;
     let sel = select(ctx, entities)?;
     let ((), txn) = topo_txn(ctx, |topo, model| {
         transform_cells(topo, &sel.closure, &xf)?;

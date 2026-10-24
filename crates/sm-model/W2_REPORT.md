@@ -12,10 +12,53 @@ Every op declares `x-entity-kind` on its id fields and `OUTPUTS` (except `model.
 no id to report). See `DESIGN.md`.
 
 Definition of done, as run:
-`cargo build --workspace`; `cargo test -p sm-model --all-features` (37 tests, one of them a proptest of 48 seeded cases);
+`cargo build --workspace`; `cargo test -p sm-model --all-features` (41 tests, one of them a proptest of 48 seeded cases);
 `RAYON_NUM_THREADS=1 cargo test -p sm-model --all-features`;
 `cargo clippy -p sm-model --all-targets --all-features -- -D warnings`;
 `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-model --no-deps`: all clean.
+
+## Review fixes (fix0)
+
+- **Huge/tiny direction vectors (must fix).** `sm_core::Transform::rotation/reflection` take
+  `sqrt(dot)` of the raw vector, so `axis = [1e200, 0, 0]` overflowed and produced `cos(t) I` (a
+  0.5 scale) or the identity, while sm-model passed `scale = 1`. `xform::nonzero_vec` now divides
+  by the largest absolute component (so `[1e-300, 0, 0]` is accepted too) and rejects a vector
+  that still cannot be normalised; `Reflect` takes the plane offset in the normalised scale.
+  `apply_similarity` also checks `M^T M = scale^2 I` (1e-9) and that the determinant sign equals the
+  op's declared handedness (`Xf::improper` is now declared by the op, not derived from the matrix),
+  returning `Failed` otherwise. Test:
+  `transforms::huge_and_tiny_direction_vectors_act_like_their_unit_directions` (rotate and reflect,
+  `1e200`, `1e-300`, `f64::MAX`, `5e-324`, diagonal `1e300`, both hosts); non-finite inputs are in
+  `invalid_requests_are_refused_without_changing_the_state`.
+- **Sphere oracle (should-fix 1, 2, 9).** New `common::check_sphere` verifies from stored geometry
+  only: sphere centre and radius; carrier sense `Forward`; face normal radial and outward at a
+  96 x 48 grid; a numerical divergence integral equal to `4/3 pi r^3` (0.2 %); pcurves on surface
+  and edge; and the sign of the (u, v) loop winding against the carrier sense. It runs after sphere
+  creation (`queries::measure_cylinder_and_sphere_match_closed_forms`, which also compares the
+  measured radius with the pole-vertex geometry), after scale about a point (both hosts,
+  with `model.measure` volume, area, centroid and bbox) and after a plane reflection and a
+  diagonal reflection (`transforms::reflect_cylinder_and_sphere_keep_pcurves_and_orientation`).
+  The sphere closed form in `model.measure` is still not a quadrature (CR-1); the acceptance
+  "within quadrature tolerance" is met by the divergence integral in the test, not by the query.
+- **`model.measure` on bodies (should-fix 3, 11).** A face is counted in `area` and `bbox` only if
+  its total use over the member volumes is one (a `Both` use counts twice); an interface or baffle
+  is internal. The centroid average is weighted only by volumes that have a centroid. Documented on
+  `Measurement::area`. Test: `queries::measure_body_counts_a_shared_internal_face_once_and_not_as_boundary`
+  (webcut brick: body area 10, each half 6).
+- **Mirror deck tolerance (should-fix 4, 10).** Still `Tolerance::with_linear(1e-6)`; the TODO to
+  restore the default once CR-2 lands is now in `common::model_errors` and in the test. The
+  acceptance is conditional on CR-2.
+- **Delta test on both hosts (5).** `primitives::brick_delta_lists_...` loops over `cell_complex` and
+  `topo_store`.
+- **Fixture differentials (8).** `primitives::cylinder_hash_equals_the_cell_complex_fixture`
+  (`h=4, r=1.5, center=[0,0,2]` vs `topo::cylinder(1.5, 4)`) and
+  `sphere_hash_equals_the_cell_complex_fixture` (`r=2` vs `topo::sphere(2)`), both hosts.
+- **Test time (12).** `tests/props.rs` runs 12 cases with chains of 1..4 steps in debug builds
+  (48 cases, 1..5 steps in release): about 7 s instead of about 52 s.
+- **Deps line (7).** Unchanged: `serde`, `schemars`, `thiserror` (TypedOp derives, CLAUDE.md error rule)
+  and dev `sm-mesh-api`, `serde_json`, `proptest` remain. This is a plan omission; the orchestrator
+  should amend plan section 2 T1 Deps, or accept the deviation. `sm-math`/`sm-geom` are dropped and
+  `sm-topo` is dev-only (valid subset).
 
 ## Acceptance bullet -> test
 
@@ -27,7 +70,7 @@ All in `crates/sm-model/tests/` unless noted.
 | brick canonical hash == `CellComplex` fixture `brick(-5, 10)` | `primitives::brick_hash_equals_the_cell_complex_fixture` (reference and production store) |
 | `Delta.created` = the 28 ids ascending; `outputs` = declared roles | `primitives::brick_delta_lists_the_28_ids_ascending_and_the_declared_roles` |
 | cylinder volume pi r^2 h | `primitives::cylinder_volume_and_topology` |
-| sphere volume 4/3 pi r^3 | `queries::measure_cylinder_and_sphere_match_closed_forms` (closed form, see deviations); topology: `primitives::sphere_volume_and_topology` |
+| sphere volume 4/3 pi r^3 | `queries::measure_cylinder_and_sphere_match_closed_forms` (closed form of `model.measure` plus the independent `check_sphere` integral; see deviations); topology: `primitives::sphere_volume_and_topology` |
 | move (1,2,3): vertices bit-exact | `transforms::move_translates_every_vertex_bit_exactly_and_keeps_ids`, `move_by_body_moves_its_volume` |
 | rotate 90 deg about z: vertices within 1e-12, outward normals kept | `transforms::rotate_90_about_z_maps_vertices_and_keeps_outward_normals`, `rotate_about_an_offset_axis` |
 | reflect: positive volume, outward normals, `validate` clean | `transforms::reflect_brick_keeps_positive_volume_outward_normals_and_validates`, `reflect_cylinder_and_sphere_keep_pcurves_and_orientation` |

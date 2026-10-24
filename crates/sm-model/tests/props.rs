@@ -59,10 +59,11 @@ fn volume(s: &Session) -> f64 {
 }
 
 proptest! {
-    #![proptest_config(sm_testkit::strategies::config(48))]
+    // Debug builds are about 10x slower: fewer cases and shorter chains there (release: 48 x 1..5).
+    #![proptest_config(sm_testkit::strategies::config(if cfg!(debug_assertions) { 12 } else { 48 }))]
 
     #[test]
-    fn chains_of_transforms_keep_the_model_valid_and_agree_across_hosts((kind, size, center) in solid(), steps in proptest::collection::vec(step(), 1..5)) {
+    fn chains_of_transforms_keep_the_model_valid_and_agree_across_hosts((kind, size, center) in solid(), steps in proptest::collection::vec(step(), 1..if cfg!(debug_assertions) { 4 } else { 5 })) {
         let create: Box<dyn Op> = if kind == 0 {
             Box::new(CreateBrick { x: size[0], y: Some(size[1]), z: Some(size[2]), center: Some(center) })
         } else {

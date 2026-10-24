@@ -10,7 +10,7 @@ use core::f64::consts::PI;
 use serde_json::json;
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshLayer, ModelLayer};
-use sm_model::{CreateBrick, CreateCylinder, CreateSphere, Delete, Measurement, ModelPlugin};
+use sm_model::{CreateBrick, CreateCylinder, CreateSphere, Delete, ModelPlugin};
 use sm_op_api::{DerivedCache, Engine, Registry, Services, Session};
 use sm_topo_api::{CellComplex, Dim, TopologyView};
 
@@ -124,10 +124,6 @@ fn model_list_reports_topology_and_model_records() {
     assert_eq!(vols, range(EntityKind::TopoVolume, 2));
 }
 
-fn measure(s: &Session, e: EntityId) -> Measurement {
-    serde_json::from_value(query(s, "model.measure", json!({"entity": e.to_string()})).expect("measure")).expect("decode")
-}
-
 fn near(a: f64, b: f64, rel: f64) {
     assert!((a - b).abs() <= rel * b.abs().max(1.0), "{a} vs {b}");
 }
@@ -181,9 +177,43 @@ fn measure_cylinder_and_sphere_match_closed_forms() {
         assert_eq!(m.bbox.lo, [-1.0, 0.0, 1.0]);
         assert_eq!(m.bbox.hi, [3.0, 4.0, 5.0]);
         assert_eq!(m.centroid, Some([1.0, 2.0, 3.0]));
+        // `model.measure` takes the radius from the surface itself, so the closed form above
+        // proves little (CR-1: no quadrature of pole surfaces yet). Compare with the pole
+        // vertices, and with an independent numerical integral over the stored geometry.
+        let poles = vertex_points(&s);
+        let half = (poles[1][2] - poles[0][2]) / 2.0;
+        assert_eq!(poles.iter().map(|p| [p[0], p[1]]).collect::<Vec<_>>(), vec![[1.0, 2.0]; 2]);
+        near(half, r, 1e-12);
+        near(m.volume.expect("v"), 4.0 / 3.0 * PI * half * half * half, 1e-12);
+        near(m.area.expect("a"), 4.0 * PI * half * half, 1e-12);
+        check_sphere(&s, [1.0, 2.0, 3.0], r);
         // The meridian seam is a half circle.
         near(measure(&s, id(EntityKind::TopoEdge, 1)).length.expect("seam"), PI * r, 1e-9);
         assert_eq!(measure(&s, id(EntityKind::TopoEdge, 2)).length, Some(0.0), "pole edge");
+    }
+}
+
+#[test]
+fn measure_body_counts_a_shared_internal_face_once_and_not_as_boundary() {
+    let mut s = session(cell_complex);
+    run(&mut s, &common::WebcutBrick {}).expect("webcut");
+    let t = model(&s).topo();
+    assert_eq!(t.cells(Dim::Volume).len(), 2);
+    let body = t.cells(Dim::Body)[0];
+    assert_eq!(t.boundary(body).len(), 2, "one body holds both volumes");
+    let b = measure(&s, body);
+    near(b.volume.expect("v"), 2.0, 1e-12);
+    // 1 x 1 x 2 box: 2 + 4 * 2 = 10; the cap shared by the halves is internal.
+    near(b.area.expect("a"), 10.0, 1e-12);
+    assert_eq!(b.bbox.lo, [0.0, 0.0, 0.0]);
+    assert_eq!(b.bbox.hi, [1.0, 1.0, 2.0]);
+    let c = b.centroid.expect("centroid");
+    for (g, w) in c.iter().zip([0.5, 0.5, 1.0]) {
+        assert!((g - w).abs() < 1e-12, "{c:?}");
+    }
+    // Each half measured alone still includes the cap: 1 + 1 + 4 * 1.
+    for v in t.cells(Dim::Volume) {
+        near(measure(&s, *v).area.expect("a"), 6.0, 1e-12);
     }
 }
 

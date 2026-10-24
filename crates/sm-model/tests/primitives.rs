@@ -50,7 +50,14 @@ fn brick_hash_equals_the_cell_complex_fixture() {
 
 #[test]
 fn brick_delta_lists_the_28_ids_ascending_and_the_declared_roles() {
-    let mut s = session(cell_complex);
+    // Production ids come from `TopoStore`, so both hosts are checked.
+    for factory in [cell_complex as Factory, topo_store] {
+        brick_delta_on(factory);
+    }
+}
+
+fn brick_delta_on(factory: Factory) {
+    let mut s = session(factory);
     let (_, d) = run(&mut s, &brick10()).expect("brick");
     let mut want = Vec::new();
     for (k, n) in [
@@ -71,6 +78,27 @@ fn brick_delta_lists_the_28_ids_ascending_and_the_declared_roles() {
     assert_eq!(d.outputs["faces"], range(EntityKind::TopoFace, 6));
     assert_eq!(d.outputs["edges"], range(EntityKind::TopoEdge, 12));
     assert_eq!(d.outputs["vertices"], range(EntityKind::TopoVertex, 8));
+}
+
+#[test]
+fn cylinder_hash_equals_the_cell_complex_fixture() {
+    // The fixture spans z = 0..h; the op is centred at the origin by default.
+    let want = sm_testkit::topo::cylinder(1.5, 4.0).expect("fixture").complex.canonical_hash();
+    for factory in [cell_complex as Factory, topo_store] {
+        let mut s = session(factory);
+        run(&mut s, &CreateCylinder { height: 4.0, radius: 1.5, center: Some([0.0, 0.0, 2.0]) }).expect("cylinder");
+        assert_eq!(model(&s).topo().canonical_hash(), want);
+    }
+}
+
+#[test]
+fn sphere_hash_equals_the_cell_complex_fixture() {
+    let want = sm_testkit::topo::sphere(2.0).expect("fixture").complex.canonical_hash();
+    for factory in [cell_complex as Factory, topo_store] {
+        let mut s = session(factory);
+        run(&mut s, &CreateSphere { radius: 2.0, center: None }).expect("sphere");
+        assert_eq!(model(&s).topo().canonical_hash(), want);
+    }
 }
 
 #[test]

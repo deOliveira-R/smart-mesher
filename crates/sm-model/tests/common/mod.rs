@@ -57,6 +57,7 @@ pub fn registry(factory: Factory) -> Registry {
     reg.register::<FakeMesh>().expect("fake mesh");
     reg.register::<MirrorDeck>().expect("mirror deck");
     reg.register::<MergedBricks>().expect("merged bricks");
+    reg.register::<WebcutBrick>().expect("webcut brick");
     reg
 }
 
@@ -197,8 +198,100 @@ impl TypedOp for MergedBricks {
     }
 }
 
+/// A 1 x 1 x 2 brick webcut at mid-height: one body with two volumes sharing the cap (test only).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WebcutBrick {}
+
+impl TypedOp for WebcutBrick {
+    const NAME: &'static str = "test.webcut_brick";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        use sm_layer_api::{LayerResultExt, commit_topology, topo_txn};
+        use sm_topo_api::fixtures;
+        let (vols, txn) = topo_txn(ctx, |topo, _| {
+            let b = fixtures::brick(topo, sm_core::Point3::new(0.0, 0.0, 0.0), [1.0, 1.0, 2.0]).or_op()?;
+            let w = fixtures::webcut_brick(topo, &b, 0.5).or_op()?;
+            Ok(w.volumes)
+        })?;
+        commit_topology(ctx, &txn, &[("volumes", &vols)])
+    }
+}
+
+/// `model.measure` of one entity, decoded.
+pub fn measure(s: &Session, e: EntityId) -> sm_model::Measurement {
+    serde_json::from_value(query(s, "model.measure", serde_json::json!({"entity": e.to_string()})).expect("measure")).expect("decode")
+}
+
+/// Independent checks of the (only) sphere face of the model, which `face_moments` refuses
+/// (CR-1) so `worst_outwardness` cannot cover it. Verifies, from the stored geometry alone:
+/// the surface is a sphere of the expected centre and radius; the face normal
+/// (`sense * du x dv`) points radially outward; a numerical divergence integral
+/// `V = 1/3 oint (p - c) . n dA` over the parameter domain gives `4/3 pi r^3`; every pcurve lies
+/// on the surface and on its edge; and the (u, v) loop runs the way the carrier sense expects,
+/// so the loop-derived normal is outward too.
+pub fn check_sphere(s: &Session, center: [f64; 3], r: f64) {
+    use sm_core::{Point3, Vector3};
+    use sm_geom_api::{SurfaceDef, Uv};
+    use sm_topo_api::{Carrier, Dim, Sense, Side, TopologyViewExt};
+    let t = model(s).topo();
+    let face = t.cells(Dim::Face)[0];
+    assert_eq!(t.cells(Dim::Face).len(), 1);
+    let Carrier::Surface(sc) = t.carrier(face).clone() else { panic!("sphere face has no surface") };
+    assert_eq!(sc.sense, Sense::Forward, "carrier sense stays Forward");
+    let def = t.shapes().surface_def(sc.surface).expect("surface def");
+    let SurfaceDef::Sphere(sp) = def else { panic!("not a sphere: {def:?}") };
+    let c = Point3::new(center[0], center[1], center[2]);
+    assert!((sp.radius - r).abs() < 1e-12 * r, "radius {} vs {r}", sp.radius);
+    assert!((sp.frame.origin - c).norm() < 1e-12 * (1.0 + r), "centre {:?} vs {center:?}", sp.frame.origin);
+    let surf = t.shapes().surface(sc.surface).expect("surface");
+    let sign = sc.sense.sign();
+    // Face normal vs the radial direction, and the divergence integral.
+    let (nu, nv) = (96usize, 48usize);
+    let (du, dv) = (core::f64::consts::TAU / nu as f64, core::f64::consts::PI / nv as f64);
+    let mut vol = 0.0;
+    for i in 0..nu {
+        for j in 0..nv {
+            let uv = Uv::new((i as f64 + 0.5) * du, -core::f64::consts::FRAC_PI_2 + (j as f64 + 0.5) * dv);
+            let jet = surf.jet(uv);
+            let radial: Vector3 = (jet.p - c) * (1.0 / r);
+            let n = jet.du.cross(jet.dv) * sign; // area-weighted face normal
+            assert!(n.dot(radial) > 0.0, "face normal points inward at {uv:?}");
+            vol += (jet.p - c).dot(n) * du * dv / 3.0;
+        }
+    }
+    let want = 4.0 / 3.0 * core::f64::consts::PI * r * r * r;
+    assert!((vol - want).abs() < 2e-3 * want, "divergence volume {vol} vs {want}");
+    // The pcurves lie on the surface and the edge curves; the loop's (u, v) winding matches
+    // the carrier sense: CCW in (u, v) with `du x dv` outward (and sense Forward) is outward.
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for co in t.coedges(face) {
+        let pc = t.pcurve(co.key).expect("pcurve");
+        let rg = pc.range();
+        let mut seg: Vec<(f64, f64)> = (0..=16).map(|k| rg.lo + (rg.hi - rg.lo) * k as f64 / 16.0).map(|x| (pc.eval(x).u, pc.eval(x).v)).collect();
+        if let Carrier::Curve(cc) = t.carrier(co.key.edge) {
+            let curve = t.shapes().curve(cc.curve).expect("curve");
+            for k in 0..=4 {
+                let x = rg.lo + (rg.hi - rg.lo) * k as f64 / 4.0;
+                assert!((surf.eval(pc.eval(x)) - curve.eval(x)).norm() < 1e-9 * (1.0 + r), "pcurve off its edge");
+            }
+        }
+        if co.key.side == Side::Right {
+            seg.reverse();
+        }
+        pts.extend(seg);
+    }
+    let shoelace: f64 = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(a, b)| a.0 * b.1 - b.0 * a.1).sum::<f64>() / 2.0;
+    let jet = surf.jet(Uv::new(1.0, 0.3));
+    let outward_uv = jet.du.cross(jet.dv).dot(jet.p - c).signum() * sign;
+    assert!(shoelace * outward_uv > 0.0, "loop runs against the face normal (shoelace {shoelace})");
+}
+
 /// Model validation errors against the model layer's topology (planarity tolerance 1e-6: the
 /// second-moment planarity test loses digits at coordinates of order 10).
+///
+/// TODO(CR-2): the loosened tolerance is a workaround for the `FaceMoments::plane` cancellation
+/// in sm-topo-api. Once CR-2 lands, use `Tolerance::default()` here so that the mirror-deck
+/// acceptance runs at the default tolerance.
 pub fn model_errors(s: &Session) -> Vec<String> {
     let l = model(s);
     sm_model_api::validate(l.model(), l.topo(), sm_model_api::Tolerance::default().with_linear(1e-6)).errors().map(|i| format!("{:?}: {}", i.code, i.detail)).collect()
