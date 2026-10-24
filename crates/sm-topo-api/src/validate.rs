@@ -92,8 +92,19 @@ pub fn validate(view: &dyn TopologyView) -> Vec<TopoIssue> {
     out
 }
 
-/// The local checks, on the given cells only (used by `end_op` on the touched cells).
-pub(crate) fn check_cells(view: &dyn TopologyView, ids: &[EntityId]) -> Vec<TopoIssue> {
+/// The local checks on the given cells only (what `end_op` runs on the touched cells), with the
+/// reference shell-closure walk. Issues come in `ids` order, per cell in a fixed rule order.
+pub fn check_cells(view: &dyn TopologyView, ids: &[EntityId]) -> Vec<TopoIssue> {
+    check_cells_with(view, ids, &|vol, ring| reference_open_shell(view, vol, ring))
+}
+
+/// [`check_cells`] with the shell-closure test supplied by the caller.
+///
+/// `open_shell(volume, ring)` returns the lowest edge with a non-zero net use in that shell and
+/// that net use, or `None` if the shell is closed (pole edges and baffles cancel as in
+/// [`validate()`]). Implementations that maintain the net uses incrementally pass their own
+/// lookup; the result must equal the reference walk. Issue order is the same as [`check_cells`].
+pub fn check_cells_with(view: &dyn TopologyView, ids: &[EntityId], open_shell: &dyn Fn(EntityId, u16) -> Option<(EntityId, i64)>) -> Vec<TopoIssue> {
     let mut out = Vec::new();
     for &c in ids {
         let Some(dim) = view.dim_of(c) else { continue };
@@ -101,15 +112,52 @@ pub(crate) fn check_cells(view: &dyn TopologyView, ids: &[EntityId]) -> Vec<Topo
         match dim {
             Dim::Edge => check_edge(view, c, &mut out),
             Dim::Face => check_face(view, c, &mut out),
-            Dim::Volume => check_shells(view, c, &mut out),
+            Dim::Volume => check_shells(view, c, open_shell, &mut out),
             _ => {}
         }
     }
     out
 }
 
+/// The reference closure test for one shell: signed use count per edge over the shell's face
+/// uses, returning the lowest edge whose count is not zero.
+fn reference_open_shell(view: &dyn TopologyView, vol: EntityId, ring: u16) -> Option<(EntityId, i64)> {
+    let shell = view.shells(vol).find(|s| s.ring == ring)?;
+    let mut count: BTreeMap<EntityId, i64> = BTreeMap::new();
+    for u in shell.entries {
+        let use_sign = match u.side {
+            Side::Left => 1,
+            Side::Right => -1,
+            Side::Both => 0,
+        };
+        for c in view.coedges(u.cell) {
+            if c.kind == crate::types::CoedgeKind::Pole {
+                continue;
+            }
+            let sign = if c.sense() == Sense::Forward { 1 } else { -1 };
+            *count.entry(c.key.edge).or_insert(0) += use_sign * sign;
+        }
+    }
+    count.into_iter().find(|(_, n)| *n != 0)
+}
+
+/// The row check ([`Rule::DeadReference`], [`Rule::BadIncidence`]) on `entries` of the rank-`dim`
+/// cell `cell`: the whole boundary row for [`check_cells`], or any subset of it.
+///
+/// This lets an implementation that knows which entries of a very long row changed check only
+/// those; the result for a subset is the corresponding subsequence of the full row's issues.
+pub fn check_row_entries(view: &dyn TopologyView, dim: Dim, cell: EntityId, entries: &[Incidence]) -> Vec<TopoIssue> {
+    let mut out = Vec::new();
+    check_entries(view, dim, cell, entries, &mut out);
+    out
+}
+
 fn check_row(view: &dyn TopologyView, dim: Dim, c: EntityId, out: &mut Vec<TopoIssue>) {
-    for e in view.boundary(c) {
+    check_entries(view, dim, c, view.boundary(c), out);
+}
+
+fn check_entries(view: &dyn TopologyView, dim: Dim, c: EntityId, row: &[Incidence], out: &mut Vec<TopoIssue>) {
+    for e in row {
         let Some(cd) = view.dim_of(e.cell) else {
             out.push(v(c, Rule::DeadReference, format!("unknown cell {:?}", e.cell)));
             continue;
@@ -184,7 +232,7 @@ fn check_face(view: &dyn TopologyView, face: EntityId, out: &mut Vec<TopoIssue>)
     }
 }
 
-fn check_shells(view: &dyn TopologyView, vol: EntityId, out: &mut Vec<TopoIssue>) {
+fn check_shells(view: &dyn TopologyView, vol: EntityId, open_shell: &dyn Fn(EntityId, u16) -> Option<(EntityId, i64)>, out: &mut Vec<TopoIssue>) {
     for shell in view.shells(vol) {
         match view.shell_kind(vol, shell.ring) {
             None => out.push(v(vol, Rule::ShellKind, format!("shell {} has no kind", shell.ring))),
@@ -194,22 +242,7 @@ fn check_shells(view: &dyn TopologyView, vol: EntityId, out: &mut Vec<TopoIssue>
             }
             _ => {}
         }
-        let mut count: BTreeMap<EntityId, i64> = BTreeMap::new();
-        for u in shell.entries {
-            let use_sign = match u.side {
-                Side::Left => 1,
-                Side::Right => -1,
-                Side::Both => 0,
-            };
-            for c in view.coedges(u.cell) {
-                if c.kind == crate::types::CoedgeKind::Pole {
-                    continue;
-                }
-                let sign = if c.sense() == Sense::Forward { 1 } else { -1 };
-                *count.entry(c.key.edge).or_insert(0) += use_sign * sign;
-            }
-        }
-        if let Some((edge, n)) = count.iter().find(|(_, n)| **n != 0) {
+        if let Some((edge, n)) = open_shell(vol, shell.ring) {
             out.push(v(vol, Rule::ShellOpen, format!("shell {} leaves edge {edge:?} with net use {n}", shell.ring)));
         }
     }

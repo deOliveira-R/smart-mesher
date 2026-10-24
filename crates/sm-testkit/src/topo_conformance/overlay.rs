@@ -1,9 +1,11 @@
-//! Decomposition overlay: composites and partitions as a real `TopologyView`, host untouched,
-//! undo by `remove`, ids never reused, rejections, persistence by replay.
+//! Conformance scenarios: The decomposition overlay over a face-split host.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
+
 
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{CurveDef, Interval, Line};
 use sm_topo_api::fixtures::{self, BrickIds, with_op};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 use std::sync::Arc;
 
@@ -19,8 +21,8 @@ fn assert_valid(v: &dyn TopologyView) {
 }
 
 /// A unit brick whose top face is split into two halves by the corner-to-corner diagonal.
-fn brick_with_split_top() -> (CellComplex, BrickIds, [EntityId; 2], EntityId) {
-    let mut t = CellComplex::new();
+fn brick_with_split_top<E: Sys>(make: &Mk<E>) -> (E, BrickIds, [EntityId; 2], EntityId) {
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let (halves, chord) = with_op(&mut t, OpId(2), |t| {
         let line = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(Point3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 0.0)).unwrap())).unwrap();
@@ -31,9 +33,8 @@ fn brick_with_split_top() -> (CellComplex, BrickIds, [EntityId; 2], EntityId) {
     (t, b, halves, chord)
 }
 
-#[test]
-fn composite_hides_the_interior_without_touching_the_host_and_undo_restores_it() {
-    let (t, b, [f0, f1], chord) = brick_with_split_top();
+pub(super) fn composite_hides_the_interior_without_touching_the_host_and_undo_restores_it<E: Sys>(make: &Mk<E>) {
+    let (t, b, [f0, f1], chord) = brick_with_split_top(make);
     let host: Arc<dyn TopologyView> = Arc::new(t.clone());
     let h0 = host.canonical_hash();
     let mut ov = Overlay::new(host.clone());
@@ -85,9 +86,8 @@ fn composite_hides_the_interior_without_touching_the_host_and_undo_restores_it()
     assert_eq!(ov.host_hash(), h0);
 }
 
-#[test]
-fn composite_rejections() {
-    let (t, b, [f0, f1], _chord) = brick_with_split_top();
+pub(super) fn composite_rejections<E: Sys>(make: &Mk<E>) {
+    let (t, b, [f0, f1], _chord) = brick_with_split_top(make);
     let host: Arc<dyn TopologyView> = Arc::new(t);
     let mut ov = Overlay::new(host);
     // Fewer than two faces, unknown/dead faces, faces that are not faces.
@@ -106,10 +106,9 @@ fn composite_rejections() {
     assert_eq!(next.serial(), vf.serial() + 1);
 }
 
-#[test]
-fn composite_rejects_different_volumes_sides_and_foreign_edges() {
+pub(super) fn composite_rejects_different_volumes_sides_and_foreign_edges<E: Sys>(make: &Mk<E>) {
     // Webcut halves belong to different volumes.
-    let mut t = CellComplex::new();
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let w = with_op(&mut t, OpId(2), |t| fixtures::webcut_brick(t, &b, 0.5)).unwrap();
     let host: Arc<dyn TopologyView> = Arc::new(t);
@@ -122,7 +121,7 @@ fn composite_rejects_different_volumes_sides_and_foreign_edges() {
     assert_eq!(ov.canonical_hash(), host.canonical_hash());
 
     // A face sharing an edge with a face outside the composite (non-manifold fin).
-    let mut t2 = CellComplex::new();
+    let mut t2 = make(None);
     let (b2, fin) = with_op(&mut t2, OpId(1), fixtures::brick_with_fin).unwrap();
     let host2: Arc<dyn TopologyView> = Arc::new(t2);
     let mut ov2 = Overlay::new(host2);
@@ -131,9 +130,8 @@ fn composite_rejects_different_volumes_sides_and_foreign_edges() {
     let _ = fin;
 }
 
-#[test]
-fn partitions_use_real_cut_geometry_and_undo_in_dependency_order() {
-    let mut t = CellComplex::new();
+pub(super) fn partitions_use_real_cut_geometry_and_undo_in_dependency_order<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let b = with_op(&mut t, OpId(1), |t| fixtures::brick(t, Point3::new(0.0, 0.0, 0.0), [1.0; 3])).unwrap();
     let host: Arc<dyn TopologyView> = Arc::new(t);
     let h0 = host.canonical_hash();
@@ -200,9 +198,8 @@ fn partitions_use_real_cut_geometry_and_undo_in_dependency_order() {
     assert_eq!(ov.canonical_hash(), before);
 }
 
-#[test]
-fn stale_overlays_are_detected_and_can_be_rebased() {
-    let (mut t, b, [f0, f1], _chord) = brick_with_split_top();
+pub(super) fn stale_overlays_are_detected_and_can_be_rebased<E: Sys>(make: &Mk<E>) {
+    let (mut t, b, [f0, f1], _chord) = brick_with_split_top(make);
     let host: Arc<dyn TopologyView> = Arc::new(t.clone());
     let mut ov = Overlay::new(host);
     let vf = ov.composite_faces(&[f0, f1]).unwrap();
@@ -224,13 +221,23 @@ fn stale_overlays_are_detected_and_can_be_rebased() {
     assert_eq!(ov.canonical_hash(), before);
 }
 
-#[test]
-fn overlay_is_object_safe_and_usable_as_a_view() {
-    let (t, _b, [f0, f1], _chord) = brick_with_split_top();
+pub(super) fn overlay_is_object_safe_and_usable_as_a_view<E: Sys>(make: &Mk<E>) {
+    let (t, _b, [f0, f1], _chord) = brick_with_split_top(make);
     let mut ov = Overlay::new(Arc::new(t));
     ov.composite_faces(&[f0, f1]).unwrap();
     let v: &dyn TopologyView = &ov;
     assert_eq!(v.cells(Dim::Face).len(), 6);
     let o: &dyn VirtualOverlay = &ov;
     assert_eq!(o.host_revision(), OpId(2));
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("composite_hides_the_interior_without_touching_the_host_and_undo_restores_it", composite_hides_the_interior_without_touching_the_host_and_undo_restores_it::<E>),
+        ("composite_rejections", composite_rejections::<E>),
+        ("composite_rejects_different_volumes_sides_and_foreign_edges", composite_rejects_different_volumes_sides_and_foreign_edges::<E>),
+        ("partitions_use_real_cut_geometry_and_undo_in_dependency_order", partitions_use_real_cut_geometry_and_undo_in_dependency_order::<E>),
+        ("stale_overlays_are_detected_and_can_be_rebased", stale_overlays_are_detected_and_can_be_rebased::<E>),
+        ("overlay_is_object_safe_and_usable_as_a_view", overlay_is_object_safe_and_usable_as_a_view::<E>),
+    ]
 }

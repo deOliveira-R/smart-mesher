@@ -1,20 +1,18 @@
-//! `bridge_loops` and `FaceCut::Chain` (W0f): a plane webcut of a holed plate by two sequential
-//! chords, and a polyline imprint, checked against exact areas.
+//! Conformance scenarios: Inner-loop bridging and chain splits of a holed plate.
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::needless_range_loop)]
 
-// Scenario copied from sm-topo-api/tests/bridge_chain.rs and run against the production store (the
-// reference's name is rebound so the assertions are untouched).
-mod common;
-use common::Dual as CellComplex;
+
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{CurveDef, Frame, Interval, Line, Plane, SurfaceDef};
+use super::{Mk, Scenario, Sys};
 use sm_topo_api::*;
 
-fn v(t: &mut CellComplex, x: f64, y: f64) -> (EntityId, Point3) {
+fn v<E: Sys>(t: &mut E, x: f64, y: f64) -> (EntityId, Point3) {
     let p = Point3::new(x, y, 0.0);
     (t.make_vertex(p).unwrap(), p)
 }
 
-fn line(t: &mut CellComplex, a: (EntityId, Point3), b: (EntityId, Point3)) -> EntityId {
+fn line<E: Sys>(t: &mut E, a: (EntityId, Point3), b: (EntityId, Point3)) -> EntityId {
     let d = b.1 - a.1;
     let curve = t.shapes_mut().unwrap().add_curve(CurveDef::Line(Line::new(a.1, d).unwrap())).unwrap();
     t.make_edge(a.0, b.0, Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward })).unwrap()
@@ -24,22 +22,22 @@ fn fwd(edge: EntityId) -> CoedgeSpec {
     CoedgeSpec { edge, sense: Sense::Forward }
 }
 
-fn plane(t: &mut CellComplex) -> SurfaceCarrier {
+fn plane<E: Sys>(t: &mut E) -> SurfaceCarrier {
     let frame = Frame::from_z(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0)).unwrap();
     let surface = t.shapes_mut().unwrap().add_surface(SurfaceDef::Plane(Plane { frame })).unwrap();
     SurfaceCarrier { surface, sense: Sense::Forward }
 }
 
 /// Closed polygon loop through `pts` (counter-clockwise seen from +z for an outer loop).
-fn polygon(t: &mut CellComplex, pts: &[(EntityId, Point3)]) -> Vec<CoedgeSpec> {
+fn polygon<E: Sys>(t: &mut E, pts: &[(EntityId, Point3)]) -> Vec<CoedgeSpec> {
     (0..pts.len()).map(|i| fwd(line(t, pts[i], pts[(i + 1) % pts.len()]))).collect()
 }
 
-fn area(t: &CellComplex, f: EntityId) -> f64 {
+fn area<E: Sys>(t: &E, f: EntityId) -> f64 {
     t.face_moments(f).unwrap().area
 }
 
-fn assert_valid(t: &CellComplex) {
+fn assert_valid<E: Sys>(t: &E) {
     let bad = validate(t);
     assert!(bad.is_empty(), "violations: {bad:#?}");
 }
@@ -51,7 +49,7 @@ struct Plate {
 }
 
 /// A 4 x 4 plate in z = 0 with a 2 x 2 square hole in the middle.
-fn holed_plate(t: &mut CellComplex) -> Plate {
+fn holed_plate<E: Sys>(t: &mut E) -> Plate {
     t.begin_op(OpId(1)).unwrap();
     let outer = vec![v(t, 0.0, 0.0), v(t, 4.0, 0.0), v(t, 4.0, 4.0), v(t, 0.0, 4.0)];
     // The hole runs clockwise seen from +z.
@@ -64,9 +62,8 @@ fn holed_plate(t: &mut CellComplex) -> Plate {
     Plate { face, outer, hole }
 }
 
-#[test]
-fn ids_start_at_serial_one() {
-    let mut t = CellComplex::new();
+pub(super) fn ids_start_at_serial_one<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let p = holed_plate(&mut t);
     assert_eq!(p.outer[0].0, EntityId::new(EntityKind::TopoVertex, 1).unwrap());
     assert_eq!(p.face, EntityId::new(EntityKind::TopoFace, 1).unwrap());
@@ -75,9 +72,8 @@ fn ids_start_at_serial_one() {
     assert_eq!(t.state(zero), None);
 }
 
-#[test]
-fn holed_plate_webcut_by_two_sequential_chords() {
-    let mut t = CellComplex::new();
+pub(super) fn holed_plate_webcut_by_two_sequential_chords<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let p = holed_plate(&mut t);
     assert!((area(&t, p.face) - 12.0).abs() < 1e-12);
     assert_eq!(t.loops(p.face).count(), 2);
@@ -123,9 +119,8 @@ fn holed_plate_webcut_by_two_sequential_chords() {
     assert_eq!(t.lineage().children(p.face).as_slice(), &[a, b]);
 }
 
-#[test]
-fn polyline_imprint_with_a_chain_cut() {
-    let mut t = CellComplex::new();
+pub(super) fn polyline_imprint_with_a_chain_cut<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     t.begin_op(OpId(1)).unwrap();
     let c = [v(&mut t, 0.0, 0.0), v(&mut t, 4.0, 0.0), v(&mut t, 4.0, 4.0), v(&mut t, 0.0, 4.0)];
     let l = polygon(&mut t, &c);
@@ -154,7 +149,7 @@ fn polyline_imprint_with_a_chain_cut() {
         assert!(t.face_edges(f).contains(&e1) && t.face_edges(f).contains(&e2));
     }
     // The reversed chain gives the same split.
-    let mut t2 = CellComplex::new();
+    let mut t2 = make(None);
     t2.begin_op(OpId(1)).unwrap();
     let c2 = [v(&mut t2, 0.0, 0.0), v(&mut t2, 4.0, 0.0), v(&mut t2, 4.0, 4.0), v(&mut t2, 0.0, 4.0)];
     let l2 = polygon(&mut t2, &c2);
@@ -172,9 +167,8 @@ fn polyline_imprint_with_a_chain_cut() {
     assert!((area(&t2, a2) - 6.0).abs() < 1e-12 && (area(&t2, b2) - 10.0).abs() < 1e-12);
 }
 
-#[test]
-fn chain_ending_on_a_hole_needs_a_bridge_first() {
-    let mut t = CellComplex::new();
+pub(super) fn chain_ending_on_a_hole_needs_a_bridge_first<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
     let p = holed_plate(&mut t);
     t.begin_op(OpId(2)).unwrap();
     let mid = v(&mut t, 0.5, 0.6);
@@ -185,4 +179,13 @@ fn chain_ending_on_a_hole_needs_a_bridge_first() {
         Err(TopoError::Unsupported(_))
     ));
     t.abort_op();
+}
+
+pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
+    vec![
+        ("ids_start_at_serial_one", ids_start_at_serial_one::<E>),
+        ("holed_plate_webcut_by_two_sequential_chords", holed_plate_webcut_by_two_sequential_chords::<E>),
+        ("polyline_imprint_with_a_chain_cut", polyline_imprint_with_a_chain_cut::<E>),
+        ("chain_ending_on_a_hole_needs_a_bridge_first", chain_ending_on_a_hole_needs_a_bridge_first::<E>),
+    ]
 }

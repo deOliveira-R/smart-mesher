@@ -74,5 +74,44 @@ fn queries(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, refine, assemblies, queries);
+/// Per-record cost of the lineage log: `n` records (a split every other record, over faces,
+/// edges and vertices with dense serials like the store allocates), then a lookup by subject and
+/// by target for each. Throughput is in records, so the report reads as time per record.
+fn lineage_log(c: &mut Criterion) {
+    use sm_core::{EntityId, EntityKind};
+    use sm_topo_api::{LineageKind, LineageLog, LineageRecord, OpId};
+    let kinds = [EntityKind::TopoFace, EntityKind::TopoEdge, EntityKind::TopoVertex];
+    let id = |k: EntityKind, n: u64| EntityId::new(k, n).expect("serial");
+    let fill = |n: usize| {
+        let mut log = LineageLog::new();
+        for i in 0..n {
+            let k = kinds[i % 3];
+            let s = (i / 3) as u64 + 1;
+            let kind = if i % 2 == 0 { LineageKind::Split { children: [id(k, 2 * s + 1), id(k, 2 * s + 2)].into_iter().collect() } } else { LineageKind::Deleted };
+            log.push(LineageRecord { op: OpId(i as u64 / 8 + 1), entity: id(k, s), kind });
+        }
+        log
+    };
+    let mut g = c.benchmark_group("lineage_log");
+    g.sample_size(20);
+    for n in [10_000usize, 100_000, 400_000] {
+        g.throughput(Throughput::Elements(n as u64));
+        g.bench_with_input(BenchmarkId::new("push", n), &n, |b, &n| b.iter(|| black_box(fill(n))));
+        let log = fill(n);
+        g.bench_with_input(BenchmarkId::new("lookup", n), &n, |b, &n| {
+            b.iter(|| {
+                let mut hits = 0usize;
+                for i in 0..n {
+                    let k = kinds[i % 3];
+                    let s = (i / 3) as u64 + 1;
+                    hits += log.of(id(k, s)).count() + log.produced(id(k, s + 1)).count();
+                }
+                black_box(hits)
+            })
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(benches, refine, assemblies, queries, lineage_log);
 criterion_main!(benches);

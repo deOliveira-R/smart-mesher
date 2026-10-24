@@ -157,6 +157,11 @@ pub trait TopologyView: Send + Sync {
     /// The tolerance policy fields are user constants and are emitted by bit pattern as `Int`.
     /// A state layer folds this into an `sm-op-api` `Digest` (`Float` via `f64_with(raw, q)`), so
     /// its identity hash is quantized and its exact (cache-key) hash is bit-for-bit.
+    ///
+    /// Implementors may override this and [`canonical_hash`](Self::canonical_hash) with a faster
+    /// path (a parallel or cached fold), provided the emitted [`HashWord`] stream, and so the
+    /// hash, is identical to this provided implementation. [`canonical_words`] collects the
+    /// stream, so a test can compare any two implementations word by word.
     fn canonical_visit(&self, f: &mut dyn FnMut(HashWord)) {
         let tol = *self.tolerance();
         let int = |f: &mut dyn FnMut(HashWord), v: u64| f(HashWord::Int(v));
@@ -274,6 +279,9 @@ pub trait TopologyView: Send + Sync {
     /// of its definition hashes as zero, see `CurveDef::quantized_values`), every live
     /// cell (id, birth op, flags, quantized tolerance override, carrier, boundary row), the
     /// pcurves by content, shell kinds, coincidence records and the full lineage log.
+    ///
+    /// An override must return what the provided fold of the [`canonical_visit`](Self::canonical_visit)
+    /// stream returns.
     fn canonical_hash(&self) -> u64 {
         let mut h = Fnv::new();
         self.canonical_visit(&mut |w| match w {
@@ -297,6 +305,13 @@ pub enum HashWord {
         /// Its quantized code.
         q: i64,
     },
+}
+
+/// The [`TopologyView::canonical_visit`] stream of `view`, collected.
+pub fn canonical_words(view: &dyn TopologyView) -> Vec<HashWord> {
+    let mut out = Vec::new();
+    view.canonical_visit(&mut |w| out.push(w));
+    out
 }
 
 /// The words of one shape definition, matching `CurveDef::quantized_values`: integers as is,
@@ -562,6 +577,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!(t.canonical_hash(), legacy_hash(&t));
+    }
+
+    #[test]
+    fn canonical_words_collects_the_visit_stream() {
+        let t = sample();
+        let words = canonical_words(&t);
+        let mut n = 0usize;
+        t.canonical_visit(&mut |_| n += 1);
+        assert_eq!(words.len(), n);
+        assert!(!words.is_empty());
+        assert_eq!(canonical_words(&t), words, "stable");
+        assert_ne!(canonical_words(&CellComplex::new()), words);
     }
 
     #[test]

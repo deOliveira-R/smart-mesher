@@ -1171,6 +1171,7 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-geom-api",
+ "sm-testkit",
  "smallvec",
  "thiserror",
 ]

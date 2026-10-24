@@ -38,7 +38,7 @@
 //! keep their host orientation (the lowest-id-left rule is not re-applied across virtual
 //! volumes).
 
-use crate::complex::canonical_rotate;
+use crate::complex::{canonical_rotate, normalize_row};
 use crate::error::{QueryError, TopoError};
 use crate::geometry::{FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
@@ -322,24 +322,6 @@ fn vrank(dim: Dim) -> Option<usize> {
         Dim::Face => Some(2),
         _ => None,
     }
-}
-
-fn normalize_face_row(row: &mut Vec<Incidence>) {
-    let mut out = Vec::with_capacity(row.len());
-    let mut embedded: Vec<Incidence> = Vec::new();
-    for g in row.chunk_by(|a, b| a.ring == b.ring) {
-        if g[0].ring == Incidence::EMBEDDED {
-            embedded.extend_from_slice(g);
-        } else {
-            let mut ring = g.to_vec();
-            canonical_rotate(&mut ring);
-            out.extend(ring);
-        }
-    }
-    embedded.sort();
-    embedded.dedup();
-    out.extend(embedded);
-    *row = out;
 }
 
 impl Overlay {
@@ -1046,7 +1028,7 @@ impl Overlay {
                 }
             }
             if is_face {
-                normalize_face_row(&mut row);
+                normalize_row(Dim::Face, &mut row);
             }
             self.set_down(par.cell, row);
         }
@@ -1085,7 +1067,7 @@ impl Overlay {
         let mut r2: Vec<Incidence> = row[b..].iter().chain(row[..a].iter()).copied().collect();
         r2.push(Incidence::new(chord, side1.flip(), 0));
         for r in [&mut r1, &mut r2] {
-            normalize_face_row(r);
+            normalize_row(Dim::Face, r);
         }
         let curve = self.layer.shapes.add_curve(cut.curve.clone())?;
         self.add_virtual(chord, Dim::Edge, Vec::new(), Carrier::Curve(CurveCarrier { curve, range: cut.range, sense: Sense::Forward }), vec![face]);

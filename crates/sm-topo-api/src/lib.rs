@@ -31,7 +31,7 @@ pub mod types;
 pub mod validate;
 pub mod view;
 
-pub use complex::CellComplex;
+pub use complex::{CellComplex, canonical_rotate, normalize_row};
 pub use derived::{Coedge, FaceClass, FaceSides, FaceUse, Loop, Shell, TopologyViewExt};
 pub use edit::TopologyEdit;
 pub use error::{QueryError, TopoError};
@@ -42,5 +42,5 @@ pub use types::{
     CapFace, Carrier, CellFlags, CoedgeKey, CoedgeKind, CoedgeSpec, Coincidence, CornerKey, CurveCarrier, CutOutcome, Dim, EntityState, FaceCut, FacePair, FaceUseSpec, Incidence,
     InnerLoopAssign, Lineage, LineageEvent, LineageKind, LineageRecord, ModKind, OpId, OpSummary, Region, Sense, ShellAssign, ShellKind, ShellSpec, Side, SurfaceCarrier, VertexId, VolumeId, WrongKind, BodyId, EdgeId, FaceId,
 };
-pub use validate::{Rule, Severity, TopoIssue, euler_characteristic, validate, validate_geometry};
-pub use view::{EdgeUse, HashWord, RADIAL_ANGLE_STEP, TopologyView};
+pub use validate::{Rule, Severity, TopoIssue, check_cells, check_cells_with, check_row_entries, euler_characteristic, validate, validate_geometry};
+pub use view::{EdgeUse, HashWord, RADIAL_ANGLE_STEP, TopologyView, canonical_words};
