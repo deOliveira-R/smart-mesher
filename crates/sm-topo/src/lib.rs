@@ -1,3 +1,17 @@
-//! Cellular non-manifold B-rep store implementing sm-topo-api, with Euler operators, stable ids and lineage.
+//! Production cellular non-manifold B-rep store implementing `sm-topo-api`.
 //!
-//! Skeleton created in W0; implemented in W1 against the frozen `*-api` contracts.
+//! [`TopoStore`] implements [`sm_topo_api::TopologyView`] and [`sm_topo_api::TopologyEdit`] with
+//! exactly the observable behaviour of the reference [`sm_topo_api::CellComplex`] (ids, lineage,
+//! validation results, canonical hashes), on a structure-of-arrays store with CSR incidence
+//! rows edited in place and journaled as deltas. See `DESIGN.md`.
+
+mod check;
+mod helpers;
+mod lifecycle;
+mod norm;
+mod ops;
+mod radial;
+mod rows;
+mod store;
+
+pub use store::TopoStore;

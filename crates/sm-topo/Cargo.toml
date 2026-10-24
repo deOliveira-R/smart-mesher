@@ -13,6 +13,18 @@ sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 thiserror = "2"
+smallvec = "1"
+rayon = "1"
+
+[dev-dependencies]
+serde_json = "1"
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "scaling"
+harness = false
 
 [lints]
 workspace = true
