@@ -194,6 +194,7 @@
         "title": "core.batch",
         "type": "object"
       },
+      "tool_name": "core__batch",
       "version": 1
     }
   ],
@@ -212,7 +213,8 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "demo.count",
         "type": "object"
-      }
+      },
+      "tool_name": "demo__count"
     }
   ]
 }

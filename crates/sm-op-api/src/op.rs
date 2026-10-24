@@ -431,6 +431,33 @@ impl<'a> ApplyCtx<'a> {
         Ok(())
     }
 
+    /// Place ids that already exist into the output `role` of the [`Delta`] without adopting or
+    /// creating them, so an op can report surviving or pre-existing entities (moved volumes,
+    /// imprint survivors). Each id must be live now (in the pre-op state, or adopted/allocated
+    /// earlier in this op); a retired or unknown id is [`OpError::Invalid`]. It is not listed in
+    /// [`Delta::created`]. Subject to the same declared-role checks as [`adopt_as`](Self::adopt_as)
+    /// (role, kind, cardinality). The ids of one call are added in ascending `(kind, serial)`
+    /// order, duplicates and ids already in the role skipped.
+    pub fn record_role(&mut self, role: &str, ids: &[EntityId]) -> Result<(), OpError> {
+        for &id in ids {
+            if !self.state.contains(id) {
+                return Err(OpError::Invalid(format!(
+                    "record_role `{role}`: {id} is not live"
+                )));
+            }
+        }
+        let mut sorted = ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let slot = self.outputs.entry(role.to_owned()).or_default();
+        for id in sorted {
+            if !slot.contains(&id) {
+                slot.push(id);
+            }
+        }
+        Ok(())
+    }
+
     /// Record that `old` was succeeded by `new` (split children, merge survivor; a copy is
     /// `old = A`, `new = [A, A']`). Every id in `new` must be live. Downstream layers receive
     /// the map through [`LayerType::on_succession`] after the op body (inside `core.batch`:
@@ -571,7 +598,7 @@ impl<'a> ApplyCtx<'a> {
         self.scope = outer;
         let sub = std::mem::replace(&mut self.outputs, saved);
         r?;
-        check_outputs(self.registry.op_outputs(&rec.name), &sub)?;
+        check_outputs(self.registry.op_outputs(op.name()), &sub)?;
         // Layers react after each nested op, so later sub-ops never see references to ids an
         // earlier sub-op retired.
         self.flush_reactions();

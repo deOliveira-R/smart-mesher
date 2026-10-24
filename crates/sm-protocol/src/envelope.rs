@@ -4,6 +4,11 @@ use serde_json::Value;
 use crate::{METHODS, Request, RpcError};
 
 /// A JSON-RPC 2.0 request: `{"jsonrpc":"2.0","id":..,"method":..,"params":..}`.
+///
+/// **Notification rule:** `id` is mandatory (string, number or `null`). A request without `id`
+/// is a JSON-RPC notification, which this protocol does not support: parsing fails with
+/// [`INVALID_REQUEST`](crate::INVALID_REQUEST) and the transport must still send that error as
+/// a reply with `id: null` (see [`Endpoint::handle_text`]) rather than drop the message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
     /// Always `"2.0"`.

@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sm_core::{EntityId, EntityKind};
-use sm_op_api::{Delta, Hash256, Head, OpError, QueryCtx, Registry, Rev, State, TypedQuery};
+use sm_op_api::{Delta, Hash256, Head, OpError, OpInfoOwned, QueryCtx, QueryInfoOwned, Registry, Rev, State, TypedQuery};
 use sm_protocol::*;
 
 fn h(n: u8) -> Hash256 {
@@ -444,75 +444,39 @@ fn result_golden_and_round_trip() {
     delta.created.push(eid(1));
     delta.outputs.insert("volume".into(), vec![eid(1)]);
     delta.touched_layers.push("model".into());
-    let a = ApplyResult {
-        node: h(1),
-        state: h(2),
-        delta,
-    };
+    let a = ApplyResult::new(h(1), h(2), delta);
     let dv = serde_json::to_value(&a.delta).unwrap();
     rt(&mut m, "apply", &a, json!({"node": hs(1), "state": hs(2), "delta": dv}));
     assert_eq!(dv["created"], json!(["TopoVolume#1"]));
 
-    rt(&mut m, "hash", &HashResult {
-            state: h(4),
-            layers: BTreeMap::from([("model".into(), h(5)), ("a".into(), h(6))]),
-        },
+    rt(&mut m, "hash", &HashResult::new(
+            h(4),
+            BTreeMap::from([("model".into(), h(5)), ("a".into(), h(6))]),
+        ),
         json!({"state": hs(4), "layers": {"a": hs(6), "model": hs(5)}}),
     );
 
-    rt(&mut m, "export.path", &ExportResult {
-            path: Some("o.smsh".into()),
-            format: ExportFormat::Smsh,
-            bytes: 12,
-            sha256: h(7),
-            base64: None,
-        },
+    rt(&mut m, "export.path", &ExportResult::new(Some("o.smsh".into()), ExportFormat::Smsh, 12, h(7)),
         json!({"path": "o.smsh", "format": "smsh", "bytes": 12, "sha256": hs(7)}),
     );
-    rt(&mut m, "export.inline", &ExportResult {
-            path: None,
-            format: ExportFormat::Vtu,
-            bytes: 3,
-            sha256: h(8),
-            base64: Some("AAEC".into()),
-        },
+    rt(&mut m, "export.inline", &ExportResult::new(None, ExportFormat::Vtu, 3, h(8)).with_base64("AAEC"),
         json!({"path": null, "format": "vtu", "bytes": 3, "sha256": hs(8), "base64": "AAEC"}),
     );
 
-    rt(&mut m, "script", &ScriptResult {
-            state: h(9),
-            output: "ok\n".into(),
-            events: vec![json!({"cmd": "brick"})],
-            diagnostics: json!([]),
-        },
+    rt(&mut m, "script", &ScriptResult::new(h(9), "ok\n", vec![json!({"cmd": "brick"})], json!([])),
         json!({"state": hs(9), "output": "ok\n", "events": [{"cmd": "brick"}], "diagnostics": []}),
     );
 
-    rt(&mut m, "status.attached", &StatusResult {
-            head: Head::Ref("main".into()),
-            position: Some(h(1)),
-            depth: 2,
-            state: h(2),
-            nodes: 3,
-            branches: BTreeMap::from([("main".into(), h(1))]),
-            redo: 1,
-            dirty: true,
-            project: Some("demo".into()),
-        },
+    rt(&mut m, "status.attached", &StatusResult::new(Head::Ref("main".into()), h(2))
+            .with_position(Some(h(1)), 2)
+            .with_branches(3, BTreeMap::from([("main".into(), h(1))]))
+            .with_redo(1)
+            .with_dirty(true)
+            .with_project(Some("demo".into())),
         json!({"head": {"ref": "main"}, "position": hs(1), "depth": 2, "state": hs(2), "nodes": 3,
                "branches": {"main": hs(1)}, "redo": 1, "dirty": true, "project": "demo"}),
     );
-    rt(&mut m, "status.empty", &StatusResult {
-            head: Head::Detached(None),
-            position: None,
-            depth: 0,
-            state: h(0),
-            nodes: 0,
-            branches: BTreeMap::new(),
-            redo: 0,
-            dirty: false,
-            project: None,
-        },
+    rt(&mut m, "status.empty", &StatusResult::new(Head::Detached(None), h(0)),
         json!({"head": "empty", "position": null, "depth": 0, "state": hs(0), "nodes": 0,
                "branches": {}, "redo": 0, "dirty": false, "project": null}),
     );
@@ -533,11 +497,15 @@ impl TypedQuery for CountQ {
 fn catalog_result_serializes_registry_infos() {
     let mut reg = Registry::new();
     reg.register_query::<CountQ>().unwrap();
-    let ops: Vec<_> = reg.catalog().into_iter().map(Result::unwrap).collect();
+    let ops: Vec<_> = reg
+        .catalog()
+        .into_iter()
+        .map(|i| OpInfoOwned::from(&i.unwrap()))
+        .collect();
     let queries: Vec<_> = reg
         .query_catalog()
         .into_iter()
-        .map(Result::unwrap)
+        .map(|q| QueryInfoOwned::from(&q.unwrap()))
         .collect();
     let batch_schema = serde_json::to_value(reg.batch_schema().unwrap()).unwrap();
     let c = CatalogResult {
@@ -548,6 +516,17 @@ fn catalog_result_serializes_registry_infos() {
     };
     let v = serde_json::to_value(&c).unwrap();
     check_fixture("catalog.json", fixtures::CATALOG, &v);
+    // Typed round trip, and the same JSON as serializing the borrowed infos.
+    let back: CatalogResult = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), v);
+    assert_eq!(v["ops"][0]["tool_name"], json!("core__batch"));
+    assert_eq!(v["queries"][0]["tool_name"], json!("demo__count"));
+    let direct: Vec<Value> = reg
+        .catalog()
+        .iter()
+        .map(|i| serde_json::to_value(i.as_ref().unwrap()).unwrap())
+        .collect();
+    assert_eq!(v["ops"], Value::Array(direct));
     assert_eq!(v["protocol"], json!(0));
     assert_eq!(v["ops"][0]["name"], json!("core.batch"));
     assert_eq!(v["queries"][0]["name"], json!("demo.count"));

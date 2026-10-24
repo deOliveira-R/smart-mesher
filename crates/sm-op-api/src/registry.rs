@@ -132,7 +132,9 @@ mod batch_schema {
 }
 
 /// How many ids an op output role holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Cardinality {
@@ -185,6 +187,38 @@ impl OutputRole {
             doc,
         }
     }
+}
+
+/// Owned, deserializable mirror of [`OutputRole`] with the same JSON shape.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct OutputRoleOwned {
+    /// Role name.
+    pub name: String,
+    /// Allowed entity kinds; empty means any kind.
+    pub kinds: Vec<EntityKind>,
+    /// How many ids the role holds.
+    pub cardinality: Cardinality,
+    /// One-line description.
+    pub doc: String,
+}
+
+impl From<&OutputRole> for OutputRoleOwned {
+    fn from(r: &OutputRole) -> Self {
+        Self {
+            name: r.name.to_owned(),
+            kinds: r.kinds.to_vec(),
+            cardinality: r.cardinality,
+            doc: r.doc.to_owned(),
+        }
+    }
+}
+
+/// Whether `s` is a valid output role name: `[a-z_][a-z0-9_]*`.
+pub fn valid_role_name(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next().is_some_and(|f| f.is_ascii_lowercase() || f == '_')
+        && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_')
 }
 
 /// Schema annotation on an id property (or, on an array, its items): the list of canonical
@@ -266,6 +300,8 @@ pub trait Plugin {
 pub struct OpInfo {
     /// Op name, e.g. `model.create_brick`.
     pub name: String,
+    /// MCP-safe tool name (`name` with `.` mangled to `__`); clients never recompute it.
+    pub tool_name: String,
     /// Current version.
     pub version: u32,
     /// Params schema; `title` is the op name.
@@ -283,6 +319,41 @@ impl OpInfo {
     /// because registered op names never contain `__`.
     pub fn tool_name(&self) -> String {
         self.name.replace('.', "__")
+    }
+}
+
+/// Owned, deserializable mirror of [`OpInfo`]: serializes to exactly the same JSON, so a
+/// client can read a catalog reply into it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct OpInfoOwned {
+    /// Op name.
+    pub name: String,
+    /// MCP-safe tool name.
+    pub tool_name: String,
+    /// Current version.
+    pub version: u32,
+    /// Params schema.
+    pub schema: Schema,
+    /// Result schema.
+    pub output_schema: Schema,
+    /// Declared output roles.
+    pub outputs: Vec<OutputRoleOwned>,
+    /// Positional params property, if any.
+    pub positional: Option<String>,
+}
+
+impl From<&OpInfo> for OpInfoOwned {
+    fn from(i: &OpInfo) -> Self {
+        Self {
+            name: i.name.clone(),
+            tool_name: i.tool_name.clone(),
+            version: i.version,
+            schema: i.schema.clone(),
+            output_schema: i.output_schema.clone(),
+            outputs: i.outputs.iter().map(OutputRoleOwned::from).collect(),
+            positional: i.positional.clone(),
+        }
     }
 }
 
@@ -381,6 +452,24 @@ impl Registry {
         if self.ops.contains_key(&name) || self.queries.contains_key(&name) {
             return Err(RegistryError::DuplicateOp(name));
         }
+        // A registered op must always appear in the catalog and the batch schema, so reject
+        // here whatever `info` would later reject.
+        Self::info(t.as_ref())?;
+        let mut seen = BTreeSet::new();
+        for r in t.outputs() {
+            if !valid_role_name(r.name) {
+                return Err(RegistryError::BadOutputRole {
+                    op: name,
+                    role: r.name.to_owned(),
+                });
+            }
+            if !seen.insert(r.name) {
+                return Err(RegistryError::DuplicateOutputRole {
+                    op: name,
+                    role: r.name.to_owned(),
+                });
+            }
+        }
         self.ops.insert(name, t);
         Ok(self)
     }
@@ -404,6 +493,19 @@ impl Registry {
         }
         if self.queries.contains_key(&name) || self.ops.contains_key(&name) {
             return Err(RegistryError::DuplicateQuery(name));
+        }
+        // Keep the query visible in `query_catalog`.
+        let bad = |reason| RegistryError::Schema {
+            name: name.clone(),
+            reason,
+        };
+        for s in [
+            t.input_schema().map_err(bad)?,
+            t.output_schema().map_err(bad)?,
+        ] {
+            if s.as_object().is_none() {
+                return Err(bad("schema is not an object".to_owned()));
+            }
         }
         self.queries.insert(name, t);
         Ok(self)
@@ -452,6 +554,7 @@ impl Registry {
                     return Err(err("schema is not an object".to_owned()));
                 }
                 Ok(QueryInfo {
+                    tool_name: name.replace('.', "__"),
                     name: name.clone(),
                     schema,
                     output_schema,
@@ -647,6 +750,7 @@ impl Registry {
             prop.insert(X_POSITIONAL.to_owned(), true.into());
         }
         Ok(OpInfo {
+            tool_name: name.replace('.', "__"),
             name,
             version: t.version(),
             schema,
