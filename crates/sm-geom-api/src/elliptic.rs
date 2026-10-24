@@ -238,15 +238,15 @@ fn sym_eigen(mut a: [[f64; 3]; 3]) -> ([f64; 3], [Vector3; 3]) {
             let t = if theta == 0.0 { 1.0 } else { t };
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
-            for k in 0..3 {
-                let (akp, akq) = (a[k][p], a[k][q]);
-                a[k][p] = c * akp - s * akq;
-                a[k][q] = s * akp + c * akq;
+            for row in &mut a {
+                let (akp, akq) = (row[p], row[q]);
+                row[p] = c * akp - s * akq;
+                row[q] = s * akp + c * akq;
             }
+            let (rp, rq) = (a[p], a[q]);
             for k in 0..3 {
-                let (apk, aqk) = (a[p][k], a[q][k]);
-                a[p][k] = c * apk - s * aqk;
-                a[q][k] = s * apk + c * aqk;
+                a[p][k] = c * rp[k] - s * rq[k];
+                a[q][k] = s * rp[k] + c * rq[k];
             }
             for row in &mut v {
                 let (vp, vq) = (row[p], row[q]);

@@ -171,12 +171,11 @@ fn quads() -> ReferenceMesh {
     for c in [q1.cell, q2.cell] {
         b.set_class(MeshEntityRef::Cell(c), on(EntityKind::TopoFace, 1)).unwrap();
     }
-    let mut k = 1;
     for f in 0..b.face_count() {
+        let k = 1 + f as u64;
         let f = FaceIx::new(f);
         let cls = if b.face_degree(f) == 1 { on(EntityKind::TopoEdge, k) } else { on(EntityKind::TopoFace, 1) };
         b.set_class(MeshEntityRef::Face(f), cls).unwrap();
-        k += 1;
     }
     b.add_set("top0", SetMembers::ShellSides(vec![0, 3])).unwrap();
     b.finish(&mut SerialAlloc::new()).unwrap().mesh

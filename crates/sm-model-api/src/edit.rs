@@ -19,14 +19,14 @@ use std::collections::BTreeSet;
 const SIMILARITY_TOL: f64 = 1e-9;
 
 fn role_fits(kind: &BoundaryKind, role: &FaceRole) -> bool {
-    match (kind, role) {
-        (BoundaryKind::Deck(Deck::Mirror { .. }), FaceRole::Deck { side: DeckSide::SelfPaired, .. }) => true,
-        (BoundaryKind::Deck(Deck::Translation { .. } | Deck::Rotation { .. }), FaceRole::Deck { side: DeckSide::A | DeckSide::B, .. }) => true,
-        (BoundaryKind::Response, FaceRole::Response) => true,
-        (BoundaryKind::Interface(InterfaceIntent::Conformal), FaceRole::Interface { side: DeckSide::A }) => true,
-        (BoundaryKind::Interface(InterfaceIntent::NonConformal { .. }), FaceRole::Interface { .. }) => true,
-        _ => false,
-    }
+    matches!(
+        (kind, role),
+        (BoundaryKind::Deck(Deck::Mirror { .. }), FaceRole::Deck { side: DeckSide::SelfPaired, .. })
+            | (BoundaryKind::Deck(Deck::Translation { .. } | Deck::Rotation { .. }), FaceRole::Deck { side: DeckSide::A | DeckSide::B, .. })
+            | (BoundaryKind::Response, FaceRole::Response)
+            | (BoundaryKind::Interface(InterfaceIntent::Conformal), FaceRole::Interface { side: DeckSide::A })
+            | (BoundaryKind::Interface(InterfaceIntent::NonConformal { .. }), FaceRole::Interface { .. })
+    )
 }
 
 /// `M^T M = s^2 I` within [`SIMILARITY_TOL`] (rotation, reflection and uniform scale).
