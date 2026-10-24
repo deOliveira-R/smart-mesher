@@ -4,7 +4,7 @@
 use sm_core::{Point3, Vector3};
 use sm_geom::exact;
 use sm_geom::{CurveGeometry, KernelStore, PreparedCurve, PreparedSurface, SsiOptions, SsiResult, curve_surface, intersect_surfaces};
-use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, GeomAppend, GeomStore, ModelTolerance, Sphere, SurfaceDef, Torus, Uv};
+use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, GeomAppend, GeomStore, ModelTolerance, ParametricCurve, ParametricSurface, Sphere, SurfaceDef, Torus, Uv};
 use sm_testkit::determinism::{check_f64_bits, hash_f64_bits};
 
 fn pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
@@ -95,4 +95,35 @@ fn repeated_runs_one_thread_vs_many_and_concurrent_callers_are_bit_identical() {
     let base = check_f64_bits(2, 4, workload).expect("determinism");
     assert!(base.len() > 2000, "the workload produced output: {}", base.len());
     assert_eq!(hash_f64_bits(&base), hash_f64_bits(&workload(3)));
+}
+
+/// The parallel `eval_many` overrides equal the default loop bit for bit, on 1 and N threads.
+#[test]
+fn eval_many_overrides_equal_the_default_loop() {
+    let torus = exact::torus_to_nurbs(&Torus::new(world(), 3.0, 1.0).unwrap()).unwrap();
+    let ps = PreparedSurface::new(&torus).unwrap();
+    let cir = exact::circle_to_nurbs(&Circle::new(world(), 2.0).unwrap()).unwrap();
+    let pc = PreparedCurve::new(&cir).unwrap();
+    let uvs: Vec<Uv> = (0..1000).map(|i| Uv::new(7.0 * (i as f64 * 0.37).sin(), 7.0 * (i as f64 * 0.61).cos())).collect();
+    let ts: Vec<f64> = (0..1000).map(|i| 9.0 * (i as f64 * 0.13).sin()).collect();
+    let loop_s: Vec<Point3> = uvs.iter().map(|q| ps.eval(*q)).collect();
+    let loop_c: Vec<Point3> = ts.iter().map(|t| pc.eval(*t)).collect();
+    for threads in [1, 4] {
+        pool(threads, || {
+            let mut out_s = vec![Point3::default(); uvs.len()];
+            ps.eval_many(&uvs, &mut out_s);
+            assert_eq!(out_s, loop_s);
+            let mut out_c = vec![Point3::default(); ts.len()];
+            pc.eval_many(&ts, &mut out_c);
+            assert_eq!(out_c, loop_c);
+            // Through a trait object, as the schemes call it.
+            let (ds, dc): (&dyn ParametricSurface, &dyn ParametricCurve) = (&ps, &pc);
+            let mut again = vec![Point3::default(); uvs.len()];
+            ds.eval_many(&uvs, &mut again);
+            assert_eq!(again, loop_s);
+            let mut again = vec![Point3::default(); ts.len()];
+            dc.eval_many(&ts, &mut again);
+            assert_eq!(again, loop_c);
+        });
+    }
 }

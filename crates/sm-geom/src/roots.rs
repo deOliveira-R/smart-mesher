@@ -1,24 +1,10 @@
-//! Private real-root machinery: stable quadratic, bracketed Brent, and polynomial roots on an
-//! interval with a double-root flag (the `Tangent` semantics of the contract's ray hook).
-//!
-//! `sm-math` was empty when W1 started; this module should migrate there.
-
-/// A real root and whether it is a double (tangential) root.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Root {
-    pub t: f64,
-    pub double: bool,
-}
+//! Private numeric helpers: bracketed Brent and a small dense solver. Polynomial and quadratic
+//! roots live in [`sm_geom_api::roots`].
 
 /// Horner evaluation of ascending coefficients.
+#[cfg(test)]
 pub(crate) fn horner(c: &[f64], t: f64) -> f64 {
     c.iter().rev().fold(0.0, |acc, v| acc * t + v)
-}
-
-/// Horner evaluation of the absolute-value polynomial (a rounding-error scale).
-fn horner_abs(c: &[f64], t: f64) -> f64 {
-    let t = t.abs();
-    c.iter().rev().fold(0.0, |acc, v| acc * t + v.abs())
 }
 
 /// Brent's method on a sign-changing bracket `[a, b]`. `fa` and `fb` must have opposite signs
@@ -87,139 +73,9 @@ pub(crate) fn brent(f: &mut impl FnMut(f64) -> f64, mut a: f64, mut b: f64, mut 
     b
 }
 
-/// Real roots of `a t^2 + b t + c` (stable form). Linear when `a` is negligible. A double root
-/// counts once and is flagged.
-pub(crate) fn quadratic(a: f64, b: f64, c: f64) -> smallvec::SmallVec<[Root; 2]> {
-    let mut out = smallvec::SmallVec::new();
-    let scale = a.abs().max(b.abs()).max(c.abs());
-    if scale == 0.0 {
-        return out;
-    }
-    if a.abs() <= 1e-14 * scale {
-        if b.abs() > 1e-14 * scale {
-            out.push(Root { t: -c / b, double: false });
-        }
-        return out;
-    }
-    let disc = b * b - 4.0 * a * c;
-    let dscale = b * b + (4.0 * a * c).abs();
-    if disc < -1e-13 * dscale {
-        return out;
-    }
-    if disc <= 1e-13 * dscale {
-        out.push(Root { t: -b / (2.0 * a), double: true });
-        return out;
-    }
-    let sq = disc.sqrt();
-    let q = -0.5 * (b + b.signum() * sq);
-    let (r1, r2) = (q / a, if q != 0.0 { c / q } else { q / a });
-    out.push(Root { t: r1.min(r2), double: false });
-    out.push(Root { t: r1.max(r2), double: false });
-    out
-}
-
-/// Real roots of the polynomial with ascending coefficients `c` inside `[lo, hi]` (either may be
-/// infinite), sorted. Monotone pieces are isolated with the roots of the derivative and refined
-/// by Brent; a critical point whose value is within rounding of zero is reported as a double
-/// root (and replaces any simple root next to it).
-pub(crate) fn poly_roots(c: &[f64], lo: f64, hi: f64) -> Vec<Root> {
-    let maxabs = c.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    if maxabs == 0.0 || !maxabs.is_finite() {
-        return Vec::new();
-    }
-    let mut n = c.len();
-    while n > 1 && c[n - 1].abs() <= 1e-14 * maxabs {
-        n -= 1;
-    }
-    let c = &c[..n];
-    match n {
-        0 | 1 => return Vec::new(),
-        2 => {
-            let r = -c[0] / c[1];
-            return if r >= lo && r <= hi { vec![Root { t: r, double: false }] } else { Vec::new() };
-        }
-        3 => return quadratic(c[2], c[1], c[0]).into_iter().filter(|r| r.t >= lo && r.t <= hi).collect(),
-        _ => {}
-    }
-    // Cauchy bound on all roots.
-    let lead = c[n - 1].abs();
-    let bound = 1.0 + c[..n - 1].iter().fold(0.0f64, |m, v| m.max(v.abs())) / lead;
-    let (lo, hi) = (lo.max(-bound), hi.min(bound));
-    if lo > hi {
-        return Vec::new();
-    }
-    let deriv: Vec<f64> = c.iter().enumerate().skip(1).map(|(i, v)| v * i as f64).collect();
-    let crit: Vec<f64> = poly_roots(&deriv, lo, hi).into_iter().map(|r| r.t).collect();
-    let mut pts = Vec::with_capacity(crit.len() + 2);
-    pts.push(lo);
-    pts.extend(crit.iter().copied());
-    pts.push(hi);
-    let mut roots: Vec<Root> = Vec::new();
-    let mut f = |t: f64| horner(c, t);
-    for w in pts.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let (fa, fb) = (f(a), f(b));
-        if fa == 0.0 {
-            roots.push(Root { t: a, double: false });
-        } else if fa * fb < 0.0 {
-            roots.push(Root { t: brent(&mut f, a, b, fa, fb), double: false });
-        }
-        if fb == 0.0 && w[1] == hi {
-            roots.push(Root { t: b, double: false });
-        }
-    }
-    // Interior critical points that are roots to rounding: tangential contacts.
-    for &t in &crit {
-        if f(t).abs() <= 1e-11 * horner_abs(c, t) {
-            // Drop simple roots that are the same contact seen from either side.
-            let near = 1e-5 * (1.0 + t.abs());
-            roots.retain(|r| (r.t - t).abs() > near);
-            roots.push(Root { t, double: true });
-        }
-    }
-    roots.sort_by(|a, b| a.t.total_cmp(&b.t));
-    roots.dedup_by(|a, b| a.t == b.t);
-    roots
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quadratic_cases() {
-        let r = quadratic(1.0, -3.0, 2.0);
-        assert_eq!(r.len(), 2);
-        assert!((r[0].t - 1.0).abs() < 1e-14 && (r[1].t - 2.0).abs() < 1e-14);
-        let r = quadratic(1.0, -2.0, 1.0);
-        assert_eq!(r.len(), 1);
-        assert!(r[0].double && (r[0].t - 1.0).abs() < 1e-12);
-        assert!(quadratic(1.0, 0.0, 1.0).is_empty());
-        let r = quadratic(0.0, 2.0, -4.0);
-        assert!((r[0].t - 2.0).abs() < 1e-14);
-        // Cancellation-prone case: roots 1e-8 and 1e8.
-        let r = quadratic(1.0, -(1e8 + 1e-8), 1.0);
-        assert!((r[0].t - 1e-8).abs() < 1e-20 && (r[1].t / 1e8 - 1.0).abs() < 1e-15);
-    }
-
-    #[test]
-    fn simple_and_multiple_polynomial_roots() {
-        // (t-1)(t-2)(t-3)(t+4) = t^4 - 2 t^3 - 13 t^2 + 38 t - 24
-        let r = poly_roots(&[-24.0, 38.0, -13.0, -2.0, 1.0], f64::NEG_INFINITY, f64::INFINITY);
-        let ts: Vec<f64> = r.iter().map(|r| r.t).collect();
-        assert_eq!(ts.len(), 4);
-        for (a, b) in ts.iter().zip([-4.0, 1.0, 2.0, 3.0]) {
-            assert!((a - b).abs() < 1e-12, "{ts:?}");
-        }
-        assert!(r.iter().all(|r| !r.double));
-        // (t-1)^2 (t-2)(t+3): double root at 1.
-        let r = poly_roots(&[-6.0, 13.0, -7.0, -1.0, 1.0], -10.0, 10.0);
-        assert!(r.iter().any(|r| r.double && (r.t - 1.0).abs() < 1e-5), "{r:?}");
-        // Interval restriction.
-        let r = poly_roots(&[-24.0, 38.0, -13.0, -2.0, 1.0], 1.5, 2.5);
-        assert_eq!(r.len(), 1);
-        assert!((r[0].t - 2.0).abs() < 1e-12);
-    }
 
     #[test]
     fn brent_converges_on_hard_function() {
@@ -227,6 +83,7 @@ mod tests {
         let (fa, fb) = (f(2.0), f(3.0));
         let r = brent(&mut f, 2.0, 3.0, fa, fb);
         assert!((r - 2.094_551_481_542_326_6).abs() < 1e-14);
+        assert!(horner(&[-5.0, -2.0, 0.0, 1.0], r).abs() < 1e-13);
     }
 }
 

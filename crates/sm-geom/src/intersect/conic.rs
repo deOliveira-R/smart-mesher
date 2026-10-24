@@ -4,7 +4,7 @@
 
 use super::ssi::{IntersectionCurve, SsiResult};
 use crate::nurbs::exact::conic_arc;
-use crate::roots::quadratic;
+use sm_geom_api::roots::{Root, solve_quadratic};
 use core::f64::consts::TAU;
 use sm_core::{Point3, Vector3};
 use sm_geom_api::{Circle, CurveDef, Ellipse, Frame, GeomError, ImplicitSurface, Interval, Line, ModelTolerance, NurbsCurve, Plane, Quadric};
@@ -180,13 +180,20 @@ fn window_ranges(pt: &dyn Fn(f64) -> Point3, mut breaks: Vec<f64>, lo: f64, hi: 
     out
 }
 
+/// Real roots of `a t^2 + b t + c` (a double root once).
+fn quadratic(a: f64, b: f64, c: f64) -> impl Iterator<Item = Root> {
+    let mut out = [Root::default(); 2];
+    let n = solve_quadratic(a, b, c, &mut out);
+    out.into_iter().take(n)
+}
+
 /// Face-crossing parameters of the polynomial coordinates `c0 + c1 t + c2 t^2` against the
 /// padded window (`k`-th coordinate between `w[k]` and `w[k + 3]`).
 fn quad_breaks(coef: [[f64; 3]; 3], w: &[f64; 6], pad: f64) -> Vec<f64> {
     let mut v = Vec::new();
     for k in 0..3 {
         for val in [w[k] - pad, w[k + 3] + pad] {
-            v.extend(quadratic(coef[k][2], coef[k][1], coef[k][0] - val).iter().map(|r| r.t));
+            v.extend(quadratic(coef[k][2], coef[k][1], coef[k][0] - val).map(|r| r.t));
         }
     }
     v
@@ -197,7 +204,7 @@ fn hyper_breaks(c: [f64; 3], a: [f64; 3], b: [f64; 3], w: &[f64; 6], pad: f64) -
     let mut v = Vec::new();
     for k in 0..3 {
         for val in [w[k] - pad, w[k + 3] + pad] {
-            v.extend(quadratic(0.5 * (a[k] + b[k]), c[k] - val, 0.5 * (a[k] - b[k])).iter().filter(|r| r.t > 0.0).map(|r| r.t.ln()));
+            v.extend(quadratic(0.5 * (a[k] + b[k]), c[k] - val, 0.5 * (a[k] - b[k])).filter(|r| r.t > 0.0).map(|r| r.t.ln()));
         }
     }
     v

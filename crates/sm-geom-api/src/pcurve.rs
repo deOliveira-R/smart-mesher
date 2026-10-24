@@ -21,7 +21,7 @@ pub struct Line2 {
 }
 
 /// A coedge's curve in its face's `(u, v)` space. All variants are closed, serializable data
-/// with `eval`, `d1` and `range`.
+/// with `eval`, `d1`, `d2` and `range`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -54,6 +54,27 @@ impl PCurve {
     /// containing `t`.
     pub fn d1(&self, t: f64) -> Uv {
         self.eval_d1(t).1
+    }
+
+    /// Second derivative `(d2u/dt2, d2v/dt2)` at `t`: zero for a line or polyline (the latter
+    /// is piecewise linear, so the kink at a vertex is ignored), the rational de Boor value for
+    /// a NURBS curve.
+    pub fn d2(&self, t: f64) -> Uv {
+        match self {
+            Self::Line2(_) | Self::Polyline2(_) => Uv::default(),
+            Self::Nurbs2(n) => n.eval_d2(t),
+        }
+    }
+
+    /// `(eval, d1, d2)` at `t` in one pass (same values as the three separate calls).
+    pub fn jet(&self, t: f64) -> (Uv, Uv, Uv) {
+        match self {
+            Self::Nurbs2(n) => n.eval_jet(t),
+            _ => {
+                let (p, d) = self.eval_d1(t);
+                (p, d, Uv::default())
+            }
+        }
     }
 
     fn eval_d1(&self, t: f64) -> (Uv, Uv) {
@@ -191,8 +212,44 @@ mod tests {
         assert_eq!(n.range(), Interval::new(0.0, 1.0));
         let (a, d) = (n.eval(0.5), n.d1(0.5));
         assert!((a.u - 1.0).abs() < 1e-14 && (a.v - 2.0).abs() < 1e-14 && (d.u - 2.0).abs() < 1e-14 && (d.v - 4.0).abs() < 1e-14);
+        assert_eq!(l.d2(1.0), Uv::default());
+        assert_eq!(p.d2(0.5), Uv::default());
+        assert_eq!(n.d2(0.5), Uv::default());
         let mut vals = Vec::new();
         l.for_each_value(|v| vals.push(v));
         assert_eq!(vals.len(), 6);
+    }
+
+    #[test]
+    fn rational_quadratic_arc_second_derivative_matches_circle() {
+        // Quarter circle of radius 2 as a rational quadratic with w1 = cos(45 deg); compare
+        // with the analytic quotient-rule second derivative and a finite difference of d1.
+        let r = 2.0;
+        let w1 = core::f64::consts::FRAC_1_SQRT_2;
+        let n = NurbsCurve2::new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![Uv::new(r, 0.0), Uv::new(r, r), Uv::new(0.0, r)], Some(vec![1.0, w1, 1.0])).unwrap();
+        let pc = PCurve::Nurbs2(n);
+        for i in 0..=20 {
+            let t = i as f64 / 20.0;
+            let (b0, b1, b2) = ((1.0 - t).powi(2), 2.0 * t * (1.0 - t), t * t);
+            let (db0, db1, db2) = (-2.0 * (1.0 - t), 2.0 - 4.0 * t, 2.0 * t);
+            let (ddb0, ddb1, ddb2) = (2.0, -4.0, 2.0);
+            let w = b0 + w1 * b1 + b2;
+            let (dw, ddw) = (db0 + w1 * db1 + db2, ddb0 + w1 * ddb1 + ddb2);
+            let comp = |nn: f64, dn: f64, ddn: f64| {
+                let x = nn / w;
+                let dx = (dn - x * dw) / w;
+                (x, (ddn - 2.0 * dx * dw - x * ddw) / w)
+            };
+            let (x, ddx) = comp(r * (b0 + w1 * b1), r * (db0 + w1 * db1), r * (ddb0 + w1 * ddb1));
+            let (y, ddy) = comp(r * (w1 * b1 + b2), r * (w1 * db1 + db2), r * (w1 * ddb1 + ddb2));
+            let p = pc.eval(t);
+            assert!(((p.u * p.u + p.v * p.v).sqrt() - r).abs() < 1e-13 && (p.u - x).abs() < 1e-13 && (p.v - y).abs() < 1e-13);
+            let d2 = pc.d2(t);
+            assert!((d2.u - ddx).abs() < 1e-11 && (d2.v - ddy).abs() < 1e-11, "t={t}: {d2:?} vs ({ddx}, {ddy})");
+            let h = 1e-6;
+            let (ta, tb) = ((t - h).max(0.0), (t + h).min(1.0));
+            let (lo, hi) = (pc.d1(ta), pc.d1(tb));
+            assert!((d2.u - (hi.u - lo.u) / (tb - ta)).abs() < 1e-5 && (d2.v - (hi.v - lo.v) / (tb - ta)).abs() < 1e-5);
+        }
     }
 }

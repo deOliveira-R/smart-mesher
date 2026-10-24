@@ -317,18 +317,6 @@ impl PreparedSurface {
         self.patches.len()
     }
 
-    /// Evaluate at many parameters in parallel (element-independent writes; identical output
-    /// for any thread count).
-    pub fn eval_many(&self, uvs: &[Uv], out: &mut [Point3]) {
-        use rayon::prelude::*;
-        assert_eq!(uvs.len(), out.len(), "eval_many: length mismatch");
-        out.par_chunks_mut(128).zip(uvs.par_chunks(128)).for_each(|(o, q)| {
-            for (o, q) in o.iter_mut().zip(q) {
-                *o = self.eval(*q);
-            }
-        });
-    }
-
     /// Closest points of many query points, in parallel; result `i` belongs to `points[i]`.
     pub fn project_many(&self, points: &[Point3]) -> Vec<SurfaceProjection> {
         use rayon::prelude::*;
@@ -409,6 +397,18 @@ impl ParametricSurface for PreparedSurface {
             (_, 1) => self.point_n::<16, 8>(uv),
             (_, _) => self.point_n::<16, 16>(uv),
         }
+    }
+
+    /// Parallel batch evaluation; element-independent writes, so the output is bit-identical to
+    /// the default loop for any thread count.
+    fn eval_many(&self, uvs: &[Uv], out: &mut [Point3]) {
+        use rayon::prelude::*;
+        assert_eq!(uvs.len(), out.len(), "eval_many: length mismatch");
+        out.par_chunks_mut(128).zip(uvs.par_chunks(128)).for_each(|(o, q)| {
+            for (o, q) in o.iter_mut().zip(q) {
+                *o = self.eval(*q);
+            }
+        });
     }
 
     fn project(&self, p: Point3, hint: Option<Uv>) -> Result<SurfaceProjection, GeomError> {
