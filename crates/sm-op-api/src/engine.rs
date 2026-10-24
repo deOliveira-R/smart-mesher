@@ -97,6 +97,11 @@ impl Engine {
                 name: name(),
                 source,
             })?;
+            ctx.check_declared_outputs(self.registry.op_outputs(op.name()))
+                .map_err(|source| ApplyError::Op {
+                    name: name(),
+                    source,
+                })?;
             let delta = ctx.finish().map_err(|source| ApplyError::Op {
                 name: name(),
                 source,
