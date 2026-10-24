@@ -2,7 +2,7 @@
 //! as an exact curve (line, circle, ellipse, or a rational NURBS chain for parabola and
 //! hyperbola branches clipped to a window).
 
-use super::ssi::{CurveGeometry, IntersectionCurve, SsiResult};
+use super::ssi::{IntersectionCurve, SsiResult};
 use crate::nurbs::exact::conic_arc;
 use core::f64::consts::TAU;
 use sm_core::{Point3, Vector3};

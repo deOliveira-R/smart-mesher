@@ -20,6 +20,8 @@ type Raw = (f64, bool);
 fn domain_range(curve: &CurveDef, range: Option<Interval>) -> Interval {
     let d = curve.as_curve().domain();
     match range {
+        // A periodic analytic curve may be asked about any window of its (unwrapped) parameter.
+        Some(r) if d.is_periodic() && !matches!(curve, CurveDef::Nurbs(_)) => r,
         Some(r) => Interval::new(r.lo.max(d.range.lo), r.hi.min(d.range.hi)),
         None => d.range,
     }

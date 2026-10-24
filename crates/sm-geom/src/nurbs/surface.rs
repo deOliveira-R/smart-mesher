@@ -246,6 +246,33 @@ impl PreparedSurface {
         self.rebuild(lu, lv, nu, nv, p2)
     }
 
+    /// The iso-parametric curve with `u = value` (`fixed_u`) or `v = value`, as an exact NURBS
+    /// curve in the other parameter (same knots, degree and periodicity as that direction).
+    pub fn iso_curve(&self, fixed_u: bool, value: f64) -> Result<sm_geom_api::NurbsCurve, GeomError> {
+        let value = if fixed_u { fold(self.du, self.lu.periodic, value) } else { fold(self.dv, self.lv.periodic, value) };
+        let (lay_fixed, lay_free, n_fixed, n_free) = if fixed_u { (&self.lu, &self.lv, self.nu, self.nv) } else { (&self.lv, &self.lu, self.nv, self.nu) };
+        let p = lay_fixed.degree;
+        let span = find_span(n_fixed, p, value, &lay_fixed.knots);
+        let basis = ders(span, value, p, &lay_fixed.knots);
+        let mut q = vec![[0.0f64; 4]; n_free];
+        for (j, qj) in q.iter_mut().enumerate() {
+            for i in 0..=p {
+                let idx = if fixed_u { (span - p + i) * self.nv + j } else { j * self.nv + (span - p + i) };
+                let h = self.poles[idx];
+                for c in 0..4 {
+                    qj[c] += basis[0][i] * h[c];
+                }
+            }
+        }
+        let control: Vec<Point3> = q.iter().map(|h| hp_point(*h)).collect();
+        let weights = self.rational.then(|| q.iter().map(|h| h[3]).collect());
+        if lay_free.periodic {
+            sm_geom_api::NurbsCurve::new_periodic(lay_free.degree, lay_free.knots.clone(), control, weights)
+        } else {
+            sm_geom_api::NurbsCurve::new(lay_free.degree, lay_free.knots.clone(), control, weights)
+        }
+    }
+
     /// Number of Bezier patches of the decomposition.
     pub fn patch_count(&self) -> usize {
         self.patches.len()
