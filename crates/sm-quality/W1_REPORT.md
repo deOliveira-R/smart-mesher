@@ -6,7 +6,7 @@
 
 Implemented per the task: scaled Jacobian, Jacobian, aspect ratio (tri/quad perimeter form, tet `tet_aspect_ratio` (Verdict's aspect "beta" is the crate's `RadiusRatio`) and `gamma`, Frobenius, radius ratio), skew, taper, warpage, stretch, condition number, shape, relative size, shape-and-size, min/max angle (interior angles in 2-D, dihedral in 3-D), edge ratio, max edge ratio, volume/area, plus Oddy, shear, shear-and-size, diagonal, dimension, distortion, collapse ratio, sphericity and star-shapedness; validity (valid / degenerate / inverted / skipped); summary statistics and histograms.
 
-**Verification status:** the first version was reconstructed from memory. A review then diffed it against the Verdict C++ sources and the 2007 manual, fix round 0 corrected the mismatches, and a differential run against a real Verdict build drove fix round 1 (below). Not everything is Verdict-identical: tet `MinAngle`, hex `EdgeRatio`, pyramid `Shape` when the longest edge is edge 0-1 or 1-2, collapsed-quad `Distortion`, hex/quad/wedge behaviour on inverted or zero-volume elements, and the quad `MinAngle`/`MaxAngle`/`Max,MeanAspectFrobenius`/`Distortion` on non-planar quads differ from Verdict, deliberately and documented in `DESIGN.md` ("Deviations from Verdict"). `tests/verdict_ref.rs` pins Verdict values for distorted elements (hand-computed in round 0; probe values from the Verdict build in round 1). Crate-only metrics are marked as extensions in `Metric`'s rustdoc and `DESIGN.md`.
+**Verification status:** the first version was reconstructed from memory. A review then diffed it against the Verdict C++ sources and the 2007 manual, fix round 0 corrected the mismatches, and a differential run against a real Verdict build drove fix round 1 (below). Not everything is Verdict-identical: tet `MinAngle`, hex `EdgeRatio`, pyramid `Shape` when the longest edge is edge 0-1 or 1-2, collapsed-quad `Distortion`, hex/quad/wedge behaviour on inverted or zero-volume elements, and the quad `MinAngle`/`Max,MeanAspectFrobenius`/`Distortion` on non-planar quads differ from Verdict, deliberately and documented in `DESIGN.md` ("Deviations from Verdict"). `tests/verdict_ref.rs` pins Verdict values for distorted elements (hand-computed in round 0; probe values from the Verdict build in round 1). Crate-only metrics are marked as extensions in `Metric`'s rustdoc and `DESIGN.md`.
 
 ## Fix round 0 (review findings)
 
@@ -36,7 +36,7 @@ Fixed:
 * Hex axes are computed lazily (only for the metrics that use them).
 * Docs: `TINY` is not Verdict's `VERDICT_DBL_MIN` (2.22e-15, scaled per element); wedge Frobenius normaliser corrected to 1.1647740 (3.4e-6 relative to Verdict's literal) and wedge `Distortion` exact 1/2 (1.2e-6); `(unchecked)` tags removed; manual reference fixed; quad `EdgeRatio` is a Verdict metric ([1, 1.3]) and triangle `Jacobian` is an extension; `Metric` rustdoc updated.
 
-Documented as deliberate deviations (new in `DESIGN.md`): tet `MinAngle` (true minimum dihedral; inverted tet reads reflex), hex `EdgeRatio` (all 12 edges), collapsed-quad `Distortion` (1 vs Verdict 2), hex/quad `Distortion` `|mean|` denominator and zero-volume value, quad reflex/zero-area `Distortion`, wedge Frobenius family on an inverted corner, non-planar quad `MinAngle`/`MaxAngle`/`Max,MeanAspectFrobenius`/`Distortion` (projection onto the reference normal, up to about 1%), tet `CollapseRatio` zero edge and wedge `ScaledJacobian` zero edge. The "Verified against the Verdict sources" claim in `DESIGN.md` was narrowed accordingly.
+Documented as deliberate deviations (new in `DESIGN.md`): tet `MinAngle` (true minimum dihedral; inverted tet reads reflex), hex `EdgeRatio` (all 12 edges), collapsed-quad `Distortion` (1 vs Verdict 2), hex/quad `Distortion` `|mean|` denominator and zero-volume value, quad reflex/zero-area `Distortion`, wedge Frobenius family on an inverted corner, non-planar quad `MinAngle`/`Max,MeanAspectFrobenius`/`Distortion` (projection onto the reference normal, up to about 1%), tet `CollapseRatio` zero edge and wedge `ScaledJacobian` zero edge. The "Verified against the Verdict sources" claim in `DESIGN.md` was narrowed accordingly.
 
 Skipped, with reasons:
 
@@ -52,6 +52,11 @@ Skipped, with reasons:
 * `Metric::ideal(Dimension, Hex)` is now `sqrt(3)/3`; `Volume`/`Jacobian` documented as having no ideal. `AspectFrobenius` rustdoc corrected (tri/tet only) and the unreachable hex/wedge match arms removed.
 * `prepare()` skips the Volume column for `ReferenceSize::Fixed` and the `Field` normal lookup for 3-D cells.
 * Docs: tangled-quad `MinAngle`/`MaxAngle`, the degenerate-input residue (hex `Dimension`, quad `AspectRatio`, pyramid and wedge `ScaledJacobian`), tet `CollapseRatio` and tet inverted `DBL_MAX` sentinels in the "Not Verdict-identical" summary, pyramid `Shape` frequency (~25%), tet `AspectRatio` label, non-planar quad wording, `Volume` agrees with `cell_volume` to rounding.
+
+## Polish round 1 (doc fixes only)
+
+* The degenerate-input residue bullet in `DESIGN.md` had each pair the wrong way round. Probed with `eval()` (all-coincident inputs plus flat pyramid, flat wedge, quad with 3 coincident corners, hex with collapsed top): the crate gives hex `Dimension` 0, quad `AspectRatio` `+1e30`, pyramid and wedge `ScaledJacobian` 0; the old values were the Verdict side. Swapped. The "Not Verdict-identical" summary and the polish round 0 bullet only name the metrics, so they stay correct.
+* `MaxAngle` dropped from the non-planar-quad differences in the `DESIGN.md` summary and in this report (it matched on the probes); the tangled-quad `MinAngle`/`MaxAngle` entry is unchanged.
 
 ## Test summary
 
