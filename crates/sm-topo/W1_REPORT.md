@@ -1,6 +1,6 @@
 # W1 report: sm-topo
 
-Status: **done** (definition of done passes; see "Test summary"). Branch: `claude/w1-sm-topo-ciy1fj`
+Status: **done** after review round fix0 (see "Fix round 0"; definition of done passes, see "Test summary"). Branch: `claude/w1-sm-topo-ciy1fj`
 (the harness-designated branch). The task text names `claude/w1-sm-topo`; the same commit is pushed
 to both names, and the orchestrator merges by SHA.
 
@@ -38,15 +38,56 @@ the same operators, ids, lineage, `OpInvalid` payloads and canonical hashes as t
 Workload: the top face of a brick refined by `n` splits (edge subdivision + chord, breadth first),
 so one volume ends with `n + 6` faces.
 
-BENCH_TABLE
+Reference (`CellComplex`) against `TopoStore`, release, `scale -- --ignored`, two runs agreeing
+to a few percent (values below are rounded between them):
+
+| Workload | n | Reference | sm-topo | Speedup |
+|---|---|---|---|---|
+| refinement, one op per split | 1 000 | 213 ms | 8.5 ms | 25x |
+| refinement, one op per split | 4 000 | 3.4 s | 35 ms | 96x |
+| refinement, all splits in one op | 4 000 | 830 ms | 28 ms | 29x |
+| refinement, one op per split (store alone) | 16 000 | not run | 16 us/split | |
+| refinement, one op (store alone) | 100 000 | not run | 3.2-3.4 s (32-40 us/split) | |
+| canonical hash | 100 000 | | 77-82 ms | |
+| `validate_par` | 100 000 | | 375-680 ms | |
+
+The reference is quadratic per op (its cost per split grows with the volume row); the store stays
+near linear. DESIGN.md's ~45 us/split at 10^5 is slightly pessimistic on this machine.
 
 At 10^5 faces the reference does not finish in reasonable time (it is quadratic: it was 5 s at
 4 000 per-op splits and the cost per split grows with the volume row), so it is benchmarked only
 up to 4 000; the store runs to 10^5.
 
+## Fix round 0 (review findings)
+
+- **Committed-invalid states.** The reference `end_op` never checks flag-only edits, so clearing
+  `DEGENERATE` on a pole edge commits an open shell. The incremental closure consumed its marks at
+  that commit, so a later op touching the volume was accepted although the reference rejects it
+  with `ShellOpen` (also in production settings, paranoid off). Fix: `TopoStore::open_edges`, a
+  persistent carry-over of edges with non-zero net use, merged into the candidates at every
+  `end_op` and replaced only on commit (rollback needs nothing). Regressions:
+  `committed_open_shell_is_reported_by_a_later_touch` (production and paranoid),
+  `pole_flag_restored_closes_the_carry_over`, and the proptest driver (which fails with the carry-over
+  disabled).
+- **Touched set.** `set_row` with an identical row now journals an empty `Splice`, as the
+  reference's `Undo::Row` does, so the checked cells match once invalid states are committable.
+- **Invariants.** DESIGN.md lists what the reference guarantees at commit and an adversarial test
+  per shortcut; `ops_on_a_committed_invalid_state_agree_with_the_reference` runs eight edits and a
+  follow-up touch from the invalid state.
+- **Scenarios in lock step.** `tests/common/dual.rs` (`Dual`) implements `TopologyEdit` over both
+  implementations: every edit result is compared, and the full state (`same_state`, ids, lineage,
+  validators, word stream, `validate_par`) at every `end_op`/`abort_op` and at drop. All `ref_*.rs`
+  scenarios run through it unchanged.
+- **Proptest.** `random.rs` gains a proptest (fixed testkit seed, shrinking) over op sequences biased
+  toward spheres/poles, baffles, lone `set_flags` toggles and touch-only ops, comparing full
+  validation after every op.
+- **`validate_par`** is now compared with `validate` after every lock-step op (including states
+  after failed `end_op`s) and on the broken testkit fixtures.
+- `Counters` is `#[non_exhaustive]`; the benchmark table above is filled in.
+
 ## Test summary
 
-`cargo test -p sm-topo` (debug) and `RAYON_NUM_THREADS=1 cargo test -p sm-topo`: **83 passed, 0
+`cargo test -p sm-topo` (debug) and `RAYON_NUM_THREADS=1 cargo test -p sm-topo`: **87 passed, 0
 failed, 2 ignored** (timing and 10^5-size reports, run with `--release --ignored`).
 
 | File | Tests | What |
@@ -56,8 +97,8 @@ failed, 2 ignored** (timing and 10^5-size reports, run with `--release --ignored
 | `ref_shells.rs` / `ref_bridge_chain.rs` / `ref_gaps3.rs` / `ref_gaps4.rs` | 6 / 4 / 4 / 6 | shell compaction, bridge + chain cuts, `canonical_visit` + `record_merged` + `live_cover`, unmerge, degenerate splits, meridian cut with analytic areas |
 | `ref_freeze.rs` | 5 | pcurve word and hash goldens (frozen values) |
 | `ref_overlay.rs` / `ref_overlay_volume.rs` | 6 / 4 | decomposition overlay over `TopoStore` hosts |
-| `differential.rs` | 8 | testkit fixtures rebuilt and compared with the testkit's own complexes + its checkers; fixture catalogue; merge/unmerge; sphere pole splits + `ChordAt`; overlay over `Arc<TopoStore>` and `Arc<CellComplex>`; polyline/NURBS pcurve words; determinism |
-| `random.rs` | 2 | 8 seeds x 60 ops and 2 seeds x 150 ops, 1-3 operators per op, random aborts, failing `end_op`s (OpInvalid payloads compared), row thresholds forced to 6 so the positional/incremental paths run on small models |
+| `differential.rs` | 11 | committed-invalid-state regressions and adversarial cases;  testkit fixtures rebuilt and compared with the testkit's own complexes + its checkers; fixture catalogue; merge/unmerge; sphere pole splits + `ChordAt`; overlay over `Arc<TopoStore>` and `Arc<CellComplex>`; polyline/NURBS pcurve words; determinism |
+| `random.rs` | 3 | proptest over biased op sequences (shrinking);  8 seeds x 60 ops and 2 seeds x 150 ops, 1-3 operators per op, random aborts, failing `end_op`s (OpInvalid payloads compared), row thresholds forced to 6 so the positional/incremental paths run on small models |
 | `scale.rs` | 2 (+2 ignored) | refinement (300 and 700 splits, one op and per op) equal to the reference, at forced and at production thresholds; timing reports |
 | `props.rs` | 2 | proptest (fixed seed, 24 cases): random bricks vs closed forms and the testkit complex; random refinement + webcut vs reference |
 | `determinism.rs` | 3 | same history twice, 1 vs 4 rayon workers, concurrent builds: canonical hash, every radial ring, both validators; `validate_par` == `validate` |
@@ -90,12 +131,15 @@ scaling`.
 3. **`end_op` re-examines fewer faces for the orientation rule** (only those whose volume uses
    actually changed, plus touched faces) than the reference (every face of every rewritten
    volume row). A face whose uses did not change cannot flip, and every committed state is
-   normalized, so the results are identical; confirmed by the lineage comparison (flips are logged,
-   in order) on the random driver.
-4. **`end_op` local checks are incremental** (see DESIGN.md "End of operation"). They rely on the
-   invariant that every committed state has closed shells and valid rows, which `end_op` itself
-   enforces; `paranoid` mode asserts equality with the full algorithm, and `OpInvalid` issue lists
-   are compared exactly in the random driver.
+   normalized (orientation does not depend on flags), so the results are identical; confirmed by
+   the lineage comparison (flips are logged, in order) and the adversarial cases in
+   `differential.rs`.
+4. **`end_op` local checks are incremental** (see DESIGN.md "End of operation" and "What the
+   reference guarantees at commit"). They do NOT assume that committed states are fully valid
+   (the reference commits open shells after a flag-only edit); closure uses a persistent
+   carry-over `open_edges`, and long-row checks rely only on flag-independent row rules.
+   `paranoid` mode asserts equality with the full algorithm, and `OpInvalid` issue lists are
+   compared exactly in the differential and proptest drivers.
 5. **Hidden API.** `TopoStore::set_paranoid`, `set_row_thresholds` (both `#[doc(hidden)]`, for
    tests), `counters()` (diagnostics), `validate_par()` (additive, same result as `validate`).
 6. **`cells(dim)`** is a lazily rebuilt cache (`OnceLock`): exact at all times as the contract
@@ -109,16 +153,17 @@ scaling`.
 ## Known gaps
 
 - Long volume rows still pay an O(n) `memmove` per edit (16 bytes per face use, 8 for the aux row);
-  this shows as mild super-linearity above 10^5 faces (17 us/split at 16k, ~45-55 us at 100k). A
+  this shows as mild super-linearity above 10^5 faces (16 us/split at 16k, 32-40 us at 100k). A
   chunked row would remove it; not worth the complexity for a contract that returns `&[Incidence]`.
 - `validate_par` (and `validate`) walks whole shells; there is no incremental full validation.
-- The canonical hash is the contract's byte-serial FNV fold: ~65 ms at 10^5 faces, dominated by the
+- The canonical hash is the contract's byte-serial FNV fold: ~77-82 ms at 10^5 faces, dominated by the
   fold itself; faster only if the hash definition changes.
 - `LineageLog` is the contract's type with `BTreeMap` indexes; its cost per record is outside this
   crate.
 - Row and arena offsets are `u32` (about 4 billion entries per rank table); beyond that edits fail
   with `IdExhausted`.
-- `tests/ref_*.rs` are copies of the reference tests with `CellComplex` rebound to `TopoStore` and
+- `tests/ref_*.rs` are copies of the reference tests with `CellComplex` rebound to `common::Dual`
+  (reference and `TopoStore` in lock step) and
   the `cfg(feature = "serde"/"schemars")` tests (which only test `sm-topo-api` derives) removed.
   They must be re-copied when the originals change (see api_change_request 3).
 - Benchmarks cover refinement of one big volume (where the reference is quadratic) and an assembly of

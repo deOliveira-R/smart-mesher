@@ -1,7 +1,9 @@
 //! Differential-testing support: build the same history on the reference `CellComplex` and on
 //! `TopoStore`, and demand identical results and identical observable state.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
+mod dual;
+pub use dual::Dual;
 use sm_core::EntityId;
 use sm_topo::TopoStore;
 use sm_topo_api::{CellComplex, CoedgeKey, Dim, Side, TopologyEdit, TopologyView, TopologyViewExt, validate, validate_geometry};
@@ -40,6 +42,7 @@ impl Twin {
     /// Full state comparison.
     pub fn same(&self, ctx: &str) {
         same_state(&self.a, &self.b, ctx);
+        assert_eq!(self.b.validate_par(), validate(&self.b), "{ctx}: validate_par vs validate");
     }
 
     /// `begin_op`, `f`, `end_op` on both (abort if `f` fails), comparing every result and the

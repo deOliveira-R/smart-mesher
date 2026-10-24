@@ -101,7 +101,7 @@ impl TopoStore {
         check.sort_unstable();
         check.dedup();
         check.retain(|id| self.state(*id) == Some(EntityState::Live));
-        let open = self.open_shells();
+        let (open, carry) = self.open_shells();
         let ins = self.inserted_entries();
         let issues = self.check_local(&check, &open, &ins);
         if self.paranoid {
@@ -112,6 +112,7 @@ impl TopoStore {
             self.cancel_op();
             return Err(TopoError::OpInvalid(issues));
         }
+        self.open_edges = carry;
         // 3. Rebuild the radial rings of changed edges (independent per edge, so parallel and
         // deterministic: results are written back by slot).
         let dirty = self.dirty_edges.take_sorted();

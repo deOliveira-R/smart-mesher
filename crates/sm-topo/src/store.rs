@@ -148,6 +148,7 @@ pub(crate) struct OpState {
 
 /// Diagnostic counters of the shortcuts a [`TopoStore`] has taken.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Counters {
     /// Parent rows (long volume/body rows) rewritten by position.
     pub sorted_parent_rewrites: u64,
@@ -187,6 +188,10 @@ pub struct TopoStore {
     pub(crate) orient_dirty: Marks,
     /// Edge slots whose shell net use may have changed (incremental closure check).
     pub(crate) closure_edges: Marks,
+    /// Persistent across commits: edge slots with a non-zero net shell use at the last commit.
+    /// The reference leaves volumes untouched by flag-only edits unchecked, so a committed state
+    /// can have open shells that a later check of the volume must still report.
+    pub(crate) open_edges: std::collections::BTreeSet<u32>,
     /// Entries inserted into volume/body rows in the open operation (for incremental row checks).
     pub(crate) ins_log: Vec<(EntityId, Incidence)>,
     /// Cross-check the incremental `end_op` shortcuts against the full reference algorithms.
@@ -231,6 +236,7 @@ impl TopoStore {
             dirty_edges: Marks::default(),
             orient_dirty: Marks::default(),
             closure_edges: Marks::default(),
+            open_edges: Default::default(),
             ins_log: Vec::new(),
             paranoid: false,
             sorted_row_min: 24,
@@ -582,9 +588,8 @@ impl TopoStore {
         let p = old.iter().zip(entries).take_while(|(a, b)| a == b).count();
         let s = old[p..].iter().rev().zip(entries[p..].iter().rev()).take(max - p).take_while(|(a, b)| a == b).count();
         let (remove, ins) = (old.len() - p - s, &entries[p..entries.len() - s]);
-        if remove == 0 && ins.is_empty() {
-            return Ok(());
-        }
+        // An identical row still journals an empty record: the reference's `set_row` always does,
+        // and the journal decides which cells the `end_op` checks cover.
         self.splice_row(id, p, remove, ins)
     }
 

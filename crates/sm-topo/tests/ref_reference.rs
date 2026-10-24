@@ -4,7 +4,8 @@
 
 // Scenario copied from sm-topo-api/tests/reference.rs and run against the production store (the
 // reference's name is rebound so the assertions are untouched).
-use sm_topo::TopoStore as CellComplex;
+mod common;
+use common::Dual as CellComplex;
 use core::f64::consts::{PI, TAU};
 use sm_core::{EntityId, EntityKind, Point3, Vector3};
 use sm_geom_api::{CsgCell, Crossing, CurveDef, Frame, HalfSpace, ImplicitDef, Interval, Line, ModelTolerance, Quadric, RayHit, Sign, Sphere, SurfaceDef, Uv};

@@ -2,7 +2,8 @@
 
 // Scenario copied from sm-topo-api/tests/gaps3.rs and run against the production store (the
 // reference's name is rebound so the assertions are untouched).
-use sm_topo::TopoStore as CellComplex;
+mod common;
+use common::Dual as CellComplex;
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{CurveDef, Interval, Line};
 use sm_topo_api::fixtures::{self, with_op};

@@ -96,19 +96,50 @@ normalization is exactly what the global normalization does to those groups, and
      net face-use count may have changed (edges of faces added to or removed from a shell, edges
      added to or removed from a loop, edges whose `DEGENERATE` flag toggled) are recorded as
      the splices happen. At `end_op` the net use per `(volume, ring)` is computed edge-centric
-     from the coboundary rows of those edges and their faces. Every committed state has closed
-     shells, so a violation can only involve a recorded edge; the lowest violating edge per
-     shell is what the reference reports too.
+     from the coboundary rows of those edges and their faces. The set of candidate edges is the
+     marks of this operation plus `open_edges`, a carry-over of every edge whose net use was
+     non-zero at the last commit. The carry-over is needed because committed states are not
+     always closed (see "What the reference guarantees at commit"): a flag-only edit that clears
+     `DEGENERATE` on a pole edge commits an open shell, and the volume is only checked by a later
+     operation that touches it. The carry-over is replaced only when an operation commits (a
+     failed or aborted operation leaves it as it was, so rollback needs no bookkeeping), and an
+     edge leaves it once its net use is zero everywhere. Invariant: `open_edges` contains every
+     live non-degenerate edge with a non-zero net use in the committed state, so the lowest
+     violating edge per shell is what the reference reports too.
    - *Long rows.* For volume/body rows of >= 128 entries only the entries inserted in the
      operation (logged at splice time, filtered to those still present, in row order) are
      checked for bad or dead references and baffles in closed shells. Unchanged entries were
      valid when they were inserted, and every operator rewrites the parents of a cell it retires.
+     This holds even for committed-invalid states: row rules (`BadIncidence`, `DeadReference`,
+     baffle-in-closed-shell) do not depend on flags.
    `paranoid` mode (tests) also runs the full reference algorithms and asserts identical
    issue lists.
 4. **Radial rings** of edges whose incidences or geometry changed are rebuilt. They are
    independent per edge, so with >= 256 dirty edges the rebuild runs on rayon and the results
    are written back by slot: the output is identical for any thread count.
 5. Summary (`OpSummary::new`) and commit; the journal is cleared.
+
+## What the reference guarantees at commit
+
+The reference `end_op` checks the cells named by `Undo::Alloc`, `Row`, `State` and `Carrier`
+records and their parents. `Undo::Flags`, tolerance, pcurve and coincidence records do not
+enter that set. Of those only flags feed a rule: `DEGENERATE` is read by the shell closure (pole
+coedges are skipped) and by `EdgeEnds`. So a committed state is valid except possibly for
+`ShellOpen` / `EdgeEnds` issues created by a flag-only edit; they surface on the first later
+operation that touches the cell. `TopoStore` reproduces this exactly rather than rejecting the
+flag edit: `set_row` journals an empty record for an identical row (the reference does too, and
+the record decides which cells are checked), and the closure carry-over above keeps the open
+shell visible. Shortcuts and what they rely on:
+
+| Shortcut | Relies on | Adversarial test |
+|---|---|---|
+| Closure from marked edges | marks cover every edge whose net use changes, plus `open_edges` | `committed_open_shell_is_reported_by_a_later_touch`, `pole_flag_restored_closes_the_carry_over` |
+| Orientation only for faces with changed uses | normalization is applied to touched faces and uses never change silently | `ops_on_a_committed_invalid_state_agree_with_the_reference` (reverse, remove use, kill) |
+| Long-row checks on inserted entries | row rules are flag-independent | the same test with thresholds forced to 6; the proptest driver |
+| Empty `Splice` for an identical `set_row` | the touched set must match the reference | the proptest driver (touch ops on invalid states) |
+
+`paranoid` mode asserts each shortcut against the full algorithm in tests; the cases above also
+compare the real results in lock step with the reference, without relying on `paranoid`.
 
 ## Live lists
 

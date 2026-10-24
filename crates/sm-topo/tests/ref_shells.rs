@@ -3,7 +3,8 @@
 
 // Scenario copied from sm-topo-api/tests/shells.rs and run against the production store (the
 // reference's name is rebound so the assertions are untouched).
-use sm_topo::TopoStore as CellComplex;
+mod common;
+use common::Dual as CellComplex;
 use sm_core::EntityId;
 use sm_topo_api::fixtures::{self, with_op};
 use sm_topo_api::*;

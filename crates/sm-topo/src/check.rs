@@ -214,8 +214,17 @@ impl TopoStore {
     /// Shells left open by the edges whose net use may have changed in the open operation: for
     /// each such edge, the net face-use count per `(volume, ring)`, read from the coboundary
     /// rows of the edge and of its faces. Consumes the closure marks.
-    pub(crate) fn open_shells(&mut self) -> OpenShells {
-        let slots = self.closure_edges.take_sorted();
+    ///
+    /// The candidate edges are this operation's marks plus `open_edges`, the persistent carry-over
+    /// of edges that had a non-zero net use at the last commit (the reference does not check
+    /// volumes touched only by flag edits, so committed states can have open shells). Returns the
+    /// open shells and the new carry-over, to be stored only if the operation commits.
+    pub(crate) fn open_shells(&mut self) -> (OpenShells, std::collections::BTreeSet<u32>) {
+        let mut slots = self.closure_edges.take_sorted();
+        slots.extend(self.open_edges.iter().copied());
+        slots.sort_unstable();
+        slots.dedup();
+        let mut carry = std::collections::BTreeSet::new();
         let mut open = OpenShells::new();
         for s in slots {
             let slot = s as usize;
@@ -250,11 +259,12 @@ impl TopoStore {
             }
             for (key, n) in nets {
                 if n != 0 {
+                    carry.insert(s);
                     open.entry(key).or_insert((edge, n));
                 }
             }
         }
-        open
+        (open, carry)
     }
 
     /// The entries inserted into volume/body rows in the open operation that are still present,

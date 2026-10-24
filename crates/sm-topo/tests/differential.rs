@@ -73,6 +73,8 @@ fn testkit_fixtures_are_identical_and_satisfy_their_expectations() {
     ));
     for (fixture, mine) in &cases {
         same_state(&fixture.complex, mine, fixture.name);
+        // Many issues per cell on the broken fixtures: the parallel validator orders them alike.
+        assert_eq!(mine.validate_par(), validate(mine), "{} validate_par", fixture.name);
         assert_eq!(Dim::ALL.map(|d| mine.cells(d).len()), fixture.counts, "{} counts", fixture.name);
         assert_eq!(euler_characteristic(mine), fixture.euler, "{} euler", fixture.name);
         // Same verdicts from the testkit's own checkers.
@@ -268,4 +270,87 @@ fn pcurve_variants_emit_identical_canonical_words() {
         Ok(())
     })
     .unwrap();
+}
+
+/// Flag-only edits are never checked by the reference `end_op`, so a pole edge can lose
+/// DEGENERATE and commit an open shell; the next op touching the volume must report it on both.
+/// The closure marks must survive the op that recorded them (production and paranoid settings).
+fn pole_flag_then_touch(prod: bool, touch: u8) {
+    let mut tw = Twin::new();
+    if prod {
+        tw.b = TopoStore::new();
+    }
+    let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+    tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+    assert!(!validate(&tw.a).is_empty(), "the committed state is invalid");
+    assert_eq!(tw.b.validate_par(), validate(&tw.b));
+    // An unrelated op must not consume the pending closure.
+    tw.op("unrelated", 3, |t| t.make_vertex(Point3::new(9.0, 9.0, 9.0)).map(|_| ())).unwrap();
+    let r = tw.op("touch", 4, |t| match touch {
+        0 => {
+            let c = t.carrier(s.face).clone();
+            t.set_carrier(s.face, c)
+        }
+        1 => t.set_carrier(s.volume, Carrier::None),
+        _ => t.set_flags(s.edges[0], CellFlags::NONE),
+    });
+    if touch < 2 {
+        assert!(matches!(r, Err(TopoError::OpInvalid(_))), "{r:?}");
+    }
+    assert_eq!(tw.b.validate_par(), validate(&tw.b));
+}
+
+#[test]
+fn committed_open_shell_is_reported_by_a_later_touch() {
+    for prod in [false, true] {
+        for touch in 0..3 {
+            pole_flag_then_touch(prod, touch);
+        }
+    }
+}
+
+/// Re-setting the flag restores a closed state; the carried-over closure must then drop.
+#[test]
+fn pole_flag_restored_closes_the_carry_over() {
+    let mut tw = Twin::new();
+    let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+    tw.op("clear", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+    tw.op("restore", 3, |t| t.set_flags(s.edges[0], CellFlags::DEGENERATE)).unwrap();
+    assert!(validate(&tw.a).is_empty());
+    tw.op("touch", 4, |t| t.set_carrier(s.volume, Carrier::None)).unwrap();
+}
+
+/// What the reference guarantees at commit: local checks on the touched cells and their parents
+/// only, flag-only edits unchecked. So a committed state may be invalid (an open shell after a
+/// DEGENERATE flag is cleared). Every incremental shortcut (shell closure, orientation
+/// re-examination, long-row checks, small thresholds here) must then still agree with the
+/// reference on any later op, accepted or rejected. Each case starts from the same invalid
+/// committed state.
+#[test]
+fn ops_on_a_committed_invalid_state_agree_with_the_reference() {
+    for case in 0..8u8 {
+        let mut tw = Twin::new();
+        let s = tw.op("sphere", 1, |t| fx(fixtures::sphere(t, 1.0))).unwrap();
+        tw.op("clear pole flag", 2, |t| t.set_flags(s.edges[0], CellFlags::NONE)).unwrap();
+        let r = tw.op("adversarial", 3, |t| match case {
+            0 => t.reverse_face(s.face),
+            1 => t.kill_cascade(s.volume).map(|_| ()),
+            2 => t.remove_face_use(s.volume, s.face, Side::Left),
+            3 => t.set_flags(s.edges[1], CellFlags::NONE),
+            4 => t.raise_tolerance(s.edges[0], 1e-6),
+            5 => t.set_vertex_point(s.vertices[0], Point3::new(0.0, 0.0, -1.0)),
+            6 => t.kill(s.volume),
+            _ => {
+                let v = t.make_vertex(Point3::new(0.0, 0.0, 5.0))?;
+                t.embed(s.volume, v)
+            }
+        });
+        eprintln!("case {case}: {:?}", r.map(|_| ()));
+        // The next op on the (possibly still invalid) state also agrees.
+        let r = tw.op("touch volume", 4, |t| {
+            let c = t.carrier(s.volume).clone();
+            t.set_carrier(s.volume, c)
+        });
+        eprintln!("case {case} touch: {:?}", r.map(|_| ()));
+    }
 }

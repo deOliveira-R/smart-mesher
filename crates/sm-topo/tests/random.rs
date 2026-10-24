@@ -8,6 +8,7 @@ use common::{Rng, Twin};
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{CurveDef, Frame, Interval, Line, ModelTolerance, PCurve, Plane, SurfaceDef, Uv};
 use sm_topo_api::fixtures::{self, FixtureError};
+use proptest::prelude::*;
 use sm_topo_api::*;
 
 fn fx<T>(r: Result<T, FixtureError>) -> Result<T, TopoError> {
@@ -517,4 +518,71 @@ fn long_random_sequences_agree_with_the_reference() {
         drive(seed, 150, 30, &mut stats);
     }
     report(&stats);
+}
+
+// ---------------------------------------------------------------- proptest driver
+
+/// One biased action toward the states where committed-but-invalid shells can arise: pole /
+/// baffle fixtures, lone DEGENERATE toggles on edges (never checked by the reference `end_op`)
+/// and ops that merely touch faces and volumes afterwards.
+fn act_biased(t: &mut dyn TopologyEdit, r: &mut Rng, kind: u8) -> String {
+    match kind {
+        0 => format!("sphere {:?}", fx(fixtures::sphere(t, 0.5 + r.unit())).map(|c| c.volume)),
+        1 => format!("baffle {:?}", fx(fixtures::brick_with_baffle(t)).map(|c| c.1)),
+        2 | 3 => {
+            // Prefer degenerate (pole) edges; fall back to any edge.
+            let edges = t.cells(Dim::Edge).to_vec();
+            let poles: Vec<EntityId> = edges.iter().copied().filter(|&e| t.flags(e).contains(CellFlags::DEGENERATE)).collect();
+            let Some(e) = (if poles.is_empty() || r.below(4) == 0 { r.pick(&edges) } else { r.pick(&poles) }) else { return "no edge".into() };
+            let f = if t.flags(e).contains(CellFlags::DEGENERATE) { CellFlags::NONE } else { CellFlags::DEGENERATE };
+            format!("set_flags {:?}", t.set_flags(e, f))
+        }
+        4 => {
+            let Some(f) = pick(t, Dim::Face, r) else { return "no face".into() };
+            let c = t.carrier(f).clone();
+            format!("touch_face {:?}", t.set_carrier(f, c))
+        }
+        5 => {
+            let Some(v) = pick(t, Dim::Volume, r) else { return "no volume".into() };
+            let c = t.carrier(v).clone();
+            format!("touch_volume {:?}", t.set_carrier(v, c))
+        }
+        6 => {
+            let Some(v) = pick(t, Dim::Volume, r) else { return "no volume".into() };
+            format!("raise_tol {:?}", t.raise_tolerance(v, 1e-6 * (1.0 + r.unit())))
+        }
+        _ => act(t, r),
+    }
+}
+
+/// Run an op sequence `(sub-seed, kind, abort)` in lock step with a full `validate` comparison
+/// (and `validate_par`) after every op.
+fn drive_ops(ops: &[(u64, u8, bool)]) {
+    let mut tw = Twin::new();
+    for (n, &(s, kind, abort)) in ops.iter().enumerate() {
+        let ctx = format!("op {} (sub-seed {s:#x}, kind {kind}, abort {abort})", n + 1);
+        tw.run(&ctx, |t| t.begin_op(OpId(n as u64 + 1))).expect("begin");
+        let log = tw.run(&ctx, |t| {
+            let mut r = Rng(s);
+            let steps = 1 + r.below(2);
+            (0..steps).map(|i| { let k = if i == 0 { kind } else { 8 + (r.below(4) as u8) }; act_biased(t, &mut r, k) }).collect::<Vec<String>>()
+        });
+        if abort {
+            tw.run(&ctx, |t| t.abort_op());
+        } else {
+            let _ = tw.run(&ctx, |t| t.end_op().map(|o| (o.op, o.created, o.retired, o.lineage_start, o.lineage_len)));
+        }
+        tw.same(&format!("{ctx} {log:?}"));
+        assert_eq!(tw.b.validate_par(), sm_topo_api::validate(&tw.b), "{ctx}: validate_par");
+    }
+}
+
+proptest! {
+    #![proptest_config(sm_testkit::strategies::config(40))]
+
+    /// Shrinking differential test over biased op sequences.
+    #[test]
+    fn biased_sequences_agree_with_the_reference(ops in proptest::collection::vec((any::<u64>(), 0u8..12, any::<u8>().prop_map(|b| b % 8 == 0)), 1..24)) {
+        drive_ops(&ops);
+    }
 }
