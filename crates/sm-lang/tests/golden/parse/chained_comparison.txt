@@ -1,0 +1,6 @@
+error[chained-comparison]: comparison operators cannot be chained
+ --> chained_comparison.smesh:1:14
+  |
+1 | assert 1 < 2 < 3
+  |              ^ use `and` to combine comparisons
+  = help: write `a < b and b < c`

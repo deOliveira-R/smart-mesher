@@ -1,0 +1,6 @@
+error[invalid-character]: `#` is only valid right after a kind name and before a serial
+ --> id_from_variable.smesh:2:15
+  |
+2 | let v = Volume#i
+  |               ^ unexpected `#`
+  = help: an id serial after `#` is a number, `[...]` or `(...)`; to build an id from a variable write `Volume#[i]` or `Volume#(i + 1)`

@@ -1,0 +1,18 @@
+error[bad-id-range]: range start is greater than its end
+ --> bad_range.smesh:1:16
+  |
+1 | let a = Volume#5..2
+  |                ^^^^ 5 > 2
+  = help: ranges are inclusive and ascending: `Volume#1..5`
+
+error[bad-id-range]: range step must be at least 1
+ --> bad_range.smesh:2:24
+  |
+2 | let b = Volume#1..9 by 0
+  |                        ^ step is zero
+
+error[bad-id-range]: empty id list
+ --> bad_range.smesh:3:16
+  |
+3 | let c = Volume#[]
+  |                ^^ list at least one id or range

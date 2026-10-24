@@ -1,3 +1,27 @@
 //! The smart-mesh command language: parser, entity lists, scripts, translation to Ops.
 //!
-//! Skeleton created in W0; implemented in W1 against the frozen `*-api` contracts.
+//! See `LANGUAGE.md` for the language and `DESIGN.md` for the implementation.
+
+pub mod ast;
+pub mod complete;
+pub mod diag;
+pub mod entity;
+pub mod eval;
+pub mod help;
+pub mod host;
+pub mod interp;
+pub mod kinds;
+pub mod lexer;
+pub mod parser;
+pub mod schema;
+pub mod span;
+pub mod value;
+
+pub use complete::{Candidate, CandidateKind, Completion};
+pub use diag::{Diagnostic, Severity};
+pub use entity::{EntitySet, Relations};
+pub use host::{EngineHost, Host, HostError, PlanHost, QueryRelations, TimelineCommand, TimelineHead};
+pub use interp::{Event, Interpreter, Options, RunReport, respell_json};
+pub use value::Val;
+pub use parser::{ParseLimits, ParseOutput, parse, parse_many, parse_with};
+pub use span::{Source, SourceMap, Span};

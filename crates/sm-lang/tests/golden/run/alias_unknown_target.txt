@@ -1,0 +1,6 @@
+error[unknown-name]: no op or query named `model.create_brik`
+ --> alias_unknown_target.smesh:1:11
+  |
+1 | alias b = model.create_brik
+  |           ^^^^^^^^^^^^^^^^^ alias target does not exist
+  = help: did you mean `model.create_brick`?

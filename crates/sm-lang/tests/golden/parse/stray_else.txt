@@ -1,0 +1,6 @@
+error[expected-statement]: `else` without a matching `if`
+ --> stray_else.smesh:2:1
+  |
+2 | else { print 2 }
+  | ^^^^ no `if` to attach to
+  = help: `else` must directly follow the closing `}` of an `if` (on the same line or the next)

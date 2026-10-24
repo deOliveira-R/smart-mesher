@@ -1,0 +1,2 @@
+let width = 3
+model.create_brick(x: widht, y: 1, z: 1)

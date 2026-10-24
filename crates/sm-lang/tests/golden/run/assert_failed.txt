@@ -1,0 +1,5 @@
+error[assert-failed]: n must exceed 5
+ --> assert_failed.smesh:2:8
+  |
+2 | assert n > 5, "n must exceed 5"
+  |        ^^^^^ this condition is false

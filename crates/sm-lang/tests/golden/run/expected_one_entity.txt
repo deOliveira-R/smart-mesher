@@ -1,0 +1,5 @@
+error[expected-one-entity]: expected exactly one entity, found 3 (pick one with `[0]`, or name a single id)
+ --> expected_one_entity.smesh:1:12
+  |
+1 | model.pick(Face#1..3)
+  |            ^^^^^^^^^ here

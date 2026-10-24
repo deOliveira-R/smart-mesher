@@ -1,0 +1,2 @@
+let n = 3
+assert n > 5, "n must exceed 5"

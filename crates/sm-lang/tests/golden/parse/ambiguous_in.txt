@@ -1,0 +1,6 @@
+error[ambiguous-in]: the operand of `in` needs parentheses before a set operator
+ --> ambiguous_in.smesh:1:27
+  |
+1 | let s = faces in Volume#1 | Volume#2
+  |                           ^ is this inside the `in` operand or outside it?
+  = help: write `faces in (A | B)` to combine the operand, or `(faces in A) | B` to combine the results

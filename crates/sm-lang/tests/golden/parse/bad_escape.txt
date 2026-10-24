@@ -1,0 +1,11 @@
+error[invalid-escape]: unknown escape sequence
+ --> bad_escape.smesh:1:12
+  |
+1 | print "bad \q escape", "\u{110000}"
+  |            ^^ valid escapes: \n \t \r \" \\ \$ \u{..}
+
+error[invalid-escape]: invalid unicode escape
+ --> bad_escape.smesh:1:25
+  |
+1 | print "bad \q escape", "\u{110000}"
+  |                         ^^^^^^^^^^ expected `\u{HEX}` with a valid scalar value

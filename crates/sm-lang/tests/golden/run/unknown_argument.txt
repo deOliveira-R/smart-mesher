@@ -1,0 +1,6 @@
+error[unknown-argument]: `model.create_brick` has no parameter `zz`
+ --> unknown_argument.smesh:1:32
+  |
+1 | model.create_brick(x: 1, y: 2, zz: 3)
+  |                                ^^ here
+  = help: did you mean `z`?

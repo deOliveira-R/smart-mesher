@@ -1,0 +1,5 @@
+error[invalid-argument]: 0.0 is below the minimum 0.001
+ --> out_of_range.smesh:1:36
+  |
+1 | intent.set_size(ids: Face#1, size: 0.0)
+  |                                    ^^^ here

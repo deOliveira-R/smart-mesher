@@ -1,0 +1,6 @@
+error[entity-not-found]: there is no live Volume#7
+ --> entity_not_found.smesh:1:12
+  |
+1 | model.pick(Volume#7)
+  |            ^^^^^^^^ not in the current state
+  = help: 2 live Volume entities: Volume#1, Volume#2

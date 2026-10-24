@@ -1,0 +1,6 @@
+error[op-in-expression]: `model.create_brick` is not a function
+ --> op_in_expression.smesh:1:13
+  |
+1 | let x = 1 + model.create_brick(x: 1, y: 1, z: 1)
+  |             ^^^^^^^^^^^^^^^^^^ ops cannot be used inside expressions (queries can)
+  = help: call it as a statement, or as the whole right-hand side of `let`: `let r = op(...)`

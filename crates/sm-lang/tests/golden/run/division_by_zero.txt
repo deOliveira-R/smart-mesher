@@ -1,0 +1,5 @@
+error[division-by-zero]: division by zero
+ --> division_by_zero.smesh:1:9
+  |
+1 | let x = 10 / (2 - 2)
+  |         ^^^^^^^^^^^^ here

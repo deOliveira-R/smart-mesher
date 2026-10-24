@@ -1,0 +1,5 @@
+error[type-mismatch]: `...` spreads an object, found an int
+ --> spread_not_object.smesh:1:15
+  |
+1 | model.pick(...3)
+  |               ^ not an object

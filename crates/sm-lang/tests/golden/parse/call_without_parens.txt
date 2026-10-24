@@ -1,0 +1,6 @@
+error[expected-token]: expected `(` after `model.create_brick`, found end of line
+ --> call_without_parens.smesh:1:19
+  |
+1 | model.create_brick
+  |                   ^ a statement is a call `name(args)` or a keyword statement
+  = help: calls look like `model.create_brick(x: 1, y: 1, z: 1)`; variables are bound with `let`

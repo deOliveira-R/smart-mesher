@@ -1,0 +1,6 @@
+error[query-in-batch]: `model.count` is a query; queries are not recorded and cannot be part of a batch
+ --> query_in_batch.smesh:2:3
+  |
+2 |   model.count()
+  |   ^^^^^^^^^^^^^ queries run immediately
+  = help: run the query before or after the batch

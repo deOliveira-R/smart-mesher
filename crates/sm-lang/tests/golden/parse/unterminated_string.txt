@@ -1,0 +1,6 @@
+error[unterminated-string]: unterminated string literal
+ --> unterminated_string.smesh:1:12
+  |
+1 | let name = "abc
+  |            ^^^^ string starts here
+  = help: strings end with `"` on the same line

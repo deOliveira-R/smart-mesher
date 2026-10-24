@@ -1,0 +1,2 @@
+model.delete(ids: Volum#3, other: Fase#[1, 2])
+let a = all volumess

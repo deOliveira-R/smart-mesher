@@ -1,0 +1,5 @@
+error[invalid-argument]: unknown entity kind `Wat`
+ --> nested_element_span.smesh:1:31
+  |
+1 | intent.set_size(ids: [Face#1, "Wat#x", Face#2], size: 1)
+  |                               ^^^^^^^ here

@@ -1,0 +1,6 @@
+warning[plan-unresolved]: this value depends on an op result that is unknown without executing
+ --> plan_unresolved_warning.smesh:2:12
+  |
+2 | model.pick(b.body)
+  |            ^^^^^^ placeholder `$plan...` emitted
+  = help: wrap dependent statements in `batch { }` to lower them without executing

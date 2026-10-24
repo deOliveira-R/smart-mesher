@@ -1,0 +1,3 @@
+let a = Volume#5..2
+let b = Volume#1..9 by 0
+let c = Volume#[]

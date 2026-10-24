@@ -1,0 +1,6 @@
+error[ambiguous-set-expression]: `-`/`except` mixed with `|`/`&` needs parentheses
+ --> ambiguous_except.smesh:1:9
+  |
+1 | let s = all volumes except Volume#1 | Volume#2
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ add parentheses around this
+  = help: write `(a - b) | c` or `a - (b | c)`

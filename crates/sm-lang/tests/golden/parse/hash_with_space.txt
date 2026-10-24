@@ -1,0 +1,6 @@
+error[invalid-character]: `#` is only valid right after a kind name and before a serial
+ --> hash_with_space.smesh:1:24
+  |
+1 | model.pick(ids: Volume #3)
+  |                        ^ unexpected `#`
+  = help: write entity ids as `Volume#3` (no spaces); comments start with `//`

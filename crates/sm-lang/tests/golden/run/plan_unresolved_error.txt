@@ -1,0 +1,5 @@
+error[plan-unresolved]: this value is unknown when planning without executing
+ --> plan_unresolved_error.smesh:2:9
+  |
+2 | let m = q.count + 1
+  |         ^^^^^^^^^^^ here

@@ -1,0 +1,6 @@
+error[not-yet-supported]: `where` is reserved for entity predicates, which this version does not have
+ --> predicate_reserved.smesh:1:27
+  |
+1 | let s = faces in Volume#1 where area > 2
+  |                           ^^^^^ predicates are not implemented
+  = help: select by id (`Face#1..4`), by relation (`faces in Volume#1`), or run a query and pass `ents(result)`; the planned forms are in LANGUAGE.md section 5.5

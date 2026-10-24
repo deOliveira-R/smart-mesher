@@ -1,0 +1,6 @@
+error[nested-batch]: a batch cannot contain another batch
+ --> nested_batch.smesh:2:3
+  |
+2 |   batch { }
+  |   ^^^^^^^^^ nested here
+  = help: core.batch rejects nesting; flatten the blocks

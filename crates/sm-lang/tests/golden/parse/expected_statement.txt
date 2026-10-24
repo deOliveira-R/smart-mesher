@@ -1,0 +1,18 @@
+error[expected-token]: expected a variable name, found `=`
+ --> expected_statement.smesh:1:5
+  |
+1 | let = 5
+  |     ^ expected a variable name
+
+error[expected-token]: expected a loop variable name, found `in`
+ --> expected_statement.smesh:2:5
+  |
+2 | for in range(3) {
+  |     ^^ expected a loop variable name
+
+error[expected-statement]: expected a statement, found number
+ --> expected_statement.smesh:4:1
+  |
+4 | 42
+  | ^^ a statement cannot start here
+  = help: statements: a call `name(args)`, `let`, `set`, `alias`, `batch`, `if`, `for`, `include`, `print`, `assert`, `help`

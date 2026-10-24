@@ -1,0 +1,5 @@
+error[type-mismatch]: `[*]` selects every output and is only valid as an element of an array parameter
+ --> star_in_scalar.smesh:3:14
+  |
+3 |   model.pick(p.faces[*])
+  |              ^^^^^^^^^^ here

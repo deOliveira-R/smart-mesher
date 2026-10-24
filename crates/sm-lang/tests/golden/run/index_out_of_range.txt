@@ -1,0 +1,5 @@
+error[index-out-of-range]: index 5 is out of range for a list of 2 elements
+ --> index_out_of_range.smesh:2:7
+  |
+2 | print l[5]
+  |       ^^^^ here
