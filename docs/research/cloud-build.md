@@ -27,3 +27,4 @@ Sources: code.claude.com/docs/en/claude-code-on-the-web.md, cloud-environments.m
 - The cloud VM cloned the repo from GitHub, honored `rust-toolchain.toml` (installed 1.99.1), built and tested `sm-core`, and pushed a branch. Measured resources: 4 vCPU, 15 GB RAM, 31 GB free disk.
 - Completion signal: the pushed branch (poll `git ls-remote origin`).
 - `isolation: "remote"` on the Agent tool silently fell back to a local worktree. Don't use it.
+- Argument order matters: the task text must come right after `--cloud` (`claude --cloud "<task>" --model sonnet`). `claude --cloud --model sonnet "<task>"` fails with "--cloud requires a description". (2026-10-24)
