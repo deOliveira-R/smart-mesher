@@ -46,6 +46,9 @@ impl LayerType for CounterLayer {
     fn references_any(&self, ids: &[EntityId]) -> bool {
         ids.iter().any(|i| self.counters.get(*i).is_some())
     }
+    fn supports_snapshot(&self) -> bool {
+        true
+    }
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         let v: Vec<(EntityId, &Counter)> = self.counters.iter().collect();
         serde_json::to_vec(&v)

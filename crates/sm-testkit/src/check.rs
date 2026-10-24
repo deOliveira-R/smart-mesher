@@ -5,6 +5,7 @@
 //! [`watertight`], [`classification_complete`], [`check_mesh_euler`], [`conformity`].
 //! Topology checks: [`topo_valid`], [`check_topo_euler`], [`manifold_edges`], [`model_valid`].
 //! Hashes: [`mesh_hash`], [`topo_hash`].
+//! Layers: [`snapshot_support_consistent`].
 
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_geom_api::{Frame, Line, ParametricCurve, ParametricSurface, Plane};
@@ -39,6 +40,22 @@ fn cells(m: &dyn MeshRead) -> impl Iterator<Item = CellIx> {
 
 fn faces(m: &dyn MeshRead) -> impl Iterator<Item = FaceIx> {
     (0..m.face_count()).map(FaceIx::new)
+}
+
+// ------------------------------------------------------------------------------ layer checks
+
+/// A layer that reports `supports_snapshot() == true` must return `Ok(Some(_))` from
+/// `snapshot()` (checked on non-empty layers; an empty layer may snapshot to nothing).
+pub fn snapshot_support_consistent(layer: &dyn sm_op_api::Layer) -> CheckResult {
+    let mut p = Vec::new();
+    if layer.supports_snapshot() && !layer.is_empty() {
+        match layer.snapshot() {
+            Ok(Some(_)) => {}
+            Ok(None) => p.push(format!("layer '{}': supports_snapshot() but snapshot() is None", layer.name())),
+            Err(e) => p.push(format!("layer '{}': supports_snapshot() but snapshot() failed: {e}", layer.name())),
+        }
+    }
+    done("snapshot_support_consistent", p)
 }
 
 // ------------------------------------------------------------------------------- mesh checks

@@ -878,3 +878,87 @@ fn redo_stack_round_trips_through_set_redo_stack() {
     // An empty stack is always accepted.
     r.set_redo_stack(Vec::new()).unwrap();
 }
+
+// ------------------------------------------------------------------ contract batch (op group)
+
+#[test]
+fn unborn_head_branch_cannot_be_created_or_renamed_onto() {
+    let mut s = session();
+    let (n1, _) = apply(&mut s, &Make {});
+    s.create_branch_at("other", n1).unwrap();
+    s.undo().unwrap(); // main is unborn, HEAD still on it
+    assert!(!s.timeline().refs().contains_key("main"));
+    let before_refs = s.timeline().refs().clone();
+    let before_log = s.reflog().len();
+    let e = s.create_branch_at("main", n1).unwrap_err();
+    assert!(matches!(e, TimelineError::HeadOnBranch(ref n) if n == "main"), "{e:?}");
+    let e = s.rename_branch("other", "main").unwrap_err();
+    assert!(matches!(e, TimelineError::HeadOnBranch(ref n) if n == "main"), "{e:?}");
+    // Nothing changed, and the session equals a reopen.
+    assert_eq!(s.timeline().refs(), &before_refs);
+    assert_eq!(s.reflog().len(), before_log);
+    let c = q();
+    let r = Session::open(engine(), s.timeline().clone(), s.head().clone(), &c.control()).unwrap();
+    assert_eq!(r.state().hash(), s.state().hash());
+    assert_eq!(r.position(), s.position());
+    // Other names still work.
+    s.create_branch_at("fine", n1).unwrap();
+}
+
+#[test]
+fn open_with_policy_skips_bad_seeds_unless_strict() {
+    let mut s = session();
+    let mut tips = Vec::new();
+    for _ in 0..4 {
+        tips.push(apply(&mut s, &CountedMake {}).0);
+    }
+    let tip = tips[3];
+    let good = s.state().clone();
+    let wrong = {
+        let c = q();
+        s.state_at(Some(tips[1]), &c.control()).unwrap()
+    };
+    let t = s.timeline().clone();
+    let head = Head::Ref("main".into());
+    let c = q();
+    for policy in [ReplayPolicy::Warn, ReplayPolicy::Rebaseline] {
+        let mut o = Session::open_with_policy(engine(), t.clone(), head.clone(), [(tip, wrong.clone())], vec![], policy, &c.control()).unwrap();
+        assert_eq!(o.state().hash(), good.hash());
+        assert_eq!(o.take_warnings().len(), 1, "{policy:?}");
+        assert!(o.reflog().is_empty(), "no spurious reflog entry");
+    }
+    let e = Session::open_with_policy(engine(), t.clone(), head.clone(), [(tip, wrong)], vec![], ReplayPolicy::Strict, &c.control());
+    assert!(e.is_err());
+    let ok = Session::open_with_policy(engine(), t, head, [(tip, good.clone())], vec![], ReplayPolicy::Warn, &c.control()).unwrap();
+    assert_eq!(ok.state().hash(), good.hash());
+}
+
+#[test]
+fn trim_reflog_keeps_the_newest_entries_in_order() {
+    let mut s = session();
+    for _ in 0..5 {
+        apply(&mut s, &Make {});
+    }
+    let all = s.reflog().to_vec();
+    assert_eq!(all.len(), 5);
+    s.trim_reflog(10);
+    assert_eq!(s.reflog(), &all[..]);
+    s.trim_reflog(2);
+    assert_eq!(s.reflog(), &all[3..]);
+    s.trim_reflog(0);
+    assert!(s.reflog().is_empty());
+}
+
+#[test]
+fn apply_record_canonical_is_public_and_returns_the_canonical_batch() {
+    let e = engine();
+    let mut st = e.registry().new_state();
+    let rec = OpRecord::of(&Make {}).unwrap();
+    let c = q();
+    let (d, canon) = e.apply_record_canonical(&mut st, &rec, &c.control()).unwrap();
+    assert!(canon.is_none());
+    assert!(!d.created.is_empty() || st.hash() != e.registry().new_state().hash());
+    let batch = OpRecord::of(&Batch { ops: vec![rec.clone()] }).unwrap();
+    let (_, canon) = e.apply_record_canonical(&mut st, &batch, &c.control()).unwrap();
+    assert_eq!(canon.expect("batch supplies a canonical record").name, "core.batch");
+}

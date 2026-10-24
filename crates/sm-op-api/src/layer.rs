@@ -211,6 +211,14 @@ pub trait LayerType: Clone + Send + Sync + 'static {
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         Ok(None)
     }
+    /// Whether [`snapshot`](Self::snapshot) is implemented: return `true` iff it returns
+    /// `Some` for non-empty states. Lets callers check ([`State::can_snapshot`]) before
+    /// attempting a snapshot. Default: `false`.
+    ///
+    /// [`State::can_snapshot`]: crate::state::State::can_snapshot
+    fn supports_snapshot(&self) -> bool {
+        false
+    }
     /// Rebuild a layer from [`snapshot`](Self::snapshot) bytes. Default: unsupported.
     fn restore(_bytes: &[u8]) -> Result<Self, CodecError>
     where
@@ -243,6 +251,10 @@ pub trait Layer: Any + Send + Sync {
     fn references_any(&self, ids: &[EntityId]) -> bool;
     /// See [`LayerType::snapshot`].
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError>;
+    /// See [`LayerType::supports_snapshot`]. Default: `false`.
+    fn supports_snapshot(&self) -> bool {
+        false
+    }
     /// Deep copy (cheap for persistent/Arc-based stores).
     fn clone_box(&self) -> Box<dyn Layer>;
     /// Upcast for downcasting by type.
@@ -287,6 +299,9 @@ impl<T: LayerType> Layer for T {
     }
     fn snapshot(&self) -> Result<Option<Vec<u8>>, CodecError> {
         LayerType::snapshot(self)
+    }
+    fn supports_snapshot(&self) -> bool {
+        LayerType::supports_snapshot(self)
     }
     fn clone_box(&self) -> Box<dyn Layer> {
         Box::new(self.clone())

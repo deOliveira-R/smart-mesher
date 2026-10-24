@@ -334,6 +334,16 @@ impl State {
         Ok(h.finish())
     }
 
+    /// Whether [`snapshot`](Self::snapshot) can succeed: every non-empty authoritative layer
+    /// reports [`LayerType::supports_snapshot`].
+    pub fn can_snapshot(&self) -> bool {
+        self.layers.values().all(|slot| {
+            slot.layer.role() != LayerRole::Authoritative
+                || slot.layer.is_empty()
+                || slot.layer.supports_snapshot()
+        })
+    }
+
     /// Persistable copy of this state. Fails if a non-empty authoritative layer does not
     /// implement the persisted-snapshot hook ([`LayerType::snapshot`]).
     pub fn snapshot(&self) -> Result<StateSnapshot, CodecError> {

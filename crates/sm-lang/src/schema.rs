@@ -6,9 +6,6 @@
 
 use serde_json::{Map, Value as Json};
 
-/// The entity-id pattern from `sm-core`'s schema.
-pub const ID_PATTERN: &str = r"^[A-Za-z]+#[0-9]+$";
-
 /// A schema document (the root, so `$ref` can be resolved).
 #[derive(Clone, Debug)]
 pub struct SchemaDoc {
@@ -178,11 +175,11 @@ impl<'a> View<'a> {
     /// True if the schema is a single entity id (pattern or an alternative of ids).
     pub fn is_entity_id(self) -> bool {
         let v = self.non_null();
-        if v.get("pattern").and_then(Json::as_str) == Some(ID_PATTERN) {
+        if v.get("pattern").and_then(Json::as_str) == Some(sm_core::ENTITY_ID_PATTERN) {
             return true;
         }
         let alts = v.alternatives();
-        !alts.is_empty() && alts.iter().any(|a| a.get("pattern").and_then(Json::as_str) == Some(ID_PATTERN))
+        !alts.is_empty() && alts.iter().any(|a| a.get("pattern").and_then(Json::as_str) == Some(sm_core::ENTITY_ID_PATTERN))
     }
 
     /// If the schema is an array of entity ids, the item view.
@@ -273,27 +270,6 @@ fn kind_of(v: &Json) -> &'static str {
     }
 }
 
-/// True if `s` has the shape of a `core.batch` reference (`batch::REF_PATTERN`).
-pub fn is_batch_ref(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix('$') else { return false };
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return false;
-    }
-    let Some(after) = rest[digits..].strip_prefix('.') else { return false };
-    let (role, suffix) = match after.find('[') {
-        Some(i) => (&after[..i], &after[i..]),
-        None => (after, ""),
-    };
-    if role.is_empty() || role.contains(']') {
-        return false;
-    }
-    suffix.is_empty() || {
-        let inner = suffix.strip_prefix('[').and_then(|x| x.strip_suffix(']'));
-        inner.is_some_and(|i| i == "*" || (!i.is_empty() && i.bytes().all(|b| b.is_ascii_digit())))
-    }
-}
-
 /// True if `s` matches `^[A-Za-z]+#[0-9]+$`.
 pub fn is_id_text(s: &str) -> bool {
     let Some((k, n)) = s.split_once('#') else { return false };
@@ -302,10 +278,10 @@ pub fn is_id_text(s: &str) -> bool {
 
 /// `Some(matches)` for the patterns the contract defines, `None` for any other pattern (not interpreted).
 fn pattern_matches(pat: &str, s: &str) -> Option<bool> {
-    if pat == ID_PATTERN {
+    if pat == sm_core::ENTITY_ID_PATTERN {
         Some(is_id_text(s))
     } else if pat == sm_op_api::batch::REF_PATTERN {
-        Some(is_batch_ref(s))
+        Some(sm_op_api::batch::is_reference(s))
     } else if pat == sm_op_api::batch::ESCAPED_LITERAL_PATTERN {
         Some(s.starts_with("$$"))
     } else {
@@ -425,9 +401,9 @@ fn check_at(view: View<'_>, value: &Json, top: bool, batch: bool, path: &mut Vec
             }
             if let Some(pat) = nn.get("pattern").and_then(Json::as_str)
                 && pattern_matches(pat, s) == Some(false)
-                && !(batch && pat == ID_PATTERN && (is_batch_ref(s) || s.starts_with("$$")))
+                && !(batch && pat == sm_core::ENTITY_ID_PATTERN && (sm_op_api::batch::is_reference(s) || s.starts_with("$$")))
             {
-                let msg = if pat == ID_PATTERN { format!("{s:?} is not an entity id (expected `Kind#serial`)") } else { format!("{s:?} does not match {pat}") };
+                let msg = if pat == sm_core::ENTITY_ID_PATTERN { format!("{s:?} is not an entity id (expected `Kind#serial`)") } else { format!("{s:?} does not match {pat}") };
                 push(out, path, "pattern-mismatch", msg);
             }
         }
