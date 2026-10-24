@@ -95,3 +95,14 @@ Skipped: 9 (retire `tests/contract_*.rs`): the contract suite is not generic ove
    *Why*: `Validation::Fast` re-implements the face-kind, dimension-order and lineage rules; a public function removes the duplicate.
    *Proposed*: `pub fn validate_classification(m: &dyn MeshRead) -> Vec<Violation>` (the rules of the private `validate_classification`, plus the lineage rule), and let `validate` call it.
 4. **crate `sm-core`** (nice to have): store `EntityId` as `NonZeroU64` (the kind byte is never 0), so `Option<EntityId>` is 8 bytes and builders need no sentinel id (this crate uses a `MeshCell` id with serial 0 as the "unset" marker of its classification columns).
+
+## fix1 (review findings)
+
+* **Fixed: `FaceIndex::grow` broke creation order for coincident faces.** The rehash walked old slots in slot order, so a probe chain wrapped past the table end was reinserted tail-first. It now starts at an empty old slot and goes round cyclically, which keeps every chain intact. Regression test `tests/face_index.rs` (baffle pairs, several grows, `find_face`/`find_face_where` against the reference before and after `truncate_faces` and a re-add, then `add_polyhedron` onto a baffle pair); it fails on the old code and passes now.
+* `MeshRead::id(Edge, ix)` without an edge table now indexes an empty slice and panics, like the reference.
+* `cell_problem`: dropped the unreachable unknown-vertex part of the Corners check (commented why).
+* New `tests/flatten_diff.rs`: property differential of `unfold` (decks of 0 to 2 mirrors, welded and unwelded) and catalog `flatten` against the reference on decorated meshes (sets, side sets, labels, cell/face tags, face classes, reclassification through `on_merge`); results, errors, `FlattenMap` and allocator state agree.
+* DESIGN.md notes that single-threaded bulk (1.01 s at 10^6) is slower than incremental (0.90 s); bulk pays off with threads. The sequential sort/scatter stages were not changed.
+* `replay_error` now documents that it relies on `add_cells_bulk` requiring an empty builder (O(cv) cost only on the error path).
+* `Cargo.lock` is the only file changed outside `crates/sm-mesh` in the original W1 commit; the orchestrator regenerates it at merge. This fix touches nothing outside the crate.
+* Not done: retiring `tests/contract_*.rs` copies; this waits for contract tests generic over an implementation (deviation 8).

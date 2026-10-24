@@ -155,7 +155,7 @@ impl MeshRead for Mesh {
             MeshEntityKind::Vertex => self.vids.id(ix as usize),
             MeshEntityKind::Face => self.fids.id(ix as usize),
             MeshEntityKind::Cell => self.cids.id(ix as usize),
-            _ => self.edges.as_ref().map_or(self.id, |t| t.ids[ix as usize]),
+            _ => self.edges.as_ref().map_or(&[][..], |t| &t.ids[..])[ix as usize],
         }
     }
     fn index_of(&self, id: EntityId) -> Option<u32> {

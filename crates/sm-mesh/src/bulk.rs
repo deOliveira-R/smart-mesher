@@ -124,7 +124,8 @@ fn cell_problem(dim: sm_mesh_api::MeshDim, nv: usize, shape: CellShape, vs: &[Ve
         }
     }
     let distinct = (0..vs.len()).all(|i| (i + 1..vs.len()).all(|j| vs[i] != vs[j]));
-    if !distinct || vs.iter().any(|v| v.get() >= nv) {
+    // Unknown vertices were reported above (every template vertex lies on a local face).
+    if !distinct {
         return Some(Problem::Corners);
     }
     None
@@ -159,7 +160,8 @@ impl Problem {
 
 impl MeshBuilder {
     /// Exact incremental error of the first `count` cells (cold path for degenerate cells whose
-    /// corner and clash errors compete).
+    /// corner and clash errors compete). Relies on `add_cells_bulk` requiring an empty builder:
+    /// if that is ever relaxed, the scratch replay must start from the existing cells.
     fn replay_error(&self, shapes: &[CellShape], offsets: &[u64], verts: &[VertexIx], count: usize) -> MeshError {
         let mut scratch = if self.dim == sm_mesh_api::MeshDim::Two { MeshBuilder::surface() } else { MeshBuilder::new() };
         for _ in 0..self.x.len() {

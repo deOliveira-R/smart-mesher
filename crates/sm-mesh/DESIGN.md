@@ -71,7 +71,7 @@ No `HashMap` iteration reaches an output (the face index and vertex grid are use
 | 64^3 | 262 k | 305 ms | 514 ms | 1.70 s |
 | 100^3 | 1 M | 1.0-1.4 s | 2.1 s | 7.1 s |
 
-Bulk 64^3 on 1, 2, 4 threads: 511, 335, 229 ms. Queries on 64^3: `vertex_cells` 59 ms, `cell_neighbors` 18 ms; edge table of a 32^3 block 44 ms. Timings on this shared machine vary by up to 2x between runs; the table shows the criterion medians.
+Bulk 64^3 on 1, 2, 4 threads: 511, 335, 229 ms. Queries on 64^3: `vertex_cells` 59 ms, `cell_neighbors` 18 ms; edge table of a 32^3 block 44 ms. Single-threaded, bulk (1.01 s at 10^6 cells) is not faster than incremental (0.90 s): the sequential sort/scatter stages dominate, so bulk only pays off with more threads. Timings on this shared machine vary by up to 2x between runs; the table shows the criterion medians.
 
 ## Limits
 

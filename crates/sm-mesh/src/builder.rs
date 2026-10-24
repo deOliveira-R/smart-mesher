@@ -78,7 +78,15 @@ impl FaceIndex {
         let cap = (self.slots.len() * 2).max(64);
         let old = std::mem::replace(&mut self.slots, vec![0; cap]);
         let mask = cap - 1;
-        for s in old.into_iter().filter(|s| *s != 0) {
+        // Rehash in creation order: start at an empty old slot so no probe chain is split by the
+        // wrap-around (a wrapped tail would otherwise be reinserted before its head).
+        let n = old.len();
+        let start = old.iter().position(|s| *s == 0).unwrap_or(0);
+        for k in 0..n {
+            let s = old[(start + k) % n];
+            if s == 0 {
+                continue;
+            }
             let mut i = (s >> 32) as usize & mask;
             while self.slots[i] != 0 {
                 i = (i + 1) & mask;
