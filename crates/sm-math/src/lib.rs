@@ -23,7 +23,8 @@ pub mod sos;
 pub mod sum;
 
 pub use predicates::{
-    incircle, insphere, orient2d, orient3d, try_incircle, try_insphere, try_orient2d, try_orient3d, PredicateError,
+    PredicateError, incircle, insphere, orient2d, orient3d, try_incircle, try_insphere,
+    try_orient2d, try_orient3d,
 };
 pub use sign::Sign;
 pub use sm_core::{Point3, Transform, Vector3};

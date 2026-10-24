@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use sm_math::{incircle, insphere, orient2d, orient3d, Sign};
+use sm_math::{Sign, incircle, insphere, orient2d, orient3d};
 
 #[test]
 fn orient2d_all_grid_triples() {
@@ -14,7 +14,11 @@ fn orient2d_all_grid_triples() {
             for &c in &pts {
                 let k = (n % 7) as i32 - 3;
                 let want = orient2d_i(a, b, c);
-                assert_eq!(orient2d(f2(a, k), f2(b, k), f2(c, k)), want, "{a:?} {b:?} {c:?}");
+                assert_eq!(
+                    orient2d(f2(a, k), f2(b, k), f2(c, k)),
+                    want,
+                    "{a:?} {b:?} {c:?}"
+                );
                 zeros += usize::from(want == Sign::Zero);
             }
         }
@@ -24,7 +28,9 @@ fn orient2d_all_grid_triples() {
 
 #[test]
 fn orient3d_all_grid_quadruples() {
-    let pts: Vec<[i64; 3]> = (0..3).flat_map(|x| (0..3).flat_map(move |y| (0..3).map(move |z| [x, y, z]))).collect();
+    let pts: Vec<[i64; 3]> = (0..3)
+        .flat_map(|x| (0..3).flat_map(move |y| (0..3).map(move |z| [x, y, z])))
+        .collect();
     let mut zeros = 0;
     for (n, &a) in pts.iter().enumerate() {
         for &b in &pts {
@@ -51,7 +57,11 @@ fn incircle_all_grid_quadruples() {
                 for &d in &pts {
                     let k = (n % 5) as i32 - 2;
                     let want = incircle_i(a, b, c, d);
-                    assert_eq!(incircle(f2(a, k), f2(b, k), f2(c, k), f2(d, k)), want, "{a:?} {b:?} {c:?} {d:?}");
+                    assert_eq!(
+                        incircle(f2(a, k), f2(b, k), f2(c, k), f2(d, k)),
+                        want,
+                        "{a:?} {b:?} {c:?} {d:?}"
+                    );
                     zeros += usize::from(want == Sign::Zero);
                 }
             }
@@ -63,10 +73,23 @@ fn incircle_all_grid_quadruples() {
 #[test]
 fn incircle_cocircular_lattice_points() {
     // All 12 lattice points on x^2 + y^2 = 25 are cocircular: every quadruple is exactly zero.
-    let circle: Vec<[i64; 2]> = [(3, 4), (4, 3), (5, 0), (4, -3), (3, -4), (0, -5), (-3, -4), (-4, -3), (-5, 0), (-4, 3), (-3, 4), (0, 5)]
-        .iter()
-        .map(|&(x, y)| [x, y])
-        .collect();
+    let circle: Vec<[i64; 2]> = [
+        (3, 4),
+        (4, 3),
+        (5, 0),
+        (4, -3),
+        (3, -4),
+        (0, -5),
+        (-3, -4),
+        (-4, -3),
+        (-5, 0),
+        (-4, 3),
+        (-3, 4),
+        (0, 5),
+    ]
+    .iter()
+    .map(|&(x, y)| [x, y])
+    .collect();
     let mut seen_zero = 0;
     for &a in &circle {
         for &b in &circle {
@@ -88,14 +111,22 @@ fn incircle_cocircular_lattice_points() {
 #[test]
 fn insphere_cospherical_and_grid_samples() {
     // Points of the 3x3x3 grid, random 5-tuples: lots of exactly cospherical ones.
-    let pts: Vec<[i64; 3]> = (0..3).flat_map(|x| (0..3).flat_map(move |y| (0..3).map(move |z| [x, y, z]))).collect();
+    let pts: Vec<[i64; 3]> = (0..3)
+        .flat_map(|x| (0..3).flat_map(move |y| (0..3).map(move |z| [x, y, z])))
+        .collect();
     let mut rng = Rng(7);
     let mut zeros = 0;
     for n in 0..200_000 {
         let p: Vec<[i64; 3]> = (0..5).map(|_| pts[rng.below(pts.len())]).collect();
-        let k = (n % 7) as i32 - 3;
+        let k = n % 7 - 3;
         let want = insphere_i(p[0], p[1], p[2], p[3], p[4]);
-        let got = insphere(f3(p[0], k), f3(p[1], k), f3(p[2], k), f3(p[3], k), f3(p[4], k));
+        let got = insphere(
+            f3(p[0], k),
+            f3(p[1], k),
+            f3(p[2], k),
+            f3(p[3], k),
+            f3(p[4], k),
+        );
         assert_eq!(got, want, "{p:?}");
         zeros += usize::from(want == Sign::Zero);
     }
@@ -114,7 +145,13 @@ fn insphere_cospherical_and_grid_samples() {
     assert_eq!(sph.len(), 30);
     for _ in 0..20_000 {
         let p: Vec<[i64; 3]> = (0..5).map(|_| sph[rng.below(sph.len())]).collect();
-        let got = insphere(f3(p[0], 0), f3(p[1], 0), f3(p[2], 0), f3(p[3], 0), f3(p[4], 0));
+        let got = insphere(
+            f3(p[0], 0),
+            f3(p[1], 0),
+            f3(p[2], 0),
+            f3(p[3], 0),
+            f3(p[4], 0),
+        );
         assert_eq!(got, Sign::Zero);
     }
 }
@@ -145,14 +182,30 @@ fn nudged_degenerate_inputs() {
         let add = |p: [i64; 3], q: [i64; 3]| [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
         let b3 = add(a3, u);
         let c3 = add(a3, v);
-        let mut d3 = [a3[0] + s * u[0] + t * v[0], a3[1] + s * u[1] + t * v[1], a3[2] + s * u[2] + t * v[2]];
+        let mut d3 = [
+            a3[0] + s * u[0] + t * v[0],
+            a3[1] + s * u[1] + t * v[1],
+            a3[2] + s * u[2] + t * v[2],
+        ];
         if n % 2 == 1 {
             d3[(n / 2) % 3] += if n % 4 == 1 { 1 } else { -1 };
         }
-        assert_eq!(orient3d(f3(a3, k), f3(b3, k), f3(c3, k), f3(d3, k)), orient3d_i(a3, b3, c3, d3));
+        assert_eq!(
+            orient3d(f3(a3, k), f3(b3, k), f3(c3, k), f3(d3, k)),
+            orient3d_i(a3, b3, c3, d3)
+        );
 
         // incircle: four lattice points on a circle (Pythagorean quadruples), nudged.
-        let r = [(3, 4), (4, 3), (5, 0), (0, 5), (-3, 4), (-4, -3), (3, -4), (0, -5)];
+        let r = [
+            (3, 4),
+            (4, 3),
+            (5, 0),
+            (0, 5),
+            (-3, 4),
+            (-4, -3),
+            (3, -4),
+            (0, -5),
+        ];
         let sc = rng.int(2000) + 2001;
         let ctr = [rng.int(big), rng.int(big)];
         let p: Vec<[i64; 2]> = (0..4)
@@ -165,26 +218,50 @@ fn nudged_degenerate_inputs() {
         if n % 3 != 0 {
             q[3][n % 2] += if n % 5 < 3 { 1 } else { -1 };
         }
-        assert_eq!(incircle(f2(q[0], k), f2(q[1], k), f2(q[2], k), f2(q[3], k)), incircle_i(q[0], q[1], q[2], q[3]));
+        assert_eq!(
+            incircle(f2(q[0], k), f2(q[1], k), f2(q[2], k), f2(q[3], k)),
+            incircle_i(q[0], q[1], q[2], q[3])
+        );
 
         // insphere: points on a sphere of radius 3 about a center, nudged.
-        let on_sphere: Vec<[i64; 3]> = [(3, 0, 0), (0, 3, 0), (0, 0, 3), (-3, 0, 0), (0, -3, 0), (0, 0, -3), (1, 2, 2), (2, 1, -2), (-2, 2, 1), (2, -2, -1)]
-            .iter()
-            .map(|&(x, y, z)| [x, y, z])
-            .collect();
+        let on_sphere: Vec<[i64; 3]> = [
+            (3, 0, 0),
+            (0, 3, 0),
+            (0, 0, 3),
+            (-3, 0, 0),
+            (0, -3, 0),
+            (0, 0, -3),
+            (1, 2, 2),
+            (2, 1, -2),
+            (-2, 2, 1),
+            (2, -2, -1),
+        ]
+        .iter()
+        .map(|&(x, y, z)| [x, y, z])
+        .collect();
         let c0 = [rng.int(big), rng.int(big), rng.int(big)];
         let scale = rng.int(300) + 301;
         let mut sp: Vec<[i64; 3]> = (0..5)
             .map(|_| {
                 let o = on_sphere[rng.below(on_sphere.len())];
-                [c0[0] + scale * o[0], c0[1] + scale * o[1], c0[2] + scale * o[2]]
+                [
+                    c0[0] + scale * o[0],
+                    c0[1] + scale * o[1],
+                    c0[2] + scale * o[2],
+                ]
             })
             .collect();
         if n % 3 != 0 {
             sp[4][n % 3] += if n % 5 < 3 { 1 } else { -1 };
         }
         assert_eq!(
-            insphere(f3(sp[0], k), f3(sp[1], k), f3(sp[2], k), f3(sp[3], k), f3(sp[4], k)),
+            insphere(
+                f3(sp[0], k),
+                f3(sp[1], k),
+                f3(sp[2], k),
+                f3(sp[3], k),
+                f3(sp[4], k)
+            ),
             insphere_i(sp[0], sp[1], sp[2], sp[3], sp[4])
         );
     }
@@ -213,7 +290,10 @@ fn shewchuk_near_degenerate_grid() {
             }
         }
     }
-    assert!(float_wrong > 0, "the grid is supposed to defeat naive evaluation");
+    assert!(
+        float_wrong > 0,
+        "the grid is supposed to defeat naive evaluation"
+    );
 }
 
 /// Full-mantissa orient2d: same binade, so everything is an exact integer in i128.
@@ -233,7 +313,14 @@ fn orient2d_full_mantissa_near_collinear() {
             c[0] += t;
         }
         let want = {
-            let (ax, ay, bx, by, cx, cy) = (a[0] as i128, a[1] as i128, b[0] as i128, b[1] as i128, c[0] as i128, c[1] as i128);
+            let (ax, ay, bx, by, cx, cy) = (
+                a[0] as i128,
+                a[1] as i128,
+                b[0] as i128,
+                b[1] as i128,
+                c[0] as i128,
+                c[1] as i128,
+            );
             sgn((ax - cx) * (by - cy) - (ay - cy) * (bx - cx))
         };
         let f = |p: [i64; 2]| [p[0] as f64 * s, p[1] as f64 * s];
@@ -247,24 +334,58 @@ fn conventions_match_shewchuk() {
     // ccw triangle -> positive.
     assert_eq!(orient2d([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]), Sign::Positive);
     // d below the plane of a ccw (seen from above) triangle -> positive.
-    let (a, b, c) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
-    assert_eq!(orient3d(a, b, c, Point3::new(0.0, 0.0, -1.0)), Sign::Positive);
-    assert_eq!(orient3d(a, b, c, Point3::new(0.0, 0.0, 1.0)), Sign::Negative);
+    let (a, b, c) = (
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    );
+    assert_eq!(
+        orient3d(a, b, c, Point3::new(0.0, 0.0, -1.0)),
+        Sign::Positive
+    );
+    assert_eq!(
+        orient3d(a, b, c, Point3::new(0.0, 0.0, 1.0)),
+        Sign::Negative
+    );
     // d inside circle of ccw abc -> positive.
-    assert_eq!(incircle([0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [0.5, 0.5]), Sign::Positive);
-    assert_eq!(incircle([0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [3.0, 3.0]), Sign::Negative);
+    assert_eq!(
+        incircle([0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [0.5, 0.5]),
+        Sign::Positive
+    );
+    assert_eq!(
+        incircle([0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [3.0, 3.0]),
+        Sign::Negative
+    );
     // positive tetra, e at centroid -> positive.
     let d = Point3::new(0.0, 0.0, -1.0);
     assert_eq!(orient3d(a, b, c, d), Sign::Positive);
-    assert_eq!(insphere(a, b, c, d, Point3::new(0.25, 0.25, -0.25)), Sign::Positive);
-    assert_eq!(insphere(a, b, c, d, Point3::new(5.0, 5.0, 5.0)), Sign::Negative);
+    assert_eq!(
+        insphere(a, b, c, d, Point3::new(0.25, 0.25, -0.25)),
+        Sign::Positive
+    );
+    assert_eq!(
+        insphere(a, b, c, d, Point3::new(5.0, 5.0, 5.0)),
+        Sign::Negative
+    );
 }
 
 #[test]
 fn try_variants_reject_out_of_range() {
-    use sm_math::{try_orient2d, PredicateError};
-    assert_eq!(try_orient2d([f64::NAN, 0.0], [1.0, 0.0], [0.0, 1.0]), Err(PredicateError::OutOfRange));
-    assert_eq!(try_orient2d([1e-200, 0.0], [1.0, 0.0], [0.0, 1.0]), Err(PredicateError::OutOfRange));
-    assert_eq!(try_orient2d([1e40, 0.0], [1.0, 0.0], [0.0, 1.0]), Err(PredicateError::OutOfRange));
-    assert_eq!(try_orient2d([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]), Ok(Sign::Positive));
+    use sm_math::{PredicateError, try_orient2d};
+    assert_eq!(
+        try_orient2d([f64::NAN, 0.0], [1.0, 0.0], [0.0, 1.0]),
+        Err(PredicateError::OutOfRange)
+    );
+    assert_eq!(
+        try_orient2d([1e-200, 0.0], [1.0, 0.0], [0.0, 1.0]),
+        Err(PredicateError::OutOfRange)
+    );
+    assert_eq!(
+        try_orient2d([1e40, 0.0], [1.0, 0.0], [0.0, 1.0]),
+        Err(PredicateError::OutOfRange)
+    );
+    assert_eq!(
+        try_orient2d([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]),
+        Ok(Sign::Positive)
+    );
 }

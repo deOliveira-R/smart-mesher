@@ -43,7 +43,16 @@ pub fn det(m: &[Vec<i128>]) -> i128 {
         if m[0][c] == 0 {
             continue;
         }
-        let minor: Vec<Vec<i128>> = m[1..].iter().map(|r| r.iter().enumerate().filter(|&(j, _)| j != c).map(|(_, &v)| v).collect()).collect();
+        let minor: Vec<Vec<i128>> = m[1..]
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != c)
+                    .map(|(_, &v)| v)
+                    .collect()
+            })
+            .collect();
         let t = m[0][c] * det(&minor);
         acc += if c % 2 == 0 { t } else { -t };
     }
@@ -71,7 +80,15 @@ pub fn incircle_i(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> Sign {
 }
 
 pub fn insphere_i(a: [i64; 3], b: [i64; 3], c: [i64; 3], d: [i64; 3], e: [i64; 3]) -> Sign {
-    let row = |p: [i64; 3]| vec![i128::from(p[0]), i128::from(p[1]), i128::from(p[2]), lift(&p), 1];
+    let row = |p: [i64; 3]| {
+        vec![
+            i128::from(p[0]),
+            i128::from(p[1]),
+            i128::from(p[2]),
+            lift(&p),
+            1,
+        ]
+    };
     sgn(det(&[row(a), row(b), row(c), row(d), row(e)]))
 }
 

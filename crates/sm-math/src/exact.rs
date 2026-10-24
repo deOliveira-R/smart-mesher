@@ -189,7 +189,9 @@ impl Expansion {
 
     /// Exact `-self`.
     pub fn negated(&self) -> Expansion {
-        Expansion { c: self.c.iter().map(|&x| -x).collect() }
+        Expansion {
+            c: self.c.iter().map(|&x| -x).collect(),
+        }
     }
 
     /// Exact `self - other`.
@@ -227,7 +229,11 @@ impl Expansion {
 
     /// Exact `self * other`.
     pub fn mul(&self, other: &Expansion) -> Expansion {
-        let (long, short) = if self.c.len() >= other.c.len() { (self, other) } else { (other, self) };
+        let (long, short) = if self.c.len() >= other.c.len() {
+            (self, other)
+        } else {
+            (other, self)
+        };
         let mut acc = Expansion::zero();
         for &f in &short.c {
             acc = acc.add(&long.scale(f));
@@ -314,10 +320,16 @@ pub fn det_exact(m: &[Vec<Expansion>]) -> Expansion {
                 if m[r][0].is_zero() {
                     continue;
                 }
-                let minor: Vec<Vec<Expansion>> =
-                    (0..n).filter(|&i| i != r).map(|i| m[i][1..].to_vec()).collect();
+                let minor: Vec<Vec<Expansion>> = (0..n)
+                    .filter(|&i| i != r)
+                    .map(|i| m[i][1..].to_vec())
+                    .collect();
                 let term = m[r][0].mul(&det_exact(&minor));
-                acc = if r % 2 == 0 { acc.add(&term) } else { acc.sub(&term) };
+                acc = if r % 2 == 0 {
+                    acc.add(&term)
+                } else {
+                    acc.sub(&term)
+                };
             }
             acc
         }

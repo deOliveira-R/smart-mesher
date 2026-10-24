@@ -30,8 +30,8 @@
 //! round-to-nearest-even. The filter constants are the standard ones and the exact stage is
 //! integer-like, so every platform returns identical signs.
 
-use crate::exact::Expansion;
 use crate::Sign;
+use crate::exact::Expansion;
 use sm_core::Point3;
 
 const EPS: f64 = f64::EPSILON * 0.5;
@@ -59,7 +59,11 @@ pub fn in_exact_range(x: f64) -> bool {
 }
 
 fn check(xs: &[f64]) -> Result<(), PredicateError> {
-    if xs.iter().all(|&x| in_exact_range(x)) { Ok(()) } else { Err(PredicateError::OutOfRange) }
+    if xs.iter().all(|&x| in_exact_range(x)) {
+        Ok(())
+    } else {
+        Err(PredicateError::OutOfRange)
+    }
 }
 
 #[inline]
@@ -214,7 +218,12 @@ pub fn incircle(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Sign {
 }
 
 /// [`incircle`] with an input range check.
-pub fn try_incircle(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Result<Sign, PredicateError> {
+pub fn try_incircle(
+    a: [f64; 2],
+    b: [f64; 2],
+    c: [f64; 2],
+    d: [f64; 2],
+) -> Result<Sign, PredicateError> {
     check(&[a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]])?;
     Ok(incircle(a, b, c, d))
 }
@@ -300,9 +309,14 @@ fn insphere_exact(a: Point3, b: Point3, c: Point3, dd: Point3, e: Point3) -> Exp
     let bcd = bez.mul(&cd).sub(&cez.mul(&bd)).add(&dez.mul(&bc));
     let cda = cez.mul(&da).add(&dez.mul(&ac)).add(&aez.mul(&cd));
     let dab = dez.mul(&ab).add(&aez.mul(&bd)).add(&bez.mul(&da));
-    let lift = |x: &Expansion, y: &Expansion, z: &Expansion| x.square().add(&y.square()).add(&z.square());
-    let (alift, blift, clift, dlift) =
-        (lift(&aex, &aey, &aez), lift(&bex, &bey, &bez), lift(&cex, &cey, &cez), lift(&dex, &dey, &dez));
+    let lift =
+        |x: &Expansion, y: &Expansion, z: &Expansion| x.square().add(&y.square()).add(&z.square());
+    let (alift, blift, clift, dlift) = (
+        lift(&aex, &aey, &aez),
+        lift(&bex, &bey, &bez),
+        lift(&cex, &cey, &cez),
+        lift(&dex, &dey, &dez),
+    );
     let left = dlift.mul(&abc).sub(&clift.mul(&dab));
     let right = blift.mul(&cda).sub(&alift.mul(&bcd));
     left.add(&right)
@@ -317,7 +331,15 @@ pub fn insphere(a: Point3, b: Point3, c: Point3, d: Point3, e: Point3) -> Sign {
 }
 
 /// [`insphere`] with an input range check.
-pub fn try_insphere(a: Point3, b: Point3, c: Point3, d: Point3, e: Point3) -> Result<Sign, PredicateError> {
-    check(&[a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z, e.x, e.y, e.z])?;
+pub fn try_insphere(
+    a: Point3,
+    b: Point3,
+    c: Point3,
+    d: Point3,
+    e: Point3,
+) -> Result<Sign, PredicateError> {
+    check(&[
+        a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z, e.x, e.y, e.z,
+    ])?;
     Ok(insphere(a, b, c, d, e))
 }

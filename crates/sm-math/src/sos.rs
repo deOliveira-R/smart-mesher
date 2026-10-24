@@ -78,7 +78,10 @@ fn gen_matchings(n: usize) -> Vec<Matching> {
             for (i, &c) in cur.iter().enumerate() {
                 cells[i] = c;
             }
-            out.push(Matching { cells, k: cur.len() as u8 });
+            out.push(Matching {
+                cells,
+                k: cur.len() as u8,
+            });
             return;
         }
         rec(r + 1, n, used, cur, out);
@@ -120,7 +123,10 @@ fn sos_sign(entries: &[Vec<Expansion>], ids: &[u64]) -> Result<Sign, SosError> {
     let mut keyed: Vec<(u32, &Matching)> = matchings(n)
         .iter()
         .map(|m| {
-            let key = m.cells[..m.k as usize].iter().map(|&(r, c)| 1u32 << (pos[r as usize] * cols + c as usize)).sum();
+            let key = m.cells[..m.k as usize]
+                .iter()
+                .map(|&(r, c)| 1u32 << (pos[r as usize] * cols + c as usize))
+                .sum();
             (key, m)
         })
         .collect();
@@ -134,19 +140,25 @@ fn sos_sign(entries: &[Vec<Expansion>], ids: &[u64]) -> Result<Sign, SosError> {
             rows_used |= 1 << r;
             cols_used |= 1 << c;
             parity += r as usize + c as usize;
-            parity += cells[i + 1..].iter().filter(|&&(r2, c2)| r2 > r && c2 < c).count();
+            parity += cells[i + 1..]
+                .iter()
+                .filter(|&&(r2, c2)| r2 > r && c2 < c)
+                .count();
         }
         let minor: Vec<Vec<Expansion>> = (0..n)
             .filter(|&r| rows_used & (1 << r) == 0)
             .map(|r| {
-                let mut row: Vec<Expansion> = (0..cols).filter(|&c| cols_used & (1 << c) == 0).map(|c| entries[r][c].clone()).collect();
+                let mut row: Vec<Expansion> = (0..cols)
+                    .filter(|&c| cols_used & (1 << c) == 0)
+                    .map(|c| entries[r][c].clone())
+                    .collect();
                 row.push(one.clone());
                 row
             })
             .collect();
         let s = det_exact(&minor).sign();
         if !s.is_zero() {
-            return Ok(if parity % 2 == 0 { s } else { -s });
+            return Ok(if parity.is_multiple_of(2) { s } else { -s });
         }
     }
     // Unreachable for distinct ids: the monomial of a maximal matching has coefficient +-1.
@@ -162,11 +174,18 @@ fn lift2(p: [f64; 2]) -> Expansion {
 }
 
 fn lift3(p: Point3) -> Expansion {
-    ex(p.x).square().add(&ex(p.y).square()).add(&ex(p.z).square())
+    ex(p.x)
+        .square()
+        .add(&ex(p.y).square())
+        .add(&ex(p.z).square())
 }
 
 /// [`orient2d`] that never returns zero: ties are broken by symbolic perturbation.
-pub fn orient2d_sos(a: Tagged<[f64; 2]>, b: Tagged<[f64; 2]>, c: Tagged<[f64; 2]>) -> Result<Sign, SosError> {
+pub fn orient2d_sos(
+    a: Tagged<[f64; 2]>,
+    b: Tagged<[f64; 2]>,
+    c: Tagged<[f64; 2]>,
+) -> Result<Sign, SosError> {
     let s = orient2d(a.point, b.point, c.point);
     if !s.is_zero() {
         return Ok(s);
@@ -176,23 +195,39 @@ pub fn orient2d_sos(a: Tagged<[f64; 2]>, b: Tagged<[f64; 2]>, c: Tagged<[f64; 2]
 }
 
 /// [`orient3d`] that never returns zero: ties are broken by symbolic perturbation.
-pub fn orient3d_sos(a: Tagged<Point3>, b: Tagged<Point3>, c: Tagged<Point3>, d: Tagged<Point3>) -> Result<Sign, SosError> {
+pub fn orient3d_sos(
+    a: Tagged<Point3>,
+    b: Tagged<Point3>,
+    c: Tagged<Point3>,
+    d: Tagged<Point3>,
+) -> Result<Sign, SosError> {
     let s = orient3d(a.point, b.point, c.point, d.point);
     if !s.is_zero() {
         return Ok(s);
     }
     let row = |t: &Tagged<Point3>| vec![ex(t.point.x), ex(t.point.y), ex(t.point.z)];
-    sos_sign(&[row(&a), row(&b), row(&c), row(&d)], &[a.id, b.id, c.id, d.id])
+    sos_sign(
+        &[row(&a), row(&b), row(&c), row(&d)],
+        &[a.id, b.id, c.id, d.id],
+    )
 }
 
 /// [`incircle`] that never returns zero: ties are broken by symbolic perturbation.
-pub fn incircle_sos(a: Tagged<[f64; 2]>, b: Tagged<[f64; 2]>, c: Tagged<[f64; 2]>, d: Tagged<[f64; 2]>) -> Result<Sign, SosError> {
+pub fn incircle_sos(
+    a: Tagged<[f64; 2]>,
+    b: Tagged<[f64; 2]>,
+    c: Tagged<[f64; 2]>,
+    d: Tagged<[f64; 2]>,
+) -> Result<Sign, SosError> {
     let s = incircle(a.point, b.point, c.point, d.point);
     if !s.is_zero() {
         return Ok(s);
     }
     let row = |t: &Tagged<[f64; 2]>| vec![ex(t.point[0]), ex(t.point[1]), lift2(t.point)];
-    sos_sign(&[row(&a), row(&b), row(&c), row(&d)], &[a.id, b.id, c.id, d.id])
+    sos_sign(
+        &[row(&a), row(&b), row(&c), row(&d)],
+        &[a.id, b.id, c.id, d.id],
+    )
 }
 
 /// [`insphere`] that never returns zero: ties are broken by symbolic perturbation.
@@ -207,6 +242,10 @@ pub fn insphere_sos(
     if !s.is_zero() {
         return Ok(s);
     }
-    let row = |t: &Tagged<Point3>| vec![ex(t.point.x), ex(t.point.y), ex(t.point.z), lift3(t.point)];
-    sos_sign(&[row(&a), row(&b), row(&c), row(&d), row(&e)], &[a.id, b.id, c.id, d.id, e.id])
+    let row =
+        |t: &Tagged<Point3>| vec![ex(t.point.x), ex(t.point.y), ex(t.point.z), lift3(t.point)];
+    sos_sign(
+        &[row(&a), row(&b), row(&c), row(&d), row(&e)],
+        &[a.id, b.id, c.id, d.id, e.id],
+    )
 }
