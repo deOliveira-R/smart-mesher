@@ -62,16 +62,23 @@ Why not C++: we would gain little speed over Rust and lose safety and the compil
 
 ```
 myproject.smesh/
-  project.toml            # format version, units, default tolerances, metadata
+  project.toml            # format version, name, [units], [tolerances], [metadata]; no timestamps
+  .gitignore              # "/.cache/" (written at create)
   timeline/
     ops/<hash>.toml       # one op per file: {parent = "<hash>", op = {...}, author, time}
     refs/heads/main       # text file containing a node hash (like git refs)
     refs/heads/try-pave
-    HEAD                  # current ref
   inputs/                 # imported CAD (STEP etc.), LFS if large
   exports/                # optional pinned outputs
-  .cache/                 # snapshots, meshes, tessellations: derived, gitignored
+  .cache/                 # per checkout, gitignored, never authoritative:
+    HEAD                  #   current ref or node (per checkout, like git's HEAD; W0a decision 1)
+    reflog.jsonl          #   undo history
+    redo.json             #   redo stack
+    snapshots/            #   state snapshots (accelerators; replay is the source of truth)
+    lock                  #   advisory write lock
 ```
+
+See `crates/sm-engine/DESIGN.md` for the exact `project.toml` keys and file formats.
 
 - Ops are content-addressed and point to their parent, so appending never causes merge conflicts. Concurrent branches simply coexist.
 - Git history (what was committed) and the in-app timeline (every action, including experiments) are separate on purpose. The in-app timeline is saved in the project and committed along with it.

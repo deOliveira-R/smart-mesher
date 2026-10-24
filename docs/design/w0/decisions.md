@@ -147,3 +147,13 @@ W1 raised 79 ACR strings from eight implementation crates. After dedup there are
 ## Note
 36. **Pre-existing timing failure:** `sm-topo/tests/ref_reference.rs::building_many_bricks_is_near_linear` (release build, 10,000 bricks through the paranoid `Dual` twin) takes about 604 s against a 2 s budget. It fails on main without any contract change. Fix it in sm-topo: build through `TopoStore` without the twin, or turn paranoid mode off for the timing assertion.
 Merged: W1 crates (sm-meshio, sm-topo, sm-quality, sm-engine, sm-math, sm-geom, sm-mesh, sm-lang) at 1b5cca0; contract batch groups topo 2738c4f, mesh c52cb2f, geom afe2fa6, op ebf5a9c.
+
+# W2 orchestrator decisions (2026-10-24)
+
+Plan: `docs/design/w2/plan.md` (task specs T1–T13, stage-0 contract changes ACR-1..5, milestone test §4).
+
+1. **Blocks are the volume color.** `sm_model_api::Model` keeps one exact volume partition (W0c model 7), so `fem.block_add` writes that partition: a volume's block *is* its material color, and each volume (and so each element) is in exactly one block. This matches Exodus (one block per element) and the transport consumer, which resolves colors to materials. Cubit-style overlapping blocks can come later as a new `Group`-backed `fem` op without breaking stored projects. Sidesets are face colors.
+2. **Meshed volumes are not transformed in W2.** `model.move/rotate/scale/reflect` on a meshed volume fails with "mesh.delete first". Meshes on deleted volumes are marked `stale`, not deleted. Moving the mesh with its geometry is W3.
+3. **Export is not an op.** It is the protocol method `session.export` and the script command `session.export(...)`, a pure function of the state (`sm_fem::export`).
+4. **Stage 0 before workers:** ACR-1 (scheme stubs behind the `stubs` feature, clippy-clean, since CI runs `--all-features`), ACR-2 (`OpInfo` output roles, cardinality, positional marker, `x-entity-kind`), ACR-3 (new contract crate `sm-layer-api`; frozen only after compiling `create_brick` and `mesh.run` sketches pass in its tests), ACR-4 (new crate `sm-protocol`, v0, unstable until W3), then ACR-5 (skeleton crates with fixed entry points, plus the defaulted `Host::session`).
+5. **Stage 1 runs on Anthropic Cloud** (all tasks at once, no local 8-worker cap). Cloud sessions have no network, so the tasks that depend on external specs (sm-mcp: MCP 2025-06-18; sm-scheme-curve and sm-sizing: Cubit semantics) carry the needed spec excerpts in their task text, and the local Opus reviewers check against the real sources.

@@ -58,7 +58,7 @@ Element types (via `sm-fem`):
 - [ ] P0 HEX8, QUAD4, TET4 · P1 HEX20/27, TET10, TRI6, QUAD8/9, WEDGE6/15, PYRAMID5/13, BAR2/3, SHELL · P2 TETRA14/15, WEDGE16+, cohesive, superelements
 - [ ] **beyond Cubit:** native polyhedral volume cells (dual meshes, agglomeration)
 Quality (P0 basic, P1 full):
-- [ ] Verdict-style metrics per element type (scaled Jacobian, aspect ratio, skew, taper, condition number, shape, etc.), thresholds, quality reports, validity (inverted elements)
+- [x] Verdict-style metrics per element type (scaled Jacobian, aspect ratio, skew, taper, condition number, shape, etc.), thresholds, quality reports, validity (inverted elements)
 Smoothing (P1):
 - [ ] laplacian · centroid area pull · equipotential · winslow · condition number (optimization) · untangle · randomize · smart/feature-preserving
 Modification (P2):
@@ -72,16 +72,16 @@ Mesh deletion (P1): delete mesh with propagation · free meshes. **Mesh import: 
 - [ ] P2 non-Exodus BCs (displacement, force, pressure, temperature, heat flux, convection, contact) · BC sets · CFD BC codes
 
 ## E. Export — `sm-meshio`
-- [ ] P0 native `.smsh` · VTU (inspect in ParaView)
+- [x] P0 native `.smsh` · VTU (inspect in ParaView) (W1: sm-meshio, round-trip tested)
 - [ ] P1 Exodus II (incl. large model / netCDF4), Gmsh msh4, Abaqus (.inp, partial/explicit), DAGMC (h5m, relevant for transport)
 - [ ] P2 Nastran, CGNS, I-DEAS UNV, Patran, LS-DYNA, Fluent, Sierra, VRML
 - [ ] Export options: by block/sideset/nodeset, 2D/3D dimension, renumbering, everything/overwrite
 
 ## F. Beyond-Cubit requirements (ours)
 - [ ] Timeline: undo/redo, checkout any node, fork, compare branches
-- [ ] Git-native project format
+- [x] Git-native project format (W1: sm-engine)
 - [ ] Remote backend + web frontend + headless
 - [ ] MCP server for agent control
-- [ ] Deterministic replay (bit-identical state hashes)
+- [x] Deterministic replay (bit-identical state hashes) (W1: sm-engine strict replay + 1/N-thread CI)
 - [ ] Polyhedral-first native format
 - [ ] GPU-accelerated smoothing/quality (later)

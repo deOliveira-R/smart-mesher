@@ -145,6 +145,7 @@ nodes:
   # history
   ops:               {domain: history, summary: "Op registry and apply(): the only way state changes"}
   timeline:          {domain: history, summary: "Op DAG, replay, snapshots, branches, project on disk"}
+  state-layers:      {domain: history, summary: "shared model + meshes layers stored in the timeline State (sm-layer-api): topology/model transactions, mesh entries"}
   # frontends
   lang:              {domain: frontends, summary: "command language -> ops"}
   server:            {domain: frontends, summary: "session host + protocol"}
@@ -233,7 +234,12 @@ edges:   # user -> provider : interface
   - [lang, ops, "op-api"]
   - [server, ops, "op-api"]
   - [server, timeline, "timeline-api"]
-  - [mcp, server, "protocol"]
+  - [mcp, server, "protocol (sm-protocol)"]
+  - [state-layers, ops, "op-api: LayerType/Plugin"]
+  - [state-layers, topo-store, "topo-edit-api"]
+  - [state-layers, coloring, "model-api"]
+  - [state-layers, mesh-store, "mesh-api"]
+  - [server, state-layers, "layer-api"]
   - [py, server, "protocol (in-process)"]
   - [cli, server, "protocol (in-process)"]
   - [gui, server, "protocol (remote)"]
