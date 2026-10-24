@@ -44,7 +44,11 @@ Dev: `sm-core`, `serde`, `schemars` (to build a real `Registry` as the mock's ca
    `ApplyResult`; publishing it would violate "MUST conform".
 4. Tool list is memoized per `run_stdio` call (catalog is immutable per endpoint).
 5. `timeline_log.limit` is optional in the tool (default 20) although `Request::Log` requires it.
-6. Branch pushed to both `claude/w2-sm-mcp` and the session branch `claude/sm-mcp-server-ofwqwm`.
+6. Branch: the task names `claude/w2-sm-mcp`, the session names `claude/sm-mcp-server-ofwqwm`; both
+   point at the same final commit.
+7. The determinism test does not call `sm_testkit::determinism::check`: sm-testkit is not in T11's
+   Deps and this crate has no state hashes to compare, only output bytes, so it compares the
+   bytes of repeated runs (including from another thread) plus the pinned golden files.
 
 ## Known gaps
 
