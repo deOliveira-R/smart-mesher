@@ -1321,13 +1321,18 @@ dependencies = [
 name = "sm-scheme-curve"
 version = "0.0.0"
 dependencies = [
+ "rayon",
+ "serde",
+ "serde_json",
  "sm-core",
  "sm-geom-api",
  "sm-math",
  "sm-mesh",
+ "sm-mesh-api",
  "sm-scheme-api",
  "sm-testkit",
  "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
