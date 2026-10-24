@@ -4,9 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sm_core::{EntityId, EntityKind};
-use sm_mesh_api::{
-    HashQuanta, MeshEntityKind, MeshRead, SerialAlloc, TagValues, topology_hash,
-};
+use sm_mesh_api::{HashQuanta, MeshEntityKind, MeshRead, SerialAlloc, TagValues, topology_hash};
 use sm_op_api::{ApplyCtx, Digest, LayerType, OpError, names};
 use sm_scheme_api::Plan;
 
@@ -40,7 +38,13 @@ impl MeshEntry {
         plan: Option<Plan>,
         quanta: HashQuanta,
     ) -> Self {
-        Self { mesh: Arc::from(mesh), selection, plan: plan.map(Arc::new), quanta, stale: false }
+        Self {
+            mesh: Arc::from(mesh),
+            selection,
+            plan: plan.map(Arc::new),
+            quanta,
+            stale: false,
+        }
     }
 
     /// Read access to the mesh.
@@ -83,7 +87,10 @@ impl MeshLayer {
 
     /// The lowest-id mesh whose selection contains `entity` (a volume or a face).
     pub fn mesh_of(&self, entity: EntityId) -> Option<EntityId> {
-        self.entries.iter().find(|(_, e)| e.selection.contains(&entity)).map(|(k, _)| *k)
+        self.entries
+            .iter()
+            .find(|(_, e)| e.selection.contains(&entity))
+            .map(|(k, _)| *k)
     }
 
     /// The allocator for mesh-kind ids (clone it to build a mesh, then pass the advanced clone
@@ -129,11 +136,15 @@ impl MeshLayer {
             return Err(LayerError::BadMeshId(format!("{id} is not a Mesh id")));
         }
         if self.entries.contains_key(&id) {
-            return Err(LayerError::BadMeshId(format!("{id} is already in the layer")));
+            return Err(LayerError::BadMeshId(format!(
+                "{id} is already in the layer"
+            )));
         }
         let own = entry.mesh().mesh_id();
         if own != id {
-            return Err(LayerError::BadMeshId(format!("{id} given, the mesh says {own}")));
+            return Err(LayerError::BadMeshId(format!(
+                "{id} given, the mesh says {own}"
+            )));
         }
         for (kind, next) in self.alloc.state() {
             if alloc_after.next_serial(kind) < next {
@@ -194,7 +205,11 @@ fn digest_entry(d: &mut Digest, id: EntityId, e: &MeshEntry) {
             }
         }
     };
-    for kind in [MeshEntityKind::Vertex, MeshEntityKind::Face, MeshEntityKind::Cell] {
+    for kind in [
+        MeshEntityKind::Vertex,
+        MeshEntityKind::Face,
+        MeshEntityKind::Cell,
+    ] {
         for i in 0..m.count(kind) {
             param(d, m.classification(kind, i as u32));
         }
@@ -295,7 +310,9 @@ pub fn adopt_minted(
         }
         let n = next - first;
         if kind == EntityKind::Mesh {
-            let ids: Vec<EntityId> = (first..next).filter_map(|s| EntityId::new(kind, s)).collect();
+            let ids: Vec<EntityId> = (first..next)
+                .filter_map(|s| EntityId::new(kind, s))
+                .collect();
             ctx.adopt_as(mesh_role, &ids)?;
         } else {
             let first_id = EntityId::new(kind, first).ok_or(OpError::IdExhausted)?;
@@ -311,9 +328,16 @@ pub fn adopt_minted(
 /// `before` is [`MeshLayer::alloc`] as read before building, `after` the advanced clone; the
 /// entry's mesh id is the id inserted. The `Mesh` id is recorded under `mesh_role`.
 ///
-/// Atomic on `Err` from validation: the entry is checked ([`MeshLayer::check_insert`]) and
-/// `before` must equal the layer's current allocator before any id is adopted, so a refused
-/// insert leaves the state untouched even if the caller ignores the error.
+/// The ids minted between `before` and `after` (per kind, serials `before.next_serial(kind)..`
+/// `after.next_serial(kind)`) must be exactly the ids the mesh holds (`Mesh`, vertex, edge, face,
+/// cell and set ids): [`retire_mesh`] retires the mesh's own ids, so an id minted and discarded
+/// by the builder would stay adopted forever. A mismatch is [`LayerError::MintedNotInMesh`].
+///
+/// Atomic on every `Err`: the entry is checked ([`MeshLayer::check_insert`]), `before` must equal
+/// the layer's allocator ([`LayerError::AllocMismatch`]), the minted set must match the mesh,
+/// and the entity table must be ready to allocate each advanced kind at `before`'s serial
+/// ([`OpError::IdMismatch`]), all before any id is adopted. A refused insert therefore leaves
+/// the state untouched even if the caller swallows the error.
 pub fn insert_mesh(
     ctx: &mut ApplyCtx<'_>,
     entry: MeshEntry,
@@ -326,7 +350,28 @@ pub fn insert_mesh(
         let layer = ctx.layer::<MeshLayer>()?;
         layer.check_insert(id, &entry, &after)?;
         if before.state().ne(layer.alloc().state()) {
-            return Err(LayerError::BadMeshId("the allocator before the build is not the layer's".into()).into());
+            return Err(LayerError::AllocMismatch(
+                "the allocator before the build is not the layer's".into(),
+            )
+            .into());
+        }
+    }
+    check_minted(id, entry.mesh(), before, &after)?;
+    for (kind, next) in after.state() {
+        let first = before.next_serial(kind);
+        if next <= first {
+            continue;
+        }
+        let want = EntityId::new(kind, first).ok_or(OpError::IdExhausted)?;
+        match ctx.state().peek_next(kind) {
+            Some(got) if got == want => {}
+            Some(got) => {
+                return Err(OpError::IdMismatch {
+                    expected: got,
+                    got: want,
+                });
+            }
+            None => return Err(OpError::IdExhausted),
         }
     }
     adopt_minted(ctx, before, &after, mesh_role)?;
@@ -334,11 +379,50 @@ pub fn insert_mesh(
     Ok(())
 }
 
+/// The minted set (per kind, `before..after`) must equal [`mesh_ids`]: same count, and every
+/// mesh id inside its kind's minted range. One pass over the (sorted, distinct) mesh ids.
+fn check_minted(
+    mesh_id: EntityId,
+    m: &dyn MeshRead,
+    before: &SerialAlloc,
+    after: &SerialAlloc,
+) -> Result<(), LayerError> {
+    let ranges: Vec<(EntityKind, u64, u64)> = after
+        .state()
+        .map(|(k, next)| (k, before.next_serial(k), next))
+        .filter(|(_, first, next)| next > first)
+        .collect();
+    let minted: u64 = ranges.iter().map(|(_, f, n)| n - f).sum();
+    let ids = mesh_ids(mesh_id, m);
+    if minted != ids.len() as u64 {
+        return Err(LayerError::MintedNotInMesh(format!(
+            "{minted} ids were minted but the mesh holds {}",
+            ids.len()
+        )));
+    }
+    for id in &ids {
+        let inside = ranges
+            .iter()
+            .any(|(k, f, n)| *k == id.kind() && (*f..*n).contains(&id.serial()));
+        if !inside {
+            return Err(LayerError::MintedNotInMesh(format!(
+                "{id} of the mesh was not minted by this build"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Every id that belongs to a mesh: the `Mesh` id, its vertices, edges, faces, cells and sets,
 /// ascending by `(kind, serial)`.
 fn mesh_ids(mesh_id: EntityId, m: &dyn MeshRead) -> Vec<EntityId> {
     let mut ids = vec![mesh_id];
-    for kind in [MeshEntityKind::Vertex, MeshEntityKind::Edge, MeshEntityKind::Face, MeshEntityKind::Cell] {
+    for kind in [
+        MeshEntityKind::Vertex,
+        MeshEntityKind::Edge,
+        MeshEntityKind::Face,
+        MeshEntityKind::Cell,
+    ] {
         ids.extend((0..m.count(kind)).map(|i| m.id(kind, i as u32)));
     }
     ids.extend(m.sets().iter().map(|s| s.id));
@@ -352,11 +436,17 @@ fn mesh_ids(mesh_id: EntityId, m: &dyn MeshRead) -> Vec<EntityId> {
 /// the entity count returns to its pre-insert value and `on_retired` hooks of downstream layers
 /// fire. Serials are never reused: the allocator keeps its counters.
 ///
+/// Together with [`insert_mesh`]'s minted-set check this makes the lifecycle exact: the ids
+/// adopted at insertion are precisely the ids retired here.
+///
 /// Atomic: fails with [`OpError::UnknownEntity`] when `mesh` is not in the layer, or when any of
 /// its ids is no longer live (e.g. an op retired one cell of it), and then changes nothing.
 pub fn retire_mesh(ctx: &mut ApplyCtx<'_>, mesh: EntityId) -> Result<(), OpError> {
     let ids = {
-        let entry = ctx.layer::<MeshLayer>()?.get(mesh).ok_or(OpError::UnknownEntity(mesh))?;
+        let entry = ctx
+            .layer::<MeshLayer>()?
+            .get(mesh)
+            .ok_or(OpError::UnknownEntity(mesh))?;
         mesh_ids(mesh, entry.mesh())
     };
     if let Some(&dead) = ids.iter().find(|i| !ctx.state().contains(**i)) {

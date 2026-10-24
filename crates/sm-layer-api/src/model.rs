@@ -61,7 +61,12 @@ impl Default for ModelLayer {
 impl ModelLayer {
     /// An empty layer over `topo`, which should hold no cells yet.
     pub fn new(topo: Box<dyn TopoHost>) -> Self {
-        Self { topo: Arc::from(topo), model: Arc::new(Model::new()), next_op: 0, pending: false }
+        Self {
+            topo: Arc::from(topo),
+            model: Arc::new(Model::new()),
+            next_op: 0,
+            pending: false,
+        }
     }
 
     /// Read-only topology.
@@ -105,7 +110,9 @@ fn host_mut(a: &mut Arc<dyn TopoHost>) -> Result<&mut dyn TopoHost, LayerError> 
     }
     match Arc::get_mut(a) {
         Some(h) => Ok(h),
-        None => Err(LayerError::Txn("topology host could not be made unique".into())),
+        None => Err(LayerError::Txn(
+            "topology host could not be made unique".into(),
+        )),
     }
 }
 
@@ -173,6 +180,9 @@ pub struct TopoTxn {
 
 /// Every id of the records the model tables hold (colors, groups, boundaries, prototypes,
 /// lattices, instances, clusters, partition cells), ascending and distinct.
+///
+/// O(records log records) per call, and `model_txn`/`topo_txn` call it twice per transaction even
+/// when nothing is removed; acceptable next to the copy-on-write clone (W3 persistence item).
 fn live_model_ids(m: &Model) -> Vec<EntityId> {
     let ins = m.instancing();
     let mut v: Vec<EntityId> = m
@@ -210,7 +220,9 @@ fn removed_ids(before: &[EntityId], minted: &[EntityId], after: &Model) -> Vec<E
 fn minted(before: &IdAlloc, after: &IdAlloc) -> Vec<EntityId> {
     let mut out = Vec::new();
     for byte in 0..=u8::MAX {
-        let Some(kind) = EntityKind::from_u8(byte) else { continue };
+        let Some(kind) = EntityKind::from_u8(byte) else {
+            continue;
+        };
         let (lo, hi) = (before.peek(kind), after.peek(kind));
         out.extend((lo..hi).filter_map(|s| EntityId::new(kind, s)));
     }
@@ -275,7 +287,14 @@ pub fn topo_txn<R>(
             layer.pending = true;
             let model_created = minted(&ids_before, layer.model.ids());
             let model_removed = removed_ids(&live_before, &model_created, &layer.model);
-            Ok((r, TopoTxn { summary, model_created, model_removed }))
+            Ok((
+                r,
+                TopoTxn {
+                    summary,
+                    model_created,
+                    model_removed,
+                },
+            ))
         }
         Err(e) => {
             layer.model = saved;
@@ -297,7 +316,10 @@ fn check_adoption(
     for &id in ids {
         let want = match next.get(&id.kind()) {
             Some(&n) => n,
-            None => state.peek_next(id.kind()).ok_or(OpError::IdExhausted)?.serial(),
+            None => state
+                .peek_next(id.kind())
+                .ok_or(OpError::IdExhausted)?
+                .serial(),
         };
         if id.serial() != want {
             let expected = EntityId::new(id.kind(), want).ok_or(OpError::IdExhausted)?;
@@ -312,22 +334,33 @@ fn check_adoption(
         }
         for m in *members {
             if retiring.binary_search(m).is_ok() {
-                return Err(LayerError::Txn(format!("role '{role}' lists {m}, which this transaction retires")).into());
+                return Err(LayerError::Txn(format!(
+                    "role '{role}' lists {m}, which this transaction retires"
+                ))
+                .into());
             }
             // An id this transaction did not create must already be live (a surviving id).
             if ids.binary_search(m).is_err() && !state.contains(*m) {
-                return Err(LayerError::Txn(format!("role '{role}' lists {m}, which is neither created by this transaction nor live")).into());
+                return Err(LayerError::Txn(format!(
+                    "role '{role}' lists {m}, which is neither created by this transaction nor live"
+                ))
+                .into());
             }
             if !seen.insert(*m) {
-                return Err(LayerError::Txn(format!("{m} is listed in more than one role (or twice)")).into());
+                return Err(LayerError::Txn(format!(
+                    "{m} is listed in more than one role (or twice)"
+                ))
+                .into());
             }
         }
     }
     Ok(())
 }
 
-/// Adopt `ids` (ascending), recording each listed id under its role. Runs of ids with the same
-/// role (or none) are adopted with one call. The caller has run [`check_adoption`].
+/// Adopt `ids` (ascending), recording each listed id under its role. Created ids and surviving
+/// role members are merged in ascending `(kind, serial)` order, and runs of the same kind of
+/// item and role are issued as one call, so every role stays ascending overall. The caller has
+/// run [`check_adoption`].
 fn adopt_all(
     ctx: &mut ApplyCtx<'_>,
     ids: &[EntityId],
@@ -336,28 +369,35 @@ fn adopt_all(
     let role_of: std::collections::BTreeMap<EntityId, &str> = roles
         .iter()
         .flat_map(|(r, ms)| ms.iter().map(move |m| (*m, *r)))
-        .filter(|(m, _)| ids.binary_search(m).is_ok())
         .collect();
+    // (id, created, role), ascending by id; created ids without a role are included.
+    let mut items: Vec<(EntityId, bool, Option<&str>)> =
+        Vec::with_capacity(ids.len() + role_of.len());
+    items.extend(ids.iter().map(|&i| (i, true, role_of.get(&i).copied())));
+    items.extend(
+        role_of
+            .iter()
+            .filter(|(m, _)| ids.binary_search(m).is_err())
+            .map(|(&m, &r)| (m, false, Some(r))),
+    );
+    items.sort_unstable_by_key(|it| it.0);
+    let mut buf: Vec<EntityId> = Vec::new();
     let mut start = 0;
-    while start < ids.len() {
-        let role = role_of.get(&ids[start]).copied();
+    while start < items.len() {
+        let (_, created, role) = items[start];
         let mut end = start + 1;
-        while end < ids.len() && role_of.get(&ids[end]).copied() == role {
+        while end < items.len() && items[end].1 == created && items[end].2 == role {
             end += 1;
         }
-        match role {
-            Some(r) => ctx.adopt_as(r, &ids[start..end])?,
-            None => ctx.adopt(&ids[start..end])?,
+        buf.clear();
+        buf.extend(items[start..end].iter().map(|it| it.0));
+        match (created, role) {
+            (true, Some(r)) => ctx.adopt_as(r, &buf)?,
+            (true, None) => ctx.adopt(&buf)?,
+            (false, Some(r)) => ctx.record_role(r, &buf)?,
+            (false, None) => {}
         }
         start = end;
-    }
-    // Surviving ids: reported after the created ones of the same role.
-    for (role, members) in roles {
-        let surviving: Vec<EntityId> =
-            members.iter().copied().filter(|m| ids.binary_search(m).is_err()).collect();
-        if !surviving.is_empty() {
-            ctx.record_role(role, &surviving)?;
-        }
     }
     Ok(())
 }
@@ -372,7 +412,8 @@ fn adopt_all(
 ///    (in adoption order, which is ascending id order, not the order of the slices; an id may
 ///    appear in at most one role). A listed id that this transaction did not create must be
 ///    live (a surviving id, e.g. a moved volume); it is recorded with
-///    [`ApplyCtx::record_role`] after the created ids of the same role, in ascending order;
+///    [`ApplyCtx::record_role`]; created and surviving members are merged, so each role is
+///    ascending overall;
 /// 3. successors from the operation's split and merge lineage are recorded
 ///    ([`ApplyCtx::record_successors`]), skipping successors retired again in the same
 ///    transaction;
@@ -392,17 +433,30 @@ pub fn commit_topology(
     txn: &TopoTxn,
     roles: &[(&str, &[EntityId])],
 ) -> Result<(), OpError> {
-    let mut ids: Vec<EntityId> = txn.summary.created.iter().chain(&txn.model_created).copied().collect();
+    let mut ids: Vec<EntityId> = txn
+        .summary
+        .created
+        .iter()
+        .chain(&txn.model_created)
+        .copied()
+        .collect();
     ids.sort_unstable();
-    let mut gone: Vec<EntityId> =
-        txn.summary.retired.iter().chain(&txn.model_removed).copied().collect();
+    let mut gone: Vec<EntityId> = txn
+        .summary
+        .retired
+        .iter()
+        .chain(&txn.model_removed)
+        .copied()
+        .collect();
     gone.sort_unstable();
     gone.dedup();
     check_adoption(ctx.state(), &ids, &gone, roles)?;
     let lineage = {
         let layer = ctx.layer_mut::<ModelLayer>()?;
         if !layer.pending {
-            return Err(LayerError::Txn("commit_topology without a pending topo_txn".into()).into());
+            return Err(
+                LayerError::Txn("commit_topology without a pending topo_txn".into()).into(),
+            );
         }
         let lineage = layer.topo.lineage().cut_outcome(txn.summary.op).lineage;
         // `apply_lineage` is transactional: on error the model is unchanged.
@@ -414,8 +468,12 @@ pub fn commit_topology(
     };
     adopt_all(ctx, &ids, roles)?;
     for row in &lineage {
-        let live: Vec<EntityId> =
-            row.new.iter().copied().filter(|n| txn.summary.retired.binary_search(n).is_err()).collect();
+        let live: Vec<EntityId> = row
+            .new
+            .iter()
+            .copied()
+            .filter(|n| txn.summary.retired.binary_search(n).is_err())
+            .collect();
         if !live.is_empty() {
             ctx.record_successors(row.old, &live)?;
         }
@@ -474,7 +532,8 @@ pub fn model_txn<R>(
     };
     let (r, new_ids, removed) = ran?;
     let role_list = roles(&r, &new_ids);
-    let role_refs: Vec<(&str, &[EntityId])> = role_list.iter().map(|(n, v)| (*n, v.as_slice())).collect();
+    let role_refs: Vec<(&str, &[EntityId])> =
+        role_list.iter().map(|(n, v)| (*n, v.as_slice())).collect();
     let adopted = check_adoption(ctx.state(), &new_ids, &removed, &role_refs)
         .and_then(|()| adopt_all(ctx, &new_ids, &role_refs))
         .and_then(|()| {

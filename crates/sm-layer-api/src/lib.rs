@@ -21,14 +21,14 @@
 //! Determinism: every map is a `BTreeMap`; ids are adopted in ascending order; digests use the
 //! W0c Q2 quantization, so state hashes are platform independent.
 
-mod plugin;
 mod error;
 mod host;
 mod mesh;
 mod model;
+mod plugin;
 
-pub use plugin::CoreLayers;
 pub use error::{LayerError, LayerResultExt};
 pub use host::{MeshHost, TopoHost};
 pub use mesh::{MeshEntry, MeshLayer, adopt_minted, insert_mesh, retire_mesh};
 pub use model::{ModelLayer, TopoTxn, commit_topology, model_txn, topo_txn};
+pub use plugin::CoreLayers;
