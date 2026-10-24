@@ -290,18 +290,6 @@ impl PreparedCurve {
         use rayon::prelude::*;
         points.par_iter().map(|p| project::project_curve(self, *p, None)).collect()
     }
-
-    /// Evaluate at many parameters, in parallel with element-independent writes (the output is
-    /// identical for any thread count).
-    pub fn eval_many(&self, params: &[f64], out: &mut [Point3]) {
-        use rayon::prelude::*;
-        assert_eq!(params.len(), out.len(), "eval_many: length mismatch");
-        out.par_chunks_mut(256).zip(params.par_chunks(256)).for_each(|(o, t)| {
-            for (o, t) in o.iter_mut().zip(t) {
-                *o = self.eval(*t);
-            }
-        });
-    }
 }
 
 impl PreparedCurve {
@@ -343,6 +331,18 @@ impl ParametricCurve for PreparedCurve {
         } else {
             self.point_n::<16>(t, span)
         }
+    }
+
+    /// Parallel batch evaluation; element-independent writes, so the output is bit-identical to
+    /// the default loop for any thread count.
+    fn eval_many(&self, params: &[f64], out: &mut [Point3]) {
+        use rayon::prelude::*;
+        assert_eq!(params.len(), out.len(), "eval_many: length mismatch");
+        out.par_chunks_mut(256).zip(params.par_chunks(256)).for_each(|(o, t)| {
+            for (o, t) in o.iter_mut().zip(t) {
+                *o = self.eval(*t);
+            }
+        });
     }
 
     fn project(&self, p: Point3, hint: Option<f64>) -> Result<CurveProjection, GeomError> {

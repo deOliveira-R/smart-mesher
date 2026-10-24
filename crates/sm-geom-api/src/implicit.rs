@@ -4,6 +4,7 @@
 //! the analytic surface normal) points to; `value(p) < 0` is the negative side (for closed
 //! shapes the inside).
 
+use crate::roots::{Root, real_roots, solve_quadratic};
 use crate::{Crossing, Frame, GeomError, GeomStore, Interval, Ray, RayHit, util};
 use sm_core::{EntityId, Point3, Vector3};
 use smallvec::SmallVec;
@@ -291,6 +292,17 @@ impl ImplicitSurface for Quadric {
     }
 
     fn ray_hits(&self, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
+        let [qc, qb, qa] = self.ray_poly(ray);
+        let mut roots = [Root::default(); 2];
+        let n = solve_quadratic(qa, qb, qc, &mut roots);
+        push_hits(self, ray, range, &roots[..n], out);
+        Ok(())
+    }
+}
+
+impl Quadric {
+    /// Ascending coefficients of `f(ray.at(t))`.
+    fn ray_poly(&self, ray: &Ray) -> [f64; 3] {
         let [a, b, c, d, e, f, g, h, j, _] = self.coeffs;
         let (o, v) = (ray.origin, ray.dir);
         let qa = a * v.x * v.x + b * v.y * v.y + c * v.z * v.z + d * v.x * v.y + e * v.y * v.z + f * v.z * v.x;
@@ -301,11 +313,7 @@ impl ImplicitSurface for Quadric {
             + g * v.x
             + h * v.y
             + j * v.z;
-        let qc = self.value(o);
-        let mut roots = [Root::default(); 2];
-        let n = solve_quadratic(qa, qb, qc, &mut roots);
-        push_hits(self, ray, range, &roots[..n], out);
-        Ok(())
+        [self.value(o), qb, qa]
     }
 }
 
@@ -340,6 +348,15 @@ impl ImplicitSurface for ImplicitTorus {
     }
 
     fn ray_hits(&self, ray: &Ray, range: Interval, out: &mut Vec<RayHit>) -> Result<(), GeomError> {
+        let roots = real_roots(&self.ray_poly(ray), range.lo, range.hi);
+        push_hits(self, ray, range, &roots, out);
+        Ok(())
+    }
+}
+
+impl ImplicitTorus {
+    /// Ascending coefficients of `f(ray.at(t))`.
+    fn ray_poly(&self, ray: &Ray) -> [f64; 5] {
         let o = self.frame.to_local(ray.origin);
         let d = self.frame.to_local_vec(ray.dir);
         let rr = self.major * self.major;
@@ -347,10 +364,7 @@ impl ImplicitSurface for ImplicitTorus {
         let (a, b, c) = (d.dot(d), o.dot(d), o.dot(o));
         let (e, g, h) = (d.x * d.x + d.y * d.y, o.x * d.x + o.y * d.y, o.x * o.x + o.y * o.y);
         let ck = c + k;
-        let coef = [ck * ck - 4.0 * rr * h, 4.0 * b * ck - 8.0 * rr * g, 4.0 * b * b + 2.0 * a * ck - 4.0 * rr * e, 4.0 * a * b, a * a];
-        let roots = real_roots(&coef, range.lo, range.hi);
-        push_hits(self, ray, range, &roots, out);
-        Ok(())
+        [ck * ck - 4.0 * rr * h, 4.0 * b * ck - 8.0 * rr * g, 4.0 * b * b + 2.0 * a * ck - 4.0 * rr * e, 4.0 * a * b, a * a]
     }
 }
 
@@ -365,6 +379,16 @@ pub enum ImplicitDef {
     Quadric(Quadric),
     /// A ring torus (degree 4).
     Torus(ImplicitTorus),
+}
+
+impl ImplicitDef {
+    /// Ascending coefficients of the polynomial `f(ray.at(t))` (degree 2 or 4).
+    pub(crate) fn ray_poly(&self, ray: &Ray) -> smallvec::SmallVec<[f64; 5]> {
+        match self {
+            Self::Quadric(q) => q.ray_poly(ray).into_iter().collect(),
+            Self::Torus(t) => t.ray_poly(ray).into_iter().collect(),
+        }
+    }
 }
 
 impl ImplicitSurface for ImplicitDef {
@@ -388,13 +412,6 @@ impl ImplicitSurface for ImplicitDef {
     }
 }
 
-/// A real root and whether it is a double (tangential) root.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Root {
-    pub t: f64,
-    pub double: bool,
-}
-
 fn push_hits<S: ImplicitSurface + ?Sized>(s: &S, ray: &Ray, range: Interval, roots: &[Root], out: &mut Vec<RayHit>) {
     let mut sorted = [Root::default(); 4];
     let n = roots.len().min(4);
@@ -416,122 +433,6 @@ fn push_hits<S: ImplicitSurface + ?Sized>(s: &S, ray: &Ray, range: Interval, roo
             out.push(RayHit { t: r.t, point, normal, uv: None, crossing });
         }
     }
-}
-
-/// Real roots of `a t^2 + b t + c` (stable form). Returns the count written to `out`
-/// (a double root counts once and is flagged). Degenerates to the linear case when `a` is
-/// negligible.
-pub(crate) fn solve_quadratic(a: f64, b: f64, c: f64, out: &mut [Root; 2]) -> usize {
-    let scale = a.abs().max(b.abs()).max(c.abs());
-    if scale == 0.0 {
-        return 0;
-    }
-    if a.abs() <= 1e-14 * scale {
-        if b.abs() <= 1e-14 * scale {
-            return 0;
-        }
-        out[0] = Root { t: -c / b, double: false };
-        return 1;
-    }
-    let disc = b * b - 4.0 * a * c;
-    let dscale = b * b + (4.0 * a * c).abs();
-    if disc < -1e-13 * dscale {
-        return 0;
-    }
-    if disc <= 1e-13 * dscale {
-        out[0] = Root { t: -b / (2.0 * a), double: true };
-        return 1;
-    }
-    let sq = disc.sqrt();
-    let q = -0.5 * (b + b.signum() * sq);
-    let (r1, r2) = (q / a, if q != 0.0 { c / q } else { q / a });
-    out[0] = Root { t: r1.min(r2), double: false };
-    out[1] = Root { t: r1.max(r2), double: false };
-    2
-}
-
-/// Real roots of the polynomial with ascending coefficients `c` inside `[lo, hi]` (either may
-/// be infinite). Isolates monotone pieces with the roots of the derivative, then bisects;
-/// double roots are detected from near-zero critical values and flagged. Sorted, deduplicated
-/// (a simple root that coincides with a flagged critical root becomes that double root).
-pub(crate) fn real_roots(c: &[f64], lo: f64, hi: f64) -> Vec<Root> {
-    let maxabs = c.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    let mut n = c.len();
-    while n > 1 && c[n - 1].abs() <= 1e-14 * maxabs {
-        n -= 1;
-    }
-    let c = &c[..n];
-    if n <= 1 {
-        return Vec::new();
-    }
-    if n == 2 {
-        let r = -c[0] / c[1];
-        return if r >= lo && r <= hi { vec![Root { t: r, double: false }] } else { Vec::new() };
-    }
-    let lead = c[n - 1].abs();
-    let bound = 1.0 + c[..n - 1].iter().fold(0.0f64, |m, v| m.max(v.abs())) / lead;
-    let (lo, hi) = (lo.max(-bound), hi.min(bound));
-    if lo > hi {
-        return Vec::new();
-    }
-    let deriv: Vec<f64> = c.iter().enumerate().skip(1).map(|(i, v)| v * i as f64).collect();
-    let crit: Vec<f64> = real_roots(&deriv, lo, hi).into_iter().map(|r| r.t).collect();
-    let eval = |t: f64| c.iter().rev().fold(0.0, |acc, v| acc * t + v);
-    let abs_eval = |t: f64| c.iter().rev().fold(0.0, |acc, v| acc * t.abs() + v.abs());
-    let mut pts = Vec::with_capacity(crit.len() + 2);
-    pts.push(lo);
-    pts.extend(crit.iter().copied());
-    pts.push(hi);
-    let mut roots: Vec<Root> = Vec::new();
-    for w in pts.windows(2) {
-        let (mut a, mut b) = (w[0], w[1]);
-        let (mut fa, fb) = (eval(a), eval(b));
-        if fa == 0.0 {
-            roots.push(Root { t: a, double: false });
-        } else if fa * fb < 0.0 {
-            for _ in 0..200 {
-                let m = 0.5 * (a + b);
-                if m <= a || m >= b {
-                    break;
-                }
-                let fm = eval(m);
-                if fm == 0.0 {
-                    a = m;
-                    b = m;
-                    break;
-                }
-                if fa * fm < 0.0 {
-                    b = m;
-                } else {
-                    a = m;
-                    fa = fm;
-                }
-            }
-            roots.push(Root { t: 0.5 * (a + b), double: false });
-        }
-        if fb == 0.0 {
-            roots.push(Root { t: b, double: false });
-        }
-    }
-    for &t in &crit {
-        if eval(t).abs() <= 1e-12 * abs_eval(t) {
-            roots.push(Root { t, double: true });
-        }
-    }
-    roots.sort_by(|a, b| a.t.total_cmp(&b.t));
-    let mut merged: Vec<Root> = Vec::with_capacity(roots.len());
-    for r in roots {
-        match merged.last_mut() {
-            Some(l) if (r.t - l.t).abs() <= 1e-9 * (1.0 + l.t.abs()) => {
-                if r.double && !l.double {
-                    l.t = r.t;
-                }
-                l.double |= r.double;
-            }
-            _ => merged.push(r),
-        }
-    }
-    merged
 }
 
 #[cfg(test)]

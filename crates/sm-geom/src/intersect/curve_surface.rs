@@ -10,7 +10,8 @@ use crate::nurbs::project::split_patch;
 use crate::nurbs::spline1::split_half_into;
 use crate::nurbs::surface::PatchPoles;
 use crate::nurbs::{PreparedCurve, PreparedSurface};
-use crate::roots::{poly_roots, solve_dense};
+use crate::roots::solve_dense;
+use sm_geom_api::roots::real_roots;
 use core::f64::consts::TAU;
 use sm_core::{Point3, Vector3};
 use sm_geom_api::{
@@ -239,7 +240,7 @@ pub fn curve_surface(curve: &CurveDef, range: Option<Interval>, surface: &Surfac
             let ray = Ray { origin: l.origin, dir: l.dir };
             let mut hits = Vec::new();
             match surface.as_surface() {
-                Some(s) => s.ray_hits(&ray, r, &mut hits)?,
+                Some(s) => s.ray_hits_tol(&ray, r, tol, &mut hits)?,
                 None => imp.ray_hits(&ray, r, &mut hits)?,
             }
             hits.into_iter().map(|h| (h.t, h.crossing == Crossing::Tangent)).collect()
@@ -457,7 +458,7 @@ fn trig_poly_roots(g: &dyn Fn(f64) -> f64, d: usize) -> Vec<(f64, bool)> {
         }
     }
     let mut ts: Vec<(f64, bool)> = Vec::new();
-    for rt in poly_roots(&total, f64::NEG_INFINITY, f64::INFINITY) {
+    for rt in real_roots(&total, f64::NEG_INFINITY, f64::INFINITY) {
         ts.push((2.0 * rt.t.atan(), rt.double));
     }
     // The point at x = infinity (t = pi) is a root when the leading coefficient vanishes.

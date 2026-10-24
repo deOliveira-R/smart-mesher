@@ -1,24 +1,15 @@
 //! A pcurve lifted to space: [`CurveOnSurface`] evaluates `S(pcurve(t))` with the chain rule to
 //! second order, so a coedge's carrier can be used wherever a [`ParametricCurve`] is expected.
 
-use crate::nurbs::PreparedCurve;
 use crate::nurbs::project::newton_curve;
 use sm_core::{Point3, Vector3};
-use sm_geom_api::{CurveJet, CurveProjection, Domain1, GeomError, Interval, Line2, NurbsCurve, PCurve, ParametricCurve, ParametricSurface, Uv};
-
-#[derive(Clone, Debug)]
-enum Pc {
-    Line(Line2),
-    Poly(Vec<Uv>),
-    /// The 2D curve embedded in the plane `z = 0` so the 3D prepared evaluator gives `d2`.
-    Nurbs(Box<PreparedCurve>),
-}
+use sm_geom_api::{CurveJet, CurveProjection, Domain1, GeomError, Interval, PCurve, ParametricCurve, ParametricSurface, Uv};
 
 /// A curve on a surface: `t -> S(u(t), v(t))`.
 #[derive(Clone, Debug)]
 pub struct CurveOnSurface<'a> {
     surface: &'a dyn ParametricSurface,
-    pc: Pc,
+    pc: PCurve,
     range: Interval,
     periodic: bool,
 }
@@ -27,42 +18,26 @@ impl<'a> CurveOnSurface<'a> {
     /// Combine a surface and a pcurve. A periodic 2D NURBS pcurve gives a periodic curve.
     pub fn new(surface: &'a dyn ParametricSurface, pcurve: &PCurve) -> Result<Self, GeomError> {
         let range = pcurve.range();
-        let (pc, periodic) = match pcurve {
-            PCurve::Line2(l) => (Pc::Line(*l), false),
+        let periodic = match pcurve {
+            PCurve::Line2(_) => false,
             PCurve::Polyline2(p) => {
                 if p.len() < 2 {
                     return Err(GeomError::Invalid("polyline pcurve needs at least two points"));
                 }
-                (Pc::Poly(p.clone()), false)
+                false
             }
             PCurve::Nurbs2(n) => {
-                let control = n.control.iter().map(|q| Point3::new(q.u, q.v, 0.0)).collect();
-                let c3 = if n.periodic { NurbsCurve::new_periodic(n.degree, n.knots.clone(), control, n.weights.clone()) } else { NurbsCurve::new(n.degree, n.knots.clone(), control, n.weights.clone()) }?;
-                (Pc::Nurbs(Box::new(PreparedCurve::new(&c3)?)), n.periodic)
+                n.validate()?;
+                n.periodic
             }
             _ => return Err(GeomError::Unsupported("pcurve kind")),
         };
-        Ok(Self { surface, pc, range, periodic })
+        Ok(Self { surface, pc: pcurve.clone(), range, periodic })
     }
 
     /// `(uv, uv', uv'')` of the pcurve at `t`.
     fn uv_jet(&self, t: f64) -> (Uv, Uv, Uv) {
-        let zero = Uv::default();
-        match &self.pc {
-            Pc::Line(l) => (Uv::new(l.origin.u + t * l.dir.u, l.origin.v + t * l.dir.v), l.dir, zero),
-            Pc::Poly(p) => {
-                let n = p.len();
-                let t = t.clamp(0.0, (n - 1) as f64);
-                let i = (t.floor() as usize).min(n - 2);
-                let f = t - i as f64;
-                let (a, b) = (p[i], p[i + 1]);
-                (Uv::new(a.u + f * (b.u - a.u), a.v + f * (b.v - a.v)), Uv::new(b.u - a.u, b.v - a.v), zero)
-            }
-            Pc::Nurbs(c) => {
-                let j = c.jet(t);
-                (Uv::new(j.p.x, j.p.y), Uv::new(j.d1.x, j.d1.y), Uv::new(j.d2.x, j.d2.y))
-            }
-        }
+        self.pc.jet(t)
     }
 }
 
@@ -107,7 +82,7 @@ impl ParametricCurve for CurveOnSurface<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sm_geom_api::{Cylinder, Frame, Line};
+    use sm_geom_api::{Cylinder, Frame, Line, Line2};
 
     #[test]
     fn helix_on_a_cylinder_matches_analytic_derivatives() {

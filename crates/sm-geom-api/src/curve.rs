@@ -50,6 +50,18 @@ pub trait ParametricCurve: Send + Sync + core::fmt::Debug {
         self.jet(t).p
     }
 
+    /// Evaluate at many parameters: `out[i] = eval(t[i])`. Panics if the lengths differ.
+    ///
+    /// Contract: an override (for example a parallel batch evaluator) is bit-identical to this
+    /// default loop for any thread count (determinism rule). Schemes holding a
+    /// `&dyn ParametricCurve` call this instead of looping over `eval`.
+    fn eval_many(&self, t: &[f64], out: &mut [Point3]) {
+        assert_eq!(t.len(), out.len(), "eval_many: length mismatch");
+        for (o, t) in out.iter_mut().zip(t) {
+            *o = self.eval(*t);
+        }
+    }
+
     /// First derivative `C'(t)`.
     fn d1(&self, t: f64) -> Vector3 {
         self.jet(t).d1
@@ -111,4 +123,19 @@ pub fn gauss_length<C: ParametricCurve + ?Sized>(c: &C, range: Interval, tol: f6
         prev = next;
     }
     Err(GeomError::NoConvergence("arc length did not reach the requested tolerance"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Circle, Frame};
+
+    #[test]
+    fn eval_many_default_matches_eval() {
+        let c = Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 2.0).unwrap();
+        let t: Vec<f64> = (0..10).map(|i| 0.7 * i as f64).collect();
+        let mut out = vec![Point3::default(); t.len()];
+        c.eval_many(&t, &mut out);
+        assert!(t.iter().zip(&out).all(|(t, p)| *p == c.eval(*t)));
+    }
 }

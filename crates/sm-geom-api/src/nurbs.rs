@@ -364,8 +364,42 @@ impl NurbsCurve2 {
 
     /// Point and first derivative at `t` (wrapped into the range if periodic, else clamped).
     pub fn eval_d1(&self, t: f64) -> (Uv, Uv) {
-        let j = self.as_3d().jet(t);
-        (Uv::new(j.p.x, j.p.y), Uv::new(j.d1.x, j.d1.y))
+        let (p, d1, _) = self.jet2(t);
+        (p, d1)
+    }
+
+    /// Second derivative `(d2u/dt2, d2v/dt2)` at `t` (rational de Boor; same wrapping as
+    /// [`Self::eval_d1`]).
+    pub fn eval_d2(&self, t: f64) -> Uv {
+        self.jet2(t).2
+    }
+
+    /// Point, first and second derivative at `t` in one pass, without allocating.
+    pub fn eval_jet(&self, t: f64) -> (Uv, Uv, Uv) {
+        self.jet2(t)
+    }
+
+    fn jet2(&self, t: f64) -> (Uv, Uv, Uv) {
+        let p = self.degree;
+        let t = fold(self.range(), self.periodic, t);
+        let span = find_span(self.control.len() - 1, p, t, &self.knots);
+        let d = ders_basis(span, t, p, &self.knots);
+        let mut a = [[0.0f64; 2]; 3];
+        let mut w = [0.0f64; 3];
+        for k in 0..3 {
+            for j in 0..=p {
+                let i = span - p + j;
+                let wi = self.weights.as_ref().map_or(1.0, |w| w[i]) * d[k][j];
+                a[k][0] += self.control[i].u * wi;
+                a[k][1] += self.control[i].v * wi;
+                w[k] += wi;
+            }
+        }
+        let iw = 1.0 / w[0];
+        let c0 = [a[0][0] * iw, a[0][1] * iw];
+        let c1 = [(a[1][0] - c0[0] * w[1]) * iw, (a[1][1] - c0[1] * w[1]) * iw];
+        let c2 = [(a[2][0] - c1[0] * (2.0 * w[1]) - c0[0] * w[2]) * iw, (a[2][1] - c1[1] * (2.0 * w[1]) - c0[1] * w[2]) * iw];
+        (Uv::new(c0[0], c0[1]), Uv::new(c1[0], c1[1]), Uv::new(c2[0], c2[1]))
     }
 }
 

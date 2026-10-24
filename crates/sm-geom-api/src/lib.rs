@@ -11,6 +11,7 @@
 //! - [`pcurve`]: [`PCurve`], the curve of a coedge in its face's parameter space.
 //! - [`store`]: closed serializable [`CurveDef`] / [`SurfaceDef`] and [`GeomStore`] /
 //!   [`GeomStoreMut`], the handle resolver used by topology.
+//! - [`roots`]: the shared real-root finders (stable quadratic, interval polynomial roots).
 //! - [`ModelTolerance`]: the one tolerance policy and the cross-platform hash quantization rule.
 //!
 //! See `DESIGN.md` in this crate for the rationale.
@@ -25,6 +26,7 @@ pub mod implicit;
 pub mod nurbs;
 pub mod pcurve;
 pub mod ray;
+pub mod roots;
 pub mod store;
 pub mod surface;
 pub mod tol;
