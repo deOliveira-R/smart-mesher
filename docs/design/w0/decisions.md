@@ -78,3 +78,12 @@ Merged: sm-scheme-api (5dbf6de; base = the `constraint` candidate, recommendatio
 4. **Duplicate transform algebra** in sm-scheme-api: remove it and use sm-core's `Transform::compose`/`inverse`. Index-map helpers stay.
 5. **Surface-only meshes:** accepted as a requirement (shell elements, sheet bodies, surface previews, deck-face checks). Recommended design: sm-mesh-api meshes carry a topological dimension, and a dim-2 mesh keeps the face-first invariants one level down (cells are polygons, facets are edges, facet→(left, right)). The fixer and the reviewer may choose otherwise only with a written reason.
 6. **Many-to-one sweep with several source faces into one target:** blocking. It is a core Cubit capability and needs a real test.
+
+# W0f/W0g: contract freeze policy (2026-10-23)
+
+W0f applied the W0e batch plus 58 accepted gap fixes over four critique rounds (21, 12, 10 and 15 accepted per round, merged at 0c24cfa). It did not converge: an open-ended "anything awkward to express" criterion over about 100 PARITY items finds new items every round. W0g therefore audits only for changes that cannot be made later, and the contracts freeze in two tiers:
+
+- **Frozen** (a change breaks stored projects or every worker branch): entity ids and kinds, hashes and their quantization, persisted/on-disk/wire formats (serde shapes, tagging, field names, defaults), enum shapes (every growable public enum is `#[non_exhaustive]`), op/query naming rules, and the trait signatures that implementation crates implement.
+- **Open** (through `api_change_request` during waves, batched by the orchestrator): additive methods, new variants behind `#[non_exhaustive]`, new provided trait methods, docs.
+
+Known correctness restriction: sm-mesh-api `unfold` accepts only commuting involutions (mirrors, half turns) and returns `Unsupported` for other deck groups instead of a wrong result. Whether rotational sectors need a group-description input is decided by the W0g audit.
