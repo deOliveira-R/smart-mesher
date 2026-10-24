@@ -81,3 +81,27 @@ fn color_domain_and_color_map_golden() {
     assert_eq!(serde_json::from_value::<ColorMap>(mv).unwrap(), m);
     assert_eq!(v(&ColorMap::new()), json!({"volume": {}, "face": {}}));
 }
+
+#[test]
+fn r4_unfold_spec_constructor_and_golden() {
+    let g = id(EntityKind::Boundary, 3);
+    let spec = UnfoldSpec::new([(g, 4u32)].into_iter().collect());
+    assert_eq!(spec.translation_repeats.get(&g), Some(&4));
+    assert_eq!(UnfoldSpec::new(Default::default()), UnfoldSpec::default());
+    let golden = json!({"translation_repeats": {"Boundary#3": 4}});
+    assert_eq!(v(&spec), golden);
+    assert_eq!(serde_json::from_value::<UnfoldSpec>(golden).unwrap(), spec);
+}
+
+#[test]
+fn r4_tolerance_constructors_and_golden() {
+    let t = Tolerance::new(1e-6, 1e-7, 1e-8);
+    assert_eq!((t.linear, t.angular, t.relative), (1e-6, 1e-7, 1e-8));
+    let d = Tolerance::default();
+    assert_eq!(Tolerance::new(d.linear, d.angular, d.relative), d);
+    let w = Tolerance::default().with_linear(1.0).with_angular(2.0).with_relative(3.0);
+    assert_eq!(w, Tolerance::new(1.0, 2.0, 3.0));
+    let golden = json!({"linear": 1.0, "angular": 2.0, "relative": 3.0});
+    assert_eq!(v(&w), golden);
+    assert_eq!(serde_json::from_value::<Tolerance>(golden).unwrap(), w);
+}

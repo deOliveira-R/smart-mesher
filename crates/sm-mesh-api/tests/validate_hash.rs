@@ -400,10 +400,7 @@ fn geometry_checks_report_volume_and_planarity() {
     );
     let loose = validate_geometry(
         &m,
-        &GeomTol {
-            planarity: 10.0,
-            min_volume: 0.0,
-        },
+        &GeomTol::new().with_planarity(10.0).with_min_volume(0.0),
     );
     assert!(loose.is_empty(), "{loose:?}");
     // A vertex pulled through the opposite face inverts the cell.

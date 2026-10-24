@@ -57,3 +57,24 @@ fn golden_serde_shapes() {
         assert_eq!(MeshEntity::from_parts(k, 3).kind(), k);
     }
 }
+
+#[test]
+fn r4_violation_and_geom_tol_constructors() {
+    let v = Violation::new(ViolationCode::FaceOrder, Some(MeshEntity::Face(FaceIx(2))), "x");
+    assert_eq!(v.code, ViolationCode::FaceOrder);
+    assert_eq!(v.entity, Some(MeshEntity::Face(FaceIx(2))));
+    assert_eq!(v.detail, "x");
+    assert_eq!(GeomTol::new(), GeomTol::default());
+    let t = GeomTol::new().with_planarity(0.5).with_min_volume(2.0);
+    assert_eq!((t.planarity, t.min_volume), (0.5, 2.0));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn r4_violation_golden_shape() {
+    use serde_json::json;
+    let v = Violation::new(ViolationCode::FaceOrder, Some(MeshEntity::Face(FaceIx(2))), "x");
+    let golden = json!({"code": "FaceOrder", "entity": {"Face": 2}, "detail": "x"});
+    assert_eq!(serde_json::to_value(&v).unwrap(), golden);
+    assert_eq!(serde_json::from_value::<Violation>(golden).unwrap(), v);
+}

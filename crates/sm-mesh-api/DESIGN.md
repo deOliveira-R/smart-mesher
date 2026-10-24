@@ -157,7 +157,8 @@ A coarse mesh is an independent mesh over the same model; no classification equa
   `Instance::new(id, prototype, transform)`, `InstancedView::new(id, instances)`,
   `LossNote::new(instance, what)`, `GeometryCache::new(rule, connectivity_hash,
   coordinate_hash)` (value columns filled afterwards), `HighOrderCell::new(degree, basis, nodes)`,
-  and `FlattenOptions::new()` / `Default` with `with_weld_tol`, `with_remap_class`,
-  `with_on_merge`.
+  `FlattenOptions::new()` / `Default` with `with_weld_tol`, `with_remap_class`,
+  `with_on_merge`, and (W0g r4) `Violation::new(code, entity, detail)` and `GeomTol::new()` /
+  `Default` with `with_planarity`, `with_min_volume`.
 - **Every field added to a persisted struct after the freeze must be `#[serde(default)]`**
   (as `MeshSet::label` already is), so data written before it still reads.

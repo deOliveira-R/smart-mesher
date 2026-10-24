@@ -278,11 +278,7 @@ mod serde_round_trips {
         rt(&HighOrderCell::new(2, Basis::LagrangeEquispaced, vec![PointIx(0), PointIx(3)]));
         let v = validate(&m);
         assert!(v.is_empty());
-        let viol = Violation {
-            code: ViolationCode::FaceOrder,
-            entity: Some(MeshEntity::Face(FaceIx(2))),
-            detail: "x".into(),
-        };
+        let viol = Violation::new(ViolationCode::FaceOrder, Some(MeshEntity::Face(FaceIx(2))), "x");
         rt(&viol);
         rt(&LossNote::new(id(EntityKind::MeshInstance, 4), LossKind::Tag(MeshEntityKind::Cell, "t".into())));
         let inst = Instance::new(id(EntityKind::MeshInstance, 1), id(EntityKind::Mesh, 1), mirror_x(1.0));

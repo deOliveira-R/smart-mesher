@@ -21,12 +21,21 @@ use sm_core::{EntityId, Transform};
 use sm_topo_api::{Sense, TopologyView};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Parameters of an unfold.
+/// Parameters of an unfold. `#[non_exhaustive]` (W0g r4): build it with [`UnfoldSpec::new`] /
+/// `Default`; fields added later are `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct UnfoldSpec {
     /// Repeat count (window) per translation generator; required for each of them.
     pub translation_repeats: BTreeMap<EntityId, u32>,
+}
+
+impl UnfoldSpec {
+    /// An unfold with the given repeat count per translation generator.
+    pub fn new(translation_repeats: BTreeMap<EntityId, u32>) -> Self {
+        Self { translation_repeats }
+    }
 }
 
 /// An entity of the fundamental domain seen in one copy.

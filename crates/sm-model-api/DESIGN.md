@@ -349,7 +349,9 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   `Piece::new(id, volume, faces, shape)` (+ `with_members`), `SplitRec::new(..)`,
   `CutCells::new(..)`, `ColorRow::new(..)`, `GroupRow::new(..)`, `BoundaryRow::new(id, name,
   kind)`, `CutSpec::new(deck, keep, origin)`, `CutPlan::new(..)`, `Symmetry::new(..)`,
-  `DetectionResult::new(..)`, `Issue::new(..)`, `Report::new(issues)`.
+  `DetectionResult::new(..)`, `Issue::new(..)`, `Report::new(issues)`, and (W0g r4)
+  `UnfoldSpec::new(translation_repeats)` (+ `Default`) and `Tolerance::new(linear, angular,
+  relative)` (+ `Default`, `Tolerance::of`, `with_linear` / `with_angular` / `with_relative`).
 - **W0g r3: `ColorMap` is `#[non_exhaustive]`** (persisted in the `Slot` / `InstanceRow` /
   `ClusterMember` / `PathOverride` recolor maps). Build it with `ColorMap::new()` / `Default`
   plus `with_volume(map)` / `with_face(map)`; fields stay `pub`. **A per-domain field added later
@@ -358,4 +360,4 @@ deserialization) checks member kinds, model-minted members, unique names and nes
   exactly as before.
 - **Every field added to a persisted row after the freeze must be `#[serde(default)]`** (as
   `Slot::clip`, `InstanceRow::clip` and `Instancing::clusters` already are), so stored models
-  still read.
+  still read. The same holds for fields added later to `UnfoldSpec` and `Tolerance`.

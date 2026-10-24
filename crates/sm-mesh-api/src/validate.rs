@@ -124,10 +124,12 @@ impl ViolationCode {
     }
 }
 
-/// One validation finding.
+/// One validation finding. `#[non_exhaustive]` (W0g r4): build it with [`Violation::new`];
+/// fields added later are `#[serde(default)]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct Violation {
     /// Stable code.
     pub code: ViolationCode,
@@ -135,6 +137,17 @@ pub struct Violation {
     pub entity: Option<MeshEntity>,
     /// Human-readable detail.
     pub detail: String,
+}
+
+impl Violation {
+    /// A finding with `code`, the offending `entity` (if one can be named) and a `detail` text.
+    pub fn new(code: ViolationCode, entity: Option<MeshEntity>, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            entity,
+            detail: detail.into(),
+        }
+    }
 }
 
 impl core::fmt::Display for Violation {
@@ -150,11 +163,7 @@ impl core::fmt::Display for Violation {
 struct Sink(Vec<Violation>);
 impl Sink {
     fn add(&mut self, code: ViolationCode, entity: Option<MeshEntity>, detail: impl Into<String>) {
-        self.0.push(Violation {
-            code,
-            entity,
-            detail: detail.into(),
-        });
+        self.0.push(Violation::new(code, entity, detail));
     }
 }
 
@@ -953,8 +962,10 @@ fn validate_sets_tags_edges(
     }
 }
 
-/// Tolerances for [`validate_geometry`].
+/// Tolerances for [`validate_geometry`]. `#[non_exhaustive]` (W0g r4): build it with
+/// [`GeomTol::new`] / `Default` and the `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct GeomTol {
     /// Largest allowed distance of a face vertex from the face's best plane, relative to
     /// `sqrt(|area|)`.
@@ -969,6 +980,25 @@ impl Default for GeomTol {
             planarity: 1e-6,
             min_volume: 0.0,
         }
+    }
+}
+
+impl GeomTol {
+    /// The default tolerances (planarity `1e-6`, min volume `0`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the planarity tolerance.
+    pub fn with_planarity(mut self, planarity: f64) -> Self {
+        self.planarity = planarity;
+        self
+    }
+
+    /// Replace the minimum cell volume.
+    pub fn with_min_volume(mut self, min_volume: f64) -> Self {
+        self.min_volume = min_volume;
+        self
     }
 }
 
@@ -1013,11 +1043,11 @@ pub fn validate_geometry_with(m: &dyn MeshRead, tol: &GeomTol, normals: &dyn Fac
         let cen = cen * (1.0 / n as f64);
         let Some(nrm) = normals.normal(entity, Point3::new(cen.x, cen.y, cen.z)) else { continue };
         if area.dot(nrm) <= 0.0 {
-            out.push(Violation {
-                code: ViolationCode::GeomShellOrientation,
-                entity: Some(MeshEntity::Cell(ci)),
-                detail: format!("corner cycle is not right-handed about the normal of {entity}"),
-            });
+            out.push(Violation::new(
+                ViolationCode::GeomShellOrientation,
+                Some(MeshEntity::Cell(ci)),
+                format!("corner cycle is not right-handed about the normal of {entity}"),
+            ));
         }
     }
     out
