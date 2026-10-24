@@ -504,6 +504,7 @@ impl Overlay {
     /// Hide a host or virtual cell: detach it from its children and parents. `covered_by` lists
     /// the virtual cells standing for it (the first one is what `virtual_of` reports).
     fn hide(&mut self, id: EntityId, covered_by: &[EntityId]) {
+        let rank = Dim::of_kind(id.kind());
         let down: Vec<Incidence> = self.down_of(id).to_vec();
         for e in &down {
             self.up_remove(e.cell, Incidence { cell: id, side: e.side, ring: e.ring });
@@ -520,7 +521,9 @@ impl Overlay {
         if let Some(&first) = covered_by.first() {
             self.layer.covering.insert(id, first);
         }
-        self.layer.cover.insert(id, covered_by.iter().copied().collect());
+        // `cover` is same-rank only: a dissolved edge or vertex has no cover (it is not a face).
+        let same: SmallVec<[EntityId; 2]> = covered_by.iter().copied().filter(|c| Dim::of_kind(c.kind()) == rank).collect();
+        self.layer.cover.insert(id, same);
     }
 
     /// Rebuild the radial rings of edges whose faces changed: the host's angular order with each

@@ -315,11 +315,13 @@ impl Patch {
     /// With a grid, [`NodeGrid::line_from`] answers (fast path). Otherwise the element table is
     /// walked: from `key` along its interior edge, then at each node along the edge opposite
     /// the incoming one (the edge sharing no quad with it), until a boundary node is reached.
-    /// Where more than one edge qualifies (a re-entrant boundary corner, an irregular interior
-    /// node) the neighbour with the smallest key is taken, so the walk is deterministic.
+    /// Where more than one interior edge leaves the start node (a re-entrant boundary corner)
+    /// the neighbour with the smallest key is taken, so the walk is deterministic.
     /// `None` if the patch has a non-quad element, `key` is not a boundary node of the patch,
-    /// it is a corner with no interior edge (as `line_from` refuses grid corners), or the walk
-    /// does not close on the boundary. Builds its edge index per call: O(E log E).
+    /// it is a corner with no interior edge (as `line_from` refuses grid corners), the walk
+    /// meets an interior node of valence other than 4 (no strip passes through it), or the
+    /// walk does not close on the boundary. Builds its edge index per call: O(E log E + L log E)
+    /// for a strip of L nodes.
     pub fn strip_from(&self, key: NodeKey) -> Option<Vec<NodeKey>> {
         if let Some(g) = &self.grid
             && let Some(line) = g.line_from(key)
@@ -329,27 +331,29 @@ impl Patch {
         if self.elements.is_empty() || self.elements.iter().any(|(s, _)| s != ElemShape::Quad) {
             return None;
         }
-        // Undirected edge -> number of quads using it; node -> neighbours; quad membership.
-        let mut uses: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        // Undirected edge -> quads using it; node -> neighbours.
+        let quads: Vec<[u32; 4]> = self.elements.iter().map(|(_, q)| [q[0], q[1], q[2], q[3]]).collect();
+        let mut uses: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
         let mut nbrs: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for (_, q) in self.elements.iter() {
+        for (qi, q) in quads.iter().enumerate() {
             for c in 0..4 {
                 let (a, b) = (q[c], q[(c + 1) % 4]);
-                let e = (a.min(b), a.max(b));
-                let n = uses.entry(e).or_insert(0);
-                *n += 1;
-                if *n == 1 {
+                let u = uses.entry((a.min(b), a.max(b))).or_default();
+                u.push(qi);
+                if u.len() == 1 {
                     nbrs.entry(a).or_default().push(b);
                     nbrs.entry(b).or_default().push(a);
                 }
             }
         }
         let edge = |a: u32, b: u32| (a.min(b), a.max(b));
-        let on_boundary = |n: u32| nbrs.get(&n).is_some_and(|v| v.iter().any(|m| uses.get(&edge(n, *m)) == Some(&1)));
+        let count = |a: u32, b: u32| uses.get(&edge(a, b)).map_or(0, Vec::len);
+        let on_boundary = |n: u32| nbrs.get(&n).is_some_and(|v| v.iter().any(|m| count(n, *m) == 1));
         // Quad-mates of the edge (a, b): the nodes adjacent to `b` in quads containing a and b.
         let mates = |a: u32, b: u32| -> Vec<u32> {
             let mut out = Vec::new();
-            for (_, q) in self.elements.iter() {
+            for &qi in uses.get(&edge(a, b)).map_or(&[][..], |v| v.as_slice()) {
+                let q = &quads[qi];
                 if let (Some(ia), Some(ib)) = (q.iter().position(|x| *x == a), q.iter().position(|x| *x == b))
                     && ((ia + 1) % 4 == ib || (ib + 1) % 4 == ia)
                 {
@@ -364,13 +368,17 @@ impl Patch {
             return None;
         }
         let pick = |cands: Vec<u32>| cands.into_iter().filter_map(|c| Some((self.key(c)?, c))).min().map(|(_, c)| c);
-        let interior: Vec<u32> = nbrs.get(&start)?.iter().copied().filter(|m| uses.get(&edge(start, *m)) == Some(&2)).collect();
+        let interior: Vec<u32> = nbrs.get(&start)?.iter().copied().filter(|m| count(start, *m) == 2).collect();
         let mut prev = start;
         let mut cur = pick(interior)?;
         let mut line = vec![key, self.key(cur)?];
         for _ in 0..self.local_len() {
             if on_boundary(cur) {
                 return Some(line);
+            }
+            // An irregular interior node (valence other than 4) has no well-defined opposite edge.
+            if nbrs.get(&cur)?.len() != 4 {
+                return None;
             }
             let side = mates(prev, cur);
             let next: Vec<u32> = nbrs.get(&cur)?.iter().copied().filter(|m| *m != prev && !side.contains(m)).collect();

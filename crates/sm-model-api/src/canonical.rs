@@ -1,13 +1,13 @@
 //! [`Model::canonical_visit`]: the model's persisted tables as a canonical word stream, for the
 //! state hash (quantized floats) and derived-cache keys (raw floats).
 
-use crate::boundary::{BoundaryKind, Deck, DeckSide, FaceRole, InterfaceIntent};
-use crate::color::Domain;
-use crate::decomposition::{CutGeometry, PieceFace, PieceRef, PieceShape};
+use crate::boundary::{BoundaryKind, BoundaryRow, FaceBoundary, Deck, DeckSide, FaceRole, InterfaceIntent};
+use crate::color::{ColorRow, Domain, GroupRow};
+use crate::decomposition::{CutCells, CutGeometry, Decomposition, Piece, PieceFace, PieceRef, PieceShape, SplitRec};
 use crate::detect::Verification;
-use crate::instancing::{ColorMap, Fill, HexOrient, Layout, PathStep};
+use crate::instancing::{ColorMap, Fill, HexOrient, InstanceRow, Instancing, Lattice, Layout, PathOverride, PathStep, Prototype, Slot};
 use crate::model::Model;
-use crate::symmetry::{CutSpec, Keep, Provenance};
+use crate::symmetry::{CutSpec, Keep, Provenance, Symmetry};
 use crate::xf::{Axis, Plane};
 use sm_core::{EntityId, Point3, Transform, Vector3};
 use sm_geom_api::ModelTolerance;
@@ -207,6 +207,8 @@ impl Model {
     /// sub-quantum change keeps the identity hash and changes the exact hash.
     pub fn canonical_visit(&self, tol: &ModelTolerance, f: &mut dyn FnMut(HashWord)) {
         let mut w = W { tol, f };
+        // Exhaustive patterns (no `..`): adding a field is a compile error until it is hashed.
+        let Model { ids: _, colors: _, volume_color: _, face_color: _, groups: _, boundaries: _, face_boundary: _, symmetry: _, provenance: _, cuts: _, instancing: _, decomposition: _ } = self;
         // 1. Id allocator.
         w.int(1);
         w.int(self.ids.next.len() as u64);
@@ -219,6 +221,7 @@ impl Model {
         w.int(self.colors.len() as u64);
         for (id, c) in &self.colors {
             w.id(*id);
+            let ColorRow { id: _, label: _, name: _, domain: _ } = c;
             w.id(c.id);
             w.int(u64::from(c.label));
             w.str(&c.name);
@@ -241,6 +244,7 @@ impl Model {
         w.int(self.groups.len() as u64);
         for (id, g) in &self.groups {
             w.id(*id);
+            let GroupRow { id: _, name: _, members: _ } = g;
             w.id(g.id);
             w.str(&g.name);
             w.ids(g.members.iter());
@@ -250,6 +254,7 @@ impl Model {
         w.int(self.boundaries.len() as u64);
         for (id, b) in &self.boundaries {
             w.id(*id);
+            let BoundaryRow { id: _, name: _, kind: _ } = b;
             w.id(b.id);
             w.str(&b.name);
             match &b.kind {
@@ -276,6 +281,7 @@ impl Model {
         w.int(self.face_boundary.len() as u64);
         for (face, fb) in &self.face_boundary {
             w.id(*face);
+            let FaceBoundary { boundary: _, role: _ } = fb;
             w.id(fb.boundary);
             match fb.role {
                 FaceRole::Deck { side, mate } => {
@@ -296,6 +302,7 @@ impl Model {
             None => w.int(0),
             Some(s) => {
                 w.int(1);
+                let Symmetry { generators: _, domain: _ } = s;
                 w.ids(s.generators.iter());
                 w.ids(s.domain.iter());
             }
@@ -341,15 +348,18 @@ impl Model {
         }
         // 11. Instancing.
         let ins = &self.instancing;
+        let Instancing { prototypes: _, lattices: _, instances: _, overrides: _ } = ins;
         w.int(11);
         w.int(ins.prototypes.len() as u64);
         for (id, p) in &ins.prototypes {
             w.id(*id);
+            let Prototype { volumes: _ } = p;
             w.ids(p.volumes.iter());
         }
         w.int(ins.lattices.len() as u64);
         for (id, l) in &ins.lattices {
             w.id(*id);
+            let Lattice { layout: _, origin: _, outer: _, slots: _ } = l;
             match l.layout {
                 Layout::Cartesian { n, pitch } => {
                     w.int(1);
@@ -375,6 +385,7 @@ impl Model {
                 for v in [ix.i, ix.j, ix.k] {
                     w.int(v as i64 as u64);
                 }
+                let Slot { fill: _, recolor: _, clip: _ } = s;
                 w.fill(s.fill);
                 w.color_map(&s.recolor);
                 w.opt_id(s.clip);
@@ -383,6 +394,7 @@ impl Model {
         w.int(ins.instances.len() as u64);
         for (id, r) in &ins.instances {
             w.id(*id);
+            let InstanceRow { of: _, at: _, recolor: _, clip: _ } = r;
             w.fill(r.of);
             w.transform(&r.at);
             w.color_map(&r.recolor);
@@ -390,6 +402,7 @@ impl Model {
         }
         w.int(ins.overrides.len() as u64);
         for o in &ins.overrides {
+            let PathOverride { prefix: _, recolor: _ } = o;
             w.int(o.prefix.len() as u64);
             for step in &o.prefix {
                 match *step {
@@ -410,10 +423,12 @@ impl Model {
         }
         // 12. Decomposition (every serialized field).
         let d = &self.decomposition;
+        let Decomposition { cells: _, splits: _, parent: _, composites: _, consumed: _, by_volume: _, by_face: _, cut_serial: _, whole_faces: _, composite_faces: _, realized: _, face_cells: _, split_cells: _ } = d;
         w.int(12);
         w.int(d.cells.len() as u64);
         for (id, p) in &d.cells {
             w.id(*id);
+            let Piece { id: _, volume: _, faces: _, shape: _, members: _ } = p;
             w.id(p.id);
             w.id(p.volume);
             w.piece_faces(&p.faces);
@@ -434,6 +449,7 @@ impl Model {
         w.int(d.splits.len() as u64);
         for (pr, s) in &d.splits {
             w.piece_ref(*pr);
+            let SplitRec { children: _, cut: _, geometry: _ } = s;
             w.ids(s.children.iter());
             w.int(u64::from(s.cut.0));
             match &s.geometry {
@@ -489,6 +505,7 @@ impl Model {
         w.int(d.realized.len() as u64);
         for (cut, cc) in &d.realized {
             w.int(u64::from(cut.0));
+            let CutCells { faces: _, edges: _, vertices: _, split_faces: _, split_edges: _ } = cc;
             w.ids(cc.faces.iter());
             w.ids(cc.edges.iter());
             w.ids(cc.vertices.iter());

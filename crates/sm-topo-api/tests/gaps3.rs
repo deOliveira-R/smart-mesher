@@ -73,7 +73,11 @@ fn live_cover_on_the_overlay_maps_hidden_host_cells_to_every_live_piece() {
     assert!(cover.contains(&halves[1]) && quarter.iter().all(|q| cover.contains(q)));
     assert!(cover.windows(2).all(|p| p[0] < p[1]));
     // Composite two adjacent host faces: each member and the interior edge map to it.
+    let shared: Vec<EntityId> = ov.face_edges(b.faces[0]).iter().copied().filter(|e| ov.face_edges(b.faces[2]).contains(e)).collect();
+    assert_eq!(shared.len(), 1);
     let vf = ov.composite_faces(&[b.faces[0], b.faces[2]]).unwrap();
+    // The dissolved interior edge has no same-rank cover (it does not map to the face).
+    assert!(ov.live_cover(shared[0]).is_empty());
     assert_eq!(ov.live_cover(b.faces[0]), vec![vf]);
     assert_eq!(ov.live_cover(b.faces[2]), vec![vf]);
     // Live cells map to themselves; undo restores the host cells.
