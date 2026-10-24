@@ -23,6 +23,9 @@ use sm_topo_api::{
 };
 use std::sync::OnceLock;
 
+/// Retirements per operation applied in place to a cached live list before it is dropped.
+const LIVE_EDITS_MAX: u32 = 32;
+
 /// Pads fresh arena blocks of id rows.
 const FILL_ID: EntityId = match EntityId::new(EntityKind::TopoVertex, 1) {
     Some(id) => id,
@@ -79,8 +82,11 @@ pub(crate) struct Table {
     pub(crate) down: Rows<Incidence>,
     pub(crate) up: Rows<Incidence>,
     pub(crate) aux: Rows<EntityId>,
-    /// Ascending live ids; rebuilt lazily after a retirement.
+    /// Ascending live ids; kept up to date for the first few retirements of an operation and
+    /// rebuilt lazily after more.
     pub(crate) live: OnceLock<Vec<EntityId>>,
+    /// Retirements applied to `live` in place since the open operation began.
+    pub(crate) live_edits: u32,
 }
 
 impl Table {
@@ -95,6 +101,7 @@ impl Table {
             up: Rows::new(FILL_INC),
             aux: Rows::new(FILL_ID),
             live: OnceLock::new(),
+            live_edits: 0,
         }
     }
 }
@@ -110,15 +117,15 @@ pub(crate) enum Undo {
     /// `removed_len` entries saved in the journal data buffer at `removed_start`.
     Splice { id: EntityId, pos: u32, removed_start: u32, removed_len: u32, inserted_len: u32 },
     State { id: EntityId, old: EntityState },
-    Carrier { id: EntityId, old: Carrier },
+    Carrier { id: EntityId, old: Box<Carrier> },
     Flags { id: EntityId, old: CellFlags },
     Tol { id: EntityId, old: f64 },
-    PCurve { key: CoedgeKey, old: Option<PCurve> },
+    PCurve { key: CoedgeKey, old: Option<Box<PCurve>> },
     Shell { volume: EntityId, ring: u16, old: Option<ShellKind> },
     Pair { a: EntityId, b: EntityId, old: Option<FacePair> },
     ModelTol(ModelTolerance),
-    Curve { id: EntityId, old: CurveDef },
-    Surface { id: EntityId, old: SurfaceDef },
+    Curve { id: EntityId, old: Box<CurveDef> },
+    Surface { id: EntityId, old: Box<SurfaceDef> },
     Gap(Option<f64>),
 }
 
@@ -180,8 +187,14 @@ pub struct TopoStore {
     pub(crate) orient_dirty: Marks,
     /// Edge slots whose shell net use may have changed (incremental closure check).
     pub(crate) closure_edges: Marks,
+    /// Entries inserted into volume/body rows in the open operation (for incremental row checks).
+    pub(crate) ins_log: Vec<(EntityId, Incidence)>,
     /// Cross-check the incremental `end_op` shortcuts against the full reference algorithms.
     pub(crate) paranoid: bool,
+    /// Volume/body rows at least this long are edited by position.
+    pub(crate) sorted_row_min: usize,
+    /// Volume/body rows at least this long are checked through their inserted entries only.
+    pub(crate) long_row: usize,
     pub(crate) counters: Counters,
 }
 
@@ -218,7 +231,10 @@ impl TopoStore {
             dirty_edges: Marks::default(),
             orient_dirty: Marks::default(),
             closure_edges: Marks::default(),
+            ins_log: Vec::new(),
             paranoid: false,
+            sorted_row_min: 24,
+            long_row: 128,
             counters: Counters::default(),
         }
     }
@@ -231,6 +247,14 @@ impl TopoStore {
     /// The operation currently open, if any.
     pub fn open_op(&self) -> Option<OpId> {
         self.open.as_ref().map(|o| o.op)
+    }
+
+    /// Lengths from which volume/body rows are edited by position and checked incrementally.
+    /// The defaults suit production; tests lower them to exercise those paths on small models.
+    #[doc(hidden)]
+    pub fn set_row_thresholds(&mut self, sorted_row_min: usize, long_row: usize) {
+        self.sorted_row_min = sorted_row_min;
+        self.long_row = long_row;
     }
 
     /// Diagnostic counters (how often each shortcut ran).
@@ -349,7 +373,7 @@ impl TopoStore {
             }
             Undo::Carrier { id, old } => {
                 if let Some((dim, slot)) = self.locate(id) {
-                    self.t[dim.index()].carrier[slot] = old;
+                    self.t[dim.index()].carrier[slot] = *old;
                 }
             }
             Undo::Flags { id, old } => {
@@ -363,7 +387,7 @@ impl TopoStore {
                 }
             }
             Undo::PCurve { key, old } => {
-                self.pcurve_put(key, old);
+                self.pcurve_put(key, old.map(|b| *b));
             }
             Undo::Shell { volume, ring, old } => {
                 self.shell_put(volume, ring, old);
@@ -374,10 +398,10 @@ impl TopoStore {
             },
             Undo::ModelTol(t) => self.tol = t,
             Undo::Curve { id, old } => {
-                let _ = self.shapes.replace_curve(id, old);
+                let _ = self.shapes.replace_curve(id, *old);
             }
             Undo::Surface { id, old } => {
-                let _ = self.shapes.replace_surface(id, old);
+                let _ = self.shapes.replace_surface(id, *old);
             }
             Undo::Gap(g) => self.merge_gap = g,
         }
@@ -543,6 +567,9 @@ impl TopoStore {
             self.jdata.truncate(removed_start as usize);
             return Err(e);
         }
+        if matches!(dim, Dim::Volume | Dim::Body) {
+            self.ins_log.extend(insert.iter().map(|e| (id, *e)));
+        }
         self.journal.push(Undo::Splice { id, pos: pos32, removed_start, removed_len, inserted_len });
         Ok(())
     }
@@ -612,10 +639,6 @@ impl TopoStore {
         if self.t[dim.index()].state[slot] == EntityState::Live { Ok((dim, slot)) } else { Err(TopoError::Dead(id)) }
     }
 
-    pub(crate) fn is_live(&self, id: EntityId) -> bool {
-        self.locate(id).is_some_and(|(d, s)| self.t[d.index()].state[s] == EntityState::Live)
-    }
-
     pub(crate) fn note(&mut self, entity: EntityId, kind: LineageKind) {
         let op = self.open.as_ref().map_or(self.revision, |o| o.op);
         self.lineage.push(LineageRecord { op, entity, kind });
@@ -629,7 +652,15 @@ impl TopoStore {
                 return;
             }
             t.state[slot] = new;
-            if (old == EntityState::Live) != (new == EntityState::Live) {
+            if old == EntityState::Live && new != EntityState::Live && t.live_edits < LIVE_EDITS_MAX {
+                // A few retirements: edit the cached list (a memmove); many: rebuild once on demand.
+                t.live_edits += 1;
+                if let Some(c) = t.live.get_mut()
+                    && let Ok(i) = c.binary_search(&id)
+                {
+                    c.remove(i);
+                }
+            } else if (old == EntityState::Live) != (new == EntityState::Live) {
                 t.live.take();
             }
             self.journal.push(Undo::State { id, old });
@@ -639,7 +670,7 @@ impl TopoStore {
     pub(crate) fn set_carrier_raw(&mut self, id: EntityId, c: Carrier) {
         if let Some((dim, slot)) = self.locate(id) {
             let old = core::mem::replace(&mut self.t[dim.index()].carrier[slot], c);
-            self.journal.push(Undo::Carrier { id, old });
+            self.journal.push(Undo::Carrier { id, old: Box::new(old) });
         }
     }
 
@@ -700,7 +731,7 @@ impl TopoStore {
             return;
         }
         let old = self.pcurve_put(key, pc);
-        self.journal.push(Undo::PCurve { key, old });
+        self.journal.push(Undo::PCurve { key, old: old.map(Box::new) });
     }
 
     pub(crate) fn move_pcurve(&mut self, from: CoedgeKey, to: CoedgeKey) {
@@ -730,9 +761,7 @@ impl TopoStore {
         let v = &mut self.shells[s];
         let r = usize::from(ring);
         if v.len() <= r {
-            if k.is_none() {
-                return None;
-            }
+            k?;
             v.resize(r + 1, None);
         }
         let old = core::mem::replace(&mut v[r], k);

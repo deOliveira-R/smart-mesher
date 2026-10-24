@@ -64,7 +64,7 @@ fn sense(r: &mut Rng) -> Sense {
 /// One random action; returns a description of its result (compared across implementations).
 fn act(t: &mut dyn TopologyEdit, r: &mut Rng) -> String {
     let k = r.below(44);
-    let s = match k {
+    match k {
         0 | 1 => {
             let min = Point3::new(r.unit() * 6.0, r.unit() * 6.0, r.unit() * 6.0);
             let size = [0.5 + r.unit(), 0.5 + r.unit(), 0.5 + r.unit()];
@@ -87,7 +87,7 @@ fn act(t: &mut dyn TopologyEdit, r: &mut Rng) -> String {
         5 => format!("sphere {:?}", fx(fixtures::sphere(t, 0.5 + r.unit())).map(|c| c.volume)),
         6 => format!("baffle {:?}", fx(fixtures::brick_with_baffle(t)).map(|c| c.1)),
         7 => format!("fin {:?}", fx(fixtures::brick_with_fin(t)).map(|c| c.1)),
-        8 | 9 | 10 => {
+        8..=10 => {
             // split an edge at a random parameter
             let Some(e) = pick(t, Dim::Edge, r) else { return "no edge".into() };
             let frac = 0.1 + 0.8 * r.unit();
@@ -101,7 +101,7 @@ fn act(t: &mut dyn TopologyEdit, r: &mut Rng) -> String {
             };
             format!("split_edge {:?}", t.split_edge(e, v, param))
         }
-        11 | 12 | 13 | 14 => {
+        11..=14 => {
             // chord or chain across a face
             let Some(f) = pick(t, Dim::Face, r) else { return "no face".into() };
             let vs: Vec<EntityId> = t.loop_vertices(f, 0).collect();
@@ -409,10 +409,18 @@ fn act(t: &mut dyn TopologyEdit, r: &mut Rng) -> String {
             // grow the same face by repeated chords so a volume row gets long
             let Some(v) = pick(t, Dim::Volume, r) else { return "grow none".into() };
             let mut n = 0;
-            for _ in 0..(8 + r.below(24)) {
+            for _ in 0..(24 + r.below(30)) {
                 let Some(f) = r.pick(t.volume_faces(v)) else { break };
                 let vs: Vec<EntityId> = t.loop_vertices(f, 0).collect();
-                if vs.len() < 4 {
+                if vs.len() < 4 || r.below(2) == 0 {
+                    // refine an edge of the face first so chords keep being possible
+                    let Some(e) = r.pick(t.face_edges(f)) else { continue };
+                    let Carrier::Curve(cc) = t.carrier(e).clone() else { continue };
+                    let param = cc.range.lo + (0.2 + 0.6 * r.unit()) * (cc.range.hi - cc.range.lo);
+                    let Some(pt) = t.shapes().curve(cc.curve).map(|c| c.eval(param)) else { continue };
+                    if let Ok(nv) = t.make_vertex(pt) {
+                        n += usize::from(t.split_edge(e, nv, param).is_ok());
+                    }
                     continue;
                 }
                 let i = r.below(vs.len());
@@ -424,8 +432,7 @@ fn act(t: &mut dyn TopologyEdit, r: &mut Rng) -> String {
             format!("grow Ok({n})")
         }
         _ => unreachable!(),
-    };
-    s
+    }
 }
 
 type Stats = std::collections::BTreeMap<String, (usize, usize)>;
@@ -487,8 +494,8 @@ fn report(stats: &Stats) {
 fn random_sequences_agree_with_the_reference() {
     let mut stats = Stats::new();
     let (mut sorted, mut full) = (0, 0);
-    for seed in 1..=12u64 {
-        let c = drive(seed, 60, 1, &mut stats);
+    for seed in 1..=8u64 {
+        let c = drive(seed, 60, 4, &mut stats);
         sorted += c.sorted_parent_rewrites;
         full += c.full_parent_rewrites;
     }

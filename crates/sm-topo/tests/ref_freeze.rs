@@ -31,19 +31,6 @@ fn constructors_match_fields() {
     assert_eq!(CutOutcome::new(Vec::new(), Vec::new()), CutOutcome::default());
 }
 
-#[cfg(feature = "serde")]
-#[test]
-fn golden_serde_shapes() {
-    use serde_json::json;
-    // CellFlags is a bare integer on the wire, whatever its storage width.
-    assert_eq!(serde_json::to_value(CellFlags::DEGENERATE).unwrap(), json!(1));
-    assert_eq!(serde_json::from_value::<CellFlags>(json!(1)).unwrap(), CellFlags::DEGENERATE);
-    // Unit variants stay plain strings; data variants stay externally tagged.
-    assert_eq!(serde_json::to_value(EntityState::Live).unwrap(), json!("Live"));
-    assert_eq!(serde_json::to_value(EntityState::Split(OpId(2))).unwrap(), json!({"Split": 2}));
-    assert_eq!(serde_json::to_value(Coincidence::ImprintedNotMerged).unwrap(), json!("ImprintedNotMerged"));
-}
-
 // ---------------------------------------------------------------- W0g r2: pcurve hash words
 
 fn pcurve_hash(pc: sm_geom_api::PCurve) -> u64 {

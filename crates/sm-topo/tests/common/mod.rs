@@ -17,12 +17,15 @@ impl Twin {
     pub fn new() -> Self {
         let mut b = TopoStore::new();
         b.set_paranoid(true);
+        // Small thresholds so the positional and incremental paths run on small models.
+        b.set_row_thresholds(6, 6);
         Self { a: CellComplex::new(), b }
     }
 
     pub fn with_tolerance(tol: sm_geom_api::ModelTolerance) -> Self {
         let mut b = TopoStore::with_tolerance(tol);
         b.set_paranoid(true);
+        b.set_row_thresholds(6, 6);
         Self { a: CellComplex::with_tolerance(tol), b }
     }
 

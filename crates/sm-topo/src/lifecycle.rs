@@ -23,7 +23,11 @@ impl TopoStore {
         self.dirty_edges.clear();
         self.orient_dirty.clear();
         self.closure_edges.clear();
+        self.ins_log.clear();
         self.merge_gap = None;
+        for t in &mut self.t {
+            t.live_edits = 0;
+        }
         self.open = Some(OpState { op, prev_revision: self.revision, start: self.mark() });
         self.revision = op;
         Ok(())
@@ -37,6 +41,7 @@ impl TopoStore {
             self.dirty_edges.clear();
             self.orient_dirty.clear();
             self.closure_edges.clear();
+            self.ins_log.clear();
             self.journal.clear();
             self.jdata.clear();
         }
@@ -97,9 +102,10 @@ impl TopoStore {
         check.dedup();
         check.retain(|id| self.state(*id) == Some(EntityState::Live));
         let open = self.open_shells();
-        let issues = self.check_local(&check, &open);
+        let ins = self.inserted_entries();
+        let issues = self.check_local(&check, &open, &ins);
         if self.paranoid {
-            let full = crate::check::check_cells(self, &check, None);
+            let full = crate::check::check_cells(self, &check, None, None);
             assert_eq!(issues, full, "incremental end_op checks differ from the full reference checks");
         }
         if !issues.is_empty() {

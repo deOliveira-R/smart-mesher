@@ -7,9 +7,6 @@ use sm_core::{EntityId, EntityKind};
 use sm_topo_api::{Carrier, Coincidence, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, ModKind, Side, SurfaceCarrier, TopoError, TopologyView};
 use std::collections::BTreeMap;
 
-/// Volume/body rows at least this long are edited by position instead of rebuilt.
-const SORTED_ROW_MIN: usize = 24;
-
 /// Positions of every entry naming `cell` in a row sorted by `(ring, cell, side)`.
 fn positions_of(row: &[Incidence], cell: EntityId, out: &mut Vec<usize>) {
     let mut pos = 0;
@@ -126,7 +123,7 @@ impl TopoStore {
         parents.dedup();
         for parent in parents {
             let Some((pdim, _)) = self.locate(parent) else { continue };
-            let long = matches!(pdim, Dim::Volume | Dim::Body) && self.row(parent).len() >= SORTED_ROW_MIN;
+            let long = matches!(pdim, Dim::Volume | Dim::Body) && self.row(parent).len() >= self.sorted_row_min;
             if long {
                 self.counters.sorted_parent_rewrites += 1;
                 let expected = self.paranoid.then(|| self.generic_replaced(parent, pdim, old, &f));

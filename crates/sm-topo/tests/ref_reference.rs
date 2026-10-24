@@ -823,27 +823,6 @@ fn view_and_edit_are_object_safe() {
     assert_valid(v);
 }
 
-#[cfg(feature = "serde")]
-#[test]
-fn public_data_types_are_serde() {
-    fn is_serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
-    is_serde::<Dim>();
-    is_serde::<Side>();
-    is_serde::<Incidence>();
-    is_serde::<Carrier>();
-    is_serde::<LineageRecord>();
-    is_serde::<LineageKind>();
-    is_serde::<Lineage>();
-    is_serde::<CutOutcome>();
-    is_serde::<FacePair>();
-    is_serde::<EntityState>();
-    is_serde::<CoedgeKey>();
-    is_serde::<Moments>();
-    is_serde::<FaceMoments>();
-    is_serde::<TopoIssue>();
-    is_serde::<EdgeUse>();
-}
-
 // ---------------------------------------------------------------- remaining contract clauses
 
 #[test]

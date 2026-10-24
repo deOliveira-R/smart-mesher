@@ -41,11 +41,6 @@ impl<T: Copy> Rows<T> {
         Self { span: Vec::new(), data: Vec::new(), free: Vec::new(), fill }
     }
 
-    /// Number of slots.
-    pub(crate) fn slots(&self) -> usize {
-        self.span.len()
-    }
-
     /// Append an empty row.
     pub(crate) fn push_empty(&mut self) {
         self.span.push(Span::default());
@@ -127,10 +122,6 @@ impl<T: Copy> Rows<T> {
         self.span[slot] = Span::default();
     }
 
-    /// Total entries currently stored (not counting free blocks), for statistics.
-    pub(crate) fn live_entries(&self) -> usize {
-        self.span.iter().map(|s| s.len as usize).sum()
-    }
 }
 
 #[cfg(test)]

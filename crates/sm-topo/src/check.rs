@@ -12,29 +12,46 @@ use std::collections::BTreeMap;
 /// that net use.
 pub(crate) type OpenShells = BTreeMap<(EntityId, u16), (EntityId, i64)>;
 
+/// For long volume/body rows: the entries inserted in the open operation that are still in the
+/// row, in row order. Rows with at least `min_len` entries are checked through these only (the
+/// rest were checked when they were inserted).
+pub(crate) struct Inserted {
+    pub(crate) min_len: usize,
+    pub(crate) map: BTreeMap<EntityId, Vec<Incidence>>,
+}
 fn v(cell: EntityId, rule: Rule, message: impl Into<String>) -> TopoIssue {
     TopoIssue::new(cell, rule, Severity::Error, message)
 }
 
 /// The local checks on the given cells (ascending). With `open` the shell closure comes from the
 /// incremental computation; without it every shell is walked (the reference algorithm).
-pub(crate) fn check_cells(view: &dyn TopologyView, ids: &[EntityId], open: Option<&OpenShells>) -> Vec<TopoIssue> {
+pub(crate) fn check_cells(view: &dyn TopologyView, ids: &[EntityId], open: Option<&OpenShells>, ins: Option<&Inserted>) -> Vec<TopoIssue> {
     let mut out = Vec::new();
     for &c in ids {
         let Some(dim) = view.dim_of(c) else { continue };
-        check_row(view, dim, c, &mut out);
+        check_row(view, dim, c, ins, &mut out);
         match dim {
             Dim::Edge => check_edge(view, c, &mut out),
             Dim::Face => check_face(view, c, &mut out),
-            Dim::Volume => check_shells(view, c, open, &mut out),
+            Dim::Volume => check_shells(view, c, open, ins, &mut out),
             _ => {}
         }
     }
     out
 }
 
-fn check_row(view: &dyn TopologyView, dim: Dim, c: EntityId, out: &mut Vec<TopoIssue>) {
-    for e in view.boundary(c) {
+/// The entries of a long sorted row that need checking: those inserted in this operation.
+fn changed_entries<'a>(view: &'a dyn TopologyView, c: EntityId, ins: Option<&'a Inserted>) -> Option<&'a [Incidence]> {
+    let ins = ins?;
+    (view.boundary(c).len() >= ins.min_len).then(|| ins.map.get(&c).map_or(&[][..], Vec::as_slice))
+}
+
+fn check_row(view: &dyn TopologyView, dim: Dim, c: EntityId, ins: Option<&Inserted>, out: &mut Vec<TopoIssue>) {
+    let row = match (dim, changed_entries(view, c, ins)) {
+        (Dim::Volume | Dim::Body, Some(changed)) => changed,
+        _ => view.boundary(c),
+    };
+    for e in row {
         let Some(cd) = view.dim_of(e.cell) else {
             out.push(v(c, Rule::DeadReference, format!("unknown cell {:?}", e.cell)));
             continue;
@@ -109,7 +126,11 @@ fn check_face(view: &dyn TopologyView, face: EntityId, out: &mut Vec<TopoIssue>)
     }
 }
 
-fn check_shells(view: &dyn TopologyView, vol: EntityId, open: Option<&OpenShells>, out: &mut Vec<TopoIssue>) {
+fn check_shells(view: &dyn TopologyView, vol: EntityId, open: Option<&OpenShells>, ins: Option<&Inserted>, out: &mut Vec<TopoIssue>) {
+    if let (Some(open), Some(changed)) = (open, changed_entries(view, vol, ins)) {
+        check_shells_long(view, vol, open, changed, out);
+        return;
+    }
     for shell in view.shells(vol) {
         match view.shell_kind(vol, shell.ring) {
             None => out.push(v(vol, Rule::ShellKind, format!("shell {} has no kind", shell.ring))),
@@ -143,6 +164,31 @@ fn check_shells(view: &dyn TopologyView, vol: EntityId, open: Option<&OpenShells
         if let Some((edge, n)) = count.iter().find(|(_, n)| **n != 0) {
             out.push(v(vol, Rule::ShellOpen, format!("shell {} leaves edge {edge:?} with net use {n}", shell.ring)));
         }
+    }
+}
+
+/// `check_shells` for a long row: ring groups by binary search, the baffle test on the entries
+/// inserted in this operation (or on the whole ring if its kind was just set).
+fn check_shells_long(view: &dyn TopologyView, vol: EntityId, open: &OpenShells, changed: &[Incidence], out: &mut Vec<TopoIssue>) {
+    let row = view.boundary(vol);
+    let mut pos = 0;
+    while pos < row.len() {
+        let ring = row[pos].ring;
+        let end = pos + row[pos..].partition_point(|e| e.ring == ring);
+        if ring != Incidence::EMBEDDED {
+            match view.shell_kind(vol, ring) {
+                None => out.push(v(vol, Rule::ShellKind, format!("shell {ring} has no kind"))),
+                Some(ShellKind::Outer) if ring != 0 => out.push(v(vol, Rule::ShellKind, "only shell 0 can be Outer")),
+                Some(ShellKind::Outer | ShellKind::Void) if changed.iter().any(|e| e.ring == ring && e.side == Side::Both) => {
+                    out.push(v(vol, Rule::ShellKind, format!("baffle in closed shell {ring}")));
+                }
+                _ => {}
+            }
+            if let Some((edge, n)) = open.get(&(vol, ring)) {
+                out.push(v(vol, Rule::ShellOpen, format!("shell {ring} leaves edge {edge:?} with net use {n}")));
+            }
+        }
+        pos = end;
     }
 }
 
@@ -211,12 +257,28 @@ impl TopoStore {
         open
     }
 
-    /// The `end_op` local checks with the incremental shell closure.
-    pub(crate) fn check_local(&self, ids: &[EntityId], open: &OpenShells) -> Vec<TopoIssue> {
-        check_cells(self, ids, Some(open))
+    /// The entries inserted into volume/body rows in the open operation that are still present,
+    /// per cell in row order.
+    pub(crate) fn inserted_entries(&self) -> Inserted {
+        let mut map: BTreeMap<EntityId, Vec<Incidence>> = BTreeMap::new();
+        for (id, e) in &self.ins_log {
+            map.entry(*id).or_default().push(*e);
+        }
+        for (id, v) in &mut map {
+            v.sort_by_key(|e| (e.ring, e.cell, e.side));
+            v.dedup();
+            let row = self.row(*id);
+            v.retain(|e| row.binary_search_by_key(&(e.ring, e.cell, e.side), |x| (x.ring, x.cell, x.side)).is_ok());
+        }
+        Inserted { min_len: self.long_row, map }
     }
 
-    /// The same result as [`sm_topo_api::validate`] (issues sorted by `(cell, rule)`), computed
+    /// The `end_op` local checks with the incremental shell closure.
+    pub(crate) fn check_local(&self, ids: &[EntityId], open: &OpenShells, ins: &Inserted) -> Vec<TopoIssue> {
+        check_cells(self, ids, Some(open), Some(ins))
+    }
+
+    /// The same result as [`sm_topo_api::validate()`] (issues sorted by `(cell, rule)`), computed
     /// in parallel over chunks of cells in a fixed order, so it is identical for any thread count.
     pub fn validate_par(&self) -> Vec<TopoIssue> {
         const CHUNK: usize = 512;
@@ -226,7 +288,7 @@ impl TopoStore {
             per_dim.push(self.cells(dim));
             ids.extend_from_slice(self.cells(dim));
         }
-        let mut out: Vec<TopoIssue> = ids.par_chunks(CHUNK).map(|c| check_cells(self, c, None)).collect::<Vec<_>>().into_iter().flatten().collect();
+        let mut out: Vec<TopoIssue> = ids.par_chunks(CHUNK).map(|c| check_cells(self, c, None, None)).collect::<Vec<_>>().into_iter().flatten().collect();
         for (d, cells) in Dim::ALL.into_iter().zip(per_dim) {
             let parts: Vec<Vec<TopoIssue>> = cells
                 .par_chunks(CHUNK)

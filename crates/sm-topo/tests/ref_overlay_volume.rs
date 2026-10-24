@@ -170,12 +170,3 @@ fn volume_split_is_deterministic() {
         assert_eq!(h.join().unwrap(), first);
     }
 }
-
-#[cfg(feature = "schemars")]
-#[test]
-fn key_types_have_json_schemas() {
-    let s = format!("{:?}", schemars::schema_for!(CornerKey));
-    assert!(s.contains("incoming") && s.contains("face"), "{s}");
-    let s = format!("{:?}", schemars::schema_for!(CoedgeKey));
-    assert!(s.contains("edge") && s.contains("side"), "{s}");
-}

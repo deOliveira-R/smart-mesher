@@ -1491,7 +1491,7 @@ impl TopologyEdit for TopoStore {
     fn replace_curve(&mut self, id: EntityId, def: CurveDef) -> Result<(), TopoError> {
         self.atomic(|s| {
             let old = s.shapes.replace_curve(id, def)?;
-            s.journal.push(Undo::Curve { id, old });
+            s.journal.push(Undo::Curve { id, old: Box::new(old) });
             let edges: Vec<EntityId> = s.cells(Dim::Edge).iter().copied().filter(|e| matches!(s.carrier(*e), Carrier::Curve(c) if c.curve == id)).collect();
             for e in edges {
                 if let Some(slot) = s.slot_in(e, Dim::Edge) {
@@ -1506,7 +1506,7 @@ impl TopologyEdit for TopoStore {
     fn replace_surface(&mut self, id: EntityId, def: SurfaceDef) -> Result<(), TopoError> {
         self.atomic(|s| {
             let old = s.shapes.replace_surface(id, def)?;
-            s.journal.push(Undo::Surface { id, old });
+            s.journal.push(Undo::Surface { id, old: Box::new(old) });
             // Faces carried by the surface and CSG cells with a half-space on it.
             let uses = |c: &Carrier| match c {
                 Carrier::Surface(c) => c.surface == id,
