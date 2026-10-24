@@ -208,6 +208,8 @@ pub struct Interpreter<'h, H: Host + ?Sized> {
     saw_placeholder: bool,
     /// Spans that already got a `batch-snapshot` warning (an unrolled loop warns once per site).
     snap_warned: BTreeSet<(u32, u32, u32)>,
+    /// Spans that already got a block-`let` `shadowed` warning (a loop body warns once per site).
+    shadow_warned: BTreeSet<(u32, u32, u32)>,
     /// Set when the call being built contains a plan placeholder (so it cannot be decoded).
     tainted: bool,
 }
@@ -234,6 +236,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             callables: None,
             saw_placeholder: false,
             snap_warned: BTreeSet::new(),
+            shadow_warned: BTreeSet::new(),
             tainted: false,
         }
     }
@@ -424,7 +427,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         // A `let` in a block that hides a binding of an enclosing scope: usually a `set` was meant.
         if prev.is_none() && self.scopes.len() > 1 {
             let outer = self.scopes[..self.scopes.len() - 1].iter().rev().find_map(|sc| sc.get(&name.name)).map(|b| b.span);
-            if let Some(outer) = outer {
+            if let Some(outer) = outer.filter(|_| self.shadow_warned.insert((name.span.file, name.span.lo, name.span.hi))) {
                 let d = Diagnostic::warning("shadowed", name.span, format!("`{}` shadows a variable of an enclosing scope", name.name))
                     .label("a new variable, not a change to the outer one")
                     .note(outer, "outer binding defined here")

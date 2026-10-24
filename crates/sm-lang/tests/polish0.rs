@@ -143,6 +143,15 @@ fn if_expression_needs_else_and_a_bool() {
 // ---- 4. shadowing ------------------------------------------------------------------------------------
 
 #[test]
+fn a_shadowing_let_in_a_loop_warns_once() {
+    let (rep, _, map) = run("let x = 1\nfor i in range(0, 1000) { let x = 2 }\n");
+    assert!(rep.ok());
+    let w = warnings(&rep);
+    assert_eq!(w.len(), 1, "{}", render_all(&rep.diagnostics, &map));
+    assert_eq!(w[0].code, "shadowed");
+}
+
+#[test]
 fn a_block_let_that_hides_an_outer_variable_warns() {
     let (rep, _, map) = run("let x = 1\nif true { let x = 2 }\nassert x == 1\n");
     assert!(rep.ok());
