@@ -248,7 +248,7 @@ fn execute(cli: &Cli, connect: &mut Connect<'_>, io: &mut Io<'_>) -> Res<()> {
     match (&cli.command, &settings.project) {
         (Command::New { dir }, _) => {
             // `session.open{create:true}` would open an existing project and report it as created.
-            if dir.join("project.toml").exists() {
+            if dir.join("project.toml").is_file() {
                 return Err(Failure::local(format!(
                     "{} already holds a project; `new` does not reuse it",
                     dir.display()

@@ -10,10 +10,15 @@ use sm_protocol::HashResult;
 
 fn smesh(args: &[&str], stdin: &str, rayon_threads: Option<usize>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smesh"));
-    std::fs::create_dir_all(env!("CARGO_TARGET_TMPDIR")).expect("target tmpdir");
-    // Relative exports of a `run --memory` script land here, not in the source tree.
+    // Relative exports of a `run --memory` script land in a directory private to this call, so
+    // concurrent processes never share an export path (or its `.part` temp file).
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("per-call tmpdir");
     cmd.args(args)
-        .current_dir(env!("CARGO_TARGET_TMPDIR"))
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

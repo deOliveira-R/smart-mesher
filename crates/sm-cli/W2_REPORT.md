@@ -124,4 +124,8 @@ Not done:
 | contract requests: `session.open` keeps author/clock; `create:true` creates on disk | Confirmed by `fixed_time_and_author_make_node_hashes_reproducible` and `run_fork_script_in_a_fresh_project_without_new`; `Server::from_factory` is used. |
 | contract requests: sm-server `ws` feature to forward | Not done: feature work, not a review defect. `serve --ws` stays a usage error (exit 2); sm-server now has `ws`, so a forwarding feature in sm-cli is a W3 item. |
 
+| p2fix 1 | Flaky `output_is_identical_across_runs_and_thread_counts` | Fixed: each `smesh()` call in `tests/binary.rs` runs in its own `CARGO_TARGET_TMPDIR/<pid>-<n>` directory, so the concurrent determinism processes no longer race on `out.smsh.part`. |
+| p2fix 2 | `new` guard used `exists()`, discovery `is_file()` | Fixed: both use `is_file()`. |
+| p2fix 3 | sm-server `write_atomic` fixed `.part` temp name | Not done: outside sm-cli (orchestrator / sm-server owner); a unique temp name (pid + counter) would make concurrent exports robust. |
+
 No state hash, export bytes or golden file changed.
