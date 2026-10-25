@@ -8,6 +8,7 @@ let info = mesh.info(mesh: m.mesh[0])
 assert info.cells == 1000
 assert info.vertices == 1331
 fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
 session.export(path: "out.smsh")
 session.export(path: "out.vtu")
 print session.hash()

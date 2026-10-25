@@ -332,20 +332,17 @@ fn mcp_milestone_lines(dir: &Path) -> Vec<Value> {
             json!({"targets":["TopoVolume#1"],"scheme":"map"}),
         ),
         tool_call(6, "mesh__run", json!({"targets":["TopoVolume#1"]})),
-        tool_call(
-            7,
-            "fem__block_add",
-            json!({"block":1,"volumes":["TopoVolume#1"]}),
-        ),
-        tool_call(8, "session_export", json!({"path": p("mcp.smsh")})),
-        tool_call(9, "session_export", json!({"path": p("mcp.vtu")})),
-        tool_call(10, "session_hash", json!({})),
+        tool_call(7, "fem__block_add", json!({"block":1,"volumes":["TopoVolume#1"]})),
+        tool_call(8, "fem__block_element_type", json!({"block":1,"element_type":"HEX8"})),
+        tool_call(9, "session_export", json!({"path": p("mcp.smsh")})),
+        tool_call(10, "session_export", json!({"path": p("mcp.vtu")})),
+        tool_call(11, "session_hash", json!({})),
     ]
 }
 
-/// (node, state) of the five op calls 3..=7.
+/// (node, state) of the six op calls 3..=8.
 fn mcp_nodes(replies: &BTreeMap<i64, Value>) -> R<Vec<(String, String)>> {
-    (3..=7)
+    (3..=8)
         .map(|id| {
             let sc = tool_ok(replies, id)?;
             Ok((
@@ -365,6 +362,7 @@ fn api_ops(vol: &str, size: f64) -> Vec<(&'static str, Value)> {
         ("mesh.scheme", json!({"targets":[vol],"scheme":"map"})),
         ("mesh.run", json!({"targets":[vol]})),
         ("fem.block_add", json!({"block":1,"volumes":[vol]})),
+        ("fem.block_element_type", json!({"block":1,"element_type":"HEX8"})),
     ]
 }
 
@@ -659,11 +657,7 @@ fn milestone() {
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"it","version":"0"}}}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            tool_call(
-                11,
-                "run_script",
-                json!({"text": read_text(&data("fork.smesh"))}),
-            ),
+            tool_call(12, "run_script", json!({"text": read_text(&data("fork.smesh"))})),
         ],
         Threads::Inherit,
     );
@@ -712,26 +706,20 @@ fn milestone() {
                 ),
                 Err(e) => rows.fail(1, e),
             }
-            for id in [8, 9] {
+            for id in [9, 10] {
                 if let Err(e) = tool_ok(rep, id) {
                     rows.fail(5, format!("MCP session_export: {e}"));
                 }
             }
             n_mcp = mcp_nodes(rep);
-            let hr = tool_ok(rep, 10);
-            h_mcp = hr
-                .as_ref()
-                .map_err(Clone::clone)
-                .and_then(|v| hash_of(&v["state"], "state"));
+            let hr = tool_ok(rep, 11);
+            h_mcp = hr.as_ref().map_err(Clone::clone).and_then(|v| hash_of(&v["state"], "state"));
             mcp_layers = hr.and_then(|v| layers_of(&v));
         }
     }
     match &mcp_fork {
-        Ok(rep) => match tool_ok(rep, 11) {
-            Ok(_) => rows.note(
-                2,
-                "MCP run_script(fork.smesh) in a fresh process: asserts pass",
-            ),
+        Ok(rep) => match tool_ok(rep, 12) {
+            Ok(_) => rows.note(2, "MCP run_script(fork.smesh) in a fresh process: asserts pass"),
             Err(e) => rows.fail(2, format!("MCP run_script(fork.smesh): {e}")),
         },
         Err(e) => rows.fail(2, format!("MCP fork session: {e}")),
