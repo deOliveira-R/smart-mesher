@@ -72,7 +72,7 @@ Definition of done run locally: `cargo build --workspace`; `cargo test -p sm-ser
   The tests that touch `standard()` skip (printing why) on `MissingScheme` and become live automatically;
   `registry.rs::standard_lists_the_milestone_ops` is `#[ignore]`d for the integration agent.
 * The registry check was exercised only on the demo ops and `core.batch`: `ModelPlugin`, `MeshPlugin`,
-  `FemPlugin`, `TessPlugin` are skeletons. `NO_OUTPUT_OPS` in `tests/registry.rs` lists the ops expected
+  `FemPlugin`, `TessPlugin` are skeletons. ops that write no ids set `TypedOp::NO_OUTPUTS` (the registry test derives from it; the former `NO_OUTPUT_OPS` list is gone), namely
   to write no ids (`model.move/rotate/scale/reflect/delete`, `mesh.size/intervals/scheme/delete`,
   `fem.block_remove/block_element_type`). Because "declares no OUTPUTS" and "writes no ids" look the same
   in `OpInfo`, an op outside that list must declare outputs; adjust the list at integration if an owner

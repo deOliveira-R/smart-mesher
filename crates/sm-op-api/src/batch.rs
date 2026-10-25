@@ -58,6 +58,7 @@ pub const ESCAPED_LITERAL_PATTERN: &str = r"^\$\$";
 
 impl TypedOp for Batch {
     const NAME: &'static str = "core.batch";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let total = self.ops.len();

@@ -54,6 +54,11 @@ pub trait TypedOp:
     /// body, any `alloc_as`/`adopt_as` role not declared and any cardinality or kind violation
     /// with [`OpError::Invalid`]. Not hashed.
     const OUTPUTS: &'static [OutputRole] = &[];
+    /// Marks an op that deliberately writes no ids and declares no output roles (default
+    /// `false`). With `OUTPUTS` empty this distinguishes "declared none" (`true`) from
+    /// "undeclared" (`false`); conventions checks can require one or the other. Must not be
+    /// `true` together with a non-empty `OUTPUTS` (registration is refused). Not hashed.
+    const NO_OUTPUTS: bool = false;
     /// Params property that front ends may pass positionally (default none). The registry
     /// marks it `x-positional` in the published schema. Not hashed.
     const POSITIONAL: Option<&'static str> = None;

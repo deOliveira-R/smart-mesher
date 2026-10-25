@@ -1,5 +1,5 @@
 //! Registry-level conventions (W2 plan §5 risk 6): every op of a distribution declares `OUTPUTS`
-//! (or is explicitly listed as writing no ids), and every `EntityId` property of an op or query
+//! (or sets `NO_OUTPUTS` because it writes no ids), and every `EntityId` property of an op or query
 //! carries `x-entity-kind`. The checker runs on the demo set, on the standard plugin set over the
 //! stub schemes (always), and on `standard()` itself once the scheme crates are merged.
 mod common;
@@ -13,25 +13,6 @@ use sm_engine::WorkspaceBuilder;
 use sm_op_api::{ApplyCtx, OpError, OpInfoOwned, QueryInfoOwned, TypedOp};
 use sm_protocol::{CatalogResult, Endpoint, Request};
 use sm_server::{Server, StandardError, distribution, try_standard};
-
-/// Ops that legitimately write no new entity ids and so declare no output role. Adding an op here
-/// is a decision, not an accident: an op that allocates or adopts ids must declare `OUTPUTS`.
-const NO_OUTPUT_OPS: &[&str] = &[
-    "core.batch",
-    "demo.rename",
-    "fem.block_element_type",
-    "fem.block_remove",
-    "mesh.default_size",
-    "mesh.delete",
-    "mesh.intervals",
-    "mesh.scheme",
-    "mesh.size",
-    "model.delete",
-    "model.move",
-    "model.reflect",
-    "model.rotate",
-    "model.scale",
-];
 
 fn is_entity_id(v: &Value) -> bool {
     let Some(o) = v.as_object() else { return false };
@@ -93,8 +74,8 @@ fn walk_properties(node: &Value, path: &str, out: &mut Vec<String>) {
 fn violations(ops: &[OpInfoOwned], queries: &[QueryInfoOwned]) -> Vec<String> {
     let mut v = Vec::new();
     for op in ops {
-        if op.outputs.is_empty() && !NO_OUTPUT_OPS.contains(&op.name.as_str()) {
-            v.push(format!("op `{}` declares no OUTPUTS (list it in NO_OUTPUT_OPS only if it writes no ids)", op.name));
+        if op.outputs.is_empty() && !op.no_outputs {
+            v.push(format!("op `{}` declares no OUTPUTS (set `NO_OUTPUTS = true` only if it writes no ids)", op.name));
         }
         let mut bad = Vec::new();
         walk_properties(op.schema.as_value(), "", &mut bad);

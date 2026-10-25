@@ -85,7 +85,7 @@ impl TypedOp for BlockAdd {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !self.faces.is_empty() {
-            return Err(OpError::Invalid(SHELL_REFUSED.into()));
+            return Err(OpError::Unsupported(SHELL_REFUSED.into()));
         }
         let vols = resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         let (label, name) = (self.block, self.name.clone());
@@ -152,6 +152,7 @@ pub struct BlockRemove {
 
 impl TypedOp for BlockRemove {
     const NAME: &'static str = "fem.block_remove";
+    const NO_OUTPUTS: bool = true;
     const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
@@ -193,18 +194,19 @@ pub struct BlockElementType {
 
 impl TypedOp for BlockElementType {
     const NAME: &'static str = "fem.block_element_type";
+    const NO_OUTPUTS: bool = true;
     const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !self.element_type.is_linear() {
-            return Err(OpError::Invalid(format!(
+            return Err(OpError::Unsupported(format!(
                 "unsupported element type {}: higher-order elements need degree elevation",
                 self.element_type
             )));
         }
         if matches!(self.element_type, ElementType::Quad4 | ElementType::Tri3) {
-            return Err(OpError::Invalid(SHELL_REFUSED.into()));
+            return Err(OpError::Unsupported(SHELL_REFUSED.into()));
         }
         let color = ctx
             .layer::<ModelLayer>()?
