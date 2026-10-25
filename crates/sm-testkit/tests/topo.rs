@@ -22,8 +22,9 @@ fn counts_euler_and_validity() {
 fn volumes_and_areas_match_closed_forms() {
     for f in all_topo_fixtures().unwrap() {
         if f.name == "sphere" {
-            // Faces touching poles have no moments in the reference complex.
-            assert!(f.complex.volume_moments(f.complex.volumes()[0]).is_err());
+            // Pole coedges contribute dv = 0 (CR-1): the moments exist and match closed forms.
+            let v = f.complex.volume_moments(f.complex.volumes()[0]).unwrap().volume;
+            assert!((v - f.volumes[0]).abs() <= 1e-6 * f.volumes[0].max(1.0), "sphere: {v}");
             continue;
         }
         let mut vols: Vec<f64> = f.complex.volumes().iter().map(|v| f.complex.volume_moments(*v).unwrap().volume).collect();

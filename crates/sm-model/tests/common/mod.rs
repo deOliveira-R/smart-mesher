@@ -222,8 +222,8 @@ pub fn measure(s: &Session, e: EntityId) -> sm_model::Measurement {
     serde_json::from_value(query(s, "model.measure", serde_json::json!({"entity": e.to_string()})).expect("measure")).expect("decode")
 }
 
-/// Independent checks of the (only) sphere face of the model, which `face_moments` refuses
-/// (CR-1) so `worst_outwardness` cannot cover it. Verifies, from the stored geometry alone:
+/// Independent checks of the (only) sphere face of the model (closed-form and geometry-level,
+/// independent of the numeric `face_moments`). Verifies, from the stored geometry alone:
 /// the surface is a sphere of the expected centre and radius; the face normal
 /// (`sense * du x dv`) points radially outward; a numerical divergence integral
 /// `V = 1/3 oint (p - c) . n dA` over the parameter domain gives `4/3 pi r^3`; every pcurve lies
@@ -286,13 +286,8 @@ pub fn check_sphere(s: &Session, center: [f64; 3], r: f64) {
     assert!(shoelace * outward_uv > 0.0, "loop runs against the face normal (shoelace {shoelace})");
 }
 
-/// Model validation errors against the model layer's topology (planarity tolerance 1e-6: the
-/// second-moment planarity test loses digits at coordinates of order 10).
-///
-/// TODO(CR-2): the loosened tolerance is a workaround for the `FaceMoments::plane` cancellation
-/// in sm-topo-api. Once CR-2 lands, use `Tolerance::default()` here so that the mirror-deck
-/// acceptance runs at the default tolerance.
+/// Model validation errors against the model layer's topology, at the default tolerance.
 pub fn model_errors(s: &Session) -> Vec<String> {
     let l = model(s);
-    sm_model_api::validate(l.model(), l.topo(), sm_model_api::Tolerance::default().with_linear(1e-6)).errors().map(|i| format!("{:?}: {}", i.code, i.detail)).collect()
+    sm_model_api::validate(l.model(), l.topo(), sm_model_api::Tolerance::default()).errors().map(|i| format!("{:?}: {}", i.code, i.detail)).collect()
 }

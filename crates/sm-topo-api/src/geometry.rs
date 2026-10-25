@@ -2,11 +2,11 @@
 //!
 //! These are *defaults* of [`crate::TopologyView`], computed from the carriers and the geometry
 //! store. They are exact for planar faces and accurate (composite Gauss quadrature, error far
-//! below the model tolerance) for any face on a parametric surface without poles whose loops are
-//! made of curve-carrying edges: planes, cylinders, tori and bounded NURBS. Faces touching a
-//! pole (sphere, cone apex), faces without a surface carrier, and virtual faces without a
-//! numeric carrier return [`QueryError::Unsupported`]; the production implementation lives in
-//! `sm-geom`/`sm-model`.
+//! below the model tolerance) for any face on a parametric surface whose loops are made of
+//! curve-carrying edges and degenerate (pole/apex) coedges: planes, cylinders, tori, spheres,
+//! cones and bounded NURBS. A degenerate coedge contributes `dv = 0` to the boundary integral;
+//! its pcurve (needed on periodic surfaces) carries the parameter jump. Faces without a surface
+//! carrier, and virtual faces without a numeric carrier, return [`QueryError::Unsupported`].
 //!
 //! Method: the surface integral over a trimmed face is turned into a boundary integral in the
 //! face's parameter space by Green's theorem, `∬ h du dv = ∮ H dv` with `H(u,v) = ∫ h du`, and
@@ -77,6 +77,11 @@ pub struct FaceMoments {
     pub second: [[f64; 3]; 3],
     /// `∫ n dA`, `n` the face normal (left to right); outward on a boundary face.
     pub vector_area: Vector3,
+    /// `∫ (x−c)(x−c)ᵀ dA` about the area centroid `c`, accumulated in a frame local to the face so
+    /// it does not cancel far from the origin. `None` when not computed (e.g. hand-built moments);
+    /// [`Self::plane`] then falls back to the origin-based `second`. Not serialized.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub central: Option<[[f64; 3]; 3]>,
 }
 
 impl FaceMoments {
@@ -89,7 +94,8 @@ impl FaceMoments {
     /// unit normal (left to right) and the plane offset `d` (`n·x = d`).
     ///
     /// With `n = vector_area/|vector_area|` and `d = n·first/area`, the mean square deviation is
-    /// `(nᵀ second n − d² area)/area`.
+    /// `(nᵀ second n − d² area)/area`, which loses digits far from the origin; when the central
+    /// second moment is present the equivalent `nᵀ C n / area` is used instead.
     pub fn plane(&self, tol: f64) -> Option<(Vector3, f64)> {
         let va = self.vector_area.norm();
         if !(self.area > 0.0 && va > 0.0) {
@@ -99,12 +105,13 @@ impl FaceMoments {
         let d = n.dot(self.first) / self.area;
         let sn = [n.x, n.y, n.z];
         let mut nsn = 0.0;
-        for (i, row) in self.second.iter().enumerate() {
+        let src = self.central.as_ref().unwrap_or(&self.second);
+        for (i, row) in src.iter().enumerate() {
             for (j, e) in row.iter().enumerate() {
                 nsn += sn[i] * e * sn[j];
             }
         }
-        let ms = ((nsn - d * d * self.area) / self.area).max(0.0);
+        let ms = if self.central.is_some() { nsn / self.area } else { (nsn - d * d * self.area) / self.area }.max(0.0);
         (ms.sqrt() <= tol).then_some((n, d))
     }
 
@@ -179,29 +186,50 @@ fn sample_face<'a, V: TopologyView + ?Sized>(view: &'a V, f: EntityId, gauss: bo
     let shapes = view.shapes();
     let surf = shapes.surface(sc.surface).ok_or(QueryError::Incomplete("surface not in store"))?;
     let dom = surf.domain();
-    if !dom.singularities.is_empty() {
-        return Err(QueryError::Unsupported("face on a surface with poles"));
-    }
     let nodes = gauss_sorted();
     let mut loops = Vec::new();
     for lp in view.loops(f) {
         let mut samples: Vec<Sample> = Vec::new();
         let mut prev: Option<Uv> = None;
+        // With pole coedges the loop's parameter path is anchored by the pcurves: the seam
+        // positions (e.g. `u = 0` vs `2 pi`) cannot be recovered by projection alone.
+        let anchored = lp.keys().any(|k| view.flags(k.edge).contains(CellFlags::DEGENERATE));
         for key in lp.keys() {
             let edge_flags: CellFlags = view.flags(key.edge);
             if edge_flags.contains(CellFlags::DEGENERATE) {
+                // Pole/apex coedge: it contributes `dv = 0` to the boundary integral, but its
+                // pcurve carries the parameter jump (e.g. `u` across a full turn), so move the
+                // unwrapping reference to its far end.
+                match view.pcurve(key) {
+                    Some(pc) => {
+                        let rg = pc.range();
+                        let end = if key.side == Side::Left { pc.eval(rg.hi) } else { pc.eval(rg.lo) };
+                        prev = Some(end);
+                    }
+                    None if dom.u.is_periodic() || dom.v.is_periodic() => return Err(QueryError::Incomplete("pole coedge without a pcurve")),
+                    None => {}
+                }
                 continue;
             }
             let Carrier::Curve(cc) = view.carrier(key.edge) else { return Err(QueryError::Unsupported("edge without a curve carrier")) };
             let curve = shapes.curve(cc.curve).ok_or(QueryError::Incomplete("curve not in store"))?;
             let along = (cc.sense == crate::types::Sense::Forward) == (key.side == Side::Left);
             let (lo, hi) = (cc.range.lo, cc.range.hi);
+            if anchored && let Some(pc) = view.pcurve(key) {
+                let rg = pc.range();
+                prev = Some(pc.eval(if along { rg.lo } else { rg.hi }));
+            }
             let mut push = |t: f64, w: f64, prev: &mut Option<Uv>| -> Result<(), QueryError> {
                 let cj = curve.jet(t);
                 let proj = surf.project(cj.p, *prev)?;
                 let uv = unwrap_uv(&dom, proj.uv, *prev);
                 let j = surf.jet(uv);
-                let (_, dvdt) = solve_duv(&j, cj.d1).ok_or(QueryError::Unsupported("degenerate parametrization on boundary"))?;
+                let dvdt = match solve_duv(&j, cj.d1) {
+                    Some((_, dvdt)) => dvdt,
+                    // A polygon end point may sit on a pole; its weight is zero anyway.
+                    None if !gauss => 0.0,
+                    None => return Err(QueryError::Unsupported("degenerate parametrization on boundary")),
+                };
                 let dir = if along { 1.0 } else { -1.0 };
                 samples.push(Sample { uv, dv: dir * w * dvdt });
                 *prev = Some(uv);
@@ -289,17 +317,36 @@ pub fn face_moments<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<F
         Carrier::Surface(sc) => sc.sense.sign(),
         _ => 1.0,
     };
-    let r = green::<13>(&fs, &|j| {
+    // Local frame for the central moments: a point of the face boundary.
+    let o = fs.surf.eval(fs.loops[0][0].uv);
+    let r = green::<22>(&fs, &|j| {
         let n = j.du.cross(j.dv);
         let (x, y, z) = (j.p.x, j.p.y, j.p.z);
         let da = n.norm();
-        [da, x * da, y * da, z * da, x * x * da, y * y * da, z * z * da, x * y * da, y * z * da, z * x * da, n.x, n.y, n.z]
+        let (a, b, c) = (x - o.x, y - o.y, z - o.z);
+        [
+            da, x * da, y * da, z * da, x * x * da, y * y * da, z * z * da, x * y * da, y * z * da, z * x * da, n.x, n.y, n.z, a * da, b * da, c * da, a * a * da, b * b * da, c * c * da, a * b * da, b * c * da,
+            c * a * da,
+        ]
+    });
+    let area = sigma * r[0];
+    let central = (area > 0.0).then(|| {
+        let f = [sigma * r[13], sigma * r[14], sigma * r[15]];
+        let s = mat([sigma * r[16], sigma * r[17], sigma * r[18], sigma * r[19], sigma * r[20], sigma * r[21]]);
+        let mut c = s;
+        for i in 0..3 {
+            for j in 0..3 {
+                c[i][j] -= f[i] * f[j] / area;
+            }
+        }
+        c
     });
     Ok(FaceMoments {
         area: sigma * r[0],
         first: Vector3::new(sigma * r[1], sigma * r[2], sigma * r[3]),
         second: mat([sigma * r[4], sigma * r[5], sigma * r[6], sigma * r[7], sigma * r[8], sigma * r[9]]),
         vector_area: Vector3::new(r[10], r[11], r[12]),
+        central,
     })
 }
 

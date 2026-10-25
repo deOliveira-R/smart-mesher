@@ -237,6 +237,11 @@ pub trait TopologyEdit: TopologyView {
     // ---- modify / delete ----
 
     /// Reverse a face's orientation. Lineage: `Modified(Reversed)`.
+    ///
+    /// The orientation rule still holds at `end_op`: on a face whose only volume use is the
+    /// reversed side, `end_op` reverses it back. A mirror (improper map) therefore cannot be a
+    /// bare `reverse_face`; use the sequence in `sm-model`'s `DESIGN.md` (take the volume uses
+    /// off, reverse, restore the carrier sense, then put the uses back on the matching sides).
     fn reverse_face(&mut self, face: EntityId) -> Result<(), TopoError>;
 
     /// Delete a cell that no non-body parent references. Lineage: `Deleted`.
