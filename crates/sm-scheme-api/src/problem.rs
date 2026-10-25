@@ -978,9 +978,11 @@ impl<'a> IntervalSink<'a> {
     /// and rounds the mean once, so a goal never overrides anything. A soft count on the class
     /// replaces the mean, and a hard count replaces both; ranges and linear rows still bind
     /// the rounded value. Prefer this to `fix(.., Firmness::Soft)` when a count is derived from
-    /// sizes, because a soft count can override the user's own soft count. A goal that is not
-    /// finite and positive is ignored by the solver.
+    /// sizes, because a soft count can override the user's own soft count. Scheme-emitted goals
+    /// skip [`IntervalConstraint::check`]: pass a finite, positive value (the reference solver
+    /// ignores any other; a debug build asserts).
     pub fn goal(&mut self, edge: EntityId, goal: f64) -> ConstraintId {
+        debug_assert!(goal.is_finite() && goal > 0.0, "interval goal must be finite and positive, got {goal}");
         self.problem
             .push_interval(self.origin.clone(), IntervalConstraint::Goal { edge, goal })
     }

@@ -4,8 +4,9 @@
 use sm_scheme_api::stubs::{brick_setup, registry};
 use sm_scheme_api::{
     Applicability, Caps, Driver, Firm, Firmness, GenCtx, GenerateFailure, IntervalCtx,
-    IntervalRequest, IntervalSink, MeshInput, MeshIntent, Params, Patch, PlanCtx, ReferenceCornerPicker, ReferenceIntervalSolver,
-    Scheme, SchemeChoice, SchemeDim, Target, WholeFaces,
+    IntervalRequest, IntervalSink, MeshInput, MeshIntent, Params, Patch, PlanCtx,
+    ReferenceCornerPicker, ReferenceIntervalSolver, Scheme, SchemeChoice, SchemeDim, Target,
+    WholeFaces,
 };
 
 /// A curve scheme that only states a goal for its own edge.
@@ -56,7 +57,11 @@ fn solved(goal: f64, req: Option<Firm<IntervalRequest>>) -> u32 {
     let e = ids.edges[0];
     intent.set_scheme(
         e,
-        SchemeChoice::with_params("goaler", serde_json::json!({ "goal": goal }), Firmness::Hard),
+        SchemeChoice::with_params(
+            "goaler",
+            serde_json::json!({ "goal": goal }),
+            Firmness::Hard,
+        ),
     );
     if let Some(r) = req {
         for k in 0..4 {
