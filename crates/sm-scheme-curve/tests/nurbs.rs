@@ -314,13 +314,13 @@ impl Rng {
     }
 }
 
-/// Reference arc length of `[a, b]` with a fixed panel count per knot span.
+/// Reference arc length of the parameter interval `[a, b]`, each knot span integrated on its
+/// own with the panel count doubled until it settles.
 fn ref_len(c: &dyn ParametricCurve, knots: &[f64], a: f64, b: f64) -> f64 {
     let mut cuts = vec![a];
     cuts.extend(knots.iter().copied().filter(|k| *k > a && *k < b));
     cuts.dedup();
     cuts.push(b);
-    // Composite 5-point rule per smooth span, panel count doubled until it settles.
     let estimate = |a: f64, b: f64, panels: usize| -> f64 {
         let h = (b - a) / panels as f64;
         let mut s = 0.0;
@@ -347,43 +347,183 @@ fn ref_len(c: &dyn ParametricCurve, knots: &[f64], a: f64, b: f64) -> f64 {
         .sum()
 }
 
+fn carrier_r(sense: Sense, lo: f64, hi: f64) -> CurveCarrier {
+    CurveCarrier { curve: sm_core::EntityId::new(sm_core::EntityKind::Curve, 0).unwrap(), range: Interval::new(lo, hi), sense }
+}
+
+/// Worst `|segment - want| / allowance` over the `n` equal-arc segments of the edge `[lo, hi]`.
+/// The allowance is 1e-9 relative plus the double-precision limit of the parameter: a node
+/// cannot be placed finer than one ulp of `t`, which is `max speed x eps x max(|lo|, |hi|)` of
+/// arc length (relevant only where a short span carries large speed). A ratio at most 1 passes.
+fn worst_ratio(c: &dyn ParametricCurve, knots: &[f64], lo: f64, hi: f64, sense: Sense, n: u32) -> f64 {
+    let fr = node_params(c, carrier_r(sense, lo, hi), n, &Spec::Equal).unwrap();
+    let fr: Vec<f64> = if sense == Sense::Reversed { fr.iter().rev().map(|f| 1.0 - f).collect() } else { fr };
+    let mut ts = vec![lo];
+    ts.extend(fr.iter().map(|f| lo + f * (hi - lo)));
+    ts.push(hi);
+    let want = ref_len(c, knots, lo, hi) / f64::from(n);
+    // Largest speed over the edge, sampled inside every knot span.
+    let mut edges = vec![lo];
+    edges.extend(knots.iter().copied().filter(|k| *k > lo && *k < hi));
+    edges.dedup();
+    edges.push(hi);
+    let vmax = edges.windows(2).flat_map(|w| (0..32).map(move |j| w[0] + (w[1] - w[0]) * (f64::from(j) + 0.5) / 32.0)).map(|t| c.d1(t).norm()).fold(0.0, f64::max);
+    let tol = 1e-9 * want + f64::EPSILON * lo.abs().max(hi.abs()).max(1.0) * vmax;
+    ts.windows(2).map(|w| (ref_len(c, knots, w[0], w[1]) - want).abs() / tol).fold(0.0, f64::max)
+}
+
+fn check_ratio(c: &dyn ParametricCurve, knots: &[f64], lo: f64, hi: f64, n: u32, name: &str) {
+    for sense in [Sense::Forward, Sense::Reversed] {
+        let r = worst_ratio(c, knots, lo, hi, sense, n);
+        assert!(r <= 1.0, "{name} [{lo}, {hi}] {sense:?} n={n}: error is {r} x the allowance");
+    }
+}
+
+/// Spline through wavy control points on `[lo, lo + w]`, knots given as fractions of `w`.
+fn shifted(d: usize, unit_knots: &[f64], lo: f64, w: f64, weights: bool) -> (NurbsCurve, Vec<f64>) {
+    let k: Vec<f64> = unit_knots.iter().map(|u| lo + w * u).collect();
+    let np = k.len() - d - 1;
+    let c = spline(d, k.clone(), np);
+    let c = if weights {
+        let wts = (0..np).map(|i| 0.6 + 0.8 * ((i * 7 % 5) as f64) / 4.0).collect();
+        NurbsCurve::new(d, k.clone(), c.control, Some(wts)).unwrap()
+    } else {
+        c
+    };
+    (c, k)
+}
+
 #[test]
-fn seeded_random_probe_with_short_spans() {
-    let mut rng = Rng(0x5eed_c0de);
-    for case in 0..200 {
+fn quadratic_short_span_away_from_zero_is_not_a_geometry_error() {
+    // Minimal repro: the speed inside the 1.63e-7 span carries parameter-scale noise at |t| ~ 100.
+    let a = 0.431_845_142_746_103_9;
+    for off in [0.0, 100.0, -7.5, 1000.0] {
+        let unit = [0.0, 0.0, 0.0, a, a, a + 1.63e-7, 1.0, 1.0, 1.0];
+        let (c, k) = shifted(2, &unit, off, 1.0, false);
+        check_ratio(&c, &k, off, off + 1.0, 6, &format!("offset {off}"));
+    }
+}
+
+#[test]
+fn short_spans_with_shifted_parameter_ranges() {
+    let a = 20.0 / 64.0 + 3e-4;
+    let b = 1.0 - 7e-4;
+    for off in [100.0, -7.5] {
+        for (d, mult) in [(1usize, 1usize), (2, 2), (3, 3)] {
+            for start in [a, b] {
+                let mut unit = vec![0.0; d + 1];
+                unit.extend(std::iter::repeat_n(start, mult));
+                unit.extend(std::iter::repeat_n(start + 1e-6, mult));
+                unit.extend(std::iter::repeat_n(1.0, d + 1));
+                let (c, k) = shifted(d, &unit, off, 1.0, false);
+                check_ratio(&c, &k, off, off + 1.0, 7, &format!("degree {d} offset {off} start {start}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn sub_range_edge_on_a_shifted_curve() {
+    let a = 0.4;
+    let unit = [0.0, 0.0, 0.0, a, a, a + 2e-6, 0.9, 1.0, 1.0, 1.0];
+    for off in [100.0, -7.5] {
+        let (c, k) = shifted(2, &unit, off, 2.0, false);
+        // Edge ranges containing the short span, ending at a knot, and cutting through it.
+        for (x, y) in [(0.1, 0.95), (0.05, a + 1e-6), (a + 1e-6, 0.8), (a - 0.1, a + 2e-6 + 0.2)] {
+            check_ratio(&c, &k, off + 2.0 * x, off + 2.0 * y, 5, &format!("sub-range offset {off}"));
+        }
+    }
+}
+
+#[test]
+fn periodic_seam_next_to_a_short_span() {
+    // Closed degree-1 and degree-2 splines with a 1e-6 span right before the seam.
+    for d in [1usize, 2] {
+        let (s0, s1, s2) = (0.3, 0.7 - 1e-6, 1e-6);
+        let mut k = vec![-s2, 0.0, s0, s0 + s1, 1.0, 1.0 + s0];
+        let mut pts = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0), Point3::new(2.5, -1.0, 0.5)];
+        if d == 2 {
+            // Three unique points need `unique + d` knots: extend the repeating spans.
+            k = vec![-s1 - s2, -s2, 0.0, s0, s0 + s1, 1.0, 1.0 + s0, 1.0 + s0 + s1];
+        }
+        pts.extend(pts.clone().into_iter().take(d));
+        let c = NurbsCurve::new_periodic(d, k.clone(), pts, None).unwrap();
+        let mut knots = Vec::new();
+        for shift in [-1.0, 0.0, 1.0, 2.0] {
+            knots.extend(k.iter().map(|x| x + shift));
+        }
+        knots.sort_by(f64::total_cmp);
+        for (lo, hi) in [(0.5, 1.5), (0.9, 1.3), (0.2, 1.2)] {
+            check_ratio(&c, &knots, lo, hi, 6, &format!("periodic degree {d}"));
+        }
+    }
+}
+
+/// Random curves: degrees 1-3, spans down to 1e-7 (relative to the range), parameter offsets
+/// 0/3/100/-7.5, scales 0.5-10, some rational, some sub-range edges, half reversed.
+fn probe(seed: u64, cases: usize, offsets: &[f64]) {
+    let mut rng = Rng(seed);
+    for case in 0..cases {
         let d = 1 + (rng.next() * 3.0) as usize % 3;
         let width = 10f64.powf(-7.0 + 4.0 * rng.next());
         let start = if rng.next() < 0.3 { 1.0 - width - 10f64.powf(-4.0 + 2.0 * rng.next()) * 0.1 } else { 0.02 + 0.9 * rng.next() };
         let start = start.clamp(0.01, 1.0 - 2.0 * width - 1e-9);
-        let mut interior = vec![(start, 1 + (rng.next() * d as f64) as usize % d), (start + width, 1 + (rng.next() * d as f64) as usize % d)];
+        let mult = |rng: &mut Rng| 1 + (rng.next() * d as f64) as usize % d;
+        let mut interior = vec![(start, mult(&mut rng)), (start + width, mult(&mut rng))];
         if rng.next() < 0.5 {
             // An extra knot elsewhere, kept clear of the short span.
             let extra = 0.01 + 0.98 * rng.next();
             if (extra - start).abs() > 1e-2 && (extra - start - width).abs() > 1e-2 {
-                interior.push((extra, 1 + (rng.next() * d as f64) as usize % d));
+                interior.push((extra, mult(&mut rng)));
                 interior.sort_by(|a, b| a.0.total_cmp(&b.0));
             }
         }
-        let k = clamped(d, &interior);
-        let np = k.len() - d - 1;
+        let unit = clamped(d, &interior);
+        let np = unit.len() - d - 1;
+        let off = offsets[(rng.next() * offsets.len() as f64) as usize % offsets.len()];
+        let scale = 0.5 + 9.5 * rng.next();
+        let k: Vec<f64> = unit.iter().map(|u| off + scale * u).collect();
         let control = (0..np).map(|_| Point3::new(2.0 * rng.next() - 1.0, 2.0 * rng.next() - 1.0, 2.0 * rng.next() - 1.0)).collect();
-        let c = NurbsCurve::new(d, k.clone(), control, None).unwrap();
-        let total = ref_len(&c, &k, 0.0, 1.0);
-        let n = 6u32;
-        let sense = if case % 2 == 0 { Sense::Forward } else { Sense::Reversed };
-        let fr = node_params(&c, carrier(sense), n, &Spec::Equal).unwrap();
-        let fr: Vec<f64> = if sense == Sense::Reversed { fr.iter().rev().map(|f| 1.0 - f).collect() } else { fr };
-        let mut ts = vec![0.0];
-        ts.extend(&fr);
-        ts.push(1.0);
-        let want = total / f64::from(n);
-        // 1e-9 relative, plus the double-precision limit of the parameter itself: a node
-        // cannot be placed finer than one ulp of t, which is (max speed) x eps of arc length.
-        let vmax = (1..=32).map(|j| c.d1(start + width * (f64::from(j) - 0.5) / 32.0).norm()).fold(0.0, f64::max);
-        let tol = 1e-9 * want + f64::EPSILON * vmax;
-        for w in ts.windows(2) {
-            let s = ref_len(&c, &k, w[0], w[1]);
-            assert!((s - want).abs() <= tol, "case {case} d={d} knots={interior:?} {sense:?}: {s} vs {want}");
+        let weights = (rng.next() < 0.3).then(|| (0..np).map(|_| 0.5 + 1.5 * rng.next()).collect());
+        let c = NurbsCurve::new(d, k.clone(), control, weights).unwrap();
+        let (mut lo, mut hi) = (off, off + scale);
+        if rng.next() < 0.3 {
+            lo += scale * 0.2 * rng.next();
+            hi -= scale * 0.2 * rng.next();
         }
+        let sense = if case % 2 == 0 { Sense::Forward } else { Sense::Reversed };
+        let r = worst_ratio(&c, &k, lo, hi, sense, 6);
+        assert!(r <= 1.0, "case {case} d={d} off={off} scale={scale} knots={interior:?} range=[{lo}, {hi}] {sense:?}: error is {r} x the allowance");
+    }
+}
+
+#[test]
+fn seeded_random_probe_with_short_spans() {
+    probe(0x5eed_c0de, 200, &[0.0]);
+}
+
+#[test]
+fn seeded_random_probe_with_shifted_ranges() {
+    probe(0x0ff5_e7ed, 300, &[0.0, 3.0, 100.0, -7.5]);
+}
+
+#[test]
+fn dense_knot_vectors_and_absurd_period_counts_are_typed() {
+    // 70000 interior knots exceed the plain panel budget but are a valid curve.
+    let n = 70_000usize;
+    let mut k = vec![0.0, 0.0];
+    k.extend((1..=n).map(|i| i as f64 / (n + 1) as f64));
+    k.extend([1.0, 1.0]);
+    let control = (0..n + 2).map(|i| Point3::new(i as f64, f64::from((i % 7) as u8), 0.0)).collect();
+    let c = NurbsCurve::new(1, k, control, None).unwrap();
+    let fr = node_params(&c, carrier(Sense::Forward), 4, &Spec::Equal).unwrap();
+    assert_eq!(fr.len(), 3);
+    // An edge spanning a huge number of periods is refused with a typed error, not a long loop.
+    let (s0, s1, s2) = (0.3, 0.4, 0.3);
+    let pts = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0), Point3::new(2.5, -1.0, 0.5), Point3::new(0.0, 0.0, 0.0)];
+    let p = NurbsCurve::new_periodic(1, vec![-s2, 0.0, s0, s0 + s1, 1.0, 1.0 + s0], pts, None).unwrap();
+    match node_params(&p, carrier_r(Sense::Forward, 0.0, 1e12), 4, &Spec::Equal) {
+        Err(SpacingError::Geometry(_)) => {}
+        other => panic!("expected a geometry error, got {other:?}"),
     }
 }

@@ -22,8 +22,13 @@ const LOBATTO_TOL: f64 = 1e-13;
 const ENDPOINT_NUDGE_ULPS: f64 = 8.0;
 /// Relative slack of the chord bound `|C(b) - C(a)| <= arc length`.
 const CHORD_TOL: f64 = 1e-12;
-/// Most panels the refinement may produce before the map is refused.
+/// Most panels the refinement may produce, beyond four per seed panel, before the map is
+/// refused.
 const MAX_PANELS: usize = 1 << 16;
+/// Most seed panels (breakpoints times periods plus the uniform grid) before the curve is refused.
+const MAX_SEEDS: usize = 1 << 20;
+/// Weight of the evaluator-noise floor (see `noise_rel`) in the panel tests.
+const NOISE_C: f64 = 16.0;
 /// A panel is accepted when its whole and split estimates differ by at most this times the
 /// initial length estimate.
 const PANEL_TOL: f64 = 1e-14;
@@ -64,12 +69,21 @@ fn is_tiny(a: f64, b: f64) -> bool {
     b - a <= MIN_REL_WIDTH * a.abs().max(b.abs()).max(1.0) || !(m > a && m < b)
 }
 
-/// One panel `[a, b]` and its 5-point integral.
+/// One panel `[a, b]` (edge fractions), its 5-point integral, and the parameter width of the
+/// smooth piece (between breakpoints) that contains it.
 #[derive(Clone, Copy)]
 struct Panel {
     a: f64,
     b: f64,
     i: f64,
+    w: f64,
+}
+
+/// Relative noise of the speed evaluation inside a smooth piece of parameter width `w` on the
+/// parameter range `[lo, hi]`. Spline basis evaluation divides parameter differences, which carry
+/// an absolute error of `eps * max(|lo|, |hi|)`, so the result is that over `w`, relative.
+fn noise_rel(lo: f64, hi: f64, w: f64) -> f64 {
+    (f64::EPSILON * lo.abs().max(hi.abs()) / w).min(1.0)
 }
 
 impl<'a> ArcMap<'a> {
@@ -80,14 +94,15 @@ impl<'a> ArcMap<'a> {
         }
         let mut map = ArcMap { curve, cc, span, tb: Vec::new(), cum: Vec::new(), total: 0.0, uniform: false };
         let (mut smin, mut smax) = (f64::INFINITY, 0.0f64);
-        let mut eval = |map: &ArcMap<'_>, a: f64, b: f64| -> Panel {
+        let mut eval = |map: &ArcMap<'_>, a: f64, b: f64, w: f64| -> Panel {
             let (i, lo, hi) = map.gl(a, b);
             smin = smin.min(lo);
             smax = smax.max(hi);
-            Panel { a, b, i }
+            Panel { a, b, i, w }
         };
-        let cuts = map.cuts();
-        let init: Vec<Panel> = cuts.windows(2).map(|w| eval(&map, w[0], w[1])).collect();
+        let (cuts, widths) = map.cuts()?;
+        let limit = MAX_PANELS + 4 * widths.len();
+        let init: Vec<Panel> = cuts.windows(2).zip(&widths).map(|(c, w)| eval(&map, c[0], c[1], *w)).collect();
         let l0: f64 = init.iter().map(|p| p.i).sum();
         if !(l0.is_finite() && l0 > 0.0) {
             return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
@@ -99,21 +114,23 @@ impl<'a> ArcMap<'a> {
         let mut stack: Vec<Panel> = init.into_iter().rev().collect();
         while let Some(p) = stack.pop() {
             let m = 0.5 * (p.a + p.b);
-            let (l, r) = (eval(&map, p.a, m), eval(&map, m, p.b));
+            let (l, r) = (eval(&map, p.a, m, p.w), eval(&map, m, p.b, p.w));
             let diff = (p.i - (l.i + r.i)).abs();
             if !diff.is_finite() {
                 return Err(SpacingError::Geometry("curve has non-finite speed".into()));
             }
             let tiny = is_tiny(p.a, p.b);
             let bad = !tiny && (map.endpoint_bad(&p, scale) || map.endpoint_bad(&l, scale) || map.endpoint_bad(&r, scale));
-            if (diff <= tol && !bad) || tiny {
+            let floor = NOISE_C * noise_rel(map.cc.range.lo, map.cc.range.hi, p.w) * p.i;
+            if (diff <= tol + floor && !bad) || tiny {
                 out.push(l);
                 out.push(r);
             } else {
                 stack.push(r);
                 stack.push(l);
             }
-            if out.len() + stack.len() > MAX_PANELS {                return Err(SpacingError::Geometry("arc length did not converge: speed is not integrable to double precision on this curve".into()));
+            if out.len() + stack.len() > limit {
+                return Err(SpacingError::Geometry("arc length did not converge: speed is not integrable to double precision on this curve".into()));
             }
         }
         if !(smin.is_finite() && smin > 0.0 && smax.is_finite()) {
@@ -140,18 +157,32 @@ impl<'a> ArcMap<'a> {
     }
 
     /// Initial panel edges in the edge fraction: the uniform grid merged with the curve's
-    /// breakpoints, ascending, with no two closer than the relative width floor.
-    fn cuts(&self) -> Vec<f64> {
+    /// breakpoints (and, for a periodic curve, its seam), ascending, with no two closer than the
+    /// relative width floor. Also returns the parameter width of the smooth piece (between
+    /// breakpoints) containing each initial panel.
+    fn cuts(&self) -> Result<(Vec<f64>, Vec<f64>)> {
         let (lo, hi) = (self.cc.range.lo, self.cc.range.hi);
-        let period = self.curve.domain().period.filter(|p| *p > 0.0 && p.is_finite());
-        let mut taus: Vec<f64> = Vec::new();
-        for bp in self.curve.breakpoints() {
+        let dom = self.curve.domain();
+        let period = dom.period.filter(|p| *p > 0.0 && p.is_finite());
+        let mut bps = self.curve.breakpoints();
+        if period.is_some() {
+            // The seam is a (possible) crease of the periodic spline.
+            bps.push(dom.range.lo);
+        }
+        let mut bpt: Vec<f64> = Vec::new();
+        for bp in bps {
             // An edge may span a seam of a periodic curve: repeat each breakpoint per period.
             let (k0, k1) = match period {
-                Some(p) => (((lo - bp) / p).floor() as i64, ((hi - bp) / p).ceil() as i64),
-                None => (0, 0),
+                Some(p) => (((lo - bp) / p).floor(), ((hi - bp) / p).ceil()),
+                None => (0.0, 0.0),
             };
-            for k in k0..=k1 {
+            let count = k1 - k0 + 1.0;
+            if !(count.is_finite() && bpt.len() as f64 + count <= MAX_SEEDS as f64) {
+                return Err(SpacingError::Geometry(
+                    "too many curve breakpoints in the edge range (edge spans too many periods or the curve has too many knots)".into(),
+                ));
+            }
+            for k in (k0 as i64)..=(k1 as i64) {
                 let t = bp + period.map_or(0.0, |p| k as f64 * p);
                 let fwd = self.cc.sense == Sense::Forward;
                 let f = (t - lo) / (hi - lo);
@@ -165,10 +196,13 @@ impl<'a> ArcMap<'a> {
                     tau += if fwd { miss } else { -miss };
                 }
                 if tau > 0.0 && tau < 1.0 {
-                    taus.push(tau);
+                    bpt.push(tau);
                 }
             }
         }
+        bpt.sort_by(f64::total_cmp);
+        bpt.dedup();
+        let mut taus: Vec<f64> = bpt.clone();
         taus.extend((1..MIN_PANELS).map(|j| j as f64 / MIN_PANELS as f64));
         taus.sort_by(f64::total_cmp);
         let mut cuts = vec![0.0];
@@ -181,7 +215,20 @@ impl<'a> ArcMap<'a> {
             }
         }
         cuts.push(1.0);
-        cuts
+        // Smooth-piece edges: 0, the breakpoints, 1.
+        let mut edges = Vec::with_capacity(bpt.len() + 2);
+        edges.push(0.0);
+        edges.extend(bpt);
+        edges.push(1.0);
+        let widths = cuts
+            .windows(2)
+            .map(|c| {
+                let m = 0.5 * (c[0] + c[1]);
+                let j = edges.partition_point(|e| *e <= m).clamp(1, edges.len() - 1);
+                ((edges[j] - edges[j - 1]) * self.span).max(f64::MIN_POSITIVE)
+            })
+            .collect();
+        Ok((cuts, widths))
     }
 
     /// Total arc length.
@@ -225,14 +272,15 @@ impl<'a> ArcMap<'a> {
             let inward = if x.abs() == 1.0 { nudge * x.signum() } else { 0.0 };
             s += w * self.speed(mid + h * x - inward);
         }
-        if (s * h - p.i).abs() > LOBATTO_TOL * scale {
+        if (s * h - p.i).abs() > LOBATTO_TOL * scale + NOISE_C * noise_rel(lo, hi, p.w) * p.i {
             return true;
         }
         let (ca, cb) = (self.curve.eval(edge_param(&self.cc, p.a)), self.curve.eval(edge_param(&self.cc, p.b)));
         let chord = (cb - ca).norm();
         // Rounding of the endpoint parameters shifts the chord by (parameter ulp) x (speed).
         let quantum = f64::EPSILON * lo.abs().max(hi.abs()) / (hi - lo);
-        let slack = CHORD_TOL * p.i + 1e-15 * scale + 64.0 * f64::EPSILON * (ca.x.abs().max(ca.y.abs()).max(ca.z.abs()) + cb.x.abs().max(cb.y.abs()).max(cb.z.abs())) + 8.0 * quantum * p.i / (p.b - p.a);
+        let slack = CHORD_TOL * p.i + 1e-15 * scale + 64.0 * f64::EPSILON * (ca.x.abs().max(ca.y.abs()).max(ca.z.abs()) + cb.x.abs().max(cb.y.abs()).max(cb.z.abs())) + 8.0 * quantum * p.i / (p.b - p.a)
+            + NOISE_C * noise_rel(lo, hi, p.w) * (ca.x.abs().max(ca.y.abs()).max(ca.z.abs()) + cb.x.abs().max(cb.y.abs()).max(cb.z.abs()));
         chord.is_nan() || chord > p.i + slack
     }
 
