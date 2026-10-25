@@ -92,8 +92,11 @@ Before generating, `mesh.run` plans once (`Driver::plan`) and estimates the cell
 `volumes * mean(edge intervals)^3`. Above `MesherConfig::max_cells` (default
 `DEFAULT_MAX_CELLS` = 20 million) it fails with `OpError::Invalid` and changes nothing. This
 guards against e.g. `size 1e-6` on a 10-unit brick (about 10^21 cells). The estimate is crude
-(anisotropic meshes are estimated by their mean count); it only catches absurd requests. The
-plan is computed twice on an accepted run (cheap: 0.11 ms at 10^6 cells).
+(anisotropic meshes are estimated by their mean count; exact for a structured brick, but only
+edge counts are seen, so a volume with few long edges, e.g. a cylinder with one seam edge on its
+curved face, can be off by a large factor either way); it only catches absurd requests. A plan
+error is returned as such, before the budget check. The plan is computed twice on an accepted
+run (cheap: 0.11 ms at 10^6 cells; `Driver::mesh_from_plan` is a W3 contract item).
 
 ### mesh.delete
 
