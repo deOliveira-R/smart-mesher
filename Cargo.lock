@@ -1139,8 +1139,11 @@ dependencies = [
  "sm-core",
  "sm-engine",
  "sm-mcp",
+ "sm-mesh-api",
+ "sm-meshio",
  "sm-op-api",
  "sm-protocol",
+ "sm-quality",
  "sm-server",
  "sm-testkit",
 ]
