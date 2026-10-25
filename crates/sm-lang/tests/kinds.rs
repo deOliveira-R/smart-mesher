@@ -87,3 +87,14 @@ fn every_kind_stays_reachable_by_one_script_spelling() {
     assert_eq!(singular_of(EntityKind::Surface), "GeomSurface");
     assert_eq!(singular_of(EntityKind::TopoFace), "Face");
 }
+
+#[test]
+fn script_singular_parses_to_the_same_kind_in_sm_core() {
+    // Pins `singular_of` (what MCP respell shows) to `EntityKind::from_str` (what tool arguments accept).
+    for &k in EntityKind::ALL {
+        assert_eq!(singular_of(k).parse::<EntityKind>(), Ok(k), "{k}");
+        let id = sm_core::EntityId::new(k, 3).unwrap();
+        assert_eq!(parse_entity_text(&format!("{}#3", singular_of(k))), Ok(id));
+        assert_eq!(format!("{}#3", singular_of(k)).parse::<sm_core::EntityId>(), Ok(id));
+    }
+}

@@ -559,3 +559,50 @@ fn text_keeps_wire_ids_by_default() {
     let text = r[0]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("TopoFace#1"), "{text}");
 }
+
+/// Every `Kind#serial` token in `s`.
+#[cfg(feature = "respell")]
+fn id_tokens(s: &str) -> Vec<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' {
+            let mut a = i;
+            while a > 0 && b[a - 1].is_ascii_alphabetic() {
+                a -= 1;
+            }
+            let mut e = i + 1;
+            while e < b.len() && b[e].is_ascii_digit() {
+                e += 1;
+            }
+            if a < i && e > i + 1 {
+                out.push(s[a..e].to_owned());
+            }
+            i = e;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(feature = "respell")]
+#[test]
+fn respelled_ids_feed_back_as_arguments() {
+    let mut m = Mock::new();
+    let r = run(&mut m, &[call(1, "model__create_brick", json!({"x": 10})), call(2, "topo__related", json!({"within": "TopoVolume#1"}))]);
+    let mut seen = 0;
+    for resp in &r[..2] {
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        for id in id_tokens(text) {
+            seen += 1;
+            assert!(!id.starts_with("Topo"), "text should be respelled: {id}");
+            let r2 = run(&mut m, &[call(9, "topo__related", json!({"within": id}))]);
+            assert!(r2[0].get("error").is_none() && r2[0]["result"]["isError"] != json!(true), "{id}: {}", r2[0]);
+            let r3 = run(&mut m, &[call(10, "mesh__run", json!({"targets": [id]}))]);
+            assert!(r3[0].get("error").is_none(), "{id}: {}", r3[0]);
+        }
+    }
+    assert!(seen > 0, "no ids found in tool text");
+}
