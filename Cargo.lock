@@ -1521,6 +1521,7 @@ dependencies = [
  "sm-tess",
  "sm-testkit",
  "sm-topo",
+ "sm-topo-api",
  "thiserror",
  "tungstenite",
 ]
