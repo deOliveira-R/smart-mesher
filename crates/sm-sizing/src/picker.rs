@@ -70,11 +70,7 @@ type Cost = (u64, u64);
 const INF: Cost = (u64::MAX, u64::MAX);
 
 fn add(a: Cost, b: Cost) -> Cost {
-    if a == INF || b == INF {
-        INF
-    } else {
-        (a.0 + b.0, a.1 + b.1)
-    }
+    if a == INF || b == INF { INF } else { (a.0 + b.0, a.1 + b.1) }
 }
 
 /// Starting state of one corner.
@@ -101,9 +97,7 @@ impl CornerPicker for AnglePicker {
         let structured = !matches!(rule, VertexRule::Free);
         let rings = corners.iter().map(|c| c.ring).max().map_or(0, |r| r + 1);
         if structured && rings != 1 {
-            return Err(bad(format!(
-                "{rule:?} needs exactly one loop, face has {rings}"
-            )));
+            return Err(bad(format!("{rule:?} needs exactly one loop, face has {rings}")));
         }
 
         // Two hard requests with different types on one corner are a conflict, not last-wins.
@@ -115,10 +109,7 @@ impl CornerPicker for AnglePicker {
                 .iter()
                 .find(|(k2, u)| k2 == k && u.firmness == Firmness::Hard && u.value != t.value)
             {
-                let at = corners
-                    .iter()
-                    .find(|c| c.key == *k)
-                    .map_or_else(String::new, |c| format!(" at {}", c.vertex));
+                let at = corners.iter().find(|c| c.key == *k).map_or_else(String::new, |c| format!(" at {}", c.vertex));
                 return Err(bad(format!(
                     "conflicting hard vertex-type requests{at}: hard {:?} and hard {:?} on the same corner",
                     u.value, t.value
@@ -143,12 +134,7 @@ impl CornerPicker for AnglePicker {
                         hard: r.firmness == Firmness::Hard,
                         req,
                     },
-                    None => Start {
-                        ty: classify_angle(c.angle),
-                        weight: 1,
-                        hard: false,
-                        req: None,
-                    },
+                    None => Start { ty: classify_angle(c.angle), weight: 1, hard: false, req: None },
                 }
             })
             .collect();
@@ -186,11 +172,7 @@ impl CornerPicker for AnglePicker {
                         return Err(bad(format!(
                             "{rule:?} cannot be met: {} corners, corner sum {target} needed; {}",
                             corners.len(),
-                            if hards.is_empty() {
-                                "no hard requests".to_string()
-                            } else {
-                                hards
-                            }
+                            if hards.is_empty() { "no hard requests".to_string() } else { hards }
                         )));
                     }
                 }
@@ -296,11 +278,7 @@ fn repair(
 /// reference picker.
 fn sides_of(corners: &[CornerAssignment], any_turn: bool) -> Vec<LogicalSide> {
     let is_break = |c: &CornerAssignment| {
-        if any_turn {
-            c.vertex_type != VertexType::Side
-        } else {
-            c.vertex_type == VertexType::End
-        }
+        if any_turn { c.vertex_type != VertexType::Side } else { c.vertex_type == VertexType::End }
     };
     let Some(first) = corners.iter().position(is_break) else {
         return Vec::new();
@@ -314,11 +292,7 @@ fn sides_of(corners: &[CornerAssignment], any_turn: bool) -> Vec<LogicalSide> {
         cur.push(corners[i].corner.incoming);
         if is_break(&corners[i]) {
             sides.push(LogicalSide::new(std::mem::take(&mut cur), dir));
-            dir = dir.turned(if any_turn {
-                corners[i].vertex_type.submap_weight()
-            } else {
-                1
-            });
+            dir = dir.turned(if any_turn { corners[i].vertex_type.submap_weight() } else { 1 });
         }
     }
     sides

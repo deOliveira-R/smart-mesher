@@ -19,11 +19,7 @@ pub fn records(items: Vec<IntervalConstraint>) -> Vec<Record<IntervalConstraint>
     items
         .into_iter()
         .enumerate()
-        .map(|(i, item)| Record {
-            id: ConstraintId(i as u32),
-            origin: Origin::Driver,
-            item,
-        })
+        .map(|(i, item)| Record { id: ConstraintId(i as u32), origin: Origin::Driver, item })
         .collect()
 }
 
@@ -54,14 +50,7 @@ pub struct LFace {
 }
 
 pub fn l_face() -> LFace {
-    let pts = [
-        (0.0, 0.0),
-        (2.0, 0.0),
-        (2.0, 1.0),
-        (1.0, 1.0),
-        (1.0, 2.0),
-        (0.0, 2.0),
-    ];
+    let pts = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
     let mut topo = CellComplex::new();
     let (face, vertices) = with_op(&mut topo, OpId(1), |t| {
         let vs: Vec<EntityId> = pts
@@ -72,40 +61,19 @@ pub fn l_face() -> LFace {
         for i in 0..pts.len() {
             let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
             let d = Vector3::new(b.0 - a.0, b.1 - a.1, 0.0);
-            let curve = t
-                .shapes_mut()?
-                .add_curve(CurveDef::Line(Line::new(Point3::new(a.0, a.1, 0.0), d)?))?;
+            let curve = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(Point3::new(a.0, a.1, 0.0), d)?))?;
             let e = t.make_edge(
                 vs[i],
                 vs[(i + 1) % pts.len()],
-                Some(CurveCarrier {
-                    curve,
-                    range: Interval::new(0.0, d.norm()),
-                    sense: Sense::Forward,
-                }),
+                Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }),
             )?;
-            loop_.push(CoedgeSpec {
-                edge: e,
-                sense: Sense::Forward,
-            });
+            loop_.push(CoedgeSpec { edge: e, sense: Sense::Forward });
         }
         let frame = Frame::from_z(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0))?;
-        let surface = t
-            .shapes_mut()?
-            .add_surface(SurfaceDef::Plane(Plane { frame }))?;
-        let face = t.make_face(
-            &[&loop_],
-            Some(SurfaceCarrier {
-                surface,
-                sense: Sense::Forward,
-            }),
-        )?;
+        let surface = t.shapes_mut()?.add_surface(SurfaceDef::Plane(Plane { frame }))?;
+        let face = t.make_face(&[&loop_], Some(SurfaceCarrier { surface, sense: Sense::Forward }))?;
         Ok((face, vs))
     })
     .expect("l face");
-    LFace {
-        topo,
-        face,
-        vertices,
-    }
+    LFace { topo, face, vertices }
 }

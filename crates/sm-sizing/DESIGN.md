@@ -149,12 +149,18 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
   odd >= 90) max 0.8214 before and 0.8148 after (the best known), sum 15.9019. Searching with
   10x and 100x the node budget returns the same vectors (14.2758 and 15.9019), so the polished
   answer is the best known, but it is still not proven optimal.
-  The polish keeps running row sums, so one move evaluation costs the moved variables' row
-  occurrences, not the row lengths (`POLISH_EVALS` bounds a meaningful amount of work), and the
-  leaf tie comparison reuses pooled buffers. Answers are bit-identical to before (dense30, the
-  40-class variant and a 512-class dense pair were pinned before and after). Release CPU time
-  (user, load-independent) of those three solves together: 15.7 s before, 15.4 s after; the
-  default-budget search dominates all three, so the polish is no longer visible in the total. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
+  The polish keeps running row sums, so the row check of one move evaluation costs the moved
+  variables' row occurrences, not the row lengths. A move that lands in the tie zone (same
+  maximum, sums within `eps`) still rebuilds the term lists for the exact comparison, which is
+  O(total terms); it is kept that way because the double-double sum must be taken in the same
+  order as before for the answers to stay bit-identical. So `POLISH_EVALS` bounds the work
+  tightly outside the tie zone only. The leaf tie comparison reuses pooled buffers, and the
+  search leaf no longer allocates. Answers are bit-identical to before (dense30, pinned in
+  `tests/iia.rs`; the 40-class variant and a 512-class dense pair were pinned before and
+  after). Release CPU time (user) of those three solves together: 15.7 s before, 15.4 s after,
+  measured under host load and not isolating the polish: the default-budget search dominates
+  all three, so this is not evidence of a polish speed-up. A single dense `<=` or `>=` row over
+  30 classes with varied goals is solved exactly in
   microseconds (bisected window plus row-aware bound); with many equal goals the exact-key
   ties make the lexicographic tie-break exhaust the budget (a feasible answer is returned).
 * The B&B variable ordering was not changed to reach the polish's 1- and 2-moves itself: only
