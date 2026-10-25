@@ -10,6 +10,7 @@ use sm_protocol::HashResult;
 
 fn smesh(args: &[&str], stdin: &str, rayon_threads: Option<usize>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smesh"));
+    std::fs::create_dir_all(env!("CARGO_TARGET_TMPDIR")).expect("target tmpdir");
     // Relative exports of a `run --memory` script land here, not in the source tree.
     cmd.args(args)
         .current_dir(env!("CARGO_TARGET_TMPDIR"))
