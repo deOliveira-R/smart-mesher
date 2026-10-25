@@ -139,17 +139,14 @@ impl<'e> Mcp<'e> {
             if obj.contains_key("result") || obj.contains_key("error") {
                 return None;
             }
-            return Some(reply_err(
-                &Value::Null,
-                &Rpc::invalid_request("missing `method`"),
-            ));
+            // JSON-RPC: `id: null` only when the id cannot be determined.
+            let id = id.filter(|i| id_is_valid(i)).unwrap_or(&Value::Null);
+            return Some(reply_err(id, &Rpc::invalid_request("missing `method`")));
         };
         let Some(id) = id else {
             return None; // notification: never answered
         };
-        // MCP: the id is a string or an integer, never null.
-        let id_ok = matches!(id, Value::String(_)) || matches!(id, Value::Number(_));
-        if !id_ok {
+        if !id_is_valid(id) {
             return Some(reply_err(
                 &Value::Null,
                 &Rpc::invalid_request("`id` must be a string or a number"),
@@ -334,6 +331,11 @@ impl<'e> Mcp<'e> {
     }
 }
 
+/// MCP: the id is a string or a number, never null.
+fn id_is_valid(id: &Value) -> bool {
+    matches!(id, Value::String(_) | Value::Number(_))
+}
+
 /// `structuredContent` must be an object: other results are wrapped as `{"result": value}`.
 fn structured(v: Value) -> Value {
     if v.is_object() { v } else { json!({"result": v}) }
@@ -382,7 +384,8 @@ fn fixed_request(f: Fixed, mut args: Map<String, Value>) -> Result<Request, Rpc>
 }
 
 /// Revisions are written as plain strings in tool arguments: `"empty"`, a 64-hex node hash, or
-/// a branch name. The object forms (`{"ref": ..}`, `{"node": ..}`) pass through unchanged.
+/// a branch name. The object forms (`{"ref": ..}`, `{"node": ..}`) pass through unchanged and are
+/// the only way to name a branch called `empty` or one whose name is 64 lowercase hex characters.
 fn normalize_rev(v: Value) -> Value {
     match v {
         Value::String(s) if s == "empty" => json!("empty"),

@@ -94,12 +94,23 @@ unit_query!(Big, "demo.big");
 unit_query!(Internal, "demo.internal");
 unit_query!(BadParams, "demo.badparams");
 
+/// How a faulty mock catalog fails.
+#[derive(Clone, Copy)]
+pub enum CatalogFault {
+    EndpointError,
+    Unreadable,
+}
+
 pub struct Mock {
     reg: Registry,
     /// Every request received, in order.
     pub log: Vec<Request>,
     /// Extra raw catalog op entries (to test hostile catalogs).
     pub extra_ops: Vec<Value>,
+    /// Extra raw catalog query entries.
+    pub extra_queries: Vec<Value>,
+    /// Make the catalog fail: `Err` from the endpoint, or an unreadable payload.
+    pub catalog_fault: Option<CatalogFault>,
     /// Replaces the `demo.big` payload size (number of array elements).
     pub big: usize,
 }
@@ -114,7 +125,7 @@ impl Mock {
         reg.register_query::<Big>().unwrap();
         reg.register_query::<Internal>().unwrap();
         reg.register_query::<BadParams>().unwrap();
-        Self { reg, log: Vec::new(), extra_ops: Vec::new(), big: 0 }
+        Self { reg, log: Vec::new(), extra_ops: Vec::new(), extra_queries: Vec::new(), catalog_fault: None, big: 0 }
     }
 
     pub fn catalog_calls(&self) -> usize {
@@ -140,6 +151,9 @@ impl Mock {
         for e in &self.extra_ops {
             v["ops"].as_array_mut().unwrap().push(e.clone());
         }
+        for e in &self.extra_queries {
+            v["queries"].as_array_mut().unwrap().push(e.clone());
+        }
         v
     }
 }
@@ -152,7 +166,11 @@ impl Endpoint for Mock {
     fn call(&mut self, req: Request) -> Result<Value, RpcError> {
         self.log.push(req.clone());
         match req {
-            Request::Catalog => Ok(self.catalog()),
+            Request::Catalog => match self.catalog_fault {
+                Some(CatalogFault::EndpointError) => Err(RpcError::internal("catalog down")),
+                Some(CatalogFault::Unreadable) => Ok(json!({"ops": "nope"})),
+                None => Ok(self.catalog()),
+            },
             Request::Apply { op, .. } => match op.as_str() {
                 "mesh.run" => Err(RpcError::application(
                     "op-invalid",

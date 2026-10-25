@@ -46,7 +46,10 @@ fn golden_dir() -> std::path::PathBuf {
 #[test]
 fn golden_session_transcript() {
     let input = transcript();
-    let out = run_raw(&mut Mock::new(), &input);
+    // `serverInfo.version` follows the workspace version; pin a placeholder instead.
+    let pkg = format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+    assert_eq!(run_raw(&mut Mock::new(), &input).matches(&pkg).count(), 1, "one version field");
+    let out = run_raw(&mut Mock::new(), &input).replace(&pkg, "\"version\":\"<CARGO_PKG_VERSION>\"");
     let out_name = if cfg!(feature = "respell") { "session.out.respell.jsonl" } else { "session.out.jsonl" };
     let (fi, fo) = (golden_dir().join("session.in.jsonl"), golden_dir().join(out_name));
     if std::env::var_os("SM_MCP_BLESS").is_some() {
@@ -153,6 +156,9 @@ fn hostile_catalog_entries_are_dropped() {
         tpl("x.shadow", "help"),
         tpl("x.good", "x__good"),
     ];
+    // A query that collides with an op's tool name: the op wins.
+    m.extra_queries = vec![json!({"name": "x.query_dup", "tool_name": "mesh__run",
+        "schema": {"type": "object"}, "output_schema": {}})];
     let ts = tools(&mut m, "2025-06-18");
     let n = names(&ts);
     assert!(n.contains(&"x__good".to_owned()));
@@ -162,6 +168,80 @@ fn hostile_catalog_entries_are_dropped() {
     // The fixed `help` wins over the shadowing op.
     let help = ts.iter().find(|t| t["name"] == "help").unwrap();
     assert!(help["description"].as_str().unwrap().starts_with("List the available tools"));
+    // The op `mesh__run` survives; the colliding query is dropped (its call would be an Apply).
+    let mesh_run = ts.iter().find(|t| t["name"] == "mesh__run").unwrap();
+    assert!(mesh_run["description"].as_str().unwrap().contains("Op `mesh.run`"));
+    assert!(!ts.iter().any(|t| t["title"] == "x.query_dup"));
+    let r = run(&mut m, &[call(1, "mesh__run", json!({"targets": []}))]);
+    assert_eq!(r[0]["result"]["isError"], true);
+    assert!(matches!(m.log.last(), Some(Request::Apply { op, .. }) if op == "mesh.run"));
+}
+
+#[test]
+fn non_object_input_schemas_are_forced_to_object() {
+    let mut m = Mock::new();
+    let mk = |name: &str, tool: &str, schema: Value| {
+        json!({"name": name, "tool_name": tool, "version": 1, "schema": schema,
+               "output_schema": {}, "outputs": [], "positional": null})
+    };
+    m.extra_ops = vec![
+        mk("x.notype", "x__notype", json!({"properties": {"a": {"type": "integer"}}})),
+        mk("x.string", "x__string", json!({"type": "string"})),
+        mk("x.union", "x__union", json!({"type": ["object", "null"]})),
+        mk("x.true", "x__true", json!(true)),
+        mk("x.false", "x__false", json!(false)),
+    ];
+    let q = |name: &str, tool: &str, schema: Value| {
+        json!({"name": name, "tool_name": tool, "schema": schema, "output_schema": {}})
+    };
+    m.extra_queries = vec![
+        q("y.notype", "y__notype", json!({})),
+        q("y.array", "y__array", json!({"type": "array"})),
+        q("y.true", "y__true", json!(true)),
+    ];
+    let ts = tools(&mut m, "2025-06-18");
+    for t in [
+        "x__notype", "x__string", "x__union", "x__true", "x__false", "y__notype", "y__array",
+        "y__true",
+    ] {
+        let tool = ts.iter().find(|x| x["name"] == t).unwrap_or_else(|| panic!("{t} missing"));
+        assert_eq!(tool["inputSchema"]["type"], "object", "{t}: {}", tool["inputSchema"]);
+    }
+    // Other keywords of a forced schema are kept.
+    let nt = ts.iter().find(|x| x["name"] == "x__notype").unwrap();
+    assert_eq!(nt["inputSchema"]["properties"]["a"]["type"], "integer");
+    // A boolean schema carries nothing else.
+    let t = ts.iter().find(|x| x["name"] == "x__true").unwrap();
+    assert_eq!(t["inputSchema"], json!({"type": "object"}));
+}
+
+#[test]
+fn rev_descriptions_name_the_ref_escape_hatch() {
+    let ts = tools(&mut Mock::new(), "2025-06-18");
+    for (tool, prop) in [("timeline_checkout", "rev"), ("session_hash", "at")] {
+        let t = ts.iter().find(|x| x["name"] == tool).unwrap();
+        let d = t["inputSchema"]["properties"][prop]["description"].as_str().unwrap();
+        assert!(d.contains("{\"ref\": name}") && d.contains("`empty`"), "{tool}: {d}");
+    }
+}
+
+#[test]
+fn branches_named_empty_or_hex_need_the_ref_form() {
+    let hex = "ab".repeat(32);
+    let mut m = Mock::new();
+    run(
+        &mut m,
+        &[
+            call(1, "timeline_checkout", json!({"rev": "empty"})),
+            call(2, "timeline_checkout", json!({"rev": {"ref": "empty"}})),
+            call(3, "timeline_checkout", json!({"rev": hex})),
+            call(4, "timeline_checkout", json!({"rev": {"ref": hex}})),
+        ],
+    );
+    assert!(matches!(&m.log[0], Request::Checkout { rev: sm_op_api::Rev::Empty }));
+    assert!(matches!(&m.log[1], Request::Checkout { rev: sm_op_api::Rev::Ref(b) } if b == "empty"));
+    assert!(matches!(&m.log[2], Request::Checkout { rev: sm_op_api::Rev::Node(_) }));
+    assert!(matches!(&m.log[3], Request::Checkout { rev: sm_op_api::Rev::Ref(b) } if *b == hex));
 }
 
 // ---- negotiation ----
@@ -255,7 +335,7 @@ fn framing_and_malformed_input() {
         "[]",
         "42",
         "\"str\"",
-        "{\"jsonrpc\":\"2.0\",\"id\":1}",                   // no method
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",                   // no method, readable id
         "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}", // null id
         "{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"ping\"}",
         "{\"jsonrpc\":\"1.0\",\"id\":2,\"method\":\"ping\"}",
@@ -283,7 +363,7 @@ fn framing_and_malformed_input() {
             (Value::Null, -32600),
             (Value::Null, -32600),
             (Value::Null, -32600),
-            (Value::Null, -32600),
+            (json!(1), -32600),
             (Value::Null, -32600),
             (Value::Null, -32600),
             (json!(2), -32600),
@@ -293,6 +373,54 @@ fn framing_and_malformed_input() {
     assert_eq!(r.len(), 11);
     assert_eq!(r[10], json!({"jsonrpc":"2.0","id":"s","result":{}}));
     assert!(m.log.is_empty(), "nothing reached the endpoint");
+}
+
+#[test]
+fn missing_method_echoes_only_a_valid_id() {
+    let input = [
+        "{\"jsonrpc\":\"2.0\",\"id\":\"abc\"}",
+        "{\"id\":7}",
+        "{\"jsonrpc\":\"2.0\",\"id\":null}",
+        "{\"jsonrpc\":\"2.0\",\"id\":[1]}",
+        "{\"jsonrpc\":\"2.0\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":[]}",
+    ]
+    .join("\n");
+    let out = run_raw(&mut Mock::new(), &input);
+    let ids: Vec<(Value, i64)> = out
+        .lines()
+        .map(|l| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            (v["id"].clone(), v["error"]["code"].as_i64().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            (json!("abc"), -32600),
+            (json!(7), -32600),
+            (Value::Null, -32600),
+            (Value::Null, -32600),
+            (Value::Null, -32600),
+            (json!(4), -32600),
+        ]
+    );
+}
+
+#[test]
+fn unknown_tool_with_a_failing_catalog_is_an_internal_error() {
+    // The name cannot be judged unknown without the catalog, so the fetch failure shows through
+    // (-32603), while fixed tools still work.
+    for fault in [CatalogFault::EndpointError, CatalogFault::Unreadable] {
+        let mut m = Mock::new();
+        m.catalog_fault = Some(fault);
+        let r = run(&mut m, &[call(1, "no_such_tool", json!({})), call(2, "session_status", json!({}))]);
+        assert_eq!(r[0]["error"]["code"], -32603, "{}", r[0]);
+        assert_eq!(r[1]["result"]["isError"], false);
+    }
+    // With a healthy catalog the same call is -32602.
+    let r = run(&mut Mock::new(), &[call(1, "no_such_tool", json!({}))]);
+    assert_eq!(r[0]["error"]["code"], -32602);
 }
 
 #[test]
