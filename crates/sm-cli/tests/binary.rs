@@ -10,7 +10,9 @@ use sm_protocol::HashResult;
 
 fn smesh(args: &[&str], stdin: &str, rayon_threads: Option<usize>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smesh"));
+    // Relative exports of a `run --memory` script land here, not in the source tree.
     cmd.args(args)
+        .current_dir(env!("CARGO_TARGET_TMPDIR"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -155,6 +157,21 @@ fn output_is_identical_across_runs_and_thread_counts() {
             smesh(&["hash", "--memory", "--json"], "", Some(threads)).stdout,
             smesh(&["help", "--memory", "--json"], "", Some(threads)).stdout,
             smesh(&["help", "core.batch"], "", Some(threads)).stdout,
+            smesh(
+                &[
+                    "run",
+                    &format!("{}/tests/data/milestone.smesh", env!("CARGO_MANIFEST_DIR")),
+                    "--memory",
+                    "--print-hash",
+                    "--author",
+                    "it",
+                    "--fixed-time",
+                    "2026-10-24T00:00:00Z",
+                ],
+                "",
+                Some(threads),
+            )
+            .stdout,
             smesh(
                 &["serve", "--memory"],
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"catalog\"}\n",

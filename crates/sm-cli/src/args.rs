@@ -75,7 +75,8 @@ pub enum Command {
     Run {
         /// Script file.
         script: PathBuf,
-        /// Also print the final state hash (64 hex digits) as the last stdout line.
+        /// Also print the final state hash (64 hex digits) as the last stdout line. Ignored with
+        /// `--json`, whose result object already carries it as `state`.
         #[arg(long)]
         print_hash: bool,
     },
