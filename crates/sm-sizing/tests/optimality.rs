@@ -279,7 +279,8 @@ fn matches_exhaustive_enumeration() {
 /// counts only when that provably contains the optimum. Every goal term is at most `gmax`, so an
 /// assignment with max deviation `D` has every goal-class count at most `gmax (1 + D)` (hard
 /// counts are at most `MAXC`). The brute optimum bounds `D*` from above, so if
-/// `gmax (1 + D) + 1 <= MAXU` the true optimum lies inside the enumerated box.
+/// `max(gmax, MAXC) (1 + D) + 1 <= MAXU` the true optimum lies inside the enumerated box (fixed
+/// soft/default counts, up to `MAXC`, are goal terms too).
 #[test]
 fn matches_exhaustive_enumeration_without_upper_bounds() {
     const GMAX: f64 = 6.0;
@@ -296,7 +297,7 @@ fn matches_exhaustive_enumeration_without_upper_bounds() {
                 match (&want, &got) {
                     (Some(((mx, _), v)), Ok(out)) => {
                         let d = *mx as f64 / (1u64 << 40) as f64;
-                        if GMAX * (1.0 + d) + 1.0 > f64::from(MAXU) {
+                        if GMAX.max(f64::from(MAXC)) * (1.0 + d) + 1.0 > f64::from(MAXU) {
                             skipped.set(skipped.get() + 1);
                             return Ok(());
                         }

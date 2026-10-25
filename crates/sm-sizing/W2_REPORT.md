@@ -89,8 +89,10 @@ Benchmark: `benches/solver.rs`.
 
 * Beyond 512 classes in one component, or after 400 000 search nodes, a coupled component is
   solved heuristically (best of search incumbent and reference solver); optimal only below the
-  limits. Pruning uses per-class objective bounds only (no row-aware bound), so dense coupled
-  `>=` rows over many free classes can hit the node budget.
+  limits. Dense coupled rows over many free classes (for example a `<=` and a `>=` row over 30
+  classes, test `dense30`) can still hit the node budget; the answer is then a verified feasible
+  point improved by the search, not a proven optimum, and equal-goal symmetric single rows can
+  exhaust the budget through exact-key ties.
 * `bias`/`geometric`/`linear` fields are not tested against Cubit numerically (no Cubit here).
 * Phase 2 of a component whose search ran out of budget keeps the best candidate found, not a
   proven optimum.
@@ -137,3 +139,51 @@ Questions for the orchestrator (no code change):
   floor binds). Consistent with cubit-meshing-semantics section 2 and the plan, but it means the
   factor has no effect on compact parts. Is that intended?
 * The picker's weighted change cost (soft 2, other 1) versus the plain "fewest types" of plan T3.
+
+## Fix round 1 (review findings)
+
+Must fix:
+
+1. `dense30` (30 edges, `sum <= 100`, `sum odd >= 60`) was reported `Infeasible` after the search
+   gave up. Now: (a) a search that exhausts its budget with no incumbent runs a feasibility-only
+   pass (propagate and assign, smallest domain first, three value orders); a point found there
+   seeds the optimizing search and is returned if nothing better is proven. (b) Components of
+   more than 12 classes bisect for the smallest deviation `D` whose windows survive propagation
+   (previously 0.5, 1, 2, ...), then grow `D` by factors `1 + 2^(l-6)`; a window is searched
+   only after the feasibility pass finds a point in it. (c) When both the search and the
+   reference solver find nothing the reason is "search budget exhausted, feasibility unproven ..."
+   and names every row of the component; it no longer reuses the reference's message. Proven
+   infeasibility (completed search, row violated by bounds) is unchanged. Module docs and
+   DESIGN.md updated. Tests: `iia::dense30_two_dense_rows_is_feasible_and_not_reported_infeasible`,
+   `iia::exhausted_search_without_proof_says_so_and_does_not_echo_the_reference`.
+   The dense30 answer itself is a verified feasible point, not a proven optimum (the budget still
+   runs out); the earlier infeasible verdict is gone.
+
+Should fix:
+
+1. Single dense `<=` row (30 goals, `sum <= 100`): now solved exactly in about 150 microseconds
+   (the bisected window is a single point). The optimum has maximum deviation 11/19, better than
+   the scaled-rounding answer (0.67) in the review. Added a row-aware sum bound (cheapest unit
+   moves repairing a violated `<=`/`>=` row, relaxed so rounding noise cannot make it invalid; a
+   first version that kept the order of moves within a variable was invalid and was caught by a
+   brute-force comparison). Test `iia::single_dense_le_row_over_30_classes_pins_the_optimum`
+   pins the vector and checks the lower bound independently (`sum ceil(g (1-d)) > 100` for any
+   smaller `d`). Remaining gap: many equal goals tie in exact keys and can exhaust the budget.
+2. Infeasible reports from root propagation now name every row of the component when more than
+   one row is involved, and never reuse the reference's wording. The `x-y=1`, `x-y=2` case is
+   reported as unproven (the search cannot prove it over unbounded domains); test
+   `iia::interacting_rows_that_conflict_name_every_row_of_the_component`.
+3. Added `iia::permuting_edge_ids_gives_the_mapped_answer` (edge ids renumbered by a bijection,
+   so component order changes; the mapped answer is identical).
+4. `optimality::matches_exhaustive_enumeration_without_upper_bounds` guard is now
+   `max(GMAX, MAXC) * (1 + D) + 1 <= MAXU`.
+5. `Cargo.lock`: only the `sm-sizing` entry changed, which cargo makes unavoidable; the
+   orchestrator should accept it at merge.
+6. Dependencies beyond the T3 Deps line (rayon, thiserror, serde_json; dev: sm-model-api,
+   sm-mesh-api, sm-geom-api, proptest, criterion; sm-math and sm-geom-api dropped from
+   `[dependencies]`) are unchanged and still need the orchestrator's approval (deviation 6).
+
+Check: `cargo test -p sm-sizing` (debug, also `RAYON_NUM_THREADS=1` for the iia tests),
+`cargo clippy -p sm-sizing --all-targets --all-features -- -D warnings`, rustdoc with
+`-D warnings`: clean. Optimality tests take about 17 s in debug (13 s before; the extra time is
+the feasibility rescue of budget-exhausting unbounded cases).

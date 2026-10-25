@@ -34,8 +34,14 @@
 //! [`deviation_key`]), so sums and maxima are exact and transitive, and ties are real ties. No
 //! floating-point LP is used. The search is an integer branch and bound with interval bound
 //! propagation on the rows and parity propagation on even-sum rows. Domains that the rows do not
-//! bound are windowed by a maximum deviation `D` (0.5, 1, 2, ... 2^40): the optimum of the
-//! windowed problem is the global optimum as soon as one feasible point exists inside the window.
+//! bound are windowed by a maximum deviation `D`: the optimum of the windowed problem is the
+//! global optimum as soon as one feasible point exists inside the window. Small components
+//! (at most 12 classes) try `D` = 0.5, 1, 2, ... 2^40. Larger ones first bisect for the smallest
+//! `D` whose windows survive bound propagation (a dense row then gives tight domains at once),
+//! then grow `D` in small geometric steps; at each window a feasibility-only search (no
+//! objective, smallest domain first, three value orders) must find a point before the
+//! optimizing search runs, and that point seeds its incumbent. For dense `<=` or `>=` rows the
+//! sum bound also adds the cheapest unit moves that repair the row from the goal-nearest point.
 //!
 //! # Components, parallelism, limits
 //!
@@ -48,8 +54,17 @@
 //! bit. A component with more than [`IiaSolver::max_component_classes`] classes,
 //! or one that exhausts [`IiaSolver::max_nodes`] search nodes, is handed to
 //! [`ReferenceIntervalSolver`] (restricted to that component), and the reference answer is
-//! verified exactly against every constraint of the component. If the reference finds nothing
-//! either, the result is [`Infeasible`] naming the constraints and edges involved.
+//! verified exactly against every constraint of the component. A search that runs out of nodes
+//! first looks for any feasible point; the best of that, the search incumbent and the reference
+//! answer is returned (not proven optimal, see DESIGN.md "Known gaps").
+//!
+//! # Infeasibility reports
+//!
+//! `Infeasible` is returned only when it is proven (a completed search, or a single row that the
+//! bounds already violate). A conflict that comes from interacting rows names every row of the
+//! component. When the search gives up (budget or size) and the reference solver finds nothing
+//! either, the reason says "search budget exhausted, feasibility unproven": that is not a proof
+//! that no assignment exists.
 //!
 //! Every returned assignment is re-verified in integer arithmetic against all constraints
 //! ([`first_violation`]).
@@ -69,6 +84,9 @@ const MIN_GOAL: f64 = 1e-9;
 const COUNT_MAX: i64 = u32::MAX as i64;
 /// Number of deviation windows tried before the unrestricted last level.
 const LEVELS: u32 = 42;
+/// Components up to this many classes are searched directly at each window (no feasibility
+/// seeding, no bisection): the search finishes long before its budget.
+const SMALL_VARS: usize = 12;
 
 /// The quantized relative deviation `round(|count - goal| / goal * 2^40)` of a count from a
 /// goal. This is the exact integer the solver compares and sums; `goal` is clamped to at least
@@ -296,6 +314,28 @@ struct Best {
     vals: Vec<i64>,
 }
 
+/// One unit move of a variable in the row-aware bound: `cost` per `w` units of row reduction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Move {
+    cost: i128,
+    w: i128,
+    j: usize,
+    s: i64,
+}
+
+impl Ord for Move {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        // cost / w ascending, ties by variable position (deterministic).
+        (self.cost * o.w).cmp(&(o.cost * self.w)).then(self.j.cmp(&o.j)).then(self.s.cmp(&o.s))
+    }
+}
+
+impl PartialOrd for Move {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
 struct Search<'a> {
     p: &'a Local,
     free: Vec<Vec<(i64, i64)>>,
@@ -304,6 +344,10 @@ struct Search<'a> {
     changed: Vec<usize>,
     /// False under a deviation cap: the maximum is then constrained, not minimized.
     use_max: bool,
+    /// Dense rows used by the row-aware sum bound.
+    dense: Vec<u32>,
+    /// Value order of the feasibility search (see `dfs_feas`).
+    order: u8,
     nodes: u64,
     max_nodes: u64,
     exhausted: bool,
@@ -329,6 +373,15 @@ impl<'a> Search<'a> {
             inq: vec![false; p.rows.len()],
             changed: Vec::new(),
             use_max: true,
+            order: 0,
+            dense: {
+                let mut d: Vec<u32> = (0..p.rows.len() as u32)
+                    .filter(|&r| p.nvar > SMALL_VARS && p.rows[r as usize].len >= 4)
+                    .collect();
+                d.sort_by_key(|&r| std::cmp::Reverse(p.rows[r as usize].len));
+                d.truncate(4);
+                d
+            },
             nodes: 0,
             max_nodes,
             exhausted: false,
@@ -411,6 +464,115 @@ impl<'a> Search<'a> {
         result
     }
 
+    /// The exact-sum minimizer of variable `v` over `[l, h]` and its sum key.
+    fn argmin_sum(&self, v: usize, l: i64, h: i64) -> (i64, u128) {
+        let mut best = (l, self.p.exact(v, l).1);
+        let mut try_n = |n: i64| {
+            if (l..=h).contains(&n) {
+                let k = self.p.exact(v, n).1;
+                if (k, n) < (best.1, best.0) {
+                    best = (n, k);
+                }
+            }
+        };
+        try_n(h);
+        for &g in self.p.terms(v) {
+            let f = g.floor() as i64;
+            for n in (f - 1)..=(f + 2) {
+                try_n(n);
+            }
+        }
+        best
+    }
+
+    /// Row-aware extra for the sum lower bound: for a dense row `sum a x <= R` whose
+    /// goal-nearest assignment violates it, the cheapest set of unit moves that restores it
+    /// (a relaxation that ignores the order of moves within one variable, so it is a valid
+    /// bound), minus what the per-variable bound already counted for the row's variables.
+    fn row_extra(&self, dom: &[(i64, i64)]) -> u128 {
+        const MAX_POPS: usize = 2048;
+        let p = self.p;
+        let mut out = 0u128;
+        for &ri in &self.dense {
+            let row = &p.rows[ri as usize];
+            let (vars, coefs) = p.row_terms(row);
+            let signs: &[i64] = match row.kind {
+                Kind::Le => &[1],
+                Kind::Ge => &[-1],
+                Kind::Eq => &[1, -1],
+                Kind::Even => continue,
+            };
+            // Base point per variable and what the plain bound already counts.
+            let base: Vec<(i64, u128)> =
+                vars.iter().map(|&v| self.argmin_sum(v as usize, dom[v as usize].0, dom[v as usize].1)).collect();
+            let counted: u128 =
+                vars.iter().map(|&v| self.lb(v as usize, dom[v as usize].0, dom[v as usize].1).1).sum();
+            let f_base: u128 = base.iter().map(|b| b.1).sum();
+            for &sg in signs {
+                let rhs = i128::from(sg) * i128::from(row.rhs);
+                let mut need: i128 = coefs
+                    .iter()
+                    .zip(&base)
+                    .map(|(&k, b)| i128::from(sg * k) * i128::from(b.0))
+                    .sum::<i128>()
+                    - rhs;
+                if need <= 0 {
+                    continue;
+                }
+                // Next unit moves, cheapest per unit of row reduction first.
+                let step_cost = |j: usize, s: i64| -> i128 {
+                    let v = vars[j] as usize;
+                    let (from, to) = if sg * coefs[j] > 0 {
+                        (base[j].0 - s + 1, base[j].0 - s)
+                    } else {
+                        (base[j].0 + s - 1, base[j].0 + s)
+                    };
+                    p.exact(v, to).1 as i128 - p.exact(v, from).1 as i128
+                };
+                // Every unit move of every variable goes into the heap at once (the relaxation
+                // ignores their order within a variable, which also holds when rounding makes
+                // the step costs of one variable non-monotone).
+                let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<Move>> =
+                    std::collections::BinaryHeap::new();
+                let mut total_moves = 0i128;
+                for (j, &v) in vars.iter().enumerate() {
+                    let (l, h) = dom[v as usize];
+                    let w = i128::from((sg * coefs[j]).abs());
+                    let avail = if sg * coefs[j] > 0 { base[j].0 - l } else { h - base[j].0 };
+                    let take = i128::from(avail).min((need + w - 1) / w);
+                    total_moves += take;
+                    if total_moves > MAX_POPS as i128 {
+                        break;
+                    }
+                    for s in 1..=(take as i64) {
+                        heap.push(std::cmp::Reverse(Move { cost: step_cost(j, s), w, j, s }));
+                    }
+                }
+                if total_moves > MAX_POPS as i128 {
+                    continue;
+                }
+                let mut greedy = 0i128;
+                let mut done = false;
+                while let Some(std::cmp::Reverse(m)) = heap.pop() {
+                    if need <= m.w {
+                        greedy += div_floor(m.cost * need, m.w);
+                        done = true;
+                        break;
+                    }
+                    greedy += m.cost;
+                    need -= m.w;
+                }
+                if done {
+                    let total = f_base as i128 + greedy - counted as i128;
+                    if total > 0 {
+                        out = out.max(total as u128);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn lex_cmp_prefix(&self, prefix: &[(i64, i64)], best: &Best) -> std::cmp::Ordering {
         for (i, (l, _)) in prefix.iter().enumerate() {
             match l.cmp(&best.vals[i]) {
@@ -447,7 +609,11 @@ impl<'a> Search<'a> {
         }
         let (mv, sv) = self.lb(v, dom[v].0, dom[v].1);
         if let Some(b) = &self.best {
-            let (tm, ts) = (mx_wo.max(mv), sm_wo + sv);
+            let (tm, mut ts) = (mx_wo.max(mv), sm_wo + sv);
+            if tm == b.max && ts <= b.sum && !self.dense.is_empty() {
+                let ex0 = self.row_extra(dom);
+                ts += ex0;
+            }
             if (tm, ts) > (b.max, b.sum)
                 || ((tm, ts) == (b.max, b.sum)
                     && self.lex_cmp_prefix(&dom[..v], b) == std::cmp::Ordering::Greater)
@@ -519,6 +685,69 @@ impl<'a> Search<'a> {
             }
             self.free.push(child);
             if self.exhausted {
+                return;
+            }
+        }
+    }
+
+    /// Feasibility-only search: propagate and assign, smallest domain first, values outward from
+    /// the goal centre. Sets `best` to the first assignment that satisfies the rows.
+    fn dfs_feas(&mut self, dom: &[(i64, i64)]) {
+        if self.exhausted || self.best.is_some() {
+            return;
+        }
+        self.nodes += 1;
+        if self.nodes > self.max_nodes {
+            self.exhausted = true;
+            return;
+        }
+        let p = self.p;
+        let pick = (0..p.nvar)
+            .filter(|&i| dom[i].0 < dom[i].1)
+            .min_by_key(|&i| (i128::from(dom[i].1) - i128::from(dom[i].0), i));
+        let Some(v) = pick else {
+            if self.rows_hold(dom) {
+                let vals: Vec<i64> = dom.iter().map(|d| d.0).collect();
+                self.best = Some(Best { max: 0, sum: 0, vals });
+            }
+            return;
+        };
+        let (lo, hi) = dom[v];
+        // Value order: 0 outward from the goal centre, 1 ascending, 2 descending.
+        let c = match self.order {
+            0 => (p.center[v].round() as i64).clamp(lo, hi),
+            1 => lo - 1,
+            _ => hi,
+        };
+        let (mut left, mut right) = (c, c + 1);
+        loop {
+            let take_left = left >= lo && (right > hi || c - left <= right - c);
+            let n = if take_left {
+                let n = left;
+                left -= 1;
+                n
+            } else if right <= hi {
+                let n = right;
+                right += 1;
+                n
+            } else {
+                break;
+            };
+            self.nodes += 1;
+            if self.nodes > self.max_nodes {
+                self.exhausted = true;
+                return;
+            }
+            let mut child = self.free.pop().unwrap_or_default();
+            child.clear();
+            child.extend_from_slice(dom);
+            child[v] = (n, n);
+            self.push_var_rows(v);
+            if self.propagate(&mut child).is_ok() {
+                self.dfs_feas(&child);
+            }
+            self.free.push(child);
+            if self.exhausted || self.best.is_some() {
                 return;
             }
         }
@@ -673,9 +902,33 @@ fn window_of(goals: &[f64], mut lo: i64, mut hi: i64, d: f64, capq: u128) -> (i6
     (lo, hi)
 }
 
+/// Narrow every goal-bearing domain of `root` to the counts within deviation `d` (keys up to
+/// `capq`) and propagate. `None` when a window is empty or propagation fails.
+fn windowed(p: &Local, s: &mut Search, root: &[(i64, i64)], d: f64, capq: u128) -> Option<Vec<(i64, i64)>> {
+    let mut dom = root.to_vec();
+    for (v, slot) in dom.iter_mut().enumerate() {
+        if p.terms(v).is_empty() {
+            continue;
+        }
+        let (wl, wh) = window_of(p.terms(v), slot.0, slot.1, d, capq);
+        *slot = (wl, wh);
+        if wl > wh {
+            return None;
+        }
+    }
+    (0..p.rows.len() as u32).for_each(|r| s.push_row(r));
+    s.propagate(&mut dom).ok()?;
+    Some(dom)
+}
+
 /// Branch and bound on one component. With `cap = None` it finds the lexicographic optimum
 /// (windowing the domains by a growing deviation); with `Some(capq)` it finds the optimum among
 /// the assignments whose every goal term has key `<= capq`.
+///
+/// The windows start at the smallest deviation `d_min` for which bound propagation leaves a
+/// non-empty window (found by bisection, so a dense row immediately gives tight domains), then
+/// grow geometrically in small steps. A search that exhausts its budget without an incumbent
+/// gets a feasibility-only pass before giving up.
 fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
     let base: Vec<(i64, i64)> = (0..p.nvar).map(|i| (p.lo0[i], p.hi0[i])).collect();
     let mut s = Search::new(p, max_nodes);
@@ -686,50 +939,135 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
     if let Err(r) = s.propagate(&mut root) {
         return Outcome::Infeasible(Some(r));
     }
-    let levels: Vec<Option<(f64, u128)>> = match cap {
-        Some(q) => vec![Some((q as f64 / KEY_SCALE, q))],
-        None => (0..LEVELS)
-            .map(|l| {
-                let d = 0.5 * 2f64.powi(l as i32);
-                Some((d, (d * KEY_SCALE) as u128))
-            })
-            .chain(std::iter::once(None))
-            .collect(),
-    };
-    for level in levels {
-        let mut dom = root.clone();
-        if let Some((d, capq)) = level {
-            let mut empty = false;
-            for (v, slot) in dom.iter_mut().enumerate() {
-                if p.terms(v).is_empty() {
-                    continue;
+    let small = p.nvar <= SMALL_VARS;
+    let dkey = |d: f64| (d * KEY_SCALE) as u128;
+    // Deviation levels to try; `None` is the unrestricted last level.
+    let mut levels: Vec<Option<(f64, u128)>> = Vec::new();
+    match cap {
+        Some(q) => levels.push(Some((q as f64 / KEY_SCALE, q))),
+        None => {
+            if small {
+                // Small problems finish quickly: plain doubling windows.
+                for l in 0..LEVELS {
+                    let d = 0.5 * 2f64.powi(l as i32);
+                    levels.push(Some((d, dkey(d))));
                 }
-                let (wl, wh) = window_of(p.terms(v), slot.0, slot.1, d, capq);
-                slot.0 = wl;
-                slot.1 = wh;
-                if slot.0 > slot.1 {
-                    empty = true;
-                    break;
+            } else {
+                // Coarse: first power-of-two deviation whose windows survive propagation.
+                let mut hi_d = None;
+                for l in 0..LEVELS {
+                    let d = 0.5 * 2f64.powi(l as i32);
+                    if windowed(p, &mut s, &root, d, dkey(d)).is_some() {
+                        hi_d = Some(d);
+                        break;
+                    }
+                }
+                if let Some(hi_d) = hi_d {
+                    // Fine: bisect (hi_d / 2, hi_d] for the smallest passing deviation, then
+                    // grow in small geometric steps.
+                    let (mut a, mut b) = (if hi_d <= 0.5 { 0.0 } else { hi_d / 2.0 }, hi_d);
+                    for _ in 0..24 {
+                        let m = 0.5 * (a + b);
+                        if windowed(p, &mut s, &root, m, dkey(m)).is_some() {
+                            b = m;
+                        } else {
+                            a = m;
+                        }
+                    }
+                    let base_d = b.max(1.0 / 64.0);
+                    levels.push(Some((b, dkey(b))));
+                    for l in 1..=(LEVELS + 6) {
+                        let d = base_d * (1.0 + 2f64.powi(l as i32 - 6));
+                        levels.push(Some((d, dkey(d))));
+                    }
                 }
             }
-            if empty {
-                continue;
-            }
-        }
-        (0..p.rows.len() as u32).for_each(|r| s.push_row(r));
-        if s.propagate(&mut dom).is_err() {
-            continue;
-        }
-        s.best = None;
-        s.dfs(&dom);
-        if s.exhausted {
-            return Outcome::Exhausted(s.best.take().map(|b| b.vals));
-        }
-        if let Some(b) = s.best.take() {
-            return Outcome::Solved(b.vals);
+            levels.push(None);
         }
     }
+    let last = levels.len() - 1;
+    for (li, level) in levels.into_iter().enumerate() {
+        let dom = match level {
+            Some((d, capq)) => match windowed(p, &mut s, &root, d, capq) {
+                Some(dom) => dom,
+                None => continue,
+            },
+            None => root.clone(),
+        };
+        if small {
+            // The node budget is shared by all windows.
+            s.best = None;
+            s.dfs(&dom);
+            if let Some(b) = s.best.take() {
+                return if s.exhausted { Outcome::Exhausted(Some(b.vals)) } else { Outcome::Solved(b.vals) };
+            }
+            if !s.exhausted {
+                if li == last {
+                    return Outcome::Infeasible(None);
+                }
+                continue; // this window holds no assignment
+            }
+        }
+        // A window with a feasible point has the global optimum inside it, so the search only
+        // runs where one is known. Undecided or empty windows are skipped for a larger one.
+        let budget = if li == last || small { max_nodes / 4 } else { max_nodes / 16 };
+        let seed = match feasible_point(p, &dom, budget) {
+            Seed::Found(vals) => vals,
+            Seed::Empty if li == last => return Outcome::Infeasible(None),
+            Seed::Unknown if li == last => return Outcome::Exhausted(None),
+            Seed::Unknown if small => return Outcome::Exhausted(None),
+            Seed::Empty | Seed::Unknown => {
+                s.nodes = 0;
+                continue;
+            }
+        };
+        let (mut mx, mut sm) = (0u128, 0u128);
+        for (v, &x) in seed.iter().enumerate() {
+            let (m, k) = s.ex(v, x);
+            mx = mx.max(m);
+            sm += k;
+        }
+        s.best = Some(Best { max: mx, sum: sm, vals: seed });
+        s.exhausted = false;
+        s.nodes = 0;
+        s.dfs(&dom);
+        let found = s.best.take().map(|b| b.vals);
+        return match found {
+            Some(v) if !s.exhausted => Outcome::Solved(v),
+            other => Outcome::Exhausted(other),
+        };
+    }
     Outcome::Infeasible(None)
+}
+
+enum Seed {
+    Found(Vec<i64>),
+    /// The domains hold no assignment (the search completed).
+    Empty,
+    /// The budget ran out in some value order.
+    Unknown,
+}
+
+/// A feasible assignment inside `dom` by feasibility-only search, trying three value orders
+/// with `budget` nodes each.
+fn feasible_point(p: &Local, dom: &[(i64, i64)], budget: u64) -> Seed {
+    for order in 0..3u8 {
+        let mut f = Search::new(p, budget);
+        f.order = order;
+        (0..p.rows.len() as u32).for_each(|r| f.push_row(r));
+        let mut d = dom.to_vec();
+        if f.propagate(&mut d).is_err() {
+            return Seed::Empty;
+        }
+        f.dfs_feas(&d);
+        if let Some(b) = f.best.take() {
+            return Seed::Found(b.vals);
+        }
+        if !f.exhausted {
+            return Seed::Empty; // a completed search settles it for every order
+        }
+    }
+    Seed::Unknown
 }
 
 /// Exact optimum of a rowless class over `[lo, hi]`: `(max, sum, n)` lexicographic, or with a
@@ -1262,22 +1600,28 @@ impl IntervalSolver for IiaSolver {
                     exact.extend(local.map(|p| (k, p)));
                 }
                 Outcome::Infeasible(row) => {
-                    let (rows_named, reason): (Vec<ConstraintId>, &str) = match (row, &local) {
-                        (Some(r), Some(p)) => (
+                    let comp_rows = r_off[k + 1] - r_off[k];
+                    let single = match (row, &local) {
+                        (Some(r), Some(p)) if comp_rows == 1 => Some((r, p)),
+                        _ => None,
+                    };
+                    let (rows_named, reason): (Vec<ConstraintId>, &str) = match single {
+                        Some((r, p)) => (
                             vec![p.rows[r as usize].cid],
                             "a row cannot be met with the hard counts and bounds of its edges",
                         ),
-                        _ => (
+                        // Interacting rows: the conflict is a property of the whole component.
+                        None => (
                             r_list[r_off[k]..r_off[k + 1]].iter().map(|&r| rows[r as usize].cid).collect(),
                             "no integer assignment satisfies the rows of this component",
                         ),
                     };
-                    let named: Vec<u32> = match (row, &local) {
-                        (Some(r), Some(p)) => {
+                    let named: Vec<u32> = match single {
+                        Some((r, p)) => {
                             let ro = &p.rows[r as usize];
                             p.r_var[ro.off..ro.off + ro.len].iter().map(|&v| classes[v as usize]).collect()
                         }
-                        _ => classes.to_vec(),
+                        None => classes.to_vec(),
                     };
                     return Err(prob.report(reason, &named, &rows_named));
                 }
@@ -1285,7 +1629,21 @@ impl IntervalSolver for IiaSolver {
                     // Reference fallback; keep the better of it and the search incumbent.
                     let refv = reference_values(k);
                     let chosen = match (incumbent, &refv) {
-                        (None, Err(e)) => return Err(e.clone()),
+                        (None, Err(e)) => {
+                            // Neither the search nor the reference found an assignment; that is
+                            // not a proof, so say so instead of echoing the reference's reason.
+                            let rows_named: Vec<ConstraintId> =
+                                r_list[r_off[k]..r_off[k + 1]].iter().map(|&r| rows[r as usize].cid).collect();
+                            let mut inf = prob.report(
+                                "search budget exhausted, feasibility unproven (the reference solver found no assignment either)",
+                                classes,
+                                &rows_named,
+                            );
+                            inf.constraints.extend(e.constraints.iter().copied());
+                            inf.constraints.sort_unstable();
+                            inf.constraints.dedup();
+                            return Err(inf);
+                        }
                         (None, Ok(r)) => r.clone(),
                         (Some(i), Err(_)) => i,
                         (Some(i), Ok(r)) => {

@@ -353,3 +353,123 @@ fn fallback_keeps_rows_whose_terms_cancel() {
         assert_eq!(first_violation(&e, &cs, &counts(&out)), None, "{solver:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// dense rows, exhausted searches, error reports
+
+fn dense_goals(n: u64) -> (Vec<EntityId>, Vec<f64>, Vec<IntervalConstraint>) {
+    let e: Vec<_> = (1..=n).map(edge).collect();
+    let g: Vec<f64> = (1..=n).map(|i| 3.0 + ((i * 17) % 7) as f64 * 1.3).collect();
+    let items = e.iter().zip(&g).map(|(&ed, &gv)| goal(ed, gv)).collect();
+    (e, g, items)
+}
+
+fn max_dev(out: &[(EntityId, u32)], g: &[f64]) -> f64 {
+    out.iter().zip(g).map(|(x, &gv)| (f64::from(x.1) - gv).abs() / gv).fold(0.0, f64::max)
+}
+
+fn dense30_rows(e: &[EntityId]) -> Vec<IntervalConstraint> {
+    let all: Vec<_> = e.iter().map(|&x| (x, 1)).collect();
+    let odd: Vec<_> = e.iter().step_by(2).map(|&x| (x, 1)).collect();
+    vec![
+        IntervalConstraint::Linear { terms: all, rel: sm_scheme_api::Rel::Le, rhs: 100 },
+        IntervalConstraint::Linear { terms: odd, rel: sm_scheme_api::Rel::Ge, rhs: 60 },
+    ]
+}
+
+#[test]
+fn dense30_two_dense_rows_is_feasible_and_not_reported_infeasible() {
+    let (e, g, mut items) = dense_goals(30);
+    items.extend(dense30_rows(&e));
+    let cs = records(items);
+    let out = IiaSolver::default().solve(&e, &cs).expect("dense30 is feasible");
+    assert_eq!(first_violation(&e, &cs, &counts(&out)), None);
+    // Odd edges = 4 and even edges = 1 is feasible with max deviation < 1; the optimum is no worse.
+    assert!(max_dev(&out, &g) < 0.9, "max deviation {}", max_dev(&out, &g));
+}
+
+#[test]
+fn single_dense_le_row_over_30_classes_pins_the_optimum() {
+    let (e, g, mut items) = dense_goals(30);
+    items.push(IntervalConstraint::Linear {
+        terms: e.iter().map(|&x| (x, 1)).collect(),
+        rel: sm_scheme_api::Rel::Le,
+        rhs: 100,
+    });
+    let cs = records(items);
+    let out = IiaSolver::default().solve(&e, &cs).expect("solve");
+    assert_eq!(first_violation(&e, &cs, &counts(&out)), None);
+    // The goals repeat with period seven (3, 4.3, ..., 10.8); the optimum scales them by about
+    // 0.47 to counts 3, 5, 3, 4, 2, 4, 2 (sum 100), with maximum deviation 11/19 (count 4 vs 9.5).
+    let want: Vec<u32> = [3, 5, 3, 4, 2, 4, 2].iter().copied().cycle().take(30).collect();
+    assert_eq!(counts(&out), want);
+    assert_eq!(want.iter().sum::<u32>(), 100);
+    // Lower bound: for any smaller deviation d, even the real-valued minimal counts
+    // ceil(g (1 - d)) already exceed 100, so no assignment does better.
+    let md = max_dev(&out, &g);
+    let d = md - 1e-6;
+    let min_sum: f64 = g.iter().map(|&gv| (gv * (1.0 - d)).ceil().max(1.0)).sum();
+    assert!(min_sum > 100.0, "a smaller deviation {d} would fit: {min_sum}");
+}
+
+#[test]
+fn exhausted_search_without_proof_says_so_and_does_not_echo_the_reference() {
+    let (e, _, mut items) = dense_goals(30);
+    items.extend(dense30_rows(&e));
+    let cs = records(items);
+    // Two nodes cannot even finish the feasibility pass.
+    let err = IiaSolver::with_limits(512, 2).solve(&e, &cs).expect_err("budget");
+    assert!(err.reason.starts_with("search budget exhausted, feasibility unproven"), "{}", err.reason);
+    assert!(err.constraints.contains(&ConstraintId(30)) && err.constraints.contains(&ConstraintId(31)));
+}
+
+#[test]
+fn interacting_rows_that_conflict_name_every_row_of_the_component() {
+    let e: Vec<_> = (1..=2).map(edge).collect();
+    let diff = |rhs| IntervalConstraint::Linear {
+        terms: vec![(e[0], 1), (e[1], -1)],
+        rel: sm_scheme_api::Rel::Eq,
+        rhs,
+    };
+    let cs = records(vec![diff(1), diff(2)]);
+    let err = IiaSolver::default().solve(&e, &cs).expect_err("infeasible");
+    assert_eq!(err.constraints, vec![ConstraintId(0), ConstraintId(1)]);
+    assert!(!err.reason.contains("did not converge"), "{}", err.reason);
+}
+
+#[test]
+fn permuting_edge_ids_gives_the_mapped_answer() {
+    // Renumbering the edges reorders the components; the answer must map one to one.
+    let (edges, cs) = big_problem(40);
+    let solver = IiaSolver::default();
+    let base = solver.solve(&edges, &cs).expect("feasible");
+    let n = edges.len() as u64;
+    // A bijection on 1..=n (stride 37 is coprime to n = 160).
+    let map = |id: EntityId| edge((id.serial() * 37) % n + 1);
+    let mut mapped: Vec<EntityId> = edges.iter().map(|&x| map(x)).collect();
+    mapped.sort_unstable();
+    let cs2: Vec<_> = cs
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            r.item = match r.item {
+                IntervalConstraint::Goal { edge, goal } => IntervalConstraint::Goal { edge: map(edge), goal },
+                IntervalConstraint::Linear { terms, rel, rhs } => IntervalConstraint::Linear {
+                    terms: terms.into_iter().map(|(x, k)| (map(x), k)).collect(),
+                    rel,
+                    rhs,
+                },
+                IntervalConstraint::EvenSum { edges } => {
+                    IntervalConstraint::EvenSum { edges: edges.into_iter().map(map).collect() }
+                }
+                other => other,
+            };
+            r
+        })
+        .collect();
+    let out = solver.solve(&mapped, &cs2).expect("feasible");
+    for (id, c) in &base {
+        let got = out.iter().find(|x| x.0 == map(*id)).expect("edge").1;
+        assert_eq!(got, *c, "edge {id}");
+    }
+}

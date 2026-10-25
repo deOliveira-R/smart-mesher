@@ -44,9 +44,16 @@ Exactness:
 * Search: depth-first over classes in lowest-edge order, values tried outward from the minimizer
   of the max deviation, pruned by (a) interval bound propagation on every row, (b) parity
   propagation, (c) the objective lower bound against the incumbent (the max term, the sum term
-  and the already-fixed prefix of the vector).
-* Domains with no upper bound are windowed by a deviation cap `D = 0.5, 1, 2, ... 2^40`, whose
-  windowed optimum is the global optimum as soon as one feasible point exists inside it.
+  and the already-fixed prefix of the vector), and (d) for components of more than 12 classes, a
+  row-aware sum bound on the four densest rows (cheapest unit moves that repair a violated
+  `<=`/`>=` row from the goal-nearest point; a relaxation, so valid under rounding noise).
+* Domains are windowed by a deviation cap `D`, whose windowed optimum is the global optimum as
+  soon as one feasible point exists inside it. Small components step `D = 0.5, 1, 2, ... 2^40`.
+  Larger ones bisect for the smallest `D` whose windows survive propagation, then grow it by
+  factors `1 + 2^(l-6)`; a window is searched only after a feasibility-only search (smallest
+  domain first, three value orders) finds a point in it, which also seeds the incumbent.
+* A search that exhausts its budget with no incumbent runs the feasibility pass before giving
+  up; only a completed search proves infeasibility.
 * The max term couples components, so there are two phases: each component finds its optimum
   and thereby `D*`, the global maximum; components strictly below `D*` are then re-solved for
   (sum, vector) under the cap `D*`. The brute-force proptest found this: independent per-component
@@ -124,6 +131,14 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
   can be larger than the true optimum, and that inflated global `D*` relaxes the sum
   minimization of every other component in phase 2. The result is still feasible and verified,
   but the exact components are then optimal only for the `D*` the heuristic one induced.
+* A component that runs out of nodes returns the best of a feasibility-only point (seeding
+  the search), the search incumbent and the reference answer; a dense `>=` and `<=` pair over
+  ~30 classes (the `dense30` regression) still leaves the exact regime, but is feasible and
+  verified. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
+  microseconds (bisected window plus row-aware bound); with many equal goals the exact-key
+  ties make the lexicographic tie-break exhaust the budget (a feasible answer is returned).
+* When the search gives up and the reference solver also finds nothing, the error says
+  "feasibility unproven"; it does not claim infeasibility.
 * Hard-fixed classes contribute no goal term, and a class with any Soft count ignores its Goal
   terms (see the module docs); both can change the argmin compared with an "all goals" reading.
 * The picker weights a soft change 2 and other changes 1 (see above).
