@@ -29,6 +29,8 @@ sm-testkit = { path = "../sm-testkit" }
 sm-meshio = { path = "../sm-meshio" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-quality = { path = "../sm-quality" }
+# Milestone: MCP text content may use the script spelling of ids (sm-mcp `respell` feature).
+sm-lang = { path = "../sm-lang" }
 
 [[bin]]
 name = "smesh"

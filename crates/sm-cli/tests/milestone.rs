@@ -311,7 +311,8 @@ fn tool_call(id: i64, name: &str, arguments: Value) -> Value {
 }
 
 /// `structuredContent` of a successful `tools/call` reply; also checks that the text content is
-/// exactly the JSON of `structuredContent`.
+/// exactly the JSON of `structuredContent`, or of its script spelling (`sm_lang::respell_json`)
+/// when sm-mcp's `respell` feature is on (as under `--all-features`).
 fn tool_ok(replies: &BTreeMap<i64, Value>, id: i64) -> R<Value> {
     let r = replies
         .get(&id)
@@ -328,7 +329,7 @@ fn tool_ok(replies: &BTreeMap<i64, Value>, id: i64) -> R<Value> {
         .ok_or_else(|| format!("id {id}: no text content"))?;
     let parsed: Value = serde_json::from_str(text)
         .map_err(|e| format!("id {id}: text content is not JSON: {e}"))?;
-    if parsed != sc {
+    if parsed != sc && parsed != sm_lang::respell_json(&sc) {
         return Err(format!(
             "id {id}: text content differs from structuredContent: {text} vs {sc}"
         ));

@@ -225,11 +225,10 @@ fn standard_panics_exactly_when_try_standard_fails() {
 }
 
 #[test]
-#[ignore = "W2 integration: needs the merged model/mesher/fem/scheme crates"]
 fn standard_lists_the_milestone_ops() {
     let cat = catalog_of(try_standard().expect("standard"));
     let names: Vec<&str> = cat.ops.iter().map(|o| o.name.as_str()).collect();
-    for want in ["core.batch", "model.create_brick", "mesh.size", "mesh.scheme", "mesh.run", "fem.block_add"] {
+    for want in ["core.batch", "model.create_brick", "mesh.size", "mesh.scheme", "mesh.run", "fem.block_add", "fem.block_element_type", "mesh.intervals", "mesh.default_size"] {
         assert!(names.contains(&want), "missing op {want}: {names:?}");
     }
     let qn: Vec<&str> = cat.queries.iter().map(|q| q.name.as_str()).collect();

@@ -1138,6 +1138,7 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-engine",
+ "sm-lang",
  "sm-mcp",
  "sm-mesh-api",
  "sm-meshio",
