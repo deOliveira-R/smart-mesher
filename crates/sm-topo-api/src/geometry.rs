@@ -268,8 +268,8 @@ fn sample_face<'a, V: TopologyView + ?Sized>(view: &'a V, f: EntityId, gauss: bo
             let along = (cc.sense == crate::types::Sense::Forward) == (key.side == Side::Left);
             let (lo, hi) = (cc.range.lo, cc.range.hi);
             if anchored && let Some(pc) = view.pcurve(key) {
-                let rg = pc.range();
-                prev = Some(pc.eval(if along { rg.lo } else { rg.hi }));
+                // A pcurve uses the edge curve's parameter, so anchor at the edge range ends.
+                prev = Some(pc.eval(if along { lo } else { hi }));
             }
             let mut push = |t: f64, w: f64, prev: &mut Option<Uv>| -> Result<(), QueryError> {
                 let cj = curve.jet(t);
