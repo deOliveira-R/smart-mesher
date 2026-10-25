@@ -414,6 +414,37 @@ fn edge_ends_within_ulps_of_a_knot_get_their_own_panel() {
 }
 
 #[test]
+fn edge_ends_within_ulps_of_a_knot_have_the_exact_total_length() {
+    // Direct bound on the arc map's total length (the per-segment allowance in the test above is
+    // edge-wide and would hide a partial regression): the sliver past a knot must be integrated
+    // at its own piece's speed, so the total matches the per-knot-span reference (1e-12 at k = +3).
+    let (k1, k2) = (0.500_108_071_832_742_9, 0.500_108_192_401_624_9);
+    let knots = vec![0.0, 0.0, 0.25, 0.4, k1, k2, 0.7, 0.9, 1.0, 1.0];
+    let c = spline(1, knots.clone(), knots.len() - 2);
+    // Largest speed, sampled inside every knot span: a node cannot sit finer than one parameter ulp.
+    let mut edges = vec![0.0];
+    edges.extend(knots.iter().copied().filter(|k| *k > 0.0 && *k < 1.0));
+    edges.dedup();
+    edges.push(1.0);
+    let vmax = edges.windows(2).flat_map(|w| (0..8).map(move |j| w[0] + (w[1] - w[0]) * (f64::from(j) + 0.5) / 8.0)).map(|t| c.d1(t).norm()).fold(0.0, f64::max);
+    for k in -8..=8 {
+        let ranges = [(0.0, ulps(k2, k)), (0.0, ulps(k1, k)), (ulps(k1, k), 1.0), (ulps(k2, k), 1.0)];
+        for (lo, hi) in ranges {
+            for sense in [Sense::Forward, Sense::Reversed] {
+                let got = sm_scheme_curve::engine::arc_length(&c, carrier_r(sense, lo, hi)).unwrap();
+                let want = ref_len(&c, &knots, lo, hi);
+                // 1e-12 plus half a parameter-ulp x peak speed (1.5e-9 of arc length here): a node cannot
+                // sit finer than one ulp of t, and the 1.2e-7 span's speed noise is of that order.
+                // The original sliver bug (a knot's sliver integrated at the neighbouring fast piece's
+                // speed) was 3-5e-9 and fails this.
+                let tol = 1e-12 + 0.5 * f64::EPSILON * vmax / want;
+                assert!((got - want).abs() <= tol * want, "[{lo}, {hi}] {sense:?} (k = {k:+}): length {got} vs {want}");
+            }
+        }
+    }
+}
+
+#[test]
 fn quadratic_short_span_away_from_zero_is_not_a_geometry_error() {
     // Minimal repro: the speed inside the 1.63e-7 span carries parameter-scale noise at |t| ~ 100.
     let a = 0.431_845_142_746_103_9;
@@ -546,4 +577,47 @@ fn dense_knot_vectors_and_absurd_period_counts_are_typed() {
         Err(SpacingError::Geometry(_)) => {}
         other => panic!("expected a geometry error, got {other:?}"),
     }
+}
+
+// ---- polish wave: reviewer repros for very short, high-contrast spans ----
+
+/// Strict relative error of the equal-arc segments (no ulp allowance), worst over both senses.
+fn strict_rel(c: &dyn ParametricCurve, knots: &[f64], n: u32) -> f64 {
+    let mut worst = 0.0f64;
+    for sense in [Sense::Forward, Sense::Reversed] {
+        let fr = node_params(c, carrier(sense), n, &Spec::Equal).unwrap();
+        let fr: Vec<f64> = if sense == Sense::Reversed { fr.iter().rev().map(|f| 1.0 - f).collect() } else { fr };
+        let mut ts = vec![0.0];
+        ts.extend(fr);
+        ts.push(1.0);
+        let want = ref_len(c, knots, 0.0, 1.0) / f64::from(n);
+        for w in ts.windows(2) {
+            worst = worst.max((ref_len(c, knots, w[0], w[1]) - want).abs() / want);
+        }
+    }
+    worst
+}
+
+#[test]
+fn reviewer_degree_one_repro_knots_are_accurate() {
+    let interior = [0.0787340, 0.0787407, 0.2335, 0.33657309, 0.33657739, 0.7663];
+    let mut k = vec![0.0, 0.0];
+    k.extend(interior);
+    k.extend([1.0, 1.0]);
+    let c = spline(1, k.clone(), k.len() - 2);
+    check_ratio(&c, &k, 0.0, 1.0, 31, "reviewer repro 1");
+    // Seeded at the knots, the strict (allowance-free) error is far below 1e-9.
+    assert!(strict_rel(&c, &k, 31) < 1e-9);
+}
+
+#[test]
+fn reviewer_short_span_near_0_6184_is_limited_only_by_the_parameter_ulp() {
+    let a = 0.6184;
+    let k = clamped(1, &[(a, 1), (a + 2e-7, 1)]);
+    let c = spline(1, k.clone(), k.len() - 2);
+    check_ratio(&c, &k, 0.0, 1.0, 31, "reviewer repro 2");
+    // The 2e-7 span carries speed ~5e6: one ulp of t (1.1e-16 at t = 0.6) is ~5e-10 of arc length,
+    // so the strict error is bounded by the parameter ulp, not by the quadrature (was 6.8e-8
+    // before the arc map was seeded at breakpoints).
+    assert!(strict_rel(&c, &k, 31) < 1e-8);
 }

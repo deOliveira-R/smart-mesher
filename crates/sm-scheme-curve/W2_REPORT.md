@@ -4,7 +4,7 @@
 
 All five schemes are implemented and registered by `sm_scheme_curve::register`: `equal`, `bias`, `dualbias`, `stretch`, `curvature`. `equal` is the first-class path (exact on lines, 1e-12 on arcs, 1e-9 on NURBS up to the knot-span limitation in Fix round 1) and also the baseline the others reduce to. Spacing is computed in arc length and converted to parameter fractions by an adaptive Gauss-Legendre map with a monotone inverse; `GenCtx::curve_patch` owns keys and positions. Parameters are typed serde structs in `SchemeChoice::params`. No other crate was touched.
 
-Definition of done (run on this tree): `cargo build --workspace`, `cargo test -p sm-scheme-curve --all-features` (65 tests), the same with `RAYON_NUM_THREADS=1`, `cargo clippy -p sm-scheme-curve --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-curve --no-deps`: all pass.
+Definition of done (run on this tree): `cargo build --workspace`, `cargo test -p sm-scheme-curve --all-features` (69 tests: 14 driver + 15 engine + 23 nurbs + 17 spacing; polish wave), the same with `RAYON_NUM_THREADS=1`, `cargo clippy -p sm-scheme-curve --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-curve --no-deps`: all pass.
 
 ## Acceptance -> tests
 
@@ -117,3 +117,22 @@ The T4 review found the arc map missed `equal` within 1e-9 on NURBS with a very 
 - Fix: breakpoints are always kept when the panel midpoints on both sides are representable; only uniform-grid cuts are dropped for crowding (and a grid cut just before a breakpoint is removed in its favour).
 - New test `edge_ends_within_ulps_of_a_knot_get_their_own_panel` (edges ending -8..+8 ulps from either knot at both ends, both senses).
 - Probe tolerance (`worst_ratio` in `tests/nurbs.rs`: 1e-9 relative plus `eps * max(|lo|, |hi|, 1) * vmax`) is the decision W2-10 wording (one fraction ulp times local speed); now documented in DESIGN.md.
+
+## Polish wave
+
+Each review note was checked against the current code (breakpoint seeding from `w2-int` is in).
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Arc map residual on very short, high-contrast spans | **Fixed upstream by breakpoint seeding; confirmed and pinned.** The MIN_WIDTH floor no longer exists (relative floor, panels seeded at `ParametricCurve::breakpoints`). Reviewer repro 1 (degree 1, knots 0.0787340 ... 0.7663, n = 31) is now 5e-11 strict relative (was 3e-9): `reviewer_degree_one_repro_knots_are_accurate`. Repro 2 (2e-7 span near 0.6184) is 4.8e-9 strict relative (was 6.8e-8), which is the parameter-ulp limit (span speed ~5e6 x ulp(t)); it passes the decision-10 allowance and is pinned at < 1e-8: `reviewer_short_span_near_0_6184_is_limited_only_by_the_parameter_ulp`. DESIGN.md limitation text corrected (reported breakpoints no longer have a speed-contrast gap; the residual is the ulp limit). The tiny-panel error accumulation / chord idea is not needed. |
+| 2 | ArcMap::new repeated speed evaluations | **Fixed (part).** `endpoint_bad` is computed once per panel at creation and stored (`Panel::bad`) instead of again for each child when it is popped: about a third fewer evaluations in the refinement loop, results identical (same predicate, same inputs); all existing tests pass unchanged. **Not done:** the arc map is still built in `applicability`, `interval_constraints` and `generate`. Only the length is shared by the first two, and caching it through `Requirements::set_data` would add persisted scheme data for a negligible gain. |
+| 3 | Dependencies beyond the T4 Deps line (serde, serde_json, thiserror, rayon; dev sm-mesh-api) | **Not done (needs orchestrator):** accept or amend the plan. `sm-mesh-api` dev-dependency stays: `MeshRead`, `SerialAlloc`, `validate` are exported only there. |
+| 4 | Root `Cargo.lock` change | **Not done (needs orchestrator):** confirm at merge. This wave removes `sm-math` from this crate's dependency list, which is a one-line `Cargo.lock` change (outside the crate, unavoidable). |
+| 5 | Test count / "Panels narrower than 1e-13" sentence | **Fixed.** Count updated above (69). The 1e-13 sentence is obsolete: DESIGN.md already describes the relative floor `4 eps max(|a|, |b|, 1)`. |
+| 6 | `sm-math` declared but unused | **Fixed:** removed from `Cargo.toml` (it is on the plan's Deps line, but nothing uses it; add it back when a use appears). |
+| 7 | Direct total-length assertion for edges ending within ulps of a knot | **Fixed, with a weaker bound than asked: `edge_ends_within_ulps_of_a_knot_have_the_exact_total_length`.** 1e-12 relative at k = +3 is not attainable: the measured error there is 1.1e-11 and up to 8e-10 absolute elsewhere, because the 1.2e-7 span's speed carries evaluator noise `eps t / w` ~ 5e-10 and a node cannot sit finer than one parameter ulp x speed (1.3e7). The test asserts 1e-12 relative plus half a parameter-ulp x peak speed (1.5e-9 absolute) on all four range types, k in -8..=8, both senses. Mutation check: restoring the old bug (dropping breakpoints within 4 eps of `tau` = 0/1) fails it (4.9e-9 absolute error at k = -4). |
+| 8 | DESIGN.md "decision W2-10 verbatim" | **Fixed:** reworded to the parameter-ulp x edge max speed reading of decision 10. |
+| 9 | Adopt `IntervalSink::goal` (listed 5 times) | **Not done, deliberately.** Tried: the three derived-count tests fail (`bias_fine_and_coarse_sizes_derive_the_count` and `bias_ratio_and_first_size_derive_the_count` give n = 2 instead of 6; `stretch_pins_the_first_edge_and_derives_the_count` is refused with a ratio-limit error). A goal is averaged with the edge's own sizing goal and `Default` counts, so a count that the scheme's sizes imply is diluted instead of honoured. The soft `Fixed` stays. If the orchestrator wants goals here, the solver needs a "scheme goal outranks the default sizing goal" rule. |
+| 10 | `ParametricCurve::breakpoints` request (three entries) | **Obsolete:** adopted in `w2-int curve-bp`; the arc map seeds panels at the breakpoints. The `CurveOnSurface` gap (surface knot-line crossings) remains open, as noted in the integration section. |
+
+No hash, golden or protocol-visible behaviour changed.
