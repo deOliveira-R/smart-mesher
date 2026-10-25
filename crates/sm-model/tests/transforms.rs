@@ -237,7 +237,7 @@ fn reflect_cylinder_and_sphere_keep_pcurves_and_orientation() {
 }
 
 /// Direction vectors with a norm that overflows (or underflows) when squared must give the same
-/// transform as their unit versions: `sm_core::Transform` takes `sqrt(dot)` of the raw vector.
+/// transform as their unit versions (`sm_core::Transform` scales before normalizing).
 #[test]
 fn huge_and_tiny_direction_vectors_act_like_their_unit_directions() {
     for factory in hosts() {

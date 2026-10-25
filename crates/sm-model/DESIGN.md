@@ -87,9 +87,9 @@ cells of the target kind. Same kind returns the sources themselves. `within` is 
 topology (`is_alive`), not the entity table, so fixtures injected through
 `register_layer_with::<ModelLayer>` work.
 
-`model.measure` uses `face_moments` / `volume_moments` (Gauss quadrature). The default view refuses
-faces on surfaces with poles, so a *whole sphere* (one loop, two pole coedges, seam on both sides)
-uses the closed forms `4 pi r^2`, `4/3 pi r^3`; a partial patch of a pole surface is `Failed`.
+`model.measure` uses `face_moments` / `volume_moments` (Gauss quadrature). A *whole sphere* (one loop,
+two pole coedges, seam on both sides) keeps the exact closed forms `4 pi r^2`, `4/3 pi r^3` (the
+view's quadrature handles pole faces since CR-1; tests compare the two to 1e-11).
 Bounding boxes come from edges: exact for lines, circles and ellipses (analytic extremes), 256
 samples for NURBS, `centre +- r` for a whole sphere. The box of a partial patch of a curved surface
 can be smaller than the true one.

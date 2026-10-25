@@ -39,9 +39,29 @@ fn finite3(name: &str, v: [f64; 3]) -> Result<Point3, OpError> {
     if v.iter().all(|c| c.is_finite()) { Ok(Point3::new(v[0], v[1], v[2])) } else { Err(OpError::Invalid(format!("`{name}` must be finite, got {v:?}"))) }
 }
 
+/// Require `lo < hi` and both finite: the derived coordinates must be representable and
+/// distinct (an extent that underflows or vanishes next to the centre would give coincident
+/// corners). Extents that are representable but below the model tolerance are accepted.
+fn span(name: &str, lo: f64, hi: f64) -> Result<(), OpError> {
+    if lo.is_finite() && hi.is_finite() && lo < hi {
+        Ok(())
+    } else {
+        Err(OpError::Invalid(format!("`{name}` and `center` give a non-finite or degenerate range [{lo}, {hi}]")))
+    }
+}
+
 /// Run `build` in a topology transaction and commit its ids under the solid roles.
-fn create(ctx: &mut ApplyCtx<'_>, build: impl FnOnce(&mut dyn TopoHost) -> Result<Built, LayerError>) -> Result<(), OpError> {
-    let (b, txn) = topo_txn(ctx, |topo, _model| build(topo).map_err(OpError::from))?;
+///
+/// `smallest` is the smallest feature size (an extent or a diameter); one at or below the model's
+/// linear tolerance would merge points the tolerance calls identical, so it is refused.
+fn create(ctx: &mut ApplyCtx<'_>, smallest: f64, build: impl FnOnce(&mut dyn TopoHost) -> Result<Built, LayerError>) -> Result<(), OpError> {
+    let (b, txn) = topo_txn(ctx, |topo, _model| {
+        let tol = topo.tolerance().linear;
+        if smallest <= tol {
+            return Err(OpError::Invalid(format!("size {smallest:e} is not above the model linear tolerance {tol:e}")));
+        }
+        build(topo).map_err(OpError::from)
+    })?;
     commit_topology(
         ctx,
         &txn,
@@ -51,7 +71,7 @@ fn create(ctx: &mut ApplyCtx<'_>, build: impl FnOnce(&mut dyn TopoHost) -> Resul
 
 /// `model.create_brick`: an axis-aligned box centred on `center` (default the origin).
 ///
-/// Extents `x`, `y`, `z`; `y` and `z` default to `x` (a cube). The minimum corner is
+/// Extents `x`, `y`, `z`; `y` and `z` default to `x` (a cube). Every primitive refuses (`Invalid`) a size at or below the model's linear tolerance, and any size or centre whose derived coordinates are not finite and distinct. The minimum corner is
 /// `center - extent / 2` and the others are `min + extent` (the `sm_topo_api::fixtures::brick`
 /// construction), so for representable values such as `x = 10` the vertices are exactly `±5`.
 /// Face order is `-x, +x, -y, +y, -z, +z`; vertex index `i + 2j + 4k`.
@@ -82,7 +102,11 @@ impl TypedOp for CreateBrick {
         let z = positive("z", self.z.unwrap_or(x))?;
         let c = finite3("center", self.center.unwrap_or([0.0; 3]))?;
         let min = Point3::new(c.x - x / 2.0, c.y - y / 2.0, c.z - z / 2.0);
-        create(ctx, |topo| {
+        // The same expression the fixture uses for the opposite corner.
+        span("x", min.x, min.x + x)?;
+        span("y", min.y, min.y + y)?;
+        span("z", min.z, min.z + z)?;
+        create(ctx, x.min(y).min(z), |topo| {
             let b = brick(topo, min, [x, y, z])?;
             Ok(Built { body: b.body, volume: b.volume, faces: b.faces.to_vec(), edges: b.edges.to_vec(), vertices: b.vertices.to_vec() })
         })
@@ -115,7 +139,10 @@ impl TypedOp for CreateCylinder {
         let r = positive("radius", self.radius)?;
         let c = finite3("center", self.center.unwrap_or([0.0; 3]))?;
         let base = Point3::new(c.x, c.y, c.z - h / 2.0);
-        create(ctx, |topo| build_cylinder(topo, base, r, h))
+        span("height", base.z, base.z + h)?;
+        span("radius", c.x - r, c.x + r)?;
+        span("radius", c.y - r, c.y + r)?;
+        create(ctx, h.min(2.0 * r), |topo| build_cylinder(topo, base, r, h))
     }
 }
 
@@ -141,7 +168,10 @@ impl TypedOp for CreateSphere {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let r = positive("radius", self.radius)?;
         let c = finite3("center", self.center.unwrap_or([0.0; 3]))?;
-        create(ctx, |topo| build_sphere(topo, c, r))
+        span("radius", c.x - r, c.x + r)?;
+        span("radius", c.y - r, c.y + r)?;
+        span("radius", c.z - r, c.z + r)?;
+        create(ctx, 2.0 * r, |topo| build_sphere(topo, c, r))
     }
 }
 
