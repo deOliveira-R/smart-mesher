@@ -27,7 +27,9 @@
 //! two unrequested corners rather than one soft corner; see DESIGN.md), and among equal repairs
 //! the least confident corner moves first.
 //! Two `Hard` requests of different types on one corner are a conflict (an error naming both
-//! types and the constraint ids), never last-wins.
+//! types and the vertex), never last-wins. The error's `constraints` are all the `ids` passed
+//! for the face: the `CornerPicker` contract does not align ids with requests, so the two
+//! conflicting requests cannot be singled out among them.
 //! A hard request wins over the rule; a hard type the rule forbids, or a rule that cannot be
 //! met, is a [`SchemeError`] naming the face, the constraint ids and the hard requests.
 //!

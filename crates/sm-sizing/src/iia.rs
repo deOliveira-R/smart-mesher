@@ -1077,6 +1077,13 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
     let base: Vec<(i64, i64)> = (0..p.nvar).map(|i| (p.lo0[i], p.hi0[i])).collect();
     let mut s = Search::new(p, max_nodes);
     s.use_max = cap.is_none();
+    // A row whose coefficients share a factor that its right-hand side lacks has no integer
+    // solution, however the bounds fall (propagation cannot see this).
+    if cap.is_none()
+        && let Some(r) = gcd_conflict(p)
+    {
+        return Outcome::InfeasiblePair(r, r);
+    }
     // Root feasibility on the full domains.
     let mut root = base.clone();
     (0..p.rows.len() as u32).for_each(|r| s.push_row(r));
@@ -1279,6 +1286,18 @@ fn pair_conflict(p: &Local, dom: &[(i64, i64)]) -> Option<(u32, u32)> {
     None
 }
 
+/// The first equality row whose coefficient gcd does not divide its right-hand side (exact
+/// integers), e.g. `2 x_1 + 4 x_2 = 81`.
+fn gcd_conflict(p: &Local) -> Option<u32> {
+    p.rows.iter().position(|r| {
+        if r.kind != Kind::Eq {
+            return false;
+        }
+        let g = p.row_terms(r).1.iter().fold(0i128, |g, &c| gcd(g, i128::from(c).abs()));
+        g > 1 && i128::from(r.rhs) % g != 0
+    }).map(|i| i as u32)
+}
+
 fn gcd(a: i128, b: i128) -> i128 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -1306,6 +1325,9 @@ fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
         cap,
         x: vals,
         evals: 0,
+        rows: Vec::new(),
+        pa: Vec::new(),
+        pb: Vec::new(),
     };
     if st.x.len() != p.nvar || !rows_ok(p, &st.x, 0..p.rows.len()) {
         return st.x;
@@ -1365,6 +1387,10 @@ struct Polisher<'a> {
     top: [(u128, usize); 3],
     cap: Option<u128>,
     evals: u64,
+    /// Scratch reused by every move evaluation (no per-move allocation).
+    rows: Vec<usize>,
+    pa: Vec<(f64, f64)>,
+    pb: Vec<(f64, f64)>,
 }
 
 impl Polisher<'_> {
@@ -1419,30 +1445,34 @@ impl Polisher<'_> {
         for &(v, d) in mv {
             self.x[v] += d;
         }
-        let mut rows: Vec<usize> = Vec::new();
+        self.rows.clear();
         for &(v, _) in mv {
-            rows.extend(p.v_rows[p.v_off[v]..p.v_off[v + 1]].iter().map(|&r| r as usize));
+            self.rows.extend(p.v_rows[p.v_off[v]..p.v_off[v + 1]].iter().map(|&r| r as usize));
         }
-        rows.sort_unstable();
-        rows.dedup();
-        let mut better = rows_ok(p, &self.x, rows);
+        self.rows.sort_unstable();
+        self.rows.dedup();
+        let mut better = rows_ok(p, &self.x, self.rows.iter().copied());
         if better {
             better = if new_max < self.mx || new_sum + eps < self.sum {
                 true
             } else {
-                // Possible tie: exact sums, then the vector.
-                let mut old = self.x.clone();
-                for &(v, d) in mv {
-                    old[v] -= d;
+                // Possible tie (same maximum, sums within `eps`): exact sums decide, then the
+                // vector. `new` and `old` differ only at the moved variables, so the first
+                // differing position is the smallest moved one and its step gives the order.
+                self.pa.clear();
+                for (v, &n) in self.x.iter().enumerate() {
+                    self.pa.extend(p.terms(v).iter().map(|&g| (n as f64, g)));
                 }
-                cmp_obj(
-                    true,
-                    (new_max, new_sum, &self.x),
-                    (self.mx, self.sum, &old),
-                    eps,
-                    &|| p.pairs(&self.x),
-                    &|| p.pairs(&old),
-                ) == Less
+                self.pb.clear();
+                self.pb.extend_from_slice(&self.pa);
+                for &(v, d) in mv {
+                    for t in &mut self.pb[p.t_off[v]..p.t_off[v + 1]] {
+                        t.0 = (self.x[v] - d) as f64;
+                    }
+                }
+                let first = mv.iter().min_by_key(|m| m.0).map_or(1, |m| m.1);
+                let vec_order = if first > 0 { std::cmp::Ordering::Greater } else { Less };
+                cmp_sums(&self.pa, &self.pb).then(vec_order) == Less
             };
         }
         if !better {
@@ -2041,12 +2071,20 @@ impl IntervalSolver for IiaSolver {
                 Outcome::InfeasiblePair(a, b) => {
                     let Some(p) = &local else { continue };
                     let (ra, rb) = (&p.rows[a as usize], &p.rows[b as usize]);
+                    let single_row = a == b;
                     let mut named: Vec<u32> = Vec::new();
                     for ro in [ra, rb] {
                         named.extend(p.r_var[ro.off..ro.off + ro.len].iter().map(|&v| classes[v as usize]));
                     }
                     named.sort_unstable();
                     named.dedup();
+                    if single_row {
+                        return Err(prob.report(
+                            "a row has no integer solution (the gcd of its coefficients does not divide its right-hand side)",
+                            &named,
+                            &[ra.cid],
+                        ));
+                    }
                     return Err(prob.report(
                         "two rows cannot hold together (their combined bounds contradict)",
                         &named,
@@ -2101,7 +2139,8 @@ impl IntervalSolver for IiaSolver {
                         (None, Ok(r)) => r.clone(),
                         (Some(i), Err(_)) => i,
                         (Some(i), Ok(r)) => {
-                            if cmp_cost(k, &i, r, false) != std::cmp::Ordering::Greater { i } else { r.clone() }
+                            // Phase 1: the maximum counts first (D* is global), then the sum, then the vector.
+                            if cmp_cost(k, &i, r, true) != std::cmp::Ordering::Greater { i } else { r.clone() }
                         }
                     };
                     let chosen = match &local {
@@ -2190,5 +2229,24 @@ impl IntervalSolver for IiaSolver {
             return Err(Infeasible::new("internal: a solution failed verification", vec![id], Vec::new()));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering::{Greater, Less};
+
+    /// Phase 1 compares the maximum first: a candidate with a lower sum but a higher maximum
+    /// must lose to one with a lower maximum. Without the maximum (the capped phase-2 pick) the
+    /// sum decides.
+    #[test]
+    fn objective_puts_the_maximum_before_the_sum() {
+        let none: Pairs = &|| Vec::new();
+        let (inc, refv) = ([1i64, 1], [2i64, 2]);
+        let a = (10u128, 100u128, &inc[..]); // lower max, higher sum
+        let b = (20u128, 50u128, &refv[..]); // higher max, lower sum
+        assert_eq!(cmp_obj(true, a, b, 0, none, none), Less);
+        assert_eq!(cmp_obj(false, a, b, 0, none, none), Greater);
     }
 }

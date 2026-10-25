@@ -340,11 +340,12 @@ fn matches_exhaustive_enumeration_without_upper_bounds() {
 /// Mid-size systems (13..=16 classes, counts at most 2 or 3, dense rows with coefficients
 /// -2..=2): above the small-component threshold, so the feasibility-seeded search runs. The
 /// answer must be exactly the brute-force minimizer. Enumeration is `maxc^n`, so counts up to 3
-/// are used only for n <= 13.
+/// are used only for n <= 13 and only in release. Coverage split: debug (what CI runs) draws 8
+/// cases per seed with counts at most 2; release draws 40 per seed, a share with counts at most 3.
 #[test]
 fn matches_exhaustive_enumeration_on_13_to_16_classes() {
     let solver = IiaSolver::default();
-    let cases = if cfg!(debug_assertions) { 3 } else { 40 };
+    let cases = if cfg!(debug_assertions) { 8 } else { 40 };
     let checked = std::cell::Cell::new(0u32);
     for seed in SEEDS {
         let cfg = Config { cases, failure_persistence: None, ..Config::default() };

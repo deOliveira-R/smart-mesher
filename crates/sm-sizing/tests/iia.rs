@@ -604,3 +604,23 @@ fn permuting_edge_ids_gives_the_mapped_answer() {
         assert_eq!(got, *c, "edge {id}");
     }
 }
+
+/// A single row whose coefficient gcd does not divide its right-hand side is proven infeasible
+/// at the root, naming only that row, however large the rest of the component is.
+#[test]
+fn single_row_gcd_conflict_is_proven_at_once_and_names_the_row() {
+    let e: Vec<_> = (1..=30).map(edge).collect();
+    let all: Vec<_> = e.iter().map(|&x| (x, 1)).collect();
+    let odd2: Vec<_> = e.iter().step_by(2).map(|&x| (x, 2)).collect();
+    let mut items = vec![
+        IntervalConstraint::Linear { terms: all, rel: sm_scheme_api::Rel::Le, rhs: 100 },
+        IntervalConstraint::Linear { terms: odd2, rel: sm_scheme_api::Rel::Eq, rhs: 81 },
+    ];
+    items.extend(e.iter().map(|&x| goal(x, 3.0)));
+    let cs = records(items);
+    let t = std::time::Instant::now();
+    let err = IiaSolver::default().solve(&e, &cs).expect_err("infeasible");
+    assert!(t.elapsed().as_secs_f64() < 1.0, "took {:?}", t.elapsed());
+    assert!(!err.reason.contains("unproven"), "{}", err.reason);
+    assert_eq!(err.constraints, vec![ConstraintId(1)], "{err:?}");
+}

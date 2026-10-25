@@ -151,6 +151,9 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
   answer is the best known, but it is still not proven optimal. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
   microseconds (bisected window plus row-aware bound); with many equal goals the exact-key
   ties make the lexicographic tie-break exhaust the budget (a feasible answer is returned).
+* The B&B variable ordering was not changed to reach the polish's 1- and 2-moves itself: only
+  the post-search polish does. An equality row whose coefficient gcd does not divide its
+  right-hand side (e.g. `sum(2 x_odd) = 81`) is proven infeasible at the root, naming that row.
 * When the search gives up and the reference solver also finds nothing, the error says
   "feasibility unproven"; it does not claim infeasibility.
 * Hard-fixed classes contribute no goal term, and a class with any Soft count ignores its Goal
