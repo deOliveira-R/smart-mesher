@@ -45,6 +45,16 @@ impl PCurve {
         }
     }
 
+    /// Distinct interior parameters (ascending) where the pcurve is not C-infinity: interior
+    /// knots of a NURBS, interior vertices of a polyline, none for a line.
+    pub fn breakpoints(&self) -> Vec<f64> {
+        match self {
+            Self::Line2(_) => Vec::new(),
+            Self::Polyline2(p) => (1..p.len().saturating_sub(1)).map(|i| i as f64).collect(),
+            Self::Nurbs2(n) => n.breakpoints(),
+        }
+    }
+
     /// `(u, v)` at parameter `t` (clamped to the range for the bounded variants).
     pub fn eval(&self, t: f64) -> Uv {
         self.eval_d1(t).0
@@ -251,5 +261,14 @@ mod tests {
             let (lo, hi) = (pc.d1(ta), pc.d1(tb));
             assert!((d2.u - (hi.u - lo.u) / (tb - ta)).abs() < 1e-5 && (d2.v - (hi.v - lo.v) / (tb - ta)).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn breakpoints_per_variant() {
+        let l = PCurve::Line2(Line2 { origin: Uv::new(0.0, 0.0), dir: Uv::new(1.0, 0.0), range: Interval::new(0.0, 1.0) });
+        assert!(l.breakpoints().is_empty());
+        let p = PCurve::Polyline2(vec![Uv::new(0.0, 0.0), Uv::new(1.0, 0.0), Uv::new(1.0, 1.0), Uv::new(0.0, 1.0)]);
+        assert_eq!(p.breakpoints(), vec![1.0, 2.0]);
+        assert!(PCurve::Polyline2(vec![Uv::new(0.0, 0.0)]).breakpoints().is_empty());
     }
 }

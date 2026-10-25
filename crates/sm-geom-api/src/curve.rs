@@ -45,6 +45,14 @@ pub trait ParametricCurve: Send + Sync + core::fmt::Debug {
     /// Position, first and second derivative.
     fn jet(&self, t: f64) -> CurveJet;
 
+    /// Distinct interior parameter values (strictly inside the domain, ascending) where the
+    /// curve is not C-infinity, such as interior knots of a spline or polyline vertices.
+    /// Integrators seed their panels here so each smooth piece is treated separately. The
+    /// default is empty (analytic curves).
+    fn breakpoints(&self) -> Vec<f64> {
+        Vec::new()
+    }
+
     /// Position `C(t)`.
     fn eval(&self, t: f64) -> Point3 {
         self.jet(t).p

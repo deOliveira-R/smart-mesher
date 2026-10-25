@@ -265,3 +265,125 @@ fn huge_interval_counts_are_refused_before_allocation() {
         }
     }
 }
+
+// ---- very short knot spans (breakpoint-seeded arc map) ----
+
+/// Clamped knot vector: `d + 1` end knots and each interior `(value, multiplicity)`.
+fn clamped(d: usize, interior: &[(f64, usize)]) -> Vec<f64> {
+    let mut k = vec![0.0; d + 1];
+    for &(v, m) in interior {
+        k.extend(std::iter::repeat_n(v, m));
+    }
+    k.extend(std::iter::repeat_n(1.0, d + 1));
+    k
+}
+
+fn short_span_case(d: usize, interior: &[(f64, usize)], name: &str) {
+    let k = clamped(d, interior);
+    let c = spline(d, k.clone(), k.len() - d - 1);
+    check_equal(&c, &k, name, &[5, 13], 1e-9);
+}
+
+#[test]
+fn degree_one_short_span_mid_and_far_end() {
+    let a = 20.0 / 64.0 + 3e-4;
+    short_span_case(1, &[(a, 1), (a + 1e-6, 1)], "polyline short span near 20/64");
+    let b = 1.0 - 7e-4;
+    short_span_case(1, &[(b, 1), (b + 1e-6, 1)], "polyline short span near the far end");
+}
+
+#[test]
+fn repeated_knots_at_a_short_span() {
+    let a = 20.0 / 64.0 + 3e-4;
+    short_span_case(2, &[(a, 2), (a + 1e-6, 2)], "quadratic double knots, short span");
+    short_span_case(3, &[(a, 3), (a + 1e-6, 3)], "cubic triple knots, short span");
+    let b = 1.0 - 7e-4;
+    short_span_case(2, &[(b, 2), (b + 1e-6, 2)], "quadratic double knots, far end");
+    short_span_case(3, &[(b, 3), (b + 1e-6, 3)], "cubic triple knots, far end");
+}
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> f64 {
+        // splitmix64
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Reference arc length of `[a, b]` with a fixed panel count per knot span.
+fn ref_len(c: &dyn ParametricCurve, knots: &[f64], a: f64, b: f64) -> f64 {
+    let mut cuts = vec![a];
+    cuts.extend(knots.iter().copied().filter(|k| *k > a && *k < b));
+    cuts.dedup();
+    cuts.push(b);
+    // Composite 5-point rule per smooth span, panel count doubled until it settles.
+    let estimate = |a: f64, b: f64, panels: usize| -> f64 {
+        let h = (b - a) / panels as f64;
+        let mut s = 0.0;
+        for k in 0..panels {
+            let mid = a + (k as f64 + 0.5) * h;
+            for (x, wt) in GL_X.iter().zip(GL_W) {
+                s += wt * c.d1(mid + 0.5 * h * x).norm();
+            }
+        }
+        s * 0.5 * h
+    };
+    cuts.windows(2)
+        .map(|w| {
+            let (mut panels, mut prev) = (32, estimate(w[0], w[1], 32));
+            loop {
+                panels *= 2;
+                let next = estimate(w[0], w[1], panels);
+                if (next - prev).abs() <= 1e-11 * next.abs() || panels >= 1 << 14 {
+                    return next;
+                }
+                prev = next;
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn seeded_random_probe_with_short_spans() {
+    let mut rng = Rng(0x5eed_c0de);
+    for case in 0..200 {
+        let d = 1 + (rng.next() * 3.0) as usize % 3;
+        let width = 10f64.powf(-7.0 + 4.0 * rng.next());
+        let start = if rng.next() < 0.3 { 1.0 - width - 10f64.powf(-4.0 + 2.0 * rng.next()) * 0.1 } else { 0.02 + 0.9 * rng.next() };
+        let start = start.clamp(0.01, 1.0 - 2.0 * width - 1e-9);
+        let mut interior = vec![(start, 1 + (rng.next() * d as f64) as usize % d), (start + width, 1 + (rng.next() * d as f64) as usize % d)];
+        if rng.next() < 0.5 {
+            // An extra knot elsewhere, kept clear of the short span.
+            let extra = 0.01 + 0.98 * rng.next();
+            if (extra - start).abs() > 1e-2 && (extra - start - width).abs() > 1e-2 {
+                interior.push((extra, 1 + (rng.next() * d as f64) as usize % d));
+                interior.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+        }
+        let k = clamped(d, &interior);
+        let np = k.len() - d - 1;
+        let control = (0..np).map(|_| Point3::new(2.0 * rng.next() - 1.0, 2.0 * rng.next() - 1.0, 2.0 * rng.next() - 1.0)).collect();
+        let c = NurbsCurve::new(d, k.clone(), control, None).unwrap();
+        let total = ref_len(&c, &k, 0.0, 1.0);
+        let n = 6u32;
+        let sense = if case % 2 == 0 { Sense::Forward } else { Sense::Reversed };
+        let fr = node_params(&c, carrier(sense), n, &Spec::Equal).unwrap();
+        let fr: Vec<f64> = if sense == Sense::Reversed { fr.iter().rev().map(|f| 1.0 - f).collect() } else { fr };
+        let mut ts = vec![0.0];
+        ts.extend(&fr);
+        ts.push(1.0);
+        let want = total / f64::from(n);
+        // 1e-9 relative, plus the double-precision limit of the parameter itself: a node
+        // cannot be placed finer than one ulp of t, which is (max speed) x eps of arc length.
+        let vmax = (1..=32).map(|j| c.d1(start + width * (f64::from(j) - 0.5) / 32.0).norm()).fold(0.0, f64::max);
+        let tol = 1e-9 * want + f64::EPSILON * vmax;
+        for w in ts.windows(2) {
+            let s = ref_len(&c, &k, w[0], w[1]);
+            assert!((s - want).abs() <= tol, "case {case} d={d} knots={interior:?} {sense:?}: {s} vs {want}");
+        }
+    }
+}

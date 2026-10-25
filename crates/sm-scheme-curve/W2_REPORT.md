@@ -4,7 +4,7 @@
 
 All five schemes are implemented and registered by `sm_scheme_curve::register`: `equal`, `bias`, `dualbias`, `stretch`, `curvature`. `equal` is the first-class path (exact on lines, 1e-12 on arcs, 1e-9 on NURBS up to the knot-span limitation in Fix round 1) and also the baseline the others reduce to. Spacing is computed in arc length and converted to parameter fractions by an adaptive Gauss-Legendre map with a monotone inverse; `GenCtx::curve_patch` owns keys and positions. Parameters are typed serde structs in `SchemeChoice::params`. No other crate was touched.
 
-Definition of done (run on this tree): `cargo build --workspace`, `cargo test -p sm-scheme-curve --all-features` (45 tests), the same with `RAYON_NUM_THREADS=1`, `cargo clippy -p sm-scheme-curve --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-curve --no-deps`: all pass.
+Definition of done (run on this tree): `cargo build --workspace`, `cargo test -p sm-scheme-curve --all-features` (59 tests), the same with `RAYON_NUM_THREADS=1`, `cargo clippy -p sm-scheme-curve --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-curve --no-deps`: all pass.
 
 ## Acceptance -> tests
 
@@ -93,3 +93,11 @@ Should fix:
 6. `sm-math` stays declared but unused; note for cleanup.
 7. Cargo.lock at the repo root changed in the earlier round (serde, serde_json, thiserror, rayon); confirm at merge. Not touched here.
 8. NURBS accuracy claims in DESIGN.md and this report are qualified.
+
+## Integration fix: curve breakpoints (w2-int curve-bp)
+
+The T4 review found the arc map missed `equal` within 1e-9 on NURBS with a very short knot span (1e-5..1e-7) and O(1) displacement, because adaptive panels were accepted at the absolute width floor `MIN_WIDTH = 1e-13`. Fixed with an additive contract change: `ParametricCurve::breakpoints(&self) -> Vec<f64>` (default empty; distinct interior parameters where the curve is not C-infinity), implemented for `NurbsCurve`, `PCurve`/`NurbsCurve2` (inherent), `sm_geom::PreparedCurve` and `CurveOnSurface` (pcurve breakpoints). No hash or persisted-format change.
+
+- `ArcMap` seeds its initial panels at the breakpoints inside the edge range (merged with the 64-panel grid, repeated per period on a seam-spanning edge, cuts refined so they map back onto the knot exactly), so each smooth piece is integrated on its own. The absolute floor is replaced by a relative one (`b - a <= 4 eps max(|a|, |b|, 1)` or a midpoint not strictly inside). Two noise guards were required once panels get that narrow: Lobatto endpoint nodes shift inward by 8 parameter ulps, and the chord slack includes (parameter ulp x local speed).
+- Four new tests in `tests/nurbs.rs` (now 13 in that file; 59 in the crate): degree-1 polyline with knots at 20/64+3e-4 and +1e-6, the same near the far end, quadratic double and cubic triple knots at the short span, and a seeded 200-curve probe (degree 1-3, spans 1e-7..1e-3, both senses) against a per-knot-span reference. All hold 1e-9 relative, plus one allowance: a node cannot be placed finer than one ulp of the parameter, so the probe adds `eps * max speed` of arc length (the 1e-7 spans reach ~1e7 speed, about 3e-9 absolute). Without that allowance no implementation using a double parameter can pass.
+- The "knots unknown" limitation and the earlier `api_change_request` are closed. Remaining: a non-smooth point a curve does not report is found only by adaptive refinement.
