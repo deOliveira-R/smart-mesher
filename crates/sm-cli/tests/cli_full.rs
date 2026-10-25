@@ -204,6 +204,11 @@ fn new_creates_a_project_instead_of_open_unsupported() {
     let d = tmp("open");
     let p = d.join("x");
     let o = smesh(&["new", p.to_str().expect("utf8")], None);
-    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     assert!(p.join("project.toml").is_file());
 }

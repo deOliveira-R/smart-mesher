@@ -97,7 +97,7 @@ pub fn connect_standard(settings: &Settings) -> Result<Box<dyn Endpoint>, String
             b = b.author(a.clone());
         }
         if let Some(t) = &time {
-            b = b.clock(sm_engine::FixedClock(t.clone()));
+            b = b.clock(sm_server::FixedClock(t.clone()));
         }
         b
     })
