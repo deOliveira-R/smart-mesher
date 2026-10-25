@@ -80,3 +80,5 @@ None.
 | 5 | Which face `TooLarge` names depends on the scheduler | fixed together with 1 (same test); DESIGN.md updated |
 
 No golden, hash or export byte changed; successful outputs are untouched. Branch: pushed to `claude/p2-sm-tess-kfiwnj` (the branch this session was assigned) rather than `claude/p2-sm-tess`.
+
+CI result: `tools/ci.sh` exit 0; `RAYON_NUM_THREADS=1 cargo test -p sm-tess --all-features` passes; clippy `-D warnings` clean (a redundant-closure lint in the first draft was fixed).
