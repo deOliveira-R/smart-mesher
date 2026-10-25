@@ -394,6 +394,11 @@ fn dense30_two_dense_rows_is_feasible_and_not_reported_infeasible() {
     let (md, sd) = (max_dev(&out, &g), sum_dev(&out, &g));
     assert!(md <= 13.0 / 19.0 + 1e-12, "max deviation {md}");
     assert!(sd <= 14.2759, "sum of deviations {sd}");
+    // Pinned vector (identical before and after the running-row-sum polish).
+    let pinned: Vec<u32> = vec![
+        4, 4, 5, 3, 4, 3, 3, 3, 4, 2, 3, 2, 3, 1, 6, 4, 5, 3, 4, 3, 3, 3, 4, 2, 3, 2, 3, 1, 6, 4,
+    ];
+    assert_eq!(counts(&out), pinned);
 }
 
 /// The polished incumbent admits no improving single move or row-sharing pair move.

@@ -338,22 +338,22 @@ fn matches_exhaustive_enumeration_without_upper_bounds() {
 }
 
 /// Mid-size systems (13..=16 classes, counts at most 2 or 3, dense rows with coefficients
-/// -2..=2): above the small-component threshold, so the feasibility-seeded search runs. The
-/// answer must be exactly the brute-force minimizer. Enumeration is `maxc^n`, so counts up to 3
+/// -2..=2, relations Eq, Le and Ge): above the small-component threshold, so the
+/// feasibility-seeded search runs. The answer must be exactly the brute-force minimizer. Enumeration is `maxc^n`, so counts up to 3
 /// are used only for n <= 13 and only in release. Coverage split: debug (what CI runs) draws 8
 /// cases per seed with counts at most 2; release draws 40 per seed, a share with counts at most 3.
 #[test]
 fn matches_exhaustive_enumeration_on_13_to_16_classes() {
     let solver = IiaSolver::default();
     let cases = if cfg!(debug_assertions) { 8 } else { 40 };
-    let checked = std::cell::Cell::new(0u32);
+    let (checked, checked_eq) = (std::cell::Cell::new(0u32), std::cell::Cell::new(0u32));
     for seed in SEEDS {
         let cfg = Config { cases, failure_persistence: None, ..Config::default() };
         let mut runner = TestRunner::new_with_rng(cfg, TestRng::from_seed(RngAlgorithm::ChaCha, &[seed ^ 0xa5; 32]));
         let strat = (13usize..=16).prop_flat_map(|n| {
             let goals = prop::collection::vec(0.6f64..4.0, n);
             let rows = prop::collection::vec(
-                (prop::collection::vec(-2i32..=2, n), 1u8..3, -4i64..=14),
+                (prop::collection::vec(-2i32..=2, n), 0u8..3, -4i64..=14),
                 2..=4,
             );
             (Just(n), goals, rows, prop::bool::ANY)
@@ -380,6 +380,9 @@ fn matches_exhaustive_enumeration_on_13_to_16_classes() {
                     (Some((_, v)), Ok(out)) => {
                         prop_assert_eq!(&out.iter().map(|x| x.1).collect::<Vec<_>>(), v, "n {} rows {:?}", n, rows);
                         checked.set(checked.get() + 1);
+                        if rows.iter().any(|r| r.1 == 0) {
+                            checked_eq.set(checked_eq.get() + 1);
+                        }
                     }
                     (None, Err(_)) => {}
                     (Some(_), Err(err)) => prop_assert!(false, "infeasible ({err}) but a solution exists"),
@@ -389,7 +392,23 @@ fn matches_exhaustive_enumeration_on_13_to_16_classes() {
             })
             .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
     }
-    assert!(checked.get() >= 3, "only {} feasible cases", checked.get());
+    // The seeds are fixed, so the counts are too (debug: 12 feasible, 6 with an Eq row; release:
+    // 80 and 38). The floors sit just below, so Eq rows stay covered.
+    let (min_checked, min_eq) = if cfg!(debug_assertions) {
+        (9, 4)
+    } else {
+        (60, 28)
+    };
+    assert!(
+        checked.get() >= min_checked,
+        "only {} feasible cases",
+        checked.get()
+    );
+    assert!(
+        checked_eq.get() >= min_eq,
+        "only {} feasible cases with an Eq row",
+        checked_eq.get()
+    );
 }
 
 fn solve_vec(e: &[EntityId], items: Vec<IntervalConstraint>) -> Vec<u32> {

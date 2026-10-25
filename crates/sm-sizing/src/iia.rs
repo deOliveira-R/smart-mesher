@@ -165,7 +165,10 @@ pub fn compare_deviation_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::O
     cmp_sums(&clamp(a), &clamp(b))
 }
 
-type Pairs<'a> = &'a dyn Fn() -> Vec<(f64, f64)>;
+/// Fills a pooled buffer with the `(count, goal)` terms of one candidate.
+type Pairs<'a> = &'a dyn Fn(&mut Vec<(f64, f64)>);
+/// Two reusable term buffers for [`cmp_obj`] (no allocation per tie-zone comparison).
+type Scratch = (Vec<(f64, f64)>, Vec<(f64, f64)>);
 
 /// Order of two candidates `(max key, sum key, vector)` under the objective: the maximum (when
 /// `use_max`), then the sum, then the vector. Quantized sums closer than `eps` (the number of
@@ -178,6 +181,7 @@ fn cmp_obj(
     eps: u128,
     pa: Pairs,
     pb: Pairs,
+    sc: &mut Scratch,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Greater, Less};
     if use_max && a.0 != b.0 {
@@ -188,7 +192,11 @@ fn cmp_obj(
     } else if a.1 + eps < b.1 {
         Less
     } else {
-        cmp_sums(&pa(), &pb())
+        sc.0.clear();
+        sc.1.clear();
+        pa(&mut sc.0);
+        pb(&mut sc.1);
+        cmp_sums(&sc.0, &sc.1)
     };
     s.then_with(|| a.2.cmp(b.2))
 }
@@ -361,6 +369,8 @@ struct Local {
     r_coef: Vec<i64>,
     v_off: Vec<usize>,
     v_rows: Vec<u32>,
+    /// Coefficient of the variable in the row at the same position of `v_rows`.
+    v_coef: Vec<i64>,
 }
 
 impl Local {
@@ -371,12 +381,10 @@ impl Local {
         (&self.r_var[r.off..r.off + r.len], &self.r_coef[r.off..r.off + r.len])
     }
     /// The `(count, goal)` terms of an assignment.
-    fn pairs(&self, vals: &[i64]) -> Vec<(f64, f64)> {
-        let mut out = Vec::with_capacity(self.goals.len());
+    fn pairs(&self, vals: &[i64], out: &mut Vec<(f64, f64)>) {
         for (v, &n) in vals.iter().enumerate() {
             out.extend(self.terms(v).iter().map(|&g| (n as f64, g)));
         }
-        out
     }
     /// Tolerance of the quantized sums: one unit per goal term.
     fn eps(&self) -> u128 {
@@ -461,6 +469,10 @@ struct Search<'a> {
     /// Pooled buffers of `row_extra` (no allocation per node).
     pool_base: Vec<(i64, u128)>,
     pool_heap: std::collections::BinaryHeap<std::cmp::Reverse<Move>>,
+    /// Pooled term buffers of the leaf comparison.
+    pool_cmp: Scratch,
+    /// Reused buffer for the leaf's values; swapped into `best` on improvement.
+    leaf_vals: Vec<i64>,
 }
 
 fn div_floor(a: i128, b: i128) -> i128 {
@@ -496,6 +508,8 @@ impl<'a> Search<'a> {
             exhausted: false,
             best: None,
             pool_base: Vec::new(),
+            pool_cmp: Scratch::default(),
+            leaf_vals: Vec::new(),
             pool_heap: std::collections::BinaryHeap::new(),
         }
     }
@@ -910,7 +924,9 @@ impl<'a> Search<'a> {
             mx = mx.max(m);
             sm += s;
         }
-        let vals: Vec<i64> = dom.iter().map(|d| d.0).collect();
+        let mut vals = std::mem::take(&mut self.leaf_vals);
+        vals.clear();
+        vals.extend(dom.iter().map(|d| d.0));
         let p = self.p;
         let better = match &self.best {
             None => true,
@@ -920,14 +936,24 @@ impl<'a> Search<'a> {
                     (mx, sm, &vals),
                     (b.max, b.sum, &b.vals),
                     p.eps(),
-                    &|| p.pairs(&vals),
-                    &|| p.pairs(&b.vals),
+                    &|o| p.pairs(&vals, o),
+                    &|o| p.pairs(&b.vals, o),
+                    &mut self.pool_cmp,
                 ) == std::cmp::Ordering::Less
             }
         };
-        if better {
-            self.best = Some(Best { max: mx, sum: sm, vals });
+        match (better, self.best.as_mut()) {
+            (true, Some(b)) => {
+                b.max = mx;
+                b.sum = sm;
+                std::mem::swap(&mut b.vals, &mut vals);
+            }
+            (true, None) => {
+                self.best = Some(Best { max: mx, sum: sm, vals: vals.clone() });
+            }
+            (false, _) => {}
         }
+        self.leaf_vals = vals;
     }
 }
 
@@ -1325,13 +1351,14 @@ fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
         cap,
         x: vals,
         evals: 0,
-        rows: Vec::new(),
+        rsum: Vec::new(),
         pa: Vec::new(),
         pb: Vec::new(),
     };
     if st.x.len() != p.nvar || !rows_ok(p, &st.x, 0..p.rows.len()) {
         return st.x;
     }
+    st.rsum = p.rows.iter().map(|r| row_sum(p, r, &st.x)).collect();
     st.k = (0..p.nvar).map(|v| st.key(v, st.x[v])).collect();
     st.refresh();
     for _ in 0..POLISH_PASSES {
@@ -1363,17 +1390,27 @@ fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
 
 /// Exact check of the given rows at a complete assignment.
 fn rows_ok(p: &Local, x: &[i64], rows: impl IntoIterator<Item = usize>) -> bool {
-    rows.into_iter().all(|ri| {
-        let r = &p.rows[ri];
-        let (vars, coefs) = p.row_terms(r);
-        let sum: i128 = vars.iter().zip(coefs).map(|(&v, &k)| i128::from(k) * i128::from(x[v as usize])).sum();
-        match r.kind {
-            Kind::Eq => sum == i128::from(r.rhs),
-            Kind::Le => sum <= i128::from(r.rhs),
-            Kind::Ge => sum >= i128::from(r.rhs),
-            Kind::Even => sum % 2 == 0,
-        }
-    })
+    rows.into_iter()
+        .all(|ri| row_holds(&p.rows[ri], row_sum(p, &p.rows[ri], x)))
+}
+
+/// Left-hand side of a row at `x` (exact).
+fn row_sum(p: &Local, r: &Row, x: &[i64]) -> i128 {
+    let (vars, coefs) = p.row_terms(r);
+    vars.iter()
+        .zip(coefs)
+        .map(|(&v, &k)| i128::from(k) * i128::from(x[v as usize]))
+        .sum()
+}
+
+/// Whether a row holds for the left-hand side `sum`.
+fn row_holds(r: &Row, sum: i128) -> bool {
+    match r.kind {
+        Kind::Eq => sum == i128::from(r.rhs),
+        Kind::Le => sum <= i128::from(r.rhs),
+        Kind::Ge => sum >= i128::from(r.rhs),
+        Kind::Even => sum % 2 == 0,
+    }
 }
 
 struct Polisher<'a> {
@@ -1387,8 +1424,9 @@ struct Polisher<'a> {
     top: [(u128, usize); 3],
     cap: Option<u128>,
     evals: u64,
+    /// Running left-hand side of every row at `x`.
+    rsum: Vec<i128>,
     /// Scratch reused by every move evaluation (no per-move allocation).
-    rows: Vec<usize>,
     pa: Vec<(f64, f64)>,
     pb: Vec<(f64, f64)>,
 }
@@ -1445,13 +1483,17 @@ impl Polisher<'_> {
         for &(v, d) in mv {
             self.x[v] += d;
         }
-        self.rows.clear();
-        for &(v, _) in mv {
-            self.rows.extend(p.v_rows[p.v_off[v]..p.v_off[v + 1]].iter().map(|&r| r as usize));
+        // Update the running row sums by the moved terms only, then check the touched rows.
+        for &(v, d) in mv {
+            for i in p.v_off[v]..p.v_off[v + 1] {
+                self.rsum[p.v_rows[i] as usize] += i128::from(p.v_coef[i]) * i128::from(d);
+            }
         }
-        self.rows.sort_unstable();
-        self.rows.dedup();
-        let mut better = rows_ok(p, &self.x, self.rows.iter().copied());
+        let mut better = mv.iter().all(|&(v, _)| {
+            p.v_rows[p.v_off[v]..p.v_off[v + 1]]
+                .iter()
+                .all(|&r| row_holds(&p.rows[r as usize], self.rsum[r as usize]))
+        });
         if better {
             better = if new_max < self.mx || new_sum + eps < self.sum {
                 true
@@ -1478,6 +1520,9 @@ impl Polisher<'_> {
         if !better {
             for &(v, d) in mv {
                 self.x[v] -= d;
+                for i in p.v_off[v]..p.v_off[v + 1] {
+                    self.rsum[p.v_rows[i] as usize] -= i128::from(p.v_coef[i]) * i128::from(d);
+                }
             }
             return false;
         }
@@ -1553,14 +1598,22 @@ fn best_single(lo: i64, hi: i64, goals: &[f64], cap: Option<u128>) -> i64 {
     }
     let mut best: Option<(u128, u128, i64)> = None;
     let eps = goals.len() as u128;
-    let pairs = |n: i64| -> Vec<(f64, f64)> { goals.iter().map(|&g| (n as f64, g)).collect() };
+    let pairs = |n: i64, o: &mut Vec<(f64, f64)>| o.extend(goals.iter().map(|&g| (n as f64, g)));
+    let mut sc = Scratch::default();
     for n in cands {
         if (lo..=hi).contains(&n) {
             let c = cost(n);
             let key = if cap.is_some() { (0, c.1, c.2) } else { c };
             let better = best.is_none_or(|b| {
-                cmp_obj(cap.is_none(), (key.0, key.1, &[n]), (b.0, b.1, &[b.2]), eps, &|| pairs(n), &|| pairs(b.2))
-                    == std::cmp::Ordering::Less
+                cmp_obj(
+                    cap.is_none(),
+                    (key.0, key.1, &[n]),
+                    (b.0, b.1, &[b.2]),
+                    eps,
+                    &|o| pairs(n, o),
+                    &|o| pairs(b.2, o),
+                    &mut sc,
+                ) == std::cmp::Ordering::Less
             });
             if better {
                 best = Some(key);
@@ -1926,11 +1979,14 @@ impl IntervalSolver for IiaSolver {
                 v_off[i + 1] += v_off[i];
             }
             let mut v_rows = vec![0u32; r_var.len()];
+            let mut v_coef = vec![0i64; r_var.len()];
             let mut fill = v_off.clone();
             for (ri, row) in lrows.iter().enumerate() {
-                for &v in &r_var[row.off..row.off + row.len] {
-                    v_rows[fill[v as usize]] = ri as u32;
-                    fill[v as usize] += 1;
+                for j in row.off..row.off + row.len {
+                    let v = r_var[j] as usize;
+                    v_rows[fill[v]] = ri as u32;
+                    v_coef[fill[v]] = r_coef[j];
+                    fill[v] += 1;
                 }
             }
             Local {
@@ -1945,6 +2001,7 @@ impl IntervalSolver for IiaSolver {
                 r_coef,
                 v_off,
                 v_rows,
+                v_coef,
             }
         };
         let work = |&k: &usize| -> (usize, Outcome, Option<Local>) {
@@ -1975,17 +2032,27 @@ impl IntervalSolver for IiaSolver {
         };
         // Order of two assignments of component `k` under the objective (the maximum only when
         // `with_max`): exact on ties of the quantized sums, then the smaller vector.
+        let cmp_pool = std::cell::RefCell::new(Scratch::default());
         let cmp_cost = |k: usize, a: &[i64], b: &[i64], with_max: bool| -> std::cmp::Ordering {
             let (ca, cb) = (cost_of(k, a), cost_of(k, b));
-            let terms = |v: &[i64]| -> Vec<(f64, f64)> {
-                let mut out = Vec::new();
+            let terms = |v: &[i64], out: &mut Vec<(f64, f64)>| {
                 for (j, &c) in comp_classes(k).iter().enumerate() {
                     out.extend(goals[t_off[c as usize]..t_off[c as usize + 1]].iter().map(|&g| (v[j] as f64, g)));
                 }
-                out
             };
-            let eps: u128 = comp_classes(k).iter().map(|&c| (t_off[c as usize + 1] - t_off[c as usize]) as u128).sum();
-            cmp_obj(with_max, (ca.0, ca.1, a), (cb.0, cb.1, b), eps, &|| terms(a), &|| terms(b))
+            let eps: u128 = comp_classes(k)
+                .iter()
+                .map(|&c| (t_off[c as usize + 1] - t_off[c as usize]) as u128)
+                .sum();
+            cmp_obj(
+                with_max,
+                (ca.0, ca.1, a),
+                (cb.0, cb.1, b),
+                eps,
+                &|o| terms(a, o),
+                &|o| terms(b, o),
+                &mut cmp_pool.borrow_mut(),
+            )
         };
         // The reference solver on one component, verified exactly. The sub-problem is the closure
         // of the constraints that touch the component's edges: a row whose cancelled terms name
@@ -2242,11 +2309,12 @@ mod tests {
     /// sum decides.
     #[test]
     fn objective_puts_the_maximum_before_the_sum() {
-        let none: Pairs = &|| Vec::new();
+        let none: Pairs = &|_| ();
+        let mut sc = Scratch::default();
         let (inc, refv) = ([1i64, 1], [2i64, 2]);
         let a = (10u128, 100u128, &inc[..]); // lower max, higher sum
         let b = (20u128, 50u128, &refv[..]); // higher max, lower sum
-        assert_eq!(cmp_obj(true, a, b, 0, none, none), Less);
-        assert_eq!(cmp_obj(false, a, b, 0, none, none), Greater);
+        assert_eq!(cmp_obj(true, a, b, 0, none, none, &mut sc), Less);
+        assert_eq!(cmp_obj(false, a, b, 0, none, none, &mut sc), Greater);
     }
 }
