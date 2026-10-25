@@ -9,11 +9,10 @@
 pub mod tfi;
 
 use sm_geom_api::{ParametricSurface, Uv};
-use sm_mesh_api::Param;
 use sm_scheme_api::geom;
 use sm_scheme_api::{
     Applicability, Caps, ElemShape, FailureKind, GenCtx, GenerateFailure, IntervalConstraint,
-    IntervalCtx, IntervalSink, LogicalSide, NodeGrid, NodeKey, Params, Patch, PatchBuilder,
+    IntervalCtx, IntervalSink, LogicalSide, NodeGrid, NodeKey, Param, Params, Patch, PatchBuilder,
     PlanCtx, Requirements, Scheme, SchemeDim, SchemeError, SchemeRegistry, Target, VertexRule,
     VertexType,
 };
