@@ -22,9 +22,9 @@
 //! malformed arguments, unknown tools and endpoint failures are JSON-RPC errors.
 //!
 //! Feature `respell` rewrites ids in the *text* content to the command-language spelling
-//! (`Face#1`) with `sm_lang::respell_json`. It is off by default. Ids are parsed with
-//! `EntityKind::from_str`, which accepts both spellings, so an id copied from the text is
-//! accepted back as an argument.
+//! (`Face#1`) with `sm_lang::respell_json`. It is off by default because tool arguments accept
+//! only the canonical spelling (`TopoFace#1`), so a model copying an id from the text would
+//! send a rejected one.
 
 mod server;
 mod tools;

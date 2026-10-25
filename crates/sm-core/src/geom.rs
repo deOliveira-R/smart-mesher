@@ -155,7 +155,8 @@ impl Transform {
     }
 
     /// Reflection in the plane `{x : n·x = d}`. `n` need not be unit length.
-    /// Returns `None` if `n` is (near) zero.
+    /// Returns `None` only if `n` is exactly zero: any nonzero finite `n`, however tiny (subnormals
+    /// included) or huge, is scaled first and yields `Some`. Non-finite input is not rejected.
     pub fn reflection(n: Vector3, d: f64) -> Option<Self> {
         let (n, d) = match out_of_range_scale(n) {
             Some(m) => (Vector3::new(n.x / m, n.y / m, n.z / m), d / m),
@@ -178,7 +179,8 @@ impl Transform {
     }
 
     /// Rotation by `angle` radians (right-hand rule) about the axis through `p` with direction `axis`.
-    /// Returns `None` if `axis` is (near) zero.
+    /// Returns `None` only if `axis` is exactly zero: any nonzero finite `axis`, however tiny
+    /// (subnormals included) or huge, is scaled first and yields `Some`. Non-finite input is not rejected.
     pub fn rotation(p: Point3, axis: Vector3, angle: f64) -> Option<Self> {
         let axis = match out_of_range_scale(axis) {
             Some(m) => Vector3::new(axis.x / m, axis.y / m, axis.z / m),
