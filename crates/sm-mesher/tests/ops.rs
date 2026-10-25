@@ -950,6 +950,16 @@ fn elongated_bricks_are_not_refused_by_the_budget() {
     }
 }
 
+/// The 1000x1000x1 plate of the earlier repro: 10^6 cells, exact under the geometric-mean
+/// estimate. Slow (about 90 s in a debug build), so it only runs with `--ignored`.
+#[test]
+#[ignore = "10^6 cells; run with --ignored"]
+fn a_million_cell_plate_is_not_refused_by_the_budget() {
+    let mut s = brick_session([1000.0, 1000.0, 1.0], 1.0);
+    mesh_run(&mut s).expect("run");
+    assert_eq!(s.state().count_of(EntityKind::MeshCell), 1_000_000);
+}
+
 #[test]
 fn a_subnormal_size_is_rejected_when_set() {
     let mut s = session();

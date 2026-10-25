@@ -115,3 +115,21 @@ None.
 * `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-mesher --no-deps`: clean
 * sm-quality dev-dependency dropped (unused); serde_json moved to dev-dependencies.
 * criterion bench run at 100^3 (4-core VM): see DESIGN.md. Stub-scheme caveat applies.
+
+## Polish wave
+
+| # | Item | Status |
+|---|---|---|
+| 1, 4 | mesh.run plans twice | not done (needs orchestrator): `Driver::mesh_from_plan` or a driver-side budget is a frozen `sm-scheme-api` change (decision 9, queued for W3; the API still has neither). Second half **fixed**: `if let Ok(plan)` is gone, a plan error is returned by `mesh.run` right away through the same error mapping; covered by `ops::infeasible_hard_intent_fails_atomically` (the infeasible error now comes from the planning step). |
+| 2 | Estimate off on non-brick volumes | fixed (doc): limit stated in the `estimate_cells` rustdoc and DESIGN.md. No test on a cylinder: no non-brick volume op exists in the stub catalog to build one. |
+| 3 | 1000x1000x1 plate coverage | fixed: `ops::a_million_cell_plate_is_not_refused_by_the_budget` (`#[ignore]`, about 90 s in debug; passes with `--ignored`). |
+| 5 | Neighbour guard | obsolete: decision 9 keeps it for W2; conformal meshing against a neighbour mesh is W3. Code unchanged. |
+| 6 | 10^6-cell op pair 10.6 s vs 4.7 s | not done (needs orchestrator): bulk adopt/retire in `sm-layer-api` and `MeshBuild::add_template_cells` are W3 contract items (decision 9). |
+| 7 | `mesh.default_size` in the catalog | obsolete: accepted by decision 9. |
+| 8 | Cargo.lock | obsolete: the dependency edits are already merged on main with the lock. |
+| Contract: firmness cascade | not done (needs orchestrator): planner change in `sm-scheme-api`, queued for W3. |
+| Contract: `size_count` rounding | obsolete: decision 9 keeps half-away-from-zero and amends the research doc. |
+| Contract: `DriverOptions::max_cells` / plan estimate | not done (needs orchestrator): not in the API; the crate-level budget stays. |
+| Other earlier contract requests | confirmed resolved on main; this crate needs no adoption (`NO_OUTPUTS`, `Unsupported` etc. are not used by anything the crate does differently). |
+
+No state hash, layer hash, export byte or golden changed.

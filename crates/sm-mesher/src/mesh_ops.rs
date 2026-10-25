@@ -53,6 +53,11 @@ fn failed(e: SchemeError) -> OpError {
 /// its edges (exact for a structured hex brick: `a*b*c`). Edges that are not in the plan are
 /// skipped; a volume with none falls back to the mean over the whole plan. Only used to catch
 /// absurd requests, so over- or under-shooting by a small factor is fine.
+///
+/// Limit: only edge counts are seen. For a volume with few, long edges and non-structured faces
+/// (a cylinder whose curved face has one seam edge) the cube of the mean edge count can be far
+/// from the true count, in either direction. It is a guard against runaway requests, not a
+/// forecast.
 fn estimate_cells(plan: &Plan, view: &dyn TopologyView, targets: &[EntityId]) -> f64 {
     let geo = |counts: &mut dyn Iterator<Item = u32>| -> Option<f64> {
         let (mut sum, mut n) = (0.0_f64, 0usize);
@@ -126,16 +131,16 @@ impl TypedOp for MeshRun {
         driver.options = DriverOptions::new();
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
         // Refuse absurd requests before generating anything. This plans a second time inside
-        // `Driver::mesh` (no plan-reuse API yet: W3 item); plan errors surface from that call.
-        if let Ok(plan) = driver.plan(&input, &intent) {
-            let est = estimate_cells(&plan, model.topo(), &targets);
-            if est > cfg.max_cells() as f64 {
-                return Err(OpError::Invalid(format!(
-                    "the plan needs about {est:.3e} cells, above the budget of {} \
-                     (MesherConfig::with_max_cells); use a larger size",
-                    cfg.max_cells()
-                )));
-            }
+        // `Driver::mesh` (no plan-reuse API yet: W3 item). A plan error is reported here, not
+        // by the second call.
+        let plan = driver.plan(&input, &intent).map_err(failed)?;
+        let est = estimate_cells(&plan, model.topo(), &targets);
+        if est > cfg.max_cells() as f64 {
+            return Err(OpError::Invalid(format!(
+                "the plan needs about {est:.3e} cells, above the budget of {} \
+                 (MesherConfig::with_max_cells); use a larger size",
+                cfg.max_cells()
+            )));
         }
         // Work on a copy of the allocator; the layer only advances on success.
         let mut alloc = alloc0.clone();
