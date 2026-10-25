@@ -9,7 +9,9 @@ use sm_fem::{
 };
 use sm_layer_api::ModelLayer;
 use sm_model_api::Domain;
-use sm_op_api::{Cardinality, Registry, Severity, X_ENTITY_KIND, X_POSITIONAL};
+use sm_op_api::{
+    Cardinality, QuietControl, Registry, Session, Severity, X_ENTITY_KIND, X_POSITIONAL,
+};
 
 fn add(block: u32, volumes: &[EntityId]) -> BlockAdd {
     BlockAdd {
@@ -150,6 +152,11 @@ fn block_element_type_is_stored_and_validated() {
             })
             .expect_err("higher order");
         assert!(e.contains("unsupported"), "{e}");
+        let code = r.apply_code(BlockElementType {
+            block: 1,
+            element_type: ho,
+        });
+        assert_eq!(code, "unsupported", "{ho:?}");
     }
     for shell in [ElementType::Quad4, ElementType::Tri3] {
         let e = r
@@ -159,7 +166,27 @@ fn block_element_type_is_stored_and_validated() {
             })
             .expect_err("shell type");
         assert!(e.contains("shell blocks"), "{e}");
+        let code = r.apply_code(BlockElementType {
+            block: 1,
+            element_type: shell,
+        });
+        assert_eq!(code, "unsupported", "{shell:?}");
     }
+    let code = r.apply_code(BlockAdd {
+        block: 7,
+        volumes: vec![],
+        faces: vec![v[0]],
+        name: None,
+    });
+    assert_eq!(code, "unsupported", "shell block_add");
+    assert_eq!(
+        r.apply_code(BlockElementType {
+            block: 9,
+            element_type: ElementType::Hex8
+        }),
+        "invalid-params",
+        "an unknown block is invalid, not unsupported"
+    );
     assert!(
         r.try_apply(BlockElementType {
             block: 9,
@@ -190,6 +217,7 @@ fn block_remove_retires_the_color_and_its_element_type() {
         1
     );
     let d = r.apply(BlockRemove { block: 1 });
+    assert!(d.diagnostics.is_empty(), "an empty block uncolors nothing");
     assert_eq!(d.removed, vec![c], "the color id is retired");
     assert!(!r.state().contains(c));
     assert!(model(&r).model().color(c).is_none());
@@ -213,8 +241,19 @@ fn block_remove_uncolors_the_volumes_of_a_non_empty_block() {
     let before = r.state().hash();
     let d = r.apply(BlockRemove { block: 2 });
     assert_eq!(d.removed, vec![c]);
+    assert_eq!(d.diagnostics.len(), 1);
+    assert_eq!(d.diagnostics[0].code, "block-uncolor");
+    assert_eq!(d.diagnostics[0].severity, Severity::Warning);
+    assert_eq!(
+        d.diagnostics[0].entities,
+        vec![v[0]],
+        "names the uncolored volume"
+    );
     assert_eq!(model(&r).model().volume_color(v[0]), None);
-    assert!(model(&r).model().volume_color(v[1]).is_some(), "other block untouched");
+    assert!(
+        model(&r).model().volume_color(v[1]).is_some(),
+        "other block untouched"
+    );
     // Undo restores the colored state exactly; redo reproduces the removal.
     let after = r.state().hash();
     r.s.undo().expect("undo");
@@ -261,6 +300,76 @@ fn sideset_add_creates_a_face_color_and_records_wrt() {
     assert_eq!(d.diagnostics[0].code, "sideset-move");
     let fem = r.state().layer::<FemLayer>().expect("fem");
     assert_eq!(fem.side_prefs().collect::<Vec<_>>(), vec![(f[0], v[0])]);
+}
+
+#[test]
+fn sideset_add_without_wrt_clears_the_stored_side_preference() {
+    let (mut r, v, f) = two_bricks();
+    let set = |sideset, faces: &[EntityId], wrt| SidesetAdd {
+        sideset,
+        faces: faces.to_vec(),
+        wrt,
+        name: None,
+    };
+    r.apply(set(1, &[f[1]], Some(v[0])));
+    let prefs = |r: &Rig| {
+        r.state()
+            .layer::<FemLayer>()
+            .expect("fem")
+            .side_prefs()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(prefs(&r), vec![(f[1], v[0])]);
+    // Extending the same sideset without wrt: the latest call wins, the preference is cleared.
+    r.apply(set(1, &[f[1], f[3]], None));
+    assert!(prefs(&r).is_empty());
+    // Repeating wrt restores it for every face of the call.
+    r.apply(set(1, &[f[1], f[3]], Some(v[0])));
+    assert_eq!(prefs(&r), vec![(f[1], v[0]), (f[3], v[0])]);
+}
+
+#[test]
+fn block_remove_cold_replay_equals_undo_redo_and_warm_state() {
+    let scenario = |r: &mut Rig| {
+        let (v, _) = {
+            let d = r.apply(Bricks {
+                origins: vec![[0.0; 3], [5.0, 0.0, 0.0]],
+                size: [1.0; 3],
+            });
+            (role(&d, "volume"), ())
+        };
+        r.apply(MeshIt {
+            volumes: v.clone(),
+            size: 0.5,
+        });
+        r.apply(add(1, &v[..1]));
+        r.apply(add(2, &v[1..]));
+        r.apply(BlockElementType {
+            block: 1,
+            element_type: ElementType::Hex8,
+        });
+        r.try_apply(BlockRemove { block: 2 }).expect("remove").0
+    };
+    let mut warm = Rig::new();
+    scenario(&mut warm);
+    let mut cold = Rig {
+        s: Session::new(engine(true)),
+    };
+    let head = scenario(&mut cold);
+    let q = QuietControl::new();
+    let replayed = cold
+        .s
+        .state_at_from_root(head, &q.control())
+        .expect("no Diverged");
+    assert_eq!(replayed.hash(), cold.state().hash());
+    assert_eq!(replayed.hash(), warm.state().hash());
+    for layer in ["fem", "model"] {
+        assert_eq!(
+            replayed.layer_hash(layer).expect(layer),
+            warm.state().layer_hash(layer).expect(layer),
+            "{layer}"
+        );
+    }
 }
 
 #[test]

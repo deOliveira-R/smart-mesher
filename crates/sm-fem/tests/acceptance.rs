@@ -206,9 +206,9 @@ fn tet4_block_on_hexes_is_an_error_and_hex8_is_fine() {
     assert!(sink.is_empty(), "nothing is written before the check");
 }
 
-/// The shape check runs in parallel above 2^14 cells and reports the same first cell.
+/// The shape check reports the same first offending cell under any thread pool.
 #[test]
-fn element_check_is_deterministic_on_the_parallel_path() {
+fn element_check_reports_the_same_first_cell_under_any_pool() {
     let (mut r, v, _) = meshed_brick(26.0);
     r.apply(block_add(1, v));
     r.apply(BlockElementType {
@@ -804,7 +804,14 @@ fn a_set_name_clash_is_a_mesh_error() {
         name: Some(format!("deck_{deck}_a")),
     });
     let mut sink = Vec::new();
-    let e = export(r.state(), &ExportRequest::new(ExportFormat::Smsh), &mut sink)
-        .expect_err("clash");
-    assert!(matches!(e, FemError::Mesh(_)) && e.code() == "mesh", "{e:?}");
+    let e = export(
+        r.state(),
+        &ExportRequest::new(ExportFormat::Smsh),
+        &mut sink,
+    )
+    .expect_err("clash");
+    assert!(
+        matches!(e, FemError::Mesh(_)) && e.code() == "mesh",
+        "{e:?}"
+    );
 }

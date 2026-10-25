@@ -316,6 +316,15 @@ impl Rig {
             .map_err(|e| e.to_string())
     }
 
+    /// The stable error code of a failing op.
+    pub fn apply_code<T: TypedOp>(&mut self, op: T) -> &'static str {
+        let q = QuietControl::new();
+        self.s
+            .apply(&op, Meta::new("test", "", ""), &q.control())
+            .expect_err("op fails")
+            .code()
+    }
+
     pub fn apply<T: TypedOp>(&mut self, op: T) -> Delta {
         self.try_apply(op).expect("op applies").1
     }

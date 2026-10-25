@@ -118,10 +118,32 @@ retirement cleaning of `FemLayer`, layer digest, empty layer invisible to the st
 
 ## api_change_requests
 
-1. **crate `sm-model-api`:** `Model::uncolor_volumes(&mut self, vols: &[EntityId])` (remove the
+1. **crate `sm-model-api` (done):** `Model::uncolor_volumes(&mut self, vols: &[EntityId])` (remove the
    volume color of each volume; ignore uncolored ones). *Why:* `fem.block_remove` cannot delete a
    non-empty block today, and nothing can return a volume to "no block". *Signature:*
    `pub fn uncolor_volumes(&mut self, vols: &[EntityId])`, mirroring `uncolor_faces`.
-2. **(optional) crate `sm-op-api`:** an `OpError::Unsupported(String)` variant with code
+   **Done** (on main; `fem.block_remove` uses it).
+2. **(optional) crate `sm-op-api` (done):** an `OpError::Unsupported(String)` variant with code
    `unsupported`, so higher-order element types and shell blocks are distinguishable from invalid
-   parameters. Today they are `OpError::Invalid` with "unsupported" in the message.
+   parameters. **Done:** the variant exists and the refusals use it.
+
+## Polish wave
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Stale "parallel path" test name/doc | fixed: renamed `element_check_reports_the_same_first_cell_under_any_pool` (acceptance.rs) |
+| 2 | `sideset_add` without `wrt` silently clears the preference | fixed by documenting "latest call wins" (rustdoc, DESIGN.md) and pinning it: `sideset_add_without_wrt_clears_the_stored_side_preference` |
+| 3 | Mirror test uses an in-test op, not `sm_testkit::topo::mirror_chamber()` | not done (needs orchestrator): `ModelLayer` constructor from `(TopoHost, Model)` |
+| 4 | Overlay branches of `lower.rs` untested end to end | not done: no overlay-producing op exists yet |
+| 5 | `clone_host` is O(mesh) per export, unmeasured at 1e6 | not done (needs orchestrator): overlay `MeshRead` outside this crate |
+| 6 | Refusals were `Invalid` with "unsupported" in the message | obsolete: they already return `OpError::Unsupported` (`block_element_type_is_stored_and_validated` now asserts code `unsupported`, including shell `block_add`) |
+| 7 | `sideset_add` requires the fem layer, `block_add` does not | fixed by ruling: an op requires the layers it touches; `block_add` writes the model only, `sideset_add` writes `side_wrt`. Documented on `BlockAdd` and in DESIGN.md. No behaviour change |
+| 8 | Every `Domain::Face` color lowers as a sideset | not changed: stays as documented in DESIGN/Known gaps; needs the orchestrator to confirm the W2 ruling (a plugin that wants a non-sideset face color needs a domain or tag in the model contract) |
+| 9 | Pin `OpError::Unsupported.code()` in sm-op-api; ops report `unsupported` | partly fixed: the sm-fem side is `block_element_type_is_stored_and_validated` (codes of higher-order, shell, and unknown-block). The `sm-op-api` `gaps.rs` test is another crate: not done (needs orchestrator) |
+| 10 | W2_REPORT:127 wording; `FemError::Unsupported` lowered via `invalid()` | report text fixed. The second half is obsolete: `invalid()` takes only `ModelError`, and no op converts a `FemError` (lowering runs only in export) |
+| 11 | Cold-replay test for `block_remove` of a non-empty block | fixed: `block_remove_cold_replay_equals_undo_redo_and_warm_state` (cold engine, `state_at_from_root`, state/fem/model hashes vs warm run). The determinism scenario is unchanged |
+| 12 | `block_remove` silently uncolors | fixed: `block-uncolor` warning naming the volumes (`block_remove_uncolors_the_volumes_of_a_non_empty_block`; an empty block warns nothing) |
+| 13 | Report lists `uncolor_volumes` as open | fixed: marked done (and the `Unsupported` request) |
+
+No state hash, layer hash, export byte or golden changed. `cargo fmt` also reflowed two
+statements in `src/lower.rs` (formatting only).

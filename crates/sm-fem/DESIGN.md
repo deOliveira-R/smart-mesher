@@ -33,6 +33,13 @@ face sets plus `DeckRecord`s from the same table.
   `Domain::Face`. `wrt` (a volume that owns every face) is stored in `FemLayer` per face, and follows topology
   lineage (`on_succession`): a split face passes it to its children, a split volume becomes all
   its pieces (the layer has no topology access, so the lowering picks the piece the face borders).
+  The latest call wins: a `fem.sideset_add` without `wrt` clears the stored `wrt` of each of its
+  faces (tested: `sideset_add_without_wrt_clears_the_stored_side_preference`).
+- `fem.block_remove` uncolors the volumes of the block and warns `block-uncolor` (naming them),
+  since the block coloring is then not a partition. `fem.block_add` needs no `fem` layer (it
+  touches the model only); `fem.sideset_add` does, because it writes `side_wrt`.
+- Refusals (higher-order and shell element types, shell blocks) are `OpError::Unsupported`,
+  code `unsupported`.
 - **Lowering** (`lower`):
   - block `c` becomes `SetMembers::Cells` named like `c`, label `c.label`, found through
     `classified_on(volume).cells` (no per-cell model lookup);
