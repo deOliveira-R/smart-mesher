@@ -154,15 +154,10 @@ fn unpinned_runs_differ_in_node_hashes_but_not_in_state() {
 #[test]
 fn run_exports_and_hash_agree_with_print_hash() {
     let d = tmp("run");
-    let mut args = vec![
-        "run".to_owned(),
-        data("milestone.smesh"),
-        "--memory".to_owned(),
-        "--print-hash".to_owned(),
-    ];
-    args.extend(PIN.map(str::to_owned));
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let o = smesh(&refs, Some(&d));
+    let script = data("milestone.smesh");
+    let mut printed = vec!["run", script.as_str(), "--memory", "--print-hash"];
+    printed.extend(PIN);
+    let o = smesh(&printed, Some(&d));
     assert_eq!(
         o.status.code(),
         Some(0),
@@ -172,6 +167,41 @@ fn run_exports_and_hash_agree_with_print_hash() {
     assert!(
         d.join("out.smsh").is_file() && d.join("out.vtu").is_file(),
         "relative exports land in the working directory under --memory"
+    );
+    let stdout = String::from_utf8(o.stdout).expect("utf8");
+    let last = stdout.lines().last().expect("a last line");
+    assert!(
+        last.len() == 64
+            && last
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "last line is 64 lowercase hex: {last:?}"
+    );
+    let mut json = vec!["run", script.as_str(), "--memory", "--json"];
+    json.extend(PIN);
+    let r = ok_json(&json, Some(&d));
+    assert_eq!(
+        r["state"], last,
+        "print-hash is the state of the --json run"
+    );
+}
+
+/// `new` on a directory that already holds a project is an error and leaves it untouched.
+#[test]
+fn new_on_an_existing_project_is_an_error() {
+    let d = tmp("newtwice");
+    let p = d.join("proj");
+    let p = p.to_str().expect("utf8");
+    assert_eq!(smesh(&["new", p], None).status.code(), Some(0));
+    let before = std::fs::read(Path::new(p).join("project.toml")).expect("toml");
+    let o = smesh(&["new", p], None);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("already holds a project"), "{err}");
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("created project"));
+    assert_eq!(
+        std::fs::read(Path::new(p).join("project.toml")).expect("toml"),
+        before
     );
 }
 

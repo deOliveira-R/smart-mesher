@@ -24,11 +24,9 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use serde_json::Value;
-use sm_core::EntityId;
-use sm_op_api::{Hash256, Rev};
 use sm_protocol::{
-    ApplyResult, Endpoint, ExportFormat, ExportResult, HashResult, INTERNAL_ERROR, INVALID_PARAMS,
-    Request, RpcError, ScriptResult, StatusResult,
+    ApplyResult, Endpoint, EntityId, ExportFormat, ExportResult, Hash256, HashResult,
+    INTERNAL_ERROR, INVALID_PARAMS, Request, Rev, RpcError, ScriptResult, StatusResult,
 };
 
 pub use args::{Cli, Command, Format, Global};
@@ -92,14 +90,7 @@ pub fn connect_standard(settings: &Settings) -> Result<Box<dyn Endpoint>, String
     let time = settings.fixed_time.clone();
     // A factory (not `Server::new`) so `session.open` can build the opened project's workspace.
     let server = sm_server::Server::from_factory(move || {
-        let mut b = sm_server::standard();
-        if let Some(a) = &author {
-            b = b.author(a.clone());
-        }
-        if let Some(t) = &time {
-            b = b.clock(sm_server::FixedClock(t.clone()));
-        }
-        b
+        sm_server::standard_with(author.clone(), time.clone())
     })
     .map_err(|e| e.to_string())?;
     Ok(Box::new(server))
@@ -256,6 +247,13 @@ fn execute(cli: &Cli, connect: &mut Connect<'_>, io: &mut Io<'_>) -> Res<()> {
     let mut opened = false;
     match (&cli.command, &settings.project) {
         (Command::New { dir }, _) => {
+            // `session.open{create:true}` would open an existing project and report it as created.
+            if dir.join("project.toml").is_file() {
+                return Err(Failure::local(format!(
+                    "{} already holds a project; `new` does not reuse it",
+                    dir.display()
+                )));
+            }
             call(
                 ep,
                 Request::Open {

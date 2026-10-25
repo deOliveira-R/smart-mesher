@@ -65,6 +65,8 @@ struct Ran {
     stderr: String,
     /// Result of every `mesh.info` query, in order.
     infos: Vec<Value>,
+    /// The `error` object of a failed `--json` run (`Null` on success).
+    error: Value,
 }
 
 /// Run `script` with `run --memory --json`; `tag` names its scratch directory.
@@ -77,7 +79,9 @@ fn run_script(tag: &str, script: &str) -> Ran {
         "",
     );
     let mut infos = Vec::new();
+    let mut error = Value::Null;
     if let Ok(v) = serde_json::from_slice::<Value>(&o.stdout) {
+        error = v["error"].clone();
         for e in v["events"].as_array().into_iter().flatten() {
             if e["event"] == "query" && e["name"] == "mesh.info" {
                 infos.push(e["result"].clone());
@@ -92,7 +96,17 @@ fn run_script(tag: &str, script: &str) -> Ran {
             String::from_utf8_lossy(&o.stdout)
         ),
         infos,
+        error,
     }
+}
+
+/// A failed script run is a `script-error` whose first diagnostic is `op-failed` with `message`.
+fn assert_op_failed(r: &Ran, message: &str) {
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert_eq!(r.error["kind"], "script-error", "{}", r.error);
+    assert_eq!(r.error["data"]["error_code"], "op-failed", "{}", r.error);
+    let m = r.error["message"].as_str().unwrap_or_default();
+    assert!(m.contains(message), "{m:?} lacks {message:?}");
 }
 
 /// Run a script that ends in one `mesh.info` and return it; the run must succeed.
@@ -289,8 +303,7 @@ fn row2_auto_out_of_range_is_an_error() {
                 "let b = model.create_brick(x: 10.0, y: 10.0, z: 10.0)\nmesh.size(targets: b.volume, auto: {f})\n"
             ),
         );
-        assert_eq!(r.code, 1, "auto {f}: {}", r.stderr);
-        assert!(r.stderr.contains("auto"), "{}", r.stderr);
+        assert_op_failed(&r, "`auto` must be in 1..=10");
     }
 }
 
@@ -335,15 +348,18 @@ fn row4_explicit_schemes_through_standard() {
 
 #[test]
 fn row4_unknown_scheme_is_a_typed_error() {
-    for target in ["b.volume", "b.faces", "b.edges"] {
+    for (target, kind) in [
+        ("b.volume", "Volume"),
+        ("b.faces", "Surface"),
+        ("b.edges", "Curve"),
+    ] {
         let r = run_script(
             "row4_unknown",
             &format!(
                 "let b = model.create_brick(x: 10.0, y: 10.0, z: 10.0)\nmesh.scheme(targets: {target}, scheme: \"nonesuch\")\n"
             ),
         );
-        assert_eq!(r.code, 1, "{target}: {}", r.stderr);
-        assert!(r.stderr.contains("nonesuch"), "{target}: {}", r.stderr);
+        assert_op_failed(&r, &format!("no {kind} scheme named `nonesuch`"));
     }
     // Over MCP the failure is a tool error naming the scheme, not a transport error.
     let r = mcp(vec![
@@ -354,7 +370,14 @@ fn row4_unknown_scheme_is_a_typed_error() {
         ),
     ]);
     assert_eq!(r[&3]["result"]["isError"], Value::Bool(true), "{}", r[&3]);
-    assert!(r[&3].to_string().contains("nonesuch"), "{}", r[&3]);
+    let msg = r[&3]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        msg.contains("no Volume scheme named `nonesuch`"),
+        "{}",
+        r[&3]
+    );
 }
 
 #[test]

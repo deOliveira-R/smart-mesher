@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use common::{Outcome, canned, go, go_with, h, status_value};
 use serde_json::{Value, json};
 use sm_cli::{Settings, discover_project};
-use sm_op_api::Rev;
+use sm_protocol::Rev;
 use sm_protocol::{
     ApplyResult, ExportFormat, ExportResult, HashResult, Request, RpcError, ScriptResult,
     StatusResult,
