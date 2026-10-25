@@ -187,6 +187,15 @@ impl Model {
         }
     }
 
+    /// Remove the volume color of each of `vols`. Uncolored volumes and ids that are not
+    /// `TopoVolume` keys are ignored (as in [`Self::uncolor_faces`]). The result equals the state
+    /// that never had the color: the tables are plain maps, so removal leaves no trace.
+    pub fn uncolor_volumes(&mut self, vols: &[EntityId]) {
+        for v in vols {
+            self.volume_color.remove(v);
+        }
+    }
+
     /// Remove a color. Fails while volumes still use it; faces that use it become uncolored.
     pub fn remove_color(&mut self, c: EntityId) -> Result<()> {
         if !self.colors.contains_key(&c) {

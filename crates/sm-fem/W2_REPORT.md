@@ -79,8 +79,8 @@ retirement cleaning of `FemLayer`, layer digest, empty layer invisible to the st
    `block_<n>`). Not in the plan; it is the only way to name a color without another op.
 3. **`faces` in `fem.block_add` is accepted by the schema but refused when non-empty.** Face blocks
    (shell elements) need a surface mesh in the `meshes` layer; W2 meshes hold volume cells only.
-4. **`fem.block_remove` only removes an empty block.** `Model` has no `uncolor_volumes`, so a
-   non-empty block gives an error telling the user to move its volumes first (api change request 1).
+4. **`fem.block_remove` uncolors the volumes of the block** with `Model::uncolor_volumes` (it used
+   to refuse a non-empty block). The volumes then belong to no block.
 5. **Export refuses a stale mesh** (`stale-mesh`). Its classification names retired entities, so
    block membership would silently be empty or wrong. Not in the plan; the skeleton did not check.
 6. **Interior faces without `wrt` lower to both sides**; boundary faces to `Left`. The plan

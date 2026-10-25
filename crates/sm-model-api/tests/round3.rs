@@ -97,3 +97,23 @@ mod serde_tamper {
         assert!(serde_json::from_str::<Model>(&bad).is_err());
     }
 }
+
+#[test]
+fn uncolor_volumes_hashes_like_a_state_that_never_had_the_color() {
+    let (_t, mut m, b) = colored_brick([1.0; 3]);
+    let mut never = Model::new();
+    never.add_color(1, "mat", Domain::Volume).unwrap();
+    let tol = sm_geom_api::ModelTolerance::default();
+    let words = |m: &Model| {
+        let mut v = Vec::new();
+        m.canonical_visit(&tol, &mut |w| v.push(format!("{w:?}")));
+        v
+    };
+    assert_ne!(words(&m), words(&never));
+    let stray = sm_core::EntityId::new(sm_core::EntityKind::TopoFace, 99).unwrap();
+    m.uncolor_volumes(&[b.volume, b.volume, stray]);
+    assert_eq!(m.volume_color(b.volume), None);
+    assert_eq!(words(&m), words(&never));
+    m.uncolor_volumes(&[b.volume]); // already uncolored: ignored
+    assert_eq!(words(&m), words(&never));
+}
