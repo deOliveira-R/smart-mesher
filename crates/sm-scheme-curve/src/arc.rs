@@ -69,14 +69,16 @@ fn is_tiny(a: f64, b: f64) -> bool {
     b - a <= MIN_REL_WIDTH * a.abs().max(b.abs()).max(1.0) || !(m > a && m < b)
 }
 
-/// One panel `[a, b]` (edge fractions), its 5-point integral, and the parameter width of the
-/// smooth piece (between breakpoints) that contains it.
+/// One panel `[a, b]` (edge fractions), its 5-point integral, the parameter width of the
+/// smooth piece (between breakpoints) that contains it, and whether its endpoint tests fail
+/// (computed once, when the panel is created).
 #[derive(Clone, Copy)]
 struct Panel {
     a: f64,
     b: f64,
     i: f64,
     w: f64,
+    bad: bool,
 }
 
 /// Relative noise of the speed evaluation inside a smooth piece of parameter width `w` on the
@@ -94,33 +96,41 @@ impl<'a> ArcMap<'a> {
         }
         let mut map = ArcMap { curve, cc, span, tb: Vec::new(), cum: Vec::new(), total: 0.0, uniform: false };
         let (mut smin, mut smax) = (f64::INFINITY, 0.0f64);
-        let mut eval = |map: &ArcMap<'_>, a: f64, b: f64, w: f64| -> Panel {
+        // `scale` is the initial length estimate, known only after the seed panels are integrated.
+        let mut eval = |map: &ArcMap<'_>, a: f64, b: f64, w: f64, scale: f64| -> Panel {
             let (i, lo, hi) = map.gl(a, b);
             smin = smin.min(lo);
             smax = smax.max(hi);
-            Panel { a, b, i, w }
+            let mut p = Panel { a, b, i, w, bad: false };
+            if scale > 0.0 {
+                p.bad = map.endpoint_bad(&p, scale);
+            }
+            p
         };
         let (cuts, widths) = map.cuts()?;
         let limit = MAX_PANELS + 4 * widths.len();
-        let init: Vec<Panel> = cuts.windows(2).zip(&widths).map(|(c, w)| eval(&map, c[0], c[1], *w)).collect();
+        let mut init: Vec<Panel> = cuts.windows(2).zip(&widths).map(|(c, w)| eval(&map, c[0], c[1], *w, 0.0)).collect();
         let l0: f64 = init.iter().map(|p| p.i).sum();
         if !(l0.is_finite() && l0 > 0.0) {
             return Err(SpacingError::Geometry("curve has zero or non-finite speed".into()));
         }
         let tol = PANEL_TOL * l0;
         let scale = l0;
+        for p in &mut init {
+            p.bad = map.endpoint_bad(p, scale);
+        }
         // Depth-first refinement in a fixed order, so the result is deterministic.
         let mut out: Vec<Panel> = Vec::with_capacity(4 * MIN_PANELS);
         let mut stack: Vec<Panel> = init.into_iter().rev().collect();
         while let Some(p) = stack.pop() {
             let m = 0.5 * (p.a + p.b);
-            let (l, r) = (eval(&map, p.a, m, p.w), eval(&map, m, p.b, p.w));
+            let (l, r) = (eval(&map, p.a, m, p.w, scale), eval(&map, m, p.b, p.w, scale));
             let diff = (p.i - (l.i + r.i)).abs();
             if !diff.is_finite() {
                 return Err(SpacingError::Geometry("curve has non-finite speed".into()));
             }
             let tiny = is_tiny(p.a, p.b);
-            let bad = !tiny && (map.endpoint_bad(&p, scale) || map.endpoint_bad(&l, scale) || map.endpoint_bad(&r, scale));
+            let bad = !tiny && (p.bad || l.bad || r.bad);
             let floor = NOISE_C * noise_rel(map.cc.range.lo, map.cc.range.hi, p.w) * p.i;
             if (diff <= tol + floor && !bad) || tiny {
                 out.push(l);
