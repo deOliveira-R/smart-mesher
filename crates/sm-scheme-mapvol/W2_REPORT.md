@@ -90,3 +90,5 @@ Branch note: the harness designated `claude/p2-sm-scheme-mapvol-alq1zz`; the tas
 | 8 | T6 Deps line: `sm-mesh-api`, `rayon` | not done (needs orchestrator): add `sm-mesh-api` to T6 (or re-export `CellShape` from `sm-scheme-api`), and decide whether rayon is accepted for T6 or `generate` stays sequential. Left as is; rayon use is deterministic and tested. |
 | 12 | E2E NotApplicable in the interval phase | not done: the stub surface map forces four `End` corners per face, so no driver-level fixture can produce it; covered at unit level by 5a. |
 
+
+Verification: `tools/ci.sh` exit 0 (run with `CARGO_PROFILE_*_DEBUG=0` after a first run hit "no space left on device"); `RAYON_NUM_THREADS=1 cargo test -p sm-scheme-mapvol --all-features` and `cargo clippy -p sm-scheme-mapvol --all-targets --all-features -- -D warnings` clean. No golden, hash or export changed.
