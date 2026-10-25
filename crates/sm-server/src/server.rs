@@ -13,7 +13,7 @@ use sm_protocol::{
 };
 
 use crate::error::{ServerError, SessionError};
-use crate::host::{ExportParams, SessionHost, resolve_path, status_result};
+use crate::host::{ExportParams, SessionHost, resolve_path, status_result, to_json};
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
 type Opener = Arc<dyn Fn() -> WorkspaceBuilder + Send + Sync>;
@@ -75,7 +75,7 @@ impl Server {
     }
 
     fn host(&mut self) -> SessionHost<'_> {
-        SessionHost::new(&mut self.ws)
+        SessionHost::plain(&mut self.ws)
     }
 
     fn catalog(&self) -> Result<Value, RpcError> {
@@ -116,7 +116,8 @@ impl Server {
         match failed {
             None => to_value(&result),
             Some((code, message)) => {
-                // Ops applied before the failing statement stay applied (each is a timeline node).
+                // Ops applied before the failing statement stay applied (one timeline node per statement; a
+                // `batch { }` block is one `core.batch` node).
                 let mut data = to_value(&result)?;
                 data["rendered"] = Value::String(rendered);
                 data["error_code"] = Value::String(code);
@@ -133,7 +134,7 @@ impl Server {
         if let Some(root) = self.ws.root()
             && same_dir(root, &dir)
         {
-            return Ok(to_json(&status_result(&self.ws)));
+            return to_json(&status_result(&self.ws));
         }
         if self.ws.root().is_some() {
             self.ws.save()?;
@@ -151,7 +152,7 @@ impl Server {
             other => other?,
         };
         self.ws = new;
-        Ok(to_json(&status_result(&self.ws)))
+        to_json(&status_result(&self.ws))
     }
 
     fn dispatch(&mut self, req: Request) -> Result<Value, SessionError> {
@@ -159,7 +160,7 @@ impl Server {
             Request::Apply { op, params, version } => {
                 let opts = ApplyOptions { version, ..ApplyOptions::default() };
                 let r = self.ws.apply_json(&op, params, &opts)?;
-                Ok(to_json(&ApplyResult::new(r.node, r.state, r.delta)))
+                to_json(&ApplyResult::new(r.node, r.state, r.delta))
             }
             Request::Query { name, input, at } => {
                 // An omitted input is `null` on the wire; queries take an object.
@@ -169,35 +170,35 @@ impl Server {
                     Some(rev) => Ok(self.ws.query_at(&rev, &name, &input)?),
                 }
             }
-            Request::Log { from, limit } => Ok(to_json(&self.ws.log(from, limit)?)),
-            Request::Status => Ok(to_json(&status_result(&self.ws))),
+            Request::Log { from, limit } => to_json(&self.ws.log(from, limit)?),
+            Request::Status => to_json(&status_result(&self.ws)),
             Request::Checkout { rev } => {
                 self.ws.checkout(rev)?;
-                Ok(to_json(&status_result(&self.ws)))
+                to_json(&status_result(&self.ws))
             }
             Request::Branch { name, at } => {
                 self.ws.fork(&name, at)?;
-                Ok(to_json(&status_result(&self.ws)))
+                to_json(&status_result(&self.ws))
             }
             Request::Undo => {
                 self.ws.undo()?;
-                Ok(to_json(&status_result(&self.ws)))
+                to_json(&status_result(&self.ws))
             }
             Request::Redo => {
                 self.ws.redo()?;
-                Ok(to_json(&status_result(&self.ws)))
+                to_json(&status_result(&self.ws))
             }
             Request::Hash { at } => {
                 let (state, layers) = self.host().hash_at(at.as_ref())?;
-                Ok(to_json(&HashResult::new(state, layers)))
+                to_json(&HashResult::new(state, layers))
             }
             Request::Export { path, format, mesh, provenance, inline } => {
                 let r = self.host().export(&ExportParams { path, format, mesh, provenance, inline })?;
-                Ok(to_json(&r))
+                to_json(&r)
             }
             Request::Save => {
                 self.host().save()?;
-                Ok(to_json(&status_result(&self.ws)))
+                to_json(&status_result(&self.ws))
             }
             Request::Open { path, create } => self.open_project(&path, create),
             other => Err(SessionError::new("method-not-implemented", format!("`{}` is not implemented", other.method()))),
@@ -223,17 +224,13 @@ fn to_value<T: serde::Serialize>(v: &T) -> Result<Value, RpcError> {
     serde_json::to_value(v).map_err(internal)
 }
 
-fn to_json<T: serde::Serialize>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
-}
-
 fn same_dir(a: &Path, b: &Path) -> bool {
     let canon = |p: &Path| -> PathBuf { p.canonicalize().unwrap_or_else(|_| p.to_owned()) };
     canon(a) == canon(b)
 }
 
 /// The JSON of one script event. Shape (owned by this crate): `event` is `op`, `batch`, `query`,
-/// `timeline`, `print`, `help` or `other`; `at` is `file:line:col` of the statement.
+/// `timeline`, `session`, `print`, `help` or `other` (an event this server does not know); `at` is `file:line:col` of the statement.
 fn event_json(e: &Event, map: &SourceMap) -> Value {
     let at = |span: sm_lang::Span| -> String {
         match map.get(span.file) {
@@ -262,8 +259,12 @@ fn event_json(e: &Event, map: &SourceMap) -> Value {
         }),
         Event::Print { span, text } => json!({ "event": "print", "at": at(*span), "text": text }),
         Event::Help { span, text } => json!({ "event": "help", "at": at(*span), "text": text }),
-        // Events added by newer sm-lang versions keep their information.
-        other => json!({ "event": "other", "debug": format!("{other:?}") }),
+        Event::Session { span, command, applied, result } => json!({
+            "event": "session", "at": at(*span), "command": command.verb(), "applied": applied, "result": result,
+        }),
+        // Events added by newer sm-lang versions: map them explicitly when they appear (no
+        // span accessor, so no position).
+        _ => json!({ "event": "other", "at": "" }),
     }
 }
 

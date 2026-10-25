@@ -80,7 +80,7 @@ fn failing_script_reports_script_error_and_keeps_applied_ops() {
     // The reported state is the real state.
     assert_eq!(e.data["state"], json!(hash(&mut s, None).state));
     // Documented failure form (`Request::ScriptRun`): message and error_code are the first error's.
-    let first = &e.data["diagnostics"][0];
+    let first = e.data["diagnostics"].as_array().and_then(|d| d.iter().find(|d| d["severity"] == "error")).expect("an error diagnostic");
     assert_eq!(e.data["error_code"], first["code"], "{}", e.data);
     assert_eq!(Value::String(e.message.clone()), first["message"], "{}", e.data);
     assert!(e.data["output"].is_string());
@@ -126,16 +126,12 @@ fn fork_then_checkout_back_is_bit_identical() {
 fn script_timeline_commands_map_to_the_workspace() {
     let mut s = server();
     let script = "demo.add_item(\"a\")\nlet h0 = timeline.head().node\ndemo.add_item(\"b\")\nlet main_hash = session.hash()\ntimeline.branch(\"alt\", at: h0)\nassert timeline.head().branch == \"alt\"\ndemo.add_item(\"b\")\nassert session.hash() == main_hash\ntimeline.checkout(\"main\")\nassert session.hash() == main_hash\n";
-    let r = s.call(Request::ScriptRun { text: script.into(), path: None, includes: Default::default() });
-    // `session.*` statements are parsed by sm-lang (T9); until it lands the statement is a
-    // diagnostic, not a crash. Timeline commands work either way.
-    match r {
-        Ok(v) => {
-            let st = call(&mut s, Request::Status);
-            assert_eq!(st["head"], json!({"ref": "main"}), "{v}");
-        }
-        Err(e) => assert_eq!(e.kind, "script-error", "{e}"),
-    }
+    // `session.hash()` is a value expression (sm-lang T9): the whole script must run.
+    let v = call(&mut s, Request::ScriptRun { text: script.into(), path: None, includes: Default::default() });
+    assert_eq!(v["diagnostics"], json!([]), "{v}");
+    let st = call(&mut s, Request::Status);
+    assert_eq!(st["head"], json!({"ref": "main"}), "{v}");
+    assert_eq!(st["branches"].as_object().map(|b| b.len()), Some(2), "{st}");
     let mut s = server();
     let script = "demo.add_item(\"a\")\nlet h0 = timeline.head().node\ndemo.add_item(\"b\")\ntimeline.branch(\"alt\", at: h0)\nassert timeline.head().branch == \"alt\"\ndemo.add_item(\"c\")\ntimeline.checkout(\"main\")\nassert timeline.head().branch == \"main\"\ntimeline.undo()\ntimeline.redo()\n";
     let v = call(&mut s, Request::ScriptRun { text: script.into(), path: None, includes: Default::default() });
@@ -441,4 +437,62 @@ fn relations_follow_the_registered_query() {
     let v = call(&mut s, Request::ScriptRun { text: "let a = demo.add_item(\"a\")\nprint count(bodies in a.item)\n".into(), path: None, includes: Default::default() });
     // The point is that `kind in X` has adjacency available (no "host has no relations" error).
     assert!(v["diagnostics"].as_array().is_some_and(|d| d.iter().all(|d| d["severity"] != "error")), "{v}");
+}
+
+#[test]
+fn session_statements_are_reported_as_session_events() {
+    let dir = TempDir::new("sessev");
+    let proj = dir.path().join("p");
+    let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
+    let text = "demo.add_hex(2)\nlet h = session.hash()\nsession.export(\"m.smsh\")\nsession.save()\n";
+    let v = call(&mut s, Request::ScriptRun { text: text.into(), path: Some("t.smesh".into()), includes: Default::default() });
+    let ev: Vec<&Value> = v["events"].as_array().expect("events").iter().filter(|e| e["event"] == "session").collect();
+    assert_eq!(ev.iter().map(|e| e["command"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["hash", "export", "save"], "{v}");
+    assert!(ev.iter().all(|e| e["applied"] == true && e["at"].as_str().is_some_and(|a| a.starts_with("t.smesh:"))), "{v}");
+    assert_eq!(ev[0]["result"], json!(s.workspace().state_hash().to_hex()));
+    assert!(v["events"].as_array().is_some_and(|e| e.iter().all(|e| e["event"] != "other")), "{v}");
+    assert!(proj.join("m.smsh").exists());
+}
+
+#[test]
+fn export_rejects_a_format_that_disagrees_with_the_extension() {
+    let dir = TempDir::new("fmt");
+    let proj = dir.path().join("p");
+    let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
+    apply(&mut s, "demo.add_hex", json!({"n": 1}));
+    let e = err(&mut s, Request::Export { path: Some("x.vtu".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false });
+    assert_eq!(e.kind, "bad-request");
+    assert!(!proj.join("x.vtu").exists(), "nothing is written");
+    let e = err(&mut s, Request::Export { path: Some("x.SMSH".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false });
+    assert_eq!(e.kind, "bad-request");
+    // Agreeing is fine, and so is an explicit format on an unknown extension.
+    call(&mut s, Request::Export { path: Some("ok.vtu".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false });
+    call(&mut s, Request::Export { path: Some("ok.dat".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false });
+    // The same through the command language.
+    use sm_lang::{Host, SessionCommand};
+    let mut ws = s.into_workspace();
+    let mut host = sm_server::SessionHost::new(&mut ws);
+    let e = host.session(&SessionCommand::Export { path: "y.vtu".into(), format: Some("smsh".into()), mesh: None, provenance: false }).expect_err("mismatch");
+    assert_eq!(e.code, "bad-request");
+}
+
+#[test]
+fn provenance_is_rejected_for_vtu_which_cannot_record_it() {
+    let mut s = server();
+    apply(&mut s, "demo.add_hex", json!({"n": 1}));
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: true, inline: true });
+    assert_eq!(e.kind, "bad-request");
+    assert!(e.message.contains("provenance"), "{e}");
+    // Without it, and for smsh, the same request works.
+    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true });
+    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: true, inline: true });
+}
+
+#[test]
+fn a_named_mesh_in_a_state_without_meshes_is_unknown_not_missing() {
+    let mut s = server();
+    let named = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some("Mesh#1".parse().expect("id")), provenance: false, inline: true };
+    assert_eq!(err(&mut s, named).kind, "unknown-mesh");
+    let unnamed = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true };
+    assert_eq!(err(&mut s, unnamed).kind, "no-mesh");
 }

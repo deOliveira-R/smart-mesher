@@ -17,7 +17,7 @@ fn log() -> Vec<String> {
         r(2, "script.run", serde_json::json!({"text": "let b = demo.add_item(\"b\")\ndemo.rename(item: b.item[0], name: \"c\")\nprint \"ok\"\n"})),
         r(3, "apply", serde_json::json!({"op": "demo.add_hex", "params": {"n": 3}})),
         r(4, "session.export", serde_json::json!({"format": "smsh", "inline": true})),
-        r(5, "session.export", serde_json::json!({"format": "vtu", "inline": true, "provenance": true})),
+        r(5, "session.export", serde_json::json!({"format": "smsh", "inline": true, "provenance": true})),
         r(6, "timeline.undo", serde_json::json!({})),
         r(7, "timeline.redo", serde_json::json!({})),
         r(8, "timeline.log", serde_json::json!({"limit": 50})),
@@ -25,6 +25,7 @@ fn log() -> Vec<String> {
         r(10, "catalog", serde_json::json!({})),
         r(11, "session.hash", serde_json::json!({})),
         r(12, "timeline.status", serde_json::json!({})),
+        r(13, "session.export", serde_json::json!({"format": "vtu", "inline": true})),
     ]
 }
 
