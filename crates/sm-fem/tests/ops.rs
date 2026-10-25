@@ -200,13 +200,31 @@ fn block_remove_retires_the_color_and_its_element_type() {
             .element_type(c)
             .is_none()
     );
-    // A block that still holds volumes cannot go.
-    r.apply(add(2, &v));
-    let e = r
-        .try_apply(BlockRemove { block: 2 })
-        .expect_err("not empty");
-    assert!(e.contains("move them"), "{e}");
+    let _ = v;
     assert!(r.try_apply(BlockRemove { block: 42 }).is_err());
+}
+
+#[test]
+fn block_remove_uncolors_the_volumes_of_a_non_empty_block() {
+    let (mut r, v, _) = two_bricks();
+    let c = role(&r.apply(add(2, &v[..1])), "block")[0];
+    r.apply(add(3, &v[1..]));
+    assert_eq!(model(&r).model().volume_color(v[0]), Some(c));
+    let before = r.state().hash();
+    let d = r.apply(BlockRemove { block: 2 });
+    assert_eq!(d.removed, vec![c]);
+    assert_eq!(model(&r).model().volume_color(v[0]), None);
+    assert!(model(&r).model().volume_color(v[1]).is_some(), "other block untouched");
+    // Undo restores the colored state exactly; redo reproduces the removal.
+    let after = r.state().hash();
+    r.s.undo().expect("undo");
+    assert_eq!(r.state().hash(), before);
+    assert_eq!(model(&r).model().volume_color(v[0]), Some(c));
+    r.s.redo().expect("redo");
+    assert_eq!(r.state().hash(), after);
+    // Removing the last block leaves no coloring.
+    r.apply(BlockRemove { block: 3 });
+    assert_eq!(model(&r).model().volume_coloring().count(), 0);
 }
 
 #[test]
