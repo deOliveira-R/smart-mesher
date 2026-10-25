@@ -12,7 +12,6 @@ bench = false
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-math = { path = "../sm-math" }
 sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }

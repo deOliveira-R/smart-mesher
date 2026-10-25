@@ -482,3 +482,72 @@ pub fn sphere_band(r: f64, lon: f64, lat0: f64, lat1: f64) -> BareFace {
         edges,
     }
 }
+
+/// A cylinder sector of radius `r`, height `h` and angular extent `sweep` with `u in [0, sweep]`
+/// and **no pcurves** (the 3-D fallback path). Edges as in [`quarter_cylinder`].
+pub fn cylinder_sector_no_pcurves(r: f64, h: f64, sweep: f64) -> BareFace {
+    let mut topo = CellComplex::new();
+    let mut edges = Vec::new();
+    let mut vertices = Vec::new();
+    let face = with_op(&mut topo, OpId(1), |t| {
+        let at = |a: f64, z: f64| Point3::new(r * a.cos(), r * a.sin(), z);
+        let (pa, pb, pc, pd) = (at(0.0, 0.0), at(sweep, 0.0), at(sweep, h), at(0.0, h));
+        let v: Vec<EntityId> = [pa, pb, pc, pd]
+            .iter()
+            .map(|p| t.make_vertex(*p))
+            .collect::<Result<_, _>>()?;
+        vertices.extend(v.iter().copied());
+        let z = Vector3::new(0.0, 0.0, 1.0);
+        let x = Vector3::new(1.0, 0.0, 0.0);
+        let arc = Interval::new(0.0, sweep);
+        let height = Interval::new(0.0, h);
+        let cb = t.shapes_mut()?.add_curve(CurveDef::Circle(Circle::new(
+            Frame::from_zx(Point3::new(0.0, 0.0, 0.0), z, x)?,
+            r,
+        )?))?;
+        let ct = t.shapes_mut()?.add_curve(CurveDef::Circle(Circle::new(
+            Frame::from_zx(Point3::new(0.0, 0.0, h), z, x)?,
+            r,
+        )?))?;
+        let lr = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pb, z)?))?;
+        let ll = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pa, z)?))?;
+        let carrier = |curve, range| CurveCarrier {
+            curve,
+            range,
+            sense: Sense::Forward,
+        };
+        let e_bot = t.make_edge(v[0], v[1], Some(carrier(cb, arc)))?;
+        let e_right = t.make_edge(v[1], v[2], Some(carrier(lr, height)))?;
+        let e_top = t.make_edge(v[3], v[2], Some(carrier(ct, arc)))?;
+        let e_left = t.make_edge(v[0], v[3], Some(carrier(ll, height)))?;
+        edges.extend([e_bot, e_right, e_top, e_left]);
+        let s = t
+            .shapes_mut()?
+            .add_surface(SurfaceDef::Cylinder(Cylinder::new(
+                Frame::at(Point3::new(0.0, 0.0, 0.0)),
+                r,
+            )?))?;
+        let spec = |edge, sense| CoedgeSpec { edge, sense };
+        let lp = [
+            spec(e_bot, Sense::Forward),
+            spec(e_right, Sense::Forward),
+            spec(e_top, Sense::Reversed),
+            spec(e_left, Sense::Reversed),
+        ];
+        Ok(t.make_face(
+            &[&lp],
+            Some(SurfaceCarrier {
+                surface: s,
+                sense: Sense::Forward,
+            }),
+        )?)
+    })
+    .expect("cylinder sector");
+    BareFace {
+        topo,
+        model: Model::new(),
+        face,
+        vertices,
+        edges,
+    }
+}

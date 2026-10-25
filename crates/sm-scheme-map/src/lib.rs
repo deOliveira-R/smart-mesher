@@ -180,6 +180,12 @@ impl Scheme for SurfaceMap {
             ));
         }
         let (ni, nj) = (s0.len(), s1.len());
+        if ni < 2 || nj < 2 {
+            return Err(fail(
+                FailureKind::Internal,
+                format!("sides with {ni} x {nj} nodes; a side has at least two"),
+            ));
+        }
         if (ni as u64) * (nj as u64) >= u64::from(u32::MAX) {
             return Err(fail(
                 FailureKind::Unsupported,
@@ -225,6 +231,7 @@ impl Scheme for SurfaceMap {
         let mut check_grid: Vec<[f64; 3]> = Vec::with_capacity(ni * nj);
 
         let uv_sides = surface.and_then(|_| side_uvs(cx, &layout.sides));
+        let uv_used = uv_sides.is_some();
         if let (Some(surf), Some(uv)) = (surface, uv_sides) {
             // Parameter-space TFI, then evaluate on the surface.
             let (b, r) = (&uv[0], &uv[1]);
@@ -294,7 +301,22 @@ impl Scheme for SurfaceMap {
                 check_grid[j * ni + i] = q;
             }
         }
-        orientation_ok(&check_grid, ni, nj).map_err(|r| fail(FailureKind::Quality, r))?;
+        // On the 3-D path a curved face has no single outline normal (a cylinder wider than a
+        // half turn, or a periodic face, folds the Newell normal), so compare each quad with
+        // the face normal at its centroid. Without a carrier the outline is the only reference.
+        let local_normal = |c: [f64; 3]| {
+            geom::face_normal(topo, f, sm_core::Point3::new(c[0], c[1], c[2]))
+                .ok()
+                .map(|n| [n.x, n.y, n.z])
+        };
+        let reference: Option<&dyn Fn([f64; 3]) -> Option<[f64; 3]>> =
+            if uv_used || surface.is_none() {
+                None
+            } else {
+                Some(&local_normal)
+            };
+        orientation_ok(&check_grid, ni, nj, reference)
+            .map_err(|r| fail(FailureKind::Quality, r))?;
 
         // The patch: boundary nodes by reference, interior nodes owned by the face.
         let mut pb = PatchBuilder::new(target);
@@ -368,6 +390,9 @@ fn side_uvs(cx: &GenCtx<'_>, sides: &[LogicalSide]) -> Option<[Vec<[f64; 2]>; 4]
             } else {
                 (0.0, 1.0)
             };
+            if n < 2 {
+                return None;
+            }
             let mut seg: Vec<[f64; 2]> = Vec::with_capacity(n);
             for (m, key) in nodes.iter().enumerate() {
                 let t = if m == 0 {
@@ -408,9 +433,19 @@ fn close(a: [f64; 2], b: [f64; 2]) -> bool {
     (a[0] - b[0]).abs() <= 1e-9 * scale && (a[1] - b[1]).abs() <= 1e-9 * scale
 }
 
-/// Every quad of the grid must turn the same way as the boundary outline (Newell normal), in
-/// whatever space `grid` lives (`(u, v, 0)` or 3-D).
-fn orientation_ok(grid: &[[f64; 3]], ni: usize, nj: usize) -> Result<(), String> {
+/// Every quad of the grid must turn the same way as its reference normal. With `local` the
+/// reference is the normal it returns at the quad centroid (3-D grids on a curved carrier);
+/// otherwise it is the Newell normal of the boundary outline, in whatever space `grid` lives
+/// (`(u, v, 0)` or 3-D).
+fn orientation_ok(
+    grid: &[[f64; 3]],
+    ni: usize,
+    nj: usize,
+    local: Option<&dyn Fn([f64; 3]) -> Option<[f64; 3]>>,
+) -> Result<(), String> {
+    if ni < 2 || nj < 2 || grid.len() != ni * nj {
+        return Err("the grid has fewer than two nodes along a side".into());
+    }
     let mut outline: Vec<[f64; 3]> = Vec::with_capacity(2 * (ni + nj));
     outline.extend((0..ni).map(|i| grid[i]));
     outline.extend((1..nj).map(|j| grid[j * ni + ni - 1]));
@@ -423,7 +458,7 @@ fn orientation_ok(grid: &[[f64; 3]], ni: usize, nj: usize) -> Result<(), String>
         n[1] += (a[2] - b[2]) * (a[0] + b[0]);
         n[2] += (a[0] - b[0]) * (a[1] + b[1]);
     }
-    if !(n.iter().all(|x| x.is_finite()) && n.iter().any(|x| *x != 0.0)) {
+    if local.is_none() && !(n.iter().all(|x| x.is_finite()) && n.iter().any(|x| *x != 0.0)) {
         return Err("the face outline has no area in its parameter space".into());
     }
     for j in 0..nj - 1 {
@@ -443,7 +478,15 @@ fn orientation_ok(grid: &[[f64; 3]], ni: usize, nj: usize) -> Result<(), String>
                 d1[2] * d2[0] - d1[0] * d2[2],
                 d1[0] * d2[1] - d1[1] * d2[0],
             ];
-            if c[0] * n[0] + c[1] * n[1] + c[2] * n[2] <= 0.0 {
+            let r = match local {
+                Some(normal_at) => {
+                    let centroid = std::array::from_fn(|k| (p0[k] + p1[k] + p2[k] + p3[k]) / 4.0);
+                    normal_at(centroid)
+                        .ok_or_else(|| format!("no face normal at quad ({i}, {j})"))?
+                }
+                None => n,
+            };
+            if c[0] * r[0] + c[1] * r[1] + c[2] * r[2] <= 0.0 {
                 return Err(format!(
                     "the interpolation folds over at quad ({i}, {j}); the boundary is not mappable"
                 ));
@@ -466,20 +509,52 @@ mod tests {
     #[test]
     fn orientation_accepts_a_regular_grid_and_rejects_a_fold() {
         let mut g = lattice(4, 4);
-        assert!(orientation_ok(&g, 4, 4).is_ok());
+        assert!(orientation_ok(&g, 4, 4, None).is_ok());
         // Push an interior node across its neighbour: the quads around it flip.
         g[4 + 1] = [2.5, 2.5, 0.0];
-        let err = orientation_ok(&g, 4, 4).expect_err("folded");
+        let err = orientation_ok(&g, 4, 4, None).expect_err("folded");
         assert!(err.contains("folds over"), "{err}");
         // A clockwise outline is the mirror image and equally valid.
         let mut mirrored = lattice(4, 4);
         for p in &mut mirrored {
             p[0] = -p[0];
         }
-        assert!(orientation_ok(&mirrored, 4, 4).is_ok());
+        assert!(orientation_ok(&mirrored, 4, 4, None).is_ok());
         // A collapsed outline has no area.
         let flat: Vec<[f64; 3]> = (0..16).map(|k| [k as f64 % 4.0, 0.0, 0.0]).collect();
-        assert!(orientation_ok(&flat, 4, 4).is_err());
+        assert!(orientation_ok(&flat, 4, 4, None).is_err());
+    }
+
+    #[test]
+    fn local_normals_accept_a_wrapped_grid_that_a_single_outline_normal_rejects() {
+        // A 3/4 cylinder strip as a (ni x nj) grid of 3-D points; quads face outward.
+        let (ni, nj) = (13usize, 3usize);
+        let grid: Vec<[f64; 3]> = (0..nj)
+            .flat_map(|j| {
+                (0..ni).map(move |i| {
+                    let a = 1.5 * core::f64::consts::PI * i as f64 / (ni - 1) as f64;
+                    [a.cos(), a.sin(), j as f64]
+                })
+            })
+            .collect();
+        assert!(orientation_ok(&grid, ni, nj, None).is_err());
+        let outward = |c: [f64; 3]| {
+            let l = c[0].hypot(c[1]);
+            Some([c[0] / l, c[1] / l, 0.0])
+        };
+        assert!(orientation_ok(&grid, ni, nj, Some(&outward)).is_ok());
+        let inward = |c: [f64; 3]| outward(c).map(|n| [-n[0], -n[1], 0.0]);
+        let err = orientation_ok(&grid, ni, nj, Some(&inward)).expect_err("flipped");
+        assert!(err.contains("folds over"), "{err}");
+        let none = |_: [f64; 3]| None;
+        assert!(orientation_ok(&grid, ni, nj, Some(&none)).is_err());
+    }
+
+    #[test]
+    fn degenerate_grids_are_errors_not_panics() {
+        assert!(orientation_ok(&[[0.0; 3]], 1, 1, None).is_err());
+        assert!(orientation_ok(&[[0.0; 3]; 3], 3, 1, None).is_err());
+        assert!(orientation_ok(&[[0.0; 3]; 4], 3, 2, None).is_err());
     }
 
     #[test]

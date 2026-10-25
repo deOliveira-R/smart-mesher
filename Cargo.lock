@@ -1465,7 +1465,6 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-geom-api",
- "sm-math",
  "sm-mesh",
  "sm-mesh-api",
  "sm-model-api",
