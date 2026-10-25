@@ -46,7 +46,7 @@ pub fn standard_schemes() -> Result<SchemeRegistry, StandardError> {
 pub fn distribution(schemes: SchemeRegistry) -> WorkspaceBuilder {
     let mesher = MesherConfig::new(schemes)
         .with_solver(Box::new(IiaSolver::default()))
-        .with_picker(Box::new(AnglePicker::default()))
+        .with_picker(Box::new(AnglePicker))
         .with_size_fields(Arc::new(sm_sizing::size_field))
         .with_auto_size(Arc::new(|view, targets, factor| {
             sm_sizing::auto_size(view, targets, factor).map_err(|e| e.to_string())
