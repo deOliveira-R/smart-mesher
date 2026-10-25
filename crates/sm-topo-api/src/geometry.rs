@@ -77,11 +77,6 @@ pub struct FaceMoments {
     pub second: [[f64; 3]; 3],
     /// `∫ n dA`, `n` the face normal (left to right); outward on a boundary face.
     pub vector_area: Vector3,
-    /// `∫ (x−c)(x−c)ᵀ dA` about the area centroid `c`, accumulated in a frame local to the face so
-    /// it does not cancel far from the origin. `None` when not computed (e.g. hand-built moments);
-    /// [`Self::plane`] then falls back to the origin-based `second`. Not serialized.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub central: Option<[[f64; 3]; 3]>,
 }
 
 impl FaceMoments {
@@ -94,8 +89,9 @@ impl FaceMoments {
     /// unit normal (left to right) and the plane offset `d` (`n·x = d`).
     ///
     /// With `n = vector_area/|vector_area|` and `d = n·first/area`, the mean square deviation is
-    /// `(nᵀ second n − d² area)/area`, which loses digits far from the origin; when the central
-    /// second moment is present the equivalent `nᵀ C n / area` is used instead.
+    /// `(nᵀ second n − d² area)/area`. This form cancels far from the origin (relative error
+    /// about `1e-16 (|x|/h)²` for a face of size `h` at distance `|x|`); use
+    /// [`TopologyView::face_plane`] or [`Self::plane_with`] for a stable test.
     pub fn plane(&self, tol: f64) -> Option<(Vector3, f64)> {
         let va = self.vector_area.norm();
         if !(self.area > 0.0 && va > 0.0) {
@@ -105,19 +101,75 @@ impl FaceMoments {
         let d = n.dot(self.first) / self.area;
         let sn = [n.x, n.y, n.z];
         let mut nsn = 0.0;
-        let src = self.central.as_ref().unwrap_or(&self.second);
-        for (i, row) in src.iter().enumerate() {
+        for (i, row) in self.second.iter().enumerate() {
             for (j, e) in row.iter().enumerate() {
                 nsn += sn[i] * e * sn[j];
             }
         }
-        let ms = if self.central.is_some() { nsn / self.area } else { (nsn - d * d * self.area) / self.area }.max(0.0);
+        let ms = ((nsn - d * d * self.area) / self.area).max(0.0);
+        (ms.sqrt() <= tol).then_some((n, d))
+    }
+
+    /// Like [`Self::plane`], but the mean square deviation is taken from the centred second
+    /// moment `c` (same face, same orientation): `nᵀ C n / area`, which does not cancel far from
+    /// the origin. `(n, d)` are computed exactly as in `plane`, so only the pass/fail gate differs.
+    pub fn plane_with(&self, c: &FaceCentral, tol: f64) -> Option<(Vector3, f64)> {
+        let va = self.vector_area.norm();
+        if !(self.area > 0.0 && va > 0.0) {
+            return None;
+        }
+        let n = self.vector_area * (1.0 / va);
+        let d = n.dot(self.first) / self.area;
+        let sn = [n.x, n.y, n.z];
+        let mut nsn = 0.0;
+        for (i, row) in c.central.iter().enumerate() {
+            for (j, e) in row.iter().enumerate() {
+                nsn += sn[i] * e * sn[j];
+            }
+        }
+        let ms = (nsn / self.area).max(0.0);
         (ms.sqrt() <= tol).then_some((n, d))
     }
 
     /// The unit normal if the face is planar within `tol`; see [`Self::plane`].
     pub fn unit_normal(&self, tol: f64) -> Option<Vector3> {
         self.plane(tol).map(|p| p.0)
+    }
+}
+
+/// Area, centroid and second moment about the centroid of a face: `∫ (x−c)(x−c)ᵀ dA`. It is
+/// accumulated in a frame local to the face, so unlike [`FaceMoments::second`] it does not lose
+/// digits far from the origin. Same orientation convention as [`FaceMoments`].
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FaceCentral {
+    /// `∫ dA`.
+    pub area: f64,
+    /// The area centroid `c` (the local origin when `area <= 0`).
+    pub centroid: Point3,
+    /// `∫ (x−c)(x−c)ᵀ dA` (zero when `area <= 0`).
+    pub central: [[f64; 3]; 3],
+}
+
+impl FaceCentral {
+    /// Union of two disjoint patches (parallel-axis theorem), e.g. the members of a composite face.
+    pub fn combine(&self, o: &Self) -> Self {
+        let area = self.area + o.area;
+        if area.is_nan() || area <= 0.0 {
+            return if self.area >= o.area { *self } else { *o };
+        }
+        let (wa, wb) = (self.area / area, o.area / area);
+        let c = Point3::new(self.centroid.x * wa + o.centroid.x * wb, self.centroid.y * wa + o.centroid.y * wb, self.centroid.z * wa + o.centroid.z * wb);
+        let mut central = [[0.0; 3]; 3];
+        for part in [self, o] {
+            let d = [part.centroid.x - c.x, part.centroid.y - c.y, part.centroid.z - c.z];
+            for i in 0..3 {
+                for j in 0..3 {
+                    central[i][j] += part.central[i][j] + part.area * d[i] * d[j];
+                }
+            }
+        }
+        Self { area, centroid: c, central }
     }
 }
 
@@ -227,7 +279,7 @@ fn sample_face<'a, V: TopologyView + ?Sized>(view: &'a V, f: EntityId, gauss: bo
                 let dvdt = match solve_duv(&j, cj.d1) {
                     Some((_, dvdt)) => dvdt,
                     // A polygon end point may sit on a pole; its weight is zero anyway.
-                    None if !gauss => 0.0,
+                    None if !gauss && !dom.singularities.is_empty() => 0.0,
                     None => return Err(QueryError::Unsupported("degenerate parametrization on boundary")),
                 };
                 let dir = if along { 1.0 } else { -1.0 };
@@ -317,37 +369,58 @@ pub fn face_moments<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<F
         Carrier::Surface(sc) => sc.sense.sign(),
         _ => 1.0,
     };
-    // Local frame for the central moments: a point of the face boundary.
-    let o = fs.surf.eval(fs.loops[0][0].uv);
-    let r = green::<22>(&fs, &|j| {
+    let r = green::<13>(&fs, &|j| {
         let n = j.du.cross(j.dv);
         let (x, y, z) = (j.p.x, j.p.y, j.p.z);
         let da = n.norm();
-        let (a, b, c) = (x - o.x, y - o.y, z - o.z);
-        [
-            da, x * da, y * da, z * da, x * x * da, y * y * da, z * z * da, x * y * da, y * z * da, z * x * da, n.x, n.y, n.z, a * da, b * da, c * da, a * a * da, b * b * da, c * c * da, a * b * da, b * c * da,
-            c * a * da,
-        ]
-    });
-    let area = sigma * r[0];
-    let central = (area > 0.0).then(|| {
-        let f = [sigma * r[13], sigma * r[14], sigma * r[15]];
-        let s = mat([sigma * r[16], sigma * r[17], sigma * r[18], sigma * r[19], sigma * r[20], sigma * r[21]]);
-        let mut c = s;
-        for i in 0..3 {
-            for j in 0..3 {
-                c[i][j] -= f[i] * f[j] / area;
-            }
-        }
-        c
+        [da, x * da, y * da, z * da, x * x * da, y * y * da, z * z * da, x * y * da, y * z * da, z * x * da, n.x, n.y, n.z]
     });
     Ok(FaceMoments {
         area: sigma * r[0],
         first: Vector3::new(sigma * r[1], sigma * r[2], sigma * r[3]),
         second: mat([sigma * r[4], sigma * r[5], sigma * r[6], sigma * r[7], sigma * r[8], sigma * r[9]]),
         vector_area: Vector3::new(r[10], r[11], r[12]),
-        central,
     })
+}
+
+/// Centred moments of one face (see [`FaceCentral`]), computed in a frame local to the face (its
+/// first boundary sample). Same coverage as [`face_moments`].
+pub fn face_central<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceCentral, QueryError> {
+    let fs = sample_face(view, f, true)?;
+    let sigma = match view.carrier(f) {
+        Carrier::Surface(sc) => sc.sense.sign(),
+        _ => 1.0,
+    };
+    let first = fs.loops.iter().find_map(|l| l.first()).ok_or(QueryError::Incomplete("face without boundary samples"))?;
+    let o = fs.surf.eval(first.uv);
+    let r = green::<10>(&fs, &|j| {
+        let da = j.du.cross(j.dv).norm();
+        let (a, b, c) = (j.p.x - o.x, j.p.y - o.y, j.p.z - o.z);
+        [da, a * da, b * da, c * da, a * a * da, b * b * da, c * c * da, a * b * da, b * c * da, c * a * da]
+    });
+    let area = sigma * r[0];
+    if area.is_nan() || area <= 0.0 {
+        return Ok(FaceCentral { area, centroid: o, central: [[0.0; 3]; 3] });
+    }
+    let fm = [sigma * r[1], sigma * r[2], sigma * r[3]];
+    let mut central = mat([sigma * r[4], sigma * r[5], sigma * r[6], sigma * r[7], sigma * r[8], sigma * r[9]]);
+    for i in 0..3 {
+        for j in 0..3 {
+            central[i][j] -= fm[i] * fm[j] / area;
+        }
+    }
+    Ok(FaceCentral { area, centroid: Point3::new(o.x + fm[0] / area, o.y + fm[1] / area, o.z + fm[2] / area), central })
+}
+
+/// Planarity test with the stable centred form: `Ok(Some((n, d)))` if the face is planar within
+/// `tol` (see [`FaceMoments::plane_with`]), `Ok(None)` if not.
+pub fn face_plane<V: TopologyView + ?Sized>(view: &V, f: EntityId, tol: f64) -> Result<Option<(Vector3, f64)>, QueryError> {
+    let fm = view.face_moments(f)?;
+    if fm.area.is_nan() || fm.area <= 0.0 {
+        return Ok(None);
+    }
+    let c = view.face_central(f)?;
+    Ok(fm.plane_with(&c, tol))
 }
 
 /// Raw moments of a volume by the divergence theorem over its face uses. Baffles (`Both`) cancel

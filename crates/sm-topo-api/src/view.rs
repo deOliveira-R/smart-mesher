@@ -2,10 +2,10 @@
 
 use crate::derived::TopologyViewExt;
 use crate::error::QueryError;
-use crate::geometry::{self, FaceMoments, Moments, PointClass};
+use crate::geometry::{self, FaceCentral, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
 use crate::types::{Carrier, CellFlags, CoedgeKey, Dim, EntityState, FacePair, Incidence, LineageKind, OpId, Sense, ShellKind};
-use sm_core::{EntityId, EntityKind};
+use sm_core::{EntityId, EntityKind, Vector3};
 use sm_geom_api::{GeomStore, ModelTolerance, PCurve, ShapeValue, Uv};
 
 /// The carrier returned for unknown cells.
@@ -119,6 +119,22 @@ pub trait TopologyView: Send + Sync {
     /// Integrated moments of a face (about the origin), oriented left to right.
     fn face_moments(&self, f: EntityId) -> Result<FaceMoments, QueryError> {
         geometry::face_moments(self, f)
+    }
+
+    /// Centred moments of a face (about its centroid, computed in a local frame; see
+    /// [`FaceCentral`]). Composite faces of an overlay combine their members by the parallel-axis
+    /// theorem.
+    fn face_central(&self, f: EntityId) -> Result<FaceCentral, QueryError> {
+        geometry::face_central(self, f)
+    }
+
+    /// `Some((n, d))` if the face is planar within `tol`, tested with the centred second moment so
+    /// it stays reliable far from the origin; otherwise `None`. `(n, d)` equal those of
+    /// [`FaceMoments::plane`]; only the pass/fail gate is more accurate (it can differ from `plane`
+    /// only when the deviation lies within rounding of `tol`). Nothing hashed calls it yet;
+    /// switching a caller that feeds a hash needs the same review.
+    fn face_plane(&self, f: EntityId, tol: f64) -> Result<Option<(Vector3, f64)>, QueryError> {
+        geometry::face_plane(self, f, tol)
     }
 
     /// Classify a point of the face's parameter space against the trimmed face.

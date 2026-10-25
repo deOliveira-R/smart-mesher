@@ -258,7 +258,7 @@ pub fn transform_moments(m: &Moments, x: &Transform) -> Moments {
 /// not `x` is improper. (The image face's loop must be reversed under an improper `x` for its
 /// stored normal to follow the right-hand rule again; see `UnfoldedModel::sense`.)
 pub fn transform_face_moments(m: &FaceMoments, x: &Transform) -> FaceMoments {
-    FaceMoments { area: m.area, first: x.apply_vector(m.first) + x.t * m.area, second: second_under(&m.second, m.first, m.area, x), vector_area: x.apply_vector(m.vector_area), central: m.central.map(|c| mat_mul(&x.m, &mat_mul(&c, &transpose(&x.m)))) }
+    FaceMoments { area: m.area, first: x.apply_vector(m.first) + x.t * m.area, second: second_under(&m.second, m.first, m.area, x), vector_area: x.apply_vector(m.vector_area) }
 }
 
 /// Compare face moments (area, first, second); the vector area is checked separately.
