@@ -151,6 +151,13 @@ fn parallel_classes(cx: &IntervalCtx<'_>, faces: &[EntityId]) -> Result<Vec<Vec<
                 .collect(),
         );
     }
+    classes_from_sides(&sides)
+}
+
+/// The classes from the per-face logical sides (four per face, in loop order, each the sorted
+/// edge ids of its chain): the twelve distinct sides must each be used by two faces, and
+/// opposite sides of a face are parallel.
+fn classes_from_sides(sides: &[Vec<Vec<EntityId>>]) -> Result<Vec<Vec<Vec<EntityId>>>, String> {
     let mut ids: BTreeMap<&Vec<EntityId>, (usize, u32)> = BTreeMap::new();
     for s in sides.iter().flatten() {
         ids.entry(s).or_insert((0, 0)).1 += 1;
@@ -169,7 +176,7 @@ fn parallel_classes(cx: &IntervalCtx<'_>, faces: &[EntityId]) -> Result<Vec<Vec<
         }
         x
     }
-    for f in &sides {
+    for f in sides {
         for s in 0..2 {
             let (a, b) = (ids[&f[s]].0, ids[&f[s + 2]].0);
             let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
@@ -185,4 +192,74 @@ fn parallel_classes(cx: &IntervalCtx<'_>, faces: &[EntityId]) -> Result<Vec<Vec<
         return Err(format!("{} classes of parallel edges (3 of 4 expected)", classes.len()));
     }
     Ok(classes.into_values().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classes_from_sides;
+    use sm_core::{EntityId, EntityKind};
+
+    fn e(n: u64) -> EntityId {
+        EntityId::new(EntityKind::TopoEdge, n).expect("id")
+    }
+
+    /// Cube edges 0..12 as sides (one edge each) of six faces, sides in loop order.
+    fn cube() -> Vec<Vec<Vec<EntityId>>> {
+        // Edges: x-parallel 0..4, y-parallel 4..8, z-parallel 8..12 (vertex pairs as in the
+        // integration tests); each face lists its edges around the loop.
+        let cyc = [[8, 6, 10, 4], [5, 11, 7, 9], [0, 9, 2, 8], [10, 3, 11, 1], [4, 1, 5, 0], [2, 7, 3, 6]];
+        cyc.iter().map(|f| f.iter().map(|x| vec![e(*x)]).collect()).collect()
+    }
+
+    fn sizes(r: &Result<Vec<Vec<Vec<EntityId>>>, String>) -> Vec<usize> {
+        r.as_ref().expect("classes").iter().map(Vec::len).collect()
+    }
+
+    #[test]
+    fn a_cube_gives_three_classes_of_four() {
+        let r = classes_from_sides(&cube());
+        assert_eq!(sizes(&r), vec![4, 4, 4]);
+        // Each class is one edge direction: x {0,1,2,3}, y {4..8}, z {8..12}.
+        let mut firsts: Vec<Vec<EntityId>> = r.expect("ok").iter().map(|c| c.iter().map(|s| s[0]).collect()).collect();
+        firsts.sort();
+        let want: Vec<Vec<EntityId>> = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]].iter().map(|c| c.iter().map(|x| e(*x)).collect()).collect();
+        assert_eq!(firsts, want);
+    }
+
+    #[test]
+    fn a_chained_side_counts_as_one_block_edge() {
+        // Edge 0, shared by faces 2 and 4, is two edges {20, 21} in both: still 12 sides.
+        let mut c = cube();
+        for (f, s) in [(2, 0), (4, 3)] {
+            c[f][s] = vec![e(20), e(21)];
+        }
+        assert_eq!(sizes(&classes_from_sides(&c)), vec![4, 4, 4]);
+    }
+
+    #[test]
+    fn a_side_used_by_one_face_only_is_refused() {
+        let mut c = cube();
+        c[0][0] = vec![e(30)];
+        let err = classes_from_sides(&c).expect_err("unshared side");
+        assert!(err.contains("12 shared block edges"), "{err}");
+    }
+
+    #[test]
+    fn a_face_with_a_side_split_differently_than_its_neighbour_is_refused() {
+        // Faces 0 and 2 disagree on how edge 8 is chained: 13 distinct sides.
+        let mut c = cube();
+        c[0][0] = vec![e(8), e(20)];
+        let err = classes_from_sides(&c).expect_err("mismatched chains");
+        assert!(err.contains("12 shared block edges"), "{err}");
+    }
+
+    #[test]
+    fn opposite_sides_that_cross_directions_leave_the_wrong_number_of_classes() {
+        // Twelve shared sides, but one face lists two sides swapped: its "opposite" pairs are
+        // then adjacent edges, which merges directions.
+        let mut c = cube();
+        c[0].swap(1, 2);
+        let err = classes_from_sides(&c).expect_err("crossed directions");
+        assert!(err.contains("classes of parallel edges"), "{err}");
+    }
 }

@@ -43,9 +43,12 @@ positions are used (a copied face's grid follows its root's layout, not its own 
 1. Corner vertices of each grid; the adjacency graph of the six corner cycles must be a cube
    (8 vertices of degree 3, 12 edges each used twice, the far corner consistent).
 2. Frame: origin `V0` is the lowest vertex id; its three neighbours in id order are the i, j, k
-   axes; if `det(a - V0, b - V0, c - V0) < 0` two axes swap. Right-handed `(i, j, k)` gives the
-   `CellShape::Hex` template order (bottom ring counter-clockwise from +z, then the top ring) a
-   positive Jacobian.
+   axes. Handedness is decided from the block as a whole, not from one corner: after the boundary
+   lattice is filled, the signed volume enclosed by the six face grids (divergence theorem, fixed
+   summation order) must be positive; if negative, the j and k axes swap and the boundary is
+   refilled. Zero or non-finite is `Geometry`. A concave or strongly warped corner at `V0` can
+   therefore no longer mirror the frame. Right-handed `(i, j, k)` gives the `CellShape::Hex`
+   template order (bottom ring counter-clockwise from +z, then the top ring) a positive Jacobian.
 3. Every lattice face is matched to its grid by corner set; the grid's dihedral map (rotation or
    reflection) is read off the positions of three corners. Interval counts must agree between
    faces, shared boundary nodes must carry the same key from both faces, and no key may occupy
@@ -95,3 +98,13 @@ bit-identical for one and many threads (tested with a one-thread pool, `Sequenti
 `src/block_tests.rs`: synthetic grids (every dihedral map, face orders, vertex numberings, graded
 affine blocks, mirror maps, folded interiors, bad inputs). `tests/volmap.rs`: through
 `Driver::mesh` with the stub `equal` and surface `map` from `sm-scheme-api[stubs]`.
+
+## Follow-ups
+
+* **Logical sides.** Cubit's volume `map` takes six *logical* sides, where one side may span
+  several surfaces. This crate requires exactly six topological faces (plan T6 wins). Supporting
+  merged sides means grouping surfaces into six patches before the frame step; the lattice and
+  interpolation code would not change.
+* The interval phase raises `NotApplicable` for layouts that are not 12 shared logical sides in
+  three classes of four; it is covered at unit level only (`classes_from_sides`), because the stub
+  surface map cannot produce such a layout.

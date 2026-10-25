@@ -442,3 +442,125 @@ fn the_registry_name_is_map_at_volume_only() {
     assert!(sm_scheme_mapvol::register(&mut twice).is_err(), "double registration is rejected");
     let _: &dyn Scheme = &sm_scheme_mapvol::VolumeMap;
 }
+
+/// A hex whose top face is rotated by `deg` degrees about the vertical axis of the unit cube.
+fn twisted_hex(deg: f64) -> [Point3; 8] {
+    let (s, c) = deg.to_radians().sin_cos();
+    std::array::from_fn(|i| {
+        let (x, y, z) = ((i & 1) as f64 - 0.5, ((i >> 1) & 1) as f64 - 0.5, ((i >> 2) & 1) as f64);
+        if z == 0.0 { Point3::new(x, y, 0.0) } else { Point3::new(c * x - s * y, s * x + c * y, 1.0) }
+    })
+}
+
+#[test]
+fn a_folded_block_fails_with_quality_and_the_driver_falls_back() {
+    let (topo, h) = build_hex(twisted_hex(170.0), ID8, ID12, ID6, [0; 6]);
+    let mut intent = map_intent(h.volume);
+    hex_counts(&mut intent, &h, [4, 4, 4]);
+    // Without a fallback the driver rejects map after its Quality failure in generate and has
+    // nothing left to try.
+    let err = mesh_with(&topo, &Model::new(), &intent, h.volume, &Sequential).err().expect("refused");
+    match &err {
+        SchemeError::NoApplicableScheme { tried, .. } => {
+            assert_eq!(tried.len(), 1, "{tried:?}");
+            assert_eq!(tried[0].scheme.as_str(), "map");
+            assert!(tried[0].message.contains("(Quality)"), "{}", tried[0].message);
+        }
+        other => panic!("{other:?}"),
+    }
+    // With a fallback in the chain the Quality failure moves the driver on to it (the stub
+    // `tetvol` then fails itself, so the run still ends in NoApplicableScheme, but with both
+    // attempts recorded in order).
+    let mut with_fb = MeshIntent::default();
+    with_fb.set_scheme(h.volume, SchemeChoice::new("map", Firmness::Hard));
+    with_fb.entity_mut(h.volume).fallbacks = vec![SchemeChoice::new("tetvol", Firmness::Hard)];
+    hex_counts(&mut with_fb, &h, [4, 4, 4]);
+    let err = mesh_with(&topo, &Model::new(), &with_fb, h.volume, &Sequential).err().expect("both fail");
+    match &err {
+        SchemeError::NoApplicableScheme { tried, .. } => {
+            let names: Vec<&str> = tried.iter().map(|a| a.scheme.as_str()).collect();
+            assert_eq!(names, ["map", "tetvol"], "{tried:?}");
+            assert!(tried[0].message.contains("(Quality)"), "{}", tried[0].message);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A triangular bipyramid: six faces, one loop each, every edge shared twice, V - E + F = 2, so
+/// it passes the topological applicability test, yet it is not hex-like.
+fn bipyramid() -> (CellComplex, EntityId) {
+    let mut topo = CellComplex::new();
+    let vol = with_op(&mut topo, OpId(1), |t| {
+        let mut p = vec![Point3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, -1.0)];
+        for i in 0..3 {
+            let a = i as f64 * std::f64::consts::TAU / 3.0;
+            p.push(Point3::new(a.cos(), a.sin(), 0.0));
+        }
+        let v: Vec<EntityId> = p.iter().map(|q| t.make_vertex(*q)).collect::<Result<_, _>>()?;
+        // Edges: apex-equator 0..3 (top), 3..6 (bottom), equator ring 6..9.
+        let mut pairs = Vec::new();
+        for (apex, _) in [(0usize, ()), (1, ())] {
+            for i in 0..3 {
+                pairs.push((apex, 2 + i));
+            }
+        }
+        for i in 0..3 {
+            pairs.push((2 + i, 2 + (i + 1) % 3));
+        }
+        let mut edges = Vec::new();
+        for (a, b) in &pairs {
+            let d = p[*b] - p[*a];
+            let u = d * (1.0 / d.norm());
+            let curve = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(p[*a], u)?))?;
+            edges.push(t.make_edge(v[*a], v[*b], Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }))?);
+        }
+        let coedge = |a: usize, b: usize| -> CoedgeSpec {
+            match pairs.iter().position(|e| *e == (a, b)) {
+                Some(n) => CoedgeSpec { edge: edges[n], sense: Sense::Forward },
+                None => CoedgeSpec { edge: edges[pairs.iter().position(|e| *e == (b, a)).expect("edge")], sense: Sense::Reversed },
+            }
+        };
+        let mut cycles: Vec<[usize; 3]> = Vec::new();
+        for i in 0..3 {
+            cycles.push([0, 2 + i, 2 + (i + 1) % 3]);
+            cycles.push([1, 2 + (i + 1) % 3, 2 + i]);
+        }
+        let mut faces = Vec::new();
+        for c in &cycles {
+            let l: Vec<CoedgeSpec> = (0..3).map(|i| coedge(c[i], c[(i + 1) % 3])).collect();
+            let n = (p[c[1]] - p[c[0]]).cross(p[c[2]] - p[c[1]]);
+            let frame = Frame::from_z(p[c[0]], n * (1.0 / n.norm()))?;
+            let surface = t.shapes_mut()?.add_surface(SurfaceDef::Plane(Plane { frame }))?;
+            faces.push(t.make_face(&[&l], Some(SurfaceCarrier { surface, sense: Sense::Forward }))?);
+        }
+        let uses: Vec<FaceUseSpec> = faces.iter().map(|f| FaceUseSpec { face: *f, side: Side::Left }).collect();
+        let volume = t.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
+        t.make_body(&[volume])?;
+        Ok(volume)
+    })
+    .expect("bipyramid");
+    (topo, vol)
+}
+
+#[test]
+fn a_six_faced_piece_that_is_not_hex_like_is_refused_by_the_driver() {
+    let (topo, vol) = bipyramid();
+    let model = Model::new();
+    let sel = [vol];
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+    let intent = MeshIntent::default();
+    let cx = PlanCtx::new(&input, &intent);
+    let r = reg();
+    let s = r.get(SchemeDim::Volume, "map").expect("registered");
+    // The topological test alone accepts it...
+    assert!(matches!(s.applicability(&cx, Target::Volume(vol), &Default::default()), Applicability::Applicable { .. }));
+    // ...and the driver refuses the hard request before generate (triangles cannot be quads).
+    let err = mesh_with(&topo, &model, &map_intent(vol), vol, &Sequential).err().expect("refused");
+    match &err {
+        SchemeError::NoApplicableScheme { target, tried, .. } => {
+            assert!(matches!(target, Target::Surface(_)), "{target:?}");
+            assert!(tried.iter().any(|a| a.message.contains("imposition from Volume")), "{tried:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

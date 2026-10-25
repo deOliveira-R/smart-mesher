@@ -126,9 +126,10 @@ fn pt(p: Point3) -> V3 {
     [p.x, p.y, p.z]
 }
 
-/// The six corner-vertex quadruples' common structure: derive the lattice frame. Returns the
-/// eight vertices indexed by `i + 2j + 4k`.
-fn frame(corners: &[[EntityId; 4]], point: &dyn Fn(NodeKey) -> Option<Point3>) -> Result<[EntityId; 8], Failure> {
+/// The six corner-vertex quadruples' common structure: derive the lattice frame from the
+/// topology alone. Returns the eight vertices indexed by `i + 2j + 4k`; the handedness is not
+/// decided here (see [`assemble`]).
+fn frame(corners: &[[EntityId; 4]]) -> Result<[EntityId; 8], Failure> {
     let mut adj: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
     let mut pair_faces: BTreeMap<(EntityId, EntityId), u32> = BTreeMap::new();
     for c in corners {
@@ -143,16 +144,7 @@ fn frame(corners: &[[EntityId; 4]], point: &dyn Fn(NodeKey) -> Option<Point3>) -
         return fail(FailureKind::Unsupported, format!("the six faces do not form a hexahedral block ({} corner vertices)", adj.len()));
     }
     let v0 = *adj.keys().next().ok_or(Failure { kind: FailureKind::Internal, reason: "no vertices".into() })?;
-    let mut nb: Vec<EntityId> = adj[&v0].iter().copied().collect();
-    let p = |v: EntityId| point(NodeKey::vertex(v)).map(pt).ok_or(Failure { kind: FailureKind::Internal, reason: format!("vertex node {v} missing") });
-    let p0 = p(v0)?;
-    let d = det(sub(p(nb[0])?, p0), sub(p(nb[1])?, p0), sub(p(nb[2])?, p0));
-    if !d.is_finite() || d == 0.0 {
-        return fail(FailureKind::Geometry, "the block corner at the lowest vertex is degenerate");
-    }
-    if d < 0.0 {
-        nb.swap(1, 2);
-    }
+    let nb: Vec<EntityId> = adj[&v0].iter().copied().collect();
     let (a, b, c) = (nb[0], nb[1], nb[2]);
     let common = |x: EntityId, y: EntityId| -> Result<EntityId, Failure> {
         let v: Vec<EntityId> = adj[&x].intersection(&adj[&y]).copied().filter(|v| *v != v0).collect();
@@ -177,12 +169,63 @@ fn frame(corners: &[[EntityId; 4]], point: &dyn Fn(NodeKey) -> Option<Point3>) -
 
 /// Orient the six face grids into one lattice, check that they agree on the shared boundary and
 /// fill the positions: boundary from the grids, interior by transfinite interpolation.
+///
+/// The frame's axes come from the topology; its handedness from the signed volume enclosed by
+/// the boundary nodes, a property of the block as a whole (a concave or warped corner cannot
+/// mirror it). A negative volume swaps the `j` and `k` axes.
 pub(crate) fn assemble(owner: EntityId, grids: &[&NodeGrid], point: &dyn Fn(NodeKey) -> Option<Point3>) -> Result<Block, Failure> {
     if grids.len() != 6 {
         return fail(FailureKind::Unsupported, format!("{} faces; the volume map needs 6", grids.len()));
     }
     let corners: Vec<[EntityId; 4]> = grids.iter().map(|g| grid_corners(g)).collect::<Result<_, _>>()?;
-    let verts = frame(&corners, point)?;
+    let verts = frame(&corners)?;
+    let mut b = lattice(owner, grids, &corners, &verts, point)?;
+    let vol = signed_volume(&b);
+    if !vol.is_finite() || vol == 0.0 {
+        return fail(FailureKind::Geometry, "the block boundary encloses no volume");
+    }
+    if vol < 0.0 {
+        let mirrored: [EntityId; 8] = std::array::from_fn(|i| verts[(i & 1) | ((i >> 1) & 1) << 2 | ((i >> 2) & 1) << 1]);
+        b = lattice(owner, grids, &corners, &mirrored, point)?;
+    }
+    tfi(&mut b)?;
+    check_orientation(&b)?;
+    Ok(b)
+}
+
+/// Signed volume enclosed by the boundary nodes (divergence theorem over the quads of the six
+/// lattice faces, each split along its first diagonal), positive for a right-handed lattice.
+/// Fixed summation order.
+fn signed_volume(b: &Block) -> f64 {
+    let n = b.n;
+    let st = b.strides();
+    let o = b.pos[0];
+    let at = |c: [usize; 3]| sub(b.pos[c[0] * st[0] + c[1] * st[1] + c[2] * st[2]], o);
+    let tri = |p: V3, q: V3, r: V3| det(p, q, r);
+    let mut sum = 0.0;
+    for (fixed, side, au, av) in FACES {
+        // `e_au x e_av` is +axis for fixed 0 and 2, -axis for fixed 1; outward is +axis on side 1.
+        let sign = if (fixed == 1) == (side == 1) { -1.0 } else { 1.0 };
+        for v in 0..n[av] {
+            for u in 0..n[au] {
+                let corner = |du: usize, dv: usize| {
+                    let mut c = [0; 3];
+                    c[fixed] = side * n[fixed];
+                    c[au] = u + du;
+                    c[av] = v + dv;
+                    at(c)
+                };
+                let (p00, p10, p11, p01) = (corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1));
+                sum += sign * (tri(p00, p10, p11) + tri(p00, p11, p01));
+            }
+        }
+    }
+    sum / 6.0
+}
+
+/// The lattice for the frame `verts`: boundary keys and positions from the grids (checked for
+/// agreement on shared nodes), interior keys assigned, interior positions not yet computed.
+fn lattice(owner: EntityId, grids: &[&NodeGrid], corners: &[[EntityId; 4]], verts: &[EntityId; 8], point: &dyn Fn(NodeKey) -> Option<Point3>) -> Result<Block, Failure> {
     let by_corners: BTreeMap<[EntityId; 4], usize> = corners
         .iter()
         .enumerate()
@@ -271,10 +314,7 @@ pub(crate) fn assemble(owner: EntityId, grids: &[&NodeGrid], point: &dyn Fn(Node
             }
         }
     }
-    let mut b = Block { n, keys, pos };
-    tfi(&mut b)?;
-    check_orientation(&b)?;
-    Ok(b)
+    Ok(Block { n, keys, pos })
 }
 
 /// Normalized arc-length fractions along the four lattice lines of direction `axis`, averaged.

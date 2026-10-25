@@ -12,8 +12,6 @@ bench = false
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-math = { path = "../sm-math" }
-sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
 # Contract crate, already a dependency of sm-scheme-api: `CellShape::Hex` for the patch elements.
@@ -21,6 +19,7 @@ sm-mesh-api = { path = "../sm-mesh-api" }
 rayon = "1"
 
 [dev-dependencies]
+sm-geom-api = { path = "../sm-geom-api" }
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-mesh = { path = "../sm-mesh" }
