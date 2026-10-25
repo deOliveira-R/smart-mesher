@@ -168,3 +168,23 @@ All in `crates/sm-model/tests/` unless noted.
   `claude/w2-sm-model`.
 - `ModelPlugin` needs `CoreLayers` installed first (it reads `ModelLayer`); queries return
   `MissingLayer` otherwise.
+
+## Polish wave
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Derived coordinates of brick/cylinder/sphere not checked for overflow | Fixed: `prim.rs::span` checks every derived corner, height bound and radius-offset point is finite and `lo < hi`; test `overflowing_or_tiny_primitives_are_invalid_and_leave_the_state_alone` (state hash unchanged). |
+| 2 | Tiny extents collapse under hash quantization | Fixed: every primitive refuses (`Invalid`) a smallest feature size (brick min extent, cylinder `min(h, 2r)`, sphere `2r`) at or below the model's linear tolerance (checked inside the transaction, so nothing changes); same test. Sizes just above it are accepted. |
+| 3, 6 | Sphere "within quadrature tolerance" only met by test-side integral (CR-1) | Partly obsolete: CR-1 has landed and `transforms.rs::assert_sphere_numeric_matches_closed_form` compares view `face_moments`/`volume_moments` with the closed form to 1e-11. `model.measure` keeps the closed form on purpose (exact; changing it would change measured bits). Docs updated. |
+| 3, 6 | Mirror-deck test at `Tolerance::with_linear(1e-6)` (CR-2) | Not done (needs orchestrator): I tried `Tolerance::default()`; `mirror_deck_stays_consistent_through_every_transform` still fails with `MirrorOffPlane` because frozen `sm_model_api::validate` still calls `FaceMoments::plane`. Switch back once `validate` uses `TopologyView::face_plane`. Test reverted to the workaround. |
+| 4, 5 | Plan §2 T1 Deps deviation | Not done (needs orchestrator): plan is outside this crate; amend plan or accept (adds serde, schemars, thiserror; dev proptest, serde_json, sm-mesh-api; sm-topo dev-only; sm-math, sm-geom dropped). |
+| 7 | `model.delete` declares no OUTPUTS (CR-4) | Obsolete: already sets `const NO_OUTPUTS: bool = true`. |
+| 8 | `Measurement.entity` has no `x-entity-kind` | Not done, by choice: it is an output field, not a param; annotating would change the published schema for no consumer. |
+| CR-1 | Pole faces in `face_moments` | Landed; adopted in tests only (see above). |
+| CR-2 | `FaceMoments::plane` cancellation | Landed in sm-topo-api (`face_plane`), but `sm-model-api::validate` still uses the old path: not done (needs orchestrator). |
+| CR-3 | `reverse_face` doc | Landed upstream; xform.rs already follows the DESIGN.md sequence. |
+| CR-4 | NO_OUTPUTS marker | Landed; adopted. |
+| Reviewer | `Transform::rotation/reflection` norm overflow | Landed in sm-core; test `huge_and_tiny_direction_vectors_act_like_their_unit_directions` covers it. |
+| Plan amendment | deps line | Not done (needs orchestrator), see 4/5. |
+
+No state hash, layer hash, export bytes or golden changed.

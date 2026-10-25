@@ -138,6 +138,35 @@ fn invalid_parameters_are_refused_and_leave_the_state_alone() {
 }
 
 #[test]
+fn overflowing_or_tiny_primitives_are_invalid_and_leave_the_state_alone() {
+    let mut s = session(cell_complex);
+    let before = s.state().hash();
+    let m = f64::MAX;
+    let ops: Vec<Box<dyn sm_op_api::Op>> = vec![
+        // Each input is finite, the derived corner (`min + x`) is not.
+        Box::new(CreateBrick { x: m, y: None, z: None, center: Some([m, 0.0, 0.0]) }),
+        Box::new(CreateBrick { x: m, y: Some(1.0), z: Some(1.0), center: Some([-m, 0.0, 0.0]) }),
+        Box::new(CreateCylinder { height: 1.0, radius: m, center: Some([m, 0.0, 0.0]) }),
+        Box::new(CreateCylinder { height: m, radius: 1.0, center: Some([0.0, 0.0, m]) }),
+        Box::new(CreateSphere { radius: m, center: Some([0.0, m, 0.0]) }),
+        // Below the linear tolerance (1e-6) or subnormal.
+        Box::new(CreateBrick { x: 5e-324, y: None, z: None, center: None }),
+        Box::new(CreateBrick { x: 1.0, y: Some(1e-7), z: None, center: None }),
+        Box::new(CreateCylinder { height: 1.0, radius: 1e-7, center: None }),
+        Box::new(CreateSphere { radius: 1e-7, center: None }),
+        // Representable only as a degenerate range next to the centre.
+        Box::new(CreateBrick { x: 1e-30, y: None, z: None, center: Some([1.0, 0.0, 0.0]) }),
+    ];
+    for op in &ops {
+        let err = run(&mut s, op.as_ref()).expect_err("refused");
+        assert!(format!("{err:?}").contains("Invalid"), "{op:?}: {err:?}");
+        assert_eq!(s.state().hash(), before, "{op:?}");
+    }
+    // Just above the tolerance still works.
+    run(&mut s, &CreateBrick { x: 1e-5, y: None, z: None, center: None }).expect("small brick");
+}
+
+#[test]
 fn cylinder_volume_and_topology() {
     let (r, h) = (1.5, 4.0);
     for factory in [cell_complex as Factory, topo_store] {

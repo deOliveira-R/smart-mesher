@@ -149,8 +149,8 @@ pub struct Measurement {
 ///
 /// Face and volume integrals are `TopologyView::face_moments` / `volume_moments` (Gauss
 /// quadrature, far below the model tolerance); a whole sphere (a single face with two pole edges
-/// and a seam) has no quadrature in the view and uses the closed forms `4 pi r^2` and
-/// `4/3 pi r^3`. Bounding boxes come from the edges: exact for lines, circles and ellipses
+/// and a seam) keeps the exact closed forms `4 pi r^2` and `4/3 pi r^3` (the view's quadrature
+/// covers it too since CR-1, to about 1e-12, but the closed form is exact and fixes the bits). Bounding boxes come from the edges: exact for lines, circles and ellipses
 /// (analytic extremes), sampled (256 points per edge) for NURBS curves; a whole sphere adds
 /// `centre +- r`. A face or volume bounded by a partial patch of a curved surface can have a
 /// bounding box smaller than the true one (the patch interior is not sampled).
