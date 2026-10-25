@@ -144,7 +144,10 @@ fn dev_dd(x: f64, g: f64) -> Dd {
 /// Order of two sums of deviations given as `(count, goal)` terms, to double-double accuracy:
 /// sums closer than `1e-24` (relative) are `Equal`.
 fn cmp_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::Ordering {
-    let sum = |t: &[(f64, f64)]| t.iter().fold((0.0, 0.0), |acc, &(x, g)| dd_add(acc, dev_dd(x, g)));
+    let sum = |t: &[(f64, f64)]| {
+        t.iter()
+            .fold((0.0, 0.0), |acc, &(x, g)| dd_add(acc, dev_dd(x, g)))
+    };
     let (sa, sb) = (sum(a), sum(b));
     let d = dd_add(sa, (-sb.0, -sb.1));
     if d.0.abs() <= 1e-24 * (sa.0.abs() + sb.0.abs() + 1.0) {
@@ -161,11 +164,16 @@ fn cmp_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::Ordering {
 /// check the solver applies when quantized sums are closer than the number of terms; it is public
 /// so oracles can use the same notion of a real tie.
 pub fn compare_deviation_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::Ordering {
-    let clamp = |t: &[(f64, f64)]| -> Vec<(f64, f64)> { t.iter().map(|&(n, g)| (n, g.max(MIN_GOAL))).collect() };
+    let clamp = |t: &[(f64, f64)]| -> Vec<(f64, f64)> {
+        t.iter().map(|&(n, g)| (n, g.max(MIN_GOAL))).collect()
+    };
     cmp_sums(&clamp(a), &clamp(b))
 }
 
-type Pairs<'a> = &'a dyn Fn() -> Vec<(f64, f64)>;
+/// Fills a pooled buffer with the `(count, goal)` terms of one candidate.
+type Pairs<'a> = &'a dyn Fn(&mut Vec<(f64, f64)>);
+/// Two reusable term buffers for [`cmp_obj`] (no allocation per tie-zone comparison).
+type Scratch = (Vec<(f64, f64)>, Vec<(f64, f64)>);
 
 /// Order of two candidates `(max key, sum key, vector)` under the objective: the maximum (when
 /// `use_max`), then the sum, then the vector. Quantized sums closer than `eps` (the number of
@@ -178,6 +186,7 @@ fn cmp_obj(
     eps: u128,
     pa: Pairs,
     pb: Pairs,
+    sc: &mut Scratch,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Greater, Less};
     if use_max && a.0 != b.0 {
@@ -188,7 +197,11 @@ fn cmp_obj(
     } else if a.1 + eps < b.1 {
         Less
     } else {
-        cmp_sums(&pa(), &pb())
+        sc.0.clear();
+        sc.1.clear();
+        pa(&mut sc.0);
+        pb(&mut sc.1);
+        cmp_sums(&sc.0, &sc.1)
     };
     s.then_with(|| a.2.cmp(b.2))
 }
@@ -207,7 +220,11 @@ pub fn first_violation(
     let at = |e: &EntityId| edges.binary_search(e).ok().map(|i| i64::from(counts[i]));
     for r in constraints {
         let ok = match &r.item {
-            IntervalConstraint::Fixed { edge, count, firmness } => match at(edge) {
+            IntervalConstraint::Fixed {
+                edge,
+                count,
+                firmness,
+            } => match at(edge) {
                 Some(v) => *firmness != Firmness::Hard || v == i64::from(*count),
                 None => false,
             },
@@ -286,14 +303,22 @@ pub struct IiaSolver {
 
 impl Default for IiaSolver {
     fn default() -> Self {
-        Self { max_component_classes: 512, max_nodes: 400_000, inner: ReferenceIntervalSolver::default() }
+        Self {
+            max_component_classes: 512,
+            max_nodes: 400_000,
+            inner: ReferenceIntervalSolver::default(),
+        }
     }
 }
 
 impl IiaSolver {
     /// A solver with explicit limits (see the field docs).
     pub fn with_limits(max_component_classes: usize, max_nodes: u64) -> Self {
-        Self { max_component_classes, max_nodes, ..Self::default() }
+        Self {
+            max_component_classes,
+            max_nodes,
+            ..Self::default()
+        }
     }
 }
 
@@ -361,6 +386,8 @@ struct Local {
     r_coef: Vec<i64>,
     v_off: Vec<usize>,
     v_rows: Vec<u32>,
+    /// Coefficient of the variable in the row at the same position of `v_rows`.
+    v_coef: Vec<i64>,
 }
 
 impl Local {
@@ -368,15 +395,16 @@ impl Local {
         &self.goals[self.t_off[v]..self.t_off[v + 1]]
     }
     fn row_terms(&self, r: &Row) -> (&[u32], &[i64]) {
-        (&self.r_var[r.off..r.off + r.len], &self.r_coef[r.off..r.off + r.len])
+        (
+            &self.r_var[r.off..r.off + r.len],
+            &self.r_coef[r.off..r.off + r.len],
+        )
     }
     /// The `(count, goal)` terms of an assignment.
-    fn pairs(&self, vals: &[i64]) -> Vec<(f64, f64)> {
-        let mut out = Vec::with_capacity(self.goals.len());
+    fn pairs(&self, vals: &[i64], out: &mut Vec<(f64, f64)>) {
         for (v, &n) in vals.iter().enumerate() {
             out.extend(self.terms(v).iter().map(|&g| (n as f64, g)));
         }
-        out
     }
     /// Tolerance of the quantized sums: one unit per goal term.
     fn eps(&self) -> u128 {
@@ -432,7 +460,10 @@ struct Move {
 impl Ord for Move {
     fn cmp(&self, o: &Self) -> std::cmp::Ordering {
         // cost / w ascending, ties by variable position (deterministic).
-        (self.cost * o.w).cmp(&(o.cost * self.w)).then(self.j.cmp(&o.j)).then(self.s.cmp(&o.s))
+        (self.cost * o.w)
+            .cmp(&(o.cost * self.w))
+            .then(self.j.cmp(&o.j))
+            .then(self.s.cmp(&o.s))
     }
 }
 
@@ -461,16 +492,26 @@ struct Search<'a> {
     /// Pooled buffers of `row_extra` (no allocation per node).
     pool_base: Vec<(i64, u128)>,
     pool_heap: std::collections::BinaryHeap<std::cmp::Reverse<Move>>,
+    /// Pooled term buffers of the leaf comparison.
+    pool_cmp: Scratch,
 }
 
 fn div_floor(a: i128, b: i128) -> i128 {
     let q = a / b;
-    if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
+    if (a % b != 0) && ((a < 0) != (b < 0)) {
+        q - 1
+    } else {
+        q
+    }
 }
 
 fn div_ceil(a: i128, b: i128) -> i128 {
     let q = a / b;
-    if (a % b != 0) && ((a < 0) == (b < 0)) { q + 1 } else { q }
+    if (a % b != 0) && ((a < 0) == (b < 0)) {
+        q + 1
+    } else {
+        q
+    }
 }
 
 impl<'a> Search<'a> {
@@ -496,6 +537,7 @@ impl<'a> Search<'a> {
             exhausted: false,
             best: None,
             pool_base: Vec::new(),
+            pool_cmp: Scratch::default(),
             pool_heap: std::collections::BinaryHeap::new(),
         }
     }
@@ -626,8 +668,10 @@ impl<'a> Search<'a> {
             for &v in vars {
                 base.push(self.argmin_sum(v as usize, dom[v as usize].0, dom[v as usize].1));
             }
-            let counted: u128 =
-                vars.iter().map(|&v| self.lb(v as usize, dom[v as usize].0, dom[v as usize].1).1).sum();
+            let counted: u128 = vars
+                .iter()
+                .map(|&v| self.lb(v as usize, dom[v as usize].0, dom[v as usize].1).1)
+                .sum();
             let f_base: u128 = base.iter().map(|b| b.1).sum();
             for &sg in signs {
                 let rhs = i128::from(sg) * i128::from(row.rhs);
@@ -659,14 +703,23 @@ impl<'a> Search<'a> {
                 for (j, &v) in vars.iter().enumerate() {
                     let (l, h) = dom[v as usize];
                     let w = i128::from((sg * coefs[j]).abs());
-                    let avail = if sg * coefs[j] > 0 { base[j].0 - l } else { h - base[j].0 };
+                    let avail = if sg * coefs[j] > 0 {
+                        base[j].0 - l
+                    } else {
+                        h - base[j].0
+                    };
                     let take = i128::from(avail).min((need + w - 1) / w);
                     total_moves += take;
                     if total_moves > MAX_POPS as i128 {
                         break;
                     }
                     for s in 1..=(take as i64) {
-                        heap.push(std::cmp::Reverse(Move { cost: step_cost(j, s), w, j, s }));
+                        heap.push(std::cmp::Reverse(Move {
+                            cost: step_cost(j, s),
+                            w,
+                            j,
+                            s,
+                        }));
                     }
                 }
                 if total_moves > MAX_POPS as i128 {
@@ -730,7 +783,11 @@ impl<'a> Search<'a> {
             if i == v {
                 continue;
             }
-            let (m, s) = if l == h { self.ex(i, l) } else { self.lb(i, l, h) };
+            let (m, s) = if l == h {
+                self.ex(i, l)
+            } else {
+                self.lb(i, l, h)
+            };
             mx_wo = mx_wo.max(m);
             sm_wo += s;
         }
@@ -761,8 +818,16 @@ impl<'a> Search<'a> {
         let (mut left, mut right) = (c, c + 1);
         let (mut left_live, mut right_live) = (true, right <= hi);
         loop {
-            let lk = if left_live && left >= lo { Some(self.ex(v, left)) } else { None };
-            let rk = if right_live && right <= hi { Some(self.ex(v, right)) } else { None };
+            let lk = if left_live && left >= lo {
+                Some(self.ex(v, left))
+            } else {
+                None
+            };
+            let rk = if right_live && right <= hi {
+                Some(self.ex(v, right))
+            } else {
+                None
+            };
             let from_left = match (lk, rk) {
                 (None, None) => break,
                 (Some(_), None) => true,
@@ -840,7 +905,11 @@ impl<'a> Search<'a> {
         let Some(v) = pick else {
             if self.rows_hold(dom) {
                 let vals: Vec<i64> = dom.iter().map(|d| d.0).collect();
-                self.best = Some(Best { max: 0, sum: 0, vals });
+                self.best = Some(Best {
+                    max: 0,
+                    sum: 0,
+                    vals,
+                });
             }
             return;
         };
@@ -890,7 +959,11 @@ impl<'a> Search<'a> {
         let p = self.p;
         p.rows.iter().all(|r| {
             let (vars, coefs) = p.row_terms(r);
-            let sum: i128 = vars.iter().zip(coefs).map(|(&v, &k)| i128::from(k) * i128::from(dom[v as usize].0)).sum();
+            let sum: i128 = vars
+                .iter()
+                .zip(coefs)
+                .map(|(&v, &k)| i128::from(k) * i128::from(dom[v as usize].0))
+                .sum();
             match r.kind {
                 Kind::Eq => sum == i128::from(r.rhs),
                 Kind::Le => sum <= i128::from(r.rhs),
@@ -920,13 +993,18 @@ impl<'a> Search<'a> {
                     (mx, sm, &vals),
                     (b.max, b.sum, &b.vals),
                     p.eps(),
-                    &|| p.pairs(&vals),
-                    &|| p.pairs(&b.vals),
+                    &|o| p.pairs(&vals, o),
+                    &|o| p.pairs(&b.vals, o),
+                    &mut self.pool_cmp,
                 ) == std::cmp::Ordering::Less
             }
         };
         if better {
-            self.best = Some(Best { max: mx, sum: sm, vals });
+            self.best = Some(Best {
+                max: mx,
+                sum: sm,
+                vals,
+            });
         }
     }
 }
@@ -944,7 +1022,11 @@ fn le_row(
     let mut minsum = 0i128;
     for (k, &v) in vars.iter().enumerate() {
         let (l, h) = dom[v as usize];
-        minsum += if a(k) > 0 { a(k) * i128::from(l) } else { a(k) * i128::from(h) };
+        minsum += if a(k) > 0 {
+            a(k) * i128::from(l)
+        } else {
+            a(k) * i128::from(h)
+        };
     }
     if minsum > rhs {
         return false;
@@ -952,7 +1034,11 @@ fn le_row(
     for (k, &v) in vars.iter().enumerate() {
         let v = v as usize;
         let (l, h) = dom[v];
-        let own = if a(k) > 0 { a(k) * i128::from(l) } else { a(k) * i128::from(h) };
+        let own = if a(k) > 0 {
+            a(k) * i128::from(l)
+        } else {
+            a(k) * i128::from(h)
+        };
         let slack = rhs - (minsum - own);
         if a(k) > 0 {
             let nh = div_floor(slack, a(k));
@@ -1029,8 +1115,16 @@ fn window_of(goals: &[f64], mut lo: i64, mut hi: i64, d: f64, capq: u128) -> (i6
     if goals.is_empty() {
         return (lo, hi);
     }
-    let wl = goals.iter().map(|g| (g * (1.0 - d)).ceil()).fold(f64::NEG_INFINITY, f64::max) - 1.0;
-    let wh = goals.iter().map(|g| (g * (1.0 + d)).floor()).fold(f64::INFINITY, f64::min) + 1.0;
+    let wl = goals
+        .iter()
+        .map(|g| (g * (1.0 - d)).ceil())
+        .fold(f64::NEG_INFINITY, f64::max)
+        - 1.0;
+    let wh = goals
+        .iter()
+        .map(|g| (g * (1.0 + d)).floor())
+        .fold(f64::INFINITY, f64::min)
+        + 1.0;
     lo = lo.max(wl.max(-1.0) as i64);
     hi = hi.min(wh.min(COUNT_MAX as f64) as i64);
     if lo > hi {
@@ -1048,7 +1142,13 @@ fn window_of(goals: &[f64], mut lo: i64, mut hi: i64, d: f64, capq: u128) -> (i6
 
 /// Narrow every goal-bearing domain of `root` to the counts within deviation `d` (keys up to
 /// `capq`) and propagate. `None` when a window is empty or propagation fails.
-fn windowed(p: &Local, s: &mut Search, root: &[(i64, i64)], d: f64, capq: u128) -> Option<Vec<(i64, i64)>> {
+fn windowed(
+    p: &Local,
+    s: &mut Search,
+    root: &[(i64, i64)],
+    d: f64,
+    capq: u128,
+) -> Option<Vec<(i64, i64)>> {
     let mut dom = root.to_vec();
     for (v, slot) in dom.iter_mut().enumerate() {
         if p.terms(v).is_empty() {
@@ -1170,7 +1270,11 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
         }
         // A window with a feasible point has the global optimum inside it, so the search only
         // runs where one is known. Undecided or empty windows are skipped for a larger one.
-        let budget = if li == last || small { max_nodes / 4 } else { max_nodes / 16 };
+        let budget = if li == last || small {
+            max_nodes / 4
+        } else {
+            max_nodes / 16
+        };
         let seed = match feasible_point(p, &dom, budget) {
             Seed::Found(vals) => vals,
             Seed::Empty if li == last => return Outcome::Infeasible(None),
@@ -1188,7 +1292,11 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
             mx = mx.max(m);
             sm += k;
         }
-        s.best = Some(Best { max: mx, sum: sm, vals: seed });
+        s.best = Some(Best {
+            max: mx,
+            sum: sm,
+            vals: seed,
+        });
         s.exhausted = false;
         s.nodes = 0;
         s.dfs(&dom);
@@ -1269,7 +1377,11 @@ fn pair_conflict(p: &Local, dom: &[(i64, i64)]) -> Option<(u32, u32)> {
                                 continue;
                             }
                             let (l, h) = dom[t];
-                            minsum += if c > 0 { c * i128::from(l) } else { c * i128::from(h) };
+                            minsum += if c > 0 {
+                                c * i128::from(l)
+                            } else {
+                                c * i128::from(h)
+                            };
                             g = gcd(g, c.abs());
                         }
                         if g == 0 {
@@ -1289,13 +1401,20 @@ fn pair_conflict(p: &Local, dom: &[(i64, i64)]) -> Option<(u32, u32)> {
 /// The first equality row whose coefficient gcd does not divide its right-hand side (exact
 /// integers), e.g. `2 x_1 + 4 x_2 = 81`.
 fn gcd_conflict(p: &Local) -> Option<u32> {
-    p.rows.iter().position(|r| {
-        if r.kind != Kind::Eq {
-            return false;
-        }
-        let g = p.row_terms(r).1.iter().fold(0i128, |g, &c| gcd(g, i128::from(c).abs()));
-        g > 1 && i128::from(r.rhs) % g != 0
-    }).map(|i| i as u32)
+    p.rows
+        .iter()
+        .position(|r| {
+            if r.kind != Kind::Eq {
+                return false;
+            }
+            let g = p
+                .row_terms(r)
+                .1
+                .iter()
+                .fold(0i128, |g, &c| gcd(g, i128::from(c).abs()));
+            g > 1 && i128::from(r.rhs) % g != 0
+        })
+        .map(|i| i as u32)
 }
 
 fn gcd(a: i128, b: i128) -> i128 {
@@ -1325,13 +1444,14 @@ fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
         cap,
         x: vals,
         evals: 0,
-        rows: Vec::new(),
+        rsum: Vec::new(),
         pa: Vec::new(),
         pb: Vec::new(),
     };
     if st.x.len() != p.nvar || !rows_ok(p, &st.x, 0..p.rows.len()) {
         return st.x;
     }
+    st.rsum = p.rows.iter().map(|r| row_sum(p, r, &st.x)).collect();
     st.k = (0..p.nvar).map(|v| st.key(v, st.x[v])).collect();
     st.refresh();
     for _ in 0..POLISH_PASSES {
@@ -1363,17 +1483,27 @@ fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
 
 /// Exact check of the given rows at a complete assignment.
 fn rows_ok(p: &Local, x: &[i64], rows: impl IntoIterator<Item = usize>) -> bool {
-    rows.into_iter().all(|ri| {
-        let r = &p.rows[ri];
-        let (vars, coefs) = p.row_terms(r);
-        let sum: i128 = vars.iter().zip(coefs).map(|(&v, &k)| i128::from(k) * i128::from(x[v as usize])).sum();
-        match r.kind {
-            Kind::Eq => sum == i128::from(r.rhs),
-            Kind::Le => sum <= i128::from(r.rhs),
-            Kind::Ge => sum >= i128::from(r.rhs),
-            Kind::Even => sum % 2 == 0,
-        }
-    })
+    rows.into_iter()
+        .all(|ri| row_holds(&p.rows[ri], row_sum(p, &p.rows[ri], x)))
+}
+
+/// Left-hand side of a row at `x` (exact).
+fn row_sum(p: &Local, r: &Row, x: &[i64]) -> i128 {
+    let (vars, coefs) = p.row_terms(r);
+    vars.iter()
+        .zip(coefs)
+        .map(|(&v, &k)| i128::from(k) * i128::from(x[v as usize]))
+        .sum()
+}
+
+/// Whether a row holds for the left-hand side `sum`.
+fn row_holds(r: &Row, sum: i128) -> bool {
+    match r.kind {
+        Kind::Eq => sum == i128::from(r.rhs),
+        Kind::Le => sum <= i128::from(r.rhs),
+        Kind::Ge => sum >= i128::from(r.rhs),
+        Kind::Even => sum % 2 == 0,
+    }
 }
 
 struct Polisher<'a> {
@@ -1387,8 +1517,9 @@ struct Polisher<'a> {
     top: [(u128, usize); 3],
     cap: Option<u128>,
     evals: u64,
+    /// Running left-hand side of every row at `x`.
+    rsum: Vec<i128>,
     /// Scratch reused by every move evaluation (no per-move allocation).
-    rows: Vec<usize>,
     pa: Vec<(f64, f64)>,
     pb: Vec<(f64, f64)>,
 }
@@ -1414,7 +1545,10 @@ impl Polisher<'_> {
     }
 
     fn max_excluding(&self, skip: &[usize]) -> u128 {
-        self.top.iter().find(|t| t.1 != usize::MAX && !skip.contains(&t.1)).map_or(0, |t| t.0)
+        self.top
+            .iter()
+            .find(|t| t.1 != usize::MAX && !skip.contains(&t.1))
+            .map_or(0, |t| t.0)
     }
 
     /// Apply `mv` (at most two `(variable, +-1)` steps) if it keeps the bounds and rows and
@@ -1445,13 +1579,17 @@ impl Polisher<'_> {
         for &(v, d) in mv {
             self.x[v] += d;
         }
-        self.rows.clear();
-        for &(v, _) in mv {
-            self.rows.extend(p.v_rows[p.v_off[v]..p.v_off[v + 1]].iter().map(|&r| r as usize));
+        // Update the running row sums by the moved terms only, then check the touched rows.
+        for &(v, d) in mv {
+            for i in p.v_off[v]..p.v_off[v + 1] {
+                self.rsum[p.v_rows[i] as usize] += i128::from(p.v_coef[i]) * i128::from(d);
+            }
         }
-        self.rows.sort_unstable();
-        self.rows.dedup();
-        let mut better = rows_ok(p, &self.x, self.rows.iter().copied());
+        let mut better = mv.iter().all(|&(v, _)| {
+            p.v_rows[p.v_off[v]..p.v_off[v + 1]]
+                .iter()
+                .all(|&r| row_holds(&p.rows[r as usize], self.rsum[r as usize]))
+        });
         if better {
             better = if new_max < self.mx || new_sum + eps < self.sum {
                 true
@@ -1471,13 +1609,20 @@ impl Polisher<'_> {
                     }
                 }
                 let first = mv.iter().min_by_key(|m| m.0).map_or(1, |m| m.1);
-                let vec_order = if first > 0 { std::cmp::Ordering::Greater } else { Less };
+                let vec_order = if first > 0 {
+                    std::cmp::Ordering::Greater
+                } else {
+                    Less
+                };
                 cmp_sums(&self.pa, &self.pb).then(vec_order) == Less
             };
         }
         if !better {
             for &(v, d) in mv {
                 self.x[v] -= d;
+                for i in p.v_off[v]..p.v_off[v + 1] {
+                    self.rsum[p.v_rows[i] as usize] -= i128::from(p.v_coef[i]) * i128::from(d);
+                }
             }
             return false;
         }
@@ -1539,7 +1684,9 @@ fn best_single(lo: i64, hi: i64, goals: &[f64], cap: Option<u128>) -> i64 {
     match cap {
         None => {
             // The max deviation is V-shaped around the harmonic point of the extreme goals.
-            let (gmin, gmax) = goals.iter().fold((f64::INFINITY, 0.0f64), |a, &g| (a.0.min(g), a.1.max(g)));
+            let (gmin, gmax) = goals
+                .iter()
+                .fold((f64::INFINITY, 0.0f64), |a, &g| (a.0.min(g), a.1.max(g)));
             let c = (2.0 / (1.0 / gmin + 1.0 / gmax)).floor() as i64;
             cands.extend((c - 2)..=(c + 3));
         }
@@ -1553,14 +1700,22 @@ fn best_single(lo: i64, hi: i64, goals: &[f64], cap: Option<u128>) -> i64 {
     }
     let mut best: Option<(u128, u128, i64)> = None;
     let eps = goals.len() as u128;
-    let pairs = |n: i64| -> Vec<(f64, f64)> { goals.iter().map(|&g| (n as f64, g)).collect() };
+    let pairs = |n: i64, o: &mut Vec<(f64, f64)>| o.extend(goals.iter().map(|&g| (n as f64, g)));
+    let mut sc = Scratch::default();
     for n in cands {
         if (lo..=hi).contains(&n) {
             let c = cost(n);
             let key = if cap.is_some() { (0, c.1, c.2) } else { c };
             let better = best.is_none_or(|b| {
-                cmp_obj(cap.is_none(), (key.0, key.1, &[n]), (b.0, b.1, &[b.2]), eps, &|| pairs(n), &|| pairs(b.2))
-                    == std::cmp::Ordering::Less
+                cmp_obj(
+                    cap.is_none(),
+                    (key.0, key.1, &[n]),
+                    (b.0, b.1, &[b.2]),
+                    eps,
+                    &|o| pairs(n, o),
+                    &|o| pairs(b.2, o),
+                    &mut sc,
+                ) == std::cmp::Ordering::Less
             });
             if better {
                 best = Some(key);
@@ -1582,7 +1737,10 @@ struct Prob<'a> {
 impl Prob<'_> {
     /// Error path only, so a linear scan is fine (the list is not sorted while it is built).
     fn cids_of(&self, class: u32) -> impl Iterator<Item = ConstraintId> + '_ {
-        self.class_cids.iter().filter(move |x| x.0 == class).map(|x| x.1)
+        self.class_cids
+            .iter()
+            .filter(move |x| x.0 == class)
+            .map(|x| x.1)
     }
 
     fn report(&self, reason: &str, classes: &[u32], rows: &[ConstraintId]) -> Infeasible {
@@ -1629,20 +1787,33 @@ impl IntervalSolver for IiaSolver {
                     | IntervalConstraint::Linear { .. }
                     | IntervalConstraint::EvenSum { .. }
             ) {
-                return Err(Infeasible::new("unsupported interval constraint kind", vec![r.id], Vec::new()));
+                return Err(Infeasible::new(
+                    "unsupported interval constraint kind",
+                    vec![r.id],
+                    Vec::new(),
+                ));
             }
         }
         let n = edges.len();
         let unknown = |e: &EntityId, id: ConstraintId| {
-            Infeasible::new(format!("edge {e} is not in the meshed region"), vec![id], vec![*e])
+            Infeasible::new(
+                format!("edge {e} is not in the meshed region"),
+                vec![id],
+                vec![*e],
+            )
         };
-        let ix = |e: &EntityId, id: ConstraintId| edges.binary_search(e).map_err(|_| unknown(e, id));
+        let ix =
+            |e: &EntityId, id: ConstraintId| edges.binary_search(e).map_err(|_| unknown(e, id));
 
         // 1. Classes from single-edge equalities.
         let mut parent: Vec<u32> = (0..n as u32).collect();
         let mut merges: Vec<(u32, ConstraintId)> = Vec::new();
         for r in constraints {
-            if let IntervalConstraint::Linear { terms, rel: Rel::Eq, rhs: 0 } = &r.item
+            if let IntervalConstraint::Linear {
+                terms,
+                rel: Rel::Eq,
+                rhs: 0,
+            } = &r.item
                 && let Some((x, y)) = pair_difference(terms)
             {
                 let (a, b) = (ix(&x, r.id)? as u32, ix(&y, r.id)? as u32);
@@ -1662,7 +1833,11 @@ impl IntervalSolver for IiaSolver {
             *slot = root_class[r];
         }
         let nc = ncls as usize;
-        let mut prob = Prob { edges, class_of, class_cids: Vec::new() };
+        let mut prob = Prob {
+            edges,
+            class_of,
+            class_cids: Vec::new(),
+        };
         for (a, id) in merges {
             prob.class_cids.push((prob.class_of[a as usize], id));
         }
@@ -1675,13 +1850,21 @@ impl IntervalSolver for IiaSolver {
         let mut dflt: Vec<(u32, f64)> = Vec::new();
         for r in constraints {
             match &r.item {
-                IntervalConstraint::Fixed { edge, count, firmness } => {
+                IntervalConstraint::Fixed {
+                    edge,
+                    count,
+                    firmness,
+                } => {
                     let c = prob.class_of[ix(edge, r.id)?];
                     match firmness {
                         Firmness::Hard => {
                             prob.class_cids.push((c, r.id));
                             if *count == 0 {
-                                return Err(prob.report("hard count 0 is below the minimum of 1", &[c], &[]));
+                                return Err(prob.report(
+                                    "hard count 0 is below the minimum of 1",
+                                    &[c],
+                                    &[],
+                                ));
                             }
                             let h = &mut hard[c as usize];
                             if *h != 0 && *h != i64::from(*count) {
@@ -1812,14 +1995,26 @@ impl IntervalSolver for IiaSolver {
                 };
                 if !ok {
                     let ents = match &r.item {
-                        IntervalConstraint::Linear { terms, .. } => terms.iter().map(|t| t.0).collect(),
+                        IntervalConstraint::Linear { terms, .. } => {
+                            terms.iter().map(|t| t.0).collect()
+                        }
                         _ => Vec::new(),
                     };
-                    return Err(Infeasible::new("a constant row cannot hold", vec![r.id], ents));
+                    return Err(Infeasible::new(
+                        "a constant row cannot hold",
+                        vec![r.id],
+                        ents,
+                    ));
                 }
                 continue;
             }
-            rows.push(Row { cid: r.id, kind, rhs, off, len });
+            rows.push(Row {
+                cid: r.id,
+                kind,
+                rhs,
+                off,
+                len,
+            });
         }
 
         // 4. Components over rows.
@@ -1857,7 +2052,10 @@ impl IntervalSolver for IiaSolver {
             c_list[fill[k]] = c as u32;
             fill[k] += 1;
         }
-        let row_comp: Vec<u32> = rows.iter().map(|r| comp_of[rterms[r.off].0 as usize]).collect();
+        let row_comp: Vec<u32> = rows
+            .iter()
+            .map(|r| comp_of[rterms[r.off].0 as usize])
+            .collect();
         let mut r_off = vec![0usize; ncomp + 1];
         for &k in &row_comp {
             r_off[k as usize + 1] += 1;
@@ -1903,8 +2101,14 @@ impl IntervalSolver for IiaSolver {
                 lt_off.push(lgoals.len());
                 let g = &goals[t_off[c as usize]..t_off[c as usize + 1]];
                 lgoals.extend_from_slice(g);
-                let (gmin, gmax) = g.iter().fold((f64::INFINITY, 0.0f64), |a, &x| (a.0.min(x), a.1.max(x)));
-                center.push(if g.is_empty() { 0.0 } else { 2.0 / (1.0 / gmin + 1.0 / gmax) });
+                let (gmin, gmax) = g
+                    .iter()
+                    .fold((f64::INFINITY, 0.0f64), |a, &x| (a.0.min(x), a.1.max(x)));
+                center.push(if g.is_empty() {
+                    0.0
+                } else {
+                    2.0 / (1.0 / gmin + 1.0 / gmax)
+                });
             }
             lt_off.push(lgoals.len());
             let mut lrows = Vec::new();
@@ -1916,7 +2120,13 @@ impl IntervalSolver for IiaSolver {
                     r_var.push(local_of(c));
                     r_coef.push(kf);
                 }
-                lrows.push(Row { cid: row.cid, kind: row.kind, rhs: row.rhs, off, len: row.len });
+                lrows.push(Row {
+                    cid: row.cid,
+                    kind: row.kind,
+                    rhs: row.rhs,
+                    off,
+                    len: row.len,
+                });
             }
             let mut v_off = vec![0usize; nvar + 1];
             for &v in &r_var {
@@ -1926,11 +2136,14 @@ impl IntervalSolver for IiaSolver {
                 v_off[i + 1] += v_off[i];
             }
             let mut v_rows = vec![0u32; r_var.len()];
+            let mut v_coef = vec![0i64; r_var.len()];
             let mut fill = v_off.clone();
             for (ri, row) in lrows.iter().enumerate() {
-                for &v in &r_var[row.off..row.off + row.len] {
-                    v_rows[fill[v as usize]] = ri as u32;
-                    fill[v as usize] += 1;
+                for j in row.off..row.off + row.len {
+                    let v = r_var[j] as usize;
+                    v_rows[fill[v]] = ri as u32;
+                    v_coef[fill[v]] = r_coef[j];
+                    fill[v] += 1;
                 }
             }
             Local {
@@ -1945,6 +2158,7 @@ impl IntervalSolver for IiaSolver {
                 r_coef,
                 v_off,
                 v_rows,
+                v_coef,
             }
         };
         let work = |&k: &usize| -> (usize, Outcome, Option<Local>) {
@@ -1975,17 +2189,31 @@ impl IntervalSolver for IiaSolver {
         };
         // Order of two assignments of component `k` under the objective (the maximum only when
         // `with_max`): exact on ties of the quantized sums, then the smaller vector.
+        let cmp_pool = std::cell::RefCell::new(Scratch::default());
         let cmp_cost = |k: usize, a: &[i64], b: &[i64], with_max: bool| -> std::cmp::Ordering {
             let (ca, cb) = (cost_of(k, a), cost_of(k, b));
-            let terms = |v: &[i64]| -> Vec<(f64, f64)> {
-                let mut out = Vec::new();
+            let terms = |v: &[i64], out: &mut Vec<(f64, f64)>| {
                 for (j, &c) in comp_classes(k).iter().enumerate() {
-                    out.extend(goals[t_off[c as usize]..t_off[c as usize + 1]].iter().map(|&g| (v[j] as f64, g)));
+                    out.extend(
+                        goals[t_off[c as usize]..t_off[c as usize + 1]]
+                            .iter()
+                            .map(|&g| (v[j] as f64, g)),
+                    );
                 }
-                out
             };
-            let eps: u128 = comp_classes(k).iter().map(|&c| (t_off[c as usize + 1] - t_off[c as usize]) as u128).sum();
-            cmp_obj(with_max, (ca.0, ca.1, a), (cb.0, cb.1, b), eps, &|| terms(a), &|| terms(b))
+            let eps: u128 = comp_classes(k)
+                .iter()
+                .map(|&c| (t_off[c as usize + 1] - t_off[c as usize]) as u128)
+                .sum();
+            cmp_obj(
+                with_max,
+                (ca.0, ca.1, a),
+                (cb.0, cb.1, b),
+                eps,
+                &|o| terms(a, o),
+                &|o| terms(b, o),
+                &mut cmp_pool.borrow_mut(),
+            )
         };
         // The reference solver on one component, verified exactly. The sub-problem is the closure
         // of the constraints that touch the component's edges: a row whose cancelled terms name
@@ -2008,7 +2236,9 @@ impl IntervalSolver for IiaSolver {
                     IntervalConstraint::Fixed { edge, .. }
                     | IntervalConstraint::Goal { edge, .. }
                     | IntervalConstraint::Range { edge, .. } => add(edge),
-                    IntervalConstraint::Linear { terms, .. } => terms.iter().for_each(|t| add(&t.0)),
+                    IntervalConstraint::Linear { terms, .. } => {
+                        terms.iter().for_each(|t| add(&t.0))
+                    }
                     IntervalConstraint::EvenSum { edges: es2 } => es2.iter().for_each(&mut add),
                     _ => {}
                 }
@@ -2041,11 +2271,18 @@ impl IntervalSolver for IiaSolver {
             let sol = self.inner.solve(&sub_edges, &sub_cons)?;
             let counts: Vec<u32> = sol.iter().map(|x| x.1).collect();
             if let Some(id) = first_violation(&sub_edges, &sub_cons, &counts) {
-                return Err(Infeasible::new("fallback solution violates a constraint", vec![id], sub_edges));
+                return Err(Infeasible::new(
+                    "fallback solution violates a constraint",
+                    vec![id],
+                    sub_edges,
+                ));
             }
             // One value per class, in class order (equal edges share their value).
-            let mut by_class: Vec<(u32, i64)> =
-                in_comp.iter().zip(&sol).map(|(&e, x)| (prob.class_of[e], i64::from(x.1))).collect();
+            let mut by_class: Vec<(u32, i64)> = in_comp
+                .iter()
+                .zip(&sol)
+                .map(|(&e, x)| (prob.class_of[e], i64::from(x.1)))
+                .collect();
             by_class.sort_unstable();
             by_class.dedup_by_key(|x| x.0);
             Ok(comp_classes(k)
@@ -2074,7 +2311,11 @@ impl IntervalSolver for IiaSolver {
                     let single_row = a == b;
                     let mut named: Vec<u32> = Vec::new();
                     for ro in [ra, rb] {
-                        named.extend(p.r_var[ro.off..ro.off + ro.len].iter().map(|&v| classes[v as usize]));
+                        named.extend(
+                            p.r_var[ro.off..ro.off + ro.len]
+                                .iter()
+                                .map(|&v| classes[v as usize]),
+                        );
                     }
                     named.sort_unstable();
                     named.dedup();
@@ -2104,14 +2345,20 @@ impl IntervalSolver for IiaSolver {
                         ),
                         // Interacting rows: the conflict is a property of the whole component.
                         None => (
-                            r_list[r_off[k]..r_off[k + 1]].iter().map(|&r| rows[r as usize].cid).collect(),
+                            r_list[r_off[k]..r_off[k + 1]]
+                                .iter()
+                                .map(|&r| rows[r as usize].cid)
+                                .collect(),
                             "no integer assignment satisfies the rows of this component",
                         ),
                     };
                     let named: Vec<u32> = match single {
                         Some((r, p)) => {
                             let ro = &p.rows[r as usize];
-                            p.r_var[ro.off..ro.off + ro.len].iter().map(|&v| classes[v as usize]).collect()
+                            p.r_var[ro.off..ro.off + ro.len]
+                                .iter()
+                                .map(|&v| classes[v as usize])
+                                .collect()
                         }
                         None => classes.to_vec(),
                     };
@@ -2124,8 +2371,10 @@ impl IntervalSolver for IiaSolver {
                         (None, Err(e)) => {
                             // Neither the search nor the reference found an assignment; that is
                             // not a proof, so say so instead of echoing the reference's reason.
-                            let rows_named: Vec<ConstraintId> =
-                                r_list[r_off[k]..r_off[k + 1]].iter().map(|&r| rows[r as usize].cid).collect();
+                            let rows_named: Vec<ConstraintId> = r_list[r_off[k]..r_off[k + 1]]
+                                .iter()
+                                .map(|&r| rows[r as usize].cid)
+                                .collect();
                             let mut inf = prob.report(
                                 "search budget exhausted, feasibility unproven (the reference solver found no assignment either)",
                                 classes,
@@ -2140,7 +2389,11 @@ impl IntervalSolver for IiaSolver {
                         (Some(i), Err(_)) => i,
                         (Some(i), Ok(r)) => {
                             // Phase 1: the maximum counts first (D* is global), then the sum, then the vector.
-                            if cmp_cost(k, &i, r, true) != std::cmp::Ordering::Greater { i } else { r.clone() }
+                            if cmp_cost(k, &i, r, true) != std::cmp::Ordering::Greater {
+                                i
+                            } else {
+                                r.clone()
+                            }
                         }
                     };
                     let chosen = match &local {
@@ -2156,7 +2409,11 @@ impl IntervalSolver for IiaSolver {
         // Phase 2. The maximum deviation is global: a component whose own optimum is below the
         // global maximum D* now minimizes its sum (then its vector) under the cap D*.
         let class_max = |c: usize, v: i64| -> u128 {
-            goals[t_off[c]..t_off[c + 1]].iter().map(|&g| key_f(v as f64, g)).max().unwrap_or(0)
+            goals[t_off[c]..t_off[c + 1]]
+                .iter()
+                .map(|&g| key_f(v as f64, g))
+                .max()
+                .unwrap_or(0)
         };
         let dstar = (0..nc).map(|c| class_max(c, value[c])).max().unwrap_or(0);
         for k in 0..ncomp {
@@ -2186,7 +2443,9 @@ impl IntervalSolver for IiaSolver {
             let mut best = current;
             for cand in others {
                 let (cm, bm) = (cost_of(k, &cand).0, cost_of(k, &best).0);
-                if cm <= dstar && (bm > dstar || cmp_cost(k, &cand, &best, false) == std::cmp::Ordering::Less) {
+                if cm <= dstar
+                    && (bm > dstar || cmp_cost(k, &cand, &best, false) == std::cmp::Ordering::Less)
+                {
                     best = cand;
                 }
             }
@@ -2208,7 +2467,8 @@ impl IntervalSolver for IiaSolver {
             let current = comp_vals(k, &value);
             let mut others: Vec<Vec<i64>> = refv.into_iter().collect();
             if let Some(p) = &local
-                && let Outcome::Solved(v) | Outcome::Exhausted(Some(v)) = solve_local(p, self.max_nodes, Some(dstar))
+                && let Outcome::Solved(v) | Outcome::Exhausted(Some(v)) =
+                    solve_local(p, self.max_nodes, Some(dstar))
             {
                 others.push(v);
             }
@@ -2226,7 +2486,11 @@ impl IntervalSolver for IiaSolver {
             .collect();
         let counts: Vec<u32> = out.iter().map(|x| x.1).collect();
         if let Some(id) = first_violation(edges, constraints, &counts) {
-            return Err(Infeasible::new("internal: a solution failed verification", vec![id], Vec::new()));
+            return Err(Infeasible::new(
+                "internal: a solution failed verification",
+                vec![id],
+                Vec::new(),
+            ));
         }
         Ok(out)
     }
@@ -2242,11 +2506,12 @@ mod tests {
     /// sum decides.
     #[test]
     fn objective_puts_the_maximum_before_the_sum() {
-        let none: Pairs = &|| Vec::new();
+        let none: Pairs = &|_| ();
+        let mut sc = Scratch::default();
         let (inc, refv) = ([1i64, 1], [2i64, 2]);
         let a = (10u128, 100u128, &inc[..]); // lower max, higher sum
         let b = (20u128, 50u128, &refv[..]); // higher max, lower sum
-        assert_eq!(cmp_obj(true, a, b, 0, none, none), Less);
-        assert_eq!(cmp_obj(false, a, b, 0, none, none), Greater);
+        assert_eq!(cmp_obj(true, a, b, 0, none, none, &mut sc), Less);
+        assert_eq!(cmp_obj(false, a, b, 0, none, none, &mut sc), Greater);
     }
 }

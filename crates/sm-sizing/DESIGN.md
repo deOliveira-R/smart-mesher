@@ -148,7 +148,13 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
   sum of deviations 18.05 before the polish and 14.2758 after; the 40-class variant (sum <= 140,
   odd >= 90) max 0.8214 before and 0.8148 after (the best known), sum 15.9019. Searching with
   10x and 100x the node budget returns the same vectors (14.2758 and 15.9019), so the polished
-  answer is the best known, but it is still not proven optimal. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
+  answer is the best known, but it is still not proven optimal.
+  The polish keeps running row sums, so one move evaluation costs the moved variables' row
+  occurrences, not the row lengths (`POLISH_EVALS` bounds a meaningful amount of work), and the
+  leaf tie comparison reuses pooled buffers. Answers are bit-identical to before (dense30, the
+  40-class variant and a 512-class dense pair were pinned before and after). Release CPU time
+  (user, load-independent) of those three solves together: 15.7 s before, 15.4 s after; the
+  default-budget search dominates all three, so the polish is no longer visible in the total. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
   microseconds (bisected window plus row-aware bound); with many equal goals the exact-key
   ties make the lexicographic tie-break exhaust the budget (a feasible answer is returned).
 * The B&B variable ordering was not changed to reach the polish's 1- and 2-moves itself: only

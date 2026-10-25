@@ -57,7 +57,11 @@ fn num(p: &Value, key: &str) -> Result<f64, String> {
 
 fn pos(p: &Value, key: &str) -> Result<f64, String> {
     let x = num(p, key)?;
-    if x > 0.0 { Ok(x) } else { Err(format!("`{key}` must be positive, got {x}")) }
+    if x > 0.0 {
+        Ok(x)
+    } else {
+        Err(format!("`{key}` must be positive, got {x}"))
+    }
 }
 
 fn point(p: &Value, key: &str) -> Result<Point3, String> {
@@ -66,8 +70,16 @@ fn point(p: &Value, key: &str) -> Result<Point3, String> {
         .and_then(Value::as_array)
         .filter(|a| a.len() == 3)
         .ok_or_else(|| format!("`{key}` must be [x, y, z]"))?;
-    let c: Vec<f64> = a.iter().filter_map(Value::as_f64).filter(|x| x.is_finite()).collect();
-    if c.len() == 3 { Ok(Point3::new(c[0], c[1], c[2])) } else { Err(format!("`{key}` must be [x, y, z] of finite numbers")) }
+    let c: Vec<f64> = a
+        .iter()
+        .filter_map(Value::as_f64)
+        .filter(|x| x.is_finite())
+        .collect();
+    if c.len() == 3 {
+        Ok(Point3::new(c[0], c[1], c[2]))
+    } else {
+        Err(format!("`{key}` must be [x, y, z] of finite numbers"))
+    }
 }
 
 /// Linear or geometric interpolation of the size between two points.
@@ -89,14 +101,25 @@ impl Interp {
         if l2 <= 0.0 || !l2.is_finite() {
             return Err("`p0` and `p1` must differ".into());
         }
-        Ok(Self { p0, d, inv_len2: 1.0 / l2, h0, h1, geometric })
+        Ok(Self {
+            p0,
+            d,
+            inv_len2: 1.0 / l2,
+            h0,
+            h1,
+            geometric,
+        })
     }
 }
 
 impl SizeField for Interp {
     fn size(&self, p: Point3) -> f64 {
         let t = ((p - self.p0).dot(self.d) * self.inv_len2).clamp(0.0, 1.0);
-        if self.geometric { self.h0 * (self.h1 / self.h0).powf(t) } else { self.h0 + (self.h1 - self.h0) * t }
+        if self.geometric {
+            self.h0 * (self.h1 / self.h0).powf(t)
+        } else {
+            self.h0 + (self.h1 - self.h0) * t
+        }
     }
 }
 
@@ -121,12 +144,27 @@ impl Bias {
         }
         let h0 = pos(p, "h0")?;
         let ratio = pos(p, "ratio")?;
-        let h_min = if p.get("h_min").is_some() { pos(p, "h_min")? } else { h0 * 1e-3 };
-        let h_max = if p.get("h_max").is_some() { pos(p, "h_max")? } else { f64::INFINITY };
+        let h_min = if p.get("h_min").is_some() {
+            pos(p, "h_min")?
+        } else {
+            h0 * 1e-3
+        };
+        let h_max = if p.get("h_max").is_some() {
+            pos(p, "h_max")?
+        } else {
+            f64::INFINITY
+        };
         if h_min > h_max {
             return Err("`h_min` exceeds `h_max`".into());
         }
-        Ok(Self { origin, axis: axis * (1.0 / n), h0, ratio, h_min, h_max })
+        Ok(Self {
+            origin,
+            axis: axis * (1.0 / n),
+            h0,
+            ratio,
+            h_min,
+            h_max,
+        })
     }
 }
 

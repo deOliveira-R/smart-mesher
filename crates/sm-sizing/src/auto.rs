@@ -68,7 +68,10 @@ pub fn auto_size(
         edges.extend_from_slice(view.cells(Dim::Edge));
     }
     for &t in targets {
-        let dim = view.dim_of(t).filter(|_| view.is_alive(t)).ok_or(SizingError::UnknownEntity(t))?;
+        let dim = view
+            .dim_of(t)
+            .filter(|_| view.is_alive(t))
+            .ok_or(SizingError::UnknownEntity(t))?;
         match dim {
             Dim::Volume => {
                 for &f in view.volume_faces(t) {
@@ -106,7 +109,8 @@ pub fn auto_size(
             grow(geom::edge_point(view, e, k as f64 / SAMPLES as f64).map_err(geo)?);
         }
     }
-    let diagonal = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+    let diagonal =
+        ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
     if !(diagonal.is_finite() && diagonal > 0.0 && shortest.is_finite() && shortest > 0.0) {
         return Err(SizingError::Degenerate { diagonal, shortest });
     }
