@@ -200,3 +200,25 @@ Merged: stage 0 at f001d6d (ACR-1 029c6d5, ACR-2 f4ee040, ACR-3 59e0fdc, ACR-4 7
    - **sm-cli → sm-engine:** sm-cli uses sm-server's re-exports only. Dropping the direct dependency is in the follow-up wave.
    - **Follow-up wave after integration:** end-to-end tests through `standard()` for `mesh.intervals`, auto size and `mesh.default_size`, explicit `equal`/`map` selection, and `mesh.info` scheme reporting; the curve sliver at edge ends within ulps of a knot; `Eq` rows in the sizing brute-force test.
    - **Follow-up merged (2026-10-25):** P0 end-to-end tests through `standard()` (`crates/sm-cli/tests/p0_rows.rs`), sm-cli without sm-engine, the curve end-sliver fix, and `Eq` rows in the sizing brute-force test. Open: no query reports which scheme ran for each entity (`mesh.info` has counts only); a `mesh.plan`/explain query is queued for W3. `sm-mesh` `contract_alloc` showed one flaky stray allocation once under full CI.
+11. **Contract batch and polish wave (2026-10-25):**
+   - **Contract batch** (merged at 2c7a065, all changes additive):
+     - sm-core accepts the script spellings of entity kinds (`Face#1`, `GeomSurface#7`) as aliases. `Surface`/`Curve` stay the geometry carriers. Output stays canonical.
+     - `Transform` rotation/reflection use a scaled norm outside [2^-500, 2^500], and are bit-identical inside that range.
+     - `OpError::Unsupported`.
+     - The `TypedOp::NO_OUTPUTS` marker, which replaces the hand list in sm-server's registry test.
+     - sm-protocol re-exports `EntityId`, `Hash256`, `Head` and `Rev`.
+     - `Model::uncolor_volumes`, so `fem.block_remove` deletes non-empty blocks (with a `block-uncolor` warning).
+     - `IntervalSink::goal`.
+     - The `sm_scheme_api::Param` re-export.
+     - CR-1 (pole-face moments), CR-2 (`face_plane`), and the CR-3 doc.
+     - Orchestrator ruling: the sm-testkit conformance check that expected pole faces to be refused now asserts the sphere's exact area and volume.
+   - **Stub `map` name collision:** the frozen stubs stay unchanged. sm-scheme-map's tests build their own registry.
+   - **Dependencies:** decision 9 applies. The per-task Deps lines bound internal crates only. Also accepted are dev-dependencies on contract crates (e.g. sm-mesh-api for `MeshRead`/`validate` in tests) and rayon where its use is deterministic and tested. The plan's Deps lines are not amended one by one.
+   - **`script.run` failure form:** the form documented on `Request::ScriptRun` (`script-error`, `data` = `ScriptResult` + `rendered` + `error_code`, partial state kept) is the protocol contract. sm-mcp and sm-cli follow it.
+   - **MCP errors:** `invalid-params` stays JSON-RPC -32602, per the MCP spec for invalid arguments. Application errors stay `isError: true`.
+   - **MCP `respell`** stays off by default, so text content equals `structuredContent` JSON. Both spellings are accepted as arguments.
+   - **sm-cli project discovery:** the current default is kept.
+   - **Face colors:** every `Domain::Face` color lowers as a sideset in W2. A non-sideset face color needs a domain or tag in the model contract (W3 if a plugin needs it).
+   - **Polish wave** (13 cloud workers, each Opus-reviewed, merged after 2a1f879): the review notes collected through W2 are resolved or marked obsolete. Each crate's W2_REPORT.md has a "Polish wave" table.
+   - **Remaining contract and feature work:** `docs/design/w3/backlog.md`.
+
