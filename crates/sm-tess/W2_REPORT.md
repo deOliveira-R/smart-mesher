@@ -68,3 +68,17 @@ Branch: the task text says `claude/w2-sm-tess`; this session was assigned `claud
 ## api_change_requests
 
 None.
+
+## Polish wave
+
+| # | Item | Status |
+|---|---|---|
+| 1 | `TooLarge` text for multi-face budgets depends on scheduling | fixed (`geometry::over_budget_error_is_the_same_for_any_thread_count_and_run`; fails before the change with differing row counts). A face over the limit alone reports itself; the first such error in face order wins. A face that only trips the shared counter returns a placeholder, replaced by a message with the total, which is order-independent (`tess::pick_error`). |
+| 2 | Cone ring alignment assumed, not checked | documented (DESIGN.md Known gaps); no code change |
+| 3 | Stacked frusta sharing a ring | test added: `shapes::stacked_frusta_with_a_shared_ring_stay_within_chord_tol` (radii 5, 1, 0.5, ring counts 50/50/23 at chord 1e-2 as predicted; the inner face goes through the zipper; sag stays within `chord_tol`). DESIGN.md reworded: each ring is at least as fine as the largest ring of every cone face it borders; equal counts hold per face, not along chains |
+| 4 | Reconcile T2 Deps line in plan.md | not done (needs orchestrator: edit `docs/design/w2/plan.md` to add thiserror, serde, schemars; drop sm-math, sm-geom) |
+| 5 | Which face `TooLarge` names depends on the scheduler | fixed together with 1 (same test); DESIGN.md updated |
+
+No golden, hash or export byte changed; successful outputs are untouched. Branch: pushed to `claude/p2-sm-tess-kfiwnj` (the branch this session was assigned) rather than `claude/p2-sm-tess`.
+
+CI result: `tools/ci.sh` exit 0; `RAYON_NUM_THREADS=1 cargo test -p sm-tess --all-features` passes; clippy `-D warnings` clean (a redundant-closure lint in the first draft was fixed).
