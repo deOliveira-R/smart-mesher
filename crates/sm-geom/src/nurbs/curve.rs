@@ -311,6 +311,10 @@ impl PreparedCurve {
 }
 
 impl ParametricCurve for PreparedCurve {
+    fn breakpoints(&self) -> Vec<f64> {
+        sm_geom_api::nurbs::interior_breakpoints(&self.lay.knots, self.lo, self.hi)
+    }
+
     fn domain(&self) -> Domain1 {
         if self.lay.periodic { Domain1::periodic(self.lo, self.hi - self.lo) } else { Domain1::open(self.lo, self.hi) }
     }
@@ -414,6 +418,16 @@ mod tests {
     fn rat_arc() -> NurbsCurve {
         let w = core::f64::consts::FRAC_1_SQRT_2;
         NurbsCurve::new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0)], Some(vec![1.0, w, 1.0])).unwrap()
+    }
+
+    #[test]
+    fn breakpoints_match_the_contract_curve() {
+        assert!(PreparedCurve::new(&rat_arc()).unwrap().breakpoints().is_empty());
+        let pts: Vec<Point3> = (0..6).map(|i| Point3::new(i as f64, (i * i) as f64, 0.0)).collect();
+        let c = NurbsCurve::new(2, vec![0.0, 0.0, 0.0, 0.25, 0.25, 0.75, 1.0, 1.0, 1.0], pts, None).unwrap();
+        let pc = PreparedCurve::new(&c).unwrap();
+        assert_eq!(pc.breakpoints(), vec![0.25, 0.75]);
+        assert_eq!(pc.breakpoints(), c.breakpoints());
     }
 
     #[test]

@@ -230,7 +230,23 @@ impl NurbsCurve {
     }
 }
 
+/// Distinct knots strictly inside `(lo, hi)`, ascending (`knots` must be non-decreasing).
+pub fn interior_breakpoints(knots: &[f64], lo: f64, hi: f64) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    for &k in knots {
+        if k > lo && k < hi && out.last() != Some(&k) {
+            out.push(k);
+        }
+    }
+    out
+}
+
 impl ParametricCurve for NurbsCurve {
+    fn breakpoints(&self) -> Vec<f64> {
+        let r = self.range();
+        interior_breakpoints(&self.knots, r.lo, r.hi)
+    }
+
     fn domain(&self) -> Domain1 {
         let r = self.range();
         if self.periodic { Domain1::periodic(r.lo, r.len()) } else { Domain1::open(r.lo, r.hi) }
@@ -360,6 +376,12 @@ impl NurbsCurve2 {
     /// Parameter range.
     pub fn range(&self) -> Interval {
         Interval::new(self.knots[self.degree], self.knots[self.control.len()])
+    }
+
+    /// Distinct interior knots (strictly inside the range), ascending.
+    pub fn breakpoints(&self) -> Vec<f64> {
+        let r = self.range();
+        interior_breakpoints(&self.knots, r.lo, r.hi)
     }
 
     /// Point and first derivative at `t` (wrapped into the range if periodic, else clamped).
@@ -745,5 +767,21 @@ mod tests {
         let d = net(3, 3, c).domain();
         let got: Vec<(ParamAxis, f64)> = d.singularities.iter().map(|s| (s.along, s.at)).collect();
         assert_eq!(got, vec![(ParamAxis::U, 0.0)]);
+    }
+
+    #[test]
+    fn breakpoints_are_distinct_interior_knots() {
+        let pts: Vec<Point3> = (0..6).map(|i| Point3::new(i as f64, 0.0, 0.0)).collect();
+        let c = NurbsCurve::new(2, vec![0.0, 0.0, 0.0, 0.25, 0.25, 0.75, 1.0, 1.0, 1.0], pts, None).unwrap();
+        assert_eq!(ParametricCurve::breakpoints(&c), vec![0.25, 0.75]);
+        assert!(ParametricCurve::breakpoints(&line()).is_empty());
+        assert!(ParametricCurve::breakpoints(&quarter_circle()).is_empty());
+        let c2 = NurbsCurve2::new(1, vec![0.0, 0.0, 0.5, 1.0, 1.0], vec![Uv::new(0.0, 0.0), Uv::new(1.0, 0.0), Uv::new(1.0, 1.0)], None).unwrap();
+        assert_eq!(c2.breakpoints(), vec![0.5]);
+    }
+
+    #[test]
+    fn interior_breakpoints_skip_the_ends() {
+        assert_eq!(interior_breakpoints(&[0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.0, 1.0), vec![0.5]);
     }
 }

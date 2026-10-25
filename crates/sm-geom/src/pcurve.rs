@@ -42,6 +42,11 @@ impl<'a> CurveOnSurface<'a> {
 }
 
 impl ParametricCurve for CurveOnSurface<'_> {
+    /// The pcurve's breakpoints (surface seams and creases are not reported).
+    fn breakpoints(&self) -> Vec<f64> {
+        self.pc.breakpoints()
+    }
+
     fn domain(&self) -> Domain1 {
         if self.periodic { Domain1::periodic(self.range.lo, self.range.len()) } else { Domain1::open(self.range.lo, self.range.hi) }
     }
