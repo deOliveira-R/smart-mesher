@@ -393,6 +393,26 @@ fn shifted(d: usize, unit_knots: &[f64], lo: f64, w: f64, weights: bool) -> (Nur
     (c, k)
 }
 
+/// Double `k` ulps above (`k > 0`) or below (`k < 0`) `x` (positive `x`).
+fn ulps(x: f64, k: i32) -> f64 {
+    f64::from_bits((x.to_bits() as i64 + i64::from(k)) as u64)
+}
+
+#[test]
+fn edge_ends_within_ulps_of_a_knot_get_their_own_panel() {
+    // Degree 1, a very short fast span [k1, k2]; edges end 0..8 ulps past and before a knot at
+    // either end. The sliver beyond the knot must not be integrated at the fast piece's speed.
+    let (k1, k2) = (0.500_108_071_832_742_9, 0.500_108_192_401_624_9);
+    let knots = vec![0.0, 0.0, 0.25, 0.4, k1, k2, 0.7, 0.9, 1.0, 1.0];
+    let c = spline(1, knots.clone(), knots.len() - 2);
+    for k in -8..=8 {
+        check_ratio(&c, &knots, 0.0, ulps(k2, k), 7, &format!("hi = k2 {k:+} ulps"));
+        check_ratio(&c, &knots, 0.0, ulps(k1, k), 7, &format!("hi = k1 {k:+} ulps"));
+        check_ratio(&c, &knots, ulps(k1, k), 1.0, 7, &format!("lo = k1 {k:+} ulps"));
+        check_ratio(&c, &knots, ulps(k2, k), 1.0, 7, &format!("lo = k2 {k:+} ulps"));
+    }
+}
+
 #[test]
 fn quadratic_short_span_away_from_zero_is_not_a_geometry_error() {
     // Minimal repro: the speed inside the 1.63e-7 span carries parameter-scale noise at |t| ~ 100.

@@ -110,3 +110,10 @@ The T4 review found the arc map missed `equal` within 1e-9 on NURBS with a very 
 - rustfmt glitch in `arc.rs` fixed.
 - **Ruling requested (orchestrator):** the probes do not hold a strict 1e-9 relative bound. They hold 1e-9 relative plus one parameter ulp times the local max speed (`eps * max(|lo|, |hi|, 1) * vmax` of arc length). A node cannot be placed finer than one ulp of `t`, and a span of 1e-7 with O(1) displacement has speed ~1e7, so the ulp is ~1e-9 of arc length: no double-parameter implementation can do better. Against strict 1e-9 the reviewer measured a worst ratio of 160x on the 1e-7 spans; against the allowance 0.45. Plan T4's "within 1e-9 relative" needs an explicit amendment to that effect, or the case is declared out of scope.
 - **Open (not done):** `CurveOnSurface::breakpoints` still reports only the pcurve's breakpoints. Crossings of surface knot lines by the pcurve are C^k breaks of the 3D curve; reporting them needs a surface-side breakpoint accessor in the frozen `sm-geom-api` plus root finding per crossing, so a short surface knot span can still show the original failure on curves on surfaces. Left for an orchestrator decision.
+
+### Follow-up: curve sliver (w2-fu)
+
+- Bug: `ArcMap::cuts` dropped any breakpoint within 4 eps (fraction) of `tau = 0` or `1` through `is_tiny`, so the few-ulp sliver past a knot was integrated at the speed of the neighbouring short fast piece (degree-1 knots ...0.5001080718327429, 0.5001081924016249, edge [0, 0.5001081924016252]: length 3.3e-9 too long, worst segment 5.6e-9 relative).
+- Fix: breakpoints are always kept when the panel midpoints on both sides are representable; only uniform-grid cuts are dropped for crowding (and a grid cut just before a breakpoint is removed in its favour).
+- New test `edge_ends_within_ulps_of_a_knot_get_their_own_panel` (edges ending -8..+8 ulps from either knot at both ends, both senses).
+- Probe tolerance (`worst_ratio` in `tests/nurbs.rs`: 1e-9 relative plus `eps * max(|lo|, |hi|, 1) * vmax`) is the decision W2-10 wording (one fraction ulp times local speed); now documented in DESIGN.md.
