@@ -1,6 +1,6 @@
 [package]
 name = "sm-sizing"
-description = "W2 skeleton: T3: interval matching, corner picking, size fields."
+description = "Production interval matching (exact integer program), Cubit-style corner picking, size fields and auto size for the smart-mesh driver."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -12,14 +12,24 @@ bench = false
 
 [dependencies]
 sm-core = { path = "../sm-core" }
-sm-math = { path = "../sm-math" }
-sm-geom-api = { path = "../sm-geom-api" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+rayon = "1"
+thiserror = "2"
+serde_json = "1"
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+sm-model-api = { path = "../sm-model-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-geom-api = { path = "../sm-geom-api" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "solver"
+harness = false
 
 [lints]
 workspace = true
