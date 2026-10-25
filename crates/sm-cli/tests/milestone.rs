@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
-use sm_engine::{ApplyOptions, FixedClock, Workspace};
 use sm_op_api::{Hash256, Rev};
+use sm_server::{ApplyOptions, FixedClock, InProcess, Server, Workspace};
 
 const AUTHOR: &str = "it";
 const TIME: &str = "2026-10-24T00:00:00Z";
@@ -185,7 +185,6 @@ fn last_line(s: &str) -> R<String> {
 
 // ------------------------------------------------------------------ .smsh header (dep-free)
 
-/// Split a `.smsh` file into its JSON header and the array payload after it.
 /// Decode a `.smsh` with sm_meshio and rebuild it as a `ReferenceMesh` (the decoded form is not
 /// itself a `MeshRead`), keeping vertices, faces, cells and their classifications.
 fn smsh_rebuild(bytes: &[u8]) -> R<sm_mesh_api::reference::ReferenceMesh> {
@@ -249,6 +248,29 @@ fn smsh_rebuild(bytes: &[u8]) -> R<sm_mesh_api::reference::ReferenceMesh> {
     b.finish(&mut SerialAlloc::new()).map(|f| f.mesh).map_err(e)
 }
 
+/// Max distance of a decoded `.smsh` vertex from the integer lattice, and whether the vertices
+/// are `{-5..5}^3` one to one.
+fn smsh_lattice(bytes: &[u8]) -> R<(f64, bool)> {
+    let file = sm_meshio::SmshFile::parse(bytes).map_err(|e| e.to_string())?;
+    let d = file.decode().map_err(|e| e.to_string())?;
+    let mut dev = 0.0f64;
+    let mut seen = BTreeSet::new();
+    for i in 0..d.x.len() {
+        let p = [d.x[i], d.y[i], d.z[i]];
+        let mut key = [0i64; 3];
+        for (k, c) in p.iter().enumerate() {
+            let r = c.round();
+            dev = dev.max((c - r).abs());
+            key[k] = r as i64;
+        }
+        if key.iter().all(|c| (-5..=5).contains(c)) {
+            seen.insert(key);
+        }
+    }
+    Ok((dev, d.x.len() == 1331 && seen.len() == 1331))
+}
+
+/// Split a `.smsh` file into its JSON header and the array payload after it.
 fn smsh_split(bytes: &[u8]) -> R<(Value, Vec<u8>)> {
     if bytes.len() < 16 || &bytes[..8] != b"SMSH\r\n\x1a\n" {
         return Err("not a .smsh file (magic)".into());
@@ -332,8 +354,16 @@ fn mcp_milestone_lines(dir: &Path) -> Vec<Value> {
             json!({"targets":["TopoVolume#1"],"scheme":"map"}),
         ),
         tool_call(6, "mesh__run", json!({"targets":["TopoVolume#1"]})),
-        tool_call(7, "fem__block_add", json!({"block":1,"volumes":["TopoVolume#1"]})),
-        tool_call(8, "fem__block_element_type", json!({"block":1,"element_type":"HEX8"})),
+        tool_call(
+            7,
+            "fem__block_add",
+            json!({"block":1,"volumes":["TopoVolume#1"]}),
+        ),
+        tool_call(
+            8,
+            "fem__block_element_type",
+            json!({"block":1,"element_type":"HEX8"}),
+        ),
         tool_call(9, "session_export", json!({"path": p("mcp.smsh")})),
         tool_call(10, "session_export", json!({"path": p("mcp.vtu")})),
         tool_call(11, "session_hash", json!({})),
@@ -362,7 +392,10 @@ fn api_ops(vol: &str, size: f64) -> Vec<(&'static str, Value)> {
         ("mesh.scheme", json!({"targets":[vol],"scheme":"map"})),
         ("mesh.run", json!({"targets":[vol]})),
         ("fem.block_add", json!({"block":1,"volumes":[vol]})),
-        ("fem.block_element_type", json!({"block":1,"element_type":"HEX8"})),
+        (
+            "fem.block_element_type",
+            json!({"block":1,"element_type":"HEX8"}),
+        ),
     ]
 }
 
@@ -383,8 +416,11 @@ fn hexes(m: &BTreeMap<String, Hash256>) -> BTreeMap<String, String> {
     m.iter().map(|(k, v)| (k.clone(), v.to_string())).collect()
 }
 
+fn e<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
 fn in_process() -> R<Api> {
-    let e = |e: sm_engine::EngineError| e.to_string();
     let mut ws: Workspace = sm_server::standard()
         .author(AUTHOR)
         .clock(FixedClock(TIME.to_owned()))
@@ -452,6 +488,77 @@ fn in_process() -> R<Api> {
         fork_coarse,
         coarse_cells,
         back_on_main: ws.state().hash().to_string(),
+    })
+}
+
+// ------------------------------------------------------------------ row 8: reference core
+
+/// The milestone over `sm_server::reference_standard()` (`CoreLayers::new(CellComplex)`).
+struct RefCore {
+    /// The milestone script, run in a project (exports land in its root).
+    script_state: String,
+    script_layers: BTreeMap<String, String>,
+    script_dir: PathBuf,
+    /// The milestone ops through `apply_json`, as in §4.5.
+    api_state: String,
+    api_layers: BTreeMap<String, String>,
+    api_nodes: Vec<(String, String)>,
+}
+
+fn rpc(ip: &mut InProcess<Server>, id: i64, method: &str, params: Value) -> R<Value> {
+    let req = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+    let reply: Value = serde_json::from_str(&ip.send_text(&req.to_string()))
+        .map_err(|x| format!("{method}: reply is not JSON: {x}"))?;
+    reply
+        .get("result")
+        .cloned()
+        .ok_or_else(|| format!("{method}: {}", reply["error"]))
+}
+
+fn reference_core(t: &Path, script: &Path) -> R<RefCore> {
+    // A closure, so the builder type need not be named (sm-server does not re-export it).
+    let pinned_reference = || {
+        sm_server::reference_standard()
+            .author(AUTHOR)
+            .clock(FixedClock(TIME.to_owned()))
+    };
+    let dir = t.join("refcore");
+    let server = Server::create(pinned_reference(), &dir, "refcore").map_err(e)?;
+    let mut ip = InProcess::new(server);
+    rpc(
+        &mut ip,
+        1,
+        "script.run",
+        json!({"text": read_text(script), "path": script.to_string_lossy()}),
+    )?;
+    let h = rpc(&mut ip, 2, "session.hash", json!({}))?;
+    let script_state = hash_of(&h["state"], "state")?;
+    let script_layers = layers_of(&h)?;
+
+    let mut ws = pinned_reference().memory().map_err(e)?;
+    let opts = ApplyOptions::default();
+    let brick = ws
+        .apply_json("model.create_brick", json!({"x":10,"y":10,"z":10}), &opts)
+        .map_err(e)?;
+    let vol = brick
+        .delta
+        .outputs
+        .get("volume")
+        .and_then(|v| v.first())
+        .ok_or("reference create_brick has no `volume` output")?
+        .to_string();
+    let mut api_nodes = vec![(brick.node.to_string(), brick.state.to_string())];
+    for (op, p) in api_ops(&vol, 1.0) {
+        let r = ws.apply_json(op, p, &opts).map_err(e)?;
+        api_nodes.push((r.node.to_string(), r.state.to_string()));
+    }
+    Ok(RefCore {
+        script_state,
+        script_layers,
+        script_dir: dir,
+        api_state: ws.state().hash().to_string(),
+        api_layers: hexes(&ws.state().layer_hashes()),
+        api_nodes,
     })
 }
 
@@ -657,7 +764,11 @@ fn milestone() {
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"it","version":"0"}}}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            tool_call(12, "run_script", json!({"text": read_text(&data("fork.smesh"))})),
+            tool_call(
+                12,
+                "run_script",
+                json!({"text": read_text(&data("fork.smesh"))}),
+            ),
         ],
         Threads::Inherit,
     );
@@ -689,6 +800,7 @@ fn milestone() {
                 "mesh__scheme",
                 "mesh__run",
                 "fem__block_add",
+                "fem__block_element_type",
                 "session_export",
                 "session_hash",
                 "run_script",
@@ -713,13 +825,19 @@ fn milestone() {
             }
             n_mcp = mcp_nodes(rep);
             let hr = tool_ok(rep, 11);
-            h_mcp = hr.as_ref().map_err(Clone::clone).and_then(|v| hash_of(&v["state"], "state"));
+            h_mcp = hr
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|v| hash_of(&v["state"], "state"));
             mcp_layers = hr.and_then(|v| layers_of(&v));
         }
     }
     match &mcp_fork {
         Ok(rep) => match tool_ok(rep, 12) {
-            Ok(_) => rows.note(2, "MCP run_script(fork.smesh) in a fresh process: asserts pass"),
+            Ok(_) => rows.note(
+                2,
+                "MCP run_script(fork.smesh) in a fresh process: asserts pass",
+            ),
             Err(e) => rows.fail(2, format!("MCP run_script(fork.smesh): {e}")),
         },
         Err(e) => rows.fail(2, format!("MCP fork session: {e}")),
@@ -1123,9 +1241,38 @@ fn milestone() {
             }
         }
     }
-    // Full decode with sm_meshio, `validate`, and the min scaled Jacobian via sm_quality.
+    // Full decode with sm_meshio: lattice, `validate`, volume and min scaled Jacobian (sm_quality).
     for (name, s) in [("memory", &smsh_m1), ("CLI -p", &smsh_cli)] {
         let Some(bytes) = s else { continue };
+        match smsh_lattice(bytes) {
+            Err(e) => rows.fail(6, format!("{name} out.smsh decode: {e}")),
+            Ok((dev, bijective)) => {
+                rows.check(6, dev <= 1e-12, || {
+                    format!("{name} smsh: max lattice deviation {dev}")
+                });
+                rows.check(6, bijective, || {
+                    format!("{name} smsh: vertices are not the lattice {{-5..5}}^3 one to one")
+                });
+            }
+        }
+        if let Ok(mesh) = smsh_rebuild(bytes) {
+            match sm_quality::report(
+                &mesh,
+                &[sm_quality::Metric::Volume],
+                &sm_quality::Options::default(),
+            ) {
+                Ok(r) => match r.first() {
+                    Some((_, sum)) if sum.count == 1000 => {
+                        let total = sum.mean * sum.count as f64;
+                        rows.check(6, (total - 1000.0).abs() <= 1e-9, || {
+                            format!("{name} smsh total volume {total}")
+                        });
+                    }
+                    other => rows.fail(6, format!("{name} smsh volume report: {other:?}")),
+                },
+                Err(e) => rows.fail(6, format!("{name} smsh volume: {e}")),
+            }
+        }
         match smsh_rebuild(bytes) {
             Err(e) => rows.fail(6, format!("{name} out.smsh decode/rebuild: {e}")),
             Ok(mesh) => {
@@ -1159,12 +1306,65 @@ fn milestone() {
     }
 
     // ================= row 8: reference vs production topology host
-    rows.fail(
-        8,
-        "not evaluable: no public way to build the standard distribution over `CoreLayers::new(CellComplex)`; \
-         `sm_server::distribution` hard-codes `TopoStore`, and assembling it by hand needs sm-layer-api, \
-         sm-topo-api, sm-model, sm-mesher, sm-fem, sm-tess, sm-sizing, which sm-cli does not depend on",
-    );
+    let refc = reference_core(&t, &script);
+    if let Some(rc) = rows.need(
+        &[8],
+        "milestone over reference_standard() (CellComplex)",
+        &refc,
+    ) {
+        if let Ok(h) = &h_cli {
+            rows.eq(
+                8,
+                "script state hash CellComplex vs TopoStore (H_cli)",
+                &rc.script_state,
+                h,
+            );
+        }
+        if let Ok(l) = &cli_layers {
+            rows.eq(
+                8,
+                "script layer hashes CellComplex vs TopoStore (CLI)",
+                &rc.script_layers,
+                l,
+            );
+        }
+        if let Some(a) = rows.need(&[8], "in process (TopoStore)", &api) {
+            rows.eq(
+                8,
+                "apply_json state hash CellComplex vs TopoStore",
+                &rc.api_state,
+                &a.state,
+            );
+            rows.eq(
+                8,
+                "apply_json layer hashes CellComplex vs TopoStore",
+                &rc.api_layers,
+                &a.layers,
+            );
+            rows.eq(
+                8,
+                "pinned node lists CellComplex vs TopoStore",
+                &rc.api_nodes,
+                &a.nodes,
+            );
+        }
+        let rv = get(&mut rows, &[8], &rc.script_dir.join("out.vtu"));
+        let rs = get(&mut rows, &[8], &rc.script_dir.join("out.smsh"));
+        same(
+            &mut rows,
+            8,
+            "out.vtu CellComplex vs TopoStore",
+            &rv,
+            &vtu_m1,
+        );
+        same(
+            &mut rows,
+            8,
+            "out.smsh CellComplex vs TopoStore (pinned)",
+            &rs,
+            &smsh_m1,
+        );
+    }
 
     // ---------------- report
     let mut report = String::new();
