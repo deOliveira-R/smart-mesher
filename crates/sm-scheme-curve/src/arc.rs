@@ -202,16 +202,36 @@ impl<'a> ArcMap<'a> {
         }
         bpt.sort_by(f64::total_cmp);
         bpt.dedup();
-        let mut taus: Vec<f64> = bpt.clone();
-        taus.extend((1..MIN_PANELS).map(|j| j as f64 / MIN_PANELS as f64));
-        taus.sort_by(f64::total_cmp);
+        // Tagged cut candidates: (tau, is_breakpoint). Breakpoints are always kept (a sliver past a
+        // knot must get its own panel, or it is integrated at the neighbouring piece's speed);
+        // grid points are dropped when too close to a neighbour.
+        let mut taus: Vec<(f64, bool)> = bpt.iter().map(|t| (*t, true)).collect();
+        taus.extend((1..MIN_PANELS).map(|j| (j as f64 / MIN_PANELS as f64, false)));
+        taus.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+        let representable = |a: f64, b: f64| {
+            let m = 0.5 * (a + b);
+            m > a && m < b
+        };
         let mut cuts = vec![0.0];
-        for t in taus {
-            if let Some(&last) = cuts.last()
-                && !is_tiny(last, t)
-                && !is_tiny(t, 1.0)
-            {
+        let mut last_is_bp = true;
+        for (t, is_bp) in taus {
+            let last = *cuts.last().unwrap_or(&0.0);
+            if t <= last {
+                continue;
+            }
+            if is_bp {
+                // A grid cut crowding a breakpoint yields to it.
+                if !last_is_bp && cuts.len() > 1 && is_tiny(last, t) {
+                    cuts.pop();
+                }
+                let last = *cuts.last().unwrap_or(&0.0);
+                if representable(last, t) && representable(t, 1.0) {
+                    cuts.push(t);
+                    last_is_bp = true;
+                }
+            } else if !is_tiny(last, t) && !is_tiny(t, 1.0) {
                 cuts.push(t);
+                last_is_bp = false;
             }
         }
         cuts.push(1.0);
