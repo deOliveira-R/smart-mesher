@@ -22,6 +22,10 @@ mod error;
 mod request;
 mod result;
 
+// Re-exported so front ends need not depend on three contract crates for the wire's id types.
+pub use sm_core::EntityId;
+pub use sm_op_api::{Hash256, Head, Rev};
+
 pub use envelope::{Endpoint, Envelope, Response};
 pub use error::{
     APPLICATION_ERROR, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,

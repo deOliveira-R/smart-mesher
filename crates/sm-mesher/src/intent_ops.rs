@@ -145,6 +145,7 @@ pub struct MeshSize {
 
 impl TypedOp for MeshSize {
     const NAME: &'static str = "mesh.size";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let targets = live_targets(ctx, &self.targets, &SIZE_KINDS)?;
@@ -212,6 +213,7 @@ pub struct MeshIntervals {
 
 impl TypedOp for MeshIntervals {
     const NAME: &'static str = "mesh.intervals";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let targets = live_targets(ctx, &self.targets, &SIZE_KINDS)?;
@@ -272,6 +274,7 @@ pub struct MeshScheme {
 
 impl TypedOp for MeshScheme {
     const NAME: &'static str = "mesh.scheme";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let targets = live_targets(ctx, &self.targets, &SIZE_KINDS)?;
@@ -345,6 +348,7 @@ pub struct MeshDefaultSize {
 
 impl TypedOp for MeshDefaultSize {
     const NAME: &'static str = "mesh.default_size";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let spec = match (self.size, &self.function) {

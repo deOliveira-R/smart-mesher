@@ -175,6 +175,7 @@ pub struct MeshDelete {
 
 impl TypedOp for MeshDelete {
     const NAME: &'static str = "mesh.delete";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let mut meshes: Vec<EntityId> = match (&self.meshes, &self.targets) {

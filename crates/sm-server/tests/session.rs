@@ -79,6 +79,11 @@ fn failing_script_reports_script_error_and_keeps_applied_ops() {
     assert_eq!(call(&mut s, Request::Status)["nodes"], 1, "the op before the failure stays applied");
     // The reported state is the real state.
     assert_eq!(e.data["state"], json!(hash(&mut s, None).state));
+    // Documented failure form (`Request::ScriptRun`): message and error_code are the first error's.
+    let first = &e.data["diagnostics"][0];
+    assert_eq!(e.data["error_code"], first["code"], "{}", e.data);
+    assert_eq!(Value::String(e.message.clone()), first["message"], "{}", e.data);
+    assert!(e.data["output"].is_string());
 }
 
 #[test]
