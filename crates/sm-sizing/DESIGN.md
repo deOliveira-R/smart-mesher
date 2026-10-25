@@ -37,8 +37,11 @@ Reduction:
 
 Exactness:
 
-* Deviations are quantized to integers, `round(|n-g|/g * 2^40)`, so maxima and sums are exact
-  and ties are real ties. No floating-point LP is used anywhere, so there is nothing to verify
+* Deviations are quantized to integers, `round(|n-g|/g * 2^40)`, so maxima and sums can be
+  bounded in exact integers. Each key carries rounding noise, so key sums closer than the number
+  of terms are compared exactly (double-double, `compare_deviation_sums`) and a real tie goes to
+  the smallest vector (goals 10, 20, 20 are flat on [10, 20]: the answer is 10). No
+  floating-point LP is used anywhere, so there is nothing to verify
   after the fact; the final assignment is nevertheless re-checked against every constraint in
   integer arithmetic (`first_violation`).
 * Search: depth-first over classes in lowest-edge order, values tried outward from the minimizer
@@ -53,7 +56,13 @@ Exactness:
   factors `1 + 2^(l-6)`; a window is searched only after a feasibility-only search (smallest
   domain first, three value orders) finds a point in it, which also seeds the incumbent.
 * A search that exhausts its budget with no incumbent runs the feasibility pass before giving
-  up; only a completed search proves infeasibility.
+  up; only a completed search, a single violated row or a contradicting row pair proves
+  infeasibility. The row-pair proof runs at the root: rows that share a class are combined with
+  multipliers up to 3 and compared with the domain bounds in exact integers (so `sum_all <= 50`
+  against `sum_odd >= 40` is refused at once, naming both rows).
+* Every exhausted incumbent (phase 1 and phase 2, search or reference) goes through a local
+  polish: `+-1` single moves and `+-1` pair moves between classes sharing a row, accepted only
+  when all rows hold exactly and `(max, sum, vector)` strictly improves, to a fixed point.
 * The max term couples components, so there are two phases: each component finds its optimum
   and thereby `D*`, the global maximum; components strictly below `D*` are then re-solved for
   (sum, vector) under the cap `D*`. The brute-force proptest found this: independent per-component
@@ -132,11 +141,19 @@ returns a feasible but not optimal point. Coupled rows are rare outside user con
   minimization of every other component in phase 2. The result is still feasible and verified,
   but the exact components are then optimal only for the `D*` the heuristic one induced.
 * A component that runs out of nodes returns the best of a feasibility-only point (seeding
-  the search), the search incumbent and the reference answer; a dense `>=` and `<=` pair over
-  ~30 classes (the `dense30` regression) still leaves the exact regime, but is feasible and
-  verified. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
+  the search), the search incumbent and the reference answer, then polished (1- and 2-move
+  locally optimal); a dense `>=` and `<=` pair over ~30 classes (the `dense30` regression)
+  still leaves the exact regime, but is feasible and verified. Measured optimality gap on the
+  exhausted path (release, default 400 000 nodes, about 1.2 s): `dense30` max 13/19 (unchanged),
+  sum of deviations 18.05 before the polish and 14.2758 after; the 40-class variant (sum <= 140,
+  odd >= 90) max 0.8214 before and 0.8148 after (the best known), sum 15.9019. Searching with
+  10x and 100x the node budget returns the same vectors (14.2758 and 15.9019), so the polished
+  answer is the best known, but it is still not proven optimal. A single dense `<=` or `>=` row over 30 classes with varied goals is solved exactly in
   microseconds (bisected window plus row-aware bound); with many equal goals the exact-key
   ties make the lexicographic tie-break exhaust the budget (a feasible answer is returned).
+* The B&B variable ordering was not changed to reach the polish's 1- and 2-moves itself: only
+  the post-search polish does. An equality row whose coefficient gcd does not divide its
+  right-hand side (e.g. `sum(2 x_odd) = 81`) is proven infeasible at the root, naming that row.
 * When the search gives up and the reference solver also finds nothing, the error says
   "feasibility unproven"; it does not claim infeasibility.
 * Hard-fixed classes contribute no goal term, and a class with any Soft count ignores its Goal

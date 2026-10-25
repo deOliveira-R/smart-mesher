@@ -12,5 +12,5 @@ pub mod picker;
 
 pub use auto::{SizingError, auto_size};
 pub use field::size_field;
-pub use iia::{IiaSolver, deviation_key, first_violation};
+pub use iia::{IiaSolver, compare_deviation_sums, deviation_key, first_violation};
 pub use picker::{AnglePicker, classify_angle};

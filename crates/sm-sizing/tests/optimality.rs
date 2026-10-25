@@ -9,7 +9,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use sm_core::EntityId;
 use sm_scheme_api::{Firmness, IntervalConstraint, IntervalSolver, Rel};
-use sm_sizing::{IiaSolver, deviation_key};
+use sm_sizing::{IiaSolver, compare_deviation_sums, deviation_key};
 
 const MAXC: u32 = 8;
 /// Enumeration limit of the unbounded-domain variant.
@@ -204,6 +204,10 @@ fn brute(items: &[IntervalConstraint], e: &[EntityId], maxc: u32) -> Option<((u1
     let cls = classes(items, e);
     let terms = terms_of(items, e, &cls);
     let comp = compile(items, e);
+    let nterms: u128 = (0..n).filter(|&c| cls[c] == c).map(|c| terms[c].len() as u128).sum();
+    let pairs = |v: &[u32]| -> Vec<(f64, f64)> {
+        (0..n).filter(|&c| cls[c] == c).flat_map(|c| terms[c].iter().map(move |&g| (f64::from(v[c]), g))).collect()
+    };
     let mut v = vec![1u32; n];
     let mut best: Option<((u128, u128), Vec<u32>)> = None;
     loop {
@@ -219,9 +223,23 @@ fn brute(items: &[IntervalConstraint], e: &[EntityId], maxc: u32) -> Option<((u1
                     sm += k;
                 }
             }
-            let cand = ((mx, sm), v.clone());
-            if best.as_ref().is_none_or(|b| cand < *b) {
-                best = Some(cand);
+            // Maximum first; sums closer than the quantization error are compared exactly, and a
+            // real tie goes to the smaller vector.
+            let better = best.as_ref().is_none_or(|b| {
+                use std::cmp::Ordering::{Equal, Greater, Less};
+                let o = mx.cmp(&b.0.0).then_with(|| {
+                    if sm > b.0.1 + nterms {
+                        Greater
+                    } else if sm + nterms < b.0.1 {
+                        Less
+                    } else {
+                        compare_deviation_sums(&pairs(&v), &pairs(&b.1))
+                    }
+                });
+                o == Less || (o == Equal && v < b.1)
+            });
+            if better {
+                best = Some(((mx, sm), v.clone()));
             }
         }
         let mut i = 0;
@@ -317,6 +335,61 @@ fn matches_exhaustive_enumeration_without_upper_bounds() {
     }
     let (checked, skipped) = (checked.get(), skipped.get());
     assert!(checked > 200, "checked {checked}, skipped {skipped}");
+}
+
+/// Mid-size systems (13..=16 classes, counts at most 2 or 3, dense rows with coefficients
+/// -2..=2): above the small-component threshold, so the feasibility-seeded search runs. The
+/// answer must be exactly the brute-force minimizer. Enumeration is `maxc^n`, so counts up to 3
+/// are used only for n <= 13 and only in release. Coverage split: debug (what CI runs) draws 8
+/// cases per seed with counts at most 2; release draws 40 per seed, a share with counts at most 3.
+#[test]
+fn matches_exhaustive_enumeration_on_13_to_16_classes() {
+    let solver = IiaSolver::default();
+    let cases = if cfg!(debug_assertions) { 8 } else { 40 };
+    let checked = std::cell::Cell::new(0u32);
+    for seed in SEEDS {
+        let cfg = Config { cases, failure_persistence: None, ..Config::default() };
+        let mut runner = TestRunner::new_with_rng(cfg, TestRng::from_seed(RngAlgorithm::ChaCha, &[seed ^ 0xa5; 32]));
+        let strat = (13usize..=16).prop_flat_map(|n| {
+            let goals = prop::collection::vec(0.6f64..4.0, n);
+            let rows = prop::collection::vec(
+                (prop::collection::vec(-2i32..=2, n), 1u8..3, -4i64..=14),
+                2..=4,
+            );
+            (Just(n), goals, rows, prop::bool::ANY)
+        });
+        runner
+            .run(&strat, |(n, goals, rows, three)| {
+                let maxc: u32 = if three && n <= 13 && !cfg!(debug_assertions) { 3 } else { 2 };
+                let e: Vec<EntityId> = (1..=n as u64).map(edge).collect();
+                let mut items = Vec::new();
+                for (i, &ed) in e.iter().enumerate() {
+                    items.push(IntervalConstraint::Range { edge: ed, min: 1, max: Some(maxc) });
+                    items.push(IntervalConstraint::Goal { edge: ed, goal: goals[i] });
+                }
+                for (coefs, rel, rhs) in &rows {
+                    items.push(IntervalConstraint::Linear {
+                        terms: coefs.iter().enumerate().filter(|(_, k)| **k != 0).map(|(i, k)| (e[i], *k)).collect(),
+                        rel: rel_of(*rel),
+                        rhs: *rhs,
+                    });
+                }
+                let want = brute(&items, &e, maxc);
+                let got = solver.solve(&e, &records(items.clone()));
+                match (&want, &got) {
+                    (Some((_, v)), Ok(out)) => {
+                        prop_assert_eq!(&out.iter().map(|x| x.1).collect::<Vec<_>>(), v, "n {} rows {:?}", n, rows);
+                        checked.set(checked.get() + 1);
+                    }
+                    (None, Err(_)) => {}
+                    (Some(_), Err(err)) => prop_assert!(false, "infeasible ({err}) but a solution exists"),
+                    (None, Ok(out)) => prop_assert!(false, "returned {out:?} but none exists"),
+                }
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+    }
+    assert!(checked.get() >= 3, "only {} feasible cases", checked.get());
 }
 
 fn solve_vec(e: &[EntityId], items: Vec<IntervalConstraint>) -> Vec<u32> {

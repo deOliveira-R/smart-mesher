@@ -91,8 +91,11 @@ Benchmark: `benches/solver.rs`.
   solved heuristically (best of search incumbent and reference solver); optimal only below the
   limits. Dense coupled rows over many free classes (for example a `<=` and a `>=` row over 30
   classes, test `dense30`) can still hit the node budget; the answer is then a verified feasible
-  point improved by the search, not a proven optimum, and equal-goal symmetric single rows can
-  exhaust the budget through exact-key ties.
+  point improved by the search and by a local polish (1- and 2-move optimal), not a proven
+  optimum. Measured gap (release, default budget): `dense30` sum of deviations 18.05 before the
+  polish, 14.2758 after, max 13/19 both; 40-class variant max 0.8214 before, 0.8148 after (the
+  best known; 10x and 100x node budgets find nothing better). Equal-goal symmetric single rows
+  can still exhaust the budget through ties (now exact ties, resolved to the smallest vector).
 * `bias`/`geometric`/`linear` fields are not tested against Cubit numerically (no Cubit here).
 * Phase 2 of a component whose search ran out of budget keeps the best candidate found, not a
   proven optimum.
@@ -188,3 +191,18 @@ Check: `cargo test -p sm-sizing` (debug, also `RAYON_NUM_THREADS=1` for the iia 
 `cargo clippy -p sm-sizing --all-targets --all-features -- -D warnings`, rustdoc with
 `-D warnings`: clean. Optimality tests take about 17 s in debug (13 s before; the extra time is
 the feasibility rescue of budget-exhausting unbounded cases).
+
+## Integration wave: sizing polish (`w2-int sizing-polish`)
+
+1. Exhausted incumbents (phase 1 and 2, search or reference) get a deterministic local polish
+   (single and row-sharing pair `+-1` moves, strict lexicographic gains, exact row checks).
+2. Root-level infeasibility proof from row pairs (exact integer combination with multipliers up
+   to 3); `sum_all <= 50` vs `sum_odd >= 40` over 30 edges is refused at once, naming both rows.
+3. `row_extra` uses pooled buffers and is charged to the node budget (documented work bound).
+4. `solve_local` resets `exhausted` with `nodes` after an empty feasibility window.
+5. Real ties in the sum are exact (double-double re-check when quantized sums are within the
+   number of terms; `compare_deviation_sums`); the brute-force oracle uses the same rule.
+6. `AnglePicker`: two Hard requests of different types on one corner are a reported conflict.
+7. New tests: seeded optimality for 13..16 classes, 1 vs 4 threads on the exhausted path, local
+   optimality of `dense30`, pair-conflict, tie and picker-conflict tests. `auto_size` docs note
+   that the sampled bounding box is approximate for curved edges.

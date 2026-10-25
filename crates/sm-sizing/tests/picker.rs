@@ -200,3 +200,26 @@ fn picker_is_deterministic() {
     let b = AnglePicker.pick(&f.topo, f.face, VertexRule::Map, &[], &[]).expect("b");
     assert_eq!(a, b);
 }
+
+#[test]
+fn two_hard_requests_with_different_types_on_one_corner_conflict() {
+    let f = split_brick();
+    let face = f.ids.faces[2];
+    let ids = [ConstraintId(3), ConstraintId(4)];
+    let origin = f.ids.vertices[0];
+    let k = key_at(&f.topo, face, origin);
+    let reqs = [(k, Firm::hard(VertexType::Side)), (k, Firm::hard(VertexType::End))];
+    for rule in [VertexRule::Map, VertexRule::Free] {
+        match AnglePicker.pick(&f.topo, face, rule, &reqs, &ids).expect_err("conflict") {
+            SchemeError::Infeasible(i) => {
+                assert!(i.reason.contains("conflicting") && i.reason.contains("Side") && i.reason.contains("End"), "{}", i.reason);
+                assert!(i.reason.contains(&origin.to_string()), "{}", i.reason);
+                assert_eq!(i.constraints, ids.to_vec());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    // The same type twice is not a conflict.
+    let same = [(k, Firm::hard(VertexType::Side)), (k, Firm::hard(VertexType::Side))];
+    AnglePicker.pick(&f.topo, face, VertexRule::Map, &same, &ids).expect("same type is fine");
+}

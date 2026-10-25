@@ -26,6 +26,10 @@
 //! changes the fewest types, up to the weighting above (soft 2, other 1: the repair may change
 //! two unrequested corners rather than one soft corner; see DESIGN.md), and among equal repairs
 //! the least confident corner moves first.
+//! Two `Hard` requests of different types on one corner are a conflict (an error naming both
+//! types and the vertex), never last-wins. The error's `constraints` are all the `ids` passed
+//! for the face: the `CornerPicker` contract does not align ids with requests, so the two
+//! conflicting requests cannot be singled out among them.
 //! A hard request wins over the rule; a hard type the rule forbids, or a rule that cannot be
 //! met, is a [`SchemeError`] naming the face, the constraint ids and the hard requests.
 //!
@@ -94,6 +98,23 @@ impl CornerPicker for AnglePicker {
         let rings = corners.iter().map(|c| c.ring).max().map_or(0, |r| r + 1);
         if structured && rings != 1 {
             return Err(bad(format!("{rule:?} needs exactly one loop, face has {rings}")));
+        }
+
+        // Two hard requests with different types on one corner are a conflict, not last-wins.
+        for (i, (k, t)) in requests.iter().enumerate() {
+            if t.firmness != Firmness::Hard {
+                continue;
+            }
+            if let Some((_, u)) = requests[..i]
+                .iter()
+                .find(|(k2, u)| k2 == k && u.firmness == Firmness::Hard && u.value != t.value)
+            {
+                let at = corners.iter().find(|c| c.key == *k).map_or_else(String::new, |c| format!(" at {}", c.vertex));
+                return Err(bad(format!(
+                    "conflicting hard vertex-type requests{at}: hard {:?} and hard {:?} on the same corner",
+                    u.value, t.value
+                )));
+            }
         }
 
         // Starting state: the firmest request per corner (later wins ties), else the angle class.
