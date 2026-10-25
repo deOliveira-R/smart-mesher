@@ -248,36 +248,31 @@ fn face_bbox(topo: &dyn TopologyView, f: EntityId) -> Aabb {
 }
 
 fn face_area(topo: &dyn TopologyView, f: EntityId) -> Result<(f64, Option<Point3>), OpError> {
-    match topo.face_moments(f) {
-        Ok(m) => Ok((m.area, m.centroid())),
-        Err(QueryError::Unsupported(_)) if whole_sphere(topo, f).is_some() => {
-            let (c, r) = whole_sphere(topo, f).ok_or_else(|| OpError::Failed("sphere vanished".into()))?;
-            let sign = match topo.carrier(f) {
-                Carrier::Surface(sc) => sc.sense.sign(),
-                _ => 1.0,
-            };
-            Ok((sign * 4.0 * PI * r * r, Some(c)))
-        }
-        Err(e) => Err(qerr(e)),
+    // A whole sphere keeps its closed form: it is exact, and goldens depend on its bits (the
+    // numeric `face_moments` also covers it since CR-1, to ~1e-12).
+    if let Some((c, r)) = whole_sphere(topo, f) {
+        let sign = match topo.carrier(f) {
+            Carrier::Surface(sc) => sc.sense.sign(),
+            _ => 1.0,
+        };
+        return Ok((sign * 4.0 * PI * r * r, Some(c)));
     }
+    let m = topo.face_moments(f).map_err(qerr)?;
+    Ok((m.area, m.centroid()))
 }
 
 /// `(volume, centroid)` of a volume.
 fn volume_value(topo: &dyn TopologyView, v: EntityId) -> Result<(f64, Option<Point3>), OpError> {
-    match topo.volume_moments(v) {
-        Ok(m) => Ok((m.volume, m.centroid())),
-        Err(QueryError::Unsupported(_)) => {
-            let faces = topo.volume_faces(v);
-            if let [f] = faces
-                && let Some((c, r)) = whole_sphere(topo, *f)
-                && topo.boundary(v).iter().all(|i| i.side == Side::Left)
-            {
-                return Ok((4.0 / 3.0 * PI * r * r * r, Some(c)));
-            }
-            Err(OpError::Failed("measure: this volume has faces on a surface with poles that are not a whole sphere".into()))
-        }
-        Err(e) => Err(qerr(e)),
+    // Whole-sphere volumes keep the exact closed form (see `face_area`).
+    let faces = topo.volume_faces(v);
+    if let [f] = faces
+        && let Some((c, r)) = whole_sphere(topo, *f)
+        && topo.boundary(v).iter().all(|i| i.side == Side::Left)
+    {
+        return Ok((4.0 / 3.0 * PI * r * r * r, Some(c)));
     }
+    let m = topo.volume_moments(v).map_err(qerr)?;
+    Ok((m.volume, m.centroid()))
 }
 
 impl TypedQuery for ModelMeasure {

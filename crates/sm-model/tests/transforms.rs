@@ -25,6 +25,19 @@ fn volume_of(s: &Session) -> f64 {
     t.volume_moments(t.cells(sm_topo_api::Dim::Volume)[0]).expect("moments").volume
 }
 
+/// Numeric `face_moments` / `volume_moments` of the only sphere agree with the closed form
+/// `queries.rs` uses (area `4 pi r^2`, volume `4/3 pi r^3`).
+fn assert_sphere_numeric_matches_closed_form(s: &Session, r: f64) {
+    let t = model(s).topo();
+    let f = t.cells(sm_topo_api::Dim::Face)[0];
+    let area = t.face_moments(f).expect("face moments").area;
+    let want = 4.0 * PI * r * r;
+    assert!((area - want).abs() < 1e-11 * want, "area {area} vs {want}");
+    let vol = volume_of(s);
+    let want = 4.0 / 3.0 * PI * r * r * r;
+    assert!((vol - want).abs() < 1e-11 * want, "volume {vol} vs {want}");
+}
+
 fn hosts() -> [Factory; 2] {
     [cell_complex, topo_store]
 }
@@ -198,10 +211,11 @@ fn reflect_cylinder_and_sphere_keep_pcurves_and_orientation() {
 
         let mut s = session(factory);
         run(&mut s, &CreateSphere { radius: 1.0, center: Some([1.0, 0.0, 0.0]) }).expect("sphere");
+        assert_sphere_numeric_matches_closed_form(&s, 1.0);
         run(&mut s, &Reflect { entities: vec![vol1()], normal: [1.0, 0.0, 0.0], origin: None }).expect("reflect sphere");
+        assert_sphere_numeric_matches_closed_form(&s, 1.0);
         assert_eq!(issues(&s), Vec::<String>::new());
-        // `worst_outwardness` needs `face_moments`, which refuses pole surfaces (CR-1), so the
-        // orientation is checked from the geometry: sense stays Forward, the face normal is
+        // The orientation is checked from the geometry: sense stays Forward, the face normal is
         // radial, the divergence integral is +4/3 pi r^3, and the loop winding agrees.
         let m = measure(&s, vol1());
         let want = 4.0 / 3.0 * PI;
@@ -346,7 +360,7 @@ fn deck_plane(s: &Session) -> (sm_core::Vector3, f64) {
 #[test]
 fn mirror_deck_stays_consistent_through_every_transform() {
     // NOTE: `model_errors` validates with `Tolerance::with_linear(1e-6)` because of the
-    // `FaceMoments::plane` cancellation (CR-2). Once CR-2 is fixed, switch it back to
+    // `FaceMoments::plane` cancellation (CR-2). Once `validate` uses `TopologyView::face_plane` (CR-2 follow-up), switch it back to
     // `Tolerance::default()`: the acceptance is about the default tolerance.
     let top = id(EntityKind::TopoFace, 6);
     let mk = || {

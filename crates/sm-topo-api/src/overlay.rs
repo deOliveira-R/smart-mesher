@@ -40,7 +40,7 @@
 
 use crate::complex::{canonical_rotate, normalize_row};
 use crate::error::{QueryError, TopoError};
-use crate::geometry::{FaceMoments, Moments, PointClass};
+use crate::geometry::{FaceCentral, FaceMoments, Moments, PointClass};
 use crate::lineage::LineageLog;
 use crate::types::{Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, EntityState, FacePair, Incidence, OpId, Sense, ShellKind, Side, SurfaceCarrier};
 use crate::derived::TopologyViewExt;
@@ -1406,6 +1406,28 @@ impl TopologyView for Overlay {
                 _ => Err(QueryError::Unsupported("moments of a partitioned virtual face")),
             },
             _ => self.host.face_moments(f),
+        }
+    }
+
+    fn face_central(&self, f: EntityId) -> Result<FaceCentral, QueryError> {
+        if self.layer.hidden.contains(&f) {
+            return Err(QueryError::NoSuchCell(f));
+        }
+        match self.layer.cells.get(&f) {
+            Some(c) if c.is_virtual => match &c.carrier {
+                Carrier::Composite(members) => {
+                    let mut acc: Option<FaceCentral> = None;
+                    for m in members {
+                        let fc = self.host.face_central(*m)?;
+                        acc = Some(acc.map_or(fc, |a| a.combine(&fc)));
+                    }
+                    acc.ok_or(QueryError::Incomplete("composite face without members"))
+                }
+                _ => Err(QueryError::Unsupported(
+                    "moments of a partitioned virtual face",
+                )),
+            },
+            _ => self.host.face_central(f),
         }
     }
 

@@ -443,7 +443,10 @@ pub(super) fn sphere_has_pole_coedges_left_out_of_euler_counts_and_rings<E: Sys>
     // The pole vertex is reached by the pole coedge but skipped in outlines.
     assert_eq!(t.loop_vertices(s.face, 0).count(), 2, "pole coedges skipped");
     assert_eq!(t.face_outline(s.face).len(), 2);
-    assert!(matches!(t.face_moments(s.face), Err(QueryError::Unsupported(_))), "faces with poles are documented as unsupported");
+    let sm = t.face_moments(s.face).unwrap();
+    assert!(close(sm.area, 4.0 * PI * 4.0, 1e-9), "pole coedges contribute dv = 0: sphere area");
+    assert!(sm.vector_area.norm() < 1e-9);
+    assert!(t.volume_moments(s.volume).is_ok_and(|vm| close(vm.volume, 4.0 / 3.0 * PI * 8.0, 1e-9)));
     assert!(t.edge_ends(s.edges[0]).is_some_and(|(a, b)| a == b));
     assert!(t.flags(s.edges[0]).contains(CellFlags::DEGENERATE));
     // A pole edge that is not closed or has a curve is rejected at end_op.

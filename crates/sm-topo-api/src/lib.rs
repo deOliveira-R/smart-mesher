@@ -35,7 +35,7 @@ pub use complex::{CellComplex, canonical_rotate, normalize_row};
 pub use derived::{Coedge, FaceClass, FaceSides, FaceUse, Loop, Shell, TopologyViewExt};
 pub use edit::TopologyEdit;
 pub use error::{QueryError, TopoError};
-pub use geometry::{FaceMoments, Moments, PointClass};
+pub use geometry::{FaceCentral, FaceMoments, Moments, PointClass};
 pub use lineage::LineageLog;
 pub use overlay::{Overlay, OverlayData, PlaneCut, VirtualCut, VirtualOp, VirtualOverlay, VolumeCut};
 pub use types::{
