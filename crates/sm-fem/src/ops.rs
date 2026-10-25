@@ -36,7 +36,8 @@ fn is_empty<T>(v: &[T]) -> bool {
     v.is_empty()
 }
 
-const SHELL_REFUSED: &str = "shell blocks (faces) are not supported: W2 meshes hold volume cells only";
+const SHELL_REFUSED: &str =
+    "shell blocks (faces) are not supported: W2 meshes hold volume cells only";
 
 const BLOCK_OUT: &[OutputRole] = &[OutputRole::new(
     "block",
@@ -59,7 +60,8 @@ const SIDESET_OUT: &[OutputRole] = &[OutputRole::new(
 /// block moves it out of the block it was in (a `block-move` warning names the volume and the
 /// old block). Colors are named `block_<n>` unless `name` is given; naming an existing block
 /// differently is an error. `faces` (shell blocks) is reserved: W2 meshes hold volume cells
-/// only, so a non-empty `faces` is refused.
+/// only, so a non-empty `faces` is refused. Blocks live in the model only, so this op does not
+/// need the `fem` layer (`fem.sideset_add` does: it stores the side preference there).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockAdd {
@@ -142,7 +144,9 @@ impl TypedOp for BlockAdd {
 /// `fem.block_remove`: delete the block `block`.
 ///
 /// The volumes of the block are uncolored first, so they belong to no block afterwards (move them
-/// to another block with `fem.block_add` beforehand to keep them in the partition).
+/// to another block with `fem.block_add` beforehand to keep them in the partition). A
+/// `block-uncolor` warning names those volumes: the block coloring is no longer a partition,
+/// and export leaves their cells out of every block.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockRemove {
@@ -158,7 +162,7 @@ impl TypedOp for BlockRemove {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let label = self.block;
-        model_txn(
+        let uncolored = model_txn(
             ctx,
             |model, _| {
                 let c = model
@@ -166,10 +170,22 @@ impl TypedOp for BlockRemove {
                     .ok_or_else(|| OpError::Invalid(format!("no block {label}")))?;
                 let vols = model.volumes_of_color(c);
                 model.uncolor_volumes(&vols);
-                model.remove_color(c).map_err(invalid)
+                model.remove_color(c).map_err(invalid)?;
+                Ok(vols)
             },
             |_, _| Vec::new(),
-        )
+        )?;
+        if !uncolored.is_empty() {
+            ctx.warn(
+                "block-uncolor",
+                format!(
+                    "block {label} removed: {} volume(s) now belong to no block",
+                    uncolored.len()
+                ),
+                &uncolored,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -224,6 +240,10 @@ impl TypedOp for BlockElementType {
 /// takes; every face must be a face of that volume. Without `wrt`, a boundary face lowers to its
 /// only side and an interior face to both sides. Sidesets are named `sideset_<n>` unless `name`
 /// is given.
+///
+/// The latest call wins for the side preference of a face: a call without `wrt` clears the
+/// `wrt` that an earlier call stored for each of its faces (an interior face then lowers to both
+/// sides again), so repeat `wrt` when extending a sideset.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SidesetAdd {

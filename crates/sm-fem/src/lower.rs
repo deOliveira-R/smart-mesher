@@ -225,10 +225,7 @@ fn sidesets(
     }
     let mut by_color: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
     for &ent in m.classified_entities() {
-        if !matches!(
-            ent.kind(),
-            EntityKind::TopoFace | EntityKind::PartitionFace
-        ) {
+        if !matches!(ent.kind(), EntityKind::TopoFace | EntityKind::PartitionFace) {
             continue;
         }
         if let Some(c) = md.live_face_color(ent, topo) {
@@ -351,7 +348,10 @@ fn deck_sets(model: &ModelLayer, m: &dyn MeshRead, out: &mut Vec<Pending>) -> Ve
                 DeckSide::A | DeckSide::SelfPaired => &mut a,
                 DeckSide::B => &mut b,
             };
-            for set in own.into_iter().chain(cover.iter().filter_map(|x| m.classified_on(*x))) {
+            for set in own
+                .into_iter()
+                .chain(cover.iter().filter_map(|x| m.classified_on(*x)))
+            {
                 target.extend(set.faces.iter().copied());
             }
         }
