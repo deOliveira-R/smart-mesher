@@ -77,6 +77,20 @@ fn layouts_equal_the_reference_picker_where_the_choice_is_forced() {
 }
 
 #[test]
+fn submap_sides_on_the_l_face_equal_the_reference_picker() {
+    // Both pickers are forced here (five Ends and one Corner, sum 4), so any difference is in the
+    // side cutting and quarter-turn directions with a real Corner turn.
+    let f = l_face();
+    for rule in [VertexRule::Submap, VertexRule::Free] {
+        let ours = AnglePicker.pick(&f.topo, f.face, rule, &[], &[]).expect("ours");
+        let theirs = ReferenceCornerPicker.pick(&f.topo, f.face, rule, &[], &[]).expect("reference");
+        let types = |l: &sm_scheme_api::FaceLayout| l.corners.iter().map(|c| (c.corner, c.vertex_type)).collect::<Vec<_>>();
+        assert_eq!(types(&ours), types(&theirs), "{rule:?}");
+        assert_eq!(ours.sides, theirs.sides, "{rule:?}");
+    }
+}
+
+#[test]
 fn l_shaped_face_under_submap_has_one_corner_and_sum_four() {
     let f = l_face();
     let layout = AnglePicker.pick(&f.topo, f.face, VertexRule::Submap, &[], &[]).expect("submap");
