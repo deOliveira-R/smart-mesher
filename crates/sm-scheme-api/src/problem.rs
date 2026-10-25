@@ -970,6 +970,21 @@ impl<'a> IntervalSink<'a> {
         )
     }
 
+    /// State a real-valued goal for the count of `edge` (for example `length / size`), without
+    /// rounding it to an integer first. Emits [`IntervalConstraint::Goal`].
+    ///
+    /// A goal is a preference at the lowest firmness: the solver averages every goal on an
+    /// equal-count class (the per-edge sizing goal, `Default` counts and goals from schemes)
+    /// and rounds the mean once, so a goal never overrides anything. A soft count on the class
+    /// replaces the mean, and a hard count replaces both; ranges and linear rows still bind
+    /// the rounded value. Prefer this to `fix(.., Firmness::Soft)` when a count is derived from
+    /// sizes, because a soft count can override the user's own soft count. A goal that is not
+    /// finite and positive is ignored by the solver.
+    pub fn goal(&mut self, edge: EntityId, goal: f64) -> ConstraintId {
+        self.problem
+            .push_interval(self.origin.clone(), IntervalConstraint::Goal { edge, goal })
+    }
+
     /// Bound a count.
     pub fn range(&mut self, edge: EntityId, min: u32, max: Option<u32>) -> ConstraintId {
         self.problem.push_interval(
