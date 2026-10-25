@@ -206,3 +206,9 @@ the feasibility rescue of budget-exhausting unbounded cases).
 7. New tests: seeded optimality for 13..16 classes, 1 vs 4 threads on the exhausted path, local
    optimality of `dense30`, pair-conflict, tie and picker-conflict tests. `auto_size` docs note
    that the sampled bounding box is approximate for curved edges.
+
+## Polish wave
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Tie-zone exact comparison rebuilt term lists over every variable | fixed (`iia::tests::tie_zone_compares_moved_terms_only`). `cmp_obj` now takes one `moved` callback that fills both buffers with the terms of the variables where the two candidates differ (variable order, so the double-double sum order is deterministic). Terms of unmoved variables are identical in both sums and cancel, so the verdict is unchanged; cost per tie-zone evaluation is O(moved terms) instead of O(total terms). The tie threshold is `1e-24 * (|sa| + |sb| + 1)` over the moved sums, so it can only be tighter in absolute terms, by at most the unmoved part (relative 1e-24, far below any golden difference). No hash or golden changed. |

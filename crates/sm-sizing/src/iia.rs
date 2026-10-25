@@ -165,8 +165,10 @@ pub fn compare_deviation_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::O
     cmp_sums(&clamp(a), &clamp(b))
 }
 
-/// Fills a pooled buffer with the `(count, goal)` terms of one candidate.
-type Pairs<'a> = &'a dyn Fn(&mut Vec<(f64, f64)>);
+/// Fills two pooled buffers with the `(count, goal)` terms of the *moved* variables only (those
+/// where the two candidates differ), in variable order. The terms of unmoved variables are
+/// identical in both sums and cancel, so leaving them out keeps the comparison exact.
+type Pairs<'a> = &'a dyn Fn(&mut Vec<(f64, f64)>, &mut Vec<(f64, f64)>);
 /// Two reusable term buffers for [`cmp_obj`] (no allocation per tie-zone comparison).
 type Scratch = (Vec<(f64, f64)>, Vec<(f64, f64)>);
 
@@ -179,8 +181,7 @@ fn cmp_obj(
     a: (u128, u128, &[i64]),
     b: (u128, u128, &[i64]),
     eps: u128,
-    pa: Pairs,
-    pb: Pairs,
+    moved: Pairs,
     sc: &mut Scratch,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering::{Greater, Less};
@@ -194,8 +195,7 @@ fn cmp_obj(
     } else {
         sc.0.clear();
         sc.1.clear();
-        pa(&mut sc.0);
-        pb(&mut sc.1);
+        moved(&mut sc.0, &mut sc.1);
         cmp_sums(&sc.0, &sc.1)
     };
     s.then_with(|| a.2.cmp(b.2))
@@ -380,10 +380,13 @@ impl Local {
     fn row_terms(&self, r: &Row) -> (&[u32], &[i64]) {
         (&self.r_var[r.off..r.off + r.len], &self.r_coef[r.off..r.off + r.len])
     }
-    /// The `(count, goal)` terms of an assignment.
-    fn pairs(&self, vals: &[i64], out: &mut Vec<(f64, f64)>) {
-        for (v, &n) in vals.iter().enumerate() {
-            out.extend(self.terms(v).iter().map(|&g| (n as f64, g)));
+    /// The `(count, goal)` terms of the variables on which two assignments differ.
+    fn moved_pairs(&self, a: &[i64], b: &[i64], oa: &mut Vec<(f64, f64)>, ob: &mut Vec<(f64, f64)>) {
+        for (v, (&x, &y)) in a.iter().zip(b).enumerate() {
+            if x != y {
+                oa.extend(self.terms(v).iter().map(|&g| (x as f64, g)));
+                ob.extend(self.terms(v).iter().map(|&g| (y as f64, g)));
+            }
         }
     }
     /// Tolerance of the quantized sums: one unit per goal term.
@@ -936,8 +939,7 @@ impl<'a> Search<'a> {
                     (mx, sm, &vals),
                     (b.max, b.sum, &b.vals),
                     p.eps(),
-                    &|o| p.pairs(&vals, o),
-                    &|o| p.pairs(&b.vals, o),
+                    &|oa, ob| p.moved_pairs(&vals, &b.vals, oa, ob),
                     &mut self.pool_cmp,
                 ) == std::cmp::Ordering::Less
             }
@@ -1610,8 +1612,10 @@ fn best_single(lo: i64, hi: i64, goals: &[f64], cap: Option<u128>) -> i64 {
                     (key.0, key.1, &[n]),
                     (b.0, b.1, &[b.2]),
                     eps,
-                    &|o| pairs(n, o),
-                    &|o| pairs(b.2, o),
+                    &|oa, ob| {
+                        pairs(n, oa);
+                        pairs(b.2, ob);
+                    },
                     &mut sc,
                 ) == std::cmp::Ordering::Less
             });
@@ -2035,9 +2039,13 @@ impl IntervalSolver for IiaSolver {
         let cmp_pool = std::cell::RefCell::new(Scratch::default());
         let cmp_cost = |k: usize, a: &[i64], b: &[i64], with_max: bool| -> std::cmp::Ordering {
             let (ca, cb) = (cost_of(k, a), cost_of(k, b));
-            let terms = |v: &[i64], out: &mut Vec<(f64, f64)>| {
+            let moved = |oa: &mut Vec<(f64, f64)>, ob: &mut Vec<(f64, f64)>| {
                 for (j, &c) in comp_classes(k).iter().enumerate() {
-                    out.extend(goals[t_off[c as usize]..t_off[c as usize + 1]].iter().map(|&g| (v[j] as f64, g)));
+                    if a[j] != b[j] {
+                        let gs = &goals[t_off[c as usize]..t_off[c as usize + 1]];
+                        oa.extend(gs.iter().map(|&g| (a[j] as f64, g)));
+                        ob.extend(gs.iter().map(|&g| (b[j] as f64, g)));
+                    }
                 }
             };
             let eps: u128 = comp_classes(k)
@@ -2049,8 +2057,7 @@ impl IntervalSolver for IiaSolver {
                 (ca.0, ca.1, a),
                 (cb.0, cb.1, b),
                 eps,
-                &|o| terms(a, o),
-                &|o| terms(b, o),
+                &moved,
                 &mut cmp_pool.borrow_mut(),
             )
         };
@@ -2304,17 +2311,42 @@ mod tests {
     use super::*;
     use std::cmp::Ordering::{Greater, Less};
 
+    /// Tie-zone comparison sums only the moved variables: with 1000 unmoved variables the term
+    /// buffers hold just the moved one's terms. Goals 10, 20, 20 make the sum flat on [10, 20]
+    /// (1.0 at both n = 12 and n = 17), so the exact check reports a tie and the smaller vector
+    /// wins, whatever the unmoved variables are.
+    #[test]
+    fn tie_zone_compares_moved_terms_only() {
+        let goals = [10.0, 20.0, 20.0];
+        let (mut a, mut b) = (vec![5i64; 1001], vec![5i64; 1001]);
+        a[3] = 12;
+        b[3] = 17;
+        let mut sc = Scratch::default();
+        let moved: Pairs = &|oa, ob| {
+            for i in 0..a.len() {
+                if a[i] != b[i] {
+                    oa.extend(goals.iter().map(|&g| (a[i] as f64, g)));
+                    ob.extend(goals.iter().map(|&g| (b[i] as f64, g)));
+                }
+            }
+        };
+        // Quantized sums within eps force the exact path.
+        assert_eq!(cmp_obj(false, (0, 100, &a), (0, 101, &b), 3, moved, &mut sc), Less);
+        assert_eq!((sc.0.len(), sc.1.len()), (3, 3));
+        assert_eq!(cmp_obj(false, (0, 101, &b), (0, 100, &a), 3, moved, &mut sc), Greater);
+    }
+
     /// Phase 1 compares the maximum first: a candidate with a lower sum but a higher maximum
     /// must lose to one with a lower maximum. Without the maximum (the capped phase-2 pick) the
     /// sum decides.
     #[test]
     fn objective_puts_the_maximum_before_the_sum() {
-        let none: Pairs = &|_| ();
+        let none: Pairs = &|_, _| ();
         let mut sc = Scratch::default();
         let (inc, refv) = ([1i64, 1], [2i64, 2]);
         let a = (10u128, 100u128, &inc[..]); // lower max, higher sum
         let b = (20u128, 50u128, &refv[..]); // higher max, lower sum
-        assert_eq!(cmp_obj(true, a, b, 0, none, none, &mut sc), Less);
-        assert_eq!(cmp_obj(false, a, b, 0, none, none, &mut sc), Greater);
+        assert_eq!(cmp_obj(true, a, b, 0, none, &mut sc), Less);
+        assert_eq!(cmp_obj(false, a, b, 0, none, &mut sc), Greater);
     }
 }
