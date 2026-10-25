@@ -191,3 +191,11 @@ Merged: stage 0 at f001d6d (ACR-1 029c6d5, ACR-2 f4ee040, ACR-3 59e0fdc, ACR-4 7
      - re-exports of `Rev`/`Hash256`/`EntityId` from `sm-protocol`
      - the failure form of `Request::ScriptRun`
    - **`ParametricCurve::breakpoints`** is done right away. Without it the curve arc-length map misses 1e-9 on NURBS with very short, high-contrast knot spans, the only open finding of T4.
+10. **Integration rulings (W2 milestone green at 38d48e3; merged with the curve and sizing follow-ups at 2efc34b):**
+   - **NURBS equal-spacing tolerance (T4):** 1e-9 relative plus one fraction ulp × local speed. Under the frozen fraction-output contract a node near a fast short span cannot be placed closer than that. Plan T4 is amended.
+   - **`fem` layer hash in milestone row 1:** empty layers are left out of `layer_hashes()`, so the milestone script sets `fem.block_element_type HEX8`, which makes the layer non-empty. This adds an op and weakens nothing.
+   - **MCP text vs `structuredContent`:** with sm-mcp's `respell` feature on, the text may be the script spelling (`sm_lang::respell_json`) of `structuredContent`. Tests accept either form.
+   - **`map (surface)` P0:** for W2 it is satisfied by surfaces meshed inside a volume run. `mesh.run` on faces alone (Cubit `mesh surface`) is W3.
+   - **Block element type in output:** for linear elements the type follows from the cell shape and is checked at export. Writing the element type into `.smsh` is queued for the polyhedral-format work (W3).
+   - **sm-cli → sm-engine:** sm-cli uses sm-server's re-exports only. Dropping the direct dependency is in the follow-up wave.
+   - **Follow-up wave after integration:** end-to-end tests through `standard()` for `mesh.intervals`, auto size and `mesh.default_size`, explicit `equal`/`map` selection, and `mesh.info` scheme reporting; the curve sliver at edge ends within ulps of a knot; `Eq` rows in the sizing brute-force test.

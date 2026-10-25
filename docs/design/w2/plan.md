@@ -197,7 +197,7 @@ Rules common to every task:
     - curvature: `{factor}`.
   - `pub fn register(reg: &mut SchemeRegistry) -> sm_scheme_api::Result<()>`.
 - **Acceptance (analytic):**
-  - equal: on a line, nodes at `i·L/n` within 1 ulp·L; on a circular arc, equal arc lengths within 1e-12·L; on a NURBS curve, equal arc lengths within 1e-9 relative.
+  - equal: on a line, nodes at `i·L/n` within 1 ulp·L; on a circular arc, equal arc lengths within 1e-12·L; on a NURBS curve, equal arc lengths within 1e-9 relative plus one fraction ulp times the local speed (decision W2-10: the frozen fraction output cannot carry more).
   - bias ratio r: consecutive segment ratios = r within 1e-12 and total length exact. `first_size` mode recovers r by Newton (closure checked). `start` on the far vertex reverses the sequence.
   - dualbias: segment lengths are mirror-symmetric within 1e-12.
   - stretch: the first segment equals `first_size` within 1e-12 and the ratio never exceeds `max_ratio`.
