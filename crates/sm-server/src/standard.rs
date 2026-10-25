@@ -44,6 +44,11 @@ pub fn standard_schemes() -> Result<SchemeRegistry, StandardError> {
 /// The standard plugins and services around a given scheme registry. [`try_standard`] passes
 /// [`standard_schemes`]; tests pass the stub registry.
 pub fn distribution(schemes: SchemeRegistry) -> WorkspaceBuilder {
+    distribution_with_core(CoreLayers::new(|| Box::new(sm_topo::TopoStore::new())), schemes)
+}
+
+/// [`distribution`] over a caller-chosen topology core (e.g. the reference `CellComplex`).
+pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> WorkspaceBuilder {
     let mesher = MesherConfig::new(schemes)
         .with_solver(Box::new(IiaSolver::default()))
         .with_picker(Box::new(AnglePicker))
@@ -52,12 +57,40 @@ pub fn distribution(schemes: SchemeRegistry) -> WorkspaceBuilder {
             sm_sizing::auto_size(view, targets, factor).map_err(|e| e.to_string())
         }));
     WorkspaceBuilder::new()
-        .plugin(CoreLayers::new(|| Box::new(sm_topo::TopoStore::new())))
+        .plugin(core)
         .plugin(ModelPlugin)
         .plugin(MeshPlugin)
         .plugin(sm_fem::FemPlugin)
         .plugin(TessPlugin)
         .services(Services::new().with_versioned("mesher", 1, mesher))
+}
+
+/// The standard distribution over the reference [`sm_topo_api::CellComplex`] core instead of
+/// `TopoStore`, with the standard schemes. For differential tests (same ops, same hashes).
+///
+/// # Panics
+/// If the distribution is misassembled, like [`standard`].
+pub fn reference_standard() -> WorkspaceBuilder {
+    let schemes = match standard_schemes() {
+        Ok(s) => s,
+        Err(e) => panic!("the standard distribution is misassembled: {e}"),
+    };
+    distribution_with_core(CoreLayers::new(|| Box::new(sm_topo_api::CellComplex::new())), schemes)
+}
+
+/// [`standard`] with an optional author and a fixed RFC 3339 timestamp (reproducible node hashes).
+///
+/// # Panics
+/// If the distribution is misassembled, like [`standard`].
+pub fn standard_with(author: Option<String>, fixed_time: Option<String>) -> WorkspaceBuilder {
+    let mut b = standard();
+    if let Some(a) = author {
+        b = b.author(a);
+    }
+    if let Some(t) = fixed_time {
+        b = b.clock(sm_engine::FixedClock(t));
+    }
+    b
 }
 
 /// The standard distribution, or why it cannot be assembled (a scheme crate failed to register,

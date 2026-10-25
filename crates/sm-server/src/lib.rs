@@ -22,7 +22,11 @@ pub mod transport;
 pub use error::{ServerError, SessionError, StandardError};
 pub use host::{ExportParams, RELATIONS_QUERY, SessionHost};
 pub use server::Server;
-pub use standard::{distribution, standard, standard_schemes, try_standard};
+pub use standard::{
+    distribution, distribution_with_core, reference_standard, standard, standard_schemes, standard_with, try_standard,
+};
+/// Re-exported so consumers need not depend on `sm-engine` directly.
+pub use sm_engine::{ApplyOptions, FixedClock, Workspace};
 pub use transport::{InProcess, MAX_LINE_BYTES, serve_lines, serve_lines_with_limit, serve_stdio};
 #[cfg(feature = "ws")]
 pub use transport::{serve_ws, serve_ws_listener};
