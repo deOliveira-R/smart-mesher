@@ -77,7 +77,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("timeline.undo", "step back one node"),
 ];
 
-/// Parameters of the commands that take any (`(name, type, detail, choices)`).
+/// Parameters of the commands that take any (a [`ParamInfo`] each).
 fn command_params(name: &str) -> Option<Vec<ParamInfo>> {
     let p = |n: &str, required: bool, ty: &str, d: &str, choices: &[&str], is_entity: bool, kinds: Vec<EntityKind>| ParamInfo {
         name: n.to_owned(),

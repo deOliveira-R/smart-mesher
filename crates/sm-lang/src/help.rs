@@ -9,6 +9,7 @@ use crate::schema::{ParamInfo, SchemaDoc};
 
 /// One callable (op or query) with its schema, as help sees it.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Callable {
     /// Registry name.
     pub name: String,

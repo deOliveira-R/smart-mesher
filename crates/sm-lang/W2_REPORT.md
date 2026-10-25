@@ -34,3 +34,20 @@ Branch note: the task text names `claude/w2-sm-lang`; the session harness only p
 
 ## api_change_requests
 None.
+
+## Polish wave
+Branch note: the task names `claude/p2-sm-lang`; the session harness only permits `claude/p2-sm-lang-1lvzaw`, so the work is there.
+
+| # | Item | Status |
+|---|---|---|
+| 1, 7 | `x-entity-kind` on batch refs and plan placeholders | fixed: the producing role's `OutputRole.kinds` must share a kind with the parameter's (`wrong-kind`; empty on either side = unrestricted). Tests `batch_refs_are_kind_checked_against_the_producing_role`, `plan_placeholders_are_kind_checked_against_the_producing_role` (`tests/polish2.rs`). Only plain role placeholders (`c.faces`, `faces[]`) are checked; deeper paths are not. |
+| 2, 6 | `Callable.outputs`, `ParamInfo.kinds` without `#[non_exhaustive]` | fixed: both structs are now `#[non_exhaustive]` (nothing outside sm-lang builds them; the whole workspace and all tests build). |
+| 3, 8 | plan-mode `session.hash()/status()`, `timeline.head()` pose as the previous op's output | fixed: distinct markers `session.hash`, `session.status`, `timeline.head` (`$plan.N.session.hash`), which can never equal an op role. Test `plan_session_values_do_not_pose_as_an_op_output`. The ordinal is still the last op's (harmless; no role matches). |
+| 4 | plan-mode `session.export` with placeholder path/format/provenance fails type-mismatch | fixed: the command is skipped with a `plan-session` warning, nothing recorded (a `SessionCommand` cannot hold an unknown path). Test `plan_export_with_unknown_path_is_skipped_with_a_warning`. |
+| 5 | `mesh: "Mesh#99"` string vs literal | fixed (made to agree): a string mesh id gets the same `entity-not-found` liveness check as a literal when the host executes. Test `a_mesh_id_string_and_literal_agree_on_liveness`. |
+| 9 | `command_params` doc says tuples | fixed (doc only). |
+| 10 | `parse_entity_text` doc stale | fixed (doc only; behaviour unchanged). |
+| 11 | wire/file readers are lenient | documented in the `parse_entity_text` rustdoc for sm-lang; the `.smsh` reader and sm-cli are other crates: not done (needs orchestrator). |
+| 12 | engine-backed `respelled_ids_feed_back_as_arguments` | not done: the test lives in `crates/sm-mcp/tests/mcp.rs` (needs orchestrator / sm-mcp worker). |
+
+No state hash, layer hash, export bytes or golden file changed.

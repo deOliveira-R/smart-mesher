@@ -1056,6 +1056,16 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         let allowed: &[&str] = if verb == "export" { &["path", "format", "mesh", "provenance"] } else { &[] };
         let args = self.command_args("session", &verb, call, allowed)?;
         let get = |k: &str| args.iter().find(|(n, ..)| n == k);
+        // Plan mode: a path, format or provenance that is not known yet (a placeholder) cannot be recorded; the command
+        // is skipped with a warning, like an unknown `mesh:` is tolerated.
+        if verb == "export"
+            && !self.host.executes()
+            && ["path", "format", "provenance"].iter().any(|k| matches!(get(k), Some((_, Val::Placeholder { .. }, _))))
+        {
+            self.saw_placeholder = true;
+            self.warn(Diagnostic::warning("plan-session", span, "`session.export` has an argument that is unknown when planning").label("not recorded; nothing is written"));
+            return Ok(Val::obj(BTreeMap::new()));
+        }
         let cmd = match verb.as_str() {
             "export" => {
                 let Some((_, pv, psp)) = get("path") else {
@@ -1086,7 +1096,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         other => return self.fail(Diagnostic::error("expected-one-entity", *sp, format!("`mesh` needs exactly one entity, found {}", other.len())).label("pick one with `[0]`, or name a single id")),
                     },
                     Some((_, Val::Str(t), sp)) => match kinds::parse_user_entity_text(t) {
-                        Ok(id) => Some(id),
+                        Ok(id) => {
+                            // Same check as the literal `Mesh#n`: the id must be live (when the host executes).
+                            if id.kind() == EntityKind::Mesh
+                                && let Err(e) = self.string_id(id, &[])
+                            {
+                                return self.fail(Diagnostic::error(e.code, *sp, e.message).label("not in the current state"));
+                            }
+                            Some(id)
+                        }
                         Err(kinds::UserIdError::AmbiguousKind(m) | kinds::UserIdError::Invalid(m)) => return self.fail(Diagnostic::error("invalid-argument", *sp, m).label("not a mesh id")),
                     },
                     // Plan mode: the id is unknown; the host would pick (recorded as `None`, see LANGUAGE.md 4.7).
@@ -1116,7 +1134,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         if !self.host.executes() {
             self.warn(Diagnostic::warning("plan-session", span, format!("`session.{verb}` is not simulated by a plan")).label("nothing is written or read"));
             self.events.push(Event::Session { span, command: cmd, applied: false, result: None });
-            return Ok(if has_value { Val::Placeholder { n: self.plan_n, role: verb } } else { Val::obj(BTreeMap::new()) });
+            return Ok(if has_value { Val::Placeholder { n: self.plan_n, role: format!("session.{verb}") } } else { Val::obj(BTreeMap::new()) });
         }
         match self.host.session(&cmd) {
             Ok(res) => {
@@ -1181,7 +1199,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             return self.fail(Diagnostic::error("unknown-argument", sp, "`timeline.head` takes no arguments").label("unexpected argument"));
         }
         if !self.host.executes() {
-            return Ok(Val::Placeholder { n: self.plan_n, role: "head".to_owned() });
+            return Ok(Val::Placeholder { n: self.plan_n, role: "timeline.head".to_owned() });
         }
         match self.host.timeline_head() {
             Ok(h) => {
@@ -1470,9 +1488,24 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                             format!("${index}.{role}[*]")
                         }
                     };
+                    let op = this.batch.as_ref().and_then(|b| b.records.get(*index)).map(|r| r.name.clone());
+                    if let Some(op) = op {
+                        let have = this.role_kinds(&op, role);
+                        if let Err(e) = role_kind_ok(have, &want_kinds, &format!("`{role}`"), path) {
+                            return Some(Err(e));
+                        }
+                    }
                     Some(Ok(Json::String(s)))
                 }
                 Val::Placeholder { n, role } => {
+                    // Only a plain output role of a planned op has declared kinds (`faces`, `faces[]`, indexed or not).
+                    let plain = role.strip_suffix("[]").unwrap_or(role);
+                    if let Some(op) = this.plan_ops.get(n).cloned() {
+                        let have = this.role_kinds(&op, plain);
+                        if let Err(e) = role_kind_ok(have, &want_kinds, &format!("`{plain}`"), path) {
+                            return Some(Err(e));
+                        }
+                    }
                     this.saw_placeholder = true;
                     Some(Ok(Json::String(format!("$plan.{n}.{role}"))))
                 }
@@ -1929,6 +1962,11 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
         self.lookup_callable(op)?.outputs.iter().find(|r| r.name == role).map(|r| r.cardinality)
     }
 
+    /// Declared kinds of `role` of op `op` (empty: any kind or undeclared).
+    fn role_kinds(&mut self, op: &str, role: &str) -> &'static [EntityKind] {
+        self.lookup_callable(op).and_then(|c| c.outputs.iter().find(|r| r.name == role).map(|r| r.kinds)).unwrap_or(&[])
+    }
+
     fn no_output<'a>(&mut self, name: &str, span: Span, roles: impl Iterator<Item = &'a str>) -> IR<Val> {
         let roles: Vec<&str> = roles.collect();
         let mut d = Diagnostic::error("unknown-field", span, format!("the op result has no output `{name}`")).label("no such output");
@@ -2113,6 +2151,16 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
 }
 
 /// True if `v` is, or holds in a list or object, a symbolic value of batch `id`.
+/// `x-entity-kind` for a reference: the producing role's declared kinds and the parameter's must share a kind.
+/// Either side empty means unrestricted.
+fn role_kind_ok(have: &[EntityKind], want: &[EntityKind], what: &str, path: &[PathSeg]) -> Result<(), Issue> {
+    if have.is_empty() || want.is_empty() || have.iter().any(|k| want.contains(k)) {
+        return Ok(());
+    }
+    let join = |ks: &[EntityKind]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(" or ");
+    Err(Issue { path: path.to_vec(), code: "wrong-kind", message: format!("expected {}, but output {what} holds {}", join(want), join(have)) })
+}
+
 fn mentions_batch(v: &Val, id: u64) -> bool {
     match v {
         Val::Outcome(Outcome::Batch { batch, .. }) | Val::Ref { batch, .. } => *batch == id,
