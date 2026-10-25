@@ -103,6 +103,16 @@ pub struct Transform {
     pub t: Vector3,
 }
 
+/// Largest component magnitude of `v` when it is finite and outside `[2^-500, 2^500]`, else `None`.
+///
+/// Inside that range `dot`/`sqrt` neither overflow nor underflow, so callers run their plain formula
+/// unchanged (bit-identical to the unscaled code); outside it they divide by this value first.
+fn out_of_range_scale(v: Vector3) -> Option<f64> {
+    let m = v.x.abs().max(v.y.abs()).max(v.z.abs());
+    let (lo, hi) = (2f64.powi(-500), 2f64.powi(500));
+    (m.is_finite() && m > 0.0 && (m < lo || m > hi)).then_some(m)
+}
+
 impl Transform {
     /// The identity.
     pub const IDENTITY: Self = Self { m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: Vector3::new(0.0, 0.0, 0.0) };
@@ -145,8 +155,13 @@ impl Transform {
     }
 
     /// Reflection in the plane `{x : n·x = d}`. `n` need not be unit length.
-    /// Returns `None` if `n` is (near) zero.
+    /// Returns `None` only if `n` is exactly zero: any nonzero finite `n`, however tiny (subnormals
+    /// included) or huge, is scaled first and yields `Some`. Non-finite input is not rejected.
     pub fn reflection(n: Vector3, d: f64) -> Option<Self> {
+        let (n, d) = match out_of_range_scale(n) {
+            Some(m) => (Vector3::new(n.x / m, n.y / m, n.z / m), d / m),
+            None => (n, d),
+        };
         let l2 = n.dot(n);
         if l2 <= f64::MIN_POSITIVE {
             return None;
@@ -164,8 +179,13 @@ impl Transform {
     }
 
     /// Rotation by `angle` radians (right-hand rule) about the axis through `p` with direction `axis`.
-    /// Returns `None` if `axis` is (near) zero.
+    /// Returns `None` only if `axis` is exactly zero: any nonzero finite `axis`, however tiny
+    /// (subnormals included) or huge, is scaled first and yields `Some`. Non-finite input is not rejected.
     pub fn rotation(p: Point3, axis: Vector3, angle: f64) -> Option<Self> {
+        let axis = match out_of_range_scale(axis) {
+            Some(m) => Vector3::new(axis.x / m, axis.y / m, axis.z / m),
+            None => axis,
+        };
         let l = axis.norm();
         if l <= f64::MIN_POSITIVE {
             return None;
@@ -293,6 +313,46 @@ mod tests {
             Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), core::f64::consts::PI / 3.0).unwrap().compose(&acc)
         });
         assert!(close(six.apply_point(Point3::new(1.0, 2.0, 3.0)), Point3::new(1.0, 2.0, 3.0)));
+    }
+
+    const ROT_BITS_A: &[u64] = &[4605215599329968137, 13825743337350415434, 4600782619949761238, 4603130235055696891, 4605669480746133353, 13813180829258347041, 13822339131139876180, 4598588764182329229, 4606425949773075380, 13831289571320271488, 13822452362520667160, 4603470598323170740];
+    const ROT_BITS_B: &[u64] = &[4599624750068189093, 13830048415072142402, 0, 4606676378217366594, 4599624750068189093, 0, 0, 0, 4607182418800017408, 0, 0, 0];
+    const REF_BITS: &[u64] = &[4603751104798211316, 4605037847548888601, 13819402685148923417, 4605037847548888601, 13826265313152535602, 4600534247921518105, 13819402685148923417, 4600534247921518105, 4606324590299565885, 4607825790175356051, 13835701426657502355, 4603322190547985555];
+
+    #[test]
+    fn rotation_in_range_bits_unchanged() {
+        // Bits computed with the unscaled formula at 53ffa58.
+        let r = Transform::rotation(Point3::new(0.5, -1.0, 2.0), Vector3::new(1.0, 2.0, 3.0), 0.7).unwrap();
+        let bits: Vec<u64> = r.m.iter().flatten().chain([r.t.x, r.t.y, r.t.z].iter()).map(|x| x.to_bits()).collect();
+        assert_eq!(bits, ROT_BITS_A);
+        let r = Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), 1.234).unwrap();
+        let bits: Vec<u64> = r.m.iter().flatten().chain([r.t.x, r.t.y, r.t.z].iter()).map(|x| x.to_bits()).collect();
+        assert_eq!(bits, ROT_BITS_B);
+        let r = Transform::reflection(Vector3::new(1.0, -2.0, 0.5), 3.0).unwrap();
+        let bits: Vec<u64> = r.m.iter().flatten().chain([r.t.x, r.t.y, r.t.z].iter()).map(|x| x.to_bits()).collect();
+        assert_eq!(bits, REF_BITS);
+    }
+
+    #[test]
+    fn huge_and_tiny_axes() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let base = Transform::rotation(p, Vector3::new(1.0, 2.0, 3.0), 0.7).unwrap();
+        for s in [1e200, 1e300, 1e-200, 1e-300, 1e-320] {
+            let r = Transform::rotation(p, Vector3::new(s, 2.0 * s, 3.0 * s), 0.7).unwrap();
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!((r.m[i][j] - base.m[i][j]).abs() < 1e-14, "scale {s}");
+                }
+            }
+            assert!(close(r.apply_point(Point3::new(0.1, 0.2, 0.3)), base.apply_point(Point3::new(0.1, 0.2, 0.3))), "scale {s}");
+        }
+        let b = Transform::reflection(Vector3::new(1.0, 0.0, 0.0), 2.0).unwrap();
+        for s in [1e200, 1e-200] {
+            let r = Transform::reflection(Vector3::new(s, 0.0, 0.0), 2.0 * s).unwrap();
+            assert!(close(r.apply_point(Point3::new(0.0, 1.0, 1.0)), b.apply_point(Point3::new(0.0, 1.0, 1.0))), "scale {s}");
+        }
+        assert!(Transform::rotation(p, Vector3::new(0.0, 0.0, 0.0), 1.0).is_none());
+        assert!(Transform::reflection(Vector3::new(0.0, 0.0, 0.0), 1.0).is_none());
     }
 
     #[test]

@@ -559,3 +559,55 @@ fn text_keeps_wire_ids_by_default() {
     let text = r[0]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("TopoFace#1"), "{text}");
 }
+
+/// Every `Kind#serial` token in `s`.
+#[cfg(feature = "respell")]
+fn id_tokens(s: &str) -> Vec<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' {
+            let mut a = i;
+            while a > 0 && b[a - 1].is_ascii_alphabetic() {
+                a -= 1;
+            }
+            let mut e = i + 1;
+            while e < b.len() && b[e].is_ascii_digit() {
+                e += 1;
+            }
+            if a < i && e > i + 1 {
+                out.push(s[a..e].to_owned());
+            }
+            i = e;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(feature = "respell")]
+#[test]
+fn respelled_ids_feed_back_as_arguments() {
+    let mut m = Mock::new();
+    let r = run(&mut m, &[call(1, "model__create_brick", json!({"x": 10})), call(2, "topo__related", json!({"within": "TopoVolume#1"}))]);
+    let mut seen = 0;
+    for resp in &r[..2] {
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        for id in id_tokens(text) {
+            seen += 1;
+            assert!(!id.starts_with("Topo"), "text should be respelled: {id}");
+            // `within` is schema-tagged TopoVolume (a pinned golden) but only the id syntax is
+            // checked, so any kind exercises the spelling. The mock parses `within` into a typed `EntityId` and rejects what does not parse.
+            let r2 = run(&mut m, &[call(9, "topo__related", json!({"within": id}))]);
+            assert!(r2[0].get("error").is_none() && r2[0]["result"]["isError"] != json!(true), "{id}: {}", r2[0]);
+            let Some(Request::Query { input, .. }) = m.log.iter().rev().find(|q| matches!(q, Request::Query { .. })) else { panic!() };
+            let parsed: sm_core::EntityId = serde_json::from_value(input["within"].clone()).unwrap();
+            let canon = parsed.to_string();
+            assert!(canon.starts_with("Topo"), "{id} -> {canon}");
+            assert_eq!(canon.split('#').nth(1), id.split('#').nth(1));
+        }
+    }
+    assert!(seen >= 3, "ids found in tool text: {seen}");
+}

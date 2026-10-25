@@ -72,6 +72,7 @@ pub struct Rename {
 
 impl TypedOp for Rename {
     const NAME: &'static str = "demo.rename";
+    const NO_OUTPUTS: bool = true;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let id = ctx.resolve_kind(self.item, EntityKind::TopoBody)?;
         *ctx.layer_mut::<DemoLayer>()?.items.get_mut(id).ok_or(OpError::UnknownEntity(id))? = self.name.clone();

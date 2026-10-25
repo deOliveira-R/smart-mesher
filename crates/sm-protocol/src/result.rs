@@ -82,7 +82,11 @@ impl ExportResult {
     }
 }
 
-/// Result of `script.run`.
+/// Result of `script.run` on success.
+///
+/// On failure the server answers with an error instead (`kind` `"script-error"`), whose `data`
+/// has this same shape plus `rendered` and `error_code`; see
+/// [`Request::ScriptRun`](crate::Request::ScriptRun) for the exact form and for what stays applied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ScriptResult {

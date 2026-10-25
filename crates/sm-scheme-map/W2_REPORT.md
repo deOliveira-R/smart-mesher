@@ -57,12 +57,13 @@ in `DESIGN.md`.
 ## api_change_requests
 
 None. Two notes for the orchestrator (not blocking):
-1. `sm_scheme_api::stubs::registry()` already registers a surface scheme named `"map"`, so
-   `sm_scheme_map::register` fails with "already registered" on it (sm-mesher and sm-server tests
-   that want the real map must build their registry from `stubs::Equal` etc. as the tests here
-   do, or the stub registry needs a variant without `map`).
-2. Re-exporting `sm_mesh_api::Param` from `sm-scheme-api` would save every scheme crate a
-   dependency edge.
+1. `sm_scheme_api::stubs::registry()` registers a surface scheme named `"map"` too, so
+   `sm_scheme_map::register` fails with "already registered" on it. Ruling (w2-acr): the stubs
+   stay as they are; tests that want the real map build their registry from
+   `SchemeRegistry::new()` plus the specific stubs (`Equal`, ...) and then `register`, as
+   `tests/common` here does. sm-mesher and sm-server tests should do the same.
+2. Done (w2-acr): `sm_scheme_api::Param` is re-exported, so `sm-mesh-api` is now only a
+   dev-dependency of this crate (its tests use `CellIx`, `validate`, ...).
 
 ## Definition of done (run)
 

@@ -248,6 +248,10 @@ pub trait OpType: Send + Sync {
     fn outputs(&self) -> &'static [OutputRole] {
         &[]
     }
+    /// Whether the op declares it writes no ids (see `TypedOp::NO_OUTPUTS`). Default: false.
+    fn no_outputs(&self) -> bool {
+        false
+    }
     /// Name of the positional params property (see `TypedOp::POSITIONAL`). Default: none.
     fn positional(&self) -> Option<&'static str> {
         None
@@ -277,6 +281,9 @@ impl<T: TypedOp> OpType for Typed<T> {
     fn outputs(&self) -> &'static [OutputRole] {
         T::OUTPUTS
     }
+    fn no_outputs(&self) -> bool {
+        T::NO_OUTPUTS
+    }
     fn positional(&self) -> Option<&'static str> {
         T::POSITIONAL
     }
@@ -291,6 +298,10 @@ pub trait Plugin {
     fn id(&self) -> &str;
     /// Register everything this plugin provides.
     fn register(&self, registry: &mut Registry) -> Result<(), RegistryError>;
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Description of one registered op, for tool/help/stub generation.
@@ -310,6 +321,10 @@ pub struct OpInfo {
     pub output_schema: Schema,
     /// Declared output roles; empty when the op declares none (then roles are unchecked).
     pub outputs: Vec<OutputRole>,
+    /// The op explicitly declares that it writes no ids (`TypedOp::NO_OUTPUTS`). Omitted from
+    /// JSON when false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub no_outputs: bool,
     /// Params property that may be given positionally (also marked `x-positional` in `schema`).
     pub positional: Option<String>,
 }
@@ -339,6 +354,9 @@ pub struct OpInfoOwned {
     pub output_schema: Schema,
     /// Declared output roles.
     pub outputs: Vec<OutputRoleOwned>,
+    /// The op explicitly declares that it writes no ids (absent in older catalogs = false).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_outputs: bool,
     /// Positional params property, if any.
     pub positional: Option<String>,
 }
@@ -352,6 +370,7 @@ impl From<&OpInfo> for OpInfoOwned {
             schema: i.schema.clone(),
             output_schema: i.output_schema.clone(),
             outputs: i.outputs.iter().map(OutputRoleOwned::from).collect(),
+            no_outputs: i.no_outputs,
             positional: i.positional.clone(),
         }
     }
@@ -749,6 +768,12 @@ impl Registry {
             };
             prop.insert(X_POSITIONAL.to_owned(), true.into());
         }
+        if t.no_outputs() && !t.outputs().is_empty() {
+            return Err(RegistryError::Schema {
+                name,
+                reason: "NO_OUTPUTS is set but OUTPUTS is not empty".to_owned(),
+            });
+        }
         Ok(OpInfo {
             tool_name: name.replace('.', "__"),
             name,
@@ -756,6 +781,7 @@ impl Registry {
             schema,
             output_schema: schema_for!(Delta),
             outputs: t.outputs().to_vec(),
+            no_outputs: t.no_outputs(),
             positional: t.positional().map(str::to_owned),
         })
     }

@@ -165,8 +165,33 @@ impl fmt::Display for EntityKind {
 impl core::str::FromStr for EntityKind {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        EntityKind::ALL.iter().copied().find(|k| k.name() == s).ok_or(ParseIdError)
+        EntityKind::ALL
+            .iter()
+            .copied()
+            .find(|k| k.name() == s)
+            .or_else(|| EntityKind::SCRIPT_ALIASES.iter().find(|(a, _)| *a == s).map(|&(_, k)| k))
+            .ok_or(ParseIdError)
     }
+}
+
+impl EntityKind {
+    /// Script singular spellings accepted when parsing, besides [`Self::name`]. They mirror
+    /// `sm_lang::kinds::singular_of` (what MCP text shows with `respell`) so ids copied from a
+    /// tool result parse back. Parsing only: `Display`/`name()`/serde stay canonical. `Surface`
+    /// and `Curve` are deliberately absent: they are canonical names of the geometry carriers.
+    /// Only `FromStr` (so `EntityId` text/serde) uses these; `EntityKind`'s own derived serde
+    /// still takes canonical names only.
+    pub const SCRIPT_ALIASES: &'static [(&'static str, EntityKind)] = &[
+        ("Vertex", EntityKind::TopoVertex),
+        ("Edge", EntityKind::TopoEdge),
+        ("Face", EntityKind::TopoFace),
+        ("Volume", EntityKind::TopoVolume),
+        ("Body", EntityKind::TopoBody),
+        ("GeomCurve", EntityKind::Curve),
+        ("GeomSurface", EntityKind::Surface),
+        ("Node", EntityKind::MeshVertex),
+        ("Element", EntityKind::MeshCell),
+    ];
 }
 
 /// JSON-schema pattern of the text form of an [`EntityId`] (`Kind#serial`). Syntax only: the
@@ -284,6 +309,24 @@ impl schemars::JsonSchema for EntityId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_aliases_parse_to_their_kind() {
+        for (alias, kind) in EntityKind::SCRIPT_ALIASES {
+            assert_eq!(alias.parse::<EntityKind>(), Ok(*kind), "{alias}");
+            assert_ne!(*alias, kind.name());
+            let id: EntityId = format!("{alias}#7").parse().unwrap();
+            assert_eq!((id.kind(), id.serial()), (*kind, 7));
+            // Output stays canonical.
+            assert_eq!(id.to_string(), format!("{}#7", kind.name()));
+        }
+        assert_eq!(EntityKind::SCRIPT_ALIASES.len(), 9);
+        // Carrier names keep meaning the carriers; never faces/edges.
+        assert_eq!("Surface".parse::<EntityKind>(), Ok(EntityKind::Surface));
+        assert_eq!("Curve".parse::<EntityKind>(), Ok(EntityKind::Curve));
+        assert!("Nope".parse::<EntityKind>().is_err());
+        assert!("face#1".parse::<EntityId>().is_err());
+    }
 
     #[test]
     fn roundtrip() {

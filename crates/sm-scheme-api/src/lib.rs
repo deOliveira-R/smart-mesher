@@ -49,6 +49,8 @@ pub mod target;
 pub mod vertex;
 
 pub use caps::Caps;
+/// Re-export of [`sm_mesh_api::Param`], so scheme crates need no direct `sm-mesh-api` edge for it.
+pub use sm_mesh_api::Param;
 pub use driver::{Driver, DriverOptions, Meshed, Rejections};
 pub use error::{Attempt, FailureKind, GenerateFailure, Infeasible, Phase, Result, SchemeError};
 pub use exec::{Executor, ScopedThreads, Sequential};

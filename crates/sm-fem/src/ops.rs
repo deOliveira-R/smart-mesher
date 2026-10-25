@@ -85,7 +85,7 @@ impl TypedOp for BlockAdd {
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !self.faces.is_empty() {
-            return Err(OpError::Invalid(SHELL_REFUSED.into()));
+            return Err(OpError::Unsupported(SHELL_REFUSED.into()));
         }
         let vols = resolve_all(ctx, &self.volumes, EntityKind::TopoVolume)?;
         let (label, name) = (self.block, self.name.clone());
@@ -139,10 +139,10 @@ impl TypedOp for BlockAdd {
     }
 }
 
-/// `fem.block_remove`: delete the empty block `block`.
+/// `fem.block_remove`: delete the block `block`.
 ///
-/// Fails while volumes are still in the block: the model keeps an exact volume partition and has
-/// no way to uncolor a volume, so move them to another block with `fem.block_add` first.
+/// The volumes of the block are uncolored first, so they belong to no block afterwards (move them
+/// to another block with `fem.block_add` beforehand to keep them in the partition).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockRemove {
@@ -152,6 +152,7 @@ pub struct BlockRemove {
 
 impl TypedOp for BlockRemove {
     const NAME: &'static str = "fem.block_remove";
+    const NO_OUTPUTS: bool = true;
     const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
@@ -163,12 +164,9 @@ impl TypedOp for BlockRemove {
                 let c = model
                     .color_by_label(Domain::Volume, label)
                     .ok_or_else(|| OpError::Invalid(format!("no block {label}")))?;
-                model.remove_color(c).map_err(|e| match e {
-                    ModelError::ColorInUse(_) => OpError::Invalid(format!(
-                        "block {label} still has volumes; move them to another block first"
-                    )),
-                    e => invalid(e),
-                })
+                let vols = model.volumes_of_color(c);
+                model.uncolor_volumes(&vols);
+                model.remove_color(c).map_err(invalid)
             },
             |_, _| Vec::new(),
         )
@@ -193,18 +191,19 @@ pub struct BlockElementType {
 
 impl TypedOp for BlockElementType {
     const NAME: &'static str = "fem.block_element_type";
+    const NO_OUTPUTS: bool = true;
     const OUTPUTS: &'static [OutputRole] = &[];
     const POSITIONAL: Option<&'static str> = Some("block");
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if !self.element_type.is_linear() {
-            return Err(OpError::Invalid(format!(
+            return Err(OpError::Unsupported(format!(
                 "unsupported element type {}: higher-order elements need degree elevation",
                 self.element_type
             )));
         }
         if matches!(self.element_type, ElementType::Quad4 | ElementType::Tri3) {
-            return Err(OpError::Invalid(SHELL_REFUSED.into()));
+            return Err(OpError::Unsupported(SHELL_REFUSED.into()));
         }
         let color = ctx
             .layer::<ModelLayer>()?

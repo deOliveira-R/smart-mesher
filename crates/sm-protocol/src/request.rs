@@ -81,6 +81,16 @@ pub enum Request {
         at: Option<Rev>,
     },
     /// Run command-language text: result is a [`ScriptResult`](crate::ScriptResult).
+    ///
+    /// Failure form (as `sm-server` answers it): if any statement yields an error diagnostic,
+    /// the reply is an [`RpcError`](crate::RpcError) with `code` = [`APPLICATION_ERROR`](crate::APPLICATION_ERROR),
+    /// `kind` = `"script-error"` and `message` = the message of the first error diagnostic.
+    /// `data` is the [`ScriptResult`](crate::ScriptResult) JSON (`state`, `output`, `events`,
+    /// `diagnostics`) plus two extra string fields: `rendered` (all diagnostics rendered as
+    /// text with source excerpts) and `error_code` (the first error diagnostic's code). Partial
+    /// state is kept: ops applied before the failing statement stay applied, each as a timeline
+    /// node, and `data.state` is the hash of that real state. A script that fails to parse
+    /// applies nothing. Execution stops at the first error.
     #[serde(rename = "script.run")]
     ScriptRun {
         /// Script source.

@@ -108,7 +108,7 @@ errs. `distribution(schemes)` is the same wiring around any scheme registry (tes
   and concurrent runs (`sm_testkit::determinism::check`, pinned clock and author); cold replay from the
   root with the strict policy gives no `Diverged`.
 * `tests/registry.rs`: the registry-level conventions (plan §5 risk 6): every op declares `OUTPUTS` (or
-  is in the explicit `NO_OUTPUT_OPS` list) and every `EntityId` property of an op or query carries a
+  sets `TypedOp::NO_OUTPUTS`) and every `EntityId` property of an op or query carries a
   valid `x-entity-kind`. The checker is tested on synthetic schemas, then run on the demo set, on the
   standard plugins over the stub schemes, and on `standard()` itself.
 

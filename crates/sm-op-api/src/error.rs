@@ -65,6 +65,11 @@ pub enum OpError {
         /// The id offered for adoption.
         got: EntityId,
     },
+    /// The request is valid but this implementation does not support it (e.g. higher-order
+    /// element types, shell blocks). Distinct from [`OpError::Invalid`]: the parameters are
+    /// well-formed, the capability is absent.
+    #[error("{0}")]
+    Unsupported(String),
     /// Any other op-specific failure.
     #[error("{0}")]
     Failed(String),
@@ -94,6 +99,7 @@ impl OpError {
             OpError::Registry(e) => e.code(),
             OpError::Codec(_) => "codec",
             OpError::IdMismatch { .. } => "id-mismatch",
+            OpError::Unsupported(_) => "unsupported",
             OpError::Failed(_) => "failed",
         }
     }

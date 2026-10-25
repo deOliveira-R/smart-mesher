@@ -22,6 +22,7 @@ pub struct Delete {
 
 impl TypedOp for Delete {
     const NAME: &'static str = "model.delete";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         if self.bodies.is_empty() {

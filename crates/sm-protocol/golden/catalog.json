@@ -38,6 +38,7 @@
   "ops": [
     {
       "name": "core.batch",
+      "no_outputs": true,
       "output_schema": {
         "$defs": {
           "Diagnostic": {
