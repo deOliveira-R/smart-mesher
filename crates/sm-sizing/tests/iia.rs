@@ -368,6 +368,10 @@ fn max_dev(out: &[(EntityId, u32)], g: &[f64]) -> f64 {
     out.iter().zip(g).map(|(x, &gv)| (f64::from(x.1) - gv).abs() / gv).fold(0.0, f64::max)
 }
 
+fn sum_dev(out: &[(EntityId, u32)], g: &[f64]) -> f64 {
+    out.iter().zip(g).map(|(x, &gv)| (f64::from(x.1) - gv).abs() / gv).sum()
+}
+
 fn dense30_rows(e: &[EntityId]) -> Vec<IntervalConstraint> {
     let all: Vec<_> = e.iter().map(|&x| (x, 1)).collect();
     let odd: Vec<_> = e.iter().step_by(2).map(|&x| (x, 1)).collect();
@@ -385,7 +389,134 @@ fn dense30_two_dense_rows_is_feasible_and_not_reported_infeasible() {
     let out = IiaSolver::default().solve(&e, &cs).expect("dense30 is feasible");
     assert_eq!(first_violation(&e, &cs, &counts(&out)), None);
     // Odd edges = 4 and even edges = 1 is feasible with max deviation < 1; the optimum is no worse.
-    assert!(max_dev(&out, &g) < 0.9, "max deviation {}", max_dev(&out, &g));
+    // The search exhausts its budget here; the local polish makes the incumbent 1- and 2-move
+    // optimal (it was max 13/19, sum 18.05 before; a unit transfer 22 -> 10 alone gains 0.2).
+    let (md, sd) = (max_dev(&out, &g), sum_dev(&out, &g));
+    assert!(md <= 13.0 / 19.0 + 1e-12, "max deviation {md}");
+    assert!(sd <= 14.2759, "sum of deviations {sd}");
+}
+
+/// The polished incumbent admits no improving single move or row-sharing pair move.
+#[test]
+fn dense30_incumbent_is_locally_optimal() {
+    let (e, g, mut items) = dense_goals(30);
+    items.extend(dense30_rows(&e));
+    let cs = records(items);
+    let out = IiaSolver::default().solve(&e, &cs).expect("dense30 is feasible");
+    let base = counts(&out);
+    let cost = |v: &[u32]| (max_dev_v(v, &g), sum_dev_v(v, &g));
+    let c0 = cost(&base);
+    for i in 0..30 {
+        for j in 0..30 {
+            for (di, dj) in [(1i64, -1i64), (-1, 1), (1, 1), (-1, -1), (1, 0), (-1, 0)] {
+                if i == j && dj != 0 {
+                    continue;
+                }
+                let mut v: Vec<i64> = base.iter().map(|&x| i64::from(x)).collect();
+                v[i] += di;
+                v[j] += dj;
+                if v.iter().any(|&x| x < 1) {
+                    continue;
+                }
+                let v: Vec<u32> = v.iter().map(|&x| x as u32).collect();
+                if first_violation(&e, &cs, &v).is_some() {
+                    continue;
+                }
+                let c = cost(&v);
+                assert!(
+                    c.0 > c0.0 + 1e-9 || (c.0 >= c0.0 - 1e-9 && c.1 >= c0.1 - 1e-9),
+                    "move ({i},{di}) ({j},{dj}) improves {c0:?} to {c:?}"
+                );
+            }
+        }
+    }
+}
+
+fn max_dev_v(v: &[u32], g: &[f64]) -> f64 {
+    v.iter().zip(g).map(|(&x, &gv)| (f64::from(x) - gv).abs() / gv).fold(0.0, f64::max)
+}
+
+fn sum_dev_v(v: &[u32], g: &[f64]) -> f64 {
+    v.iter().zip(g).map(|(&x, &gv)| (f64::from(x) - gv).abs() / gv).sum()
+}
+
+/// A 40-class variant (sum <= 140, odd >= 90): the polished answer reaches the better maximum.
+#[test]
+fn dense40_variant_reaches_the_better_maximum() {
+    let (e, g, mut items) = dense_goals(40);
+    let all: Vec<_> = e.iter().map(|&x| (x, 1)).collect();
+    let odd: Vec<_> = e.iter().step_by(2).map(|&x| (x, 1)).collect();
+    items.push(IntervalConstraint::Linear { terms: all, rel: sm_scheme_api::Rel::Le, rhs: 140 });
+    items.push(IntervalConstraint::Linear { terms: odd, rel: sm_scheme_api::Rel::Ge, rhs: 90 });
+    let cs = records(items);
+    let out = IiaSolver::default().solve(&e, &cs).expect("feasible");
+    assert_eq!(first_violation(&e, &cs, &counts(&out)), None);
+    assert!(max_dev(&out, &g) <= 0.8148 + 1e-4, "max deviation {}", max_dev(&out, &g));
+}
+
+/// The exhausted path is deterministic across thread counts (two independent components, so the
+/// components are solved in parallel).
+#[test]
+fn exhausted_path_is_identical_on_one_and_four_threads() {
+    let (e1, _, mut items) = dense_goals(30);
+    items.extend(dense30_rows(&e1));
+    // A second copy on edges 101..=130.
+    let e2: Vec<_> = (101..=130).map(edge).collect();
+    for (i, &ed) in e2.iter().enumerate() {
+        items.push(goal(ed, 3.0 + (((i as u64 + 1) * 17) % 7) as f64 * 1.3));
+    }
+    items.extend(dense30_rows(&e2));
+    let e: Vec<_> = e1.iter().chain(&e2).copied().collect();
+    let cs = records(items);
+    let run = |threads: usize| {
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+            .install(|| IiaSolver::default().solve(&e, &cs).expect("feasible"))
+    };
+    let (a, b) = (run(1), run(4));
+    assert_eq!(a, b);
+    assert_eq!(a, run(1));
+    assert_eq!(counts(&a)[..30], counts(&a)[30..], "the two copies solve identically");
+}
+
+#[test]
+fn row_pair_conflicts_are_proven_at_once_and_name_both_rows() {
+    let e: Vec<_> = (1..=30).map(edge).collect();
+    let all: Vec<_> = e.iter().map(|&x| (x, 1)).collect();
+    let odd: Vec<_> = e.iter().step_by(2).map(|&x| (x, 1)).collect();
+    for (le, ge) in [(50, 40), (59, 60)] {
+        let mut items = vec![
+            IntervalConstraint::Linear { terms: all.clone(), rel: sm_scheme_api::Rel::Le, rhs: le },
+            IntervalConstraint::Linear { terms: odd.clone(), rel: sm_scheme_api::Rel::Ge, rhs: ge },
+        ];
+        items.extend(e.iter().map(|&x| goal(x, 3.0)));
+        let cs = records(items);
+        let t = std::time::Instant::now();
+        let err = IiaSolver::default().solve(&e, &cs).expect_err("infeasible");
+        assert!(t.elapsed().as_secs_f64() < 1.0, "took {:?}", t.elapsed());
+        assert!(!err.reason.contains("unproven"), "{}", err.reason);
+        assert!(err.constraints.contains(&ConstraintId(0)) && err.constraints.contains(&ConstraintId(1)), "{err:?}");
+    }
+}
+
+/// Real ties are exact: the sum of deviations of goals 10, 20, 20 is flat on [10, 20], and the
+/// plan's smallest vector wins even though the quantized keys differ by rounding noise.
+#[test]
+fn real_ties_in_the_sum_go_to_the_smallest_vector() {
+    let e: Vec<_> = (1..=4).map(edge).collect();
+    let cs = records(vec![
+        goal(e[0], 1.0),
+        IntervalConstraint::Range { edge: e[0], min: 2, max: None },
+        goal(e[1], 10.0),
+        goal(e[2], 20.0),
+        goal(e[3], 20.0),
+        IntervalConstraint::sum_equal(&[e[1]], &[e[2]]),
+        IntervalConstraint::sum_equal(&[e[2]], &[e[3]]),
+    ]);
+    let out = IiaSolver::default().solve(&e, &cs).expect("solve");
+    assert_eq!(counts(&out), vec![2, 10, 10, 10]);
 }
 
 #[test]

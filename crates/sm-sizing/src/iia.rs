@@ -31,8 +31,16 @@
 //! # Exactness
 //!
 //! Deviations are compared as integers: `key = round(|n - g| / g * 2^40)` (see
-//! [`deviation_key`]), so sums and maxima are exact and transitive, and ties are real ties. No
-//! floating-point LP is used. The search is an integer branch and bound with interval bound
+//! [`deviation_key`]), so the search can sum, bound and prune in exact integer arithmetic. No
+//! floating-point LP is used. Each key carries up to half a unit of rounding error, so two sums
+//! of keys that differ by no more than the number of goal terms may be a real tie in disguise
+//! (goals 10, 20, 20 have a sum that is flat on `[10, 20]`, yet the keys differ by noise). Such
+//! sums are never ordered by their keys: the pruning treats them as ties, and every candidate
+//! comparison (leaf, polish, reference pick, rowless classes) re-checks them in double-double
+//! arithmetic ([`compare_deviation_sums`], relative accuracy about 1e-30; sums closer than 1e-24
+//! are a tie), so a real tie goes to the lexicographically smallest vector as the plan states.
+//! Two sums that differ genuinely but by less than `terms * 2^-40` are also read as a tie by the
+//! pruning (never by the final comparison). The search is an integer branch and bound with interval bound
 //! propagation on the rows and parity propagation on even-sum rows. Domains that the rows do not
 //! bound are windowed by a maximum deviation `D`: the optimum of the windowed problem is the
 //! global optimum as soon as one feasible point exists inside the window. Small components
@@ -56,12 +64,23 @@
 //! [`ReferenceIntervalSolver`] (restricted to that component), and the reference answer is
 //! verified exactly against every constraint of the component. A search that runs out of nodes
 //! first looks for any feasible point; the best of that, the search incumbent and the reference
-//! answer is returned (not proven optimal, see DESIGN.md "Known gaps").
+//! answer is then improved by a deterministic local polish (single `+-1` moves and `+-1` pair
+//! moves between variables that share a row, strict lexicographic improvements only, run to a
+//! fixed point) and returned: 1- and 2-move locally optimal, not proven optimal (see DESIGN.md
+//! "Known gaps"). The polish also runs under the phase-2 cap `D*`.
+//!
+//! Work bound: a search visits at most [`IiaSolver::max_nodes`] nodes; the row-aware bound
+//! (at most four dense rows, at most 2048 heap moves each, pooled buffers) is charged to the same
+//! budget, one node per 64 moves; the polish is capped at 20 million move evaluations. A 30-class
+//! exhausted component takes about a second in release mode at the default budget.
 //!
 //! # Infeasibility reports
 //!
-//! `Infeasible` is returned only when it is proven (a completed search, or a single row that the
-//! bounds already violate). A conflict that comes from interacting rows names every row of the
+//! `Infeasible` is returned only when it is proven (a completed search, a single row that the
+//! bounds already violate, or two rows that contradict each other: at the root every pair of
+//! rows sharing a class is combined with small integer multipliers and compared with the sum of
+//! the domain bounds in exact integers, so `sum_all <= 50` against `sum_odd >= 40` over counts
+//! of at least 1 is refused at once, naming both rows). A conflict that comes from interacting rows names every row of the
 //! component. When the search gives up (budget or size) and the reference solver finds nothing
 //! either, the reason says "search budget exhausted, feasibility unproven": that is not a proof
 //! that no assignment exists.
@@ -97,6 +116,81 @@ pub fn deviation_key(count: u32, goal: f64) -> u128 {
 
 fn key_f(x: f64, g: f64) -> u128 {
     ((x - g).abs() / g * KEY_SCALE).round() as u128
+}
+
+// Double-double arithmetic (about 2^-104 relative error) for the exact tie checks.
+type Dd = (f64, f64);
+
+fn two_sum(a: f64, b: f64) -> Dd {
+    let s = a + b;
+    let bb = s - a;
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+fn dd_add(a: Dd, b: Dd) -> Dd {
+    let (s, e) = two_sum(a.0, b.0);
+    two_sum(s, e + a.1 + b.1)
+}
+
+/// `|x - g| / g` as a double-double (`x - g` is exact, the division keeps the remainder).
+fn dev_dd(x: f64, g: f64) -> Dd {
+    let (dh, dl) = two_sum(x, -g);
+    let q1 = dh / g;
+    let r = (-q1).mul_add(g, dh) + dl;
+    let (h, l) = two_sum(q1, r / g);
+    if h < 0.0 { (-h, -l) } else { (h, l) }
+}
+
+/// Order of two sums of deviations given as `(count, goal)` terms, to double-double accuracy:
+/// sums closer than `1e-24` (relative) are `Equal`.
+fn cmp_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::Ordering {
+    let sum = |t: &[(f64, f64)]| t.iter().fold((0.0, 0.0), |acc, &(x, g)| dd_add(acc, dev_dd(x, g)));
+    let (sa, sb) = (sum(a), sum(b));
+    let d = dd_add(sa, (-sb.0, -sb.1));
+    if d.0.abs() <= 1e-24 * (sa.0.abs() + sb.0.abs() + 1.0) {
+        std::cmp::Ordering::Equal
+    } else if d.0 < 0.0 {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Greater
+    }
+}
+
+/// Order of two sums of relative deviations `|n - g| / g`, each given as `(n, g)` terms, computed
+/// in double-double arithmetic: sums within `1e-24` (relative) are `Equal`. This is the exact tie
+/// check the solver applies when quantized sums are closer than the number of terms; it is public
+/// so oracles can use the same notion of a real tie.
+pub fn compare_deviation_sums(a: &[(f64, f64)], b: &[(f64, f64)]) -> std::cmp::Ordering {
+    let clamp = |t: &[(f64, f64)]| -> Vec<(f64, f64)> { t.iter().map(|&(n, g)| (n, g.max(MIN_GOAL))).collect() };
+    cmp_sums(&clamp(a), &clamp(b))
+}
+
+type Pairs<'a> = &'a dyn Fn() -> Vec<(f64, f64)>;
+
+/// Order of two candidates `(max key, sum key, vector)` under the objective: the maximum (when
+/// `use_max`), then the sum, then the vector. Quantized sums closer than `eps` (the number of
+/// terms: each key carries at most half a unit of rounding error) are not trusted: the exact
+/// sums decide, and only a real tie goes to the vector.
+fn cmp_obj(
+    use_max: bool,
+    a: (u128, u128, &[i64]),
+    b: (u128, u128, &[i64]),
+    eps: u128,
+    pa: Pairs,
+    pb: Pairs,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Greater, Less};
+    if use_max && a.0 != b.0 {
+        return a.0.cmp(&b.0);
+    }
+    let s = if a.1 > b.1 + eps {
+        Greater
+    } else if a.1 + eps < b.1 {
+        Less
+    } else {
+        cmp_sums(&pa(), &pb())
+    };
+    s.then_with(|| a.2.cmp(b.2))
 }
 
 /// The first constraint (in list order) that `counts` violates, or `None` when every
@@ -276,6 +370,18 @@ impl Local {
     fn row_terms(&self, r: &Row) -> (&[u32], &[i64]) {
         (&self.r_var[r.off..r.off + r.len], &self.r_coef[r.off..r.off + r.len])
     }
+    /// The `(count, goal)` terms of an assignment.
+    fn pairs(&self, vals: &[i64]) -> Vec<(f64, f64)> {
+        let mut out = Vec::with_capacity(self.goals.len());
+        for (v, &n) in vals.iter().enumerate() {
+            out.extend(self.terms(v).iter().map(|&g| (n as f64, g)));
+        }
+        out
+    }
+    /// Tolerance of the quantized sums: one unit per goal term.
+    fn eps(&self) -> u128 {
+        self.goals.len() as u128
+    }
     fn exact(&self, v: usize, n: i64) -> (u128, u128) {
         let (mut mx, mut sm) = (0u128, 0u128);
         for &g in self.terms(v) {
@@ -352,6 +458,9 @@ struct Search<'a> {
     max_nodes: u64,
     exhausted: bool,
     best: Option<Best>,
+    /// Pooled buffers of `row_extra` (no allocation per node).
+    pool_base: Vec<(i64, u128)>,
+    pool_heap: std::collections::BinaryHeap<std::cmp::Reverse<Move>>,
 }
 
 fn div_floor(a: i128, b: i128) -> i128 {
@@ -386,6 +495,8 @@ impl<'a> Search<'a> {
             max_nodes,
             exhausted: false,
             best: None,
+            pool_base: Vec::new(),
+            pool_heap: std::collections::BinaryHeap::new(),
         }
     }
 
@@ -489,11 +600,18 @@ impl<'a> Search<'a> {
     /// goal-nearest assignment violates it, the cheapest set of unit moves that restores it
     /// (a relaxation that ignores the order of moves within one variable, so it is a valid
     /// bound), minus what the per-variable bound already counted for the row's variables.
-    fn row_extra(&self, dom: &[(i64, i64)]) -> u128 {
+    ///
+    /// Cost: at most `MAX_POPS` heap moves per dense row (at most four rows), so
+    /// `O(4 * MAX_POPS * log MAX_POPS)` per call; each call is also charged to the node budget
+    /// (one node per 64 moves), so the total work of a component stays proportional to
+    /// `max_nodes`.
+    fn row_extra(&mut self, dom: &[(i64, i64)]) -> u128 {
         const MAX_POPS: usize = 2048;
         let p = self.p;
         let mut out = 0u128;
-        for &ri in &self.dense {
+        let mut work = 0u64;
+        let dense = std::mem::take(&mut self.dense);
+        for &ri in &dense {
             let row = &p.rows[ri as usize];
             let (vars, coefs) = p.row_terms(row);
             let signs: &[i64] = match row.kind {
@@ -503,8 +621,11 @@ impl<'a> Search<'a> {
                 Kind::Even => continue,
             };
             // Base point per variable and what the plain bound already counts.
-            let base: Vec<(i64, u128)> =
-                vars.iter().map(|&v| self.argmin_sum(v as usize, dom[v as usize].0, dom[v as usize].1)).collect();
+            let mut base = std::mem::take(&mut self.pool_base);
+            base.clear();
+            for &v in vars {
+                base.push(self.argmin_sum(v as usize, dom[v as usize].0, dom[v as usize].1));
+            }
             let counted: u128 =
                 vars.iter().map(|&v| self.lb(v as usize, dom[v as usize].0, dom[v as usize].1).1).sum();
             let f_base: u128 = base.iter().map(|b| b.1).sum();
@@ -532,8 +653,8 @@ impl<'a> Search<'a> {
                 // Every unit move of every variable goes into the heap at once (the relaxation
                 // ignores their order within a variable, which also holds when rounding makes
                 // the step costs of one variable non-monotone).
-                let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<Move>> =
-                    std::collections::BinaryHeap::new();
+                let mut heap = std::mem::take(&mut self.pool_heap);
+                heap.clear();
                 let mut total_moves = 0i128;
                 for (j, &v) in vars.iter().enumerate() {
                     let (l, h) = dom[v as usize];
@@ -549,8 +670,10 @@ impl<'a> Search<'a> {
                     }
                 }
                 if total_moves > MAX_POPS as i128 {
+                    self.pool_heap = heap;
                     continue;
                 }
+                work += heap.len() as u64 / 64 + 1;
                 let mut greedy = 0i128;
                 let mut done = false;
                 while let Some(std::cmp::Reverse(m)) = heap.pop() {
@@ -568,8 +691,12 @@ impl<'a> Search<'a> {
                         out = out.max(total as u128);
                     }
                 }
+                self.pool_heap = heap;
             }
+            self.pool_base = base;
         }
+        self.dense = dense;
+        self.nodes += work;
         out
     }
 
@@ -608,15 +735,20 @@ impl<'a> Search<'a> {
             sm_wo += s;
         }
         let (mv, sv) = self.lb(v, dom[v].0, dom[v].1);
-        if let Some(b) = &self.best {
+        let eps = p.eps();
+        if let Some((bmax, bsum)) = self.best.as_ref().map(|b| (b.max, b.sum)) {
             let (tm, mut ts) = (mx_wo.max(mv), sm_wo + sv);
-            if tm == b.max && ts <= b.sum && !self.dense.is_empty() {
-                let ex0 = self.row_extra(dom);
-                ts += ex0;
+            if tm == bmax && ts <= bsum + eps && !self.dense.is_empty() {
+                ts += self.row_extra(dom);
             }
-            if (tm, ts) > (b.max, b.sum)
-                || ((tm, ts) == (b.max, b.sum)
-                    && self.lex_cmp_prefix(&dom[..v], b) == std::cmp::Ordering::Greater)
+            // Sums within `eps` of the incumbent may be real ties: only a clearly worse bound
+            // prunes on the sum, and the vector order prunes within the tie zone.
+            let Some(b) = &self.best else { return };
+            if tm > bmax
+                || (tm == bmax
+                    && (ts > bsum + eps
+                        || (ts + eps >= bsum
+                            && self.lex_cmp_prefix(&dom[..v], b) == std::cmp::Ordering::Greater)))
             {
                 return;
             }
@@ -664,10 +796,10 @@ impl<'a> Search<'a> {
                     continue;
                 }
                 let (tm, ts) = (mx_wo.max(mk), sm_wo + sk);
-                if (tm, ts) > (b.max, b.sum) {
+                if tm > b.max || (tm == b.max && ts > b.sum + eps) {
                     continue;
                 }
-                if (tm, ts) == (b.max, b.sum) {
+                if tm == b.max && ts + eps >= b.sum {
                     match self.lex_cmp_prefix(&dom[..v], b) {
                         std::cmp::Ordering::Greater => continue,
                         std::cmp::Ordering::Equal if n > b.vals[v] => continue,
@@ -779,9 +911,19 @@ impl<'a> Search<'a> {
             sm += s;
         }
         let vals: Vec<i64> = dom.iter().map(|d| d.0).collect();
+        let p = self.p;
         let better = match &self.best {
             None => true,
-            Some(b) => (mx, sm, &vals) < (b.max, b.sum, &b.vals),
+            Some(b) => {
+                cmp_obj(
+                    self.use_max,
+                    (mx, sm, &vals),
+                    (b.max, b.sum, &b.vals),
+                    p.eps(),
+                    &|| p.pairs(&vals),
+                    &|| p.pairs(&b.vals),
+                ) == std::cmp::Ordering::Less
+            }
         };
         if better {
             self.best = Some(Best { max: mx, sum: sm, vals });
@@ -875,6 +1017,8 @@ fn even_row(vars: &[u32], dom: &mut [(i64, i64)], changed: &mut Vec<usize>) -> b
 enum Outcome {
     Solved(Vec<i64>),
     Infeasible(Option<u32>),
+    /// Two rows that contradict each other (a combined-bound proof at the root).
+    InfeasiblePair(u32, u32),
     /// The node budget ran out; the best assignment found so far, if any.
     Exhausted(Option<Vec<i64>>),
 }
@@ -939,6 +1083,11 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
     if let Err(r) = s.propagate(&mut root) {
         return Outcome::Infeasible(Some(r));
     }
+    if cap.is_none()
+        && let Some((a, b)) = pair_conflict(p, &root)
+    {
+        return Outcome::InfeasiblePair(a, b);
+    }
     let small = p.nvar <= SMALL_VARS;
     let dkey = |d: f64| (d * KEY_SCALE) as u128;
     // Deviation levels to try; `None` is the unrestricted last level.
@@ -999,7 +1148,11 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
             s.best = None;
             s.dfs(&dom);
             if let Some(b) = s.best.take() {
-                return if s.exhausted { Outcome::Exhausted(Some(b.vals)) } else { Outcome::Solved(b.vals) };
+                return if s.exhausted {
+                    Outcome::Exhausted(Some(polish(p, b.vals, cap)))
+                } else {
+                    Outcome::Solved(b.vals)
+                };
             }
             if !s.exhausted {
                 if li == last {
@@ -1018,6 +1171,7 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
             Seed::Unknown if small => return Outcome::Exhausted(None),
             Seed::Empty | Seed::Unknown => {
                 s.nodes = 0;
+                s.exhausted = false;
                 continue;
             }
         };
@@ -1034,10 +1188,275 @@ fn solve_local(p: &Local, max_nodes: u64, cap: Option<u128>) -> Outcome {
         let found = s.best.take().map(|b| b.vals);
         return match found {
             Some(v) if !s.exhausted => Outcome::Solved(v),
-            other => Outcome::Exhausted(other),
+            other => Outcome::Exhausted(other.map(|v| polish(p, v, cap))),
         };
     }
     Outcome::Infeasible(None)
+}
+
+/// Root-level infeasibility proof from pairs of rows that share a variable. Each non-parity row
+/// is put in `a x <= r` form (an equality gives two); the pair is combined with small integer
+/// multipliers, and `min sum (combined) x` over the root domains, tightened by the gcd of the
+/// coefficients, is compared with the combined right-hand side in exact integers. This sees what
+/// per-row propagation cannot, e.g. `sum_all <= 50` against `sum_odd >= 40` with every count at
+/// least 1 (the even edges then need 15 more than the row allows). Returns the two row indices.
+/// The work is capped (`PAIR_WORK` coefficient visits), after which pairs go unchecked.
+fn pair_conflict(p: &Local, dom: &[(i64, i64)]) -> Option<(u32, u32)> {
+    const PAIR_WORK: usize = 4_000_000;
+    const MULTS: [(i128, i128); 7] = [(1, 1), (1, 2), (2, 1), (1, 3), (3, 1), (2, 3), (3, 2)];
+    let forms = |r: &Row| -> &'static [i64] {
+        match r.kind {
+            Kind::Le => &[1],
+            Kind::Ge => &[-1],
+            Kind::Eq => &[1, -1],
+            Kind::Even => &[],
+        }
+    };
+    let mut work = 0usize;
+    let mut coef = vec![0i128; p.nvar];
+    let mut touched: Vec<usize> = Vec::new();
+    let mut seen = vec![u32::MAX; p.rows.len()];
+    for (r1, row1) in p.rows.iter().enumerate() {
+        let (vars1, coefs1) = p.row_terms(row1);
+        // Rows after r1 that share a variable with it, in ascending order.
+        let mut partners: Vec<u32> = Vec::new();
+        for &v in vars1 {
+            for &r2 in &p.v_rows[p.v_off[v as usize]..p.v_off[v as usize + 1]] {
+                if r2 as usize > r1 && seen[r2 as usize] != r1 as u32 {
+                    seen[r2 as usize] = r1 as u32;
+                    partners.push(r2);
+                }
+            }
+        }
+        partners.sort_unstable();
+        for r2 in partners {
+            let row2 = &p.rows[r2 as usize];
+            let (vars2, coefs2) = p.row_terms(row2);
+            for &s1 in forms(row1) {
+                for &s2 in forms(row2) {
+                    for &(m1, m2) in &MULTS {
+                        work += vars1.len() + vars2.len();
+                        if work > PAIR_WORK {
+                            return None;
+                        }
+                        for &t in &touched {
+                            coef[t] = 0;
+                        }
+                        touched.clear();
+                        for (&v, &k) in vars1.iter().zip(coefs1) {
+                            coef[v as usize] += m1 * i128::from(s1 * k);
+                            touched.push(v as usize);
+                        }
+                        for (&v, &k) in vars2.iter().zip(coefs2) {
+                            coef[v as usize] += m2 * i128::from(s2 * k);
+                            touched.push(v as usize);
+                        }
+                        touched.sort_unstable();
+                        touched.dedup();
+                        let rhs = m1 * i128::from(s1) * i128::from(row1.rhs)
+                            + m2 * i128::from(s2) * i128::from(row2.rhs);
+                        let (mut minsum, mut g) = (0i128, 0i128);
+                        for &t in &touched {
+                            let c = coef[t];
+                            if c == 0 {
+                                continue;
+                            }
+                            let (l, h) = dom[t];
+                            minsum += if c > 0 { c * i128::from(l) } else { c * i128::from(h) };
+                            g = gcd(g, c.abs());
+                        }
+                        if g == 0 {
+                            continue;
+                        }
+                        if div_ceil(minsum, g) > div_floor(rhs, g) {
+                            return Some((r1 as u32, r2));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn gcd(a: i128, b: i128) -> i128 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Most improvement passes of [`polish`].
+const POLISH_PASSES: usize = 10_000;
+/// Most move evaluations of one [`polish`] call.
+const POLISH_EVALS: u64 = 20_000_000;
+
+/// Deterministic local search for an incumbent of an exhausted search. It tries, in a fixed
+/// order, every single-variable `+-1` move and every `+-1, +-1` pair move between variables
+/// that share a row (a unit transfer is the `(+1, -1)` case), and keeps a move only if every
+/// row still holds (exact integers) and the objective strictly improves: `(max, sum, vector)`
+/// lexicographically, with exact tie checks; under `cap` the maximum is a constraint
+/// (`max <= cap`) and the objective is `(sum, vector)`. It repeats until a full pass changes
+/// nothing, or [`POLISH_PASSES`] passes or [`POLISH_EVALS`] evaluations are used. The result is
+/// 1-move and pair-move locally optimal (barring those bounds), still not proven optimal.
+fn polish(p: &Local, vals: Vec<i64>, cap: Option<u128>) -> Vec<i64> {
+    let mut st = Polisher {
+        p,
+        k: Vec::new(),
+        sum: 0,
+        mx: 0,
+        top: [(0, usize::MAX); 3],
+        cap,
+        x: vals,
+        evals: 0,
+    };
+    if st.x.len() != p.nvar || !rows_ok(p, &st.x, 0..p.rows.len()) {
+        return st.x;
+    }
+    st.k = (0..p.nvar).map(|v| st.key(v, st.x[v])).collect();
+    st.refresh();
+    for _ in 0..POLISH_PASSES {
+        let mut any = false;
+        for v in 0..p.nvar {
+            for d in [-1, 1] {
+                any |= st.try_move(&[(v, d)]);
+            }
+        }
+        for r in &p.rows {
+            let (vars, _) = p.row_terms(r);
+            for (ai, &a) in vars.iter().enumerate() {
+                for &b in &vars[ai + 1..] {
+                    if st.evals > POLISH_EVALS {
+                        return st.x;
+                    }
+                    for (da, db) in [(1, -1), (-1, 1), (1, 1), (-1, -1)] {
+                        any |= st.try_move(&[(a as usize, da), (b as usize, db)]);
+                    }
+                }
+            }
+        }
+        if !any || st.evals > POLISH_EVALS {
+            break;
+        }
+    }
+    st.x
+}
+
+/// Exact check of the given rows at a complete assignment.
+fn rows_ok(p: &Local, x: &[i64], rows: impl IntoIterator<Item = usize>) -> bool {
+    rows.into_iter().all(|ri| {
+        let r = &p.rows[ri];
+        let (vars, coefs) = p.row_terms(r);
+        let sum: i128 = vars.iter().zip(coefs).map(|(&v, &k)| i128::from(k) * i128::from(x[v as usize])).sum();
+        match r.kind {
+            Kind::Eq => sum == i128::from(r.rhs),
+            Kind::Le => sum <= i128::from(r.rhs),
+            Kind::Ge => sum >= i128::from(r.rhs),
+            Kind::Even => sum % 2 == 0,
+        }
+    })
+}
+
+struct Polisher<'a> {
+    p: &'a Local,
+    x: Vec<i64>,
+    /// Per variable: (effective max key, sum key) at its current value.
+    k: Vec<(u128, u128)>,
+    sum: u128,
+    mx: u128,
+    /// The three largest effective max keys with their variables.
+    top: [(u128, usize); 3],
+    cap: Option<u128>,
+    evals: u64,
+}
+
+impl Polisher<'_> {
+    fn key(&self, v: usize, n: i64) -> (u128, u128) {
+        let (m, s) = self.p.exact(v, n);
+        (self.cap.map_or(m, |q| m.saturating_sub(q)), s)
+    }
+
+    fn refresh(&mut self) {
+        self.sum = self.k.iter().map(|k| k.1).sum();
+        self.top = [(0, usize::MAX); 3];
+        for (v, k) in self.k.iter().enumerate() {
+            let mut e = (k.0, v);
+            for slot in &mut self.top {
+                if slot.1 == usize::MAX || e.0 > slot.0 {
+                    std::mem::swap(slot, &mut e);
+                }
+            }
+        }
+        self.mx = self.top[0].0;
+    }
+
+    fn max_excluding(&self, skip: &[usize]) -> u128 {
+        self.top.iter().find(|t| t.1 != usize::MAX && !skip.contains(&t.1)).map_or(0, |t| t.0)
+    }
+
+    /// Apply `mv` (at most two `(variable, +-1)` steps) if it keeps the bounds and rows and
+    /// strictly improves the objective.
+    fn try_move(&mut self, mv: &[(usize, i64)]) -> bool {
+        use std::cmp::Ordering::Less;
+        let p = self.p;
+        self.evals += 1;
+        let mut skip = [usize::MAX; 2];
+        let mut new_sum = self.sum;
+        let mut new_loc = 0u128;
+        let mut newk = [(0u128, 0u128); 2];
+        for (i, &(v, d)) in mv.iter().enumerate() {
+            let nv = self.x[v] + d;
+            if nv < p.lo0[v] || nv > p.hi0[v] {
+                return false;
+            }
+            newk[i] = self.key(v, nv);
+            new_sum = new_sum + newk[i].1 - self.k[v].1;
+            new_loc = new_loc.max(newk[i].0);
+            skip[i] = v;
+        }
+        let new_max = self.max_excluding(&skip).max(new_loc);
+        let eps = p.eps();
+        if new_max > self.mx || (new_max == self.mx && new_sum > self.sum + eps) {
+            return false;
+        }
+        for &(v, d) in mv {
+            self.x[v] += d;
+        }
+        let mut rows: Vec<usize> = Vec::new();
+        for &(v, _) in mv {
+            rows.extend(p.v_rows[p.v_off[v]..p.v_off[v + 1]].iter().map(|&r| r as usize));
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        let mut better = rows_ok(p, &self.x, rows);
+        if better {
+            better = if new_max < self.mx || new_sum + eps < self.sum {
+                true
+            } else {
+                // Possible tie: exact sums, then the vector.
+                let mut old = self.x.clone();
+                for &(v, d) in mv {
+                    old[v] -= d;
+                }
+                cmp_obj(
+                    true,
+                    (new_max, new_sum, &self.x),
+                    (self.mx, self.sum, &old),
+                    eps,
+                    &|| p.pairs(&self.x),
+                    &|| p.pairs(&old),
+                ) == Less
+            };
+        }
+        if !better {
+            for &(v, d) in mv {
+                self.x[v] -= d;
+            }
+            return false;
+        }
+        for (i, &(v, _)) in mv.iter().enumerate() {
+            self.k[v] = newk[i];
+        }
+        self.refresh();
+        true
+    }
 }
 
 enum Seed {
@@ -1103,11 +1522,17 @@ fn best_single(lo: i64, hi: i64, goals: &[f64], cap: Option<u128>) -> i64 {
         }
     }
     let mut best: Option<(u128, u128, i64)> = None;
+    let eps = goals.len() as u128;
+    let pairs = |n: i64| -> Vec<(f64, f64)> { goals.iter().map(|&g| (n as f64, g)).collect() };
     for n in cands {
         if (lo..=hi).contains(&n) {
             let c = cost(n);
             let key = if cap.is_some() { (0, c.1, c.2) } else { c };
-            if best.is_none_or(|b| key < b) {
+            let better = best.is_none_or(|b| {
+                cmp_obj(cap.is_none(), (key.0, key.1, &[n]), (b.0, b.1, &[b.2]), eps, &|| pairs(n), &|| pairs(b.2))
+                    == std::cmp::Ordering::Less
+            });
+            if better {
                 best = Some(key);
             }
         }
@@ -1518,6 +1943,20 @@ impl IntervalSolver for IiaSolver {
             }
             (mx, sm)
         };
+        // Order of two assignments of component `k` under the objective (the maximum only when
+        // `with_max`): exact on ties of the quantized sums, then the smaller vector.
+        let cmp_cost = |k: usize, a: &[i64], b: &[i64], with_max: bool| -> std::cmp::Ordering {
+            let (ca, cb) = (cost_of(k, a), cost_of(k, b));
+            let terms = |v: &[i64]| -> Vec<(f64, f64)> {
+                let mut out = Vec::new();
+                for (j, &c) in comp_classes(k).iter().enumerate() {
+                    out.extend(goals[t_off[c as usize]..t_off[c as usize + 1]].iter().map(|&g| (v[j] as f64, g)));
+                }
+                out
+            };
+            let eps: u128 = comp_classes(k).iter().map(|&c| (t_off[c as usize + 1] - t_off[c as usize]) as u128).sum();
+            cmp_obj(with_max, (ca.0, ca.1, a), (cb.0, cb.1, b), eps, &|| terms(a), &|| terms(b))
+        };
         // The reference solver on one component, verified exactly. The sub-problem is the closure
         // of the constraints that touch the component's edges: a row whose cancelled terms name
         // edges of another class still constrains this component, and those classes then come
@@ -1599,6 +2038,21 @@ impl IntervalSolver for IiaSolver {
                     assign(&mut value, &vals);
                     exact.extend(local.map(|p| (k, p)));
                 }
+                Outcome::InfeasiblePair(a, b) => {
+                    let Some(p) = &local else { continue };
+                    let (ra, rb) = (&p.rows[a as usize], &p.rows[b as usize]);
+                    let mut named: Vec<u32> = Vec::new();
+                    for ro in [ra, rb] {
+                        named.extend(p.r_var[ro.off..ro.off + ro.len].iter().map(|&v| classes[v as usize]));
+                    }
+                    named.sort_unstable();
+                    named.dedup();
+                    return Err(prob.report(
+                        "two rows cannot hold together (their combined bounds contradict)",
+                        &named,
+                        &[ra.cid, rb.cid],
+                    ));
+                }
                 Outcome::Infeasible(row) => {
                     let comp_rows = r_off[k + 1] - r_off[k];
                     let single = match (row, &local) {
@@ -1647,8 +2101,12 @@ impl IntervalSolver for IiaSolver {
                         (None, Ok(r)) => r.clone(),
                         (Some(i), Err(_)) => i,
                         (Some(i), Ok(r)) => {
-                            if (cost_of(k, &i), &i) <= (cost_of(k, r), r) { i } else { r.clone() }
+                            if cmp_cost(k, &i, r, false) != std::cmp::Ordering::Greater { i } else { r.clone() }
                         }
+                    };
+                    let chosen = match &local {
+                        Some(p) => polish(p, chosen, None),
+                        None => chosen,
                     };
                     assign(&mut value, &chosen);
                     unproven.push((k, local, refv.ok()));
@@ -1688,9 +2146,8 @@ impl IntervalSolver for IiaSolver {
         let pick = |k: usize, current: Vec<i64>, others: Vec<Vec<i64>>| -> Vec<i64> {
             let mut best = current;
             for cand in others {
-                let (cm, cs) = cost_of(k, &cand);
-                let (bm, bs) = cost_of(k, &best);
-                if cm <= dstar && (bm > dstar || (cs, &cand) < (bs, &best)) {
+                let (cm, bm) = (cost_of(k, &cand).0, cost_of(k, &best).0);
+                if cm <= dstar && (bm > dstar || cmp_cost(k, &cand, &best, false) == std::cmp::Ordering::Less) {
                     best = cand;
                 }
             }
@@ -1716,7 +2173,10 @@ impl IntervalSolver for IiaSolver {
             {
                 others.push(v);
             }
-            let chosen = pick(k, current, others);
+            let mut chosen = pick(k, current, others);
+            if let Some(p) = &local {
+                chosen = polish(p, chosen, Some(dstar));
+            }
             for (j, &c) in comp_classes(k).iter().enumerate() {
                 value[c as usize] = chosen[j];
             }

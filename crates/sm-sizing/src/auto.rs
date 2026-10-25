@@ -14,7 +14,9 @@
 //! Selection: volumes contribute their face edges, faces their edges, edges themselves;
 //! vertices and other kinds are ignored; an empty selection means every live edge of the model.
 //! The bounding box covers all selected vertices plus 17 uniformly spaced curve points per
-//! edge (so a bulging arc counts), accumulated in ascending edge order.
+//! edge (so a bulging arc counts), accumulated in ascending edge order. The box is approximate for curved edges: it is built from
+//! the samples, so a bulge between two samples can lie slightly outside it (the diagonal, and so
+//! the size, is then a hair small; the clamp bounds keep the result sane).
 
 use sm_core::{EntityId, Point3};
 use sm_scheme_api::geom;
