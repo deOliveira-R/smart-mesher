@@ -6,8 +6,9 @@ Each item maps to a crate (see `ARCHITECTURE.md`). Priority: **P0** = first vert
 Gaps still to research (per-scheme manual pages not read yet): exact behavior of each scheme, the virtual-topology command set, healing commands, sizing functions, boundary layers, Sculpt.
 
 ## A. Environment & session — `sm-engine`, `sm-lang`, `sm-server`
-- [x] P0 Command language (own syntax): entity lists, ranges, `all`, `except`, `in` filters (e.g. "surfaces in volume 2") (W2: sm-lang, tests/entity.rs, run.rs)
-- [x] P0 Script files (play), comments, variables (replaces APREPRO) (W2: milestone.rs; "record" = the timeline op log; writing a session back out as a script is P1)
+- [x] P0 Command language (own syntax): entity lists, ranges, `all`, `except`, `in` filters (e.g. "surfaces in volume 2") (W2: sm-lang, tests/fix0.rs, fix1.rs, run.rs)
+- [x] P0 Script files (play), comments, variables (replaces APREPRO) (W2: milestone.rs)
+- [ ] P1 Script record: write a session's op history out as a script file (the timeline already stores every op)
 - [x] P0 Headless/batch mode (W2: `smesh` CLI, `serve --stdio`, milestone.rs)
 - [ ] P1 Groups: add/remove/equals/xor, unite/intersect/subtract groups
 - [ ] P1 Entity naming, persistent IDs, ID renumbering controls
