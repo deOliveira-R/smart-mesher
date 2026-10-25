@@ -623,6 +623,7 @@ let info = mesh.info(mesh: m.mesh[0])
 assert info.cells == 1000
 assert info.vertices == 1331
 fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
 session.export(path: "out.smsh")
 session.export(path: "out.vtu")
 print session.hash()
@@ -636,12 +637,14 @@ mesh.size(targets: b.volume, size: 1.0)
 mesh.scheme(targets: b.volume, scheme: "map")
 mesh.run(targets: b.volume)
 fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
 let main_hash = session.hash()
 timeline.branch("alt", at: h0)                  // fork at the brick, re-apply the same ops
 mesh.size(targets: b.volume, size: 1.0)
 mesh.scheme(targets: b.volume, scheme: "map")
 mesh.run(targets: b.volume)
 fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
 assert session.hash() == main_hash
 timeline.branch("coarse", at: h0)
 mesh.size(targets: b.volume, size: 2.0)
@@ -679,10 +682,11 @@ smesh checkout alt -p $T/fork && smesh hash -p $T/fork   # == H_cli
 {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"mesh__scheme","arguments":{"targets":["TopoVolume#1"],"scheme":"map"}}}
 {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"mesh__run","arguments":{"targets":["TopoVolume#1"]}}}
 {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"fem__block_add","arguments":{"block":1,"volumes":["TopoVolume#1"]}}}
-{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"session_export","arguments":{"path":"<T>/mcp.smsh"}}}
-{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"session_export","arguments":{"path":"<T>/mcp.vtu"}}}
-{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"session_hash","arguments":{}}}          # -> H_mcp
-{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"run_script","arguments":{"text":"<fork.smesh contents>"}}}   # in a second, fresh process: asserts pass
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"fem__block_element_type","arguments":{"block":1,"element_type":"HEX8"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"session_export","arguments":{"path":"<T>/mcp.smsh"}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"session_export","arguments":{"path":"<T>/mcp.vtu"}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"session_hash","arguments":{}}}          # -> H_mcp
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"run_script","arguments":{"text":"<fork.smesh contents>"}}}   # in a second, fresh process: asserts pass
 ```
 - `x: 10` (an integer here) against `10.0` (a float in the script) is deliberate. `apply_json` re-encodes through the registry, so the node bodies must be identical.
 

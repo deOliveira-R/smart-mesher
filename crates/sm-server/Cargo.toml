@@ -30,6 +30,7 @@ sm-scheme-map = { path = "../sm-scheme-map" }
 sm-scheme-mapvol = { path = "../sm-scheme-mapvol" }
 sm-tess = { path = "../sm-tess" }
 sm-topo = { path = "../sm-topo" }
+sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
 serde = "1"
 serde_json = "1"

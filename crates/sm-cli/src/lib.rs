@@ -88,14 +88,20 @@ pub type Connect<'a> = dyn FnMut(&Settings) -> Result<Box<dyn Endpoint>, String>
 /// `settings` applied to the builder. The project (if any) is opened later by [`run`] through
 /// `session.open`, so the builder's author and clock stay in force for the project's new nodes.
 pub fn connect_standard(settings: &Settings) -> Result<Box<dyn Endpoint>, String> {
-    let mut builder = sm_server::standard();
-    if let Some(a) = &settings.author {
-        builder = builder.author(a.clone());
-    }
-    if let Some(t) = &settings.fixed_time {
-        builder = builder.clock(sm_engine::FixedClock(t.clone()));
-    }
-    let server = sm_server::Server::new(builder).map_err(|e| e.to_string())?;
+    let author = settings.author.clone();
+    let time = settings.fixed_time.clone();
+    // A factory (not `Server::new`) so `session.open` can build the opened project's workspace.
+    let server = sm_server::Server::from_factory(move || {
+        let mut b = sm_server::standard();
+        if let Some(a) = &author {
+            b = b.author(a.clone());
+        }
+        if let Some(t) = &time {
+            b = b.clock(sm_engine::FixedClock(t.clone()));
+        }
+        b
+    })
+    .map_err(|e| e.to_string())?;
     Ok(Box::new(server))
 }
 
