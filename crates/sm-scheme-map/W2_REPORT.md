@@ -71,3 +71,27 @@ None. Two notes for the orchestrator (not blocking):
 integration); `RAYON_NUM_THREADS=1 cargo test -p sm-scheme-map --all-features`;
 `cargo clippy -p sm-scheme-map --all-targets --all-features -- -D warnings`;
 `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-scheme-map --no-deps`: all clean.
+
+## Polish wave
+
+Hashes, goldens and protocol-visible behaviour are unchanged (all existing tests pass
+untouched; the only behaviour change is that valid curved faces without pcurves no longer
+report a false fold).
+
+| # | Item | Status |
+|---|---|---|
+| 1 | `orientation_ok` global Newell normal on the 3-D fallback | **fixed**: on a carrier without pcurves each quad is compared with `geom::face_normal` at its centroid (no-carrier faces keep the outline normal; the `(u, v)` path is unchanged). Tests: `three_quarters_of_a_cylinder_without_pcurves_meshes_through_the_projection_fallback` (270 degrees, curved projection fallback, exact lattice), `a_fully_periodic_face_without_pcurves_is_not_rejected_for_having_no_area`, unit `local_normals_accept_a_wrapped_grid_that_a_single_outline_normal_rejects`. Both integration tests fail on the old code with "folds over at quad (0, 0)". |
+| 2 | No end-to-end re-entrant face test | **fixed**: `a_re_entrant_l_shape_meshes_validly_with_its_corner_forced` (the L meshes validly, area 12, normals correct) and `a_dart_whose_forced_corners_fold_is_a_typed_quality_failure_not_a_panic` (typed Quality fold through `Driver::mesh`). Both pin score 10. |
+| 3, 10 | `NotApplicable` for side count != 4 untested | **fixed**: `a_layout_with_three_sides_is_a_not_applicable_failure_in_the_interval_phase` (a wrapping `CornerPicker` drops a side; verified by mutation that the message comes from `interval_constraints`) and `generate_rejects_a_layout_with_a_side_count_other_than_four` (cloned plan with a side removed, direct `generate`). |
+| 4 | `ni >= 2 && nj >= 2` guard in `generate` | **fixed** (typed `Internal`). Not reachable through the driver (`edge_nodes` always yields >= 2 nodes), so no integration test; `orientation_ok` has the same guard, covered by `degenerate_grids_are_errors_not_panics`. |
+| 5 | Normal check on the pcurve path | **fixed**: `quads_follow_the_face_normal_on_the_parameter_space_path` (quarter cylinder and sphere band, `face_normal` at each centroid). |
+| 6, 12 | Unused `sm-math` dependency | **fixed**: removed from `Cargo.toml` (one line of `Cargo.lock` drops, a consequence). |
+| 7 | `sm-mesh-api` in `[dependencies]` | **obsolete**: `sm_scheme_api::Param` is re-exported and used; `sm-mesh-api` is dev-only. |
+| 8 | Dev-deps `sm-model-api`, `serde_json` | **confirmed, no change** (fixtures only); for the orchestrator to acknowledge. |
+| 9 | Differential test against `stubs::Map` | **fixed**: `map_agrees_exactly_with_the_reference_stub_on_the_six_brick_faces` (identical `topology_hash`, `geometry_hash`, per-face `NodeGrid`, max point difference exactly 0). |
+| 11 | `seg[0]` / `seg[1..]` with empty `coedge_nodes` | **fixed**: `n < 2` returns `None` in `side_uvs` (falls back to 3-D). Unreachable through the driver, no dedicated test. |
+| CR note 1 | stubs `registry()` already has `map` | **confirmed, no change here**: tests build their registry from `Equal` + `register`, as the ruling says. |
+| CR note 2 / Param re-export | **obsolete**: done on main; this crate uses `sm_scheme_api::Param`. |
+
+Not done (needs orchestrator): a `stubs::registry` variant without `map` (contract crate, ruled
+out by w2-acr); acknowledging the two dev-deps (item 8).

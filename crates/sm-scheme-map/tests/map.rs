@@ -588,3 +588,279 @@ fn a_five_sided_face_meshes_as_four_logical_sides_once_a_corner_is_demoted() {
 }
 
 const TAU_5: f64 = 2.0 * PI / 5.0;
+
+/// Every quad turns along the face normal at its centroid.
+fn assert_quads_follow_face_normal(m: &dyn MeshRead, topo: &sm_topo_api::CellComplex) {
+    for c in 0..m.cell_count() {
+        let ci = CellIx::new(c);
+        let cyc = m.cell_corners(ci).expect("corners");
+        let p: Vec<_> = cyc.iter().map(|v| m.point(v.get())).collect();
+        let n = (p[2] - p[0]).cross(p[3] - p[1]);
+        let centroid = Point3::new(
+            p.iter().map(|q| q.x).sum::<f64>() / 4.0,
+            p.iter().map(|q| q.y).sum::<f64>() / 4.0,
+            p.iter().map(|q| q.z).sum::<f64>() / 4.0,
+        );
+        let face = m.cell_class(ci).entity;
+        let want = geom::face_normal(topo, face, centroid).expect("normal");
+        assert!(n.dot(want) > 0.0, "cell {c} on {face} against the normal");
+    }
+}
+
+#[test]
+fn quads_follow_the_face_normal_on_the_parameter_space_path() {
+    let q = quarter_cylinder(2.0, 3.0);
+    let intent = counts(&[
+        (q.edges[0], 6),
+        (q.edges[1], 4),
+        (q.edges[2], 6),
+        (q.edges[3], 4),
+    ]);
+    let out = mesh_faces(&q.topo, &q.model, &[q.face], &intent, &Sequential).expect("mesh");
+    assert_quads_follow_face_normal(&out.finished.mesh, &q.topo);
+    let b = sphere_band(3.0, FRAC_PI_2, PI / 6.0, PI / 3.0);
+    let intent = counts(&[
+        (b.edges[0], 5),
+        (b.edges[1], 4),
+        (b.edges[2], 5),
+        (b.edges[3], 4),
+    ]);
+    let out = mesh_faces(&b.topo, &b.model, &[b.face], &intent, &Sequential).expect("mesh");
+    assert_quads_follow_face_normal(&out.finished.mesh, &b.topo);
+}
+
+#[test]
+fn three_quarters_of_a_cylinder_without_pcurves_meshes_through_the_projection_fallback() {
+    // 270 degrees: a single Newell normal of the outline points away from the far side, so a
+    // global reference reported a fold on a valid mesh.
+    let (r, h, sweep) = (2.0, 3.0, 1.5 * PI);
+    let c = cylinder_sector_no_pcurves(r, h, sweep);
+    let (nu, nv) = (12u32, 4u32);
+    let intent = counts(&[(c.edges[0], nu), (c.edges[1], nv), (c.edges[2], nu), (c.edges[3], nv)]);
+    let out = mesh_faces(&c.topo, &c.model, &[c.face], &intent, &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert_eq!(m.cell_count(), (nu * nv) as usize);
+    // The 3-D blend of arc points keeps their angles, so the projected interior is the exact
+    // (angle, height) lattice.
+    let want: Vec<[f64; 3]> = (0..=nv)
+        .flat_map(|j| {
+            (0..=nu).map(move |i| {
+                let a = sweep * f64::from(i) / f64::from(nu);
+                [r * a.cos(), r * a.sin(), h * f64::from(j) / f64::from(nv)]
+            })
+        })
+        .collect();
+    let got = points(m);
+    assert_same_point_set(&got, &want, 1e-9);
+    assert_quads_follow_face_normal(m, &c.topo);
+    // Interior nodes carry the projected surface parameters.
+    let patch = out.patches.get(Target::Surface(c.face)).expect("patch");
+    let grid = patch.grid.as_ref().expect("grid");
+    let key = grid.at(1, 1).expect("interior key");
+    assert!(matches!(
+        out.patches.node(key).expect("node").1,
+        sm_mesh_api::Param::Surface(_)
+    ));
+}
+
+#[test]
+fn a_fully_periodic_face_without_pcurves_is_not_rejected_for_having_no_area() {
+    use sm_topo_api::{CoedgeKey, Side, TopologyEdit, TopologyView};
+    let (mut topo, ids, model) = cylinder_lateral(1.5, 2.0);
+    let face = ids.faces[2];
+    let [bot, top, seam] = ids.edges;
+    // Strip the pcurves of the lateral face: the fallback has only 3-D data.
+    sm_topo_api::fixtures::with_op(&mut topo, sm_topo_api::OpId(2), |t| {
+        for e in [bot, top, seam] {
+            for side in [Side::Left, Side::Right] {
+                let k = CoedgeKey { face, edge: e, side };
+                if t.pcurve(k).is_some() {
+                    t.set_pcurve(k, None)?;
+                }
+            }
+        }
+        Ok(())
+    })
+    .expect("strip pcurves");
+    let intent = counts(&[(bot, 8), (top, 8), (seam, 4)]);
+    let out = mesh_faces(&topo, &model, &[face], &intent, &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert_eq!(m.cell_count(), 32);
+    for p in points(m) {
+        assert!((p[0].hypot(p[1]) - 1.5).abs() < 1e-9);
+    }
+    assert_quads_follow_face_normal(m, &topo);
+}
+
+fn sized(size: f64) -> MeshIntent {
+    let mut intent = MeshIntent::default();
+    intent.defaults.sizing = Some(sm_scheme_api::SizingSpec::Constant { size });
+    intent
+}
+
+#[test]
+fn a_re_entrant_l_shape_meshes_validly_with_its_corner_forced() {
+    // 270 degree corner: map is the last resort (score 10), the picker forces it to a Side.
+    let l = polygon(
+        &[
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [2.0, 4.0, 0.0],
+            [0.0, 4.0, 0.0],
+        ],
+        [0.0, 0.0, 1.0],
+    );
+    assert!(matches!(
+        applicability(&registry(), &l),
+        Applicability::Applicable { score: 10, .. }
+    ));
+    let out = mesh_faces(&l.topo, &l.model, &[l.face], &sized(0.5), &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert!((area(m) - 12.0).abs() < 1e-9, "{}", area(m));
+    assert_quads_follow_face_normal(m, &l.topo);
+}
+
+#[test]
+fn a_dart_whose_forced_corners_fold_is_a_typed_quality_failure_not_a_panic() {
+    // Quadrilateral with one reflex corner: the forced End corners make the blend fold.
+    let d = polygon(
+        &[
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 4.0, 0.0],
+        ],
+        [0.0, 0.0, 1.0],
+    );
+    assert!(matches!(
+        applicability(&registry(), &d),
+        Applicability::Applicable { score: 10, .. }
+    ));
+    match mesh_faces(&d.topo, &d.model, &[d.face], &sized(0.5), &Sequential) {
+        Err(SchemeError::NoApplicableScheme { tried, .. }) => {
+            assert!(
+                tried
+                    .iter()
+                    .any(|a| a.message.contains("Quality") && a.message.contains("folds over")),
+                "{tried:?}"
+            );
+        }
+        other => panic!("expected a Quality fold, got {:?}", other.map(|_| ())),
+    }
+}
+
+/// Corner picker that drops the last logical side of every layout it returns.
+struct ThreeSides;
+
+impl sm_scheme_api::CornerPicker for ThreeSides {
+    fn pick(
+        &self,
+        topo: &dyn sm_topo_api::TopologyView,
+        face: sm_core::EntityId,
+        rule: sm_scheme_api::VertexRule,
+        requests: &[(sm_topo_api::CornerKey, sm_scheme_api::Firm<VertexType>)],
+        ids: &[sm_scheme_api::ConstraintId],
+    ) -> sm_scheme_api::Result<sm_scheme_api::FaceLayout> {
+        let l = sm_scheme_api::ReferenceCornerPicker.pick(topo, face, rule, requests, ids)?;
+        let mut sides = l.sides.clone();
+        sides.pop();
+        Ok(sm_scheme_api::FaceLayout::new(l.face, l.rule, l.corners, sides))
+    }
+}
+
+#[test]
+fn a_layout_with_three_sides_is_a_not_applicable_failure_in_the_interval_phase() {
+    let r = rectangle(10.0, 6.0);
+    let reg = registry();
+    let solver = sm_scheme_api::ReferenceIntervalSolver::default();
+    let driver = sm_scheme_api::Driver::new(&reg, &solver, &ThreeSides);
+    let sel = [r.face];
+    let input = MeshInput::new(&r.topo, &r.model, &WholeFaces, &sel);
+    let err = driver
+        .mesh(
+            &input,
+            &counts(&[]),
+            &Sequential,
+            sm_mesh::MeshBuilder::surface(),
+            &mut sm_mesh_api::SerialAlloc::new(),
+        )
+        .err()
+        .expect("error");
+    let text = err.to_string();
+    // The failure is raised by `interval_constraints` (the first place the side count is read).
+    assert!(
+        text.contains("NotApplicable") && text.contains("3 logical sides; map needs four"),
+        "{text}"
+    );
+}
+
+#[test]
+fn generate_rejects_a_layout_with_a_side_count_other_than_four() {
+    use sm_scheme_api::{FailureKind, GenCtx, Params, Scheme};
+    let r = rectangle(10.0, 6.0);
+    let intent = counts(&[
+        (r.edges[0], 5),
+        (r.edges[1], 3),
+        (r.edges[2], 5),
+        (r.edges[3], 3),
+    ]);
+    let out = mesh_faces(&r.topo, &r.model, &[r.face], &intent, &Sequential).expect("mesh");
+    let mut plan = out.plan.clone();
+    plan.layouts[0].sides.pop();
+    let sel = [r.face];
+    let input = MeshInput::new(&r.topo, &r.model, &WholeFaces, &sel);
+    let cx = GenCtx::new(&input, &plan, &out.patches, None);
+    let err = sm_scheme_map::SurfaceMap
+        .generate(&cx, Target::Surface(r.face), &Params::default())
+        .expect_err("three sides");
+    assert_eq!(err.kind, FailureKind::NotApplicable, "{err:?}");
+    assert!(err.reason.contains("3 logical sides"), "{}", err.reason);
+}
+
+#[test]
+fn map_agrees_exactly_with_the_reference_stub_on_the_six_brick_faces() {
+    let (topo, ids, model) = brick_setup([1.0, 1.5, 2.0]);
+    let intent = counts(&[(ids.edges[0], 2), (ids.edges[4], 3), (ids.edges[8], 4)]);
+    let mut stub_reg = sm_scheme_api::SchemeRegistry::new();
+    stub_reg
+        .register(Box::new(sm_scheme_api::stubs::Equal))
+        .expect("equal");
+    stub_reg
+        .register(Box::new(sm_scheme_api::stubs::Map))
+        .expect("stub map");
+    let solver = sm_scheme_api::ReferenceIntervalSolver::default();
+    let driver = sm_scheme_api::Driver::new(&stub_reg, &solver, &sm_scheme_api::ReferenceCornerPicker);
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &ids.faces);
+    let reference = driver
+        .mesh(
+            &input,
+            &intent,
+            &Sequential,
+            sm_mesh::MeshBuilder::surface(),
+            &mut sm_mesh_api::SerialAlloc::new(),
+        )
+        .expect("stub mesh");
+    let real = mesh_faces(&topo, &model, &ids.faces, &intent, &Sequential).expect("real mesh");
+    let (a, b) = (&real.finished.mesh, &reference.finished.mesh);
+    assert_eq!(sm_mesh_api::topology_hash(a), sm_mesh_api::topology_hash(b));
+    assert_eq!(sm_mesh_api::geometry_hash(a), sm_mesh_api::geometry_hash(b));
+    let (pa, pb) = (points(a), points(b));
+    assert_eq!(pa.len(), pb.len());
+    let max_diff = pa
+        .iter()
+        .zip(&pb)
+        .flat_map(|(p, q)| (0..3).map(move |k| (p[k] - q[k]).abs()))
+        .fold(0.0, f64::max);
+    assert_eq!(max_diff, 0.0);
+    for f in &ids.faces {
+        let ga = real.patches.get(Target::Surface(*f)).and_then(|p| p.grid.as_ref());
+        let gb = reference.patches.get(Target::Surface(*f)).and_then(|p| p.grid.as_ref());
+        assert!(ga.is_some());
+        assert_eq!(ga, gb, "NodeGrid of {f}");
+    }
+}
