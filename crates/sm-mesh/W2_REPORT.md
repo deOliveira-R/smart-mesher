@@ -17,3 +17,6 @@ passes with 4 concurrent loops (previously ~4 of 15 failed on the base commit).
 
 Not done (needs orchestrator): none.
 Changed goldens/hashes: none (test-only change).
+
+Gate: `tools/ci.sh` exit 0; `RAYON_NUM_THREADS=1 cargo test -p sm-mesh --all-features` exit 0;
+`cargo clippy -p sm-mesh --all-targets --all-features -- -D warnings` exit 0.
