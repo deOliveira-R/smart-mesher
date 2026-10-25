@@ -148,9 +148,15 @@ impl Fixed {
     fn input_schema(self) -> Value {
         let hash = |d: &str| json!({"type": "string", "pattern": HASH_PATTERN, "description": d});
         let rev = |d: &str| {
-            json!({"type": "string", "description": format!(
-                "{d} A branch name, a 64-hex node hash, or \"empty\" (the state before any op)."
-            )})
+            json!({"description": format!(
+                "{d} A branch name, a 64-hex node hash, or \"empty\" (the state before any op). \
+                 To name a branch literally called `empty`, or one whose name is 64 lowercase hex \
+                 characters, use {{\"ref\": name}}; a node can also be given as {{\"node\": hash}}."
+            ), "anyOf": [
+                {"type": "string"},
+                {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"], "additionalProperties": false},
+                {"type": "object", "properties": {"node": {"type": "string", "pattern": HASH_PATTERN}}, "required": ["node"], "additionalProperties": false},
+            ]})
         };
         let (properties, required) = match self {
             Fixed::RunScript => (

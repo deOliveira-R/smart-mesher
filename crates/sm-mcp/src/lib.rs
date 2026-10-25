@@ -22,9 +22,10 @@
 //! malformed arguments, unknown tools and endpoint failures are JSON-RPC errors.
 //!
 //! Feature `respell` rewrites ids in the *text* content to the command-language spelling
-//! (`Face#1`) with `sm_lang::respell_json`. It is off by default because tool arguments accept
-//! only the canonical spelling (`TopoFace#1`), so a model copying an id from the text would
-//! send a rejected one.
+//! (`Face#1`) with `sm_lang::respell_json`. Tool arguments accept both spellings
+//! (`EntityKind::from_str` takes the canonical `TopoFace#1` and the command-language aliases),
+//! so a model copying a respelled id from the text sends a valid one. It stays off by default
+//! so the text is the exact JSON of `structuredContent`.
 
 mod server;
 mod tools;
@@ -40,8 +41,9 @@ pub use version::McpVersion;
 ///
 /// One reply line per request, in request order, flushed after each. Notifications and blank
 /// lines get no reply. A malformed line gets a reply with `id: null` (`-32700` for invalid
-/// JSON or UTF-8, `-32600` for a non-object, a batch array or a missing method). Requests run
-/// one at a time; `notifications/cancelled` cannot interrupt a running call and is ignored.
+/// JSON or UTF-8, `-32600` for a non-object or a batch array). A request object with a missing
+/// or non-string `method` (or a bad `jsonrpc`) gets `-32600` and echoes its `id` when that is a
+/// string or a number, else `null`. Requests run one at a time; `notifications/cancelled` cannot interrupt a running call and is ignored.
 ///
 /// # Errors
 /// Only I/O errors of `input` or `output` end the loop early.

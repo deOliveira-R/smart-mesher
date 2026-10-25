@@ -22,7 +22,7 @@ public surface (plus `McpVersion`). The `respell` feature adds `sm-lang`.
 - Requests: `id` must be a string or number (MCP forbids `null`). No `id` means notification:
   never answered, whatever the method (`notifications/initialized`, `notifications/cancelled`,
   ...). Responses from the client are ignored. Batch arrays get `-32600` (batching was removed in
-  2025-06-18). Unparseable or structurally invalid input is answered with `id: null`.
+  2025-06-18). Unparseable or structurally invalid input is answered with `id: null`, except a request whose `id` is a valid string/number: its -32600 replies (missing or non-string `method`, bad `jsonrpc`) echo the id.
 - `initialize`: a requested version in {2025-06-18, 2025-03-26, 2024-11-05} is echoed, anything
   else is answered with 2025-06-18 (the client decides whether to disconnect). The negotiated
   version gates fields: `title` and `structuredContent` need 2025-06-18, tool `annotations` need
@@ -80,4 +80,4 @@ iteration; maps are sorted. `tests/golden/session.*.jsonl` pin a full transcript
 - `notifications/cancelled` and progress are ignored: calls are synchronous.
 - Queries cannot be evaluated `at` another revision through MCP (the query input is passed
   through verbatim); use `run_script` or the protocol directly.
-- `respell` (off by default) shows `Face#1` in the text; tool arguments only accept `TopoFace#1`.
+- `respell` (off by default) shows `Face#1` in the text; tool arguments accept both spellings (`TopoFace#1` and the alias `Face#1`).
