@@ -12,7 +12,7 @@ use sm_core::{ENTITY_ID_PATTERN, EntityId, EntityKind};
 use sm_engine::WorkspaceBuilder;
 use sm_op_api::{ApplyCtx, OpError, OpInfoOwned, QueryInfoOwned, TypedOp};
 use sm_protocol::{CatalogResult, Endpoint, Request};
-use sm_server::{Server, StandardError, distribution, try_standard};
+use sm_server::{Server, distribution, try_standard};
 
 fn is_entity_id(v: &Value) -> bool {
     let Some(o) = v.as_object() else { return false };
@@ -189,12 +189,37 @@ fn standard_follows_the_conventions_once_the_scheme_crates_are_merged() {
             let v = violations(&cat.ops, &cat.queries);
             assert!(v.is_empty(), "{v:#?}");
         }
-        // Skeleton scheme crates register nothing yet; the check goes live with the merge.
-        Err(StandardError::MissingScheme { dim, scheme }) => {
-            eprintln!("skipped: scheme `{scheme}` ({dim}) is not registered yet (skeleton scheme crates)");
-        }
         Err(e) => panic!("standard distribution failed to assemble: {e}"),
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Contradiction {
+    #[schemars(extend("x-entity-kind" = ["TopoVolume"]))]
+    volume: EntityId,
+}
+
+impl TypedOp for Contradiction {
+    const NAME: &'static str = "probe.contradiction";
+    const NO_OUTPUTS: bool = true;
+    const OUTPUTS: &'static [sm_op_api::OutputRole] =
+        &[sm_op_api::OutputRole::new("volume", &[EntityKind::TopoVolume], sm_op_api::Cardinality::One, "claims an output")];
+    fn apply(&self, _: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn registering_no_outputs_with_declared_outputs_is_refused() {
+    let mut r = sm_op_api::Registry::new();
+    match r.register::<Contradiction>() {
+        Err(sm_op_api::RegistryError::Schema { name, reason }) => {
+            assert_eq!(name, "probe.contradiction");
+            assert!(reason.contains("NO_OUTPUTS"), "{reason}");
+        }
+        other => panic!("expected a schema error, got {:?}", other.map(|_| ())),
+    }
+    assert!(!r.op_names().contains(&"probe.contradiction"), "the op was not registered");
 }
 
 #[test]

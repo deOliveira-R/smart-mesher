@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::Value;
 use sm_core::{EntityId, EntityKind};
 use sm_engine::{ApplyOptions, Workspace};
-use sm_fem::{ExportFormat as FemFormat, ExportRequest};
+use sm_fem::{ExportFormat as FemFormat, ExportRequest, FemError};
 use sm_lang::{Host, HostError, QueryRelations, Relations, SessionCommand, TimelineCommand, TimelineHead};
 use sm_layer_api::MeshLayer;
 use sm_op_api::{Delta, Engine, Hash256, Head, OpRecord, Registry, Rev, State};
@@ -74,6 +74,12 @@ impl<'w> SessionHost<'w> {
         Self { ws, relations, includes: BTreeMap::new() }
     }
 
+    /// A host for the session operations only (hash, export, save): no adjacency lookup, so no
+    /// registry scan per request.
+    pub(crate) fn plain(ws: &'w mut Workspace) -> Self {
+        Self { ws, relations: None, includes: BTreeMap::new() }
+    }
+
     /// In-memory include files, by the name a script gives to `include`.
     #[must_use]
     pub fn with_includes(mut self, includes: BTreeMap<String, String>) -> Self {
@@ -131,15 +137,31 @@ impl<'w> SessionHost<'w> {
     /// Export a mesh of the current state: build the bytes with [`sm_fem::export`], then write
     /// them atomically (temp file and rename) when a path is given.
     ///
-    /// With no mesh named, the only mesh is exported; none is `no-mesh`, several is
-    /// `ambiguous-mesh`. The bytes are a pure function of the state and the request.
+    /// With no mesh named, [`sm_fem::export`] picks the only mesh; none is `no-mesh`, several is
+    /// `ambiguous-mesh` (with `data.meshes`), a named id that is not in the state is
+    /// `unknown-mesh`. Other failures carry [`FemError::code`]. An explicit `format` that
+    /// disagrees with a `.smsh`/`.vtu` path extension, and `provenance` with a format that cannot
+    /// record it (VTU), are `bad-request`. The bytes are a pure function of the state and the
+    /// request.
     pub fn export(&mut self, p: &ExportParams) -> Result<ExportResult, SessionError> {
         let path = p.path.as_deref().map(|s| self.resolve_path(s)).transpose()?;
         if path.is_none() && !p.inline {
             return Err(SessionError::bad_request("export needs a `path`, or `inline: true`"));
         }
         let format = match (p.format, &path) {
-            (Some(f), _) => f,
+            (Some(f), Some(path)) => {
+                if let Some(by_ext) = known_format_of(path)
+                    && by_ext != f
+                {
+                    return Err(SessionError::bad_request(format!(
+                        "format `{}` disagrees with the extension of {}",
+                        format_name(f),
+                        path.display()
+                    )));
+                }
+                f
+            }
+            (Some(f), None) => f,
             (None, Some(path)) => format_of(path)?,
             (None, None) => return Err(SessionError::bad_request("inline export needs an explicit `format`")),
         };
@@ -148,15 +170,20 @@ impl<'w> SessionHost<'w> {
             ExportFormat::Vtu => FemFormat::Vtu,
             _ => return Err(SessionError::bad_request("unsupported export format")),
         };
+        if p.provenance && format != ExportFormat::Smsh {
+            return Err(SessionError::bad_request(format!(
+                "`provenance` is only recorded in `smsh` exports, not `{}`",
+                format_name(format)
+            )));
+        }
         let state = self.ws.state();
-        let mesh = pick_mesh(state, p.mesh)?;
         let mut req = ExportRequest::new(fem_format);
-        req.mesh = Some(mesh);
+        req.mesh = p.mesh;
         if p.provenance {
-            req.provenance = Some(self.ws.status().position.map_or_else(String::new, |h| h.to_hex()));
+            req.provenance = provenance_of(self.ws.status().position);
         }
         let mut bytes = Vec::new();
-        sm_fem::export(state, &req, &mut bytes)?;
+        sm_fem::export(state, &req, &mut bytes).map_err(|e| export_error(&e, state, p.mesh))?;
         if let Some(path) = &path {
             write_atomic(path, &bytes)?;
         }
@@ -183,14 +210,14 @@ impl<'w> SessionHost<'w> {
                     provenance: *provenance,
                     inline: false,
                 })?;
-                Ok(to_json(&r))
+                to_json(&r)
             }
             SessionCommand::Save => {
                 self.save()?;
-                Ok(strip_nulls(to_json(&self.status_result())))
+                Ok(strip_nulls(to_json(&self.status_result())?))
             }
             SessionCommand::Hash => Ok(Value::String(self.ws.state_hash().to_hex())),
-            SessionCommand::Status => Ok(strip_nulls(to_json(&self.status_result()))),
+            SessionCommand::Status => Ok(strip_nulls(to_json(&self.status_result())?)),
             other => Err(SessionError::new(
                 "session-unsupported",
                 format!("`session.{}` is not supported by this server", other.verb()),
@@ -297,14 +324,12 @@ pub(crate) fn resolve_path(root: Option<&Path>, path: &str) -> Result<PathBuf, S
 }
 
 fn format_of(path: &Path) -> Result<ExportFormat, SessionError> {
-    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("smsh") => Ok(ExportFormat::Smsh),
-        Some("vtu") => Ok(ExportFormat::Vtu),
-        _ => Err(SessionError::bad_request(format!(
+    known_format_of(path).ok_or_else(|| {
+        SessionError::bad_request(format!(
             "cannot infer the export format from {}: use `.smsh` or `.vtu`, or pass `format`",
             path.display()
-        ))),
-    }
+        ))
+    })
 }
 
 fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
@@ -315,23 +340,40 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
     }
 }
 
-/// The mesh to export: the named one, else the only one.
-fn pick_mesh(state: &State, named: Option<EntityId>) -> Result<EntityId, SessionError> {
-    let Some(layer) = state.layer::<MeshLayer>() else {
-        return Err(SessionError::new("no-mesh", "the state holds no mesh to export"));
-    };
-    if let Some(id) = named {
-        return Ok(id);
+/// The format a `.smsh`/`.vtu` extension names; none for any other extension.
+fn known_format_of(path: &Path) -> Option<ExportFormat> {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("smsh") => Some(ExportFormat::Smsh),
+        Some("vtu") => Some(ExportFormat::Vtu),
+        _ => None,
     }
-    let mut ids = layer.meshes().map(|(id, _)| id);
-    match (ids.next(), ids.next()) {
-        (None, _) => Err(SessionError::new("no-mesh", "the state holds no mesh to export")),
-        (Some(id), None) => Ok(id),
-        (Some(_), Some(_)) => {
-            let all: Vec<String> = layer.meshes().map(|(id, _)| id.to_string()).collect();
-            Err(SessionError::new("ambiguous-mesh", format!("the state holds {} meshes: name one with `mesh`", all.len()))
-                .with_data(serde_json::json!({ "meshes": all })))
+}
+
+fn format_name(f: ExportFormat) -> &'static str {
+    match f {
+        ExportFormat::Vtu => "vtu",
+        _ => "smsh",
+    }
+}
+
+/// The provenance string of an export: the current node hash, none in the empty state.
+fn provenance_of(position: Option<Hash256>) -> Option<String> {
+    position.map(Hash256::to_hex)
+}
+
+/// A failed [`sm_fem::export`] as a session error, with [`FemError::code`] as the code. A state
+/// without a `meshes` layer holds no mesh (`no-mesh`), or, when `named` asks for one,
+/// does not hold that one (`unknown-mesh`); an ambiguous pick lists the meshes in `data.meshes`.
+fn export_error(e: &FemError, state: &State, named: Option<EntityId>) -> SessionError {
+    match e {
+        FemError::NoMeshLayer if named.is_some() => SessionError::new("unknown-mesh", e.to_string()),
+        FemError::NoMeshLayer => SessionError::new("no-mesh", e.to_string()),
+        FemError::AmbiguousMesh(_) => {
+            let meshes: Vec<String> =
+                state.layer::<MeshLayer>().map(|l| l.meshes().map(|(id, _)| id.to_string()).collect()).unwrap_or_default();
+            SessionError::new(e.code(), e.to_string()).with_data(serde_json::json!({ "meshes": meshes }))
         }
+        other => SessionError::from(other),
     }
 }
 
@@ -352,8 +394,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     })
 }
 
-fn to_json<T: serde::Serialize>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
+/// `v` as JSON; a serialization failure is an `internal` error, never a null success.
+pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> Result<Value, SessionError> {
+    serde_json::to_value(v).map_err(|e| SessionError::internal(e.to_string()))
 }
 
 /// The command language has no null: an absent field is simply missing.
@@ -362,5 +405,36 @@ fn strip_nulls(v: Value) -> Value {
         Value::Object(m) => Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect()),
         Value::Array(a) => Value::Array(a.into_iter().map(strip_nulls).collect()),
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_protocol::RpcError;
+
+    struct Unserializable;
+
+    impl serde::Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("boom"))
+        }
+    }
+
+    #[test]
+    fn a_serialization_failure_is_an_internal_error_not_a_null_result() {
+        let e = to_json(&Unserializable).expect_err("must fail");
+        assert_eq!(e.code, "internal");
+        let rpc = RpcError::from(e);
+        assert_eq!(rpc.code, sm_protocol::INTERNAL_ERROR);
+        assert_eq!(rpc.kind, "internal");
+        assert!(rpc.message.contains("boom"), "{rpc}");
+    }
+
+    #[test]
+    fn provenance_is_the_node_hash_and_absent_in_the_empty_state() {
+        let h = Hash256::of(b"node");
+        assert_eq!(provenance_of(Some(h)), Some(h.to_hex()));
+        assert_eq!(provenance_of(None), None);
     }
 }

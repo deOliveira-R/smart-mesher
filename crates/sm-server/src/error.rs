@@ -37,6 +37,9 @@ pub enum StandardError {
     },
 }
 
+/// The code of [`SessionError::internal`].
+const INTERNAL_KIND: &str = "internal";
+
 /// A failure of one session operation, before it is spelled for a transport: the contract
 /// `code()` string, a message and optional structured details. Converts to [`RpcError`]
 /// (protocol) and [`HostError`] (command language) without losing the code.
@@ -59,6 +62,12 @@ impl SessionError {
     /// A malformed request (`bad-request`).
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new("bad-request", message)
+    }
+
+    /// A failure of the server itself (a bug, not a user error): becomes the protocol's
+    /// `internal` error.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(INTERNAL_KIND, message)
     }
 
     /// Attach structured details.
@@ -101,13 +110,7 @@ impl From<EngineError> for SessionError {
 
 impl From<&FemError> for SessionError {
     fn from(e: &FemError) -> Self {
-        let code = match e {
-            FemError::NoMesh => "no-mesh",
-            FemError::UnknownMesh(_) => "unknown-mesh",
-            FemError::Io(_) => "io",
-            _ => "export-failed",
-        };
-        Self::new(code, e.to_string())
+        Self::new(e.code(), e.to_string())
     }
 }
 
@@ -119,6 +122,9 @@ impl From<FemError> for SessionError {
 
 impl From<SessionError> for RpcError {
     fn from(e: SessionError) -> Self {
+        if e.code == INTERNAL_KIND {
+            return RpcError::internal(e.message);
+        }
         RpcError::application(e.code, e.message).with_data(e.data)
     }
 }

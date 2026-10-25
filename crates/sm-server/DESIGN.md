@@ -58,15 +58,20 @@ what happened. A script that fails to *parse* applies nothing.
 ### Export
 
 * `mesh` absent: the only mesh is exported; none is `no-mesh`, several is `ambiguous-mesh`
-  (`data.meshes` lists them). The server decides this itself so the error contract does not depend on
-  the lowering crate's variants.
+  (`data.meshes` lists them); a named mesh that is not in the state is `unknown-mesh`, also when the
+  state has no mesh layer at all. `sm_fem::export` does the selection; the server maps its errors and
+  uses `FemError::code()` for every other failure (`stale-mesh`, `element-mismatch`, `unsupported`,
+  `mesh`, `meshio`, `io`).
 * **Path rule:** an absolute path is used as is; a relative path resolves against the project root
   when a project is attached, otherwise against the server process's working directory.
 * The format is inferred from `.smsh` / `.vtu` when `format` is absent; anything else is `bad-request`.
+  An explicit `format` that disagrees with a `.smsh` / `.vtu` extension is `bad-request` (an explicit
+  format on any other extension is honoured).
   Inline-only export (`path` absent, `inline: true`) needs an explicit format.
 * Bytes are built in memory (needed for the SHA-256 and the optional base64), then written to
   `<name>.part` and renamed, so a reader never sees a half-written file. A failed export writes nothing.
-* `provenance: true` records the current node hash (empty state: no provenance).
+* `provenance: true` records the current node hash in `smsh` exports (empty state: no provenance).
+  With `vtu`, which cannot carry it, the request is `bad-request`.
 * The bytes are a pure function of the state and the request; `ExportResult.sha256` is `Hash256::of(bytes)`.
 
 ### Errors
@@ -74,7 +79,8 @@ what happened. A script that fails to *parse* applies nothing.
 Every failure is `RpcError{code, kind, message, data}` with `kind` = the contract `code()` string
 (`EngineError::code`, which forwards `TimelineError`, `RegistryError`, `OpError` codes), or one of the
 server's own codes: `script-error`, `no-mesh`, `ambiguous-mesh`, `unknown-mesh`, `bad-request`,
-`open-unsupported`, `workspace-not-empty`, `export-failed`, `io`. `stopped-on-warning` carries the
+`open-unsupported`, `workspace-not-empty`, `internal` (a reply that failed to serialize; JSON-RPC internal error), plus
+`FemError::code()` for the rest of export. `stopped-on-warning` carries the
 diagnostics in `data`; `not-persisted` carries the recorded node. Protocol-level errors
 (`parse-error`, `invalid-request`, `method-not-found`, `invalid-params`) come from `sm-protocol`.
 

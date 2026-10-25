@@ -47,10 +47,9 @@ Definition of done run locally: `cargo build --workspace`; `cargo test -p sm-ser
    `ScriptResult` shape (plus `rendered`, `error_code`) in `error.data`. Reason: `ScriptResult` documents
    `diagnostics` as "warnings and notes", and CLI exit code 1 / MCP `isError` want a failure signal.
    sm-mcp and sm-cli should read `error.data` for the events of a failed script. Ops applied before the
-   failing statement stay applied (they are timeline nodes).
-2. **Export mesh selection is done in sm-server**, not left to `sm_fem::export`. Reason: the skeleton picks
-   "the first mesh by id" and T8's variant names for `ambiguous-mesh` are unknown to me; owning the check
-   keeps the error codes stable. It is harmless if T8 does the same.
+   failing statement stay applied (one timeline node per statement; a `batch { }` block is one `core.batch` node).
+2. ~~Export mesh selection is done in sm-server.~~ Superseded by the polish wave: `sm_fem::export` selects,
+   the server only maps its errors (see below).
 3. **Branch used.** The task text says `claude/w2-sm-server`; the session's designated branch is
    `claude/w2-sm-server-syo1is`. The same commit is on both.
 4. **`Cargo.lock` is committed** (new deps: tungstenite and its tree for the optional `ws` feature,
@@ -71,14 +70,12 @@ Definition of done run locally: `cargo build --workspace`; `cargo test -p sm-ser
   `standard()` (sm-cli's milestone, ignored today). `try_standard()` returns `MissingScheme` instead.
   The tests that touch `standard()` skip (printing why) on `MissingScheme` and become live automatically;
   `registry.rs::standard_lists_the_milestone_ops` is `#[ignore]`d for the integration agent.
-* The registry check was exercised only on the demo ops and `core.batch`: `ModelPlugin`, `MeshPlugin`,
-  `FemPlugin`, `TessPlugin` are skeletons. ops that write no ids set `TypedOp::NO_OUTPUTS` (the registry test derives from it; the former `NO_OUTPUT_OPS` list is gone), namely
-  to write no ids (`model.move/rotate/scale/reflect/delete`, `mesh.size/intervals/scheme/delete`,
-  `fem.block_remove/block_element_type`). Because "declares no OUTPUTS" and "writes no ids" look the same
-  in `OpInfo`, an op outside that list must declare outputs; adjust the list at integration if an owner
-  disagrees.
-* `session.*` script statements (`session.export(...)`, `session.hash()`) are parsed by sm-lang T9; here only
-  the host side is tested (`Host::session`). `SessionCommand::Hash` returns a hex string and `Status` an
+* The registry check runs on the demo ops, the standard plugins over the stub schemes and `standard()`
+  itself. Ops that write no ids set `TypedOp::NO_OUTPUTS`; every other op must declare `OUTPUTS`
+  (`tests/registry.rs` derives both from `OpInfo`, and registration refuses `NO_OUTPUTS` together with
+  non-empty `OUTPUTS`).
+* `session.*` script statements (`session.export(...)`, `session.hash()`) are parsed by sm-lang T9 and run
+  end to end (`session_statements_are_reported_as_session_events`). `SessionCommand::Hash` returns a hex string and `Status` an
   object without null fields (the language has no null).
 * No bench: the task names no hot path. Exports are built fully in memory (see DESIGN.md "Known limits").
 * The stub-scheme meshing path (`Driver::mesh` through `mesh.run`) is not exercised here: `MeshPlugin` is a
@@ -88,3 +85,37 @@ Definition of done run locally: `cargo build --workspace`; `cargo test -p sm-ser
 ## api_change_requests
 
 None.
+
+## Polish wave
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | `script_timeline_commands_map_to_the_workspace` could not fail | fixed: sm-lang T9 parses `session.*`, so the first block now requires an Ok run with no diagnostics and checks head and branches (`script_timeline_commands_map_to_the_workspace`) |
+| 2 | format vs extension mismatch writes the wrong bytes | fixed: explicit `format` disagreeing with a `.smsh`/`.vtu` extension is `bad-request`; an explicit format on another extension still works (`export_rejects_a_format_that_disagrees_with_the_extension`, protocol and command-language paths) |
+| 3 | `provenance` silently dropped for VTU; `Some("")` on empty position | fixed: VTU + provenance is `bad-request` (`provenance_is_rejected_for_vtu_which_cannot_record_it`); empty position gives no provenance (`host::tests::provenance_is_the_node_hash_and_absent_in_the_empty_state`; unreachable through export today, since an empty state has no mesh). Determinism log request 5 changed to smsh + provenance and request 13 (vtu inline) added; the log is test input, no golden changed |
+| 4 | named mesh without `meshes` layer is `no-mesh`; `NoMeshLayer` is `export-failed` | fixed: `unknown-mesh` for a named id, `no-mesh` otherwise (`a_named_mesh_in_a_state_without_meshes_is_unknown_not_missing`) |
+| 5 | `to_json` turns a serialization failure into `null` | fixed: failure is `SessionError::internal`, which becomes `RpcError::internal` (JSON-RPC -32603, kind `internal`) (`host::tests::a_serialization_failure_is_an_internal_error_not_a_null_result`) |
+| 6 | per-request `query_names()` Vec; `other` event without `at` | fixed: hash/export/save use `SessionHost::plain` (no registry scan); `other` carries `at: ""`. Cosmetic, no behaviour test |
+| 7 | `serde`/`thiserror` beyond T10's Deps line | not done (needs orchestrator): accept the two deps or amend the plan; both are required (CLAUDE.md style, generic `Serialize` bounds) |
+| 8 | mesh selection reimplemented; hard-coded `FemError` codes | fixed: selection delegated to `sm_fem::export`; `From<&FemError>` uses `FemError::code()`; `AmbiguousMesh` keeps `data.meshes` (`export_picks_the_only_mesh_and_rejects_ambiguity`). **Visible code changes:** failures that were `export-failed` now carry the FemError code (`stale-mesh`, `element-mismatch`, `unsupported`, `mesh`, `meshio`); `io` and `no-mesh`/`unknown-mesh`/`ambiguous-mesh` are unchanged |
+| 9 | failed `script.run` is an error reply | not done (needs orchestrator): record as a cross-crate decision and tell sm-mcp/sm-cli; already documented on `Request::ScriptRun` and pinned by `failing_script_reports_script_error_and_keeps_applied_ops` |
+| 10 | `standard()` skip branches | fixed: scheme crates are merged, `standard_lists_the_milestone_ops` is live; the `MissingScheme` skip is removed so the check fails hard |
+| 11 | `NO_OUTPUT_OPS` guess list | obsolete: the list is gone; the checker reads `NO_OUTPUTS` from `OpInfo`, and `standard_follows_the_conventions…` passes against the real ops |
+| 12 | `event_json` Debug fallback | fixed: `Event::Session` is mapped explicitly (`session_statements_are_reported_as_session_events`); the unknown-event fallback no longer emits Debug text (`{"event":"other","at":""}`) |
+| 13 | no test for the NO_OUTPUTS + OUTPUTS refusal | fixed: `registering_no_outputs_with_declared_outputs_is_refused` |
+| 14 | garbled W2_REPORT bullet | fixed: rewritten (Known gaps) |
+| 15 | `ScriptRun` doc wording; `diagnostics[0]` indexing | server comment and report fixed; the test now picks the first *error* diagnostic. The doc on `Request::ScriptRun` is in sm-protocol: not done (needs orchestrator) |
+| 16 | same garbled bullet | fixed with 14 |
+| 17 | protocol doc describes one implementation | not done (needs orchestrator; sm-protocol) |
+| 18 | downstream behaviour notes | nothing to do here |
+| – | earlier contract requests | confirmed resolved on main; `NO_OUTPUTS` adopted in the registry test, `standard_with` in `reference_core.rs` |
+
+### Not done (needs orchestrator)
+
+* 7: accept `serde` and `thiserror` in `[dependencies]` or amend the plan's Deps line.
+* 9: record the `script-error` failure form as a decision and inform sm-mcp and sm-cli.
+* 15, 17: `Request::ScriptRun` rustdoc (sm-protocol): say "one `core.batch` node per `batch { }` block", and consider stating the failure form as the contract rather than "as sm-server answers it".
+
+### Changed goldens
+
+None. No state hash, layer hash or export byte changed (export bytes are unchanged for every accepted request).
