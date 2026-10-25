@@ -88,8 +88,8 @@ pub enum Request {
     /// `data` is the [`ScriptResult`](crate::ScriptResult) JSON (`state`, `output`, `events`,
     /// `diagnostics`) plus two extra string fields: `rendered` (all diagnostics rendered as
     /// text with source excerpts) and `error_code` (the first error diagnostic's code). Partial
-    /// state is kept: ops applied before the failing statement stay applied, each as a timeline
-    /// node, and `data.state` is the hash of that real state. A script that fails to parse
+    /// state is kept: ops applied before the failing statement stay applied (one timeline node
+    /// per op, or one `core.batch` node per `batch { }` block), and `data.state` is the hash of that real state. A script that fails to parse
     /// applies nothing. Execution stops at the first error.
     #[serde(rename = "script.run")]
     ScriptRun {

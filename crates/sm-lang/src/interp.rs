@@ -2150,7 +2150,6 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     }
 }
 
-/// True if `v` is, or holds in a list or object, a symbolic value of batch `id`.
 /// `x-entity-kind` for a reference: the producing role's declared kinds and the parameter's must share a kind.
 /// Either side empty means unrestricted.
 fn role_kind_ok(have: &[EntityKind], want: &[EntityKind], what: &str, path: &[PathSeg]) -> Result<(), Issue> {
@@ -2161,6 +2160,7 @@ fn role_kind_ok(have: &[EntityKind], want: &[EntityKind], what: &str, path: &[Pa
     Err(Issue { path: path.to_vec(), code: "wrong-kind", message: format!("expected {}, but output {what} holds {}", join(want), join(have)) })
 }
 
+/// True if `v` is, or holds in a list or object, a symbolic value of batch `id`.
 fn mentions_batch(v: &Val, id: u64) -> bool {
     match v {
         Val::Outcome(Outcome::Batch { batch, .. }) | Val::Ref { batch, .. } => *batch == id,

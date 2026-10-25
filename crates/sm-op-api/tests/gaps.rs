@@ -727,6 +727,7 @@ fn protocol_dtos_serialize_like_the_node_file() {
 fn error_codes_are_stable_kebab_case() {
     let codes = [
         OpError::Invalid("x".into()).code(),
+        OpError::Unsupported("x".into()).code(),
         OpError::Cancelled.code(),
         OpError::Cache(CacheError::TypeConflict { kind: "k".into() }).code(),
         RegistryError::BadOpName("x".into()).code(),
@@ -736,7 +737,7 @@ fn error_codes_are_stable_kebab_case() {
     ];
     assert_eq!(
         codes,
-        ["invalid-params", "cancelled", "cache-type-conflict", "bad-op-name", "id-exhausted", "nothing-to-undo", "unknown-op"]
+        ["invalid-params", "unsupported", "cancelled", "cache-type-conflict", "bad-op-name", "id-exhausted", "nothing-to-undo", "unknown-op"]
     );
     for c in codes {
         assert!(c.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'));
