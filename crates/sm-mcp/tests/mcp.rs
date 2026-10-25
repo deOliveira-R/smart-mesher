@@ -598,11 +598,16 @@ fn respelled_ids_feed_back_as_arguments() {
         for id in id_tokens(text) {
             seen += 1;
             assert!(!id.starts_with("Topo"), "text should be respelled: {id}");
+            // `within` is schema-tagged TopoVolume (a pinned golden) but only the id syntax is
+            // checked, so any kind exercises the spelling. The mock parses `within` into a typed `EntityId` and rejects what does not parse.
             let r2 = run(&mut m, &[call(9, "topo__related", json!({"within": id}))]);
             assert!(r2[0].get("error").is_none() && r2[0]["result"]["isError"] != json!(true), "{id}: {}", r2[0]);
-            let r3 = run(&mut m, &[call(10, "mesh__run", json!({"targets": [id]}))]);
-            assert!(r3[0].get("error").is_none(), "{id}: {}", r3[0]);
+            let Some(Request::Query { input, .. }) = m.log.iter().rev().find(|q| matches!(q, Request::Query { .. })) else { panic!() };
+            let parsed: sm_core::EntityId = serde_json::from_value(input["within"].clone()).unwrap();
+            let canon = parsed.to_string();
+            assert!(canon.starts_with("Topo"), "{id} -> {canon}");
+            assert_eq!(canon.split('#').nth(1), id.split('#').nth(1));
         }
     }
-    assert!(seen > 0, "no ids found in tool text");
+    assert!(seen >= 3, "ids found in tool text: {seen}");
 }

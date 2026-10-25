@@ -179,6 +179,8 @@ impl EntityKind {
     /// `sm_lang::kinds::singular_of` (what MCP text shows with `respell`) so ids copied from a
     /// tool result parse back. Parsing only: `Display`/`name()`/serde stay canonical. `Surface`
     /// and `Curve` are deliberately absent: they are canonical names of the geometry carriers.
+    /// Only `FromStr` (so `EntityId` text/serde) uses these; `EntityKind`'s own derived serde
+    /// still takes canonical names only.
     pub const SCRIPT_ALIASES: &'static [(&'static str, EntityKind)] = &[
         ("Vertex", EntityKind::TopoVertex),
         ("Edge", EntityKind::TopoEdge),

@@ -168,7 +168,15 @@ impl Endpoint for Mock {
             },
             Request::Query { name, .. } => match name.as_str() {
                 "demo.count" => Ok(json!(7)),
-                "topo.related" => Ok(json!(["TopoFace#1", "TopoFace#2"])),
+                "topo.related" => {
+                    // Typed parse, like a real endpoint: a rejected id is invalid params.
+                    let Request::Query { input, .. } = &self.log[self.log.len() - 1] else {
+                        unreachable!()
+                    };
+                    serde_json::from_value::<Related>(input.clone())
+                        .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+                    Ok(json!(["TopoFace#1", "TopoFace#2"]))
+                }
                 "demo.big" => {
                     Ok(Value::Array((0..self.big).map(|i| json!(format!("a\nb{i}"))).collect()))
                 }
