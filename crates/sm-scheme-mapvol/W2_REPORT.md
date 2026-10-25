@@ -71,3 +71,24 @@ Definition of done, all run on this branch: `cargo build --workspace`;
 ## api_change_requests
 
 None.
+
+## Polish wave
+
+Branch note: the harness designated `claude/p2-sm-scheme-mapvol-alq1zz`; the task text names `claude/p2-sm-scheme-mapvol`. Pushed to the harness branch only.
+
+| # | Item | Status |
+|---|---|---|
+| 1, 10 | Cargo.lock stale | obsolete: already regenerated upstream; `cargo build --locked` passes on the starting commit. The dependency cleanup of 7/11 removes one line from the `sm-scheme-mapvol` entry (`sm-math`); that lock line is the only root-file touch, committed so `--locked` CI stays green. |
+| 2, 9 | affine exactness tolerance | obsolete for the assertion (the 1e-9 rounding is only in the cell-matching helpers used by the invariance tests; both exactness tests already assert `< 1e-12` on max abs error). Tightened `affine_block_with_graded_spacing_is_exact` from nearest-lattice-point matching to node-by-node comparison with the same-index lattice point (max abs error < 1e-12). `parallelepiped_is_affine_exact` keeps nearest-point matching (mesh node order is the builder's) at 1e-12 per component. |
+| 3 | frame handedness from one corner | fixed: orientation from the signed boundary volume. Test `a_strongly_bent_block_is_oriented_by_its_volume_not_by_one_corner` (270 degree bent beam, both senses, two face orders); verified it fails with `Quality` on the old code. Hashes unchanged: all existing tests, including the mesh-hash comparison, pass untouched. |
+| 4 | count-mismatch only `is_err()` | fixed: `faces_that_do_not_close_a_hex_block_are_refused` now removes an interior column (corners stay vertices; the previous truncation broke the corners and failed earlier with `Unsupported`) and asserts `FailureKind::Constraint` and the reason. |
+| 5a | NotApplicable from parallel_classes | fixed at unit level: `classes_from_sides` extracted; tests in `src/lib.rs` (cube, chained side, unshared side, mismatched chains, crossed directions). |
+| 5b | six-faced non-hex-like piece through the driver | fixed: `a_six_faced_piece_that_is_not_hex_like_is_refused_by_the_driver` (triangular bipyramid: passes applicability, refused by the driver on the faces, since triangles cannot be imposed `QUAD`). It does not reach `generate`. |
+| 5c | Quality failure to fallback, end to end | fixed: `a_folded_block_fails_with_quality_and_the_driver_falls_back` (170 degree twisted hex; map rejected after Quality; with a `tetvol` fallback both attempts are recorded in order). The stub `tetvol` generate fails by design, so the run does not end in a mesh; a successful fallback mesh needs a real volume fallback scheme. |
+| 6 | logical-sides gap | recorded in DESIGN.md "Follow-ups". |
+| 7, 11 | unused deps | fixed: `sm-math` dropped; `sm-geom-api` moved to dev-dependencies (tests build `Line`/`Plane`); `serde_json` was already gone. Dev `sm-model-api` stays (tests need `Model`); noted as outside the T6 dev list. |
+| 8 | T6 Deps line: `sm-mesh-api`, `rayon` | not done (needs orchestrator): add `sm-mesh-api` to T6 (or re-export `CellShape` from `sm-scheme-api`), and decide whether rayon is accepted for T6 or `generate` stays sequential. Left as is; rayon use is deterministic and tested. |
+| 12 | E2E NotApplicable in the interval phase | not done: the stub surface map forces four `End` corners per face, so no driver-level fixture can produce it; covered at unit level by 5a. |
+
+
+Verification: `tools/ci.sh` exit 0 (run with `CARGO_PROFILE_*_DEBUG=0` after a first run hit "no space left on device"); `RAYON_NUM_THREADS=1 cargo test -p sm-scheme-mapvol --all-features` and `cargo clippy -p sm-scheme-mapvol --all-targets --all-features -- -D warnings` clean. No golden, hash or export changed.

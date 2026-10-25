@@ -170,24 +170,21 @@ fn affine_block_with_graded_spacing_is_exact() {
     let (b, cells) = run(&s, [0; 6], [0, 1, 2, 3, 4, 5], IDV);
     assert_eq!(b.n, [3, 4, 2]);
     assert_eq!(cells.len(), 3 * 4 * 2);
-    // Every interior node equals the affine lattice point (nearest match, 1e-12), and the block's
-    // positions are a permutation of the synthetic lattice.
-    let mut want: Vec<V3> = Vec::new();
+    // Node-by-node against the affine lattice point of the same index: max abs error < 1e-12.
+    assert_eq!(b.pos.len(), 4 * 5 * 3);
+    let mut worst = 0.0f64;
     for k in 0..=2 {
         for j in 0..=4 {
             for i in 0..=3 {
-                want.push(s.lattice_pos([i, j, k]));
+                let want = s.lattice_pos([i, j, k]);
+                let got = b.pos[i + 4 * (j + 5 * k)];
+                for d in 0..3 {
+                    worst = worst.max((got[d] - want[d]).abs());
+                }
             }
         }
     }
-    assert_eq!(b.pos.len(), want.len());
-    let near = |p: &V3, set: &[V3]| set.iter().map(|q| (0..3).map(|d| (p[d] - q[d]).abs()).fold(0.0, f64::max)).fold(f64::INFINITY, f64::min);
-    for p in &b.pos {
-        assert!(near(p, &want) < 1e-12, "node {p:?} off the lattice by {}", near(p, &want));
-    }
-    for q in &want {
-        assert!(near(q, &b.pos) < 1e-12, "lattice point {q:?} has no node");
-    }
+    assert!(worst < 1e-12, "worst node error {worst}");
 }
 
 #[test]
@@ -260,13 +257,15 @@ fn faces_that_do_not_close_a_hex_block_are_refused() {
     assert_eq!(e.kind, FailureKind::Unsupported);
     // Two faces disagree on the interval count of their shared edge.
     let mut bad = grids.clone();
+    // Drop one interior column of the k = 0 face: its corners stay vertices, only the count differs.
     let g = &bad[4];
     let (ni, nj) = (g.ni, g.nj);
-    let mut nodes = g.nodes.clone();
-    nodes.truncate(((ni - 1) * nj) as usize);
+    let nodes: Vec<NodeKey> = (0..nj).flat_map(|j| (0..ni).filter(|i| *i != 1).map(move |i| (i, j))).map(|(i, j)| g.at(i, j).expect("node")).collect();
     bad[4] = NodeGrid::new(ni - 1, nj, nodes);
     let refs: Vec<&NodeGrid> = bad.iter().collect();
-    assert!(assemble(owner, &refs, &point).is_err());
+    let e = assemble(owner, &refs, &point).expect_err("count mismatch");
+    assert_eq!(e.kind, FailureKind::Constraint, "{}", e.reason);
+    assert!(e.reason.contains("interval counts"), "{}", e.reason);
 }
 
 #[test]
@@ -288,4 +287,28 @@ fn an_inverted_interior_is_a_quality_failure() {
     let owner = eid(EntityKind::TopoVolume, 1);
     let e = assemble(owner, &refs, &|k| pos.get(&k).copied()).expect_err("folded");
     assert_eq!(e.kind, FailureKind::Quality, "{}", e.reason);
+}
+
+/// A beam bent through 270 degrees about the z axis: at every corner the chord to the far
+/// neighbour along the beam points backward against the local tangent, so the corner triple
+/// product at the lowest vertex has the sign opposite to the block's. Orientation must come
+/// from the block as a whole.
+#[test]
+fn a_strongly_bent_block_is_oriented_by_its_volume_not_by_one_corner() {
+    for sign in [1.0, -1.0] {
+        let s = Synth {
+            n: [12, 2, 2],
+            params: [graded(12, 1.0), graded(2, 1.0), graded(2, 1.0)],
+            map: Box::new(move |p| {
+                let th = sign * p[0] * 1.5 * std::f64::consts::PI;
+                let r = 2.0 + p[1];
+                [r * th.cos(), r * th.sin(), p[2]]
+            }),
+        };
+        for order in [[0, 1, 2, 3, 4, 5], [5, 3, 1, 4, 2, 0]] {
+            let (b, cells) = run(&s, [0; 6], order, IDV);
+            assert_eq!(b.n.iter().product::<usize>(), 48, "sign {sign}");
+            assert_eq!(cells.len(), 48, "sign {sign}");
+        }
+    }
 }
