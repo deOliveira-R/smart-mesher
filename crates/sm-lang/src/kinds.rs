@@ -94,8 +94,10 @@ pub fn plural_spellings() -> Vec<&'static str> {
 
 /// Parse the text form of an entity id held in a string (a JSON value, `ents("...")`).
 ///
-/// A string is wire form: the canonical `sm-core` spelling is tried first, so `"Surface#7"` is the geometry carrier
-/// exactly as an op or query reports it. Only when that fails are the script aliases consulted (`"Face#7"`, `"Volume#3"`).
+/// A string is wire form: the canonical `sm-core` parse is tried first, so `"Surface#7"` is the geometry carrier
+/// exactly as an op or query reports it. `sm-core`'s `FromStr` is itself lenient and accepts the script aliases
+/// (`"Face#7"`, `"Volume#3"`), so readers of wire text accept alias spellings; output stays canonical. The fallback
+/// only matters for spellings that only [`kind_from_singular`] knows.
 /// In *source* (`Surface#7` without quotes) `Surface` is a face; see [`kind_from_singular`].
 pub fn parse_entity_text(s: &str) -> Result<sm_core::EntityId, String> {
     if let Ok(id) = s.parse::<sm_core::EntityId>() {

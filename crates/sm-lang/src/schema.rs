@@ -60,6 +60,7 @@ pub struct Issue {
 
 /// Static facts about one parameter, for help and completion.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ParamInfo {
     /// Property name.
     pub name: String,
