@@ -223,7 +223,7 @@ fn first_error<T>(results: Vec<Result<T, TessError>>) -> Result<Vec<T>, TessErro
 /// does not depend on the order either.
 fn pick_error<T>(results: Vec<Result<T, TessError>>, budget: &std::sync::atomic::AtomicUsize) -> Result<Vec<T>, TessError> {
     let is_placeholder = |e: &TessError| matches!(e, TessError::TooLarge(m) if m == face::BUDGET_TRIPPED);
-    if results.iter().any(|r| r.as_ref().is_err_and(|e| is_placeholder(e))) {
+    if results.iter().any(|r| r.as_ref().is_err_and(is_placeholder)) {
         let real = results.into_iter().filter_map(Result::err).find(|e| !is_placeholder(e));
         return Err(real.unwrap_or_else(|| {
             TessError::TooLarge(format!("grid faces need about {} interior points in total; the limit is {} vertices (raise chord_tol)", budget.load(std::sync::atomic::Ordering::Relaxed), sample::MAX_VERTICES))
