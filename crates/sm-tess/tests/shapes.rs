@@ -406,3 +406,66 @@ fn curved_face_with_a_hole_is_flagged_boundary_only() {
     let (c3, f3, _) = plate_with_hole();
     assert!(!tessellate(&c3, &[f3], &opts(5e-3)).unwrap().faces[0].boundary_only);
 }
+
+/// Two cone faces of one cone (half angle `a`) stacked along the axis: ring radii `r0 > r1 > r2`
+/// (large to small), the middle ring shared. Each face has its own seam.
+fn stacked_frusta(a: f64, r: [f64; 3]) -> (CellComplex, [EntityId; 2], [EntityId; 3]) {
+    build(|t| {
+        let (s, co) = a.sin_cos();
+        let v = |k: usize| r[k] / s;
+        let at = |v: f64| Point3::new(v * s, 0.0, v * co);
+        let z = Vector3::new(0.0, 0.0, 1.0);
+        let x = Vector3::new(1.0, 0.0, 0.0);
+        let full = Interval::new(0.0, TAU);
+        let surf = add_surface(t, SurfaceDef::Cone(Cone::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), 0.0, a)?))?;
+        let mut vx = Vec::new();
+        let mut ring = Vec::new();
+        for k in 0..3 {
+            vx.push(t.make_vertex(at(v(k)))?);
+            let c = add_curve(t, CurveDef::Circle(Circle::new(Frame::from_zx(Point3::new(0.0, 0.0, v(k) * co), z, x)?, r[k])?))?;
+            ring.push(t.make_edge(vx[k], vx[k], Some(CurveCarrier { curve: c, range: full, sense: Sense::Forward }))?);
+        }
+        let mut faces = Vec::new();
+        for (lo, hi) in [(0, 1), (1, 2)] {
+            let slant = v(lo) - v(hi);
+            let sc = add_curve(t, CurveDef::Line(Line::new(at(v(lo)), at(v(hi)) - at(v(lo)))?))?;
+            let seam = t.make_edge(vx[lo], vx[hi], Some(CurveCarrier { curve: sc, range: Interval::new(0.0, slant), sense: Sense::Forward }))?;
+            let lp = [fwd(ring[lo]), fwd(seam), rev(ring[hi]), rev(seam)];
+            let f = t.make_face(&[&lp], Some(SurfaceCarrier { surface: surf, sense: Sense::Reversed }))?;
+            let key = |edge, side| CoedgeKey { face: f, edge, side };
+            t.set_pcurve(key(ring[lo], Side::Left), Some(line2((0.0, v(lo)), (1.0, 0.0), full)))?;
+            t.set_pcurve(key(seam, Side::Left), Some(line2((TAU, v(lo)), (0.0, -1.0), Interval::new(0.0, slant))))?;
+            t.set_pcurve(key(ring[hi], Side::Right), Some(line2((0.0, v(hi)), (1.0, 0.0), full)))?;
+            t.set_pcurve(key(seam, Side::Right), Some(line2((0.0, v(lo)), (0.0, -1.0), Interval::new(0.0, slant))))?;
+            faces.push(f);
+        }
+        Ok(([faces[0], faces[1]], [ring[0], ring[1], ring[2]]))
+    })
+    .pipe(|(c, (f, e))| (c, f, e))
+}
+
+#[test]
+fn stacked_frusta_with_a_shared_ring_stay_within_chord_tol() {
+    // edge_rule takes the maximum radius over the faces next to an edge: the shared ring (radius
+    // 1) gets the count for radius 5, the far ring of the inner frustum (radius 0.5) only the
+    // count for radius 1. The inner face therefore has unequal rings and goes through the zipper;
+    // its sag must still be within chord_tol (each ring is at least as fine as its own face needs).
+    let a = 0.4;
+    for chord in [1e-2, 1e-3] {
+        let (c, faces, rings) = stacked_frusta(a, [5.0, 1.0, 0.5]);
+        let o = TessOptions { chord_tol: chord, angle_tol: 3.0, max_edge: f64::INFINITY };
+        let t = tessellate(&c, &faces, &o).unwrap();
+        let n: Vec<usize> = rings.iter().map(|&e| t.edge_polyline(e).unwrap().len() - 1).collect();
+        assert!(n[0] == n[1] && n[2] < n[1], "ring counts {n:?}");
+        // Circle rule at radius 5 for the outer face, at radius 1 for the far inner ring.
+        let need = |r: f64| (TAU / (2.0 * (1.0 - chord / r).acos())).ceil() as usize;
+        assert!(n[0] >= need(5.0) && n[2] >= need(1.0), "{n:?}");
+        let dist = move |p: [f64; 3]| ((p[0] * p[0] + p[1] * p[1]).sqrt() * a.cos() - p[2] * a.sin()).abs();
+        for &f in &faces {
+            check_face_structure(&c, &t, f);
+            check_normal_signs(&c, &t, f);
+            let dev = max_deviation(&t, f, dist);
+            assert!(dev <= chord + f32_slack(5.0), "chord {chord}: {:.3}x chord_tol", dev / chord);
+        }
+    }
+}

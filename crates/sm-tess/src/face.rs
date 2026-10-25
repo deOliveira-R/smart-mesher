@@ -89,6 +89,11 @@ fn build_chain<'a>(sh: &Shared<'a>, face: EntityId, e: &Incidence) -> Result<Cha
     Ok(Chain { pole: None, pcurve, reversed: false, s })
 }
 
+/// Message of the placeholder error a face returns when the shared budget is exceeded. Which face
+/// crosses the limit first depends on the scheduler, so `tess::pick_error` replaces it with a
+/// message built from the (order-independent) total.
+pub(crate) const BUDGET_TRIPPED: &str = "shared face-point budget exceeded";
+
 fn too_large(rows: usize, per_row: usize) -> TessError {
     TessError::TooLarge(format!("a grid face needs about {rows} rows of {per_row} points; the limit is {} vertices in total (raise chord_tol)", sample::MAX_VERTICES))
 }
@@ -288,7 +293,7 @@ fn grid_face(sh: &Shared<'_>, face: EntityId, surf: &dyn ParametricSurface, def:
         counts.push(k);
     }
     if sh.budget.fetch_add(total, std::sync::atomic::Ordering::Relaxed) + total > sample::MAX_VERTICES {
-        return Err(too_large(rows, total / rows.max(1)));
+        return Err(TessError::TooLarge(BUDGET_TRIPPED.into()));
     }
     let mut uvs: Vec<Uv> = Vec::new();
     for j in 1..rows {

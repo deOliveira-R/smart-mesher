@@ -217,6 +217,21 @@ fn first_error<T>(results: Vec<Result<T, TessError>>) -> Result<Vec<T>, TessErro
     results.into_iter().collect()
 }
 
+/// First error in face order, ignoring the scheduler-dependent budget placeholder. Every other
+/// error depends on its face alone. If only placeholders remain, the message names the total
+/// requested by all faces that got that far (each adds its sum whether or not it trips), which
+/// does not depend on the order either.
+fn pick_error<T>(results: Vec<Result<T, TessError>>, budget: &std::sync::atomic::AtomicUsize) -> Result<Vec<T>, TessError> {
+    let is_placeholder = |e: &TessError| matches!(e, TessError::TooLarge(m) if m == face::BUDGET_TRIPPED);
+    if results.iter().any(|r| r.as_ref().is_err_and(|e| is_placeholder(e))) {
+        let real = results.into_iter().filter_map(Result::err).find(|e| !is_placeholder(e));
+        return Err(real.unwrap_or_else(|| {
+            TessError::TooLarge(format!("grid faces need about {} interior points in total; the limit is {} vertices (raise chord_tol)", budget.load(std::sync::atomic::Ordering::Relaxed), sample::MAX_VERTICES))
+        }));
+    }
+    first_error(results)
+}
+
 pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extra_edges: &[EntityId], opts: &TessOptions) -> Result<Tessellation, TessError> {
     opts.validate()?;
     let mut faces: Vec<EntityId> = faces.to_vec();
@@ -310,7 +325,7 @@ pub(crate) fn tessellate_parts(view: &dyn TopologyView, faces: &[EntityId], extr
     let budget = std::sync::atomic::AtomicUsize::new(0);
     let sh = Shared { view, opts, edges: &edges, edge_off: &edge_off, edge_g: &edge_g, edge_pos: &edge_pos, edge_t: &edge_t, vertices: &vertices, g_count, budget: &budget };
     let outs: Vec<Result<FaceOut, TessError>> = faces.par_iter().map(|&f| face::tessellate_face(&sh, f)).collect();
-    let outs = first_error(outs)?;
+    let outs = pick_error(outs, &budget)?;
 
     // Stage D (serial): append face-interior points and remap local indices.
     let mut indices: Vec<u32> = Vec::new();

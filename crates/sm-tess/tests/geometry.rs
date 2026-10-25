@@ -234,3 +234,26 @@ fn tiny_chord_tol_is_too_large_not_an_abort() {
     assert!(matches!(r, Err(TessError::TooLarge(_))), "{:?}", r.map(|t| t.vertex_count()));
     assert!(started.elapsed().as_secs() < 20);
 }
+
+#[test]
+fn over_budget_error_is_the_same_for_any_thread_count_and_run() {
+    // Each sphere fits alone; together they exceed the 2^24 vertex limit. Which face crosses the
+    // limit first depends on the scheduler, the reported message must not.
+    let (c, _) = build(|t| {
+        for r in [1.0, 1.1, 1.2, 1.3, 1.4, 1.5] {
+            sphere(t, r)?;
+        }
+        Ok(())
+    });
+    let faces = all_faces(&c);
+    let o = TessOptions { chord_tol: 1.5e-6, angle_tol: 3.0, max_edge: f64::INFINITY };
+    let msg = |threads: usize| match pool(threads, || tessellate(&c, &faces, &o)) {
+        Err(TessError::TooLarge(m)) => m,
+        other => panic!("expected TooLarge, got {:?}", other.map(|t| t.vertex_count())),
+    };
+    let first = msg(1);
+    assert!(first.contains("in total"), "{first}");
+    for threads in [1, 2, 4, 8, 4, 8] {
+        assert_eq!(msg(threads), first);
+    }
+}
