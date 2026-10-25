@@ -1,13 +1,12 @@
 # W2 report: sm-cli (T12)
 
-Status: **done for the CLI itself; end-to-end behaviour against the real server is unverified**
-because `sm-server` on main still answers every method except `catalog` and `session.hash` with
-`method-not-implemented` (T10 is parallel). The CLI's logic is covered against a recording endpoint
-and the real binary covers what the skeleton supports. The T10-dependent flows are written and
-`#[ignore = "W2 integration"]` in `tests/cli_full.rs`.
+Status: **done**. Originally written before sm-server (T10) merged; since the integration wave the
+flows in `tests/cli_full.rs` run against the real distribution and are no longer ignored (the
+historical text below describes the state at T12 delivery). `tests/p0_rows.rs` adds P0 rows through `standard()`.
+sm-cli no longer depends on sm-engine (it uses `sm_server::{FixedClock, ...}`).
 
 Definition of done, all run on this tree: `cargo build --workspace`; `cargo test -p sm-cli
---all-features` (45 pass, 4 ignored) and with `RAYON_NUM_THREADS=1`; `cargo clippy -p sm-cli
+--all-features` (45 pass, 4 ignored at delivery) and with `RAYON_NUM_THREADS=1`; `cargo clippy -p sm-cli
 --all-targets --all-features -- -D warnings`; `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-cli
 --no-deps`.
 
@@ -99,7 +98,7 @@ Fixed in sm-cli:
 - **Should 13.** `tests/fake.rs` moved to `tests/common/mod.rs`.
 
 Not done:
-- **Must 2 (drop `sm-engine`).** Needs sm-server (T10) to expose the clock (`standard_with(author,
+- **Must 2 (drop `sm-engine`).** DONE in w2-fu cli-p0 via sm-server's re-exports. Was: needs sm-server (T10) to expose the clock (`standard_with(author,
   fixed_time)` or a re-export of `FixedClock`/`Clock`); sm-cli may not edit sm-server. Route to T10, or the
   orchestrator accepts the deviation. Once it lands, only `connect_standard` changes.
 - **Should 2/8.** `sm-op-api`, `sm-core`, `serde` stay until sm-protocol re-exports the types (ACR 1).

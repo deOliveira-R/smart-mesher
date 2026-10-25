@@ -91,5 +91,6 @@ compare the binary's bytes over repeated runs, `RAYON_NUM_THREADS` 1 vs 3 and co
   exit codes, `--json` shapes parsed back into the typed `sm_protocol` results).
 - `tests/binary.rs`: the real binary and `standard()` server for what is independent of the other W2
   crates (usage, catalog/help, hash, transports, error mapping, determinism).
-- `tests/cli_full.rs`: full flows on the real distribution, `#[ignore = "W2 integration"]`.
+- `tests/cli_full.rs`: full flows on the real distribution (no longer ignored).
+- `tests/p0_rows.rs`: P0 capabilities (interval count, auto size, default size, scheme selection, firmness) through the real binary and MCP on `standard()`.
 - `tests/data/{milestone,fork}.smesh`: the plan §4 scripts, for the integration phase's `milestone*.rs`.
