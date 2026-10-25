@@ -1,6 +1,5 @@
 //! Full `smesh` flows against the real standard distribution. They need the W2 crates
-//! (`sm-server` endpoint methods, `sm-model`, `sm-mesher`, ...) merged, so they are ignored until
-//! the integration phase. The integration phase's `milestone*.rs` files cover §4 of the plan;
+//! (`sm-server` endpoint methods, `sm-model`, `sm-mesher`, ...). The integration phase's `milestone*.rs` files cover §4 of the plan;
 //! these exercise each command once.
 
 use std::path::{Path, PathBuf};
@@ -46,7 +45,6 @@ fn data(name: &str) -> String {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn timeline_commands_round_trip_in_a_project() {
     let d = tmp("timeline");
     let p = d.join("proj");
@@ -94,7 +92,6 @@ fn timeline_commands_round_trip_in_a_project() {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn fixed_time_and_author_make_node_hashes_reproducible() {
     let d = tmp("pinned");
     let mut nodes = Vec::new();
@@ -117,7 +114,6 @@ fn fixed_time_and_author_make_node_hashes_reproducible() {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn run_fork_script_in_a_fresh_project_without_new() {
     let d = tmp("forkfresh");
     let p = d.join("fork");
@@ -128,7 +124,6 @@ fn run_fork_script_in_a_fresh_project_without_new() {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn unpinned_runs_differ_in_node_hashes_but_not_in_state() {
     let d = tmp("unpinned");
     let mut out = Vec::new();
@@ -157,7 +152,6 @@ fn unpinned_runs_differ_in_node_hashes_but_not_in_state() {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn run_exports_and_hash_agree_with_print_hash() {
     let d = tmp("run");
     let mut args = vec![
@@ -182,7 +176,6 @@ fn run_exports_and_hash_agree_with_print_hash() {
 }
 
 #[test]
-#[ignore = "W2 integration"]
 fn export_command_writes_the_requested_file() {
     let d = tmp("export");
     let p = d.join("proj");
@@ -203,4 +196,14 @@ fn export_command_writes_the_requested_file() {
         None,
     );
     assert!(target.is_file() && r["bytes"].as_u64().is_some_and(|b| b > 0));
+}
+
+/// Regression: the connector must build a server that can `session.open` (not `open-unsupported`).
+#[test]
+fn new_creates_a_project_instead_of_open_unsupported() {
+    let d = tmp("open");
+    let p = d.join("x");
+    let o = smesh(&["new", p.to_str().expect("utf8")], None);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(p.join("project.toml").is_file());
 }

@@ -25,6 +25,10 @@ serde_json = "1"
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
+# Milestone row 6: decode the exported `.smsh`, validate it, and measure its quality.
+sm-meshio = { path = "../sm-meshio" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-quality = { path = "../sm-quality" }
 
 [[bin]]
 name = "smesh"
