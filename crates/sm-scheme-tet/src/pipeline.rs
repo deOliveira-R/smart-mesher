@@ -170,7 +170,26 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     let t0 = Instant::now();
     check_options(opts)?;
     validate::check_surface(&input.points, &input.tris)?;
+    // Canonical triangle order (rotated to the smallest vertex first, sorted), so the result does
+    // not depend on the order the triangles are listed in.
+    let mut order: Vec<u32> = (0..input.tris.len() as u32).collect();
+    let canon: Vec<[u32; 3]> = input.tris.iter().map(|&t| crate::tds::canon_tri(t)).collect();
+    order.sort_unstable_by_key(|&i| canon[i as usize]);
+    let canonical = SurfaceInput { points: input.points.clone(), tris: order.iter().map(|&i| canon[i as usize]).collect() };
     stage_ms[0] = ms(t0);
+    let back = |i: u32| order.get(i as usize).copied().unwrap_or(i);
+    run(&canonical, opts, stage_ms).map_err(|e| match e {
+        TetError::InvertedShell { tri } => TetError::InvertedShell { tri: back(tri) },
+        TetError::RecoveryFailed { tri, edge, reason } => TetError::RecoveryFailed { tri: back(tri), edge, reason },
+        TetError::SelfIntersection { tri_a, tri_b } => {
+            let (a, b) = (back(tri_a), back(tri_b));
+            TetError::SelfIntersection { tri_a: a.min(b), tri_b: a.max(b) }
+        }
+        other => other,
+    })
+}
+
+fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> Result<TetMesh, TetError> {
     let n = input.points.len();
     let max_steiner = if opts.max_steiner == 0 { 8 * n + 100_000 } else { opts.max_steiner };
 

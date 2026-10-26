@@ -15,6 +15,7 @@ mod optimize;
 mod pipeline;
 mod quality;
 mod refine;
+mod scheme;
 mod recover;
 mod tds;
 mod validate;
@@ -22,6 +23,7 @@ mod validate;
 pub use error::TetError;
 pub use geom::{in_sphere, ori};
 pub use pipeline::tetrahedralize;
+pub use scheme::{NAME, TetParams, TetVolume, register};
 pub use quality::{TetQ, tet_quality};
 
 use geom::V3;

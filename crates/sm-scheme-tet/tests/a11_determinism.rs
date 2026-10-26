@@ -70,3 +70,27 @@ fn stage_ms_is_excluded_from_equality() {
     b.stats.stage_ms = [1.0, 2.0, 3.0, 4.0, 5.0];
     assert_eq!(a, b);
 }
+
+/// The adapter hands over triangles in whatever order its node keys were collected; the result
+/// must not depend on that order (triangle order and rotation).
+#[test]
+fn triangle_order_does_not_matter() {
+    for f in [surf3::tri_cube(4), surf3::cube_with_cavity(5), surf3::noisy_sphere(3)] {
+        let inp = input_of(&f, 0);
+        let base = mesh_hash(&tetrahedralize(&inp, &TetOptions::default()).unwrap());
+        let mut r = surf3::SplitMix64(11);
+        for _ in 0..3 {
+            let mut shuffled = inp.clone();
+            for i in (1..shuffled.tris.len()).rev() {
+                let j = (r.next_u64() % (i as u64 + 1)) as usize;
+                shuffled.tris.swap(i, j);
+            }
+            for t in &mut shuffled.tris {
+                let k = (r.next_u64() % 3) as usize;
+                t.rotate_left(k);
+            }
+            let h = mesh_hash(&tetrahedralize(&shuffled, &TetOptions::default()).unwrap());
+            assert_eq!(h, base, "{}", f.name);
+        }
+    }
+}

@@ -17,6 +17,9 @@ use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+/// How much faster than the gradation a user size may shrink away from coarse corner sizes.
+const LOWER_SLOPE: f64 = 1.0;
+
 /// Refinement state.
 pub(crate) struct Refiner<'a, 'o> {
     pub dt: &'a mut Dt,
@@ -59,9 +62,9 @@ impl<'a, 'o> Refiner<'a, 'o> {
         for &c in &v {
             let hc = self.h[c as usize];
             if hc.is_finite() {
-                let d = g1 * dist(p, self.dt.pts[c as usize]);
-                hi = hi.min(hc + d);
-                lo = lo.max(hc - d);
+                let d = dist(p, self.dt.pts[c as usize]);
+                hi = hi.min(hc + g1 * d);
+                lo = lo.max(hc - LOWER_SLOPE * g1 * d);
             }
         }
         let user = match self.opts.size {
