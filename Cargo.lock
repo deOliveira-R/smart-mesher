@@ -1133,7 +1133,25 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "sm-boolean"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "sm-core",
+ "sm-geom",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-model",
+ "sm-model-api",
  "sm-op-api",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]

@@ -11,7 +11,27 @@ license.workspace = true
 bench = false
 
 [dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-geom = { path = "../sm-geom" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-model-api = { path = "../sm-model-api" }
 sm-op-api = { path = "../sm-op-api" }
+sm-layer-api = { path = "../sm-layer-api" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+thiserror = "2"
+smallvec = "1"
+
+[dev-dependencies]
+sm-topo = { path = "../sm-topo" }
+sm-testkit = { path = "../sm-testkit" }
+sm-mesh = { path = "../sm-mesh" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+sm-model = { path = "../sm-model" }
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
