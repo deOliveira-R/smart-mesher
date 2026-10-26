@@ -11,7 +11,22 @@ license.workspace = true
 bench = false
 
 [dependencies]
+sm-core = { path = "../sm-core" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+thiserror = "2"
+
+[dev-dependencies]
+sm-mesh = { path = "../sm-mesh" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-model-api = { path = "../sm-model-api" }
+sm-quality = { path = "../sm-quality" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-sizing = { path = "../sm-sizing" }
+sm-scheme-map = { path = "../sm-scheme-map" }
+sm-testkit = { path = "../sm-testkit" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+serde_json = "1"
 
 [lints]
 workspace = true
