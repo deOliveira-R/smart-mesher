@@ -1556,7 +1556,19 @@ dependencies = [
 name = "sm-scheme-submap"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "serde_json",
+ "sm-core",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-quality",
  "sm-scheme-api",
+ "sm-scheme-map",
+ "sm-sizing",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
