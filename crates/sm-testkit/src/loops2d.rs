@@ -253,6 +253,48 @@ pub fn five_sided_submap() -> Region2 {
     }
 }
 
+/// A right-angled staircase region with unit-spaced integer coordinates and `k = steps.len()`
+/// reflex corners.
+///
+/// It has `k + 1` columns from the left. Column `j < k` has width `steps[j].0` and column `k`
+/// width 1. Column heights decrease to the right: column `k` has height 1 and the drop from
+/// column `j` to `j + 1` is `steps[j].1`, so column `j` has height `1 + sum_{i >= j} steps[i].1`.
+/// Zero entries are raised to 1. The loop starts at the origin and runs counter-clockwise
+/// (`2k + 4` vertices); `steps = [(1, 1)]` is the L-shape (area 3).
+///
+/// `area` is the exact integer `sum_j width_j * height_j`. `outer_types` has `End` at convex and
+/// `Corner` at reflex vertices (the turning sum is 4). Not part of [`all_regions`].
+pub fn staircase(steps: &[(u32, u32)]) -> Region2 {
+    use VertexType::{Corner, End};
+    let k = steps.len();
+    let mut widths: Vec<u32> = steps.iter().map(|s| s.0.max(1)).collect();
+    widths.push(1);
+    let drops: Vec<u32> = steps.iter().map(|s| s.1.max(1)).collect();
+    let mut heights = vec![1u32; k + 1];
+    for j in (0..k).rev() {
+        heights[j] = heights[j + 1] + drops[j];
+    }
+    let mut left = vec![0u32; k + 2];
+    for j in 0..=k {
+        left[j + 1] = left[j] + widths[j];
+    }
+    let f = |v: u32| f64::from(v);
+    let mut outer: Vec<P2> = vec![(0.0, 0.0), (f(left[k + 1]), 0.0)];
+    for j in (0..=k).rev() {
+        outer.push((f(left[j + 1]), f(heights[j])));
+        outer.push((f(left[j]), f(heights[j])));
+    }
+    let area: u64 = (0..=k).map(|j| u64::from(widths[j]) * u64::from(heights[j])).sum();
+    let n = outer.len();
+    let types = (0..n)
+        .map(|i| {
+            let (p, c, q) = (outer[(i + n - 1) % n], outer[i], outer[(i + 1) % n]);
+            if (c.0 - p.0) * (q.1 - c.1) - (c.1 - p.1) * (q.0 - c.0) > 0.0 { End } else { Corner }
+        })
+        .collect();
+    Region2 { name: "staircase", outer, holes: vec![], area: area as f64, outer_types: Some(types) }
+}
+
 /// All region fixtures (circle and annulus with 32 points).
 pub fn all_regions() -> Vec<Region2> {
     vec![square(), rectangle(3.0, 2.0), rectangle_with_holes(), annulus(1.0, 2.0, 32), l_shape(), circle(1.5, 32), five_sided_submap()]
