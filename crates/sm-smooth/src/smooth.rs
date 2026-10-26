@@ -5,7 +5,7 @@ use sm_mesh_api::{CellIx, Classification, MeshEdit, MeshEntity, MeshRead, Param,
 use sm_core::Point3;
 use sm_quality::{Metric, Options, SurfaceNormals, compute, summarize, validity};
 
-use crate::kernel::{Kernel, Prop};
+use crate::kernel::{CellCache, Kernel, Prop};
 use crate::moved::Moved;
 use crate::normals::CarrierNormals;
 use crate::prep::{Mode, Prep, V};
@@ -28,13 +28,26 @@ struct Counts {
 }
 
 impl Counts {
-    fn tally(&mut self, p: Prop, v: usize, pos: &mut [V], hint: &mut [[f64; 2]], rel: &dyn Fn(usize, V, V) -> f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn tally(
+        &mut self,
+        p: Prop,
+        v: usize,
+        pos: &mut [V],
+        hint: &mut [[f64; 2]],
+        cache: &mut CellCache,
+        prep: &Prep<'_>,
+        rel: &dyn Fn(usize, V, V) -> f64,
+    ) {
         match p {
             Prop::Stay => {}
-            Prop::Move { p, h } => {
+            Prop::Move { p, h, m } => {
                 self.max_move = self.max_move.max(rel(v, pos[v], p));
                 pos[v] = p;
                 hint[v] = h;
+                for (&c, mc) in prep.cells_of(v).iter().zip(m) {
+                    cache.m[c as usize] = mc;
+                }
                 self.accepted += 1;
             }
             Prop::RejGuard => self.rej_guard += 1,
@@ -115,6 +128,7 @@ pub fn smooth(input: &SmoothInput<'_>, req: &SmoothRequest) -> Result<SmoothOutc
     let mut pos = p0.clone();
     let mut hint = prep.hint0.clone();
     let kernel = Kernel { prep: &prep, normals: CarrierNormals { topo: input.topo }, floor: req.guard_floor };
+    let mut cache = kernel.init_cache(&pos);
     let colours = if req.schedule == Schedule::Colored { colour(&prep) } else { Vec::new() };
 
     let mut cnt = Counts::default();
@@ -132,10 +146,10 @@ pub fn smooth(input: &SmoothInput<'_>, req: &SmoothRequest) -> Result<SmoothOutc
                     let props: Vec<Prop> = col
                         .par_iter()
                         .with_min_len(MIN_LEN)
-                        .map(|&v| kernel.propose(v as usize, &pos, &hint, method))
+                        .map(|&v| kernel.propose(v as usize, &pos, &hint, &cache, method))
                         .collect();
                     for (&v, p) in col.iter().zip(props) {
-                        cnt.tally(p, v as usize, &mut pos, &mut hint, &rel);
+                        cnt.tally(p, v as usize, &mut pos, &mut hint, &mut cache, &prep, &rel);
                     }
                 }
             }
@@ -144,28 +158,31 @@ pub fn smooth(input: &SmoothInput<'_>, req: &SmoothRequest) -> Result<SmoothOutc
                     .movable
                     .par_iter()
                     .with_min_len(MIN_LEN)
-                    .map(|&v| kernel.propose(v as usize, &pos, &hint, method))
+                    .map(|&v| kernel.propose(v as usize, &pos, &hint, &cache, method))
                     .collect();
                 let old = pos.clone();
                 let old_hint = hint.clone();
                 let mut moved: Vec<u32> = Vec::new();
                 for (&v, p) in prep.movable.iter().zip(props) {
-                    if let Prop::Move { p: q, h } = p {
+                    if let Prop::Move { p: q, h, .. } = p {
                         pos[v as usize] = q;
                         hint[v as usize] = h;
                         moved.push(v);
                     } else {
-                        cnt.tally(p, v as usize, &mut pos, &mut hint, &rel);
+                        cnt.tally(p, v as usize, &mut pos, &mut hint, &mut cache, &prep, &rel);
                     }
                 }
-                let reverted = repair(&prep, &kernel, &old, &mut pos, &mut hint, &old_hint, moved.clone());
+                let reverted = repair(&prep, &kernel, &cache, &mut pos, &mut hint, &old, &old_hint, moved.clone());
                 cnt.rej_guard += reverted.len() as u64;
+                let mut survivors: Vec<u32> = Vec::new();
                 for &v in &moved {
                     if reverted.binary_search(&v).is_err() {
                         cnt.max_move = cnt.max_move.max(rel(v as usize, old[v as usize], pos[v as usize]));
                         cnt.accepted += 1;
+                        survivors.push(v);
                     }
                 }
+                refresh_cache(&prep, &kernel, &mut cache, &survivors, &pos);
             }
         }
         iterations_run += 1;
@@ -214,12 +231,14 @@ pub fn smooth(input: &SmoothInput<'_>, req: &SmoothRequest) -> Result<SmoothOutc
 /// Jacobi repair: revert the moved nodes of every cell that violates the guard against the
 /// pre-sweep state, up to [`REPAIR_PASSES`] times, then the whole sweep if violations remain.
 /// Returns the reverted nodes, ascending.
+#[allow(clippy::too_many_arguments)]
 fn repair(
     prep: &Prep<'_>,
     kernel: &Kernel<'_, '_>,
-    old: &[V],
+    cache: &CellCache,
     pos: &mut [V],
     hint: &mut [[f64; 2]],
+    old: &[V],
     old_hint: &[[f64; 2]],
     moved: Vec<u32>,
 ) -> Vec<u32> {
@@ -250,7 +269,7 @@ fn repair(
             .par_iter()
             .with_min_len(MIN_LEN)
             .copied()
-            .filter(|&c| kernel.cell_violates(c as usize, old, pos))
+            .filter(|&c| kernel.cell_violates(c as usize, pos, cache))
             .collect();
         if bad.is_empty() {
             break;
@@ -278,6 +297,24 @@ fn repair(
     reverted.sort_unstable();
     reverted.dedup();
     reverted
+}
+
+/// Recompute the cached metrics of every cell touched by one of `nodes`, at `pos`.
+fn refresh_cache(prep: &Prep<'_>, kernel: &Kernel<'_, '_>, cache: &mut CellCache, nodes: &[u32], pos: &[V]) {
+    let mut seen = vec![false; prep.shape.len()];
+    let mut cells: Vec<u32> = Vec::new();
+    for &v in nodes {
+        for &c in prep.cells_of(v as usize) {
+            if !seen[c as usize] {
+                seen[c as usize] = true;
+                cells.push(c);
+            }
+        }
+    }
+    let new: Vec<(f64, f64)> = cells.par_iter().with_min_len(MIN_LEN).map(|&c| kernel.cell_metrics(c as usize, pos)).collect();
+    for (&c, m) in cells.iter().zip(new) {
+        cache.m[c as usize] = m;
+    }
 }
 
 /// Write an outcome into an editable mesh: `set_point` for each moved vertex, then one `set_classes`.

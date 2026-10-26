@@ -14,13 +14,22 @@ use crate::types::{Method, Objective};
 /// `beta` values at or above this are treated as infinitely bad.
 const BETA_MAX: f64 = 1e15;
 
+/// `(ScaledJacobian, Volume)` of the incident cells of one node, in `cells_of` order.
+pub(crate) type NewMetrics = SmallVec<[(f64, f64); 8]>;
+
+/// Cached `(ScaledJacobian, Volume)` of every template cell at the current positions; the
+/// guard compares candidates against it instead of re-evaluating the old cells.
+pub(crate) struct CellCache {
+    pub m: Vec<(f64, f64)>,
+}
+
 /// Outcome of one node update.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Prop {
     /// No change (candidate equals the position, or no descent step exists).
     Stay,
-    /// Accepted: new position and parameter hint.
-    Move { p: V, h: [f64; 2] },
+    /// Accepted: new position, parameter hint and the new metrics of the incident cells.
+    Move { p: V, h: [f64; 2], m: NewMetrics },
     /// The guard (or the smart-Laplacian shape test) refused it.
     RejGuard,
     /// The projection failed or left the curve range or the trimmed face.
@@ -97,37 +106,47 @@ impl Kernel<'_, '_> {
         new.0.is_finite() && new.0 >= lim && (old.1 <= 0.0 || old.1.is_nan() || new.1 > 0.0)
     }
 
-    /// Guard: every incident cell keeps `SJ' >= min(SJ, floor)` and a positive volume stays positive.
-    fn guard(&self, v: usize, x: V, pos: &[V], old: &[(f64, f64)]) -> bool {
+    /// Guard: every incident cell keeps `SJ' >= min(SJ, floor)` and a positive volume stays
+    /// positive. Returns the new cell metrics when the candidate passes.
+    fn guard(&self, v: usize, x: V, pos: &[V], cache: &CellCache) -> Option<NewMetrics> {
         let mut buf = Pts::new();
-        for (k, &c) in self.prep.cells_of(v).iter().enumerate() {
+        let mut out = NewMetrics::new();
+        for &c in self.prep.cells_of(v) {
             self.gather(c as usize, pos, Some((v as u32, x)), &mut buf);
-            if !self.cell_ok(old[k], self.sj_vol(c as usize, &buf)) {
-                return false;
+            let new = self.sj_vol(c as usize, &buf);
+            if !self.cell_ok(cache.m[c as usize], new) {
+                return None;
             }
+            out.push(new);
         }
-        true
+        Some(out)
     }
 
-    fn old_metrics(&self, v: usize, pos: &[V]) -> SmallVec<[(f64, f64); 16]> {
+    /// The cache for the positions `pos` (template cells; others hold NaN).
+    pub fn init_cache(&self, pos: &[V]) -> CellCache {
+        use rayon::prelude::*;
+        let m = (0..self.prep.shape.len())
+            .into_par_iter()
+            .with_min_len(256)
+            .map(|c| self.cell_metrics(c, pos))
+            .collect();
+        CellCache { m }
+    }
+
+    /// `(ScaledJacobian, Volume)` of cell `c` at `pos` (NaN for a cell without corners).
+    pub fn cell_metrics(&self, c: usize, pos: &[V]) -> (f64, f64) {
+        if self.prep.corner_off[c] == self.prep.corner_off[c + 1] {
+            return (f64::NAN, f64::NAN);
+        }
         let mut buf = Pts::new();
-        self.prep
-            .cells_of(v)
-            .iter()
-            .map(|&c| {
-                self.gather(c as usize, pos, None, &mut buf);
-                self.sj_vol(c as usize, &buf)
-            })
-            .collect()
+        self.gather(c, pos, None, &mut buf);
+        self.sj_vol(c, &buf)
     }
 
-    /// Guard check of a whole cell against the pre-sweep positions (Jacobi repair).
-    pub fn cell_violates(&self, c: usize, before: &[V], after: &[V]) -> bool {
-        let mut a = Pts::new();
-        let mut b = Pts::new();
-        self.gather(c, before, None, &mut a);
-        self.gather(c, after, None, &mut b);
-        !self.cell_ok(self.sj_vol(c, &a), self.sj_vol(c, &b))
+    /// Guard check of a whole cell: positions `after` against the cached pre-sweep metrics
+    /// (Jacobi repair).
+    pub fn cell_violates(&self, c: usize, after: &[V], cache: &CellCache) -> bool {
+        !self.cell_ok(cache.m[c], self.cell_metrics(c, after))
     }
 
     /// Minimum `Shape` over the cells of `v` with `v` at `x`.
@@ -313,7 +332,7 @@ impl Kernel<'_, '_> {
     }
 
     /// One node update from the positions `pos` and hints `hint`.
-    pub fn propose(&self, v: usize, pos: &[V], hint: &[[f64; 2]], method: &Method) -> Prop {
+    pub fn propose(&self, v: usize, pos: &[V], hint: &[[f64; 2]], cache: &CellCache, method: &Method) -> Prop {
         let x = pos[v];
         match *method {
             Method::Laplacian { relax }
@@ -336,25 +355,22 @@ impl Kernel<'_, '_> {
                 if p == x {
                     return Prop::Stay;
                 }
-                let old = self.old_metrics(v, pos);
-                if !self.guard(v, p, pos, &old) {
-                    return Prop::RejGuard;
-                }
+                let Some(m) = self.guard(v, p, pos, cache) else { return Prop::RejGuard };
                 if matches!(method, Method::SmartLaplacian { .. }) {
                     let (a, b) = (self.min_shape(v, x, pos), self.min_shape(v, p, pos));
                     if a.is_nan() || b.is_nan() || b < a {
                         return Prop::RejGuard;
                     }
                 }
-                Prop::Move { p, h }
+                Prop::Move { p, h, m }
             }
-            Method::Optimize { objective, p: pw } => self.optimize(v, pos, hint, objective, pw),
+            Method::Optimize { objective, p: pw } => self.optimize(v, pos, hint, cache, objective, pw),
             #[allow(unreachable_patterns)]
             _ => Prop::Stay,
         }
     }
 
-    fn optimize(&self, v: usize, pos: &[V], hint: &[[f64; 2]], obj: Objective, pw: f64) -> Prop {
+    fn optimize(&self, v: usize, pos: &[V], hint: &[[f64; 2]], cache: &CellCache, obj: Objective, pw: f64) -> Prop {
         let l = self.prep.ell[v];
         let x = pos[v];
         if l.is_nan() || l <= 0.0 {
@@ -393,22 +409,19 @@ impl Kernel<'_, '_> {
             return Prop::Stay;
         }
         let dir = [-gt[0] / gn, -gt[1] / gn, -gt[2] / gn];
-        let old = self.old_metrics(v, pos);
         let mut alpha = 0.25 * l;
         let mut first: Option<Prop> = None;
         for _ in 0..=10 {
             let raw = [x[0] + alpha * dir[0], x[1] + alpha * dir[1], x[2] + alpha * dir[2]];
             let fail = match self.project(v, raw, hint[v]) {
                 Err(()) => Some(Prop::RejGeom),
-                Ok((p, h)) => {
-                    if !self.guard(v, p, pos, &old) {
-                        Some(Prop::RejGuard)
-                    } else if self.objective(v, p, pos, obj, pw) <= f0 - 1e-4 * alpha * gn {
-                        return if p == x { Prop::Stay } else { Prop::Move { p, h } };
-                    } else {
-                        Some(Prop::Stay)
+                Ok((p, h)) => match self.guard(v, p, pos, cache) {
+                    None => Some(Prop::RejGuard),
+                    Some(m) if self.objective(v, p, pos, obj, pw) <= f0 - 1e-4 * alpha * gn => {
+                        return if p == x { Prop::Stay } else { Prop::Move { p, h, m } };
                     }
-                }
+                    Some(_) => Some(Prop::Stay),
+                },
             };
             first = first.or(fail);
             alpha *= 0.5;
