@@ -11,7 +11,8 @@ use std::path::Path;
 
 /// Lines per formatting task.
 const LINES: usize = 4096;
-/// Zone label lists up to this length are written inline (`List<label> 4(0 1 2 3)`).
+/// Zone label lists up to this length are written inline (`List<label> 4(0 1 2 3)`); longer ones
+/// in OpenFOAM's block layout (`List<label> \nN\n(\n...\n)` with the `;` added by the caller).
 const INLINE: usize = 10;
 
 /// One polyMesh file: its name (`points`, `faces`, ...) and bytes.
@@ -110,7 +111,7 @@ fn labels_inline_or_block(v: &[u32], ty: &str, fmt: impl Fn(usize, &mut Vec<u8>)
             fmt(i, b);
             b.push(b'\n');
         }));
-        b.extend_from_slice(b")\n;");
+        b.extend_from_slice(b")\n");
         b
     }
 }

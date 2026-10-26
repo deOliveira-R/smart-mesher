@@ -113,7 +113,7 @@ fn files_parse_back_to_the_same_mesh_bit_for_bit() {
 #[test]
 fn awkward_scalars_survive_the_round_trip() {
     let mut b = build(&single_hex().unwrap().mesh);
-    let vals = [0.1, -0.0, 1e-300, 5e-324, 1.7976931348623157e308, 1.0 / 3.0, 123456789.123456789, -2.5e-7, 1e21, 1e16];
+    let vals = [0.1, -0.0, 1e-300, 5e-324, f64::MAX, 1.0 / 3.0, 123_456_789.123_456_79, -2.5e-7, 1e21, 1e16];
     for (i, v) in vals.iter().enumerate() {
         b.mesh.points[i % 8][i % 3] = *v;
     }
@@ -495,7 +495,7 @@ fn a_side_set_becomes_a_face_zone_with_flips() {
     let foam_of = |f: FaceIx| b.face_of_foam.iter().position(|x| *x == f.0).unwrap() as u32;
     let s = &b.mesh.face_zones[0];
     assert_eq!(s.name, "s");
-    let mut want = vec![(foam_of(int), true), (foam_of(bnd[0]), false), (foam_of(bnd[1]), false)];
+    let mut want = [(foam_of(int), true), (foam_of(bnd[0]), false), (foam_of(bnd[1]), false)];
     want.sort();
     assert_eq!(s.labels, want.iter().map(|w| w.0).collect::<Vec<_>>());
     assert_eq!(s.flips, want.iter().map(|w| w.1).collect::<Vec<_>>());
@@ -602,5 +602,32 @@ fn single_hex_files_equal_the_hand_written_golden_bytes() {
     for f in &files {
         let want = std::fs::read(dir.join(&f.name)).unwrap_or_else(|e| panic!("{}: {e}", f.name));
         assert_eq!(String::from_utf8_lossy(&f.bytes), String::from_utf8_lossy(&want), "{}", f.name);
+    }
+}
+
+#[test]
+fn long_zones_round_trip_through_the_block_layout() {
+    // 4x4x4 block: a 64-cell zone and a faceZone over the 96 boundary faces; lists longer than the
+    // inline threshold are written in OpenFOAM's multi-line layout.
+    let mut m = hex_block([4, 4, 4], [0.25; 3], &mut SerialAlloc::new()).unwrap();
+    let mut alloc = SerialAlloc::new();
+    MeshEdit::add_set(&mut m, "all", SetMembers::Cells((0..64).map(CellIx::new).collect()), &mut alloc).unwrap();
+    let bnd: Vec<FaceIx> = (0..m.face_count()).map(FaceIx::new).filter(|f| m.face_kind(*f) == FaceKind::Boundary).collect();
+    assert_eq!(bnd.len(), 96);
+    let sides: Vec<SignedFace> = bnd.iter().map(|f| SignedFace::new(*f, Side::Left)).collect();
+    MeshEdit::add_set(&mut m, "skin", SetMembers::Sides(sides), &mut alloc).unwrap();
+    let b = build_polymesh(&m, &FoamOptions::new().face_zones(vec!["skin".into()])).unwrap();
+    assert_eq!((b.mesh.cell_zones[0].labels.len(), b.mesh.face_zones[0].labels.len()), (64, 96));
+    let files = b.mesh.files().unwrap();
+    let text = |n: &str| String::from_utf8(files.iter().find(|f| f.name == n).unwrap().bytes.clone()).unwrap();
+    assert!(text("cellZones").contains(")\n;\n}"), "block layout, one semicolon");
+    assert!(!text("cellZones").contains(";;") && !text("faceZones").contains(";;"));
+    assert_eq!(parse_polymesh(&files).unwrap(), b.mesh);
+    // Exactly 10 and 11 labels straddle the inline threshold.
+    for n in [10usize, 11] {
+        let mut m = hex_block([4, 4, 4], [0.25; 3], &mut SerialAlloc::new()).unwrap();
+        MeshEdit::add_set(&mut m, "z", SetMembers::Cells((0..n).map(CellIx::new).collect()), &mut SerialAlloc::new()).unwrap();
+        let b = build(&m);
+        assert_eq!(parse_polymesh(&b.mesh.files().unwrap()).unwrap(), b.mesh, "{n} labels");
     }
 }

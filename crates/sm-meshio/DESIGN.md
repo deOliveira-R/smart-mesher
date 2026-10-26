@@ -19,6 +19,16 @@ VTU), not just against our reader. This gives a transport code a lossless, fast 
 ParaView a faithful picture of the same mesh, with Exodus / CGNS / Gmsh exporters left to slot
 in next to them.
 
+The OpenFOAM `polyMesh` writer (`foam`) is similar to OpenFOAM's own converters (`gmshToFoam`,
+`fluent3DMeshToFoam`, `ideasUnvToFoam`), which rebuild `owner` / `neighbour` by matching the
+faces of cell-shape lists. It differs because it derives polyMesh directly from the face-first IR,
+whose left / right / outward-loop rule already is OpenFOAM's owner / neighbour / normal convention:
+there is no face matching, no flipping, no cell renumbering, polyhedra and true 6-node prisms stay
+exact, and patches and cellZones come from the mesh's own sets and classification. This gives an
+export in which a `checkMesh` failure points at the exporter (our validator already approved the
+mesh), a loss report saying what OpenFOAM could not carry, and an in-process parser and checker
+(`foam::parse_polymesh`, `foam::check_polymesh`) that find exporter bugs without OpenFOAM.
+
 ## Layout
 
 | module | role |
@@ -27,6 +37,10 @@ in next to them.
 | `smsh::writer` | `SmshWriter`: builder over `&dyn MeshRead`, `to_bytes` / `write_to` / `write_file` |
 | `smsh::reader` | `SmshFile` (zero-copy typed views, CRC check), `SmshMesh` (full owned decode), `SmshMap` (feature `mmap`) |
 | `vtu` | `write_vtu` / `vtu_bytes`, `VtuOptions`, `VtuEncoding` |
+| `report` | `LossReport` / `LossItem` / `LossSeverity` shared by every exporter, `vtu_loss_report` |
+| `foam::build` | `build_polymesh`: face reordering, patch and zone assignment, `FoamReport` |
+| `foam::write`, `foam::tar` | `PolyMesh::files` / `write_dir` / `write_tar`, `write_polymesh` |
+| `foam::parse`, `foam::check` | `parse_polymesh` / `read_polymesh_dir`, `check_polymesh` |
 | `le`, `crc` | little-endian packing, CRC-32 (slicing-by-8) |
 
 Decoded edge tables and sets use the contract types (`sm_mesh_api::EdgeTable`, `MeshSet`).
@@ -80,14 +94,47 @@ The byte-level spec is `SMSH_FORMAT.md`. The reference reader is `readers/smsh.p
   `class_dim`, `class_entity`, `set:<name>`, `tag:<name>`. `class_entity` is the serial of the
   classified model entity (the "color"); `region` is the label of the first labelled cell set.
 
+## `.smsh` 1.1
+
+`VERSION_MINOR = 1`; the reader accepts 1.0 and 1.1 (`tests/data/v10_hex_block.smsh`, written by
+the unmodified 1.0 writer, pins that). 1.1 adds two optional header items and no arrays:
+
+* `element_types: [{set, element_type, shape}]`, always written (possibly `[]`), ascending by set
+  id. `SmshWriter::element_type(set, name)` declares the type of a cell set; the writer checks the
+  set, the shape of every member, the high-order node count for `HEX20`-style names, one record
+  per set and agreement of a cell that is in two typed sets. Spellings are decision 12's
+  (`POLYHEDRON` / `POLYGON`); `NFACED` / `NSIDED` are exporter mappings and are `Unsupported`
+  here. The decoder re-checks every record against the `cell_shape` array.
+* `mesh.stats`, derived counts (cells by shape, faces by kind, `max_cell_faces`,
+  `max_face_vertices`) for consumers that size ray-tracing or transport scratch from the header.
+  `SmshFile::decode` recomputes them and refuses a file that disagrees. The writer and the decoder
+  share one function (`MeshStats::from_arrays`), integer counting over fixed chunks.
+
+No other polyhedral additions are needed: the `cell_faces` CSR, `cell_shape` code 4 and the
+zero-length `cell_corners` rows already hold any closed polyhedron exactly.
+
+## OpenFOAM
+
+`foam::build_polymesh` reads the mesh through `MeshRead` only. Internal faces are those with a
+right cell; if they are already in `(owner, neighbour)` order (always, for canonical meshes) they
+are taken as is, else sorted by `(owner, neighbour, source index)`. Patch faces follow, each patch
+in ascending source order, then the loop CSR is filled in 4096-face windows in parallel. The rules
+for patches, zones, names and losses are in `FOAM_FORMAT.md`. `PolyMesh` keeps its own face CSR
+(about 12 M `u32` per million hexahedra); `PolyMesh::write_tar` exists for `Write`-based
+consumers, while the integration plan writes the case directory.
+
 ## Determinism
 
 No hash-ordered iteration. Parallelism is only over fixed-size index chunks writing disjoint
 output windows, and per-array independent jobs collected in order (`par_iter().collect()` keeps
 order). Tests compare 1-thread and N-thread output by hash (`sm_testkit::determinism::check`)
-for the whole corpus, both formats, and a block larger than every chunk size.
+for the whole corpus, both formats, and a block larger than every chunk size. The OpenFOAM files,
+the tar stream, the index maps and the report, and `.smsh` 1.1 bytes with element types are
+checked the same way (`tests/determinism.rs`), including a 64,000-cell block.
 
 ## Limits (see W1_REPORT.md)
 
-High-order geometry is not exported to VTU (corners only); VTU has no face/side-set or boundary
-skin output; no Exodus/CGNS/Gmsh yet; `.smsh` import returns arrays, not a `MeshRead`.
+High-order geometry is not exported to VTU (corners only; `vtu_loss_report` says so); VTU has no
+face/side-set or boundary skin output; Exodus lives in `sm-exodus`, CGNS / Gmsh / DAGMC / Fluent
+are W3b; `.smsh` import returns arrays, not a `MeshRead`. OpenFOAM: ASCII only, no binary, no
+cyclic / AMI patches, dimension-3 meshes without inactive cells only (see `FOAM_FORMAT.md`).

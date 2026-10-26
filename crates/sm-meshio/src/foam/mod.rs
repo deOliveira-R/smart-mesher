@@ -6,7 +6,7 @@
 //! stores no cell shapes, so a true 6-node prism is five faces and polyhedra stay exact.
 //!
 //! * [`build_polymesh`]: [`FoamOptions`] + `&dyn MeshRead` -> [`FoamBuild`] ([`PolyMesh`], index maps,
-//!   [`FoamReport`] with a [`LossReport`](crate::LossReport)).
+//!   [`FoamReport`] with a [`LossReport`]).
 //! * [`PolyMesh::files`], [`PolyMesh::write_dir`], [`PolyMesh::write_tar`], [`write_polymesh`].
 //! * [`parse_polymesh`], [`read_polymesh_dir`]: ASCII only, hostile-input safe.
 //! * [`check_polymesh`]: checkMesh's topology and orientation checks, in process.

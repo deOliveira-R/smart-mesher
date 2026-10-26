@@ -310,3 +310,54 @@ fn tar_holds_the_files_with_valid_headers_and_is_deterministic() {
         assert!(l.lines().all(|x| x.starts_with("-rw-r--r--")) && l.contains("constant/polyMesh/points"), "{l}");
     }
 }
+
+// ---- allocation bound under an address-space limit ----------------------------------------------------
+
+/// The parses that would allocate gigabytes if a declared count sized a buffer. Runs only inside
+/// the child process of [`huge_counts_do_not_allocate_under_an_address_space_limit`].
+#[test]
+fn inner_huge_counts() {
+    if std::env::var_os("SM_MESHIO_INNER").is_none() {
+        return;
+    }
+    let g = good();
+    for (name, from) in [("points", "8\n("), ("faces", "6\n("), ("owner", "6\n("), ("neighbour", "0\n("), ("boundary", "1\n(")] {
+        for count in ["4000000000", "2147483647", "9999999999", "4294967295"] {
+            let t = replace(&g, name, from, &format!("{count}\n("));
+            assert!(parse_polymesh(&t).is_err(), "{name} {count}");
+        }
+    }
+    let t = replace(&g, "owner", "6\n(\n0\n0\n0\n0\n0\n0\n)", "4000000000{0}");
+    assert!(parse_polymesh(&t).is_err());
+    let t = replace(&g, "faces", "4(0 1 5 4)", "4000000000(0 1 5 4)");
+    assert!(parse_polymesh(&t).is_err());
+    let t = replace(&g, "boundary", "nFaces          6;", "nFaces          4294967295;");
+    assert!(parse_polymesh(&t).is_err());
+    // A file of 2 MB of data parses within the limit too (memory proportional to the input).
+    let big = build_polymesh(&hex_block([30, 30, 30], [1.0; 3], &mut SerialAlloc::new()).unwrap(), &FoamOptions::default()).unwrap().mesh;
+    assert_eq!(parse_polymesh(&big.files().unwrap()).unwrap(), big);
+}
+
+/// Re-run `inner_huge_counts` in a child process whose address space is capped at 1 GiB. A parser
+/// that allocated from the declared counts (tens of GB) cannot pass; one that grows with the
+/// tokens read stays far below. Skipped without `sh`.
+#[test]
+fn huge_counts_do_not_allocate_under_an_address_space_limit() {
+    if std::env::var_os("SM_MESHIO_INNER").is_some() {
+        return;
+    }
+    if !std::process::Command::new("sh").arg("-c").arg("ulimit -v 1048576").status().is_ok_and(|s| s.success()) {
+        eprintln!("cannot set an address space limit: skipping");
+        return;
+    }
+    let exe = std::env::current_exe().unwrap();
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -v 1048576 && exec \"$0\" --exact inner_huge_counts --test-threads=1")
+        .arg(&exe)
+        .env("SM_MESHIO_INNER", "1")
+        .output()
+        .unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && text.contains("1 passed"), "{text}");
+}
