@@ -1312,12 +1312,15 @@ impl TopologyEdit for CellComplex {
         self.atomic(|s| {
             let op = s.ensure_open()?;
             let plan = crate::join::plan_join_faces(&*s, keep, drop)?;
-            // Coincidence records of the absorbed face now belong to the survivor.
+            // Coincidence records of the absorbed face now belong to the survivor; where `keep`
+            // already has a record with the same face, the survivor's record wins.
+            let keep_partners: Vec<EntityId> = s.coincident_faces(keep).iter().filter_map(|p| p.other(keep)).collect();
             let pairs: Vec<FacePair> = s.coincident_faces(drop).to_vec();
             for p in pairs {
                 s.del_pair(p.a, p.b);
                 if let Some(other) = p.other(drop)
                     && other != keep
+                    && !keep_partners.contains(&other)
                 {
                     let (a, b) = if keep <= other { (keep, other) } else { (other, keep) };
                     s.put_pair(FacePair { a, b, status: p.status, op });

@@ -332,7 +332,7 @@ pub fn plan_join_faces(view: &dyn TopologyView, keep: EntityId, drop: EntityId) 
         return Err(TopoError::EmptyLoop);
     }
     let (ku, du) = (uses(&kr), uses(&dr));
-    let shared: BTreeSet<EntityId> = ku.keys().filter(|e| du.contains_key(e)).copied().collect();
+    let mut shared: BTreeSet<EntityId> = ku.keys().filter(|e| du.contains_key(e)).copied().collect();
     if shared.is_empty() {
         return Err(TopoError::InvalidParameter("faces do not share an edge"));
     }
@@ -359,7 +359,28 @@ pub fn plan_join_faces(view: &dyn TopologyView, keep: EntityId, drop: EntityId) 
         if pk[0] != 0 || pd[0] != 0 {
             return Err(TopoError::Unsupported("join_faces: the chain must lie on the outer loops"));
         }
-        let (ka, da) = (arc(&kr[0], &shared)?, arc(&dr[0], &shared)?);
+        let arcs = |sh: &BTreeSet<EntityId>| Ok::<_, TopoError>((arc(&kr[0], sh)?, arc(&dr[0], sh)?));
+        let (ka, da) = match arcs(&shared) {
+            Ok(a) => a,
+            Err(e) if shared.len() == 2 => {
+                // A periodic face cut by one chord: the pieces share the chord and the seam,
+                // which are disconnected. The chord dissolves; the seam stays and is used twice
+                // by the merged face.
+                let [x, y] = [*shared.first().unwrap_or(&keep), *shared.last().unwrap_or(&keep)];
+                let seam_like = |e: EntityId| match (view.pcurve(CoedgeKey { face: keep, edge: e, side: ku[&e][0] }), view.pcurve(CoedgeKey { face: drop, edge: e, side: du[&e][0] })) {
+                    (Some(a), Some(b)) => a != b,
+                    _ => false,
+                };
+                // The seam is the edge whose two pcurves differ (u = 0 against u = 2 pi); with no
+                // pcurves to tell, the older edge is the seam.
+                let seam = if seam_like(y) && !seam_like(x) { y } else { x };
+                let chord = BTreeSet::from([if seam == x { y } else { x }]);
+                let a = arcs(&chord).map_err(|_| e)?;
+                shared = chord;
+                a
+            }
+            Err(e) => return Err(e),
+        };
         let (k_tail, k_head) = (tail_head(view, &ka[0])?.0, tail_head(view, &ka[ka.len() - 1])?.1);
         let (d_tail, d_head) = (tail_head(view, &da[0])?.0, tail_head(view, &da[da.len() - 1])?.1);
         if k_head != d_tail || d_head != k_tail {

@@ -182,7 +182,9 @@ pub trait TopologyEdit: TopologyView {
     /// pair in the parent faces is replaced by one coedge of the survivor and the pcurves are
     /// joined (equal pcurves stay, collinear adjacent `Line2` pieces fuse; anything else is
     /// `Unsupported`). If the two edges share both end vertices (a ring of two), the higher
-    /// vertex id dissolves and the survivor becomes a closed edge. Returns the survivor.
+    /// vertex id dissolves and the survivor becomes a closed edge. The survivor takes the larger
+    /// edge tolerance override; an override on the dissolved vertex is dropped with it. Returns
+    /// the survivor.
     /// Lineage: `Merged { into: survivor, gap: 0 }` on the absorbed edge, `Modified(Carrier)` on
     /// the survivor, `Deleted` on the vertex. Refusals: `InvalidParameter` (not adjacent, vertex
     /// shared with other cells), `NotCoincident` (different curves or flags, ranges not adjacent).
@@ -201,8 +203,13 @@ pub trait TopologyEdit: TopologyView {
     /// interior-loop case of a split). The loops fuse along the chain; inner loops are kept (the
     /// result has `keep`'s holes then `drop`'s). The chain edges and the chain vertices left
     /// without edges are killed, `drop`'s pcurves move onto `keep`, its coincidence records with
-    /// other faces become `keep`'s, and `keep` takes the larger tolerance override. `keep < drop`
-    /// is not required. Returns `keep`. Lineage: `Merged { into: keep, gap: 0 }` on `drop`,
+    /// other faces become `keep`'s (when `keep` already has a record with the same face, `keep`'s
+    /// record wins and `drop`'s is discarded), and `keep` takes the larger face tolerance
+    /// override. Tolerance overrides on the killed chain edges and vertices are dropped with
+    /// them. A periodic face cut once (the pieces share a chord and the seam, which are not
+    /// connected) is handled: the chord dissolves and the seam stays, used twice by the merged
+    /// face; the seam is the shared edge whose two pcurves differ, else the older one. `keep <
+    /// drop` is not required. Returns `keep`. Lineage: `Merged { into: keep, gap: 0 }` on `drop`,
     /// `Deleted` on the chain cells, `Modified(InnerLoop)` on `keep` when a hole disappeared.
     /// Refusals: `InvalidParameter` (no shared edge), `NotCoincident` (carrier, flags, volume
     /// uses or orientation differ), `Unsupported` (shared edges are not one chain).

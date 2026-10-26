@@ -21,7 +21,8 @@ fn assert_valid(v: &dyn TopologyView) {
 }
 
 /// An id-free structural signature: per-rank counts, sorted vertex positions with degree, edge
-/// curve ranges, face areas with loop sizes and pcurve counts, volume sizes and moments.
+/// curve ranges with end-vertex positions, face areas with loop sizes and pcurve counts, the
+/// pcurve values themselves (sorted, quantized), volume sizes and moments.
 fn signature<E: Sys>(t: &E) -> Vec<String> {
     let q = |x: f64| (x * 1e9).round() as i64;
     let mut out = vec![format!("{:?}", Dim::ALL.map(|d| t.cells(d).len()))];
@@ -35,6 +36,10 @@ fn signature<E: Sys>(t: &E) -> Vec<String> {
         .collect();
     vs.sort();
     out.extend(vs);
+    let at = |v: EntityId| match t.carrier(v) {
+        Carrier::Point(p) => (q(p.x), q(p.y), q(p.z)),
+        _ => (0, 0, 0),
+    };
     let mut es: Vec<String> = t
         .cells(Dim::Edge)
         .iter()
@@ -43,7 +48,8 @@ fn signature<E: Sys>(t: &E) -> Vec<String> {
                 Carrier::Curve(c) => format!("c{}:{}:{}:{:?}", c.curve.to_raw(), q(c.range.lo), q(c.range.hi), c.sense),
                 _ => "none".into(),
             };
-            format!("e{curve} up{} flags{}", t.coboundary(*e).len(), t.flags(*e).bits())
+            let ends = t.edge_ends(*e).map(|(a, b)| (at(a), at(b)));
+            format!("e{curve} {ends:?} up{} flags{}", t.coboundary(*e).len(), t.flags(*e).bits())
         })
         .collect();
     es.sort();
@@ -61,6 +67,20 @@ fn signature<E: Sys>(t: &E) -> Vec<String> {
         .collect();
     fs.sort();
     out.extend(fs);
+    // Pcurve values, one line per coedge: wrong data or a mis-wired coedge cannot pass on counts.
+    let mut pcs: Vec<String> = Vec::new();
+    for f in t.cells(Dim::Face) {
+        for c in t.coedges(*f) {
+            let Some(pc) = t.pcurve(c.key) else { continue };
+            let data = match pc {
+                PCurve::Line2(l) => format!("L{:?}", [l.origin.u, l.origin.v, l.dir.u, l.dir.v, l.range.lo, l.range.hi].map(q)),
+                other => format!("{other:?}"),
+            };
+            pcs.push(format!("pc {:?} {:?} {data}", c.key.side, t.edge_ends(c.key.edge).map(|(a, b)| (at(a), at(b)))));
+        }
+    }
+    pcs.sort();
+    out.extend(pcs);
     let mut vols: Vec<String> = t
         .cells(Dim::Volume)
         .iter()
@@ -225,6 +245,11 @@ pub(super) fn join_edges_refuses_what_it_cannot_undo<E: Sys>(make: &Mk<E>) {
     t.set_carrier(halves[1], Carrier::Curve(c1)).unwrap();
     t.set_flags(halves[1], CellFlags::DEGENERATE).unwrap();
     assert!(matches!(t.join_edges(halves[0], halves[1]), Err(TopoError::Unsupported(_))));
+    // Any other differing bit reaches the flags comparison.
+    t.set_flags(halves[1], CellFlags::from_bits(2).unwrap()).unwrap();
+    let h4 = t.canonical_hash();
+    assert!(matches!(t.join_edges(halves[0], halves[1]), Err(TopoError::NotCoincident("edges differ in flags"))));
+    assert_eq!(t.canonical_hash(), h4);
     t.set_flags(halves[1], CellFlags::NONE).unwrap();
     // With the carrier restored the halves join again.
     t.join_edges(halves[0], halves[1]).unwrap();
@@ -425,6 +450,163 @@ pub(super) fn join_faces_refuses_what_it_cannot_undo<E: Sys>(make: &Mk<E>) {
     t.abort_op();
 }
 
+pub(super) fn join_edges_refuses_a_pcurve_on_one_coedge_only<E: Sys>(make: &Mk<E>) {
+    let mut t = make(None);
+    let c = with_op(&mut t, OpId(1), |t| fixtures::cylinder(t, 1.5, 2.0)).unwrap();
+    let (_, halves) = with_op(&mut t, OpId(2), |t| {
+        let m = t.make_vertex(Point3::new(1.5, 0.0, 1.0))?;
+        Ok((m, t.split_edge(c.edges[2], m, 1.0)?))
+    })
+    .unwrap();
+    let key = |edge, side| CoedgeKey { face: c.faces[2], edge, side };
+    t.begin_op(OpId(3)).unwrap();
+    assert!(t.pcurve(key(halves[0], Side::Left)).is_some() && t.pcurve(key(halves[1], Side::Left)).is_some());
+    t.set_pcurve(key(halves[1], Side::Left), None).unwrap();
+    let h = t.canonical_hash();
+    assert!(matches!(t.join_edges(halves[0], halves[1]), Err(TopoError::Unsupported(_))), "pcurve on one of the two coedges");
+    assert_eq!(t.canonical_hash(), h, "refusal changes nothing");
+    t.abort_op();
+}
+
+/// Cylinder with its bottom and top circles split at `u = pi` (vertices `m_b`, `m_t`) and the
+/// lateral face cut by the generator between them. Returns `(complex, ids, chord, kids,
+/// [bottom halves, top halves])`.
+#[allow(clippy::type_complexity)]
+fn periodic_chord_cut<E: Sys>(make: &Mk<E>, chord_pcurves: bool) -> (E, fixtures::CylinderIds, EntityId, [EntityId; 2], [[EntityId; 2]; 2]) {
+    let mut t = make(None);
+    let c = with_op(&mut t, OpId(1), |t| fixtures::cylinder(t, 1.5, 2.0)).unwrap();
+    let h = 2.0;
+    let (chord, kids, circles) = with_op(&mut t, OpId(2), |t| {
+        let mb = t.make_vertex(Point3::new(-1.5, 0.0, 0.0))?;
+        let mt = t.make_vertex(Point3::new(-1.5, 0.0, h))?;
+        let bottom = t.split_edge(c.edges[0], mb, core::f64::consts::PI)?;
+        let top = t.split_edge(c.edges[1], mt, core::f64::consts::PI)?;
+        let chord = line_edge(t, (mb, Point3::new(-1.5, 0.0, 0.0)), (mt, Point3::new(-1.5, 0.0, h)))?;
+        let kids = t.split_face(c.faces[2], FaceCut::Chord { edge: chord }, InnerLoopAssign::None)?;
+        if chord_pcurves {
+            let line = PCurve::Line2(Line2 { origin: Uv::new(core::f64::consts::PI, 0.0), dir: Uv::new(0.0, 1.0), range: Interval::new(0.0, h) });
+            for f in kids {
+                let side = t.boundary(f).iter().find(|i| i.cell == chord).map(|i| i.side).unwrap();
+                t.set_pcurve(CoedgeKey { face: f, edge: chord, side }, Some(line.clone()))?;
+            }
+        }
+        Ok((chord, kids, [bottom, top]))
+    })
+    .unwrap();
+    (t, c, chord, kids, circles)
+}
+
+pub(super) fn join_faces_undoes_a_single_chord_cut_of_a_periodic_face<E: Sys>(make: &Mk<E>) {
+    let plain = plain_cylinder(make);
+    for chord_pcurves in [false, true] {
+        for swap in [false, true] {
+            let (mut t, c, chord, kids, circles) = periodic_chord_cut(make, chord_pcurves);
+            assert_valid(&t);
+            assert_ne!(signature(&t), signature(&plain));
+            let (keep, drop) = if swap { (kids[1], kids[0]) } else { (kids[0], kids[1]) };
+            let got = with_op(&mut t, OpId(3), |t| Ok(t.join_faces(keep, drop)?)).unwrap();
+            assert_eq!(got, keep);
+            assert_valid(&t);
+            assert_eq!(t.state(chord), Some(EntityState::Deleted(OpId(3))), "the chord dissolves");
+            assert!(t.is_alive(c.edges[2]), "the seam stays");
+            assert_eq!(t.coedges(keep).filter(|k| k.key.edge == c.edges[2]).count(), 2, "the merged face uses the seam on both sides");
+            for side in [Side::Left, Side::Right] {
+                assert!(t.pcurve(CoedgeKey { face: keep, edge: c.edges[2], side }).is_some(), "{side:?}");
+            }
+            assert!(t.lineage().of(drop).any(|r| matches!(r.kind, LineageKind::Merged { into, gap } if into == keep && gap == 0.0)));
+            // The circle halves and their vertices are joined back.
+            for (i, halves) in circles.into_iter().enumerate() {
+                with_op(&mut t, OpId(4 + i as u64), |t| Ok(t.join_edges(halves[0], halves[1])?)).unwrap();
+            }
+            assert_valid(&t);
+            assert_eq!(signature(&t), signature(&plain), "chord pcurves {chord_pcurves}, swap {swap}: cut + join = never cut, up to ids");
+        }
+    }
+}
+
+pub(super) fn join_faces_undoes_a_meridian_cut_of_a_sphere<E: Sys>(make: &Mk<E>) {
+    use core::f64::consts::{FRAC_PI_2, PI};
+    let r = 2.0;
+    let mut t = make(None);
+    let s = with_op(&mut t, OpId(1), |t| fixtures::sphere(t, r)).unwrap();
+    let [pole_s, seam, pole_n] = s.edges;
+    let [vs, vn] = s.vertices;
+    let (chord, f1, f2) = with_op(&mut t, OpId(2), |t| {
+        let [h1, _h2] = t.split_degenerate_edge(pole_s, PI)?;
+        let [_n1, n2] = t.split_degenerate_edge(pole_n, PI)?;
+        let frame = Frame::from_zx(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0), Vector3::new(-1.0, 0.0, 0.0))?;
+        let curve = t.shapes_mut()?.add_curve(CurveDef::Circle(Circle::new(frame, r)?))?;
+        let chord = t.make_edge(vs, vn, Some(CurveCarrier { curve, range: Interval::new(-FRAC_PI_2, FRAC_PI_2), sense: Sense::Forward }))?;
+        let corner = |edge, side| CornerKey { face: s.face, incoming: CoedgeKey { face: s.face, edge, side } };
+        let [f1, f2] = t.split_face(s.face, FaceCut::ChordAt { edge: chord, start: corner(h1, Side::Left), end: corner(n2, Side::Right) }, InnerLoopAssign::None)?;
+        let line = PCurve::Line2(Line2 { origin: Uv::new(PI, 0.0), dir: Uv::new(0.0, 1.0), range: Interval::new(-FRAC_PI_2, FRAC_PI_2) });
+        for f in [f1, f2] {
+            let side = t.boundary(f).iter().find(|i| i.cell == chord).map(|i| i.side).unwrap();
+            t.set_pcurve(CoedgeKey { face: f, edge: chord, side }, Some(line.clone()))?;
+        }
+        Ok((chord, f1, f2))
+    })
+    .unwrap();
+    assert_valid(&t);
+    let keep = with_op(&mut t, OpId(3), |t| Ok(t.join_faces(f1, f2)?)).unwrap();
+    assert_eq!(keep, f1);
+    assert_valid(&t);
+    assert_eq!(t.state(chord), Some(EntityState::Deleted(OpId(3))));
+    assert!(t.is_alive(seam), "the meridian seam stays");
+    assert_eq!(t.coedges(keep).filter(|c| c.key.edge == seam).count(), 2);
+    let m = t.face_moments(keep).unwrap();
+    assert!((m.area - 4.0 * PI * r * r).abs() < 1e-6, "{}", m.area);
+    assert_eq!(t.cells(Dim::Face).len(), 1);
+}
+
+pub(super) fn join_faces_keeps_the_survivors_coincidence_record<E: Sys>(make: &Mk<E>) {
+    let partner = |t: &E, f: EntityId, x: EntityId| t.coincident_faces(f).iter().find(|p| p.other(f) == Some(x)).map(|p| p.status);
+    let setup = |both: bool| {
+        let (mut t, b, _chord, kids) = diagonal_cut(make);
+        let x = b.faces[5];
+        with_op(&mut t, OpId(3), |t| {
+            if both {
+                t.record_coincidence(kids[0], x, Coincidence::ImprintedNotMerged)?;
+            }
+            t.record_coincidence(kids[1], x, Coincidence::Overlapping)?;
+            Ok(())
+        })
+        .unwrap();
+        (t, x, kids)
+    };
+    // Both halves coincide with the same face: keep's record wins, drop's is discarded.
+    let (mut t, x, kids) = setup(true);
+    with_op(&mut t, OpId(4), |t| Ok(t.join_faces(kids[0], kids[1])?)).unwrap();
+    assert_eq!(partner(&t, kids[0], x), Some(Coincidence::ImprintedNotMerged));
+    assert_eq!(partner(&t, kids[1], x), None);
+    // Swapped roles: the other record wins.
+    let (mut t, x, kids) = setup(true);
+    with_op(&mut t, OpId(4), |t| Ok(t.join_faces(kids[1], kids[0])?)).unwrap();
+    assert_eq!(partner(&t, kids[1], x), Some(Coincidence::Overlapping));
+    assert_eq!(partner(&t, kids[0], x), None);
+    // Only drop has a record: it transfers.
+    let (mut t, x, kids) = setup(false);
+    with_op(&mut t, OpId(4), |t| Ok(t.join_faces(kids[0], kids[1])?)).unwrap();
+    assert_eq!(partner(&t, kids[0], x), Some(Coincidence::Overlapping));
+}
+
+pub(super) fn join_faces_refuses_a_t_junction_in_the_middle_of_the_chain<E: Sys>(make: &Mk<E>) {
+    let (mut t, b, chord, kids) = diagonal_cut(make);
+    t.begin_op(OpId(3)).unwrap();
+    // Split the chord in two, then hang a loose edge on the middle vertex.
+    let Carrier::Curve(cc) = t.carrier(chord).clone() else { panic!("chord curve") };
+    let mid = 0.5 * (cc.range.lo + cc.range.hi);
+    let Some(CurveDef::Line(l)) = t.shapes().curve_def(cc.curve) else { panic!("line") };
+    let pm = l.origin + l.dir * mid;
+    let m = t.make_vertex(pm).unwrap();
+    t.split_edge(chord, m, mid).unwrap();
+    line_edge(&mut t, (m, pm), (b.vertices[2], Point3::new(0.0, 3.0, 0.0))).unwrap();
+    let h = t.canonical_hash();
+    assert!(matches!(t.join_faces(kids[0], kids[1]), Err(TopoError::Unsupported("join_faces: a chain vertex has other incident cells"))));
+    assert_eq!(t.canonical_hash(), h);
+    t.abort_op();
+}
+
 pub(super) fn join_operators_need_an_open_operation<E: Sys>(make: &Mk<E>) {
     let (mut t, b, _chord, kids) = diagonal_cut(make);
     assert!(matches!(t.join_faces(kids[0], kids[1]), Err(TopoError::NoOpenOp)));
@@ -448,6 +630,11 @@ pub(super) fn scenarios<E: Sys>() -> Vec<Scenario<E>> {
         ("join_faces_undoes_an_interior_loop_imprint_in_both_roles", join_faces_undoes_an_interior_loop_imprint_in_both_roles::<E>),
         ("join_faces_and_edges_undo_a_seam_cut_of_a_cylinder", join_faces_and_edges_undo_a_seam_cut_of_a_cylinder::<E>),
         ("join_faces_refuses_what_it_cannot_undo", join_faces_refuses_what_it_cannot_undo::<E>),
+        ("join_edges_refuses_a_pcurve_on_one_coedge_only", join_edges_refuses_a_pcurve_on_one_coedge_only::<E>),
+        ("join_faces_undoes_a_single_chord_cut_of_a_periodic_face", join_faces_undoes_a_single_chord_cut_of_a_periodic_face::<E>),
+        ("join_faces_undoes_a_meridian_cut_of_a_sphere", join_faces_undoes_a_meridian_cut_of_a_sphere::<E>),
+        ("join_faces_keeps_the_survivors_coincidence_record", join_faces_keeps_the_survivors_coincidence_record::<E>),
+        ("join_faces_refuses_a_t_junction_in_the_middle_of_the_chain", join_faces_refuses_a_t_junction_in_the_middle_of_the_chain::<E>),
         ("join_operators_need_an_open_operation", join_operators_need_an_open_operation::<E>),
     ]
 }
