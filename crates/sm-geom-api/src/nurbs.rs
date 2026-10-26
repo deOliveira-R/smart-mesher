@@ -306,20 +306,26 @@ pub(crate) fn project_curve_numeric<C: ParametricCurve + ?Sized>(c: &C, p: Point
         let j = c.jet(t);
         let diff = j.p - p;
         let g = diff.dot(j.d1);
-        let h = j.d1.dot(j.d1) + diff.dot(j.d2);
-        if h.abs() < 1e-300 {
+        let mut h = j.d1.dot(j.d1) + diff.dot(j.d2);
+        if h <= 0.0 {
+            // Not a descent direction: fall back to Gauss-Newton.
+            h = j.d1.dot(j.d1);
+        }
+        if h < 1e-300 {
             break;
         }
-        let nt = fix(t - g / h);
+        let step = g / h;
+        let nt = fix(t - step);
         if (nt - t).abs() <= 1e-15 * (1.0 + t.abs()) {
             t = nt;
             break;
         }
-        // Only accept steps that do not increase the distance.
-        if (c.eval(nt) - p).norm() <= (c.eval(t) - p).norm() {
-            t = nt;
-        } else {
-            break;
+        // Backtrack until the distance does not increase.
+        let d0 = diff.norm();
+        let accepted = (0..30).map(|k| fix(t - step * 0.5f64.powi(k))).find(|&ct| (c.eval(ct) - p).norm() <= d0);
+        match accepted {
+            Some(ct) => t = ct,
+            None => break,
         }
     }
     if (c.eval(t) - p).norm() > best_d {
@@ -591,20 +597,34 @@ impl ParametricSurface for NurbsSurface {
             let j = self.jet(Uv::new(u, v));
             let r = j.p - p;
             let (g0, g1) = (r.dot(j.du), r.dot(j.dv));
-            let h00 = j.du.dot(j.du) + r.dot(j.duu);
-            let h01 = j.du.dot(j.dv) + r.dot(j.duv);
-            let h11 = j.dv.dot(j.dv) + r.dot(j.dvv);
+            let (mut h00, mut h01, mut h11) = (j.du.dot(j.du) + r.dot(j.duu), j.du.dot(j.dv) + r.dot(j.duv), j.dv.dot(j.dv) + r.dot(j.dvv));
+            if h00 <= 0.0 || h00 * h11 - h01 * h01 <= 0.0 {
+                // Indefinite Hessian (saddle-shaped patch far from the foot point): use the
+                // Gauss-Newton matrix J^T J, which always gives a descent direction.
+                (h00, h01, h11) = (j.du.dot(j.du), j.du.dot(j.dv), j.dv.dot(j.dv));
+            }
             let det = h00 * h11 - h01 * h01;
             if det.abs() < 1e-300 {
                 break;
             }
             let (su, sv) = ((h11 * g0 - h01 * g1) / det, (h00 * g1 - h01 * g0) / det);
-            let (nu_, nv_) = (fold(du, self.periodic[0], u - su), fold(dv, self.periodic[1], v - sv));
-            // Step length before wrapping (a wrap across the seam is not a large move).
-            let moved = if self.periodic.iter().any(|p| *p) { su.abs() + sv.abs() } else { (nu_ - u).abs() + (nv_ - v).abs() };
-            if (self.jet(Uv::new(nu_, nv_)).p - p).norm() > r.norm() {
-                break;
+            // Backtrack until the distance does not increase (a full step can overshoot on a
+            // strongly skewed patch).
+            let d0 = r.norm();
+            let mut accepted = None;
+            for k in 0..30 {
+                let l = 0.5f64.powi(k);
+                let (cu, cv) = (fold(du, self.periodic[0], u - l * su), fold(dv, self.periodic[1], v - l * sv));
+                if (self.jet(Uv::new(cu, cv)).p - p).norm() <= d0 {
+                    accepted = Some((l, cu, cv));
+                    break;
+                }
             }
+            let Some((l, nu_, nv_)) = accepted else {
+                break;
+            };
+            // Step length before wrapping (a wrap across the seam is not a large move).
+            let moved = if self.periodic.iter().any(|p| *p) { l * (su.abs() + sv.abs()) } else { (nu_ - u).abs() + (nv_ - v).abs() };
             u = nu_;
             v = nv_;
             if moved <= 1e-15 * (1.0 + u.abs() + v.abs()) {
