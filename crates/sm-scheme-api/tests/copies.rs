@@ -418,7 +418,10 @@ fn a_deck_copy_of_a_claimed_face_is_scheduled_after_the_group() {
     let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
     let params = serde_json::json!({ "source": [row[0].faces[0]], "target": [row[2].faces[1]] });
-    intent.groups.push(MeshGroup::new(GroupId(1), row.iter().map(|b| b.volume).collect()).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
+    intent.groups.push(
+        MeshGroup::new(GroupId(1), row.iter().map(|b| b.volume).collect())
+            .with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)),
+    );
     intent.set_scheme(
         d.volume,
         SchemeChoice::with_params(

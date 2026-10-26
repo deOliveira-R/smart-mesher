@@ -22,7 +22,6 @@ fn corr(source: Target, target: Target, reason: impl Into<String>) -> SchemeErro
     }
 }
 
-
 /// Compose two sorted correspondences: `(a, b)` then `(b, c)` gives `(a, c)`.
 pub fn compose_maps(
     first: &[(EntityId, EntityId)],
@@ -322,7 +321,11 @@ pub fn copy_patch(
     let mut out = Patch::new(target);
     out.nodes.reserve(src.nodes.len());
     for n in &src.nodes {
-        out.nodes.push(PatchNode::new(km.map(n.key)?, transform.apply_point(n.point), Param::None));
+        out.nodes.push(PatchNode::new(
+            km.map(n.key)?,
+            transform.apply_point(n.point),
+            Param::None,
+        ));
     }
     out.refs.reserve(src.refs.len());
     for r in &src.refs {
@@ -407,7 +410,8 @@ fn canonical_elements(
             keys.push(map(k)?);
         }
         let el = &mut keys[start..];
-        if matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) && !el.is_empty() {
+        if matches!(shape, ElemShape::Tri | ElemShape::Quad | ElemShape::Polygon) && !el.is_empty()
+        {
             if flip {
                 el[1..].reverse();
             }

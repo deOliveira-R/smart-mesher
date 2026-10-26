@@ -168,7 +168,12 @@ impl<'w> SessionHost<'w> {
         let fem_format = match format {
             ExportFormat::Smsh => FemFormat::Smsh,
             ExportFormat::Vtu => FemFormat::Vtu,
-            _ => return Err(SessionError::bad_request("unsupported export format")),
+            other => {
+                return Err(SessionError::new(
+                    "unsupported-format",
+                    format!("export format `{}` is not available yet", format_name(other)),
+                ));
+            }
         };
         if p.provenance && format != ExportFormat::Smsh {
             return Err(SessionError::bad_request(format!(
@@ -341,6 +346,9 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
 }
 
 /// The format a `.smsh`/`.vtu` extension names; none for any other extension.
+///
+/// Note: this, `parse_format` and `sm-cli`'s `Format` do not yet know `exodus`/`openfoam`
+/// (the W3a integration task wires them; `ExportFormat` already has the variants).
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("smsh") => Some(ExportFormat::Smsh),
@@ -352,6 +360,8 @@ fn known_format_of(path: &Path) -> Option<ExportFormat> {
 fn format_name(f: ExportFormat) -> &'static str {
     match f {
         ExportFormat::Vtu => "vtu",
+        ExportFormat::Exodus => "exodus",
+        ExportFormat::Openfoam => "openfoam",
         _ => "smsh",
     }
 }

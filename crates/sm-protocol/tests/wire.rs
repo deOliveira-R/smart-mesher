@@ -565,3 +565,24 @@ fn deterministic_encoding() {
     };
     assert_eq!(schema(), schema());
 }
+
+#[test]
+fn export_formats_and_file_listing_are_additive() {
+    for (f, s) in [(ExportFormat::Exodus, "exodus"), (ExportFormat::Openfoam, "openfoam")] {
+        assert_eq!(serde_json::to_value(f).unwrap(), json!(s));
+        assert_eq!(serde_json::from_value::<ExportFormat>(json!(s)).unwrap(), f);
+    }
+    // A single-file result serializes exactly as before (no `files` key) and old JSON loads.
+    let plain = ExportResult::new(None, ExportFormat::Smsh, 12, h(7));
+    let js = serde_json::to_value(&plain).unwrap();
+    assert!(js.get("files").is_none(), "{js}");
+    assert_eq!(serde_json::from_value::<ExportResult>(js).unwrap(), plain);
+    let multi = ExportResult::new(Some("case".into()), ExportFormat::Openfoam, 30, h(1))
+        .with_files(vec![ExportedFile::new("points", 10, h(2)), ExportedFile::new("faces", 20, h(3))]);
+    let js = serde_json::to_value(&multi).unwrap();
+    assert_eq!(
+        js["files"],
+        json!([{"name": "points", "bytes": 10, "sha256": hs(2)}, {"name": "faces", "bytes": 20, "sha256": hs(3)}])
+    );
+    assert_eq!(serde_json::from_value::<ExportResult>(js).unwrap(), multi);
+}

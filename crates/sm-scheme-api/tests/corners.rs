@@ -190,8 +190,12 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
     // Override: the geometric corner at the origin becomes a Side and the middle vertex an End.
     let x = corner_at(&f, face, f.ids.vertices[0]);
     let m = corner_at(&f, face, f.mid);
-    intent.corners.push(CornerIntent::new(x, Firm::hard(VertexType::Side)));
-    intent.corners.push(CornerIntent::new(m, Firm::hard(VertexType::End)));
+    intent
+        .corners
+        .push(CornerIntent::new(x, Firm::hard(VertexType::Side)));
+    intent
+        .corners
+        .push(CornerIntent::new(m, Firm::hard(VertexType::End)));
     let plan = driver.plan(&input, &intent).expect("plan with overrides");
     let layout = plan.layout(face).expect("layout");
     let get = |k: CornerKey| {
@@ -259,9 +263,17 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
     };
     let (ni, nj) = (gsum(SideDir::PlusI), gsum(SideDir::PlusJ));
     assert_eq!(patch.elements.len(), (ni * nj) as usize);
-    assert!(patch.elements.iter().all(|(s, _)| s == sm_scheme_api::ElemShape::Quad));
+    assert!(
+        patch
+            .elements
+            .iter()
+            .all(|(s, _)| s == sm_scheme_api::ElemShape::Quad)
+    );
     let mid = sm_scheme_api::NodeKey::vertex(f.mid);
-    assert!(patch.refs.contains(&mid), "the straight-through vertex is a boundary node");
+    assert!(
+        patch.refs.contains(&mid),
+        "the straight-through vertex is a boundary node"
+    );
     // Every non-corner boundary node starts a strip across the block; the four corners none.
     let mut starts = 0;
     for k in &patch.refs {
@@ -273,7 +285,10 @@ fn submap_honours_hard_corner_overrides_and_reports_a_bad_sum() {
                 strip.len()
             );
             assert_eq!(strip.first(), Some(k));
-            assert!(patch.refs.contains(strip.last().expect("end")), "ends on the boundary");
+            assert!(
+                patch.refs.contains(strip.last().expect("end")),
+                "ends on the boundary"
+            );
         }
     }
     assert_eq!(starts, 2 * (ni - 1) + 2 * (nj - 1));

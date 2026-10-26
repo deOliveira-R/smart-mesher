@@ -133,7 +133,11 @@ impl IntervalConstraint {
                 for (e, c) in terms.iter() {
                     *acc.entry(*e).or_insert(0) += i64::from(*c);
                 }
-                *terms = acc.into_iter().filter(|x| x.1 != 0).map(|(e, c)| (e, c.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)).collect();
+                *terms = acc
+                    .into_iter()
+                    .filter(|x| x.1 != 0)
+                    .map(|(e, c)| (e, c.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32))
+                    .collect();
             }
             IntervalConstraint::EvenSum { edges } => edges.sort_unstable(),
             _ => {}
@@ -146,13 +150,24 @@ impl IntervalConstraint {
     /// no zero coefficient and a right-hand side within `±2^53`; an `EvenSum` lists an edge.
     pub fn check(&self) -> Result<()> {
         let bad = |m: String| Err(SchemeError::Input(format!("interval row: {m}")));
-        if let Some(e) = self.edges().into_iter().find(|e| !matches!(e.kind(), sm_core::EntityKind::TopoEdge | sm_core::EntityKind::PartitionEdge)) {
+        if let Some(e) = self.edges().into_iter().find(|e| {
+            !matches!(
+                e.kind(),
+                sm_core::EntityKind::TopoEdge | sm_core::EntityKind::PartitionEdge
+            )
+        }) {
             return bad(format!("{e} is not an edge"));
         }
         match self {
             IntervalConstraint::Fixed { count: 0, .. } => bad("a fixed count must be >= 1".into()),
-            IntervalConstraint::Goal { goal, .. } if !(goal.is_finite() && *goal > 0.0) => bad("a goal must be positive and finite".into()),
-            IntervalConstraint::Range { min, max, .. } if *min == 0 || max.is_some_and(|m| m < *min) => bad("a range needs 1 <= min <= max".into()),
+            IntervalConstraint::Goal { goal, .. } if !(goal.is_finite() && *goal > 0.0) => {
+                bad("a goal must be positive and finite".into())
+            }
+            IntervalConstraint::Range { min, max, .. }
+                if *min == 0 || max.is_some_and(|m| m < *min) =>
+            {
+                bad("a range needs 1 <= min <= max".into())
+            }
             IntervalConstraint::Linear { terms, rhs, .. } => {
                 if terms.is_empty() {
                     bad("a linear row needs a term".into())
@@ -164,7 +179,9 @@ impl IntervalConstraint {
                     Ok(())
                 }
             }
-            IntervalConstraint::EvenSum { edges } if edges.is_empty() => bad("an even-sum row needs an edge".into()),
+            IntervalConstraint::EvenSum { edges } if edges.is_empty() => {
+                bad("an even-sum row needs an edge".into())
+            }
             _ => Ok(()),
         }
     }
@@ -296,7 +313,13 @@ impl CopyConstraint {
     /// A copy of `source` onto `target` under `transform`, with an empty vertex map (derived
     /// geometrically from `transform`).
     pub fn new(source: Target, target: Target, transform: Transform, reason: CopyReason) -> Self {
-        Self { source, target, transform, vertex_map: Vec::new(), reason }
+        Self {
+            source,
+            target,
+            transform,
+            vertex_map: Vec::new(),
+            reason,
+        }
     }
 
     /// With an explicit vertex correspondence `(source vertex, target vertex)`; it is sorted by
@@ -889,7 +912,12 @@ impl<'a> Requirements<'a> {
             Some("a target cannot read itself")
         } else if (self.scope.within)(other, me) {
             Some("an ancestor is generated after its sub-entities")
-        } else if self.problem.claims.iter().any(|c| c.item.by == me && c.item.child == other) {
+        } else if self
+            .problem
+            .claims
+            .iter()
+            .any(|c| c.item.by == me && c.item.child == other)
+        {
             Some("a claimed child is written by the requester itself")
         } else {
             None
@@ -898,7 +926,13 @@ impl<'a> Requirements<'a> {
             self.fail(other, reason);
             return REFUSED;
         }
-        self.problem.push_constraint(self.origin.clone(), MeshConstraint::Precedes { before: other, after: me })
+        self.problem.push_constraint(
+            self.origin.clone(),
+            MeshConstraint::Precedes {
+                before: other,
+                after: me,
+            },
+        )
     }
 
     /// Store scheme-private data for this target. It is kept in
@@ -982,7 +1016,10 @@ impl<'a> IntervalSink<'a> {
     /// skip [`IntervalConstraint::check`]: pass a finite, positive value (the reference solver
     /// ignores any other; a debug build asserts).
     pub fn goal(&mut self, edge: EntityId, goal: f64) -> ConstraintId {
-        debug_assert!(goal.is_finite() && goal > 0.0, "interval goal must be finite and positive, got {goal}");
+        debug_assert!(
+            goal.is_finite() && goal > 0.0,
+            "interval goal must be finite and positive, got {goal}"
+        );
         self.problem
             .push_interval(self.origin.clone(), IntervalConstraint::Goal { edge, goal })
     }

@@ -393,7 +393,9 @@ impl<'r> Driver<'r> {
         for (i, (k, pt, param)) in ps.nodes().enumerate() {
             let v = b.add_vertex(pt)?;
             if v.get() != i {
-                return Err(SchemeError::Input("commit needs an empty builder: node i must become VertexIx(i)".into()));
+                return Err(SchemeError::Input(
+                    "commit needs an empty builder: node i must become VertexIx(i)".into(),
+                ));
             }
             let ent = classify(k.owner)?;
             let param = if ent == k.owner && param.fits(ent.kind()) {
@@ -547,7 +549,10 @@ impl<'r> Driver<'r> {
             ));
         }
         let mut vs: Vec<VertexIx> = Vec::with_capacity(8);
-        for patch in ps.patches().filter(|p| p.target.dim() == SchemeDim::Surface) {
+        for patch in ps
+            .patches()
+            .filter(|p| p.target.dim() == SchemeDim::Surface)
+        {
             let t = patch.target;
             let Some(face) = t.entity() else { continue };
             let class = Classification::on(classify(face)?);
@@ -780,13 +785,21 @@ impl<'p> CheckCtx<'p> {
     /// of `GenCtx::embedded`).
     fn embedded_keys(&self, parent: EntityId, out: &mut BTreeSet<NodeKey>) {
         for e in self.input.embedded_edges(parent) {
-            if let (Some((a, b)), Some(n)) = (sm_topo_api::TopologyViewExt::edge_ends(self.input.topo, e), self.plan.intervals(e)) {
+            if let (Some((a, b)), Some(n)) = (
+                sm_topo_api::TopologyViewExt::edge_ends(self.input.topo, e),
+                self.plan.intervals(e),
+            ) {
                 out.insert(NodeKey::vertex(a));
                 out.insert(NodeKey::vertex(b));
                 out.extend((1..n).map(|i| NodeKey::new(e, i)));
             }
         }
-        out.extend(self.input.embedded_vertices(parent).into_iter().map(NodeKey::vertex));
+        out.extend(
+            self.input
+                .embedded_vertices(parent)
+                .into_iter()
+                .map(NodeKey::vertex),
+        );
     }
 
     /// The patch contract: right target; nodes owned by the target, a group member or a
@@ -842,7 +855,11 @@ impl<'p> CheckCtx<'p> {
                 Target::Group(_) => self.members.get(&t).cloned().unwrap_or_default(),
                 _ => t.entity().into_iter().collect(),
             };
-            for p in parents.iter().chain(claimed.iter().filter(|c| self.claimed[&t].contains(&Target::Surface(**c)))) {
+            for p in parents.iter().chain(
+                claimed
+                    .iter()
+                    .filter(|c| self.claimed[&t].contains(&Target::Surface(**c))),
+            ) {
                 self.embedded_keys(*p, &mut need);
             }
             if let Some(k) = need.iter().find(|k| !ref_set.contains(k)) {

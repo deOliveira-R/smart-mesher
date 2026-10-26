@@ -138,11 +138,14 @@ fn build_one(
                 )
             } else {
                 let inv =
-                    r.item.transform.inverse().ok_or_else(|| SchemeError::Correspondence {
-                        source_target: r.item.source,
-                        target: r.item.target,
-                        reason: "singular copy transform".into(),
-                    })?;
+                    r.item
+                        .transform
+                        .inverse()
+                        .ok_or_else(|| SchemeError::Correspondence {
+                            source_target: r.item.source,
+                            target: r.item.target,
+                            reason: "singular copy transform".into(),
+                        })?;
                 (
                     inv.compose(&pu.from_root),
                     compose_maps(&pu.vm, &invert_map(&r.item.vertex_map)),

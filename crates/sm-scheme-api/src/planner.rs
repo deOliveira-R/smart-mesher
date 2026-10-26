@@ -65,7 +65,11 @@ fn children_in(input: &MeshInput<'_>, region: &Region, t: Target) -> Result<BTre
     // Boundary edges and embedded (wire) edges of a face are its curve children.
     let add_face = |f: EntityId, out: &mut BTreeSet<Target>| {
         out.insert(Target::Surface(f));
-        for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+        for e in input
+            .face_edges(f)
+            .into_iter()
+            .chain(input.embedded_edges(f))
+        {
             out.insert(Target::Curve(e));
         }
     };
@@ -83,7 +87,11 @@ fn children_in(input: &MeshInput<'_>, region: &Region, t: Target) -> Result<BTre
     match t {
         Target::Curve(_) => {}
         Target::Surface(f) => {
-            for e in input.face_edges(f).into_iter().chain(input.embedded_edges(f)) {
+            for e in input
+                .face_edges(f)
+                .into_iter()
+                .chain(input.embedded_edges(f))
+            {
                 out.insert(Target::Curve(e));
             }
         }
@@ -138,15 +146,16 @@ enum Cand {
 impl<'r> Driver<'r> {
     pub(crate) fn region(&self, input: &MeshInput<'_>, intent: &MeshIntent) -> Result<Region> {
         let selected = sorted(input.selection.to_vec());
-        let is_face = |id: &EntityId| {
-            matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace)
-        };
+        let is_face =
+            |id: &EntityId| matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace);
         // Surface-only selection: faces of the view, no pieces.
         let surface_only = !selected.is_empty() && selected.iter().all(is_face);
         let (volumes, picked_faces) = if surface_only {
             for f in &selected {
                 if input.topo.dim_of(*f) != Some(Dim::Face) || !input.topo.is_alive(*f) {
-                    return Err(SchemeError::Input(format!("{f} is not a live face of the view")));
+                    return Err(SchemeError::Input(format!(
+                        "{f} is not a live face of the view"
+                    )));
                 }
             }
             (Vec::new(), selected)
@@ -426,7 +435,11 @@ impl<'a, 'r> Planner<'a, 'r> {
             grouped: &self.region.grouped,
         });
         let (footprints, waves) = match scheduled {
-            Err(SchemeError::Schedule { jobs, constraints, reason }) => return Err(self.blame_cycle(jobs, constraints, reason)),
+            Err(SchemeError::Schedule {
+                jobs,
+                constraints,
+                reason,
+            }) => return Err(self.blame_cycle(jobs, constraints, reason)),
             other => other?,
         };
         Ok(Plan {
@@ -459,14 +472,25 @@ impl<'a, 'r> Planner<'a, 'r> {
     /// scheme-origin `Precedes` (a scheme's [`Requirements::reads`]): that becomes an
     /// [`Infeasible`] blaming the reading `(target, scheme)` (the later such constraint, if the
     /// scheme is blameable), so the driver rejects it and re-plans.
-    fn blame_cycle(&self, jobs: Vec<Job>, constraints: Vec<ConstraintId>, reason: String) -> SchemeError {
+    fn blame_cycle(
+        &self,
+        jobs: Vec<Job>,
+        constraints: Vec<ConstraintId>,
+        reason: String,
+    ) -> SchemeError {
         let blame = (reason == "dependency cycle")
             .then(|| {
                 constraints.iter().rev().find_map(|id| {
-                    let is_read = self.p.constraints.iter().any(|r| r.id == *id && matches!(r.item, MeshConstraint::Precedes { .. }));
+                    let is_read =
+                        self.p.constraints.iter().any(|r| {
+                            r.id == *id && matches!(r.item, MeshConstraint::Precedes { .. })
+                        });
                     match self.p.record_origin(*id)? {
                         Origin::Scheme { scheme, target }
-                            if is_read && scheme.as_str() != SchemeName::COPY && !self.hard.contains(target) && !self.rej.0.contains_key(&(*target, scheme.clone())) =>
+                            if is_read
+                                && scheme.as_str() != SchemeName::COPY
+                                && !self.hard.contains(target)
+                                && !self.rej.0.contains_key(&(*target, scheme.clone())) =>
                         {
                             Some((*target, scheme.clone()))
                         }
@@ -486,9 +510,19 @@ impl<'a, 'r> Planner<'a, 'r> {
                     .collect();
                 entities.sort_unstable();
                 entities.dedup();
-                Infeasible { reason: "dependency cycle through a scheme read".into(), constraints, entities, blame: Some(b) }.into()
+                Infeasible {
+                    reason: "dependency cycle through a scheme read".into(),
+                    constraints,
+                    entities,
+                    blame: Some(b),
+                }
+                .into()
             }
-            None => SchemeError::Schedule { jobs, constraints, reason },
+            None => SchemeError::Schedule {
+                jobs,
+                constraints,
+                reason,
+            },
         }
     }
 
@@ -576,12 +610,22 @@ impl<'a, 'r> Planner<'a, 'r> {
         // A request on anything but a region face would be silently dropped: refuse it (curve
         // boundary layers do not exist yet; `MeshIntent::check` refuses non-face kinds too).
         for (id, e) in &self.intent.entities {
-            if e.boundary_layer.is_some() && self.region.faces.binary_search(id).is_err() && !matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace) {
-                return Err(SchemeError::Input(format!("{id}: boundary layers are only supported on faces")));
+            if e.boundary_layer.is_some()
+                && self.region.faces.binary_search(id).is_err()
+                && !matches!(id.kind(), EntityKind::TopoFace | EntityKind::PartitionFace)
+            {
+                return Err(SchemeError::Input(format!(
+                    "{id}: boundary layers are only supported on faces"
+                )));
             }
         }
         for f in self.region.faces.clone() {
-            let Some(spec) = self.intent.entities.get(&f).and_then(|e| e.boundary_layer.clone()) else {
+            let Some(spec) = self
+                .intent
+                .entities
+                .get(&f)
+                .and_then(|e| e.boundary_layer.clone())
+            else {
                 continue;
             };
             let mut targets: Vec<Target> = Vec::new();
@@ -600,7 +644,9 @@ impl<'a, 'r> Planner<'a, 'r> {
                 });
             }
             if let Some(v) = spec.into.iter().find(|v| !adjacent.contains(v)) {
-                return Err(SchemeError::Input(format!("{f}: boundary layer `into` volume {v} is not adjacent to the face")));
+                return Err(SchemeError::Input(format!(
+                    "{f}: boundary layer `into` volume {v} is not adjacent to the face"
+                )));
             }
             for vt in sorted(targets) {
                 self.p.push_constraint(
@@ -687,8 +733,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             };
             self.p.push_copy(
                 Origin::Intent,
-                CopyConstraint::new(st, t, transform, CopyReason::User)
-                    .with_vertex_map(vertex_map),
+                CopyConstraint::new(st, t, transform, CopyReason::User).with_vertex_map(vertex_map),
             );
         }
         Ok(())
@@ -1338,7 +1383,9 @@ impl<'a, 'r> Planner<'a, 'r> {
             && let Some(piece) = self.input.model.decomposition().piece(c)
         {
             match &piece.shape {
-                PieceShape::Sweep { source, target: tg, .. } => {
+                PieceShape::Sweep {
+                    source, target: tg, ..
+                } => {
                     let map = |v: &[sm_model_api::PieceFace]| -> Vec<EntityId> {
                         v.iter()
                             .filter_map(|pf| {
@@ -1540,7 +1587,9 @@ impl<'a, 'r> Planner<'a, 'r> {
             })?;
         let (input, region) = (self.input, &self.region);
         let in_region = |t: Target| region.contains(t);
-        let within = |parent: Target, child: Target| children_in(input, region, parent).is_ok_and(|c| c.contains(&child));
+        let within = |parent: Target, child: Target| {
+            children_in(input, region, parent).is_ok_and(|c| c.contains(&child))
+        };
         let scope = Scope {
             children: self.children_of(tp.target)?,
             resolved: &self.plans,
@@ -1676,7 +1725,9 @@ impl<'a, 'r> Planner<'a, 'r> {
                                 firmness: *firmness,
                             },
                         ),
-                        Firmness::Default => (Origin::Intent, IntervalConstraint::Goal { edge: e, goal }),
+                        Firmness::Default => {
+                            (Origin::Intent, IntervalConstraint::Goal { edge: e, goal })
+                        }
                     }
                 }
                 None => match field {
@@ -1697,8 +1748,14 @@ impl<'a, 'r> Planner<'a, 'r> {
         }
         // User relations between edges, in intent order.
         for r in &intent.intervals {
-            if let Some(e) = r.edges().into_iter().find(|e| self.region.edges.binary_search(e).is_err()) {
-                return Err(SchemeError::Input(format!("interval row names {e}, which is not an edge of the region")));
+            if let Some(e) = r
+                .edges()
+                .into_iter()
+                .find(|e| self.region.edges.binary_search(e).is_err())
+            {
+                return Err(SchemeError::Input(format!(
+                    "interval row names {e}, which is not an edge of the region"
+                )));
             }
             let mut r = r.clone();
             r.canonicalize();
@@ -1768,5 +1825,9 @@ impl<'a, 'r> Planner<'a, 'r> {
 
 /// Interval count of a firm size request: `round(length / size)`, at least 1.
 fn size_count(goal: f64) -> u32 {
-    if goal.is_finite() { goal.round().clamp(1.0, f64::from(u32::MAX)) as u32 } else { 1 }
+    if goal.is_finite() {
+        goal.round().clamp(1.0, f64::from(u32::MAX)) as u32
+    } else {
+        1
+    }
 }

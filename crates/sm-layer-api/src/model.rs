@@ -69,6 +69,17 @@ impl ModelLayer {
         }
     }
 
+    /// A layer over an existing shared topology host and model tables, with no committed
+    /// topology operation (`ops_run() == 0`). Neither store is cloned.
+    pub fn from_parts(topo: Arc<dyn TopoHost>, model: Arc<Model>) -> Self {
+        Self {
+            topo,
+            model,
+            next_op: 0,
+            pending: false,
+        }
+    }
+
     /// Read-only topology.
     pub fn topo(&self) -> &dyn TopologyView {
         (*self.topo).as_view()

@@ -49,8 +49,6 @@ pub mod target;
 pub mod vertex;
 
 pub use caps::Caps;
-/// Re-export of [`sm_mesh_api::Param`], so scheme crates need no direct `sm-mesh-api` edge for it.
-pub use sm_mesh_api::Param;
 pub use driver::{Driver, DriverOptions, Meshed, Rejections};
 pub use error::{Attempt, FailureKind, GenerateFailure, Infeasible, Phase, Result, SchemeError};
 pub use exec::{Executor, ScopedThreads, Sequential};
@@ -71,6 +69,8 @@ pub use scheme::{
     MeshTransform, PieceResolver, PlanCtx, Scheme, SchemeRegistry, WholeFaces,
 };
 pub use sizing::{ConstantSize, SizeField, SymMat3};
+/// Re-export of [`sm_mesh_api::Param`], so scheme crates need no direct `sm-mesh-api` edge for it.
+pub use sm_mesh_api::Param;
 pub use solve::{CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver};
 pub use target::{GroupId, Job, NodeKey, SchemeDim, Target, TransformId, piece_of};
 pub use vertex::{CornerAssignment, FaceLayout, LogicalSide, SideDir, VertexRule, VertexType};

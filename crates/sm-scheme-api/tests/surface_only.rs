@@ -20,7 +20,11 @@ use stub_schemes::{brick_setup, registry};
 
 fn counts(ids: &sm_topo_api::fixtures::BrickIds, n: [u32; 3]) -> MeshIntent {
     let mut intent = MeshIntent::default();
-    for (e, c) in [(ids.edges[0], n[0]), (ids.edges[4], n[1]), (ids.edges[8], n[2])] {
+    for (e, c) in [
+        (ids.edges[0], n[0]),
+        (ids.edges[4], n[1]),
+        (ids.edges[8], n[2]),
+    ] {
         intent.set_intervals(e, Firm::hard(IntervalRequest::Count(c)));
     }
     intent
@@ -35,7 +39,13 @@ fn the_faces_of_a_brick_mesh_as_one_closed_surface() {
     let sel = ids.faces;
     let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let out = driver
-        .mesh(&input, &counts(&ids, [2, 3, 4]), &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new())
+        .mesh(
+            &input,
+            &counts(&ids, [2, 3, 4]),
+            &Sequential,
+            ReferenceBuilder::surface(),
+            &mut SerialAlloc::new(),
+        )
         .expect("surface mesh");
     let m = &out.finished.mesh;
     assert_eq!(m.dim(), MeshDim::Two);
@@ -45,9 +55,14 @@ fn the_faces_of_a_brick_mesh_as_one_closed_surface() {
     assert!((0..m.cell_count()).all(|c| m.cell_shape(CellIx::new(c)) == CellShape::Quad));
     // A closed surface: every facet has two cells, and V - E + F = 2.
     assert!((0..m.face_count()).all(|f| m.face_kind(FaceIx::new(f)) == FaceKind::Interior));
-    assert_eq!(m.vertex_count() as i64 - m.face_count() as i64 + m.cell_count() as i64, 2);
+    assert_eq!(
+        m.vertex_count() as i64 - m.face_count() as i64 + m.cell_count() as i64,
+        2
+    );
     // Total area 2 (1.5 * 2 + 1 * 2 + 1 * 1.5) = 13.
-    let area: f64 = (0..m.cell_count()).map(|c| cell_volume(m, CellIx::new(c))).sum();
+    let area: f64 = (0..m.cell_count())
+        .map(|c| cell_volume(m, CellIx::new(c)))
+        .sum();
     assert!((area - 13.0).abs() < 1e-12, "{area}");
     // Cells lie on their faces; facets on the brick edges lie on those edges.
     for f in ids.faces {
@@ -55,7 +70,11 @@ fn the_faces_of_a_brick_mesh_as_one_closed_surface() {
     }
     for e in ids.edges {
         let n = out.plan.intervals(e).unwrap() as usize;
-        assert_eq!(m.classified_on(e).map(|c| c.faces.len()), Some(n), "edge {e}");
+        assert_eq!(
+            m.classified_on(e).map(|c| c.faces.len()),
+            Some(n),
+            "edge {e}"
+        );
     }
     // Every cell follows its face's outward normal (the brick's faces all have the volume on
     // their left), so the polygon normals point out of the brick.
@@ -70,10 +89,22 @@ fn the_faces_of_a_brick_mesh_as_one_closed_surface() {
     }
     // Deterministic across executors.
     let again = driver
-        .mesh(&input, &counts(&ids, [2, 3, 4]), &sm_scheme_api::ScopedThreads(4), ReferenceBuilder::surface(), &mut SerialAlloc::new())
+        .mesh(
+            &input,
+            &counts(&ids, [2, 3, 4]),
+            &sm_scheme_api::ScopedThreads(4),
+            ReferenceBuilder::surface(),
+            &mut SerialAlloc::new(),
+        )
         .expect("surface mesh");
-    assert_eq!(sm_mesh_api::topology_hash(&again.finished.mesh), sm_mesh_api::topology_hash(m));
-    assert_eq!(sm_mesh_api::geometry_hash(&again.finished.mesh), sm_mesh_api::geometry_hash(m));
+    assert_eq!(
+        sm_mesh_api::topology_hash(&again.finished.mesh),
+        sm_mesh_api::topology_hash(m)
+    );
+    assert_eq!(
+        sm_mesh_api::geometry_hash(&again.finished.mesh),
+        sm_mesh_api::geometry_hash(m)
+    );
 }
 
 #[test]
@@ -85,26 +116,52 @@ fn one_face_is_an_open_surface_and_selections_cannot_mix() {
     let sel = [ids.faces[4]];
     let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let out = driver
-        .mesh(&input, &counts(&ids, [2, 3, 4]), &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new())
+        .mesh(
+            &input,
+            &counts(&ids, [2, 3, 4]),
+            &Sequential,
+            ReferenceBuilder::surface(),
+            &mut SerialAlloc::new(),
+        )
         .expect("one face");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     assert_eq!(m.cell_count(), 6);
-    let boundary = (0..m.face_count()).filter(|f| m.face_kind(FaceIx::new(*f)) == FaceKind::Boundary).count();
+    let boundary = (0..m.face_count())
+        .filter(|f| m.face_kind(FaceIx::new(*f)) == FaceKind::Boundary)
+        .count();
     assert_eq!(boundary, 2 * (2 + 3));
     let area: f64 = (0..6).map(|c| cell_volume(m, CellIx::new(c))).sum();
     assert!((area - 1.5).abs() < 1e-12);
     // Faces and pieces cannot be mixed.
     let mixed = [ids.faces[4], ids.volume];
     let input = MeshInput::new(&topo, &model, &WholeFaces, &mixed);
-    assert!(matches!(driver.plan(&input, &counts(&ids, [2, 3, 4])), Err(SchemeError::Input(_))));
+    assert!(matches!(
+        driver.plan(&input, &counts(&ids, [2, 3, 4])),
+        Err(SchemeError::Input(_))
+    ));
     // A volume selection cannot be committed into a dimension-2 builder.
     let vsel = [ids.volume];
     let input = MeshInput::new(&topo, &model, &WholeFaces, &vsel);
     let mut it = counts(&ids, [2, 3, 4]);
-    it.set_scheme(ids.volume, SchemeChoice::with_params("sweep", serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }), Firmness::Hard));
-    match driver.mesh(&input, &it, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()) {
-        Err(SchemeError::InvalidPatch { reason, .. }) => assert!(reason.contains("dimension-2"), "{reason}"),
+    it.set_scheme(
+        ids.volume,
+        SchemeChoice::with_params(
+            "sweep",
+            serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }),
+            Firmness::Hard,
+        ),
+    );
+    match driver.mesh(
+        &input,
+        &it,
+        &Sequential,
+        ReferenceBuilder::surface(),
+        &mut SerialAlloc::new(),
+    ) {
+        Err(SchemeError::InvalidPatch { reason, .. }) => {
+            assert!(reason.contains("dimension-2"), "{reason}")
+        }
         other => panic!("expected InvalidPatch, got {:?}", other.map(|_| ())),
     }
 }
@@ -118,18 +175,27 @@ fn a_sizing_function_without_a_size_field_is_an_error() {
     let sel = [ids.faces[4]];
     let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = MeshIntent::default();
-    intent.defaults.sizing = Some(SizingSpec::Function { name: "curvature".into(), params: Params::default() });
+    intent.defaults.sizing = Some(SizingSpec::Function {
+        name: "curvature".into(),
+        params: Params::default(),
+    });
     match driver.plan(&input, &intent) {
         Err(SchemeError::Input(r)) => assert!(r.contains("needs a SizeField"), "{r}"),
         other => panic!("expected a sizing error, got {:?}", other.map(|_| ())),
     }
     intent.defaults.sizing = Some(SizingSpec::Constant { size: -1.0 });
-    assert!(matches!(driver.plan(&input, &intent), Err(SchemeError::Input(_))));
+    assert!(matches!(
+        driver.plan(&input, &intent),
+        Err(SchemeError::Input(_))
+    ));
     // With an explicit size field the function is fine.
     let field = sm_scheme_api::ConstantSize(0.5);
     let mut d2 = Driver::new(&reg, &solver, &picker);
     d2.size = Some(&field);
-    intent.defaults.sizing = Some(SizingSpec::Function { name: "curvature".into(), params: Params::default() });
+    intent.defaults.sizing = Some(SizingSpec::Function {
+        name: "curvature".into(),
+        params: Params::default(),
+    });
     let plan = d2.plan(&input, &intent).expect("plan with a size field");
     assert_eq!(plan.intervals(ids.edges[0]), Some(2));
 }
@@ -155,33 +221,57 @@ impl Scheme for ClaimEdge {
     fn applicability(&self, _cx: &PlanCtx<'_>, _t: Target, _p: &Params) -> Applicability {
         Applicability::yes(1, "test claimer")
     }
-    fn requirements(&self, cx: &PlanCtx<'_>, target: Target, _p: &Params, out: &mut Requirements<'_>) -> sm_scheme_api::Result<()> {
+    fn requirements(
+        &self,
+        cx: &PlanCtx<'_>,
+        target: Target,
+        _p: &Params,
+        out: &mut Requirements<'_>,
+    ) -> sm_scheme_api::Result<()> {
         if let Target::Surface(f) = target {
             out.claim(Target::Curve(claimed_edge(cx.input.topo, f)));
         }
         Ok(())
     }
-    fn generate(&self, cx: &GenCtx<'_>, target: Target, p: &Params) -> Result<Patch, GenerateFailure> {
+    fn generate(
+        &self,
+        cx: &GenCtx<'_>,
+        target: Target,
+        p: &Params,
+    ) -> Result<Patch, GenerateFailure> {
         let fatal = |r: String| GenerateFailure::fatal(target, "claimedge", r);
-        let Target::Surface(f) = target else { return Err(fatal("not a face".into())) };
+        let Target::Surface(f) = target else {
+            return Err(fatal("not a face".into()));
+        };
         let t = cx.input.topo;
         let e = claimed_edge(t, f);
-        let off: u32 = p.get::<u32>("claimedge", "offset").ok().flatten().unwrap_or(0);
-        let n = cx.intervals(e).ok_or_else(|| fatal("no intervals".into()))?;
+        let off: u32 = p
+            .get::<u32>("claimedge", "offset")
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        let n = cx
+            .intervals(e)
+            .ok_or_else(|| fatal("no intervals".into()))?;
         let (a, b) = t.edge_ends(e).ok_or_else(|| fatal("ends".into()))?;
         let mut pb = PatchBuilder::new(target);
         let mut chain = vec![pb.refer(NodeKey::vertex(a))];
         let mut own = std::collections::BTreeMap::new();
         for i in 1..n {
             let k = NodeKey::new(e, i + off);
-            let q = geom::edge_point(t, e, f64::from(i) / f64::from(n)).map_err(|x| fatal(x.to_string()))?;
+            let q = geom::edge_point(t, e, f64::from(i) / f64::from(n))
+                .map_err(|x| fatal(x.to_string()))?;
             let l = pb.node(k, q, sm_mesh_api::Param::None);
             own.insert(NodeKey::new(e, i), l);
             chain.push(l);
         }
         chain.push(pb.refer(NodeKey::vertex(b)));
         let lp = cx.loops(f).map_err(|x| fatal(x.to_string()))?;
-        let poly: Vec<u32> = lp[0].nodes.iter().map(|k| own.get(k).copied().unwrap_or_else(|| pb.refer(*k))).collect();
+        let poly: Vec<u32> = lp[0]
+            .nodes
+            .iter()
+            .map(|k| own.get(k).copied().unwrap_or_else(|| pb.refer(*k)))
+            .collect();
         pb.push(ElemShape::Polygon, &poly);
         for w in chain.windows(2) {
             pb.owner(e);
@@ -210,17 +300,47 @@ fn a_claimed_edge_is_split_out_and_checked_against_the_curve_rule() {
     let mut intent = MeshIntent::default();
     intent.set_intervals(e, Firm::hard(IntervalRequest::Count(3)));
     intent.set_scheme(face, SchemeChoice::new("claimedge", Firmness::Hard));
-    let out = driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()).expect("claimed edge");
+    let out = driver
+        .mesh(
+            &input,
+            &intent,
+            &Sequential,
+            ReferenceBuilder::surface(),
+            &mut SerialAlloc::new(),
+        )
+        .expect("claimed edge");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     assert_eq!(m.cell_count(), 1);
     assert_eq!(m.cell_shape(CellIx(0)), CellShape::Polygon);
-    assert_eq!(m.classified_on(e).map(|c| c.faces.len()), Some(3), "the split curve patch classifies its facets");
-    assert!(out.patches.get(Target::Curve(e)).is_some(), "the claimed edge became a patch of its own");
+    assert_eq!(
+        m.classified_on(e).map(|c| c.faces.len()),
+        Some(3),
+        "the split curve patch classifies its facets"
+    );
+    assert!(
+        out.patches.get(Target::Curve(e)).is_some(),
+        "the claimed edge became a patch of its own"
+    );
     // Misnumbered edge nodes (2..=3 instead of 1..=2) are refused.
-    intent.set_scheme(face, SchemeChoice::with_params("claimedge", serde_json::json!({ "offset": 1 }), Firmness::Hard));
-    match driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::surface(), &mut SerialAlloc::new()) {
-        Err(SchemeError::InvalidPatch { reason, .. }) => assert!(reason.contains("needs nodes"), "{reason}"),
+    intent.set_scheme(
+        face,
+        SchemeChoice::with_params(
+            "claimedge",
+            serde_json::json!({ "offset": 1 }),
+            Firmness::Hard,
+        ),
+    );
+    match driver.mesh(
+        &input,
+        &intent,
+        &Sequential,
+        ReferenceBuilder::surface(),
+        &mut SerialAlloc::new(),
+    ) {
+        Err(SchemeError::InvalidPatch { reason, .. }) => {
+            assert!(reason.contains("needs nodes"), "{reason}")
+        }
         other => panic!("expected InvalidPatch, got {:?}", other.map(|_| ())),
     }
 }

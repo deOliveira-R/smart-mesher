@@ -137,8 +137,15 @@ fn edges_with_the_same_ends_map_by_geometry() {
 /// A triangle at height `z` with the diameter of `half_disk` as one side and a third vertex at
 /// (0, -1, z).
 fn triangle(t: &mut CellComplex, z: f64) -> EntityId {
-    let pts = [Point3::new(1.0, 0.0, z), Point3::new(-1.0, 0.0, z), Point3::new(0.0, -1.0, z)];
-    let vs: Vec<EntityId> = pts.iter().map(|p| t.make_vertex(*p).expect("vertex")).collect();
+    let pts = [
+        Point3::new(1.0, 0.0, z),
+        Point3::new(-1.0, 0.0, z),
+        Point3::new(0.0, -1.0, z),
+    ];
+    let vs: Vec<EntityId> = pts
+        .iter()
+        .map(|p| t.make_vertex(*p).expect("vertex"))
+        .collect();
     let mut lp = Vec::new();
     for i in 0..3 {
         let (p, q) = (pts[i], pts[(i + 1) % 3]);
@@ -148,13 +155,36 @@ fn triangle(t: &mut CellComplex, z: f64) -> EntityId {
             .add_curve(CurveDef::Line(Line::new(p, q - p).expect("line")))
             .expect("curve");
         let e = t
-            .make_edge(vs[i], vs[(i + 1) % 3], Some(CurveCarrier { curve, range: Interval::new(0.0, (q - p).norm()), sense: Sense::Forward }))
+            .make_edge(
+                vs[i],
+                vs[(i + 1) % 3],
+                Some(CurveCarrier {
+                    curve,
+                    range: Interval::new(0.0, (q - p).norm()),
+                    sense: Sense::Forward,
+                }),
+            )
             .expect("edge");
-        lp.push(CoedgeSpec { edge: e, sense: Sense::Forward });
+        lp.push(CoedgeSpec {
+            edge: e,
+            sense: Sense::Forward,
+        });
     }
-    let frame = Frame::from_z(Point3::new(0.0, 0.0, z), Vector3::new(0.0, 0.0, -1.0)).expect("frame");
-    let surface = t.shapes_mut().expect("shapes").add_surface(SurfaceDef::Plane(Plane { frame })).expect("surface");
-    t.make_face(&[&lp], Some(SurfaceCarrier { surface, sense: Sense::Forward })).expect("face")
+    let frame =
+        Frame::from_z(Point3::new(0.0, 0.0, z), Vector3::new(0.0, 0.0, -1.0)).expect("frame");
+    let surface = t
+        .shapes_mut()
+        .expect("shapes")
+        .add_surface(SurfaceDef::Plane(Plane { frame }))
+        .expect("surface");
+    t.make_face(
+        &[&lp],
+        Some(SurfaceCarrier {
+            surface,
+            sense: Sense::Forward,
+        }),
+    )
+    .expect("face")
 }
 
 #[test]
@@ -162,8 +192,15 @@ fn two_source_edges_with_one_image_are_a_correspondence_error() {
     // The arc and the diameter of the half disk share their ends; the triangle has a single
     // edge between the images of those ends, so both would map onto it.
     let mut c = CellComplex::new();
-    let (src, dst) = with_op(&mut c, OpId(1), |t| Ok((half_disk(t, 0.0, false), triangle(t, 1.0)))).expect("faces");
-    let mut cc = copy_of(src.face, dst, Transform::translation(Vector3::new(0.0, 0.0, 1.0)));
+    let (src, dst) = with_op(&mut c, OpId(1), |t| {
+        Ok((half_disk(t, 0.0, false), triangle(t, 1.0)))
+    })
+    .expect("faces");
+    let mut cc = copy_of(
+        src.face,
+        dst,
+        Transform::translation(Vector3::new(0.0, 0.0, 1.0)),
+    );
     cc.vertex_map = derive_vertex_map(&c, &cc).expect("vertex map");
     match edge_map(&c, &cc) {
         Err(sm_scheme_api::SchemeError::Correspondence { reason, .. }) => {

@@ -359,9 +359,6 @@ fn deck_plane(s: &Session) -> (sm_core::Vector3, f64) {
 
 #[test]
 fn mirror_deck_stays_consistent_through_every_transform() {
-    // NOTE: `model_errors` validates with `Tolerance::with_linear(1e-6)` because of the
-    // `FaceMoments::plane` cancellation (CR-2). Once `validate` uses `TopologyView::face_plane` (CR-2 follow-up), switch it back to
-    // `Tolerance::default()`: the acceptance is about the default tolerance.
     let top = id(EntityKind::TopoFace, 6);
     let mk = || {
         let mut s = session(topo_store);

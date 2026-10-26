@@ -195,8 +195,18 @@ pub struct MeshInput<'a> {
 
 impl<'a> MeshInput<'a> {
     /// The input of one meshing run.
-    pub fn new(topo: &'a dyn TopologyView, model: &'a Model, pieces: &'a dyn PieceResolver, selection: &'a [EntityId]) -> Self {
-        Self { topo, model, pieces, selection }
+    pub fn new(
+        topo: &'a dyn TopologyView,
+        model: &'a Model,
+        pieces: &'a dyn PieceResolver,
+        selection: &'a [EntityId],
+    ) -> Self {
+        Self {
+            topo,
+            model,
+            pieces,
+            selection,
+        }
     }
 
     /// Faces of a volume target (via the resolver).
@@ -226,7 +236,11 @@ impl<'a> MeshInput<'a> {
         let mut v: Vec<EntityId> = t
             .boundary(parent)
             .iter()
-            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Edge) && !t.flags(i.cell).contains(CellFlags::DEGENERATE))
+            .filter(|i| {
+                i.ring == Incidence::EMBEDDED
+                    && t.dim_of(i.cell) == Some(Dim::Edge)
+                    && !t.flags(i.cell).contains(CellFlags::DEGENERATE)
+            })
             .map(|i| i.cell)
             .collect();
         v.sort_unstable();
@@ -287,8 +301,18 @@ pub struct IntervalCtx<'a> {
 
 impl<'a> IntervalCtx<'a> {
     /// The interval-phase context.
-    pub fn new(input: &'a MeshInput<'a>, layouts: &'a [FaceLayout], roles: &'a [(Target, Role)], targets: &'a [TargetPlan]) -> Self {
-        Self { input, layouts, roles, targets }
+    pub fn new(
+        input: &'a MeshInput<'a>,
+        layouts: &'a [FaceLayout],
+        roles: &'a [(Target, Role)],
+        targets: &'a [TargetPlan],
+    ) -> Self {
+        Self {
+            input,
+            layouts,
+            roles,
+            targets,
+        }
     }
     /// Layout of `face`.
     pub fn layout(&self, face: EntityId) -> Option<&FaceLayout> {
@@ -356,8 +380,18 @@ pub struct GenCtx<'a> {
 
 impl<'a> GenCtx<'a> {
     /// The generation-phase context.
-    pub fn new(input: &'a MeshInput<'a>, plan: &'a Plan, patches: &'a PatchSet, size: Option<&'a dyn SizeField>) -> Self {
-        Self { input, plan, patches, size }
+    pub fn new(
+        input: &'a MeshInput<'a>,
+        plan: &'a Plan,
+        patches: &'a PatchSet,
+        size: Option<&'a dyn SizeField>,
+    ) -> Self {
+        Self {
+            input,
+            plan,
+            patches,
+            size,
+        }
     }
 
     /// Solved interval count of `edge`.
@@ -434,6 +468,111 @@ impl<'a> GenCtx<'a> {
         Ok(out)
     }
 
+    /// The surface parameters `(u, v)` of the nodes of boundary loop `lp` of `face`: one entry
+    /// per `lp.nodes` entry, in the same order. `None` when they cannot be determined reliably.
+    ///
+    /// Each coedge is read from its **pcurve** first: a node with a curve parameter (an edge
+    /// node of an earlier curve patch, [`Param::Curve`]) is evaluated at that parameter, the
+    /// others at the uniform fraction of the carrier range. A coedge without a pcurve falls
+    /// back to **projecting** the node position onto the face's surface, which is only
+    /// allowed when the surface is non-periodic in both directions (the projection cannot know
+    /// which seam branch the loop lives on).
+    ///
+    /// Periodic seams: pcurves are expected to lie on one consistent unrolled branch, so a
+    /// seam vertex has `u = lo` on one coedge and `u = lo + period` on the next one only if a
+    /// seam coedge connects them. Where two consecutive pcurve-derived coedges disagree at
+    /// their shared vertex (beyond `1e-6` relative) and no pole coedge lies between them, the
+    /// result is `None`. A face with a periodic surface and any coedge without a pcurve is
+    /// `None`, as is a face without a surface carrier.
+    ///
+    /// Poles: degenerate coedges are skipped in [`GenCtx::loops`], so at a pole the incoming
+    /// coedge ends at `(u1, v_pole)` and the outgoing one starts at `(u2, v_pole)`. The
+    /// single pole node takes the **outgoing** coedge's value `(u2, v_pole)`; the `u` jump
+    /// across the collapsed edge is the caller's to bridge.
+    pub fn loop_uvs(&self, face: EntityId, lp: &BoundaryLoop) -> Option<Vec<[f64; 2]>> {
+        let t = self.input.topo;
+        let surf = match t.carrier(face) {
+            sm_topo_api::Carrier::Surface(sc) => t.shapes().surface(sc.surface)?,
+            _ => return None,
+        };
+        let dom = surf.domain();
+        let periodic = dom.u.is_periodic() || dom.v.is_periodic();
+        let full: Vec<CoedgeKey> = t.loops(face).find(|l| l.ring == lp.ring)?.keys().collect();
+        let n_uses = lp.uses.len();
+        let mut out: Vec<[f64; 2]> = vec![[0.0; 2]; lp.nodes.len()];
+        // (start, end) of each use when pcurve-derived.
+        let mut ends: Vec<Option<([f64; 2], [f64; 2])>> = Vec::with_capacity(n_uses);
+        for u in &lp.uses {
+            let k = u.coedge;
+            let n = u.segments as usize;
+            let first = u.first as usize;
+            if n == 0 || first + n > lp.nodes.len() {
+                return None;
+            }
+            let left = k.side == Side::Left;
+            if let Some(pc) = t.pcurve(k) {
+                let (_, cc) = geom::edge_curve(t, k.edge).ok()?;
+                let at = |frac: f64| -> [f64; 2] {
+                    let uv = pc.eval(geom::edge_param(&cc, frac));
+                    [uv.u, uv.v]
+                };
+                for j in 0..n {
+                    let key = lp.nodes[first + j];
+                    let frac = if left {
+                        j as f64 / n as f64
+                    } else {
+                        1.0 - j as f64 / n as f64
+                    };
+                    let uv = match (j, self.patches.node(key)) {
+                        (j, Some((_, Param::Curve(p)))) if j > 0 => {
+                            let uv = pc.eval(p);
+                            [uv.u, uv.v]
+                        }
+                        _ => at(frac),
+                    };
+                    out[first + j] = uv;
+                }
+                let (s, e) = if left { (0.0, 1.0) } else { (1.0, 0.0) };
+                ends.push(Some((at(s), at(e))));
+            } else {
+                if periodic {
+                    return None;
+                }
+                for j in 0..n {
+                    let key = lp.nodes[first + j];
+                    let p = self.point(key).or_else(|| {
+                        (key.owner.kind() == sm_core::EntityKind::TopoVertex)
+                            .then(|| geom::vertex_point(t, key.owner).ok())
+                            .flatten()
+                    })?;
+                    let uv = surf.project(p, None).ok()?.uv;
+                    out[first + j] = [uv.u, uv.v];
+                }
+                ends.push(None);
+            }
+        }
+        // Seam consistency: a pcurve coedge must end where the next one starts, unless a pole
+        // coedge lies between them in the topological loop.
+        for i in 0..n_uses {
+            let (Some((_, e)), Some((s, _))) = (ends[i], ends[(i + 1) % n_uses]) else {
+                continue;
+            };
+            let a = lp.uses[i].coedge;
+            let pole_between = full.iter().position(|k| *k == a).is_some_and(|p| {
+                t.flags(full[(p + 1) % full.len()].edge)
+                    .contains(CellFlags::DEGENERATE)
+            });
+            if pole_between {
+                continue;
+            }
+            let close = |x: f64, y: f64| (x - y).abs() <= 1e-6 * (1.0 + x.abs().max(y.abs()));
+            if !(close(e[0], s[0]) && close(e[1], s[1])) {
+                return None;
+            }
+        }
+        Some(out)
+    }
+
     /// The embedded members of a face or piece `parent` as node chains (W0f gaps 2): one chain
     /// per embedded edge, ascending by edge, `[start, (e,1)..(e,n-1), end]` in the edge's own
     /// direction ([`GenCtx::edge_nodes`]), then a one-node chain `[(v,0)]` for each embedded
@@ -446,7 +585,9 @@ impl<'a> GenCtx<'a> {
         let mut out: Vec<Vec<NodeKey>> = Vec::new();
         let mut ends: Vec<EntityId> = Vec::new();
         for e in self.input.embedded_edges(parent) {
-            let chain = self.edge_nodes(e).ok_or_else(|| SchemeError::Input(format!("embedded edge {e} has no interval count")))?;
+            let chain = self.edge_nodes(e).ok_or_else(|| {
+                SchemeError::Input(format!("embedded edge {e} has no interval count"))
+            })?;
             if let Some((a, b)) = self.input.topo.edge_ends(e) {
                 ends.extend([a, b]);
             }

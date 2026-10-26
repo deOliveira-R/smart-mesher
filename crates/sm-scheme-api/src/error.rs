@@ -2,7 +2,7 @@
 
 use crate::intent::SchemeName;
 use crate::problem::{ConstraintId, Need};
-use crate::target::{Job, Target};
+use crate::target::{Job, NodeKey, Target};
 use serde::{Deserialize, Serialize};
 use sm_core::EntityId;
 
@@ -77,8 +77,20 @@ pub struct Attempt {
 
 impl Attempt {
     /// An attempt of `scheme` on `target` that was rejected or failed in `phase`.
-    pub fn new(target: Target, scheme: SchemeName, phase: Phase, kind: FailureKind, message: impl Into<String>) -> Self {
-        Self { target, scheme, phase, kind, message: message.into() }
+    pub fn new(
+        target: Target,
+        scheme: SchemeName,
+        phase: Phase,
+        kind: FailureKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            target,
+            scheme,
+            phase,
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -95,6 +107,11 @@ pub struct GenerateFailure {
     pub kind: FailureKind,
     /// Human-readable reason.
     pub reason: String,
+    /// Mesh nodes that locate the failure (for example the corners of an inverted element), if
+    /// the scheme knows them. Empty when unknown. Absent in older persisted attempts and
+    /// omitted from the serialized form when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<NodeKey>,
 }
 
 impl GenerateFailure {
@@ -105,7 +122,14 @@ impl GenerateFailure {
             scheme: SchemeName::new(scheme),
             kind,
             reason: reason.into(),
+            nodes: Vec::new(),
         }
+    }
+    /// Attach the nodes that locate the failure ([`nodes`](Self::nodes)).
+    #[must_use]
+    pub fn with_nodes(mut self, nodes: Vec<NodeKey>) -> Self {
+        self.nodes = nodes;
+        self
     }
     /// A quality failure: the driver may recover by falling back.
     pub fn fallback(target: Target, scheme: &str, reason: impl Into<String>) -> Self {
@@ -139,12 +163,21 @@ pub struct Infeasible {
 impl Infeasible {
     /// An infeasibility over `constraints` and `entities` (sorted and deduplicated here); the
     /// driver fills [`blame`](Self::blame).
-    pub fn new(reason: impl Into<String>, mut constraints: Vec<ConstraintId>, mut entities: Vec<EntityId>) -> Self {
+    pub fn new(
+        reason: impl Into<String>,
+        mut constraints: Vec<ConstraintId>,
+        mut entities: Vec<EntityId>,
+    ) -> Self {
         constraints.sort_unstable();
         constraints.dedup();
         entities.sort_unstable();
         entities.dedup();
-        Self { reason: reason.into(), constraints, entities, blame: None }
+        Self {
+            reason: reason.into(),
+            constraints,
+            entities,
+            blame: None,
+        }
     }
 }
 

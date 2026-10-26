@@ -114,7 +114,13 @@ fn run_group(exec: &dyn Executor) -> Hashes {
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Constant { size: 0.5 });
     let params = serde_json::json!({ "source": [ids[0].faces[0]], "target": [ids[2].faces[1]] });
-    intent.groups.push(MeshGroup::new(GroupId(1), sel.clone()).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
+    intent.groups.push(
+        MeshGroup::new(GroupId(1), sel.clone()).with_scheme(SchemeChoice::with_params(
+            "msweep",
+            params,
+            Firmness::Hard,
+        )),
+    );
     let out = driver
         .mesh(
             &input,
