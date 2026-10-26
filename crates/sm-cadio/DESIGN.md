@@ -240,9 +240,17 @@ transaction); they are recorded, not gated.
   imports as 6 faces, 12 edges, 8 vertices and `volume_moments` gives OCC's volume to 1.1e-8.
   Remove the split when the sampler honours seam pcurves and panels the quadrature
   (ACR 1 and 2 in `W3_REPORT.md`).
-- Assembly flattening is bounded by the file size: at most `max(1024, 8 x entities)` placed
-  instances in all and `max(2^16, 4 x entities)` copied cells, one budget for the whole file that every solid beyond the first decoded copy is charged to (solid records sharing one body are decoded once and cloned); beyond that the read fails with
-  `step.too_many_instances`. A representation reached again on its own path is a cycle
+- Decoding is bounded by the file size before any geometry is decoded (`src/budget.rs`): each
+  solid gets an upper estimate of its decoded size (faces, coedges, edges, vertices plus the
+  size of the curve and surface entities they reach, x4 for faces on B-spline surfaces that the
+  split may cut), memoized per face, edge, shell and geometry entity so the estimate costs one
+  pass over the input. Every solid is charged its estimate once per placement, the first decode
+  of a shared body included, against one file-wide budget of `max(2^17, 8 x file size)` (file
+  size = entities plus scalars and references); beyond that the read fails with
+  `step.decode_budget`. Legitimate fixtures use at most 3.7x (the loft). Solid records with the
+  same arguments are still decoded once and cloned.
+- Assembly flattening places at most `max(1024, 8 x entities)` instances in all; beyond that the
+  read fails with `step.too_many_instances`. A representation reached again on its own path is a cycle
   (detected at the first revisit; the assembly then stays in local coordinates with a
   warning). Chains deeper than 64 representations fail the same way.
 - A void shell that is wrongly oriented by the writer is repaired per shell, but a shell that

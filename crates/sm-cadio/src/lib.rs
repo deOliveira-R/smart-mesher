@@ -13,6 +13,7 @@
 
 mod args;
 mod assembly;
+mod budget;
 mod decode;
 mod edge;
 pub mod error;

@@ -264,3 +264,52 @@ Should fix:
 - **4 (`cad.step_info` says what is in the file): done** in `DESIGN.md`.
 - **5 (per-file clone budget): done** by the same file-wide budget.
 - **6 (Cargo.lock): left for the orchestrator.**
+
+## Review round 3
+
+Must fix: **file-wide decode budget before decoding: done.** Round 1 grouped solids by the
+arguments of their solid record and never charged the first decode of a group, so N distinct
+`#a=CLOSED_SHELL('',(<same face ids>)); #b=MANIFOLD_SOLID_BREP('',#a);` records gave N full decodes
+(and with 8 or more groups the parallel path decoded them all before any check).
+
+Design: `src/budget.rs` estimates, from the entity graph and before any geometry is decoded, an
+upper bound of what decoding each solid produces: per face 2 + the size of its surface entity
+(with what it references) + per bound 1 + per coedge 1 + its edge (3 + the size of its curve, the
+`SURFACE_CURVE`/`SEAM_CURVE` wrappers skipped as the decoder does), x4 when the surface is a
+B-spline that the closed-face split may cut into four; `POLY_LOOP` points cost 4 each and a
+`VERTEX_LOOP` 6. Faces, edges, shells and geometry entities are memoized by id, so the estimate
+costs one pass over the input however many shells reach the same faces. `read_file` sums
+estimate x placements over all selected solids, the first of each shared body included, and
+fails with the new `StepError::DecodeBudget` (`step.decode_budget`: "the decoded solids and their
+copies would cost N units, over the budget of M the file's size allows") as soon as the total
+passes `max(2^17, 8 x file size)`, where file size counts entities plus scalars and references.
+This replaces the round-1 clone budget (which was measured after decoding). The walk is
+tolerant: what it cannot follow costs nothing and the decoder reports it with its usual typed
+error, so error behaviour on malformed files is unchanged. Identical solid records are still
+decoded once and cloned. Face-level memoization of the decode itself was not needed: with every
+decode charged up front, the total decode work is already bounded by a constant times the input.
+
+Calibration: over every fixture and test file, legitimate solids cost at most 3.7x the file size
+(the loft, because of the x4 split allowance); 2^3 nested pin placements cost 5.9x, under the floor.
+The model then takes roughly 30 bytes per unit (box_fillet1 x131 accepted: 124k units, 3.8 MB),
+so a large file stays within about 8 x 30 / 21 = 11x its bytes on top of the parse tree.
+
+Measured (release, macOS, test binary under `/usr/bin/time -l`, peak RSS includes building the
+input in the process; baseline for just generating the input in brackets):
+
+| Input | Bytes | Result | Time in `read_step` | Peak RSS |
+|---|---|---|---|---|
+| box_fillet1 + 4,000 distinct shells | 443 KB | `step.decode_budget` | 7.0 ms (debug 51 ms) | 7.7 MB (3.1 MB) |
+| box_fillet1 + 20,000 distinct shells (round-2 bomb: 295 MB) | 2.14 MB | `step.decode_budget` | 35 ms | 26 MB (6.0 MB) |
+| loft_bspline + 4,000 distinct shells | 352 KB | `step.decode_budget` | 6.7 ms (debug 46 ms) | 7.1 MB (3.0 MB) |
+| loft_bspline + 2,000 distinct shells (round-2 bomb: 45 s CPU) | 180 KB | `step.decode_budget` | 3.6 ms | 5.1 MB |
+| box_fillet1 + 130 shells (largest accepted, at the floor) | 33 KB | 131 solids | 5.2 ms | 6.4 MB |
+| loft_bspline + 18 shells (largest accepted, at the floor) | 9 KB | 19 solids | 106 ms | 4.7 MB |
+
+Tests (`tests/shared_shell.rs`): box_fillet1 and the loft each with 4,000 distinct shells over their
+faces are refused with `DecodeBudget` in under 5 s (the message names copies, not assembly
+flattening); the old same-shell fans of 4,000 now fail the same way; 3 distinct shells over the
+same faces still read; and `a_closed_nurbs_face_that_cannot_be_split_is_kept_with_a_warning`
+covers the `step.split_closed_face` fallback (the loft's lateral loop also runs its bottom circle
+forward and back: still closed, not the plain seam case, so the face is kept with the warning).
+The assembly fan-out bomb keeps `step.too_many_instances` from the instance walk.

@@ -100,6 +100,18 @@ pub enum StepError {
         /// The limit that was hit.
         limit: usize,
     },
+    /// Decoding the selected solids, counting every copy (solid records that reach the same
+    /// faces, and assembly placements), would produce far more than the file's size allows.
+    /// Checked from the entity graph before any geometry is decoded.
+    #[error("solid #{id}: the decoded solids and their copies would cost {cost} units, over the budget of {budget} the file's size allows (many solids over shared faces or placements)")]
+    DecodeBudget {
+        /// The solid at which the running total crossed the budget.
+        id: u64,
+        /// The estimated total up to and including that solid.
+        cost: usize,
+        /// The budget.
+        budget: usize,
+    },
     /// A geometric entity this reader does not support.
     #[error("#{id} {entity} is not supported")]
     Unsupported {
@@ -174,6 +186,7 @@ impl StepError {
             Self::BadParam { .. } => "step.bad_param",
             Self::Cycle { .. } => "step.cycle",
             Self::TooManyInstances { .. } => "step.too_many_instances",
+            Self::DecodeBudget { .. } => "step.decode_budget",
             Self::Unsupported { .. } => "step.unsupported",
             Self::Units(_) => "step.units",
             Self::GeometryMismatch { .. } => "step.geometry_mismatch",

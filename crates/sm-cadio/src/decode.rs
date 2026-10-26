@@ -20,10 +20,10 @@ use crate::weld::{weld_edges, weld_vertices};
 const INSTANCE_FLOOR: usize = 1024;
 /// Placed instances allowed per entity of the file.
 const INSTANCES_PER_ENTITY: usize = 8;
-/// Smallest cap on the cells copied by flattening (about 6 MB).
-const CLONE_CELLS_FLOOR: usize = 1 << 16;
-/// Copied cells allowed per entity of the file.
-const CLONE_CELLS_PER_ENTITY: usize = 4;
+/// Smallest decode budget, in [`budget`](crate::budget) units (a few MB of decoded model).
+const DECODE_FLOOR: usize = 1 << 17;
+/// Decode budget per unit of the file's own size.
+const DECODE_PER_UNIT: usize = 8;
 
 /// Read a STEP file into plain B-rep data.
 ///
@@ -164,7 +164,6 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     // Flattening copies a solid per placement: bound the count by the file's size, so a few
     // links per level cannot multiply into millions of solids (and, below, the cloned cells).
     let instance_limit = INSTANCE_FLOOR.max(INSTANCES_PER_ENTITY * file.entities.len());
-    let clone_limit = CLONE_CELLS_FLOOR.max(CLONE_CELLS_PER_ENTITY * file.entities.len());
     let mut instance_total = 0usize;
     let mut unit_groups: Vec<(String, Vec<u64>)> = Vec::new();
     for (id, kind) in &selected {
@@ -226,9 +225,23 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
         };
         preps.push((*id, *kind, report, placements));
     }
+    // One file-wide budget, checked before any geometry is decoded: every solid is charged its
+    // estimated decode cost once per placement, including the first decode of a shared body. A
+    // fan of tiny solid or shell records over the same faces thus fails here, in time
+    // proportional to the input.
+    {
+        let budget = DECODE_FLOOR.max(DECODE_PER_UNIT.saturating_mul(crate::budget::file_size(file)));
+        let mut est = crate::budget::Estimator::new(ents);
+        let mut total = 0usize;
+        for (id, kind, _, placements) in &preps {
+            total = total.saturating_add(est.solid(*id, *kind).saturating_mul(placements.len()));
+            if total > budget {
+                return Err(StepError::DecodeBudget { id: *id, cost: total, budget });
+            }
+        }
+    }
     // Solids that share their body (same entity arguments after the name, same units) are
-    // decoded once; later ones are charged to one file-wide clone budget and cloned. This keeps
-    // a fan of tiny solid records over one shell from multiplying the decoded shell.
+    // decoded once and cloned (already charged to the budget above).
     let mut group_of: Vec<usize> = Vec::with_capacity(preps.len());
     let mut firsts: Vec<usize> = Vec::new();
     {
@@ -259,24 +272,13 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let mut solids = Vec::with_capacity(preps.len());
     let (mut welded_v, mut welded_e) = (0usize, 0usize);
     let mut instances = 0usize;
-    let mut clone_total = 0usize;
     for (_, base_notes, stats) in bases.iter_mut() {
         notes.append(base_notes);
         welded_v += stats.0;
         welded_e += stats.1;
     }
-    let mut used = vec![false; bases.len()];
     for (i, (id, _, _, placements)) in preps.iter().enumerate() {
-        let g = group_of[i];
-        let base = &bases[g].0;
-        let cells = base.vertices.len() + base.curves.len() + base.surfaces.len() + base.edges.len() + base.faces.len() + 1;
-        // The first placement of a group's first solid is input-proportional; the rest are copies.
-        let copies = placements.len() - usize::from(!used[g]);
-        used[g] = true;
-        clone_total = clone_total.saturating_add(copies.saturating_mul(cells));
-        if clone_total > clone_limit {
-            return Err(StepError::TooManyInstances { id: *id, limit: clone_limit / cells });
-        }
+        let base = &bases[group_of[i]].0;
         let name = file.entities.get(id).and_then(|e| e.rec("MANIFOLD_SOLID_BREP").or_else(|| e.first())).and_then(|r| match r.params.first() {
             Some(part21::Param::Str(s)) => Some(s.clone()),
             _ => None,
@@ -365,7 +367,7 @@ struct RawEdge {
 }
 
 /// The closed shell behind `id` and whether an `ORIENTED_CLOSED_SHELL` reverses it.
-fn shell_of(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
+pub(crate) fn shell_of(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
     let mut cur = id;
     let mut by = by;
     let mut reversed = false;
@@ -386,39 +388,56 @@ fn shell_of(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> 
     Err(StepError::Cycle { id })
 }
 
+/// The name of a `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS` (simple or complex spelling).
+fn solid_name(ents: Ents<'_>, id: u64) -> Result<String, StepError> {
+    let entity = ents.get(id, id)?;
+    match entity {
+        Entity::Simple(r) => Ok(Args { id, rec: r }.string(0)),
+        Entity::Complex(_) => {
+            let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
+            Ok(Args { id, rec: m }.string(0))
+        }
+    }
+}
+
+/// The closed shells of a solid: the outer one, then the voids, each with whether an
+/// `ORIENTED_CLOSED_SHELL` reverses it.
+pub(crate) fn solid_shell_refs(ents: Ents<'_>, id: u64, kind: SolidKind) -> Result<Vec<(u64, bool)>, StepError> {
+    let entity = ents.get(id, id)?;
+    let (outer_ref, void_refs) = match entity {
+        Entity::Simple(r) => {
+            let a = Args { id, rec: r };
+            let voids = if kind == SolidKind::WithVoids { a.refs(2)? } else { Vec::new() };
+            (a.reference(1)?, voids)
+        }
+        Entity::Complex(_) => {
+            let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
+            let a = Args { id, rec: m };
+            let voids = match entity.rec("BREP_WITH_VOIDS") {
+                Some(r) => Args { id, rec: r }.refs(0)?,
+                None => Vec::new(),
+            };
+            (a.reference(1)?, voids)
+        }
+    };
+    let mut srcs: Vec<(u64, bool)> = vec![shell_of(ents, outer_ref, id)?];
+    for v in void_refs {
+        srcs.push(shell_of(ents, v, id)?);
+    }
+    Ok(srcs)
+}
+
 fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts: &ReadOptions, notes: &mut Vec<Note>) -> Result<(Solid, (usize, usize)), StepError> {
     if kind == SolidKind::Faceted {
         return read_faceted(ents, id, units, opts);
     }
-    let entity = ents.get(id, id)?;
     // Name and shells: outer shell and voids for a solid (simple or complex spelling), the
     // shells of a surface model for a sheet.
     let (name, shell_srcs): (String, Vec<(u64, bool)>) = if kind == SolidKind::Sheet {
         let a = ents.rec(id, id, "SHELL_BASED_SURFACE_MODEL")?;
         (a.string(0), a.refs(1)?.into_iter().map(|s| (s, false)).collect())
     } else {
-        let (name, outer_ref, void_refs) = match entity {
-            Entity::Simple(r) => {
-                let a = Args { id, rec: r };
-                let voids = if kind == SolidKind::WithVoids { a.refs(2)? } else { Vec::new() };
-                (a.string(0), a.reference(1)?, voids)
-            }
-            Entity::Complex(_) => {
-                let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
-                let a = Args { id, rec: m };
-                let voids = match entity.rec("BREP_WITH_VOIDS") {
-                    Some(r) => Args { id, rec: r }.refs(0)?,
-                    None => Vec::new(),
-                };
-                (a.string(0), a.reference(1)?, voids)
-            }
-        };
-        // ---- shells and faces (topology only; geometry is decoded afterwards)
-        let mut srcs: Vec<(u64, bool)> = vec![shell_of(ents, outer_ref, id)?];
-        for v in void_refs {
-            srcs.push(shell_of(ents, v, id)?);
-        }
-        (name, srcs)
+        (solid_name(ents, id)?, solid_shell_refs(ents, id, kind)?)
     };
     if shell_srcs.is_empty() {
         return Err(StepError::BadParam { id, entity: "SHELL_BASED_SURFACE_MODEL".into(), index: 1, msg: "a surface model needs at least one shell".into() });
@@ -790,7 +809,7 @@ fn geo_point(geo: &Geo<'_>, point_id: u64, by: u64) -> Result<Point3, StepError>
 }
 
 /// The `EDGE_CURVE` id and effective orientation of an `ORIENTED_EDGE` (nested ones flatten).
-fn oriented_edge(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
+pub(crate) fn oriented_edge(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
     let mut cur = id;
     let mut by = by;
     let mut orient = true;
