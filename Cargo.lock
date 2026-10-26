@@ -1424,6 +1424,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-rt-api-cand-dagmc-compat"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "sm-core",
+ "sm-geom-api",
+ "sm-mesh-api",
+ "sm-topo-api",
+ "thiserror",
+]
+
+[[package]]
 name = "sm-scheme-api"
 version = "0.0.0"
 dependencies = [

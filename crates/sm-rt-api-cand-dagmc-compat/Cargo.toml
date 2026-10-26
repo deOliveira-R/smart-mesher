@@ -1,0 +1,25 @@
+[package]
+name = "sm-rt-api-cand-dagmc-compat"
+description = "Candidate frozen contract for ray tracing / particle tracking (DAGMC-compatible query surface). Becomes sm-rt-api."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "sm-core/serde"]
+# C ABI sketch (extern "C", opaque handles) for Fortran/C++ callers. The only unsafe code.
+capi = []
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
