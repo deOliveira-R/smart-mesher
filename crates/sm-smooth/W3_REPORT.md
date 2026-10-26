@@ -16,7 +16,8 @@ of `claude/w3-sm-smooth` (the session rules forbid pushing another branch name).
   `meshes` layer through `replace_mesh`) and query `mesh.smooth_preview`; no layer, no export.
 - Classification constraints, pins, guard, colouring, repair loop and the update rules are
   specified in `DESIGN.md`.
-- No `unsafe`, no `unwrap` / `expect` in `src/`, no `HashMap`, no randomness.
+- No `unsafe`, no `unwrap` / `expect` in `src/`, no `HashMap`, no randomness. `README.md` has the
+  deferred list; `DESIGN.md` the formulas, measured values and bench table.
 
 ## Acceptance -> test
 
@@ -37,6 +38,8 @@ of `claude/w3-sm-smooth` (the session rules forbid pushing another branch name).
 | 7 | 10^3 brick: lattice restored, volume 1000, `Delta.created` empty, `touched_layers == ["meshes"]`, `smooth.report`, undo / redo / cold replay, `validate` / `validate_geometry` before and after, preview equals op report with unchanged hash | `a7_smoothing_a_jittered_brick_restores_the_lattice` (`op.rs`) |
 | 7 | `entities:[face]` moves only that face's nodes | `a7_entities_restrict_the_moved_nodes` |
 | 7 | Unknown mesh, node-less `TopoFace`, bad params, high-order mesh fail with the hash unchanged | `a7_failures_leave_the_state_hash_unchanged` |
+| 7 | A face shared with an unselected volume stays conformal (`fix_boundary: false`, listed volume): cap, cap edges and the other volume are bit-identical; the listed volume's outer faces move | `a7_a_face_shared_with_an_unselected_volume_stays_conformal` (a mutation of the closure rule to "any listed volume" makes it fail) |
+| 7 | Dim-2 listed face moves its edges with `fix_boundary: false` (deviation 2 and 3) | `a_listed_face_of_a_surface_mesh_moves_its_edges_with_fix_boundary_false` (`unsupported.rs`) |
 | 7 | `NothingToSmooth` fails with the hash unchanged | `a7_nothing_to_smooth_fails_without_a_change` |
 | 7 | Params round-trip through the schema | `a7_params_round_trip_through_the_schema` |
 | 8 | `check_f64_bits(3 runs, 4 threads)` on `points`, every method x schedule x fixture; default pool; exact `geometry_hash` and state hash for 1, 2, 4 threads | `a8_points_are_bit_identical_for_every_method_and_schedule`, `a8_geometry_hash_and_state_hash_do_not_depend_on_threads` (`determinism.rs`); the whole suite also passes with `RAYON_NUM_THREADS=1` |
@@ -122,6 +125,15 @@ All release builds, this VM (4 cores). Tolerances were not relaxed.
   analytic gradients / Newton; polyhedral and high-order meshes; parallel colouring; targeting
   by stored mesh set; dihedral feature preservation; bulk-commit-dependent perf gates. Tied
   smoothing of translation / rotation decks is W4.
+- `Partition*` -> `unprojectable` is implemented (it is in the constraint table) but untested: no
+  fixture produces partition-classified nodes.
+- Acceptance 8 reads "exact `geometry_hash` and state hash" as checked at op level for one
+  method (`optimize`, `fix_boundary: false`) across 1, 2 and 4 threads; the bit-identity of
+  `points` is checked for every method x schedule x fixture, and the geometry hash is a function
+  of the points and classification parameters.
+- `quality()` evaluates `Shape` and `Condition` with two `compute` calls (identical values to
+  `compute_many`, which is what the task text names; `compute_many` errors when one metric is
+  undefined for every shape, the two calls degrade each metric independently).
 - Docker is not needed by this task.
 
 ## Notes for the orchestrator

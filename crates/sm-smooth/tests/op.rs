@@ -186,3 +186,54 @@ fn a7_diagnostics_name_the_problem() {
     let deck = d.diagnostics.iter().find(|x| x.code == "smooth.pinned_deck").expect("pinned_deck");
     assert!(deck.entities.contains(&id(EntityKind::TopoFace, 1)) && deck.entities.contains(&id(EntityKind::TopoFace, 2)), "{:?}", deck.entities);
 }
+
+#[test]
+fn a7_a_face_shared_with_an_unselected_volume_stays_conformal() {
+    use sm_core::EntityId;
+    use sm_topo_api::types::Dim;
+    let mut s = session();
+    apply(&mut s, &CreateBrick { origin: [0.0; 3], size: [2.0, 2.0, 4.0] }).expect("brick");
+    let (_, cut) = apply(&mut s, &Webcut { size: [2.0, 2.0, 4.0], frac: 0.5 }).expect("webcut");
+    let cap = cut.outputs["cap"][0];
+    let vols = cut.outputs["volumes"].clone();
+    assert_eq!(vols.len(), 2);
+    run_json(&mut s, "mesh.size", json!({"targets": [vols[0].to_string(), vols[1].to_string()], "size": 1.0})).expect("size");
+    let (_, d) = run_json(&mut s, "mesh.run", json!({"targets": [vols[0].to_string(), vols[1].to_string()]})).expect("mesh.run");
+    let mesh = d.outputs["mesh"][0];
+    apply(&mut s, &JitterMesh { mesh, seed: 6, amp: 0.15, volume_only: false }).expect("jitter");
+    let start = mesh_points(&s, mesh);
+
+    // Smooth the second volume only, boundary included.
+    run_json(
+        &mut s,
+        "mesh.smooth",
+        json!({"mesh": mesh.to_string(), "entities": [vols[1].to_string()], "method": {"kind": "laplacian"}, "iterations": 15, "fix_boundary": false}),
+    )
+    .expect("smooth volume 2");
+    let end = mesh_points(&s, mesh);
+
+    let model = s.state().layer::<sm_layer_api::ModelLayer>().expect("model").clone();
+    let topo = model.topo();
+    let layer = s.state().layer::<MeshLayer>().expect("layer");
+    let m = layer.get(mesh).expect("mesh").mesh();
+    let nodes_of = |e: EntityId| -> Vec<usize> { m.classified_on(e).map(|c| c.vertices.iter().map(|v| v.get()).collect()).unwrap_or_default() };
+    let same = |i: usize| bits(&start[i..=i]) == bits(&end[i..=i]);
+
+    // The cap and its edges (below both volumes), and everything of the first volume, did not move.
+    let mut frozen = nodes_of(cap);
+    for inc in topo.boundary(cap) {
+        frozen.extend(nodes_of(inc.cell));
+    }
+    frozen.extend(nodes_of(vols[0]));
+    assert!(!frozen.is_empty());
+    for &i in &frozen {
+        assert!(same(i), "node {i} shared with or inside the unselected volume moved");
+    }
+    // Faces and edges whose only volume is the second one moved with it.
+    let mut outer_moved = 0;
+    for f in topo.cells(Dim::Face).iter().copied().filter(|f| topo.coboundary(*f).iter().all(|i| i.cell == vols[1])) {
+        outer_moved += nodes_of(f).into_iter().filter(|&i| !same(i)).count();
+    }
+    assert!(outer_moved > 0, "outer face nodes of the selected volume moved");
+    assert!(nodes_of(vols[1]).into_iter().any(|i| !same(i)), "interior nodes moved");
+}

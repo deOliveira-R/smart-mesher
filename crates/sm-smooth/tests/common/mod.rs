@@ -149,6 +149,33 @@ impl TypedOp for CreateBrick {
     }
 }
 
+/// `test.webcut`: cut the first brick (ids from 1) with the plane `z = frac * size[2]`; two volumes
+/// share the cap face (roles `volumes`, `cap`).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Webcut {
+    pub size: [f64; 3],
+    pub frac: f64,
+}
+
+impl TypedOp for Webcut {
+    const NAME: &'static str = "test.webcut";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let ids = |k, n: u64| -> Vec<EntityId> { (1..=n).map(|s| id(k, s)).collect() };
+        let b = sm_topo_api::fixtures::BrickIds {
+            min: Point3::new(0.0, 0.0, 0.0),
+            size: self.size,
+            vertices: ids(EntityKind::TopoVertex, 8).try_into().expect("8"),
+            edges: ids(EntityKind::TopoEdge, 12).try_into().expect("12"),
+            faces: ids(EntityKind::TopoFace, 6).try_into().expect("6"),
+            volume: id(EntityKind::TopoVolume, 1),
+            body: id(EntityKind::TopoBody, 1),
+        };
+        let (cut, txn) = topo_txn(ctx, |topo, _| sm_topo_api::fixtures::webcut_brick(topo, &b, self.frac).or_op())?;
+        commit_topology(ctx, &txn, &[("volumes", &cut.volumes), ("cap", &[cut.cap])])
+    }
+}
+
 /// `test.jitter`: jitter the nodes of a mesh in place (replace_mesh, no ids).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -230,6 +257,7 @@ pub fn engine_with(cache: DerivedCache) -> Engine {
     reg.install(&SmoothPlugin).expect("smooth");
     reg.register::<CreateBrick>().expect("brick");
     reg.register::<JitterMesh>().expect("jitter");
+    reg.register::<Webcut>().expect("webcut");
     reg.register::<AddExtraNode>().expect("extra");
     reg.register::<PairFaces>().expect("pair");
     Engine::new(Arc::new(reg), Services::new().with_versioned("mesher", 1, MesherConfig::new(stubs::registry())), Arc::new(cache))

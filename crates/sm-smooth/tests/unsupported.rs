@@ -115,3 +115,22 @@ fn a_move_beyond_the_end_of_an_edge_is_rejected() {
     assert_eq!((o.report.rejected_geometry, o.report.accepted), (1, 0));
     assert_eq!(o.points[2][0].to_bits(), mesh.point(2).x.to_bits());
 }
+
+#[test]
+fn a_listed_face_of_a_surface_mesh_moves_its_edges_with_fix_boundary_false() {
+    // lattice::quad meshes one face of a brick; the side faces above its edge nodes are unmeshed,
+    // so the edges are in the closure of the listed face and move with it.
+    let f = lattice::quad([4, 4], [1.0; 2]).expect("quad");
+    let p = f.perturbed(2, 0.2).expect("perturb");
+    let face = p.mesh.classification(sm_mesh_api::MeshEntityKind::Cell, 0).entity;
+    let input = SmoothInput { mesh: &p.mesh, topo: &p.topo, model: &p.model };
+    let run = |fix_boundary: bool| {
+        let r = SmoothRequest { nodes: NodeSelect::Entities(vec![face]), fix_boundary, iterations: 30, tolerance: 0.0, ..SmoothRequest::default() };
+        smooth(&input, &r).expect("smooth")
+    };
+    let on_edge = |i: usize| p.mesh.classification(sm_mesh_api::MeshEntityKind::Vertex, i as u32).entity.kind() == sm_core::EntityKind::TopoEdge;
+    let (fixed, free) = (run(true), run(false));
+    let moved = |o: &sm_smooth::SmoothOutcome| (0..o.points.len()).filter(|&i| on_edge(i) && o.points[i] != [p.mesh.point(i).x, p.mesh.point(i).y, p.mesh.point(i).z]).count();
+    assert_eq!(moved(&fixed), 0, "fix_boundary keeps the edge nodes");
+    assert!(moved(&free) > 0, "edge nodes slide along their edges");
+}
