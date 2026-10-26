@@ -1,0 +1,27 @@
+[package]
+name = "sm-rt-api"
+description = "Frozen contract for ray tracing / particle tracking: one structure for Sn/MOC characteristics, Monte Carlo and mesh tallies (cell walking, boundaries, hierarchy, rebuildable cache)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The reference implementor `stub::AnalyticWorld` (exact answers, brute force). Pulls rayon for
+# its block-parallel `trace_bundle`.
+stubs = ["dep:rayon"]
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-model-api = { path = "../sm-model-api" }
+thiserror = "2"
+smallvec = "1"
+rayon = { version = "1", optional = true }
