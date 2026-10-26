@@ -45,7 +45,15 @@ fn brick_4x3x5_is_a_bit_exact_lattice() {
     let (topo, ids, model) = sm_scheme_api::stubs::brick_setup([4.0, 3.0, 5.0]);
     let mut intent = counts(&ids, [4, 3, 5]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
-    let out = mesh_with(&registry(), &topo, &model, &[ids.volume], &intent, &Sequential).expect("mesh");
+    let out = mesh_with(
+        &registry(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     assert_eq!(m.count(MeshEntityKind::Cell), 60);
@@ -59,7 +67,10 @@ fn brick_4x3x5_is_a_bit_exact_lattice() {
     assert!((min_scaled_jacobian(m) - 1.0).abs() < 1e-12);
     // Hex cells, not polyhedra.
     for c in 0..60 {
-        assert_eq!(m.cell_shape(sm_mesh_api::CellIx(c)), sm_mesh_api::CellShape::Hex);
+        assert_eq!(
+            m.cell_shape(sm_mesh_api::CellIx(c)),
+            sm_mesh_api::CellShape::Hex
+        );
     }
 }
 
@@ -68,7 +79,15 @@ fn a_column_edge_count_of_seven_gives_seven_layers() {
     let (topo, ids, model) = sm_scheme_api::stubs::brick_setup([1.0, 1.0, 1.0]);
     let mut intent = counts(&ids, [2, 2, 7]);
     intent.set_scheme(ids.volume, sweep_z(&ids));
-    let out = mesh_with(&registry(), &topo, &model, &[ids.volume], &intent, &Sequential).expect("mesh");
+    let out = mesh_with(
+        &registry(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
     assert_eq!(out.finished.mesh.count(MeshEntityKind::Cell), 4 * 7);
     for e in 8..12 {
         assert_eq!(out.plan.intervals(ids.edges[e]), Some(7));
@@ -81,7 +100,15 @@ fn size_two_on_a_height_ten_brick_gives_five_layers() {
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Constant { size: 2.0 });
     intent.set_scheme(ids.volume, sweep_z(&ids));
-    let out = mesh_with(&registry(), &topo, &model, &[ids.volume], &intent, &Sequential).expect("mesh");
+    let out = mesh_with(
+        &registry(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
     let m = &out.finished.mesh;
     assert_eq!(m.count(MeshEntityKind::Cell), 5);
     assert!((total_volume(m) - 40.0).abs() < 1e-12);
@@ -98,10 +125,15 @@ fn composite(
 ) {
     let (topo, ids, mut model) = sm_scheme_api::stubs::row_setup(2);
     let mat = model.add_color(1, "mat", Domain::Volume).expect("color");
-    model.color_volumes(mat, &[ids[0].volume, ids[1].volume]).expect("color volumes");
+    model
+        .color_volumes(mat, &[ids[0].volume, ids[1].volume])
+        .expect("color volumes");
     let cell = model
         .composite(
-            &[PieceRef::Whole(ids[0].volume), PieceRef::Whole(ids[1].volume)],
+            &[
+                PieceRef::Whole(ids[0].volume),
+                PieceRef::Whole(ids[1].volume),
+            ],
             &topo,
         )
         .expect("composite");
@@ -147,7 +179,12 @@ fn a_composite_of_two_bricks_with_columns_3_and_4_gives_seven_layers() {
     assert!((total_volume(m) - 2.0).abs() < 1e-12);
     assert_eq!(out.plan.intervals(ids[0].edges[0]), Some(3));
     assert_eq!(out.plan.intervals(ids[1].edges[0]), Some(4));
-    assert_eq!(out.plan.target(Target::Volume(cell)).map(|t| t.scheme.as_str()), Some("sweep"));
+    assert_eq!(
+        out.plan
+            .target(Target::Volume(cell))
+            .map(|t| t.scheme.as_str()),
+        Some("sweep")
+    );
 }
 
 #[test]
@@ -174,7 +211,10 @@ fn layers_forces_a_linear_row_on_a_two_edge_column() {
             }
         })
         .collect();
-    assert!(!rows.is_empty(), "no linear layer row in the plan for {cell}");
+    assert!(
+        !rows.is_empty(),
+        "no linear layer row in the plan for {cell}"
+    );
 }
 
 #[test]
@@ -186,7 +226,10 @@ fn conflicting_hard_counts_are_infeasible_and_name_both_edges() {
     intent.set_scheme(ids.volume, sweep_z(&ids));
     match plan_only(&registry(), &topo, &model, &[ids.volume], &intent) {
         Err(SchemeError::Infeasible(i)) => {
-            assert!(i.entities.contains(&ids.edges[8]) && i.entities.contains(&ids.edges[9]), "{i}");
+            assert!(
+                i.entities.contains(&ids.edges[8]) && i.entities.contains(&ids.edges[9]),
+                "{i}"
+            );
         }
         other => panic!("expected Infeasible, got {:?}", other.map(|_| ())),
     }
@@ -220,8 +263,15 @@ fn bias_on_the_column_edges_gives_a_geometric_layer_ratio_and_exact_interior_lev
         );
     }
     intent.set_scheme(ids.volume, sweep_z(&ids));
-    let out = mesh_with(&registry_with_bias(), &topo, &model, &[ids.volume], &intent, &Sequential)
-        .expect("mesh");
+    let out = mesh_with(
+        &registry_with_bias(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     // Boundary column z levels: the nodes at x = y = 0.
@@ -241,7 +291,107 @@ fn bias_on_the_column_edges_gives_a_geometric_layer_ratio_and_exact_interior_lev
     assert!(up || down, "ratios {ratio:?}");
     // Every node (interior ones included) lies on one of the boundary column's levels.
     for p in &pts {
-        assert!(col.iter().any(|z| (z - p[2]).abs() < 1e-12), "z {} is not a column level", p[2]);
+        assert!(
+            col.iter().any(|z| (z - p[2]).abs() < 1e-12),
+            "z {} is not a column level",
+            p[2]
+        );
     }
     let _ = Vector3::default();
+}
+
+/// Source edges with interior nodes: the edge-node columns cross two linking faces (one per
+/// member) through the node on the interface edge.
+#[test]
+fn composite_columns_of_edge_nodes_cross_both_members() {
+    let (topo, ids, mut model) = sm_scheme_api::stubs::row_setup(2);
+    let mat = model.add_color(1, "mat", Domain::Volume).expect("color");
+    model
+        .color_volumes(mat, &[ids[0].volume, ids[1].volume])
+        .expect("color volumes");
+    let cell = model
+        .composite(
+            &[
+                PieceRef::Whole(ids[0].volume),
+                PieceRef::Whole(ids[1].volume),
+            ],
+            &topo,
+        )
+        .expect("composite");
+    model
+        .set_shape(
+            cell,
+            PieceShape::sweep(
+                vec![PieceFace::Whole(ids[0].faces[0])],
+                vec![PieceFace::Whole(ids[1].faces[1])],
+            ),
+        )
+        .expect("shape");
+    let mut intent = MeshIntent::default();
+    for e in sm_topo_api::TopologyView::face_edges(&topo, ids[0].faces[0]).to_vec() {
+        intent.set_intervals(e, Firm::hard(IntervalRequest::Count(2)));
+    }
+    intent.set_intervals(ids[0].edges[0], Firm::hard(IntervalRequest::Count(3)));
+    intent.set_intervals(ids[1].edges[0], Firm::hard(IntervalRequest::Count(4)));
+    let out = mesh_with(&registry(), &topo, &model, &[cell], &intent, &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert_eq!(m.count(MeshEntityKind::Cell), 4 * 7);
+    assert_eq!(m.count(MeshEntityKind::Vertex), 9 * 8);
+    assert!((total_volume(m) - 2.0).abs() < 1e-12);
+    assert!((min_scaled_jacobian(m) - 1.0).abs() < 1e-12);
+}
+
+/// A bias on one column edge only: the column displacements are not affine in the source
+/// position, so the interior layers come from the affine fit plus the Shepard residual.
+#[test]
+fn a_single_biased_column_is_blended_into_the_interior_without_inversions() {
+    let (topo, ids, model) = sm_scheme_api::stubs::brick_setup([2.0, 2.0, 3.0]);
+    let mut intent = counts(&ids, [4, 4, 6]);
+    intent.set_scheme(
+        ids.edges[8],
+        SchemeChoice::with_params("bias", serde_json::json!({ "ratio": 1.5 }), Firmness::Hard),
+    );
+    intent.set_scheme(ids.volume, sweep_z(&ids));
+    let out = mesh_with(
+        &registry_with_bias(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    assert_eq!(m.count(MeshEntityKind::Cell), 16 * 6);
+    assert!((total_volume(m) - 12.0).abs() < 1e-9, "{}", total_volume(m));
+    assert!(min_scaled_jacobian(m) > 0.0);
+    // The biased corner column and a uniform column differ at layer 1; the centre column lies
+    // strictly between them (a convex blend of the boundary displacements).
+    let pts = coords_of(m);
+    let at = |x: f64, y: f64| {
+        let mut zs: Vec<f64> = pts
+            .iter()
+            .filter(|p| (p[0] - x).abs() < 1e-12 && (p[1] - y).abs() < 1e-12)
+            .map(|p| p[2])
+            .collect();
+        zs.sort_by(f64::total_cmp);
+        zs
+    };
+    let corner = at(0.0, 0.0);
+    let far = at(2.0, 2.0);
+    let centre = at(1.0, 1.0);
+    assert_eq!((corner.len(), far.len(), centre.len()), (7, 7, 7));
+    let (lo, hi) = (corner[1].min(far[1]), corner[1].max(far[1]));
+    assert!((corner[1] - far[1]).abs() > 1e-3);
+    assert!(
+        centre[1] > lo && centre[1] < hi,
+        "{} not in ({lo}, {hi})",
+        centre[1]
+    );
+    for z in [&corner, &far, &centre] {
+        assert!(z.windows(2).all(|w| w[1] > w[0]));
+        assert!(z[0].abs() < 1e-12 && (z[6] - 3.0).abs() < 1e-12);
+    }
 }

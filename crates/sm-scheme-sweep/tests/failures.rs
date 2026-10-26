@@ -8,10 +8,9 @@ use sm_core::{EntityId, Point3};
 use sm_mesh_api::{MeshEntityKind, MeshRead, validate};
 use sm_model_api::Model;
 use sm_scheme_api::{
-    Applicability, Caps, Driver, ElemShape, FailureKind, Firm, Firmness, GenCtx, GenerateFailure,
-    IntervalRequest, MeshInput, MeshIntent, NodeKey, Params, Patch, PatchBuilder, Phase, PlanCtx,
-    ReferenceCornerPicker, ReferenceIntervalSolver, Requirements, Scheme, SchemeChoice,
-    SchemeDim, SchemeError, SchemeRegistry, Sequential, Target, VertexRule, WholeFaces,
+    Driver, FailureKind, Firm, Firmness, IntervalRequest, MeshInput, MeshIntent, NodeKey, Params,
+    Phase, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeChoice, SchemeError,
+    SchemeRegistry, Sequential, Target, WholeFaces,
 };
 use sm_scheme_sweep::{SweepParams, TargetMode};
 use sm_topo_api::TopologyEdit;
@@ -55,12 +54,18 @@ fn faces_that_touch_are_not_applicable() {
 fn a_volume_without_any_sweepable_face_pair_is_not_applicable_with_a_reason() {
     // A sphere has a single face: no pair can give columns.
     let fx = sm_testkit::topo::sphere(1.0).expect("sphere");
-    let vol = sm_topo_api::TopologyView::cells(&fx.complex, sm_topo_api::Dim::Volume).first().copied().expect("volume");
+    let vol = sm_topo_api::TopologyView::cells(&fx.complex, sm_topo_api::Dim::Volume)
+        .first()
+        .copied()
+        .expect("volume");
     let mut intent = MeshIntent::default();
     intent.set_scheme(vol, SchemeChoice::new("sweep", Firmness::Hard));
     match plan_only(&registry(), &fx.complex, &Model::new(), &[vol], &intent) {
         Err(SchemeError::NotApplicable { reason, .. }) => {
-            assert!(reason.contains("no pair of faces gives columns"), "{reason}");
+            assert!(
+                reason.contains("no pair of faces gives columns"),
+                "{reason}"
+            );
         }
         other => panic!("expected NotApplicable, got {:?}", other.map(|_| ())),
     }
@@ -70,7 +75,8 @@ fn a_volume_without_any_sweepable_face_pair_is_not_applicable_with_a_reason() {
 fn a_non_affine_target_in_auto_mode_names_the_residual() {
     let (mut topo, ids, model) = brick();
     // Move one top vertex: the top square becomes a quadrilateral that is no affine image.
-    let top_edges: Vec<EntityId> = sm_topo_api::TopologyView::face_edges(&topo, ids.faces[5]).to_vec();
+    let top_edges: Vec<EntityId> =
+        sm_topo_api::TopologyView::face_edges(&topo, ids.faces[5]).to_vec();
     let (a, _) = sm_topo_api::TopologyViewExt::edge_ends(&topo, top_edges[0]).expect("ends");
     let p = sm_scheme_api::geom::vertex_point(&topo, a).expect("p");
     sm_topo_api::fixtures::with_op(&mut topo, sm_topo_api::OpId(2), |t| {
@@ -81,13 +87,19 @@ fn a_non_affine_target_in_auto_mode_names_the_residual() {
     intent.set_scheme(ids.volume, sweep_with(&ids, serde_json::json!({})));
     match plan_only(&registry(), &topo, &model, &[ids.volume], &intent) {
         Err(SchemeError::NotApplicable { reason, .. }) => {
-            assert!(reason.contains("not an affine image") && reason.contains("residual"), "{reason}");
+            assert!(
+                reason.contains("not an affine image") && reason.contains("residual"),
+                "{reason}"
+            );
         }
         other => panic!("expected NotApplicable, got {:?}", other.map(|_| ())),
     }
     // target_mode copy registers the copy anyway (the user takes responsibility).
     let mut intent = MeshIntent::default();
-    intent.set_scheme(ids.volume, sweep_with(&ids, serde_json::json!({ "target_mode": "copy" })));
+    intent.set_scheme(
+        ids.volume,
+        sweep_with(&ids, serde_json::json!({ "target_mode": "copy" })),
+    );
     let plan = plan_only(&registry(), &topo, &model, &[ids.volume], &intent).expect("copy plans");
     assert!(plan.copy_of(Target::Surface(ids.faces[5])).is_some());
 }
@@ -128,21 +140,41 @@ fn an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back()
         other => panic!("expected a generation failure, got {:?}", other.map(|_| ())),
     };
     assert_eq!(g.kind, FailureKind::Quality);
-    assert!(g.reason.contains("layer 0") && g.reason.contains("source element 0"), "{}", g.reason);
+    assert!(
+        g.reason.contains("layer 0") && g.reason.contains("source element 0"),
+        "{}",
+        g.reason
+    );
     assert_eq!(g.nodes.len(), 8, "{:?}", g.nodes);
     for k in &g.nodes {
-        assert!(g.reason.contains(&format!("{k:?}")), "{k:?} missing from {}", g.reason);
+        assert!(
+            g.reason.contains(&format!("{k:?}")),
+            "{k:?} missing from {}",
+            g.reason
+        );
     }
     assert!(g.reason.contains("Jacobian"));
     // Through the driver: the attempt is recorded and the fallback meshes the brick.
-    let out = mesh_with(&reg, &topo, &model, &[ids.volume], &intent, &Sequential).expect("fallback");
+    let out =
+        mesh_with(&reg, &topo, &model, &[ids.volume], &intent, &Sequential).expect("fallback");
     let first = out.attempts.first().expect("an attempt");
     assert_eq!(
         (first.target, first.scheme.as_str(), first.phase, first.kind),
-        (Target::Volume(ids.volume), "sweep", Phase::Generate, FailureKind::Quality)
+        (
+            Target::Volume(ids.volume),
+            "sweep",
+            Phase::Generate,
+            FailureKind::Quality
+        )
     );
-    assert!(out.plan.rejections.contains(Target::Volume(ids.volume), &sm_scheme_api::SchemeName::new("sweep")));
-    let tp = out.plan.target(Target::Volume(ids.volume)).expect("plan row");
+    assert!(out.plan.rejections.contains(
+        Target::Volume(ids.volume),
+        &sm_scheme_api::SchemeName::new("sweep")
+    ));
+    let tp = out
+        .plan
+        .target(Target::Volume(ids.volume))
+        .expect("plan row");
     assert_eq!(tp.scheme.as_str(), "polyvol");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty(), "{:?}", validate(m));
@@ -154,12 +186,26 @@ fn an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back()
 fn a_min_scaled_jacobian_above_the_mesh_quality_fails_the_gate() {
     let (topo, ids, model) = brick();
     let mut intent = MeshIntent::default();
-    intent.set_scheme(ids.volume, sweep_with(&ids, serde_json::json!({ "min_scaled_jacobian": 0.5 })));
+    intent.set_scheme(
+        ids.volume,
+        sweep_with(&ids, serde_json::json!({ "min_scaled_jacobian": 0.5 })),
+    );
     // Unit cube hexes have scaled Jacobian 1: fine.
-    mesh_with(&registry(), &topo, &model, &[ids.volume], &intent, &Sequential).expect("mesh");
+    mesh_with(
+        &registry(),
+        &topo,
+        &model,
+        &[ids.volume],
+        &intent,
+        &Sequential,
+    )
+    .expect("mesh");
     // Nothing exceeds 1: rejected at parameter parsing.
     let mut intent = MeshIntent::default();
-    intent.set_scheme(ids.volume, sweep_with(&ids, serde_json::json!({ "min_scaled_jacobian": 1.0 })));
+    intent.set_scheme(
+        ids.volume,
+        sweep_with(&ids, serde_json::json!({ "min_scaled_jacobian": 1.0 })),
+    );
     assert!(matches!(
         plan_only(&registry(), &topo, &model, &[ids.volume], &intent),
         Err(SchemeError::BadParams { .. })
@@ -172,7 +218,9 @@ fn bad_parameters_are_bad_params() {
     let a = EntityId::new(sm_core::EntityKind::TopoFace, 1).expect("id");
     let b = EntityId::new(sm_core::EntityKind::TopoFace, 2).expect("id");
     assert!(p(serde_json::json!({})).is_ok());
-    assert!(p(serde_json::json!({ "source": [a], "target": [b], "layers": 4, "support": 0 })).is_ok());
+    assert!(
+        p(serde_json::json!({ "source": [a], "target": [b], "layers": 4, "support": 0 })).is_ok()
+    );
     for bad in [
         serde_json::json!({ "source": [a] }),
         serde_json::json!({ "target": [b] }),
@@ -186,7 +234,10 @@ fn bad_parameters_are_bad_params() {
         serde_json::json!({ "placement": 3 }),
         serde_json::json!({ "support": -2 }),
     ] {
-        assert!(matches!(p(bad.clone()), Err(SchemeError::BadParams { .. })), "{bad}");
+        assert!(
+            matches!(p(bad.clone()), Err(SchemeError::BadParams { .. })),
+            "{bad}"
+        );
     }
     match p(serde_json::json!({ "target_mode": "project" })) {
         Err(SchemeError::BadParams { reason, .. }) => {
@@ -195,7 +246,9 @@ fn bad_parameters_are_bad_params() {
         other => panic!("{other:?}"),
     }
     assert_eq!(
-        p(serde_json::json!({ "target_mode": "copy" })).expect("copy").target_mode,
+        p(serde_json::json!({ "target_mode": "copy" }))
+            .expect("copy")
+            .target_mode,
         TargetMode::Copy
     );
 }
@@ -204,7 +257,10 @@ fn bad_parameters_are_bad_params() {
 fn bad_parameters_surface_from_the_driver_as_bad_params() {
     let (topo, ids, model) = brick();
     let mut intent = MeshIntent::default();
-    intent.set_scheme(ids.volume, sweep_with(&ids, serde_json::json!({ "target_mode": "project" })));
+    intent.set_scheme(
+        ids.volume,
+        sweep_with(&ids, serde_json::json!({ "target_mode": "project" })),
+    );
     assert!(matches!(
         plan_only(&registry(), &topo, &model, &[ids.volume], &intent),
         Err(SchemeError::BadParams { .. })

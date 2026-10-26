@@ -35,7 +35,7 @@ use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh};
 use sm_mesh_api::{CellIx, MeshRead, SerialAlloc, cell_volume};
 use sm_model_api::Model;
 use sm_scheme_api::{
-    Applicability, Caps, Driver, Executor, GenCtx, GenerateFailure, Meshed, MeshInput, MeshIntent,
+    Applicability, Caps, Driver, Executor, GenCtx, GenerateFailure, MeshInput, MeshIntent, Meshed,
     Params, Patch, PlanCtx, ReferenceCornerPicker, ReferenceIntervalSolver, Scheme, SchemeDim,
     Target, WholeFaces,
 };
@@ -71,8 +71,12 @@ pub fn total_volume(m: &dyn MeshRead) -> f64 {
 
 /// Minimum scaled Jacobian over all cells (sm-quality).
 pub fn min_scaled_jacobian(m: &dyn MeshRead) -> f64 {
-    let q = sm_quality::compute(m, sm_quality::Metric::ScaledJacobian, &sm_quality::Options::default())
-        .expect("quality");
+    let q = sm_quality::compute(
+        m,
+        sm_quality::Metric::ScaledJacobian,
+        &sm_quality::Options::default(),
+    )
+    .expect("quality");
     q.into_iter().fold(f64::INFINITY, f64::min)
 }
 
@@ -93,7 +97,12 @@ impl Scheme for Bias {
     fn applicability(&self, _cx: &PlanCtx<'_>, _t: Target, _p: &Params) -> Applicability {
         Applicability::yes(80, "bias")
     }
-    fn generate(&self, cx: &GenCtx<'_>, target: Target, p: &Params) -> Result<Patch, GenerateFailure> {
+    fn generate(
+        &self,
+        cx: &GenCtx<'_>,
+        target: Target,
+        p: &Params,
+    ) -> Result<Patch, GenerateFailure> {
         let Target::Curve(e) = target else {
             return Err(GenerateFailure::fatal(target, "bias", "not a curve"));
         };
@@ -144,4 +153,66 @@ pub fn registry_with_sources() -> SchemeRegistry {
     r.register(Box::new(surf::Ring)).expect("ring");
     r.register(Box::new(surf::OnePolygon)).expect("onepolygon");
     r
+}
+
+/// Determinant of the trilinear map of a hex (template order) at `(s, t, u)` in `[0, 1]^3`.
+pub fn jacobian_det(p: &[[f64; 3]], s: f64, t: f64, u: f64) -> f64 {
+    // Corner (i, j, k) ordering: 0 (0,0,0) 1 (1,0,0) 2 (1,1,0) 3 (0,1,0), then z = 1.
+    let ijk = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+    ];
+    let mut jac = [[0.0; 3]; 3];
+    for (c, q) in p.iter().enumerate() {
+        let (a, b, d) = (ijk[c][0], ijk[c][1], ijk[c][2]);
+        let (fs, ft, fu) = (
+            if a > 0.5 { s } else { 1.0 - s },
+            if b > 0.5 { t } else { 1.0 - t },
+            if d > 0.5 { u } else { 1.0 - u },
+        );
+        let (ds, dt, du) = (
+            if a > 0.5 { 1.0 } else { -1.0 },
+            if b > 0.5 { 1.0 } else { -1.0 },
+            if d > 0.5 { 1.0 } else { -1.0 },
+        );
+        for k in 0..3 {
+            jac[k][0] += q[k] * ds * ft * fu;
+            jac[k][1] += q[k] * fs * dt * fu;
+            jac[k][2] += q[k] * fs * ft * du;
+        }
+    }
+    jac[0][0] * (jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1])
+        - jac[0][1] * (jac[1][0] * jac[2][2] - jac[1][2] * jac[2][0])
+        + jac[0][2] * (jac[1][0] * jac[2][1] - jac[1][1] * jac[2][0])
+}
+
+/// Exact (2x2x2 Gauss) volume of a hex mesh and the smallest Jacobian determinant at the
+/// Gauss points.
+pub fn hex_gauss_volume(m: &dyn MeshRead) -> (f64, f64) {
+    let c = m.coords();
+    let g = 0.5 / 3f64.sqrt();
+    let (mut vol, mut least) = (0.0, f64::INFINITY);
+    for ci in 0..m.count(sm_mesh_api::MeshEntityKind::Cell) {
+        let corners = m.cell_corners(CellIx(ci as u32)).expect("hex corners");
+        let p: Vec<[f64; 3]> = corners
+            .iter()
+            .map(|v| [c.x[v.0 as usize], c.y[v.0 as usize], c.z[v.0 as usize]])
+            .collect();
+        for &sx in &[0.5 - g, 0.5 + g] {
+            for &sy in &[0.5 - g, 0.5 + g] {
+                for &sz in &[0.5 - g, 0.5 + g] {
+                    let d = jacobian_det(&p, sx, sy, sz);
+                    vol += 0.125 * d;
+                    least = least.min(d);
+                }
+            }
+        }
+    }
+    (vol, least)
 }

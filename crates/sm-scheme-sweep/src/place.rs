@@ -374,7 +374,7 @@ pub fn place_layers(
             None => Fit::Interp(bsrc.iter().zip(&c).map(|(s, p)| *p - *s).collect()),
         })
     };
-    let fits: Vec<Fit> = if layers - 1 >= PAR_MIN {
+    let fits: Vec<Fit> = if layers > PAR_MIN {
         (1..layers)
             .into_par_iter()
             .map(layer_fit)

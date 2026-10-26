@@ -175,8 +175,7 @@ fn check_element(
             let frames: &[[u8; 4]] = if n == 4 { &HEX_CORNERS } else { &WEDGE_CORNERS };
             for (ci, c) in frames.iter().enumerate() {
                 let sj = corner_jacobian(&p[..2 * n], *c);
-                // `!(a > b)` also rejects NaN.
-                if !(sj > min_sj) {
+                if sj.is_nan() || sj <= min_sj {
                     return Some(fail(format!(
                         "corner {ci} has scaled Jacobian {sj:.6e} (must exceed {min_sj})"
                     )));
@@ -420,7 +419,7 @@ pub(crate) fn generate_prism(
     let mut first_fail: Option<Fail> = None;
     let mut forward: Vec<bool> = Vec::new();
     let mut placed_ok = false;
-    for (attempt, mode) in modes.iter().enumerate() {
+    for mode in modes {
         let placed = place_layers(
             &Boundary {
                 keys: &b_keys,
@@ -485,9 +484,8 @@ pub(crate) fn generate_prism(
                 break;
             }
             Some(f) => {
-                if attempt == 0 {
-                    first_fail = Some(f);
-                } else if first_fail.is_none() {
+                // Report the first attempt's failure (the interpolating retry failed too).
+                if first_fail.is_none() {
                     first_fail = Some(f);
                 }
             }
@@ -541,13 +539,11 @@ pub(crate) fn generate_prism(
     let n_cells = n_el * layers;
     out.elements = sm_scheme_api::Elements::with_capacity(n_cells, 8);
     let mut buf: Vec<u32> = Vec::with_capacity(16);
-    for e in 0..n_el {
-        let (shape, _, _) = elems.meta[e];
+    for (e, &fwd) in forward.iter().enumerate() {
         let ring = elems.nodes(e);
         let n = ring.len();
-        let order: Vec<usize> = ring_order(n, forward[e]).collect();
+        let order: Vec<usize> = ring_order(n, fwd).collect();
         let at = |i: usize, layer: usize| local[ring[order[i]] as usize * stride + layer];
-        let _ = shape;
         for l in 0..layers {
             if n <= 4 {
                 buf.clear();
@@ -594,7 +590,10 @@ mod tests {
         assert_eq!(first_unsupported(&e), Some((3, ElemShape::Segment)));
         let mut c = Elements::new();
         c.push(ElemShape::Cell(CellShape::Hex), &[0, 1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(first_unsupported(&c), Some((0, ElemShape::Cell(CellShape::Hex))));
+        assert_eq!(
+            first_unsupported(&c),
+            Some((0, ElemShape::Cell(CellShape::Hex)))
+        );
         let mut d = Elements::new();
         d.push(ElemShape::Polygon, &[0, 1]);
         assert_eq!(first_unsupported(&d), Some((0, ElemShape::Polygon)));

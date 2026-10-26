@@ -68,7 +68,8 @@ impl Scheme for GridFace {
         let t: &dyn TopologyView = cx.input.topo;
         let outline = t.face_outline(f);
         let z = outline.first().map_or(0.0, |p| p.z);
-        let lattice = |p: Point3| -> (i64, i64) { ((p.x / h).round() as i64, (p.y / h).round() as i64) };
+        let lattice =
+            |p: Point3| -> (i64, i64) { ((p.x / h).round() as i64, (p.y / h).round() as i64) };
         let loops = cx.loops(f).map_err(|e| fatal(e.to_string()))?;
         let mut boundary: BTreeMap<(i64, i64), NodeKey> = BTreeMap::new();
         for lp in &loops {
@@ -121,14 +122,16 @@ impl Scheme for GridFace {
         let mut idx: BTreeMap<(i64, i64), u32> = BTreeMap::new();
         for (n, q) in order.iter().enumerate() {
             let pt = Point3::new(q.0 as f64 * h, q.1 as f64 * h, z);
-            let (pt, param) = geom::snap_to_face(t, f, pt)
-                .map_err(|e| GenerateFailure::new(target, "gridface", FailureKind::Geometry, e.to_string()))?;
+            let (pt, param) = geom::snap_to_face(t, f, pt).map_err(|e| {
+                GenerateFailure::new(target, "gridface", FailureKind::Geometry, e.to_string())
+            })?;
             idx.insert(*q, pb.node(NodeKey::new(f, n as u32), pt, param));
         }
         for (q, k) in &boundary {
-            if cells.iter().any(|(i, j)| {
-                [(*i, *j), (i + 1, *j), (i + 1, j + 1), (*i, j + 1)].contains(q)
-            }) {
+            if cells
+                .iter()
+                .any(|(i, j)| [(*i, *j), (i + 1, *j), (i + 1, j + 1), (*i, j + 1)].contains(q))
+            {
                 idx.insert(*q, pb.refer(*k));
             }
         }
@@ -190,16 +193,22 @@ impl Scheme for Fan {
             .map(|k| cx.point(*k).ok_or_else(|| fatal(format!("node {k:?}"))))
             .collect::<GResult<_>>()?;
         let n = pts.len() as f64;
-        let c = pts.iter().fold((0.0, 0.0, 0.0), |a, p| (a.0 + p.x, a.1 + p.y, a.2 + p.z));
+        let c = pts
+            .iter()
+            .fold((0.0, 0.0, 0.0), |a, p| (a.0 + p.x, a.1 + p.y, a.2 + p.z));
         let c = Point3::new(c.0 / n, c.1 / n, c.2 / n);
-        let (c, param) = geom::snap_to_face(cx.input.topo, f, c)
-            .map_err(|e| GenerateFailure::new(target, "fan", FailureKind::Geometry, e.to_string()))?;
+        let (c, param) = geom::snap_to_face(cx.input.topo, f, c).map_err(|e| {
+            GenerateFailure::new(target, "fan", FailureKind::Geometry, e.to_string())
+        })?;
         let mut pb = PatchBuilder::new(target);
         let centre = pb.node(NodeKey::new(f, 0), c, param);
         let ring: Vec<u32> = lp.nodes.iter().map(|k| pb.refer(*k)).collect();
         // The loop runs with the face on its left, i.e. counter-clockwise about the normal.
         for i in 0..ring.len() {
-            pb.push(ElemShape::Tri, &[centre, ring[i], ring[(i + 1) % ring.len()]]);
+            pb.push(
+                ElemShape::Tri,
+                &[centre, ring[i], ring[(i + 1) % ring.len()]],
+            );
         }
         Ok(pb.finish())
     }
@@ -327,7 +336,11 @@ impl Scheme for OnePolygon {
             .loops(f)
             .map_err(|e| GenerateFailure::fatal(target, "onepolygon", e.to_string()))?;
         let [lp] = loops.as_slice() else {
-            return Err(GenerateFailure::fatal(target, "onepolygon", "needs a single loop"));
+            return Err(GenerateFailure::fatal(
+                target,
+                "onepolygon",
+                "needs a single loop",
+            ));
         };
         let mut pb = PatchBuilder::new(target);
         let ring: Vec<u32> = lp.nodes.iter().map(|k| pb.refer(*k)).collect();

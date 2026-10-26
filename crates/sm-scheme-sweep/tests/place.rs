@@ -63,7 +63,12 @@ fn run(
 }
 
 fn rot(l: usize, p: Point3) -> Point3 {
-    let g = Transform::rotation(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0), 0.2 * l as f64).expect("rz");
+    let g = Transform::rotation(
+        Point3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        0.2 * l as f64,
+    )
+    .expect("rz");
     g.apply_point(p) + Vector3::new(0.0, 0.0, l as f64)
 }
 
@@ -134,14 +139,24 @@ fn interpolate_and_affine_agree_when_the_residual_is_zero() {
     let (bk, bp, ik, ip) = square();
     let layers = 5;
     // Pure translation per layer: no residual of either kind.
-    let cols = columns(&bp, layers, |l, p| p + Vector3::new(0.1 * l as f64, 0.0, l as f64));
+    let cols = columns(&bp, layers, |l, p| {
+        p + Vector3::new(0.1 * l as f64, 0.0, l as f64)
+    });
     let mk = |placement| PlaceOptions {
         placement,
         shepard_power: 3.0,
         support: 16,
     };
     let a = run(&bk, &bp, &cols, layers, &ik, &ip, mk(Placement::Affine));
-    let i = run(&bk, &bp, &cols, layers, &ik, &ip, mk(Placement::Interpolate));
+    let i = run(
+        &bk,
+        &bp,
+        &cols,
+        layers,
+        &ik,
+        &ip,
+        mk(Placement::Interpolate),
+    );
     for (p, q) in a.iter().zip(&i) {
         assert!((*p - *q).norm() < 1e-12);
     }
@@ -153,7 +168,10 @@ fn interpolate_and_affine_agree_when_the_residual_is_zero() {
             cols: &cols,
             layers,
         },
-        &Interior { keys: &ik, pos: &ip },
+        &Interior {
+            keys: &ik,
+            pos: &ip,
+        },
         &mk(Placement::Auto),
     )
     .expect("place");
@@ -207,7 +225,13 @@ fn ties_are_broken_by_node_key_and_input_order_does_not_matter() {
         Point3::new(-5.0, -5.0, 0.0),
     ];
     let keys: Vec<NodeKey> = (0..pts.len() as u32).map(key).collect();
-    let delta = |j: usize| Vector3::new(0.1 * (j + 1) as f64, -0.03 * (j * j) as f64, 0.5 + 0.01 * j as f64);
+    let delta = |j: usize| {
+        Vector3::new(
+            0.1 * (j + 1) as f64,
+            -0.03 * (j * j) as f64,
+            0.5 + 0.01 * j as f64,
+        )
+    };
     let layers = 2;
     let cols = columns(&pts, layers, |_, p| p);
     // Per-node displacements (non-uniform, so no fast path).
@@ -265,7 +289,13 @@ fn the_grid_neighbour_search_matches_a_dense_reference() {
     let ik: Vec<NodeKey> = (0..40u32).map(|i| key(1000 + i)).collect();
     let layers = 2;
     let disp: Vec<Vector3> = (0..nb)
-        .map(|_| Vector3::new(rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), 1.0 + rng.range(-0.1, 0.1)))
+        .map(|_| {
+            Vector3::new(
+                rng.range(-0.2, 0.2),
+                rng.range(-0.2, 0.2),
+                1.0 + rng.range(-0.1, 0.1),
+            )
+        })
         .collect();
     let cols = {
         let mut c = Vec::new();
@@ -317,7 +347,10 @@ fn inconsistent_input_is_an_error() {
             cols: &cols[1..],
             layers: 2,
         },
-        &Interior { keys: &ik, pos: &ip },
+        &Interior {
+            keys: &ik,
+            pos: &ip,
+        },
         &PlaceOptions::default(),
     );
     assert!(bad.is_err());
@@ -332,7 +365,10 @@ fn inconsistent_input_is_an_error() {
                 cols: &c2,
                 layers: 2
             },
-            &Interior { keys: &ik, pos: &ip },
+            &Interior {
+                keys: &ik,
+                pos: &ip
+            },
             &PlaceOptions::default(),
         )
         .is_err()

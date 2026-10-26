@@ -32,7 +32,11 @@ fn random_affine(rng: &mut Rng) -> Transform {
         }
         let t = Transform {
             m,
-            t: Vector3::new(rng.range(-3.0, 3.0), rng.range(-3.0, 3.0), rng.range(-3.0, 3.0)),
+            t: Vector3::new(
+                rng.range(-3.0, 3.0),
+                rng.range(-3.0, 3.0),
+                rng.range(-3.0, 3.0),
+            ),
         };
         if t.det() > 0.2 {
             return t;
@@ -97,20 +101,28 @@ fn fit_affine_rejects_too_few_or_collinear_points() {
         fit_affine(&three, &three),
         Err(SweepError::TooFewPoints { have: 3, need: 4 })
     ));
-    let line: Vec<Point3> = (0..6).map(|i| p(f64::from(i), 2.0 * f64::from(i), 0.5)).collect();
+    let line: Vec<Point3> = (0..6)
+        .map(|i| p(f64::from(i), 2.0 * f64::from(i), 0.5))
+        .collect();
     assert!(matches!(
         fit_affine(&line, &line),
         Err(SweepError::Degenerate { .. })
     ));
     let same = vec![p(1.0, 1.0, 1.0); 5];
-    assert!(matches!(fit_affine(&same, &same), Err(SweepError::Degenerate { .. })));
+    assert!(matches!(
+        fit_affine(&same, &same),
+        Err(SweepError::Degenerate { .. })
+    ));
     assert!(matches!(
         fit_affine(&line, &line[..5]),
         Err(SweepError::LengthMismatch { .. })
     ));
     let mut bad = line.clone();
     bad[2].x = f64::NAN;
-    assert!(matches!(fit_affine(&bad, &line), Err(SweepError::NonFinite)));
+    assert!(matches!(
+        fit_affine(&bad, &line),
+        Err(SweepError::NonFinite)
+    ));
 }
 
 fn square(z: f64) -> Vec<Point3> {
@@ -155,7 +167,10 @@ fn a_rotation_by_phi_is_rz_phi() {
         .expect("rotation");
         for i in 0..3 {
             for j in 0..3 {
-                assert!((t.m[i][j] - g.m[i][j]).abs() < 1e-12, "phi {phi} m[{i}][{j}]");
+                assert!(
+                    (t.m[i][j] - g.m[i][j]).abs() < 1e-12,
+                    "phi {phi} m[{i}][{j}]"
+                );
             }
         }
         assert!(t.t.norm() < 1e-12);
@@ -189,11 +204,17 @@ fn a_non_affine_correspondence_gives_none() {
     let n_t = Vector3::new(0.0, 0.0, 1.0);
     // Swap two vertices of a rotated copy.
     let g = rz(0.6);
-    let mut dst: Vec<Point3> = src.iter().map(|p| g.apply_point(*p) + Vector3::new(0.0, 0.0, 2.0)).collect();
+    let mut dst: Vec<Point3> = src
+        .iter()
+        .map(|p| g.apply_point(*p) + Vector3::new(0.0, 0.0, 2.0))
+        .collect();
     dst.swap(1, 3);
     assert!(fit_target_transform(&src, &dst, n_s, n_t, 1e-9).is_none());
     // One vertex moved off the affine image.
-    let mut dst: Vec<Point3> = src.iter().map(|p| *p + Vector3::new(0.0, 0.0, 2.0)).collect();
+    let mut dst: Vec<Point3> = src
+        .iter()
+        .map(|p| *p + Vector3::new(0.0, 0.0, 2.0))
+        .collect();
     dst[2].x += 1e-3;
     assert!(fit_target_transform(&src, &dst, n_s, n_t, 1e-9).is_none());
     // A mirror image is not an orientation-preserving fit.
@@ -206,7 +227,10 @@ fn a_non_affine_correspondence_gives_none() {
 #[test]
 fn a_scaled_target_is_affine() {
     let src = square(0.0);
-    let dst: Vec<Point3> = src.iter().map(|p| Point3::new(1.5 * p.x, 0.5 * p.y, 4.0)).collect();
+    let dst: Vec<Point3> = src
+        .iter()
+        .map(|p| Point3::new(1.5 * p.x, 0.5 * p.y, 4.0))
+        .collect();
     let t = fit_target_transform(
         &src,
         &dst,

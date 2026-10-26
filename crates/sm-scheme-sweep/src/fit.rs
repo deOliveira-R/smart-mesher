@@ -74,7 +74,7 @@ pub(crate) fn fit_affine_unchecked(
     }
     let eig = sym3_eigen(&bmat)?;
     let top = eig.values[2];
-    if !(top > 0.0) {
+    if top.is_nan() || top <= 0.0 {
         return Err(SweepError::Degenerate { rank: 0 });
     }
     let kept = eig.values.iter().filter(|v| **v >= RANK_TOL * top).count();
@@ -163,7 +163,7 @@ pub fn fit_target_transform(
     let (cs, ct) = (centroid(src), centroid(dst));
     let l = src.iter().map(|p| (*p - cs).norm()).sum::<f64>() / n;
     let (ns, nd) = (unit(n_src)?, unit(n_dst)?);
-    if !(l > 0.0) {
+    if l.is_nan() || l <= 0.0 {
         return None;
     }
     let mut a: Vec<Point3> = src.to_vec();
@@ -191,7 +191,7 @@ pub(crate) fn best_effort_transform(
     let l = src.iter().map(|p| (*p - cs).norm()).sum::<f64>() / n;
     let fitted = (|| {
         let (ns, nd) = (unit(n_src)?, unit(n_dst)?);
-        if !(l > 0.0) {
+        if l.is_nan() || l <= 0.0 {
             return None;
         }
         let mut a: Vec<Point3> = src.to_vec();
