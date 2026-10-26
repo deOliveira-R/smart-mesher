@@ -11,7 +11,7 @@ use sm_model_api::{BoundaryKind, Deck};
 use sm_quality::Metric;
 use sm_topo_api::{Carrier, TopologyView};
 
-use crate::types::{Method, NodeSelect, SmoothError, SmoothInput, SmoothRequest};
+use crate::types::{Method, NodeSelect, Objective, SmoothError, SmoothInput, SmoothRequest};
 
 /// A point.
 pub(crate) type V = [f64; 3];
@@ -66,6 +66,8 @@ pub(crate) struct Prep<'a> {
     /// In-entity faces of each face node (3-D `CentroidArea` only).
     pub vf_off: Vec<u32>,
     pub vf: Vec<u32>,
+    /// Winslow neighbours `[E, N, W, S, NE, NW, SW, SE]` of every eligible node (Winslow only).
+    pub wnb: Vec<[u32; 8]>,
     pub pinned: BTreeMap<String, usize>,
     pub pinned_entities: BTreeMap<String, Vec<EntityId>>,
 }
@@ -139,7 +141,10 @@ pub(crate) fn validate_request(req: &SmoothRequest) -> Result<(), SmoothError> {
         return bad(format!("guard_floor {} must be in [0, 1)", req.guard_floor));
     }
     match req.method {
-        Method::Laplacian { relax } | Method::SmartLaplacian { relax } | Method::CentroidArea { relax } => {
+        Method::Laplacian { relax }
+        | Method::SmartLaplacian { relax }
+        | Method::CentroidArea { relax }
+        | Method::Winslow { relax } => {
             if !(relax.is_finite() && relax > 0.0 && relax < 2.0) {
                 return bad(format!("relax {relax} must be in (0, 2)"));
             }
@@ -153,8 +158,46 @@ pub(crate) fn validate_request(req: &SmoothRequest) -> Result<(), SmoothError> {
     Ok(())
 }
 
-fn needs_shape(m: &Method) -> bool {
-    matches!(m, Method::SmartLaplacian { .. } | Method::Optimize { .. })
+/// The metric a method needs defined on every incident cell (besides the guard's).
+fn needs_metric(m: &Method) -> Option<Metric> {
+    match m {
+        Method::SmartLaplacian { .. } | Method::Optimize { objective: Objective::MeanRatio, .. } => Some(Metric::Shape),
+        Method::Optimize { objective: Objective::Condition, .. } => Some(Metric::Condition),
+        _ => None,
+    }
+}
+
+/// The eight Winslow neighbours `[E, N, W, S, NE, NW, SW, SE]` of a node with exactly four
+/// incident quads whose wedges close into a cycle, in the orientation of the cells.
+fn winslow_stencil(shape: &[CellShape], corner_off: &[u32], corners: &[u32], cells: &[u32], v: u32) -> Option<[u32; 8]> {
+    if cells.len() != 4 {
+        return None;
+    }
+    // (next, prev, opposite) of each quad about v.
+    let mut w: [(u32, u32, u32); 4] = [(0, 0, 0); 4];
+    for (k, &c) in cells.iter().enumerate() {
+        let c = c as usize;
+        if shape[c] != CellShape::Quad {
+            return None;
+        }
+        let q = &corners[corner_off[c] as usize..corner_off[c + 1] as usize];
+        let i = q.iter().position(|x| *x == v)?;
+        w[k] = (q[(i + 1) % 4], q[(i + 3) % 4], q[(i + 2) % 4]);
+    }
+    let mut order = [0usize; 4];
+    let mut used = [false; 4];
+    used[0] = true;
+    for k in 1..4 {
+        let want = w[order[k - 1]].1;
+        let j = (0..4).find(|&j| !used[j] && w[j].0 == want)?;
+        used[j] = true;
+        order[k] = j;
+    }
+    if w[order[3]].1 != w[order[0]].0 {
+        return None;
+    }
+    let [a, b, c, d] = order.map(|i| w[i]);
+    Some([a.0, b.0, c.0, d.0, a.2, b.2, c.2, d.2])
 }
 
 impl<'a> Prep<'a> {
@@ -242,15 +285,15 @@ impl<'a> Prep<'a> {
             })
             .collect();
         // Per entity: closure indices and (edges) the faces above, as sorted index lists.
-        let mut closure_ix: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        let mut cob_ix: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        let mut closure_ix: Vec<Vec<u32>> = vec![Vec::new(); ents.len()];
+        let mut cob_ix: Vec<Vec<u32>> = vec![Vec::new(); ents.len()];
         for (i, e) in ents.iter().enumerate() {
             match e.kind() {
                 EntityKind::TopoFace | EntityKind::TopoEdge => {
                     let mut cl: Vec<u32> =
                         closure(topo, *e).iter().filter_map(|x| ents.binary_search(x).ok().map(|j| j as u32)).collect();
                     cl.sort_unstable();
-                    closure_ix.insert(i as u32, cl);
+                    closure_ix[i] = cl;
                     if e.kind() == EntityKind::TopoEdge {
                         let mut cb: Vec<u32> = topo
                             .coboundary(*e)
@@ -258,7 +301,7 @@ impl<'a> Prep<'a> {
                             .filter_map(|inc| ents.binary_search(&inc.cell).ok().map(|j| j as u32))
                             .collect();
                         cb.sort_unstable();
-                        cob_ix.insert(i as u32, cb);
+                        cob_ix[i] = cb;
                     }
                 }
                 _ => {}
@@ -274,26 +317,25 @@ impl<'a> Prep<'a> {
             match ents[ve as usize].kind() {
                 EntityKind::TopoVolume => true,
                 EntityKind::TopoFace => {
-                    x == ve && vei[w] != u32::MAX && closure_ix[&ve].binary_search(&vei[w]).is_ok()
+                    x == ve && vei[w] != u32::MAX && closure_ix[ve as usize].binary_search(&vei[w]).is_ok()
                 }
                 EntityKind::TopoEdge => {
-                    (x == ve || cob_ix[&ve].binary_search(&x).is_ok())
+                    (x == ve || cob_ix[ve as usize].binary_search(&x).is_ok())
                         && vei[w] != u32::MAX
-                        && closure_ix[&ve].binary_search(&vei[w]).is_ok()
+                        && closure_ix[ve as usize].binary_search(&vei[w]).is_ok()
                 }
                 _ => false,
             }
         };
         let for_each_pair = |emit: &mut dyn FnMut(usize, usize, u32)| {
-            for f in 0..nf {
+            for (f, &x) in fei.iter().enumerate() {
                 let lo = co.face_vertex_offsets[f] as usize;
                 let hi = co.face_vertex_offsets[f + 1] as usize;
                 let lp = &co.face_vertices[lo..hi];
                 let m = lp.len();
                 let pairs = if m == 2 { 1 } else { m };
                 for i in 0..pairs {
-                    let (a, b) = (lp[i].get(), lp[(i + 1) % m].get());
-                    emit(a, b, fei[f]);
+                    emit(lp[i].get(), lp[(i + 1) % m].get(), x);
                 }
             }
         };
@@ -454,7 +496,12 @@ impl<'a> Prep<'a> {
         let mut movable = Vec::new();
         let mut pinned: BTreeMap<String, usize> = BTreeMap::new();
         let mut pinned_sets: BTreeMap<String, BTreeSet<EntityId>> = BTreeMap::new();
-        let need_shape = needs_shape(&req.method);
+        let need_metric = needs_metric(&req.method);
+        let winslow = matches!(req.method, Method::Winslow { .. });
+        if winslow && !dim2 {
+            return Err(SmoothError::Unsupported("winslow smoothing is 2-D (quad surface meshes) only"));
+        }
+        let mut wnb: Vec<[u32; 8]> = if winslow { vec![[0; 8]; n] } else { Vec::new() };
         for v in 0..n {
             if !selected[v] {
                 continue;
@@ -506,12 +553,16 @@ impl<'a> Prep<'a> {
                 reason = Some("isolated");
             }
             if reason.is_none()
-                && need_shape
-                && v2c[v2c_off[v] as usize..v2c_off[v + 1] as usize]
-                    .iter()
-                    .any(|&c| !Metric::Shape.applies(shape[c as usize]))
+                && let Some(metric) = need_metric
+                && v2c[v2c_off[v] as usize..v2c_off[v + 1] as usize].iter().any(|&c| !metric.applies(shape[c as usize]))
             {
                 reason = Some("unsupported_shape");
+            }
+            if reason.is_none() && winslow {
+                match winslow_stencil(&shape, &corner_off, &corners, &v2c[v2c_off[v] as usize..v2c_off[v + 1] as usize], v as u32) {
+                    Some(st) if m == Mode::Surf => wnb[v] = st,
+                    _ => reason = Some("winslow_unstructured"),
+                }
             }
             if let Some(r) = reason {
                 *pinned.entry(r.to_owned()).or_default() += 1;
@@ -590,6 +641,7 @@ impl<'a> Prep<'a> {
             vcls,
             vf_off,
             vf,
+            wnb,
             pinned,
             pinned_entities,
         })

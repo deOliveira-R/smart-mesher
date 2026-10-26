@@ -1,5 +1,7 @@
 //! Acceptance 3: mean-ratio optimisation, objective monotonicity, tet lattice quality.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;
@@ -36,15 +38,34 @@ fn a3_optimize_reaches_shape_099_on_the_jittered_hex_lattice() {
 
 #[test]
 fn a3_colored_objective_never_increases() {
+    // One sweep at a time, feeding the outcome back in (the classification carries the hints).
     let f = lattice::hex([6, 6, 6], [1.0; 3]).expect("lattice");
-    let p = f.perturbed(3, 0.2).expect("perturb");
+    let mut p = f.perturbed(3, 0.2).expect("perturb");
     let mut last = sum_beta(&shapes(&p, &pts_of(&p.mesh)), 4.0);
     for k in 1..=40u32 {
-        let o = run(&p, &req(opt(4.0), Schedule::Colored, k, false));
-        let now = sum_beta(&shapes(&p, &o.points), 4.0);
+        let o = run(&p, &req(opt(4.0), Schedule::Colored, 1, false));
+        p.mesh = applied(&p, &o);
+        let now = sum_beta(&shapes(&p, &pts_of(&p.mesh)), 4.0);
         assert!(now <= last * (1.0 + 1e-12), "sweep {k}: {now} > {last}");
         last = now;
     }
+}
+
+#[test]
+fn a3_condition_objective_reaches_max_condition_101() {
+    let f = lattice::hex([6, 6, 6], [1.0; 3]).expect("lattice");
+    let p = f.perturbed(3, 0.2).expect("perturb");
+    let cond = |pts: &[[f64; 3]]| {
+        let mut m = p.mesh.clone();
+        set_points(&mut m, pts);
+        summarize(&compute(&m, Metric::Condition, &Options::default()).expect("condition")).max
+    };
+    let c0 = cond(&pts_of(&p.mesh));
+    let o = run(&p, &req(Method::Optimize { objective: Objective::Condition, p: 4.0 }, Schedule::Colored, 300, false));
+    let c1 = cond(&o.points);
+    eprintln!("a3 stretch hex condition: max {c0} -> {c1} in {} sweeps", o.report.iterations_run);
+    assert!(c1 <= 1.01, "max condition {c1}");
+    assert!((o.report.after.max_condition - c1).abs() < 1e-12);
 }
 
 #[test]

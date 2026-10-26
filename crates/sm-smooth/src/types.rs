@@ -56,7 +56,15 @@ pub enum Method {
         #[serde(default = "one")]
         relax: f64,
     },
-    /// Node-local minimisation of `sum_c (1 / Shape_c)^p` by finite-difference steepest descent
+    /// Winslow smoothing of a structured-interior all-quad surface mesh: a node with exactly four
+    /// incident quads moves to the discrete Winslow (elliptic grid generation) update; every
+    /// other node is pinned (`winslow_unstructured`). Affine invariant.
+    Winslow {
+        /// Relaxation factor in `(0, 2)`.
+        #[serde(default = "one")]
+        relax: f64,
+    },
+    /// Node-local minimisation of `sum_c beta_c^p` by finite-difference steepest descent
     /// with Armijo backtracking.
     Optimize {
         /// The cell quality objective.
@@ -89,6 +97,8 @@ pub enum Objective {
     /// Knupp mean ratio, `beta = 1 / Metric::Shape`.
     #[default]
     MeanRatio,
+    /// Condition number, `beta = Metric::Condition` (1 is ideal).
+    Condition,
 }
 
 /// Sweep order.
@@ -163,7 +173,7 @@ pub struct SmoothReport {
     /// Nodes that were free to move.
     pub movable: usize,
     /// Selected nodes that were frozen, by reason (`vertex`, `deck`, `interface`,
-    /// `polyhedral`, `unprojectable`, `unsupported_shape`, `isolated`).
+    /// `polyhedral`, `unprojectable`, `unsupported_shape`, `winslow_unstructured`, `isolated`).
     pub pinned: BTreeMap<String, usize>,
     /// Entities behind the pins: faces for `deck` and `interface`, the classifying entities
     /// for the other reasons (at most 20 each).

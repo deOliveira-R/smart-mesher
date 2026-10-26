@@ -1,5 +1,7 @@
 //! Acceptance 7: the `mesh.smooth` op and the `mesh.smooth_preview` query.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;

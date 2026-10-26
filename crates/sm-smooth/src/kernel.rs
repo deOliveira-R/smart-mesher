@@ -11,6 +11,9 @@ use crate::normals::CarrierNormals;
 use crate::prep::{Geo, Mode, Prep, V};
 use crate::types::{Method, Objective};
 
+/// `beta` values at or above this are treated as infinitely bad.
+const BETA_MAX: f64 = 1e15;
+
 /// Outcome of one node update.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Prop {
@@ -91,7 +94,7 @@ impl Kernel<'_, '_> {
     /// The guard predicate for one cell.
     fn cell_ok(&self, old: (f64, f64), new: (f64, f64)) -> bool {
         let lim = if old.0.is_nan() { self.floor } else { old.0.min(self.floor) };
-        new.0.is_finite() && new.0 >= lim && !(old.1 > 0.0 && !(new.1 > 0.0))
+        new.0.is_finite() && new.0 >= lim && (old.1 <= 0.0 || old.1.is_nan() || new.1 > 0.0)
     }
 
     /// Guard: every incident cell keeps `SJ' >= min(SJ, floor)` and a positive volume stays positive.
@@ -142,20 +145,44 @@ impl Kernel<'_, '_> {
         m
     }
 
-    /// `sum_c (1/Shape_c)^p` over the cells of `v` with `v` at `x`; infinite if a cell is
-    /// degenerate or its shape is undefined.
-    fn objective(&self, v: usize, x: V, pos: &[V], p: f64) -> f64 {
+    /// `sum_c beta_c^p` over the cells of `v` with `v` at `x`; infinite if a cell is degenerate
+    /// or its metric is undefined.
+    fn objective(&self, v: usize, x: V, pos: &[V], obj: Objective, p: f64) -> f64 {
         let mut buf = Pts::new();
         let mut f = 0.0;
         for &c in self.prep.cells_of(v) {
             self.gather(c as usize, pos, Some((v as u32, x)), &mut buf);
-            let s = self.metric(Metric::Shape, c as usize, &buf);
-            if !(s > 1e-14) {
+            let beta = match obj {
+                Objective::MeanRatio => {
+                    let s = self.metric(Metric::Shape, c as usize, &buf);
+                    if s > 1e-14 { 1.0 / s } else { f64::INFINITY }
+                }
+                Objective::Condition => self.metric(Metric::Condition, c as usize, &buf),
+            };
+            if !(0.0..BETA_MAX).contains(&beta) {
                 return f64::INFINITY;
             }
-            f += (1.0 / s).powf(p);
+            f += beta.powf(p);
         }
         f
+    }
+
+    /// The discrete Winslow update of node `v` (`None` if the metric terms vanish).
+    fn winslow_target(&self, v: usize, pos: &[V]) -> Option<V> {
+        let [e, n, w, s, ne, nw, sw, se] = self.prep.wnb[v].map(|i| pos[i as usize]);
+        let xi = [(e[0] - w[0]) * 0.5, (e[1] - w[1]) * 0.5, (e[2] - w[2]) * 0.5];
+        let eta = [(n[0] - s[0]) * 0.5, (n[1] - s[1]) * 0.5, (n[2] - s[2]) * 0.5];
+        let (alpha, gamma, beta) = (dot(eta, eta), dot(xi, xi), dot(xi, eta));
+        let den = 2.0 * (alpha + gamma);
+        if den.is_nan() || den <= 0.0 {
+            return None;
+        }
+        let mut x = [0.0; 3];
+        for (k, xk) in x.iter_mut().enumerate() {
+            let cross = ne[k] - nw[k] - se[k] + sw[k];
+            *xk = (alpha * (e[k] + w[k]) + gamma * (n[k] + s[k]) - 0.5 * beta * cross) / den;
+        }
+        Some(x)
     }
 
     /// Project `raw` onto the geometry of node `v`. `Err` = geometry rejection.
@@ -289,8 +316,15 @@ impl Kernel<'_, '_> {
     pub fn propose(&self, v: usize, pos: &[V], hint: &[[f64; 2]], method: &Method) -> Prop {
         let x = pos[v];
         match *method {
-            Method::Laplacian { relax } | Method::SmartLaplacian { relax } | Method::CentroidArea { relax } => {
+            Method::Laplacian { relax }
+            | Method::SmartLaplacian { relax }
+            | Method::CentroidArea { relax }
+            | Method::Winslow { relax } => {
                 let target = match method {
+                    Method::Winslow { .. } => match self.winslow_target(v, pos) {
+                        Some(t) => t,
+                        None => return Prop::Stay,
+                    },
                     Method::CentroidArea { .. } => match self.centroid_area(v, pos) {
                         Some(t) => t,
                         None => return Prop::Stay,
@@ -308,25 +342,25 @@ impl Kernel<'_, '_> {
                 }
                 if matches!(method, Method::SmartLaplacian { .. }) {
                     let (a, b) = (self.min_shape(v, x, pos), self.min_shape(v, p, pos));
-                    if !(b >= a) {
+                    if a.is_nan() || b.is_nan() || b < a {
                         return Prop::RejGuard;
                     }
                 }
                 Prop::Move { p, h }
             }
-            Method::Optimize { objective: Objective::MeanRatio, p: pw } => self.optimize(v, pos, hint, pw),
+            Method::Optimize { objective, p: pw } => self.optimize(v, pos, hint, objective, pw),
             #[allow(unreachable_patterns)]
             _ => Prop::Stay,
         }
     }
 
-    fn optimize(&self, v: usize, pos: &[V], hint: &[[f64; 2]], pw: f64) -> Prop {
+    fn optimize(&self, v: usize, pos: &[V], hint: &[[f64; 2]], obj: Objective, pw: f64) -> Prop {
         let l = self.prep.ell[v];
         let x = pos[v];
-        if !(l > 0.0) {
+        if l.is_nan() || l <= 0.0 {
             return Prop::Stay;
         }
-        let f0 = self.objective(v, x, pos, pw);
+        let f0 = self.objective(v, x, pos, obj, pw);
         if !f0.is_finite() {
             return Prop::Stay;
         }
@@ -336,7 +370,7 @@ impl Kernel<'_, '_> {
             let (mut a, mut b) = (x, x);
             a[i] += d;
             b[i] -= d;
-            let (fa, fb) = (self.objective(v, a, pos, pw), self.objective(v, b, pos, pw));
+            let (fa, fb) = (self.objective(v, a, pos, obj, pw), self.objective(v, b, pos, obj, pw));
             if !(fa.is_finite() && fb.is_finite()) {
                 return Prop::Stay;
             }
@@ -355,7 +389,7 @@ impl Kernel<'_, '_> {
             }
         };
         let gn = norm(gt);
-        if !(gn * l > 1e-12 * f0) {
+        if (gn * l).is_nan() || gn * l <= 1e-12 * f0 {
             return Prop::Stay;
         }
         let dir = [-gt[0] / gn, -gt[1] / gn, -gt[2] / gn];
@@ -369,7 +403,7 @@ impl Kernel<'_, '_> {
                 Ok((p, h)) => {
                     if !self.guard(v, p, pos, &old) {
                         Some(Prop::RejGuard)
-                    } else if self.objective(v, p, pos, pw) <= f0 - 1e-4 * alpha * gn {
+                    } else if self.objective(v, p, pos, obj, pw) <= f0 - 1e-4 * alpha * gn {
                         return if p == x { Prop::Stay } else { Prop::Move { p, h } };
                     } else {
                         Some(Prop::Stay)

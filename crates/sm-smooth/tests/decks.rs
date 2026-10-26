@@ -1,5 +1,7 @@
 //! Acceptance 6: mirror decks slide, translation decks and interfaces are pinned.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;

@@ -1,5 +1,7 @@
 //! Acceptance 1 and 2: Laplacian / centroid-area recovery of perturbed lattices.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;

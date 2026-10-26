@@ -1,5 +1,7 @@
 //! Acceptance 4: the guard makes "never inverts" a contract on every method.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;
@@ -29,6 +31,10 @@ fn methods() -> Vec<(String, Method)> {
     }
     for p in [2.0, 4.0] {
         v.push((format!("optimize p{p}"), Method::Optimize { objective: Objective::MeanRatio, p }));
+        v.push((format!("condition p{p}"), Method::Optimize { objective: Objective::Condition, p }));
+    }
+    for relax in [1.0, 1.5, 1.9] {
+        v.push((format!("winslow r{relax}"), Method::Winslow { relax }));
     }
     v
 }

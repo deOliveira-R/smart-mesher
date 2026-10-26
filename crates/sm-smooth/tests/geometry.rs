@@ -1,10 +1,11 @@
 //! Acceptance 5: nodes stay on their geometry, and the trim-reject path.
 
+#![allow(clippy::needless_range_loop)]
+
 mod common;
 
 use common::*;
 use sm_core::{EntityKind, Point3};
-use sm_geom_api::{ParametricCurve, ParametricSurface};
 use sm_mesh_api::MeshEdit;
 use sm_mesh_api::{Classification, MeshEntityKind, MeshRead, Param, VertexIx};
 use sm_smooth::{Method, NodeSelect, Objective, Schedule, SmoothRequest, smooth};
@@ -17,6 +18,8 @@ fn methods() -> Vec<(&'static str, Method)> {
         ("smart", Method::SmartLaplacian { relax: 1.0 }),
         ("centroid", Method::CentroidArea { relax: 1.0 }),
         ("optimize", Method::Optimize { objective: Objective::MeanRatio, p: 4.0 }),
+        ("condition", Method::Optimize { objective: Objective::Condition, p: 4.0 }),
+        ("winslow", Method::Winslow { relax: 1.0 }),
     ]
 }
 
