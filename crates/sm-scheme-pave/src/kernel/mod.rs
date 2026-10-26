@@ -184,7 +184,8 @@ const ATTEMPT_BUDGET: usize = 150_000;
 /// The production ladder: the strategies, in this fixed order, that recovered the most
 /// regions in the surveys of `tests.rs` (`survey_cover`).
 fn ladder() -> Vec<Strategy> {
-    candidates()
+    let c = candidates();
+    [0, 73, 33, 93, 10, 70, 71, 35, 40, 12, 3, 6, 21, 72].into_iter().filter_map(|i| c.get(i).copied()).collect()
 }
 
 /// Points, quads and rounds of one successful strategy.
