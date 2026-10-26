@@ -1,0 +1,27 @@
+[package]
+name = "sm-rt-api-cand-exact-hierarchy"
+description = "Candidate frozen contract for ray tracing and particle tracking: exact analytic surfaces, lattice/instance hierarchy, deck faces in the structure, facets as fallback."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+serde = ["dep:serde", "sm-core/serde", "sm-geom-api/serde", "sm-topo-api/serde", "sm-model-api/serde"]
+# C ABI sketch (extern "C" functions, opaque handles) for Fortran/C++ callers.
+capi = []
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+sm-model-api = { path = "../sm-model-api" }
+serde = { version = "1", features = ["derive"], optional = true }
+smallvec = "1"
+thiserror = "2"
