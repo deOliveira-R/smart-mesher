@@ -4,7 +4,7 @@
 use crate::canon::canonical_tets;
 use crate::delaunay::{Dt, splitmix};
 use crate::error::TetError;
-use crate::geom::{V3, coord_ok, ori};
+use crate::geom::{V3, coord_ok, ori, sanitize};
 use crate::quality::mesh_stats;
 use crate::recover::{Constraints, Recover};
 use crate::tds::{NONE, same_cycle, sorted3};
@@ -67,6 +67,39 @@ fn boundary_sizes(points: &[V3], tris: &[[u32; 3]], total: usize) -> Vec<f64> {
         }
     }
     (0..total).map(|i| if cnt[i] > 0 { sum[i] / f64::from(cnt[i]) } else { f64::INFINITY }).collect()
+}
+
+fn count_flat(dt: &Dt) -> usize {
+    (0..dt.tds.slots() as u32)
+        .filter(|&t| dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none())
+        .filter(|&t| {
+            let v = dt.tds.verts[t as usize];
+            ori(dt.pts[v[0] as usize], dt.pts[v[1] as usize], dt.pts[v[2] as usize], dt.pts[v[3] as usize]) <= 0
+        })
+        .count()
+}
+
+/// A Steiner candidate inside the solid next to triangle `tri` (inward normal offset), tried
+/// when recovery fails around it.
+fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>, attempt: usize) -> Option<V3> {
+    use crate::geom::{add, cross, dist, scale, sub};
+    let t = tris.get(tri as usize)?;
+    let [a, b, c] = t.map(|i| points[i as usize]);
+    let n = cross(sub(b, a), sub(c, a));
+    let nl = crate::geom::dot(n, n).sqrt();
+    if nl == 0.0 {
+        return None;
+    }
+    let n = scale(n, 1.0 / nl);
+    let h = (dist(a, b) + dist(b, c) + dist(c, a)) / 3.0;
+    let mut base = scale(add(add(a, b), c), 1.0 / 3.0);
+    if let Some(e) = edge {
+        // Aim at the failing edge: blend the centroid with the edge midpoint.
+        let mid = scale(add(points[e[0] as usize], points[e[1] as usize]), 0.5);
+        base = add(scale(base, 0.5), scale(mid, 0.5));
+    }
+    let off = 0.35 + 0.2 * attempt as f64;
+    sanitize(sub(base, scale(n, off * h)))
 }
 
 fn check_options(o: &TetOptions<'_>) -> Result<(), TetError> {
@@ -141,47 +174,66 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     let n = input.points.len();
     let max_steiner = if opts.max_steiner == 0 { 8 * n + 100_000 } else { opts.max_steiner };
 
-    // Stage 2: Delaunay of the input plus auxiliary far points.
-    let t1 = Instant::now();
+    // Stages 2 and 3: Delaunay of the input plus auxiliary far points, then boundary recovery.
+    // A recovery failure that interior points can cure restarts the build with an extra point
+    // placed inside the solid next to the failing triangle (at most six times).
     let far = far_points(&input.points)?;
-    let mut pts = input.points.clone();
-    pts.extend_from_slice(&far);
-    let order = crate::delaunay::insertion_order(&pts, &(0..n as u32).collect::<Vec<_>>());
-    let mut dt = Dt::new(pts);
-    let f0 = n as u32;
-    // Corners 0, 3, 5, 6 of the far box form a tetrahedron.
-    dt.init([f0, f0 + 3, f0 + 5, f0 + 6])?;
-    for k in [1usize, 2, 4, 7] {
-        dt.insert(f0 + k as u32)?;
-    }
-    for &p in &order {
-        dt.insert(p)?;
-    }
-    stage_ms[1] = ms(t1);
-
-    let dbg = std::env::var("TET_DEBUG").is_ok();
-    let count_flat = |dt: &Dt| -> usize {
-        (0..dt.tds.slots() as u32)
-            .filter(|&t| dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none())
-            .filter(|&t| {
-                let v = dt.tds.verts[t as usize];
-                ori(dt.pts[v[0] as usize], dt.pts[v[1] as usize], dt.pts[v[2] as usize], dt.pts[v[3] as usize]) <= 0
-            })
-            .count()
-    };
-    if dbg {
-        eprintln!("flat tets after Delaunay: {} of {}", count_flat(&dt), dt.tds.len());
-    }
-    // Stage 3 + 4: recovery and classification.
-    let t2 = Instant::now();
     let con = Constraints::new(&input.tris);
-    let (mut flips, mut n_steiner);
-    {
-        let mut rec = Recover::new(&mut dt, &con, max_steiner, n as u32);
-        rec.run()?;
-        flips = rec.flips;
-        n_steiner = rec.n_steiner;
+    let dbg = std::env::var("TET_DEBUG").is_ok();
+    let mut extra: Vec<V3> = Vec::new();
+    let (mut dt, mut flips, mut n_steiner, mut t_delaunay, mut t_recover);
+    let mut attempt = 0;
+    loop {
+        let t1 = Instant::now();
+        let mut pts = input.points.clone();
+        pts.extend_from_slice(&far);
+        pts.extend_from_slice(&extra);
+        let mut ids: Vec<u32> = (0..n as u32).collect();
+        ids.extend((n + N_FAR) as u32..pts.len() as u32);
+        let order = crate::delaunay::insertion_order(&pts, &ids);
+        let mut d = Dt::new(pts);
+        let f0 = n as u32;
+        // Corners 0, 3, 5, 6 of the far box form a tetrahedron.
+        d.init([f0, f0 + 3, f0 + 5, f0 + 6])?;
+        for k in [1usize, 2, 4, 7] {
+            d.insert(f0 + k as u32)?;
+        }
+        for &p in &order {
+            d.insert(p)?;
+        }
+        t_delaunay = ms(t1);
+        if dbg {
+            eprintln!("delaunay done (attempt {attempt}, {} extra points)", extra.len());
+        }
+        let t2 = Instant::now();
+        let r = {
+            let mut rec = Recover::new(&mut d, &con, &input.tris, max_steiner, n as u32);
+            let r = rec.run();
+            (r, rec.flips, rec.n_steiner)
+        };
+        t_recover = ms(t2);
+        match r.0 {
+            Ok(()) => {
+                dt = d;
+                flips = r.1;
+                n_steiner = r.2;
+                break;
+            }
+            Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < 6 => {
+                if dbg {
+                    eprintln!("recovery failed ({reason}); restarting with an interior point near triangle {tri}");
+                }
+                match steiner_near(&input.points, &input.tris, tri, edge, attempt) {
+                    Some(p) => extra.push(p),
+                    None => return Err(TetError::RecoveryFailed { tri, edge, reason }),
+                }
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
     }
+    stage_ms[1] = t_delaunay;
+    let t2 = Instant::now();
     if dbg {
         eprintln!("flat tets after recovery: {} of {}", count_flat(&dt), dt.tds.len());
     }
@@ -193,7 +245,7 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     flips += dt.remove_flats()?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
-    stage_ms[2] = ms(t2);
+    stage_ms[2] = ms(t2) + t_recover;
 
     // Stage 5 + 6 (filled in by the refine / optimize modules).
     let t3 = Instant::now();

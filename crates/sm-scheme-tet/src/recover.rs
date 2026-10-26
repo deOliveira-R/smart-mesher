@@ -56,6 +56,8 @@ pub(crate) struct Recover<'a> {
     pub n_steiner: usize,
     /// Points below this index are input points (the far points follow them).
     pub n_real: u32,
+    /// Oriented input triangles (for inside/outside tests of Steiner candidates).
+    tris: &'a [[u32; 3]],
     sc: FlipScratch,
     buf: Vec<u32>,
     tabu: Vec<[u32; 2]>,
@@ -66,8 +68,8 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 }
 
 impl<'a> Recover<'a> {
-    pub fn new(dt: &'a mut Dt, con: &'a Constraints, max_steiner: usize, n_real: u32) -> Self {
-        Self { dt, con, flips: 0, max_steiner, n_steiner: 0, n_real, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+    pub fn new(dt: &'a mut Dt, con: &'a Constraints, tris: &'a [[u32; 3]], max_steiner: usize, n_real: u32) -> Self {
+        Self { dt, con, flips: 0, max_steiner, n_steiner: 0, n_real, tris, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
     }
 
     /// Recover every constraint edge and triangle.
@@ -207,11 +209,11 @@ impl<'a> Recover<'a> {
 
     fn ensure_edge(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
         let mut last = None;
-        for attempt in 0..4 {
+        for attempt in 0..2 {
             match self.ensure_edge_once(u, w, owner) {
                 Ok(()) => return Ok(()),
                 Err(e @ TetError::RecoveryFailed { .. }) => {
-                    if attempt == 3 {
+                    if attempt == 1 {
                         return Err(e);
                     }
                     if !self.edge_steiner(u, w, attempt)? {
@@ -267,11 +269,19 @@ impl<'a> Recover<'a> {
         }
         let c = scale(c, 1.0 / vs.len() as f64);
         let mid = scale(add(up, wp), 0.5);
-        let cand = match attempt {
-            0 => c,
-            1 => add(scale(c, 0.5), scale(mid, 0.5)),
-            _ => add(scale(c, 0.8), scale(mid, 0.2)),
-        };
+        // Candidates: the centroid, then points on the way from the segment midpoint to each
+        // surrounding vertex; the first ones inside the solid are used in turn.
+        let mut cands: Vec<V3> = vec![c];
+        for &v in vs.iter().take(12) {
+            if v != u && v != w {
+                cands.push(add(mid, scale(sub(self.dt.pts[v as usize], mid), 0.4)));
+            }
+        }
+        let inside: Vec<V3> = cands.into_iter().filter(|&p| self.inside_solid(p)).collect();
+        if std::env::var("TET_DEBUG").is_ok() {
+            eprintln!("  edge_steiner attempt {attempt}: {} candidates inside the solid", inside.len());
+        }
+        let Some(&cand) = inside.get(attempt) else { return Ok(false) };
         let Some(p) = sanitize(cand) else { return Ok(false) };
         // Containing tet: strictly inside under exact arithmetic.
         let mut host = NONE;
@@ -308,6 +318,21 @@ impl<'a> Recover<'a> {
         self.dt.tds.replace(&[host], &new, &mut ids)?;
         self.flips += 1;
         Ok(true)
+    }
+
+    /// Generalized winding number of the input surface about `p` is close to one.
+    fn inside_solid(&self, p: V3) -> bool {
+        let mut total = 0.0;
+        for t in self.tris {
+            let a = sub(self.dt.pts[t[0] as usize], p);
+            let b = sub(self.dt.pts[t[1] as usize], p);
+            let c = sub(self.dt.pts[t[2] as usize], p);
+            let (la, lb, lc) = (dot(a, a).sqrt(), dot(b, b).sqrt(), dot(c, c).sqrt());
+            let num = dot(a, crate::geom::cross(b, c));
+            let den = la * lb * lc + dot(a, b) * lc + dot(b, c) * la + dot(c, a) * lb;
+            total += 2.0 * num.atan2(den);
+        }
+        total / (4.0 * std::f64::consts::PI) > 0.5
     }
 
     fn touches(&self, t: u32, u: u32, w: u32, up: V3, wp: V3) -> bool {
@@ -690,26 +715,39 @@ impl<'a> Recover<'a> {
 
     /// Interior Steiner fallback: find a point that sees every face (strictly) and star it.
     fn star_fill(&mut self, tri: u32, faces: &[[u32; 3]]) -> Result<Vec<[u32; 4]>, TetError> {
-        let pts: Vec<V3> = self.dt.pts.clone();
+        let Some(c) = self.dt.kernel_point(faces) else {
+            return Err(fail(tri, None, "cavity cannot be tetrahedralized and has no interior kernel point (Steiner fallback failed)"));
+        };
+        if self.n_steiner + 1 > self.max_steiner {
+            return Err(TetError::SteinerBudget { limit: self.max_steiner });
+        }
+        let id = self.dt.push_point(c);
+        self.n_steiner += 1;
+        Ok(faces.iter().map(|f| [id, f[0], f[1], f[2]]).collect())
+    }
+}
+
+impl Dt {
+    /// A point strictly on the inner side of every face of the polyhedron bounded by `faces`
+    /// (outward orientation), found from the vertex centroid, the face centroid and an
+    /// alternating-projection kernel search; `None` if the polyhedron is not star-shaped
+    /// enough.
+    pub(crate) fn kernel_point(&self, faces: &[[u32; 3]]) -> Option<V3> {
+        let pts = &self.pts;
         let mut verts: Vec<u32> = faces.iter().flatten().copied().collect();
         verts.sort_unstable();
         verts.dedup();
-        let cen = {
-            let mut c = [0.0; 3];
-            for &v in &verts {
-                c = add(c, pts[v as usize]);
-            }
-            scale(c, 1.0 / verts.len() as f64)
-        };
+        let mut cen = [0.0; 3];
+        for &v in &verts {
+            cen = add(cen, pts[v as usize]);
+        }
+        let cen = scale(cen, 1.0 / verts.len() as f64);
         let mut fc = [0.0; 3];
         for f in faces {
             fc = add(fc, scale(add(add(pts[f[0] as usize], pts[f[1] as usize]), pts[f[2] as usize]), 1.0 / 3.0));
         }
         let fcen = scale(fc, 1.0 / faces.len() as f64);
         let visible = |p: V3| faces.iter().all(|f| ori(pts[f[0] as usize], pts[f[1] as usize], pts[f[2] as usize], p) < 0);
-        let mut cands: Vec<V3> = vec![cen, fcen];
-        // Kernel search: alternating projections onto the inner half spaces.
-        let mut p = cen;
         let h = {
             let mut m = 0.0;
             for f in faces {
@@ -717,6 +755,7 @@ impl<'a> Recover<'a> {
             }
             m / faces.len() as f64
         };
+        let mut p = cen;
         for _ in 0..60 {
             let mut moved = false;
             for f in faces {
@@ -728,7 +767,7 @@ impl<'a> Recover<'a> {
                 }
                 let n = scale(n, 1.0 / nn);
                 let d = dot(sub(p, a), n);
-                // Inner side is negative; require at least 0.05 h inside.
+                // The inner side is negative; keep at least 0.05 h inside.
                 if d > -0.05 * h {
                     p = sub(p, scale(n, d + 0.1 * h));
                     moved = true;
@@ -738,20 +777,7 @@ impl<'a> Recover<'a> {
                 break;
             }
         }
-        cands.push(p);
-        for c in cands.into_iter().take(3) {
-            let Some(c) = sanitize(c) else { continue };
-            if !visible(c) {
-                continue;
-            }
-            if self.n_steiner + 1 > self.max_steiner {
-                return Err(TetError::SteinerBudget { limit: self.max_steiner });
-            }
-            let id = self.dt.push_point(c);
-            self.n_steiner += 1;
-            return Ok(faces.iter().map(|f| [id, f[0], f[1], f[2]]).collect());
-        }
-        Err(fail(tri, None, "cavity cannot be tetrahedralized and has no interior kernel point (Steiner fallback failed)"))
+        [cen, fcen, p].into_iter().filter_map(sanitize).find(|&c| visible(c))
     }
 }
 

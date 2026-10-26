@@ -48,20 +48,31 @@ impl<'a, 'o> Refiner<'a, 'o> {
     }
 
     /// Target size at `p` as seen from the corners `v`.
+    ///
+    /// `hi = min_c (h_c + (g-1)|p-c|)` is the graded upper bound from the corner sizes; the user
+    /// size (constant or field) can only lower it, and never below `lo = max_c (h_c - (g-1)|p-c|)`,
+    /// so a fine user size next to a coarse frozen boundary grades smoothly instead of jumping.
     fn size_at(&self, p: V3, v: [u32; 4]) -> f64 {
         let g1 = self.opts.gradation - 1.0;
-        let mut h = f64::INFINITY;
+        let mut hi = f64::INFINITY;
+        let mut lo = 0.0f64;
         for &c in &v {
-            h = h.min(self.h[c as usize] + g1 * dist(p, self.dt.pts[c as usize]));
-        }
-        match self.opts.size {
-            SizeSpec::FromBoundary => h,
-            SizeSpec::Constant(c) => h.min(c),
-            SizeSpec::Field(f) => {
-                let u = f(p);
-                if u.is_finite() && u > 0.0 { h.min(u) } else { h }
+            let hc = self.h[c as usize];
+            if hc.is_finite() {
+                let d = g1 * dist(p, self.dt.pts[c as usize]);
+                hi = hi.min(hc + d);
+                lo = lo.max(hc - d);
             }
         }
+        let user = match self.opts.size {
+            SizeSpec::FromBoundary => f64::INFINITY,
+            SizeSpec::Constant(c) => c,
+            SizeSpec::Field(f) => {
+                let u = f(p);
+                if u.is_finite() && u > 0.0 { u } else { f64::INFINITY }
+            }
+        };
+        hi.min(user).max(lo.min(hi))
     }
 
     /// Badness of a tet: above 1 means it must be refined.

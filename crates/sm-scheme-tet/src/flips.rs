@@ -349,6 +349,14 @@ impl Dt {
                 self.tds.replace(&r, &new, &mut ids)?;
                 return Ok(true);
             }
+            // Not tetrahedralizable with its own vertices: add an interior Steiner point.
+            if let Some(p) = self.kernel_point(&front) {
+                let id = self.push_point(p);
+                let new: Vec<[u32; 4]> = front.iter().map(|f| [id, f[0], f[1], f[2]]).collect();
+                let mut ids = Vec::new();
+                self.tds.replace(&r, &new, &mut ids)?;
+                return Ok(true);
+            }
         }
         Ok(false)
     }
