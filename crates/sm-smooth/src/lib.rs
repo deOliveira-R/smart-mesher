@@ -1,20 +1,20 @@
-//! Mesh smoothing suite: Laplacian, smart Laplacian, centroid-area, Winslow, mean-ratio optimization; nodes stay on their geometry.
+//! Mesh smoothing suite: Laplacian, smart Laplacian, centroid-area and mean-ratio optimization;
+//! nodes stay on their geometry and no cell is made worse than the guard allows.
 //!
-//! W3a skeleton (orchestrator, stage 0). Keep [`SmoothPlugin`] (unit struct, `Plugin` id `"smooth"`): `sm-server` installs it.
+//! See `DESIGN.md`. [`smooth`] is the pure library entry; [`SmoothPlugin`] registers the
+//! `mesh.smooth` op and the `mesh.smooth_preview` query.
 
-use sm_op_api::{Plugin, Registry, RegistryError};
+mod kernel;
+mod moved;
+mod normals;
+mod op;
+mod prep;
+mod smooth;
+mod types;
 
-/// The `smooth` plugin. The skeleton registers nothing.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SmoothPlugin;
-
-impl Plugin for SmoothPlugin {
-    fn id(&self) -> &str {
-        "smooth"
-    }
-
-    fn register(&self, registry: &mut Registry) -> Result<(), RegistryError> {
-        let _ = registry;
-        Ok(())
-    }
-}
+pub use op::{MeshSmooth, MeshSmoothPreview, SmoothPlugin};
+pub use smooth::{apply_outcome, smooth};
+pub use types::{
+    Method, NodeSelect, Objective, QualityStats, Schedule, SmoothError, SmoothInput, SmoothOutcome, SmoothReport,
+    SmoothRequest,
+};
