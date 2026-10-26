@@ -1570,7 +1570,6 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-math",
- "sm-mesh",
  "sm-mesh-api",
  "sm-model-api",
  "sm-quality",
