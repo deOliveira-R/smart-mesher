@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::{
-    CellIx, CellShape, FaceIx, FaceKind, GeomTol, HashQuanta, MeshDim, MeshEdit, MeshEntityKind, MeshRead, SerialAlloc,
+    CellIx, CellShape, FaceIx, FaceKind, GeomTol, HashQuanta, MeshDim, MeshEdit, MeshEntityKind, MeshRead, SerialAlloc, VertexIx,
     ViolationCode, geometry_hash, geometry_hash_quantized, topology_hash, validate, validate_geometry,
 };
 use sm_poly::{
@@ -307,12 +307,24 @@ fn acc6_edge_table_is_classified() {
     assert!(validate(&m).is_empty(), "{:?}", validate(&m));
     // the reflex curve: its dual segments are on one TopoEdge that has vertices on it
     let t = m.edges().unwrap();
+    // the model edge of the reflex line x = y = 2, read off the source vertex at (2, 2, 1)
+    let co = l.mesh.coords();
+    let reflex = (0..l.mesh.count(MeshEntityKind::Vertex))
+        .find(|&v| (co.x[v] - 2.0).abs() < 1e-12 && (co.y[v] - 2.0).abs() < 1e-12 && (co.z[v] - 1.0).abs() < 1e-12)
+        .map(|v| l.mesh.vertex_class(VertexIx::new(v)))
+        .expect("source vertex on the reflex line");
+    assert_eq!(reflex.dim(), Some(1), "that vertex lies on the reflex TopoEdge");
+    let mut on_reflex = 0;
     for (i, [a, b]) in t.vertices.iter().enumerate() {
         let (ca, cb) = (m.vertex_class(*a), m.vertex_class(*b));
         if ca.dim().unwrap() <= 1 && cb.dim().unwrap() <= 1 {
             assert_eq!(t.class[i].dim(), Some(1));
+            let want = if ca.dim() == Some(1) { ca.entity } else { cb.entity };
+            assert_eq!(t.class[i].entity, want, "dual edge {i} sits on the TopoEdge of its endpoints");
+            on_reflex += usize::from(t.class[i].entity == reflex.entity);
         }
     }
+    assert!(on_reflex > 0, "some dual edges are classified on the reflex TopoEdge");
 }
 
 #[test]

@@ -197,3 +197,94 @@ fn rotated_scaled_and_shifted_blocks_behave_like_the_aligned_one() {
         }
     }
 }
+
+// ---- known gap: reflex interface edges ------------------------------------------------------
+
+type Notch = Box<dyn Fn([f64; 3]) -> bool>;
+
+/// `tet_block([4,4,4])` re-built with `region(centroid)` naming the volume of each tet, classified
+/// by plane groups (`build_mesh_volumes`).
+fn regionized_block(in_region_2: &dyn Fn([f64; 3]) -> bool) -> ReferenceMesh {
+    use sm_testkit::meshes::{CellSpec, build_mesh_volumes};
+    let src = meshes::tet_block([4, 4, 4], [1.0; 3]).unwrap().mesh;
+    let co = src.coords();
+    let pts: Vec<[f64; 3]> = (0..src.vertex_count()).map(|v| [co.x[v], co.y[v], co.z[v]]).collect();
+    let cells: Vec<(CellSpec, u64)> = (0..src.cell_count())
+        .map(|c| {
+            let k: Vec<usize> = src.cell_corners(CellIx::new(c)).unwrap().iter().map(|v| v.0 as usize).collect();
+            let cen = [0, 1, 2].map(|a| k.iter().map(|&i| pts[i][a]).sum::<f64>() / 4.0);
+            (CellSpec::Template(CellShape::Tet, k), if in_region_2(cen) { 2 } else { 1 })
+        })
+        .collect();
+    build_mesh_volumes(&pts, &cells, &mut SerialAlloc::new()).unwrap()
+}
+
+/// Cells with a `GeomSideTet` finding of `validate_geometry(default)`.
+fn side_tet_cells(m: &dyn MeshRead) -> Vec<usize> {
+    let mut cells: Vec<usize> = validate_geometry(m, &GeomTol::default())
+        .iter()
+        .filter(|v| v.code == sm_mesh_api::ViolationCode::GeomSideTet)
+        .filter_map(|v| match v.entity {
+            Some(sm_mesh_api::MeshEntity::Cell(c)) => Some(c.get()),
+            _ => None,
+        })
+        .collect();
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+/// KNOWN GAP (W3_REPORT, DESIGN.md risks): a dual cell at a reflex feature edge can be concave
+/// enough that its volume centroid leaves the cell, so `validate_geometry` reports `GeomSideTet`.
+/// This test pins the CURRENT result. A future repair (splitting cells at reflex features) is
+/// expected to flip the assertions on the failing notches; do not loosen the tolerance instead.
+#[test]
+fn known_gap_reflex_interface_edge_gives_side_tet_violations() {
+    let (opts, r) = (PolyOptions::new(), VertexClassResolver);
+    let fav: [(&str, Notch); 4] = [
+        ("x>2,y>2", Box::new(|c| c[0] > 2.0 && c[1] > 2.0)),
+        ("x<2,y<2", Box::new(|c| c[0] < 2.0 && c[1] < 2.0)),
+        ("x<2,z<2", Box::new(|c| c[0] < 2.0 && c[2] < 2.0)),
+        ("x>2,z>2", Box::new(|c| c[0] > 2.0 && c[2] > 2.0)),
+    ];
+    let unfav: [(&str, Notch); 3] = [
+        ("x<2,y>2", Box::new(|c| c[0] < 2.0 && c[1] > 2.0)),
+        ("x>2,y<2", Box::new(|c| c[0] > 2.0 && c[1] < 2.0)),
+        ("y<2,z>2", Box::new(|c| c[1] < 2.0 && c[2] > 2.0)),
+    ];
+    for (name, f) in fav.iter().chain(unfav.iter()) {
+        let m = regionized_block(f);
+        assert!(validate(&m).is_empty(), "{name}: {:?}", validate(&m));
+        let (d, rep) = dual_prod(&m, &opts, &r).unwrap_or_else(|e| panic!("{name}: the op path itself succeeds: {e}"));
+        assert!(validate(&d).is_empty(), "{name}: topology is valid: {:?}", validate(&d));
+        assert!(rel(rep.total_volume, 64.0) < 1e-12, "{name}: volume is still conserved");
+        let bad = side_tet_cells(&d);
+        eprintln!("{name}: GeomSideTet cells {bad:?}");
+        if *name == "x<2,y>2" {
+            // the reported repro: bottom and top end of the reflex interface edge (2, 2, z)
+            assert_eq!(bad, vec![12, 96]);
+        }
+        if fav.iter().any(|(n, _)| n == name) {
+            assert!(bad.is_empty(), "notch {name} is clean");
+        } else {
+            assert!(!bad.is_empty(), "notch {name}: if this passes the gap was repaired; update W3_REPORT and DESIGN.md");
+        }
+    }
+}
+
+/// Observation (not op-reachable): in `Keep` mode an enclosed cube inclusion (region 2 = [1,3]^3) gives
+/// 12 `GeomSideTet` findings; `Planar` is clean.
+#[test]
+fn known_gap_keep_mode_enclosed_inclusion() {
+    let inside = |c: [f64; 3]| c.iter().all(|x| *x > 1.0 && *x < 3.0);
+    let m = regionized_block(&inside);
+    assert!(validate(&m).is_empty());
+    let r = VertexClassResolver;
+    let (p, _) = dual_prod(&m, &PolyOptions::new(), &r).expect("planar");
+    assert!(side_tet_cells(&p).is_empty(), "Planar is clean");
+    let (k, _) = dual_prod(&m, &PolyOptions::new().with_faces(FaceMode::Keep), &r).expect("keep");
+    let g = validate_geometry(&k, &tol_for(FaceMode::Keep));
+    let n = g.iter().filter(|v| v.code == sm_mesh_api::ViolationCode::GeomSideTet).count();
+    eprintln!("Keep, inclusion: {n} GeomSideTet");
+    assert!(n > 0, "if this passes the observation is obsolete; update W3_REPORT");
+}

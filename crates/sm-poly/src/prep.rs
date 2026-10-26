@@ -239,12 +239,11 @@ impl<'a> Prep<'a> {
         // Tets and regions.
         let tv: Vec<[u32; 4]> = (0..nt)
             .map(|c| {
-                src.cell_corners(CellIx::new(c)).and_then(|k| {
-                    (k.len() == 4).then(|| [k[0].0, k[1].0, k[2].0, k[3].0])
-                })
+                src.cell_corners(CellIx::new(c))
+                    .and_then(|k| (k.len() == 4).then(|| [k[0].0, k[1].0, k[2].0, k[3].0]))
+                    .ok_or(PolyError::NotTet { cell: CellIx::new(c) })
             })
-            .collect::<Option<_>>()
-            .ok_or(PolyError::NotTet { cell: CellIx::new(0) })?;
+            .collect::<Result<_, _>>()?;
         let cls: Vec<EntityId> = (0..nt).map(|c| src.cell_class(CellIx::new(c)).entity).collect();
         let mut regions = cls.clone();
         regions.sort_unstable();

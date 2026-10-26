@@ -17,8 +17,10 @@ ray tracer can use directly:
    gets one cell per volume and the interface polygons of the two cells coincide.
 4. **Planar and conservative.** Every emitted face is planar within the default `GeomTol`
    (non-planar polygons are split into planar pieces that both cells share), total volume equals
-   the tet volume to rounding, and the output passes `validate` and `validate_geometry`, which
-   gives ray tracing exact plane tests.
+   the tet volume to rounding, and the output passes `validate` on every input and
+   `validate_geometry` on the stage-0 fixtures, perturbed lattices and multi-volume blocks with
+   planar interfaces. It does NOT in general: a dual cell at a reflex interface edge can fail
+   `GeomSideTet` (see "Risks"). Planar faces give ray tracing exact plane tests.
 
 It is an IR -> IR mesh pass (`MeshRead -> MeshBuild`), not a `VolumeScheme`: a scheme sees one
 target's patch, never a finished mesh (`sm-scheme-api` DESIGN, "Transforms").
@@ -214,10 +216,33 @@ default 0.1 therefore merges nothing there; 0.75 or more admits 20 merges at rat
 105 cells), nothing merges at or below 0.5. The tests pin both facts rather than relaxing the
 default.
 
+## Risks
+
+**Reflex interface edges can produce concave dual cells (`GeomSideTet`), open.** Decision 12 and
+the plan foresaw it; the tolerance is not loosened. Repro (pinned by
+`known_gap_reflex_interface_edge_gives_side_tet_violations` in `tests/robust.rs`):
+`tet_block([4,4,4],[1;3])` with the tets whose centroid has `x<2 && y>2` moved to `TopoVolume` 2,
+dualized with the op defaults (`FaceMode::Planar`, `VertexClassResolver`). Cells 12 (vertex
+`(2,2,0)`) and 96 (vertex `(2,2,4)`), the two ends of the reflex interface edge, in region 1 fail
+`GeomSideTet`. The flagged face is a convex interface kite in the plane `y=2`; the region-1
+cell's volume centroid `(2.19, 2.12, 0.27)` lies on the region-2 side of it, so the cell is not
+star-shaped about its centroid. It is not a winding or planarity bug (the partner region-2 cells
+are not flagged) and the volume is conserved. It depends on the orientation of the notch against
+the Kuhn diagonal: notches `{x>2,y>2}`, `{x<2,y<2}`, `{x<2,z<2}`, `{x>2,z>2}` pass; `{x<2,y>2}`
+(cells 12, 96), `{x>2,y<2}` (8, 92) and `{y<2,z>2}` (60, 64) fail, as does a 3-concave corner
+`{x<2,y<2,z>1}`. The stage-0 `tet_lshape` passes only because its notch (`i>=m && j>=m`) is the
+favourable orientation (checked for m = 1..4). Repair needs cell splitting at reflex features
+(W3b); until then treat a mesh with a reflex interface or boundary edge as "may fail
+`validate_geometry`".
+
+Observation, `Keep` mode only (not reachable from the op): an enclosed cube inclusion (region 2
+= `[1,3]^3` in a 4^3 block) gives 12 `GeomSideTet` findings; `Planar` is clean
+(`known_gap_keep_mode_enclosed_inclusion`).
+
 ## Known gaps (W3b)
 
 Partial dualization of a mixed mesh (needs conformize), circumcentric duals, vertex-moving
 planarization, projection of boundary dual points onto the CAD surface (curved bodies deviate by
 the chord error), hybrid input, seam edges and a vertex with one split edge, a bulk builder
-commit, concavity repair beyond the agglomeration guard, a persistent (state) mark that the poly
+commit, concavity repair beyond the agglomeration guard (including the reflex-edge `GeomSideTet` risk above), a persistent (state) mark that the poly
 mesh is derived from its source (the delta records the succession only; see the report).

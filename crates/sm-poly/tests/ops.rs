@@ -16,7 +16,7 @@ use sm_mesh_api::{
 };
 use sm_op_api::{Plugin as _,
     ApplyCtx, Delta, DerivedCache, Engine, Hash256, Meta, Op, OpError, OpRecord, QuietControl, Registry, Services,
-    Session, TimelineError, TypedOp,
+    Session, TimelineError, TypedOp, ApplyError,
 };
 use sm_poly::{PolyPlugin, poly_stats};
 use sm_testkit::meshes;
@@ -127,6 +127,7 @@ fn acc8_default_keeps_the_source() {
     assert_eq!(poly.selection, src.selection);
     assert_eq!(poly.quanta.length.to_bits(), src.quanta.length.to_bits());
     assert_eq!(poly.quanta.param.to_bits(), src.quanta.param.to_bits());
+    // Only presence is checked: building a `Plan` needs a scheme crate, not a dev-dependency here.
     assert_eq!(poly.plan.is_some(), src.plan.is_some());
     assert!(!poly.stale);
     // valid, planar, and the volume is conserved
@@ -173,7 +174,7 @@ fn assert_refused(s: &mut Session, params: serde_json::Value) -> TimelineError {
 }
 
 fn is_invalid(e: &TimelineError) -> bool {
-    format!("{e:?}").contains("Invalid")
+    matches!(e, TimelineError::Apply(ApplyError::Op { source: OpError::Invalid(_), .. }))
 }
 
 #[test]
@@ -201,9 +202,11 @@ fn acc8_refusals_leave_the_state_untouched() {
         let h = s.state().hash();
         let e = run_json(&mut s, "mesh.to_poly", p.clone()).expect_err("decode must fail");
         assert_eq!(s.state().hash(), h, "{p}");
+        // Documented deviation (W3_REPORT, deviation 5): the registry's strict decode rejects these
+        // before `apply` runs, as a registry decode error and not as `OpError::Invalid`.
         let t = format!("{e:?}");
-        // rejected by the registry's strict decode, before `apply` runs
         assert!(t.contains("Registry(Decode"), "{t}");
+        assert!(!is_invalid(&e), "{t}");
     }
 }
 
