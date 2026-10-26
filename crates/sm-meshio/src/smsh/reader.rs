@@ -246,6 +246,8 @@ pub struct SmshMesh {
     pub level_maps: Vec<SmshLevelMap>,
     /// Extrusion maps.
     pub extrusions: Vec<SmshExtrusion>,
+    /// Declared `(cell set name, element type)` pairs (format 1.1; empty for a 1.0 file).
+    pub element_types: Vec<(String, String)>,
 }
 
 impl SmshMesh {
@@ -590,6 +592,29 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
         extrusions.push(e);
     }
 
+    if let Some(st) = &mi.stats {
+        let want = MeshStats::from_arrays(&cell_shape, &face_kind, &cell_face_offsets, &face_offsets);
+        if *st != want {
+            return bad(format!("header mesh.stats disagree with the arrays (header {st:?}, arrays {want:?})"));
+        }
+    }
+    let mut element_types = Vec::new();
+    for e in &h.element_types {
+        let Some(shape) = element_type_shape(&e.element_type) else { return bad(format!("unknown element type '{}'", e.element_type)) };
+        if e.shape != shape.code() {
+            return bad(format!("element type '{}' has shape code {}, expected {}", e.element_type, e.shape, shape.code()));
+        }
+        let Some(set) = sets.iter().find(|s| s.name == e.set) else { return bad(format!("element type names unknown set '{}'", e.set)) };
+        let SetMembers::Cells(cells) = &set.members else { return bad(format!("element type set '{}' is not a cell set", e.set)) };
+        if let Some(c) = cells.iter().find(|c| cell_shape[c.get()] != shape.code()) {
+            return bad(format!("element type '{}': cell {} of set '{}' has another shape", e.element_type, c.0, e.set));
+        }
+        if element_types.iter().any(|(s, _): &(String, String)| *s == e.set) {
+            return bad(format!("set '{}' has two element type records", e.set));
+        }
+        element_types.push((e.set.clone(), e.element_type.clone()));
+    }
+
     Ok(SmshMesh {
         header: h.clone(),
         mesh_id,
@@ -624,5 +649,6 @@ fn decode_mesh(f: &SmshFile) -> Result<SmshMesh> {
         tags,
         level_maps,
         extrusions,
+        element_types,
     })
 }

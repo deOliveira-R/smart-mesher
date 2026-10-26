@@ -2,7 +2,9 @@
 
 use crate::error::{MeshioError, Result};
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 use sm_core::Transform;
+use sm_mesh_api::{CellShape, FaceKind};
 use sm_model_api::Deck;
 
 /// File magic: `SMSH\r\n\x1a\n` (the PNG trick: detects text-mode transfer damage).
@@ -14,7 +16,7 @@ pub const PREAMBLE: u64 = 16;
 /// Format major version written by this crate. A reader rejects a different major.
 pub const VERSION_MAJOR: u32 = 1;
 /// Format minor version written by this crate. Minor bumps only add optional fields and arrays.
-pub const VERSION_MINOR: u32 = 0;
+pub const VERSION_MINOR: u32 = 1;
 
 /// Round `x` up to a multiple of [`ALIGN`].
 pub(crate) const fn align_up(x: u64) -> u64 {
@@ -107,6 +109,169 @@ pub struct MeshInfo {
     /// Content hashes; absent when the writer was told to skip them.
     #[serde(default)]
     pub hashes: Option<HashInfo>,
+    /// Derived counts for consumers that preallocate scratch (1.1; absent in 1.0 files).
+    #[serde(default)]
+    pub stats: Option<MeshStats>,
+}
+
+/// Derived mesh statistics (format 1.1, `mesh.stats`). Always recomputable from the arrays;
+/// [`crate::SmshFile::decode`] recomputes them and rejects a file whose header disagrees.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshStats {
+    /// Cells of shape `Tet`.
+    pub n_tet: u64,
+    /// Cells of shape `Hex`.
+    pub n_hex: u64,
+    /// Cells of shape `Wedge`.
+    pub n_wedge: u64,
+    /// Cells of shape `Pyramid`.
+    pub n_pyramid: u64,
+    /// Cells of shape `Polyhedron`.
+    pub n_polyhedron: u64,
+    /// Cells of shape `Tri` (dimension 2).
+    pub n_tri: u64,
+    /// Cells of shape `Quad` (dimension 2).
+    pub n_quad: u64,
+    /// Cells of shape `Polygon` (dimension 2).
+    pub n_polygon: u64,
+    /// Faces of kind `Interior`.
+    pub n_interior_faces: u64,
+    /// Faces of kind `Boundary`.
+    pub n_boundary_faces: u64,
+    /// Faces of kind `NonConformal`.
+    pub n_nonconformal_faces: u64,
+    /// Faces of kind `PartitionCut`.
+    pub n_partition_cut_faces: u64,
+    /// Largest number of faces of any cell.
+    pub max_cell_faces: u64,
+    /// Largest number of vertices of any face loop.
+    pub max_face_vertices: u64,
+}
+
+impl MeshStats {
+    /// Compute the statistics from the raw arrays: shape codes and face-kind codes (as in the
+    /// file) and the two CSR offset arrays. Unknown codes are ignored (the decoder rejects them
+    /// separately). Integer counting, so the result does not depend on the schedule.
+    pub fn from_arrays(cell_shape: &[u8], face_kind: &[u8], cell_face_offsets: &[u64], face_offsets: &[u64]) -> Self {
+        const NC: usize = 8;
+        const NK: usize = 4;
+        #[derive(Clone, Copy, Default)]
+        struct Acc {
+            shapes: [u64; NC],
+            kinds: [u64; NK],
+            max_cell_faces: u64,
+            max_face_vertices: u64,
+        }
+        let join = |mut a: Acc, b: Acc| {
+            for i in 0..NC {
+                a.shapes[i] += b.shapes[i];
+            }
+            for i in 0..NK {
+                a.kinds[i] += b.kinds[i];
+            }
+            a.max_cell_faces = a.max_cell_faces.max(b.max_cell_faces);
+            a.max_face_vertices = a.max_face_vertices.max(b.max_face_vertices);
+            a
+        };
+        const CH: usize = 1 << 16;
+        let cells = cell_shape
+            .par_chunks(CH)
+            .enumerate()
+            .map(|(k, ch)| {
+                let mut a = Acc::default();
+                for (i, s) in ch.iter().enumerate() {
+                    if let Some(c) = a.shapes.get_mut(*s as usize) {
+                        *c += 1;
+                    }
+                    let c = k * CH + i;
+                    if let (Some(lo), Some(hi)) = (cell_face_offsets.get(c), cell_face_offsets.get(c + 1)) {
+                        a.max_cell_faces = a.max_cell_faces.max(hi.saturating_sub(*lo));
+                    }
+                }
+                a
+            })
+            .reduce(Acc::default, join);
+        let faces = face_kind
+            .par_chunks(CH)
+            .enumerate()
+            .map(|(k, ch)| {
+                let mut a = Acc::default();
+                for (i, s) in ch.iter().enumerate() {
+                    if let Some(c) = a.kinds.get_mut(*s as usize) {
+                        *c += 1;
+                    }
+                    let f = k * CH + i;
+                    if let (Some(lo), Some(hi)) = (face_offsets.get(f), face_offsets.get(f + 1)) {
+                        a.max_face_vertices = a.max_face_vertices.max(hi.saturating_sub(*lo));
+                    }
+                }
+                a
+            })
+            .reduce(Acc::default, join);
+        let a = join(cells, faces);
+        let sh = |s: CellShape| a.shapes[s.code() as usize];
+        let kd = |k: FaceKind| a.kinds[k.code() as usize];
+        Self {
+            n_tet: sh(CellShape::Tet),
+            n_hex: sh(CellShape::Hex),
+            n_wedge: sh(CellShape::Wedge),
+            n_pyramid: sh(CellShape::Pyramid),
+            n_polyhedron: sh(CellShape::Polyhedron),
+            n_tri: sh(CellShape::Tri),
+            n_quad: sh(CellShape::Quad),
+            n_polygon: sh(CellShape::Polygon),
+            n_interior_faces: kd(FaceKind::Interior),
+            n_boundary_faces: kd(FaceKind::Boundary),
+            n_nonconformal_faces: kd(FaceKind::NonConformal),
+            n_partition_cut_faces: kd(FaceKind::PartitionCut),
+            max_cell_faces: a.max_cell_faces,
+            max_face_vertices: a.max_face_vertices,
+        }
+    }
+}
+
+/// Header entry declaring the element type of a cell set (format 1.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElementTypeInfo {
+    /// Name of a cell set of this file.
+    pub set: String,
+    /// Element type spelling, one of [`ELEMENT_TYPES`] (`HEX8`, `POLYHEDRON`, ...).
+    pub element_type: String,
+    /// `CellShape::code` of the cells of the set (the shape of `element_type`).
+    pub shape: u8,
+}
+
+/// The element type names of format 1.1 with the cell shape each stands for and, for
+/// high-order types, the node count of the matching high-order record (`None` = linear).
+/// Decision 12 spelling: `POLYHEDRON` / `POLYGON`, never `NFACED` / `NSIDED`.
+pub const ELEMENT_TYPES: [(&str, CellShape, Option<usize>); 15] = [
+    ("HEX8", CellShape::Hex, None),
+    ("HEX20", CellShape::Hex, Some(20)),
+    ("HEX27", CellShape::Hex, Some(27)),
+    ("TET4", CellShape::Tet, None),
+    ("TET10", CellShape::Tet, Some(10)),
+    ("WEDGE6", CellShape::Wedge, None),
+    ("WEDGE15", CellShape::Wedge, Some(15)),
+    ("PYRAMID5", CellShape::Pyramid, None),
+    ("PYRAMID13", CellShape::Pyramid, Some(13)),
+    ("QUAD4", CellShape::Quad, None),
+    ("QUAD8", CellShape::Quad, Some(8)),
+    ("TRI3", CellShape::Tri, None),
+    ("TRI6", CellShape::Tri, Some(6)),
+    ("POLYHEDRON", CellShape::Polyhedron, None),
+    ("POLYGON", CellShape::Polygon, None),
+];
+
+/// The cell shape of an element type name of format 1.1; `None` for an unknown spelling
+/// (including the Exodus names `NFACED` / `NSIDED`, which are exporter mappings).
+pub fn element_type_shape(name: &str) -> Option<CellShape> {
+    ELEMENT_TYPES.iter().find(|(n, _, _)| *n == name).map(|(_, s, _)| *s)
+}
+
+/// The node count a high-order element type name requires (`None` for linear names and unknown
+/// spellings).
+pub(crate) fn element_type_nodes(name: &str) -> Option<usize> {
+    ELEMENT_TYPES.iter().find(|(n, _, _)| *n == name).and_then(|(_, _, k)| *k)
 }
 
 /// Header entry of a named set.
@@ -318,6 +483,10 @@ pub struct Header {
     /// Provenance, if recorded.
     #[serde(default)]
     pub provenance: Option<Provenance>,
+    /// Element type declared per cell set (1.1; absent in 1.0 files). Always written, possibly
+    /// empty; ascending by set id.
+    #[serde(default)]
+    pub element_types: Vec<ElementTypeInfo>,
 }
 
 impl Header {

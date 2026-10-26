@@ -1,4 +1,4 @@
-"""Reference reader for the smart-mesh `.smsh` container (format v1, see SMSH_FORMAT.md).
+"""Reference reader for the smart-mesh `.smsh` container (format v1.0 and v1.1, see SMSH_FORMAT.md).
 
 Standard library only. Arrays are zero-copy memoryviews over an mmap (little-endian host).
 Usage as a script: `python3 -I smsh.py FILE` verifies checksums and prints a JSON summary.
@@ -60,6 +60,14 @@ class Smsh:
     def sets(self):
         return {s["name"]: (s["label"], s["role"], list(self.array(s["array"]))) for s in self.header["sets"]}
 
+    def element_types(self):
+        """[(set name, element type)] declared by the file (v1.1; [] for v1.0 files)."""
+        return [(e["set"], e["element_type"]) for e in self.header.get("element_types", [])]
+
+    def stats(self):
+        """The v1.1 `mesh.stats` dict, or None for a v1.0 file."""
+        return self.header["mesh"].get("stats")
+
 
 def main(path):
     m = Smsh(path)
@@ -74,6 +82,9 @@ def main(path):
         "x_last": m.array("x")[mi["n_points"] - 1] if mi["n_points"] else None,
         "sets": {k: [v[0], v[1], len(v[2])] for k, v in m.sets().items()},
         "arrays": [a["name"] for a in m.header["arrays"]],
+        "version": m.header["version"],
+        "element_types": m.element_types(),
+        "stats": m.stats(),
     }))
 
 

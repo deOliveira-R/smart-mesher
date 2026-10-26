@@ -4,6 +4,7 @@
 //! a pure function of the mesh: byte-identical across runs and thread counts.
 //!
 //! * [`smsh`]: the native format (`SMSH_FORMAT.md`), writer and reader.
+//! * [`report`]: the loss report every exporter shares.
 //! * [`vtu`]: ParaView / VTK export with polyhedra, mixed cells and region/color cell data.
 //!
 //! See `DESIGN.md`.
@@ -11,9 +12,11 @@
 mod crc;
 pub mod error;
 mod le;
+pub mod report;
 pub mod smsh;
 pub mod vtu;
 
 pub use error::{MeshioError, Result};
-pub use smsh::{DeckParams, DeckRecord, SmshFile, SmshMesh, SmshWriter};
+pub use report::{LossItem, LossReport, LossSeverity, vtu_loss_report};
+pub use smsh::{DeckParams, DeckRecord, ElementTypeInfo, MeshStats, SmshFile, SmshMesh, SmshWriter, element_type_shape};
 pub use vtu::{VtuEncoding, VtuOptions, write_vtu, vtu_bytes};

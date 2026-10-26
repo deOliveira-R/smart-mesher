@@ -7,7 +7,7 @@ mod writer;
 
 pub use format::{
     ALIGN, ArrayInfo, DeckParams, DeckRecord, Dtype, ExtrusionInfo, GeometryCacheInfo, HashInfo, Header, LevelMapInfo, MAGIC, MeshInfo, PREAMBLE,
-    Provenance, SetInfo, TagInfo, VERSION_MAJOR, VERSION_MINOR, Version,
+    Provenance, SetInfo, TagInfo, VERSION_MAJOR, VERSION_MINOR, Version, ELEMENT_TYPES, ElementTypeInfo, MeshStats, element_type_shape,
 };
 #[cfg(feature = "mmap")]
 pub use reader::SmshMap;

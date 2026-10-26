@@ -79,9 +79,34 @@ fn code_columns_outside_the_table_are_rejected() {
     expect_malformed(&g, &poke(&g, "cell_shape", 1, 3, 255), "cell_shape");
     expect_malformed(&g, &poke(&g, "face_kind", 1, 0, 4), "face_kind");
     expect_malformed(&g, &poke(&g, "face_kind", 1, 2, 255), "face_kind");
-    // The last valid codes are still accepted.
-    SmshFile::parse(&poke(&g, "cell_shape", 1, 0, 7)).unwrap().decode().unwrap();
-    SmshFile::parse(&poke(&g, "face_kind", 1, 0, 3)).unwrap().decode().unwrap();
+    // The last valid codes pass the table check; the 1.1 `mesh.stats` then disagree with the
+    // arrays, which is what the decoder reports.
+    expect_malformed(&g, &poke(&g, "cell_shape", 1, 0, 7), "mesh.stats");
+    expect_malformed(&g, &poke(&g, "face_kind", 1, 0, 3), "mesh.stats");
+}
+
+#[test]
+fn tampered_stats_are_rejected() {
+    let g = write(&sm_testkit::meshes::mixed_transition().unwrap().mesh);
+    let f = SmshFile::parse(&g).unwrap();
+    let st = f.header().mesh.stats.clone().expect("1.1 files carry stats");
+    assert_eq!((st.n_hex, st.n_wedge, st.n_pyramid, st.n_tet), (1, 1, 1, 1));
+    // Same-length edits of single digits in the header text.
+    expect_malformed(&g, &patch_header(&g, "\"n_interior_faces\":3", "\"n_interior_faces\":4"), "mesh.stats");
+    expect_malformed(&g, &patch_header(&g, "\"max_cell_faces\":6", "\"max_cell_faces\":7"), "mesh.stats");
+    expect_malformed(&g, &patch_header(&g, "\"n_hex\":1", "\"n_hex\":2"), "mesh.stats");
+}
+
+#[test]
+fn element_type_records_are_checked_by_the_decoder() {
+    let m = hex_block([2, 2, 2], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    let mut m = m;
+    MeshEdit::add_set(&mut m, "b", SetMembers::Cells((0..8).map(CellIx).collect()), &mut SerialAlloc::new()).unwrap();
+    let g = SmshWriter::new(&m).element_type("b", "HEX8").to_bytes().unwrap();
+    SmshFile::parse(&g).unwrap().decode().unwrap();
+    expect_malformed(&g, &patch_header(&g, "\"HEX8\"", "\"TET4\""), "element type");
+    expect_malformed(&g, &patch_header(&g, "\"HEX8\"", "\"HEX9\""), "unknown element type");
+    expect_malformed(&g, &patch_header(&g, "\"set\":\"b\"", "\"set\":\"c\""), "unknown set");
 }
 
 #[test]
