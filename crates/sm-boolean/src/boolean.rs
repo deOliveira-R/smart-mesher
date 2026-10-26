@@ -363,7 +363,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     }
     // 11. Regularize.
     if o.regularize {
-        crate::regularize::regularize(topo, &new_volumes, &b_faces)?;
+        crate::regularize::regularize(topo, &new_volumes)?;
     }
     // 12. Final checks.
     for &v in &new_volumes {
