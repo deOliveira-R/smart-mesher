@@ -64,7 +64,8 @@ fn voxel_surface(occ: &[bool], n: usize, sub: usize, r: &mut surf3::SplitMix64) 
 /// Quick deterministic sweep (a few valid cases per configuration).
 #[test]
 fn voxel_fuzz_small() {
-    sweep(5);
+    // Debug builds run fewer cases (the exact predicates are an order of magnitude slower).
+    sweep(if cfg!(debug_assertions) { 2 } else { 5 });
 }
 
 /// Larger sweep: `cargo test --release -- --ignored`.

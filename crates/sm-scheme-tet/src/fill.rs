@@ -1,5 +1,6 @@
 //! Exact cavity tetrahedralization by backtracking gift wrapping.
 
+use crate::guard::{Guard, S4};
 use crate::delaunay::Dt;
 use crate::geom::ori;
 use crate::tds::{canon_tri, same_cycle};
@@ -114,7 +115,9 @@ impl Dt {
                 if *g == canon_tri(*h) {
                     continue; // coincides with a front face: the tet closes it
                 }
-                if same_cycle(*g, [h[0], h[2], h[1]]) {
+                // The reverse of a front face is a tet on its far side: invalid, unless the front
+                // holds both sides of that face (a slit wall kept inside the cavity).
+                if same_cycle(*g, [h[0], h[2], h[1]]) && !front.contains(&canon_tri(*h)) {
                     return false;
                 }
                 let gv = [(g[0], s.p(g[0])), (g[1], s.p(g[1])), (g[2], s.p(g[2]))];
@@ -145,7 +148,7 @@ impl Dt {
     /// Fill a cavity with its own vertices; if that is impossible, retry with one interior
     /// Steiner point the tets may use (centroid, then points just inside the faces). Returns
     /// the tets and the number of Steiner points used (0 or 1); points not used are discarded.
-    pub(crate) fn fill_with_steiner(&mut self, faces: &[[u32; 3]], seg: Option<(u32, u32)>, budget: usize) -> Option<(Vec<[u32; 4]>, usize)> {
+    pub(crate) fn fill_with_steiner(&mut self, faces: &[[u32; 3]], seg: Option<(u32, u32)>, budget: usize, guard: &Guard<'_>) -> Option<(Vec<[u32; 4]>, usize)> {
         use crate::geom::{add, cross, dist, dot, sanitize, scale, sub};
         if let Some(t) = self.fill_budgeted(faces, seg, &[], budget) {
             return Some((t, 0));
@@ -166,7 +169,7 @@ impl Dt {
             m / faces.len() as f64
         };
         let mut cands: Vec<[f64; 3]> = vec![c];
-        for f in faces.iter().take(8) {
+        for (i, f) in faces.iter().take(8).enumerate() {
             let (a, b, d) = (self.pts[f[0] as usize], self.pts[f[1] as usize], self.pts[f[2] as usize]);
             let n = cross(sub(b, a), sub(d, a));
             let nl = dot(n, n).sqrt();
@@ -174,9 +177,20 @@ impl Dt {
                 let fc = scale(add(add(a, b), d), 1.0 / 3.0);
                 // The right-hand normal of an outward face points out of the cavity.
                 cands.push(sub(fc, scale(n, 0.3 * mean_edge / nl)));
+                if i < 4 {
+                    cands.push(sub(fc, scale(n, 0.6 * mean_edge / nl)));
+                    cands.push(add(scale(c, 0.5), scale(fc, 0.5)));
+                }
             }
         }
-        for cand in cands.into_iter().take(6) {
+        // Ruling S4: candidates are tried best-score first (compliant ones, then by margin), so a
+        // point too close to an input triangle inside the solid is used only if nothing better
+        // fills the cavity; the order among equal scores is kept.
+        let mut scored: Vec<(f64, usize, [f64; 3])> = cands.into_iter().enumerate().filter_map(|(i, p)| sanitize(p).map(|p| (guard.score(p), i, p))).collect();
+        // Bucket by compliance (original order inside the compliant bucket: the centroid first),
+        // then by margin.
+        scored.sort_by(|a, b| (b.0 >= S4).cmp(&(a.0 >= S4)).then_with(|| if a.0 >= S4 { a.1.cmp(&b.1) } else { b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)) }));
+        for (_, _, cand) in scored.into_iter().take(12) {
             let Some(p) = sanitize(cand) else { continue };
             let base = self.pts.len();
             let id = self.push_point(p);

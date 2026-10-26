@@ -27,6 +27,9 @@ type GResult<T> = Result<T, GenerateFailure>;
 /// into the volume so that its triangles cut through the solid.
 struct TriTest {
     broken_face: Option<EntityId>,
+    /// Non-zero: emit the same triangles in a scrambled element order, with rotated corners and
+    /// reversed node creation order (the patch is the same mesh, listed differently).
+    shuffle: u64,
 }
 
 impl Scheme for TriTest {
@@ -80,9 +83,16 @@ impl Scheme for TriTest {
         let pt = |k: NodeKey| cx.point(k).ok_or_else(|| fatal(format!("node {k:?} missing")));
         let mut pb = PatchBuilder::new(target);
         let mut idx = vec![0u32; ni * nj];
+        let order: Vec<(usize, usize)> = {
+            let mut o: Vec<(usize, usize)> = (0..nj).flat_map(|j| (0..ni).map(move |i| (i, j))).collect();
+            if self.shuffle != 0 {
+                o.reverse();
+            }
+            o
+        };
         let (p00, p10, p01, p11) = (pt(keys[0])?, pt(keys[ni - 1])?, pt(keys[(nj - 1) * ni])?, pt(keys[nj * ni - 1])?);
-        for j in 0..nj {
-            for i in 0..ni {
+        {
+            for &(i, j) in &order {
                 let at = j * ni + i;
                 if i == 0 || j == 0 || i == ni - 1 || j == nj - 1 {
                     idx[at] = pb.refer(keys[at]);
@@ -102,26 +112,44 @@ impl Scheme for TriTest {
                 idx[at] = pb.node(key, p, param);
             }
         }
+        let mut tris: Vec<[u32; 3]> = Vec::new();
         for j in 0..nj - 1 {
             for i in 0..ni - 1 {
                 let (a, b, c, d) = (idx[j * ni + i], idx[j * ni + i + 1], idx[(j + 1) * ni + i + 1], idx[(j + 1) * ni + i]);
                 if (i + j) % 2 == 0 {
-                    pb.push(ElemShape::Tri, &[a, b, c]);
-                    pb.push(ElemShape::Tri, &[a, c, d]);
+                    tris.push([a, b, c]);
+                    tris.push([a, c, d]);
                 } else {
-                    pb.push(ElemShape::Tri, &[a, b, d]);
-                    pb.push(ElemShape::Tri, &[b, c, d]);
+                    tris.push([a, b, d]);
+                    tris.push([b, c, d]);
                 }
             }
+        }
+        if self.shuffle != 0 {
+            let mix = |x: u64| {
+                let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15).wrapping_mul(self.shuffle | 1);
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z ^ (z >> 27)
+            };
+            let mut keyed: Vec<(u64, [u32; 3])> = tris.iter().enumerate().map(|(k, t)| (mix(k as u64), *t)).collect();
+            keyed.sort_unstable_by_key(|x| x.0);
+            tris = keyed.into_iter().map(|(h, t)| { let r = (h % 3) as usize; [t[r], t[(r + 1) % 3], t[(r + 2) % 3]] }).collect();
+        }
+        for t in &tris {
+            pb.push(ElemShape::Tri, t);
         }
         Ok(pb.finish())
     }
 }
 
 fn registry(broken: Option<EntityId>) -> SchemeRegistry {
+    registry_shuffled(broken, 0)
+}
+
+fn registry_shuffled(broken: Option<EntityId>, shuffle: u64) -> SchemeRegistry {
     let mut r = SchemeRegistry::new();
     r.register(Box::new(Equal)).unwrap();
-    r.register(Box::new(TriTest { broken_face: broken })).unwrap();
+    r.register(Box::new(TriTest { broken_face: broken, shuffle })).unwrap();
     sm_scheme_tet::register(&mut r).unwrap();
     r
 }
@@ -353,4 +381,101 @@ fn record_adapter_perf() {
     let s = t.elapsed().as_secs_f64();
     let cells = out.finished.mesh.count(MeshEntityKind::Cell);
     eprintln!("adapter: {cells} tets through the driver in {s:.1} s = {:.0} tets/s (generation + serial commit)", cells as f64 / s);
+}
+
+
+// ---------------------------------------------------------------- PartitionCell pieces
+
+/// A 2 x 1 x 1 brick cut at x = 0.8 by a realized plane cut: the two pieces are `PartitionCell`
+/// targets of the overlay (ruling S4: their Steiner nodes are owned by the cell).
+struct Split {
+    overlay: sm_topo_api::Overlay,
+    model: sm_model_api::Model,
+    pieces: [EntityId; 2],
+    cut_face: EntityId,
+}
+
+fn split() -> Split {
+    use sm_core::Vector3;
+    use sm_model_api::{Domain, PieceRef, Plane};
+    use sm_topo_api::fixtures::brick;
+    let mut t = CellComplex::new();
+    let ids = with_op(&mut t, OpId(1), |t| brick(t, Point3::new(0.0, 0.0, 0.0), [2.0, 1.0, 1.0])).unwrap();
+    let host: std::sync::Arc<dyn TopologyView> = std::sync::Arc::new(t);
+    let mut overlay = sm_topo_api::Overlay::new(host);
+    let mut model = sm_model_api::Model::new();
+    let mat = model.add_color(1, "fuel", Domain::Volume).unwrap();
+    model.color_volumes(mat, &[ids.volume]).unwrap();
+    let pieces = model.split_realized(PieceRef::Whole(ids.volume), Plane::new(Vector3::new(1.0, 0.0, 0.0), 0.8).unwrap(), &mut overlay).unwrap();
+    let cut = model.decomposition().split_of(PieceRef::Whole(ids.volume)).unwrap().cut;
+    let cut_face = model.decomposition().cut_cells(cut).unwrap().faces[0];
+    Split { overlay, model, pieces, cut_face }
+}
+
+#[test]
+fn partition_cell_pieces_mesh_conformingly_and_own_their_steiner_nodes() {
+    use sm_scheme_api::DecompositionFaces;
+    let s = split();
+    let reg = registry(None);
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let input = MeshInput::new(&s.overlay, &s.model, &DecompositionFaces, &s.pieces);
+    let intent = size_intent(0.25);
+    let out = driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new()).expect("mesh both pieces");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    let mut vol = [0.0; 2];
+    for c in 0..m.count(MeshEntityKind::Cell) {
+        let ci = CellIx::new(c);
+        assert_eq!(m.cell_shape(ci), CellShape::Tet);
+        let on = m.cell_class(ci).entity;
+        let k = s.pieces.iter().position(|p| *p == on).expect("cells are classified on the pieces");
+        vol[k] += cell_volume(m, ci);
+    }
+    assert!((vol[0] - 0.8).abs() < 1e-9 && (vol[1] - 1.2).abs() < 1e-9, "{vol:?}");
+    // The cut face is meshed once and shared by both pieces.
+    let cut = m.classified_on(s.cut_face).expect("faces on the cut");
+    assert!(!cut.faces.is_empty());
+    assert!(cut.faces.iter().all(|f| m.face_kind(*f) == sm_mesh_api::FaceKind::Interior));
+    // Steiner nodes are owned by the cell they were generated for, with no parametrisation.
+    for p in s.pieces {
+        let vp = out.patches.get(Target::Volume(p)).expect("piece patch");
+        assert!(vp.nodes.iter().all(|n| n.key.owner == p && n.param == sm_mesh_api::Param::None));
+    }
+    assert!(s.pieces.iter().any(|p| !out.patches.get(Target::Volume(*p)).unwrap().nodes.is_empty()), "refinement adds interior nodes");
+}
+
+/// The tets of a volume patch as sorted node-key quadruples, and its Steiner nodes by key.
+type PatchContent = (Vec<Vec<NodeKey>>, Vec<(NodeKey, [u64; 3])>);
+
+fn patch_content(out: &sm_scheme_api::Meshed<sm_mesh_api::reference::ReferenceMesh>, vol: EntityId) -> PatchContent {
+    let p = out.patches.get(Target::Volume(vol)).expect("volume patch");
+    let mut tets: Vec<Vec<NodeKey>> = p
+        .elements
+        .iter()
+        .map(|(_, local)| {
+            let mut k: Vec<NodeKey> = local.iter().map(|&i| p.key(i).unwrap()).collect();
+            k.sort_unstable();
+            k
+        })
+        .collect();
+    tets.sort_unstable();
+    let mut nodes: Vec<(NodeKey, [u64; 3])> = p.nodes.iter().map(|n| (n.key, [n.point.x.to_bits(), n.point.y.to_bits(), n.point.z.to_bits()])).collect();
+    nodes.sort_unstable();
+    (tets, nodes)
+}
+
+/// Acceptance 11 through the adapter: the same surface patches listed in a different node and
+/// element order (rotated corners, reversed node creation) give the same tets and Steiner nodes.
+#[test]
+fn adapter_result_does_not_depend_on_patch_listing_order() {
+    let (topo, ids, _) = brick_setup([10.0, 10.0, 10.0]);
+    let intent = size_intent(2.0);
+    let base = mesh_with(&topo, ids.volume, &intent, &registry(None), &Sequential).expect("mesh");
+    let want = patch_content(&base, ids.volume);
+    assert!(!want.0.is_empty() && !want.1.is_empty());
+    for seed in [1u64, 2, 7] {
+        let out = mesh_with(&topo, ids.volume, &intent, &registry_shuffled(None, seed), &Sequential).expect("mesh");
+        assert_eq!(patch_content(&out, ids.volume), want, "shuffle {seed}");
+    }
 }

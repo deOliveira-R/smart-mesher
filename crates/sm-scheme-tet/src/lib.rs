@@ -11,6 +11,7 @@ mod exact;
 mod fill;
 mod flips;
 mod geom;
+mod guard;
 mod optimize;
 mod pipeline;
 mod quality;
@@ -47,9 +48,13 @@ pub enum SizeSpec<'a> {
     /// Size from the boundary mesh: the mean incident boundary edge length at each boundary
     /// vertex, graded into the interior.
     FromBoundary,
-    /// A constant target edge length (combined with the boundary size by `min`).
+    /// A constant target edge length (combined with the boundary size by `min`, but never
+    /// finer than the graded floor from the frozen boundary: next to a coarse boundary the
+    /// target is `max_c (h_c - (gradation - 1)|p - c|)` at least, so a value far below the
+    /// boundary edge length is only partly honoured; see `DESIGN.md`, deviation 6).
     Constant(f64),
-    /// A user size field `h(x)` (combined with the boundary size by `min`).
+    /// A user size field `h(x)` (combined with the boundary size by `min`, with the same floor as
+    /// [`SizeSpec::Constant`]).
     Field(&'a (dyn Fn([f64; 3]) -> f64 + Sync)),
 }
 

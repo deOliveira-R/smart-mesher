@@ -100,15 +100,24 @@ Everything below works on the triangulation including the far box.
    crossed faces (Klincsek DP over the ring polygon maximizing the minimum mean ratio, every new
    tet needing strictly positive **exact** orientation) and 2-3 flips of crossed faces. A repair
    is applied only if it reduces the number of tets crossing the segment (2-3 flips may keep it
-   equal; the created edge is then tabu). A crossed constraint triangle gives `SelfIntersection`.
+   equal; the created edge is then tabu). `SelfIntersection` is raised only on an *exact*
+   proof (`exact::seg_tri_improper`, `tris_conflict`, closed-contact predicates): the corridor
+   walk and the crossing tests of triangle recovery use symbolic perturbation, which on
+   degenerate (symmetric, coplanar) input can report a crossing that is a mere touch, so a
+   perturbed hit on a constraint face that the exact test does not confirm is not an error (the
+   walk stops and the cavity path decides). Affine images of valid surfaces are valid
+   (regression: the Schönhardt fixture scaled by 0.3 in z used to fail here).
 2. **Edges, fallback.** When no flip helps, the cavity of all tets that touch the open segment
    (exact closed-contact test) is removed and refilled by *backtracking gift wrapping* (`fill`)
    with the segment as a mandatory edge, growing the cavity by up to four layers of neighbours
    (never across a present constraint triangle). Validity uses exact closed-contact predicates
    (`exact`): a new tet may meet the other cavity vertices and the front faces only in common
-   sub-simplices; coplanar overlaps count.
-3. **Edges, last resort.** A Steiner point inside the solid next to the failing edge (generalized
-   winding number > 1/2) split into its host tet (1-4); then retry.
+   sub-simplices; coplanar overlaps count. A constraint triangle that lies between two cavity
+   tets without being crossed by the segment (tets that merely touch the segment from both
+   sides, as happens with hint points around a triangle) stays in the cavity as a *slit*: both
+   of its sides are cavity boundary, so the refill keeps it.
+3. **Edges, last resort.** An edge whose cavity cannot be filled (even with one interior point,
+   `fill_with_steiner`) fails with `RecoveryFailed` and yields hint points; step 5 restarts.
 4. **Triangles** (all three edges present). Collect the tets whose interior the triangle
    crosses, split the cavity boundary by the side of the triangle's plane, fill each side with
    the triangle as a cap (empty-sphere preference, backtracking). A side that cannot be filled
@@ -128,6 +137,18 @@ Everything below works on the triangulation including the far box.
    full-budget fallback takes 30 ms with two cheap attempts (at the price of a few more
    interior points). Hints are interior Steiner points; boundary points and triangles stay
    frozen.
+   **Ruling S4 on this path** (`guard.rs`). Every interior point the recovery or smoothing adds
+   is scored by `Guard::score`: the smallest `dist(p, T) / h_T` over all input triangles `T`
+   (`h_T` = mean edge length of `T`, capped at 0.3), or 0.3 if the point lies outside the solid
+   (side of the nearest triangle, evaluated only for points closer than the bound; outside points are dropped with the exterior). Candidates are
+   tried best score first (hint selection, the `fill_with_steiner` candidates, the kernel point,
+   whose alternating projection runs with margins 0.4 .. 0.05 h and keeps the deepest visible
+   point), so a compliant point is used whenever one exists. Where S4 is infeasible (thin parts:
+   Schönhardt fixture best 0.18 h, a 10 x 10 x 0.02 slab best 0.002 h) the best-scoring point is
+   used rather than failing; refusing would turn S4 into a recovery failure. Smoothing refuses
+   any move that brings a vertex closer (relative to `h_T`) to a triangle than the bound or than
+   it already was. Measured Steiner margins: Schönhardt 0.154 h, `cube_with_cavity(4)` 0.346 h,
+   `two_cubes_shared(3)` 0.52 h, `tri_cube(4)` 0.44 h (`tests/a14_s4.rs`).
 6. **Zero-volume tets.** Degenerate input (cospherical, coplanar grids) makes the perturbed
    Delaunay contain tets of exactly zero volume. After classification each one is removed by an
    edge-removal or 2-3 flip with exact positive results, else by a cavity refill, else by a

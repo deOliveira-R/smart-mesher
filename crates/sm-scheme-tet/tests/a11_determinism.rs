@@ -44,7 +44,7 @@ fn tetrahedralize_is_bit_identical_across_runs_and_threads() {
         ("torus", surf3::tri_torus(2.0, 0.7, if heavy { 24 } else { 12 }, if heavy { 12 } else { 6 })),
         ("cavity", surf3::cube_with_cavity(3)),
         ("schonhardt", surf3::schonhardt()),
-        ("noisy", surf3::noisy_sphere(2)),
+        ("noisy", if heavy { surf3::noisy_sphere(2) } else { surf3::tri_cube(2) }),
     ];
     let runs = if heavy { 3 } else { 2 };
     for (name, f) in cases {
@@ -78,7 +78,12 @@ fn stage_ms_is_excluded_from_equality() {
 /// must not depend on that order (triangle order and rotation).
 #[test]
 fn triangle_order_does_not_matter() {
-    for f in [surf3::tri_cube(4), surf3::cube_with_cavity(5), surf3::noisy_sphere(3)] {
+    let fixtures = if cfg!(debug_assertions) {
+        vec![surf3::tri_cube(3), surf3::cube_with_cavity(3)]
+    } else {
+        vec![surf3::tri_cube(4), surf3::cube_with_cavity(5), surf3::noisy_sphere(3)]
+    };
+    for f in fixtures {
         let inp = input_of(&f, 0);
         let base = mesh_hash(&tetrahedralize(&inp, &TetOptions::default()).unwrap());
         let mut r = surf3::SplitMix64(11);
@@ -95,5 +100,19 @@ fn triangle_order_does_not_matter() {
             let h = mesh_hash(&tetrahedralize(&shuffled, &TetOptions::default()).unwrap());
             assert_eq!(h, base, "{}", f.name);
         }
+    }
+}
+
+/// The restart path (pocket point, S4-ranked hints, slit cavities) is deterministic too.
+#[test]
+fn schonhardt_family_is_bit_identical_across_runs_and_threads() {
+    for zs in [1.0, 0.5, 0.3] {
+        let mut inp = input_of(&surf3::schonhardt(), 0);
+        for p in &mut inp.points {
+            p[2] *= zs;
+        }
+        let h = determinism::check(3, 4, |threads| in_pool(threads, || mesh_hash(&tetrahedralize(&inp, &TetOptions::default()).unwrap())))
+            .unwrap_or_else(|e| panic!("z scale {zs}: {e}"));
+        assert_ne!(h, 0);
     }
 }

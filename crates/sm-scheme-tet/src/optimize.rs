@@ -9,6 +9,7 @@ use crate::delaunay::Dt;
 use crate::error::TetError;
 use crate::flips::{FlipScratch, Plan};
 use crate::geom::{V3, add, mean_ratio, ori, scale, sub};
+use crate::guard::Guard;
 use rayon::prelude::*;
 
 impl Dt {
@@ -68,8 +69,8 @@ impl Dt {
     /// Laplacian smoothing of the vertices `>= first_movable` that are used by a tet, with a
     /// backtracking line search that only accepts moves that raise the local minimum mean ratio
     /// and keep every incident tet strictly positive. Stops early when a pass gains less than
-    /// `1e-4` per movable vertex on average. Returns the number of passes performed.
-    pub(crate) fn smooth(&mut self, first_movable: usize, max_passes: usize) -> usize {
+    /// `1e-4` per movable vertex on average. Moves respect the S4 guard. Returns the number of passes performed.
+    pub(crate) fn smooth(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>) -> usize {
         let np = self.pts.len();
         // Vertex -> tets (CSR). The topology does not change while smoothing.
         let mut count = vec![0u32; np + 1];
@@ -135,7 +136,7 @@ impl Dt {
                     let this = &*self;
                     class
                         .par_iter()
-                        .map(|&v| this.smooth_vertex(v, &inc[count[v as usize] as usize..count[v as usize + 1] as usize]))
+                        .map(|&v| this.smooth_vertex(v, guard, &inc[count[v as usize] as usize..count[v as usize + 1] as usize]))
                         .collect()
                 };
                 for (&v, u) in class.iter().zip(updates) {
@@ -154,7 +155,7 @@ impl Dt {
         passes
     }
 
-    fn smooth_vertex(&self, v: u32, inc: &[u32]) -> Option<(V3, f64)> {
+    fn smooth_vertex(&self, v: u32, guard: &Guard<'_>, inc: &[u32]) -> Option<(V3, f64)> {
         let x = self.pts[v as usize];
         // Neighbour centroid (each neighbour counted once per incident tet; stable and cheap).
         let mut c = [0.0; 3];
@@ -184,11 +185,15 @@ impl Dt {
             Some(m)
         };
         let base = local_min(x)?;
+        // Ruling S4: a move may not bring the vertex closer (relative to the triangle size) to an
+        // input triangle than the bound, or than it already is.
+        let floor = guard.margin(x);
         let mut alpha = 1.0;
         for _ in 0..5 {
             let cand = add(x, scale(sub(target, x), alpha));
             if let Some(m) = local_min(cand)
                 && m > base + 1e-12
+                && guard.margin(cand) >= floor
             {
                 return Some((cand, m - base));
             }

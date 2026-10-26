@@ -13,7 +13,8 @@
 use crate::delaunay::Dt;
 use crate::error::TetError;
 use crate::flips::FlipScratch;
-use crate::geom::{Pts, V3, add, dot, ori, pt, sanitize, scale, sub};
+use crate::geom::{Pts, V3, add, dot, ori, sanitize, scale, sub};
+use crate::guard::Guard;
 use crate::tds::{FACE, NONE, sorted3};
 
 /// Constraint edges and triangles with their owners.
@@ -62,13 +63,59 @@ pub(crate) struct Recover<'a> {
     pub attempt: usize,
     /// Cheap mode (the first restarts): only quick repairs, failures become hints.
     cheap: bool,
+    guard: &'a Guard<'a>,
+    marks: Marks,
     sc: FlipScratch,
     buf: Vec<u32>,
     tabu: Vec<[u32; 2]>,
 }
 
+/// Epoch-marked tet sets: O(1) membership without clearing.
+#[derive(Default)]
+struct Marks {
+    a: Vec<u32>,
+    b: Vec<u32>,
+    ea: u32,
+    eb: u32,
+}
+
+impl Marks {
+    /// Start fresh sets covering `slots` tet slots.
+    fn reset(&mut self, slots: usize) {
+        if self.a.len() < slots {
+            self.a.resize(slots, 0);
+            self.b.resize(slots, 0);
+        }
+        self.ea += 1;
+        self.eb += 1;
+    }
+    fn in_a(&self, t: u32) -> bool {
+        self.a.get(t as usize) == Some(&self.ea)
+    }
+    fn in_b(&self, t: u32) -> bool {
+        self.b.get(t as usize) == Some(&self.eb)
+    }
+    /// Slots created after `reset` (flips during triangle recovery) grow the arrays on demand.
+    fn grow(&mut self, t: u32) {
+        let i = t as usize;
+        if i >= self.a.len() {
+            self.a.resize(i + 64, 0);
+            self.b.resize(i + 64, 0);
+        }
+    }
+    fn add_a(&mut self, t: u32) {
+        self.grow(t);
+        self.a[t as usize] = self.ea;
+    }
+    fn add_b(&mut self, t: u32) {
+        self.grow(t);
+        self.b[t as usize] = self.eb;
+    }
+}
+
 /// Number of leading attempts that only try quick repairs (flips and small cavities).
 const CHEAP_ATTEMPTS: usize = 2;
+
 
 /// Tets crossed by a segment and the crossed faces as `(tet, slot)`.
 type Corridor = (Vec<u32>, Vec<(u32, usize)>);
@@ -78,8 +125,8 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 }
 
 impl<'a> Recover<'a> {
-    pub fn new(dt: &'a mut Dt, con: &'a Constraints, max_steiner: usize, n_real: u32, attempt: usize) -> Self {
-        Self { dt, con, flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, cheap: attempt < CHEAP_ATTEMPTS, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+    pub fn new(dt: &'a mut Dt, con: &'a Constraints, guard: &'a Guard<'a>, max_steiner: usize, n_real: u32, attempt: usize) -> Self {
+        Self { dt, con, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, cheap: attempt < CHEAP_ATTEMPTS, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
     }
 
     /// Recover every constraint edge and triangle. A recovery failure does not stop the pass:
@@ -264,15 +311,18 @@ impl<'a> Recover<'a> {
         let mut star = Vec::new();
         self.dt.tds.star(u, &mut star);
         let mut touching: Vec<u32> = Vec::new();
+        let mut marks = std::mem::take(&mut self.marks);
+        marks.reset(self.dt.tds.slots());
         let mut stack: Vec<u32> = star.into_iter().filter(|&t| self.touches(t, u, w, up, wp)).collect();
         while let Some(t) = stack.pop() {
-            if touching.contains(&t) {
+            if marks.in_a(t) {
                 continue;
             }
+            marks.add_a(t);
             touching.push(t);
             for k in 0..4 {
                 let n = self.dt.tds.nbr[t as usize][k];
-                if n != NONE && !touching.contains(&n) && self.touches(n, u, w, up, wp) {
+                if n != NONE && !marks.in_a(n) && self.touches(n, u, w, up, wp) {
                     stack.push(n);
                 }
             }
@@ -280,6 +330,7 @@ impl<'a> Recover<'a> {
                 break;
             }
         }
+        self.marks = marks;
         let mut vs: Vec<u32> = touching.iter().flat_map(|&t| self.dt.tds.verts[t as usize]).filter(|&x| x < self.n_real).collect();
         vs.sort_unstable();
         vs.dedup();
@@ -354,6 +405,21 @@ impl<'a> Recover<'a> {
         cands.into_iter().filter_map(sanitize).take(2).collect()
     }
 
+    /// Exact test: does segment `(u,w)` meet the vertices-`f` triangle other than at a common vertex?
+    fn edge_hits_face(&self, u: u32, w: u32, f: [u32; 3]) -> bool {
+        let q = |i: u32| (i, self.dt.pts[i as usize]);
+        crate::exact::seg_tri_improper(q(u), q(w), [q(f[0]), q(f[1]), q(f[2])])
+    }
+
+    /// Exact test: do the constraint triangles `g` and `f` meet beyond their common sub-simplex?
+    fn faces_conflict(&self, g: [u32; 3], f: [u32; 3]) -> bool {
+        let q = |i: u32| (i, self.dt.pts[i as usize]);
+        let h = f.map(|i| self.dt.pts[i as usize]);
+        // Reference point off the plane of `f` (only used for coplanar triangles sharing an edge).
+        let r = g.iter().map(|&i| self.dt.pts[i as usize]).find(|&p| ori(h[0], h[1], h[2], p) != 0).unwrap_or(h[0]);
+        crate::exact::tris_conflict([q(g[0]), q(g[1]), q(g[2])], [q(f[0]), q(f[1]), q(f[2])], r)
+    }
+
     fn touches(&self, t: u32, u: u32, w: u32, up: V3, wp: V3) -> bool {
         let v = self.dt.tds.verts[t as usize];
         if v.contains(&crate::tds::GHOST) {
@@ -372,11 +438,20 @@ impl<'a> Recover<'a> {
             let Some((tets, faces)) = self.corridor(u, w) else {
                 return Err(fail(owner, Some([u, w]), "could not trace the edge through the triangulation"));
             };
+            // A constraint face in the corridor is only a proof of intersection if the exact test
+            // agrees (the corridor walk is perturbed); otherwise the cavity path decides.
+            let mut blocked = false;
             for &(t, k) in &faces {
                 let f = self.dt.tds.face(t, k);
                 if let Some(other) = self.con.face_owner(sorted3(f[0], f[1], f[2])) {
-                    return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
+                    if self.edge_hits_face(u, w, f) {
+                        return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
+                    }
+                    blocked = true;
                 }
+            }
+            if blocked {
+                break;
             }
             let before = tets.len();
             let mut sorted_c = tets.clone();
@@ -460,6 +535,15 @@ impl<'a> Recover<'a> {
     }
 
     fn recover_face(&mut self, tri: u32, key: [u32; 3]) -> Result<(), TetError> {
+        let mut marks = std::mem::take(&mut self.marks);
+        marks.reset(self.dt.tds.slots());
+        let res = self.recover_face_in(tri, key, &mut marks);
+        self.marks = marks;
+        res
+    }
+
+    /// [`Recover::recover_face`] with the epoch set `a` marking the crossing tets.
+    fn recover_face_in(&mut self, tri: u32, key: [u32; 3], marks: &mut Marks) -> Result<(), TetError> {
         // The oriented triangle is not needed here, only its vertices.
         let [a, b, c] = key;
         for &(x, y) in &[(a, b), (b, c), (a, c)] {
@@ -496,13 +580,14 @@ impl<'a> Recover<'a> {
         }
         // BFS over crossing tets.
         let mut rset: Vec<u32> = vec![seed];
+        marks.add_a(seed);
         let mut head = 0;
         while head < rset.len() {
             let t = rset[head];
             head += 1;
             for k in 0..4 {
                 let n = self.dt.tds.nbr[t as usize][k];
-                if n == NONE || rset.contains(&n) {
+                if n == NONE || marks.in_a(n) {
                     continue;
                 }
                 let g = self.dt.tds.face(t, k);
@@ -511,11 +596,16 @@ impl<'a> Recover<'a> {
                 }
                 if self.tri_pierce(g, key) {
                     if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
-                        return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
+                        if self.faces_conflict(g, key) {
+                            return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
+                        }
+                        // Perturbed crossing only (exact contact is proper): do not cross it.
+                        continue;
                     }
                     if self.dt.tds.ghost_slot(n).is_some() {
                         return Err(fail(tri, None, "triangle reaches the auxiliary hull"));
                     }
+                    marks.add_a(n);
                     rset.push(n);
                 }
             }
@@ -531,14 +621,14 @@ impl<'a> Recover<'a> {
                     let (p, q) = (v[i], v[j]);
                     if !key.contains(&p) && !key.contains(&q)
                         && let Some(other) = self.con.edge_owner(p, q)
-                            && self.pierces(p, q, a, b, c) {
+                            && self.edge_hits_face(p, q, key) {
                                 return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
                             }
                 }
             }
             for k in 0..4 {
                 let n = self.dt.tds.nbr[t as usize][k];
-                if n != NONE && rset.contains(&n) {
+                if n != NONE && marks.in_a(n) {
                     let g = self.dt.tds.face(t, k);
                     if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
                         return Err(fail(tri, None, format!("triangle {other} lies inside the cavity of this triangle")));
@@ -553,7 +643,7 @@ impl<'a> Recover<'a> {
         for &t in &rset {
             for k in 0..4 {
                 let n = self.dt.tds.nbr[t as usize][k];
-                if n != NONE && rset.contains(&n) {
+                if n != NONE && marks.in_a(n) {
                     continue;
                 }
                 let g = self.dt.tds.face(t, k);
@@ -611,6 +701,15 @@ impl<'a> Recover<'a> {
     /// Edge recovery by cavity re-tetrahedralization: remove every tet touching the open segment
     /// and refill with the segment as a mandatory edge.
     fn edge_by_cavity(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+        let mut marks = std::mem::take(&mut self.marks);
+        marks.reset(self.dt.tds.slots());
+        let res = self.edge_by_cavity_in(u, w, owner, &mut marks);
+        self.marks = marks;
+        res
+    }
+
+    /// [`Recover::edge_by_cavity`] with the epoch sets (`a`: cavity, `b`: tested).
+    fn edge_by_cavity_in(&mut self, u: u32, w: u32, owner: u32, marks: &mut Marks) -> Result<(), TetError> {
         let (up, wp) = (self.dt.pts[u as usize], self.dt.pts[w as usize]);
         let touches = |this: &Self, t: u32| -> bool {
             let v = this.dt.tds.verts[t as usize];
@@ -622,22 +721,29 @@ impl<'a> Recover<'a> {
         };
         let mut star = Vec::new();
         self.dt.tds.star(u, &mut star);
-        let mut r: Vec<u32> = star.into_iter().filter(|&t| touches(self, t)).collect();
+        let mut r: Vec<u32> = Vec::new();
+        for t in star {
+            marks.add_b(t);
+            if touches(self, t) {
+                marks.add_a(t);
+                r.push(t);
+            }
+        }
         if r.is_empty() {
             return Err(fail(owner, Some([u, w]), "no tet touches the edge"));
         }
-        let mut tested: Vec<u32> = r.clone();
         let mut head = 0;
         while head < r.len() {
             let t = r[head];
             head += 1;
             for k in 0..4 {
                 let n = self.dt.tds.nbr[t as usize][k];
-                if n == NONE || tested.contains(&n) {
+                if n == NONE || marks.in_b(n) {
                     continue;
                 }
-                tested.push(n);
+                marks.add_b(n);
                 if touches(self, n) {
+                    marks.add_a(n);
                     r.push(n);
                 }
             }
@@ -653,7 +759,7 @@ impl<'a> Recover<'a> {
                 for &t in &snapshot {
                     for k in 0..4 {
                         let n = self.dt.tds.nbr[t as usize][k];
-                        if n == NONE || r.contains(&n) || self.dt.tds.ghost_slot(n).is_some() {
+                        if n == NONE || marks.in_a(n) || self.dt.tds.ghost_slot(n).is_some() {
                             continue;
                         }
                         let g = self.dt.tds.face(t, k);
@@ -663,7 +769,7 @@ impl<'a> Recover<'a> {
                         // Do not swallow a constraint face between two cavity tets.
                         let swallows = (0..4).any(|j| {
                             let m = self.dt.tds.nbr[n as usize][j];
-                            m != NONE && m != t && r.contains(&m) && {
+                            m != NONE && m != t && marks.in_a(m) && {
                                 let h = self.dt.tds.face(n, j);
                                 self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
                             }
@@ -671,6 +777,7 @@ impl<'a> Recover<'a> {
                         if swallows {
                             continue;
                         }
+                        marks.add_a(n);
                         r.push(n);
                     }
                 }
@@ -683,9 +790,14 @@ impl<'a> Recover<'a> {
                 for k in 0..4 {
                     let n = self.dt.tds.nbr[t as usize][k];
                     let g = self.dt.tds.face(t, k);
-                    if n != NONE && r.contains(&n) {
+                    if n != NONE && marks.in_a(n) {
                         if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
-                            return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
+                            if self.edge_hits_face(u, w, g) {
+                                return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
+                            }
+                            // The segment passes around this constraint face: keep it as a slit
+                            // (both sides are cavity boundary, so it survives the refill).
+                            bfaces.push(g);
                         }
                         continue;
                     }
@@ -721,14 +833,14 @@ impl<'a> Recover<'a> {
         if self.n_steiner + 1 > self.max_steiner {
             return self.dt.fill(faces, seg, &[]);
         }
-        let (t, used) = self.dt.fill_with_steiner(faces, seg, 2000 + 40 * faces.len())?;
+        let (t, used) = self.dt.fill_with_steiner(faces, seg, 2000 + 40 * faces.len(), self.guard)?;
         self.n_steiner += used;
         Some(t)
     }
 
     /// Interior Steiner fallback: find a point that sees every face (strictly) and star it.
     fn star_fill(&mut self, tri: u32, faces: &[[u32; 3]]) -> Result<Vec<[u32; 4]>, TetError> {
-        let Some(c) = self.dt.kernel_point(faces) else {
+        let Some(c) = self.dt.kernel_point(faces, self.guard) else {
             // Suggest the centroid of the cavity (if inside the solid) to the caller's restart.
             let mut vs: Vec<u32> = faces.iter().flatten().copied().collect();
             vs.sort_unstable();
@@ -758,9 +870,10 @@ impl<'a> Recover<'a> {
 impl Dt {
     /// A point strictly on the inner side of every face of the polyhedron bounded by `faces`
     /// (outward orientation), found from the vertex centroid, the face centroid and an
-    /// alternating-projection kernel search; `None` if the polyhedron is not star-shaped
-    /// enough.
-    pub(crate) fn kernel_point(&self, faces: &[[u32; 3]]) -> Option<V3> {
+    /// alternating-projection kernel search with decreasing margins; `None` if the polyhedron is
+    /// not star-shaped enough. The candidate with the best S4 score wins (first on ties), so a
+    /// compliant point is used whenever one is found.
+    pub(crate) fn kernel_point(&self, faces: &[[u32; 3]], guard: &Guard<'_>) -> Option<V3> {
         let pts = &self.pts;
         let mut verts: Vec<u32> = faces.iter().flatten().copied().collect();
         verts.sort_unstable();
@@ -783,34 +896,39 @@ impl Dt {
             }
             m / faces.len() as f64
         };
-        let mut p = cen;
-        for _ in 0..60 {
-            let mut moved = false;
-            for f in faces {
-                let (a, b, c) = (pts[f[0] as usize], pts[f[1] as usize], pts[f[2] as usize]);
-                let n = crate::geom::cross(sub(b, a), sub(c, a));
-                let nn = dot(n, n).sqrt();
-                if nn == 0.0 {
-                    continue;
+        let mut cands: Vec<V3> = vec![cen, fcen];
+        for margin in [0.4, 0.3, 0.2, 0.12, 0.05] {
+            let mut p = cen;
+            for _ in 0..60 {
+                let mut moved = false;
+                for f in faces {
+                    let (a, b, c) = (pts[f[0] as usize], pts[f[1] as usize], pts[f[2] as usize]);
+                    let n = crate::geom::cross(sub(b, a), sub(c, a));
+                    let nn = dot(n, n).sqrt();
+                    if nn == 0.0 {
+                        continue;
+                    }
+                    let n = scale(n, 1.0 / nn);
+                    let d = dot(sub(p, a), n);
+                    // The inner side is negative; keep at least `margin h` inside.
+                    if d > -margin * h {
+                        p = sub(p, scale(n, d + 1.2 * margin * h));
+                        moved = true;
+                    }
                 }
-                let n = scale(n, 1.0 / nn);
-                let d = dot(sub(p, a), n);
-                // The inner side is negative; keep at least 0.05 h inside.
-                if d > -0.05 * h {
-                    p = sub(p, scale(n, d + 0.1 * h));
-                    moved = true;
+                if !moved {
+                    break;
                 }
             }
-            if !moved {
-                break;
+            cands.push(p);
+        }
+        let mut best: Option<(f64, V3)> = None;
+        for c in cands.into_iter().filter_map(sanitize).filter(|&c| visible(c)) {
+            let sc = guard.score(c);
+            if best.is_none_or(|b| sc > b.0) {
+                best = Some((sc, c));
             }
         }
-        [cen, fcen, p].into_iter().filter_map(sanitize).find(|&c| visible(c))
+        best.map(|b| b.1)
     }
-}
-
-#[allow(dead_code)]
-fn _unused(_: V3) {
-    let _ = pt([0.0; 3]);
-    let _ = Pts(&[]);
 }

@@ -5,6 +5,7 @@ use crate::canon::canonical_tets;
 use crate::delaunay::{Dt, splitmix};
 use crate::error::TetError;
 use crate::geom::{V3, coord_ok, ori, sanitize};
+use crate::guard::Guard;
 use crate::quality::mesh_stats;
 use crate::recover::{Constraints, Recover};
 use crate::tds::{NONE, same_cycle, sorted3};
@@ -13,6 +14,10 @@ use std::time::Instant;
 
 /// How often the build restarts with extra interior points after a recovery failure.
 const MAX_RESTARTS: usize = 12;
+
+/// Interior hints closer than this (relative to the triangle size) to an input triangle are
+/// dropped: they would sit on the surface.
+const MIN_MARGIN: f64 = 1e-6;
 
 /// Number of auxiliary far points added around the input.
 pub(crate) const N_FAR: usize = 8;
@@ -72,9 +77,43 @@ fn boundary_sizes(points: &[V3], tris: &[[u32; 3]], total: usize) -> Vec<f64> {
     (0..total).map(|i| if cnt[i] > 0 { sum[i] / f64::from(cnt[i]) } else { f64::INFINITY }).collect()
 }
 
+/// Vertex centroid of the connected surface component holding the failing triangle, if that
+/// component is tiny (a few dozen vertices). Such a body is one pocket: a single point that sees
+/// all of it (Schönhardt-like prisms and their affine images) is what recovery needs, while on
+/// larger surfaces a far-away centroid would only get in the way.
+fn pocket_point(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>) -> Option<V3> {
+    const MAX_VERTS: usize = 64;
+    let t0 = tris.get(tri as usize)?;
+    let mut by_vert: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+    for (i, t) in tris.iter().enumerate() {
+        for &v in t {
+            by_vert.entry(v).or_default().push(i as u32);
+        }
+    }
+    let mut seen: std::collections::BTreeSet<u32> = t0.iter().copied().chain(edge.into_iter().flatten()).collect();
+    let mut stack: Vec<u32> = seen.iter().copied().collect();
+    while let Some(v) = stack.pop() {
+        for &t in by_vert.get(&v).map_or(&[][..], |x| x) {
+            for &u in &tris[t as usize] {
+                if seen.insert(u) {
+                    if seen.len() > MAX_VERTS {
+                        return None;
+                    }
+                    stack.push(u);
+                }
+            }
+        }
+    }
+    let mut c = [0.0; 3];
+    for &v in &seen {
+        c = crate::geom::add(c, points[v as usize]);
+    }
+    sanitize(crate::geom::scale(c, 1.0 / seen.len() as f64))
+}
+
 /// A Steiner candidate inside the solid next to triangle `tri` (inward normal offset), tried
-/// when recovery fails around it.
-fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>, attempt: usize) -> Option<V3> {
+/// when recovery fails around it and no other candidate was accepted.
+fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>, attempt: usize, guard: &Guard<'_>) -> Option<V3> {
     use crate::geom::{add, cross, dist, scale, sub};
     let t = tris.get(tri as usize)?;
     let [a, b, c] = t.map(|i| points[i as usize]);
@@ -91,8 +130,20 @@ fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2
         let mid = scale(add(points[e[0] as usize], points[e[1] as usize]), 0.5);
         base = add(scale(base, 0.5), scale(mid, 0.5));
     }
-    let off = 0.35 + 0.2 * attempt as f64;
-    sanitize(sub(base, scale(n, off * h)))
+    // Offsets from just compliant with S4 upwards, rotated by the restart number; the best
+    // score wins (first on ties).
+    let offs = [0.4, 0.55, 0.75, 1.0, 0.35, 0.65];
+    let mut best: Option<(f64, V3)> = None;
+    for j in 0..offs.len() {
+        let off = offs[(attempt + j) % offs.len()];
+        if let Some(p) = sanitize(sub(base, scale(n, off * h))) {
+            let sc = guard.score(p);
+            if best.is_none_or(|b| sc > b.0) {
+                best = Some((sc, p));
+            }
+        }
+    }
+    best.map(|b| b.1)
 }
 
 fn check_options(o: &TetOptions<'_>) -> Result<(), TetError> {
@@ -187,9 +238,10 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
 
     // Stages 2 and 3: Delaunay of the input plus auxiliary far points, then boundary recovery.
     // A recovery failure that interior points can cure restarts the build with an extra point
-    // placed inside the solid next to the failing triangle (at most six times).
+    // placed inside the solid next to the failing triangle (at most [`MAX_RESTARTS`] times).
     let far = far_points(&input.points)?;
     let con = Constraints::new(&input.tris);
+    let guard = Guard::new(&input.points, &input.tris);
     let mut extra: Vec<V3> = Vec::new();
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
@@ -212,11 +264,11 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
             d.insert(p)?;
         }
         // Zero-volume tets of the perturbed Delaunay would make crossing tests degenerate.
-        let _ = d.remove_flats(false)?;
+        let _ = d.remove_flats(false, &guard)?;
         t_delaunay = ms(t1);
         let t2 = Instant::now();
         let r = {
-            let mut rec = Recover::new(&mut d, &con, max_steiner, n as u32, attempt);
+            let mut rec = Recover::new(&mut d, &con, &guard, max_steiner, n as u32, attempt);
             let r = rec.run();
             (r, rec.flips, rec.hints.clone())
         };
@@ -228,16 +280,29 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
                 break;
             }
             Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < MAX_RESTARTS => {
-                // Add the interior points the failed recoveries suggested (or one next to the
-                // failing triangle) and rebuild.
+                // Add interior points and rebuild: the pocket centroid of a tiny body (the point
+                // a non-star-shaped pocket needs), then the points the failed recoveries
+                // suggested, best S4 score first (compliant points before the rest). A point on
+                // an input triangle is useless and dropped.
                 let before = extra.len();
-                for h in r.2 {
-                    if !extra.contains(&h) && !input.points.contains(&h) && extra.len() < before + 32usize.max(n / 8) {
+                let cap = before + 32usize.max(n / 8);
+                let pocket = pocket_point(&input.points, &input.tris, tri, edge);
+                let mut scored: Vec<(f64, usize, V3)> = pocket
+                    .iter()
+                    .chain(r.2.iter())
+                    .copied()
+                    .enumerate()
+                    .filter(|(_, p)| !input.points.contains(p) && guard.margin(*p) >= MIN_MARGIN)
+                    .map(|(i, p)| (if i == 0 && pocket.is_some() { f64::INFINITY } else { guard.score(p) }, i, p))
+                    .collect();
+                scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                for (_, _, h) in scored {
+                    if extra.len() < cap && !extra.contains(&h) {
                         extra.push(h);
                     }
                 }
                 if extra.len() == before {
-                    match steiner_near(&input.points, &input.tris, tri, edge, attempt) {
+                    match steiner_near(&input.points, &input.tris, tri, edge, attempt, &guard) {
                         Some(p) if !extra.contains(&p) => extra.push(p),
                         _ => return Err(TetError::RecoveryFailed { tri, edge, reason }),
                     }
@@ -251,7 +316,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     let t2 = Instant::now();
     let outside = classify(&dt, &con, &input.tris)?;
     dt.tds.remove(&outside);
-    flips += dt.remove_flats(true)?;
+    flips += dt.remove_flats(true, &guard)?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2) + t_recover;
@@ -274,9 +339,9 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     }
     if opts.optimize >= 2 {
         let first_movable = n + N_FAR;
-        smooth_passes += dt.smooth(first_movable, 12);
+        smooth_passes += dt.smooth(first_movable, 12, &guard);
         flips += dt.flip_optimize(0.7, 4)?;
-        smooth_passes += dt.smooth(first_movable, 8);
+        smooth_passes += dt.smooth(first_movable, 8, &guard);
         flips += dt.flip_optimize(0.7, 4)?;
     }
     stage_ms[4] = ms(t4);

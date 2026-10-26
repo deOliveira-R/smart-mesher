@@ -57,3 +57,62 @@ pub fn check_boundary(m: &TetMesh, tris: &[[u32; 3]]) -> Result<(), String> {
     }
     Ok(())
 }
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Distance from `p` to triangle `a,b,c` (Ericson).
+pub fn point_tri_dist(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let (ab, ac, ap) = (sub3(b, a), sub3(c, a), sub3(p, a));
+    let (d1, d2) = (dot3(ab, ap), dot3(ac, ap));
+    let at = |q: [f64; 3]| dot3(sub3(p, q), sub3(p, q)).sqrt();
+    let mix = |q: [f64; 3], u: [f64; 3], s: f64| at([q[0] + u[0] * s, q[1] + u[1] * s, q[2] + u[2] * s]);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return at(a);
+    }
+    let bp = sub3(p, b);
+    let (d3, d4) = (dot3(ab, bp), dot3(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return at(b);
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return mix(a, ab, d1 / (d1 - d3));
+    }
+    let cp = sub3(p, c);
+    let (d5, d6) = (dot3(ab, cp), dot3(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return at(c);
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return mix(a, ac, d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return mix(b, sub3(c, b), w);
+    }
+    let den = 1.0 / (va + vb + vc);
+    let (v, w) = (vb * den, vc * den);
+    at([a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w])
+}
+
+/// Smallest `dist(p, T) / h_T` over the Steiner points `p` of `m` and the input triangles `T`
+/// (`h_T` = mean edge length of `T`); `f64::INFINITY` without Steiner points.
+pub fn min_s4_margin(m: &TetMesh, inp: &SurfaceInput) -> f64 {
+    let mut worst = f64::INFINITY;
+    for p in &m.points[m.n_input..] {
+        for t in &inp.tris {
+            let [a, b, c] = t.map(|i| inp.points[i as usize]);
+            let e = |x: [f64; 3], y: [f64; 3]| dot3(sub3(x, y), sub3(x, y)).sqrt();
+            let h = (e(a, b) + e(b, c) + e(c, a)) / 3.0;
+            worst = worst.min(point_tri_dist(*p, a, b, c) / h);
+        }
+    }
+    worst
+}

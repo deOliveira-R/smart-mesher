@@ -163,7 +163,7 @@ impl Dt {
     /// that create strictly positive tets only, falling back to a cavity refill or a Steiner
     /// point. Returns the number of flips. With `strict`, flats that cannot be removed are an
     /// error; otherwise they are left in place.
-    pub(crate) fn remove_flats(&mut self, strict: bool) -> Result<usize, crate::TetError> {
+    pub(crate) fn remove_flats(&mut self, strict: bool, guard: &crate::guard::Guard<'_>) -> Result<usize, crate::TetError> {
         let mut sc = FlipScratch::default();
         let mut flips = 0;
         for _round in 0..64 {
@@ -216,7 +216,7 @@ impl Dt {
                     self.apply(&plan)?;
                     flips += 1;
                     progressed = true;
-                } else if self.flat_by_cavity(f)? {
+                } else if self.flat_by_cavity(f, guard)? {
                     flips += 1;
                     progressed = true;
                 }
@@ -235,7 +235,7 @@ impl Dt {
 impl Dt {
     /// Replace the flat tet `f` and a growing neighbourhood by an exactly valid tetrahedralization
     /// of the same region (backtracking gift wrapping).
-    fn flat_by_cavity(&mut self, f: u32) -> Result<bool, crate::TetError> {
+    fn flat_by_cavity(&mut self, f: u32, guard: &crate::guard::Guard<'_>) -> Result<bool, crate::TetError> {
         use crate::tds::NONE;
         let mut r: Vec<u32> = vec![f];
         for _level in 0..4 {
@@ -267,13 +267,13 @@ impl Dt {
             if r.iter().any(|&t| self.tds.verts[t as usize].iter().any(|x| bverts.binary_search(x).is_err())) {
                 continue;
             }
-            if let Some((new, _)) = self.fill_with_steiner(&front, None, 20_000 + 400 * front.len()) {
+            if let Some((new, _)) = self.fill_with_steiner(&front, None, 20_000 + 400 * front.len(), guard) {
                 let mut ids = Vec::new();
                 self.tds.replace(&r, &new, &mut ids)?;
                 return Ok(true);
             }
             // Not tetrahedralizable with its own vertices: add an interior Steiner point.
-            if let Some(p) = self.kernel_point(&front) {
+            if let Some(p) = self.kernel_point(&front, guard) {
                 let id = self.push_point(p);
                 let new: Vec<[u32; 4]> = front.iter().map(|f| [id, f[0], f[1], f[2]]).collect();
                 let mut ids = Vec::new();

@@ -291,6 +291,9 @@ fn explain(e: &TetError, target: Target, input: &SurfaceInput, tri_keys: &[[Node
         TetError::SteinerBudget { .. } => "increase the element size or simplify the geometry".to_owned(),
         _ => "see the error text".to_owned(),
     };
+    // Spec (W3-TET): a TetError is `fatal` with the offending nodes attached. Kept `Internal` on
+    // purpose: `Geometry` would let the driver fall back and drop the nodes (an `Attempt`
+    // carries only a message), and `tetmesh` is the last resort anyway.
     GenerateFailure::fatal(target, NAME, format!("{e}{at}; suggested action: {action}")).with_nodes(nodes)
 }
 

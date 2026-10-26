@@ -3,8 +3,7 @@
 //! Unlike the symbolic-perturbation tests, these treat touching and coplanar configurations
 //! exactly: two simplices of a valid triangulation may meet only in a common sub-simplex.
 
-use crate::geom::{V3, ori, pt};
-use sm_math::Sign;
+use crate::geom::{V3, ori};
 
 #[inline]
 fn o2(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> i32 {
@@ -155,8 +154,29 @@ pub(crate) fn seg_touches_tet(ids: [u32; 4], pts4: [V3; 4], uid: u32, wid: u32, 
     }
 }
 
-#[allow(dead_code)]
-fn _unused() {
-    let _ = pt([0.0; 3]);
-    let _ = Sign::Zero;
+/// Does the segment `u-w` meet triangle `g` anywhere other than in a common vertex? Exact; used
+/// to prove that an input edge really passes through another input triangle. Vertices are
+/// recognised by index. A triangle containing both endpoints holds the edge: no conflict.
+pub(crate) fn seg_tri_improper(u: (u32, V3), w: (u32, V3), g: [(u32, V3); 3]) -> bool {
+    let gu = g.iter().position(|x| x.0 == u.0);
+    let gw = g.iter().position(|x| x.0 == w.0);
+    let gp = [g[0].1, g[1].1, g[2].1];
+    match (gu, gw) {
+        (None, None) => seg_tri_contact(u.1, w.1, gp[0], gp[1], gp[2]),
+        (Some(_), Some(_)) => false,
+        (Some(s), None) | (None, Some(s)) => {
+            // One shared endpoint `a`: the segment leaves it; it overlaps the triangle iff it is
+            // coplanar and points into the closed wedge of the triangle at `a`.
+            let (a, far) = if gu.is_some() { (u.1, w.1) } else { (w.1, u.1) };
+            let (p, q) = (gp[(s + 1) % 3], gp[(s + 2) % 3]);
+            if ori(a, p, q, far) != 0 {
+                return false;
+            }
+            let Some(ax) = proj_axes(a, p, q) else { return false };
+            let (a2, p2, q2, f2) = (pr(a, ax), pr(p, ax), pr(q, ax), pr(far, ax));
+            let w0 = o2(a2, p2, q2);
+            let (s1, s2) = (o2(a2, p2, f2), o2(a2, f2, q2));
+            if w0 > 0 { s1 >= 0 && s2 >= 0 } else { s1 <= 0 && s2 <= 0 }
+        }
+    }
 }
