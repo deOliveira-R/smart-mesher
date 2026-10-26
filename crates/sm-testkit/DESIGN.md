@@ -45,3 +45,10 @@ Principle: **reuse the contracts, add oracles.** Fixtures are the contract crate
 - `check::conformity` builds its problem labels lazily (no allocation per vertex on success). `Region2::contains` ignores empty loops; `ellipse_perimeter` defines degenerate axes (one zero: `4 max(a, b)`; negative or non-finite: NaN). Its AGM series loses accuracy as `b/a -> 0` (not used near there).
 - Fixtures that the task lists but the contracts cannot yet express: none missing. The mirror-cut chamber's deck face is the cap of `Model::apply_cut`; the 3x3 pin lattice is a stub (rectangular pins, no cylinders).
 - The task asked for "dual patch" and "prism split polyhedron": the dual patch is seven welded hexagonal prisms; "prism split polyhedron" is the cube with a split face plus a hexagonal prism.
+
+## W3a geometry fixtures (stage 0)
+
+- `topo`: `planar_face(Region2, z)`, `annulus_face`, `sphere_zone` (single-face `FaceFixture`s); the sweep solids `extruded_l`, `twisted_prism`, `annular_sector`, `hollow_cylinder`, `regular_prism` (`SweepFixture`: closed-form volume/area/counts plus source, target, linking and column ids); `pin_assembly` and `instanced_core` (`ModelFixture`s with three resp. one instancing level). Each is checked against its analytic values in `tests/w3_geom.rs`.
+- `boolean`: operand pairs and expected results as data only (`cases()`).
+- `step`: the OCC-written STEP files under `data/step/`, sha256-pinned, with analytic volumes.
+- `w3a`: the milestone part constants (derived by hand in the module docs), `STEP` bytes and `mixed_all_shapes()`.

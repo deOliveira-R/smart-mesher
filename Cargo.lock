@@ -1646,6 +1646,7 @@ name = "sm-testkit"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "sha2",
  "sm-core",
  "sm-geom-api",
  "sm-mesh-api",

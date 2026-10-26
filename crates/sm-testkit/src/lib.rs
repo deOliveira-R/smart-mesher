@@ -14,13 +14,16 @@
 //!
 //! See `DESIGN.md`.
 
+pub mod boolean;
 pub mod broken;
 pub mod check;
 pub mod determinism;
 pub mod geom;
 pub mod loops2d;
 pub mod meshes;
+pub mod step;
 pub mod strategies;
 pub mod topo;
 pub mod topo_conformance;
 pub mod topo_differential;
+pub mod w3a;
