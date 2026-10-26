@@ -12,6 +12,7 @@
 //! `sm_topo_api::fixtures::with_op`. [`merge_check`] and [`locate_point`] are read-only.
 
 mod arrange;
+mod assemble;
 mod bodies;
 pub mod boolean;
 mod cc;
