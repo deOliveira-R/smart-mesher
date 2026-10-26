@@ -1,6 +1,8 @@
 //! Unstructured all-quad surface scheme (paving).
-//!
-//! W3a skeleton (orchestrator, stage 0). Keep the [`register`] signature: `sm-server` calls it.
+
+mod kernel;
+
+pub use kernel::{PaveError, PaveOptions, QuadMesh2, pave_region};
 
 use sm_scheme_api::SchemeRegistry;
 
