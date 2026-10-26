@@ -236,12 +236,12 @@ transaction); they are recorded, not gated.
   loft), and puts one 5-point panel across a non-periodic span. The reader therefore cuts such
   a face (plain case only: one loop, one seam edge used twice) into four faces by exact knot
   insertion, with shared generator edges and the crossing edges split (`src/split.rs`, note
-  `step.split_closed_face`; a case it cannot handle is left as read with a warning). The loft
+  `step.split_closed_face`; a case it cannot handle is left as read with a warning, which `check: true` turns into an op error `step.split_closed_face`). The loft
   imports as 6 faces, 12 edges, 8 vertices and `volume_moments` gives OCC's volume to 1.1e-8.
   Remove the split when the sampler honours seam pcurves and panels the quadrature
   (ACR 1 and 2 in `W3_REPORT.md`).
 - Assembly flattening is bounded by the file size: at most `max(1024, 8 x entities)` placed
-  instances in all and `max(2^19, 64 x entities)` copied cells; beyond that the read fails with
+  instances in all and `max(2^16, 4 x entities)` copied cells, one budget for the whole file that every solid beyond the first decoded copy is charged to (solid records sharing one body are decoded once and cloned); beyond that the read fails with
   `step.too_many_instances`. A representation reached again on its own path is a cycle
   (detected at the first revisit; the assembly then stays in local coordinates with a
   warning). Chains deeper than 64 representations fail the same way.
@@ -249,3 +249,5 @@ transaction); they are recorded, not gated.
   mixes orientations is reported as `OpenShell`, never repaired.
 
 See `W3_REPORT.md` for the measured values, deviations and gaps.
+- `cad.step_info` describes the file as written (the loft: 3 faces, 1 NURBS and 2 planes); the import
+  may hold more faces after the closed-face split above (6 for the loft).

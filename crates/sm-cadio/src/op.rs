@@ -9,7 +9,7 @@ use sm_topo_api::{Severity, TopologyView, check_cells, validate_geometry};
 
 use crate::decode::read_step;
 use crate::inputs::StepInputs;
-use crate::model::{LengthUnit, NoteSeverity, ReadOptions};
+use crate::model::{LengthUnit, NoteCode, NoteSeverity, ReadOptions};
 use crate::realize::{RealizeOptions, realize};
 use crate::source::{Source, load};
 
@@ -105,6 +105,12 @@ impl TypedOp for ImportStep {
             return Err(OpError::Invalid("step.no_solids: the file contains no solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, FACETED_BREP) to import".to_owned()));
         }
         let label = self.name.clone().unwrap_or_default();
+        let check = self.check.unwrap_or(true);
+        // A closed NURBS face the splitter could not handle has wrong area/volume integrals that
+        // both validators miss: refuse it under `check`.
+        if check && let Some(n) = model.notes.iter().find(|n| n.code == NoteCode::SplitClosedFace && n.severity == NoteSeverity::Warning) {
+            return Err(OpError::Invalid(format!("step.split_closed_face: {} (pass check: false to import it anyway)", n.message)));
+        }
         for n in &model.notes {
             emit(ctx, n, &label, &[]);
         }
@@ -113,7 +119,6 @@ impl TypedOp for ImportStep {
                 ctx.warn("step.units", format!("{label}solid #{}: the file declares no length unit; assuming {}", s.id, self.assume_unit.unwrap_or(LengthUnit::Mm).symbol()), &[]);
             }
         }
-        let check = self.check.unwrap_or(true);
         let ((realized, warnings), txn) = topo_txn(ctx, |topo: &mut dyn TopoHost, _model| {
             let realized = realize(&model, topo, &RealizeOptions::default())?;
             let mut warnings = Vec::new();

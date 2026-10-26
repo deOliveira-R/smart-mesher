@@ -20,10 +20,10 @@ use crate::weld::{weld_edges, weld_vertices};
 const INSTANCE_FLOOR: usize = 1024;
 /// Placed instances allowed per entity of the file.
 const INSTANCES_PER_ENTITY: usize = 8;
-/// Smallest cap on the cells copied by flattening (about 50 MB).
-const CLONE_CELLS_FLOOR: usize = 1 << 19;
+/// Smallest cap on the cells copied by flattening (about 6 MB).
+const CLONE_CELLS_FLOOR: usize = 1 << 16;
 /// Copied cells allowed per entity of the file.
-const CLONE_CELLS_PER_ENTITY: usize = 64;
+const CLONE_CELLS_PER_ENTITY: usize = 4;
 
 /// Read a STEP file into plain B-rep data.
 ///
@@ -226,41 +226,79 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
         };
         preps.push((*id, *kind, report, placements));
     }
-    // Solids are independent: decode them in parallel, collected in order.
-    type SolidResult = Result<(Vec<Solid>, Vec<Note>, (usize, usize), usize), StepError>;
-    let decode_one = |(id, kind, report, placements): &(u64, SolidKind, UnitReport, Vec<Transform>)| -> SolidResult {
+    // Solids that share their body (same entity arguments after the name, same units) are
+    // decoded once; later ones are charged to one file-wide clone budget and cloned. This keeps
+    // a fan of tiny solid records over one shell from multiplying the decoded shell.
+    let mut group_of: Vec<usize> = Vec::with_capacity(preps.len());
+    let mut firsts: Vec<usize> = Vec::new();
+    {
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        for (i, (id, kind, report, _)) in preps.iter().enumerate() {
+            let body = match file.entities.get(id) {
+                Some(Entity::Simple(r)) => format!("{:?}", &r.params[r.params.len().min(1)..]),
+                Some(Entity::Complex(v)) => format!("{:?}", v.iter().map(|r| (&r.name, &r.params[r.params.len().min(1)..])).collect::<Vec<_>>()),
+                None => format!("missing {id}"),
+            };
+            let key = format!("{kind:?}|{body}|{report:?}");
+            let g = *seen.entry(key).or_insert_with(|| {
+                firsts.push(i);
+                firsts.len() - 1
+            });
+            group_of.push(g);
+        }
+    }
+    type BaseResult = Result<(Solid, Vec<Note>, (usize, usize)), StepError>;
+    let decode_base = |i: &usize| -> BaseResult {
+        let (id, kind, report, _) = &preps[*i];
         let mut local = Vec::new();
         let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
-        let cells = solid.vertices.len() + solid.curves.len() + solid.surfaces.len() + solid.edges.len() + solid.faces.len() + 1;
-        if placements.len() > 1 && placements.len().saturating_mul(cells) > clone_limit {
-            return Err(StepError::TooManyInstances { id: *id, limit: clone_limit / cells });
-        }
-        let mut out = Vec::with_capacity(placements.len());
-        let mut refused = 0usize;
-        for (k, t) in placements.iter().enumerate() {
-            let mut inst = solid.clone();
-            inst.instance = k as u32;
-            if *t != Transform::IDENTITY && assembly::transform_solid(&mut inst, t).is_err() {
-                refused += 1;
-                inst = solid.clone();
-                inst.instance = k as u32;
-            }
-            out.push(inst);
-        }
-        Ok((out, local, stats, refused))
+        Ok((solid, local, stats))
     };
-    let results: Vec<SolidResult> = if preps.len() >= 8 { preps.par_iter().map(decode_one).collect() } else { preps.iter().map(decode_one).collect() };
-    let mut solids = Vec::with_capacity(results.len());
+    let bases: Vec<BaseResult> = if firsts.len() >= 8 { firsts.par_iter().map(decode_base).collect() } else { firsts.iter().map(decode_base).collect() };
+    let mut bases: Vec<(Solid, Vec<Note>, (usize, usize))> = bases.into_iter().collect::<Result<_, _>>()?;
+    let mut solids = Vec::with_capacity(preps.len());
     let (mut welded_v, mut welded_e) = (0usize, 0usize);
     let mut instances = 0usize;
-    for r in results {
-        let (list, local, stats, refused) = r?;
-        notes.extend(local);
+    let mut clone_total = 0usize;
+    for (_, base_notes, stats) in bases.iter_mut() {
+        notes.append(base_notes);
         welded_v += stats.0;
         welded_e += stats.1;
-        placement_failures += refused;
-        instances += list.len();
-        solids.extend(list);
+    }
+    let mut used = vec![false; bases.len()];
+    for (i, (id, _, _, placements)) in preps.iter().enumerate() {
+        let g = group_of[i];
+        let base = &bases[g].0;
+        let cells = base.vertices.len() + base.curves.len() + base.surfaces.len() + base.edges.len() + base.faces.len() + 1;
+        // The first placement of a group's first solid is input-proportional; the rest are copies.
+        let copies = placements.len() - usize::from(!used[g]);
+        used[g] = true;
+        clone_total = clone_total.saturating_add(copies.saturating_mul(cells));
+        if clone_total > clone_limit {
+            return Err(StepError::TooManyInstances { id: *id, limit: clone_limit / cells });
+        }
+        let name = file.entities.get(id).and_then(|e| e.rec("MANIFOLD_SOLID_BREP").or_else(|| e.first())).and_then(|r| match r.params.first() {
+            Some(part21::Param::Str(s)) => Some(s.clone()),
+            _ => None,
+        });
+        let stamp = |inst: &mut Solid, k: usize| {
+            inst.id = *id;
+            if let Some(n) = &name {
+                inst.name = n.clone();
+            }
+            inst.instance = k as u32;
+        };
+        for (k, t) in placements.iter().enumerate() {
+            let mut inst = base.clone();
+            stamp(&mut inst, k);
+            if *t != Transform::IDENTITY && assembly::transform_solid(&mut inst, t).is_err() {
+                placement_failures += 1;
+                inst = base.clone();
+                stamp(&mut inst, k);
+            }
+            solids.push(inst);
+            instances += 1;
+        }
     }
     let mut unit_notes = Vec::new();
     if selected.is_empty() {

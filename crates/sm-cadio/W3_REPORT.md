@@ -206,7 +206,7 @@ Must fix:
 2. **Assembly allocation bomb: done.** `assembly::instances` walks with a path stack (a cycle
    is found at the first revisit, whatever the fan-out), a depth cap of 64, and a limit on the
    placements of every intermediate list. `read_file` shares a budget across solids:
-   `max(1024, 8 x entities)` instances and `max(2^19, 64 x entities)` copied cells, else the
+   `max(1024, 8 x entities)` instances and `max(2^16, 4 x entities)` copied cells (file-wide, see round 1), else the
    new typed `StepError::TooManyInstances` (`step.too_many_instances`). The earlier behaviour for
    a cycle is kept (local coordinates plus the `step.assembly_transforms_ignored` warning).
    `tests/assembly_bomb.rs` builds a 4-links-by-12-levels file (about 17 KB, 16.7M instances
@@ -236,3 +236,31 @@ Should fix:
 - **7 (`write_step` without a shell): done.** It returns `StepError::Export`.
 
 Gate (round 0): `cargo build --workspace`, `cargo test -p sm-cadio --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc -p sm-cadio --no-deps` and `tools/ci.sh` (which includes the `RAYON_NUM_THREADS=1` test pass) all exit 0; ci log `/tmp/ci-sm-cadio-r0-81799.log`.
+
+## Review round 1
+
+Must fix:
+
+1. **Shared-shell allocation bomb: done.** `read_file` groups solid records with the same
+   arguments after the name (and the same units) and decodes each group once, so `split_closed_nurbs`
+   and `check_closed` no longer rerun per record; the later records are clones with their own id and
+   name. All copies of the file (assembly placements and shared-body records) are charged to ONE
+   file-wide budget, `max(2^16, 4 x entities)` cells (was per solid, `max(2^19, 64 x entities)`), else
+   `step.too_many_instances`. The 64/entity scale left box_fillet1 with 16,000 refs at about 200x;
+   4/entity bounds the fan at roughly 10-20x for large files. Notes and weld counts of a group are
+   reported once. Tests (`tests/shared_shell.rs`): a fan of 3 clones exactly; box_fillet1 and the loft
+   with 4,000 refs to the shell fail with the typed error in under 10 s.
+
+Should fix:
+
+- **1 (fillet 1e-8): declined again.** It still needs the panelled quadrature in `sm-topo-api`; the
+  test keeps 1e-7 (measured 4.1e-8).
+- **2 (split fallback): done.** `model.import_step` with `check: true` fails with
+  `step.split_closed_face` (Invalid) when a closed NURBS face was left unsplit; `check: false` imports it
+  with the warning. No test: no small file reaches the fallback (the plain seam is the only closed
+  configuration in the fixtures).
+- **3 (memoize split): done** by the per-body decode above (a shared shell is split once). Distinct
+  shells that happen to be equal copies are still split each, in proportion to their own input.
+- **4 (`cad.step_info` says what is in the file): done** in `DESIGN.md`.
+- **5 (per-file clone budget): done** by the same file-wide budget.
+- **6 (Cargo.lock): left for the orchestrator.**
