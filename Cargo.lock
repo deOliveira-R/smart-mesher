@@ -1573,7 +1573,18 @@ dependencies = [
 name = "sm-scheme-pave"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-quality",
  "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
