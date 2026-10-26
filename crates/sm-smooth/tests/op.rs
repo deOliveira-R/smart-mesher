@@ -45,6 +45,7 @@ fn a7_smoothing_a_jittered_brick_restores_the_lattice() {
 
     let pts = mesh_points(&s, mesh);
     let dev = max_dev(&pts, &lattice);
+    eprintln!("a7 deviation after 100 sweeps: {dev:e}");
     assert!(dev <= 1e-6, "deviation {dev:e}");
     let info = query(&s, "mesh.info", json!({"mesh": mesh.to_string()})).expect("info");
     let vol = info["volume"].as_f64().expect("volume");

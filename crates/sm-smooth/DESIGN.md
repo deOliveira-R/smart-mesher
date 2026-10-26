@@ -187,6 +187,34 @@ in `W3_REPORT.md`; the ones that fixed a free choice of the task text are:
   from a 0.2 h volume jitter the deviation is 1.8e-6 (above 1e-6), from a 0.1 h jitter it is
   below 1e-6. The test uses 0.1 h.
 
+## Performance (criterion, record-only, 4 cores)
+
+`cargo bench -p sm-smooth --bench smooth`; each case runs 1 and 10 sweeps, so one sweep costs
+`(t10 - t1) / 9` and the fixed cost (preparation, the two quality passes, cache build) is
+`t1 - (t10 - t1) / 9`. 64^3 hex lattice (274 625 nodes, 250 047 movable), volume nodes
+jittered by 0.2 h, `fix_boundary: true`:
+
+| case | t1 | t10 | per sweep | fixed | node updates / s |
+|---|---|---|---|---|---|
+| Laplacian, Colored | 0.542 s | 2.324 s | 0.198 s | 0.34 s | 1.26 M |
+| Laplacian, Jacobi | 0.593 s | 2.775 s | 0.242 s | 0.35 s | 1.03 M |
+| Optimize p=4, Colored, 16^3 (3 375 movable) | 43.8 ms | 506.9 ms | 51.5 ms | below noise | 0.066 M |
+
+Before the per-cell metric cache (the guard re-evaluated the old cells of every candidate) the
+same cases measured 0.672 s / 3.735 s (0.340 s per sweep, 0.74 M updates/s, Colored),
+0.679 s / 4.095 s (0.380 s per sweep, 0.66 M/s, Jacobi) and 45.1 ms / 497.9 ms (50.3 ms per
+sweep, Optimize). The cache halves the metric evaluations of Laplacian-type sweeps and does not
+help `Optimize`, which is dominated by the 6 gradient and up to 11 line-search objective
+evaluations per node.
+
+The target of 5 M node-updates/s for Laplacian on 4 threads is **not met** (1.26 M/s). The
+guard dominates: each candidate evaluates `ScaledJacobian` and `Volume` on the 8 hexes of the
+node through `sm_quality::eval` (about 150-200 ns per call, including its power-of-two
+rescaling). Options for W3b: a fused SJ+volume kernel for the guard, a skip of the volume test
+when every corner Jacobian is positive by a margin, and a cheaper smooth-region fast path. The
+whole-mesh clone of `replace_mesh` and the `set_classes` rebuild are not in these numbers (the
+bench calls the pure library function).
+
 ## Deviations from Mesquite and Cubit
 
 - Steepest descent with finite-difference gradients instead of feasible Newton; one objective
