@@ -403,12 +403,8 @@ mod staircase_property {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig {
-            cases: 48,
-            failure_persistence: None,
-            rng_algorithm: proptest::test_runner::RngAlgorithm::ChaCha,
-            .. ProptestConfig::default()
-        })]
+        // Fixed seed, no failure persistence (CLAUDE.md: explicitly seeded randomness).
+        #![proptest_config(sm_testkit::strategies::config(48))]
         #[test]
         fn random_staircases_mesh_to_the_integer_lattice(
             steps in proptest::collection::vec((1u32..=4, 1u32..=4), 1..=4)
@@ -465,6 +461,36 @@ fn case7_a_seam_edge_on_both_sides_cancels_without_an_empty_row() {
         IntervalConstraint::sum_equal(&[e], &[e]),
         IntervalConstraint::Linear { terms, .. } if terms.is_empty()
     ));
+}
+
+/// The scheme's own empty-row skip: the cylinder's lateral face has the seam edge on both
+/// `i` sides, so the `sum(+i) = sum(-i)` row cancels to an empty row and must be skipped.
+#[test]
+fn case7_the_seam_edge_on_both_sides_is_skipped_by_the_scheme_not_infeasible() {
+    use sm_topo_api::fixtures::with_op;
+    use sm_topo_api::{CellComplex, OpId};
+    let mut topo = CellComplex::new();
+    let ids = with_op(&mut topo, OpId(1), |t| sm_topo_api::fixtures::cylinder(t, 1.0, 2.0))
+        .expect("cylinder");
+    let lat = ids.faces[2];
+    let seam = ids.edges[2];
+    let mut intent = counts(&[(ids.edges[0], 4), (ids.edges[1], 4), (seam, 3)]);
+    intent.set_scheme(lat, SchemeChoice::new("submap", Firmness::Hard));
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let model = sm_model_api::Model::new();
+    let sel = [lat];
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+    let plan = driver.plan(&input, &intent).expect("plan succeeds, no empty infeasible row");
+    let layout = plan.layouts.iter().find(|l| l.face == lat).expect("layout");
+    assert_eq!(layout.sides.len(), 4);
+    let seam_sides = layout
+        .sides
+        .iter()
+        .filter(|s| s.coedges.iter().any(|c| c.edge == seam))
+        .count();
+    assert_eq!(seam_sides, 2, "the seam is on two sides");
 }
 
 // ------------------------------------------------------------------------------ acceptance 8

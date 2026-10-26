@@ -21,7 +21,7 @@ All in `tests/submap.rs` unless noted.
 | 2 | L with hard counts 5,3,3,2,2,5: polygon, (19,20,10), 19 quads / 30 nodes, 2 blocks, area, Jacobian floor | `case2_l_shape_with_hard_counts_5_3_3_2_2_5` |
 | 3 | five-sided: 4 sides (one with two edges), 32 quads / 45 nodes, area 8, Jacobian 1, hard goals bottom = top via the layout | `case3_five_sided_face_is_four_logical_sides_with_exact_rows` |
 | 4 | rectangle(3,2) size 0.5: bit-exact lattice, 1 block, 24 quads | `case4_rectangle_is_the_analytic_lattice_in_one_block` |
-| 5 | proptest staircases k = 1..4, widths/heights 1..4 (48 cases, ChaCha seed printed by proptest on failure): node set = integer lattice points, quads = A, nodes = I + B, area, Jacobian 1, validate, blocks = k + 1, disjoint, total area A | `staircase_property::random_staircases_mesh_to_the_integer_lattice`, `staircase_property::the_unit_l_staircase_is_the_testkit_l` |
+| 5 | proptest staircases k = 1..4, widths/heights 1..4 (48 cases, fixed seed via `sm_testkit::strategies::config(48)`, no failure persistence): node set = integer lattice points, quads = A, nodes = I + B, area, Jacobian 1, validate, blocks = k + 1, disjoint, total area A | `staircase_property::random_staircases_mesh_to_the_integer_lattice`, `staircase_property::the_unit_l_staircase_is_the_testkit_l` |
 | 6 | lattice unit tests: L and staircases accepted; non-simple U ("lattice:" + "not simple"); clockwise -> positivity; unclosed -> closure; Pick vs brute force on 200 seeded staircases | `lattice::tests::*` (`the_l_is_closed_positive_and_simple`, `a_non_simple_u_is_rejected_with_a_lattice_message`, `clockwise_unclosed_and_degenerate_sequences_are_typed_errors`, `staircases_are_accepted_and_pick_matches_brute_force_counting`), plus `blocks::tests::*` (literal reflex-cut oracle) |
 | 7 | broken closure row -> `Infeasible` naming the rows in `ReferenceIntervalSolver` and `IiaSolver`; seam edge on both sides cancels | `case7_a_broken_closure_row_is_infeasible_in_both_solvers_naming_the_rows`, `case7_a_seam_edge_on_both_sides_cancels_without_an_empty_row` |
 | 8 | fallback `submap -> pave` (stub Pave, registry without stub Submap), attempt history has the `Constraint` failure; without the chain the error is returned | `case8_a_lattice_failure_falls_back_to_pave_and_is_recorded` |
@@ -85,7 +85,8 @@ line), `a_sized_u_face_meshes_with_four_valence_interior_nodes` (a valid U, 3 bl
 
 - Parameter-space blending through pcurves, periodic/seam faces, `Reversal`, inner loops and
   auto selection are W3b, as specified (noted in DESIGN.md).
-- Graded cut spacing (stretch): not implemented, the measured L-case Jacobians do not need it.
+- Graded cut spacing (stretch): not implemented. The shipped cases do not need it, but strongly
+  graded L counts give min Jacobians 0.22 to 0.61 (DESIGN.md table); that is the motivation.
 - A face on a strongly curved carrier relies on `snap_to_face` (one `project` per interior
   node and one `face_normal` per quad); not benchmarked beyond planar faces.
 - The U fallback test exercises the failure path for a *planar* U; the lattice test of
@@ -94,3 +95,19 @@ line), `a_sized_u_face_meshes_with_four_valence_interior_nodes` (a valid U, 3 bl
 ## api_change_requests
 
 None. All needed items were on main.
+
+## What changed in review (round 0)
+
+- Acceptance 5: the staircase property now uses `sm_testkit::strategies::config(48)`
+  (`RngSeed::Fixed`, no failure persistence). The earlier "ChaCha seed" wording was wrong:
+  ChaCha was only the algorithm and the seed was random per run.
+- Acceptance 7, second half: added `case7_the_seam_edge_on_both_sides_is_skipped_by_the_scheme_not_infeasible`
+  (cylinder lateral face, submap imposed Hard, `Driver::plan` succeeds, the seam edge sits on two
+  sides), which runs this crate's empty-row skip; the contract-level `sum_equal` test remains.
+- DESIGN.md records the measured low-Jacobian graded L counts as the motivation for the stretch item.
+- `LatticePolygon` docs state the hand-built precondition; `side`, `decompose` and `Block::area`
+  gain `debug_assert`s.
+- Declined: none. Noted for the orchestrator: deviation 3 (CSR `PointRows` instead of `BTreeMap`)
+  and deviation 4 (case 8 via Soft imposition / `NoApplicableScheme`; `with_nodes` attachment
+  untested through the driver) are driver-behaviour or equivalent-determinism choices, accepted
+  in review.

@@ -36,6 +36,7 @@ impl Block {
 
     /// Area in cells.
     pub fn area(&self) -> u64 {
+        debug_assert!(self.width() >= 0 && self.height() >= 0, "inverted block");
         (self.width() * self.height()) as u64
     }
 }
@@ -54,6 +55,10 @@ pub struct Cut {
 /// Decompose `p` into rectangles, sorted by `(j0, i0)`. `p` must come from
 /// [`lattice_polygon`](crate::lattice::lattice_polygon) (simple, positive).
 pub fn decompose(p: &LatticePolygon) -> Vec<Block> {
+    debug_assert!(
+        p.verts.len() == p.dirs.len() && p.verts.len() == p.lens.len() && p.area2() > 0,
+        "decompose needs a validated polygon"
+    );
     let mut xs: Vec<i64> = p.verts.iter().map(|v| v.0).collect();
     xs.sort_unstable();
     xs.dedup();

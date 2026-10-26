@@ -32,6 +32,11 @@ pub enum Location {
 }
 
 /// A simple, positively oriented, closed lattice polygon with axis-parallel sides.
+///
+/// Build it with [`lattice_polygon`], which validates it. The fields are public for reading;
+/// a hand-built polygon must keep the three vectors the same non-zero length, `lens` positive
+/// and the sides closed, simple and counter-clockwise, or [`side`](Self::side) and
+/// [`decompose`](crate::blocks::decompose) may panic or give meaningless results.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LatticePolygon {
     /// Start point of every side; side `k` runs from `verts[k]` to `verts[(k + 1) % n]`.
@@ -94,7 +99,11 @@ impl LatticePolygon {
     }
 
     /// End points `(from, to)` of side `k`.
+    ///
+    /// # Panics
+    /// If `k >= self.len()`.
     pub fn side(&self, k: usize) -> ((i64, i64), (i64, i64)) {
+        debug_assert!(k < self.verts.len(), "side index out of range");
         (self.verts[k], self.verts[(k + 1) % self.verts.len()])
     }
 

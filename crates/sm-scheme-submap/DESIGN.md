@@ -97,6 +97,17 @@ boundary spacing) has minimum scaled Jacobian **0.9806**; the test pins `0.9 x` 
 (0.8825, above the 0.5 floor). Graded cut-line spacing (stretch) is therefore not needed for
 the shipped cases and is not implemented.
 
+That holds only for the shipped cases. Strongly graded hard counts on the L (counts in
+side order) still give valid meshes with exact area but low quality, measured in review:
+
+| L counts | min scaled Jacobian |
+|---|---|
+| (10, 1, 9, 9, 1, 10) | 0.2195 |
+| (7, 6, 1, 1, 6, 7) | 0.324 |
+| (3, 1, 2, 5, 1, 6) | 0.614 |
+
+These are the measured motivation for the stretch item (graded cut-line spacing, W3b).
+
 ## Cost and parallelism
 
 `generate` is `O(rows * sides + points)`: one pass for the row index, one for boundary nodes,
