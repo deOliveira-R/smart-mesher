@@ -193,3 +193,85 @@ fn torus_and_cone_faces_mesh_validly() {
         }
     }
 }
+
+#[test]
+fn reversed_carrier_sense_keeps_the_face_counter_clockwise() {
+    use sm_core::{Point3, Vector3};
+    use sm_geom_api::{CurveDef, Frame, Interval, Line, Plane, SurfaceDef};
+    use sm_topo_api::{CoedgeSpec, CurveCarrier, Sense, SurfaceCarrier, TopologyEdit};
+    // A unit square in z = 0 whose plane carrier has normal -z; the face sense is Reversed, so
+    // the face normal is +z and the loop is counter-clockwise seen from +z.
+    let mut c = CellComplex::new();
+    let (face, edges) = with_op(&mut c, OpId(1), |t| {
+        let pts = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y)| Point3::new(x, y, 0.0));
+        let vs: Vec<_> = pts.iter().map(|p| t.make_vertex(*p)).collect::<Result<_, _>>()?;
+        let mut es = Vec::new();
+        for i in 0..4 {
+            let d = pts[(i + 1) % 4] - pts[i];
+            let curve = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pts[i], d)?))?;
+            es.push(t.make_edge(
+                vs[i],
+                vs[(i + 1) % 4],
+                Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }),
+            )?);
+        }
+        let frame = Frame::from_zx(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, -1.0), Vector3::new(1.0, 0.0, 0.0))?;
+        let surface = t.shapes_mut()?.add_surface(SurfaceDef::Plane(Plane { frame }))?;
+        let lp: Vec<CoedgeSpec> = es.iter().map(|e| CoedgeSpec { edge: *e, sense: Sense::Forward }).collect();
+        let face = t.make_face(&[&lp], Some(SurfaceCarrier { surface, sense: Sense::Reversed }))?;
+        Ok((face, es))
+    })
+    .unwrap();
+    let counts: Vec<_> = edges.iter().map(|&e| (e, 10u32)).collect();
+    let out = mesh_faces(&c, &[face], &counts, "trimesh", &Sequential).expect("reversed face");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty());
+    assert!((mesh_area(m) - 1.0).abs() < 1e-12);
+    for t in tri_points(m) {
+        assert!((t[1] - t[0]).cross(t[2] - t[0]).z > 0.0, "normal follows the face (+z)");
+    }
+    assert!(min_angle_deg(m) >= 20.0);
+}
+
+#[test]
+fn a_face_without_a_surface_carrier_uses_its_newell_plane() {
+    use sm_core::Point3;
+    use sm_geom_api::{CurveDef, Interval, Line};
+    use sm_topo_api::{CoedgeSpec, CurveCarrier, Sense, TopologyEdit};
+    // A tilted square (no surface carrier): corners in the plane x + y + z = 1... use a skew frame.
+    let mut c = CellComplex::new();
+    let (face, edges) = with_op(&mut c, OpId(1), |t| {
+        let pts = [
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, -1.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let vs: Vec<_> = pts.iter().map(|p| t.make_vertex(*p)).collect::<Result<_, _>>()?;
+        let mut es = Vec::new();
+        for i in 0..4 {
+            let d = pts[(i + 1) % 4] - pts[i];
+            let curve = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pts[i], d)?))?;
+            es.push(t.make_edge(
+                vs[i],
+                vs[(i + 1) % 4],
+                Some(CurveCarrier { curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward }),
+            )?);
+        }
+        let lp: Vec<CoedgeSpec> = es.iter().map(|e| CoedgeSpec { edge: *e, sense: Sense::Forward }).collect();
+        let face = t.make_face(&[&lp], None)?;
+        Ok((face, es))
+    })
+    .unwrap();
+    let counts: Vec<_> = edges.iter().map(|&e| (e, 8u32)).collect();
+    let out = mesh_faces(&c, &[face], &counts, "trimesh", &Sequential).expect("newell face");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty());
+    // Area of the parallelogram spanned by (1, 0, -1) and (0, 1, -1)... the corners above give
+    // |(1,0,-1) x (0,1,-1... )| computed from the first three corners.
+    let a = Point3::new(0.0, 0.0, 1.0);
+    let (u, v) = (Point3::new(1.0, 0.0, 0.0) - a, Point3::new(0.0, 1.0, 0.0) - a);
+    let want = u.cross(v).norm();
+    assert!((mesh_area(m) - want).abs() <= 1e-12 * want, "{} vs {want}", mesh_area(m));
+    assert!(min_angle_deg(m) >= 20.0);
+}

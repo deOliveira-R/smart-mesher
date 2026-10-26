@@ -88,11 +88,12 @@ impl Cdt {
                     ok = false;
                     break;
                 }
+                // The smallest angle is at most 60 degrees, so its sine orders like the angle.
                 before = before.min(
-                    measure(g, pos3(tv[0], false), pos3(tv[1], false), pos3(tv[2], false)).min_angle,
+                    measure(g, pos3(tv[0], false), pos3(tv[1], false), pos3(tv[2], false)).sin_min,
                 );
                 after = after.min(
-                    measure(g, pos3(tv[0], true), pos3(tv[1], true), pos3(tv[2], true)).min_angle,
+                    measure(g, pos3(tv[0], true), pos3(tv[1], true), pos3(tv[2], true)).sin_min,
                 );
             }
             if ok && after >= before && target != old {
@@ -162,26 +163,32 @@ impl Cdt {
         }
     }
 
+    /// Flip with a worklist until no edge wants to flip. After a flip the four border edges of
+    /// the quad are re-examined (their `(slot, index)` are known from the flip layout:
+    /// `T1 = (a, b, d)` in slot `t` has `(b, d)` at 0 and `(a, b)` at 2; `T2 = (a, d, c)` in
+    /// slot `n` has `(d, c)` at 0 and `(c, a)` at 1). Deterministic: the initial order is the
+    /// slot order and the stack is LIFO.
     fn flip_to_fixed_point(&mut self, g: &dyn Geometry2) {
-        let mut passes = 0;
-        loop {
-            let mut changed = false;
-            for t in 0..self.tri.len() as u32 {
-                if !self.is_real(t) {
-                    continue;
-                }
-                for i in 0..3 {
-                    if self.should_flip(g, t, i) {
-                        self.flip(t, i);
-                        changed = true;
-                        break;
-                    }
+        let mut stack: Vec<(u32, u8)> = Vec::new();
+        for t in (0..self.tri.len() as u32).rev() {
+            if self.is_real(t) {
+                for i in (0..3u8).rev() {
+                    stack.push((t, i));
                 }
             }
-            passes += 1;
-            if !changed || passes > 1000 {
+        }
+        let mut budget = 64 * self.tri.len() + 1024;
+        while let Some((t, i)) = stack.pop() {
+            if budget == 0 {
                 break;
             }
+            if !self.is_real(t) || !self.should_flip(g, t, i as usize) {
+                continue;
+            }
+            budget -= 1;
+            let n = self.nbr[t as usize][i as usize];
+            self.flip(t, i as usize);
+            stack.extend([(t, 0), (t, 2), (n, 0), (n, 1)]);
         }
     }
 }

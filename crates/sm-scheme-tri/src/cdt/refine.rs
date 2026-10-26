@@ -47,8 +47,15 @@ pub(crate) struct Measure {
     pub sin_min: f64,
     /// Circumradius in units of the target size.
     pub r_over_h: f64,
-    /// The smallest angle, radians.
-    pub min_angle: f64,
+    /// Cosine of the smallest angle.
+    pub cos_min: f64,
+}
+
+impl Measure {
+    /// The smallest angle in radians.
+    pub fn min_angle(&self) -> f64 {
+        self.sin_min.atan2(self.cos_min)
+    }
 }
 
 /// Measure the triangle `(a, b, c)` of surface points.
@@ -99,12 +106,10 @@ pub(crate) fn measure(g: &dyn Geometry2, a: [f64; 3], b: [f64; 3], c: [f64; 3]) 
     Measure {
         sin_min: sin_min.min(1.0),
         r_over_h: r / h,
-        min_angle: if sin_min > 0.0 {
-            // Angle opposite the shortest edge via atan2 at the vertex between the long edges.
-            let cosv = ((x * x + y * y - short * short) / (2.0 * denom)).clamp(-1.0, 1.0);
-            (2.0 * k2 / denom).atan2(cosv)
+        cos_min: if denom > 0.0 {
+            ((x * x + y * y - short * short) / (2.0 * denom)).clamp(-1.0, 1.0)
         } else {
-            0.0
+            1.0
         },
     }
 }
@@ -171,7 +176,7 @@ impl Cdt {
         let mut best: Option<(f64, [u32; 3])> = None;
         for t in self.live().collect::<Vec<_>>() {
             let v = self.tri[t as usize];
-            let a = self.measure_tri(g, v).min_angle.to_degrees();
+            let a = self.measure_tri(g, v).min_angle().to_degrees();
             if best.is_none_or(|(b, _)| a < b) {
                 best = Some((a, v));
             }
