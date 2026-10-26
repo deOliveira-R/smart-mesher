@@ -49,7 +49,7 @@ Branch: `claude/w3-sm-diag-go88ci` (the session's designated branch; the task te
 
 ## Known gaps
 
-* Stretch items are not done: `grow` and `thresholds` on `mesh.flag_cells`, topology-liveness of classification entities, a testkit `sheared_hex_pair`.
+* Stretch: `grow` and `thresholds` on `mesh.flag_cells` are done (`grow_adds_exactly_the_face_neighbours`, `thresholds_override_the_limits` in `tests/flag.rs`). Not done: topology-liveness of classification entities, a testkit `sheared_hex_pair` (stays test-local, `pair_mesh` in `tests/common`).
 * Deferred to W3b as in the task: dimension-2 shell orientation, equiangle/equivolume skewness, cell aspect ratio in the checkMesh definition, face-pyramid volumes, `mesh.unflag_cells`, `DerivedCache`, per-material profiles, the checkMesh/Fluent conformance harness.
 * `quality_report` assumes a structurally valid mesh (every finished mesh is) and may panic on a corrupted one; run `mesh.validate` first on a suspect mesh (which never calls quality code when structural codes exist).
 * Generic and Transport thresholds are provisional; the user should ratify Transport before it is advertised. The five FV formulas marked "recalled" in sm-quality's DESIGN.md are for the conformance harness to diff.

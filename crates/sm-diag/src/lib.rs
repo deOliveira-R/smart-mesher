@@ -26,7 +26,7 @@ use sm_op_api::{Plugin, Registry, RegistryError};
 pub use analysis::{SkippedMetric, ThresholdOverride};
 pub use common::SCHEMA_VERSION;
 pub use error::DiagError;
-pub use flag::{Level, MeshFlagCells, flagged_cells};
+pub use flag::{Level, MAX_GROW, MeshFlagCells, flagged_cells, grow_cells};
 pub use locate::{EntityRef, NEAR_CAP};
 pub use quality::{
     Cluster, HistogramOut, MAX_CLUSTERS, MAX_WORST, MeshQuality, MetricReport, ProfileName, QualityOptions, QualityReport, SummaryOut, ThresholdOut, ValiditySummary,

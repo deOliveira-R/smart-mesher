@@ -44,12 +44,41 @@
           "type": "string"
         }
       ]
+    },
+    "ThresholdOverride": {
+      "additionalProperties": false,
+      "description": "Per-metric override of the limits of a rule.",
+      "properties": {
+        "fail": {
+          "description": "New failure limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "warn": {
+          "description": "New warning limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.\n\nA cell is flagged if any selected metric grades at or above `level`, or if it is invalid\n(`include_invalid`). The set is a `MeshSet` of cells named `name`, stored in the mesh so\nlater ops can target it by id. An empty selection succeeds with a `diag.nothing_to_flag`\nwarning and no set. A name already used in the mesh is an error.",
+  "description": "`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.\n\nA cell is flagged if any selected metric grades at or above `level`, or if it is invalid\n(`include_invalid`). The set is a `MeshSet` of cells named `name`, stored in the mesh so\nlater ops can target it by id. An empty selection succeeds with a `diag.nothing_to_flag`\nwarning and no set. A name already used in the mesh is an error. `thresholds` override the\nlimits as in `mesh.quality`; `grow` adds rings of face neighbours (deterministic BFS).",
   "properties": {
+    "grow": {
+      "description": "Add this many rings of face neighbours to the set, 0 to 5 (default 0).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
     "include_invalid": {
       "default": true,
       "description": "Also flag inverted and degenerate cells (default true).",
@@ -95,6 +124,13 @@
       "$ref": "#/$defs/ProfileName",
       "default": "generic",
       "description": "`generic` (default), `openfoam`, `fluent` or `transport`."
+    },
+    "thresholds": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ThresholdOverride"
+      },
+      "description": "Limit overrides by metric name, as in `mesh.quality`.",
+      "type": "object"
     }
   },
   "required": [

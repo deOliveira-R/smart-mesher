@@ -91,7 +91,7 @@ fn flags_exactly_the_failing_cells() {
         (Profile::OpenFoam, Level::Fail, 2, true),
     ] {
         let want = expected(&reference, profile, rank, invalid);
-        let got: Vec<u32> = flagged_cells(&reference, profile, None, level, invalid).unwrap().iter().map(|c| c.0).collect();
+        let got: Vec<u32> = flagged_cells(&reference, profile, None, &Default::default(), level, invalid).unwrap().iter().map(|c| c.0).collect();
         assert_eq!(got, want, "{profile:?} {level:?} invalid={invalid}");
     }
     let n_fail = expected(&reference, Profile::Generic, 2, true).len();
@@ -196,5 +196,62 @@ fn mesh_defaults_to_the_only_mesh_and_lists_candidates() {
     assert!(rig.json("mesh.flag_cells", json!({"name": "a", "mesh": "Mesh#2", "extra": 1})).is_err());
     let (_, d) = rig.json("mesh.flag_cells", json!({"name": "a", "mesh": "Mesh#2", "level": "warn", "metrics": ["interpolation_weight"]})).unwrap();
     // Stretched pair: weight 1/3 is above the 0.2 warning limit: nothing flagged.
+    assert_eq!(d.diagnostics[0].code, "diag.nothing_to_flag");
+}
+
+#[test]
+fn thresholds_override_the_limits() {
+    let m = pair_mesh("sheared", &mut SerialAlloc::new());
+    let metrics = [Ms::from_name("non_orthogonality").unwrap()];
+    let none = flagged_cells(&m, Profile::Generic, Some(&metrics), &Default::default(), Level::Fail, true).unwrap();
+    assert!(none.is_empty(), "45 degrees is within the generic limit");
+    let t = std::collections::BTreeMap::from([("non_orthogonality".to_string(), sm_diag::ThresholdOverride { warn: None, fail: Some(40.0) })]);
+    let both = flagged_cells(&m, Profile::Generic, Some(&metrics), &t, Level::Fail, true).unwrap();
+    assert_eq!(both.iter().map(|c| c.0).collect::<Vec<_>>(), [0, 1], "the shared face reaches both its cells");
+    let bad = std::collections::BTreeMap::from([("volume".to_string(), sm_diag::ThresholdOverride { warn: None, fail: Some(1.0) })]);
+    assert!(flagged_cells(&m, Profile::Generic, Some(&metrics), &bad, Level::Fail, true).is_err());
+    // Through the op.
+    let (mut rig, _) = Rig::with_pair("sheared");
+    let (_, d) = rig.json("mesh.flag_cells", json!({"name": "hot", "metrics": ["non_orthogonality"], "thresholds": {"non_orthogonality": {"fail": 40}}})).unwrap();
+    assert_eq!(d.outputs["set"].len(), 1);
+}
+
+/// Cells sharing a face with a member, by a direct loop over the faces.
+fn neighbours(m: &ReferenceMesh, members: &BTreeSet<u32>) -> BTreeSet<u32> {
+    let mut out = members.clone();
+    for f in 0..m.face_count() {
+        let fi = sm_mesh_api::FaceIx::new(f);
+        if let Some(r) = m.face_right(fi) {
+            let l = m.face_left(fi);
+            if members.contains(&l.0) {
+                out.insert(r.0);
+            }
+            if members.contains(&r.0) {
+                out.insert(l.0);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn grow_adds_exactly_the_face_neighbours() {
+    let moves = damaged_moves();
+    let reference = block([3, 3, 3], [1.0; 3], &moves, &mut SerialAlloc::new());
+    let base = expected(&reference, Profile::Generic, 2, true);
+    let base_set: BTreeSet<u32> = base.iter().copied().collect();
+    let ring1 = neighbours(&reference, &base_set);
+    assert!(ring1.len() > base_set.len() && ring1.len() < 27, "{} -> {}", base_set.len(), ring1.len());
+    let ring2 = neighbours(&reference, &ring1);
+    let (mut rig, mesh) = Rig::with_block([3, 3, 3], &moves);
+    for (grow, want) in [(0u32, &base_set), (1, &ring1), (2, &ring2)] {
+        let (_, d) = rig.json("mesh.flag_cells", json!({"name": format!("g{grow}"), "grow": grow})).unwrap();
+        let got: BTreeSet<u32> = members_of(&rig, mesh, d.outputs["set"][0]).into_iter().collect();
+        assert_eq!(&got, want, "grow {grow}");
+    }
+    assert!(rig.json("mesh.flag_cells", json!({"name": "too_far", "grow": 6})).unwrap_err().contains("grow"));
+    // Growing an empty selection stays empty.
+    let (mut clean, _) = Rig::with_block([3, 3, 3], &[]);
+    let (_, d) = clean.json("mesh.flag_cells", json!({"name": "none", "grow": 3})).unwrap();
     assert_eq!(d.diagnostics[0].code, "diag.nothing_to_flag");
 }
