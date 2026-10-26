@@ -19,6 +19,7 @@ Read `docs/ARCHITECTURE.md` (design), `docs/PLAN.md` (how work is split), `docs/
 `cargo build`, `cargo test -p <crate>`, `cargo clippy -p <crate> -- -D warnings`, determinism test passing, property tests from `sm-testkit` where they apply, and rustdoc on every public item. Numerical code gets tests against analytic results, not only "doesn't crash".
 
 ## Style
+- `unsafe` is allowed only in `crates/sm-rt-capi` (the C ABI), each block with a `// SAFETY:` comment and every `extern "C"` entry wrapped in `catch_unwind`.
 - Rust edition 2024. No `unwrap()` in library code paths that inputs can reach; return typed errors (`thiserror`).
 - Performance matters: avoid per-element heap allocation in hot loops, prefer SoA/CSR layouts, and use `rayon` for data parallelism.
 - Keep comments short and useful.

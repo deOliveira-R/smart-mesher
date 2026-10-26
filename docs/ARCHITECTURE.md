@@ -98,21 +98,28 @@ L1  sm-topo        cellular B-rep: Body ▸ Volume ▸ Shell ▸ FaceUse ▸ Fac
                    Coedge records how a face sees an edge. Sidesets "wrt volume", sweep source/target and shell
                    closure depend on it.
 L2  sm-naming      persistent IDs, lineage tracking, selectors
-L2  sm-model       geometry ops: primitives, extrude/revolve/sweep/loft, booleans, webcut, imprint, merge,
-                   transforms, virtual topology (composite/partition/collapse), healing/defeaturing
+L2  sm-model       geometry ops: primitives, extrude/revolve/sweep/loft, transforms,
+                   virtual topology (composite/partition/collapse), healing/defeaturing
+L2  sm-boolean     booleans (unite/subtract/intersect), imprint, merge, webcut family (one fragment kernel)
 L2  sm-tess        tessellation of B-rep for display & facet-based geometry
-L2  sm-cadio       STEP AP203/214/242 read+write, IGES read, STL/OBJ read+write
+L2  sm-cadio       STEP AP203/214/242 read+write (content-addressed import), IGES read, STL/OBJ read+write
 L1  sm-mesh        mesh store: nodes, mixed elements (bar/tri/quad/tet/hex/wedge/pyramid/**polyhedron**,
                    high-order), owner association (every node/element owned by a topo entity), adjacency
 L2  sm-sizing      intervals, interval matching (integer program), size fields, bias, sizing functions
+L2  sm-quality     quality metrics (Verdict-equivalent set + finite-volume face metrics), validity classification
 L3  sm-scheme-*    one crate per scheme family, all implementing the same traits (below)
-L3  sm-quality     quality metrics (Verdict-equivalent set), validity checks
+L3  sm-diag        mesh.validate / mesh.quality / mesh.flag_cells: located, geometry-linked, actionable diagnostics
+L3  sm-poly        tet → polyhedral conversion (median dual, planar faces, features), agglomeration
+L3  sm-rt          ray tracing / particle tracking (implements sm-rt-api: cell walking, BVH locate, .smrt cache)
 L3  sm-smooth      Laplacian, centroid area pull, equipotential, Winslow, condition-number/optimization, untangle
 L3  sm-modify      refine, coarsen, pillow, collapse, remesh, align, mesh boolean/cleanup
 L2  sm-fem         blocks, sidesets, nodesets, materials, element type assignment, BC sets
-L2  sm-meshio      native format (below), Exodus II, VTU/VTKHDF, Gmsh msh4, Abaqus, Nastran, CGNS, DAGMC h5m, Fluent
+L2  sm-meshio      native format (below), VTU/VTKHDF, OpenFOAM polyMesh (ASCII), Gmsh msh4, Abaqus, Nastran, CGNS,
+                   DAGMC h5m, Fluent (spec: docs/research/fluent-msh.md)
+L2  sm-exodus      Exodus II writer (own netCDF classic / 64-bit-offset encoder), NFACED/NSIDED polyhedra
 L4  sm-engine      Op registry, apply(), state, Delta, undo/redo, timeline DAG, snapshots, replay
 L4  sm-lang        our command language → Ops (parser, completion, help generated from Op schemas)
+L4  sm-rt-capi     C ABI (+ DAGMC-shaped shims) over sm-rt-api trackers for Fortran/C++ transport codes
 L5  sm-server      session host; protocol over WebSocket (JSON-RPC control + binary frames for buffers)
 L5  sm-mcp         MCP tools → protocol
 L5  sm-py          PyO3 bindings

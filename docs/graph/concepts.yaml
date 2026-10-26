@@ -125,15 +125,15 @@ nodes:
   scheme-convert:    {domain: meshing, summary: "THex, QTri, HTet, TQuad, degree elevation"}
   boundary-layer:    {domain: meshing, summary: "inflation layers on response boundaries (never on deck boundaries)"}
   # mesh-ops
-  quality:           {domain: mesh-ops, summary: "metrics and validity"}
-  smooth:            {domain: mesh-ops, summary: "smoothing/optimization/untangling; keeps mirror-plane nodes on plane, paired nodes paired"}
+  quality:           {domain: mesh-ops, summary: "metrics (Verdict + finite-volume face metrics) and validity; diagnostics ops (sm-diag) report located, geometry-linked findings with suggested fixes"}
+  smooth:            {domain: mesh-ops, summary: "smoothing/optimization/untangling; keeps mirror-plane nodes on plane, paired nodes paired (W3a: deck-pair nodes pinned)"}
   modify:            {domain: mesh-ops, summary: "refine, coarsen, pillow, collapse, remesh"}
   # interfaces
   interface-detect:  {domain: interfaces, summary: "find unmatched/coincident faces -> candidate interface records"}
   face-intersect:    {domain: interfaces, summary: "overlap polygons/areas/weights (symmetric overlap table)"}
   conformize:        {domain: interfaces, summary: "replace coarse faces by fine faces to make an interface conformal"}
   # tracking
-  tracking-structure: {domain: tracking, summary: "Hierarchy-aware BVH (lattice/instance -> volume -> surface), exact quadric/analytic hits, face-side next-volume, mesh walking"}
+  tracking-structure: {domain: tracking, summary: "Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, exact analytic refine (W3b), .smrt cache; C ABI + DAGMC shims in sm-rt-capi"}
   # distribution
   partitioner:       {domain: distribution, summary: "graph partitioning, owners, ghosts, global ids"}
   # fields
@@ -205,7 +205,8 @@ edges:   # user -> provider : interface
   - [scheme-tri, mesh-driver, "scheme-api: SurfaceScheme"]
   - [scheme-hex, mesh-driver, "scheme-api: VolumeScheme"]
   - [scheme-tet, mesh-driver, "scheme-api: VolumeScheme"]
-  - [scheme-poly, mesh-driver, "scheme-api: VolumeScheme"]
+  - [scheme-poly, mesh-store, "mesh-api (tet mesh in, polyhedral mesh out; W3a op mesh.to_poly)"]
+  - [scheme-poly, classification, "classification-api (dual faces/cells keep geometry links)"]
   - [scheme-convert, mesh-driver, "scheme-api: MeshTransform"]
   - [boundary-layer, mesh-driver, "scheme-api: MeshTransform"]
   - [quality, mesh-geometry, "mesh-geometry-api"]
@@ -249,4 +250,4 @@ open:
   - "Mesh import deferred (user, 2026-10-23): we import geometry and export meshes. Revisit later for remeshing / tracking-structure generation from foreign meshes."
   - "Mixed-material cells (volume fractions)"
   - "Units, 2D/RZ/1D meshes, time series"
-  - "Exodus writer: libnetcdf vs netCDF-4 layout through HDF5"
+  - "Exodus writer: decided W3a: own netCDF classic / 64-bit-offset encoder (sm-exodus); netCDF-4/HDF5 later if needed"
