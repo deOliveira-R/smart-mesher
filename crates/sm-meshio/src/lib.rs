@@ -4,6 +4,7 @@
 //! a pure function of the mesh: byte-identical across runs and thread counts.
 //!
 //! * [`smsh`]: the native format (`SMSH_FORMAT.md`), writer and reader.
+//! * [`foam`]: OpenFOAM polyMesh (ASCII) writer, parser and checker.
 //! * [`report`]: the loss report every exporter shares.
 //! * [`vtu`]: ParaView / VTK export with polyhedra, mixed cells and region/color cell data.
 //!
@@ -11,6 +12,7 @@
 
 mod crc;
 pub mod error;
+pub mod foam;
 mod le;
 pub mod report;
 pub mod smsh;

@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 
 pub mod py;
+pub mod wrap;
+pub mod foam;
 
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_meshio::SmshMesh;

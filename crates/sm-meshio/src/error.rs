@@ -30,6 +30,9 @@ pub enum MeshioError {
     /// Attached metadata (decks, hierarchy maps) is inconsistent with the mesh.
     #[error("inconsistent metadata: {0}")]
     Inconsistent(String),
+    /// An OpenFOAM export, parse or check error.
+    #[error(transparent)]
+    Foam(#[from] crate::foam::FoamError),
     /// A mesh-API call failed.
     #[error(transparent)]
     Mesh(#[from] MeshError),
