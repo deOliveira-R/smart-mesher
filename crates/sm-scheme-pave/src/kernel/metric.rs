@@ -118,6 +118,7 @@ impl Space<'_> {
 
 /// Default size field: boundary-segment metric lengths, interpolated over the boundary-node
 /// triangulation and limited by `gradation`.
+#[derive(Clone)]
 pub(crate) struct SizeMap {
     cdt: Cdt,
     s: Vec<f64>,

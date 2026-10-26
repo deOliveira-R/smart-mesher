@@ -330,3 +330,73 @@ fn robustness_survey() {
     }
     eprintln!("total {total}, failures {fails}, rounds histogram {hist:?}");
 }
+
+/// Rectangle `w x h` with `a, b, c, d` intervals on bottom, right, top, left.
+fn counted_rect(w: f64, h: f64, c: [usize; 4]) -> Vec<[f64; 2]> {
+    let mut l = Vec::new();
+    for i in 0..c[0] {
+        l.push([w * i as f64 / c[0] as f64, 0.0]);
+    }
+    for j in 0..c[1] {
+        l.push([w, h * j as f64 / c[1] as f64]);
+    }
+    for i in 0..c[2] {
+        l.push([w - w * i as f64 / c[2] as f64, h]);
+    }
+    for j in 0..c[3] {
+        l.push([0.0, h - h * j as f64 / c[3] as f64]);
+    }
+    l
+}
+
+#[test]
+#[ignore]
+fn small_rectangles_with_unequal_counts() {
+    let o = PaveOptions::default();
+    let (mut bad, mut total) = (0, 0);
+    let (mut qmin, mut low) = (f64::INFINITY, 0);
+    for a in 1..=8 {
+        for b in 1..=8 {
+            for c in 1..=8 {
+                for d in 1..=8 {
+                    if (a + b + c + d) % 2 == 1 || a + b + c + d < 4 {
+                        continue;
+                    }
+                    let (lo, hi) = ([a, b, c, d].into_iter().min().unwrap_or(1), [a, b, c, d].into_iter().max().unwrap_or(1));
+                    if hi > 2 * lo {
+                        continue;
+                    }
+                    total += 1;
+                    let l = counted_rect(1.0, 1.0, [a, b, c, d]);
+                    match pave_region(&[l], &id_metric, None, &o) {
+                        Ok(m) => {
+                            assert!(m.rounds <= 6);
+                            let q = {
+                                let ccw = 1.0;
+                                m.quads.iter().map(|q| sj(&m.points, q, ccw)).fold(f64::INFINITY, f64::min)
+                            };
+                            qmin = qmin.min(q);
+                            if q < 0.2 {
+                                low += 1;
+                            }
+                        }
+                        Err(e) => {
+                            bad += 1;
+                            if bad < 30 {
+                                eprintln!("counts {a},{b},{c},{d}: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{bad} failures of {total}; worst min SJ {qmin:.3}, {low} cases below 0.2");
+}
+
+#[test]
+#[ignore]
+fn dump_small() {
+    let l = counted_rect(1.0, 1.0, [1, 2, 1, 2]);
+    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+}

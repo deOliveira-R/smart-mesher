@@ -378,6 +378,43 @@ fn flip_repair(m: &mut Mesher<'_>, a: &mut Analysis) {
     }
 }
 
+/// Debugging aid: dump the triangulation and the matching as SVG.
+fn debug_svg(m: &Mesher<'_>, an: &Analysis, path: std::ffi::OsString) {
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in &m.cdt.pts {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let d = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    let mut svg = format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='{} {} {} {}' width='1400' height='1400'><rect x='-1000' y='-1000' width='3000' height='3000' fill='white'/>", lo[0] - 0.05 * d, -hi[1] - 0.05 * d, 1.1 * d, 1.1 * d);
+    let sw = d * 0.003;
+    for (i, &t) in an.tris.iter().enumerate() {
+        let v = m.cdt.tv[t as usize];
+        let pts: Vec<String> = v.iter().map(|x| format!("{},{}", m.cdt.pts[*x as usize][0], -m.cdt.pts[*x as usize][1])).collect();
+        let fill = if an.mate[i] == NONE { "red" } else { "none" };
+        svg += &format!("<polygon points='{}' fill='{fill}' stroke='gray' stroke-width='{sw}'/>", pts.join(" "));
+    }
+    for i in 0..an.tris.len() {
+        let j = an.mate[i];
+        if j != NONE && (j as usize) > i {
+            let (t, u) = (an.tris[i], an.tris[j as usize]);
+            let s = (0..3).find(|k| m.cdt.tn[t as usize][*k] == u).unwrap_or(0);
+            let c = if t < u { candidate(m, t, s, u) } else { let su = (0..3).find(|k| m.cdt.tn[u as usize][*k] == t).unwrap_or(0); candidate(m, u, su, t) };
+            if let Some((_, _, q)) = c {
+                let pts: Vec<String> = q.iter().map(|x| format!("{},{}", m.cdt.pts[*x as usize][0], -m.cdt.pts[*x as usize][1])).collect();
+                svg += &format!("<polygon points='{}' fill='none' stroke='blue' stroke-width='{}'/>", pts.join(" "), 2.0 * sw);
+            }
+        }
+    }
+    for (i, p) in m.cdt.pts.iter().enumerate() {
+        svg += &format!("<text x='{}' y='{}' font-size='{}' fill='green'>{i}</text>", p[0], -p[1], 6.0 * sw);
+    }
+    svg += "</svg>";
+    let _ = std::fs::write(path, svg);
+}
+
 /// Recombine the triangulation into quads. Returns the quads (counter-clockwise, vertex ids
 /// of the mesher) and the number of edge-splitting rounds used.
 pub(crate) fn recombine(m: &mut Mesher<'_>, max_rounds: u32) -> Result<(Vec<[u32; 4]>, u32), PaveError> {
@@ -392,6 +429,9 @@ pub(crate) fn recombine(m: &mut Mesher<'_>, max_rounds: u32) -> Result<(Vec<[u32
             }
         }
         let unmatched = an.unmatched();
+        if let (0, Some(path)) = (rounds, std::env::var_os("PAVE_SVG")) {
+            debug_svg(m, &an, path);
+        }
         if unmatched.is_empty() {
             let mut quads = Vec::with_capacity(an.tris.len() / 2);
             for i in 0..an.tris.len() {

@@ -177,6 +177,33 @@ fn check_boundary(pts: &[[f64; 2]], ranges: &[Range<usize>]) -> Result<(), PaveE
     Ok(())
 }
 
+/// One entry of the strategy ladder.
+#[derive(Clone, Copy)]
+struct Strategy {
+    rows: bool,
+    fill: bool,
+    hscale: f64,
+    row_factor: f64,
+}
+
+/// The ladder: the default placement first, then variations of the size scale and of the row
+/// distance, then no rows at all. The first strategy that recombines completely wins.
+fn strategies() -> Vec<Strategy> {
+    let mut v = vec![Strategy { rows: true, fill: true, hscale: 1.0, row_factor: 1.0 }];
+    for hscale in [1.25, 0.8, 1.5, 1.0, 0.65, 2.0] {
+        for row_factor in [1.0, 0.9, 1.1, 0.8, 1.2] {
+            if hscale != 1.0 || row_factor != 1.0 {
+                v.push(Strategy { rows: true, fill: true, hscale, row_factor });
+            }
+        }
+    }
+    v.push(Strategy { rows: false, fill: false, hscale: 1.0, row_factor: 1.0 });
+    for hscale in [1.0, 1.6, 0.8] {
+        v.push(Strategy { rows: false, fill: true, hscale, row_factor: 1.0 });
+    }
+    v
+}
+
 /// Meshes the region bounded by `loops` with quads.
 ///
 /// `loops[0]` is the outer loop and the rest are holes; either handedness of the outer loop
@@ -267,13 +294,41 @@ pub fn pave_region(
         let v = cdt.tv[t as usize];
         cdt::signed_area(&[cdt.pts[v[0] as usize], cdt.pts[v[1] as usize], cdt.pts[v[2] as usize]])
     }).sum::<f64>();
-    let mut mesher = Mesher::new(&space, cdt, nb, size_map, area_w)?;
-    mesher.rows(&ranges)?;
-    mesher.fill()?;
-    let (quads, rounds) = matching::recombine(&mut mesher, opts.max_rounds)?;
-    let Mesher { cdt, met, .. } = mesher;
-    let mut pts = cdt.pts;
-    smooth::smooth(&mut pts, &met, &quads, nb, opts.smooth_iters);
+
+    // The ladder of strategies: the first that recombines completely wins. Coarse regions
+    // (a few boundary nodes against the size) are where the default placement can leave a
+    // triangle dual without a perfect matching.
+    let mut last_err = PaveError::Internal("no strategy ran");
+    let mut result: Option<(Vec<[f64; 2]>, Vec<[u32; 4]>, u32)> = None;
+    for (si, strat) in strategies().into_iter().enumerate() {
+        let mut mesher = Mesher::new(&space, cdt.clone(), nb, size_map.clone(), area_w, strat.hscale, strat.row_factor)?;
+        let run = (|| {
+            if strat.rows {
+                mesher.rows(&ranges)?;
+            }
+            if strat.fill {
+                mesher.fill()?;
+            }
+            matching::recombine(&mut mesher, opts.max_rounds)
+        })();
+        match run {
+            Ok((quads, rounds)) => {
+                let Mesher { cdt, met, .. } = mesher;
+                let mut pts = cdt.pts;
+                smooth::smooth(&mut pts, &met, &quads, nb, opts.smooth_iters);
+                if std::env::var_os("PAVE_DEBUG").is_some() {
+                    eprintln!("strategy {si} ok (rounds {rounds})");
+                }
+                result = Some((pts, quads, rounds));
+                break;
+            }
+            Err(e @ (PaveError::NoPerfectMatching { .. } | PaveError::Internal(_))) => last_err = e,
+            Err(e) => return Err(e),
+        }
+    }
+    let Some((pts, quads, rounds)) = result else {
+        return Err(last_err);
+    };
 
     // Back to the parameter space; boundary nodes are the input, bit for bit.
     let mut points: Vec<[f64; 2]> = uv;

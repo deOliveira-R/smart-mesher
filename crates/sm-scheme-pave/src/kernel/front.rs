@@ -41,8 +41,10 @@ pub(crate) struct Mesher<'a> {
     tag: Vec<u64>,
     space: &'a Space<'a>,
     size_map: Option<SizeMap>,
-    pub nb: usize,
     max_vertices: usize,
+    hscale: f64,
+    /// Multiplier of the row distance (strategy ladder).
+    row_factor: f64,
 }
 
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -50,8 +52,8 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 }
 
 impl<'a> Mesher<'a> {
-    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64) -> Result<Self, PaveError> {
-        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, nb, max_vertices: usize::MAX };
+    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64, hscale: f64, row_factor: f64) -> Result<Self, PaveError> {
+        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, max_vertices: usize::MAX, hscale, row_factor };
         for i in 0..nb {
             let w = m.cdt.pts[i];
             let (mt, h) = (m.space.met(w)?, m.h_at(w)?);
@@ -72,6 +74,7 @@ impl<'a> Mesher<'a> {
             (None, Some(m)) => m.at(w),
             (None, None) => 1.0,
         };
+        let h = h * self.hscale;
         if h.is_finite() && h > 0.0 { Ok(h) } else { Err(PaveError::BadMetric) }
     }
 
@@ -132,7 +135,7 @@ impl<'a> Mesher<'a> {
             (Some(a), None) | (None, Some(a)) => (a, h),
             (None, None) => return None,
         };
-        let off = b.unapply([dir[0] * d, dir[1] * d]);
+        let off = b.unapply([dir[0] * d * self.row_factor, dir[1] * d * self.row_factor]);
         Some([pv[0] + off[0], pv[1] + off[1]])
     }
 
