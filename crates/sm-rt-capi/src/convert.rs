@@ -326,3 +326,54 @@ pub fn response_in(kind: i32, albedo: f64) -> Result<ResponseKind, Fail> {
         k => Err(Fail::bad(format!("unknown response kind {k}"))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_rt_api::{ComponentId, InstanceId};
+
+    #[test]
+    fn deep_hierarchies_are_truncated_and_counted_never_overrun() {
+        let src: Vec<Level> = (0..12).map(|i| Level::new(ComponentId(i), InstanceId(100 + i), [i as i32, 0, -1])).collect();
+        let mut dst = [SmrtLevel { component: 99, ..SmrtLevel::default() }; SMRT_MAX_LEVELS];
+        let (total, len) = levels_out(&src, &mut dst);
+        assert_eq!((total, len), (12, 8));
+        assert_eq!(dst[7].component, 7);
+        assert_eq!(dst[7].lattice, [7, 0, -1]);
+        // A shallow path clears the stale entries.
+        let (total, len) = levels_out(&src[..2], &mut dst);
+        assert_eq!((total, len), (2, 2));
+        assert_eq!(dst[2], SmrtLevel::default());
+    }
+
+    #[test]
+    fn id_spellings_round_trip() {
+        let comp = Some(RegionId(3));
+        assert_eq!(region_out(RegionId(3), comp), SMRT_COMPLEMENT);
+        assert_eq!(region_out(RegionId(2), comp), 2);
+        assert_eq!(region_out(RegionId::NONE, comp), SMRT_NONE);
+        assert_eq!(region_in(SMRT_COMPLEMENT, comp).ok(), Some(RegionId(3)));
+        assert_eq!(region_in(3, comp).ok(), Some(RegionId(3)), "the raw id is accepted too");
+        assert!(region_in(SMRT_COMPLEMENT, None).is_err());
+        assert!(region_in(-7, comp).is_err() && region_in(i64::MAX, comp).is_err());
+        assert_eq!(cell_out(CellId::COMPLEMENT), SMRT_COMPLEMENT);
+        assert_eq!(cell_out(CellId::NONE), SMRT_NONE);
+        assert_eq!(hint_in(SMRT_NONE).ok(), Some(None));
+        assert_eq!(hint_in(5).ok(), Some(Some(CellId(5))));
+        assert!(hint_in(1 << 40).is_err());
+        assert!(face_in(-1).is_err() && surface_in(i64::from(u32::MAX)).is_err());
+    }
+
+    #[test]
+    fn response_kinds_follow_the_contract_codes() {
+        for (k, want) in [(SMRT_RESP_VACUUM, ResponseKind::Vacuum), (SMRT_RESP_WHITE, ResponseKind::White), (SMRT_RESP_REFLECTIVE, ResponseKind::Reflective)] {
+            let r = response_in(k, 0.0).unwrap();
+            assert_eq!(r, want);
+            assert_eq!(r.code() as i32, k);
+        }
+        assert_eq!(response_in(SMRT_RESP_ALBEDO, 0.25).unwrap(), ResponseKind::Albedo(0.25));
+        assert!(response_in(0, 0.0).is_err() && response_in(5, 0.0).is_err());
+        assert_eq!(action_code(&FaceAction::Respond(ResponseKind::Albedo(0.5))), (SMRT_ACT_ALBEDO, 0.5));
+        assert_eq!(action_code(&FaceAction::Reflect).0, SMRT_ACT_MIRROR);
+    }
+}

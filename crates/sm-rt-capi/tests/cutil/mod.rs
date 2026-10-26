@@ -47,6 +47,12 @@ pub fn check_ok(what: &str, out: &Output) {
     );
 }
 
+/// The C++ compiler (the `cc` crate's C++ driver).
+pub fn cxx_compiler() -> Command {
+    let triple = format!("{}-unknown-linux-gnu", std::env::consts::ARCH);
+    cc::Build::new().cpp(true).target(&triple).host(&triple).opt_level(1).cargo_metadata(false).cargo_warnings(false).cargo_debug(false).get_compiler().to_command()
+}
+
 /// Build a C program linked to the cdylib and run it; returns its stdout.
 pub fn build_and_run_c(src: &Path, name: &str) -> String {
     let dir = scratch(name);
@@ -56,8 +62,9 @@ pub fn build_and_run_c(src: &Path, name: &str) -> String {
     assert!(lib.exists(), "cdylib not found at {lib:?} (run with --all-features)");
     let inc = crate_dir().join("include");
     let tests_c = crate_dir().join("tests/c");
-    let mut cc = c_compiler();
-    cc.args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE"])
+    let cpp = src.extension().is_some_and(|e| e == "cpp");
+    let mut cc = if cpp { cxx_compiler() } else { c_compiler() };
+    cc.args([if cpp { "-std=c++17" } else { "-std=c11" }, "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE"])
         .arg(format!("-I{}", inc.display()))
         .arg(format!("-I{}", tests_c.display()))
         .arg(src)

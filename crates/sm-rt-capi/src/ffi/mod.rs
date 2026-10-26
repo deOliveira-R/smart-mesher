@@ -2,7 +2,7 @@
 //! only place in the crate with `unsafe` code; every block names the invariant it relies on.
 //!
 //! Entry-point rules (all `smrt_*` functions):
-//! * the first thing is [`guard`]: no panic crosses the boundary, a panic becomes
+//! * the first thing is `guard`: no panic crosses the boundary, a panic becomes
 //!   `SMRT_ERR_PANIC` and the message goes to this thread's slot;
 //! * every pointer argument is null-checked before use (`SMRT_ERR_NULL`);
 //! * a [`SmrtCtx`] is used by one thread at a time (documented, not locked); a [`SmrtTracker`]

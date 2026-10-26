@@ -193,10 +193,8 @@ fn rate<'a>(n: usize, f: &'a dyn Fn() -> (u64, u64)) -> impl FnMut() -> f64 + 'a
 fn cpu_model() -> String {
     if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
         for key in ["model name", "Model", "Hardware", "cpu model"] {
-            if let Some(l) = s.lines().find(|l| l.starts_with(key)) {
-                if let Some((_, v)) = l.split_once(':') {
-                    return v.trim().to_string();
-                }
+            if let Some((_, v)) = s.lines().find(|l| l.starts_with(key)).and_then(|l| l.split_once(':')) {
+                return v.trim().to_string();
             }
         }
     }
@@ -282,10 +280,22 @@ fn main() {
             unsafe { smrt_ctx_free(c) };
             ns
         };
-        measure(f)
+        f()
     };
-    let (direct, d_min, d_max) = step_ns(false);
-    let (abi, a_min, a_max) = step_ns(true);
+    // Interleave the two measurements so machine drift hits both; the overhead is the median of
+    // the per-repetition differences.
+    for _ in 0..WARMUP {
+        step_ns(false);
+        step_ns(true);
+    }
+    let (mut dv, mut av, mut ov) = (vec![], vec![], vec![]);
+    for _ in 0..REPS {
+        let (d, a) = (step_ns(false), step_ns(true));
+        ov.push(a - d);
+        dv.push(d);
+        av.push(a);
+    }
+    let ((direct, d_min, d_max), (abi, a_min, a_max), (over, o_min, o_max)) = (stats(dv), stats(av), stats(ov));
 
     println!(
         "{{\"tool\":\"rt_capi_bench\",\"case\":\"{case}\",\"backend\":\"stub AnalyticWorld (analytic; not a competitor number)\",\"rays\":{n},\"threads\":{threads},\"cpu_model\":\"{}\",\
@@ -295,10 +305,9 @@ fn main() {
 \"crossings_per_s_capi\":{:.1},\
 \"step_ns_direct\":{{\"median\":{direct:.2},\"min\":{d_min:.2},\"max\":{d_max:.2}}},\
 \"step_ns_capi\":{{\"median\":{abi:.2},\"min\":{a_min:.2},\"max\":{a_max:.2}}},\
-\"step_overhead_ns\":{:.2},\"warmup\":{WARMUP},\"reps\":{REPS}}}",
+\"step_overhead_ns\":{{\"median\":{over:.2},\"min\":{o_min:.2},\"max\":{o_max:.2}}},\"warmup\":{WARMUP},\"reps\":{REPS}}}",
         cpu_model().replace('"', "'"),
-        cr * c_capi as f64 / n as f64,
-        abi - direct
+        cr * c_capi as f64 / n as f64
     );
     // SAFETY: freed once, after the last context.
     unsafe { smrt_tracker_free(h) };

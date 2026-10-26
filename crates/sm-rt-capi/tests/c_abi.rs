@@ -16,3 +16,9 @@ fn c_dag_shims_status_and_panic_containment() {
     let out = build_and_run_c(&crate_dir().join("tests/c/dag.c"), "dag");
     assert!(out.contains("dag: ok"), "{out}");
 }
+
+#[test]
+fn cpp_raii_wrapper() {
+    let out = build_and_run_c(&crate_dir().join("tests/c/raii.cpp"), "raii");
+    assert!(out.contains("raii: ok"), "{out}");
+}
