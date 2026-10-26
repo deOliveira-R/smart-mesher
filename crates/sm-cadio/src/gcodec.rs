@@ -20,6 +20,19 @@ pub(crate) struct Geo<'a> {
 /// Entity names of curves that are supported (the underlying geometry of an edge).
 pub(crate) const CURVE_WRAPPERS: [&str; 3] = ["SURFACE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE"];
 
+/// Tolerance under which axes and directions count as already unit and orthogonal.
+const UNIT_TOL: f64 = 1e-14;
+
+/// A right-handed frame from axis `z` and reference direction `x`. When they are already unit
+/// and orthogonal within [`UNIT_TOL`] they are used as given (no renormalization noise, so a
+/// written and re-read frame is bit-identical); otherwise `x` is orthogonalized.
+fn exact_frame(origin: Point3, z: Vector3, x: Vector3) -> Result<Frame, GeomError> {
+    if (z.norm() - 1.0).abs() <= UNIT_TOL && (x.norm() - 1.0).abs() <= UNIT_TOL && z.dot(x).abs() <= UNIT_TOL {
+        return Ok(Frame { origin, x, y: z.cross(x), z });
+    }
+    Frame::from_zx(origin, z, x)
+}
+
 fn geom_err(a: &Args<'_>, index: usize, e: GeomError) -> StepError {
     a.bad(index, e.to_string())
 }
@@ -55,8 +68,8 @@ impl<'a> Geo<'a> {
         let r = match (axis, refd) {
             (None, None) => Ok(Frame::at(origin)),
             (Some(z), None) => Frame::from_z(origin, self.direction(z, id)?),
-            (None, Some(x)) => Frame::from_zx(origin, Vector3::new(0.0, 0.0, 1.0), self.direction(x, id)?),
-            (Some(z), Some(x)) => Frame::from_zx(origin, self.direction(z, id)?, self.direction(x, id)?),
+            (None, Some(x)) => exact_frame(origin, Vector3::new(0.0, 0.0, 1.0), self.direction(x, id)?),
+            (Some(z), Some(x)) => exact_frame(origin, self.direction(z, id)?, self.direction(x, id)?),
         };
         r.map_err(|e| geom_err(&a, 3, e))
     }
@@ -100,6 +113,11 @@ impl<'a> Geo<'a> {
                     return Err(v.bad(2, "vector magnitude must be positive"));
                 }
                 let d = self.direction(v.reference(1)?, v.id)?;
+                // A direction that is already a unit vector is kept bit for bit (idempotent
+                // read-write-read); anything else is normalized.
+                if (d.norm() - 1.0).abs() <= UNIT_TOL {
+                    return Ok(CurveDef::Line(Line { origin, dir: d }));
+                }
                 Line::new(origin, d).map(CurveDef::Line).map_err(|e| geom_err(&a, 2, e))
             }
             "CIRCLE" => {

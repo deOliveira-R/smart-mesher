@@ -27,6 +27,7 @@ mod realize;
 mod source;
 mod units;
 mod weld;
+mod write;
 
 pub use decode::read_step;
 pub use edge::edge_range;
@@ -39,6 +40,7 @@ pub use query::StepInfoQuery;
 pub use realize::{Inverted, RealizeOptions, Realized, realize};
 pub use source::{InlineSource, MAX_INLINE_BYTES, Sha256Source, Source};
 pub use weld::weld_vertices;
+pub use write::{Loss, StepSchema, WriteOptions, WriteReport, export_step, write_step};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 

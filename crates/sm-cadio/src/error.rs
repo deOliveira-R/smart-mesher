@@ -125,6 +125,9 @@ pub enum StepError {
     /// The `inline` source is malformed or too large.
     #[error("{0}")]
     Inline(String),
+    /// The writer cannot export the model (or an I/O error while writing).
+    #[error("export: {0}")]
+    Export(String),
 }
 
 fn fmt_open(issues: &[OpenEdge]) -> String {
@@ -165,6 +168,7 @@ impl StepError {
             Self::OpenShell { .. } => "step.open_shell",
             Self::Topology(_) => "step.topology",
             Self::Inline(_) => "step.inline",
+            Self::Export(_) => "step.export",
         }
     }
 }
