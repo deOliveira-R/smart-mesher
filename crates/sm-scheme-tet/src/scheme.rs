@@ -47,26 +47,22 @@ impl TetParams {
         } else {
             serde_json::from_value(params.0.clone()).map_err(|e| format!("tetmesh params: {e}"))?
         };
-        if let Some(s) = p.size {
-            if !(s.is_finite() && s > 0.0) {
+        if let Some(s) = p.size
+            && !(s.is_finite() && s > 0.0) {
                 return Err(format!("tetmesh params: size = {s} must be positive and finite"));
             }
-        }
-        if let Some(r) = p.radius_edge {
-            if !(r.is_finite() && r >= 1.0) {
+        if let Some(r) = p.radius_edge
+            && !(r.is_finite() && r >= 1.0) {
                 return Err(format!("tetmesh params: radius_edge = {r} must be finite and >= 1"));
             }
-        }
-        if let Some(o) = p.optimize {
-            if o > 2 {
+        if let Some(o) = p.optimize
+            && o > 2 {
                 return Err(format!("tetmesh params: optimize = {o} must be 0, 1 or 2"));
             }
-        }
-        if let Some(g) = p.gradation {
-            if !(g.is_finite() && g >= 1.0) {
+        if let Some(g) = p.gradation
+            && !(g.is_finite() && g >= 1.0) {
                 return Err(format!("tetmesh params: gradation = {g} must be finite and >= 1"));
             }
-        }
         Ok(p)
     }
 }
@@ -179,7 +175,7 @@ impl Scheme for TetVolume {
         let Target::Volume(owner) = target else {
             return Err(fail("not a volume".into()));
         };
-        let p = TetParams::parse(params).map_err(&fail)?;
+        let p = TetParams::parse(params).map_err(fail)?;
         let u = face_uses(cx.input.topo, owner);
         if let Some(why) = u.unsupported {
             return Err(fail(format!("unsupported: {why}")));
@@ -217,7 +213,6 @@ impl Scheme for TetVolume {
         }
         let tris: Vec<[u32; 3]> = tri_keys.iter().map(|t| t.map(|k| id_of[&k])).collect();
         let input = SurfaceInput { points, tris };
-        let key_of = |i: u32| keys[i as usize];
 
         // Options. A size field from the context and the constant `size` parameter combine by min.
         let ctx_size: Option<&dyn SizeField> = cx.size;
@@ -247,34 +242,40 @@ impl Scheme for TetVolume {
         if let Some(g) = p.gradation {
             opts.gradation = g;
         }
-        let mesh = tetrahedralize(&input, &opts).map_err(|e| {
-            let (nodes, tri) = locate(&e, &input, &tri_keys, &key_of);
-            let what = tri.and_then(|t| tri_face.get(t as usize).copied());
-            let centre = tri.and_then(|t| input.tris.get(t as usize)).map(|t| {
-                let q = t.map(|i| input.points[i as usize]);
-                [(q[0][0] + q[1][0] + q[2][0]) / 3.0, (q[0][1] + q[1][1] + q[2][1]) / 3.0, (q[0][2] + q[1][2] + q[2][2]) / 3.0]
-            });
-            let at = match (what, centre) {
-                (Some(f), Some(c)) => format!(" on {f} near ({:.6}, {:.6}, {:.6})", c[0], c[1], c[2]),
-                _ => String::new(),
-            };
-            let face = what.map_or_else(|| "the boundary faces".to_owned(), |f| f.to_string());
-            let action = match &e {
-                TetError::RecoveryFailed { .. } | TetError::SelfIntersection { .. } => {
-                    format!("refine intervals on the curves of {face} or remesh it; the surface triangles could not be conformed without boundary Steiner points")
-                }
-                TetError::NotClosed { .. } | TetError::NonManifold { .. } => "check that the volume shell is closed and every face is meshed (merge coincident faces)".to_owned(),
-                TetError::InvertedShell { .. } => "check the orientation of the face meshes of the volume".to_owned(),
-                TetError::DegenerateTri { .. } => format!("remesh {face}: it contains a degenerate triangle"),
-                TetError::DuplicatePoint { .. } => "two mesh nodes coincide: merge or remove the duplicate".to_owned(),
-                TetError::OutOfRange(_) => "scale the model so that coordinates lie within 2^-100 .. 2^100".to_owned(),
-                TetError::SteinerBudget { .. } => "increase the element size or simplify the geometry".to_owned(),
-                _ => "see the error text".to_owned(),
-            };
-            GenerateFailure::fatal(target, NAME, format!("{e}{at}; suggested action: {action}")).with_nodes(nodes)
-        })?;
+        let mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
         Ok(build_patch(target, owner, &mesh, &keys))
     }
+}
+
+/// Turn a core error into a located, actionable generation failure: the message names the
+/// `TopoFace` that owns the offending triangle, its position and a suggested action; the nodes
+/// are the triangle's (or edge's) node keys.
+fn explain(e: &TetError, target: Target, input: &SurfaceInput, tri_keys: &[[NodeKey; 3]], tri_face: &[EntityId], keys: &[NodeKey]) -> GenerateFailure {
+    let key_of = |i: u32| keys[i as usize];
+    let (nodes, tri) = locate(e, input, tri_keys, &key_of);
+    let what = tri.and_then(|t| tri_face.get(t as usize).copied());
+    let centre = tri.and_then(|t| input.tris.get(t as usize)).map(|t| {
+        let q = t.map(|i| input.points[i as usize]);
+        [(q[0][0] + q[1][0] + q[2][0]) / 3.0, (q[0][1] + q[1][1] + q[2][1]) / 3.0, (q[0][2] + q[1][2] + q[2][2]) / 3.0]
+    });
+    let at = match (what, centre) {
+        (Some(f), Some(c)) => format!(" on {f} near ({:.6}, {:.6}, {:.6})", c[0], c[1], c[2]),
+        _ => String::new(),
+    };
+    let face = what.map_or_else(|| "the boundary faces".to_owned(), |f| f.to_string());
+    let action = match e {
+        TetError::RecoveryFailed { .. } | TetError::SelfIntersection { .. } => {
+            format!("refine intervals on the curves of {face} or remesh it; the surface triangles could not be conformed without boundary Steiner points")
+        }
+        TetError::NotClosed { .. } | TetError::NonManifold { .. } => "check that the volume shell is closed and every face is meshed (merge coincident faces)".to_owned(),
+        TetError::InvertedShell { .. } => "check the orientation of the face meshes of the volume".to_owned(),
+        TetError::DegenerateTri { .. } => format!("remesh {face}: it contains a degenerate triangle"),
+        TetError::DuplicatePoint { .. } => "two mesh nodes coincide: merge or remove the duplicate".to_owned(),
+        TetError::OutOfRange(_) => "scale the model so that coordinates lie within 2^-100 .. 2^100".to_owned(),
+        TetError::SteinerBudget { .. } => "increase the element size or simplify the geometry".to_owned(),
+        _ => "see the error text".to_owned(),
+    };
+    GenerateFailure::fatal(target, NAME, format!("{e}{at}; suggested action: {action}")).with_nodes(nodes)
 }
 
 /// The node keys locating `e` (the offending triangle's corners, the edge's or points' keys) and
@@ -285,11 +286,10 @@ fn locate(e: &TetError, input: &SurfaceInput, tri_keys: &[[NodeKey; 3]], key_of:
         TetError::SelfIntersection { tri_a, .. } => Some(*tri_a),
         _ => None,
     };
-    if let Some(t) = tri {
-        if let Some(k) = tri_keys.get(t as usize) {
+    if let Some(t) = tri
+        && let Some(k) = tri_keys.get(t as usize) {
             return (k.to_vec(), Some(t));
         }
-    }
     match e {
         TetError::NotClosed { edge } | TetError::NonManifold { edge } => {
             let tri = input.tris.iter().position(|t| edge.iter().all(|x| t.contains(x))).map(|t| t as u32);
@@ -316,4 +316,30 @@ fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey]
         pb.push(ElemShape::Cell(CellShape::Tet), &t.map(|i| local[i as usize]));
     }
     pb.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::EntityKind;
+
+    #[test]
+    fn recovery_failure_names_the_face_and_carries_the_triangle_keys() {
+        let face = EntityId::new(EntityKind::TopoFace, 12).unwrap();
+        let vol = EntityId::new(EntityKind::TopoVolume, 1).unwrap();
+        let keys: Vec<NodeKey> = (0..4).map(|i| NodeKey::new(face, i)).collect();
+        let input = SurfaceInput { points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], tris: vec![[0, 1, 2], [0, 3, 1]] };
+        let tri_keys = vec![[keys[0], keys[1], keys[2]], [keys[0], keys[3], keys[1]]];
+        let tri_face = vec![face, face];
+        let e = TetError::RecoveryFailed { tri: 1, edge: Some([0, 3]), reason: "forced".into() };
+        let g = explain(&e, Target::Volume(vol), &input, &tri_keys, &tri_face, &keys);
+        assert!(g.reason.contains("TopoFace#12"), "{}", g.reason);
+        assert!(g.reason.contains("refine intervals on the curves of TopoFace#12"), "{}", g.reason);
+        assert_eq!(g.nodes, tri_keys[1].to_vec());
+        assert_eq!(g.kind, sm_scheme_api::FailureKind::Internal);
+        // Edge-located errors carry the edge's keys.
+        let g = explain(&TetError::NotClosed { edge: [1, 2] }, Target::Volume(vol), &input, &tri_keys, &tri_face, &keys);
+        assert_eq!(g.nodes, vec![keys[1], keys[2]]);
+        assert!(g.reason.contains("TopoFace#12"));
+    }
 }

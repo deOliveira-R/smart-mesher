@@ -16,7 +16,7 @@ use sm_scheme_api::{
     ScopedThreads, Sequential, SizingSpec, Target, VertexRule, WholeFaces,
 };
 use sm_scheme_tet::{NAME, TetVolume};
-use sm_topo_api::fixtures::{BrickIds, brick_with_baffle, brick_with_void, with_op};
+use sm_topo_api::fixtures::{brick_with_baffle, brick_with_void, with_op};
 use sm_topo_api::{CellComplex, OpId, TopologyEdit, TopologyView};
 use std::collections::BTreeSet;
 
@@ -337,4 +337,20 @@ fn failure_names_the_face_and_carries_node_keys() {
     assert!(g.nodes.len() >= 2, "nodes {:?}", g.nodes);
     // The nodes belong to the mesh (curve, vertex or face nodes).
     eprintln!("failure: {}", g.reason);
+}
+
+/// Acceptance 12 (record only): a million-tet brick through the driver, including the
+/// serial commit into the reference builder (the bulk commit is W3b).
+#[test]
+#[ignore = "performance record"]
+fn record_adapter_perf() {
+    let (topo, ids, _) = brick_setup([1.0, 1.0, 1.0]);
+    let reg = registry(None);
+    let mut intent = size_intent(1.0 / 56.0);
+    intent.set_scheme(ids.volume, SchemeChoice::with_params(NAME, serde_json::json!({"size": 0.018}), Firmness::Hard));
+    let t = std::time::Instant::now();
+    let out = mesh_with(&topo, ids.volume, &intent, &reg, &Sequential).expect("mesh");
+    let s = t.elapsed().as_secs_f64();
+    let cells = out.finished.mesh.count(MeshEntityKind::Cell);
+    eprintln!("adapter: {cells} tets through the driver in {s:.1} s = {:.0} tets/s (generation + serial commit)", cells as f64 / s);
 }

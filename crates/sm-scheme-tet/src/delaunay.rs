@@ -61,6 +61,12 @@ impl Dt {
         (self.pts.len() - 1) as u32
     }
 
+    /// Drop the points `>= n` (they must not be used by any tet).
+    pub fn truncate_points(&mut self, n: usize) {
+        self.pts.truncate(n);
+        self.tds.vtet.truncate(n);
+    }
+
     /// Build the first tet and its four ghosts from four points.
     pub fn init(&mut self, v: [u32; 4]) -> Result<(), TetError> {
         let s = self.sos();
@@ -351,15 +357,13 @@ mod tests2 {
             let dt = build(pts.clone(), None, None).unwrap();
             dt.tds.check().unwrap();
             let mut vol = 0.0;
-            let mut nreal = 0;
             for t in 0..dt.tds.slots() as u32 {
                 if dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none() {
                     let v = dt.tds.verts[t as usize];
                     vol += vol6(pts[v[0] as usize], pts[v[1] as usize], pts[v[2] as usize], pts[v[3] as usize]) / 6.0;
-                    nreal += 1;
                 }
             }
-            eprintln!("n={n} real={nreal} vol={vol}");
+            assert!((vol - 1.0).abs() < 1e-9, "n={n} vol={vol}");
         }
     }
 }

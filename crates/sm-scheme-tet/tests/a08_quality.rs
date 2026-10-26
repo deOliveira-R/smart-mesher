@@ -16,8 +16,19 @@ fn fixtures() -> Vec<(&'static str, SurfaceFixture)> {
     ]
 }
 
+/// Meshes are computed once per `(fixture, optimize)` and shared between the tests.
 fn run(f: &SurfaceFixture, optimize: u8) -> TetMesh {
-    tetrahedralize(&input_of(f, 0), &TetOptions { optimize, ..TetOptions::default() }).unwrap()
+    static CACHE: std::sync::Mutex<Vec<(String, u8, TetMesh)>> = std::sync::Mutex::new(Vec::new());
+    let key = format!("{}:{}:{}", f.name, f.points.len(), f.tris.len());
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some((_, _, m)) = cache.iter().find(|(k, o, _)| *k == key && *o == optimize) {
+            return m.clone();
+        }
+    }
+    let m = tetrahedralize(&input_of(f, 0), &TetOptions { optimize, ..TetOptions::default() }).unwrap();
+    CACHE.lock().unwrap().push((key, optimize, m.clone()));
+    m
 }
 
 struct Summary {

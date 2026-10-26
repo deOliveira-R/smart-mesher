@@ -49,7 +49,7 @@ pub fn check_boundary(m: &TetMesh, tris: &[[u32; 3]]) -> Result<(), String> {
     }
     // Every outward face whose reverse is absent must be an input triangle.
     let tri_set: std::collections::BTreeSet<[u32; 3]> = tris.iter().map(|t| canon(*t)).collect();
-    for (f, _) in &faces {
+    for f in faces.keys() {
         let rev = canon([f[0], f[2], f[1]]);
         if !faces.contains_key(&rev) && !tri_set.contains(f) {
             return Err(format!("boundary face {f:?} is not an input triangle"));

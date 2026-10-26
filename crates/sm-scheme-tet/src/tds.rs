@@ -98,11 +98,6 @@ impl Tds {
         self.n_alive
     }
 
-    /// True if there are no live tets.
-    pub fn is_empty(&self) -> bool {
-        self.n_alive == 0
-    }
-
     /// Number of tet slots (live or free).
     pub fn slots(&self) -> usize {
         self.verts.len()
@@ -119,12 +114,6 @@ impl Tds {
     pub fn face(&self, t: u32, i: usize) -> [u32; 3] {
         let v = &self.verts[t as usize];
         [v[FACE[i][0]], v[FACE[i][1]], v[FACE[i][2]]]
-    }
-
-    /// Slot of vertex `x` in `t`.
-    #[inline]
-    pub fn slot_of(&self, t: u32, x: u32) -> Option<usize> {
-        self.verts[t as usize].iter().position(|&v| v == x)
     }
 
     /// True if `t` has vertex `x`.
@@ -267,11 +256,10 @@ impl Tds {
         for &t in old {
             for i in 0..4 {
                 let n = self.nbr[t as usize][i];
-                if n != NONE && self.mark[n as usize] != self.epoch {
-                    if let Some(j) = self.back_slot(n, t) {
+                if n != NONE && self.mark[n as usize] != self.epoch
+                    && let Some(j) = self.back_slot(n, t) {
                         self.nbr[n as usize][j] = NONE;
                     }
-                }
             }
         }
         for &t in old {
@@ -395,6 +383,7 @@ impl Tds {
     }
 }
 
+#[cfg(test)]
 impl Tds {
     /// Structural self-check (adjacency symmetry and face agreement); for tests and debug.
     pub fn check(&self) -> Result<(), String> {

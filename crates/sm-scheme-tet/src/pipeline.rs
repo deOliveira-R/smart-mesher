@@ -11,6 +11,9 @@ use crate::tds::{NONE, same_cycle, sorted3};
 use crate::{SurfaceInput, TetMesh, TetOptions, TetStats, validate};
 use std::time::Instant;
 
+/// How often the build restarts with extra interior points after a recovery failure.
+const MAX_RESTARTS: usize = 12;
+
 /// Number of auxiliary far points added around the input.
 pub(crate) const N_FAR: usize = 8;
 
@@ -69,16 +72,6 @@ fn boundary_sizes(points: &[V3], tris: &[[u32; 3]], total: usize) -> Vec<f64> {
     (0..total).map(|i| if cnt[i] > 0 { sum[i] / f64::from(cnt[i]) } else { f64::INFINITY }).collect()
 }
 
-fn count_flat(dt: &Dt) -> usize {
-    (0..dt.tds.slots() as u32)
-        .filter(|&t| dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none())
-        .filter(|&t| {
-            let v = dt.tds.verts[t as usize];
-            ori(dt.pts[v[0] as usize], dt.pts[v[1] as usize], dt.pts[v[2] as usize], dt.pts[v[3] as usize]) <= 0
-        })
-        .count()
-}
-
 /// A Steiner candidate inside the solid next to triangle `tri` (inward normal offset), tried
 /// when recovery fails around it.
 fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>, attempt: usize) -> Option<V3> {
@@ -112,11 +105,10 @@ fn check_options(o: &TetOptions<'_>) -> Result<(), TetError> {
     if !(o.gradation.is_finite() && o.gradation >= 1.0) {
         return Err(TetError::BadOption(format!("gradation = {} must be finite and >= 1", o.gradation)));
     }
-    if let crate::SizeSpec::Constant(h) = o.size {
-        if !(h.is_finite() && h > 0.0) {
+    if let crate::SizeSpec::Constant(h) = o.size
+        && !(h.is_finite() && h > 0.0) {
             return Err(TetError::BadOption(format!("size = {h} must be finite and positive")));
         }
-    }
     Ok(())
 }
 
@@ -198,9 +190,8 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     // placed inside the solid next to the failing triangle (at most six times).
     let far = far_points(&input.points)?;
     let con = Constraints::new(&input.tris);
-    let dbg = std::env::var("TET_DEBUG").is_ok();
     let mut extra: Vec<V3> = Vec::new();
-    let (mut dt, mut flips, mut n_steiner, mut t_delaunay, mut t_recover);
+    let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
     loop {
         let t1 = Instant::now();
@@ -220,31 +211,36 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
         for &p in &order {
             d.insert(p)?;
         }
+        // Zero-volume tets of the perturbed Delaunay would make crossing tests degenerate.
+        let _ = d.remove_flats(false)?;
         t_delaunay = ms(t1);
-        if dbg {
-            eprintln!("delaunay done (attempt {attempt}, {} extra points)", extra.len());
-        }
         let t2 = Instant::now();
         let r = {
-            let mut rec = Recover::new(&mut d, &con, &input.tris, max_steiner, n as u32);
+            let mut rec = Recover::new(&mut d, &con, max_steiner, n as u32, attempt);
             let r = rec.run();
-            (r, rec.flips, rec.n_steiner)
+            (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
         match r.0 {
             Ok(()) => {
                 dt = d;
                 flips = r.1;
-                n_steiner = r.2;
                 break;
             }
-            Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < 6 => {
-                if dbg {
-                    eprintln!("recovery failed ({reason}); restarting with an interior point near triangle {tri}");
+            Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < MAX_RESTARTS => {
+                // Add the interior points the failed recoveries suggested (or one next to the
+                // failing triangle) and rebuild.
+                let before = extra.len();
+                for h in r.2 {
+                    if !extra.contains(&h) && !input.points.contains(&h) && extra.len() < before + 32usize.max(n / 8) {
+                        extra.push(h);
+                    }
                 }
-                match steiner_near(&input.points, &input.tris, tri, edge, attempt) {
-                    Some(p) => extra.push(p),
-                    None => return Err(TetError::RecoveryFailed { tri, edge, reason }),
+                if extra.len() == before {
+                    match steiner_near(&input.points, &input.tris, tri, edge, attempt) {
+                        Some(p) if !extra.contains(&p) => extra.push(p),
+                        _ => return Err(TetError::RecoveryFailed { tri, edge, reason }),
+                    }
                 }
                 attempt += 1;
             }
@@ -253,35 +249,25 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     }
     stage_ms[1] = t_delaunay;
     let t2 = Instant::now();
-    if dbg {
-        eprintln!("flat tets after recovery: {} of {}", count_flat(&dt), dt.tds.len());
-    }
     let outside = classify(&dt, &con, &input.tris)?;
     dt.tds.remove(&outside);
-    if dbg {
-        eprintln!("flat tets inside: {} of {}", count_flat(&dt), dt.tds.len());
-    }
-    flips += dt.remove_flats()?;
+    flips += dt.remove_flats(true)?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2) + t_recover;
 
-    // Stage 5 + 6 (filled in by the refine / optimize modules).
+    // Stage 5: refinement.
     let t3 = Instant::now();
-    let mut unrefinable = 0usize;
     let mut smooth_passes = 0usize;
+    let unrefinable;
     {
         let h = boundary_sizes(&input.points, &input.tris, dt.pts.len());
-        let mut rf = crate::refine::Refiner::new(&mut dt, h, opts, max_steiner, n);
+        let mut rf = crate::refine::Refiner::new(&mut dt, h, opts, max_steiner);
         unrefinable = rf.run()?;
-        if dbg {
-            eprintln!("refine: {} inserted, {} unrefinable, failure reasons {:?}", rf.n_steiner, unrefinable, rf.reasons);
-        }
-        n_steiner += rf.n_steiner;
         flips += rf.flips;
     }
-    let _ = (&mut flips, &mut smooth_passes);
     stage_ms[3] = ms(t3);
+    // Stage 6: optimization.
     let t4 = Instant::now();
     if opts.optimize >= 1 {
         flips += dt.flip_optimize(0.7, 8)?;

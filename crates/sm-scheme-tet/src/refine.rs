@@ -30,14 +30,11 @@ pub(crate) struct Refiner<'a, 'o> {
     /// Repair flips applied.
     pub flips: usize,
     pub max_steiner: usize,
-    pub n_real: usize,
     heap: BinaryHeap<(u64, Reverse<[u32; 4]>, u32)>,
     failed: Vec<[u32; 4]>,
     mark: Vec<u32>,
     epoch: u32,
     rng: u64,
-    /// Failure reasons of insertion attempts (diagnostics).
-    pub reasons: std::collections::BTreeMap<&'static str, usize>,
 }
 
 fn sorted4(mut v: [u32; 4]) -> [u32; 4] {
@@ -46,8 +43,8 @@ fn sorted4(mut v: [u32; 4]) -> [u32; 4] {
 }
 
 impl<'a, 'o> Refiner<'a, 'o> {
-    pub fn new(dt: &'a mut Dt, h: Vec<f64>, opts: &'a TetOptions<'o>, max_steiner: usize, n_real: usize) -> Self {
-        Self { dt, h, opts, n_steiner: 0, flips: 0, max_steiner, n_real, heap: BinaryHeap::new(), failed: Vec::new(), mark: Vec::new(), epoch: 0, rng: 0x5EED, reasons: Default::default() }
+    pub fn new(dt: &'a mut Dt, h: Vec<f64>, opts: &'a TetOptions<'o>, max_steiner: usize) -> Self {
+        Self { dt, h, opts, n_steiner: 0, flips: 0, max_steiner, heap: BinaryHeap::new(), failed: Vec::new(), mark: Vec::new(), epoch: 0, rng: 0x5EED }
     }
 
     /// Target size at `p` as seen from the corners `v`.
@@ -134,12 +131,9 @@ impl<'a, 'o> Refiner<'a, 'o> {
                 self.heap.push((b.min(1e300).to_bits(), Reverse(sorted4(v)), t as u32));
             }
         }
-        for round in 0..40 {
+        for _round in 0..40 {
             self.drain()?;
             let any = self.repair_failed()?;
-            if std::env::var("TET_DEBUG").is_ok() {
-                eprintln!("  refine round {round}: repaired={any}, queue {}", self.heap.len());
-            }
             if !any {
                 break;
             }
@@ -166,18 +160,6 @@ impl<'a, 'o> Refiner<'a, 'o> {
                 return Err(TetError::SteinerBudget { limit: self.max_steiner });
             }
             if !self.refine_tet(t)? {
-                if std::env::var("TET_DEBUG2").is_ok() {
-                    let v = self.dt.tds.verts[t as usize];
-                    let p = |i: usize| self.dt.pts[v[i] as usize];
-                    let (a, b, c, d) = (p(0), p(1), p(2), p(3));
-                    let g = scale(add(add(a, b), add(c, d)), 0.25);
-                    let hs = self.size_at(g, v);
-                    let r = circumsphere(a, b, c, d).map(|x| x.1.sqrt()).unwrap_or(f64::NAN);
-                    let q = crate::quality::tet_quality([a, b, c, d]);
-                    let nb = (0..4).filter(|&i| self.dt.tds.nbr[t as usize][i] == NONE).count();
-                    eprintln!("  exact ori={} coords {:?} {:?} {:?} {:?}", ori(a, b, c, d), a, b, c, d);
-                    eprintln!("  FAILED tet {:?} bfaces={nb} R={r:.4} h={hs:.4} R/h={:.3} re={:.3} mr={:.4} verts<n_real={}", v, r / hs, q.radius_edge, q.mean_ratio, v.iter().filter(|&&x| (x as usize) < self.n_real).count());
-                }
                 self.failed.push(key);
             }
         }
@@ -295,11 +277,7 @@ impl<'a, 'o> Refiner<'a, 'o> {
     }
 
     fn try_insert(&mut self, p: V3, start: u32) -> Result<bool, TetError> {
-        let r = self.try_insert_inner(p, start)?;
-        if let Err(why) = r {
-            *self.reasons.entry(why).or_insert(0) += 1;
-        }
-        Ok(r.is_ok())
+        Ok(self.try_insert_inner(p, start)?.is_ok())
     }
 
     fn try_insert_inner(&mut self, p: V3, start: u32) -> Result<Result<(), &'static str>, TetError> {

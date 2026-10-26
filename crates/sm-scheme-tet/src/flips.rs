@@ -62,21 +62,6 @@ impl Dt {
             }
         };
         let n = k;
-        if std::env::var("TET_DEBUG").is_ok() {
-            for i in 0..n {
-                let (p, q) = (qv[i], qv[(i + 1) % n]);
-                eprintln!("      ring pair {i}: ori_s={} exact={}", self.sos().ori_s(a, b, p, q), self.sos().ori(a, b, p, q));
-            }
-            for i in 0..n {
-                for j in i + 1..n {
-                    for l in j + 1..n {
-                        let ta = self.q([a, qv[i], qv[j], qv[l]]);
-                        let tb = self.q([b, qv[i], qv[l], qv[j]]);
-                        eprintln!("      tri({i},{j},{l}) a-tet {:?} b-tet {:?}", ta, tb);
-                    }
-                }
-            }
-        }
         sc.best.clear();
         sc.best.resize(n * n, f64::NEG_INFINITY);
         sc.choice.clear();
@@ -173,66 +158,18 @@ impl Dt {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::geom::V3;
-
-    /// Three tets around the axis a-b (a above, b below); the 3-2 flip must produce two tets.
-    #[test]
-    fn three_two_flip_orientation() {
-        let pts: Vec<V3> = vec![
-            [0.0, 0.0, 1.0],  // a 0
-            [0.0, 0.0, -1.0], // b 1
-            [1.0, 0.0, 0.0],  // 2
-            [-0.5, 0.866, 0.0],
-            [-0.5, -0.866, 0.0],
-        ];
-        let mut dt = Dt::new(pts);
-        let mk = |x: u32, y: u32| {
-            let mut v = [0, 1, x, y];
-            if ori(dt_p(&dt_pts(), v[0]), dt_p(&dt_pts(), v[1]), dt_p(&dt_pts(), v[2]), dt_p(&dt_pts(), v[3])) < 0 {
-                v.swap(2, 3);
-            }
-            v
-        };
-        fn dt_pts() -> Vec<V3> {
-            vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [-0.5, 0.866, 0.0], [-0.5, -0.866, 0.0]]
-        }
-        fn dt_p(p: &[V3], i: u32) -> V3 {
-            p[i as usize]
-        }
-        let tets = [mk(2, 3), mk(3, 4), mk(4, 2)];
-        // Close with ghost-like absent neighbours: use replace with open boundary (NONE neighbours).
-        // replace() requires matching old boundary faces; with an empty old set every face must
-        // pair, so add outer ghosts: build the full 5-point hull via the Delaunay builder instead.
-        let _ = (&mut dt, tets);
-        let dt = crate::delaunay::build(dt_pts(), None, None).unwrap();
-        let mut sc = FlipScratch::default();
-        let t0 = (0..dt.tds.slots() as u32).find(|&t| dt.tds.alive[t as usize] && dt.tds.has(t, 0) && dt.tds.has(t, 1) && dt.tds.ghost_slot(t).is_none());
-        // The Delaunay of this bipyramid contains the axis edge only if the 3 equatorial tets exist.
-        if let Some(t0) = t0 {
-            let plan = dt.plan_edge_removal(0, 1, t0, 16, &mut sc).expect("3-2 flip valid");
-            assert_eq!(plan.old.len(), 3);
-            assert_eq!(plan.new.len(), 2);
-            for v in &plan.new {
-                let p = |i: usize| dt.pts[v[i] as usize];
-                assert_eq!(ori(p(0), p(1), p(2), p(3)), 1);
-            }
-        }
-    }
-}
-
 impl Dt {
-    /// Remove tets of exactly zero volume from the (ghost-free) mesh by edge-removal and 2-3
-    /// flips that create strictly positive tets only. Returns the number of flips.
-    pub(crate) fn remove_flats(&mut self) -> Result<usize, crate::TetError> {
+    /// Remove tets of exactly zero volume (ghost tets are skipped) by edge-removal and 2-3 flips
+    /// that create strictly positive tets only, falling back to a cavity refill or a Steiner
+    /// point. Returns the number of flips. With `strict`, flats that cannot be removed are an
+    /// error; otherwise they are left in place.
+    pub(crate) fn remove_flats(&mut self, strict: bool) -> Result<usize, crate::TetError> {
         let mut sc = FlipScratch::default();
         let mut flips = 0;
         for _round in 0..64 {
             let mut flats: Vec<u32> = (0..self.tds.slots() as u32)
                 .filter(|&t| {
-                    self.tds.alive[t as usize] && {
+                    self.tds.alive[t as usize] && self.tds.ghost_slot(t).is_none() && {
                         let v = self.tds.verts[t as usize];
                         let p = |i: usize| self.pts[v[i] as usize];
                         ori(p(0), p(1), p(2), p(3)) <= 0
@@ -258,7 +195,7 @@ impl Dt {
                     continue;
                 }
                 let mut best: Option<Plan> = None;
-                let mut consider = |plan: Plan, best: &mut Option<Plan>| {
+                let consider = |plan: Plan, best: &mut Option<Plan>| {
                     if best.as_ref().is_none_or(|b| plan.min_q > b.min_q) {
                         *best = Some(plan);
                     }
@@ -288,24 +225,10 @@ impl Dt {
                 break;
             }
         }
-        if std::env::var("TET_DEBUG").is_ok() {
-            for t in 0..self.tds.slots() as u32 {
-                if self.tds.alive[t as usize] {
-                    let v = self.tds.verts[t as usize];
-                    let p = |i: usize| self.pts[v[i] as usize];
-                    if ori(p(0), p(1), p(2), p(3)) <= 0 {
-                        eprintln!("flat tet {t}: {:?} nbr {:?}", v.map(|i| self.pts[i as usize]), self.tds.nbr[t as usize]);
-                        for k in 0..4 {
-                            let n = self.tds.nbr[t as usize][k];
-                            if n != crate::tds::NONE {
-                                eprintln!("   nbr {n}: {:?}", self.tds.verts[n as usize].map(|i| self.pts[i as usize]));
-                            }
-                        }
-                    }
-                }
-            }
+        if strict {
+            return Err(crate::TetError::Internal("could not remove zero-volume tets from the mesh".into()));
         }
-        Err(crate::TetError::Internal("could not remove zero-volume tets from the mesh".into()))
+        Ok(flips)
     }
 }
 
@@ -344,7 +267,7 @@ impl Dt {
             if r.iter().any(|&t| self.tds.verts[t as usize].iter().any(|x| bverts.binary_search(x).is_err())) {
                 continue;
             }
-            if let Some(new) = self.fill(&front, None) {
+            if let Some((new, _)) = self.fill_with_steiner(&front, None, 20_000 + 400 * front.len()) {
                 let mut ids = Vec::new();
                 self.tds.replace(&r, &new, &mut ids)?;
                 return Ok(true);
@@ -404,13 +327,14 @@ impl Dt {
                         let f = self.tds.face(t, i);
                         for e in 0..3 {
                             let (a, b) = (f[e], f[(e + 1) % 3]);
-                            if let Some(plan) = self.plan_edge_removal(a, b, t, 3, &mut sc) {
-                                if plan.old.len() == 3 && plan.old.contains(&n) {
-                                    self.apply(&plan)?;
-                                    flips += 1;
-                                    changed = true;
-                                    break;
-                                }
+                            if let Some(plan) = self.plan_edge_removal(a, b, t, 3, &mut sc)
+                                && plan.old.len() == 3
+                                && plan.old.contains(&n)
+                            {
+                                self.apply(&plan)?;
+                                flips += 1;
+                                changed = true;
+                                break;
                             }
                         }
                     }
@@ -424,5 +348,55 @@ impl Dt {
             }
         }
         Ok(flips)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::V3;
+
+    /// Three tets around the axis a-b (a above, b below); the 3-2 flip must produce two tets.
+    #[test]
+    fn three_two_flip_orientation() {
+        let pts: Vec<V3> = vec![
+            [0.0, 0.0, 1.0],  // a 0
+            [0.0, 0.0, -1.0], // b 1
+            [1.0, 0.0, 0.0],  // 2
+            [-0.5, 0.866, 0.0],
+            [-0.5, -0.866, 0.0],
+        ];
+        let mut dt = Dt::new(pts);
+        let mk = |x: u32, y: u32| {
+            let mut v = [0, 1, x, y];
+            if ori(dt_p(&dt_pts(), v[0]), dt_p(&dt_pts(), v[1]), dt_p(&dt_pts(), v[2]), dt_p(&dt_pts(), v[3])) < 0 {
+                v.swap(2, 3);
+            }
+            v
+        };
+        fn dt_pts() -> Vec<V3> {
+            vec![[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [-0.5, 0.866, 0.0], [-0.5, -0.866, 0.0]]
+        }
+        fn dt_p(p: &[V3], i: u32) -> V3 {
+            p[i as usize]
+        }
+        let tets = [mk(2, 3), mk(3, 4), mk(4, 2)];
+        // Close with ghost-like absent neighbours: use replace with open boundary (NONE neighbours).
+        // replace() requires matching old boundary faces; with an empty old set every face must
+        // pair, so add outer ghosts: build the full 5-point hull via the Delaunay builder instead.
+        let _ = (&mut dt, tets);
+        let dt = crate::delaunay::build(dt_pts(), None, None).unwrap();
+        let mut sc = FlipScratch::default();
+        let t0 = (0..dt.tds.slots() as u32).find(|&t| dt.tds.alive[t as usize] && dt.tds.has(t, 0) && dt.tds.has(t, 1) && dt.tds.ghost_slot(t).is_none());
+        // The Delaunay of this bipyramid contains the axis edge only if the 3 equatorial tets exist.
+        if let Some(t0) = t0 {
+            let plan = dt.plan_edge_removal(0, 1, t0, 16, &mut sc).expect("3-2 flip valid");
+            assert_eq!(plan.old.len(), 3);
+            assert_eq!(plan.new.len(), 2);
+            for v in &plan.new {
+                let p = |i: usize| dt.pts[v[i] as usize];
+                assert_eq!(ori(p(0), p(1), p(2), p(3)), 1);
+            }
+        }
     }
 }

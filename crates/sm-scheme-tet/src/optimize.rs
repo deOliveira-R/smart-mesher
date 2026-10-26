@@ -27,7 +27,7 @@ impl Dt {
             }
             let v = self.tds.verts[t as usize];
             let mut best: Option<(f64, Plan)> = None;
-            let mut consider = |plan: Plan, this: &Dt, best: &mut Option<(f64, Plan)>| {
+            let consider = |plan: Plan, this: &Dt, best: &mut Option<(f64, Plan)>| {
                 let old_q = this.min_quality(&plan.old);
                 if plan.min_q > old_q + 1e-9 && best.as_ref().is_none_or(|b| plan.min_q > b.1.min_q) {
                     *best = Some((old_q, plan));
@@ -67,69 +67,71 @@ impl Dt {
 
     /// Laplacian smoothing of the vertices `>= first_movable` that are used by a tet, with a
     /// backtracking line search that only accepts moves that raise the local minimum mean ratio
-    /// and keep every incident tet strictly positive. Returns the number of passes performed.
+    /// and keep every incident tet strictly positive. Stops early when a pass gains less than
+    /// `1e-4` per movable vertex on average. Returns the number of passes performed.
     pub(crate) fn smooth(&mut self, first_movable: usize, max_passes: usize) -> usize {
         let np = self.pts.len();
+        // Vertex -> tets (CSR). The topology does not change while smoothing.
+        let mut count = vec![0u32; np + 1];
+        let mut live: Vec<u32> = Vec::new();
+        for t in 0..self.tds.slots() as u32 {
+            if self.tds.alive[t as usize] {
+                live.push(t);
+                for &x in &self.tds.verts[t as usize] {
+                    count[x as usize + 1] += 1;
+                }
+            }
+        }
+        for i in 0..np {
+            count[i + 1] += count[i];
+        }
+        let mut fill = count.clone();
+        let mut inc = vec![0u32; count[np] as usize];
+        for &t in &live {
+            for &x in &self.tds.verts[t as usize] {
+                inc[fill[x as usize] as usize] = t;
+                fill[x as usize] += 1;
+            }
+        }
+        let movable: Vec<u32> = (first_movable..np).filter(|&v| count[v + 1] > count[v]).map(|v| v as u32).collect();
+        if movable.is_empty() {
+            return 0;
+        }
+        // Greedy colouring in index order over the vertex adjacency.
+        let mut color = vec![u32::MAX; np];
+        let mut classes: Vec<Vec<u32>> = Vec::new();
+        let mut forbidden: Vec<u32> = Vec::new();
+        for &v in &movable {
+            forbidden.clear();
+            for &t in &inc[count[v as usize] as usize..count[v as usize + 1] as usize] {
+                for &x in &self.tds.verts[t as usize] {
+                    if x != v && color[x as usize] != u32::MAX {
+                        forbidden.push(color[x as usize]);
+                    }
+                }
+            }
+            forbidden.sort_unstable();
+            forbidden.dedup();
+            let mut c = 0;
+            for &f in &forbidden {
+                if f == c {
+                    c += 1;
+                } else if f > c {
+                    break;
+                }
+            }
+            color[v as usize] = c;
+            if classes.len() <= c as usize {
+                classes.resize(c as usize + 1, Vec::new());
+            }
+            classes[c as usize].push(v);
+        }
         let mut passes = 0;
         for _ in 0..max_passes {
-            // Vertex -> tets (CSR), vertex adjacency via tets.
-            let mut count = vec![0u32; np + 1];
-            let mut live: Vec<u32> = Vec::new();
-            for t in 0..self.tds.slots() as u32 {
-                if self.tds.alive[t as usize] {
-                    live.push(t);
-                    for &x in &self.tds.verts[t as usize] {
-                        count[x as usize + 1] += 1;
-                    }
-                }
-            }
-            for i in 0..np {
-                count[i + 1] += count[i];
-            }
-            let mut fill = count.clone();
-            let mut inc = vec![0u32; count[np] as usize];
-            for &t in &live {
-                for &x in &self.tds.verts[t as usize] {
-                    inc[fill[x as usize] as usize] = t;
-                    fill[x as usize] += 1;
-                }
-            }
-            let movable: Vec<u32> = (first_movable..np).filter(|&v| count[v + 1] > count[v]).map(|v| v as u32).collect();
-            if movable.is_empty() {
-                break;
-            }
-            // Greedy colouring in index order over the vertex adjacency.
-            let mut color = vec![u32::MAX; np];
-            let mut classes: Vec<Vec<u32>> = Vec::new();
-            let mut forbidden: Vec<u32> = Vec::new();
-            for &v in &movable {
-                forbidden.clear();
-                for &t in &inc[count[v as usize] as usize..count[v as usize + 1] as usize] {
-                    for &x in &self.tds.verts[t as usize] {
-                        if x != v && color[x as usize] != u32::MAX {
-                            forbidden.push(color[x as usize]);
-                        }
-                    }
-                }
-                forbidden.sort_unstable();
-                forbidden.dedup();
-                let mut c = 0;
-                for &f in &forbidden {
-                    if f == c {
-                        c += 1;
-                    } else if f > c {
-                        break;
-                    }
-                }
-                color[v as usize] = c;
-                if classes.len() <= c as usize {
-                    classes.resize(c as usize + 1, Vec::new());
-                }
-                classes[c as usize].push(v);
-            }
+            let mut gain = 0.0;
             let mut moved_total = 0usize;
             for class in &classes {
-                let updates: Vec<Option<V3>> = {
+                let updates: Vec<Option<(V3, f64)>> = {
                     let this = &*self;
                     class
                         .par_iter()
@@ -137,21 +139,22 @@ impl Dt {
                         .collect()
                 };
                 for (&v, u) in class.iter().zip(updates) {
-                    if let Some(p) = u {
+                    if let Some((p, g)) = u {
                         self.pts[v as usize] = p;
+                        gain += g;
                         moved_total += 1;
                     }
                 }
             }
             passes += 1;
-            if moved_total == 0 {
+            if moved_total == 0 || gain < 1e-4 * movable.len() as f64 {
                 break;
             }
         }
         passes
     }
 
-    fn smooth_vertex(&self, v: u32, inc: &[u32]) -> Option<V3> {
+    fn smooth_vertex(&self, v: u32, inc: &[u32]) -> Option<(V3, f64)> {
         let x = self.pts[v as usize];
         // Neighbour centroid (each neighbour counted once per incident tet; stable and cheap).
         let mut c = [0.0; 3];
@@ -184,10 +187,10 @@ impl Dt {
         let mut alpha = 1.0;
         for _ in 0..5 {
             let cand = add(x, scale(sub(target, x), alpha));
-            if let Some(m) = local_min(cand) {
-                if m > base + 1e-12 {
-                    return Some(cand);
-                }
+            if let Some(m) = local_min(cand)
+                && m > base + 1e-12
+            {
+                return Some((cand, m - base));
             }
             alpha *= 0.5;
         }
