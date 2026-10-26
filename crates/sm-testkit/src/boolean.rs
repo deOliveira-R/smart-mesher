@@ -31,6 +31,19 @@ pub enum Operand {
         /// Height along the axis.
         height: f64,
     },
+    /// The same solid cylinder as [`Operand::Cylinder`], but its lateral surface is given as a
+    /// rational quadratic NURBS (nine-point circle, weights `1, sqrt(2)/2` alternating) instead of
+    /// an analytic quadric. Geometrically identical, so volume and area equal the analytic ones.
+    NurbsCylinder {
+        /// Centre of the base disk.
+        base: [f64; 3],
+        /// Unit axis.
+        axis: [f64; 3],
+        /// Radius.
+        radius: f64,
+        /// Height along the axis.
+        height: f64,
+    },
     /// Solid sphere.
     Sphere {
         /// Centre.
@@ -45,7 +58,7 @@ impl Operand {
     pub fn volume(&self) -> f64 {
         match *self {
             Operand::Brick { size, .. } => size[0] * size[1] * size[2],
-            Operand::Cylinder { radius, height, .. } => PI * radius * radius * height,
+            Operand::Cylinder { radius, height, .. } | Operand::NurbsCylinder { radius, height, .. } => PI * radius * radius * height,
             Operand::Sphere { radius, .. } => 4.0 / 3.0 * PI * radius.powi(3),
         }
     }
@@ -54,7 +67,7 @@ impl Operand {
     pub fn area(&self) -> f64 {
         match *self {
             Operand::Brick { size, .. } => 2.0 * (size[0] * size[1] + size[1] * size[2] + size[0] * size[2]),
-            Operand::Cylinder { radius, height, .. } => 2.0 * PI * radius * (radius + height),
+            Operand::Cylinder { radius, height, .. } | Operand::NurbsCylinder { radius, height, .. } => 2.0 * PI * radius * (radius + height),
             Operand::Sphere { radius, .. } => 4.0 * PI * radius * radius,
         }
     }
@@ -168,7 +181,9 @@ pub fn partial_overlap_bricks() -> BooleanCase {
 }
 
 /// The brick `[0,2]^3` and the sphere of radius 1 centred at `(2, 1, 1)`, the middle of the
-/// brick's `x = 2` face: exactly a hemisphere is inside. Union: volume `8 + 2 pi / 3`, area
+/// brick's `x = 2` face: exactly a hemisphere is inside. This is a deliberate tangency stress
+/// case: the sphere is tangent to the four edges of the `x = 2` face and touches the faces
+/// `y = 0`, `y = 2`, `z = 0`, `z = 2` at single points. Union: volume `8 + 2 pi / 3`, area
 /// `24 - pi + 2 pi = 24 + pi`. Intersection (the hemisphere): volume `2 pi / 3`, area
 /// `pi + 2 pi = 3 pi`. `A - B`: volume `8 - 2 pi / 3`, area `24 + pi`.
 pub fn brick_sphere_half() -> BooleanCase {
@@ -182,6 +197,16 @@ pub fn brick_sphere_half() -> BooleanCase {
             exp(Rule::Subtract, &[8.0 - 2.0 * PI / 3.0], 24.0 + PI, None, None),
         ],
     }
+}
+
+/// [`brick_minus_cylinder`] with the tool given as a [`Operand::NurbsCylinder`]: the rational
+/// NURBS form of the same cylinder must give the same result (volume `64 - 4 pi`, area
+/// `96 + 6 pi`, counts 10/15/7, Euler 2).
+pub fn nurbs_cylinder_equiv() -> BooleanCase {
+    let mut c = brick_minus_cylinder();
+    c.name = "nurbs_cylinder_equiv";
+    c.b = Operand::NurbsCylinder { base: [2.0, 2.0, -1.0], axis: [0.0, 0.0, 1.0], radius: 1.0, height: 6.0 };
+    c
 }
 
 /// Two perpendicular cylinders for surface-surface intersection tests: `A` of radius 1 about the
@@ -208,5 +233,5 @@ pub fn crossing_cylinders_curve_point(phi: f64, sign: f64) -> [f64; 3] {
 
 /// All cases, in a fixed order.
 pub fn cases() -> Vec<BooleanCase> {
-    vec![overlapping_bricks(), brick_minus_cylinder(), brick_with_cavity(), partial_overlap_bricks(), brick_sphere_half(), crossing_cylinders()]
+    vec![overlapping_bricks(), brick_minus_cylinder(), brick_with_cavity(), partial_overlap_bricks(), brick_sphere_half(), crossing_cylinders(), nurbs_cylinder_equiv()]
 }

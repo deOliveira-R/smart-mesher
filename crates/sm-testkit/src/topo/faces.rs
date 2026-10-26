@@ -50,11 +50,11 @@ fn plane_z(z: f64) -> Result<SurfaceDef, FixtureError> {
 type LoopIds = Vec<Vec<EntityId>>;
 
 /// The planar face of `region` at height `z`: one straight `Line` edge per segment, the outer
-/// loop counter-clockwise and the holes clockwise as given (normal `+z`), `Plane` carrier.
+/// loop counter-clockwise and the holes clockwise (normal `+z`; checked by signed area), `Plane` carrier.
 ///
 /// Invariants: `loop_count() == 1 + holes`, face area equals `region.area` (to 1e-12 relative for
 /// the shipped regions), `euler == 1 - holes`. Errors if a loop has fewer than three vertices or
-/// a zero-length segment.
+/// a zero-length segment, or a loop with the wrong orientation.
 pub fn planar_face(region: &Region2, z: f64) -> Result<FaceFixture, FixtureError> {
     let mut t = CellComplex::new();
     let (face, vertices, edges) = run(&mut t, 1, |t| {
@@ -64,6 +64,10 @@ pub fn planar_face(region: &Region2, z: f64) -> Result<FaceFixture, FixtureError
         for l in region.loops() {
             if l.len() < 3 {
                 return Err(bad("a loop needs at least three vertices"));
+            }
+            let sa = crate::loops2d::signed_area(l);
+            if (loops.is_empty() && sa <= 0.0) || (!loops.is_empty() && sa >= 0.0) {
+                return Err(bad("outer loop must be counter-clockwise and holes clockwise"));
             }
             let pts: Vec<Point3> = l.iter().map(|p| Point3::new(p.0, p.1, z)).collect();
             let vs: Vec<EntityId> = pts.iter().map(|p| t.make_vertex(*p)).collect::<Result<_, _>>()?;

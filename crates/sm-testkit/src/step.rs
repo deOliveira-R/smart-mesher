@@ -98,7 +98,7 @@ pub const W3A_PART: StepFixture = StepFixture {
     solids: 3,
     volume: crate::w3a::TOTAL_VOLUME,
     rel_tol: 1e-9,
-    marker: "MANIFOLD_SOLID_BREP",
+    marker: "CARTESIAN_POINT('',(10.,20.,10.))",
 };
 
 /// Every committed STEP file, in a fixed order.

@@ -41,6 +41,13 @@ fn planar_faces_of_every_region() {
 }
 
 #[test]
+fn planar_face_rejects_wrong_orientation() {
+    let mut r = loops2d::square();
+    r.outer.reverse();
+    assert!(topo::planar_face(&r, 0.0).is_err());
+}
+
+#[test]
 fn planar_face_rejects_degenerate_loops() {
     let mut r = loops2d::square();
     r.outer.truncate(2);
@@ -202,7 +209,11 @@ fn instanced_core_places_n_copies() {
 #[test]
 fn boolean_cases_are_self_consistent() {
     let cases = boolean::cases();
-    assert_eq!(cases.len(), 6);
+    assert_eq!(cases.len(), 7);
+    let (a, b) = (boolean::brick_minus_cylinder(), boolean::nurbs_cylinder_equiv());
+    assert_eq!(a.expected, b.expected);
+    close(a.b.volume(), b.b.volume(), 1e-15, "nurbs tool volume");
+    close(a.b.area(), b.b.area(), 1e-15, "nurbs tool area");
     for c in &cases {
         // Inclusion-exclusion between the operations of one case.
         let get = |r| c.expect(r).map(|e| e.volumes.iter().sum::<f64>());
