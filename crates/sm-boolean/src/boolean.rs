@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3, Vector3};
-use sm_topo_api::{CoedgeKind, Dim, FaceUseSpec, Sense, ShellKind, ShellSpec, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Dim, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt};
 
 use crate::arrange;
 use crate::bodies;
@@ -378,7 +378,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     // 12. Final checks.
     for &v in &new_volumes {
         let m = topo.volume_moments(v)?;
-        if !(m.volume > 0.0) {
+        if m.volume.is_nan() || m.volume <= 0.0 {
             return Err(BooleanError::ResultInvalid { volume: v, rule: rule.name() });
         }
     }

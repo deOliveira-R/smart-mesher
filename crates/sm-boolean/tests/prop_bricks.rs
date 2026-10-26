@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use sm_boolean::{BoolOptions, BoolRule, BooleanError, boolean};
-use sm_topo_api::{CellComplex, TopologyView};
+use sm_topo_api::CellComplex;
 
 fn interval_overlap(a0: i32, a1: i32, b0: i32, b1: i32) -> i32 {
     (a1.min(b1) - a0.max(b0)).max(0)

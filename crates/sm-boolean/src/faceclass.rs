@@ -83,7 +83,7 @@ fn build_model<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<FaceMo
             let mut last3: Option<Point3> = None;
             for k in 0..=SAMPLES {
                 let frac = k as f64 / SAMPLES as f64;
-                let t = geo::edge_param(&cc, if along { frac } else { 1.0 - frac });
+                let t = geo::edge_param(cc, if along { frac } else { 1.0 - frac });
                 let p3 = curve.eval(t);
                 if let Some(l) = last3 {
                     spacing = spacing.max(geo::dist(l, p3));

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use sm_core::EntityId;
-use sm_topo_api::{Dim, Incidence, ShellKind, Side, TopologyView, TopologyViewExt};
+use sm_topo_api::{Dim, Incidence, ShellKind, Side, TopologyView};
 
 use crate::error::BooleanError;
 

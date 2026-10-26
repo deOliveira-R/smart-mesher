@@ -137,7 +137,7 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
             }
         }
     }
-    for (&b, _) in &old_bodies {
+    for &b in old_bodies.keys() {
         let members: Vec<EntityId> = topo.boundary(b).iter().map(|e| e.cell).collect();
         if members.iter().any(|m| !target_set.contains(m)) {
             return Err(BooleanError::Unsupported("webcut of some volumes of a body that holds other cells: delete or separate them first"));
@@ -336,10 +336,6 @@ fn side_of_volume<V: TopologyView + ?Sized>(view: &V, v: EntityId, tool: EntityI
         }
     }
     Ok(None)
-}
-
-fn side_of_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, tool: EntityId, lin: f64) -> Result<bool, BooleanError> {
-    try_side_of_face(view, f, tool, lin)?.ok_or(BooleanError::Unsupported("a face lies on the tool surface"))
 }
 
 fn try_side_of_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, tool: EntityId, lin: f64) -> Result<Option<bool>, BooleanError> {
@@ -624,7 +620,7 @@ fn build_cylinder_caps<E: TopologyEdit + ?Sized>(topo: &mut E, edges: &mut BTree
         }
     }
     bands.sort_by(|a, b| a.0.total_cmp(&b.0));
-    if bands.len() % 2 != 0 {
+    if !bands.len().is_multiple_of(2) {
         return Err(BooleanError::Unsupported("the tool cuts the volume in an odd number of loops around the cylinder: it does not separate it"));
     }
     for pair in bands.chunks(2) {

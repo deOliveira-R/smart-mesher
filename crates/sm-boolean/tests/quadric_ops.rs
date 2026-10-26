@@ -6,7 +6,6 @@ use common::rig::*;
 use common::*;
 use core::f64::consts::PI;
 use sm_boolean::ops::{Intersect, Subtract, Unite};
-use sm_topo_api::{TopologyView, TopologyViewExt};
 
 #[test]
 fn brick_minus_through_cylinder() {
@@ -83,11 +82,6 @@ fn unite_brick_and_sphere_half() {
     let t = r.topo();
     assert_valid(t);
     let v = d.outputs["volumes"][0];
-    for &f in t.volume_faces(v) {
-        let fm = t.face_moments(f).unwrap();
-        eprintln!("face {f} area {} sides {:?} outline {:?}", fm.area, t.face_sides(f), t.face_outline(f).len());
-    }
-    eprintln!("counts {:?} vol {} want {}", counts(t), volume_of(t, v), 8.0 + 2.0 * PI / 3.0);
     assert!((volume_of(t, v) - (8.0 + 2.0 * PI / 3.0)).abs() < 1e-8 * 9.0);
     assert!((total_area(t) - (24.0 + PI)).abs() < 1e-8 * 30.0);
 }
@@ -166,10 +160,5 @@ fn unite_brick_and_sphere_half_unregularized() {
     let t = r.topo();
     assert_valid(t);
     let v = d.outputs["volumes"][0];
-    for &f in t.volume_faces(v) {
-        let fm = t.face_moments(f).unwrap();
-        eprintln!("face {f} area {} outline {:?}", fm.area, t.face_outline(f).len());
-    }
-    eprintln!("counts {:?} vol {} want {}", counts(t), volume_of(t, v), 8.0 + 2.0 * PI / 3.0);
     assert!((volume_of(t, v) - (8.0 + 2.0 * PI / 3.0)).abs() < 1e-8 * 9.0);
 }

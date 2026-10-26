@@ -86,9 +86,9 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
     let computed = pieces::compute(&*topo, &pairs, Share::Private, &group_of, 10.0 * tol.linear_max)?;
     let mut out = ImprintOutcome::default();
     let mut fragments: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
-    for g in 0..groups.len() {
+    for (g, faces) in faces_for.iter().enumerate().take(groups.len()) {
         let ps: Vec<&pieces::Piece> = computed.pieces.iter().filter(|p| p.group == g).collect();
-        let applied = arrange::apply(topo, &ps, tol.linear, &faces_for[g])?;
+        let applied = arrange::apply(topo, &ps, tol.linear, faces)?;
         out.edges.extend(applied.new_edges.iter().copied());
         fragments.extend(applied.fragments);
     }

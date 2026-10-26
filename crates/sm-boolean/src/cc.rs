@@ -200,11 +200,10 @@ fn numeric(c1: &dyn ParametricCurve, r1: Interval, c2: &dyn ParametricCurve, r2:
         }
         if best_d <= tol {
             let p = c1.eval(best_t);
-            if let Some((_, s)) = dist_to_range(c2, r2, p) {
-                if out.points.iter().all(|h| (h.t1 - best_t).abs() > 1e-9 * r1.len().abs().max(1.0)) {
+            if let Some((_, s)) = dist_to_range(c2, r2, p)
+                && out.points.iter().all(|h| (h.t1 - best_t).abs() > 1e-9 * r1.len().abs().max(1.0)) {
                     out.points.push(CcHit { t1: best_t, t2: s, p });
                 }
-            }
         }
     }
     out.points.sort_by(|a, b| a.t1.total_cmp(&b.t1));

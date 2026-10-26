@@ -6,7 +6,7 @@ use common::rig::*;
 use common::*;
 use sm_boolean::ops::{Intersect, Subtract, Unite};
 use sm_model::Rotate;
-use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
+use sm_topo_api::{Dim};
 
 fn crossing(r: &mut Rig) -> (Solid, Solid) {
     let a = r.cylinder(4.0, 1.0, [0.0; 3]);

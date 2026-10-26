@@ -57,8 +57,10 @@ pub(crate) struct Piece {
     pub group: usize,
     /// An existing edge this piece is a part of (a coincident-face imprint): in a shared apply
     /// its sub-edge is used instead of a new edge.
+    #[allow(dead_code)]
     pub source_edge: Option<EntityId>,
     /// Index of the pair that produced the piece.
+    #[allow(dead_code)]
     pub pair: usize,
 }
 
@@ -83,7 +85,7 @@ pub(crate) struct Computed {
     pub any_curves: bool,
 }
 
-pub(crate) fn surface_def_of<'a, V: TopologyView + ?Sized>(view: &'a V, f: EntityId) -> Option<&'a SurfaceDef> {
+pub(crate) fn surface_def_of<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<&SurfaceDef> {
     match view.carrier(f) {
         Carrier::Surface(sc) => view.shapes().surface_def(sc.surface),
         _ => None,
@@ -141,11 +143,10 @@ pub(crate) fn compute<V: TopologyView + ?Sized>(view: &V, pairs: &[PairSpec], sh
         let out = out?;
         c.any_curves |= out.any_curves;
         c.tangent_points.extend(out.tangent);
-        if out.coincident {
-            if let Other::Face(b) = pairs[pi].b {
+        if out.coincident
+            && let Other::Face(b) = pairs[pi].b {
                 c.coincident.push((pairs[pi].a, b));
             }
-        }
         let base = key;
         let max_idx = out.next_idx;
         for pr in out.pieces {

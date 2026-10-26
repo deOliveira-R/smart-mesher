@@ -5,7 +5,7 @@
 //! classification of the fragments against the other operand, volume assembly and
 //! regularization. See `DESIGN.md`.
 //!
-//! The library functions ([`boolean`], [`imprint_bodies`], [`merge`], [`webcut`]) run **inside an
+//! The library functions ([`boolean()`], [`imprint_bodies`], [`merge()`], [`webcut()`]) run **inside an
 //! already open operation** (`begin_op` .. `end_op`), exactly like `sm_topo_api::fixtures`: they
 //! never open, close or abort one. Atomicity comes from the caller: `sm_layer_api::topo_txn`
 //! aborts the operation when a function returns `Err`, and tests use

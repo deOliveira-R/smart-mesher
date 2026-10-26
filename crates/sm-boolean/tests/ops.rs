@@ -9,7 +9,7 @@ use sm_boolean::KeepSide;
 use sm_boolean::ops::{AxisPlane, Intersect, PlaneAxis, PlaneSpec, PointNormalPlane, Subtract, Unite, VerticesPlane, WebcutPlane, WebcutSurface};
 use sm_core::{EntityId, EntityKind};
 use sm_op_api::{Delta, OpError, TimelineError};
-use sm_topo_api::{Carrier, Dim, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, Dim, TopologyViewExt};
 
 fn cube(r: &mut Rig) -> Solid {
     r.brick([1.0; 3], [0.5; 3])

@@ -14,7 +14,7 @@ use sm_geom_api::{Frame, SurfaceDef};
 use sm_layer_api::{MeshLayer, ModelLayer, commit_topology, topo_txn};
 use sm_model_api::FaceRole;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
-use sm_topo_api::{Carrier, Dim, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, Dim, TopologyView};
 
 use crate::boolean::{BoolOptions, BoolRule, boolean};
 use crate::error::BooleanError;
@@ -498,7 +498,7 @@ impl TypedOp for WebcutPlane {
                 (p[0], n)
             }
         };
-        if !(normal.norm() > 0.0) {
+        if normal.norm().is_nan() || normal.norm() <= 0.0 {
             return Err(OpError::Invalid("the plane is degenerate (zero normal)".into()));
         }
         webcut_run(ctx, &self.targets, CutTool::Plane { origin, normal }, self.keep, self.merge, self.imprint)
@@ -581,7 +581,7 @@ impl TypedOp for WebcutCylinder {
         }
         let axis = finite3("axis", self.axis)?;
         let c = finite3("center", self.center)?;
-        if !(axis.norm() > 0.0) {
+        if axis.norm().is_nan() || axis.norm() <= 0.0 {
             return Err(OpError::Invalid("`axis` must not be zero".into()));
         }
         let frame = Frame::from_z(Point3::new(c.x, c.y, c.z), axis).map_err(|e| OpError::Invalid(e.to_string()))?;

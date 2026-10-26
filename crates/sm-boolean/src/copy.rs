@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use sm_core::EntityId;
-use sm_topo_api::{Carrier, CoedgeSpec, Dim, FaceUseSpec, Incidence, Sense, ShellKind, ShellSpec, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CoedgeSpec, Dim, FaceUseSpec, Incidence, Sense, ShellKind, ShellSpec, Side, TopologyEdit, TopologyViewExt};
 
 use crate::error::BooleanError;
 use crate::geo;

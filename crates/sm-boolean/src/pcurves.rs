@@ -10,8 +10,8 @@
 //! gets no pcurve (a gap documented in `W3_REPORT.md`).
 
 use sm_core::EntityId;
-use sm_geom_api::{Interval, Line2, PCurve, ParametricSurface, SurfaceDef, Uv};
-use sm_topo_api::{Carrier, CoedgeKey, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_geom_api::{Interval, Line2, PCurve, SurfaceDef, Uv};
+use sm_topo_api::{Carrier, CoedgeKey, Sense, Side, TopologyEdit, TopologyViewExt};
 
 use crate::error::BooleanError;
 use crate::geo;
@@ -147,6 +147,3 @@ pub(crate) fn fix_faces<E: TopologyEdit + ?Sized>(topo: &mut E, faces: &[EntityI
     }
     Ok(())
 }
-
-#[allow(dead_code)]
-fn unused(_: &dyn ParametricSurface) {}

@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use sm_boolean::{ImprintOptions, MergeKind, MergeOptions, MergeStatus, imprint_bodies, merge, merge_check};
-use sm_topo_api::{CellComplex, Coincidence, Dim, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellComplex, Coincidence, Dim, TopologyView, TopologyViewExt};
 
 #[test]
 fn partial_overlap_imprint_then_merge() {

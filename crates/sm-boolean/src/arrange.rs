@@ -611,7 +611,7 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
             for k in 0..per_edge {
                 let frac = k as f64 / per_edge as f64;
-                let t = geo::edge_param(&cc0, if spec.sense == Sense::Forward { frac } else { 1.0 - frac });
+                let t = geo::edge_param(cc0, if spec.sense == Sense::Forward { frac } else { 1.0 - frac });
                 let p = curve.eval(t);
                 let pr = surf.project(p, prev)?;
                 let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |q| q.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |q| q.v)));
@@ -676,7 +676,7 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             for k in 0..N {
                 let frac = k as f64 / N as f64;
                 let along = spec.sense == Sense::Forward;
-                let t = geo::edge_param(&cc0, if along { frac } else { 1.0 - frac });
+                let t = geo::edge_param(cc0, if along { frac } else { 1.0 - frac });
                 let pr = surf.project(curve.eval(t), prev)?;
                 let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)));
                 pts.push(uv);

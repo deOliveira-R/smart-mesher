@@ -8,7 +8,7 @@ use sm_core::EntityId;
 use sm_layer_api::{CoreLayers, ModelLayer, TopoHost};
 use sm_model::{CreateBrick, CreateCylinder, CreateSphere, ModelPlugin};
 use sm_op_api::{DerivedCache, Delta, Engine, Meta, Op, QuietControl, Registry, Services, Session, TimelineError};
-use sm_topo_api::{TopologyEdit, TopologyView};
+use sm_topo_api::{TopologyView};
 
 pub type Factory = fn() -> Box<dyn TopoHost>;
 
@@ -50,6 +50,12 @@ impl Rig {
 
     pub fn cc() -> Self {
         Self::new(cell_complex)
+    }
+
+    /// A rig without the derived-data cache (cold replay checks).
+    pub fn uncached(factory: Factory) -> Self {
+        let engine = Engine::new(Arc::new(registry(factory)), Services::new(), Arc::new(DerivedCache::disabled())).expect("engine");
+        Self { s: Session::new(engine) }
     }
 
     pub fn run(&mut self, op: &dyn Op) -> Result<Delta, TimelineError> {
