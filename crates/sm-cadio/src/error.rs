@@ -125,6 +125,9 @@ pub enum StepError {
     /// The `inline` source is malformed or too large.
     #[error("{0}")]
     Inline(String),
+    /// A read option is invalid (a solid ordinal out of range, a bad tolerance).
+    #[error("{0}")]
+    BadOption(String),
     /// The writer cannot export the model (or an I/O error while writing).
     #[error("export: {0}")]
     Export(String),
@@ -169,6 +172,7 @@ impl StepError {
             Self::Topology(_) => "step.topology",
             Self::Inline(_) => "step.inline",
             Self::Export(_) => "step.export",
+            Self::BadOption(_) => "step.bad_option",
         }
     }
 }

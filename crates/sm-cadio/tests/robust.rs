@@ -40,6 +40,12 @@ fn corpus() -> Vec<(String, Vec<u8>)> {
         "frustum_r2_r1_h3.stp",
         "sphere_seam_r3.stp",
         "block_fillet_nurbs.stp",
+        "brick_faceted.stp",
+        "brick_faceted_dup.stp",
+        "brick_unstitched.stp",
+        "sheet_open_box.stp",
+        "assembly_pins.stp",
+        "assembly_mapped.stp",
         "bad/open_shell.stp",
         "bad/cyclic_ref.stp",
         "bad/no_units.stp",
@@ -174,7 +180,7 @@ fn one_case(idx: u64, corpus: &[(String, Vec<u8>)]) -> String {
         let est = tree_bytes(&file);
         assert!(est <= 20 * bytes.len() + 4096, "{label}: parse tree of ~{est} bytes");
     }
-    let opts = ReadOptions { assume_unit: Some(LengthUnit::Mm), to_unit: if idx.is_multiple_of(3) { Some(LengthUnit::Cm) } else { None }, weld_tol: if idx.is_multiple_of(5) { 1e-3 } else { 1e-6 }, ..ReadOptions::default() };
+    let opts = ReadOptions { assume_unit: Some(LengthUnit::Mm), to_unit: if idx.is_multiple_of(3) { Some(LengthUnit::Cm) } else { None }, weld_tol: if idx.is_multiple_of(5) { 1e-3 } else { 1e-6 }, sheets: idx.is_multiple_of(7), flatten_assemblies: !idx.is_multiple_of(11), ..ReadOptions::default() };
     if let Ok(model) = read_step(&bytes, &opts) {
         // Whatever reads must realize without panicking (errors are fine). NURBS models are
         // skipped: the orientation self-check integrates them (about 8 s for the loft in debug
@@ -194,7 +200,8 @@ fn mutated_and_random_inputs_never_panic() {
     let corpus = corpus();
     // Warm the rayon pool so its start-up is not attributed to any case.
     let _ = read_step(&synth::bricks_step(10), &ReadOptions::default());
-    let cases = 2400u64;
+    // 2400 cases by default; `SM_CADIO_FUZZ_CASES=n` runs a longer sweep.
+    let cases = std::env::var("SM_CADIO_FUZZ_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(2400u64);
     for idx in 0..cases {
         let t0 = std::time::Instant::now();
         let r = catch_unwind(AssertUnwindSafe(|| one_case(idx, &corpus)));

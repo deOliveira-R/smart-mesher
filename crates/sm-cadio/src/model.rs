@@ -153,7 +153,8 @@ pub struct ReadOptions {
     pub weld_tol: f64,
     /// Import only these solids (0-based ordinals in ascending STEP id). `None` imports all.
     pub solids: Option<Vec<u32>>,
-    /// Import sheets (`SHELL_BASED_SURFACE_MODEL`, `OPEN_SHELL`). Not supported yet.
+    /// Import sheets (`SHELL_BASED_SURFACE_MODEL`): free faces grouped in one body per model,
+    /// listed after the solids. Their shells need not be closed.
     pub sheets: bool,
     /// Apply assembly placements (`MAPPED_ITEM`, `ITEM_DEFINED_TRANSFORMATION`): one solid per
     /// instance, in the root representation's coordinates. When `false`, or when a placement
@@ -275,6 +276,11 @@ pub enum SolidKind {
     Manifold,
     /// `BREP_WITH_VOIDS`.
     WithVoids,
+    /// `FACETED_BREP`: planar facets bounded by `POLY_LOOP`s. Planes and straight edges are
+    /// synthesized from the points.
+    Faceted,
+    /// `SHELL_BASED_SURFACE_MODEL`: faces with no volume (only with `ReadOptions::sheets`).
+    Sheet,
 }
 
 /// One solid with its own cells and geometry.

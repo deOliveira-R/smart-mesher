@@ -373,3 +373,34 @@ fn s3_the_milestone_part_keeps_its_coordinates() {
     let b = read_step(sm_testkit::w3a::STEP, &ReadOptions { flatten_assemblies: false, ..ReadOptions::default() }).expect("read");
     assert_eq!(a.solids, b.solids);
 }
+
+/// An inward sphere (`same_sense = .F.`) has its carrier flipped back by the orientation check,
+/// and the pole sweeps are recomputed for the flipped carrier.
+#[test]
+fn inward_sphere_and_cone_are_flipped_and_keep_valid_poles() {
+    for (name, bytes, vol) in [
+        ("sphere", data("sphere_seam_r3.stp"), 36.0 * PI),
+        ("occ cone", sm_testkit::step::CONE_R2_H3.bytes.to_vec(), 4.0 * PI),
+    ] {
+        let t = String::from_utf8(bytes).expect("ascii");
+        // Flip the same_sense flag of every ADVANCED_FACE.
+        let mut out = String::new();
+        for line in t.split_inclusive('\n') {
+            if line.contains("ADVANCED_FACE(") && line.trim_end().ends_with(".T.);") {
+                out.push_str(&line.replacen(".T.);", ".F.);", 1));
+            } else if line.contains("ADVANCED_FACE(") && line.trim_end().ends_with(".F.);") {
+                out.push_str(&line.replacen(".F.);", ".T.);", 1));
+            } else {
+                out.push_str(line);
+            }
+        }
+        // OCC wraps long lines: the flag may sit on a continuation line.
+        let out = if out == t { t.replace("),#22,.T.);", "),#22,.F.);") } else { out };
+        assert_ne!(out, t, "{name}: the fixture was modified");
+        let m = read_step(out.as_bytes(), &ReadOptions::default()).expect("read");
+        let (h, r) = import_into(cell_complex, &m);
+        assert!(!r.inverted.is_empty(), "{name}: flagged as inverted");
+        assert!(rel(volume(h.as_view(), r.volumes[0]), vol) <= 1e-9, "{name}: {}", volume(h.as_view(), r.volumes[0]));
+        assert!(issues(h.as_view()).is_empty(), "{name}: {:?}", issues(h.as_view()));
+    }
+}

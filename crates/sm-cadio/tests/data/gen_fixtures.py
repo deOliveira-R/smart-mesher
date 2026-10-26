@@ -463,7 +463,69 @@ def assembly_text(mapped):
     return header(AP214, "assembly") + d.text() + FOOTER
 
 
+def unstitched_text():
+    """A 2x3x4 brick as a face soup: every face owns its four vertices and four edges."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    s = Solid(d)
+    size = (2.0, 3.0, 4.0)
+
+    def corner(i):
+        return ((i & 1) * size[0], ((i >> 1) & 1) * size[1], ((i >> 2) & 1) * size[2])
+
+    for f in range(6):
+        cyc = CORNER_CYCLES[f]
+        vs = [s.vertex(corner(c)) for c in cyc]
+        es = [s.line_edge(vs[i], vs[(i + 1) % 4]) for i in range(4)]
+        surf = s.plane(corner(cyc[0]), NORMALS[f])
+        s.face(surf, [[(e, True) for e in es]])
+    solid = d.add(f"MANIFOLD_SOLID_BREP('soup',#{s.shell()})")
+    product(d, ctx, [solid])
+    return header(AP214, "brick_unstitched") + d.text() + FOOTER
+
+
+def faceted_text(duplicate_points):
+    """A 2x3x4 brick as an AP203 FACETED_BREP: FACE / POLY_LOOP, no surfaces or edges."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    size = (2.0, 3.0, 4.0)
+
+    def corner(i):
+        return ((i & 1) * size[0], ((i >> 1) & 1) * size[1], ((i >> 2) & 1) * size[2])
+
+    shared = [d.point(corner(i)) for i in range(8)]
+    faces = []
+    for f in range(6):
+        cyc = CORNER_CYCLES[f]
+        pts = [d.point(corner(c)) if duplicate_points else shared[c] for c in cyc]
+        lp = d.add(f"POLY_LOOP('',({','.join('#%d' % p for p in pts)}))")
+        fb = d.add(f"FACE_OUTER_BOUND('',#{lp},.T.)")
+        faces.append(d.add(f"FACE('',(#{fb}))"))
+    sh = d.add(f"CLOSED_SHELL('',({','.join('#%d' % f for f in faces)}))")
+    solid = d.add(f"FACETED_BREP('faceted',#{sh})")
+    origin = d.axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+    d.add(f"FACETED_BREP_SHAPE_REPRESENTATION('',(#{origin},#{solid}),#{ctx})")
+    return header(AP214, "brick_faceted") + d.text() + FOOTER
+
+
+def sheet_text():
+    """The 2x3x4 brick without its top face: an OPEN_SHELL in a SHELL_BASED_SURFACE_MODEL."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    s = brick_parts(d, (0.0, 0.0, 0.0), (2.0, 3.0, 4.0))
+    s.f.pop()
+    sh = d.add(f"OPEN_SHELL('',({','.join('#%d' % f for f in s.f)}))")
+    sbsm = d.add(f"SHELL_BASED_SURFACE_MODEL('open box',(#{sh}))")
+    origin = d.axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+    d.add(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#{origin},#{sbsm}),#{ctx})")
+    return header(AP214, "sheet_open_box") + d.text() + FOOTER
+
+
 def main():
+    write("brick_faceted.stp", faceted_text(False))
+    write("brick_faceted_dup.stp", faceted_text(True))
+    write("sheet_open_box.stp", sheet_text())
+    write("brick_unstitched.stp", unstitched_text())
     write("assembly_pins.stp", assembly_text(False))
     write("assembly_mapped.stp", assembly_text(True))
     write("brick_inverted.stp", inverted_text())

@@ -16,7 +16,7 @@ use crate::source::{Source, load};
 /// Output roles of the import (all `Many`, in STEP-id order).
 const IMPORT_OUTPUTS: &[OutputRole] = &[
     OutputRole::new("bodies", &[EntityKind::TopoBody], Cardinality::Many, "One body per imported solid."),
-    OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "One volume per imported solid."),
+    OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "One volume per imported solid (none for sheets)."),
     OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The faces of the imported solids."),
     OutputRole::new("edges", &[EntityKind::TopoEdge], Cardinality::Many, "The edges (including pole edges) of the imported solids."),
     OutputRole::new("vertices", &[EntityKind::TopoVertex], Cardinality::Many, "The vertices of the imported solids."),
@@ -38,7 +38,9 @@ const MAX_LISTED_ISSUES: usize = 20;
 /// - `weld_tol`: vertices closer than this (target units) are welded; default the model's linear
 ///   tolerance, at most its `linear_max`.
 /// - `solids`: 0-based ordinals, in ascending STEP id, of the solids to import (default all).
-/// - `sheets`: accepted; `true` is not supported yet and gives `Unsupported`.
+/// - `sheets` (default `false`): also import `SHELL_BASED_SURFACE_MODEL`s, one body of free
+///   faces each, after the solids (`solids` ordinals select among solids only). They produce no
+///   volume.
 /// - `check` (default `true`): run `sm_topo_api::check_cells` and `validate_geometry` on the new
 ///   cells; an `Error` issue fails the op (`Invalid`, first 20 issues listed) and leaves the
 ///   state unchanged, warnings become `step.validate` diagnostics.
@@ -89,9 +91,6 @@ impl TypedOp for ImportStep {
     const IMPL_VERSION: u32 = 1;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        if self.sheets == Some(true) {
-            return Err(OpError::Unsupported("step.sheets: importing sheets is not supported yet".to_owned()));
-        }
         let tol = ctx.layer::<ModelLayer>()?.tolerance();
         let weld_tol = match self.weld_tol {
             None => tol.linear,
@@ -99,10 +98,10 @@ impl TypedOp for ImportStep {
             Some(w) => return Err(OpError::Invalid(format!("weld_tol {w} must be finite, positive and at most the model's linear_max {}", tol.linear_max))),
         };
         let bytes = load(&self.source, || ctx.service::<StepInputs>())?;
-        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: false, flatten_assemblies: true };
+        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: self.sheets.unwrap_or(false), flatten_assemblies: true };
         let model = read_step(&bytes, &opts)?;
         if model.solids.is_empty() {
-            return Err(OpError::Invalid("step.no_solids: the file contains no MANIFOLD_SOLID_BREP or BREP_WITH_VOIDS to import".to_owned()));
+            return Err(OpError::Invalid("step.no_solids: the file contains no solid (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, FACETED_BREP) to import".to_owned()));
         }
         let label = self.name.clone().unwrap_or_default();
         for n in &model.notes {

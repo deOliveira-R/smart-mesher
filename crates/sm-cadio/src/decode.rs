@@ -45,11 +45,18 @@ pub(crate) fn solid_entities(file: &StepFile) -> Vec<(u64, SolidKind)> {
                 Some((*id, SolidKind::WithVoids))
             } else if e.is("MANIFOLD_SOLID_BREP") {
                 Some((*id, SolidKind::Manifold))
+            } else if e.is("FACETED_BREP") {
+                Some((*id, SolidKind::Faceted))
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// `SHELL_BASED_SURFACE_MODEL` entities in ascending id order.
+pub(crate) fn sheet_entities(file: &StepFile) -> Vec<u64> {
+    file.entities.iter().filter(|(_, e)| e.is("SHELL_BASED_SURFACE_MODEL")).map(|(id, _)| *id).collect()
 }
 
 /// Counts of entity keywords that are not imported, by category.
@@ -70,7 +77,7 @@ pub(crate) fn scan_skipped(file: &StepFile) -> Skipped {
         for n in names {
             match n {
                 "SHELL_BASED_SURFACE_MODEL" | "OPEN_SHELL" | "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" | "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION" => *s.sheets.entry(n.to_owned()).or_default() += 1,
-                "FACETED_BREP" | "TESSELLATED_SOLID" | "TRIANGULATED_FACE" => *s.unsupported.entry(n.to_owned()).or_default() += 1,
+                "TESSELLATED_SOLID" | "TRIANGULATED_FACE" => *s.unsupported.entry(n.to_owned()).or_default() += 1,
                 "MAPPED_ITEM" | "NEXT_ASSEMBLY_USAGE_OCCURRENCE" => s.assemblies = true,
                 "COLOUR_RGB" | "DRAUGHTING_PRE_DEFINED_COLOUR" => *s.attributes.entry("colors").or_default() += 1,
                 "STYLED_ITEM" | "OVER_RIDING_STYLED_ITEM" => *s.attributes.entry("styled items").or_default() += 1,
@@ -86,7 +93,7 @@ pub(crate) fn scan_skipped(file: &StepFile) -> Skipped {
 
 pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel, StepError> {
     if !(opts.weld_tol.is_finite() && opts.weld_tol >= 0.0) {
-        return Err(StepError::Units(format!("weld tolerance {} must be finite and non-negative", opts.weld_tol)));
+        return Err(StepError::BadOption(format!("weld tolerance {} must be finite and non-negative", opts.weld_tol)));
     }
     let all = solid_entities(file);
     let selected: Vec<(u64, SolidKind)> = match &opts.solids {
@@ -95,7 +102,7 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             let mut sel = Vec::new();
             for &o in ords {
                 let Some(s) = all.get(o as usize) else {
-                    return Err(StepError::Units(format!("solid ordinal {o} out of range: the file has {} solids", all.len())));
+                    return Err(StepError::BadOption(format!("solid ordinal {o} out of range: the file has {} solids", all.len())));
                 };
                 sel.push(*s);
             }
@@ -104,6 +111,10 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             sel
         }
     };
+    let mut selected = selected;
+    if opts.sheets {
+        selected.extend(sheet_entities(file).into_iter().map(|id| (id, SolidKind::Sheet)));
+    }
     let mut notes: Vec<Note> = Vec::new();
     let skipped = scan_skipped(file);
     if !skipped.sheets.is_empty() && !opts.sheets {
@@ -315,32 +326,46 @@ fn shell_of(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> 
 }
 
 fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts: &ReadOptions, notes: &mut Vec<Note>) -> Result<(Solid, (usize, usize)), StepError> {
-    let entity = ents.get(id, id)?;
-    // Name, outer shell and voids, for the simple and the complex spelling.
-    let (name, outer_ref, void_refs) = match entity {
-        Entity::Simple(r) => {
-            let a = Args { id, rec: r };
-            let voids = if kind == SolidKind::WithVoids { a.refs(2)? } else { Vec::new() };
-            (a.string(0), a.reference(1)?, voids)
-        }
-        Entity::Complex(_) => {
-            let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
-            let a = Args { id, rec: m };
-            let voids = match entity.rec("BREP_WITH_VOIDS") {
-                Some(r) => Args { id, rec: r }.refs(0)?,
-                None => Vec::new(),
-            };
-            (a.string(0), a.reference(1)?, voids)
-        }
-    };
-    // ---- shells and faces (topology only; geometry is decoded afterwards)
-    let mut shell_srcs: Vec<(u64, bool)> = vec![shell_of(ents, outer_ref, id)?];
-    for v in void_refs {
-        shell_srcs.push(shell_of(ents, v, id)?);
+    if kind == SolidKind::Faceted {
+        return read_faceted(ents, id, units, opts);
     }
+    let entity = ents.get(id, id)?;
+    // Name and shells: outer shell and voids for a solid (simple or complex spelling), the
+    // shells of a surface model for a sheet.
+    let (name, shell_srcs): (String, Vec<(u64, bool)>) = if kind == SolidKind::Sheet {
+        let a = ents.rec(id, id, "SHELL_BASED_SURFACE_MODEL")?;
+        (a.string(0), a.refs(1)?.into_iter().map(|s| (s, false)).collect())
+    } else {
+        let (name, outer_ref, void_refs) = match entity {
+            Entity::Simple(r) => {
+                let a = Args { id, rec: r };
+                let voids = if kind == SolidKind::WithVoids { a.refs(2)? } else { Vec::new() };
+                (a.string(0), a.reference(1)?, voids)
+            }
+            Entity::Complex(_) => {
+                let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
+                let a = Args { id, rec: m };
+                let voids = match entity.rec("BREP_WITH_VOIDS") {
+                    Some(r) => Args { id, rec: r }.refs(0)?,
+                    None => Vec::new(),
+                };
+                (a.string(0), a.reference(1)?, voids)
+            }
+        };
+        // ---- shells and faces (topology only; geometry is decoded afterwards)
+        let mut srcs: Vec<(u64, bool)> = vec![shell_of(ents, outer_ref, id)?];
+        for v in void_refs {
+            srcs.push(shell_of(ents, v, id)?);
+        }
+        (name, srcs)
+    };
+    if shell_srcs.is_empty() {
+        return Err(StepError::BadParam { id, entity: "SHELL_BASED_SURFACE_MODEL".into(), index: 1, msg: "a surface model needs at least one shell".into() });
+    }
+    let shell_names: &[&str] = if kind == SolidKind::Sheet { &["CLOSED_SHELL", "OPEN_SHELL"] } else { &["CLOSED_SHELL"] };
     let mut face_ids: BTreeMap<u64, (usize, bool)> = BTreeMap::new();
     for (si, (shell_id, reversed)) in shell_srcs.iter().enumerate() {
-        let a = ents.rec(*shell_id, id, "CLOSED_SHELL")?;
+        let a = ents.one_of(*shell_id, id, shell_names)?;
         for f in a.refs(1)? {
             face_ids.entry(f).or_insert((si, *reversed));
         }
@@ -515,25 +540,13 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     let mut shells: Vec<Shell> = shell_srcs
         .iter()
         .enumerate()
-        .map(|(i, (sid, _))| Shell { id: *sid, kind: if i == 0 { ShellKind::Outer } else { ShellKind::Void }, faces: Vec::new() })
+        .map(|(i, (sid, _))| Shell { id: *sid, kind: if i == 0 || kind == SolidKind::Sheet { ShellKind::Outer } else { ShellKind::Void }, faces: Vec::new() })
         .collect();
     for (fi, f) in faces.iter().enumerate() {
         shells[f.shell].faces.push(fi);
     }
-    for sh in &shells {
-        let mut net: BTreeMap<usize, i64> = BTreeMap::new();
-        for &fi in &sh.faces {
-            for lp in &faces[fi].loops {
-                for c in lp {
-                    *net.entry(c.edge).or_default() += if c.sense == Sense::Forward { 1 } else { -1 };
-                }
-            }
-        }
-        let mut issues: Vec<OpenEdge> = net.iter().filter(|(_, n)| **n != 0).map(|(e, n)| OpenEdge { edge: kept[*e].id, net_uses: *n }).collect();
-        if !issues.is_empty() {
-            issues.sort_by_key(|i| i.edge);
-            return Err(StepError::OpenShell { solid: id, issues });
-        }
+    if kind != SolidKind::Sheet {
+        check_closed(id, &shells, &faces, &kept)?;
     }
     let solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
     Ok((solid, (welded_vertices, welded_edges)))
@@ -563,6 +576,146 @@ fn pole_loop(surface: &sm_geom_api::SurfaceDef, pole: usize, loop_id: u64, tol: 
     let edge = edges.len();
     edges.push(Edge { id: loop_id, start: south, end: north_i, curve, range: sm_geom_api::Interval::new(-FRAC_PI_2, FRAC_PI_2), sense: Sense::Forward, merged: Vec::new() });
     Ok(vec![Coedge { edge, sense: Sense::Forward }, Coedge { edge, sense: Sense::Reversed }])
+}
+
+/// Every edge must cancel (forward uses minus reverse uses) in every shell.
+fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge]) -> Result<(), StepError> {
+    for sh in shells {
+        let mut net: BTreeMap<usize, i64> = BTreeMap::new();
+        for &fi in &sh.faces {
+            for lp in &faces[fi].loops {
+                for c in lp {
+                    *net.entry(c.edge).or_default() += if c.sense == Sense::Forward { 1 } else { -1 };
+                }
+            }
+        }
+        let mut issues: Vec<OpenEdge> = net.iter().filter(|(_, n)| **n != 0).map(|(e, n)| OpenEdge { edge: edges[*e].id, net_uses: *n }).collect();
+        if !issues.is_empty() {
+            issues.sort_by_key(|i| i.edge);
+            return Err(StepError::OpenShell { solid, issues });
+        }
+    }
+    Ok(())
+}
+
+/// A `FACETED_BREP`: planar facets bounded by `POLY_LOOP`s. Vertices are the points (welded),
+/// edges the straight segments between consecutive points (one per unordered vertex pair, id =
+/// the `POLY_LOOP` that first used it), each face gets a plane through its outer loop (Newell
+/// normal, so the loop is counter-clockwise seen from outside as in a `FACE_OUTER_BOUND`).
+fn read_faceted(ents: Ents<'_>, id: u64, units: UnitReport, opts: &ReadOptions) -> Result<(Solid, (usize, usize)), StepError> {
+    use sm_geom_api::{CurveDef, Frame, Interval, Line, Plane, SurfaceDef};
+    let a = ents.rec(id, id, "FACETED_BREP")?;
+    let (shell_id, shell_reversed) = shell_of(ents, a.reference(1)?, id)?;
+    let cs = ents.rec(shell_id, id, "CLOSED_SHELL")?;
+    let face_ids: BTreeSet<u64> = cs.refs(1)?.into_iter().collect();
+    struct Poly {
+        loop_id: u64,
+        outer: bool,
+        /// Point entity ids, in the order of the face (bound orientation applied).
+        points: Vec<u64>,
+    }
+    let mut polys: Vec<(u64, Vec<Poly>)> = Vec::with_capacity(face_ids.len());
+    let mut point_ids: BTreeSet<u64> = BTreeSet::new();
+    for &fid in &face_ids {
+        let fa = ents.one_of(fid, id, &["FACE", "FACE_SURFACE", "ADVANCED_FACE"])?;
+        let mut bounds = Vec::new();
+        for b in fa.refs(1)? {
+            let ba = ents.one_of(b, fid, &["FACE_OUTER_BOUND", "FACE_BOUND"])?;
+            let orientation = ba.boolean(2)?;
+            let loop_id = ba.reference(1)?;
+            let la = ents.rec(loop_id, b, "POLY_LOOP")?;
+            let mut pts = la.refs(1)?;
+            if pts.len() < 3 {
+                return Err(la.bad(1, "a polygon loop needs at least three points"));
+            }
+            if orientation == shell_reversed {
+                pts.reverse();
+            }
+            point_ids.extend(pts.iter().copied());
+            bounds.push(Poly { loop_id, outer: ba.rec.name == "FACE_OUTER_BOUND", points: pts });
+        }
+        if bounds.is_empty() {
+            return Err(fa.bad(1, "a face needs at least one bound"));
+        }
+        if let Some(p) = bounds.iter().position(|b| b.outer) {
+            let o = bounds.remove(p);
+            bounds.insert(0, o);
+        }
+        polys.push((fid, bounds));
+    }
+    let pids: Vec<u64> = point_ids.into_iter().collect();
+    let geo = Geo { ents, scale: units.scale, angle: units.angle_rad };
+    let pts: Vec<Point3> = pids.iter().map(|p| geo_point(&geo, *p, id)).collect::<Result<_, _>>()?;
+    let rep = weld_vertices(&pts, opts.weld_tol);
+    let mut compact = vec![usize::MAX; pids.len()];
+    let mut vertices: Vec<Vertex> = Vec::new();
+    for (i, r) in rep.iter().enumerate() {
+        if *r == i {
+            compact[i] = vertices.len();
+            vertices.push(Vertex { id: pids[i], point: pts[i] });
+        }
+    }
+    let welded = pids.len() - vertices.len();
+    let v_of: BTreeMap<u64, usize> = pids.iter().enumerate().map(|(i, p)| (*p, compact[rep[i]])).collect();
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut curves: Vec<CurveRec> = Vec::new();
+    let mut edge_ix: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut surfaces: Vec<SurfaceRec> = Vec::new();
+    let mut faces: Vec<Face> = Vec::with_capacity(polys.len());
+    for (fid, bounds) in &polys {
+        let mut loops = Vec::with_capacity(bounds.len());
+        let mut plane: Option<Plane> = None;
+        for (bi, b) in bounds.iter().enumerate() {
+            let vs: Vec<usize> = b.points.iter().map(|p| v_of[p]).collect();
+            let mut lp = Vec::with_capacity(vs.len());
+            for i in 0..vs.len() {
+                let (va, vb) = (vs[i], vs[(i + 1) % vs.len()]);
+                if va == vb {
+                    continue;
+                }
+                let key = (va.min(vb), va.max(vb));
+                let ei = match edge_ix.get(&key) {
+                    Some(e) => *e,
+                    None => {
+                        let (p0, p1) = (vertices[key.0].point, vertices[key.1].point);
+                        let d = p1 - p0;
+                        let line = Line::new(p0, d).map_err(|e| StepError::GeometryMismatch { id: b.loop_id, msg: e.to_string() })?;
+                        let curve = curves.len();
+                        curves.push(CurveRec { id: b.loop_id, def: CurveDef::Line(line) });
+                        let ei = edges.len();
+                        edges.push(Edge { id: b.loop_id, start: key.0, end: key.1, curve, range: Interval::new(0.0, d.norm()), sense: Sense::Forward, merged: Vec::new() });
+                        edge_ix.insert(key, ei);
+                        ei
+                    }
+                };
+                lp.push(Coedge { edge: ei, sense: if (va, vb) == key { Sense::Forward } else { Sense::Reversed } });
+            }
+            if lp.len() < 3 {
+                return Err(StepError::GeometryMismatch { id: b.loop_id, msg: "a polygon loop collapses after welding".into() });
+            }
+            if bi == 0 {
+                // Newell normal of the outer loop.
+                let mut n = [0.0f64; 3];
+                for i in 0..vs.len() {
+                    let (p, q) = (vertices[vs[i]].point, vertices[vs[(i + 1) % vs.len()]].point);
+                    n[0] += (p.y - q.y) * (p.z + q.z);
+                    n[1] += (p.z - q.z) * (p.x + q.x);
+                    n[2] += (p.x - q.x) * (p.y + q.y);
+                }
+                let frame = Frame::from_z(vertices[vs[0]].point, sm_core::Vector3::new(n[0], n[1], n[2])).map_err(|_| StepError::GeometryMismatch { id: *fid, msg: "the outer polygon of the face has no area".into() })?;
+                plane = Some(Plane { frame });
+            }
+            loops.push(lp);
+        }
+        let Some(plane) = plane else { continue };
+        let surface = surfaces.len();
+        surfaces.push(SurfaceRec { id: *fid, def: SurfaceDef::Plane(plane) });
+        faces.push(Face { id: *fid, surface, sense: Sense::Forward, loops, shell: 0 });
+    }
+    let shells = vec![Shell { id: shell_id, kind: ShellKind::Outer, faces: (0..faces.len()).collect() }];
+    check_closed(id, &shells, &faces, &edges)?;
+    let name = a.string(0);
+    Ok((Solid { id, instance: 0, name, kind: SolidKind::Faceted, units, vertices, curves, surfaces, edges, faces, shells }, (welded, 0)))
 }
 
 fn geo_point(geo: &Geo<'_>, point_id: u64, by: u64) -> Result<Point3, StepError> {

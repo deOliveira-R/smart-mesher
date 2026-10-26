@@ -103,7 +103,46 @@ fn surface_kind(e: &Entity) -> String {
 }
 
 fn is_supported_curve(e: &Entity) -> bool {
-    matches!(e.first().map(|r| r.name.as_str()), Some("LINE" | "CIRCLE" | "ELLIPSE")) || e.is("B_SPLINE_CURVE_WITH_KNOTS")
+    matches!(e.first().map(|r| r.name.as_str()), Some("LINE" | "CIRCLE" | "ELLIPSE" | "TRIMMED_CURVE")) || e.is("B_SPLINE_CURVE_WITH_KNOTS")
+}
+
+/// A `FACETED_BREP`: faces are planar polygons; vertices and edges are counted by distinct
+/// point entities and distinct unordered point pairs (before any welding).
+fn inspect_faceted(ents: Ents<'_>, id: u64) -> Result<SolidInfo, StepError> {
+    let a = ents.rec(id, id, "FACETED_BREP")?;
+    let mut shell = a.reference(1)?;
+    for _ in 0..4 {
+        match ents.get(shell, id)?.rec("ORIENTED_CLOSED_SHELL") {
+            Some(r) => shell = Args { id: shell, rec: r }.reference(2)?,
+            None => break,
+        }
+    }
+    let faces: BTreeSet<u64> = ents.rec(shell, id, "CLOSED_SHELL")?.refs(1)?.into_iter().collect();
+    let mut points: BTreeSet<u64> = BTreeSet::new();
+    let mut pairs: BTreeSet<(u64, u64)> = BTreeSet::new();
+    for &f in &faces {
+        let fa = ents.one_of(f, id, &["FACE", "FACE_SURFACE", "ADVANCED_FACE"])?;
+        for b in fa.refs(1)? {
+            let ba = ents.one_of(b, f, &["FACE_OUTER_BOUND", "FACE_BOUND"])?;
+            let la = ents.rec(ba.reference(1)?, b, "POLY_LOOP")?;
+            let pts = la.refs(1)?;
+            points.extend(pts.iter().copied());
+            for i in 0..pts.len() {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                pairs.insert((p.min(q), p.max(q)));
+            }
+        }
+    }
+    Ok(SolidInfo {
+        step_id: id,
+        name: a.string(0),
+        kind: "faceted".to_owned(),
+        shells: 1,
+        faces: faces.len(),
+        edges: pairs.len(),
+        vertices: points.len(),
+        surface_kinds: BTreeMap::from([("plane".to_owned(), faces.len())]),
+    })
 }
 
 /// Summarize a parsed file.
@@ -117,6 +156,10 @@ pub(crate) fn inspect(file: &StepFile, sha256: String, bytes: u64) -> Result<Ste
     for (id, kind) in solid_entities(file) {
         first_ctx = first_ctx.or_else(|| ctx_of.get(&id).copied());
         let e = ents.get(id, id)?;
+        if kind == SolidKind::Faceted {
+            solids.push(inspect_faceted(ents, id)?);
+            continue;
+        }
         let (name, outer, voids) = match e {
             Entity::Simple(r) => {
                 let a = Args { id, rec: r };
@@ -207,7 +250,13 @@ pub(crate) fn inspect(file: &StepFile, sha256: String, bytes: u64) -> Result<Ste
         solids.push(SolidInfo {
             step_id: id,
             name,
-            kind: if kind == SolidKind::WithVoids { "with_voids" } else { "manifold" }.to_owned(),
+            kind: match kind {
+                SolidKind::WithVoids => "with_voids",
+                SolidKind::Faceted => "faceted",
+                SolidKind::Sheet => "sheet",
+                SolidKind::Manifold => "manifold",
+            }
+            .to_owned(),
             shells: shell_ids.len(),
             faces: faces.len(),
             edges: edges.len(),

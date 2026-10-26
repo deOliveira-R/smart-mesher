@@ -170,9 +170,6 @@ fn failures_are_invalid_and_leave_the_state_untouched() {
     o.weld_tol = Some(1.0);
     assert!(matches!(op_error(run(&mut s, &o).expect_err("weld_tol above linear_max")), OpError::Invalid(_)));
     let mut o = op(Source::inline(&data("brick_2x3x4.stp")));
-    o.sheets = Some(true);
-    assert!(matches!(op_error(run(&mut s, &o).expect_err("sheets")), OpError::Unsupported(_)));
-    let mut o = op(Source::inline(&data("brick_2x3x4.stp")));
     o.solids = Some(vec![5]);
     assert!(matches!(op_error(run(&mut s, &o).expect_err("ordinal")), OpError::Invalid(_)));
 
@@ -354,4 +351,28 @@ fn json_records_decode_and_reject_paths_and_unknown_fields() {
     }
     // The model layer is the one CoreLayers registered: cadio adds no layer.
     assert!(s.state().layer::<ModelLayer>().is_some());
+}
+
+#[test]
+fn s4_sheets_and_faceted_solids_through_the_op_and_the_query() {
+    // Faceted solid: imported like any other, reported by the query.
+    let mut s = session(cell_complex, store());
+    let (_, d) = run(&mut s, &op(Source::inline(&data("brick_faceted_dup.stp")))).expect("faceted");
+    assert!(rel(volume(model(&s).topo(), d.outputs["volumes"][0]), 24.0) <= 1e-9);
+    let info: StepInfo = serde_json::from_value(common_query(&s, json!({"source": serde_json::to_value(Source::inline(&data("brick_faceted.stp"))).expect("source")}))).expect("info");
+    assert_eq!((info.solids[0].kind.as_str(), info.solids[0].faces, info.solids[0].edges, info.solids[0].vertices), ("faceted", 6, 12, 8));
+    assert!(info.unsupported.is_empty());
+    // Sheets: refused by default (nothing to import), imported on request without volumes.
+    let mut s = session(cell_complex, store());
+    let sheet = data("sheet_open_box.stp");
+    let m = invalid_msg(run(&mut s, &op(Source::inline(&sheet))).expect_err("no solids"));
+    assert!(m.contains("step.no_solids"), "{m}");
+    let mut o = op(Source::inline(&sheet));
+    o.sheets = Some(true);
+    let (_, d) = run(&mut s, &o).expect("sheets");
+    assert_eq!(d.outputs["bodies"].len(), 1);
+    assert_eq!(d.outputs["faces"].len(), 5);
+    assert!(d.outputs.get("volumes").is_none_or(|v| v.is_empty()));
+    assert!(rel(total_area(model(&s).topo()), 46.0) <= 1e-9);
+    assert!(issues(model(&s).topo()).is_empty());
 }

@@ -24,7 +24,7 @@ use sm_geom_api::{Interval, Line2, ParamAxis, ParametricCurve, ParametricSurface
 use sm_topo_api::{CellComplex, CellFlags, CoedgeKey, CoedgeSpec, CurveCarrier, FaceUseSpec, OpId, Sense, ShellKind, ShellSpec, Side, SurfaceCarrier, TopologyEdit, TopologyView};
 
 use crate::error::StepError;
-use crate::model::{BrepModel, Coedge, Solid};
+use crate::model::{BrepModel, Coedge, Solid, SolidKind};
 
 /// Options of [`realize`].
 #[derive(Clone, Debug, PartialEq)]
@@ -79,7 +79,7 @@ pub fn realize<E: TopologyEdit + ?Sized>(m: &BrepModel, topo: &mut E, o: &Realiz
     let mut flips: Vec<Vec<bool>> = Vec::with_capacity(m.solids.len());
     let mut inverted = Vec::new();
     for s in &m.solids {
-        let f = if o.fix_orientation { decide_flips(s, o)? } else { vec![false; s.shells.len()] };
+        let f = if o.fix_orientation && s.kind != SolidKind::Sheet { decide_flips(s, o)? } else { vec![false; s.shells.len()] };
         let shells: Vec<usize> = f.iter().enumerate().filter(|(_, x)| **x).map(|(i, _)| i).collect();
         if !shells.is_empty() {
             inverted.push(Inverted { solid: s.id, shells });
@@ -244,6 +244,14 @@ fn build<E: TopologyEdit + ?Sized>(topo: &mut E, solids: &[&Solid], flips: &[Vec
     }
     // ---- volumes and bodies
     for (k, s) in solids.iter().enumerate() {
+        if s.kind == SolidKind::Sheet {
+            // A sheet is a body of free faces: no volume.
+            if !per_shell_volumes {
+                let b = topo.make_body(&fids[k])?;
+                out.bodies.push(b);
+            }
+            continue;
+        }
         let uses: Vec<Vec<FaceUseSpec>> = s.shells.iter().map(|sh| sh.faces.iter().map(|&f| FaceUseSpec { face: fids[k][f], side: Side::Left }).collect()).collect();
         if per_shell_volumes {
             for u in &uses {

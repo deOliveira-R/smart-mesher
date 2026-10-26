@@ -71,6 +71,13 @@ pub(crate) fn scan(file: &StepFile) -> Assembly {
             }
         }
     }
+    // The first representation listing each item (a `MAPPED_ITEM` sits in exactly one).
+    let mut item_rep: BTreeMap<u64, u64> = BTreeMap::new();
+    for (rep, (items, _)) in &asm.reps {
+        for it in items {
+            item_rep.entry(*it).or_insert(*rep);
+        }
+    }
     for (id, e) in &file.entities {
         // Relationships with a transformation, simple or complex.
         if let Some(wt) = e.rec("REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION") {
@@ -97,7 +104,7 @@ pub(crate) fn scan(file: &StepFile) -> Assembly {
                 asm.unsupported.push((*id, "malformed MAPPED_ITEM".into()));
                 continue;
             };
-            let parent = asm.reps.iter().find(|(_, (items, _))| items.contains(id)).map(|(r, _)| *r);
+            let parent = item_rep.get(id).copied();
             let map = ents.get(src, *id).ok().and_then(|x| x.rec("REPRESENTATION_MAP"));
             let origin_child = map.and_then(|r| Some((reference(r.params.first())?, reference(r.params.get(1))?)));
             let target_ok = ents.get(target, *id).is_ok_and(|t| t.is("AXIS2_PLACEMENT_3D"));

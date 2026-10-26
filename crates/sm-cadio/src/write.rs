@@ -336,6 +336,13 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
     let pds = wr.add(&format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
     let origin = wr.placement(&Frame::at(Point3::new(0.0, 0.0, 0.0)), anchor)?;
 
+    if bodies.is_none() {
+        for &b in view.cells(Dim::Body) {
+            if !view.boundary(b).iter().any(|e| view.dim_of(e.cell) == Some(Dim::Volume)) {
+                report.losses.push(Loss { cell: Some(b), what: format!("{b} has no volume (a sheet or wire body): not written") });
+            }
+        }
+    }
     let mut solids: Vec<u64> = Vec::new();
     for &vol in &volumes {
         solids.push(write_solid(&mut wr, vol, &mut report, tol)?);

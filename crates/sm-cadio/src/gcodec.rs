@@ -102,6 +102,13 @@ impl<'a> Geo<'a> {
 
     /// Decode the curve entity `id` (a plain curve, not a wrapper).
     pub fn curve(&self, id: u64, by: u64) -> Result<CurveDef, StepError> {
+        self.curve_at(id, by, 0)
+    }
+
+    fn curve_at(&self, id: u64, by: u64, depth: usize) -> Result<CurveDef, StepError> {
+        if depth > 8 {
+            return Err(StepError::Cycle { id });
+        }
         let e = self.ents.get(id, by)?;
         let name = e.first().map(|r| r.name.as_str()).unwrap_or("");
         match name {
@@ -133,6 +140,13 @@ impl<'a> Geo<'a> {
                 Ellipse::new(frame, ra, rb).map(CurveDef::Ellipse).map_err(|e| geom_err(&a, 2, e))
             }
             _ if e.is("B_SPLINE_CURVE_WITH_KNOTS") => self.bspline_curve(id, e),
+            // The trims only select an arc of the basis curve; an edge's range comes from its
+            // vertices anyway.
+            "TRIMMED_CURVE" => {
+                let a = self.ents.rec(id, by, "TRIMMED_CURVE")?;
+                let basis = a.reference(1)?;
+                self.curve_at(self.curve_ref(basis, id)?, id, depth + 1)
+            }
             _ => Err(StepError::Unsupported { id, entity: e.display_name() }),
         }
     }
