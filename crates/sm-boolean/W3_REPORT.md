@@ -54,10 +54,9 @@ Definition of done (run on this branch): `cargo build --workspace`, `cargo test 
 - **`webcut imprint=true`** returns `Unsupported` (sheet-tool imprint is W3b/M3).
 - **`webcut_cylinder`** with a non-wrapping cylinder patch returns `Unsupported`.
 - **Subtract tool copies.** With several targets the tool is deep-copied for all but the last target.
-- **`dev-dependencies`** beyond the brief: `proptest` (bullet 10) and `rayon` as a dev-dep for the
-  per-thread-count pools in the determinism test. `indexmap`, `smallvec` as normal deps for ordered maps / small vectors.
-- Coplanar bricks that touch only along a face give `Invalid("bodies do not touch...")` for unite with no
-  overlap and no shared face; tangent-only contact is `Unsupported`.
+- **Dependencies beyond the brief's list:** `smallvec` (normal), `proptest` and `serde_json` (dev-only).
+- **Disjoint operands:** unite of bodies that do not touch is `Invalid("bodies do not touch...")`, intersect is
+  `EmptyResult`, subtract returns the target unchanged; tangent-only contact is `Unsupported`.
 
 ## Known gaps
 
