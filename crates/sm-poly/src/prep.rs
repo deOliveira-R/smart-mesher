@@ -743,7 +743,7 @@ impl<'a> Prep<'a> {
             let iface = self.src.face_kind(f0) == FaceKind::Interior;
             let mut kites = false;
             if mode == FaceMode::Planar && pts.len() > 3 {
-                let coords: SmallVec<[V3; 32]> = canonical_cycle(&pts).iter().map(|&p| self.coord(p)).collect();
+                let coords: SmallVec<[V3; 32]> = canonical_cycle(&pts).0.iter().map(|&p| self.coord(p)).collect();
                 kites = geom::nonplanarity(&coords) > GeomTol::default().planarity;
             }
             if kites {
@@ -769,12 +769,13 @@ impl<'a> Prep<'a> {
 
 /// The cycle rotated to start at its smallest point id and run towards the smaller neighbour,
 /// so the two cells of an interface polygon (which see it in opposite orders) evaluate
-/// identical arithmetic.
-fn canonical_cycle(pts: &[u32]) -> SmallVec<[u32; 32]> {
+/// identical arithmetic. The flag tells whether the input already ran that way.
+pub(crate) fn canonical_cycle(pts: &[u32]) -> (SmallVec<[u32; 32]>, bool) {
     let n = pts.len();
     let k = (0..n).min_by_key(|&i| pts[i]).unwrap_or(0);
     let fwd = pts[(k + 1) % n] <= pts[(k + n - 1) % n];
-    (0..n)
+    let cyc = (0..n)
         .map(|i| if fwd { pts[(k + i) % n] } else { pts[(k + n - i) % n] })
-        .collect()
+        .collect();
+    (cyc, fwd)
 }

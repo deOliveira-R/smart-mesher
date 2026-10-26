@@ -14,7 +14,7 @@ use sm_mesh_api::{
     GeomTol, MeshEntityKind, MeshRead, SerialAlloc, validate,
     validate_geometry,
 };
-use sm_op_api::{
+use sm_op_api::{Plugin as _,
     ApplyCtx, Delta, DerivedCache, Engine, Hash256, Meta, Op, OpError, OpRecord, QuietControl, Registry, Services,
     Session, TimelineError, TypedOp,
 };
@@ -202,7 +202,8 @@ fn acc8_refusals_leave_the_state_untouched() {
         let e = run_json(&mut s, "mesh.to_poly", p.clone()).expect_err("decode must fail");
         assert_eq!(s.state().hash(), h, "{p}");
         let t = format!("{e:?}");
-        assert!(t.contains("Decode") || t.contains("Invalid"), "{t}");
+        // rejected by the registry's strict decode, before `apply` runs
+        assert!(t.contains("Registry(Decode"), "{t}");
     }
 }
 
@@ -236,3 +237,29 @@ fn acc8_cold_replay_has_no_divergence() {
     let s2 = Session::open(engine(), s.timeline().clone(), s.head().clone(), &q.control()).expect("reopen");
     assert_eq!(s2.state().hash(), s.state().hash());
 }
+
+#[test]
+fn registration_shape_matches_the_contract() {
+    let e = engine();
+    let reg = e.registry();
+    assert_eq!(PolyPlugin.id(), "poly");
+    // the op: exact args, entity kind on `mesh`, one output role `mesh`
+    let info = reg.catalog().into_iter().filter_map(Result::ok).find(|i| i.name == "mesh.to_poly").expect("op registered");
+    let schema = serde_json::to_value(&info.schema).unwrap();
+    assert_eq!(schema["additionalProperties"], false, "deny_unknown_fields");
+    assert_eq!(schema["required"], json!(["mesh"]));
+    assert_eq!(schema["properties"]["mesh"]["x-entity-kind"], json!(["Mesh"]));
+    assert!(schema["properties"].get("keep_source").is_some());
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 2, "no `targets`, `faces` or `agglomerate`");
+    assert_eq!(info.outputs.len(), 1);
+    assert_eq!((info.outputs[0].name, info.outputs[0].kinds), ("mesh", &[EntityKind::Mesh][..]));
+    assert_eq!(info.outputs[0].cardinality, sm_op_api::Cardinality::One);
+    // the query, and no layers of its own
+    assert!(reg.query_names().contains(&"mesh.poly_info"));
+    let mut only_poly = Registry::new();
+    only_poly.install(&CoreLayers::default()).unwrap();
+    let before: Vec<_> = only_poly.layer_roles().iter().map(|l| l.0).collect();
+    only_poly.install(&PolyPlugin).unwrap();
+    assert_eq!(before, only_poly.layer_roles().iter().map(|l| l.0).collect::<Vec<_>>());
+}
+

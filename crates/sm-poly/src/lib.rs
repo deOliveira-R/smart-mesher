@@ -11,11 +11,13 @@
 //!
 //! Install [`PolyPlugin`] after `sm_layer_api::CoreLayers`.
 
+mod agglom;
 mod dual;
 mod error;
 mod geom;
 mod ops;
 mod options;
+mod polydata;
 mod prep;
 mod resolver;
 mod stats;
@@ -23,7 +25,7 @@ mod stats;
 pub use dual::dualize;
 pub use error::PolyError;
 pub use ops::{PolyInfo, ToPoly};
-pub use options::{DualReport, FaceMode, PolyOptions};
+pub use options::{Agglomerate, DualReport, FaceMode, PolyOptions};
 pub use resolver::{EdgeResolver, TopologyResolver, VertexClassResolver};
 pub use stats::{PolyStats, Spread, face_nonplanarity, poly_stats};
 

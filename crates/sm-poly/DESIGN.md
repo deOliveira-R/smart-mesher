@@ -131,11 +131,13 @@ Hub splitting keeps the vertex set small, keeps most faces whole, and needs no v
 5. boundary fans per cell (outward triangle loops rotated to start at the vertex, linked
    counterclockwise).
 
-`dual.rs` numbers the points (tets, boundary triangles ascending, midpoints by sorted vertex
-pair, primal vertices, hubs; only used ones), then feeds the builder serially in
-`(region, vertex)` order: `add_face` for the lower cell of an edge face and
-`SignedFace::new(f, Side::Left)`, `Side::Right` for the higher one; interface polygons go through
-`find_face` so the second region reuses the first one's face. Cell shapes are inferred by
+`polydata.rs` numbers the points (tets, boundary triangles ascending, midpoints by sorted vertex
+pair, primal vertices, hubs; only used ones) and records faces and cells serially in
+`(region, vertex)` order as plain data (`PolyData`): the lower cell of an edge face gets
+`Side::Left`, the higher one `Side::Right`; an interface polygon is found again by its canonical
+point cycle so the second region reuses the first one's face. `commit` then feeds the builder
+(`add_face`, `add_cell`) after the optional agglomeration pass (`agglom.rs`) has dropped merged
+faces and unused points. Cell shapes are inferred by
 `finish`: a dual cell with hex topology (all four cells of one tet) comes out as `Hex`; the
 block-level element type `POLYHEDRON` belongs to the fem/export layer, not to this crate.
 
@@ -155,10 +157,12 @@ cycle, so both regions decide identically.
 ### Performance (informational, S1)
 
 `tet_block([40,40,40])`, 384 000 tets, release, 4 cores, `lattice::tet_kuhn` source:
-`Planar` 0.38 s, `Keep` 0.34 s (68 921 cells, 529 246 / 472 606 faces); 1 thread (`RAYON_NUM_THREADS=1`)
-0.97 s / 0.86 s. Peak RSS of the dualization is about 90 MB over the resident source (353 MB
-peak with the 263 MB source and fixture resident). The serial builder commit is not separated;
-bulk commit is W3b. `cargo bench -p sm-poly` times 48k and 384k tets in both modes.
+`Planar` 0.46 s, `Keep` 0.38 s (68 921 cells, 529 246 / 472 606 faces); 1 thread
+(`RAYON_NUM_THREADS=1`) 0.99 s / 0.88 s (noisy shared VM: 0.34-0.46 s seen for the same run).
+Peak RSS of the dualization is about 115 MB over the resident source (377 MB peak with the
+263 MB source and fixture resident). The serial builder commit is not separated; bulk commit is
+W3b. `cargo bench -p sm-poly` times 48k and 384k tets in both modes;
+`cargo test --release -p sm-poly --test perf -- --ignored --nocapture` prints the figures above.
 
 ## Op, query and the `ambiguous-mesh` consequence
 
@@ -192,10 +196,28 @@ face centres and a feature angle), so only invariants are compared, on the same 
 
 Cell and face counts are reported, never compared exactly. Docker is the orchestrator's.
 
+## Agglomeration (library option, stretch S2)
+
+`PolyOptions::agglomerate = Some(Agglomerate { min_volume_ratio, max_concavity = 0.1,
+max_rounds = 4 })`, off by default and not an op argument. Serial greedy matching on the
+`PolyData`: cells below `ratio * median` volume (visited by ascending `(volume, index)`) merge
+with the same-region neighbour of largest shared face area (ties lowest index; the first
+neighbour that passes is taken) when the shared faces form one disc patch (their boundary is one
+simple cycle), the merged cell has positive volume and positive side tetrahedra, and its
+concavity `max_{f,v} (x_v - apex_f) . n_f / V^(1/3)` is within `max_concavity`. Each cell merges
+once per round; the lower cell index survives. Faces are only removed, so every face stays
+planar, interface faces and classes survive, and the volume sum is unchanged.
+
+**Measured limit.** In `Planar` mode the unmerged cells already have concavity 0.14 (median) and
+0.235 (max) on `tet_block([4,4,4])`, because hub triangles bulge (0.043 / 0.084 in `Keep`). The
+default 0.1 therefore merges nothing there; 0.75 or more admits 20 merges at ratio 0.75 (125 ->
+105 cells), nothing merges at or below 0.5. The tests pin both facts rather than relaxing the
+default.
+
 ## Known gaps (W3b)
 
 Partial dualization of a mixed mesh (needs conformize), circumcentric duals, vertex-moving
 planarization, projection of boundary dual points onto the CAD surface (curved bodies deviate by
 the chord error), hybrid input, seam edges and a vertex with one split edge, a bulk builder
-commit, concavity repair. Agglomeration is a library option (`Agglomerate`), off by default and
-not exposed through the op.
+commit, concavity repair beyond the agglomeration guard, a persistent (state) mark that the poly
+mesh is derived from its source (the delta records the succession only; see the report).
