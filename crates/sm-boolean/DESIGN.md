@@ -62,6 +62,36 @@ guard (a volume with a mesh is refused, "mesh.delete first"). Webcut roles `posi
 bodies, one body per resulting volume. Interface faces of the model boundary tables are skipped by
 `model.merge`.
 
+## Operand order and folding
+
+`unite` and `intersect` take any number of operands. `unite` keeps a running volume and fuses it
+with whichever remaining operand touches it (a failed "bodies do not touch" attempt edits nothing,
+so the next candidate is tried); `Invalid("bodies do not touch ...")` is returned only when no
+remaining operand touches the running volume. The result therefore does not depend on the operand
+order for any connected set. `new_faces` accumulates over every fuse.
+
+## Known limits
+
+- **Near-tangent contact.** A curved operand whose clearance to another surface is below about
+  `1e-2` model units (for example a unit-radius cylinder 1e-5..1e-3 from a brick face, with
+  `linear = 1e-6`) is not classified robustly: the assembled volume fails its check and the
+  operation is rolled back with `ResultInvalid` (the message names the near-tangent cause).
+  Clearances of `1e-2` and above work. Exact line tangency (cylinder on a plane) and point
+  tangency are `TangentContact { entity, detail }` (`OpError::Unsupported`): the message names the
+  face and says to perturb the tool beyond the model tolerance.
+- **Webcut with a plane on an existing face** does not cross the target: the body is returned in
+  one role and the other is empty (documented on `webcut`).
+
+## Performance red flags (acceptable for W3a, to fix in W3b)
+
+- `pieces::candidate_pairs` is a brute-force O(|fa| * |fb|) loop over face pairs with no spatial
+  index (use a BVH over face boxes).
+- Fragment classification runs `on_face` against every face of the other operand and a ray cast
+  per fragment: O(F^2) for F fragments.
+- `subtract` with N targets deep-copies the tool N-1 times.
+- The unite worklist tries candidates in order, which is O(n^2) pair attempts for n operands in
+  the worst case; each failed attempt costs one pair imprint test.
+
 ## Deferred to W3b
 
 Mixed-dimension unite (sheets/wires with solids); self-intersecting or non-manifold inputs;

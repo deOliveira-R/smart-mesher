@@ -75,14 +75,21 @@ fn brick_minus_interior_sphere() {
 
 #[test]
 fn intersect_cylinder_inside_brick_returns_the_cylinder() {
+    // The cylinder (r = 1, h = 4) lies strictly inside the 6^3 brick: containment, no new edges.
+    let mut fresh = Rig::cc();
+    fresh.cylinder(4.0, 1.0, [3.0; 3]);
+    let cyl_counts = counts(fresh.topo());
     let mut r = Rig::cc();
-    let b = r.brick([4.0; 3], [2.0; 3]);
-    let c = r.cylinder(2.0, 1.0, [2.0, 2.0, 2.0]);
+    let b = r.brick([6.0; 3], [3.0; 3]);
+    let c = r.cylinder(4.0, 1.0, [3.0; 3]);
     let d = r.run(&Intersect { bodies: vec![b.body, c.body], keep: None, regularize: None, tol: None }).unwrap();
     let t = r.topo();
     assert_valid(t);
     let v = d.outputs["volumes"][0];
-    assert!((volume_of(t, v) - 2.0 * PI).abs() < 1e-8 * 7.0);
+    assert!((volume_of(t, v) - 4.0 * PI).abs() < 1e-8 * 13.0);
+    assert!((total_area(t) - 2.0 * PI * 1.0 * (1.0 + 4.0)).abs() < 1e-8 * 32.0);
+    // Exactly the cylinder's cells: no intersection edges were created.
+    assert_eq!(counts(t), cyl_counts);
     assert_eq!(counts(t)[3], 1);
 }
 

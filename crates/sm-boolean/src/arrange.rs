@@ -453,7 +453,7 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 if start == end {
                     let n = pos.get(&start).map_or(0, Vec::len);
                     if n != 2 {
-                        return Err(BooleanError::Unsupported("a closed cut touches the face boundary at a vertex that is not a periodic seam vertex"));
+                        return Err(BooleanError::TangentContact { entity: f, detail: "a closed cut touches this face's boundary at one vertex that is not a periodic seam vertex (a surface tangent to the face along a line)" });
                     }
                     let chain = self.orient_seam_loop(f, chain, &pos[&start])?;
                     return Ok(Step { kind: StepKind::Closed, chain, used, ends: None });
@@ -500,7 +500,7 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             }
             let mut nexts: Vec<usize> = incident.get(&cur).into_iter().flatten().copied().filter(|j| !used.contains(j)).collect();
             nexts.sort_by_key(|&j| cuts[j].edge);
-            let Some(&j) = nexts.first() else { return Err(BooleanError::Unsupported("an interior cut is a dangling chain")) };
+            let Some(&j) = nexts.first() else { return Err(BooleanError::TangentContact { entity: f, detail: "the cut curve ends inside this face (a surface tangent to the face along a line)" }) };
             used.push(j);
             path.push((j, cur));
             cur = if cuts[j].tail == cur { cuts[j].head } else { cuts[j].tail };

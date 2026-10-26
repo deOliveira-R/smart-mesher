@@ -99,7 +99,11 @@ fn unit_or(v: Vector3) -> Result<Vector3, BooleanError> {
 ///
 /// Runs inside an open operation. Each target body must hold only target volumes; every resulting
 /// volume becomes its own body (the old body is deleted and `record_split` names the new ones).
-/// A target the tool does not cross is reported on the side it lies on and is not changed.
+/// A target the tool does not cross is reported on the side it lies on and is not changed. That
+/// includes a plane that only coincides with a face of the target (for example `z = 0` on a cube
+/// above it): the target is returned in `positive` (or `negative`), the other role is empty and
+/// the topology is untouched. This is deliberate, so that one tool can be applied to a stack of
+/// bricks along their interface; callers that need a real cut check that both roles are non-empty.
 ///
 /// # Errors
 /// `Unsupported` for non-manifold targets, for tools other than planes and cylinders, for

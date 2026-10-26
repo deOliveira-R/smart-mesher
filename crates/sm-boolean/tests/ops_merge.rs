@@ -29,6 +29,26 @@ fn merge_op_joins_coincident_faces() {
     assert_eq!(r.topo().cells(Dim::Face).len(), 11);
     assert_eq!(d.outputs["faces"].len(), 1);
     assert_valid(r.topo());
+    // Bullet 1 at op level: counts, area, and the structure of `merged_bricks` (bricks made by
+    // `model.create_brick` get other ids than the fixture's, so compare id-free signatures; the
+    // canonical hash is not compared because the model layer's bookkeeping differs).
+    let t = r.topo();
+    assert_eq!(counts(t), [12, 20, 11, 2, 2]);
+    assert!((total_area(t) - 11.0).abs() < 1e-12, "{}", total_area(t));
+    let want = sm_testkit::topo::merged_bricks().unwrap();
+    assert_eq!(counts(t), want.counts);
+    let sig = |t: &dyn sm_topo_api::TopologyView| -> Vec<(Dim, usize, usize)> {
+        let mut v: Vec<_> = Dim::ALL.iter().flat_map(|&d| t.cells(d).iter().map(move |&c| (d, t.boundary(c).len(), t.coboundary(c).len())).collect::<Vec<_>>()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(sig(t), sig(&want.complex), "boundary/coboundary degrees per cell");
+    let merged = |t: &dyn sm_topo_api::TopologyView| t.lineage().records().iter().filter(|r| matches!(r.kind, sm_topo_api::LineageKind::Merged { .. })).count();
+    assert_eq!(merged(t), merged(&want.complex), "Merged lineage records");
+    assert_eq!(merged(t), 9);
+    let merged_pairs = |t: &dyn sm_topo_api::TopologyView| t.coincidences().iter().filter(|p| p.status == sm_topo_api::Coincidence::Merged).count();
+    assert_eq!(merged_pairs(t), merged_pairs(&want.complex));
+    assert_eq!(merged_pairs(t), 1);
 }
 
 #[test]

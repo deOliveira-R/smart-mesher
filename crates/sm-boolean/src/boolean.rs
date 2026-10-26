@@ -77,6 +77,9 @@ pub struct BoolOutcome {
     pub faces: Vec<EntityId>,
 }
 
+/// Prefix of the error of a unite whose operands do not touch.
+const NO_TOUCH: &str = "bodies do not touch";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     In,
@@ -168,10 +171,31 @@ pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[Enti
             let mut all: Vec<EntityId> = va.clone();
             all.extend(vb.iter().copied());
             let mut cur = all[0];
+            let mut rest: Vec<EntityId> = all[1..].to_vec();
             let mut stage: Option<Stage> = None;
-            for &next in &all[1..] {
-                let s = fuse2(topo, rule, cur, next, o)?;
-                new_faces = s.new_faces.clone();
+            // Worklist: fuse `cur` with any remaining operand that touches it. A failed
+            // "do not touch" attempt happens before the first edit, so the next candidate is safe.
+            while !rest.is_empty() {
+                let mut fused: Option<(usize, Stage)> = None;
+                let mut untouched: Option<BooleanError> = None;
+                for (i, &next) in rest.iter().enumerate() {
+                    match fuse2(topo, rule, cur, next, o) {
+                        Ok(s) => {
+                            fused = Some((i, s));
+                            break;
+                        }
+                        Err(BooleanError::Invalid(m)) if rule == BoolRule::Unite && m.starts_with(NO_TOUCH) => {
+                            untouched.get_or_insert(BooleanError::Invalid(m));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                let Some((i, s)) = fused else {
+                    let first = rest[0];
+                    return Err(untouched.unwrap_or_else(|| BooleanError::Invalid(format!("{NO_TOUCH}: {cur} touches none of the remaining operands ({first} ...); unite needs operands that overlap or share a face"))));
+                };
+                rest.remove(i);
+                new_faces.extend(s.new_faces.iter().copied());
                 if s.volumes.len() != 1 {
                     return Err(BooleanError::Unsupported("the result has several volumes"));
                 }
@@ -246,7 +270,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     let pairs: Vec<PairSpec> = pieces::candidate_pairs(&*topo, &fa, &fb, tol.linear_max).into_iter().map(|(a, b)| PairSpec { a, b: Other::Face(b) }).collect();
     let computed = pieces::compute(&*topo, &pairs, Share::Shared, &|_| 0, 10.0 * tol.linear_max)?;
     if computed.pieces.is_empty() && computed.coincident.is_empty() && !computed.tangent_points.is_empty() {
-        return Err(BooleanError::Unsupported("tangent-only contact between the operands: perturb one of them"));
+        return Err(BooleanError::TangentContact { entity: va, detail: "this operand and the other one touch only at isolated points" });
     }
     if !computed.pieces.is_empty() {
         let ps: Vec<&pieces::Piece> = computed.pieces.iter().collect();
@@ -272,7 +296,7 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
     if all_out && computed.pieces.is_empty() {
         match rule {
-            BoolRule::Unite => return Err(BooleanError::Invalid("bodies do not touch: unite needs operands that overlap or share a face".into())),
+            BoolRule::Unite => return Err(BooleanError::Invalid(format!("{NO_TOUCH}: volumes {va} and {vb} neither overlap nor share a face; unite needs operands that overlap or share a face"))),
             BoolRule::Intersect => return Err(BooleanError::EmptyResult),
             BoolRule::Subtract => {
                 // Nothing to remove: the target stays, the tool is consumed.

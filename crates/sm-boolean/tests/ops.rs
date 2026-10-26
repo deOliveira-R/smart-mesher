@@ -201,13 +201,16 @@ fn without_keep_the_inputs_are_retired_and_with_keep_they_are_not() {
     let a = r.brick([2.0; 3], [1.0; 3]);
     let b = r.brick([2.0; 3], [2.0, 1.0, 1.0]);
     let d = r.run(&Unite { bodies: vec![a.body, b.body], keep: None, regularize: None, tol: None }).unwrap();
-    for id in [a.volume, b.volume, a.body, b.body] {
-        assert!(d.removed.contains(&id), "{id} retired");
-    }
+    // The retired volumes and bodies are exactly the four inputs (faces/edges/vertices aside).
+    let retired = |d: &Delta| -> std::collections::BTreeSet<EntityId> { d.removed.iter().copied().filter(|id| matches!(id.kind(), sm_core::EntityKind::TopoVolume | sm_core::EntityKind::TopoBody)).collect() };
+    let inputs: std::collections::BTreeSet<EntityId> = [a.volume, b.volume, a.body, b.body].into_iter().collect();
+    assert_eq!(retired(&d), inputs, "retired volumes and bodies");
     let mut r = Rig::cc();
     let a = r.brick([2.0; 3], [1.0; 3]);
     let b = r.brick([2.0; 3], [2.0, 1.0, 1.0]);
     let d = r.run(&Unite { bodies: vec![a.body, b.body], keep: Some(true), regularize: None, tol: None }).unwrap();
+    // With keep the kernel works on copies; the copies are consumed, the inputs are not.
+    assert!(retired(&d).is_disjoint(&inputs), "inputs kept: {:?}", d.removed);
     for id in [a.volume, b.volume, a.body, b.body] {
         assert!(!d.removed.contains(&id), "{id} kept");
     }

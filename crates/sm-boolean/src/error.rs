@@ -23,6 +23,15 @@ pub enum BooleanError {
     /// An input volume is not a manifold solid (baffle `Both` uses, fins, free faces).
     #[error("{0} is not a manifold solid (baffle, fin or free face): boolean operations need closed shells; delete or detach the sheet first")]
     NonManifoldInput(EntityId),
+    /// The operands touch along a line or at points only (tangent contact), which the arrangement
+    /// cannot split robustly.
+    #[error("tangent contact at {entity}: {detail}; perturb the tool by more than the model tolerance (move or resize it so the contact becomes a proper overlap or a clean gap)")]
+    TangentContact {
+        /// The face (or, for point contact between whole operands, the volume) where it was found.
+        entity: EntityId,
+        /// What was found.
+        detail: &'static str,
+    },
     /// Two surfaces could not be intersected.
     #[error("intersecting the surfaces of faces {a} and {b} failed: {source}; perturb the tool or intersect fewer bodies")]
     Ssi {
@@ -52,7 +61,7 @@ pub enum BooleanError {
         point: Point3,
     },
     /// The assembled volume failed its final check.
-    #[error("the {rule} result volume {volume} is invalid (open shell, non-positive volume or failed validation); the operation was rolled back: perturb the tool or intersect fewer bodies")]
+    #[error("the {rule} result volume {volume} is invalid (open shell, non-positive volume or failed validation); the operation was rolled back: perturb the tool or intersect fewer bodies; operands that are nearly tangent (clearance below about 1e-2 model units on a curved surface) are a known cause, so open the clearance or close it to a clean overlap")]
     ResultInvalid {
         /// The offending volume.
         volume: EntityId,
@@ -78,6 +87,7 @@ impl From<BooleanError> for OpError {
         match e {
             BooleanError::Invalid(m) => OpError::Invalid(m),
             BooleanError::Unsupported(m) => OpError::Unsupported(m.to_owned()),
+            e @ BooleanError::TangentContact { .. } => OpError::Unsupported(e.to_string()),
             other => OpError::Failed(other.to_string()),
         }
     }
