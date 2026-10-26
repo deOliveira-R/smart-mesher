@@ -50,7 +50,7 @@ impl Cdt {
     fn mark_edge(&mut self, a: u32, b: u32, id: u32, code: u8) -> Result<(), TriError> {
         let (t, i) = self
             .find_edge(a, b)
-            .ok_or_else(|| TriError::Degenerate("segment edge missing after recovery".into()))?;
+            .ok_or_else(|| TriError::Degenerate(format!("segment edge {a}-{b} missing after recovery")))?;
         let n = self.nbr[t as usize][i];
         let c = self.code[t as usize][i].max(code);
         self.code[t as usize][i] = c;
@@ -151,8 +151,10 @@ impl Cdt {
                 .position(|&x| x != r_v && x != l_v)
                 .ok_or_else(|| TriError::Degenerate("bad crossing triangle".into()))?;
         }
-        self.sloan(a, b, crossed)?;
+        let fresh = self.sloan(a, b, crossed)?;
+        // Constrain the segment before legalizing, or Lawson flips could remove it again.
         self.mark_edge(a, b, id, code)?;
+        self.legalize(fresh)?;
         Ok(Step::Done)
     }
 
@@ -171,7 +173,7 @@ impl Cdt {
     }
 
     /// Remove the crossed edges by flipping, then restore the Delaunay property around them.
-    fn sloan(&mut self, a: u32, b: u32, crossed: Vec<(u32, u32)>) -> Result<(), TriError> {
+    fn sloan(&mut self, a: u32, b: u32, crossed: Vec<(u32, u32)>) -> Result<Vec<(u32, u32)>, TriError> {
         let mut queue: VecDeque<(u32, u32)> = crossed.iter().copied().collect();
         let mut fresh: Vec<(u32, u32)> = Vec::new();
         let mut budget = 1000 + 50 * crossed.len() * crossed.len();
@@ -202,15 +204,8 @@ impl Cdt {
                 fresh.push((p, q));
             }
         }
-        // Lawson legalization of the new edges and what surrounds them.
-        let mut stack: Vec<(u32, u32)> = Vec::new();
-        for &(p, q) in &fresh {
-            if (p == a && q == b) || (p == b && q == a) {
-                continue;
-            }
-            stack.push((p, q));
-        }
-        self.legalize(stack)
+        // The new edges (the segment itself is among them) are legalized by the caller.
+        Ok(fresh)
     }
 
     /// Flip unconstrained edges whose opposite vertex is strictly inside the circumcircle,

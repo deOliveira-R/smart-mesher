@@ -5,6 +5,7 @@ mod common;
 use common::*;
 use sm_testkit::loops2d;
 use sm_scheme_tri::cdt::{Cdt, Pslg, Segment, SegmentKind};
+use sm_core as _;
 
 fn lattice(n: usize, scale: f64) -> Pslg {
     let mut p = Pslg::default();
@@ -193,5 +194,106 @@ fn collinear_overlapping_segments_are_split() {
     assert!(all_positive(&c));
     for k in 0..4 {
         assert!(c.is_constrained(base + k, base + k + 1));
+    }
+}
+
+// ------------------------------------------------------------------ randomized checks
+
+fn star_polygon(rng: &mut Rng, n: usize) -> Vec<[f64; 2]> {
+    // Strictly increasing angles, radii in [0.4, 1], quantized to keep exact degeneracies likely.
+    let mut angs: Vec<f64> = (0..n).map(|i| (i as f64 + 0.3 + 0.4 * (rng.below(1000) as f64 / 1000.0)) / n as f64 * std::f64::consts::TAU).collect();
+    angs.dedup();
+    angs.iter()
+        .map(|a| {
+            let r = 0.4 + 0.6 * (rng.below(16) as f64 / 16.0);
+            [1.5 + r * a.cos(), 1.5 + r * a.sin()]
+        })
+        .collect()
+}
+
+#[test]
+fn prop_random_star_polygons_with_interior_points_and_chords() {
+    use sm_scheme_tri::cdt::{Geometry2, RefineOptions};
+    for seed in 1..=150u64 {
+        let mut rng = Rng(seed * 7919 + 13);
+        let n = 5 + rng.below(40);
+        let ring = star_polygon(&mut rng, n);
+        let m = ring.len() as u32;
+        let mut p = Pslg { points: ring.clone(), segments: Vec::new() };
+        for i in 0..m {
+            p.segments.push(Segment { a: i, b: (i + 1) % m, kind: SegmentKind::Boundary });
+        }
+        // Interior points near the center (inside every star polygon: radii >= 0.4).
+        for _ in 0..rng.below(30) {
+            let q = [1.5 + 0.3 * (rng.below(61) as f64 / 30.0 - 1.0) * 0.9, 1.5 + 0.3 * (rng.below(61) as f64 / 30.0 - 1.0) * 0.9];
+            if !p.points.contains(&q) {
+                p.points.push(q);
+            }
+        }
+        // An embedded chord between two polygon vertices when it stays inside (it may cross
+        // nothing: vertex i to the interior point 0 if any).
+        let c = Cdt::new(&p).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        assert!(all_positive(&c), "seed {seed}");
+        assert_eq!(delaunay_violations(&c), 0, "seed {seed}");
+        let area_poly: f64 = {
+            let mut s = 0.0;
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                s += a[0] * b[1] - b[0] * a[1];
+            }
+            0.5 * s
+        };
+        assert!((area(&c) - area_poly).abs() <= 1e-12 * area_poly, "seed {seed}");
+        let mut want: Vec<(u32, u32)> = p.segments.iter().map(|s| (s.a.min(s.b), s.a.max(s.b))).collect();
+        want.sort();
+        assert_eq!(boundary_edges(&c), want, "seed {seed}");
+        // Same triangulation for a shuffled input.
+        assert_eq!(tri_set(&c), tri_set(&Cdt::new(&shuffled(&p, seed)).unwrap()), "seed {seed}");
+        // Refinement keeps everything valid.
+        let mut c2 = c.clone();
+        struct G;
+        impl Geometry2 for G {
+            fn lift(&self, q: [f64; 2]) -> sm_core::Point3 { sm_core::Point3::new(q[0], q[1], 0.0) }
+            fn size(&self, _p: sm_core::Point3) -> f64 { 0.25 }
+            fn is_isometric(&self) -> bool { true }
+        }
+        let rep = c2.refine(&G, &RefineOptions::default());
+        assert!(all_positive(&c2), "seed {seed}");
+        assert_eq!(delaunay_violations(&c2), 0, "seed {seed}");
+        assert!((area(&c2) - area_poly).abs() <= 1e-12 * area_poly, "seed {seed}");
+        assert_eq!(boundary_edges(&c2), want, "seed {seed}");
+        let _ = rep;
+    }
+}
+
+#[test]
+fn prop_random_lattice_subsets_are_exact_and_order_independent() {
+    // Points on a small integer lattice (many cocircular quadruples), with a hull boundary.
+    for seed in 1..=60u64 {
+        let mut rng = Rng(seed * 104729 + 7);
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        // A convex frame so the region is simple, then random interior lattice points.
+        let k = 6usize;
+        for i in 0..k { pts.push([i as f64, 0.0]); }
+        for i in 0..k { pts.push([k as f64, i as f64]); }
+        for i in 0..k { pts.push([(k - i) as f64, k as f64]); }
+        for i in 0..k { pts.push([0.0, (k - i) as f64]); }
+        for _ in 0..rng.below(25) {
+            let q = [1.0 + rng.below(k - 1) as f64, 1.0 + rng.below(k - 1) as f64];
+            if !pts.contains(&q) { pts.push(q); }
+        }
+        let m = (4 * k) as u32;
+        let mut p = Pslg { points: pts, segments: Vec::new() };
+        for i in 0..m {
+            p.segments.push(Segment { a: i, b: (i + 1) % m, kind: SegmentKind::Boundary });
+        }
+        let c = Cdt::new(&p).unwrap();
+        assert!(all_positive(&c), "seed {seed}");
+        assert_eq!(delaunay_violations(&c), 0, "seed {seed}");
+        assert!((area(&c) - (k * k) as f64).abs() < 1e-12, "seed {seed}");
+        let base = tri_set(&c);
+        for s2 in 0..3u64 {
+            assert_eq!(tri_set(&Cdt::new(&shuffled(&p, seed * 31 + s2)).unwrap()), base, "seed {seed}/{s2}");
+        }
     }
 }
