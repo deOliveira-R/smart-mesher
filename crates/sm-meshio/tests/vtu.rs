@@ -449,3 +449,105 @@ fn tag_columns_of_the_wrong_length_are_an_error() {
     o.tags = false;
     vtu_bytes(&w, &o).unwrap();
 }
+
+// ---- Scope D: polyhedra decode to the fixture volumes -------------------------------------------
+
+/// Cell volumes decoded from the raw VTU arrays alone: `1/3 sum p0 . Sf` over the outward faces
+/// (`faces` stream for `VTK_POLYHEDRON`, the template faces for a hexahedron), with Newell area vectors.
+fn volumes_from_vtu(m: &ReferenceMesh) -> (Vec<f64>, Vec<i32>, Vec<i32>) {
+    let a = export(m);
+    let pts = as_f64(&a["Points/Points"]);
+    let p = |i: i32| [pts[3 * i as usize], pts[3 * i as usize + 1], pts[3 * i as usize + 2]];
+    let types = &a["Cells/types"].1;
+    let (conn, off) = (as_i32(&a["Cells/connectivity"]), as_i32(&a["Cells/offsets"]));
+    let (faces, foff) = (a.get("Cells/faces").map(as_i32).unwrap_or_default(), a.get("Cells/faceoffsets").map(as_i32).unwrap_or_default());
+    let third_p0_sf = |l: &[i32]| -> f64 {
+        let mut s = [0.0; 3];
+        for k in 0..l.len() {
+            let (u, v) = (p(l[k]), p(l[(k + 1) % l.len()]));
+            s[0] += (u[1] * v[2] - u[2] * v[1]) / 2.0;
+            s[1] += (u[2] * v[0] - u[0] * v[2]) / 2.0;
+            s[2] += (u[0] * v[1] - u[1] * v[0]) / 2.0;
+        }
+        let p0 = p(l[0]);
+        (p0[0] * s[0] + p0[1] * s[1] + p0[2] * s[2]) / 3.0
+    };
+    let mut vols = vec![];
+    let mut stream_at = 0usize;
+    for c in 0..types.len() {
+        let lo = if c == 0 { 0 } else { off[c - 1] as usize };
+        let corners = &conn[lo..off[c] as usize];
+        vols.push(match types[c] {
+            42 => {
+                let end = foff[c] as usize;
+                let (mut at, mut v) = (stream_at, 0.0);
+                let nfaces = faces[at];
+                at += 1;
+                for _ in 0..nfaces {
+                    let n = faces[at] as usize;
+                    v += third_p0_sf(&faces[at + 1..at + 1 + n]);
+                    at += 1 + n;
+                }
+                assert_eq!(at, end, "face stream of cell {c} ends at its faceoffset");
+                stream_at = end;
+                v
+            }
+            12 => CellShape::Hex.local_faces().iter().map(|f| third_p0_sf(&f.iter().map(|i| corners[*i as usize]).collect::<Vec<_>>())).sum(),
+            t => panic!("unexpected VTK type {t}"),
+        });
+    }
+    (vols, types.iter().map(|t| i32::from(*t)).collect(), foff)
+}
+
+fn assert_volumes(name: &str, m: &ReferenceMesh, want: &[f64]) {
+    let (got, _, _) = volumes_from_vtu(m);
+    assert_eq!(got.len(), want.len(), "{name}");
+    for (c, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!((g - w).abs() <= 1e-12 * w.abs(), "{name} cell {c}: {g} vs {w}");
+    }
+}
+
+#[test]
+fn polyhedra_decode_to_the_fixture_volumes() {
+    use sm_testkit::meshes::{CellSpec, build_mesh, dual_patch, hexagonal_prism, nonconvex_poly, split_face_cube};
+    for f in [dual_patch().unwrap(), hexagonal_prism(1.0, 2.0).unwrap(), nonconvex_poly().unwrap(), split_face_cube().unwrap()] {
+        assert_volumes(f.name, &f.mesh, &f.cell_volumes);
+    }
+    assert_eq!(dual_patch().unwrap().cell_volumes[0], 1.5 * 3f64.sqrt());
+    // The non-convex L prism is a polyhedron next to a hexahedron: -1 in `faceoffsets` for the hex.
+    let nc = nonconvex_poly().unwrap();
+    let (_, types, foff) = volumes_from_vtu(&nc.mesh);
+    assert_eq!(types, [42, 12]);
+    assert!(foff[0] > 0 && foff[1] == -1);
+
+    // A hex stacked on the 7-face cube: the shared quad is a face of both, the hex comes second.
+    let cube = split_face_cube().unwrap();
+    let mut pts: Vec<[f64; 3]> = (0..8).map(|i| {
+        let c = cube.mesh.point(i);
+        [c.x, c.y, c.z]
+    }).collect();
+    pts.extend([[0., 0., 2.], [1., 0., 2.], [1., 1., 2.], [0., 1., 2.]]);
+    let loops = vec![vec![0, 2, 1], vec![0, 3, 2], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]];
+    let stacked = build_mesh(&pts, &[CellSpec::Poly(loops), CellSpec::Template(CellShape::Hex, vec![4, 5, 6, 7, 8, 9, 10, 11])], &mut SerialAlloc::new()).unwrap();
+    assert_eq!((stacked.cell_shape(CellIx(0)), stacked.cell_shape(CellIx(1))), (CellShape::Polyhedron, CellShape::Hex));
+    assert_eq!(stacked.face_count() - (0..stacked.face_count()).filter(|f| stacked.is_boundary_face(FaceIx::new(*f))).count(), 1);
+    assert_volumes("stacked", &stacked, &[1.0, 1.0]);
+    let (_, types, foff) = volumes_from_vtu(&stacked);
+    assert_eq!(types, [42, 12]);
+    assert!(foff[0] > 0 && foff[1] == -1);
+    // The face stream lists outward loops: the cube's top face (shared with the hex) points up
+    // (+z, out of the lower cell), so its loop is counter-clockwise seen from above: 4 5 6 7.
+    let a = export(&stacked);
+    let faces = as_i32(&a["Cells/faces"]);
+    assert_eq!(faces[0], 7, "seven faces");
+    let mut at = 1;
+    let mut quad_loops = vec![];
+    for _ in 0..7 {
+        let n = faces[at] as usize;
+        if n == 4 && faces[at + 1..at + 5].iter().all(|v| (4..8).contains(v)) {
+            quad_loops.push(faces[at + 1..at + 5].to_vec());
+        }
+        at += 1 + n;
+    }
+    assert_eq!(quad_loops, [vec![4, 5, 6, 7]]);
+}
