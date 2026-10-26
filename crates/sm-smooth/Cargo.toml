@@ -11,7 +11,31 @@ license.workspace = true
 bench = false
 
 [dependencies]
+sm-core = { path = "../sm-core", features = ["serde", "schemars"] }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-model-api = { path = "../sm-model-api" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["schemars"] }
+sm-quality = { path = "../sm-quality" }
 sm-op-api = { path = "../sm-op-api" }
+sm-layer-api = { path = "../sm-layer-api" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+smallvec = "1"
+thiserror = "2"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+sm-mesh = { path = "../sm-mesh" }
+sm-mesher = { path = "../sm-mesher" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs", "schemars"] }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "smooth"
+harness = false
 
 [lints]
 workspace = true
