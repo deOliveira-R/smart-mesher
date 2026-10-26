@@ -83,6 +83,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bit-set"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1140,7 +1146,23 @@ dependencies = [
 name = "sm-cadio"
 version = "0.0.0"
 dependencies = [
+ "base64",
+ "criterion 0.5.1",
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sm-core",
+ "sm-geom-api",
+ "sm-layer-api",
  "sm-op-api",
+ "sm-testkit",
+ "sm-topo",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]

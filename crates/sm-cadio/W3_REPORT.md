@@ -91,7 +91,7 @@ allocator would need `unsafe`, which CLAUDE.md allows only in `sm-rt-capi`.
    `sm-topo-api`, `sm-op-api`, `sm-layer-api`, `serde`, `serde_json`, `schemars`, `thiserror`,
    `sha2`, `base64`, `rayon`, `smallvec`; dev: `sm-topo`, `sm-testkit`, `proptest`, `criterion`.
    `smallvec` is declared but unused (listed in the task). `Cargo.lock` was regenerated locally
-   (new: `base64`) and is **not committed**: the orchestrator owns it.
+   (new: `base64`) and its 22 additive lines (sm-cadio's dependencies, `base64`) are committed only because the branch must build; the orchestrator should discard them and regenerate the lock at merge.
 2. **Branch.** Pushed to `claude/w3-sm-cadio` as asked and to the session branch
    `claude/w3-sm-cadio-cf7j8a`.
 3. **`StepError`.** `Truncated` and `TooDeep` carry `line:col` (the task also wants every error
