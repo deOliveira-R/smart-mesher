@@ -153,7 +153,7 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     let con = Constraints::new(&input.tris);
     let (mut flips, mut n_steiner);
     {
-        let mut rec = Recover::new(&mut dt, &con, max_steiner);
+        let mut rec = Recover::new(&mut dt, &con, max_steiner, n as u32);
         rec.run()?;
         flips = rec.flips;
         n_steiner = rec.n_steiner;

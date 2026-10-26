@@ -8,6 +8,7 @@ mod canon;
 mod delaunay;
 mod error;
 mod exact;
+mod fill;
 mod flips;
 mod geom;
 mod pipeline;

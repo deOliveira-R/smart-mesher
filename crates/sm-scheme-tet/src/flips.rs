@@ -279,12 +279,77 @@ impl Dt {
                     self.apply(&plan)?;
                     flips += 1;
                     progressed = true;
+                } else if self.flat_by_cavity(f)? {
+                    flips += 1;
+                    progressed = true;
                 }
             }
             if !progressed {
                 break;
             }
         }
+        if std::env::var("TET_DEBUG").is_ok() {
+            for t in 0..self.tds.slots() as u32 {
+                if self.tds.alive[t as usize] {
+                    let v = self.tds.verts[t as usize];
+                    let p = |i: usize| self.pts[v[i] as usize];
+                    if ori(p(0), p(1), p(2), p(3)) <= 0 {
+                        eprintln!("flat tet {t}: {:?} nbr {:?}", v.map(|i| self.pts[i as usize]), self.tds.nbr[t as usize]);
+                        for k in 0..4 {
+                            let n = self.tds.nbr[t as usize][k];
+                            if n != crate::tds::NONE {
+                                eprintln!("   nbr {n}: {:?}", self.tds.verts[n as usize].map(|i| self.pts[i as usize]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Err(crate::TetError::Internal("could not remove zero-volume tets from the mesh".into()))
+    }
+}
+
+impl Dt {
+    /// Replace the flat tet `f` and a growing neighbourhood by an exactly valid tetrahedralization
+    /// of the same region (backtracking gift wrapping).
+    fn flat_by_cavity(&mut self, f: u32) -> Result<bool, crate::TetError> {
+        use crate::tds::NONE;
+        let mut r: Vec<u32> = vec![f];
+        for _level in 0..4 {
+            // Grow by one layer.
+            let snapshot = r.clone();
+            for &t in &snapshot {
+                for k in 0..4 {
+                    let n = self.tds.nbr[t as usize][k];
+                    if n != NONE && !r.contains(&n) && self.tds.ghost_slot(n).is_none() {
+                        r.push(n);
+                    }
+                }
+            }
+            if r.len() > 80 {
+                break;
+            }
+            let mut front: Vec<[u32; 3]> = Vec::new();
+            for &t in &r {
+                for k in 0..4 {
+                    let n = self.tds.nbr[t as usize][k];
+                    if n == NONE || !r.contains(&n) {
+                        front.push(self.tds.face(t, k));
+                    }
+                }
+            }
+            let mut bverts: Vec<u32> = front.iter().flatten().copied().collect();
+            bverts.sort_unstable();
+            bverts.dedup();
+            if r.iter().any(|&t| self.tds.verts[t as usize].iter().any(|x| bverts.binary_search(x).is_err())) {
+                continue;
+            }
+            if let Some(new) = self.fill(&front, None) {
+                let mut ids = Vec::new();
+                self.tds.replace(&r, &new, &mut ids)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }

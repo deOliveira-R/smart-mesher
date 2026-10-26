@@ -54,6 +54,8 @@ pub(crate) struct Recover<'a> {
     pub flips: usize,
     pub max_steiner: usize,
     pub n_steiner: usize,
+    /// Points below this index are input points (the far points follow them).
+    pub n_real: u32,
     sc: FlipScratch,
     buf: Vec<u32>,
     tabu: Vec<[u32; 2]>,
@@ -64,8 +66,8 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 }
 
 impl<'a> Recover<'a> {
-    pub fn new(dt: &'a mut Dt, con: &'a Constraints, max_steiner: usize) -> Self {
-        Self { dt, con, flips: 0, max_steiner, n_steiner: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+    pub fn new(dt: &'a mut Dt, con: &'a Constraints, max_steiner: usize, n_real: u32) -> Self {
+        Self { dt, con, flips: 0, max_steiner, n_steiner: 0, n_real, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
     }
 
     /// Recover every constraint edge and triangle.
@@ -204,6 +206,120 @@ impl<'a> Recover<'a> {
     }
 
     fn ensure_edge(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+        let mut last = None;
+        for attempt in 0..4 {
+            match self.ensure_edge_once(u, w, owner) {
+                Ok(()) => return Ok(()),
+                Err(e @ TetError::RecoveryFailed { .. }) => {
+                    if attempt == 3 {
+                        return Err(e);
+                    }
+                    if !self.edge_steiner(u, w, attempt)? {
+                        return Err(e);
+                    }
+                    last = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| fail(owner, Some([u, w]), "edge recovery failed")))
+    }
+
+    /// Insert an interior Steiner point near the failing edge (1-4 split of the tet that contains
+    /// it). Returns `false` if no admissible point was found.
+    fn edge_steiner(&mut self, u: u32, w: u32, attempt: usize) -> Result<bool, TetError> {
+        let (up, wp) = (self.dt.pts[u as usize], self.dt.pts[w as usize]);
+        let mut star = Vec::new();
+        self.dt.tds.star(u, &mut star);
+        // Tets touching the segment (level 0 cavity).
+        let touching: Vec<u32> = {
+            let mut r: Vec<u32> = Vec::new();
+            let mut stack: Vec<u32> = star
+                .into_iter()
+                .filter(|&t| self.touches(t, u, w, up, wp))
+                .collect();
+            while let Some(t) = stack.pop() {
+                if r.contains(&t) {
+                    continue;
+                }
+                r.push(t);
+                for k in 0..4 {
+                    let n = self.dt.tds.nbr[t as usize][k];
+                    if n != NONE && !r.contains(&n) && self.touches(n, u, w, up, wp) {
+                        stack.push(n);
+                    }
+                }
+                if r.len() > 512 {
+                    break;
+                }
+            }
+            r
+        };
+        let mut vs: Vec<u32> = touching.iter().flat_map(|&t| self.dt.tds.verts[t as usize]).filter(|&x| x < self.n_real).collect();
+        vs.sort_unstable();
+        vs.dedup();
+        if vs.is_empty() {
+            return Ok(false);
+        }
+        let mut c = [0.0; 3];
+        for &v in &vs {
+            c = add(c, self.dt.pts[v as usize]);
+        }
+        let c = scale(c, 1.0 / vs.len() as f64);
+        let mid = scale(add(up, wp), 0.5);
+        let cand = match attempt {
+            0 => c,
+            1 => add(scale(c, 0.5), scale(mid, 0.5)),
+            _ => add(scale(c, 0.8), scale(mid, 0.2)),
+        };
+        let Some(p) = sanitize(cand) else { return Ok(false) };
+        // Containing tet: strictly inside under exact arithmetic.
+        let mut host = NONE;
+        for t in 0..self.dt.tds.slots() as u32 {
+            if !self.dt.tds.alive[t as usize] || self.dt.tds.ghost_slot(t).is_some() {
+                continue;
+            }
+            let v = self.dt.tds.verts[t as usize];
+            let q = [self.dt.pts[v[0] as usize], self.dt.pts[v[1] as usize], self.dt.pts[v[2] as usize], self.dt.pts[v[3] as usize]];
+            let inside = (0..4).all(|k| {
+                let f = FACE[k];
+                ori(q[f[0]], q[f[1]], q[f[2]], p) < 0
+            });
+            if inside {
+                host = t;
+                break;
+            }
+        }
+        if host == NONE {
+            return Ok(false);
+        }
+        if self.n_steiner + 1 > self.max_steiner {
+            return Err(TetError::SteinerBudget { limit: self.max_steiner });
+        }
+        let id = self.dt.push_point(p);
+        self.n_steiner += 1;
+        let new: Vec<[u32; 4]> = (0..4)
+            .map(|k| {
+                let f = self.dt.tds.face(host, k);
+                [id, f[0], f[1], f[2]]
+            })
+            .collect();
+        let mut ids = Vec::new();
+        self.dt.tds.replace(&[host], &new, &mut ids)?;
+        self.flips += 1;
+        Ok(true)
+    }
+
+    fn touches(&self, t: u32, u: u32, w: u32, up: V3, wp: V3) -> bool {
+        let v = self.dt.tds.verts[t as usize];
+        if v.contains(&crate::tds::GHOST) {
+            return false;
+        }
+        let p = |i: usize| self.dt.pts[v[i] as usize];
+        crate::exact::seg_touches_tet(v, [p(0), p(1), p(2), p(3)], u, w, up, wp)
+    }
+
+    fn ensure_edge_once(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
         self.tabu.clear();
         for _iter in 0..600 {
             if self.dt.tds.find_edge(u, w).is_some() {
@@ -450,7 +566,7 @@ impl<'a> Recover<'a> {
         for (side, faces) in [(true, &mut top), (false, &mut bot)] {
             let cap = if side { [a, c, b] } else { [a, b, c] };
             faces.insert(0, cap);
-            match self.fill(faces, None) {
+            match self.dt.fill(faces, None) {
                 Some(t) => new_tets.extend(t),
                 None => {
                     let t = self.star_fill(tri, faces)?;
@@ -465,131 +581,6 @@ impl<'a> Recover<'a> {
     }
 
     // ---------------------------------------------------------------- cavity filling
-
-    /// Tetrahedralize the polyhedron bounded by `faces` (outward orientation) with exact
-    /// closed-contact validity: depth-first gift wrapping with an empty-sphere preference and
-    /// backtracking (complete for small cavities, bounded by a node budget). With
-    /// `seg = Some((u,w))` no new tet may touch the open segment except by having `u-w` as an
-    /// edge.
-    fn fill(&self, faces: &[[u32; 3]], seg: Option<(u32, u32)>) -> Option<Vec<[u32; 4]>> {
-        let mut verts: Vec<u32> = faces.iter().flatten().copied().collect();
-        verts.sort_unstable();
-        verts.dedup();
-        let mut front: std::collections::VecDeque<[u32; 3]> = faces.iter().map(|&f| canon_tri(f)).collect();
-        let mut out: Vec<[u32; 4]> = Vec::new();
-        let mut budget = 4000 + 200 * faces.len();
-        if self.wrap_dfs(&mut front, &mut out, &verts, seg, &mut budget) { Some(out) } else { None }
-    }
-
-    fn wrap_dfs(
-        &self,
-        front: &mut std::collections::VecDeque<[u32; 3]>,
-        out: &mut Vec<[u32; 4]>,
-        verts: &[u32],
-        seg: Option<(u32, u32)>,
-        budget: &mut usize,
-    ) -> bool {
-        let Some(f) = front.pop_front() else { return true };
-        if *budget == 0 {
-            front.push_front(f);
-            return false;
-        }
-        *budget -= 1;
-        let s = self.dt.sos();
-        let [x, y, z] = f;
-        let (px, py, pz) = (s.p(x), s.p(y), s.p(z));
-        let mut cands: Vec<u32> = Vec::new();
-        for &w in verts {
-            if w == x || w == y || w == z || ori(px, py, pz, s.p(w)) >= 0 {
-                continue;
-            }
-            if self.wrap_valid([w, x, y, z], front, verts, seg) {
-                cands.push(w);
-            }
-        }
-        // Order candidates by the empty-sphere preference (best first): a candidate whose
-        // sphere contains another candidate loses to it.
-        let mut ordered: Vec<u32> = Vec::with_capacity(cands.len());
-        while !cands.is_empty() {
-            let mut bi = 0;
-            for i in 1..cands.len() {
-                if s.in_sphere_s(cands[bi], x, y, z, cands[i]) {
-                    bi = i;
-                }
-            }
-            ordered.push(cands.remove(bi));
-        }
-        for w in ordered {
-            let saved = front.clone();
-            out.push([w, x, y, z]);
-            for h in [[w, z, y], [w, x, z], [w, y, x]] {
-                let hc = canon_tri(h);
-                if let Some(pos) = front.iter().position(|g| *g == hc) {
-                    front.remove(pos);
-                } else {
-                    front.push_back(canon_tri([h[0], h[2], h[1]]));
-                }
-            }
-            if self.wrap_dfs(front, out, verts, seg, budget) {
-                return true;
-            }
-            out.pop();
-            *front = saved;
-            if *budget == 0 {
-                break;
-            }
-        }
-        front.push_front(f);
-        false
-    }
-
-    fn wrap_valid(&self, tet: [u32; 4], front: &std::collections::VecDeque<[u32; 3]>, verts: &[u32], seg: Option<(u32, u32)>) -> bool {
-        let s = self.dt.sos();
-        let [w, x, y, z] = tet;
-        let tp = [s.p(w), s.p(x), s.p(y), s.p(z)];
-        // Other cavity vertices may not touch the closed tet.
-        let dbg = std::env::var("TET_DEBUG").is_ok();
-        for &c in verts {
-            if !tet.contains(&c) && crate::exact::pt_in_closed_tet(tp, s.p(c)) {
-                if dbg {
-                    eprintln!("        reject {:?}: vertex {:?} in closed tet", tp, s.p(c));
-                }
-                return false;
-            }
-        }
-        if let Some((u, v)) = seg {
-            if crate::exact::seg_touches_tet(tet, tp, u, v, s.p(u), s.p(v)) {
-                if dbg {
-                    eprintln!("        reject {:?}: touches segment", tp);
-                }
-                return false;
-            }
-        }
-        // Outward faces of the new tet other than the wrapped one, with the opposite vertex.
-        let outward = [([w, z, y], x), ([w, x, z], y), ([w, y, x], z)];
-        for g in front {
-            for (h, opp) in &outward {
-                if *g == canon_tri(*h) {
-                    continue; // coincides with a front face: the tet closes it
-                }
-                if same_cycle(*g, [h[0], h[2], h[1]]) {
-                    if dbg {
-                        eprintln!("        reject: reverse front face");
-                    }
-                    return false;
-                }
-                let gv = [(g[0], s.p(g[0])), (g[1], s.p(g[1])), (g[2], s.p(g[2]))];
-                let hv = [(h[0], s.p(h[0])), (h[1], s.p(h[1])), (h[2], s.p(h[2]))];
-                if crate::exact::tris_conflict(gv, hv, s.p(*opp)) {
-                    if dbg {
-                        eprintln!("        reject {:?}: new face {:?} conflicts with front face {:?}", tp, hv.map(|x| x.1), gv.map(|x| x.1));
-                    }
-                    return false;
-                }
-            }
-        }
-        true
-    }
 
     /// Edge recovery by cavity re-tetrahedralization: remove every tet touching the open segment
     /// and refill with the segment as a mandatory edge.
@@ -684,7 +675,7 @@ impl<'a> Recover<'a> {
             if enclosed {
                 continue;
             }
-            if let Some(new_tets) = self.fill(&bfaces, Some((u, w))) {
+            if let Some(new_tets) = self.dt.fill(&bfaces, Some((u, w))) {
                 let mut ids = Vec::new();
                 self.dt.tds.replace(&r, &new_tets, &mut ids).map_err(|e| fail(owner, Some([u, w]), format!("edge cavity commit failed: {e}")))?;
                 self.flips += 1;
