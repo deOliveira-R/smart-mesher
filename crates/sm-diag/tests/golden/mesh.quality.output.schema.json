@@ -1,0 +1,564 @@
+{
+  "$defs": {
+    "Cluster": {
+      "description": "A model entity where bad entities concentrate.",
+      "properties": {
+        "enrichment": {
+          "description": "`fraction` over the mesh-wide bad fraction.",
+          "format": "double",
+          "type": "number"
+        },
+        "fraction": {
+          "description": "`n_bad / n_total`.",
+          "format": "double",
+          "type": "number"
+        },
+        "model": {
+          "$ref": "#/$defs/EntityId",
+          "description": "The model entity (dimension at most 2)."
+        },
+        "n_bad": {
+          "description": "Bad entities (grade warn or fail) touching it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_total": {
+          "description": "Entities with a defined value touching it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "n_bad",
+        "n_total",
+        "fraction",
+        "enrichment"
+      ],
+      "type": "object"
+    },
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    },
+    "EntityRef": {
+      "description": "A mesh entity on the wire: its stable id and dense index.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The stable id (`MeshCell#12`); `null` when the index is out of range."
+        },
+        "index": {
+          "description": "The dense index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "HistogramOut": {
+      "description": "Histogram of the finite, non-sentinel values.",
+      "properties": {
+        "above": {
+          "description": "Values above `hi`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "below": {
+          "description": "Values below `lo`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "counts": {
+          "description": "Counts per bin.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "hi": {
+          "description": "Upper edge of the last bin.",
+          "format": "double",
+          "type": "number"
+        },
+        "lo": {
+          "description": "Lower edge of the first bin.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lo",
+        "hi",
+        "counts",
+        "below",
+        "above"
+      ],
+      "type": "object"
+    },
+    "MetricReport": {
+      "description": "Report of one metric.",
+      "properties": {
+        "clusters": {
+          "description": "Hot spots by model entity, at most ten.",
+          "items": {
+            "$ref": "#/$defs/Cluster"
+          },
+          "type": "array"
+        },
+        "count": {
+          "description": "Entities of this kind in the mesh: `counts + below + above + undefined + n_sentinel`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entity": {
+          "description": "`face` or `cell`.",
+          "type": "string"
+        },
+        "histogram": {
+          "$ref": "#/$defs/HistogramOut",
+          "description": "Histogram without the sentinel."
+        },
+        "metric": {
+          "description": "Wire name of the metric.",
+          "type": "string"
+        },
+        "n_fail": {
+          "description": "Entities graded `fail`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_sentinel": {
+          "description": "Entities holding the 1e30 sentinel (excluded from summary and histogram).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_warn": {
+          "description": "Entities graded `warn` (not counting `fail`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sense": {
+          "description": "`lower_is_worse` or `higher_is_worse` (informational for ungraded metrics).",
+          "type": "string"
+        },
+        "summary": {
+          "$ref": "#/$defs/SummaryOut",
+          "description": "Statistics without the sentinel."
+        },
+        "threshold": {
+          "$ref": "#/$defs/ThresholdOut",
+          "description": "The limits applied; all `null` for an ungraded metric."
+        },
+        "undefined": {
+          "description": "Entities where the metric is undefined (NaN, boundary face for an internal-only metric).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unit": {
+          "description": "`deg` or empty.",
+          "type": "string"
+        },
+        "worst": {
+          "description": "The worst entities, worst first.",
+          "items": {
+            "$ref": "#/$defs/WorstEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "metric",
+        "entity",
+        "unit",
+        "sense",
+        "count",
+        "undefined",
+        "n_sentinel",
+        "summary",
+        "threshold",
+        "n_warn",
+        "n_fail",
+        "histogram",
+        "worst",
+        "clusters"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Severity of a violation. Errors make a mesh invalid, warnings do not.",
+      "oneOf": [
+        {
+          "const": "error",
+          "description": "The mesh is invalid.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "Worth a look; the mesh stays valid.",
+          "type": "string"
+        }
+      ]
+    },
+    "SkippedMetric": {
+      "description": "A metric no cell supports, and why.",
+      "properties": {
+        "metric": {
+          "description": "Wire name of the metric.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it was not computed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Suggestion": {
+      "description": "A rule-based suggested action.",
+      "properties": {
+        "args": {
+          "description": "Ready-made op arguments, if any (the op's own schema decides the rest)."
+        },
+        "available": {
+          "description": "True if `op` is registered.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Stable id: `kind:target:metric`.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`adjust_intervals`, `change_scheme`, `refine_surface`, `smooth` or `fix_geometry_or_scheme`.",
+          "type": "string"
+        },
+        "metric": {
+          "description": "The metric that triggered it (`validity` for invalid cells).",
+          "type": "string"
+        },
+        "op": {
+          "description": "Name of the op that carries it out, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "description": "Numbers behind the suggestion."
+        },
+        "reason": {
+          "description": "Why, in a sentence.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "description": "`error` if the metric fails somewhere, else `warning`."
+        },
+        "targets": {
+          "description": "Entities the action applies to.",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "severity",
+        "metric",
+        "targets",
+        "params",
+        "reason",
+        "available"
+      ],
+      "type": "object"
+    },
+    "SummaryOut": {
+      "description": "Summary statistics of the finite, non-sentinel values; `null` when there are none.",
+      "properties": {
+        "max": {
+          "description": "Largest value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mean": {
+          "description": "Mean.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min": {
+          "description": "Smallest value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "std_dev": {
+          "description": "Population standard deviation.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ThresholdOut": {
+      "description": "Limits actually applied; `null` where there is none (or it is infinite).",
+      "properties": {
+        "fail": {
+          "description": "Failure limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "fail_boundary": {
+          "description": "Failure limit of boundary faces.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "warn": {
+          "description": "Warning limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ValiditySummary": {
+      "description": "Cell validity counts.",
+      "properties": {
+        "n_degenerate": {
+          "description": "Degenerate cells.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_inverted": {
+          "description": "Inverted cells.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_valid": {
+          "description": "Valid cells.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n_valid",
+        "n_degenerate",
+        "n_inverted"
+      ],
+      "type": "object"
+    },
+    "Verdict": {
+      "description": "Overall verdict of a quality report.",
+      "oneOf": [
+        {
+          "const": "pass",
+          "description": "No failing or warning entity, no invalid cell.",
+          "type": "string"
+        },
+        {
+          "const": "warn",
+          "description": "Some entity warns, none fails.",
+          "type": "string"
+        },
+        {
+          "const": "fail",
+          "description": "Some entity fails or a cell is invalid.",
+          "type": "string"
+        }
+      ]
+    },
+    "WorstEntry": {
+      "description": "One of the worst entities of a metric.",
+      "properties": {
+        "cells": {
+          "description": "The cells of a face; absent for cell metrics.",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "entity": {
+          "$ref": "#/$defs/EntityRef",
+          "description": "The entity."
+        },
+        "grade": {
+          "description": "`ok`, `warn` or `fail`; `null` if the metric is not graded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "description": "Face centroid or cell centroid.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "near": {
+          "description": "Lower-dimensional model entities around it.",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entity's own classification."
+        },
+        "value": {
+          "description": "Its value (the 1e30 sentinel is a number).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity",
+        "value",
+        "near"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Reply of `mesh.quality`.",
+  "properties": {
+    "cells": {
+      "description": "Number of cells.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "dim": {
+      "description": "Mesh dimension, 2 or 3.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mesh": {
+      "$ref": "#/$defs/EntityId",
+      "description": "The mesh."
+    },
+    "metrics": {
+      "description": "One report per computed metric.",
+      "items": {
+        "$ref": "#/$defs/MetricReport"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "description": "The profile graded.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire version, 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "skipped": {
+      "description": "Metrics no cell supports.",
+      "items": {
+        "$ref": "#/$defs/SkippedMetric"
+      },
+      "type": "array"
+    },
+    "suggestions": {
+      "description": "Suggested actions.",
+      "items": {
+        "$ref": "#/$defs/Suggestion"
+      },
+      "type": "array"
+    },
+    "validity": {
+      "$ref": "#/$defs/ValiditySummary",
+      "description": "Cell validity."
+    },
+    "verdict": {
+      "$ref": "#/$defs/Verdict",
+      "description": "`pass`, `warn` or `fail`."
+    }
+  },
+  "required": [
+    "schema_version",
+    "mesh",
+    "profile",
+    "cells",
+    "dim",
+    "verdict",
+    "validity",
+    "metrics",
+    "skipped",
+    "suggestions"
+  ],
+  "title": "QualityReport",
+  "type": "object"
+}

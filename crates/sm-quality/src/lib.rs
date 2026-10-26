@@ -6,15 +6,20 @@
 //!   [`sm_mesh_api::MeshRead`] in parallel; [`validity`] classifies cells as valid, degenerate or
 //!   inverted; [`summarize`] and [`histogram`] reduce columns deterministically.
 //!
+//! * [`fv_geometry`], [`fv_compute`] and [`face_to_cell`] add the finite-volume metrics of OpenFOAM
+//!   `checkMesh` and Fluent ([`FvMetric`]); [`Profile`] and [`rules`] hold the graded limits.
+//!
 //! Output is bit-identical for any number of threads. See `DESIGN.md` for every formula, its
 //! range and the conventions for degenerate input.
 
 mod driver;
 mod error;
 mod faces;
+mod fv;
 mod metric;
 mod planar;
 mod polyhedron;
+mod profile;
 mod solid;
 mod stats;
 mod vec;
@@ -27,3 +32,5 @@ pub use error::{QualityError, Result};
 pub use metric::{Context, Metric, eval};
 pub use stats::{CHUNK, Histogram, Summary, histogram, histogram_auto, summarize};
 pub use vec::{DBL_MAX, TINY, V};
+pub use fv::{FvColumn, FvEntity, FvGeometry, FvMetric, Reduce, face_to_cell, fv_compute, fv_geometry};
+pub use profile::{Grade, Measure, Profile, Rule, Sense, rules};

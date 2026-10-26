@@ -1174,7 +1174,22 @@ dependencies = [
 name = "sm-diag"
 version = "0.0.0"
 dependencies = [
+ "criterion 0.5.1",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-mesher",
  "sm-op-api",
+ "sm-quality",
+ "sm-scheme-api",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]

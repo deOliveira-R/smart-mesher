@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`mesh.validate`: check a mesh and locate what is wrong.\n\nRuns `sm_mesh_api::validate`, then (if the topology is sound) the geometry checks and the\ncorner-Jacobian validity, then flags classification entities that are no longer live and a\nstale mesh entry. Every violation carries its entity, its owner (the entity's own\nclassification), the lower-dimensional model entities near it and a point.",
+  "properties": {
+    "geometry": {
+      "default": true,
+      "description": "Run the geometric checks (default true).",
+      "type": "boolean"
+    },
+    "limit": {
+      "default": 100,
+      "description": "Number of violations returned in full, 0 to 10000 (default 100).",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mesh": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The mesh; defaults to the only mesh of the state.",
+      "x-entity-kind": [
+        "Mesh"
+      ]
+    },
+    "min_volume": {
+      "default": 0.0,
+      "description": "Cells with volume at most this are reported (default 0).",
+      "format": "double",
+      "type": "number"
+    },
+    "planarity": {
+      "default": 1e-6,
+      "description": "Planarity tolerance relative to `sqrt(area)` (default 1e-6).",
+      "format": "double",
+      "type": "number"
+    }
+  },
+  "title": "mesh.validate",
+  "type": "object"
+}

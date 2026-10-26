@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    },
+    "ProfileName": {
+      "description": "Name of a quality profile on the wire.",
+      "oneOf": [
+        {
+          "const": "generic",
+          "description": "General-purpose limits.",
+          "type": "string"
+        },
+        {
+          "const": "openfoam",
+          "description": "OpenFOAM `checkMesh` limits.",
+          "type": "string"
+        },
+        {
+          "const": "fluent",
+          "description": "Fluent orthogonal quality.",
+          "type": "string"
+        },
+        {
+          "const": "transport",
+          "description": "Planar convex faces for ray tracing and sweeps.",
+          "type": "string"
+        }
+      ]
+    },
+    "ThresholdOverride": {
+      "additionalProperties": false,
+      "description": "Per-metric override of the limits of a rule.",
+      "properties": {
+        "fail": {
+          "description": "New failure limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "warn": {
+          "description": "New warning limit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`mesh.quality`: grade a mesh against a profile and say where and why it is bad.\n\nPer metric: counts, summary, histogram, the worst entities with locations, the model entities\nwhere bad entities cluster (with an enrichment ratio over the mesh average) and, from a fixed\nrule table, suggested actions that name a registered op.",
+  "properties": {
+    "bins": {
+      "default": 20,
+      "description": "Histogram bins, 2 to 200 (default 20).",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mesh": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The mesh; defaults to the only mesh of the state.",
+      "x-entity-kind": [
+        "Mesh"
+      ]
+    },
+    "metrics": {
+      "description": "Metric names to report instead of the profile's rules.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "profile": {
+      "$ref": "#/$defs/ProfileName",
+      "default": "generic",
+      "description": "`generic` (default), `openfoam`, `fluent` or `transport`."
+    },
+    "thresholds": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ThresholdOverride"
+      },
+      "description": "Limit overrides by metric name: `{\"non_orthogonality\": {\"fail\": 40}}`.",
+      "type": "object"
+    },
+    "worst_n": {
+      "default": 10,
+      "description": "Worst entities per metric, 0 to 100 (default 10).",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "title": "mesh.quality",
+  "type": "object"
+}
