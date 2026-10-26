@@ -170,6 +170,48 @@ pub trait TopologyEdit: TopologyView {
     /// pass.
     fn merge_faces(&mut self, keep: EntityId, drop: EntityId, relative: Sense) -> Result<(), TopoError>;
 
+    // ---- join (inverse of split; regularize) ----
+
+    /// Inverse of [`Self::split_edge`]: join two edges that meet at a degree-2 vertex into one.
+    ///
+    /// The vertex must be incident to exactly these two edges (no embedded or body parents).
+    /// Both edges either lie on the same curve handle with adjacent parameter ranges (running
+    /// the same way along the curve) or have no curve; flags must be equal and neither may be
+    /// degenerate or closed. The lower id survives (the result does not depend on the argument
+    /// order) and keeps its direction; its carrier range grows over the other edge. Every coedge
+    /// pair in the parent faces is replaced by one coedge of the survivor and the pcurves are
+    /// joined (equal pcurves stay, collinear adjacent `Line2` pieces fuse; anything else is
+    /// `Unsupported`). If the two edges share both end vertices (a ring of two), the higher
+    /// vertex id dissolves and the survivor becomes a closed edge. Returns the survivor.
+    /// Lineage: `Merged { into: survivor, gap: 0 }` on the absorbed edge, `Modified(Carrier)` on
+    /// the survivor, `Deleted` on the vertex. Refusals: `InvalidParameter` (not adjacent, vertex
+    /// shared with other cells), `NotCoincident` (different curves or flags, ranges not adjacent).
+    /// Default: [`TopoError::Unsupported`].
+    fn join_edges(&mut self, first: EntityId, second: EntityId) -> Result<EntityId, TopoError> {
+        let _ = (first, second);
+        Err(TopoError::Unsupported("join_edges"))
+    }
+
+    /// Inverse of [`Self::split_face`] along one connected chain: absorb `drop` into `keep`.
+    ///
+    /// Both faces carry the same surface handle and sense (or none), equal flags, and the same
+    /// volume uses (no other parents, no embedded members). The edges they share (each used once
+    /// per face on opposite sides, with no third face) form one connected chain on the outer
+    /// loops, or one whole hole of one face that is the whole outer loop of the other (the
+    /// interior-loop case of a split). The loops fuse along the chain; inner loops are kept (the
+    /// result has `keep`'s holes then `drop`'s). The chain edges and the chain vertices left
+    /// without edges are killed, `drop`'s pcurves move onto `keep`, its coincidence records with
+    /// other faces become `keep`'s, and `keep` takes the larger tolerance override. `keep < drop`
+    /// is not required. Returns `keep`. Lineage: `Merged { into: keep, gap: 0 }` on `drop`,
+    /// `Deleted` on the chain cells, `Modified(InnerLoop)` on `keep` when a hole disappeared.
+    /// Refusals: `InvalidParameter` (no shared edge), `NotCoincident` (carrier, flags, volume
+    /// uses or orientation differ), `Unsupported` (shared edges are not one chain).
+    /// Default: [`TopoError::Unsupported`].
+    fn join_faces(&mut self, keep: EntityId, drop: EntityId) -> Result<EntityId, TopoError> {
+        let _ = (keep, drop);
+        Err(TopoError::Unsupported("join_faces"))
+    }
+
     // ---- unmerge (inverse of merge; webcut `nomerge`) ----
 
     /// Copy vertex `v` (same point, flags and tolerance) and re-point the listed `edges` to the

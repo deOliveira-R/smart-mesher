@@ -61,7 +61,7 @@ FNV-1a over little-endian words; no geometry float ever enters as raw bits (only
 
 ## Fixtures (all through `TopologyEdit`, inside an open op; `with_op` wraps one)
 
-`brick`, `two_bricks` + `merge_touching_bricks[_gap]`, `webcut_brick` (face lineage `3 -> 3a, 3b`, volume `1 -> 1a, 1b`, cap `Generated`), `cylinder` (periodic seam, pcurves at `u = 0` and `u = 2 pi`), `sphere` (pole coedges), `brick_with_baffle` (`Internal` shell), `brick_with_fin` (non-manifold edge with three faces). The "mirrored instance" fixture of the recommendation is dropped with instancing (Q8).
+`brick`, `two_bricks` + `merge_touching_bricks[_gap]`, `webcut_brick` (face lineage `3 -> 3a, 3b`, volume `1 -> 1a, 1b`, cap `Generated`), `cylinder` (periodic seam, pcurves at `u = 0` and `u = 2 pi`), `sphere` (pole coedges), `brick_with_baffle` (`Internal` shell), `brick_with_fin` (non-manifold edge with three faces); W3 stage 0 adds `torus` (1 vertex, 2 closed seam edges, 1 face), `cone` (apex pole), `brick_with_void` (`Outer` + `Void` shells; cavity normals point into the cavity) and `nested_spheres` (two-sided spherical faces; shell `i >= 1` holds sphere `i - 1` as a right-side `Void` use). The "mirrored instance" fixture of the recommendation is dropped with instancing (Q8).
 
 ## Deviations from the recommendation (honest list)
 
@@ -161,3 +161,11 @@ FNV-1a over little-endian words; no geometry float ever enters as raw bits (only
   the named constants, test with `contains`. Serde is a bare integer (`serde(transparent)`) and
   the canonical hash feeds `bits()` as one `u64` word, so the storage can be widened later
   without changing stored data or hashes. Golden test: `tests/freeze.rs`.
+
+## W3 stage 0: `join_edges` and `join_faces`
+
+Additive, default `Unsupported`; implemented by `CellComplex` and `TopoStore`. They are the inverses of `split_edge` and `split_face` for regularize (dissolving the seam a boolean leaves behind). Both hosts apply one plan computed by `plan_join_edges` / `plan_join_faces` (module `join`, read-only over a `TopologyView`), so ids, rows and lineage agree by construction and the differential `Dual` checks the application.
+
+- **`join_edges(first, second)`.** The lower id survives (argument order is irrelevant) and keeps its direction; the other is `Merged { into, gap: 0 }`, the survivor logs `Modified(Carrier)`, the degree-2 vertex is `Deleted`. Same curve handle with adjacent ranges running the same way, or both curve-less; equal flags; neither degenerate nor closed. A ring of two edges (both ends shared) dissolves the higher vertex and leaves a closed survivor. Pcurves are in curve parameter, so equal pcurves stay, collinear adjacent `Line2` pieces fuse, anything else is `Unsupported`.
+- **`join_faces(keep, drop)`.** Same surface handle and sense, equal flags, identical volume uses, no other parents, no embedded members. The shared edges (once per face, opposite sides, no third face) are one chain on the two outer loops, or one whole hole of one face equal to the outer loop of the other. Chain edges and chain vertices left without edges are `Deleted`, `drop` is `Merged { into: keep }`, `drop`'s pcurves and coincidence records move to `keep`, `keep` logs `Modified(InnerLoop)` when a hole disappears. A chain vertex that other edges still touch (a T-junction in the middle of the chain) is refused.
+- **Not literally the canonical hash.** The hash includes ids, the revision and the lineage log, which a split and its join change; the conformance scenarios (`topo_conformance::join`) compare an id-free structural signature instead (counts, vertex positions and degrees, edge curve ranges, face areas and pcurve counts, volume moments).

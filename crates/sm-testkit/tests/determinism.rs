@@ -14,7 +14,7 @@ fn pipeline(threads: usize) -> Vec<u64> {
         let vols: Vec<f64> = (0..f.mesh.cell_count()).map(|c| cell_volume(&f.mesh, CellIx::new(c))).collect();
         mesh_hash(&f.mesh) ^ hash_f64_bits(&vols)
     });
-    let topo_hashes = par_map(threads, 6, |i| {
+    let topo_hashes = par_map(threads, topo::all_topo_fixtures().unwrap().len(), |i| {
         let all = topo::all_topo_fixtures().unwrap();
         topo_hash(&all[i].complex)
     });
@@ -25,12 +25,12 @@ fn pipeline(threads: usize) -> Vec<u64> {
 #[test]
 fn determinism_fixture_pipeline() {
     let h = check(2, 4, pipeline).unwrap();
-    assert_eq!(h.len(), 18);
+    assert_eq!(h.len(), 22);
     // Different fixtures give different hashes.
     let mut d = h.clone();
     d.sort_unstable();
     d.dedup();
-    assert!(d.len() >= 16);
+    assert!(d.len() >= 20);
 }
 
 #[test]

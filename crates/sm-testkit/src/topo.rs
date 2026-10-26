@@ -2,7 +2,7 @@
 //! (through `sm-model-api`).
 //!
 //! The topology fixtures reuse `sm_topo_api::fixtures` (brick, cylinder, sphere, touching
-//! bricks, webcut) and wrap each in a [`TopoFixture`] with the counts, Euler characteristic,
+//! bricks, webcut, torus, cone, brick with a void, nested spheres) and wrap each in a [`TopoFixture`] with the counts, Euler characteristic,
 //! volumes and area that follow from the construction. [`pin_lattice_stub`] and
 //! [`mirror_chamber`] add what the topology crate does not have: instancing and a mirror cut
 //! with a deck face.
@@ -113,6 +113,55 @@ pub fn webcut_cube(frac: f64) -> Result<TopoFixture, FixtureError> {
     Ok(TopoFixture { name: "webcut_cube", complex: t, counts: [12, 20, 11, 2, 1], euler: 3, volumes, area: 7.0 })
 }
 
+/// Solid ring torus about `z` (`major > minor > 0`): counts `[1, 2, 1, 1, 1]` (one vertex, the
+/// two seam circles, one face), Euler 0, volume `2 pi^2 R r^2`, area `4 pi^2 R r`.
+pub fn torus(major: f64, minor: f64) -> Result<TopoFixture, FixtureError> {
+    let mut t = CellComplex::new();
+    run(&mut t, 1, |t| fixtures::torus(t, major, minor))?;
+    Ok(TopoFixture { name: "torus", complex: t, counts: [1, 2, 1, 1, 1], euler: 0, volumes: vec![2.0 * PI * PI * major * minor * minor], area: 4.0 * PI * PI * major * minor })
+}
+
+/// Solid cone with base radius `r` at `z = 0` and apex at `(0, 0, h)`: counts `[2, 3, 2, 1, 1]`
+/// (apex, base vertex; base circle, generator, degenerate apex pole edge), Euler 2, volume
+/// `pi r^2 h / 3`, area `pi r (r + sqrt(r^2 + h^2))`.
+pub fn cone(r: f64, h: f64) -> Result<TopoFixture, FixtureError> {
+    let mut t = CellComplex::new();
+    run(&mut t, 1, |t| fixtures::cone(t, r, h))?;
+    Ok(TopoFixture { name: "cone", complex: t, counts: [2, 3, 2, 1, 1], euler: 2, volumes: vec![PI * r * r * h / 3.0], area: PI * r * (r + r.hypot(h)) })
+}
+
+/// A brick with a box cavity (`Outer` + `Void` shells of one volume): counts `[16, 24, 12, 1, 1]`,
+/// Euler 4, volume `prod(size) - prod(void_size)`, area the sum of both boxes' areas.
+pub fn brick_with_void(min: [f64; 3], size: [f64; 3], void_min: [f64; 3], void_size: [f64; 3]) -> Result<TopoFixture, FixtureError> {
+    let mut t = CellComplex::new();
+    let p = |a: [f64; 3]| Point3::new(a[0], a[1], a[2]);
+    run(&mut t, 1, |t| fixtures::brick_with_void(t, p(min), size, p(void_min), void_size))?;
+    let vol = |s: [f64; 3]| s[0] * s[1] * s[2];
+    let area = |s: [f64; 3]| 2.0 * (s[0] * s[1] + s[1] * s[2] + s[0] * s[2]);
+    Ok(TopoFixture { name: "brick_with_void", complex: t, counts: [16, 24, 12, 1, 1], euler: 4, volumes: vec![vol(size) - vol(void_size)], area: area(size) + area(void_size) })
+}
+
+/// Concentric spheres with strictly increasing `radii` (`n` of them): a ball and `n - 1` shells
+/// sharing two-sided spherical faces, in one body. Counts `[2n, 3n, n, n, 1]`, Euler `2n`,
+/// shell volumes `4/3 pi (r_i^3 - r_{i-1}^3)` (sorted ascending, as the field requires), area
+/// `sum 4 pi r_i^2`.
+pub fn nested_spheres(radii: &[f64]) -> Result<TopoFixture, FixtureError> {
+    let mut t = CellComplex::new();
+    run(&mut t, 1, |t| fixtures::nested_spheres(t, radii))?;
+    let n = radii.len();
+    let cube = |r: f64| 4.0 / 3.0 * PI * r * r * r;
+    let mut volumes: Vec<f64> = (0..n).map(|i| cube(radii[i]) - if i == 0 { 0.0 } else { cube(radii[i - 1]) }).collect();
+    volumes.sort_by(f64::total_cmp);
+    Ok(TopoFixture {
+        name: "nested_spheres",
+        complex: t,
+        counts: [2 * n, 3 * n, n, n, 1],
+        euler: 2 * n as i64,
+        volumes,
+        area: radii.iter().map(|r| 4.0 * PI * r * r).sum(),
+    })
+}
+
 /// A model with its topology.
 #[derive(Clone, Debug)]
 pub struct ModelFixture {
@@ -197,5 +246,16 @@ pub fn model_errors(f: &ModelFixture) -> Vec<String> {
 
 /// All topology fixtures with default parameters.
 pub fn all_topo_fixtures() -> Result<Vec<TopoFixture>, FixtureError> {
-    Ok(vec![cube()?, brick([-1.0, 2.0, 0.5], [2.0, 3.0, 4.0])?, cylinder(1.0, 2.0)?, sphere(1.5)?, merged_bricks()?, webcut_cube(0.25)?])
+    Ok(vec![
+        cube()?,
+        brick([-1.0, 2.0, 0.5], [2.0, 3.0, 4.0])?,
+        cylinder(1.0, 2.0)?,
+        sphere(1.5)?,
+        merged_bricks()?,
+        webcut_cube(0.25)?,
+        torus(5.0, 1.0)?,
+        cone(2.0, 3.0)?,
+        brick_with_void([0.0; 3], [10.0; 3], [4.0; 3], [2.0; 3])?,
+        nested_spheres(&[1.0, 2.0, 3.0])?,
+    ])
 }
