@@ -129,16 +129,151 @@ fn check(region: &Region2, loops: &[Vec<[f64; 2]>], m: &QuadMesh2) -> Stats {
     Stats { min, mean: sum / m.quads.len() as f64 }
 }
 
+const SPACINGS: [f64; 3] = [0.125, 0.25, 0.5];
+
 #[test]
-fn survey_acceptance_one_and_two() {
-    let fixtures = [loops2d::square(), loops2d::rectangle(3.0, 2.0), loops2d::circle(1.5, 32), loops2d::l_shape()];
-    for r in &fixtures {
-        for h in [0.125, 0.25, 0.5] {
-            let ls = loops_at(r, h);
+fn acceptance_1_conformity_ownership_area_euler_on_the_fixtures() {
+    for r in [loops2d::square(), loops2d::rectangle(3.0, 2.0), loops2d::circle(1.5, 32), loops2d::l_shape()] {
+        for h in SPACINGS {
+            let ls = loops_at(&r, h);
             let m = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
-            let s = check(r, &ls, &m);
-            eprintln!("{:>10} h={h:<6} nb={:<4} quads={:<5} rounds={} min={:.3} mean={:.3}", r.name, ls.iter().map(Vec::len).sum::<usize>(), m.quads.len(), m.rounds, s.min, s.mean);
+            check(&r, &ls, &m);
         }
+    }
+}
+
+#[test]
+fn acceptance_2_quality_floors() {
+    for (r, min_floor) in [(loops2d::square(), 0.40), (loops2d::rectangle(3.0, 2.0), 0.40), (loops2d::circle(1.5, 32), 0.40), (loops2d::l_shape(), 0.35)] {
+        for h in SPACINGS {
+            let ls = loops_at(&r, h);
+            let m = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
+            let s = check(&r, &ls, &m);
+            assert!(s.min >= min_floor, "{} h={h}: min {:.3}", r.name, s.min);
+            assert!(s.mean >= 0.85, "{} h={h}: mean {:.3}", r.name, s.mean);
+        }
+    }
+}
+
+#[test]
+fn acceptance_3_even_rule_for_every_mandatory_fixture() {
+    let o = PaveOptions::default();
+    for r in [loops2d::square(), loops2d::rectangle(3.0, 2.0), loops2d::circle(1.5, 32), loops2d::l_shape()] {
+        for h in SPACINGS {
+            let mut ls = loops_at(&r, h);
+            // One more node: the total turns odd.
+            let (a, b) = (ls[0][0], ls[0][1]);
+            ls[0].insert(1, [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
+            let total: usize = ls.iter().map(Vec::len).sum();
+            assert_eq!(pave_region(&ls, &id_metric, None, &o).err(), Some(PaveError::OddBoundary { total }), "{} h={h}", r.name);
+        }
+    }
+    assert_eq!(pave_region(&[vec![[0.0, 0.0], [1.0, 0.0]]], &id_metric, None, &o).err(), Some(PaveError::LoopTooSmall { ring: 0, nodes: 2 }));
+    let square = resample(&loops2d::square().outer, 0.5);
+    assert_eq!(pave_region(&[square, vec![[0.2, 0.2], [0.4, 0.2]]], &id_metric, None, &o).err(), Some(PaveError::LoopTooSmall { ring: 1, nodes: 2 }));
+    // A hand-built self-crossing loop (bow tie), a loop that touches itself, and a hole that
+    // pokes through the outer loop.
+    let bow = vec![[0.0, 0.0], [2.0, 2.0], [2.0, 0.0], [0.0, 2.0]];
+    assert_eq!(pave_region(&[bow], &id_metric, None, &o).err(), Some(PaveError::BoundaryIntersects));
+    let touching = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [1.0, 0.0], [0.0, 2.0], [0.0, 1.0]];
+    assert_eq!(pave_region(&[touching], &id_metric, None, &o).err(), Some(PaveError::BoundaryIntersects));
+    let outer = resample(&loops2d::square().outer, 0.25);
+    let poke: Vec<[f64; 2]> = vec![[0.5, 0.5], [0.5, 1.5], [0.7, 1.5], [0.7, 0.5]];
+    assert_eq!(pave_region(&[outer.clone(), poke], &id_metric, None, &o).err(), Some(PaveError::BoundaryIntersects));
+    // Duplicate nodes and non-finite coordinates.
+    let mut dup = outer.clone();
+    dup[3] = dup[2];
+    assert_eq!(pave_region(&[dup], &id_metric, None, &o).err(), Some(PaveError::BoundaryIntersects));
+    let mut nan = outer.clone();
+    nan[0][0] = f64::NAN;
+    assert_eq!(pave_region(&[nan], &id_metric, None, &o).err(), Some(PaveError::NonFinite));
+    // A hole wound like the outer loop.
+    let hole: Vec<[f64; 2]> = vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+    assert_eq!(pave_region(&[outer, hole], &id_metric, None, &o).err(), Some(PaveError::BadOrientation { ring: 1 }));
+    // Bad metrics.
+    let bad = |_: [f64; 2]| [1.0, 2.0, 1.0];
+    assert_eq!(pave_region(&[resample(&loops2d::square().outer, 0.5)], &bad, None, &o).err(), Some(PaveError::BadMetric));
+}
+
+#[test]
+fn acceptance_4a_constant_metric_meshes_like_a_2_by_1_rectangle() {
+    // [0,1]^2 with E = 4 is a 2 x 1 rectangle: segments of 1/16 in u are 0.125 long, 1/8 in v.
+    let (nu, nv) = (16usize, 8usize);
+    let mut l: Vec<[f64; 2]> = Vec::new();
+    for i in 0..nu {
+        l.push([i as f64 / nu as f64, 0.0]);
+    }
+    for j in 0..nv {
+        l.push([1.0, j as f64 / nv as f64]);
+    }
+    for i in 0..nu {
+        l.push([1.0 - i as f64 / nu as f64, 1.0]);
+    }
+    for j in 0..nv {
+        l.push([0.0, 1.0 - j as f64 / nv as f64]);
+    }
+    let metric = |_: [f64; 2]| [4.0, 0.0, 1.0];
+    let m = pave_region(&[l.clone()], &metric, None, &PaveOptions::default()).expect("pave");
+    let h = 0.125;
+    // The same mesh, measured in the metric: scale u by 2.
+    let q: Vec<[f64; 2]> = m.points.iter().map(|p| [2.0 * p[0], p[1]]).collect();
+    let mut min_sj = f64::INFINITY;
+    for quad in &m.quads {
+        for k in 0..4 {
+            let (a, b) = (q[quad[k] as usize], q[quad[(k + 1) % 4] as usize]);
+            let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+            assert!((0.5 * h..=2.0 * h).contains(&len), "edge length {len} outside [{}, {}]", 0.5 * h, 2.0 * h);
+        }
+        min_sj = min_sj.min(sj(&q, quad, 1.0));
+    }
+    assert!(min_sj >= 0.40, "min scaled Jacobian {min_sj}");
+    assert_eq!(m.quads.len(), 16 * 8, "the lattice is regular");
+    let region = Region2 { name: "unit", outer: loops2d::square().outer, holes: vec![], area: 1.0, outer_types: None };
+    check(&region, &[l], &m);
+}
+
+#[test]
+fn kernel_is_deterministic_and_reflection_invariant() {
+    let ls = loops_at(&loops2d::circle(1.5, 32), 0.125);
+    let a = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
+    let b = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
+    assert_eq!(a.quads, b.quads);
+    assert!(a.points.iter().zip(&b.points).all(|(p, q)| p.map(f64::to_bits) == q.map(f64::to_bits)));
+    // The mirror image (clockwise outer loop) meshes to the mirrored mesh with the same
+    // connectivity: quads keep the winding of the input loop.
+    let cw: Vec<Vec<[f64; 2]>> = ls.iter().map(|l| l.iter().rev().copied().collect()).collect();
+    let c = pave_region(&cw, &id_metric, None, &PaveOptions::default()).expect("pave cw");
+    let region = loops2d::circle(1.5, 32);
+    let mut flipped = region.clone();
+    flipped.outer.reverse();
+    let s = check(&flipped, &cw, &c);
+    assert!(s.min >= 0.40);
+}
+
+#[test]
+fn acceptance_11_performance_100_by_100() {
+    // 400 boundary points, about 10^4 quads; the gate only binds in release builds.
+    let n = 100;
+    let mut l: Vec<[f64; 2]> = Vec::new();
+    for i in 0..n {
+        l.push([i as f64, 0.0]);
+    }
+    for i in 0..n {
+        l.push([n as f64, i as f64]);
+    }
+    for i in 0..n {
+        l.push([(n - i) as f64, n as f64]);
+    }
+    for i in 0..n {
+        l.push([0.0, (n - i) as f64]);
+    }
+    let t0 = std::time::Instant::now();
+    let m = pave_region(&[l], &id_metric, None, &PaveOptions::default()).expect("pave");
+    let dt = t0.elapsed().as_secs_f64();
+    eprintln!("100 x 100 square: {} quads in {dt:.3} s", m.quads.len());
+    assert_eq!(m.quads.len(), n * n);
+    if !cfg!(debug_assertions) {
+        assert!(dt < 2.0, "{dt} s");
     }
 }
 
@@ -147,4 +282,51 @@ fn survey_acceptance_one_and_two() {
 fn dump_circle() {
     let ls = loops_at(&loops2d::circle(1.5, 32), 0.125);
     let _ = pave_region(&ls, &id_metric, None, &PaveOptions::default());
+}
+
+#[test]
+#[ignore]
+fn robustness_survey() {
+    let o = PaveOptions::default();
+    let mut fails = 0;
+    let mut total = 0;
+    let mut hist = [0usize; 8];
+    for n in (24..=160).step_by(2) {
+        let r = loops2d::circle(1.0 + 0.01 * n as f64, 32);
+        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; [r.outer[0].0 * a.cos(), r.outer[0].0 * a.sin()] }).collect();
+        total += 1;
+        match pave_region(&[l], &id_metric, None, &o) {
+            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
+            Err(e) => {
+                fails += 1;
+                eprintln!("circle n={n}: {e}");
+            }
+        }
+    }
+    // Ellipses, stars and rectangles of odd aspect.
+    for k in 0..60 {
+        let n = 40 + 2 * k;
+        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; [3.0 * a.cos(), 1.0 * a.sin()] }).collect();
+        total += 1;
+        match pave_region(&[l], &id_metric, None, &o) {
+            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
+            Err(e) => {
+                fails += 1;
+                eprintln!("ellipse n={n}: {e}");
+            }
+        }
+    }
+    for k in 0..40 {
+        let n = 60 + 4 * k;
+        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; let r = 1.0 + 0.35 * (5.0 * a).cos(); [r * a.cos(), r * a.sin()] }).collect();
+        total += 1;
+        match pave_region(&[l], &id_metric, None, &o) {
+            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
+            Err(e) => {
+                fails += 1;
+                eprintln!("star n={n}: {e}");
+            }
+        }
+    }
+    eprintln!("total {total}, failures {fails}, rounds histogram {hist:?}");
 }
