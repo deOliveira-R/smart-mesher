@@ -136,6 +136,14 @@ pub enum RtError {
         /// The value supplied.
         value: f64,
     },
+    /// Two tallies with different bin counts were merged.
+    #[error("tally bin counts differ ({left} vs {right})")]
+    BinCountMismatch {
+        /// Bins in the receiving tally.
+        left: usize,
+        /// Bins in the merged tally.
+        right: usize,
+    },
     /// A cache image is for different inputs, options or builder version.
     #[error("tracker cache is stale: {0}")]
     CacheStale(&'static str),
@@ -163,6 +171,7 @@ impl RtError {
     /// | `CacheCorrupt` | -7 |
     /// | `Geom` | -8 |
     /// | `BadAlbedo` | -9 |
+    /// | `BinCountMismatch` | -10 |
     ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
@@ -176,6 +185,7 @@ impl RtError {
             Self::CacheCorrupt(_) => -7,
             Self::Geom(_) => -8,
             Self::BadAlbedo { .. } => -9,
+            Self::BinCountMismatch { .. } => -10,
         }
     }
 }
@@ -189,7 +199,7 @@ mod tests {
 
     #[test]
     fn codes_are_frozen() {
-        let all: [(RtError, i32); 9] = [
+        let all: [(RtError, i32); 10] = [
             (RtError::Build(vec![]), -1),
             (RtError::BadDirection { norm: 0.0 }, -2),
             (RtError::NonFinite("x"), -3),
@@ -199,6 +209,7 @@ mod tests {
             (RtError::CacheCorrupt(String::new()), -7),
             (RtError::Geom(GeomError::Invalid("x")), -8),
             (RtError::BadAlbedo { value: 2.0 }, -9),
+            (RtError::BinCountMismatch { left: 1, right: 2 }, -10),
         ];
         for (e, c) in &all {
             assert_eq!(e.code(), *c, "{e}");

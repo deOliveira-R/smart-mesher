@@ -10,8 +10,9 @@ use crate::ids::{CellId, FaceId, RegionId, SurfaceId};
 use crate::boundary::{FaceAction, ResponseKind};
 use crate::state::TrackState;
 
-/// One cell's chord along a ray.
+/// One cell's chord along a ray. Build with [`Segment::new`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Segment {
     /// The cell.
     pub cell: CellId,
@@ -21,11 +22,25 @@ pub struct Segment {
     pub t0: f64,
     /// Chord length in the cell.
     pub length: f64,
-    /// Face the ray entered the cell through (`None` for the first segment).
+    /// Face the ray entered the cell through. `None` for the first segment and for the first
+    /// segment after a `SlotChange` (a lattice or instance wall is not a model face).
     pub face_in: Option<FaceId>,
     /// Face the ray leaves through (`None` if the ray ended inside the cell or crossed a
     /// lattice/instance wall that is not a model face).
     pub face_out: Option<FaceId>,
+}
+
+impl Segment {
+    /// A segment with no entry or exit face; set them with [`Self::with_faces`].
+    pub fn new(cell: CellId, region: RegionId, t0: f64, length: f64) -> Self {
+        Self { cell, region, t0, length, face_in: None, face_out: None }
+    }
+    /// The same with entry and exit faces.
+    pub fn with_faces(mut self, face_in: Option<FaceId>, face_out: Option<FaceId>) -> Self {
+        self.face_in = face_in;
+        self.face_out = face_out;
+        self
+    }
 }
 
 /// What a sink wants next.
@@ -49,8 +64,9 @@ impl<F: FnMut(&Segment) -> Flow> SegmentSink for F {
     }
 }
 
-/// Limits for a trace.
+/// Limits for a trace. Start from [`TraceOptions::default`] and use the `with_*` builders.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TraceOptions {
     /// Maximum total distance (`f64::INFINITY` for none).
     pub max_dist: f64,
@@ -65,6 +81,24 @@ pub struct TraceOptions {
 impl Default for TraceOptions {
     fn default() -> Self {
         Self { max_dist: f64::INFINITY, max_steps: 1_000_000, stop_at_deck: false }
+    }
+}
+
+impl TraceOptions {
+    /// Set the maximum total distance.
+    pub fn with_max_dist(mut self, d: f64) -> Self {
+        self.max_dist = d;
+        self
+    }
+    /// Set the step cap.
+    pub fn with_max_steps(mut self, n: u32) -> Self {
+        self.max_steps = n;
+        self
+    }
+    /// Set whether the trace ends at deck boundaries.
+    pub fn with_stop_at_deck(mut self, stop: bool) -> Self {
+        self.stop_at_deck = stop;
+        self
     }
 }
 
@@ -95,6 +129,7 @@ pub enum TraceEnd {
 
 /// Result of [`crate::Tracker::fire`] (DAGMC `ray_fire`): distance to the next *region* change.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct FireResult {
     /// Distance travelled.
     pub dist: f64,
@@ -103,9 +138,17 @@ pub struct FireResult {
     pub end: crate::state::StepEnd,
 }
 
+impl FireResult {
+    /// A result of travelling `dist` and ending with `end`.
+    pub fn new(dist: f64, end: crate::state::StepEnd) -> Self {
+        Self { dist, end }
+    }
+}
+
 /// How a bundle ray ended (flat form of [`TraceEnd`] for SoA storage).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum EndCode {
     /// Distance limit.
     Limit = 0,
@@ -125,6 +168,24 @@ pub enum EndCode {
     Lost = 7,
     /// Albedo boundary (the coefficient is in the surface table).
     Albedo = 8,
+}
+
+impl EndCode {
+    /// Decode a stored discriminant (`None` for an unknown code).
+    pub fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => Self::Limit,
+            1 => Self::Stopped,
+            2 => Self::LeftModel,
+            3 => Self::Vacuum,
+            4 => Self::Reflective,
+            5 => Self::White,
+            6 => Self::Periodic,
+            7 => Self::Lost,
+            8 => Self::Albedo,
+            _ => return None,
+        })
+    }
 }
 
 impl From<&TraceEnd> for EndCode {
@@ -169,9 +230,12 @@ impl TrackBundle {
     pub fn ray_count(&self) -> usize {
         self.end.len()
     }
-    /// Segment index range of ray `i`.
-    pub fn ray_range(&self, i: usize) -> core::ops::Range<usize> {
-        self.offsets[i] as usize..self.offsets[i + 1] as usize
+    /// Segment index range of ray `i`; `None` if `i` is out of range or the offsets are
+    /// malformed (non-monotone or past the columns).
+    pub fn ray_range(&self, i: usize) -> Option<core::ops::Range<usize>> {
+        let a = *self.offsets.get(i)? as usize;
+        let b = *self.offsets.get(i.checked_add(1)?)? as usize;
+        (a <= b && b <= self.cell.len()).then_some(a..b)
     }
     /// Start a bundle.
     pub fn new() -> Self {
@@ -286,7 +350,7 @@ impl TrackLengthTally {
     /// Add `other` into `self`, bin by bin in index order.
     pub fn merge(&mut self, other: &Self) -> Result<(), RtError> {
         if self.acc.len() != other.acc.len() {
-            return Err(RtError::Unsupported("tally bin counts differ"));
+            return Err(RtError::BinCountMismatch { left: self.acc.len(), right: other.acc.len() });
         }
         for (a, b) in self.acc.iter_mut().zip(&other.acc) {
             *a += *b;
@@ -307,4 +371,64 @@ impl SegmentSink for TrackLengthTally {
 /// A tiny helper: advance `st` by `d` along its direction (used by default trait methods).
 pub(crate) fn advance(st: &mut TrackState, d: f64) {
     st.pos = st.pos + st.dir * d;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ray_range_is_checked() {
+        let mut b = TrackBundle::new();
+        let s = Segment::new(CellId(0), RegionId(0), 0.0, 1.5);
+        b.push_ray(&[s, s], &TraceEnd::Limit);
+        b.push_ray(&[], &TraceEnd::LeftModel);
+        assert_eq!(b.ray_range(0), Some(0..2));
+        assert_eq!(b.ray_range(1), Some(2..2));
+        assert_eq!(b.ray_range(2), None);
+        assert_eq!(b.ray_range(usize::MAX), None);
+        let bad = TrackBundle { offsets: vec![0, 9], ..TrackBundle::default() };
+        assert_eq!(bad.ray_range(0), None, "offset past the columns");
+        let rev = TrackBundle { offsets: vec![3, 1], cell: vec![0; 4], ..TrackBundle::default() };
+        assert_eq!(rev.ray_range(0), None, "non-monotone offsets");
+    }
+
+    #[test]
+    fn merge_rejects_mismatched_bins_with_its_own_error() {
+        let mut a = TrackLengthTally::new(BinMap::identity(2));
+        let b = TrackLengthTally::new(BinMap::identity(3));
+        assert!(matches!(a.merge(&b), Err(RtError::BinCountMismatch { left: 2, right: 3 })));
+        let mut c = TrackLengthTally::new(BinMap::identity(2));
+        c.acc = vec![1.0, 2.0];
+        a.merge(&c).unwrap();
+        a.merge(&c).unwrap();
+        assert_eq!(a.acc, vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn end_codes_are_frozen_and_decode() {
+        for (c, v) in [
+            (EndCode::Limit, 0u8),
+            (EndCode::Stopped, 1),
+            (EndCode::LeftModel, 2),
+            (EndCode::Vacuum, 3),
+            (EndCode::Reflective, 4),
+            (EndCode::White, 5),
+            (EndCode::Periodic, 6),
+            (EndCode::Lost, 7),
+            (EndCode::Albedo, 8),
+        ] {
+            assert_eq!(c as u8, v);
+            assert_eq!(EndCode::from_u8(v), Some(c));
+        }
+        assert_eq!(EndCode::from_u8(9), None);
+    }
+
+    #[test]
+    fn builders_set_fields() {
+        let o = TraceOptions::default().with_max_dist(2.0).with_max_steps(7).with_stop_at_deck(true);
+        assert_eq!((o.max_dist, o.max_steps, o.stop_at_deck), (2.0, 7, true));
+        let s = Segment::new(CellId(1), RegionId(2), 0.5, 1.0).with_faces(Some(FaceId(3)), None);
+        assert_eq!((s.face_in, s.face_out), (Some(FaceId(3)), None));
+    }
 }

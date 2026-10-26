@@ -155,7 +155,8 @@ impl TrackerKind {
 }
 
 /// Section tags. Frozen codes; unknown tags below `0x1000` make a reader reject the image,
-/// tags from `0x1000` up are implementor-private and may be skipped.
+/// tags `0x1000..=0x1FFFF` are implementor-private (`Private(c)` is code `0x1000 + c`, with `c`
+/// a `u16` so the sum cannot overflow); codes above that range are rejected as corrupt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum SectionTag {
@@ -173,8 +174,8 @@ pub enum SectionTag {
     Boundaries,
     /// Hierarchy: components, placements, lattices.
     Hierarchy,
-    /// Implementor-private section (`>= 0x1000`).
-    Private(u32),
+    /// Implementor-private section; wire code `0x1000 + c`.
+    Private(u16),
 }
 
 impl SectionTag {
@@ -188,7 +189,7 @@ impl SectionTag {
             Self::Tables => 5,
             Self::Boundaries => 6,
             Self::Hierarchy => 7,
-            Self::Private(c) => 0x1000 + c,
+            Self::Private(c) => 0x1000 + c as u32,
         }
     }
     /// Decode a wire code (`None` for unknown public codes).
@@ -201,7 +202,7 @@ impl SectionTag {
             5 => Self::Tables,
             6 => Self::Boundaries,
             7 => Self::Hierarchy,
-            c if c >= 0x1000 => Self::Private(c - 0x1000),
+            c if (0x1000..=0x1000 + u16::MAX as u32).contains(&c) => Self::Private((c - 0x1000) as u16),
             _ => return None,
         })
     }
@@ -403,6 +404,19 @@ mod tests {
         assert_eq!(back.section(SectionTag::FacePlanes).map(<[u8]>::len), Some(100));
         assert_eq!(back.key, img.key);
         assert_eq!(back.encode(), bytes, "encode is canonical");
+    }
+
+    #[test]
+    fn private_tags_cannot_overflow_and_roundtrip() {
+        assert_eq!(SectionTag::Private(0).code(), 0x1000);
+        assert_eq!(SectionTag::Private(u16::MAX).code(), 0x1000 + 0xFFFF);
+        for c in [0u16, 1, 5, u16::MAX] {
+            let t = SectionTag::Private(c);
+            assert_eq!(SectionTag::from_code(t.code()), Some(t));
+        }
+        assert_eq!(SectionTag::from_code(0x1000 + 0x1_0000), None);
+        assert_eq!(SectionTag::from_code(u32::MAX), None);
+        assert_eq!(SectionTag::from_code(0x0FFF), None);
     }
 
     #[test]

@@ -65,6 +65,7 @@ rt_index! {
 
 impl CellId {
     /// The implicit complement: space inside the domain that no cell covers (DAGMC's implicit
-    /// complement). It has no mesh cell; the tracker uses the boundary-face BVH there.
+    /// complement). It has no mesh cell; the tracker uses the boundary-face BVH there. A tracker
+    /// whose complement is made of real cells (the `stub` background) never returns it.
     pub const COMPLEMENT: Self = Self(u32::MAX - 1);
 }

@@ -39,13 +39,29 @@ pub enum Precision {
 pub enum RecoveryPolicy {
     /// Report `StepEnd::Lost` immediately. Used by validation runs.
     Fail,
-    /// Retry up to `tries` times: nudge the position along the direction by
-    /// `tol.linear * 2^k` for `k = 0..tries`, re-locate with that direction, and continue on
+    /// Retry up to `tries` times: attempt `k = 0..tries` moves the position **from where the
+    /// loss was detected** (not cumulatively) along the direction by `tol.linear * 2^k`
+    /// ([`RecoveryPolicy::nudge_distance`]), re-locates with that direction, and continues on
     /// success. Deterministic: the nudge depends only on the state and the attempt number.
     Nudge {
         /// Maximum number of nudges.
         tries: u8,
     },
+}
+
+impl RecoveryPolicy {
+    /// Number of nudge attempts (`0` for `Fail`).
+    pub fn tries(self) -> u32 {
+        match self {
+            Self::Fail => 0,
+            Self::Nudge { tries } => u32::from(tries),
+        }
+    }
+    /// Distance of nudge attempt `k`: `tol.linear * 2^k`, measured from the position where the
+    /// loss was detected. The one rule every implementor uses.
+    pub fn nudge_distance(tol: &ModelTolerance, k: u32) -> f64 {
+        tol.linear * 2f64.powi(k.min(255) as i32)
+    }
 }
 
 /// How curved faces without an exact analytic carrier are treated.
@@ -441,6 +457,17 @@ pub trait TrackerBuilder: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nudge_rule_is_pinned_and_not_cumulative() {
+        let tol = ModelTolerance::DEFAULT;
+        let seq: Vec<f64> = (0..5).map(|k| RecoveryPolicy::nudge_distance(&tol, k)).collect();
+        let l = tol.linear;
+        assert_eq!(seq, vec![l, 2.0 * l, 4.0 * l, 8.0 * l, 16.0 * l]);
+        assert_eq!(RecoveryPolicy::Fail.tries(), 0);
+        assert_eq!(RecoveryPolicy::Nudge { tries: 3 }.tries(), 3);
+        assert!(RecoveryPolicy::nudge_distance(&tol, u32::MAX).is_finite());
+    }
+
     use super::*;
 
     fn vol(n: u64) -> EntityId {

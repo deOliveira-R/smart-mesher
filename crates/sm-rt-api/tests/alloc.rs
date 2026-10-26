@@ -12,20 +12,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
+// SAFETY: every method forwards to `System` with the caller's arguments unchanged, so the
+// `GlobalAlloc` contract is upheld exactly as `System` upholds it; only a counter is added.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: `l` is forwarded as given; the caller meets `System.alloc`'s contract.
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        // SAFETY: `p`/`l` come from a prior allocation through this allocator, i.e. from `System`.
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: `p`/`l` came from `System` and `n` is forwarded as given.
         unsafe { System.realloc(p, l, n) }
     }
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: `l` is forwarded as given by the caller.
         unsafe { System.alloc_zeroed(l) }
     }
 }

@@ -139,6 +139,7 @@ pub enum StepEnd {
 
 /// One step: from the state's position to the next event, inside a single cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Step {
     /// Distance travelled (the chord of the cell along the ray).
     pub dist: f64,
@@ -148,6 +149,13 @@ pub struct Step {
     pub region: RegionId,
     /// What ended the step.
     pub end: StepEnd,
+}
+
+impl Step {
+    /// A step of length `dist` through `cell` of `region`, ended by `end`.
+    pub fn new(dist: f64, cell: CellId, region: RegionId, end: StepEnd) -> Self {
+        Self { dist, cell, region, end }
+    }
 }
 
 /// Result of locating a point.
@@ -179,6 +187,7 @@ impl Located {
 
 /// Closest-point answer (DAGMC `closest_to_location`).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Closest {
     /// Distance to the closest boundary of the region.
     pub dist: f64,
@@ -188,8 +197,16 @@ pub struct Closest {
     pub point: Point3,
 }
 
+impl Closest {
+    /// A closest-point answer.
+    pub fn new(dist: f64, surface: SurfaceId, point: Point3) -> Self {
+        Self { dist, surface, point }
+    }
+}
+
 /// The next surface a ray reaches, without moving (see `Tracker::distance_to_boundary`).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct BoundaryHit {
     /// Distance along the ray.
     pub dist: f64,
@@ -201,6 +218,14 @@ pub struct BoundaryHit {
     pub to_region: RegionId,
     /// What the surface does when it is a model boundary (`None` for a region interface).
     pub action: Option<FaceAction>,
+}
+
+impl BoundaryHit {
+    /// A hit at `dist` on `surface`/`face`, entering `to_region`, with the boundary `action` if
+    /// the surface is a model boundary.
+    pub fn new(dist: f64, surface: SurfaceId, face: FaceId, to_region: RegionId, action: Option<FaceAction>) -> Self {
+        Self { dist, surface, face, to_region, action }
+    }
 }
 
 /// Result of a peek along a ray.
@@ -217,6 +242,7 @@ pub enum Peek {
 
 /// One material region (a volume).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct RegionInfo {
     /// The B-rep volume (or `MeshBlock`) it comes from.
     pub entity: Option<EntityId>,
@@ -226,8 +252,26 @@ pub struct RegionInfo {
     pub implicit_complement: bool,
 }
 
+impl RegionInfo {
+    /// A named ordinary region (not the implicit complement), with no model entity.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { entity: None, name: name.into(), implicit_complement: false }
+    }
+    /// Link the region to its model entity.
+    pub fn with_entity(mut self, e: EntityId) -> Self {
+        self.entity = Some(e);
+        self
+    }
+    /// Mark the region as the implicit complement.
+    pub fn as_implicit_complement(mut self) -> Self {
+        self.implicit_complement = true;
+        self
+    }
+}
+
 /// One model surface.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SurfaceInfo {
     /// The B-rep face or boundary set.
     pub entity: Option<EntityId>,
@@ -238,6 +282,24 @@ pub struct SurfaceInfo {
     pub back: RegionId,
     /// What the surface does when it is a model boundary (`None` for a region interface).
     pub boundary: Option<FaceAction>,
+}
+
+impl SurfaceInfo {
+    /// A surface with `front` (normal points out of) and `back` (points into) regions, no
+    /// entity and no boundary action.
+    pub fn new(front: RegionId, back: RegionId) -> Self {
+        Self { entity: None, front, back, boundary: None }
+    }
+    /// Link the surface to its model entity.
+    pub fn with_entity(mut self, e: EntityId) -> Self {
+        self.entity = Some(e);
+        self
+    }
+    /// Make the surface a model boundary with `action`.
+    pub fn with_boundary(mut self, action: FaceAction) -> Self {
+        self.boundary = Some(action);
+        self
+    }
 }
 
 /// Region table, dense by `RegionId`.
@@ -332,7 +394,7 @@ mod tests {
 
     #[test]
     fn surface_table_sense_and_next_region() {
-        let t = SurfaceTable(vec![SurfaceInfo { entity: None, front: RegionId(0), back: RegionId(1), boundary: None }]);
+        let t = SurfaceTable(vec![SurfaceInfo::new(RegionId(0), RegionId(1))]);
         let s = SurfaceId(0);
         assert_eq!((t.sense(s, RegionId(0)), t.sense(s, RegionId(1)), t.sense(s, RegionId(2))), (Some(1), Some(-1), None));
         assert_eq!(

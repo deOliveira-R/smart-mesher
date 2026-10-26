@@ -123,7 +123,8 @@ pub enum InstancePolicy {
     Flatten,
     /// Keep prototypes; the tracker carries a level stack and transforms rays into local frames.
     Hierarchical,
-    /// Hierarchical when a prototype is instanced more than `flatten_below` times in total cells.
+    /// The implementor chooses per world by its own documented heuristic (e.g. flatten small
+    /// worlds); the choice never changes tracking results, only speed and memory.
     #[default]
     Auto,
 }
@@ -236,27 +237,56 @@ impl WorldSpec {
         h.finish()
     }
 
-    /// Depth of the component graph from the root (a lone leaf has depth 1); `None` on a cycle.
-    /// Call only after the id checks of [`Self::validate`] pass.
+    /// Depth of the component graph from the root (a lone leaf has depth 1). `None` on a cycle,
+    /// a missing root or a dangling child id (never panics, so it is safe before
+    /// [`Self::validate`]). Shared children are memoized, so a lattice of lattices costs time
+    /// linear in the number of components and fill entries, not the product of the fan-outs.
     pub fn depth(&self) -> Option<usize> {
-        fn go(w: &WorldSpec, c: ComponentId, stack: &mut Vec<u32>) -> Option<usize> {
-            if stack.contains(&c.0) {
-                return None;
-            }
-            stack.push(c.0);
-            let kids: Vec<ComponentId> = match &w.components[c.get()] {
-                ComponentKind::Leaf { .. } => vec![],
-                ComponentKind::Union { placements } => placements.iter().map(|p| p.child).collect(),
-                ComponentKind::Lattice(l) => l.fill.iter().chain(l.outer.iter()).copied().collect(),
-            };
-            let mut best = 0;
-            for k in kids {
-                best = best.max(go(w, k, stack)?);
-            }
-            stack.pop();
-            Some(best + 1)
+        struct Frame {
+            comp: usize,
+            kids: Vec<usize>,
+            next: usize,
+            best: usize,
         }
-        go(self, self.root, &mut Vec::new())
+        let n = self.components.len();
+        let kids_of = |c: usize| -> Option<Vec<usize>> {
+            Some(match self.components.get(c)? {
+                ComponentKind::Leaf { .. } => vec![],
+                ComponentKind::Union { placements } => placements.iter().map(|p| p.child.get()).collect(),
+                ComponentKind::Lattice(l) => l.fill.iter().chain(l.outer.iter()).map(|c| c.get()).collect(),
+            })
+        };
+        let root = self.root.get();
+        let mut memo = vec![0usize; n];
+        let mut on_stack = vec![false; n];
+        let mut stack = vec![Frame { comp: root, kids: kids_of(root)?, next: 0, best: 0 }];
+        on_stack[root] = true;
+        while let Some(top) = stack.last_mut() {
+            if let Some(&k) = top.kids.get(top.next) {
+                top.next += 1;
+                let known = *memo.get(k)?;
+                if on_stack[k] {
+                    return None;
+                }
+                if known > 0 {
+                    top.best = top.best.max(known);
+                } else {
+                    on_stack[k] = true;
+                    stack.push(Frame { comp: k, kids: kids_of(k)?, next: 0, best: 0 });
+                }
+            } else {
+                let d = top.best + 1;
+                let c = top.comp;
+                memo[c] = d;
+                on_stack[c] = false;
+                stack.pop();
+                match stack.last_mut() {
+                    Some(parent) => parent.best = parent.best.max(d),
+                    None => return Some(d),
+                }
+            }
+        }
+        None
     }
 }
 
@@ -291,6 +321,47 @@ mod tests {
         assert_eq!(l.locate_rect(Point3::new(-0.1, 0.1, 0.5)), None);
         let c = l.element_center([1, 0, 0]);
         assert!((c.x - 1.89).abs() < 1e-12 && (c.y - 0.63).abs() < 1e-12);
+    }
+
+    #[test]
+    fn depth_is_linear_on_nested_lattices_and_total_on_bad_ids() {
+        // 24 levels of 17x17 lattices of the previous level: 289^24 paths, 25 components.
+        let mut components = vec![ComponentKind::Leaf { input: 0 }];
+        for i in 0..24u32 {
+            components.push(ComponentKind::Lattice(Lattice {
+                kind: LatticeKind::Rect { pitch: [1.0, 1.0, 1.0] },
+                origin: Point3::new(0.0, 0.0, 0.0),
+                dims: [17, 17, 1],
+                fill: vec![ComponentId(i); 289],
+                outer: None,
+            }));
+        }
+        let w = WorldSpec { components, root: ComponentId(24), policy: InstancePolicy::Hierarchical };
+        assert_eq!(w.depth(), Some(25));
+        assert_eq!(w.validate(1).unwrap().len(), 1, "deep_hierarchy warning");
+        // Bad ids give None, never a panic.
+        let mut bad = pin_lattice();
+        bad.root = ComponentId(99);
+        assert_eq!(bad.depth(), None);
+        if let ComponentKind::Lattice(l) = &mut bad.components[1] {
+            l.fill[3] = ComponentId(77);
+        }
+        bad.root = ComponentId(1);
+        assert_eq!(bad.depth(), None);
+        // A diamond (shared child twice) is not a cycle.
+        let id = Transform::translation(Vector3::new(0.0, 0.0, 0.0));
+        let u = |c: u32| ComponentKind::Union { placements: vec![Placement { child: ComponentId(c), transform: id }] };
+        let diamond = WorldSpec {
+            components: vec![
+                ComponentKind::Leaf { input: 0 },
+                u(0),
+                u(0),
+                ComponentKind::Union { placements: vec![Placement { child: ComponentId(1), transform: id }, Placement { child: ComponentId(2), transform: id }] },
+            ],
+            root: ComponentId(3),
+            policy: InstancePolicy::Hierarchical,
+        };
+        assert_eq!(diamond.depth(), Some(3));
     }
 
     #[test]

@@ -48,8 +48,8 @@ pub struct FireHit {
 pub enum RayFire {
     /// A surface was hit within the limit.
     Hit(FireHit),
-    /// No acceptable hit within the limit (or the origin is not in the volume for an exiting
-    /// ray).
+    /// No acceptable hit within the limit, the origin is outside the model, or the origin is not
+    /// in the volume for an exiting ray.
     Miss,
     /// Tracking failed; a located value, never a panic.
     Lost(LostInfo),
@@ -61,6 +61,10 @@ pub enum RayFire {
 ///   the ray leaves it through.
 /// * `Entering`: the first surface the ray enters `volume` through.
 /// * `Any`: the first surface between `volume` and anything else.
+///
+/// An origin outside the model (`CellId::NONE`) is a `Miss` for every orientation, as in DAGMC
+/// (no hit, no error); no recovery nudge is attempted. `Lost` is reserved for tracking failures
+/// after a valid start.
 ///
 /// Interior cell faces and lattice walls are skipped. A model boundary (`Boundary` event) is a
 /// hit when the ray is in `volume` and the orientation is not `Entering`; deck boundaries are
@@ -75,6 +79,9 @@ pub fn ray_fire<T: Tracker + ?Sized>(
     scratch: &mut Scratch,
 ) -> Result<RayFire> {
     let mut st = t.init_state(origin, dir, None, scratch)?;
+    if st.cell.is_none() {
+        return Ok(RayFire::Miss);
+    }
     let limit = dist_limit.unwrap_or(f64::INFINITY);
     let max = t.info().max_events;
     let mut total = 0.0;

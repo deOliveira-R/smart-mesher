@@ -268,10 +268,10 @@ pub trait Tracker: Send + Sync {
         Ok(match r.end {
             StepEnd::Limit => Peek::Limit,
             StepEnd::RegionBoundary { surface, face, to_region, .. } => {
-                Peek::Hit(BoundaryHit { dist: r.dist, surface, face, to_region, action: None })
+                Peek::Hit(BoundaryHit::new(r.dist, surface, face, to_region, None))
             }
             StepEnd::Boundary { surface, face, action } => {
-                Peek::Hit(BoundaryHit { dist: r.dist, surface, face, to_region: RegionId::NONE, action: Some(action) })
+                Peek::Hit(BoundaryHit::new(r.dist, surface, face, RegionId::NONE, Some(action)))
             }
             StepEnd::Lost(l) => Peek::Lost(l),
             // `fire` never returns these; treat defensively as the limit.
@@ -288,10 +288,10 @@ pub trait Tracker: Send + Sync {
             let s = self.step(st, dist_limit - total, scratch)?;
             total += s.dist;
             if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
-                return Ok(FireResult { dist: total, end: s.end });
+                return Ok(FireResult::new(total, s.end));
             }
         }
-        Ok(FireResult { dist: total, end: StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded)) })
+        Ok(FireResult::new(total, StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded))))
     }
 
     /// Characteristics: emit one [`Segment`] per cell chord until the limit, a `Respond`
@@ -309,7 +309,7 @@ pub trait Tracker: Send + Sync {
                 _ => None,
             };
             if !matches!(s.end, StepEnd::Lost(_)) && !(s.dist == 0.0 && matches!(s.end, StepEnd::Limit)) {
-                let seg = Segment { cell: s.cell, region: s.region, t0: t, length: s.dist, face_in, face_out };
+                let seg = Segment::new(s.cell, s.region, t, s.dist).with_faces(face_in, face_out);
                 if sink.segment(&seg) == Flow::Stop {
                     return Ok(TraceEnd::Stopped);
                 }

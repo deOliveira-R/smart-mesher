@@ -11,7 +11,14 @@
 //!   frame is centred on the element, and every shape must lie strictly inside the element
 //!   (so lattice walls never cut a shape).
 //! * Local cell `c < n` is shape `c` (the first shape containing a point wins, so list inner shapes
-//!   first); local cell `n` is the background. The global cell of element `e` (x fastest) is
+//!   first); local cell `n` is the background. The background is a *real* cell per element (so
+//!   tallies bin it) and its region carries `implicit_complement`, because it plays DAGMC's role
+//!   (what no shape covers); `locate` never returns `CellId::COMPLEMENT`, which is for trackers
+//!   whose complement has no cells.
+//! * `cell_volume` is exact when it can be: a shape cell is its primitive minus the earlier
+//!   shapes strictly nested in it, the background is the element box minus the outermost
+//!   shapes; it is `None` whenever shapes partly overlap, are not pairwise disjoint at the top
+//!   level, or leave the element box. The global cell of element `e` (x fastest) is
 //!   `e * (n + 1) + c`. **Regions are prototypes**: region `c` is shared by all elements.
 //! * Surface `i < n` is shape `i`'s surface (shared by all elements), surface `n + k` is domain
 //!   face `k` (`-x,+x,-y,+y,-z,+z`). `FaceId` equals `SurfaceId`. Lattice walls are not model
@@ -25,7 +32,7 @@ use crate::boundary::{FaceAction, ResponseKind};
 use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
 use crate::error::{BuildIssue, LostCause, Result, RtError};
 use crate::ids::{CellId, ComponentId, FaceId, InstanceId, RegionId, SurfaceId};
-use crate::input::{BuildInput, BuildOptions, BuildReport, TrackerBuilder};
+use crate::input::{BuildInput, BuildOptions, BuildReport, RecoveryPolicy, TrackerBuilder};
 use crate::state::{
     Closest, LEVEL_INLINE, Level, Located, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo, SurfaceTable,
     TrackState, TrackerCaps,
@@ -255,6 +262,74 @@ pub struct AnalyticWorld {
     info: TrackerInfo,
     tol: ModelTolerance,
     block_size: usize,
+    recovery: RecoveryPolicy,
+    /// Exact volume per local cell (`n + 1` entries), `None` when not exact.
+    volumes: Vec<Option<f64>>,
+}
+
+/// Relation of two shapes.
+fn contains(outer: &Shape, inner: &Shape) -> bool {
+    let corners = |lo: Point3, hi: Point3| {
+        (0..8).map(move |m| Point3::new(if m & 1 == 0 { lo.x } else { hi.x }, if m & 2 == 0 { lo.y } else { hi.y }, if m & 4 == 0 { lo.z } else { hi.z }))
+    };
+    match (*outer, *inner) {
+        (Shape::Sphere { center: co, radius: ro }, Shape::Sphere { center: ci, radius: ri }) => (co - ci).norm() + ri <= ro,
+        (Shape::Box { lo, hi }, Shape::Box { lo: l2, hi: h2 }) => (0..3).all(|a| comp(lo, a) <= comp(l2, a) && comp(h2, a) <= comp(hi, a)),
+        (Shape::Box { lo, hi }, Shape::Sphere { center, radius }) => (0..3).all(|a| comp(lo, a) <= comp(center, a) - radius && comp(center, a) + radius <= comp(hi, a)),
+        (Shape::Sphere { center, radius }, Shape::Box { lo, hi }) => corners(lo, hi).all(|c| (c - center).norm() <= radius),
+    }
+}
+
+fn disjoint(a: &Shape, b: &Shape) -> bool {
+    match (*a, *b) {
+        (Shape::Sphere { center: c1, radius: r1 }, Shape::Sphere { center: c2, radius: r2 }) => (c1 - c2).norm() >= r1 + r2,
+        (Shape::Box { lo, hi }, Shape::Box { lo: l2, hi: h2 }) => (0..3).any(|k| comp(hi, k) <= comp(l2, k) || comp(h2, k) <= comp(lo, k)),
+        (Shape::Sphere { center, radius }, bx @ Shape::Box { .. }) | (bx @ Shape::Box { .. }, Shape::Sphere { center, radius }) => bx.signed_distance(center) >= radius,
+    }
+}
+
+/// Volume of the union of `members` (indices into `shapes`) when it is exactly the sum of the
+/// outermost members: those must be pairwise disjoint. `None` otherwise.
+fn union_volume(shapes: &[Shape], members: &[usize]) -> Option<f64> {
+    // Outermost: not contained in another member (identical shapes: the lowest index is kept).
+    let outer: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&j| !members.iter().any(|&k| k != j && contains(&shapes[k], &shapes[j]) && (!contains(&shapes[j], &shapes[k]) || k < j)))
+        .collect();
+    for (x, &i) in outer.iter().enumerate() {
+        if outer[x + 1..].iter().any(|&j| !disjoint(&shapes[i], &shapes[j])) {
+            return None;
+        }
+    }
+    Some(outer.iter().map(|&i| shapes[i].volume()).sum())
+}
+
+/// Exact volume of each local cell (`n` shape cells, then the background) in the element box.
+fn local_volumes(shapes: &[Shape], ebox: &Aabb) -> Vec<Option<f64>> {
+    let bx = Shape::Box { lo: ebox.lo, hi: ebox.hi };
+    let mut out = Vec::with_capacity(shapes.len() + 1);
+    for (c, s) in shapes.iter().enumerate() {
+        let exact = (|| {
+            if !contains(&bx, s) {
+                return None;
+            }
+            let mut nested = Vec::new();
+            for (j, o) in shapes[..c].iter().enumerate() {
+                if contains(s, o) {
+                    nested.push(j);
+                } else if !disjoint(s, o) {
+                    return None;
+                }
+            }
+            Some(s.volume() - union_volume(shapes, &nested)?)
+        })();
+        out.push(exact);
+    }
+    let all: Vec<usize> = (0..shapes.len()).collect();
+    let bg = if shapes.iter().all(|s| contains(&bx, s)) { union_volume(shapes, &all).map(|u| bx.volume() - u) } else { None };
+    out.push(bg);
+    out
 }
 
 fn box_exit(o: Point3, d: Vector3, b: &Aabb) -> (f64, usize) {
@@ -295,6 +370,15 @@ impl AnalyticWorld {
     pub fn with_tolerance(mut self, tol: ModelTolerance) -> Self {
         self.tol = tol;
         self.info.tol = tol;
+        self
+    }
+
+    /// Lost-particle handling for a state outside the model (default `Fail`). With
+    /// `Nudge { tries }`, `step` tries [`RecoveryPolicy::nudge_distance`] `(tol, k)` for
+    /// `k = 0..tries` from the state's position along its direction and continues from the first
+    /// attempt that lands inside; the nudge is counted in the step's `dist`.
+    pub fn with_recovery(mut self, r: RecoveryPolicy) -> Self {
+        self.recovery = r;
         self
     }
 
@@ -383,7 +467,10 @@ impl AnalyticWorld {
             info: TrackerInfo::new(domain, n_elems * (n + 1), ContentHash(0)),
             tol,
             block_size: 256,
+            recovery: RecoveryPolicy::Fail,
+            volumes: Vec::new(),
         };
+        w.volumes = local_volumes(&w.shapes, &w.ebox);
         w.info.faces = n + 6;
         w.info.exact_faces = n + 6;
         w.info.prototypes = 1;
@@ -713,12 +800,13 @@ impl Tracker for AnalyticWorld {
     fn cell_region(&self, c: CellId) -> Option<RegionId> {
         (c.get() < self.n_cells()).then(|| RegionId::new(c.get() % self.n_local()))
     }
-    /// Full primitive volume (nesting is not subtracted); `None` for the background.
+    /// Exact region volume of the cell (nested shapes subtracted; the background is the element
+    /// box minus the outermost shapes); `None` when the shapes do not nest cleanly.
     fn cell_volume(&self, c: CellId) -> Option<f64> {
         if c.get() >= self.n_cells() {
             return None;
         }
-        self.shapes.get(c.get() % self.n_local()).map(Shape::volume)
+        *self.volumes.get(c.get() % self.n_local())?
     }
 
     fn locate(&self, p: Point3, dir: Option<Vector3>, _hint: Option<CellId>, _scratch: &mut Scratch) -> Result<Located> {
@@ -743,6 +831,24 @@ impl Tracker for AnalyticWorld {
         }
         let (from, region) = (st.cell, st.region);
         if from.is_none() || from.get() >= self.n_cells() {
+            // Recovery: attempt k moves from the original position by tol.linear * 2^k.
+            for k in 0..self.recovery.tries() {
+                let d = RecoveryPolicy::nudge_distance(&self.tol, k);
+                if d > max_dist {
+                    break;
+                }
+                let q = st.pos + st.dir * d;
+                if let Some(loc) = self.locate_dir(q, Some(st.dir)) {
+                    st.pos = q;
+                    st.cell = loc.cell;
+                    st.region = loc.region;
+                    st.entered_via = loc.on_face;
+                    st.levels = loc.levels;
+                    let mut s = self.step(st, max_dist - d, scratch)?;
+                    s.dist += d;
+                    return Ok(s);
+                }
+            }
             return Ok(Step { dist: 0.0, cell: from, region, end: StepEnd::Lost(lost(st, LostCause::NoCellContainsPoint)) });
         }
         let nl = self.n_local();
@@ -913,7 +1019,7 @@ impl StubBuilder {
     }
 
     fn finish(&self, w: AnalyticWorld, key: CacheKey, opts: &BuildOptions) -> Box<dyn Tracker> {
-        let mut w = w.with_tolerance(opts.tol).with_block_size(opts.block_size as usize);
+        let mut w = w.with_tolerance(opts.tol).with_block_size(opts.block_size as usize).with_recovery(opts.recovery);
         w.info.key = Some(key);
         w.info.max_events = opts.max_events;
         w.info.precision = crate::input::Precision::F64;
@@ -1528,5 +1634,88 @@ mod tests {
         let f = crate::FacetInput::default();
         let bs = crate::BoundarySpec::default();
         assert!(matches!(b.build(&BuildInput::Facets(&f, &bs), &opts), Err(RtError::Unsupported(_))));
+    }
+
+    #[test]
+    fn cell_volumes_are_exact_for_nested_shapes_and_partition_the_domain() {
+        let w = world(vec![sphere(1.0), sphere(2.0)], vac());
+        let ball = |r: f64| 4.0 / 3.0 * core::f64::consts::PI * r.powi(3);
+        let vols: Vec<f64> = (0..3).map(|c| w.cell_volume(CellId::new(c)).unwrap()).collect();
+        assert!((vols[0] - ball(1.0)).abs() < 1e-12);
+        assert!((vols[1] - (ball(2.0) - ball(1.0))).abs() < 1e-12, "shell, not the full sphere");
+        assert!((vols[2] - (1000.0 - ball(2.0))).abs() < 1e-9);
+        assert!((vols.iter().sum::<f64>() - 1000.0).abs() < 1e-9);
+        assert_eq!(w.cell_volume(CellId::new(3)), None);
+        assert_eq!(w.cell_volume(CellId::NONE), None);
+        // Partly overlapping spheres: the overlapped cell and the background are not exact.
+        let o = world(vec![sphere(1.0), Shape::Sphere { center: p(1.0, 0.0, 0.0), radius: 1.0 }], vac());
+        assert!(o.cell_volume(CellId::new(0)).is_some());
+        assert_eq!(o.cell_volume(CellId::new(1)), None);
+        assert_eq!(o.cell_volume(CellId::new(2)), None);
+        // A shape leaving the domain is not exact either.
+        let big = world(vec![sphere(9.0)], vac());
+        assert_eq!(big.cell_volume(CellId::new(0)), None);
+        // Lattice: per-element volumes, element box 4^3.
+        let l = lattice_world([FaceAction::Respond(vac()); 6]);
+        let e = 3; // cell index of element 1's first local cell
+        assert!((l.cell_volume(CellId::new(e)).unwrap() - ball(1.0)).abs() < 1e-12);
+        assert!((l.cell_volume(CellId::new(e + 1)).unwrap() - 0.216).abs() < 1e-12);
+        assert!((l.cell_volume(CellId::new(e + 2)).unwrap() - (64.0 - ball(1.0) - 0.216)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_background_is_a_real_cell_never_the_complement_sentinel() {
+        let w = world(vec![sphere(1.0)], vac());
+        let mut sc = Scratch::new();
+        assert_eq!(w.regions().implicit_complement(), Some(RegionId(1)));
+        let loc = w.locate(p(4.0, 4.0, 4.0), None, None, &mut sc).unwrap();
+        assert_eq!((loc.cell, loc.region), (CellId(1), RegionId(1)));
+        assert_ne!(loc.cell, CellId::COMPLEMENT);
+        assert_eq!(w.cell_region(CellId(1)), Some(RegionId(1)));
+    }
+
+    #[test]
+    fn nudge_recovery_follows_the_tol_times_two_to_the_k_rule() {
+        let base = world(vec![sphere(1.0)], vac());
+        let tol = base.info().tol.linear;
+        let start_x = -5.0 - 3.5 * tol;
+        let run = |w: &AnalyticWorld| {
+            let mut sc = Scratch::new();
+            let mut st = w.init_state(p(start_x, 0.0, 0.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+            assert!(st.cell.is_none(), "starts outside the domain");
+            let s = w.step(&mut st, 1.0, &mut sc).unwrap();
+            (st, s)
+        };
+        // Fail: lost where it stands.
+        let (st, s) = run(&base);
+        assert!(matches!(s.end, StepEnd::Lost(_)) && st.pos.x == start_x);
+        // Two tries reach 1 tol and 2 tol: still 1.5 tol short of the wall. Lost.
+        let (_, s) = run(&base.clone().with_recovery(RecoveryPolicy::Nudge { tries: 2 }));
+        assert!(matches!(s.end, StepEnd::Lost(_)));
+        // Three tries: attempt k = 2 (4 tol, from the original position) is the first inside.
+        let w = base.clone().with_recovery(RecoveryPolicy::Nudge { tries: 3 });
+        let (st, s) = run(&w);
+        assert!(matches!(s.end, StepEnd::Limit), "{:?}", s.end);
+        assert!((s.dist - 1.0).abs() < 1e-12, "the nudge is part of the step distance");
+        assert!((st.pos.x - (start_x + 1.0)).abs() < 1e-12);
+        // Pin the landing point itself: nudge only, then the limit at exactly 4 tol.
+        let mut sc = Scratch::new();
+        let mut st = w.init_state(p(start_x, 0.0, 0.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        let s = w.step(&mut st, 4.0 * tol, &mut sc).unwrap();
+        assert!(matches!(s.end, StepEnd::Limit) && !st.cell.is_none());
+        assert!((st.pos.x - (start_x + 4.0 * tol)).abs() < 1e-15);
+        // A limit shorter than the first nudge cannot nudge: lost.
+        let mut st = w.init_state(p(start_x, 0.0, 0.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        assert!(matches!(w.step(&mut st, 0.5 * tol, &mut sc).unwrap().end, StepEnd::Lost(_)));
+    }
+
+    #[test]
+    fn ray_fire_from_outside_the_model_is_a_miss_for_every_orientation() {
+        let w = world(vec![sphere(2.0)], vac());
+        let mut sc = Scratch::new();
+        for o in [RayOrientation::Exiting, RayOrientation::Entering, RayOrientation::Any] {
+            // Pointing at the sphere from outside the domain.
+            assert_eq!(compat::ray_fire(&w, RegionId(0), p(-10.0, 0.0, 0.0), v(1.0, 0.0, 0.0), o, None, &mut sc).unwrap(), RayFire::Miss, "{o:?}");
+        }
     }
 }

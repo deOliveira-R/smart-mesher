@@ -85,6 +85,8 @@
 //! Fortran `iso_c_binding` block (`bind(C)` interfaces with `c_int`, `c_double`, `c_ptr`) is
 //! provided next to the C header by `sm-rt-capi`.
 
+#![forbid(unsafe_code)]
+
 pub mod boundary;
 pub mod cache;
 pub mod compat;
