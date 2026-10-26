@@ -13,6 +13,7 @@ Read `docs/ARCHITECTURE.md` (design), `docs/PLAN.md` (how work is split), `docs/
 - Never let `HashMap`/`HashSet` iteration order affect output. Use `IndexMap`, `BTreeMap`, or sort first.
 - Parallel reductions must be order-independent or done in a fixed order. Output must be bit-identical for 1 thread and N threads.
 - Any randomness uses an RNG explicitly seeded from inputs. No time-based or thread-based seeds.
+- Property tests use `sm_testkit::strategies::config(n)` (fixed seed, no failure persistence), never `ProptestConfig::default()`, so CI runs the same cases every time.
 - Every crate has a determinism test: run twice, and with `RAYON_NUM_THREADS=1` vs default, then compare hashes.
 
 ## Definition of done
