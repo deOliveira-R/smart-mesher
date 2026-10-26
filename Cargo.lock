@@ -1550,6 +1550,14 @@ dependencies = [
 [[package]]
 name = "sm-rt-capi"
 version = "0.0.0"
+dependencies = [
+ "cc",
+ "rayon",
+ "sm-core",
+ "sm-geom-api",
+ "sm-rt-api",
+ "sm-testkit",
+]
 
 [[package]]
 name = "sm-scheme-api"

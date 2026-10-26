@@ -8,9 +8,34 @@ publish.workspace = true
 license.workspace = true
 
 [lib]
+# The C library is `libsm_rt_capi` (cdylib + staticlib); the rlib serves Rust embedding and tests.
+crate-type = ["rlib", "cdylib", "staticlib"]
 bench = false
 
+[features]
+default = []
+# Test-only exports (`smrt_test_*`) that build stub trackers for the C tests; pulls the contract stub.
+stubs = ["sm-rt-api/stubs"]
+# Loader for `smrt_open`. OFF in W3a: the orchestrator adds `sm-rt` as an optional dependency and
+# changes this line to `sm-rt = ["dep:sm-rt"]` once sm-rt is on main. Without it `smrt_open`
+# returns `SMRT_ERR_UNSUPPORTED`.
+sm-rt = []
+
 [dependencies]
+sm-rt-api = { path = "../sm-rt-api" }
+# Contract crates whose types appear in the `Tracker` signatures (`Point3`, `Vector3`, `Ray`).
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+rayon = "1"
+
+[dev-dependencies]
+sm-rt-api = { path = "../sm-rt-api", features = ["stubs"] }
+sm-testkit = { path = "../sm-testkit" }
+cc = "1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "rt_capi_bench"
+required-features = ["stubs"]

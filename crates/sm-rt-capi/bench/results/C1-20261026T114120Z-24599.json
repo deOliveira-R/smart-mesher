@@ -1,0 +1,165 @@
+{
+  "capi_stub": {
+    "t1": {
+      "backend": "stub AnalyticWorld (analytic; not a competitor number)",
+      "build_s": 1.2e-05,
+      "case": "C1",
+      "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+      "crossings": 246002,
+      "crossings_per_s_capi": 5928092.3,
+      "lost": 0,
+      "rays": 200000,
+      "rays_per_s_capi": {
+        "max": 5066605.3,
+        "median": 4819548.0,
+        "min": 3231022.8
+      },
+      "rays_per_s_rust": {
+        "max": 6041522.9,
+        "median": 5935221.3,
+        "min": 3609969.5
+      },
+      "reps": 7,
+      "step_ns_capi": {
+        "max": 160.8,
+        "median": 142.89,
+        "min": 139.45
+      },
+      "step_ns_direct": {
+        "max": 138.34,
+        "median": 131.42,
+        "min": 129.18
+      },
+      "step_overhead_ns": {
+        "max": 31.61,
+        "median": 9.63,
+        "min": 4.56
+      },
+      "threads": 1,
+      "tool": "rt_capi_bench",
+      "warmup": 3
+    },
+    "t4": {
+      "backend": "stub AnalyticWorld (analytic; not a competitor number)",
+      "build_s": 1.4e-05,
+      "case": "C1",
+      "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+      "crossings": 246002,
+      "crossings_per_s_capi": 17264067.6,
+      "lost": 0,
+      "rays": 200000,
+      "rays_per_s_capi": {
+        "max": 15979627.9,
+        "median": 14035713.2,
+        "min": 12558360.3
+      },
+      "rays_per_s_rust": {
+        "max": 16670288.3,
+        "median": 14417421.6,
+        "min": 10223161.4
+      },
+      "reps": 7,
+      "step_ns_capi": {
+        "max": 172.77,
+        "median": 151.45,
+        "min": 141.6
+      },
+      "step_ns_direct": {
+        "max": 185.83,
+        "median": 134.5,
+        "min": 126.65
+      },
+      "step_overhead_ns": {
+        "max": 34.18,
+        "median": 15.44,
+        "min": -26.32
+      },
+      "threads": 4,
+      "tool": "rt_capi_bench",
+      "warmup": 3
+    }
+  },
+  "case": "C1",
+  "dagmc": {
+    "t1": {
+      "audits": 243,
+      "backend": "DAGMC OBB tree (conda-forge dagmc 3.2.4, nodoubledown)",
+      "build_s": 0.108847,
+      "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+      "crossings": 245988,
+      "crossings_per_s": {
+        "max": 273361.0,
+        "median": 260200.9,
+        "min": 205558.7
+      },
+      "lost": 0,
+      "lost_breakdown": {
+        "no_hit_inside_bounded_volume": 0,
+        "point_in_volume_audit": 0,
+        "ray_fire_error": 0
+      },
+      "rays": 200000,
+      "rays_per_s": {
+        "max": 222255.5,
+        "median": 211555.7,
+        "min": 167129.0
+      },
+      "reps": 7,
+      "threads": 1,
+      "tool": "dagmc_driver",
+      "warmup": 3
+    },
+    "t4": {
+      "audits": 243,
+      "backend": "DAGMC OBB tree (conda-forge dagmc 3.2.4, nodoubledown)",
+      "build_s": 0.140129,
+      "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+      "crossings": 245988,
+      "crossings_per_s": {
+        "max": 949196.1,
+        "median": 741792.8,
+        "min": 711323.9
+      },
+      "lost": 0,
+      "lost_breakdown": {
+        "no_hit_inside_bounded_volume": 0,
+        "point_in_volume_audit": 0,
+        "ray_fire_error": 0
+      },
+      "rays": 200000,
+      "rays_per_s": {
+        "max": 771741.8,
+        "median": 603113.0,
+        "min": 578340.3
+      },
+      "reps": 7,
+      "threads": 4,
+      "tool": "dagmc_driver",
+      "warmup": 3
+    }
+  },
+  "dagmc_build": {
+    "check_watertight_exit": 0,
+    "check_watertight_tail": [
+      "0/0 (-nan%) unmatched edges",
+      "0/2 (0%) unsealed surfaces",
+      "0/2 (0%) unsealed volumes",
+      "leaky surface ids=",
+      "leaky volume ids=",
+      "0.077404 seconds"
+    ],
+    "facets": "/data/C1/facets.bin",
+    "surfaces": 2,
+    "triangles": 20492,
+    "vertices": 10250,
+    "volumes": 2,
+    "watertight": true
+  },
+  "date_utc": "2026-10-26T11:41:50+00:00",
+  "note": "record-only measurements; the stub numbers are analytic overhead numbers, not competitor numbers",
+  "run_id": "20261026T114120Z-24599",
+  "sm_rt": {
+    "skipped": "sm-rt trace_rays example not available"
+  },
+  "threads_requested": 4
+}
