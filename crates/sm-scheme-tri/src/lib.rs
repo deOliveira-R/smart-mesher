@@ -1,6 +1,9 @@
 //! Triangle surface schemes: constrained Delaunay with refinement (trimesh, tridelaunay) and advancing front (triadvance).
-//!
-//! W3a skeleton (orchestrator, stage 0). Keep the [`register`] signature: `sm-server` calls it.
+
+pub mod cdt;
+pub mod error;
+
+pub use error::TriError;
 
 use sm_scheme_api::SchemeRegistry;
 
