@@ -25,6 +25,8 @@ pub fn registry(factory: Factory) -> Registry {
     reg.install(&CoreLayers::new(factory)).expect("core layers");
     reg.install(&ModelPlugin).expect("model plugin");
     reg.install(&BooleanPlugin).expect("boolean plugin");
+    reg.register::<Tag>().expect("tag");
+    reg.register::<FakeMesh>().expect("fake mesh");
     reg
 }
 
@@ -125,4 +127,59 @@ pub fn mesh_volumes(rig: &Rig, volumes: &[EntityId], size: f64) -> sm_scheme_api
     }
     let input = MeshInput::new(topo, layer.model(), &WholeFaces, volumes);
     driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new()).expect("mesh")
+}
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use sm_op_api::{ApplyCtx, OpError, TypedOp};
+
+/// Colors volumes and creates a group of the same members (test only).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tag {
+    pub volumes: Vec<EntityId>,
+    pub label: u32,
+}
+
+impl TypedOp for Tag {
+    const NAME: &'static str = "test.tag";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        use sm_layer_api::{LayerResultExt, model_txn};
+        use sm_model_api::Domain;
+        model_txn(
+            ctx,
+            |m, _t| {
+                let c = match m.color_by_label(Domain::Volume, self.label) {
+                    Some(c) => c,
+                    None => m.add_color(self.label, "tag", Domain::Volume).or_op()?,
+                };
+                m.color_volumes(c, &self.volumes).or_op()?;
+                m.add_group(&format!("g{}", self.label), &self.volumes).or_op()?;
+                Ok(c)
+            },
+            |_, _| Vec::new(),
+        )?;
+        Ok(())
+    }
+}
+
+/// Inserts a one-hex mesh on a volume (test only), to exercise the meshed-volume guard.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FakeMesh {
+    pub volume: EntityId,
+}
+
+const UNIT_CUBE: [[f64; 3]; 8] = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
+
+impl TypedOp for FakeMesh {
+    const NAME: &'static str = "test.fake_mesh";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        use sm_layer_api::{MeshEntry, MeshLayer, insert_mesh};
+        let q = ctx.layer::<ModelLayer>()?.hash_quanta();
+        let before = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mut alloc = before.clone();
+        let fx = sm_testkit::meshes::build_mesh(&UNIT_CUBE, &[sm_testkit::meshes::CellSpec::Template(sm_mesh_api::CellShape::Hex, (0..8).collect())], &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
+        insert_mesh(ctx, MeshEntry::new(Box::new(fx), vec![self.volume], None, q), &before, alloc, "mesh")
+    }
 }
