@@ -213,3 +213,41 @@ fn acc5_gate_fails_on_the_thin_rectangle_with_the_worst_triangle_nodes() {
     assert_eq!(gf.nodes.len(), 3, "worst triangle nodes: {:?}", gf.nodes);
     assert_eq!(gf.scheme.as_str(), "trimesh");
 }
+
+#[test]
+fn acc3_embedded_diagonal_between_two_loop_vertices_shares_their_nodes() {
+    use sm_geom_api::{CurveDef, Interval, Line};
+    use sm_scheme_api::NodeKey;
+    use sm_topo_api::fixtures::with_op;
+    use sm_topo_api::{CurveCarrier, OpId, Sense, TopologyEdit, TopologyViewExt};
+    let mut fx = planar_face(&loops2d::square(), 0.0).unwrap();
+    let (va, vc) = (fx.vertices[0][0], fx.vertices[0][2]);
+    let face = fx.face;
+    let diag = with_op(&mut fx.complex, OpId(2), |t| {
+        let pa = sm_scheme_api::geom::vertex_point(t, va).unwrap();
+        let pc = sm_scheme_api::geom::vertex_point(t, vc).unwrap();
+        let line = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pa, pc - pa)?))?;
+        let e = t.make_edge(va, vc, Some(CurveCarrier { curve: line, range: Interval::new(0.0, (pc - pa).norm()), sense: Sense::Forward }))?;
+        t.embed(face, e)?;
+        Ok(e)
+    })
+    .unwrap();
+    let mut counts = counts_for(&fx, 0.2);
+    counts.push((diag, 7));
+    for scheme in ["trimesh", "triadvance"] {
+        let out = mesh_faces(&fx.complex, &[fx.face], &counts, scheme, &Sequential).expect(scheme);
+        let m = &out.finished.mesh;
+        assert!(validate(m).is_empty(), "{scheme}");
+        let (a, b) = fx.complex.edge_ends(diag).unwrap();
+        let mut keys = vec![NodeKey::vertex(a)];
+        keys.extend((1..7).map(|i| NodeKey::new(diag, i)));
+        keys.push(NodeKey::vertex(b));
+        let used = edge_use(m);
+        for w in keys.windows(2) {
+            let (x, y) = (out.vertex_of(w[0]).unwrap().0 as usize, out.vertex_of(w[1]).unwrap().0 as usize);
+            assert!(used.contains_key(&(x.min(y), x.max(y))), "{scheme}: diagonal segment {w:?}");
+        }
+        assert!((mesh_area(m) - 1.0).abs() < 1e-12, "{scheme}");
+        assert_eq!(euler(m), 1, "{scheme}");
+    }
+}

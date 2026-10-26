@@ -72,7 +72,8 @@ impl Cdt {
     /// [`TriError::Degenerate`] if no triangle contains it or it lies on a constrained edge.
     pub(crate) fn insert_input_point(&mut self, v: u32) -> Result<(), TriError> {
         let p = self.p(v);
-        let Some(t0) = self.locate(p, self.hint, true) else {
+        // The walk may cross embedded segments (not the region boundary); a scan covers the rest.
+        let Some(t0) = self.locate(p, self.hint, false).or_else(|| self.locate_scan(p)) else {
             return Err(TriError::Degenerate(format!("isolated point {v} is outside the region")));
         };
         if self.tri[t0 as usize].iter().any(|&w| self.p(w) == p) {

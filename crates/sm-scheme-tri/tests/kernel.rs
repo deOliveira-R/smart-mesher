@@ -26,7 +26,7 @@ fn lattice(n: usize, scale: f64) -> Pslg {
 }
 
 #[test]
-fn cocircular_lattice_is_exact_and_order_independent() {
+fn acc1_cocircular_lattice_is_exact_and_order_independent() {
     let p = lattice(11, 1.0);
     let c = Cdt::new(&p).expect("cdt");
     assert!(all_positive(&c));
@@ -42,7 +42,7 @@ fn cocircular_lattice_is_exact_and_order_independent() {
 }
 
 #[test]
-fn square_with_a_hundred_collinear_boundary_points() {
+fn acc1_square_with_a_hundred_collinear_boundary_points() {
     let n = 100usize;
     let mut p = Pslg::default();
     let mut ring: Vec<[f64; 2]> = Vec::new();
@@ -75,7 +75,7 @@ fn square_with_a_hundred_collinear_boundary_points() {
 }
 
 #[test]
-fn scaled_by_two_to_the_sixty_both_ways() {
+fn acc1_scaled_by_two_to_the_sixty_both_ways() {
     for e in [60i32, -60] {
         let s = 2f64.powi(e);
         let r = loops2d::rectangle_with_holes();

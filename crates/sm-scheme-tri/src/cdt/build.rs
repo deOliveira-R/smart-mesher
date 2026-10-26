@@ -302,7 +302,7 @@ impl Cdt {
         self.locate_scan(p)
     }
 
-    fn locate_scan(&self, p: [f64; 2]) -> Option<u32> {
+    pub(super) fn locate_scan(&self, p: [f64; 2]) -> Option<u32> {
         for t in 0..self.tri.len() as u32 {
             if !self.alive(t) {
                 continue;

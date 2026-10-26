@@ -895,3 +895,49 @@ fn check_closure(ring: u16, nodes: &[ChartNode]) -> Result<(), TriError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::EntityKind;
+
+    fn nodes(uv: &[[f64; 2]]) -> Vec<ChartNode> {
+        let owner = EntityId::new(EntityKind::TopoEdge, 1).expect("id");
+        uv.iter()
+            .enumerate()
+            .map(|(i, p)| ChartNode {
+                key: NodeKey::new(owner, i as u32),
+                uv: *p,
+                q: *p,
+                new: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_closed_loop_passes_and_an_open_one_is_reported() {
+        let square = nodes(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        assert!(check_closure(0, &square).is_ok());
+        // The last node is a full period away from the first: the loop does not close.
+        let steps: Vec<[f64; 2]> = (0..13).map(|i| [0.5 * f64::from(i), 0.0]).collect();
+        match check_closure(0, &nodes(&steps)) {
+            Err(TriError::OpenLoop { ring: 0, gap }) => assert!(gap > 0.9, "{gap}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(check_closure(0, &square[..2]), Err(TriError::Degenerate(_))));
+    }
+
+    #[test]
+    fn psi_is_monotone_with_an_accurate_inverse() {
+        // Sphere: psi(v) = ln tan(pi/4 + v/2) (the Mercator coordinate).
+        let psi = Psi::build(-1.2, 1.2, |v| 1.0 / v.cos()).expect("psi");
+        for k in 0..=40 {
+            let v = -1.2 + 2.4 * k as f64 / 40.0;
+            let exact = (core::f64::consts::FRAC_PI_4 + v / 2.0).tan().ln() - (core::f64::consts::FRAC_PI_4 - 0.6).tan().ln();
+            let got = psi.eval(v) - psi.eval(-1.2) + 0.0;
+            assert!((got - (exact)).abs() < 1e-9, "v = {v}: {got} vs {exact}");
+            assert!((psi.inverse(psi.eval(v)) - v).abs() < 1e-12, "inverse v = {v}: {}", psi.inverse(psi.eval(v)));
+            assert!((psi.deriv(v) - 1.0 / v.cos()).abs() < 1e-5, "deriv v = {v}: {} vs {}", psi.deriv(v), 1.0 / v.cos());
+        }
+    }
+}

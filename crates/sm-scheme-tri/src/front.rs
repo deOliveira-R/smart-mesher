@@ -441,9 +441,11 @@ pub fn advance(p: &Pslg, g: &dyn Geometry2, o: &AdvanceOptions) -> Result<Cdt, T
         }
     }
     for s in &p.segments {
-        f.push_edge(s.a, s.b);
+        // An embedded segment has unmeshed region on both sides: both directions are front edges
+        // (not a cancelling pair; a triangle consumes one direction at a time).
+        f.add_edge(s.a, s.b);
         if s.kind == SegmentKind::Embedded {
-            f.push_edge(s.b, s.a);
+            f.add_edge(s.b, s.a);
         }
     }
     // Iteration cap: 20 * (2 * boundary segments + ideal triangle count).

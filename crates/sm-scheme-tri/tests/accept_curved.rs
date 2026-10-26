@@ -163,3 +163,15 @@ fn acc6_full_sphere_poles_seam_and_closed_surface() {
     assert!(a >= lo, "{a} < {lo}");
     let _ = (NeumaierSum::new(), Point3::default());
 }
+
+#[test]
+fn acc2_delaunay_on_the_cylinder_lateral_face_without_optimize() {
+    let (c, ids) = cyl();
+    let counts = vec![(ids.edges[0], 12u32), (ids.edges[1], 12), (ids.edges[2], 6)];
+    let (reg, seen) = probe_registry();
+    mesh_faces_params(&reg, &c, &[ids.faces[2]], &counts, serde_json::json!({ "optimize": false }), &Sequential, None)
+        .expect("mesh");
+    let s = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(s.isometric);
+    assert_eq!(s.delaunay_violations, 0, "chart-space exact in-circle on the cylinder");
+}

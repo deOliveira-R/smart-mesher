@@ -238,7 +238,7 @@ fn a_face_without_a_surface_carrier_uses_its_newell_plane() {
     use sm_core::Point3;
     use sm_geom_api::{CurveDef, Interval, Line};
     use sm_topo_api::{CoedgeSpec, CurveCarrier, Sense, TopologyEdit};
-    // A tilted square (no surface carrier): corners in the plane x + y + z = 1... use a skew frame.
+    // A skew parallelogram without a surface carrier: the chart is its Newell plane.
     let mut c = CellComplex::new();
     let (face, edges) = with_op(&mut c, OpId(1), |t| {
         let pts = [
@@ -267,8 +267,7 @@ fn a_face_without_a_surface_carrier_uses_its_newell_plane() {
     let out = mesh_faces(&c, &[face], &counts, "trimesh", &Sequential).expect("newell face");
     let m = &out.finished.mesh;
     assert!(validate(m).is_empty());
-    // Area of the parallelogram spanned by (1, 0, -1) and (0, 1, -1)... the corners above give
-    // |(1,0,-1) x (0,1,-1... )| computed from the first three corners.
+    // Area of the parallelogram spanned by the edges at the first corner.
     let a = Point3::new(0.0, 0.0, 1.0);
     let (u, v) = (Point3::new(1.0, 0.0, 0.0) - a, Point3::new(0.0, 1.0, 0.0) - a);
     let want = u.cross(v).norm();
