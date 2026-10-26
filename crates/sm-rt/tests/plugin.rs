@@ -15,6 +15,9 @@ use std::sync::Arc;
 #[serde(deny_unknown_fields)]
 struct HexModel {
     n: u32,
+    /// Also tag the first brick face as a response boundary named `wall`.
+    #[serde(default)]
+    wall: bool,
 }
 
 impl TypedOp for HexModel {
@@ -23,6 +26,17 @@ impl TypedOp for HexModel {
         let n = f64::from(self.n);
         let (b, txn) = topo_txn(ctx, |topo, _| brick(topo, Point3::new(0.0, 0.0, 0.0), [n, n, n]).or_op())?;
         commit_topology(ctx, &txn, &[("volume", &[b.volume])])?;
+        if self.wall {
+            let face = b.faces[0];
+            sm_layer_api::model_txn(
+                ctx,
+                |model, _| {
+                    let w = model.add_boundary("wall", sm_model_api::BoundaryKind::Response).map_err(|e| OpError::Failed(e.to_string()))?;
+                    model.assign_response(w, &[face]).map_err(|e| OpError::Failed(e.to_string()))
+                },
+                |_, _| Vec::new(),
+            )?;
+        }
         let alloc0 = ctx.layer::<MeshLayer>()?.alloc().clone();
         let mut alloc = alloc0.clone();
         let mesh = hex_block([self.n; 3], [1.0; 3], &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
@@ -48,7 +62,7 @@ fn mesh_id(s: &Session) -> EntityId {
 fn r2_rt_queries_report_info_check_and_locate() {
     let mut s = session();
     let q = QuietControl::new();
-    s.apply(&HexModel { n: 4 }, Meta::new("test", "", ""), &q.control()).expect("model + mesh");
+    s.apply(&HexModel { n: 4, wall: false }, Meta::new("test", "", ""), &q.control()).expect("model + mesh");
     let mesh = mesh_id(&s);
     let info = s.engine().run_query(s.state(), "rt.info", &json!({ "mesh": mesh.to_string() }), &q.control()).expect("rt.info");
     assert_eq!(info["cells"], 64);
@@ -96,4 +110,23 @@ fn r2_rt_queries_are_listed_with_schemas() {
             assert!(serde_json::to_string(&q.schema).unwrap().contains("x-entity-kind"), "{}", q.name);
         }
     }
+}
+
+#[test]
+fn r2_rt_check_reports_an_invalid_boundary_as_a_located_issue() {
+    let mut s = session();
+    let q = QuietControl::new();
+    s.apply(&HexModel { n: 2, wall: true }, Meta::new("test", "", ""), &q.control()).expect("model + mesh + wall");
+    let mesh = mesh_id(&s);
+    let args = |a: f64| json!({ "mesh": mesh.to_string(), "responses": [{ "boundary": "wall", "response": { "albedo": a } }] });
+    let ok = s.engine().run_query(s.state(), "rt.check", &args(0.5), &q.control()).unwrap();
+    assert_eq!(ok["ok"], true, "{ok}");
+    let bad = s.engine().run_query(s.state(), "rt.check", &args(2.0), &q.control()).unwrap();
+    assert_eq!(bad["ok"], false, "{bad}");
+    let issues = bad["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0]["code"], "boundary.bad_albedo");
+    assert!(bad["error"].is_string());
+    // The tracker-building queries refuse the same input with a typed error.
+    assert!(s.engine().run_query(s.state(), "rt.info", &args(2.0), &q.control()).is_err());
 }

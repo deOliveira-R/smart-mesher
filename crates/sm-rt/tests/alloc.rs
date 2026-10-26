@@ -41,8 +41,8 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
-fn workload(t: &dyn Tracker, sc: &mut Scratch, lo: [f64; 3], hi: [f64; 3]) -> (usize, f64) {
-    let mut r = rng("acc13_alloc");
+fn workload(t: &dyn Tracker, sc: &mut Scratch, lo: [f64; 3], hi: [f64; 3], seed: &str) -> (usize, f64) {
+    let mut r = rng(seed);
     let mut events = 0;
     let mut acc = 0.0;
     for _ in 0..1000 {
@@ -81,11 +81,12 @@ fn acc13_warm_scratch_means_zero_allocations() {
         [(&mesh_t, [-0.2; 3], [6.2; 3]), (&nc_t, [-0.2, -0.2, -0.2], [3.2, 2.2, 1.2]), (&*facet_t, [-2.2; 3], [2.2; 3])];
     for (t, lo, hi) in cases {
         let mut sc = Scratch::new();
-        let warm = workload(t, &mut sc, lo, hi); // grows the buffers
+        // Warm up on two seeds, then measure a third, different set of rays.
+        let _ = workload(t, &mut sc, lo, hi, "acc13_warm_a");
+        let _ = workload(t, &mut sc, lo, hi, "acc13_warm_b");
         let before = ALLOCS.load(Ordering::SeqCst);
-        let again = workload(t, &mut sc, lo, hi);
+        let again = workload(t, &mut sc, lo, hi, "acc13_fresh");
         let after = ALLOCS.load(Ordering::SeqCst);
-        assert_eq!(warm.0, again.0);
         assert!(again.0 > 200, "workload too small: {} events", again.0);
         eprintln!("{} events, 0 allocations", again.0);
         assert_eq!(after - before, 0, "allocations after warm-up");

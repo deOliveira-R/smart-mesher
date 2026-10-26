@@ -214,7 +214,7 @@ pub(crate) fn build_mesh(inp: &MeshInput<'_>, opts: &BuildOptions) -> Result<Bui
         .collect();
     let mate_faces = |e: EntityId| -> Vec<u32> { m.classified_on(e).map(|s| s.faces.iter().map(|f| f.0).collect()).unwrap_or_default() };
     let mut issues = Vec::new();
-    assign_actions(&mut core, inp.boundaries, &rule_faces, &mate_faces, opts, &mut issues, |f| m.face_id(FaceIx(f)));
+    assign_actions(&mut core, inp.boundaries, &rule_faces, &mate_faces, opts, &mut issues, complement.is_some(), |f| m.face_id(FaceIx(f)));
     if !issues.is_empty() {
         return Err(RtError::Build(issues));
     }
@@ -332,7 +332,7 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
         .collect();
     let mate_faces = |e: EntityId| -> Vec<u32> { by_entity.get(&e.to_raw()).cloned().unwrap_or_default() };
     let mut issues = Vec::new();
-    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, |t| f.face[t as usize]);
+    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, true, |t| f.face[t as usize]);
     if !issues.is_empty() {
         return Err(RtError::Build(issues));
     }
@@ -350,8 +350,34 @@ fn fill_surface_boundaries(core: &Core, surfaces: &mut [SurfaceInfo]) {
     }
 }
 
+/// Exact-bits key of an action, for interning in O(log n).
+fn action_key(a: &FaceAction) -> [u64; 16] {
+    let mut k = [0u64; 16];
+    match a {
+        FaceAction::Reflect => k[0] = 1,
+        FaceAction::Wrap { transform, mate } => {
+            k[0] = 2;
+            for (i, v) in transform.m.iter().flatten().enumerate() {
+                k[1 + i] = v.to_bits();
+            }
+            k[10] = transform.t.x.to_bits();
+            k[11] = transform.t.y.to_bits();
+            k[12] = transform.t.z.to_bits();
+            k[13] = u64::from(mate.0);
+        }
+        FaceAction::Respond(r) => {
+            k[0] = 3;
+            k[1] = u64::from(r.code());
+            k[2] = if let ResponseKind::Albedo(x) = r { x.to_bits() } else { 0 };
+        }
+        _ => {}
+    }
+    k
+}
+
 /// Resolve the boundary action of every one-cell face (first matching rule wins, then the
 /// default), including the periodic mate matching by transformed face centre.
+#[allow(clippy::too_many_arguments)] // one internal call site per input kind
 fn assign_actions(
     core: &mut Core,
     spec: &BoundarySpec,
@@ -359,6 +385,7 @@ fn assign_actions(
     mate_faces: &dyn Fn(EntityId) -> Vec<u32>,
     opts: &BuildOptions,
     issues: &mut Vec<BuildIssue>,
+    has_complement: bool,
     entity_of: impl Fn(u32) -> EntityId,
 ) {
     let nf = core.n_faces();
@@ -373,15 +400,19 @@ fn assign_actions(
     // Candidate mate faces per mate entity: boundary faces sorted by centre x.
     let mut mates: BTreeMap<u64, Vec<([f64; 3], u32)>> = BTreeMap::new();
     let mut table: Vec<FaceAction> = Vec::new();
-    let intern = |a: FaceAction, table: &mut Vec<FaceAction>| -> u32 {
-        if let Some(i) = table.iter().position(|x| *x == a) {
-            return i as u32;
-        }
-        table.push(a);
-        (table.len() - 1) as u32
+    let mut seen: BTreeMap<[u64; 16], u32> = BTreeMap::new();
+    let mut intern = |a: FaceAction, table: &mut Vec<FaceAction>| -> u32 {
+        *seen.entry(action_key(&a)).or_insert_with(|| {
+            table.push(a);
+            (table.len() - 1) as u32
+        })
     };
     for (f, &rule) in face_rule.iter().enumerate() {
         if core.f_right[f] != NONE {
+            continue;
+        }
+        // With a complement, a face no rule claims is crossed into it (no action).
+        if rule == NONE && has_complement {
             continue;
         }
         let def = if rule == NONE { spec.default } else { spec.rules[rule as usize].1 };

@@ -277,7 +277,16 @@ impl TypedQuery for RtCheck {
     fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<RtCheckOut, OpError> {
         let (model, meshes) = layers(state)?;
         let entry = meshes.get(self.mesh).ok_or(OpError::UnknownEntity(self.mesh))?;
-        let spec = boundary_spec(model, &self.responses)?;
+        let spec = match boundary_spec(model, &self.responses) {
+            Ok(s) => s,
+            // A bad boundary record is a finding of the check, not a failed query.
+            Err(OpError::Invalid(m)) => {
+                let (code, message) = m.split_once(": ").map_or(("boundary.invalid", m.as_str()), |(c, t)| (c, t));
+                let issue = IssueOut { code: code.to_owned(), message: message.to_owned(), entity: None, location: None, gap: None, suggestion: None };
+                return Ok(RtCheckOut { ok: false, issues: vec![issue], error: Some("boundary conditions are invalid".into()) });
+            }
+            Err(e) => return Err(e),
+        };
         let (rules, complement) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside);
         let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
         Ok(match MeshTrackerBuilder.build_concrete(&input, &BuildOptions::default()) {

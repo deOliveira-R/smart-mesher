@@ -117,9 +117,14 @@ locates to `COMPLEMENT`; `step` there finds the first entering exterior-facing b
 `face_bvh` and ends with `RegionBoundary{to_cell}`; if there is none the ray leaves the box and the
 step ends with `RegionBoundary{surface: NONE, face: NONE, to_region: NONE, to_cell: NONE}` after the
 distance to the box (the state then has `cell == NONE`, which `trace` reports as `LeftModel`).
-Leaving the model through a boundary face is always a `Boundary` event (default: vacuum), so the
-complement is a place to start a ray from, not somewhere particles are scattered into. With
-`ComplementPolicy::Outside` the outside of a mesh is `NONE`.
+A one-cell (exterior) face that no `BoundarySpec` rule claims, when a complement exists, is crossed
+into it: `step` ends with `RegionBoundary{to_region: complement, to_cell: COMPLEMENT}` (no
+`Boundary` event; the face has no action in the table). Disjoint bodies and a non-convex hull are
+therefore connected through the complement. Explicit rules (Reflect, Wrap, Respond) still claim
+their faces and give `Boundary`. The complement ends at the box of the vertices; leaving it is
+`RegionBoundary{.. to_cell: NONE}` (`LeftModel`), i.e. vacuum: `spec.default` is not applied
+there. With `ComplementPolicy::Outside` (no complement) the unclaimed faces keep `spec.default`
+and the outside of a mesh is `NONE`.
 
 ## Facet input
 

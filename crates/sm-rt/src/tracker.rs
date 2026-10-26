@@ -508,6 +508,16 @@ impl MeshTracker {
         let other = if self.core.f_left[f] as usize == c { self.core.f_right[f] } else { self.core.f_left[f] };
         let face = FaceId(ex.face);
         let surface = SurfaceId(self.core.f_surface[f]);
+        if other == NONE && self.core.f_action[f] == NONE && self.complement.is_some() {
+            // Unclaimed exterior face: the particle leaves the body into the complement.
+            let comp = self.complement.map_or(RegionId::NONE, RegionId);
+            st.pos = vec_to_point(newpos);
+            st.cell = CellId::COMPLEMENT;
+            st.region = comp;
+            st.entered_via = Some(face);
+            let end = StepEnd::RegionBoundary { surface, face, to_region: comp, to_cell: CellId::COMPLEMENT };
+            return Ok(Once::Done(Step::new(ex.t, CellId::new(c), region, end)));
+        }
         if other == NONE {
             let ai = self.core.f_action[f];
             let action = if ai == NONE { FaceAction::Respond(sm_rt_api::ResponseKind::Vacuum) } else { self.core.actions[ai as usize] };

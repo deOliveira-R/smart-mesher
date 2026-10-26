@@ -199,7 +199,9 @@ fn scope5_complement_policy_region_makes_the_notch_a_complement_cell() {
     assert!((s.dist - 0.5).abs() < 1e-14 && s.cell == CellId::COMPLEMENT && s.region == void);
     assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, .. } if to_cell == CellId::new(0)));
     let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
-    assert!((s.dist - 1.0).abs() < 1e-14 && matches!(s.end, StepEnd::Boundary { .. }));
+    // ... and leaves through the far wall into the complement again (not a Boundary event).
+    assert!((s.dist - 1.0).abs() < 1e-14 && matches!(s.end, StepEnd::RegionBoundary { to_cell, to_region, .. } if to_cell == CellId::COMPLEMENT && to_region == void));
+    assert_eq!(st.cell, CellId::COMPLEMENT);
     // Towards the bounding box: the complement ends at the domain bounds, leaving the model.
     let mut st = t.init_state(Point3::new(1.5, 1.5, 0.5), Vector3::new(0.0, 1.0, 0.0), None, &mut sc).unwrap();
     let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
@@ -209,4 +211,24 @@ fn scope5_complement_policy_region_makes_the_notch_a_complement_cell() {
     // With the default policy the notch is simply outside the model.
     let plain = build_mesh_tracker(&nc.mesh, &BoundarySpec::default(), &opts_fail());
     assert!(plain.locate(Point3::new(1.5, 1.5, 0.5), None, None, &mut sc).unwrap().cell.is_none());
+}
+
+#[test]
+fn scope4_a_ray_leaves_a_body_into_the_notch_complement() {
+    use sm_rt_api::{BoundarySpec, BuildInput, ComplementPolicy, MeshInput, RegionRule, TrackerBuilder};
+    let nc = sm_testkit::meshes::nonconvex_poly().unwrap();
+    let (rules, comp, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Region("void".into()), BoundarySpec::default());
+    let input = BuildInput::Mesh(MeshInput::new(&nc.mesh, &rules, &spec, &comp));
+    let (t, _) = sm_rt::MeshTrackerBuilder.build(&input, &BuildOptions::default()).unwrap();
+    let mut sc = Scratch::new();
+    let void = t.regions().implicit_complement().unwrap();
+    let mut st = t.init_state(Point3::new(0.5, 1.5, 0.5), Vector3::new(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert!((s.dist - 0.5).abs() < 1e-14, "{}", s.dist);
+    assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, to_region, .. } if to_cell == CellId::COMPLEMENT && to_region == void), "{:?}", s.end);
+    assert_eq!((st.cell, st.region), (CellId::COMPLEMENT, void));
+    // The notch is traversed as the complement and the ray finally leaves the box.
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert_eq!(s.cell, CellId::COMPLEMENT);
+    assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, .. } if to_cell.is_none()));
 }

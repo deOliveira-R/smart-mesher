@@ -189,9 +189,9 @@ fn acc07_nested_shells_chord_sequence_and_complement_entry() {
             _ => {}
         }
     }
-    // complement -> outer -> inner -> outer, then the vacuum boundary of the outer shell.
+    // complement -> outer -> inner -> outer -> complement, then out of the box.
     let r = |i: usize| RegionId::new(i);
-    assert_eq!(regions, vec![r(2), r(1), r(0), r(1)]);
+    assert_eq!(regions, vec![r(2), r(1), r(0), r(1), r(2)]);
     // The inner shell is a level-2 icosphere: its chord through the vertex axis is ~2.
     assert!((total[0] - 2.0).abs() < 0.1, "inner chord {}", total[0]);
     assert!((total[1] - 2.0).abs() < 0.2, "outer chords {}", total[1]);
@@ -301,4 +301,40 @@ fn acc05_cauchy_hex_block_and_truncated_octahedron() {
         assert_cauchy(&st, v, s, 4.0);
         assert_eq!(st.lost, 0);
     }
+}
+
+#[test]
+fn scope4_disjoint_bodies_are_connected_through_the_complement() {
+    let mut f = FacetInput::default();
+    let pts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let tris = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+    add_shell(&mut f, &pts, &tris, vol(1), Region::Exterior, 1);
+    let moved = pts.map(|p| [p[0] + 3.0, p[1], p[2]]);
+    add_shell(&mut f, &moved, &tris, vol(2), Region::Exterior, 2);
+    let t = build(&f, &opts_fail()).unwrap();
+    let mut sc = Scratch::new();
+    let mut st = t.init_state(Point3::new(0.1, 0.1, 0.1), v3([1.0, 0.0, 0.0]), None, &mut sc).unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+        seen.push((s.cell, s.dist));
+        match s.end {
+            StepEnd::Boundary { .. } | StepEnd::Lost(_) => panic!("history cut short: {:?}", s.end),
+            StepEnd::RegionBoundary { to_cell, .. } if to_cell.is_none() => break,
+            _ => {}
+        }
+    }
+    // body 1 (0.7), complement (2.2), body 2 (0.8), complement to the box edge.
+    assert_eq!(seen.len(), 4, "{seen:?}");
+    assert!((seen[0].1 - 0.7).abs() < 1e-14 && seen[0].0 == CellId::new(0));
+    assert!((seen[1].1 - 2.2).abs() < 1e-12 && seen[1].0 == CellId::COMPLEMENT);
+    assert!((seen[2].1 - 0.8).abs() < 1e-12 && seen[2].0 == CellId::new(1));
+    assert_eq!(seen[3].0, CellId::COMPLEMENT);
+    // An explicit rule on a face still claims it.
+    let spec = BoundarySpec::new(sm_rt_api::BoundaryDef::Respond(sm_rt_api::ResponseKind::Vacuum), vec![(sm_rt_api::BoundarySelector::Entity(ent(sm_core::EntityKind::TopoFace, 1)), sm_rt_api::BoundaryDef::Reflect)]);
+    use sm_rt_api::TrackerBuilder;
+    let t = sm_rt::MeshTrackerBuilder.build(&sm_rt_api::BuildInput::Facets(&f, &spec), &opts_fail()).unwrap().0;
+    let mut st = t.init_state(Point3::new(0.1, 0.1, 0.1), v3([1.0, 0.0, 0.0]), None, &mut sc).unwrap();
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert!(matches!(s.end, StepEnd::Boundary { action: sm_rt_api::FaceAction::Reflect, .. }), "{:?}", s.end);
 }
