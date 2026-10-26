@@ -25,6 +25,7 @@ sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-model-api = { path = "../sm-model-api" }
+sm-geom-api = { path = "../sm-geom-api" }
 sm-mesh = { path = "../sm-mesh" }
 sm-quality = { path = "../sm-quality" }
 sm-scheme-curve = { path = "../sm-scheme-curve" }

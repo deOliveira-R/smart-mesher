@@ -15,7 +15,7 @@ pub mod scheme;
 mod util;
 
 pub use error::TriError;
-pub use scheme::{TriParams, TriScheme};
+pub use scheme::{FaceTriangulation, TriParams, TriScheme, triangulate_chart};
 
 use sm_scheme_api::SchemeRegistry;
 

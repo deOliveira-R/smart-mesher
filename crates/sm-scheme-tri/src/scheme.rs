@@ -280,6 +280,58 @@ fn smallest_corner_deg(cx: &GenCtx<'_>, face: EntityId) -> f64 {
     }
 }
 
+/// A face triangulated in its chart, before the quality gate and patch assembly.
+///
+/// Exposed so tests (and the stretch front) can inspect the exact chart-space triangulation.
+pub struct FaceTriangulation<'a> {
+    /// The chart (also the kernel's [`Geometry2`]).
+    pub chart: FaceChart<'a>,
+    /// The lifted boundary loops (with pole fans).
+    pub loops: Vec<ChartLoop>,
+    /// The refined triangulation; input points `0..n_input` are the PSLG points.
+    pub cdt: Cdt,
+    /// Node key of each input point.
+    pub keys: Vec<NodeKey>,
+    /// True for input points this face creates (pole-ring nodes).
+    pub new: Vec<bool>,
+    /// What refinement reported.
+    pub report: crate::cdt::RefineReport,
+}
+
+/// Lift `face`, triangulate, refine and (if `prm.optimize`) optimize in the chart.
+///
+/// # Errors
+/// Any [`TriError`] of lifting, triangulation or the point budget.
+pub fn triangulate_chart<'a>(
+    cx: &'a GenCtx<'_>,
+    face: EntityId,
+    prm: &TriParams,
+) -> Result<FaceTriangulation<'a>, TriError> {
+    let (chart, loops) = FaceChart::lift(cx, face)?;
+    let asm = assemble(cx, face, &chart, &loops)?;
+    let mut cdt = Cdt::new(&asm.pslg)?;
+    let ropts = RefineOptions {
+        min_angle: prm.min_angle,
+        size_factor: prm.size_factor,
+        max_points: prm.max_points as usize,
+    };
+    let report = cdt.refine(&chart, &ropts);
+    if report.truncated {
+        return Err(TriError::TooManyPoints { limit: prm.max_points });
+    }
+    if prm.optimize {
+        cdt.optimize(&chart, &OptimizeOptions::default());
+    }
+    Ok(FaceTriangulation {
+        chart,
+        loops,
+        cdt,
+        keys: asm.keys,
+        new: asm.new,
+        report,
+    })
+}
+
 /// Mesh `face`. Shared by `trimesh` and `tridelaunay`.
 pub(crate) fn triangulate(
     cx: &GenCtx<'_>,
@@ -288,150 +340,133 @@ pub(crate) fn triangulate(
     target: Target,
     name: &str,
 ) -> Result<Patch, GenerateFailure> {
-    let fail = |e: TriError| fail_of(target, name, &e);
-    let (chart, loops) = FaceChart::lift(cx, face).map_err(&fail)?;
-    let asm = assemble(cx, face, &chart, &loops).map_err(&fail)?;
-    let n_input = asm.pslg.points.len();
-    let mut cdt = Cdt::new(&asm.pslg).map_err(&fail)?;
-    let ropts = RefineOptions {
-        min_angle: prm.min_angle,
-        size_factor: prm.size_factor,
-        max_points: prm.max_points as usize,
-    };
-    let report = cdt.refine(&chart, &ropts);
-    if report.truncated {
-        return Err(fail(TriError::TooManyPoints { limit: prm.max_points }));
-    }
-    if prm.optimize {
-        cdt.optimize(&chart, &OptimizeOptions::default());
-    }
-    // Quality gate.
-    let limit = prm.fail_angle.min(0.9 * smallest_corner_deg(cx, face));
-    let keys_of = |t: [u32; 3]| -> Vec<NodeKey> {
-        t.iter()
-            .filter_map(|&v| key_of_point(&asm, &chart, n_input, v))
-            .collect()
-    };
-    if let Some((ang, worst)) = cdt.min_angle(&chart)
-        && ang < limit
-    {
-        let e = TriError::Quality {
-            min_angle: ang,
-            limit,
-            worst,
-        };
-        return Err(GenerateFailure::fallback(target, name, e.to_string())
-            .with_nodes(keys_of(worst)));
-    }
-
-    // Assemble the patch.
-    let tris = cdt.triangles();
-    let pts = cdt.points();
-    let mut pb = PatchBuilder::new(target);
-    let mut local: Vec<u32> = Vec::with_capacity(pts.len());
-    let mut by_key: BTreeMap<NodeKey, u32> = BTreeMap::new();
-    let mut p3: Vec<Point3> = Vec::with_capacity(pts.len());
-    for (i, q) in pts.iter().enumerate() {
-        let (key, is_new) = if i < n_input {
-            (asm.keys[i], asm.new[i])
-        } else {
-            (
-                NodeKey::new(face, chart.next_index() + (i - n_input) as u32),
-                true,
-            )
-        };
-        let idx = if let Some(&l) = by_key.get(&key) {
-            l
-        } else if is_new {
-            let uv = chart.to_uv(*q);
-            let p = chart.point_at(uv);
-            let l = pb.node(key, p, Param::Surface(chart.wrap_uv(uv)));
-            by_key.insert(key, l);
-            l
-        } else {
-            let l = pb.refer(key);
-            by_key.insert(key, l);
-            l
-        };
-        local.push(idx);
-        p3.push(if i < n_input && !asm.new[i] {
-            cx.point(asm.keys[i]).unwrap_or_else(|| chart.lift3(*q))
-        } else {
-            chart.lift3(*q)
-        });
-    }
-    // Normal check (the lift must not fold) and area bookkeeping.
-    let mut worst_bad: Option<[u32; 3]> = None;
-    for t in &tris {
-        let (a, b, c) = (p3[t[0] as usize], p3[t[1] as usize], p3[t[2] as usize]);
-        let n = (b - a).cross(c - a);
-        let cen = [
-            (pts[t[0] as usize][0] + pts[t[1] as usize][0] + pts[t[2] as usize][0]) / 3.0,
-            (pts[t[0] as usize][1] + pts[t[1] as usize][1] + pts[t[2] as usize][1]) / 3.0,
-        ];
-        if let Some(fnrm) = chart.normal_at(chart.to_uv(cen))
-            && n.dot(fnrm) <= 0.0
-        {
-            worst_bad = Some(*t);
-            break;
-        }
-    }
-    if let Some(t) = worst_bad {
-        return Err(GenerateFailure::fallback(
-            target,
-            name,
-            "a triangle folds over the surface (non-positive normal)",
-        )
-        .with_nodes(keys_of(t)));
-    }
-    for t in &tris {
-        let l = [local[t[0] as usize], local[t[1] as usize], local[t[2] as usize]];
-        if l[0] == l[1] || l[1] == l[2] || l[0] == l[2] {
-            return Err(GenerateFailure::new(
-                target,
-                name,
-                FailureKind::Geometry,
-                "a triangle repeats a node (seam or pole not separated)",
-            )
-            .with_nodes(keys_of(*t)));
-        }
-        pb.push(ElemShape::Tri, &l);
-    }
-    // Pole fans: (pole, ring_i, ring_{i+1}) counter-clockwise in the chart is (b, a, pole).
-    for lp in &loops {
-        for fan in &lp.fans {
-            let pole = pb.refer(fan.pole);
-            for w in fan.path.windows(2) {
-                let ia = by_key.get(&w[0]).copied();
-                let ib = by_key.get(&w[1]).copied();
-                let (Some(a), Some(b)) = (ia, ib) else {
-                    return Err(GenerateFailure::new(
-                        target,
-                        name,
-                        FailureKind::Internal,
-                        "pole ring node missing from the patch",
-                    ));
-                };
-                if a == b || a == pole || b == pole {
-                    return Err(GenerateFailure::new(
-                        target,
-                        name,
-                        FailureKind::Geometry,
-                        "pole fan triangle repeats a node",
-                    ));
-                }
-                pb.push(ElemShape::Tri, &[b, a, pole]);
-            }
-        }
-    }
-    Ok(pb.finish())
+    let mut ft = triangulate_chart(cx, face, prm).map_err(|e| fail_of(target, name, &e))?;
+    ft.into_patch(cx, face, prm, target, name)
 }
 
-fn key_of_point(asm: &Assembly, chart: &FaceChart<'_>, n_input: usize, v: u32) -> Option<NodeKey> {
-    let v = v as usize;
-    if v < n_input {
-        Some(asm.keys[v])
-    } else {
-        Some(NodeKey::new(chart.face(), chart.next_index() + (v - n_input) as u32))
+impl FaceTriangulation<'_> {
+    fn key_of(&self, v: u32) -> NodeKey {
+        let n_input = self.keys.len();
+        let v = v as usize;
+        if v < n_input {
+            self.keys[v]
+        } else {
+            NodeKey::new(self.chart.face(), self.chart.next_index() + (v - n_input) as u32)
+        }
+    }
+
+    /// Apply the quality gate and build the patch.
+    ///
+    /// The gate is `min_angle_3d >= min(fail_angle, 0.9 * smallest input corner angle)` and a
+    /// positive 3-D normal on every triangle; a failure is `FailureKind::Quality` with the nodes
+    /// of the worst triangle.
+    ///
+    /// # Errors
+    /// A [`GenerateFailure`]: `Quality` below the gate, `Geometry` for a triangle that repeats
+    /// a node.
+    pub fn into_patch(
+        &mut self,
+        cx: &GenCtx<'_>,
+        face: EntityId,
+        prm: &TriParams,
+        target: Target,
+        name: &str,
+    ) -> Result<Patch, GenerateFailure> {
+        let n_input = self.keys.len();
+        let limit = prm.fail_angle.min(0.9 * smallest_corner_deg(cx, face));
+        let keys_of = |this: &Self, t: [u32; 3]| -> Vec<NodeKey> { t.iter().map(|&v| this.key_of(v)).collect() };
+        if let Some((ang, worst)) = self.cdt.min_angle(&self.chart)
+            && ang < limit
+        {
+            let e = TriError::Quality { min_angle: ang, limit, worst };
+            return Err(GenerateFailure::fallback(target, name, e.to_string())
+                .with_nodes(keys_of(self, worst)));
+        }
+        let chart = &self.chart;
+        let tris = self.cdt.triangles();
+        let pts = self.cdt.points();
+        let mut pb = PatchBuilder::new(target);
+        let mut local: Vec<u32> = Vec::with_capacity(pts.len());
+        let mut by_key: BTreeMap<NodeKey, u32> = BTreeMap::new();
+        let mut p3: Vec<Point3> = Vec::with_capacity(pts.len());
+        for (i, q) in pts.iter().enumerate() {
+            let key = self.key_of(i as u32);
+            let is_new = i >= n_input || self.new[i];
+            let idx = if let Some(&l) = by_key.get(&key) {
+                l
+            } else if is_new {
+                let uv = chart.to_uv(*q);
+                let l = pb.node(key, chart.point_at(uv), Param::Surface(chart.wrap_uv(uv)));
+                by_key.insert(key, l);
+                l
+            } else {
+                let l = pb.refer(key);
+                by_key.insert(key, l);
+                l
+            };
+            local.push(idx);
+            p3.push(if is_new {
+                chart.lift3(*q)
+            } else {
+                cx.point(key).unwrap_or_else(|| chart.lift3(*q))
+            });
+        }
+        // The lift must not fold the surface: every triangle follows the face normal.
+        for t in &tris {
+            let (a, b, c) = (p3[t[0] as usize], p3[t[1] as usize], p3[t[2] as usize]);
+            let n = (b - a).cross(c - a);
+            let cen = [0, 1].map(|k| {
+                (pts[t[0] as usize][k] + pts[t[1] as usize][k] + pts[t[2] as usize][k]) / 3.0
+            });
+            if let Some(f) = chart.normal_at(chart.to_uv(cen))
+                && n.dot(f) <= 0.0
+            {
+                return Err(GenerateFailure::fallback(
+                    target,
+                    name,
+                    "a triangle folds over the surface (non-positive normal)",
+                )
+                .with_nodes(keys_of(self, *t)));
+            }
+        }
+        for t in &tris {
+            let l = [local[t[0] as usize], local[t[1] as usize], local[t[2] as usize]];
+            if l[0] == l[1] || l[1] == l[2] || l[0] == l[2] {
+                return Err(GenerateFailure::new(
+                    target,
+                    name,
+                    FailureKind::Geometry,
+                    "a triangle repeats a node (seam or pole not separated)",
+                )
+                .with_nodes(keys_of(self, *t)));
+            }
+            pb.push(ElemShape::Tri, &l);
+        }
+        // Pole fans: (pole, ring_i, ring_{i+1}) counter-clockwise in the chart is (b, a, pole).
+        for lp in &self.loops {
+            for fan in &lp.fans {
+                let pole = pb.refer(fan.pole);
+                for w in fan.path.windows(2) {
+                    let (Some(&a), Some(&b)) = (by_key.get(&w[0]), by_key.get(&w[1])) else {
+                        return Err(GenerateFailure::new(
+                            target,
+                            name,
+                            FailureKind::Internal,
+                            "pole ring node missing from the patch",
+                        ));
+                    };
+                    if a == b || a == pole || b == pole {
+                        return Err(GenerateFailure::new(
+                            target,
+                            name,
+                            FailureKind::Geometry,
+                            "pole fan triangle repeats a node",
+                        ));
+                    }
+                    pb.push(ElemShape::Tri, &[b, a, pole]);
+                }
+            }
+        }
+        Ok(pb.finish())
     }
 }

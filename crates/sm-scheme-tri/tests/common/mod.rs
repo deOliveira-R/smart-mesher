@@ -234,3 +234,310 @@ pub fn mesh_area(m: &ReferenceMesh) -> f64 {
     }
     s.value()
 }
+
+// ---------------------------------------------------------------- mesh extraction
+
+use sm_core::Vector3;
+use sm_mesh_api::{FaceIx, FaceKind, VertexIx};
+
+/// Vertex indices of every triangle of a surface mesh.
+pub fn tri_vertices(m: &ReferenceMesh) -> Vec<[usize; 3]> {
+    (0..m.cell_count())
+        .map(|c| {
+            let v = m.cell_corners(CellIx::new(c)).expect("corners");
+            assert_eq!(v.len(), 3, "cell {c} is not a triangle");
+            [v[0].get(), v[1].get(), v[2].get()]
+        })
+        .collect()
+}
+
+pub fn tri_points(m: &ReferenceMesh) -> Vec<[Point3; 3]> {
+    tri_vertices(m)
+        .iter()
+        .map(|t| [m.point(t[0]), m.point(t[1]), m.point(t[2])])
+        .collect()
+}
+
+/// Angles of a 3-D triangle in degrees.
+pub fn angles_deg(t: &[Point3; 3]) -> [f64; 3] {
+    let ang = |a: Point3, b: Point3, c: Point3| {
+        let (u, v): (Vector3, Vector3) = (b - a, c - a);
+        u.cross(v).norm().atan2(u.dot(v)).to_degrees()
+    };
+    [ang(t[0], t[1], t[2]), ang(t[1], t[2], t[0]), ang(t[2], t[0], t[1])]
+}
+
+pub fn min_angle_deg(m: &ReferenceMesh) -> f64 {
+    tri_points(m)
+        .iter()
+        .flat_map(|t| angles_deg(t))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Circumradius of a 3-D triangle.
+pub fn circumradius(t: &[Point3; 3]) -> f64 {
+    let (a, b, c) = ((t[1] - t[2]).norm(), (t[2] - t[0]).norm(), (t[0] - t[1]).norm());
+    let k = 0.5 * (t[1] - t[0]).cross(t[2] - t[0]).norm();
+    a * b * c / (4.0 * k)
+}
+
+/// Mesh edges `(lo, hi)` of a dim-2 mesh with their number of cells.
+pub fn edge_use(m: &ReferenceMesh) -> BTreeMap<(usize, usize), u32> {
+    let mut out: BTreeMap<(usize, usize), u32> = BTreeMap::new();
+    for t in tri_vertices(m) {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *out.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    out
+}
+
+/// The vertex pairs of the mesh facets that are on the boundary of the mesh.
+pub fn boundary_pairs(m: &ReferenceMesh) -> Vec<(usize, usize)> {
+    let mut v: Vec<(usize, usize)> = (0..m.face_count())
+        .filter(|&f| m.face_kind(FaceIx::new(f)) != FaceKind::Interior)
+        .map(|f| {
+            let fv = m.face_vertices(FaceIx::new(f));
+            let (a, b): (VertexIx, VertexIx) = (fv[0], fv[1]);
+            (a.get().min(b.get()), a.get().max(b.get()))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The consecutive node pairs of the given edges (the boundary segments the face must keep),
+/// as mesh vertex pairs.
+pub fn expected_boundary(
+    out: &Meshed<ReferenceMesh>,
+    topo: &CellComplex,
+    edges: &[EntityId],
+) -> Vec<(usize, usize)> {
+    use sm_topo_api::TopologyViewExt;
+    let _ = topo;
+    let mut v = Vec::new();
+    for &e in edges {
+        let n = out.plan.intervals(e).expect("intervals");
+        let (a, b) = topo.edge_ends(e).expect("ends");
+        let mut keys = vec![sm_scheme_api::NodeKey::vertex(a)];
+        keys.extend((1..n).map(|i| sm_scheme_api::NodeKey::new(e, i)));
+        keys.push(sm_scheme_api::NodeKey::vertex(b));
+        for w in keys.windows(2) {
+            let (x, y) = (
+                out.vertex_of(w[0]).expect("vertex").0 as usize,
+                out.vertex_of(w[1]).expect("vertex").0 as usize,
+            );
+            v.push((x.min(y), x.max(y)));
+        }
+    }
+    v.sort();
+    v
+}
+
+pub fn euler(m: &ReferenceMesh) -> i64 {
+    m.vertex_count() as i64 - m.face_count() as i64 + m.cell_count() as i64
+}
+
+// ---------------------------------------------------------------- probe scheme
+
+use sm_scheme_api::{
+    Applicability, Caps, GenCtx, GenerateFailure, Params, Patch, PlanCtx, Scheme, SchemeDim,
+    Target,
+};
+use sm_scheme_tri::{TriParams, TriScheme, triangulate_chart};
+use std::sync::{Arc, Mutex};
+
+/// What the probe saw of one face.
+#[derive(Clone, Debug, Default)]
+pub struct Seen {
+    pub triangles: usize,
+    pub points: usize,
+    pub delaunay_violations: usize,
+    pub unfixable: usize,
+    pub min_angle: f64,
+    pub isometric: bool,
+    pub uv_area: f64,
+}
+
+/// `trimesh` that records chart-space facts about every face it generates.
+pub struct Probe {
+    pub seen: Arc<Mutex<Vec<Seen>>>,
+}
+
+impl Scheme for Probe {
+    fn name(&self) -> &str {
+        "trimesh"
+    }
+    fn dim(&self) -> SchemeDim {
+        SchemeDim::Surface
+    }
+    fn caps(&self, p: &Params) -> Caps {
+        TriScheme::trimesh().caps(p)
+    }
+    fn applicability(&self, cx: &PlanCtx<'_>, t: Target, p: &Params) -> Applicability {
+        TriScheme::trimesh().applicability(cx, t, p)
+    }
+    fn requirements(
+        &self,
+        cx: &PlanCtx<'_>,
+        t: Target,
+        p: &Params,
+        out: &mut sm_scheme_api::Requirements<'_>,
+    ) -> sm_scheme_api::Result<()> {
+        TriScheme::trimesh().requirements(cx, t, p, out)
+    }
+    fn generate(&self, cx: &GenCtx<'_>, t: Target, p: &Params) -> Result<Patch, GenerateFailure> {
+        let Target::Surface(face) = t else { panic!("surface") };
+        let prm = TriParams::from_params(p).expect("params");
+        let mut ft = triangulate_chart(cx, face, &prm)
+            .map_err(|e| GenerateFailure::new(t, "trimesh", e.kind(), e.to_string()))?;
+        let (min_angle, _) = {
+            let c = &ft.chart;
+            ft.cdt.min_angle(c).unwrap_or((0.0, [0; 3]))
+        };
+        // Area in (u, v): sum of triangle areas with boundary uv exact and Steiner uv from the chart.
+        let n_in = ft.keys.len();
+        let uv_of = |i: usize, ft: &sm_scheme_tri::FaceTriangulation<'_>| -> [f64; 2] {
+            let q = ft.cdt.points()[i];
+            ft.chart.to_uv(q)
+        };
+        let _ = n_in;
+        let mut area = sm_math::sum::NeumaierSum::new();
+        for tr in ft.cdt.triangles() {
+            let (a, b, c) = (uv_of(tr[0] as usize, &ft), uv_of(tr[1] as usize, &ft), uv_of(tr[2] as usize, &ft));
+            area.add(0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])));
+        }
+        self.seen.lock().unwrap().push(Seen {
+            triangles: ft.cdt.triangles().len(),
+            points: ft.cdt.points().len(),
+            delaunay_violations: delaunay_violations(&ft.cdt),
+            unfixable: ft.report.unfixable.len(),
+            min_angle,
+            isometric: ft.chart.is_isometric(),
+            uv_area: area.value(),
+        });
+        ft.into_patch(cx, face, &prm, t, "trimesh")
+    }
+}
+
+/// Real curve schemes plus the probe in place of `trimesh`.
+pub fn probe_registry() -> (SchemeRegistry, Arc<Mutex<Vec<Seen>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut r = SchemeRegistry::new();
+    sm_scheme_curve::register(&mut r).expect("curve");
+    r.register(Box::new(Probe { seen: seen.clone() })).expect("probe");
+    (r, seen)
+}
+
+/// Like [`mesh_faces_with`] with scheme parameters.
+pub fn mesh_faces_params(
+    reg: &SchemeRegistry,
+    topo: &CellComplex,
+    faces: &[EntityId],
+    counts: &[(EntityId, u32)],
+    params: serde_json::Value,
+    exec: &dyn Executor,
+    size: Option<&dyn sm_scheme_api::SizeField>,
+) -> Result<Meshed<ReferenceMesh>, sm_scheme_api::SchemeError> {
+    let model = Model::new();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let mut driver = Driver::new(reg, &solver, &picker);
+    driver.size = size;
+    let input = MeshInput::new(topo, &model, &WholeFaces, faces);
+    let mut intent = MeshIntent::default();
+    for &(e, n) in counts {
+        intent.set_intervals(e, Firm::hard(IntervalRequest::Count(n)));
+    }
+    for &f in faces {
+        intent.set_scheme(f, SchemeChoice::with_params("trimesh", params.clone(), Firmness::Hard));
+    }
+    driver.mesh(&input, &intent, exec, ReferenceBuilder::surface(), &mut SerialAlloc::new())
+}
+
+// ---------------------------------------------------------------- fixtures
+
+use sm_scheme_api::geom;
+use sm_testkit::topo::FaceFixture;
+use sm_topo_api::fixtures::with_op;
+use sm_topo_api::{CurveCarrier, OpId, Sense, TopologyEdit};
+
+/// Interval counts `round(length / h)` (at least 1) for every edge of the fixture.
+pub fn counts_for(fx: &FaceFixture, h: f64) -> Vec<(EntityId, u32)> {
+    fx.edges
+        .iter()
+        .flatten()
+        .map(|&e| {
+            let len = geom::edge_length(&fx.complex, e).expect("length");
+            (e, ((len / h).round() as u32).max(1))
+        })
+        .collect()
+}
+
+/// Every edge of the fixture, flat.
+pub fn all_edges(fx: &FaceFixture) -> Vec<EntityId> {
+    fx.edges.iter().flatten().copied().collect()
+}
+
+/// Embed straight wires (between new interior vertices) and isolated points in the face of a
+/// planar fixture at `z`. Returns `(wire edges, isolated vertices)`.
+pub fn embed_wires(
+    fx: &mut FaceFixture,
+    z: f64,
+    wires: &[([f64; 2], [f64; 2])],
+    points: &[[f64; 2]],
+) -> (Vec<EntityId>, Vec<EntityId>) {
+    use sm_geom_api::{CurveDef, Interval, Line};
+    let face = fx.face;
+    with_op(&mut fx.complex, OpId(2), |t| {
+        let mut es = Vec::new();
+        let mut vs = Vec::new();
+        for (a, b) in wires {
+            let (pa, pb) = (Point3::new(a[0], a[1], z), Point3::new(b[0], b[1], z));
+            let va = t.make_vertex(pa)?;
+            let vb = t.make_vertex(pb)?;
+            let line = t.shapes_mut()?.add_curve(CurveDef::Line(Line::new(pa, pb - pa)?))?;
+            let e = t.make_edge(
+                va,
+                vb,
+                Some(CurveCarrier {
+                    curve: line,
+                    range: Interval::new(0.0, (pb - pa).norm()),
+                    sense: Sense::Forward,
+                }),
+            )?;
+            t.embed(face, e)?;
+            es.push(e);
+        }
+        for p in points {
+            let v = t.make_vertex(Point3::new(p[0], p[1], z))?;
+            t.embed(face, v)?;
+            vs.push(v);
+        }
+        Ok((es, vs))
+    })
+    .expect("embed")
+}
+
+/// Plan and generate without committing or re-planning: the structured scheme failure.
+pub fn generate_only(
+    reg: &SchemeRegistry,
+    topo: &CellComplex,
+    faces: &[EntityId],
+    counts: &[(EntityId, u32)],
+    params: serde_json::Value,
+) -> Result<sm_scheme_api::PatchSet, sm_scheme_api::SchemeError> {
+    let model = Model::new();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(reg, &solver, &picker);
+    let input = MeshInput::new(topo, &model, &WholeFaces, faces);
+    let mut intent = MeshIntent::default();
+    for &(e, n) in counts {
+        intent.set_intervals(e, Firm::hard(IntervalRequest::Count(n)));
+    }
+    for &f in faces {
+        intent.set_scheme(f, SchemeChoice::with_params("trimesh", params.clone(), Firmness::Hard));
+    }
+    let plan = driver.plan(&input, &intent)?;
+    driver.generate(&input, &plan, &sm_scheme_api::Sequential)
+}
