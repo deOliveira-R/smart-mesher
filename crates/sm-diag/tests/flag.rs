@@ -4,13 +4,12 @@
 mod common;
 use common::*;
 use serde_json::json;
-use sm_core::{EntityId, EntityKind, Point3};
+use sm_core::{EntityId, EntityKind};
 use sm_diag::{Level, flagged_cells};
 use sm_mesh_api::reference::ReferenceMesh;
-use sm_mesh_api::{CellIx, MeshRead, SerialAlloc, SetMembers};
+use sm_mesh_api::{MeshRead, SerialAlloc, SetMembers};
 use sm_op_api::QuietControl;
-use sm_quality::{CellStatus, Measure, Options, Profile, compute, fv_compute, fv_geometry, rules, validity};
-use sm_quality::{FvEntity, Measure as Ms};
+use sm_quality::{CellStatus, FvEntity, Measure as Ms, Options, Profile, compute, fv_compute, fv_geometry, rules, validity};
 use std::collections::BTreeSet;
 
 /// 3x3x3 block with the first interior vertex pushed hard: a few cells fail.
@@ -98,7 +97,6 @@ fn flags_exactly_the_failing_cells() {
     let n_fail = expected(&reference, Profile::Generic, 2, true).len();
     assert!(n_fail > 0 && n_fail < 27, "the damage fails some but not all cells: {n_fail}");
     assert!(expected(&reference, Profile::Generic, 1, true).len() >= n_fail);
-    let _ = (CellIx::new(0), Point3::new(0., 0., 0.), Measure::from_name("volume"), Ms::from_name("volume"), QuietControl::new());
 }
 
 #[test]

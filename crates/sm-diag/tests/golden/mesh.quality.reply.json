@@ -519,65 +519,6 @@
           "value": 1.0
         }
       ]
-    },
-    {
-      "clusters": [],
-      "count": 11,
-      "entity": "face",
-      "histogram": {
-        "above": 0,
-        "below": 0,
-        "counts": [
-          0,
-          0,
-          1,
-          0
-        ],
-        "hi": 1.5000000000000002,
-        "lo": 0.5000000000000002
-      },
-      "metric": "volume_ratio",
-      "n_fail": 0,
-      "n_sentinel": 0,
-      "n_warn": 0,
-      "sense": "higher_is_worse",
-      "summary": {
-        "max": 1.0000000000000002,
-        "mean": 1.0000000000000002,
-        "min": 1.0000000000000002,
-        "std_dev": 0.0
-      },
-      "threshold": {
-        "fail": 100.0
-      },
-      "undefined": 10,
-      "unit": "",
-      "worst": [
-        {
-          "cells": [
-            "MeshCell#1",
-            "MeshCell#2"
-          ],
-          "entity": {
-            "id": "MeshFace#1",
-            "index": 0
-          },
-          "grade": "ok",
-          "location": [
-            1.0,
-            0.5,
-            0.5
-          ],
-          "near": [
-            "TopoVertex#2",
-            "TopoVertex#3",
-            "TopoVertex#6",
-            "TopoVertex#7"
-          ],
-          "owner": "TopoVolume#1",
-          "value": 1.0000000000000002
-        }
-      ]
     }
   ],
   "profile": "openfoam",

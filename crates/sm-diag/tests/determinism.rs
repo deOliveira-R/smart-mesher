@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 use serde_json::json;
-use sm_diag::{MeshQuality, QualityOptions, ValidateOptions, flagged_cells, quality_report, validate_mesh};
+use sm_diag::{QualityOptions, ValidateOptions, flagged_cells, quality_report, validate_mesh};
 use sm_mesh_api::reference::ReferenceMesh;
 use sm_mesh_api::{MeshEdit, MeshRead, PointIx, SerialAlloc};
 use sm_quality::Profile;
@@ -45,7 +45,7 @@ fn quality_and_validate_json_are_bit_identical_across_threads() {
     assert_eq!(m.cell_count(), 8000);
     for profile in [Profile::Generic, Profile::Transport, Profile::OpenFoam] {
         let o = QualityOptions { profile, ..Default::default() };
-        let (bytes, h) = check(2, 4, |t| {
+        check(2, 4, |t| {
             with_threads(t, || {
                 let r = quality_report(&m, &o, &|op| op == "mesh.smooth").unwrap();
                 let b = serde_json::to_vec(&r).unwrap();
@@ -53,9 +53,7 @@ fn quality_and_validate_json_are_bit_identical_across_threads() {
                 (digest(&b), digest(&v))
             })
         })
-        .map(|x| (x, 0))
         .unwrap();
-        let _ = (bytes, h);
     }
     // The report on this mesh is not trivially empty.
     let r = quality_report(&m, &QualityOptions::default(), &|_| true).unwrap();
@@ -81,5 +79,4 @@ fn query_bytes_through_the_engine_are_identical_for_concurrent_callers() {
         })
     };
     check(3, 4, run).unwrap();
-    let _ = MeshQuality { mesh: None, profile: Default::default(), metrics: None, thresholds: Default::default(), worst_n: 10, bins: 20 };
 }

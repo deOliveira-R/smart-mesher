@@ -220,7 +220,7 @@ Module `fv.rs` (geometry and metrics) and `profile.rs` (names, profiles, grading
 | `NonOrthogonality` (deg) | internal face | `angle(d, Sf)`, `d = C_N - C_O`; cell value = max over its internal faces (`face_to_cell`) | `checkFaceOrthogonality`; checkMesh fails above 70 |
 | `Skewness` | face | internal: `Cpf = Cf - C_O`, `sv = Cpf - (Sf.Cpf)/(Sf.d) d`; boundary: `d = n (n.Cpf)`, `n = Sf/|Sf|`, same `sv`. `fd = max(0.2 |d|, max_p |svHat . (p - Cf)|)`, skew `= |sv|/fd` | `faceSkewness`; checkMesh fails above 4 internal, 20 boundary (*recalled*) |
 | `OrthogonalQuality` | cell | min over faces of `cos(Sf_out, Cf - C_c)` and, for internal faces, `cos(Sf_out, C_n - C_c)`; 1 is best | Fluent; guidance warn below 0.1, fail below 0.01 |
-| `VolumeRatio` | internal face | `max(V_O, V_N) / min(V_O, V_N) >= 1`; `1e30` (the Verdict sentinel) if the smaller volume is not positive | `checkVolRatio` reports the reciprocal `min/max`, checkMesh minimum 0.01: our fail limit 100 is its reciprocal (*recalled*) |
+| `VolumeRatio` | internal face | `max(V_O, V_N) / min(V_O, V_N) >= 1`; `1e30` (the Verdict sentinel) if the smaller volume is not positive | `checkVolRatio` reports the reciprocal `min/max` (conversion: ours `= 1/faceVolRatio`); the OpenFOAM profile has no limit for it |
 | `InterpolationWeight` | internal face | `w = |Sf.(C_N - Cf)| / (|Sf.(C_N - Cf)| + |Sf.(Cf - C_O)| + vSmall)`, reported as `min(w, 1 - w)`; 0.5 ideal | `checkFaceWeight`; fails below 0.05 |
 | `FaceFlatness` | face | `min(1, |Sf| / sum_i |A_i|)`, `A_i` the fan triangles `(p_i, p_{i+1}, Cf)`; 1 for triangles | `checkFaceFlatness`; warns below 0.8 (fan apex `Cf`: *recalled*) |
 | `FaceWarp` (deg) | face | max angle between a fan-triangle normal and `Sf`; 0 for triangles; 90 for a zero-area face | smart-mesh extension (no checkMesh counterpart) |
@@ -236,7 +236,7 @@ Angles are evaluated as `atan2(|a x b|, a . b)`, which equals `acos(a.b/(|a||b|)
 | Profile | Rules (warn / fail) |
 |---|---|
 | Generic | ScaledJacobian 0.2 / 0.05 (lower is worse); EdgeRatio 10 / 100; NonOrthogonality 50 / 70; Skewness 2 / 4 (boundary 20); VolumeRatio 4 / 20; InterpolationWeight 0.2 / 0.05 (lower); FaceFlatness 0.9 / 0.8 (lower); FaceConcavity 5 / 10 |
-| OpenFoam | NonOrthogonality fail 70; Skewness fail 4 (boundary 20); InterpolationWeight fail 0.05; FaceFlatness warn 0.8 (never fails: `fail = -inf`); FaceConcavity fail 10; CellDeterminant fail 1e-3; VolumeRatio fail 100 |
+| OpenFoam | NonOrthogonality fail 70; Skewness fail 4 (boundary 20); InterpolationWeight fail 0.05; FaceFlatness warn 0.8 (never fails: `fail = -inf`); FaceConcavity fail 10; CellDeterminant fail 1e-3 |
 | Fluent | OrthogonalQuality 0.1 / 0.01 (lower). Equiangle skewness is a documented gap |
 | Transport | FaceFlatness 0.9999 / 0.999 (lower); FaceConcavity 0.1 / 1; Starness 0.2 / 0 (lower); EdgeRatio 20 / 200; VolumeRatio 10 / 100. Suits planar convex faces for ray tracing and sweeps |
 

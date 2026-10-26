@@ -243,7 +243,6 @@ const OPENFOAM: &[Rule] = &[
     rule(f(FvMetric::FaceFlatness), Sense::LowerIsWorse, Some(0.8), f64::NEG_INFINITY, None, "checkMesh checkFaceFlatness warns only"),
     rule(f(FvMetric::FaceConcavity), Sense::HigherIsWorse, None, 10.0, None, "checkMesh checkFaceAngles"),
     rule(f(FvMetric::CellDeterminant), Sense::LowerIsWorse, None, 1e-3, None, "checkMesh checkCellDeterminant"),
-    rule(f(FvMetric::VolumeRatio), Sense::HigherIsWorse, None, 100.0, None, "reciprocal of checkVolRatio minRatio 0.01 (recalled)"),
 ];
 
 const FLUENT: &[Rule] = &[rule(

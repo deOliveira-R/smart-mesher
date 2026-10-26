@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use sm_core::EntityKind;
 
 fn rig_registry() -> sm_op_api::Registry {
@@ -40,16 +40,7 @@ fn registered_by_the_plugin_only() {
     assert!(reg.query_names().contains(&"mesh.validate") && reg.query_names().contains(&"mesh.quality"));
     assert!(reg.op_names().contains(&"mesh.flag_cells"));
     // No layer is registered by the plugin: the layer order is that of CoreLayers + MeshPlugin.
-    assert_eq!(sm_diag::DiagPlugin.id_for_test(), "diag");
-}
-
-trait Id {
-    fn id_for_test(&self) -> String;
-}
-impl Id for sm_diag::DiagPlugin {
-    fn id_for_test(&self) -> String {
-        sm_op_api::Plugin::id(self).to_owned()
-    }
+    assert_eq!(sm_op_api::Plugin::id(&sm_diag::DiagPlugin), "diag");
 }
 
 #[test]
@@ -81,6 +72,5 @@ fn validate_reply_is_golden_and_finite() {
     assert_eq!(v["truncated"], true);
     assert_eq!(v["violations"].as_array().unwrap().len(), 4);
     assert_finite(&v, "validate");
-    let _: Value = v.clone();
     golden("mesh.validate.reply.json", &v, 1e-9);
 }

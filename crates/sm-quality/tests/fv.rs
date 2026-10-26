@@ -3,10 +3,13 @@
 
 mod common;
 use common::*;
+use proptest::prelude::*;
+use sm_core::{Point3, Transform};
 use sm_mesh_api::{CellIx, CellShape, FaceIx, MeshRead, SerialAlloc, cell_volume};
 use sm_quality::*;
 use sm_testkit::broken::Tampered;
 use sm_testkit::determinism::{check, hash_f64_bits};
+use sm_testkit::strategies::{config, proper_transform};
 use sm_testkit::meshes::{CellSpec, all_mesh_fixtures, build_mesh, hexagonal_prism, single_hex};
 
 const TOL: f64 = 1e-12;
@@ -332,41 +335,42 @@ fn close(a: f64, b: f64) -> bool {
     (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
 }
 
-fn transformed(m: &sm_mesh_api::reference::ReferenceMesh, scale: f64, rotate: bool) -> Tampered<'_> {
-    let mut t = Tampered::of(m);
-    // Proper rotation (Rodrigues) about the axis (1, 2, 3) plus a translation.
-    let (ax, ang) = ([1.0 / 14f64.sqrt(), 2.0 / 14f64.sqrt(), 3.0 / 14f64.sqrt()], 0.7f64);
-    let (s, c) = ang.sin_cos();
-    for i in 0..t.x.len() {
-        let p = [t.x[i], t.y[i], t.z[i]];
-        let q = if rotate {
-            let cr = [ax[1] * p[2] - ax[2] * p[1], ax[2] * p[0] - ax[0] * p[2], ax[0] * p[1] - ax[1] * p[0]];
-            let d = dot(ax, p);
-            [0, 1, 2].map(|k| p[k] * c + cr[k] * s + ax[k] * d * (1.0 - c) + [10.0, -3.0, 7.0][k])
-        } else {
-            p
-        };
-        (t.x[i], t.y[i], t.z[i]) = (q[0] * scale, q[1] * scale, q[2] * scale);
+fn transformed<'a>(m: &'a sm_mesh_api::reference::ReferenceMesh, t: &Transform, scale: f64) -> Tampered<'a> {
+    let mut out = Tampered::of(m);
+    for i in 0..out.x.len() {
+        let q = t.apply_point(Point3::new(out.x[i], out.y[i], out.z[i]));
+        (out.x[i], out.y[i], out.z[i]) = (q.x * scale, q.y * scale, q.z * scale);
     }
-    t
+    out
 }
 
-#[test]
-fn rigid_motion_and_uniform_scale_leave_every_fv_metric_unchanged() {
-    let mut meshes: Vec<(String, sm_mesh_api::reference::ReferenceMesh)> =
-        all_mesh_fixtures().unwrap().into_iter().map(|f| (f.name.to_string(), f.mesh)).collect();
-    meshes.push(("perturbed".into(), perturbed_block(4, 0.3)));
-    meshes.push(("sheared".into(), sheared_pair()));
-    for (name, m) in &meshes {
-        let g0 = fv_geometry(m).unwrap();
-        let c0 = fv_compute(m, &g0, FV_ALL).unwrap();
-        for (scale, rotate) in [(1.0, true), (3.7, false), (0.25, true)] {
-            let t = transformed(m, scale, rotate);
-            let g1 = fv_geometry(&t).unwrap();
-            let c1 = fv_compute(&t, &g1, FV_ALL).unwrap();
+fn property_meshes() -> &'static [(String, sm_mesh_api::reference::ReferenceMesh)] {
+    static MESHES: std::sync::OnceLock<Vec<(String, sm_mesh_api::reference::ReferenceMesh)>> = std::sync::OnceLock::new();
+    MESHES.get_or_init(|| {
+        let mut meshes: Vec<(String, sm_mesh_api::reference::ReferenceMesh)> =
+            all_mesh_fixtures().unwrap().into_iter().map(|f| (f.name.to_string(), f.mesh)).collect();
+        meshes.push(("perturbed".into(), perturbed_block(4, 0.3)));
+        meshes.push(("sheared".into(), sheared_pair()));
+        meshes
+    })
+}
+
+proptest! {
+    #![proptest_config(config(24))]
+
+    /// A proper rigid motion composed with a uniform scale leaves every FV metric unchanged:
+    /// they are all dimensionless or degrees.
+    #[test]
+    fn rigid_motion_and_uniform_scale_leave_every_fv_metric_unchanged(t in proper_transform(), scale in 0.05f64..20.0) {
+        for (name, m) in property_meshes() {
+            let g0 = fv_geometry(m).unwrap();
+            let c0 = fv_compute(m, &g0, FV_ALL).unwrap();
+            let tm = transformed(m, &t, scale);
+            let g1 = fv_geometry(&tm).unwrap();
+            let c1 = fv_compute(&tm, &g1, FV_ALL).unwrap();
             for (a, b) in c0.iter().zip(&c1) {
                 for (i, (x, y)) in a.values.iter().zip(&b.values).enumerate() {
-                    assert!(close(*x, *y), "{name} {:?} #{i} scale {scale}: {x} vs {y}", a.metric);
+                    prop_assert!(close(*x, *y), "{name} {:?} #{i} scale {scale}: {x} vs {y}", a.metric);
                 }
             }
         }

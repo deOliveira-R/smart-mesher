@@ -7,8 +7,8 @@ use serde_json::json;
 use sm_core::{EntityKind, Point3};
 use sm_diag::{OpNames, QualityOptions, QualityReport, ThresholdOverride, Verdict, quality_report};
 use sm_mesh_api::reference::ReferenceMesh;
-use sm_mesh_api::{CellIx, FaceIx, MeshEntityKind, MeshRead, SerialAlloc};
-use sm_quality::{FvMetric, Grade, Measure, Profile, fv_compute, fv_geometry, rules};
+use sm_mesh_api::{FaceIx, MeshRead, SerialAlloc};
+use sm_quality::{FvMetric, Measure, Profile, fv_compute, fv_geometry};
 use sm_testkit::broken::Tampered;
 use sm_testkit::{lattice, meshes};
 use std::collections::BTreeMap;
@@ -377,5 +377,4 @@ fn surface_clusters_suggest_a_scheme_change_or_refinement() {
     assert!(r.suggestions.iter().all(|s| s.kind != "refine_surface"));
     let names: Vec<&str> = r.metrics.iter().map(|m| m.metric.as_str()).collect();
     assert_eq!(names, ["face_flatness", "face_concavity", "starness", "edge_ratio", "volume_ratio"]);
-    let _ = (CellIx::new(0), MeshEntityKind::Cell, Grade::Ok, rules(Profile::Generic));
 }
