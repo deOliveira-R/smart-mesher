@@ -1616,7 +1616,20 @@ dependencies = [
 name = "sm-scheme-tri"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-math",
+ "sm-mesh",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-quality",
  "sm-scheme-api",
+ "sm-scheme-curve",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
 ]
 
 [[package]]
