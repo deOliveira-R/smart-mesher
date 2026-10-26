@@ -92,11 +92,8 @@ fn outward_normal<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId
     Ok(n * sense.sign())
 }
 
-fn use_side<V: TopologyView + ?Sized>(view: &V, f: EntityId, vol: EntityId) -> Option<Side> {
-    view.coboundary(f).iter().find(|e| e.cell == vol).map(|e| e.side)
-}
-
-fn classify_frag<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId, other: EntityId, other_uses: &[locate::Use]) -> Result<Class, BooleanError> {
+/// Class of a fragment, with its interior probe point and its outward normal there.
+fn classify_frag<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId, other: EntityId, other_uses: &[locate::Use]) -> Result<(Class, Point3, Vector3), BooleanError> {
     let tol = *view.tolerance();
     let lin = tol.linear;
     let p = faceclass::interior_point(view, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
@@ -104,12 +101,12 @@ fn classify_frag<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId,
     for &(g, _) in other_uses {
         if locate::on_face(view, g, p, lin)? {
             let n_g = outward_normal(view, g, other, p)?;
-            return Ok(if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite });
+            return Ok((if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite }, p, n_own));
         }
     }
     match locate::locate_in_uses(view, other_uses, p, &tol)? {
-        PointLocation::In => Ok(Class::In),
-        PointLocation::Out => Ok(Class::Out),
+        PointLocation::In => Ok((Class::In, p, n_own)),
+        PointLocation::Out => Ok((Class::Out, p, n_own)),
         PointLocation::On => Err(BooleanError::Ambiguous { face: f, point: p }),
     }
 }
@@ -118,7 +115,11 @@ fn classify_frag<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId,
 #[derive(Clone, Copy, Debug)]
 struct Kept {
     face: EntityId,
-    side: Side,
+    /// A point inside the fragment and the normal pointing out of the result region there. The
+    /// side the result occupies is derived from them at assembly, because freeing the operands'
+    /// uses may reverse a face (the orientation rule).
+    pt: Point3,
+    n_res: Vector3,
     from_b: bool,
 }
 
@@ -256,15 +257,17 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     let fb_now: Vec<EntityId> = topo.volume_faces(vb).to_vec();
     let uses_a = locate::volume_uses(&*topo, va);
     let uses_b = locate::volume_uses(&*topo, vb);
-    let mut class_a: Vec<(EntityId, Class)> = Vec::new();
+    let mut class_a: Vec<(EntityId, Class, Point3, Vector3)> = Vec::new();
     for &f in &fa_now {
-        class_a.push((f, classify_frag(&*topo, f, va, vb, &uses_b)?));
+        let (c, p, n) = classify_frag(&*topo, f, va, vb, &uses_b)?;
+        class_a.push((f, c, p, n));
     }
-    let mut class_b: Vec<(EntityId, Class)> = Vec::new();
+    let mut class_b: Vec<(EntityId, Class, Point3, Vector3)> = Vec::new();
     for &f in &fb_now {
-        class_b.push((f, classify_frag(&*topo, f, vb, va, &uses_a)?));
+        let (c, p, n) = classify_frag(&*topo, f, vb, va, &uses_a)?;
+        class_b.push((f, c, p, n));
     }
-    let all_out = class_a.iter().chain(&class_b).all(|(_, c)| *c == Class::Out);
+    let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
     if all_out && computed.pieces.is_empty() {
         match rule {
             BoolRule::Unite => return Err(BooleanError::Invalid("bodies do not touch: unite needs operands that overlap or share a face".into())),
@@ -282,26 +285,24 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     }
     // 6. Selection.
     let mut kept: Vec<Kept> = Vec::new();
-    for &(f, c) in &class_a {
+    for &(f, c, pt, n) in &class_a {
         let keep = match rule {
             BoolRule::Unite => matches!(c, Class::Out | Class::OnSame),
             BoolRule::Intersect => matches!(c, Class::In | Class::OnSame),
             BoolRule::Subtract => matches!(c, Class::Out | Class::OnOpposite),
         };
         if keep {
-            let side = use_side(&*topo, f, va).ok_or(BooleanError::Unsupported("a fragment is not used by its volume"))?;
-            kept.push(Kept { face: f, side, from_b: false });
+            kept.push(Kept { face: f, pt, n_res: n, from_b: false });
         }
     }
-    for &(f, c) in &class_b {
+    for &(f, c, pt, n) in &class_b {
         let (keep, flip) = match rule {
             BoolRule::Unite => (c == Class::Out, false),
             BoolRule::Intersect => (c == Class::In, false),
             BoolRule::Subtract => (c == Class::In, true),
         };
         if keep {
-            let side = use_side(&*topo, f, vb).ok_or(BooleanError::Unsupported("a fragment is not used by its volume"))?;
-            kept.push(Kept { face: f, side: if flip { side.flip() } else { side }, from_b: true });
+            kept.push(Kept { face: f, pt, n_res: if flip { n * -1.0 } else { n }, from_b: true });
         }
     }
     if kept.is_empty() {
@@ -388,6 +389,12 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
 fn assemble<E: TopologyEdit + ?Sized>(topo: &mut E, kept: &[Kept], rule: BoolRule, probe_volume: EntityId) -> Result<Vec<EntityId>, BooleanError> {
     let lin = topo.tolerance().linear;
     let n = kept.len();
+    // The side the result occupies, from the face's current orientation.
+    let mut sides: Vec<Side> = Vec::with_capacity(n);
+    for k in kept {
+        let (nf, _, _) = geo::face_normal_near(&*topo, k.face, k.pt).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
+        sides.push(if nf.dot(k.n_res) > 0.0 { Side::Left } else { Side::Right });
+    }
     let index: BTreeMap<EntityId, usize> = kept.iter().enumerate().map(|(i, k)| (k.face, i)).collect();
     // Edge -> kept faces using it (with multiplicity).
     let mut edge_uses: BTreeMap<EntityId, Vec<usize>> = BTreeMap::new();
@@ -444,7 +451,7 @@ fn assemble<E: TopologyEdit + ?Sized>(topo: &mut E, kept: &[Kept], rule: BoolRul
     let mut is_outer: Vec<bool> = Vec::new();
     let mut shell_uses: Vec<Vec<locate::Use>> = Vec::new();
     for s in &shell_list {
-        let uses: Vec<locate::Use> = s.iter().map(|&i| (kept[i].face, if kept[i].side == Side::Left { Sense::Forward } else { Sense::Reversed })).collect();
+        let uses: Vec<locate::Use> = s.iter().map(|&i| (kept[i].face, if sides[i] == Side::Left { Sense::Forward } else { Sense::Reversed })).collect();
         let mut bbox = sm_core::Aabb::empty();
         for &(f, _) in &uses {
             bbox = bbox.union(&geo::face_aabb(&*topo, f, 0.0));
@@ -500,7 +507,7 @@ fn assemble<E: TopologyEdit + ?Sized>(topo: &mut E, kept: &[Kept], rule: BoolRul
         let Some((_, o)) = best else { return Err(BooleanError::ResultInvalid { volume: probe_volume, rule: rule.name() }) };
         void_of.entry(o).or_default().push(i);
     }
-    let spec_of = |idx: usize| -> Vec<FaceUseSpec> { shell_list[idx].iter().map(|&i| FaceUseSpec { face: kept[i].face, side: kept[i].side }).collect() };
+    let spec_of = |idx: usize| -> Vec<FaceUseSpec> { shell_list[idx].iter().map(|&i| FaceUseSpec { face: kept[i].face, side: sides[i] }).collect() };
     let mut volumes = Vec::new();
     for &o in &outers {
         let outer_spec = spec_of(o);
