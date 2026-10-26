@@ -45,7 +45,7 @@ fn mesh_id(s: &Session) -> EntityId {
 }
 
 #[test]
-fn rt_queries_report_info_check_and_locate() {
+fn r2_rt_queries_report_info_check_and_locate() {
     let mut s = session();
     let q = QuietControl::new();
     s.apply(&HexModel { n: 4 }, Meta::new("test", "", ""), &q.control()).expect("model + mesh");
@@ -83,7 +83,7 @@ fn rt_queries_report_info_check_and_locate() {
 }
 
 #[test]
-fn rt_queries_are_listed_with_schemas() {
+fn r2_rt_queries_are_listed_with_schemas() {
     let s = session();
     let reg = s.engine().registry();
     for n in ["rt.info", "rt.check", "rt.locate"] {

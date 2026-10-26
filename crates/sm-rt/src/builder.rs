@@ -2,10 +2,10 @@
 
 use crate::build::{Built, build_facets, build_mesh};
 use crate::image::{import, make_info};
-use crate::tracker::MeshTracker;
+use crate::tracker::{MeshTracker, Parts};
 use sm_mesh_api::{SetMembers, geometry_hash, topology_hash};
 use sm_rt_api::{
-    BoundarySpec, BuildInput, BuildOptions, BuildReport, CacheImage, CacheKey, ComplementPolicy, ContentHash, ContentHasher, RegionRule, Result, RtError, Tracker, TrackerBuilder,
+    BuildInput, BuildOptions, BuildReport, CacheImage, CacheKey, ComplementPolicy, ContentHash, ContentHasher, RegionRule, Result, RtError, Tracker, TrackerBuilder,
     TrackerKind,
 };
 
@@ -78,7 +78,7 @@ impl MeshTrackerBuilder {
         let Built { core, regions, surfaces, complement, kind, report } = built;
         let hash = MeshTracker::hash_structure(&core, &regions, &surfaces, kind, complement, &cell_sets);
         let info = make_info(&core, &regions, &surfaces, kind, opts.tol, opts.max_events, hash, Some(key));
-        let t = MeshTracker::assemble(core, info, regions, surfaces, kind, complement, cell_sets, opts.block_size as usize, opts.recovery);
+        let t = MeshTracker::assemble(Parts { core, regions, surfaces, kind, complement, cell_sets }, info, opts.block_size as usize, opts.recovery);
         Ok((t, report))
     }
 }
@@ -116,9 +116,4 @@ impl TrackerBuilder for MeshTrackerBuilder {
 /// what a `.smrt` sidecar opener such as the C ABI uses. The image is fully validated.
 pub fn load_image(image: &CacheImage) -> Result<MeshTracker> {
     import(image)
-}
-
-/// The boundary spec used when none is given: all-vacuum.
-pub fn default_boundaries() -> BoundarySpec {
-    BoundarySpec::default()
 }

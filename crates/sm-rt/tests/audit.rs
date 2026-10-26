@@ -59,7 +59,6 @@ struct Tally {
     histories: u64,
     steps: u64,
     lost: u64,
-    nudged: u64,
 }
 
 fn run(models: &[Model], n: usize, steps: usize) -> Tally {
@@ -111,7 +110,7 @@ fn run(models: &[Model], n: usize, steps: usize) -> Tally {
             t
         })
         .collect();
-    parts.iter().fold(Tally::default(), |a, b| Tally { histories: a.histories + b.histories, steps: a.steps + b.steps, lost: a.lost + b.lost, nudged: 0 })
+    parts.iter().fold(Tally::default(), |a, b| Tally { histories: a.histories + b.histories, steps: a.steps + b.steps, lost: a.lost + b.lost })
 }
 
 fn audit(n: usize, steps: usize) {

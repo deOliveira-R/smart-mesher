@@ -287,16 +287,21 @@ pub fn run_iur(
     tot
 }
 
-/// Assert `mean chord == V / (pi rho^2)` within `k` sigma for every cell with volume `vols[c]`.
+/// Assert `mean chord == V / (pi rho^2)` within `k` sigma for every cell with volume `vols[c]`;
+/// prints the largest |z| so the report can quote it.
 pub fn assert_cell_means(st: &CellStats, vols: &[f64], rho: f64, k: f64) {
     let n = st.n as f64;
+    let mut max_z: f64 = 0.0;
     for (c, &v) in vols.iter().enumerate() {
         let mean = st.sum[c] / n;
         let var = (st.sumsq[c] / n - mean * mean).max(0.0);
         let sigma = (var / n).sqrt();
         let want = v / (std::f64::consts::PI * rho * rho);
-        assert!((mean - want).abs() <= k * sigma.max(1e-18), "cell {c}: mean chord {mean} vs {want} (sigma {sigma}, {} sigma)", (mean - want).abs() / sigma);
+        let z = (mean - want).abs() / sigma.max(1e-18);
+        max_z = max_z.max(z);
+        assert!(z <= k, "cell {c}: mean chord {mean} vs {want} (sigma {sigma}, {z} sigma)");
     }
+    eprintln!("cell means: {} cells, {} lines, max |z| = {max_z:.2}, max chord-sum error {:.2e}", vols.len(), st.n, st.max_err);
 }
 
 /// Cauchy: the mean chord of the lines that hit equals `4 V / S`, within `k` sigma.
@@ -306,6 +311,7 @@ pub fn assert_cauchy(st: &CellStats, v: f64, s: f64, k: f64) {
     let var = (st.line_sumsq / h - mean * mean).max(0.0);
     let sigma = (var / h).sqrt();
     let want = 4.0 * v / s;
+    eprintln!("Cauchy: mean chord {mean:.6} vs 4V/S {want:.6} ({:.2} sigma, {} hits)", (mean - want).abs() / sigma, st.hits);
     assert!((mean - want).abs() <= k * sigma, "Cauchy mean chord {mean} vs 4V/S = {want} (sigma {sigma}, {} hits)", st.hits);
 }
 

@@ -32,6 +32,16 @@ pub struct MeshTracker {
     nudges: AtomicU64,
 }
 
+/// The pieces of a tracker apart from its info and options.
+pub(crate) struct Parts {
+    pub core: Core,
+    pub regions: RegionTable,
+    pub surfaces: SurfaceTable,
+    pub kind: TrackerKind,
+    pub complement: Option<u32>,
+    pub cell_sets: Vec<(String, Vec<u32>)>,
+}
+
 enum Once {
     Done(Step),
     Fail(LostCause),
@@ -46,17 +56,8 @@ enum Probe {
 }
 
 impl MeshTracker {
-    pub(crate) fn assemble(
-        core: Core,
-        mut info: TrackerInfo,
-        regions: RegionTable,
-        surfaces: SurfaceTable,
-        kind: TrackerKind,
-        complement: Option<u32>,
-        cell_sets: Vec<(String, Vec<u32>)>,
-        block_size: usize,
-        recovery: RecoveryPolicy,
-    ) -> Self {
+    pub(crate) fn assemble(parts: Parts, mut info: TrackerInfo, block_size: usize, recovery: RecoveryPolicy) -> Self {
+        let Parts { core, regions, surfaces, kind, complement, cell_sets } = parts;
         let mut b = [f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
         for p in &core.pos {
             for k in 0..3 {
@@ -221,16 +222,20 @@ impl MeshTracker {
                 }
             } else if slack <= tol {
                 on = on.min(f);
-                let w = *dir.get_or_insert_with(|| {
-                    let h = hashed_direction(Point3::new(p[0], p[1], p[2]));
-                    [h.x, h.y, h.z]
-                });
-                let md = s * dot(n, w);
-                if md >= 0.0 {
-                    into = false;
-                }
-                if md > GRAZE_COS {
-                    leaving = true;
+                // Only a face the point is at or beyond constrains the direction: with positive
+                // slack the particle is still inside and merely has a short chord to the face.
+                if slack <= 0.0 {
+                    let w = *dir.get_or_insert_with(|| {
+                        let h = hashed_direction(Point3::new(p[0], p[1], p[2]));
+                        [h.x, h.y, h.z]
+                    });
+                    let md = s * dot(n, w);
+                    if md >= 0.0 {
+                        into = false;
+                    }
+                    if md > GRAZE_COS {
+                        leaving = true;
+                    }
                 }
             }
         }
@@ -292,9 +297,14 @@ impl MeshTracker {
         if on == NONE {
             return if self.raycast_inside(c, p, hashed(p)) { Probe::In } else { Probe::Out { across: NONE } };
         }
+        // Does the direction enter the cell? Probe just ahead (a chord that starts at the point and
+        // is shorter than the tolerance) and 2 tol ahead (a point slightly outside that enters).
         let w = *dir.get_or_insert_with(|| hashed(p));
-        let q = madd(p, w, 2.0 * tol);
-        Probe::On { face: on, rank: if self.raycast_inside(c, q, hashed(q)) { 0 } else { 2 } }
+        let enters = [1e-3 * tol, 2.0 * tol].into_iter().any(|e| {
+            let q = madd(p, w, e);
+            self.raycast_inside(c, q, hashed(q))
+        });
+        Probe::On { face: on, rank: if enters { 0 } else { 2 } }
     }
 
     fn probe(&self, c: usize, p: [f64; 3], dir: &mut Option<[f64; 3]>) -> Probe {
@@ -402,8 +412,14 @@ impl MeshTracker {
             return self.cell_located(c, p, None);
         }
         let w = dir.unwrap_or_else(|| hashed(p));
-        let q = madd(p, w, 2.0 * tol);
-        let c = self.first_hit_cell(q, hashed(q), sc);
+        // The region just ahead of the point; if that is outside, the region 2 tol ahead (see
+        // `generic_probe`).
+        let q1 = madd(p, w, 1e-3 * tol);
+        let mut c = self.first_hit_cell(q1, hashed(q1), sc);
+        if c == NONE {
+            let q2 = madd(p, w, 2.0 * tol);
+            c = self.first_hit_cell(q2, hashed(q2), sc);
+        }
         self.cell_located(c, p, Some(FaceId(on)))
     }
 
@@ -474,7 +490,7 @@ impl MeshTracker {
         let ex = if self.core.c_flags[c] & C_CONVEX != 0 {
             self.core.exit_convex(c, o, d, entry, tol)
         } else {
-            self.core.exit_generic(c, o, d, entry, tol, &mut sc.hits, &mut sc.ids)
+            self.core.exit_generic(c, o, d, entry, tol, sc)
         };
         let ex = match ex {
             Ok(e) => e,
@@ -574,10 +590,6 @@ impl MeshTracker {
             comp_region,
             StepEnd::RegionBoundary { surface: SurfaceId::NONE, face: FaceId::NONE, to_region: RegionId::NONE, to_cell: CellId::NONE },
         ))
-    }
-
-    fn check_cell(&self, c: CellId) -> Result<usize> {
-        if c.get() < self.core.n_cells() { Ok(c.get()) } else { Err(RtError::UnknownId { kind: "cell", id: c.0 }) }
     }
 }
 
@@ -797,12 +809,3 @@ impl sm_rt_api::Tracker for MeshTracker {
         }
     }
 }
-
-impl MeshTracker {
-    /// Validate a cell id (for callers that index tables by `CellId`).
-    pub fn check_cell_id(&self, c: CellId) -> Result<usize> {
-        self.check_cell(c)
-    }
-}
-
-

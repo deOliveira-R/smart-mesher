@@ -147,7 +147,8 @@ impl Bvh {
 
     /// Visit primitives along the ray `o + t d` for `t in [t0, tmax]`, nearest box first.
     /// `f` returns the (possibly reduced) `tmax`; nodes whose entry exceeds it are pruned.
-    pub fn visit_ray(&self, o: [f64; 3], d: [f64; 3], pad: f64, t0: f64, tmax: f64, stack: &mut Vec<u32>, mut f: impl FnMut(u32) -> f64) {
+    pub fn visit_ray(&self, ray: ([f64; 3], [f64; 3]), pad: f64, t_range: (f64, f64), stack: &mut Vec<u32>, mut f: impl FnMut(u32) -> f64) {
+        let ((o, d), (t0, tmax)) = (ray, t_range);
         if self.bb.is_empty() {
             return;
         }

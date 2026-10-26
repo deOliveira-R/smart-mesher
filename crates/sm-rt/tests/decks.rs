@@ -191,7 +191,7 @@ fn acc06_closed_reflective_box_keeps_every_history_inside() {
     }
     let t = build_mesh_tracker(&mesh, &spec, &opts_fail());
     let histories = if cfg!(debug_assertions) { 1_000 } else { 10_000 };
-    let steps = if cfg!(debug_assertions) { 1_000 } else { 1_000 };
+    let steps = 1_000;
     let mut sc = Scratch::new();
     let mut r = rng("acc06_reflective_box");
     for h in 0..histories {

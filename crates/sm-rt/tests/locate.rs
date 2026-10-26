@@ -17,7 +17,7 @@ fn brute_cell(polys: &[Convex], p: [f64; 3]) -> Option<usize> {
             found = Some(c);
         }
     }
-    Some(found.map_or(usize::MAX, |c| c)) // usize::MAX: outside every cell
+    Some(found.unwrap_or(usize::MAX)) // usize::MAX: outside every cell
 }
 
 fn random_points_agree(mesh: &dyn MeshRead, name: &str) {

@@ -1,7 +1,8 @@
 //! Exit-face search inside one cell, ray queries over the face BVH, and exact distances.
 
-use crate::core::{BIG_CELL, C_BVH, Core, NONE};
-use crate::vec3::{add, cross, dot, linf, madd, scale, sub};
+use crate::core::{C_BVH, Core, NONE};
+use sm_rt_api::Scratch;
+use crate::vec3::{add, dot, linf, madd, scale, sub};
 
 /// Why no exit face could be returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +77,7 @@ impl Core {
             if md <= GRAZE && (f == entry || slack <= tol) {
                 continue;
             }
-            let t = (slack / md).max(0.0);
-            if t <= tmin + tie {
+            if (slack / md).max(0.0) <= tmin + tie {
                 best = f;
             }
         }
@@ -86,7 +86,8 @@ impl Core {
 
     /// Crossing-based exit of any cell (non-convex, non-planar faces, facet cells). `hits`
     /// and `stack` are the caller's scratch buffers.
-    pub fn exit_generic(&self, c: usize, o: [f64; 3], d: [f64; 3], entry: u32, tol: f64, hits: &mut Vec<(f64, u32)>, stack: &mut Vec<u32>) -> Result<Exit, ExitFail> {
+    pub fn exit_generic(&self, c: usize, o: [f64; 3], d: [f64; 3], entry: u32, tol: f64, sc: &mut Scratch) -> Result<Exit, ExitFail> {
+        let (hits, stack) = (&mut sc.hits, &mut sc.ids);
         hits.clear();
         let cu = c as u32;
         let push = |f: u32, hits: &mut Vec<(f64, u32)>| -> f64 {
@@ -114,7 +115,7 @@ impl Core {
         };
         if self.c_flags[c] & C_BVH != 0 {
             let mut tmax = f64::INFINITY;
-            self.face_bvh.visit_ray(o, d, tol, -tol, tmax, stack, |f| {
+            self.face_bvh.visit_ray((o, d), tol, (-tol, tmax), stack, |f| {
                 let r = push(f, hits);
                 tmax = tmax.min(r);
                 tmax
@@ -131,7 +132,7 @@ impl Core {
     pub fn first_hit(&self, o: [f64; 3], d: [f64; 3], tol: f64, stack: &mut Vec<u32>) -> Option<(f64, u32, bool)> {
         let mut best: Option<(f64, u32, bool)> = None;
         let mut tmax = f64::INFINITY;
-        self.face_bvh.visit_ray(o, d, tol, 0.0, tmax, stack, |f| {
+        self.face_bvh.visit_ray((o, d), tol, (0.0, tmax), stack, |f| {
             self.face_crossings(f as usize, o, d, |t, along| {
                 if t < 0.0 {
                     return;
@@ -157,7 +158,7 @@ impl Core {
     pub fn enter_from_outside(&self, o: [f64; 3], d: [f64; 3], tol: f64, stack: &mut Vec<u32>) -> Option<(f64, u32)> {
         let mut best: Option<(f64, u32)> = None;
         let mut tmax = f64::INFINITY;
-        self.face_bvh.visit_ray(o, d, tol, -tol, tmax, stack, |f| {
+        self.face_bvh.visit_ray((o, d), tol, (-tol, tmax), stack, |f| {
             if self.f_right[f as usize] != NONE {
                 return tmax;
             }
@@ -195,17 +196,11 @@ impl Core {
         }
         best
     }
-
-    /// True when cell `c` has more faces than the linear scan is meant for.
-    #[allow(dead_code)]
-    pub fn is_big(&self, c: usize) -> bool {
-        self.cell_faces(c).len() > BIG_CELL
-    }
 }
 
 /// Apply the exit rule to the collected crossings (`face << 1 | outward`).
 fn decide_exit(hits: &[(f64, u32)], o: [f64; 3], tol: f64) -> Result<Exit, ExitFail> {
-    // Entering crossings at or behind the start (within 4 tol, the horizon of the locate probe)
+    // Entering crossings at or behind the start (within 4 tol, twice the 2-tol locate probe)
     // are the entry itself, not evidence of a sense error; outward crossings slightly behind the start are exits at once.
     let usable = |h: &&(f64, u32)| h.0 >= -tol && (h.1 & 1 == 1 || h.0 > 4.0 * tol);
     let first = hits
@@ -283,12 +278,4 @@ pub(crate) fn closest_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64
     let v = vb * denom;
     let w = vc * denom;
     add(a, add(scale(ab, v), scale(ac, w)))
-}
-
-/// Unit normal of the triangle `abc` (zero vector when degenerate).
-#[allow(dead_code)]
-pub(crate) fn tri_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
-    let n = cross(sub(b, a), sub(c, a));
-    let l = dot(n, n).sqrt();
-    if l > 0.0 { scale(n, 1.0 / l) } else { [0.0; 3] }
 }

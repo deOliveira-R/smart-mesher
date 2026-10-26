@@ -3,7 +3,7 @@
 
 use crate::bvh::Bvh;
 use crate::core::{Core, F_PLANAR, NONE};
-use crate::tracker::MeshTracker;
+use crate::tracker::{MeshTracker, Parts};
 use sm_core::{EntityId, Transform, Vector3};
 use sm_geom_api::ModelTolerance;
 use sm_rt_api::{
@@ -242,12 +242,12 @@ impl<'a> R<'a> {
     fn vec_u32(&mut self) -> Result<Vec<u32>> {
         let n = self.len(4)?;
         let s = self.take(n * 4)?;
-        Ok(s.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+        Ok(s.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect())
     }
     fn vec_f64(&mut self) -> Result<Vec<f64>> {
         let n = self.len(8)?;
         let s = self.take(n * 8)?;
-        Ok(s.chunks_exact(8).map(|c| f64::from_bits(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))).collect())
+        Ok(s.as_chunks::<8>().0.iter().map(|c| f64::from_bits(u64::from_le_bytes(*c))).collect())
     }
     fn done(&self) -> Result<()> {
         if self.at == self.b.len() { Ok(()) } else { Err(bad("trailing bytes in section")) }
@@ -255,10 +255,10 @@ impl<'a> R<'a> {
 }
 
 fn chunk3(v: Vec<f64>) -> Result<Vec<[f64; 3]>> {
-    if v.len() % 3 != 0 {
+    if !v.len().is_multiple_of(3) {
         return Err(bad("column length"));
     }
-    Ok(v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+    Ok(v.as_chunks::<3>().0.to_vec())
 }
 
 fn read_bvh(b: &[u8]) -> Result<Bvh> {
@@ -311,7 +311,7 @@ fn entity_opt(raw: u64) -> Result<Option<EntityId>> {
     if raw == 0 { Ok(None) } else { EntityId::from_raw(raw).map(Some).ok_or_else(|| bad("bad entity id")) }
 }
 
-fn section<'a>(img: &'a CacheImage, tag: SectionTag) -> Result<&'a [u8]> {
+fn section(img: &CacheImage, tag: SectionTag) -> Result<&[u8]> {
     img.section(tag).ok_or_else(|| bad("missing section"))
 }
 
@@ -357,10 +357,10 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
     let mut r = R::new(section(img, SectionTag::FacePlanes)?);
     let pl = r.vec_f64()?;
     r.done()?;
-    if pl.len() % 4 != 0 {
+    if !pl.len().is_multiple_of(4) {
         return Err(bad("plane column length"));
     }
-    core.f_plane = pl.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+    core.f_plane = pl.as_chunks::<4>().0.to_vec();
     let mut r = R::new(section(img, SectionTag::Private(TAG_APEX))?);
     core.f_apex = chunk3(r.vec_f64()?)?;
     r.done()?;
@@ -370,10 +370,10 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
     core.c_region = r.vec_u32()?;
     core.c_flags = r.bytes()?;
     let bb = r.vec_f64()?;
-    if bb.len() % 6 != 0 {
+    if !bb.len().is_multiple_of(6) {
         return Err(bad("box column length"));
     }
-    core.c_bbox = bb.chunks_exact(6).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect();
+    core.c_bbox = bb.as_chunks::<6>().0.to_vec();
     core.c_volume = r.vec_f64()?;
     r.done()?;
     let mut r = R::new(section(img, SectionTag::Boundaries)?);
@@ -430,7 +430,7 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
         return Err(bad("structure hash mismatch"));
     }
     let info = make_info(&core, &regions, &surfaces, kind, tol, max_events, hash, Some(img.key));
-    Ok(MeshTracker::assemble(core, info, regions, surfaces, kind, complement, cell_sets, block_size, recovery))
+    Ok(MeshTracker::assemble(Parts { core, regions, surfaces, kind, complement, cell_sets }, info, block_size, recovery))
 }
 
 fn validate_core(c: &Core, nv: usize, nf: usize, nc: usize, nreg: usize, nsurf: usize, sets: &[(String, Vec<u32>)]) -> Result<()> {

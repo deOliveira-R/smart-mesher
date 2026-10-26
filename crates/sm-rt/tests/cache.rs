@@ -185,3 +185,29 @@ fn acc11_build_cache_and_bundle_are_deterministic() {
     };
     sm_testkit::determinism::check(2, 4, run).unwrap();
 }
+
+#[test]
+fn acc10_key_follows_the_mesh_identity_hashes() {
+    use sm_testkit::meshes::{CellSpec, build_mesh};
+    // The key is a pure function of the mesh's own identity hashes (`topology_hash`,
+    // `geometry_hash`), so it is exactly as canonical as the mesh: a rebuild of the same cells
+    // gives the same key and structure; the cell index is part of the mesh identity (tallies are
+    // indexed by it), so swapping two cells changes the key.
+    let pts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]];
+    let loops = vec![vec![0, 3, 2, 1], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]];
+    let mut pts2 = pts.to_vec();
+    pts2.extend(pts.iter().map(|p| [p[0] + 3.0, p[1], p[2]]));
+    let shifted: Vec<Vec<usize>> = loops.iter().map(|l| l.iter().map(|v| v + 8).collect()).collect();
+    let key_of = |cells: &[CellSpec]| {
+        let mesh = build_mesh(&pts2, cells, &mut SerialAlloc::new()).unwrap();
+        let (rules, comp, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside, BoundarySpec::default());
+        let input = BuildInput::Mesh(MeshInput::new(&mesh, &rules, &spec, &comp));
+        let key = MeshTrackerBuilder.cache_key(&input, &BuildOptions::default()).unwrap();
+        let (t, _) = MeshTrackerBuilder.build(&input, &BuildOptions::default()).unwrap();
+        (key, t.structure_hash())
+    };
+    let ab = [CellSpec::Poly(loops.clone()), CellSpec::Poly(shifted.clone())];
+    let ba = [CellSpec::Poly(shifted), CellSpec::Poly(loops)];
+    assert_eq!(key_of(&ab), key_of(&ab));
+    assert_ne!(key_of(&ab).0, key_of(&ba).0);
+}

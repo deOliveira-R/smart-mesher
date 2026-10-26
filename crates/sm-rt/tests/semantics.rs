@@ -24,7 +24,7 @@ fn rays(name: &str, n: usize, lo: [f64; 3], hi: [f64; 3]) -> Vec<Ray> {
 }
 
 #[test]
-fn bundle_override_is_bit_identical_to_the_default_sequential_walk() {
+fn scope6_bundle_override_is_bit_identical_to_the_default_sequential_walk() {
     let mesh = hex_block([5; 3], [1.0; 3], &mut SerialAlloc::new()).unwrap();
     let t = build_mesh_tracker(&mesh, &vacuum(), &BuildOptions::default());
     let rs = rays("bundle_equiv", 20_000, [-0.5; 3], [5.5; 3]);
@@ -50,7 +50,7 @@ fn bundle_override_is_bit_identical_to_the_default_sequential_walk() {
 }
 
 #[test]
-fn bin_maps_cells_regions_and_mesh_sets() {
+fn scope6_bin_maps_cells_regions_and_mesh_sets() {
     let fx = tet_block_two_volumes([4, 2, 2], [1.0; 3], 2).unwrap();
     let t = build_mesh_tracker(&fx.mesh, &vacuum(), &opts_fail());
     let nc = t.cell_count();
@@ -83,7 +83,7 @@ fn bin_maps_cells_regions_and_mesh_sets() {
 }
 
 #[test]
-fn region_boundaries_surfaces_fire_peek_and_dagmc_shims() {
+fn scope8_region_boundaries_surfaces_fire_peek_and_dagmc_shims() {
     let fx = tet_block_two_volumes([4, 2, 2], [1.0; 3], 2).unwrap();
     let t = build_mesh_tracker(&fx.mesh, &vacuum(), &opts_fail());
     assert!(t.caps().has(TrackerCaps::VOLUME_MESH) && t.caps().has(TrackerCaps::EXACT_PLANAR));
@@ -126,7 +126,7 @@ fn region_boundaries_surfaces_fire_peek_and_dagmc_shims() {
 }
 
 #[test]
-fn lost_particles_are_diagnosed_and_nudge_recovery_is_counted() {
+fn scope3_lost_particles_are_diagnosed_and_nudge_recovery_is_counted() {
     let mesh = hex_block([4; 3], [1.0; 3], &mut SerialAlloc::new()).unwrap();
     let mut sc = Scratch::new();
     // A state whose cell is wrong by 2e-6 (beyond the 1e-6 tolerance).
@@ -179,4 +179,34 @@ fn lost_particles_are_diagnosed_and_nudge_recovery_is_counted() {
     assert!(matches!(s.end, StepEnd::Limit) && s.dist == 0.3 && (st.pos.x - 0.4).abs() < 1e-15);
     let s = fail.step(&mut st, 0.0, &mut sc).unwrap();
     assert!(matches!(s.end, StepEnd::Limit) && s.dist == 0.0);
+}
+
+#[test]
+fn scope5_complement_policy_region_makes_the_notch_a_complement_cell() {
+    use sm_rt_api::{BoundarySpec, BuildInput, ComplementPolicy, MeshInput, RegionRule, TrackerBuilder};
+    let nc = sm_testkit::meshes::nonconvex_poly().unwrap();
+    let (rules, comp, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Region("void".into()), BoundarySpec::default());
+    let input = BuildInput::Mesh(MeshInput::new(&nc.mesh, &rules, &spec, &comp));
+    let (t, _) = sm_rt::MeshTrackerBuilder.build(&input, &BuildOptions::default()).unwrap();
+    let mut sc = Scratch::new();
+    let void = t.regions().implicit_complement().expect("complement region");
+    assert_eq!(t.regions().get(void).unwrap().name, "void");
+    let loc = t.locate(Point3::new(1.5, 1.5, 0.5), None, None, &mut sc).unwrap();
+    assert_eq!((loc.cell, loc.region), (CellId::COMPLEMENT, void));
+    // Into the wall of the L cell: complement -> body, then out through the far wall.
+    let mut st = t.init_state(Point3::new(1.5, 1.5, 0.5), Vector3::new(-1.0, 0.0, 0.0), None, &mut sc).unwrap();
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert!((s.dist - 0.5).abs() < 1e-14 && s.cell == CellId::COMPLEMENT && s.region == void);
+    assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, .. } if to_cell == CellId::new(0)));
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert!((s.dist - 1.0).abs() < 1e-14 && matches!(s.end, StepEnd::Boundary { .. }));
+    // Towards the bounding box: the complement ends at the domain bounds, leaving the model.
+    let mut st = t.init_state(Point3::new(1.5, 1.5, 0.5), Vector3::new(0.0, 1.0, 0.0), None, &mut sc).unwrap();
+    let s = t.step(&mut st, f64::INFINITY, &mut sc).unwrap();
+    assert!((s.dist - 0.5).abs() < 1e-14);
+    assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, to_region, .. } if to_cell.is_none() && to_region == RegionId::NONE));
+    assert!(st.cell.is_none());
+    // With the default policy the notch is simply outside the model.
+    let plain = build_mesh_tracker(&nc.mesh, &BoundarySpec::default(), &opts_fail());
+    assert!(plain.locate(Point3::new(1.5, 1.5, 0.5), None, None, &mut sc).unwrap().cell.is_none());
 }

@@ -2,7 +2,7 @@
 mod common;
 use common::*;
 use sm_mesh_api::reference::hex_block;
-use sm_mesh_api::{CellIx, FaceIx, MeshRead, SerialAlloc};
+use sm_mesh_api::{CellIx, MeshRead, SerialAlloc};
 use sm_rt_api::{CellId, FaceId, Scratch, StepEnd, Tracker};
 use sm_testkit::meshes::{MeshFixture, dual_patch, hexagonal_prism, mixed_transition, nonconvex_poly, truncated_octahedron};
 
@@ -242,9 +242,7 @@ fn acc04_edge_exits_pick_the_lowest_face_and_never_get_lost() {
                 if let Some((a, b)) = hull.clip(o, d).filter(|(a, b)| b > a) {
                     let tr = trace_to_end(&t, [o[0] + a * d[0], o[1] + a * d[1], o[2] + a * d[2]], d, &mut sc);
                     let total: f64 = tr.chords.iter().map(|c| c.1).sum();
-                    // Chords shorter than the model tolerance may be dropped (the start is within
-                    // tolerance of the hull and the direction leaves); longer ones must be exact.
-                    if tr.lost || (b - a > 1e-3 && (total - (b - a)).abs() > 1e-12) || total > b - a + 1e-12 {
+                    if tr.lost || (total - (b - a)).abs() > 1e-12 {
                         lost += 1;
                         if lost < 6 {
                             eprintln!("cell {c}: lost={} total={total} want={} o={o:?} d={d:?} chords={}", tr.lost, b - a, tr.chords.len());
@@ -294,7 +292,7 @@ fn acc04_vertex_exits_pick_the_lowest_face_and_never_get_lost() {
             for _ in 0..5 {
                 let (d, _, _) = random_frame(&mut r);
                 let o = [vtx[0] + 1e-9 * r.unit() - 5.0 * d[0], vtx[1] + 1e-9 * r.unit() - 5.0 * d[1], vtx[2] + 1e-9 * r.unit() - 5.0 * d[2]];
-                if let Some((a, b)) = hull.clip(o, d).filter(|(a, b)| b - a > 1e-3) {
+                if let Some((a, b)) = hull.clip(o, d).filter(|(a, b)| b > a) {
                     let tr = trace_to_end(&t, [o[0] + a * d[0], o[1] + a * d[1], o[2] + a * d[2]], d, &mut sc);
                     let total: f64 = tr.chords.iter().map(|c| c.1).sum();
                     assert!(!tr.lost && (total - (b - a)).abs() < 1e-12, "cell {c} vertex {vtx:?}: lost {} err {}", tr.lost, (total - (b - a)).abs());

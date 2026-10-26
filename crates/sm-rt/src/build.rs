@@ -55,19 +55,21 @@ pub(crate) fn build_mesh(inp: &MeshInput<'_>, opts: &BuildOptions) -> Result<Bui
     if cols.face_vertex_offsets.len() != nf + 1 || cols.cell_face_offsets.len() != nc + 1 || cols.face_left.len() != nf || cols.face_right.len() != nf {
         return Err(RtError::Build(vec![BuildIssue::new("mesh.columns", "inconsistent topology column lengths")]));
     }
-    let mut core = Core::default();
-    core.pos = (0..nv).map(|i| [co.x[i], co.y[i], co.z[i]]).collect();
+    let mut core = Core {
+        pos: (0..nv).map(|i| [co.x[i], co.y[i], co.z[i]]).collect(),
+        fv_off: cols.face_vertex_offsets.iter().map(|&o| to_u32(o)).collect::<Result<_, _>>()?,
+        fv: cols.face_vertices.iter().map(|v| v.0).collect(),
+        f_left: cols.face_left.iter().map(|c| c.0).collect(),
+        f_right: cols.face_right.to_vec(),
+        c_off: cols.cell_face_offsets.iter().map(|&o| to_u32(o)).collect::<Result<_, _>>()?,
+        c_face: cols.cell_faces.iter().map(|s| s.face().0).collect(),
+        ..Core::default()
+    };
     for (i, p) in core.pos.iter().enumerate() {
         if !p.iter().all(|c| c.is_finite()) {
             push_issue(&mut fatal, BuildIssue::new("mesh.non_finite_vertex", format!("vertex {i} is not finite")));
         }
     }
-    core.fv_off = cols.face_vertex_offsets.iter().map(|&o| to_u32(o)).collect::<Result<_, _>>()?;
-    core.fv = cols.face_vertices.iter().map(|v| v.0).collect();
-    core.f_left = cols.face_left.iter().map(|c| c.0).collect();
-    core.f_right = cols.face_right.to_vec();
-    core.c_off = cols.cell_face_offsets.iter().map(|&o| to_u32(o)).collect::<Result<_, _>>()?;
-    core.c_face = cols.cell_faces.iter().map(|s| s.face().0).collect();
     if core.fv.iter().any(|&v| v as usize >= nv) || core.f_left.iter().any(|&c| c as usize >= nc) || core.f_right.iter().any(|&c| c != NONE && c as usize >= nc) || core.c_face.iter().any(|&f| f as usize >= nf) {
         return Err(RtError::Build(vec![BuildIssue::new("mesh.index_range", "a topology column indexes a missing entity")]));
     }
@@ -241,12 +243,14 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
             Region::Exterior => NONE,
         }
     };
-    let mut core = Core::default();
-    core.pos = f.vertices.clone();
-    core.fv_off = (0..=nt as u32).map(|i| i * 3).collect();
-    core.fv = Vec::with_capacity(nt * 3);
-    core.f_left = Vec::with_capacity(nt);
-    core.f_right = Vec::with_capacity(nt);
+    let mut core = Core {
+        pos: f.vertices.clone(),
+        fv_off: (0..=nt as u32).map(|i| i * 3).collect(),
+        fv: Vec::with_capacity(nt * 3),
+        f_left: Vec::with_capacity(nt),
+        f_right: Vec::with_capacity(nt),
+        ..Core::default()
+    };
     let mut fatal = Vec::new();
     for i in 0..nt {
         let (mut l, mut r) = (cell_of(&f.front[i]), cell_of(&f.back[i]));
@@ -333,8 +337,7 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
         return Err(RtError::Build(issues));
     }
     fill_surface_boundaries(&core, &mut surfaces);
-    let mut report = BuildReport::default();
-    report.unsealed_edges = Vec::new();
+    let report = BuildReport::default();
     Ok(Built { core, regions: RegionTable(regions), surfaces: SurfaceTable(surfaces), complement: Some(nr as u32), kind: TrackerKind::Facets, report })
 }
 
@@ -377,11 +380,11 @@ fn assign_actions(
         table.push(a);
         (table.len() - 1) as u32
     };
-    for f in 0..nf {
+    for (f, &rule) in face_rule.iter().enumerate() {
         if core.f_right[f] != NONE {
             continue;
         }
-        let def = if face_rule[f] == NONE { spec.default } else { spec.rules[face_rule[f] as usize].1 };
+        let def = if rule == NONE { spec.default } else { spec.rules[rule as usize].1 };
         let action = match def {
             BoundaryDef::Reflect => FaceAction::Reflect,
             BoundaryDef::Respond(r) => {

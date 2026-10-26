@@ -278,6 +278,7 @@ fn acc05_cauchy_icosphere_shell() {
         .sum();
     let (mean, sigma, hits) = facet_hull_chords(&f, "cauchy_icosphere4");
     let want = 4.0 * v / area;
+    eprintln!("Cauchy icosphere(4): mean chord {mean:.6} vs 4V/S {want:.6} ({:.2} sigma, {hits} hits)", (mean - want).abs() / sigma);
     assert!((mean - want).abs() <= 4.0 * sigma, "mean chord {mean} vs 4V/S {want} (sigma {sigma}, {hits} hits)");
 }
 

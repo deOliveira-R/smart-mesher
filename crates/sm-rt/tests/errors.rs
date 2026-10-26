@@ -13,7 +13,7 @@ use sm_rt_api::{
 use sm_testkit::topo;
 
 #[test]
-fn unsupported_inputs_name_their_variant() {
+fn acc12_unsupported_inputs_name_their_variant() {
     let f = tet_facets();
     let topo = topo::cube().unwrap();
     let geom = MemoryStore::new();
@@ -33,7 +33,7 @@ fn unsupported_inputs_name_their_variant() {
 }
 
 #[test]
-fn open_shell_is_a_build_error_with_located_issues() {
+fn acc12_open_shell_is_a_build_error_with_located_issues() {
     let mut f = tet_facets();
     f.triangles.pop();
     f.front.pop();
@@ -51,7 +51,7 @@ fn tracker() -> impl Tracker {
 }
 
 #[test]
-fn query_errors_are_typed_and_leave_state_alone() {
+fn acc12_query_errors_are_typed_and_leave_state_alone() {
     let t = tracker();
     let mut sc = Scratch::new();
     let ok = Point3::new(0.5, 0.5, 0.5);
@@ -97,7 +97,7 @@ fn query_errors_are_typed_and_leave_state_alone() {
 }
 
 #[test]
-fn a_point_outside_is_not_an_error() {
+fn acc12_a_point_outside_is_not_an_error() {
     let t = tracker();
     let mut sc = Scratch::new();
     let st = t.init_state(Point3::new(9.0, 9.0, 9.0), Vector3::new(1.0, 0.0, 0.0), None, &mut sc).unwrap();

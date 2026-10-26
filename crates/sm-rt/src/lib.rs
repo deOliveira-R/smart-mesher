@@ -20,7 +20,7 @@ mod tracker;
 mod vec3;
 mod walk;
 
-pub use builder::{BUILDER_VERSION, MeshTrackerBuilder, default_boundaries, load_image};
+pub use builder::{BUILDER_VERSION, MeshTrackerBuilder, load_image};
 pub use facets::check_facets;
 pub use image::{read_smrt, write_smrt, write_smrt_file};
 pub use plugin::RtPlugin;
