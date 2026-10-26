@@ -310,8 +310,8 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
         let mut extra = Vec::new();
         for &c in &cut_faces {
             let right = topo.face_sides(c).map(|s| s.right);
-            if matches!(right, Some(sm_topo_api::Region::Volume(_))) {
-                let n = topo.unmerge_face(c, Side::Right)?;
+            if let Some(sm_topo_api::Region::Volume(rv)) = right {
+                let n = unmerge_cap(topo, c, rv)?;
                 topo.record_generated(n, tool_handle)?;
                 extra.push(n);
             }
@@ -657,4 +657,42 @@ fn build_cylinder_caps<E: TopologyEdit + ?Sized>(topo: &mut E, edges: &mut BTree
         return Err(BooleanError::Unsupported("the cylinder tool cuts a patch that does not wrap around it (not available yet)"));
     }
     Ok(caps)
+}
+
+/// Cubit `nomerge` for one cap: the volume on the cap's right gets its own copy of the face, of
+/// the edges around it and of the vertices where only its own edges meet, so the two pieces
+/// share no cell. Returns the new cap.
+fn unmerge_cap<E: TopologyEdit + ?Sized>(topo: &mut E, cap: EntityId, right_volume: EntityId) -> Result<EntityId, BooleanError> {
+    let left_volume = match topo.face_sides(cap).map(|s| s.left) {
+        Some(sm_topo_api::Region::Volume(v)) => Some(v),
+        _ => None,
+    };
+    let cap_edges: Vec<EntityId> = topo.face_edges(cap).iter().copied().filter(|&e| !geo::is_degenerate(&*topo, e)).collect();
+    let new = topo.unmerge_face(cap, Side::Right)?;
+    let pos_faces: BTreeSet<EntityId> = topo.volume_faces(right_volume).iter().copied().collect();
+    for &e in &cap_edges {
+        let users: Vec<EntityId> = topo.coboundary(e).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Face) && pos_faces.contains(&i.cell)).map(|i| i.cell).collect();
+        if !users.is_empty() {
+            topo.unmerge_edge(e, &users)?;
+        }
+    }
+    let edges_of = |t: &E, faces: &mut dyn Iterator<Item = EntityId>| -> BTreeSet<EntityId> { faces.flat_map(|f| t.face_edges(f).to_vec()).collect() };
+    let pos_edges = edges_of(&*topo, &mut pos_faces.iter().copied());
+    let mut neg_faces: Vec<EntityId> = left_volume.map(|v| topo.volume_faces(v).to_vec()).unwrap_or_default();
+    neg_faces.push(cap);
+    let neg_edges = edges_of(&*topo, &mut neg_faces.into_iter());
+    let mut verts: BTreeSet<EntityId> = BTreeSet::new();
+    for &e in &cap_edges {
+        if let Some((s, t)) = topo.edge_ends(e) {
+            verts.insert(s);
+            verts.insert(t);
+        }
+    }
+    for v in verts {
+        let mine: Vec<EntityId> = topo.coboundary(v).iter().filter(|i| topo.dim_of(i.cell) == Some(Dim::Edge)).map(|i| i.cell).filter(|e| pos_edges.contains(e) && !neg_edges.contains(e)).collect();
+        if !mine.is_empty() {
+            topo.unmerge_vertex(v, &mine)?;
+        }
+    }
+    Ok(new)
 }

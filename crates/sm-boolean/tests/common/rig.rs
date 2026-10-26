@@ -106,3 +106,23 @@ impl Rig {
         }
     }
 }
+
+/// Mesh the given volumes of the model layer with the stub schemes in one `Driver::mesh` call,
+/// every edge at `size`.
+pub fn mesh_volumes(rig: &Rig, volumes: &[EntityId], size: f64) -> sm_scheme_api::Meshed<sm_mesh_api::reference::ReferenceMesh> {
+    use sm_mesh_api::SerialAlloc;
+    use sm_mesh_api::reference::ReferenceBuilder;
+    use sm_scheme_api::{Driver, Firm, IntervalRequest, MeshInput, MeshIntent, ReferenceCornerPicker, ReferenceIntervalSolver, Sequential, WholeFaces};
+    use sm_topo_api::Dim;
+    let layer = rig.layer();
+    let topo = layer.topo();
+    let reg = sm_scheme_api::stubs::registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let mut intent = MeshIntent::default();
+    for &e in topo.cells(Dim::Edge) {
+        intent.set_intervals(e, Firm::hard(IntervalRequest::Size(size)));
+    }
+    let input = MeshInput::new(topo, layer.model(), &WholeFaces, volumes);
+    driver.mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new()).expect("mesh")
+}
