@@ -19,3 +19,6 @@ sm-model-api = { path = "../sm-model-api" }
 sm-op-api = { path = "../sm-op-api" }
 thiserror = "2"
 proptest = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+sha2 = "0.10"

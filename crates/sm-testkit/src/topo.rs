@@ -16,6 +16,14 @@ use sm_topo_api::fixtures::{self, FixtureError, with_op};
 use sm_topo_api::{CellComplex, OpId, TopologyEdit, TopologyView, TopologyViewExt};
 use std::collections::BTreeMap;
 
+mod assembly;
+mod faces;
+mod sweeps;
+
+pub use assembly::*;
+pub use faces::*;
+pub use sweeps::*;
+
 /// A fixture could not be built.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
