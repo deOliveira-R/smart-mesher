@@ -140,15 +140,14 @@ fn check_rotational(sweep: f64, layers: u32) {
             "angle {a} not on a layer"
         );
         per_layer[l as usize] += 1;
-        // Source radii: 1, 4/3, 5/3, 2.
-        let rad = (r - 1.0) * 3.0;
+        // Source radii: 1, 4/3, 5/3, 2 and source heights k / 4, to 1e-12.
         assert!(
-            (rad - rad.round()).abs() < 1e-11,
+            (0..=3).any(|k| (r - (1.0 + f64::from(k) / 3.0)).abs() < 1e-12),
             "radius {r} not on the source lattice"
         );
         assert!(
-            (p[2] * 4.0 - (p[2] * 4.0).round()).abs() < 1e-11,
-            "z {}",
+            (0..=4).any(|k| (p[2] - f64::from(k) / 4.0).abs() < 1e-12),
+            "z {} not on the source lattice",
             p[2]
         );
     }

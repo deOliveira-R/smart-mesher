@@ -217,6 +217,10 @@ fn polyhedral_prism_has_three_hexagonal_prisms() {
         }
         verts.sort_unstable();
         verts.dedup();
+        assert!(
+            sm_mesh_api::cell_volume(m, c) > 0.0,
+            "outward faces: positive volume"
+        );
         assert_eq!(verts.len(), 12, "V");
         assert_eq!(loop_len / 2, 18, "E");
     }

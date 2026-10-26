@@ -1,6 +1,6 @@
 # W3-SWEEP report: `sm-scheme-sweep`
 
-Status: **all 14 mandatory acceptance bullets covered and passing; stretch (`target_mode:
+Status: **all 14 mandatory acceptance bullets covered and passing (final commit subject `w3 sm-scheme-sweep: done`); stretch (`target_mode:
 "project"`, S1) not attempted.** Branch `claude/w3-sm-scheme-sweep-t8t99h` (the session's
 designated branch; the task text names `claude/w3-sm-scheme-sweep`, the orchestrator can take
 the final commit SHA from this branch).
@@ -38,7 +38,7 @@ All tests are in `crates/sm-scheme-sweep/tests/` (plus one unit test in `src/emi
 | 8 | Polyhedral prism: 3 polyhedra V12 E18 F8, volume, validate | `curved::polyhedral_prism_has_three_hexagonal_prisms` |
 | 9 | `fit_affine` / `fit_target_transform` | `fit::*` (8 tests) |
 | 10 | `place_layers` on synthetic data | `place::*` (7 tests) |
-| 11 | Failure modes | `failures::faces_that_touch_are_not_applicable`, `a_volume_without_any_sweepable_face_pair_is_not_applicable_with_a_reason`, `a_non_affine_target_in_auto_mode_names_the_residual`, `emit::tests::only_tri_quad_and_polygon_sources_are_supported`, `an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back`; also `bad_parameters_are_bad_params`, `bad_parameters_surface_from_the_driver_as_bad_params`, `a_min_scaled_jacobian_above_the_mesh_quality_fails_the_gate` |
+| 11 | Failure modes | `failures::a_min_scaled_jacobian_above_the_measured_value_is_a_quality_failure` (the `min_scaled_jacobian` gate rejects 0.9 on the 0.832 twisted prism), `failures::faces_that_touch_are_not_applicable`, `a_volume_without_any_sweepable_face_pair_is_not_applicable_with_a_reason`, `a_non_affine_target_in_auto_mode_names_the_residual`, `emit::tests::only_tri_quad_and_polygon_sources_are_supported`, `an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back`; also `bad_parameters_are_bad_params`, `bad_parameters_surface_from_the_driver_as_bad_params`, `a_min_scaled_jacobian_of_one_or_more_is_bad_params` |
 | 12 | Determinism | `determinism::l_prism_is_bit_identical_across_executors_and_pools`, `twisted_prism_with_shepard_is_bit_identical_across_executors_and_pools`, `harness_check_over_repeated_and_concurrent_runs`; whole suite also run with `RAYON_NUM_THREADS=1` |
 | 13 | proptest | `prop::twisted_prism_volume_and_jacobians` (48 cases) |
 | 14 | Performance (record-only) | `perf::brick_100_cubed`, `perf::twisted_100_cubed` (`--ignored`), `benches/sweep.rs` |
@@ -48,11 +48,13 @@ All tests are in `crates/sm-scheme-sweep/tests/` (plus one unit test in `src/emi
 * Twisted prism (2, 3, pi/2), 4x4 source, 6 layers: min scaled Jacobian **0.832050**.
 * Rotational 90 degrees, 9 layers: volume 2.3442504 (the formula value, to 1e-6 in the test and
   to 1e-12 relative against `(L/2)(r_out^2 - r_in^2) h sin(sweep/L)`).
-* Performance (release, 4 rayon threads): brick 100^3 (10^6 hexes) `Driver::generate`
-  **0.79 s**, bulk commit 15.8 s (**95 %** of generate + commit); twisted prism 100^3
-  `Driver::generate` **6.0-6.9 s**, commit 15.4-16.4 s (70-73 %). Reference: 4.7 s driver-only
-  for a complete 10^6-cell mesh. In the twisted case 3.3 s are 396 `Patch::strip_from` calls
-  (see ACR 1); placement + gate + emission take about 0.15 s.
+* Performance (release, 4 rayon threads, this VM; record-only), commit through the `sm-mesh`
+  `MeshBuilder`: brick 100^3 (10^6 hexes) `Driver::generate` **0.83 s**, commit 2.80 s (77 % of
+  generate + commit); twisted prism 100^3 `Driver::generate` **6.3 s**, commit 2.89 s (31 %).
+  Through the slow `ReferenceBuilder` the commit is 15-16 s. The decision-12 reference of 4.7 s
+  for a 10^6-cell `Driver::mesh` is from other hardware (this VM: 3.6 s for the brick). In the
+  twisted case 3.3 s are 396 `Patch::strip_from` calls (see ACR 1); placement + gate + emission
+  take about 0.15 s.
 * Determinism cases: 43 200 hexes (L-prism) and 40 000 hexes (twisted, Shepard path).
 
 ## Deviations (with reasons)

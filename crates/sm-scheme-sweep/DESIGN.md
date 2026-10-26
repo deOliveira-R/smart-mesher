@@ -143,19 +143,22 @@ Tests compare `Sequential`, `ScopedThreads(4)`, a 1-thread and a 4-thread rayon 
 Twisted prism `(side 2, h 3, φ = π/2)`, 4x4 source quads, 6 layers: minimum scaled Jacobian
 **0.832050** (all corner Jacobians positive; the fit residual is zero to 1e-12).
 
-Performance (release build, 4 rayon threads, this VM; `tests/perf.rs`, `--ignored`):
+Performance (release build, 4 rayon threads, this VM; `tests/perf.rs`, run with `--ignored`;
+record-only, not a gate). `generate` is the whole `Driver::generate` (curves, source, linking
+faces, target copy and the volume); commit is `Driver::commit` into the `sm-mesh` `MeshBuilder`
+(the reference `ReferenceBuilder` is 15-16 s for the same patches and is not representative).
 
-| case | cells | generate | commit (reference builder) | commit share |
+| case | cells | generate | commit (`sm-mesh`) | commit share |
 |---|---|---|---|---|
-| brick 100x100x100 (translation path) | 10⁶ | 0.79 s | 15.8 s | 95 % |
-| twisted prism 100x100x100 (affine + Shepard) | 10⁶ | 6.0-6.9 s | 15.4-16.4 s | 70-73 % |
+| brick 100x100x100 (translation path) | 10⁶ | 0.83 s | 2.80 s | 77 % |
+| twisted prism 100x100x100 (affine + Shepard) | 10⁶ | 6.3 s | 2.89 s | 31 % |
 
-`generate` is the whole `Driver::generate` (curves, source, linking faces, target copy and the
-volume), against the reference of 4.7 s driver-only for the complete mesh. In the twisted case
-about 3.3 s of the 6 s are 396 calls to `Patch::strip_from` on Submap-meshed (grid-less) linking
-faces (about 7.5 ms each: the edge index of the 10⁴-quad patch is rebuilt per call); placement,
-gate and emission together take about 0.15 s. See the API change request in `W3_REPORT.md`.
-The bulk mesh commit is W3b work and dominates both cases.
+The decision-12 reference (4.7 s for `Driver::mesh` of 10⁶ cells) was measured on other
+hardware; on this VM the brick total is 3.6 s. In the twisted case about 3.3 s of the 6 s are
+396 calls to `Patch::strip_from` on Submap-meshed (grid-less) linking faces (about 7.5 ms each:
+the edge index of the 10⁴-quad patch is rebuilt per call); placement, gate and emission
+together take about 0.15 s. See the API change request in `W3_REPORT.md`. The bulk mesh commit
+is W3b work and dominates the translation case.
 
 ## Limits and deferred
 

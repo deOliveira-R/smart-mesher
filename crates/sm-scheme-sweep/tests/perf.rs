@@ -5,7 +5,6 @@ mod common;
 
 use common::registry;
 use sm_mesh_api::SerialAlloc;
-use sm_mesh_api::reference::ReferenceBuilder;
 use sm_model_api::Model;
 use sm_scheme_api::{
     Driver, Firm, Firmness, IntervalRequest, MeshInput, MeshIntent, ReferenceCornerPicker,
@@ -60,7 +59,7 @@ fn run(
         .commit(
             &input,
             &ps,
-            ReferenceBuilder::new(),
+            sm_mesh::MeshBuilder::new(),
             &mut SerialAlloc::new(),
         )
         .expect("commit");

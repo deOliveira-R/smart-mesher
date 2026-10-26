@@ -183,7 +183,7 @@ fn an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back()
 }
 
 #[test]
-fn a_min_scaled_jacobian_above_the_mesh_quality_fails_the_gate() {
+fn a_min_scaled_jacobian_of_one_or_more_is_bad_params() {
     let (topo, ids, model) = brick();
     let mut intent = MeshIntent::default();
     intent.set_scheme(
@@ -272,4 +272,65 @@ fn sources_registry_has_the_real_sweep_only_once() {
     // Registering the real sweep twice is the duplicate-name error the stubs registry would give.
     let mut r = registry_with_sources();
     assert!(sm_scheme_sweep::register(&mut r).is_err());
+}
+
+#[test]
+fn a_min_scaled_jacobian_above_the_measured_value_is_a_quality_failure() {
+    // The twisted prism (2, 3, pi/2), 4x4 x 6, has minimum scaled Jacobian 0.83205.
+    let fx =
+        sm_testkit::topo::twisted_prism(2.0, 3.0, core::f64::consts::FRAC_PI_2).expect("twisted");
+    let topo = &fx.topo.complex;
+    let build = |min: f64| {
+        let mut intent = MeshIntent::default();
+        for e in sm_topo_api::TopologyView::face_edges(topo, fx.source).to_vec() {
+            intent.set_intervals(e, Firm::hard(IntervalRequest::Count(4)));
+        }
+        for e in &fx.columns {
+            intent.set_intervals(*e, Firm::hard(IntervalRequest::Count(6)));
+        }
+        intent.set_scheme(
+            fx.volume,
+            SchemeChoice::with_params(
+                "sweep",
+                serde_json::json!({
+                    "source": [fx.source], "target": [fx.target], "min_scaled_jacobian": min
+                }),
+                Firmness::Hard,
+            ),
+        );
+        intent.set_scheme(fx.source, SchemeChoice::new("map", Firmness::Hard));
+        intent
+    };
+    let reg = registry();
+    let model = Model::new();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let sel = [fx.volume];
+    let input = MeshInput::new(topo, &model, &WholeFaces, &sel);
+    // 0.8 is below the measured minimum: fine.
+    let intent = build(0.8);
+    let plan = driver.plan(&input, &intent).expect("plan");
+    driver
+        .generate(&input, &plan, &Sequential)
+        .expect("0.8 passes");
+    // 0.9 is above it: a Quality failure naming the cell and its eight nodes.
+    let intent = build(0.9);
+    let plan = driver.plan(&input, &intent).expect("plan");
+    match driver.generate(&input, &plan, &Sequential) {
+        Err(SchemeError::Generate(g)) => {
+            assert_eq!(g.kind, FailureKind::Quality, "{g}");
+            assert!(
+                g.reason.contains("Jacobian") && g.reason.contains("0.9"),
+                "{}",
+                g.reason
+            );
+            assert!(
+                g.reason.contains("layer") && g.reason.contains("source element"),
+                "{}",
+                g.reason
+            );
+            assert_eq!(g.nodes.len(), 8);
+        }
+        other => panic!("expected a Quality failure, got {:?}", other.map(|_| ())),
+    }
 }
