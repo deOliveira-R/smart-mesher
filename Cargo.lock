@@ -1197,6 +1197,15 @@ dependencies = [
 [[package]]
 name = "sm-exodus"
 version = "0.0.0"
+dependencies = [
+ "criterion 0.5.1",
+ "proptest",
+ "rayon",
+ "sm-core",
+ "sm-mesh-api",
+ "sm-testkit",
+ "thiserror",
+]
 
 [[package]]
 name = "sm-fem"
