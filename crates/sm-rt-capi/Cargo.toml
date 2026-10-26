@@ -35,3 +35,7 @@ cc = "1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "rt_capi_bench"
+required-features = ["stubs"]

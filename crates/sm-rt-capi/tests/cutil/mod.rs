@@ -34,8 +34,7 @@ pub fn c_compiler() -> Command {
 }
 
 pub fn run(cmd: &mut Command) -> Output {
-    let out = cmd.output().unwrap_or_else(|e| panic!("cannot run {cmd:?}: {e}"));
-    out
+    cmd.output().unwrap_or_else(|e| panic!("cannot run {cmd:?}: {e}"))
 }
 
 pub fn check_ok(what: &str, out: &Output) {
