@@ -55,6 +55,13 @@ Definition of done (run on this branch): `cargo build --workspace`, `cargo test 
 - **`webcut_cylinder`** with a non-wrapping cylinder patch returns `Unsupported`.
 - **Subtract tool copies.** With several targets the tool is deep-copied for all but the last target.
 - **Dependencies beyond the brief's list:** `smallvec` (normal), `proptest` and `serde_json` (dev-only).
+- **Bullet 1 hash.** The structural comparison with `merged_bricks` uses `fixtures::two_bricks` at library
+  level; the op-level test (`ops_merge::merge_op_joins_coincident_faces`) checks the face count and output only,
+  not the canonical hash against bricks from `model.create_brick`.
+- **Bullet 10 range.** Integer-grid bricks use positions `0..6` and sizes `1..5`.
+- **Bullet 15 construction.** The all-8-ambiguous case is triggered by inflating the model tolerance (`linear = 0.49`
+  on a unit cube, centre point), not by a ray exactly through an edge: the eight irrational directions never
+  hit an edge exactly. It exercises the same all-directions-ambiguous path and typed `Ambiguous` error.
 - **Disjoint operands:** unite of bodies that do not touch is `Invalid("bodies do not touch...")`, intersect is
   `EmptyResult`, subtract returns the target unchanged; tangent-only contact is `Unsupported`.
 

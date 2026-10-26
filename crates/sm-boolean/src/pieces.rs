@@ -55,11 +55,11 @@ pub(crate) struct Piece {
     /// Apply group: pieces of different groups never share vertices or edges (imprint without
     /// merge keeps each body self-contained).
     pub group: usize,
-    /// An existing edge this piece is a part of (a coincident-face imprint): in a shared apply
-    /// its sub-edge is used instead of a new edge.
+    /// An existing edge this piece is a part of (a coincident-face imprint); recorded for
+    /// diagnostics, the apply finds the edge geometrically.
     #[allow(dead_code)]
     pub source_edge: Option<EntityId>,
-    /// Index of the pair that produced the piece.
+    /// Index of the pair that produced the piece (diagnostics only).
     #[allow(dead_code)]
     pub pair: usize,
 }

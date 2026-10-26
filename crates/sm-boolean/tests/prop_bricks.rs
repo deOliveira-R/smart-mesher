@@ -37,7 +37,7 @@ fn vol(a: &[i32; 6]) -> f64 {
 }
 
 fn arb_brick() -> impl Strategy<Value = [i32; 6]> {
-    (0..4i32, 0..4i32, 0..4i32, 1..4i32, 1..4i32, 1..4i32).prop_map(|(x, y, z, sx, sy, sz)| [x, y, z, sx, sy, sz])
+    (0..6i32, 0..6i32, 0..6i32, 1..5i32, 1..5i32, 1..5i32).prop_map(|(x, y, z, sx, sy, sz)| [x, y, z, sx, sy, sz])
 }
 
 proptest! {

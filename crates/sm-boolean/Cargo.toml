@@ -31,7 +31,6 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-model = { path = "../sm-model" }
-serde_json = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

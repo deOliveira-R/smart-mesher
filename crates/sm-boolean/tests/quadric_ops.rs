@@ -6,6 +6,7 @@ use common::rig::*;
 use common::*;
 use core::f64::consts::PI;
 use sm_boolean::ops::{Intersect, Subtract, Unite};
+use sm_topo_api::TopologyViewExt;
 
 #[test]
 fn brick_minus_through_cylinder() {
@@ -21,7 +22,20 @@ fn brick_minus_through_cylinder() {
     assert!((total_area(t) - (96.0 + 6.0 * PI)).abs() < 1e-8 * 100.0);
     assert_eq!(counts(t), [10, 15, 7, 1, 1]);
     assert_eq!(euler(t), 2);
-    let _ = t.volume_faces(v);
+    // Top and bottom carry an inner loop (area 16 - pi); the lateral face points at the axis.
+    let holed: Vec<_> = t.volume_faces(v).iter().filter(|&&f| t.loops(f).count() == 2).collect();
+    assert_eq!(holed.len(), 2);
+    for &&f in &holed {
+        assert!((t.face_moments(f).unwrap().area - (16.0 - PI)).abs() < 1e-8);
+    }
+    let lateral = t.volume_faces(v).iter().copied().find(|f| t.loops(*f).count() == 1 && matches!(t.carrier(*f), sm_topo_api::Carrier::Surface(sc) if matches!(t.shapes().surface_def(sc.surface), Some(sm_geom_api::SurfaceDef::Cylinder(_))))).expect("lateral face");
+    let sm_topo_api::Carrier::Surface(sc) = t.carrier(lateral).clone() else { unreachable!() };
+    let surf = t.shapes().surface(sc.surface).unwrap();
+    let probe = sm_core::Point3::new(3.0, 2.0, 2.0);
+    let uv = surf.project(probe, None).unwrap().uv;
+    let use_sense = t.face_uses(v).find(|u| u.face == lateral).expect("use").sense;
+    let outward = surf.normal(uv).unwrap() * (sc.sense.sign() * use_sense.sign());
+    assert!(outward.dot(sm_core::Vector3::new(-1.0, 0.0, 0.0)) > 0.99, "outward normal of the solid points toward the axis: {outward:?}");
 }
 
 fn sub(r: &mut Rig, t: &[sm_core::EntityId], tools: &[sm_core::EntityId]) -> Result<sm_op_api::Delta, sm_op_api::TimelineError> {
