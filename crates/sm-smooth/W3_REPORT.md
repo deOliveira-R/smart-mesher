@@ -25,7 +25,7 @@ of `claude/w3-sm-smooth` (the session rules forbid pushing another branch name).
 | 1 | Recovery 3-D, both schedules, vertices bit-identical | `a1_laplacian_restores_the_perturbed_hex_lattice` (`recovery.rs`) |
 | 2 | Recovery 2-D, Laplacian and CentroidArea, both schedules | `a2_laplacian_and_centroid_area_restore_the_quad_lattice` (`recovery.rs`) |
 | 3 | Optimize reaches Shape 0.99; `sum beta^p` non-increasing; tet lattice | `a3_optimize_reaches_shape_099_on_the_jittered_hex_lattice`, `a3_colored_objective_never_increases`, `a3_tet_lattice_keeps_the_unperturbed_mean_shape` (`optimize.rs`) |
-| 4 | Never inverts matrix (440 runs) | `a4_every_method_keeps_a_jittered_quad_lattice_valid` (`never_inverts.rs`) |
+| 4 | Never inverts matrix (640 runs) | `a4_every_method_keeps_a_jittered_quad_lattice_valid` (`never_inverts.rs`) |
 | 4 | L-shape: unguarded Laplacian inverts, ours does not | `a4_the_guard_is_exercised_on_an_l_shaped_region` |
 | 4 | Inverted input: SJ non-decreasing, `n_inverted` non-increasing, `smooth.inverted_input` | `a4_an_inverted_input_never_gets_worse`; diagnostic in `a7_diagnostics_name_the_problem` (`op.rs`) |
 | 5 | Stays on the cylinder (face, circles, seam, vertices, Param re-evaluation, t in range) | `a5_nodes_stay_on_the_cylinder_for_every_method` (`geometry.rs`) |
@@ -61,10 +61,10 @@ All release builds, this VM (4 cores). Tolerances were not relaxed.
   0.72089, SmartLaplacian 0.76420 (32 sweeps), Optimize 0.88847 (18 sweeps).
 - A4: at jitter 0.45 h only seed 4 of seeds 0..29 keeps the 12x12 lattice valid (per-axis
   displacement is `amp * U[-1,1)`); the test scans for the first valid seed (4, initial min
-  ScaledJacobian 0.0608). 440 runs all valid, min SJ >= min(initial, 1e-3). L region: an 8x8-cell
+  ScaledJacobian 0.0608). 640 runs all valid, min SJ >= min(initial, 1e-3). L region: an 8x8-cell
   L, reflex corner moved by (-0.5, -0.5), interior jitter 0.3 h seed 19: one unguarded Jacobi
-  sweep inverts 1 cell; the guarded matrix (9+... methods x 2 schedules x 4 iteration counts)
-  refused 4157 moves and stayed valid.
+  sweep inverts 1 cell; the guarded matrix (16 method variants x 2 schedules x 4 iteration
+  counts) refused 5228 moves and stayed valid.
 - A5 (tube 12x6, r=1, h=2, jitter 0.2 h): all geometry checks within 1e-12; 400 sweeps restore
   angular spacing to 4.3e-14 (Laplacian) / 3.3e-13 (CentroidArea) rad and axial spacing to
   4e-16 / 1e-14.
