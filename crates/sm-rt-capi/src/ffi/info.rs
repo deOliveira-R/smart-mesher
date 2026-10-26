@@ -113,7 +113,7 @@ pub unsafe extern "C" fn smrt_region_info(tracker: *const SmrtTracker, region: i
 /// ABI version as `major * 10000 + minor * 100 + patch`.
 #[unsafe(no_mangle)]
 pub extern "C" fn smrt_version() -> i32 {
-    SMRT_VERSION
+    SMRT_ABI_VERSION
 }
 
 /// Copy this thread's last error message into `buf` (NUL-terminated, truncated to `cap` bytes)

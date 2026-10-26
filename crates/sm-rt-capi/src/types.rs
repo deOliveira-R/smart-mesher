@@ -8,7 +8,7 @@
 //! region's raw id. All structs have only 8-byte members, so there is no hidden padding.
 
 /// ABI version `major * 10000 + minor * 100 + patch`, returned by `smrt_version`.
-pub const SMRT_VERSION: i32 = 10000;
+pub const SMRT_ABI_VERSION: i32 = 10000;
 /// Id sentinel: none / outside the model.
 pub const SMRT_NONE: i64 = -1;
 /// Id sentinel: the implicit complement (region or cell).

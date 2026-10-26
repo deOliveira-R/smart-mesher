@@ -333,7 +333,7 @@ fn open_without_a_backend_is_unsupported_and_free_order_is_safe() {
     assert_eq!(unsafe { smrt_open(path.as_ptr(), &mut out) }, SMRT_ERR_UNSUPPORTED);
     assert!(out.is_null());
     assert!(err_msg().contains("smrt_open"));
-    assert_eq!(smrt_version(), SMRT_VERSION);
+    assert_eq!(smrt_version(), SMRT_ABI_VERSION);
     // The context keeps the tracker alive: free the tracker first.
     let t = sphere5();
     let c = ctx_of(t);

@@ -69,6 +69,21 @@ pub struct SmrtCtx {
 
 /// Wrap a tracker in a C handle (for embedding Rust code and tests). The caller owns the
 /// pointer and releases it with `smrt_tracker_free`. Never null.
+///
+/// ```
+/// use std::sync::Arc;
+/// use sm_core::{Aabb, Point3};
+/// use sm_rt_api::stub::AnalyticWorld;
+/// use sm_rt_api::{ResponseKind, Tracker};
+///
+/// let bounds = Aabb { lo: Point3::new(-1.0, -1.0, -1.0), hi: Point3::new(1.0, 1.0, 1.0) };
+/// let world = AnalyticWorld::simple(vec![], bounds, ResponseKind::Vacuum).unwrap();
+/// let t: Arc<dyn Tracker> = Arc::new(world);
+/// let h = sm_rt_capi::tracker_into_raw(t);
+/// assert!(!h.is_null());
+/// // SAFETY: `h` came from `tracker_into_raw` and is freed exactly once.
+/// assert_eq!(unsafe { sm_rt_capi::ffi::smrt_tracker_free(h) }, 0);
+/// ```
 pub fn tracker_into_raw(t: Arc<dyn Tracker>) -> *mut SmrtTracker {
     Box::into_raw(Box::new(SmrtTracker::new(t)))
 }
