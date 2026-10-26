@@ -1,0 +1,17 @@
+[package]
+name = "sm-scheme-pave"
+description = "Unstructured all-quad surface scheme (paving)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[lints]
+workspace = true

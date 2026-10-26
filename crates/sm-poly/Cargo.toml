@@ -1,0 +1,17 @@
+[package]
+name = "sm-poly"
+description = "Tet to polyhedral conversion (median dual with boundary and feature handling; optional agglomeration)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true

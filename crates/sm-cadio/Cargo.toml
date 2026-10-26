@@ -1,0 +1,17 @@
+[package]
+name = "sm-cadio"
+description = "CAD geometry import: STEP (AP203/AP214/AP242) B-rep reader (and writer), content-addressed."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "sm-diag"
+description = "Mesh validation and quality diagnostics as queries and ops: mesh.validate, mesh.quality, mesh.flag_cells."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "sm-rt"
+description = "Ray tracing / particle tracking: implements the sm-rt-api contract (cell walking on the polyhedral mesh, BVH locate)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+
+[lints]
+workspace = true

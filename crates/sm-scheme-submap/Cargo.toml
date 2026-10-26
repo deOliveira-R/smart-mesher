@@ -1,0 +1,17 @@
+[package]
+name = "sm-scheme-submap"
+description = "Surface submap scheme (Cubit submap: corner picking, logical sides, structured sub-blocks)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[lints]
+workspace = true

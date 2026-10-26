@@ -1,0 +1,17 @@
+[package]
+name = "sm-boolean"
+description = "Booleans (unite, subtract, intersect), imprint, merge and the webcut family on the cell complex."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true

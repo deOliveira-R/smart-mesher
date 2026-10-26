@@ -1,0 +1,16 @@
+[package]
+name = "sm-rt-capi"
+description = "C ABI over sm-rt-api trackers for Fortran/C++ transport codes, plus DAGMC-shaped shims."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+
+[lints]
+workspace = true

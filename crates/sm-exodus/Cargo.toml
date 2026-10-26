@@ -1,0 +1,16 @@
+[package]
+name = "sm-exodus"
+description = "Exodus II writer in pure Rust (own netCDF classic / 64-bit-offset encoder)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+
+[lints]
+workspace = true

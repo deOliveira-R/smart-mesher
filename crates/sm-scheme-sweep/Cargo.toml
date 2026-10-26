@@ -1,0 +1,17 @@
+[package]
+name = "sm-scheme-sweep"
+description = "Volume sweep schemes: 1-to-1 (translate, twist, linking surfaces) and rotational."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[lints]
+workspace = true

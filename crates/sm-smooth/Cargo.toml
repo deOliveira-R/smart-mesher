@@ -1,0 +1,17 @@
+[package]
+name = "sm-smooth"
+description = "Mesh smoothing suite: Laplacian, smart Laplacian, centroid-area, Winslow, mean-ratio optimization; nodes stay on their geometry."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true
