@@ -1,0 +1,30 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Written by sm-meshio (smart-mesh)
+    \\  /    A nd           |
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       faceList;
+    note        "nPoints:8  nCells:1  nFaces:6  nInternalFaces:0";
+    location    "constant/polyMesh";
+    object      faces;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+6
+(
+4(0 1 5 4)
+4(0 3 2 1)
+4(0 4 7 3)
+4(1 2 6 5)
+4(2 3 7 6)
+4(4 5 6 7)
+)
+
+// ************************************************************************* //

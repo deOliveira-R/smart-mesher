@@ -2,12 +2,14 @@
 #![allow(dead_code)]
 
 pub mod py;
+pub mod wrap;
+pub mod foam;
 
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_meshio::SmshMesh;
 use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh, hex_block, hex_block_with_edges};
 use sm_mesh_api::*;
-use sm_testkit::meshes::all_mesh_fixtures;
+use sm_testkit::meshes::{all_mesh_fixtures, nonconvex_poly};
 
 pub fn id(kind: EntityKind, n: u64) -> EntityId {
     EntityId::new(kind, n).unwrap()
@@ -163,6 +165,7 @@ pub fn decorated_block() -> ReferenceMesh {
 /// Every mesh the round-trip and export tests run on.
 pub fn corpus() -> Vec<(String, ReferenceMesh)> {
     let mut v: Vec<(String, ReferenceMesh)> = all_mesh_fixtures().unwrap().into_iter().map(|f| (f.name.to_string(), f.mesh)).collect();
+    v.push(("nonconvex_poly".into(), nonconvex_poly().unwrap().mesh));
     v.push(("hex_block".into(), hex_block([4, 3, 2], [1.0; 3], &mut SerialAlloc::new()).unwrap()));
     v.push(("decorated_block".into(), decorated_block()));
     v.push(("ho_hex".into(), ho_hex()));

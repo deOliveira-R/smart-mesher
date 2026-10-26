@@ -1,4 +1,4 @@
-# `.smsh` container format, version 1.0
+# `.smsh` container format, version 1.1
 
 Native mesh format of smart-mesh. One file holds one mesh in the face-first model of
 `sm-mesh-api` (docs/design/ir.md sections 2 and 6), with classification, sets, tags, optional
@@ -7,7 +7,7 @@ high-order data, hierarchy maps, deck-transformation metadata and provenance.
 Design goals: memory-mappable with zero copies, a reader in about 100 lines of any language
 (`readers/smsh.py` is one), no dependency on HDF5, and bit-exact round trips.
 
-Status: **v1.0**. Compatibility rule: readers reject a different **major**; a **minor** bump only
+Status: **v1.1** (v1.0 files are still read). Compatibility rule: readers reject a different **major**; a **minor** bump only
 adds optional header fields and arrays, so a v1.0 reader reads any v1.x file and ignores what it
 does not know. Writers write exactly the arrays below; readers must look arrays up by name.
 
@@ -56,7 +56,7 @@ below, so output is byte-reproducible; readers must not depend on order.
 | field | type | meaning |
 |---|---|---|
 | `format` | string | always `"smsh"` |
-| `version` | `{major, minor}` | `{1, 0}` |
+| `version` | `{major, minor}` | `{1, 1}` (written); readers accept `{1, 0}` and `{1, 1}` |
 | `endian` | string | always `"little"` |
 | `producer` | string | writer id, informational (`"sm-meshio 0.0.0"`) |
 | `mesh` | object | identity, counts, hashes (below) |
@@ -68,6 +68,7 @@ below, so output is byte-reproducible; readers must not depend on order.
 | `extrusions` | list | extrusion maps involving this mesh |
 | `decks` | list | deck transformations from the model |
 | `provenance` | object or null | `{timeline_hash}` |
+| `element_types` | list | 1.1: element type declared per cell set (2.9); absent in 1.0 files, always written (possibly `[]`) in 1.1 |
 
 Entity ids appear in text form `Kind#serial` (for example `Mesh#1`, `MeshSet#4`) in the header and
 as raw `u64` (`kind << 56 | serial`) in arrays. Hashes (64-bit) appear as 16 lowercase hex digits,
@@ -86,6 +87,7 @@ because JSON numbers are not safe for 64 bits in every language.
 | `n_cells` | cells (`nc`) |
 | `n_edges` | rows of the edge table (`ne`; 0 = no table) |
 | `hashes` | optional `{connectivity, topology, geometry}`: the `sm-mesh-api` content hashes |
+| `stats` | 1.1, derived: counts for consumers that preallocate scratch (2.10); absent in 1.0 files |
 
 ### 2.2 `arrays` rows
 
@@ -157,6 +159,42 @@ this spec (new `kind`); a writer meeting an unknown model variant returns `Unsup
 
 `{timeline_hash}`: the op-timeline node hash (opaque text, normally hex) the mesh was generated
 from, so the mesh can be regenerated or forked.
+
+### 2.9 `element_types` rows (1.1)
+
+`{set, element_type, shape}`. `set` names a **cell set** of this file; `element_type` is one of
+
+| name | shape (`cell_shape` code) | high-order node count |
+|---|---|---|
+| `HEX8`, `HEX20`, `HEX27` | hex (1) | -, 20, 27 |
+| `TET4`, `TET10` | tet (0) | -, 10 |
+| `WEDGE6`, `WEDGE15` | wedge (2) | -, 15 |
+| `PYRAMID5`, `PYRAMID13` | pyramid (3) | -, 13 |
+| `QUAD4`, `QUAD8` | quad (6) | -, 8 |
+| `TRI3`, `TRI6` | tri (5) | -, 6 |
+| `POLYHEDRON` | polyhedron (4) | - |
+| `POLYGON` | polygon (7) | - |
+
+`shape` is the `cell_shape` code of the table. Rules (checked by the writer and by
+`SmshFile::decode`): the set exists and is a cell set; every member's `cell_shape` equals
+`shape`; a high-order name needs a high-order record (`ho_cell`) with exactly that node count on
+every member; one record per set; a cell that is in two typed sets gets the same type from both.
+Rows are ascending by set id. The spellings are decision 12's: polyhedra and polygons are
+`POLYHEDRON` / `POLYGON`; the Exodus names `NFACED` / `NSIDED` and the VTK id `VTK_POLYHEDRON`
+are exporter mappings and never appear in a `.smsh` file.
+
+**Polyhedra need nothing else.** The `cell_faces` CSR, `cell_shape` code 4 and the zero-length
+`cell_corners` rows already hold an arbitrary closed polyhedron exactly (any number of faces, any
+face size, non-convex cells included). 1.1 adds only the typed declaration and `stats`.
+
+### 2.10 `mesh.stats` (1.1)
+
+Derived counts, always recomputable from the arrays; a reader that decodes must recompute them
+and refuse a file whose header disagrees. `{n_tet, n_hex, n_wedge, n_pyramid, n_polyhedron,
+n_tri, n_quad, n_polygon}` count cells by `cell_shape`; `{n_interior_faces, n_boundary_faces,
+n_nonconformal_faces, n_partition_cut_faces}` count faces by `face_kind`; `max_cell_faces` is the
+largest `cell_face_offsets` row length and `max_face_vertices` the largest `face_offsets` row
+length. They exist so a ray tracer or transport sweep can size its scratch from the header.
 
 ## 3. Arrays
 
@@ -239,7 +277,8 @@ are tested). Coordinates are stored as exact IEEE bit patterns.
 
 ## 5. Versioning and extension
 
-* Add an optional array or header field: minor bump.
+* Add an optional array or header field: minor bump (1.1 added `element_types` and `mesh.stats`;
+  a 1.0 reader ignores both).
 * Change the meaning of an existing array, an enum code, or the layout: major bump.
 * Unknown `cell_shape` / `face_kind` codes: a reader that needs them must refuse the file;
   new codes only appear with a minor bump when the mesh API grows a shape.

@@ -4,9 +4,10 @@ use super::format::*;
 use crate::crc::crc32;
 use crate::error::{MeshioError, Result};
 use crate::le::{self, f64_bytes, index_bytes, pack, pack_slice};
+use crate::report::LossReport;
 use rayon::prelude::*;
 use sm_mesh_api::{
-    CellIx, Classification, ExtrusionMap, FaceIx, LevelMap, MeshDim, MeshEntityKind, MeshRead, NO_CELL, Param, SetMembers, TagValues,
+    CellIx, CellShape, Classification, ExtrusionMap, FaceIx, LevelMap, MeshDim, MeshEntityKind, MeshRead, NO_CELL, Param, SetMembers, TagValues,
     connectivity_hash, geometry_hash, topology_hash,
 };
 use std::borrow::Cow;
@@ -31,13 +32,14 @@ pub struct SmshWriter<'a> {
     decks: Vec<DeckRecord>,
     level_maps: Vec<&'a LevelMap>,
     extrusions: Vec<&'a ExtrusionMap>,
+    element_types: Vec<(String, String)>,
     hashes: bool,
 }
 
 impl<'a> SmshWriter<'a> {
     /// A writer for `mesh` with no metadata attached.
     pub fn new(mesh: &'a dyn MeshRead) -> Self {
-        Self { mesh, provenance: None, decks: Vec::new(), level_maps: Vec::new(), extrusions: Vec::new(), hashes: true }
+        Self { mesh, provenance: None, decks: Vec::new(), level_maps: Vec::new(), extrusions: Vec::new(), element_types: Vec::new(), hashes: true }
     }
 
     /// Record the op-timeline hash that produced the mesh.
@@ -63,6 +65,23 @@ impl<'a> SmshWriter<'a> {
     pub fn extrusion(mut self, map: &'a ExtrusionMap) -> Self {
         self.extrusions.push(map);
         self
+    }
+
+    /// Declare the element type of a cell set (`HEX8`, `TET10`, `POLYHEDRON`, ...; see
+    /// [`element_type_shape`]). Checked when writing: the set must exist and be a cell set, every
+    /// member's shape must equal the type's shape, high-order names need a high-order record with
+    /// the right node count on every member, a set takes one record, and a cell in two typed sets
+    /// must get the same type. Violations are [`MeshioError::Inconsistent`] or
+    /// [`MeshioError::Unsupported`] (unknown spelling, including `NFACED` / `NSIDED`).
+    pub fn element_type(mut self, set: impl Into<String>, element_type: impl Into<String>) -> Self {
+        self.element_types.push((set.into(), element_type.into()));
+        self
+    }
+
+    /// What this writer cannot carry: nothing. `.smsh` is lossless for everything `MeshRead`
+    /// exposes, so the report is always empty.
+    pub fn loss_report(&self) -> LossReport {
+        LossReport::new()
     }
 
     /// Skip the three content hashes (`connectivity`, `topology`, `geometry`) of the mesh API,
@@ -156,13 +175,14 @@ impl<'a> SmshWriter<'a> {
         push("face_left", Dtype::U32, n1(nf), index_bytes(fl));
         push("face_right", Dtype::U32, n1(nf), pack_slice(cols.face_right).into());
         let kinds = pack(nf, |i| m.face_kind(FaceIx::new(i)).code());
-        push("face_kind", Dtype::U8, n1(nf), kinds.into());
+        push("face_kind", Dtype::U8, n1(nf), kinds.clone().into());
         push("cell_face_offsets", Dtype::U64, n1(nc + 1), pack_slice(cols.cell_face_offsets).into());
         let cf = cols.cell_faces;
         push("cell_faces", Dtype::U32, n1(cf.len()), index_bytes(cf));
 
         // Cells: shape tags, template corners, lineage.
         let shapes = pack(nc, |c| m.cell_shape(CellIx::new(c)).code());
+        let stats = MeshStats::from_arrays(&shapes, &kinds, cols.cell_face_offsets, cols.face_vertex_offsets);
         push("cell_shape", Dtype::U8, n1(nc), shapes.into());
         let (off, data) = le::csr(nc, |c| m.cell_corners(CellIx::new(c)).unwrap_or(&[]), |v| v.0);
         push("cell_corner_offsets", Dtype::U64, n1(nc + 1), pack_slice(&off).into());
@@ -283,6 +303,8 @@ impl<'a> SmshWriter<'a> {
             }
         }
 
+        let element_types = self.check_element_types()?;
+
         // Hierarchy. A map is checked against the mesh it is attached to (ids, sizes and the
         // connectivity hash it recorded), so a stale map is an error, never a panic.
         let id = m.mesh_id();
@@ -364,6 +386,7 @@ impl<'a> SmshWriter<'a> {
                 n_faces: nf as u64,
                 n_cells: nc as u64,
                 n_edges: ne as u64,
+                stats: Some(stats),
                 hashes: self.hashes.then(|| {
                     // Three independent pure passes: run them side by side.
                     let ((c, g), t) = rayon::join(|| rayon::join(|| connectivity_hash(m), || geometry_hash(m)), || topology_hash(m));
@@ -378,8 +401,72 @@ impl<'a> SmshWriter<'a> {
             extrusions,
             decks: self.decks.clone(),
             provenance: self.provenance.clone(),
+            element_types,
         };
         Ok((header, b))
+    }
+
+    /// Validate the declared element types against the mesh and return the header rows,
+    /// ascending by set id.
+    fn check_element_types(&self) -> Result<Vec<ElementTypeInfo>> {
+        let m = self.mesh;
+        let bad = |s: String| MeshioError::Inconsistent(s);
+        // (set index, type name, shape) per record, one record per set.
+        let mut recs: Vec<(usize, &str, CellShape)> = Vec::new();
+        for (set, ty) in &self.element_types {
+            let shape = element_type_shape(ty)
+                .ok_or_else(|| MeshioError::Unsupported(format!("element type '{ty}' (set '{set}') is not a .smsh element type; use POLYHEDRON / POLYGON, not NFACED / NSIDED")))?;
+            let Some(si) = m.sets().iter().position(|s| s.name == *set) else {
+                return Err(bad(format!("element type '{ty}' names unknown set '{set}'")));
+            };
+            if recs.iter().any(|r| r.0 == si) {
+                return Err(bad(format!("set '{set}' has more than one element type record")));
+            }
+            recs.push((si, ty.as_str(), shape));
+        }
+        recs.sort_by_key(|r| r.0);
+        let nc = m.cell_count();
+        for (si, ty, shape) in &recs {
+            let s = &m.sets()[*si];
+            let SetMembers::Cells(cells) = &s.members else {
+                return Err(bad(format!("element type '{ty}': set '{}' is not a cell set", s.name)));
+            };
+            if let Some(c) = cells.iter().find(|c| c.get() >= nc || m.cell_shape(**c) != *shape) {
+                return Err(bad(format!("element type '{ty}': cell {} of set '{}' is not a {shape:?}", c.0, s.name)));
+            }
+            if let Some(n) = element_type_nodes(ty)
+                && let Some(c) = cells.iter().find(|c| m.high_order_cell(**c).is_none_or(|h| h.nodes.len() != n))
+            {
+                return Err(bad(format!("element type '{ty}': cell {} of set '{}' has no high-order record with {n} nodes", c.0, s.name)));
+            }
+        }
+        // A cell in two typed sets must get one type: intersect the sorted member lists.
+        for (i, a) in recs.iter().enumerate() {
+            for b in &recs[i + 1..] {
+                if a.1 == b.1 {
+                    continue;
+                }
+                let (SetMembers::Cells(x), SetMembers::Cells(y)) = (&m.sets()[a.0].members, &m.sets()[b.0].members) else { continue };
+                let (mut p, mut q) = (0, 0);
+                while p < x.len() && q < y.len() {
+                    match x[p].cmp(&y[q]) {
+                        core::cmp::Ordering::Less => p += 1,
+                        core::cmp::Ordering::Greater => q += 1,
+                        core::cmp::Ordering::Equal => {
+                            return Err(bad(format!(
+                                "cell {} is in set '{}' typed {} and set '{}' typed {}",
+                                x[p].0,
+                                m.sets()[a.0].name,
+                                a.1,
+                                m.sets()[b.0].name,
+                                b.1
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(recs.iter().map(|(si, ty, shape)| ElementTypeInfo { set: m.sets()[*si].name.clone(), element_type: (*ty).to_string(), shape: shape.code() }).collect())
     }
 }
 
