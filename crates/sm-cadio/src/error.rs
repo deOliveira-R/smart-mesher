@@ -92,6 +92,14 @@ pub enum StepError {
         /// An entity on the cycle.
         id: u64,
     },
+    /// Flattening an assembly would produce more solid instances than the file's size allows.
+    #[error("#{id}: assembly flattening exceeds the limit of {limit} placed instances")]
+    TooManyInstances {
+        /// The representation (or solid) being placed.
+        id: u64,
+        /// The limit that was hit.
+        limit: usize,
+    },
     /// A geometric entity this reader does not support.
     #[error("#{id} {entity} is not supported")]
     Unsupported {
@@ -165,6 +173,7 @@ impl StepError {
             Self::WrongType { .. } => "step.wrong_type",
             Self::BadParam { .. } => "step.bad_param",
             Self::Cycle { .. } => "step.cycle",
+            Self::TooManyInstances { .. } => "step.too_many_instances",
             Self::Unsupported { .. } => "step.unsupported",
             Self::Units(_) => "step.units",
             Self::GeometryMismatch { .. } => "step.geometry_mismatch",

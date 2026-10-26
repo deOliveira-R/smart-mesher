@@ -47,7 +47,8 @@ const MAX_LISTED_ISSUES: usize = 20;
 ///
 /// Diagnostic codes: `step.units`, `step.inverted_solid`, `step.welded`, `step.sheets_skipped`,
 /// `step.unsupported_entity`, `step.validate`, `step.edge_gap`, `step.edge_sense`,
-/// `step.attributes`, `step.assembly_transforms_ignored`.
+/// `step.attributes`, `step.assembly_transforms_ignored`, `step.assembly_flattened`,
+/// `step.split_closed_face`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportStep {
@@ -88,7 +89,7 @@ impl TypedOp for ImportStep {
     const NAME: &'static str = "model.import_step";
     const OUTPUTS: &'static [OutputRole] = IMPORT_OUTPUTS;
     /// Bump when the reader changes the cells it creates for the same bytes.
-    const IMPL_VERSION: u32 = 1;
+    const IMPL_VERSION: u32 = 2;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let tol = ctx.layer::<ModelLayer>()?.tolerance();

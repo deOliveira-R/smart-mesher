@@ -533,7 +533,7 @@ fn write_solid(wr: &mut Writer<'_>, vol: EntityId, report: &mut WriteReport, tol
         let id = if is_void { wr.add(&format!("ORIENTED_CLOSED_SHELL('',*,#{cs},.F.)")) } else { cs };
         shell_ids.push((id, is_void));
     }
-    let outer = shell_ids[0].0;
+    let Some(&(outer, _)) = shell_ids.first() else { return Err(StepError::Export("the volume has no shell".into())) };
     Ok(if shell_ids.len() == 1 {
         wr.add(&format!("MANIFOLD_SOLID_BREP('',#{outer})"))
     } else {

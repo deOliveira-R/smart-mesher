@@ -16,6 +16,15 @@ use crate::part21::{self, Entity, StepFile};
 use crate::units::{self, ContextUnits, FileLength};
 use crate::weld::{weld_edges, weld_vertices};
 
+/// Smallest cap on placed solid instances of a file.
+const INSTANCE_FLOOR: usize = 1024;
+/// Placed instances allowed per entity of the file.
+const INSTANCES_PER_ENTITY: usize = 8;
+/// Smallest cap on the cells copied by flattening (about 50 MB).
+const CLONE_CELLS_FLOOR: usize = 1 << 19;
+/// Copied cells allowed per entity of the file.
+const CLONE_CELLS_PER_ENTITY: usize = 64;
+
 /// Read a STEP file into plain B-rep data.
 ///
 /// Pure: no clock, no environment, no files, no topology store. Per-face geometry is decoded
@@ -152,6 +161,11 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     // Units are resolved first (cheap, sequential, deterministic first error).
     let mut preps: Vec<(u64, SolidKind, UnitReport, Vec<Transform>)> = Vec::with_capacity(selected.len());
     let mut placement_failures = 0usize;
+    // Flattening copies a solid per placement: bound the count by the file's size, so a few
+    // links per level cannot multiply into millions of solids (and, below, the cloned cells).
+    let instance_limit = INSTANCE_FLOOR.max(INSTANCES_PER_ENTITY * file.entities.len());
+    let clone_limit = CLONE_CELLS_FLOOR.max(CLONE_CELLS_PER_ENTITY * file.entities.len());
+    let mut instance_total = 0usize;
     let mut unit_groups: Vec<(String, Vec<u64>)> = Vec::new();
     for (id, kind) in &selected {
         let ctx = ctx_of.get(id).copied().or(default_ctx);
@@ -195,8 +209,13 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             (Some(a), Some(rep)) => {
                 let own = length.um;
                 let scale_of = |r: u64| rep_um.get(&r).copied().unwrap_or(own) / target_um;
-                match assembly::instances(file, a, *rep, &scale_of, 0) {
-                    Ok(v) if !v.is_empty() => v,
+                let mut walk = assembly::Walk::new(instance_limit.saturating_sub(instance_total));
+                match assembly::instances(file, a, *rep, &scale_of, &mut walk) {
+                    Ok(v) if !v.is_empty() => {
+                        instance_total += v.len();
+                        v
+                    }
+                    Err(e @ StepError::TooManyInstances { .. }) => return Err(e),
                     _ => {
                         placement_failures += 1;
                         vec![Transform::IDENTITY]
@@ -212,6 +231,10 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let decode_one = |(id, kind, report, placements): &(u64, SolidKind, UnitReport, Vec<Transform>)| -> SolidResult {
         let mut local = Vec::new();
         let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
+        let cells = solid.vertices.len() + solid.curves.len() + solid.surfaces.len() + solid.edges.len() + solid.faces.len() + 1;
+        if placements.len() > 1 && placements.len().saturating_mul(cells) > clone_limit {
+            return Err(StepError::TooManyInstances { id: *id, limit: clone_limit / cells });
+        }
         let mut out = Vec::with_capacity(placements.len());
         let mut refused = 0usize;
         for (k, t) in placements.iter().enumerate() {
@@ -548,7 +571,8 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     if kind != SolidKind::Sheet {
         check_closed(id, &shells, &faces, &kept)?;
     }
-    let solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    let mut solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    crate::split::split_closed_nurbs(&mut solid, opts.weld_tol, notes);
     Ok((solid, (welded_vertices, welded_edges)))
 }
 
@@ -579,7 +603,7 @@ fn pole_loop(surface: &sm_geom_api::SurfaceDef, pole: usize, loop_id: u64, tol: 
 }
 
 /// Every edge must cancel (forward uses minus reverse uses) in every shell.
-fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge]) -> Result<(), StepError> {
+pub(crate) fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge]) -> Result<(), StepError> {
     for sh in shells {
         let mut net: BTreeMap<usize, i64> = BTreeMap::new();
         for &fi in &sh.faces {

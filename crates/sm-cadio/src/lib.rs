@@ -25,6 +25,7 @@ pub mod part21;
 mod query;
 mod realize;
 mod source;
+mod split;
 mod units;
 mod weld;
 mod write;

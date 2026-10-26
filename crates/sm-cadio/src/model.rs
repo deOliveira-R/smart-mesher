@@ -96,6 +96,9 @@ pub enum NoteCode {
     AssemblyTransformsIgnored,
     /// `step.assembly_flattened`: assembly placements were applied, one solid per instance.
     AssemblyFlattened,
+    /// `step.split_closed_face`: a face on a closed, non-periodic NURBS surface was split into
+    /// several faces (info), or could not be (warning).
+    SplitClosedFace,
     /// `step.attributes`: counts of colors, PMI, tessellation and similar entities not imported.
     Attributes,
 }
@@ -114,6 +117,7 @@ impl NoteCode {
             Self::EdgeSense => "step.edge_sense",
             Self::AssemblyTransformsIgnored => "step.assembly_transforms_ignored",
             Self::AssemblyFlattened => "step.assembly_flattened",
+            Self::SplitClosedFace => "step.split_closed_face",
             Self::Attributes => "step.attributes",
         }
     }

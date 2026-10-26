@@ -12,17 +12,16 @@ encodings: the sphere's `VERTEX_LOOP`, the cone apex), S2 (STEP writer with a by
 round trip), S3 (assembly flattening) and all of S4 (`sheets: true`, `FACETED_BREP` with
 `POLY_LOOP`, `TRIMMED_CURVE`).
 
-Two things do not meet their stated numbers; both are caused by `sm-topo-api`'s default
-quadrature and need a contract change (see "api_change_requests"):
+One thing still misses its stated number (see "Review round 0" for what changed):
 
-- `volume_moments` / `face_moments` cannot integrate the OCC loft (a closed but non-periodic
-  degree-13 NURBS lateral face): the seam coedges project onto `u = 0` or `u = 1` arbitrarily.
-  The import itself is valid; the loft volume is computed in the test by tensor Gauss
-  quadrature over the imported surface (54.4542725764, Gauss 20 and 40 agree to 1e-10, OCC
-  reports 54.454271953, relative difference 1.1e-8).
 - The rational NURBS fillet block integrates to a relative volume error of 4.1e-8 (area 7.7e-9)
   with the default quadrature (5-point Gauss, one panel along a non-periodic parameter), against
-  the 1e-8 asked. The test asserts 1e-7 for the volume and 1e-8 for the area.
+  the 1e-8 asked. The test asserts 1e-7 for the volume and 1e-8 for the area (ACR 2).
+
+The OCC loft (a closed but non-periodic degree-13 NURBS lateral face) now meets ruling C2
+through the platform measure: `volume_moments` gives 54.454272576 against OCC's 54.454271953
+(relative 1.1e-8, limit 1e-6). The reader gets there by cutting such a face into four faces
+(`src/split.rs`), because `sample_face` cannot tell the two seam coedges apart (ACR 1).
 
 ## Acceptance bullet to test
 
@@ -34,7 +33,7 @@ quadrature and need a contract change (see "api_change_requests"):
 | 4 | OCC cylinder, frustum | `occ_cylinder_and_hand_written_frustum` |
 | 5 | Seam sphere, pole rule | `seam_sphere_proves_the_pole_rule` |
 | 6 | OCC torus | `occ_torus_matches_the_fixture_numerically` (hash equal to `fixtures::torus` once the four pcurves the fixture sets are added) |
-| 7 | NURBS fillet block, OCC fillet, OCC loft | `fillet_blocks_cylindrical_and_nurbs`, `occ_loft_volume_by_independent_quadrature` |
+| 7 | NURBS fillet block, OCC fillet, OCC loft | `fillet_blocks_cylindrical_and_nurbs`, `occ_loft_volume_through_volume_moments` (platform `volume_moments` at 1e-6 plus a tensor-Gauss cross-check) |
 | 8 | Void, two bricks | `brick_with_void_and_two_bricks` (hash equal to the fixture for the inward spelling) |
 | 9 | Milestone part, inline vs sha256 | `milestone_part_through_the_reader`, `milestone_part_through_the_op`, `inline_and_sha256_forms_give_the_same_state_hash` |
 | 10 | Op level | `delta_lists_topology_ids_ascending_and_outputs_match_the_roles`, `undo_redo_and_cold_replay_do_not_diverge`, `failures_are_invalid_and_leave_the_state_untouched`, `solid_ordinals_select_solids`, `a_missing_input_service_is_reported_only_for_sha256_sources`, `json_records_decode_and_reject_paths_and_unknown_fields`, `check_fails_the_op_on_validator_errors_and_can_be_switched_off`, `inverted_solids_are_flipped_with_a_warning` (`tests/op_level.rs`) |
@@ -64,7 +63,7 @@ Analytic checks (debug and release give the same numbers to the digits shown):
 | OCC fillet box | volume / area | 990 + 2.5 pi / 578 + 5.5 pi | 997.8539816339753 / 595.2787595947442 |
 | NURBS fillet block | volume | 960 + 10 pi = 991.4159265358979 | 991.415886269718 (4.1e-8) |
 | NURBS fillet block | area | 552 + 12 pi = 589.6991118430775 | 589.699116354852 (7.7e-9) |
-| OCC loft | volume (own quadrature) | 54.454271953 (OCC) | 54.4542725764, Gauss 20 vs 40 agree to < 1e-10 |
+| OCC loft (4 faces after the split) | volume by `volume_moments` | 54.454271953 (OCC) | 54.454272576 (1.1e-8); tensor Gauss over the pieces agrees to 1e-9 |
 | w3a part | volumes | 1200, 200, 600 | 1200.0000000000018, 200.00000000000006, 600.0000000000009 (<= 1.5e-15) |
 | brick with void | volume | 992 | 992.0000000000003 |
 
@@ -139,9 +138,10 @@ allocator would need `unsafe`, which CLAUDE.md allows only in `sm-rt-capi`.
 
 - Sheets are free faces without volume or closure check; the writer does not write them.
   `TESSELLATED_SOLID` and other tessellated geometry are reported, not imported.
-- No `PCURVE` import: closed NURBS faces and periodic seams rely on projection.
-  `volume_moments` is wrong for the OCC loft (see above), so downstream map/TFI schemes would
-  fall back to `snap_to_face` there; untested with `sm-scheme-map`.
+- No `PCURVE` import: closed NURBS faces and periodic seams rely on projection. A closed
+  non-periodic NURBS face is cut into four faces (plain case only); any other closed NURBS
+  face keeps the seam and a `step.split_closed_face` warning, and its face integrals may be
+  wrong. Untested with `sm-scheme-map`.
 - Mirrored assembly placements and `CARTESIAN_TRANSFORMATION_OPERATOR_3D` targets are not
   flattened. A relationship is read with `rep_1` as the child (OCC's convention, and the
   milestone file's); a writer using the opposite convention would place parts inversely.
@@ -157,10 +157,13 @@ allocator would need `unsafe`, which CLAUDE.md allows only in `sm-rt-capi`.
    `DEGENERATE` coedge. Why: on a closed but non-periodic NURBS surface (the OCC loft) both
    seam coedges project to the same `u` (`NurbsSurface::project` keeps the first of two equal
    candidates), so the face integrates to zero and `volume_moments` is wrong (6 pi instead
-   of 54.45). Proposed: in `sample_face`, replace `surf.project(cj.p, *prev)` by
+   of 54.45). Worked around in the reader since round 0 (`split.rs`); the request stands so
+   the split can be removed. Proposed: in `sample_face`, replace `surf.project(cj.p, *prev)` by
    `pc.eval(t)` when `view.pcurve(key)` is `Some`, falling back to projection otherwise. The
    reader would then set `Polyline2` pcurves on NURBS faces that are closed in `u` or `v`
-   (a follow-up in `realize`, not landed because it would be inert today).
+   (a follow-up in `realize`, not landed because it would be inert today). Note that
+   `NurbsSurface::project` also ignores the hint on ties, so the sampler must use the pcurve
+   value itself, not only as the unwrapping reference.
 2. **crate `sm-topo-api`, `geometry::green`.** What: split the inner `u` integral into panels
    along non-periodic parameters too (e.g. at the surface's knot spans, or at most a fixed
    parameter length). Why: one 5-point Gauss panel gives 4.1e-8 relative volume error on the
@@ -176,3 +179,60 @@ allocator would need `unsafe`, which CLAUDE.md allows only in `sm-rt-capi`.
   `session.export` format is later work.
 - `sm_testkit::w3a::STEP` imports to bodies, volumes, faces, edges and vertices in STEP-id order
   (V1, V2, V3 = 1200, 200, 600), as the milestone scripts assume.
+
+## Review round 0
+
+Must fix:
+
+1. **C2 / acceptance 7 through `volume_moments`: done.** Cause as reviewed: the face sampler
+   projects both seam coedges to the same `u`, and it uses one 5-point panel across a
+   non-periodic span. Pcurves alone would not help in-crate: `NurbsSurface::project` keeps the
+   first of two equal candidates and ignores the hint on a tie. Fix: `src/split.rs` cuts a
+   closed non-periodic NURBS face (one loop, one seam edge used twice) at equal parameter
+   fractions into four faces by exact knot insertion (Boehm, homogeneous coordinates, so
+   rational surfaces are exact), with the generators as shared edges and the crossing cap edges
+   split at the generators (located by Gauss-Newton projection and bisection). Four pieces were
+   chosen by measurement on the loft: 1 piece 1.9e-3, 2 pieces 3.6e-6, 4 pieces 1.1e-8 (the
+   OCC value itself differs from the converged integral by that much), 8 and more the same.
+   The loft imports as 6 faces, 12 edges, 8 vertices (Euler 2); the box_fillet1 (7 faces) and
+   hand-written NURBS block are untouched (their NURBS faces are not closed). A configuration
+   the splitter cannot handle is left as read with a `step.split_closed_face` warning; the
+   result is checked for shell closure and discarded if it fails. The test now asserts
+   `volume_moments` at 1e-6 and the validators clean. `IMPL_VERSION` is 2 (the loft imports to
+   different cells; the brick and AP203 hashes are unchanged). The orchestrator may remove
+   the split when ACR 1 and 2 land. Limits: the number of pieces is fixed at 4, so a very
+   wiggly closed surface may still integrate less accurately; the roundtrip of the loft
+   writes and re-reads the four faces.
+2. **Assembly allocation bomb: done.** `assembly::instances` walks with a path stack (a cycle
+   is found at the first revisit, whatever the fan-out), a depth cap of 64, and a limit on the
+   placements of every intermediate list. `read_file` shares a budget across solids:
+   `max(1024, 8 x entities)` instances and `max(2^19, 64 x entities)` copied cells, else the
+   new typed `StepError::TooManyInstances` (`step.too_many_instances`). The earlier behaviour for
+   a cycle is kept (local coordinates plus the `step.assembly_transforms_ignored` warning).
+   `tests/assembly_bomb.rs` builds a 4-links-by-12-levels file (about 17 KB, 16.7M instances
+   before) and expects the typed error; a 2 x 3 nesting still flattens to 8 solids; a
+   20-fold self link returns at once. Note that acceptance 12's 20x bound cannot hold for a
+   legitimately flattened assembly (each instance is a deep copy by design); the budgets bound
+   it by the file size instead.
+
+Should fix:
+
+- **1 (fillet 1e-8): declined.** It needs ACR 2 (panelled quadrature in `green`); the test
+  keeps 1e-7 for the volume until the orchestrator rules.
+- **2 (`fit_edge` complementary arc): done.** An open edge on a closed non-periodic B-spline
+  whose `same_sense` contradicts the vertex order is `Unsupported`; the reviewer's square is a
+  unit test and the OCC fixtures still import.
+- **3 (validate only new cells): declined.** `sm_topo_api::validate_geometry` takes the whole
+  view; there is no per-cell variant (`check_cells` is already restricted). Candidate ACR:
+  `validate_geometry_cells(view, ids)`.
+- **4 (test runtime): done for determinism.** The heavy fixtures (loft, w3a part, 40 bricks) skip
+  the state-hash loop in debug builds (they run under `--release`); `read_step` determinism and
+  the cold-replay test of the w3a part still run everywhere. Acceptance is not trimmed: every
+  step file's volume is asserted unconditionally.
+- **5 (assembly warning semantics, `rep_1` convention): left for the orchestrator.** Behaviour
+  unchanged and documented under deviation 8 and in known gaps.
+- **6 (Cargo.lock): left for the orchestrator** (no new dependency this round; the lock is
+  unchanged since the worker's commit).
+- **7 (`write_step` without a shell): done.** It returns `StepError::Export`.
+
+Gate (round 0): `cargo build --workspace`, `cargo test -p sm-cadio --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc -p sm-cadio --no-deps` and `tools/ci.sh` (which includes the `RAYON_NUM_THREADS=1` test pass) all exit 0; ci log `/tmp/ci-sm-cadio-r0-81799.log`.

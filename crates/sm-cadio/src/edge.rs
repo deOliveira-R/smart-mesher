@@ -35,6 +35,9 @@ fn mismatch(msg: impl Into<String>) -> StepError {
 /// - A closed circle/ellipse (or periodic curve) edge gets `[t0, t0 + period]`.
 /// - A closed B-spline edge needs the vertex at the curve start, otherwise
 ///   [`StepError::Unsupported`].
+/// - An open edge on a closed non-periodic B-spline whose `same_sense` contradicts the order of
+///   its vertex parameters (it would cross the curve start) is [`StepError::Unsupported`], not
+///   the complementary arc.
 /// - A vertex farther than `tol` from the curve gives [`StepError::GeometryMismatch`] (with
 ///   `id: 0`; callers that know the edge id replace it).
 pub fn edge_range(def: &CurveDef, p_start: Point3, p_end: Point3, same_sense: bool, closed: bool, tol: f64) -> Result<(Interval, Sense), StepError> {
@@ -99,6 +102,11 @@ pub(crate) fn fit_edge(def: &CurveDef, p_start: Point3, p_end: Point3, same_sens
     }
     let ascending = ts < te;
     let repaired = ascending != same_sense;
+    // On a closed non-periodic curve the vertices cannot tell which of the two arcs the edge is:
+    // a contradiction with `same_sense` would silently pick the complementary arc.
+    if repaired && matches!(def, CurveDef::Nurbs(_)) && (curve.eval(dom.range.lo) - curve.eval(dom.range.hi)).norm() <= tol {
+        return Err(StepError::Unsupported { id: 0, entity: "open edge on a closed B-spline curve that runs across the curve start".into() });
+    }
     let (range, sense) = if ascending { (Interval::new(ts, te), Sense::Forward) } else { (Interval::new(te, ts), Sense::Reversed) };
     Ok(EdgeFit { range, sense, gap, repaired })
 }
@@ -182,5 +190,19 @@ mod tests {
         assert_eq!((r.lo, r.hi, s), (0.0, 4.0, Sense::Forward));
         let e = edge_range(&d, p(1.0, 0.0, 0.0), p(1.0, 0.0, 0.0), true, true, 1e-6).expect_err("not at start");
         assert!(matches!(e, StepError::Unsupported { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn open_edge_across_the_start_of_a_closed_bspline_is_refused() {
+        let c = NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0], vec![p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0), p(1.0, 1.0, 0.0), p(0.0, 1.0, 0.0), p(0.0, 0.0, 0.0)], None).expect("nurbs");
+        let d = CurveDef::Nurbs(c);
+        // From t=3 (0,1) to t=1 (1,0) along the curve crosses t=4=0: the span [3,4] + [0,1].
+        let e = fit_edge(&d, p(0.0, 1.0, 0.0), p(1.0, 0.0, 0.0), true, false, 1e-6).expect_err("crosses the start");
+        assert!(matches!(e, StepError::Unsupported { .. }), "{e:?}");
+        // The ascending edge and the reversed one on the same arc are fine.
+        let f = fit_edge(&d, p(1.0, 0.0, 0.0), p(0.0, 1.0, 0.0), true, false, 1e-6).expect("ascending");
+        assert_eq!((f.range.lo, f.range.hi, f.sense), (1.0, 3.0, Sense::Forward));
+        let f = fit_edge(&d, p(0.0, 1.0, 0.0), p(1.0, 0.0, 0.0), false, false, 1e-6).expect("reversed");
+        assert_eq!((f.range.lo, f.range.hi, f.sense), (1.0, 3.0, Sense::Reversed));
     }
 }

@@ -124,17 +124,41 @@ fn snap(t: Transform) -> Transform {
     if near { id } else { t }
 }
 
+/// Deepest representation chain followed (the path stack also stops cycles).
+const MAX_DEPTH: usize = 64;
+
+/// State of one instance walk: the representations on the current path (cycle detection) and the
+/// largest number of placements the walk may produce.
+pub(crate) struct Walk {
+    path: Vec<u64>,
+    /// Limit on the placements of one solid (and on every intermediate list).
+    pub limit: usize,
+}
+
+impl Walk {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { path: Vec::new(), limit }
+    }
+}
+
 /// The placements of every instance of the representation `rep`, ascending by link id along each
 /// path. A representation with no link is its own root: one identity instance.
 ///
-/// `scale_of(rep)` is the factor from a representation's length unit to the target unit.
-pub(crate) fn instances(file: &StepFile, asm: &Assembly, rep: u64, scale_of: &dyn Fn(u64) -> f64, depth: usize) -> Result<Vec<Transform>, StepError> {
-    if depth > 16 {
+/// `scale_of(rep)` is the factor from a representation's length unit to the target unit. A
+/// representation reached again on its own path is a [`StepError::Cycle`] (at the first
+/// revisit, whatever the fan-out); more than `walk.limit` placements, at any level, is
+/// [`StepError::TooManyInstances`], so a small file cannot make the walk allocate without bound.
+pub(crate) fn instances(file: &StepFile, asm: &Assembly, rep: u64, scale_of: &dyn Fn(u64) -> f64, walk: &mut Walk) -> Result<Vec<Transform>, StepError> {
+    if walk.path.contains(&rep) {
         return Err(StepError::Cycle { id: rep });
+    }
+    if walk.path.len() >= MAX_DEPTH {
+        return Err(StepError::TooManyInstances { id: rep, limit: walk.limit });
     }
     let Some(links) = asm.links.get(&rep) else { return Ok(vec![Transform::IDENTITY]) };
     let ents = Ents::new(file);
     let mut out = Vec::new();
+    walk.path.push(rep);
     for l in links {
         let f1 = Geo { ents, scale: scale_of(l.child), angle: 1.0 }.frame(l.item1, l.id)?;
         let f2 = Geo { ents, scale: scale_of(l.parent), angle: 1.0 }.frame(l.item2, l.id)?;
@@ -151,10 +175,14 @@ pub(crate) fn instances(file: &StepFile, asm: &Assembly, rep: u64, scale_of: &dy
         let rot = Transform { m, t: Vector3::new(0.0, 0.0, 0.0) };
         let o1 = rot.apply_point(f1.origin);
         let link = snap(Transform { m, t: Vector3::new(f2.origin.x - o1.x, f2.origin.y - o1.y, f2.origin.z - o1.z) });
-        for p in instances(file, asm, l.parent, scale_of, depth + 1)? {
+        for p in instances(file, asm, l.parent, scale_of, walk)? {
+            if out.len() >= walk.limit {
+                return Err(StepError::TooManyInstances { id: rep, limit: walk.limit });
+            }
             out.push(snap(p.compose(&link)));
         }
     }
+    walk.path.pop();
     Ok(out)
 }
 

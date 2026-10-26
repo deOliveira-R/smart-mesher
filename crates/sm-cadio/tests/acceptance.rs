@@ -251,34 +251,34 @@ fn milestone_part_through_the_reader() {
     assert!(m.solids.iter().flat_map(|s| &s.surfaces).all(|s| matches!(s.def, sm_geom_api::SurfaceDef::Plane(_))));
 }
 
-/// The OCC loft over a degree-13 B-spline surface. `volume_moments` cannot place the seam
-/// coedges of a closed, non-periodic NURBS face (see W3_REPORT.md), so the volume is computed
-/// here from the imported geometry: the lateral patch by tensor Gauss quadrature over its whole
-/// parameter domain and the elliptical caps in closed form.
+/// The OCC loft over a degree-13 B-spline surface, closed but not periodic (ruling C2). The
+/// platform measure `volume_moments` must give OCC's 54.454271953 to 1e-6: the reader cuts the
+/// closed lateral face into four faces so the seam coedges cannot be confused (see `split.rs`).
 #[test]
-fn occ_loft_volume_by_independent_quadrature() {
+fn occ_loft_volume_through_volume_moments() {
     let m = read(sm_testkit::step::LOFT_BSPLINE.bytes);
     let s = &m.solids[0];
-    assert_eq!((s.faces.len(), s.vertices.len(), s.edges.len()), (3, 2, 3));
-    let kinds: Vec<&sm_geom_api::SurfaceDef> = s.surfaces.iter().map(|x| &x.def).collect();
-    assert_eq!(kinds.iter().filter(|k| matches!(k, sm_geom_api::SurfaceDef::Plane(_))).count(), 2);
-    let lateral = s.faces.iter().find(|f| matches!(s.surfaces[f.surface].def, sm_geom_api::SurfaceDef::Nurbs(_))).expect("lateral face");
-    let surf = s.surfaces[lateral.surface].def.as_surface().expect("parametric");
-    let sign = lateral.sense.sign();
-    // Caps: the circle r = 2 at z = 0 (p . n = 0) and the ellipse 3 x 1.5 at z = 4 (outward +z).
+    // 2 caps + 4 lateral pieces; vertices 2 + 6 cut points; edges 2 x 4 arcs + 3 generators + seam.
+    assert_eq!((s.faces.len(), s.vertices.len(), s.edges.len()), (6, 8, 12));
+    assert!(m.notes.iter().any(|n| n.code == NoteCode::SplitClosedFace && n.severity == sm_cadio::NoteSeverity::Info), "{:?}", m.notes);
+    let (h, r) = both(sm_testkit::step::LOFT_BSPLINE.bytes);
+    let v = h.as_view();
+    assert!(issues(v).is_empty());
+    assert_eq!((count(v, Dim::Vertex), count(v, Dim::Edge), count(v, Dim::Face)), (8, 12, 6));
+    assert_eq!(euler_characteristic(v), 2);
+    let got = volume(v, r.volumes[0]);
+    assert!(rel(got, sm_testkit::step::LOFT_BSPLINE.volume) <= 1e-6, "{got:.12}");
+    // Independent cross-check: tensor Gauss over each patch plus the elliptical caps in closed
+    // form (the circle r = 2 at z = 0 contributes nothing, the 3 x 1.5 ellipse at z = 4 gives 4 pi 1.5 * 3 / 3).
     let caps = 4.0 * PI * 1.5 * 3.0 / 3.0;
-    let v20 = sign * patch_volume_term(surf, 20) + caps;
-    let v40 = sign * patch_volume_term(surf, 40) + caps;
-    assert!(rel(v20, v40) <= 1e-10, "Gauss 20 vs 40: {v20} vs {v40}");
-    assert!(v40 > 16.0 * PI && v40 < 18.0 * PI, "{v40}");
-    assert!(rel(v40, sm_testkit::step::LOFT_BSPLINE.volume) <= 1e-6, "{v40}");
-    // Pin the converged value (OCC's mass properties give 54.454271953, 1.1e-8 lower).
-    assert!(rel(v40, 54.454_272_576_4) <= 1e-9, "{v40:.12}");
-    // The import itself is valid and closed.
-    let (h, _) = both(sm_testkit::step::LOFT_BSPLINE.bytes);
-    assert!(issues(h.as_view()).is_empty());
+    let patches: f64 = s
+        .faces
+        .iter()
+        .filter(|f| matches!(s.surfaces[f.surface].def, sm_geom_api::SurfaceDef::Nurbs(_)))
+        .map(|f| f.sense.sign() * patch_volume_term(s.surfaces[f.surface].def.as_surface().expect("parametric"), 20))
+        .sum();
+    assert!(rel(patches + caps, 54.454_272_576_4) <= 1e-9, "{:.12}", patches + caps);
 }
-
 // ---- Stretch S1: the pole encodings OCC writes
 
 #[test]

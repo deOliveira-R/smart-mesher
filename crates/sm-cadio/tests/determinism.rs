@@ -45,6 +45,11 @@ fn the_import_state_hash_is_bit_identical_across_runs_and_thread_counts() {
         let r = st.put(&bytes);
         // The production store on the small models only (the NURBS loft is slow in debug builds).
         let heavy = matches!(name, "loft_bspline" | "w3a_part" | "many_bricks");
+        // Realizing these costs minutes in a debug build; `cargo test --release` (and the
+        // `cold_replay` test, which imports the w3a part) still cover them.
+        if heavy && cfg!(debug_assertions) {
+            continue;
+        }
         let factories: &[Factory] = if heavy { &[cell_complex] } else { &[cell_complex, topo_store] };
         for factory in factories.iter().copied() {
             let h = check(if heavy { 1 } else { 2 }, 3, |threads| {
