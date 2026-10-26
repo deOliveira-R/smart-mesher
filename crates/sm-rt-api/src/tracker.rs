@@ -384,7 +384,8 @@ pub trait Tracker: Send + Sync {
     /// * `Vacuum`: terminate.
     /// * `Reflective`: exact specular reflection `d' = d - 2 (d.n) n` (exact for planar faces).
     /// * `White`: cosine-law direction about the inward normal.
-    /// * `Albedo(a)`: if `u[0] < a` reflect specularly and continue, else terminate. `a` outside
+    /// * `Albedo(a)`: if `u[0] < a` (or `a == 1`, so a full albedo always survives even at
+    ///   `u[0] = 1`) reflect specularly and continue, else terminate. `a` outside
     ///   `[0, 1]` is `RtError::BadAlbedo`.
     ///
     /// A used uniform that is NaN or outside `[0, 1]` is `RtError::InvalidInput` and the state
@@ -401,7 +402,7 @@ pub trait Tracker: Send + Sync {
                 if !unit(u[0]) {
                     return Err(RtError::InvalidInput("random number u[0] must be finite and in [0, 1]"));
                 }
-                if u[0] < a { reflect_specular(self, st, face) } else { Ok(BoundaryAction::Terminate) }
+                if u[0] < a || a >= 1.0 { reflect_specular(self, st, face) } else { Ok(BoundaryAction::Terminate) }
             }
             ResponseKind::White => {
                 if !unit(u[0]) || !unit(u[1]) {
