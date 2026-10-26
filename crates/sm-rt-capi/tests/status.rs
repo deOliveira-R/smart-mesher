@@ -62,6 +62,8 @@ fn every_function_returns_null_status_for_a_null_pointer() {
     let (i32out, i64a, f64a, i64b, outlen) = (leak::<i32>(), leak::<i64>(), leak::<f64>(), leak::<i64>(), leak::<u64>());
     let n3 = leak::<[f64; 3]>().cast::<f64>();
     let words = Box::into_raw(Box::new([0u64; 64])).cast::<u64>();
+    let bundle_out: *mut *mut SmrtBundle = Box::into_raw(Box::new(null_mut()));
+    let words_out: *mut *const u64 = Box::into_raw(Box::new(null()));
     let (pt, pc) = (t as usize, c as usize);
     let (tp, cp) = (move || pt as *mut SmrtTracker, move || pc as *mut SmrtCtx);
     let pick = |bad: usize, i: usize| bad == i;
@@ -94,9 +96,14 @@ fn every_function_returns_null_status_for_a_null_pointer() {
         ("smrt_trace_bundle", 4, Box::new(|b| unsafe {
             smrt_trace_bundle(if pick(b, 0) { null() } else { tp() }, 1, if pick(b, 1) { null() } else { &rays }, 0, null(), if pick(b, 2) { null_mut() } else { words }, 64, if pick(b, 3) { null_mut() } else { outlen })
         })),
+        ("smrt_trace_bundle_new", 4, Box::new(|b| unsafe {
+            smrt_trace_bundle_new(if pick(b, 0) { null() } else { tp() }, 1, if pick(b, 1) { null() } else { &rays }, 0, null(), if pick(b, 2) { null_mut() } else { bundle_out }, if pick(b, 3) { null_mut() } else { outlen })
+        })),
+        ("smrt_bundle_words", 1, Box::new(|_| unsafe { smrt_bundle_words(null(), words_out, outlen) })),
+        ("smrt_bundle_free", 1, Box::new(|_| unsafe { smrt_bundle_free(null_mut()) })),
         ("smrt_last_error_message", 1, Box::new(|_| unsafe { smrt_last_error_message(null_mut(), 8) })),
     ];
-    assert!(rows.len() >= 24);
+    assert!(rows.len() >= 27);
     for (name, n, f) in &rows {
         for bad in 0..*n {
             if *name == "smrt_last_error_message" {

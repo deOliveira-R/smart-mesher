@@ -294,6 +294,11 @@ fn locate_closest_state_and_normals() {
         bad.levels_total = 9;
         bad.levels_len = 8;
         assert_eq!(smrt_set_state(c, &bad), SMRT_ERR_BAD_ARG);
+        // A cell id beyond the model is rejected up front, and the state is unchanged.
+        let mut far = saved;
+        far.cell = 123_456;
+        assert_eq!(smrt_set_state(c, &far), SMRT_ERR_UNKNOWN_ID);
+        assert_eq!(state(c), saved);
     }
 }
 

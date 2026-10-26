@@ -94,6 +94,38 @@ fn bundle_bytes_equal_across_threads_blocks_and_the_rust_path() {
 }
 
 #[test]
+fn bundle_handle_equals_the_one_shot_words() {
+    let t = tracker_into_raw(tracker_for(STUB_SHELLS, 5.0).unwrap());
+    let (soa, _) = rays();
+    let want = c_bundle(t, &soa, 256, None);
+    let r = SmrtRays {
+        x: soa.c[0].as_ptr(),
+        y: soa.c[1].as_ptr(),
+        z: soa.c[2].as_ptr(),
+        u: soa.c[3].as_ptr(),
+        v: soa.c[4].as_ptr(),
+        w: soa.c[5].as_ptr(),
+        start_cell: std::ptr::null(),
+    };
+    let mut h: *mut SmrtBundle = std::ptr::null_mut();
+    let (mut len, mut len2) = (0u64, 0u64);
+    let mut words: *const u64 = std::ptr::null();
+    // SAFETY: arrays hold N entries; out slots are valid; the handle is freed once.
+    unsafe {
+        assert_eq!(smrt_trace_bundle_new(t, N as i64, &r, 256, std::ptr::null(), &mut h, &mut len), 0);
+        assert!(!h.is_null());
+        assert_eq!(smrt_bundle_words(h, &mut words, &mut len2), 0);
+        assert_eq!((len, len2), (want.len() as u64, want.len() as u64));
+        assert_eq!(std::slice::from_raw_parts(words, want.len()), &want[..]);
+        assert_eq!(smrt_bundle_words(std::ptr::null(), &mut words, &mut len2), SMRT_ERR_NULL);
+        assert_eq!(smrt_trace_bundle_new(t, -1, &r, 0, std::ptr::null(), &mut h, &mut len), SMRT_ERR_BAD_ARG);
+        assert_eq!(smrt_bundle_free(h), 0);
+        assert_eq!(smrt_bundle_free(std::ptr::null_mut()), SMRT_ERR_NULL);
+        smrt_tracker_free(t);
+    }
+}
+
+#[test]
 fn bundle_passes_the_testkit_determinism_check() {
     let arc = tracker_for(STUB_SHELLS, 5.0).unwrap();
     let t = tracker_into_raw(arc);

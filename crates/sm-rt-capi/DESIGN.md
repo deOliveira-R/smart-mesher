@@ -165,12 +165,12 @@ The shims call `sm_rt_api::compat` one to one. Documented differences:
 Harness: `bench/` (README there: formats, Docker commands, result layout). Record-only: nothing
 gates and no speedup is claimed. Method: 3 warm-up and 7 measured repetitions of the whole ray set,
 median with min and max, CPU model recorded. DAGMC side: conda-forge `dagmc` 3.2.4 (OBB tree,
-`nodoubledown`) with `moab` 5.5.1 (the build that ships pymoab), `init_OBBTree`, then the standard
+`nodoubledown`) with `moab` (5.6.0 on aarch64; no pymoab, the h5m is written by a C++ converter), `init_OBBTree`, then the standard
 `ray_fire` + `next_vol` loop to leakage with the same rays; lost particles are counted as ray_fire
 error, no hit inside a bounded volume, or `point_in_volume` disagreement on a 1-in-1000 audit.
 
 Recorded on 2026-10-26, Intel Xeon @ 2.80 GHz, 4 vCPU (x86_64 VM, Docker Engine 29.9.2; the
-arm64 build was not tried here), 200 000 rays per case. Files: `bench/results/C*-20261026T114120Z-24599.json`.
+arm64 build is covered by `C1-20261026T130138Z-18917.json`), 200 000 rays per case. Files: `bench/results/C*-20261026T114120Z-24599.json`.
 The VM is noisy (min/max spread of 10 to 30 %); read the medians as magnitudes.
 
 | Case | DAGMC 1 thread, rays/s (median [min, max]) | DAGMC 4 threads | crossings | lost | `check_watertight` |

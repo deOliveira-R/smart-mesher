@@ -4,7 +4,7 @@ use super::{SmrtCtx, SmrtTracker, exclusive, guard, read3, read3_opt, shared, wr
 use crate::convert::*;
 use crate::status::*;
 use crate::types::*;
-use sm_rt_api::{BoundaryAction, Level, Scratch, StepEnd, TrackState, check_direction};
+use sm_rt_api::{BoundaryAction, CellId, Level, Scratch, StepEnd, TrackState, check_direction};
 use sm_rt_api::{ComponentId, InstanceId};
 use std::sync::Arc;
 
@@ -104,6 +104,9 @@ pub unsafe extern "C" fn smrt_set_state(ctx: *mut SmrtCtx, state: *const SmrtSta
         }
         let mut st = TrackState::new(point(s.pos), vector(s.dir));
         st.cell = cell_in(s.cell)?;
+        if st.cell != CellId::NONE && st.cell.get() >= c.tracker.cell_count() {
+            return Err(Fail::Rt(sm_rt_api::RtError::UnknownId { kind: "cell", id: st.cell.get() as u32 }));
+        }
         st.region = region_in(s.region, c.complement)?;
         st.entered_via = if s.entered_via < 0 { None } else { Some(face_in(s.entered_via)?) };
         for l in &s.levels[..n] {

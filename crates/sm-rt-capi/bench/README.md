@@ -11,8 +11,8 @@ measurements with the CPU model and date recorded next to them.
 |---|---|
 | `gen_case.py` | Writes `facets.bin`, `rays.bin`, `manifest.json` per case (stdlib only, deterministic). |
 | `expected_sha256.txt` | SHA-256 of the default output (200 000 rays per case), asserted by `run_bench.sh --check-gen`. |
-| `dagmc/Dockerfile` | Image with DAGMC 3.2.4 (OBB tree), MOAB 5.5.1 + pymoab, the conda C++ toolchain; builds the driver. |
-| `dagmc/facets_to_h5m.py` | pymoab: facets to h5m (surfaces, volumes, `GEOM_SENSE_2`), then `check_watertight`. |
+| `dagmc/Dockerfile` | Image with DAGMC 3.2.4 (OBB tree), MOAB (no pymoab), the conda C++ toolchain; builds the driver. |
+| `dagmc/facets_to_h5m.cpp` | MOAB C++ API: facets to h5m (surfaces, volumes, `GEOM_SENSE_2`), then `check_watertight`. |
 | `dagmc/dagmc_driver.cpp` | `init_OBBTree`, then `ray_fire` + `next_vol` to leakage; JSON result. |
 | `dagmc/run_case.sh` | Container entry point. |
 | `run_bench.sh` | Builds the image, runs the cases, merges all JSON into `results/`. |
@@ -77,7 +77,7 @@ docker run --rm -v "$PWD/crates/sm-rt-capi/bench/data:/data:ro" -v "$OUT:/out" s
 ```
 
 `run_bench.sh` builds the image (behind an HTTPS proxy it passes `HTTPS_PROXY` and the proxy CA
-bundle as build inputs), converts each case with `facets_to_h5m.py`, runs `dagmc_driver` with 1
+bundle as build inputs), converts each case with `facets_to_h5m`, runs `dagmc_driver` with 1
 thread and N threads, runs the C-ABI stub example, and runs `cargo run --release -p sm-rt --example
 trace_rays` when `crates/sm-rt/examples/trace_rays.rs` exists (otherwise it says so and records
 `{"skipped": ...}`). The image uses the base image's native architecture (x86_64 and aarch64 are both

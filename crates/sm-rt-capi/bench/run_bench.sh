@@ -13,7 +13,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 cases="C1,C2,C3"
 rays=200000
-threads="$(nproc 2>/dev/null || echo 4)"
+threads="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 check_gen=0
 skip_docker=0
 skip_rust=0
@@ -37,7 +37,7 @@ if [ "$check_gen" = 1 ]; then
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   python3 "$here/gen_case.py" --out "$tmp" >/dev/null
-  (cd "$tmp" && sha256sum -c "$here/expected_sha256.txt")
+  (cd "$tmp" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$here/expected_sha256.txt"; else shasum -a 256 -c "$here/expected_sha256.txt"; fi)
   echo "run_bench.sh --check-gen: gen_case.py output matches expected_sha256.txt"
   exit 0
 fi

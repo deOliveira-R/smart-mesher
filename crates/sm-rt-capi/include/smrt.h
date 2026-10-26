@@ -76,6 +76,7 @@ extern "C" {
 /* ---- handles ------------------------------------------------------------------------------ */
 typedef struct SmrtTracker SmrtTracker; /* opaque, shared, read-only */
 typedef struct SmrtCtx SmrtCtx;         /* opaque, one thread at a time */
+typedef struct SmrtBundle SmrtBundle;   /* opaque, an encoded track bundle */
 
 /* ---- data --------------------------------------------------------------------------------- */
 typedef struct SmrtLevel {
@@ -193,6 +194,11 @@ int32_t smrt_locate(SmrtCtx *ctx, const double p[3], const double *dir_or_null, 
 int32_t smrt_closest(SmrtCtx *ctx, const double p[3], int64_t region, SmrtClosest *out);
 int32_t smrt_trace_bundle(const SmrtTracker *tracker, int64_t n, const SmrtRays *rays, int64_t block_size,
                           const SmrtTraceOpts *opts, uint64_t *out_buf, uint64_t cap, uint64_t *out_len);
+/* Trace once, keep the words in a handle (no size-query retrace); *out_len = words. */
+int32_t smrt_trace_bundle_new(const SmrtTracker *tracker, int64_t n, const SmrtRays *rays, int64_t block_size,
+                              const SmrtTraceOpts *opts, SmrtBundle **out, uint64_t *out_len);
+int32_t smrt_bundle_words(const SmrtBundle *bundle, const uint64_t **out_words, uint64_t *out_len);
+int32_t smrt_bundle_free(SmrtBundle *bundle);
 
 /* ---- DAGMC-shaped shims ------------------------------------------------------------------- */
 int32_t smrt_dag_ray_fire(const SmrtTracker *tracker, SmrtCtx *ctx, int64_t region, const double origin[3],

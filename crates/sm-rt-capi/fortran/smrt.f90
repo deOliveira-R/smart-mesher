@@ -305,6 +305,33 @@ module smrt
       integer(c_int32_t) :: rc
     end function smrt_trace_bundle
 
+    function smrt_trace_bundle_new(tracker, n, rays, block_size, opts, out, out_len) &
+        bind(C, name="smrt_trace_bundle_new") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t, SmrtRays
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: n
+      type(SmrtRays), intent(in) :: rays
+      integer(c_int64_t), value :: block_size
+      type(c_ptr), value :: opts
+      type(c_ptr), intent(out) :: out
+      integer(c_int64_t), intent(out) :: out_len
+      integer(c_int32_t) :: rc
+    end function smrt_trace_bundle_new
+
+    function smrt_bundle_words(bundle, out_words, out_len) bind(C, name="smrt_bundle_words") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: bundle
+      type(c_ptr), intent(out) :: out_words
+      integer(c_int64_t), intent(out) :: out_len
+      integer(c_int32_t) :: rc
+    end function smrt_bundle_words
+
+    function smrt_bundle_free(bundle) bind(C, name="smrt_bundle_free") result(rc)
+      import :: c_ptr, c_int32_t
+      type(c_ptr), value :: bundle
+      integer(c_int32_t) :: rc
+    end function smrt_bundle_free
+
     ! ---- DAGMC-shaped shims
     function smrt_dag_ray_fire(tracker, ctx, region, origin, dir, orientation, dist_limit, &
         out_surface, out_dist, out_face) bind(C, name="smrt_dag_ray_fire") result(rc)

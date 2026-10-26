@@ -180,7 +180,7 @@ fn fortran_module_compiles_and_runs_when_gfortran_exists() {
     }
     let dir = scratch("fortran");
     let deps = deps_dir();
-    let lib = deps.join("libsm_rt_capi.so");
+    let lib = deps.join(cdylib_name());
     let compile = |args: &[&str]| {
         let mut c = Command::new("gfortran");
         c.current_dir(&dir).args(["-Wall", "-std=f2008"]).args(args);
