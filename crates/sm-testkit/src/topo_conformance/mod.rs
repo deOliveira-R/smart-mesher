@@ -18,6 +18,7 @@ mod flags;
 mod freeze;
 mod gaps3;
 mod gaps4;
+mod join;
 mod overlay;
 mod overlay_volume;
 mod reference;
@@ -43,6 +44,7 @@ fn groups<E: Sys>() -> Vec<(&'static str, Vec<Scenario<E>>)> {
         ("freeze", freeze::scenarios::<E>()),
         ("gaps3", gaps3::scenarios::<E>()),
         ("gaps4", gaps4::scenarios::<E>()),
+        ("join", join::scenarios::<E>()),
         ("overlay", overlay::scenarios::<E>()),
         ("overlay_volume", overlay_volume::scenarios::<E>()),
         ("shells", shells::scenarios::<E>()),

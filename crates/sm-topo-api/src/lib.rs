@@ -25,6 +25,7 @@ pub mod edit;
 pub mod error;
 pub mod fixtures;
 pub mod geometry;
+pub mod join;
 pub mod lineage;
 pub mod overlay;
 pub mod types;
@@ -36,6 +37,7 @@ pub use derived::{Coedge, FaceClass, FaceSides, FaceUse, Loop, Shell, TopologyVi
 pub use edit::TopologyEdit;
 pub use error::{QueryError, TopoError};
 pub use geometry::{FaceCentral, FaceMoments, Moments, PointClass};
+pub use join::{JoinEdgesPlan, JoinFacesPlan, plan_join_edges, plan_join_faces};
 pub use lineage::LineageLog;
 pub use overlay::{Overlay, OverlayData, PlaneCut, VirtualCut, VirtualOp, VirtualOverlay, VolumeCut};
 pub use types::{

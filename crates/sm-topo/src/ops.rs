@@ -1193,6 +1193,80 @@ impl TopologyEdit for TopoStore {
         })
     }
 
+    fn join_edges(&mut self, first: EntityId, second: EntityId) -> Result<EntityId, TopoError> {
+        self.atomic(|s| {
+            let op = s.ensure_open()?;
+            let plan = sm_topo_api::plan_join_edges(&*s, first, second)?;
+            for (k, p) in &plan.pcurves {
+                if p.is_some() || s.pcurve_raw(*k).is_some() {
+                    s.set_pcurve_raw(*k, p.clone());
+                }
+            }
+            for (f, row) in &plan.face_rows {
+                s.set_row(*f, row)?;
+            }
+            s.set_carrier_raw(plan.survivor, plan.carrier.clone());
+            s.set_row(plan.survivor, &plan.row)?;
+            if let Some(t) = plan.tolerance {
+                s.set_tol_raw(plan.survivor, Some(t));
+                s.note(plan.survivor, LineageKind::Modified(ModKind::Tolerance));
+            }
+            s.retire(plan.absorbed, EntityState::Merged(op))?;
+            s.note(plan.absorbed, LineageKind::Merged { into: plan.survivor, gap: 0.0 });
+            s.note(plan.survivor, LineageKind::Modified(ModKind::Carrier));
+            s.remove_from_bodies_and_kill(plan.vertex)?;
+            s.mark_dirty_around(plan.survivor);
+            Ok(plan.survivor)
+        })
+    }
+
+    fn join_faces(&mut self, keep: EntityId, drop: EntityId) -> Result<EntityId, TopoError> {
+        self.atomic(|s| {
+            let op = s.ensure_open()?;
+            let plan = sm_topo_api::plan_join_faces(&*s, keep, drop)?;
+            // Coincidence records of the absorbed face now belong to the survivor; where `keep`
+            // already has a record with the same face, the survivor's record wins.
+            let keep_partners: Vec<EntityId> = s.pairs_of_face(keep).iter().filter_map(|p| p.other(keep)).collect();
+            let pairs: Vec<FacePair> = s.pairs_of_face(drop).to_vec();
+            for p in pairs {
+                s.del_pair(p.a, p.b);
+                if let Some(other) = p.other(drop)
+                    && other != keep
+                    && !keep_partners.contains(&other)
+                {
+                    let (a, b) = if keep <= other { (keep, other) } else { (other, keep) };
+                    s.put_pair(FacePair::new(a, b, p.status, op));
+                }
+            }
+            s.replace_in_parents(drop, |_| smallvec![])?;
+            for k in &plan.pcurve_drops {
+                if s.pcurve_raw(*k).is_some() {
+                    s.set_pcurve_raw(*k, None);
+                }
+            }
+            for (from, to) in &plan.pcurve_moves {
+                s.move_pcurve(*from, *to);
+            }
+            s.set_row(keep, &plan.keep_row)?;
+            if let Some(t) = plan.tolerance {
+                s.set_tol_raw(keep, Some(t));
+                s.note(keep, LineageKind::Modified(ModKind::Tolerance));
+            }
+            s.retire(drop, EntityState::Merged(op))?;
+            s.note(drop, LineageKind::Merged { into: keep, gap: 0.0 });
+            if plan.inner_loops_changed {
+                s.note(keep, LineageKind::Modified(ModKind::InnerLoop));
+            }
+            for e in &plan.chain_edges {
+                s.remove_from_bodies_and_kill(*e)?;
+            }
+            for v in &plan.chain_vertices {
+                s.remove_from_bodies_and_kill(*v)?;
+            }
+            Ok(keep)
+        })
+    }
+
     fn unmerge_vertex(&mut self, v: EntityId, edges: &[EntityId]) -> Result<EntityId, TopoError> {
         self.atomic(|s| {
             s.live_slot(v, Dim::Vertex)?;

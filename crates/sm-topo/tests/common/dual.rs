@@ -221,6 +221,8 @@ impl TopologyEdit for Dual {
         merge_vertices(keep: EntityId, drop: EntityId, max_gap: Option<f64>) -> Result<(), TopoError>;
         merge_edges(keep: EntityId, drop: EntityId, relative: Sense) -> Result<(), TopoError>;
         merge_faces(keep: EntityId, drop: EntityId, relative: Sense) -> Result<(), TopoError>;
+        join_edges(first: EntityId, second: EntityId) -> Result<EntityId, TopoError>;
+        join_faces(keep: EntityId, drop: EntityId) -> Result<EntityId, TopoError>;
         unmerge_vertex(v: EntityId, edges: &[EntityId]) -> Result<EntityId, TopoError>;
         unmerge_edge(edge: EntityId, faces: &[EntityId]) -> Result<EntityId, TopoError>;
         unmerge_face(face: EntityId, side: Side) -> Result<EntityId, TopoError>;

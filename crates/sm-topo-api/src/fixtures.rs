@@ -1,4 +1,5 @@
-//! Reference fixtures built only through [`TopologyEdit`]: brick, touching bricks (and their
+//! Reference fixtures built only through [`TopologyEdit`]: brick, torus, cone, brick with a void,
+//! nested spheres, touching bricks (and their
 //! merge), webcut brick, cylinder with a periodic seam, sphere with poles, brick with an internal
 //! baffle, brick with a non-manifold fin.
 //!
@@ -11,7 +12,7 @@ use crate::error::TopoError;
 use crate::types::{CellFlags, CoedgeKey, CoedgeSpec, Coincidence, CurveCarrier, FaceCut, FaceUseSpec, InnerLoopAssign, OpId, Sense, ShellAssign, ShellKind, ShellSpec, Side, SurfaceCarrier};
 use core::f64::consts::{FRAC_PI_2, TAU};
 use sm_core::{EntityId, Point3, Vector3};
-use sm_geom_api::{Circle, CurveDef, Cylinder, Frame, GeomError, Interval, Line, Line2, PCurve, Plane, Sphere, SurfaceDef, Uv};
+use sm_geom_api::{Circle, Cone, CurveDef, Cylinder, Frame, GeomError, Interval, Line, Line2, PCurve, Plane, Sphere, SurfaceDef, Torus, Uv};
 
 /// A fixture could not be built.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -86,7 +87,8 @@ fn arr<const N: usize>(v: Vec<EntityId>) -> Result<[EntityId; N], FixtureError> 
     v.try_into().map_err(|_| FixtureError::Topo(TopoError::IdExhausted))
 }
 
-fn brick_parts<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 3]) -> Result<BrickParts, FixtureError> {
+/// `inward` builds a cavity: loops and plane normals point into the box (out of the solid around it).
+fn brick_parts<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 3], inward: bool) -> Result<BrickParts, FixtureError> {
     let corner = |idx: usize| Point3::new(min.x + (idx & 1) as f64 * size[0], min.y + ((idx >> 1) & 1) as f64 * size[1], min.z + ((idx >> 2) & 1) as f64 * size[2]);
     let vs: Vec<EntityId> = (0..8).map(|idx| topo.make_vertex(corner(idx))).collect::<Result<_, _>>()?;
     let vertices: [EntityId; 8] = arr(vs)?;
@@ -126,9 +128,13 @@ fn brick_parts<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 
     };
     let mut face_vec = Vec::with_capacity(6);
     for f in 0..6 {
-        let cyc = CORNER_CYCLES[f];
+        let mut cyc = CORNER_CYCLES[f];
+        let mut n = NORMALS[f];
+        if inward {
+            cyc.reverse();
+            n = n.map(|c| -c);
+        }
         let l: Vec<CoedgeSpec> = (0..4).map(|i| coedge(cyc[i], cyc[(i + 1) % 4])).collect();
-        let n = NORMALS[f];
         let frame = Frame::from_z(corner(cyc[0]), Vector3::new(n[0], n[1], n[2]))?;
         let surface = add_surface(topo, SurfaceDef::Plane(Plane { frame }))?;
         face_vec.push(topo.make_face(&[&l], Some(SurfaceCarrier { surface, sense: Sense::Forward }))?);
@@ -138,7 +144,7 @@ fn brick_parts<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 
 
 /// Build an axis-aligned brick `[min, min + size]` (one op must be open).
 pub fn brick<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 3]) -> Result<BrickIds, FixtureError> {
-    let p = brick_parts(topo, min, size)?;
+    let p = brick_parts(topo, min, size, false)?;
     let uses: Vec<FaceUseSpec> = p.faces.iter().map(|&face| FaceUseSpec { face, side: Side::Left }).collect();
     let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
     let body = topo.make_body(&[volume])?;
@@ -322,6 +328,16 @@ pub struct SphereIds {
 /// used twice, and two degenerate closed pole edges (flag `DEGENERATE`, no curve). The face loop
 /// is `[south pole, seam, north pole (reversed), seam (reversed)]`, i.e. the `(u, v)` rectangle.
 pub fn sphere<E: TopologyEdit + ?Sized>(topo: &mut E, r: f64) -> Result<SphereIds, FixtureError> {
+    let (vertices, edges, face, surface) = sphere_face(topo, r)?;
+    let uses = [FaceUseSpec { face, side: Side::Left }];
+    let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
+    let body = topo.make_body(&[volume])?;
+    Ok(SphereIds { vertices, edges, face, volume, body, surface })
+}
+
+/// The closed spherical face of radius `r` about the origin with its vertices and edges: what
+/// [`sphere`] and [`nested_spheres`] share. Returns `(vertices, edges, face, surface)`.
+fn sphere_face<E: TopologyEdit + ?Sized>(topo: &mut E, r: f64) -> Result<([EntityId; 2], [EntityId; 3], EntityId, EntityId), FixtureError> {
     let vs = topo.make_vertex(Point3::new(0.0, 0.0, -r))?;
     let vn = topo.make_vertex(Point3::new(0.0, 0.0, r))?;
     let frame = Frame::from_zx(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0), Vector3::new(1.0, 0.0, 0.0))?;
@@ -345,10 +361,7 @@ pub fn sphere<E: TopologyEdit + ?Sized>(topo: &mut E, r: f64) -> Result<SphereId
     topo.set_pcurve(key(seam, Side::Left), Some(line2((TAU, 0.0), (0.0, 1.0), Interval::new(-FRAC_PI_2, FRAC_PI_2))))?;
     topo.set_pcurve(key(pole_n, Side::Right), Some(line2((0.0, FRAC_PI_2), (1.0, 0.0), Interval::new(0.0, TAU))))?;
     topo.set_pcurve(key(seam, Side::Right), Some(line2((0.0, 0.0), (0.0, 1.0), Interval::new(-FRAC_PI_2, FRAC_PI_2))))?;
-    let uses = [FaceUseSpec { face, side: Side::Left }];
-    let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
-    let body = topo.make_body(&[volume])?;
-    Ok(SphereIds { vertices: [vs, vn], edges: [pole_s, seam, pole_n], face, volume, body, surface })
+    Ok(([vs, vn], [pole_s, seam, pole_n], face, surface))
 }
 
 /// Ids of the baffle added by [`brick_with_baffle`].
@@ -366,7 +379,7 @@ pub struct BaffleIds {
 /// baffle (`Side::Both`) in an `Internal` shell (ring 1) of the brick's volume.
 pub fn brick_with_baffle<E: TopologyEdit + ?Sized>(topo: &mut E) -> Result<(BrickIds, BaffleIds), FixtureError> {
     let min = Point3::new(0.0, 0.0, 0.0);
-    let p = brick_parts(topo, min, [1.0, 1.0, 1.0])?;
+    let p = brick_parts(topo, min, [1.0, 1.0, 1.0], false)?;
     let pts = [(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)];
     let vv: Vec<EntityId> = pts.iter().map(|&(y, z)| topo.make_vertex(Point3::new(0.5, y, z))).collect::<Result<_, _>>()?;
     let vs: [EntityId; 4] = arr(vv)?;
@@ -417,4 +430,202 @@ pub fn brick_with_fin<E: TopologyEdit + ?Sized>(topo: &mut E) -> Result<(BrickId
     let surface = add_surface(topo, SurfaceDef::Plane(Plane { frame: Frame::from_z(p(0.0, 0.0, 0.0), Vector3::new(1.0, -1.0, 0.0))? }))?;
     let face = topo.make_face(&[&lp], Some(SurfaceCarrier { surface, sense: Sense::Forward }))?;
     Ok((b, FinIds { vertices: [w0, w4], edges: [top, far, bottom], face }))
+}
+
+/// Ids of the torus fixture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TorusIds {
+    /// The one vertex, at `(R + r, 0, 0)` (`u = v = 0`).
+    pub vertex: EntityId,
+    /// `[major circle (u), minor circle (v)]`, both closed on the vertex.
+    pub edges: [EntityId; 2],
+    /// The toroidal face.
+    pub face: EntityId,
+    /// The volume.
+    pub volume: EntityId,
+    /// The body.
+    pub body: EntityId,
+    /// Handle of the torus surface.
+    pub surface: EntityId,
+}
+
+/// A solid ring torus about the z axis (major radius `major`, tube radius `minor`, `major >
+/// minor > 0`): 1 vertex, 2 closed edges (the `v = 0` circle of radius `R + r` and the `u = 0`
+/// meridian circle) and 1 face whose loop uses each edge twice, the `(u, v)` square. Euler
+/// characteristic 0, volume `2 pi^2 R r^2`, area `4 pi^2 R r`. Pcurves are in `(u, v) =
+/// (angle about z, angle around the tube)`.
+pub fn torus<E: TopologyEdit + ?Sized>(topo: &mut E, major: f64, minor: f64) -> Result<TorusIds, FixtureError> {
+    let surface_def = Torus::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), major, minor)?;
+    let v = topo.make_vertex(Point3::new(major + minor, 0.0, 0.0))?;
+    let x = Vector3::new(1.0, 0.0, 0.0);
+    let c_u = add_curve(topo, CurveDef::Circle(Circle::new(Frame::at(Point3::new(0.0, 0.0, 0.0)), major + minor)?))?;
+    // Meridian circle: x = R + r cos v, z = r sin v (normal -y so the angle runs from +x to +z).
+    let c_v = add_curve(topo, CurveDef::Circle(Circle::new(Frame::from_zx(Point3::new(major, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0), x)?, minor)?))?;
+    let full = Interval::new(0.0, TAU);
+    let e_u = topo.make_edge(v, v, Some(CurveCarrier { curve: c_u, range: full, sense: Sense::Forward }))?;
+    let e_v = topo.make_edge(v, v, Some(CurveCarrier { curve: c_v, range: full, sense: Sense::Forward }))?;
+    let surface = add_surface(topo, SurfaceDef::Torus(surface_def))?;
+    let lp = [
+        CoedgeSpec { edge: e_u, sense: Sense::Forward },
+        CoedgeSpec { edge: e_v, sense: Sense::Forward },
+        CoedgeSpec { edge: e_u, sense: Sense::Reversed },
+        CoedgeSpec { edge: e_v, sense: Sense::Reversed },
+    ];
+    let face = topo.make_face(&[&lp], Some(SurfaceCarrier { surface, sense: Sense::Forward }))?;
+    let line2 = |origin: (f64, f64), dir: (f64, f64)| PCurve::Line2(Line2 { origin: Uv::new(origin.0, origin.1), dir: Uv::new(dir.0, dir.1), range: full });
+    let key = |edge, side| CoedgeKey { face, edge, side };
+    topo.set_pcurve(key(e_u, Side::Left), Some(line2((0.0, 0.0), (1.0, 0.0))))?;
+    topo.set_pcurve(key(e_v, Side::Left), Some(line2((TAU, 0.0), (0.0, 1.0))))?;
+    topo.set_pcurve(key(e_u, Side::Right), Some(line2((0.0, TAU), (1.0, 0.0))))?;
+    topo.set_pcurve(key(e_v, Side::Right), Some(line2((0.0, 0.0), (0.0, 1.0))))?;
+    let uses = [FaceUseSpec { face, side: Side::Left }];
+    let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
+    let body = topo.make_body(&[volume])?;
+    Ok(TorusIds { vertex: v, edges: [e_u, e_v], face, volume, body, surface })
+}
+
+/// Ids of the cone fixture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConeIds {
+    /// `[apex, base-circle vertex at (r, 0, 0)]`.
+    pub vertices: [EntityId; 2],
+    /// `[base circle, generator (base vertex to apex), apex pole]`; the pole edge is degenerate.
+    pub edges: [EntityId; 3],
+    /// `[lateral, base disc]`.
+    pub faces: [EntityId; 2],
+    /// The volume.
+    pub volume: EntityId,
+    /// The body.
+    pub body: EntityId,
+    /// Handle of the cone surface.
+    pub lateral_surface: EntityId,
+}
+
+/// A solid circular cone with base radius `r` in the plane `z = 0` (disc normal `-z`) and apex
+/// at `(0, 0, h)`: 2 vertices, 3 edges (base circle, one generator used twice by the lateral
+/// face, and the degenerate apex pole edge), 2 faces. Euler characteristic 2, volume `pi r^2 h /
+/// 3`, area `pi r (r + sqrt(r^2 + h^2))`. The cone surface has `frame.z = -z` (it widens
+/// toward the base), so `u` runs clockwise seen from `+z` and the base circle edge runs with
+/// `u`.
+pub fn cone<E: TopologyEdit + ?Sized>(topo: &mut E, r: f64, h: f64) -> Result<ConeIds, FixtureError> {
+    let slant = r.hypot(h);
+    let half_angle = r.atan2(h);
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let down = Vector3::new(0.0, 0.0, -1.0);
+    let x = Vector3::new(1.0, 0.0, 0.0);
+    let frame = Frame::from_zx(origin, down, x)?;
+    let cone = Cone::new(frame, r, half_angle)?;
+    let vb = topo.make_vertex(Point3::new(r, 0.0, 0.0))?;
+    let va = topo.make_vertex(Point3::new(0.0, 0.0, h))?;
+    let base = add_curve(topo, CurveDef::Circle(Circle::new(frame, r)?))?;
+    let generator = add_curve(topo, CurveDef::Line(Line::new(Point3::new(r, 0.0, 0.0), Vector3::new(-r / slant, 0.0, h / slant))?))?;
+    let full = Interval::new(0.0, TAU);
+    let e_base = topo.make_edge(vb, vb, Some(CurveCarrier { curve: base, range: full, sense: Sense::Forward }))?;
+    let e_seam = topo.make_edge(vb, va, Some(CurveCarrier { curve: generator, range: Interval::new(0.0, slant), sense: Sense::Forward }))?;
+    let e_apex = topo.make_edge(va, va, None)?;
+    topo.set_flags(e_apex, CellFlags::DEGENERATE)?;
+    let s_lat = add_surface(topo, SurfaceDef::Cone(cone))?;
+    // Loop counter-clockwise in (u, v): apex row, seam up at u = 2 pi, base back, seam down at u = 0.
+    let lateral = [
+        CoedgeSpec { edge: e_apex, sense: Sense::Forward },
+        CoedgeSpec { edge: e_seam, sense: Sense::Reversed },
+        CoedgeSpec { edge: e_base, sense: Sense::Reversed },
+        CoedgeSpec { edge: e_seam, sense: Sense::Forward },
+    ];
+    let f_lat = topo.make_face(&[&lateral], Some(SurfaceCarrier { surface: s_lat, sense: Sense::Forward }))?;
+    let line2 = |origin: (f64, f64), dir: (f64, f64), range: Interval| PCurve::Line2(Line2 { origin: Uv::new(origin.0, origin.1), dir: Uv::new(dir.0, dir.1), range });
+    let key = |edge, side| CoedgeKey { face: f_lat, edge, side };
+    topo.set_pcurve(key(e_apex, Side::Left), Some(line2((0.0, cone.apex_v()), (1.0, 0.0), full)))?;
+    topo.set_pcurve(key(e_seam, Side::Right), Some(line2((TAU, 0.0), (0.0, -1.0), Interval::new(0.0, slant))))?;
+    topo.set_pcurve(key(e_base, Side::Right), Some(line2((0.0, 0.0), (1.0, 0.0), full)))?;
+    topo.set_pcurve(key(e_seam, Side::Left), Some(line2((0.0, 0.0), (0.0, -1.0), Interval::new(0.0, slant))))?;
+    let s_disc = add_surface(topo, SurfaceDef::Plane(Plane { frame: Frame::from_zx(origin, down, x)? }))?;
+    let f_disc = topo.make_face(&[&[CoedgeSpec { edge: e_base, sense: Sense::Forward }]], Some(SurfaceCarrier { surface: s_disc, sense: Sense::Forward }))?;
+    let uses = [f_lat, f_disc].map(|face| FaceUseSpec { face, side: Side::Left });
+    let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &uses }])?;
+    let body = topo.make_body(&[volume])?;
+    Ok(ConeIds { vertices: [va, vb], edges: [e_base, e_seam, e_apex], faces: [f_lat, f_disc], volume, body, lateral_surface: s_lat })
+}
+
+/// Ids of the brick-with-a-void fixture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoidBrickIds {
+    /// The outer box (its `volume` and `body` are the solid's).
+    pub outer: BrickIds,
+    /// The cavity box. Its faces' stored normals point into the cavity (out of the solid); its
+    /// `volume` and `body` are the same as `outer`'s.
+    pub void: BrickIds,
+}
+
+/// A brick `[min, min + size]` with a box-shaped cavity `[void_min, void_min + void_size]`: one
+/// volume with an `Outer` shell (ring 0) and a `Void` shell (ring 1), 16 vertices, 24 edges, 12
+/// faces. Euler characteristic 4, volume `prod(size) - prod(void_size)`, area the sum of both
+/// boxes' surface areas. The cavity must lie strictly inside the brick (not checked).
+pub fn brick_with_void<E: TopologyEdit + ?Sized>(topo: &mut E, min: Point3, size: [f64; 3], void_min: Point3, void_size: [f64; 3]) -> Result<VoidBrickIds, FixtureError> {
+    let o = brick_parts(topo, min, size, false)?;
+    let c = brick_parts(topo, void_min, void_size, true)?;
+    let outer_uses: Vec<FaceUseSpec> = o.faces.iter().map(|&face| FaceUseSpec { face, side: Side::Left }).collect();
+    let void_uses: Vec<FaceUseSpec> = c.faces.iter().map(|&face| FaceUseSpec { face, side: Side::Left }).collect();
+    let volume = topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &outer_uses }, ShellSpec { kind: ShellKind::Void, uses: &void_uses }])?;
+    let body = topo.make_body(&[volume])?;
+    Ok(VoidBrickIds {
+        outer: BrickIds { min, size, vertices: o.vertices, edges: o.edges, faces: o.faces, volume, body },
+        void: BrickIds { min: void_min, size: void_size, vertices: c.vertices, edges: c.edges, faces: c.faces, volume, body },
+    })
+}
+
+/// Ids of the nested-spheres fixture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NestedSpheresIds {
+    /// One sphere per radius, ascending radius.
+    pub spheres: Vec<SphereFaceIds>,
+    /// `volumes[0]` is the inner ball, `volumes[i]` the shell between `radii[i - 1]` and `radii[i]`.
+    pub volumes: Vec<EntityId>,
+    /// The body holding every volume.
+    pub body: EntityId,
+}
+
+/// The topology of one sphere of [`NestedSpheresIds`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SphereFaceIds {
+    /// `[south pole, north pole]`.
+    pub vertices: [EntityId; 2],
+    /// `[south pole edge, meridian seam, north pole edge]`.
+    pub edges: [EntityId; 3],
+    /// The spherical face (normal outward).
+    pub face: EntityId,
+    /// Handle of the sphere surface.
+    pub surface: EntityId,
+}
+
+/// Concentric spheres about the origin with the given strictly increasing positive `radii`: a
+/// ball inside the first sphere and a shell volume between each pair. Interior spheres are
+/// single faces with a volume on each side (the inner volume on the left, whose lower id keeps
+/// the orientation rule satisfied); each shell holds its outer sphere in an `Outer` shell and
+/// its inner sphere in a `Void` shell (ring 1, right-side use). One body holds all volumes.
+/// Counts `[2n, 3n, n, n, 1]` for `n` radii, Euler characteristic `2n`, shell volumes `4/3 pi
+/// (r_i^3 - r_{i-1}^3)`.
+pub fn nested_spheres<E: TopologyEdit + ?Sized>(topo: &mut E, radii: &[f64]) -> Result<NestedSpheresIds, FixtureError> {
+    let valid = !radii.is_empty() && radii.iter().all(|r| r.is_finite() && *r > 0.0) && radii.windows(2).all(|w| w[0] < w[1]);
+    if !valid {
+        return Err(FixtureError::Topo(TopoError::InvalidParameter("radii must be positive and strictly increasing")));
+    }
+    let mut spheres = Vec::with_capacity(radii.len());
+    for &r in radii {
+        let (vertices, edges, face, surface) = sphere_face(topo, r)?;
+        spheres.push(SphereFaceIds { vertices, edges, face, surface });
+    }
+    let mut volumes = Vec::with_capacity(radii.len());
+    for i in 0..radii.len() {
+        let outer = [FaceUseSpec { face: spheres[i].face, side: Side::Left }];
+        let v = if i == 0 {
+            topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &outer }])?
+        } else {
+            let inner = [FaceUseSpec { face: spheres[i - 1].face, side: Side::Right }];
+            topo.make_volume(&[ShellSpec { kind: ShellKind::Outer, uses: &outer }, ShellSpec { kind: ShellKind::Void, uses: &inner }])?
+        };
+        volumes.push(v);
+    }
+    let body = topo.make_body(&volumes)?;
+    Ok(NestedSpheresIds { spheres, volumes, body })
 }

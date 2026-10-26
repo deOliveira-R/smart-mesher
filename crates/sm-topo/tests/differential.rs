@@ -59,6 +59,13 @@ fn testkit_fixtures_are_identical_and_satisfy_their_expectations() {
                 })
             }),
         ),
+        ("torus", Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::torus(t, 5.0, 1.0)).map(|_| ())))),
+        ("cone", Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::cone(t, 2.0, 3.0)).map(|_| ())))),
+        (
+            "brick_with_void",
+            Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::brick_with_void(t, Point3::new(0.0, 0.0, 0.0), [10.0; 3], Point3::new(4.0, 4.0, 4.0), [2.0; 3])).map(|_| ()))),
+        ),
+        ("nested_spheres", Box::new(|| build(|t| with_op(t, OpId(1), |t| fixtures::nested_spheres(t, &[1.0, 2.0, 3.0])).map(|_| ())))),
     ];
     let all = topo::all_topo_fixtures().unwrap();
     assert_eq!(all.len(), rebuilds.len(), "all_topo_fixtures changed: add a rebuild");
