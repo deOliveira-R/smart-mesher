@@ -29,7 +29,12 @@ measurements with the CPU model and date recorded next to them.
 
 Rays: splitmix64 seeded with the FNV-1a 64 hash of the case name. Origin uniform in the box (rejected
 inside the void for C3), direction isotropic by rejection sampling in the unit ball and
-normalisation. Only IEEE-exact operations are used, so the bytes are identical on every platform.
+normalisation. **Start-region rule:** the spheres are icospheres (inscribed polyhedra, vertices on
+the true sphere), so a point with `inscribed radius < |p| < radius` is inside the analytic ball but
+outside the faceted one; such starts are rejected (a band of about 1e-3 of the radius, computed
+exactly from the triangle planes), so every start label is correct for both the faceted model and
+the analytic ball. Without this rule 10 of 200 000 C2 starts were mislabelled and DAGMC reported them
+as lost. Only IEEE-exact operations are used, so the bytes are identical on every platform.
 Default 200 000 rays per case (`--rays N` to change; `--check-gen` only matches the default).
 
 ## File formats (little-endian)
@@ -112,9 +117,9 @@ sanity/overhead number (brute force over one or five spheres); it is not a compe
 
 ```
 6b2e378f02c9d2f112f5ca47cf66f7eb7a7f546cc34c5811b591d136d877d2c4  C1/facets.bin
-0641e93c63e625ea2cfac216cab650cbc8a9ea51478e852a5c90a942aa9456a3  C1/rays.bin
+42f6c62bae567e93724d60fddd5e682b8307a932cc33b0e8dd4c533a94c66047  C1/rays.bin
 cd4171181096f065ef35c578020776cbc6fca4427d1e12339d29fc6b21db2b94  C2/facets.bin
-03b05d73cbee67781e1177a9d786374ac9c9e25bf271258c9599706ef3c9d3f4  C2/rays.bin
+a4bad00372dbb1d3200ed2c418cce0387579de684ad39c5772615493055adc54  C2/rays.bin
 de41d3385e45b7545bb13c226e68f12de488e0467b80608139da64af65438ef1  C3/facets.bin
 93c78ca90f72004e4943b2de7a62be7f9cf931fbbbfee0968af45ba1afc39209  C3/rays.bin
 ```

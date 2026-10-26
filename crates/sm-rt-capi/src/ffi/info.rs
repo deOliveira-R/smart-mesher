@@ -5,6 +5,7 @@ use crate::convert::region_in;
 use crate::status::*;
 use crate::types::*;
 use std::ffi::{CStr, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Free a tracker handle. Contexts made from it keep the tracker alive until they are freed.
 /// Returns `0`.
@@ -120,25 +121,28 @@ pub extern "C" fn smrt_version() -> i32 {
 /// and return the full message length in bytes without the NUL (`snprintf` semantics); `0` means
 /// no message. `buf` may be null when `cap` is `0`, to ask for the length. The message belongs
 /// to the calling thread: another thread's failures never change it, and successful calls do not
-/// clear it.
+/// clear it. Its own argument errors (`SMRT_ERR_NULL` for a null `buf` with `cap > 0`,
+/// `SMRT_ERR_BAD_ARG` for a negative `cap`) are returned without touching the stored message.
 ///
 /// # Safety
 /// `buf` is null or valid for `cap` bytes of writes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn smrt_last_error_message(buf: *mut c_char, cap: i64) -> i32 {
-    guard(|| {
-        let cap = usize::try_from(cap).map_err(|_| Fail::bad("negative buffer capacity"))?;
+    // Not under `guard`: a failure here must not overwrite the message the caller asks to read.
+    let r = catch_unwind(AssertUnwindSafe(|| {
+        let Ok(cap) = usize::try_from(cap) else { return SMRT_ERR_BAD_ARG };
         let len = if cap == 0 {
             last_error().len()
         } else {
             if buf.is_null() {
-                return Err(Fail::Null("buf"));
+                return SMRT_ERR_NULL;
             }
             // SAFETY: `buf` is non-null and valid for `cap` bytes by the caller contract; `u8`
             // and `c_char` have the same layout.
             let dst = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), cap) };
             copy_last_error(dst)
         };
-        Ok(i32::try_from(len).unwrap_or(i32::MAX))
-    })
+        i32::try_from(len).unwrap_or(i32::MAX)
+    }));
+    r.unwrap_or(SMRT_ERR_PANIC)
 }

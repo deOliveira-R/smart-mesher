@@ -99,14 +99,25 @@ fn every_function_returns_null_status_for_a_null_pointer() {
     assert!(rows.len() >= 24);
     for (name, n, f) in &rows {
         for bad in 0..*n {
+            if *name == "smrt_last_error_message" {
+                // The reader reports its own argument errors without clobbering the message.
+                let keep = "sentinel message";
+                sm_rt_capi::status::set_last_error(keep);
+                assert_eq!(f(bad), SMRT_ERR_NULL, "{name}");
+                assert_eq!(err_msg(), keep, "reading the message must not replace it");
+                continue;
+            }
             assert_eq!(f(bad), SMRT_ERR_NULL, "{name}: pointer argument {bad} null");
             assert!(err_msg().contains("null pointer"), "{name}");
         }
     }
     // The same functions are fine with every pointer valid (spot check of the harness itself).
     assert!(rows.iter().find(|r| r.0 == "smrt_step").map(|r| (r.2)(usize::MAX)).is_some_and(|v| v >= 0));
-    // SAFETY: valid buffer.
-    let _ = unsafe { smrt_last_error_message(buf.as_mut_ptr().cast(), 16) };
+    // SAFETY: valid buffer; a negative capacity is a bad argument.
+    unsafe {
+        assert!(smrt_last_error_message(buf.as_mut_ptr().cast(), 16) >= 0);
+        assert_eq!(smrt_last_error_message(buf.as_mut_ptr().cast(), -1), SMRT_ERR_BAD_ARG);
+    }
 }
 
 #[test]

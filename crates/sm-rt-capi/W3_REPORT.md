@@ -28,7 +28,7 @@ x86_64 machine, not arm64.** Stretch S1 (wire `smrt_open` to sm-rt), S3 (Embree)
 | 5 | `smrt.h` / `smrt.f90` vs exports and layouts; gfortran | `header::header_and_fortran_list_exactly_the_exported_symbols`, `struct_sizes_and_offsets_match_the_header` (generated `_Static_assert`s from `size_of`/`offset_of`, compiled by `cc`; header also compiled as C++), `fortran_module_compiles_and_runs_when_gfortran_exists` (compiles the module with `-std=f2008 -Wall`, runs `version.f90` and a chord program `chord.f90` that also checks struct sizes; prints `SKIPPED ...` when gfortran is absent). I installed gfortran in this VM, so the sub-test ran here. |
 | 6 | Bundle bytes 1 vs N threads, equal to Rust `content_hash`, determinism harness | `bundle::bundle_bytes_equal_across_threads_blocks_and_the_rust_path` (1e5 rays; 1 vs 4 threads; block sizes 0/1/777/2^20; equals `TrackBundle` and its `content_hash`), `bundle_passes_the_testkit_determinism_check` (`sm_testkit::determinism::check`), `determinism::step_streams_are_bit_identical_across_runs_and_thread_counts`; unit tests of the codec in `src/bundle.rs`. All suites also pass with `RAYON_NUM_THREADS=1`. |
 | 7 | No allocation in `smrt_step` after ctx creation; overhead recorded | `alloc::step_peek_fire_allocate_nothing_after_context_creation` (counting allocator; step, peek, fire, set_direction; lattice world). Overhead: below. |
-| 8 | Bench harness | `run_bench.sh --check-gen` (passes, six SHA-256 in `bench/expected_sha256.txt` and `bench/README.md`); `docker build` of `dagmc/Dockerfile` succeeded; `dagmc_driver` ran C1, C2, C3 end to end (`bench/results/C{1,2,3}-20261026T113347Z-21952.json`); the Rust stub side ran. |
+| 8 | Bench harness | `run_bench.sh --check-gen` (passes, six SHA-256 in `bench/expected_sha256.txt` and `bench/README.md`); `docker build` of `dagmc/Dockerfile` succeeded; `dagmc_driver` ran C1, C2, C3 end to end (`bench/results/C{1,2,3}-20261026T114120Z-24599.json`); the Rust stub side ran. |
 | 9 | Lints, docs, unsafe confined | `cargo clippy -p sm-rt-capi --all-targets --all-features -- -D warnings` and without features: clean; `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-rt-capi --no-deps --all-features`: clean; `header::no_unsafe_outside_the_ffi_module` (keyword grep outside `src/ffi/`; inside, every block has a `SAFETY` comment and every `unsafe fn` a `# Safety` section) |
 | S2 | C++ RAII wrapper | `c_abi::cpp_raii_wrapper` (`tests/c/raii.cpp`) |
 
@@ -42,16 +42,24 @@ All on Intel Xeon @ 2.80 GHz, 4 vCPU, x86_64, 2026-10-26. The VM is noisy; sprea
 min and max repetitions are normal here.
 
 * **DAGMC (conda-forge dagmc 3.2.4 OBB tree + moab 5.5.1), 200 000 rays, 3 warm-up + 7 reps, median [min, max] rays/s:**
-  C1 227 224 [211 927, 242 980] (1 thread), 771 430 [627 107, 832 008] (4 threads);
-  C2 126 867 [109 474, 143 283], 517 364 [390 885, 554 928];
-  C3 346 260 [316 196, 353 076], 1 132 035 [979 108, 1 389 421].
-  Lost: 0, 10 (C2, "no hit inside a bounded volume", the same 10 rays at 1 and 4 threads), 0.
-  `check_watertight` passes for all three models. Build (`load_file` + `init_OBBTree`) 0.10-0.15 s.
+  C1 211 556 [167 129, 222 256] (1 thread), 603 113 [578 340, 771 742] (4 threads);
+  C2 128 681 [104 528, 147 056], 365 589 [353 361, 451 582];
+  C3 377 739 [328 094, 403 940], 1 109 568 [826 676, 1 534 308].
+  Lost: 0, 0, 0 (counted as ray_fire error, no hit inside a bounded volume, or point_in_volume audit
+  disagreement on 1-in-1000: 243, 328 and 200 audits).
+  `check_watertight` passes for all three models. Build (`load_file` + `init_OBBTree`) 0.10-0.14 s.
+  *A first run reported 10 lost rays on C2.* Diagnosis, with evidence: all ten failed at step 0 with
+  `point_in_volume(start_volume, start) == 0`, and their `|p|` was 0.99923, 0.79979, ... just below the
+  shell radii 1.0 and 0.8: inside the analytic ball the generator used for the start label, outside the
+  inscribed icosphere. A generator bug, not a DAGMC loss. `gen_case.py` now rejects starts in the band
+  `inscribed radius < |p| < radius` (rule in `bench/README.md`); C2 rays and the SHA-256 table changed
+  (C1 too; C3 did not), and all numbers here are from the rerun.
 * **C ABI over the analytic stub (1 thread):** per-step overhead of `smrt_step` over `Tracker::step`:
-  C1 30.9 ns [2.8, 79.4], C2 22.1 ns [16.7, 32.9], C3 35.0 ns [29.0, 44.8] (stub step 129-161 ns).
-  Rays/s through the ABI vs the direct trait loop: C1 3.6e6 vs 6.0e6, C2 3.2e6 vs 3.6e6, C3 3.9e6 vs 5.8e6.
+  C1 9.6 ns [4.6, 31.6], C2 16.7 ns [3.2, 29.1], C3 35.6 ns [21.0, 44.5] (stub step 131-185 ns); the previous
+  run of the same code gave 30.9 / 22.1 / 35.0 ns, so read it as 10 to 40 ns on this noisy VM.
+  Rays/s through the ABI vs the direct trait loop: C1 4.8e6 vs 5.9e6, C2 2.8e6 vs 3.6e6, C3 3.3e6 vs 5.8e6.
   This is an analytic brute-force stub: an overhead number, not a competitor number.
-* DAGMC vs stub crossing counts: 245 993 vs 246 007 (C1), 301 922 vs 302 030 (C2): the difference is the
+* DAGMC vs stub crossing counts: 245 988 vs 246 002 (C1), 301 831 vs 301 915 (C2): the difference is the
   facet approximation of the spheres.
 * The sm-rt side of the comparison is absent from the result files (sm-rt is not on main; the files say
   `{"skipped": ...}`). No speedup is claimed anywhere.
@@ -103,9 +111,6 @@ min and max repetitions are normal here.
 * The sm-rt half of the benchmark (`trace_rays`) has never run: sm-rt is not on main. `run_bench.sh` calls
   `cargo run --release -p sm-rt --example trace_rays -- <facets.bin> <rays.bin> [--threads N]` when the file exists
   (CLI documented in `bench/README.md`); the sm-rt worker should confirm it matches.
-* 10 of 200 000 C2 rays are lost by DAGMC ("no surface hit inside a bounded volume"); I did not investigate
-  whether they are rays through facet edges between the nested spheres or a driver artefact.
-  The sphere surfaces are watertight (`check_watertight` passes), and the count is identical at 1 and 4 threads.
 * The `step` overhead numbers are noisy (shared VM); a quiet machine should re-run `run_bench.sh`.
 * `smrt_set_state` cannot set a hierarchy deeper than 8 levels; `smrt_get_state` reports the true depth.
 * After a caught panic the context's particle state is unspecified; re-initialise it.

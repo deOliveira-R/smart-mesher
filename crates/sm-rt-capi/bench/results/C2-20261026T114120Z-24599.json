@@ -2,38 +2,38 @@
   "capi_stub": {
     "t1": {
       "backend": "stub AnalyticWorld (analytic; not a competitor number)",
-      "build_s": 2.6e-05,
+      "build_s": 3e-05,
       "case": "C2",
       "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
-      "crossings": 302030,
-      "crossings_per_s_capi": 4785028.1,
+      "crossings": 301915,
+      "crossings_per_s_capi": 4158863.3,
       "lost": 0,
       "rays": 200000,
       "rays_per_s_capi": {
-        "max": 3375552.9,
-        "median": 3168578.0,
-        "min": 2389929.2
+        "max": 3421328.6,
+        "median": 2754989.5,
+        "min": 2051853.8
       },
       "rays_per_s_rust": {
-        "max": 3735488.5,
-        "median": 3570571.1,
-        "min": 2718540.3
+        "max": 3870525.8,
+        "median": 3629637.3,
+        "min": 2509149.0
       },
       "reps": 7,
       "step_ns_capi": {
-        "max": 191.91,
-        "median": 184.07,
-        "min": 180.82
+        "max": 187.05,
+        "median": 183.09,
+        "min": 176.9
       },
       "step_ns_direct": {
-        "max": 165.15,
-        "median": 160.76,
-        "min": 159.04
+        "max": 178.29,
+        "median": 166.4,
+        "min": 156.45
       },
       "step_overhead_ns": {
-        "max": 32.88,
-        "median": 22.12,
-        "min": 16.68
+        "max": 29.1,
+        "median": 16.69,
+        "min": 3.17
       },
       "threads": 1,
       "tool": "rt_capi_bench",
@@ -41,38 +41,38 @@
     },
     "t4": {
       "backend": "stub AnalyticWorld (analytic; not a competitor number)",
-      "build_s": 8.3e-05,
+      "build_s": 2e-05,
       "case": "C2",
       "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
-      "crossings": 302030,
-      "crossings_per_s_capi": 18497631.9,
+      "crossings": 301915,
+      "crossings_per_s_capi": 13314415.7,
       "lost": 0,
       "rays": 200000,
       "rays_per_s_capi": {
-        "max": 13235204.9,
-        "median": 12248870.6,
-        "min": 9282866.5
+        "max": 9382468.4,
+        "median": 8819976.3,
+        "min": 7085062.3
       },
       "rays_per_s_rust": {
-        "max": 13286865.6,
-        "median": 11220890.7,
-        "min": 10368951.7
+        "max": 11519127.6,
+        "median": 9598863.5,
+        "min": 7679431.4
       },
       "reps": 7,
       "step_ns_capi": {
-        "max": 191.71,
-        "median": 187.81,
-        "min": 181.23
+        "max": 241.93,
+        "median": 192.06,
+        "min": 182.92
       },
       "step_ns_direct": {
-        "max": 171.25,
-        "median": 166.05,
-        "min": 160.08
+        "max": 216.16,
+        "median": 165.25,
+        "min": 158.28
       },
       "step_overhead_ns": {
-        "max": 28.22,
-        "median": 24.87,
-        "min": 10.61
+        "max": 33.37,
+        "median": 25.77,
+        "min": 16.98
       },
       "threads": 4,
       "tool": "rt_capi_bench",
@@ -82,27 +82,27 @@
   "case": "C2",
   "dagmc": {
     "t1": {
-      "audits": 308,
+      "audits": 328,
       "backend": "DAGMC OBB tree (conda-forge dagmc 3.2.4, nodoubledown)",
-      "build_s": 0.109808,
+      "build_s": 0.119294,
       "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
-      "crossings": 301922,
+      "crossings": 301831,
       "crossings_per_s": {
-        "max": 216301.8,
-        "median": 191519.7,
-        "min": 165263.0
+        "max": 221930.8,
+        "median": 194199.7,
+        "min": 157749.5
       },
-      "lost": 10,
+      "lost": 0,
       "lost_breakdown": {
-        "no_hit_inside_bounded_volume": 10,
+        "no_hit_inside_bounded_volume": 0,
         "point_in_volume_audit": 0,
         "ray_fire_error": 0
       },
       "rays": 200000,
       "rays_per_s": {
-        "max": 143283.2,
-        "median": 126867.0,
-        "min": 109474.0
+        "max": 147056.3,
+        "median": 128681.1,
+        "min": 104528.3
       },
       "reps": 7,
       "threads": 1,
@@ -110,27 +110,27 @@
       "warmup": 3
     },
     "t4": {
-      "audits": 308,
+      "audits": 328,
       "backend": "DAGMC OBB tree (conda-forge dagmc 3.2.4, nodoubledown)",
-      "build_s": 0.11806,
+      "build_s": 0.119359,
       "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
-      "crossings": 301922,
+      "crossings": 301831,
       "crossings_per_s": {
-        "max": 837725.6,
-        "median": 781017.2,
-        "min": 590084.1
+        "max": 681506.7,
+        "median": 551730.0,
+        "min": 533276.9
       },
-      "lost": 10,
+      "lost": 0,
       "lost_breakdown": {
-        "no_hit_inside_bounded_volume": 10,
+        "no_hit_inside_bounded_volume": 0,
         "point_in_volume_audit": 0,
         "ray_fire_error": 0
       },
       "rays": 200000,
       "rays_per_s": {
-        "max": 554928.5,
-        "median": 517363.5,
-        "min": 390885.1
+        "max": 451581.6,
+        "median": 365588.7,
+        "min": 353361.3
       },
       "reps": 7,
       "threads": 4,
@@ -146,7 +146,7 @@
       "0/6 (0%) unsealed volumes",
       "leaky surface ids=",
       "leaky volume ids=",
-      "0.090039 seconds"
+      "0.125404 seconds"
     ],
     "facets": "/data/C2/facets.bin",
     "surfaces": 6,
@@ -155,9 +155,9 @@
     "volumes": 6,
     "watertight": true
   },
-  "date_utc": "2026-10-26T11:34:34+00:00",
+  "date_utc": "2026-10-26T11:42:15+00:00",
   "note": "record-only measurements; the stub numbers are analytic overhead numbers, not competitor numbers",
-  "run_id": "20261026T113347Z-21952",
+  "run_id": "20261026T114120Z-24599",
   "sm_rt": {
     "skipped": "sm-rt trace_rays example not available"
   },

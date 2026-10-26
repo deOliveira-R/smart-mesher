@@ -93,6 +93,12 @@ All pointers are checked for null first. `ctx` functions take the context of exa
 | `smrt_dag_ray_fire`, `smrt_dag_point_in_volume`, `smrt_dag_next_vol`, `smrt_dag_surface_sense`, `smrt_dag_get_angle`, `smrt_dag_measure_volume`, `smrt_dag_measure_area` | DAGMC shims |
 | `smrt_version()`, `smrt_last_error_message(buf, cap)` | |
 
+Fortran spelling: `fortran/smrt.f90` mirrors `smrt.h` with four renames the language forces (Fortran is
+case-insensitive and `end`/`kind` are poor identifiers): `SMRT_VERSION` is `SMRT_ABI_VERSION`
+everywhere (C, Fortran and Rust), `SmrtStep%end` is `end_code`, the `kind` argument of
+`smrt_resolve_boundary` is `resp_kind`, and the `uint64_t` hash fields of `SmrtInfo` are `int64` bit
+patterns. `smrt_version()` is the one entry without `guard`: it returns a constant and cannot panic.
+
 `SmrtState`, `SmrtStep`, `SmrtLocated`, `SmrtLevel[8]` mirror the contract. Hierarchy levels past
 eight are counted in `levels_total` and not copied (`levels_len <= 8`): truncated, never an overrun.
 `smrt_set_state` refuses `levels_total != levels_len` or more than eight levels (`-102`).
@@ -164,16 +170,18 @@ median with min and max, CPU model recorded. DAGMC side: conda-forge `dagmc` 3.2
 error, no hit inside a bounded volume, or `point_in_volume` disagreement on a 1-in-1000 audit.
 
 Recorded on 2026-10-26, Intel Xeon @ 2.80 GHz, 4 vCPU (x86_64 VM, Docker Engine 29.9.2; the
-arm64 build was not tried here), 200 000 rays per case. Files: `bench/results/C*-20261026T113347Z-21952.json`.
+arm64 build was not tried here), 200 000 rays per case. Files: `bench/results/C*-20261026T114120Z-24599.json`.
 The VM is noisy (min/max spread of 10 to 30 %); read the medians as magnitudes.
 
 | Case | DAGMC 1 thread, rays/s (median [min, max]) | DAGMC 4 threads | crossings | lost | `check_watertight` |
 |---|---|---|---|---|---|
-| C1 icosphere shell in a box | 227 224 [211 927, 242 980] | 771 430 [627 107, 832 008] | 245 993 | 0 | pass |
-| C2 five nested icospheres | 126 867 [109 474, 143 283] | 517 364 [390 885, 554 928] | 301 922 | 10 (ray_fire found no surface) | pass |
-| C3 box with spherical void | 346 260 [316 196, 353 076] | 1 132 035 [979 108, 1 389 421] | 200 000 | 0 | pass |
+| C1 icosphere shell in a box | 211 556 [167 129, 222 256] | 603 113 [578 340, 771 742] | 245 988 | 0 | pass |
+| C2 five nested icospheres | 128 681 [104 528, 147 056] | 365 589 [353 361, 451 582] | 301 831 | 0 | pass |
+| C3 box with spherical void | 377 739 [328 094, 403 940] | 1 109 568 [826 676, 1 534 308] | 200 000 | 0 | pass |
 
-DAGMC `build_s` (load + `init_OBBTree`): 0.10 to 0.15 s per case. The sm-rt side is not in these files
+DAGMC `build_s` (load + `init_OBBTree`): 0.10 to 0.14 s per case. An earlier run with a generator that
+mislabelled 10 C2 starts (inside the analytic shell, outside the inscribed facets) counted those as lost;
+the start-region rule in `bench/README.md` removed them. The sm-rt side is not in these files
 (`sm-rt` is not on main; the script records `{"skipped": ...}` and says so).
 
 C ABI over the analytic stub (`rt_capi_bench`, same rays, sphere geometry of C1/C2/C3 replaced by
@@ -181,12 +189,15 @@ exact spheres; **not a competitor number**), 1 thread:
 
 | Case | direct `Tracker::fire` loop, rays/s | same loop through the C ABI, rays/s | `step` direct, ns | `step` via `smrt_step`, ns | overhead per step, ns (median [min, max]) |
 |---|---|---|---|---|---|
-| C1 | 6.03e6 | 3.63e6 | 142.7 | 158.4 | 30.9 [2.8, 79.4] |
-| C2 | 3.57e6 | 3.17e6 | 160.8 | 184.1 | 22.1 [16.7, 32.9] |
-| C3 | 5.84e6 | 3.87e6 | 128.5 | 161.2 | 35.0 [29.0, 44.8] |
+| C1 | 5.94e6 | 4.82e6 | 131.4 | 142.9 | 9.6 [4.6, 31.6] |
+| C2 | 3.63e6 | 2.75e6 | 166.4 | 183.1 | 16.7 [3.2, 29.1] |
+| C3 | 5.81e6 | 3.25e6 | 185.2 | 222.2 | 35.6 [21.0, 44.5] |
+
+Run-to-run spread on this VM is large: the same measurement in a previous run gave 30.9, 22.1 and 35.0 ns.
+Read it as "10 to 40 ns per step".
 
 Cross-checks: the stub (exact spheres) and DAGMC (faceted spheres) agree on the crossing count to
-14 of 246 007 (C1) and 108 of 302 030 (C2) crossings, the facet error; C3 differs by design (the
+14 of 246 002 (C1) and 84 of 301 915 (C2) crossings, the facet error; C3 differs by design (the
 stub treats the void as a region, DAGMC as the implicit complement). The per-step overhead is a few
 tens of ns on a stub whose own step costs 130 to 200 ns; against a fast mesh walker it will be a
 larger share, so the ABI is for the per-particle loop, with `smrt_trace_bundle` for bulk work.

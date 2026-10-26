@@ -57,8 +57,9 @@ impl SplitMix {
     }
 }
 
-/// The generator of `bench/gen_case.py`, for runs without a rays file (start regions are
-/// recomputed by the tracker, so only origins and directions matter).
+/// The generator of `bench/gen_case.py` without its facet-band rejection, for runs without a rays
+/// file (start regions are recomputed by the tracker and the analytic stub has no facet band, so
+/// only origins and directions matter; use `--rays` for the exact benchmark rays).
 fn generated(case: &str, n: usize, radii: &[f64]) -> Rays {
     let mut rng = SplitMix(fnv1a64(case));
     let (mut o, mut d) = (Vec::with_capacity(n), Vec::with_capacity(n));

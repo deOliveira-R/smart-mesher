@@ -85,7 +85,15 @@ static void trace_range(moab::DagMC& dag, const Rays& R, size_t lo, size_t hi, E
       if (dag.ray_fire(vol, pos, dir, surf, dist, &history, 0.0, 1) != moab::MB_SUCCESS) {
         c.lost++; c.lost_error++; break;
       }
-      if (surf == 0) { c.lost++; c.lost_no_hit++; break; }
+      if (surf == 0) {
+        if (std::getenv("SMRT_DEBUG_AUDIT") && c.lost_no_hit < 12) {
+          int in_start = -1;
+          dag.point_in_volume(vol, pos, in_start, dir);
+          std::fprintf(stderr, "no hit: ray %zu step %u start_region %d |pos|=%.9g point_in_volume(vol, pos)=%d\n", i, step, (int)r0,
+                       std::sqrt(pos[0]*pos[0]+pos[1]*pos[1]+pos[2]*pos[2]), in_start);
+        }
+        c.lost++; c.lost_no_hit++; break;
+      }
       if (dag.next_vol(surf, vol, next) != moab::MB_SUCCESS) { c.lost++; c.lost_error++; break; }
       for (int k = 0; k < 3; k++) pos[k] += dist * dir[k];
       c.crossings++;

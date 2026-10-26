@@ -97,6 +97,20 @@ def icosphere(radius, subdivisions):
     return verts, tris
 
 
+def inscribed_radius(verts, tris):
+    """Smallest distance from the origin to a triangle plane: the faceted sphere contains the ball
+    of this radius, and every vertex lies on the true sphere."""
+    best = float("inf")
+    for a, b, c in tris:
+        pa, pb, pc = verts[a], verts[b], verts[c]
+        u = (pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
+        v = (pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2])
+        n = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+        norm = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+        best = min(best, abs(n[0] * pa[0] + n[1] * pa[1] + n[2] * pa[2]) / norm)
+    return best
+
+
 def box(half):
     """Axis-aligned box, 12 triangles, outward normals."""
     h = half
@@ -124,14 +138,17 @@ def build_case(name):
     if name == "C1":
         v, t = icosphere(1.0, 5)
         soup.add(v, t, 0, 1)  # ball inside, shell region outside
+        inradii = [inscribed_radius(v, t)]
         v, t = box(HALF)
         soup.add(v, t, 1, -1)
         radii = [1.0]
     elif name == "C2":
         radii = [0.2, 0.4, 0.6, 0.8, 1.0]
+        inradii = []
         for k, r in enumerate(radii):
             v, t = icosphere(r, 4)
             soup.add(v, t, k, k + 1)
+            inradii.append(inscribed_radius(v, t))
         v, t = box(HALF)
         soup.add(v, t, len(radii), -1)
     elif name == "C3":
@@ -139,26 +156,36 @@ def build_case(name):
         soup.add(v, t, 0, -1)
         v, t = icosphere(1.0, 5)
         soup.add(v, t, 0, -1, flip=True)  # normal points into the void, out of the solid
+        inradii = [inscribed_radius(v, t)]
         radii = [1.0]
     else:
         raise SystemExit(f"unknown case {name!r}")
-    return soup, radii
+    return soup, radii, inradii
 
 
-def start_region(name, radii, p):
+def start_region(name, radii, inradii, p):
+    """Region of a start point, or None if it is not a valid start.
+
+    The spheres are icospheres: inscribed polyhedra whose vertices lie on the true sphere, so the
+    facets lie up to a sagitta inside it. A point with inradius < |p| < radius is inside the
+    analytic ball but outside the faceted one, and its region would depend on the model. Such
+    points are rejected (the band is ~1e-3 of the radius), which makes every label exact for both
+    the faceted model and the analytic ball."""
     r = math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2])
+    if any(rin < r < rad for rin, rad in zip(inradii, radii)):
+        return None
     if name == "C3":
-        return 0 if r > radii[0] else None  # inside the void: not a start
-    return sum(1 for q in radii if r > q)
+        return 0 if r >= radii[0] else None  # inside the void: not a start
+    return sum(1 for q in radii if r >= q)
 
 
-def make_rays(name, radii, n):
+def make_rays(name, radii, inradii, n):
     rng = SplitMix64(fnv1a64(name))
     out, regions = [], []
     while len(regions) < n:
         p = tuple((2.0 * rng.unit() - 1.0) * HALF for _ in range(3))
         d = rng.direction()
-        reg = start_region(name, radii, p)
+        reg = start_region(name, radii, inradii, p)
         if reg is None:
             continue
         out.append(p + d)
@@ -167,7 +194,7 @@ def make_rays(name, radii, n):
 
 
 def write_case(name, outdir, n_rays):
-    soup, radii = build_case(name)
+    soup, radii, inradii = build_case(name)
     d = os.path.join(outdir, name)
     os.makedirs(d, exist_ok=True)
     fpath, rpath = os.path.join(d, "facets.bin"), os.path.join(d, "rays.bin")
@@ -179,7 +206,7 @@ def write_case(name, outdir, n_rays):
             f.write(struct.pack("<III", *t))
         for s in soup.sides:
             f.write(struct.pack("<ii", *s))
-    rays, regions = make_rays(name, radii, n_rays)
+    rays, regions = make_rays(name, radii, inradii, n_rays)
     with open(rpath, "wb") as f:
         f.write(struct.pack("<I", len(rays)))
         for r in rays:

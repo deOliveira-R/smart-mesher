@@ -1,5 +1,8 @@
 ! smrt.f90: Fortran (iso_c_binding) interfaces to libsmrt, the C ABI of crate sm-rt-capi.
 ! Mirrors include/smrt.h; see that file for the conventions (status codes, ids, threading).
+! Names differ from smrt.h only where Fortran needs it: the SmrtStep component `end` is `end_code` and the
+! `kind` argument of smrt_resolve_boundary is `resp_kind`; SMRT_VERSION is SMRT_ABI_VERSION (Fortran is
+! case-insensitive and would clash with the function smrt_version); uint64 fields are int64 bit patterns.
 ! Link with -lsm_rt_capi. Handles are type(c_ptr); a context is used by one thread at a time.
 module smrt
   use, intrinsic :: iso_c_binding
