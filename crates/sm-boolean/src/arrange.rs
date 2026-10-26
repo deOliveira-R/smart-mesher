@@ -1,0 +1,514 @@
+//! Stage 4 of the kernel: apply pieces to the topology.
+//!
+//! Vertices are found or created (a [`VertexIndex`] per apply group), existing edges are split
+//! where a vertex lies on them, every piece becomes sub-edges between consecutive vertices
+//! (an existing edge is reused when one already connects the same vertices along the same
+//! geometry), and each face is arranged: its cuts are inserted one chain at a time with
+//! `split_face`, the remaining cuts following their children.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use sm_core::{EntityId, Point3};
+use sm_geom_api::{CurveDef, Interval, Uv};
+use sm_topo_api::{Carrier, CoedgeSpec, CurveCarrier, Dim, FaceCut, InnerLoopAssign, PointClass, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt};
+
+use crate::cc;
+use crate::error::BooleanError;
+use crate::faceclass;
+use crate::geo;
+use crate::pieces::{CurveSrc, Piece};
+use crate::registry::VertexIndex;
+
+/// One cut to insert into a face.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Cut {
+    pub edge: EntityId,
+    /// Vertex the edge starts at, and the one it ends at.
+    pub tail: EntityId,
+    pub head: EntityId,
+    /// A point strictly inside the edge, used to decide which child of a split owns it.
+    pub mid: Point3,
+}
+
+/// What [`apply`] did.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Applied {
+    /// Original face -> the live faces it became (only faces that were cut).
+    pub fragments: BTreeMap<EntityId, Vec<EntityId>>,
+    /// Every edge a piece produced or reused, with the original faces it was inserted into.
+    pub cut_edges: Vec<(EntityId, Vec<EntityId>)>,
+    /// Edges created for pieces (not reused).
+    pub new_edges: Vec<EntityId>,
+    /// Vertices created.
+    pub new_vertices: Vec<EntityId>,
+}
+
+/// The owned definition of a piece's curve.
+fn piece_def<E: TopologyEdit + ?Sized>(topo: &E, src: &CurveSrc) -> Option<CurveDef> {
+    match src {
+        CurveSrc::New(d) => Some(d.clone()),
+        CurveSrc::Existing(h) => topo.shapes().curve_def(*h).cloned(),
+    }
+}
+
+struct Applier<'a, E: TopologyEdit + ?Sized> {
+    topo: &'a mut E,
+    lin: f64,
+    out: Applied,
+}
+
+/// Apply `pieces` (all of one group) to the topology. `generated_from` is recorded on every new
+/// edge's faces by the caller; here only geometry and topology change.
+pub(crate) fn apply<E: TopologyEdit + ?Sized>(topo: &mut E, pieces: &[&Piece], lin: f64, face_order: &[EntityId]) -> Result<Applied, BooleanError> {
+    let mut ap = Applier { topo, lin, out: Applied::default() };
+    ap.run(pieces, face_order)?;
+    Ok(ap.out)
+}
+
+impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
+    fn run(&mut self, pieces: &[&Piece], face_order: &[EntityId]) -> Result<(), BooleanError> {
+        if pieces.is_empty() {
+            return Ok(());
+        }
+        // Faces and the cells around them.
+        let mut faces: BTreeSet<EntityId> = BTreeSet::new();
+        for p in pieces {
+            faces.extend(p.faces.iter().copied());
+            faces.extend(p.on_boundary.iter().copied());
+        }
+        let mut edges: BTreeSet<EntityId> = BTreeSet::new();
+        let mut index = VertexIndex::new(self.lin);
+        let mut seen_v: BTreeSet<EntityId> = BTreeSet::new();
+        for &f in &faces {
+            for &e in self.topo.face_edges(f) {
+                if !edges.insert(e) {
+                    continue;
+                }
+                if let Some((s, t)) = self.topo.edge_ends(e) {
+                    for v in [s, t] {
+                        if seen_v.insert(v)
+                            && let Some(p) = geo::vertex_point(&*self.topo, v)
+                        {
+                            index.insert(v, p);
+                        }
+                    }
+                }
+            }
+        }
+        // Curve handles for new curves, one per key.
+        let mut handles: BTreeMap<usize, EntityId> = BTreeMap::new();
+        for p in pieces {
+            if let CurveSrc::New(def) = &p.src
+                && !handles.contains_key(&p.key)
+            {
+                let h = self.topo.shapes_mut()?.add_curve(def.clone())?;
+                handles.insert(p.key, h);
+            }
+        }
+        // Vertices at piece ends.
+        let mut ends: Vec<(EntityId, EntityId)> = Vec::with_capacity(pieces.len());
+        let mut defs: Vec<CurveDef> = Vec::with_capacity(pieces.len());
+        for p in pieces {
+            let def = piece_def(&*self.topo, &p.src).ok_or(BooleanError::Unsupported("a piece's curve is not in the store"))?;
+            let c = def.as_curve();
+            let (a, b) = (c.eval(p.range.lo), c.eval(p.range.hi));
+            let va = self.vertex_at(&mut index, a)?;
+            let vb = if p.closed { va } else { self.vertex_at(&mut index, b)? };
+            ends.push((va, vb));
+            defs.push(def);
+        }
+        // Split existing edges where a vertex lies on them.
+        let mut edge_children: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
+        for &e in &edges {
+            let kids = self.split_edge_at_vertices(e, &index)?;
+            if kids.len() > 1 {
+                edge_children.insert(e, kids);
+            }
+        }
+        // Sub-edges of every piece.
+        let mut cuts: BTreeMap<EntityId, Vec<Cut>> = BTreeMap::new();
+        for (pi, p) in pieces.iter().enumerate() {
+            let handle = handles.get(&p.key).copied();
+            let (va, vb) = ends[pi];
+            let _ = handle;
+            let c = defs[pi].as_curve();
+            // Interior vertices on the piece.
+            let mut mids: Vec<(f64, EntityId)> = Vec::new();
+            for &(v, q) in index.all() {
+                if v == va || v == vb {
+                    continue;
+                }
+                if let Some((d, t)) = cc::dist_to_range(c, p.range, q)
+                    && d <= self.lin
+                    && t > p.range.lo
+                    && t < p.range.hi
+                {
+                    mids.push((t, v));
+                }
+            }
+            mids.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+            let mut chain: Vec<(f64, EntityId)> = vec![(p.range.lo, va)];
+            chain.extend(mids);
+            chain.push((p.range.hi, vb));
+            for w in chain.windows(2) {
+                let ((ta, u), (tb, v)) = (w[0], w[1]);
+                if u == v && !(p.closed && chain.len() == 2) {
+                    continue;
+                }
+                let midp = c.eval(0.5 * (ta + tb));
+                // Reuse an edge that already runs between the same vertices along the same curve.
+                let target_faces: Vec<EntityId> = p.faces.iter().chain(p.on_boundary.iter()).copied().collect();
+                let existing = self.find_edge(u, v, midp, &edges, &edge_children);
+                let edge = match existing {
+                    Some(e) => e,
+                    None => {
+                        let h = match &p.src {
+                            CurveSrc::New(_) => handles[&p.key],
+                            CurveSrc::Existing(h) => *h,
+                        };
+                        let e = self.topo.make_edge(u, v, Some(CurveCarrier { curve: h, range: Interval::new(ta, tb), sense: Sense::Forward }))?;
+                        self.out.new_edges.push(e);
+                        e
+                    }
+                };
+                let (tail, head) = self.topo.edge_ends(edge).unwrap_or((u, v));
+                let mut inserted_into = Vec::new();
+                for &f in &p.faces {
+                    // Skip a face whose boundary already holds the edge.
+                    if self.topo.face_edges(f).binary_search(&edge).is_ok() {
+                        continue;
+                    }
+                    cuts.entry(f).or_default().push(Cut { edge, tail, head, mid: midp });
+                    inserted_into.push(f);
+                }
+                let _ = target_faces;
+                self.out.cut_edges.push((edge, inserted_into));
+            }
+        }
+        // Arrange each face.
+        let order: Vec<EntityId> = if face_order.is_empty() { cuts.keys().copied().collect() } else { face_order.iter().copied().filter(|f| cuts.contains_key(f)).collect() };
+        for f in order {
+            let mut list = cuts.remove(&f).unwrap_or_default();
+            list.sort_by_key(|c| c.edge);
+            list.dedup_by_key(|c| c.edge);
+            let frags = self.arrange(f, list)?;
+            self.out.fragments.insert(f, frags);
+        }
+        // Faces that got cuts but were not in `face_order` (should not happen) are arranged too.
+        let rest: Vec<EntityId> = cuts.keys().copied().collect();
+        for f in rest {
+            let mut list = cuts.remove(&f).unwrap_or_default();
+            list.sort_by_key(|c| c.edge);
+            list.dedup_by_key(|c| c.edge);
+            let frags = self.arrange(f, list)?;
+            self.out.fragments.insert(f, frags);
+        }
+        Ok(())
+    }
+
+    fn vertex_at(&mut self, index: &mut VertexIndex, p: Point3) -> Result<EntityId, BooleanError> {
+        if let Some(v) = index.find(p) {
+            return Ok(v);
+        }
+        let v = self.topo.make_vertex(p)?;
+        index.insert(v, p);
+        self.out.new_vertices.push(v);
+        Ok(v)
+    }
+
+    /// Split `edge` at every indexed vertex lying strictly inside it; returns the live pieces in
+    /// edge order (`[edge]` if nothing was split).
+    fn split_edge_at_vertices(&mut self, edge: EntityId, index: &VertexIndex) -> Result<Vec<EntityId>, BooleanError> {
+        let Some((vs, ve)) = self.topo.edge_ends(edge) else { return Ok(vec![edge]) };
+        let Carrier::Curve(cc0) = self.topo.carrier(edge).clone() else { return Ok(vec![edge]) };
+        let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Ok(vec![edge]) };
+        let mut hits: Vec<(f64, EntityId)> = Vec::new();
+        for &(v, q) in index.all() {
+            if v == vs || v == ve {
+                // A closed edge's own vertex is an end; nothing to split there.
+                continue;
+            }
+            if let Some((d, t)) = cc::dist_to_range(curve, cc0.range, q)
+                && d <= self.lin
+                && t > cc0.range.lo
+                && t < cc0.range.hi
+            {
+                hits.push((t, v));
+            }
+        }
+        if hits.is_empty() {
+            return Ok(vec![edge]);
+        }
+        // Edge direction order: increasing parameter for a forward carrier, decreasing otherwise.
+        hits.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+        if cc0.sense == Sense::Reversed {
+            hits.reverse();
+        }
+        hits.dedup_by(|a, b| a.1 == b.1);
+        let mut kids = Vec::with_capacity(hits.len() + 1);
+        let mut cur = edge;
+        for (t, v) in hits {
+            let [first, second] = self.topo.split_edge(cur, v, t)?;
+            kids.push(first);
+            cur = second;
+        }
+        kids.push(cur);
+        Ok(kids)
+    }
+
+    /// A live edge between `u` and `v` that runs through `mid` (and, for a closed edge, covers the
+    /// range), among the cells of this apply.
+    fn find_edge(&self, u: EntityId, v: EntityId, mid: Point3, edges: &BTreeSet<EntityId>, children: &BTreeMap<EntityId, Vec<EntityId>>) -> Option<EntityId> {
+        let mut cand: Vec<EntityId> = Vec::new();
+        for inc in self.topo.coboundary(u) {
+            if Dim::of_real_kind(inc.cell.kind()) == Some(Dim::Edge) {
+                cand.push(inc.cell);
+            }
+        }
+        cand.sort();
+        cand.dedup();
+        for e in cand {
+            if !self.topo.is_alive(e) {
+                continue;
+            }
+            // Only edges of this apply: originals (or their pieces) and edges created here.
+            let known = edges.contains(&e) || children.values().any(|k| k.contains(&e)) || self.out.new_edges.contains(&e);
+            if !known {
+                continue;
+            }
+            let Some((s, t)) = self.topo.edge_ends(e) else { continue };
+            if !((s == u && t == v) || (s == v && t == u)) {
+                continue;
+            }
+            let Carrier::Curve(cc0) = self.topo.carrier(e) else { continue };
+            let Some(ec) = self.topo.shapes().curve(cc0.curve) else { continue };
+            if let Some((d, _)) = cc::dist_to_range(ec, cc0.range, mid)
+                && d <= self.lin
+            {
+                return Some(e);
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Face arrangement
+// ---------------------------------------------------------------------------------------------
+
+/// A cut chain chosen for insertion.
+struct Step {
+    kind: StepKind,
+    /// Coedges in traversal order.
+    chain: Vec<CoedgeSpec>,
+    /// Indices into the cut list that the chain consumes.
+    used: Vec<usize>,
+}
+
+enum StepKind {
+    /// Open chain between two distinct vertices of the outer loop.
+    Chain,
+    /// Closed chain: interior (no vertex on the face) or through a vertex occurring twice.
+    Closed,
+    /// A single edge joining two different loops: bridge them.
+    Bridge(EntityId),
+}
+
+impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
+    /// Insert `cuts` into `face`; returns the live fragments (ascending).
+    pub(crate) fn arrange(&mut self, face: EntityId, cuts: Vec<Cut>) -> Result<Vec<EntityId>, BooleanError> {
+        let mut work: Vec<(EntityId, Vec<Cut>)> = vec![(face, cuts)];
+        let mut done: Vec<EntityId> = Vec::new();
+        while let Some((f, cuts)) = work.pop() {
+            if cuts.is_empty() {
+                done.push(f);
+                continue;
+            }
+            let step = self.next_step(f, &cuts)?;
+            if let StepKind::Bridge(e) = step.kind {
+                self.topo.bridge_loops(f, e)?;
+                let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
+                work.push((f, rest));
+                continue;
+            }
+            let has_inner = self.topo.loops(f).any(|l| l.ring > 0);
+            let inner = if has_inner { InnerLoopAssign::ByPointTest } else { InnerLoopAssign::None };
+            let cut = match step.kind {
+                StepKind::Chain if step.chain.len() == 1 => FaceCut::Chord { edge: step.chain[0].edge },
+                StepKind::Chain => FaceCut::Chain { edges: &step.chain },
+                StepKind::Closed => FaceCut::ClosedLoop { edges: &step.chain },
+                StepKind::Bridge(_) => unreachable!("handled above"),
+            };
+            let [c0, c1] = self.topo.split_face(f, cut, inner)?;
+            let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
+            let (mut r0, mut r1) = (Vec::new(), Vec::new());
+            for c in rest {
+                let (class, _) = faceclass::classify(&*self.topo, c0, c.mid, self.lin)?;
+                if class == PointClass::In {
+                    r0.push(c);
+                } else {
+                    let (class1, _) = faceclass::classify(&*self.topo, c1, c.mid, self.lin)?;
+                    if class1 != PointClass::In {
+                        return Err(BooleanError::Unsupported("a cut lies on neither side of the cut just inserted (crossing cuts inside a face)"));
+                    }
+                    r1.push(c);
+                }
+            }
+            work.push((c1, r1));
+            work.push((c0, r0));
+        }
+        done.sort();
+        Ok(done)
+    }
+
+    /// Loop vertex positions of a face: vertex -> list of `(ring, index)`.
+    fn loop_positions(&self, f: EntityId) -> BTreeMap<EntityId, Vec<(u16, usize)>> {
+        let mut m: BTreeMap<EntityId, Vec<(u16, usize)>> = BTreeMap::new();
+        for lp in self.topo.loops(f) {
+            for (i, key) in lp.keys().enumerate() {
+                let Some((s, t)) = self.topo.edge_ends(key.edge) else { continue };
+                let tail = if key.side == Side::Right { t } else { s };
+                m.entry(tail).or_default().push((lp.ring, i));
+            }
+        }
+        m
+    }
+
+    /// Depth-first walk from `cur` along unused cuts to a vertex on a face loop. On success `path`
+    /// holds `(cut index, vertex it is entered from)` and the loop vertex reached is returned.
+    fn walk(cuts: &[Cut], incident: &BTreeMap<EntityId, Vec<usize>>, pos: &BTreeMap<EntityId, Vec<(u16, usize)>>, cur: EntityId, used: &mut Vec<usize>, path: &mut Vec<(usize, EntityId)>, depth: usize) -> Option<EntityId> {
+        if pos.contains_key(&cur) {
+            return Some(cur);
+        }
+        if depth > cuts.len() {
+            return None;
+        }
+        let mut nexts: Vec<usize> = incident.get(&cur).into_iter().flatten().copied().filter(|j| !used.contains(j)).collect();
+        nexts.sort_by_key(|&j| cuts[j].edge);
+        for j in nexts {
+            used.push(j);
+            path.push((j, cur));
+            let nxt = if cuts[j].tail == cur { cuts[j].head } else { cuts[j].tail };
+            if let Some(end) = Self::walk(cuts, incident, pos, nxt, used, path, depth + 1) {
+                return Some(end);
+            }
+            used.pop();
+            path.pop();
+        }
+        None
+    }
+
+    fn chain_of(cuts: &[Cut], path: &[(usize, EntityId)]) -> Vec<CoedgeSpec> {
+        path.iter().map(|&(j, from)| CoedgeSpec { edge: cuts[j].edge, sense: if cuts[j].tail == from { Sense::Forward } else { Sense::Reversed } }).collect()
+    }
+
+    fn next_step(&self, f: EntityId, cuts: &[Cut]) -> Result<Step, BooleanError> {
+        let pos = self.loop_positions(f);
+        let mut incident: BTreeMap<EntityId, Vec<usize>> = BTreeMap::new();
+        for (i, c) in cuts.iter().enumerate() {
+            incident.entry(c.tail).or_default().push(i);
+            incident.entry(c.head).or_default().push(i);
+        }
+        let ring_of = |v: EntityId| -> Option<u16> { pos.get(&v).and_then(|ps| ps.iter().map(|p| p.0).min()) };
+        let mut order: Vec<usize> = (0..cuts.len()).collect();
+        order.sort_by_key(|&i| cuts[i].edge);
+        // 1. Chains starting at a loop vertex.
+        for &i in &order {
+            for start in [cuts[i].tail, cuts[i].head] {
+                if !pos.contains_key(&start) {
+                    continue;
+                }
+                let mut used = vec![i];
+                let mut path = vec![(i, start)];
+                let cur = if cuts[i].tail == start { cuts[i].head } else { cuts[i].tail };
+                let Some(end) = Self::walk(cuts, &incident, &pos, cur, &mut used, &mut path, 0) else {
+                    // A dead end from this start; try the other end / next cut.
+                    continue;
+                };
+                let chain = Self::chain_of(cuts, &path);
+                if start == end {
+                    let n = pos.get(&start).map_or(0, Vec::len);
+                    if n != 2 {
+                        return Err(BooleanError::Unsupported("a closed cut touches the face boundary at a vertex that is not a periodic seam vertex"));
+                    }
+                    return Ok(Step { kind: StepKind::Closed, chain, used });
+                }
+                let (rs, re) = (ring_of(start), ring_of(end));
+                if rs != re {
+                    if used.len() == 1 {
+                        return Ok(Step { kind: StepKind::Bridge(cuts[i].edge), chain, used });
+                    }
+                    return Err(BooleanError::Unsupported("a multi-edge cut joins two different loops of a face (bridge_loops takes a single edge)"));
+                }
+                if rs != Some(0) {
+                    return Err(BooleanError::Unsupported("a cut runs from an inner loop back to the same inner loop"));
+                }
+                for v in [start, end] {
+                    if pos.get(&v).map_or(0, Vec::len) > 1 {
+                        return Err(BooleanError::Unsupported("a cut ends at a vertex that occurs more than once in the face loop (pole or seam corner)"));
+                    }
+                }
+                return Ok(Step { kind: StepKind::Chain, chain, used });
+            }
+        }
+        // 2. A cycle strictly inside the face.
+        let i0 = order[0];
+        let start = cuts[i0].tail;
+        let mut used = vec![i0];
+        let mut path = vec![(i0, start)];
+        let mut cur = cuts[i0].head;
+        let mut guard = 0;
+        while cur != start {
+            guard += 1;
+            if guard > cuts.len() + 2 {
+                return Err(BooleanError::Unsupported("interior cut does not close"));
+            }
+            let mut nexts: Vec<usize> = incident.get(&cur).into_iter().flatten().copied().filter(|j| !used.contains(j)).collect();
+            nexts.sort_by_key(|&j| cuts[j].edge);
+            let Some(&j) = nexts.first() else { return Err(BooleanError::Unsupported("an interior cut is a dangling chain")) };
+            used.push(j);
+            path.push((j, cur));
+            cur = if cuts[j].tail == cur { cuts[j].head } else { cuts[j].tail };
+        }
+        let mut chain = Self::chain_of(cuts, &path);
+        // The disk child runs counter-clockwise seen from the face's right side.
+        if self.loop_orientation(f, &chain)? < 0.0 {
+            chain.reverse();
+            for c in &mut chain {
+                c.sense = c.sense.flip();
+            }
+        }
+        Ok(Step { kind: StepKind::Closed, chain, used })
+    }
+
+    /// Signed area of a closed chain in the parameter space of `f`, times the carrier sense
+    /// (positive: counter-clockwise seen from the face's right side).
+    fn loop_orientation(&self, f: EntityId, chain: &[CoedgeSpec]) -> Result<f64, BooleanError> {
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let dom = surf.domain();
+        let mut pts: Vec<Uv> = Vec::new();
+        let mut prev: Option<Uv> = None;
+        for spec in chain {
+            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else { return Err(BooleanError::Unsupported("an edge has no curve")) };
+            let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
+            const N: usize = 16;
+            for k in 0..N {
+                let frac = k as f64 / N as f64;
+                let along = spec.sense == Sense::Forward;
+                let t = geo::edge_param(&cc0, if along { frac } else { 1.0 - frac });
+                let pr = surf.project(curve.eval(t), prev)?;
+                let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)));
+                pts.push(uv);
+                prev = Some(uv);
+            }
+        }
+        let n = pts.len();
+        let mut a = 0.0;
+        for i in 0..n {
+            let (p, q) = (pts[i], pts[(i + 1) % n]);
+            a += p.u * q.v - q.u * p.v;
+        }
+        Ok(0.5 * a * sc.sense.sign())
+    }
+}
+

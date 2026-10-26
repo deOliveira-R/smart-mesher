@@ -132,3 +132,51 @@ pub(crate) fn classify_uv<V: TopologyView + ?Sized>(view: &V, f: EntityId, uv: U
     let (polys, dom) = polygons(view, f)?;
     Ok((if inside(&polys, &dom, uv) { PointClass::In } else { PointClass::Out }, uv))
 }
+
+/// A point strictly inside the trimmed face, as far from the boundary as a coarse search finds:
+/// the centroid when it lies inside, else the best of a grid over the parameter bounding box.
+pub(crate) fn interior_point<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Result<Option<Point3>, BooleanError> {
+    let Some((surf, _)) = geo::face_surface(view, f) else { return Ok(None) };
+    let lin = view.tolerance().linear;
+    if let Ok(fm) = view.face_moments(f)
+        && let Some(c) = fm.centroid()
+        && let Ok(pr) = surf.project(c, None)
+        && pr.distance <= 1e-3
+    {
+        let p = pr.point;
+        if matches!(classify(view, f, p, lin)?.0, PointClass::In) {
+            // Prefer the centroid unless it is uncomfortably close to the boundary.
+            let d = boundary_distance(view, f, p);
+            if d > 1e-3 * fm.area.sqrt().max(lin) {
+                return Ok(Some(p));
+            }
+        }
+    }
+    let (polys, dom) = polygons(view, f)?;
+    let (mut lo, mut hi) = (Uv::new(f64::INFINITY, f64::INFINITY), Uv::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for lp in &polys {
+        for q in lp {
+            lo = Uv::new(lo.u.min(q.u), lo.v.min(q.v));
+            hi = Uv::new(hi.u.max(q.u), hi.v.max(q.v));
+        }
+    }
+    if !(lo.u.is_finite() && hi.u.is_finite()) {
+        return Ok(None);
+    }
+    let mut best: Option<(f64, Point3)> = None;
+    const N: usize = 11;
+    for i in 1..N {
+        for j in 1..N {
+            let uv = Uv::new(lo.u + (hi.u - lo.u) * i as f64 / N as f64, lo.v + (hi.v - lo.v) * j as f64 / N as f64);
+            if !inside(&polys, &dom, uv) {
+                continue;
+            }
+            let p = surf.eval(uv);
+            let d = boundary_distance(view, f, p);
+            if d > lin && best.is_none_or(|b| d > b.0) {
+                best = Some((d, p));
+            }
+        }
+    }
+    Ok(best.map(|b| b.1))
+}

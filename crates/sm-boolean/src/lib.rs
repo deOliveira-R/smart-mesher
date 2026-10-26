@@ -11,15 +11,21 @@
 //! aborts the operation when a function returns `Err`, and tests use
 //! `sm_topo_api::fixtures::with_op`. [`merge_check`] and [`locate_point`] are read-only.
 
+mod arrange;
+mod bodies;
 mod cc;
 pub mod error;
 mod faceclass;
 mod geo;
+pub mod imprint;
 pub mod locate;
 pub mod merge;
+mod pieces;
 mod poly2;
+mod registry;
 
 pub use error::BooleanError;
+pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use locate::{PointLocation, locate_point};
 pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
 
