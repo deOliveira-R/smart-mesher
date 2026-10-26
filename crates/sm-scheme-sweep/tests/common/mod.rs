@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod rng;
+pub mod surf;
 
 use sm_scheme_api::SchemeRegistry;
 use sm_scheme_api::stubs::{
@@ -133,4 +134,14 @@ pub fn plan_only(
     let driver = Driver::new(reg, &solver, &picker);
     let input = MeshInput::new(topo, model, &WholeFaces, sel);
     driver.plan(&input, intent)
+}
+
+/// [`registry`] plus the test-local source schemes.
+pub fn registry_with_sources() -> SchemeRegistry {
+    let mut r = registry();
+    r.register(Box::new(surf::GridFace)).expect("gridface");
+    r.register(Box::new(surf::Fan)).expect("fan");
+    r.register(Box::new(surf::Ring)).expect("ring");
+    r.register(Box::new(surf::OnePolygon)).expect("onepolygon");
+    r
 }
