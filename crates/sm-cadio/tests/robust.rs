@@ -174,7 +174,7 @@ fn one_case(idx: u64, corpus: &[(String, Vec<u8>)]) -> String {
         let est = tree_bytes(&file);
         assert!(est <= 20 * bytes.len() + 4096, "{label}: parse tree of ~{est} bytes");
     }
-    let opts = ReadOptions { assume_unit: Some(LengthUnit::Mm), to_unit: if idx % 3 == 0 { Some(LengthUnit::Cm) } else { None }, weld_tol: if idx % 5 == 0 { 1e-3 } else { 1e-6 }, ..ReadOptions::default() };
+    let opts = ReadOptions { assume_unit: Some(LengthUnit::Mm), to_unit: if idx.is_multiple_of(3) { Some(LengthUnit::Cm) } else { None }, weld_tol: if idx.is_multiple_of(5) { 1e-3 } else { 1e-6 }, ..ReadOptions::default() };
     if let Ok(model) = read_step(&bytes, &opts) {
         // Whatever reads must realize without panicking (errors are fine). NURBS models are
         // skipped: the orientation self-check integrates them (about 8 s for the loft in debug

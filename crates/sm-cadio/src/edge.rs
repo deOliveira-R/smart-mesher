@@ -47,7 +47,7 @@ pub(crate) fn fit_edge(def: &CurveDef, p_start: Point3, p_end: Point3, same_sens
     let ps = curve.project(p_start, None).map_err(|e| mismatch(format!("cannot project the start vertex: {e}")))?;
     let pe = if closed { ps } else { curve.project(p_end, None).map_err(|e| mismatch(format!("cannot project the end vertex: {e}")))? };
     let gap = ps.distance.max(pe.distance);
-    if !(gap <= tol) {
+    if gap.is_nan() || gap > tol {
         return Err(mismatch(format!("vertex lies {gap:e} from the edge curve (limit {tol:e})")));
     }
     let side = if same_sense { Sense::Forward } else { Sense::Reversed };

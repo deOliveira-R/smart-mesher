@@ -143,46 +143,46 @@ pub(crate) fn context_units(file: &StepFile, ctx: u64) -> Result<ContextUnits, S
     let e: &Entity = ents.get(ctx, ctx)?;
     let mut length = None;
     let mut angle = FileAngle { name: "radian".into(), rad: 1.0 };
-    if let Some(r) = e.rec("GLOBAL_UNIT_ASSIGNED_CONTEXT") {
-        if let Some(Param::List(units)) = r.params.first() {
-            for u in units {
-                if let Param::Ref(uid) = u {
-                    match unit(ents, *uid, ctx, 0)? {
-                        Unit::Length(l) => length = Some(l),
-                        Unit::Angle(a) => angle = a,
-                        Unit::Other => {}
-                    }
+    if let Some(r) = e.rec("GLOBAL_UNIT_ASSIGNED_CONTEXT")
+        && let Some(Param::List(units)) = r.params.first()
+    {
+        for u in units {
+            if let Param::Ref(uid) = u {
+                match unit(ents, *uid, ctx, 0)? {
+                    Unit::Length(l) => length = Some(l),
+                    Unit::Angle(a) => angle = a,
+                    Unit::Other => {}
                 }
             }
         }
     }
     let mut uncertainty = None;
-    if let Some(r) = e.rec("GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT") {
-        if let Some(Param::List(us)) = r.params.first() {
-            for u in us {
-                let Param::Ref(uid) = u else { continue };
-                let ue = ents.get(*uid, ctx)?;
-                let Some(rec) = ue.rec("UNCERTAINTY_MEASURE_WITH_UNIT") else { continue };
-                let value = match rec.params.first() {
-                    Some(Param::Typed(_, inner)) => match &**inner {
-                        Param::Real(v) => *v,
-                        Param::Int(v) => *v as f64,
-                        _ => continue,
-                    },
-                    Some(Param::Real(v)) => *v,
+    if let Some(r) = e.rec("GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT")
+        && let Some(Param::List(us)) = r.params.first()
+    {
+        for u in us {
+            let Param::Ref(uid) = u else { continue };
+            let ue = ents.get(*uid, ctx)?;
+            let Some(rec) = ue.rec("UNCERTAINTY_MEASURE_WITH_UNIT") else { continue };
+            let value = match rec.params.first() {
+                Some(Param::Typed(_, inner)) => match &**inner {
+                    Param::Real(v) => *v,
+                    Param::Int(v) => *v as f64,
                     _ => continue,
-                };
-                let factor = match rec.params.get(1) {
-                    Some(Param::Ref(r)) => match (unit(ents, *r, *uid, 0)?, &length) {
-                        (Unit::Length(l), Some(fl)) if fl.um > 0.0 => l.um / fl.um,
-                        _ => 1.0,
-                    },
+                },
+                Some(Param::Real(v)) => *v,
+                _ => continue,
+            };
+            let factor = match rec.params.get(1) {
+                Some(Param::Ref(r)) => match (unit(ents, *r, *uid, 0)?, &length) {
+                    (Unit::Length(l), Some(fl)) if fl.um > 0.0 => l.um / fl.um,
                     _ => 1.0,
-                };
-                if value.is_finite() && value >= 0.0 {
-                    uncertainty = Some(value * factor);
-                    break;
-                }
+                },
+                _ => 1.0,
+            };
+            if value.is_finite() && value >= 0.0 {
+                uncertainty = Some(value * factor);
+                break;
             }
         }
     }

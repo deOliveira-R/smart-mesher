@@ -97,7 +97,7 @@ fn decide_flips(s: &Solid, o: &RealizeOptions) -> Result<Vec<bool>, StepError> {
     let mut scratch = CellComplex::new();
     scratch.begin_op(OpId(1))?;
     let flips = vec![false; s.shells.len()];
-    let r = build(&mut scratch, &[s], &[flips.clone()], true, o);
+    let r = build(&mut scratch, &[s], std::slice::from_ref(&flips), true, o);
     let out = match r {
         Ok(r) => s
             .shells
@@ -372,7 +372,7 @@ fn insert_poles<E: TopologyEdit + ?Sized>(
         let mid = s.curves[e.curve].def.as_curve().eval(0.5 * (e.range.lo + e.range.hi));
         let v_mid = project_uv(surf, mid, face_id)?.v;
         let dv = spec.at - v_mid;
-        if !(dv.abs() > 1e-12) {
+        if dv.is_nan() || dv.abs() <= 1e-12 {
             return Err(StepError::GeometryMismatch { id: face_id, msg: "the edge before a pole does not leave the pole".into() });
         }
         let u_in = prev.ok_or(StepError::GeometryMismatch { id: face_id, msg: "a pole loop must contain a curve edge".into() })?;

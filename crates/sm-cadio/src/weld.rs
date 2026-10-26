@@ -72,7 +72,7 @@ fn samples(e: &Edge, curve: &dyn ParametricCurve) -> [Point3; 5] {
 /// and the direction of the input edge relative to the kept one.
 pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(usize, Sense)> {
     let mut out: Vec<(usize, Sense)> = (0..edges.len()).map(|i| (i, Sense::Forward)).collect();
-    if !(tol > 0.0) {
+    if tol.is_nan() || tol <= 0.0 {
         return out;
     }
     let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();

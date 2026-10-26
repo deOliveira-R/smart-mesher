@@ -1,5 +1,8 @@
 //! Performance record (acceptance 15, record-only): parse a generated 50 MB file, import 1000
 //! disjoint bricks, weld 1e5 vertices. The numbers are written to DESIGN.md, not gated.
+//!
+//! Run: `cargo bench -p sm-cadio --bench perf`.
+#![allow(missing_docs)]
 
 use std::sync::Arc;
 
@@ -73,7 +76,6 @@ fn weld_1e5(c: &mut Criterion) {
     g.sample_size(10);
     g.bench_function("vertices_1e5", |b| b.iter(|| weld_vertices(&pts, 1e-6)));
     g.finish();
-    let _ = Registry::new();
 }
 
 criterion_group!(benches, parse_50mb, import_1000_bricks, weld_1e5);

@@ -96,7 +96,7 @@ impl<'a> Geo<'a> {
                 let a = self.ents.rec(id, by, "LINE")?;
                 let origin = self.point(a.reference(1)?, id)?;
                 let v = self.ents.rec(a.reference(2)?, id, "VECTOR")?;
-                if !(v.finite(2)? > 0.0) {
+                if v.finite(2)? <= 0.0 {
                     return Err(v.bad(2, "vector magnitude must be positive"));
                 }
                 let d = self.direction(v.reference(1)?, v.id)?;
@@ -166,7 +166,7 @@ impl<'a> Geo<'a> {
                 let a = self.ents.rec(id, by, "CONICAL_SURFACE")?;
                 let frame = self.frame(a.reference(1)?, id)?;
                 let r = a.finite(2)? * self.scale;
-                if !(r >= 0.0) {
+                if r < 0.0 {
                     return Err(a.bad(2, "radius must not be negative"));
                 }
                 let half = a.finite(3)? * self.angle;

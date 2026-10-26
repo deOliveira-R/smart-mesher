@@ -554,10 +554,8 @@ impl<'a> Parser<'a> {
         let text = &b[at..i];
         // Number tokens are ASCII by construction.
         let s = std::str::from_utf8(text).map_err(|_| self.syntax(at, "malformed number"))?;
-        if !real {
-            if let Ok(v) = s.parse::<i64>() {
-                return Ok(Param::Int(v));
-            }
+        if !real && let Ok(v) = s.parse::<i64>() {
+            return Ok(Param::Int(v));
         }
         s.parse::<f64>().map(Param::Real).map_err(|_| self.syntax(at, "malformed number"))
     }
