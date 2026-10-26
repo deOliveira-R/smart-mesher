@@ -89,6 +89,18 @@ fn polyhedron_volumes(faces: &[Vec<Point3>]) -> (f64, f64) {
     (total, least)
 }
 
+/// The first source element that is not a triangle, quad or polygon.
+pub(crate) fn first_unsupported(elements: &sm_scheme_api::Elements) -> Option<(usize, ElemShape)> {
+    elements.iter().enumerate().find_map(|(i, (shape, nodes))| {
+        let ok = match shape {
+            ElemShape::Tri | ElemShape::Quad => true,
+            ElemShape::Polygon => nodes.len() >= 3,
+            _ => false,
+        };
+        (!ok).then_some((i, shape))
+    })
+}
+
 /// Source elements in a form the layer loops can share.
 struct Elems {
     /// `(shape, start, len)` into `ring`.
@@ -252,20 +264,13 @@ pub(crate) fn generate_prism(
         return Err(fatal("zero layers".into()));
     }
     let stride = layers + 1;
-    for (shape, nodes) in src.elements.iter() {
-        let ok = match shape {
-            ElemShape::Tri | ElemShape::Quad => true,
-            ElemShape::Polygon => nodes.len() >= 3,
-            _ => false,
-        };
-        if !ok {
-            return Err(GenerateFailure::new(
-                target,
-                name,
-                FailureKind::Unsupported,
-                format!("cannot sweep a source element of shape {shape:?}"),
-            ));
-        }
+    if let Some((e, shape)) = first_unsupported(&src.elements) {
+        return Err(GenerateFailure::new(
+            target,
+            name,
+            FailureKind::Unsupported,
+            format!("cannot sweep source element {e} of shape {shape:?}"),
+        ));
     }
 
     // Source nodes in canonical order.
@@ -571,4 +576,27 @@ pub(crate) fn generate_prism(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_scheme_api::Elements;
+
+    #[test]
+    fn only_tri_quad_and_polygon_sources_are_supported() {
+        let mut e = Elements::new();
+        e.push(ElemShape::Quad, &[0, 1, 2, 3]);
+        e.push(ElemShape::Tri, &[0, 1, 2]);
+        e.push(ElemShape::Polygon, &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(first_unsupported(&e), None);
+        e.push(ElemShape::Segment, &[0, 1]);
+        assert_eq!(first_unsupported(&e), Some((3, ElemShape::Segment)));
+        let mut c = Elements::new();
+        c.push(ElemShape::Cell(CellShape::Hex), &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(first_unsupported(&c), Some((0, ElemShape::Cell(CellShape::Hex))));
+        let mut d = Elements::new();
+        d.push(ElemShape::Polygon, &[0, 1]);
+        assert_eq!(first_unsupported(&d), Some((0, ElemShape::Polygon)));
+    }
 }
