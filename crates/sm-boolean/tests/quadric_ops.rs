@@ -83,6 +83,11 @@ fn unite_brick_and_sphere_half() {
     let t = r.topo();
     assert_valid(t);
     let v = d.outputs["volumes"][0];
+    for &f in t.volume_faces(v) {
+        let fm = t.face_moments(f).unwrap();
+        eprintln!("face {f} area {} sides {:?} outline {:?}", fm.area, t.face_sides(f), t.face_outline(f).len());
+    }
+    eprintln!("counts {:?} vol {} want {}", counts(t), volume_of(t, v), 8.0 + 2.0 * PI / 3.0);
     assert!((volume_of(t, v) - (8.0 + 2.0 * PI / 3.0)).abs() < 1e-8 * 9.0);
     assert!((total_area(t) - (24.0 + PI)).abs() < 1e-8 * 30.0);
 }
@@ -150,4 +155,21 @@ fn webcut_cylinder_through_brick() {
     let pos = d.outputs["positive"][0];
     let pv = t.boundary(pos)[0].cell;
     assert!((volume_of(t, pv) - (64.0 - 4.0 * PI)).abs() < 1e-8);
+}
+
+#[test]
+fn unite_brick_and_sphere_half_unregularized() {
+    let mut r = Rig::cc();
+    let b = r.brick([2.0; 3], [1.0; 3]);
+    let s = r.sphere(1.0, [2.0, 1.0, 1.0]);
+    let d = r.run(&Unite { bodies: vec![b.body, s.body], keep: None, regularize: Some(false), tol: None }).unwrap();
+    let t = r.topo();
+    assert_valid(t);
+    let v = d.outputs["volumes"][0];
+    for &f in t.volume_faces(v) {
+        let fm = t.face_moments(f).unwrap();
+        eprintln!("face {f} area {} outline {:?}", fm.area, t.face_outline(f).len());
+    }
+    eprintln!("counts {:?} vol {} want {}", counts(t), volume_of(t, v), 8.0 + 2.0 * PI / 3.0);
+    assert!((volume_of(t, v) - (8.0 + 2.0 * PI / 3.0)).abs() < 1e-8 * 9.0);
 }

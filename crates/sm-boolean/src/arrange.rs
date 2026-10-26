@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Interval, Uv};
-use sm_topo_api::{Carrier, CoedgeSpec, CurveCarrier, Dim, FaceCut, InnerLoopAssign, PointClass, Sense, Side, TopologyEdit, TopologyView, TopologyViewExt};
+use sm_topo_api::{Carrier, CoedgeKey, CoedgeSpec, CornerKey, CurveCarrier, Dim, FaceCut, InnerLoopAssign, PointClass, Sense, Side, TopologyEdit, TopologyViewExt};
 
 use crate::cc;
 use crate::error::BooleanError;
@@ -303,8 +303,21 @@ struct Step {
     chain: Vec<CoedgeSpec>,
     /// Indices into the cut list that the chain consumes.
     used: Vec<usize>,
+    /// Where the chain attaches: set when an end vertex occurs more than once in the face loop.
+    ends: Option<(End, End)>,
 }
 
+/// One end of a chain on the face loop.
+#[derive(Clone, Copy, Debug)]
+enum End {
+    /// A vertex that occurs once in the loop.
+    One,
+    /// A vertex that occurs several times (pole, seam): the corner is chosen from the direction
+    /// the chain leaves in, given by a point of the chain close to the vertex.
+    Multi(EntityId, Point3),
+}
+
+#[derive(Clone, Copy)]
 enum StepKind {
     /// Open chain between two distinct vertices of the outer loop.
     Chain,
@@ -333,11 +346,21 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             }
             let has_inner = self.topo.loops(f).any(|l| l.ring > 0);
             let inner = if has_inner { InnerLoopAssign::ByPointTest } else { InnerLoopAssign::None };
-            let cut = match step.kind {
-                StepKind::Chain if step.chain.len() == 1 => FaceCut::Chord { edge: step.chain[0].edge },
-                StepKind::Chain => FaceCut::Chain { edges: &step.chain },
-                StepKind::Closed => FaceCut::ClosedLoop { edges: &step.chain },
-                StepKind::Bridge(_) => unreachable!("handled above"),
+            let corners = match step.ends {
+                Some((a, b)) => {
+                    let ca = self.resolve_corner(f, a)?;
+                    let cb = self.resolve_corner(f, b)?;
+                    Some((ca, cb))
+                }
+                None => None,
+            };
+            let cut = match (step.kind, corners) {
+                (StepKind::Chain, Some((start, end))) if step.chain.len() == 1 => FaceCut::ChordAt { edge: step.chain[0].edge, start, end },
+                (StepKind::Chain, Some((start, end))) => FaceCut::ChainAt { edges: &step.chain, start, end },
+                (StepKind::Chain, None) if step.chain.len() == 1 => FaceCut::Chord { edge: step.chain[0].edge },
+                (StepKind::Chain, None) => FaceCut::Chain { edges: &step.chain },
+                (StepKind::Closed, _) => FaceCut::ClosedLoop { edges: &step.chain },
+                (StepKind::Bridge(_), _) => unreachable!("handled above"),
             };
             let [c0, c1] = self.topo.split_face(f, cut, inner)?;
             let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
@@ -432,24 +455,34 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                         return Err(BooleanError::Unsupported("a closed cut touches the face boundary at a vertex that is not a periodic seam vertex"));
                     }
                     let chain = self.orient_seam_loop(f, chain, &pos[&start])?;
-                    return Ok(Step { kind: StepKind::Closed, chain, used });
+                    return Ok(Step { kind: StepKind::Closed, chain, used, ends: None });
                 }
                 let (rs, re) = (ring_of(start), ring_of(end));
                 if rs != re {
                     if used.len() == 1 {
-                        return Ok(Step { kind: StepKind::Bridge(cuts[i].edge), chain, used });
+                        return Ok(Step { kind: StepKind::Bridge(cuts[i].edge), chain, used, ends: None });
                     }
                     return Err(BooleanError::Unsupported("a multi-edge cut joins two different loops of a face (bridge_loops takes a single edge)"));
                 }
                 if rs != Some(0) {
                     return Err(BooleanError::Unsupported("a cut runs from an inner loop back to the same inner loop"));
                 }
-                for v in [start, end] {
-                    if pos.get(&v).map_or(0, Vec::len) > 1 {
-                        return Err(BooleanError::Unsupported("a cut ends at a vertex that occurs more than once in the face loop (pole or seam corner)"));
+                let end_of = |v: EntityId, first: bool| -> End {
+                    if pos.get(&v).map_or(0, Vec::len) <= 1 {
+                        return End::One;
                     }
-                }
-                return Ok(Step { kind: StepKind::Chain, chain, used });
+                    // A point of the chain near this end.
+                    let (spec, near_tail) = if first { (chain[0], chain[0].sense == Sense::Forward) } else { (chain[chain.len() - 1], chain[chain.len() - 1].sense != Sense::Forward) };
+                    let eps = 0.02;
+                    let frac = if near_tail { eps } else { 1.0 - eps };
+                    match geo::edge_sample(&*self.topo, spec.edge, frac) {
+                        Some(p) => End::Multi(v, p),
+                        None => End::One,
+                    }
+                };
+                let ends = (end_of(start, true), end_of(end, false));
+                let ends = if matches!(ends.0, End::One) && matches!(ends.1, End::One) { None } else { Some(ends) };
+                return Ok(Step { kind: StepKind::Chain, chain, used, ends });
             }
         }
         // 2. A cycle strictly inside the face.
@@ -479,7 +512,90 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                 c.sense = c.sense.flip();
             }
         }
-        Ok(Step { kind: StepKind::Closed, chain, used })
+        Ok(Step { kind: StepKind::Closed, chain, used, ends: None })
+    }
+
+    /// The corner of the outer loop of `f` where a chain that leaves vertex `v` towards `toward`
+    /// attaches. A pole vertex has degenerate coedges spanning a range of longitudes: the one that
+    /// holds the chain's longitude is split there. Other repeated vertices (a periodic seam) pick
+    /// the corner whose interior wedge contains the chain's direction.
+    fn resolve_corner(&mut self, f: EntityId, end: End) -> Result<CornerKey, BooleanError> {
+        let End::Multi(v, toward) = end else { return Err(BooleanError::Unsupported("internal: a single occurrence needs no corner")) };
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let dom = surf.domain();
+        let entries: Vec<(EntityId, Side)> = self.topo.loops(f).find(|l| l.ring == 0).map(|l| l.entries.iter().map(|e| (e.cell, e.side)).collect()).unwrap_or_default();
+        let n = entries.len();
+        let tail = |t: &E, i: usize| -> Option<EntityId> {
+            let (e, side) = entries[i];
+            t.edge_ends(e).map(|(s, h)| if side == Side::Right { h } else { s })
+        };
+        let key = |i: usize| CoedgeKey { face: f, edge: entries[i].0, side: entries[i].1 };
+        let positions: Vec<usize> = (0..n).filter(|&i| tail(&*self.topo, i) == Some(v)).collect();
+        let prev = |i: usize| (i + n - 1) % n;
+        // Pole: a degenerate coedge starts here.
+        let deg: Vec<usize> = positions.iter().copied().filter(|&i| geo::is_degenerate(&*self.topo, entries[i].0)).collect();
+        if !deg.is_empty() {
+            let u0 = surf.project(toward, None)?.uv.u;
+            let period = dom.u.period.unwrap_or(0.0);
+            for i in deg {
+                let (edge, side) = entries[i];
+                let Some(sm_geom_api::PCurve::Line2(l)) = self.topo.pcurve(key(i)).cloned() else { return Err(BooleanError::Unsupported("a pole edge has no Line2 pcurve")) };
+                let (ua, ub) = if side == Side::Left { (l.origin.u + l.range.lo * l.dir.u, l.origin.u + l.range.hi * l.dir.u) } else { (l.origin.u + l.range.hi * l.dir.u, l.origin.u + l.range.lo * l.dir.u) };
+                let (lo, hi) = (ua.min(ub), ua.max(ub));
+                let mid = 0.5 * (lo + hi);
+                let u = if period > 0.0 { u0 + period * ((mid - u0) / period).round() } else { u0 };
+                let tol_u = 1e-8;
+                if u > lo + tol_u && u < hi - tol_u {
+                    if l.dir.u == 0.0 {
+                        return Err(BooleanError::Unsupported("a pole pcurve does not run along u"));
+                    }
+                    let t = (u - l.origin.u) / l.dir.u;
+                    let [e1, e2] = self.topo.split_degenerate_edge(edge, t)?;
+                    let incoming = if side == Side::Left { CoedgeKey { face: f, edge: e1, side } } else { CoedgeKey { face: f, edge: e2, side } };
+                    return Ok(CornerKey { face: f, incoming });
+                }
+                if (u - ua).abs() <= tol_u {
+                    return Ok(CornerKey { face: f, incoming: key(prev(i)) });
+                }
+                if (u - ub).abs() <= tol_u {
+                    return Ok(CornerKey { face: f, incoming: key(i) });
+                }
+            }
+            return Err(BooleanError::Unsupported("the chain meets a pole at a longitude outside the pole edge"));
+        }
+        // Repeated non-pole vertex: wedge test in the parameter plane.
+        let pv = geo::vertex_point(&*self.topo, v).ok_or(BooleanError::Unsupported("vertex without point"))?;
+        let c = surf.project(pv, None)?.uv;
+        let near = |p: Point3| -> Result<(f64, f64), BooleanError> {
+            let uv = surf.project(p, Some(c))?.uv;
+            Ok((dom.u.nearest_to(uv.u, c.u) - c.u, dom.v.nearest_to(uv.v, c.v) - c.v))
+        };
+        let angle = |d: (f64, f64)| d.1.atan2(d.0);
+        let a_chain = angle(near(toward)?);
+        let eps = 0.02;
+        let mut hits: Vec<usize> = Vec::new();
+        for &i in &positions {
+            let (e_out, s_out) = entries[i];
+            let (e_in, s_in) = entries[prev(i)];
+            // A point just after the corner on the outgoing coedge, just before it on the incoming.
+            let f_out = if s_out == Side::Right { 1.0 - eps } else { eps };
+            let f_in = if s_in == Side::Right { eps } else { 1.0 - eps };
+            let (Some(po), Some(pi)) = (geo::edge_sample(&*self.topo, e_out, f_out), geo::edge_sample(&*self.topo, e_in, f_in)) else { continue };
+            let (a_out, a_in) = (angle(near(po)?), angle(near(pi)?));
+            let ccw = |from: f64, to: f64, x: f64| {
+                let tau = core::f64::consts::TAU;
+                let d = |a: f64| a.rem_euclid(tau);
+                d(x - from) <= d(to - from)
+            };
+            let inside = if sc.sense == Sense::Forward { ccw(a_out, a_in, a_chain) } else { ccw(a_in, a_out, a_chain) };
+            if inside {
+                hits.push(i);
+            }
+        }
+        match hits[..] {
+            [i] => Ok(CornerKey { face: f, incoming: key(prev(i)) }),
+            _ => Err(BooleanError::Unsupported("cannot tell which corner of a repeated vertex the cut attaches to")),
+        }
     }
 
     /// Sample a chain in the parameter space of `f` (continuous in the periodic directions) with

@@ -242,6 +242,12 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
             children.push(Child { volume: vol, positive: *positive });
         }
         let child_vols: Vec<EntityId> = children.iter().map(|c| c.volume).collect();
+        let mut child_faces: BTreeSet<EntityId> = BTreeSet::new();
+        for &cv in &child_vols {
+            child_faces.extend(topo.volume_faces(cv).iter().copied());
+        }
+        let cf: Vec<EntityId> = child_faces.into_iter().collect();
+        crate::pcurves::fix_faces(topo, &cf)?;
         topo.record_split(v, &child_vols)?;
         cut_faces.extend(caps.iter().copied());
         per_body.entry(body.unwrap_or(v)).or_default().extend(children);

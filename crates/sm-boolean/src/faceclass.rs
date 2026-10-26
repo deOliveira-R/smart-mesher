@@ -48,7 +48,9 @@ pub(crate) fn polygons<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Resul
                     Some(pc) => pc.eval(t),
                     None => {
                         let pr = surf.project(curve.eval(t), prev)?;
-                        Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)))
+                        // A sample at a pole has no longitude of its own: keep the previous one.
+                        let u = if surf.jet(pr.uv).du.norm() < 1e-9 { prev.map_or(pr.uv.u, |p| p.u) } else { dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |p| p.u)) };
+                        Uv::new(u, dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |p| p.v)))
                     }
                 };
                 poly.push(uv);

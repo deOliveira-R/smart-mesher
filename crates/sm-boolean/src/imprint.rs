@@ -110,6 +110,8 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
     for v in fragments.values() {
         faces.extend(v.iter().copied());
     }
+    let frag_list: Vec<EntityId> = faces.iter().copied().collect();
+    crate::pcurves::fix_faces(topo, &frag_list)?;
     if o.merge {
         let mut scope: Vec<EntityId> = Vec::new();
         for g in &groups {

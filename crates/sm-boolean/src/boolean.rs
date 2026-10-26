@@ -366,6 +366,13 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     if o.regularize {
         crate::regularize::regularize(topo, &new_volumes)?;
     }
+    // Pcurves of the new and moved coedges on curved faces.
+    let mut result_faces: BTreeSet<EntityId> = BTreeSet::new();
+    for &v in &new_volumes {
+        result_faces.extend(topo.volume_faces(v).iter().copied());
+    }
+    let rf: Vec<EntityId> = result_faces.into_iter().collect();
+    crate::pcurves::fix_faces(topo, &rf)?;
     // 12. Final checks.
     for &v in &new_volumes {
         let m = topo.volume_moments(v)?;

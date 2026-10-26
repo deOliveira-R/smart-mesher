@@ -24,6 +24,7 @@ pub mod imprint;
 pub mod locate;
 pub mod merge;
 pub mod ops;
+mod pcurves;
 mod pieces;
 mod poly2;
 mod regularize;
