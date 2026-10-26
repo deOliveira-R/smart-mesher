@@ -1,0 +1,491 @@
+//! [`read_step`]: STEP bytes to a [`BrepModel`], independent of any topology store.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use rayon::prelude::*;
+use sm_core::Point3;
+use sm_topo_api::{Sense, ShellKind};
+
+use crate::args::{Args, Ents};
+use crate::edge::{fit_edge, with_id};
+use crate::error::{OpenEdge, StepError};
+use crate::gcodec::Geo;
+use crate::model::*;
+use crate::part21::{self, Entity, StepFile};
+use crate::units::{self, ContextUnits, FileLength};
+use crate::weld::{weld_edges, weld_vertices};
+
+/// Read a STEP file into plain B-rep data.
+///
+/// Pure: no clock, no environment, no files, no topology store. Per-face geometry is decoded
+/// under rayon and collected by index, so the result is identical for any thread count.
+///
+/// Supported: `MANIFOLD_SOLID_BREP` and `BREP_WITH_VOIDS` (also through
+/// `ORIENTED_CLOSED_SHELL`) with `ADVANCED_FACE`/`FACE_SURFACE` faces bounded by `EDGE_LOOP`s;
+/// `LINE`, `CIRCLE`, `ELLIPSE`, `B_SPLINE_CURVE_WITH_KNOTS` (also rational) curves, possibly
+/// wrapped in `SURFACE_CURVE`/`SEAM_CURVE` (the pcurves are ignored); `PLANE`,
+/// `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE` and
+/// `B_SPLINE_SURFACE_WITH_KNOTS` (also rational). Sheets are skipped with a note.
+///
+/// # Errors
+/// Any [`StepError`]; see the variants. A file without a length unit is an error unless
+/// [`ReadOptions::assume_unit`] is set.
+pub fn read_step(bytes: &[u8], opts: &ReadOptions) -> Result<BrepModel, StepError> {
+    let file = part21::parse(bytes)?;
+    read_file(&file, opts)
+}
+
+/// Solid entities of the file in ascending id order.
+pub(crate) fn solid_entities(file: &StepFile) -> Vec<(u64, SolidKind)> {
+    file.entities
+        .iter()
+        .filter_map(|(id, e)| {
+            if e.is("BREP_WITH_VOIDS") {
+                Some((*id, SolidKind::WithVoids))
+            } else if e.is("MANIFOLD_SOLID_BREP") {
+                Some((*id, SolidKind::Manifold))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Counts of entity keywords that are not imported, by category.
+pub(crate) struct Skipped {
+    pub sheets: BTreeMap<String, usize>,
+    pub unsupported: BTreeMap<String, usize>,
+    pub attributes: BTreeMap<&'static str, usize>,
+    pub assemblies: bool,
+}
+
+pub(crate) fn scan_skipped(file: &StepFile) -> Skipped {
+    let mut s = Skipped { sheets: BTreeMap::new(), unsupported: BTreeMap::new(), attributes: BTreeMap::new(), assemblies: false };
+    for e in file.entities.values() {
+        let names: Vec<&str> = match e {
+            Entity::Simple(r) => vec![r.name.as_str()],
+            Entity::Complex(v) => v.iter().map(|r| r.name.as_str()).collect(),
+        };
+        for n in names {
+            match n {
+                "SHELL_BASED_SURFACE_MODEL" | "OPEN_SHELL" | "MANIFOLD_SURFACE_SHAPE_REPRESENTATION" | "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION" => *s.sheets.entry(n.to_owned()).or_default() += 1,
+                "FACETED_BREP" | "TESSELLATED_SOLID" | "TRIANGULATED_FACE" => *s.unsupported.entry(n.to_owned()).or_default() += 1,
+                "MAPPED_ITEM" | "NEXT_ASSEMBLY_USAGE_OCCURRENCE" => s.assemblies = true,
+                "COLOUR_RGB" | "DRAUGHTING_PRE_DEFINED_COLOUR" => *s.attributes.entry("colors").or_default() += 1,
+                "STYLED_ITEM" | "OVER_RIDING_STYLED_ITEM" => *s.attributes.entry("styled items").or_default() += 1,
+                "PRESENTATION_LAYER_ASSIGNMENT" => *s.attributes.entry("layers").or_default() += 1,
+                _ if n.starts_with("TESSELLATED_") => *s.attributes.entry("tessellation").or_default() += 1,
+                _ if n.contains("TOLERANCE") && n != "UNCERTAINTY_MEASURE_WITH_UNIT" || n.starts_with("DIMENSIONAL_") || n.starts_with("DATUM") => *s.attributes.entry("PMI").or_default() += 1,
+                _ => {}
+            }
+        }
+    }
+    s
+}
+
+pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel, StepError> {
+    if !(opts.weld_tol.is_finite() && opts.weld_tol >= 0.0) {
+        return Err(StepError::Units(format!("weld tolerance {} must be finite and non-negative", opts.weld_tol)));
+    }
+    let all = solid_entities(file);
+    let selected: Vec<(u64, SolidKind)> = match &opts.solids {
+        None => all.clone(),
+        Some(ords) => {
+            let mut sel = Vec::new();
+            for &o in ords {
+                let Some(s) = all.get(o as usize) else {
+                    return Err(StepError::Units(format!("solid ordinal {o} out of range: the file has {} solids", all.len())));
+                };
+                sel.push(*s);
+            }
+            sel.sort_unstable_by_key(|s| s.0);
+            sel.dedup_by_key(|s| s.0);
+            sel
+        }
+    };
+    let mut notes: Vec<Note> = Vec::new();
+    let skipped = scan_skipped(file);
+    if !skipped.sheets.is_empty() && !opts.sheets {
+        let list: Vec<String> = skipped.sheets.iter().map(|(n, c)| format!("{c} {n}")).collect();
+        notes.push(Note::info(NoteCode::SheetsSkipped, format!("sheets not imported: {}", list.join(", ")), Vec::new()));
+    }
+    if !skipped.unsupported.is_empty() {
+        let list: Vec<String> = skipped.unsupported.iter().map(|(n, c)| format!("{c} {n}")).collect();
+        notes.push(Note::warn(NoteCode::UnsupportedEntity, format!("not imported (unsupported): {}", list.join(", ")), Vec::new()));
+    }
+    if !skipped.attributes.is_empty() {
+        let list: Vec<String> = skipped.attributes.iter().map(|(n, c)| format!("{c} {n}")).collect();
+        notes.push(Note::info(NoteCode::Attributes, format!("attribute entities not imported: {}", list.join(", ")), Vec::new()));
+    }
+    let ctx_of = units::contexts_by_item(file);
+    let default_ctx = ctx_of.values().next().copied();
+    let ents = Ents::new(file);
+    let mut solids = Vec::with_capacity(selected.len());
+    let mut unit_groups: Vec<(String, Vec<u64>)> = Vec::new();
+    let (mut welded_v, mut welded_e) = (0usize, 0usize);
+    for (id, kind) in &selected {
+        let ctx = ctx_of.get(id).copied().or(default_ctx);
+        let cu = match ctx {
+            Some(c) => units::context_units(file, c)?,
+            None => ContextUnits { length: None, angle: units::context_units_default(), uncertainty: None },
+        };
+        let (length, declared) = match (&cu.length, opts.assume_unit) {
+            (Some(l), _) => (l.clone(), true),
+            (None, Some(u)) => (FileLength { name: format!("assumed {}", u.symbol()), um: u.micrometres() }, false),
+            (None, None) => return Err(StepError::Units(format!("solid #{id}: the file declares no length unit (pass assume_unit to read it anyway)"))),
+        };
+        let target_um = opts.to_unit.map_or(length.um, |u| u.micrometres());
+        let scale = if target_um == length.um { 1.0 } else { length.um / target_um };
+        let report = UnitReport {
+            length_name: length.name.clone(),
+            length_um: length.um,
+            declared,
+            angle_name: cu.angle.name.clone(),
+            angle_rad: cu.angle.rad,
+            uncertainty: cu.uncertainty,
+            scale,
+        };
+        let key = format!(
+            "length unit {}{}{}; plane angle unit {}; {}",
+            units::describe_length(&length),
+            if declared { "" } else { " (not declared in the file)" },
+            cu.uncertainty.map_or(String::new(), |u| format!("; uncertainty {u:e}")),
+            cu.angle.name,
+            match (opts.to_unit, scale == 1.0) {
+                (Some(u), false) => format!("converted to {} (x{scale})", u.symbol()),
+                (Some(u), true) => format!("already in {}", u.symbol()),
+                (None, _) => "no conversion".to_owned(),
+            }
+        );
+        match unit_groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, v)) => v.push(*id),
+            None => unit_groups.push((key, vec![*id])),
+        }
+        let (solid, stats) = read_solid(ents, *id, *kind, report, opts, &mut notes)?;
+        welded_v += stats.0;
+        welded_e += stats.1;
+        solids.push(solid);
+    }
+    let mut unit_notes = Vec::new();
+    if selected.is_empty() {
+        // Still report the file's units when it holds no solid.
+        if let Some(c) = default_ctx {
+            let cu = units::context_units(file, c)?;
+            if let Some(l) = cu.length {
+                unit_notes.push(Note::info(NoteCode::Units, format!("length unit {}; plane angle unit {}", units::describe_length(&l), cu.angle.name), Vec::new()));
+            }
+        }
+    }
+    for (msg, ids) in unit_groups {
+        unit_notes.push(Note::info(NoteCode::Units, msg, ids));
+    }
+    notes.splice(0..0, unit_notes);
+    if welded_v + welded_e > 0 {
+        notes.push(Note::info(NoteCode::Welded, format!("welded {welded_v} vertices and {welded_e} duplicate edges"), Vec::new()));
+    }
+    if skipped.assemblies && !solids.is_empty() {
+        notes.push(Note::warn(
+            NoteCode::AssemblyTransformsIgnored,
+            "the file is an assembly: solids are imported in their local coordinates and assembly placements are ignored".to_owned(),
+            Vec::new(),
+        ));
+    }
+    Ok(BrepModel { schema: file.header.schemas.first().cloned().unwrap_or_default(), solids, notes })
+}
+
+// ---------------------------------------------------------------------------------------------
+// One solid
+
+struct RawBound {
+    outer: bool,
+    orientation: bool,
+    /// (EDGE_CURVE id, oriented edge orientation)
+    edges: Vec<(u64, bool)>,
+}
+
+struct RawFace {
+    id: u64,
+    shell: usize,
+    reversed: bool,
+    surface: u64,
+    same_sense: bool,
+    bounds: Vec<RawBound>,
+}
+
+struct RawEdge {
+    start: u64,
+    end: u64,
+    curve: u64,
+    same_sense: bool,
+}
+
+/// The closed shell behind `id` and whether an `ORIENTED_CLOSED_SHELL` reverses it.
+fn shell_of(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
+    let mut cur = id;
+    let mut by = by;
+    let mut reversed = false;
+    for _ in 0..8 {
+        let e = ents.get(cur, by)?;
+        if let Some(rec) = e.rec("ORIENTED_CLOSED_SHELL") {
+            let a = Args { id: cur, rec };
+            reversed ^= !a.boolean(3)?;
+            by = cur;
+            cur = a.reference(2)?;
+            continue;
+        }
+        if e.is("CLOSED_SHELL") {
+            return Ok((cur, reversed));
+        }
+        return Err(StepError::WrongType { id: cur, expected: "CLOSED_SHELL".into(), found: e.display_name() });
+    }
+    Err(StepError::Cycle { id })
+}
+
+fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts: &ReadOptions, notes: &mut Vec<Note>) -> Result<(Solid, (usize, usize)), StepError> {
+    let entity = ents.get(id, id)?;
+    // Name, outer shell and voids, for the simple and the complex spelling.
+    let (name, outer_ref, void_refs) = match entity {
+        Entity::Simple(r) => {
+            let a = Args { id, rec: r };
+            let voids = if kind == SolidKind::WithVoids { a.refs(2)? } else { Vec::new() };
+            (a.string(0), a.reference(1)?, voids)
+        }
+        Entity::Complex(_) => {
+            let m = entity.rec("MANIFOLD_SOLID_BREP").ok_or(StepError::Unsupported { id, entity: entity.display_name() })?;
+            let a = Args { id, rec: m };
+            let voids = match entity.rec("BREP_WITH_VOIDS") {
+                Some(r) => Args { id, rec: r }.refs(0)?,
+                None => Vec::new(),
+            };
+            (a.string(0), a.reference(1)?, voids)
+        }
+    };
+    // ---- shells and faces (topology only; geometry is decoded afterwards)
+    let mut shell_srcs: Vec<(u64, bool)> = vec![shell_of(ents, outer_ref, id)?];
+    for v in void_refs {
+        shell_srcs.push(shell_of(ents, v, id)?);
+    }
+    let mut face_ids: BTreeMap<u64, (usize, bool)> = BTreeMap::new();
+    for (si, (shell_id, reversed)) in shell_srcs.iter().enumerate() {
+        let a = ents.rec(*shell_id, id, "CLOSED_SHELL")?;
+        for f in a.refs(1)? {
+            face_ids.entry(f).or_insert((si, *reversed));
+        }
+    }
+    let mut raw_faces: Vec<RawFace> = Vec::with_capacity(face_ids.len());
+    let mut raw_edges: BTreeMap<u64, RawEdge> = BTreeMap::new();
+    let mut vertex_points: BTreeMap<u64, u64> = BTreeMap::new();
+    for (&fid, &(shell, reversed)) in &face_ids {
+        let a = ents.one_of(fid, id, &["ADVANCED_FACE", "FACE_SURFACE"])?;
+        let bound_ids = a.refs(1)?;
+        if bound_ids.is_empty() {
+            return Err(a.bad(1, "a face needs at least one bound"));
+        }
+        let surface = a.reference(2)?;
+        let same_sense = a.boolean(3)?;
+        let mut bounds = Vec::with_capacity(bound_ids.len());
+        for b in bound_ids {
+            let ba = ents.one_of(b, fid, &["FACE_OUTER_BOUND", "FACE_BOUND"])?;
+            let outer = ba.rec.name == "FACE_OUTER_BOUND";
+            let orientation = ba.boolean(2)?;
+            let loop_id = ba.reference(1)?;
+            let le = ents.get(loop_id, b)?;
+            let Some(lrec) = le.rec("EDGE_LOOP") else {
+                return Err(match le.first() {
+                    Some(r) if r.name == "VERTEX_LOOP" || r.name == "POLY_LOOP" => StepError::Unsupported { id: loop_id, entity: r.name.clone() },
+                    _ => StepError::WrongType { id: loop_id, expected: "EDGE_LOOP".into(), found: le.display_name() },
+                });
+            };
+            let la = Args { id: loop_id, rec: lrec };
+            let mut edges = Vec::new();
+            for oe in la.refs(1)? {
+                let (edge_id, orient) = oriented_edge(ents, oe, loop_id)?;
+                if let std::collections::btree_map::Entry::Vacant(slot) = raw_edges.entry(edge_id) {
+                    let ea = ents.rec(edge_id, oe, "EDGE_CURVE")?;
+                    let (v0, v1) = (ea.reference(1)?, ea.reference(2)?);
+                    for v in [v0, v1] {
+                        if let std::collections::btree_map::Entry::Vacant(s) = vertex_points.entry(v) {
+                            let va = ents.rec(v, edge_id, "VERTEX_POINT")?;
+                            s.insert(va.reference(1)?);
+                        }
+                    }
+                    slot.insert(RawEdge { start: v0, end: v1, curve: ea.reference(3)?, same_sense: ea.boolean(4)? });
+                }
+                edges.push((edge_id, orient));
+            }
+            if edges.is_empty() {
+                return Err(la.bad(1, "an edge loop needs at least one edge"));
+            }
+            bounds.push(RawBound { outer, orientation, edges });
+        }
+        raw_faces.push(RawFace { id: fid, shell, reversed, surface, same_sense, bounds });
+    }
+
+    // ---- geometry
+    let geo = Geo { ents, scale: units.scale, angle: units.angle_rad };
+    let v_ids: Vec<u64> = vertex_points.keys().copied().collect();
+    let v_pts: Vec<Point3> = v_ids.iter().map(|v| geo_point(&geo, vertex_points[v], *v)).collect::<Result<_, _>>()?;
+    // Underlying curve entity of each edge, ascending.
+    let mut edge_curve: BTreeMap<u64, u64> = BTreeMap::new();
+    for (eid, e) in &raw_edges {
+        edge_curve.insert(*eid, geo.curve_ref(e.curve, *eid)?);
+    }
+    let curve_ids: Vec<u64> = edge_curve.values().copied().collect::<BTreeSet<_>>().into_iter().collect();
+    let surface_ids: Vec<u64> = raw_faces.iter().map(|f| f.surface).collect::<BTreeSet<_>>().into_iter().collect();
+    let curve_defs = par_decode(&curve_ids, |c| geo.curve(c, c))?;
+    let surface_defs = par_decode(&surface_ids, |s| geo.surface(s, s))?;
+    let curves: Vec<CurveRec> = curve_ids.iter().zip(curve_defs).map(|(id, def)| CurveRec { id: *id, def }).collect();
+    let surfaces: Vec<SurfaceRec> = surface_ids.iter().zip(surface_defs).map(|(id, def)| SurfaceRec { id: *id, def }).collect();
+    let curve_ix: BTreeMap<u64, usize> = curve_ids.iter().enumerate().map(|(i, c)| (*c, i)).collect();
+    let surface_ix: BTreeMap<u64, usize> = surface_ids.iter().enumerate().map(|(i, c)| (*c, i)).collect();
+
+    // ---- vertex weld
+    let rep = weld_vertices(&v_pts, opts.weld_tol);
+    let mut compact = vec![usize::MAX; v_ids.len()];
+    let mut vertices: Vec<Vertex> = Vec::new();
+    for (i, r) in rep.iter().enumerate() {
+        if *r == i {
+            compact[i] = vertices.len();
+            vertices.push(Vertex { id: v_ids[i], point: v_pts[i] });
+        }
+    }
+    let v_ix: BTreeMap<u64, usize> = v_ids.iter().enumerate().map(|(i, v)| (*v, compact[rep[i]])).collect();
+    let welded_vertices = v_ids.len() - vertices.len();
+
+    // ---- edges
+    let unc = units.uncertainty.map_or(0.0, |u| u * units.scale);
+    let limit = opts.weld_tol.max(10.0 * unc);
+    let mut edges: Vec<Edge> = Vec::with_capacity(raw_edges.len());
+    let mut edge_ids: Vec<u64> = Vec::with_capacity(raw_edges.len());
+    for (eid, e) in &raw_edges {
+        let (s, t) = (v_ix[&e.start], v_ix[&e.end]);
+        let ci = curve_ix[&edge_curve[eid]];
+        let fit = fit_edge(&curves[ci].def, vertices[s].point, vertices[t].point, e.same_sense, s == t, limit).map_err(|er| with_id(er, *eid))?;
+        if fit.gap > opts.weld_tol {
+            notes.push(Note::warn(NoteCode::EdgeGap, format!("edge #{eid}: a vertex lies {:e} from the edge curve (weld tolerance {:e})", fit.gap, opts.weld_tol), vec![*eid]));
+        }
+        if fit.repaired {
+            notes.push(Note::warn(NoteCode::EdgeSense, format!("edge #{eid}: same_sense contradicts the vertices; the sense was taken from the geometry"), vec![*eid]));
+        }
+        edges.push(Edge { id: *eid, start: s, end: t, curve: ci, range: fit.range, sense: fit.sense, merged: Vec::new() });
+        edge_ids.push(*eid);
+    }
+    let merge = weld_edges(&edges, &curves, opts.weld_tol);
+    let mut new_ix = vec![usize::MAX; edges.len()];
+    let mut kept: Vec<Edge> = Vec::new();
+    for (i, e) in edges.iter().enumerate() {
+        if merge[i].0 == i {
+            new_ix[i] = kept.len();
+            kept.push(e.clone());
+        }
+    }
+    let mut welded_edges = 0;
+    for (i, (k, _)) in merge.iter().enumerate() {
+        if *k != i {
+            new_ix[i] = new_ix[*k];
+            kept[new_ix[*k]].merged.push(edge_ids[i]);
+            welded_edges += 1;
+        }
+    }
+    // (kept edge index, relative direction) by STEP edge id
+    let edge_map: BTreeMap<u64, (usize, Sense)> = edge_ids.iter().enumerate().map(|(i, id)| (*id, (new_ix[i], merge[i].1))).collect();
+
+    // ---- faces
+    let mut faces: Vec<Face> = Vec::with_capacity(raw_faces.len());
+    for rf in &raw_faces {
+        let mut order: Vec<usize> = (0..rf.bounds.len()).collect();
+        // The outer bound first (stable: file order among the others).
+        if let Some(p) = rf.bounds.iter().position(|b| b.outer) {
+            order.remove(p);
+            order.insert(0, p);
+        }
+        let mut loops = Vec::with_capacity(order.len());
+        for &bi in &order {
+            let b = &rf.bounds[bi];
+            // `.F.` on the bound or a reversed shell reverses the loop.
+            let flip = !b.orientation ^ rf.reversed;
+            let mut lp: Vec<Coedge> = b
+                .edges
+                .iter()
+                .map(|(eid, orient)| {
+                    let (ei, rel) = edge_map[eid];
+                    let forward = *orient == (rel == Sense::Forward);
+                    Coedge { edge: ei, sense: if forward { Sense::Forward } else { Sense::Reversed } }
+                })
+                .collect();
+            if flip {
+                lp.reverse();
+                for c in &mut lp {
+                    c.sense = c.sense.flip();
+                }
+            }
+            loops.push(lp);
+        }
+        let sense = if rf.same_sense ^ rf.reversed { Sense::Forward } else { Sense::Reversed };
+        faces.push(Face { id: rf.id, surface: surface_ix[&rf.surface], sense, loops, shell: rf.shell });
+    }
+    // ---- shells and closure
+    let mut shells: Vec<Shell> = shell_srcs
+        .iter()
+        .enumerate()
+        .map(|(i, (sid, _))| Shell { id: *sid, kind: if i == 0 { ShellKind::Outer } else { ShellKind::Void }, faces: Vec::new() })
+        .collect();
+    for (fi, f) in faces.iter().enumerate() {
+        shells[f.shell].faces.push(fi);
+    }
+    for sh in &shells {
+        let mut net: BTreeMap<usize, i64> = BTreeMap::new();
+        for &fi in &sh.faces {
+            for lp in &faces[fi].loops {
+                for c in lp {
+                    *net.entry(c.edge).or_default() += if c.sense == Sense::Forward { 1 } else { -1 };
+                }
+            }
+        }
+        let mut issues: Vec<OpenEdge> = net.iter().filter(|(_, n)| **n != 0).map(|(e, n)| OpenEdge { edge: kept[*e].id, net_uses: *n }).collect();
+        if !issues.is_empty() {
+            issues.sort_by_key(|i| i.edge);
+            return Err(StepError::OpenShell { solid: id, issues });
+        }
+    }
+    let solid = Solid { id, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    Ok((solid, (welded_vertices, welded_edges)))
+}
+
+fn geo_point(geo: &Geo<'_>, point_id: u64, by: u64) -> Result<Point3, StepError> {
+    let a = geo.ents.rec(point_id, by, "CARTESIAN_POINT")?;
+    let c = a.reals(1)?;
+    if c.len() != 3 || c.iter().any(|v| !v.is_finite()) {
+        return Err(a.bad(1, "expected three finite coordinates"));
+    }
+    Ok(Point3::new(c[0] * geo.scale, c[1] * geo.scale, c[2] * geo.scale))
+}
+
+/// The `EDGE_CURVE` id and effective orientation of an `ORIENTED_EDGE` (nested ones flatten).
+fn oriented_edge(ents: Ents<'_>, id: u64, by: u64) -> Result<(u64, bool), StepError> {
+    let mut cur = id;
+    let mut by = by;
+    let mut orient = true;
+    for _ in 0..4 {
+        let a = ents.rec(cur, by, "ORIENTED_EDGE")?;
+        orient ^= !a.boolean(4)?;
+        let el = a.reference(3)?;
+        if ents.get(el, cur)?.is("ORIENTED_EDGE") {
+            by = cur;
+            cur = el;
+            continue;
+        }
+        return Ok((el, orient));
+    }
+    Err(StepError::Cycle { id })
+}
+
+/// Decode `ids` in parallel, collected by index; the first error by index wins.
+fn par_decode<T: Send>(ids: &[u64], f: impl Fn(u64) -> Result<T, StepError> + Sync) -> Result<Vec<T>, StepError> {
+    if ids.len() < 128 {
+        return ids.iter().map(|&i| f(i)).collect();
+    }
+    let results: Vec<Result<T, StepError>> = ids.par_iter().map(|&i| f(i)).collect();
+    results.into_iter().collect()
+}
+
