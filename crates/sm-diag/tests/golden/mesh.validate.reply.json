@@ -1,0 +1,120 @@
+{
+  "by_code": {
+    "diag.class_retired": 23,
+    "mesh.stale": 1
+  },
+  "by_owner": [
+    {
+      "count": 1,
+      "owner": "TopoVertex#1"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#2"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#3"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#4"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#5"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#6"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#7"
+    },
+    {
+      "count": 1,
+      "owner": "TopoVertex#8"
+    },
+    {
+      "count": 1,
+      "owner": "TopoEdge#5"
+    },
+    {
+      "count": 1,
+      "owner": "TopoEdge#6"
+    }
+  ],
+  "geometry_checked": true,
+  "mesh": "Mesh#1",
+  "schema_version": 1,
+  "total": 24,
+  "truncated": true,
+  "valid": false,
+  "violations": [
+    {
+      "code": "diag.class_retired",
+      "detail": "TopoVertex#1 classifies 1 mesh entities but is no longer live",
+      "entity": {
+        "id": "MeshVertex#1",
+        "index": 0
+      },
+      "location": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "near": [],
+      "owner": "TopoVertex#1",
+      "severity": "error"
+    },
+    {
+      "code": "diag.class_retired",
+      "detail": "TopoVertex#2 classifies 1 mesh entities but is no longer live",
+      "entity": {
+        "id": "MeshVertex#2",
+        "index": 1
+      },
+      "location": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "near": [],
+      "owner": "TopoVertex#2",
+      "severity": "error"
+    },
+    {
+      "code": "diag.class_retired",
+      "detail": "TopoVertex#3 classifies 1 mesh entities but is no longer live",
+      "entity": {
+        "id": "MeshVertex#3",
+        "index": 2
+      },
+      "location": [
+        0.0,
+        2.0,
+        0.0
+      ],
+      "near": [],
+      "owner": "TopoVertex#3",
+      "severity": "error"
+    },
+    {
+      "code": "diag.class_retired",
+      "detail": "TopoVertex#4 classifies 1 mesh entities but is no longer live",
+      "entity": {
+        "id": "MeshVertex#4",
+        "index": 3
+      },
+      "location": [
+        1.0,
+        2.0,
+        0.0
+      ],
+      "near": [],
+      "owner": "TopoVertex#4",
+      "severity": "error"
+    }
+  ]
+}

@@ -1,0 +1,593 @@
+{
+  "cells": 2,
+  "dim": 3,
+  "mesh": "Mesh#1",
+  "metrics": [
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          0,
+          0,
+          1,
+          0
+        ],
+        "hi": 45.5,
+        "lo": 44.5
+      },
+      "metric": "non_orthogonality",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "higher_is_worse",
+      "summary": {
+        "max": 45.0,
+        "mean": 45.0,
+        "min": 45.0,
+        "std_dev": 0.0
+      },
+      "threshold": {
+        "fail": 70.0
+      },
+      "undefined": 10,
+      "unit": "deg",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 45.0
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          9,
+          0,
+          1,
+          1
+        ],
+        "hi": 2.0,
+        "lo": 0.0
+      },
+      "metric": "skewness",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "higher_is_worse",
+      "summary": {
+        "max": 2.0,
+        "mean": 0.34545454545454546,
+        "min": 0.0,
+        "std_dev": 0.6035706426435575
+      },
+      "threshold": {
+        "fail": 4.0,
+        "fail_boundary": 20.0
+      },
+      "undefined": 0,
+      "unit": "",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#11",
+            "index": 10
+          },
+          "grade": "ok",
+          "location": [
+            2.0,
+            2.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#9",
+            "TopoVertex#10",
+            "TopoVertex#11",
+            "TopoVertex#12"
+          ],
+          "owner": "TopoFace#7",
+          "value": 2.0
+        },
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 1.0
+        },
+        {
+          "cells": [
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#8",
+            "index": 7
+          },
+          "grade": "ok",
+          "location": [
+            1.5,
+            0.9999999999999998,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#6",
+            "TopoVertex#9",
+            "TopoVertex#11"
+          ],
+          "owner": "TopoFace#6",
+          "value": 0.4000000000000001
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          0,
+          0,
+          1,
+          0
+        ],
+        "hi": 1.0,
+        "lo": 0.0
+      },
+      "metric": "interpolation_weight",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "lower_is_worse",
+      "summary": {
+        "max": 0.5,
+        "mean": 0.5,
+        "min": 0.5,
+        "std_dev": 0.0
+      },
+      "threshold": {
+        "fail": 0.05
+      },
+      "undefined": 10,
+      "unit": "",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          0,
+          0,
+          11,
+          0
+        ],
+        "hi": 1.5,
+        "lo": 0.5
+      },
+      "metric": "face_flatness",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "lower_is_worse",
+      "summary": {
+        "max": 1.0,
+        "mean": 1.0,
+        "min": 1.0,
+        "std_dev": 0.0
+      },
+      "threshold": {
+        "warn": 0.8
+      },
+      "undefined": 0,
+      "unit": "",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 1.0
+        },
+        {
+          "cells": [
+            "MeshCell#1"
+          ],
+          "entity": {
+            "id": "MeshFace#2",
+            "index": 1
+          },
+          "grade": "ok",
+          "location": [
+            0.5,
+            0.0,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#1",
+            "TopoVertex#2",
+            "TopoVertex#5",
+            "TopoVertex#6"
+          ],
+          "owner": "TopoFace#3",
+          "value": 1.0
+        },
+        {
+          "cells": [
+            "MeshCell#1"
+          ],
+          "entity": {
+            "id": "MeshFace#3",
+            "index": 2
+          },
+          "grade": "ok",
+          "location": [
+            0.5,
+            0.5,
+            0.0
+          ],
+          "near": [
+            "TopoVertex#1",
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#4"
+          ],
+          "owner": "TopoFace#1",
+          "value": 1.0
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          0,
+          0,
+          11,
+          0
+        ],
+        "hi": 0.5,
+        "lo": -0.5
+      },
+      "metric": "face_concavity",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "higher_is_worse",
+      "summary": {
+        "max": 0.0,
+        "mean": 0.0,
+        "min": 0.0,
+        "std_dev": 0.0
+      },
+      "threshold": {
+        "fail": 10.0
+      },
+      "undefined": 0,
+      "unit": "deg",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 0.0
+        },
+        {
+          "cells": [
+            "MeshCell#1"
+          ],
+          "entity": {
+            "id": "MeshFace#2",
+            "index": 1
+          },
+          "grade": "ok",
+          "location": [
+            0.5,
+            0.0,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#1",
+            "TopoVertex#2",
+            "TopoVertex#5",
+            "TopoVertex#6"
+          ],
+          "owner": "TopoFace#3",
+          "value": 0.0
+        },
+        {
+          "cells": [
+            "MeshCell#1"
+          ],
+          "entity": {
+            "id": "MeshFace#3",
+            "index": 2
+          },
+          "grade": "ok",
+          "location": [
+            0.5,
+            0.5,
+            0.0
+          ],
+          "near": [
+            "TopoVertex#1",
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#4"
+          ],
+          "owner": "TopoFace#1",
+          "value": 0.0
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 2,
+      "entity": "cell",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          1,
+          0,
+          0,
+          1
+        ],
+        "hi": 1.0,
+        "lo": 0.15885101704315424
+      },
+      "metric": "cell_determinant",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "lower_is_worse",
+      "summary": {
+        "max": 1.0,
+        "mean": 0.5794255085215771,
+        "min": 0.15885101704315424,
+        "std_dev": 0.42057449147842285
+      },
+      "threshold": {
+        "fail": 0.001
+      },
+      "undefined": 0,
+      "unit": "",
+      "worst": [
+        {
+          "entity": {
+            "id": "MeshCell#2",
+            "index": 1
+          },
+          "grade": "ok",
+          "location": [
+            1.4999999999999998,
+            1.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7",
+            "TopoVertex#9",
+            "TopoVertex#10",
+            "TopoVertex#11",
+            "TopoVertex#12"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 0.15885101704315424
+        },
+        {
+          "entity": {
+            "id": "MeshCell#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            0.49999999999999994,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#1",
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#4",
+            "TopoVertex#5",
+            "TopoVertex#6",
+            "TopoVertex#7",
+            "TopoVertex#8"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 1.0
+        }
+      ]
+    },
+    {
+      "clusters": [],
+      "count": 11,
+      "entity": "face",
+      "histogram": {
+        "above": 0,
+        "below": 0,
+        "counts": [
+          0,
+          0,
+          1,
+          0
+        ],
+        "hi": 1.5000000000000002,
+        "lo": 0.5000000000000002
+      },
+      "metric": "volume_ratio",
+      "n_fail": 0,
+      "n_sentinel": 0,
+      "n_warn": 0,
+      "sense": "higher_is_worse",
+      "summary": {
+        "max": 1.0000000000000002,
+        "mean": 1.0000000000000002,
+        "min": 1.0000000000000002,
+        "std_dev": 0.0
+      },
+      "threshold": {
+        "fail": 100.0
+      },
+      "undefined": 10,
+      "unit": "",
+      "worst": [
+        {
+          "cells": [
+            "MeshCell#1",
+            "MeshCell#2"
+          ],
+          "entity": {
+            "id": "MeshFace#1",
+            "index": 0
+          },
+          "grade": "ok",
+          "location": [
+            1.0,
+            0.5,
+            0.5
+          ],
+          "near": [
+            "TopoVertex#2",
+            "TopoVertex#3",
+            "TopoVertex#6",
+            "TopoVertex#7"
+          ],
+          "owner": "TopoVolume#1",
+          "value": 1.0000000000000002
+        }
+      ]
+    }
+  ],
+  "profile": "openfoam",
+  "schema_version": 1,
+  "skipped": [],
+  "suggestions": [],
+  "validity": {
+    "n_degenerate": 0,
+    "n_inverted": 0,
+    "n_valid": 2
+  },
+  "verdict": "pass"
+}

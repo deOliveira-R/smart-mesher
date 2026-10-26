@@ -1,0 +1,211 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    },
+    "EntityRef": {
+      "description": "A mesh entity on the wire: its stable id and dense index.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The stable id (`MeshCell#12`); `null` when the index is out of range."
+        },
+        "index": {
+          "description": "The dense index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "OwnerCount": {
+      "description": "Number of violations owned by one model entity.",
+      "properties": {
+        "count": {
+          "description": "Violations of entities classified on it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "owner": {
+          "$ref": "#/$defs/EntityId",
+          "description": "The owning classification entity."
+        }
+      },
+      "required": [
+        "owner",
+        "count"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Severity of a violation. Errors make a mesh invalid, warnings do not.",
+      "oneOf": [
+        {
+          "const": "error",
+          "description": "The mesh is invalid.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "Worth a look; the mesh stays valid.",
+          "type": "string"
+        }
+      ]
+    },
+    "Violation": {
+      "description": "One violation with its location.",
+      "properties": {
+        "code": {
+          "description": "Stable code.",
+          "type": "string"
+        },
+        "detail": {
+          "description": "Human-readable detail.",
+          "type": "string"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The offending entity, `null` for a finding about the whole mesh."
+        },
+        "location": {
+          "description": "Vertex point, edge midpoint, face centroid or cell centroid; `null` for an out-of-range index.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "near": {
+          "description": "Model entities of dimension below the owner's, from the entity's vertex classifications\n(sorted, at most 8).",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The classification of the entity itself."
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "description": "`error` or `warning`."
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "detail",
+        "near"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Reply of `mesh.validate`.",
+  "properties": {
+    "by_code": {
+      "additionalProperties": {
+        "format": "uint",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "description": "Violations per code; sums to `total`.",
+      "type": "object"
+    },
+    "by_owner": {
+      "description": "The ten classification entities owning most violations, by count then id.",
+      "items": {
+        "$ref": "#/$defs/OwnerCount"
+      },
+      "type": "array"
+    },
+    "geometry_checked": {
+      "description": "Whether the geometric checks ran.",
+      "type": "boolean"
+    },
+    "geometry_skipped_reason": {
+      "description": "Why they did not, when `geometry_checked` is false.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mesh": {
+      "$ref": "#/$defs/EntityId",
+      "description": "The mesh."
+    },
+    "schema_version": {
+      "description": "Wire version, 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "total": {
+      "description": "All violations found, including those cut by `limit`.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "truncated": {
+      "description": "True if `violations` was cut.",
+      "type": "boolean"
+    },
+    "valid": {
+      "description": "True if there is no error-severity violation.",
+      "type": "boolean"
+    },
+    "violations": {
+      "description": "The violations sorted by severity, code, entity kind, index and detail, cut to `limit`.",
+      "items": {
+        "$ref": "#/$defs/Violation"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "mesh",
+    "valid",
+    "geometry_checked",
+    "total",
+    "by_code",
+    "by_owner",
+    "violations",
+    "truncated"
+  ],
+  "title": "ValidateReport",
+  "type": "object"
+}

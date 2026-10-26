@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    },
+    "Level": {
+      "description": "Which grade flags a cell.",
+      "oneOf": [
+        {
+          "const": "fail",
+          "description": "Only cells graded `fail`.",
+          "type": "string"
+        },
+        {
+          "const": "warn",
+          "description": "Cells graded `warn` or `fail`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProfileName": {
+      "description": "Name of a quality profile on the wire.",
+      "oneOf": [
+        {
+          "const": "generic",
+          "description": "General-purpose limits.",
+          "type": "string"
+        },
+        {
+          "const": "openfoam",
+          "description": "OpenFOAM `checkMesh` limits.",
+          "type": "string"
+        },
+        {
+          "const": "fluent",
+          "description": "Fluent orthogonal quality.",
+          "type": "string"
+        },
+        {
+          "const": "transport",
+          "description": "Planar convex faces for ray tracing and sweeps.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`mesh.flag_cells`: store the cells that fail (or warn) a quality profile as a cell set.\n\nA cell is flagged if any selected metric grades at or above `level`, or if it is invalid\n(`include_invalid`). The set is a `MeshSet` of cells named `name`, stored in the mesh so\nlater ops can target it by id. An empty selection succeeds with a `diag.nothing_to_flag`\nwarning and no set. A name already used in the mesh is an error.",
+  "properties": {
+    "include_invalid": {
+      "default": true,
+      "description": "Also flag inverted and degenerate cells (default true).",
+      "type": "boolean"
+    },
+    "level": {
+      "$ref": "#/$defs/Level",
+      "default": "fail",
+      "description": "`fail` (default) flags failing cells, `warn` also warning cells."
+    },
+    "mesh": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The mesh; defaults to the only mesh of the state.",
+      "x-entity-kind": [
+        "Mesh"
+      ]
+    },
+    "metrics": {
+      "description": "Metric names to grade instead of the profile's rules.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "Name of the set: 1 to 64 characters of `[A-Za-z0-9_.-]`, unused in the mesh.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    },
+    "profile": {
+      "$ref": "#/$defs/ProfileName",
+      "default": "generic",
+      "description": "`generic` (default), `openfoam`, `fluent` or `transport`."
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "mesh.flag_cells",
+  "type": "object"
+}
