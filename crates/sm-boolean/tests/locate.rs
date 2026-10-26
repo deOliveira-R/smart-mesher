@@ -56,3 +56,16 @@ fn cavity_is_outside_the_volume() {
     assert_eq!(locate_point(&t, b.outer.volume, p(4.0, 5.0, 5.0)).unwrap(), PointLocation::On);
     assert_eq!(locate_point(&t, b.outer.volume, p(11.0, 5.0, 5.0)).unwrap(), PointLocation::Out);
 }
+
+/// Acceptance 15: when every probe direction passes within tolerance of an edge or vertex the
+/// answer is the typed `Ambiguous`, not a guess.
+#[test]
+fn all_directions_ambiguous_is_a_typed_error() {
+    let tol = sm_geom_api::ModelTolerance::default().with_linear_max(0.49).with_linear(0.49);
+    let mut t = CellComplex::with_tolerance(tol);
+    t.begin_op(OpId(1)).unwrap();
+    let b = fixtures::brick(&mut t, p(0.0, 0.0, 0.0), [1.0, 1.0, 1.0]).unwrap();
+    t.end_op().unwrap();
+    let e = locate_point(&t, b.volume, p(0.5, 0.5, 0.5)).unwrap_err();
+    assert!(matches!(e, sm_boolean::BooleanError::Ambiguous { .. }), "{e:?}");
+}
