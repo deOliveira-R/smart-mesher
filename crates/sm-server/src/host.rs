@@ -346,6 +346,9 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
 }
 
 /// The format a `.smsh`/`.vtu` extension names; none for any other extension.
+///
+/// Note: this, `parse_format` and `sm-cli`'s `Format` do not yet know `exodus`/`openfoam`
+/// (the W3a integration task wires them; `ExportFormat` already has the variants).
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("smsh") => Some(ExportFormat::Smsh),

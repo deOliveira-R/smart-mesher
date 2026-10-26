@@ -51,9 +51,11 @@ pub fn builtin_field(spec: &SizingSpec) -> Option<Box<dyn SizeField>> {
 pub fn field_for(spec: Option<&SizingSpec>) -> Result<Option<Box<dyn SizeField>>> {
     match spec {
         None => Ok(None),
-        Some(s @ SizingSpec::Constant { size }) => builtin_field(s)
-            .map(Some)
-            .ok_or_else(|| SchemeError::Input(format!("sizing: constant size {size} must be positive and finite"))),
+        Some(s @ SizingSpec::Constant { size }) => builtin_field(s).map(Some).ok_or_else(|| {
+            SchemeError::Input(format!(
+                "sizing: constant size {size} must be positive and finite"
+            ))
+        }),
         Some(SizingSpec::Function { name, .. }) => Err(SchemeError::Input(format!(
             "sizing function '{name}' needs a SizeField (set Driver::size)"
         ))),

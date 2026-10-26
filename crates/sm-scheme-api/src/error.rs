@@ -77,8 +77,20 @@ pub struct Attempt {
 
 impl Attempt {
     /// An attempt of `scheme` on `target` that was rejected or failed in `phase`.
-    pub fn new(target: Target, scheme: SchemeName, phase: Phase, kind: FailureKind, message: impl Into<String>) -> Self {
-        Self { target, scheme, phase, kind, message: message.into() }
+    pub fn new(
+        target: Target,
+        scheme: SchemeName,
+        phase: Phase,
+        kind: FailureKind,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            target,
+            scheme,
+            phase,
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -151,12 +163,21 @@ pub struct Infeasible {
 impl Infeasible {
     /// An infeasibility over `constraints` and `entities` (sorted and deduplicated here); the
     /// driver fills [`blame`](Self::blame).
-    pub fn new(reason: impl Into<String>, mut constraints: Vec<ConstraintId>, mut entities: Vec<EntityId>) -> Self {
+    pub fn new(
+        reason: impl Into<String>,
+        mut constraints: Vec<ConstraintId>,
+        mut entities: Vec<EntityId>,
+    ) -> Self {
         constraints.sort_unstable();
         constraints.dedup();
         entities.sort_unstable();
         entities.dedup();
-        Self { reason: reason.into(), constraints, entities, blame: None }
+        Self {
+            reason: reason.into(),
+            constraints,
+            entities,
+            blame: None,
+        }
     }
 }
 

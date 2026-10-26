@@ -195,8 +195,18 @@ pub struct MeshInput<'a> {
 
 impl<'a> MeshInput<'a> {
     /// The input of one meshing run.
-    pub fn new(topo: &'a dyn TopologyView, model: &'a Model, pieces: &'a dyn PieceResolver, selection: &'a [EntityId]) -> Self {
-        Self { topo, model, pieces, selection }
+    pub fn new(
+        topo: &'a dyn TopologyView,
+        model: &'a Model,
+        pieces: &'a dyn PieceResolver,
+        selection: &'a [EntityId],
+    ) -> Self {
+        Self {
+            topo,
+            model,
+            pieces,
+            selection,
+        }
     }
 
     /// Faces of a volume target (via the resolver).
@@ -226,7 +236,11 @@ impl<'a> MeshInput<'a> {
         let mut v: Vec<EntityId> = t
             .boundary(parent)
             .iter()
-            .filter(|i| i.ring == Incidence::EMBEDDED && t.dim_of(i.cell) == Some(Dim::Edge) && !t.flags(i.cell).contains(CellFlags::DEGENERATE))
+            .filter(|i| {
+                i.ring == Incidence::EMBEDDED
+                    && t.dim_of(i.cell) == Some(Dim::Edge)
+                    && !t.flags(i.cell).contains(CellFlags::DEGENERATE)
+            })
             .map(|i| i.cell)
             .collect();
         v.sort_unstable();
@@ -287,8 +301,18 @@ pub struct IntervalCtx<'a> {
 
 impl<'a> IntervalCtx<'a> {
     /// The interval-phase context.
-    pub fn new(input: &'a MeshInput<'a>, layouts: &'a [FaceLayout], roles: &'a [(Target, Role)], targets: &'a [TargetPlan]) -> Self {
-        Self { input, layouts, roles, targets }
+    pub fn new(
+        input: &'a MeshInput<'a>,
+        layouts: &'a [FaceLayout],
+        roles: &'a [(Target, Role)],
+        targets: &'a [TargetPlan],
+    ) -> Self {
+        Self {
+            input,
+            layouts,
+            roles,
+            targets,
+        }
     }
     /// Layout of `face`.
     pub fn layout(&self, face: EntityId) -> Option<&FaceLayout> {
@@ -356,8 +380,18 @@ pub struct GenCtx<'a> {
 
 impl<'a> GenCtx<'a> {
     /// The generation-phase context.
-    pub fn new(input: &'a MeshInput<'a>, plan: &'a Plan, patches: &'a PatchSet, size: Option<&'a dyn SizeField>) -> Self {
-        Self { input, plan, patches, size }
+    pub fn new(
+        input: &'a MeshInput<'a>,
+        plan: &'a Plan,
+        patches: &'a PatchSet,
+        size: Option<&'a dyn SizeField>,
+    ) -> Self {
+        Self {
+            input,
+            plan,
+            patches,
+            size,
+        }
     }
 
     /// Solved interval count of `edge`.
@@ -463,11 +497,7 @@ impl<'a> GenCtx<'a> {
         };
         let dom = surf.domain();
         let periodic = dom.u.is_periodic() || dom.v.is_periodic();
-        let full: Vec<CoedgeKey> = t
-            .loops(face)
-            .find(|l| l.ring == lp.ring)?
-            .keys()
-            .collect();
+        let full: Vec<CoedgeKey> = t.loops(face).find(|l| l.ring == lp.ring)?.keys().collect();
         let n_uses = lp.uses.len();
         let mut out: Vec<[f64; 2]> = vec![[0.0; 2]; lp.nodes.len()];
         // (start, end) of each use when pcurve-derived.
@@ -488,7 +518,11 @@ impl<'a> GenCtx<'a> {
                 };
                 for j in 0..n {
                     let key = lp.nodes[first + j];
-                    let frac = if left { j as f64 / n as f64 } else { 1.0 - j as f64 / n as f64 };
+                    let frac = if left {
+                        j as f64 / n as f64
+                    } else {
+                        1.0 - j as f64 / n as f64
+                    };
                     let uv = match (j, self.patches.node(key)) {
                         (j, Some((_, Param::Curve(p)))) if j > 0 => {
                             let uv = pc.eval(p);
@@ -524,10 +558,10 @@ impl<'a> GenCtx<'a> {
                 continue;
             };
             let a = lp.uses[i].coedge;
-            let pole_between = full
-                .iter()
-                .position(|k| *k == a)
-                .is_some_and(|p| t.flags(full[(p + 1) % full.len()].edge).contains(CellFlags::DEGENERATE));
+            let pole_between = full.iter().position(|k| *k == a).is_some_and(|p| {
+                t.flags(full[(p + 1) % full.len()].edge)
+                    .contains(CellFlags::DEGENERATE)
+            });
             if pole_between {
                 continue;
             }
@@ -551,7 +585,9 @@ impl<'a> GenCtx<'a> {
         let mut out: Vec<Vec<NodeKey>> = Vec::new();
         let mut ends: Vec<EntityId> = Vec::new();
         for e in self.input.embedded_edges(parent) {
-            let chain = self.edge_nodes(e).ok_or_else(|| SchemeError::Input(format!("embedded edge {e} has no interval count")))?;
+            let chain = self.edge_nodes(e).ok_or_else(|| {
+                SchemeError::Input(format!("embedded edge {e} has no interval count"))
+            })?;
             if let Some((a, b)) = self.input.topo.edge_ends(e) {
                 ends.extend([a, b]);
             }

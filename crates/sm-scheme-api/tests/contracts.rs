@@ -214,7 +214,13 @@ fn a_child_without_a_scheme_blames_the_soft_parent_and_replanning_succeeds() {
             Err(e) => {
                 let (t, s) = e.blame().unwrap_or_else(|| panic!("no blame for {e}"));
                 blamed.push((t, s.as_str().to_owned()));
-                rej.insert(Attempt::new(t, s, Phase::Resolve, FailureKind::NotApplicable, e.to_string()));
+                rej.insert(Attempt::new(
+                    t,
+                    s,
+                    Phase::Resolve,
+                    FailureKind::NotApplicable,
+                    e.to_string(),
+                ));
             }
         }
     };

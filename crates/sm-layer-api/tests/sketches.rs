@@ -12,8 +12,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind, Point3, Transform, Vector3};
 use sm_layer_api::{
-    CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, TopoHost, commit_topology,
-    insert_mesh, model_txn, retire_mesh, topo_txn,
+    CoreLayers, LayerError, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, TopoHost,
+    commit_topology, insert_mesh, model_txn, retire_mesh, topo_txn,
 };
 use sm_mesh_api::{MeshEdit, MeshRead, PointIx, SerialAlloc};
 use sm_model_api::Domain;
@@ -1415,27 +1415,63 @@ fn add_mesh_set_mints_one_set_id_and_is_atomic() {
 
 #[test]
 fn replace_mesh_checks_entry_id_and_allocator() {
-    let (s, mid) = set_session();
+    let (mut s, mid) = set_session();
+    // A second mesh, whose host carries another Mesh id.
+    run(
+        &mut s,
+        &MeshRun {
+            volume: id(EntityKind::TopoVolume, 1),
+            size: 0.5,
+        },
+    )
+    .expect("second mesh");
     let layer = s.state().layer::<MeshLayer>().expect("layer").clone();
+    let other = layer
+        .meshes()
+        .map(|(i, _)| i)
+        .find(|i| *i != mid)
+        .expect("second mesh id");
     let host = layer.get(mid).expect("entry").mesh.clone();
+    let other_host = layer.get(other).expect("entry").mesh.clone();
+    let before = layer.clone();
+    let unchanged = |l: &MeshLayer| {
+        assert!(l.alloc().state().eq(before.alloc().state()));
+        assert_eq!(l.meshes().count(), before.meshes().count());
+        for (i, e) in before.meshes() {
+            assert!(Arc::ptr_eq(&l.get(i).expect("entry").mesh, &e.mesh));
+        }
+    };
     let mut l = layer.clone();
     assert!(
         l.replace_mesh(mid, host.clone(), layer.alloc().clone())
             .is_ok()
     );
+    unchanged(&l);
     assert!(
-        l.replace_mesh(
-            id(EntityKind::Mesh, 99),
-            host.clone(),
-            layer.alloc().clone()
-        )
-        .is_err(),
+        matches!(
+            l.replace_mesh(
+                id(EntityKind::Mesh, 99),
+                host.clone(),
+                layer.alloc().clone()
+            ),
+            Err(LayerError::BadMeshId(_))
+        ),
         "unknown entry"
     );
+    unchanged(&l);
+    assert!(
+        matches!(
+            l.replace_mesh(mid, other_host, layer.alloc().clone()),
+            Err(LayerError::BadMeshId(_))
+        ),
+        "host carries another mesh id"
+    );
+    unchanged(&l);
     assert!(
         l.replace_mesh(mid, host, SerialAlloc::new()).is_err(),
         "allocator may only advance"
     );
+    unchanged(&l);
 }
 
 #[test]

@@ -331,8 +331,10 @@ impl Model {
             if t.face_class(cap.face) != Some(FaceClass::Boundary) {
                 return Err(ModelError::CutInvalid(format!("cap {} is not a boundary face; remove the discarded part first", cap.face)));
             }
-            let fm = cache.face(cap.face).ok_or_else(|| ModelError::CutInvalid(format!("no moments for cap {}", cap.face)))?;
-            let (n, d) = fm.plane(tol.linear).ok_or_else(|| ModelError::CutInvalid(format!("cap {} is not planar", cap.face)))?;
+            let (n, d) = t
+                .face_plane(cap.face, tol.linear)
+                .map_err(|e| ModelError::CutInvalid(format!("no moments for cap {}: {e}", cap.face)))?
+                .ok_or_else(|| ModelError::CutInvalid(format!("cap {} is not planar", cap.face)))?;
             let hit = plan.half_spaces.iter().position(|h| {
                 let dot = n.dot(h.normal);
                 dot.abs() > 1.0 - 1e-6 && ((if dot > 0.0 { d } else { -d }) - h.offset).abs() <= dist_tol

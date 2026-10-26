@@ -101,8 +101,18 @@ pub struct CornerAssignment {
 
 impl CornerAssignment {
     /// A solved corner type.
-    pub const fn new(corner: CornerKey, vertex_type: VertexType, firmness: Firmness, angle: f64) -> Self {
-        Self { corner, vertex_type, firmness, angle }
+    pub const fn new(
+        corner: CornerKey,
+        vertex_type: VertexType,
+        firmness: Firmness,
+        angle: f64,
+    ) -> Self {
+        Self {
+            corner,
+            vertex_type,
+            firmness,
+            angle,
+        }
     }
 }
 
@@ -185,7 +195,17 @@ pub struct FaceLayout {
 
 impl FaceLayout {
     /// Construct (the type is `#[non_exhaustive]`; a [`crate::CornerPicker`] returns this).
-    pub fn new(face: sm_core::EntityId, rule: VertexRule, corners: Vec<CornerAssignment>, sides: Vec<LogicalSide>) -> Self {
-        Self { face, rule, corners, sides }
+    pub fn new(
+        face: sm_core::EntityId,
+        rule: VertexRule,
+        corners: Vec<CornerAssignment>,
+        sides: Vec<LogicalSide>,
+    ) -> Self {
+        Self {
+            face,
+            rule,
+            corners,
+            sides,
+        }
     }
 }

@@ -286,13 +286,7 @@ pub fn check_sphere(s: &Session, center: [f64; 3], r: f64) {
     assert!(shoelace * outward_uv > 0.0, "loop runs against the face normal (shoelace {shoelace})");
 }
 
-/// Model validation errors against the model layer's topology (planarity tolerance 1e-6: the
-/// second-moment planarity test loses digits at coordinates of order 10).
-///
-/// TODO(CR-2 follow-up): the loosened tolerance is a workaround for the `FaceMoments::plane`
-/// cancellation. sm-topo-api now offers the stable `TopologyView::face_plane`, but `validate` and
-/// `symmetry` (frozen sm-model-api) still call `FaceMoments::plane`; once they switch (separately
-/// approved), use `Tolerance::default()` here so the mirror-deck acceptance runs at the default.
+/// Model validation errors against the model layer's topology at the default tolerance.
 pub fn model_errors(s: &Session) -> Vec<String> {
     let l = model(s);
     sm_model_api::validate(l.model(), l.topo(), sm_model_api::Tolerance::default()).errors().map(|i| format!("{:?}: {}", i.code, i.detail)).collect()

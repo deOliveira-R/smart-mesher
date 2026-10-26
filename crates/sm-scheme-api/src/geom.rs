@@ -71,13 +71,31 @@ pub fn edge_length(t: &dyn TopologyView, e: EntityId) -> Result<f64> {
 /// parameter, doubling the panel count until two estimates agree to `1e-10` relative (at most
 /// 2^14 panels; the last estimate is returned). Deterministic. A non-positive or non-finite
 /// size is an input error.
-pub fn edge_size_goal(t: &dyn TopologyView, e: EntityId, f: &dyn crate::sizing::SizeField) -> Result<f64> {
-    const X: [f64; 5] = [0.0, -0.538_469_310_105_683_1, 0.538_469_310_105_683_1, -0.906_179_845_938_664, 0.906_179_845_938_664];
-    const W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
+pub fn edge_size_goal(
+    t: &dyn TopologyView,
+    e: EntityId,
+    f: &dyn crate::sizing::SizeField,
+) -> Result<f64> {
+    const X: [f64; 5] = [
+        0.0,
+        -0.538_469_310_105_683_1,
+        0.538_469_310_105_683_1,
+        -0.906_179_845_938_664,
+        0.906_179_845_938_664,
+    ];
+    const W: [f64; 5] = [
+        0.568_888_888_888_888_9,
+        0.478_628_670_499_366_5,
+        0.478_628_670_499_366_5,
+        0.236_926_885_056_189_1,
+        0.236_926_885_056_189_1,
+    ];
     let (c, cc) = edge_curve(t, e)?;
     let (lo, hi) = (cc.range.lo, cc.range.hi);
     if !(lo.is_finite() && hi.is_finite() && hi > lo) {
-        return Err(SchemeError::Input(format!("edge {e}: unbounded or empty curve range")));
+        return Err(SchemeError::Input(format!(
+            "edge {e}: unbounded or empty curve range"
+        )));
     }
     let estimate = |panels: u32| -> Result<f64> {
         let w = (hi - lo) / f64::from(panels);

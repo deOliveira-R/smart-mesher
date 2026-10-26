@@ -254,7 +254,10 @@ pub struct CornerIntent {
 impl CornerIntent {
     /// A vertex-type override on `corner`.
     pub fn new(corner: CornerKey, vertex_type: Firm<VertexType>) -> Self {
-        Self { corner, vertex_type }
+        Self {
+            corner,
+            vertex_type,
+        }
     }
 }
 
@@ -286,7 +289,13 @@ pub struct MeshGroup {
 impl MeshGroup {
     /// A group of `members` with no scheme chosen yet.
     pub fn new(id: GroupId, members: Vec<EntityId>) -> Self {
-        Self { id, members, scheme: None, fallbacks: Vec::new(), conversion: None }
+        Self {
+            id,
+            members,
+            scheme: None,
+            fallbacks: Vec::new(),
+            conversion: None,
+        }
     }
     /// Set the group scheme.
     pub fn with_scheme(mut self, choice: SchemeChoice) -> Self {
@@ -327,7 +336,11 @@ pub struct TransformIntent {
 impl TransformIntent {
     /// A transform over `targets`.
     pub fn new(id: TransformId, targets: Vec<EntityId>, transform: SchemeChoice) -> Self {
-        Self { id, targets, transform }
+        Self {
+            id,
+            targets,
+            transform,
+        }
     }
 }
 
@@ -374,7 +387,11 @@ pub struct AutoPolicy {
 impl AutoPolicy {
     /// Candidate lists per dimension (empty = registry auto list).
     pub fn new(curve: Vec<SchemeName>, surface: Vec<SchemeName>, volume: Vec<SchemeName>) -> Self {
-        Self { curve, surface, volume }
+        Self {
+            curve,
+            surface,
+            volume,
+        }
     }
 }
 
@@ -514,7 +531,10 @@ impl MeshIntent {
                 _ => {}
             }
             if let Some(b) = &e.boundary_layer {
-                if !matches!(id.kind(), sm_core::EntityKind::TopoFace | sm_core::EntityKind::PartitionFace) {
+                if !matches!(
+                    id.kind(),
+                    sm_core::EntityKind::TopoFace | sm_core::EntityKind::PartitionFace
+                ) {
                     return bad(format!(
                         "{id}: boundary layers are only supported on faces (curve boundary layers do not exist yet)"
                     ));
@@ -529,8 +549,15 @@ impl MeshIntent {
                         "{id}: boundary layer needs first > 0, growth >= 1 and layers >= 1"
                     ));
                 }
-                if let Some(v) = b.into.iter().find(|v| !matches!(v.kind(), sm_core::EntityKind::TopoVolume | sm_core::EntityKind::PartitionCell)) {
-                    return bad(format!("{id}: boundary layer `into` lists {v}, which is not a volume piece"));
+                if let Some(v) = b.into.iter().find(|v| {
+                    !matches!(
+                        v.kind(),
+                        sm_core::EntityKind::TopoVolume | sm_core::EntityKind::PartitionCell
+                    )
+                }) {
+                    return bad(format!(
+                        "{id}: boundary layer `into` lists {v}, which is not a volume piece"
+                    ));
                 }
                 b.params
                     .check()

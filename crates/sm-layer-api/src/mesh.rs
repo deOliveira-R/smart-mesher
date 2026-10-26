@@ -463,10 +463,9 @@ pub fn add_mesh_set(
             .state()
             .all(|(k, n)| k == EntityKind::MeshSet || n == before.next_serial(k));
     if !minted_one {
-        return Err(LayerError::MintedNotInMesh(
-            "add_set must mint exactly one MeshSet id".into(),
-        )
-        .into());
+        return Err(
+            LayerError::MintedNotInMesh("add_set must mint exactly one MeshSet id".into()).into(),
+        );
     }
     match ctx.state().peek_next(EntityKind::MeshSet) {
         Some(got) if got == id => {}

@@ -36,14 +36,27 @@ fn sample_intent() -> MeshIntent {
         id(EntityKind::TopoEdge, 2),
         Firm::hard(IntervalRequest::Count(7)),
     );
-    a.corners.push(CornerIntent::new(corner, Firm::soft(VertexType::Side)));
-    a.corners.push(CornerIntent::new(corner, Firm::hard(VertexType::End)));
-    let mut g = MeshGroup::new(GroupId(1), vec![id(EntityKind::TopoVolume, 2), id(EntityKind::TopoVolume, 1)])
-        .with_scheme(SchemeChoice::new("sweep", Firmness::Hard))
-        .with_fallbacks(vec![SchemeChoice::with_params("tetmesh", serde_json::json!({ "growth": 1.3 }), Firmness::Default)]);
+    a.corners
+        .push(CornerIntent::new(corner, Firm::soft(VertexType::Side)));
+    a.corners
+        .push(CornerIntent::new(corner, Firm::hard(VertexType::End)));
+    let mut g = MeshGroup::new(
+        GroupId(1),
+        vec![id(EntityKind::TopoVolume, 2), id(EntityKind::TopoVolume, 1)],
+    )
+    .with_scheme(SchemeChoice::new("sweep", Firmness::Hard))
+    .with_fallbacks(vec![SchemeChoice::with_params(
+        "tetmesh",
+        serde_json::json!({ "growth": 1.3 }),
+        Firmness::Default,
+    )]);
     g.conversion = Some(SchemeChoice::new("thex", Firmness::Hard));
     a.groups.push(g);
-    a.transforms.push(TransformIntent::new(TransformId(2), vec![id(EntityKind::TopoVolume, 3), id(EntityKind::TopoVolume, 3)], SchemeChoice::new("htet", Firmness::Hard)));
+    a.transforms.push(TransformIntent::new(
+        TransformId(2),
+        vec![id(EntityKind::TopoVolume, 3), id(EntityKind::TopoVolume, 3)],
+        SchemeChoice::new("htet", Firmness::Hard),
+    ));
     a.defaults.sizing = Some(SizingSpec::Constant { size: 0.5 });
     a
 }
@@ -91,7 +104,11 @@ fn intent_crosses_the_op_codec_and_rejects_non_toml_params() {
     assert!(bad.check().is_err());
     // Reserved and duplicate ids.
     let mut bad = sample_intent();
-    bad.transforms.push(TransformIntent::new(TransformId(TransformId::GROUP_BASE), vec![id(EntityKind::TopoVolume, 1)], SchemeChoice::new("htet", Firmness::Hard)));
+    bad.transforms.push(TransformIntent::new(
+        TransformId(TransformId::GROUP_BASE),
+        vec![id(EntityKind::TopoVolume, 1)],
+        SchemeChoice::new("htet", Firmness::Hard),
+    ));
     assert!(bad.check().is_err());
     let mut bad = sample_intent();
     bad.groups.push(bad.groups[0].clone());

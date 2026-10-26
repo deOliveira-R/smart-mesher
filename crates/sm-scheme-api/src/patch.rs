@@ -342,7 +342,11 @@ impl Patch {
             return None;
         }
         // Undirected edge -> quads using it; node -> neighbours.
-        let quads: Vec<[u32; 4]> = self.elements.iter().map(|(_, q)| [q[0], q[1], q[2], q[3]]).collect();
+        let quads: Vec<[u32; 4]> = self
+            .elements
+            .iter()
+            .map(|(_, q)| [q[0], q[1], q[2], q[3]])
+            .collect();
         let mut uses: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
         let mut nbrs: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for (qi, q) in quads.iter().enumerate() {
@@ -358,14 +362,19 @@ impl Patch {
         }
         let edge = |a: u32, b: u32| (a.min(b), a.max(b));
         let count = |a: u32, b: u32| uses.get(&edge(a, b)).map_or(0, Vec::len);
-        let on_boundary = |n: u32| nbrs.get(&n).is_some_and(|v| v.iter().any(|m| count(n, *m) == 1));
+        let on_boundary = |n: u32| {
+            nbrs.get(&n)
+                .is_some_and(|v| v.iter().any(|m| count(n, *m) == 1))
+        };
         // Quad-mates of the edge (a, b): the nodes adjacent to `b` in quads containing a and b.
         let mates = |a: u32, b: u32| -> Vec<u32> {
             let mut out = Vec::new();
             for &qi in uses.get(&edge(a, b)).map_or(&[][..], |v| v.as_slice()) {
                 let q = &quads[qi];
-                if let (Some(ia), Some(ib)) = (q.iter().position(|x| *x == a), q.iter().position(|x| *x == b))
-                    && ((ia + 1) % 4 == ib || (ib + 1) % 4 == ia)
+                if let (Some(ia), Some(ib)) = (
+                    q.iter().position(|x| *x == a),
+                    q.iter().position(|x| *x == b),
+                ) && ((ia + 1) % 4 == ib || (ib + 1) % 4 == ia)
                 {
                     out.push(q[(ib + 1) % 4]);
                     out.push(q[(ib + 3) % 4]);
@@ -377,8 +386,19 @@ impl Patch {
         if !on_boundary(start) {
             return None;
         }
-        let pick = |cands: Vec<u32>| cands.into_iter().filter_map(|c| Some((self.key(c)?, c))).min().map(|(_, c)| c);
-        let interior: Vec<u32> = nbrs.get(&start)?.iter().copied().filter(|m| count(start, *m) == 2).collect();
+        let pick = |cands: Vec<u32>| {
+            cands
+                .into_iter()
+                .filter_map(|c| Some((self.key(c)?, c)))
+                .min()
+                .map(|(_, c)| c)
+        };
+        let interior: Vec<u32> = nbrs
+            .get(&start)?
+            .iter()
+            .copied()
+            .filter(|m| count(start, *m) == 2)
+            .collect();
         let mut prev = start;
         let mut cur = pick(interior)?;
         let mut line = vec![key, self.key(cur)?];
@@ -391,7 +411,12 @@ impl Patch {
                 return None;
             }
             let side = mates(prev, cur);
-            let next: Vec<u32> = nbrs.get(&cur)?.iter().copied().filter(|m| *m != prev && !side.contains(m)).collect();
+            let next: Vec<u32> = nbrs
+                .get(&cur)?
+                .iter()
+                .copied()
+                .filter(|m| *m != prev && !side.contains(m))
+                .collect();
             let n = pick(next)?;
             prev = cur;
             cur = n;

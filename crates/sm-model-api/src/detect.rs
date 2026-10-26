@@ -392,7 +392,7 @@ pub fn detect_symmetry(m: &Model, t: &dyn TopologyView, tol: Tolerance) -> Resul
     let faces: Vec<EntityId> = t.cells(Dim::Face).to_vec();
     for f in &faces {
         let fm = c.face_res(*f)?;
-        if let Some((n, _)) = fm.plane(1e-6 * l + tol.linear) {
+        if let Ok(Some((n, _))) = t.face_plane(*f, 1e-6 * l + tol.linear) {
             add_src(&mut dirs, n);
         }
         if let Some(cf) = fm.centroid() {

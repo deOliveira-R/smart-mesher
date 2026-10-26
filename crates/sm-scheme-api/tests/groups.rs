@@ -31,7 +31,13 @@ fn group_intent(ids: &[sm_topo_api::fixtures::BrickIds], extra: serde_json::Valu
         p.extend(e.clone());
     }
     let mut intent = MeshIntent::default();
-    intent.groups.push(MeshGroup::new(GroupId(1), sel).with_scheme(SchemeChoice::with_params("msweep", params, Firmness::Hard)));
+    intent.groups.push(
+        MeshGroup::new(GroupId(1), sel).with_scheme(SchemeChoice::with_params(
+            "msweep",
+            params,
+            Firmness::Hard,
+        )),
+    );
     intent
 }
 
@@ -396,7 +402,11 @@ fn standalone_transforms_run_after_their_writers_and_commit_atomically() {
         )
     };
     // A transform job is scheduled after the volume and a no-op leaves the mesh bit-identical.
-    intent.transforms.push(TransformIntent::new(TransformId(1), vec![ids.volume], SchemeChoice::new("noop", Firmness::Hard)));
+    intent.transforms.push(TransformIntent::new(
+        TransformId(1),
+        vec![ids.volume],
+        SchemeChoice::new("noop", Firmness::Hard),
+    ));
     let noop = driver
         .mesh(
             &input,
@@ -484,7 +494,10 @@ fn a_decomposition_piece_is_meshed_and_classified_on_its_cell() {
     model
         .set_shape(
             cell,
-            PieceShape::sweep(vec![PieceFace::Whole(ids[0].faces[0])], vec![PieceFace::Whole(ids[1].faces[1])]),
+            PieceShape::sweep(
+                vec![PieceFace::Whole(ids[0].faces[0])],
+                vec![PieceFace::Whole(ids[1].faces[1])],
+            ),
         )
         .expect("shape");
     let reg = registry();

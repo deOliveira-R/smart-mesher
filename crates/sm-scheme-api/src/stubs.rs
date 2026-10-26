@@ -9,11 +9,6 @@
 //! merged bricks. Behind feature `stubs`; test-only code, so `expect` is allowed.
 #![allow(missing_docs, clippy::needless_range_loop)]
 
-use core::f64::consts::FRAC_PI_2;
-use serde::{Deserialize, Serialize};
-use sm_core::{EntityId, Point3, Transform, Vector3};
-use sm_mesh_api::{CellShape, Param};
-use sm_model_api::Model;
 use crate::geom;
 use crate::{
     Applicability, Caps, CopyConstraint, CopyReason, ElemShape, FailureKind, Firmness, GenCtx,
@@ -21,6 +16,11 @@ use crate::{
     Params, Patch, PatchBuilder, PlanCtx, Requirements, Role, Scheme, SchemeDim, SchemeRegistry,
     SideDir, Target, VertexRule,
 };
+use core::f64::consts::FRAC_PI_2;
+use serde::{Deserialize, Serialize};
+use sm_core::{EntityId, Point3, Transform, Vector3};
+use sm_mesh_api::{CellShape, Param};
+use sm_model_api::Model;
 use sm_topo_api::fixtures::{BrickIds, brick, merge_touching_bricks, with_op};
 use sm_topo_api::{CellComplex, Coincidence, OpId, TopologyEdit, TopologyView, TopologyViewExt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -226,9 +226,9 @@ impl Scheme for Map {
         let Target::Surface(f) = target else {
             return Ok(());
         };
-        let layout = cx.layout(f).ok_or_else(|| {
-            crate::SchemeError::Input(format!("map face {f} has no layout"))
-        })?;
+        let layout = cx
+            .layout(f)
+            .ok_or_else(|| crate::SchemeError::Input(format!("map face {f} has no layout")))?;
         if layout.sides.len() != 4 {
             return Err(crate::SchemeError::Input(format!(
                 "map face {f}: {} sides",
@@ -295,9 +295,9 @@ impl Scheme for Submap {
         let Target::Surface(f) = target else {
             return Ok(());
         };
-        let layout = cx.layout(f).ok_or_else(|| {
-            crate::SchemeError::Input(format!("submap face {f} has no layout"))
-        })?;
+        let layout = cx
+            .layout(f)
+            .ok_or_else(|| crate::SchemeError::Input(format!("submap face {f} has no layout")))?;
         let edges = |d: SideDir| -> Vec<EntityId> {
             layout
                 .sides
@@ -716,8 +716,7 @@ fn stack_of_ic(cx: &IntervalCtx<'_>, target: Target) -> crate::Result<Stack> {
     let d = cx
         .data(target)
         .ok_or_else(|| crate::SchemeError::Input("no stack data".into()))?;
-    serde_json::from_value(d.0.clone())
-        .map_err(|e| crate::SchemeError::Input(e.to_string()))
+    serde_json::from_value(d.0.clone()).map_err(|e| crate::SchemeError::Input(e.to_string()))
 }
 
 /// Interval rows shared by both sweeps: every column has the same layer counts.
@@ -859,7 +858,9 @@ fn generate_stack(
                         .ok_or_else(|| fatal(format!("edge {} has no linking face", cur.owner)))?;
                     used.push(l);
                     let line = cx.strip_from(l, cur).ok_or_else(|| {
-                        fatal(format!("node {cur:?} starts no quad strip of linking face {l}"))
+                        fatal(format!(
+                            "node {cur:?} starts no quad strip of linking face {l}"
+                        ))
                     })?;
                     col.extend_from_slice(&line[1..]);
                     cur = *line.last().ok_or_else(|| fatal("empty line".into()))?;
@@ -925,7 +926,11 @@ fn generate_stack(
             .ok_or_else(|| fatal("source outline".into()))?;
         let ns = geom::face_normal(t, st.source, p0).map_err(|e| fatal(e.to_string()))?;
         for (p, flip) in plane_flip.iter_mut().enumerate().skip(1) {
-            let face = if p == layers { Some(st.target) } else { plane_owner[p] };
+            let face = if p == layers {
+                Some(st.target)
+            } else {
+                plane_owner[p]
+            };
             if let Some(f) = face {
                 let q = p0 + shift * frac[p];
                 let nf = geom::face_normal(t, f, q).map_err(|e| fatal(e.to_string()))?;
@@ -1053,13 +1058,12 @@ impl Scheme for Sweep {
         p: &Params,
         out: &mut Requirements<'_>,
     ) -> crate::Result<()> {
-        let st = single_stack(cx.input, target, p).map_err(|e| {
-            crate::SchemeError::NotApplicable {
+        let st =
+            single_stack(cx.input, target, p).map_err(|e| crate::SchemeError::NotApplicable {
                 target,
                 scheme: crate::SchemeName::new("sweep"),
                 reason: e,
-            }
-        })?;
+            })?;
         out.role(
             Target::Surface(st.source),
             Role::SweepSource { volume: target },
@@ -1094,8 +1098,7 @@ impl Scheme for Sweep {
             .with_vertex_map(vm),
         );
         out.set_data(Params(
-            serde_json::to_value(&st)
-                .map_err(|e| crate::SchemeError::Input(e.to_string()))?,
+            serde_json::to_value(&st).map_err(|e| crate::SchemeError::Input(e.to_string()))?,
         ));
         Ok(())
     }
@@ -1162,7 +1165,12 @@ impl Scheme for MSweep {
         SchemeDim::Volume
     }
     fn caps(&self, _p: &Params) -> Caps {
-        Caps::HEX | Caps::WEDGE | Caps::MESHES_CHILDREN | Caps::QUAD | Caps::STRUCTURED | Caps::BLOCK_STRUCTURED
+        Caps::HEX
+            | Caps::WEDGE
+            | Caps::MESHES_CHILDREN
+            | Caps::QUAD
+            | Caps::STRUCTURED
+            | Caps::BLOCK_STRUCTURED
     }
     fn supports_groups(&self) -> bool {
         true
@@ -1208,8 +1216,7 @@ impl Scheme for MSweep {
             );
         }
         out.set_data(Params(
-            serde_json::to_value(&st)
-                .map_err(|e| crate::SchemeError::Input(e.to_string()))?,
+            serde_json::to_value(&st).map_err(|e| crate::SchemeError::Input(e.to_string()))?,
         ));
         Ok(())
     }
@@ -1246,7 +1253,15 @@ impl Scheme for MSweep {
         }
         let st = stack_of(cx, target, "msweep")?;
         let flag = |k: &str| p.get::<bool>("msweep", k).ok().flatten().unwrap_or(false);
-        generate_stack(cx, target, &st, true, "msweep", flag("perturb"), flag("misorient"))
+        generate_stack(
+            cx,
+            target,
+            &st,
+            true,
+            "msweep",
+            flag("perturb"),
+            flag("misorient"),
+        )
     }
 }
 

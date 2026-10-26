@@ -581,7 +581,8 @@ fn translation_deck_pair_is_meshed_as_an_exact_copy() {
     );
 
     // A boundary layer on a deck face is refused.
-    intent.entity_mut(ids.faces[0]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
+    intent.entity_mut(ids.faces[0]).boundary_layer =
+        Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
     assert!(matches!(
         driver.plan(&input, &intent),
         Err(SchemeError::BoundaryLayerOnDeck { .. })
@@ -597,7 +598,8 @@ fn boundary_layer_needs_a_capable_volume_scheme() {
     let sel = [ids.volume];
     let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
     let mut intent = counts_intent(&ids, [1, 1, 1]);
-    intent.entity_mut(ids.faces[2]).boundary_layer = Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
+    intent.entity_mut(ids.faces[2]).boundary_layer =
+        Some(sm_scheme_api::BoundaryLayerIntent::new(0.01, 1.2, 3));
     // No registered volume scheme has the capability: the intent is refused, with attempts.
     match driver.plan(&input, &intent) {
         Err(SchemeError::NoApplicableScheme { target, tried, .. }) => {

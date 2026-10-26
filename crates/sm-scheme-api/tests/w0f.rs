@@ -17,7 +17,11 @@ const Y: usize = 4;
 const Z: usize = 8;
 
 fn sweep_z(ids: &sm_topo_api::fixtures::BrickIds) -> SchemeChoice {
-    SchemeChoice::with_params("sweep", serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }), Firmness::Hard)
+    SchemeChoice::with_params(
+        "sweep",
+        serde_json::json!({ "source": [ids.faces[4]], "target": [ids.faces[5]] }),
+        Firmness::Hard,
+    )
 }
 
 fn interval_records(plan: &Plan, e: EntityId) -> Vec<(Origin, IntervalConstraint)> {
@@ -29,7 +33,11 @@ fn interval_records(plan: &Plan, e: EntityId) -> Vec<(Origin, IntervalConstraint
         .collect()
 }
 
-fn plan_with(size: [f64; 3], f: impl FnOnce(&sm_topo_api::fixtures::BrickIds, &mut MeshIntent), field: Option<&dyn SizeField>) -> (sm_topo_api::fixtures::BrickIds, Result<Plan, SchemeError>) {
+fn plan_with(
+    size: [f64; 3],
+    f: impl FnOnce(&sm_topo_api::fixtures::BrickIds, &mut MeshIntent),
+    field: Option<&dyn SizeField>,
+) -> (sm_topo_api::fixtures::BrickIds, Result<Plan, SchemeError>) {
     let (topo, ids, model) = brick_setup(size);
     let reg = registry();
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
@@ -46,11 +54,21 @@ fn plan_with(size: [f64; 3], f: impl FnOnce(&sm_topo_api::fixtures::BrickIds, &m
 
 #[test]
 fn firm_sizes_become_fixed_counts_with_their_firmness() {
-    for (firmness, want) in [(Firmness::Hard, Some(Firmness::Hard)), (Firmness::Soft, Some(Firmness::Soft)), (Firmness::Default, None)] {
+    for (firmness, want) in [
+        (Firmness::Hard, Some(Firmness::Hard)),
+        (Firmness::Soft, Some(Firmness::Soft)),
+        (Firmness::Default, None),
+    ] {
         let (ids, plan) = plan_with(
             [2.0, 1.0, 1.0],
             |ids, i| {
-                i.set_intervals(ids.edges[X], Firm { value: IntervalRequest::Size(0.5), firmness });
+                i.set_intervals(
+                    ids.edges[X],
+                    Firm {
+                        value: IntervalRequest::Size(0.5),
+                        firmness,
+                    },
+                );
                 i.set_intervals(ids.edges[Y], Firm::hard(IntervalRequest::Count(1)));
                 i.set_intervals(ids.edges[Z], Firm::hard(IntervalRequest::Count(1)));
             },
@@ -116,7 +134,8 @@ fn size_field_goal_integrates_ds_over_h() {
     let plan = plan.expect("plan");
     let recs = interval_records(&plan, ids.edges[X]);
     assert!(
-        recs.iter().any(|(o, c)| *o == Origin::Sizing && matches!(c, IntervalConstraint::Goal { goal, .. } if (goal - want).abs() < 1e-9)),
+        recs.iter().any(|(o, c)| *o == Origin::Sizing
+            && matches!(c, IntervalConstraint::Goal { goal, .. } if (goal - want).abs() < 1e-9)),
         "{recs:?}"
     );
 }
@@ -127,11 +146,16 @@ fn boundary_layers_off_faces_are_refused_and_into_is_checked() {
     let (_, r) = plan_with(
         [1.0, 1.0, 1.0],
         |ids, i| {
-            i.entity_mut(ids.edges[X]).boundary_layer = Some(BoundaryLayerIntent::new(0.01, 1.2, 3));
+            i.entity_mut(ids.edges[X]).boundary_layer =
+                Some(BoundaryLayerIntent::new(0.01, 1.2, 3));
         },
         None,
     );
-    assert!(matches!(r, Err(SchemeError::Input(ref m)) if m.contains("only supported on faces")), "{:?}", r.map(|_| ()));
+    assert!(
+        matches!(r, Err(SchemeError::Input(ref m)) if m.contains("only supported on faces")),
+        "{:?}",
+        r.map(|_| ())
+    );
     // `into` must list adjacent volume pieces.
     let (_, r) = plan_with(
         [1.0, 1.0, 1.0],
@@ -142,7 +166,11 @@ fn boundary_layers_off_faces_are_refused_and_into_is_checked() {
         },
         None,
     );
-    assert!(matches!(r, Err(SchemeError::Input(ref m)) if m.contains("not adjacent")), "{:?}", r.map(|_| ()));
+    assert!(
+        matches!(r, Err(SchemeError::Input(ref m)) if m.contains("not adjacent")),
+        "{:?}",
+        r.map(|_| ())
+    );
     let (_, r) = plan_with(
         [1.0, 1.0, 1.0],
         |ids, i| {
@@ -152,20 +180,27 @@ fn boundary_layers_off_faces_are_refused_and_into_is_checked() {
         },
         None,
     );
-    assert!(matches!(r, Err(SchemeError::Input(ref m)) if m.contains("not a volume piece")), "{:?}", r.map(|_| ()));
+    assert!(
+        matches!(r, Err(SchemeError::Input(ref m)) if m.contains("not a volume piece")),
+        "{:?}",
+        r.map(|_| ())
+    );
 }
 
 #[test]
 fn boundary_layer_intent_is_extensible_on_the_wire() {
     // Old records (no `into`, no `params`) still load; empty fields are not written.
-    let old: BoundaryLayerIntent = serde_json::from_value(serde_json::json!({"first": 0.01, "growth": 1.2, "layers": 3})).unwrap();
+    let old: BoundaryLayerIntent =
+        serde_json::from_value(serde_json::json!({"first": 0.01, "growth": 1.2, "layers": 3}))
+            .unwrap();
     assert_eq!(old, BoundaryLayerIntent::new(0.01, 1.2, 3));
     let v = serde_json::to_value(&old).unwrap();
     assert!(v.get("into").is_none() && v.get("params").is_none(), "{v}");
     let mut full = old.clone();
     full.into = vec![EntityId::new(sm_core::EntityKind::TopoVolume, 1).unwrap()];
     full.params = sm_scheme_api::Params(serde_json::json!({"aspect": 2.0}));
-    let back: BoundaryLayerIntent = serde_json::from_value(serde_json::to_value(&full).unwrap()).unwrap();
+    let back: BoundaryLayerIntent =
+        serde_json::from_value(serde_json::to_value(&full).unwrap()).unwrap();
     assert_eq!(back, full);
 }
 
