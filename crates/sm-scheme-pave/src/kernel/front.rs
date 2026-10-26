@@ -11,6 +11,10 @@ use core::ops::Range;
 
 /// Minimum distance (in sizes) between a frontal point and any existing vertex.
 const ALPHA_ROW: f64 = 0.6;
+/// Number of adjacent proposals dropped together where a row crowds.
+const DROP_RUN: usize = 2;
+/// Proposals closer than this fraction of the row distance count as duplicates.
+const DUPLICATE: f64 = 0.4;
 /// Same for refinement points.
 const ALPHA_FILL: f64 = 0.5;
 /// Triangles with circumradius above this many sizes are refined.
@@ -34,7 +38,7 @@ pub(crate) struct Mesher<'a> {
     pub cdt: Cdt,
     pub met: Vec<Met>,
     pub h: Vec<f64>,
-    gen_: Vec<u32>,
+    tag: Vec<u64>,
     space: &'a Space<'a>,
     size_map: Option<SizeMap>,
     pub nb: usize,
@@ -47,13 +51,13 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 
 impl<'a> Mesher<'a> {
     pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64) -> Result<Self, PaveError> {
-        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), gen_: Vec::with_capacity(nb), space, size_map, nb, max_vertices: usize::MAX };
+        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, nb, max_vertices: usize::MAX };
         for i in 0..nb {
             let w = m.cdt.pts[i];
             let (mt, h) = (m.space.met(w)?, m.h_at(w)?);
             m.met.push(mt);
             m.h.push(h);
-            m.gen_.push(0);
+            m.tag.push(0);
         }
         // Generous bound that only a runaway placement loop can reach.
         let hmin = m.h.iter().copied().fold(f64::INFINITY, f64::min);
@@ -72,14 +76,14 @@ impl<'a> Mesher<'a> {
     }
 
     /// Insert the point `p` (already known to be inside) and record its data.
-    fn insert_checked(&mut self, p: [f64; 2], loc: Loc, gen_: u32) -> Result<u32, PaveError> {
+    fn insert_checked(&mut self, p: [f64; 2], loc: Loc, tag: u64) -> Result<u32, PaveError> {
         let met = self.space.met(p)?;
         let h = self.h_at(p)?;
         let id = self.cdt.insert(p, loc).map_err(|_| PaveError::Internal("point insertion failed"))?;
         debug_assert_eq!(id as usize, self.met.len());
         self.met.push(met);
         self.h.push(h);
-        self.gen_.push(gen_);
+        self.tag.push(tag);
         Ok(id)
     }
 
@@ -94,7 +98,7 @@ impl<'a> Mesher<'a> {
             Loc::OnEdge(t, i) if !self.cdt.tc[t as usize][i as usize] && self.cdt.tn[t as usize][i as usize] != NONE => {}
             _ => return Ok(None),
         }
-        self.insert_checked(p, loc, u32::MAX).map(Some)
+        self.insert_checked(p, loc, u64::MAX).map(Some)
     }
 
     // ---------------------------------------------------------------- rows
@@ -132,11 +136,12 @@ impl<'a> Mesher<'a> {
         Some([pv[0] + off[0], pv[1] + off[1]])
     }
 
-    fn try_row(&mut self, p: [f64; 2], src: u32, gen_: u32) -> Result<Res, PaveError> {
+    /// Try to insert a row point proposed from `src`; `tag` identifies the chain and pass.
+    fn try_row(&mut self, p: [f64; 2], src: u32, tag: u64) -> Result<Res, PaveError> {
         let loc = self.cdt.locate(p, self.cdt.vt[src as usize]);
         match loc {
             Loc::Outside => return Ok(Res::Collide),
-            Loc::OnVertex(v) => return Ok(if self.gen_[v as usize] == gen_ { Res::Crowd } else { Res::Collide }),
+            Loc::OnVertex(v) => return Ok(if self.tag[v as usize] == tag { Res::Crowd } else { Res::Collide }),
             Loc::OnEdge(t, i) if self.cdt.tc[t as usize][i as usize] || self.cdt.tn[t as usize][i as usize] == NONE => return Ok(Res::Collide),
             _ => {}
         }
@@ -147,7 +152,7 @@ impl<'a> Mesher<'a> {
         for t in cav {
             for v in self.cdt.tv[t as usize] {
                 if b.len(sub(p, self.cdt.pts[v as usize])) < lim {
-                    if self.gen_[v as usize] == gen_ { crowd = true } else { collide = true }
+                    if self.tag[v as usize] == tag { crowd = true } else { collide = true }
                 }
             }
         }
@@ -160,34 +165,83 @@ impl<'a> Mesher<'a> {
         if self.cdt.pts.len() >= self.max_vertices {
             return Err(PaveError::Internal("vertex budget exhausted"));
         }
-        Ok(Res::Accepted(self.insert_checked(p, loc, gen_)?))
+        Ok(Res::Accepted(self.insert_checked(p, loc, tag)?))
+    }
+
+    /// Indices of the proposals that survive the spacing filter along a chain. A closed
+    /// chain keeps the parity of its length, so that the strip between two rows can be
+    /// recombined on its own.
+    fn thin(&self, c: &Chain, props: &[[f64; 2]]) -> Vec<usize> {
+        let n = c.v.len();
+        let dist = |i: usize, j: usize| self.met[c.v[i] as usize].len(sub(props[i], props[j]));
+        let lim = |i: usize| ALPHA_ROW * self.h[c.v[i] as usize];
+        let mut kept: Vec<usize> = Vec::with_capacity(n);
+        let mut force = 0usize;
+        for i in 0..n {
+            if force > 0 {
+                force -= 1;
+                continue;
+            }
+            match kept.last().map(|&j| dist(i, j)) {
+                None => kept.push(i),
+                Some(d) if d >= lim(i) => kept.push(i),
+                // Coincident proposals (the corners of a front): drop the duplicate only.
+                Some(d) if d < DUPLICATE * lim(i) => {}
+                // Genuine crowding: thin out in pairs of adjacent proposals, since a lone
+                // dropped node leaves a wedge triangle that no convex pair can absorb.
+                Some(_) => force = DROP_RUN - 1,
+            }
+        }
+        if c.closed {
+            while kept.len() > 1 && dist(kept[kept.len() - 1], kept[0]) < lim(kept[0]) {
+                kept.pop();
+            }
+            if (n - kept.len()) % 2 == 1 && kept.len() > 3 {
+                // Drop the kept proposal with the smallest neighbour gaps.
+                let m = kept.len();
+                let mut best: Option<(Ord64, usize)> = None;
+                for k in 0..m {
+                    let (a, b, c2) = (kept[(k + m - 1) % m], kept[k], kept[(k + 1) % m]);
+                    let key = (Ord64(dist(a, b) + dist(b, c2)), k);
+                    if best.is_none_or(|x| key < x) {
+                        best = Some(key);
+                    }
+                }
+                if let Some((_, k)) = best {
+                    kept.remove(k);
+                }
+            }
+        }
+        kept
     }
 
     /// Row-by-row frontal insertion from the given loops.
     pub fn rows(&mut self, loops: &[Range<usize>]) -> Result<(), PaveError> {
         let mut chains: Vec<Chain> = loops.iter().map(|r| Chain { v: (r.start as u32..r.end as u32).collect(), closed: true }).collect();
-        let mut gen_ = 0u32;
+        let mut pass = 0u64;
         while !chains.is_empty() {
-            gen_ += 1;
-            if gen_ > 1_000_000 {
+            pass += 1;
+            if pass > 1_000_000 {
                 return Err(PaveError::Internal("too many rows"));
             }
             let before = self.cdt.pts.len();
             let mut next: Vec<Chain> = Vec::new();
-            for c in &chains {
+            for (ci, c) in chains.iter().enumerate() {
+                let tag = (pass << 32) | ci as u64;
                 let n = c.v.len();
-                let mut seq: Vec<Option<u32>> = Vec::with_capacity(n);
-                for i in 0..n {
-                    let Some(p) = self.propose(c, i) else {
-                        seq.push(None);
-                        continue;
-                    };
-                    match self.try_row(p, c.v[i], gen_)? {
+                let props: Vec<[f64; 2]> = (0..n).map(|i| self.propose(c, i).unwrap_or([f64::NAN; 2])).collect();
+                let ok = |i: usize| props[i][0].is_finite() && props[i][1].is_finite();
+                let kept = if props.iter().all(|p| p[0].is_finite() && p[1].is_finite()) { self.thin(c, &props) } else { (0..n).filter(|i| ok(*i)).collect() };
+                let mut seq: Vec<Option<u32>> = Vec::with_capacity(kept.len());
+                for &i in &kept {
+                    match self.try_row(props[i], c.v[i], tag)? {
                         Res::Accepted(id) => seq.push(Some(id)),
                         Res::Crowd => {}
                         Res::Collide => seq.push(None),
                     }
                 }
+                // A thinned-out stretch of a closed chain stays connected; a skipped
+                // (non-finite) proposal breaks an open one.
                 split_pieces(seq, c.closed, &mut next);
             }
             if self.cdt.pts.len() == before {
@@ -275,7 +329,7 @@ impl<'a> Mesher<'a> {
                     if self.cdt.pts.len() >= self.max_vertices {
                         return Err(PaveError::Internal("vertex budget exhausted"));
                     }
-                    self.insert_checked(p, loc, u32::MAX)?;
+                    self.insert_checked(p, loc, u64::MAX)?;
                     changed = true;
                     break;
                 }

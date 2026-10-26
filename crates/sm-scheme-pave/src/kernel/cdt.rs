@@ -37,6 +37,16 @@ pub(crate) enum Loc {
     Outside,
 }
 
+/// Everything needed to undo one flip.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FlipUndo {
+    t: u32,
+    u: u32,
+    tv: [[u32; 3]; 2],
+    tn: [[u32; 3]; 2],
+    tc: [[bool; 3]; 2],
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Cdt {
     pub pts: Vec<[f64; 2]>,
@@ -295,6 +305,52 @@ impl Cdt {
             self.set_vt(x);
         }
         [t_a, t_b, u_b, u_a]
+    }
+
+    /// Flip the edge opposite vertex `i` of `t` when it is interior, unconstrained and its
+    /// quad strictly convex. Returns the other triangle `u` and the record that undoes the
+    /// flip exactly (triangle ids included).
+    pub fn flip_if_convex(&mut self, t: u32, i: usize) -> Option<(u32, FlipUndo)> {
+        let n = self.tn[t as usize][i];
+        if n == NONE || self.tc[t as usize][i] {
+            return None;
+        }
+        let v = self.tv[t as usize];
+        let (p, a, b) = (v[i], v[(i + 1) % 3], v[(i + 2) % 3]);
+        let q = self.tv[n as usize].into_iter().find(|x| *x != a && *x != b)?;
+        let ok = self.o2(p, a, self.pts[q as usize]) == Sign::Positive && self.o2(q, b, self.pts[p as usize]) == Sign::Positive;
+        if !ok {
+            return None;
+        }
+        let undo = FlipUndo {
+            t,
+            u: n,
+            tv: [self.tv[t as usize], self.tv[n as usize]],
+            tn: [self.tn[t as usize], self.tn[n as usize]],
+            tc: [self.tc[t as usize], self.tc[n as usize]],
+        };
+        let u = self.flip(t, i);
+        debug_assert_eq!(u, n);
+        Some((u, undo))
+    }
+
+    /// Undo a flip made by [`Cdt::flip_if_convex`] (nothing else may have changed since).
+    pub fn undo_flip(&mut self, f: FlipUndo) {
+        for (k, x) in [f.t, f.u].into_iter().enumerate() {
+            self.tv[x as usize] = f.tv[k];
+            self.tn[x as usize] = f.tn[k];
+            self.tc[x as usize] = f.tc[k];
+        }
+        for x in [f.t, f.u] {
+            let v = self.tv[x as usize];
+            for s in 0..3 {
+                let n = self.tn[x as usize][s];
+                if n != NONE && n != f.t && n != f.u {
+                    self.relink(n, v[(s + 1) % 3], v[(s + 2) % 3], x);
+                }
+            }
+            self.set_vt(x);
+        }
     }
 
     /// Check the edge opposite vertex `i` of `t`; flip it if it is not locally Delaunay.
