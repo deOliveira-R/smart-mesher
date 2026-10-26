@@ -12,7 +12,7 @@ use sm_scheme_api::{
     ReferenceIntervalSolver, SchemeError, SchemeRegistry, WholeFaces,
 };
 use sm_topo_api::fixtures::{CylinderIds, with_op};
-use sm_topo_api::{CellComplex, OpId, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellComplex, OpId, TopologyView};
 
 /// The real `pave`, the stub `equal` and the stub `tri` (never `stubs::registry()`: it holds
 /// the stub `pave` too).
