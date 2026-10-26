@@ -62,18 +62,6 @@ fn hilbert_index(mut x: u64, mut y: u64, order: u32) -> u128 {
     d
 }
 
-/// Smallest power of two `>= x` (`x > 0`, finite), exactly.
-fn pow2_ceil(x: f64) -> f64 {
-    let bits = x.to_bits();
-    let exp = ((bits >> 52) & 0x7ff) as i64;
-    if exp == 0 {
-        return f64::MIN_POSITIVE;
-    }
-    let mant = bits & ((1u64 << 52) - 1);
-    let e = if mant == 0 { exp } else { exp + 1 };
-    f64::from_bits((e as u64) << 52)
-}
-
 /// Point ids sorted along the Hilbert curve of the coordinates quantized on a fixed `2^-40` grid
 /// of the (power-of-two enlarged) bounding box; ties by id. Depends only on the coordinates.
 pub(super) fn hilbert_order(pts: &[[f64; 2]]) -> Vec<u32> {
@@ -87,7 +75,7 @@ pub(super) fn hilbert_order(pts: &[[f64; 2]]) -> Vec<u32> {
     }
     let ext = (hi[0] - lo[0]).max(hi[1] - lo[1]);
     let scale = if ext > 0.0 && ext.is_finite() {
-        pow2_ceil(ext)
+        crate::util::pow2_ceil(ext)
     } else {
         1.0
     };
@@ -401,8 +389,10 @@ impl Cdt {
             }
             if walls && b.code != C_NONE {
                 let (pa, pb) = (self.p(b.a), self.p(b.b));
-                let dot = (pa[0] - p[0]) * (pb[0] - p[0]) + (pa[1] - p[1]) * (pb[1] - p[1]);
-                if dot < 0.0 {
+                let (ax, ay, bx, by) = (pa[0] - p[0], pa[1] - p[1], pb[0] - p[0], pb[1] - p[1]);
+                let dot = ax * bx + ay * by;
+                // Points on the diametral circle (dot = 0 up to rounding) do not encroach.
+                if dot < -1e-9 * ((ax * ax + ay * ay) * (bx * bx + by * by)).sqrt() {
                     return Err(Reject::Encroach);
                 }
             }

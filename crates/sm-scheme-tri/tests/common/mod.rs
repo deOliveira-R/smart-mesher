@@ -167,3 +167,70 @@ pub fn boundary_edges(c: &Cdt) -> Vec<(u32, u32)> {
     }
     count.into_iter().filter(|(_, n)| *n == 1).map(|(e, _)| e).collect()
 }
+
+// ---------------------------------------------------------------- driver helpers
+
+use sm_core::EntityId;
+use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh};
+use sm_mesh_api::{CellIx, MeshRead, SerialAlloc, cell_volume};
+use sm_model_api::Model;
+use sm_scheme_api::{
+    Driver, Executor, Firm, Firmness, IntervalRequest, Meshed, MeshInput, MeshIntent,
+    ReferenceCornerPicker, ReferenceIntervalSolver, SchemeChoice, SchemeRegistry, WholeFaces,
+};
+use sm_topo_api::CellComplex;
+
+/// Registry with the real curve schemes and this crate's schemes.
+pub fn registry() -> SchemeRegistry {
+    let mut r = SchemeRegistry::new();
+    sm_scheme_curve::register(&mut r).expect("curve");
+    sm_scheme_tri::register(&mut r).expect("tri");
+    r
+}
+
+/// Mesh `faces` of `topo` surface-only with `trimesh`, edges given hard counts.
+pub fn mesh_faces(
+    topo: &CellComplex,
+    faces: &[EntityId],
+    counts: &[(EntityId, u32)],
+    scheme: &str,
+    exec: &dyn Executor,
+) -> Result<Meshed<ReferenceMesh>, String> {
+    let reg = registry();
+    mesh_faces_with(&reg, topo, faces, counts, scheme, exec, None)
+}
+
+pub fn mesh_faces_with(
+    reg: &SchemeRegistry,
+    topo: &CellComplex,
+    faces: &[EntityId],
+    counts: &[(EntityId, u32)],
+    scheme: &str,
+    exec: &dyn Executor,
+    size: Option<&dyn sm_scheme_api::SizeField>,
+) -> Result<Meshed<ReferenceMesh>, String> {
+    let model = Model::new();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let mut driver = Driver::new(reg, &solver, &picker);
+    driver.size = size;
+    let input = MeshInput::new(topo, &model, &WholeFaces, faces);
+    let mut intent = MeshIntent::default();
+    for &(e, n) in counts {
+        intent.set_intervals(e, Firm::hard(IntervalRequest::Count(n)));
+    }
+    for &f in faces {
+        intent.set_scheme(f, SchemeChoice::new(scheme, Firmness::Hard));
+    }
+    driver
+        .mesh(&input, &intent, exec, ReferenceBuilder::surface(), &mut SerialAlloc::new())
+        .map_err(|e| e.to_string())
+}
+
+/// Triangle areas via the mesh (compensated).
+pub fn mesh_area(m: &ReferenceMesh) -> f64 {
+    let mut s = NeumaierSum::new();
+    for c in 0..m.cell_count() {
+        s.add(cell_volume(m, CellIx::new(c)));
+    }
+    s.value()
+}
