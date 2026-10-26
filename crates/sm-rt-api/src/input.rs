@@ -196,6 +196,7 @@ impl<'a> MeshInput<'a> {
 /// Triangles with the regions on both sides. Positions are `f64` (unlike the render
 /// `Tessellation`) because tracking precision is a correctness issue, not a display one.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct FacetInput {
     /// Vertex positions. Triangles share vertices by index; shared curves must share vertices.
     pub vertices: Vec<[f64; 3]>,

@@ -210,9 +210,16 @@ impl From<&TraceEnd> for EndCode {
     }
 }
 
+impl Default for TrackBundle {
+    /// Same as [`TrackBundle::new`]: an empty bundle with `offsets == [0]`.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Segments of many rays in CSR layout: the MOC / Sn track database. Ray `i`'s segments are
 /// `offsets[i]..offsets[i+1]`. Rays appear in input order regardless of thread count.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct TrackBundle {
     /// `n_rays + 1` offsets into the segment columns.
@@ -243,7 +250,7 @@ impl TrackBundle {
     }
     /// Start a bundle.
     pub fn new() -> Self {
-        Self { offsets: vec![0], ..Self::default() }
+        Self { offsets: vec![0], cell: Vec::new(), region: Vec::new(), length: Vec::new(), end: Vec::new(), end_surface: Vec::new() }
     }
     /// Append one finished ray. Offsets are `u32`: returns `RtError::Unsupported` (and leaves
     /// the bundle unchanged) if the segment count would pass `u32::MAX`.

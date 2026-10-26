@@ -13,6 +13,7 @@ pub const LEVEL_INLINE: usize = 8;
 
 /// A particle's place in the hierarchy: one entry per level below the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Level {
     /// Component the particle is in at this level.
     pub component: ComponentId,
@@ -20,6 +21,13 @@ pub struct Level {
     pub instance: InstanceId,
     /// Lattice index at this level, when the component is a lattice.
     pub lattice: [i32; 3],
+}
+
+impl Level {
+    /// A level entry (the struct is `#[non_exhaustive]`, so implementors build it here).
+    pub fn new(component: ComponentId, instance: InstanceId, lattice: [i32; 3]) -> Self {
+        Self { component, instance, lattice }
+    }
 }
 
 /// Everything a tracker needs to continue a particle, owned by the caller (one per particle /

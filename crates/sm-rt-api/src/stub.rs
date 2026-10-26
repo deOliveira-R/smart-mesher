@@ -846,6 +846,9 @@ impl Tracker for AnalyticWorld {
         if max_dist.is_nan() {
             return Err(RtError::NonFinite("max_dist"));
         }
+        if max_dist < 0.0 {
+            return Err(RtError::InvalidInput("max_dist must be >= 0"));
+        }
         let (from, region) = (st.cell, st.region);
         if from.is_none() || from.get() >= self.n_cells() {
             // Recovery: attempt k moves from the original position by tol.linear * 2^k.

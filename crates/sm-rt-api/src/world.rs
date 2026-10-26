@@ -206,7 +206,10 @@ impl WorldSpec {
                         if !ok(p.child) {
                             issues.push(BuildIssue::new("world.child", format!("component {i}: child {} missing", p.child.0)));
                         }
-                        if p.transform.inverse().is_none() {
+                        let t = &p.transform;
+                        if !(t.m.iter().flatten().all(|v| v.is_finite()) && t.t.x.is_finite() && t.t.y.is_finite() && t.t.z.is_finite()) {
+                            issues.push(BuildIssue::new("world.placement_nonfinite", format!("component {i}: non-finite placement")));
+                        } else if p.transform.inverse().is_none() {
                             issues.push(BuildIssue::new("world.singular_transform", format!("component {i}: singular placement")));
                         }
                     }

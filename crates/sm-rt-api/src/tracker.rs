@@ -217,7 +217,9 @@ pub trait Tracker: Send + Sync {
     /// Advance to the next cell face, slot change, region boundary, model boundary or the
     /// distance limit, whichever comes first, updating `st` (see [`StepEnd`] for the post-state
     /// of each case). `st.dir` must be unit. Deck boundaries are applied inside (see
-    /// [`crate::boundary`]). Never allocates (see [`Scratch`]).
+    /// [`crate::boundary`]). `max_dist` must be `>= 0` (use `f64::INFINITY` for no limit);
+    /// a negative or NaN value is an error and leaves `st` unchanged. Never allocates (see
+    /// [`Scratch`]).
     fn step(&self, st: &mut TrackState, max_dist: f64, scratch: &mut Scratch) -> Result<Step>;
 
     /// Distance and location of the closest boundary of `region` (or of any region when `None`)
