@@ -387,7 +387,9 @@ impl<'a> Prep<'a> {
         match &req.nodes {
             NodeSelect::All => {
                 for v in 0..n {
+                    // In a surface mesh the face nodes are the interior nodes.
                     selected[v] = match vcls[v].entity.kind() {
+                        EntityKind::TopoFace if dim2 => true,
                         EntityKind::TopoEdge | EntityKind::TopoFace => !req.fix_boundary,
                         _ => true,
                     };

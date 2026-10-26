@@ -33,3 +33,22 @@ fn a1_laplacian_restores_the_perturbed_hex_lattice() {
         eprintln!("a1 {sched:?}: iterations {} dev {dev:e} rej_guard {} rej_geom {}", o.report.iterations_run, o.report.rejected_guard, o.report.rejected_geometry);
     }
 }
+
+#[test]
+fn a2_laplacian_and_centroid_area_restore_the_quad_lattice() {
+    let f = lattice::quad([6, 6], [1.0; 2]).expect("lattice");
+    let p = f.perturbed(11, 0.25).expect("perturb");
+    let start = pts_of(&p.mesh);
+    assert!(max_dev(&start, &p.exact) > 0.05 * p.h);
+    for sched in [Schedule::Colored, Schedule::Jacobi] {
+        let o = run(&p, &req(Method::Laplacian { relax: 1.0 }, sched, 300, false));
+        let dev = max_dev(&o.points, &p.exact);
+        eprintln!("a2 laplacian {sched:?}: iterations {} dev/h {:e}", o.report.iterations_run, dev / p.h);
+        assert!(dev <= 1e-9 * p.h, "{sched:?}: {dev:e}");
+        assert_vertices_bit_identical(&p, &o.points, &start);
+        let o = run(&p, &req(Method::CentroidArea { relax: 1.0 }, sched, 400, false));
+        let dev = max_dev(&o.points, &p.exact);
+        eprintln!("a2 centroid  {sched:?}: iterations {} dev/h {:e}", o.report.iterations_run, dev / p.h);
+        assert!(dev <= 1e-6 * p.h, "{sched:?}: {dev:e}");
+    }
+}
