@@ -5,13 +5,14 @@ use sm_testkit::surf3;
 
 fn run(name: &str, f: &surf3::SurfaceFixture, v: usize) {
     let inp = input_of(f, v);
-    let opts = TetOptions { optimize: 0, ..TetOptions::default() };
+    let opt: u8 = std::env::var("OPT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let opts = TetOptions { optimize: opt, ..TetOptions::default() };
     let t = std::time::Instant::now();
     match tetrahedralize(&inp, &opts) {
         Ok(m) => {
             let vol = total_volume(&m);
             let r = check_boundary(&m, &inp.tris);
-            eprintln!("{name}: ok tets={} steiner={} vol={vol} ref={} bnd={:?} exact+={} {:?}", m.tets.len(), m.stats.n_steiner, f.volumes[v].enclosed_volume, r, all_exact_positive(&m), t.elapsed());
+            eprintln!("{name}: ok tets={} steiner={} unref={} vol={vol:.12} ref={:.12} bnd={:?} exact+={} re={:.2} mr={:.3} dih=[{:.1},{:.1}] {:?}", m.tets.len(), m.stats.n_steiner, m.stats.unrefinable, f.volumes[v].enclosed_volume, r.is_ok(), all_exact_positive(&m), m.stats.max_radius_edge, m.stats.min_mean_ratio, m.stats.min_dihedral_deg, m.stats.max_dihedral_deg, t.elapsed());
         }
         Err(e) => eprintln!("{name}: ERR {e}"),
     }

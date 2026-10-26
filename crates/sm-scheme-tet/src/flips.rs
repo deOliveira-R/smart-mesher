@@ -353,3 +353,68 @@ impl Dt {
         Ok(false)
     }
 }
+
+impl Dt {
+    /// Locally-Delaunay flips on interior faces (constrained: boundary faces have no neighbour
+    /// and never move). A face whose neighbour apex lies inside the circumsphere is flipped (2-3)
+    /// when the union is convex, or via the 3-2 flip around one of its edges when that edge has
+    /// exactly three tets. Returns the number of flips; bounded work, no guarantee of termination
+    /// on degenerate input.
+    pub(crate) fn delaunay_flips(&mut self) -> Result<usize, crate::TetError> {
+        use crate::geom::in_sphere;
+        use crate::tds::NONE;
+        let mut sc = FlipScratch::default();
+        let mut flips = 0usize;
+        let budget = 20 * self.tds.len() + 1000;
+        for _sweep in 0..12 {
+            let mut changed = false;
+            let n_slots = self.tds.slots() as u32;
+            for t in 0..n_slots {
+                if !self.tds.alive[t as usize] {
+                    continue;
+                }
+                for i in 0..4 {
+                    if !self.tds.alive[t as usize] {
+                        break;
+                    }
+                    let n = self.tds.nbr[t as usize][i];
+                    if n == NONE || n < t {
+                        continue;
+                    }
+                    let v = self.tds.verts[t as usize];
+                    let p = |k: usize| self.pts[v[k] as usize];
+                    let Some(j) = self.tds.back_slot(n, t) else { continue };
+                    let apex = self.pts[self.tds.verts[n as usize][j] as usize];
+                    if !in_sphere(p(0), p(1), p(2), p(3), apex) {
+                        continue;
+                    }
+                    if let Some(plan) = self.plan_flip23(t, i) {
+                        self.apply(&plan)?;
+                        flips += 1;
+                        changed = true;
+                    } else {
+                        let f = self.tds.face(t, i);
+                        for e in 0..3 {
+                            let (a, b) = (f[e], f[(e + 1) % 3]);
+                            if let Some(plan) = self.plan_edge_removal(a, b, t, 3, &mut sc) {
+                                if plan.old.len() == 3 && plan.old.contains(&n) {
+                                    self.apply(&plan)?;
+                                    flips += 1;
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if flips > budget {
+                        return Ok(flips);
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Ok(flips)
+    }
+}

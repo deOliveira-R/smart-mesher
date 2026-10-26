@@ -45,6 +45,30 @@ fn far_points(pts: &[V3]) -> Result<[V3; N_FAR], TetError> {
     Ok(out)
 }
 
+/// Per-point target size: the mean incident boundary edge length at input points (others 0,
+/// filled when the points are created).
+fn boundary_sizes(points: &[V3], tris: &[[u32; 3]], total: usize) -> Vec<f64> {
+    let mut sum = vec![0.0f64; total];
+    let mut cnt = vec![0u32; total];
+    let mut edges: Vec<[u32; 2]> = Vec::with_capacity(tris.len() * 3 / 2);
+    for t in tris {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            edges.push([a.min(b), a.max(b)]);
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    for e in edges {
+        let l = crate::geom::dist(points[e[0] as usize], points[e[1] as usize]);
+        for x in e {
+            sum[x as usize] += l;
+            cnt[x as usize] += 1;
+        }
+    }
+    (0..total).map(|i| if cnt[i] > 0 { sum[i] / f64::from(cnt[i]) } else { f64::INFINITY }).collect()
+}
+
 fn check_options(o: &TetOptions<'_>) -> Result<(), TetError> {
     if o.optimize > 2 {
         return Err(TetError::BadOption(format!("optimize = {} is not supported (0..=2)", o.optimize)));
@@ -167,15 +191,37 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
         eprintln!("flat tets inside: {} of {}", count_flat(&dt), dt.tds.len());
     }
     flips += dt.remove_flats()?;
+    flips += dt.delaunay_flips()?;
+    flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2);
 
     // Stage 5 + 6 (filled in by the refine / optimize modules).
     let t3 = Instant::now();
     let mut unrefinable = 0usize;
     let mut smooth_passes = 0usize;
-    let _ = (&mut flips, &mut n_steiner, &mut unrefinable, &mut smooth_passes);
+    {
+        let h = boundary_sizes(&input.points, &input.tris, dt.pts.len());
+        let mut rf = crate::refine::Refiner::new(&mut dt, h, opts, max_steiner, n);
+        unrefinable = rf.run()?;
+        if dbg {
+            eprintln!("refine: {} inserted, {} unrefinable, failure reasons {:?}", rf.n_steiner, unrefinable, rf.reasons);
+        }
+        n_steiner += rf.n_steiner;
+        flips += rf.flips;
+    }
+    let _ = (&mut flips, &mut smooth_passes);
     stage_ms[3] = ms(t3);
     let t4 = Instant::now();
+    if opts.optimize >= 1 {
+        flips += dt.flip_optimize(0.7, 8)?;
+    }
+    if opts.optimize >= 2 {
+        let first_movable = n + N_FAR;
+        smooth_passes += dt.smooth(first_movable, 12);
+        flips += dt.flip_optimize(0.7, 4)?;
+        smooth_passes += dt.smooth(first_movable, 8);
+        flips += dt.flip_optimize(0.7, 4)?;
+    }
     stage_ms[4] = ms(t4);
 
     // Stage 7: canonical output.
