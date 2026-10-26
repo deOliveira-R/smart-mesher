@@ -177,6 +177,9 @@ fn check_boundary(pts: &[[f64; 2]], ranges: &[Range<usize>]) -> Result<(), PaveE
     Ok(())
 }
 
+/// Points, quads and rounds of one successful strategy.
+type Solution = (Vec<[f64; 2]>, Vec<[u32; 4]>, u32);
+
 /// One entry of the strategy ladder.
 #[derive(Clone, Copy)]
 struct Strategy {
@@ -299,7 +302,7 @@ pub fn pave_region(
     // (a few boundary nodes against the size) are where the default placement can leave a
     // triangle dual without a perfect matching.
     let mut last_err = PaveError::Internal("no strategy ran");
-    let mut result: Option<(Vec<[f64; 2]>, Vec<[u32; 4]>, u32)> = None;
+    let mut result: Option<Solution> = None;
     for (si, strat) in strategies().into_iter().enumerate() {
         let mut mesher = Mesher::new(&space, cdt.clone(), nb, size_map.clone(), area_w, strat.hscale, strat.row_factor)?;
         let run = (|| {

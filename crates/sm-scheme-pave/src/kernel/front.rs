@@ -286,10 +286,10 @@ impl<'a> Mesher<'a> {
             for t in self.cdt.triangles() {
                 let v = self.cdt.tv[t as usize];
                 let h = (self.h[v[0] as usize] + self.h[v[1] as usize] + self.h[v[2] as usize]) / 3.0;
-                if let Some((r, _)) = self.circum(t) {
-                    if r > FILL_RATIO * h {
-                        bad.push((Ord64(-(r / h)), t, v));
-                    }
+                if let Some((r, _)) = self.circum(t)
+                    && r > FILL_RATIO * h
+                {
+                    bad.push((Ord64(-(r / h)), t, v));
                 }
             }
             if bad.is_empty() {
@@ -309,10 +309,10 @@ impl<'a> Mesher<'a> {
                     [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0]
                 };
                 let mut cands: Vec<[f64; 2]> = Vec::with_capacity(2);
-                if let Some((_, cc)) = self.circum(t) {
-                    if b.len(sub(cc, centroid)) <= 1.2 * h {
-                        cands.push(cc);
-                    }
+                if let Some((_, cc)) = self.circum(t)
+                    && b.len(sub(cc, centroid)) <= 1.2 * h
+                {
+                    cands.push(cc);
                 }
                 cands.push(centroid);
                 for p in cands {

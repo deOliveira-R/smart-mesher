@@ -1,3 +1,4 @@
+#![allow(clippy::single_range_in_vec_init)]
 use super::*;
 use sm_math::{Sign, orient2d};
 use sm_testkit::loops2d::{self, Region2};

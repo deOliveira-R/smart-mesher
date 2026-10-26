@@ -95,11 +95,12 @@ pub(crate) fn smooth(pts: &mut [[f64; 2]], met: &[Met], quads: &[[u32; 4]], nb: 
             for omega in [1.0, 0.5, 0.25] {
                 let cand = [p0[0] + omega * (t[0] - p0[0]), p0[1] + omega * (t[1] - p0[1])];
                 pts[v] = cand;
-                if let Some((mn, avg)) = measure(pts, v) {
-                    if mn >= old_min - 1e-12 && avg > old_avg + 1e-12 {
-                        moved = moved.max((cand[0] - p0[0]).abs().max((cand[1] - p0[1]).abs()));
-                        break;
-                    }
+                if let Some((mn, avg)) = measure(pts, v)
+                    && mn >= old_min - 1e-12
+                    && avg > old_avg + 1e-12
+                {
+                    moved = moved.max((cand[0] - p0[0]).abs().max((cand[1] - p0[1]).abs()));
+                    break;
                 }
                 pts[v] = p0;
             }

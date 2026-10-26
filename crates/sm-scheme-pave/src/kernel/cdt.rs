@@ -82,6 +82,7 @@ impl Cdt {
     }
 
     /// Number of live triangles.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.live
     }
@@ -433,12 +434,6 @@ impl Cdt {
         (self.pts.len() - 1) as u32
     }
 
-    /// Move vertex `v` to `p` is not supported (the front only inserts); this is a plain
-    /// accessor for symmetry.
-    pub fn point(&self, v: u32) -> [f64; 2] {
-        self.pts[v as usize]
-    }
-
     // ---------------------------------------------------------------- queries
 
     /// A triangle containing the edge `{u, v}` and the slot of that edge in it.
@@ -526,10 +521,10 @@ impl Cdt {
         let t0 = c.alloc([nb as u32, nb as u32 + 1, nb as u32 + 2], [NONE; 3], [false; 3]);
         c.set_vt(t0);
         let mut hint = t0;
-        for i in 0..nb {
-            let loc = c.locate(pts[i], hint);
+        for (i, p) in pts.iter().enumerate() {
+            let loc = c.locate(*p, hint);
             let loc = match loc {
-                Loc::Outside => c.locate_scan(pts[i]),
+                Loc::Outside => c.locate_scan(*p),
                 l => l,
             };
             match loc {
@@ -900,6 +895,7 @@ pub(crate) fn signed_area(p: &[[f64; 2]]) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 

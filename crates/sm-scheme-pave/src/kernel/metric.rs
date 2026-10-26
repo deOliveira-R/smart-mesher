@@ -44,10 +44,6 @@ impl Met {
         }
         Some(Met { b11, b12, b22: r.sqrt() })
     }
-    /// The identity metric.
-    pub const fn identity() -> Met {
-        Met { b11: 1.0, b12: 0.0, b22: 1.0 }
-    }
     /// `B d`: the vector in the metric-orthonormal frame.
     #[inline]
     pub fn apply(&self, d: [f64; 2]) -> [f64; 2] {
@@ -82,11 +78,11 @@ impl Frame {
         let m = Met::from_sym(g_mean)?;
         Some(Frame { a11: m.b11, a12: m.b12, a22: m.b22, reflect })
     }
-    pub fn to_w(&self, uv: [f64; 2]) -> [f64; 2] {
+    pub fn to_w(self, uv: [f64; 2]) -> [f64; 2] {
         let x = self.a11 * uv[0] + self.a12 * uv[1];
         [if self.reflect { -x } else { x }, self.a22 * uv[1]]
     }
-    pub fn to_uv(&self, w: [f64; 2]) -> [f64; 2] {
+    pub fn to_uv(self, w: [f64; 2]) -> [f64; 2] {
         let x = if self.reflect { -w[0] } else { w[0] };
         let v = w[1] / self.a22;
         [(x - self.a12 * v) / self.a11, v]

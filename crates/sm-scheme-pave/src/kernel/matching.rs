@@ -541,22 +541,22 @@ mod tests {
 
     /// Maximum matching size by exhaustive search.
     fn brute(n: usize, edges: &[(u32, u32)]) -> usize {
-        fn go(i: usize, n: usize, edges: &[(u32, u32)], used: &mut Vec<bool>, size: usize) -> usize {
+        fn go(i: usize, edges: &[(u32, u32)], used: &mut [bool], size: usize) -> usize {
             if i == edges.len() {
                 return size;
             }
-            let mut best = go(i + 1, n, edges, used, size);
+            let mut best = go(i + 1, edges, used, size);
             let (a, b) = (edges[i].0 as usize, edges[i].1 as usize);
             if !used[a] && !used[b] {
                 used[a] = true;
                 used[b] = true;
-                best = best.max(go(i + 1, n, edges, used, size + 1));
+                best = best.max(go(i + 1, edges, used, size + 1));
                 used[a] = false;
                 used[b] = false;
             }
             best
         }
-        go(0, n, edges, &mut vec![false; n], 0)
+        go(0, edges, &mut vec![false; n], 0)
     }
 
     #[test]

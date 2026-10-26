@@ -280,7 +280,7 @@ impl Scheme for Pave {
                 let l = e1.norm() * e2.norm();
                 sjmin = sjmin.min(if l > 0.0 { e1.cross(e2).dot(n) / l } else { -1.0 });
             }
-            if !(sjmin > MIN_SJ_3D) {
+            if sjmin.is_nan() || sjmin <= MIN_SJ_3D {
                 return Err(quality(format!("a quad has 3-D scaled Jacobian {sjmin:.3}")));
             }
             pb.push(ElemShape::Quad, &[local[q[0] as usize], local[q[1] as usize], local[q[2] as usize], local[q[3] as usize]]);
