@@ -549,6 +549,32 @@ fn names_are_sanitized_and_collisions_are_errors() {
     assert!(matches!(foam_err(build_polymesh(&mm, &FoamOptions::new().default_patch(""))), FoamError::BadName(_)));
 }
 
+#[test]
+fn names_that_read_as_numbers_get_a_prefix() {
+    let mut alloc = SerialAlloc::new();
+    for (given, want) in [("1e5", "_1e5"), ("1", "_1"), ("+x", "_+x"), ("-x", "_-x"), (".x", "_.x"), ("3 inlet", "_3_inlet"), ("e5", "e5")] {
+        let mut m = hex_block([2, 2, 2], [0.5; 3], &mut alloc).unwrap();
+        let f = faces_on(&m, 0, 0.0);
+        add_faces(&mut m, given, f, &mut alloc);
+        let b = build(&m);
+        assert_eq!(b.mesh.patches[0].name, want, "{given}");
+    }
+}
+
+#[test]
+fn out_of_range_columns_are_inconsistent_not_panics() {
+    let m = hex_block([2, 2, 2], [0.5; 3], &mut SerialAlloc::new()).unwrap();
+    let nv = m.vertex_count() as u32;
+    let nc = m.cell_count() as u32;
+    let o = FoamOptions::default();
+    let inconsistent = |r: sm_meshio::Result<FoamBuild>| matches!(r, Err(MeshioError::Inconsistent(_)));
+    assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_vertex(0, nv), &o)));
+    assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_vertex(3, u32::MAX), &o)));
+    assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_left(0, nc), &o)));
+    assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_right(0, nc), &o)));
+    assert!(build_polymesh(&Wrap::new(&m), &o).is_ok());
+}
+
 // ---- errors of the input mesh ----------------------------------------------------------------------
 
 #[test]

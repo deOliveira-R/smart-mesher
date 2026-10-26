@@ -134,7 +134,9 @@ wins. Translation and rotation decks write plain patches (loss `foam.deck_cyclic
 
 Characters outside `[A-Za-z0-9_.+-]` become `_` (loss `foam.name_sanitized`, info). A name that
 is empty afterwards is `BadName`; two patches (or two zones of one kind) with the same name
-afterwards are `DuplicateName`. Nothing else is renamed.
+afterwards are `DuplicateName`. A name that starts with a digit, `+`, `-` or `.` gets a leading `_`
+(`1e5` -> `_1e5`; OpenFOAM's tokenizer reads the bare spelling as a number; same loss item).
+Nothing else is renamed.
 
 ## 7. Spellings to confirm in the conformance run (OpenFOAM v2506)
 
@@ -145,7 +147,7 @@ afterwards are `DuplicateName`. Nothing else is renamed.
 | `inGroups` | only for `wall` | `symmetryPlane` patches written without it |
 | zone label lists | `List<label> N(...)` inline, block layout when longer | both are OpenFOAM list spellings |
 | `flipMap` | `List<bool>` with `1`/`0` | v2506 may prefer `true`/`false` in its own output; both are readable |
-| uniform lists `N{v}` | never written; the parser reads them (bounded by input length) | OpenFOAM writes them for all-equal lists |
+| uniform lists `N{v}` | never written; the parser reads them for scalar-like lists, bounded by `N * bytes of one element <= input length`; for `faces` it answers `Unsupported` | OpenFOAM writes them for all-equal lists, not for faces or points |
 | `faceCompactList` | not written; parser answers `Unsupported` | newer OpenFOAM writes it for binary `faces` only |
 | strictly increasing neighbours | not guaranteed for two cells sharing two faces | fixtures never hit it |
 | `symmetryPlane` | exact planarity checked at 1e-9 relative | checkMesh may use a tighter tolerance |

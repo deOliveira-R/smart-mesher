@@ -56,10 +56,7 @@ fn foam_output_is_bit_identical_across_runs_and_thread_counts() {
     determinism::check(2, 4, |t| foam_hash(&w, &FoamOptions::default(), t)).unwrap();
     // A block larger than every chunk: 64 000 cells, 68 921 points (chunks are 4096 lines).
     let big = hex_block([40, 40, 40], [0.025; 3], &mut SerialAlloc::new()).unwrap();
-    let a = foam_hash(&big, &FoamOptions::default(), 1);
-    assert_eq!(a, foam_hash(&big, &FoamOptions::default(), 1));
-    assert_eq!(a, foam_hash(&big, &FoamOptions::default(), 7));
-    assert_eq!(a, foam_hash(&big, &FoamOptions::default(), 3));
+    determinism::check(1, 3, |t| foam_hash(&big, &FoamOptions::default(), t)).unwrap();
     let b = build_polymesh(&big, &FoamOptions::default()).unwrap();
     assert_eq!((b.mesh.n_cells, b.mesh.points.len(), b.mesh.n_internal()), (64_000, 68_921, 3 * 40 * 40 * 39));
     assert!(check_polymesh(&b.mesh, 1e-9).is_empty());
@@ -86,7 +83,5 @@ fn smsh_with_element_types_is_bit_identical() {
     let poly = typed(dual_patch().unwrap().mesh, "cells", 7);
     determinism::check(2, 4, |t| smsh_hash(&poly, "cells", "POLYHEDRON", t)).unwrap();
     let big = typed(hex_block([40, 40, 40], [0.025; 3], &mut SerialAlloc::new()).unwrap(), "block_1", 64_000);
-    let a = smsh_hash(&big, "block_1", "HEX8", 1);
-    assert_eq!(a, smsh_hash(&big, "block_1", "HEX8", 5));
-    assert_eq!(a, smsh_hash(&big, "block_1", "HEX8", 1));
+    determinism::check(1, 3, |t| smsh_hash(&big, "block_1", "HEX8", t)).unwrap();
 }

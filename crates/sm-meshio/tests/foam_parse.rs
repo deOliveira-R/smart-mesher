@@ -100,6 +100,34 @@ fn negative_and_huge_counts_are_errors() {
     assert_eq!(kind(&parse_checked(&t).unwrap_err()), "malformed");
 }
 
+/// A uniform list of a big element multiplies the input: `20000{10000(0 ... 0)}` is 20 KB of text
+/// but 800 MB of labels if expanded. Faces, points and the generic bound all refuse it.
+#[test]
+fn uniform_lists_of_big_elements_are_refused() {
+    let g = good();
+    let face = format!("10000({})", vec!["0"; 10_000].join(" "));
+    let big_faces = replace(&g, "faces", "6\n(", &format!("20000{{{face}}}\n("));
+    assert!(parse_checked(&big_faces).is_err());
+    // A whole-file version of the same shape: the uniform form replacing the list entirely.
+    let f = g.iter().find(|f| f.name == "faces").unwrap();
+    let text = String::from_utf8(f.bytes.clone()).unwrap();
+    let head = &text[..text.find("6\n(").unwrap()];
+    let hostile = FoamFile { name: "faces".into(), bytes: format!("{head}20000{{{face}}}\n").into_bytes() };
+    assert!(hostile.bytes.len() < 30_000);
+    let files: Vec<FoamFile> = g.iter().map(|x| if x.name == "faces" { hostile.clone() } else { x.clone() }).collect();
+    assert!(matches!(parse_checked(&files), Err(MeshioError::Foam(_))));
+    // Points: 3 scalars per 8+ bytes, so a count near the input length is bounded by size too.
+    let p = g.iter().find(|f| f.name == "points").unwrap();
+    let text = String::from_utf8(p.bytes.clone()).unwrap();
+    let head = &text[..text.find("8\n(").unwrap()];
+    let n = head.len() / 2; // passes the plain count check, fails n * element size
+    let files: Vec<FoamFile> = g.iter().map(|x| if x.name == "points" { FoamFile { name: "points".into(), bytes: format!("{head}{n}{{(0 0 0)}}\n").into_bytes() } } else { x.clone() }).collect();
+    assert!(parse_checked(&files).is_err());
+    // A small uniform point list still parses (and then fails the face index check, not the lexer).
+    let files: Vec<FoamFile> = g.iter().map(|x| if x.name == "points" { FoamFile { name: "points".into(), bytes: format!("{head}8{{(0 0 0)}}\n").into_bytes() } } else { x.clone() }).collect();
+    assert!(parse_checked(&files).is_ok());
+}
+
 #[test]
 fn indices_out_of_range_are_errors() {
     let g = good();
@@ -329,6 +357,10 @@ fn inner_huge_counts() {
     }
     let t = replace(&g, "owner", "6\n(\n0\n0\n0\n0\n0\n0\n)", "4000000000{0}");
     assert!(parse_polymesh(&t).is_err());
+    // Uniform lists of big elements (the quadratic-expansion shape).
+    let face = format!("10000({})", vec!["0"; 10_000].join(" "));
+    let t = replace(&g, "faces", "6\n(", &format!("20000{{{face}}}\n("));
+    assert!(parse_polymesh(&t).is_err());
     let t = replace(&g, "faces", "4(0 1 5 4)", "4000000000(0 1 5 4)");
     assert!(parse_polymesh(&t).is_err());
     let t = replace(&g, "boundary", "nFaces          6;", "nFaces          4294967295;");
@@ -336,6 +368,16 @@ fn inner_huge_counts() {
     // A file of 2 MB of data parses within the limit too (memory proportional to the input).
     let big = build_polymesh(&hex_block([30, 30, 30], [1.0; 3], &mut SerialAlloc::new()).unwrap(), &FoamOptions::default()).unwrap().mesh;
     assert_eq!(parse_polymesh(&big.files().unwrap()).unwrap(), big);
+}
+
+/// Child-process half of the enforcement probe: a 4 GiB reservation must fail under the limit.
+#[test]
+fn inner_limit_is_enforced() {
+    if std::env::var_os("SM_MESHIO_INNER").is_none() {
+        return;
+    }
+    let mut v: Vec<u8> = Vec::new();
+    assert!(v.try_reserve_exact(4usize << 30).is_err(), "ulimit -v did not limit the address space");
 }
 
 /// Re-run `inner_huge_counts` in a child process whose address space is capped at 1 GiB. A parser
@@ -347,9 +389,21 @@ fn huge_counts_do_not_allocate_under_an_address_space_limit() {
         return;
     }
     if !std::process::Command::new("sh").arg("-c").arg("ulimit -v 1048576").status().is_ok_and(|s| s.success()) {
-        eprintln!("cannot set an address space limit: skipping");
+        // Linux only: macOS refuses `ulimit -v`, so this test gives no evidence there.
+        eprintln!("cannot set an address space limit (Linux only): skipping");
         return;
     }
+    // The limit must actually bite: a 4 GiB reservation fails inside the child.
+    let exe0 = std::env::current_exe().unwrap();
+    let probe = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -v 1048576 && exec \"$0\" --exact inner_limit_is_enforced --test-threads=1")
+        .arg(&exe0)
+        .env("SM_MESHIO_INNER", "1")
+        .output()
+        .unwrap();
+    let ptext = format!("{}{}", String::from_utf8_lossy(&probe.stdout), String::from_utf8_lossy(&probe.stderr));
+    assert!(probe.status.success() && ptext.contains("1 passed"), "address-space limit not enforced: {ptext}");
     let exe = std::env::current_exe().unwrap();
     let out = std::process::Command::new("sh")
         .arg("-c")

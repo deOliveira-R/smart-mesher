@@ -459,9 +459,13 @@ pub struct FoamBuild {
     pub report: FoamReport,
 }
 
-/// Replace every character outside `[A-Za-z0-9_.+-]` by `_`. Returns `BadName` for a result that
-/// is empty. Used for patch and zone names.
+/// Replace every character outside `[A-Za-z0-9_.+-]` by `_`, and prefix `_` to a name that starts
+/// with a digit, sign or dot (OpenFOAM's tokenizer would read `1e5` as a number). Returns
+/// `BadName` for a result that is empty. Used for patch and zone names.
 pub(crate) fn sanitize(name: &str) -> Result<String, FoamError> {
     let s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-') { c } else { '_' }).collect();
-    if s.is_empty() { Err(FoamError::BadName(name.to_string())) } else { Ok(s) }
+    if s.is_empty() {
+        return Err(FoamError::BadName(name.to_string()));
+    }
+    Ok(if s.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) { format!("_{s}") } else { s })
 }

@@ -229,8 +229,15 @@ impl<'a> Lexer<'a> {
                 if n > self.src.len() {
                     return self.malformed(format!("uniform list of {n} entries is larger than the input"));
                 }
+                let start = self.pos;
                 let v = elem(self)?;
                 self.expect(Tok::RBrace, "'}'")?;
+                // n copies of an element that took `size` bytes to write must fit in the input,
+                // so the expansion stays proportional to it whatever the element's own size.
+                let size = (self.pos - start).max(1);
+                if n.saturating_mul(size) > self.src.len() {
+                    return self.malformed(format!("uniform list of {n} entries of {size} bytes is larger than the input"));
+                }
                 out = vec![v; n];
             }
             t => return Err(self.err(format!("expected '(' or '{{' after the count, found {t:?}"))),
@@ -332,6 +339,47 @@ fn dict_list<T>(
     Ok(out)
 }
 
+/// The `faces` list straight into CSR (offsets, concatenated labels), no per-face allocation.
+/// The uniform `N{face}` spelling is rejected: OpenFOAM never writes it for faces, and expanding
+/// it would multiply the input.
+fn faces_csr(lx: &mut Lexer) -> Result<(Vec<u64>, Vec<u32>)> {
+    if let Some(Tok::Word(w)) = lx.peek()?
+        && w.starts_with("List<")
+    {
+        lx.next()?;
+    }
+    let n = lx.count()?;
+    match lx.need("'('")? {
+        Tok::LParen => {}
+        Tok::LBrace => return Err(fe(FoamError::Unsupported(format!("{}: uniform N{{face}} list for faces", lx.file)))),
+        t => return Err(lx.err(format!("expected '(' after the count, found {t:?}"))),
+    }
+    let mut offsets = vec![0u64];
+    let mut pts = Vec::new();
+    while lx.peek()? != Some(Tok::RParen) {
+        let k = lx.count()?;
+        lx.expect(Tok::LParen, "'('")?;
+        let before = pts.len();
+        while lx.peek()? != Some(Tok::RParen) {
+            pts.push(lx.label()?);
+        }
+        lx.next()?;
+        let held = pts.len() - before;
+        if held != k {
+            return lx.malformed(format!("face declares {k} points but holds {held}"));
+        }
+        if k < 3 {
+            return lx.malformed(format!("a face with {k} points"));
+        }
+        offsets.push(pts.len() as u64);
+    }
+    lx.next()?;
+    if offsets.len() - 1 != n {
+        return lx.malformed(format!("list declares {n} entries but holds {}", offsets.len() - 1));
+    }
+    Ok((offsets, pts))
+}
+
 /// Parse polyMesh files (`points faces owner neighbour boundary`, optional `cellZones`,
 /// `faceZones`) into a [`PolyMesh`]. ASCII only: `format binary` is [`FoamError::Unsupported`].
 /// Handles `//` and `/* */` comments, the `FoamFile` header and the list spellings `N(...)`,
@@ -352,35 +400,21 @@ pub fn parse_polymesh(files: &[FoamFile]) -> Result<PolyMesh> {
     let ff = require(files, "faces")?;
     let mut lx = Lexer::new(&ff.name, &ff.bytes);
     header(&mut lx)?;
-    let faces: Vec<Vec<u32>> = lx.list(|l| {
-        let n = l.count()?;
-        l.expect(Tok::LParen, "'('")?;
-        let mut v = Vec::new();
-        while l.peek()? != Some(Tok::RParen) {
-            v.push(l.label()?);
-        }
-        l.next()?;
-        if v.len() != n {
-            return l.malformed(format!("face declares {n} points but holds {}", v.len()));
-        }
-        if n < 3 {
-            return l.malformed(format!("a face with {n} points"));
-        }
-        Ok(v)
-    })?;
+    let (face_offsets, face_points) = faces_csr(&mut lx)?;
     only_end(&mut lx)?;
 
     let owner = label_file(require(files, "owner")?)?;
     let neighbour = label_file(require(files, "neighbour")?)?;
+    let nf_total = face_offsets.len() - 1;
     let mal = |s: String| fe(FoamError::Malformed(s));
-    if owner.len() != faces.len() {
-        return Err(mal(format!("{} faces but {} owners", faces.len(), owner.len())));
+    if owner.len() != nf_total {
+        return Err(mal(format!("{} faces but {} owners", nf_total, owner.len())));
     }
     if neighbour.len() > owner.len() {
         return Err(mal(format!("{} neighbours for {} faces", neighbour.len(), owner.len())));
     }
     let np = points.len();
-    if let Some(v) = faces.iter().flatten().find(|v| **v as usize >= np) {
+    if let Some(v) = face_points.iter().find(|v| **v as usize >= np) {
         return Err(mal(format!("face point index {v} is past the {np} points")));
     }
     let max_cell = owner.iter().chain(&neighbour).max().copied();
@@ -412,7 +446,7 @@ pub fn parse_polymesh(files: &[FoamFile]) -> Result<PolyMesh> {
         },
     )?;
     only_end(&mut lx)?;
-    let n_faces = faces.len() as u64;
+    let n_faces = nf_total as u64;
     let mut patches = Vec::new();
     for p in raw {
         let ty = p.ty.ok_or_else(|| mal(format!("patch '{}' has no type", p.name)))?;
@@ -472,13 +506,6 @@ pub fn parse_polymesh(files: &[FoamFile]) -> Result<PolyMesh> {
         face_zones = z;
     }
 
-    let mut face_offsets = Vec::with_capacity(faces.len() + 1);
-    face_offsets.push(0u64);
-    let mut face_points = Vec::new();
-    for f in &faces {
-        face_points.extend_from_slice(f);
-        face_offsets.push(face_points.len() as u64);
-    }
     Ok(PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells, patches, cell_zones, face_zones })
 }
 

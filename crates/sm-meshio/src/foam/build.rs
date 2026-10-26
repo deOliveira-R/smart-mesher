@@ -28,6 +28,26 @@ struct PatchBuild {
     faces: Vec<u32>,
 }
 
+/// Index ranges the length-only `check_columns` leaves open: monotone offsets, vertex and cell
+/// indices below their counts. An out-of-range column is `Inconsistent`, never a panic.
+fn check_ranges(mesh: &dyn MeshRead, nv: usize, nc: usize) -> Result<()> {
+    let bad = |what: &str| Err(MeshioError::Inconsistent(format!("{what} out of range")));
+    let cols = mesh.columns();
+    if !cols.face_vertex_offsets.par_windows(2).all(|w| w[0] <= w[1]) || !cols.cell_face_offsets.par_windows(2).all(|w| w[0] <= w[1]) {
+        return bad("topology offsets (not monotone)");
+    }
+    if cols.face_vertices.par_iter().any(|v| v.get() >= nv) {
+        return bad("face vertex index");
+    }
+    if cols.face_left.par_iter().any(|c| c.get() >= nc) {
+        return bad("face left cell");
+    }
+    if cols.face_right.par_iter().any(|&r| r != NO_CELL && r as usize >= nc) {
+        return bad("face right cell");
+    }
+    Ok(())
+}
+
 /// Build the OpenFOAM polyMesh of `mesh` under `opts`.
 ///
 /// Cells keep their indices; faces are ordered `[internal][patch 0][patch 1]...` with internal
@@ -54,6 +74,7 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
     }
     let cols = mesh.columns();
     let (left, right) = (cols.face_left, cols.face_right);
+    check_ranges(mesh, nv, nc)?;
     let mut loss = LossReport::new();
     let mut note = |code: &str, sev: LossSeverity, count: usize, detail: String| loss.push(LossItem::new(code, sev, count as u64, detail));
 

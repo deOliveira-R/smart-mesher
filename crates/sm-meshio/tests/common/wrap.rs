@@ -109,6 +109,21 @@ impl<'a> Wrap<'a> {
         self.rebuild();
         self
     }
+    /// Overwrite entry `i` of the concatenated face vertices (out-of-range probes).
+    pub fn corrupt_vertex(mut self, i: usize, v: u32) -> Self {
+        self.verts[i] = VertexIx(v);
+        self
+    }
+    /// Overwrite the left cell of new face `i`.
+    pub fn corrupt_left(mut self, i: usize, c: u32) -> Self {
+        self.left[i] = CellIx(c);
+        self
+    }
+    /// Overwrite the right cell of new face `i`.
+    pub fn corrupt_right(mut self, i: usize, c: u32) -> Self {
+        self.right[i] = c;
+        self
+    }
     /// Old index of new face `i`.
     pub fn old(&self, i: usize) -> usize {
         self.perm[i]

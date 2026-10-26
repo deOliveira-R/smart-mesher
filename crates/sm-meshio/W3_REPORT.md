@@ -34,12 +34,12 @@ Definition of done, all green on the final commit: `cargo build --workspace`;
 | 4 | ordering, reordering proof | `ordering_rules_on_every_fixture`, `interleaved_boundary_faces_are_moved_behind_the_interior_ones` (natural interleaving plus a hand-built mesh with a boundary face between two interior faces of cell 0), `unsorted_interior_faces_are_sorted_by_owner_then_neighbour` (sort path), `an_interior_face_with_left_not_below_right_is_an_orientation_error` |
 | 5 | patches and zones | `face_sets_become_patches_in_set_order`, `cell_sets_become_cell_zones`, `an_unlisted_boundary_face_lands_in_default_faces`, `overlapping_sets_report_in_sets_mode_and_fail_when_explicit`, `classification_gives_one_patch_per_model_face`, `non_conformal_and_partition_cut_faces_go_to_their_own_patches`, `a_planar_mirror_set_becomes_a_symmetry_plane_and_a_bent_one_a_patch`, `a_side_set_becomes_a_face_zone_with_flips`, plus `translation_decks_stay_plain_patches_with_a_loss_item`, `names_are_sanitized_and_collisions_are_errors`, `unsupported_inputs_are_typed_errors`, `options_json_shape`, `high_order_cells_are_reported_not_written` |
 | 6 | golden bytes | `single_hex_files_equal_the_hand_written_golden_bytes` (`tests/data/foam/single_hex/*`) |
-| 7 | hostile parse | `truncated_files_are_errors` (every prefix up to the last closing bracket of every file), `binary_format_is_unsupported`, `negative_and_huge_counts_are_errors`, `indices_out_of_range_are_errors`, `deep_nesting_and_junk_do_not_recurse_or_panic`, proptests `random_bytes_never_panic`, `mutated_valid_files_never_panic`, `printable_garbage_in_every_slot`, `huge_counts_do_not_allocate_under_an_address_space_limit` (`tests/foam_parse.rs`); spellings: `accepts_comments_and_the_list_spellings`, `read_dir_round_trips_and_write_dir_removes_stale_zone_files` |
+| 7 | hostile parse | `truncated_files_are_errors` (every prefix up to the last closing bracket of every file), `binary_format_is_unsupported`, `negative_and_huge_counts_are_errors`, `indices_out_of_range_are_errors`, `deep_nesting_and_junk_do_not_recurse_or_panic`, proptests `random_bytes_never_panic`, `mutated_valid_files_never_panic`, `printable_garbage_in_every_slot`, `uniform_lists_of_big_elements_are_refused` (review round 0), `huge_counts_do_not_allocate_under_an_address_space_limit` (`tests/foam_parse.rs`; Linux only, see below); spellings: `accepts_comments_and_the_list_spellings`, `read_dir_round_trips_and_write_dir_removes_stale_zone_files` |
 | 8 | tar | `tar_holds_the_files_with_valid_headers_and_is_deterministic` (own 30-line untar: checksums, mode 0644, uid/gid/mtime 0, sorted names, ustar prefix split, byte-identical runs; system `tar -tvf` when present) |
 | 9 | `.smsh` 1.1 | `v10_golden_still_decodes_and_matches_its_mesh`, `hex8_on_a_1000_cell_block_round_trips`, `polyhedron_on_dual_patch_round_trips`, `element_type_violations_are_typed_errors` (TET4 on hexes, unknown set, duplicate record, missing HO record, `NFACED`), `element_type_set_kind_and_overlap_checks`, `high_order_names_need_the_right_node_count`, `stats_match_the_mesh` (`mixed_transition`: 1/1/1/1 cells, 3 interior, 14 boundary, `max_cell_faces` 6; whole corpus), `python_reader_returns_the_same_element_types_and_stats`, `tampered_stats_are_rejected` and `element_type_records_are_checked_by_the_decoder` (`tests/corrupt.rs`) |
 | 10 | loss reports | `vtu_report_for_a_high_order_mesh` (`ho_hex`: `vtu.high_order_dropped` 1, `vtu.extra_points_unused` 19), `vtu_report_for_face_sets_and_edge_tables`, `vtu_report_is_empty_for_plain_meshes`, `report_stays_sorted_merges_and_serializes` (`tests/loss.rs`), `smsh_loss_report_is_empty` (`tests/smsh11.rs`) |
 | 11 | VTU polyhedron check | `polyhedra_decode_to_the_fixture_volumes` (`tests/vtu.rs`): `dual_patch`, `hexagonal_prism`, `nonconvex_poly`, `split_face_cube` and a hex stacked on `split_face_cube`, volumes decoded from the raw VTU arrays to relative 1e-12; `faceoffsets` is -1 for the hex; outward loop of the shared face checked. No writer change was needed. |
-| 12 | determinism | `foam_output_is_bit_identical_across_runs_and_thread_counts` (every fixture + `nonconvex_poly` + sets block + reversed-face block through `determinism::check(2, 4, ..)`; the 40x40x40 block, 64,000 cells / 68,921 points, by direct hash comparison for 1, 1, 7, 3 threads, **not** through `determinism::check`), `smsh_with_element_types_is_bit_identical` (same split); the hash covers files, tar, index maps and report |
+| 12 | determinism | `foam_output_is_bit_identical_across_runs_and_thread_counts` (every fixture + `nonconvex_poly` + sets block + reversed-face block through `determinism::check(2, 4, ..)`; the 40x40x40 block, 64,000 cells / 68,921 points, through `determinism::check(1, 3, ..)`), `smsh_with_element_types_is_bit_identical` (same, 40x40x40 likewise); the hash covers files, tar, index maps and report |
 | 13 | build, test, clippy, rustdoc | see "Definition of done" above |
 
 Registered ops: none, so there is no cold-replay `Diverged` check to run.
@@ -57,6 +57,30 @@ Registered ops: none, so there is no cold-replay `Diverged` check to run.
 | `foam_polymesh/parse` (single thread, 84 MiB/s) | 97 ms |
 
 The parser's peak memory is bounded by construction (deviation 7); it was not measured.
+
+## What changed in review (round 0)
+
+* **Must fix: hostile-parse allocation bound.** The uniform `N{elem}` branch only compared `N` with
+  the input length, so `20000{10000(0 ... 0)}` (20 KB) expanded to 800 MB of labels. Now the
+  branch requires `N * (bytes the element took) <= input length`, and `faces` no longer goes
+  through the generic list at all: `faces_csr` parses straight into CSR and answers `Unsupported`
+  for the uniform spelling (OpenFOAM never writes it for faces). Regression:
+  `uniform_lists_of_big_elements_are_refused` (runs everywhere) and a case in `inner_huge_counts`.
+* **Address-space test only runs on Linux.** `ulimit -v` fails on darwin, so
+  `huge_counts_do_not_allocate_under_an_address_space_limit` skips there and gives no evidence on
+  macOS. Where `ulimit -v` works the test now first proves the limit bites (a child must fail a
+  4 GiB `try_reserve_exact`, `inner_limit_is_enforced`). The new uniform-list regression does not
+  depend on it.
+* **Names that read as numbers.** `sanitize` prefixes `_` to a name starting with a digit, `+`,
+  `-` or `.` (`1e5` -> `_1e5`), with the existing `foam.name_sanitized` item, rather than failing
+  with `BadName` (a set called `1_wall` stays usable). Test `names_that_read_as_numbers_get_a_prefix`;
+  `FOAM_FORMAT.md` section 6.
+* **Acceptance 12** now goes through `sm_testkit::determinism::check` for the 40x40x40 blocks too.
+* **Index ranges.** `build_polymesh` checks offset monotonicity, face vertex, left and right cell
+  indices (`check_ranges`) and returns `Inconsistent`; test
+  `out_of_range_columns_are_inconsistent_not_panics`. The `.smsh` and VTU writers keep their
+  length-only check (not part of this change).
+* **Parser faces into CSR.** No per-face `Vec`; parse throughput not re-measured (the review machine was under load 200+); the 84 MiB/s figure is the old one.
 
 ## E6: other crates that read `.smsh` bytes
 
