@@ -79,7 +79,9 @@ fn milestone_part_through_the_op() {
     }
     assert!(issues(t).is_empty());
     assert!(delta.diagnostics.iter().all(|d| d.code != "step.unsupported_entity"));
-    assert!(delta.diagnostics.iter().any(|d| d.code == "step.assembly_transforms_ignored"), "the assembly warning is mandatory");
+    // The three placements are identity: flattened, no warning.
+    assert!(delta.diagnostics.iter().any(|d| d.code == "step.assembly_flattened"));
+    assert!(delta.diagnostics.iter().all(|d| d.code != "step.assembly_transforms_ignored"));
 }
 
 #[test]

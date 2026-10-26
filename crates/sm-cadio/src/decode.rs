@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
-use sm_core::Point3;
+use sm_core::{Point3, Transform};
 use sm_topo_api::{Sense, ShellKind};
 
 use crate::args::{Args, Ents};
+use crate::assembly;
 use crate::edge::{fit_edge, with_id};
 use crate::error::{OpenEdge, StepError};
 use crate::gcodec::Geo;
@@ -120,8 +121,26 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let ctx_of = units::contexts_by_item(file);
     let default_ctx = ctx_of.values().next().copied();
     let ents = Ents::new(file);
+    // Assembly graph: only when the file has assembly entities.
+    let asm = (skipped.assemblies && opts.flatten_assemblies).then(|| assembly::scan(file));
+    let mut solid_rep: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut rep_um: BTreeMap<u64, f64> = BTreeMap::new();
+    if let Some(a) = &asm {
+        for (rep, (items, ctx)) in &a.reps {
+            for it in items {
+                solid_rep.entry(*it).or_insert(*rep);
+            }
+            if let Some(c) = ctx
+                && let Ok(cu) = units::context_units(file, *c)
+                && let Some(l) = cu.length
+            {
+                rep_um.insert(*rep, l.um);
+            }
+        }
+    }
     // Units are resolved first (cheap, sequential, deterministic first error).
-    let mut preps: Vec<(u64, SolidKind, UnitReport)> = Vec::with_capacity(selected.len());
+    let mut preps: Vec<(u64, SolidKind, UnitReport, Vec<Transform>)> = Vec::with_capacity(selected.len());
+    let mut placement_failures = 0usize;
     let mut unit_groups: Vec<(String, Vec<u64>)> = Vec::new();
     for (id, kind) in &selected {
         let ctx = ctx_of.get(id).copied().or(default_ctx);
@@ -161,24 +180,53 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             Some((_, v)) => v.push(*id),
             None => unit_groups.push((key, vec![*id])),
         }
-        preps.push((*id, *kind, report));
+        let placements = match (&asm, solid_rep.get(id)) {
+            (Some(a), Some(rep)) => {
+                let own = length.um;
+                let scale_of = |r: u64| rep_um.get(&r).copied().unwrap_or(own) / target_um;
+                match assembly::instances(file, a, *rep, &scale_of, 0) {
+                    Ok(v) if !v.is_empty() => v,
+                    _ => {
+                        placement_failures += 1;
+                        vec![Transform::IDENTITY]
+                    }
+                }
+            }
+            _ => vec![Transform::IDENTITY],
+        };
+        preps.push((*id, *kind, report, placements));
     }
     // Solids are independent: decode them in parallel, collected in order.
-    type SolidResult = Result<(Solid, Vec<Note>, (usize, usize)), StepError>;
-    let decode_one = |(id, kind, report): &(u64, SolidKind, UnitReport)| -> SolidResult {
+    type SolidResult = Result<(Vec<Solid>, Vec<Note>, (usize, usize), usize), StepError>;
+    let decode_one = |(id, kind, report, placements): &(u64, SolidKind, UnitReport, Vec<Transform>)| -> SolidResult {
         let mut local = Vec::new();
         let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
-        Ok((solid, local, stats))
+        let mut out = Vec::with_capacity(placements.len());
+        let mut refused = 0usize;
+        for (k, t) in placements.iter().enumerate() {
+            let mut inst = solid.clone();
+            inst.instance = k as u32;
+            if *t != Transform::IDENTITY && assembly::transform_solid(&mut inst, t).is_err() {
+                refused += 1;
+                inst = solid.clone();
+                inst.instance = k as u32;
+            }
+            out.push(inst);
+        }
+        Ok((out, local, stats, refused))
     };
     let results: Vec<SolidResult> = if preps.len() >= 8 { preps.par_iter().map(decode_one).collect() } else { preps.iter().map(decode_one).collect() };
     let mut solids = Vec::with_capacity(results.len());
     let (mut welded_v, mut welded_e) = (0usize, 0usize);
+    let mut instances = 0usize;
     for r in results {
-        let (solid, local, stats) = r?;
+        let (list, local, stats, refused) = r?;
         notes.extend(local);
         welded_v += stats.0;
         welded_e += stats.1;
-        solids.push(solid);
+        placement_failures += refused;
+        instances += list.len();
+        solids.extend(list);
     }
     let mut unit_notes = Vec::new();
     if selected.is_empty() {
@@ -198,11 +246,20 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
         notes.push(Note::info(NoteCode::Welded, format!("welded {welded_v} vertices and {welded_e} duplicate edges"), Vec::new()));
     }
     if skipped.assemblies && !solids.is_empty() {
-        notes.push(Note::warn(
-            NoteCode::AssemblyTransformsIgnored,
-            "the file is an assembly: solids are imported in their local coordinates and assembly placements are ignored".to_owned(),
-            Vec::new(),
-        ));
+        match &asm {
+            Some(a) if !a.links.is_empty() && a.unsupported.is_empty() && placement_failures == 0 => {
+                notes.push(Note::info(NoteCode::AssemblyFlattened, format!("assembly flattened: {instances} solid instance(s) of {} solid(s) placed in the root representation", selected.len()), Vec::new()));
+            }
+            _ => {
+                let why = match &asm {
+                    None => "assembly flattening is off".to_owned(),
+                    Some(a) if a.links.is_empty() && a.unsupported.is_empty() => "the file has assembly entities but no placement this reader understands".to_owned(),
+                    Some(a) if !a.unsupported.is_empty() => format!("{} (#{})", a.unsupported[0].1, a.unsupported[0].0),
+                    Some(_) => format!("{placement_failures} placement(s) could not be applied (mirrored or inconsistent)"),
+                };
+                notes.push(Note::warn(NoteCode::AssemblyTransformsIgnored, format!("the file is an assembly: solids are imported in their local coordinates ({why})"), Vec::new()));
+            }
+        }
     }
     Ok(BrepModel { schema: file.header.schemas.first().cloned().unwrap_or_default(), solids, notes })
 }
@@ -478,7 +535,7 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
             return Err(StepError::OpenShell { solid: id, issues });
         }
     }
-    let solid = Solid { id, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
+    let solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
     Ok((solid, (welded_vertices, welded_edges)))
 }
 

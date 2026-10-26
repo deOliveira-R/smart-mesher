@@ -99,7 +99,7 @@ impl TypedOp for ImportStep {
             Some(w) => return Err(OpError::Invalid(format!("weld_tol {w} must be finite, positive and at most the model's linear_max {}", tol.linear_max))),
         };
         let bytes = load(&self.source, || ctx.service::<StepInputs>())?;
-        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: false };
+        let opts = ReadOptions { to_unit: self.to_unit, assume_unit: Some(self.assume_unit.unwrap_or(LengthUnit::Mm)), weld_tol, solids: self.solids.clone(), sheets: false, flatten_assemblies: true };
         let model = read_step(&bytes, &opts)?;
         if model.solids.is_empty() {
             return Err(OpError::Invalid("step.no_solids: the file contains no MANIFOLD_SOLID_BREP or BREP_WITH_VOIDS to import".to_owned()));

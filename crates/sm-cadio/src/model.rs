@@ -91,8 +91,11 @@ pub enum NoteCode {
     /// `step.edge_sense`: an `EDGE_CURVE.same_sense` flag contradicted the vertices and was
     /// repaired from the geometry.
     EdgeSense,
-    /// `step.assembly_transforms_ignored`: the file is an assembly; solids stay local.
+    /// `step.assembly_transforms_ignored`: the file is an assembly whose placements could not be
+    /// applied; those solids stay in local coordinates.
     AssemblyTransformsIgnored,
+    /// `step.assembly_flattened`: assembly placements were applied, one solid per instance.
+    AssemblyFlattened,
     /// `step.attributes`: counts of colors, PMI, tessellation and similar entities not imported.
     Attributes,
 }
@@ -110,6 +113,7 @@ impl NoteCode {
             Self::EdgeGap => "step.edge_gap",
             Self::EdgeSense => "step.edge_sense",
             Self::AssemblyTransformsIgnored => "step.assembly_transforms_ignored",
+            Self::AssemblyFlattened => "step.assembly_flattened",
             Self::Attributes => "step.attributes",
         }
     }
@@ -151,11 +155,15 @@ pub struct ReadOptions {
     pub solids: Option<Vec<u32>>,
     /// Import sheets (`SHELL_BASED_SURFACE_MODEL`, `OPEN_SHELL`). Not supported yet.
     pub sheets: bool,
+    /// Apply assembly placements (`MAPPED_ITEM`, `ITEM_DEFINED_TRANSFORMATION`): one solid per
+    /// instance, in the root representation's coordinates. When `false`, or when a placement
+    /// cannot be applied, solids stay local and `step.assembly_transforms_ignored` is raised.
+    pub flatten_assemblies: bool,
 }
 
 impl Default for ReadOptions {
     fn default() -> Self {
-        Self { to_unit: None, assume_unit: None, weld_tol: 1e-6, solids: None, sheets: false }
+        Self { to_unit: None, assume_unit: None, weld_tol: 1e-6, solids: None, sheets: false, flatten_assemblies: true }
     }
 }
 
@@ -274,6 +282,8 @@ pub enum SolidKind {
 pub struct Solid {
     /// STEP id of the solid entity.
     pub id: u64,
+    /// Instance ordinal when assembly flattening places the solid more than once (0 otherwise).
+    pub instance: u32,
     /// Its name attribute.
     pub name: String,
     /// Entity kind.

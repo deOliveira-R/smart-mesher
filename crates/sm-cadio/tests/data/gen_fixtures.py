@@ -433,7 +433,39 @@ def off_surface_text():
     return header(AP214, "face_off_surface") + d.text() + FOOTER
 
 
+def assembly_text(mapped):
+    """A brick [0,1]x[0,2]x[0,3] placed in a root representation.
+
+    `mapped=False`: two REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION placements (a translation
+    by (10,0,0); a quarter turn about z followed by (0,5,0)). `mapped=True`: one MAPPED_ITEM
+    whose target turns z into -y and lifts by 20 (R p = (x, -z, y) + (0,0,20)).
+    """
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    s = brick_parts(d, (0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
+    solid = d.add(f"MANIFOLD_SOLID_BREP('pin',#{s.shell()})")
+    child_origin = d.axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+    child = d.add(f"ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{child_origin},#{solid}),#{ctx})")
+    root_origin = d.axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+    if not mapped:
+        p1 = d.axis((10.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+        p2 = d.axis((0.0, 5.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0))
+        root = d.add(f"SHAPE_REPRESENTATION('',(#{root_origin},#{p1},#{p2}),#{ctx})")
+        for p in (p1, p2):
+            idt = d.add(f"ITEM_DEFINED_TRANSFORMATION('','',#{child_origin},#{p})")
+            d.add(f"( REPRESENTATION_RELATIONSHIP('','',#{child},#{root}) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{idt}) SHAPE_REPRESENTATION_RELATIONSHIP() )")
+    else:
+        target = d.axis((0.0, 0.0, 20.0), (0.0, -1.0, 0.0), (1.0, 0.0, 0.0))
+        rmap = d.add(f"REPRESENTATION_MAP(#{child_origin},#{child})")
+        mi = d.add(f"MAPPED_ITEM('',#{rmap},#{target})")
+        d.add(f"SHAPE_REPRESENTATION('',(#{root_origin},#{mi}),#{ctx})")
+    d.add("NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#1,#1,$)")
+    return header(AP214, "assembly") + d.text() + FOOTER
+
+
 def main():
+    write("assembly_pins.stp", assembly_text(False))
+    write("assembly_mapped.stp", assembly_text(True))
     write("brick_inverted.stp", inverted_text())
     write("bad/face_off_surface.stp", off_surface_text())
     write("brick_2x3x4.stp", brick_text((1.0, 2.0, 3.0), (2.0, 3.0, 4.0), name="brick_2x3x4"))

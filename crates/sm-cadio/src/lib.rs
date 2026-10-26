@@ -12,6 +12,7 @@
 //! | [`inputs`] | content-addressed blobs: [`StepInputs`], [`MemoryInputStore`], [`DirInputStore`], [`stage_file`] |
 
 mod args;
+mod assembly;
 mod decode;
 mod edge;
 pub mod error;

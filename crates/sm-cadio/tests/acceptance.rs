@@ -310,3 +310,66 @@ fn s1_occ_cone_apex_gets_its_pole_edge() {
     assert_eq!((count(&reference, Dim::Vertex), count(&reference, Dim::Edge), count(&reference, Dim::Face)), (2, 3, 2));
     assert!(rel(volume(v, r.volumes[0]), reference.volume_moments(ids.volume).expect("moments").volume) <= 1e-9);
 }
+
+// ---- Stretch S3: assemblies
+
+fn bbox_of_solid(s: &sm_cadio::Solid) -> ([f64; 3], [f64; 3]) {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for v in &s.vertices {
+        for (k, x) in [v.point.x, v.point.y, v.point.z].into_iter().enumerate() {
+            lo[k] = lo[k].min(x);
+            hi[k] = hi[k].max(x);
+        }
+    }
+    (lo, hi)
+}
+
+#[test]
+fn s3_relationship_placements_are_flattened_into_instances() {
+    let m = read(&data("assembly_pins.stp"));
+    assert_eq!(m.solids.len(), 2, "one pin placed twice");
+    assert_eq!((m.solids[0].id, m.solids[0].instance), (m.solids[1].id, 0));
+    assert_eq!(m.solids[1].instance, 1);
+    // Instance 0: translated by (10, 0, 0); instance 1: (x, y, z) -> (-y, x, z) + (0, 5, 0).
+    assert_eq!(bbox_of_solid(&m.solids[0]), ([10.0, 0.0, 0.0], [11.0, 2.0, 3.0]));
+    assert_eq!(bbox_of_solid(&m.solids[1]), ([-2.0, 5.0, 0.0], [0.0, 6.0, 3.0]));
+    let note = m.notes.iter().find(|n| n.code == NoteCode::AssemblyFlattened).expect("flattened info");
+    assert!(note.message.contains("2 solid instance"), "{}", note.message);
+    assert!(m.notes.iter().all(|n| n.code != NoteCode::AssemblyTransformsIgnored));
+    // Both instances are valid solids of volume 6 with outward normals (proper rigid maps).
+    let (h, r) = both(&data("assembly_pins.stp"));
+    for v in &r.volumes {
+        assert!(rel(volume(h.as_view(), *v), 6.0) <= 1e-9);
+    }
+    assert!(rel(total_area(h.as_view()), 2.0 * 22.0) <= 1e-9);
+}
+
+#[test]
+fn s3_mapped_items_are_flattened_with_their_target_frame() {
+    let m = read(&data("assembly_mapped.stp"));
+    assert_eq!(m.solids.len(), 1);
+    // R p = (x, -z, y) + (0, 0, 20) maps [0,1]x[0,2]x[0,3] to [0,1] x [-3,0] x [20,22].
+    assert_eq!(bbox_of_solid(&m.solids[0]), ([0.0, -3.0, 20.0], [1.0, 0.0, 22.0]));
+    let (h, r) = both(&data("assembly_mapped.stp"));
+    assert!(rel(volume(h.as_view(), r.volumes[0]), 6.0) <= 1e-9);
+}
+
+#[test]
+fn s3_flattening_can_be_switched_off_and_then_warns() {
+    let opts = ReadOptions { flatten_assemblies: false, ..ReadOptions::default() };
+    let m = read_step(&data("assembly_pins.stp"), &opts).expect("read");
+    assert_eq!(m.solids.len(), 1, "the pin once, in local coordinates");
+    assert_eq!(bbox_of_solid(&m.solids[0]), ([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]));
+    let w = m.notes.iter().find(|n| n.code == NoteCode::AssemblyTransformsIgnored).expect("the warning");
+    assert_eq!(w.severity, sm_cadio::NoteSeverity::Warning);
+    assert!(m.notes.iter().all(|n| n.code != NoteCode::AssemblyFlattened));
+}
+
+#[test]
+fn s3_the_milestone_part_keeps_its_coordinates() {
+    // Identity placements: the flattened part equals the unflattened one bit for bit.
+    let a = read(sm_testkit::w3a::STEP);
+    let b = read_step(sm_testkit::w3a::STEP, &ReadOptions { flatten_assemblies: false, ..ReadOptions::default() }).expect("read");
+    assert_eq!(a.solids, b.solids);
+}
