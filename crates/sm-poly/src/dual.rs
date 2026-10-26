@@ -72,10 +72,7 @@ pub fn dualize<B: MeshBuild>(
     }
     b.reserve(npts as usize, nc);
     let mut pcls: Vec<Classification> = Vec::with_capacity(npts as usize);
-    for vid in 0..used.len() {
-        if !used[vid] {
-            continue;
-        }
+    for (vid, _) in used.iter().enumerate().filter(|(_, u)| **u) {
         let cls = point_class(&prep, vid as u32, &hub_reg);
         let p = prep.coord(vid as u32);
         let v = b.add_vertex(Point3::new(p[0], p[1], p[2]))?;

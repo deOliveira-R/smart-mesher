@@ -64,3 +64,44 @@ pub fn n_faces(m: &dyn MeshRead) -> usize {
 pub fn face_sizes(m: &dyn MeshRead) -> Vec<usize> {
     (0..n_faces(m)).map(|f| m.face_vertices(FaceIx::new(f)).len()).collect()
 }
+
+/// Resolver that must never be asked.
+pub struct NeverResolver;
+
+impl EdgeResolver for NeverResolver {
+    fn resolve(&self, _a: EntityId, _b: EntityId, _ends: [Classification; 2]) -> Option<EntityId> {
+        None
+    }
+}
+
+/// A copy of a lattice mesh with a fully classified edge table: edges along a model edge are
+/// classified on it (found through the topology), the others derive.
+pub fn with_edge_table(mesh: &ReferenceMesh, topo: &dyn sm_topo_api::TopologyView) -> ReferenceMesh {
+    use sm_mesh_api::{MeshEdit, VertexIx};
+    use sm_topo_api::TopologyViewExt;
+    let on_curve = |c: Classification, curve: EntityId| match c.entity.kind() {
+        EntityKind::TopoEdge => c.entity == curve,
+        EntityKind::TopoVertex => topo.edge_ends(curve).is_some_and(|(p, q)| p == c.entity || q == c.entity),
+        _ => false,
+    };
+    let mut explicit: Vec<(VertexIx, VertexIx, Classification)> = Vec::new();
+    for f in 0..mesh.face_count() {
+        let l = mesh.face_vertices(FaceIx::new(f));
+        for i in 0..l.len() {
+            let (x, y) = (l[i], l[(i + 1) % l.len()]);
+            let (cx, cy) = (mesh.vertex_class(x), mesh.vertex_class(y));
+            let curve = [cx, cy].iter().find(|c| c.entity.kind() == EntityKind::TopoEdge).map(|c| c.entity);
+            if let Some(curve) = curve
+                && on_curve(cx, curve)
+                && on_curve(cy, curve)
+            {
+                explicit.push((x.min(y), x.max(y), Classification::on(curve)));
+            }
+        }
+    }
+    explicit.sort_by_key(|e| (e.0, e.1));
+    explicit.dedup_by_key(|e| (e.0, e.1));
+    let mut out = mesh.clone();
+    out.ensure_edges(&mut SerialAlloc::new(), &explicit).expect("edge table");
+    out
+}
