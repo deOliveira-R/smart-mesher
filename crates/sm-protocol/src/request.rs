@@ -15,6 +15,11 @@ pub enum ExportFormat {
     Smsh,
     /// VTK XML unstructured grid.
     Vtu,
+    /// Exodus II (NetCDF-4) file.
+    Exodus,
+    /// OpenFOAM `polyMesh` case directory (ASCII); the result lists the files in
+    /// [`ExportResult::files`](crate::ExportResult::files).
+    Openfoam,
 }
 
 /// Every method name of the protocol, sorted. [`Request`]'s serde tags are exactly these.

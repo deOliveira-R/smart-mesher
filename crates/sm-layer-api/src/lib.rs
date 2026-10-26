@@ -29,6 +29,6 @@ mod plugin;
 
 pub use error::{LayerError, LayerResultExt};
 pub use host::{MeshHost, TopoHost};
-pub use mesh::{MeshEntry, MeshLayer, adopt_minted, insert_mesh, retire_mesh};
+pub use mesh::{MeshEntry, MeshLayer, add_mesh_set, adopt_minted, insert_mesh, retire_mesh};
 pub use model::{ModelLayer, TopoTxn, commit_topology, model_txn, topo_txn};
 pub use plugin::CoreLayers;

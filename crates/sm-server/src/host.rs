@@ -168,7 +168,12 @@ impl<'w> SessionHost<'w> {
         let fem_format = match format {
             ExportFormat::Smsh => FemFormat::Smsh,
             ExportFormat::Vtu => FemFormat::Vtu,
-            _ => return Err(SessionError::bad_request("unsupported export format")),
+            other => {
+                return Err(SessionError::new(
+                    "unsupported-format",
+                    format!("export format `{}` is not available yet", format_name(other)),
+                ));
+            }
         };
         if p.provenance && format != ExportFormat::Smsh {
             return Err(SessionError::bad_request(format!(
@@ -352,6 +357,8 @@ fn known_format_of(path: &Path) -> Option<ExportFormat> {
 fn format_name(f: ExportFormat) -> &'static str {
     match f {
         ExportFormat::Vtu => "vtu",
+        ExportFormat::Exodus => "exodus",
+        ExportFormat::Openfoam => "openfoam",
         _ => "smsh",
     }
 }

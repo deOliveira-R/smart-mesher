@@ -201,7 +201,7 @@ pub fn validate(m: &Model, t: &dyn TopologyView, tol: Tolerance) -> Report {
     let by_b = faces_by_boundary(m);
     check_coloring(m, t, &mut s);
     check_faces(m, t, &mut s);
-    check_decks(m, &by_b, &mut c, l, &tol, &mut s);
+    check_decks(m, &by_b, t, &mut c, l, &tol, &mut s);
     check_symmetry(m, &by_b, t, &tol, &mut s);
     check_interfaces(m, &by_b, t, &mut c, l, &tol, &mut s);
     check_instancing(m, t, &mut s);
@@ -290,7 +290,7 @@ fn check_faces(m: &Model, t: &dyn TopologyView, s: &mut Sink) {
     }
 }
 
-fn check_decks(m: &Model, by_b: &ByBoundary<'_>, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
+fn check_decks(m: &Model, by_b: &ByBoundary<'_>, t: &dyn TopologyView, c: &mut GeomCache<'_>, l: f64, tol: &Tolerance, s: &mut Sink) {
     let planar = tol.linear.max(1e-9 * l);
     let dist = 10.0 * tol.linear + 1e-9 * l;
     for row in m.boundaries() {
@@ -316,7 +316,7 @@ fn check_decks(m: &Model, by_b: &ByBoundary<'_>, c: &mut GeomCache<'_>, l: f64, 
             };
             match (deck, side) {
                 (Deck::Mirror { plane }, DeckSide::SelfPaired) => {
-                    match fm.plane(planar) {
+                    match t.face_plane(f, planar).ok().flatten() {
                         Some((n, d)) => {
                             let dot = n.dot(plane.normal);
                             let off = if dot > 0.0 { d } else { -d };
@@ -373,8 +373,10 @@ fn check_decks(m: &Model, by_b: &ByBoundary<'_>, c: &mut GeomCache<'_>, l: f64, 
         let Ok(plan) = plan_cut(spec) else { continue };
         for row in m.boundaries().filter(|r| r.kind.as_deck().is_some_and(|d| d.same_as(&spec.deck))) {
             for (f, _) in faces_of(by_b, row.id) {
-                let Some(fm) = c.face(f) else { continue };
-                let on = fm.plane(planar).is_some_and(|(n, d)| {
+                if c.face(f).is_none() {
+                    continue;
+                }
+                let on = t.face_plane(f, planar).ok().flatten().is_some_and(|(n, d)| {
                     plan.half_spaces.iter().any(|h| {
                         let dot = n.dot(h.normal);
                         dot.abs() > 1.0 - 1e-6 && ((if dot > 0.0 { d } else { -d }) - h.offset).abs() <= dist

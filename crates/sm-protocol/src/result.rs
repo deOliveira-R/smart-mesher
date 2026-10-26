@@ -40,6 +40,29 @@ impl HashResult {
     }
 }
 
+/// One file of a multi-file export (for example an OpenFOAM `polyMesh` directory).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ExportedFile {
+    /// File name relative to the export path.
+    pub name: String,
+    /// Size in bytes.
+    pub bytes: u64,
+    /// SHA-256 of the file's bytes.
+    pub sha256: Hash256,
+}
+
+impl ExportedFile {
+    /// A file entry.
+    pub fn new(name: impl Into<String>, bytes: u64, sha256: Hash256) -> Self {
+        Self {
+            name: name.into(),
+            bytes,
+            sha256,
+        }
+    }
+}
+
 /// Result of `session.export`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -55,6 +78,10 @@ pub struct ExportResult {
     /// The bytes, base64-encoded, when `inline` was requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base64: Option<String>,
+    /// The files written, for formats that produce several (empty for single-file formats,
+    /// where `bytes` and `sha256` describe the one file).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ExportedFile>,
 }
 
 impl ExportResult {
@@ -71,7 +98,15 @@ impl ExportResult {
             bytes,
             sha256,
             base64: None,
+            files: Vec::new(),
         }
+    }
+
+    /// Attach the per-file listing of a multi-file export.
+    #[must_use]
+    pub fn with_files(mut self, files: Vec<ExportedFile>) -> Self {
+        self.files = files;
+        self
     }
 
     /// Attach the base64-encoded bytes (for `inline` exports).

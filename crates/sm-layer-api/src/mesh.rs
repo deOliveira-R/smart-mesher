@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sm_core::{EntityId, EntityKind};
-use sm_mesh_api::{HashQuanta, MeshEntityKind, MeshRead, SerialAlloc, TagValues, topology_hash};
+use sm_mesh_api::{
+    HashQuanta, MeshEntityKind, MeshRead, SerialAlloc, SetMembers, TagValues, topology_hash,
+};
 use sm_op_api::{ApplyCtx, Digest, LayerType, OpError, names};
 use sm_scheme_api::Plan;
 
@@ -144,6 +146,50 @@ impl MeshLayer {
         if own != id {
             return Err(LayerError::BadMeshId(format!(
                 "{id} given, the mesh says {own}"
+            )));
+        }
+        for (kind, next) in self.alloc.state() {
+            if alloc_after.next_serial(kind) < next {
+                return Err(LayerError::AllocRegressed(kind));
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the host of an existing entry and advance the allocator to `alloc_after`.
+    ///
+    /// Checked and atomic: the entry must exist, `host` must carry the same `Mesh` id, and
+    /// `alloc_after` must not be behind the current allocator for any kind. Selection, plan,
+    /// quanta and `stale` of the entry are unchanged. Ids the new host holds beyond the old
+    /// one's must be adopted by the caller (see [`add_mesh_set`]).
+    pub fn replace_mesh(
+        &mut self,
+        mesh: EntityId,
+        host: Arc<dyn MeshHost>,
+        alloc_after: SerialAlloc,
+    ) -> Result<(), LayerError> {
+        self.check_replace(mesh, &*host, &alloc_after)?;
+        if let Some(e) = self.entries.get_mut(&mesh) {
+            e.mesh = host;
+        }
+        self.alloc = alloc_after;
+        Ok(())
+    }
+
+    /// The validation of [`replace_mesh`](Self::replace_mesh), without changing the layer.
+    pub fn check_replace(
+        &self,
+        mesh: EntityId,
+        host: &dyn MeshHost,
+        alloc_after: &SerialAlloc,
+    ) -> Result<(), LayerError> {
+        if !self.entries.contains_key(&mesh) {
+            return Err(LayerError::BadMeshId(format!("{mesh} is not in the layer")));
+        }
+        let own = host.as_read().mesh_id();
+        if own != mesh {
+            return Err(LayerError::BadMeshId(format!(
+                "{mesh} given, the mesh says {own}"
             )));
         }
         for (kind, next) in self.alloc.state() {
@@ -381,6 +427,64 @@ pub fn insert_mesh(
     adopt_minted(ctx, before, &after, mesh_role)?;
     ctx.layer_mut::<MeshLayer>()?.insert(id, entry, after)?;
     Ok(())
+}
+
+/// Add a named set to the mesh `mesh` of the `meshes` layer and adopt its id under `role`.
+///
+/// Clones the host, calls [`MeshEdit::add_set`](sm_mesh_api::MeshEdit::add_set) with a clone of
+/// the layer allocator, checks that exactly one `MeshSet` id (and nothing else) was minted and
+/// that the entity table is ready to allocate it, adopts it with
+/// [`ApplyCtx::adopt_as`] and stores the new host with [`MeshLayer::replace_mesh`]. Selection,
+/// plan, quanta and `stale` of the entry are unchanged. Returns the new set id.
+///
+/// Atomic on every `Err` (unknown mesh, duplicate name, bad members, allocator or id mismatch):
+/// nothing is adopted and the layer is untouched.
+pub fn add_mesh_set(
+    ctx: &mut ApplyCtx<'_>,
+    mesh: EntityId,
+    name: &str,
+    members: SetMembers,
+    role: &str,
+) -> Result<EntityId, OpError> {
+    let (mut host, before) = {
+        let layer = ctx.layer::<MeshLayer>()?;
+        let entry = layer.get(mesh).ok_or(OpError::UnknownEntity(mesh))?;
+        (entry.mesh.clone_host(), layer.alloc().clone())
+    };
+    let mut after = before.clone();
+    let id = host
+        .add_set(name, members, &mut after)
+        .map_err(LayerError::from)?;
+    let first = before.next_serial(EntityKind::MeshSet);
+    let minted_one = id.kind() == EntityKind::MeshSet
+        && id.serial() == first
+        && after.next_serial(EntityKind::MeshSet) == first + 1
+        && after
+            .state()
+            .all(|(k, n)| k == EntityKind::MeshSet || n == before.next_serial(k));
+    if !minted_one {
+        return Err(LayerError::MintedNotInMesh(
+            "add_set must mint exactly one MeshSet id".into(),
+        )
+        .into());
+    }
+    match ctx.state().peek_next(EntityKind::MeshSet) {
+        Some(got) if got == id => {}
+        Some(got) => {
+            return Err(OpError::IdMismatch {
+                expected: got,
+                got: id,
+            });
+        }
+        None => return Err(OpError::IdExhausted),
+    }
+    let host: Arc<dyn MeshHost> = Arc::from(host);
+    ctx.layer::<MeshLayer>()?
+        .check_replace(mesh, &*host, &after)?;
+    ctx.adopt_as(role, &[id])?;
+    ctx.layer_mut::<MeshLayer>()?
+        .replace_mesh(mesh, host, after)?;
+    Ok(id)
 }
 
 /// The minted set (per kind, `before..after`) must equal [`mesh_ids`]: same count, and every

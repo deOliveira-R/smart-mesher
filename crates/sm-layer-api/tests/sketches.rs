@@ -1315,3 +1315,135 @@ fn roles_mixing_created_and_surviving_ids_stay_ascending() {
     assert_eq!(v.len(), 2);
     assert!(v[0] == old && v[0] < v[1], "ascending overall: {v:?}");
 }
+
+// ------------------------------------------------------------------ add_mesh_set / replace_mesh
+
+/// Adds a cell set to the first mesh; `swallow` ignores a refused add and succeeds.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AddSet {
+    mesh: EntityId,
+    name: String,
+    cells: Vec<u32>,
+    #[serde(default)]
+    swallow: bool,
+}
+
+impl TypedOp for AddSet {
+    const NAME: &'static str = "mesh.add_set_test";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let members = sm_mesh_api::SetMembers::Cells(
+            self.cells.iter().map(|&c| sm_mesh_api::CellIx(c)).collect(),
+        );
+        match sm_layer_api::add_mesh_set(ctx, self.mesh, &self.name, members, "set") {
+            Err(_) if self.swallow => Ok(()),
+            other => other.map(|_| ()),
+        }
+    }
+}
+
+fn set_session() -> (Session, EntityId) {
+    let mut reg = Registry::new();
+    reg.install(&CoreLayers::new(topo_store))
+        .expect("core layers");
+    reg.register::<CreateBrick>().expect("brick");
+    reg.register::<MeshRun>().expect("mesh.run");
+    reg.register::<AddSet>().expect("add_set");
+    let e = Engine::new(
+        Arc::new(reg),
+        Services::new(),
+        Arc::new(DerivedCache::disabled()),
+    )
+    .expect("engine");
+    let mut s = Session::new(e);
+    run(&mut s, &brick_op()).expect("brick");
+    run(
+        &mut s,
+        &MeshRun {
+            volume: id(EntityKind::TopoVolume, 1),
+            size: 0.5,
+        },
+    )
+    .expect("mesh.run");
+    let mid = s
+        .state()
+        .layer::<MeshLayer>()
+        .expect("layer")
+        .meshes()
+        .next()
+        .expect("mesh")
+        .0;
+    (s, mid)
+}
+
+fn add_set_op(mid: EntityId, name: &str, cells: Vec<u32>, swallow: bool) -> AddSet {
+    AddSet {
+        mesh: mid,
+        name: name.into(),
+        cells,
+        swallow,
+    }
+}
+
+#[test]
+fn add_mesh_set_mints_one_set_id_and_is_atomic() {
+    let (mut s, mid) = set_session();
+    let before_hash = s.state().hash();
+    let (_, d) = run(&mut s, &add_set_op(mid, "flagged", vec![0, 3, 7], false)).expect("add set");
+    let sets = &d.outputs["set"];
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].kind(), EntityKind::MeshSet);
+    assert_eq!(d.created, sets.clone(), "exactly the set id is created");
+    assert_ne!(s.state().hash(), before_hash, "sets are inside the digest");
+    let layer = s.state().layer::<MeshLayer>().expect("layer");
+    let e = layer.get(mid).expect("entry");
+    assert!(!e.stale);
+    assert_eq!(e.mesh().sets().len(), 1);
+    assert_eq!(e.mesh().sets()[0].id, sets[0]);
+    for (kind, next) in layer.alloc().state() {
+        assert_eq!(s.state().peek_next(kind).expect("next").serial(), next);
+    }
+    // A refused add (duplicate name, bad member) changes nothing, even when swallowed.
+    let h = s.state().hash();
+    run(&mut s, &add_set_op(mid, "flagged", vec![1], true)).expect("swallowed");
+    assert_eq!(s.state().hash(), h);
+    assert!(run(&mut s, &add_set_op(mid, "bad", vec![9999], false)).is_err());
+    assert_eq!(s.state().hash(), h);
+    let (_, d2) = run(&mut s, &add_set_op(mid, "second", vec![2], false)).expect("second");
+    assert_eq!(d2.outputs["set"][0].serial(), sets[0].serial() + 1);
+}
+
+#[test]
+fn replace_mesh_checks_entry_id_and_allocator() {
+    let (s, mid) = set_session();
+    let layer = s.state().layer::<MeshLayer>().expect("layer").clone();
+    let host = layer.get(mid).expect("entry").mesh.clone();
+    let mut l = layer.clone();
+    assert!(
+        l.replace_mesh(mid, host.clone(), layer.alloc().clone())
+            .is_ok()
+    );
+    assert!(
+        l.replace_mesh(
+            id(EntityKind::Mesh, 99),
+            host.clone(),
+            layer.alloc().clone()
+        )
+        .is_err(),
+        "unknown entry"
+    );
+    assert!(
+        l.replace_mesh(mid, host, SerialAlloc::new()).is_err(),
+        "allocator may only advance"
+    );
+}
+
+#[test]
+fn model_layer_from_parts_shares_the_stores() {
+    let (s, _) = set_session();
+    let m = s.state().layer::<ModelLayer>().expect("model");
+    let l = ModelLayer::from_parts(m.topo_host().clone(), Arc::new(m.model().clone()));
+    assert_eq!(l.ops_run(), 0);
+    assert!(Arc::ptr_eq(l.topo_host(), m.topo_host()));
+    assert_eq!(l.hash_quanta(), m.hash_quanta());
+}
