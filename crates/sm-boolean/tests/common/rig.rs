@@ -27,6 +27,7 @@ pub fn registry(factory: Factory) -> Registry {
     reg.install(&BooleanPlugin).expect("boolean plugin");
     reg.register::<Tag>().expect("tag");
     reg.register::<FakeMesh>().expect("fake mesh");
+    reg.register::<MarkInterface>().expect("mark interface");
     reg
 }
 
@@ -187,5 +188,30 @@ impl TypedOp for FakeMesh {
         let mut alloc = before.clone();
         let fx = sm_testkit::meshes::build_mesh(&UNIT_CUBE, &[sm_testkit::meshes::CellSpec::Template(sm_mesh_api::CellShape::Hex, (0..8).collect())], &mut alloc).map_err(|e| OpError::Failed(e.to_string()))?;
         insert_mesh(ctx, MeshEntry::new(Box::new(fx), vec![self.volume], None, q), &before, alloc, "mesh")
+    }
+}
+
+/// Puts faces on a conformal interface record (test only): `model.merge` must leave them alone.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkInterface {
+    pub faces: Vec<EntityId>,
+}
+
+impl TypedOp for MarkInterface {
+    const NAME: &'static str = "test.mark_interface";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        use sm_layer_api::{LayerResultExt, model_txn};
+        use sm_model_api::{BoundaryKind, InterfaceIntent};
+        model_txn(
+            ctx,
+            |m, _t| {
+                let b = m.add_boundary("iface", BoundaryKind::Interface(InterfaceIntent::Conformal)).or_op()?;
+                m.assign_interface(b, &self.faces, &[]).or_op()?;
+                Ok(b)
+            },
+            |_, _| Vec::new(),
+        )?;
+        Ok(())
     }
 }
