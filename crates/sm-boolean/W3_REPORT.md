@@ -54,7 +54,7 @@ Definition of done (run on this branch): `cargo build --workspace`, `cargo test 
 - **`webcut imprint=true`** returns `Unsupported` (sheet-tool imprint is W3b/M3).
 - **`webcut_cylinder`** with a non-wrapping cylinder patch returns `Unsupported`.
 - **Subtract tool copies.** With several targets the tool is deep-copied for all but the last target.
-- **Dependencies beyond the brief's list:** `smallvec` (normal), `proptest` and `serde_json` (dev-only).
+- **Dependencies beyond the brief's list:** `smallvec` (normal), `proptest` (dev-only).
 - **Bullet 1 hash.** The structural comparison with `merged_bricks` uses `fixtures::two_bricks` at library
   level; the op-level test (`ops_merge::merge_op_joins_coincident_faces`) checks the face count and output only,
   not the canonical hash against bricks from `model.create_brick`.
