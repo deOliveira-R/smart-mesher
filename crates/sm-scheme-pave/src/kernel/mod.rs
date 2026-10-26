@@ -181,11 +181,16 @@ fn check_boundary(pts: &[[f64; 2]], ranges: &[Range<usize>]) -> Result<(), PaveE
 /// strategies always run).
 const ATTEMPT_BUDGET: usize = 150_000;
 
-/// The production ladder: the strategies, in this fixed order, that recovered the most
-/// regions in the surveys of `tests.rs` (`survey_cover`).
+/// The production ladder: first the strategies that recovered the most regions in the
+/// surveys of `tests.rs` (`survey_cover`), then every other candidate.
 fn ladder() -> Vec<Strategy> {
     let c = candidates();
-    [0, 73, 33, 93, 10, 70, 71, 35, 40, 12, 3, 6, 21, 72].into_iter().filter_map(|i| c.get(i).copied()).collect()
+    let first = [0usize, 73, 33, 93, 10, 70, 71, 35, 40, 12, 3, 6, 21, 72];
+    let mut v: Vec<Strategy> = first.iter().filter_map(|i| c.get(*i).copied()).collect();
+    // The remaining candidates follow in their original order (they matter for metrics the
+    // survey corpus does not cover); the work budget bounds the total.
+    v.extend(c.iter().enumerate().filter(|(i, _)| !first.contains(i)).map(|(_, s)| *s));
+    v
 }
 
 /// Points, quads and rounds of one successful strategy.

@@ -121,7 +121,8 @@ finally "no rows at all"), the first that recombines completely wins; every vari
 deterministic as the first. The ladder is bounded by a work budget in triangles
 (`150000` triangle-attempts, at least two attempts) so a huge face that fails does not spend
 minutes failing. `QuadMesh2::rounds` reports the splitting rounds of the winning attempt.
-LADDER_PLACEHOLDER
+The production ladder lists 14 strategies ordered by a greedy cover over a 1275-case corpus (`survey_cover`, ignored test), then the other 80 candidates in a fixed order (they recover regions with spatially varying metrics, which the corpus lacks), all under the work budget.
+Surveys and the measured limits are in `W3_REPORT.md`.
 
 ## Failure mapping
 
@@ -140,7 +141,7 @@ is blamed and falls back).
 
 ## Cost and parallelism
 
-`pave_region` on a 100 x 100 square (400 boundary nodes, 10 000 quads): PERF_PLACEHOLDER s in a
+`pave_region` on a 100 x 100 square (400 boundary nodes, 10 000 quads): 0.12 s in a
 release build (gate: under 2 s, asserted in `acceptance_11_performance_100_by_100`; the
 number only binds in release builds). Time through `Driver::mesh` is recorded in the report
 only (decision 12: it depends on the W3b bulk commit). Buffers are flat `Vec`s (triangle SoA, CSR
@@ -159,7 +160,7 @@ cylinder lateral face); disks and annuli have irregular nodes at the centre
 
 - **Acute corners (< ~90 degrees) and coarse unequal boundaries.** A triangle region fails the
   default placement in nearly all cases, the ladder recovers part of them (surveys in
-  `W3_REPORT.md`); rectangles, L and U polygons never fail. A failure is typed (`Geometry`) and
+  `W3_REPORT.md`); rectangles, L and U polygons almost never fail (2 of 450). A failure is typed (`Geometry`) and
   the production fallback `trimesh` takes over. A corner rule (a corner node with a small
   interior angle owns one quad, with the far corner of the rhombus placed explicitly) is the W3b
   fix. The milestone never asks `pave` for a triangle: V2's triangle faces are sweep

@@ -44,7 +44,44 @@ kernel unit tests (CDT validity, blossom against brute force on 300 random graph
 Everything below is from a release build unless stated; thresholds are the proposed ones and none was
 lowered.
 
-SURVEYS_PLACEHOLDER
+Kernel fixtures (`acceptance_1/2`, spacings 0.125 / 0.25 / 0.5, min / mean corner-sine scaled Jacobian):
+
+| fixture | 0.125 | 0.25 | 0.5 |
+|---|---|---|---|
+| square, rectangle(3,2) | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| circle(1.5, 32) | 0.525 / 0.934 | 0.680 / 0.950 | 0.783 / 0.928 |
+| l_shape | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+
+All fixtures need 0 splitting rounds. Floors (0.40 / 0.85; l_shape 0.35) are met with margin.
+
+Scheme meshes through `Driver::mesh`:
+
+| case | quads | SJ min / mean |
+|---|---|---|
+| planar brick +z face, counts (8, 6) | 48 | 1.000 / 1.000 |
+| cylinder lateral (72, 72, seam 4) | 288 | 1.000 / 1.000; widest quad 0.088 rad, edge ratio 1.22 |
+| cylinder bottom cap (32 nodes) | 99 | 0.696 / 0.932 |
+| rectangle with two holes (S1) | 200 | 1.000 / 1.000 |
+| annulus face r 1 to 2 (S1) | 276 | 0.574 / 0.928 |
+
+Kernel S1: rectangle_with_holes 3200 / 800 / 200 quads, min 0.633 / 0.726 / 1.000; annulus(1,2,32) 983 / 272 / 128 quads, min 0.610 / 0.832 / 0.995 (mean 0.97 to 1.0). S2: 478 quads, min 0.619, mean 0.954, mean-area ratio left/right 0.1426 (gate 1/3). S3 (metric `[(1+u)^2, 0, 1]`, quality measured in the physical image): coarse (12x6) 50 quads min 0.520 mean 0.889; fine (32x16) 317 quads min 0.491 mean 0.927; medium (20x10) fails with `NoPerfectMatching` (typed fallback).
+
+Performance: `pave_region` on 100 x 100 (400 boundary nodes, 10000 quads): 0.12 s release (gate 2 s). `Driver::mesh` of the same face: 0.10 s (recorded only).
+
+Robustness surveys (ignored tests in `src/kernel/tests.rs`, production 14-entry ladder, release):
+
+| corpus | failures (typed `NoPerfectMatching`) | worst min SJ |
+|---|---|---|
+| unit rectangle, unequal counts (ratio <= 2), 440 | 0 | 0.345 |
+| random rectangles, L, U (uniform rounded spacing), 450 | 2 | 0.369 |
+| circles, ellipses, 5-lobed stars, 169 | 0 | 0.151 (15 below 0.2) |
+| random triangles, 150 | 32 | 0.356 |
+| isosceles triangles (apex 20 to 140 deg), 66 | 21 | 0.455 |
+
+Without the ladder the default placement fails every triangle and about 35 % of the 1275-case mixed corpus. `survey_cover`
+(448 cases fail the first strategy; 55 of them no one of 94 candidates recovers) chose the first 14 ladder entries
+`[0, 73, 33, 93, 10, 70, 71, 35, 40, 12, 3, 6, 21, 72]` of `candidates()`; the other candidates follow in order (the 14 alone failed all three S3 varying-metric rectangles). The survey table below was measured with the 14-entry ladder, so it is a slight underestimate of the production ladder. Isosceles table (min SJ for 4, 6, 8, 10, 12, 16 leg intervals, `--` = failure):
+apex 30: 0.50 0.50 0.50 0.50 0.50 0.48; 60: 0.63 0.75 0.74 0.62 0.62 0.50; 90: 0.57 0.55 -- 0.54 0.55 --; 120: -- -- 0.50 -- -- 0.50; 20 and 140: all fail.
 
 ## Deviations (with reasons)
 
@@ -75,7 +112,16 @@ SURVEYS_PLACEHOLDER
 
 ## Known gaps
 
-GAPS_PLACEHOLDER
+- **Acute and very obtuse corners.** Triangle regions fail the default placement and part of them the whole ladder
+  (32 of 150 random triangles, 21 of 66 isosceles; corners of 20 or 140 degrees always). A failure is typed
+  `Geometry`, so the driver falls back (production: `trimesh`). The fix is a corner rule (W3b). The milestone
+  never asks `pave` for a triangle (V2 is a sweep).
+- 2 of 450 random rectangles/L/U polygons also fail the ladder (same typed fallback).
+- Some curved regions have a poor worst quad (min SJ 0.151 on a 5-lobed star); no valence cleanup yet (W3b).
+- A failing large face spends at most the ladder budget (150000 triangle-attempts) before falling back.
+- Deferred, as listed in `DESIGN.md`: embedded members, poles, min-weight matching, valence cleanup, Winslow,
+  anisotropic metric, intra-face parallelism, cross-field, auto-selection, shared CDT crate.
+- `Cargo.lock` changed (the `sm-scheme-pave` dependency list); the orchestrator should accept it at merge.
 
 ## api_change_requests
 
