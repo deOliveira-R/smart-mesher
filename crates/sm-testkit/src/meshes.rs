@@ -583,6 +583,11 @@ pub fn build_mesh_volumes(points: &[[f64; 3]], cells: &[(CellSpec, u64)], alloc:
     Ok(b.finish(alloc)?.mesh)
 }
 
+/// Reject zero counts and non-positive or non-finite sizes (the lattice size check).
+fn check_block(n: [u32; 3], h: &[f64; 3]) -> Result<()> {
+    crate::lattice::check_size(&n.map(|x| x as usize), h).map_err(|e| MeshError::State(e.to_string()))
+}
+
 /// A Kuhn (Freudenthal) tetrahedral box: every cell of an `n[0] x n[1] x n[2]` lattice with cell
 /// sizes `h` is split into 6 tetrahedra along its main diagonal; the same split in every cell
 /// makes the mesh conforming. Classified onto a CAD box exactly like
@@ -592,8 +597,10 @@ pub fn build_mesh_volumes(points: &[[f64; 3]], cells: &[(CellSpec, u64)], alloc:
 /// Invariants: `V = (n0+1)(n1+1)(n2+1)`, `T = 6 n0 n1 n2` tets of volume `h0 h1 h2 / 6`, total
 /// volume `n0 n1 n2 h0 h1 h2`, boundary area `2 (L0 L1 + L1 L2 + L0 L2)` with `Li = ni hi`, and
 /// `4 (n0 n1 + n1 n2 + n0 n2)` boundary triangles. Use `n >= 2` per axis so every model edge has
-/// an interior vertex. Fails with [`MeshError::State`] if any `n[i]` is zero.
+/// an interior vertex. Fails with [`MeshError::State`] if any `n[i]` is zero or any `h[i]` is not
+/// positive and finite (likewise [`tet_block_two_volumes`], [`tet_block_warped`], [`tet_lshape`]).
 pub fn tet_block(n: [u32; 3], h: [f64; 3]) -> Result<MeshFixture> {
+    check_block(n, &h)?;
     let point = |i: usize, j: usize, k: usize| Point3::new(i as f64 * h[0], j as f64 * h[1], k as f64 * h[2]);
     let mesh = build_box_lattice(n, true, &point, &|_, _| Param::None, &mut SerialAlloc::new())?;
     let nc = n.map(|x| x as usize);
@@ -646,6 +653,7 @@ fn kuhn_block_data(n: [u32; 3], h: [f64; 3]) -> KuhnData {
 /// Volume per side: `split n1 n2 h0 h1 h2` and `(n0 - split) n1 n2 h0 h1 h2`. Needs
 /// `0 < split < n0`.
 pub fn tet_block_two_volumes(n: [u32; 3], h: [f64; 3], split: u32) -> Result<MeshFixture> {
+    check_block(n, &h)?;
     if n.contains(&0) || split == 0 || split >= n[0] {
         return Err(MeshError::State("tet_block_two_volumes needs n >= 1 and 0 < split < n[0]".into()));
     }
@@ -675,6 +683,10 @@ pub fn tet_block_two_volumes(n: [u32; 3], h: [f64; 3], split: u32) -> Result<Mes
 /// moved points (summed to `volume`) and `area` is the polyhedral area of the boundary
 /// triangles. For `amp = 0` the result equals [`tet_block`].
 pub fn tet_block_warped(n: [u32; 3], h: [f64; 3], amp: f64) -> Result<MeshFixture> {
+    check_block(n, &h)?;
+    if !amp.is_finite() {
+        return Err(MeshError::State("tet_block_warped needs a finite amp".into()));
+    }
     let nc = n.map(|x| x as usize);
     let (lx, ly) = (nc[0] as f64 * h[0], nc[1] as f64 * h[1]);
     let warp = |x: f64, y: f64, z: f64| {
@@ -701,6 +713,7 @@ pub fn tet_block_warped(n: [u32; 3], h: [f64; 3], amp: f64) -> Result<MeshFixtur
 /// Volume `3 m^3 h^3` (`18 m^3` tets of volume `h^3 / 6`), boundary area `14 m^2 h^2`, `28 m^2`
 /// boundary triangles. Needs `m >= 1`.
 pub fn tet_lshape(m: u32, h: f64) -> Result<MeshFixture> {
+    check_block([m; 3], &[h; 3])?;
     if m == 0 {
         return Err(MeshError::State("tet_lshape needs m >= 1".into()));
     }

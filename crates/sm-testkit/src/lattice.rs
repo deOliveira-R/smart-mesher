@@ -73,7 +73,7 @@ impl LatticeFixture {
     }
 }
 
-fn check_size(n: &[usize], size: &[f64]) -> Result<()> {
+pub(crate) fn check_size(n: &[usize], size: &[f64]) -> Result<()> {
     if n.contains(&0) || size.iter().any(|s| !(s.is_finite() && *s > 0.0)) {
         return Err(LatticeError::Invalid(format!("counts {n:?} must be positive and sizes {size:?} positive and finite")));
     }
@@ -250,7 +250,13 @@ pub fn tube_quad(n_theta: usize, n_z: usize, r: f64, height: f64) -> Result<Latt
 /// moved onto its entity: corner vertices stay fixed, an edge node is projected onto the curve, a
 /// face node onto the surface (the classification parameter is updated), a volume node moves
 /// freely. `amp` is an absolute length; use `amplitude_over_h * fixture.h` or
-/// [`LatticeFixture::perturbed`]. Entities that are not `Topo*` kinds are left alone.
+/// [`LatticeFixture::perturbed`]. Entities that are not `Topo*` kinds are left alone. Fails with
+/// [`LatticeError`] if a carrier is missing or cannot project.
+///
+/// Safe amplitudes (`amplitude_over_h`, measured with `validate_geometry`): the hex lattice
+/// fails planarity (`GeomPlanar`) at 0.25 h; the Kuhn tet lattice passes at 0.25 h and inverts
+/// tets at 0.4 h; the quad lattice stays valid up to about 0.45 h. Use `<= 0.2` for hex and tet
+/// and `<= 0.45` for quad.
 pub fn perturb(mesh: &mut ReferenceMesh, topo: &dyn TopologyView, seed: u64, amp: f64) -> Result<()> {
     for i in 0..mesh.vertex_count() {
         let c = mesh.classification(MeshEntityKind::Vertex, i as u32);

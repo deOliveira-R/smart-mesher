@@ -402,6 +402,25 @@ fn tet_block_warped_conserves_volume_and_stays_positive() {
     let m = &f.mesh;
     let top: Vec<f64> = (0..m.vertex_count()).map(|i| m.point(i)).filter(|p| (p.z - p.z.round()).abs() > 1e-9 || p.z > 1.9).map(|p| p.z).collect();
     assert!(top.iter().any(|z| *z > 2.0 + 0.1));
+    // Both signs of amp, odd and unit counts: all tets stay positive.
+    for n in [[1, 1, 1], [2, 5, 3], [4, 4, 4]] {
+        for amp in [-0.2, 0.2] {
+            let f = meshes::tet_block_warped(n, [0.5, 0.7, 0.9], amp).unwrap();
+            assert!(f.cell_volumes.iter().all(|v| *v > 0.0), "n {n:?} amp {amp}");
+            positive_volumes(&f.mesh).unwrap();
+        }
+    }
+}
+
+#[test]
+fn tet_fixtures_reject_bad_sizes() {
+    for h in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(meshes::tet_block([2, 2, 2], [1.0, h, 1.0]).is_err());
+        assert!(meshes::tet_block_warped([2, 2, 2], [h, 1.0, 1.0], 0.1).is_err());
+        assert!(meshes::tet_block_two_volumes([2, 2, 2], [1.0, 1.0, h], 1).is_err());
+        assert!(meshes::tet_lshape(2, h).is_err());
+    }
+    assert!(meshes::tet_block_warped([2, 2, 2], [1.0; 3], f64::NAN).is_err());
 }
 
 #[test]
@@ -561,6 +580,7 @@ fn quad_lattice_is_a_planar_dimension_two_mesh() {
         assert!(n.z > 0.0 && n.x == 0.0 && n.y == 0.0, "cell {c}: {n:?}");
     }
     assert_class_params(&f);
+    mesh_valid(&f.mesh).unwrap();
     let kinds: BTreeSet<_> = (0..20).map(|i| f.mesh.classification(MeshEntityKind::Vertex, i).entity.kind()).collect();
     assert_eq!(kinds, BTreeSet::from([EntityKind::TopoVertex, EntityKind::TopoEdge, EntityKind::TopoFace]));
     let corners = (0..20).filter(|&i| f.mesh.classification(MeshEntityKind::Vertex, i).entity.kind() == EntityKind::TopoVertex).count();
@@ -595,10 +615,27 @@ fn tube_quad_is_closed_across_the_seam() {
         assert!(n.x * ctr.x + n.y * ctr.y > 0.0);
     }
     assert_class_params(&f);
+    mesh_valid(m).unwrap();
     let count = |k: EntityKind| (0..m.vertex_count()).filter(|&i| m.classification(MeshEntityKind::Vertex, i as u32).entity.kind() == k).count();
     assert_eq!((count(EntityKind::TopoVertex), count(EntityKind::TopoEdge)), (2, 2 * (nt - 1) + (nz - 1)));
     assert!((f.h - (TAU * r / nt as f64).min(height / nz as f64)).abs() < 1e-15);
     assert!(lattice::tube_quad(2, 3, 1.0, 1.0).is_err());
+}
+
+#[test]
+fn perturbed_lattices_stay_valid_at_documented_amplitudes() {
+    for seed in 0..4 {
+        let t = lattice::tet_kuhn([4, 4, 4], [1.0; 3]).unwrap().perturbed(seed, 0.2).unwrap();
+        mesh_valid(&t.mesh).unwrap();
+        positive_volumes(&t.mesh).unwrap();
+        let q = lattice::quad([12, 12], [1.0, 1.0]).unwrap().perturbed(seed, 0.45).unwrap();
+        mesh_valid(&q.mesh).unwrap();
+        // Hex at 0.2 h: geometry validity is not guaranteed (planarity); volumes must be positive.
+        let h = lattice::hex([4, 4, 4], [1.0; 3]).unwrap().perturbed(seed, 0.2).unwrap();
+        if mesh_valid(&h.mesh).is_err() {
+            positive_volumes(&h.mesh).unwrap();
+        }
+    }
 }
 
 #[test]
