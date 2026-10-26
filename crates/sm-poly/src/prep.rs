@@ -413,6 +413,8 @@ impl<'a> Prep<'a> {
                 return Err(bad());
             }
             let mut m = SlotMeta { open, f_in: NONE, f_out, hub: false, split: false, mid: None };
+            #[cfg(debug_assertions)]
+            self.assert_ring_orientation(&out.ring[ring_start..], s, a, b, open, f_out, start);
             if open {
                 let (_, en) = exit_entry(self.src, start, a, b).ok_or_else(bad)?;
                 m.f_in = en.face().0;
@@ -437,6 +439,33 @@ impl<'a> Prep<'a> {
             out.meta.push(m);
         }
         Ok(out)
+    }
+
+    /// Debug check of the topologically derived orientation: the centroid polygon of the slot
+    /// winds counterclockwise about `a -> b`, so its Newell normal has a non-negative component
+    /// along `b - a` (inverted or flat input can only make it smaller).
+    #[cfg(debug_assertions)]
+    #[allow(clippy::too_many_arguments)]
+    fn assert_ring_orientation(&self, ring: &[u32], s: usize, a: u32, b: u32, open: bool, f_out: u32, start: u32) {
+        let mut pts: SmallVec<[V3; 24]> = SmallVec::new();
+        if open {
+            let (_, en) = exit_entry(self.src, start, a, b).expect("entry face");
+            pts.push(self.coord(self.p_tri(en.face().0)));
+        }
+        pts.extend(ring.iter().map(|&t| self.tcent[t as usize]));
+        if open {
+            pts.push(self.coord(self.p_tri(f_out)));
+            pts.push(self.coord(self.p_mid(self.s_edge[s])));
+        }
+        let mut n = [0.0; 3];
+        for i in 0..pts.len() {
+            let c = geom::cross(pts[i], pts[(i + 1) % pts.len()]);
+            n = [n[0] + c[0], n[1] + c[1], n[2] + c[2]];
+        }
+        let (pa, pb) = (self.coord(self.p_vert(a)), self.coord(self.p_vert(b)));
+        let along = geom::dot(n, geom::sub(pb, pa));
+        let scale = geom::norm(n) * geom::norm(geom::sub(pb, pa));
+        debug_assert!(along >= -1e-9 * scale, "ring of edge ({a}, {b}) winds clockwise about a -> b");
     }
 
     /// Split flag and midpoint class of an open path.

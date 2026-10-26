@@ -57,50 +57,51 @@ fn multi_volume_blocks_with_several_splits() {
     }
 }
 
-fn pair_of_tets(shared_face: bool, classes: [u64; 2], face_class: Classification) -> Result<ReferenceMesh, sm_mesh_api::MeshError> {
+/// Negative-case construction (no stage-0 fixture is non-manifold): two tets of one region that
+/// touch only along the edge (0, 1).
+fn bowtie() -> ReferenceMesh {
     let mut b = ReferenceBuilder::new();
     let pts: [[f64; 3]; 6] = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [0., 0., -1.], [1.0, 1.0, -1.0]];
     let vs: Vec<VertexIx> = pts.iter().map(|p| b.add_vertex(Point3::new(p[0], p[1], p[2])).unwrap()).collect();
-    let a = b.add_cell_from_vertices(CellShape::Tet, &[vs[0], vs[1], vs[2], vs[3]])?;
-    let second = if shared_face {
-        // shares the face (0, 1, 2) with the first tet, below it
-        [vs[0], vs[2], vs[1], vs[4]]
-    } else {
-        // shares only the edge (0, 1)
-        [vs[0], vs[1], vs[4], vs[5]]
-    };
-    let c = b.add_cell_from_vertices(CellShape::Tet, &second)?;
-    let vol = |k| Classification::on(EntityId::new(EntityKind::TopoVolume, k).unwrap());
-    b.set_class(MeshEntityRef::Cell(a.cell), vol(classes[0]))?;
-    b.set_class(MeshEntityRef::Cell(c.cell), vol(classes[1]))?;
+    let vol = Classification::on(EntityId::new(EntityKind::TopoVolume, 1).unwrap());
+    for t in [[0, 1, 2, 3], [0, 1, 4, 5]] {
+        let c = b.add_cell_from_vertices(CellShape::Tet, &t.map(|i| vs[i])).unwrap();
+        b.set_class(MeshEntityRef::Cell(c.cell), vol).unwrap();
+    }
     for f in 0..b.face_count() {
-        let fi = FaceIx::new(f);
-        let cl = if b.face_degree(fi) == 2 { face_class } else { Classification::on(EntityId::new(EntityKind::TopoFace, f as u64 + 1).unwrap()) };
-        b.set_class(MeshEntityRef::Face(fi), cl)?;
+        let tf = Classification::on(EntityId::new(EntityKind::TopoFace, f as u64 + 1).unwrap());
+        b.set_class(MeshEntityRef::Face(FaceIx::new(f)), tf).unwrap();
     }
     for (i, v) in vs.iter().enumerate() {
-        // vertices touch faces: classify each on a TopoVertex of its own so the dimension order holds
-        b.set_class(MeshEntityRef::Vertex(*v), Classification::on(EntityId::new(EntityKind::TopoVertex, i as u64 + 1).unwrap()))?;
+        // each vertex on a TopoVertex of its own keeps the dimension order valid
+        let tv = Classification::on(EntityId::new(EntityKind::TopoVertex, i as u64 + 1).unwrap());
+        b.set_class(MeshEntityRef::Vertex(*v), tv).unwrap();
     }
-    Ok(b.finish(&mut SerialAlloc::new())?.mesh)
+    b.finish(&mut SerialAlloc::new()).unwrap().mesh
 }
 
 #[test]
 fn bowtie_edge_is_an_open_ring_error() {
-    // two tets of one region that touch only along an edge: the tets around that edge form two chains
-    let m = pair_of_tets(false, [1, 1], Classification::on(EntityId::new(EntityKind::TopoVolume, 1).unwrap()))
-        .or_else(|_| pair_of_tets(false, [1, 1], Classification::on(EntityId::new(EntityKind::TopoVolume, 1).unwrap())))
-        .expect("bowtie mesh");
-    let e = dual_ref(&m, &PolyOptions::new(), &PairResolver).unwrap_err();
-    assert!(matches!(e, PolyError::OpenRing { .. }), "{e:?}");
+    // the tets around the shared edge form two chains
+    let e = dual_ref(&bowtie(), &PolyOptions::new(), &PairResolver).unwrap_err();
+    assert!(matches!(e, PolyError::OpenRing { edge } if edge == [VertexIx(0), VertexIx(1)]), "{e:?}");
 }
 
 #[test]
 fn interface_not_on_a_model_face_is_refused() {
-    // two regions share a face that is classified on a volume
-    let face_class = Classification::on(EntityId::new(EntityKind::TopoVolume, 1).unwrap());
-    let m = pair_of_tets(true, [1, 2], face_class).expect("two tets");
-    let e = dual_ref(&m, &PolyOptions::new(), &PairResolver).unwrap_err();
+    // re-classify the interface faces of the two-volume fixture onto a volume
+    let f = meshes::tet_block_two_volumes([4, 2, 2], [1.0; 3], 2).unwrap();
+    let mut m = f.mesh.clone();
+    let vol = Classification::on(EntityId::new(EntityKind::TopoVolume, 1).unwrap());
+    let iface: Vec<_> = (0..m.face_count())
+        .map(FaceIx::new)
+        .filter(|f| m.face_right(*f).is_some_and(|r| m.cell_class(m.face_left(*f)).entity != m.cell_class(r).entity))
+        .collect();
+    assert_eq!(iface.len(), 2 * 2 * 2);
+    for fi in &iface {
+        MeshEdit::set_class(&mut m, sm_mesh_api::MeshEntity::Face(*fi), vol).unwrap();
+    }
+    let e = dual_ref(&m, &PolyOptions::new(), &VertexClassResolver).unwrap_err();
     assert!(matches!(e, PolyError::BadClassification { .. }), "{e:?}");
 }
 

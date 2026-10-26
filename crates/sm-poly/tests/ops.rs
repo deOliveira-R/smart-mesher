@@ -11,7 +11,7 @@ use sm_core::{EntityId, EntityKind, Point3};
 use sm_layer_api::{CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, commit_topology, insert_mesh, topo_txn};
 use sm_mesh_api::reference::{ReferenceMesh, hex_block};
 use sm_mesh_api::{
-    CellShape, GeomTol, MeshEntityKind, MeshRead, SerialAlloc, validate,
+    GeomTol, MeshEntityKind, MeshRead, SerialAlloc, validate,
     validate_geometry,
 };
 use sm_op_api::{
@@ -49,27 +49,9 @@ fn build(kind: &str, n: [u32; 3], h: [f64; 3]) -> ReferenceMesh {
     match kind {
         "tet" => meshes::tet_block(n, h).expect("tet_block").mesh,
         "hex" => hex_block(n, h, &mut SerialAlloc::new()).expect("hex_block"),
-        "pyramid_tet" => pyramid_with_tet(),
+        "mixed" => meshes::mixed_transition().expect("mixed_transition").mesh,
         other => panic!("unknown kind {other}"),
     }
-}
-
-/// One pyramid with a tetrahedron glued on one of its triangles: tets plus one non-tet cell.
-fn pyramid_with_tet() -> ReferenceMesh {
-    let p = meshes::single_pyramid().expect("pyramid").mesh;
-    let corners: Vec<usize> = p.cell_corners(sm_mesh_api::CellIx(0)).expect("corners").iter().map(|v| v.get()).collect();
-    let mut pts: Vec<[f64; 3]> = (0..p.vertex_count()).map(|i| {
-        let q = p.point(i);
-        [q.x, q.y, q.z]
-    }).collect();
-    // pyramid template: base 0..4, apex 4. Glue a tet on the triangle (0, 1, apex) (the -y side).
-    let extra = pts.len();
-    pts.push([0.5, -1.0, 0.5]);
-    let cells = vec![
-        meshes::CellSpec::Template(CellShape::Pyramid, corners.clone()),
-        meshes::CellSpec::Template(CellShape::Tet, vec![corners[0], corners[1], corners[4], extra]),
-    ];
-    meshes::build_mesh(&pts, &cells, &mut SerialAlloc::new()).expect("pyramid+tet")
 }
 
 impl TypedOp for InsertMesh {
@@ -154,6 +136,9 @@ fn acc8_default_keeps_the_source() {
     // the source is untouched
     assert_eq!(src.mesh().count(MeshEntityKind::Cell), 162);
     assert_eq!(d.touched_layers, vec!["meshes".to_owned()]);
+    // the new mesh is marked as derived from the source: a copy, `A -> [A, A']`
+    assert_eq!(d.successors[&mesh1()], vec![mesh1(), id(EntityKind::Mesh, 2)]);
+    assert_eq!(d.successors.len(), 1);
 }
 
 #[test]
@@ -176,6 +161,8 @@ fn acc8_keep_source_false_retires_the_source() {
     assert_eq!(d.removed.iter().filter(|i| i.kind() == EntityKind::MeshCell).count(), 162);
     // the model is untouched and the selection still names the volume
     assert_eq!(layer.get(poly_id).unwrap().selection, vec![id(EntityKind::TopoVolume, 1)]);
+    // a replacement: `source -> [new]`
+    assert_eq!(d.successors[&mesh1()], vec![poly_id]);
 }
 
 fn assert_refused(s: &mut Session, params: serde_json::Value) -> TimelineError {
@@ -201,7 +188,7 @@ fn acc8_refusals_leave_the_state_untouched() {
     let e = assert_refused(&mut s, json!({"mesh": "Mesh#1"}));
     assert!(is_invalid(&e), "{e:?}");
     // a mesh with one non-tet cell
-    let mut s = session_with("pyramid_tet");
+    let mut s = session_with("mixed");
     let e = assert_refused(&mut s, json!({"mesh": "Mesh#1"}));
     assert!(is_invalid(&e), "{e:?}");
     // an unknown mesh
@@ -240,7 +227,7 @@ fn acc8_poly_info_equals_poly_stats() {
 fn acc8_cold_replay_has_no_divergence() {
     let mut s = session_with("tet");
     run_json(&mut s, "mesh.to_poly", json!({"mesh": "Mesh#1", "keep_source": false})).expect("to_poly");
-    run_json(&mut s, "mesh.to_poly", json!({"mesh": "Mesh#3"})).expect_err("poly of poly is refused");
+    run_json(&mut s, "mesh.to_poly", json!({"mesh": "Mesh#2"})).expect_err("poly of poly is refused");
     let head = s.position().expect("head");
     let q = QuietControl::new();
     let cold = s.state_at_from_root(head, &q.control()).expect("cold replay (no Diverged)");

@@ -4,12 +4,10 @@
 mod common;
 
 use common::*;
-use sm_core::{EntityId, EntityKind, Point3};
-use sm_mesh_api::reference::ReferenceBuilder;
+use sm_core::{EntityId, EntityKind};
 use sm_mesh_api::{
-    CellIx, CellShape, Classification, FaceIx, FaceKind, GeomTol, MeshBuild, MeshDim, MeshEntityKind, MeshEntityRef,
-    MeshRead, SerialAlloc, ViolationCode, geometry_hash, geometry_hash_quantized, topology_hash, validate,
-    validate_geometry, HashQuanta,
+    CellIx, CellShape, FaceIx, FaceKind, GeomTol, HashQuanta, MeshDim, MeshEdit, MeshEntityKind, MeshRead, SerialAlloc,
+    ViolationCode, geometry_hash, geometry_hash_quantized, topology_hash, validate, validate_geometry,
 };
 use sm_poly::{
     EdgeResolver, FaceMode, PolyError, PolyOptions, TopologyResolver, VertexClassResolver, dualize, face_nonplanarity,
@@ -433,32 +431,13 @@ fn acc10_errors_are_typed() {
     let q = lattice::quad([2, 2], [1.0, 1.0]).unwrap();
     assert_eq!(q.mesh.dim(), MeshDim::Two);
     assert!(matches!(dual_ref(&q.mesh, &PolyOptions::new(), &PairResolver), Err(PolyError::Dim2)));
-    // a non-conformal face
-    let t = meshes::single_tet().unwrap();
-    let mut b = ReferenceBuilder::new();
-    let vs: Vec<_> = (0..t.mesh.vertex_count())
-        .map(|i| {
-            let p = t.mesh.point(i);
-            b.add_vertex(Point3::new(p.x, p.y, p.z)).unwrap()
-        })
-        .collect();
-    let corners = t.mesh.cell_corners(CellIx::new(0)).unwrap();
-    let cv: Vec<_> = corners.iter().map(|c| vs[c.get()]).collect();
-    let added = b.add_cell_from_vertices(CellShape::Tet, &cv).unwrap();
-    let c0 = t.mesh.cell_class(CellIx::new(0));
-    b.set_class(MeshEntityRef::Cell(added.cell), Classification::on(c0.entity)).unwrap();
-    for (i, v) in vs.iter().enumerate() {
-        b.set_class(MeshEntityRef::Vertex(*v), t.mesh.vertex_class(sm_mesh_api::VertexIx::new(i))).unwrap();
-    }
-    for fi in 0..b.face_count() {
-        let f = FaceIx::new(fi);
-        b.set_class(MeshEntityRef::Face(f), Classification::on(EntityId::new(EntityKind::TopoFace, fi as u64 + 1).unwrap())).unwrap();
-    }
-    b.set_face_kind(FaceIx::new(0), FaceKind::NonConformal).unwrap();
-    let nc = b.finish(&mut SerialAlloc::new()).unwrap().mesh;
+    // a non-conformal face (a boundary face of a fixture, re-marked through the edit API)
+    let mut nc = meshes::tet_block([2, 2, 2], [1.0; 3]).unwrap().mesh;
+    let bf = (0..nc.face_count()).map(FaceIx::new).find(|f| nc.is_boundary_face(*f)).unwrap();
+    MeshEdit::set_face_kind(&mut nc, bf, FaceKind::NonConformal).unwrap();
     assert!(matches!(
-        dual_ref(&nc, &PolyOptions::new(), &PairResolver),
-        Err(PolyError::UnsupportedFaceKind { .. })
+        dual_ref(&nc, &PolyOptions::new(), &VertexClassResolver),
+        Err(PolyError::UnsupportedFaceKind { face }) if face == bf
     ));
 }
 

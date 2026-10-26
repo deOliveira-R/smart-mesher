@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
 use sm_mesh::MeshBuilder;
-use sm_mesh_api::{MeshDim, SerialAlloc};
+use sm_mesh_api::{MeshDim, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 
 use crate::error::PolyError;
@@ -21,8 +21,14 @@ use crate::stats::{PolyStats, poly_stats};
 /// With the default `keep_source` the source stays, and the volume then has two mesh entries,
 /// so exports must name the mesh. `keep_source: false` retires the source's `Mesh*` ids.
 ///
+/// The delta records the succession `source -> [source, new]` (`source -> [new]` with
+/// `keep_source: false`), so layers and front ends can tell the new mesh is derived from the
+/// source. The entry's `selection`, `plan`, `quanta` and `stale` are copied from the source.
+///
 /// Atomic: any refusal (not 3D, a non-tet cell, an already polyhedral mesh, a non-conformal
-/// face, an unsupported feature) fails with `OpError::Invalid` and changes nothing.
+/// face, an unsupported mesh topology) fails with `OpError::Invalid`, and a mesh with an
+/// unsupported feature (a seam or dangling feature edge) with `OpError::Unsupported`; the state
+/// is unchanged either way.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToPoly {
@@ -44,6 +50,10 @@ const OUTPUTS: &[OutputRole] = &[OutputRole::new(
 fn refuse(e: PolyError) -> OpError {
     match e {
         PolyError::Mesh(m) => OpError::Failed(m.to_string()),
+        PolyError::UnsupportedFeature { vertex } => OpError::Unsupported(format!(
+            "vertex {} has exactly one feature edge in a region (a seam or a dangling curve); not supported in this version",
+            vertex.0
+        )),
         PolyError::NotTet { cell } => OpError::Invalid(format!(
             "cell {} is not a tetrahedron; mesh.to_poly converts all-tet meshes only (a polyhedral or mixed mesh cannot be converted)",
             cell.0
@@ -59,10 +69,10 @@ impl TypedOp for ToPoly {
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let source = ctx.resolve_kind(self.mesh, EntityKind::Mesh)?;
         // Cheap clones (Arc) of what we read, so the context is free for the writes below.
-        let (host, selection, plan, quanta, alloc0) = {
+        let (host, selection, plan, quanta, stale, alloc0) = {
             let layer = ctx.layer::<MeshLayer>()?;
             let e = layer.get(source).ok_or(OpError::UnknownEntity(source))?;
-            (e.mesh.clone(), e.selection.clone(), e.plan.clone(), e.quanta, layer.alloc().clone())
+            (e.mesh.clone(), e.selection.clone(), e.plan.clone(), e.quanta, e.stale, layer.alloc().clone())
         };
         let model = ctx.layer::<ModelLayer>()?.clone();
         let src = host.as_read();
@@ -80,11 +90,17 @@ impl TypedOp for ToPoly {
         )
         .map_err(refuse)?;
         ctx.step(1, 2, "inserting")?;
+        let new = fin.mesh.mesh_id();
         let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
         entry.plan = plan;
+        entry.stale = stale;
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")?;
+        // The new mesh is a derived copy of the source (`A -> [A, A']`), or its replacement.
         if self.keep_source == Some(false) {
+            ctx.record_successors(source, &[new])?;
             retire_mesh(ctx, source)?;
+        } else {
+            ctx.record_successors(source, &[source, new])?;
         }
         Ok(())
     }
