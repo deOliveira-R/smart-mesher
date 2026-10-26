@@ -119,6 +119,8 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
                     if assigned[f as usize] == NONE {
                         assigned[f as usize] = idx;
                         mine.push(f);
+                    } else if assigned[f as usize] == idx {
+                        // Repeated inside this set: keep one copy, not an overlap with another set.
                     } else {
                         overlap += 1;
                     }
@@ -143,14 +145,17 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
                     }));
                 };
                 let idx = patches.len() as u32;
+                owner_of.push(&spec.set);
                 for &f in &faces {
                     let prev = assigned[f as usize];
+                    if prev == idx {
+                        return Err(MeshioError::Inconsistent(format!("set '{}' lists face {f} twice", spec.set)));
+                    }
                     if prev != NONE {
                         return Err(fe(FoamError::PatchOverlap { face: f, a: owner_of[prev as usize].to_string(), b: spec.set.clone() }));
                     }
                     assigned[f as usize] = idx;
                 }
-                owner_of.push(&spec.set);
                 patches.push(PatchBuild {
                     name: spec.name.clone().unwrap_or_else(|| spec.set.clone()),
                     patch_type: spec.patch_type,

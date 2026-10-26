@@ -103,6 +103,10 @@ pub fn check_polymesh(m: &PolyMesh, tol: f64) -> Vec<FoamIssue> {
     if let Some(i) = m.face_points.iter().position(|v| *v as usize >= np) {
         structural.push(issue("foam.index_range", None, None, format!("face point entry {i} = {} is past the {np} points", m.face_points[i])));
     }
+    if nc > nf + ni {
+        // Public fields: a hostile count must not size the per-cell vectors below.
+        structural.push(issue("foam.index_range", None, None, format!("{nc} cells but only {nf} owner and {ni} neighbour entries")));
+    }
     if let Some(f) = m.owner.iter().position(|c| *c as usize >= nc) {
         structural.push(issue("foam.index_range", Some(f as u32), Some(m.owner[f]), format!("owner {} is past the {nc} cells", m.owner[f])));
     }

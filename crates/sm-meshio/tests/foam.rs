@@ -573,6 +573,18 @@ fn out_of_range_columns_are_inconsistent_not_panics() {
     assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_left(0, nc), &o)));
     assert!(inconsistent(build_polymesh(&Wrap::new(&m).corrupt_right(0, nc), &o)));
     assert!(build_polymesh(&Wrap::new(&m), &o).is_ok());
+    // A face listed twice in one set breaks the 'unique' rule: Inconsistent, not an index panic.
+    let sb = sets_block();
+    let mut sets = sb.sets().to_vec();
+    let SetMembers::Faces(f) = &sets[0].members else { panic!("set 0 is a face set") };
+    let dup = SetMembers::Faces(vec![f[0], f[0]]);
+    sets[0].members = dup;
+    let mut explicit = FoamOptions::default();
+    explicit.patches = PatchSource::Explicit(vec![PatchSpec::new("xmin")]);
+    assert!(inconsistent(build_polymesh(&Wrap::new(&sb).sets(sets.clone()), &explicit)));
+    // Sets mode keeps one copy and does not report an overlap with an earlier set.
+    let b = build_polymesh(&Wrap::new(&sb).sets(sets), &o).unwrap();
+    assert!(b.report.loss.get("foam.patch_overlap").is_none());
 }
 
 // ---- errors of the input mesh ----------------------------------------------------------------------

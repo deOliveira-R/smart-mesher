@@ -128,6 +128,54 @@ fn uniform_lists_of_big_elements_are_refused() {
     assert!(parse_checked(&files).is_ok());
 }
 
+fn with_file(files: &[FoamFile], name: &str, body: &str) -> Vec<FoamFile> {
+    let head = String::from_utf8(files.iter().find(|f| f.name == "owner").unwrap().bytes.clone()).unwrap();
+    let head = &head[..head.find("FoamFile").unwrap()];
+    let mut v: Vec<FoamFile> = files.iter().filter(|f| f.name != name).cloned().collect();
+    let text = format!("{head}FoamFile {{ version 2.0; format ascii; class regIOobject; object {name}; }}\n{body}\n");
+    v.push(FoamFile { name: name.into(), bytes: text.into_bytes() });
+    v
+}
+
+/// One uniform list is bounded by the file length, but a zone file holds one list per zone: the
+/// total expansion must stay bounded too (it used to be zones x file length).
+#[test]
+fn many_uniform_zone_lists_share_one_budget() {
+    let g = good();
+    let zone = |i: usize| format!("z{i} {{ type cellZone; cellLabels List<label> 100{{0}}; }}");
+    let few = |i: usize| format!("z{i} {{ type cellZone; cellLabels List<label> 5{{0}}; }}");
+    let body = |n: usize| format!("{n}\n(\n{}\n)", (0..n).map(zone).collect::<Vec<_>>().join("\n"));
+    // A few small uniform lists fit; 4000 zones x 100 labels (400k labels) in a ~230 KB file do not.
+    let small = format!("10\n(\n{}\n)", (0..10).map(few).collect::<Vec<_>>().join("\n"));
+    assert!(parse_checked(&with_file(&g, "cellZones", &small)).is_ok());
+    let big = with_file(&g, "cellZones", &body(4000));
+    let len = big.iter().find(|f| f.name == "cellZones").unwrap().bytes.len();
+    assert!(4000 * 100 > len);
+    assert_eq!(kind(&parse_checked(&big).unwrap_err()), "malformed");
+    // faceZones: labels and flipMap draw on the same budget.
+    let fz = |i: usize| format!("f{i} {{ type faceZone; faceLabels List<label> 100{{0}}; flipMap List<bool> 100{{0}}; }}");
+    let body = format!("4000\n(\n{}\n)", (0..4000).map(fz).collect::<Vec<_>>().join("\n"));
+    assert_eq!(kind(&parse_checked(&with_file(&g, "faceZones", &body)).unwrap_err()), "malformed");
+    // flipMap N{0} on a legitimate zone stays accepted.
+    let body = "1\n(\nf0 { type faceZone; faceLabels List<label> 2(0 1); flipMap List<bool> 2{0}; }\n)";
+    assert!(parse_checked(&with_file(&g, "faceZones", body)).is_ok());
+}
+
+/// A tiny owner file with one huge label must not yield a mesh claiming billions of cells.
+#[test]
+fn huge_cell_label_is_refused() {
+    let g = good();
+    let t = String::from_utf8(g.iter().find(|f| f.name == "owner").unwrap().bytes.clone()).unwrap();
+    let first = t.find("(\n").unwrap() + 2;
+    let hostile = format!("{}4000000000{}", &t[..first], &t[first + t[first..].find('\n').unwrap()..]);
+    let files = replace(&g, "owner", &t, &hostile);
+    assert_eq!(kind(&parse_checked(&files).unwrap_err()), "malformed");
+    // check_polymesh survives a hand-built PolyMesh with the same lie.
+    let mut m = parse_checked(&g).unwrap();
+    m.n_cells = u32::MAX;
+    assert!(!check_polymesh(&m, 1e-9).is_empty());
+}
+
 #[test]
 fn indices_out_of_range_are_errors() {
     let g = good();

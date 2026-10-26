@@ -34,7 +34,7 @@ Definition of done, all green on the final commit: `cargo build --workspace`;
 | 4 | ordering, reordering proof | `ordering_rules_on_every_fixture`, `interleaved_boundary_faces_are_moved_behind_the_interior_ones` (natural interleaving plus a hand-built mesh with a boundary face between two interior faces of cell 0), `unsorted_interior_faces_are_sorted_by_owner_then_neighbour` (sort path), `an_interior_face_with_left_not_below_right_is_an_orientation_error` |
 | 5 | patches and zones | `face_sets_become_patches_in_set_order`, `cell_sets_become_cell_zones`, `an_unlisted_boundary_face_lands_in_default_faces`, `overlapping_sets_report_in_sets_mode_and_fail_when_explicit`, `classification_gives_one_patch_per_model_face`, `non_conformal_and_partition_cut_faces_go_to_their_own_patches`, `a_planar_mirror_set_becomes_a_symmetry_plane_and_a_bent_one_a_patch`, `a_side_set_becomes_a_face_zone_with_flips`, plus `translation_decks_stay_plain_patches_with_a_loss_item`, `names_are_sanitized_and_collisions_are_errors`, `unsupported_inputs_are_typed_errors`, `options_json_shape`, `high_order_cells_are_reported_not_written` |
 | 6 | golden bytes | `single_hex_files_equal_the_hand_written_golden_bytes` (`tests/data/foam/single_hex/*`) |
-| 7 | hostile parse | `truncated_files_are_errors` (every prefix up to the last closing bracket of every file), `binary_format_is_unsupported`, `negative_and_huge_counts_are_errors`, `indices_out_of_range_are_errors`, `deep_nesting_and_junk_do_not_recurse_or_panic`, proptests `random_bytes_never_panic`, `mutated_valid_files_never_panic`, `printable_garbage_in_every_slot`, `uniform_lists_of_big_elements_are_refused` (review round 0), `huge_counts_do_not_allocate_under_an_address_space_limit` (`tests/foam_parse.rs`; Linux only, see below); spellings: `accepts_comments_and_the_list_spellings`, `read_dir_round_trips_and_write_dir_removes_stale_zone_files` |
+| 7 | hostile parse | `truncated_files_are_errors` (every prefix up to the last closing bracket of every file), `binary_format_is_unsupported`, `negative_and_huge_counts_are_errors`, `indices_out_of_range_are_errors`, `deep_nesting_and_junk_do_not_recurse_or_panic`, proptests `random_bytes_never_panic`, `mutated_valid_files_never_panic`, `printable_garbage_in_every_slot`, `uniform_lists_of_big_elements_are_refused` (review round 0), `many_uniform_zone_lists_share_one_budget` and `huge_cell_label_is_refused` (review round 1), `huge_counts_do_not_allocate_under_an_address_space_limit` (`tests/foam_parse.rs`; Linux only, see below); spellings: `accepts_comments_and_the_list_spellings`, `read_dir_round_trips_and_write_dir_removes_stale_zone_files` |
 | 8 | tar | `tar_holds_the_files_with_valid_headers_and_is_deterministic` (own 30-line untar: checksums, mode 0644, uid/gid/mtime 0, sorted names, ustar prefix split, byte-identical runs; system `tar -tvf` when present) |
 | 9 | `.smsh` 1.1 | `v10_golden_still_decodes_and_matches_its_mesh`, `hex8_on_a_1000_cell_block_round_trips`, `polyhedron_on_dual_patch_round_trips`, `element_type_violations_are_typed_errors` (TET4 on hexes, unknown set, duplicate record, missing HO record, `NFACED`), `element_type_set_kind_and_overlap_checks`, `high_order_names_need_the_right_node_count`, `stats_match_the_mesh` (`mixed_transition`: 1/1/1/1 cells, 3 interior, 14 boundary, `max_cell_faces` 6; whole corpus), `python_reader_returns_the_same_element_types_and_stats`, `tampered_stats_are_rejected` and `element_type_records_are_checked_by_the_decoder` (`tests/corrupt.rs`) |
 | 10 | loss reports | `vtu_report_for_a_high_order_mesh` (`ho_hex`: `vtu.high_order_dropped` 1, `vtu.extra_points_unused` 19), `vtu_report_for_face_sets_and_edge_tables`, `vtu_report_is_empty_for_plain_meshes`, `report_stays_sorted_merges_and_serializes` (`tests/loss.rs`), `smsh_loss_report_is_empty` (`tests/smsh11.rs`) |
@@ -54,7 +54,7 @@ Registered ops: none, so there is no cold-replay `Diverged` check to run.
 | `foam_polymesh/files` (format 5 files) | 17.0 ms |
 | `foam_polymesh/build_and_files`, 4 threads | 23.6 ms |
 | `foam_polymesh/build_and_files`, `RAYON_NUM_THREADS=1` | 55.8 ms |
-| `foam_polymesh/parse` (single thread, 84 MiB/s) | 97 ms |
+| `foam_polymesh/parse` (single thread, round 1: 68 MiB/s, noisy; round 0: 84 MiB/s) | 120 ms (round 0: 97 ms) |
 
 The parser's peak memory is bounded by construction (deviation 7); it was not measured.
 
@@ -80,7 +80,22 @@ The parser's peak memory is bounded by construction (deviation 7); it was not me
   indices (`check_ranges`) and returns `Inconsistent`; test
   `out_of_range_columns_are_inconsistent_not_panics`. The `.smsh` and VTU writers keep their
   length-only check (not part of this change).
-* **Parser faces into CSR.** No per-face `Vec`; parse throughput not re-measured (the review machine was under load 200+); the 84 MiB/s figure is the old one.
+* **Parser faces into CSR.** No per-face `Vec`.
+
+## What changed in review (round 1)
+
+* **Acceptance 7, zone files.** The round-0 check bounded each uniform `N{elem}` list alone, so a
+  cellZones or faceZones file with thousands of zones expanded to zones x file length (a 164 KB
+  file with 4000 zones gave 321M labels, 1.3 GB RSS). Each `Lexer` now holds one expansion budget
+  equal to the input length; every uniform expansion takes `n * size` from it and `Malformed` is
+  returned when it runs out. `flipMap N{0}` stays accepted. Test `many_uniform_zone_lists_share_one_budget`.
+* **Cell count.** `parse_polymesh` returns `Malformed` when `max label + 1` exceeds the owner plus
+  neighbour entries (every cell appears in one of them); `check_polymesh` reports `foam.index_range`
+  for the same lie in a hand-built `PolyMesh` instead of sizing five per-cell vectors with it. Test `huge_cell_label_is_refused`.
+* **Duplicate face in one set.** Explicit patches: `Inconsistent` (was an index panic); Sets mode
+  keeps one copy and no longer reports it as `foam.patch_overlap`. Added to
+  `out_of_range_columns_are_inconsistent_not_panics`.
+* **Parse throughput re-measured** after the CSR change: 119.5 ms median (101.9 to 141.8 ms), 68 MiB/s (58 to 80), a noisy run; slower than the old 84 MiB/s figure (97 ms); record only, not investigated..
 
 ## E6: other crates that read `.smsh` bytes
 
@@ -117,8 +132,8 @@ unaffected (no op code changed).
 7. **Allocation bound (acceptance 7).** Not metered in process: a counting `GlobalAlloc` needs
    `unsafe`, which CLAUDE.md forbids outside `sm-rt-capi` (I wrote one first; it passed; I removed
    it for that reason). Instead the bound holds by construction (lists grow as tokens are read,
-   declared counts are compared at the closing bracket, uniform `N{v}` lists are capped at the
-   input length) and is tested by re-running the huge-count cases in a child process under
+   declared counts are compared at the closing bracket, uniform `N{v}` lists draw on one expansion budget per file, equal to
+   its length, so zone files with one list per zone stay bounded; the cell count may not exceed the owner plus neighbour entries) and is tested by re-running the huge-count cases in a child process under
    `ulimit -v` of 1 GiB (`huge_counts_do_not_allocate_under_an_address_space_limit`). Mutation
    check: replacing the list `Vec::new()` by `Vec::with_capacity(count)` fails that test
    (`memory allocation of 96000000000 bytes failed`). The test needs `sh` and is skipped without it.

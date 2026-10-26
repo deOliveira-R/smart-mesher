@@ -1,5 +1,6 @@
-//! ASCII polyMesh reader. Iterative (no recursion), allocation proportional to the tokens read
-//! (declared counts are only compared, never pre-allocated), `Err` and never a panic on any input.
+//! ASCII polyMesh reader. Iterative (no recursion), allocation proportional to the input
+//! (declared counts are only compared; uniform `N{elem}` expansion draws on a per-file budget of
+//! the input length), `Err` and never a panic on any input.
 
 use super::{FoamError, FoamFile, FoamPatchType, PatchOrigin, PolyFaceZone, PolyMesh, PolyPatch, PolyZone};
 use crate::error::{MeshioError, Result};
@@ -26,11 +27,14 @@ struct Lexer<'a> {
     pos: usize,
     line: usize,
     peeked: Option<Tok<'a>>,
+    /// Bytes still available for uniform `N{elem}` expansion; starts at the input length so the
+    /// total expansion per file is proportional to it, however many lists the file holds.
+    budget: usize,
 }
 
 impl<'a> Lexer<'a> {
     fn new(file: &'a str, src: &'a [u8]) -> Self {
-        Self { file, src, pos: 0, line: 1, peeked: None }
+        Self { file, src, pos: 0, line: 1, peeked: None, budget: src.len() }
     }
 
     fn err(&self, detail: impl Into<String>) -> MeshioError {
@@ -226,7 +230,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Tok::LBrace => {
-                if n > self.src.len() {
+                if n > self.budget {
                     return self.malformed(format!("uniform list of {n} entries is larger than the input"));
                 }
                 let start = self.pos;
@@ -235,9 +239,10 @@ impl<'a> Lexer<'a> {
                 // n copies of an element that took `size` bytes to write must fit in the input,
                 // so the expansion stays proportional to it whatever the element's own size.
                 let size = (self.pos - start).max(1);
-                if n.saturating_mul(size) > self.src.len() {
-                    return self.malformed(format!("uniform list of {n} entries of {size} bytes is larger than the input"));
-                }
+                let Some(rest) = n.checked_mul(size).and_then(|b| self.budget.checked_sub(b)) else {
+                    return self.malformed(format!("uniform lists exceed the expansion budget (this one: {n} entries of {size} bytes)"));
+                };
+                self.budget = rest;
                 out = vec![v; n];
             }
             t => return Err(self.err(format!("expected '(' or '{{' after the count, found {t:?}"))),
@@ -422,6 +427,11 @@ pub fn parse_polymesh(files: &[FoamFile]) -> Result<PolyMesh> {
         None => 0,
         Some(m) => m.checked_add(1).ok_or_else(|| mal("cell label overflows".into()))?,
     };
+    // Every cell appears as an owner or a neighbour, so a count past that is hostile input that
+    // would make downstream per-cell allocations unbounded.
+    if n_cells as usize > owner.len() + neighbour.len() {
+        return Err(mal(format!("{n_cells} cells but only {} owner and {} neighbour entries", owner.len(), neighbour.len())));
+    }
 
     let bf = require(files, "boundary")?;
     let mut lx = Lexer::new(&bf.name, &bf.bytes);
