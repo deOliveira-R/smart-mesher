@@ -201,6 +201,8 @@ struct RawBound {
     orientation: bool,
     /// (EDGE_CURVE id, oriented edge orientation)
     edges: Vec<(u64, bool)>,
+    /// `VERTEX_LOOP`: (loop id, vertex id). Such a bound has no edges.
+    vertex_loop: Option<(u64, u64)>,
 }
 
 struct RawFace {
@@ -291,8 +293,17 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
             let loop_id = ba.reference(1)?;
             let le = ents.get(loop_id, b)?;
             let Some(lrec) = le.rec("EDGE_LOOP") else {
+                if let Some(vl) = le.rec("VERTEX_LOOP") {
+                    let v = Args { id: loop_id, rec: vl }.reference(1)?;
+                    if let std::collections::btree_map::Entry::Vacant(s) = vertex_points.entry(v) {
+                        let va = ents.rec(v, loop_id, "VERTEX_POINT")?;
+                        s.insert(va.reference(1)?);
+                    }
+                    bounds.push(RawBound { outer, orientation, edges: Vec::new(), vertex_loop: Some((loop_id, v)) });
+                    continue;
+                }
                 return Err(match le.first() {
-                    Some(r) if r.name == "VERTEX_LOOP" || r.name == "POLY_LOOP" => StepError::Unsupported { id: loop_id, entity: r.name.clone() },
+                    Some(r) if r.name == "POLY_LOOP" => StepError::Unsupported { id: loop_id, entity: r.name.clone() },
                     _ => StepError::WrongType { id: loop_id, expected: "EDGE_LOOP".into(), found: le.display_name() },
                 });
             };
@@ -316,7 +327,7 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
             if edges.is_empty() {
                 return Err(la.bad(1, "an edge loop needs at least one edge"));
             }
-            bounds.push(RawBound { outer, orientation, edges });
+            bounds.push(RawBound { outer, orientation, edges, vertex_loop: None });
         }
         raw_faces.push(RawFace { id: fid, shell, reversed, surface, same_sense, bounds });
     }
@@ -334,7 +345,7 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     let surface_ids: Vec<u64> = raw_faces.iter().map(|f| f.surface).collect::<BTreeSet<_>>().into_iter().collect();
     let curve_defs = par_decode(&curve_ids, |c| geo.curve(c, c))?;
     let surface_defs = par_decode(&surface_ids, |s| geo.surface(s, s))?;
-    let curves: Vec<CurveRec> = curve_ids.iter().zip(curve_defs).map(|(id, def)| CurveRec { id: *id, def }).collect();
+    let mut curves: Vec<CurveRec> = curve_ids.iter().zip(curve_defs).map(|(id, def)| CurveRec { id: *id, def }).collect();
     let surfaces: Vec<SurfaceRec> = surface_ids.iter().zip(surface_defs).map(|(id, def)| SurfaceRec { id: *id, def }).collect();
     let curve_ix: BTreeMap<u64, usize> = curve_ids.iter().enumerate().map(|(i, c)| (*c, i)).collect();
     let surface_ix: BTreeMap<u64, usize> = surface_ids.iter().enumerate().map(|(i, c)| (*c, i)).collect();
@@ -402,6 +413,11 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
         let mut loops = Vec::with_capacity(order.len());
         for &bi in &order {
             let b = &rf.bounds[bi];
+            if let Some((loop_id, v)) = b.vertex_loop {
+                let lp = pole_loop(&surfaces[surface_ix[&rf.surface]].def, v_ix[&v], loop_id, opts.weld_tol, &mut vertices, &mut curves, &mut kept)?;
+                loops.push(lp);
+                continue;
+            }
             // `.F.` on the bound or a reversed shell reverses the loop.
             let flip = !b.orientation ^ rf.reversed;
             let mut lp: Vec<Coedge> = b
@@ -450,6 +466,32 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
     }
     let solid = Solid { id, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
     Ok((solid, (welded_vertices, welded_edges)))
+}
+
+/// A `VERTEX_LOOP` on a sphere at one of its poles bounds the whole sphere: synthesize the
+/// opposite pole vertex, a meridian seam edge (south to north, at `u = 0`) and the seam-pair loop
+/// the pole rule then closes with two `DEGENERATE` edges.
+fn pole_loop(surface: &sm_geom_api::SurfaceDef, pole: usize, loop_id: u64, tol: f64, vertices: &mut Vec<Vertex>, curves: &mut Vec<CurveRec>, edges: &mut Vec<Edge>) -> Result<Vec<Coedge>, StepError> {
+    use core::f64::consts::FRAC_PI_2;
+    let sm_geom_api::SurfaceDef::Sphere(sp) = surface else {
+        return Err(StepError::Unsupported { id: loop_id, entity: "VERTEX_LOOP".into() });
+    };
+    let local = sp.frame.to_local(vertices[pole].point);
+    let r = sp.radius;
+    if local.x.hypot(local.y) > tol.max(1e-9 * r) {
+        return Err(StepError::Unsupported { id: loop_id, entity: "VERTEX_LOOP away from a pole of the sphere".into() });
+    }
+    let north = local.z > 0.0;
+    let other = vertices.len();
+    vertices.push(Vertex { id: loop_id, point: sp.frame.origin + sp.frame.z * if north { -r } else { r } });
+    let (south, north_i) = if north { (other, pole) } else { (pole, other) };
+    let frame = sm_geom_api::Frame::from_zx(sp.frame.origin, sp.frame.y * -1.0, sp.frame.x).map_err(|e| StepError::GeometryMismatch { id: loop_id, msg: e.to_string() })?;
+    let circle = sm_geom_api::Circle::new(frame, r).map_err(|e| StepError::GeometryMismatch { id: loop_id, msg: e.to_string() })?;
+    let curve = curves.len();
+    curves.push(CurveRec { id: loop_id, def: sm_geom_api::CurveDef::Circle(circle) });
+    let edge = edges.len();
+    edges.push(Edge { id: loop_id, start: south, end: north_i, curve, range: sm_geom_api::Interval::new(-FRAC_PI_2, FRAC_PI_2), sense: Sense::Forward, merged: Vec::new() });
+    Ok(vec![Coedge { edge, sense: Sense::Forward }, Coedge { edge, sense: Sense::Reversed }])
 }
 
 fn geo_point(geo: &Geo<'_>, point_id: u64, by: u64) -> Result<Point3, StepError> {

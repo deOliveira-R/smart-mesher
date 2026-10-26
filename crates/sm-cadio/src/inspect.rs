@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::args::{Args, Ents};
 use crate::decode::{scan_skipped, solid_entities};
@@ -14,7 +14,7 @@ use crate::part21::{Entity, StepFile};
 use crate::units;
 
 /// Per-solid summary.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SolidInfo {
     /// STEP id of the solid entity.
     pub step_id: u64,
@@ -36,7 +36,7 @@ pub struct SolidInfo {
 }
 
 /// An entity kind the reader cannot import.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UnsupportedInfo {
     /// Entity name.
     pub entity: String,
@@ -45,7 +45,7 @@ pub struct UnsupportedInfo {
 }
 
 /// The `cad.step_info` reply.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StepInfo {
     /// `AP203`, `AP214`, `AP242` or `other`.
     pub schema: String,
@@ -167,7 +167,12 @@ pub(crate) fn inspect(file: &StepFile, sha256: String, bytes: u64) -> Result<Ste
                 let ba = ents.one_of(b, *f, &["FACE_OUTER_BOUND", "FACE_BOUND"])?;
                 let lp = ents.get(ba.reference(1)?, b)?;
                 let Some(lrec) = lp.rec("EDGE_LOOP") else {
-                    *unsupported.entry(lp.display_name()).or_default() += 1;
+                    match lp.rec("VERTEX_LOOP") {
+                        Some(vl) => {
+                            vertices.insert(Args { id: ba.reference(1)?, rec: vl }.reference(1)?);
+                        }
+                        None => *unsupported.entry(lp.display_name()).or_default() += 1,
+                    }
                     continue;
                 };
                 let la = Args { id: ba.reference(1)?, rec: lrec };

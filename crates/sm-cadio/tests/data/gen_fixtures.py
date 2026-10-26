@@ -217,7 +217,7 @@ CORNER_CYCLES = [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 
 NORMALS = [(-1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0), (0.0, 0.0, 1.0)]
 
 
-def brick_parts(d, mn, size, inward=False):
+def brick_parts(d, mn, size, inward=False, off_face0=0.0):
     """Mirror of sm_topo_api::fixtures::brick_parts: same entity order."""
     s = Solid(d)
 
@@ -244,7 +244,10 @@ def brick_parts(d, mn, size, inward=False):
         if inward:
             cyc.reverse()
             n = tuple(-c for c in n)
-        surf = s.plane(corner(cyc[0]), n)
+        o = corner(cyc[0])
+        if f == 0 and off_face0:
+            o = tuple(o[k] + n[k] * off_face0 for k in range(3))
+        surf = s.plane(o, n)
         s.face(surf, [s.loop_from_vertices(cyc)])
     return s
 
@@ -410,7 +413,29 @@ def fillet_text():
     return header(AP214, "block_fillet_nurbs") + d.text() + FOOTER
 
 
+def inverted_text():
+    """A brick whose faces point inward: the importer must flip it (step.inverted_solid)."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    s = brick_parts(d, (0.0, 0.0, 0.0), (2.0, 3.0, 4.0), inward=True)
+    solid = d.add(f"MANIFOLD_SOLID_BREP('inverted',#{s.shell()})")
+    product(d, ctx, [solid])
+    return header(AP214, "brick_inverted") + d.text() + FOOTER
+
+
+def off_surface_text():
+    """A brick whose first plane does not contain its boundary edges (validate_geometry fails)."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    s = brick_parts(d, (0.0, 0.0, 0.0), (2.0, 3.0, 4.0), off_face0=0.5)
+    solid = d.add(f"MANIFOLD_SOLID_BREP('off',#{s.shell()})")
+    product(d, ctx, [solid])
+    return header(AP214, "face_off_surface") + d.text() + FOOTER
+
+
 def main():
+    write("brick_inverted.stp", inverted_text())
+    write("bad/face_off_surface.stp", off_surface_text())
     write("brick_2x3x4.stp", brick_text((1.0, 2.0, 3.0), (2.0, 3.0, 4.0), name="brick_2x3x4"))
     write("brick_ap203.stp", brick_text((1.0, 2.0, 3.0), (2.0, 3.0, 4.0), schema=AP203, ap203=True, name="brick_2x3x4"))
     write("brick_inch.stp", brick_text((0.0, 0.0, 0.0), (1.0, 2.0, 3.0), length="inch", name="brick_inch"))
