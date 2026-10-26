@@ -494,7 +494,7 @@ fn overlap_of<V: TopologyView + ?Sized>(view: &V, a: EntityId, b: EntityId, o: &
         let Some((s, _)) = geo::face_surface(view, into) else { return false };
         geo::face_boundary_samples(view, from, 2).into_iter().any(|p| {
             let Ok(pr) = s.project(p, None) else { return false };
-            matches!(view.classify_point_on_face(into, Uv::new(pr.uv.u, pr.uv.v)), Ok(sm_topo_api::PointClass::In))
+            matches!(crate::faceclass::classify_uv(view, into, Uv::new(pr.uv.u, pr.uv.v), view.tolerance().linear), Ok((sm_topo_api::PointClass::In, _)))
         })
     };
     (inside(a, b) || inside(b, a)).then_some(None)
