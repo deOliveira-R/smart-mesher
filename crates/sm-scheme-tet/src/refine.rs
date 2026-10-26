@@ -300,6 +300,9 @@ impl<'a, 'o> Refiner<'a, 'o> {
         self.set_mark(t0);
         let mut head = 0;
         let mut guard = 0;
+        // Before the first insertion the mesh may be (nearly) cospherical, e.g. a sphere's
+        // boundary points: every tet conflicts with the first point, so let it carve any cavity.
+        let max_cavity = if self.n_steiner == 0 { usize::MAX } else { 400 };
         let bfaces: Vec<(u32, usize)> = loop {
             while head < cav.len() {
                 let t = cav[head];
@@ -344,7 +347,7 @@ impl<'a, 'o> Refiner<'a, 'o> {
                 None => break bf,
                 Some(n) => {
                     guard += 1;
-                    if guard > 40 || cav.len() > 400 {
+                    if guard > 40 || cav.len() > max_cavity {
                         return Ok(Err("grow_limit"));
                     }
                     self.set_mark(n);

@@ -242,9 +242,25 @@ impl Scheme for TetVolume {
         if let Some(g) = p.gradation {
             opts.gradation = g;
         }
+        if let Some(c) = const_size {
+            // The default Steiner budget scales with the boundary; a constant size that is fine
+            // against a coarse boundary needs room for the interior points (about one per six
+            // tets, a regular tet of edge `c` having volume c^3 / (6 sqrt 2)).
+            let vol = input.tris.iter().map(|t| signed_volume6(t.map(|i| input.points[i as usize]))).sum::<f64>().abs() / 6.0;
+            let wanted = 2.0 * vol / (c * c * c * 0.1179 * 6.0);
+            if wanted.is_finite() {
+                opts.max_steiner = 8 * input.points.len() + 100_000 + wanted.min(1.0e8) as usize;
+            }
+        }
         let mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
         Ok(build_patch(target, owner, &mesh, &keys))
     }
+}
+
+/// Six times the signed volume of the cone from the origin over a triangle.
+fn signed_volume6(t: [[f64; 3]; 3]) -> f64 {
+    let [a, b, c] = t;
+    a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])
 }
 
 /// Turn a core error into a located, actionable generation failure: the message names the

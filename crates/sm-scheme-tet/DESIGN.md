@@ -114,15 +114,32 @@ Everything below works on the triangulation including the far box.
    the triangle as a cap (empty-sphere preference, backtracking). A side that cannot be filled
    (Schönhardt-like) gets an interior Steiner point from a kernel search (vertex centroid, face
    centroid, alternating projections onto the inner half spaces) and is starred from it.
-5. **Restart.** If a failure remains, the whole build is restarted with an extra interior point
-   placed inside the solid next to the failing triangle (inward-normal offset), up to six times;
-   afterwards `RecoveryFailed` names the triangle and the edge. This restart is what cures
-   Steiner-needing configurations around reflex cube edges where a single point inserted into a
-   host tet is not connected to enough of the neighbourhood (`cube_with_cavity(5)` needs one).
+5. **Cheap attempts, then hints, then restart.** Each recovery attempt collects *all* its
+   failures instead of stopping at the first. The first two attempts are "cheap": the cavity
+   fills are budgeted (`120 + 3 faces` validity evaluations), edge cavities grow at most two
+   layers, and no per-failure Steiner search runs. A failure instead yields a *hint*: a point in
+   the kernel of the failed cavity, or a point just inside (and, for reflex edges, just outside)
+   the solid next to the failing triangle. The pipeline then **restarts the whole build** with
+   the hints as extra interior points (at most 32 or `n/8` per restart, at most twelve
+   restarts); later attempts use the full budgets and `fill_with_steiner` (one interior point
+   that the cavity's tets may use). If nothing is left to try, `RecoveryFailed` names the
+   triangle and the edge. Restarts cure Steiner-needing configurations (`cube_with_cavity(5)`)
+   and keep CAD-like planar surfaces fast: a random voxel surface that took 3 s with a
+   full-budget fallback takes 30 ms with two cheap attempts (at the price of a few more
+   interior points). Hints are interior Steiner points; boundary points and triangles stay
+   frozen.
 6. **Zero-volume tets.** Degenerate input (cospherical, coplanar grids) makes the perturbed
    Delaunay contain tets of exactly zero volume. After classification each one is removed by an
    edge-removal or 2-3 flip with exact positive results, else by a cavity refill, else by a
-   Steiner point in the kernel of its neighbourhood.
+   Steiner point in the kernel of its neighbourhood. A first pass (non-strict) also runs right
+   after the Delaunay build, before recovery, so crossing tests are never degenerate.
+7. **Delaunay flips.** After classification, locally non-Delaunay interior faces are flipped
+   (bounded work). This matters for refinement: a mesh left as recovery produced it contains
+   huge needle tets whose conflict regions are the whole mesh, and circumcenter insertion
+   degrades by orders of magnitude (measured: 1.1M-tet ball, 14 s with, over 500 s without).
+   For the same reason the first insertion of a refinement run may carve a cavity of any size
+   (a sphere's boundary points are cospherical, so the first interior point conflicts with
+   every tet); later insertions are capped at 400 tets.
 
 ### Refinement
 
@@ -183,11 +200,34 @@ surface is accepted, and failures are reported with their location rather than a
 One calibration pass; floors frozen at the task's values, with tighter regression guards (marked
 "guard") below the measured numbers. Release build, default options, seeds fixed.
 
-CALIBRATION_TABLE
+| fixture (default size, optimize = 2) | min dihedral | max dihedral | min mean ratio | mean mean ratio | frac R/l <= 2 at optimize 0 | unrefinable at optimize 0 |
+|---|---|---|---|---|---|---|
+| `tri_cube(10)` | 27.8 | 135.6 | 0.621 | 0.872 | 1.0000 | 0 of 5101 |
+| `icosphere(1, 4)` | 24.3 | 139.5 | 0.593 | 0.870 | 1.0000 | 2 of 27523 |
+| `tri_torus(2, 0.7, 48, 24)` | 20.1 | 139.8 | 0.562 | 0.831 | 0.9988 | 0 of 7480 |
+
+Mean ratio without optimization (min): 0.183 / 0.040 / 0.000 (cube / sphere / torus); with level 1:
+0.537 / 0.406 / 0.477. Frozen gates (task): min dihedral >= 10, max dihedral <= 165, min mean
+ratio >= 0.10, mean mean ratio >= 0.75, fraction R/l <= 2 at optimize 0 >= 0.98, unrefinable
+<= 0.5 %. Regression guards ("guard", in `tests/a08_quality.rs`): min dihedral >= 15, min mean
+ratio >= 0.4, mean mean ratio >= 0.78. The `sm_quality` cross-check agrees to 1e-15 (mean ratio
+and radius-edge) and 6e-14 degrees (dihedrals).
 
 ## Performance record (acceptance 12, record-only, 4 vCPU)
 
-PERF_RECORD
+Release build, 4 vCPU, `tests/perf.rs` and `tests/adapter.rs` (`--ignored`), no gates:
+
+| case | result |
+|---|---|
+| `delaunay`, 200 000 random points | 1 347 023 tets in 3.9 s = 51 000 points/s |
+| `tetrahedralize`, `icosphere(1, 5)` (10 242 boundary points), `h = 0.033`, optimize 2 | 1 139 988 tets (186 076 Steiner, 120 unrefinable) in 25.4 s = 44 900 tets/s; stage ms: validate 8, Delaunay 1512, recovery + classify + flats 3025, refinement 10 084, optimization 10 478; min dihedral 16.4, min mean ratio 0.428 |
+| same surface, `h = 0.07` | 182 924 tets in 7.4 s = 24 700 tets/s, 0 unrefinable, min dihedral 22.1 |
+| adapter: unit brick through the `Driver`, 1/56 boundary intervals, `size = 0.018` | 1 719 532 tets in 53.7 s = 32 000 tets/s, including the serial commit into the reference builder |
+
+The sphere is the only large core case measured; planar CAD-like surfaces were measured for
+robustness (random voxel shapes, mean 0.19 s each in release over 122 cases, the slowest 9.5 s), not for
+throughput. The adapter's default Steiner budget is `8 n + 100 000`, raised by an estimate of the
+interior point count when a constant `size` parameter is given.
 
 ## Stretch and deferred
 
