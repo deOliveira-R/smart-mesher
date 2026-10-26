@@ -23,6 +23,8 @@
 //! [`netcdf`] is the codec on its own; [`read`] is an internal decoder for round-trip tests, not a
 //! general Exodus reader. See `DESIGN.md` for the positioning, the side tables and the variable list.
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod netcdf;
 pub mod options;

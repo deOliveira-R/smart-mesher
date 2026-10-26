@@ -61,9 +61,11 @@ Gate (this VM): `cargo build --workspace`, `cargo test -p sm-exodus --all-featur
    `num_face` slightly more) plus `fa_status|fa_prop1|fa_names`, `entity_type1/2` attributes on
    `ebepecnt`/`fbepecnt`, `num_nod_per_fa<j>` for the face block's node total. Marked
    **experimental** (ruling E4); a single constant change per name if a SEACAS check disagrees.
-5. Known mismatches with libexodus values that I kept as the task specifies: `file_size = 1` for
-   every format (libexodus writes 0 for classic), `int64_status = 1` (libexodus uses a bitmask, 7
-   for all-int64).
+5. `file_size = 1` is kept on purpose for every format: libexodus chooses between the old single
+   `coord` variable and `coordx|y|z` by this flag, and we always write `coordx|y|z`. One known
+   mismatch with libexodus values: `int64_status = 1` (libexodus uses a bitmask, 7 for all-int64).
+   Also: `*_status` variables are widened with `int64` (libexodus keeps them `NC_INT`);
+   `BlockSelection::Names` with a missing set returns `ExodusError::Mesh(State(..))`.
 6. **Acceptance 3, pyramid**: "s1 y=0 triangle" is loose; the side-1 triangle (0,0,0), (1,0,0),
    (.5,.5,1) only has its base edge on y=0. The test asserts the exact centroid (.5, 1/6, 1/3).
 7. **Acceptance 5, mixed_transition**: the order HEX8/WEDGE6/PYRAMID5/TET4 appears when four

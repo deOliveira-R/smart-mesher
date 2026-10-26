@@ -411,6 +411,10 @@ fn acc6_round_trip_every_fixture_and_format() {
             assert_eq!(d.nodesets[0].nodes, vec![1, nv as i64]);
             let names: Vec<(i64, &str, usize)> = d.sidesets.iter().map(|s| (s.id, s.name.as_str(), s.elems.len())).collect();
             assert_eq!(names, [(3, "bnd", fx.boundary_faces), (4, "deck", 1)]);
+            if d.face_blocks.len() > 1 {
+                // Several NFACED blocks: the second face block has a nonzero global face base.
+                check_poly(&m, &d);
+            }
             decoded.push(d);
         }
         for d in &mut decoded {
