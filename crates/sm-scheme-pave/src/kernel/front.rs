@@ -11,8 +11,6 @@ use core::ops::Range;
 
 /// Minimum distance (in sizes) between a frontal point and any existing vertex.
 const ALPHA_ROW: f64 = 0.6;
-/// Number of adjacent proposals dropped together where a row crowds.
-const DROP_RUN: usize = 2;
 /// Proposals closer than this fraction of the row distance count as duplicates.
 const DUPLICATE: f64 = 0.4;
 /// Same for refinement points.
@@ -33,6 +31,17 @@ enum Res {
     Collide,
 }
 
+/// Knobs of the placement that the strategy ladder varies.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Tuning {
+    /// Multiplier of the size field.
+    pub hscale: f64,
+    /// Multiplier of the row distance.
+    pub row_factor: f64,
+    /// Adjacent proposals dropped together where a row crowds.
+    pub drop_run: usize,
+}
+
 /// The triangulation plus the per-vertex data the placement needs.
 pub(crate) struct Mesher<'a> {
     pub cdt: Cdt,
@@ -45,6 +54,8 @@ pub(crate) struct Mesher<'a> {
     hscale: f64,
     /// Multiplier of the row distance (strategy ladder).
     row_factor: f64,
+    /// Adjacent proposals dropped together where a row crowds (strategy ladder).
+    drop_run: usize,
 }
 
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -52,8 +63,8 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 }
 
 impl<'a> Mesher<'a> {
-    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64, hscale: f64, row_factor: f64) -> Result<Self, PaveError> {
-        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, max_vertices: usize::MAX, hscale, row_factor };
+    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64, tuning: Tuning) -> Result<Self, PaveError> {
+        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, max_vertices: usize::MAX, hscale: tuning.hscale, row_factor: tuning.row_factor, drop_run: tuning.drop_run };
         for i in 0..nb {
             let w = m.cdt.pts[i];
             let (mt, h) = (m.space.met(w)?, m.h_at(w)?);
@@ -192,7 +203,7 @@ impl<'a> Mesher<'a> {
                 Some(d) if d < DUPLICATE * lim(i) => {}
                 // Genuine crowding: thin out in pairs of adjacent proposals, since a lone
                 // dropped node leaves a wedge triangle that no convex pair can absorb.
-                Some(_) => force = DROP_RUN - 1,
+                Some(_) => force = self.drop_run.max(1) - 1,
             }
         }
         if c.closed {

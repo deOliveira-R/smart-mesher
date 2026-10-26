@@ -82,7 +82,6 @@ impl Cdt {
     }
 
     /// Number of live triangles.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.live
     }

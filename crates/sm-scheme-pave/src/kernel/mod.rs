@@ -15,7 +15,7 @@ mod smooth;
 
 use cdt::{Cdt, CdtError};
 use core::ops::Range;
-use front::Mesher;
+use front::{Mesher, Tuning};
 use metric::{Frame, Met, SizeMap, Space};
 use sm_math::{Sign, orient2d};
 
@@ -177,6 +177,10 @@ fn check_boundary(pts: &[[f64; 2]], ranges: &[Range<usize>]) -> Result<(), PaveE
     Ok(())
 }
 
+/// Triangle-attempts a failing region may spend on the strategy ladder (at least two
+/// strategies always run).
+const ATTEMPT_BUDGET: usize = 150_000;
+
 /// Points, quads and rounds of one successful strategy.
 type Solution = (Vec<[f64; 2]>, Vec<[u32; 4]>, u32);
 
@@ -185,24 +189,27 @@ type Solution = (Vec<[f64; 2]>, Vec<[u32; 4]>, u32);
 struct Strategy {
     rows: bool,
     fill: bool,
-    hscale: f64,
-    row_factor: f64,
+    tuning: Tuning,
 }
 
-/// The ladder: the default placement first, then variations of the size scale and of the row
-/// distance, then no rows at all. The first strategy that recombines completely wins.
+/// The ladder: the default placement first, then variations of the size scale, the row
+/// distance and the thinning, then no rows at all. The first strategy that recombines
+/// completely wins.
 fn strategies() -> Vec<Strategy> {
-    let mut v = vec![Strategy { rows: true, fill: true, hscale: 1.0, row_factor: 1.0 }];
-    for hscale in [1.25, 0.8, 1.5, 1.0, 0.65, 2.0] {
-        for row_factor in [1.0, 0.9, 1.1, 0.8, 1.2] {
-            if hscale != 1.0 || row_factor != 1.0 {
-                v.push(Strategy { rows: true, fill: true, hscale, row_factor });
+    let t = |hscale, row_factor, drop_run| Tuning { hscale, row_factor, drop_run };
+    let mut v = vec![Strategy { rows: true, fill: true, tuning: t(1.0, 1.0, 2) }];
+    for drop_run in [2, 1, 3] {
+        for hscale in [1.0, 1.25, 0.8, 1.5, 0.65, 2.0] {
+            for row_factor in [1.0, 0.9, 1.1, 0.8, 1.2] {
+                if (hscale, row_factor, drop_run) != (1.0, 1.0, 2) {
+                    v.push(Strategy { rows: true, fill: true, tuning: t(hscale, row_factor, drop_run) });
+                }
             }
         }
     }
-    v.push(Strategy { rows: false, fill: false, hscale: 1.0, row_factor: 1.0 });
+    v.push(Strategy { rows: false, fill: false, tuning: t(1.0, 1.0, 2) });
     for hscale in [1.0, 1.6, 0.8] {
-        v.push(Strategy { rows: false, fill: true, hscale, row_factor: 1.0 });
+        v.push(Strategy { rows: false, fill: true, tuning: t(hscale, 1.0, 2) });
     }
     v
 }
@@ -303,8 +310,12 @@ pub fn pave_region(
     // triangle dual without a perfect matching.
     let mut last_err = PaveError::Internal("no strategy ran");
     let mut result: Option<Solution> = None;
-    for (si, strat) in strategies().into_iter().enumerate() {
-        let mut mesher = Mesher::new(&space, cdt.clone(), nb, size_map.clone(), area_w, strat.hscale, strat.row_factor)?;
+    let ladder_len = std::env::var("PAVE_LADDER").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(usize::MAX);
+    for (si, strat) in strategies().into_iter().enumerate().take(ladder_len) {
+        if std::env::var("PAVE_ONLY").is_ok_and(|v| v != si.to_string()) {
+            continue;
+        }
+        let mut mesher = Mesher::new(&space, cdt.clone(), nb, size_map.clone(), area_w, strat.tuning)?;
         let run = (|| {
             if strat.rows {
                 mesher.rows(&ranges)?;
@@ -325,7 +336,14 @@ pub fn pave_region(
                 result = Some((pts, quads, rounds));
                 break;
             }
-            Err(e @ (PaveError::NoPerfectMatching { .. } | PaveError::Internal(_))) => last_err = e,
+            Err(e @ (PaveError::NoPerfectMatching { .. } | PaveError::Internal(_))) => {
+                last_err = e;
+                // Work budget in triangles: small regions try the whole ladder, huge ones a
+                // few strategies (a failed attempt costs about as much as a successful one).
+                if si >= 1 && (si + 1) * mesher.cdt.len().max(1) >= ATTEMPT_BUDGET {
+                    break;
+                }
+            }
             Err(e) => return Err(e),
         }
     }

@@ -401,3 +401,233 @@ fn dump_small() {
     let l = counted_rect(1.0, 1.0, [1, 2, 1, 2]);
     let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
 }
+
+/// Deterministic xorshift for the surveys.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Polygon through `corners` with `round(len / h)` intervals per side (at least 1); one side
+/// gets an extra interval if the total is odd.
+fn rounded_polygon(corners: &[[f64; 2]], h: f64, rng: &mut Rng) -> Vec<[f64; 2]> {
+    let n = corners.len();
+    let mut counts: Vec<usize> = (0..n).map(|i| {
+        let (a, b) = (corners[i], corners[(i + 1) % n]);
+        (((b[0] - a[0]).hypot(b[1] - a[1]) / h).round() as usize).max(1)
+    }).collect();
+    if counts.iter().sum::<usize>() % 2 == 1 {
+        let k = (rng.next() % n as u64) as usize;
+        counts[k] += 1;
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = (corners[i], corners[(i + 1) % n]);
+        for s in 0..counts[i] {
+            let t = s as f64 / counts[i] as f64;
+            out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn survey_realistic_polygons() {
+    let o = PaveOptions::default();
+    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let (mut total, mut fails) = (0, 0);
+    let (mut worst_min, mut below) = (f64::INFINITY, 0);
+    let mut strategy_hist = std::collections::BTreeMap::<u32, u32>::new();
+    for case in 0..600 {
+        if std::env::var("PAVE_SHAPE").is_ok_and(|v| v != (case % 4).to_string()) {
+            let _ = (rng.unit(), rng.unit(), rng.unit());
+            continue;
+        }
+        let (w, hh) = (1.0 + 5.0 * rng.unit(), 1.0 + 5.0 * rng.unit());
+        let h = 0.15 + 0.5 * rng.unit();
+        let corners: Vec<[f64; 2]> = match case % 4 {
+            0 => vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.0, hh]],
+            1 => vec![[0.0, 0.0], [w, 0.0], [w, 0.5 * hh], [0.5 * w, 0.5 * hh], [0.5 * w, hh], [0.0, hh]],
+            2 => vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.7 * w, hh], [0.7 * w, 0.4 * hh], [0.3 * w, 0.4 * hh], [0.3 * w, hh], [0.0, hh]],
+            _ => vec![[0.0, 0.0], [w, 0.0], [0.4 * w, hh]],
+        };
+        let l = rounded_polygon(&corners, h, &mut rng);
+        if l.len() < 4 {
+            continue;
+        }
+        total += 1;
+        match pave_region(std::slice::from_ref(&l), &id_metric, None, &o) {
+            Ok(m) => {
+                let q = m.quads.iter().map(|q| sj(&m.points, q, 1.0)).fold(f64::INFINITY, f64::min);
+                worst_min = worst_min.min(q);
+                if q < 0.2 {
+                    below += 1;
+                }
+            }
+            Err(e) => {
+                fails += 1;
+                if fails < 15 {
+                    eprintln!("case {case} (h={h:.2}, nb={}): {e}", l.len());
+                    if std::env::var("PAVE_CASE").is_ok_and(|c| c == case.to_string()) {
+                        eprintln!("LOOP {l:?}");
+                    }
+                }
+            }
+        }
+        let _ = &mut strategy_hist;
+    }
+    eprintln!("{fails} failures of {total}; worst min SJ {worst_min:.3}; {below} below 0.2");
+}
+
+#[test]
+#[ignore]
+fn dump_triangle() {
+    let l: Vec<[f64; 2]> = vec![[0.0, 0.0], [0.42933127328489845, 0.0], [0.8586625465697969, 0.0], [1.2879938198546954, 0.0], [1.7173250931395938, 0.0], [2.1466563664244926, 0.0], [2.575987639709391, 0.0], [3.0053189129942894, 0.0], [3.4346501862791876, 0.0], [3.8639814595640862, 0.0], [3.4003036844163956, 0.20855420599678826], [2.9366259092687055, 0.4171084119935765], [2.4729481341210153, 0.6256626179903647], [2.0092703589733247, 0.834216823987153], [1.5455925838256346, 1.0427710299839412], [1.159194437869226, 0.7820782724879559], [0.7727962919128173, 0.5213855149919706], [0.38639814595640853, 0.2606927574959853]];
+    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+}
+
+#[test]
+fn stretch_s1_regions_with_holes() {
+    for r in [loops2d::rectangle_with_holes(), loops2d::annulus(1.0, 2.0, 32)] {
+        for h in SPACINGS {
+            let ls = loops_at(&r, h);
+            let m = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
+            let s = check(&r, &ls, &m);
+            eprintln!("{} h={h}: {} quads, min {:.3} mean {:.3}", r.name, m.quads.len(), s.min, s.mean);
+            assert!(s.min >= 0.40, "{} h={h}: min {:.3}", r.name, s.min);
+            assert!(s.mean >= 0.85, "{} h={h}: mean {:.3}", r.name, s.mean);
+        }
+        // Even rule and the loop count of the hole loops.
+        let mut ls = loops_at(&r, 0.25);
+        let (a, b) = (ls[1][0], ls[1][1]);
+        ls[1].insert(1, [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
+        let total: usize = ls.iter().map(Vec::len).sum();
+        assert_eq!(pave_region(&ls, &id_metric, None, &PaveOptions::default()).err(), Some(PaveError::OddBoundary { total }));
+    }
+}
+
+/// Boundary nodes along `a -> b` (without `b`) whose spacing grows geometrically from about
+/// `s_a` to about `s_b`.
+fn graded_segment(a: [f64; 2], b: [f64; 2], s_a: f64, s_b: f64) -> Vec<[f64; 2]> {
+    let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+    let n = if (s_a - s_b).abs() < 1e-12 { len / s_a } else { len * (s_b / s_a).ln() / (s_b - s_a) }.round().max(1.0) as usize;
+    // x_i = len * (q^i - 1) / (q^n - 1), q solved so that the first spacing is s_a.
+    let first = |q: f64| len * (q - 1.0) / (q.powi(n as i32) - 1.0);
+    let q = if n == 1 || (s_a - s_b).abs() < 1e-12 {
+        1.0
+    } else {
+        let (mut lo, mut hi) = if s_b > s_a { (1.0 + 1e-9, 4.0) } else { (0.25, 1.0 - 1e-9) };
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            // `first` decreases with q.
+            if first(mid) > s_a { lo = mid } else { hi = mid }
+        }
+        0.5 * (lo + hi)
+    };
+    (0..n)
+        .map(|i| {
+            let x = if q == 1.0 { i as f64 / n as f64 } else { (q.powi(i as i32) - 1.0) / (q.powi(n as i32) - 1.0) };
+            [a[0] + x * (b[0] - a[0]), a[1] + x * (b[1] - a[1])]
+        })
+        .collect()
+}
+
+#[test]
+fn stretch_s2_graded_boundary() {
+    // [0, 3] x [0, 1.5]: spacing 0.05 on the left growing to 0.2 on the right.
+    let (w, h) = (3.0, 1.5);
+    let mut l: Vec<[f64; 2]> = Vec::new();
+    l.extend(graded_segment([0.0, 0.0], [w, 0.0], 0.05, 0.2));
+    l.extend(graded_segment([w, 0.0], [w, h], 0.2, 0.2));
+    l.extend(graded_segment([w, h], [0.0, h], 0.2, 0.05));
+    l.extend(graded_segment([0.0, h], [0.0, 0.0], 0.05, 0.05));
+    if l.len() % 2 == 1 {
+        // One more node on the short right edge.
+        let k = l.iter().position(|p| p[0] == w && p[1] == 0.0).unwrap_or(0);
+        let (a, b) = (l[k], l[k + 1]);
+        l.insert(k + 1, [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
+    }
+    let m = pave_region(&[l.clone()], &id_metric, None, &PaveOptions::default()).expect("pave");
+    let region = Region2 { name: "graded", outer: vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)], holes: vec![], area: w * h, outer_types: None };
+    let s = check(&region, &[l], &m);
+    let area = |q: &[u32; 4]| {
+        let p: [[f64; 2]; 4] = core::array::from_fn(|k| m.points[q[k] as usize]);
+        0.5 * ((p[2][0] - p[0][0]) * (p[3][1] - p[1][1]) - (p[2][1] - p[0][1]) * (p[3][0] - p[1][0])).abs()
+    };
+    let centroid_x = |q: &[u32; 4]| q.iter().map(|v| m.points[*v as usize][0]).sum::<f64>() / 4.0;
+    let (mut left, mut right) = ((0.0, 0usize), (0.0, 0usize));
+    for q in &m.quads {
+        let (cx, a) = (centroid_x(q), area(q));
+        if cx < 1.0 {
+            left = (left.0 + a, left.1 + 1);
+        } else if cx > 2.0 {
+            right = (right.0 + a, right.1 + 1);
+        }
+    }
+    let ratio = (left.0 / left.1 as f64) / (right.0 / right.1 as f64);
+    eprintln!("graded: {} quads, min {:.3} mean {:.3}, mean area ratio left/right {ratio:.4}", m.quads.len(), s.min, s.mean);
+    assert!(ratio <= 1.0 / 3.0, "ratio {ratio}");
+}
+
+#[test]
+#[ignore]
+fn survey_isoceles_triangles() {
+    let o = PaveOptions::default();
+    for apex in [20.0f64, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 120.0, 140.0] {
+        let mut row = String::new();
+        for n in [4usize, 6, 8, 10, 12, 16] {
+            // Equal legs of length 1 from the apex; the base gets about the same spacing.
+            let a = apex.to_radians();
+            let (p0, p1, p2) = ([0.0, 0.0], [1.0, 0.0], [a.cos(), a.sin()]);
+            let base = (p2[0] - p1[0]).hypot(p2[1] - p1[1]);
+            let nb = ((base * n as f64).round() as usize).max(1);
+            let mut counts = [n, nb, n];
+            if counts.iter().sum::<usize>() % 2 == 1 {
+                counts[1] += 1;
+            }
+            let corners = [p0, p1, p2];
+            let mut l = Vec::new();
+            for i in 0..3 {
+                let (u, v) = (corners[i], corners[(i + 1) % 3]);
+                for s in 0..counts[i] {
+                    let t = s as f64 / counts[i] as f64;
+                    l.push([u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])]);
+                }
+            }
+            match pave_region(&[l], &id_metric, None, &o) {
+                Ok(m) => {
+                    let q = m.quads.iter().map(|q| sj(&m.points, q, 1.0)).fold(f64::INFINITY, f64::min);
+                    row += &format!(" {:>5.2}", q);
+                }
+                Err(_) => row += "    --",
+            }
+        }
+        eprintln!("apex {apex:>5.0}:{row}");
+    }
+}
+
+#[test]
+#[ignore]
+fn dump_equilateral() {
+    let a = 60.0f64.to_radians();
+    let corners = [[0.0, 0.0], [1.0, 0.0], [a.cos(), a.sin()]];
+    let n = 8;
+    let mut l = Vec::new();
+    for i in 0..3 {
+        let (u, v) = (corners[i], corners[(i + 1) % 3]);
+        for s in 0..n {
+            let t = s as f64 / n as f64;
+            l.push([u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])]);
+        }
+    }
+    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+}
