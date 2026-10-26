@@ -11,6 +11,20 @@ license.workspace = true
 bench = false
 
 [dependencies]
+sm-core = { path = "../sm-core" }
+sm-mesh-api = { path = "../sm-mesh-api" }
+thiserror = "2"
+rayon = "1"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+rayon = "1"
+
+[[bench]]
+name = "exodus"
+harness = false
 
 [lints]
 workspace = true
