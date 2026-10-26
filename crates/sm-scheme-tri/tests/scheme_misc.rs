@@ -36,7 +36,7 @@ fn params_defaults_roundtrip_and_validation() {
 
 #[test]
 fn bad_parameters_are_not_applicable_and_never_panic() {
-    use sm_scheme_api::{MeshInput, MeshIntent, PlanCtx, Scheme, WholeFaces};
+    use sm_scheme_api::{MeshInput, MeshIntent, PlanCtx, WholeFaces};
     let fx = planar_face(&loops2d::square(), 0.0).unwrap();
     let model = sm_model_api::Model::new();
     let sel = [fx.face];
@@ -109,8 +109,8 @@ fn a_sphere_too_coarse_for_pole_rings_is_unsupported_not_a_panic() {
     let mut c = CellComplex::new();
     let ids = with_op(&mut c, OpId(1), |t| sphere(t, 1.0)).unwrap();
     let err = generate_only(&registry(), &c, &[ids.face], &[(ids.edges[1], 2)], serde_json::json!({}))
-        .err()
-        .expect("two seam intervals leave no room for the rings");
+        .map(|_| ())
+        .expect_err("two seam intervals leave no room for the rings");
     match err {
         SchemeError::Generate(gf) => assert_eq!(gf.kind, FailureKind::Unsupported, "{}", gf.reason),
         other => panic!("{other:?}"),
@@ -150,8 +150,8 @@ fn point_budget_is_a_quality_failure() {
     let fx = planar_face(&loops2d::square(), 0.0).unwrap();
     let counts = counts_for(&fx, 0.1);
     let err = generate_only(&registry(), &fx.complex, &[fx.face], &counts, serde_json::json!({ "max_points": 60 }))
-        .err()
-        .expect("budget");
+        .map(|_| ())
+        .expect_err("budget");
     match err {
         SchemeError::Generate(gf) => {
             assert_eq!(gf.kind, FailureKind::Quality);
