@@ -10,8 +10,37 @@ license.workspace = true
 [lib]
 bench = false
 
+[features]
+default = []
+# Test hook (`SweepParams::bend`) that forces an inverted layer so the driver's quality
+# fallback can be exercised. Off in production builds; enabled for this crate's tests.
+test-hooks = []
+
 [dependencies]
+sm-core = { path = "../sm-core", features = ["serde"] }
+sm-math = { path = "../sm-math" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-mesh-api = { path = "../sm-mesh-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+sm-scheme-sweep = { path = ".", features = ["test-hooks"] }
+sm-testkit = { path = "../sm-testkit" }
+sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
+sm-mesh = { path = "../sm-mesh" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["serde"] }
+sm-model-api = { path = "../sm-model-api" }
+sm-quality = { path = "../sm-quality" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "sweep"
+harness = false
 
 [lints]
 workspace = true
