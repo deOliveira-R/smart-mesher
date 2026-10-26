@@ -1514,6 +1514,24 @@ dependencies = [
 [[package]]
 name = "sm-rt"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-math",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-op-api",
+ "sm-rt-api",
+ "sm-testkit",
+ "sm-topo-api",
+ "smallvec",
+]
 
 [[package]]
 name = "sm-rt-api"
