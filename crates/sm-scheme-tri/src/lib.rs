@@ -11,15 +11,16 @@
 pub mod cdt;
 pub mod chart;
 pub mod error;
+pub mod front;
 pub mod scheme;
 mod util;
 
 pub use error::TriError;
-pub use scheme::{FaceTriangulation, TriParams, TriScheme, triangulate_chart};
+pub use scheme::{FaceTriangulation, TriParams, TriScheme, advance_chart, triangulate_chart};
 
 use sm_scheme_api::SchemeRegistry;
 
-/// Register `trimesh` and `tridelaunay` (surface schemes, `Caps::TRI`).
+/// Register `trimesh`, `tridelaunay` and `triadvance` (surface schemes, `Caps::TRI`).
 ///
 /// Never registers `tri` (the stub's name), a fallback chain or an auto list: those stay
 /// unchanged in W3a (decision 12).
@@ -29,5 +30,6 @@ use sm_scheme_api::SchemeRegistry;
 pub fn register(registry: &mut SchemeRegistry) -> sm_scheme_api::Result<()> {
     registry.register(Box::new(TriScheme::trimesh()))?;
     registry.register(Box::new(TriScheme::tridelaunay()))?;
+    registry.register(Box::new(TriScheme::triadvance()))?;
     Ok(())
 }

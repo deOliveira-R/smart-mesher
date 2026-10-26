@@ -90,6 +90,9 @@ fn driver_hashes(threads: usize) -> Vec<(u64, u64, u64)> {
         let counts = counts_for(&fx, 0.5);
         let o = mesh_faces(&fx.complex, &[fx.face], &counts, "tridelaunay", exec.as_ref()).unwrap();
         out.push(hashes(&o.finished.mesh));
+        // The advancing front.
+        let o = mesh_faces(&fx.complex, &[fx.face], &counts, "triadvance", exec.as_ref()).unwrap();
+        out.push(hashes(&o.finished.mesh));
     }
     out
 }
@@ -105,9 +108,32 @@ fn hashes(m: &sm_mesh_api::reference::ReferenceMesh) -> (u64, u64, u64) {
 }
 
 #[test]
+fn s2_front_kernel_is_deterministic() {
+    use sm_scheme_tri::cdt::{Pslg, Segment, SegmentKind};
+    use sm_scheme_tri::front::{AdvanceOptions, advance};
+    let mut p = Pslg::default();
+    let n = 16;
+    for k in 0..n {
+        let a = std::f64::consts::TAU * k as f64 / n as f64;
+        p.points.push([1.5 + a.cos(), 1.5 + a.sin()]);
+    }
+    for i in 0..n as u32 {
+        p.segments.push(Segment { a: i, b: (i + 1) % n as u32, kind: SegmentKind::Boundary });
+    }
+    let h = 2.0 * (std::f64::consts::PI / n as f64).sin();
+    check(2, 4, |_| {
+        let c = advance(&p, &Flat(h), &AdvanceOptions::default()).unwrap();
+        let coords: Vec<f64> = c.points().iter().flat_map(|q| [q[0], q[1]]).collect();
+        let tris: Vec<f64> = c.triangles().iter().flatten().map(|&i| f64::from(i)).collect();
+        hash_f64_bits(&coords) ^ hash_f64_bits(&tris).rotate_left(11)
+    })
+    .expect("front deterministic");
+}
+
+#[test]
 fn acc9_driver_sequential_vs_scoped_threads_is_bit_identical() {
     let base = check(2, 4, driver_hashes).expect("deterministic");
-    assert_eq!(base.len(), 4);
+    assert_eq!(base.len(), 5);
     // And the executor flavours agree with each other explicitly.
     assert_eq!(driver_hashes(1), driver_hashes(4));
 }

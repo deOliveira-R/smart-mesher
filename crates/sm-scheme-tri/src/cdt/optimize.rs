@@ -108,8 +108,9 @@ impl Cdt {
         moved
     }
 
-    /// Angle at `apex` between the edges to `p` and `q`, in 3-D (or the metric).
-    fn angle_at(&self, g: &dyn Geometry2, apex: u32, p: u32, q: u32) -> f64 {
+    /// `(sin, cos)` of the angle at `apex` between the edges to `p` and `q`, scaled by the
+    /// product of the edge lengths, in 3-D (or the metric): `(|e1 x e2|, e1 . e2)`.
+    fn corner(&self, g: &dyn Geometry2, apex: u32, p: u32, q: u32) -> (f64, f64) {
         let (a, b, c) = (
             self.pts3[apex as usize],
             self.pts3[p as usize],
@@ -134,7 +135,17 @@ impl Cdt {
             e1[0] * e2[1] - e1[1] * e2[0],
         ];
         let dot = e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2];
-        (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt().atan2(dot)
+        ((cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt(), dot)
+    }
+
+    /// True if the angles opposite the edge `u-v` at `x` and `y` sum to more than pi (the
+    /// 3-D Delaunay flip criterion). `sin(a + b) = (s1 c2 + c1 s2) / (L1 L2) < 0`, so no
+    /// trigonometry is needed; the relative tolerance keeps ties from flipping back and forth.
+    fn angle_sum_exceeds_pi(&self, g: &dyn Geometry2, x: u32, y: u32, u: u32, v: u32) -> bool {
+        let (s1, c1) = self.corner(g, x, u, v);
+        let (s2, c2) = self.corner(g, y, u, v);
+        let scale = (s1.hypot(c1)) * (s2.hypot(c2));
+        s1 * c2 + c1 * s2 < -1e-12 * scale
     }
 
     fn should_flip(&self, g: &dyn Geometry2, t: u32, i: usize) -> bool {
@@ -159,7 +170,7 @@ impl Cdt {
         if g.is_isometric() {
             incircle(self.p(tv[0]), self.p(tv[1]), self.p(tv[2]), self.p(y)) == Sign::Positive
         } else {
-            self.angle_at(g, x, u, v) + self.angle_at(g, y, u, v) > core::f64::consts::PI + 1e-12
+            self.angle_sum_exceeds_pi(g, x, y, u, v)
         }
     }
 

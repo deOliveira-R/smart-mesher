@@ -14,6 +14,9 @@ use sm_scheme_api::{
 use sm_topo_api::TopologyViewExt;
 use std::collections::BTreeMap;
 
+/// Provisional score of `triadvance` (ruling S1: 20, below `trimesh`).
+pub const FRONT_SCORE: u32 = 20;
+
 /// Provisional automatic-selection score of the Delaunay schemes (decision 12: map 100,
 /// submap 80, pave 40, trimesh 30). Only W3b auto selection reads it.
 pub const SCORE: u32 = 30;
@@ -98,17 +101,34 @@ impl TriParams {
 #[derive(Clone, Copy, Debug)]
 pub struct TriScheme {
     name: &'static str,
+    method: Method,
+    score: u32,
+}
+
+/// The algorithm behind a [`TriScheme`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Method {
+    /// Constrained Delaunay plus Ruppert/Chew refinement.
+    Delaunay,
+    /// Advancing front plus smoothing and flips.
+    Front,
 }
 
 impl TriScheme {
     /// The `trimesh` scheme (the default triangle scheme).
     pub const fn trimesh() -> Self {
-        Self { name: "trimesh" }
+        Self { name: "trimesh", method: Method::Delaunay, score: SCORE }
     }
 
     /// The `tridelaunay` scheme (same algorithm under Cubit's name).
     pub const fn tridelaunay() -> Self {
-        Self { name: "tridelaunay" }
+        Self { name: "tridelaunay", method: Method::Delaunay, score: SCORE }
+    }
+
+    /// The `triadvance` scheme: advancing front in the chart, then smoothing and flips. No angle
+    /// guarantee beyond the gate; meant as the fallback of `trimesh` (provisional score 20).
+    pub const fn triadvance() -> Self {
+        Self { name: "triadvance", method: Method::Front, score: FRONT_SCORE }
     }
 }
 
@@ -135,7 +155,10 @@ impl Scheme for TriScheme {
         if cx.input.topo.loops(f).count() == 0 {
             return Applicability::no("face has no boundary loop");
         }
-        Applicability::yes(SCORE, "constrained Delaunay with refinement")
+        Applicability::yes(self.score, match self.method {
+            Method::Delaunay => "constrained Delaunay with refinement",
+            Method::Front => "advancing front",
+        })
     }
 
     fn requirements(
@@ -163,7 +186,7 @@ impl Scheme for TriScheme {
         let prm = TriParams::from_params(params).map_err(|e| {
             GenerateFailure::new(target, self.name, FailureKind::Constraint, e)
         })?;
-        triangulate(cx, face, &prm, target, self.name)
+        triangulate(cx, face, &prm, target, self.name, self.method)
     }
 }
 
@@ -307,8 +330,46 @@ pub fn triangulate_chart<'a>(
     face: EntityId,
     prm: &TriParams,
 ) -> Result<FaceTriangulation<'a>, TriError> {
+    triangulate_chart_with(cx, face, prm, Method::Delaunay)
+}
+
+/// [`triangulate_chart`] with the advancing front instead of Delaunay refinement.
+///
+/// # Errors
+/// Any [`TriError`], in particular [`TriError::Stuck`] when the front cannot be closed.
+pub fn advance_chart<'a>(
+    cx: &'a GenCtx<'_>,
+    face: EntityId,
+    prm: &TriParams,
+) -> Result<FaceTriangulation<'a>, TriError> {
+    triangulate_chart_with(cx, face, prm, Method::Front)
+}
+
+fn triangulate_chart_with<'a>(
+    cx: &'a GenCtx<'_>,
+    face: EntityId,
+    prm: &TriParams,
+    method: Method,
+) -> Result<FaceTriangulation<'a>, TriError> {
     let (chart, loops) = FaceChart::lift(cx, face)?;
     let asm = assemble(cx, face, &chart, &loops)?;
+    if method == Method::Front {
+        let aopts = crate::front::AdvanceOptions {
+            size_factor: prm.size_factor,
+            optimize: prm.optimize,
+            max_points: prm.max_points as usize,
+            ..Default::default()
+        };
+        let cdt = crate::front::advance(&asm.pslg, &chart, &aopts)?;
+        return Ok(FaceTriangulation {
+            chart,
+            loops,
+            cdt,
+            keys: asm.keys,
+            new: asm.new,
+            report: crate::cdt::RefineReport::default(),
+        });
+    }
     let mut cdt = Cdt::new(&asm.pslg).map_err(|e| {
         // Pole rings that collide or cross mean the boundary is too coarse for pole fans.
         if loops.iter().any(|l| !l.fans.is_empty())
@@ -349,14 +410,15 @@ pub fn triangulate_chart<'a>(
 }
 
 /// Mesh `face`. Shared by `trimesh` and `tridelaunay`.
-pub(crate) fn triangulate(
+fn triangulate(
     cx: &GenCtx<'_>,
     face: EntityId,
     prm: &TriParams,
     target: Target,
     name: &str,
+    method: Method,
 ) -> Result<Patch, GenerateFailure> {
-    let mut ft = triangulate_chart(cx, face, prm).map_err(|e| fail_of(target, name, &e))?;
+    let mut ft = triangulate_chart_with(cx, face, prm, method).map_err(|e| fail_of(target, name, &e))?;
     ft.into_patch(cx, face, prm, target, name)
 }
 

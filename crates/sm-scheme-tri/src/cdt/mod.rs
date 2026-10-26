@@ -21,10 +21,11 @@
 //! and every queue and heap tie-break is an integer. The result therefore depends only on the
 //! point coordinates, not on their input order, and is bit-identical on every platform.
 
+mod assemble;
 mod build;
 mod geometry;
 mod optimize;
-mod refine;
+pub(crate) mod refine;
 mod segments;
 
 pub use geometry::{Geometry2, OptimizeOptions, RefineOptions, RefineReport};
@@ -106,6 +107,11 @@ impl Cdt {
     /// All points: the input points first, then the Steiner points in insertion order.
     pub fn points(&self) -> &[[f64; 2]] {
         &self.pts
+    }
+
+    /// Treat the first `n` points as input (fixed in [`Cdt::optimize`]); the rest are free.
+    pub(crate) fn set_input_count(&mut self, n: usize) {
+        self.n_input = n;
     }
 
     /// Number of input points (ids `0..input_count()` are the PSLG points).

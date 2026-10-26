@@ -102,7 +102,7 @@ fn registration_never_registers_tri_chains_or_auto_lists() {
     let mut r = SchemeRegistry::new();
     sm_scheme_tri::register(&mut r).unwrap();
     let names: Vec<&str> = r.of_dim(SchemeDim::Surface).map(|s| s.name()).collect();
-    assert_eq!(names, ["tridelaunay", "trimesh"]);
+    assert_eq!(names, ["triadvance", "tridelaunay", "trimesh"]);
     assert!(r.auto(SchemeDim::Surface).is_empty());
     assert!(r.fallbacks(SchemeDim::Surface, "trimesh").is_empty());
     assert!(r.get(SchemeDim::Surface, "tri").is_none());
