@@ -1451,7 +1451,21 @@ dependencies = [
 name = "sm-poly"
 version = "0.0.0"
 dependencies = [
+ "criterion 0.5.1",
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-layer-api",
+ "sm-mesh",
+ "sm-mesh-api",
  "sm-op-api",
+ "sm-testkit",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]
