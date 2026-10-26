@@ -9,6 +9,8 @@
 //! * [`write_smrt`], [`read_smrt`], [`load_image`] handle the `.smrt` sidecar.
 //! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`.
 
+#![forbid(unsafe_code)]
+
 mod build;
 mod builder;
 mod bvh;

@@ -1,7 +1,7 @@
 # W3-RT report: `sm-rt`
 
 Branch: `claude/w3-sm-rt-08sugi` (the task text says `claude/w3-sm-rt`; the session harness fixed the
-branch name, so everything was pushed there). Last commit subject: `w3 sm-rt: done ...`.
+branch name, so everything was pushed there). Last commit subject: `w3 sm-rt: done`.
 
 ## Summary
 
@@ -19,7 +19,7 @@ branch name, so everything was pushed there). Last commit subject: `w3 sm-rt: do
 * `examples/trace_rays.rs` (smfacets/smrays bench side) and `examples/bench_rt.rs` (acceptance 14 numbers).
 * `DESIGN.md` (positioning, layout, rules, tolerance policy, numbers).
 
-Gates run on the final tree: `cargo build --workspace`; `cargo test -p sm-rt --all-features`;
+Release-mode run of the whole suite (`cargo test --release -p sm-rt`) and the debug suite with `RAYON_NUM_THREADS=1` also passed on the final tree. Gates run on the final tree: `cargo build --workspace`; `cargo test -p sm-rt --all-features`;
 `RAYON_NUM_THREADS=1 cargo test -p sm-rt --all-features`; `cargo clippy -p sm-rt --all-targets
 --all-features -- -D warnings`; `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-rt --no-deps`; the
 `#[ignore]`d 1e7-history audit in release.
@@ -40,7 +40,7 @@ runs the full 1e6 and all the numbers below are from the release run.
 | 7 | `acc07_*` (facets.rs) | tetrahedron, icosphere(3), nested pair build; removing one triangle gives exactly one `facet.open_edge` with `gap` = longest edge within 1e-12 and `location` on the triangle; flipped triangle gives `facet.inconsistent_orientation`; hostile soups never panic; `locate` agrees with an independent winding number on 1e5 points (release; 2e4 debug), nested shells right |
 | 8 | `acc08_*` (locate.rs) | 1e5 random points in hex_block(10) and mixed_transition equal brute force (with no hint, a wrong hint, the right hint); points at 1e-3/1e-9/0 from faces, edges, vertices are exact or flagged `on_face`; directionless locate on a face identical across calls, hints and 1/N threads |
 | 9 | `acc09_lost_particle_audit_debug_size` (2e5 histories x 60 steps), `acc09_lost_particle_audit_full` (`#[ignore]`, 1e7 histories x 100 steps), `acc09_reflex_edge_stress` | full run (release): 1e7 histories, 1e9 steps, 0 lost, 0 sense mismatch (no `Lost` at all) under `RecoveryPolicy::Fail`; with `Nudge{3}` (2e5 histories x 100 steps) 0 lost and `nudge_count() == 0`; models: hex_block(6) with White, nonconvex_poly, mixed_transition, nested icospheres (Reflective), hex_block with mirror decks. The first full run found the bug listed below; the numbers here are from the rerun on the final logic. Debug run: 2e5 histories x 60 steps = 1.2e7 steps, 0 lost |
-| 10 | `acc10_*` (cache.rs) | round trip via `write_smrt`/`read_smrt`/`load`: equal `structure_hash`, equal `TrackerInfo`, bit-identical 1e5-ray bundle; one flipped byte in any section is `CacheCorrupt`; ~800 hash-consistent tampers never panic and are `CacheCorrupt` or a no-op; changed coordinate/boundary/option are `CacheStale` with the right reason; key unchanged for 1 and 3 threads |
+| 10 | `acc10_*` (cache.rs) | round trip via `write_smrt`/`read_smrt`/`load`: equal `structure_hash`, equal `TrackerInfo`, bit-identical 1e5-ray bundle; one flipped byte in any section is `CacheCorrupt`; more than 500 hash-consistent single-byte tampers never panic and are `CacheCorrupt` or a no-op; changed coordinate/boundary/option are `CacheStale` with the right reason; key unchanged for 1 and 3 threads |
 | 11 | `acc11_build_cache_and_bundle_are_deterministic` | `sm_testkit::determinism::check` over cache bytes and bundle hashes (mesh and facets), 1 vs 4 threads, repeats and concurrent runs |
 | 12 | `acc12_*` (errors.rs) | `Unsupported` (Brep, World), `Build`, `BadDirection`, `NonFinite`, `UnknownId`, `CacheStale`, `CacheCorrupt`, plus `InvalidInput` and `BadAlbedo` through the provided methods |
 | 13 | `acc13_warm_scratch_means_zero_allocations` (alloc.rs) | 0 allocations in `step`, `locate`, `closest`, `distance_to_boundary` after warm-up on a hex mesh (3668 events), the non-convex mesh (379) and nested facet shells (1292) |
@@ -84,9 +84,10 @@ Other tests: `scope6_bundle_override_is_bit_identical_to_the_default_sequential_
     leaving direction") are in DESIGN.md.
 14. **`crc32fast` not used** (the contract's `hash64` covers integrity); extra dependencies: `smallvec`
     (the contract's `TrackState` type), `schemars`, `serde`, `serde_json` (plugin queries; allow-list).
-15. **Test allocator**: `tests/alloc.rs` contains the counting `GlobalAlloc` (the only `unsafe`, each method
+15. **`Cargo.lock`** gained the entries of sm-rt's new dependencies (cargo wrote it; no other manifest was touched). `#![forbid(unsafe_code)]` is set in the library.
+16. **Test allocator**: `tests/alloc.rs` contains the counting `GlobalAlloc` (the only `unsafe`, each method
     with a `// SAFETY:` comment, same pattern as `sm-rt-api/tests/alloc.rs`); the library has no `unsafe`.
-16. **Stretch** items S2-S5 and `rt.fire` were not done. S2 (`Brep` with `SurfaceRefine::None`) would
+17. **Stretch** items S2-S5 and `rt.fire` were not done. S2 (`Brep` with `SurfaceRefine::None`) would
     contradict the mandatory "`Brep` is `Unsupported`" test; it is a few lines in `builder.rs` if wanted.
 
 ## Bugs found by the audits (fixed, now covered by tests)
