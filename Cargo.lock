@@ -1460,6 +1460,20 @@ name = "sm-rt"
 version = "0.0.0"
 
 [[package]]
+name = "sm-rt-api"
+version = "0.0.0"
+dependencies = [
+ "rayon",
+ "sm-core",
+ "sm-geom-api",
+ "sm-mesh-api",
+ "sm-model-api",
+ "sm-topo-api",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "sm-rt-capi"
 version = "0.0.0"
 
