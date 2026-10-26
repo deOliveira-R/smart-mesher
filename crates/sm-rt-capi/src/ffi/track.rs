@@ -104,7 +104,9 @@ pub unsafe extern "C" fn smrt_set_state(ctx: *mut SmrtCtx, state: *const SmrtSta
         }
         let mut st = TrackState::new(point(s.pos), vector(s.dir));
         st.cell = cell_in(s.cell)?;
-        if st.cell != CellId::NONE && st.cell.get() >= c.tracker.cell_count() {
+        // NONE is "outside"; COMPLEMENT is valid only when the model has an implicit complement.
+        let special = st.cell == CellId::NONE || (st.cell == CellId::COMPLEMENT && c.complement.is_some());
+        if !special && st.cell.get() >= c.tracker.cell_count() {
             return Err(Fail::Rt(sm_rt_api::RtError::UnknownId { kind: "cell", id: st.cell.get() as u32 }));
         }
         st.region = region_in(s.region, c.complement)?;

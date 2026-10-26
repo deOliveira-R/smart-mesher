@@ -52,13 +52,26 @@ x86_64 machine, not arm64.** Stretch S1 (wire `smrt_open` to sm-rt), S3 (Embree)
   test stays as is). `start_cell` in `SmrtRays` is still accepted and ignored (the contract's
   `trace_bundle` has no hint); stays on the W3b list.
 
+## What changed in review round 1
+
+* **Fixed:** `smrt_set_state` rejected `SMRT_COMPLEMENT` as a cell (`CellId::COMPLEMENT` failed the
+  `cell_count()` bound), breaking the `smrt_get_state` -> `smrt_set_state` round trip for trackers with an
+  implicit complement. The bound check now exempts `CellId::COMPLEMENT` when the tracker has an implicit
+  complement. Test added in `tests/abi.rs`.
+* Report: Known gaps and Measured values updated (cross-platform tests, arm64 C1 file kept apart).
+* Declined: stricter SAFETY test; it already checks every `unsafe {` block in `src/ffi` for a SAFETY comment
+  within 4 lines, and the reviewer verified all blocks by script.
+
 Definition of done run here: `cargo build --workspace`; `cargo test -p sm-rt-capi --all-features`;
 `RAYON_NUM_THREADS=1 cargo test -p sm-rt-capi --all-features`; clippy; rustdoc: all pass. The
 "cold replay from root" item does not apply: the crate registers no ops.
 
 ## Measured values
 
-All on Intel Xeon @ 2.80 GHz, 4 vCPU, x86_64, 2026-10-26. The VM is noisy; spreads of 10 to 30 % between
+All numbers in this section are from the Intel Xeon @ 2.80 GHz, 4 vCPU, x86_64 machine, 2026-10-26. The one
+arm64 file is separate: `bench/results/C1-20261026T130138Z-18917.json` (macOS arm64 Docker VM, linux-aarch64
+image): DAGMC C1 median 139.6k rays/s (1 thread), 227.7k rays/s (4 threads), 245 988 crossings, 0 lost. Do not
+compare it with the x86_64 numbers. The VM is noisy; spreads of 10 to 30 % between
 min and max repetitions are normal here.
 
 * **DAGMC (conda-forge dagmc 3.2.4 OBB tree + moab 5.5.1), 200 000 rays, 3 warm-up + 7 reps, median [min, max] rays/s:**
@@ -137,9 +150,8 @@ min and max repetitions are normal here.
 * The `step` overhead numbers are noisy (shared VM); a quiet machine should re-run `run_bench.sh`.
 * `smrt_set_state` cannot set a hierarchy deeper than 8 levels; `smrt_get_state` reports the true depth.
 * After a caught panic the context's particle state is unspecified; re-initialise it.
-* The Fortran module and header were compiled only with gfortran 13 / gcc 13 on x86_64 Linux. The tests locate the
-  cdylib at `target/<profile>/deps/libsm_rt_capi.so` and derive the target triple from `ARCH` + `unknown-linux-gnu`,
-  so the C/Fortran tests are Linux-only.
+* The Fortran module, header, and C/C++ tests build and pass with gfortran/cc on Linux x86_64 and macOS arm64
+  (the tests find the cdylib via `DLL_PREFIX`/`DLL_SUFFIX` and use the host triple). Windows is untested.
 
 ## api_change_requests
 

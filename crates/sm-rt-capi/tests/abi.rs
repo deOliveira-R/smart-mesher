@@ -299,6 +299,11 @@ fn locate_closest_state_and_normals() {
         far.cell = 123_456;
         assert_eq!(smrt_set_state(c, &far), SMRT_ERR_UNKNOWN_ID);
         assert_eq!(state(c), saved);
+        // The implicit-complement cell (what `smrt_get_state` writes there) round-trips.
+        let mut comp = saved;
+        comp.cell = SMRT_COMPLEMENT;
+        assert_eq!(smrt_set_state(c, &comp), 0);
+        assert_eq!(state(c).cell, SMRT_COMPLEMENT);
     }
 }
 
