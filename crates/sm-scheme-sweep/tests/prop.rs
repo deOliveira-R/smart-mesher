@@ -10,7 +10,7 @@ use sm_scheme_api::{Firm, Firmness, IntervalRequest, MeshIntent, SchemeChoice, S
 use sm_testkit::topo::twisted_prism;
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+    #![proptest_config(sm_testkit::strategies::config(48))]
 
     #[test]
     fn twisted_prism_volume_and_jacobians(

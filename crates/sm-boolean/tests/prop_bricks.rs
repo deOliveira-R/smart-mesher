@@ -41,7 +41,7 @@ fn arb_brick() -> impl Strategy<Value = [i32; 6]> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
+    #![proptest_config(sm_testkit::strategies::config(300))]
 
     #[test]
     fn inclusion_exclusion_and_symmetry(a in arb_brick(), b in arb_brick()) {

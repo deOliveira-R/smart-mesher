@@ -488,7 +488,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(sm_testkit::strategies::config(64))]
 
         #[test]
         fn random_star_polygons(n in 12usize..48, jit in prop::collection::vec(0.0f64..1.0, 48), rad in prop::collection::vec(1.0f64..10.0, 48)) {
