@@ -250,7 +250,7 @@ fn acceptance_8_a_loop_with_sum_below_four_is_infeasible() {
 
 type Hashes = (u64, u64);
 
-fn hashes(out: &sm_scheme_api::Meshed<sm_mesh::Mesh>) -> Hashes {
+fn hashes(out: &sm_scheme_api::Meshed<sm_mesh_api::reference::ReferenceMesh>) -> Hashes {
     (sm_mesh_api::topology_hash(&out.finished.mesh), sm_mesh_api::geometry_hash(&out.finished.mesh))
 }
 
@@ -270,4 +270,91 @@ fn acceptance_10_executors_give_bit_identical_meshes() {
         assert_eq!(hashes(&seq), hashes(&par), "{face}: Sequential vs ScopedThreads(4)");
         assert_eq!(hashes(&seq), hashes(&again), "{face}: two runs");
     }
+}
+
+// ---------------------------------------------------------------------------- stretch S1
+
+#[test]
+fn stretch_s1_rectangle_with_two_holes_meshes_through_the_driver() {
+    let fx = sm_testkit::topo::planar_face(&sm_testkit::loops2d::rectangle_with_holes(), 2.0).expect("planar face");
+    assert_eq!((fx.loop_count(), fx.euler), (3, -1));
+    let model = sm_model_api::Model::new();
+    // Spacing 0.5 on every edge.
+    let pairs: Vec<(EntityId, u32)> = fx.edges.iter().flatten().map(|e| (*e, (edge_len(&fx.complex, *e) / 0.5).round() as u32)).collect();
+    let out = mesh_faces(&fx.complex, &model, &[fx.face], &hard(&pairs), &Sequential).expect("mesh");
+    assert_eq!(out.plan.target(Target::Surface(fx.face)).map(|t| t.scheme.as_str()), Some("pave"));
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    all_quads(m);
+    assert!((area(m) - 50.0).abs() < 1e-12, "area {}", area(m));
+    // Euler characteristic of the meshed face: 1 - 2 holes.
+    assert_eq!(m.vertex_count() as i64 - m.face_count() as i64 + m.cell_count() as i64, -1);
+    cells_follow_face_normal(m, &fx.complex, fx.face);
+    let (min, mean) = scaled_jacobian(m);
+    eprintln!("rectangle with holes: {} quads, scaled Jacobian min {min:.3} mean {mean:.3}", m.cell_count());
+    assert!(min >= 0.40 && mean >= 0.85, "min {min} mean {mean}");
+}
+
+#[test]
+fn stretch_s1_annulus_face_with_two_circle_edges() {
+    let fx = sm_testkit::topo::annulus_face(1.0, 2.0).expect("annulus");
+    assert_eq!((fx.loop_count(), fx.euler), (2, 0));
+    let model = sm_model_api::Model::new();
+    let (outer, inner) = (fx.edges[0][0], fx.edges[1][0]);
+    let intent = hard(&[(outer, 64), (inner, 32)]);
+    let out = mesh_faces(&fx.complex, &model, &[fx.face], &intent, &Sequential).expect("mesh");
+    assert_eq!(out.plan.target(Target::Surface(fx.face)).map(|t| t.scheme.as_str()), Some("pave"));
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    all_quads(m);
+    // The mesh is the polygonal annulus (64-gon minus 32-gon), which is what the quads tile;
+    // it is within the chord error of pi (4 - 1).
+    let want = ngon_area(64, 2.0) - ngon_area(32, 1.0);
+    assert!((area(m) - want).abs() <= 1e-12 * want, "area {} vs {want}", area(m));
+    assert!((area(m) - core::f64::consts::PI * 3.0).abs() < 0.03 * core::f64::consts::PI * 3.0);
+    assert_eq!(m.vertex_count() as i64 - m.face_count() as i64 + m.cell_count() as i64, 0);
+    cells_follow_face_normal(m, &fx.complex, fx.face);
+    let (min, mean) = scaled_jacobian(m);
+    eprintln!("annulus face: {} quads, scaled Jacobian min {min:.3} mean {mean:.3}", m.cell_count());
+    assert!(min >= 0.40 && mean >= 0.85, "min {min} mean {mean}");
+}
+
+#[test]
+fn a_size_field_steers_the_interior_through_generate() {
+    use sm_mesh_api::SerialAlloc;
+    let (topo, ids, model) = brick_setup([4.0, 3.0, 1.0]);
+    let face = ids.faces[5];
+    let intent = brick_face_counts(&topo, face, 8, 6);
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let mut counts = Vec::new();
+    for size in [0.25, 0.5, 1.0] {
+        let field = sm_scheme_api::ConstantSize(size);
+        let mut driver = Driver::new(&reg, &solver, &picker);
+        driver.size = Some(&field);
+        let sel = [face];
+        let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+        let out = driver.mesh(&input, &intent, &Sequential, sm_mesh_api::reference::ReferenceBuilder::surface(), &mut SerialAlloc::new()).expect("mesh");
+        let m = &out.finished.mesh;
+        assert!(validate(m).is_empty(), "size {size}: {:?}", validate(m));
+        assert!((area(m) - 12.0).abs() < 1e-12);
+        let (min, _) = scaled_jacobian(m);
+        assert!(min >= 0.40, "size {size}: min {min}");
+        counts.push(m.cell_count());
+    }
+    // The boundary nodes are fixed (spacing 0.5): a finer wanted size adds interior quads.
+    assert!(counts[0] > counts[1] && counts[2] <= counts[0], "{counts:?}");
+}
+
+/// Recorded, not gated (decision 12: it depends on the W3b bulk mesh commit): the time of
+/// `Driver::mesh` for a 100 x 100 face. Run with `--release --ignored --nocapture`.
+#[test]
+#[ignore]
+fn driver_time_for_a_100_by_100_face_is_recorded() {
+    let (topo, ids, model) = brick_setup([100.0, 100.0, 1.0]);
+    let face = ids.faces[5];
+    let pairs: Vec<(EntityId, u32)> = face_edges(&topo, face).into_iter().map(|e| (e, 100)).collect();
+    let t0 = std::time::Instant::now();
+    let out = mesh_faces(&topo, &model, &[face], &hard(&pairs), &Sequential).expect("mesh");
+    eprintln!("Driver::mesh of a 100 x 100 paved face: {} quads in {:.3} s", out.finished.mesh.cell_count(), t0.elapsed().as_secs_f64());
 }

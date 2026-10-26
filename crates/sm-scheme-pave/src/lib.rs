@@ -220,9 +220,10 @@ impl Scheme for Pave {
         let size_fn = cx.size.map(|s| move |uv: [f64; 2]| s.size(surf.eval(Uv::new(uv[0], uv[1]))));
         let size_ref: Option<&dyn Fn([f64; 2]) -> f64> = size_fn.as_ref().map(|f| f as &dyn Fn([f64; 2]) -> f64);
         let mesh = pave_region(&uv_loops, &metric, size_ref, &opts).map_err(|e| {
+            // `Internal` (a guard such as the vertex budget) is a geometry-level failure here:
+            // the driver falls back to the next scheme instead of aborting the run.
             let kind = match e {
                 PaveError::OddBoundary { .. } | PaveError::LoopTooSmall { .. } => FailureKind::Constraint,
-                PaveError::Internal(_) => FailureKind::Internal,
                 _ => FailureKind::Geometry,
             };
             fail(kind, e.to_string())

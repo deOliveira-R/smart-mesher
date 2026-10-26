@@ -3,7 +3,7 @@
 #![allow(dead_code, missing_docs)]
 
 use sm_core::{EntityId, Point3};
-use sm_mesh::{Mesh, MeshBuilder};
+use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh};
 use sm_mesh_api::{CellIx, MeshRead, SerialAlloc};
 use sm_model_api::Model;
 use sm_scheme_api::stubs::{Equal, Tri};
@@ -41,11 +41,11 @@ pub fn mesh_with(
     sel: &[EntityId],
     intent: &MeshIntent,
     exec: &dyn Executor,
-) -> Result<Meshed<Mesh>, SchemeError> {
+) -> Result<Meshed<ReferenceMesh>, SchemeError> {
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(reg, &solver, &picker);
     let input = MeshInput::new(topo, model, &WholeFaces, sel);
-    driver.mesh(&input, intent, exec, MeshBuilder::surface(), &mut SerialAlloc::new())
+    driver.mesh(&input, intent, exec, ReferenceBuilder::surface(), &mut SerialAlloc::new())
 }
 
 /// [`mesh_with`] over [`registry`].
@@ -55,7 +55,7 @@ pub fn mesh_faces(
     sel: &[EntityId],
     intent: &MeshIntent,
     exec: &dyn Executor,
-) -> Result<Meshed<Mesh>, SchemeError> {
+) -> Result<Meshed<ReferenceMesh>, SchemeError> {
     mesh_with(&registry(), topo, model, sel, intent, exec)
 }
 

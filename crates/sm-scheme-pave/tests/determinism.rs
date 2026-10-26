@@ -64,9 +64,10 @@ fn the_scheme_is_bit_identical_under_both_executors_and_concurrent_callers() {
     check(2, 4, run).expect("planar, cylinder and cap meshes are bit-identical");
 }
 
-/// The crate never iterates a hash collection (BTreeMap/IndexMap/sorting only).
+/// The library never iterates a hash collection, reads the environment, the clock or files,
+/// or prints (the in-crate `tests.rs` surveys are excluded: they only run under `--ignored`).
 #[test]
-fn no_hash_collections_in_the_crate() {
+fn the_library_has_no_hash_collections_env_clock_or_io() {
     fn visit(dir: &std::path::Path, hits: &mut Vec<String>) {
         for e in std::fs::read_dir(dir).expect("read_dir") {
             let p = e.expect("entry").path();
@@ -75,7 +76,7 @@ fn no_hash_collections_in_the_crate() {
             } else if p.extension().is_some_and(|x| x == "rs") {
                 let text = std::fs::read_to_string(&p).expect("read");
                 // The needle is split so this file does not match itself.
-                for needle in [concat!("Hash", "Map"), concat!("Hash", "Set"), "RandomState", "thread_rng", "SystemTime", "Instant::now"] {
+                for needle in [concat!("Hash", "Map"), concat!("Hash", "Set"), "RandomState", "thread_rng", "SystemTime", "Instant::now", "std::env", "eprintln!", "std::fs", "println!"] {
                     if text.contains(needle) && !p.ends_with("tests.rs") && !p.ends_with("determinism.rs") {
                         hits.push(format!("{}: {needle}", p.display()));
                     }

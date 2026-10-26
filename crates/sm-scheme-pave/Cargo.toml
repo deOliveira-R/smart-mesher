@@ -21,7 +21,6 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
-sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-model-api = { path = "../sm-model-api" }
 sm-quality = { path = "../sm-quality" }

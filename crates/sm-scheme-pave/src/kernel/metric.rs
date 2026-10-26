@@ -124,7 +124,7 @@ pub(crate) struct SizeMap {
 impl SizeMap {
     /// `seg_len[i]` is the metric length of the segment leaving boundary node `i` in its
     /// loop; `prev[i]` is the index of the preceding node of the loop.
-    pub fn new(cdt: &Cdt, nb: usize, seg_len: &[f64], prev: &[usize], next: &[usize], gradation: f64) -> SizeMap {
+    pub fn new(cdt: &Cdt, nb: usize, seg_len: &[f64], prev: &[usize], gradation: f64) -> SizeMap {
         let mut s: Vec<f64> = (0..nb).map(|i| 0.5 * (seg_len[prev[i]] + seg_len[i])).collect();
         // Edge list of the boundary triangulation, Dijkstra-style gradient limiting.
         let mut nbrs: Vec<Vec<u32>> = vec![Vec::new(); nb];
@@ -140,7 +140,6 @@ impl SizeMap {
             l.sort_unstable();
             l.dedup();
         }
-        let _ = next;
         let mut heap: BinaryHeap<Reverse<(Ord64, u32)>> = (0..nb).map(|i| Reverse((Ord64(s[i]), i as u32))).collect();
         while let Some(Reverse((Ord64(si), i))) = heap.pop() {
             if si > s[i as usize] {

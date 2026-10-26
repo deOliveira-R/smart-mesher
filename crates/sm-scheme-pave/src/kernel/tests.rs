@@ -150,6 +150,7 @@ fn acceptance_2_quality_floors() {
             let ls = loops_at(&r, h);
             let m = pave_region(&ls, &id_metric, None, &PaveOptions::default()).expect("pave");
             let s = check(&r, &ls, &m);
+            eprintln!("{:>10} h={h:<6} nb={:<4} quads={:<5} rounds={} min={:.3} mean={:.3}", r.name, ls.iter().map(Vec::len).sum::<usize>(), m.quads.len(), m.rounds, s.min, s.mean);
             assert!(s.min >= min_floor, "{} h={h}: min {:.3}", r.name, s.min);
             assert!(s.mean >= 0.85, "{} h={h}: mean {:.3}", r.name, s.mean);
         }
@@ -278,58 +279,21 @@ fn acceptance_11_performance_100_by_100() {
     }
 }
 
-#[test]
-#[ignore]
-fn dump_circle() {
-    let ls = loops_at(&loops2d::circle(1.5, 32), 0.125);
-    let _ = pave_region(&ls, &id_metric, None, &PaveOptions::default());
-}
+// ---------------------------------------------------------------------------- surveys
+// Ignored by default: they print robustness statistics (see W3_REPORT.md).
 
-#[test]
-#[ignore]
-fn robustness_survey() {
-    let o = PaveOptions::default();
-    let mut fails = 0;
-    let mut total = 0;
-    let mut hist = [0usize; 8];
-    for n in (24..=160).step_by(2) {
-        let r = loops2d::circle(1.0 + 0.01 * n as f64, 32);
-        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; [r.outer[0].0 * a.cos(), r.outer[0].0 * a.sin()] }).collect();
-        total += 1;
-        match pave_region(&[l], &id_metric, None, &o) {
-            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
-            Err(e) => {
-                fails += 1;
-                eprintln!("circle n={n}: {e}");
-            }
-        }
+/// Deterministic xorshift for the surveys.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
     }
-    // Ellipses, stars and rectangles of odd aspect.
-    for k in 0..60 {
-        let n = 40 + 2 * k;
-        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; [3.0 * a.cos(), 1.0 * a.sin()] }).collect();
-        total += 1;
-        match pave_region(&[l], &id_metric, None, &o) {
-            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
-            Err(e) => {
-                fails += 1;
-                eprintln!("ellipse n={n}: {e}");
-            }
-        }
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
-    for k in 0..40 {
-        let n = 60 + 4 * k;
-        let l: Vec<[f64; 2]> = (0..n).map(|i| { let a = core::f64::consts::TAU * i as f64 / n as f64; let r = 1.0 + 0.35 * (5.0 * a).cos(); [r * a.cos(), r * a.sin()] }).collect();
-        total += 1;
-        match pave_region(&[l], &id_metric, None, &o) {
-            Ok(m) => hist[m.rounds.min(7) as usize] += 1,
-            Err(e) => {
-                fails += 1;
-                eprintln!("star n={n}: {e}");
-            }
-        }
-    }
-    eprintln!("total {total}, failures {fails}, rounds histogram {hist:?}");
 }
 
 /// Rectangle `w x h` with `a, b, c, d` intervals on bottom, right, top, left.
@@ -350,70 +314,18 @@ fn counted_rect(w: f64, h: f64, c: [usize; 4]) -> Vec<[f64; 2]> {
     l
 }
 
-#[test]
-#[ignore]
-fn small_rectangles_with_unequal_counts() {
-    let o = PaveOptions::default();
-    let (mut bad, mut total) = (0, 0);
-    let (mut qmin, mut low) = (f64::INFINITY, 0);
-    for a in 1..=8 {
-        for b in 1..=8 {
-            for c in 1..=8 {
-                for d in 1..=8 {
-                    if (a + b + c + d) % 2 == 1 || a + b + c + d < 4 {
-                        continue;
-                    }
-                    let (lo, hi) = ([a, b, c, d].into_iter().min().unwrap_or(1), [a, b, c, d].into_iter().max().unwrap_or(1));
-                    if hi > 2 * lo {
-                        continue;
-                    }
-                    total += 1;
-                    let l = counted_rect(1.0, 1.0, [a, b, c, d]);
-                    match pave_region(&[l], &id_metric, None, &o) {
-                        Ok(m) => {
-                            assert!(m.rounds <= 6);
-                            let q = {
-                                let ccw = 1.0;
-                                m.quads.iter().map(|q| sj(&m.points, q, ccw)).fold(f64::INFINITY, f64::min)
-                            };
-                            qmin = qmin.min(q);
-                            if q < 0.2 {
-                                low += 1;
-                            }
-                        }
-                        Err(e) => {
-                            bad += 1;
-                            if bad < 30 {
-                                eprintln!("counts {a},{b},{c},{d}: {e}");
-                            }
-                        }
-                    }
-                }
-            }
+/// Polygon through `corners` with `counts[i]` equal intervals on side `i`.
+fn counted_polygon(corners: &[[f64; 2]], counts: &[usize]) -> Vec<[f64; 2]> {
+    let n = corners.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (a, b) = (corners[i], corners[(i + 1) % n]);
+        for s in 0..counts[i] {
+            let t = s as f64 / counts[i] as f64;
+            out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
         }
     }
-    eprintln!("{bad} failures of {total}; worst min SJ {qmin:.3}, {low} cases below 0.2");
-}
-
-#[test]
-#[ignore]
-fn dump_small() {
-    let l = counted_rect(1.0, 1.0, [1, 2, 1, 2]);
-    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
-}
-
-/// Deterministic xorshift for the surveys.
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn unit(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
-    }
+    out
 }
 
 /// Polygon through `corners` with `round(len / h)` intervals per side (at least 1); one side
@@ -428,71 +340,182 @@ fn rounded_polygon(corners: &[[f64; 2]], h: f64, rng: &mut Rng) -> Vec<[f64; 2]>
         let k = (rng.next() % n as u64) as usize;
         counts[k] += 1;
     }
-    let mut out = Vec::new();
-    for i in 0..n {
-        let (a, b) = (corners[i], corners[(i + 1) % n]);
-        for s in 0..counts[i] {
-            let t = s as f64 / counts[i] as f64;
-            out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+    counted_polygon(corners, &counts)
+}
+
+/// Rectangles with unequal counts (ratio at most 2), named by their counts.
+fn corpus_small_rectangles() -> Vec<(String, Vec<[f64; 2]>)> {
+    let mut v = Vec::new();
+    for a in 1..=8usize {
+        for b in 1..=8usize {
+            for c in 1..=8usize {
+                for d in 1..=8usize {
+                    let (lo, hi) = ([a, b, c, d].into_iter().min().unwrap_or(1), [a, b, c, d].into_iter().max().unwrap_or(1));
+                    if (a + b + c + d) % 2 == 1 || a + b + c + d < 4 || hi > 2 * lo {
+                        continue;
+                    }
+                    v.push((format!("rect {a},{b},{c},{d}"), counted_rect(1.0, 1.0, [a, b, c, d])));
+                }
+            }
         }
     }
-    out
+    v
+}
+
+/// Random rectangles, L, U and triangle polygons with rounded uniform spacing.
+fn corpus_polygons(shapes: core::ops::Range<u64>) -> Vec<(String, Vec<[f64; 2]>)> {
+    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut v = Vec::new();
+    for case in 0..600u64 {
+        let (w, hh) = (1.0 + 5.0 * rng.unit(), 1.0 + 5.0 * rng.unit());
+        let h = 0.15 + 0.5 * rng.unit();
+        let (name, corners): (&str, Vec<[f64; 2]>) = match case % 4 {
+            0 => ("rectangle", vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.0, hh]]),
+            1 => ("L", vec![[0.0, 0.0], [w, 0.0], [w, 0.5 * hh], [0.5 * w, 0.5 * hh], [0.5 * w, hh], [0.0, hh]]),
+            2 => ("U", vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.7 * w, hh], [0.7 * w, 0.4 * hh], [0.3 * w, 0.4 * hh], [0.3 * w, hh], [0.0, hh]]),
+            _ => ("triangle", vec![[0.0, 0.0], [w, 0.0], [0.4 * w, hh]]),
+        };
+        let l = rounded_polygon(&corners, h, &mut rng);
+        if l.len() >= 4 && shapes.contains(&(case % 4)) {
+            v.push((format!("{name} case {case} (h={h:.2})"), l));
+        }
+    }
+    v
+}
+
+/// Circles, ellipses and five-lobed stars with 24 to 160 nodes.
+fn corpus_curves() -> Vec<(String, Vec<[f64; 2]>)> {
+    let tau = core::f64::consts::TAU;
+    let mut v = Vec::new();
+    for n in (24..=160).step_by(2) {
+        let r = 1.0 + 0.01 * n as f64;
+        v.push((format!("circle n={n}"), (0..n).map(|i| [r * (tau * i as f64 / n as f64).cos(), r * (tau * i as f64 / n as f64).sin()]).collect()));
+    }
+    for k in 0..60 {
+        let n = 40 + 2 * k;
+        v.push((format!("ellipse n={n}"), (0..n).map(|i| [3.0 * (tau * i as f64 / n as f64).cos(), (tau * i as f64 / n as f64).sin()]).collect()));
+    }
+    for k in 0..40 {
+        let n = 60 + 4 * k;
+        v.push((format!("star n={n}"), (0..n).map(|i| { let a = tau * i as f64 / n as f64; let r = 1.0 + 0.35 * (5.0 * a).cos(); [r * a.cos(), r * a.sin()] }).collect()));
+    }
+    v
+}
+
+/// Isosceles triangles (apex angle 20 to 140 degrees, 4 to 16 intervals on the legs).
+fn corpus_isoceles() -> Vec<(String, Vec<[f64; 2]>)> {
+    let mut v = Vec::new();
+    for apex in [20.0f64, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 120.0, 140.0] {
+        for n in [4usize, 6, 8, 10, 12, 16] {
+            let a = apex.to_radians();
+            let corners = [[0.0, 0.0], [1.0, 0.0], [a.cos(), a.sin()]];
+            let base = (corners[2][0] - 1.0).hypot(corners[2][1]);
+            let mut counts = [n, ((base * n as f64).round() as usize).max(1), n];
+            if counts.iter().sum::<usize>() % 2 == 1 {
+                counts[1] += 1;
+            }
+            v.push((format!("apex {apex:.0} n={n}"), counted_polygon(&corners, &counts)));
+        }
+    }
+    v
+}
+
+fn min_sj(m: &QuadMesh2) -> f64 {
+    m.quads.iter().map(|q| sj(&m.points, q, 1.0)).fold(f64::INFINITY, f64::min)
+}
+
+/// Run the production ladder over a corpus; print failures and the worst minimum SJ.
+fn survey(title: &str, corpus: &[(String, Vec<[f64; 2]>)]) {
+    let o = PaveOptions::default();
+    let (mut fails, mut worst, mut below, mut worst_mean) = (0, f64::INFINITY, 0, f64::INFINITY);
+    let t0 = std::time::Instant::now();
+    for (name, l) in corpus {
+        match pave_region(std::slice::from_ref(l), &id_metric, None, &o) {
+            Ok(m) => {
+                let q = min_sj(&m);
+                worst = worst.min(q);
+                below += usize::from(q < 0.2);
+                worst_mean = worst_mean.min(m.quads.iter().map(|q| sj(&m.points, q, 1.0)).sum::<f64>() / m.quads.len() as f64);
+            }
+            Err(e) => {
+                fails += 1;
+                if fails <= 5 {
+                    eprintln!("{title}: {name}: {e}");
+                }
+            }
+        }
+    }
+    eprintln!("{title}: {fails} failures of {}; worst min SJ {worst:.3}, worst mean {worst_mean:.3}, {below} below 0.2; {:.1} s", corpus.len(), t0.elapsed().as_secs_f64());
+}
+
+#[test]
+#[ignore]
+fn robustness_survey() {
+    survey("curves", &corpus_curves());
+}
+
+#[test]
+#[ignore]
+fn small_rectangles_with_unequal_counts() {
+    survey("small rectangles", &corpus_small_rectangles());
 }
 
 #[test]
 #[ignore]
 fn survey_realistic_polygons() {
-    let o = PaveOptions::default();
-    let mut rng = Rng(0x1234_5678_9abc_def1);
-    let (mut total, mut fails) = (0, 0);
-    let (mut worst_min, mut below) = (f64::INFINITY, 0);
-    let mut strategy_hist = std::collections::BTreeMap::<u32, u32>::new();
-    for case in 0..600 {
-        if std::env::var("PAVE_SHAPE").is_ok_and(|v| v != (case % 4).to_string()) {
-            let _ = (rng.unit(), rng.unit(), rng.unit());
-            continue;
-        }
-        let (w, hh) = (1.0 + 5.0 * rng.unit(), 1.0 + 5.0 * rng.unit());
-        let h = 0.15 + 0.5 * rng.unit();
-        let corners: Vec<[f64; 2]> = match case % 4 {
-            0 => vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.0, hh]],
-            1 => vec![[0.0, 0.0], [w, 0.0], [w, 0.5 * hh], [0.5 * w, 0.5 * hh], [0.5 * w, hh], [0.0, hh]],
-            2 => vec![[0.0, 0.0], [w, 0.0], [w, hh], [0.7 * w, hh], [0.7 * w, 0.4 * hh], [0.3 * w, 0.4 * hh], [0.3 * w, hh], [0.0, hh]],
-            _ => vec![[0.0, 0.0], [w, 0.0], [0.4 * w, hh]],
-        };
-        let l = rounded_polygon(&corners, h, &mut rng);
-        if l.len() < 4 {
-            continue;
-        }
-        total += 1;
-        match pave_region(std::slice::from_ref(&l), &id_metric, None, &o) {
-            Ok(m) => {
-                let q = m.quads.iter().map(|q| sj(&m.points, q, 1.0)).fold(f64::INFINITY, f64::min);
-                worst_min = worst_min.min(q);
-                if q < 0.2 {
-                    below += 1;
-                }
-            }
-            Err(e) => {
-                fails += 1;
-                if fails < 15 {
-                    eprintln!("case {case} (h={h:.2}, nb={}): {e}", l.len());
-                    if std::env::var("PAVE_CASE").is_ok_and(|c| c == case.to_string()) {
-                        eprintln!("LOOP {l:?}");
-                    }
-                }
-            }
-        }
-        let _ = &mut strategy_hist;
-    }
-    eprintln!("{fails} failures of {total}; worst min SJ {worst_min:.3}; {below} below 0.2");
+    survey("rectangles, L, U", &corpus_polygons(0..3));
+    survey("triangles", &corpus_polygons(3..4));
 }
 
 #[test]
 #[ignore]
-fn dump_triangle() {
-    let l: Vec<[f64; 2]> = vec![[0.0, 0.0], [0.42933127328489845, 0.0], [0.8586625465697969, 0.0], [1.2879938198546954, 0.0], [1.7173250931395938, 0.0], [2.1466563664244926, 0.0], [2.575987639709391, 0.0], [3.0053189129942894, 0.0], [3.4346501862791876, 0.0], [3.8639814595640862, 0.0], [3.4003036844163956, 0.20855420599678826], [2.9366259092687055, 0.4171084119935765], [2.4729481341210153, 0.6256626179903647], [2.0092703589733247, 0.834216823987153], [1.5455925838256346, 1.0427710299839412], [1.159194437869226, 0.7820782724879559], [0.7727962919128173, 0.5213855149919706], [0.38639814595640853, 0.2606927574959853]];
-    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+fn survey_isoceles_triangles() {
+    survey("isoceles triangles", &corpus_isoceles());
+    // The per-case table: minimum scaled Jacobian, `--` for a failure.
+    let o = PaveOptions::default();
+    for (i, apex) in [20.0f64, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 120.0, 140.0].into_iter().enumerate() {
+        let row: String = corpus_isoceles()[6 * i..6 * i + 6].iter().map(|(_, l)| match pave_region(std::slice::from_ref(l), &id_metric, None, &o) {
+            Ok(m) => format!(" {:>5.2}", min_sj(&m)),
+            Err(_) => "    --".to_string(),
+        }).collect();
+        eprintln!("apex {apex:>5.0}:{row}");
+    }
+}
+
+/// Which candidate strategies recover the regions that the first strategy fails on, and a
+/// greedy cover: the order in which `ladder()` should list them.
+#[test]
+#[ignore]
+fn survey_cover() {
+    let o = PaveOptions::default();
+    let cands = candidates();
+    let mut corpus = corpus_small_rectangles();
+    corpus.extend(corpus_polygons(0..4));
+    corpus.extend(corpus_curves());
+    corpus.extend(corpus_isoceles());
+    let mut hard: Vec<(String, Vec<usize>)> = Vec::new();
+    for (name, l) in &corpus {
+        if pave_with(std::slice::from_ref(l), &id_metric, None, &o, &cands[..1]).is_ok() {
+            continue;
+        }
+        let ok: Vec<usize> = (1..cands.len()).filter(|k| pave_with(std::slice::from_ref(l), &id_metric, None, &o, &cands[*k..*k + 1]).is_ok()).collect();
+        hard.push((name.clone(), ok));
+    }
+    eprintln!("{} of {} cases fail the first strategy; {} of them no candidate recovers", hard.len(), corpus.len(), hard.iter().filter(|h| h.1.is_empty()).count());
+    let mut left: Vec<&(String, Vec<usize>)> = hard.iter().filter(|h| !h.1.is_empty()).collect();
+    let mut order = vec![0usize];
+    while !left.is_empty() {
+        let best = (1..cands.len()).filter(|k| !order.contains(k)).max_by_key(|k| (left.iter().filter(|h| h.1.contains(k)).count(), core::cmp::Reverse(*k)));
+        let Some(k) = best else { break };
+        let n = left.iter().filter(|h| h.1.contains(&k)).count();
+        if n == 0 {
+            break;
+        }
+        order.push(k);
+        left.retain(|h| !h.1.contains(&k));
+        eprintln!("  + candidate {k}: covers {n}, {} left", left.len());
+    }
+    eprintln!("ladder order: {order:?}");
 }
 
 #[test]
@@ -578,56 +601,20 @@ fn stretch_s2_graded_boundary() {
     assert!(ratio <= 1.0 / 3.0, "ratio {ratio}");
 }
 
-#[test]
-#[ignore]
-fn survey_isoceles_triangles() {
-    let o = PaveOptions::default();
-    for apex in [20.0f64, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 120.0, 140.0] {
-        let mut row = String::new();
-        for n in [4usize, 6, 8, 10, 12, 16] {
-            // Equal legs of length 1 from the apex; the base gets about the same spacing.
-            let a = apex.to_radians();
-            let (p0, p1, p2) = ([0.0, 0.0], [1.0, 0.0], [a.cos(), a.sin()]);
-            let base = (p2[0] - p1[0]).hypot(p2[1] - p1[1]);
-            let nb = ((base * n as f64).round() as usize).max(1);
-            let mut counts = [n, nb, n];
-            if counts.iter().sum::<usize>() % 2 == 1 {
-                counts[1] += 1;
-            }
-            let corners = [p0, p1, p2];
-            let mut l = Vec::new();
-            for i in 0..3 {
-                let (u, v) = (corners[i], corners[(i + 1) % 3]);
-                for s in 0..counts[i] {
-                    let t = s as f64 / counts[i] as f64;
-                    l.push([u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])]);
-                }
-            }
-            match pave_region(&[l], &id_metric, None, &o) {
-                Ok(m) => {
-                    let q = m.quads.iter().map(|q| sj(&m.points, q, 1.0)).fold(f64::INFINITY, f64::min);
-                    row += &format!(" {:>5.2}", q);
-                }
-                Err(_) => row += "    --",
-            }
-        }
-        eprintln!("apex {apex:>5.0}:{row}");
-    }
-}
 
+/// S3 (reported, not asserted): quality on a spatially varying metric. The metric
+/// `[(1 + u)^2, 0, 1]` is the pull-back of the map `x = u + u^2 / 2, y = v`, so the physical
+/// mesh is the image of the quads; quality is measured there.
 #[test]
-#[ignore]
-fn dump_equilateral() {
-    let a = 60.0f64.to_radians();
-    let corners = [[0.0, 0.0], [1.0, 0.0], [a.cos(), a.sin()]];
-    let n = 8;
-    let mut l = Vec::new();
-    for i in 0..3 {
-        let (u, v) = (corners[i], corners[(i + 1) % 3]);
-        for s in 0..n {
-            let t = s as f64 / n as f64;
-            l.push([u[0] + t * (v[0] - u[0]), u[1] + t * (v[1] - u[1])]);
-        }
+fn stretch_s3_varying_metric_quality_is_reported() {
+    let metric = |uv: [f64; 2]| [(1.0 + uv[0]) * (1.0 + uv[0]), 0.0, 1.0];
+    for (label, nu, nv) in [("coarse", 12usize, 6usize), ("fine", 32, 16)] {
+        let l = counted_rect(2.0, 1.0, [nu, nv, nu, nv]);
+        let m = pave_region(std::slice::from_ref(&l), &metric, None, &PaveOptions::default()).expect("pave");
+        let phys: Vec<[f64; 2]> = m.points.iter().map(|p| [p[0] + 0.5 * p[0] * p[0], p[1]]).collect();
+        let sjs: Vec<f64> = m.quads.iter().map(|q| sj(&phys, q, 1.0)).collect();
+        let (min, mean) = (sjs.iter().copied().fold(f64::INFINITY, f64::min), sjs.iter().sum::<f64>() / sjs.len() as f64);
+        eprintln!("S3 {label}: {} quads, physical scaled Jacobian min {min:.3} mean {mean:.3}", m.quads.len());
+        assert!(min > 0.0, "inverted quad in the physical space");
     }
-    let _ = pave_region(&[l], &id_metric, None, &PaveOptions::default());
 }
