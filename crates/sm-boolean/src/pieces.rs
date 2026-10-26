@@ -393,7 +393,7 @@ fn clip_curve<V: TopologyView + ?Sized>(
                 on_boundary.push(b);
             }
         }
-        if faces.is_empty() {
+        if faces.is_empty() && b.is_some() {
             // Runs along the boundary of both: nothing to insert.
             continue;
         }

@@ -13,7 +13,9 @@
 
 mod arrange;
 mod bodies;
+pub mod boolean;
 mod cc;
+mod copy;
 pub mod error;
 mod faceclass;
 mod geo;
@@ -22,10 +24,14 @@ pub mod locate;
 pub mod merge;
 mod pieces;
 mod poly2;
+mod regularize;
 mod registry;
+pub mod webcut;
 
 pub use error::BooleanError;
+pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
 pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
+pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
 pub use locate::{PointLocation, locate_point};
 pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
 
