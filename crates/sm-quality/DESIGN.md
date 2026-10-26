@@ -11,7 +11,7 @@ The first version was reconstructed from memory of Verdict and Knupp's papers an
 * **Verified against the Verdict sources** (by reading the C++ and, in fix round 1, by a differential run against a real Verdict build; pinned by `tests/verdict_ref.rs`): the metrics in the tables below **except** the ones listed under "Not Verdict-identical" next to this list. That covers hex `MaxAspectFrobenius`/`MeanAspectFrobenius`/`Condition`/`Oddy` (centre sample included, `DBL_MAX` for a non-positive determinant)/`Dimension`/relative size (mean corner determinant), hex `Distortion` on valid hexes (Gauss points and nodes); wedge `Shape`, `MaxAspectFrobenius`, `MeanAspectFrobenius`, `Condition`, `Distortion` (up to the constants in "Normalisations"); pyramid `ScaledJacobian`; pyramid `Shape` (since fix round 1: apex height along the corner-0 base normal, as Verdict; the largest-edge bug is not replicated); quad `Distortion` on planar convex quads; collapsed-quad routing (including `Shear`/`ShearAndSize` since round 1); quad warpage (`min cos^3`, 1 = flat; the manual's table lists ideal 0, the code is authoritative); the volume rule (Verdict triangulates hex/pyramid faces about the face mean, which is `smartmesh.fan_vertex_mean.v1`, so `Volume` equals Verdict's even for non-planar faces). `MeanAspectFrobenius` returns `DBL_MAX` as soon as any corner is degenerate (quad, hex, wedge), as Verdict does; it never averages the sentinel.
 * **Not Verdict-identical** (deliberate or documented; full list under "Deviations from Verdict"): tet `MinAngle` (true minimum dihedral), tet `CollapseRatio` (Verdict's index slip not replicated), hex `EdgeRatio` (all 12 edges), pyramid `Shape` where the longest edge is one of edges 0-1/1-2 (about 25% of random pyramids), collapsed-quad `Distortion`, quad `MinAngle`/`MaxAngle` on tangled (self-intersecting, bowtie) quads (the crate uses `atan2` in `[0, 360)`, Verdict unsigned `acos`; simple reflex quads match), the tet inverted-element `DBL_MAX` sentinels (`AspectRatio`, `AspectGamma`, `RadiusRatio`, `AspectFrobenius`, `Condition`; Verdict returns finite or signed values), hex/quad/wedge behaviour on inverted or zero-volume elements, the degenerate-input residue listed under "Deviations from Verdict", and the quad metrics on non-planar quads (`MinAngle` can differ; `MaxAspectFrobenius`, `MeanAspectFrobenius`, `Distortion` do).
 * **Normalisations:** the factors that make the ideal element score 1 (tri `2/sqrt3`, tet `sqrt2`, wedge `2/sqrt3`, pyramid `sqrt2` on top of the tet value) follow Verdict. Verdict divides the wedge Frobenius aspect by the rounded literal 1.16477; the crate uses the exact value `4 / (3 * 1.5^(1/3)) = 1.1647740...` so the ideal wedge scores exactly 1. Every wedge `MaxAspectFrobenius`/`MeanAspectFrobenius`/`Condition` value therefore differs from Verdict by a constant factor of 3.4e-6 (confirmed against a Verdict build). Likewise wedge `Distortion` uses the exact factor 1/2 where Verdict uses the literals 0.433013/0.866025 (a 1.2e-6 relative difference).
-* **Advisory ranges.** The "Accept" columns are the manual's acceptable ranges where the manual gives one (the entries corrected in round 0: quad `AspectRatio`, quad Max/Mean `AspectFrobenius`, quad `ScaledJacobian`, quad `Warpage`, hex `Taper`, hex `EdgeRatio` (none), tet `MinAngle`, tri `ShapeAndSize`). All ranges were checked against the manual tables in fix round 1; wedge ranges in the Verdict sources are `Jacobian [0, DBL_MAX]`, `Distortion [0.5, 1]`, `Shape [0.3, 1]`. There is no thresholds API yet (see Known gaps).
+* **Advisory ranges.** The "Accept" columns are the manual's acceptable ranges where the manual gives one (the entries corrected in round 0: quad `AspectRatio`, quad Max/Mean `AspectFrobenius`, quad `ScaledJacobian`, quad `Warpage`, hex `Taper`, hex `EdgeRatio` (none), tet `MinAngle`, tri `ShapeAndSize`). All ranges were checked against the manual tables in fix round 1; wedge ranges in the Verdict sources are `Jacobian [0, DBL_MAX]`, `Distortion [0.5, 1]`, `Shape [0.3, 1]`. Graded limits live in `profile.rs`.
 * **smart-mesh extensions** (not Verdict metrics, no ranges claimed): see "Extensions" below.
 
 ## Layers
@@ -205,10 +205,49 @@ Verdict-only metrics (skew, taper, Jacobians, ...) return `Unsupported` for poly
 
 `Validity::inverted()` lists inverted cells in ascending order; `all_valid()` is true iff nothing is inverted or degenerate.
 
+## Finite-volume metrics
+
+Module `fv.rs` (geometry and metrics) and `profile.rs` (names, profiles, grading). **Similar to** OpenFOAM `checkMesh` (`primitiveMeshTools`, `primitiveMeshCheck`) and Fluent's orthogonal quality, **differs in** running on any `MeshRead` (polyhedra, mixed shapes) with fixed-chunk parallel passes, one output slot per entity, bit-identical for any thread count, **giving** numbers that can be diffed against `checkMesh` but are graded by our own validator (the conformance harness is a separate task).
+
+**Status of the formulas.** Everything below was written from memory of the OpenFOAM sources and is pinned by analytic fixtures (`tests/fv.rs`). Items marked *recalled, to be diffed against checkMesh by the conformance harness* are not verified against a real `checkMesh` run.
+
+**Conventions.** Owner `O` = `face_left`, neighbour `N` = `face_right`, `Sf` points left to right (outward for a boundary face). `Sf` and `Cf` come from `sm_mesh_api::face_geometry` (vertex-mean estimate, area-weighted fan-triangle centroids: OpenFOAM's rule). `vSmall = 1e-300`, `rootVSmall = 1e-150`. Inactive cells and faces give NaN.
+
+**Cell centre and volume** (`fv_geometry`; OpenFOAM `primitiveMeshCellCentresAndVols`): `cEst` = mean of the face centres, `pyr3Vol_f = Sf_out . (Cf - cEst)`, `C = sum(pyr3Vol_f (3/4 Cf + 1/4 cEst)) / sum(pyr3Vol_f)`, `V = sum(pyr3Vol_f) / 3`; a zero sum gives `C = cEst`. Pyramid volumes are not clipped to `vSmall`. For planar faces `V` equals `sm_mesh_api::cell_volume`; for warped faces it differs, because `cell_volume` uses the vertex-mean fan triangles and the pyramid rule uses `Cf` and the area-weighted `Sf`. Both are exact for planar faces.
+
+| Metric | Entity | Formula | OpenFOAM / Fluent counterpart |
+|---|---|---|---|
+| `NonOrthogonality` (deg) | internal face | `angle(d, Sf)`, `d = C_N - C_O`; cell value = max over its internal faces (`face_to_cell`) | `checkFaceOrthogonality`; checkMesh fails above 70 |
+| `Skewness` | face | internal: `Cpf = Cf - C_O`, `sv = Cpf - (Sf.Cpf)/(Sf.d) d`; boundary: `d = n (n.Cpf)`, `n = Sf/|Sf|`, same `sv`. `fd = max(0.2 |d|, max_p |svHat . (p - Cf)|)`, skew `= |sv|/fd` | `faceSkewness`; checkMesh fails above 4 internal, 20 boundary (*recalled*) |
+| `OrthogonalQuality` | cell | min over faces of `cos(Sf_out, Cf - C_c)` and, for internal faces, `cos(Sf_out, C_n - C_c)`; 1 is best | Fluent; guidance warn below 0.1, fail below 0.01 |
+| `VolumeRatio` | internal face | `max(V_O, V_N) / min(V_O, V_N) >= 1`; `1e30` (the Verdict sentinel) if the smaller volume is not positive | `checkVolRatio` reports the reciprocal `min/max`, checkMesh minimum 0.01: our fail limit 100 is its reciprocal (*recalled*) |
+| `InterpolationWeight` | internal face | `w = |Sf.(C_N - Cf)| / (|Sf.(C_N - Cf)| + |Sf.(Cf - C_O)| + vSmall)`, reported as `min(w, 1 - w)`; 0.5 ideal | `checkFaceWeight`; fails below 0.05 |
+| `FaceFlatness` | face | `min(1, |Sf| / sum_i |A_i|)`, `A_i` the fan triangles `(p_i, p_{i+1}, Cf)`; 1 for triangles | `checkFaceFlatness`; warns below 0.8 (fan apex `Cf`: *recalled*) |
+| `FaceWarp` (deg) | face | max angle between a fan-triangle normal and `Sf`; 0 for triangles; 90 for a zero-area face | smart-mesh extension (no checkMesh counterpart) |
+| `FaceConcavity` (deg) | face | at each vertex with `(e0 x e1) . n_hat < 0` (`e0` incoming, `e1` outgoing edge): `asin(min(1, |e0 x e1| / (|e0||e1|)))`; face value = max, 0 if convex | `checkFaceAngles`; fails above 10 (*recalled*: asin form and sign test) |
+| `CellDeterminant` | cell | `det(M) / (tr(M)/3)^3`, `M = sum_f Sf (x) Sf / |Sf|` over all faces; 1 for a cube | `checkCellDeterminant`; fails below 1e-3 (normalisation *recalled*) |
+
+Angles are evaluated as `atan2(|a x b|, a . b)`, which equals `acos(a.b/(|a||b|))` mathematically and stays accurate near 0 (`acos` loses about 8 digits there). A face with `|d| |Sf| = 0` reports 90 degrees for `NonOrthogonality`.
+
+**Closed forms in the tests.** Sheared hex pair (B's x=2 layer shifted 2 in y): shared face non-orthogonality 45, skewness 1, weight 0.5, orthogonal quality `1/sqrt2` (A) and `1/sqrt5` (B), B's boundary face skewness 2. Stretched pair (widths 1, 2): volume ratio 2, weight 1/3. Determinants: cube 1, 1x1x2 brick 0.864, regular hexagonal prism 0.9932. Saddle quad (h = 1/4): flatness `1/sqrt(1+4h^2)`, warp `atan(2h)`; dart quad concavity `asin(0.8)`; L-shaped hexagon 90.
+
+**Profiles** (`rules(Profile)`; a value equal to a limit passes; `fail_boundary` applies to boundary faces). All Generic and Transport numbers are provisional engineering guesses held in one table in `profile.rs`; the Transport numbers await the user's ratification before they are advertised.
+
+| Profile | Rules (warn / fail) |
+|---|---|
+| Generic | ScaledJacobian 0.2 / 0.05 (lower is worse); EdgeRatio 10 / 100; NonOrthogonality 50 / 70; Skewness 2 / 4 (boundary 20); VolumeRatio 4 / 20; InterpolationWeight 0.2 / 0.05 (lower); FaceFlatness 0.9 / 0.8 (lower); FaceConcavity 5 / 10 |
+| OpenFoam | NonOrthogonality fail 70; Skewness fail 4 (boundary 20); InterpolationWeight fail 0.05; FaceFlatness warn 0.8 (never fails: `fail = -inf`); FaceConcavity fail 10; CellDeterminant fail 1e-3; VolumeRatio fail 100 |
+| Fluent | OrthogonalQuality 0.1 / 0.01 (lower). Equiangle skewness is a documented gap |
+| Transport | FaceFlatness 0.9999 / 0.999 (lower); FaceConcavity 0.1 / 1; Starness 0.2 / 0 (lower); EdgeRatio 20 / 200; VolumeRatio 10 / 100. Suits planar convex faces for ray tracing and sweeps |
+
+`Metric::name()/from_name()`, `FvMetric::name()/from_name()` and `Profile::name()/from_name()` use the snake_case of the variant and round-trip over `ALL`. These names become public API when released.
+
+**Known gaps.** Equiangle and equivolume skewness (Fluent), the cell-level aspect ratio in the checkMesh definition and face-pyramid volumes are deferred. High-order cells use the corner skeleton (faces are the corner loops).
+
 ## Known gaps
 
 * **Missing Verdict metrics:** `*_equiangle_skew` (all shapes), `tri_normalized_inradius`, `quad_radius_ratio`, `tet_mean_ratio`, `tet_normalized_inradius`, `tet_inradius`, `tet_squish_index`, `tet_equivolume_skew`, `hex_nodal_jacobian_ratio`, hex/tet `timestep`, `wedge_max_stretch` (`Stretch` is not applied to wedges). PARITY lists "full" as P1.
-* **No thresholds API.** The "Accept" columns are documentation only; PARITY asks for thresholds.
+* **Thresholds.** The "Accept" columns of the Verdict tables are documentation only; the graded limits are in `profile.rs` (see "Finite-volume metrics").
 * High-order cells are evaluated on the corner skeleton; no curved-element Jacobian sampling.
 * **Degenerate threshold** is `TINY = 1e-30` on power-of-two-normalised coordinates, not Verdict's `VERDICT_DBL_MIN`; values on exactly degenerate elements are not all Verdict-identical (see the deviations list).
 
