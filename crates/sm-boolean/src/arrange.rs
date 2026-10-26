@@ -431,6 +431,7 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
                     if n != 2 {
                         return Err(BooleanError::Unsupported("a closed cut touches the face boundary at a vertex that is not a periodic seam vertex"));
                     }
+                    let chain = self.orient_seam_loop(f, chain, &pos[&start])?;
                     return Ok(Step { kind: StepKind::Closed, chain, used });
                 }
                 let (rs, re) = (ring_of(start), ring_of(end));
@@ -479,6 +480,69 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             }
         }
         Ok(Step { kind: StepKind::Closed, chain, used })
+    }
+
+    /// Sample a chain in the parameter space of `f` (continuous in the periodic directions) with
+    /// the matching 3D points.
+    fn chain_uv(&self, f: EntityId, chain: &[CoedgeSpec], per_edge: usize) -> Result<Vec<(Uv, Point3)>, BooleanError> {
+        let Some((surf, _)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let dom = surf.domain();
+        let mut pts: Vec<(Uv, Point3)> = Vec::new();
+        let mut prev: Option<Uv> = None;
+        for spec in chain {
+            let Carrier::Curve(cc0) = self.topo.carrier(spec.edge) else { return Err(BooleanError::Unsupported("an edge has no curve")) };
+            let Some(curve) = self.topo.shapes().curve(cc0.curve) else { return Err(BooleanError::Unsupported("curve not in store")) };
+            for k in 0..per_edge {
+                let frac = k as f64 / per_edge as f64;
+                let t = geo::edge_param(&cc0, if spec.sense == Sense::Forward { frac } else { 1.0 - frac });
+                let p = curve.eval(t);
+                let pr = surf.project(p, prev)?;
+                let uv = Uv::new(dom.u.nearest_to(pr.uv.u, prev.map_or(pr.uv.u, |q| q.u)), dom.v.nearest_to(pr.uv.v, prev.map_or(pr.uv.v, |q| q.v)));
+                pts.push((uv, p));
+                prev = Some(uv);
+            }
+        }
+        Ok(pts)
+    }
+
+    /// Orient a closed chain through a periodic seam vertex so that the first child
+    /// (`outer[a..b]` plus the chain) lies on the interior side of its own boundary.
+    fn orient_seam_loop(&self, f: EntityId, chain: Vec<CoedgeSpec>, at: &[(u16, usize)]) -> Result<Vec<CoedgeSpec>, BooleanError> {
+        let Some((surf, sc)) = geo::face_surface(&*self.topo, f) else { return Err(BooleanError::Unsupported("a face has no surface")) };
+        let dom = surf.domain();
+        let (a, b) = (at[0].1.min(at[1].1), at[0].1.max(at[1].1));
+        let outer: Vec<CoedgeSpec> = self
+            .topo
+            .loops(f)
+            .find(|l| l.ring == 0)
+            .map(|l| l.entries.iter().map(|e| CoedgeSpec { edge: e.cell, sense: if e.side == Side::Right { Sense::Reversed } else { Sense::Forward } }).collect())
+            .unwrap_or_default();
+        if b <= a || b > outer.len() {
+            return Ok(chain);
+        }
+        // A point of the first child's boundary segment (middle coedge, skipping pole edges).
+        let seg: Vec<&CoedgeSpec> = outer[a..b].iter().filter(|c| !geo::is_degenerate(&*self.topo, c.edge)).collect();
+        let Some(mid) = seg.get(seg.len() / 2) else { return Ok(chain) };
+        let Some(q3) = geo::edge_sample(&*self.topo, mid.edge, 0.5) else { return Ok(chain) };
+        let pts = self.chain_uv(f, &chain, 24)?;
+        if pts.len() < 2 {
+            return Ok(chain);
+        }
+        let (i, _) = pts.iter().enumerate().map(|(i, p)| (i, geo::dist(p.1, q3))).fold((0, f64::INFINITY), |m, x| if x.1 < m.1 { x } else { m });
+        let j = (i + 1) % pts.len();
+        let (c, t) = (pts[i].0, Uv::new(pts[j].0.u - pts[i].0.u, pts[j].0.v - pts[i].0.v));
+        let qpr = surf.project(q3, Some(c))?;
+        let (qu, qv) = (dom.u.nearest_to(qpr.uv.u, c.u), dom.v.nearest_to(qpr.uv.v, c.v));
+        let cross = t.u * (qv - c.v) - t.v * (qu - c.u);
+        if cross * sc.sense.sign() > 0.0 {
+            Ok(chain)
+        } else {
+            let mut r: Vec<CoedgeSpec> = chain.into_iter().rev().collect();
+            for c in &mut r {
+                c.sense = c.sense.flip();
+            }
+            Ok(r)
+        }
     }
 
     /// Signed area of a closed chain in the parameter space of `f`, times the carrier sense

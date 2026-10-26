@@ -22,6 +22,7 @@ mod geo;
 pub mod imprint;
 pub mod locate;
 pub mod merge;
+pub mod ops;
 mod pieces;
 mod poly2;
 mod regularize;
@@ -37,7 +38,8 @@ pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, Mer
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 
-/// The `boolean` plugin. The skeleton registers nothing.
+/// The `boolean` plugin: booleans, imprint, merge and webcut as ops and queries. It registers no
+/// layers (assembly installs it next to `sm_layer_api::CoreLayers`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BooleanPlugin;
 
@@ -47,7 +49,15 @@ impl Plugin for BooleanPlugin {
     }
 
     fn register(&self, registry: &mut Registry) -> Result<(), RegistryError> {
-        let _ = registry;
+        registry.register::<ops::Unite>()?;
+        registry.register::<ops::Subtract>()?;
+        registry.register::<ops::Intersect>()?;
+        registry.register::<ops::Imprint>()?;
+        registry.register::<ops::Merge>()?;
+        registry.register::<ops::WebcutPlane>()?;
+        registry.register::<ops::WebcutSurface>()?;
+        registry.register::<ops::WebcutCylinder>()?;
+        registry.register_query::<ops::MergeCheck>()?;
         Ok(())
     }
 }

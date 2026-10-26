@@ -1,6 +1,8 @@
 //! Shared helpers of the integration tests.
 #![allow(dead_code)]
 
+pub mod rig;
+
 use sm_core::{EntityId, Point3};
 use sm_topo_api::fixtures::{self, FixtureError};
 use sm_topo_api::{CellComplex, Dim, OpId, TopologyEdit, TopologyView, validate, validate_geometry};
