@@ -174,6 +174,7 @@ pub enum ComplementPolicy {
 
 /// A polyhedral volume mesh to track in.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct MeshInput<'a> {
     /// The mesh. `sm_mesh_api::validate` must pass; the builder re-checks only what tracking needs.
     pub mesh: &'a dyn MeshRead,
@@ -183,6 +184,13 @@ pub struct MeshInput<'a> {
     pub boundaries: &'a BoundarySpec,
     /// Outside policy.
     pub complement: &'a ComplementPolicy,
+}
+
+impl<'a> MeshInput<'a> {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(mesh: &'a dyn MeshRead, regions: &'a RegionRule, boundaries: &'a BoundarySpec, complement: &'a ComplementPolicy) -> Self {
+        Self { mesh, regions, boundaries, complement }
+    }
 }
 
 /// Triangles with the regions on both sides. Positions are `f64` (unlike the render
@@ -259,7 +267,22 @@ impl FacetInput {
     /// remap triangles. Returns the number of vertices removed. This is *exact* welding only;
     /// near-misses are a producer bug to fix at the source (shared B-rep edges tessellate to one
     /// polyline), not something tracking papers over with a tolerance.
-    pub fn weld_exact(&mut self) -> usize {
+    ///
+    /// Fails with `RtError::Build` (`facet.index_range`) before changing anything if a triangle
+    /// indexes a missing vertex.
+    pub fn weld_exact(&mut self) -> Result<usize> {
+        let nv = self.vertices.len();
+        let issues: Vec<BuildIssue> = self
+            .triangles
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.iter().any(|&v| v as usize >= nv))
+            .take(8)
+            .map(|(i, _)| BuildIssue::new("facet.index_range", format!("triangle {i} indexes a missing vertex")))
+            .collect();
+        if !issues.is_empty() {
+            return Err(RtError::Build(issues));
+        }
         let mut seen: BTreeMap<[u64; 3], u32> = BTreeMap::new();
         let mut map = Vec::with_capacity(self.vertices.len());
         let mut kept = Vec::new();
@@ -278,7 +301,7 @@ impl FacetInput {
                 *v = map[*v as usize];
             }
         }
-        removed
+        Ok(removed)
     }
 
     /// Content hash of the facets (cache key `topology_hash` for a facet input).
@@ -392,6 +415,7 @@ pub enum SurfaceRefine {
 
 /// A B-rep model plus its facets.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct BrepInput<'a> {
     /// Topology.
     pub topo: &'a dyn TopologyView,
@@ -403,6 +427,13 @@ pub struct BrepInput<'a> {
     pub refine: SurfaceRefine,
     /// Boundary conditions.
     pub boundaries: &'a BoundarySpec,
+}
+
+impl<'a> BrepInput<'a> {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(topo: &'a dyn TopologyView, geom: &'a dyn GeomStore, facets: &'a FacetInput, refine: SurfaceRefine, boundaries: &'a BoundarySpec) -> Self {
+        Self { topo, geom, facets, refine, boundaries }
+    }
 }
 
 /// Build the `front`/`back` region of a face from the topology: `front = left`, `back = right`
@@ -534,9 +565,17 @@ mod tests {
         let mut f = tet();
         f.vertices.push([0.0, 0.0, -0.0]);
         f.triangles[0][0] = 4;
-        assert_eq!(f.weld_exact(), 1);
+        assert_eq!(f.weld_exact().unwrap(), 1);
         assert_eq!(f.triangles[0][0], 0);
         assert!(f.check_watertight().is_empty());
+    }
+
+    #[test]
+    fn weld_rejects_out_of_range_indices_without_changing_anything() {
+        let mut f = FacetInput { vertices: vec![[0.0; 3]], triangles: vec![[0, 1, 2]], ..FacetInput::default() };
+        let before = f.clone();
+        assert!(matches!(f.weld_exact(), Err(RtError::Build(_))));
+        assert_eq!(f, before);
     }
 
     #[test]

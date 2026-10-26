@@ -46,6 +46,7 @@ use smallvec::SmallVec;
 
 /// An analytic primitive.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Shape {
     /// Sphere.
     Sphere {
@@ -232,6 +233,7 @@ impl Shape {
 
 /// A rectangular lattice of identical elements (the 2-level hierarchy of the stub).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct RectLattice {
     /// Lower corner of element `(0, 0, 0)`.
     pub origin: Point3,
@@ -242,6 +244,11 @@ pub struct RectLattice {
 }
 
 impl RectLattice {
+    /// Construct (the type is `#[non_exhaustive]`); the world builders validate it.
+    pub const fn new(origin: Point3, pitch: [f64; 3], dims: [u32; 3]) -> Self {
+        Self { origin, pitch, dims }
+    }
+
     fn bounds(&self) -> Aabb {
         let hi = |a: usize| comp(self.origin, a) + f64::from(self.dims[a]) * self.pitch[a];
         Aabb { lo: self.origin, hi: Point3::new(hi(0), hi(1), hi(2)) }
@@ -394,10 +401,19 @@ impl AnalyticWorld {
         if domain.is_empty() || (0..3).any(|a| comp(domain.hi, a) <= comp(domain.lo, a)) {
             issues.push(BuildIssue::new("analytic.domain", "domain box is empty"));
         }
-        if let Some(l) = &lattice
-            && (l.dims.contains(&0) || l.pitch.iter().any(|&p| !(p > 0.0 && p.is_finite())))
-        {
-            issues.push(BuildIssue::new("analytic.lattice", "lattice needs positive pitch and at least one element per axis"));
+        // Element count and total cell count, overflow-checked (dims also index as `i32`).
+        let mut n_elems = 1usize;
+        let mut n_cells = n + 1;
+        if let Some(l) = &lattice {
+            if l.dims.contains(&0) || l.pitch.iter().any(|&p| !(p > 0.0 && p.is_finite())) {
+                issues.push(BuildIssue::new("analytic.lattice", "lattice needs positive pitch and at least one element per axis"));
+            }
+            let count = l.dims.iter().try_fold(1usize, |acc, &d| acc.checked_mul(usize::try_from(d).ok()?));
+            let cells = count.and_then(|c| c.checked_mul(n + 1)).filter(|&c| c < u32::MAX as usize);
+            match (count, cells) {
+                (Some(c), Some(k)) if l.dims.iter().all(|&d| d <= i32::MAX as u32) => (n_elems, n_cells) = (c, k),
+                _ => issues.push(BuildIssue::new("analytic.lattice_dims", format!("lattice dims {:?} give too many elements or cells", l.dims))),
+            }
         }
         // Element box in the element frame.
         let ebox = match &lattice {
@@ -455,7 +471,6 @@ impl AnalyticWorld {
         }
         let diag = (domain.hi - domain.lo).norm();
         let tol = ModelTolerance::for_extent(diag);
-        let n_elems = lattice.map_or(1, |l| l.dims.iter().map(|&d| d as usize).product());
         let mut w = Self {
             shapes,
             lattice,
@@ -464,7 +479,7 @@ impl AnalyticWorld {
             actions,
             regions: RegionTable(regions),
             surfaces: SurfaceTable(surfaces),
-            info: TrackerInfo::new(domain, n_elems * (n + 1), ContentHash(0)),
+            info: TrackerInfo::new(domain, n_cells, ContentHash(0)),
             tol,
             block_size: 256,
             recovery: RecoveryPolicy::Fail,
@@ -737,7 +752,8 @@ impl AnalyticWorld {
         let lattice = if r.u()? == 1 {
             let origin = r.pt()?;
             let pitch = [r.f()?, r.f()?, r.f()?];
-            let dims = [r.u()? as u32, r.u()? as u32, r.u()? as u32];
+            let mut d = || u32::try_from(r.u()?).map_err(|_| RtError::CacheCorrupt("lattice dimension exceeds u32".into()));
+            let dims = [d()?, d()?, d()?];
             Some(RectLattice { origin, pitch, dims })
         } else {
             None
@@ -757,7 +773,8 @@ impl AnalyticWorld {
                     let mut tr = Transform::IDENTITY;
                     tr.m = m;
                     tr.t = t;
-                    FaceAction::Wrap { transform: tr, mate: FaceId(r.u()? as u32) }
+                    let mate = u32::try_from(r.u()?).map_err(|_| RtError::CacheCorrupt("face id exceeds u32".into()))?;
+                    FaceAction::Wrap { transform: tr, mate: FaceId(mate) }
                 }
                 3 => {
                     let code = r.u()?;
@@ -938,7 +955,7 @@ impl Tracker for AnalyticWorld {
     fn face_normal(&self, f: FaceId, p: Point3) -> Result<Vector3> {
         let n = self.n();
         if f.get() < n {
-            let idx = self.elem_at(p, None).ok_or(RtError::NonFinite("point outside the domain"))?;
+            let idx = self.elem_at(p, None).ok_or(RtError::InvalidInput("point outside the domain"))?;
             return self.shapes[f.get()].outward_normal(shift(p, self.offset(idx)));
         }
         let k = f.get() - n;
@@ -961,7 +978,7 @@ impl Tracker for AnalyticWorld {
         let parts: Vec<Result<TrackBundle>> = rays.par_chunks(self.block_size).map(|b| self.trace_bundle_block(b, opts, &mut Scratch::new())).collect();
         let mut all = TrackBundle::new();
         for p in parts {
-            all.append(&p?);
+            all.append(&p?)?;
         }
         Ok(all)
     }
@@ -991,7 +1008,7 @@ impl StubBuilder {
                 if l.outer.is_some() || !l.fill.iter().copied().all(leaf) {
                     return Err(RtError::Unsupported("stub lattices need every slot to be leaf 0 and no outer fill"));
                 }
-                Ok((Some(RectLattice { origin: l.origin, pitch, dims: l.dims }), warnings))
+                Ok((Some(RectLattice::new(l.origin, pitch, l.dims)), warnings))
             }
             _ => Err(RtError::Unsupported("stub worlds are a lone leaf or one rect lattice of leaf 0")),
         }
@@ -1717,5 +1734,69 @@ mod tests {
             // Pointing at the sphere from outside the domain.
             assert_eq!(compat::ray_fire(&w, RegionId(0), p(-10.0, 0.0, 0.0), v(1.0, 0.0, 0.0), o, None, &mut sc).unwrap(), RayFire::Miss, "{o:?}");
         }
+    }
+
+    #[test]
+    fn bad_uniforms_are_rejected_and_leave_the_state_alone() {
+        let w = world(vec![], vac());
+        let mut sc = Scratch::new();
+        let mut st = w.init_state(p(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        let r = w.fire(&mut st, f64::INFINITY, 10, &mut sc).unwrap();
+        let StepEnd::Boundary { face, .. } = r.end else { panic!() };
+        let before = st.clone();
+        for (k, u) in [
+            (ResponseKind::White, [-0.1, 0.5]),
+            (ResponseKind::White, [f64::NAN, 0.5]),
+            (ResponseKind::White, [0.5, 1.5]),
+            (ResponseKind::Albedo(0.5), [f64::NAN, 0.0]),
+            (ResponseKind::Albedo(0.5), [2.0, 0.0]),
+        ] {
+            assert!(matches!(w.resolve_boundary(&mut st, face, k, u), Err(RtError::InvalidInput(_))), "{k:?} {u:?}");
+            assert_eq!(st, before);
+        }
+        // Edge values are legal.
+        assert!(w.resolve_boundary(&mut st, face, ResponseKind::White, [0.0, 1.0]).is_ok());
+    }
+
+    #[test]
+    fn hostile_lattices_error_instead_of_panicking() {
+        let hostile = |dims: [u32; 3]| WorldSpec::new(
+            vec![ComponentKind::Leaf { input: 0 }, ComponentKind::Lattice(Lattice::new(LatticeKind::Rect { pitch: [6.0; 3] }, p(0.0, 0.0, 0.0), dims, vec![], None))],
+            ComponentId(1),
+            InstancePolicy::Hierarchical,
+        );
+        let opts = BuildOptions::default();
+        for dims in [[u32::MAX; 3], [1 << 31, 1, 1], [0, 1, 1], [70_000, 70_000, 1]] {
+            let spec = hostile(dims);
+            assert!(matches!(spec.validate(1), Err(RtError::Build(_))), "{dims:?}");
+            assert!(builder().build(&BuildInput::World(&spec), &opts).is_err(), "{dims:?}");
+        }
+        // Direct construction path.
+        let l = RectLattice::new(p(0.0, 0.0, 0.0), [1.0; 3], [u32::MAX; 3]);
+        assert!(AnalyticWorld::with_lattice(vec![], l, [FaceAction::Respond(vac()); 6]).is_err());
+        let l = RectLattice::new(p(0.0, 0.0, 0.0), [1.0; 3], [1 << 31, 1, 1]);
+        assert!(AnalyticWorld::with_lattice(vec![], l, [FaceAction::Respond(vac()); 6]).is_err());
+        // Cache bytes carrying hostile dims fail in load, not by panicking.
+        let good = lattice_spec([2, 1, 1]);
+        let b = builder();
+        let input = BuildInput::World(&good);
+        let (built, _) = b.build(&input, &opts).unwrap();
+        let mut image = built.export_cache().unwrap();
+        for dims in [[u64::MAX; 3], [u64::from(u32::MAX); 3], [1 << 31, 1, 1]] {
+            let mut sec = image.section(SectionTag::Private(0)).unwrap().to_vec();
+            // Layout: n, shapes (7 words each), lattice flag, origin(3), pitch(3), dims(3).
+            let at = 8 * (1 + 7 * 2 + 1 + 3 + 3);
+            for (i, d) in dims.iter().enumerate() {
+                sec[at + 8 * i..at + 8 * i + 8].copy_from_slice(&d.to_le_bytes());
+            }
+            image.sections = vec![(SectionTag::Private(0), sec)];
+            assert!(b.load(&input, &opts, &image).is_err(), "{dims:?}");
+        }
+    }
+
+    #[test]
+    fn face_normal_outside_the_domain_is_invalid_input() {
+        let w = world(vec![sphere(1.0)], vac());
+        assert!(matches!(w.face_normal(FaceId::new(0), p(100.0, 0.0, 0.0)), Err(RtError::InvalidInput(_))));
     }
 }

@@ -12,7 +12,7 @@ fn world() -> AnalyticWorld {
         Shape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 1.0 },
         Shape::Box { lo: Point3::new(1.2, -0.3, -0.3), hi: Point3::new(1.8, 0.3, 0.3) },
     ];
-    let l = RectLattice { origin: Point3::new(0.0, 0.0, 0.0), pitch: [4.0; 3], dims: [6, 5, 3] };
+    let l = RectLattice::new(Point3::new(0.0, 0.0, 0.0), [4.0; 3], [6, 5, 3]);
     AnalyticWorld::with_lattice(shapes, l, [FaceAction::Respond(ResponseKind::Vacuum); 6]).unwrap().with_block_size(37)
 }
 

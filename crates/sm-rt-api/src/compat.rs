@@ -1,6 +1,6 @@
 //! DAGMC-shaped queries as thin functions over [`Tracker`], so a code written against DAGMC
 //! (`ray_fire`, `point_in_volume`, `next_vol`, `surface_sense`, `get_angle`) ports without
-//! restructuring. They add no state: each is a few lines over `locate`, `fire` and the tables.
+//! restructuring. They add no state: each is a few lines over `locate`, `step` and the tables.
 //!
 //! Conventions (these differ from DAGMC only where DAGMC is random or ambiguous):
 //! * a *volume* is a [`RegionId`], a *surface* is a [`SurfaceId`];
@@ -31,6 +31,7 @@ pub enum RayOrientation {
 
 /// A surface hit found by [`ray_fire`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct FireHit {
     /// The surface hit (DAGMC `next_surf`).
     pub surface: SurfaceId,
@@ -40,6 +41,13 @@ pub struct FireHit {
     pub dist: f64,
     /// Region on the other side; `RegionId::NONE` at a model boundary.
     pub to_region: RegionId,
+}
+
+impl FireHit {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(surface: SurfaceId, face: FaceId, dist: f64, to_region: RegionId) -> Self {
+        Self { surface, face, dist, to_region }
+    }
 }
 
 /// Outcome of [`ray_fire`].
@@ -85,11 +93,13 @@ pub fn ray_fire<T: Tracker + ?Sized>(
     let limit = dist_limit.unwrap_or(f64::INFINITY);
     let max = t.info().max_events;
     let mut total = 0.0;
+    // One step budget in total (`max` events), spent directly on `step`: calling `fire` per
+    // region change would allow up to `max^2` steps.
     for _ in 0..max {
         let from = st.region;
-        let r = t.fire(&mut st, limit - total, max, scratch)?;
-        total += r.dist;
-        match r.end {
+        let s = t.step(&mut st, limit - total, scratch)?;
+        total += s.dist;
+        match s.end {
             StepEnd::Limit => return Ok(RayFire::Miss),
             StepEnd::Lost(l) => return Ok(RayFire::Lost(l)),
             StepEnd::RegionBoundary { surface, face, to_region, .. } => {
@@ -99,7 +109,7 @@ pub fn ray_fire<T: Tracker + ?Sized>(
                     RayOrientation::Any => from == volume || to_region == volume,
                 };
                 if accept {
-                    return Ok(RayFire::Hit(FireHit { surface, face, dist: total, to_region }));
+                    return Ok(RayFire::Hit(FireHit::new(surface, face, total, to_region)));
                 }
                 if orientation == RayOrientation::Exiting {
                     return Ok(RayFire::Miss);
@@ -107,15 +117,14 @@ pub fn ray_fire<T: Tracker + ?Sized>(
             }
             StepEnd::Boundary { surface, face, .. } => {
                 if from == volume && orientation != RayOrientation::Entering {
-                    return Ok(RayFire::Hit(FireHit { surface, face, dist: total, to_region: RegionId::NONE }));
+                    return Ok(RayFire::Hit(FireHit::new(surface, face, total, RegionId::NONE)));
                 }
                 return Ok(RayFire::Miss);
             }
-            // `fire` skips these; defensive.
             StepEnd::CellFace { .. } | StepEnd::SlotChange { .. } => {}
         }
     }
-    Ok(RayFire::Miss)
+    Ok(RayFire::Lost(crate::tracker::lost(&st, crate::error::LostCause::MaxStepsExceeded)))
 }
 
 /// DAGMC `point_in_volume`: is `p` in `volume`? On a surface the direction `dir` decides (the

@@ -27,6 +27,7 @@ pub struct Level {
 /// a ray never re-hits its entry face, and no history buffer is needed because adjacency is
 /// exact.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TrackState {
     /// Position (global frame).
     pub pos: Point3,

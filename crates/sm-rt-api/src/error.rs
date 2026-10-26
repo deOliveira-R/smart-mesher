@@ -144,6 +144,10 @@ pub enum RtError {
         /// Bins in the merged tally.
         right: usize,
     },
+    /// An argument is outside its documented domain (for example a random number outside
+    /// `[0, 1]`).
+    #[error("invalid argument: {0}")]
+    InvalidInput(&'static str),
     /// A cache image is for different inputs, options or builder version.
     #[error("tracker cache is stale: {0}")]
     CacheStale(&'static str),
@@ -172,6 +176,7 @@ impl RtError {
     /// | `Geom` | -8 |
     /// | `BadAlbedo` | -9 |
     /// | `BinCountMismatch` | -10 |
+    /// | `InvalidInput` | -11 |
     ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
@@ -186,6 +191,7 @@ impl RtError {
             Self::Geom(_) => -8,
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
+            Self::InvalidInput(_) => -11,
         }
     }
 }
@@ -199,7 +205,7 @@ mod tests {
 
     #[test]
     fn codes_are_frozen() {
-        let all: [(RtError, i32); 10] = [
+        let all: [(RtError, i32); 11] = [
             (RtError::Build(vec![]), -1),
             (RtError::BadDirection { norm: 0.0 }, -2),
             (RtError::NonFinite("x"), -3),
@@ -210,6 +216,7 @@ mod tests {
             (RtError::Geom(GeomError::Invalid("x")), -8),
             (RtError::BadAlbedo { value: 2.0 }, -9),
             (RtError::BinCountMismatch { left: 1, right: 2 }, -10),
+            (RtError::InvalidInput("x"), -11),
         ];
         for (e, c) in &all {
             assert_eq!(e.code(), *c, "{e}");

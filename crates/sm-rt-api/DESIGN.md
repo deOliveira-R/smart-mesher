@@ -54,10 +54,10 @@ the query surface; this file explains the choices.
   `FireResult`, `BoundaryHit`, `Closest`, `RegionInfo`, `SurfaceInfo`, `EndCode`, and the
   option/enum types that already were. Downstream crates construct them through `new` /
   `Default` / `with_*` builders; matching on the enums needs a wildcard arm.
-* `EndCode` is `#[repr(u8)]` with frozen discriminants (`EndCode::from_u8` decodes them).
+* `EndCode` is `#[repr(u8)]` with frozen discriminants (`EndCode::from_u8` decodes them; `Other = 9` is any end without its own code).
   `RtError::code()` values are frozen and a new variant gets the next free negative code
-  (`BinCountMismatch` is `-10`).
-* `SectionTag::Private(u16)` maps to wire codes `0x1000..=0x1FFFF`, so the code cannot
+  (`BinCountMismatch` is `-10`, `InvalidInput` `-11`).
+* `SectionTag::Private(u16)` maps to wire codes `0x1000..=0x10FFF`, so the code cannot
   overflow; other codes above the public range are rejected as corrupt.
 * The crate is `#![forbid(unsafe_code)]`. The test allocator in `tests/alloc.rs` is the only
   unsafe code, with `// SAFETY:` comments.

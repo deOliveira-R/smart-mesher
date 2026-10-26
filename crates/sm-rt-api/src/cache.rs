@@ -155,7 +155,7 @@ impl TrackerKind {
 }
 
 /// Section tags. Frozen codes; unknown tags below `0x1000` make a reader reject the image,
-/// tags `0x1000..=0x1FFFF` are implementor-private (`Private(c)` is code `0x1000 + c`, with `c`
+/// tags `0x1000..=0x10FFF` are implementor-private (`Private(c)` is code `0x1000 + c`, with `c`
 /// a `u16` so the sum cannot overflow); codes above that range are rejected as corrupt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
@@ -211,6 +211,7 @@ impl SectionTag {
 /// What a cache image must match to be reused. Decomposed so an edit invalidates only what it
 /// should: a boundary-condition edit changes `boundary_hash` and nothing about the geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CacheKey {
     /// Tracker kind.
     pub kind: TrackerKind,
@@ -226,6 +227,13 @@ pub struct CacheKey {
     pub boundary_hash: ContentHash,
     /// Hash of the build options: [`crate::BuildOptions::content_hash`].
     pub options_hash: ContentHash,
+}
+
+impl CacheKey {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(kind: TrackerKind, builder_version: u32, topology_hash: ContentHash, hierarchy_hash: ContentHash, boundary_hash: ContentHash, options_hash: ContentHash) -> Self {
+        Self { kind, builder_version, topology_hash, hierarchy_hash, boundary_hash, options_hash }
+    }
 }
 
 /// A serialized tracker: header + sections.
@@ -266,7 +274,8 @@ fn rd_u128(b: &[u8], at: usize) -> Result<u128> {
 }
 
 impl CacheImage {
-    /// Encode to bytes (layout in the module docs). Sections are written sorted by tag code.
+    /// Encode to bytes (layout in the module docs). Sections are written sorted by tag code; a
+    /// tag must appear at most once (an image with duplicates encodes but fails to decode).
     pub fn encode(&self) -> Vec<u8> {
         let mut secs: Vec<&(SectionTag, Vec<u8>)> = self.sections.iter().collect();
         secs.sort_by_key(|s| s.0.code());
@@ -297,7 +306,8 @@ impl CacheImage {
         out
     }
 
-    /// Decode and verify magic, version, alignment and every section hash.
+    /// Decode and verify magic, version, alignment, every section hash and the canonical order
+    /// (strictly ascending tag codes, so no duplicates).
     pub fn decode(b: &[u8]) -> Result<Self> {
         if b.get(..8) != Some(&MAGIC[..]) {
             return Err(RtError::CacheCorrupt("bad magic".into()));
@@ -316,6 +326,7 @@ impl CacheImage {
             return Err(RtError::CacheCorrupt("section count exceeds file".into()));
         }
         let mut sections = Vec::with_capacity(n);
+        let mut prev_code: Option<u32> = None;
         for i in 0..n {
             let at = HEADER_LEN + i * ENTRY_LEN;
             let code = rd_u32(b, at)?;
@@ -335,6 +346,10 @@ impl CacheImage {
             let Some(tag) = SectionTag::from_code(code) else {
                 return Err(RtError::CacheCorrupt(format!("unknown section {code}")));
             };
+            if prev_code.is_some_and(|p| p >= code) {
+                return Err(RtError::CacheCorrupt(format!("section {code} is duplicated or out of canonical order")));
+            }
+            prev_code = Some(code);
             sections.push((tag, data.to_vec()));
         }
         Ok(Self { key: CacheKey { kind, builder_version, topology_hash, hierarchy_hash, boundary_hash, options_hash }, sections })
@@ -404,6 +419,21 @@ mod tests {
         assert_eq!(back.section(SectionTag::FacePlanes).map(<[u8]>::len), Some(100));
         assert_eq!(back.key, img.key);
         assert_eq!(back.encode(), bytes, "encode is canonical");
+    }
+
+    #[test]
+    fn decode_rejects_duplicate_and_unsorted_sections() {
+        let img = CacheImage { key: key(1), sections: vec![(SectionTag::Bvh, vec![1]), (SectionTag::Bvh, vec![2])] };
+        assert!(matches!(CacheImage::decode(&img.encode()), Err(RtError::CacheCorrupt(_))));
+        // Swap the two directory entries of a valid image: unsorted.
+        let ok = CacheImage { key: key(1), sections: vec![(SectionTag::FacePlanes, vec![1]), (SectionTag::Bvh, vec![2])] };
+        let mut bytes = ok.encode();
+        let (a, b) = (HEADER_LEN, HEADER_LEN + ENTRY_LEN);
+        let first: Vec<u8> = bytes[a..a + ENTRY_LEN].to_vec();
+        let second: Vec<u8> = bytes[b..b + ENTRY_LEN].to_vec();
+        bytes[a..a + ENTRY_LEN].copy_from_slice(&second);
+        bytes[b..b + ENTRY_LEN].copy_from_slice(&first);
+        assert!(matches!(CacheImage::decode(&bytes), Err(RtError::CacheCorrupt(_))));
     }
 
     #[test]

@@ -69,6 +69,7 @@ pub fn hashed_direction(p: Point3) -> Vector3 {
 
 /// Where a periodic face continues (a query-only view of a [`crate::FaceAction::Wrap`] face).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct PeriodicImage {
     /// The matched face on the partner surface.
     pub face: FaceId,
@@ -76,6 +77,13 @@ pub struct PeriodicImage {
     pub to_cell: CellId,
     /// Rigid map from this face's frame to the partner's (applied to position and direction).
     pub transform: Transform,
+}
+
+impl PeriodicImage {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub const fn new(face: FaceId, to_cell: CellId, transform: Transform) -> Self {
+        Self { face, to_cell, transform }
+    }
 }
 
 /// What `resolve_boundary` did.
@@ -353,7 +361,7 @@ pub trait Tracker: Send + Sync {
                     scratch,
                 )?
             };
-            out.push_ray(&segs, &end);
+            out.push_ray(&segs, &end)?;
         }
         Ok(out)
     }
@@ -368,7 +376,7 @@ pub trait Tracker: Send + Sync {
     }
 
     /// Apply a response boundary to a state sitting on a boundary face (after
-    /// [`StepEnd::Boundary`] with a `Respond` action). `u` holds two uniforms in `[0,1)` from the
+    /// [`StepEnd::Boundary`] with a `Respond` action). `u` holds two uniforms in `[0,1]` from the
     /// caller's RNG; `White` reads both, `Albedo` reads `u[0]`, the others none.
     ///
     /// * `Vacuum`: terminate.
@@ -376,7 +384,11 @@ pub trait Tracker: Send + Sync {
     /// * `White`: cosine-law direction about the inward normal.
     /// * `Albedo(a)`: if `u[0] < a` reflect specularly and continue, else terminate. `a` outside
     ///   `[0, 1]` is `RtError::BadAlbedo`.
+    ///
+    /// A used uniform that is NaN or outside `[0, 1]` is `RtError::InvalidInput` and the state
+    /// is left unchanged.
     fn resolve_boundary(&self, st: &mut TrackState, face: FaceId, kind: ResponseKind, u: [f64; 2]) -> Result<BoundaryAction> {
+        let unit = |x: f64| (0.0..=1.0).contains(&x);
         match kind {
             ResponseKind::Vacuum => Ok(BoundaryAction::Terminate),
             ResponseKind::Reflective => reflect_specular(self, st, face),
@@ -384,9 +396,15 @@ pub trait Tracker: Send + Sync {
                 if !kind.is_valid() {
                     return Err(RtError::BadAlbedo { value: a });
                 }
+                if !unit(u[0]) {
+                    return Err(RtError::InvalidInput("random number u[0] must be finite and in [0, 1]"));
+                }
                 if u[0] < a { reflect_specular(self, st, face) } else { Ok(BoundaryAction::Terminate) }
             }
             ResponseKind::White => {
+                if !unit(u[0]) || !unit(u[1]) {
+                    return Err(RtError::InvalidInput("random numbers u must be finite and in [0, 1]"));
+                }
                 let n_in = -self.face_normal(face, st.pos)?;
                 let axis = if n_in.x.abs() < 0.9 { Vector3::new(1.0, 0.0, 0.0) } else { Vector3::new(0.0, 1.0, 0.0) };
                 let t1 = n_in.cross(axis);

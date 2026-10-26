@@ -5,7 +5,7 @@
 //! cell-ordering/tracing pass all consume the same segment stream from the same structure.
 
 use crate::cache::ContentHasher;
-use crate::error::{LostInfo, RtError};
+use crate::error::{BuildIssue, LostInfo, RtError};
 use crate::ids::{CellId, FaceId, RegionId, SurfaceId};
 use crate::boundary::{FaceAction, ResponseKind};
 use crate::state::TrackState;
@@ -168,6 +168,8 @@ pub enum EndCode {
     Lost = 7,
     /// Albedo boundary (the coefficient is in the surface table).
     Albedo = 8,
+    /// Any other end (a face action with no dedicated code, e.g. `Transmit`, or one added later).
+    Other = 9,
 }
 
 impl EndCode {
@@ -183,6 +185,7 @@ impl EndCode {
             6 => Self::Periodic,
             7 => Self::Lost,
             8 => Self::Albedo,
+            9 => Self::Other,
             _ => return None,
         })
     }
@@ -201,7 +204,7 @@ impl From<&TraceEnd> for EndCode {
                 FaceAction::Respond(ResponseKind::White) => Self::White,
                 FaceAction::Respond(ResponseKind::Albedo(_)) => Self::Albedo,
                 FaceAction::Wrap { .. } => Self::Periodic,
-                _ => Self::Limit,
+                _ => Self::Other,
             },
         }
     }
@@ -210,6 +213,7 @@ impl From<&TraceEnd> for EndCode {
 /// Segments of many rays in CSR layout: the MOC / Sn track database. Ray `i`'s segments are
 /// `offsets[i]..offsets[i+1]`. Rays appear in input order regardless of thread count.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct TrackBundle {
     /// `n_rays + 1` offsets into the segment columns.
     pub offsets: Vec<u32>,
@@ -241,29 +245,41 @@ impl TrackBundle {
     pub fn new() -> Self {
         Self { offsets: vec![0], ..Self::default() }
     }
-    /// Append one finished ray.
-    pub fn push_ray(&mut self, segs: &[Segment], end: &TraceEnd) {
+    /// Append one finished ray. Offsets are `u32`: returns `RtError::Unsupported` (and leaves
+    /// the bundle unchanged) if the segment count would pass `u32::MAX`.
+    pub fn push_ray(&mut self, segs: &[Segment], end: &TraceEnd) -> Result<(), RtError> {
+        let total = self.cell.len().checked_add(segs.len()).and_then(|t| u32::try_from(t).ok());
+        let Some(total) = total else {
+            return Err(RtError::Unsupported("track bundle exceeds u32::MAX segments"));
+        };
         for s in segs {
             self.cell.push(s.cell.0);
             self.region.push(s.region.0);
             self.length.push(s.length);
         }
-        self.offsets.push(self.cell.len() as u32);
+        self.offsets.push(total);
         self.end.push(end.into());
         self.end_surface.push(match end {
             TraceEnd::Boundary { surface, .. } => surface.0,
             _ => SurfaceId::NONE.0,
         });
+        Ok(())
     }
-    /// Append another bundle's rays after this one's (used to join per-block results in block order).
-    pub fn append(&mut self, o: &Self) {
-        let base = self.cell.len() as u32;
-        self.offsets.extend(o.offsets.iter().skip(1).map(|&x| x + base));
+    /// Append another bundle's rays after this one's (used to join per-block results in block
+    /// order). `RtError::Unsupported` (bundle unchanged) if the joined segment count would pass
+    /// `u32::MAX`.
+    pub fn append(&mut self, o: &Self) -> Result<(), RtError> {
+        let too_big = || RtError::Unsupported("track bundle exceeds u32::MAX segments");
+        let base = u32::try_from(self.cell.len()).map_err(|_| too_big())?;
+        let added = u32::try_from(o.cell.len()).map_err(|_| too_big())?;
+        base.checked_add(added).ok_or_else(too_big)?;
+        self.offsets.extend(o.offsets.iter().skip(1).map(|&x| x.saturating_add(base)));
         self.cell.extend_from_slice(&o.cell);
         self.region.extend_from_slice(&o.region);
         self.length.extend_from_slice(&o.length);
         self.end.extend_from_slice(&o.end);
         self.end_surface.extend_from_slice(&o.end_surface);
+        Ok(())
     }
     /// Stable hash of the bundle (lengths by bit pattern): equal for 1 and N threads.
     pub fn content_hash(&self) -> crate::cache::ContentHash {
@@ -302,6 +318,7 @@ pub enum TallySpec {
 
 /// Cell to bin map. A cell may be in no bin (`NO_BIN`).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct BinMap {
     /// Number of bins.
     pub n_bins: usize,
@@ -312,6 +329,23 @@ pub struct BinMap {
 impl BinMap {
     /// Cell not in any bin.
     pub const NO_BIN: u32 = u32::MAX;
+    /// A map; run [`Self::validate`] (or use [`TrackLengthTally::try_new`]) before tallying.
+    pub fn new(n_bins: usize, bin_of_cell: Vec<u32>) -> Self {
+        Self { n_bins, bin_of_cell }
+    }
+    /// Check that every assigned bin is below `n_bins`; `RtError::Build` (`tally.bin_range`)
+    /// otherwise.
+    pub fn validate(&self) -> Result<(), RtError> {
+        let issues: Vec<BuildIssue> = self
+            .bin_of_cell
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b != Self::NO_BIN && b as usize >= self.n_bins)
+            .take(8)
+            .map(|(c, &b)| BuildIssue::new("tally.bin_range", format!("cell {c} maps to bin {b}, but there are {} bins", self.n_bins)))
+            .collect();
+        if issues.is_empty() { Ok(()) } else { Err(RtError::Build(issues)) }
+    }
     /// Identity map over `n` cells.
     pub fn identity(n: usize) -> Self {
         Self { n_bins: n, bin_of_cell: (0..n as u32).collect() }
@@ -342,10 +376,16 @@ pub struct TrackLengthTally {
 }
 
 impl TrackLengthTally {
-    /// A zeroed tally.
+    /// A zeroed tally. Does not validate `bins`: a segment whose bin is out of range is
+    /// skipped. Use [`Self::try_new`] to reject such a map up front.
     pub fn new(bins: BinMap) -> Self {
         let n = bins.n_bins;
         Self { bins, acc: vec![0.0; n], weight: 1.0 }
+    }
+    /// A zeroed tally from a validated map ([`BinMap::validate`]).
+    pub fn try_new(bins: BinMap) -> Result<Self, RtError> {
+        bins.validate()?;
+        Ok(Self::new(bins))
     }
     /// Add `other` into `self`, bin by bin in index order.
     pub fn merge(&mut self, other: &Self) -> Result<(), RtError> {
@@ -361,8 +401,8 @@ impl TrackLengthTally {
 
 impl SegmentSink for TrackLengthTally {
     fn segment(&mut self, seg: &Segment) -> Flow {
-        if let Some(b) = self.bins.bin(seg.cell) {
-            self.acc[b] += self.weight * seg.length;
+        if let Some(slot) = self.bins.bin(seg.cell).and_then(|b| self.acc.get_mut(b)) {
+            *slot += self.weight * seg.length;
         }
         Flow::Continue
     }
@@ -381,8 +421,8 @@ mod tests {
     fn ray_range_is_checked() {
         let mut b = TrackBundle::new();
         let s = Segment::new(CellId(0), RegionId(0), 0.0, 1.5);
-        b.push_ray(&[s, s], &TraceEnd::Limit);
-        b.push_ray(&[], &TraceEnd::LeftModel);
+        b.push_ray(&[s, s], &TraceEnd::Limit).unwrap();
+        b.push_ray(&[], &TraceEnd::LeftModel).unwrap();
         assert_eq!(b.ray_range(0), Some(0..2));
         assert_eq!(b.ray_range(1), Some(2..2));
         assert_eq!(b.ray_range(2), None);
@@ -417,11 +457,12 @@ mod tests {
             (EndCode::Periodic, 6),
             (EndCode::Lost, 7),
             (EndCode::Albedo, 8),
+            (EndCode::Other, 9),
         ] {
             assert_eq!(c as u8, v);
             assert_eq!(EndCode::from_u8(v), Some(c));
         }
-        assert_eq!(EndCode::from_u8(9), None);
+        assert_eq!(EndCode::from_u8(10), None);
     }
 
     #[test]
@@ -430,5 +471,25 @@ mod tests {
         assert_eq!((o.max_dist, o.max_steps, o.stop_at_deck), (2.0, 7, true));
         let s = Segment::new(CellId(1), RegionId(2), 0.5, 1.0).with_faces(Some(FaceId(3)), None);
         assert_eq!((s.face_in, s.face_out), (Some(FaceId(3)), None));
+    }
+
+    #[test]
+    fn mismatched_bin_map_is_skipped_or_rejected_never_a_panic() {
+        let bad = BinMap::new(1, vec![5]);
+        assert!(matches!(bad.validate(), Err(RtError::Build(_))));
+        assert!(TrackLengthTally::try_new(bad.clone()).is_err());
+        let mut t = TrackLengthTally::new(bad);
+        let seg = Segment::new(CellId(0), RegionId(0), 0.0, 1.0);
+        assert_eq!(t.segment(&seg), Flow::Continue);
+        assert_eq!(t.acc, vec![0.0]);
+        assert!(BinMap::new(2, vec![0, BinMap::NO_BIN, 1]).validate().is_ok());
+    }
+
+    #[test]
+    fn unlisted_boundary_actions_map_to_other() {
+        let e = TraceEnd::Boundary { surface: SurfaceId(0), face: FaceId(0), action: FaceAction::Transmit };
+        assert_eq!(EndCode::from(&e), EndCode::Other);
+        assert_eq!(EndCode::from_u8(9), Some(EndCode::Other));
+        assert_eq!(EndCode::from_u8(10), None);
     }
 }

@@ -222,6 +222,7 @@ pub type ResponseMap = BTreeMap<EntityId, ResponseKind>;
 /// Boundary conditions from the deck. Deterministic: rules are an ordered `Vec`, the first
 /// matching selector wins.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct BoundarySpec {
     /// Applied to boundary faces no selector claims.
     pub default: BoundaryDef,
@@ -236,6 +237,10 @@ impl Default for BoundarySpec {
 }
 
 impl BoundarySpec {
+    /// Construct (the type is `#[non_exhaustive]`); `Default` is all-vacuum with no rules.
+    pub fn new(default: BoundaryDef, rules: Vec<(BoundarySelector, BoundaryDef)>) -> Self {
+        Self { default, rules }
+    }
     /// Add the condition of one model face, derived from the model's boundary tables
     /// (`face_boundary` row `fb` plus the `BoundaryKind` of its record `fb.boundary`).
     ///

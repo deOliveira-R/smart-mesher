@@ -15,11 +15,19 @@ use sm_core::{Point3, Transform, Vector3};
 
 /// A child placed in a `Union`.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Placement {
     /// The prototype.
     pub child: ComponentId,
     /// Placement (may be improper: mirrored copy).
     pub transform: Transform,
+}
+
+impl Placement {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(child: ComponentId, transform: Transform) -> Self {
+        Self { child, transform }
+    }
 }
 
 /// Lattice shape.
@@ -42,6 +50,7 @@ pub enum LatticeKind {
 
 /// A regular array of one or more prototypes.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Lattice {
     /// Shape.
     pub kind: LatticeKind,
@@ -56,6 +65,11 @@ pub struct Lattice {
 }
 
 impl Lattice {
+    /// Construct (the type is `#[non_exhaustive]`); [`WorldSpec::validate`] checks the result.
+    pub fn new(kind: LatticeKind, origin: Point3, dims: [u32; 3], fill: Vec<ComponentId>, outer: Option<ComponentId>) -> Self {
+        Self { kind, origin, dims, fill, outer }
+    }
+
     /// Centre of element `idx` in the lattice's parent frame.
     pub fn element_center(&self, idx: [i32; 3]) -> Point3 {
         match self.kind {
@@ -92,8 +106,31 @@ impl Lattice {
         Some([f(p.x, self.origin.x, pitch[0], self.dims[0])?, f(p.y, self.origin.y, pitch[1], self.dims[1])?, f(p.z, self.origin.z, pitch[2], self.dims[2])?])
     }
 
-    fn element_count(&self) -> usize {
-        self.dims.iter().map(|&d| d as usize).product()
+    /// Number of elements, `None` if the product overflows `usize`.
+    pub fn element_count(&self) -> Option<usize> {
+        self.dims.iter().try_fold(1usize, |acc, &d| acc.checked_mul(usize::try_from(d).ok()?))
+    }
+
+    /// Located problems with the shape (dims, pitch, origin), independent of the fill. Dims must
+    /// be non-zero, at most `i32::MAX` (indices are `i32`) and their product must fit `usize`.
+    fn shape_issues(&self, comp: usize) -> Vec<BuildIssue> {
+        let mut out = Vec::new();
+        if self.dims.contains(&0) || self.dims.iter().any(|&d| d > i32::MAX as u32) || self.element_count().is_none() {
+            out.push(BuildIssue::new("world.lattice_dims", format!("component {comp}: dims {:?} must be in 1..=i32::MAX with a product that fits usize", self.dims)));
+        }
+        let pos = |v: f64| v.is_finite() && v > 0.0;
+        let z_used = self.dims[2] > 1;
+        let pitch_ok = match self.kind {
+            LatticeKind::Rect { pitch } => pos(pitch[0]) && pos(pitch[1]) && (!z_used || pos(pitch[2])),
+            LatticeKind::Hex { pitch, z_pitch } => pos(pitch) && (!z_used || pos(z_pitch)),
+        };
+        if !pitch_ok {
+            out.push(BuildIssue::new("world.lattice_pitch", format!("component {comp}: lattice pitch must be positive and finite")));
+        }
+        if ![self.origin.x, self.origin.y, self.origin.z].iter().all(|v| v.is_finite()) {
+            out.push(BuildIssue::new("world.lattice_origin", format!("component {comp}: lattice origin is not finite")));
+        }
+        out
     }
 }
 
@@ -131,6 +168,7 @@ pub enum InstancePolicy {
 
 /// A hierarchical world.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct WorldSpec {
     /// Components, dense by `ComponentId`.
     pub components: Vec<ComponentKind>,
@@ -141,6 +179,11 @@ pub struct WorldSpec {
 }
 
 impl WorldSpec {
+    /// Construct (the type is `#[non_exhaustive]`); [`Self::validate`] checks the result.
+    pub fn new(components: Vec<ComponentKind>, root: ComponentId, policy: InstancePolicy) -> Self {
+        Self { components, root, policy }
+    }
+
     /// Check ids, lattice fills and acyclicity. Errors are `RtError::Build` (located by message;
     /// components have no model entity). On success returns warnings: a hierarchy with more than
     /// [`crate::LEVEL_INLINE`] levels below the root is legal (the level stack spills to the
@@ -169,8 +212,13 @@ impl WorldSpec {
                     }
                 }
                 ComponentKind::Lattice(l) => {
-                    if l.fill.len() != l.element_count() {
-                        issues.push(BuildIssue::new("world.lattice_fill", format!("component {i}: fill has {} entries, dims need {}", l.fill.len(), l.element_count())));
+                    let shape = l.shape_issues(i);
+                    let shape_ok = shape.is_empty();
+                    issues.extend(shape);
+                    if let (true, Some(need)) = (shape_ok, l.element_count())
+                        && l.fill.len() != need
+                    {
+                        issues.push(BuildIssue::new("world.lattice_fill", format!("component {i}: fill has {} entries, dims need {need}", l.fill.len())));
                     }
                     if l.fill.iter().chain(l.outer.iter()).any(|&c| !ok(c)) {
                         issues.push(BuildIssue::new("world.child", format!("component {i}: lattice fill references a missing component")));
@@ -362,6 +410,30 @@ mod tests {
             policy: InstancePolicy::Hierarchical,
         };
         assert_eq!(diamond.depth(), Some(3));
+    }
+
+    #[test]
+    fn hostile_lattice_shapes_are_rejected_not_panicked() {
+        let code_of = |mutate: &dyn Fn(&mut Lattice)| {
+            let mut w = pin_lattice();
+            if let ComponentKind::Lattice(l) = &mut w.components[1] {
+                mutate(l);
+            }
+            match w.validate(1) {
+                Err(RtError::Build(v)) => v.iter().map(|i| i.code).collect::<Vec<_>>(),
+                _ => vec![],
+            }
+        };
+        assert!(code_of(&|l| l.dims = [u32::MAX; 3]).contains(&"world.lattice_dims"));
+        assert!(code_of(&|l| l.dims = [1 << 31, 1, 1]).contains(&"world.lattice_dims"));
+        assert!(code_of(&|l| l.dims = [0, 17, 1]).contains(&"world.lattice_dims"));
+        assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [0.0, 1.0, 1.0] }).contains(&"world.lattice_pitch"));
+        assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [f64::NAN, 1.0, 1.0] }).contains(&"world.lattice_pitch"));
+        assert!(code_of(&|l| l.kind = LatticeKind::Hex { pitch: -1.0, z_pitch: 1.0 }).contains(&"world.lattice_pitch"));
+        assert!(code_of(&|l| l.origin = Point3::new(f64::INFINITY, 0.0, 0.0)).contains(&"world.lattice_origin"));
+        // 2D lattice: z pitch is ignored.
+        assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [1.0, 1.0, 0.0] }).is_empty());
+        assert_eq!(Lattice::new(LatticeKind::Rect { pitch: [1.0; 3] }, Point3::new(0.0, 0.0, 0.0), [u32::MAX; 3], vec![], None).element_count(), None);
     }
 
     #[test]
