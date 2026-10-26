@@ -365,12 +365,13 @@ impl<E: TopologyEdit + ?Sized> Applier<'_, E> {
             let [c0, c1] = self.topo.split_face(f, cut, inner)?;
             let rest: Vec<Cut> = cuts.iter().enumerate().filter(|(i, _)| !step.used.contains(i)).map(|(_, c)| *c).collect();
             let (mut r0, mut r1) = (Vec::new(), Vec::new());
+            let cache = faceclass::FaceCache::new();
             for c in rest {
-                let (class, _) = faceclass::classify(&*self.topo, c0, c.mid, self.lin)?;
+                let (class, _) = faceclass::classify(&*self.topo, &cache, c0, c.mid, self.lin)?;
                 if class == PointClass::In {
                     r0.push(c);
                 } else {
-                    let (class1, _) = faceclass::classify(&*self.topo, c1, c.mid, self.lin)?;
+                    let (class1, _) = faceclass::classify(&*self.topo, &cache, c1, c.mid, self.lin)?;
                     if class1 != PointClass::In {
                         return Err(BooleanError::Unsupported("a cut lies on neither side of the cut just inserted (crossing cuts inside a face)"));
                     }

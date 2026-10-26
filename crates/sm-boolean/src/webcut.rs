@@ -190,9 +190,10 @@ pub fn webcut<E: TopologyEdit + ?Sized>(topo: &mut E, targets: &[EntityId], tool
             n_out: Vector3,
             positive: bool,
         }
+        let fcache = faceclass::FaceCache::new();
         let mut frags: Vec<Frag> = Vec::with_capacity(faces_now.len());
         for &f in &faces_now {
-            let p = faceclass::interior_point(&*topo, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
+            let p = faceclass::interior_point(&*topo, &fcache, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
             let (nf, _, _) = geo::face_normal_near(&*topo, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
             let sense = topo.face_use_in(f, v).first().copied().unwrap_or(Sense::Forward);
             let n_out = nf * sense.sign();
@@ -343,7 +344,7 @@ fn side_of_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, tool: EntityId,
 
 fn try_side_of_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, tool: EntityId, lin: f64) -> Result<Option<bool>, BooleanError> {
     let Some(imp) = view.shapes().implicit(tool) else { return Err(BooleanError::Unsupported("the tool has no implicit form")) };
-    let Some(p) = faceclass::interior_point(view, f)? else { return Ok(None) };
+    let Some(p) = faceclass::interior_point(view, &faceclass::FaceCache::new(), f)? else { return Ok(None) };
     let val = imp.value(p);
     Ok((val.abs() > 10.0 * lin).then_some(val > 0.0))
 }

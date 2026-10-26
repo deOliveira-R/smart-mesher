@@ -28,6 +28,7 @@ fn sense_of(side: Side) -> Sense {
 /// the error.
 pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId, Side)], probe: EntityId, rule: &'static str) -> Result<Vec<ShellGroup>, BooleanError> {
     let invalid = || BooleanError::ResultInvalid { volume: probe, rule };
+    let cache = faceclass::FaceCache::new();
     let lin = view.tolerance().linear;
     let tol = *view.tolerance();
     let n = uses.len();
@@ -85,11 +86,11 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
         let delta = (1e-3 * diag).max(100.0 * lin);
         let mut verdict: Option<bool> = None;
         for &(f, sense) in su {
-            let Some(p) = faceclass::interior_point(view, f)? else { continue };
+            let Some(p) = faceclass::interior_point(view, &cache, f)? else { continue };
             let (nf, _, _) = geo::face_normal_near(view, f, p).ok_or(BooleanError::Unsupported("cannot evaluate a face normal"))?;
             let n_out = nf * sense.sign();
             let q = Point3::new(p.x - delta * n_out.x, p.y - delta * n_out.y, p.z - delta * n_out.z);
-            match locate::locate_in_uses(view, su, q, &tol) {
+            match locate::locate_in_uses(view, &cache, su, q, &tol) {
                 Ok(PointLocation::In) => {
                     verdict = Some(true);
                     break;
@@ -113,10 +114,10 @@ pub(crate) fn group_shells<V: TopologyView + ?Sized>(view: &V, uses: &[(EntityId
             continue;
         }
         let f = shell_uses[i][0].0;
-        let p = faceclass::interior_point(view, f)?.ok_or_else(invalid)?;
+        let p = faceclass::interior_point(view, &cache, f)?.ok_or_else(invalid)?;
         let mut best: Option<(f64, usize)> = None;
         for &o in &outers {
-            if locate::locate_in_uses(view, &shell_uses[o], p, &tol)? == PointLocation::In {
+            if locate::locate_in_uses(view, &cache, &shell_uses[o], p, &tol)? == PointLocation::In {
                 let mut bbox = sm_core::Aabb::empty();
                 for &(g, _) in &shell_uses[o] {
                     bbox = bbox.union(&geo::face_aabb(view, g, 0.0));

@@ -60,10 +60,10 @@ pub(crate) fn volume_uses<V: TopologyView + ?Sized>(view: &V, volume: EntityId) 
 }
 
 /// Locate `p` against a region given by its boundary uses.
-pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, uses: &[Use], p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, uses: &[Use], p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
     // 1. On: distance to every face.
     for &(f, _) in uses {
-        if on_face(view, f, p, tol.linear)? {
+        if on_face(view, cache, f, p, tol.linear)? {
             return Ok(PointLocation::On);
         }
     }
@@ -93,7 +93,7 @@ pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, uses: &[Use], p
                         Err(_) => continue,
                     },
                 };
-                match crate::faceclass::classify_uv(view, f, Uv::new(uv.u, uv.v), tol.linear)?.0 {
+                match crate::faceclass::classify_uv(view, cache, f, Uv::new(uv.u, uv.v), tol.linear)?.0 {
                     PointClass::Out => continue,
                     PointClass::On => {
                         last_ambiguous = Some(f);
@@ -139,13 +139,13 @@ pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, uses: &[Use], p
 }
 
 /// True if `p` lies on face `f` within `tol` (on the surface and inside or on the boundary).
-pub(crate) fn on_face<V: TopologyView + ?Sized>(view: &V, f: EntityId, p: Point3, tol: f64) -> Result<bool, BooleanError> {
+pub(crate) fn on_face<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, f: EntityId, p: Point3, tol: f64) -> Result<bool, BooleanError> {
     let Some((surf, _)) = geo::face_surface(view, f) else { return Ok(false) };
     let Ok(pr) = surf.project(p, None) else { return Ok(false) };
     if pr.distance > tol {
         return Ok(false);
     }
-    Ok(matches!(crate::faceclass::classify_uv(view, f, pr.uv, tol)?.0, PointClass::In | PointClass::On))
+    Ok(matches!(crate::faceclass::classify_uv(view, cache, f, pr.uv, tol)?.0, PointClass::In | PointClass::On))
 }
 
 /// Where `p` is relative to `volume`: inside, on its boundary (within the model's linear
@@ -167,5 +167,5 @@ pub fn locate_point(view: &dyn TopologyView, volume: EntityId, p: Point3) -> Res
     }
     let uses = volume_uses(view, volume);
     let tol = *view.tolerance();
-    locate_in_uses(view, &uses, p, &tol)
+    locate_in_uses(view, &crate::faceclass::FaceCache::new(), &uses, p, &tol)
 }

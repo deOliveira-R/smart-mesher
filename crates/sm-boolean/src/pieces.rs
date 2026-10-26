@@ -204,8 +204,9 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
         },
         Other::Surface(s) => (s.clone(), None),
     };
+    let cache = faceclass::FaceCache::new();
     let window = window_of(view, a, &spec.b, window_pad);
-    let opts = SsiOptions::new(tol).with_window(window).with_chord_tol(10.0 * lin);
+    let opts = SsiOptions::new(tol).with_window(window).with_chord_tol(100.0 * lin);
     let bid = bface.unwrap_or(a);
     let res = intersect_surfaces(sa, &sb, &opts).map_err(|e| BooleanError::Ssi { a, b: bid, source: e })?;
     let mut out = PairOut { pieces: Vec::new(), coincident: false, tangent: Vec::new(), any_curves: false, next_idx: 0 };
@@ -216,8 +217,8 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
             out.coincident = true;
             if let Some(b) = bface {
                 // Boundary of B inside A (target slot 0), boundary of A inside B (slot 1).
-                coplanar_pieces(view, b, a, 0, lin, &mut out)?;
-                coplanar_pieces(view, a, b, 1, lin, &mut out)?;
+                coplanar_pieces(view, &cache, b, a, 0, lin, &mut out)?;
+                coplanar_pieces(view, &cache, a, b, 1, lin, &mut out)?;
             }
         }
         SsiResult::Curves(curves) => {
@@ -236,7 +237,7 @@ fn compute_pair<V: TopologyView + ?Sized>(view: &V, spec: &PairSpec, window_pad:
                 if !(range.lo.is_finite() && range.hi.is_finite()) {
                     return Err(BooleanError::Unsupported("an intersection curve is unbounded: the window did not clip it"));
                 }
-                clip_curve(view, a, bface, sa, &sb, &def, range, closed, ci, lin, &mut out)?;
+                clip_curve(view, &cache, a, bface, sa, &sb, &def, range, closed, ci, lin, &mut out)?;
                 out.next_idx = out.next_idx.max(ci + 1);
             }
         }
@@ -281,6 +282,7 @@ fn edge_breakpoints<V: TopologyView + ?Sized>(view: &V, face: EntityId, other: &
 #[allow(clippy::too_many_arguments)]
 fn clip_curve<V: TopologyView + ?Sized>(
     view: &V,
+    cache: &faceclass::FaceCache,
     a: EntityId,
     b: Option<EntityId>,
     sa: &SurfaceDef,
@@ -371,9 +373,9 @@ fn clip_curve<V: TopologyView + ?Sized>(
             continue;
         }
         let mid = c.eval(0.5 * (t0 + t1));
-        let ca = faceclass::classify(view, a, mid, lin)?.0;
+        let ca = faceclass::classify(view, cache, a, mid, lin)?.0;
         let cb = match b {
-            Some(b) => faceclass::classify(view, b, mid, lin)?.0,
+            Some(b) => faceclass::classify(view, cache, b, mid, lin)?.0,
             None => PointClass::In,
         };
         if ca == PointClass::Out || cb == PointClass::Out {
@@ -404,7 +406,7 @@ fn clip_curve<V: TopologyView + ?Sized>(
 
 /// Boundary edges of `src_face` clipped to the interior of `into` (both on one surface):
 /// cut pieces for `into`.
-fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, src_face: EntityId, into: EntityId, slot: u8, lin: f64, out: &mut PairOut) -> Result<(), BooleanError> {
+fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, src_face: EntityId, into: EntityId, slot: u8, lin: f64, out: &mut PairOut) -> Result<(), BooleanError> {
     let into_edges = unique_edges(view, into);
     for e in unique_edges(view, src_face) {
         let curve_idx = out.next_idx;
@@ -433,7 +435,7 @@ fn coplanar_pieces<V: TopologyView + ?Sized>(view: &V, src_face: EntityId, into:
                 continue;
             }
             let mid = def.as_curve().eval(0.5 * (t0 + t1));
-            let class = faceclass::classify(view, into, mid, lin)?.0;
+            let class = faceclass::classify(view, cache, into, mid, lin)?.0;
             if class != PointClass::In {
                 continue;
             }

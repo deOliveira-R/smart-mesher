@@ -94,13 +94,14 @@ pub fn imprint_bodies<E: TopologyEdit + ?Sized>(topo: &mut E, bodies_in: &[Entit
     }
     // Coincident pairs: record the state of the fragments that now match exactly.
     let lin = tol.linear;
+    let cache = faceclass::FaceCache::new();
     for &(a, b) in &computed.coincident {
         let fa = fragments.get(&a).cloned().unwrap_or_else(|| vec![a]);
         let fb = fragments.get(&b).cloned().unwrap_or_else(|| vec![b]);
         for &x in &fa {
-            let Some(p) = faceclass::interior_point(&*topo, x)? else { continue };
+            let Some(p) = faceclass::interior_point(&*topo, &cache, x)? else { continue };
             for &y in &fb {
-                if crate::locate::on_face(&*topo, y, p, lin)? && same_boundary(&*topo, x, y, lin) {
+                if crate::locate::on_face(&*topo, &cache, y, p, lin)? && same_boundary(&*topo, x, y, lin) {
                     topo.record_coincidence(x.min(y), x.max(y), Coincidence::ImprintedNotMerged)?;
                 }
             }

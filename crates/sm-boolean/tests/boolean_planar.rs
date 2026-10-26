@@ -83,3 +83,21 @@ fn intersect_and_subtract_regularized() {
     assert!((volume_of(&t, out.volumes[0]) - 4.0).abs() < 1e-12);
     assert_eq!(counts(&t), [8, 12, 6, 1, 1]);
 }
+
+#[test]
+fn keep_leaves_the_inputs_untouched() {
+    use sm_topo_api::{Dim, TopologyViewExt};
+    let (mut t, a, b) = two([0.0; 3], [2.0; 3], [1.0, 0.0, 0.0], [2.0; 3]);
+    let before: Vec<(sm_core::EntityId, Vec<sm_topo_api::Incidence>)> = [a.volume, b.volume].iter().flat_map(|&v| t.closure(v)).map(|c| (c, t.boundary(c).to_vec())).collect();
+    let o = BoolOptions { keep: true, ..BoolOptions::default() };
+    let out = in_op(&mut t, 3, |t| boolean(t, BoolRule::Unite, &[a.body], &[b.body], &o)).unwrap();
+    assert_valid(&t);
+    for (c, row) in &before {
+        assert!(t.is_alive(*c));
+        assert_eq!(t.boundary(*c), row.as_slice(), "{c} changed");
+    }
+    assert!(out.volumes.iter().all(|v| *v != a.volume && *v != b.volume));
+    assert!((volume_of(&t, out.volumes[0]) - 12.0).abs() < 1e-12);
+    assert_eq!(t.cells(Dim::Volume).len(), 3);
+    assert_eq!(t.cells(Dim::Body).len(), 3);
+}

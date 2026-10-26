@@ -66,7 +66,7 @@ fn unify_surface<E: TopologyEdit + ?Sized>(topo: &mut E, keep: EntityId, drop: E
     if sk.surface == sd.surface {
         return Ok(sk.sense == sd.sense);
     }
-    let Some(p) = crate::faceclass::interior_point(&*topo, drop)? else { return Ok(false) };
+    let Some(p) = crate::faceclass::interior_point(&*topo, &crate::faceclass::FaceCache::new(), drop)? else { return Ok(false) };
     let (Some((nk_surf, _)), Some((nd_surf, _))) = (surface_normal(&*topo, sk.surface, p), surface_normal(&*topo, sd.surface, p)) else { return Ok(false) };
     let n_drop = nd_surf * sd.sense.sign();
     let dot = n_drop.dot(nk_surf);

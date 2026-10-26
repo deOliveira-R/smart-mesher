@@ -93,18 +93,19 @@ fn outward_normal<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId
 }
 
 /// Class of a fragment, with its interior probe point and its outward normal there.
-fn classify_frag<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId, other: EntityId, other_uses: &[locate::Use]) -> Result<(Class, Point3, Vector3), BooleanError> {
+fn classify_frag<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, f: EntityId, own: EntityId, other: EntityId, other_uses: &[locate::Use]) -> Result<(Class, Point3, Vector3), BooleanError> {
     let tol = *view.tolerance();
     let lin = tol.linear;
-    let p = faceclass::interior_point(view, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
+    let p = faceclass::interior_point(view, cache, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
     let n_own = outward_normal(view, f, own, p)?;
     for &(g, _) in other_uses {
-        if locate::on_face(view, g, p, lin)? {
+        if locate::on_face(view, cache, g, p, lin)? {
             let n_g = outward_normal(view, g, other, p)?;
             return Ok((if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite }, p, n_own));
         }
     }
-    match locate::locate_in_uses(view, other_uses, p, &tol)? {
+    let loc = locate::locate_in_uses(view, cache, other_uses, p, &tol)?;
+    match loc {
         PointLocation::In => Ok((Class::In, p, n_own)),
         PointLocation::Out => Ok((Class::Out, p, n_own)),
         PointLocation::On => Err(BooleanError::Ambiguous { face: f, point: p }),
@@ -186,17 +187,17 @@ pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[Enti
             let mut bodies_now: BTreeMap<EntityId, EntityId> = BTreeMap::new();
             for &tool in &vb {
                 let mut next: Vec<EntityId> = Vec::new();
-                let mut any_overlap = false;
-                for &t in &current {
-                    let s = fuse2(topo, rule, t, tool, o)?;
-                    any_overlap = true;
+                let last = current.len().saturating_sub(1);
+                for (ti, &t) in current.iter().enumerate() {
+                    // Every fuse consumes its tool: all but the last target get a copy.
+                    let tool_now = if ti < last { crate::copy::copy_volume(topo, tool)? } else { tool };
+                    let s = fuse2(topo, rule, t, tool_now, o)?;
                     for (v, nb) in s.volumes.iter().zip(&s.bodies) {
                         bodies_now.insert(*v, *nb);
                     }
                     new_faces.extend(s.new_faces.iter().copied());
                     next.extend(s.volumes);
                 }
-                let _ = any_overlap;
                 if next.is_empty() {
                     return Err(BooleanError::EmptyResult);
                 }
@@ -251,20 +252,21 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
         let ps: Vec<&pieces::Piece> = computed.pieces.iter().collect();
         let order: Vec<EntityId> = fa.iter().chain(fb.iter()).copied().collect();
         arrange::apply(topo, &ps, lin, &order)?;
-    }
+        }
     // 5. Classification.
     let fa_now: Vec<EntityId> = topo.volume_faces(va).to_vec();
     let fb_now: Vec<EntityId> = topo.volume_faces(vb).to_vec();
     let uses_a = locate::volume_uses(&*topo, va);
     let uses_b = locate::volume_uses(&*topo, vb);
+    let cache = faceclass::FaceCache::new();
     let mut class_a: Vec<(EntityId, Class, Point3, Vector3)> = Vec::new();
     for &f in &fa_now {
-        let (c, p, n) = classify_frag(&*topo, f, va, vb, &uses_b)?;
+        let (c, p, n) = classify_frag(&*topo, &cache, f, va, vb, &uses_b)?;
         class_a.push((f, c, p, n));
     }
     let mut class_b: Vec<(EntityId, Class, Point3, Vector3)> = Vec::new();
     for &f in &fb_now {
-        let (c, p, n) = classify_frag(&*topo, f, vb, va, &uses_a)?;
+        let (c, p, n) = classify_frag(&*topo, &cache, f, vb, va, &uses_a)?;
         class_b.push((f, c, p, n));
     }
     let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
