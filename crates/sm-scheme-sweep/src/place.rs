@@ -342,7 +342,13 @@ pub fn place_layers(
         for (s, p) in bsrc.iter().zip(&c) {
             mean = mean + (*p - *s);
         }
-        let mean = mean * (1.0 / nb as f64);
+        let mut mean = mean * (1.0 / nb as f64);
+        // Identical displacements (the common lattice case) are used as they are, so no
+        // rounding enters through the sum.
+        let d0 = c[0] - bsrc[0];
+        if bsrc.iter().zip(&c).all(|(s, p)| *p - *s == d0) {
+            mean = d0;
+        }
         let tol = TRANSLATION_TOL * scale;
         if bsrc
             .iter()
