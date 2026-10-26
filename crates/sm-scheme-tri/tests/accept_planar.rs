@@ -155,11 +155,7 @@ fn acc4_twenty_degrees_on_disc_annulus_and_l_shape() {
         (loops2d::rectangle_with_holes(), 0.5),
     ];
     for (r, h) in cases {
-        let fx = if r.name == "annulus_48_96" {
-            planar_face(&r, 0.0).unwrap()
-        } else {
-            planar_face(&r, 0.0).unwrap()
-        };
+        let fx = planar_face(&r, 0.0).unwrap();
         let (out, s) = run_probe(&fx, h, serde_json::json!({}));
         let ang = min_angle_deg(&out.finished.mesh);
         println!("{}: N={} min angle {ang:.3} unfixable {}", r.name, out.finished.mesh.cell_count(), s.unfixable);

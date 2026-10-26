@@ -270,7 +270,7 @@ pub fn angles_deg(t: &[Point3; 3]) -> [f64; 3] {
 pub fn min_angle_deg(m: &ReferenceMesh) -> f64 {
     tri_points(m)
         .iter()
-        .flat_map(|t| angles_deg(t))
+        .flat_map(angles_deg)
         .fold(f64::INFINITY, f64::min)
 }
 

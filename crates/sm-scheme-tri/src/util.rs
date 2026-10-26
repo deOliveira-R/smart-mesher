@@ -11,3 +11,10 @@ pub(crate) fn pow2_ceil(x: f64) -> f64 {
     let e = if mant == 0 { exp } else { exp + 1 };
     f64::from_bits((e as u64) << 52)
 }
+
+/// True for a strictly positive number (false for NaN): the readable form of `!(x > 0.0)`'s
+/// complement.
+#[inline]
+pub(crate) fn is_pos(x: f64) -> bool {
+    x > 0.0
+}

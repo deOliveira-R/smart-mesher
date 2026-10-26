@@ -1,7 +1,7 @@
 //! The `trimesh` / `tridelaunay` schemes: params, applicability and generation.
 
 use crate::cdt::{
-    Cdt, Geometry2, OptimizeOptions, Pslg, RefineOptions, Segment, SegmentKind,
+    Cdt, OptimizeOptions, Pslg, RefineOptions, Segment, SegmentKind,
 };
 use crate::chart::{ChartLoop, FaceChart};
 use crate::error::TriError;
@@ -284,7 +284,7 @@ fn smallest_corner_deg(cx: &GenCtx<'_>, face: EntityId) -> f64 {
 ///
 /// Exposed so tests (and the stretch front) can inspect the exact chart-space triangulation.
 pub struct FaceTriangulation<'a> {
-    /// The chart (also the kernel's [`Geometry2`]).
+    /// The chart (also the kernel's [`crate::cdt::Geometry2`]).
     pub chart: FaceChart<'a>,
     /// The lifted boundary loops (with pole fans).
     pub loops: Vec<ChartLoop>,
@@ -309,7 +309,23 @@ pub fn triangulate_chart<'a>(
 ) -> Result<FaceTriangulation<'a>, TriError> {
     let (chart, loops) = FaceChart::lift(cx, face)?;
     let asm = assemble(cx, face, &chart, &loops)?;
-    let mut cdt = Cdt::new(&asm.pslg)?;
+    let mut cdt = Cdt::new(&asm.pslg).map_err(|e| {
+        // Pole rings that collide or cross mean the boundary is too coarse for pole fans.
+        if loops.iter().any(|l| !l.fans.is_empty())
+            && matches!(
+                e,
+                TriError::DuplicatePoint { .. }
+                    | TriError::SelfIntersection { .. }
+                    | TriError::Degenerate(_)
+            )
+        {
+            TriError::Unsupported(format!(
+                "pole rings collide ({e}); the face needs a finer boundary (r >= 2h) or a model-level partition"
+            ))
+        } else {
+            e
+        }
+    })?;
     let ropts = RefineOptions {
         min_angle: prm.min_angle,
         size_factor: prm.size_factor,

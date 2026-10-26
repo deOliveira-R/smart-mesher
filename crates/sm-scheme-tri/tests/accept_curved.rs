@@ -10,7 +10,7 @@ use sm_mesh_api::{FaceIx, FaceKind, MeshRead, validate};
 use sm_scheme_api::{NodeKey, Sequential};
 use sm_testkit::topo::sphere_zone;
 use sm_topo_api::fixtures::{cylinder, sphere, with_op};
-use sm_topo_api::{CellComplex, OpId, TopologyView, TopologyViewExt};
+use sm_topo_api::{CellComplex, OpId, TopologyView};
 
 fn cyl() -> (CellComplex, sm_topo_api::fixtures::CylinderIds) {
     let mut c = CellComplex::new();
@@ -18,7 +18,7 @@ fn cyl() -> (CellComplex, sm_topo_api::fixtures::CylinderIds) {
     (c, ids)
 }
 
-fn surface_of<'a>(topo: &'a CellComplex, face: sm_core::EntityId) -> &'a dyn sm_geom_api::ParametricSurface {
+fn surface_of(topo: &CellComplex, face: sm_core::EntityId) -> &dyn sm_geom_api::ParametricSurface {
     match topo.carrier(face) {
         sm_topo_api::Carrier::Surface(sc) => topo.shapes().surface(sc.surface).unwrap(),
         _ => panic!("no surface"),

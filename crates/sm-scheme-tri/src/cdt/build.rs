@@ -2,7 +2,7 @@
 //! machinery that refinement reuses (with constrained edges as walls).
 
 use super::{
-    C_BND, C_NONE, Cdt, DEAD, GHOST, NONE, Pslg, SegmentKind, TriError,
+    C_NONE, Cdt, DEAD, GHOST, NONE, Pslg, SegmentKind, TriError,
 };
 use sm_math::Sign;
 use sm_math::predicates::{in_exact_range, incircle};

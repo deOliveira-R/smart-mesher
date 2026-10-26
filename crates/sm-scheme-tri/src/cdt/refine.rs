@@ -18,6 +18,12 @@ pub(crate) const RADIUS_FACTOR: f64 = 0.67;
 /// segment `R` in `(0.67 h, 0.707 h)` cannot be split. That window is tolerance, not failure.
 pub(crate) const SIZE_SLACK: f64 = 1.06;
 
+/// A triangle with circumradius below `MIN_RADIUS * h` is never split: its circumcenter would
+/// create a feature far below the target size. Without segment splitting this is what stops the
+/// cascade around an input corner that is too sharp for the angle bound (Ruppert's algorithm
+/// terminates there only because it splits the segments).
+pub(crate) const MIN_RADIUS: f64 = 0.02;
+
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -202,6 +208,10 @@ impl Cdt {
                 break;
             }
             let v = self.tri[t as usize];
+            if self.measure_tri(g, v).r_over_h < MIN_RADIUS * o.size_factor {
+                rejected.push((t, id));
+                continue;
+            }
             let (a, b, c) = (self.p(v[0]), self.p(v[1]), self.p(v[2]));
             let centroid = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0];
             let Some(p) = circumcenter(a, b, c, g.chart_metric(centroid)) else {

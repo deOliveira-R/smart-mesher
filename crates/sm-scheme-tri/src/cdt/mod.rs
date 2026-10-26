@@ -170,11 +170,6 @@ impl Cdt {
     }
 
     #[inline]
-    fn is_ghost(&self, t: u32) -> bool {
-        self.tri[t as usize][2] == GHOST
-    }
-
-    #[inline]
     fn alive(&self, t: u32) -> bool {
         self.tri[t as usize][0] != DEAD
     }

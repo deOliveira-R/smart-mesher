@@ -21,7 +21,7 @@
 
 use crate::cdt::Geometry2;
 use crate::error::TriError;
-use crate::util::pow2_ceil;
+use crate::util::{is_pos, pow2_ceil};
 use core::f64::consts::TAU;
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::{ParametricSurface, Uv};
@@ -69,6 +69,133 @@ struct PlaneFrame {
     e2: Vector3,
 }
 
+/// How `(u, v)` maps to the plane before the power-of-two scaling.
+#[derive(Clone, Debug)]
+enum ChartKind {
+    /// `z = L^T (s (u - u0), v - v0)` with `G = L L^T` the metric at the loop centroid
+    /// (`lt = [l11, l21, l22]`, `inv` the entries of `L^-T`). Exact for planes and cylinders.
+    Linear { lt: [f64; 3], inv: [f64; 3] },
+    /// Surfaces of revolution (`F = 0`, `E` and `G` functions of `v` only: sphere, cone, torus):
+    /// the conformal coordinates `z = (s (u - u0), psi(v) - psi(v0))` with
+    /// `psi(v) = int sqrt(G / E) dv`. Angles are preserved, so chart-Delaunay triangles and
+    /// chart circumcenters are the 3-D ones to first order.
+    ConformalV(Psi),
+}
+
+/// Tabulated `psi(v) = int sqrt(G/E) dv` of a surface of revolution (cubic Hermite in `v`).
+#[derive(Clone, Debug)]
+struct Psi {
+    v0: f64,
+    dv: f64,
+    psi: Vec<f64>,
+    dpsi: Vec<f64>,
+}
+
+const PSI_CELLS: usize = 512;
+
+impl Psi {
+    /// Tabulate on `[v_lo, v_hi]` from the derivative `sqrt(G/E)`; `None` if it is not finite
+    /// and positive everywhere.
+    fn build(v_lo: f64, v_hi: f64, dpsi: impl Fn(f64) -> f64) -> Option<Psi> {
+        if !is_pos(v_hi - v_lo) {
+            return None;
+        }
+        const X: [f64; 5] = [0.0, -0.538_469_310_105_683_1, 0.538_469_310_105_683_1, -0.906_179_845_938_664, 0.906_179_845_938_664];
+        const W: [f64; 5] = [0.568_888_888_888_888_9, 0.478_628_670_499_366_5, 0.478_628_670_499_366_5, 0.236_926_885_056_189_1, 0.236_926_885_056_189_1];
+        let n = PSI_CELLS;
+        let dv = (v_hi - v_lo) / n as f64;
+        let mut psi = vec![0.0; n + 1];
+        let mut d = Vec::with_capacity(n + 1);
+        for k in 0..=n {
+            let x = dpsi(v_lo + dv * k as f64);
+            if !(x.is_finite() && x > 0.0) {
+                return None;
+            }
+            d.push(x);
+        }
+        for k in 0..n {
+            let mid = v_lo + dv * (k as f64 + 0.5);
+            let mut acc = 0.0;
+            for (x, w) in X.iter().zip(W) {
+                let f = dpsi(mid + 0.5 * dv * x);
+                if !(f.is_finite() && f > 0.0) {
+                    return None;
+                }
+                acc += w * f;
+            }
+            psi[k + 1] = psi[k] + 0.5 * dv * acc;
+        }
+        Some(Psi { v0: v_lo, dv, psi, dpsi: d })
+    }
+
+    fn cell(&self, v: f64) -> (usize, f64) {
+        let n = self.psi.len() - 1;
+        let x = (v - self.v0) / self.dv;
+        let i = (x.floor().max(0.0) as usize).min(n - 1);
+        (i, x - i as f64)
+    }
+
+    fn eval(&self, v: f64) -> f64 {
+        let n = self.psi.len() - 1;
+        let v_end = self.v0 + self.dv * n as f64;
+        if v < self.v0 {
+            return self.psi[0] + self.dpsi[0] * (v - self.v0);
+        }
+        if v > v_end {
+            return self.psi[n] + self.dpsi[n] * (v - v_end);
+        }
+        let (i, t) = self.cell(v);
+        let (t2, t3) = (t * t, t * t * t);
+        let (h00, h10, h01, h11) = (2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2);
+        h00 * self.psi[i] + h10 * self.dv * self.dpsi[i] + h01 * self.psi[i + 1] + h11 * self.dv * self.dpsi[i + 1]
+    }
+
+    fn deriv(&self, v: f64) -> f64 {
+        let n = self.psi.len() - 1;
+        if v < self.v0 {
+            return self.dpsi[0];
+        }
+        if v > self.v0 + self.dv * n as f64 {
+            return self.dpsi[n];
+        }
+        let (i, t) = self.cell(v);
+        let t2 = t * t;
+        let (h00, h10, h01, h11) = (6.0 * t2 - 6.0 * t, 3.0 * t2 - 4.0 * t + 1.0, -6.0 * t2 + 6.0 * t, 3.0 * t2 - 2.0 * t);
+        (h00 * self.psi[i] + h01 * self.psi[i + 1]) / self.dv + h10 * self.dpsi[i] + h11 * self.dpsi[i + 1]
+    }
+
+    /// The `v` with `psi(v) = s`.
+    fn inverse(&self, s: f64) -> f64 {
+        let n = self.psi.len() - 1;
+        if s <= self.psi[0] {
+            return self.v0 + (s - self.psi[0]) / self.dpsi[0];
+        }
+        if s >= self.psi[n] {
+            return self.v0 + self.dv * n as f64 + (s - self.psi[n]) / self.dpsi[n];
+        }
+        // Binary search for the cell, then bisection on the Hermite cubic.
+        let (mut lo, mut hi) = (0usize, n);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if self.psi[mid] <= s {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let (mut a, mut b) = (self.v0 + self.dv * lo as f64, self.v0 + self.dv * (lo + 1) as f64);
+        for _ in 0..60 {
+            let m = 0.5 * (a + b);
+            if self.eval(m) < s {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        0.5 * (a + b)
+    }
+}
+
 /// The chart of one face, also the [`Geometry2`] of its refinement.
 pub struct FaceChart<'a> {
     face: EntityId,
@@ -76,12 +203,10 @@ pub struct FaceChart<'a> {
     plane: Option<PlaneFrame>,
     flip: f64,
     uv0: [f64; 2],
-    /// Upper triangular `L^T = [[l11, l21], [0, l22]]`.
-    lt: [f64; 3],
-    inv: [f64; 3],
+    psi0: f64,
+    kind: ChartKind,
     scale: f64,
     shift: [f64; 2],
-    periodic_u: Option<f64>,
     isometric: bool,
     aniso: bool,
     size: Option<&'a dyn SizeField>,
@@ -138,7 +263,7 @@ impl<'a> FaceChart<'a> {
                     n += 1;
                 }
             }
-            if n == 0 || !(sum > 0.0) {
+            if n == 0 || !is_pos(sum) {
                 return Err(TriError::Degenerate("boundary has zero length".into()));
             }
             sum / n as f64
@@ -288,16 +413,82 @@ impl<'a> FaceChart<'a> {
             let (du, dv) = jet(uv);
             metric_form(du * flip, dv, m)
         };
-        let g = gform(uv_c, &m_c);
-        let (l11, l21, l22) = cholesky2(g)?;
-        let lt = [l11, l21, l22];
-        let inv = [1.0 / l11, -l21 / (l11 * l22), 1.0 / l22];
+
+        // Isometry (constant first fundamental form) and anisotropy, by sampling.
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for cl in &chart_loops {
+            for nd in &cl.nodes {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(nd.uv[k]);
+                    hi[k] = hi[k].max(nd.uv[k]);
+                }
+            }
+        }
+        let mut samples: Vec<[f64; 2]> = vec![uv_c];
+        for &x in &[lo[0], hi[0]] {
+            for &y in &[lo[1], hi[1]] {
+                samples.push([x, y]);
+            }
+        }
+        let unit = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0];
+        let g_ref = gform(uv_c, &unit);
+        let mut iso_const = true;
+        for s in &samples {
+            let gs = gform(*s, &unit);
+            let nrm = g_ref[0].abs() + g_ref[1].abs() + g_ref[2].abs();
+            if (0..3).any(|k| (gs[k] - g_ref[k]).abs() > 1e-9 * nrm) {
+                iso_const = false;
+            }
+        }
+        let mut aniso = false;
+        let mut m_const = true;
+        if let Some(f) = cx.size {
+            let mut pts: Vec<Point3> = vec![p_c];
+            for cl in &chart_loops {
+                for nd in cl.nodes.iter().step_by((cl.nodes.len() / 8).max(1)) {
+                    pts.push(eval(nd.uv));
+                }
+            }
+            for p in &pts {
+                let m = f.metric(*p).0;
+                let tr = (m[0] + m[3] + m[5]) / 3.0;
+                let off = 2.0 * (m[1].abs() + m[2].abs() + m[4].abs());
+                let nrm = m[0].abs() + m[3].abs() + m[5].abs() + off;
+                if (m[0] - tr).abs() + (m[3] - tr).abs() + (m[5] - tr).abs() + off > 1e-6 * nrm {
+                    aniso = true;
+                }
+                if (0..6).any(|k| (m[k] - m_c[k]).abs() > 1e-9 * nrm) {
+                    m_const = false;
+                }
+            }
+        }
+        let isometric = iso_const && (!aniso || m_const);
+
+        // The map: linear (Cholesky of the centroid metric) or, for a curved surface of
+        // revolution without anisotropy, conformal.
+        let conformal = if !isometric && !aniso && surface.is_some() {
+            conformal_psi(surface, flip, &lo, &hi, uv_c)
+        } else {
+            None
+        };
+        let kind = match conformal {
+            Some(psi) => ChartKind::ConformalV(psi),
+            None => {
+                let g = gform(uv_c, &m_c);
+                let (l11, l21, l22) = cholesky2(g)?;
+                ChartKind::Linear {
+                    lt: [l11, l21, l22],
+                    inv: [1.0 / l11, -l21 / (l11 * l22), 1.0 / l22],
+                }
+            }
+        };
+        let psi0 = match &kind {
+            ChartKind::ConformalV(psi) => psi.eval(uv_c[1]),
+            ChartKind::Linear { .. } => 0.0,
+        };
+        let zmap = |uv: [f64; 2]| -> [f64; 2] { z_of(&kind, flip, uv_c, psi0, uv) };
 
         // z for every node, bounding box, then the power-of-two scaling.
-        let zmap = |uv: [f64; 2]| -> [f64; 2] {
-            let w = [flip * (uv[0] - uv_c[0]), uv[1] - uv_c[1]];
-            [lt[0] * w[0] + lt[1] * w[1], lt[2] * w[1]]
-        };
         let (mut zmin, mut zmax) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for cl in &chart_loops {
             for nd in &cl.nodes {
@@ -323,72 +514,16 @@ impl<'a> FaceChart<'a> {
                 nd.q = [z[0] * scale + shift[0], z[1] * scale + shift[1]];
             }
         }
-
-        // Isometry and anisotropy, by sampling.
-        let mut samples: Vec<[f64; 2]> = vec![uv_c];
-        {
-            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-            for cl in &chart_loops {
-                for nd in &cl.nodes {
-                    for k in 0..2 {
-                        lo[k] = lo[k].min(nd.uv[k]);
-                        hi[k] = hi[k].max(nd.uv[k]);
-                    }
-                }
-            }
-            for &x in &[lo[0], hi[0]] {
-                for &y in &[lo[1], hi[1]] {
-                    samples.push([x, y]);
-                }
-            }
-        }
-        let unit = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0];
-        let g_ref = gform(uv_c, &unit);
-        let mut iso_const = true;
-        for s in &samples {
-            // At a pole the form is singular on purpose; skip samples that collapse it.
-            let gs = gform(*s, &unit);
-            let nrm = g_ref[0].abs() + g_ref[1].abs() + g_ref[2].abs();
-            if (0..3).any(|k| (gs[k] - g_ref[k]).abs() > 1e-9 * nrm) {
-                iso_const = false;
-            }
-        }
-        let mut aniso = false;
-        let mut m_const = true;
-        if let Some(f) = cx.size {
-            let mut pts: Vec<Point3> = vec![p_c];
-            for cl in &chart_loops {
-                for nd in cl.nodes.iter().step_by((cl.nodes.len() / 8).max(1)) {
-                    pts.push(eval(nd.uv));
-                }
-            }
-            for p in &pts {
-                let m = f.metric(*p).0;
-                let tr = (m[0] + m[3] + m[5]) / 3.0;
-                let nrm = m[0].abs() + m[3].abs() + m[5].abs() + 2.0 * (m[1].abs() + m[2].abs() + m[4].abs());
-                if (m[0] - tr).abs() + (m[3] - tr).abs() + (m[5] - tr).abs()
-                    + 2.0 * (m[1].abs() + m[2].abs() + m[4].abs())
-                    > 1e-6 * nrm
-                {
-                    aniso = true;
-                }
-                if (0..6).any(|k| (m[k] - m_c[k]).abs() > 1e-9 * nrm) {
-                    m_const = false;
-                }
-            }
-        }
-        let isometric = iso_const && (!aniso || m_const);
         let chart = FaceChart {
             face,
             surface,
             plane,
             flip,
             uv0: uv_c,
-            lt,
-            inv,
+            psi0,
+            kind,
             scale,
             shift,
-            periodic_u: period_u,
             isometric,
             aniso,
             size: cx.size,
@@ -426,16 +561,22 @@ impl<'a> FaceChart<'a> {
 
     /// Chart coordinates of surface parameters.
     pub fn to_q(&self, uv: [f64; 2]) -> [f64; 2] {
-        let w = [self.flip * (uv[0] - self.uv0[0]), uv[1] - self.uv0[1]];
-        let z = [self.lt[0] * w[0] + self.lt[1] * w[1], self.lt[2] * w[1]];
+        let z = z_of(&self.kind, self.flip, self.uv0, self.psi0, uv);
         [z[0] * self.scale + self.shift[0], z[1] * self.scale + self.shift[1]]
     }
 
     /// Surface parameters (on the loop branch, not wrapped) of chart point `q`.
     pub fn to_uv(&self, q: [f64; 2]) -> [f64; 2] {
         let z = [(q[0] - self.shift[0]) / self.scale, (q[1] - self.shift[1]) / self.scale];
-        let w = [self.inv[0] * z[0] + self.inv[1] * z[1], self.inv[2] * z[1]];
-        [self.uv0[0] + self.flip * w[0], self.uv0[1] + w[1]]
+        match &self.kind {
+            ChartKind::Linear { inv, .. } => {
+                let w = [inv[0] * z[0] + inv[1] * z[1], inv[2] * z[1]];
+                [self.uv0[0] + self.flip * w[0], self.uv0[1] + w[1]]
+            }
+            ChartKind::ConformalV(psi) => {
+                [self.uv0[0] + self.flip * z[0], psi.inverse(z[1] + self.psi0)]
+            }
+        }
     }
 
     /// Surface parameters wrapped into the principal domain (what `Param::Surface` stores).
@@ -464,9 +605,16 @@ impl<'a> FaceChart<'a> {
         let uv = self.to_uv(q);
         let (du, dv) = jet_surface(self.surface, self.plane.as_ref(), uv);
         let (a, b) = (du * self.flip, dv);
-        // J_q = [a b] * L^T^-1 / scale, L^T^-1 = [[i0, i1], [0, i2]].
-        let c1 = a * (self.inv[0] / self.scale);
-        let c2 = a * (self.inv[1] / self.scale) + b * (self.inv[2] / self.scale);
+        let (c1, c2) = match &self.kind {
+            ChartKind::Linear { inv, .. } => (
+                a * (inv[0] / self.scale),
+                a * (inv[1] / self.scale) + b * (inv[2] / self.scale),
+            ),
+            ChartKind::ConformalV(psi) => (
+                a * (1.0 / self.scale),
+                b * (1.0 / (psi.deriv(uv[1]) * self.scale)),
+            ),
+        };
         [[c1.x, c2.x], [c1.y, c2.y], [c1.z, c2.z]]
     }
 
@@ -515,7 +663,7 @@ impl Geometry2 for FaceChart<'_> {
     }
 
     fn chart_metric(&self, q: [f64; 2]) -> Option<[f64; 3]> {
-        if self.isometric {
+        if self.isometric || matches!(self.kind, ChartKind::ConformalV(_)) {
             return None;
         }
         let j = self.jacobian(q);
@@ -536,24 +684,76 @@ impl Geometry2 for FaceChart<'_> {
         let m = self.size?.metric(p).0;
         // M = C C^T (lower Cholesky); |C^T e|^2 = e^T M e.
         let c00 = m[0].sqrt();
-        if !(c00 > 0.0) {
+        if !is_pos(c00) {
             return None;
         }
         let c10 = m[1] / c00;
         let c20 = m[2] / c00;
         let d11 = m[3] - c10 * c10;
-        if !(d11 > 0.0) {
+        if !is_pos(d11) {
             return None;
         }
         let c11 = d11.sqrt();
         let c21 = (m[4] - c20 * c10) / c11;
         let d22 = m[5] - c20 * c20 - c21 * c21;
-        if !(d22 > 0.0) {
+        if !is_pos(d22) {
             return None;
         }
         let c22 = d22.sqrt();
         Some([[c00, c10, c20], [0.0, c11, c21], [0.0, 0.0, c22]])
     }
+}
+
+/// `z` of surface parameters `uv` for the chart kind.
+fn z_of(kind: &ChartKind, flip: f64, uv_c: [f64; 2], psi0: f64, uv: [f64; 2]) -> [f64; 2] {
+    match kind {
+        ChartKind::Linear { lt, .. } => {
+            let w = [flip * (uv[0] - uv_c[0]), uv[1] - uv_c[1]];
+            [lt[0] * w[0] + lt[1] * w[1], lt[2] * w[1]]
+        }
+        ChartKind::ConformalV(psi) => [flip * (uv[0] - uv_c[0]), psi.eval(uv[1]) - psi0],
+    }
+}
+
+/// The conformal coordinate of a surface of revolution over the v range `[lo[1], hi[1]]`, if
+/// the surface is one there: orthogonal parameter lines and `E`, `G` independent of `u`.
+fn conformal_psi(
+    surface: Option<&dyn ParametricSurface>,
+    flip: f64,
+    lo: &[f64; 2],
+    hi: &[f64; 2],
+    uv_c: [f64; 2],
+) -> Option<Psi> {
+    let s = surface?;
+    let _ = flip;
+    let (u_lo, u_hi) = (lo[0], hi[0]);
+    let (v_lo, v_hi) = (lo[1], hi[1]);
+    if !is_pos(v_hi - v_lo) {
+        return None;
+    }
+    let dom = s.domain();
+    let ef = |uv: [f64; 2]| -> Option<(f64, f64, f64)> {
+        let j = s.jet(Uv::new(dom.u.wrap(uv[0]), dom.v.wrap(uv[1])));
+        let (e, g, f) = (j.du.dot(j.du), j.dv.dot(j.dv), j.du.dot(j.dv));
+        (e.is_finite() && g.is_finite() && e > 0.0 && g > 0.0).then_some((e, g, f))
+    };
+    for iv in 0..=8 {
+        let v = v_lo + (v_hi - v_lo) * iv as f64 / 8.0;
+        let (e0, g0, _) = ef([uv_c[0], v])?;
+        for iu in 0..=4 {
+            let u = u_lo + (u_hi - u_lo) * iu as f64 / 4.0;
+            let (e, g, f) = ef([u, v])?;
+            if f.abs() > 1e-8 * (e * g).sqrt()
+                || (e - e0).abs() > 1e-8 * e0
+                || (g - g0).abs() > 1e-8 * g0
+            {
+                return None;
+            }
+        }
+    }
+    Psi::build(v_lo, v_hi, |v| {
+        ef([uv_c[0], v]).map_or(f64::NAN, |(e, g, _)| (g / e).sqrt())
+    })
 }
 
 /// `[g11, g12, g22]` of the displacement `dq1 * a + dq2 * b` in the metric `m` (xx, xy, xz,
@@ -624,7 +824,7 @@ fn newell_frame(cx: &GenCtx<'_>, face: EntityId, pos: &[Vec<Point3>]) -> Result<
         c = c + Vector3::new(a.x, a.y, a.z);
     }
     let l = n.norm();
-    if !(l > 0.0) {
+    if !is_pos(l) {
         return Err(TriError::Degenerate("face without a surface has no normal".into()));
     }
     let n = n * (1.0 / l);
@@ -651,7 +851,10 @@ fn project_loop(
 ) -> Result<Vec<[f64; 2]>, TriError> {
     let d = s.domain();
     if !d.singularities.is_empty() {
-        return Err(TriError::Lift { key: nodes[0] });
+        return Err(TriError::Unsupported(
+            "surface with a pole or apex whose boundary has no collapsed (pole) coedge needs a model-level partition"
+                .into(),
+        ));
     }
     let mut out: Vec<[f64; 2]> = Vec::with_capacity(pos.len());
     for (i, p) in pos.iter().enumerate() {

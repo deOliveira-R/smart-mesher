@@ -297,3 +297,69 @@ fn prop_random_lattice_subsets_are_exact_and_order_independent() {
         }
     }
 }
+
+#[test]
+fn point_cloud_without_segments_is_the_delaunay_triangulation_of_the_hull() {
+    for seed in 1..=20u64 {
+        let mut rng = Rng(seed * 6007 + 11);
+        let mut pts: Vec<[f64; 2]> = Vec::new();
+        while pts.len() < 800 {
+            let q = [rng.below(4096) as f64 / 4096.0, rng.below(4096) as f64 / 4096.0];
+            if !pts.contains(&q) {
+                pts.push(q);
+            }
+        }
+        let p = Pslg { points: pts, segments: Vec::new() };
+        let c = Cdt::new(&p).expect("cdt");
+        assert!(all_positive(&c), "seed {seed}");
+        assert_eq!(delaunay_violations(&c), 0, "seed {seed}");
+        // Euler for a triangulated disc: T = 2V - 2 - H with H hull vertices.
+        let h = boundary_edges(&c).len();
+        assert_eq!(c.triangles().len(), 2 * 800 - 2 - h, "seed {seed}");
+    }
+}
+
+#[test]
+fn cocircular_points_on_a_circle_with_a_center() {
+    let n = 64usize;
+    let mut pts: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            [1.5 + a.cos(), 1.5 + a.sin()]
+        })
+        .collect();
+    pts.push([1.5, 1.5]);
+    let mut p = Pslg { points: pts, segments: Vec::new() };
+    for i in 0..n as u32 {
+        p.segments.push(Segment { a: i, b: (i + 1) % n as u32, kind: SegmentKind::Boundary });
+    }
+    let c = Cdt::new(&p).expect("cdt");
+    assert!(all_positive(&c));
+    assert_eq!(delaunay_violations(&c), 0);
+    assert_eq!(c.triangles().len(), n);
+}
+
+#[test]
+fn needle_corner_terminates_and_reports_unfixable() {
+    use sm_scheme_tri::cdt::{Geometry2, RefineOptions};
+    struct G(f64);
+    impl Geometry2 for G {
+        fn lift(&self, q: [f64; 2]) -> sm_core::Point3 { sm_core::Point3::new(q[0], q[1], 0.0) }
+        fn size(&self, _p: sm_core::Point3) -> f64 { self.0 }
+        fn is_isometric(&self) -> bool { true }
+    }
+    // A 5-degree wedge: no bound can hold at the apex.
+    let t = (5.0f64).to_radians().tan();
+    let mut p = Pslg {
+        points: vec![[1.0, 1.0], [2.0, 1.0], [2.0, 1.0 + t]],
+        segments: Vec::new(),
+    };
+    for i in 0..3u32 {
+        p.segments.push(Segment { a: i, b: (i + 1) % 3, kind: SegmentKind::Boundary });
+    }
+    let mut c = Cdt::new(&p).unwrap();
+    let rep = c.refine(&G(0.05), &RefineOptions::default());
+    assert!(!rep.truncated);
+    assert!(!rep.unfixable.is_empty(), "the apex triangle cannot reach 20 degrees");
+    assert!(all_positive(&c));
+}
