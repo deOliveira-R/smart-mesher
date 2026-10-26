@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+
+pub mod synth;
 use std::sync::Arc;
 
 use sm_cadio::{BrepModel, CadioPlugin, MemoryInputStore, ReadOptions, RealizeOptions, Realized, StepInputs, read_step, realize};

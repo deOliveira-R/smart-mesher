@@ -120,9 +120,9 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let ctx_of = units::contexts_by_item(file);
     let default_ctx = ctx_of.values().next().copied();
     let ents = Ents::new(file);
-    let mut solids = Vec::with_capacity(selected.len());
+    // Units are resolved first (cheap, sequential, deterministic first error).
+    let mut preps: Vec<(u64, SolidKind, UnitReport)> = Vec::with_capacity(selected.len());
     let mut unit_groups: Vec<(String, Vec<u64>)> = Vec::new();
-    let (mut welded_v, mut welded_e) = (0usize, 0usize);
     for (id, kind) in &selected {
         let ctx = ctx_of.get(id).copied().or(default_ctx);
         let cu = match ctx {
@@ -161,7 +161,21 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             Some((_, v)) => v.push(*id),
             None => unit_groups.push((key, vec![*id])),
         }
-        let (solid, stats) = read_solid(ents, *id, *kind, report, opts, &mut notes)?;
+        preps.push((*id, *kind, report));
+    }
+    // Solids are independent: decode them in parallel, collected in order.
+    type SolidResult = Result<(Solid, Vec<Note>, (usize, usize)), StepError>;
+    let decode_one = |(id, kind, report): &(u64, SolidKind, UnitReport)| -> SolidResult {
+        let mut local = Vec::new();
+        let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
+        Ok((solid, local, stats))
+    };
+    let results: Vec<SolidResult> = if preps.len() >= 8 { preps.par_iter().map(decode_one).collect() } else { preps.iter().map(decode_one).collect() };
+    let mut solids = Vec::with_capacity(results.len());
+    let (mut welded_v, mut welded_e) = (0usize, 0usize);
+    for r in results {
+        let (solid, local, stats) = r?;
+        notes.extend(local);
         welded_v += stats.0;
         welded_e += stats.1;
         solids.push(solid);
