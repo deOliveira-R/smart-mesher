@@ -45,7 +45,8 @@ Branch: `claude/w3-sm-diag-go88ci` (the session's designated branch; the task te
 8. **`count` semantics** of a metric report: all entities of the metric's kind, so `counts + below + above + undefined + n_sentinel == count`. `grade` of a worst entry and the threshold fields are `null` for an ungraded metric; its `sense` is informational (rule's, else a small fixed table).
 9. **Registry flag**: `QualityOptions::registry_provided` carries "the `OpNames` service was absent" into the pure core (whose fixed signature only has the `ops` predicate). `OpNames::new` is a convenience constructor.
 10. **Dev-dependencies beyond the task's list** (all contract or workspace crates already on main, no W3a crate): `sm-topo-api` (`fixtures::brick`, for the test rig's model entities) and `sm-scheme-api` with `stubs` and `schemars` (the stub `mesh.run` rig, same as sm-fem/sm-mesher tests), plus `criterion` (bench). Normal deps are exactly the task's list; `sm-core` is added with features `serde` and `schemars` (already transitively enabled by `sm-mesh-api`). sm-quality gained no dependency.
-11. `Metric::name/from_name` are in `profile.rs` (additive file) rather than `metric.rs`.
+11. **`Cargo.lock`** (root, generated, not a manifest) is committed with only the new `sm-diag` dependency entries so `--locked` builds pass; at merge the orchestrator can regenerate it.
+12. `Metric::name/from_name` are in `profile.rs` (additive file) rather than `metric.rs`.
 
 ## Known gaps
 

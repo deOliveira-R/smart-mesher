@@ -64,7 +64,7 @@ fn quality_and_validate_json_are_bit_identical_across_threads() {
 #[test]
 fn flagged_cells_are_identical_across_threads() {
     let m = perturbed(12, 0.35);
-    let cells = check(2, 4, |t| with_threads(t, || flagged_cells(&m, Profile::Generic, None, sm_diag::Level::Warn, true).unwrap().iter().map(|c| c.0).collect::<Vec<u32>>())).unwrap();
+    let cells = check(2, 4, |t| with_threads(t, || flagged_cells(&m, Profile::Generic, None, &Default::default(), sm_diag::Level::Warn, true).unwrap().iter().map(|c| c.0).collect::<Vec<u32>>())).unwrap();
     assert!(!cells.is_empty());
 }
 
