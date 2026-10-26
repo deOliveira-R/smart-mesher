@@ -112,8 +112,8 @@ fn ints(f: &NcFile<'_>, name: &str) -> Result<Vec<i64>> {
     let v = f.var_by_name(name).ok_or_else(|| missing(name))?;
     let b = f.var_bytes(name).ok_or_else(|| missing(name))?;
     match v.ty {
-        NcType::Int => Ok(b.chunks_exact(4).map(|c| i64::from(i32::from_be_bytes([c[0], c[1], c[2], c[3]]))).collect()),
-        NcType::Int64 => Ok(b.chunks_exact(8).map(|c| i64::from_be_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).collect()),
+        NcType::Int => Ok(b.as_chunks::<4>().0.iter().map(|c| i64::from(i32::from_be_bytes(*c))).collect()),
+        NcType::Int64 => Ok(b.as_chunks::<8>().0.iter().map(|c| i64::from_be_bytes(*c)).collect()),
         _ => Err(ExodusError::Malformed(format!("variable '{name}' is not an integer"))),
     }
 }
@@ -124,7 +124,7 @@ fn opt_ints(f: &NcFile<'_>, name: &str) -> Result<Vec<i64>> {
 
 fn doubles(f: &NcFile<'_>, name: &str) -> Result<Vec<f64>> {
     let b = f.var_bytes(name).ok_or_else(|| missing(name))?;
-    Ok(b.chunks_exact(8).map(|c| f64::from_be_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).collect())
+    Ok(b.as_chunks::<8>().0.iter().map(|c| f64::from_be_bytes(*c)).collect())
 }
 
 fn rows(f: &NcFile<'_>, name: &str, width: usize) -> Result<Vec<String>> {
@@ -235,7 +235,7 @@ pub fn read_exodus(bytes: &[u8]) -> Result<ExodusData> {
     let mut qa = Vec::new();
     if opt_dim(&f, "num_qa_rec") > 0 {
         let flat = rows(&f, "qa_records", dim(&f, "len_string")?)?;
-        for r in flat.chunks_exact(4) {
+        for r in flat.as_chunks::<4>().0 {
             qa.push([r[0].clone(), r[1].clone(), r[2].clone(), r[3].clone()]);
         }
     }

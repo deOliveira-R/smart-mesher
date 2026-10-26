@@ -204,13 +204,7 @@ impl NcValue {
 
     fn decode(ty: NcType, raw: &[u8]) -> NcValue {
         fn chunks<const N: usize, T>(raw: &[u8], f: impl Fn([u8; N]) -> T) -> Vec<T> {
-            raw.chunks_exact(N)
-                .map(|c| {
-                    let mut a = [0u8; N];
-                    a.copy_from_slice(c);
-                    f(a)
-                })
-                .collect()
+            raw.as_chunks::<N>().0.iter().map(|c| f(*c)).collect()
         }
         match ty {
             NcType::Char => NcValue::Text(String::from_utf8_lossy(raw).into_owned()),
@@ -245,8 +239,8 @@ impl fmt::Debug for NcData<'_> {
 pub(crate) fn par_pack<const N: usize, T: Copy + Send + Sync>(xs: &[T], f: impl Fn(T) -> [u8; N] + Sync) -> Vec<u8> {
     let mut out = vec![0u8; xs.len() * N];
     out.par_chunks_mut(PAR_CHUNK * N).zip(xs.par_chunks(PAR_CHUNK)).for_each(|(o, x)| {
-        for (dst, v) in o.chunks_exact_mut(N).zip(x) {
-            dst.copy_from_slice(&f(*v));
+        for (dst, v) in o.as_chunks_mut::<N>().0.iter_mut().zip(x) {
+            *dst = f(*v);
         }
     });
     out
@@ -844,7 +838,7 @@ impl Header {
         self.count(0);
     }
     fn pad(&mut self) {
-        while self.out.len() % 4 != 0 {
+        while !self.out.len().is_multiple_of(4) {
             self.out.push(0);
         }
     }
