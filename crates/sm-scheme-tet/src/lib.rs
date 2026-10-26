@@ -7,12 +7,19 @@
 mod canon;
 mod delaunay;
 mod error;
+mod exact;
+mod flips;
 mod geom;
+mod pipeline;
+mod quality;
+mod recover;
 mod tds;
 mod validate;
 
 pub use error::TetError;
 pub use geom::{in_sphere, ori};
+pub use pipeline::tetrahedralize;
+pub use quality::{TetQ, tet_quality};
 
 use geom::V3;
 

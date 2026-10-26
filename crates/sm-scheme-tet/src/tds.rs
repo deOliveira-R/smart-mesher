@@ -258,6 +258,29 @@ impl Tds {
         Ok(())
     }
 
+    /// Remove `old` tets without replacement: their neighbours outside the set get `NONE` there.
+    pub fn remove(&mut self, old: &[u32]) {
+        self.begin_mark();
+        for &t in old {
+            self.mark[t as usize] = self.epoch;
+        }
+        for &t in old {
+            for i in 0..4 {
+                let n = self.nbr[t as usize][i];
+                if n != NONE && self.mark[n as usize] != self.epoch {
+                    if let Some(j) = self.back_slot(n, t) {
+                        self.nbr[n as usize][j] = NONE;
+                    }
+                }
+            }
+        }
+        for &t in old {
+            self.alive[t as usize] = false;
+            self.n_alive -= 1;
+            self.free.push(t);
+        }
+    }
+
     /// All live tets incident to `v`, in discovery order (depth first from `vtet[v]`).
     pub fn star(&mut self, v: u32, out: &mut Vec<u32>) {
         out.clear();
