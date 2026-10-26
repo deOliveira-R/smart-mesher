@@ -80,11 +80,9 @@ fn run(ws: &mut Workspace, id: sm_core::EntityId, a: &Act) -> Option<&'static st
 static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(40),
-        failure_persistence: None,
-        ..ProptestConfig::default()
-    })]
+    #![proptest_config(sm_testkit::strategies::config(
+        std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(40),
+    ))]
 
     #[test]
     fn reopen_equals_memory_and_twin(acts in proptest::collection::vec(act(), 1..30), reopen_at in 0usize..30) {

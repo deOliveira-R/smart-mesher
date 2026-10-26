@@ -90,7 +90,7 @@ fn volume_below(corners: &[Vector3], d: &[f64], o: Vector3, n: Vector3, section:
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+    #![proptest_config(sm_testkit::strategies::config(200))]
 
     #[test]
     fn random_planes_split_a_cube(
@@ -123,7 +123,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+    #![proptest_config(sm_testkit::strategies::config(12))]
 
     #[test]
     fn random_planes_split_a_cylinder(tilt in 0.0f64..0.6, az in 0.0f64..6.2, d in -0.8f64..0.8) {

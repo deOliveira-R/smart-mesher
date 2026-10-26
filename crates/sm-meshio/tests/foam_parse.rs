@@ -230,7 +230,7 @@ fn deep_nesting_and_junk_do_not_recurse_or_panic() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
+    #![proptest_config(sm_testkit::strategies::config(400))]
 
     #[test]
     fn random_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..2048), which in 0usize..5) {
