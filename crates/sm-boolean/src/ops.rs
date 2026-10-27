@@ -16,7 +16,7 @@ use sm_model_api::FaceRole;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 use sm_topo_api::{Carrier, Dim, TopologyView};
 
-use crate::boolean::{BoolOptions, BoolRule, boolean};
+use crate::boolean::{BoolOptions, BoolRule, boolean_ordered};
 use crate::error::BooleanError;
 use crate::imprint::{ImprintOptions, imprint_bodies};
 use crate::merge::{MergeKinds, MergeOptions, MergeReport, merge, merge_check};
@@ -91,7 +91,25 @@ fn run_boolean(ctx: &mut ApplyCtx<'_>, rule: BoolRule, a: &[EntityId], b: &[Enti
             return Err(OpError::Invalid(format!("`tol` {t:e} is outside [0, linear_max = {max:e}]")));
         }
     }
-    let (out, txn) = topo_txn(ctx, |topo, _model| boolean(topo, rule, a, b, &opts).map_err(OpError::from))?;
+    // A tangent contact met after the arrangement started cannot be undone inside the kernel, but
+    // the whole transaction can: roll back and retry with the offending operand fused last (a
+    // bridge operand may cover the tangent line). Each retry defers one more operand, so at most
+    // one retry per operand.
+    let mut defer: Vec<usize> = Vec::new();
+    let mut first_err: Option<OpError> = None;
+    let (out, txn) = loop {
+        let mut culprit: Option<usize> = None;
+        let r = topo_txn(ctx, |topo, _model| boolean_ordered(topo, rule, a, b, &opts, &defer, &mut culprit).map_err(OpError::from));
+        match (r, culprit) {
+            (Err(e), Some(c)) if rule != BoolRule::Subtract && !defer.contains(&c) => {
+                first_err.get_or_insert(e);
+                defer.push(c);
+            }
+            // The first tangent contact is the informative one when the reordered run fails too.
+            (Err(_), _) if first_err.is_some() => return Err(first_err.take().unwrap_or_else(|| OpError::Failed("boolean failed".into()))),
+            (r, _) => break r?,
+        }
+    };
     commit_topology(ctx, &txn, &[("bodies", &out.bodies), ("volumes", &out.volumes), ("new_faces", &out.new_faces), ("faces", &out.faces)])
 }
 

@@ -92,6 +92,27 @@ Definition of done (run on this branch): `cargo build --workspace`, `cargo test 
   bricks; documented and tested instead). Fixing near-tangent robustness itself (1e-5..1e-3 clearance still
   rolls back; documented as a limit).
 
+## Polish
+
+- **Tangent unite worklist.** A tangent line found while arranging a candidate fuse (a cylinder
+  resting on a brick face) is raised after edits started, and `TopologyEdit` has no sub-transaction
+  or snapshot (the trait is frozen). Instead of a snapshot inside the kernel, the ops roll the whole
+  `topo_txn` back and retry with the offending operand fused last (`boolean_ordered`, one retry per
+  operand at most; the first error is reported if all fail). Test `contact`: the reviewer's repro
+  (brick A 4^3 at (2,2,2), cylinder r=1 h=2 at (-1,2,2), bridge brick (1,1,3) at (0,2,2)) gives volume
+  70.870 in all six orders; without a bridge it still fails with `TangentContact` and the state hash
+  is unchanged. The library function `boolean` itself does not retry (documented).
+- **Edge-only / vertex-only contact.** Before: unite of bricks meeting along an edge or at a vertex
+  said "bodies do not touch" while the docs promised `TangentContact`. Now (code, `DESIGN.md` table and
+  rustdoc agree): unite is `TangentContact`, intersect `EmptyResult`, subtract returns the target;
+  curved point tangency and line tangency are `TangentContact` for every rule. Such a unite candidate
+  is skipped in the worklist like a non-touching one (edge-contact bricks bridged by a third brick
+  work in any order). Limit: detection needs a vertex of one operand on a face of the other.
+- **`regularize::unify_surface`.** It re-pointed the dropped face's carrier and deleted its pcurves
+  before `join_faces`, and left that in place when the join refused. It now returns an undo record and
+  the carrier and pcurves are restored on refusal. Declined: a dedicated test, because no fixture
+  makes `join_faces` refuse after `unify_surface` succeeds; the regression suite covers the success path.
+
 ## Known gaps
 
 - M3 (`webcut_body`, `webcut_sheet`, `imprint_curves`, `model.unmerge`, extended `webcut_surface`) and M4

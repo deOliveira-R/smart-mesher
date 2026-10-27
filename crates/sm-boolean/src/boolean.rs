@@ -80,6 +80,10 @@ pub struct BoolOutcome {
 /// Prefix of the error of a unite whose operands do not touch.
 const NO_TOUCH: &str = "bodies do not touch";
 
+/// Detail of the `TangentContact` for operands that meet along an edge or at points only. It
+/// is raised before any edit, so the unite worklist can skip such a candidate safely.
+const CONTACT_ONLY: &str = "the operands touch only along an edge or at isolated points, so their union would not be a manifold solid";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     In,
@@ -146,9 +150,20 @@ struct Stage {
 ///
 /// # Errors
 /// See [`BooleanError`]; notably `Ambiguous` when a fragment cannot be classified,
-/// `Unsupported` for tangent-only contacts and for geometry the arrangement cannot express, and
+/// `TangentContact` for tangent-only contacts (line or point tangency, and a unite of operands
+/// that meet along an edge or at a vertex only; the intersect of those is `EmptyResult` and the
+/// subtract leaves the target) and `Unsupported` for geometry the arrangement cannot express, and
 /// `ResultInvalid` when an assembled volume is open or has no positive volume.
 pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[EntityId], b: &[EntityId], o: &BoolOptions) -> Result<BoolOutcome, BooleanError> {
+    boolean_ordered(topo, rule, a, b, o, &[], &mut None)
+}
+
+/// [`boolean`] with the fold order of unite/intersect adjusted: the operands at the positions
+/// `defer` (indices into the volumes of `a` then `b`) are fused last, in that order. When a fuse
+/// fails with `TangentContact` after edits started, `culprit` receives the position of the
+/// operand being fused, so a caller that can roll the whole operation back (the ops do) may
+/// retry with that operand deferred: a later operand can cover the tangent line.
+pub(crate) fn boolean_ordered<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[EntityId], b: &[EntityId], o: &BoolOptions, defer: &[usize], culprit: &mut Option<usize>) -> Result<BoolOutcome, BooleanError> {
     let va = bodies::volumes_of(&*topo, a)?;
     let vb = bodies::volumes_of(&*topo, b)?;
     if va.is_empty() {
@@ -168,17 +183,23 @@ pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[Enti
     let mut new_faces: BTreeSet<EntityId> = BTreeSet::new();
     match rule {
         BoolRule::Unite | BoolRule::Intersect => {
-            let mut all: Vec<EntityId> = va.clone();
-            all.extend(vb.iter().copied());
-            let mut cur = all[0];
-            let mut rest: Vec<EntityId> = all[1..].to_vec();
+            let mut all: Vec<(usize, EntityId)> = va.iter().chain(vb.iter()).copied().enumerate().collect();
+            if !defer.is_empty() {
+                let mut ordered: Vec<(usize, EntityId)> = all.iter().copied().filter(|(i, _)| !defer.contains(i)).collect();
+                ordered.extend(defer.iter().filter_map(|d| all.iter().copied().find(|(i, _)| i == d)));
+                all = ordered;
+            }
+            let mut cur = all[0].1;
+            let mut rest: Vec<(usize, EntityId)> = all[1..].to_vec();
             let mut stage: Option<Stage> = None;
             // Worklist: fuse `cur` with any remaining operand that touches it. A failed
-            // "do not touch" attempt happens before the first edit, so the next candidate is safe.
+            // "do not touch" or "edge/point contact only" attempt happens before the first edit,
+            // so the next candidate is safe. A tangent contact found while arranging happens
+            // after edits: the caller rolls back and retries with that operand deferred.
             while !rest.is_empty() {
                 let mut fused: Option<(usize, Stage)> = None;
                 let mut untouched: Option<BooleanError> = None;
-                for (i, &next) in rest.iter().enumerate() {
+                for (i, &(pos, next)) in rest.iter().enumerate() {
                     match fuse2(topo, rule, cur, next, o) {
                         Ok(s) => {
                             fused = Some((i, s));
@@ -187,11 +208,19 @@ pub fn boolean<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, a: &[Enti
                         Err(BooleanError::Invalid(m)) if rule == BoolRule::Unite && m.starts_with(NO_TOUCH) => {
                             untouched.get_or_insert(BooleanError::Invalid(m));
                         }
-                        Err(e) => return Err(e),
+                        Err(e @ BooleanError::TangentContact { detail: CONTACT_ONLY, .. }) if rule == BoolRule::Unite => {
+                            untouched.get_or_insert(e);
+                        }
+                        Err(e) => {
+                            if matches!(e, BooleanError::TangentContact { .. }) {
+                                *culprit = Some(pos);
+                            }
+                            return Err(e);
+                        }
                     }
                 }
                 let Some((i, s)) = fused else {
-                    let first = rest[0];
+                    let first = rest[0].1;
                     return Err(untouched.unwrap_or_else(|| BooleanError::Invalid(format!("{NO_TOUCH}: {cur} touches none of the remaining operands ({first} ...); unite needs operands that overlap or share a face"))));
                 };
                 rest.remove(i);
@@ -269,8 +298,12 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     let fb: Vec<EntityId> = topo.volume_faces(vb).to_vec();
     let pairs: Vec<PairSpec> = pieces::candidate_pairs(&*topo, &fa, &fb, tol.linear_max).into_iter().map(|(a, b)| PairSpec { a, b: Other::Face(b) }).collect();
     let computed = pieces::compute(&*topo, &pairs, Share::Shared, &|_| 0, 10.0 * tol.linear_max)?;
+    // Surfaces that touch at isolated points (a sphere on a plane) are tangent contact for every
+    // rule: a fragment's probe point may sit exactly on the other surface, so classification is
+    // not reliable.
+    let contact_only = BooleanError::TangentContact { entity: va, detail: CONTACT_ONLY };
     if computed.pieces.is_empty() && computed.coincident.is_empty() && !computed.tangent_points.is_empty() {
-        return Err(BooleanError::TangentContact { entity: va, detail: "this operand and the other one touch only at isolated points" });
+        return Err(contact_only);
     }
     if !computed.pieces.is_empty() {
         let ps: Vec<&pieces::Piece> = computed.pieces.iter().collect();
@@ -296,10 +329,18 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     let all_out = class_a.iter().chain(&class_b).all(|(_, c, _, _)| *c == Class::Out);
     if all_out && computed.pieces.is_empty() {
         match rule {
-            BoolRule::Unite => return Err(BooleanError::Invalid(format!("{NO_TOUCH}: volumes {va} and {vb} neither overlap nor share a face; unite needs operands that overlap or share a face"))),
+            BoolRule::Unite => {
+                // Edge or vertex contact is not "far apart": the union would not be a manifold
+                // solid, so it is a tangent contact, not "do not touch".
+                if boundary_contact(&*topo, &cache, &fa_now, &fb_now, lin)? {
+                    return Err(contact_only);
+                }
+                return Err(BooleanError::Invalid(format!("{NO_TOUCH}: volumes {va} and {vb} neither overlap nor share a face; unite needs operands that overlap or share a face")));
+            }
             BoolRule::Intersect => return Err(BooleanError::EmptyResult),
             BoolRule::Subtract => {
-                // Nothing to remove: the target stays, the tool is consumed.
+                // Nothing to remove (also when the tool only touches along an edge or at
+                // points): the target stays, the tool is consumed.
                 if let Some(b) = body_b {
                     topo.kill_cascade(b)?;
                 } else {
@@ -415,6 +456,31 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
         }
     }
     Ok(Stage { volumes: new_volumes, bodies: new_bodies, new_faces: nf.into_iter().filter(|f| topo.is_alive(*f)).collect() })
+}
+
+/// True if a vertex of one operand lies on a face of the other (within `lin`): with every
+/// fragment outside and nothing imprinted, that is contact along an edge or at a vertex.
+fn boundary_contact<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, fa: &[EntityId], fb: &[EntityId], lin: f64) -> Result<bool, BooleanError> {
+    for (own, other) in [(fa, fb), (fb, fa)] {
+        let mut verts: BTreeSet<EntityId> = BTreeSet::new();
+        for &f in own {
+            for &e in view.face_edges(f) {
+                if let Some((s, t)) = view.edge_ends(e) {
+                    verts.insert(s);
+                    verts.insert(t);
+                }
+            }
+        }
+        for v in verts {
+            let Some(p) = geo::vertex_point(view, v) else { continue };
+            for &g in other {
+                if locate::on_face(view, cache, g, p, lin)? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Group the kept face uses into shells and make the volumes. Returns the new volumes in
