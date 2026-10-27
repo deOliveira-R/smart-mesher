@@ -118,10 +118,46 @@ Coarse or unequal boundaries (a few nodes against the size, acute corners) can l
 triangle dual with no perfect matching under the default placement. The kernel therefore
 retries a *fixed, ordered* list of placement variants (size scale, row distance, thinning run,
 finally "no rows at all"), the first that recombines completely wins; every variant is as
-deterministic as the first. The ladder is bounded by a work budget in triangles
-(`150000` triangle-attempts, at least two attempts) so a huge face that fails does not spend
-minutes failing. `QuadMesh2::rounds` reports the splitting rounds of the winning attempt.
-The production ladder lists 14 strategies ordered by a greedy cover over a 1275-case corpus (`survey_cover`, ignored test), then the other 80 candidates in a fixed order (they recover regions with spatially varying metrics, which the corpus lacks), all under the work budget.
+deterministic as the first. `QuadMesh2::rounds` reports the splitting rounds of the winning
+attempt and `QuadMesh2::size_scale` the size factor of the winning strategy (above 1 means the
+mesh is coarser than the wanted size; the scheme refuses a mesh more than 2x coarser than an
+explicit size field, since `Patch` has no diagnostics channel).
+
+**Cut-off.** A failing region is cut off by *counts*, never by the clock: after the first
+attempt the ladder may spend `6 x` that attempt's work plus a floor of `10^6` work units
+(a unit is one triangle visit of the recombination, including the per-flip re-matching, plus 8 per
+vertex; roughly 0.3 us in release), at most 40 attempts, and each later attempt is abandoned
+at `4 x` the first attempt's vertices (at least 4000). A small face therefore fails in well
+under a second (a thin triangle that used to take 3 s now takes about 0.5 s), a large
+one after a few attempts.
+
+### Strip fill
+
+A single loop whose boundary nodes split into four logical sides with equal opposite counts
+(`a = c`, `b = d`, so `a + b = n / 2`) is a structured grid; the triangle route cannot
+recombine thin ones (a 10 x 0.2 rectangle with 50 x 2 intervals has no perfect matching in the
+Delaunay triangles, 10 to 28 s to fail the old ladder). `strip.rs` picks the four corners by
+minimising the deviation of the turning angle from a right angle over all `(i, a)` pairs
+(O(n^2), nodes <= 8192), fills the interior by transfinite interpolation on index fractions
+(boundary nodes untouched) and accepts the grid if every quad is strictly convex by exact
+`orient2d` and the worst corner sine is at least `1e-3`. Order of use: a grid with corner sine
+>= 0.95 is taken first (an unstructured mesh cannot beat it); otherwise the default placement,
+then a grid with sine >= 0.3, then the ladder, and a worse grid only after the whole ladder
+failed. A grid more than 1.5x coarser than the wanted size waits behind the ladder (and is
+the fallback). Not covered: three-sided regions (a triangle with sides `a, b, c` needs
+`a + b - c >= 2` and so on for a three-block decomposition; `10 x 0.5` with 20/1/21 has `a + b = c`
+and no all-quad mesh without irregular transition pairs), unequal opposite counts, holes.
+
+### Explicit size field
+
+An explicit `size` is limited by the boundary-derived field (which carries `gradation`): the
+interior is never coarser than the boundary spacing grades into. A size *finer* than the boundary
+spacing is honoured as asked, without a lower gradation; the kernel cannot refine more than about
+1.5x against fixed boundary nodes, so such a request ends in a mesh coarser than asked
+(`size_scale > 1`). Absolute bound: the vertex count estimated from the size at the centroid of
+every boundary triangle is limited to `2 x 10^6` (`PaveError::TooLarge`, a `Geometry` failure),
+and so is any attempt that grows past it.
+The production ladder lists 14 strategies ordered by a greedy cover over a 1275-case corpus (`survey_cover`, ignored test), then the other 80 candidates in a fixed order (they recover regions with spatially varying metrics, which the corpus lacks), all under the cut-off.
 Surveys and the measured limits are in `W3_REPORT.md`.
 
 ## Failure mapping
@@ -141,9 +177,12 @@ is blamed and falls back).
 
 ## Cost and parallelism
 
-`pave_region` on a 100 x 100 square (400 boundary nodes, 10 000 quads): 0.12 s in a
-release build (gate: under 2 s, asserted in `acceptance_11_performance_100_by_100`; the
-number only binds in release builds). Time through `Driver::mesh` is recorded in the report
+`pave_region` on a 100 x 100 square (400 boundary nodes, about 10 000 quads), release build on
+Apple silicon macOS: 1.1 s through the triangle route (unequal opposite counts), 0.18 s as a
+structured grid (equal counts); the 70c7242 code measured 1.7 s on the same machine and the
+earlier figure of 0.12 s came from a different platform (gate: under 2 s, asserted in
+`acceptance_11_performance_100_by_100`; the number only binds in release builds, and a run next
+to other heavy tests can exceed it). Time through `Driver::mesh` is recorded in the report
 only (decision 12: it depends on the W3b bulk commit). Buffers are flat `Vec`s (triangle SoA, CSR
 dual graph with at most three neighbours per triangle); point location is a walk from the
 neighbouring triangle, never a global scan. The kernel is sequential on purpose (determinism

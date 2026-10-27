@@ -31,6 +31,10 @@ pub const NAME: &str = "pave";
 /// A quad whose 3-D scaled Jacobian (corner sine) is at or below this is a `Quality` failure.
 const MIN_SJ_3D: f64 = 0.05;
 
+/// With a size field, a mesh whose quads are more than this many times the wanted size is a
+/// `Quality` failure (the kernel's own ladder coarsens by at most 2).
+const MAX_SIZE_SCALE: f64 = 2.0 + 1e-9;
+
 /// Register the surface paving scheme (`"pave"`, [`SchemeDim::Surface`]).
 pub fn register(registry: &mut SchemeRegistry) -> sm_scheme_api::Result<()> {
     registry.register(Box::new(Pave))
@@ -196,10 +200,10 @@ impl Scheme for Pave {
         let mut uv_loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(loops.len());
         let mut keys: Vec<NodeKey> = Vec::new();
         for lp in &loops {
-            let uvs = cx.loop_uvs(f, lp).ok_or_else(|| {
+            let uvs = cx.loop_uvs(f, lp).filter(|u| u.len() == lp.nodes.len()).ok_or_else(|| {
                 fail(
                     FailureKind::Geometry,
-                    format!("loop {}: the boundary parameters (u, v) cannot be determined (missing pcurves, seam mismatch or no surface)", lp.ring),
+                    format!("loop {}: the boundary parameters (u, v) cannot be determined, or do not match the {} loop nodes (missing pcurves, seam mismatch or no surface)", lp.ring, lp.nodes.len()),
                 )
             })?;
             uv_loops.push(uvs);
@@ -220,14 +224,25 @@ impl Scheme for Pave {
         let size_fn = cx.size.map(|s| move |uv: [f64; 2]| s.size(surf.eval(Uv::new(uv[0], uv[1]))));
         let size_ref: Option<&dyn Fn([f64; 2]) -> f64> = size_fn.as_ref().map(|f| f as &dyn Fn([f64; 2]) -> f64);
         let mesh = pave_region(&uv_loops, &metric, size_ref, &opts).map_err(|e| {
-            // `Internal` (a guard such as the vertex budget) is a geometry-level failure here:
-            // the driver falls back to the next scheme instead of aborting the run.
+            // `Internal` (a guard such as the vertex budget) and `TooLarge` (an unbounded size
+            // request) are geometry-level failures here: the driver falls back to the next
+            // scheme instead of aborting the run.
             let kind = match e {
                 PaveError::OddBoundary { .. } | PaveError::LoopTooSmall { .. } => FailureKind::Constraint,
                 _ => FailureKind::Geometry,
             };
             fail(kind, e.to_string())
         })?;
+        // The kernel may coarsen the wanted size to find a perfect matching (or, for a
+        // structured fallback grid, ignore it). `Patch` has no diagnostics channel, so a mesh
+        // much coarser than the size field is refused: the driver falls back instead of
+        // silently ignoring the size.
+        if cx.size.is_some() && mesh.size_scale > MAX_SIZE_SCALE {
+            return Err(fail(
+                FailureKind::Quality,
+                format!("the mesh is {:.1} times coarser than the size field", mesh.size_scale),
+            ));
+        }
 
         // Interior points on the surface.
         let interior_uv: Vec<Uv> = mesh.points[nb..].iter().map(|p| Uv::new(p[0], p[1])).collect();

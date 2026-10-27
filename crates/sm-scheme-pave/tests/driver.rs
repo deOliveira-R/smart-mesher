@@ -342,8 +342,10 @@ fn a_size_field_steers_the_interior_through_generate() {
         assert!(min >= 0.40, "size {size}: min {min}");
         counts.push(m.cell_count());
     }
-    // The boundary nodes are fixed (spacing 0.5): a finer wanted size adds interior quads.
-    assert!(counts[0] > counts[1] && counts[2] <= counts[0], "{counts:?}");
+    // The boundary nodes are fixed (spacing 0.5), and the kernel cannot refine 2x against
+    // them within its bounded ladder: a finer wanted size never gives fewer quads, and the
+    // coarser sizes are clamped to the boundary spacing (identical meshes).
+    assert!(counts[0] >= counts[1] && counts[1] == counts[2], "{counts:?}");
 }
 
 /// Recorded, not gated (decision 12: it depends on the W3b bulk mesh commit): the time of
@@ -357,4 +359,53 @@ fn driver_time_for_a_100_by_100_face_is_recorded() {
     let t0 = std::time::Instant::now();
     let out = mesh_faces(&topo, &model, &[face], &hard(&pairs), &Sequential).expect("mesh");
     eprintln!("Driver::mesh of a 100 x 100 paved face: {} quads in {:.3} s", out.finished.mesh.cell_count(), t0.elapsed().as_secs_f64());
+}
+
+/// A thin cladding-gap style strip (10 x 0.2, 50 x 2 intervals) is a structured grid through
+/// the whole driver, with 3-D scaled Jacobian 1.
+#[test]
+fn a_thin_strip_with_equal_counts_meshes_through_the_driver() {
+    let (topo, ids, model) = brick_setup([10.0, 0.2, 1.0]);
+    let face = ids.faces[5];
+    let pairs: Vec<(EntityId, u32)> = face_edges(&topo, face)
+        .into_iter()
+        .map(|e| (e, if (edge_len(&topo, e) - 10.0).abs() < 1e-9 { 50 } else { 2 }))
+        .collect();
+    let t0 = std::time::Instant::now();
+    let out = mesh_faces(&topo, &model, &[face], &hard(&pairs), &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    assert_eq!(out.plan.target(Target::Surface(face)).map(|t| t.scheme.as_str()), Some("pave"));
+    assert!(out.attempts.iter().all(|a| a.scheme.as_str() != "pave"), "{:?}", out.attempts);
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    all_quads(m);
+    assert_eq!(m.cell_count(), 100);
+    assert!((area(m) - 2.0).abs() < 1e-12, "area {}", area(m));
+    cells_follow_face_normal(m, &topo, face);
+    let (min, mean) = scaled_jacobian(m);
+    assert!(min > 0.999 && mean > 0.999, "min {min} mean {mean}");
+    eprintln!("thin strip 50 x 2: {} quads in {:.3} s", m.cell_count(), t0.elapsed().as_secs_f64());
+}
+
+/// A size field of 1e-9 is a typed failure (too many vertices), not a near-unbounded run.
+#[test]
+fn an_absurdly_small_size_field_is_a_typed_failure() {
+    use sm_mesh_api::SerialAlloc;
+    let (topo, ids, model) = brick_setup([4.0, 3.0, 1.0]);
+    let face = ids.faces[5];
+    let intent = brick_face_counts(&topo, face, 8, 6);
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let field = sm_scheme_api::ConstantSize(1e-9);
+    let mut driver = Driver::new(&reg, &solver, &picker);
+    driver.size = Some(&field);
+    let sel = [face];
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+    let t0 = std::time::Instant::now();
+    let res = driver.mesh(&input, &intent, &Sequential, sm_mesh_api::reference::ReferenceBuilder::surface(), &mut SerialAlloc::new());
+    assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());
+    // The auto chain falls back to the stub `tri`; the history names pave's typed failure.
+    let out = res.expect("fallback mesh");
+    let a = out.attempts.first().expect("history");
+    assert_eq!((a.scheme.as_str(), a.kind), ("pave", FailureKind::Geometry), "{a:?}");
+    assert!(a.message.contains("vertices"), "{}", a.message);
 }

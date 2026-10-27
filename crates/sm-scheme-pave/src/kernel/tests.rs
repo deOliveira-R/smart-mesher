@@ -254,28 +254,24 @@ fn kernel_is_deterministic_and_reflection_invariant() {
 
 #[test]
 fn acceptance_11_performance_100_by_100() {
-    // 400 boundary points, about 10^4 quads; the gate only binds in release builds.
-    let n = 100;
-    let mut l: Vec<[f64; 2]> = Vec::new();
-    for i in 0..n {
-        l.push([i as f64, 0.0]);
-    }
-    for i in 0..n {
-        l.push([n as f64, i as f64]);
-    }
-    for i in 0..n {
-        l.push([(n - i) as f64, n as f64]);
-    }
-    for i in 0..n {
-        l.push([0.0, (n - i) as f64]);
-    }
+    // 400 boundary points, about 10^4 quads; the gate only binds in release builds. The
+    // opposite counts differ (100/98 and 100/102), so the structured strip fill does not
+    // apply and this measures the triangle route; the exact 100 x 100 grid is timed too.
+    let l = counted_rect(100.0, 100.0, [100, 100, 98, 102]);
     let t0 = std::time::Instant::now();
     let m = pave_region(&[l], &id_metric, None, &PaveOptions::default()).expect("pave");
     let dt = t0.elapsed().as_secs_f64();
-    eprintln!("100 x 100 square: {} quads in {dt:.3} s", m.quads.len());
-    assert_eq!(m.quads.len(), n * n);
+    eprintln!("100 x 100 square (unequal counts, triangle route): {} quads in {dt:.3} s", m.quads.len());
+    assert!((9_000..=11_000).contains(&m.quads.len()), "{} quads", m.quads.len());
+    let grid = counted_rect(100.0, 100.0, [100, 100, 100, 100]);
+    let t1 = std::time::Instant::now();
+    let g = pave_region(&[grid], &id_metric, None, &PaveOptions::default()).expect("pave grid");
+    let dg = t1.elapsed().as_secs_f64();
+    eprintln!("100 x 100 square (equal counts, structured grid): {} quads in {dg:.3} s", g.quads.len());
+    assert_eq!(g.quads.len(), 100 * 100);
     if !cfg!(debug_assertions) {
         assert!(dt < 2.0, "{dt} s");
+        assert!(dg < 2.0, "{dg} s");
     }
 }
 
@@ -626,4 +622,131 @@ fn stretch_s3_varying_metric_quality_is_reported() {
         assert!(min > 0.0, "inverted quad in the physical space");
     }
     assert!(succeeded >= 1);
+}
+
+// ---------------------------------------------------------------- polish
+
+/// A rectangle region of the given size (for `check`).
+fn rect_region(w: f64, h: f64) -> Region2 {
+    loops2d::rectangle(w, h)
+}
+
+#[test]
+fn thin_strips_with_equal_opposite_counts_mesh_as_grids() {
+    // Rectangles with 2 intervals across and many along (cladding gaps).
+    for (w, h, c) in [(10.0, 0.2, [50, 2, 50, 2]), (10.0, 0.1, [100, 2, 100, 2]), (10.0, 0.3, [40, 3, 40, 3]), (6.0, 0.2, [30, 2, 30, 2])] {
+        let l = vec![counted_rect(w, h, c)];
+        let m = pave_region(&l, &id_metric, None, &PaveOptions::default()).unwrap_or_else(|e| panic!("{w}x{h} {c:?}: {e}"));
+        let s = check(&rect_region(w, h), &l, &m);
+        assert_eq!(m.quads.len(), c[0] * c[1], "{w}x{h}");
+        assert_eq!(m.rounds, 0);
+        assert!(s.min > 0.999 && s.mean > 0.999, "{w}x{h}: min {} mean {}", s.min, s.mean);
+        // The grid follows the boundary spacing, so it is about as coarse as wanted.
+        assert!(m.size_scale > 0.5 && m.size_scale < 2.0, "{w}x{h}: scale {}", m.size_scale);
+    }
+}
+
+#[test]
+fn the_strip_fill_is_deterministic_and_reflection_safe() {
+    let l = vec![counted_rect(10.0, 0.2, [50, 2, 50, 2])];
+    let o = PaveOptions::default();
+    let a = pave_region(&l, &id_metric, None, &o).expect("strip");
+    let b = pave_region(&l, &id_metric, None, &o).expect("strip");
+    assert_eq!(a, b);
+    // Reflected input gives the mirrored grid.
+    let r: Vec<[f64; 2]> = l[0].iter().rev().map(|p| [p[0], -p[1]]).collect();
+    let m = pave_region(&[r], &id_metric, None, &o).expect("reflected strip");
+    assert_eq!(m.quads.len(), 100);
+}
+
+#[test]
+fn a_thin_strip_in_a_stretched_metric_still_meshes() {
+    // Same nodes in (u, v) with a strongly anisotropic metric: the frame absorbs it.
+    let l = vec![counted_rect(1.0, 0.02, [50, 2, 50, 2])];
+    let metric = |_: [f64; 2]| [100.0, 0.0, 1.0];
+    let m = pave_region(&l, &metric, None, &PaveOptions::default()).expect("pave");
+    assert_eq!(m.quads.len(), 100);
+}
+
+/// The wedge `10 x 0.5` with 20/1/21 intervals has no all-quad mesh without irregular
+/// transition pairs (its three-block decomposition would need a zero-width block), so it
+/// stays a typed failure: and, since the ladder is cut off by counts, a fast one.
+#[test]
+fn the_degenerate_wedge_fails_typed_and_fast() {
+    let l = counted_polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 0.5]], &[20, 1, 21]);
+    let t = std::time::Instant::now();
+    let r = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+    assert!(matches!(r, Err(PaveError::NoPerfectMatching { .. })), "{r:?}");
+    assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
+}
+
+#[test]
+fn a_failing_small_region_stops_after_a_bounded_number_of_attempts() {
+    // Random thin triangles that fail the whole ladder must fail in well under a second each
+    // (release), whatever the clock: this only checks the typed error and a loose bound.
+    let t = std::time::Instant::now();
+    for k in [3usize, 5, 7] {
+        let l = counted_polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 0.5]], &[20, k, 21]);
+        let r = pave_region(&[l], &id_metric, None, &PaveOptions::default());
+        assert!(r.is_ok() || matches!(r, Err(PaveError::NoPerfectMatching { .. })), "{r:?}");
+    }
+    assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
+}
+
+#[test]
+fn an_absurd_size_is_a_typed_error_not_a_long_run() {
+    let l = vec![resample(&loops2d::square().outer, 0.25)];
+    let tiny = |_: [f64; 2]| 1e-9;
+    let t = std::time::Instant::now();
+    let r = pave_region(&l, &id_metric, Some(&tiny), &PaveOptions::default());
+    assert!(matches!(r, Err(PaveError::TooLarge { .. })), "{r:?}");
+    assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
+    // A boundary-derived request can be absurd too: one 1e-7 segment and (almost) no
+    // gradation make the whole unit square 1e-7 sized.
+    let mut sq = vec![[0.0, 0.0], [5e-8, 0.0], [1e-7, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.5], [0.0, 0.25]];
+    sq.rotate_left(0);
+    let o = PaveOptions { gradation: 1e-9, ..PaveOptions::default() };
+    let r = pave_region(&[sq], &id_metric, None, &o);
+    assert!(matches!(r, Err(PaveError::TooLarge { .. })), "{r:?}");
+    // Non-positive sizes stay a metric error.
+    let zero = |_: [f64; 2]| 0.0;
+    assert_eq!(pave_region(&l, &id_metric, Some(&zero), &PaveOptions::default()).err(), Some(PaveError::BadMetric));
+}
+
+#[test]
+fn an_explicit_size_is_limited_by_the_boundary_spacing_with_gradation() {
+    let l = vec![resample(&loops2d::rectangle(3.0, 2.0).outer, 0.25)];
+    let o = PaveOptions::default();
+    let default = pave_region(&l, &id_metric, None, &o).expect("default");
+    // A size far coarser than the boundary allows is clamped to the boundary-derived field,
+    // which is exactly what no size gives.
+    let coarse = |_: [f64; 2]| 100.0;
+    let m = pave_region(&l, &id_metric, Some(&coarse), &o).expect("coarse");
+    assert_eq!(m, default);
+    // A size finer than the boundary spacing is not graded (the kernel cannot refine 2x
+    // against fixed boundary nodes): the mesh may be coarser than asked, and says so.
+    let l2 = vec![resample(&loops2d::rectangle(4.0, 3.0).outer, 0.5)];
+    let base = pave_region(&l2, &id_metric, None, &o).expect("base");
+    let fine = |_: [f64; 2]| 0.25;
+    let f = pave_region(&l2, &id_metric, Some(&fine), &o).expect("fine");
+    assert!(f.quads.len() >= base.quads.len(), "{} vs {}", f.quads.len(), base.quads.len());
+    assert!(f.size_scale >= 1.0, "scale {}", f.size_scale);
+}
+
+#[test]
+fn the_size_scale_of_the_winning_strategy_is_reported() {
+    let o = PaveOptions::default();
+    let sq = vec![resample(&loops2d::square().outer, 0.25)];
+    assert_eq!(pave_region(&sq, &id_metric, None, &o).expect("square").size_scale, 1.0);
+    // A strategy's scale is one of the ladder's factors; a strip grid reports its measured
+    // edge-to-size ratio.
+    let allowed = [0.65, 0.8, 1.0, 1.25, 1.5, 2.0];
+    let mut coarsened = 0;
+    for (name, l) in corpus_small_rectangles() {
+        if let Ok(m) = pave_region(&[l], &id_metric, None, &o) {
+            assert!(allowed.contains(&m.size_scale) || (m.rounds == 0 && m.size_scale > 0.2 && m.size_scale < 5.0), "{name}: {}", m.size_scale);
+            coarsened += (m.size_scale > 1.0) as usize;
+        }
+    }
+    eprintln!("{coarsened} small rectangles were meshed with a coarsened size");
 }
