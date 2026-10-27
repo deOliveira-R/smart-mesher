@@ -86,7 +86,10 @@ pub(crate) fn colour(prep: &Prep<'_>) -> Vec<Vec<u32>> {
 fn quality(mesh: &dyn MeshRead, topo: &dyn sm_topo_api::TopologyView) -> Result<(QualityStats, Vec<f64>, Vec<CellIx>), SmoothError> {
     let cn = CarrierNormals { topo };
     let opts = Options::default().with_normals(SurfaceNormals::Field(&cn));
-    let err = |e: sm_quality::QualityError| SmoothError::BadParams(format!("quality evaluation failed: {e}"));
+    let err = |e: sm_quality::QualityError| match e {
+        sm_quality::QualityError::BadArgument(s) => SmoothError::BadParams(format!("quality evaluation failed: {s}")),
+        _ => SmoothError::Unsupported("quality evaluation is undefined for this mesh"),
+    };
     let shape = compute(mesh, Metric::Shape, &opts).ok();
     let cond = compute(mesh, Metric::Condition, &opts).ok();
     let val = validity(mesh, &opts).map_err(err)?;

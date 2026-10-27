@@ -106,8 +106,8 @@ fn closure(topo: &dyn TopologyView, e: EntityId) -> Vec<EntityId> {
     out.into_iter().collect()
 }
 
-/// Meshed cells of kind `top` above `e`.
-fn top_ancestors(topo: &dyn TopologyView, e: EntityId, top: EntityKind, ents: &[EntityId]) -> Vec<EntityId> {
+/// Every cell of kind `top` above `e`, meshed here or not.
+fn top_ancestors(topo: &dyn TopologyView, e: EntityId, top: EntityKind) -> Vec<EntityId> {
     let mut out = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut stack = vec![e];
@@ -118,9 +118,7 @@ fn top_ancestors(topo: &dyn TopologyView, e: EntityId, top: EntityKind, ents: &[
                 continue;
             }
             if c.kind() == top {
-                if ents.binary_search(&c).is_ok() {
-                    out.insert(c);
-                }
+                out.insert(c);
             } else if matches!(c.kind(), EntityKind::TopoFace | EntityKind::TopoEdge) {
                 stack.push(c);
             }
@@ -211,6 +209,10 @@ impl<'a> Prep<'a> {
 
         if mesh.coords().len() != n {
             return Err(SmoothError::Unsupported("high-order mesh (extra nodes)"));
+        }
+        let xyz = mesh.coords();
+        if let Some(v) = (0..n).find(|&i| !(xyz.x[i].is_finite() && xyz.y[i].is_finite() && xyz.z[i].is_finite())) {
+            return Err(SmoothError::NonFiniteInput(v));
         }
         // ---- cells ------------------------------------------------------------------------
         let mut shape = Vec::with_capacity(nc);
@@ -428,11 +430,19 @@ impl<'a> Prep<'a> {
         let mut selected = vec![false; n];
         match &req.nodes {
             NodeSelect::All => {
+                // A face or edge node of a 3-D mesh moves only if every volume above it is meshed
+                // here: a volume in another mesh entry would otherwise lose conformity.
+                let mut conformal: BTreeMap<EntityId, bool> = BTreeMap::new();
                 for v in 0..n {
+                    let e = vcls[v].entity;
                     // In a surface mesh the face nodes are the interior nodes.
-                    selected[v] = match vcls[v].entity.kind() {
+                    selected[v] = match e.kind() {
                         EntityKind::TopoFace if dim2 => true,
-                        EntityKind::TopoEdge | EntityKind::TopoFace => !req.fix_boundary,
+                        EntityKind::TopoEdge | EntityKind::TopoFace if req.fix_boundary => false,
+                        EntityKind::TopoEdge | EntityKind::TopoFace if dim2 => true,
+                        EntityKind::TopoEdge | EntityKind::TopoFace => *conformal
+                            .entry(e)
+                            .or_insert_with(|| top_ancestors(topo, e, top_kind).iter().all(|a| ents.binary_search(a).is_ok())),
                         _ => true,
                     };
                 }
@@ -473,7 +483,11 @@ impl<'a> Prep<'a> {
                         if !below {
                             continue;
                         }
-                        let anc = top_ancestors(topo, e, top_kind, ents);
+                        // 2-D: only faces meshed here count. 3-D: every volume above must be selected.
+                        let mut anc = top_ancestors(topo, e, top_kind);
+                        if dim2 {
+                            anc.retain(|a| ents.binary_search(a).is_ok());
+                        }
                         if !anc.is_empty()
                             && anc.iter().all(|a| tops.binary_search(a).is_ok())
                             && let Some(set) = mesh.classified_on(e)

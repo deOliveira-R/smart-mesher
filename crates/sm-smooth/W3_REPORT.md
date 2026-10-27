@@ -148,9 +148,40 @@ All release builds, this VM (4 cores). Tolerances were not relaxed.
 
 None.
 
+## Polish
+
+Review items, round 0.
+
+1. **Test time.** Debug test CPU time of `cargo test -p sm-smooth` is now about 40 s per pass
+   (was about 20 min wall under load; the machine load average was 900 during measurement, so wall
+   time is noisy and CPU `user` time is the reliable figure). Changes: determinism fixtures
+   shrunk (hex 3^3, tet 2^3, quad 5^2, tube 8x4, 3-6 sweeps; op-level brick 4^3); never-inverts
+   matrix uses 8x8 and sweeps {1, 2, 5, 10, 20}, split per method family so the harness runs them
+   in parallel; optimize tests use a 4^3 hex and 2^3 tet with the same thresholds; geometry uses
+   an 8x4 tube (25 sweeps) and a 6x3 tube (100 sweeps) for spacing restoration; op-level
+   recovery uses a 5^3 brick. Every acceptance bullet keeps a default-run test. The original
+   sizes are `#[ignore]` tests named `*_large` / `a4_exhaustive` (12x12, sweeps 1..=20, 6^3 hex,
+   4^3 tet, 12x6 tube with 400 sweeps, 10^3 brick, large determinism fixtures); run them with
+   `cargo test -p sm-smooth --all-features -- --ignored` (or `--test <file> -- --ignored`).
+2. **Shared faces across mesh entries.** In 3-D, a face or edge node moves under
+   `fix_boundary: false` only if every `TopoVolume` in its upward closure (all of them, meshed in
+   this entry or not) is selected; `NodeSelect::All` applies the same rule with "selected" meaning
+   "meshed in this entry". 2-D keeps the meshed-faces-only filter. Test: `tests/shared_face.rs`
+   (webcut brick, lower half meshed alone, cap nodes bit-identical under `All` and `Entities`).
+3. **Non-finite input.** `SmoothError::NonFiniteInput(vertex)` (op: `Invalid`) when any
+   coordinate is NaN or infinite; tested for both.
+4. **`quality()` errors.** `QualityError::BadArgument` maps to `BadParams`, the others to
+   `Unsupported`. `Method::Optimize` docs state that nodes of degenerate or inverted cells are
+   never moved (untangle is deferred).
+5. **Perf, record only (not done).** (a) Keep a per-surface projection context in `Kernel::ctx`
+   so `ParametricSurface::project` with a hint does not rebuild it on every trial. (b) The guard's
+   `NewMetrics` is a `SmallVec<[_; 8]>` with one entry per incident cell; an interior tet node has
+   about 20-30 incident cells, so it spills to the heap. A larger inline capacity (32) or a
+   per-thread scratch buffer would remove that allocation.
+
 ## Test status
 
 `cargo build --workspace`, `cargo test -p sm-smooth --all-features`,
-`RAYON_NUM_THREADS=1 cargo test -p sm-smooth --all-features` (debug, about 3 minutes each),
+`RAYON_NUM_THREADS=1 cargo test -p sm-smooth --all-features` (debug, well under 2 minutes each after Polish),
 `cargo clippy -p sm-smooth --all-targets --all-features -- -D warnings` and
 `RUSTDOCFLAGS="-D warnings" cargo doc -p sm-smooth --no-deps` all pass.

@@ -62,11 +62,13 @@ Fixtures (all from `sm_testkit::lattice`, names as in the task): `hex`, `tet_kuh
      nothing to move; `fix_boundary` then governs the `TopoEdge` nodes only).
    - `Entities`: a listed `TopoVolume` selects its nodes. A listed `TopoFace` or `TopoEdge` selects
      its own nodes explicitly (any `fix_boundary`). With `fix_boundary: false`, the face and edge
-     nodes in the closure of the listed volumes also move when every **meshed** volume above them
-     (via `coboundary`) is listed. The closure test counts only entities that carry mesh nodes
-     (`classified_entities`), so a face shared with an unmeshed neighbour moves with its volume,
-     and a lone meshed face (`lattice::quad` sits on one face of a brick) does not pin its edges
-     because of the unmeshed side faces. In a dim-2 mesh a listed `TopoFace` plays the volume's
+     nodes in the closure of the listed volumes also move when every volume above them (via
+     `coboundary`, meshed in this entry or not) is listed. A face shared with a volume that is
+     not meshed here (another mesh entry, or none) therefore stays put, keeping the mesh
+     conformal (Polish round 0; before, only meshed volumes were counted). `All` with
+     `fix_boundary: false` applies the same rule with "listed" meaning "meshed in this entry".
+     In a dim-2 mesh only meshed faces count, so a lone meshed face (`lattice::quad` sits on one
+     face of a brick) does not pin its edges because of the unmeshed side faces. In a dim-2 mesh a listed `TopoFace` plays the volume's
      role for its edges.
    - `Vertices`: explicit; the constraint table and pins still apply.
    An unknown or node-less listed entity gives `UnknownEntity`; a selection with nothing free

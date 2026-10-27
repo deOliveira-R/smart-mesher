@@ -70,11 +70,23 @@ fn check_on_geometry(f: &lattice::LatticeFixture, mesh: &dyn MeshRead, label: &s
 
 #[test]
 fn a5_nodes_stay_on_the_cylinder_for_every_method() {
-    let f = lattice::tube_quad(12, 6, 1.0, 2.0).expect("tube");
+    // 8x4 tube, 25 sweeps: enough to move every node class; the 12x6 / 60-sweep run is ignored.
+    stay_on_cylinder(8, 4, 25);
+}
+
+/// The original 12x6 tube with 60 sweeps. Run with `cargo test -p sm-smooth --test geometry -- --ignored`.
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a5_nodes_stay_on_the_cylinder_for_every_method_large() {
+    stay_on_cylinder(12, 6, 60);
+}
+
+fn stay_on_cylinder(nt: usize, nz: usize, iters: u32) {
+    let f = lattice::tube_quad(nt, nz, 1.0, 2.0).expect("tube");
     let p = f.perturbed(9, 0.2).expect("perturb");
     for (name, m) in methods() {
         for sched in [Schedule::Colored, Schedule::Jacobi] {
-            let o = run(&p, &req(m, sched, 60, false));
+            let o = run(&p, &req(m, sched, iters, false));
             let mesh = applied(&p, &o);
             check_on_geometry(&p, &mesh, &format!("{name} {sched:?}"));
             assert!(o.report.accepted > 0, "{name}: nothing moved");
@@ -88,10 +100,22 @@ fn a5_nodes_stay_on_the_cylinder_for_every_method() {
 
 #[test]
 fn a5_laplacian_and_centroid_restore_equal_spacing() {
-    let f = lattice::tube_quad(12, 6, 1.0, 2.0).expect("tube");
+    // 6x3 tube converges in ~100 sweeps (ring radius 0.5, axial 0.5); the 12x6 / 400 run is ignored.
+    restore_spacing(6, 3, 100);
+}
+
+/// The original 12x6 tube with 400 sweeps. Run with `cargo test -p sm-smooth --test geometry -- --ignored`.
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a5_laplacian_and_centroid_restore_equal_spacing_large() {
+    restore_spacing(12, 6, 400);
+}
+
+fn restore_spacing(nt: usize, nz: usize, iters: u32) {
+    let f = lattice::tube_quad(nt, nz, 1.0, 2.0).expect("tube");
     let p = f.perturbed(9, 0.2).expect("perturb");
     for (name, m) in [("laplacian", Method::Laplacian { relax: 1.0 }), ("centroid", Method::CentroidArea { relax: 1.0 })] {
-        let mut r = req(m, Schedule::Colored, 400, false);
+        let mut r = req(m, Schedule::Colored, iters, false);
         r.tolerance = 0.0;
         let o = run(&p, &r);
         // angular and axial spacing
