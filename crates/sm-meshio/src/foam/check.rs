@@ -79,7 +79,8 @@ fn face_geometry(pts: &[V3], f: &[u32]) -> (V3, V3) {
 /// `tol` is the relative tolerance of the closedness test (`1e-9` is a good value).
 ///
 /// Codes: `foam.index_range` (indices or array sizes inconsistent; geometry checks are then
-/// skipped), `foam.owner_not_below_neighbour`, `foam.not_upper_triangular` (internal faces not
+/// skipped; this includes `n_cells` larger than the owner plus neighbour entry count, reported as
+/// "N cells but only A owner and B neighbour entries" and returned alone), `foam.owner_not_below_neighbour`, `foam.not_upper_triangular` (internal faces not
 /// ordered by owner then neighbour), `foam.upper_triangular_tie` (equal `(owner, neighbour)` of
 /// two faces: a warning, checkMesh may need strictly increasing neighbours), `foam.patch_range`
 /// (patches do not tile `n_internal..n_faces`), `foam.point_unused`, `foam.cell_too_few_faces`

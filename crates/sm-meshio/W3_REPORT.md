@@ -158,3 +158,16 @@ unaffected (no op code changed).
 * Planarity of a mirror patch is judged against the plane of its first non-degenerate face.
 * `PolyMesh` duplicates the face CSR; memory not measured beyond the 64,000-cell bench.
 * The VTK-reader half of the VTU check did not run (no `vtk` module in this VM).
+
+## Polish
+
+* **`check_polymesh` rustdoc (done).** The `foam.index_range` entry now states that `n_cells`
+  larger than the owner plus neighbour entry count is reported as "N cells but only A owner and B
+  neighbour entries" and returned alone (structural failure, geometry checks skipped).
+* **Parse throughput (declined, no change).** The 84 to 68 MiB/s drop could not be attributed to
+  code: the CSR change removed the per-face `Vec`, so it only removes work. A re-measure at 70c7242
+  gave 31 to 35 MiB/s with the machine at load average ~680, i.e. the benchmark is dominated by
+  contention and cannot resolve a 20% difference. The remaining cost is the per-token lexer
+  and `f64::from_str`; a lexer rewrite is not "cheap" and is unjustified without a quiet machine.
+  Re-measure on an idle host before touching it.
+
