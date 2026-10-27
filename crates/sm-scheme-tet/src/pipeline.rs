@@ -13,7 +13,7 @@ use crate::{SurfaceInput, TetMesh, TetOptions, TetStats, validate};
 use std::time::Instant;
 
 /// How often the build restarts with extra interior points after a recovery failure.
-const MAX_RESTARTS: usize = 12;
+const MAX_RESTARTS: usize = 2;
 
 /// Interior hints closer than this (relative to the triangle size) to an input triangle are
 /// dropped: they would sit on the surface.
@@ -267,12 +267,14 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
         let _ = d.remove_flats(false, &guard)?;
         t_delaunay = ms(t1);
         let t2 = Instant::now();
+        d.droppable_from = (n + N_FAR) as u32;
         let r = {
             let mut rec = Recover::new(&mut d, &con, &guard, max_steiner, n as u32, attempt);
             let r = rec.run();
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
+        d.droppable_from = u32::MAX;
         match r.0 {
             Ok(()) => {
                 dt = d;
@@ -327,7 +329,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     let unrefinable;
     {
         let h = boundary_sizes(&input.points, &input.tris, dt.pts.len());
-        let mut rf = crate::refine::Refiner::new(&mut dt, h, opts, max_steiner);
+        let mut rf = crate::refine::Refiner::new(&mut dt, h, opts, &guard, max_steiner);
         unrefinable = rf.run()?;
         flips += rf.flips;
     }

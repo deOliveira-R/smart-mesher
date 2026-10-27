@@ -267,7 +267,7 @@ impl Dt {
             if r.iter().any(|&t| self.tds.verts[t as usize].iter().any(|x| bverts.binary_search(x).is_err())) {
                 continue;
             }
-            if let Some((new, _)) = self.fill_with_steiner(&front, None, 20_000 + 400 * front.len(), guard) {
+            if let Some((new, _)) = self.fill_with_steiner(&front, None, &[], &crate::fill::Seeds::default(), 20_000 + 400 * front.len(), guard) {
                 let mut ids = Vec::new();
                 self.tds.replace(&r, &new, &mut ids)?;
                 return Ok(true);

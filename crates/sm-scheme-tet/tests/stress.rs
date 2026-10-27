@@ -8,7 +8,10 @@ use sm_testkit::surf3;
 
 fn check(name: String, f: &surf3::SurfaceFixture, v: usize, fails: &mut Vec<String>) {
     let inp = input_of(f, v);
-    match tetrahedralize(&inp, &TetOptions::default()) {
+    let t = std::time::Instant::now();
+    let r = tetrahedralize(&inp, &TetOptions::default());
+    eprintln!("{name}: {:.2}s", t.elapsed().as_secs_f64());
+    match r {
         Ok(m) => {
             let want = f.volumes[v].enclosed_volume;
             let vol = total_volume(&m);

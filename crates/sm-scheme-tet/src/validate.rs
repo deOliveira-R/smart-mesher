@@ -50,11 +50,17 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
 /// Check the surface: indices, degenerate triangles, closure/manifoldness with consistent
 /// orientation, and shell volumes.
 pub(crate) fn check_surface(points: &[V3], tris: &[[u32; 3]]) -> Result<(), TetError> {
+    if tris.is_empty() {
+        return Err(TetError::BadOption("the surface has no triangles".into()));
+    }
     check_points(points)?;
     let n = points.len() as u32;
     for (i, t) in tris.iter().enumerate() {
         let tri = i as u32;
-        if t.iter().any(|&x| x >= n) || t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+        if let Some(&index) = t.iter().find(|&&x| x >= n) {
+            return Err(TetError::BadIndex { tri, index });
+        }
+        if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
             return Err(TetError::DegenerateTri { tri });
         }
         let [a, b, c] = t.map(|x| points[x as usize]);

@@ -286,6 +286,7 @@ fn explain(e: &TetError, target: Target, input: &SurfaceInput, tri_keys: &[[Node
         TetError::NotClosed { .. } | TetError::NonManifold { .. } => "check that the volume shell is closed and every face is meshed (merge coincident faces)".to_owned(),
         TetError::InvertedShell { .. } => "check the orientation of the face meshes of the volume".to_owned(),
         TetError::DegenerateTri { .. } => format!("remesh {face}: it contains a degenerate triangle"),
+        TetError::BadIndex { .. } => "the mesh refers to a node that does not exist (internal error in the adapter)".to_owned(),
         TetError::DuplicatePoint { .. } => "two mesh nodes coincide: merge or remove the duplicate".to_owned(),
         TetError::OutOfRange(_) => "scale the model so that coordinates lie within 2^-100 .. 2^100".to_owned(),
         TetError::SteinerBudget { .. } => "increase the element size or simplify the geometry".to_owned(),
@@ -301,7 +302,7 @@ fn explain(e: &TetError, target: Target, input: &SurfaceInput, tri_keys: &[[Node
 /// the offending triangle, if any.
 fn locate(e: &TetError, input: &SurfaceInput, tri_keys: &[[NodeKey; 3]], key_of: &dyn Fn(u32) -> NodeKey) -> (Vec<NodeKey>, Option<u32>) {
     let tri = match e {
-        TetError::InvertedShell { tri } | TetError::DegenerateTri { tri } | TetError::RecoveryFailed { tri, .. } => Some(*tri),
+        TetError::InvertedShell { tri } | TetError::DegenerateTri { tri } | TetError::BadIndex { tri, .. } | TetError::RecoveryFailed { tri, .. } => Some(*tri),
         TetError::SelfIntersection { tri_a, .. } => Some(*tri_a),
         _ => None,
     };

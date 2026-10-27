@@ -14,6 +14,9 @@ pub(crate) struct Dt {
     pub pts: Vec<V3>,
     pub tds: Tds,
     pub last: u32,
+    /// Points with an index `>= droppable_from` are interior Steiner points that cavity fills
+    /// may leave out (swallow) while boundary recovery runs; `u32::MAX` outside of it.
+    pub droppable_from: u32,
     rng: u64,
     cmark: Vec<u32>,
     cepoch: u32,
@@ -39,6 +42,7 @@ impl Dt {
             pts,
             tds: Tds::new(n),
             last: NONE,
+            droppable_from: u32::MAX,
             rng: splitmix(n as u64),
             cmark: Vec::new(),
             cepoch: 0,

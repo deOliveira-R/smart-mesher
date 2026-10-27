@@ -109,34 +109,48 @@ Everything below works on the triangulation including the far box.
    (regression: the Schönhardt fixture scaled by 0.3 in z used to fail here).
 2. **Edges, fallback.** When no flip helps, the cavity of all tets that touch the open segment
    (exact closed-contact test) is removed and refilled by *backtracking gift wrapping* (`fill`)
-   with the segment as a mandatory edge, growing the cavity by up to four layers of neighbours
-   (never across a present constraint triangle). Validity uses exact closed-contact predicates
-   (`exact`): a new tet may meet the other cavity vertices and the front faces only in common
-   sub-simplices; coplanar overlaps count. A constraint triangle that lies between two cavity
-   tets without being crossed by the segment (tets that merely touch the segment from both
-   sides, as happens with hint points around a triangle) stays in the cavity as a *slit*: both
-   of its sides are cavity boundary, so the refill keeps it.
-3. **Edges, last resort.** An edge whose cavity cannot be filled (even with one interior point,
-   `fill_with_steiner`) fails with `RecoveryFailed` and yields hint points; step 5 restarts.
+   with the segment as a mandatory edge. The search is fail-first (it wraps the front face with
+   the fewest valid apexes among the first few) and, when it fails, reports the front faces
+   that made candidate tets invalid by crossing or overlapping them (*blockers*). Validity uses
+   exact closed-contact predicates (`exact`): a new tet may meet the other cavity vertices and
+   the front faces only in common sub-simplices; coplanar overlaps count. A constraint triangle
+   that lies between two cavity tets without being crossed by the segment (tets that merely
+   touch the segment from both sides, as happens with hint points around a triangle) stays in
+   the cavity as a *slit*: both of its sides are cavity boundary, so the refill keeps it.
+   Interior points added earlier (hints, earlier Steiner points) that the cavity encloses are
+   *droppable*: the refill may swallow them (`Dt::droppable_from`), they do not have to become
+   vertices of the new tets.
+3. **Edges, interior points.** The order for one edge: (0) the smallest cavity, with interior
+   points if it needs them (`fill_with_steiner`); (A) up to eight rounds of absorbing the tet
+   beyond each blocker face (never across a constraint triangle) and refilling with the vertices
+   at hand, until the cavity would exceed 80 tets; (B) interior points on the grown cavity and
+   up to two layers around it. `fill_with_steiner` tries, in this order: the plain fill, one
+   point from the *seeds* (points next to both endpoints in the cone of their inner and outer
+   sides, bisectors of the solid-side and exterior wedges around the edge, at distances capped
+   at half the way to the next input triangle), one point from the cavity centroid and offsets
+   of its faces, a solid-side plus an exterior point (a cavity with a slit has two sides), and
+   finally *dead-face repair*: the fill reports the shallowest front face that no vertex can
+   close, a point just behind that face is added (the placement that lets the search go
+   deepest), and the fill is retried, up to four times. After three failed edges in a pass only
+   the plain refill is tried for the rest (the pass then just collects hints). An edge that
+   fails everything yields hint points; step 5 restarts.
 4. **Triangles** (all three edges present). Collect the tets whose interior the triangle
    crosses, split the cavity boundary by the side of the triangle's plane, fill each side with
    the triangle as a cap (empty-sphere preference, backtracking). A side that cannot be filled
    (Schönhardt-like) gets an interior Steiner point from a kernel search (vertex centroid, face
    centroid, alternating projections onto the inner half spaces) and is starred from it.
-5. **Cheap attempts, then hints, then restart.** Each recovery attempt collects *all* its
-   failures instead of stopping at the first. The first two attempts are "cheap": the cavity
-   fills are budgeted (`120 + 3 faces` validity evaluations), edge cavities grow at most two
-   layers, and no per-failure Steiner search runs. A failure instead yields a *hint*: a point in
-   the kernel of the failed cavity, or a point just inside (and, for reflex edges, just outside)
-   the solid next to the failing triangle. The pipeline then **restarts the whole build** with
-   the hints as extra interior points (at most 32 or `n/8` per restart, at most twelve
-   restarts); later attempts use the full budgets and `fill_with_steiner` (one interior point
-   that the cavity's tets may use). If nothing is left to try, `RecoveryFailed` names the
-   triangle and the edge. Restarts cure Steiner-needing configurations (`cube_with_cavity(5)`)
-   and keep CAD-like planar surfaces fast: a random voxel surface that took 3 s with a
-   full-budget fallback takes 30 ms with two cheap attempts (at the price of a few more
-   interior points). Hints are interior Steiner points; boundary points and triangles stay
-   frozen.
+5. **Hints and restarts.** Each recovery attempt collects *all* its failures instead of
+   stopping at the first. A failure yields *hints*: the centroid of the vertices around the
+   failing segment, points next to its endpoints (the fan point of a pit or peak vertex: the
+   single point from which every incident triangle is visible), the wedge bisectors on the solid
+   side and, free of S4 because they are dropped with the exterior, on the exterior side; after
+   a few restarts also the chamber points next to its two triangles. The pipeline then
+   **restarts the whole build** with the hints as extra interior points (at most 32 or `n/8`
+   per restart, at most two restarts). If nothing is left to try, `RecoveryFailed` names the
+   triangle and the edge. The previous design ran two deliberately cheap attempts first; review
+   round 1 removed them: the hints from a cheap pass enlarged the point set and made later
+   cavities harder, and failing inputs paid for several full passes. Hints are interior Steiner
+   points; boundary points and triangles stay frozen.
    **Ruling S4 on this path** (`guard.rs`). Every interior point the recovery or smoothing adds
    is scored by `Guard::score`: the smallest `dist(p, T) / h_T` over all input triangles `T`
    (`h_T` = mean edge length of `T`, capped at 0.3), or 0.3 if the point lies outside the solid
@@ -147,8 +161,18 @@ Everything below works on the triangulation including the far box.
    Schönhardt fixture best 0.18 h, a 10 x 10 x 0.02 slab best 0.002 h) the best-scoring point is
    used rather than failing; refusing would turn S4 into a recovery failure. Smoothing refuses
    any move that brings a vertex closer (relative to `h_T`) to a triangle than the bound or than
-   it already was. Measured Steiner margins: Schönhardt 0.154 h, `cube_with_cavity(4)` 0.346 h,
-   `two_cubes_shared(3)` 0.52 h, `tri_cube(4)` 0.44 h (`tests/a14_s4.rs`).
+   it already was. Measured Steiner margins: Schönhardt 0.154 h (one point), twisted prisms of 5
+   and 10 degrees 0.289 h and 0.263 h (one point each; round 0 needed three at 0.14 h),
+   `cube_with_cavity(3)` 0.302 h, `cube_with_cavity(4)` 0.347 h, `two_cubes_shared(3)` 0.41 h,
+   `tri_cube(4)` 0.44 h (`tests/a14_s4.rs`, `a13_schonhardt_family`).
+   **One definition of `h`.** The ruling does not define it; the crate uses `h_T`, the mean edge
+   length of the input triangle `T`, everywhere: the guard (recovery, smoothing, zero-volume
+   repair), refinement (`Guard::margin(p) >= 0.3` against *every* input triangle, not only the
+   boundary faces of the insertion cavity) and the test measure (`common::min_s4_margin`). The
+   one remaining use of the graded size field is the distance of a refinement point to the
+   *vertices* of its cavity (`0.3 * size_at(p)`): vertices are interior points as often as
+   boundary points and have no triangle to scale by. Round 0 measured `cube_with_cavity(3)` at
+   0.267 h_T because refinement checked `0.3 * size_at` against the cavity's boundary faces only.
 6. **Zero-volume tets.** Degenerate input (cospherical, coplanar grids) makes the perturbed
    Delaunay contain tets of exactly zero volume. After classification each one is removed by an
    edge-removal or 2-3 flip with exact positive results, else by a cavity refill, else by a
@@ -167,8 +191,8 @@ Everything below works on the triangulation including the far box.
 A priority queue of tets with `R/l_min > radius_edge` or `R > 0.75 h(centroid)`. The key is
 `(-badness, sorted vertex tuple)`, never a slot id. The circumcenter is inserted by a
 *constrained cavity*: grown from the containing tet through interior faces only, extended until
-star-shaped, refused if it lies outside, closer than `0.3 h` to a cavity vertex or boundary
-triangle (ruling S4), or would enclose a vertex. On failure the point moves along the segment
+star-shaped, refused if it lies outside, closer than `0.3 h` to a cavity vertex or to an input
+triangle (ruling S4, `h_T` of each input triangle, all of them), or would enclose a vertex. On failure the point moves along the segment
 centroid to circumcenter at t = 1/2 and 1/4; else the tet is *unrefinable*. Unrefinable tets
 (boundary slivers whose circumcenter is outside) are then attacked by quality flips, and the
 count that remains is `stats.unrefinable`.
@@ -218,17 +242,20 @@ surface is accepted, and failures are reported with their location rather than a
 
 ## Calibration (acceptance 8)
 
-One calibration pass; floors frozen at the task's values, with tighter regression guards (marked
-"guard") below the measured numbers. Release build, default options, seeds fixed.
+One calibration pass, refreshed in review round 1 from the output of that commit (round 0 had
+the table of an earlier commit: the sphere and the torus have since moved because refinement
+now applies ruling S4 against every input triangle). Floors frozen at the task's values, with
+tighter regression guards (marked "guard") below the measured numbers. Release build, default
+options, seeds fixed.
 
 | fixture (default size, optimize = 2) | min dihedral | max dihedral | min mean ratio | mean mean ratio | frac R/l <= 2 at optimize 0 | unrefinable at optimize 0 |
 |---|---|---|---|---|---|---|
 | `tri_cube(10)` | 27.8 | 135.6 | 0.621 | 0.872 | 1.0000 | 0 of 5101 |
-| `icosphere(1, 4)` | 24.3 | 139.5 | 0.593 | 0.870 | 1.0000 | 2 of 27523 |
-| `tri_torus(2, 0.7, 48, 24)` | 20.1 | 139.8 | 0.562 | 0.831 | 0.9988 | 0 of 7480 |
+| `icosphere(1, 4)` | 25.1 | 137.9 | 0.558 | 0.871 | 1.0000 | 0 of 27619 |
+| `tri_torus(2, 0.7, 48, 24)` | 21.2 | 137.4 | 0.543 | 0.832 | 0.9988 | 0 of 7503 |
 
-Mean ratio without optimization (min): 0.183 / 0.040 / 0.000 (cube / sphere / torus); with level 1:
-0.537 / 0.406 / 0.477. Frozen gates (task): min dihedral >= 10, max dihedral <= 165, min mean
+Mean ratio without optimization (min): 0.183 / 0.020 / 0.000 (cube / sphere / torus); with level 1:
+0.537 / 0.471 / 0.400. Frozen gates (task): min dihedral >= 10, max dihedral <= 165, min mean
 ratio >= 0.10, mean mean ratio >= 0.75, fraction R/l <= 2 at optimize 0 >= 0.98, unrefinable
 <= 0.5 %. Regression guards ("guard", in `tests/a08_quality.rs`): min dihedral >= 15, min mean
 ratio >= 0.4, mean mean ratio >= 0.78. The `sm_quality` cross-check agrees to 1e-15 (mean ratio

@@ -4,13 +4,14 @@
 //! local target size) are fixed by inserting their circumcenter through a *constrained cavity*:
 //! the cavity grows only through interior faces (boundary faces have no neighbour), must be
 //! star-shaped around the new point, and keeps the boundary untouched. A point that lies
-//! outside, closer than 0.3 h to a vertex or a boundary triangle, or breaks star-shape is
+//! outside, closer than 0.3 h to a vertex or closer than 0.3 h_T to an input triangle T, or breaks star-shape is
 //! retried on the segment from the tet centroid to the circumcenter (t = 1/2, 1/4) before the
 //! tet is given up as unrefinable.
 
 use crate::delaunay::Dt;
 use crate::error::TetError;
-use crate::geom::{V3, add, circumsphere, dist, dist2_point_tri, in_sphere, norm2, ori, sanitize, scale, sub};
+use crate::guard::{Guard, S4};
+use crate::geom::{V3, add, circumsphere, dist, in_sphere, norm2, ori, sanitize, scale, sub};
 use crate::tds::{FACE, NONE};
 use crate::{SizeSpec, TetOptions};
 use rayon::prelude::*;
@@ -26,6 +27,8 @@ pub(crate) struct Refiner<'a, 'o> {
     /// Target size per point.
     pub h: Vec<f64>,
     opts: &'a TetOptions<'o>,
+    /// Ruling S4: distance of new points to every input triangle, relative to its own size.
+    guard: &'a Guard<'a>,
     pub n_steiner: usize,
     /// Repair flips applied.
     pub flips: usize,
@@ -43,8 +46,8 @@ fn sorted4(mut v: [u32; 4]) -> [u32; 4] {
 }
 
 impl<'a, 'o> Refiner<'a, 'o> {
-    pub fn new(dt: &'a mut Dt, h: Vec<f64>, opts: &'a TetOptions<'o>, max_steiner: usize) -> Self {
-        Self { dt, h, opts, n_steiner: 0, flips: 0, max_steiner, heap: BinaryHeap::new(), failed: Vec::new(), mark: Vec::new(), epoch: 0, rng: 0x5EED }
+    pub fn new(dt: &'a mut Dt, h: Vec<f64>, opts: &'a TetOptions<'o>, guard: &'a Guard<'a>, max_steiner: usize) -> Self {
+        Self { dt, h, opts, guard, n_steiner: 0, flips: 0, max_steiner, heap: BinaryHeap::new(), failed: Vec::new(), mark: Vec::new(), epoch: 0, rng: 0x5EED }
     }
 
     /// Target size at `p` as seen from the corners `v`.
@@ -374,16 +377,10 @@ impl<'a, 'o> Refiner<'a, 'o> {
                 return Ok(Err("near_vertex"));
             }
         }
-        // Distance to boundary triangles of the cavity.
-        for &t in &cav {
-            for k in 0..4 {
-                if self.dt.tds.nbr[t as usize][k] == NONE {
-                    let f = self.dt.tds.face(t, k);
-                    if dist2_point_tri(p, self.dt.pts[f[0] as usize], self.dt.pts[f[1] as usize], self.dt.pts[f[2] as usize]) < min_d * min_d {
-                        return Ok(Err("near_tri"));
-                    }
-                }
-            }
+        // Ruling S4: at least 0.3 h_T from every input triangle T (h_T = mean edge length of T),
+        // including the boundary triangles that are not faces of the cavity.
+        if self.guard.margin(p) < S4 {
+            return Ok(Err("near_tri"));
         }
         let id = self.dt.push_point(p);
         self.h.push(hp);

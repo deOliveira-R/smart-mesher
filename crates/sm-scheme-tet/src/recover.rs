@@ -4,14 +4,16 @@
 //! (see `DESIGN.md`). Constraint edges are recovered first, by flips that remove the edges
 //! crossing the segment (n-to-m edge removal and 2-3 flips); then constraint triangles by
 //! removing the tets they cross and re-tetrahedralizing the two cavities (gift wrapping with an
-//! empty-sphere preference). A cavity that cannot be filled gets an interior Steiner point
-//! (at most three tries) and is starred from it.
+//! empty-sphere preference). A cavity that cannot be filled gets interior Steiner points chosen
+//! where the fill gets stuck (see `DESIGN.md`); a triangle cavity that stays unfillable is
+//! starred from a kernel point.
 //!
 //! All crossing decisions use symbolic perturbation (generic position); every tet created has
 //! strictly positive exact orientation.
 
 use crate::delaunay::Dt;
 use crate::error::TetError;
+use crate::fill::Seeds;
 use crate::flips::FlipScratch;
 use crate::geom::{Pts, V3, add, dot, ori, sanitize, scale, sub};
 use crate::guard::Guard;
@@ -21,6 +23,12 @@ use crate::tds::{FACE, NONE, sorted3};
 pub(crate) struct Constraints {
     pub edges: Vec<([u32; 2], u32)>,
     pub faces: Vec<([u32; 3], u32)>,
+    /// The input triangles as listed (outward oriented).
+    pub tris: Vec<[u32; 3]>,
+    /// `(edge, triangle)` for every triangle edge, sorted: the triangles around an edge.
+    edge_tris: Vec<([u32; 2], u32)>,
+    /// `(vertex, triangle)` for every triangle corner, sorted: the triangles around a vertex.
+    vert_tris: Vec<(u32, u32)>,
 }
 
 impl Constraints {
@@ -34,10 +42,27 @@ impl Constraints {
                 edges.push(([a.min(b), a.max(b)], i as u32));
             }
         }
+        let mut edge_tris = edges.clone();
+        edge_tris.sort_unstable();
         edges.sort_unstable();
         edges.dedup_by_key(|e| e.0);
         faces.sort_unstable();
-        Self { edges, faces }
+        let mut vert_tris: Vec<(u32, u32)> = tris.iter().enumerate().flat_map(|(i, t)| t.map(|v| (v, i as u32))).collect();
+        vert_tris.sort_unstable();
+        Self { edges, faces, tris: tris.to_vec(), edge_tris, vert_tris }
+    }
+    /// The triangles around vertex `v`.
+    pub fn tris_of_vertex(&self, v: u32) -> impl Iterator<Item = u32> + '_ {
+        let lo = self.vert_tris.partition_point(|e| e.0 < v);
+        let hi = self.vert_tris.partition_point(|e| e.0 <= v);
+        self.vert_tris[lo..hi].iter().map(|e| e.1)
+    }
+    /// The (up to two) triangles that have edge `(a,b)`.
+    pub fn tris_of_edge(&self, a: u32, b: u32) -> &[([u32; 2], u32)] {
+        let k = [a.min(b), a.max(b)];
+        let lo = self.edge_tris.partition_point(|e| e.0 < k);
+        let hi = self.edge_tris.partition_point(|e| e.0 <= k);
+        &self.edge_tris[lo..hi]
     }
     pub fn edge_owner(&self, a: u32, b: u32) -> Option<u32> {
         let k = [a.min(b), a.max(b)];
@@ -61,9 +86,10 @@ pub(crate) struct Recover<'a> {
     pub hints: Vec<V3>,
     /// Restart number (selects which hint candidates are produced).
     pub attempt: usize,
-    /// Cheap mode (the first restarts): only quick repairs, failures become hints.
-    cheap: bool,
     guard: &'a Guard<'a>,
+    /// Edges that failed in this pass; after [`SEARCH_EDGES`] of them the expensive searches
+    /// with interior points are skipped (the pass only collects hints).
+    failed_edges: usize,
     marks: Marks,
     sc: FlipScratch,
     buf: Vec<u32>,
@@ -113,8 +139,28 @@ impl Marks {
     }
 }
 
-/// Number of leading attempts that only try quick repairs (flips and small cavities).
-const CHEAP_ATTEMPTS: usize = 2;
+/// How many times an edge cavity may grow across the faces that block its refill.
+const MAX_GROW: usize = 8;
+
+/// Cavities above this many tets are not grown or searched with interior points any further.
+const MAX_CAVITY: usize = 80;
+
+/// Layers of neighbours (around the grown cavity) over which interior points are tried.
+const STEINER_LAYERS: usize = 3;
+
+/// Surface components with at most this many vertices count as one pocket.
+const POCKET_VERTS: usize = 64;
+
+/// Failed edges per pass after which the searches (cavity growth, interior points) stop.
+const SEARCH_EDGES: usize = 3;
+
+/// A cavity around a missing edge: boundary faces (outward), the tet beyond each (sorted by
+/// face key; `NONE` for a kept constraint face), and enclosed vertices.
+struct Cavity {
+    faces: Vec<[u32; 3]>,
+    outside: Vec<([u32; 3], u32)>,
+    inner: Vec<u32>,
+}
 
 
 /// Tets crossed by a segment and the crossed faces as `(tet, slot)`.
@@ -126,7 +172,7 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 
 impl<'a> Recover<'a> {
     pub fn new(dt: &'a mut Dt, con: &'a Constraints, guard: &'a Guard<'a>, max_steiner: usize, n_real: u32, attempt: usize) -> Self {
-        Self { dt, con, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, cheap: attempt < CHEAP_ATTEMPTS, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+        Self { dt, con, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, failed_edges: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
     }
 
     /// Recover every constraint edge and triangle. A recovery failure does not stop the pass:
@@ -293,12 +339,171 @@ impl<'a> Recover<'a> {
     fn ensure_edge(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
         match self.ensure_edge_once(u, w, owner) {
             Err(e @ TetError::RecoveryFailed { .. }) => {
+                self.failed_edges += 1;
                 let hints = self.edge_hints(u, w);
                 self.hints.extend(hints);
                 Err(e)
             }
             other => other,
         }
+    }
+
+    /// Distance along the ray `o + t d` (unit `d`) to the nearest input triangle that does not
+    /// contain any of the vertices `skip`; infinite if the ray hits none. A heuristic bound on how
+    /// far a hint point can sit from the surface before it crosses to the other side.
+    fn ray_cap(&self, o: V3, d: V3, skip: &[u32]) -> f64 {
+        let mut best = f64::INFINITY;
+        for tri in &self.con.tris {
+            if tri.iter().any(|x| skip.contains(x)) {
+                continue;
+            }
+            let [a, b, c] = tri.map(|i| self.dt.pts[i as usize]);
+            let (e1, e2) = (sub(b, a), sub(c, a));
+            let pv = crate::geom::cross(d, e2);
+            let det = dot(e1, pv);
+            if det.abs() < 1e-300 {
+                continue;
+            }
+            let inv = 1.0 / det;
+            let tv = sub(o, a);
+            let u = dot(tv, pv) * inv;
+            if !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            let qv = crate::geom::cross(tv, e1);
+            let v = dot(d, qv) * inv;
+            if v < 0.0 || u + v > 1.0 {
+                continue;
+            }
+            let t = dot(e2, qv) * inv;
+            if t > 0.0 && t < best {
+                best = t;
+            }
+        }
+        best
+    }
+
+    /// Points next to input vertex `v`, inside the solid and outside it: `v` plus a direction on
+    /// the inner (outer) side of every incident triangle, at `rho * h` for each `rho`. A pit
+    /// (peak) vertex whose edges all bend the wrong way is recovered by the fan of tets from `v`
+    /// to a single point below (above) it. Empty if the incident triangles have no common side.
+    fn vertex_points(&self, v: u32, rhos: &[f64]) -> (Vec<V3>, Vec<V3>) {
+        let vp = self.dt.pts[v as usize];
+        let mut normals: Vec<V3> = Vec::new();
+        let mut hsum = 0.0;
+        let mut hcnt = 0.0;
+        for t in self.con.tris_of_vertex(v) {
+            let tri = self.con.tris[t as usize];
+            let [a, b, c] = tri.map(|i| self.dt.pts[i as usize]);
+            let n = crate::geom::cross(sub(b, a), sub(c, a));
+            let nl = dot(n, n).sqrt();
+            if nl == 0.0 {
+                return (Vec::new(), Vec::new());
+            }
+            normals.push(scale(n, 1.0 / nl));
+            for &o in &tri {
+                if o != v {
+                    hsum += crate::geom::dist(vp, self.dt.pts[o as usize]);
+                    hcnt += 1.0;
+                }
+            }
+        }
+        if normals.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let h = hsum / hcnt;
+        // A unit direction `d` with `dot(d, m_i) >= margin` for all inner normals `m_i = -sgn n_i`
+        // (the solid side for sgn = 1), by alternating projection from the mean.
+        let dir = |sgn: f64| -> Option<V3> {
+            let mut d = [0.0; 3];
+            for n in &normals {
+                d = add(d, scale(*n, -sgn));
+            }
+            let l = dot(d, d).sqrt();
+            if l == 0.0 {
+                return None;
+            }
+            d = scale(d, 1.0 / l);
+            for margin in [0.5, 0.35, 0.2, 0.1] {
+                for _ in 0..80 {
+                    let mut moved = false;
+                    for n in &normals {
+                        let m = scale(*n, -sgn);
+                        let g = dot(d, m);
+                        if g < margin {
+                            d = add(d, scale(m, margin - g + 1e-3));
+                            let l = dot(d, d).sqrt();
+                            d = scale(d, 1.0 / l);
+                            moved = true;
+                        }
+                    }
+                    if !moved {
+                        return Some(d);
+                    }
+                }
+            }
+            None
+        };
+        let side = |sgn: f64| -> Vec<V3> {
+            match dir(sgn) {
+                Some(d) => {
+                    // Stay on this side of the surface: at most half way to the next triangle.
+                    let cap = 0.5 * self.ray_cap(vp, d, &[v]);
+                    rhos.iter().map(|&r| add(vp, scale(d, (r * h).min(cap)))).collect()
+                }
+                None => Vec::new(),
+            }
+        };
+        (side(1.0), side(-1.0))
+    }
+
+    /// Points in the wedges around constraint edge `(u,w)`: the bisector of the solid-side wedge
+    /// and of the exterior wedge, at `rho * h` from the points `t * |uw|` along the edge. The
+    /// ring of tets around a recovered edge needs a vertex on every side whose dihedral angle
+    /// exceeds 180 degrees (the solid side of a reflex edge, the exterior side of a convex one).
+    fn wedge_points(&self, u: u32, w: u32, rhos: &[f64], ts: &[f64]) -> (Vec<V3>, Vec<V3>) {
+        let (mut win, mut wout) = (Vec::new(), Vec::new());
+        let (up, wp) = (self.dt.pts[u as usize], self.dt.pts[w as usize]);
+        let tris: Vec<[u32; 3]> = self.con.tris_of_edge(u, w).iter().map(|&(_, t)| self.con.tris[t as usize]).collect();
+        let [ta, tb] = tris[..] else { return (win, wout) };
+        let third = |t: [u32; 3]| t.iter().copied().find(|&x| x != u && x != w);
+        let (Some(a), Some(b)) = (third(ta), third(tb)) else { return (win, wout) };
+        let [p0, p1, p2] = ta.map(|i| self.dt.pts[i as usize]);
+        let nrm = crate::geom::cross(sub(p1, p0), sub(p2, p0));
+        let nl = dot(nrm, nrm).sqrt();
+        let el = crate::geom::dist(up, wp);
+        if nl == 0.0 || el == 0.0 {
+            return (win, wout);
+        }
+        let ev = scale(sub(wp, up), 1.0 / el);
+        let perp = |q: V3| {
+            let d = sub(q, up);
+            let d = sub(d, scale(ev, dot(d, ev)));
+            let l = dot(d, d).sqrt();
+            if l > 0.0 { Some(scale(d, 1.0 / l)) } else { None }
+        };
+        let (Some(da), Some(db)) = (perp(self.dt.pts[a as usize]), perp(self.dt.pts[b as usize])) else { return (win, wout) };
+        // Rotating about the edge from `da` by +sigma goes into the solid.
+        let ta_dir = crate::geom::cross(ev, da);
+        let sigma = if dot(ta_dir, nrm) < 0.0 { 1.0 } else { -1.0 };
+        let ang = f64::atan2(dot(ev, crate::geom::cross(da, db)), dot(da, db));
+        let mut theta = sigma * ang;
+        if theta <= 0.0 {
+            theta += std::f64::consts::TAU;
+        }
+        let (sn, cs) = (sigma * theta * 0.5).sin_cos();
+        let dir = add(scale(da, cs), scale(ta_dir, sn));
+        let h = (el + crate::geom::dist(up, self.dt.pts[a as usize]) + crate::geom::dist(wp, self.dt.pts[b as usize])) / 3.0;
+        for &t in ts {
+            let m = add(up, scale(ev, t * el));
+            let cap_in = 0.5 * self.ray_cap(m, dir, &[u, w]);
+            let cap_out = 0.5 * self.ray_cap(m, scale(dir, -1.0), &[u, w]);
+            for &rho in rhos {
+                win.push(add(m, scale(dir, (rho * h).min(cap_in))));
+                wout.push(add(m, scale(dir, -(rho * h).min(cap_out))));
+            }
+        }
+        (win, wout)
     }
 
     /// Points worth adding when edge `(u,w)` cannot be recovered: the centroid of the input
@@ -343,13 +548,17 @@ impl<'a> Recover<'a> {
         }
         let c = scale(c, 1.0 / vs.len() as f64);
         let mid = scale(add(up, wp), 0.5);
-        // Chambers next to the edge: on both sides of both incident surface triangles, at a
-        // fraction of the triangle size (what the failing cavity usually needs is a point in the
-        // pocket the diagonals enclose, inside or outside the solid).
+        // Points in the wedges around the edge. The ring of tets around a recovered edge needs a
+        // vertex on every side whose dihedral angle exceeds 180 degrees (the interior side of a
+        // reflex edge, the exterior side of a convex one): the bisector of each wedge at growing
+        // distances from the edge, then the chambers next to the two triangles.
+        let rho = [0.45, 0.7, 0.3, 1.0, 0.55][self.attempt % 5];
+        let tpos = [0.5, 0.35, 0.65][(self.attempt / 5) % 3];
+        let (wedge_in, wedge_out) = self.wedge_points(u, w, &[rho], &[tpos]);
         let mut chamber: Vec<V3> = Vec::new();
         let frac = [0.5, 0.35, 0.7][self.attempt % 3];
-        for &(key, _) in self.con.faces.iter().filter(|(k, _)| k.contains(&u) && k.contains(&w)) {
-            let [a, b, d] = key.map(|i| self.dt.pts[i as usize]);
+        for &(_, ti) in self.con.tris_of_edge(u, w) {
+            let [a, b, d] = self.con.tris[ti as usize].map(|i| self.dt.pts[i as usize]);
             let n = crate::geom::cross(sub(b, a), sub(d, a));
             let nl = dot(n, n).sqrt();
             if nl == 0.0 {
@@ -361,8 +570,23 @@ impl<'a> Recover<'a> {
                 chamber.push(add(fc, scale(n, sgn * frac * h / nl)));
             }
         }
-        if self.attempt < 6 && !chamber.is_empty() {
-            return chamber.into_iter().filter_map(sanitize).collect();
+        if self.attempt < 6 && (!wedge_in.is_empty() || !chamber.is_empty()) {
+            // Exterior points are free (dropped with the exterior); interior ones go first only
+            // as the wedge bisector, the chambers only after a few failed restarts.
+            let mut out = vec![c];
+            let mut ext: Vec<V3> = Vec::new();
+            for v in [u, w] {
+                let (i, o) = self.vertex_points(v, &[0.6]);
+                out.extend(i);
+                ext.extend(o);
+            }
+            out.extend(wedge_in);
+            out.extend(ext);
+            out.extend(wedge_out);
+            if self.attempt >= 2 {
+                out.extend(chamber);
+            }
+            return out.into_iter().filter_map(sanitize).collect();
         }
         let mut cands: Vec<V3> = vec![c, add(scale(c, 0.5), scale(mid, 0.5))];
         for &v in &vs {
@@ -672,7 +896,7 @@ impl<'a> Recover<'a> {
         bverts.dedup();
         for &t in &rset {
             for &x in &self.dt.tds.verts[t as usize] {
-                if bverts.binary_search(&x).is_err() {
+                if bverts.binary_search(&x).is_err() && x < self.dt.droppable_from {
                     return Err(fail(tri, None, "a vertex is enclosed by the cavity"));
                 }
             }
@@ -682,7 +906,7 @@ impl<'a> Recover<'a> {
         for (side, faces) in [(true, &mut top), (false, &mut bot)] {
             let cap = if side { [a, c, b] } else { [a, b, c] };
             faces.insert(0, cap);
-            match self.fill_steiner(faces, None) {
+            match self.fill_steiner(faces, None, &[], &Seeds::default()) {
                 Some(t) => new_tets.extend(t),
                 None => {
                     let t = self.star_fill(tri, faces)?;
@@ -751,89 +975,204 @@ impl<'a> Recover<'a> {
                 return Err(fail(owner, Some([u, w]), "edge cavity too large"));
             }
         }
-        let max_level = if self.cheap { 2 } else { 4 };
-        for level in 0..max_level {
-            if level > 0 {
-                // Grow by one layer of neighbours across non-constraint faces.
-                let snapshot = r.clone();
-                for &t in &snapshot {
-                    for k in 0..4 {
-                        let n = self.dt.tds.nbr[t as usize][k];
-                        if n == NONE || marks.in_a(n) || self.dt.tds.ghost_slot(n).is_some() {
-                            continue;
-                        }
-                        let g = self.dt.tds.face(t, k);
-                        if self.con.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
-                            continue;
-                        }
-                        // Do not swallow a constraint face between two cavity tets.
-                        let swallows = (0..4).any(|j| {
-                            let m = self.dt.tds.nbr[n as usize][j];
-                            m != NONE && m != t && marks.in_a(m) && {
-                                let h = self.dt.tds.face(n, j);
-                                self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
-                            }
-                        });
-                        if swallows {
-                            continue;
-                        }
-                        marks.add_a(n);
-                        r.push(n);
+        // Phase 0: the smallest cavity, with interior points if it needs them.
+        let search = self.failed_edges < SEARCH_EDGES;
+        let seeds = if search { self.edge_seeds(u, w) } else { Seeds::default() };
+        if search {
+            let cav = self.edge_cavity_boundary(&r, marks, u, w, owner)?;
+            if let Some(tets) = self.fill_steiner(&cav.faces, Some((u, w)), &cav.inner, &seeds) {
+                return self.commit_edge_cavity(&r, &tets, u, w, owner);
+            }
+        }
+        // Phase A: refill with the vertices at hand, growing the cavity across the boundary faces
+        // that made candidate tets invalid until the fill works or nothing more can be absorbed.
+        for _ in 0..if search { MAX_GROW } else { 1 } {
+            let cav = self.edge_cavity_boundary(&r, marks, u, w, owner)?;
+            let budget = 2000 + 40 * cav.faces.len();
+            match self.dt.fill_report(&cav.faces, Some((u, w)), &cav.inner, budget) {
+                Ok(tets) => return self.commit_edge_cavity(&r, &tets, u, w, owner),
+                Err(why) => {
+                    let mut added = 0;
+                    for g in &why.blockers {
+                        added += self.absorb_across(g, &cav, &mut r, marks);
+                    }
+                    if added == 0 || r.len() > MAX_CAVITY {
+                        break;
                     }
                 }
-                if r.len() > 2048 {
-                    break;
-                }
             }
-            let mut bfaces: Vec<[u32; 3]> = Vec::new();
-            for &t in &r {
-                for k in 0..4 {
-                    let n = self.dt.tds.nbr[t as usize][k];
-                    let g = self.dt.tds.face(t, k);
-                    if n != NONE && marks.in_a(n) {
-                        if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
-                            if self.edge_hits_face(u, w, g) {
-                                return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
-                            }
-                            // The segment passes around this constraint face: keep it as a slit
-                            // (both sides are cavity boundary, so it survives the refill).
-                            bfaces.push(g);
-                        }
-                        continue;
-                    }
-                    bfaces.push(g);
-                }
+        }
+        // Phase B: interior points may help (once on the cavity so far, then on layers around it).
+        for layer in 0..if search { STEINER_LAYERS } else { 0 } {
+            if layer > 0 {
+                self.grow_layer(&mut r, marks);
             }
-            let mut bverts: Vec<u32> = bfaces.iter().flatten().copied().collect();
-            bverts.sort_unstable();
-            bverts.dedup();
-            let enclosed = r.iter().any(|&t| self.dt.tds.verts[t as usize].iter().any(|x| bverts.binary_search(x).is_err()));
-            if enclosed {
-                continue;
+            if r.len() > MAX_CAVITY {
+                break;
             }
-            if let Some(new_tets) = self.fill_steiner(&bfaces, Some((u, w))) {
-                let mut ids = Vec::new();
-                self.dt.tds.replace(&r, &new_tets, &mut ids).map_err(|e| fail(owner, Some([u, w]), format!("edge cavity commit failed: {e}")))?;
-                self.flips += 1;
-                if self.dt.tds.find_edge(u, w).is_none() {
-                    return Err(fail(owner, Some([u, w]), "edge missing after cavity refill"));
-                }
-                return Ok(());
+            let cav = self.edge_cavity_boundary(&r, marks, u, w, owner)?;
+            if let Some(tets) = self.fill_steiner(&cav.faces, Some((u, w)), &cav.inner, &seeds) {
+                return self.commit_edge_cavity(&r, &tets, u, w, owner);
             }
         }
         Err(fail(owner, Some([u, w]), "edge cavity cannot be tetrahedralized with the edge"))
     }
 
-    /// Fill a cavity (see [`Dt::fill_with_steiner`]); counts the Steiner point it adds.
-    fn fill_steiner(&mut self, faces: &[[u32; 3]], seg: Option<(u32, u32)>) -> Option<Vec<[u32; 4]>> {
-        if self.cheap {
-            // First passes only look for the easy fills; failures are cheap and become hints.
-            return self.dt.fill_budgeted(faces, seg, &[], 120 + 3 * faces.len());
+    /// Steiner candidates for the cavity around constraint edge `(u,w)`: points next to its
+    /// endpoints and in the wedges around it, inside the solid and outside it.
+    fn edge_seeds(&self, u: u32, w: u32) -> Seeds {
+        let (mut inside, mut outside) = (Vec::new(), Vec::new());
+        for v in [u, w] {
+            let (i, o) = self.vertex_points(v, &[0.6, 0.35, 0.9]);
+            inside.extend(i);
+            outside.extend(o);
         }
+        let (i, o) = self.wedge_points(u, w, &[0.4, 0.6, 0.9], &[0.5, 0.3, 0.7]);
+        inside.extend(i);
+        outside.extend(o);
+        Seeds { pocket: self.pocket_centroid(u), inside, outside }
+    }
+
+    /// The vertex centroid of the connected surface component holding vertex `v`, if that
+    /// component is tiny (a few dozen vertices): such a body is one pocket, and a single point
+    /// that sees all of it is what a Schönhardt-like prism and its affine images need.
+    fn pocket_centroid(&self, v: u32) -> Option<V3> {
+        let mut seen: Vec<u32> = vec![v];
+        let mut head = 0;
+        while head < seen.len() {
+            let x = seen[head];
+            head += 1;
+            for t in self.con.tris_of_vertex(x) {
+                for &y in &self.con.tris[t as usize] {
+                    if !seen.contains(&y) {
+                        if seen.len() >= POCKET_VERTS {
+                            return None;
+                        }
+                        seen.push(y);
+                    }
+                }
+            }
+        }
+        let mut c = [0.0; 3];
+        for &x in &seen {
+            c = add(c, self.dt.pts[x as usize]);
+        }
+        sanitize(scale(c, 1.0 / seen.len() as f64))
+    }
+
+    /// The boundary of the cavity formed by tets `r` (marked in set `a`): its faces (outward),
+    /// the tet beyond each boundary face, and the vertices the cavity encloses.
+    fn edge_cavity_boundary(&self, r: &[u32], marks: &Marks, u: u32, w: u32, owner: u32) -> Result<Cavity, TetError> {
+        let mut faces: Vec<[u32; 3]> = Vec::new();
+        let mut outside: Vec<([u32; 3], u32)> = Vec::new();
+        for &t in r {
+            for k in 0..4 {
+                let n = self.dt.tds.nbr[t as usize][k];
+                let g = self.dt.tds.face(t, k);
+                if n != NONE && marks.in_a(n) {
+                    if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
+                        if self.edge_hits_face(u, w, g) {
+                            return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
+                        }
+                        // The segment passes around this constraint face: keep it as a slit
+                        // (both sides are cavity boundary, so it survives the refill).
+                        faces.push(g);
+                        outside.push((sorted3(g[0], g[1], g[2]), NONE));
+                    }
+                    continue;
+                }
+                faces.push(g);
+                outside.push((sorted3(g[0], g[1], g[2]), n));
+            }
+        }
+        outside.sort_unstable();
+        let mut bverts: Vec<u32> = faces.iter().flatten().copied().collect();
+        bverts.sort_unstable();
+        bverts.dedup();
+        // Interior points added earlier that the cavity encloses must be used by the refill
+        // unless they are droppable Steiner points; both kinds are candidates.
+        let mut inner: Vec<u32> = r.iter().flat_map(|&t| self.dt.tds.verts[t as usize]).filter(|x| bverts.binary_search(x).is_err()).collect();
+        inner.sort_unstable();
+        inner.dedup();
+        Ok(Cavity { faces, outside, inner })
+    }
+
+    /// Add the tet beyond cavity boundary face `g` to the cavity `r`, unless `g` is a constraint
+    /// face, there is no such tet, or taking it would swallow a constraint face. Returns the
+    /// number of tets added.
+    fn absorb_across(&self, g: &[u32; 3], cav: &Cavity, r: &mut Vec<u32>, marks: &mut Marks) -> usize {
+        let key = sorted3(g[0], g[1], g[2]);
+        if self.con.face_owner(key).is_some() {
+            return 0;
+        }
+        let Ok(i) = cav.outside.binary_search_by(|e| e.0.cmp(&key)) else { return 0 };
+        let n = cav.outside[i].1;
+        if n == NONE || marks.in_a(n) || self.dt.tds.ghost_slot(n).is_some() {
+            return 0;
+        }
+        // Do not swallow a constraint face between two cavity tets.
+        let swallows = (0..4).any(|j| {
+            let m = self.dt.tds.nbr[n as usize][j];
+            m != NONE && marks.in_a(m) && {
+                let h = self.dt.tds.face(n, j);
+                self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
+            }
+        });
+        if swallows {
+            return 0;
+        }
+        marks.add_a(n);
+        r.push(n);
+        1
+    }
+
+    /// Grow the cavity `r` by one layer of neighbours across non-constraint faces.
+    fn grow_layer(&self, r: &mut Vec<u32>, marks: &mut Marks) {
+        let snapshot = r.clone();
+        for &t in &snapshot {
+            for k in 0..4 {
+                let n = self.dt.tds.nbr[t as usize][k];
+                if n == NONE || marks.in_a(n) || self.dt.tds.ghost_slot(n).is_some() {
+                    continue;
+                }
+                let g = self.dt.tds.face(t, k);
+                if self.con.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
+                    continue;
+                }
+                let swallows = (0..4).any(|j| {
+                    let m = self.dt.tds.nbr[n as usize][j];
+                    m != NONE && m != t && marks.in_a(m) && {
+                        let h = self.dt.tds.face(n, j);
+                        self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
+                    }
+                });
+                if swallows {
+                    continue;
+                }
+                marks.add_a(n);
+                r.push(n);
+            }
+        }
+    }
+
+    /// Replace the cavity tets `r` by `tets` and check that the edge is there.
+    fn commit_edge_cavity(&mut self, r: &[u32], tets: &[[u32; 4]], u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+        let mut ids = Vec::new();
+        self.dt.tds.replace(r, tets, &mut ids).map_err(|e| fail(owner, Some([u, w]), format!("edge cavity commit failed: {e}")))?;
+        self.flips += 1;
+        if self.dt.tds.find_edge(u, w).is_none() {
+            return Err(fail(owner, Some([u, w]), "edge missing after cavity refill"));
+        }
+        Ok(())
+    }
+
+    /// Fill a cavity (see [`Dt::fill_with_steiner`]); counts the Steiner points it adds.
+    fn fill_steiner(&mut self, faces: &[[u32; 3]], seg: Option<(u32, u32)>, inner: &[u32], seeds: &Seeds) -> Option<Vec<[u32; 4]>> {
+        let budget = 2000 + 40 * faces.len();
         if self.n_steiner + 1 > self.max_steiner {
-            return self.dt.fill(faces, seg, &[]);
+            return self.dt.fill_budgeted(faces, seg, inner, budget);
         }
-        let (t, used) = self.dt.fill_with_steiner(faces, seg, 2000 + 40 * faces.len(), self.guard)?;
+        let (t, used) = self.dt.fill_with_steiner(faces, seg, inner, seeds, budget, self.guard)?;
         self.n_steiner += used;
         Some(t)
     }

@@ -79,7 +79,9 @@ fn degenerate_triangles_and_bad_indices() {
     assert_eq!(tetrahedralize(&inp, &opts()).unwrap_err(), TetError::DegenerateTri { tri: 3 });
     let mut inp = input_of(&f, 0);
     inp.tris[4][2] = 10_000;
-    assert_eq!(tetrahedralize(&inp, &opts()).unwrap_err(), TetError::DegenerateTri { tri: 4 });
+    assert_eq!(tetrahedralize(&inp, &opts()).unwrap_err(), TetError::BadIndex { tri: 4, index: 10_000 });
+    let empty = SurfaceInput { points: vec![], tris: vec![] };
+    assert!(matches!(tetrahedralize(&empty, &opts()), Err(TetError::BadOption(_))));
 }
 
 #[test]

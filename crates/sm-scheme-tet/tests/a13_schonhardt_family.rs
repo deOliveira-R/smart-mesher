@@ -71,6 +71,22 @@ fn twists() {
     }
 }
 
+/// Slightly twisted prisms (5 and 10 degrees) need interior points; fewer and deeper ones are
+/// better (ruling S4 is a preference here: no interior point of such a thin-walled pocket
+/// reaches 0.3 h from all eight triangles, one near the centroid gets about 0.29 h).
+#[test]
+fn small_twists_use_few_deep_points() {
+    for tw in [5.0, 10.0] {
+        let inp = twisted_prism(tw);
+        let m = tetrahedralize(&inp, &TetOptions::default()).unwrap_or_else(|e| panic!("twist{tw}: {e}"));
+        check_boundary(&m, &inp.tris).unwrap();
+        assert!(all_exact_positive(&m));
+        let margin = min_s4_margin(&m, &inp);
+        eprintln!("twist{tw}: steiner {} min margin {margin:.3} h", m.stats.n_steiner);
+        assert!(m.stats.n_steiner <= 3, "twist{tw}: {} Steiner points", m.stats.n_steiner);
+    }
+}
+
 /// An affine image of a valid closed surface is valid: no fixture may fail with
 /// `SelfIntersection` (or fail at all) after anisotropic scaling or shear.
 #[test]

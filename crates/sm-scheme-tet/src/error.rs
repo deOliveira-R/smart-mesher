@@ -40,6 +40,14 @@ pub enum TetError {
         /// Triangle index.
         tri: u32,
     },
+    /// A triangle refers to a point that does not exist.
+    #[error("triangle {tri} refers to point {index}, which does not exist")]
+    BadIndex {
+        /// Triangle index.
+        tri: u32,
+        /// The out-of-range point index.
+        index: u32,
+    },
     /// A triangle (or one of its edges) could not be recovered without boundary Steiner points.
     #[error("boundary recovery failed for triangle {tri} (edge {edge:?}): {reason}")]
     RecoveryFailed {

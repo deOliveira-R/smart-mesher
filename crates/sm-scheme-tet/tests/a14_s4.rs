@@ -31,7 +31,7 @@ fn schonhardt_steiner_point_is_deep() {
 /// Where 0.3 h is feasible the bound holds for every Steiner point, recovery ones included.
 #[test]
 fn feasible_fixtures_keep_the_bound() {
-    for (name, f) in [("cube_with_cavity(4)", surf3::cube_with_cavity(4)), ("two_cubes_shared(3)", surf3::two_cubes_shared(3)), ("tri_cube(4)", surf3::tri_cube(4))] {
+    for (name, f) in [("cube_with_cavity(3)", surf3::cube_with_cavity(3)), ("cube_with_cavity(4)", surf3::cube_with_cavity(4)), ("two_cubes_shared(3)", surf3::two_cubes_shared(3)), ("tri_cube(4)", surf3::tri_cube(4))] {
         for v in 0..f.volumes.len() {
             let (m, margin) = run(&format!("{name} v{v}"), &input_of(&f, v));
             assert!(m.stats.n_steiner > 0);
