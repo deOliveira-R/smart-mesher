@@ -49,6 +49,34 @@ fn close(a: Point3, b: Point3, tol: f64) -> bool {
 }
 
 #[test]
+fn a_pure_translation_is_returned_bit_exactly() {
+    // A step that is not representable: the mean of equal differences could round differently.
+    let src = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let dst: Vec<Point3> = src
+        .iter()
+        .map(|p| *p + Vector3::new(0.0, 0.0, 0.1))
+        .collect();
+    let t = fit_target_transform(
+        &src,
+        &dst,
+        Vector3::new(0.0, 0.0, -1.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        1e-9,
+    )
+    .expect("translation");
+    assert_eq!(t.t, dst[0] - src[0]);
+    for (i, row) in t.m.iter().enumerate() {
+        for (j, e) in row.iter().enumerate() {
+            assert_eq!(*e, if i == j { 1.0 } else { 0.0 });
+        }
+    }
+}
+
+#[test]
 fn fit_affine_recovers_a_random_affine_map() {
     let mut rng = Rng(7);
     for n in [6usize, 9, 40] {

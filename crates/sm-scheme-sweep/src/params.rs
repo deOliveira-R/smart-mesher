@@ -12,7 +12,8 @@ pub enum TargetMode {
     /// ([`crate::fit_target_transform`] accepts), else the scheme is not applicable.
     #[default]
     Auto,
-    /// Always register a copy constraint (the best-effort transform if the strict fit fails).
+    /// Always register a copy constraint with the best-effort fitted transform; if its residual
+    /// exceeds the copy tolerance the analysis fails (no silent bad copy) until `project` exists.
     Copy,
     /// Mesh the target by projecting the last layer. Parsed, but not implemented: it is rejected
     /// with `BadParams`.

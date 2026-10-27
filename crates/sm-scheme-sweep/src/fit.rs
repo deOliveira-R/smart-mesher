@@ -151,11 +151,17 @@ pub fn fit_target_transform(
         return None;
     }
     let n = src.len() as f64;
-    let mut d = Vector3::default();
-    for (s, t) in src.iter().zip(dst) {
-        d = d + (*t - *s);
-    }
-    let d = d * (1.0 / n);
+    // All differences bit-identical: use the first one, so a pure translation is exact.
+    let d0 = dst[0] - src[0];
+    let d = if src.iter().zip(dst).all(|(s, t)| *t - *s == d0) {
+        d0
+    } else {
+        let mut d = Vector3::default();
+        for (s, t) in src.iter().zip(dst) {
+            d = d + (*t - *s);
+        }
+        d * (1.0 / n)
+    };
     let translation = Transform::translation(d);
     if max_residual(&translation, src, dst) <= tol {
         return Some(translation);

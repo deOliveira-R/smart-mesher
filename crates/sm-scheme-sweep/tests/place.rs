@@ -337,6 +337,37 @@ fn the_grid_neighbour_search_matches_a_dense_reference() {
 }
 
 #[test]
+fn shepard_weights_stay_finite_for_tiny_and_huge_geometry() {
+    // d^-3 overflows (or underflows) at these scales without normalising by the nearest distance.
+    for scale in [1e-120_f64, 1e120] {
+        let (bk, bp, ik, ip) = square();
+        let sc = |p: &Point3| Point3::new(p.x * scale, p.y * scale, p.z * scale);
+        let bp: Vec<Point3> = bp.iter().map(sc).collect();
+        let ip: Vec<Point3> = ip.iter().map(sc).collect();
+        let layers = 2;
+        let cols = columns(&bp, layers, |l, p| {
+            p + Vector3::new(0.0, 0.0, l as f64 * scale)
+        });
+        let opts = PlaceOptions {
+            placement: Placement::Interpolate,
+            shepard_power: 3.0,
+            support: 0,
+        };
+        let out = run(&bk, &bp, &cols, layers, &ik, &ip, opts);
+        for (n, p) in out.iter().enumerate() {
+            assert!(
+                p.x.is_finite() && p.y.is_finite() && p.z.is_finite(),
+                "scale {scale}: {p:?}"
+            );
+            assert!(
+                (p.z - scale).abs() <= 1e-12 * scale,
+                "scale {scale} node {n}: {p:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn inconsistent_input_is_an_error() {
     let (bk, bp, ik, ip) = square();
     let cols = columns(&bp, 2, |_, p| p);
