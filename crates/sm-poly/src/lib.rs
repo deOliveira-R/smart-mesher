@@ -12,6 +12,7 @@
 //! Install [`PolyPlugin`] after `sm_layer_api::CoreLayers`.
 
 mod agglom;
+mod concave;
 mod dual;
 mod error;
 mod geom;

@@ -10,7 +10,7 @@ use sm_mesh_api::{
     CellIx, CellShape, Classification, FaceIx, GeomTol, MeshBuild, MeshEdit, MeshEntityRef, MeshRead, SerialAlloc,
     VertexIx, validate, validate_geometry,
 };
-use sm_poly::{FaceMode, PolyError, PolyOptions, TopologyResolver, VertexClassResolver};
+use sm_poly::{EdgeResolver, FaceMode, PolyError, PolyOptions, TopologyResolver, VertexClassResolver};
 use sm_testkit::{lattice, meshes};
 
 fn tol_for(mode: FaceMode) -> GeomTol {
@@ -198,7 +198,7 @@ fn rotated_scaled_and_shifted_blocks_behave_like_the_aligned_one() {
     }
 }
 
-// ---- known gap: reflex interface edges ------------------------------------------------------
+// ---- reflex interface edges (formerly a known gap) -------------------------------------------
 
 type Notch = Box<dyn Fn([f64; 3]) -> bool>;
 
@@ -212,11 +212,58 @@ fn regionized_block(in_region_2: &dyn Fn([f64; 3]) -> bool) -> ReferenceMesh {
     let cells: Vec<(CellSpec, u64)> = (0..src.cell_count())
         .map(|c| {
             let k: Vec<usize> = src.cell_corners(CellIx::new(c)).unwrap().iter().map(|v| v.0 as usize).collect();
-            let cen = [0, 1, 2].map(|a| k.iter().map(|&i| pts[i][a]).sum::<f64>() / 4.0);
+            let cen = centroid_of(&pts, &k);
             (CellSpec::Template(CellShape::Tet, k), if in_region_2(cen) { 2 } else { 1 })
         })
         .collect();
     build_mesh_volumes(&pts, &cells, &mut SerialAlloc::new()).unwrap()
+}
+
+/// [`regionized_block`] with every free coordinate (not 0, 2 or 4) moved by up to `amp`.
+fn regionized_block_perturbed(in_region_2: &dyn Fn([f64; 3]) -> bool, seed: u64, amp: f64) -> ReferenceMesh {
+    use sm_testkit::meshes::{CellSpec, build_mesh_volumes};
+    let src = meshes::tet_block([4, 4, 4], [1.0; 3]).unwrap().mesh;
+    let co = src.coords();
+    let pts0: Vec<[f64; 3]> = (0..src.vertex_count()).map(|v| [co.x[v], co.y[v], co.z[v]]).collect();
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = move || {
+        // xorshift64*, mapped to [-1, 1)
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    };
+    let pts: Vec<[f64; 3]> = pts0
+        .iter()
+        .map(|p| p.map(|x| if [0.0, 2.0, 4.0].contains(&x) { x } else { x + amp * rnd() }))
+        .collect();
+    let cells: Vec<(CellSpec, u64)> = (0..src.cell_count())
+        .map(|c| {
+            let k: Vec<usize> = src.cell_corners(CellIx::new(c)).unwrap().iter().map(|v| v.0 as usize).collect();
+            let cen = centroid_of(&pts0, &k);
+            (CellSpec::Template(CellShape::Tet, k), if in_region_2(cen) { 2 } else { 1 })
+        })
+        .collect();
+    build_mesh_volumes(&pts, &cells, &mut SerialAlloc::new()).unwrap()
+}
+
+fn centroid_of(pts: &[[f64; 3]], k: &[usize]) -> [f64; 3] {
+    [0, 1, 2].map(|a| k.iter().map(|&i| pts[i][a]).sum::<f64>() / 4.0)
+}
+
+/// Centroid of the tet of `tet_block([4,4,4])` nearest to `p`.
+fn tet_near(p: [f64; 3]) -> [f64; 3] {
+    let src = meshes::tet_block([4, 4, 4], [1.0; 3]).unwrap().mesh;
+    let co = src.coords();
+    let pts: Vec<[f64; 3]> = (0..src.vertex_count()).map(|v| [co.x[v], co.y[v], co.z[v]]).collect();
+    let d2 = |c: [f64; 3]| (0..3).map(|a| (c[a] - p[a]).powi(2)).sum::<f64>();
+    (0..src.cell_count())
+        .map(|c| {
+            let k: Vec<usize> = src.cell_corners(CellIx::new(c)).unwrap().iter().map(|v| v.0 as usize).collect();
+            centroid_of(&pts, &k)
+        })
+        .min_by(|a, b| d2(*a).total_cmp(&d2(*b)))
+        .unwrap()
 }
 
 /// Cells with a `GeomSideTet` finding of `validate_geometry(default)`.
@@ -234,57 +281,128 @@ fn side_tet_cells(m: &dyn MeshRead) -> Vec<usize> {
     cells
 }
 
-/// KNOWN GAP (W3_REPORT, DESIGN.md risks): a dual cell at a reflex feature edge can be concave
-/// enough that its volume centroid leaves the cell, so `validate_geometry` reports `GeomSideTet`.
-/// This test pins the CURRENT result. A future repair (splitting cells at reflex features) is
-/// expected to flip the assertions on the failing notches; do not loosen the tolerance instead.
+/// [`VertexClassResolver`], and for a curve of one interval (both ends on model vertices) an id
+/// minted from the two end vertices, so both regions of an interface agree.
+struct EndsResolver;
+
+impl EdgeResolver for EndsResolver {
+    fn resolve(&self, a: EntityId, b: EntityId, ends: [Classification; 2]) -> Option<EntityId> {
+        VertexClassResolver.resolve(a, b, ends).or_else(|| {
+            let [x, y] = ends.map(|c| c.entity);
+            (x.kind() == EntityKind::TopoVertex && y.kind() == EntityKind::TopoVertex)
+                .then(|| EntityId::new(EntityKind::TopoEdge, 1_000_000 + x.serial().min(y.serial()) * 1000 + x.serial().max(y.serial())))
+                .flatten()
+        })
+    }
+}
+
+/// Notches, inclusions and concave corners: every dual passes `validate` and
+/// `validate_geometry(default)` and conserves the volume. The cells at a reflex interface edge
+/// that are not star-shaped about their centroid (formerly `GeomSideTet`, e.g. cells 12 and 96
+/// of the `x<2,y>2` notch) are split into wedges; the favourable orientations split nothing.
 #[test]
-fn known_gap_reflex_interface_edge_gives_side_tet_violations() {
-    let (opts, r) = (PolyOptions::new(), VertexClassResolver);
-    let fav: [(&str, Notch); 4] = [
-        ("x>2,y>2", Box::new(|c| c[0] > 2.0 && c[1] > 2.0)),
-        ("x<2,y<2", Box::new(|c| c[0] < 2.0 && c[1] < 2.0)),
-        ("x<2,z<2", Box::new(|c| c[0] < 2.0 && c[2] < 2.0)),
-        ("x>2,z>2", Box::new(|c| c[0] > 2.0 && c[2] > 2.0)),
+fn reflex_interface_edges_are_split_into_valid_wedges() {
+    let one = tet_near([2.3, 2.2, 2.1]);
+    let cases: Vec<(&str, Notch, Option<bool>)> = vec![
+        ("x>2,y>2", Box::new(|c| c[0] > 2.0 && c[1] > 2.0), Some(false)),
+        ("x<2,y<2", Box::new(|c| c[0] < 2.0 && c[1] < 2.0), Some(false)),
+        ("x<2,z<2", Box::new(|c| c[0] < 2.0 && c[2] < 2.0), Some(false)),
+        ("x>2,z>2", Box::new(|c| c[0] > 2.0 && c[2] > 2.0), Some(false)),
+        ("x<2,y>2", Box::new(|c| c[0] < 2.0 && c[1] > 2.0), Some(true)),
+        ("x>2,y<2", Box::new(|c| c[0] > 2.0 && c[1] < 2.0), Some(true)),
+        ("y<2,z>2", Box::new(|c| c[1] < 2.0 && c[2] > 2.0), Some(true)),
+        ("x<2,y<2,z>1", Box::new(|c| c[0] < 2.0 && c[1] < 2.0 && c[2] > 1.0), Some(true)),
+        ("single tet", Box::new(move |c| (0..3).all(|a| (c[a] - one[a]).abs() < 1e-9)), Some(true)),
+        ("cube [1,3]^3", Box::new(|c| c.iter().all(|x| *x > 1.0 && *x < 3.0)), Some(false)),
     ];
-    let unfav: [(&str, Notch); 3] = [
-        ("x<2,y>2", Box::new(|c| c[0] < 2.0 && c[1] > 2.0)),
-        ("x>2,y<2", Box::new(|c| c[0] > 2.0 && c[1] < 2.0)),
-        ("y<2,z>2", Box::new(|c| c[1] < 2.0 && c[2] > 2.0)),
-    ];
-    for (name, f) in fav.iter().chain(unfav.iter()) {
+    let mut cases = cases;
+    // the eight octants at (2, 2, 2): three reflex edges meet at an interior vertex
+    for o in 0..8u32 {
+        let name: &'static str = Box::leak(format!("octant {o}").into_boxed_str());
+        let s = [o & 1, (o >> 1) & 1, (o >> 2) & 1].map(|b| b == 1);
+        cases.push((name, Box::new(move |c| (0..3).all(|a| (c[a] > 2.0) == s[a])), None));
+    }
+    for (name, f, must_split) in &cases {
         let m = regionized_block(f);
         assert!(validate(&m).is_empty(), "{name}: {:?}", validate(&m));
-        let (d, rep) = dual_prod(&m, &opts, &r).unwrap_or_else(|e| panic!("{name}: the op path itself succeeds: {e}"));
-        assert!(validate(&d).is_empty(), "{name}: topology is valid: {:?}", validate(&d));
-        assert!(rel(rep.total_volume, 64.0) < 1e-12, "{name}: volume is still conserved");
-        let bad = side_tet_cells(&d);
-        eprintln!("{name}: GeomSideTet cells {bad:?}");
-        if *name == "x<2,y>2" {
-            // the reported repro: bottom and top end of the reflex interface edge (2, 2, z)
-            assert_eq!(bad, vec![12, 96]);
-        }
-        if fav.iter().any(|(n, _)| n == name) {
-            assert!(bad.is_empty(), "notch {name} is clean");
-        } else {
-            assert!(!bad.is_empty(), "notch {name}: if this passes the gap was repaired; update W3_REPORT and DESIGN.md");
+        let r = &EndsResolver;
+        for mode in [FaceMode::Planar, FaceMode::Keep] {
+            let opts = PolyOptions::new().with_faces(mode);
+            let (d, rep) = dual_prod(&m, &opts, r).unwrap_or_else(|e| panic!("{name} {mode:?}: {e}"));
+            assert!(validate(&d).is_empty(), "{name} {mode:?}: {:?}", validate(&d));
+            let g = validate_geometry(&d, &tol_for(mode));
+            eprintln!(
+                "{name} {mode:?}: split {} -> {} wedges, cells {}, side-tet {:?}",
+                rep.split_cells,
+                rep.wedges,
+                rep.cells,
+                side_tet_cells(&d)
+            );
+            assert!(g.is_empty(), "{name} {mode:?}: {:?}", &g[..g.len().min(3)]);
+            assert!(rel(rep.total_volume, 64.0) < 1e-12, "{name} {mode:?}: volume {}", rep.total_volume);
+            if mode == FaceMode::Planar
+                && let Some(want) = must_split
+            {
+                assert_eq!(rep.split_cells > 0, *want, "{name}: split cells {}", rep.split_cells);
+            }
+            let (dr, rep_r) = dual_ref(&m, &opts, r).unwrap();
+            assert_eq!(rep_r, rep, "{name} {mode:?}: builders agree");
+            assert!(validate(&dr).is_empty());
         }
     }
 }
 
-/// Observation (not op-reachable): in `Keep` mode an enclosed cube inclusion (region 2 = [1,3]^3) gives
-/// 12 `GeomSideTet` findings; `Planar` is clean.
+/// The same notches on unstructured neighbourhoods: every coordinate that is not on the box
+/// faces or on a notch plane (0, 2, 4) is moved by up to `amp` (seeded), so the interface stays
+/// planar but the tets around the reflex edge are irregular.
 #[test]
-fn known_gap_keep_mode_enclosed_inclusion() {
-    let inside = |c: [f64; 3]| c.iter().all(|x| *x > 1.0 && *x < 3.0);
-    let m = regionized_block(&inside);
-    assert!(validate(&m).is_empty());
-    let r = VertexClassResolver;
-    let (p, _) = dual_prod(&m, &PolyOptions::new(), &r).expect("planar");
-    assert!(side_tet_cells(&p).is_empty(), "Planar is clean");
-    let (k, _) = dual_prod(&m, &PolyOptions::new().with_faces(FaceMode::Keep), &r).expect("keep");
-    let g = validate_geometry(&k, &tol_for(FaceMode::Keep));
-    let n = g.iter().filter(|v| v.code == sm_mesh_api::ViolationCode::GeomSideTet).count();
-    eprintln!("Keep, inclusion: {n} GeomSideTet");
-    assert!(n > 0, "if this passes the observation is obsolete; update W3_REPORT");
+fn perturbed_reflex_notches_are_valid() {
+    let notches: [(&str, Notch); 4] = [
+        ("x<2,y>2", Box::new(|c| c[0] < 2.0 && c[1] > 2.0)),
+        ("x>2,y>2", Box::new(|c| c[0] > 2.0 && c[1] > 2.0)),
+        ("y<2,z>2", Box::new(|c| c[1] < 2.0 && c[2] > 2.0)),
+        ("x<2,y<2,z<2", Box::new(|c| c[0] < 2.0 && c[1] < 2.0 && c[2] < 2.0)),
+    ];
+    let mut split_total = 0;
+    for (name, f) in &notches {
+        for seed in 0..4u64 {
+            let m = regionized_block_perturbed(f, seed, 0.3);
+            assert!(validate(&m).is_empty(), "{name}/{seed}: {:?}", validate(&m));
+            let (d, rep) = dual_prod(&m, &PolyOptions::new(), &EndsResolver).unwrap_or_else(|e| panic!("{name}/{seed}: {e}"));
+            let src_vol: f64 = (0..m.cell_count()).map(|c| sm_mesh_api::cell_volume(&m, CellIx::new(c))).sum();
+            assert!(validate(&d).is_empty(), "{name}/{seed}: {:?}", validate(&d));
+            let g = validate_geometry(&d, &GeomTol::default());
+            assert!(g.is_empty(), "{name}/{seed}: split {} {:?}", rep.split_cells, &g[..g.len().min(3)]);
+            assert!(rel(rep.total_volume, src_vol) < 1e-12, "{name}/{seed}");
+            split_total += rep.split_cells;
+        }
+    }
+    eprintln!("perturbed notches: {split_total} split cells");
+}
+
+/// The edge-manifold refusal class: two volumes alternating around the edge `x = y = 2`
+/// (checkerboard) give each volume two chains of tets there, refused as `OpenRing`.
+#[test]
+fn checkerboard_edge_is_an_open_ring_error() {
+    let m = regionized_block(&|c| (c[0] < 2.0) == (c[1] < 2.0));
+    assert!(validate(&m).is_empty(), "{:?}", validate(&m));
+    let e = dual_prod(&m, &PolyOptions::new(), &EndsResolver).unwrap_err();
+    assert!(matches!(e, PolyError::OpenRing { .. }), "{e:?}");
+}
+
+/// Split decisions and wedges are deterministic: repeated runs with 1 and 4 threads give
+/// bit-identical meshes (perturbed notch with split cells).
+#[test]
+fn split_cells_are_deterministic() {
+    let notch = |c: [f64; 3]| c[0] < 2.0 && c[1] > 2.0;
+    let m = regionized_block_perturbed(&notch, 1, 0.3);
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        pool.install(|| {
+            let (d, rep) = dual_prod(&m, &PolyOptions::new().with_edges(Some(true)), &EndsResolver).unwrap();
+            assert!(rep.split_cells > 0);
+            (sm_mesh_api::topology_hash(&d), sm_mesh_api::geometry_hash(&d))
+        })
+    };
+    sm_testkit::determinism::check(2, 4, run).unwrap();
 }

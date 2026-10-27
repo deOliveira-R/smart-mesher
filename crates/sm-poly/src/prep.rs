@@ -54,6 +54,8 @@ pub(crate) struct FanMeta {
     pub cls: EntityId,
     /// The polygon is shared with the cell of the neighbouring region.
     pub iface: bool,
+    /// The one boundary triangle the polygon lies in, or `NONE` for a fan over several.
+    pub tri: u32,
 }
 
 /// The analysed source.
@@ -80,9 +82,17 @@ pub(crate) struct Prep<'a> {
     pub ckeys: Vec<u64>,
     pub s_ca: Vec<u32>,
     pub s_cb: Vec<u32>,
+    /// Cell -> slots (edge faces) in ascending slot order, CSR.
+    pub cs_off: Vec<u32>,
+    pub cs: Vec<u32>,
     pub fan_metas: Vec<FanMeta>,
     pub fan_pts: Vec<u32>,
     pub split_fans: usize,
+    /// Face mode the fans were built for.
+    pub mode: FaceMode,
+    /// Vertices whose boundary fans are emitted as one quad per triangle in every region
+    /// (vertices of split cells, so interface polygons stay shared).
+    pub vsplit: Vec<bool>,
 }
 
 impl Prep<'_> {
@@ -121,7 +131,7 @@ impl Prep<'_> {
     }
 
     /// Slot of the (edge, region) pair, if any.
-    fn slot_for(&self, a: u32, b: u32, region: u32) -> Option<usize> {
+    pub fn slot_for(&self, a: u32, b: u32, region: u32) -> Option<usize> {
         let key = pair_key(a, b);
         let e = self.ekeys.binary_search(&key).ok()?;
         self.slots_of_edge(e).find(|&s| self.s_reg[s] == region)
@@ -315,9 +325,13 @@ impl<'a> Prep<'a> {
             ckeys: Vec::new(),
             s_ca: Vec::new(),
             s_cb: Vec::new(),
+            cs_off: Vec::new(),
+            cs: Vec::new(),
             fan_metas: Vec::new(),
             fan_pts: Vec::new(),
             split_fans: 0,
+            mode,
+            vsplit: vec![false; nv],
         };
 
         // Rings, split edges, feature classes, hub decisions.
@@ -346,8 +360,42 @@ impl<'a> Prep<'a> {
         }
 
         prep.build_cells();
-        prep.build_fans(mode)?;
+        prep.build_fans()?;
         Ok(prep)
+    }
+
+    /// Rebuild the boundary fans with the vertices in `vsplit` emitting one quad per triangle.
+    pub fn set_split_vertices(&mut self, vsplit: Vec<bool>) -> Result<(), PolyError> {
+        self.vsplit = vsplit;
+        self.fan_metas.clear();
+        self.fan_pts.clear();
+        self.split_fans = 0;
+        self.build_fans()
+    }
+
+    /// The tet of `region` on face `f` (`NONE` if none).
+    pub fn tet_on_face(&self, f: u32, region: u32) -> u32 {
+        let fi = FaceIx(f);
+        let l = self.src.face_left(fi).0;
+        if self.treg[l as usize] == region {
+            return l;
+        }
+        match self.src.face_right(fi) {
+            Some(r) if self.treg[r.get()] == region => r.0,
+            _ => NONE,
+        }
+    }
+
+    /// Midpoint of edge `e` as a virtual point: the boundary midpoint of an open edge, the hub
+    /// of a closed one (both are the edge midpoint).
+    pub fn edge_mid(&self, e: u32) -> u32 {
+        if self.meta[self.e_slot_off[e as usize] as usize].open { self.p_mid(e) } else { self.p_hub(e) }
+    }
+
+    /// Entry and exit face of tet `t` for a right-handed rotation about edge `e`.
+    pub fn entry_exit(&self, t: u32, e: u32) -> Option<(u32, u32)> {
+        let (a, b) = self.edge_ends(e);
+        exit_entry(self.src, t, a, b).map(|(ex, en)| (en.face().0, ex.face().0))
     }
 
     fn slot_chunk(
@@ -545,6 +593,47 @@ impl<'a> Prep<'a> {
             .collect();
         self.s_ca = ends.iter().map(|e| e.0).collect();
         self.s_cb = ends.iter().map(|e| e.1).collect();
+        let nc = self.ckeys.len();
+        let mut off = vec![0u32; nc + 1];
+        for s in 0..self.s_edge.len() {
+            for c in [self.s_ca[s], self.s_cb[s]] {
+                if c != NONE {
+                    off[c as usize + 1] += 1;
+                }
+            }
+        }
+        for c in 0..nc {
+            off[c + 1] += off[c];
+        }
+        let mut cs = vec![0u32; off[nc] as usize];
+        let mut fill = off.clone();
+        for s in 0..self.s_edge.len() {
+            for c in [self.s_ca[s], self.s_cb[s]] {
+                if c != NONE {
+                    cs[fill[c as usize] as usize] = s as u32;
+                    fill[c as usize] += 1;
+                }
+            }
+        }
+        self.cs_off = off;
+        self.cs = cs;
+    }
+
+    /// Dual cell of (region, vertex), `NONE` if the region does not touch the vertex.
+    pub fn cell_of(&self, region: u32, v: u32) -> u32 {
+        self.ckeys
+            .binary_search(&((u64::from(region) << 32) | u64::from(v)))
+            .map_or(NONE, |c| c as u32)
+    }
+
+    /// Ring tets of slot `s`.
+    pub fn ring_of(&self, s: usize) -> &[u32] {
+        &self.ring[self.s_off[s] as usize..self.s_off[s + 1] as usize]
+    }
+
+    /// Slots of dual cell `c`.
+    pub fn slots_of_cell(&self, c: usize) -> &[u32] {
+        &self.cs[self.cs_off[c] as usize..self.cs_off[c + 1] as usize]
     }
 
     /// Region-boundary triangle entries `(face, region)`, ascending by face.
@@ -569,7 +658,8 @@ impl<'a> Prep<'a> {
     }
 
     /// Boundary fans of every cell that has region-boundary triangles.
-    fn build_fans(&mut self, mode: FaceMode) -> Result<(), PolyError> {
+    fn build_fans(&mut self) -> Result<(), PolyError> {
+        let mode = self.mode;
         let entries = self.boundary_entries();
         // (cell, entry) incidences, sorted.
         let mut inc: Vec<u64> = Vec::with_capacity(entries.len() * 3);
@@ -634,11 +724,13 @@ impl<'a> Prep<'a> {
                 let k = o.iter().position(|&x| x == v).unwrap_or(0);
                 tris.push((f, o[(k + 1) % 3], o[(k + 2) % 3]));
             }
-            self.fans_of_cell(cell, v, region, &tris, mode, &mut out)?;
+            let force = self.vsplit[v as usize];
+            self.fans_of_cell(cell, v, region, &tris, mode, force, &mut out)?;
         }
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fans_of_cell(
         &self,
         cell: u32,
@@ -646,6 +738,7 @@ impl<'a> Prep<'a> {
         region: u32,
         tris: &[(u32, u32, u32)],
         mode: FaceMode,
+        force_kites: bool,
         out: &mut FanChunk,
     ) -> Result<(), PolyError> {
         let n = tris.len();
@@ -740,8 +833,8 @@ impl<'a> Prep<'a> {
             let f0 = FaceIx(tris[chain[0]].0);
             let cls = self.src.face_class(f0).entity;
             let iface = self.src.face_kind(f0) == FaceKind::Interior;
-            let mut kites = false;
-            if mode == FaceMode::Planar && pts.len() > 3 {
+            let mut kites = force_kites && chain.len() > 1;
+            if !kites && mode == FaceMode::Planar && pts.len() > 3 {
                 let coords: SmallVec<[V3; 32]> = canonical_cycle(&pts).0.iter().map(|&p| self.coord(p)).collect();
                 kites = geom::nonplanarity(&coords) > GeomTol::default().planarity;
             }
@@ -754,11 +847,12 @@ impl<'a> Prep<'a> {
                         self.p_tri(tris[k].0),
                         self.p_mid(self.s_edge[sq[k]]),
                     ];
-                    out.metas.push(FanMeta { cell, len: 4, cls, iface });
+                    out.metas.push(FanMeta { cell, len: 4, cls, iface, tri: tris[k].0 });
                     out.pts.extend_from_slice(&kite);
                 }
             } else {
-                out.metas.push(FanMeta { cell, len: pts.len() as u32, cls, iface });
+                let tri = if chain.len() == 1 { tris[chain[0]].0 } else { NONE };
+                out.metas.push(FanMeta { cell, len: pts.len() as u32, cls, iface, tri });
                 out.pts.extend_from_slice(&pts);
             }
         }

@@ -30,7 +30,7 @@ fn pt(d: &PolyData, p: u32) -> V3 {
 }
 
 /// Vertex mean of a face loop.
-fn apex(d: &PolyData, l: &[u32]) -> V3 {
+pub(crate) fn apex(d: &PolyData, l: &[u32]) -> V3 {
     let ps: SmallVec<[V3; 16]> = l.iter().map(|&p| pt(d, p)).collect();
     geom::mean(&ps)
 }
@@ -47,7 +47,7 @@ fn area_vector(d: &PolyData, l: &[u32]) -> V3 {
 }
 
 /// Volume and centroid of the cell bounded by `faces` (the fan polyhedron of the geometry rule).
-fn vol_centroid(d: &PolyData, faces: &[SignedFace]) -> (f64, V3) {
+pub(crate) fn vol_centroid(d: &PolyData, faces: &[SignedFace]) -> (f64, V3) {
     let Some(first) = faces.first() else {
         return (0.0, [0.0; 3]);
     };
