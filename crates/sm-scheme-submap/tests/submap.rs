@@ -360,6 +360,15 @@ mod staircase_property {
         );
         let blocks = decompose(&poly);
         prop_assert_eq!(blocks.len(), steps.len() + 1);
+        // Pairwise disjoint interiors (half-open rectangles).
+        for (x, p) in blocks.iter().enumerate() {
+            for q in &blocks[x + 1..] {
+                prop_assert!(
+                    p.i1 <= q.i0 || q.i1 <= p.i0 || p.j1 <= q.j0 || q.j1 <= p.j0,
+                    "blocks overlap: {p:?} {q:?}"
+                );
+            }
+        }
         prop_assert_eq!(blocks.iter().map(|b| b.area()).sum::<u64>(), a);
         // The node set is the set of integer lattice points of the polygon, up to the
         // (rotation, translation) of the frame: every node is an integer point of the
@@ -576,6 +585,36 @@ fn case8_a_lattice_failure_falls_back_to_pave_and_is_recorded() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn case8_the_lattice_failure_value_carries_the_side_start_nodes() {
+    use sm_scheme_api::{GenCtx, PatchSet};
+    let (u, mut intent) = touching_u();
+    intent.set_scheme(u.face, SchemeChoice::new("submap", Firmness::Hard));
+    let reg = registry();
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let sel = [u.face];
+    let input = MeshInput::new(&u.topo, &u.model, &WholeFaces, &sel);
+    let plan = driver.plan(&input, &intent).expect("plan");
+    let patches = PatchSet::default();
+    let cx = GenCtx::new(&input, &plan, &patches, None);
+    let scheme = reg
+        .get(sm_scheme_api::SchemeDim::Surface, "submap")
+        .expect("submap");
+    let target = Target::Surface(u.face);
+    let err = scheme
+        .generate(&cx, target, &Params::default())
+        .expect_err("the touching U fails");
+    assert_eq!(err.kind, FailureKind::Constraint);
+    assert!(err.reason.contains("not simple"), "{}", err.reason);
+    let layout = plan.layout(u.face).expect("layout");
+    let want: Vec<_> = (0..layout.sides.len())
+        .map(|k| cx.side_nodes(u.face, k).expect("side")[0])
+        .collect();
+    assert_eq!(err.nodes, want);
+    assert!(!err.nodes.is_empty());
 }
 
 // ------------------------------------------------------------------------------ acceptance 9
