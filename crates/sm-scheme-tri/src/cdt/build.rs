@@ -63,7 +63,8 @@ fn hilbert_index(mut x: u64, mut y: u64, order: u32) -> u128 {
 }
 
 /// Point ids sorted along the Hilbert curve of the coordinates quantized on a fixed `2^-40` grid
-/// of the (power-of-two enlarged) bounding box; ties by id. Depends only on the coordinates.
+/// of the (power-of-two enlarged) bounding box; ties by exact coordinates, then id.
+/// Depends only on the coordinates.
 pub(super) fn hilbert_order(pts: &[[f64; 2]]) -> Vec<u32> {
     const BITS: u32 = 40;
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
@@ -87,7 +88,15 @@ pub(super) fn hilbert_order(pts: &[[f64; 2]]) -> Vec<u32> {
         .enumerate()
         .map(|(i, p)| (hilbert_index(q(p[0], lo[0]), q(p[1], lo[1]), BITS), i as u32))
         .collect();
-    keyed.sort_unstable();
+    // Ties of the quantized index break by exact coordinates (total order), then by id, so the
+    // order is a function of the coordinates alone.
+    keyed.sort_unstable_by(|a, b| {
+        let (p, r) = (pts[a.1 as usize], pts[b.1 as usize]);
+        a.0.cmp(&b.0)
+            .then(p[0].total_cmp(&r[0]))
+            .then(p[1].total_cmp(&r[1]))
+            .then(a.1.cmp(&b.1))
+    });
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 

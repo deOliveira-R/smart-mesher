@@ -165,6 +165,20 @@ fn acc6_full_sphere_poles_seam_and_closed_surface() {
 }
 
 #[test]
+fn acc4_cylinder_with_default_params_reaches_twenty_degrees() {
+    // Default parameters: optimize = true, min_angle = 20.
+    let (c, ids) = cyl();
+    let counts = vec![(ids.edges[0], 12u32), (ids.edges[1], 12), (ids.edges[2], 6)];
+    let out = mesh_faces_params(&registry(), &c, &[ids.faces[2]], &counts, serde_json::json!({}), &Sequential, None)
+        .expect("mesh");
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty(), "{:?}", validate(m));
+    let ang = min_angle_deg(m);
+    println!("cylinder (defaults): N={} min angle {ang:.3}", m.cell_count());
+    assert!(ang >= 20.0, "{ang}");
+}
+
+#[test]
 fn acc2_delaunay_on_the_cylinder_lateral_face_without_optimize() {
     let (c, ids) = cyl();
     let counts = vec![(ids.edges[0], 12u32), (ids.edges[1], 12), (ids.edges[2], 6)];

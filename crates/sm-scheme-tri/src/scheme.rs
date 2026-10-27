@@ -433,6 +433,43 @@ impl FaceTriangulation<'_> {
         }
     }
 
+    /// Gate the pole-fan triangles `(b, a, pole)`: 3-D minimum angle at least `limit` degrees and
+    /// a positive normal. `p3` holds the lifted kernel points.
+    fn gate_fans(
+        &self,
+        cx: &GenCtx<'_>,
+        p3: &[Point3],
+        limit: f64,
+        target: Target,
+        name: &str,
+    ) -> Result<(), GenerateFailure> {
+        let pos: BTreeMap<NodeKey, usize> = (0..p3.len()).map(|i| (self.key_of(i as u32), i)).collect();
+        for lp in &self.loops {
+            for fan in &lp.fans {
+                let Some(pole) = cx.point(fan.pole) else { continue };
+                for w in fan.path.windows(2) {
+                    let (Some(&ia), Some(&ib)) = (pos.get(&w[0]), pos.get(&w[1])) else { continue };
+                    let (a, b) = (p3[ia], p3[ib]);
+                    let ang = tri_min_angle_deg(b, a, pole);                    let mid = [0, 1].map(|k| 0.5 * (self.cdt.points()[ia][k] + self.cdt.points()[ib][k]));
+                    let folded = self
+                        .chart
+                        .normal_at(self.chart.to_uv(mid))
+                        .is_some_and(|f| (a - b).cross(pole - b).dot(f) <= 0.0);
+                    if ang < limit || folded {
+                        let worst = [w[1], w[0], fan.pole];
+                        let msg = if folded {
+                            "a pole-fan triangle folds over the surface (non-positive normal)".to_string()
+                        } else {
+                            format!("pole-fan triangle minimum angle {ang:.3} deg is below the gate {limit:.3} deg")
+                        };
+                        return Err(GenerateFailure::fallback(target, name, msg).with_nodes(worst.to_vec()));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Apply the quality gate and build the patch.
     ///
     /// The gate is `min_angle_3d >= min(fail_angle, 0.9 * smallest input corner angle)` and a
@@ -507,6 +544,8 @@ impl FaceTriangulation<'_> {
                 .with_nodes(keys_of(self, *t)));
             }
         }
+        // Pole fans take the same gate (minimum angle and normal) as the kernel triangles.
+        self.gate_fans(cx, &p3, limit, target, name)?;
         for t in &tris {
             let l = [local[t[0] as usize], local[t[1] as usize], local[t[2] as usize]];
             if l[0] == l[1] || l[1] == l[2] || l[0] == l[2] {
@@ -547,4 +586,17 @@ impl FaceTriangulation<'_> {
         }
         Ok(pb.finish())
     }
+}
+
+/// Smallest angle of the triangle `(a, b, c)` in degrees (0 for a degenerate one).
+fn tri_min_angle_deg(a: Point3, b: Point3, c: Point3) -> f64 {
+    let ang = |p: Point3, q: Point3, r: Point3| {
+        let (u, v) = (q - p, r - p);
+        let (nu, nv) = (u.norm(), v.norm());
+        if nu == 0.0 || nv == 0.0 {
+            return 0.0;
+        }
+        u.cross(v).norm().atan2(u.dot(v)).to_degrees()
+    };
+    ang(a, b, c).min(ang(b, c, a)).min(ang(c, a, b))
 }

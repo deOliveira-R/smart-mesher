@@ -94,6 +94,13 @@ fn acc1_scaled_by_two_to_the_sixty_both_ways() {
         let t1: Vec<_> = c1.triangles();
         let t2: Vec<_> = c.triangles();
         assert_eq!(t1, t2, "scale 2^{e}");
+        // Three shuffles of the scaled input give the same triangle set.
+        let base = tri_set(&c);
+        for seed in [1u64, 2, 3] {
+            let c3 = Cdt::new(&shuffled(&p, seed)).expect("cdt shuffled");
+            assert!(all_positive(&c3), "scale 2^{e} shuffle {seed}");
+            assert_eq!(tri_set(&c3), base, "scale 2^{e} shuffle {seed}");
+        }
     }
 }
 

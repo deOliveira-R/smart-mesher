@@ -78,8 +78,7 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
             &c,
             &[ids.face],
             &[(ids.edges[1], n)],
-            // The pole fans of coarse spheres are poor: accept any angle here, check topology.
-            serde_json::json!({ "fail_angle": 0.0 }),
+            serde_json::json!({}),
             &Sequential,
             None,
         )
@@ -87,6 +86,9 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
         let m = &out.finished.mesh;
         assert!(validate(m).is_empty(), "n = {n}: {:?}", validate(m));
         assert_eq!(euler(m), 2, "n = {n}");
+        // Default gate (12 deg) holds over kernel triangles and pole fans alike.
+        let ang = min_angle_deg(m);
+        assert!(ang >= 12.0, "n = {n}: {ang}");
         assert!((0..m.face_count()).all(|f| m.face_kind(FaceIx::new(f)) == FaceKind::Interior), "n = {n}");
         for pole in ids.vertices {
             let v = out.vertex_of(sm_scheme_api::NodeKey::vertex(pole)).unwrap().0 as usize;
