@@ -52,7 +52,6 @@ Branch: `claude/w3-sm-diag-go88ci` (the session's designated branch; the task te
 
 * Stretch: `grow` and `thresholds` on `mesh.flag_cells` are done (`grow_adds_exactly_the_face_neighbours`, `thresholds_override_the_limits` in `tests/flag.rs`). Not done: topology-liveness of classification entities, a testkit `sheared_hex_pair` (stays test-local, `pair_mesh` in `tests/common`).
 * Deferred to W3b as in the task: dimension-2 shell orientation, equiangle/equivolume skewness, cell aspect ratio in the checkMesh definition, face-pyramid volumes, `mesh.unflag_cells`, `DerivedCache`, per-material profiles, the checkMesh/Fluent conformance harness.
-* `quality_report` assumes a structurally valid mesh (every finished mesh is) and may panic on a corrupted one; run `mesh.validate` first on a suspect mesh (which never calls quality code when structural codes exist).
 * Generic and Transport thresholds are provisional; the user should ratify Transport before it is advertised. The five FV formulas marked "recalled" in sm-quality's DESIGN.md are for the conformance harness to diff.
 * Cluster hot spots rely on classification quality; a surface-dominated hot spot is diluted by interior faces that touch the surface (needs fraction >= 0.5 for a suggestion).
 
@@ -65,3 +64,16 @@ None. The frozen contracts were enough (`add_mesh_set`, `MeshLayer`, `QueryCtx::
 * sm-server: install `DiagPlugin` after `MeshPlugin` (the plugin, not a `QualityPlugin`) and provide `OpNames(registry.op_names())` as a service; without it every suggestion with an op is `available: false` and says "op registry not provided".
 * The integration text still assumes per-violation `class + suggestion` and `QualityPlugin`; it must adopt the shapes in `crates/sm-diag/DESIGN.md`.
 * Ruling E6: no `.smsh` bytes, golden `.smsh` files or state hashes of other crates were touched. Adding `DiagPlugin` registers no layer, so no state hash changes.
+
+## Polish
+
+Review items, all in `crates/sm-diag/` plus an additive change in `crates/sm-quality/`.
+
+1. **Corrupt meshes no longer panic.** New `sm_quality::check_indices` (additive; new `QualityError::CorruptMesh`, the enum is `#[non_exhaustive]`) checks in O(n), in parallel and with a scheduling-independent answer, that face cells, face vertices, cell faces and cell corners are in range. It runs at the start of `fv_geometry`, `validity`, `quality_report` and `flagged_cells`. The error names the entity and says to run `mesh.validate`. Test: `structurally_corrupt_mesh_is_a_typed_error_not_a_panic` (out-of-range `face_right`, out-of-range cell face). This replaces the old "may panic on a corrupted mesh" known gap.
+2. **`reversed_loop_is_structural_and_skips_geometry`** now asserts the `loop.canonical` code at face 0 with its id and owner, `cell.closed` for both cells with ids and owners, the count, that no `quality.*` code appears, and the skip reason.
+3. **Cluster pass is parallel**: per-`CHUNK` integer counts reduced by integer addition (exact, order independent), so the result is identical for any thread count (determinism tests pass). Bench `quality_generic_damaged_50^3` (125 000 cells, every 3rd vertex displaced by a hash-derived offset, 93 652 bad entities over 8 metrics, 35 clusters), release: **0.73 s** (0.69 to 0.78 s) on the default threads, **3.8 s** (3.5 to 4.2 s) with `RAYON_NUM_THREADS=1`. No pre-change baseline was taken, so the gain of the cluster pass alone is not isolated; recorded, not asserted. The mesh is a `Tampered` reference mesh, so absolute times include its overhead.
+4. **Suggestion gap**: a metric with bad entities but no suggestion from the other rules (hot spot below the cluster fraction/enrichment thresholds, or on a model vertex) now gets an `inspect` suggestion (op `mesh.flag_cells`, target the mesh). Documented in the `suggest.rs` table and `DESIGN.md`; golden schema updated for the `kind` description. Test: `weak_hot_spot_falls_back_to_inspect`.
+5. **`mesh.validate`** reports an `Err` from `sm_quality::validity` as a `diag.validity_unavailable` warning finding (the mesh stays valid, the cause is visible). No test reaches this path: after the structural gate `validity` with default options has no failing input, so it is covered by inspection only.
+6. **`flag_cells` warning** uses the wire name (`Level::name()`: `fail` or `warn`) instead of `{:?}`; asserted in `empty_selection_warns_and_adds_nothing`.
+
+Declined: none.

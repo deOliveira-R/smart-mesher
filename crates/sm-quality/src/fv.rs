@@ -47,6 +47,7 @@ pub fn fv_geometry(mesh: &dyn MeshRead) -> Result<FvGeometry> {
     if mesh.dim() == MeshDim::Two {
         return Err(QualityError::BadArgument("finite-volume metrics need a dimension-3 mesh".into()));
     }
+    crate::check::check_indices(mesh)?;
     let (nf, nc) = (mesh.face_count(), mesh.cell_count());
     let mut face_area = vec![[f64::NAN; 3]; nf];
     let mut face_centre = vec![[f64::NAN; 3]; nf];

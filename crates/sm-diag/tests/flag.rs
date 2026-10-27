@@ -173,6 +173,7 @@ fn empty_selection_warns_and_adds_nothing() {
     assert!(d.outputs.get("set").is_none_or(Vec::is_empty), "{:?}", d.outputs);
     assert_eq!(d.diagnostics.len(), 1);
     assert_eq!(d.diagnostics[0].code, "diag.nothing_to_flag");
+    assert!(d.diagnostics[0].message.contains("graded fail or invalid"), "wire name, not Debug: {}", d.diagnostics[0].message);
     assert!(d.created.is_empty());
     assert_eq!(rig.state().count_of(EntityKind::MeshSet), sets);
     // The op is recorded (a no-op node) but the state hash is unchanged.

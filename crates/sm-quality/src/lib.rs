@@ -12,6 +12,7 @@
 //! Output is bit-identical for any number of threads. See `DESIGN.md` for every formula, its
 //! range and the conventions for degenerate input.
 
+mod check;
 mod driver;
 mod error;
 mod faces;
@@ -28,6 +29,7 @@ pub use driver::{
     CellStatus, Options, QualityTable, ReferenceSize, SurfaceNormals, Validity, compute, compute_many, report,
     validity,
 };
+pub use check::check_indices;
 pub use error::{QualityError, Result};
 pub use metric::{Context, Metric, eval};
 pub use stats::{CHUNK, Histogram, Summary, histogram, histogram_auto, summarize};

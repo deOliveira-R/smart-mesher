@@ -24,6 +24,9 @@ pub enum QualityError {
     /// A caller-supplied option or argument is invalid.
     #[error("invalid argument: {0}")]
     BadArgument(String),
+    /// A stored index is out of range; the message suggests `mesh.validate`.
+    #[error("corrupt mesh: {0}")]
+    CorruptMesh(String),
 }
 
 /// Result alias for this crate.
