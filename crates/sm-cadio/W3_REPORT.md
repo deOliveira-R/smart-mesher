@@ -89,8 +89,7 @@ allocator would need `unsafe`, which CLAUDE.md allows only in `sm-rt-capi`.
    task's Deps line plus the G2 pre-approvals: `sm-core`, `sm-geom-api` (serde, schemars),
    `sm-topo-api`, `sm-op-api`, `sm-layer-api`, `serde`, `serde_json`, `schemars`, `thiserror`,
    `sha2`, `base64`, `rayon`, `smallvec`; dev: `sm-topo`, `sm-testkit`, `proptest`, `criterion`.
-   `smallvec` is declared but unused (listed in the task). `Cargo.lock` was regenerated locally
-   (new: `base64`) and its 22 additive lines (sm-cadio's dependencies, `base64`) are committed only because the branch must build; the orchestrator should discard them and regenerate the lock at merge.
+   `smallvec` is declared but unused (listed in the task). The worker's branch carried 22 additive `Cargo.lock` lines (sm-cadio's dependencies, new: `base64`) only so it built; the orchestrator regenerated the lock at merge (70c7242), and this crate's commits do not touch it.
 2. **Branch.** Pushed to `claude/w3-sm-cadio` as asked and to the session branch
    `claude/w3-sm-cadio-cf7j8a`.
 3. **`StepError`.** `Truncated` and `TooDeep` carry `line:col` (the task also wants every error
@@ -380,3 +379,24 @@ volume); 100 vs 200 split layers in one solid (at most 4x). Known limitation, un
 generator that passes exactly through a boundary vertex is not detected as a crossing (sign
 change between samples), so such a face is kept with the warning (the test prisms use 3 edges
 per side to avoid it).
+
+## Polish
+
+1. **Split-budget timing: done.** The linear-time test takes the minimum of 3 repeats per size
+   before comparing (the 6x bound is unchanged). The machine was at load ~900 while this was
+   written, which is the noise the single sample could not survive.
+2. **Crossing at a vertex: done.** `crossings` now also projects the two end points of each
+   edge; an end point within tolerance of a generator is that generator's cut vertex (deduplicated
+   per vertex, no new vertex or edge split). Plain prisms (square and triangle with `k = 1`,
+   corner cuts with sub-vertices, same-seam stacked layers) now split with no warning
+   (`generators_through_boundary_vertices_split_the_face`, 7 configurations; the first is also
+   realized and its volume checked in debug, all in release or with `SPLIT_ALL=1`).
+   Making these work needed projection fixes: Newton is damped (step halved while the distance
+   grows) and retried from either side of a stall; when a seeded run fails, Newton restarts from
+   the middles of the knot spans around the stall (a seed across a corner of a polygonal section
+   is a local minimum), and the global search is unseeded.
+3. **Weld rounding: done.** `weld_vertices` and `weld_edges` probe the cell span of
+   `[x - tol, x + tol]` padded by a few ulps instead of a fixed +-1 or an unpadded span, so a
+   neighbour at `|dx| == tol` is found whatever the rounding. Test:
+   `points_exactly_one_tolerance_apart_weld_whatever_the_rounding`.
+4. **Cargo.lock sentence: done** (deviation 1 above).

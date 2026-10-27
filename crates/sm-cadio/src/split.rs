@@ -278,8 +278,22 @@ fn cut(s: &NurbsSurface, params: &[f64]) -> Result<(Vec<NurbsSurface>, Vec<Nurbs
     Ok((pieces, gens))
 }
 
-/// Gauss-Newton projection of `p` onto `surf` from `uv0` (no global search).
+/// Gauss-Newton projection of `p` onto `surf` from `uv0` (no global search). On a surface with
+/// a kink (degree 1 in a direction) the iteration can stall on the kink line when the seed lies
+/// across it; it is then retried from points slightly to either side of where it stalled.
 fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> Option<Uv> {
+    let (found, stalled) = newton(surf, p, uv0, tol);
+    if found.is_some() {
+        return found;
+    }
+    let dom = surf.domain();
+    let (du, dv) = (1e-6 * dom.u.range.len(), 1e-6 * dom.v.range.len());
+    let starts = [(-du, 0.0), (du, 0.0), (0.0, -dv), (0.0, dv)];
+    starts.iter().find_map(|&(a, b)| newton(surf, p, Uv::new(dom.u.range.clamp(stalled.u + a), dom.v.range.clamp(stalled.v + b)), tol).0)
+}
+
+/// One Gauss-Newton run: the projection when it lands within `tol`, and where the run ended.
+fn newton(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> (Option<Uv>, Uv) {
     let dom = surf.domain();
     let (mut u, mut v) = (uv0.u, uv0.v);
     for _ in 0..50 {
@@ -289,16 +303,28 @@ fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> 
         let (g0, g1) = (r.dot(j.du), r.dot(j.dv));
         let det = a * c - b * b;
         if det.abs() < 1e-300 {
-            return None;
+            return (None, Uv::new(u, v));
         }
         let (su, sv) = ((c * g0 - b * g1) / det, (a * g1 - b * g0) / det);
-        u = dom.u.range.clamp(u - su);
-        v = dom.v.range.clamp(v - sv);
-        if su.abs() + sv.abs() < 1e-14 {
+        // Halve the step while it makes the distance grow (a zigzag across a kink line).
+        let d0 = r.norm();
+        let mut alpha = 1.0;
+        let (mut nu, mut nv) = (dom.u.range.clamp(u - su), dom.v.range.clamp(v - sv));
+        for _ in 0..8 {
+            if (surf.jet(Uv::new(nu, nv)).p - p).norm() <= d0 {
+                break;
+            }
+            alpha *= 0.5;
+            (nu, nv) = (dom.u.range.clamp(u - alpha * su), dom.v.range.clamp(v - alpha * sv));
+        }
+        let moved = (nu - u).abs() + (nv - v).abs();
+        (u, v) = (nu, nv);
+        if moved < 1e-14 {
             break;
         }
     }
-    ((surf.jet(Uv::new(u, v)).p - p).norm() <= tol).then_some(Uv::new(u, v))
+    let uv = Uv::new(u, v);
+    (((surf.jet(uv).p - p).norm() <= tol).then_some(uv), uv)
 }
 
 /// Global (grid search) projections allowed per split face. Each costs about `64 nu nv` surface
@@ -317,14 +343,41 @@ struct Proj<'a> {
 impl Proj<'_> {
     /// Project `p` from `seed` when there is one, else (or when Newton fails) by a global search.
     fn project(&mut self, p: Point3, seed: Option<Uv>) -> Result<Uv, String> {
-        if let Some(uv) = seed.and_then(|s| local_project(self.surf, p, s, self.tol)) {
-            return Ok(uv);
+        if let Some(uv0) = seed {
+            if let Some(uv) = local_project(self.surf, p, uv0, self.tol) {
+                return Ok(uv);
+            }
+            // The seed may lie across a kink (a corner of a polygonal section): start from the
+            // middle of the knot spans around where the iteration stalled.
+            let (_, st) = newton(self.surf, p, uv0, self.tol);
+            if let Some(uv) = self.neighbour_spans(p, st) {
+                return Ok(uv);
+            }
         }
         if self.global_left == 0 {
             return Err("too many boundary points needed a global projection".into());
         }
         self.global_left -= 1;
-        Ok(self.surf.project(p, seed).map_err(|e| e.to_string())?.uv)
+        // No seed: a seed on the far side of a kink would trap the search in a local minimum.
+        let uv = self.surf.project(p, None).map_err(|e| e.to_string())?.uv;
+        // A global result can stall on a kink line; polish it from either side.
+        Ok(if (self.surf.jet(uv).p - p).norm() > self.tol { local_project(self.surf, p, uv, self.tol).unwrap_or(uv) } else { uv })
+    }
+}
+
+impl Proj<'_> {
+    /// Newton from the middles of the (up to) two knot spans on either side of `st`, in each
+    /// direction, keeping the other parameter of `st`.
+    fn neighbour_spans(&self, p: Point3, st: Uv) -> Option<Uv> {
+        let s = self.surf;
+        let spans = |knots: &[f64], lo: usize, hi: usize, x: f64| -> Vec<f64> {
+            let ks = &knots[lo..=hi];
+            let at = ks.partition_point(|&k| k <= x).saturating_sub(1);
+            (at.saturating_sub(2)..(at + 3).min(ks.len() - 1)).filter(|&i| ks[i + 1] > ks[i]).map(|i| 0.5 * (ks[i] + ks[i + 1])).collect()
+        };
+        let us = spans(&s.knots_u, s.degree_u, s.nu, st.u).into_iter().map(|u| Uv::new(u, st.v));
+        let vs = spans(&s.knots_v, s.degree_v, s.nv, st.v).into_iter().map(|v| Uv::new(st.u, v));
+        us.chain(vs).find_map(|start| newton(s, p, start, self.tol).0)
     }
 }
 
@@ -342,10 +395,18 @@ impl Track {
     }
 }
 
+/// What an edge does at the generators: interior crossings `(t, cut)` that need a new vertex,
+/// and end points that already lie on a generator `(at the high end, cut)`.
+struct Hits {
+    cross: Vec<(f64, usize)>,
+    ends: Vec<(bool, usize)>,
+}
+
 /// Parameters `t` on the edge (with the cut index) where the edge curve crosses a generator,
-/// and the edge's samples. Samples are projected in traversal order (`backward`: from the high
+/// the end points that lie on one (a boundary vertex on a generator is the crossing, and the
+/// sign test on interior samples cannot see it), and the edge's samples. Samples are projected in traversal order (`backward`: from the high
 /// end), the first from `seed` (the previous edge's last sample), each next from its neighbour.
-fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: Interval, us: &[f64], seed: Option<Uv>, backward: bool) -> Result<(Vec<(f64, usize)>, Track), String> {
+fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: Interval, us: &[f64], seed: Option<Uv>, backward: bool) -> Result<(Hits, Track), String> {
     let ts: Vec<f64> = (0..SAMPLES).map(|i| range.lo + range.len() * (i as f64 + 0.5) / SAMPLES as f64).collect();
     let mut uvs: Vec<Uv> = vec![Uv::new(0.0, 0.0); SAMPLES];
     let mut prev = seed;
@@ -360,6 +421,17 @@ fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: I
         prev = Some(uv);
     }
     let (surf, tol) = (proj.surf, proj.tol);
+    // End points: projected from the nearest sample; on a generator when within `tol` of it.
+    let mut ends = Vec::new();
+    for (hi, t, near) in [(false, range.lo, uvs[0]), (true, range.hi, uvs[SAMPLES - 1])] {
+        let p = curve.eval(t);
+        let Some(uv) = local_project(surf, p, near, tol) else { continue };
+        for (k, &uk) in us.iter().enumerate() {
+            if (surf.jet(Uv::new(uk, uv.v)).p - p).norm() <= tol {
+                ends.push((hi, k));
+            }
+        }
+    }
     let mut out = Vec::new();
     for (k, &uk) in us.iter().enumerate() {
         for i in 0..SAMPLES - 1 {
@@ -383,7 +455,7 @@ fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: I
             out.push((0.5 * (ta + tb), k));
         }
     }
-    Ok((out, Track { ts, uvs }))
+    Ok((Hits { cross: out, ends }, Track { ts, uvs }))
 }
 
 /// One use of a (sub-)edge in the expanded loop.
@@ -449,7 +521,7 @@ fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTree
     let etol = tol.max(1e-6);
     let mut proj = Proj { surf: &base, tol: etol * 10.0, global_left: MAX_GLOBAL };
     // ---- project the edges in loop order, each seeded from the previous one
-    let mut tracks: BTreeMap<usize, (Vec<(f64, usize)>, Track)> = BTreeMap::new();
+    let mut tracks: BTreeMap<usize, (Hits, Track)> = BTreeMap::new();
     let mut seed: Option<Uv> = None;
     for c in lp.iter().filter(|c| c.edge != seam) {
         let e = &s.edges[c.edge];
@@ -464,7 +536,15 @@ fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTree
     for &ei in &ids {
         let e = s.edges[ei].clone();
         let curve = s.curves[e.curve].def.as_curve();
-        let mut cs = tracks.get(&ei).map(|t| t.0.clone()).unwrap_or_default();
+        let hits = tracks.get(&ei).map(|t| &t.0);
+        // A boundary vertex on a generator is that generator's cut vertex (once per vertex).
+        for &(hi, k) in hits.map_or(&[][..], |h| &h.ends[..]) {
+            let vi = if hi == (e.sense == Sense::Forward) { e.end } else { e.start };
+            if !cut_vertices[k].contains(&vi) {
+                cut_vertices[k].push(vi);
+            }
+        }
+        let mut cs = hits.map(|h| h.cross.clone()).unwrap_or_default();
         cs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut with_v = Vec::new();
         for (t, k) in cs {

@@ -191,12 +191,41 @@ fn a_small_closed_bspline_prism_reads_splits_and_measures() {
 fn a_large_closed_bspline_face_with_many_edges_decodes_in_linear_time() {
     let _serial = serial();
     let (sides, rows, k) = (env("SPLIT_SIDES", 199), env("SPLIT_ROWS", 200), env("SPLIT_K", 3));
-    let (t_half, _, _) = run(sides / 2, rows / 2, k);
-    let (t_full, _, _) = run(sides, rows, k);
+    // Minimum of three repeats per size: a single wall-time sample is noisy on a loaded machine.
+    let best = |s: usize, r: usize| (0..3).map(|_| run(s, r, k).0).fold(f64::INFINITY, f64::min);
+    let (t_half, t_full) = (best(sides / 2, rows / 2), best(sides, rows));
     let limit = if cfg!(debug_assertions) { 60.0 } else { 10.0 };
     assert!(t_full < limit, "{t_full:.3} s over {limit} s");
     // Linear work: 2x the edges, 4x the net and the file. `E nu nv` work gives 8x.
     assert!(t_full < 6.0 * t_half.max(0.05), "full {t_full:.3} s vs half {t_half:.3} s");
+}
+
+/// Plain prisms whose generators pass through boundary vertices (polygon corners, and the shared
+/// ring of same-seam layers) are split like any other: the crossing is the vertex itself.
+#[test]
+fn generators_through_boundary_vertices_split_the_face() {
+    let _serial = serial();
+    // (sides, k, seams): square and triangle with one edge per side, corner cuts with sub-vertices,
+    // and layers whose seams coincide (the generators of each layer meet the shared ring at the
+    // vertices the layer below created).
+    let cases: [(usize, usize, &[usize]); 7] = [(4, 1, &[0]), (3, 1, &[0]), (4, 3, &[1]), (8, 3, &[0]), (4, 1, &[0, 0]), (4, 3, &[0, 0, 0]), (6, 2, &[0, 3, 3])];
+    for (ci, (sides, k, seams)) in cases.into_iter().enumerate() {
+        let (bytes, vol, _) = stack(sides, 4, k, seams);
+        let m = read_step(&bytes, &ReadOptions::default()).expect("reads");
+        let splits = m.notes.iter().filter(|n| n.code == NoteCode::SplitClosedFace && n.severity == NoteSeverity::Info).count();
+        assert_eq!(splits, seams.len(), "sides={sides} k={k} seams={seams:?}: {:?}", m.notes);
+        assert!(m.notes.iter().all(|n| n.severity != NoteSeverity::Warning), "{:?}", m.notes);
+        assert_eq!(m.solids[0].faces.len(), 2 + 4 * seams.len());
+        // Realizing measures the volume (twice); that is slow in a debug build, so only the first case (set `SPLIT_ALL` for all).
+        if cfg!(debug_assertions) && ci > 0 && std::env::var_os("SPLIT_ALL").is_none() {
+            continue;
+        }
+        let (h, r) = common::import_into(common::cell_complex, &m);
+        let v = h.as_view();
+        assert!(common::issues(v).is_empty(), "sides={sides} k={k}: {:?}", common::issues(v));
+        let got = common::volume(v, r.volumes[0]);
+        assert!(common::rel(got, vol) <= 1e-6, "sides={sides} k={k} seams={seams:?}: {got:.12} vs {vol:.12}");
+    }
 }
 
 /// Two closed B-spline faces stacked on a shared polygon, with their seams at different corners:
