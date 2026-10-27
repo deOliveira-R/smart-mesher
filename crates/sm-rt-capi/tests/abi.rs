@@ -304,6 +304,33 @@ fn locate_closest_state_and_normals() {
         comp.cell = SMRT_COMPLEMENT;
         assert_eq!(smrt_set_state(c, &comp), 0);
         assert_eq!(state(c).cell, SMRT_COMPLEMENT);
+        // A region id beyond the model is rejected, and the state is unchanged.
+        let before = state(c);
+        let mut far_r = saved;
+        far_r.region = 1_000;
+        assert_eq!(smrt_set_state(c, &far_r), SMRT_ERR_UNKNOWN_ID);
+        assert_eq!(state(c), before);
+    }
+}
+
+#[test]
+fn set_state_complement_without_a_complement_is_unknown_id() {
+    let t = stub(STUB_NO_COMPLEMENT, 2.0);
+    let c = ctx_of(t);
+    assert_eq!(init(c, [0.0; 3], [1.0, 0.0, 0.0]), 0);
+    let saved = state(c);
+    for (cell, region) in [(SMRT_COMPLEMENT, saved.region), (saved.cell, SMRT_COMPLEMENT)] {
+        let mut bad = saved;
+        bad.cell = cell;
+        bad.region = region;
+        // SAFETY: live ctx, valid state.
+        assert_eq!(unsafe { smrt_set_state(c, &bad) }, SMRT_ERR_UNKNOWN_ID);
+        assert_eq!(state(c), saved);
+    }
+    // SAFETY: each handle is freed once.
+    unsafe {
+        assert_eq!(smrt_ctx_free(c), 0);
+        assert_eq!(smrt_tracker_free(t), 0);
     }
 }
 
