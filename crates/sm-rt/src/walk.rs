@@ -29,6 +29,58 @@ const GRAZE: f64 = GRAZE_COS;
 /// Direction cosine below which a direction counts as tangent to a face.
 pub(crate) const GRAZE_COS: f64 = 1e-9;
 
+/// The nearest few crossings of a ray (smallest `t` first while collecting).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Ties {
+    t: [f64; 4],
+    pub face: [u32; 4],
+    pub along: [bool; 4],
+    pub n: usize,
+}
+
+impl Ties {
+    fn push(&mut self, t: f64, f: u32, along: bool) {
+        if self.n == 4 {
+            let (wi, wt) = (0..4).fold((0, f64::NEG_INFINITY), |a, i| if self.t[i] > a.1 { (i, self.t[i]) } else { a });
+            if t >= wt {
+                return;
+            }
+            self.n -= 1;
+            self.swap_remove(wi);
+        }
+        self.t[self.n] = t;
+        self.face[self.n] = f;
+        self.along[self.n] = along;
+        self.n += 1;
+    }
+    fn swap_remove(&mut self, i: usize) {
+        let l = self.n;
+        self.t[i] = self.t[l];
+        self.face[i] = self.face[l];
+        self.along[i] = self.along[l];
+    }
+    /// Drop crossings beyond `tmax` and sort the rest by face id.
+    fn keep_within(&mut self, tmax: f64) {
+        let mut k = 0;
+        for i in 0..self.n {
+            if self.t[i] <= tmax {
+                (self.t[k], self.face[k], self.along[k]) = (self.t[i], self.face[i], self.along[i]);
+                k += 1;
+            }
+        }
+        self.n = k;
+        for i in 1..k {
+            let mut j = i;
+            while j > 0 && (self.face[j - 1], self.along[j - 1]) > (self.face[j], self.along[j]) {
+                self.face.swap(j - 1, j);
+                self.along.swap(j - 1, j);
+                self.t.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+    }
+}
+
 #[inline]
 fn tie_width(o: [f64; 3], t: f64) -> f64 {
     64.0 * f64::EPSILON * (1.0 + t.abs().min(1e300) + linf(o))
@@ -128,15 +180,19 @@ impl Core {
         decide_exit(hits, o, tol)
     }
 
-    /// First crossing of the line `o + t d` (`t >= 0`) over all BVH faces: `(t, face, along)`.
-    pub fn first_hit(&self, o: [f64; 3], d: [f64; 3], tol: f64, stack: &mut Vec<u32>) -> Option<(f64, u32, bool)> {
+    /// First crossing of the line `o + t d` (`t >= 0`) over all BVH faces as `(t, face, along)`, plus the (up to four) nearest crossings `(face, along)` that tie
+    /// with the first within the ray tie width, in ascending face id; it includes the first
+    /// itself. Coincident facets of touching shells show up here.
+    pub fn first_hit_ties(&self, o: [f64; 3], d: [f64; 3], tol: f64, stack: &mut Vec<u32>) -> (Option<(f64, u32, bool)>, Ties) {
         let mut best: Option<(f64, u32, bool)> = None;
+        let mut near = Ties::default();
         let mut tmax = f64::INFINITY;
         self.face_bvh.visit_ray((o, d), tol, (0.0, tmax), stack, |f| {
             self.face_crossings(f as usize, o, d, |t, along| {
                 if t < 0.0 {
                     return;
                 }
+                near.push(t, f, along);
                 let better = match best {
                     None => true,
                     Some((bt, bf, _)) => t < bt || (t == bt && f < bf),
@@ -150,7 +206,10 @@ impl Core {
             }
             tmax
         });
-        best
+        if let Some((bt, _, _)) = best {
+            near.keep_within(bt + tie_width(o, bt));
+        }
+        (best, near)
     }
 
     /// Nearest entering crossing of an exterior-facing boundary face (`f_right == NONE`, line

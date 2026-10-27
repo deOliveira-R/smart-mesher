@@ -10,7 +10,7 @@ use sm_rt_api::{
 };
 
 /// Algorithm version recorded in cache keys; bump when the built structure changes.
-pub const BUILDER_VERSION: u32 = 1;
+pub const BUILDER_VERSION: u32 = 2;
 
 /// Builder of the mesh-native cell-walking tracker (`VOLUME_MESH | EXACT_PLANAR`).
 ///
