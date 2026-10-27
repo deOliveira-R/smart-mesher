@@ -70,40 +70,60 @@ fn samples(e: &Edge, curve: &dyn ParametricCurve) -> [Point3; 5] {
 /// Merge duplicate edges: same (welded) end vertices and five sampled curve points within
 /// `tol`. Returns, for each input edge, the index of the kept edge (the lowest of its group)
 /// and the direction of the input edge relative to the kept one.
+///
+/// Kept edges are bucketed by their end vertices and the grid cell (size `tol`) of their middle
+/// sample, which is the same point in either direction; a match must lie in one of the 27 cells
+/// around, so many distinct edges between the same two vertices do not compare all pairs.
 pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(usize, Sense)> {
     let mut out: Vec<(usize, Sense)> = (0..edges.len()).map(|i| (i, Sense::Forward)).collect();
     if tol.is_nan() || tol <= 0.0 {
         return out;
     }
-    let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-    let mut cache: Vec<Option<[Point3; 5]>> = vec![None; edges.len()];
+    let smp: Vec<[Point3; 5]> = edges.iter().map(|e| samples(e, curves[e.curve].def.as_curve())).collect();
+    let mut kept: BTreeMap<(usize, usize, i64, i64, i64), Vec<usize>> = BTreeMap::new();
+    let close = |a: &[Point3; 5], b: &[Point3; 5], rev: bool| (0..5).all(|j| (a[j] - b[if rev { 4 - j } else { j }]).norm() <= tol);
     for (i, e) in edges.iter().enumerate() {
-        let key = (e.start.min(e.end), e.start.max(e.end));
-        let kept = groups.entry(key).or_default();
-        let si = *cache[i].get_or_insert_with(|| samples(e, curves[e.curve].def.as_curve()));
-        let mut found = None;
-        for &k in kept.iter() {
-            let sk = *cache[k].get_or_insert_with(|| samples(&edges[k], curves[edges[k].curve].def.as_curve()));
-            let close = |a: &[Point3; 5], b: &[Point3; 5], rev: bool| (0..5).all(|j| (a[j] - b[if rev { 4 - j } else { j }]).norm() <= tol);
-            let closed = e.start == e.end;
-            // Same direction when the start vertices agree (closed edges: whichever samples match).
-            let same_dir = e.start == edges[k].start;
-            if closed {
-                if close(&si, &sk, false) {
-                    found = Some((k, Sense::Forward));
-                } else if close(&si, &sk, true) {
-                    found = Some((k, Sense::Reversed));
+        let (a, b) = (e.start.min(e.end), e.start.max(e.end));
+        let m = smp[i][2];
+        let c = (cell(m.x, tol), cell(m.y, tol), cell(m.z, tol));
+        let closed = e.start == e.end;
+        // The lowest-index kept edge that matches, as a scan of all kept edges in index order.
+        let mut found: Option<(usize, Sense)> = None;
+        for dx in -1i64..=1 {
+            for dy in -1i64..=1 {
+                for dz in -1i64..=1 {
+                    let key = (a, b, c.0.saturating_add(dx), c.1.saturating_add(dy), c.2.saturating_add(dz));
+                    let Some(list) = kept.get(&key) else { continue };
+                    for &k in list {
+                        if found.is_some_and(|f| f.0 < k) {
+                            break;
+                        }
+                        // Same direction when the start vertices agree (closed edges: whichever samples match).
+                        let same_dir = e.start == edges[k].start;
+                        let hit = if closed {
+                            if close(&smp[i], &smp[k], false) {
+                                Some((k, Sense::Forward))
+                            } else if close(&smp[i], &smp[k], true) {
+                                Some((k, Sense::Reversed))
+                            } else {
+                                None
+                            }
+                        } else if close(&smp[i], &smp[k], !same_dir) {
+                            Some((k, if same_dir { Sense::Forward } else { Sense::Reversed }))
+                        } else {
+                            None
+                        };
+                        if hit.is_some() {
+                            found = hit;
+                            break;
+                        }
+                    }
                 }
-            } else if close(&si, &sk, !same_dir) {
-                found = Some((k, if same_dir { Sense::Forward } else { Sense::Reversed }));
-            }
-            if found.is_some() {
-                break;
             }
         }
         match found {
             Some(f) => out[i] = f,
-            None => kept.push(i),
+            None => kept.entry((a, b, c.0, c.1, c.2)).or_default().push(i),
         }
     }
     out
@@ -158,5 +178,83 @@ mod tests {
     fn nonpositive_tolerance_welds_nothing() {
         let pts = [p(0.0, 0.0, 0.0), p(0.0, 0.0, 0.0)];
         assert_eq!(weld_vertices(&pts, 0.0), [0, 1]);
+    }
+
+    /// Edges between vertices `a` and `b` (points `pa`, `pb`) bowed through `mid`; `rev` stores
+    /// the curve from `b` to `a`.
+    fn bowed(curves: &mut Vec<CurveRec>, a: (usize, Point3), b: (usize, Point3), mid: Point3, rev: bool) -> Edge {
+        use sm_geom_api::{CurveDef, Interval, NurbsCurve};
+        let ctrl = if rev { vec![b.1, mid, a.1] } else { vec![a.1, mid, b.1] };
+        let c = NurbsCurve::new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], ctrl, None).expect("curve");
+        curves.push(CurveRec { id: curves.len() as u64, def: CurveDef::Nurbs(c) });
+        let (start, end) = if rev { (b.0, a.0) } else { (a.0, b.0) };
+        Edge { id: curves.len() as u64, start, end, curve: curves.len() - 1, range: Interval::new(0.0, 1.0), sense: Sense::Forward, merged: Vec::new() }
+    }
+
+    /// The pre-bucketing algorithm: every kept edge of the vertex pair, in index order.
+    fn weld_edges_scan(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(usize, Sense)> {
+        let mut out: Vec<(usize, Sense)> = (0..edges.len()).map(|i| (i, Sense::Forward)).collect();
+        let smp: Vec<[Point3; 5]> = edges.iter().map(|e| samples(e, curves[e.curve].def.as_curve())).collect();
+        let close = |a: &[Point3; 5], b: &[Point3; 5], rev: bool| (0..5).all(|j| (a[j] - b[if rev { 4 - j } else { j }]).norm() <= tol);
+        let mut groups: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+        for (i, e) in edges.iter().enumerate() {
+            let kept = groups.entry((e.start.min(e.end), e.start.max(e.end))).or_default();
+            let mut found = None;
+            for &k in kept.iter() {
+                let same_dir = e.start == edges[k].start;
+                if e.start == e.end {
+                    if close(&smp[i], &smp[k], false) {
+                        found = Some((k, Sense::Forward));
+                    } else if close(&smp[i], &smp[k], true) {
+                        found = Some((k, Sense::Reversed));
+                    }
+                } else if close(&smp[i], &smp[k], !same_dir) {
+                    found = Some((k, if same_dir { Sense::Forward } else { Sense::Reversed }));
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            match found {
+                Some(f) => out[i] = f,
+                None => kept.push(i),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn edge_welding_matches_the_full_scan() {
+        let mut s = 777u64;
+        let mut rnd = move || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (s >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let tol = 0.05;
+        let verts = [(0, p(0.0, 0.0, 0.0)), (1, p(1.0, 0.0, 0.0)), (2, p(0.0, 1.0, 0.0))];
+        let mut curves = Vec::new();
+        let mut edges = Vec::new();
+        for _ in 0..600 {
+            let (ia, ib) = ((rnd() * 3.0) as usize % 3, (rnd() * 3.0) as usize % 3);
+            // Bows on a coarse lattice plus jitter of the order of the tolerance (closed edges included).
+            let mid = p((rnd() * 4.0).floor() * 0.1 + rnd() * 0.03, (rnd() * 4.0).floor() * 0.1 + rnd() * 0.03, rnd() * 0.06);
+            edges.push(bowed(&mut curves, verts[ia], verts[ib], mid, rnd() < 0.5));
+        }
+        let got = weld_edges(&edges, &curves, tol);
+        assert_eq!(got, weld_edges_scan(&edges, &curves, tol));
+        assert!(got.iter().enumerate().filter(|(i, g)| g.0 != *i).count() > 100, "the test should merge many edges");
+    }
+
+    #[test]
+    fn many_distinct_edges_on_one_vertex_pair_weld_in_near_linear_time() {
+        let (a, b) = ((0, p(0.0, 0.0, 0.0)), (1, p(1.0, 0.0, 0.0)));
+        let mut curves = Vec::new();
+        let n = 20_000;
+        let edges: Vec<Edge> = (0..n).map(|k| bowed(&mut curves, a, b, p(0.5, 0.01 * k as f64, 0.0), false)).collect();
+        let t = std::time::Instant::now();
+        let got = weld_edges(&edges, &curves, 1e-6);
+        // A full scan compares 2e8 pairs (minutes in a debug build).
+        assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+        assert!(got.iter().enumerate().all(|(i, g)| g.0 == i));
     }
 }

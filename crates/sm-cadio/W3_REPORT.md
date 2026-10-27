@@ -313,3 +313,70 @@ same faces still read; and `a_closed_nurbs_face_that_cannot_be_split_is_kept_wit
 covers the `step.split_closed_face` fallback (the loft's lateral loop also runs its bottom circle
 forward and back: still closed, not the plain seam case, so the face is kept with the warning).
 The assembly fan-out bomb keeps `step.too_many_instances` from the instance walk.
+
+## Review round 4
+
+Must fix: **the closed-face split in the decode budget: confirmed, fixed by making the split
+cheap.** The reviewer read that `split.rs` projected every non-seam edge of a split face with a
+global `NurbsSurface::project` (a `(8 nu + 1) x (8 nv + 1)` grid of surface jets) in `crossings`
+and again per sub-edge in `piece_of_edge`, while the budget charged the surface once per face.
+`tests/split_budget.rs` builds the input in Rust: a polygonal prism whose lateral surface is one
+closed, non-periodic B-spline face (degree 1 around, degree 3 along the axis, `sides + 1` columns
+x `rows` rows), bounded by both polygons (every side cut into 3 line edges) and the seam twice,
+plus two planar caps. Every input passes the budget (one face; the net dominates the file size).
+
+Measured (release, macOS, decode time inside `read_step`; peak RSS of the test process):
+
+| sides x rows, edges | Bytes | Before (d4f5412) | After |
+|---|---|---|---|
+| 33 x 34, 199 | 218 KB | 6.75 s (6.0 MB) | - |
+| 49 x 50, 295 | 401 KB | 21.7 s (7.8 MB) | - |
+| 99 x 100, 595 | 1.31 MB | 173 s (15 MB) | 0.19-0.24 s |
+| 199 x 200, 1,195 | 4.64 MB | 1,402 s (41 MB) | 0.75-0.90 s (46 MB, both sizes in one process) |
+
+Before: about 8x per doubling of sides, rows and edges (`E nu nv` work). After: 4x, the file's
+own growth. Debug build: 2.4 s and 9.9 s.
+
+Fix (`split.rs`): all projections of a split face go through one `Proj`: Gauss-Newton from a
+seed, else a global search, at most `MAX_GLOBAL = 8` global searches per face (more fails the
+split into the usual `step.split_closed_face` warning, face kept). Edges are sampled in loop
+order, in traversal direction, the first sample seeded from the previous edge's last sample, so
+only the loop's first sample needs a global search; `piece_of_edge` seeds the sub-edge midpoint
+from the nearest stored sample of its parent edge. Cost per face: a constant per coedge plus at
+most 8 global searches of `64 nu nv` jets each, with degree capped at `MAX_DEGREE = 15`, i.e. a
+constant times the surface size that `budget.rs` already charges once per face. So no per-coedge
+surface charge was added (a comment in `Estimator::face` says why): legitimate CAD with large
+nets and many edges is still read, and fast. New vertices are still created in edge-index order.
+
+Should fix:
+
+- **One-pass split.** `try_split` no longer clones the solid nor runs `check_closed` per face. A
+  split mutates the solid in place; a failed attempt truncates what it appended (all overwrites
+  come after the last failure point). A cut edge becomes dead and its pieces are all new; dead
+  edge -> pieces is kept in a map, and every loop is relinked through it (through every level, so
+  a face split later cuts the sub-edges of an earlier split) before a face is examined and once at
+  the end. Pieces after the first are appended per face and the faces reordered once; dead edges
+  are dropped and indices remapped once; closure is checked once, and if it fails the solid is
+  restored from a single snapshot and every split note becomes the "left as is" warning. Release:
+  a stack of 200 / 400 split layers reads in 0.46 / 0.93 s (round 3: 5.8 / 12.1 s).
+- **`weld_edges` buckets** by end-vertex pair plus the cell (size `tol`) of the middle sample,
+  which is the same point in either direction, and probes the 27 cells around for the
+  lowest-index match: same result as the full scan (unit test against the old algorithm on 600
+  jittered edges with duplicates both ways); 20,000 distinct edges on one vertex pair weld in
+  well under a second in debug.
+- **`budget.rs::geom` memo keyed by (id, depth).** A geometry entity first reached deep had its
+  depth-truncated cost reused for shallow references. The truncation depth matches the decoder
+  (`gcodec::curve_at` refuses nesting deeper than 8). Unit test: a 9-deep `TRIMMED_CURVE` chain
+  costs the same in either visit order. No fixture's cost moved; a new unit test pins the
+  calibration: every testkit and `tests/data` fixture costs at most 1.96x its file size (the
+  loft), under the 8x budget. That figure is the per-solid estimate without placements, the same
+  with either memo; it is lower than round 3's 3.7x, which was measured differently.
+
+Tests added (`tests/split_budget.rs`): the 200 x 200 face (under 60 s debug / 10 s release, and
+at most 6x the half-size instance, so a return to cubic work fails on any machine); a small
+prism that splits, realizes valid and has the exact volume to 1e-6; two stacked split faces with
+seams at different corners sharing a cut polygon (both split, 10 faces, 65 edges, valid, exact
+volume); 100 vs 200 split layers in one solid (at most 4x). Known limitation, unchanged: a
+generator that passes exactly through a boundary vertex is not detected as a crossing (sign
+change between samples), so such a face is kept with the warning (the test prisms use 3 edges
+per side to avoid it).

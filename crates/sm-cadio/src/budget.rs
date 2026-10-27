@@ -18,7 +18,8 @@ use crate::gcodec::Geo;
 use crate::model::SolidKind;
 use crate::part21::{Entity, Param, StepFile};
 
-/// Depth limit when costing a geometry entity's references (decoders nest far less).
+/// Depth limit when costing a geometry entity's references: the curve decoder refuses nesting
+/// deeper than 8 (`gcodec::curve_at`), and the others nest far less.
 const GEOM_DEPTH: usize = 8;
 
 /// The size of a parameter, counting every scalar and reference once.
@@ -56,7 +57,9 @@ fn refs_of(p: &Param, out: &mut Vec<u64>) {
 /// Memoized cost estimates over one file.
 pub(crate) struct Estimator<'a> {
     ents: Ents<'a>,
-    geom: BTreeMap<u64, usize>,
+    /// Keyed by id and depth: the cost below depth `d` is truncated at [`GEOM_DEPTH`], so an
+    /// entity first reached deep must not lend its truncated cost to a shallow reference.
+    geom: BTreeMap<(u64, usize), usize>,
     edges: BTreeMap<u64, usize>,
     faces: BTreeMap<u64, usize>,
     shells: BTreeMap<u64, usize>,
@@ -69,12 +72,12 @@ impl<'a> Estimator<'a> {
 
     /// Size of a geometry entity with what it references (control points, placements).
     fn geom(&mut self, id: u64, depth: usize) -> usize {
-        if let Some(c) = self.geom.get(&id) {
+        if let Some(c) = self.geom.get(&(id, depth)) {
             return *c;
         }
         let Some(e) = self.ents.map.get(&id) else { return 0 };
         // Placeholder while in progress: a cycle costs nothing more (the decoder rejects it).
-        self.geom.insert(id, 1);
+        self.geom.insert((id, depth), 1);
         let mut cost = entity_size(e);
         if depth < GEOM_DEPTH {
             let mut refs = Vec::new();
@@ -89,7 +92,7 @@ impl<'a> Estimator<'a> {
                 cost = cost.saturating_add(self.geom(r, depth + 1));
             }
         }
-        self.geom.insert(id, cost);
+        self.geom.insert((id, depth), cost);
         cost
     }
 
@@ -126,7 +129,9 @@ impl<'a> Estimator<'a> {
                 && let Ok(s) = a.reference(2)
             {
                 cost = cost.saturating_add(self.geom(s, 0));
-                // A face on a closed NURBS surface may be cut into `PIECES` faces.
+                // A face on a closed NURBS surface may be cut into `PIECES` faces. The split
+                // itself costs a constant per coedge plus a few global projections (each a
+                // constant times the surface size), so the surface needs no per-coedge charge.
                 if ents.map.get(&s).is_some_and(|e| e.is("B_SPLINE_SURFACE_WITH_KNOTS") || e.is("B_SPLINE_SURFACE")) {
                     pieces = crate::split::PIECES;
                 }
@@ -184,5 +189,55 @@ impl<'a> Estimator<'a> {
             _ => crate::decode::solid_shell_refs(ents, id, kind).map(|v| v.into_iter().map(|(s, _)| s).collect()).unwrap_or_default(),
         };
         shells.into_iter().fold(1usize, |c, s| c.saturating_add(self.shell(s)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cost of every solid of `bytes` over the file size.
+    fn ratio(bytes: &[u8]) -> f64 {
+        let file = crate::part21::parse(bytes).expect("parse");
+        let mut est = Estimator::new(Ents::new(&file));
+        let cost = crate::decode::solid_entities(&file).into_iter().fold(0usize, |c, (id, kind)| c + est.solid(id, kind));
+        cost as f64 / file_size(&file) as f64
+    }
+
+    /// Legitimate files stay well inside the `8 x file size` budget (the loft, with its x4
+    /// split allowance, is the largest).
+    #[test]
+    fn legitimate_fixtures_cost_a_few_times_their_size() {
+        for (k, f) in sm_testkit::step::ALL.iter().enumerate() {
+            let r = ratio(f.bytes);
+            eprintln!("testkit fixture {k}: {r:.2}");
+            assert!(r > 0.0 && r < 4.0, "fixture {k}: {r}");
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        let mut names: Vec<_> = std::fs::read_dir(&dir).expect("tests/data").filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "stp")).collect();
+        names.sort();
+        for p in names {
+            let r = ratio(&std::fs::read(&p).expect("read"));
+            eprintln!("{}: {r:.2}", p.display());
+            assert!(r < 4.0, "{}: {r}", p.display());
+        }
+    }
+
+    /// A geometry entity reached first deep in a reference chain is costed in full when it is
+    /// later reached from the top (the memo is keyed by depth).
+    #[test]
+    fn geometry_cost_does_not_depend_on_visit_order() {
+        let mut text = String::from("ISO-10303-21;HEADER;ENDSEC;DATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=CARTESIAN_POINT('',(1.,0.,0.));\n#3=DIRECTION('',(1.,0.,0.));\n#4=VECTOR('',#3,1.);\n#5=LINE('',#1,#4);\n");
+        for k in 6..=14 {
+            text += &format!("#{k}=TRIMMED_CURVE('',#{},(#1),(#2),.T.,.CARTESIAN.);\n", k - 1);
+        }
+        text += "ENDSEC;END-ISO-10303-21;\n";
+        let file = crate::part21::parse(text.as_bytes()).expect("parse");
+        let fresh = Estimator::new(Ents::new(&file)).geom(6, 0);
+        let mut est = Estimator::new(Ents::new(&file));
+        // #6 is first reached from #14 at depth 8, where its references are cut off.
+        est.geom(14, 0);
+        assert_eq!(est.geom(6, 0), fresh);
+        assert!(fresh > entity_size(&file.entities[&6]));
     }
 }

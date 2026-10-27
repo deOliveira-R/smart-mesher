@@ -16,13 +16,17 @@
 //!
 //! Only the plain configuration is handled: a face with one loop that uses one edge twice
 //! (the seam), with the surface closed in exactly one direction. Anything else is left as read
-//! and a `step.split_closed_face` warning says so. The result is checked for closure and
-//! discarded if it fails. Remove this module when `sample_face` honours seam pcurves
-//! (ACR 1) and the quadrature is panelled (ACR 2).
+//! and a `step.split_closed_face` warning says so. The solid is checked for closure once after
+//! all splits, and every split is undone if it fails. Projections onto the surface are Newton
+//! steps from a neighbouring point, with at most [`MAX_GLOBAL`] grid searches per face, so the
+//! work is linear in the face whatever its control net. Remove this module when `sample_face`
+//! honours seam pcurves (ACR 1) and the quadrature is panelled (ACR 2).
 
 use sm_core::Point3;
 use sm_geom_api::{CurveDef, Interval, NurbsCurve, NurbsSurface, ParametricSurface, SurfaceDef, Uv};
 use sm_topo_api::Sense;
+
+use std::collections::BTreeMap;
 
 use crate::decode::check_closed;
 use crate::model::{Coedge, CurveRec, Edge, Face, Note, NoteCode, Solid, SurfaceRec, Vertex};
@@ -38,22 +42,103 @@ type Rows = Vec<Vec<Hom>>;
 type Cut = (f64, usize, usize);
 
 /// Split every closed non-periodic NURBS face of `solid` that has the plain seam configuration.
+///
+/// One pass over the faces: each split mutates the solid in place (a failed attempt is rolled
+/// back by truncating what it appended), cut edges become dead and are replaced by their pieces
+/// in every loop at the end, the faces are reordered and the solid compacted once, and closure
+/// is checked once. If that check fails the solid is restored and every split face is reported
+/// as left as is. Work is linear in the solid plus the split faces' own size.
 pub(crate) fn split_closed_nurbs(solid: &mut Solid, tol: f64, notes: &mut Vec<Note>) {
-    let mut fi = 0;
-    while fi < solid.faces.len() {
-        match candidate(solid, fi, tol) {
-            None => fi += 1,
-            Some(dir) => match try_split(solid, fi, dir, tol) {
-                Ok(next) => {
-                    notes.push(Note::info(NoteCode::SplitClosedFace, format!("face #{} on a closed NURBS surface split into {PIECES} faces along generators (volume and area integrals need an open parameter span)", solid.faces[fi].id), vec![solid.faces[fi].id]));
-                    *solid = next;
-                    fi += PIECES;
-                }
-                Err(why) => {
-                    notes.push(Note::warn(NoteCode::SplitClosedFace, format!("face #{} lies on a closed NURBS surface that was left as is ({why}); its area and volume integrals may be wrong", solid.faces[fi].id), vec![solid.faces[fi].id]));
-                    fi += 1;
-                }
-            },
+    let n0 = solid.faces.len();
+    let mut snapshot: Option<Solid> = None;
+    // Dead edge -> its pieces in traversal order (pieces may die in turn).
+    let mut children: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    // Face -> its pieces after the first, which stays in its slot.
+    let mut extra: BTreeMap<usize, Vec<Face>> = BTreeMap::new();
+    let mut split_notes: Vec<usize> = Vec::new();
+    for fi in 0..n0 {
+        if !children.is_empty() {
+            relink(&mut solid.faces[fi], &children);
+        }
+        let Some(dir) = candidate(solid, fi, tol) else { continue };
+        let id = solid.faces[fi].id;
+        if snapshot.is_none() {
+            snapshot = Some(solid.clone());
+        }
+        match try_split(solid, fi, dir, tol, &mut children) {
+            Ok(more) => {
+                split_notes.push(notes.len());
+                notes.push(Note::info(NoteCode::SplitClosedFace, format!("face #{id} on a closed NURBS surface split into {PIECES} faces along generators (volume and area integrals need an open parameter span)"), vec![id]));
+                extra.insert(fi, more);
+            }
+            Err(why) => notes.push(left_as_is(id, &why)),
+        }
+    }
+    if extra.is_empty() {
+        return;
+    }
+    // ---- every loop on live edges, faces in order with their pieces, dead edges dropped
+    for f in &mut solid.faces {
+        relink(f, &children);
+    }
+    let mut faces = Vec::with_capacity(n0 + extra.len() * (PIECES - 1));
+    let mut first = Vec::with_capacity(n0);
+    for (fi, f) in std::mem::take(&mut solid.faces).into_iter().enumerate() {
+        first.push(faces.len());
+        faces.push(f);
+        if let Some(more) = extra.remove(&fi) {
+            for mut g in more {
+                relink(&mut g, &children);
+                faces.push(g);
+            }
+        }
+    }
+    first.push(faces.len());
+    solid.faces = faces;
+    for sh in &mut solid.shells {
+        let mut out = Vec::with_capacity(sh.faces.len());
+        for &f in &sh.faces {
+            out.extend(first[f]..first[f + 1]);
+        }
+        sh.faces = out;
+    }
+    let mut new_ix = vec![usize::MAX; solid.edges.len()];
+    let mut kept = Vec::with_capacity(solid.edges.len());
+    for (i, e) in std::mem::take(&mut solid.edges).into_iter().enumerate() {
+        if !children.contains_key(&i) {
+            new_ix[i] = kept.len();
+            kept.push(e);
+        }
+    }
+    solid.edges = kept;
+    for f in &mut solid.faces {
+        for l in &mut f.loops {
+            for c in l.iter_mut() {
+                c.edge = new_ix[c.edge];
+            }
+        }
+    }
+    if let Err(e) = check_closed(solid.id, &solid.shells, &solid.faces, &solid.edges) {
+        let why = format!("the split solid is not closed: {e}");
+        if let Some(orig) = snapshot {
+            *solid = orig;
+        }
+        for k in split_notes {
+            let id = notes[k].step_ids.first().copied().unwrap_or(0);
+            notes[k] = left_as_is(id, &why);
+        }
+    }
+}
+
+fn left_as_is(id: u64, why: &str) -> Note {
+    Note::warn(NoteCode::SplitClosedFace, format!("face #{id} lies on a closed NURBS surface that was left as is ({why}); its area and volume integrals may be wrong"), vec![id])
+}
+
+/// Replace every coedge on a dead edge by the coedges of its live pieces.
+fn relink(f: &mut Face, children: &BTreeMap<usize, Vec<usize>>) {
+    for l in &mut f.loops {
+        if l.iter().any(|c| children.contains_key(&c.edge)) {
+            *l = l.iter().flat_map(|&c| expand(children, c)).collect();
         }
     }
 }
@@ -216,21 +301,65 @@ fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> 
     ((surf.jet(Uv::new(u, v)).p - p).norm() <= tol).then_some(Uv::new(u, v))
 }
 
-/// Parameters `t` on the edge (with the cut index) where the edge curve crosses a generator.
-fn crossings(surf: &dyn ParametricSurface, curve: &dyn sm_geom_api::ParametricCurve, range: Interval, us: &[f64], tol: f64) -> Result<Vec<(f64, usize)>, String> {
+/// Global (grid search) projections allowed per split face. Each costs about `64 nu nv` surface
+/// evaluations (degree at most `MAX_DEGREE`), so a face costs a constant times its surface size
+/// however many edges bound it; every other projection is Newton from a nearby projected point.
+const MAX_GLOBAL: usize = 8;
+
+/// Projection onto the surface of one split face: local Newton from a seed, with a capped number
+/// of global searches as the fallback.
+struct Proj<'a> {
+    surf: &'a NurbsSurface,
+    tol: f64,
+    global_left: usize,
+}
+
+impl Proj<'_> {
+    /// Project `p` from `seed` when there is one, else (or when Newton fails) by a global search.
+    fn project(&mut self, p: Point3, seed: Option<Uv>) -> Result<Uv, String> {
+        if let Some(uv) = seed.and_then(|s| local_project(self.surf, p, s, self.tol)) {
+            return Ok(uv);
+        }
+        if self.global_left == 0 {
+            return Err("too many boundary points needed a global projection".into());
+        }
+        self.global_left -= 1;
+        Ok(self.surf.project(p, seed).map_err(|e| e.to_string())?.uv)
+    }
+}
+
+/// The samples of one edge: curve parameters and their surface parameters.
+struct Track {
+    ts: Vec<f64>,
+    uvs: Vec<Uv>,
+}
+
+impl Track {
+    /// Surface parameters of the curve point at `t`, seeded from the nearest sample.
+    fn uv_at(&self, proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, t: f64) -> Result<Uv, String> {
+        let near = self.ts.iter().zip(&self.uvs).min_by(|a, b| (a.0 - t).abs().total_cmp(&(b.0 - t).abs())).map(|(_, &uv)| uv);
+        proj.project(curve.eval(t), near)
+    }
+}
+
+/// Parameters `t` on the edge (with the cut index) where the edge curve crosses a generator,
+/// and the edge's samples. Samples are projected in traversal order (`backward`: from the high
+/// end), the first from `seed` (the previous edge's last sample), each next from its neighbour.
+fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: Interval, us: &[f64], seed: Option<Uv>, backward: bool) -> Result<(Vec<(f64, usize)>, Track), String> {
     let ts: Vec<f64> = (0..SAMPLES).map(|i| range.lo + range.len() * (i as f64 + 0.5) / SAMPLES as f64).collect();
-    let mut uvs: Vec<Uv> = Vec::with_capacity(SAMPLES);
-    for &t in &ts {
-        let p = curve.eval(t);
-        let uv = match uvs.last().and_then(|&l| local_project(surf, p, l, tol)) {
-            Some(uv) => uv,
-            None => surf.project(p, None).map_err(|e| e.to_string())?.uv,
-        };
-        if (surf.jet(uv).p - p).norm() > tol {
+    let mut uvs: Vec<Uv> = vec![Uv::new(0.0, 0.0); SAMPLES];
+    let mut prev = seed;
+    for k in 0..SAMPLES {
+        let i = if backward { SAMPLES - 1 - k } else { k };
+        let p = curve.eval(ts[i]);
+        let uv = proj.project(p, prev)?;
+        if (proj.surf.jet(uv).p - p).norm() > proj.tol {
             return Err("an edge does not lie on the surface".into());
         }
-        uvs.push(uv);
+        uvs[i] = uv;
+        prev = Some(uv);
     }
+    let (surf, tol) = (proj.surf, proj.tol);
     let mut out = Vec::new();
     for (k, &uk) in us.iter().enumerate() {
         for i in 0..SAMPLES - 1 {
@@ -254,7 +383,7 @@ fn crossings(surf: &dyn ParametricSurface, curve: &dyn sm_geom_api::ParametricCu
             out.push((0.5 * (ta + tb), k));
         }
     }
-    Ok(out)
+    Ok((out, Track { ts, uvs }))
 }
 
 /// One use of a (sub-)edge in the expanded loop.
@@ -266,22 +395,39 @@ struct Item {
     to: usize,
 }
 
-/// The coedges a coedge becomes when its edge was split (itself if not), in traversal order.
-fn expand(sub: &std::collections::BTreeMap<usize, Vec<usize>>, c: Coedge) -> Vec<Coedge> {
-    match sub.get(&c.edge) {
-        None => vec![c],
-        Some(t) => {
-            let mut v: Vec<Coedge> = t.iter().map(|&e| Coedge { edge: e, sense: c.sense }).collect();
-            if c.sense == Sense::Reversed {
-                v.reverse();
-            }
-            v
+/// The coedges a coedge becomes when its edge was split (itself if not), in traversal order,
+/// through every level of splitting.
+fn expand(sub: &BTreeMap<usize, Vec<usize>>, c: Coedge) -> Vec<Coedge> {
+    let mut v = Vec::new();
+    let mut stack = vec![c.edge];
+    while let Some(e) = stack.pop() {
+        match sub.get(&e) {
+            Some(t) => stack.extend(t.iter().rev()),
+            None => v.push(Coedge { edge: e, sense: c.sense }),
         }
     }
+    if c.sense == Sense::Reversed {
+        v.reverse();
+    }
+    v
 }
 
-fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, String> {
-    let mut s = solid.clone();
+/// Split face `fi` of `s` in place. Returns the pieces after the first (which replaces the face
+/// in its slot) and records the cut edges, now dead, in `children`. On failure everything the
+/// attempt appended is truncated away and nothing else has changed.
+fn try_split(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>) -> Result<Vec<Face>, String> {
+    let lens = (s.vertices.len(), s.curves.len(), s.edges.len(), s.surfaces.len());
+    let r = split_face(s, fi, dir, tol, children);
+    if r.is_err() {
+        s.vertices.truncate(lens.0);
+        s.curves.truncate(lens.1);
+        s.edges.truncate(lens.2);
+        s.surfaces.truncate(lens.3);
+    }
+    r
+}
+
+fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>) -> Result<Vec<Face>, String> {
     let face = s.faces[fi].clone();
     let SurfaceDef::Nurbs(orig) = &s.surfaces[face.surface].def else { return Err("not a NURBS surface".into()) };
     let orig = orig.clone();
@@ -289,6 +435,7 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
     let (ulo, uhi) = (base.knots_u[base.degree_u], base.knots_u[base.nu]);
     let us: Vec<f64> = (1..PIECES).map(|k| ulo + (uhi - ulo) * k as f64 / PIECES as f64).collect();
     let (base_pieces, gen_curves) = cut(&base, &us)?;
+    let piece_defs: Vec<SurfaceDef> = base_pieces.into_iter().map(|bp| Ok(SurfaceDef::Nurbs(if dir == Dir::U { bp } else { transpose(&bp)? }))).collect::<Result<_, String>>()?;
     let lp = face.loops[0].clone();
     let seam = seam_pair(&face).ok_or("no seam pair")?;
     if lp.iter().filter(|c| c.edge == seam).count() != 2 {
@@ -300,13 +447,24 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
         return Err("another edge appears twice in the loop".into());
     }
     let etol = tol.max(1e-6);
-    // ---- cut the edges that cross a generator
+    let mut proj = Proj { surf: &base, tol: etol * 10.0, global_left: MAX_GLOBAL };
+    // ---- project the edges in loop order, each seeded from the previous one
+    let mut tracks: BTreeMap<usize, (Vec<(f64, usize)>, Track)> = BTreeMap::new();
+    let mut seed: Option<Uv> = None;
+    for c in lp.iter().filter(|c| c.edge != seam) {
+        let e = &s.edges[c.edge];
+        let backward = (c.sense == Sense::Forward) != (e.sense == Sense::Forward);
+        let (cs, tr) = crossings(&mut proj, s.curves[e.curve].def.as_curve(), e.range, &us, seed, backward)?;
+        seed = Some(if backward { tr.uvs[0] } else { tr.uvs[SAMPLES - 1] });
+        tracks.insert(c.edge, (cs, tr));
+    }
+    // ---- cut the edges that cross a generator (new vertices in edge order)
     let mut cuts: Vec<(usize, Vec<Cut>)> = Vec::new();
     let mut cut_vertices: Vec<Vec<usize>> = vec![Vec::new(); PIECES - 1];
     for &ei in &ids {
         let e = s.edges[ei].clone();
         let curve = s.curves[e.curve].def.as_curve();
-        let mut cs = crossings(&base, curve, e.range, &us, etol * 10.0)?;
+        let mut cs = tracks.get(&ei).map(|t| t.0.clone()).unwrap_or_default();
         cs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut with_v = Vec::new();
         for (t, k) in cs {
@@ -339,8 +497,9 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
         s.edges.push(Edge { id: face.id, start: bot, end: top, curve: ci, range: vdom, sense: Sense::Forward, merged: Vec::new() });
         gens.push((bot, top, ei));
     }
-    // ---- split the cut edges; `sub[e]` lists the sub-edges in traversal order
-    let mut sub: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+    // ---- split the cut edges (all pieces new; the cut edge dies on success); `sub[e]` lists
+    // the sub-edges in traversal order
+    let mut sub: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (ei, list) in &cuts {
         let e = s.edges[*ei].clone();
         let m = list.len();
@@ -356,13 +515,8 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
                 (if i == m { e.start } else { vtx(i + 1) }, if i == 0 { e.end } else { vtx(i) })
             };
             let ne = Edge { id: e.id, start, end, curve: e.curve, range: Interval::new(bounds[i], bounds[i + 1]), sense: e.sense, merged: if i == 0 { e.merged.clone() } else { Vec::new() } };
-            if i == 0 {
-                s.edges[*ei] = ne;
-                asc.push(*ei);
-            } else {
-                asc.push(s.edges.len());
-                s.edges.push(ne);
-            }
+            asc.push(s.edges.len());
+            s.edges.push(ne);
         }
         if e.sense == Sense::Reversed {
             asc.reverse();
@@ -370,10 +524,21 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
         sub.insert(*ei, asc);
     }
     // ---- the expanded boundary of the lateral face with its pieces
-    let piece_of_edge = |s: &Solid, ei: usize| -> Result<usize, String> {
+    // The original edge of each sub-edge, whose samples seed the midpoint projection.
+    let mut parent: BTreeMap<usize, usize> = BTreeMap::new();
+    for (o, list) in &sub {
+        for &x in list {
+            parent.insert(x, *o);
+        }
+    }
+    let mut piece_of_edge = |s: &Solid, ei: usize| -> Result<usize, String> {
         let e = &s.edges[ei];
-        let p = s.curves[e.curve].def.as_curve().eval(0.5 * (e.range.lo + e.range.hi));
-        let uv = base.project(p, None).map_err(|x| x.to_string())?.uv;
+        let curve = s.curves[e.curve].def.as_curve();
+        let t = 0.5 * (e.range.lo + e.range.hi);
+        let uv = match tracks.get(&parent.get(&ei).copied().unwrap_or(ei)) {
+            Some((_, tr)) => tr.uv_at(&mut proj, curve, t)?,
+            None => proj.project(curve.eval(t), None)?,
+        };
         Ok((((uv.u - ulo) / (uhi - ulo) * PIECES as f64).floor().max(0.0) as usize).min(PIECES - 1))
     };
     let ends = |s: &Solid, c: Coedge| {
@@ -383,8 +548,8 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
     let mut items: Vec<Item> = Vec::new();
     for &c in &lp {
         for sc in expand(&sub, c) {
-            let (from, to) = ends(&s, sc);
-            let piece = if sc.edge == seam { usize::MAX } else { piece_of_edge(&s, sc.edge)? };
+            let (from, to) = ends(s, sc);
+            let piece = if sc.edge == seam { usize::MAX } else { piece_of_edge(s, sc.edge)? };
             items.push(Item { c: sc, piece, from, to });
         }
     }
@@ -433,21 +598,11 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
         }
         piece_loops.push(lp_p);
     }
-    // ---- other faces: replace split coedges
-    for (i, f) in s.faces.iter_mut().enumerate() {
-        if i == fi {
-            continue;
-        }
-        for l in &mut f.loops {
-            let out: Vec<Coedge> = l.iter().flat_map(|&c| expand(&sub, c)).collect();
-            *l = out;
-        }
-    }
-    // ---- surfaces and faces
+    // ---- commit: no failure past this point
+    children.extend(sub);
     let sid = s.surfaces[face.surface].id;
     let mut surf_ix = Vec::with_capacity(PIECES);
-    for (p, bp) in base_pieces.into_iter().enumerate() {
-        let def = SurfaceDef::Nurbs(if dir == Dir::U { bp } else { transpose(&bp)? });
+    for (p, def) in piece_defs.into_iter().enumerate() {
         if p == 0 {
             s.surfaces[face.surface] = SurfaceRec { id: sid, def };
             surf_ix.push(face.surface);
@@ -456,23 +611,11 @@ fn try_split(solid: &Solid, fi: usize, dir: Dir, tol: f64) -> Result<Solid, Stri
             s.surfaces.push(SurfaceRec { id: sid, def });
         }
     }
-    let new_faces: Vec<Face> = piece_loops.into_iter().enumerate().map(|(p, l)| Face { id: face.id, surface: surf_ix[p], sense: face.sense, loops: vec![l], shell: face.shell }).collect();
-    s.faces.splice(fi..=fi, new_faces);
-    for sh in &mut s.shells {
-        let mut out = Vec::with_capacity(sh.faces.len() + PIECES);
-        for &f in &sh.faces {
-            if f == fi {
-                out.extend(fi..fi + PIECES);
-            } else if f > fi {
-                out.push(f + PIECES - 1);
-            } else {
-                out.push(f);
-            }
-        }
-        sh.faces = out;
+    let mut pieces = piece_loops.into_iter().enumerate().map(|(p, l)| Face { id: face.id, surface: surf_ix[p], sense: face.sense, loops: vec![l], shell: face.shell });
+    if let Some(f0) = pieces.next() {
+        s.faces[fi] = f0;
     }
-    check_closed(s.id, &s.shells, &s.faces, &s.edges).map_err(|e| format!("the split solid is not closed: {e}"))?;
-    Ok(s)
+    Ok(pieces.collect())
 }
 
 #[cfg(test)]
