@@ -116,7 +116,7 @@ arrays NUL-padded to `len_name`. Ids and connectivity are `NC_INT`, or `NC_INT64
 `ExodusOptions::int64` (needs CDF-5). Info lines longer than 80 bytes are split; the provenance
 string becomes the info record `smart-mesh provenance: <s>`.
 
-### NSIDED / NFACED (experimental, from memory of libexodus)
+### NSIDED / NFACED (experimental, names from memory of libexodus)
 
 No SEACAS header or source is reachable from the build VM, so these names are recalled, not
 checked; `ExodusOptions::polyhedra = true` is the default but the report marks the output
@@ -125,11 +125,18 @@ experimental until a SEACAS reader confirms it.
 * `NSIDED` block: `connect<k>(num_nod_per_el<k>)` (total nodes, attr `elem_type = "NSIDED"`),
   `ebepecnt<k>(num_el_in_blk<k>)` = nodes per element (attrs `entity_type1 = "NODE"`,
   `entity_type2 = "ELEM"`).
-* `NFACED` block: `facconn<k>(num_fa_in_blk<k>)` (attr `elem_type = "NFACED"`; global face numbers,
+* `NFACED` block: `facconn<k>(num_fac_per_el<k>)` (total face references; attr `elem_type = "NFACED"`; global face numbers,
   1-based), `ebepecnt<k>(num_el_in_blk<k>)` = faces per element (attrs `FACE`, `ELEM`).
-* Face block `j` per NFACED block: `num_fa_in_fblk<j>`, `num_nod_per_fa<j>`,
-  `fbconn<j>(num_nod_per_fa<j>)`, `fbepecnt<j>(num_fa_in_fblk<j>)` (attrs `NODE`, `FACE`), plus
+* Face block `j` per NFACED block: `num_fa_in_blk<j>`, `num_nod_per_fa<j>`,
+  `fbconn<j>(num_nod_per_fa<j>)` (attr `elem_type = "NSIDED"`), `fbepecnt<j>(num_fa_in_blk<j>)` (attrs `NODE`, `FACE`), plus
   `num_fa_blk`, `num_face`, `fa_status`, `fa_prop1` (`name = "ID"`), `fa_names`.
+* Names follow `exodusII.h` as recalled (`DIM_NUM_FAC_PER_EL` = `num_fac_per_el%d`,
+  `DIM_NUM_FA_IN_FBLK` = `num_fa_in_blk%d`, `VAR_FCONN` = `facconn%d`, `VAR_FBCONN` = `fbconn%d`).
+  Still not checked against SEACAS sources (none reachable here); a real libexodus/ParaView
+  read-back is the open verification.
+* `int64_status` is a libexodus bitmask (maps 1, ids 2, bulk 4, inquiry 8, from memory); with
+  `int64 = true` we write 15 (all), since maps, ids and bulk data are all `NC_INT64`.
+* Side numbers of polygons and polyhedra are `u32` (position in the face list).
 * One outward-oriented face copy per (cell, face), the loop reversed for `Right` entries (the
   smallest vertex stays first); element face order = `cell_faces` order; no shared faces.
 

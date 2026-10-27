@@ -21,7 +21,7 @@ pub enum BlockSelection {
 pub struct ExodusOptions {
     /// netCDF flavour (default [`NcFormat::Offset64`]).
     pub format: NcFormat,
-    /// Write ids and connectivity as `NC_INT64` and set `int64_status = 1`. Needs
+    /// Write ids and connectivity as `NC_INT64` and set `int64_status` to 15 (every `EX_*_INT64_DB` bit). Needs
     /// [`NcFormat::Data64`], otherwise the writer returns `Unsupported`.
     pub int64: bool,
     /// File title (at most 80 bytes).

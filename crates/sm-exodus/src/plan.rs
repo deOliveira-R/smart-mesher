@@ -36,8 +36,8 @@ pub struct SideSetPlan {
     pub name: String,
     /// 1-based element numbers.
     pub elems: Vec<u32>,
-    /// Exodus side numbers (1-based).
-    pub sides: Vec<u8>,
+    /// Exodus side numbers (1-based; `u32` because polyhedra and polygons number sides by position).
+    pub sides: Vec<u32>,
 }
 
 /// One node set.
@@ -47,7 +47,8 @@ pub struct NodeSetPlan {
     pub id: i64,
     /// Name.
     pub name: String,
-    /// 0-based vertex indices, ascending.
+    /// 0-based vertex indices in set order (not sorted, not deduplicated); the file stores each
+    /// plus one.
     pub nodes: Vec<u32>,
 }
 
@@ -211,6 +212,16 @@ pub fn plan(mesh: &dyn MeshRead, opts: &ExodusOptions) -> Result<ExodusPlan> {
     if !opts.polyhedra && blocks.iter().any(|b| b.shape == CellShape::Polyhedron) {
         return Err(ExodusError::Unsupported("polyhedral cells need ExodusOptions::polyhedra = true (NFACED)".into()));
     }
+    for b in &blocks {
+        if b.shape != CellShape::Polyhedron
+            && let Some(&c) = b.cells.iter().find(|&&c| mesh.cell_corners(CellIx(c)).is_none())
+        {
+            return Err(ExodusError::Mesh(MeshError::State(format!(
+                "cell {c} ({}) has no cell_corners; the Exodus writer needs the corner list",
+                exodus_element_type(b.shape)
+            ))));
+        }
+    }
     blocks.sort_by_key(|b| b.id);
     let mut elem_order = Vec::with_capacity(n_active);
     let mut cell_elem = vec![0u32; nc];
@@ -256,7 +267,7 @@ pub fn plan(mesh: &dyn MeshRead, opts: &ExodusOptions) -> Result<ExodusPlan> {
             SetMembers::Faces(v) => v.iter().map(|f| (*f, Side::Left)).collect(),
             _ => continue,
         };
-        let results: Vec<Result<Option<(u32, u8)>>> = entries
+        let results: Vec<Result<Option<(u32, u32)>>> = entries
             .par_iter()
             .with_min_len(1024)
             .map(|&(f, side)| {
@@ -331,7 +342,7 @@ fn assign_ids(idx: &[usize], sets: &[sm_mesh_api::MeshSet]) -> Result<Vec<i64>> 
 }
 
 /// Exodus side of `cell` for the face entry `(f, side)`.
-fn side_of(mesh: &dyn MeshRead, cell: CellIx, f: FaceIx, side: Side) -> Result<u8> {
+fn side_of(mesh: &dyn MeshRead, cell: CellIx, f: FaceIx, side: Side) -> Result<u32> {
     let want_rel = if side == Side::Left { LoopRelation::Same } else { LoopRelation::Reversed };
     let shape = mesh.cell_shape(cell);
     let fv = mesh.face_vertices(f);
@@ -343,7 +354,7 @@ fn side_of(mesh: &dyn MeshRead, cell: CellIx, f: FaceIx, side: Side) -> Result<u
             if cf[pos].side() != side {
                 return Err(bad());
             }
-            u8::try_from(pos + 1).map_err(|_| ExodusError::TooLarge { what: "polyhedron faces".into(), value: pos as u64 + 1, limit: 255 })
+            Ok(u32::try_from(pos + 1).unwrap_or(u32::MAX))
         }
         CellShape::Polygon => {
             let corners = mesh.cell_corners(cell).ok_or_else(bad)?;
@@ -351,7 +362,7 @@ fn side_of(mesh: &dyn MeshRead, cell: CellIx, f: FaceIx, side: Side) -> Result<u
             for i in 0..n {
                 let want = [corners[i], corners[(i + 1) % n]];
                 if loop_relation(fv, &want) == Some(want_rel) {
-                    return u8::try_from(i + 1).map_err(|_| ExodusError::TooLarge { what: "polygon edges".into(), value: i as u64 + 1, limit: 255 });
+                    return Ok(u32::try_from(i + 1).unwrap_or(u32::MAX));
                 }
             }
             Err(bad())
@@ -364,7 +375,7 @@ fn side_of(mesh: &dyn MeshRead, cell: CellIx, f: FaceIx, side: Side) -> Result<u
                     *w = *corners.get(l as usize).ok_or_else(bad)?;
                 }
                 if loop_relation(fv, &want[..lf.len()]) == Some(want_rel) {
-                    return exodus_side(shape, k).ok_or_else(bad);
+                    return exodus_side(shape, k).map(u32::from).ok_or_else(bad);
                 }
             }
             Err(bad())

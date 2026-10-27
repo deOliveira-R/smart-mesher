@@ -274,3 +274,50 @@ fn cdl_of_a_small_file() {
     let want = "netcdf file {\ndimensions:\n\tx = 2 ;\nvariables:\n\tint v(x) ;\n\n// global attributes:\n\t\t:t = \"ab\" ;\ndata:\n\n v = 1, 2 ;\n}\n";
     assert_eq!(cdl, want);
 }
+
+#[test]
+fn classic_begin_is_signed_32_bit() {
+    // 2.2e9 bytes fits u32 but the next variable would begin above i32::MAX.
+    let mut f = NcFile::new(NcFormat::Classic);
+    let d = f.dim("d", Some(2_200_000_000));
+    let e = f.dim("e", Some(4));
+    f.var("p", NcType::Byte, &[d]);
+    f.var("q", NcType::Byte, &[e]);
+    assert!(matches!(f.layout(), Err(ExodusError::TooLarge { .. })));
+}
+
+#[test]
+fn offset64_big_variable_with_record_variable_is_rejected() {
+    let mut f = NcFile::new(NcFormat::Offset64);
+    let t = f.dim("t", None);
+    let (a, b) = (f.dim("a", Some(1 << 16)), f.dim("b", Some(81920)));
+    f.var("big", NcType::Byte, &[a, b]);
+    f.var("rec", NcType::Double, &[t]);
+    let err = f.layout().unwrap_err();
+    assert!(matches!(err, ExodusError::TooLarge { .. }));
+    assert!(err.to_string().contains("Data64"), "{err}");
+    let mut g = NcFile::new(NcFormat::Data64);
+    let t = g.dim("t", None);
+    let d = g.dim("d", Some(5 << 30));
+    g.var("big", NcType::Byte, &[d]);
+    g.var("rec", NcType::Double, &[t]);
+    assert!(g.layout().is_ok());
+}
+
+#[test]
+fn record_variables_are_interleaved() {
+    let mut f = NcFile::new(NcFormat::Data64);
+    let t = f.dim("t", None);
+    let d = f.dim("d", Some(3));
+    f.var("fixed", NcType::Int, &[d]);
+    let a = f.var("a", NcType::Double, &[t]);
+    let b = f.var("b", NcType::Short, &[t, d]);
+    let c = f.var("c", NcType::Int, &[t]);
+    let _ = (a, b, c);
+    let lay = f.layout().unwrap();
+    let (fx, a, b, c) = (&lay.vars[0], &lay.vars[1], &lay.vars[2], &lay.vars[3]);
+    assert_eq!(a.begin, fx.begin + fx.size);
+    assert_eq!(b.begin, a.begin + a.vsize);
+    assert_eq!(c.begin, b.begin + b.vsize);
+    assert_eq!(lay.file_size, fx.begin + fx.size);
+}

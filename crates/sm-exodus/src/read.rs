@@ -199,7 +199,7 @@ pub fn read_exodus(bytes: &[u8]) -> Result<ExodusData> {
             face_blocks.push(FaceBlockData {
                 id: *ids.get(j - 1).ok_or_else(|| missing("fa_prop1 entry"))?,
                 name: names.get(j - 1).cloned().ok_or_else(|| missing("fa_names entry"))?,
-                num_faces: dim(&f, &format!("num_fa_in_fblk{j}"))?,
+                num_faces: dim(&f, &format!("num_fa_in_blk{j}"))?,
                 connectivity: ints(&f, &format!("fbconn{j}"))?,
                 entity_counts: ints(&f, &format!("fbepecnt{j}"))?,
             });

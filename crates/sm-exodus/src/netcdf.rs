@@ -576,8 +576,9 @@ impl<'a> NcFile<'a> {
     /// `2^33`-element dimension is fine). Non-record variables follow the header in declaration
     /// order, record variables (zero records) after them.
     ///
-    /// Errors: [`ExodusError::TooLarge`] when CDF-1 needs an offset or size above `u32::MAX`, or
-    /// when a CDF-2 variable above 4 GiB is not the last non-record variable;
+    /// Errors: [`ExodusError::TooLarge`] when CDF-1 needs a `begin` above `i32::MAX` (offsets are signed) or a
+    /// size above `u32::MAX`, or when a CDF-2 variable above 4 GiB is not the last fixed variable
+    /// or record variables exist (use [`NcFormat::Data64`]);
     /// [`ExodusError::Malformed`] for inconsistent models (length-0 dimension, two unlimited
     /// dimensions, repeated names).
     pub fn layout(&self) -> Result<NcLayout> {
@@ -592,26 +593,40 @@ impl<'a> NcFile<'a> {
             sizes.push(pad4(bytes));
             rec.push(record);
         }
+        let any_record = rec.iter().any(|r| *r);
         let last_fixed = (0..n).rev().find(|&i| !rec[i]);
         let mut begins = vec![0u64; n];
         let mut vsizes = vec![0u64; n];
         let mut pos = header_size;
         let classic = self.format == NcFormat::Classic;
         let max32 = u64::from(u32::MAX);
+        let max_i32 = i64::from(i32::MAX) as u64;
+        // Fixed variables first. Record variables begin where the fixed section ends and are
+        // interleaved record by record, so variable k starts after the vsizes of earlier ones.
+        let mut rec_off = 0u64;
         for pass_record in [false, true] {
             for i in (0..n).filter(|&i| rec[i] == pass_record) {
-                begins[i] = pos;
+                begins[i] = if pass_record { pos + rec_off } else { pos };
                 vsizes[i] = sizes[i];
-                if classic && (pos > max32 || sizes[i] > max32) {
-                    return Err(too_large(format!("variable '{}' (CDF-1 offset/size)", self.vars[i].name), pos.max(sizes[i]), max32));
+                let name = &self.vars[i].name;
+                if classic && (begins[i] > max_i32 || sizes[i] > max32) {
+                    return Err(too_large(format!("variable '{name}' (CDF-1 offsets are signed 32-bit)"), begins[i].max(sizes[i]), max_i32));
                 }
                 if self.format == NcFormat::Offset64 && sizes[i] > max32 {
-                    if Some(i) != last_fixed {
-                        return Err(too_large(format!("variable '{}' (CDF-2 allows one >4 GiB variable, as the last)", self.vars[i].name), sizes[i], max32));
+                    if Some(i) != last_fixed || any_record {
+                        return Err(too_large(
+                            format!(
+                                "variable '{name}' (CDF-2 allows a >4 GiB variable only as the last fixed variable with no record variables; use NcFormat::Data64)"
+                            ),
+                            sizes[i],
+                            max32,
+                        ));
                     }
                     vsizes[i] = max32;
                 }
-                if !pass_record {
+                if pass_record {
+                    rec_off = rec_off.checked_add(sizes[i]).ok_or_else(|| too_large("record", u64::MAX, u64::MAX))?;
+                } else {
                     pos = pos.checked_add(sizes[i]).ok_or_else(|| too_large("file", u64::MAX, u64::MAX))?;
                 }
             }
