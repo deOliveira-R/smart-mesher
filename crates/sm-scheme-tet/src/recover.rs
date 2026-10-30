@@ -52,27 +52,6 @@ impl Constraints {
         vert_tris.sort_unstable();
         Self { edges, faces, tris: tris.to_vec(), edge_tris, vert_tris }
     }
-    /// Constraints from explicit parts: `faces` (oriented triangle, owner) and `edges` (sorted
-    /// endpoints, owner; duplicates keep the first owner).
-    pub fn from_parts(faces: &[([u32; 3], u32)], mut edges: Vec<([u32; 2], u32)>) -> Self {
-        edges.sort_unstable();
-        edges.dedup_by_key(|e| e.0);
-        let mut fs: Vec<([u32; 3], u32)> = faces.iter().map(|&(t, o)| (sorted3(t[0], t[1], t[2]), o)).collect();
-        fs.sort_unstable();
-        let tris: Vec<[u32; 3]> = faces.iter().map(|f| f.0).collect();
-        let mut edge_tris: Vec<([u32; 2], u32)> = Vec::new();
-        let mut vert_tris: Vec<(u32, u32)> = Vec::new();
-        for (i, t) in tris.iter().enumerate() {
-            for k in 0..3 {
-                let (a, b) = (t[k], t[(k + 1) % 3]);
-                edge_tris.push(([a.min(b), a.max(b)], i as u32));
-                vert_tris.push((t[k], i as u32));
-            }
-        }
-        edge_tris.sort_unstable();
-        vert_tris.sort_unstable();
-        Self { edges, faces: fs, tris, edge_tris, vert_tris }
-    }
     /// The triangles around vertex `v`.
     pub fn tris_of_vertex(&self, v: u32) -> impl Iterator<Item = u32> + '_ {
         let lo = self.vert_tris.partition_point(|e| e.0 < v);
@@ -98,9 +77,9 @@ impl Constraints {
 /// Recovery driver.
 pub(crate) struct Recover<'a> {
     pub dt: &'a mut Dt,
-    /// The constraints being recovered: the input triangles, or in complete mode the current
-    /// subdivision of them (see [`crate::steiner`]).
-    pub con: std::borrow::Cow<'a, Constraints>,
+    /// The input constraints (lookups go through [`Recover::edge_owner`] and
+    /// [`Recover::face_owner`], which in complete mode read the current subdivision instead).
+    pub con: &'a Constraints,
     /// The input constraints.
     pub orig: &'a Constraints,
     /// Complete mode: missing edges and triangles get temporary boundary Steiner points
@@ -212,7 +191,21 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 impl<'a> Recover<'a> {
     pub fn new(dt: &'a mut Dt, con: &'a Constraints, guard: &'a Guard<'a>, max_steiner: usize, n_real: u32, attempt: usize) -> Self {
         dt.search_limit = dt.work.load(std::sync::atomic::Ordering::Relaxed).saturating_add(SEARCH_WORK);
-        Self { dt, con: std::borrow::Cow::Borrowed(con), orig: con, complete_mode: false, bnd: crate::steiner::Bnd::default(), n_boundary_steiner: 0, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, failed_edges: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+        Self { dt, con, orig: con, complete_mode: false, bnd: crate::steiner::Bnd::default(), n_boundary_steiner: 0, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, failed_edges: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+    }
+
+    /// Input triangle owning constraint edge `(a,b)`: an input edge, or in complete mode a
+    /// subsegment of one or an edge of a recovered tile (the smallest owner).
+    #[inline]
+    pub(crate) fn edge_owner(&self, a: u32, b: u32) -> Option<u32> {
+        if self.complete_mode { self.bnd.edge_owner(self.orig, a, b) } else { self.con.edge_owner(a, b) }
+    }
+
+    /// Input triangle owning constraint face `k` (sorted): an input triangle, or in complete
+    /// mode a recovered tile of one.
+    #[inline]
+    pub(crate) fn face_owner(&self, k: [u32; 3]) -> Option<u32> {
+        if self.complete_mode { self.bnd.face_owner(k) } else { self.con.face_owner(k) }
     }
 
     /// Recover every constraint edge and triangle. A recovery failure does not stop the pass:
@@ -723,7 +716,7 @@ impl<'a> Recover<'a> {
             let mut blocked = false;
             for &(t, k) in &faces {
                 let f = self.dt.tds.face(t, k);
-                if let Some(other) = self.con.face_owner(sorted3(f[0], f[1], f[2])) {
+                if let Some(other) = self.face_owner(sorted3(f[0], f[1], f[2])) {
                     if self.edge_hits_face(u, w, f) {
                         return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
                     }
@@ -752,7 +745,7 @@ impl<'a> Recover<'a> {
                 for e in 0..3 {
                     let (x, y) = (f[e], f[(e + 1) % 3]);
                     let key = [x.min(y), x.max(y)];
-                    if seen.contains(&key) || self.tabu.contains(&key) || self.con.edge_owner(x, y).is_some() {
+                    if seen.contains(&key) || self.tabu.contains(&key) || self.edge_owner(x, y).is_some() {
                         continue;
                     }
                     seen.push(key);
@@ -879,7 +872,7 @@ impl<'a> Recover<'a> {
                     continue;
                 }
                 if self.tri_pierce(g, key) {
-                    if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
+                    if let Some(other) = self.face_owner(sorted3(g[0], g[1], g[2])) {
                         if self.faces_conflict(g, key) {
                             return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
                         }
@@ -904,7 +897,7 @@ impl<'a> Recover<'a> {
                 for j in i + 1..4 {
                     let (p, q) = (v[i], v[j]);
                     if !key.contains(&p) && !key.contains(&q)
-                        && let Some(other) = self.con.edge_owner(p, q)
+                        && let Some(other) = self.edge_owner(p, q)
                             && self.edge_hits_face(p, q, key) {
                                 return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
                             }
@@ -914,7 +907,7 @@ impl<'a> Recover<'a> {
                 let n = self.dt.tds.nbr[t as usize][k];
                 if n != NONE && marks.in_a(n) {
                     let g = self.dt.tds.face(t, k);
-                    if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
+                    if let Some(other) = self.face_owner(sorted3(g[0], g[1], g[2])) {
                         return Err(fail(tri, None, format!("triangle {other} lies inside the cavity of this triangle")));
                     }
                 }
@@ -981,7 +974,7 @@ impl<'a> Recover<'a> {
                 for i in 0..4 {
                     for j in i + 1..4 {
                         let k = [v[i].min(v[j]), v[i].max(v[j])];
-                        if self.con.edge_owner(k[0], k[1]).is_some() && bedges.binary_search(&k).is_err() {
+                        if self.edge_owner(k[0], k[1]).is_some() && bedges.binary_search(&k).is_err() {
                             return Err(fail(tri, None, "a constraint edge lies inside the cavity"));
                         }
                     }
@@ -1167,7 +1160,7 @@ impl<'a> Recover<'a> {
                 let n = self.dt.tds.nbr[t as usize][k];
                 let g = self.dt.tds.face(t, k);
                 if n != NONE && marks.in_a(n) {
-                    if let Some(other) = self.con.face_owner(sorted3(g[0], g[1], g[2])) {
+                    if let Some(other) = self.face_owner(sorted3(g[0], g[1], g[2])) {
                         if self.edge_hits_face(u, w, g) {
                             return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
                         }
@@ -1199,7 +1192,7 @@ impl<'a> Recover<'a> {
     /// number of tets added.
     fn absorb_across(&self, g: &[u32; 3], cav: &Cavity, r: &mut Vec<u32>, marks: &mut Marks) -> usize {
         let key = sorted3(g[0], g[1], g[2]);
-        if self.con.face_owner(key).is_some() {
+        if self.face_owner(key).is_some() {
             return 0;
         }
         let Ok(i) = cav.outside.binary_search_by(|e| e.0.cmp(&key)) else { return 0 };
@@ -1212,7 +1205,7 @@ impl<'a> Recover<'a> {
             let m = self.dt.tds.nbr[n as usize][j];
             m != NONE && marks.in_a(m) && {
                 let h = self.dt.tds.face(n, j);
-                self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
+                self.face_owner(sorted3(h[0], h[1], h[2])).is_some()
             }
         });
         if swallows {
@@ -1233,14 +1226,14 @@ impl<'a> Recover<'a> {
                     continue;
                 }
                 let g = self.dt.tds.face(t, k);
-                if self.con.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
+                if self.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
                     continue;
                 }
                 let swallows = (0..4).any(|j| {
                     let m = self.dt.tds.nbr[n as usize][j];
                     m != NONE && m != t && marks.in_a(m) && {
                         let h = self.dt.tds.face(n, j);
-                        self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some()
+                        self.face_owner(sorted3(h[0], h[1], h[2])).is_some()
                     }
                 });
                 if swallows {
@@ -1311,6 +1304,25 @@ impl Dt {
     /// compliant point is used whenever one is found.
     pub(crate) fn kernel_point(&self, faces: &[[u32; 3]], guard: &Guard<'_>) -> Option<V3> {
         let pts = &self.pts;
+        let visible = |p: V3| faces.iter().all(|f| ori(pts[f[0] as usize], pts[f[1] as usize], pts[f[2] as usize], p) < 0);
+        let mut best: Option<(f64, V3)> = None;
+        for c in self.kernel_candidates(faces).into_iter().filter(|&c| visible(c)) {
+            let sc = guard.score(c);
+            if best.is_none_or(|b| sc > b.0) {
+                best = Some((sc, c));
+            }
+        }
+        best.map(|b| b.1)
+    }
+
+    /// Candidate kernel points of the polyhedron bounded by `faces` (see [`Dt::kernel_point`]),
+    /// finite but not checked for visibility: the vertex and face centroids and the results of
+    /// the alternating projection with margins 0.4 .. 0.05 of the mean edge length.
+    pub(crate) fn kernel_candidates(&self, faces: &[[u32; 3]]) -> Vec<V3> {
+        let pts = &self.pts;
+        if faces.is_empty() {
+            return Vec::new();
+        }
         let mut verts: Vec<u32> = faces.iter().flatten().copied().collect();
         verts.sort_unstable();
         verts.dedup();
@@ -1324,7 +1336,6 @@ impl Dt {
             fc = add(fc, scale(add(add(pts[f[0] as usize], pts[f[1] as usize]), pts[f[2] as usize]), 1.0 / 3.0));
         }
         let fcen = scale(fc, 1.0 / faces.len() as f64);
-        let visible = |p: V3| faces.iter().all(|f| ori(pts[f[0] as usize], pts[f[1] as usize], pts[f[2] as usize], p) < 0);
         let h = {
             let mut m = 0.0;
             for f in faces {
@@ -1358,13 +1369,6 @@ impl Dt {
             }
             cands.push(p);
         }
-        let mut best: Option<(f64, V3)> = None;
-        for c in cands.into_iter().filter_map(sanitize).filter(|&c| visible(c)) {
-            let sc = guard.score(c);
-            if best.is_none_or(|b| sc > b.0) {
-                best = Some((sc, c));
-            }
-        }
-        best.map(|b| b.1)
+        cands.into_iter().filter_map(sanitize).collect()
     }
 }

@@ -5,13 +5,17 @@
 //! Round 2: the relief cases at depth 0.9 on 6 x 6 and 8 x 8 grids and 0.6 on 8 x 8 grids, which
 //! used to end in `RecoveryFailed`, recover through complete recovery
 //! (`relief_hard_cases_recover_exactly`).
+//!
+//! Round 3: those cases also meet ruling S4 (every interior point at least `0.3 h_T` from every
+//! input triangle) with a dihedral floor, and the work of complete recovery is linear in the
+//! surface size (`complete_recovery_work_is_linear`, a work counter, not wall clock).
 
 mod common;
 use common::*;
 use sm_scheme_tet::{SurfaceInput, TetMesh, TetOptions, tetrahedralize};
 use sm_testkit::surf3::{self, SplitMix64};
 
-fn check(inp: &SurfaceInput, label: &str) {
+fn check(inp: &SurfaceInput, label: &str) -> TetMesh {
     let t = std::time::Instant::now();
     let m = tetrahedralize(inp, &TetOptions::default()).unwrap_or_else(|e| panic!("{label}: {e}"));
     eprintln!("{label}: {:.2}s steiner {} tets {}", t.elapsed().as_secs_f64(), m.stats.n_steiner, m.tets.len());
@@ -21,6 +25,7 @@ fn check(inp: &SurfaceInput, label: &str) {
     let vol = total_volume(&m);
     let want = enclosed_volume(inp);
     assert!((vol - want).abs() <= 1e-10 * want.abs().max(1.0), "{label}: volume {vol} vs {want}");
+    m
 }
 
 /// Enclosed volume of the closed surface (divergence theorem about the first point).
@@ -137,15 +142,19 @@ fn mesh_hash(m: &TetMesh) -> u64 {
             h.write(&i.to_le_bytes());
         }
     }
-    for x in [m.stats.n_steiner, m.stats.n_steiner_recovery, m.stats.n_boundary_steiner, m.stats.flips, m.stats.smooth_passes, m.stats.unrefinable] {
+    for x in [m.stats.n_steiner, m.stats.n_steiner_recovery, m.stats.n_boundary_steiner, m.stats.flips, m.stats.smooth_passes, m.stats.unrefinable, m.stats.n_s4_violations] {
         h.write(&(x as u64).to_le_bytes());
     }
+    h.write(&m.stats.n_constraint_updates.to_le_bytes());
+    h.write(&m.stats.worst_s4_margin.to_bits().to_le_bytes());
     h.finish()
 }
 
 /// Review round 2: relief cases the interior-point recovery cannot finish (decision 12). They
 /// go through complete recovery (temporary boundary Steiner points on the stuck edges and
 /// triangles, moved off the surface afterwards) and must come out with the exact boundary.
+/// Round 3: every interior point meets ruling S4 (measured here independently of the mesher's
+/// own statistic, which must agree), and the smallest dihedral angle stays above a floor.
 /// Debug builds run three of the eleven cases.
 #[test]
 fn relief_hard_cases_recover_exactly() {
@@ -159,18 +168,54 @@ fn relief_hard_cases_recover_exactly() {
     for (n, seed, depth) in cases {
         let label = format!("relief n{n} seed{seed} d{depth}");
         let inp = relief_cube(n, seed, depth);
-        let t = std::time::Instant::now();
-        let m = tetrahedralize(&inp, &TetOptions::default()).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let m = check(&inp, &label);
+        let margin = min_s4_margin(&m, &inp);
+        let (d_steiner, d_input) = min_dihedral_split(&m);
         eprintln!(
-            "{label}: {:.2}s recovery Steiner {} (temporary boundary {}), refinement {}, tets {}",
-            t.elapsed().as_secs_f64(),
+            "{label}: recovery Steiner {} (temporary boundary {}), refinement {}, tets {}, S4 margin {margin:.4} ({} violations), min dihedral {:.3} (tets with a Steiner vertex {d_steiner:.3}, input vertices only {d_input:.3}, sharpest surface wedge {:.3}), stage ms {:?}",
             m.stats.n_steiner_recovery,
             m.stats.n_boundary_steiner,
             m.stats.n_steiner_refine,
-            m.tets.len()
+            m.tets.len(),
+            m.stats.n_s4_violations,
+            m.stats.min_dihedral_deg,
+            min_solid_wedge_deg(&inp),
+            m.stats.stage_ms.map(|x| x.round())
         );
-        check(&inp, &label);
+        // Ruling S4, and the statistic never hides a violation.
+        assert_eq!(m.stats.n_s4_violations, 0, "{label}: S4 violations (worst {})", m.stats.worst_s4_margin);
+        assert!(margin >= 0.3 - 1e-9, "{label}: S4 margin {margin}");
+        // Dihedral floors (review round 3, measured 0.563 (n8 seed4 d0.6) .. 5.24 degrees
+        // overall, the worst tets having input vertices only: they span thin walls next to the
+        // steepest relief, where S4 leaves no room for an interior point; tets with a Steiner
+        // vertex 1.99 (n8 seed2 d0.9) .. 11.9 degrees).
+        assert!(m.stats.min_dihedral_deg >= 0.5, "{label}: min dihedral {}", m.stats.min_dihedral_deg);
+        assert!(d_steiner >= 1.5, "{label}: min dihedral at Steiner tets {d_steiner}");
     }
+}
+
+/// Review round 3: the constraint lookup of complete recovery is updated incrementally (it was
+/// rebuilt from scratch after every recovered triangle, quadratic in the surface size). The
+/// number of lookup entries touched is about six per input triangle, independent of the size.
+#[test]
+fn complete_recovery_work_is_linear() {
+    let mut per_tri: Vec<f64> = Vec::new();
+    for n in [16u32, 32] {
+        let inp = patch_cube(n, 8, 2, 0.9);
+        let m = check(&inp, &format!("patch n{n}"));
+        let st = &m.stats;
+        let tris = inp.tris.len() as u64;
+        eprintln!("patch n{n}: {tris} triangles, {} temporary boundary points, {} constraint updates", st.n_boundary_steiner, st.n_constraint_updates);
+        assert!(st.n_boundary_steiner > 0, "patch n{n}: complete recovery did not run");
+        assert!(st.n_constraint_updates <= 7 * tris + 64 * st.n_boundary_steiner as u64, "patch n{n}: {} updates", st.n_constraint_updates);
+        per_tri.push(st.n_constraint_updates as f64 / tris as f64);
+        assert_eq!(st.n_s4_violations, 0, "patch n{n}");
+    }
+    // Four times the triangles: at most about four times the work (a rebuild per triangle
+    // would be sixteen).
+    assert!(per_tri[1] <= 1.25 * per_tri[0], "updates per triangle {per_tri:?}");
+    let plain = tetrahedralize(&input_of(&surf3::tri_cube(16), 0), &TetOptions::default()).unwrap();
+    assert_eq!(plain.stats.n_constraint_updates, 0, "complete recovery ran on the plain cube");
 }
 
 /// Complete recovery is bit-identical over runs and thread counts.
@@ -182,4 +227,39 @@ fn relief_hard_case_is_deterministic() {
     })
     .unwrap_or_else(|e| panic!("relief n6 seed2 d0.9: {e}"));
     assert_ne!(h, 0);
+}
+
+/// Review round 3, release sweep: relief on 6 .. 12 grids up to depth 0.97, plus the review's
+/// worst S4 case (n12 seed7 d0.995). Every case keeps the exact boundary; ruling S4 is met or
+/// its violation is disclosed by `TetStats::n_s4_violations` (never silent). Prints a summary.
+#[test]
+#[ignore = "release sweep (minutes)"]
+fn relief_sweep_s4() {
+    let mut cases: Vec<(u32, u64, f64)> = vec![(12, 7, 0.995)];
+    for n in [6u32, 8, 10, 12] {
+        for seed in 1..=4u64 {
+            for depth in [0.6, 0.9, 0.97] {
+                cases.push((n, seed, depth));
+            }
+        }
+    }
+    let (mut compliant, mut worst, mut min_dih) = (0usize, f64::INFINITY, f64::INFINITY);
+    for &(n, seed, depth) in &cases {
+        let label = format!("relief n{n} seed{seed} d{depth}");
+        let inp = relief_cube(n, seed, depth);
+        let m = check(&inp, &label);
+        let margin = min_s4_margin(&m, &inp);
+        eprintln!(
+            "{label}: S4 margin {margin:.4} ({} violations), min dihedral {:.3}, temporary boundary {}",
+            m.stats.n_s4_violations, m.stats.min_dihedral_deg, m.stats.n_boundary_steiner
+        );
+        if margin < 0.3 - 1e-9 {
+            assert!(m.stats.n_s4_violations > 0, "{label}: S4 violation not disclosed (margin {margin})");
+        } else {
+            compliant += 1;
+        }
+        worst = worst.min(margin);
+        min_dih = min_dih.min(m.stats.min_dihedral_deg);
+    }
+    eprintln!("sweep: {compliant} of {} cases meet S4; worst margin {worst:.4}; smallest dihedral {min_dih:.3}", cases.len());
 }

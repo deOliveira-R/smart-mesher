@@ -151,6 +151,27 @@ impl<'a> Guard<'a> {
         dot(sub(p, a), cross(sub(b, a), sub(d, a))) <= 0.0
     }
 
+    /// The input triangle with the smallest `dist(p, T) / h_T` among those within the S4 bound
+    /// of `p`: its vertices and `h_T`; `None` if `p` complies.
+    pub fn nearest(&self, p: V3) -> Option<([V3; 3], f64)> {
+        let inside_grid = (0..3).all(|k| p[k] >= self.lo[k] && p[k] <= self.lo[k] + self.dim[k] as f64 / self.inv[k]);
+        if !inside_grid {
+            return None;
+        }
+        let c = self.cell_of(p);
+        let ci = (c[2] * self.dim[1] + c[1]) * self.dim[0] + c[0];
+        let mut best: Option<(f64, u32)> = None;
+        for &ti in &self.items[self.start[ci] as usize..self.start[ci + 1] as usize] {
+            let [a, b, d] = self.tris[ti as usize].map(|i| self.pts[i as usize]);
+            let r = dist2_point_tri(p, a, b, d).sqrt() / self.h[ti as usize];
+            if r < S4 && best.is_none_or(|x| r < x.0) {
+                best = Some((r, ti));
+            }
+        }
+        let (_, ti) = best?;
+        Some((self.tris[ti as usize].map(|i| self.pts[i as usize]), self.h[ti as usize]))
+    }
+
     /// S4 score of a candidate interior point: [`S4`] if it complies (or lies outside the solid,
     /// where the point is dropped with the exterior), else its margin.
     pub fn score(&self, p: V3) -> f64 {

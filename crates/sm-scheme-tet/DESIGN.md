@@ -77,9 +77,9 @@ pub struct TetVolume; pub fn register(&mut SchemeRegistry) -> sm_scheme_api::Res
 | 1 | validate | `validate` | options; finite coordinates within `[2^-100, 2^100]`; duplicate points; degenerate triangles (exact collinearity); every undirected edge shared by exactly two oppositely wound triangles; shell volumes (`InvertedShell` if the total enclosed volume is not positive) |
 | 2 | Delaunay | `delaunay`, `tds` | Bowyer-Watson with a ghost vertex, SoS predicates, BRIO rounds (seed from `n`) with a Hilbert key, stochastic visibility walk from the last tet, SoA `Tds` (`verts`, `nbr`, free list). One primitive, `Tds::replace(old, new)`, glues faces by sorted keys and validates face orientation before mutating |
 | 3 | recovery | `recover`, `steiner`, `flips`, `fill`, `exact` | see below |
-| 4 | classify | `pipeline` | flood fill from the ghost tets toggling at constraint triangles; the side of a tet is read from the *orientation* of its constraint face, contradictions give `InvertedShell`; outside tets dropped; then zero-volume tets removed |
-| 5 | refine | `refine` | constrained-cavity circumcenter insertion |
-| 6 | optimize | `optimize` | level 0 none, 1 flips, 2 flips + smoothing |
+| 4 | classify | `pipeline`, `relocate` | flood fill from the ghost tets toggling at constraint triangles; the side of a tet is read from the *orientation* of its constraint face, contradictions give `InvertedShell`; outside tets dropped; then zero-volume tets removed, unneeded recovery points removed, recovery points closer than ruling S4 allows moved (step 9) |
+| 5 | refine | `refine`, `relocate` | constrained-cavity circumcenter insertion; then step 9 again |
+| 6 | optimize | `optimize`, `relocate` | level 0 none, 1 flips, 2 flips + smoothing; then step 9 a last time |
 | 7 | canonical output | `canon` | as above |
 
 ### Deviation from the task text: auxiliary far points
@@ -168,7 +168,8 @@ Everything below works on the triangulation including the far box.
    whose alternating projection runs with margins 0.4 .. 0.05 h and keeps the deepest visible
    point), so a compliant point is used whenever one exists. Where S4 is infeasible (thin parts:
    Schönhardt fixture best 0.18 h, a 10 x 10 x 0.02 slab best 0.002 h) the best-scoring point is
-   used rather than failing; refusing would turn S4 into a recovery failure. Smoothing refuses
+   used rather than failing; refusing would turn S4 into a recovery failure. Step 9 then tries
+   to move it, and what remains is counted (`TetStats::n_s4_violations`). Smoothing refuses
    any move that brings a vertex closer (relative to `h_T`) to a triangle than the bound or than
    it already was. Measured Steiner margins: Schönhardt 0.154 h (one point), twisted prisms of 5
    and 10 degrees 0.289 h and 0.263 h (one point each; round 0 needed three at 0.14 h),
@@ -218,14 +219,26 @@ Everything below works on the triangulation including the far box.
      mode refuse a cavity holding a constraint edge, and no operation creates a *shortcut*
      (an edge between two points of one split input edge that are not neighbours on it: it
      would lie along the edge past a point rounded off it and leave flat tets on the surface).
+   * *Constraint lookup.* The subsegments and the recovered tiles (with their edges) are kept
+     in `BTreeMap`s with owner multisets and updated in place: a split replaces one subsegment
+     by two, a recovered triangle adds its tiles, a suppression swaps the fan tiles of the
+     point. Review round 3 replaced a rebuild of the whole lookup after every recovered
+     triangle, split and suppression (quadratic: 40 s for complete recovery on 12 288
+     triangles). `TetStats::n_constraint_updates` counts the entries touched, about six per
+     input triangle at every size (`a15::complete_recovery_work_is_linear`).
    * *Suppression.* Every temporary point is then moved off the surface, last created first:
      its fans in the surface (one closed fan for a point inside a triangle, two open fans for a
      point on an edge) are re-triangulated without it by ear clipping in the triangle's plane
      (largest smallest angle first, exact 2-D orientations); this cuts its star into a solid
      side and an exterior side. The solid side is refilled without a point if a short gift-wrap
      search finds one, else each side is starred from a point in its kernel next to the old
-     position (the kernel search of step 4 and `p + delta d`, `d` the bisector into that side,
-     delta from 0.5 h down to 1e-12 h; the best-shaped star wins). One exists in exact
+     position (the kernel point of step 4, the deepest the kernel search finds, and
+     `p + delta d`, `d` the bisector into that side, delta from 0.5 h down to 1e-12 h; the
+     best-shaped star wins; points left too shallow are handled by step 9). Review round 3
+     tried ranking the solid-side candidates by S4 margin before shape (no change on the hard
+     relief cases once step 9 runs, but slower and a worse minimum dihedral on
+     `relief n12 seed7 d0.995`) and a wider candidate set (all kernel candidates, offsets up to
+     1.0 h: it lost `relief n12 seed4 d0.97`, a deeper star blocking a later suppression). One exists in exact
      arithmetic (the old point sees every link face strictly and the new fans are planar); when
      rounding lets a sliver lying flat on the surface hide it, the side cavity absorbs the tets
      behind the blocking faces (never across a constraint face, never enclosing a vertex that
@@ -233,14 +246,50 @@ Everything below works on the triangulation including the far box.
      Steiner points; exterior ones are dropped with the exterior. When all are gone the input
      triangles are faces again, bit-exactly (checked).
    * *Cleanup.* After classification every recovery point whose star can be refilled without
-     it (exact gift wrapping) is removed (`Dt::remove_points`), on both paths.
+     it (exact gift wrapping) is removed (`Dt::remove_points`), on both paths; the points left
+     too close to the surface go to step 9.
    Complete recovery is deterministic (sorted keys and creation order only, no clocks) and
-   sequential. `TetStats` reports `n_steiner_recovery`, `n_steiner_refine` and
-   `n_boundary_steiner` (temporary points, none in the output). Ruling S4 is not applied to
-   the relocated points: they sit inside the star of a surface point, so their margin is small
-   (measured 0.0003 .. 0.03 h on the hard relief cases); refinement and smoothing then work as
-   usual. A complete-recovery failure (not seen on the test families) falls back to a restart
-   with hints and finally to a located `RecoveryFailed`.
+   sequential. `TetStats` reports `n_steiner_recovery`, `n_steiner_refine`,
+   `n_boundary_steiner` (temporary points, none in the output) and `n_constraint_updates`.
+   A complete-recovery failure (not seen on the test families) falls back to a restart with
+   hints and finally to a located `RecoveryFailed`.
+   Growing the solid side of a suppressed point further while its best point violates S4 was
+   tried in review round 3 and dropped: on `relief n8 seed4 d0.9` a grown side made a later
+   suppression impossible (complete recovery failed and the build restarted). After
+   classification, where every constraint face is a hull face, cavities can grow freely
+   instead (step 9).
+9. **Ruling S4 for recovery points** (`relocate.rs`, review round 3). A point of the star of a
+   suppressed surface point, or a kernel point of a thin cavity, can sit within a fraction of
+   `h` of the surface (before round 3: 0.0003 .. 0.03 h on the hard relief cases, minimum
+   dihedral angles down to 0.014 degrees). Each interior point with margin below 0.3 (in
+   index order) is removed or moved: for *targets* near it (offsets of 0.35 .. 1 h inward from
+   its nearest input triangle and from the hull faces of its star, centroids of the tets
+   within three layers; those with margin at least 0.3, nearest first, at most 16) the cavity
+   is grown from its star across every interior face that does not see the target strictly
+   (at most 100 tets, never enclosing a vertex other than an interior point, which is
+   dropped). If the target sees every face of the cavity it is starred from the target (the
+   star with the largest smallest dihedral angle over the targets wins); else the cavity is
+   gift-wrapped with the target as an optional apex (budget 10 000 + 100 per face; the first
+   success, smallest cavity first). A target outside a thin part never becomes an apex but
+   still steers the growth, whose refill then needs no point: on the test families this is
+   how most of these points disappear. If no target works, the star is grown by whole layers
+   (six rounds, 400 tets): a refill without a point or a compliant kernel point ends it,
+   otherwise the deepest kernel point that raises the margin without lowering the worst mean
+   ratio is used and revisited. Three sweeps per call (a point that failed is retried only
+   when its star changed); the three calls of one build share a budget of 80 million units of
+   fill work (`Dt::work`; the eleven hard relief cases use at most about 65 million, about 8 s
+   on the loaded test host; a point is not started once the budget is used up, which is
+   deterministic because the counter is only advanced by sequential code). It runs after
+   classification, after refinement (whose points the cavities may then drop) and after
+   optimization (rarely needed; the hardest relief case needs it). Exact orientation of
+   every new tet, sequential, deterministic. Points it adds after refinement count as
+   refinement points in `TetStats`. `TetStats::n_s4_violations` and
+   `worst_s4_margin` report what is left over every interior point of the output (thin parts
+   where S4 is infeasible, such as the 0.02-thick slab, are counted, never hidden). On the
+   eleven hard relief cases every point now meets S4 and recovery adds 0 or 1 points
+   (before: 3 .. 13); the smallest dihedral angle is 0.56 .. 5.2 degrees (before 0.014 .. 2.7),
+   the worst tets having input vertices only: they span thin walls next to the steepest
+   relief, where the sharpest solid wedge is 8 .. 15 degrees and S4 leaves no room for a point.
 
 ### Refinement
 
@@ -327,6 +376,7 @@ Release build, 4 vCPU, `tests/perf.rs` and `tests/adapter.rs` (`--ignored`), no 
 | `tetrahedralize`, `icosphere(1, 5)` (10 242 boundary points), `h = 0.033`, optimize 2 | 1 139 988 tets (186 076 Steiner, 120 unrefinable) in 25.4 s = 44 900 tets/s; stage ms: validate 8, Delaunay 1512, recovery + classify + flats 3025, refinement 10 084, optimization 10 478; min dihedral 16.4, min mean ratio 0.428 |
 | same surface, `h = 0.07` | 182 924 tets in 7.4 s = 24 700 tets/s, 0 unrefinable, min dihedral 22.1 |
 | adapter: unit brick through the `Driver`, 1/56 boundary intervals, `size = 0.018` | 1 719 532 tets in 53.7 s = 32 000 tets/s, including the serial commit into the reference builder |
+| complete recovery scaling (`perf::record_hard_patch_scaling`, review round 3; 10-core host at load 15 .. 50): `tri_cube(n)` plain vs with an 8 x 8 hard relief patch (`patch_cube(n, 8, 2, 0.9)`) | n = 16 (3 072 triangles): 0.20 s vs 0.82 s; n = 32 (12 288): 0.85 s vs 1.64 s; n = 48 (27 648): 2.19 s vs 3.46 s (1.6 x). Constraint updates 18 272 / 69 000 / 153 500 (5.9 / 5.6 / 5.6 per triangle). Before round 3: patch n = 16 2.1 s, n = 32 27.5 s (26.1 s of it in the facet phase), n = 48 247 s (orchestrator's measurement) |
 
 The sphere is the only large core case measured; planar CAD-like surfaces were measured for
 robustness (random voxel shapes, mean 0.19 s each in release over 122 cases, the slowest 9.5 s), not for

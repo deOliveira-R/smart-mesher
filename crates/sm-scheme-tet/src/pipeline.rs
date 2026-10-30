@@ -252,6 +252,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
     let mut bnd_steiner: usize;
+    let mut con_updates: u64;
     loop {
         let t1 = Instant::now();
         let mut pts = input.points.clone();
@@ -287,6 +288,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                 }
             }
             bnd_steiner = rec.n_boundary_steiner;
+            con_updates = rec.bnd.work;
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
@@ -333,11 +335,15 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     }
     stage_ms[1] = t_delaunay;
     let t2 = Instant::now();
+    // One fill-work budget for the three S4 relocation passes.
+    let mut reloc_budget = crate::relocate::RELOC_WORK;
     let outside = classify(&dt, &con, &input.tris)?;
     dt.tds.remove(&outside);
     flips += dt.remove_flats(true, &guard)?;
     // Recovery points the final mesh can do without (a refill of their star without them).
     flips += dt.remove_points(n + N_FAR, dt.pts.len())?;
+    // Ruling S4: recovery points still too close to the surface are removed or moved deeper.
+    flips += dt.relocate_for_s4(n + N_FAR, &guard, &mut reloc_budget)?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2) + t_recover;
@@ -353,6 +359,10 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         unrefinable = rf.run()?;
         flips += rf.flips;
     }
+    // Refinement changed the stars of the recovery points: try S4 again (refinement points may
+    // now be dropped by the cavities).
+    flips += dt.remove_points(n + N_FAR, first_refine)?;
+    flips += dt.relocate_for_s4(n + N_FAR, &guard, &mut reloc_budget)?;
     stage_ms[3] = ms(t3);
     // Stage 6: optimization.
     let t4 = Instant::now();
@@ -364,6 +374,12 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         smooth_passes += dt.smooth(first_movable, 12, &guard);
         flips += dt.flip_optimize(0.7, 4)?;
         smooth_passes += dt.smooth(first_movable, 8, &guard);
+        flips += dt.flip_optimize(0.7, 4)?;
+    }
+    // Smoothing and flips changed the stars once more: a last S4 pass (rarely does anything).
+    let moved = dt.relocate_for_s4(n + N_FAR, &guard, &mut reloc_budget)?;
+    flips += moved;
+    if moved > 0 && opts.optimize >= 1 {
         flips += dt.flip_optimize(0.7, 4)?;
     }
     stage_ms[4] = ms(t4);
@@ -404,11 +420,17 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     canonical_tets(&mut tets);
     let (min_d, max_d, max_re, min_mr, mean_mr) = mesh_stats(&points, &tets);
     let n_steiner_recovery = (n + N_FAR..first_refine.min(dt.pts.len())).filter(|&i| used[i]).count();
+    // Ruling S4 over every interior point of the output (disclosed, never silent).
+    let margins: Vec<f64> = points[n..].iter().map(|&p| guard.margin(p)).filter(|&m| m < crate::guard::S4).collect();
+    let worst_s4_margin = margins.iter().copied().fold(crate::guard::S4, f64::min);
     let stats = TetStats {
         n_steiner: points.len() - n,
         n_steiner_recovery,
         n_steiner_refine: points.len() - n - n_steiner_recovery,
         n_boundary_steiner: bnd_steiner,
+        n_constraint_updates: con_updates,
+        n_s4_violations: margins.len(),
+        worst_s4_margin,
         flips,
         smooth_passes,
         unrefinable,

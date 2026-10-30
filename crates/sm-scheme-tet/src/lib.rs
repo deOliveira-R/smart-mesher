@@ -16,6 +16,7 @@ mod optimize;
 mod pipeline;
 mod quality;
 mod refine;
+mod relocate;
 mod scheme;
 mod recover;
 mod steiner;
@@ -113,6 +114,17 @@ pub struct TetStats {
     /// Temporary boundary Steiner points that complete recovery inserted on input edges and
     /// triangles and then moved off the surface (none remain in the output).
     pub n_boundary_steiner: usize,
+    /// Constraint-lookup entries (subsegments, tiles and their edges) inserted or removed by
+    /// complete recovery: its work measure, linear in the surface size plus the temporary
+    /// points (0 when complete recovery did not run).
+    pub n_constraint_updates: u64,
+    /// Interior Steiner points inside the solid closer than ruling S4 allows (`0.3 h_T` to an
+    /// input triangle `T`, `h_T` its mean edge length), after every attempt to move or remove
+    /// them; 0 when S4 holds everywhere. Thin parts can make S4 infeasible.
+    pub n_s4_violations: usize,
+    /// Smallest `dist(p, T) / h_T` over those points, capped at 0.3 (exactly 0.3 when
+    /// `n_s4_violations == 0`; 0 only in a `Default` value).
+    pub worst_s4_margin: f64,
     /// Flips performed (recovery and optimization).
     pub flips: usize,
     /// Smoothing passes performed.
@@ -139,6 +151,9 @@ impl PartialEq for TetStats {
             && self.n_steiner_recovery == o.n_steiner_recovery
             && self.n_steiner_refine == o.n_steiner_refine
             && self.n_boundary_steiner == o.n_boundary_steiner
+            && self.n_constraint_updates == o.n_constraint_updates
+            && self.n_s4_violations == o.n_s4_violations
+            && self.worst_s4_margin.to_bits() == o.worst_s4_margin.to_bits()
             && self.flips == o.flips
             && self.smooth_passes == o.smooth_passes
             && self.unrefinable == o.unrefinable
@@ -189,5 +204,5 @@ pub fn delaunay(points: &[[f64; 3]]) -> Result<TetMesh, TetError> {
         }
     }
     canon::canonical_tets(&mut tets);
-    Ok(TetMesh { points: points.to_vec(), n_input: points.len(), tets, stats: TetStats::default() })
+    Ok(TetMesh { points: points.to_vec(), n_input: points.len(), tets, stats: TetStats { worst_s4_margin: guard::S4, ..TetStats::default() } })
 }
