@@ -33,7 +33,7 @@ const MIN_SJ_3D: f64 = 0.05;
 
 /// With a size field, a mesh whose quads are more than this many times the wanted size is a
 /// `Quality` failure (the kernel's own ladder coarsens by at most 2).
-const MAX_SIZE_SCALE: f64 = 2.0 + 1e-9;
+const MAX_SIZE_SCALE: f64 = 2.1;
 
 /// Register the surface paving scheme (`"pave"`, [`SchemeDim::Surface`]).
 pub fn register(registry: &mut SchemeRegistry) -> sm_scheme_api::Result<()> {

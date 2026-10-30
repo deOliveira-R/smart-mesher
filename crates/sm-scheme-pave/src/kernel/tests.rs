@@ -750,3 +750,24 @@ fn the_size_scale_of_the_winning_strategy_is_reported() {
     }
     eprintln!("{coarsened} small rectangles were meshed with a coarsened size");
 }
+
+#[test]
+fn a_size_finer_than_the_boundary_falls_back_to_what_the_boundary_allows() {
+    let o = PaveOptions::default();
+    // Unequal opposite counts (no structured grid): the ladder may fail under the finer size;
+    // the fallback meshes at the boundary spacing and reports how much coarser than asked.
+    for (c, s) in [([8, 6, 8, 8], 0.35), ([8, 7, 8, 5], 0.35), ([8, 6, 8, 8], 0.25)] {
+        let f = move |_: [f64; 2]| s;
+        let m = pave_region(&[counted_rect(4.0, 3.0, c)], &id_metric, Some(&f), &o).unwrap_or_else(|e| panic!("{c:?} at {s}: {e}"));
+        let area: f64 = m.quads.iter().map(|q| {
+            let p: [[f64; 2]; 4] = core::array::from_fn(|k| m.points[q[k] as usize]);
+            0.5 * ((p[2][0] - p[0][0]) * (p[3][1] - p[1][1]) - (p[3][0] - p[1][0]) * (p[2][1] - p[0][1]))
+        }).sum();
+        assert!((area - 12.0).abs() < 1e-9, "{c:?} at {s}: area {area}");
+        assert!(m.size_scale > 1.0 && m.size_scale < 2.1, "{c:?} at {s}: scale {}", m.size_scale);
+    }
+    // Equal counts at a moderately finer size follow the request (the grid is not taken).
+    let f = |_: [f64; 2]| 0.35;
+    let m = pave_region(&[counted_rect(4.0, 3.0, [8, 6, 8, 6])], &id_metric, Some(&f), &o).expect("equal counts");
+    assert!(m.quads.len() > 48, "{} quads", m.quads.len());
+}

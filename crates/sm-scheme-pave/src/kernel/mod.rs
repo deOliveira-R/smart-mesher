@@ -214,7 +214,7 @@ const STRIP_PERFECT: f64 = 0.95;
 /// fails; a worse one only after the whole ladder failed.
 const STRIP_GOOD: f64 = 0.3;
 /// ... and only if its quads are at most this many times the wanted size.
-const STRIP_MAX_SCALE: f64 = 1.5;
+const STRIP_MAX_SCALE: f64 = 1.2;
 
 /// The production ladder: first the strategies that recovered the most regions in the
 /// surveys of `tests.rs` (`survey_cover`), then every other candidate.
@@ -280,7 +280,40 @@ pub fn pave_region(
     size: Option<&dyn Fn([f64; 2]) -> f64>,
     opts: &PaveOptions,
 ) -> Result<QuadMesh2, PaveError> {
-    pave_with(loops, metric, size, opts, &ladder())
+    let ladder = ladder();
+    match pave_with(loops, metric, size, opts, &ladder) {
+        // A size finer than the boundary spacing can leave every placement without a perfect
+        // matching: fall back to the size the boundary allows and report how much coarser
+        // than asked the result is (`size_scale`).
+        Err(PaveError::NoPerfectMatching { .. } | PaveError::Internal(_)) if size.is_some() => {
+            let mut m = pave_with(loops, metric, None, opts, &ladder)?;
+            if let Some(f) = size {
+                m.size_scale = measured_scale(&m, metric, f);
+            }
+            Ok(m)
+        }
+        r => r,
+    }
+}
+
+/// Geometric mean over the quads of (mean metric edge length) / (wanted size at the centre).
+fn measured_scale(m: &QuadMesh2, metric: &dyn Fn([f64; 2]) -> [f64; 3], size: &dyn Fn([f64; 2]) -> f64) -> f64 {
+    let mut log_sum = 0.0;
+    for q in &m.quads {
+        let p: [[f64; 2]; 4] = core::array::from_fn(|k| m.points[q[k] as usize]);
+        let c = [0.25 * (p[0][0] + p[1][0] + p[2][0] + p[3][0]), 0.25 * (p[0][1] + p[1][1] + p[2][1] + p[3][1])];
+        let g = metric(c);
+        let edge = (0..4)
+            .map(|k| {
+                let d = [p[(k + 1) % 4][0] - p[k][0], p[(k + 1) % 4][1] - p[k][1]];
+                (g[0] * d[0] * d[0] + 2.0 * g[1] * d[0] * d[1] + g[2] * d[1] * d[1]).max(0.0).sqrt()
+            })
+            .sum::<f64>()
+            / 4.0;
+        log_sum += (edge / size(c)).ln();
+    }
+    let s = (log_sum / m.quads.len().max(1) as f64).exp();
+    if s.is_finite() { s } else { 1.0 }
 }
 
 /// [`pave_region`] over an explicit strategy ladder.

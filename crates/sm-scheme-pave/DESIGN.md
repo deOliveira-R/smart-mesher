@@ -143,7 +143,7 @@ minimising the deviation of the turning angle from a right angle over all `(i, a
 `orient2d` and the worst corner sine is at least `1e-3`. Order of use: a grid with corner sine
 >= 0.95 is taken first (an unstructured mesh cannot beat it); otherwise the default placement,
 then a grid with sine >= 0.3, then the ladder, and a worse grid only after the whole ladder
-failed. A grid more than 1.5x coarser than the wanted size waits behind the ladder (and is
+failed. A grid more than 1.2x coarser than the wanted size waits behind the ladder (and is
 the fallback). Not covered: three-sided regions (a triangle with sides `a, b, c` needs
 `a + b - c >= 2` and so on for a three-block decomposition; `10 x 0.5` with 20/1/21 has `a + b = c`
 and no all-quad mesh without irregular transition pairs), unequal opposite counts, holes.
@@ -152,9 +152,16 @@ and no all-quad mesh without irregular transition pairs), unequal opposite count
 
 An explicit `size` is limited by the boundary-derived field (which carries `gradation`): the
 interior is never coarser than the boundary spacing grades into. A size *finer* than the boundary
-spacing is honoured as asked, without a lower gradation; the kernel cannot refine more than about
-1.5x against fixed boundary nodes, so such a request ends in a mesh coarser than asked
-(`size_scale > 1`). Absolute bound: the vertex count estimated from the size at the centroid of
+spacing is not graded from below and the kernel cannot refine more than about 1.5x against fixed
+boundary nodes. Three outcomes: (1) the ladder finds a mesh (possibly coarser than asked, `size_scale > 1`);
+(2) every strategy fails, and `pave_region` re-runs the ladder without the explicit size, i.e. at the
+spacing the boundary allows, and reports the measured geometric-mean edge/size ratio as `size_scale`
+(the scheme refuses a mesh more than 2.1x coarser than the size field as `Quality`, and the driver
+falls back); (3) for a single loop with equal opposite counts the structured strip grid is taken at
+once only when it is at most 1.2x coarser than asked, otherwise the ladder runs first and the grid is
+the fallback (a 4x3 rectangle with counts 8/6/8/6 at size 0.35 gives 97 quads; at 0.25, where the
+ladder fails, the 48-quad grid replaces the request, `size_scale` 2.0).
+Absolute bound: the vertex count estimated from the size at the centroid of
 every boundary triangle is limited to `2 x 10^6` (`PaveError::TooLarge`, a `Geometry` failure),
 and so is any attempt that grows past it.
 The production ladder lists 14 strategies ordered by a greedy cover over a 1275-case corpus (`survey_cover`, ignored test), then the other 80 candidates in a fixed order (they recover regions with spatially varying metrics, which the corpus lacks), all under the cut-off.
