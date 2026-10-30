@@ -237,6 +237,7 @@ impl<'e> Mcp<'e> {
         };
         match target {
             Target::Fixed(Fixed::Help) => self.help(args),
+            Target::Fixed(Fixed::SessionStage) => self.stage(args),
             Target::Fixed(f) => {
                 let req = fixed_request(f, args)?;
                 self.dispatch(req)
@@ -254,29 +255,64 @@ impl<'e> Mcp<'e> {
         }
     }
 
+    /// `session_stage`: the protocol has no stage method, so run `session.stage(path)` as a
+    /// script and return the value of its session event.
+    fn stage(&mut self, args: Map<String, Value>) -> Result<Value, Rpc> {
+        if let Some(k) = args.keys().find(|k| *k != "path") {
+            return Err(Rpc::invalid_params(format!("unknown argument `{k}`")));
+        }
+        let path = match args.get("path") {
+            Some(Value::String(s)) if !s.is_empty() => s,
+            _ => return Err(Rpc::invalid_params("`path` must be a non-empty string")),
+        };
+        let text = format!("session.stage({})\n", script_string(path));
+        let req = Request::ScriptRun { text, path: None, includes: Default::default() };
+        match self.endpoint.call(req) {
+            Ok(v) => {
+                let found = v["events"].as_array().and_then(|evs| {
+                    evs.iter().find(|e| e["event"] == "session" && e["command"] == "stage")
+                });
+                match found.map(|e| e["result"].clone()) {
+                    Some(r) if r.is_object() => Ok(self.tool_result(r, false)),
+                    _ => Err(Rpc::internal("script.run returned no stage event")),
+                }
+            }
+            Err(e) => self.app_error(e),
+        }
+    }
+
     /// Run `req`: success and application errors are tool results, everything else a protocol
     /// error.
     fn dispatch(&mut self, req: Request) -> Result<Value, Rpc> {
         match self.endpoint.call(req) {
             Ok(v) => Ok(self.tool_result(structured(v), false)),
-            Err(e) if e.code == APPLICATION_ERROR => {
-                let mut err = Map::new();
-                err.insert("code".into(), json!(e.code));
-                err.insert("kind".into(), json!(e.kind));
-                err.insert("message".into(), json!(e.message));
-                if !e.data.is_null() {
-                    err.insert("data".into(), e.data);
-                }
-                Ok(self.tool_result(json!({"error": err}), true))
-            }
-            Err(e) => Err(lift(e)),
+            Err(e) => self.app_error(e),
         }
+    }
+
+    /// An application error is a tool failure, anything else a protocol error.
+    fn app_error(&self, e: RpcError) -> Result<Value, Rpc> {
+        if e.code != APPLICATION_ERROR {
+            return Err(lift(e));
+        }
+        let mut err = Map::new();
+        err.insert("code".into(), json!(e.code));
+        err.insert("kind".into(), json!(e.kind));
+        err.insert("message".into(), json!(e.message));
+        if !e.data.is_null() {
+            err.insert("data".into(), e.data);
+        }
+        Ok(self.tool_result(json!({"error": err}), true))
     }
 
     /// A `tools/call` result: compact JSON text always, `structuredContent` from 2025-06-18.
     fn tool_result(&self, structured: Value, is_error: bool) -> Value {
         let shown: Cow<'_, Value> = display_form(&structured);
-        let text = serde_json::to_string(shown.as_ref()).unwrap_or_default();
+        let mut text = serde_json::to_string(shown.as_ref()).unwrap_or_default();
+        // A result with a `summary` string (`mesh.validate`, `mesh.quality`) leads with it.
+        if let Some(sum) = structured.get("summary").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            text = format!("{sum}\n{text}");
+        }
         let mut m = Map::new();
         m.insert("content".into(), json!([{"type": "text", "text": text}]));
         if self.version.has_structured_output() {
@@ -329,6 +365,25 @@ impl<'e> Mcp<'e> {
             }
         }
     }
+}
+
+/// `s` as a command-language string literal.
+fn script_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '$' => out.push_str("\\$"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// MCP: the id is a string or a number, never null.
@@ -396,5 +451,33 @@ fn normalize_rev(v: Value) -> Value {
         }
         Value::String(s) => json!({"ref": s}),
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Null;
+    impl Endpoint for Null {
+        fn call(&mut self, _: Request) -> Result<Value, RpcError> {
+            Ok(Value::Null)
+        }
+    }
+
+    #[test]
+    fn text_leads_with_summary_when_present() {
+        let mut e = Null;
+        let mcp = Mcp::new(&mut e);
+        let r = mcp.tool_result(json!({"summary": "valid, 3 warnings", "valid": true}), false);
+        let text = r["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.starts_with("valid, 3 warnings\n{"), "{text}");
+        let r = mcp.tool_result(json!({"valid": true}), false);
+        assert_eq!(r["content"][0]["text"], "{\"valid\":true}");
+    }
+
+    #[test]
+    fn script_strings_escape_specials() {
+        assert_eq!(script_string("a\"b\\c$d\n"), "\"a\\\"b\\\\c\\$d\\n\"");
     }
 }

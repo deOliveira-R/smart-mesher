@@ -1370,6 +1370,7 @@ dependencies = [
  "sm-lang",
  "sm-op-api",
  "sm-protocol",
+ "sm-server",
 ]
 
 [[package]]
