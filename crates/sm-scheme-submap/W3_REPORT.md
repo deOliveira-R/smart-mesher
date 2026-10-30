@@ -111,3 +111,14 @@ None. All needed items were on main.
   and deviation 4 (case 8 via Soft imposition / `NoApplicableScheme`; `with_nodes` attachment
   untested through the driver) are driver-behaviour or equivalent-determinism choices, accepted
   in review.
+
+## Polish
+
+- Review item 1: the staircase property now asserts pairwise disjoint block interiors (half-open
+  rectangle test over all pairs) in addition to the existing area-sum check.
+- Review item 2: new `case8_the_lattice_failure_value_carries_the_side_start_nodes` calls the
+  scheme's `generate` directly (plan from `Driver::plan`, `GenCtx::new`) on the touching U and
+  checks the failure is `Constraint`, "not simple", and `nodes` equals the first node of every
+  logical side (the `with_nodes` attachment of `generate::run`).
+- Declined: none. The test lives in `tests/submap.rs` because `generate::run` is crate-private
+  and needs a driver-built plan; going through `Scheme::generate` exercises the same path.
