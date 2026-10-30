@@ -131,10 +131,16 @@ Review items, all in `crates/sm-exodus/` only:
    record variables (interleaved records). Test `record_variables_are_interleaved`.
 5. Golden CDL QA version comes from `env!("CARGO_PKG_VERSION")` (template placeholder in the test).
 6. Side numbers of polygons/polyhedra widened to `u32` (`SideSetPlan.sides: Vec<u32>`); no 255 cap.
-7. `int64_status`: libexodus bitmask (maps 1, ids 2, bulk 4, inquiry 8, recalled, unverified). With
-   `int64 = true` the file now says 15 instead of 1, because a value of 1 would tell a reader that only
-   maps are 64-bit while ids and bulk are too.
+7. `int64_status`: see Polish round 1 (superseded: the first fix wrote 15, which was wrong).
 8. `NodeSetPlan.nodes` rustdoc corrected (set order, not sorted or deduplicated). A template or polygon
    cell without `cell_corners` is now a typed `Mesh(State(..))` error from `plan`.
 
 Declined: none.
+
+## Polish
+
+Round 1: `int64_status` corrected against SEACAS `exodusII.h`: `EX_MAPS_INT64_DB=0x0400`,
+`EX_IDS_INT64_DB=0x0800`, `EX_BULK_INT64_DB=0x1000`, `EX_ALL_INT64_DB=0x1C00`. The inquiry flag
+(`EX_INQ_INT64_API=0x10000`) is API-only. `exi_populate_header` writes `int64_status & EX_ALL_INT64_DB`, so with
+`int64 = true` the file now says 7168 (0x1C00); the earlier 15 would be masked to 0 by libexodus. The reader
+still treats any nonzero value as int64. Updated write.rs, options.rs rustdoc, DESIGN.md and this report.

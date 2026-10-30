@@ -12,8 +12,8 @@ use std::io::Write;
 const CHUNK: usize = 1 << 14;
 const STR_LEN: usize = 32;
 const LINE_LEN: usize = 80;
-/// `int64_status` with every `EX_*_INT64_DB` bit set (maps 1, ids 2, bulk 4, inquiry 8).
-const INT64_ALL: i32 = 15;
+/// `int64_status` = `EX_ALL_INT64_DB` (maps 0x0400, ids 0x0800, bulk 0x1000), as SEACAS writes it.
+const INT64_ALL: i32 = 0x1C00;
 
 /// One element block of a [`ExodusReport`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,7 +244,7 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
     f.global_attr("file_size", NcValue::Int(vec![1]));
     f.global_attr("maximum_name_length", NcValue::Int(vec![p.max_name_length as i32]));
     // libexodus bitmask (recalled, unverified): MAPS 1 | IDS 2 | BULK 4 | INQ 8. Maps, ids and
-    // bulk data are all NC_INT64 here, and 15 is the "all" value libexodus itself writes.
+    // bulk data are all NC_INT64 here, and 0x1C00 (7168) is `EX_ALL_INT64_DB`, the value libexodus writes.
     f.global_attr("int64_status", NcValue::Int(vec![if int64 { INT64_ALL } else { 0 }]));
     f.global_attr("title", NcValue::Text(opts.title.clone()));
 

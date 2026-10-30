@@ -134,8 +134,8 @@ experimental until a SEACAS reader confirms it.
   `DIM_NUM_FA_IN_FBLK` = `num_fa_in_blk%d`, `VAR_FCONN` = `facconn%d`, `VAR_FBCONN` = `fbconn%d`).
   Still not checked against SEACAS sources (none reachable here); a real libexodus/ParaView
   read-back is the open verification.
-* `int64_status` is a libexodus bitmask (maps 1, ids 2, bulk 4, inquiry 8, from memory); with
-  `int64 = true` we write 15 (all), since maps, ids and bulk data are all `NC_INT64`.
+* `int64_status` is the SEACAS `EX_*_INT64_DB` bitmask (maps 0x0400, ids 0x0800, bulk 0x1000, all 0x1C00; the
+  inquiry flag 0x10000 is API-only and never stored); with `int64 = true` we write 7168 (0x1C00).
 * Side numbers of polygons and polyhedra are `u32` (position in the face list).
 * One outward-oriented face copy per (cell, face), the loop reversed for `Right` entries (the
   smallest vertex stays first); element face order = `cell_faces` order; no shared faces.
