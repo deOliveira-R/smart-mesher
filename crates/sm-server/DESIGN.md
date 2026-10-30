@@ -68,7 +68,7 @@ what happened. A script that fails to *parse* applies nothing.
   absent; anything else is `bad-request`. `openfoam` is never inferred: it needs an explicit `format`
   and `path` is the case directory (files go to `<path>/constant/polyMesh/`). An explicit `format`
   that disagrees with a known extension is `bad-request` (an explicit format on any other extension is
-  honoured; OpenFOAM paths are not checked).
+  honoured, except that `openfoam` on a known single-file extension (`.vtu`, `.exo`, ...) is `bad-request`).
 * Multi-file formats go through `sm_fem::export_files`; each file is written to a unique temp name
   (`.<name>.<pid>.<counter>.part`) and renamed. `ExportResult.files` lists them sorted by name, `bytes`
   is the total and `sha256` is the SHA-256 of the manifest lines `name\tsha256hex\n`. `inline: true`
@@ -140,7 +140,13 @@ errs. `distribution(schemes)` is the same wiring around any scheme registry (tes
   `<project>/inputs/<sha256>.stp` once bound) plus `InputsHandle` for staging.
 * Binding: the store cannot know the project at builder time, so `Server::open`, `Server::create` and
   `session.open` bind the store of the builder just assembled on the same thread (thread-local hand-off
-  in `standard.rs`) to `<dir>/inputs/` before the project replays. `standard().open(dir)` called directly
-  (bypassing `Server`) keeps the in-memory store.
+  in `standard.rs`) to `<dir>/inputs/` before the project replays. The hand-off is cleared by
+  `Server::new`/`from_factory`/`from_workspace`, and after open/create/`session.open` the handle is
+  re-bound to `<root>/inputs` if it is bound elsewhere; `stage_input` does the same, so staging always
+  lands in the attached project. Limits: `standard().open(dir)` called directly (bypassing `Server`) keeps
+  the in-memory store, and `Server::open(b, dir)` with a builder that is not the most recent one made
+  on the thread binds only after the replay (a STEP import then replays with `step.input_missing`).
+  No full fix without builder introspection: api_change_request to sm-engine, a `WorkspaceBuilder`
+  services getter (or a project-dir-aware service hook called by `open`/`create` before replay).
 * `Server::stage_input(bytes)` and `session.stage(path)` (`SessionCommand::Stage`) stage bytes and return
   `{sha256, bytes}`; ops record the hash, never a path.

@@ -153,9 +153,9 @@ impl<'w> SessionHost<'w> {
         }
         let format = match (p.format, &path) {
             (Some(f), Some(path)) => {
-                // An OpenFOAM path is a case directory: its name says nothing about the format.
-                if f != ExportFormat::Openfoam
-                    && let Some(by_ext) = known_format_of(path)
+                // An OpenFOAM path is a case directory: its name says nothing about the format, but a
+                // single-file extension (`.vtu`, `.exo`, ...) is almost surely a mistake.
+                if let Some(by_ext) = known_format_of(path)
                     && by_ext != f
                 {
                     return Err(SessionError::bad_request(format!(
@@ -492,14 +492,22 @@ fn write_dir(root: &Path, format: ExportFormat, files: &[(&str, &[u8])]) -> Resu
         .with_files(listing))
 }
 
+/// The input-store handle of the workspace's distribution, bound to `<root>/inputs` when the
+/// workspace has a project (so staged blobs always land in the attached project).
+pub(crate) fn project_inputs(ws: &Workspace) -> Option<&InputsHandle> {
+    let handle = ws.session().engine().services().get::<InputsHandle>()?;
+    if let Some(root) = ws.root() {
+        let want = root.join("inputs");
+        if handle.0.bound_dir().as_deref() != Some(want.as_path()) {
+            handle.0.bind(root);
+        }
+    }
+    Some(handle)
+}
+
 /// Stage `bytes` in the workspace's input store.
 pub(crate) fn stage_bytes(ws: &Workspace, bytes: &[u8]) -> Result<InputRef, ServerError> {
-    let handle = ws
-        .session()
-        .engine()
-        .services()
-        .get::<InputsHandle>()
-        .ok_or_else(|| ServerError::Input("this distribution has no input store".into()))?;
+    let handle = project_inputs(ws).ok_or_else(|| ServerError::Input("this distribution has no input store".into()))?;
     handle.0.stage(bytes).map_err(|e| ServerError::Input(e.to_string()))
 }
 

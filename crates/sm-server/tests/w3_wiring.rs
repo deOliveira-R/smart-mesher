@@ -119,6 +119,14 @@ fn exodus_exports_by_extension_and_inline_and_openfoam_writes_a_case_directory()
     let e = err(&mut s, Request::Export { path: Some("x".into()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true });
     assert_eq!(e.kind, "bad-request");
 
+    // An explicit openfoam on a single-file extension is a mistake, not a case directory.
+    for name in ["x.vtu", "case.exo"] {
+        let p = dir.path().join(name);
+        let e = err(&mut s, Request::Export { path: Some(p.to_string_lossy().into_owned()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: false });
+        assert_eq!(e.kind, "bad-request", "{name}");
+        assert!(!p.exists(), "{name} must not be created");
+    }
+
     let case = dir.path().join("case");
     let case_s = case.to_str().expect("utf8");
     let r = export(&mut s, Some(case_s), Some(ExportFormat::Openfoam), false).expect("openfoam");
@@ -156,7 +164,8 @@ fn a_missing_blob_is_a_typed_error_and_leaves_the_state_unchanged() {
     let mut s = Server::new(standard()).expect("server");
     let before = hash(&mut s);
     let e = err(&mut s, Request::Apply { op: "model.import_step".into(), params: json!({"source": {"sha256": "0".repeat(64)}}), version: None });
-    assert!(e.message.contains("step.input_missing") || e.message.contains("not found"), "{e}");
+    assert_eq!(e.kind, "invalid-params", "{e}");
+    assert!(e.message.contains("step.input_missing"), "{e}");
     assert_eq!(hash(&mut s), before, "a failed import changes nothing");
     assert!(s.workspace().timeline().is_empty());
 }
@@ -231,4 +240,44 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
             std::fs::copy(e.path(), dst).expect("copy");
         }
     }
+}
+
+/// Stage the STEP file, import it, save, then replay the project from a copy.
+fn stage_import_save_replay(mut s: Server, proj: &std::path::Path, copy: &std::path::Path) {
+    let staged = s.stage_input(sm_testkit::w3a::STEP).expect("stage");
+    apply(&mut s, "model.import_step", json!({"source": {"sha256": staged.sha256}}));
+    let h = hash(&mut s);
+    call(&mut s, Request::Save);
+    let blob = proj.join("inputs").join(format!("{}.stp", staged.sha256));
+    assert!(blob.is_file(), "the blob lives in <project>/inputs/");
+    drop(s);
+    copy_dir(proj, copy);
+    let mut reopened = Server::from_factory(std_builder).expect("server");
+    call(&mut reopened, Request::Open { path: copy.to_string_lossy().into_owned(), create: false });
+    assert_eq!(hash(&mut reopened), h, "the project directory alone replays");
+}
+
+#[test]
+fn two_builders_before_create_still_stage_into_the_project() {
+    let dir = TempDir::new("w3two");
+    let proj = dir.path().join("proj");
+    let b = std_builder();
+    let _other = standard();
+    let s = Server::create(b, &proj, "proj").expect("create");
+    stage_import_save_replay(s, &proj, &dir.path().join("copy"));
+}
+
+#[test]
+fn a_stale_pending_store_from_an_in_memory_server_is_not_bound_to_a_project() {
+    let dir = TempDir::new("w3stale");
+    let proj = dir.path().join("proj");
+    let mem = Server::new(standard()).expect("mem");
+    // A builder from elsewhere (no distribution store) must not drag the memory server's store along.
+    let s = Server::create(sm_engine::WorkspaceBuilder::new(), &proj, "proj").expect("create");
+    drop(s);
+    let staged = mem.stage_input(b"hello").expect("stage");
+    assert_eq!(staged.bytes, 5);
+    let inputs = proj.join("inputs");
+    let leaked = inputs.is_dir() && std::fs::read_dir(&inputs).expect("dir").next().is_some();
+    assert!(!leaked, "the in-memory server wrote into a project it is not attached to");
 }
