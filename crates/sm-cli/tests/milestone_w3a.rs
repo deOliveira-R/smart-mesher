@@ -149,7 +149,7 @@ fn joined<T>(x: std::thread::Result<T>) -> R<T> {
 fn stage_into(ws: Workspace) -> R<Workspace> {
     let server = Server::from_workspace(ws);
     let got = server.stage_input(sm_testkit::w3a::STEP).map_err(e)?;
-    if got.sha256.to_string() != step_sha() {
+    if got.sha256.to_string().as_str() != step_sha() {
         return Err(format!("Server::stage_input sha256 {} != pinned {}", got.sha256, step_sha()));
     }
     Ok(server.into_workspace())
@@ -338,8 +338,11 @@ struct Cli {
     wall: Duration,
 }
 
+/// (state, printed lines) of a script run.
+type MemRun = (String, BTreeMap<String, String>);
+
 /// (state, printed) of a `smesh run ... --json` in a directory.
-fn mem_run(script: &Path, dir: &Path, pin: bool, threads: Threads) -> R<(String, BTreeMap<String, String>)> {
+fn mem_run(script: &Path, dir: &Path, pin: bool, threads: Threads) -> R<MemRun> {
     std::fs::create_dir_all(dir).map_err(e)?;
     let s = ts(script);
     let mut a = vec!["run", s.as_str(), "--memory", "--json"];
@@ -631,7 +634,7 @@ fn layer_check(rows: &mut Tagged<'_>, what: &str, l: &BTreeMap<String, String>) 
     }
 }
 
-fn mesh_of<'s>(state: &'s State, id: EntityId) -> R<&'s dyn MeshRead> {
+fn mesh_of(state: &State, id: EntityId) -> R<&dyn MeshRead> {
     let layer = state.layer::<MeshLayer>().ok_or("no meshes layer")?;
     Ok(layer.get(id).ok_or_else(|| format!("{id} not in the meshes layer"))?.mesh())
 }
@@ -716,7 +719,7 @@ fn run_path(h: Head, t: &Path, step: &Path, all: &mut Rows, facts: &mut PathFact
     let api = rows.need(&[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "in-process §4.5", &api);
 
     // ---------------- row 1: hashes across front ends
-    let mem_res: Vec<R<(PathBuf, (String, BTreeMap<String, String>))>> = mems
+    let mem_res: Vec<R<(PathBuf, MemRun)>> = mems
         .into_iter()
         .map(|r| r.and_then(|(d, x)| x.map(|v| (d, v))))
         .collect();
@@ -1164,8 +1167,8 @@ fn mesh_rows(h: Head, rows: &mut Tagged<'_>, api: &Api, ops: &Ops, fork_dir: &Pa
 
     // ---------------- row 9: sidesets
     let areas = [meshchk::area_on(m, &faces[0]), meshchk::area_on(m, &faces[1]), meshchk::area_on(m, &faces[2])];
-    for k in 0..3 {
-        rows.near(9, &format!("sideset {} area", k + 1), areas[k], sm_testkit::w3a::SIDESET_AREAS[k], 1e-9);
+    for (k, (a, want)) in areas.iter().zip(sm_testkit::w3a::SIDESET_AREAS).enumerate() {
+        rows.near(9, &format!("sideset {} area", k + 1), *a, want, 1e-9);
     }
 
     // ---------------- row 10: Exodus

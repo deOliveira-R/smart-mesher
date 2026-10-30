@@ -144,9 +144,9 @@ pub fn check_case(case: &Path) -> FoamCheck {
     if open > 0 {
         problems.push(format!("{open} cells are not closed (sum of outward area vectors)"));
     }
-    for c in 0..nc {
-        for k in 0..3 {
-            cen[c][k] /= mag[c].max(1e-300);
+    for (c, w) in cen.iter_mut().zip(&mag) {
+        for x in c.iter_mut() {
+            *x /= w.max(1e-300);
         }
     }
     let wrong = (0..ni)

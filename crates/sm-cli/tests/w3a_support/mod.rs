@@ -410,19 +410,20 @@ pub fn fork_script(h: Head, step: &Path) -> String {
     s
 }
 
-/// Conformance fixture `w3a_hybrid` (path B, no input file): the hybrid state; prints `mesh`.
+/// Conformance fixture `w3a_hybrid` (path B, no input file): the hybrid state. Prints one
+/// `check <label> <mesh id>` line per mesh `tools/conformance.sh` checks.
 pub fn emit_hybrid() -> String {
     let mut s = head(Head::B, Path::new(""));
     s.push_str(&tail_hybrid("1.0"));
-    s.push_str("print \"mesh\", m.mesh[0]\n");
+    s.push_str("print \"check\", \"w3a_hybrid\", m.mesh[0]\n");
     s
 }
 
-/// Conformance fixture `w3a_tet` (path B): the tet branch; prints `tet` and `poly` mesh ids.
+/// Conformance fixture `w3a_tet` (path B): the tet branch, its tet and poly meshes.
 pub fn emit_tet() -> String {
     let mut s = head(Head::B, Path::new(""));
     s.push_str(&tail_tet("1.0"));
-    s.push_str("print \"tet\", mt.mesh[0]\nprint \"poly\", pm.mesh[0]\n");
+    s.push_str("print \"check\", \"w3a_tet\", mt.mesh[0]\nprint \"check\", \"w3a_poly\", pm.mesh[0]\n");
     s
 }
 

@@ -1,0 +1,11 @@
+// Conformance fixture polydual: tetbox, then its polyhedral dual (mesh.to_poly, source retired).
+let b = model.create_brick(x: 10.0, y: 10.0, z: 6.0)
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: topo.related(kind: "TopoFace", within: b.volume), scheme: "trimesh")
+mesh.scheme(targets: b.volume, scheme: "tetmesh")
+let m = mesh.run(targets: b.volume)
+let pm = mesh.to_poly(mesh: m.mesh[0], keep_source: false)
+fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "POLYHEDRON")
+fem.sideset_add(sideset: 1, faces: topo.related(kind: "TopoFace", within: b.volume), wrt: b.volume)
+print "check", "polydual", pm.mesh[0]

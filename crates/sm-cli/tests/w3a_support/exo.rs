@@ -72,7 +72,7 @@ pub fn check_hybrid(bytes: &[u8], m: &dyn MeshRead, vols: &[EntityId; 3], side_f
     let mut elem_block: Vec<(i64, String, Vec<i64>)> = Vec::new(); // per element: (block id, type, nodes)
     for b in &d.blocks {
         r.blocks.push((b.id, b.elem_type.clone(), b.num_elem));
-        let npe = if b.num_elem == 0 { 0 } else { b.connectivity.len() / b.num_elem };
+        let npe = b.connectivity.len().checked_div(b.num_elem).unwrap_or(0);
         for k in 0..b.num_elem {
             elem_block.push((b.id, b.elem_type.clone(), b.connectivity.get(k * npe..(k + 1) * npe).map(<[i64]>::to_vec).unwrap_or_default()));
         }

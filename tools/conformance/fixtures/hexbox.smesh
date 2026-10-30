@@ -1,0 +1,9 @@
+// Conformance fixture hexbox: a 10^3 mapped hex block (1000 HEX8), one block, one side set.
+let b = model.create_brick(x: 10.0, y: 10.0, z: 10.0)
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+let m = mesh.run(targets: b.volume)
+fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
+fem.sideset_add(sideset: 1, faces: topo.related(kind: "TopoFace", within: b.volume), wrt: b.volume)
+print "check", "hexbox", m.mesh[0]
