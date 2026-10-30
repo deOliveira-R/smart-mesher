@@ -4,10 +4,16 @@ use crate::geom::{self, V3};
 use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sm_mesh_api::{CellIx, FaceIx, MeshEntityKind, MeshRead, cell_volume, face_area_vector};
+use sm_mesh_api::{CellIx, FaceIx, MeshEntityKind, MeshRead, TagValues, cell_volume, face_area_vector};
+use std::collections::BTreeMap;
 
 /// Fixed chunk size of every reduction, so sums do not depend on the thread count.
 pub(crate) const CHUNK: usize = 2048;
+
+/// Name of the cell tag column `dualize` adds when it split cells: per output cell, the number of
+/// wedges of the dual cell it came from (0 if that cell was not split). Absent when nothing was
+/// split.
+pub const WEDGE_TAG: &str = "poly.wedges";
 
 /// Minimum, mean and maximum of a count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -44,6 +50,12 @@ pub struct PolyStats {
     pub volume_sum: f64,
     /// Total area of the boundary faces.
     pub boundary_area: f64,
+    /// Output cells that came from split dual cells (see `DualReport::wedges`); read from the
+    /// [`WEDGE_TAG`] column, 0 if there is none. Cells merged by agglomeration are counted once.
+    pub wedges: usize,
+    /// Dual cells that were split (see `DualReport::split_cells`); with `wedges`, the poly cell
+    /// count is `(vertex, region) pairs + wedges - split_cells - merges`.
+    pub split_cells: usize,
 }
 
 fn spread(values: impl Iterator<Item = usize>) -> Spread {
@@ -115,8 +127,25 @@ pub(crate) fn volume_range(m: &dyn MeshRead) -> (f64, f64, f64) {
     acc
 }
 
+/// `(wedges, split_cells)` from the [`WEDGE_TAG`] column: cells with tag `n > 0` are wedges, and
+/// each split cell contributes `n` of them, so `split_cells = sum(1 / n)`.
+fn wedge_counts(m: &dyn MeshRead) -> (usize, usize) {
+    let Some(TagValues::I64(v)) = m.tag(MeshEntityKind::Cell, WEDGE_TAG).map(|t| &t.values) else {
+        return (0, 0);
+    };
+    let mut per_n: BTreeMap<i64, usize> = BTreeMap::new();
+    for &n in v.iter().filter(|&&n| n > 0) {
+        *per_n.entry(n).or_insert(0) += 1;
+    }
+    let wedges = per_n.values().sum();
+    // after agglomeration a count need not be a multiple of n: round up
+    let split = per_n.iter().map(|(&n, &k)| k.div_ceil(n as usize)).sum();
+    (wedges, split)
+}
+
 /// Statistics of any mesh (meant for polyhedral ones).
 pub fn poly_stats(m: &dyn MeshRead) -> PolyStats {
+    let (wedges, split_cells) = wedge_counts(m);
     let (nc, nf, nv) = (
         m.count(MeshEntityKind::Cell),
         m.count(MeshEntityKind::Face),
@@ -143,5 +172,7 @@ pub fn poly_stats(m: &dyn MeshRead) -> PolyStats {
         volume_max,
         volume_sum,
         boundary_area: parts.into_iter().sum(),
+        wedges,
+        split_cells,
     }
 }

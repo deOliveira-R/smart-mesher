@@ -15,7 +15,7 @@ use crate::geom::{self, V3};
 use crate::polydata::PolyData;
 use crate::prep::{NONE, Prep};
 use rayon::prelude::*;
-use sm_mesh_api::{CellIx, Side};
+use sm_mesh_api::{CellIx, Side, SignedFace};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
@@ -26,6 +26,45 @@ const MARGIN: f64 = 1e-9;
 /// Side tetrahedra at or below this fraction of the cell volume count as failing in
 /// [`bad_cells`] (rounding level; far below any side tetrahedron of a regular cell).
 const DETECT_MARGIN: f64 = 1e-12;
+
+/// A face of a cell is "visible" from the vertex mean (sm-quality's `Starness` metric) when
+/// `cos(area vector, apex - mean) >` this. Wedges are accepted above [`STAR_MARGIN`]; a cell is
+/// flagged by [`bad_cells`] at or below [`STAR_DETECT`] (rounding level).
+const STAR_MARGIN: f64 = 1e-6;
+const STAR_DETECT: f64 = 1e-9;
+
+/// Smallest `cos(area vector, apex - c)` over the loops (same rule as sm-quality's `Starness`:
+/// fan area vector about the loop mean), `c` the mean of the cell's distinct vertices.
+fn min_starness<'a>(c: V3, loops: impl Iterator<Item = &'a [V3]>) -> f64 {
+    let mut m = f64::INFINITY;
+    for l in loops {
+        let n = l.len();
+        let ap = geom::mean(l);
+        let mut a = [0.0; 3];
+        for i in 0..n {
+            let x = geom::cross(geom::sub(l[i], ap), geom::sub(l[(i + 1) % n], ap));
+            a = [a[0] + 0.5 * x[0], a[1] + 0.5 * x[1], a[2] + 0.5 * x[2]];
+        }
+        let d = geom::sub(ap, c);
+        let den = geom::dot(a, a).sqrt() * geom::dot(d, d).sqrt();
+        m = m.min(if den <= 1e-300 { 0.0 } else { geom::dot(a, d) / den });
+    }
+    m
+}
+
+/// Mean of the distinct points among `ids` (virtual point ids).
+fn distinct_mean(p: &Prep<'_>, ids: &[[u32; 4]]) -> V3 {
+    let mut u: SmallVec<[u32; 64]> = ids.iter().flatten().copied().collect();
+    u.sort_unstable();
+    u.dedup();
+    let mut s = [0.0; 3];
+    for &x in &u {
+        let q = p.coord(x);
+        s = [s[0] + q[0], s[1] + q[1], s[2] + q[2]];
+    }
+    let n = u.len().max(1) as f64;
+    [s[0] / n, s[1] / n, s[2] / n]
+}
 
 /// Split decisions: per split dual cell (ckey index), the wedge of each of its tets.
 #[derive(Default)]
@@ -157,13 +196,15 @@ fn wedge_ok(p: &Prep<'_>, corners: &[Corner], tets: &[u32], members: &[usize]) -
         return false;
     }
     let min = MARGIN * vol;
-    loops.iter().all(|l| {
+    let centroid_ok = loops.iter().all(|l| {
         let ap = geom::mean(l);
         (0..4).all(|i| {
             let (a, b) = (l[i], l[(i + 1) % 4]);
             geom::dot(geom::sub(ap, g), geom::cross(geom::sub(a, g), geom::sub(b, g))) > min
         })
-    })
+    });
+    // also star-shaped about the vertex mean (the sm-quality `Starness` rule)
+    centroid_ok && min_starness(distinct_mean(p, &ids), loops.iter().map(|l| &l[..])) > STAR_MARGIN
 }
 
 /// The tets of `region` at `v`, ascending (the union of the rings of the cell's slots).
@@ -238,6 +279,15 @@ pub(crate) fn bad_cells(d: &PolyData) -> Vec<u32> {
         .collect()
 }
 
+/// Points of the loop of `sf` as seen from its cell (outward winding).
+fn oriented(d: &PolyData, sf: &SignedFace) -> SmallVec<[V3; 8]> {
+    let mut v: SmallVec<[V3; 8]> = d.face_loop(sf.face().get()).iter().map(|&x| d.pts[x as usize]).collect();
+    if sf.side() == Side::Right {
+        v.reverse();
+    }
+    v
+}
+
 fn cell_ok(d: &PolyData, c: usize) -> bool {
     let faces = d.cell_faces(c);
     let (vol, g) = agglom::vol_centroid(d, faces);
@@ -245,6 +295,22 @@ fn cell_ok(d: &PolyData, c: usize) -> bool {
         return false;
     }
     let min = DETECT_MARGIN * vol;
+    // sm-quality `Starness`: star-shaped about the mean of the cell's distinct vertices
+    let mut vs: SmallVec<[u32; 64]> =
+        faces.iter().flat_map(|sf| d.face_loop(sf.face().get()).iter().copied()).collect();
+    vs.sort_unstable();
+    vs.dedup();
+    let mut vm = [0.0; 3];
+    for &x in &vs {
+        let q = d.pts[x as usize];
+        vm = [vm[0] + q[0], vm[1] + q[1], vm[2] + q[2]];
+    }
+    let nv = vs.len().max(1) as f64;
+    let vm = [vm[0] / nv, vm[1] / nv, vm[2] / nv];
+    let loops: SmallVec<[SmallVec<[V3; 8]>; 16]> = faces.iter().map(|sf| oriented(d, sf)).collect();
+    if min_starness(vm, loops.iter().map(|v| &v[..])) <= STAR_DETECT {
+        return false;
+    }
     faces.iter().all(|sf| {
         let l = d.face_loop(sf.face().get());
         let ap = agglom::apex(d, l);

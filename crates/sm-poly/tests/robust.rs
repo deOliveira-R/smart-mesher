@@ -313,7 +313,7 @@ fn reflex_interface_edges_are_split_into_valid_wedges() {
         ("y<2,z>2", Box::new(|c| c[1] < 2.0 && c[2] > 2.0), Some(true)),
         ("x<2,y<2,z>1", Box::new(|c| c[0] < 2.0 && c[1] < 2.0 && c[2] > 1.0), Some(true)),
         ("single tet", Box::new(move |c| (0..3).all(|a| (c[a] - one[a]).abs() < 1e-9)), Some(true)),
-        ("cube [1,3]^3", Box::new(|c| c.iter().all(|x| *x > 1.0 && *x < 3.0)), Some(false)),
+        ("cube [1,3]^3", Box::new(|c| c.iter().all(|x| *x > 1.0 && *x < 3.0)), None),
     ];
     let mut cases = cases;
     // the eight octants at (2, 2, 2): three reflex edges meet at an interior vertex
@@ -339,6 +339,12 @@ fn reflex_interface_edges_are_split_into_valid_wedges() {
                 side_tet_cells(&d)
             );
             assert!(g.is_empty(), "{name} {mode:?}: {:?}", &g[..g.len().min(3)]);
+            // `poly_stats` (mesh.poly_info) recovers the repair counts of the report from the mesh
+            let st = sm_poly::poly_stats(&d);
+            assert_eq!((st.wedges, st.split_cells), (rep.wedges, rep.split_cells), "{name} {mode:?}: poly_stats");
+            // sm-quality's validity (star-shaped about the vertex mean) agrees
+            let v = sm_quality::validity(&d, &sm_quality::Options::default()).unwrap();
+            assert!(v.n_inverted == 0, "{name} {mode:?}: {} inverted cells (starness)", v.n_inverted);
             assert!(rel(rep.total_volume, 64.0) < 1e-12, "{name} {mode:?}: volume {}", rep.total_volume);
             if mode == FaceMode::Planar
                 && let Some(want) = must_split

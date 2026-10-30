@@ -204,6 +204,15 @@ Repair, after the dual is built (`concave.rs`, `dual.rs`):
 5. **Rounds.** The neighbours whose faces bent are checked again; a failing one is split in the
    next round (at most 8 rounds, in practice 1 or 2). Wedges are valid by construction.
 
+Star-shapedness is judged by both rules: about the volume centroid (`validate_geometry`'s side
+tetrahedra) and about the mean of the cell's distinct vertices (sm-quality's `Starness`, the
+`quality.inverted` criterion). Detection and wedge growth use both, so boundary-corner cells whose
+vertex mean sees a face from behind are split too. When any cell is split, `dualize` adds the cell
+tag `poly.wedges` (wedge count of the originating dual cell, 0 if unsplit); `poly_stats` /
+`mesh.poly_info` read `wedges` and `split_cells` back from it. The conformance warnings of
+OpenFOAM `checkMesh -allGeometry` (concave cells by face planes, low interpolation weights) are
+intrinsic to the barycentric dual with bent edge faces and are not addressed by the repair.
+
 Faces only subdivide space, so the total volume is unchanged. `DualReport::split_cells` and
 `wedges` count the repair; `cells = (vertex, region) pairs + wedges - split_cells - merges`,
 which matters to anyone asserting the pair count. Measured on `tet_block([4,4,4])`
