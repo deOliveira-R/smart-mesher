@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use sm_cadio::InputRef;
 use sm_engine::{ApplyOptions, EngineError, ProjectConfig, Workspace, WorkspaceBuilder};
 use sm_lang::diag::render_all;
 use sm_lang::{Event, Interpreter, Options, SourceMap};
@@ -13,7 +14,8 @@ use sm_protocol::{
 };
 
 use crate::error::{ServerError, SessionError};
-use crate::host::{ExportParams, SessionHost, resolve_path, status_result, to_json};
+use crate::host::{ExportParams, SessionHost, resolve_path, stage_bytes, status_result, to_json};
+use crate::standard::{bind_pending_inputs, clear_pending_inputs};
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
 type Opener = Arc<dyn Fn() -> WorkspaceBuilder + Send + Sync>;
@@ -48,12 +50,17 @@ impl Server {
     }
 
     /// A server over the project at `dir`, opened (and replayed strictly) with `builder`.
+    ///
+    /// A builder from [`standard`](crate::standard) gets its input store bound to
+    /// `<dir>/inputs/` first, so the replay finds staged STEP files.
     pub fn open(builder: WorkspaceBuilder, dir: impl AsRef<Path>) -> Result<Self, ServerError> {
+        bind_pending_inputs(dir.as_ref());
         Ok(Self::from_workspace(builder.open(dir)?))
     }
 
     /// A server over a new project at `dir` (absent or empty directory) named `name`.
     pub fn create(builder: WorkspaceBuilder, dir: impl AsRef<Path>, name: &str) -> Result<Self, ServerError> {
+        bind_pending_inputs(dir.as_ref());
         Ok(Self::from_workspace(builder.create(dir, ProjectConfig::new(name))?))
     }
 
@@ -72,6 +79,13 @@ impl Server {
     /// Give the workspace back (to close it, for example).
     pub fn into_workspace(self) -> Workspace {
         self.ws
+    }
+
+    /// Stage `bytes` in the content-addressed input store (`<project>/inputs/` when a project is
+    /// attached, memory otherwise) and return their `{sha256, bytes}`. Ops such as
+    /// `model.import_step` record the sha256, never a path.
+    pub fn stage_input(&self, bytes: &[u8]) -> Result<InputRef, ServerError> {
+        stage_bytes(&self.ws, bytes)
     }
 
     fn host(&mut self) -> SessionHost<'_> {
@@ -144,10 +158,16 @@ impl Server {
                 format!("opening a project would discard the in-memory session ({} nodes); `session.save` it elsewhere first", self.ws.timeline().len()),
             ));
         }
-        let new = match opener().open(&dir) {
+        let fresh = || {
+            clear_pending_inputs();
+            let b = opener();
+            bind_pending_inputs(&dir);
+            b
+        };
+        let new = match fresh().open(&dir) {
             Err(EngineError::NotAProject(_)) if create => {
                 let name = dir.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
-                opener().create(&dir, ProjectConfig::new(name))?
+                fresh().create(&dir, ProjectConfig::new(name))?
             }
             other => other?,
         };

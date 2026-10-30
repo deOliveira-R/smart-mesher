@@ -498,13 +498,13 @@ fn a_named_mesh_in_a_state_without_meshes_is_unknown_not_missing() {
 }
 
 #[test]
-fn exodus_and_openfoam_are_typed_unsupported_until_wired() {
+fn exodus_inline_exports_and_openfoam_inline_is_bad_request() {
     let dir = TempDir::new("unsup");
     let proj = dir.path().join("p");
     let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    for f in [ExportFormat::Exodus, ExportFormat::Openfoam] {
-        let e = err(&mut s, Request::Export { path: None, format: Some(f), mesh: None, provenance: false, inline: true });
-        assert_eq!(e.kind, "unsupported-format");
-    }
+    let v = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Exodus), mesh: None, provenance: false, inline: true });
+    assert_eq!(v["format"], "exodus");
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true });
+    assert_eq!(e.kind, "bad-request");
 }

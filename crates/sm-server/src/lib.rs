@@ -22,8 +22,10 @@ pub mod transport;
 pub use error::{ServerError, SessionError, StandardError};
 pub use host::{ExportParams, RELATIONS_QUERY, SessionHost};
 pub use server::Server;
+/// A staged input: its sha256 and size (what `session.stage` returns).
+pub use sm_cadio::InputRef;
 pub use standard::{
-    distribution, distribution_with_core, reference_standard, standard, standard_schemes, standard_with, try_standard,
+    InputsHandle, ProjectInputs, distribution, distribution_with_core, reference_standard, standard, standard_schemes, standard_with, try_standard,
 };
 /// Re-exported so consumers need not depend on `sm-engine` directly.
 pub use sm_engine::{ApplyOptions, FixedClock, Workspace};

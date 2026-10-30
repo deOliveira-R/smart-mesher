@@ -1,27 +1,35 @@
-//! The standard distribution: core layers, the four plugins and the mesher service.
+//! The standard distribution: core layers, every plugin, the mesher service and the input store.
 
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::path::Path;
+use std::sync::{Arc, PoisonError, RwLock};
 
+use sm_cadio::{CadioPlugin, DirInputStore, InputRef, InputStore, MemoryInputStore, StepInputs};
 use sm_engine::WorkspaceBuilder;
 use sm_layer_api::CoreLayers;
 use sm_mesher::{MeshPlugin, MesherConfig};
 use sm_model::ModelPlugin;
-use sm_op_api::Services;
+use sm_op_api::{Plugin, Registry, Services};
 use sm_scheme_api::{SchemeDim, SchemeRegistry};
 use sm_sizing::{AnglePicker, IiaSolver};
 use sm_tess::TessPlugin;
 
 use crate::error::StandardError;
 
-/// The scheme registry of the standard distribution: every scheme crate registered, then the
+/// The scheme registry of the standard distribution: every scheme crate registered (strict: a failure is an error), then the
 /// strict auto lists `curve: [equal]`, `surface: [map]`, `volume: [map]`.
 pub fn standard_schemes() -> Result<SchemeRegistry, StandardError> {
     let mut registry = SchemeRegistry::new();
     type Register = fn(&mut SchemeRegistry) -> sm_scheme_api::Result<()>;
-    let crates: [(&'static str, Register); 3] = [
+    let crates: [(&'static str, Register); 8] = [
         ("sm-scheme-curve", sm_scheme_curve::register),
         ("sm-scheme-map", sm_scheme_map::register),
         ("sm-scheme-mapvol", sm_scheme_mapvol::register),
+        ("sm-scheme-submap", sm_scheme_submap::register),
+        ("sm-scheme-pave", sm_scheme_pave::register),
+        ("sm-scheme-tri", sm_scheme_tri::register),
+        ("sm-scheme-sweep", sm_scheme_sweep::register),
+        ("sm-scheme-tet", sm_scheme_tet::register),
     ];
     for (crate_name, register) in crates {
         register(&mut registry).map_err(|e| StandardError::Register { crate_name, message: e.to_string() })?;
@@ -47,6 +55,99 @@ pub fn distribution(schemes: SchemeRegistry) -> WorkspaceBuilder {
     distribution_with_core(CoreLayers::new(|| Box::new(sm_topo::TopoStore::new())), schemes)
 }
 
+/// The content-addressed store of staged inputs (STEP files), bound to a project directory.
+///
+/// Unbound (in-memory sessions, `reference_standard`, a fresh [`standard`]) it keeps blobs in a
+/// [`MemoryInputStore`]. [`Server::open`](crate::Server::open), [`Server::create`](crate::Server::create)
+/// and `session.open` bind it to `<project>/inputs/` before the project replays, so the project
+/// directory alone carries everything a replay needs. Binding is done by this crate for the
+/// builder it just built on the same thread; a caller that opens a project with
+/// `standard().open(dir)` directly gets the in-memory store (a STEP import then replays only if
+/// the blob was staged in this process).
+#[derive(Debug, Default)]
+pub struct ProjectInputs {
+    dir: RwLock<Option<DirInputStore>>,
+    mem: MemoryInputStore,
+}
+
+impl ProjectInputs {
+    /// An unbound store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind to `<project>/inputs/` (blobs there become visible; new blobs go there).
+    pub fn bind(&self, project: &Path) {
+        *self.dir.write().unwrap_or_else(PoisonError::into_inner) = Some(DirInputStore::new(project.join("inputs")));
+    }
+
+    /// The `inputs/` directory this store is bound to, if any.
+    pub fn bound_dir(&self) -> Option<std::path::PathBuf> {
+        self.dir.read().unwrap_or_else(PoisonError::into_inner).as_ref().map(|d| d.root().to_owned())
+    }
+
+    /// Stage `bytes` (in the project's `inputs/` when bound, else in memory).
+    pub fn stage(&self, bytes: &[u8]) -> std::io::Result<InputRef> {
+        match self.dir.read().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            Some(d) => d.put(bytes),
+            None => Ok(self.mem.put(bytes)),
+        }
+    }
+}
+
+impl InputStore for ProjectInputs {
+    fn get(&self, sha256: &str) -> Option<Arc<[u8]>> {
+        let from_dir = self.dir.read().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|d| d.get(sha256));
+        from_dir.or_else(|| self.mem.get(sha256))
+    }
+}
+
+/// Service handle that lets the server stage bytes (the [`StepInputs`] service only reads).
+#[derive(Clone, Debug)]
+pub struct InputsHandle(pub Arc<ProjectInputs>);
+
+thread_local! {
+    /// The store of the builder most recently assembled on this thread, awaiting its project.
+    static PENDING: RefCell<Option<Arc<ProjectInputs>>> = const { RefCell::new(None) };
+}
+
+/// Forget any store awaiting a project (called before building a builder to open).
+pub(crate) fn clear_pending_inputs() {
+    PENDING.with(|p| p.borrow_mut().take());
+}
+
+/// Bind the store of the builder just assembled on this thread to `project`, if there is one.
+pub(crate) fn bind_pending_inputs(project: &Path) {
+    if let Some(store) = PENDING.with(|p| p.borrow_mut().take()) {
+        store.bind(project);
+    }
+}
+
+/// Every plugin of the distribution, in install order.
+fn each_plugin(core: &CoreLayers, mut f: impl FnMut(&dyn Plugin)) {
+    f(core);
+    f(&ModelPlugin);
+    f(&MeshPlugin);
+    f(&sm_fem::FemPlugin);
+    f(&TessPlugin);
+    f(&sm_boolean::BooleanPlugin);
+    f(&CadioPlugin);
+    f(&sm_smooth::SmoothPlugin);
+    f(&sm_poly::PolyPlugin);
+    f(&sm_diag::DiagPlugin);
+    f(&sm_rt::RtPlugin);
+}
+
+/// The names of every op the plugins register (INT-3). A plugin that fails to install here fails
+/// the same way when the workspace builds, which reports it.
+fn op_names(core: &CoreLayers) -> sm_diag::OpNames {
+    let mut reg = Registry::new();
+    each_plugin(core, |p| {
+        let _ = reg.install(p);
+    });
+    sm_diag::OpNames::new(reg.op_names())
+}
+
 /// [`distribution`] over a caller-chosen topology core (e.g. the reference `CellComplex`).
 pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> WorkspaceBuilder {
     let mesher = MesherConfig::new(schemes)
@@ -56,13 +157,27 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
         .with_auto_size(Arc::new(|view, targets, factor| {
             sm_sizing::auto_size(view, targets, factor).map_err(|e| e.to_string())
         }));
+    let inputs = Arc::new(ProjectInputs::new());
+    PENDING.with(|p| *p.borrow_mut() = Some(inputs.clone()));
+    let names = op_names(&core);
+    let services = Services::new()
+        .with_versioned("mesher", 1, mesher)
+        .with(StepInputs(inputs.clone()))
+        .with(InputsHandle(inputs))
+        .with(names);
     WorkspaceBuilder::new()
         .plugin(core)
         .plugin(ModelPlugin)
         .plugin(MeshPlugin)
         .plugin(sm_fem::FemPlugin)
         .plugin(TessPlugin)
-        .services(Services::new().with_versioned("mesher", 1, mesher))
+        .plugin(sm_boolean::BooleanPlugin)
+        .plugin(CadioPlugin)
+        .plugin(sm_smooth::SmoothPlugin)
+        .plugin(sm_poly::PolyPlugin)
+        .plugin(sm_diag::DiagPlugin)
+        .plugin(sm_rt::RtPlugin)
+        .services(services)
 }
 
 /// The standard distribution over the reference [`sm_topo_api::CellComplex`] core instead of
@@ -99,9 +214,10 @@ pub fn try_standard() -> Result<WorkspaceBuilder, StandardError> {
     Ok(distribution(standard_schemes()?))
 }
 
-/// The standard distribution: [`CoreLayers`] over `TopoStore`, `ModelPlugin`, `MeshPlugin`,
-/// `FemPlugin`, `TessPlugin`, and the `mesher` service (IIA solver, angle picker, size fields,
-/// auto size, the three scheme crates, strict auto lists).
+/// The standard distribution: [`CoreLayers`] over `TopoStore`, the model, mesh, fem, tess,
+/// boolean, cadio, smooth, poly, diag and rt plugins, and the services: `mesher` (IIA solver,
+/// angle picker, size fields, auto size, the eight scheme crates, strict auto lists), the
+/// [`ProjectInputs`] store behind `StepInputs`, and `sm_diag::OpNames`.
 ///
 /// # Panics
 /// If the distribution is misassembled, i.e. [`try_standard`] fails. Scheme registration errors
