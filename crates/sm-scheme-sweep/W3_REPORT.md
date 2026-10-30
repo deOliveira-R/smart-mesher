@@ -101,6 +101,31 @@ All tests are in `crates/sm-scheme-sweep/tests/` (plus one unit test in `src/emi
 * Polyhedral side faces are non-planar under twist (exporter question).
 * The Docker steps (OpenFOAM checkMesh, DAGMC) are not part of this task.
 
+## Polish
+
+Review should-fix items, all done:
+
+1. The twisted-prism test asserts the detected copy transform: `Rz(pi/2)` entries and
+   translation `(0, 0, 3)` to 1e-12.
+2. New failure test `an_inverted_bend_with_three_layers_and_interior_nodes_fails_in_the_gate`:
+   2x2 source (one interior node per layer), 3 layers, 170 degree bend. The bent columns feed
+   `place_layers`, the gate reports a `Quality` failure with 8 nodes, and a mild bend meshes.
+3. `fit_target_transform`: when every `dst - src` is bit-identical the first difference is
+   returned, so a pure translation is exact (test `a_pure_translation_is_returned_bit_exactly`).
+4. `target_mode: "copy"` with a non-affine correspondence now fails (`NotApplicable`, names the
+   residual and tolerance) when the best-effort residual exceeds the copy tolerance, until
+   `project` mode exists. The old test that expected a silent bad copy was changed.
+5. Shepard weights are `(d2 / d2_nearest)^(-p/2)`: all in (0, 1], the nearest is 1, so no
+   overflow or 0/0 at tiny or huge scales (test at 1e-120 and 1e120).
+6. `emit.rs` hot loops: no per-element `order`/`bot`/`top`/`faces` vectors in the gate (ring
+   slots by index arithmetic `ring_at`, scratch rings reused over layers, a closed-form
+   `prism_volumes` replacing the O(n^2) `contains` dedup); the orientation test sums the Newell
+   vector without a temporary; emission reuses flat scratch buffers. Declined in part: the
+   `&[&[u32]]` face list that `Elements::push_polyhedron` takes is still one small pointer
+   `Vec` per polyhedron cell (the contract is frozen; polyhedra are the rare path).
+7. The 16-member column cap is derived: a column crosses each linking face at most once, so the
+   walk is bounded by `linking.len()`.
+
 ## api_change_requests
 
 1. **sm-scheme-api, `Patch::strip_from` (performance).** What: a way to answer many strips of
@@ -112,3 +137,11 @@ All tests are in `crates/sm-scheme-sweep/tests/` (plus one unit test in `src/emi
    semantics identical to `strip_from`. Not blocking.
 2. **sm-scheme-api, `PlanCtx` model tolerance** (already queued): a `tolerance()` accessor to
    replace the `1e-9 * bbox diagonal` constant.
+
+## Polish
+
+Round 1 (reviewer MUST FIX: gate not verified). The earlier review was cut off while
+`tools/ci.sh` was still compiling, so there was no defect, only an unfinished gate. No code
+changed. `tools/ci.sh` was rerun at 34b0e19 (workspace build, tests, tests with
+`RAYON_NUM_THREADS=1`, clippy `-D warnings`, rustdoc `-D warnings`, graph check) and exited
+0 (log `/tmp/ci-polish-sm-scheme-sweep-r1-29.log`). The review is therefore a pass.

@@ -32,8 +32,15 @@ fn check(twist_deg: f64, side: f64, h: f64, layers: u32, m: u32) -> Result<(), S
         ),
     );
     intent.set_scheme(fx.source, SchemeChoice::new("map", Firmness::Hard));
-    let out = mesh_with(&registry(), topo, &Model::new(), &[fx.volume], &intent, &Sequential)
-        .map_err(|e| e.to_string())?;
+    let out = mesh_with(
+        &registry(),
+        topo,
+        &Model::new(),
+        &[fx.volume],
+        &intent,
+        &Sequential,
+    )
+    .map_err(|e| e.to_string())?;
     let mesh = &out.finished.mesh;
     if !validate(mesh).is_empty() {
         return Err("invalid mesh".into());

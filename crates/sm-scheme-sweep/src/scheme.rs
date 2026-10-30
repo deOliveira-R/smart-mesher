@@ -108,9 +108,15 @@ pub(crate) fn analyse(
     let transform = match (strict, sp.target_mode) {
         (Some(tr), _) => tr,
         (None, TargetMode::Copy) => {
-            best_effort_transform(&src, &dst, n_s, n_t)
-                .ok_or("no transform can be fitted to the vertex correspondence")?
-                .0
+            let (tr, resid) = best_effort_transform(&src, &dst, n_s, n_t)
+                .ok_or("no transform can be fitted to the vertex correspondence")?;
+            // Until `project` mode exists a copy must be a true copy: refuse a bad fit.
+            if resid.is_nan() || resid > tol {
+                return Err(format!(
+                    "target_mode copy: the target is not an affine image of the source (residual {resid:.3e}, tolerance {tol:.3e}); target_mode project is not implemented"
+                ));
+            }
+            tr
         }
         (None, _) => {
             let resid = best_effort_transform(&src, &dst, n_s, n_t).map(|r| r.1);

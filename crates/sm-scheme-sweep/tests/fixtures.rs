@@ -252,6 +252,32 @@ fn twisted_prism_layers_are_exact_affine_images() {
         }
     }
     assert_eq!(hit, 175);
+    // The detected copy transform is Rz(pi/2) followed by the translation (0, 0, 3).
+    let copy = out
+        .plan
+        .problem
+        .copy_into(Target::Surface(fx.target))
+        .expect("copy constraint");
+    let g = Transform::rotation(
+        Point3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        FRAC_PI_2,
+    )
+    .expect("rz");
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!(
+                (copy.item.transform.m[i][j] - g.m[i][j]).abs() < 1e-12,
+                "m[{i}][{j}] = {}",
+                copy.item.transform.m[i][j]
+            );
+        }
+    }
+    let tr = copy.item.transform.t;
+    assert!(
+        tr.x.abs() < 1e-12 && tr.y.abs() < 1e-12 && (tr.z - 3.0).abs() < 1e-12,
+        "{tr:?}"
+    );
     // Volume by exact 2x2x2 Gauss integration of the trilinear Jacobian.
     let (vol, least) = common::hex_gauss_volume(m);
     assert!(least > 0.0, "Gauss-point Jacobian {least}");

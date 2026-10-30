@@ -238,13 +238,16 @@ fn weights(bsrc: &[Point3], interior: &[Point3], support: usize, power: f64) -> 
             }
         }
         let coincident = best.first().is_some_and(|b| b.0 == 0.0);
+        // Normalise by the nearest distance so every weight is in (0, 1] and the nearest is 1:
+        // no overflow for tiny distances and no 0/0 in the normalisation.
+        let d2min = best.first().map_or(1.0, |b| b.0);
         let mut sum = 0.0;
         for (s, (d2, j)) in best.iter().enumerate() {
             ids[s] = *j;
             ws[s] = if coincident {
                 f64::from(u8::from(s == 0))
             } else {
-                d2.powf(-0.5 * power)
+                (d2 / d2min).powf(-0.5 * power)
             };
             sum += ws[s];
         }

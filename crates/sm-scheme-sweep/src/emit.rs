@@ -61,28 +61,35 @@ fn newell(ring: &[Point3]) -> Vector3 {
     n
 }
 
-/// Pyramid volumes of a polyhedron from its centroid: `(total, min over faces)`.
-fn polyhedron_volumes(faces: &[Vec<Point3>]) -> (f64, f64) {
-    let (mut c, mut n) = (Vector3::default(), 0.0);
-    let mut seen: Vec<Point3> = Vec::new();
-    for f in faces {
-        for p in f {
-            if !seen.contains(p) {
-                seen.push(*p);
-                c = c + Vector3::new(p.x, p.y, p.z);
-                n += 1.0;
-            }
-        }
+/// Pyramid volumes of the prism over the counter-clockwise rings `bot` and `top` (same length
+/// `n >= 3`): `(total, min over faces)`. Works from the centroid of the `2n` vertices with no
+/// allocation; coincident vertices are counted once per ring slot.
+fn prism_volumes(bot: &[Point3], top: &[Point3]) -> (f64, f64) {
+    let n = bot.len();
+    let mut c = Vector3::default();
+    for p in bot.iter().chain(top) {
+        c = c + Vector3::new(p.x, p.y, p.z);
     }
-    let c = c * (1.0 / n);
-    let (mut total, mut least) = (0.0, f64::INFINITY);
-    for f in faces {
+    let c = c * (1.0 / (2 * n) as f64);
+    let mean = |ring: &[Point3]| {
+        let mut m = Vector3::default();
+        for p in ring {
+            m = m + Vector3::new(p.x, p.y, p.z);
+        }
+        m * (1.0 / n as f64)
+    };
+    // Bottom face is the reversed ring: its Newell vector is the negative.
+    let vb = (-newell(bot)).dot(mean(bot) - c) / 6.0;
+    let vt = newell(top).dot(mean(top) - c) / 6.0;
+    let (mut total, mut least) = (vb + vt, vb.min(vt));
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let f = [bot[i], bot[j], top[j], top[i]];
         let mut fc = Vector3::default();
-        for p in f {
+        for p in &f {
             fc = fc + Vector3::new(p.x, p.y, p.z);
         }
-        let fc = fc * (1.0 / f.len() as f64);
-        let v = newell(f).dot(fc - c) / 6.0;
+        let v = newell(&f).dot(fc * 0.25 - c) / 6.0;
         total += v;
         least = least.min(v);
     }
@@ -116,9 +123,10 @@ impl Elems {
     }
 }
 
-/// Order the ring so that it runs counter-clockwise about the direction of the sweep.
-fn ring_order(n: usize, forward: bool) -> impl Iterator<Item = usize> {
-    (0..n).map(move |i| if forward || i == 0 { i } else { n - i })
+/// Ring slot `i` in the order that runs counter-clockwise about the direction of the sweep.
+#[inline]
+fn ring_at(n: usize, forward: bool, i: usize) -> usize {
+    if forward || i == 0 { i } else { n - i }
 }
 
 fn ordered<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync + Send) -> Vec<T> {
@@ -150,9 +158,14 @@ fn check_element(
 ) -> Option<Fail> {
     let ring = elems.nodes(e);
     let n = ring.len();
-    let order: Vec<usize> = ring_order(n, forward).collect();
+    // Scratch rings for the polyhedron gate, reused over the layers of this element.
+    let (mut bot, mut top): (Vec<Point3>, Vec<Point3>) = if n > 4 {
+        (Vec::with_capacity(n), Vec::with_capacity(n))
+    } else {
+        (Vec::new(), Vec::new())
+    };
     for l in 0..layers {
-        let at = |i: usize, layer: usize| ring[order[i]] as usize * stride + layer;
+        let at = |i: usize, layer: usize| ring[ring_at(n, forward, i)] as usize * stride + layer;
         let fail = |what: String| {
             let mut nodes: Vec<NodeKey> = Vec::with_capacity(2 * n);
             for layer in [l, l + 1] {
@@ -182,19 +195,11 @@ fn check_element(
                 }
             }
         } else {
-            let bot: Vec<Point3> = (0..n).rev().map(|i| pos[at(i, l)]).collect();
-            let top: Vec<Point3> = (0..n).map(|i| pos[at(i, l + 1)]).collect();
-            let mut faces = vec![bot, top];
-            for i in 0..n {
-                let j = (i + 1) % n;
-                faces.push(vec![
-                    pos[at(i, l)],
-                    pos[at(j, l)],
-                    pos[at(j, l + 1)],
-                    pos[at(i, l + 1)],
-                ]);
-            }
-            let (total, least) = polyhedron_volumes(&faces);
+            bot.clear();
+            top.clear();
+            bot.extend((0..n).map(|i| pos[at(i, l)]));
+            top.extend((0..n).map(|i| pos[at(i, l + 1)]));
+            let (total, least) = prism_volumes(&bot, &top);
             if !(total > 0.0 && least > 0.0) {
                 return Some(fail(format!(
                     "polyhedron volume {total:.6e}, smallest face-pyramid volume {least:.6e} (must be positive)"
@@ -290,6 +295,7 @@ pub(crate) fn generate_prism(
     let end_edges: BTreeSet<EntityId> = t.face_edges(st.target).iter().copied().collect();
     let mut lk: Vec<NodeKey> = vec![NodeKey::new(volume, u32::MAX); n_src * stride];
     let mut slot = 0usize;
+    let mut used: Vec<EntityId> = Vec::with_capacity(st.linking.len());
     for (i, k) in keys.iter().enumerate() {
         let col: Vec<NodeKey> = if interior[i] {
             let mut c = Vec::with_capacity(stride);
@@ -311,10 +317,12 @@ pub(crate) fn generate_prism(
                         .ok_or_else(|| fatal("column edge nodes unavailable".into()))?
                 }
                 Some(Dim::Edge) => {
-                    let mut col = vec![*k];
-                    let mut used: Vec<EntityId> = Vec::new();
+                    let mut col = Vec::with_capacity(stride);
+                    col.push(*k);
+                    used.clear();
                     let mut cur = *k;
-                    for _ in 0..16 {
+                    // A column crosses each linking face at most once.
+                    for _ in 0..st.linking.len() {
                         let l = st
                             .linking
                             .iter()
@@ -448,12 +456,21 @@ pub(crate) fn generate_prism(
         let pos_ref = &pos;
         forward = ordered(n_el, |e| {
             let ring = elems.nodes(e);
-            let bot: Vec<Point3> = ring.iter().map(|i| pos_ref[*i as usize * stride]).collect();
+            // Newell vector of the layer-0 ring, accumulated without a temporary.
+            let n = ring.len();
+            let at0 = |k: usize| {
+                let p = pos_ref[ring[k] as usize * stride];
+                Vector3::new(p.x, p.y, p.z)
+            };
+            let mut nrm = Vector3::default();
+            for k in 0..n {
+                nrm = nrm + at0(k).cross(at0((k + 1) % n));
+            }
             let up = ring.iter().fold(Vector3::default(), |a, i| {
                 let i = *i as usize * stride;
                 a + (pos_ref[i + 1] - pos_ref[i])
             });
-            newell(&bot).dot(up) > 0.0
+            nrm.dot(up) > 0.0
         });
         let fails = |forward: &[bool]| -> Option<Fail> {
             let check = |e: usize| {
@@ -539,11 +556,13 @@ pub(crate) fn generate_prism(
     let n_cells = n_el * layers;
     out.elements = sm_scheme_api::Elements::with_capacity(n_cells, 8);
     let mut buf: Vec<u32> = Vec::with_capacity(16);
+    // Polyhedron scratch: face loops concatenated in `flat`, bounds in `ends`, reused per cell.
+    let mut flat: Vec<u32> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
     for (e, &fwd) in forward.iter().enumerate() {
         let ring = elems.nodes(e);
         let n = ring.len();
-        let order: Vec<usize> = ring_order(n, fwd).collect();
-        let at = |i: usize, layer: usize| local[ring[order[i]] as usize * stride + layer];
+        let at = |i: usize, layer: usize| local[ring[ring_at(n, fwd, i)] as usize * stride + layer];
         for l in 0..layers {
             if n <= 4 {
                 buf.clear();
@@ -557,16 +576,24 @@ pub(crate) fn generate_prism(
                 };
                 out.elements.push(ElemShape::Cell(cell), &buf);
             } else {
-                let bot: Vec<u32> = (0..n).rev().map(|i| at(i, l)).collect();
-                let top: Vec<u32> = (0..n).map(|i| at(i, l + 1)).collect();
-                let sides: Vec<[u32; 4]> = (0..n)
-                    .map(|i| {
-                        let j = (i + 1) % n;
-                        [at(i, l), at(j, l), at(j, l + 1), at(i, l + 1)]
-                    })
-                    .collect();
-                let mut faces: Vec<&[u32]> = vec![&bot, &top];
-                faces.extend(sides.iter().map(|s| s.as_slice()));
+                flat.clear();
+                ends.clear();
+                flat.extend((0..n).rev().map(|i| at(i, l)));
+                ends.push(flat.len());
+                flat.extend((0..n).map(|i| at(i, l + 1)));
+                ends.push(flat.len());
+                for i in 0..n {
+                    let j = (i + 1) % n;
+                    flat.extend([at(i, l), at(j, l), at(j, l + 1), at(i, l + 1)]);
+                    ends.push(flat.len());
+                }
+                // One small pointer list per polyhedron cell (the API takes `&[&[u32]]`).
+                let mut faces: Vec<&[u32]> = Vec::with_capacity(ends.len());
+                let mut s0 = 0;
+                for &e1 in &ends {
+                    faces.push(&flat[s0..e1]);
+                    s0 = e1;
+                }
                 out.elements.push_polyhedron(&faces);
             }
         }

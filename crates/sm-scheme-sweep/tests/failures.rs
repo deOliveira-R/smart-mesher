@@ -94,14 +94,21 @@ fn a_non_affine_target_in_auto_mode_names_the_residual() {
         }
         other => panic!("expected NotApplicable, got {:?}", other.map(|_| ())),
     }
-    // target_mode copy registers the copy anyway (the user takes responsibility).
+    // target_mode copy also refuses a bad fit until `project` mode exists.
     let mut intent = MeshIntent::default();
     intent.set_scheme(
         ids.volume,
         sweep_with(&ids, serde_json::json!({ "target_mode": "copy" })),
     );
-    let plan = plan_only(&registry(), &topo, &model, &[ids.volume], &intent).expect("copy plans");
-    assert!(plan.copy_of(Target::Surface(ids.faces[5])).is_some());
+    match plan_only(&registry(), &topo, &model, &[ids.volume], &intent) {
+        Err(SchemeError::NotApplicable { reason, .. }) => {
+            assert!(
+                reason.contains("target_mode copy") && reason.contains("residual"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected NotApplicable, got {:?}", other.map(|_| ())),
+    }
 }
 
 fn fallback_registry() -> SchemeRegistry {
@@ -180,6 +187,57 @@ fn an_inverted_layer_is_a_quality_failure_with_nodes_and_the_driver_falls_back()
     assert!(validate(m).is_empty(), "{:?}", validate(m));
     assert_eq!(m.count(MeshEntityKind::Cell), 1);
     let _ = NodeKey::new(ids.volume, 0);
+}
+
+#[test]
+fn an_inverted_bend_with_three_layers_and_interior_nodes_fails_in_the_gate() {
+    // 2x2 source (one interior node per layer) and 3 layers: the bent boundary columns go
+    // through `place_layers`, and the gate still rejects the folded layers.
+    let (topo, ids, model) = brick();
+    let reg = fallback_registry();
+    let mut intent = MeshIntent::default();
+    for e in [0usize, 4] {
+        intent.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(2)));
+    }
+    intent.set_intervals(ids.edges[8], Firm::hard(IntervalRequest::Count(3)));
+    intent.set_scheme(
+        ids.volume,
+        SchemeChoice::with_params(
+            "sweep",
+            serde_json::json!({
+                "source": [ids.faces[4]], "target": [ids.faces[5]],
+                "bend": 170.0_f64.to_radians(),
+            }),
+            Firmness::Hard,
+        ),
+    );
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let driver = Driver::new(&reg, &solver, &picker);
+    let sel = [ids.volume];
+    let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+    let plan = driver.plan(&input, &intent).expect("plan");
+    let g = match driver.generate(&input, &plan, &Sequential) {
+        Err(SchemeError::Generate(g)) => g,
+        other => panic!("expected a generation failure, got {:?}", other.map(|_| ())),
+    };
+    assert_eq!(g.kind, FailureKind::Quality, "{g}");
+    assert_eq!(g.nodes.len(), 8, "{:?}", g.nodes);
+    assert!(
+        g.reason.contains("layer") && g.reason.contains("source element"),
+        "{}",
+        g.reason
+    );
+    // With a mild bend the same mesh is accepted (the failure is the fold, not the setup).
+    let mut mild = MeshIntent::default();
+    for e in [0usize, 4] {
+        mild.set_intervals(ids.edges[e], Firm::hard(IntervalRequest::Count(2)));
+    }
+    mild.set_intervals(ids.edges[8], Firm::hard(IntervalRequest::Count(3)));
+    mild.set_scheme(
+        ids.volume,
+        sweep_with(&ids, serde_json::json!({ "bend": 0.1 })),
+    );
+    mesh_with(&reg, &topo, &model, &[ids.volume], &mild, &Sequential).expect("mild bend meshes");
 }
 
 #[test]
