@@ -60,29 +60,46 @@ fn sides_key<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> Option<FaceSide
     view.face_sides(f)
 }
 
+/// What [`unify_surface`] changed on the dropped face, to put back if the join is refused.
+struct Repointed {
+    face: EntityId,
+    old: SurfaceCarrier,
+    pcurves: Vec<(sm_topo_api::CoedgeKey, sm_geom_api::PCurve)>,
+}
+
 /// Re-point face `drop` at the surface handle of `keep` (same geometry), keeping its normal.
-fn unify_surface<E: TopologyEdit + ?Sized>(topo: &mut E, keep: EntityId, drop: EntityId) -> Result<bool, BooleanError> {
-    let (Carrier::Surface(sk), Carrier::Surface(sd)) = (topo.carrier(keep).clone(), topo.carrier(drop).clone()) else { return Ok(false) };
+/// `Ok(None)` means the faces cannot be joined; `Ok(Some(None))` that they already agree and
+/// nothing changed; `Ok(Some(Some(r)))` that `drop` was re-pointed (undo with [`restore`]).
+fn unify_surface<E: TopologyEdit + ?Sized>(topo: &mut E, keep: EntityId, drop: EntityId) -> Result<Option<Option<Repointed>>, BooleanError> {
+    let (Carrier::Surface(sk), Carrier::Surface(sd)) = (topo.carrier(keep).clone(), topo.carrier(drop).clone()) else { return Ok(None) };
     if sk.surface == sd.surface {
-        return Ok(sk.sense == sd.sense);
+        return Ok((sk.sense == sd.sense).then_some(None));
     }
-    let Some(p) = crate::faceclass::interior_point(&*topo, &crate::faceclass::FaceCache::new(), drop)? else { return Ok(false) };
-    let (Some((nk_surf, _)), Some((nd_surf, _))) = (surface_normal(&*topo, sk.surface, p), surface_normal(&*topo, sd.surface, p)) else { return Ok(false) };
+    let Some(p) = crate::faceclass::interior_point(&*topo, &crate::faceclass::FaceCache::new(), drop)? else { return Ok(None) };
+    let (Some((nk_surf, _)), Some((nd_surf, _))) = (surface_normal(&*topo, sk.surface, p), surface_normal(&*topo, sd.surface, p)) else { return Ok(None) };
     let n_drop = nd_surf * sd.sense.sign();
     let dot = n_drop.dot(nk_surf);
     if dot.abs() < 0.5 {
-        return Ok(false);
+        return Ok(None);
     }
     let sense = if dot > 0.0 { Sense::Forward } else { Sense::Reversed };
     // The old pcurves belong to the old parametrization: drop them (the pcurve pass rebuilds).
     let keys: Vec<_> = topo.coedges(drop).map(|c| c.key).collect();
+    let pcurves: Vec<_> = keys.iter().filter_map(|&k| topo.pcurve(k).cloned().map(|pc| (k, pc))).collect();
     topo.set_carrier(drop, Carrier::Surface(SurfaceCarrier { surface: sk.surface, sense }))?;
-    for k in keys {
-        if topo.pcurve(k).is_some() {
-            topo.set_pcurve(k, None)?;
-        }
+    for &(k, _) in &pcurves {
+        topo.set_pcurve(k, None)?;
     }
-    Ok(true)
+    Ok(Some(Some(Repointed { face: drop, old: sd, pcurves })))
+}
+
+/// Undo a [`unify_surface`] whose join was refused, so a refusal leaves no side effect.
+fn restore<E: TopologyEdit + ?Sized>(topo: &mut E, r: Repointed) -> Result<(), BooleanError> {
+    topo.set_carrier(r.face, Carrier::Surface(r.old))?;
+    for (k, pc) in r.pcurves {
+        topo.set_pcurve(k, Some(pc))?;
+    }
+    Ok(())
 }
 
 fn surface_normal<V: TopologyView + ?Sized>(view: &V, s: EntityId, p: Point3) -> Option<(sm_core::Vector3, Point3)> {
@@ -124,12 +141,13 @@ fn join_faces_pass<E: TopologyEdit + ?Sized>(topo: &mut E, volumes: &[EntityId],
             if !same_surface(sf, sg, tol.linear, tol.angular) {
                 continue;
             }
-            if !unify_surface(topo, f, g)? {
-                continue;
-            }
-            // Atomic: an error leaves the complex as it was.
+            let Some(undo) = unify_surface(topo, f, g)? else { continue };
+            // `join_faces` is atomic; if it refuses, put the surface and pcurves back.
             if topo.join_faces(f, g).is_ok() {
                 return Ok(true);
+            }
+            if let Some(r) = undo {
+                restore(topo, r)?;
             }
         }
     }

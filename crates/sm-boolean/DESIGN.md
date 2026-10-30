@@ -70,6 +70,27 @@ so the next candidate is tried); `Invalid("bodies do not touch ...")` is returne
 remaining operand touches the running volume. The result therefore does not depend on the operand
 order for any connected set. `new_faces` accumulates over every fuse.
 
+Candidates that meet the running volume along an edge or at isolated points only (nothing to
+imprint, every fragment outside) fail with `TangentContact` before any edit and are skipped the
+same way. A line tangency found while arranging (a cylinder resting on a brick face) fails after
+edits started and the kernel has no sub-transaction. The ops therefore roll the whole transaction
+back and retry with the offending operand fused last (`boolean_ordered`), at most once per
+operand, so a bridge operand that covers the tangent line makes the set work in any order. If the
+retries fail too, the first `TangentContact` is reported. The library function `boolean` alone
+(without the ops) does not retry: it returns the error.
+
+## Contact that is not an overlap
+
+| Contact between two operands | unite | intersect | subtract |
+|---|---|---|---|
+| far apart | `Invalid("bodies do not touch")` | `EmptyResult` | target unchanged |
+| along an edge or at a vertex only (found by a vertex of one lying on the other) | `TangentContact` (union is not a manifold solid) | `EmptyResult` | target unchanged |
+| curved surfaces touching at isolated points (SSI tangent points) | `TangentContact` | `TangentContact` | `TangentContact` |
+| along a line (cylinder on a plane) | `TangentContact` | `TangentContact` | `TangentContact` |
+
+Edge or vertex contact is detected only when a vertex of one operand lies on a face of the
+other; two edges that cross at an interior point of both are reported as "do not touch".
+
 ## Known limits
 
 - **Near-tangent contact.** A curved operand whose clearance to another surface is below about
@@ -77,7 +98,7 @@ order for any connected set. `new_faces` accumulates over every fuse.
   `linear = 1e-6`) is not classified robustly: the assembled volume fails its check and the
   operation is rolled back with `ResultInvalid` (the message names the near-tangent cause).
   Clearances of `1e-2` and above work. Exact line tangency (cylinder on a plane) and point
-  tangency are `TangentContact { entity, detail }` (`OpError::Unsupported`): the message names the
+  tangency of curved surfaces are `TangentContact { entity, detail }` (`OpError::Unsupported`): the message names the
   face and says to perturb the tool beyond the model tolerance.
 - **Webcut with a plane on an existing face** does not cross the target: the body is returned in
   one role and the other is empty (documented on `webcut`).
