@@ -184,6 +184,14 @@ Round r0 after the Opus review of the W3a pass.
 7. **Scale test**: `acc1_scaled_by_two_to_the_sixty_both_ways` also runs 3 shuffles at each
    scale and compares triangle sets.
 
+Round 1 (review MUST FIX 1): the angle limit `min(fail_angle, 0.9 * smallest corner)` was 0 on
+every face with a pole fan, because `geom::corners` skips the degenerate pole coedge and the seam
+then turns straight back at the pole (a 0 degree corner). The fan angle gate and the kernel gate
+on spheres therefore could never fire. `smallest_corner_deg` now leaves out turn-back corners
+(next real coedge on the same edge), so the 12 degree default applies to kernel triangles and
+fans. The sphere test now also asserts that a sphere with `fail_angle` above the achieved fan
+angle fails with `Quality`.
+
 Declined: none. (The property-style tests use their own fixed xorshift seeds, not
 `sm_testkit::strategies::config`, because they are not proptest strategies; unchanged.)
 

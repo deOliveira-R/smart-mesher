@@ -107,6 +107,20 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
 }
 
 #[test]
+fn the_angle_gate_applies_to_faces_with_pole_fans() {
+    for n in [8u32, 16] {
+        let mut c = CellComplex::new();
+        let ids = with_op(&mut c, OpId(1), |t| sphere(t, 2.5)).unwrap();
+        // Fan angles measure 58-60 degrees, so a 59.9 degree gate must fire (it was inert at 0).
+        let r = generate_only(&registry(), &c, &[ids.face], &[(ids.edges[1], n)], serde_json::json!({ "fail_angle": 59.9 }));
+        match r.map(|_| ()).expect_err("gate must fire") {
+            SchemeError::Generate(gf) => assert_eq!(gf.kind, FailureKind::Quality, "n = {n}: {}", gf.reason),
+            other => panic!("n = {n}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn a_sphere_too_coarse_for_pole_rings_is_unsupported_not_a_panic() {
     let mut c = CellComplex::new();
     let ids = with_op(&mut c, OpId(1), |t| sphere(t, 1.0)).unwrap();

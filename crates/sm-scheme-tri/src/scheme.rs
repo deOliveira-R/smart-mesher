@@ -293,10 +293,22 @@ fn assemble(
 }
 
 /// Smallest interior corner angle of the face's loops in degrees (180 if none is measurable).
+///
+/// Turn-back corners (the next real coedge uses the same edge, as at a pole where the seam goes
+/// in and straight out again) are not corners of the boundary and are left out.
 fn smallest_corner_deg(cx: &GenCtx<'_>, face: EntityId) -> f64 {
+    let mut turn_back: Vec<_> = Vec::new();
+    for lp in geom::face_loops(cx.input.topo, face) {
+        for (i, k) in lp.iter().enumerate() {
+            if lp[(i + 1) % lp.len()].edge == k.edge {
+                turn_back.push(*k);
+            }
+        }
+    }
     match geom::corners(cx.input.topo, face) {
         Ok(cs) => cs
             .iter()
+            .filter(|c| !turn_back.contains(&c.key.incoming))
             .map(|c| c.angle.to_degrees())
             .fold(180.0, f64::min),
         Err(_) => 180.0,
