@@ -378,3 +378,45 @@ fn surface_clusters_suggest_a_scheme_change_or_refinement() {
     let names: Vec<&str> = r.metrics.iter().map(|m| m.metric.as_str()).collect();
     assert_eq!(names, ["face_flatness", "face_concavity", "starness", "edge_ratio", "volume_ratio"]);
 }
+
+#[test]
+fn weak_hot_spot_falls_back_to_inspect() {
+    // One displaced vertex of a model face: the face cluster is enriched (>= 1.5) but too
+    // small a fraction (< 0.5) for adjust_intervals, and its presence rules out `smooth`.
+    let m0 = block([6, 6, 6], [1.0; 3], &[], &mut SerialAlloc::new());
+    let v = 3 + 7 * 3; // vertex (3, 3, 0): interior of a bottom face
+    let p = m0.point(v);
+    let m = block([6, 6, 6], [1.0; 3], &[(v, [p.x + 0.3, p.y, p.z])], &mut SerialAlloc::new());
+    let r = report(&m, &hot_options(true));
+    let metric = by_name(&r, "non_orthogonality");
+    assert!(metric.n_warn + metric.n_fail > 0);
+    assert!(metric.clusters.iter().all(|c| c.fraction < 0.5 || c.enrichment < 2.0), "{:?}", metric.clusters);
+    assert!(metric.clusters.iter().any(|c| c.enrichment >= 1.5), "{:?}", metric.clusters);
+    let kinds: Vec<&str> = r.suggestions.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(kinds, ["inspect"], "{kinds:?}");
+    let s = &r.suggestions[0];
+    assert_eq!((s.op.as_deref(), s.available, s.metric.as_str()), (Some("mesh.flag_cells"), true, "non_orthogonality"));
+    assert_eq!(s.targets, vec![m.mesh_id()]);
+    let r = quality_report(&m, &hot_options(true), &|_| false).unwrap();
+    assert!(!r.suggestions[0].available && r.suggestions[0].reason.contains("not registered"));
+}
+
+#[test]
+fn structurally_corrupt_mesh_is_a_typed_error_not_a_panic() {
+    let m = block([2, 1, 1], [1.0; 3], &[], &mut SerialAlloc::new());
+    let f = (0..m.face_count()).find(|&f| m.face_right(FaceIx::new(f)).is_some()).unwrap();
+    let t = Tampered::of(&m).set_face_right(f, 9999);
+    let e = quality_report(&t, &QualityOptions::default(), &all_ops).unwrap_err();
+    assert!(matches!(e, sm_diag::DiagError::Quality(sm_quality::QualityError::CorruptMesh(_))), "{e:?}");
+    let msg = e.to_string();
+    assert!(msg.contains("mesh.validate") && msg.contains(&format!("face {f}")) && msg.contains("9999"), "{msg}");
+    let e = sm_diag::flagged_cells(&t, Profile::Generic, None, &BTreeMap::new(), sm_diag::Level::Fail, true).unwrap_err();
+    assert!(e.to_string().contains("mesh.validate"), "{e}");
+    assert!(sm_quality::fv_geometry(&t).unwrap_err().to_string().contains("mesh.validate"));
+    assert!(sm_quality::validity(&t, &sm_quality::Options::default()).is_err());
+    // A cell that names a face out of range.
+    let mut t = Tampered::of(&m);
+    t.cell_faces[0] = sm_mesh_api::SignedFace::new(FaceIx::new(5000), sm_mesh_api::Side::Left);
+    let msg = quality_report(&t, &QualityOptions::default(), &all_ops).unwrap_err().to_string();
+    assert!(msg.contains("cell 0") && msg.contains("5000"), "{msg}");
+}

@@ -8,7 +8,7 @@ use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshLayer, add_mesh_set};
 use sm_mesh_api::{CellIx, MeshRead, SetMembers};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_quality::{CellStatus, FvEntity, Measure, Options, Profile, Reduce, face_to_cell, validity};
+use sm_quality::{CellStatus, check_indices, FvEntity, Measure, Options, Profile, Reduce, face_to_cell, validity};
 
 use crate::analysis::{G_FAIL, G_UNDEF, G_WARN, ThresholdOverride, compute_columns, grade_ranks, resolve};
 use crate::common::resolve_mesh;
@@ -24,6 +24,16 @@ pub enum Level {
     Fail,
     /// Cells graded `warn` or `fail`.
     Warn,
+}
+
+impl Level {
+    /// Wire name: `fail` or `warn`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Level::Fail => "fail",
+            Level::Warn => "warn",
+        }
+    }
 }
 
 /// Largest accepted `grow`.
@@ -68,6 +78,7 @@ pub fn flagged_cells(
     level: Level,
     include_invalid: bool,
 ) -> Result<Vec<CellIx>, DiagError> {
+    check_indices(m)?;
     let min_rank = if level == Level::Warn { G_WARN } else { G_FAIL };
     let items: Vec<_> = resolve(profile, metrics, thresholds)?.into_iter().filter(|(_, r)| r.is_some()).collect();
     let measures: Vec<Measure> = items.iter().map(|(x, _)| *x).collect();
@@ -178,7 +189,7 @@ impl TypedOp for MeshFlagCells {
             cells = grow_cells(m, &cells, self.grow);
         }
         if cells.is_empty() {
-            ctx.warn("diag.nothing_to_flag", format!("no cell of {id} is graded {:?} or invalid: no set `{}` was created", self.level, self.name), &[id]);
+            ctx.warn("diag.nothing_to_flag", format!("no cell of {id} is graded {} or invalid: no set `{}` was created", self.level.name(), self.name), &[id]);
             return Ok(());
         }
         add_mesh_set(ctx, id, &self.name, SetMembers::Cells(cells), "set")?;

@@ -256,7 +256,7 @@
           "type": "string"
         },
         "kind": {
-          "description": "`adjust_intervals`, `change_scheme`, `refine_surface`, `smooth` or `fix_geometry_or_scheme`.",
+          "description": "`adjust_intervals`, `change_scheme`, `refine_surface`, `smooth`, `inspect` or `fix_geometry_or_scheme`.",
           "type": "string"
         },
         "metric": {

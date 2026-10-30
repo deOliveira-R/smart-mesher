@@ -403,6 +403,7 @@ fn classify(x: f64, tol: f64) -> CellStatus {
 /// the sign of the volume; polyhedra use the volume and star-shapedness about the vertex mean.
 /// For 2-D cells the sign is relative to [`Options::normals`].
 pub fn validity(mesh: &dyn MeshRead, opts: &Options<'_>) -> Result<Validity> {
+    crate::check::check_indices(mesh)?;
     let p = prepare(mesh, &[], opts)?;
     let tol = opts.degenerate_tol;
     let n = mesh.cell_count();

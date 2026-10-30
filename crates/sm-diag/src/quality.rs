@@ -9,7 +9,7 @@ use sm_core::EntityId;
 use sm_layer_api::MeshLayer;
 use sm_mesh_api::{CellIx, FaceIx, MeshDim, MeshEntityKind, MeshRead, entity_dim};
 use sm_op_api::{OpError, QueryCtx, State, TypedQuery};
-use sm_quality::{CHUNK, CellStatus, DBL_MAX, FvEntity, Measure, Options, Profile, Rule, Sense, histogram_auto, summarize, validity};
+use sm_quality::{CHUNK, check_indices, CellStatus, DBL_MAX, FvEntity, Measure, Options, Profile, Rule, Sense, histogram_auto, summarize, validity};
 
 use crate::OpNames;
 use crate::analysis::{G_FAIL, G_WARN, MetricColumn, SkippedMetric, ThresholdOverride, compute_columns, grade_ranks, resolve, sense_of};
@@ -338,22 +338,41 @@ impl Touch {
 /// Clusters of bad entities by model entity: `bad[i]` marks bad entities, `defined[i]` those with
 /// a value. Sorted by fraction (descending), bad count (descending), id; the top ten.
 fn clusters(m: &dyn MeshRead, touch: &Touch, entity: FvEntity, ranks: &[u8], values: &[f64]) -> Vec<Cluster> {
-    let mut counts: Vec<(usize, usize)> = vec![(0, 0); touch.models.len()];
-    let (mut bad_all, mut defined_all) = (0usize, 0usize);
-    let mut scratch: Vec<u32> = Vec::new();
-    for (i, &v) in values.iter().enumerate() {
-        if !v.is_finite() {
-            continue;
-        }
-        let bad = ranks[i] == G_WARN || ranks[i] == G_FAIL;
-        defined_all += 1;
-        bad_all += usize::from(bad);
-        touch.of(m, entity, i, &mut scratch);
-        for &c in &scratch {
-            counts[c as usize].1 += 1;
-            counts[c as usize].0 += usize::from(bad);
-        }
-    }
+    let nm = touch.models.len();
+    // Per-chunk integer counts, summed: exact, so independent of the reduction order.
+    let (counts, bad_all, defined_all) = values
+        .par_chunks(CHUNK)
+        .zip(ranks.par_chunks(CHUNK))
+        .enumerate()
+        .map(|(ci, (vs, rs))| {
+            let mut counts: Vec<(usize, usize)> = vec![(0, 0); nm];
+            let (mut bad_all, mut defined_all) = (0usize, 0usize);
+            let mut scratch: Vec<u32> = Vec::new();
+            for (i, (&v, &r)) in vs.iter().zip(rs).enumerate() {
+                if !v.is_finite() {
+                    continue;
+                }
+                let bad = r == G_WARN || r == G_FAIL;
+                defined_all += 1;
+                bad_all += usize::from(bad);
+                touch.of(m, entity, ci * CHUNK + i, &mut scratch);
+                for &c in &scratch {
+                    counts[c as usize].1 += 1;
+                    counts[c as usize].0 += usize::from(bad);
+                }
+            }
+            (counts, bad_all, defined_all)
+        })
+        .reduce(
+            || (vec![(0, 0); nm], 0, 0),
+            |mut a, b| {
+                for (x, y) in a.0.iter_mut().zip(&b.0) {
+                    x.0 += y.0;
+                    x.1 += y.1;
+                }
+                (a.0, a.1 + b.1, a.2 + b.2)
+            },
+        );
     if bad_all == 0 {
         return Vec::new();
     }
@@ -480,8 +499,8 @@ fn analyze(m: &dyn MeshRead, col: &MetricColumn, rule: Option<&Rule>, o: &Qualit
 ///
 /// `ops` answers "is this op registered" for the suggestion table; set
 /// [`QualityOptions::registry_provided`] to false when there is no registry to ask. Metrics no
-/// cell supports go to `skipped`, never to an error. Assumes a structurally valid mesh (every
-/// finished mesh is); run `mesh.validate` for a suspect one.
+/// cell supports go to `skipped`, never to an error. A structurally corrupt mesh (an index out of
+/// range) gives [`DiagError::Quality`] with `CorruptMesh`, whose message suggests `mesh.validate`.
 pub fn quality_report(m: &dyn MeshRead, o: &QualityOptions, ops: &dyn Fn(&str) -> bool) -> Result<QualityReport, DiagError> {
     if o.worst_n > MAX_WORST {
         return Err(DiagError::BadArgument(format!("worst_n {} exceeds {MAX_WORST}", o.worst_n)));
@@ -489,6 +508,7 @@ pub fn quality_report(m: &dyn MeshRead, o: &QualityOptions, ops: &dyn Fn(&str) -
     if !(2..=200).contains(&o.bins) {
         return Err(DiagError::BadArgument(format!("bins {} is outside 2..=200", o.bins)));
     }
+    check_indices(m)?;
     let items = resolve(o.profile, o.metrics.as_deref(), &o.thresholds)?;
     let measures: Vec<Measure> = items.iter().map(|(m, _)| *m).collect();
     let (cols, skipped) = compute_columns(m, &measures)?;

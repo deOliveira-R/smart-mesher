@@ -51,6 +51,7 @@ Pure core `quality_report(m, &QualityOptions, ops)`; `ops` answers "is this op r
 | cluster on a `TopoFace`, same thresholds | `change_scheme` | `mesh.scheme` | `{n_bad, n_total}` |
 | the same, metric `face_flatness`, `face_warp` or `face_concavity` on the transport profile | `refine_surface` (instead) | `mesh.size` | `{n_bad, n_total}` |
 | bad entities of a metric and no cluster with enrichment >= 1.5 | `smooth` (target: the mesh) | `mesh.smooth` | `{n_bad}` |
+| bad entities of a metric and none of the rules above produced a suggestion for it | `inspect` (target: the mesh) | `mesh.flag_cells` | `{n_bad}` |
 | inverted or degenerate cells | `fix_geometry_or_scheme`, one per owning volume | none | `{n_inverted, n_degenerate}` |
 
 `args` is `null` throughout (the op's own schema decides the rest). **Availability reads the op registry.** `QueryCtx` has no registry handle, so the host injects `OpNames(BTreeSet<String>)` (sm-server fills it from `Registry::op_names()`); `available = ops(op)`. If the service is absent every suggestion with an op is `available: false` and its reason says "op registry not provided"; if the registry lacks the op the reason says it is not registered. Nothing hard-codes which ops exist: `mesh.smooth` becomes available the day `sm-smooth` is installed. Suggestions without an op (`fix_geometry_or_scheme`) are `available: false`.
@@ -69,4 +70,4 @@ Benchmark (`benches/quality.rs`, record only, not asserted): `quality_report` wi
 
 ## Known gaps
 
-Shell-orientation validation for dimension-2 meshes (needs `FaceNormals` over the topology), equiangle skewness, cell-level aspect ratio in the checkMesh definition, per-material profiles, `mesh.unflag_cells` and a derived cache are deferred (W3b). `quality_report` assumes a structurally valid mesh (every finished mesh is); run `mesh.validate` first on a suspect one. The Transport and Generic thresholds are provisional and the Transport numbers await the user's ratification. Topology-liveness of classification entities (beyond state liveness) is not checked.
+Shell-orientation validation for dimension-2 meshes (needs `FaceNormals` over the topology), equiangle skewness, cell-level aspect ratio in the checkMesh definition, per-material profiles, `mesh.unflag_cells` and a derived cache are deferred (W3b). `quality_report`, `flagged_cells`, `fv_geometry` and `validity` run an O(n) index-range precheck (`sm_quality::check_indices`) and return `CorruptMesh` (the message suggests `mesh.validate`) instead of panicking. The Transport and Generic thresholds are provisional and the Transport numbers await the user's ratification. Topology-liveness of classification entities (beyond state liveness) is not checked.

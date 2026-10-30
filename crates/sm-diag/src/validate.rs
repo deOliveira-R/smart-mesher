@@ -215,15 +215,18 @@ fn collect(m: &dyn MeshRead, o: &ValidateOptions, live: Option<&dyn Fn(EntityId)
         tol.planarity = o.planarity;
         tol.min_volume = o.min_volume;
         out.extend(validate_geometry(m, &tol).into_iter().map(|v| Finding::new(v.code.as_str(), Severity::Error, v.entity, v.detail)));
-        if let Ok(v) = validity(m, &Options::default()) {
-            for (c, s) in v.status.iter().enumerate() {
-                let (code, what) = match s {
-                    CellStatus::Inverted => ("quality.inverted", "a corner Jacobian or the volume is negative"),
-                    CellStatus::Degenerate => ("quality.degenerate", "the cell is collapsed (zero Jacobian or non-finite coordinates)"),
-                    _ => continue,
-                };
-                out.push(Finding::new(code, Severity::Error, Some(MeshEntity::Cell(sm_mesh_api::CellIx::new(c))), what));
+        match validity(m, &Options::default()) {
+            Ok(v) => {
+                for (c, s) in v.status.iter().enumerate() {
+                    let (code, what) = match s {
+                        CellStatus::Inverted => ("quality.inverted", "a corner Jacobian or the volume is negative"),
+                        CellStatus::Degenerate => ("quality.degenerate", "the cell is collapsed (zero Jacobian or non-finite coordinates)"),
+                        _ => continue,
+                    };
+                    out.push(Finding::new(code, Severity::Error, Some(MeshEntity::Cell(sm_mesh_api::CellIx::new(c))), what));
+                }
             }
+            Err(e) => out.push(Finding::new("diag.validity_unavailable", Severity::Warning, None, format!("cell validity (inverted and degenerate cells) could not be computed: {e}"))),
         }
         GeometryStatus::Checked
     };
@@ -252,7 +255,7 @@ fn collect(m: &dyn MeshRead, o: &ValidateOptions, live: Option<&dyn Fn(EntityId)
 
 /// Validate `m`: [`sm_mesh_api::validate()`](sm_mesh_api::validate()); then, if no structural code was found, geometry
 /// ([`sm_mesh_api::validate_geometry`] and [`sm_quality::validity`] as `quality.inverted` /
-/// `quality.degenerate`); then `diag.class_retired` for every classification entity `live`
+/// `quality.degenerate`; if that cannot run, a `diag.validity_unavailable` warning says so); then `diag.class_retired` for every classification entity `live`
 /// rejects. `live` is `None` when there is no state to ask. Pure and deterministic.
 pub fn validate_mesh(m: &dyn MeshRead, o: &ValidateOptions, live: Option<&dyn Fn(EntityId) -> bool>) -> ValidateReport {
     validate_with(m, o, live, false)

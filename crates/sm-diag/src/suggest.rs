@@ -8,6 +8,7 @@
 //! | cluster on a `TopoEdge`, fraction >= 0.5 and enrichment >= 2 | `adjust_intervals` (op `mesh.intervals`, params `{current_count}`) |
 //! | cluster on a `TopoFace`, same thresholds | `change_scheme` (op `mesh.scheme`); for `face_flatness`, `face_warp`, `face_concavity` on the transport profile `refine_surface` (op `mesh.size`) instead |
 //! | bad entities of a metric and no cluster with enrichment >= 1.5 | `smooth` (op `mesh.smooth`) |
+//! | bad entities of a metric and none of the rules above produced a suggestion for it (a hot spot below the cluster thresholds or on a vertex) | `inspect` (op `mesh.flag_cells`): store the bad cells as a set to look at |
 //! | inverted or degenerate cells | `fix_geometry_or_scheme` per owning volume, no op |
 
 use schemars::JsonSchema;
@@ -26,6 +27,8 @@ pub const OP_INTERVALS: &str = "mesh.intervals";
 pub const OP_SCHEME: &str = "mesh.scheme";
 /// Op named by `refine_surface`.
 pub const OP_SIZE: &str = "mesh.size";
+/// Op named by `inspect`.
+pub const OP_FLAG: &str = "mesh.flag_cells";
 /// Op named by `smooth`.
 pub const OP_SMOOTH: &str = "mesh.smooth";
 
@@ -41,7 +44,7 @@ pub const SPREAD_ENRICHMENT: f64 = 1.5;
 pub struct Suggestion {
     /// Stable id: `kind:target:metric`.
     pub id: String,
-    /// `adjust_intervals`, `change_scheme`, `refine_surface`, `smooth` or `fix_geometry_or_scheme`.
+    /// `adjust_intervals`, `change_scheme`, `refine_surface`, `smooth`, `inspect` or `fix_geometry_or_scheme`.
     pub kind: String,
     /// `error` if the metric fails somewhere, else `warning`.
     pub severity: Severity,
@@ -110,6 +113,7 @@ pub(crate) fn suggest(
         let severity = if f.n_fail > 0 { Severity::Error } else { Severity::Warning };
         let transport_surface = profile == Profile::Transport
             && matches!(f.measure, Measure::Fv(FvMetric::FaceFlatness | FvMetric::FaceWarp | FvMetric::FaceConcavity));
+        let first = out.len();
         let strong = |c: &&Cluster| c.fraction >= MIN_FRACTION && c.enrichment >= MIN_ENRICHMENT;
         for c in f.clusters.iter().filter(strong) {
             let pct = format!("{}/{} touching entities are bad, enrichment {:.1}", c.n_bad, c.n_total, c.enrichment);
@@ -175,6 +179,22 @@ pub(crate) fn suggest(
                 args: None,
                 params: json!({ "n_bad": f.n_bad }),
                 reason: format!("{name}: {} bad entities are spread over the mesh, no hot spot; smoothing may help{why}", f.n_bad),
+                available,
+            });
+        }
+        // Gap-filler: bad entities that no rule above turned into an action.
+        if f.n_bad > 0 && out.len() == first {
+            let (available, why) = av.of(OP_FLAG);
+            out.push(Suggestion {
+                id: format!("inspect:{mesh}:{name}"),
+                kind: "inspect".into(),
+                severity,
+                metric: name.into(),
+                targets: vec![mesh],
+                op: Some(OP_FLAG.into()),
+                args: None,
+                params: json!({ "n_bad": f.n_bad }),
+                reason: format!("{name}: {} bad entities form a hot spot too small or too specific for a rule; flag them as a set and inspect{why}", f.n_bad),
                 available,
             });
         }

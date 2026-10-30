@@ -83,10 +83,22 @@ fn reversed_loop_is_structural_and_skips_geometry() {
     let t = Tampered::of(&m).reverse_loop(0);
     let r = validate_mesh(&t, &opts(), None);
     assert!(!r.valid && !r.geometry_checked);
-    assert!(r.violations.iter().any(|v| v.entity.is_some_and(|e| e.index == 0) || v.code == "cell.closed" || v.code == "cell.side"), "{:?}", r.violations);
-    assert!(r.by_code.keys().any(|c| c.starts_with("loop.") || c.starts_with("cell.") || c.starts_with("face.")));
+    // The reversed face itself: `loop.canonical` at face 0, with its own id and classification.
+    let v = r.violations.iter().find(|v| v.code == "loop.canonical").unwrap_or_else(|| panic!("{:?}", r.violations));
+    let e = v.entity.expect("entity");
+    assert_eq!((e.index, e.id), (0, Some(m.id(MeshEntityKind::Face, 0))));
+    assert_eq!(v.owner, Some(m.classification(MeshEntityKind::Face, 0).entity));
+    assert_eq!(v.severity, Severity::Error);
+    // The two cells that use it stop being closed surfaces, both owned by their volume.
+    for c in 0..2u32 {
+        let v = r.violations.iter().find(|v| v.code == "cell.closed" && v.entity.is_some_and(|e| e.index == c)).unwrap_or_else(|| panic!("cell {c}: {:?}", r.violations));
+        assert_eq!(v.entity.unwrap().id, Some(m.id(MeshEntityKind::Cell, c)));
+        assert_eq!(v.owner, Some(m.classification(MeshEntityKind::Cell, c).entity));
+    }
+    assert!(r.by_code.contains_key("loop.canonical") && r.by_code["cell.closed"] == 2);
+    assert!(!r.by_code.keys().any(|c| c.starts_with("quality.")), "geometry must not run");
     assert_eq!(r.by_code.values().sum::<usize>(), r.total);
-    assert!(r.geometry_skipped_reason.is_some());
+    assert!(r.geometry_skipped_reason.as_deref().unwrap().contains("structural violation"));
 }
 
 #[test]
