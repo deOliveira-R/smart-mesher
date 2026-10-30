@@ -121,6 +121,7 @@ impl MeshTracker {
         for a in &core.actions {
             a.hash_into(&mut h);
         }
+        h.write_u64(core.exit_action.map_or(u64::MAX, u64::from));
         for bvh in [&core.face_bvh, &core.cell_bvh] {
             h.write_u64(bvh.bb.len() as u64);
             for b in &bvh.bb {
@@ -365,13 +366,35 @@ impl MeshTracker {
     fn first_hit_cell(&self, p: [f64; 3], w0: [f64; 3], sc: &mut Scratch) -> u32 {
         let tol = self.tol();
         let cast = |w: [f64; 3], sc: &mut Scratch| -> (u32, bool) {
-            match self.core.first_hit(p, w, tol, &mut sc.ids) {
+            let (hit, ties) = self.core.first_hit_ties(p, w, tol, &mut sc.ids);
+            match hit {
                 None => (NONE, false),
                 Some((_, f, along)) => {
                     let fi = f as usize;
                     let pl = self.core.f_plane[fi];
-                    let graze = dot([pl[0], pl[1], pl[2]], w).abs() < 1e-6;
-                    (if along { self.core.f_left[fi] } else { self.core.f_right[fi] }, graze)
+                    let mut graze = dot([pl[0], pl[1], pl[2]], w).abs() < 1e-6;
+                    let mut cell = if along { self.core.f_left[fi] } else { self.core.f_right[fi] };
+                    if ties.n > 1 {
+                        // Coincident facets (touching shells): the cell on the `p` side is a
+                        // volume, the far side of a facet facing the wrong way is the exterior.
+                        // Distinct volumes among the ties are left to the direction vote.
+                        let mut vols = [NONE; 4];
+                        let mut nv = 0;
+                        for i in 0..ties.n {
+                            let g = ties.face[i] as usize;
+                            let c = if ties.along[i] { self.core.f_left[g] } else { self.core.f_right[g] };
+                            if c != NONE && !vols[..nv].contains(&c) {
+                                vols[nv] = c;
+                                nv += 1;
+                            }
+                        }
+                        match nv {
+                            0 => cell = NONE,
+                            1 => cell = vols[0],
+                            _ => graze = true,
+                        }
+                    }
+                    (cell, graze)
                 }
             }
         };
@@ -579,11 +602,18 @@ impl MeshTracker {
             return Once::Done(Step::new(t, CellId::COMPLEMENT, comp_region, end));
         }
         let mut t_exit = f64::INFINITY;
+        let mut slot = 0usize;
         for k in 0..3 {
-            if d[k] > 0.0 {
-                t_exit = t_exit.min((self.bounds[3 + k] - o[k]) / d[k]);
+            let t = if d[k] > 0.0 {
+                (self.bounds[3 + k] - o[k]) / d[k]
             } else if d[k] < 0.0 {
-                t_exit = t_exit.min((self.bounds[k] - o[k]) / d[k]);
+                (self.bounds[k] - o[k]) / d[k]
+            } else {
+                continue;
+            };
+            if t < t_exit {
+                t_exit = t;
+                slot = 2 * k + usize::from(d[k] > 0.0);
             }
         }
         let t_exit = t_exit.max(0.0);
@@ -591,6 +621,18 @@ impl MeshTracker {
             return limit(st, if max_dist.is_finite() { max_dist } else { 0.0 });
         }
         st.pos = vec_to_point(madd(o, d, t_exit));
+        if let Some(ai) = self.core.exit_action {
+            // Default boundary at the box: virtual face `n_faces + slot` (see `face_normal`).
+            let action = self.core.actions[ai as usize];
+            let face = FaceId((self.core.n_faces() + slot) as u32);
+            st.entered_via = Some(face);
+            if matches!(action, FaceAction::Reflect) {
+                let mut r = d;
+                r[slot / 2] = -r[slot / 2];
+                st.dir = Vector3::new(r[0], r[1], r[2]);
+            }
+            return Once::Done(Step::new(t_exit, CellId::COMPLEMENT, comp_region, StepEnd::Boundary { surface: SurfaceId::NONE, face, action }));
+        }
         st.cell = CellId::NONE;
         st.region = RegionId::NONE;
         st.entered_via = None;
@@ -743,7 +785,15 @@ impl sm_rt_api::Tracker for MeshTracker {
             return Err(RtError::NonFinite("position"));
         }
         let fi = f.get();
-        if fi >= self.core.n_faces() {
+        let nf = self.core.n_faces();
+        if fi >= nf {
+            // Virtual box faces of the complement: order -x, +x, -y, +y, -z, +z; outward normals.
+            if self.complement.is_some() && fi < nf + 6 {
+                let s = fi - nf;
+                let mut n = [0.0; 3];
+                n[s / 2] = if s % 2 == 1 { 1.0 } else { -1.0 };
+                return Ok(Vector3::new(n[0], n[1], n[2]));
+            }
             return Err(RtError::UnknownId { kind: "face", id: f.0 });
         }
         if self.core.f_flags[fi] & crate::core::F_PLANAR != 0 {

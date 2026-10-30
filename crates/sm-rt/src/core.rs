@@ -46,6 +46,8 @@ pub(crate) struct Core {
     /// Index into `actions` for model-boundary faces, else `NONE`.
     pub f_action: Vec<u32>,
     pub actions: Vec<FaceAction>,
+    /// Index into `actions` applied where a ray leaves the complement's outer box (`None` = vacuum).
+    pub exit_action: Option<u32>,
     pub c_off: Vec<u32>,
     pub c_face: Vec<u32>,
     pub c_region: Vec<u32>,

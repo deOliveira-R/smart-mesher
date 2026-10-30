@@ -59,7 +59,9 @@ counts lengths, not capacities, so a loaded cache reports the same number).
   endpoints are ordered by vertex index (apex edges by `n_vertices + face`), so neighbouring
   triangles of a cell evaluate each shared edge identically, and an exact zero is resolved by
   `sm_math::sos::orient3d_sos` with ids = vertex indices (line points get the two largest ids). An
-  exactly degenerate edge therefore allocates inside `sm-math`; generic positions never do. The
+  exactly degenerate edge therefore allocates inside `sm-math`; generic positions never do. This is a
+  known gap that cannot be fixed locally (`orient3d_sos` is owned by `sm-math`; a fix needs an
+  allocation-free SoS entry point there). The
   parameter `t` comes from the face plane (the triangle plane for a non-planar face). The exit is
   the first outward crossing at `t >= -tol`; entering crossings at `t <= 4 tol` are the entry
   itself and ignored; a first crossing that is entering beyond that is retried against exiting
@@ -121,9 +123,18 @@ A one-cell (exterior) face that no `BoundarySpec` rule claims, when a complement
 into it: `step` ends with `RegionBoundary{to_region: complement, to_cell: COMPLEMENT}` (no
 `Boundary` event; the face has no action in the table). Disjoint bodies and a non-convex hull are
 therefore connected through the complement. Explicit rules (Reflect, Wrap, Respond) still claim
-their faces and give `Boundary`. The complement ends at the box of the vertices; leaving it is
-`RegionBoundary{.. to_cell: NONE}` (`LeftModel`), i.e. vacuum: `spec.default` is not applied
-there. With `ComplementPolicy::Outside` (no complement) the unclaimed faces keep `spec.default`
+their faces and give `Boundary`. The complement ends at the box of the vertices. Ruling (DAGMC graveyard convention): when a
+complement exists, `BoundarySpec.default` applies at the complement's outer box exit, not on the
+unclaimed faces that lead into it. A vacuum default (or none) keeps the exit
+`RegionBoundary{.. to_cell: NONE}` (`LeftModel`); any other default (`Reflect`, `Respond` with
+white, albedo or reflective) ends the step with `Boundary{surface: NONE, face, action}` in the
+complement, where `face` is a virtual id `n_faces + k` for the box side `k` (-x, +x, -y, +y, -z, +z;
+`face_normal` returns its outward axis normal, so `resolve_boundary` works). `Reflect` is applied
+inside `step` (exact axis flip). A `Wrap` default cannot apply at a box and falls back to vacuum.
+The action is the `exit_action` of the core, stored in the `Boundaries` section (builder version
+2). The build emits a non-fatal `boundary.default_at_complement_exit` warning in `BuildReport`
+whenever a non-vacuum default would have applied to faces that now lead into the complement
+(`boundary.default_wrap_at_complement_exit` for the `Wrap` fallback). With `ComplementPolicy::Outside` (no complement) the unclaimed faces keep `spec.default`
 and the outside of a mesh is `NONE`.
 
 ## Facet input
@@ -133,7 +144,11 @@ and the outside of a mesh is `NONE`.
 kind: one missing triangle is one `facet.open_edge` whose `location` is the mean of the hole's
 vertices (on the missing triangle) and `gap` the longest open edge. The other codes are
 `facet.nonmanifold_edge`, `facet.inconsistent_orientation` and `deck.mismatch` (a periodic rule whose
-mate face is not in the input). Nothing is ever repaired; a non-watertight input is
+mate face is not in the input). `facet.coincident` flags facets of different shells whose snapped corners (grid of 1e-9 of the
+model diagonal) coincide: touching volumes that were not imprinted and merged, as DAGMC requires;
+the build refuses them. Should such facets reach `locate` anyway, tied first hits (within the ray
+tie width) resolve to the volume side, and distinct volumes among the ties go to the 3-direction
+majority vote. Nothing is ever repaired; a non-watertight input is
 `RtError::Build`. Each region becomes one cell; a triangle with an exterior front is flipped so its
 left cell is a volume; one `SurfaceInfo` per `(B-rep face, front, back)`.
 

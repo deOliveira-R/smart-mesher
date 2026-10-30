@@ -151,3 +151,23 @@ Other tests: `scope6_bundle_override_is_bit_identical_to_the_default_sequential_
    tracker cannot borrow the input and a loaded cache has no mesh.
 3. (optional) `sm-rt-api::TrackerCaps`: define `PERIODIC` as "applies matched `Wrap` decks" so the bit
    can be set for conforming periodic pairs.
+
+## Polish
+
+* **Complement exit (orchestrator ruling).** Unclaimed exterior faces lead into the complement and
+  `BoundarySpec.default` applies at the complement's outer box exit (DAGMC graveyard convention).
+  A non-vacuum default gives `Boundary` at a virtual box face (`n_faces + k`, `face_normal` knows the
+  six outward normals); `Reflect` is applied in `step`. The action is stored in the `Boundaries`
+  section (`BUILDER_VERSION` 2) and the structure hash. A `boundary.default_at_complement_exit`
+  warning is added to `BuildReport` when a non-vacuum default would have applied to faces that now
+  lead into the complement (`..._wrap_...` when a `Wrap` default falls back to vacuum). Test:
+  `tests/polish.rs::default_applies_at_the_complement_box_exit_with_a_warning` (includes the cache).
+* **Touching unmerged shells.** `check_facets` reports `facet.coincident` (snapped corner triples
+  equal, grid 1e-9 of the diagonal), one issue per pair of B-rep faces; the build refuses. Tied
+  first hits in `locate` prefer the volume side, and distinct volumes among ties use the
+  3-direction majority vote. Test: `touching_unmerged_shells_are_reported_and_refused`. The
+  tie-break itself is only reachable through such inputs, which the build now refuses, so it has no
+  separate test.
+* **Allocation in `orient3d_sos`.** Not fixable in this crate (needs an allocation-free SoS entry in
+  `sm-math`); recorded as a known gap in DESIGN.md.
+* Declined: none.

@@ -177,6 +177,7 @@ pub(crate) fn export(t: &MeshTracker) -> Option<CacheImage> {
     for a in &c.actions {
         write_action(&mut bnd, a);
     }
+    bnd.u32(c.exit_action.unwrap_or(NONE));
 
     let mut fb = W::default();
     write_bvh(&mut fb, &c.face_bvh);
@@ -381,6 +382,7 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
     for _ in 0..na {
         core.actions.push(read_action(&mut r)?);
     }
+    core.exit_action = Some(r.u32()?).filter(|&a| a != NONE);
     r.done()?;
     core.face_bvh = read_bvh(section(img, SectionTag::Bvh)?)?;
     core.cell_bvh = read_bvh(section(img, SectionTag::CellBvh)?)?;
@@ -474,6 +476,9 @@ fn validate_core(c: &Core, nv: usize, nf: usize, nc: usize, nreg: usize, nsurf: 
     }
     if c.c_region.iter().any(|&r| r as usize >= nreg) || c.f_surface.iter().any(|&s| s != NONE && s as usize >= nsurf) || c.f_action.iter().any(|&a| a != NONE && a as usize >= c.actions.len()) {
         return Err(bad("table index out of range"));
+    }
+    if c.exit_action.is_some_and(|a| a as usize >= c.actions.len()) {
+        return Err(bad("exit action out of range"));
     }
     if c.actions.iter().any(|a| matches!(a, FaceAction::Wrap { mate, .. } if mate.get() >= nf)) {
         return Err(bad("wrap mate out of range"));

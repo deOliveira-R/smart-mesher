@@ -214,10 +214,12 @@ pub(crate) fn build_mesh(inp: &MeshInput<'_>, opts: &BuildOptions) -> Result<Bui
         .collect();
     let mate_faces = |e: EntityId| -> Vec<u32> { m.classified_on(e).map(|s| s.faces.iter().map(|f| f.0).collect()).unwrap_or_default() };
     let mut issues = Vec::new();
-    assign_actions(&mut core, inp.boundaries, &rule_faces, &mate_faces, opts, &mut issues, complement.is_some(), |f| m.face_id(FaceIx(f)));
+    let mut warnings = Vec::new();
+    assign_actions(&mut core, inp.boundaries, &rule_faces, &mate_faces, opts, &mut issues, &mut warnings, complement.is_some(), |f| m.face_id(FaceIx(f)));
     if !issues.is_empty() {
         return Err(RtError::Build(issues));
     }
+    report.issues.extend(warnings);
     fill_surface_boundaries(&core, &mut surfaces);
     Ok(Built { core, regions: RegionTable(regions), surfaces: SurfaceTable(surfaces), complement, kind: TrackerKind::MeshWalk, report })
 }
@@ -332,12 +334,14 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
         .collect();
     let mate_faces = |e: EntityId| -> Vec<u32> { by_entity.get(&e.to_raw()).cloned().unwrap_or_default() };
     let mut issues = Vec::new();
-    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, true, |t| f.face[t as usize]);
+    let mut warnings = Vec::new();
+    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, &mut warnings, true, |t| f.face[t as usize]);
     if !issues.is_empty() {
         return Err(RtError::Build(issues));
     }
     fill_surface_boundaries(&core, &mut surfaces);
-    let report = BuildReport::default();
+    let mut report = BuildReport::default();
+    report.issues = warnings;
     Ok(Built { core, regions: RegionTable(regions), surfaces: SurfaceTable(surfaces), complement: Some(nr as u32), kind: TrackerKind::Facets, report })
 }
 
@@ -385,6 +389,7 @@ fn assign_actions(
     mate_faces: &dyn Fn(EntityId) -> Vec<u32>,
     opts: &BuildOptions,
     issues: &mut Vec<BuildIssue>,
+    warnings: &mut Vec<BuildIssue>,
     has_complement: bool,
     entity_of: impl Fn(u32) -> EntityId,
 ) {
@@ -407,12 +412,14 @@ fn assign_actions(
             (table.len() - 1) as u32
         })
     };
+    let mut unclaimed: Option<u32> = None;
     for (f, &rule) in face_rule.iter().enumerate() {
         if core.f_right[f] != NONE {
             continue;
         }
         // With a complement, a face no rule claims is crossed into it (no action).
         if rule == NONE && has_complement {
+            unclaimed.get_or_insert(f as u32);
             continue;
         }
         let def = if rule == NONE { spec.default } else { spec.rules[rule as usize].1 };
@@ -463,6 +470,38 @@ fn assign_actions(
             _ => FaceAction::Respond(ResponseKind::Vacuum),
         };
         core.f_action[f] = intern(action, &mut table);
+    }
+    // Unclaimed faces lead into the complement; `spec.default` applies where the complement ends.
+    if let Some(f0) = unclaimed {
+        let ent = entity_of(f0);
+        let exit = match spec.default {
+            BoundaryDef::Reflect => Some(FaceAction::Reflect),
+            BoundaryDef::Respond(ResponseKind::Vacuum) => None,
+            BoundaryDef::Respond(r) if r.is_valid() => Some(FaceAction::Respond(r)),
+            BoundaryDef::Respond(_) => {
+                push_issue(issues, BuildIssue::new("boundary.bad_albedo", "albedo must be in [0, 1]").with_entity(ent));
+                None
+            }
+            _ => {
+                warnings.push(
+                    BuildIssue::new("boundary.default_wrap_at_complement_exit", "a periodic default cannot apply at the complement's outer box; vacuum is used there")
+                        .with_entity(ent)
+                        .suggest("claim the periodic faces with explicit rules"),
+                );
+                None
+            }
+        };
+        if let Some(a) = exit {
+            warnings.push(
+                BuildIssue::new(
+                    "boundary.default_at_complement_exit",
+                    "exterior faces that no rule claims lead into the complement region; the default boundary condition applies where the complement's outer box is left, not on those faces",
+                )
+                .with_entity(ent)
+                .suggest("add explicit rules for the faces that should carry the condition"),
+            );
+            core.exit_action = Some(intern(a, &mut table));
+        }
     }
     core.actions = table;
 }

@@ -19,6 +19,66 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
+/// Facets of different shells that sit on top of each other (touching, unmerged volumes).
+///
+/// Corner positions are snapped to a grid of `1e-9` of the model diagonal; two triangles with the
+/// same three snapped corners are coincident. One `facet.coincident` issue per pair of B-rep
+/// faces, located at the mean centroid of the pairs.
+fn coincident_facets(f: &FacetInput, out: &mut Vec<BuildIssue>) {
+    if f.triangles.len() < 2 {
+        return;
+    }
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for v in &f.vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v[k]);
+            hi[k] = hi[k].max(v[k]);
+        }
+    }
+    let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
+    let q = if diag > 0.0 { diag * 1e-9 } else { return };
+    let snap = |v: u32| -> [i64; 3] {
+        let p = f.vertices[v as usize];
+        [0, 1, 2].map(|k| ((p[k] - lo[k]) / q).round() as i64)
+    };
+    let mut keyed: Vec<([[i64; 3]; 3], u32)> = f
+        .triangles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut k = [snap(t[0]), snap(t[1]), snap(t[2])];
+            k.sort_unstable();
+            (k, i as u32)
+        })
+        .collect();
+    keyed.sort_unstable();
+    let mut groups: BTreeMap<(EntityId, EntityId), (u32, [f64; 3], u32)> = BTreeMap::new();
+    for w in keyed.windows(2) {
+        if w[0].0 != w[1].0 {
+            continue;
+        }
+        let (i, j) = (w[0].1 as usize, w[1].1 as usize);
+        let (a, b) = (f.face[i].min(f.face[j]), f.face[i].max(f.face[j]));
+        let t = f.triangles[i];
+        let e = groups.entry((a, b)).or_insert((0, [0.0; 3], t[0]));
+        e.0 += 1;
+        for v in t {
+            for k in 0..3 {
+                e.1[k] += f.vertices[v as usize][k] / 3.0;
+            }
+        }
+    }
+    for ((a, _), (n, s, _)) in groups {
+        let n_f = f64::from(n);
+        out.push(
+            BuildIssue::new("facet.coincident", format!("{n} facet pair(s) of these faces coincide: touching shells that were not imprinted and merged"))
+                .with_entity(a)
+                .at(Point3::new(s[0] / n_f, s[1] / n_f, s[2] / n_f))
+                .suggest("imprint and merge the touching volumes so they share one set of facets, as DAGMC requires"),
+        );
+    }
+}
+
 /// Located, grouped findings for a facet soup and its boundary rules.
 ///
 /// Unlike [`FacetInput::check_watertight`] (one issue per bad edge) the bad edges of one
@@ -26,7 +86,8 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
 /// one `facet.open_edge` issue: `location` is the mean of the group's vertices (on the missing
 /// triangle for a one-triangle hole), `gap` the longest open edge of the group. Codes:
 /// `facet.open_edge`, `facet.nonmanifold_edge`, `facet.inconsistent_orientation`,
-/// `deck.mismatch` (a periodic rule whose mate face is not in the input). Output order is
+/// `facet.coincident` (touching shells whose facets lie on top of each other, i.e. not imprinted
+/// and merged), `deck.mismatch` (a periodic rule whose mate face is not in the input). Output order is
 /// deterministic (volume id, code, group's lowest edge). Structural problems
 /// ([`FacetInput::validate`]) are reported first and stop the scan.
 pub fn check_facets(f: &FacetInput, spec: &BoundarySpec) -> Vec<BuildIssue> {
@@ -109,6 +170,7 @@ pub fn check_facets(f: &FacetInput, spec: &BoundarySpec) -> Vec<BuildIssue> {
             }
         }
     }
+    coincident_facets(f, &mut out);
     let faces: BTreeSet<EntityId> = f.face.iter().copied().collect();
     for (_, def) in &spec.rules {
         if let BoundaryDef::Wrap { mate, .. } = def
