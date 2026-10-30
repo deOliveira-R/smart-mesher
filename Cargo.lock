@@ -1188,18 +1188,27 @@ name = "sm-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "rayon",
  "serde",
  "serde_json",
  "sm-core",
+ "sm-exodus",
+ "sm-geom-api",
  "sm-lang",
+ "sm-layer-api",
  "sm-mcp",
+ "sm-mesh",
  "sm-mesh-api",
  "sm-meshio",
  "sm-op-api",
+ "sm-poly",
  "sm-protocol",
  "sm-quality",
+ "sm-rt",
+ "sm-rt-api",
  "sm-server",
  "sm-testkit",
+ "sm-topo-api",
 ]
 
 [[package]]

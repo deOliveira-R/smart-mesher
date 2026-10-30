@@ -1,0 +1,37 @@
+// W3a milestone hybrid tail (plan §4.1): hex sweep of V1 (paved source), wedge sweep of V2 (tri
+// source), tet mesh of V3. Sources (z = 0) and targets (z = 4) are found by their bounding boxes.
+let s1 = v1
+let t1 = v1
+let s2 = v2
+let t2 = v2
+for f in topo.related(kind: "TopoFace", within: v1) {
+    let bb = model.measure(entity: f).bbox
+    if abs(bb.lo[2]) < 1e-9 and abs(bb.hi[2]) < 1e-9 { set s1 = f }
+    if abs(bb.lo[2] - 4.0) < 1e-9 and abs(bb.hi[2] - 4.0) < 1e-9 { set t1 = f }
+}
+for f in topo.related(kind: "TopoFace", within: v2) {
+    let bb = model.measure(entity: f).bbox
+    if abs(bb.lo[2]) < 1e-9 and abs(bb.hi[2]) < 1e-9 { set s2 = f }
+    if abs(bb.lo[2] - 4.0) < 1e-9 and abs(bb.hi[2] - 4.0) < 1e-9 { set t2 = f }
+}
+assert s1 != v1 and t1 != v1 and s2 != v2 and t2 != v2, "sweep source/target faces not found"
+mesh.size(targets: v1 | v2 | v3, size: @SIZE@)
+mesh.scheme(targets: s1, scheme: "pave")
+mesh.scheme(targets: s2, scheme: "trimesh")
+mesh.scheme(targets: v1, scheme: "sweep", params: { source: s1, target: t1 })
+mesh.scheme(targets: v2, scheme: "sweep", params: { source: s2, target: t2 })   // t2 is the V2|V3 triangle, a copy of s2
+// Every face of v3 except t2 gets trimesh; t2 takes its triangles from V2's sweep copy (ruling INT-5).
+let f3 = topo.related(kind: "TopoFace", within: v3) - t2
+mesh.scheme(targets: f3, scheme: "trimesh")
+mesh.scheme(targets: v3, scheme: "tetmesh")
+let m = mesh.run(targets: v1 | v2 | v3)
+mesh.smooth(mesh: m.mesh[0], method: { kind: "laplacian" }, iterations: 5, fix_boundary: false)
+fem.block_add(block: 1, volumes: v1)
+fem.block_element_type(block: 1, element_type: "HEX8")
+fem.block_add(block: 2, volumes: v2)
+fem.block_element_type(block: 2, element_type: "WEDGE6")
+fem.block_add(block: 3, volumes: v3)
+fem.block_element_type(block: 3, element_type: "TET4")
+fem.sideset_add(sideset: 1, faces: topo.related(kind: "TopoFace", within: v1), wrt: v1)
+fem.sideset_add(sideset: 2, faces: topo.related(kind: "TopoFace", within: v2), wrt: v2)
+fem.sideset_add(sideset: 3, faces: topo.related(kind: "TopoFace", within: v3), wrt: v3)
