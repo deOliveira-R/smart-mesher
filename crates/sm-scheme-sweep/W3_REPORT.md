@@ -137,3 +137,11 @@ Review should-fix items, all done:
    semantics identical to `strip_from`. Not blocking.
 2. **sm-scheme-api, `PlanCtx` model tolerance** (already queued): a `tolerance()` accessor to
    replace the `1e-9 * bbox diagonal` constant.
+
+## Polish
+
+Round 1 (reviewer MUST FIX: gate not verified). The earlier review was cut off while
+`tools/ci.sh` was still compiling, so there was no defect, only an unfinished gate. No code
+changed. `tools/ci.sh` was rerun at 34b0e19 (workspace build, tests, tests with
+`RAYON_NUM_THREADS=1`, clippy `-D warnings`, rustdoc `-D warnings`, graph check) and exited
+0 (log `/tmp/ci-polish-sm-scheme-sweep-r1-29.log`). The review is therefore a pass.
