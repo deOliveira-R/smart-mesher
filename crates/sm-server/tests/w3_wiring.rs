@@ -281,3 +281,35 @@ fn a_stale_pending_store_from_an_in_memory_server_is_not_bound_to_a_project() {
     let leaked = inputs.is_dir() && std::fs::read_dir(&inputs).expect("dir").next().is_some();
     assert!(!leaked, "the in-memory server wrote into a project it is not attached to");
 }
+
+fn inputs_empty(proj: &std::path::Path) -> bool {
+    let inputs = proj.join("inputs");
+    !inputs.is_dir() || std::fs::read_dir(&inputs).expect("dir").next().is_none()
+}
+
+#[test]
+fn two_builders_create_then_memory_server_stages_in_memory() {
+    let dir = TempDir::new("w3twomem");
+    let proj = dir.path().join("proj");
+    let b1 = standard();
+    let b2 = standard();
+    let s = Server::create(b1, &proj, "proj").expect("create");
+    drop(s);
+    let mem = Server::new(b2).expect("mem");
+    assert_eq!(mem.stage_input(b"hello").expect("stage").bytes, 5);
+    assert!(inputs_empty(&proj), "the in-memory server wrote into projA/inputs");
+}
+
+#[test]
+fn two_builders_open_then_memory_server_stages_in_memory() {
+    let dir = TempDir::new("w3twoopen");
+    let proj = dir.path().join("proj");
+    drop(Server::create(std_builder(), &proj, "proj").expect("create"));
+    let b1 = standard();
+    let b2 = standard();
+    let s = Server::open(b1, &proj).expect("open");
+    drop(s);
+    let mem = Server::new(b2).expect("mem");
+    assert_eq!(mem.stage_input(b"hello").expect("stage").bytes, 5);
+    assert!(inputs_empty(&proj), "the in-memory server wrote into projA/inputs");
+}
