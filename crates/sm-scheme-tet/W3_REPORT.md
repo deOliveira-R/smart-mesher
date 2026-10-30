@@ -1,6 +1,6 @@
 # W3 report: sm-scheme-tet
 
-status: done with one open item (all mandatory acceptance items 1-11 covered by named tests; item 12 recorded); review rounds 0 and 1 applied (see below). Open: recovery still fails, with a typed `RecoveryFailed`, on a family of valid height-field surfaces (see round 1, must fix 1).
+status: done (all mandatory acceptance items 1-11 covered by named tests; item 12 recorded); review rounds 0, 1 and 2 applied (see below). Round 2 closed the round-1 open item: boundary recovery is complete (temporary boundary Steiner points, suppressed again).
 
 `api_change_requests`: none. No contract crate, no other crate, no root file was edited
 (`Cargo.lock` gained the new crate's entries only).
@@ -170,6 +170,78 @@ Should fix:
    `a14::schonhardt_steiner_point_is_deep`). The thin-slab patterns stay at 0.0008 h worst
    (best possible 0.002 h).
 
+## What changed in review round 2
+
+Must fix: **complete boundary recovery** (decision 12: any valid closed surface, no boundary
+Steiner point in the output). The round-1 open item (relief on 6 x 6 and 8 x 8 grids at depth
+0.9, 8 x 8 at 0.6) is closed.
+
+Method: Hang Si's surface-preserving recovery (TetGen `-Y`; Si & Gärtner, IJNME 2011; Si, ACM
+TOMS 2015) on exact predicates, new module `steiner.rs`, run on the triangulation the
+interior-point pass leaves when it is stuck (`DESIGN.md`, boundary recovery step 8):
+missing edges get temporary points *on* them (2-6 / n-2n / located simplex splits, each validated
+exactly) until the pieces are edges; missing triangles (polygons now) are recovered by cavity
+refill or by removing every crossing tet edge (edge removal, else a split on the triangle) and
+reading the tiling off the mesh (backtracking search, checked combinatorially); then every
+temporary point is suppressed: its fans are re-triangulated without it, the two sides of its
+star are refilled without a point or starred from a kernel point next to it (side cavities grow
+past slivers lying flat on the surface). Invariants: no recovered constraint is ever given up,
+and no operation creates a shortcut edge along a split input edge. After classification every
+recovery point whose star refills without it is removed (both paths).
+
+Behaviour changes (intended): only a tiny component (<= 64 vertices, the Schönhardt-like pocket)
+still restarts with hints; anything else stuck goes to complete recovery. The interior-point
+searches are budgeted by count: edge cavities above 80 tets are not searched, and a pass stops
+searching after 2.5 M units of fill predicate work (`Dt::work`; successful searches on the test
+families used at most about 2.2 M, the stuck ones tens to hundreds of M). Some inputs that used
+to recover inside the interior-point pass (for example relief n6 seed 3 at 0.9) now finish in
+complete recovery instead. Gift-wrap fills also stop at their budget during the first level
+(they used to scan every front face first) and charge a sixteenth of a check per side test.
+
+`TetStats` gained `n_steiner_recovery`, `n_steiner_refine` (their sum is `n_steiner`) and
+`n_boundary_steiner` (temporary boundary points, all suppressed).
+
+Per case (release, default options; recovery-only counts). Gmsh 4.15.2 with
+`MeshSizeMin = MeshSizeMax = 1e3`, `MeshSizeExtendFromBoundary = 0`, `Optimize = 0`, so it adds
+recovery points only; both Gmsh algorithms keep all input triangles.
+
+| case | ours: interior recovery points | ours: temporary boundary points | Gmsh Delaunay (TetGen recovery) | Gmsh HXT | S4 margin (whole mesh) | time |
+|---|---|---|---|---|---|---|
+| relief n6 seed1 d0.9 | 4 | 5 | 2 | 0 | 0.020 h | 1.60 s |
+| relief n6 seed2 d0.9 | 7 | 25 | 4 | 0 | 0.0016 h | 2.70 s |
+| relief n6 seed3 d0.9 | 3 | 9 | 1 | 0 | 0.029 h | 1.15 s |
+| relief n8 seed1 d0.6 | 4 | 7 | 2 | 0 | 0.029 h | 1.40 s |
+| relief n8 seed2 d0.6 | 6 | 19 | 2 | 0 | 0.0082 h | 1.84 s |
+| relief n8 seed3 d0.6 | 4 | 10 | 2 | 0 | 0.0045 h | 1.38 s |
+| relief n8 seed4 d0.6 | 6 | 32 | 4 | 0 | 0.0097 h | 2.56 s |
+| relief n8 seed1 d0.9 | 7 | 55 | 3 | 0 | 0.0011 h | 2.22 s |
+| relief n8 seed2 d0.9 | 13 | 72 | 2 | 0 | 0.0003 h | 2.41 s |
+| relief n8 seed3 d0.9 | 4 | 27 | 3 | 0 | 0.0083 h | 1.45 s |
+| relief n8 seed4 d0.9 | 11 | 88 | 8 | 0 | 0.0004 h | 2.24 s |
+
+Gmsh HXT needs no interior point at all here (its recovery adds and then removes them); its
+Delaunay mode needs 1-8. Ours needs 3-13: the interior-point pass leaves a few, and every
+temporary boundary point whose solid side cannot be refilled without a point leaves one.
+Timings are the whole `tetrahedralize` call (default options: refinement and optimization included), release, measured on a 10-core host at load average about 500 (other agents' builds), so an idle machine is several times faster; recovery itself is deterministic and budgeted by counts, never by clock. Before this round the five failing cases took 15-270 s and then failed.
+
+The relocated points sit in the star of a surface point, so ruling S4 is not met by them (margin
+column; S4 stays a preference, see round 0). The round-0/1 fixtures that the interior-point
+pass handles keep their margins (`a14` unchanged and green).
+
+Robustness (release): a sweep of 172 inputs (relief on 5, 6, 8, 10, 12 grids, seeds 1-8, depths
+0.3 / 0.6 / 0.9 / 0.97, relief on two opposite faces and on a side face) all mesh with the exact
+boundary, positive orientation, untouched input points and the divergence-theorem volume; the
+worst case (12 x 12, depth 0.97) takes a few seconds on the loaded host. Complete recovery alone
+(skipping the interior-point pass) meshes the surf3 fixtures, the relief families, the towers and
+the twisted prisms (`steiner::tests`). `fixture_sweep_full` and `voxel_fuzz_large` pass.
+
+Tests: `a15::relief_known_hard_fail_typed` is replaced by `relief_hard_cases_recover_exactly`
+(n6 seeds 1-3 at 0.9, n8 seeds 1-4 at 0.6 and 0.9; three of them in debug builds) and
+`relief_hard_case_is_deterministic` (two runs, 1 and 4 threads, complete-recovery path);
+`steiner::tests::{complete_recovery_alone_meshes_the_fixtures,
+complete_recovery_alone_meshes_hard_surfaces}` plus unit tests of the polygon triangulation and
+the line helpers.
+
 ## Acceptance bullet to test
 
 | # | bullet | test(s) |
@@ -181,7 +253,7 @@ Should fix:
 | 5 | shared interface conforming | `a05_shared::two_cubes_shared_interface_is_conforming` |
 | 6 | hard recovery (Schönhardt, noisy sphere) | `a06_hard::{schonhardt_needs_an_interior_steiner_point, noisy_sphere_keeps_all_triangles}`; `a13_schonhardt_family::{z_scaled_03, z_scaled_05, xy_stretched, twists, affine_images_of_the_fixtures_are_accepted}` (review round 0: affine images of valid surfaces are never `SelfIntersection`); `stress::fixture_sweep_quick` (all surf3 fixtures; `fixture_sweep_full` ignored); `fuzz_voxel::voxel_fuzz_small` (`voxel_fuzz_large` ignored) |
 | S4 | interior Steiner points >= 0.3 h_T from every input triangle (ruling S4) | refinement (round 1: `Guard::margin` against every input triangle), recovery and smoothing: `a14_s4::{schonhardt_steiner_point_is_deep, feasible_fixtures_keep_the_bound (incl. cube_with_cavity(3)), thin_slab_all_diagonal_patterns}`, `a13_schonhardt_family::small_twists_use_few_deep_points` |
-| 6b | recovery of valid surfaces that need interior points (decision 12; review round 1) | `a15_recovery_robust::{relief_cube_seed5_depth09_n4, relief_family_n4, relief_family_n6_n8_moderate, two_layer_schonhardt_tower, five_ring_tower, alternating_towers}`; `relief_known_hard_fail_typed` (ignored) records the open limit |
+| 6b | recovery of valid surfaces that need interior points (decision 12; review round 1) | `a15_recovery_robust::{relief_cube_seed5_depth09_n4, relief_family_n4, relief_family_n6_n8_moderate, two_layer_schonhardt_tower, five_ring_tower, alternating_towers, relief_hard_cases_recover_exactly, relief_hard_case_is_deterministic}` (round 2: the former open limit); `steiner::tests::complete_recovery_alone_*` |
 | 7 | size control and gradation | `a07_size::{constant_size_counts_and_edge_lengths, graded_field_adjacent_ratio}` |
 | 8 | quality floors and `sm_quality` cross-check | `a08_quality::{optimize0_radius_edge_and_unrefinable_floors, optimize2_floors_and_monotone, cross_check_with_sm_quality}` |
 | 9 | typed errors with locations | `a09_errors::*` (9 tests; bad index and empty input added in round 1), `scheme::tests::recovery_failure_names_the_face_and_carries_the_triangle_keys` |
@@ -260,9 +332,9 @@ Earlier rounds: release and debug `cargo test -p sm-scheme-tet --all-features` p
 * Large-scale performance is measured on sphere/brick-bounded cases only. A fine interior
   size on a very coarse boundary is limited by the gradation rate (deviation 6) and by the
   Steiner budget.
-* Recovery without boundary Steiner points can fail on valid inputs; the failure is typed and
-  located, never a panic. Known failing family: height-field relief with deep pits next to the
-  rim on 6 x 6 and finer grids (round 1, must fix 1). There is no proof of completeness and the
-  fuzz covers planar facets only.
+* Recovery is complete on every family tested (round 2), but there is no proof of completeness
+  in floating point: a complete-recovery failure falls back to a restart with hints and then to
+  a typed, located `RecoveryFailed`. Points left by complete recovery sit close to the surface
+  (ruling S4 not met by them, see round 2).
 * Debug-profile tests are still slow (a11 and a13 two to three minutes each on an idle host);
   release is the intended profile.

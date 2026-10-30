@@ -17,6 +17,12 @@ pub(crate) struct Dt {
     /// Points with an index `>= droppable_from` are interior Steiner points that cavity fills
     /// may leave out (swallow) while boundary recovery runs; `u32::MAX` outside of it.
     pub droppable_from: u32,
+    /// Points that are never droppable (temporary boundary Steiner points), by index.
+    pub pinned: Vec<bool>,
+    /// Predicate work done by cavity fills (see `fill.rs`), for deterministic search limits.
+    pub work: std::sync::atomic::AtomicU64,
+    /// Interior-point searches of cavity fills stop once [`Dt::work`] reaches this.
+    pub search_limit: u64,
     rng: u64,
     cmark: Vec<u32>,
     cepoch: u32,
@@ -43,6 +49,9 @@ impl Dt {
             tds: Tds::new(n),
             last: NONE,
             droppable_from: u32::MAX,
+            pinned: Vec::new(),
+            work: std::sync::atomic::AtomicU64::new(0),
+            search_limit: u64::MAX,
             rng: splitmix(n as u64),
             cmark: Vec::new(),
             cepoch: 0,
@@ -56,6 +65,18 @@ impl Dt {
     #[inline]
     pub fn sos(&self) -> Pts<'_> {
         Pts(&self.pts)
+    }
+
+    /// True if cavity fills may leave point `c` out (see [`Dt::droppable_from`]).
+    #[inline]
+    pub fn droppable(&self, c: u32) -> bool {
+        c >= self.droppable_from && !self.pinned.get(c as usize).copied().unwrap_or(false)
+    }
+
+    /// True once the fills have used up the work allowed for interior-point searches.
+    #[inline]
+    pub fn searched_out(&self) -> bool {
+        self.work.load(std::sync::atomic::Ordering::Relaxed) >= self.search_limit
     }
 
     /// Append a point (it must still be inserted).

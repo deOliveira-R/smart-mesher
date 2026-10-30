@@ -20,6 +20,7 @@ use crate::guard::Guard;
 use crate::tds::{FACE, NONE, sorted3};
 
 /// Constraint edges and triangles with their owners.
+#[derive(Clone)]
 pub(crate) struct Constraints {
     pub edges: Vec<([u32; 2], u32)>,
     pub faces: Vec<([u32; 3], u32)>,
@@ -51,6 +52,27 @@ impl Constraints {
         vert_tris.sort_unstable();
         Self { edges, faces, tris: tris.to_vec(), edge_tris, vert_tris }
     }
+    /// Constraints from explicit parts: `faces` (oriented triangle, owner) and `edges` (sorted
+    /// endpoints, owner; duplicates keep the first owner).
+    pub fn from_parts(faces: &[([u32; 3], u32)], mut edges: Vec<([u32; 2], u32)>) -> Self {
+        edges.sort_unstable();
+        edges.dedup_by_key(|e| e.0);
+        let mut fs: Vec<([u32; 3], u32)> = faces.iter().map(|&(t, o)| (sorted3(t[0], t[1], t[2]), o)).collect();
+        fs.sort_unstable();
+        let tris: Vec<[u32; 3]> = faces.iter().map(|f| f.0).collect();
+        let mut edge_tris: Vec<([u32; 2], u32)> = Vec::new();
+        let mut vert_tris: Vec<(u32, u32)> = Vec::new();
+        for (i, t) in tris.iter().enumerate() {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                edge_tris.push(([a.min(b), a.max(b)], i as u32));
+                vert_tris.push((t[k], i as u32));
+            }
+        }
+        edge_tris.sort_unstable();
+        vert_tris.sort_unstable();
+        Self { edges, faces: fs, tris, edge_tris, vert_tris }
+    }
     /// The triangles around vertex `v`.
     pub fn tris_of_vertex(&self, v: u32) -> impl Iterator<Item = u32> + '_ {
         let lo = self.vert_tris.partition_point(|e| e.0 < v);
@@ -76,7 +98,18 @@ impl Constraints {
 /// Recovery driver.
 pub(crate) struct Recover<'a> {
     pub dt: &'a mut Dt,
-    pub con: &'a Constraints,
+    /// The constraints being recovered: the input triangles, or in complete mode the current
+    /// subdivision of them (see [`crate::steiner`]).
+    pub con: std::borrow::Cow<'a, Constraints>,
+    /// The input constraints.
+    pub orig: &'a Constraints,
+    /// Complete mode: missing edges and triangles get temporary boundary Steiner points
+    /// instead of interior-point searches (see [`crate::steiner`]).
+    pub complete_mode: bool,
+    /// The surface subdivision of complete mode.
+    pub bnd: crate::steiner::Bnd,
+    /// Temporary boundary Steiner points created (and later suppressed) in complete mode.
+    pub n_boundary_steiner: usize,
     pub flips: usize,
     pub max_steiner: usize,
     pub n_steiner: usize,
@@ -86,7 +119,7 @@ pub(crate) struct Recover<'a> {
     pub hints: Vec<V3>,
     /// Restart number (selects which hint candidates are produced).
     pub attempt: usize,
-    guard: &'a Guard<'a>,
+    pub(crate) guard: &'a Guard<'a>,
     /// Edges that failed in this pass; after [`SEARCH_EDGES`] of them the expensive searches
     /// with interior points are skipped (the pass only collects hints).
     failed_edges: usize,
@@ -154,6 +187,12 @@ const POCKET_VERTS: usize = 64;
 /// Failed edges per pass after which the searches (cavity growth, interior points) stop.
 const SEARCH_EDGES: usize = 3;
 
+/// Fill predicate work (see [`Dt::work`]) per pass after which the interior-point searches stop
+/// and what is still missing is left to complete recovery ([`crate::steiner`]). Successful
+/// searches on the test families used up to about 2.2 million units; stuck ones on the hard
+/// relief cases used tens to hundreds of millions (seconds to minutes).
+const SEARCH_WORK: u64 = 2_500_000;
+
 /// A cavity around a missing edge: boundary faces (outward), the tet beyond each (sorted by
 /// face key; `NONE` for a kept constraint face), and enclosed vertices.
 struct Cavity {
@@ -172,7 +211,8 @@ fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError
 
 impl<'a> Recover<'a> {
     pub fn new(dt: &'a mut Dt, con: &'a Constraints, guard: &'a Guard<'a>, max_steiner: usize, n_real: u32, attempt: usize) -> Self {
-        Self { dt, con, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, failed_edges: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
+        dt.search_limit = dt.work.load(std::sync::atomic::Ordering::Relaxed).saturating_add(SEARCH_WORK);
+        Self { dt, con: std::borrow::Cow::Borrowed(con), orig: con, complete_mode: false, bnd: crate::steiner::Bnd::default(), n_boundary_steiner: 0, guard, marks: Marks::default(), flips: 0, max_steiner, n_steiner: 0, n_real, hints: Vec::new(), attempt, failed_edges: 0, sc: FlipScratch::default(), buf: Vec::new(), tabu: Vec::new() }
     }
 
     /// Recover every constraint edge and triangle. A recovery failure does not stop the pass:
@@ -228,7 +268,8 @@ impl<'a> Recover<'a> {
         if let Some(e) = first {
             return Err(e);
         }
-        for &(k, tri) in &self.con.faces {
+        let con = self.orig;
+        for &(k, tri) in &con.faces {
             if !self.face_present(k) {
                 return Err(fail(tri, None, "triangle still missing after recovery rounds"));
             }
@@ -236,7 +277,7 @@ impl<'a> Recover<'a> {
         Ok(())
     }
 
-    fn face_present(&mut self, k: [u32; 3]) -> bool {
+    pub(crate) fn face_present(&mut self, k: [u32; 3]) -> bool {
         let mut buf = std::mem::take(&mut self.buf);
         self.dt.tds.star(k[0], &mut buf);
         let r = buf.iter().any(|&t| self.dt.tds.has(t, k[1]) && self.dt.tds.has(t, k[2]));
@@ -269,7 +310,7 @@ impl<'a> Recover<'a> {
     }
 
     /// Does segment `(p,q)` cross triangle `(a,b,c)` (generic position)?
-    fn pierces(&self, p: u32, q: u32, a: u32, b: u32, c: u32) -> bool {
+    pub(crate) fn pierces(&self, p: u32, q: u32, a: u32, b: u32, c: u32) -> bool {
         let s = self.dt.sos();
         if s.ori_s(a, b, c, p) == s.ori_s(a, b, c, q) {
             return false;
@@ -280,7 +321,7 @@ impl<'a> Recover<'a> {
 
     /// The tets crossed by segment `(u,w)` from `u` to `w`, and the crossed faces
     /// `(tet, slot)` (face of `tet` towards the next tet).
-    fn corridor(&mut self, u: u32, w: u32) -> Option<Corridor> {
+    pub(crate) fn corridor(&mut self, u: u32, w: u32) -> Option<Corridor> {
         let mut star = Vec::new();
         self.dt.tds.star(u, &mut star);
         let s = self.dt.sos();
@@ -336,7 +377,10 @@ impl<'a> Recover<'a> {
         None
     }
 
-    fn ensure_edge(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+    pub(crate) fn ensure_edge(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+        if self.complete_mode {
+            return self.recover_seg(u, w, owner);
+        }
         match self.ensure_edge_once(u, w, owner) {
             Err(e @ TetError::RecoveryFailed { .. }) => {
                 self.failed_edges += 1;
@@ -630,13 +674,13 @@ impl<'a> Recover<'a> {
     }
 
     /// Exact test: does segment `(u,w)` meet the vertices-`f` triangle other than at a common vertex?
-    fn edge_hits_face(&self, u: u32, w: u32, f: [u32; 3]) -> bool {
+    pub(crate) fn edge_hits_face(&self, u: u32, w: u32, f: [u32; 3]) -> bool {
         let q = |i: u32| (i, self.dt.pts[i as usize]);
         crate::exact::seg_tri_improper(q(u), q(w), [q(f[0]), q(f[1]), q(f[2])])
     }
 
     /// Exact test: do the constraint triangles `g` and `f` meet beyond their common sub-simplex?
-    fn faces_conflict(&self, g: [u32; 3], f: [u32; 3]) -> bool {
+    pub(crate) fn faces_conflict(&self, g: [u32; 3], f: [u32; 3]) -> bool {
         let q = |i: u32| (i, self.dt.pts[i as usize]);
         let h = f.map(|i| self.dt.pts[i as usize]);
         // Reference point off the plane of `f` (only used for coplanar triangles sharing an edge).
@@ -654,12 +698,24 @@ impl<'a> Recover<'a> {
     }
 
     fn ensure_edge_once(&mut self, u: u32, w: u32, owner: u32) -> Result<(), TetError> {
+        if self.edge_by_flips(u, w, owner)? {
+            return Ok(());
+        }
+        self.edge_by_cavity(u, w, owner)
+    }
+
+    /// Try to recover edge `(u,w)` by flips that reduce the number of tets crossing it; `true`
+    /// if the edge is present afterwards.
+    pub(crate) fn edge_by_flips(&mut self, u: u32, w: u32, owner: u32) -> Result<bool, TetError> {
         self.tabu.clear();
         for _iter in 0..120 {
             if self.dt.tds.find_edge(u, w).is_some() {
-                return Ok(());
+                return Ok(true);
             }
             let Some((tets, faces)) = self.corridor(u, w) else {
+                if self.complete_mode {
+                    return Ok(false);
+                }
                 return Err(fail(owner, Some([u, w]), "could not trace the edge through the triangulation"));
             };
             // A constraint face in the corridor is only a proof of intersection if the exact test
@@ -700,7 +756,9 @@ impl<'a> Recover<'a> {
                         continue;
                     }
                     seen.push(key);
-                    if let Some(plan) = self.dt.plan_edge_removal(x, y, t, 16, &mut self.sc) {
+                    if let Some(plan) = self.dt.plan_edge_removal(x, y, t, 16, &mut self.sc)
+                        && !self.makes_shortcut(&plan.old, &plan.new)
+                    {
                         let after = after_of(self, &plan.old, &plan.new);
                         let cand = (after, plan.new.len(), key);
                         if best.as_ref().is_none_or(|b| cand < (b.0, b.1, b.2)) {
@@ -718,7 +776,9 @@ impl<'a> Recover<'a> {
             // 2-3 flips of crossed faces (reshape), best-first, never undone by edge removal.
             let mut best23: Option<(usize, [u32; 2], crate::flips::Plan)> = None;
             for &(t, k) in &faces {
-                if let Some(plan) = self.dt.plan_flip23(t, k) {
+                if let Some(plan) = self.dt.plan_flip23(t, k)
+                    && !self.makes_shortcut(&plan.old, &plan.new)
+                {
                     let after = after_of(self, &plan.old, &plan.new);
                     let ne = [plan.new[0][0].min(plan.new[0][1]), plan.new[0][0].max(plan.new[0][1])];
                     if self.tabu.contains(&ne) {
@@ -738,13 +798,13 @@ impl<'a> Recover<'a> {
                 }
             break;
         }
-        self.edge_by_cavity(u, w, owner)
+        Ok(self.dt.tds.find_edge(u, w).is_some())
     }
 
     // ---------------------------------------------------------------- faces
 
     /// Do triangles `g` and `f` intersect improperly (generic position)?
-    fn tri_pierce(&self, g: [u32; 3], f: [u32; 3]) -> bool {
+    pub(crate) fn tri_pierce(&self, g: [u32; 3], f: [u32; 3]) -> bool {
         for e in 0..3 {
             let (p, q) = (g[e], g[(e + 1) % 3]);
             if !f.contains(&p) && !f.contains(&q) && self.pierces(p, q, f[0], f[1], f[2]) {
@@ -758,7 +818,7 @@ impl<'a> Recover<'a> {
         false
     }
 
-    fn recover_face(&mut self, tri: u32, key: [u32; 3]) -> Result<(), TetError> {
+    pub(crate) fn recover_face(&mut self, tri: u32, key: [u32; 3]) -> Result<(), TetError> {
         let mut marks = std::mem::take(&mut self.marks);
         marks.reset(self.dt.tds.slots());
         let res = self.recover_face_in(tri, key, &mut marks);
@@ -896,8 +956,35 @@ impl<'a> Recover<'a> {
         bverts.dedup();
         for &t in &rset {
             for &x in &self.dt.tds.verts[t as usize] {
-                if bverts.binary_search(&x).is_err() && x < self.dt.droppable_from {
+                if bverts.binary_search(&x).is_err() && !self.dt.droppable(x) {
                     return Err(fail(tri, None, "a vertex is enclosed by the cavity"));
+                }
+            }
+        }
+        if self.complete_mode {
+            // Complete recovery never gives up a recovered constraint edge: refuse a cavity that
+            // has one inside (not on a boundary face); the caller splits instead.
+            let mut bedges: Vec<[u32; 2]> = Vec::new();
+            for g in top.iter().chain(bot.iter()) {
+                for e in 0..3 {
+                    let (x, y) = (g[e], g[(e + 1) % 3]);
+                    bedges.push([x.min(y), x.max(y)]);
+                }
+            }
+            for e in 0..3 {
+                let (x, y) = (key[e], key[(e + 1) % 3]);
+                bedges.push([x.min(y), x.max(y)]);
+            }
+            bedges.sort_unstable();
+            for &t in &rset {
+                let v = self.dt.tds.verts[t as usize];
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        let k = [v[i].min(v[j]), v[i].max(v[j])];
+                        if self.con.edge_owner(k[0], k[1]).is_some() && bedges.binary_search(&k).is_err() {
+                            return Err(fail(tri, None, "a constraint edge lies inside the cavity"));
+                        }
+                    }
                 }
             }
         }
@@ -913,6 +1000,9 @@ impl<'a> Recover<'a> {
                     new_tets.extend(t);
                 }
             }
+        }
+        if self.makes_shortcut(&rset, &new_tets) {
+            return Err(fail(tri, None, "the refill would join two points of a split edge"));
         }
         let mut ids = Vec::new();
         self.dt.tds.replace(&rset, &new_tets, &mut ids).map_err(|e| fail(tri, None, format!("cavity commit failed: {e}")))?;
@@ -971,12 +1061,13 @@ impl<'a> Recover<'a> {
                     r.push(n);
                 }
             }
-            if r.len() > 2048 {
+            if r.len() > MAX_CAVITY {
+                // Too large for a gift-wrapping refill; complete recovery splits the edge.
                 return Err(fail(owner, Some([u, w]), "edge cavity too large"));
             }
         }
         // Phase 0: the smallest cavity, with interior points if it needs them.
-        let search = self.failed_edges < SEARCH_EDGES;
+        let search = self.failed_edges < SEARCH_EDGES && !self.dt.searched_out();
         let seeds = if search { self.edge_seeds(u, w) } else { Seeds::default() };
         if search {
             let cav = self.edge_cavity_boundary(&r, marks, u, w, owner)?;
@@ -986,7 +1077,10 @@ impl<'a> Recover<'a> {
         }
         // Phase A: refill with the vertices at hand, growing the cavity across the boundary faces
         // that made candidate tets invalid until the fill works or nothing more can be absorbed.
-        for _ in 0..if search { MAX_GROW } else { 1 } {
+        for round in 0..if search { MAX_GROW } else { 1 } {
+            if round > 0 && self.dt.searched_out() {
+                break;
+            }
             let cav = self.edge_cavity_boundary(&r, marks, u, w, owner)?;
             let budget = 2000 + 40 * cav.faces.len();
             match self.dt.fill_report(&cav.faces, Some((u, w)), &cav.inner, budget) {
@@ -1004,6 +1098,9 @@ impl<'a> Recover<'a> {
         }
         // Phase B: interior points may help (once on the cavity so far, then on layers around it).
         for layer in 0..if search { STEINER_LAYERS } else { 0 } {
+            if self.dt.searched_out() {
+                break;
+            }
             if layer > 0 {
                 self.grow_layer(&mut r, marks);
             }

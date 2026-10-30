@@ -2,13 +2,13 @@
 //! (height-field relief on a cube face, stacked and alternating twisted prisms) must be accepted
 //! with the boundary preserved exactly (decision 12).
 //!
-//! Known limit (see W3_REPORT): relief at depth 0.9 on 6 x 6 and finer grids, and 0.6 on 8 x 8
-//! grids, can still fail with a typed `RecoveryFailed`. `relief_known_hard_fail_typed` records
-//! that they fail cleanly and in bounded time.
+//! Round 2: the relief cases at depth 0.9 on 6 x 6 and 8 x 8 grids and 0.6 on 8 x 8 grids, which
+//! used to end in `RecoveryFailed`, recover through complete recovery
+//! (`relief_hard_cases_recover_exactly`).
 
 mod common;
 use common::*;
-use sm_scheme_tet::{SurfaceInput, TetError, TetOptions, tetrahedralize};
+use sm_scheme_tet::{SurfaceInput, TetMesh, TetOptions, tetrahedralize};
 use sm_testkit::surf3::{self, SplitMix64};
 
 fn check(inp: &SurfaceInput, label: &str) {
@@ -123,20 +123,63 @@ fn alternating_towers() {
     }
 }
 
-/// Cases the recovery still cannot do (release only, about 15 s each): they must fail with
-/// a typed `RecoveryFailed`, never panic, never return a wrong mesh.
-#[test]
-#[ignore = "known limit; about 15 s each in release"]
-fn relief_known_hard_fail_typed() {
-    for (n, seed, depth) in [(6u32, 1u64, 0.9), (6, 2, 0.9), (8, 1, 0.6)] {
-        let inp = relief_cube(n, seed, depth);
-        match tetrahedralize(&inp, &TetOptions::default()) {
-            Ok(m) => {
-                check_boundary(&m, &inp.tris).unwrap();
-                assert!(all_exact_positive(&m));
-            }
-            Err(TetError::RecoveryFailed { .. }) => {}
-            Err(e) => panic!("n{n} seed{seed} d{depth}: unexpected {e}"),
+/// Hash of a mesh: point bits, tets and the statistics (not `stage_ms`).
+fn mesh_hash(m: &TetMesh) -> u64 {
+    use core::hash::Hasher;
+    let mut h = sm_testkit::determinism::Fnv::default();
+    for p in &m.points {
+        for c in p {
+            h.write(&c.to_bits().to_le_bytes());
         }
     }
+    for t in &m.tets {
+        for i in t {
+            h.write(&i.to_le_bytes());
+        }
+    }
+    for x in [m.stats.n_steiner, m.stats.n_steiner_recovery, m.stats.n_boundary_steiner, m.stats.flips, m.stats.smooth_passes, m.stats.unrefinable] {
+        h.write(&(x as u64).to_le_bytes());
+    }
+    h.finish()
+}
+
+/// Review round 2: relief cases the interior-point recovery cannot finish (decision 12). They
+/// go through complete recovery (temporary boundary Steiner points on the stuck edges and
+/// triangles, moved off the surface afterwards) and must come out with the exact boundary.
+/// Debug builds run three of the eleven cases.
+#[test]
+fn relief_hard_cases_recover_exactly() {
+    let mut cases: Vec<(u32, u64, f64)> = (1..=3).map(|s| (6, s, 0.9)).collect();
+    for depth in [0.6, 0.9] {
+        cases.extend((1..=4).map(|s| (8, s, depth)));
+    }
+    if cfg!(debug_assertions) {
+        cases = vec![(6, 1, 0.9), (6, 2, 0.9), (8, 2, 0.6)];
+    }
+    for (n, seed, depth) in cases {
+        let label = format!("relief n{n} seed{seed} d{depth}");
+        let inp = relief_cube(n, seed, depth);
+        let t = std::time::Instant::now();
+        let m = tetrahedralize(&inp, &TetOptions::default()).unwrap_or_else(|e| panic!("{label}: {e}"));
+        eprintln!(
+            "{label}: {:.2}s recovery Steiner {} (temporary boundary {}), refinement {}, tets {}",
+            t.elapsed().as_secs_f64(),
+            m.stats.n_steiner_recovery,
+            m.stats.n_boundary_steiner,
+            m.stats.n_steiner_refine,
+            m.tets.len()
+        );
+        check(&inp, &label);
+    }
+}
+
+/// Complete recovery is bit-identical over runs and thread counts.
+#[test]
+fn relief_hard_case_is_deterministic() {
+    let inp = relief_cube(6, 2, 0.9);
+    let h = sm_testkit::determinism::check(2, 4, |threads| {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| mesh_hash(&tetrahedralize(&inp, &TetOptions::default()).unwrap()))
+    })
+    .unwrap_or_else(|e| panic!("relief n6 seed2 d0.9: {e}"));
+    assert_ne!(h, 0);
 }

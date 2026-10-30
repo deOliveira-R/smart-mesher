@@ -18,6 +18,7 @@ mod quality;
 mod refine;
 mod scheme;
 mod recover;
+mod steiner;
 mod tds;
 mod validate;
 
@@ -102,8 +103,16 @@ impl Default for TetOptions<'_> {
 /// Statistics of a run. `stage_ms` is excluded from equality and from every hash.
 #[derive(Clone, Debug, Default)]
 pub struct TetStats {
-    /// Interior Steiner points in the output.
+    /// Interior Steiner points in the output (`n_steiner_recovery + n_steiner_refine`).
     pub n_steiner: usize,
+    /// Interior Steiner points in the output that boundary recovery added (including the
+    /// zero-volume repair before refinement).
+    pub n_steiner_recovery: usize,
+    /// Interior Steiner points in the output that refinement added.
+    pub n_steiner_refine: usize,
+    /// Temporary boundary Steiner points that complete recovery inserted on input edges and
+    /// triangles and then moved off the surface (none remain in the output).
+    pub n_boundary_steiner: usize,
     /// Flips performed (recovery and optimization).
     pub flips: usize,
     /// Smoothing passes performed.
@@ -127,6 +136,9 @@ pub struct TetStats {
 impl PartialEq for TetStats {
     fn eq(&self, o: &Self) -> bool {
         self.n_steiner == o.n_steiner
+            && self.n_steiner_recovery == o.n_steiner_recovery
+            && self.n_steiner_refine == o.n_steiner_refine
+            && self.n_boundary_steiner == o.n_boundary_steiner
             && self.flips == o.flips
             && self.smooth_passes == o.smooth_passes
             && self.unrefinable == o.unrefinable
