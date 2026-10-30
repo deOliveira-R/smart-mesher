@@ -1298,6 +1298,14 @@ When a task entry and a ruling below disagree, the ruling wins. When a task entr
   - The `sm-rt-api` contract crate and the skeletons of the new crates.
   - The CLAUDE.md `unsafe` exception for sm-rt-capi (not used here).
   - If any of these is missing when the worker starts, the worker stops with `blocked_on_api`; it never works around one.
+#### 0. Orchestrator rulings at integration (2026-10-30; they win over the text below)
+- INT-1. Row 11: the poly cell count is `pairs + wedges - split_cells` (the reflex-edge repair in sm-poly 6ec5ca6 splits non-star-shaped dual cells).
+- INT-2. Ruling R2 wins over D3's "No sm-rt plugin is installed": D3 installs `sm_rt::RtPlugin` (read-only queries `rt.info`, `rt.check`, `rt.locate`) in `distribution_with_core` and `reference_standard()`. There is still no tracking op, no protocol field and no `.smsh` section; row 13 still builds the tracker in process.
+- INT-3. Ruling D1 wiring: D3 injects `sm_diag::OpNames` (the sorted names of every registered op) into the workspace services, built from the final registry, so `mesh.quality` suggestions report `available` correctly.
+- INT-4. Ruling M3 wiring (sm-mesher owner micro task D7): `mesh.run` on a selection where any target volume already has more than one mesh entry (e.g. a source plus its derived poly mesh) fails atomically with `OpError::Invalid` naming the volume and the mesh ids, and suggesting `mesh.delete`. A volume with exactly one entry keeps the W2 behaviour bit-identically (W2 hashes unchanged). No contract change (the `MeshEntry.derived_from` ACR stays in the post-W3a batch).
+- INT-5. Ruling I3 holds: the V2|V3 triangle is never trimeshed by the script; it comes from V2's sweep copy.
+- INT-6. The sm-scheme-tet S4/performance follow-up runs in parallel and only touches sm-scheme-tet; the milestone uses whatever is on main when it runs.
+
 #### 1. Who registers what (W3a)
 | Op / query / format | Registered by | Writes | Reads |
 |---|---|---|---|
@@ -1461,7 +1469,7 @@ When a task entry and a ruling below disagree, the ruling wins. When a task entr
   10. Exodus (via `read_exodus`):
       - `out.exo` has blocks HEX8, WEDGE6, TET4 with the mesh counts; nodes equal the mesh vertices; coordinates bit-equal to the in-process mesh; each side set entry reconstructs, under the Exodus side numbering, exactly the face node set of our sideset.
       - `poly.exo` has NFACED blocks whose counts equal the poly cells per block.
-  11. OpenFOAM (in-test topology conformance, i.e. checkMesh's topological checks in Rust): `foam::check_polymesh` is empty for `case`, `tetcase` and `polycase`; the parsed back `PolyMesh` equals the built one; an independent re-check in the test (owner ascending, neighbour > owner, neighbours ascending per owner, each cell closed, patches cover [nInternal, nFaces) contiguously, face normals point owner -> neighbour) agrees. `polycase` cell count = sum over V1, V2, V3 of the number of tet-mesh vertices touching that volume (sm-poly keys dual cells by (vertex, region), so interface vertices count once per volume).
+  11. OpenFOAM (in-test topology conformance, i.e. checkMesh's topological checks in Rust): `foam::check_polymesh` is empty for `case`, `tetcase` and `polycase`; the parsed back `PolyMesh` equals the built one; an independent re-check in the test (owner ascending, neighbour > owner, neighbours ascending per owner, each cell closed, patches cover [nInternal, nFaces) contiguously, face normals point owner -> neighbour) agrees. `polycase` cell count = pairs + wedges - split_cells, where pairs = sum over V1, V2, V3 of the number of tet-mesh vertices touching that volume (sm-poly keys dual cells by (vertex, region), so interface vertices count once per volume), and wedges / split_cells come from `mesh.poly_info` (a dual cell at a reflex interface edge that is not star-shaped is split into wedges; see the sm-poly W3_REPORT). Ruling INT-1.
   12. Poly (tet fork):
       - Sum of dual volumes = 2000 (1e-9) and per block 1200/200/600 (no dual cell mixes volumes).
       - `pm` carries `POLYHEDRON` cells and passes `validate` + `validate_geometry` with default tolerances.
