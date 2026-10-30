@@ -12,6 +12,35 @@ pub enum Format {
     Smsh,
     /// VTK XML unstructured grid (`.vtu`).
     Vtu,
+    /// Exodus II (`.exo`).
+    Exodus,
+    /// An OpenFOAM `constant/polyMesh` case: the argument is a directory, not a file.
+    Openfoam,
+}
+
+/// Quality profiles accepted by `smesh quality --profile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum QualityProfile {
+    /// General-purpose limits (the default).
+    Generic,
+    /// OpenFOAM `checkMesh` limits.
+    Openfoam,
+    /// Fluent orthogonal quality.
+    Fluent,
+    /// Planar convex faces for ray tracing and sweeps.
+    Transport,
+}
+
+impl QualityProfile {
+    /// The wire name, as `mesh.quality` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Openfoam => "openfoam",
+            Self::Fluent => "fluent",
+            Self::Transport => "transport",
+        }
+    }
 }
 
 /// Flags every command accepts, before or after the subcommand.
@@ -139,9 +168,10 @@ pub enum Command {
     Undo,
     /// Step forward one node.
     Redo,
-    /// Export a mesh to a file (`.smsh` or `.vtu`).
+    /// Export a mesh to a file (`.smsh`, `.vtu`, `.exo`) or, with `--format openfoam`, to a
+    /// case directory.
     Export {
-        /// Output file; a relative path resolves against the project root under `-p`.
+        /// Output file (a directory for `--format openfoam`); a relative path resolves against the project root under `-p`.
         file: PathBuf,
         /// Mesh id, e.g. `Mesh#1`. Optional when the state holds exactly one mesh.
         #[arg(long, value_name = "ID")]
@@ -152,6 +182,35 @@ pub enum Command {
         /// Embed provenance data.
         #[arg(long)]
         provenance: bool,
+    },
+    /// Store a file (e.g. a STEP file) in the project's input store and print `{sha256, bytes}`.
+    ///
+    /// Pass the `sha256` to ops such as `model.import_step`; the recorded op never holds a path.
+    /// A relative FILE resolves against the working directory.
+    Stage {
+        /// File to stage.
+        file: PathBuf,
+    },
+    /// Check a mesh and list what is wrong. Exits 1 when the mesh is not valid.
+    ///
+    /// Each violation shows its code, severity, entity, owner (the entity's classification), the
+    /// model entities near it and a location.
+    Validate {
+        /// Mesh id, e.g. `Mesh#1`. Optional when the state holds exactly one mesh.
+        #[arg(long, value_name = "ID")]
+        mesh: Option<String>,
+    },
+    /// Grade a mesh: verdict, per-metric statistics, worst entities and suggested fixes.
+    Quality {
+        /// Mesh id, e.g. `Mesh#1`. Optional when the state holds exactly one mesh.
+        #[arg(long, value_name = "ID")]
+        mesh: Option<String>,
+        /// Profile whose limits are graded (default: generic).
+        #[arg(long, value_enum)]
+        profile: Option<QualityProfile>,
+        /// Worst entities listed per metric, 0 to 100 (default: the server's, 10).
+        #[arg(long, value_name = "N")]
+        worst: Option<usize>,
     },
     /// Serve the protocol as JSON-RPC lines.
     Serve {

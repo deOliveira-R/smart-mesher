@@ -37,6 +37,9 @@ drive it with a recording fake endpoint, and the binary passes `connect_standard
 | `hash [--at rev] [--layers]` | `session.hash{at?}` |
 | `checkout <rev>` / `fork <name> [--at hash]` / `undo` / `redo` | `timeline.checkout` / `.branch` / `.undo` / `.redo` |
 | `export <file> [--mesh id] [--format f] [--provenance]` | `session.export` |
+| `stage <file>` | `script.run{"session.stage(<abs path>)"}` (the protocol has no stage method); prints the event's `{sha256, bytes}` |
+| `validate [--mesh id]` | `query{mesh.validate, {mesh?}}`; exit 1 when `valid` is false (the report is still printed) |
+| `quality [--mesh id] [--profile p] [--worst n]` | `query{mesh.quality, {mesh?, profile?, worst_n?}}` |
 | `serve [--stdio]` | loop of `Endpoint::handle_text`, one reply line per request line |
 | `serve --ws addr` | not available in this build (exit 1) |
 | `mcp` | `sm_mcp::run_stdio` |
@@ -52,7 +55,7 @@ branch name. A branch literally named `empty` or spelled as 64 hex digits cannot
 
 Export paths are passed to the server unchanged. The rule (plan T10) is: relative paths resolve
 against the project root under `-p`, otherwise against the working directory; absolute paths are
-used as is. The format comes from `--format` or the `.smsh`/`.vtu` extension; anything else is a usage
+used as is. The format comes from `--format` (`smsh|vtu|exodus|openfoam`) or the `.smsh`/`.vtu`/`.exo` extension (`openfoam` writes a directory and always needs `--format`); anything else is a usage
 error before any request is sent.
 
 `run` scans the script for `include "path"` lines and sends the files (read next to the script,

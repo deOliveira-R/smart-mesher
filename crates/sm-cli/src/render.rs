@@ -105,10 +105,208 @@ pub(crate) fn export(io: &mut Io<'_>, json: bool, r: &ExportResult, raw: &Value)
         return;
     }
     let path = r.path.as_deref().unwrap_or("<inline>");
+    if r.files.is_empty() {
+        line(
+            io,
+            &format!("wrote {path} ({} bytes, sha256 {})", r.bytes, r.sha256),
+        );
+        return;
+    }
+    line(io, &format!("wrote {path} ({} files)", r.files.len()));
+    for f in &r.files {
+        line(
+            io,
+            &format!("  {} ({} bytes, sha256 {})", f.name, f.bytes, f.sha256),
+        );
+    }
+}
+
+pub(crate) fn staged(io: &mut Io<'_>, json: bool, file: &std::path::Path, r: &Value) {
+    if json {
+        line(io, &compact(r));
+        return;
+    }
     line(
         io,
-        &format!("wrote {path} ({} bytes, sha256 {})", r.bytes, r.sha256),
+        &format!(
+            "staged {} ({} bytes, sha256 {})",
+            file.display(),
+            r["bytes"],
+            text(&r["sha256"])
+        ),
     );
+}
+
+/// A scalar as text, or `-` when absent or null.
+fn text(v: &Value) -> String {
+    match v {
+        Value::Null => "-".to_owned(),
+        Value::String(t) => t.clone(),
+        o => compact(o),
+    }
+}
+
+fn ids(v: &Value) -> String {
+    match v.as_array() {
+        Some(a) if !a.is_empty() => a.iter().map(text).collect::<Vec<_>>().join(","),
+        _ => "-".to_owned(),
+    }
+}
+
+fn point(v: &Value) -> String {
+    match v.as_array() {
+        Some(a) if a.len() == 3 => {
+            let c: Vec<String> = a.iter().map(num).collect();
+            format!("({})", c.join(", "))
+        }
+        _ => "-".to_owned(),
+    }
+}
+
+fn num(v: &Value) -> String {
+    v.as_f64()
+        .map_or_else(|| "-".to_owned(), |x| format!("{x:.6e}"))
+}
+
+/// A mesh entity `{id, index}`: its id, else the dense index.
+fn entity(v: &Value) -> String {
+    match v {
+        Value::Null => "-".to_owned(),
+        e => match e["id"].as_str() {
+            Some(id) => id.to_owned(),
+            None => format!("#{}", e["index"]),
+        },
+    }
+}
+
+pub(crate) fn validate(io: &mut Io<'_>, json: bool, v: &Value) {
+    if json {
+        line(io, &compact(v));
+        return;
+    }
+    let valid = v["valid"].as_bool().unwrap_or(false);
+    let cut = if v["truncated"] == Value::Bool(true) {
+        ", list truncated"
+    } else {
+        ""
+    };
+    line(
+        io,
+        &format!(
+            "{}: {} ({} violations{cut})",
+            text(&v["mesh"]),
+            if valid { "valid" } else { "INVALID" },
+            v["total"],
+        ),
+    );
+    if v["geometry_checked"] == Value::Bool(false) {
+        line(
+            io,
+            &format!(
+                "  geometry not checked: {}",
+                text(&v["geometry_skipped_reason"])
+            ),
+        );
+    }
+    for x in v["violations"].as_array().into_iter().flatten() {
+        line(
+            io,
+            &format!(
+                "  {} {} entity={} owner={} near={} at={}",
+                text(&x["severity"]),
+                text(&x["code"]),
+                entity(&x["entity"]),
+                text(&x["owner"]),
+                ids(&x["near"]),
+                point(&x["location"])
+            ),
+        );
+        if let Some(d) = x["detail"].as_str().filter(|d| !d.is_empty()) {
+            line(io, &format!("      {d}"));
+        }
+    }
+}
+
+pub(crate) fn quality(io: &mut Io<'_>, json: bool, v: &Value) {
+    if json {
+        line(io, &compact(v));
+        return;
+    }
+    line(
+        io,
+        &format!(
+            "{}: verdict {} (profile {}, {} cells, dim {})",
+            text(&v["mesh"]),
+            text(&v["verdict"]),
+            text(&v["profile"]),
+            v["cells"],
+            v["dim"]
+        ),
+    );
+    let va = &v["validity"];
+    line(
+        io,
+        &format!(
+            "  validity: {} valid, {} degenerate, {} inverted",
+            va["n_valid"], va["n_degenerate"], va["n_inverted"]
+        ),
+    );
+    for m in v["metrics"].as_array().into_iter().flatten() {
+        let sm = &m["summary"];
+        line(
+            io,
+            &format!(
+                "  {} [{}]: min {} max {} mean {} n_warn {} n_fail {}",
+                text(&m["metric"]),
+                text(&m["entity"]),
+                num(&sm["min"]),
+                num(&sm["max"]),
+                num(&sm["mean"]),
+                m["n_warn"],
+                m["n_fail"]
+            ),
+        );
+        for w in m["worst"].as_array().into_iter().flatten() {
+            line(
+                io,
+                &format!(
+                    "      worst {} = {} grade={} owner={} at={}",
+                    entity(&w["entity"]),
+                    num(&w["value"]),
+                    text(&w["grade"]),
+                    text(&w["owner"]),
+                    point(&w["location"])
+                ),
+            );
+        }
+    }
+    for k in v["skipped"].as_array().into_iter().flatten() {
+        line(io, &format!("  skipped: {}", compact(k)));
+    }
+    let sug = v["suggestions"].as_array().cloned().unwrap_or_default();
+    if !sug.is_empty() {
+        line(io, "  suggestions:");
+    }
+    for x in &sug {
+        let avail = if x["available"] == Value::Bool(true) {
+            "available"
+        } else {
+            "unavailable"
+        };
+        let op = x["op"]
+            .as_str()
+            .map_or(String::new(), |o| format!(" op={o}"));
+        line(
+            io,
+            &format!(
+                "    {} {} ({avail}{op}) targets={}: {}",
+                text(&x["severity"]),
+                text(&x["kind"]),
+                ids(&x["targets"]),
+                text(&x["reason"])
+            ),
+        );
+    }
 }
 
 fn head_text(raw: &Value) -> String {

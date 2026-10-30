@@ -29,7 +29,7 @@ use sm_protocol::{
     INTERNAL_ERROR, INVALID_PARAMS, Request, Rev, RpcError, ScriptResult, StatusResult,
 };
 
-pub use args::{Cli, Command, Format, Global};
+pub use args::{Cli, Command, Format, Global, QualityProfile};
 
 /// The `smesh --version` line.
 pub fn version_line() -> String {
@@ -50,7 +50,11 @@ pub fn usage() -> &'static str {
      \x20 checkout <rev>                move HEAD\n\
      \x20 fork <name> [--at hash]       branch and switch\n\
      \x20 undo | redo                   step through the timeline\n\
-     \x20 export <file> [--mesh id]     write .smsh or .vtu\n\
+     \x20 export <file> [--mesh id]     write .smsh, .vtu, .exo or (--format openfoam) a case dir\n\
+     \x20 stage <file>                  store a file in the input store: {sha256, bytes}\n\
+     \x20 validate [--mesh id]          check a mesh (exit 1 when invalid)\n\
+     \x20 quality [--mesh id] [--profile p] [--worst n]\n\
+     \x20                               grade a mesh and suggest fixes\n\
      \x20 serve [--stdio | --ws addr]   serve JSON-RPC lines\n\
      \x20 mcp                           serve MCP over stdio\n\
      \x20 help [op]                     list ops, or describe one\n\
@@ -108,6 +112,8 @@ pub fn discover_project(start: &Path) -> Option<PathBuf> {
 pub(crate) struct Failure {
     pub(crate) exit: i32,
     pub(crate) err: RpcError,
+    /// The result was already printed; only the exit code remains to report.
+    pub(crate) quiet: bool,
 }
 
 impl Failure {
@@ -115,16 +121,30 @@ impl Failure {
         Self {
             exit: 2,
             err: RpcError::new(INVALID_PARAMS, "usage", msg),
+            quiet: false,
         }
     }
     pub(crate) fn local(msg: impl Into<String>) -> Self {
         Self {
             exit: 1,
             err: RpcError::new(INTERNAL_ERROR, "io", msg),
+            quiet: false,
         }
     }
     pub(crate) fn rpc(err: RpcError) -> Self {
-        Self { exit: 1, err }
+        Self {
+            exit: 1,
+            err,
+            quiet: false,
+        }
+    }
+    /// Exit 1 after the report was printed (an invalid mesh); nothing more is written.
+    pub(crate) fn reported() -> Self {
+        Self {
+            exit: 1,
+            err: RpcError::new(INVALID_PARAMS, "invalid-mesh", "the mesh is not valid"),
+            quiet: true,
+        }
     }
 }
 
@@ -173,7 +193,9 @@ where
     match execute(&cli, connect, io) {
         Ok(()) => 0,
         Err(f) => {
-            render::failure(io, json, &f);
+            if !f.quiet {
+                render::failure(io, json, &f);
+            }
             f.exit
         }
     }
@@ -332,6 +354,46 @@ pub(crate) fn parse_rev(s: &str) -> Res<Rev> {
 fn parse_hash(s: &str) -> Res<Hash256> {
     s.parse::<Hash256>()
         .map_err(|_| Failure::usage(format!("`{s}` is not a 64-digit lowercase hex node hash")))
+}
+
+fn parse_mesh(m: Option<&str>) -> Res<Option<EntityId>> {
+    m.map(|m| {
+        m.parse::<EntityId>()
+            .map_err(|e| Failure::usage(format!("--mesh `{m}`: {e}")))
+    })
+    .transpose()
+}
+
+/// One `Request::Query` whose input is `{mesh?, ...extra}`.
+fn mesh_query(
+    ep: &mut dyn Endpoint,
+    name: &str,
+    mesh: Option<EntityId>,
+    extra: Vec<(&str, Value)>,
+) -> Res<Value> {
+    let mut input = serde_json::Map::new();
+    if let Some(m) = mesh {
+        input.insert("mesh".to_owned(), Value::String(m.to_string()));
+    }
+    for (k, v) in extra {
+        input.insert(k.to_owned(), v);
+    }
+    call(
+        ep,
+        Request::Query {
+            name: name.to_owned(),
+            input: Value::Object(input),
+            at: None,
+        },
+    )
+}
+
+/// A path as a command-language string literal.
+fn lang_string(s: &str) -> Res<String> {
+    if s.chars().any(char::is_control) {
+        return Err(Failure::usage("file name contains a control character"));
+    }
+    serde_json::to_string(s).map_err(|e| Failure::local(e.to_string()))
 }
 
 fn json_arg(s: &str, io: &mut Io<'_>) -> Res<Value> {
@@ -501,24 +563,21 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             let format = match format {
                 Some(Format::Smsh) => ExportFormat::Smsh,
                 Some(Format::Vtu) => ExportFormat::Vtu,
+                Some(Format::Exodus) => ExportFormat::Exodus,
+                Some(Format::Openfoam) => ExportFormat::Openfoam,
                 None => match file.extension().and_then(|e| e.to_str()) {
                     Some("smsh") => ExportFormat::Smsh,
                     Some("vtu") => ExportFormat::Vtu,
+                    Some("exo" | "exodus") => ExportFormat::Exodus,
                     _ => {
                         return Err(Failure::usage(format!(
-                            "cannot infer the export format of {}; use a .smsh or .vtu name or pass --format",
+                            "cannot infer the export format of {}; use a .smsh, .vtu or .exo name or pass --format (openfoam always needs it)",
                             file.display()
                         )));
                     }
                 },
             };
-            let mesh = mesh
-                .as_deref()
-                .map(|m| {
-                    m.parse::<EntityId>()
-                        .map_err(|e| Failure::usage(format!("--mesh `{m}`: {e}")))
-                })
-                .transpose()?;
+            let mesh = parse_mesh(mesh.as_deref())?;
             let req = Request::Export {
                 path: Some(path_str(file)),
                 format: Some(format),
@@ -529,6 +588,50 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             let v = call(ep, req)?;
             let r: ExportResult = typed(v.clone(), "session.export")?;
             render::export(io, json, &r, &v);
+            Ok(())
+        }
+        Command::Stage { file } => {
+            let full = std::path::absolute(file).unwrap_or_else(|_| file.clone());
+            let quoted = lang_string(&path_str(&full))?;
+            let v = call(
+                ep,
+                Request::ScriptRun {
+                    text: format!("session.stage({quoted})\n"),
+                    path: None,
+                    includes: BTreeMap::new(),
+                },
+            )?;
+            let staged = v["events"]
+                .as_array()
+                .and_then(|e| e.iter().find(|e| e["event"] == "session"))
+                .map(|e| e["result"].clone())
+                .filter(|r| r["sha256"].is_string())
+                .ok_or_else(|| Failure::local("malformed `session.stage` reply"))?;
+            render::staged(io, json, file, &staged);
+            Ok(())
+        }
+        Command::Validate { mesh } => {
+            let v = mesh_query(ep, "mesh.validate", parse_mesh(mesh.as_deref())?, Vec::new())?;
+            render::validate(io, json, &v);
+            if v["valid"] == Value::Bool(false) {
+                return Err(Failure::reported());
+            }
+            Ok(())
+        }
+        Command::Quality {
+            mesh,
+            profile,
+            worst,
+        } => {
+            let mut extra = Vec::new();
+            if let Some(p) = profile {
+                extra.push(("profile", Value::from(p.name())));
+            }
+            if let Some(w) = worst {
+                extra.push(("worst_n", Value::from(*w)));
+            }
+            let v = mesh_query(ep, "mesh.quality", parse_mesh(mesh.as_deref())?, extra)?;
+            render::quality(io, json, &v);
             Ok(())
         }
         Command::Serve { stdio: _, ws } => {
