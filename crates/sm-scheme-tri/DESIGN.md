@@ -98,6 +98,10 @@ constrained edges as walls:
   split without a Steiner point on the segment; that window is tolerance, not failure. (The
   unit square with 10 intervals per side would otherwise report 12 "unfixable" corner triangles.)
 
+**Ratified: `SIZE_SLACK = 1.06`.** The orchestrator ratified the 6 % size tolerance (reviewed in
+the W3a Opus pass, polish round r0). It only decides what is *reported* as `unfixable`; it never
+loosens the angle criterion or the insertion rules.
+
 ### Optimization
 
 At most 4 Jacobi sweeps of Laplacian smoothing in the chart over the Steiner points only (input
@@ -147,7 +151,10 @@ pole, is itself a ring node**; the other `m - 1` ring nodes are face-owned
 is 5 face-owned nodes plus the seam node. Ring nodes are input points of the kernel, so
 `optimize` never moves them. Result: exactly 6 triangles at each pole, three distinct keys in every
 triangle, and the seam stays a conforming edge. Hemispheres and apexes without a collapsed
-coedge, and spheres so coarse that the two rings collide (`r < 2h`), are `Unsupported`.
+coedge, and spheres so coarse that the two rings collide, are `Unsupported`. The plan's rule
+"`r < 2h` is `Unsupported`" is replaced by this geometric test (ring collision or crossing,
+neighbours not on one iso-line, ring not closing): the ring radius is the seam's first interval,
+not `h`, so `r < 2h` is not the right threshold. The plan's rule is not evaluated anywhere.
 
 ### Patch assembly and failure mapping
 
@@ -158,7 +165,8 @@ normal oriented). `TriError` maps to the driver: geometry and lift errors to `Ge
 unsupported pole case to `Unsupported`, point budget and quality to `Quality`
 (`GenerateFailure::fallback(..).with_nodes(worst triangle)`). The gate is
 `min_angle_3d >= min(fail_angle, 0.9 * smallest input corner angle)` and a positive normal against
-the face normal for every triangle (a fold of the lift is a `Quality` failure).
+the face normal for every triangle, **pole-fan triangles included** (measured in 3-D from the
+lifted ring and the pole; a fold of the lift is a `Quality` failure).
 
 ### Advancing front (`front`, `triadvance`)
 

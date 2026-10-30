@@ -136,6 +136,10 @@ Debug build, numbers printed by the tests above.
     not end where the first starts; `GenCtx::loop_uvs` already refuses inconsistent coedge ends
     (returns `None`), which falls back to projection and then to `Lift`/`Unsupported`. Unit test
     in `chart.rs` (`a_closed_loop_passes_and_an_open_one_is_reported`).
+14. **`r < 2h` rule replaced.** The plan says any sphere with `r < 2h` is `Unsupported`. That
+    rule is not implemented: the ring radius is the seam's first interval (deviation 1), so the
+    check is geometric (ring collision or crossing, neighbours not on one iso-line, ring not
+    closing), all `Unsupported`. Spheres of 4 to 32 seam intervals mesh; 2 are `Unsupported`.
 
 ## Known gaps
 
@@ -145,9 +149,9 @@ Debug build, numbers printed by the tests above.
 * The chart is exact only for planes and cylinders; for revolution surfaces it is conformal (angles
   right to first order, circumcenters accurate); other curved faces and anisotropic metrics on
   curved faces use the constant-metric chart and are approximate.
-* The full sphere at 16 seam intervals reaches 30.9 degrees; coarse spheres (4-8 intervals) have
-  poor pole fans and need `fail_angle` lowered (the test uses 0); spheres with 2 seam intervals
-  are `Unsupported`.
+* The full sphere at 16 seam intervals reaches 30.9 degrees; coarse spheres (4-32 intervals) pass
+  the default gate (fan triangles measure 55-58 degrees; see *Polish*); spheres with 2 seam
+  intervals are `Unsupported`.
 * Hemispheres, rim-winding faces and cone apexes without a collapsed coedge are `Unsupported`
   (they need a model-level partition).
 * `triadvance` has no angle guarantee; on the 10 x 0.1 rectangle it fails the gate like `trimesh`
@@ -159,6 +163,37 @@ Debug build, numbers printed by the tests above.
   `GenerateFailure::nodes` (worst triangle) is visible when calling `Driver::generate` directly
   (as the acceptance 5 test does) but not in the final `NoApplicableScheme` error. A contract
   note, not an ACR.
+
+## Polish
+
+Round r0 after the Opus review of the W3a pass.
+
+1. **Gate on pole fans** (`scheme.rs`, `gate_fans`): the fan triangles `(b, a, pole)` are now
+   checked against the same limit and for a positive normal; they were outside the kernel and
+   unchecked. Failure is `Quality` with the three nodes. Measured fan minimum angles 55.0 to
+   57.8 degrees for 4 to 32 seam intervals.
+2. **Deviation 14** declares the `r < 2h` replacement (also in `DESIGN.md`).
+3. **`SIZE_SLACK = 1.06` ratified** by the orchestrator; recorded in `DESIGN.md` (Refinement).
+4. **Coarse-sphere note refreshed**: the test `spheres_of_many_resolutions_...` now runs at
+   default parameters (no `fail_angle` override) for 4, 5, 6, 8, 12, 16, 24, 32 intervals and
+   asserts a minimum angle of at least 12 degrees. Known gaps updated.
+5. **`hilbert_order`** breaks ties of the quantized index by exact coordinates (`total_cmp`),
+   then id.
+6. **Cylinder at defaults**: `acc4_cylinder_with_default_params_reaches_twenty_degrees`
+   (`optimize = true`, asserts >= 20 degrees).
+7. **Scale test**: `acc1_scaled_by_two_to_the_sixty_both_ways` also runs 3 shuffles at each
+   scale and compares triangle sets.
+
+Round 1 (review MUST FIX 1): the angle limit `min(fail_angle, 0.9 * smallest corner)` was 0 on
+every face with a pole fan, because `geom::corners` skips the degenerate pole coedge and the seam
+then turns straight back at the pole (a 0 degree corner). The fan angle gate and the kernel gate
+on spheres therefore could never fire. `smallest_corner_deg` now leaves out turn-back corners
+(next real coedge on the same edge), so the 12 degree default applies to kernel triangles and
+fans. The sphere test now also asserts that a sphere with `fail_angle` above the achieved fan
+angle fails with `Quality`.
+
+Declined: none. (The property-style tests use their own fixed xorshift seeds, not
+`sm_testkit::strategies::config`, because they are not proptest strategies; unchanged.)
 
 ## api_change_requests
 

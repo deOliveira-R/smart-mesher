@@ -78,8 +78,7 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
             &c,
             &[ids.face],
             &[(ids.edges[1], n)],
-            // The pole fans of coarse spheres are poor: accept any angle here, check topology.
-            serde_json::json!({ "fail_angle": 0.0 }),
+            serde_json::json!({}),
             &Sequential,
             None,
         )
@@ -87,6 +86,9 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
         let m = &out.finished.mesh;
         assert!(validate(m).is_empty(), "n = {n}: {:?}", validate(m));
         assert_eq!(euler(m), 2, "n = {n}");
+        // Default gate (12 deg) holds over kernel triangles and pole fans alike.
+        let ang = min_angle_deg(m);
+        assert!(ang >= 12.0, "n = {n}: {ang}");
         assert!((0..m.face_count()).all(|f| m.face_kind(FaceIx::new(f)) == FaceKind::Interior), "n = {n}");
         for pole in ids.vertices {
             let v = out.vertex_of(sm_scheme_api::NodeKey::vertex(pole)).unwrap().0 as usize;
@@ -101,6 +103,20 @@ fn spheres_of_many_resolutions_are_closed_valid_and_pole_fans_have_six_triangles
         // Area is bounded by the sphere and positive.
         let a = mesh_area(m);
         assert!(a > 0.0 && a <= 4.0 * std::f64::consts::PI * 2.5 * 2.5 * (1.0 + 1e-12), "n = {n}: {a}");
+    }
+}
+
+#[test]
+fn the_angle_gate_applies_to_faces_with_pole_fans() {
+    for n in [8u32, 16] {
+        let mut c = CellComplex::new();
+        let ids = with_op(&mut c, OpId(1), |t| sphere(t, 2.5)).unwrap();
+        // Fan angles measure 58-60 degrees, so a 59.9 degree gate must fire (it was inert at 0).
+        let r = generate_only(&registry(), &c, &[ids.face], &[(ids.edges[1], n)], serde_json::json!({ "fail_angle": 59.9 }));
+        match r.map(|_| ()).expect_err("gate must fire") {
+            SchemeError::Generate(gf) => assert_eq!(gf.kind, FailureKind::Quality, "n = {n}: {}", gf.reason),
+            other => panic!("n = {n}: {other:?}"),
+        }
     }
 }
 
