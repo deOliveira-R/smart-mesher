@@ -348,6 +348,7 @@ fn flip_repair(m: &mut Mesher<'_>, a: &mut Analysis) {
                     return;
                 }
                 let Some((u, undo)) = m.cdt.flip_if_convex(t, s) else { continue };
+                m.work += a.tris.len() as u64;
                 budget -= 1;
                 let saved = a.mate.clone();
                 let cur = saved.iter().filter(|x| **x == NONE).count();
@@ -384,6 +385,7 @@ pub(crate) fn recombine(m: &mut Mesher<'_>, max_rounds: u32) -> Result<(Vec<[u32
     let mut rounds = 0u32;
     loop {
         let mut an = analyze(m);
+        m.work += an.tris.len() as u64;
         if !an.unmatched().is_empty() {
             flip_repair(m, &mut an);
         }

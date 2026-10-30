@@ -1,6 +1,6 @@
 # W3-PAVE report (`sm-scheme-pave`)
 
-Status: **done** for every mandatory acceptance bullet (1-3, 4a, 5, 6, 7a, 8-10, 11) plus stretch S1
+Status: **done** (polished, see the last section) for every mandatory acceptance bullet (1-3, 4a, 5, 6, 7a, 8-10, 11) plus stretch S1
 and S2 (S3 measured and reported). One known gap with a typed fallback: acute-corner (triangle)
 regions, see "Known gaps".
 
@@ -49,7 +49,7 @@ Kernel fixtures (`acceptance_1/2`, spacings 0.125 / 0.25 / 0.5, min / mean corne
 | fixture | 0.125 | 0.25 | 0.5 |
 |---|---|---|---|
 | square, rectangle(3,2) | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
-| circle(1.5, 32) | 0.525 / 0.934 | 0.680 / 0.950 | 0.783 / 0.928 |
+| circle(1.5, 32) | 0.553 / 0.940 | 0.679 / 0.950 | 0.783 / 0.928 |
 | l_shape | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
 
 All fixtures need 0 splitting rounds. Floors (0.40 / 0.85; l_shape 0.35) are met with margin.
@@ -59,24 +59,26 @@ Scheme meshes through `Driver::mesh`:
 | case | quads | SJ min / mean |
 |---|---|---|
 | planar brick +z face, counts (8, 6) | 48 | 1.000 / 1.000 |
-| cylinder lateral (72, 72, seam 4) | 288 | 1.000 / 1.000; widest quad 0.088 rad, edge ratio 1.22 |
-| cylinder bottom cap (32 nodes) | 99 | 0.696 / 0.932 |
+| cylinder lateral (72, 72, seam 4) | 288 | 1.000 / 1.000; widest quad 0.087 rad, edge ratio 1.05 |
+| cylinder bottom cap (32 nodes) | 99 | 0.694 / 0.927 |
 | rectangle with two holes (S1) | 200 | 1.000 / 1.000 |
 | annulus face r 1 to 2 (S1) | 276 | 0.574 / 0.928 |
 
-Kernel S1: rectangle_with_holes 3200 / 800 / 200 quads, min 0.633 / 0.726 / 1.000; annulus(1,2,32) 983 / 272 / 128 quads, min 0.610 / 0.832 / 0.995 (mean 0.97 to 1.0). S2: 478 quads, min 0.619, mean 0.954, mean-area ratio left/right 0.1426 (gate 1/3). S3 (metric `[(1+u)^2, 0, 1]`, quality measured in the physical image): coarse (12x6) 50 quads min 0.520 mean 0.889; fine (32x16) 317 quads min 0.491 mean 0.927; medium (20x10) fails with `NoPerfectMatching` (typed fallback).
+Kernel S1: rectangle_with_holes 3200 / 800 / 200 quads, min 0.633 / 0.726 / 1.000; annulus(1,2,32) 1760 / 276 / 128 quads, min 0.730 / 0.604 / 0.995 (mean 0.95 to 1.0). S2: 478 quads, min 0.619, mean 0.954, mean-area ratio left/right 0.1426 (gate 1/3). S3 (metric `[(1+u)^2, 0, 1]`, quality measured in the physical image): coarse (12x6) 72 quads, medium (20x10) 200, fine (32x16) 512, all min and mean 1.000 (equal opposite counts, so the structured strip fill takes them; before the polish they were 50 / fail / 317 quads at min 0.52 / 0.49).
 
-Performance: `pave_region` on 100 x 100 (400 boundary nodes, 10000 quads): 0.12 s release (gate 2 s). `Driver::mesh` of the same face: 0.10 s (recorded only).
+Performance (this platform, see below): `pave_region` on 100 x 100 (400 boundary nodes, about 10000 quads) 1.1 s through the triangle route (unequal opposite counts, 9970 quads) and 0.07 to 0.18 s as a structured grid (equal counts, 10000 quads); gate 2 s. The 70c7242 code took 1.7 s for the equal-count square on the same machine, so the 0.12 s in the earlier report came from a different platform. `Driver::mesh` of the same face: 0.06 s (recorded only).
 
 Robustness surveys (ignored tests in `src/kernel/tests.rs`, production 14-entry ladder, release):
 
 | corpus | failures (typed `NoPerfectMatching`) | worst min SJ |
 |---|---|---|
 | unit rectangle, unequal counts (ratio <= 2), 440 | 0 | 0.345 |
-| random rectangles, L, U (uniform rounded spacing), 450 | 2 | 0.369 |
+| random rectangles, L, U (uniform rounded spacing), 450 | 3 (was 2) | 0.369 |
 | circles, ellipses, 5-lobed stars, 169 | 0 | 0.151 (15 below 0.2) |
-| random triangles, 150 | 32 | 0.356 |
-| isosceles triangles (apex 20 to 140 deg), 66 | 21 | 0.455 |
+| random triangles, 150 | 33 (was 32) | 0.356 |
+| isosceles triangles (apex 20 to 140 deg), 66 | 21 | 0.449 |
+
+(Measured after the polish; the count cut-off costs one more failure in two corpora and makes the surveys 10 times faster: 67 s instead of 759 s for the four ignored survey tests.)
 
 Without the ladder the default placement fails every triangle and about 35 % of the 1275-case mixed corpus. `survey_cover`
 (448 cases fail the first strategy; 55 of them no one of 94 candidates recovers) chose the first 14 ladder entries
@@ -118,7 +120,7 @@ apex 30: 0.50 0.50 0.50 0.50 0.50 0.48; 60: 0.63 0.75 0.74 0.62 0.62 0.50; 90: 0
   never asks `pave` for a triangle (V2 is a sweep).
 - 2 of 450 random rectangles/L/U polygons also fail the ladder (same typed fallback).
 - Some curved regions have a poor worst quad (min SJ 0.151 on a 5-lobed star); no valence cleanup yet (W3b).
-- A failing large face spends at most the ladder budget (150000 triangle-attempts) before falling back.
+- A failing face is cut off by a deterministic work count (see Polish); a thin triangle that used to take 3 s to fail takes about 0.5 s.
 - Deferred, as listed in `DESIGN.md`: embedded members, poles, min-weight matching, valence cleanup, Winslow,
   anisotropic metric, intra-face parallelism, cross-field, auto-selection, shared CDT crate.
 - `Cargo.lock` changed (the `sm-scheme-pave` dependency list); the orchestrator should accept it at merge.
@@ -139,3 +141,35 @@ sm-sizing or any other W3a crate.
 ## Docker
 
 Not needed by this task (no OpenFOAM or DAGMC step).
+
+## Polish
+
+Review items against 70c7242 (Darwin 27.0.0 arm64, Apple M1 Max, release builds; the earlier numbers of this report were from another machine, which is why the 100 x 100 timing differs).
+
+1. **Narrow regions (done).** New `strip.rs`: a single loop whose nodes split into four sides with equal opposite counts is meshed as a transfinite-interpolation grid (corners by turning angle; exact convexity check). Taken first when it is a (nearly) perfect grid, otherwise after the default placement and before the rest of the ladder. Tests (`thin_strips_with_equal_opposite_counts_mesh_as_grids`, `a_thin_strip_in_a_stretched_metric_still_meshes`, `the_strip_fill_is_deterministic_and_reflection_safe`, driver `a_thin_strip_with_equal_counts_meshes_through_the_driver`):
+
+   | case | before (70c7242) | after |
+   |---|---|---|
+   | rect 10 x 0.2, 50/2/50/2 | `NoPerfectMatching` after 10.4 s | 100 quads, SJ 1.000, 1.6 ms |
+   | rect 10 x 0.1, 100/2/100/2 | `NoPerfectMatching` after 27.7 s | 200 quads, SJ 1.000, 2.2 ms |
+   | wedge 10 x 0.5, 20/1/21 | `NoPerfectMatching` after 4.5 s | **declined**, still `NoPerfectMatching`, now in 70 ms |
+
+   **Declined: the wedge.** A triangle with sides 20, 1, 21 has `a + b = c`: its three-block decomposition needs blocks of width `(a + b - c)/2 = 0` and a corner angle of 2.9 degrees, and a four-corner grid puts a flat (180 degree) corner at the extra node (quality 1e-16, rejected). An all-quad mesh needs an interior valence-3 node and irregular transition pairs, which this kernel does not build; "trivially exists" does not hold for this case. The test `the_degenerate_wedge_fails_typed_and_fast` pins the typed, fast failure. Three-sided regions with `a + b - c >= 2` (for example 20/3/21) also still fail (typed); a three-block fill is the W3b item. Equal-count strips with unequal opposite counts or holes (annular gaps) are likewise not covered.
+2. **Failure cost (done).** The ladder is cut off by counts: later attempts may use `6 x` the first attempt's work plus `10^6` units (a unit is a triangle visit of the recombination incl. per-flip re-matching, plus 8 per vertex), at most 40 attempts, each capped at `4 x` the first attempt's vertices (min 4000). Wall-clock is never read. Timings (release, M1 Max): isosceles-triangle survey 148 s to 7 s, random-triangle survey 261 s to 24 s, curves survey 120 s to 21 s, rectangles/L/U survey 47 s to 6 s; a single failing apex-20 triangle (n = 12) 3.1 s to about 0.5 s; the three thin 20/k/21 triangles of `a_failing_small_region_stops_after_a_bounded_number_of_attempts` fail or pass in 0.44 s together. Cost: robustness drops by one case in two corpora (table above).
+3. **Explicit size (done, with a disclosure).** An explicit size is now limited by the gradation-limited boundary field (coarser requests cannot jump away from the boundary spacing; `an_explicit_size_is_limited_by_the_boundary_spacing_with_gradation`). *Disclosed, see "Polish round 1" for the corrected behaviour:* a size finer than the boundary spacing is not graded from below (a lower clamp made the ladder fail more often and was removed), and the kernel cannot refine more than about 1.5x against fixed boundary nodes within its bounded ladder. The claim made here earlier ("honoured as asked", "a mesh coarser than asked") was wrong for unequal counts. Absolute bound: `PaveError::TooLarge { estimate, limit }` (limit `2 x 10^6` vertices) from the area/size^2 estimate at every boundary-triangle centroid, and from any attempt that grows past it; a size of 1e-9 fails in milliseconds (`an_absurd_size_is_a_typed_error_not_a_long_run`, driver `an_absurdly_small_size_field_is_a_typed_failure`: the auto chain lands on the stub `tri` and the history names pave's `Geometry` failure). *Signal for hscale:* `QuadMesh2::size_scale` (new field) reports the winning strategy's size factor (the strip fill reports its measured edge/size ratio). `Patch` has no diagnostics channel, so the scheme refuses (`FailureKind::Quality`) a mesh more than 2x coarser than an explicit size field and the driver falls back; that branch is not covered by a driver test (no fixture reaches it cheaply: the structured grid is taken only when 1.5x or less coarser, otherwise after the ladder).
+4. **`loop_uvs` length (done).** `generate` returns a `Geometry` failure when `loop_uvs(..).len() != lp.nodes.len()`. No test: `GenCtx::loop_uvs` cannot return a wrong length from the public fixtures, the check is a guard.
+5. **Numbers (done).** The tables above are re-measured. Platform note: every timing in this report is release, Apple M1 Max, Darwin; the 100 x 100 gate of 2 s is tight on this machine under parallel test load (one run measured 2.04 s with other heavy tests running; alone 1.1 s).
+
+Other changes: `PaveError::TooLarge` (new variant on the `#[non_exhaustive]` enum), `QuadMesh2::size_scale`, unused `Cdt::len` made test-only, acceptance 11 now times both the triangle route (unequal counts) and the grid. Failure cost and strip order are documented in `DESIGN.md`.
+
+Gate: `cargo build --workspace`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc` (crate and workspace), `tools/graph.py` and `cargo test -p sm-scheme-pave --all-features` (default threads and `RAYON_NUM_THREADS=1`, debug and release) pass. `tools/ci.sh` stopped with rc 101 at the unrelated `sm-cadio` test `a_large_closed_bspline_face_with_many_edges_decodes_in_linear_time` (219 s against its 60 s bound) while the machine's load average was about 650 from parallel agents; the crates after it alphabetically (including this one) were therefore only run by the commands above.
+
+## Polish round 1
+
+Review of 1bf1c36 (release, Apple M1 Max; the machine was at load average about 385 during the re-measurement, so wall times are inflated and only counts are quoted).
+
+1. **Regression in the explicit-size path (fixed).** A 4x3 rectangle, boundary spacing about 0.5, counts [8,6,8,8] and [8,7,8,5], size 0.35 and 0.25: 70c7242 meshed them (61 / 75 and 55 / 53 quads) and 1bf1c36 returned `NoPerfectMatching` because the count cut-off no longer reached the late strategy (hscale 1.5) that used to succeed. Fix: when the whole ladder fails with an explicit size, `pave_region` re-runs the ladder without it (the size the boundary allows) and sets `size_scale` to the measured geometric-mean edge/size ratio. Now: [8,6,8,8] 56 quads at 0.35 (scale 1.32) and at 0.25 (1.85); [8,7,8,5] 48 quads at 0.35 (1.43) and at 0.25 (2.003). `MAX_SIZE_SCALE` of the scheme glue is 2.1 (was 2 + 1e-9) so the measured 2.003 is not refused. Pinned by `a_size_finer_than_the_boundary_falls_back_to_what_the_boundary_allows` (unequal counts under 0.35 and 0.25, area and scale checked).
+2. **Strip grid replaced the request (fixed for moderate sizes).** Equal counts [8,6,8,6]: 97 quads at 0.35 and 77 at 0.25 before the first polish; 1bf1c36 gave 48 in both because the grid was taken when at most 1.5x coarser than asked (1.43 here). The threshold is now 1.2x, so at 0.35 the ladder runs first and gives 97 quads (asserted in the same test). At 0.25 the ladder still fails, the grid is the fallback and gives 48 quads with `size_scale` 2.0: this is a disclosed limit, not fixed.
+3. **Documentation corrected.** `DESIGN.md` "Explicit size field" and item 3 above now state the three outcomes exactly (ladder mesh, fallback to the boundary spacing with a reported `size_scale`, strip grid) instead of "honoured as asked".
+
+Not changed: failing explicit-size requests now cost two ladders (the second without the size); the cut-off still bounds each.

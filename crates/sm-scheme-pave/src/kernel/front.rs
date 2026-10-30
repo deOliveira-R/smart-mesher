@@ -9,6 +9,10 @@ use super::cdt::{Cdt, Loc, NONE};
 use super::metric::{Met, Ord64, SizeMap, Space};
 use core::ops::Range;
 
+/// Absolute bound on the vertices of one region; a request beyond it (for instance a size of
+/// 1e-9) is a typed [`PaveError::TooLarge`] instead of a near-unbounded run.
+pub(crate) const MAX_VERTICES: usize = 2_000_000;
+
 /// Minimum distance (in sizes) between a frontal point and any existing vertex.
 const ALPHA_ROW: f64 = 0.6;
 /// Proposals closer than this fraction of the row distance count as duplicates.
@@ -48,8 +52,11 @@ pub(crate) struct Mesher<'a> {
     pub met: Vec<Met>,
     pub h: Vec<f64>,
     tag: Vec<u64>,
+    /// Deterministic work counter (triangle visits of the recombination), for the ladder cut-off.
+    pub work: u64,
     space: &'a Space<'a>,
     size_map: Option<SizeMap>,
+    /// Soft vertex bound of this attempt (runaway guard, retried by the ladder).
     max_vertices: usize,
     hscale: f64,
     /// Multiplier of the row distance (strategy ladder).
@@ -63,8 +70,8 @@ fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 }
 
 impl<'a> Mesher<'a> {
-    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, area: f64, tuning: Tuning) -> Result<Self, PaveError> {
-        let mut m = Mesher { cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, max_vertices: usize::MAX, hscale: tuning.hscale, row_factor: tuning.row_factor, drop_run: tuning.drop_run };
+    pub fn new(space: &'a Space<'a>, cdt: Cdt, nb: usize, size_map: Option<SizeMap>, tuning: Tuning) -> Result<Self, PaveError> {
+        let mut m = Mesher { work: 0, cdt, met: Vec::with_capacity(nb), h: Vec::with_capacity(nb), tag: Vec::with_capacity(nb), space, size_map, max_vertices: usize::MAX, hscale: tuning.hscale, row_factor: tuning.row_factor, drop_run: tuning.drop_run };
         for i in 0..nb {
             let w = m.cdt.pts[i];
             let (mt, h) = (m.space.met(w)?, m.h_at(w)?);
@@ -72,16 +79,66 @@ impl<'a> Mesher<'a> {
             m.h.push(h);
             m.tag.push(0);
         }
+        // How many vertices the wanted size asks for: the area of every boundary triangle
+        // over the square of the size at its centroid (an absurd request is a typed error
+        // before any point is placed).
+        let tris: Vec<u32> = m.cdt.triangles().collect();
+        let mut est = 1.0f64;
+        for t in tris {
+            let v = m.cdt.tv[t as usize];
+            let p: [[f64; 2]; 3] = core::array::from_fn(|k| m.cdt.pts[v[k] as usize]);
+            let area = 0.5 * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0])).abs();
+            let c = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0];
+            let h = m.h_at(c)?;
+            est += area / (h * h);
+        }
+        if est > MAX_VERTICES as f64 {
+            return Err(PaveError::TooLarge { estimate: est.min(usize::MAX as f64) as usize, limit: MAX_VERTICES });
+        }
         // Generous bound that only a runaway placement loop can reach.
-        let hmin = m.h.iter().copied().fold(f64::INFINITY, f64::min);
-        let est = (area / (hmin * hmin)).max(1.0);
-        m.max_vertices = nb + (40.0 * est).min(1e9) as usize + 10_000;
+        m.max_vertices = (nb + (40.0 * est) as usize + 10_000).min(MAX_VERTICES);
         Ok(m)
     }
 
+    /// Tighten the soft vertex bound of this attempt to at most `n`.
+    pub fn limit_vertices(&mut self, n: usize) {
+        self.max_vertices = self.max_vertices.min(n.max(self.cdt.pts.len() + 1));
+    }
+
+    /// Fails when one more vertex would pass a bound: the absolute one is a typed error
+    /// that ends the run, the soft one a retryable guard.
+    fn check_budget(&self) -> Result<(), PaveError> {
+        let n = self.cdt.pts.len();
+        if n >= MAX_VERTICES {
+            return Err(PaveError::TooLarge { estimate: n, limit: MAX_VERTICES });
+        }
+        if n >= self.max_vertices {
+            return Err(PaveError::Internal("vertex budget exhausted"));
+        }
+        Ok(())
+    }
+
+    /// The wanted size at the frame point `w` before the strategy's `hscale`.
+    pub fn wanted(&mut self, w: [f64; 2]) -> Result<f64, PaveError> {
+        let k = core::mem::replace(&mut self.hscale, 1.0);
+        let h = self.h_at(w);
+        self.hscale = k;
+        h
+    }
+
     fn h_at(&mut self, w: [f64; 2]) -> Result<f64, PaveError> {
+        // An explicit size is limited by the boundary-derived field, which carries the
+        // gradation: the interior cannot be coarser than the boundary spacing allows. Finer
+        // than the boundary is honoured as asked (no lower gradation; see DESIGN.md).
         let h = match (&self.space.size, &mut self.size_map) {
-            (Some(f), _) => f(self.space.frame.to_uv(w)),
+            (Some(f), Some(m)) => {
+                let want = f(self.space.frame.to_uv(w));
+                if !(want.is_finite() && want > 0.0) {
+                    return Err(PaveError::BadMetric);
+                }
+                want.min(m.at(w))
+            }
+            (Some(f), None) => f(self.space.frame.to_uv(w)),
             (None, Some(m)) => m.at(w),
             (None, None) => 1.0,
         };
@@ -103,9 +160,7 @@ impl<'a> Mesher<'a> {
 
     /// Insert `p` wherever it lands (used by the edge splitting of the recombination).
     pub fn insert_free(&mut self, p: [f64; 2], hint: u32) -> Result<Option<u32>, PaveError> {
-        if self.cdt.pts.len() >= self.max_vertices {
-            return Err(PaveError::Internal("vertex budget exhausted"));
-        }
+        self.check_budget()?;
         let loc = self.cdt.locate(p, hint);
         match loc {
             Loc::In(_) => {}
@@ -176,9 +231,7 @@ impl<'a> Mesher<'a> {
         if crowd {
             return Ok(Res::Crowd);
         }
-        if self.cdt.pts.len() >= self.max_vertices {
-            return Err(PaveError::Internal("vertex budget exhausted"));
-        }
+        self.check_budget()?;
         Ok(Res::Accepted(self.insert_checked(p, loc, tag)?))
     }
 
@@ -340,9 +393,7 @@ impl<'a> Mesher<'a> {
                     if near {
                         continue;
                     }
-                    if self.cdt.pts.len() >= self.max_vertices {
-                        return Err(PaveError::Internal("vertex budget exhausted"));
-                    }
+                    self.check_budget()?;
                     self.insert_checked(p, loc, u64::MAX)?;
                     changed = true;
                     break;
