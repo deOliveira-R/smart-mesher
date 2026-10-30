@@ -16,6 +16,13 @@ fn cell(p: f64, h: f64) -> i64 {
     (p / h).floor() as i64
 }
 
+/// Cells overlapping `[p - tol, p + tol]`, padded by a few ulps so that a neighbour at exactly
+/// `|d| == tol` is found whatever the rounding of the subtraction and of the division.
+fn span(p: f64, tol: f64) -> (i64, i64) {
+    let pad = tol + 4.0 * f64::EPSILON * (p.abs() + tol);
+    (cell(p - pad, tol), cell(p + pad, tol))
+}
+
 /// Weld points: `out[i]` is the index of the representative of point `i`.
 ///
 /// Points are visited in index order. Point `i` joins the lowest-index representative within
@@ -30,12 +37,11 @@ pub fn weld_vertices(points: &[Point3], tol: f64) -> Vec<usize> {
     }
     let mut grid: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
     for (i, p) in points.iter().enumerate() {
-        let lo = (cell(p.x - tol, tol), cell(p.y - tol, tol), cell(p.z - tol, tol));
-        let hi = (cell(p.x + tol, tol), cell(p.y + tol, tol), cell(p.z + tol, tol));
+        let (sx, sy, sz) = (span(p.x, tol), span(p.y, tol), span(p.z, tol));
         let mut best: Option<usize> = None;
-        for ix in lo.0..=hi.0 {
-            for iy in lo.1..=hi.1 {
-                for iz in lo.2..=hi.2 {
+        for ix in sx.0..=sx.1 {
+            for iy in sy.0..=sy.1 {
+                for iz in sz.0..=sz.1 {
                     let Some(reps) = grid.get(&(ix, iy, iz)) else { continue };
                     for &j in reps {
                         if best.is_some_and(|b| b < j) {
@@ -72,8 +78,8 @@ fn samples(e: &Edge, curve: &dyn ParametricCurve) -> [Point3; 5] {
 /// and the direction of the input edge relative to the kept one.
 ///
 /// Kept edges are bucketed by their end vertices and the grid cell (size `tol`) of their middle
-/// sample, which is the same point in either direction; a match must lie in one of the 27 cells
-/// around, so many distinct edges between the same two vertices do not compare all pairs.
+/// sample, which is the same point in either direction; a match must lie in one of the cells
+/// within `tol` (3 per axis, a ulp-padded span), so many distinct edges between the same two vertices do not compare all pairs.
 pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(usize, Sense)> {
     let mut out: Vec<(usize, Sense)> = (0..edges.len()).map(|i| (i, Sense::Forward)).collect();
     if tol.is_nan() || tol <= 0.0 {
@@ -89,10 +95,11 @@ pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(
         let closed = e.start == e.end;
         // The lowest-index kept edge that matches, as a scan of all kept edges in index order.
         let mut found: Option<(usize, Sense)> = None;
-        for dx in -1i64..=1 {
-            for dy in -1i64..=1 {
-                for dz in -1i64..=1 {
-                    let key = (a, b, c.0.saturating_add(dx), c.1.saturating_add(dy), c.2.saturating_add(dz));
+        let (sx, sy, sz) = (span(m.x, tol), span(m.y, tol), span(m.z, tol));
+        for ix in sx.0..=sx.1 {
+            for iy in sy.0..=sy.1 {
+                for iz in sz.0..=sz.1 {
+                    let key = (a, b, ix, iy, iz);
                     let Some(list) = kept.get(&key) else { continue };
                     for &k in list {
                         if found.is_some_and(|f| f.0 < k) {
@@ -172,6 +179,20 @@ mod tests {
             }
         }
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn points_exactly_one_tolerance_apart_weld_whatever_the_rounding() {
+        // `b = a + tol` computed in floating point: a cell could be missed without the padded span.
+        for tol in [1e-3, 0.1, 1e-6 / 3.0] {
+            for k in 0..2000 {
+                let x = k as f64 * tol * 0.99973 - 7.3;
+                let pts = [p(x, 0.0, 0.0), p(x + tol, 0.0, 0.0)];
+                let (a, b) = (pts[0], pts[1]);
+                let want = if (b - a).norm() <= tol { [0, 0] } else { [0, 1] };
+                assert_eq!(weld_vertices(&pts, tol), want, "x={x:e} tol={tol:e}");
+            }
+        }
     }
 
     #[test]
