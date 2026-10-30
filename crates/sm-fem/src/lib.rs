@@ -5,7 +5,8 @@
 //! | [`FemPlugin`] | registers the [`FemLayer`] and the `fem.*` ops |
 //! | [`FemLayer`] | element type per block color, side preference per sideset face |
 //! | [`lower`] | blocks, sidesets and decks to mesh sets (export time, never stored) |
-//! | [`export`] | `(state, request)` to `.smsh` / VTU bytes, a pure function |
+//! | [`export`] | `(state, request)` to `.smsh` / VTU / Exodus bytes, a pure function |
+//! | [`export_files`] | `(state, request)` to a file set (OpenFOAM `polyMesh`), a pure function |
 //!
 //! See `DESIGN.md` for the positioning and the rules.
 
@@ -18,7 +19,9 @@ mod ops;
 
 pub use element::ElementType;
 pub use error::FemError;
-pub use export::{ExportFormat, ExportReport, ExportRequest, export};
+pub use export::{
+    ExportBundle, ExportFile, ExportFormat, ExportReport, ExportRequest, export, export_files,
+};
 pub use layer::{FEM_LAYER, FemLayer};
 pub use lower::{Lowered, SetOrigin, SetSummary, lower};
 pub use ops::{BlockAdd, BlockElementType, BlockRemove, SidesetAdd};

@@ -10,6 +10,7 @@ use sm_meshio::DeckRecord;
 use sm_model_api::{BoundaryKind, DeckSide, Domain, FaceRole};
 use sm_topo_api::TopologyView;
 
+use crate::element::ElementType;
 use crate::error::FemError;
 use crate::layer::FemLayer;
 
@@ -50,6 +51,8 @@ pub struct Lowered {
     pub decks: Vec<DeckRecord>,
     /// The sets added, in the order they were added.
     pub sets: Vec<SetSummary>,
+    /// Declared element type per emitted block set (by set name); blocks with none are absent.
+    pub block_types: BTreeMap<String, ElementType>,
 }
 
 impl Lowered {
@@ -59,6 +62,7 @@ impl Lowered {
             mesh: Arc::clone(&mesh.mesh),
             decks: Vec::new(),
             sets: Vec::new(),
+            block_types: BTreeMap::new(),
         }
     }
 }
@@ -68,6 +72,7 @@ struct Pending {
     members: SetMembers,
     label: Option<i64>,
     origin: SetOrigin,
+    ty: Option<ElementType>,
 }
 
 /// Lower the blocks, sidesets and decks of `model` onto a copy of `mesh`.
@@ -123,7 +128,11 @@ pub fn lower(
     let mut host = (*mesh.mesh).clone_host();
     let mut alloc = alloc.clone();
     let mut sets = Vec::with_capacity(pending.len());
+    let mut block_types = BTreeMap::new();
     for p in pending {
+        if let Some(ty) = p.ty {
+            block_types.insert(p.name.clone(), ty);
+        }
         let len = p.members.len();
         host.add_set(&p.name, p.members, &mut alloc)?;
         if let Some(l) = p.label {
@@ -144,6 +153,7 @@ pub fn lower(
         mesh: Arc::from(host),
         decks: records,
         sets,
+        block_types,
     })
 }
 
@@ -181,7 +191,8 @@ fn blocks(
         };
         cells.sort_unstable();
         cells.dedup();
-        if let Some(ty) = fem.element_type(color) {
+        let declared = fem.element_type(color);
+        if let Some(ty) = declared {
             if !ty.is_linear() {
                 return Err(FemError::Unsupported(format!("element type {ty}")));
             }
@@ -201,6 +212,7 @@ fn blocks(
             members: SetMembers::Cells(cells),
             label: Some(i64::from(row.label)),
             origin: SetOrigin::Block,
+            ty: declared,
         });
     }
     Ok(())
@@ -262,6 +274,7 @@ fn sidesets(
             members: SetMembers::Sides(sides),
             label: Some(i64::from(row.label)),
             origin: SetOrigin::Sideset,
+            ty: None,
         });
     }
     Ok(())
@@ -370,6 +383,7 @@ fn deck_sets(model: &ModelLayer, m: &dyn MeshRead, out: &mut Vec<Pending>) -> Ve
                 members: SetMembers::Faces(faces),
                 label: None,
                 origin: SetOrigin::DeckFace,
+                ty: None,
             });
             Some(name)
         };

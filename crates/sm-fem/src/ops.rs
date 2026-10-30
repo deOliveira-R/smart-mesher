@@ -218,7 +218,10 @@ impl TypedOp for BlockElementType {
                 self.element_type
             )));
         }
-        if matches!(self.element_type, ElementType::Quad4 | ElementType::Tri3) {
+        if matches!(
+            self.element_type,
+            ElementType::Quad4 | ElementType::Tri3 | ElementType::Polygon
+        ) {
             return Err(OpError::Unsupported(SHELL_REFUSED.into()));
         }
         let color = ctx
