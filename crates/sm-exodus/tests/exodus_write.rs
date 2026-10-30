@@ -111,7 +111,7 @@ data:
 
  qa_records =
   "smart-mesh",
-  "0.0.0",
+  "@VERSION@",
   "1970/01/01",
   "00:00:00" ;
 }
@@ -179,10 +179,11 @@ fn acc2_golden_cdl_single_hex() {
     let opts = ExodusOptions::default();
     let p = plan(&m, &opts).unwrap();
     let cdl = exodus_nc(&m, &opts, &p).unwrap().to_cdl();
-    assert_eq!(cdl, HEX_CDL);
+    let golden = HEX_CDL.replace("@VERSION@", env!("CARGO_PKG_VERSION"));
+    assert_eq!(cdl, golden);
     // The CDL of the file read back equals the CDL of the model.
     let bytes = exodus_bytes(&m, &opts).unwrap();
-    assert_eq!(NcFile::read(&bytes).unwrap().to_cdl(), HEX_CDL);
+    assert_eq!(NcFile::read(&bytes).unwrap().to_cdl(), golden);
 }
 
 #[test]
@@ -542,6 +543,12 @@ fn acc7_truncated_octahedron() {
     counts.sort_unstable();
     assert_eq!(counts, [vec![4; 6], vec![6; 8]].concat());
     check_poly(&m, &d);
+    // libexodus dimension names (recalled from exodusII.h).
+    let nc = NcFile::read(&bytes).unwrap();
+    assert_eq!(nc.dim_len("num_fac_per_el1"), Some(14));
+    assert_eq!(nc.dim_len("num_fa_in_blk1"), Some(14));
+    let fb = nc.var_by_name("fbconn1").unwrap();
+    assert!(fb.attrs.iter().any(|(n, v)| n == "elem_type" && v.as_text() == Some("NSIDED")));
     // Exodus spellings only.
     for needle in [&b"POLYHEDRON"[..], &b"POLYGON"[..]] {
         assert!(!bytes.windows(needle.len()).any(|w| w == needle));

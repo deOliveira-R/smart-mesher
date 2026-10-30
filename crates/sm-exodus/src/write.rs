@@ -12,6 +12,8 @@ use std::io::Write;
 const CHUNK: usize = 1 << 14;
 const STR_LEN: usize = 32;
 const LINE_LEN: usize = 80;
+/// `int64_status` = `EX_ALL_INT64_DB` (maps 0x0400, ids 0x0800, bulk 0x1000), as SEACAS writes it.
+const INT64_ALL: i32 = 0x1C00;
 
 /// One element block of a [`ExodusReport`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,7 +243,9 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
     f.global_attr("floating_point_word_size", NcValue::Int(vec![8]));
     f.global_attr("file_size", NcValue::Int(vec![1]));
     f.global_attr("maximum_name_length", NcValue::Int(vec![p.max_name_length as i32]));
-    f.global_attr("int64_status", NcValue::Int(vec![i32::from(int64)]));
+    // libexodus bitmask (recalled, unverified): MAPS 1 | IDS 2 | BULK 4 | INQ 8. Maps, ids and
+    // bulk data are all NC_INT64 here, and 0x1C00 (7168) is `EX_ALL_INT64_DB`, the value libexodus writes.
+    f.global_attr("int64_status", NcValue::Int(vec![if int64 { INT64_ALL } else { 0 }]));
     f.global_attr("title", NcValue::Text(opts.title.clone()));
 
     f.var("time_whole", NcType::Double, &[d_time]);
@@ -287,7 +291,7 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
                 fblk += 1;
                 let nfa = pf.per_face.len();
                 let nnod: usize = pf.per_face.iter().map(|x| *x as usize).sum();
-                let d_fa = f.dim(&format!("num_fa_in_blk{k}"), Some(nfa as u64));
+                let d_fa = f.dim(&format!("num_fac_per_el{k}"), Some(nfa as u64));
                 let v = f.var(&format!("facconn{k}"), id_ty, &[d_fa]);
                 f.var_attr(v, "elem_type", NcValue::Text("NFACED".into()));
                 let base = face_base;
@@ -298,9 +302,10 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
                 let per_cell: Vec<i64> = pf.per_cell.iter().map(|x| i64::from(*x)).collect();
                 f.set_data(e, NcData::Bytes(ids_bytes(&per_cell, int64)));
                 // Face block j = fblk.
-                let d_ff = f.dim(&format!("num_fa_in_fblk{fblk}"), Some(nfa as u64));
+                let d_ff = f.dim(&format!("num_fa_in_blk{fblk}"), Some(nfa as u64));
                 let d_fn = f.dim(&format!("num_nod_per_fa{fblk}"), Some(nnod as u64));
                 let fc = f.var(&format!("fbconn{fblk}"), id_ty, &[d_fn]);
+                f.var_attr(fc, "elem_type", NcValue::Text("NSIDED".into()));
                 f.set_data(
                     fc,
                     NcData::Lazy(Box::new(move || {
@@ -380,7 +385,7 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
             let d = f.dim(&format!("num_side_ss{k}"), Some(s.elems.len() as u64));
             let ev = f.var(&format!("elem_ss{k}"), id_ty, &[d]);
             let sv = f.var(&format!("side_ss{k}"), id_ty, &[d]);
-            let (elems, sides): (&'a [u32], &'a [u8]) = (&s.elems, &s.sides);
+            let (elems, sides): (&'a [u32], &'a [u32]) = (&s.elems, &s.sides);
             f.set_data(ev, NcData::Lazy(Box::new(move || pack_with(elems.len(), int64, |j| i64::from(elems[j])))));
             f.set_data(sv, NcData::Lazy(Box::new(move || pack_with(sides.len(), int64, |j| i64::from(sides[j])))));
         }

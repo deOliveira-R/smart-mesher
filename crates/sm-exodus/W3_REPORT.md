@@ -115,3 +115,32 @@ Wiring is the integration step's: `sm_exodus::write_exodus(&dyn MeshRead, &Exodu
 Write)` for `ExportFormat::Exodus`; `ExodusOptions::provenance` takes the string passed to
 `SmshWriter`. Deck face sets (`Faces`) become side sets by default; the sm-fem lowering produces no
 vertex sets today, so the milestone export carries blocks and side sets only.
+
+## Polish
+
+Review items, all in `crates/sm-exodus/` only:
+
+1. NFACED/NSIDED names now follow `exodusII.h` as recalled: `facconn<k>(num_fac_per_el<k>)`, face block
+   count dimension `num_fa_in_blk<j>` (was `num_fa_in_fblk<j>`), `fbconn<j>` carries `elem_type = "NSIDED"`.
+   **Still unverified**: no SEACAS source or header is reachable here, so this is documented in `DESIGN.md`
+   as recalled, not checked. Real libexodus/ParaView read-back remains the open check.
+2. CDF-1: `begin` above `i32::MAX` is `TooLarge` (offsets are signed).
+3. CDF-2: a >4 GiB fixed variable must be the last fixed variable and there must be no record variable;
+   otherwise `TooLarge` with a message pointing to `Data64` (Exodus always has `time_whole`).
+4. `NcFile::layout`: record variable k begins at the end of the fixed section plus the vsizes of earlier
+   record variables (interleaved records). Test `record_variables_are_interleaved`.
+5. Golden CDL QA version comes from `env!("CARGO_PKG_VERSION")` (template placeholder in the test).
+6. Side numbers of polygons/polyhedra widened to `u32` (`SideSetPlan.sides: Vec<u32>`); no 255 cap.
+7. `int64_status`: see Polish round 1 (superseded: the first fix wrote 15, which was wrong).
+8. `NodeSetPlan.nodes` rustdoc corrected (set order, not sorted or deduplicated). A template or polygon
+   cell without `cell_corners` is now a typed `Mesh(State(..))` error from `plan`.
+
+Declined: none.
+
+## Polish
+
+Round 1: `int64_status` corrected against SEACAS `exodusII.h`: `EX_MAPS_INT64_DB=0x0400`,
+`EX_IDS_INT64_DB=0x0800`, `EX_BULK_INT64_DB=0x1000`, `EX_ALL_INT64_DB=0x1C00`. The inquiry flag
+(`EX_INQ_INT64_API=0x10000`) is API-only. `exi_populate_header` writes `int64_status & EX_ALL_INT64_DB`, so with
+`int64 = true` the file now says 7168 (0x1C00); the earlier 15 would be masked to 0 by libexodus. The reader
+still treats any nonzero value as int64. Updated write.rs, options.rs rustdoc, DESIGN.md and this report.
