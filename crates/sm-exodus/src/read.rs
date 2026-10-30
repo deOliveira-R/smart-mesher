@@ -13,7 +13,7 @@ pub struct BlockData {
     pub id: i64,
     /// Block name (`eb_names`).
     pub name: String,
-    /// `elem_type` attribute (`HEX8`, `NFACED`, ...).
+    /// `elem_type` attribute, canonicalised (`HEX8`, `TET4`, `NFACED`, ...; the file spells `TETRA`, `WEDGE`, `PYRAMID`).
     pub elem_type: String,
     /// Number of elements (`num_el_in_blk<k>`).
     pub num_elem: usize,
@@ -150,6 +150,7 @@ fn elem_type(f: &NcFile<'_>, vars: &[String]) -> String {
         .filter_map(|v| f.var_by_name(v))
         .flat_map(|v| v.attrs.iter())
         .find_map(|(n, a)| (n == "elem_type").then(|| a.as_text().unwrap_or("").to_string()))
+        .map(|t| crate::tables::canonical_element_type(&t))
         .unwrap_or_default()
 }
 

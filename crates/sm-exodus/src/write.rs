@@ -4,7 +4,7 @@ use crate::error::{ExodusError, Result};
 use crate::netcdf::{DimId, NcData, NcFile, NcFormat, NcType, NcValue, VarId, par_pack};
 use crate::options::ExodusOptions;
 use crate::plan::{BlockPlan, ExodusPlan, plan};
-use crate::tables::exodus_element_type;
+use crate::tables::{exodus_element_type, exodus_file_element_type};
 use rayon::prelude::*;
 use sm_mesh_api::{CellIx, CellShape, MeshRead, Side};
 use std::io::Write;
@@ -351,7 +351,7 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
                 let npe = shape.vertex_count().unwrap_or(0);
                 let d_n = f.dim(&format!("num_nod_per_el{k}"), Some(npe as u64));
                 let v = f.var(&format!("connect{k}"), id_ty, &[d_el, d_n]);
-                f.var_attr(v, "elem_type", NcValue::Text(exodus_element_type(shape).into()));
+                f.var_attr(v, "elem_type", NcValue::Text(exodus_file_element_type(shape).into()));
                 f.set_data(v, NcData::Lazy(Box::new(move || template_connectivity(mesh, cells, npe, int64))));
             }
         }

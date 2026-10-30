@@ -73,6 +73,28 @@ pub const fn exodus_element_type(shape: CellShape) -> &'static str {
     }
 }
 
+/// Spelling written to the file's `elem_type` attribute. Same as [`exodus_element_type`] except
+/// `TETRA` / `WEDGE` / `PYRAMID`, which Cubit writes and meshio 5.3.5 can map (it lacks `TET4`,
+/// `WEDGE6` and `PYRAMID5`); VTK reads both spellings.
+pub const fn exodus_file_element_type(shape: CellShape) -> &'static str {
+    match shape {
+        CellShape::Tet => "TETRA",
+        CellShape::Wedge => "WEDGE",
+        CellShape::Pyramid => "PYRAMID",
+        _ => exodus_element_type(shape),
+    }
+}
+
+/// Canonical (`TET4` ...) spelling of a file `elem_type`; unknown names pass through.
+pub fn canonical_element_type(name: &str) -> String {
+    match name.to_ascii_uppercase().as_str() {
+        "TETRA" | "TETRA4" | "TET" => "TET4".into(),
+        "WEDGE" => "WEDGE6".into(),
+        "PYRAMID" => "PYRAMID5".into(),
+        _ => name.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
