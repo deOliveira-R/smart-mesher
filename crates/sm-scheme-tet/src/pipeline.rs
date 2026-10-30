@@ -209,6 +209,12 @@ fn classify(dt: &Dt, con: &Constraints, tris: &[[u32; 3]]) -> Result<Vec<u32>, T
 
 /// Tetrahedralize the volume enclosed by `input`; see the crate docs.
 pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<TetMesh, TetError> {
+    tetrahedralize_with(input, opts, false)
+}
+
+/// [`tetrahedralize`]; with `complete_only` boundary recovery skips the interior-point recovery
+/// and runs complete recovery ([`crate::steiner`]) right after the Delaunay stage (tests).
+pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, complete_only: bool) -> Result<TetMesh, TetError> {
     let mut stage_ms = [0.0f64; 5];
     let t0 = Instant::now();
     check_options(opts)?;
@@ -221,7 +227,7 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     let canonical = SurfaceInput { points: input.points.clone(), tris: order.iter().map(|&i| canon[i as usize]).collect() };
     stage_ms[0] = ms(t0);
     let back = |i: u32| order.get(i as usize).copied().unwrap_or(i);
-    run(&canonical, opts, stage_ms).map_err(|e| match e {
+    run(&canonical, opts, stage_ms, complete_only).map_err(|e| match e {
         TetError::InvertedShell { tri } => TetError::InvertedShell { tri: back(tri) },
         TetError::RecoveryFailed { tri, edge, reason } => TetError::RecoveryFailed { tri: back(tri), edge, reason },
         TetError::SelfIntersection { tri_a, tri_b } => {
@@ -232,7 +238,7 @@ pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<Tet
     })
 }
 
-fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> Result<TetMesh, TetError> {
+fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], complete_only: bool) -> Result<TetMesh, TetError> {
     let n = input.points.len();
     let max_steiner = if opts.max_steiner == 0 { 8 * n + 100_000 } else { opts.max_steiner };
 
@@ -245,6 +251,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     let mut extra: Vec<V3> = Vec::new();
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
+    let mut bnd_steiner: usize;
     loop {
         let t1 = Instant::now();
         let mut pts = input.points.clone();
@@ -270,18 +277,28 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
         d.droppable_from = (n + N_FAR) as u32;
         let r = {
             let mut rec = Recover::new(&mut d, &con, &guard, max_steiner, n as u32, attempt);
-            let r = rec.run();
+            let mut r = if complete_only { Err(TetError::RecoveryFailed { tri: 0, edge: None, reason: String::new() }) } else { rec.run() };
+            // A tiny body (a Schönhardt-like pocket) restarts with its centroid; anything else
+            // that is stuck goes to complete recovery with temporary boundary Steiner points.
+            if let Err(TetError::RecoveryFailed { tri, edge, .. }) = &r {
+                let tiny = !complete_only && pocket_point(&input.points, &input.tris, *tri, *edge).is_some();
+                if !(tiny && attempt < MAX_RESTARTS) {
+                    r = rec.complete();
+                }
+            }
+            bnd_steiner = rec.n_boundary_steiner;
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
         d.droppable_from = u32::MAX;
+        d.search_limit = u64::MAX;
         match r.0 {
             Ok(()) => {
                 dt = d;
                 flips = r.1;
                 break;
             }
-            Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < MAX_RESTARTS => {
+            Err(TetError::RecoveryFailed { tri, edge, reason }) if attempt < MAX_RESTARTS && !complete_only => {
                 // Add interior points and rebuild: the pocket centroid of a tiny body (the point
                 // a non-star-shaped pocket needs), then the points the failed recoveries
                 // suggested, best S4 score first (compliant points before the rest). A point on
@@ -319,11 +336,14 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     let outside = classify(&dt, &con, &input.tris)?;
     dt.tds.remove(&outside);
     flips += dt.remove_flats(true, &guard)?;
+    // Recovery points the final mesh can do without (a refill of their star without them).
+    flips += dt.remove_points(n + N_FAR, dt.pts.len())?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2) + t_recover;
 
-    // Stage 5: refinement.
+    // Stage 5: refinement. Points from here on are refinement points.
+    let first_refine = dt.pts.len();
     let t3 = Instant::now();
     let mut smooth_passes = 0usize;
     let unrefinable;
@@ -383,8 +403,12 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5]) -> R
     let mut tets: Vec<[u32; 4]> = tets_raw.iter().map(|v| v.map(|x| remap[x as usize])).collect();
     canonical_tets(&mut tets);
     let (min_d, max_d, max_re, min_mr, mean_mr) = mesh_stats(&points, &tets);
+    let n_steiner_recovery = (n + N_FAR..first_refine.min(dt.pts.len())).filter(|&i| used[i]).count();
     let stats = TetStats {
         n_steiner: points.len() - n,
+        n_steiner_recovery,
+        n_steiner_refine: points.len() - n - n_steiner_recovery,
+        n_boundary_steiner: bnd_steiner,
         flips,
         smooth_passes,
         unrefinable,

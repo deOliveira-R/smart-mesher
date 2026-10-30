@@ -14,8 +14,11 @@ meshes share:
 1. **The boundary is frozen.** TetGen splits boundary facets and edges with Steiner points, HXT
    and fTetWild modify or approximate the surface. We add only *interior* points
    (decision 12), so every neighbouring volume and the triangle patches of the faces stay
-   conforming by construction. The price is that recovery can fail on bad surfaces; it then fails
-   with a *located, actionable* error (triangle, edge, `TopoFace`, node keys).
+   conforming by construction. Recovery is nevertheless complete in practice: where interior
+   points do not suffice, temporary boundary Steiner points are inserted and then moved off
+   the surface again (Si's surface-preserving recovery, TetGen `-Y`; step 8 below), so the
+   output never has one. Invalid input (self-intersections) still fails with a *located,
+   actionable* error (triangle, edge, `TopoFace`, node keys).
 2. **Exact predicates with symbolic perturbation.** `sm_math::orient3d/insphere` with
    `sos::{orient3d_sos, insphere_sos}` (perturbation id = point index) make the Delaunay
    tetrahedralization of a point set unique and independent of the insertion order; TetGen uses
@@ -73,7 +76,7 @@ pub struct TetVolume; pub fn register(&mut SchemeRegistry) -> sm_scheme_api::Res
 |---|---|---|---|
 | 1 | validate | `validate` | options; finite coordinates within `[2^-100, 2^100]`; duplicate points; degenerate triangles (exact collinearity); every undirected edge shared by exactly two oppositely wound triangles; shell volumes (`InvertedShell` if the total enclosed volume is not positive) |
 | 2 | Delaunay | `delaunay`, `tds` | Bowyer-Watson with a ghost vertex, SoS predicates, BRIO rounds (seed from `n`) with a Hilbert key, stochastic visibility walk from the last tet, SoA `Tds` (`verts`, `nbr`, free list). One primitive, `Tds::replace(old, new)`, glues faces by sorted keys and validates face orientation before mutating |
-| 3 | recovery | `recover`, `flips`, `fill`, `exact` | see below |
+| 3 | recovery | `recover`, `steiner`, `flips`, `fill`, `exact` | see below |
 | 4 | classify | `pipeline` | flood fill from the ghost tets toggling at constraint triangles; the side of a tet is read from the *orientation* of its constraint face, contradictions give `InvertedShell`; outside tets dropped; then zero-volume tets removed |
 | 5 | refine | `refine` | constrained-cavity circumcenter insertion |
 | 6 | optimize | `optimize` | level 0 none, 1 flips, 2 flips + smoothing |
@@ -91,7 +94,7 @@ such edges are ordinary interior edges (ring flips, e.g. 4-4), and the ghost ver
 the far box. The far tets are outside the surface, so classification drops them; the output
 never contains a far point. This costs nothing in output exactness.
 
-### Boundary recovery (interior Steiner points only)
+### Boundary recovery (no Steiner point left on the boundary)
 
 Everything below works on the triangulation including the far box.
 
@@ -146,8 +149,14 @@ Everything below works on the triangulation including the far box.
    side and, free of S4 because they are dropped with the exterior, on the exterior side; after
    a few restarts also the chamber points next to its two triangles. The pipeline then
    **restarts the whole build** with the hints as extra interior points (at most 32 or `n/8`
-   per restart, at most two restarts). If nothing is left to try, `RecoveryFailed` names the
-   triangle and the edge. The previous design ran two deliberately cheap attempts first; review
+   per restart, at most two restarts). Since review round 2 only a tiny surface component (at
+   most 64 vertices: a Schönhardt-like pocket) restarts; everything else that is stuck goes to
+   complete recovery (step 8) on the triangulation the pass left. The interior-point searches
+   of steps 2 and 3 are budgeted by count: an edge cavity above 80 tets is not searched, and a
+   pass stops searching after 2.5 million units of fill predicate work (`Dt::work`, one unit
+   per vertex side test or per vertex / front face checked by a validity test); successful
+   searches on the test families used at most about 2.2 million, the stuck searches on the hard
+   relief cases tens to hundreds of millions. The previous design ran two deliberately cheap attempts first; review
    round 1 removed them: the hints from a cheap pass enlarged the point set and made later
    cavities harder, and failing inputs paid for several full passes. Hints are interior Steiner
    points; boundary points and triangles stay frozen.
@@ -185,6 +194,53 @@ Everything below works on the triangulation including the far box.
    For the same reason the first insertion of a refinement run may carve a cavity of any size
    (a sphere's boundary points are cospherical, so the first interior point conflicts with
    every tet); later insertions are capped at 400 tets.
+8. **Complete recovery** (`steiner.rs`; Si & Gärtner, IJNME 2011; Si, ACM TOMS 2015). Runs on
+   the triangulation the interior-point pass left when that pass is stuck:
+   * *Segments.* A missing input edge is recovered by flips (as in step 1); where they are
+     stuck, a point is inserted *on* it where it leaves the first tet of its corridor: a 2-6
+     split of the crossed face, else an n-2n split of the crossed face's edge the segment
+     passes (almost) through, else a split of the simplex around the start vertex that holds a
+     point of the segment (exact location: tet, face or edge). Every new tet is validated
+     exactly; the first piece is an edge at once. If every point at the start is degenerate
+     the edge is split from its other end. The chain of points of each input edge is kept.
+   * *Facets.* An input triangle, now a polygon with the points of its edges, is first read
+     off the mesh if already present, else recovered by the cavity refill of step 4 when its
+     edges are whole. Otherwise every tet edge crossing it (exact test against the triangle;
+     in a second pass against an ear triangulation of the polygon through the actual points)
+     is removed: by an edge removal creating no new crossing, else by an n-2n split where it
+     crosses (each split removes one crossing edge and creates none; rounding next to an
+     almost flat ring tet is handled by trying nearby roundings, by removing an interior
+     endpoint, or by first flipping the flattest ring tets away). Then the triangle is tiled by
+     the mesh faces whose vertices all lie on it; the tiling is found by a backtracking search
+     from the boundary pieces (a tet lying flat in the triangle offers two tilings of its
+     outline; needle faces along an edge may be used either way) and checked combinatorially.
+   * *Invariants.* Nothing given up: no flip removes a constraint edge, cavity refills in this
+     mode refuse a cavity holding a constraint edge, and no operation creates a *shortcut*
+     (an edge between two points of one split input edge that are not neighbours on it: it
+     would lie along the edge past a point rounded off it and leave flat tets on the surface).
+   * *Suppression.* Every temporary point is then moved off the surface, last created first:
+     its fans in the surface (one closed fan for a point inside a triangle, two open fans for a
+     point on an edge) are re-triangulated without it by ear clipping in the triangle's plane
+     (largest smallest angle first, exact 2-D orientations); this cuts its star into a solid
+     side and an exterior side. The solid side is refilled without a point if a short gift-wrap
+     search finds one, else each side is starred from a point in its kernel next to the old
+     position (the kernel search of step 4 and `p + delta d`, `d` the bisector into that side,
+     delta from 0.5 h down to 1e-12 h; the best-shaped star wins). One exists in exact
+     arithmetic (the old point sees every link face strictly and the new fans are planar); when
+     rounding lets a sliver lying flat on the surface hide it, the side cavity absorbs the tets
+     behind the blocking faces (never across a constraint face, never enclosing a vertex that
+     must stay; up to six rounds, 400 tets) and is starred. Solid-side points are interior
+     Steiner points; exterior ones are dropped with the exterior. When all are gone the input
+     triangles are faces again, bit-exactly (checked).
+   * *Cleanup.* After classification every recovery point whose star can be refilled without
+     it (exact gift wrapping) is removed (`Dt::remove_points`), on both paths.
+   Complete recovery is deterministic (sorted keys and creation order only, no clocks) and
+   sequential. `TetStats` reports `n_steiner_recovery`, `n_steiner_refine` and
+   `n_boundary_steiner` (temporary points, none in the output). Ruling S4 is not applied to
+   the relocated points: they sit inside the star of a surface point, so their margin is small
+   (measured 0.0003 .. 0.03 h on the hard relief cases); refinement and smoothing then work as
+   usual. A complete-recovery failure (not seen on the test families) falls back to a restart
+   with hints and finally to a located `RecoveryFailed`.
 
 ### Refinement
 

@@ -31,8 +31,10 @@ impl Dt {
         verts.dedup();
         let mut front: std::collections::VecDeque<[u32; 3]> = faces.iter().map(|&f| canon_tri(f)).collect();
         let mut out: Vec<[u32; 4]> = Vec::new();
-        let mut wrap = Wrap { verts: &verts, seg, budget, fail: FillFail::default() };
-        if self.wrap_dfs(&mut front, &mut out, &mut wrap, 0) { Ok(out) } else { Err(wrap.fail) }
+        let mut wrap = Wrap { verts: &verts, seg, budget, work: 0, fail: FillFail::default() };
+        let ok = self.wrap_dfs(&mut front, &mut out, &mut wrap, 0);
+        self.work.fetch_add(wrap.work, std::sync::atomic::Ordering::Relaxed);
+        if ok { Ok(out) } else { Err(wrap.fail) }
     }
 
     fn wrap_dfs(&self, front: &mut std::collections::VecDeque<[u32; 3]>, out: &mut Vec<[u32; 4]>, wrap: &mut Wrap<'_>, depth: usize) -> bool {
@@ -49,14 +51,21 @@ impl Dt {
         let mut pick: Option<(usize, Vec<u32>)> = None;
         let width = if depth == 0 { front.len() } else { front.len().min(MRV_WIDTH) };
         for idx in 0..width {
+            if wrap.budget == 0 {
+                return false;
+            }
             let [x, y, z] = front[idx];
             let (px, py, pz) = (s.p(x), s.p(y), s.p(z));
             let mut cands: Vec<u32> = Vec::new();
+            // The side test of every vertex costs a sixteenth of a validity check.
+            wrap.budget = wrap.budget.saturating_sub(verts.len() / 16);
+            wrap.work += verts.len() as u64;
             for &w in verts {
                 if w == x || w == y || w == z || ori(px, py, pz, s.p(w)) >= 0 {
                     continue;
                 }
                 wrap.budget = wrap.budget.saturating_sub(1);
+                wrap.work += (verts.len() + front.len()) as u64;
                 match self.wrap_valid([w, x, y, z], front, verts, seg) {
                     Ok(()) => cands.push(w),
                     Err(Some(g)) if depth == 0 => {
@@ -126,7 +135,7 @@ impl Dt {
         let tp = [s.p(w), s.p(x), s.p(y), s.p(z)];
         // Other cavity vertices may not touch the closed tet.
         for &c in verts {
-            if !tet.contains(&c) && c < self.droppable_from && crate::exact::pt_in_closed_tet(tp, s.p(c)) {
+            if !tet.contains(&c) && !self.droppable(c) && crate::exact::pt_in_closed_tet(tp, s.p(c)) {
                 return Err(None);
             }
         }
@@ -180,6 +189,9 @@ struct Wrap<'a> {
     verts: &'a [u32],
     seg: Option<(u32, u32)>,
     budget: usize,
+    /// Predicate work done (one unit per vertex side test or per vertex or front face checked
+    /// by a validity test).
+    work: u64,
     fail: FillFail,
 }
 
@@ -266,6 +278,10 @@ impl Dt {
         singles.extend(ins.iter().take(8));
         singles.extend(outs.iter().take(6));
         for &p in singles.iter().take(14) {
+            if self.searched_out() {
+                self.truncate_points(pts_base);
+                return None;
+            }
             let base = self.pts.len();
             let id = self.push_point(p);
             if let Some(t) = self.fill_budgeted(faces, seg, &[inner, &[id]].concat(), budget)
@@ -294,6 +310,10 @@ impl Dt {
             }
         }
         for (p, q) in pairs.into_iter().take(6) {
+            if self.searched_out() {
+                self.truncate_points(pts_base);
+                return None;
+            }
             let base = self.pts.len();
             let a = self.push_point(p);
             let b = self.push_point(q);
@@ -310,6 +330,9 @@ impl Dt {
         let base = self.pts.len();
         let mut added: Vec<u32> = Vec::new();
         for _round in 0..MAX_REPAIR {
+            if self.searched_out() {
+                break;
+            }
             let ex = [inner, &added[..]].concat();
             let dead = match self.fill_report(faces, seg, &ex, budget) {
                 Ok(t) => {
@@ -342,6 +365,9 @@ impl Dt {
             offs.sort_by_key(|x| std::cmp::Reverse(x.0 >= S4));
             let mut pick: Option<(usize, [f64; 3])> = None;
             for (_, p) in offs {
+                if self.searched_out() {
+                    break;
+                }
                 let id = self.push_point(p);
                 let ex2 = [&ex[..], &[id]].concat();
                 match self.fill_report(faces, seg, &ex2, budget) {
