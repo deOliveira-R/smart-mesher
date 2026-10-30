@@ -29,6 +29,8 @@ pub const STUB_REFLECTIVE_BOX: i32 = 5;
 pub const STUB_ALBEDO_BOX: i32 = 6;
 /// Kind: 3x3x3 lattice with pitch 4 (domain `[0,12]^3`), one sphere of radius `radius` per element.
 pub const STUB_LATTICE: i32 = 7;
+/// Kind: the `STUB_SPHERE` world, but its region table has no implicit complement flag.
+pub const STUB_NO_COMPLEMENT: i32 = 98;
 /// Kind: the `STUB_SPHERE` world, but `step` panics.
 pub const STUB_PANIC_ON_STEP: i32 = 99;
 
@@ -46,7 +48,7 @@ pub fn world(kind: i32, radius: f64) -> Option<AnalyticWorld> {
     let all = |a: FaceAction| [a; 6];
     let vac = ResponseKind::Vacuum;
     match kind {
-        STUB_SPHERE | STUB_PANIC_ON_STEP => AnalyticWorld::simple(vec![sphere(radius)], domain(), vac).ok(),
+        STUB_SPHERE | STUB_PANIC_ON_STEP | STUB_NO_COMPLEMENT => AnalyticWorld::simple(vec![sphere(radius)], domain(), vac).ok(),
         STUB_SHELLS => AnalyticWorld::simple((1..=5).map(|k| sphere(radius * f64::from(k) / 5.0)).collect(), domain(), vac).ok(),
         STUB_MIRROR_BOX => AnalyticWorld::new(vec![], domain(), all(FaceAction::Reflect)).ok(),
         STUB_WHITE_BOX => AnalyticWorld::simple(vec![], domain(), ResponseKind::White).ok(),
@@ -97,10 +99,60 @@ impl Tracker for PanicOnStep {
     }
 }
 
+/// A tracker that forwards to a world but reports no implicit complement region.
+pub struct NoComplement(AnalyticWorld, RegionTable);
+
+impl NoComplement {
+    fn new(w: AnalyticWorld) -> Self {
+        let mut t = w.regions().clone();
+        for r in &mut t.0 {
+            r.implicit_complement = false;
+        }
+        Self(w, t)
+    }
+}
+
+impl Tracker for NoComplement {
+    fn caps(&self) -> TrackerCaps {
+        self.0.caps()
+    }
+    fn info(&self) -> &TrackerInfo {
+        self.0.info()
+    }
+    fn regions(&self) -> &RegionTable {
+        &self.1
+    }
+    fn surfaces(&self) -> &SurfaceTable {
+        self.0.surfaces()
+    }
+    fn cell_region(&self, c: CellId) -> Option<RegionId> {
+        self.0.cell_region(c)
+    }
+    fn cell_volume(&self, c: CellId) -> Option<f64> {
+        self.0.cell_volume(c)
+    }
+    fn locate(&self, p: Point3, dir: Option<Vector3>, hint: Option<CellId>, scratch: &mut Scratch) -> RtResult<Located> {
+        self.0.locate(p, dir, hint, scratch)
+    }
+    fn step(&self, st: &mut TrackState, max_dist: f64, scratch: &mut Scratch) -> RtResult<Step> {
+        self.0.step(st, max_dist, scratch)
+    }
+    fn closest(&self, p: Point3, region: Option<RegionId>, scratch: &mut Scratch) -> RtResult<Option<Closest>> {
+        self.0.closest(p, region, scratch)
+    }
+    fn face_normal(&self, f: FaceId, p: Point3) -> RtResult<Vector3> {
+        self.0.face_normal(f, p)
+    }
+}
+
 /// Safe constructor used by Rust tests: the tracker handle for a kind.
 pub fn tracker_for(kind: i32, radius: f64) -> Option<Arc<dyn Tracker>> {
     let w = world(kind, radius)?;
-    Some(if kind == STUB_PANIC_ON_STEP { Arc::new(PanicOnStep(w)) } else { Arc::new(w) })
+    Some(match kind {
+        STUB_PANIC_ON_STEP => Arc::new(PanicOnStep(w)),
+        STUB_NO_COMPLEMENT => Arc::new(NoComplement::new(w)),
+        _ => Arc::new(w),
+    })
 }
 
 /// Create a stub tracker handle for the C tests: `kind` is one of the `STUB_*` constants (values

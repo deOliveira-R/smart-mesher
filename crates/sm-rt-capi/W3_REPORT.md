@@ -166,3 +166,13 @@ None blocks the work; all are additive suggestions to the frozen `sm-rt-api` (`s
 3. **Region attributes.** `RegionInfo` has no colour id or original (CAD) id besides `entity`; if a transport code
    needs them (DAGMC `id_by_index`, material groups), add `pub tags: Vec<(String, i64)>` or similar.
 4. **Cache loader without the build input** (sm-rt side or contract): see Known gaps.
+
+## Polish
+
+* **Fixed:** `smrt_set_state` now bound-checks the region id against `regions().len()` (an id beyond the
+  model returns `SMRT_ERR_UNKNOWN_ID`, -4, and leaves the state unchanged). Before, only the cell id was checked.
+* **Tests:** `smrt_set_state(SMRT_COMPLEMENT)` (as cell and as region) on a tracker without an implicit
+  complement returns -4 and keeps the state (`set_state_complement_without_a_complement_is_unknown_id`); an
+  out-of-range region id is rejected in `locate_closest_state_and_normals`. The stub worlds all have a
+  complement, so a test-hook kind `STUB_NO_COMPLEMENT` (98) wraps a world with the flag cleared.
+* Declined: none.
