@@ -108,7 +108,7 @@ pub fn language_summary() -> &'static str {
   timeline    timeline.branch(\"name\")  timeline.checkout(\"name\")  timeline.undo()  timeline.redo()   (statements, not ops)
               (`timeline.head()` returns {branch, node} and may be used in expressions)
   session     session.export(\"out.vtu\", format: \"vtu\", mesh: Mesh#1)  session.save()   (statements, not ops)
-              (`session.hash()` and `session.status()` return values and may be used in expressions)
+              (`session.hash()`, `session.status()` and `session.stage()` return values and may be used in expressions)
   other       print e, ...   assert cond, \"msg\"   alias short = model.create_brick   help [name]
   comments    // line   /* block */
 "
@@ -131,11 +131,12 @@ pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
     }
     if let Some(verb) = name.strip_prefix("session.") {
         return match verb {
-            "export" => Ok("session.export(path: string, format?: \"smsh\" | \"vtu\", mesh?: id, provenance?: bool)  (session command, not an op)\nWrite a mesh to a file. `path` may be positional; a relative path is resolved by the host. `format` defaults to the file extension; `mesh` defaults to the only mesh; `provenance` embeds the timeline hash.\n".to_owned()),
+            "export" => Ok("session.export(path: string, format?: \"smsh\" | \"vtu\" | \"exodus\" | \"openfoam\", mesh?: id, provenance?: bool)  (session command, not an op)\nWrite a mesh to a file. `path` may be positional; a relative path is resolved by the host. `format` defaults to the file extension (`openfoam` must be named, and `path` is then the case directory); `mesh` defaults to the only mesh; `provenance` embeds the timeline hash.\n".to_owned()),
             "save" => Ok("session.save()  (session command, not an op)\nSave the project.\n".to_owned()),
             "hash" => Ok("session.hash()  (session command, not an op)\nReturns the state hash. May be used in expressions.\n".to_owned()),
+            "stage" => Ok("session.stage(path: string)  (session command, not an op)\nStore a file\'s bytes in the project input store. Returns {sha256, bytes}; pass the sha256 to ops such as `model.import_step`. May be used in expressions. The host reads the file; the language does no I/O.\n".to_owned()),
             "status" => Ok("session.status()  (session command, not an op)\nReturns the session status object. May be used in expressions.\n".to_owned()),
-            _ => Err(format!("no session command `{name}`; session commands: export, save, hash, status")),
+            _ => Err(format!("no session command `{name}`; session commands: export, save, hash, status, stage")),
         };
     }
     let all = callables(registry);

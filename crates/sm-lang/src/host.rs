@@ -66,7 +66,7 @@ pub enum SessionCommand {
     Export {
         /// Destination path (relative paths are resolved by the host).
         path: String,
-        /// `"smsh"` or `"vtu"`; the host infers it from the extension when absent.
+        /// `"smsh"`, `"vtu"`, `"exodus"` or `"openfoam"` (a case directory); the host infers it from the extension when absent.
         format: Option<String>,
         /// The mesh to export; the host picks one when absent.
         mesh: Option<EntityId>,
@@ -79,16 +79,22 @@ pub enum SessionCommand {
     Hash,
     /// Report the session status.
     Status,
+    /// Stage a file's bytes in the project's content-addressed input store; the value is `{sha256, bytes}`.
+    Stage {
+        /// Source file (relative paths are resolved by the host; the language does no I/O).
+        path: String,
+    },
 }
 
 impl SessionCommand {
-    /// The statement verb: `export`, `save`, `hash` or `status`.
+    /// The statement verb: `export`, `save`, `hash`, `status` or `stage`.
     pub fn verb(&self) -> &'static str {
         match self {
             Self::Export { .. } => "export",
             Self::Save => "save",
             Self::Hash => "hash",
             Self::Status => "status",
+            Self::Stage { .. } => "stage",
         }
     }
 }

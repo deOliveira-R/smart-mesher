@@ -1,0 +1,6 @@
+error[invalid-argument]: unknown export format "exodos"
+ --> export_bad_format_exodus.smesh:1:33
+  |
+1 | session.export("a.exo", format: "exodos")
+  |                                 ^^^^^^^^ not a format
+  = help: did you mean "exodus"?
