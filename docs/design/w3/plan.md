@@ -1230,7 +1230,7 @@ When a task entry and a ruling below disagree, the ruling wins. When a task entr
 - S1. Score for a submap corner sum other than 4: 20. Score for triadvance: 20, provisional (only W3b auto selection reads it).
 - S2. tri: keep poles (full sphere) mandatory. The 20° bound is a target: when a fixture's boundary makes it impossible, report the minimum angle you reach and why. Do not escalate.
 - S3. sweep copies use tolerance `1e-9 × bbox diagonal` in W3a. Solid-cylinder revolve with a pole column is W3b.
-- S4. tet: Steiner nodes carry `Param::None` and are owned by the partition cell. If the Driver commit refuses them, return `blocked_on_api` with the exact error, and keep the rest working through a local test harness. Keep interior Steiner points at least 0.3h from boundary vertices and from boundary triangles.
+- S4. tet: Steiner nodes carry `Param::None` and are owned by the partition cell. If the Driver commit refuses them, return `blocked_on_api` with the exact error, and keep the rest working through a local test harness. Keep interior Steiner points at least 0.3h from boundary vertices and from boundary triangles. Superseded by ruling INT-7 (spacing is an objective plus a quality floor).
 
 **Mesh post-processing**
 - M1. sm-smooth keeps its own private `CarrierNormals` in W3a; a shared FaceNormals is W3b. `mesh.smooth` targets a whole mesh or an explicit cell list; targeting by set is W3b. Deck-pair nodes are pinned in W3a.
@@ -1305,6 +1305,10 @@ When a task entry and a ruling below disagree, the ruling wins. When a task entr
 - INT-4. Ruling M3 wiring (sm-mesher owner micro task D7): `mesh.run` on a selection where any target volume already has more than one mesh entry (e.g. a source plus its derived poly mesh) fails atomically with `OpError::Invalid` naming the volume and the mesh ids, and suggesting `mesh.delete`. A volume with exactly one entry keeps the W2 behaviour bit-identically (W2 hashes unchanged). No contract change (the `MeshEntry.derived_from` ACR stays in the post-W3a batch).
 - INT-5. Ruling I3 holds: the V2|V3 triangle is never trimeshed by the script; it comes from V2's sweep copy.
 - INT-6. The sm-scheme-tet S4/performance follow-up runs in parallel and only touches sm-scheme-tet; the milestone uses whatever is on main when it runs.
+- INT-7 (user-approved 2026-10-30). Ruling S4 for tet is restated. The 0.3h distance was a proxy for element quality; the floor now applies to quality itself, and spacing becomes an objective.
+  1. Objective: for every interior Steiner point, the normalized spacing r = (distance to nearest boundary vertex or triangle) / h_local, with h_local from the size field. Minimize the deviation of r from the size field's target. TetStats reports the distribution: count, mean, standard deviation, 1st percentile and minimum of r.
+  2. Floor: minimum dihedral angle and (after `mesh.to_poly`) polyhedral cell quality above thresholds set in sm-scheme-tet's DESIGN.md. The 0.3h distance stays as one reported metric, not the rule.
+  3. Where the work budget or the geometry (thin walls next to steep relief) prevents meeting the floor, each violation is a located diagnostic (position, input triangles nearby, measured value, suggested fix such as local refinement), returned in the stats and readable by sm-diag. A violation is never hidden; it is not a build failure.
 
 #### 1. Who registers what (W3a)
 | Op / query / format | Registered by | Writes | Reads |
