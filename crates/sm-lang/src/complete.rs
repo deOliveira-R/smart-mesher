@@ -69,6 +69,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("session.export", "write a mesh to a file"),
     ("session.hash", "the state hash (a value)"),
     ("session.save", "save the project"),
+    ("session.stage", "stage a file in the input store: {sha256, bytes} (a value)"),
     ("session.status", "the session status (a value)"),
     ("timeline.branch", "fork a branch at the current position"),
     ("timeline.checkout", "move to a branch, node or the empty state"),
@@ -92,10 +93,11 @@ fn command_params(name: &str) -> Option<Vec<ParamInfo>> {
     Some(match name {
         "session.export" => vec![
             p("path", true, "string", "destination file", &[], false, vec![]),
-            p("format", false, "\"smsh\" | \"vtu\"", "output format (default: from the extension)", &["smsh", "vtu"], false, vec![]),
+            p("format", false, "\"smsh\" | \"vtu\" | \"exodus\" | \"openfoam\"", "output format (default: from the extension; openfoam needs it, path is the case directory)", &["smsh", "vtu", "exodus", "openfoam"], false, vec![]),
             p("mesh", false, "id", "the mesh to export (default: the only one)", &[], true, vec![EntityKind::Mesh]),
             p("provenance", false, "bool", "embed the timeline hash", &[], false, vec![]),
         ],
+        "session.stage" => vec![p("path", true, "string", "file to stage (resolved by the host)", &[], false, vec![])],
         "timeline.branch" => vec![p("name", true, "string", "new branch name", &[], false, vec![]), p("at", false, "string", "fork at this node hash", &[], false, vec![])],
         "timeline.checkout" => vec![
             p("ref", false, "string", "branch name", &[], false, vec![]),

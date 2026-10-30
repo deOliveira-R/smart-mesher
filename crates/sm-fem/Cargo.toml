@@ -16,6 +16,7 @@ sm-topo-api = { path = "../sm-topo-api" }
 sm-model-api = { path = "../sm-model-api" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-meshio = { path = "../sm-meshio" }
+sm-exodus = { path = "../sm-exodus" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
 serde = { version = "1", features = ["derive"] }

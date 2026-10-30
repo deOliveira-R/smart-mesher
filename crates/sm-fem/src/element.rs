@@ -6,8 +6,8 @@ use sm_mesh_api::CellShape;
 
 /// An element type of a block (Exodus/Cubit names).
 ///
-/// Only the linear types are supported in W2: [`ElementType::is_linear`] is false for the
-/// others, and `fem.block_element_type` refuses them until degree elevation exists.
+/// Only the linear types and the general `Polyhedron` / `Polygon` are supported:
+/// [`ElementType::is_linear`] is false for the others, and `fem.block_element_type` refuses them until degree elevation exists.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -52,6 +52,12 @@ pub enum ElementType {
     /// 6-node triangle (not supported yet).
     #[serde(rename = "TRI6")]
     Tri6,
+    /// General polyhedron (Exodus `NFACED`; `.smsh` spelling `POLYHEDRON`).
+    #[serde(rename = "POLYHEDRON")]
+    Polyhedron,
+    /// General polygon (shell; Exodus `NSIDED`; `.smsh` spelling `POLYGON`).
+    #[serde(rename = "POLYGON")]
+    Polygon,
 }
 
 impl ElementType {
@@ -71,6 +77,8 @@ impl ElementType {
             Self::Pyramid13 => "PYRAMID13",
             Self::Quad8 => "QUAD8",
             Self::Tri6 => "TRI6",
+            Self::Polyhedron => "POLYHEDRON",
+            Self::Polygon => "POLYGON",
         }
     }
 
@@ -78,7 +86,14 @@ impl ElementType {
     pub const fn is_linear(self) -> bool {
         matches!(
             self,
-            Self::Hex8 | Self::Tet4 | Self::Wedge6 | Self::Pyramid5 | Self::Quad4 | Self::Tri3
+            Self::Hex8
+                | Self::Tet4
+                | Self::Wedge6
+                | Self::Pyramid5
+                | Self::Quad4
+                | Self::Tri3
+                | Self::Polyhedron
+                | Self::Polygon
         )
     }
 
@@ -91,6 +106,8 @@ impl ElementType {
             Self::Pyramid5 | Self::Pyramid13 => CellShape::Pyramid,
             Self::Quad4 | Self::Quad8 => CellShape::Quad,
             Self::Tri3 | Self::Tri6 => CellShape::Tri,
+            Self::Polyhedron => CellShape::Polyhedron,
+            Self::Polygon => CellShape::Polygon,
         }
     }
 
@@ -110,6 +127,8 @@ impl ElementType {
             Self::Pyramid13 => 11,
             Self::Quad8 => 12,
             Self::Tri6 => 13,
+            Self::Polyhedron => 14,
+            Self::Polygon => 15,
         }
     }
 }

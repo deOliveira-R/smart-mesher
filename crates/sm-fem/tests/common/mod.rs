@@ -260,6 +260,53 @@ impl TypedOp for KillVolume {
     }
 }
 
+/// Insert a reference mesh fixture (`mixed_transition` or `dual_patch`) as a mesh that matches
+/// no model entity.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureMesh {
+    pub name: String,
+}
+
+impl TypedOp for FixtureMesh {
+    const NAME: &'static str = "test.fixture_mesh";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        use sm_mesh_api::{MeshEntityKind, MeshRead, SerialAlloc};
+        use sm_testkit::meshes::{dual_patch, mixed_transition};
+        let fx = match self.name.as_str() {
+            "mixed_transition" => mixed_transition(),
+            "dual_patch" => dual_patch(),
+            n => return Err(OpError::Invalid(format!("no fixture {n}"))),
+        }
+        .map_err(|e| OpError::Failed(e.to_string()))?;
+        let mesh = fx.mesh;
+        let alloc0 = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mut next: std::collections::BTreeMap<EntityKind, u64> = alloc0.state().collect();
+        let mut raise = |id: EntityId| {
+            let e = next.entry(id.kind()).or_insert(1);
+            *e = (*e).max(id.serial() + 1);
+        };
+        raise(mesh.mesh_id());
+        for kind in [
+            MeshEntityKind::Vertex,
+            MeshEntityKind::Edge,
+            MeshEntityKind::Face,
+            MeshEntityKind::Cell,
+        ] {
+            for i in 0..mesh.count(kind) {
+                raise(mesh.id(kind, i as u32));
+            }
+        }
+        for s in mesh.sets() {
+            raise(s.id);
+        }
+        let after = SerialAlloc::from_state(next).map_err(|e| OpError::Failed(e.to_string()))?;
+        let quanta = ctx.layer::<ModelLayer>()?.hash_quanta();
+        let entry = MeshEntry::new(Box::new(mesh), vec![], None, quanta);
+        insert_mesh(ctx, entry, &alloc0, after, "mesh")
+    }
+}
+
 pub fn registry(fem: bool) -> Registry {
     let mut reg = Registry::new();
     reg.install(&CoreLayers::default()).expect("layers");
@@ -274,6 +321,7 @@ pub fn registry(fem: bool) -> Registry {
     reg.register::<MeshIt>().expect("mesh_it");
     reg.register::<DropMesh>().expect("drop_mesh");
     reg.register::<KillVolume>().expect("kill");
+    reg.register::<FixtureMesh>().expect("fixture");
     reg
 }
 

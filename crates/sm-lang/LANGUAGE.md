@@ -279,7 +279,7 @@ becomes an `Event::Timeline`. Under `PlanHost` nothing happens and a `plan-timel
 later statements are checked against the state as it is. The namespace is shadowed by the language: a registry op named `timeline.x` would be unreachable,
 so plugins must not register that prefix. **Variables are not rolled back** by `undo`/`checkout`: they keep the ids they hold, and entity lists are
 resolved against the new current state when used (an id that no longer exists is `entity-not-found`). `help timeline.branch` documents each command.
-The sibling namespace `session.*` (export, save, hash, status) follows the same argument rules and event/plan-mode conventions: see §4.7.
+The sibling namespace `session.*` (export, save, hash, status, stage) follows the same argument rules and event/plan-mode conventions: see §4.7.
 
 ### 4.7 Session commands
 
@@ -291,12 +291,16 @@ session.export("out.vtu")                                         // path is pos
 session.export("out.smsh", format: "smsh", mesh: m.mesh, provenance: true)
 session.save()                                                    //                              SessionCommand::Save
 let h = session.hash()      print session.status().branch         // values, usable in expressions SessionCommand::Hash / Status
+let s = session.stage("part.step")                                // {sha256, bytes};             SessionCommand::Stage
 ```
 
-* `export(path: string, format?: "smsh" | "vtu", mesh?: id, provenance?: bool)`. `path` is a non-empty string; `format` is validated here (`invalid-argument` with did-you-mean at the argument; when absent the
+* `export(path: string, format?: "smsh" | "vtu" | "exodus" | "openfoam", mesh?: id, provenance?: bool)`. `path` is a non-empty string; `format` is validated here (`invalid-argument` with did-you-mean at the argument; when absent the
   host infers it from the extension); `mesh` is one id of kind `Mesh` (`wrong-kind` otherwise; when absent the host picks, or fails with its own `no-mesh` / `ambiguous-mesh`); `provenance` defaults to false.
-  The language does no I/O and does not resolve paths: the host does.
-* `export` and `save` are statements only (`op-in-expression` in an expression or on the right of `let`/`set`). `hash()` and `status()` have a value, the host's JSON converted like a query result
+  The language does no I/O and does not resolve paths: the host does. For `"openfoam"` (a multi-file format) the format must be named and `path` is the case directory.
+* `stage(path: string)` is a value command (like `hash()`, a statement or an expression): the host reads the file, stores the bytes in the content-addressed input store and returns `{sha256, bytes}`.
+  Pass the `sha256` to ops such as `model.import_step`; the recorded op never carries a path. `path` must be a non-empty string (`missing-argument` / `type-mismatch` otherwise). In a plan the command is
+  not run (`plan-session` warning) and its value is a placeholder.
+* `export` and `save` are statements only (`op-in-expression` in an expression or on the right of `let`/`set`). `hash()`, `status()` and `stage()` have a value, the host's JSON converted like a query result
   (an object becomes an object, a string a string), and may be used in expressions.
 * All four are errors inside a batch (`session-in-batch`: a batch is one timeline node and a session command is not an op).
 * A host failure is `session-failed` carrying the host's code and message; the failing statement had no effect.

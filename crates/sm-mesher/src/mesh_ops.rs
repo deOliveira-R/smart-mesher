@@ -98,6 +98,22 @@ impl TypedOp for MeshRun {
             let meshes = ctx.layer::<MeshLayer>()?;
             let view = model.topo();
             for &t in &targets {
+                // INT-4: several entries on one volume (a source plus a derived mesh) are
+                // ambiguous; refuse and name them all.
+                let ids: Vec<EntityId> = meshes
+                    .meshes()
+                    .filter(|(_, e)| e.selection.contains(&t))
+                    .map(|(m, _)| m)
+                    .collect();
+                if ids.len() > 1 {
+                    let list: Vec<String> = ids.iter().map(ToString::to_string).collect();
+                    return Err(OpError::Invalid(format!(
+                        "{t} already has {} meshes ({}); mesh.delete the ones you do not \
+                         want first",
+                        ids.len(),
+                        list.join(", ")
+                    )));
+                }
                 if let Some(m) = meshes.mesh_of(t) {
                     return Err(OpError::Invalid(format!(
                         "{t} is already meshed ({m}); mesh.delete first"

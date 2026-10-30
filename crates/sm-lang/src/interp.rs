@@ -21,9 +21,11 @@ use crate::span::{SourceMap, Span};
 use crate::value::{Outcome, Sel, Val, fmt_num};
 
 /// The `session.*` verbs.
-const SESSION_VERBS: [&str; 4] = ["export", "save", "hash", "status"];
+const SESSION_VERBS: [&str; 5] = ["export", "save", "hash", "status", "stage"];
 /// The `session.*` verbs that have a value and may appear in expressions.
-const SESSION_VALUE_VERBS: [&str; 2] = ["hash", "status"];
+const SESSION_VALUE_VERBS: [&str; 3] = ["hash", "status", "stage"];
+/// Export formats `session.export` accepts.
+const EXPORT_FORMATS: [&str; 4] = ["smsh", "vtu", "exodus", "openfoam"];
 
 /// Interpreter limits.
 #[derive(Clone, Debug)]
@@ -1036,7 +1038,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
     }
 
     /// `session.export(path, format?, mesh?, provenance?)`, `session.save()` (statements); `session.hash()`,
-    /// `session.status()` (expressions). Dispatched to [`Host::session`]; never recorded as ops.
+    /// `session.status()`, `session.stage(path)` (expressions). Dispatched to [`Host::session`]; never recorded as ops.
     fn exec_session(&mut self, call: &Call, span: Span) -> IR<Val> {
         let verb = call.path.segs[1].name.clone();
         if self.batch.is_some() {
@@ -1049,11 +1051,15 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             let mut d = Diagnostic::error("unknown-name", call.path.segs[1].span, format!("no session command `session.{verb}`")).label("not a session command");
             d = match suggest(&verb, SESSION_VERBS) {
                 Some(s) => d.help(format!("did you mean `session.{s}`?")),
-                None => d.help("session commands: export(path, format, mesh, provenance), save(), hash(), status()"),
+                None => d.help("session commands: export(path, format, mesh, provenance), save(), hash(), status(), stage(path)"),
             };
             return self.fail(d);
         }
-        let allowed: &[&str] = if verb == "export" { &["path", "format", "mesh", "provenance"] } else { &[] };
+        let allowed: &[&str] = match verb.as_str() {
+            "export" => &["path", "format", "mesh", "provenance"],
+            "stage" => &["path"],
+            _ => &[],
+        };
         let args = self.command_args("session", &verb, call, allowed)?;
         let get = |k: &str| args.iter().find(|(n, ..)| n == k);
         // Plan mode: a path, format or provenance that is not known yet (a placeholder) cannot be recorded; the command
@@ -1079,10 +1085,10 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                 };
                 let format = match get("format") {
                     None => None,
-                    Some((_, Val::Str(f), _)) if f == "smsh" || f == "vtu" => Some(f.clone()),
+                    Some((_, Val::Str(f), _)) if EXPORT_FORMATS.contains(&f.as_str()) => Some(f.clone()),
                     Some((_, Val::Str(f), sp)) => {
-                        let mut d = Diagnostic::error("invalid-argument", *sp, format!("unknown export format {f:?}")).label("not a format").help("formats: \"smsh\", \"vtu\"");
-                        if let Some(sg) = suggest(f, ["smsh", "vtu"]) {
+                        let mut d = Diagnostic::error("invalid-argument", *sp, format!("unknown export format {f:?}")).label("not a format").help("formats: \"smsh\", \"vtu\", \"exodus\", \"openfoam\"");
+                        if let Some(sg) = suggest(f, EXPORT_FORMATS) {
                             d = d.help(format!("did you mean \"{sg}\"?"));
                         }
                         return self.fail(d);
@@ -1125,6 +1131,21 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     Some((_, other, sp)) => return self.fail(Diagnostic::error("type-mismatch", *sp, format!("`provenance` needs a bool, found {}", other.a_type())).label("not a bool")),
                 };
                 SessionCommand::Export { path, format, mesh, provenance }
+            }
+            "stage" => {
+                let Some((_, pv, psp)) = get("path") else {
+                    return self.fail(Diagnostic::error("missing-argument", call.args_span, "`session.stage` needs the file path").label("write `session.stage(\"part.step\")`"));
+                };
+                match pv {
+                    Val::Str(s) if !s.is_empty() => SessionCommand::Stage { path: s.clone() },
+                    // Plan mode: the path is unknown; nothing is staged, the value is a placeholder.
+                    Val::Placeholder { .. } if !self.host.executes() => {
+                        self.saw_placeholder = true;
+                        self.warn(Diagnostic::warning("plan-session", span, "`session.stage` has a path that is unknown when planning").label("not staged"));
+                        return Ok(Val::Placeholder { n: self.plan_n, role: "session.stage".to_owned() });
+                    }
+                    other => return self.fail(Diagnostic::error("type-mismatch", *psp, format!("`path` needs a non-empty string, found {}", other.a_type())).label("not a path")),
+                }
             }
             "save" => SessionCommand::Save,
             "hash" => SessionCommand::Hash,
@@ -1842,7 +1863,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
             }
             let d = Diagnostic::error("op-in-expression", c.path.span, format!("`{name}` is a statement, not a function"))
                 .label("this session command cannot be used inside expressions")
-                .help("write it as its own statement (`session.hash()` and `session.status()` do have values)");
+                .help("write it as its own statement (`session.hash()`, `session.status()` and `session.stage()` do have values)");
             return self.fail(d);
         }
         if self.is_registry_call(c) {

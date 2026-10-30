@@ -93,3 +93,7 @@ block cannot be removed because `Model` has no way to uncolor a volume (api chan
 the lowering handles overlay `PartitionFace`/`PartitionCell` classification but no W2 op builds
 an overlay, so that path is not tested end to end. Side and face sets exist only in `.smsh`: the
 VTU writer (sm-meshio) emits cell sets and a `region` array only.
+
+## Formats (W3 D1)
+
+`ExportFormat` is `Smsh`, `Vtu`, `Exodus`, `OpenFoam`. `export` writes one stream and refuses `OpenFoam` with `FemError::MultiFile` (`multi-file-format`); `export_files` returns an `ExportBundle` of files sorted by name (OpenFOAM: `constant/polyMesh/{points,faces,owner,neighbour,boundary[,cellZones,faceZones]}`; single-stream formats: one `mesh.<ext>`). Exodus uses `sm_exodus::write_exodus` with default options (labelled cell sets are blocks, side sets and deck face sets are sidesets); OpenFOAM uses `foam::build_polymesh` with the lowered deck records. `ExportReport.notes` / `ExportBundle.notes` carry one `code: detail xcount` line per loss item. `ElementType` adds `Polyhedron` (code 14) and `Polygon` (code 15, shell, refused by `fem.block_element_type`). Declared block types are written to the `.smsh` `element_types` header (`Lowered.block_types`).
