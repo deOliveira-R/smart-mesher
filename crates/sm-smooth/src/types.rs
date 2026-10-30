@@ -66,6 +66,10 @@ pub enum Method {
     },
     /// Node-local minimisation of `sum_c beta_c^p` by finite-difference steepest descent
     /// with Armijo backtracking.
+    ///
+    /// A node whose incident cell is degenerate or inverted has an infinite objective, so
+    /// `Optimize` never moves it (untangling is deferred to W3b); the guard-checked
+    /// Laplacian-type methods may still move such nodes.
     Optimize {
         /// The cell quality objective.
         #[serde(default)]
@@ -218,6 +222,9 @@ pub enum SmoothError {
     /// A listed entity does not exist or has no nodes in the mesh.
     #[error("unknown entity {0:?}")]
     UnknownEntity(EntityId),
+    /// A vertex of the input has a NaN or infinite coordinate.
+    #[error("vertex {0} has a non-finite coordinate")]
+    NonFiniteInput(usize),
     /// The selection leaves no movable node.
     #[error("nothing to smooth: no selected node is free to move")]
     NothingToSmooth,

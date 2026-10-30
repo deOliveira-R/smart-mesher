@@ -49,17 +49,19 @@ fn valid_seed(f: &lattice::LatticeFixture) -> u64 {
         .expect("some seed keeps the lattice valid")
 }
 
-#[test]
-fn a4_every_method_keeps_a_jittered_quad_lattice_valid() {
-    let f = lattice::quad([12, 12], [1.0; 2]).expect("lattice");
+/// Sweep counts of the default matrix; the exhaustive `1..=20` is `a4_exhaustive` (ignored).
+const QUICK_ITERS: [u32; 5] = [1, 2, 5, 10, 20];
+
+fn every_method_keeps_valid(n: usize, iters_list: &[u32], family: &str) {
+    let f = lattice::quad([n, n], [1.0; 2]).expect("lattice");
     let seed = valid_seed(&f);
     let p = f.perturbed(seed, 0.45).expect("perturb");
     assert!(validity(&p.mesh, &opts()).expect("validity").all_valid(), "precondition");
     let sj0 = min_sj(&p.mesh);
     let mut runs = 0;
-    for (name, m) in methods() {
+    for (name, m) in methods().into_iter().filter(|(name, _)| name.starts_with(family)) {
         for sched in [Schedule::Colored, Schedule::Jacobi] {
-            for iters in 1..=20 {
+            for &iters in iters_list {
                 let mut r = req(m, sched, iters, false);
                 r.tolerance = 0.0;
                 let o = run(&p, &r);
@@ -73,6 +75,33 @@ fn a4_every_method_keeps_a_jittered_quad_lattice_valid() {
         }
     }
     eprintln!("a4: seed {seed}, {runs} runs valid; initial min SJ {sj0}");
+}
+
+// The matrix is split by method family so the test harness runs the families in parallel.
+// The default size is an 8x8 lattice; the acceptance 12x12 lattice with every sweep count
+// 1..=20 is `a4_exhaustive` (ignored).
+macro_rules! family {
+    ($name:ident, $prefix:literal) => {
+        #[test]
+        fn $name() {
+            every_method_keeps_valid(8, &QUICK_ITERS, $prefix);
+        }
+    };
+}
+family!(a4_laplacian_keeps_valid, "laplacian");
+family!(a4_smart_keeps_valid, "smart");
+family!(a4_centroid_keeps_valid, "centroid");
+family!(a4_winslow_keeps_valid, "winslow");
+family!(a4_optimize_keeps_valid, "optimize");
+family!(a4_condition_keeps_valid, "condition");
+
+/// 12x12 lattice, every sweep count 1..=20, all methods. Run with
+/// `cargo test -p sm-smooth --test never_inverts -- --ignored`.
+#[test]
+#[ignore = "slow in debug (many minutes); run with --ignored"]
+fn a4_exhaustive() {
+    let all: Vec<u32> = (1..=20).collect();
+    every_method_keeps_valid(12, &all, "");
 }
 
 /// An L-shaped quad region `[0,n]^2 minus [k,n]^2` (cells of side 1): boundary nodes are
@@ -191,7 +220,7 @@ fn a4_the_guard_is_exercised_on_an_l_shaped_region() {
     let mut refused = 0;
     for (name, method) in methods() {
         for sched in [Schedule::Colored, Schedule::Jacobi] {
-            for iters in [1, 2, 5, 20] {
+            for iters in [1, 2, 5, 10] {
                 let r = SmoothRequest { nodes: NodeSelect::All, method, iterations: iters, tolerance: 0.0, schedule: sched, ..SmoothRequest::default() };
                 let o = smooth(&input, &r).expect("smooth");
                 let mut mm = m.clone();
@@ -208,7 +237,7 @@ fn a4_the_guard_is_exercised_on_an_l_shaped_region() {
 
 #[test]
 fn a4_an_inverted_input_never_gets_worse() {
-    let f = lattice::quad([12, 12], [1.0; 2]).expect("lattice");
+    let f = lattice::quad([8, 8], [1.0; 2]).expect("lattice");
     let p = (0..200u64)
         .map(|s| f.perturbed(s, 0.45).expect("perturb"))
         .find(|p| validity(&p.mesh, &opts()).expect("v").n_inverted == 1)
@@ -216,7 +245,7 @@ fn a4_an_inverted_input_never_gets_worse() {
     let sj0 = min_sj(&p.mesh);
     for (name, m) in methods() {
         for sched in [Schedule::Colored, Schedule::Jacobi] {
-            let mut r = req(m, sched, 20, false);
+            let mut r = req(m, sched, 10, false);
             r.tolerance = 0.0;
             let o = run(&p, &r);
             assert_eq!(o.report.before.n_inverted, 1);

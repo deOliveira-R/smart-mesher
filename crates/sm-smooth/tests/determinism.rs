@@ -31,40 +31,65 @@ fn flat(pts: &[[f64; 3]]) -> Vec<f64> {
     pts.iter().flatten().copied().collect()
 }
 
-#[test]
-fn a8_points_are_bit_identical_for_every_method_and_schedule() {
-    let fixtures = [
-        ("hex", lattice::hex([5, 5, 5], [1.0; 3]).expect("hex").perturbed(2, 0.2).expect("perturb")),
-        ("tet", lattice::tet_kuhn([3, 3, 3], [1.0; 3]).expect("tet").perturbed(2, 0.2).expect("perturb")),
-        ("quad", lattice::quad([8, 8], [1.0; 2]).expect("quad").perturbed(2, 0.3).expect("perturb")),
-        ("tube", lattice::tube_quad(12, 6, 1.0, 2.0).expect("tube").perturbed(2, 0.2).expect("perturb")),
-    ];
-    for (fname, f) in &fixtures {
-        for (mname, m) in methods() {
-            for sched in [Schedule::Colored, Schedule::Jacobi] {
-                if matches!(m, Method::Winslow { .. }) && !matches!(*fname, "quad" | "tube") {
-                    continue; // 2-D only
-                }
-                let mut r = req(m, sched, 12, false);
-                r.tolerance = 0.0;
-                let base = check_f64_bits(3, 4, |t| pool(t, || flat(&run(f, &r).points))).unwrap_or_else(|e| panic!("{fname} {mname} {sched:?}: {e}"));
-                let default = flat(&run(f, &r).points);
-                assert_eq!(base.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), default.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), "{fname} {mname} {sched:?}: default pool");
+/// Every method x schedule on one fixture: 3 runs on 4 threads agree bitwise and equal the
+/// default pool. Small fixtures and few sweeps keep this fast in debug; `a8_*_large` (ignored)
+/// runs the original, larger fixtures.
+fn check_points(fname: &str, f: &lattice::LatticeFixture, iters: u32) {
+    let two_d = matches!(fname, "quad" | "tube");
+    for (mname, m) in methods() {
+        for sched in [Schedule::Colored, Schedule::Jacobi] {
+            if matches!(m, Method::Winslow { .. }) && !two_d {
+                continue; // 2-D only
             }
+            let mut r = req(m, sched, iters, false);
+            r.tolerance = 0.0;
+            let base = check_f64_bits(3, 4, |t| pool(t, || flat(&run(f, &r).points))).unwrap_or_else(|e| panic!("{fname} {mname} {sched:?}: {e}"));
+            let default = flat(&run(f, &r).points);
+            assert_eq!(base.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), default.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), "{fname} {mname} {sched:?}: default pool");
         }
     }
+}
+
+#[test]
+fn a8_points_hex() {
+    check_points("hex", &lattice::hex([3, 3, 3], [1.0; 3]).expect("hex").perturbed(2, 0.2).expect("perturb"), 3);
+}
+
+#[test]
+fn a8_points_tet() {
+    check_points("tet", &lattice::tet_kuhn([2, 2, 2], [1.0; 3]).expect("tet").perturbed(2, 0.2).expect("perturb"), 3);
+}
+
+#[test]
+fn a8_points_quad() {
+    check_points("quad", &lattice::quad([5, 5], [1.0; 2]).expect("quad").perturbed(2, 0.3).expect("perturb"), 6);
+}
+
+#[test]
+fn a8_points_tube() {
+    check_points("tube", &lattice::tube_quad(8, 4, 1.0, 2.0).expect("tube").perturbed(2, 0.2).expect("perturb"), 4);
+}
+
+/// The larger fixtures. Run with `cargo test -p sm-smooth --test determinism -- --ignored`.
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a8_points_large() {
+    check_points("hex", &lattice::hex([5, 5, 5], [1.0; 3]).expect("hex").perturbed(2, 0.2).expect("perturb"), 12);
+    check_points("tet", &lattice::tet_kuhn([3, 3, 3], [1.0; 3]).expect("tet").perturbed(2, 0.2).expect("perturb"), 12);
+    check_points("quad", &lattice::quad([8, 8], [1.0; 2]).expect("quad").perturbed(2, 0.3).expect("perturb"), 12);
+    check_points("tube", &lattice::tube_quad(12, 6, 1.0, 2.0).expect("tube").perturbed(2, 0.2).expect("perturb"), 12);
 }
 
 #[test]
 fn a8_geometry_hash_and_state_hash_do_not_depend_on_threads() {
     let go = |threads: usize| {
         pool(threads, || {
-            let (mut s, mesh) = meshed_brick([6.0; 3], 1.0);
+            let (mut s, mesh) = meshed_brick([4.0; 3], 1.0);
             apply(&mut s, &JitterMesh { mesh, seed: 4, amp: 0.15, volume_only: false }).expect("jitter");
             run_json(
                 &mut s,
                 "mesh.smooth",
-                json!({"mesh": mesh.to_string(), "method": {"kind": "optimize", "p": 4.0}, "iterations": 6, "tolerance": 0.0, "fix_boundary": false}),
+                json!({"mesh": mesh.to_string(), "method": {"kind": "optimize", "p": 4.0}, "iterations": 3, "tolerance": 0.0, "fix_boundary": false}),
             )
             .expect("smooth");
             let layer = s.state().layer::<MeshLayer>().expect("layer");

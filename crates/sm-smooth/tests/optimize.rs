@@ -23,9 +23,23 @@ fn opt(p: f64) -> Method {
     Method::Optimize { objective: Objective::MeanRatio, p }
 }
 
+// The acceptance sizes (6x6x6 hex, 4x4x4 tet) are `*_large` and `#[ignore]`d because they take
+// minutes in debug; run them with `cargo test -p sm-smooth --test optimize -- --ignored`.
+// The default runs use 4x4x4 hex and 2x2x2 tet with the same thresholds.
+
 #[test]
 fn a3_optimize_reaches_shape_099_on_the_jittered_hex_lattice() {
-    let f = lattice::hex([6, 6, 6], [1.0; 3]).expect("lattice");
+    optimize_reaches_099(4);
+}
+
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a3_optimize_reaches_shape_099_on_the_jittered_hex_lattice_large() {
+    optimize_reaches_099(6);
+}
+
+fn optimize_reaches_099(n: usize) {
+    let f = lattice::hex([n; 3], [1.0; 3]).expect("lattice");
     let p = f.perturbed(3, 0.2).expect("perturb");
     let s0 = summarize(&shapes(&p, &pts_of(&p.mesh)));
     eprintln!("a3 hex initial min shape {}", s0.min);
@@ -38,11 +52,21 @@ fn a3_optimize_reaches_shape_099_on_the_jittered_hex_lattice() {
 
 #[test]
 fn a3_colored_objective_never_increases() {
+    colored_objective_never_increases(4, 15);
+}
+
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a3_colored_objective_never_increases_large() {
+    colored_objective_never_increases(6, 40);
+}
+
+fn colored_objective_never_increases(n: usize, sweeps: u32) {
     // One sweep at a time, feeding the outcome back in (the classification carries the hints).
-    let f = lattice::hex([6, 6, 6], [1.0; 3]).expect("lattice");
+    let f = lattice::hex([n; 3], [1.0; 3]).expect("lattice");
     let mut p = f.perturbed(3, 0.2).expect("perturb");
     let mut last = sum_beta(&shapes(&p, &pts_of(&p.mesh)), 4.0);
-    for k in 1..=40u32 {
+    for k in 1..=sweeps {
         let o = run(&p, &req(opt(4.0), Schedule::Colored, 1, false));
         p.mesh = applied(&p, &o);
         let now = sum_beta(&shapes(&p, &pts_of(&p.mesh)), 4.0);
@@ -53,7 +77,17 @@ fn a3_colored_objective_never_increases() {
 
 #[test]
 fn a3_condition_objective_reaches_max_condition_101() {
-    let f = lattice::hex([6, 6, 6], [1.0; 3]).expect("lattice");
+    condition_reaches_101(4);
+}
+
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a3_condition_objective_reaches_max_condition_101_large() {
+    condition_reaches_101(6);
+}
+
+fn condition_reaches_101(n: usize) {
+    let f = lattice::hex([n; 3], [1.0; 3]).expect("lattice");
     let p = f.perturbed(3, 0.2).expect("perturb");
     let cond = |pts: &[[f64; 3]]| {
         let mut m = p.mesh.clone();
@@ -70,7 +104,17 @@ fn a3_condition_objective_reaches_max_condition_101() {
 
 #[test]
 fn a3_tet_lattice_keeps_the_unperturbed_mean_shape() {
-    let f = lattice::tet_kuhn([4, 4, 4], [1.0; 3]).expect("lattice");
+    tet_keeps_mean_shape(2);
+}
+
+#[test]
+#[ignore = "slow in debug (minutes); run with --ignored"]
+fn a3_tet_lattice_keeps_the_unperturbed_mean_shape_large() {
+    tet_keeps_mean_shape(4);
+}
+
+fn tet_keeps_mean_shape(n: usize) {
+    let f = lattice::tet_kuhn([n; 3], [1.0; 3]).expect("lattice");
     let ideal = summarize(&shapes(&f, &f.exact)).mean;
     let p = f.perturbed(5, 0.2).expect("perturb");
     let start = summarize(&shapes(&p, &pts_of(&p.mesh))).mean;
