@@ -58,7 +58,9 @@ impl Server {
     /// The input store of the most recent distribution builder assembled on this thread (if no
     /// other server consumed it) is bound to `<dir>/inputs/` before the replay, so the replay
     /// finds staged STEP files. If `builder` is not that one (another builder was made in
-    /// between), its store is bound only after the open, and replaying a STEP import may fail
+    /// between), the pending store (which then belongs to a different builder) is still bound to
+    /// `dir`, which is harmless because staging rebinds to the attached project and an in-memory
+    /// workspace unbinds; the opened builder's own store is bound only after the open, and replaying a STEP import may fail
     /// with `step.input_missing`: build the builder right before use. Staging always binds to
     /// the attached project.
     pub fn open(builder: WorkspaceBuilder, dir: impl AsRef<Path>) -> Result<Self, ServerError> {
@@ -70,7 +72,6 @@ impl Server {
 
     /// A server over a new project at `dir` (absent or empty directory) named `name`.
     pub fn create(builder: WorkspaceBuilder, dir: impl AsRef<Path>, name: &str) -> Result<Self, ServerError> {
-        bind_pending_inputs(dir.as_ref());
         let ws = builder.create(dir, ProjectConfig::new(name))?;
         let _ = project_inputs(&ws);
         Ok(Self::from_workspace(ws))
@@ -170,16 +171,19 @@ impl Server {
                 format!("opening a project would discard the in-memory session ({} nodes); `session.save` it elsewhere first", self.ws.timeline().len()),
             ));
         }
-        let fresh = || {
+        // Only a replay needs the pre-bind; a create binds afterwards via `project_inputs`.
+        let fresh = |replay: bool| {
             clear_pending_inputs();
             let b = opener();
-            bind_pending_inputs(&dir);
+            if replay {
+                bind_pending_inputs(&dir);
+            }
             b
         };
-        let new = match fresh().open(&dir) {
+        let new = match fresh(true).open(&dir) {
             Err(EngineError::NotAProject(_)) if create => {
                 let name = dir.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
-                fresh().create(&dir, ProjectConfig::new(name))?
+                fresh(false).create(&dir, ProjectConfig::new(name))?
             }
             other => other?,
         };

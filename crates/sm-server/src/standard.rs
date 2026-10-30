@@ -81,6 +81,11 @@ impl ProjectInputs {
         *self.dir.write().unwrap_or_else(PoisonError::into_inner) = Some(DirInputStore::new(project.join("inputs")));
     }
 
+    /// Drop the project binding; new blobs go to memory again.
+    pub fn unbind(&self) {
+        *self.dir.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// The `inputs/` directory this store is bound to, if any.
     pub fn bound_dir(&self) -> Option<std::path::PathBuf> {
         self.dir.read().unwrap_or_else(PoisonError::into_inner).as_ref().map(|d| d.root().to_owned())

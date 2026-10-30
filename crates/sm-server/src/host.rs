@@ -493,7 +493,8 @@ fn write_dir(root: &Path, format: ExportFormat, files: &[(&str, &[u8])]) -> Resu
 }
 
 /// The input-store handle of the workspace's distribution, bound to `<root>/inputs` when the
-/// workspace has a project (so staged blobs always land in the attached project).
+/// workspace has a project, unbound (memory) when it has none, so staged blobs only ever land
+/// in the attached project.
 pub(crate) fn project_inputs(ws: &Workspace) -> Option<&InputsHandle> {
     let handle = ws.session().engine().services().get::<InputsHandle>()?;
     if let Some(root) = ws.root() {
@@ -501,6 +502,8 @@ pub(crate) fn project_inputs(ws: &Workspace) -> Option<&InputsHandle> {
         if handle.0.bound_dir().as_deref() != Some(want.as_path()) {
             handle.0.bind(root);
         }
+    } else if handle.0.bound_dir().is_some() {
+        handle.0.unbind();
     }
     Some(handle)
 }
