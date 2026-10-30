@@ -116,3 +116,70 @@ pub fn min_s4_margin(m: &TetMesh, inp: &SurfaceInput) -> f64 {
     }
     worst
 }
+
+/// The sharpest solid-side angle (degrees) between two input triangles sharing an edge: an
+/// upper bound on the smallest dihedral angle of any mesh of the surface (the tets around that
+/// edge split the wedge).
+pub fn min_solid_wedge_deg(inp: &SurfaceInput) -> f64 {
+    let p = |i: u32| inp.points[i as usize];
+    let unit = |a: [f64; 3]| {
+        let l = dot3(a, a).sqrt();
+        [a[0] / l, a[1] / l, a[2] / l]
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    // Directed edge -> third vertex of the triangle that has it.
+    let mut third: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    for t in &inp.tris {
+        for r in 0..3 {
+            third.insert((t[r], t[(r + 1) % 3]), t[(r + 2) % 3]);
+        }
+    }
+    let mut worst = 180.0f64;
+    for (&(a, b), &c) in &third {
+        let Some(&d) = third.get(&(b, a)) else { continue };
+        let e = unit(sub3(p(b), p(a)));
+        let perp = |x: [f64; 3]| {
+            let v = sub3(x, p(a));
+            let s = dot3(v, e);
+            unit([v[0] - s * e[0], v[1] - s * e[1], v[2] - s * e[2]])
+        };
+        let (u1, u2) = (perp(p(c)), perp(p(d)));
+        let phi = dot3(u1, u2).clamp(-1.0, 1.0).acos().to_degrees();
+        // Outward normal of (a, b, c): the solid lies on its negative side.
+        let n1 = cross(sub3(p(b), p(a)), sub3(p(c), p(a)));
+        let ang = if dot3(u2, n1) < 0.0 { phi } else { 360.0 - phi };
+        worst = worst.min(ang);
+    }
+    worst
+}
+
+/// Smallest dihedral angle (degrees) over the tets with a Steiner vertex and over those with
+/// input vertices only.
+pub fn min_dihedral_split(m: &TetMesh) -> (f64, f64) {
+    let (mut with, mut without) = (180.0f64, 180.0f64);
+    for t in &m.tets {
+        let q = sm_scheme_tet::tet_quality(t.map(|i| m.points[i as usize])).min_dihedral;
+        if t.iter().any(|&i| i as usize >= m.n_input) {
+            with = with.min(q);
+        } else {
+            without = without.min(q);
+        }
+    }
+    (with, without)
+}
+
+/// `tri_cube(n)` whose top face carries a `k x k` hard relief patch in its corner: the interior
+/// vertices of the patch pushed down by up to `depth * k / n` (SplitMix64 in point order), the
+/// relief cases of `a15` scaled into a finer cube.
+pub fn patch_cube(n: u32, k: u32, seed: u64, depth: f64) -> SurfaceInput {
+    let f = sm_testkit::surf3::tri_cube(n);
+    let mut inp = input_of(&f, 0);
+    let mut rng = sm_testkit::surf3::SplitMix64(seed);
+    let lim = f64::from(k) / f64::from(n);
+    for p in &mut inp.points {
+        if p[2] == 1.0 && p[0] > 0.0 && p[0] < lim && p[1] > 0.0 && p[1] < lim {
+            p[2] = 1.0 - depth * lim * rng.unit().abs();
+        }
+    }
+    inp
+}

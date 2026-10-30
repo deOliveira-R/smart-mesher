@@ -32,7 +32,6 @@ use crate::error::TetError;
 use crate::geom::{V3, add, cross, dist, dot, mean_ratio, ori, sanitize, scale, sub};
 use crate::recover::{Constraints, Recover};
 use crate::tds::{GHOST, same_cycle, sorted3};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Splits per segment recovery.
@@ -52,8 +51,15 @@ const MAX_FILL_TETS: usize = 64;
 const MAX_SIDE_TETS: usize = 400;
 /// The old tets (sorted) and the new tets of one side of a suppressed point.
 type SideFill = (Vec<u32>, Vec<[u32; 4]>);
-/// New tets, or the faces that hide the kernel candidates.
-type FillOutcome = Result<Vec<[u32; 4]>, Vec<[u32; 3]>>;
+/// How one side cavity can be closed (see [`Recover::fill_side`]).
+enum SideOutcome {
+    /// Refilled without a point.
+    Filled(Vec<[u32; 4]>),
+    /// Starred from this point (not yet added).
+    Star(V3),
+    /// No candidate sees every face: the faces that hide the candidate with the fewest of them.
+    Blocked(Vec<[u32; 3]>),
+}
 /// Placeholder vertex id for the point being inserted.
 const NEW: u32 = u32::MAX - 1;
 
@@ -82,13 +88,86 @@ pub(crate) struct Bnd {
     face_pts: BTreeMap<u32, Vec<u32>>,
     /// Input triangles tiled so far.
     done: Vec<bool>,
+    /// Tiles by sorted key: owner (input triangle) -> multiplicity.
+    tile_faces: BTreeMap<[u32; 3], BTreeMap<u32, u32>>,
+    /// Edges of the tiles: owner -> multiplicity.
+    tile_edges: BTreeMap<[u32; 2], BTreeMap<u32, u32>>,
+    /// Constraint-table entries inserted or removed: the work measure of the incremental
+    /// constraint lookup (each tile, subsegment or split costs O(1) entries, never a rebuild).
+    pub work: u64,
+}
+
+/// Add one `owner` to a multiset entry.
+fn ms_add<K: Ord>(m: &mut BTreeMap<K, BTreeMap<u32, u32>>, k: K, owner: u32) {
+    *m.entry(k).or_default().entry(owner).or_default() += 1;
+}
+
+/// Remove one `owner` from a multiset entry (empty entries are dropped).
+fn ms_remove<K: Ord>(m: &mut BTreeMap<K, BTreeMap<u32, u32>>, k: K, owner: u32) {
+    if let Some(o) = m.get_mut(&k) {
+        if let Some(c) = o.get_mut(&owner) {
+            *c -= 1;
+            if *c == 0 {
+                o.remove(&owner);
+            }
+        }
+        if o.is_empty() {
+            m.remove(&k);
+        }
+    }
 }
 
 impl Bnd {
     fn new(orig: &Constraints) -> Self {
         let chains = orig.edges.iter().map(|e| e.0.to_vec()).collect();
         let segs = orig.edges.iter().enumerate().map(|(i, e)| (e.0, i as u32)).collect();
-        Self { subs: Vec::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()] }
+        let work = orig.edges.len() as u64;
+        Self { subs: Vec::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()], tile_faces: BTreeMap::new(), tile_edges: BTreeMap::new(), work }
+    }
+
+    /// Owner of constraint edge `(a,b)`: the smallest of the owner of the input edge whose
+    /// subsegment it is and the owners of the tiles that have it.
+    pub(crate) fn edge_owner(&self, orig: &Constraints, a: u32, b: u32) -> Option<u32> {
+        let k = key2(a, b);
+        let seg = self.segs.get(&k).and_then(|&e| orig.edges.get(e as usize)).map(|e| e.1);
+        let tile = self.tile_edges.get(&k).and_then(|o| o.keys().next().copied());
+        match (seg, tile) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, y) => x.or(y),
+        }
+    }
+
+    /// Owner of tile `k` (sorted key), the smallest if several.
+    pub(crate) fn face_owner(&self, k: [u32; 3]) -> Option<u32> {
+        self.tile_faces.get(&k).and_then(|o| o.keys().next().copied())
+    }
+
+    /// Add tile `t` of input triangle `owner` to the surface and the lookup.
+    fn add_tile(&mut self, t: [u32; 3], owner: u32) {
+        self.index_tile(t, owner, true);
+        self.subs.push((t, owner));
+    }
+
+    /// Insert (`add`) or remove the lookup entries of tile `t`.
+    fn index_tile(&mut self, t: [u32; 3], owner: u32, add: bool) {
+        let f = if add { ms_add::<[u32; 3]> } else { ms_remove::<[u32; 3]> };
+        f(&mut self.tile_faces, sorted3(t[0], t[1], t[2]), owner);
+        let e = if add { ms_add::<[u32; 2]> } else { ms_remove::<[u32; 2]> };
+        for r in 0..3 {
+            e(&mut self.tile_edges, key2(t[r], t[(r + 1) % 3]), owner);
+        }
+        self.work += 4;
+    }
+
+    /// Replace subsegment `old` by the subsegments `new` of input edge `e`.
+    fn replace_seg(&mut self, old: &[[u32; 2]], new: &[[u32; 2]], e: u32) {
+        for k in old {
+            self.segs.remove(k);
+        }
+        for &k in new {
+            self.segs.insert(k, e);
+        }
+        self.work += (old.len() + new.len()) as u64;
     }
 }
 
@@ -247,7 +326,6 @@ impl Recover<'_> {
     pub fn complete(&mut self) -> Result<(), TetError> {
         self.complete_mode = true;
         self.bnd = Bnd::new(self.orig);
-        self.sync();
         let r = self.complete_inner();
         let r = r.map_err(|e| self.map_err(e));
         self.complete_mode = false;
@@ -256,20 +334,7 @@ impl Recover<'_> {
                 *x = false;
             }
         }
-        self.con = Cow::Borrowed(self.orig);
         r
-    }
-
-    /// Rebuild the constraint lookup: the subsegments and the tiles of recovered triangles.
-    /// Owners are input triangles.
-    fn sync(&mut self) {
-        let mut edges: Vec<([u32; 2], u32)> = self.bnd.segs.iter().map(|(&k, &e)| (k, self.orig.edges[e as usize].1)).collect();
-        for &(t, tri) in &self.bnd.subs {
-            for r in 0..3 {
-                edges.push((key2(t[r], t[(r + 1) % 3]), tri));
-            }
-        }
-        self.con = Cow::Owned(Constraints::from_parts(&self.bnd.subs, edges));
     }
 
     /// Replace Steiner vertices in the edge of an error by the input edge they lie on.
@@ -358,7 +423,7 @@ impl Recover<'_> {
         };
         let f1 = self.dt.tds.face(t0, k0);
         let t1 = self.dt.tds.nbr[t0 as usize][k0];
-        if let Some(other) = self.con.face_owner(sorted3(f1[0], f1[1], f1[2])) {
+        if let Some(other) = self.face_owner(sorted3(f1[0], f1[1], f1[2])) {
             if self.edge_hits_face(u, w, f1) {
                 return Err(TetError::SelfIntersection { tri_a: owner.min(other), tri_b: owner.max(other) });
             }
@@ -378,7 +443,7 @@ impl Recover<'_> {
         let mut es: Vec<(f64, [u32; 2], V3)> = Vec::new();
         for e in 0..3 {
             let (a, b) = (f1[e], f1[(e + 1) % 3]);
-            if self.con.edge_owner(a, b).is_some() {
+            if self.edge_owner(a, b).is_some() {
                 continue;
             }
             if let Some((p, d)) = edge_line_closest(self.dt.pts[a as usize], self.dt.pts[b as usize], pu, pw)
@@ -461,7 +526,7 @@ impl Recover<'_> {
             for i in 0..4 {
                 for j in i + 1..4 {
                     let (a, b) = (v[i], v[j]);
-                    if self.con.edge_owner(a, b).is_some() {
+                    if self.edge_owner(a, b).is_some() {
                         continue;
                     }
                     if let Some(plan) = self.dt.plan_edge_removal(a, b, t, 16, &mut sc)
@@ -475,7 +540,7 @@ impl Recover<'_> {
             }
             for k in 0..4 {
                 let g = self.dt.tds.face(t, k);
-                if self.con.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
+                if self.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
                     continue;
                 }
                 if let Some(plan) = self.dt.plan_flip23(t, k)
@@ -585,16 +650,14 @@ impl Recover<'_> {
 
     /// Record that subsegment `(u,w)` of an input edge was split at `p`.
     fn on_seg_split(&mut self, u: u32, w: u32, p: u32) -> u32 {
-        if let Some(e) = self.bnd.segs.remove(&key2(u, w)) {
-            self.bnd.segs.insert(key2(u, p), e);
-            self.bnd.segs.insert(key2(p, w), e);
+        if let Some(&e) = self.bnd.segs.get(&key2(u, w)) {
+            self.bnd.replace_seg(&[key2(u, w)], &[key2(u, p), key2(p, w)], e);
             let chain = &mut self.bnd.chains[e as usize];
             if let Some(i) = chain.windows(2).position(|x| (x[0] == u && x[1] == w) || (x[0] == w && x[1] == u)) {
                 chain.insert(i + 1, p);
             }
             self.pin(p, On::Edge(e));
         }
-        self.sync();
         p
     }
 
@@ -671,7 +734,7 @@ impl Recover<'_> {
     fn clear_crossings(&mut self, tri: u32, refs: &[[V3; 3]], vs: &mut Vec<u32>) -> Result<(), TetError> {
         for _ in 0..MAX_FACE_STEPS {
             let Some((x, y, tet, r)) = self.crossing_edge(refs, vs) else { return Ok(()) };
-            if let Some(other) = self.con.edge_owner(x, y) {
+            if let Some(other) = self.edge_owner(x, y) {
                 return Err(TetError::SelfIntersection { tri_a: tri.min(other), tri_b: tri.max(other) });
             }
             if self.unflip_crossing(refs, vs, x, y, tet)? {
@@ -712,9 +775,10 @@ impl Recover<'_> {
     }
 
     fn commit_tiles(&mut self, tri: u32, tiles: Vec<[u32; 3]>) {
-        self.bnd.subs.extend(tiles.into_iter().map(|t| (t, tri)));
+        for t in tiles {
+            self.bnd.add_tile(t, tri);
+        }
         self.bnd.done[tri as usize] = true;
-        self.sync();
     }
 
     /// Would replacing the tets `old` by `new` create a *shortcut*: an edge between two points of
@@ -1077,25 +1141,27 @@ impl Recover<'_> {
         self.flips += 1;
         // Update the surface.
         let mut keep: Vec<([u32; 3], u32)> = Vec::with_capacity(self.bnd.subs.len());
-        for (i, s) in self.bnd.subs.iter().enumerate() {
+        let subs = std::mem::take(&mut self.bnd.subs);
+        for (i, s) in subs.into_iter().enumerate() {
             if fan_idx.binary_search(&i).is_err() {
-                keep.push(*s);
+                keep.push(s);
+            } else {
+                self.bnd.index_tile(s.0, s.1, false);
             }
         }
-        keep.extend(new_subs);
         self.bnd.subs = keep;
+        for (t, tri) in new_subs {
+            self.bnd.add_tile(t, tri);
+        }
         if let On::Edge(e) = on
             && let Some(&(a, b)) = ends.first()
         {
-            self.bnd.segs.remove(&key2(a, p));
-            self.bnd.segs.remove(&key2(b, p));
-            self.bnd.segs.insert(key2(a, b), e);
+            self.bnd.replace_seg(&[key2(a, p), key2(b, p)], &[key2(a, b)], e);
         }
         self.bnd.on.remove(&p);
         if let Some(x) = self.dt.pinned.get_mut(p as usize) {
             *x = false;
         }
-        self.sync();
         Ok(true)
     }
 
@@ -1104,7 +1170,9 @@ impl Recover<'_> {
     /// be filled (a sliver of the star lying flat on the surface hides every point near `p`),
     /// the cavity absorbs the tets beyond the faces that block the points next to `p`, never
     /// across a constraint face and never enclosing a vertex that must stay; up to
-    /// [`SIDE_GROW`] times. Returns the old tets (sorted) and the new ones.
+    /// [`SIDE_GROW`] times. Returns the old tets (sorted) and the new ones. (Growing the solid
+    /// side further for ruling S4 was tried and made later suppressions fail; points left too
+    /// shallow are moved after classification instead, see [`crate::relocate`].)
     fn side_fill(&mut self, p: u32, group: &[u32], polys: &[[u32; 3]], star: &[u32], solid: bool, dir: V3) -> Result<Option<SideFill>, TetError> {
         let mut cav: Vec<u32> = group.to_vec();
         cav.sort_unstable();
@@ -1129,9 +1197,13 @@ impl Recover<'_> {
             // Refills without a point are tried on the star itself only (a grown cavity is
             // starred: cheap, and it exists by construction of the growth).
             let try_fill = round == 0 && cav.len() <= MAX_FILL_TETS;
-            let blockers = match self.fill_side(&faces, pp, dir, solid, try_fill)? {
-                Ok(tets) => return Ok(Some((cav, tets))),
-                Err(b) => b,
+            let blockers = match self.fill_side(&faces, pp, dir, solid, try_fill) {
+                SideOutcome::Filled(tets) => return Ok(Some((cav, tets))),
+                SideOutcome::Star(q) => {
+                    let tets = self.star_new(&faces, q)?;
+                    return Ok(Some((cav, tets)));
+                }
+                SideOutcome::Blocked(b) => b,
             };
             if cav.len() > MAX_SIDE_TETS {
                 break;
@@ -1145,7 +1217,7 @@ impl Recover<'_> {
                 if n == crate::tds::NONE || self.dt.tds.ghost_slot(n).is_some() || star.binary_search(&n).is_ok() || add.contains(&n) {
                     continue;
                 }
-                if self.con.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
+                if self.face_owner(sorted3(g[0], g[1], g[2])).is_some() {
                     continue;
                 }
                 if self.absorb_ok(n, &cav, &add, p) {
@@ -1161,6 +1233,16 @@ impl Recover<'_> {
         Ok(None)
     }
 
+    /// Add point `q` and star the faces `faces` from it.
+    fn star_new(&mut self, faces: &[[u32; 3]], q: V3) -> Result<Vec<[u32; 4]>, TetError> {
+        if self.n_steiner + 1 > self.max_steiner {
+            return Err(TetError::SteinerBudget { limit: self.max_steiner });
+        }
+        let id = self.dt.push_point(q);
+        self.n_steiner += 1;
+        Ok(faces.iter().map(|f| [id, f[0], f[1], f[2]]).collect())
+    }
+
     /// May tet `n` join the side cavity `cav` (plus `add`)? Not if a face it shares with the
     /// cavity is a constraint face, or if it would enclose a vertex that cavity fills may not
     /// drop (every tet of that vertex in the cavity).
@@ -1170,7 +1252,7 @@ impl Recover<'_> {
             let m = self.dt.tds.nbr[n as usize][k];
             if m != crate::tds::NONE && m != n && inside(m) {
                 let h = self.dt.tds.face(n, k);
-                if self.con.face_owner(sorted3(h[0], h[1], h[2])).is_some() {
+                if self.face_owner(sorted3(h[0], h[1], h[2])).is_some() {
                     return false;
                 }
             }
@@ -1207,13 +1289,13 @@ impl Recover<'_> {
             for i in 0..4 {
                 for j in i + 1..4 {
                     let (x, y) = (v[i], v[j]);
-                    if x != p && y != p && self.con.edge_owner(x, y).is_some() && !edges.contains(&key2(x, y)) {
+                    if x != p && y != p && self.edge_owner(x, y).is_some() && !edges.contains(&key2(x, y)) {
                         return false;
                     }
                 }
                 let g = self.dt.tds.face(t, i);
                 let k = sorted3(g[0], g[1], g[2]);
-                if !g.contains(&p) && self.con.face_owner(k).is_some() && !faces.contains(&k) {
+                if !g.contains(&p) && self.face_owner(k).is_some() && !faces.contains(&k) {
                     return false;
                 }
             }
@@ -1221,17 +1303,18 @@ impl Recover<'_> {
         true
     }
 
-    /// Tetrahedralize the polyhedron bounded by `faces` (outward), one side of a suppressed
-    /// point at `p`. The solid side is refilled without a point if possible; otherwise a point
-    /// in the kernel (the polyhedron's own kernel search, or `p` moved towards `dir`) is added
-    /// and starred, the best-shaped star winning. On failure, the faces that hide the candidate
-    /// with the fewest of them.
-    fn fill_side(&mut self, faces: &[[u32; 3]], p: V3, dir: V3, solid: bool, try_fill: bool) -> Result<FillOutcome, TetError> {
+    /// Close the polyhedron bounded by `faces` (outward), one side of a suppressed point at
+    /// `p`. The solid side is refilled without a point if possible; otherwise, of the candidate
+    /// points (the polyhedron's kernel point, the deepest the kernel search finds, then `p`
+    /// moved towards `dir` by 0.5 h down to 1e-12 h) that see every face, the best-shaped star
+    /// wins. Points left too shallow are moved by [`crate::relocate`] after classification. On
+    /// failure, the faces that hide the candidate with the fewest of them.
+    fn fill_side(&self, faces: &[[u32; 3]], p: V3, dir: V3, solid: bool, try_fill: bool) -> SideOutcome {
         if solid
             && try_fill
             && let Some(t) = self.dt.fill_budgeted(faces, None, &[], SIDE_FILL_BUDGET + 10 * faces.len())
         {
-            return Ok(Ok(t));
+            return SideOutcome::Filled(t);
         }
         let pts = &self.dt.pts;
         let mut h = 0.0;
@@ -1243,10 +1326,11 @@ impl Recover<'_> {
             }
         }
         let h = if cnt > 0.0 { h / cnt } else { 1.0 };
-        let mut cands: Vec<V3> = Vec::new();
-        if let Some(k) = self.dt.kernel_point(faces, self.guard) {
-            cands.push(k);
-        }
+        // The kernel point (the deepest of the kernel search) and offsets. Review round 3 tried
+        // ranking these by S4 margin before shape and a wider candidate set: the first changed
+        // nothing on the hard relief cases after step 9 (`crate::relocate`) but cost time, the
+        // second lost `relief n12 seed4 d0.97` (a deeper star blocked a later suppression).
+        let mut cands: Vec<V3> = self.dt.kernel_point(faces, self.guard).into_iter().collect();
         for d in [0.5, 0.3, 0.2, 0.1, 0.05, 0.02, 1e-2, 3e-3, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 1e-12] {
             if let Some(q) = sanitize(add(p, scale(dir, d * h))) {
                 cands.push(q);
@@ -1274,20 +1358,15 @@ impl Recover<'_> {
             }
         }
         if let Some((_, q)) = best {
-            if self.n_steiner + 1 > self.max_steiner {
-                return Err(TetError::SteinerBudget { limit: self.max_steiner });
-            }
-            let id = self.dt.push_point(q);
-            self.n_steiner += 1;
-            return Ok(Ok(faces.iter().map(|f| [id, f[0], f[1], f[2]]).collect()));
+            return SideOutcome::Star(q);
         }
         if !solid
             && try_fill
             && let Some(t) = self.dt.fill_budgeted(faces, None, &[], SIDE_FILL_BUDGET + 10 * faces.len())
         {
-            return Ok(Ok(t));
+            return SideOutcome::Filled(t);
         }
-        Ok(Err(blockers.unwrap_or_default()))
+        SideOutcome::Blocked(blockers.unwrap_or_default())
     }
 }
 
