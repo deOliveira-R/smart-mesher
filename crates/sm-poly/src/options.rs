@@ -15,7 +15,8 @@ pub enum FaceMode {
     #[default]
     Planar,
     /// One polygon per primal edge and per boundary fan, planar or not (geometry follows the
-    /// `smartmesh.fan_vertex_mean.v1` rule). For tests and cross-checks; not reachable from the
+    /// `smartmesh.fan_vertex_mean.v1` rule), except at cells split into wedges, whose faces are
+    /// per-tet kites and quads in both modes. For tests and cross-checks; not reachable from the
     /// op.
     Keep,
 }
@@ -108,8 +109,15 @@ impl Agglomerate {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct DualReport {
-    /// Cells of the output: one per vertex per region touching it, minus the merges.
+    /// Cells of the output: one per vertex per region touching it, plus `wedges - split_cells`,
+    /// minus `merges`.
     pub cells: usize,
+    /// (vertex, region) cells that were not star-shaped about their volume centroid (at a
+    /// reflex interface or boundary edge) and were split into wedges of tet corners.
+    pub split_cells: usize,
+    /// Output cells those split cells became (`>= split_cells`; equal when a cell only needed
+    /// its edge faces refined).
+    pub wedges: usize,
     /// Cell pairs merged by agglomeration (0 unless [`PolyOptions::agglomerate`] is set):
     /// `cells` equals the unmerged count minus `merges`.
     pub merges: usize,

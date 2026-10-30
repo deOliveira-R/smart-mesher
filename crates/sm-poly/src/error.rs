@@ -25,7 +25,9 @@ pub enum PolyError {
         face: FaceIx,
     },
     /// The tets of one region around a primal edge do not form a single closed ring or a single
-    /// open path (non-manifold or non-conformal input).
+    /// open path: the region is not edge-manifold (a checkerboard where two volumes alternate
+    /// around the edge, two tets of one volume touching only along it) or the input is not
+    /// conformal.
     #[error("the tets around edge ({}, {}) form neither one closed ring nor one open path", edge[0].0, edge[1].0)]
     OpenRing {
         /// The primal edge, as its two (ascending) vertices.

@@ -2,11 +2,13 @@
 //! agglomerated, and committed to a [`MeshBuild`] in one serial pass.
 
 use crate::error::PolyError;
-use crate::geom::V3;
+use crate::geom::{self, V3};
+use crate::options::FaceMode;
 use crate::options::DualReport;
+use crate::concave::{self, Split};
 use crate::prep::{NONE, Prep, canonical_cycle};
 use sm_core::{EntityId, Point3};
-use sm_mesh_api::{Classification, FaceIx, MeshBuild, MeshEntityRef, Side, SignedFace, VertexIx};
+use sm_mesh_api::{Classification, FaceIx, GeomTol, MeshBuild, MeshEntityRef, Side, SignedFace, VertexIx};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
@@ -65,11 +67,17 @@ pub(crate) struct Counts {
     pub boundary_faces: usize,
     pub hub_split_faces: usize,
     pub hub_triangles: usize,
+    /// Dual cells split into wedges, and the wedges they became.
+    pub split_cells: usize,
+    pub wedges: usize,
 }
 
-/// Number the used points and record faces and cells in `(region, vertex)` order.
-pub(crate) fn build(prep: &Prep<'_>) -> (PolyData, Counts) {
+/// Number the used points and record faces and cells in `(region, vertex)` order (the wedges
+/// of a split cell in wedge order). Returns the data, the counters and, per output cell, its
+/// dual cell (ckey index).
+pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u32>) {
     let (nt, nc, ns) = (prep.nt, prep.ckeys.len(), prep.s_edge.len());
+    let refined = |s: usize| split.is_split(prep.s_ca[s]) || split.is_split(prep.s_cb[s]);
     let mut used = vec![false; prep.n_virtual()];
     used[..nt].fill(true);
     let mut hub_reg = vec![NONE; prep.ne];
@@ -77,13 +85,30 @@ pub(crate) fn build(prep: &Prep<'_>) -> (PolyData, Counts) {
         let m = &prep.meta[s];
         let e = prep.s_edge[s];
         if m.open {
-            used[prep.p_tri(m.f_in) as usize] = true;
-            used[prep.p_tri(m.f_out) as usize] = true;
             used[prep.p_mid(e) as usize] = true;
-        } else if m.hub {
+        }
+        let hub = if refined(s) {
+            for &t in prep.ring_of(s) {
+                if let Some((en, ex)) = prep.entry_exit(t, e) {
+                    used[prep.p_tri(en) as usize] = true;
+                    used[prep.p_tri(ex) as usize] = true;
+                }
+            }
+            true
+        } else {
+            let (path, hub) = slot_path(prep, split, s);
+            for &p in &path {
+                used[p as usize] = true;
+            }
+            hub
+        };
+        if hub && !m.open {
             used[prep.p_hub(e) as usize] = true;
             hub_reg[e as usize] = prep.s_reg[s];
         }
+    }
+    for &c in split.cells.keys() {
+        used[prep.p_vert(prep.ckeys[c as usize] as u32) as usize] = true;
     }
     for &p in &prep.fan_pts {
         used[p as usize] = true;
@@ -107,7 +132,7 @@ pub(crate) fn build(prep: &Prep<'_>) -> (PolyData, Counts) {
         c_off: vec![0],
         c_faces: Vec::new(),
         c_region: Vec::with_capacity(nc),
-        c_alive: vec![true; nc],
+        c_alive: Vec::new(),
         regions: prep.regions.clone(),
         n_tet_pts: nt as u32,
     };
@@ -117,81 +142,157 @@ pub(crate) fn build(prep: &Prep<'_>) -> (PolyData, Counts) {
     }
     let nm = |vid: u32| num[vid as usize];
 
-    // Cell -> slots (edge faces) in ascending slot order.
-    let mut cs_off = vec![0u32; nc + 1];
-    for s in 0..ns {
-        cs_off[prep.s_ca[s] as usize + 1] += 1;
-        cs_off[prep.s_cb[s] as usize + 1] += 1;
-    }
-    for c in 0..nc {
-        cs_off[c + 1] += cs_off[c];
-    }
-    let mut cs = vec![0u32; cs_off[nc] as usize];
-    let mut fill = cs_off.clone();
-    for s in 0..ns {
-        for c in [prep.s_ca[s], prep.s_cb[s]] {
-            cs[fill[c as usize] as usize] = s as u32;
-            fill[c as usize] += 1;
-        }
-    }
-
     let mut counts = Counts::default();
     let mut slot_face: Vec<(u32, u32)> = vec![(NONE, 0); ns];
+    let mut c_key: Vec<u32> = Vec::with_capacity(nc);
     // Interface polygons by canonical point cycle -> (face, runs canonical).
     let mut shared: BTreeMap<SmallVec<[u32; 32]>, (u32, bool)> = BTreeMap::new();
     let (mut fan_i, mut pt_i) = (0usize, 0usize);
     let mut lp: SmallVec<[u32; 32]> = SmallVec::new();
     let mut cell_faces: Vec<SignedFace> = Vec::new();
+    // Faces between the wedges of the current cell: (face, left wedge, right wedge).
+    let mut seps: Vec<(u32, u32, u32)> = Vec::new();
     for cell in 0..nc {
-        cell_faces.clear();
-        for &s in &cs[cs_off[cell] as usize..cs_off[cell + 1] as usize] {
+        let slots = prep.slots_of_cell(cell);
+        for &s in slots {
             let s = s as usize;
-            let lower = prep.s_ca[s] as usize == cell;
-            if lower {
+            if prep.s_ca[s] as usize == cell {
                 let first = d.n_faces() as u32;
-                let count = emit_slot(prep, s, &nm, &mut d, &mut lp, &mut counts);
+                let count = if refined(s) {
+                    emit_kites(prep, s, &nm, &mut d)
+                } else {
+                    emit_slot(prep, split, s, &nm, &mut d, &mut lp, &mut counts)
+                };
                 slot_face[s] = (first, count);
             }
-            let (first, count) = slot_face[s];
-            let side = if lower { Side::Left } else { Side::Right };
-            cell_faces.extend((0..count).map(|i| SignedFace::new(FaceIx(first + i), side)));
         }
-        while fan_i < prep.fan_metas.len() && prep.fan_metas[fan_i].cell as usize == cell {
-            let fm = prep.fan_metas[fan_i];
-            let pts = &prep.fan_pts[pt_i..pt_i + fm.len as usize];
-            fan_i += 1;
-            pt_i += fm.len as usize;
-            lp.clear();
-            lp.extend(pts.iter().map(|&p| nm(p)));
-            let sf = if fm.iface {
-                let (key, fwd) = canonical_cycle(&lp);
-                match shared.get(&key) {
-                    Some(&(f, first_fwd)) => {
-                        SignedFace::new(FaceIx(f), if first_fwd == fwd { Side::Left } else { Side::Right })
+        let key = prep.ckeys[cell];
+        let (region, v) = ((key >> 32) as u32, key as u32);
+        let nw = split.n_wedges(cell as u32);
+        seps.clear();
+        if split.is_split(cell as u32) {
+            counts.split_cells += 1;
+            counts.wedges += nw as usize;
+            emit_separators(prep, split, cell, v, region, &nm, &mut d, &mut seps);
+        }
+        let (fan0, pt0) = (fan_i, pt_i);
+        for w in 0..nw {
+            let out = c_key.len() as u32;
+            cell_faces.clear();
+            for &s in slots {
+                let s = s as usize;
+                let lower = prep.s_ca[s] as usize == cell;
+                let (first, count) = slot_face[s];
+                let side = if lower { Side::Left } else { Side::Right };
+                if refined(s) {
+                    for (i, &t) in prep.ring_of(s).iter().enumerate() {
+                        if split.wedge(cell as u32, t) == w {
+                            cell_faces.push(SignedFace::new(FaceIx(first + i as u32), side));
+                        }
                     }
-                    None => {
-                        let f = d.push_face(&lp, Some(fm.cls));
-                        counts.boundary_faces += 1;
-                        shared.insert(key, (f, fwd));
-                        SignedFace::new(FaceIx(f), Side::Left)
-                    }
+                } else {
+                    cell_faces.extend((0..count).map(|i| SignedFace::new(FaceIx(first + i), side)));
                 }
-            } else {
-                let f = d.push_face(&lp, Some(fm.cls));
-                counts.boundary_faces += 1;
-                SignedFace::new(FaceIx(f), Side::Left)
-            };
-            cell_faces.push(sf);
+            }
+            for &(f, l, r) in &seps {
+                if l == w {
+                    cell_faces.push(SignedFace::new(FaceIx(f), Side::Left));
+                } else if r == w {
+                    cell_faces.push(SignedFace::new(FaceIx(f), Side::Right));
+                }
+            }
+            (fan_i, pt_i) = (fan0, pt0);
+            while fan_i < prep.fan_metas.len() && prep.fan_metas[fan_i].cell as usize == cell {
+                let fm = prep.fan_metas[fan_i];
+                let pts = &prep.fan_pts[pt_i..pt_i + fm.len as usize];
+                fan_i += 1;
+                pt_i += fm.len as usize;
+                // fans of a split vertex are single triangles, so each has one wedge
+                let fw = if nw > 1 && fm.tri != NONE { split.wedge(cell as u32, prep.tet_on_face(fm.tri, region)) } else { 0 };
+                if fw != w {
+                    continue;
+                }
+                lp.clear();
+                lp.extend(pts.iter().map(|&p| nm(p)));
+                let sf = if fm.iface {
+                    let (key, fwd) = canonical_cycle(&lp);
+                    match shared.get(&key) {
+                        Some(&(f, first_fwd)) => {
+                            SignedFace::new(FaceIx(f), if first_fwd == fwd { Side::Left } else { Side::Right })
+                        }
+                        None => {
+                            let f = d.push_face(&lp, Some(fm.cls));
+                            counts.boundary_faces += 1;
+                            shared.insert(key, (f, fwd));
+                            SignedFace::new(FaceIx(f), Side::Left)
+                        }
+                    }
+                } else {
+                    let f = d.push_face(&lp, Some(fm.cls));
+                    counts.boundary_faces += 1;
+                    SignedFace::new(FaceIx(f), Side::Left)
+                };
+                cell_faces.push(sf);
+            }
+            for sf in &cell_faces {
+                let slot = &mut d.f_cells[sf.face().get()][usize::from(sf.side() == Side::Right)];
+                *slot = out;
+            }
+            d.c_faces.extend_from_slice(&cell_faces);
+            d.c_off.push(d.c_faces.len() as u32);
+            d.c_region.push(region);
+            c_key.push(cell as u32);
         }
-        for sf in &cell_faces {
-            let slot = &mut d.f_cells[sf.face().get()][usize::from(sf.side() == Side::Right)];
-            *slot = cell as u32;
-        }
-        d.c_faces.extend_from_slice(&cell_faces);
-        d.c_off.push(d.c_faces.len() as u32);
-        d.c_region.push((prep.ckeys[cell] >> 32) as u32);
     }
-    (d, counts)
+    d.c_alive = vec![true; c_key.len()];
+    (d, counts, c_key)
+}
+
+/// Record the per-tet kites `(m_e, fc_entry, c_t, fc_exit)` of a refined slot, in ring order;
+/// returns how many. They wind like the slot's polygon (about `a -> b`).
+fn emit_kites(p: &Prep<'_>, s: usize, nm: &dyn Fn(u32) -> u32, d: &mut PolyData) -> u32 {
+    let e = p.s_edge[s];
+    let hub = nm(p.edge_mid(e));
+    let ring = p.ring_of(s);
+    for &t in ring {
+        // the ring walk already found both faces of every ring tet
+        let (en, ex) = p.entry_exit(t, e).unwrap_or((0, 0));
+        d.push_face(&[hub, nm(p.p_tri(en)), nm(t), nm(p.p_tri(ex))], None);
+    }
+    ring.len() as u32
+}
+
+/// Record the quads `(v, m_vw1, fc_f, m_vw2)` between the wedges of split cell `cell`, oriented
+/// from the lower wedge to the higher one.
+#[allow(clippy::too_many_arguments)]
+fn emit_separators(
+    p: &Prep<'_>,
+    split: &Split,
+    cell: usize,
+    v: u32,
+    region: u32,
+    nm: &dyn Fn(u32) -> u32,
+    d: &mut PolyData,
+    seps: &mut Vec<(u32, u32, u32)>,
+) {
+    let Some(list) = split.cells.get(&(cell as u32)) else { return };
+    for &(t, wt) in list {
+        let Some(c) = concave::corner(p, v, region, t) else { continue };
+        for j in 0..3 {
+            let n = c.nb[j];
+            if n == NONE || n < t {
+                continue;
+            }
+            let wn = split.wedge(cell as u32, n);
+            if wn == wt {
+                continue;
+            }
+            // the quad winds outward from t
+            let q = c.quads[3 + j].map(nm);
+            let f = if wt < wn { d.push_face(&q, None) } else { d.push_face(&[q[0], q[3], q[2], q[1]], None) };
+            seps.push((f, wt.min(wn), wt.max(wn)));
+        }
+    }
 }
 
 /// Class of virtual point `vid`.
@@ -203,7 +304,13 @@ fn point_class(p: &Prep<'_>, vid: u32, hub_reg: &[u32]) -> Classification {
     }
     let i = vid - nt;
     if i < nf {
-        return Classification::on(src.face_class(FaceIx(i)).entity);
+        let fi = FaceIx(i);
+        let l = p.treg[src.face_left(fi).get()];
+        if src.face_right(fi).is_some_and(|r| p.treg[r.get()] == l) {
+            // interior triangle of a region (only used by refined edge faces)
+            return Classification::on(p.regions[l as usize]);
+        }
+        return Classification::on(src.face_class(fi).entity);
     }
     let i = i - nf;
     if i < ne {
@@ -219,8 +326,57 @@ fn point_class(p: &Prep<'_>, vid: u32, hub_reg: &[u32]) -> Classification {
 }
 
 /// Record the faces of slot `s` (an edge face, or its hub triangles); returns how many.
+/// The open or closed path of an unrefined slot as virtual points (without the closing `m_e`)
+/// and whether it is replaced by hub triangles. Next to a split cell the path also passes
+/// through the centroid of every *bent* triangle it crosses (an interior triangle with a vertex
+/// whose cell in this region is split): the refined faces of the split cell bend the dual edge
+/// of that triangle through its centroid, and every face around that edge must follow.
+fn slot_path(p: &Prep<'_>, split: &Split, s: usize) -> (SmallVec<[u32; 32]>, bool) {
+    let m = p.meta[s];
+    let e = p.s_edge[s];
+    let region = p.s_reg[s];
+    let ring = p.ring_of(s);
+    let mut path: SmallVec<[u32; 32]> = SmallVec::new();
+    if m.open {
+        path.push(p.p_tri(m.f_in));
+    }
+    let mut bent_any = false;
+    for (i, &t) in ring.iter().enumerate() {
+        path.push(t);
+        if m.open && i + 1 == ring.len() {
+            break;
+        }
+        if !split.cells.is_empty()
+            && let Some((_, ex)) = p.entry_exit(t, e)
+            && p.src.face_vertices(sm_mesh_api::FaceIx(ex)).iter().any(|u| {
+                let c = p.cell_of(region, u.0);
+                c != NONE && split.is_split(c)
+            })
+        {
+            path.push(p.p_tri(ex));
+            bent_any = true;
+        }
+    }
+    if m.open {
+        path.push(p.p_tri(m.f_out));
+    }
+    let hub = if !bent_any {
+        m.hub
+    } else if p.mode == FaceMode::Planar {
+        let mut pts: SmallVec<[V3; 32]> = path.iter().map(|&x| p.coord(x)).collect();
+        if m.open {
+            pts.push(p.coord(p.p_mid(e)));
+        }
+        geom::nonplanarity(&pts) > GeomTol::default().planarity
+    } else {
+        false
+    };
+    (path, hub)
+}
+
 fn emit_slot(
     p: &Prep<'_>,
+    split: &Split,
     s: usize,
     nm: &dyn Fn(u32) -> u32,
     d: &mut PolyData,
@@ -229,16 +385,9 @@ fn emit_slot(
 ) -> u32 {
     let m = p.meta[s];
     let e = p.s_edge[s];
-    let ring = &p.ring[p.s_off[s] as usize..p.s_off[s + 1] as usize];
-    let mut path: SmallVec<[u32; 32]> = SmallVec::new();
-    if m.open {
-        path.push(nm(p.p_tri(m.f_in)));
-    }
-    path.extend(ring.iter().map(|&t| nm(t)));
-    if m.open {
-        path.push(nm(p.p_tri(m.f_out)));
-    }
-    if !m.hub {
+    let (vpath, hub) = slot_path(p, split, s);
+    let path: SmallVec<[u32; 32]> = vpath.iter().map(|&x| nm(x)).collect();
+    if !hub {
         lp.clear();
         lp.extend(path.iter().copied());
         if m.open {
@@ -369,4 +518,6 @@ pub(crate) fn fill_report(rep: &mut DualReport, counts: &Counts, prep: &Prep<'_>
     rep.hub_split_faces = counts.hub_split_faces;
     rep.hub_triangles = counts.hub_triangles;
     rep.split_fans = prep.split_fans;
+    rep.split_cells = counts.split_cells;
+    rep.wedges = counts.wedges;
 }
