@@ -296,6 +296,39 @@ fn sideset_on_plus_x_face_has_100_left_sides() {
 
 // ---- Interior faces: both sides, or the side of `wrt`
 
+
+// ---- A face in two sidesets lowers into both (the model keeps one face color)
+
+#[test]
+fn a_face_added_to_two_sidesets_is_in_both_lowered_sets() {
+    let (mut r, v, f) = meshed_brick(10.0);
+    r.apply(block_add(1, v));
+    for sideset in [4, 5] {
+        r.apply(SidesetAdd {
+            sideset,
+            faces: vec![f[1]],
+            wrt: None,
+            name: None,
+        });
+    }
+    let st = r.state();
+    let (model, fem, layer) = (
+        st.layer::<ModelLayer>().expect("model"),
+        st.layer::<FemLayer>().expect("fem"),
+        st.layer::<MeshLayer>().expect("meshes"),
+    );
+    let (_, entry) = layer.meshes().next().expect("mesh");
+    let low = lower(model, entry, fem, layer.alloc()).expect("lower");
+    let m = (*low.mesh).as_read();
+    for name in ["sideset_4", "sideset_5"] {
+        let set = m.set_by_name(name).expect("sideset");
+        let SetMembers::Sides(sides) = &set.members else {
+            panic!("side set")
+        };
+        assert_eq!(sides.len(), 100, "{name}");
+    }
+}
+
 #[test]
 fn interior_face_sideset_takes_both_sides_or_the_side_of_wrt() {
     let mut r = Rig::new();
@@ -639,7 +672,11 @@ fn sideset_wrt_follows_a_face_and_volume_split() {
                 .all(|(f, w)| colored.contains(f) && topo.is_alive(*w))
         );
         for face in colored {
-            let w = fem.side_wrt(face);
+            let w: Vec<_> = fem
+                .memberships()
+                .filter(|(f, _, _)| *f == face)
+                .flat_map(|(_, _, vs)| vs.iter().copied())
+                .collect();
             assert!(!w.is_empty(), "{face} lost its wrt");
             assert!(
                 w.iter().any(|vol| topo.volume_faces(*vol).contains(&face)),

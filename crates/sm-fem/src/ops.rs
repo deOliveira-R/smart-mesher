@@ -238,14 +238,16 @@ impl TypedOp for BlockElementType {
 /// `fem.sideset_add`: create sideset `sideset` (a face color labelled `sideset`) or extend it
 /// with `faces`.
 ///
-/// A face is in one sideset (it has one color), so adding it elsewhere moves it (a
-/// `sideset-move` warning). `wrt` names the volume whose side of an interior face the sideset
+/// A face may be in several sidesets: the model keeps one face color (the latest sideset), and
+/// the `fem` layer records every membership, so each sideset lowers all its faces. `wrt` names
+/// the volume whose side of an interior face the sideset
 /// takes; every face must be a face of that volume. Without `wrt`, a boundary face lowers to its
 /// only side and an interior face to both sides. Sidesets are named `sideset_<n>` unless `name`
 /// is given.
 ///
-/// The latest call wins for the side preference of a face: a call without `wrt` clears the
-/// `wrt` that an earlier call stored for each of its faces (an interior face then lowers to both
+/// The latest call wins for the side preference of a face in a sideset: a call without `wrt`
+/// clears the `wrt` that an earlier call stored for each of its faces in that sideset (an
+/// interior face then lowers to both
 /// sides again), so repeat `wrt` when extending a sideset.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -277,7 +279,7 @@ impl TypedOp for SidesetAdd {
             .map(|v| ctx.resolve_kind(v, EntityKind::TopoVolume))
             .transpose()?;
         let (label, name) = (self.sideset, self.name.clone());
-        let moved = model_txn(
+        let color = model_txn(
             ctx,
             |model, topo| {
                 for f in &faces {
@@ -311,29 +313,14 @@ impl TypedOp for SidesetAdd {
                             .map_err(invalid)?
                     }
                 };
-                let moved: Vec<(EntityId, u32)> = faces
-                    .iter()
-                    .filter_map(|f| {
-                        let old = model.face_color(*f).filter(|o| *o != color)?;
-                        Some((*f, model.color(old).map_or(0, |r| r.label)))
-                    })
-                    .collect();
                 model.color_faces(color, &faces).map_err(invalid)?;
-                Ok((color, moved))
+                Ok(color)
             },
-            |(color, _), _| vec![("sideset", vec![*color])],
-        )?
-        .1;
+            |color, _| vec![("sideset", vec![*color])],
+        )?;
         let fem = ctx.layer_mut::<FemLayer>()?;
         for f in &faces {
-            fem.set_side_wrt(*f, wrt);
-        }
-        for (f, old) in moved {
-            ctx.warn(
-                "sideset-move",
-                format!("{f} moved from sideset {old} to sideset {label}"),
-                &[f],
-            );
+            fem.set_side_wrt(*f, color, wrt);
         }
         Ok(())
     }
