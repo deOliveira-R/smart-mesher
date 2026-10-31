@@ -77,9 +77,9 @@ pub struct TetVolume; pub fn register(&mut SchemeRegistry) -> sm_scheme_api::Res
 | 1 | validate | `validate` | options; finite coordinates within `[2^-100, 2^100]`; duplicate points; degenerate triangles (exact collinearity); every undirected edge shared by exactly two oppositely wound triangles; shell volumes (`InvertedShell` if the total enclosed volume is not positive) |
 | 2 | Delaunay | `delaunay`, `tds` | Bowyer-Watson with a ghost vertex, SoS predicates, BRIO rounds (seed from `n`) with a Hilbert key, stochastic visibility walk from the last tet, SoA `Tds` (`verts`, `nbr`, free list). One primitive, `Tds::replace(old, new)`, glues faces by sorted keys and validates face orientation before mutating |
 | 3 | recovery | `recover`, `steiner`, `flips`, `fill`, `exact` | see below |
-| 4 | classify | `pipeline` | flood fill from the ghost tets toggling at constraint triangles; the side of a tet is read from the *orientation* of its constraint face, contradictions give `InvertedShell`; outside tets dropped; then zero-volume tets removed |
-| 5 | refine | `refine` | constrained-cavity circumcenter insertion |
-| 6 | optimize | `optimize` | level 0 none, 1 flips, 2 flips + smoothing |
+| 4 | classify | `pipeline`, `relocate` | flood fill from the ghost tets toggling at constraint triangles; the side of a tet is read from the *orientation* of its constraint face, contradictions give `InvertedShell`; outside tets dropped; then zero-volume tets removed, unneeded recovery points removed, recovery points closer than ruling S4 allows moved (step 9) |
+| 5 | refine | `refine`, `relocate` | constrained-cavity circumcenter insertion; then step 9 again |
+| 6 | optimize | `optimize`, `relocate` | level 0 none, 1 flips, 2 flips + smoothing; then step 9 a last time |
 | 7 | canonical output | `canon` | as above |
 
 ### Deviation from the task text: auxiliary far points
@@ -168,7 +168,8 @@ Everything below works on the triangulation including the far box.
    whose alternating projection runs with margins 0.4 .. 0.05 h and keeps the deepest visible
    point), so a compliant point is used whenever one exists. Where S4 is infeasible (thin parts:
    Schönhardt fixture best 0.18 h, a 10 x 10 x 0.02 slab best 0.002 h) the best-scoring point is
-   used rather than failing; refusing would turn S4 into a recovery failure. Smoothing refuses
+   used rather than failing; refusing would turn S4 into a recovery failure. Step 9 then tries
+   to move it, and what remains is counted (`TetStats::n_s4_violations`). Smoothing refuses
    any move that brings a vertex closer (relative to `h_T`) to a triangle than the bound or than
    it already was. Measured Steiner margins: Schönhardt 0.154 h (one point), twisted prisms of 5
    and 10 degrees 0.289 h and 0.263 h (one point each; round 0 needed three at 0.14 h),
@@ -218,14 +219,26 @@ Everything below works on the triangulation including the far box.
      mode refuse a cavity holding a constraint edge, and no operation creates a *shortcut*
      (an edge between two points of one split input edge that are not neighbours on it: it
      would lie along the edge past a point rounded off it and leave flat tets on the surface).
+   * *Constraint lookup.* The subsegments and the recovered tiles (with their edges) are kept
+     in `BTreeMap`s with owner multisets and updated in place: a split replaces one subsegment
+     by two, a recovered triangle adds its tiles, a suppression swaps the fan tiles of the
+     point. Review round 3 replaced a rebuild of the whole lookup after every recovered
+     triangle, split and suppression (quadratic: 40 s for complete recovery on 12 288
+     triangles). `TetStats::n_constraint_updates` counts the entries touched, about six per
+     input triangle at every size (`a15::complete_recovery_work_is_linear`).
    * *Suppression.* Every temporary point is then moved off the surface, last created first:
      its fans in the surface (one closed fan for a point inside a triangle, two open fans for a
      point on an edge) are re-triangulated without it by ear clipping in the triangle's plane
      (largest smallest angle first, exact 2-D orientations); this cuts its star into a solid
      side and an exterior side. The solid side is refilled without a point if a short gift-wrap
      search finds one, else each side is starred from a point in its kernel next to the old
-     position (the kernel search of step 4 and `p + delta d`, `d` the bisector into that side,
-     delta from 0.5 h down to 1e-12 h; the best-shaped star wins). One exists in exact
+     position (the kernel point of step 4, the deepest the kernel search finds, and
+     `p + delta d`, `d` the bisector into that side, delta from 0.5 h down to 1e-12 h; the
+     best-shaped star wins; points left too shallow are handled by step 9). Review round 3
+     tried ranking the solid-side candidates by S4 margin before shape (no change on the hard
+     relief cases once step 9 runs, but slower and a worse minimum dihedral on
+     `relief n12 seed7 d0.995`) and a wider candidate set (all kernel candidates, offsets up to
+     1.0 h: it lost `relief n12 seed4 d0.97`, a deeper star blocking a later suppression). One exists in exact
      arithmetic (the old point sees every link face strictly and the new fans are planar); when
      rounding lets a sliver lying flat on the surface hide it, the side cavity absorbs the tets
      behind the blocking faces (never across a constraint face, never enclosing a vertex that
@@ -233,14 +246,50 @@ Everything below works on the triangulation including the far box.
      Steiner points; exterior ones are dropped with the exterior. When all are gone the input
      triangles are faces again, bit-exactly (checked).
    * *Cleanup.* After classification every recovery point whose star can be refilled without
-     it (exact gift wrapping) is removed (`Dt::remove_points`), on both paths.
+     it (exact gift wrapping) is removed (`Dt::remove_points`), on both paths; the points left
+     too close to the surface go to step 9.
    Complete recovery is deterministic (sorted keys and creation order only, no clocks) and
-   sequential. `TetStats` reports `n_steiner_recovery`, `n_steiner_refine` and
-   `n_boundary_steiner` (temporary points, none in the output). Ruling S4 is not applied to
-   the relocated points: they sit inside the star of a surface point, so their margin is small
-   (measured 0.0003 .. 0.03 h on the hard relief cases); refinement and smoothing then work as
-   usual. A complete-recovery failure (not seen on the test families) falls back to a restart
-   with hints and finally to a located `RecoveryFailed`.
+   sequential. `TetStats` reports `n_steiner_recovery`, `n_steiner_refine`,
+   `n_boundary_steiner` (temporary points, none in the output) and `n_constraint_updates`.
+   A complete-recovery failure (not seen on the test families) falls back to a restart with
+   hints and finally to a located `RecoveryFailed`.
+   Growing the solid side of a suppressed point further while its best point violates S4 was
+   tried in review round 3 and dropped: on `relief n8 seed4 d0.9` a grown side made a later
+   suppression impossible (complete recovery failed and the build restarted). After
+   classification, where every constraint face is a hull face, cavities can grow freely
+   instead (step 9).
+9. **Ruling S4 for recovery points** (`relocate.rs`, review round 3). A point of the star of a
+   suppressed surface point, or a kernel point of a thin cavity, can sit within a fraction of
+   `h` of the surface (before round 3: 0.0003 .. 0.03 h on the hard relief cases, minimum
+   dihedral angles down to 0.014 degrees). Each interior point with margin below 0.3 (in
+   index order) is removed or moved: for *targets* near it (offsets of 0.35 .. 1 h inward from
+   its nearest input triangle and from the hull faces of its star, centroids of the tets
+   within three layers; those with margin at least 0.3, nearest first, at most 16) the cavity
+   is grown from its star across every interior face that does not see the target strictly
+   (at most 100 tets, never enclosing a vertex other than an interior point, which is
+   dropped). If the target sees every face of the cavity it is starred from the target (the
+   star with the largest smallest dihedral angle over the targets wins); else the cavity is
+   gift-wrapped with the target as an optional apex (budget 10 000 + 100 per face; the first
+   success, smallest cavity first). A target outside a thin part never becomes an apex but
+   still steers the growth, whose refill then needs no point: on the test families this is
+   how most of these points disappear. If no target works, the star is grown by whole layers
+   (six rounds, 400 tets): a refill without a point or a compliant kernel point ends it,
+   otherwise the deepest kernel point that raises the margin without lowering the worst mean
+   ratio is used and revisited. Three sweeps per call (a point that failed is retried only
+   when its star changed); the three calls of one build share a budget of 80 million units of
+   fill work (`Dt::work`; the eleven hard relief cases use at most about 65 million, about 8 s
+   on the loaded test host; a point is not started once the budget is used up, which is
+   deterministic because the counter is only advanced by sequential code). It runs after
+   classification, after refinement (whose points the cavities may then drop) and after
+   optimization (rarely needed; the hardest relief case needs it). Exact orientation of
+   every new tet, sequential, deterministic. Points it adds after refinement count as
+   refinement points in `TetStats`. `TetStats::n_s4_violations` and
+   `worst_s4_margin` report what is left over every interior point of the output (thin parts
+   where S4 is infeasible, such as the 0.02-thick slab, are counted, never hidden). On the
+   eleven hard relief cases every point now meets S4 and recovery adds 0 or 1 points
+   (before: 3 .. 13); the smallest dihedral angle is 0.56 .. 5.2 degrees (before 0.014 .. 2.7),
+   the worst tets having input vertices only: they span thin walls next to the steepest
+   relief, where the sharpest solid wedge is 8 .. 15 degrees and S4 leaves no room for a point.
 
 ### Refinement
 
@@ -273,8 +322,156 @@ away from the boundary; refine the surface mesh if the interior must be finer.
   vertex-index order; each class is evaluated in parallel (`par_iter().collect()` keeps index
   order) and written back in index order. Passes stop when the average gain drops below 1e-4.
   Sequence: flips, smooth (<= 12), flips, smooth (<= 8), flips.
-* The monotonicity requirement (minimum mean ratio never below the `optimize=0` value) holds
-  because every accepted operation raises the local minimum.
+* **Spacing, `Dt::respace`** (INT-7, below), the last move of level 2. It is the one operation
+  that does not raise a local minimum; it is constrained to leave the mesh minima alone.
+* The monotonicity requirement (acceptance 8: the minimum mean ratio, and the minimum dihedral,
+  never below the values before optimization) holds in two parts. Flips and smoothing accept
+  an operation only if the minimum of the tets it replaces strictly rises, so they cannot lower
+  the mesh minimum. `respace` may lower the quality of the tets of the vertex it moves, but only
+  down to the *global* minima of mean ratio and dihedral that the mesh had when the pass started
+  (and never below `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`): every accepted move keeps all
+  incident tets at or above those two values, and a move changes only its own incident tets, so
+  the mesh minima after the pass are at least those before it, in any order of acceptance and
+  for any thread count. What may still change the minima afterwards is step 9 (S4 relocation,
+  which can trade quality for distance from the surface and runs again after the pass) and
+  the flip sweep that follows it; the claim is therefore "the pass does not lower the minima"
+  (asserted against the same build without the pass in `int7_r5::respace_never_lowers_the_mesh_minima`)
+  and the end-to-end gates are the measured floors of `a08_quality`. A mesh whose minimum
+  already lies below the quality floor keeps what it has (the floor applied to a move is
+  `max(global minimum, MIN)`, which a below-floor vertex can only meet by improving).
+
+## Ruling INT-7: spacing objective, quality floor, located diagnostics (review round 4)
+
+INT-7 (docs/design/w3/plan.md) supersedes ruling S4. The 0.3 h distance was a proxy for element
+quality; the floor now applies to quality itself and spacing is an objective. S4 itself
+(`n_s4_violations`, `worst_s4_margin`, and the 0.3 h guard of refinement, smoothing and step 9)
+is unchanged in the code and stays a **reported metric**; what changed is what is judged and
+reported.
+
+**Normalized spacing.** For an interior Steiner point `p` (every point of the output beyond the
+input points), `r(p) = d(p) / h_loc(p)`:
+
+* `d(p)` is the distance to the nearest input triangle (`spacing.rs`, a second `Guard` grid that
+  lists each triangle in the cells within `REACH = 1.5` of its own size). A boundary vertex lies
+  on a triangle, so the triangles alone give the nearest boundary vertex or triangle.
+* `h_loc(p)` is the size field at `p`, built like the refinement size: `hi = h_T + (g - 1) d`
+  from the nearest triangle `T` (`h_T` its mean edge length, `g` the gradation), lowered by the
+  user size (`Constant` / `Field`), floored at `max(h_T - (g - 1) d, 0)` but never above `hi`.
+* `r` is clipped at `cap = REACH / (1 + (g - 1) REACH)` (1.03 for `g = 1.3`): a point with no
+  triangle in reach has at least that much. Edge case, disclosed: the search takes the nearest
+  triangle *listed in the cell of `p`*; if a coarse triangle is listed and the true nearest one,
+  much finer, is not (a triangle is listed only within `1.5 h_T` of itself), `r` is measured
+  against the coarse one and is too large, never too small by more than the clip.
+* Target `TARGET_R = sqrt(2/3) = 0.8165`: the height of a regular tet over its base face in
+  units of the edge length, i.e. the spacing at which the first layer of an equilateral mesh
+  sits.
+
+`TetStats::spacing` ([`SpacingStats`]) holds `count`, `mean`, `std_dev` (population), `p01` (the
+sorted value at index `floor(0.01 (count - 1))`, i.e. lowest-rank), `min`, `target`, `rms_dev`
+(root mean square of `r - target`, the value of the objective) and `cap`. All sums run over the
+sorted list: bit-identical for any thread count. An independent implementation in the tests
+(`tests/common/r.rs`, bucket grid, brute-force nearest triangle) agrees to 1e-9
+(`int7::spacing_stats_match_an_independent_measure`).
+
+**Objective.** Two places minimize the deviation of `r` from the target, both budgeted and
+deterministic:
+
+1. Step 9 (`relocate.rs`): the targets of a point are the same nearest-16 candidates as before
+   but are tried in order of `|r - target|`, and among refills whose smallest dihedral is at
+   least `MIN_DIHEDRAL_DEG` the target with the smaller deviation wins (below the floor the
+   larger smallest dihedral wins, as before); among equal-margin kernel candidates of the
+   layer-wise fallback with mean ratio at least 0.1 the smaller deviation wins. It still runs
+   only on points that violate S4 (the 80 M work budget is unchanged). On the hard relief cases
+   it rarely changes the result (most of these points are removed without a replacement); the
+   gain comes from 2.
+2. `Dt::respace` (`optimize.rs`, after the last smoothing pass, three passes): every interior
+   point with `r < TARGET_R` (too close to the surface; points deeper than the target are left
+   alone) steps (half, quarter, eighth of the way) towards the point at distance `TARGET_R h_loc` along the
+   line from its nearest triangle's closest point through itself. Accepted when no incident
+   tet is inverted (exact), the local minimum mean ratio stays at least
+   `min(0.99 base, 0.5)` and the local minimum dihedral at least `min(0.97 base, 20 degrees)`
+   (a neighbourhood better than 0.5 / 20 degrees may trade the excess for spacing; one below
+   keeps what it has), the S4 margin does not shrink, the ratio of mean edge lengths of adjacent tets does not
+   exceed `max(its value now, 1.4)` (size grading) and the deviation falls. Round 5: **and the
+   incident tets stay at or above the global minima** of mean ratio and dihedral that the mesh
+   had when the pass began (clamped from below at `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`). The
+   local relative guards alone let many vertices each take 1 .. 3 % off a neighbourhood that was
+   the mesh minimum (round 4: ball `icosphere(1, 4)` h 0.1 min dihedral 23.0 -> 19.3, cube with
+   a NaN/0.08 size field 26.1 -> 20.3, gradation-1 ball 26.2 -> 19.8). With the global floor
+   the minima are exactly those of the same build without the pass on the four good meshes
+   and on the relief cases (`int7_r5::respace_never_lowers_the_mesh_minima`), and 85 .. 98 %
+   of the spacing gain (fall of the rms deviation of `r`) is kept on them (report, round 5).
+   Colour classes as in `smooth`: bit-identical for any thread count. A first version with a
+   looser rule (`min(base, 0.3)` per pass, six passes) cascaded to min dihedral 9.3 and min
+   mean ratio 0.30 on the ball and was dropped. The mean of the mean ratio still falls by about
+   0.001 .. 0.03 (spacing is bought with average quality, not with the worst tets).
+
+**Quality floor.** `MIN_DIHEDRAL_DEG = 5` (smallest dihedral of a tet) and `MIN_MEAN_RATIO =
+0.05` (mean ratio of a tet, the in-crate proxy for cell quality). 5 degrees is the level the
+optimizer reaches on non-pathological input (0 violations on the ball `icosphere(1, 2)`,
+asserted in `int7`; the ball record has a 19 degree minimum), well above the 0.5 / 1.5 degree test floors of the hard relief
+cases. The dual polyhedral cell quality after `mesh.to_poly` is not computable here (sm-poly
+owns it); the tet mean ratio is the proxy, and the polyhedral metric belongs to sm-diag.
+Every tet below a threshold, per metric, is counted (`n_quality_violations`, exact) and, by
+default, every one is located: `TetStats::quality_diagnostics` has exactly
+`n_quality_violations` entries, sorted worst first by `value / threshold`, then tet index in the
+canonical order, then metric (deterministic; a thin slab, `tri_cube(6)` with z scaled by 0.02,
+has 400 located of 400 counted, `int7_r5::diagnostics_are_uncapped_by_default`).
+`TetOptions::max_diagnostics` (default 0 = no cap) keeps only the worst that many, for callers
+that want a bounded list; the count stays exact. Each entry is a `QualityDiagnostic`:
+position (tet centroid), up to six nearest input triangles (indices into `SurfaceInput::tris`
+as the caller listed them, i.e. the owners; the pipeline's canonical reordering is undone;
+**empty** when the centroid is deeper than the reach, 1.5 triangle sizes, of every input
+triangle, which large interior tets of a coarse region can be), metric, measured value, threshold and a
+`SuggestedFix`: `RefineSizeNear { h }` (half the local size) when the tet has an interior
+vertex, `RefineInputSurface { h }` when it spans input vertices only (frozen: remesh those
+triangles finer or smooth the surface there). Violations are never hidden and never an error.
+
+**Performance caps (review round 4).**
+
+* Complete recovery finds the tiles of a temporary point by vertex (`Bnd::by_vertex`, serial
+  numbered `subs`) instead of scanning all tiles per point: `suppress` was O(T S).
+* The post-classification `Dt::remove_points` is bounded: points are tried in order of star
+  size, never above `MAX_REMOVE_STAR = 160` tets, and until `REMOVE_WORK = 30 M` units of fill
+  work (the counter of step 9) are spent per call. Points skipped stay (always valid) and are
+  counted in `TetStats::n_removal_deferred`. Before the round this step took 72 s of 105 s on
+  the 64 x 64 tiled relief cube (stars up to 408 tets).
+* `TetStats::n_lookup_rebuilds` counts from-scratch rebuilds of the constraint lookup of
+  complete recovery. There is no such code path (the lookup is incremental), so it is 0 by
+  construction; the field and the asserts in `a15::complete_recovery_work_is_linear` and
+  `int7::tiled_relief_work_per_triangle_is_bounded` are tripwires for someone reintroducing one.
+  `steiner::tests::bnd_index_follows_tiles_and_names_owners` checks the incremental lookup
+  against a rebuild.
+
+**The tiled-relief cliff (round 5, investigated, not changed).** `tiled_cube(n, 8, 2, 0.9)` at
+n = 48 needs 355 temporary boundary points and 5 s; n = 64 needed 2 643 and 28 s (1.8 times the
+triangles). Instrumented (counters `n_recovery_restarts`, `n_boundary_steiner_discarded`):
+
+| | n = 48 (36 patches) | n = 64 (64 patches) |
+|---|---|---|
+| interior-point recovery | fails at attempt 0 | fails at attempts 0, 1, 2 |
+| complete recovery | succeeds at attempt 0: 355 points | fails at attempt 0 (451 points, triangle 26383: "not tiled by mesh faces after removing its crossing edges") and attempt 1 (861 points, then triangle 8619), succeeds at attempt 2 with 2 643 |
+| restarts / points discarded | 0 / 0 | 2 / 1 312 |
+| extra interior points of the restarts | 0 | 3 072, then 6 144 (hints of every failed patch, cap `max(32, n_input / 8)`) |
+
+So the anomaly is not the patches: it is that one hard patch out of 64 defeats complete
+recovery, and a failure restarts the *whole* build (all 64 patches) with up to `n_input / 8`
+hint points taken from all failed patches of the surface. Two restarts repeat the recovery
+three times; the last attempt runs with 6 144 foreign interior points in the Delaunay
+triangulation, which make its recovery 3.3 times larger (2 643 points against about 800 per
+attempt without them) and 2 times slower (recover stage 14.6 s against 7.3 s with 64 extras).
+The number of failing patches grows with the number of patches (the relief of each patch is a
+random draw), hence "from about 40 patches on". Fixes tried and **declined**: (a) keeping
+only the hints within 8 or 3 edge lengths of the failed triangle, (b) capping the extras at
+32 per restart. Every variant changed the outcome of a lottery, not the cause: the same
+triangle 26383 fails again at attempts 0 and 1 whatever the extras, and the build only
+succeeds when the perturbation happens to cure it (cap 32 with all hints: all three attempts
+fail, `RecoveryFailed`; cap 32 within 8 edge lengths: fails; cap 32 within 3 edge lengths:
+succeeds with 507 points in 17 s; cap 3 072 within 3: 780 points, 20 s). A policy that passes one case and
+fails another by chance is not safe to ship. The real fix is in complete recovery
+(`recover_facet`: the rounding case in which no tiling shows up for a triangle), a different
+change. Work counters stay in tests (`int7::tiled_relief_work_per_triangle_is_bounded` asserts
+0 restarts at the sizes it runs); wall time stays in `record_tiled_relief`.
 
 ## Quality definitions and the `sm_quality` cross-check
 
@@ -327,6 +524,7 @@ Release build, 4 vCPU, `tests/perf.rs` and `tests/adapter.rs` (`--ignored`), no 
 | `tetrahedralize`, `icosphere(1, 5)` (10 242 boundary points), `h = 0.033`, optimize 2 | 1 139 988 tets (186 076 Steiner, 120 unrefinable) in 25.4 s = 44 900 tets/s; stage ms: validate 8, Delaunay 1512, recovery + classify + flats 3025, refinement 10 084, optimization 10 478; min dihedral 16.4, min mean ratio 0.428 |
 | same surface, `h = 0.07` | 182 924 tets in 7.4 s = 24 700 tets/s, 0 unrefinable, min dihedral 22.1 |
 | adapter: unit brick through the `Driver`, 1/56 boundary intervals, `size = 0.018` | 1 719 532 tets in 53.7 s = 32 000 tets/s, including the serial commit into the reference builder |
+| complete recovery scaling (`perf::record_hard_patch_scaling`, review round 3; 10-core host at load 15 .. 50): `tri_cube(n)` plain vs with an 8 x 8 hard relief patch (`patch_cube(n, 8, 2, 0.9)`) | n = 16 (3 072 triangles): 0.20 s vs 0.82 s; n = 32 (12 288): 0.85 s vs 1.64 s; n = 48 (27 648): 2.19 s vs 3.46 s (1.6 x). Constraint updates 18 272 / 69 000 / 153 500 (5.9 / 5.6 / 5.6 per triangle). Before round 3: patch n = 16 2.1 s, n = 32 27.5 s (26.1 s of it in the facet phase), n = 48 247 s (orchestrator's measurement) |
 
 The sphere is the only large core case measured; planar CAD-like surfaces were measured for
 robustness (random voxel shapes, mean 0.19 s each in release over 122 cases, the slowest 9.5 s), not for

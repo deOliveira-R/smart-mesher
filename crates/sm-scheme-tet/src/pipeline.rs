@@ -8,6 +8,7 @@ use crate::geom::{V3, coord_ok, ori, sanitize};
 use crate::guard::Guard;
 use crate::quality::mesh_stats;
 use crate::recover::{Constraints, Recover};
+use crate::steiner::REMOVE_WORK;
 use crate::tds::{NONE, same_cycle, sorted3};
 use crate::{SurfaceInput, TetMesh, TetOptions, TetStats, validate};
 use std::time::Instant;
@@ -209,12 +210,19 @@ fn classify(dt: &Dt, con: &Constraints, tris: &[[u32; 3]]) -> Result<Vec<u32>, T
 
 /// Tetrahedralize the volume enclosed by `input`; see the crate docs.
 pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<TetMesh, TetError> {
-    tetrahedralize_with(input, opts, false)
+    tetrahedralize_with(input, opts, false, true)
+}
+
+/// [`tetrahedralize`] without the spacing pass (`respace`), the baseline of the INT-7 tests and
+/// tables. Not part of the stable API.
+#[doc(hidden)]
+pub fn tetrahedralize_without_respace(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<TetMesh, TetError> {
+    tetrahedralize_with(input, opts, false, false)
 }
 
 /// [`tetrahedralize`]; with `complete_only` boundary recovery skips the interior-point recovery
 /// and runs complete recovery ([`crate::steiner`]) right after the Delaunay stage (tests).
-pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, complete_only: bool) -> Result<TetMesh, TetError> {
+pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, complete_only: bool, respace: bool) -> Result<TetMesh, TetError> {
     let mut stage_ms = [0.0f64; 5];
     let t0 = Instant::now();
     check_options(opts)?;
@@ -227,7 +235,16 @@ pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, c
     let canonical = SurfaceInput { points: input.points.clone(), tris: order.iter().map(|&i| canon[i as usize]).collect() };
     stage_ms[0] = ms(t0);
     let back = |i: u32| order.get(i as usize).copied().unwrap_or(i);
-    run(&canonical, opts, stage_ms, complete_only).map_err(|e| match e {
+    let remap_diags = |mut m: TetMesh| {
+        for d in &mut m.stats.quality_diagnostics {
+            for t in &mut d.triangles {
+                *t = back(*t);
+            }
+            d.triangles.sort_unstable();
+        }
+        m
+    };
+    run(&canonical, opts, stage_ms, complete_only, respace).map(remap_diags).map_err(|e| match e {
         TetError::InvertedShell { tri } => TetError::InvertedShell { tri: back(tri) },
         TetError::RecoveryFailed { tri, edge, reason } => TetError::RecoveryFailed { tri: back(tri), edge, reason },
         TetError::SelfIntersection { tri_a, tri_b } => {
@@ -238,7 +255,7 @@ pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, c
     })
 }
 
-fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], complete_only: bool) -> Result<TetMesh, TetError> {
+fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], complete_only: bool, respace: bool) -> Result<TetMesh, TetError> {
     let n = input.points.len();
     let max_steiner = if opts.max_steiner == 0 { 8 * n + 100_000 } else { opts.max_steiner };
 
@@ -248,10 +265,14 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     let far = far_points(&input.points)?;
     let con = Constraints::new(&input.tris);
     let guard = Guard::new(&input.points, &input.tris);
+    let meter = crate::spacing::Meter::new(&input.points, &input.tris, opts);
     let mut extra: Vec<V3> = Vec::new();
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
+    let (mut restarts, mut discarded) = (0usize, 0usize);
     let mut bnd_steiner: usize;
+    let mut con_updates: u64;
+    let mut lookup_rebuilds: u64;
     loop {
         let t1 = Instant::now();
         let mut pts = input.points.clone();
@@ -287,6 +308,8 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                 }
             }
             bnd_steiner = rec.n_boundary_steiner;
+            con_updates = rec.bnd.work;
+            lookup_rebuilds = rec.bnd.rebuilds;
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
@@ -305,6 +328,8 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                 // an input triangle is useless and dropped.
                 let before = extra.len();
                 let cap = before + 32usize.max(n / 8);
+                restarts += 1;
+                discarded += bnd_steiner;
                 let pocket = pocket_point(&input.points, &input.tris, tri, edge);
                 let mut scored: Vec<(f64, usize, V3)> = pocket
                     .iter()
@@ -333,11 +358,18 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     }
     stage_ms[1] = t_delaunay;
     let t2 = Instant::now();
+    // One fill-work budget for the three S4 relocation passes.
+    let mut reloc_budget = crate::relocate::RELOC_WORK;
     let outside = classify(&dt, &con, &input.tris)?;
     dt.tds.remove(&outside);
     flips += dt.remove_flats(true, &guard)?;
-    // Recovery points the final mesh can do without (a refill of their star without them).
-    flips += dt.remove_points(n + N_FAR, dt.pts.len())?;
+    // Recovery points the final mesh can do without (a refill of their star without them);
+    // bounded work, what is left is counted in `n_removal_deferred`.
+    let mut deferred = std::collections::BTreeSet::<u32>::new();
+    let np = dt.pts.len();
+    flips += dt.remove_points(n + N_FAR, np, REMOVE_WORK, &mut deferred)?;
+    // Ruling S4: recovery points still too close to the surface are removed or moved deeper.
+    flips += dt.relocate_for_s4(n + N_FAR, &guard, &meter, &mut reloc_budget)?;
     flips += dt.delaunay_flips()?;
     flips += dt.flip_optimize(1e-3, 6)?;
     stage_ms[2] = ms(t2) + t_recover;
@@ -353,6 +385,10 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         unrefinable = rf.run()?;
         flips += rf.flips;
     }
+    // Refinement changed the stars of the recovery points: try S4 again (refinement points may
+    // now be dropped by the cavities).
+    flips += dt.remove_points(n + N_FAR, first_refine, REMOVE_WORK, &mut deferred)?;
+    flips += dt.relocate_for_s4(n + N_FAR, &guard, &meter, &mut reloc_budget)?;
     stage_ms[3] = ms(t3);
     // Stage 6: optimization.
     let t4 = Instant::now();
@@ -364,6 +400,16 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         smooth_passes += dt.smooth(first_movable, 12, &guard);
         flips += dt.flip_optimize(0.7, 4)?;
         smooth_passes += dt.smooth(first_movable, 8, &guard);
+        flips += dt.flip_optimize(0.7, 4)?;
+        // Ruling INT-7: spacing objective, within the quality it has.
+        if respace {
+            smooth_passes += dt.respace(first_movable, 3, &guard, &meter);
+        }
+    }
+    // Smoothing and flips changed the stars once more: a last S4 pass (rarely does anything).
+    let moved = dt.relocate_for_s4(n + N_FAR, &guard, &meter, &mut reloc_budget)?;
+    flips += moved;
+    if moved > 0 && opts.optimize >= 1 {
         flips += dt.flip_optimize(0.7, 4)?;
     }
     stage_ms[4] = ms(t4);
@@ -404,11 +450,28 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     canonical_tets(&mut tets);
     let (min_d, max_d, max_re, min_mr, mean_mr) = mesh_stats(&points, &tets);
     let n_steiner_recovery = (n + N_FAR..first_refine.min(dt.pts.len())).filter(|&i| used[i]).count();
+    // Ruling S4 over every interior point of the output (disclosed, never silent).
+    let spacing = meter.stats(&points[n..]);
+    let (n_quality_violations, quality_diagnostics) = meter.quality_floor(&points, n, &tets, opts.max_diagnostics);
+    // Distinct deferred points that are still in the mesh.
+    let n_removal_deferred = deferred.iter().filter(|&&v| used[v as usize]).count();
+    let margins: Vec<f64> = points[n..].iter().map(|&p| guard.margin(p)).filter(|&m| m < crate::guard::S4).collect();
+    let worst_s4_margin = margins.iter().copied().fold(crate::guard::S4, f64::min);
     let stats = TetStats {
         n_steiner: points.len() - n,
         n_steiner_recovery,
         n_steiner_refine: points.len() - n - n_steiner_recovery,
         n_boundary_steiner: bnd_steiner,
+        n_recovery_restarts: restarts,
+        n_boundary_steiner_discarded: discarded,
+        n_constraint_updates: con_updates,
+        spacing,
+        n_quality_violations,
+        quality_diagnostics,
+        n_lookup_rebuilds: lookup_rebuilds,
+        n_removal_deferred,
+        n_s4_violations: margins.len(),
+        worst_s4_margin,
         flips,
         smooth_passes,
         unrefinable,

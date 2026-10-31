@@ -1,0 +1,88 @@
+# DRAFT v0 (2026-10-30): workflow view of the concept graph.
+#
+# concepts.yaml says what depends on what. This file says WHEN each concept comes into existence
+# in a user's session: a model is made, decomposed, given intent, meshed, reshaped, checked,
+# enriched with derived data (tracking, partitions), then exported.
+#
+# - stages: ordered. Each stage "makes" one thing that later stages build on.
+# - groups: the big concepts inside a stage (collapsible in the view). Members are concepts.yaml nodes.
+# - spans:  big concepts present at every stage (history, frontends, foundation).
+# Every concepts.yaml node appears in exactly one group or span.
+# A dependency whose provider sits in a LATER stage than its user is an ordering conflict:
+# either the placement is wrong or the dependency is. The view lists them.
+
+spans:
+  history:
+    title: History
+    role: "every state change is an op on a replayable timeline"
+    nodes: [ops, timeline, state-layers]
+  frontends:
+    title: Frontends
+    role: "how a person or an agent drives the stages"
+    nodes: [lang, server, mcp, py, cli, gui]
+  foundation:
+    title: Foundation
+    role: "math and exact predicates under everything"
+    nodes: [math, predicates]
+
+stages:
+  - id: model
+    title: Model
+    makes: "an exact, colored model with known boundaries and symmetry"
+    groups:
+      import:   {title: Import,            nodes: [cad-io]}
+      shape:    {title: Shape,             nodes: [geom, geom-intersect, csg], note: "curves and surfaces; CSG quadrics sit beside NURBS"}
+      brep:     {title: B-rep,             nodes: [topo-store, construct, boolean, imprint-merge, heal, tess], note: "the cell complex and the operations that edit it"}
+      meaning:  {title: Colors and boundaries, nodes: [coloring, boundary-kind], note: "material colors on volumes; deck / response / interface on faces"}
+      symmetry: {title: Symmetry and instancing, nodes: [symmetry, instancing], note: "deck group, fundamental domain, lattices"}
+
+  - id: decompose
+    title: Decompose
+    makes: "meshable pieces (virtual, reversible, colors untouched)"
+    groups:
+      decomposition: {title: Decomposition, nodes: [virtual-topo, decomposition]}
+
+  - id: intent
+    title: Intent
+    makes: "how each piece should be meshed"
+    groups:
+      sizing: {title: Sizing and intervals, nodes: [sizing, interval-solve]}
+
+  - id: mesh
+    title: Mesh
+    makes: "a mesh classified onto the model"
+    groups:
+      mesh-db:  {title: Mesh store, nodes: [mesh-store, classification, mesh-geometry], note: "classification is the bridge back to the model"}
+      driver:   {title: Driver,     nodes: [mesh-driver]}
+      schemes2: {title: Curve and surface schemes, nodes: [scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri]}
+      schemes3: {title: Volume schemes, nodes: [scheme-hex, scheme-tet, boundary-layer]}
+
+  - id: reshape
+    title: Reshape
+    makes: "the mesh the analysis wants (polyhedral, smoothed, conformal)"
+    groups:
+      convert:    {title: Convert,    nodes: [scheme-convert, scheme-poly], note: "tet to polyhedral dual lives here"}
+      improve:    {title: Improve,    nodes: [smooth, modify]}
+      interfaces: {title: Interfaces, nodes: [interface-detect, face-intersect, conformize]}
+
+  - id: check
+    title: Check
+    makes: "a verdict: is this mesh acceptable?"
+    groups:
+      quality: {title: Quality and validation, nodes: [quality, validator]}
+
+  - id: enrich
+    title: Enrich
+    makes: "derived data for an accepted mesh"
+    groups:
+      hierarchy:    {title: Hierarchy,    nodes: [mesh-hierarchy], note: "coarse levels, instances, unfold"}
+      tracking:     {title: Tracking,     nodes: [tracking-structure], note: "what Monte Carlo walks"}
+      distribution: {title: Distribution, nodes: [partitioner]}
+      fields:       {title: Fields,       nodes: [discretization]}
+
+  - id: export
+    title: Export
+    makes: "files other codes read"
+    groups:
+      store:     {title: Native store, nodes: [ir-store]}
+      exporters: {title: Exporters,    nodes: [exporters]}
