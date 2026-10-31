@@ -7,7 +7,7 @@
 //! distance tests. The inside test (side of the nearest triangle) is only used for points that are
 //! closer than the bound.
 
-use crate::geom::{V3, cross, dist, dist2_point_tri, dot, sub};
+use crate::geom::{V3, closest_point_tri, cross, dist, dist2_point_tri, dot, sub};
 
 /// The S4 bound as a fraction of the local triangle size.
 pub(crate) const S4: f64 = 0.3;
@@ -18,6 +18,8 @@ pub(crate) struct Guard<'a> {
     tris: &'a [[u32; 3]],
     /// Mean edge length per triangle.
     h: Vec<f64>,
+    /// Grow factor of the cell lists: a triangle is listed in every cell within `grow * h`.
+    grow: f64,
     lo: V3,
     inv: V3,
     dim: [usize; 3],
@@ -28,6 +30,12 @@ pub(crate) struct Guard<'a> {
 impl<'a> Guard<'a> {
     /// Index `tris` over `pts`.
     pub fn new(pts: &'a [V3], tris: &'a [[u32; 3]]) -> Self {
+        Self::with_grow(pts, tris, S4)
+    }
+
+    /// Index `tris` over `pts`, listing each triangle in the cells within `grow * h_T` of it
+    /// (`grow >= S4`; the spacing meter uses a wider reach than the S4 guard).
+    pub fn with_grow(pts: &'a [V3], tris: &'a [[u32; 3]], grow: f64) -> Self {
         let h: Vec<f64> = tris
             .iter()
             .map(|t| {
@@ -48,7 +56,7 @@ impl<'a> Guard<'a> {
             lo = [0.0; 3];
             hi = [1.0; 3];
         }
-        let pad = S4 * h.iter().copied().fold(0.0, f64::max);
+        let pad = grow * h.iter().copied().fold(0.0, f64::max);
         for k in 0..3 {
             lo[k] -= pad;
             hi[k] += pad;
@@ -61,7 +69,7 @@ impl<'a> Guard<'a> {
         let cell = med.max(span / 48.0);
         let dim = ext.map(|e| ((e / cell).ceil() as usize).clamp(1, 48));
         let inv = [dim[0] as f64 / ext[0].max(f64::MIN_POSITIVE), dim[1] as f64 / ext[1].max(f64::MIN_POSITIVE), dim[2] as f64 / ext[2].max(f64::MIN_POSITIVE)];
-        let mut g = Self { pts, tris, h, lo, inv, dim, start: Vec::new(), items: Vec::new() };
+        let mut g = Self { pts, tris, h, grow, lo, inv, dim, start: Vec::new(), items: Vec::new() };
         let ncell = dim[0] * dim[1] * dim[2];
         let mut count = vec![0u32; ncell + 1];
         for pass in 0..2 {
@@ -103,7 +111,7 @@ impl<'a> Guard<'a> {
     }
 
     fn range(&self, ti: usize, t: &[u32; 3]) -> ([usize; 3], [usize; 3]) {
-        let grow = S4 * self.h[ti];
+        let grow = self.grow * self.h[ti];
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for &i in t {
             for k in 0..3 {
@@ -112,6 +120,59 @@ impl<'a> Guard<'a> {
             }
         }
         (self.cell_of(lo), self.cell_of(hi))
+    }
+
+    /// The triangles listed in the cell of `p` as `(distance, index)`, nearest first (ties by
+    /// index), at most `k`. Exact for every triangle within `grow * h_T` of `p`.
+    pub fn near(&self, p: V3, k: usize) -> Vec<(f64, u32)> {
+        if !self.in_grid(p) {
+            return Vec::new();
+        }
+        let c = self.cell_of(p);
+        let ci = (c[2] * self.dim[1] + c[1]) * self.dim[0] + c[0];
+        let mut v: Vec<(f64, u32)> = self.items[self.start[ci] as usize..self.start[ci + 1] as usize]
+            .iter()
+            .map(|&ti| {
+                let [a, b, d] = self.tris[ti as usize].map(|i| self.pts[i as usize]);
+                (dist2_point_tri(p, a, b, d).sqrt(), ti)
+            })
+            .collect();
+        v.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+        v.truncate(k);
+        v
+    }
+
+    /// The nearest triangle listed in the cell of `p`: `(distance, index)`; no allocation.
+    pub fn nearest_listed(&self, p: V3) -> Option<(f64, u32)> {
+        if !self.in_grid(p) {
+            return None;
+        }
+        let c = self.cell_of(p);
+        let ci = (c[2] * self.dim[1] + c[1]) * self.dim[0] + c[0];
+        let mut best: Option<(f64, u32)> = None;
+        for &ti in &self.items[self.start[ci] as usize..self.start[ci + 1] as usize] {
+            let [a, b, d] = self.tris[ti as usize].map(|i| self.pts[i as usize]);
+            let r = dist2_point_tri(p, a, b, d);
+            if best.is_none_or(|x| r < x.0) {
+                best = Some((r, ti));
+            }
+        }
+        best.map(|(r, ti)| (r.sqrt(), ti))
+    }
+
+    /// Closest point on triangle `ti` to `p`.
+    pub fn foot(&self, p: V3, ti: u32) -> V3 {
+        let [a, b, d] = self.tris[ti as usize].map(|i| self.pts[i as usize]);
+        closest_point_tri(p, a, b, d)
+    }
+
+    /// Mean edge length of triangle `ti`.
+    pub fn tri_h(&self, ti: u32) -> f64 {
+        self.h[ti as usize]
+    }
+
+    fn in_grid(&self, p: V3) -> bool {
+        (0..3).all(|k| p[k] >= self.lo[k] && p[k] <= self.lo[k] + self.dim[k] as f64 / self.inv[k])
     }
 
     /// Smallest `dist(p, T) / h_T` over the triangles `T`, capped at [`S4`].

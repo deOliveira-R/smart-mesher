@@ -325,6 +325,97 @@ away from the boundary; refine the surface mesh if the interior must be finer.
 * The monotonicity requirement (minimum mean ratio never below the `optimize=0` value) holds
   because every accepted operation raises the local minimum.
 
+## Ruling INT-7: spacing objective, quality floor, located diagnostics (review round 4)
+
+INT-7 (docs/design/w3/plan.md) supersedes ruling S4. The 0.3 h distance was a proxy for element
+quality; the floor now applies to quality itself and spacing is an objective. S4 itself
+(`n_s4_violations`, `worst_s4_margin`, and the 0.3 h guard of refinement, smoothing and step 9)
+is unchanged in the code and stays a **reported metric**; what changed is what is judged and
+reported.
+
+**Normalized spacing.** For an interior Steiner point `p` (every point of the output beyond the
+input points), `r(p) = d(p) / h_loc(p)`:
+
+* `d(p)` is the distance to the nearest input triangle (`spacing.rs`, a second `Guard` grid that
+  lists each triangle in the cells within `REACH = 1.5` of its own size). A boundary vertex lies
+  on a triangle, so the triangles alone give the nearest boundary vertex or triangle.
+* `h_loc(p)` is the size field at `p`, built like the refinement size: `hi = h_T + (g - 1) d`
+  from the nearest triangle `T` (`h_T` its mean edge length, `g` the gradation), lowered by the
+  user size (`Constant` / `Field`), floored at `max(h_T - (g - 1) d, 0)` but never above `hi`.
+* `r` is clipped at `cap = REACH / (1 + (g - 1) REACH)` (1.03 for `g = 1.3`): a point with no
+  triangle in reach has at least that much. Edge case, disclosed: the search takes the nearest
+  triangle *listed in the cell of `p`*; if a coarse triangle is listed and the true nearest one,
+  much finer, is not (a triangle is listed only within `1.5 h_T` of itself), `r` is measured
+  against the coarse one and is too large, never too small by more than the clip.
+* Target `TARGET_R = sqrt(2/3) = 0.8165`: the height of a regular tet over its base face in
+  units of the edge length, i.e. the spacing at which the first layer of an equilateral mesh
+  sits.
+
+`TetStats::spacing` ([`SpacingStats`]) holds `count`, `mean`, `std_dev` (population), `p01` (the
+sorted value at index `floor(0.01 (count - 1))`, i.e. lowest-rank), `min`, `target`, `rms_dev`
+(root mean square of `r - target`, the value of the objective) and `cap`. All sums run over the
+sorted list: bit-identical for any thread count. An independent implementation in the tests
+(`tests/common/r.rs`, bucket grid, brute-force nearest triangle) agrees to 1e-9
+(`int7::spacing_stats_match_an_independent_measure`).
+
+**Objective.** Two places minimize the deviation of `r` from the target, both budgeted and
+deterministic:
+
+1. Step 9 (`relocate.rs`): the targets of a point are the same nearest-16 candidates as before
+   but are tried in order of `|r - target|`, and among refills whose smallest dihedral is at
+   least `MIN_DIHEDRAL_DEG` the target with the smaller deviation wins (below the floor the
+   larger smallest dihedral wins, as before); among equal-margin kernel candidates of the
+   layer-wise fallback with mean ratio at least 0.1 the smaller deviation wins. It still runs
+   only on points that violate S4 (the 80 M work budget is unchanged). On the hard relief cases
+   it rarely changes the result (most of these points are removed without a replacement); the
+   gain comes from 2.
+2. `Dt::respace` (`optimize.rs`, after the last smoothing pass, three passes): every interior
+   point with `r < TARGET_R` (too close to the surface; points deeper than the target are left
+   alone) steps (half, quarter, eighth of the way) towards the point at distance `TARGET_R h_loc` along the
+   line from its nearest triangle's closest point through itself. Accepted when no incident
+   tet is inverted (exact), the local minimum mean ratio stays at least
+   `min(0.99 base, 0.5)` and the local minimum dihedral at least `min(0.97 base, 20 degrees)`
+   (a neighbourhood better than 0.5 / 20 degrees may trade the excess for spacing; one below
+   keeps what it has), the S4 margin does not shrink, the ratio of mean edge lengths of adjacent tets does not
+   exceed `max(its value now, 1.4)` (size grading) and the deviation falls. Colour classes
+   as in `smooth`: bit-identical for any thread count. The trade is real and measured (round 4
+   report): on the ball `icosphere(1, 5)`, `h = 0.07`, min dihedral 23.7 -> 19.1 degrees, min
+   mean ratio 0.554 -> 0.496, mean 0.881 -> 0.872; on the hard relief cases the mean of the
+   mean ratio falls by 0.01 .. 0.05 while the rms deviation of `r` falls by 0.01 .. 0.1. A
+   first version with a looser rule (`min(base, 0.3)` per pass, six passes) cascaded to min
+   dihedral 9.3 and min mean ratio 0.30 on the ball and was dropped.
+
+**Quality floor.** `MIN_DIHEDRAL_DEG = 5` (smallest dihedral of a tet) and `MIN_MEAN_RATIO =
+0.05` (mean ratio of a tet, the in-crate proxy for cell quality). 5 degrees is the level the
+optimizer reaches on non-pathological input (0 violations on the ball `icosphere(1, 2)`,
+asserted in `int7`; the ball record has a 19 degree minimum), well above the 0.5 / 1.5 degree test floors of the hard relief
+cases. The dual polyhedral cell quality after `mesh.to_poly` is not computable here (sm-poly
+owns it); the tet mean ratio is the proxy, and the polyhedral metric belongs to sm-diag.
+Every tet below a threshold, per metric, is counted (`n_quality_violations`, exact); the worst
+`MAX_DIAGNOSTICS = 256` (by `value / threshold`, then tet index) are returned as
+`TetStats::quality_diagnostics`, each a `QualityDiagnostic`: position (tet centroid), the six
+nearest input triangles (indices into `SurfaceInput::tris` as the caller listed them, i.e. the
+owners; the pipeline's canonical reordering is undone), metric, measured value, threshold and a
+`SuggestedFix`: `RefineSizeNear { h }` (half the local size) when the tet has an interior
+vertex, `RefineInputSurface { h }` when it spans input vertices only (frozen: remesh those
+triangles finer or smooth the surface there). Violations are never hidden and never an error.
+
+**Performance caps (review round 4).**
+
+* Complete recovery finds the tiles of a temporary point by vertex (`Bnd::by_vertex`, serial
+  numbered `subs`) instead of scanning all tiles per point: `suppress` was O(T S).
+* The post-classification `Dt::remove_points` is bounded: points are tried in order of star
+  size, never above `MAX_REMOVE_STAR = 160` tets, and until `REMOVE_WORK = 30 M` units of fill
+  work (the counter of step 9) are spent per call. Points skipped stay (always valid) and are
+  counted in `TetStats::n_removal_deferred`. Before the round this step took 72 s of 105 s on
+  the 64 x 64 tiled relief cube (stars up to 408 tets).
+* `TetStats::n_lookup_rebuilds` counts from-scratch rebuilds of the constraint lookup of
+  complete recovery. There is no such code path (the lookup is incremental), so it is 0 by
+  construction; the field and the asserts in `a15::complete_recovery_work_is_linear` and
+  `int7::tiled_relief_work_per_triangle_is_bounded` are tripwires for someone reintroducing one.
+  `steiner::tests::bnd_index_follows_tiles_and_names_owners` checks the incremental lookup
+  against a rebuild.
+
 ## Quality definitions and the `sm_quality` cross-check
 
 | quantity | definition here | `sm_quality` equivalent |

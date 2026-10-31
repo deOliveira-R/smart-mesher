@@ -19,6 +19,7 @@ use crate::error::TetError;
 use crate::geom::{V3, add, cross, dist, dot, mean_ratio, ori, sanitize, scale, sub};
 use crate::guard::{Guard, S4};
 use crate::quality::tet_quality;
+use crate::spacing::{MIN_DIHEDRAL_DEG, Meter};
 use crate::tds::NONE;
 use std::collections::BTreeMap;
 
@@ -46,6 +47,21 @@ const MAX_VISIBLE_TETS: usize = 100;
 /// target) and the target.
 type Refill = (f64, Vec<u32>, Vec<[u32; 4]>, V3);
 
+/// Mean ratio from which a kernel point counts as adequate (the spacing objective then decides).
+const ADEQUATE_MEAN_RATIO: f64 = 0.1;
+
+/// Is refill `a` (smallest dihedral, target) better than `b`? Objective (INT-7): among refills
+/// whose smallest dihedral is above the floor, the target whose spacing `r` is nearest to the
+/// goal wins; below the floor the larger smallest dihedral wins. Ties keep `b` (first found).
+fn better(meter: &Meter<'_, '_>, a: (f64, V3), b: (f64, V3)) -> bool {
+    let (a_ok, b_ok) = (a.0 >= MIN_DIHEDRAL_DEG, b.0 >= MIN_DIHEDRAL_DEG);
+    match (a_ok, b_ok) {
+        (true, true) => meter.deviation(a.1) < meter.deviation(b.1),
+        (false, false) => a.0 > b.0,
+        (x, _) => x,
+    }
+}
+
 /// A fallback star: its margin, the cavity (sorted), its faces and the point.
 type Fallback = (f64, Vec<u32>, Vec<[u32; 3]>, V3);
 
@@ -63,15 +79,15 @@ impl Dt {
     /// Remove or move the interior points (index `from..`) that violate ruling S4 (see the module
     /// docs), spending at most `budget` units of fill work (the rest is left in `budget`; a
     /// point is not started once it is used up). Returns the number of points removed or moved.
-    pub(crate) fn relocate_for_s4(&mut self, from: usize, guard: &Guard<'_>, budget: &mut u64) -> Result<usize, TetError> {
+    pub(crate) fn relocate_for_s4(&mut self, from: usize, guard: &Guard<'_>, meter: &Meter<'_, '_>, budget: &mut u64) -> Result<usize, TetError> {
         let start = self.work.load(std::sync::atomic::Ordering::Relaxed);
-        let r = self.relocate_within(from, guard, start.saturating_add(*budget));
+        let r = self.relocate_within(from, guard, meter, start.saturating_add(*budget));
         *budget = budget.saturating_sub(self.work.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(start));
         r
     }
 
     /// [`Dt::relocate_for_s4`] until the fill work counter reaches `limit`.
-    fn relocate_within(&mut self, from: usize, guard: &Guard<'_>, limit: u64) -> Result<usize, TetError> {
+    fn relocate_within(&mut self, from: usize, guard: &Guard<'_>, meter: &Meter<'_, '_>, limit: u64) -> Result<usize, TetError> {
         let mut done = 0;
         let mut star = Vec::new();
         // Points that failed, with the vertices of their star then: retried only if it changed.
@@ -96,7 +112,7 @@ impl Dt {
                 if failed.get(&(v as u32)) == Some(&sig) {
                     continue;
                 }
-                if self.relocate_one(v as u32, &star, from as u32, guard)? {
+                if self.relocate_one(v as u32, &star, from as u32, guard, meter)? {
                     done += 1;
                     changed = true;
                 } else {
@@ -111,10 +127,10 @@ impl Dt {
     }
 
     /// Remove or move interior point `v` (star `star`); `true` if the mesh changed.
-    fn relocate_one(&mut self, v: u32, star: &[u32], from: u32, guard: &Guard<'_>) -> Result<bool, TetError> {
+    fn relocate_one(&mut self, v: u32, star: &[u32], from: u32, guard: &Guard<'_>, meter: &Meter<'_, '_>) -> Result<bool, TetError> {
         let p = self.pts[v as usize];
-        let targets = self.s4_targets(p, star, guard.nearest(p), guard);
-        if let Some(r) = self.best_refill(star, &targets, from) {
+        let targets = self.s4_targets(p, star, guard.nearest(p), guard, meter);
+        if let Some(r) = self.best_refill(star, &targets, from, meter) {
             self.apply_refill(r)?;
             return Ok(true);
         }
@@ -141,7 +157,7 @@ impl Dt {
                 self.tds.replace(&cav, &tets, &mut ids)?;
                 return Ok(true);
             }
-            if let Some((m, q, x)) = self.deepest_star_point(&faces, guard) {
+            if let Some((m, q, x)) = self.deepest_star_point(&faces, guard, meter) {
                 if m >= S4 {
                     self.star_from(&cav, &faces, x)?;
                     return Ok(true);
@@ -204,7 +220,7 @@ impl Dt {
     /// `near` (with its `h`), and centroids of the tets within [`TARGET_LAYERS`] layers of
     /// `seed`; those with margin at least [`S4`], nearest to `p` first, at most
     /// [`MAX_TARGETS`].
-    fn s4_targets(&self, p: V3, seed: &[u32], near: Option<([V3; 3], f64)>, guard: &Guard<'_>) -> Vec<V3> {
+    fn s4_targets(&self, p: V3, seed: &[u32], near: Option<([V3; 3], f64)>, guard: &Guard<'_>, meter: &Meter<'_, '_>) -> Vec<V3> {
         let mut seen: Vec<u32> = seed.to_vec();
         seen.sort_unstable();
         seen.dedup();
@@ -267,12 +283,16 @@ impl Dt {
             .map(|(i, q)| (dist(p, q), i, q))
             .collect();
         ok.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
-        ok.into_iter().take(MAX_TARGETS).map(|x| x.2).collect()
+        // The nearest MAX_TARGETS stay candidates (they are the likeliest to be reachable); they
+        // are tried in order of their spacing deviation (INT-7), nearest first on ties.
+        let mut t: Vec<(f64, V3)> = ok.into_iter().take(MAX_TARGETS).map(|x| (meter.deviation(x.2), x.2)).collect();
+        t.sort_by(|a, b| a.0.total_cmp(&b.0));
+        t.into_iter().map(|x| x.1).collect()
     }
 
     /// The best refill of the cavities grown from `seed` towards each target (see the module
     /// docs): the one with the largest smallest dihedral angle (first on ties).
-    fn best_refill(&mut self, seed: &[u32], targets: &[V3], from: u32) -> Option<Refill> {
+    fn best_refill(&mut self, seed: &[u32], targets: &[V3], from: u32, meter: &Meter<'_, '_>) -> Option<Refill> {
         let mut best: Option<Refill> = None;
         let mut grown: Vec<(Vec<u32>, Vec<[u32; 3]>, V3)> = Vec::new();
         // Stars of the targets that see every cavity face (cheap) first.
@@ -284,7 +304,7 @@ impl Dt {
             }) {
                 let tets: Vec<[u32; 4]> = faces.iter().map(|f| [NEW, f[0], f[1], f[2]]).collect();
                 let q = min_dihedral(&self.pts, &tets, t);
-                if best.as_ref().is_none_or(|b| q > b.0) {
+                if best.as_ref().is_none_or(|b| better(meter, (q, t), (b.0, b.3))) {
                     best = Some((q, cav, tets, t));
                 }
             } else {
@@ -374,7 +394,7 @@ impl Dt {
 
     /// The visible kernel candidate of the polyhedron `faces` with the largest S4 margin (capped
     /// at [`S4`]), ties broken by the worst mean ratio of its star: `(margin, quality, point)`.
-    fn deepest_star_point(&self, faces: &[[u32; 3]], guard: &Guard<'_>) -> Option<(f64, f64, V3)> {
+    fn deepest_star_point(&self, faces: &[[u32; 3]], guard: &Guard<'_>, meter: &Meter<'_, '_>) -> Option<(f64, f64, V3)> {
         let mut best: Option<(f64, f64, V3)> = None;
         for q in self.kernel_candidates(faces) {
             let mut worst = f64::INFINITY;
@@ -391,7 +411,18 @@ impl Dt {
                 continue;
             }
             let m = guard.margin(q).min(S4);
-            if best.is_none_or(|b| m > b.0 || (m == b.0 && worst > b.1)) {
+            let wins = |b: (f64, f64, V3)| {
+                if m != b.0 {
+                    return m > b.0;
+                }
+                // Equal margin: among adequate shapes the spacing objective decides, else shape.
+                if worst >= ADEQUATE_MEAN_RATIO && b.1 >= ADEQUATE_MEAN_RATIO {
+                    meter.deviation(q) < meter.deviation(b.2)
+                } else {
+                    worst > b.1
+                }
+            };
+            if best.is_none_or(wins) {
                 best = Some((m, worst, q));
             }
         }

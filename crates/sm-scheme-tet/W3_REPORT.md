@@ -346,6 +346,155 @@ Other `--ignored` records with the final code (release, host load 15 .. 60): bal
 point Delaunay 2.0 s; adapter 1.72 M tets in 18.2 s; `fixture_sweep_full` 9.7 s,
 `voxel_fuzz_large` 12.3 s, all passing.
 
+## What changed in review round 4 (ruling INT-7 and performance)
+
+Ruling INT-7 (docs/design/w3/plan.md) restates S4: spacing is an objective, quality is the floor,
+violations are located diagnostics. Definitions and parameters are in `DESIGN.md`, section
+"Ruling INT-7". Summary of the code:
+
+* `TetStats::spacing` (`SpacingStats`): count, mean, standard deviation, p01, min of the
+  normalized spacing `r = d / h_loc`, plus the target (`sqrt(2/3)`), the rms deviation from it
+  and the clip. `n_s4_violations` / `worst_s4_margin` are unchanged and stay reported metrics.
+* Objective: step 9 prefers targets whose `r` is nearest the goal (secondary to the dihedral
+  floor), and a new spacing pass `Dt::respace` pushes points that are too close to the surface
+  towards the goal within a quality guard.
+* Floor: tets with min dihedral below 5 degrees or mean ratio below 0.05 are counted
+  (`n_quality_violations`) and the worst 256 are returned as `QualityDiagnostic` (position,
+  nearby input triangle ids in the caller's order, metric, value, threshold, `SuggestedFix`).
+* Perf: tiles of complete recovery are indexed by vertex (`suppress` was O(T S)); the
+  post-classification `remove_points` is capped (star at most 160 tets, 30 M units of fill work,
+  cheapest first, the rest counted in `n_removal_deferred`); `n_lookup_rebuilds` tripwire.
+* Bug: the failure path of `suppress_all` (and the inconsistent-fan error) passed a tile index
+  as `tri` of `RecoveryFailed`; it now names the owner (input triangle). No fixture reaches that
+  path, so the unit test (`steiner::tests::bnd_index_follows_tiles_and_names_owners`) covers the
+  owner lookup (`Bnd::owner_near`) only.
+
+Measurement notes. The host was heavily loaded the whole time (load average 450 .. 650 on 10
+cores at times). Wall times below are only comparable between runs that overlapped; the "before"
+runs (tree at 6136b61, same test file) and the "after" runs were not at the same load. Work
+counters and quality numbers are exact. `r` in the tables is measured by an independent
+implementation (`tests/common/r.rs`), identical code for before and after, and agrees with the
+in-crate statistic to 1e-9 (test). Before = 6136b61, after = this round.
+
+**The eleven hard relief cases** (release; `int7_table::table_a15`; `r` = mean / sd / p01 / min
+of the spacing of the Steiner points; mean ratio = (min, mean)):
+
+| case | r before | r after | rms dev of r | min dihedral | mean ratio (min, mean) | time (s, not comparable) |
+|---|---|---|---|---|---|---|
+| relief n6 seed1 d0.9 | 0.478 / 0.102 / 0.304 / 0.304 | 0.582 / 0.132 / 0.304 / 0.304 | 0.353 -> 0.269 | 3.424 -> 3.424 | 0.0989, 0.7406 -> 0.0989, 0.7195 | 6.8 -> 0.8 |
+| relief n6 seed2 d0.9 | 0.521 / 0.150 / 0.318 / 0.318 | 0.603 / 0.161 / 0.338 / 0.338 | 0.332 -> 0.268 | 5.240 -> 5.240 | 0.1070, 0.7414 -> 0.1070, 0.7232 | 11.4 -> 2.0 |
+| relief n6 seed3 d0.9 | 0.506 / 0.122 / 0.284 / 0.284 | 0.585 / 0.135 / 0.284 / 0.284 | 0.334 -> 0.268 | 4.586 -> 4.586 | 0.1193, 0.7508 -> 0.1193, 0.7292 | 4.5 -> 0.9 |
+| relief n8 seed1 d0.6 | 0.569 / 0.171 / 0.284 / 0.276 | 0.687 / 0.152 / 0.289 / 0.284 | 0.301 -> 0.199 | 2.567 -> 2.567 | 0.1017, 0.7955 -> 0.1017, 0.7560 | 3.7 -> 1.2 |
+| relief n8 seed2 d0.6 | 0.582 / 0.157 / 0.310 / 0.282 | 0.693 / 0.151 / 0.311 / 0.282 | 0.282 -> 0.195 | 4.566 -> 4.566 | 0.1138, 0.7858 -> 0.1138, 0.7513 | 4.9 -> 1.9 |
+| relief n8 seed3 d0.6 | 0.600 / 0.171 / 0.304 / 0.290 | 0.709 / 0.150 / 0.304 / 0.290 | 0.276 -> 0.185 | 1.091 -> 1.091 | 0.0553, 0.8045 -> 0.0553, 0.7682 | 5.0 -> 1.6 |
+| relief n8 seed4 d0.6 | 0.581 / 0.161 / 0.295 / 0.293 | 0.694 / 0.147 / 0.300 / 0.295 | 0.286 -> 0.192 | 0.563 -> 0.563 | 0.0318, 0.7777 -> 0.0318, 0.7416 | 17.3 -> 4.4 |
+| relief n8 seed1 d0.9 | 0.530 / 0.143 / 0.284 / 0.284 | 0.603 / 0.159 / 0.282 / 0.282 | 0.320 -> 0.266 | 0.692 -> 0.692 | 0.0280, 0.6908 -> 0.0280, 0.6723 | 5.1 -> 1.6 |
+| relief n8 seed2 d0.9 | 0.527 / 0.147 / 0.286 / 0.286 | 0.617 / 0.153 / 0.287 / 0.287 | 0.325 -> 0.251 | 0.762 -> 0.762 | 0.0304, 0.6873 -> 0.0304, 0.6646 | 18.4 -> 7.8 |
+| relief n8 seed3 d0.9 | 0.528 / 0.136 / 0.275 / 0.275 | 0.624 / 0.153 / 0.275 / 0.275 | 0.319 -> 0.246 | 2.104 -> 2.104 | 0.0512, 0.7141 -> 0.0512, 0.6905 | 1.8 -> 1.4 |
+| relief n8 seed4 d0.9 | 0.514 / 0.144 / 0.322 / 0.322 | 0.574 / 0.159 / 0.330 / 0.330 | 0.335 -> 0.290 | 1.790 -> 1.790 | 0.0496, 0.6283 -> 0.0496, 0.6214 | 31.3 -> 26.1 |
+
+Reading: the spacing distribution moves towards the target (mean r up 0.06 .. 0.13, rms
+deviation from the target down by 0.01 .. 0.10), the minimum dihedral is unchanged on all eleven,
+the Steiner counts are unchanged except n8 seed1 d0.9 (+2 tets), and the mean of the mean ratio
+falls by 0.01 .. 0.05: spacing was bought with average quality, inside the guard. p01 and min of
+`r` do not move: they are the points held at the S4 floor by thin walls, where no move is
+allowed. All eleven still have 0 S4 violations. The time column is not a speed-up claim
+(different host load).
+
+**The 49-case sweep** (`int7_table::table_sweep`, release; replaces `a15::relief_sweep_s4`, which
+printed less):
+
+| | before | after |
+|---|---|---|
+| cases with S4 violations (of 49) | 11 | 12 |
+| S4 violations in all | 49 | 47 |
+| mean over cases of the mean r | 0.536 | 0.611 |
+| mean over cases of the rms deviation of r from the target | 0.326 | 0.266 |
+| smallest minimum dihedral of the sweep (degrees) | 0.007 | 0.004 |
+| mean over cases of the minimum dihedral (degrees) | 1.80 | 1.79 |
+| total wall time (s, different load) | 569 | 521 |
+
+Cases that changed their S4 outcome (before -> after violations): n10 seed1 d0.97 2 -> 0, n12
+seed2 d0.97 9 -> 3, n12 seed4 d0.97 6 -> 4, n8 seed2 d0.97 0 -> 1, n10 seed2 d0.97 0 -> 2, n12
+seed1 d0.97 3 -> 5, n12 seed3 d0.97 3 -> 7, n12 seed7 d0.995 10 -> 9. These are the cases where
+the 80 M relocation budget binds, as before the round; the removal pass that shares its fill
+counter now runs in another order. Minimum dihedral regressions (degrees): n12 seed7 d0.995 0.010
+-> 0.004, n10 seed3 d0.97 1.25 -> 0.16, n6 seed2 d0.97 2.50 -> 1.44, n12 seed1 d0.97 0.41 ->
+0.14; improvements: n10 seed1 d0.97 0.007 -> 1.45, n10 seed2 d0.97 0.42 -> 0.80. These changes
+come from the changed removal order and budget interplay (`respace` cannot lower a local minimum
+below `0.97 base`), not from a fix or a new bug in recovery; every case still recovers with the
+exact boundary. This is a regression on a few extreme cases and is disclosed, not tuned away.
+
+**Tiled relief** (`tiled_cube(n, 8, 2, 0.9)`: `(n/8)^2` hard 8 x 8 patches on the top face;
+`int7::record_tiled_relief`, release; before from `int7_table`, same independent `r`):
+
+| n | triangles | time before -> after (s) | r mean / sd / p01 / min before | r mean / sd / p01 / min after | min dihedral before -> after | S4 violations | quality violations (after) | temporary boundary points | removals deferred |
+|---|---|---|---|---|---|---|---|---|---|
+| 16 | 3 072 | 9.1 -> 5.9 | 0.690 / 0.219 / 0.317 / 0.284 | 0.774 / 0.160 / 0.336 / 0.280 | 0.355 -> 0.355 | 0 -> 0 | 62 | 111 | 0 |
+| 32 | 12 288 | 40.5 -> 19.1 | 0.769 / 0.230 / 0.350 / 0.275 | 0.843 / 0.161 / 0.384 / 0.275 | 0.238 -> 0.238 | 0 -> 0 | 88 | 238 | 0 |
+| 48 | 27 648 | 27.5 -> 13.4 | 0.793 / 0.229 / 0.374 / 0.275 | 0.867 / 0.156 / 0.416 / 0.275 | 0.139 -> 0.139 | 0 -> 0 | 154 | 355 | 0 |
+| 64 | 49 152 | 225.7 -> 55.4 | 0.806 / 0.227 / 0.388 / 0.275 | 0.877 / 0.153 / 0.458 / 0.275 | 0.008 -> 0.008 | 0 -> 0 | 173 | 2 643 | 555 |
+
+The quality-violation count has no "before" (the statistic is new). Wall times come from loaded
+runs (n = 32 before took 40 s while n = 48 took 27 s: load noise). The reliable statement: at
+n = 64 the post-classification removal no longer dominates (the review measured 72 s of 105 s;
+now 5.7 s, capped) and the whole build is 55 s at this load. What is left at n = 64: complete
+recovery 9.6 s, step 9 relocation about 14 s (its own 80 M budget), refinement 8 s, optimization
+4 .. 7 s, and 555 recovery points whose removal was deferred, which stay in the mesh (valid,
+counted in `n_removal_deferred`). A first capped version that walked the points in index order
+deferred 3 507 points and, with the relocation budget then exhausted, left 63 S4 violations
+(worst 0.0000 h) at n = 64; ordering the removal by star size fixed that (0 violations).
+
+Anomaly to know about: at n = 64 recovery needs 2 643 temporary boundary points against 355 at
+n = 48 (7 times for 1.8 times the triangles), and 7.45 constraint updates per triangle against
+about 6; the work-per-triangle bound (`7 tris + 64 temporary points`) holds there only through
+the per-point slack. The cause is not investigated (a limit of the interior-point pass that is
+reached from about 40 patches on is the suspect). Work per triangle is bounded at n = 16 .. 48
+and measured, not proven, at 64.
+
+**Balls and the cost of `respace`** (`perf::record_ball_small`, `icosphere(1, 5)`, `h = 0.07`,
+183 021 tets in both):
+
+| | min dihedral | min mean ratio | mean mean ratio | max R/l |
+|---|---|---|---|---|
+| before | 23.7 | 0.554 | 0.8811 | 1.47 |
+| after | 19.1 | 0.496 | 0.8719 | 2.08 |
+
+This is the price of the spacing objective on a deep, well-shaped mesh. If it is too high, the
+two guard levels (`RESPACE_GOOD_MR`, `RESPACE_GOOD_DIHEDRAL` in `optimize.rs`) are the knobs:
+at 1 and 90 degrees `respace` is limited to a 1 % / 3 % loss per pass. Two looser variants were
+measured and dropped (down to mean ratio 0.30 per pass: ball min dihedral 9.3).
+
+**Tests added.** `tests/int7.rs`: the in-crate spacing against the independent measure (cube,
+ball, relief), an all-zero statistic without Steiner points, located diagnostics (ids in range
+and sorted, values below thresholds, near the position, worst first, the worst dihedral equals
+the mesh minimum), diagnostic triangle ids follow the caller's order (reversed input),
+determinism of the new statistics (2 runs, 1 vs 4 threads), tiled work per triangle (n = 16 and
+24 in debug, 16 and 32 in release: constraint updates and flips per triangle, 0 lookup
+rebuilds), and the ignored `record_tiled_relief` (n = 16 .. 64). `a15::complete_recovery_work_is_linear`
+asserts `n_lookup_rebuilds == 0`. **Deviation:** the task asked for n = 16 and 32 in debug; the
+n = 32 build takes minutes unoptimized on this host, so debug runs 16 and 24 and release 16 and
+32.
+
+**api_change_request (not done here; the contract is frozen).** What: a carrier for scheme
+diagnostics so that sm-diag can read the located violations. Why: `TetStats::quality_diagnostics`
+exists, but `sm-scheme-api` has no channel from `Scheme::generate` / `Patch` to anyone after the
+mesh is committed (`Patch` and `GenerateFailure` only), so INT-7 item 3 ("readable by sm-diag")
+cannot be met without it. Proposed signature (additive), in `sm-scheme-api`:
+`pub struct SchemeNote { pub position: Point3, pub entities: Vec<EntityId>, pub metric: String, pub value: f64, pub threshold: f64, pub suggestion: String }`
+and `Patch::notes: Vec<SchemeNote>` (or `PatchBuilder::note(..)`), kept by the Driver in the mesh
+entry's provenance, sorted. The tet adapter then maps `QualityDiagnostic::triangles` through its
+existing `tri_face` table to `EntityId`s; nothing else changes here. Polyhedral cell quality
+after `mesh.to_poly` belongs to sm-poly / sm-diag (it needs the dual cells); the tet mean ratio
+is the proxy here.
+
+**Declined.** (a) A true optimizer of `r` inside smoothing (it would change `smooth`'s quality
+objective for every mesh; `respace` is a separate guarded pass). (b) An exact `r` beyond 1.5
+triangle sizes (the clip makes that region read "at least the cap"). (c) Polyhedral cell quality
+(not computable here). (d) Raising `RELOC_WORK` to close the sweep's remaining S4 cases (time for
+a metric that is no longer the rule). (e) A real count in `n_lookup_rebuilds`: there is no rebuild
+code path, so it is 0 by construction and serves as a tripwire.
+
 ## Acceptance bullet to test
 
 | # | bullet | test(s) |
@@ -447,3 +596,10 @@ Earlier rounds: release and debug `cargo test -p sm-scheme-tet --all-features` p
   input vertices only and span thin walls next to the steepest relief.
 * Debug-profile tests are still slow (a11 and a13 two to three minutes each on an idle host);
   release is the intended profile.
+* Round 4 (INT-7): the quality floor is met by the hard relief cases only partly: 62 .. 173 tets
+  below 5 degrees on the tiled relief (min dihedral 0.008 .. 0.355 degrees); 12 of 49 sweep cases
+  still end with S4 violations (a reported metric, no longer the rule); n = 64 tiled needs 2 643
+  temporary boundary points (cause not investigated); 555 recovery points stay in the mesh
+  because their removal exceeded the cap; `respace` costs the balls 4.6 degrees of minimum
+  dihedral. The located diagnostics reach `TetStats` only: there is no carrier to sm-diag (see
+  the api_change_request above).
