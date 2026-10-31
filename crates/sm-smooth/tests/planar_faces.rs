@@ -35,7 +35,7 @@ fn smoothing_keeps_planar_faces_planar() {
     for fix_boundary in [false, true] {
         for method in [Method::Laplacian { relax: 1.0 }, Method::CentroidArea { relax: 1.0 }] {
             for schedule in [Schedule::Colored, Schedule::Jacobi] {
-                let o = run(&f, &req(method.clone(), schedule, 5, fix_boundary));
+                let o = run(&f, &req(method, schedule, 5, fix_boundary));
                 let m = applied(&f, &o);
                 assert_eq!(planar_violations(&m), 0, "{method:?} {schedule:?} fix_boundary={fix_boundary}");
                 assert!(validate_geometry(&m, &GeomTol::default()).is_empty());
