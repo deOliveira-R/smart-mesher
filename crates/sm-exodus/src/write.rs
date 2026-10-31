@@ -208,7 +208,8 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
         .map(|b| if b.shape == CellShape::Polygon { b.cells.iter().map(|&c| mesh.cell_corners(CellIx(c)).map_or(0, <[_]>::len)).sum() } else { 0 })
         .collect();
     let total_faces: usize = poly.iter().flatten().map(|pf| pf.per_face.len()).sum();
-    let n_fa_blk = poly.iter().flatten().count();
+    // One shared face block for all NFACED blocks (vtkExodusIIReader misreads several).
+    let n_fa_blk = usize::from(poly.iter().any(Option::is_some));
 
     if !int64 {
         let max_id = p.blocks.iter().map(|b| b.id).chain(p.sidesets.iter().map(|s| s.id)).chain(p.nodesets.iter().map(|s| s.id)).max().unwrap_or(0);
@@ -279,7 +280,6 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
     meta(&mut f, "eb", d_elblk, &ids, &names);
 
     // Blocks.
-    let mut fblk = 0usize;
     let mut face_base = 0usize;
     for (bi, b) in p.blocks.iter().enumerate() {
         let k = bi + 1;
@@ -288,9 +288,7 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
         match b.shape {
             CellShape::Polyhedron => {
                 let Some(pf) = poly[bi].as_ref() else { continue };
-                fblk += 1;
                 let nfa = pf.per_face.len();
-                let nnod: usize = pf.per_face.iter().map(|x| *x as usize).sum();
                 let d_fa = f.dim(&format!("num_fac_per_el{k}"), Some(nfa as u64));
                 let v = f.var(&format!("facconn{k}"), id_ty, &[d_fa]);
                 f.var_attr(v, "elem_type", NcValue::Text("NFACED".into()));
@@ -301,28 +299,6 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
                 f.var_attr(e, "entity_type2", NcValue::Text("ELEM".into()));
                 let per_cell: Vec<i64> = pf.per_cell.iter().map(|x| i64::from(*x)).collect();
                 f.set_data(e, NcData::Bytes(ids_bytes(&per_cell, int64)));
-                // Face block j = fblk.
-                let d_ff = f.dim(&format!("num_fa_in_blk{fblk}"), Some(nfa as u64));
-                let d_fn = f.dim(&format!("num_nod_per_fa{fblk}"), Some(nnod as u64));
-                let fc = f.var(&format!("fbconn{fblk}"), id_ty, &[d_fn]);
-                f.var_attr(fc, "elem_type", NcValue::Text("NSIDED".into()));
-                f.set_data(
-                    fc,
-                    NcData::Lazy(Box::new(move || {
-                        let mut vals: Vec<i64> = Vec::with_capacity(nnod);
-                        for &c in cells {
-                            for sf in mesh.cell_faces(CellIx(c)) {
-                                push_outward(mesh, *sf, |x| vals.push(x));
-                            }
-                        }
-                        ids_bytes(&vals, int64)
-                    })),
-                );
-                let fe = f.var(&format!("fbepecnt{fblk}"), id_ty, &[d_ff]);
-                f.var_attr(fe, "entity_type1", NcValue::Text("NODE".into()));
-                f.var_attr(fe, "entity_type2", NcValue::Text("FACE".into()));
-                let per_face: Vec<i64> = pf.per_face.iter().map(|x| i64::from(*x)).collect();
-                f.set_data(fe, NcData::Bytes(ids_bytes(&per_face, int64)));
                 face_base += nfa;
             }
             CellShape::Polygon => {
@@ -357,9 +333,36 @@ fn build<'a>(mesh: &'a dyn MeshRead, opts: &'a ExodusOptions, p: &'a ExodusPlan)
         }
     }
     if let Some(d_fablk) = d_fablk {
-        let fids: Vec<i64> = p.blocks.iter().zip(&poly).filter(|(_, pf)| pf.is_some()).map(|(b, _)| b.id).collect();
-        let fnames: Vec<&str> = p.blocks.iter().zip(&poly).filter(|(_, pf)| pf.is_some()).map(|(b, _)| b.name.as_str()).collect();
-        meta(&mut f, "fa", d_fablk, &fids, &fnames);
+        // The single face block: every NFACED block's face copies, in block order.
+        let pfs: Vec<&PolyFaces> = poly.iter().flatten().collect();
+        let nnod: usize = pfs.iter().map(|pf| pf.per_face.iter().map(|x| *x as usize).sum::<usize>()).sum();
+        let d_ff = f.dim("num_fa_in_blk1", Some(total_faces as u64));
+        let d_fn = f.dim("num_nod_per_fa1", Some(nnod as u64));
+        let fc = f.var("fbconn1", id_ty, &[d_fn]);
+        f.var_attr(fc, "elem_type", NcValue::Text("NSIDED".into()));
+        let polys: Vec<&'a [u32]> =
+            p.blocks.iter().zip(&poly).filter(|(_, pf)| pf.is_some()).map(|(b, _)| &b.cells[..]).collect();
+        f.set_data(
+            fc,
+            NcData::Lazy(Box::new(move || {
+                let mut vals: Vec<i64> = Vec::with_capacity(nnod);
+                for cells in &polys {
+                    for &c in *cells {
+                        for sf in mesh.cell_faces(CellIx(c)) {
+                            push_outward(mesh, *sf, |x| vals.push(x));
+                        }
+                    }
+                }
+                ids_bytes(&vals, int64)
+            })),
+        );
+        let fe = f.var("fbepecnt1", id_ty, &[d_ff]);
+        f.var_attr(fe, "entity_type1", NcValue::Text("NODE".into()));
+        f.var_attr(fe, "entity_type2", NcValue::Text("FACE".into()));
+        let per_face: Vec<i64> = pfs.iter().flat_map(|pf| pf.per_face.iter().map(|x| i64::from(*x))).collect();
+        f.set_data(fe, NcData::Bytes(ids_bytes(&per_face, int64)));
+        let first = p.blocks.iter().zip(&poly).find(|(_, pf)| pf.is_some()).map(|(b, _)| b.id).unwrap_or(1);
+        meta(&mut f, "fa", d_fablk, &[first], &["faces"]);
     }
 
     // Node sets.

@@ -15,7 +15,8 @@
 //! - Side sets come from `SetMembers::Sides` (and, optionally, deck `Faces` sets on the left cell);
 //!   the side is found by comparing the face loop with the cell's template faces ([`tables`]).
 //! - Node sets come from `SetMembers::Vertices` / `Points`.
-//! - Polygons become `NSIDED` blocks, polyhedra `NFACED` blocks over a face block with one outward
+//! - Polygons become `NSIDED` blocks, polyhedra `NFACED` blocks over a single shared face block
+//!   (all NFACED blocks use it; vtkExodusIIReader misreads later face blocks) with one outward
 //!   face copy per (cell, face). The internal names `POLYGON` / `POLYHEDRON` never reach the file.
 //!   NFACED names are written from memory of libexodus and are **experimental**
 //!   ([`ExodusOptions::polyhedra`]).
