@@ -63,15 +63,20 @@ def main(out, exo, smsh_path):
             at += c
     blocks = []
     for i in range(1, dim("num_el_blk") + 1):
-        name = f"connect{i}"
+        # An NFACED block stores face ids in facconn<i> (file-global face numbering over the
+        # face blocks in order) and has no connect<i>.
+        name = f"facconn{i}" if f"facconn{i}" in ds.variables else f"connect{i}"
         if name not in ds.variables:
-            problems.append(f"block {i}: no {name}")
+            problems.append(f"block {i}: no connect{i} or facconn{i}")
             continue
         var = ds.variables[name]
         ty = text(getattr(var, "elem_type", "")).upper()
         ty = ALIASES.get(ty, ty)
         n = dim(f"num_el_in_blk{i}")
         blocks.append((i, ty, n))
+        if name.startswith("facconn") and ty != "NFACED":
+            problems.append(f"block {i}: facconn{i} has elem_type {ty}, expected NFACED")
+            continue
         if ty == "NFACED":
             fc = ds.variables[f"facconn{i}"][:].tolist()
             cnt = ds.variables[f"ebepecnt{i}"][:].tolist()
@@ -92,7 +97,13 @@ def main(out, exo, smsh_path):
         sd = ds.variables[f"side_ss{k}"][:].tolist()
         got = []
         for e, s in zip(el, sd):
+            if not 1 <= e <= len(elems):
+                problems.append(f"side set {sid}: element {e} out of range 1..{len(elems)}")
+                break
             ty, nodes, faces = elems[e - 1]
+            if ty == "NFACED" and not 1 <= s <= len(faces):
+                problems.append(f"side set {sid}: element {e} side {s} out of range 1..{len(faces)}")
+                break
             if ty == "NFACED":
                 got.append(tuple(sorted(v - 1 for v in faces[s - 1])))
             elif ty in SIDES:
