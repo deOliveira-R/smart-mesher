@@ -440,57 +440,55 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
     if opts.split_small_determinant
         && let Some(info) = split_small_determinant(&mut poly, SMALL_DETERMINANT)
     {
-        {
-            if info.unsplit > 0 {
+        if info.unsplit > 0 {
+            note(
+                "foam.small_det_unsplit",
+                LossSeverity::Degraded,
+                info.unsplit as usize,
+                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} that cannot be split (faces not a closed manifold, or a face pyramid around the centroid has non-positive volume): written unsplit"),
+            );
+        }
+        if !info.split_cells.is_empty() {
+            note(
+                "foam.small_det_split",
+                LossSeverity::Degraded,
+                info.split_cells.len(),
+                format!(
+                    "cells with checkMesh determinant < {SMALL_DETERMINANT} split at the centroid into {} sub-cells (zones and patches kept); exported cell -> internal cell map in {CELL_MAP_FILE}",
+                    info.sub_cells
+                ),
+            );
+            if info.remaining > 0 {
                 note(
-                    "foam.small_det_unsplit",
+                    "foam.small_det_remaining",
                     LossSeverity::Degraded,
-                    info.unsplit as usize,
-                    format!("cells with checkMesh determinant < {SMALL_DETERMINANT} whose faces are not a closed manifold: written unsplit"),
+                    info.remaining as usize,
+                    format!("exported cells still below checkMesh determinant {SMALL_DETERMINANT} after the split"),
                 );
             }
-            if !info.split_cells.is_empty() {
-                note(
-                    "foam.small_det_split",
-                    LossSeverity::Degraded,
-                    info.split_cells.len(),
-                    format!(
-                        "cells with checkMesh determinant < {SMALL_DETERMINANT} split at the centroid into {} sub-cells (zones and patches kept); exported cell -> internal cell map in {CELL_MAP_FILE}",
-                        info.sub_cells
-                    ),
-                );
-                if info.remaining > 0 {
-                    note(
-                        "foam.small_det_remaining",
-                        LossSeverity::Degraded,
-                        info.remaining as usize,
-                        format!("exported cells still below checkMesh determinant {SMALL_DETERMINANT} after the split"),
-                    );
-                }
-                // The census follows the exported cells.
-                for &c in &info.split_cells {
-                    let i = match mesh.cell_shape(CellIx::new(c as usize)) {
-                        CellShape::Hex => 0,
-                        CellShape::Wedge => 1,
-                        CellShape::Pyramid => 2,
-                        CellShape::Tet => 3,
-                        _ => 4,
-                    };
-                    counts[i] -= 1;
-                }
-                counts[3] += info.sub_shapes[0];
-                counts[2] += info.sub_shapes[1];
-                counts[4] += info.sub_shapes[2];
-                let ni_old = n_int;
-                n_int += info.added_faces;
-                let mut fof = vec![NONE; poly.n_faces()];
-                for (old, &new) in info.new_of_old_face.iter().enumerate() {
-                    fof[new as usize] = face_of_foam[old];
-                }
-                face_of_foam = fof;
-                point_of_foam.resize(poly.points.len(), NONE);
-                debug_assert!(n_int > ni_old);
+            // The census follows the exported cells.
+            for &c in &info.split_cells {
+                let i = match mesh.cell_shape(CellIx::new(c as usize)) {
+                    CellShape::Hex => 0,
+                    CellShape::Wedge => 1,
+                    CellShape::Pyramid => 2,
+                    CellShape::Tet => 3,
+                    _ => 4,
+                };
+                counts[i] -= 1;
             }
+            counts[3] += info.sub_shapes[0];
+            counts[2] += info.sub_shapes[1];
+            counts[4] += info.sub_shapes[2];
+            let ni_old = n_int;
+            n_int += info.added_faces;
+            let mut fof = vec![NONE; poly.n_faces()];
+            for (old, &new) in info.new_of_old_face.iter().enumerate() {
+                fof[new as usize] = face_of_foam[old];
+            }
+            face_of_foam = fof;
+            point_of_foam.resize(poly.points.len(), NONE);
+            debug_assert!(n_int > ni_old);
         }
     }
     let report = FoamReport {

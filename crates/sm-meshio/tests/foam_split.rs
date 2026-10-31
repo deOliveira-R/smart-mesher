@@ -26,9 +26,10 @@ fn two_tets() -> ReferenceMesh {
 
 #[test]
 fn determinant_matches_a_hand_computed_case() {
-    // Cell 0 has four internal faces with area vectors (1/2) * (1,0,0), (0,1,0), (0,0,1), (1,1,1):
-    // unit normals x, y, z, (1,1,1)/sqrt 3, so sum n n^T = I + J/3 (eigenvalues 2, 1, 1), det 2,
-    // divided by (4/3)^3 = 64/27 gives 27/32. Cells 1..4 have one internal face: det 0.
+    // Cell 0 has four internal faces with area vectors (1/2) * (1,0,0), (0,1,0), (0,0,1), (1,1,1).
+    // Magnitudes 1/2 (x3) and sqrt(3)/2: avg = (3 + sqrt 3) / 8. Tensor sum Sf Sf^T = (I + J)/4,
+    // eigenvalues 1, 1/4, 1/4 -> det 1/16; OpenFOAM: |det| / avg^6 / 8.
+    // Cells 1..4 have one internal face: rank 1, det 0.
     let points = vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
     let faces: [[u32; 3]; 4] = [[0, 2, 3], [0, 3, 1], [0, 1, 2], [1, 2, 3]];
     let mut pm = PolyMesh { points, n_cells: 5, ..Default::default() };
@@ -37,15 +38,25 @@ fn determinant_matches_a_hand_computed_case() {
     pm.owner = vec![0; 4];
     pm.neighbour = vec![1, 2, 3, 4];
     let d = cell_determinants(&pm);
-    assert!((d[0] - 27.0 / 32.0).abs() < 1e-14, "{}", d[0]);
-    assert!(d[1..].iter().all(|x| *x == 0.0));
-    // Three orthogonal normals: the identity, determinant 1 after normalisation.
+    let avg: f64 = (3.0 + 3f64.sqrt()) / 8.0;
+    let want = (1.0 / 16.0) / avg.powi(6) / 8.0;
+    assert!((d[0] - want).abs() < 1e-12 * want, "{} vs {want}", d[0]);
+    assert!(d[1..].iter().all(|x| *x < 1e-12));
+    // Three orthogonal equal faces: identity tensor, det 1, / 8.
     pm.face_offsets = vec![0, 3, 6, 9];
     pm.face_points = faces[..3].concat();
     pm.owner = vec![0; 3];
     pm.neighbour = vec![1, 2, 3];
     pm.n_cells = 4;
-    assert!((cell_determinants(&pm)[0] - 1.0).abs() < 1e-14);
+    assert!((cell_determinants(&pm)[0] - 0.125).abs() < 1e-14);
+    // An interior cube cell (six faces) is 1; a cell with no internal face is 0.
+    let h = hex_block([3, 3, 3], [1.0; 3], &mut SerialAlloc::new()).unwrap();
+    let hp = build_polymesh(&h, &split_off()).unwrap().mesh;
+    let d = cell_determinants(&hp);
+    assert!((d.iter().cloned().fold(f64::MAX, f64::min) - 0.125).abs() < 1e-14);
+    assert!((d.iter().cloned().fold(0.0, f64::max) - 1.0).abs() < 1e-14);
+    let lone = build_polymesh(&single_hex().unwrap().mesh, &split_off()).unwrap().mesh;
+    assert_eq!(cell_determinants(&lone), [0.0]);
 }
 
 #[test]
@@ -107,9 +118,12 @@ fn hex_meshes_without_small_determinants_export_unchanged() {
         assert!(a.mesh.cell_map.is_empty());
         assert!(a.mesh.files().unwrap().iter().all(|f| f.name != CELL_MAP_FILE));
     }
-    // A lone cell has no internal face: not flagged, not split.
-    for f in [single_hex().unwrap(), single_tet().unwrap()] {
-        assert_eq!(build_polymesh(&f.mesh, &FoamOptions::default()).unwrap().mesh.n_cells, 1);
+    // A lone cell has no internal face (determinant 0): split into face pyramids, which pass.
+    for (f, n) in [(single_hex().unwrap(), 6), (single_tet().unwrap(), 4)] {
+        let b = build_polymesh(&f.mesh, &FoamOptions::default()).unwrap();
+        assert_eq!(b.mesh.n_cells, n);
+        assert!(cell_determinants(&b.mesh).iter().all(|d| *d >= SMALL_DETERMINANT));
+        assert!(b.report.loss.get("foam.small_det_remaining").is_none());
     }
 }
 

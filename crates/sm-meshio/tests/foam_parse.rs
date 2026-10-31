@@ -13,7 +13,7 @@ use sm_testkit::meshes::{hex_block_2x2x2, single_hex};
 // ---- helpers --------------------------------------------------------------------------------------
 
 fn good() -> Vec<FoamFile> {
-    build_polymesh(&single_hex().unwrap().mesh, &FoamOptions::default()).unwrap().mesh.files().unwrap()
+    build_polymesh(&single_hex().unwrap().mesh, &FoamOptions::new().split_small_determinant(false)).unwrap().mesh.files().unwrap()
 }
 
 fn replace(files: &[FoamFile], name: &str, from: &str, to: &str) -> Vec<FoamFile> {

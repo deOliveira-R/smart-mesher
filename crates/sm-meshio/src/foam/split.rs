@@ -34,45 +34,63 @@ pub(crate) fn area_vector(points: &[[f64; 3]], loop_: &[u32]) -> [f64; 3] {
     s
 }
 
-/// OpenFOAM `primitiveMeshTools::cellDeterminant` of every cell: the determinant of
-/// `sum(n n^T)` over the cell's internal faces (`n` the unit face normal), divided by
-/// `(N / 3)^3` for `N` internal faces, so a cell whose normals span space evenly is 1 and a cell
-/// whose normals lie in one plane or along one line is 0. A cell with no internal face is 1
-/// (OpenFOAM divides 0 by 0 there and does not flag it).
+/// OpenFOAM `primitiveMeshTools::cellDeterminant` of every cell. With `Sf` the face area
+/// vectors of the cell's internal faces and `avg` their mean magnitude, the area tensor is
+/// `sum (Sf/avg)(Sf/avg)^T` and the result is `|det| / 8` (an interior cube cell is 1, a cube
+/// corner cell with 3 internal faces is 1/8). A cell with no internal face, or `avg` below
+/// 1e-150, is 0: checkMesh flags it.
 pub fn cell_determinants(pm: &PolyMesh) -> Vec<f64> {
     let nc = pm.n_cells as usize;
     let ni = pm.n_internal();
-    let nrm: Vec<[f64; 3]> = (0..ni)
-        .into_par_iter()
-        .map(|i| {
-            let s = area_vector(&pm.points, pm.face(i));
-            let l = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
-            if l > 0.0 { [s[0] / l, s[1] / l, s[2] / l] } else { [0.0; 3] }
-        })
-        .collect();
+    let sf: Vec<[f64; 3]> = (0..ni).into_par_iter().map(|i| area_vector(&pm.points, pm.face(i))).collect();
     // Serial in face order: the sums are bit-identical for any thread count.
     let mut a = vec![[0.0f64; 6]; nc];
+    let mut mag = vec![0.0f64; nc];
     let mut cnt = vec![0u32; nc];
-    for (i, n) in nrm.iter().enumerate() {
+    for (i, n) in sf.iter().enumerate() {
         let t = [n[0] * n[0], n[0] * n[1], n[0] * n[2], n[1] * n[1], n[1] * n[2], n[2] * n[2]];
+        let m = (t[0] + t[3] + t[5]).sqrt();
         for c in [pm.owner[i] as usize, pm.neighbour[i] as usize] {
             for k in 0..6 {
                 a[c][k] += t[k];
             }
+            mag[c] += m;
             cnt[c] += 1;
         }
     }
     (0..nc)
         .map(|c| {
-            if cnt[c] == 0 {
-                return 1.0;
+            let avg = if cnt[c] > 0 { mag[c] / f64::from(cnt[c]) } else { 0.0 };
+            if cnt[c] == 0 || avg < 1e-150 {
+                return 0.0;
             }
-            let [xx, xy, xz, yy, yz, zz] = a[c];
+            let k = 1.0 / (avg * avg);
+            let [xx, xy, xz, yy, yz, zz] = a[c].map(|v| v * k);
             let det = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
-            let s = f64::from(cnt[c]) / 3.0;
-            det.abs() / (s * s * s)
+            det.abs() / 8.0
         })
         .collect()
+}
+
+/// Sum of the signed volumes of the fan tets (apex, m, a, b) over an outward base loop, `m` the
+/// loop's vertex average: positive when `apex` lies inside the base's half-space.
+fn pyramid_volume(points: &[[f64; 3]], loop_: &[u32], apex: [f64; 3]) -> f64 {
+    let n = loop_.len();
+    let mut m = [0.0; 3];
+    for &v in loop_ {
+        for (d, x) in m.iter_mut().enumerate() {
+            *x += points[v as usize][d] / n as f64;
+        }
+    }
+    let sub = |p: [f64; 3], q: [f64; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let mut vol = 0.0;
+    for e in 0..n {
+        let (a, b) = (sub(points[loop_[e] as usize], m), sub(points[loop_[(e + 1) % n] as usize], m));
+        let c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let h = sub(m, apex);
+        vol += (c[0] * h[0] + c[1] * h[1] + c[2] * h[2]) / 6.0;
+    }
+    vol
 }
 
 /// What [`split_small_determinant`] did.
@@ -84,7 +102,8 @@ pub(crate) struct SplitInfo {
     pub sub_cells: u64,
     /// Sub-cells by shape: tet, pyramid, other.
     pub sub_shapes: [u64; 3],
-    /// Cells below the threshold that could not be split (open or non-manifold cell).
+    /// Cells below the threshold that could not be split (open or non-manifold cell, or a
+    /// face pyramid around the centroid with non-positive volume).
     pub unsplit: u64,
     /// Exported cells still below the threshold after the split.
     pub remaining: u64,
@@ -145,6 +164,7 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
     // reverse edge in exactly one other face. across[k][i][e] = local face across edge e of face i.
     let mut splittable = vec![false; n_cand];
     let mut across: Vec<Vec<Vec<u32>>> = vec![Vec::new(); n_cand];
+    let mut centre = vec![[0.0f64; 3]; n_cand];
     for (k, fs) in cfaces.iter().enumerate() {
         if fs.len() < 4 {
             continue;
@@ -176,9 +196,24 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
             }
             ac.push(row);
         }
-        if ok {
+        if !ok {
+            continue;
+        }
+        let mut vs: Vec<u32> = loops.iter().flatten().copied().collect();
+        vs.sort_unstable();
+        vs.dedup();
+        let mut sum = [0.0; 3];
+        for &v in &vs {
+            for (d, x) in sum.iter_mut().enumerate() {
+                *x += pm.points[v as usize][d];
+            }
+        }
+        let n = vs.len() as f64;
+        let cen = [sum[0] / n, sum[1] / n, sum[2] / n];
+        if loops.iter().all(|l| pyramid_volume(&pm.points, l, cen) > 0.0) {
             splittable[k] = true;
             across[k] = ac;
+            centre[k] = cen;
         }
     }
     let mut info = SplitInfo { unsplit: splittable.iter().filter(|s| !**s).count() as u64, ..Default::default() };
@@ -207,19 +242,8 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
         }
         let k = cand[c] as usize;
         let fs = &cfaces[k];
-        let mut vs: Vec<u32> = fs.iter().flat_map(|&(f, _)| pm.face(f as usize).iter().copied()).collect();
-        vs.sort_unstable();
-        vs.dedup();
-        let mut s = [0.0; 3];
-        for &v in &vs {
-            let p = pm.points[v as usize];
-            for d in 0..3 {
-                s[d] += p[d];
-            }
-        }
-        let n = vs.len() as f64;
         centroid_of[k] = base_np + new_points.len() as u32;
-        new_points.push([s[0] / n, s[1] / n, s[2] / n]);
+        new_points.push(centre[k]);
         for (i, &(f, own)) in fs.iter().enumerate() {
             let sc = first[c] + i as u32;
             if own {

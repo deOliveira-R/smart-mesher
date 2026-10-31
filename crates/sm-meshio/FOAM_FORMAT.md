@@ -195,11 +195,14 @@ decide mesh validity; that stays `sm_mesh_api::validate`, which the exporter nev
 ## 11. Small-determinant split (ruling INT-8)
 
 The internal mesh stays exact; the exporter maps to what `checkMesh` accepts. A cell whose
-checkMesh cell determinant (`foam::cell_determinants`: `det(sum n n^T)` over the cell's internal
-faces, `n` the unit normal, divided by `(N/3)^3`; a cell with no internal face counts as 1) is
+checkMesh cell determinant (`foam::cell_determinants`, OpenFOAM `primitiveMeshTools::
+cellDeterminant`: `|det(sum (Sf/avg)(Sf/avg)^T)| / 8` over the cell's internal faces, `Sf` the face
+area vector, `avg` their mean magnitude; a cell with no internal face is 0) is
 below `foam::SMALL_DETERMINANT` (0.001) is replaced by one sub-cell per face: a face pyramid
 around the cell's vertex centroid (for a tet, the 4-tet centroid split). A tet with three
-boundary faces has one internal face and determinant 0, so it is always split.
+boundary faces has one internal face and determinant 0, so it is always split. A lone cell (no
+internal face) has determinant 0 and is split too. A cube corner cell with 3 internal faces is 1/8,
+an interior cube cell 1.
 
 * Cells keep source order; parent `p` becomes consecutive cells. Sub-cell `i` is the pyramid over
   the cell's `i`-th face (ascending foam face order). The centroid is a new last point; the
@@ -213,8 +216,13 @@ boundary faces has one internal face and determinant 0, so it is always split.
   it into `PolyMesh::cell_map`; OpenFOAM ignores the unknown file.
 * Report: `foam.small_det_split` (count = split parents; detail gives the sub-cell total),
   `foam.small_det_remaining` (exported cells still below the threshold: slivers), and
-  `foam.small_det_unsplit` (flagged cells whose faces are not a closed manifold). Shape counts
+  `foam.small_det_unsplit` (flagged cells whose faces are not a closed manifold, or whose centroid face pyramids
+  are not all positive in volume; they are written unsplit). Shape counts
   follow the exported cells.
 * `FoamOptions::split_small_determinant(false)` disables it. Meshes with no flagged cell (for
   example hex or wedge meshes with three or more internal faces per cell) export byte for byte
-  as without the pass. A lone cell (no internal face) is not flagged.
+  as without the pass.
+* One-layer hex or wedge meshes (for example `hex_block([n, n, 1])`, the usual 2D OpenFOAM setup)
+  have rank-2 internal normals, so checkMesh flags every cell and they are split into pyramids.
+  That breaks their use as a 2D case with `empty` patches; disable the split for such exports
+  (`FoamOptions::split_small_determinant(false)`). `sm_fem::export_files` has no switch for it yet.
