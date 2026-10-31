@@ -65,6 +65,20 @@ pub fn tet_quality(p: [V3; 4]) -> TetQ {
     TetQ { mean_ratio: eta, radius_edge, min_dihedral: mn, max_dihedral: mx }
 }
 
+/// Smallest scaled Jacobian over the four corners (`sqrt(2) |det| / (l1 l2 l3)`, 1 for the
+/// regular tet, 0 for a flat one); orientation-free. The downstream cell-quality metric.
+pub fn scaled_jacobian(p: [V3; 4]) -> f64 {
+    let mut worst = f64::INFINITY;
+    for i in 0..4 {
+        let e: [V3; 3] = std::array::from_fn(|j| sub(p[(i + j + 1) % 4], p[i]));
+        let det = dot(e[0], cross(e[1], e[2]));
+        let l = norm2(e[0]).sqrt() * norm2(e[1]).sqrt() * norm2(e[2]).sqrt();
+        let sj = if l > 0.0 { std::f64::consts::SQRT_2 * det.abs() / l } else { 0.0 };
+        worst = worst.min(sj);
+    }
+    worst
+}
+
 /// Summary statistics of a mesh, evaluated in parallel with order-independent reductions.
 pub(crate) fn mesh_stats(points: &[V3], tets: &[[u32; 4]]) -> (f64, f64, f64, f64, f64) {
     if tets.is_empty() {
