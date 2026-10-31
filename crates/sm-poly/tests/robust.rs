@@ -342,6 +342,12 @@ fn reflex_interface_edges_are_split_into_valid_wedges() {
             // `poly_stats` (mesh.poly_info) recovers the repair counts of the report from the mesh
             let st = sm_poly::poly_stats(&d);
             assert_eq!((st.wedges, st.split_cells), (rep.wedges, rep.split_cells), "{name} {mode:?}: poly_stats");
+            // a wedge that is a single corner must not come out as a `Hex` cell
+            if let Some(sm_mesh_api::TagValues::I64(t)) = d.tag(sm_mesh_api::MeshEntityKind::Cell, sm_poly::WEDGE_TAG).map(|c| &c.values) {
+                for (c, &n) in t.iter().enumerate() {
+                    assert!(n == 0 || d.cell_shape(CellIx::new(c)) == sm_mesh_api::CellShape::Polyhedron, "{name} {mode:?}: wedge cell {c} is {:?}", d.cell_shape(CellIx::new(c)));
+                }
+            }
             // sm-quality's validity (star-shaped about the vertex mean) agrees
             let v = sm_quality::validity(&d, &sm_quality::Options::default()).unwrap();
             assert!(v.n_inverted == 0, "{name} {mode:?}: {} inverted cells (starness)", v.n_inverted);

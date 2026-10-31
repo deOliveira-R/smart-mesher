@@ -50,7 +50,7 @@ impl PolyData {
         &self.c_faces[self.c_off[c] as usize..self.c_off[c + 1] as usize]
     }
 
-    fn push_face(&mut self, lp: &[u32], cls: Option<EntityId>) -> u32 {
+    pub(crate) fn push_face(&mut self, lp: &[u32], cls: Option<EntityId>) -> u32 {
         let f = self.n_faces() as u32;
         self.f_pts.extend_from_slice(lp);
         self.f_off.push(self.f_pts.len() as u32);

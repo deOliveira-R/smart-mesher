@@ -83,10 +83,12 @@ pub fn dualize<B: MeshBuild>(
     }
     // Per output cell, the wedge count of the dual cell it came from (0 for an unsplit cell), so
     // `mesh.poly_info` can report `wedges` and `split_cells` from the mesh alone.
-    let wedge_tags: Vec<i64> = (0..data.n_cells())
-        .filter(|&c| data.c_alive[c])
+    let tags_all: Vec<i64> = (0..data.n_cells())
         .map(|c| if split.is_split(c_key[c]) { i64::from(split.n_wedges(c_key[c])) } else { 0 })
         .collect();
+    let wedge_tags: Vec<i64> = (0..data.n_cells()).filter(|&c| data.c_alive[c]).map(|c| tags_all[c]).collect();
+    let wedged: Vec<bool> = tags_all.iter().map(|&t| t > 0).collect();
+    concave::break_hex_wedges(&mut data, &wedged);
     polydata::commit(&data, &mut b, want_edges)?;
     if rep.split_cells > 0 {
         b.add_tag(stats::WEDGE_TAG, MeshEntityKind::Cell, TagValues::I64(wedge_tags))?;

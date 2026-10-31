@@ -268,6 +268,67 @@ pub(crate) fn plan(p: &Prep<'_>, cell: usize) -> Option<Vec<(u32, u32)>> {
     Some(tets.into_iter().zip(wedge).collect())
 }
 
+/// A wedge that is a single corner is a hexahedron (6 quads, 8 points), which the mesh would tag
+/// `Hex` although it belongs to a polyhedral mesh. Split one quad of every such cell (the first
+/// face) into two triangles, in the neighbouring cell too, so the shape stays `Polyhedron`.
+/// `wedged[c]` marks the cells that came from split dual cells; other cells are left alone.
+pub(crate) fn break_hex_wedges(d: &mut PolyData, wedged: &[bool]) {
+    let nc = d.n_cells();
+    let mut edits: Vec<Option<Vec<SignedFace>>> = vec![None; nc];
+    let mut any = false;
+    for c in 0..nc {
+        if !d.c_alive[c] || !wedged[c] {
+            continue;
+        }
+        let faces: Vec<SignedFace> = edits[c].clone().unwrap_or_else(|| d.cell_faces(c).to_vec());
+        if faces.len() != 6 || faces.iter().any(|sf| d.face_loop(sf.face().get()).len() != 4) {
+            continue;
+        }
+        let mut pts: SmallVec<[u32; 24]> =
+            faces.iter().flat_map(|sf| d.face_loop(sf.face().get()).iter().copied()).collect();
+        pts.sort_unstable();
+        pts.dedup();
+        if pts.len() != 8 {
+            continue;
+        }
+        let f = faces[0].face().get();
+        let l: [u32; 4] = [0, 1, 2, 3].map(|i| d.face_loop(f)[i]);
+        let cls = d.f_cls[f];
+        let (g1, g2) = (d.push_face(&[l[0], l[1], l[2]], cls) as usize, d.push_face(&[l[0], l[2], l[3]], cls) as usize);
+        d.f_alive[f] = false;
+        let owners = d.f_cells[f];
+        d.f_cells[g1] = owners;
+        d.f_cells[g2] = owners;
+        for (k, &o) in owners.iter().enumerate() {
+            if o == NONE {
+                continue;
+            }
+            let side = if k == 0 { Side::Left } else { Side::Right };
+            let mut list = if o as usize == c { faces.clone() } else { edits[o as usize].clone().unwrap_or_else(|| d.cell_faces(o as usize).to_vec()) };
+            if let Some(i) = list.iter().position(|sf| sf.face().get() == f) {
+                list[i] = SignedFace::new(sm_mesh_api::FaceIx(g1 as u32), side);
+                list.insert(i + 1, SignedFace::new(sm_mesh_api::FaceIx(g2 as u32), side));
+            }
+            edits[o as usize] = Some(list);
+        }
+        any = true;
+    }
+    if !any {
+        return;
+    }
+    let (mut off, mut cf) = (vec![0u32], Vec::new());
+    for (c, e) in edits.iter().enumerate() {
+        match e {
+            Some(l) => cf.extend_from_slice(l),
+            None if d.c_alive[c] => cf.extend_from_slice(d.cell_faces(c)),
+            None => {}
+        }
+        off.push(cf.len() as u32);
+    }
+    d.c_off = off;
+    d.c_faces = cf;
+}
+
 /// Output cells that fail the `validate_geometry` volume or side-tetrahedron rule, ascending.
 /// Same rule as the validator (fan rule, vertex-mean apex). The finished mesh orders a cell's
 /// faces and rotates face loops differently, which changes rounding only, so a cell is also
