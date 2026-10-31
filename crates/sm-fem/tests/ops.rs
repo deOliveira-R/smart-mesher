@@ -289,17 +289,20 @@ fn sideset_add_creates_a_face_color_and_records_wrt() {
         fem.side_prefs().collect::<Vec<_>>(),
         vec![(f[0], v[0]), (f[1], v[0])]
     );
-    // Re-adding one face without wrt clears its preference; moving it warns.
+    // Adding a face to a second sideset keeps it in the first (with its wrt).
     let d = r.apply(SidesetAdd {
         sideset: 4,
         faces: vec![f[1]],
         wrt: None,
         name: Some("inlet".into()),
     });
-    assert_eq!(d.diagnostics.len(), 1);
-    assert_eq!(d.diagnostics[0].code, "sideset-move");
+    assert!(d.diagnostics.is_empty());
     let fem = r.state().layer::<FemLayer>().expect("fem");
-    assert_eq!(fem.side_prefs().collect::<Vec<_>>(), vec![(f[0], v[0])]);
+    assert_eq!(
+        fem.side_prefs().collect::<Vec<_>>(),
+        vec![(f[0], v[0]), (f[1], v[0])]
+    );
+    assert_eq!(fem.memberships().count(), 3);
 }
 
 #[test]

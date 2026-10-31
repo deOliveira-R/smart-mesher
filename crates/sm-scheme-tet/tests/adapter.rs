@@ -259,6 +259,41 @@ fn brick10_size2_through_the_driver() {
     let _ = (VertexIx::new(0), vertex_point as fn(&dyn TopologyView, EntityId) -> _);
 }
 
+/// Finite-volume solvers judge a cell by its interior faces only (OpenFOAM `checkMesh` cell
+/// determinant); a tet with two boundary faces keeps two interior normals and is under-determined.
+#[test]
+fn no_cell_is_under_determined_by_its_interior_faces() {
+    let (topo, ids, _) = brick_setup([10.0, 10.0, 10.0]);
+    let out = mesh_with(&topo, ids.volume, &size_intent(2.0), &registry(None), &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    let mut worst = f64::INFINITY;
+    for c in 0..m.count(MeshEntityKind::Cell) {
+        let mut a = [[0.0f64; 3]; 3];
+        let mut n_int = 0;
+        for sf in m.cell_faces(CellIx::new(c)) {
+            let f = sf.face();
+            if m.face_right(f).is_none() {
+                continue;
+            }
+            n_int += 1;
+            let s = sm_mesh_api::face_geometry(m, f).area_vector;
+            let s = [s.x, s.y, s.z];
+            let l = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+            for i in 0..3 {
+                for j in 0..3 {
+                    a[i][j] += s[i] * s[j] / l;
+                }
+            }
+        }
+        assert!(n_int >= 3, "cell {c} has {n_int} interior faces");
+        let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+        let tr3 = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+        worst = worst.min(det / (tr3 * tr3 * tr3));
+    }
+    assert!(worst >= 1e-3, "smallest interior-face determinant {worst}");
+}
+
 #[test]
 fn brick_with_void_has_both_shells() {
     let mut topo = CellComplex::new();

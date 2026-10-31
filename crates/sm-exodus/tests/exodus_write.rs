@@ -289,6 +289,24 @@ fn acc5_mixed_transition_blocks() {
     assert_eq!(got, [(1, "unassigned_TET4"), (2, "unassigned_HEX8"), (3, "unassigned_WEDGE6"), (4, "unassigned_PYRAMID5")]);
 }
 
+/// meshio 5.3.5 maps only `TETRA` / `WEDGE` / `PYRAMID` (Cubit spellings); `TET4` etc. raise
+/// KeyError. The file must carry those, while `read_exodus` reports the canonical names.
+#[test]
+fn file_uses_meshio_readable_element_types() {
+    let cases = [
+        (meshes::single_tet().unwrap(), "TETRA", "TET4"),
+        (meshes::single_wedge().unwrap(), "WEDGE", "WEDGE6"),
+        (meshes::single_pyramid().unwrap(), "PYRAMID", "PYRAMID5"),
+        (meshes::single_hex().unwrap(), "HEX8", "HEX8"),
+    ];
+    for (fx, raw, canon) in cases {
+        let bytes = exodus_bytes(&fx.mesh, &ExodusOptions::default()).unwrap();
+        let cdl = NcFile::read(&bytes).unwrap().to_cdl();
+        assert!(cdl.contains(&format!("elem_type = \"{raw}\"")), "{raw}: {cdl}");
+        assert_eq!(read_exodus(&bytes).unwrap().blocks[0].elem_type, canon);
+    }
+}
+
 #[test]
 fn mixed_set_splits_by_shape() {
     let mut m = meshes::mixed_transition().unwrap().mesh;

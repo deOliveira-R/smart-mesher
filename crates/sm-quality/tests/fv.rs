@@ -155,6 +155,16 @@ fn cell_determinant_matches_analytic_values() {
     assert!((det(&hp.mesh, &g) - want).abs() < TOL);
 }
 
+/// Boundary faces do not count (checkMesh): a corner cell of a two-cell stack has one internal
+/// face, so its face-area tensor has rank 1 and the determinant is zero.
+#[test]
+fn cell_determinant_ignores_boundary_faces_of_cells_with_internal_faces() {
+    let m = stretched_pair();
+    let g = fv_geometry(&m).unwrap();
+    let d = fv_compute(&m, &g, &[FvMetric::CellDeterminant]).unwrap();
+    assert!(d[0].values.iter().all(|&v| v.abs() < TOL), "{:?}", d[0].values);
+}
+
 /// A prism over `base` (CCW, in the xy-plane, with z offsets `zb`) of height 1, as one polyhedron.
 /// Returns the mesh and the index of its bottom face.
 fn prism_over(base: &[[f64; 3]]) -> (sm_mesh_api::reference::ReferenceMesh, usize) {

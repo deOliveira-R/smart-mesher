@@ -80,8 +80,19 @@ fn block_with_two_polyhedra() -> sm_mesh_api::reference::ReferenceMesh {
 
 #[test]
 fn a_polyhedral_cell_freezes_its_nodes() {
-    let mesh = block_with_two_polyhedra();
+    let mut mesh = block_with_two_polyhedra();
     assert_eq!(mesh.cell_shape(sm_mesh_api::CellIx::new(0)), sm_mesh_api::CellShape::Polyhedron);
+    // Warp the interior nodes a little: faces that start planar are kept planar (and so keep
+    // their nodes in place); warped faces are free to move.
+    for k in 1..=2usize {
+        for j in 1..=2usize {
+            for i in 1..=2usize {
+                let v = i + 4 * j + 16 * k;
+                let (p, w) = (mesh.point(v), 0.01 * ((v * 7) % 5) as f64);
+                mesh.set_point(PointIx::new(v), Point3::new(p.x + w, p.y - 0.5 * w, p.z + 0.3 * w)).expect("set");
+            }
+        }
+    }
     let (topo, model) = (CellComplex::new(), Model::new());
     let input = SmoothInput { mesh: &mesh, topo: &topo, model: &model };
     let r = SmoothRequest { method: Method::Laplacian { relax: 1.0 }, iterations: 20, tolerance: 0.0, ..SmoothRequest::default() };

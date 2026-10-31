@@ -1513,6 +1513,7 @@ dependencies = [
  "sm-mesh",
  "sm-mesh-api",
  "sm-op-api",
+ "sm-quality",
  "sm-testkit",
  "sm-topo-api",
  "smallvec",

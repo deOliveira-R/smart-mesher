@@ -1,4 +1,4 @@
-//! The `fem` layer: element types per block, side preferences per sideset face.
+//! The `fem` layer: element types per block, sideset memberships and side preferences per face.
 
 use std::collections::BTreeMap;
 
@@ -13,21 +13,24 @@ pub const FEM_LAYER: &str = "fem";
 /// FE-specific data that the `model` tables cannot hold.
 ///
 /// Blocks are volume [`Color`](sm_model_api::ColorRow)s and sidesets are face colors, so the
-/// partition of volumes into blocks lives in the `model` layer. This layer adds only
-/// - the element type declared for a block color, and
-/// - the volume a sideset face is taken `wrt` (which side of an interior face the sideset lowers
-///   to).
+/// partition of volumes into blocks lives in the `model` layer. The model gives a face only one
+/// color, so this layer also holds what a sideset needs beyond that:
+/// - the element type declared for a block color,
+/// - the sideset memberships of faces (a face may be in several sidesets), and
+/// - for each membership, the volume the face is taken `wrt` (which side of an interior face
+///   the sideset lowers to).
 ///
-/// # Digest (version 1)
-/// The element-type count, then `(color id, type code)` ascending; then the side-preference
-/// count and `(face id, volume id)` ascending. Everything is integer data, so the hash is exact
-/// on every platform.
+/// # Digest (version 2)
+/// The element-type count, then `(color id, type code)` ascending; then the membership count and
+/// `(face id, color id, volume count, volume ids)` ascending by face then color. Everything is
+/// integer data, so the hash is exact on every platform.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FemLayer {
     element_types: BTreeMap<EntityId, ElementType>,
-    /// Face to the volumes it may be taken `wrt`: one volume as added, several after the volume
-    /// split (the lowering picks the one the face borders). Sorted and distinct.
-    side_wrt: BTreeMap<EntityId, Vec<EntityId>>,
+    /// `(face, sideset color)` to the volumes the face may be taken `wrt`: empty when none was
+    /// given, one volume as added, several after the volume split (the lowering picks the one
+    /// the face borders). Sorted and distinct.
+    members: BTreeMap<(EntityId, EntityId), Vec<EntityId>>,
 }
 
 impl FemLayer {
@@ -41,34 +44,39 @@ impl FemLayer {
         self.element_types.iter().map(|(c, t)| (*c, *t))
     }
 
-    /// The volumes whose side of `face` a sideset takes, ascending; empty when none was given.
+    /// The volumes whose side of `face` the sideset `color` takes, ascending; empty when none
+    /// was given.
     ///
     /// One volume as added by `fem.sideset_add`. When that volume is later split, the face keeps
     /// all its pieces as candidates (the face borders at most one of them on a given side).
-    pub fn side_wrt(&self, face: EntityId) -> &[EntityId] {
-        self.side_wrt.get(&face).map_or(&[], Vec::as_slice)
+    pub fn side_wrt(&self, face: EntityId, color: EntityId) -> &[EntityId] {
+        self.members.get(&(face, color)).map_or(&[], Vec::as_slice)
     }
 
-    /// All side preferences `(face, volume)`, ascending by face then volume.
-    pub fn side_prefs(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
-        self.side_wrt
+    /// All memberships `(face, sideset color, wrt volumes)`, ascending by face then color.
+    ///
+    /// A face can appear under several colors; the model's own single face color is not
+    /// repeated here unless `fem.sideset_add` named it.
+    pub fn memberships(&self) -> impl Iterator<Item = (EntityId, EntityId, &[EntityId])> + '_ {
+        self.members
             .iter()
-            .flat_map(|(f, vs)| vs.iter().map(move |v| (*f, *v)))
+            .map(|((f, c), vs)| (*f, *c, vs.as_slice()))
+    }
+
+    /// All side preferences `(face, volume)`, ascending by face, then color, then volume.
+    pub fn side_prefs(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
+        self.members
+            .iter()
+            .flat_map(|((f, _), vs)| vs.iter().map(move |v| (*f, *v)))
     }
 
     pub(crate) fn set_element_type(&mut self, color: EntityId, ty: ElementType) {
         self.element_types.insert(color, ty);
     }
 
-    pub(crate) fn set_side_wrt(&mut self, face: EntityId, wrt: Option<EntityId>) {
-        match wrt {
-            Some(v) => {
-                self.side_wrt.insert(face, vec![v]);
-            }
-            None => {
-                self.side_wrt.remove(&face);
-            }
-        }
+    /// Put `face` in sideset `color`, replacing the `wrt` an earlier add of the pair stored.
+    pub(crate) fn set_side_wrt(&mut self, face: EntityId, color: EntityId, wrt: Option<EntityId>) {
+        self.members.insert((face, color), wrt.into_iter().collect());
     }
 }
 
@@ -82,24 +90,28 @@ impl LayerType for FemLayer {
             d.id(*c);
             d.u64(t.code());
         }
-        d.u64(self.side_prefs().count() as u64);
-        for (f, v) in self.side_prefs() {
-            d.id(f);
-            d.id(v);
+        d.u64(self.members.len() as u64);
+        for ((f, c), vs) in &self.members {
+            d.id(*f);
+            d.id(*c);
+            d.u64(vs.len() as u64);
+            for v in vs {
+                d.id(*v);
+            }
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.element_types.is_empty() && self.side_wrt.is_empty()
+        self.element_types.is_empty() && self.members.is_empty()
     }
 
-    /// Carries side preferences over splits and merges: a split face passes its volume list to
+    /// Carries memberships over splits and merges: a split face passes its memberships to
     /// every child, and a split volume is replaced by all its pieces in every list. (The layer
     /// has no topology access, so it cannot tell which piece owns which child face; the
     /// lowering resolves that against the mesh.)
     fn on_succession(&mut self, succ: &Successors) {
-        let mut next: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
-        for (f, vs) in std::mem::take(&mut self.side_wrt) {
+        let mut next: BTreeMap<(EntityId, EntityId), Vec<EntityId>> = BTreeMap::new();
+        for ((f, c), vs) in std::mem::take(&mut self.members) {
             let faces = match succ.get(&f) {
                 Some(new) => new.as_slice(),
                 None => std::slice::from_ref(&f),
@@ -112,29 +124,31 @@ impl LayerType for FemLayer {
                 }
             }
             for g in faces {
-                next.entry(*g).or_default().extend_from_slice(&mapped);
+                next.entry((*g, c)).or_default().extend_from_slice(&mapped);
             }
         }
         for vs in next.values_mut() {
             vs.sort_unstable();
             vs.dedup();
         }
-        self.side_wrt = next;
+        self.members = next;
     }
 
-    /// Drops the entries whose block color or face was retired, and retired volumes from the
-    /// preferences (a face left with none loses its preference).
+    /// Drops the entries whose block color, sideset color or face was retired, and retired
+    /// volumes from the preferences (a membership whose every preferred volume is gone is
+    /// dropped; one that never had a preference stays).
     fn on_retired(&mut self, ids: &[EntityId]) {
         let mut sorted = ids.to_vec();
         sorted.sort_unstable();
         let gone = |id: &EntityId| sorted.binary_search(id).is_ok();
         self.element_types.retain(|c, _| !gone(c));
-        self.side_wrt.retain(|f, vs| {
-            if gone(f) {
+        self.members.retain(|(f, c), vs| {
+            if gone(f) || gone(c) {
                 return false;
             }
+            let had = !vs.is_empty();
             vs.retain(|v| !gone(v));
-            !vs.is_empty()
+            !(had && vs.is_empty())
         });
     }
 
@@ -144,9 +158,9 @@ impl LayerType for FemLayer {
         let hit = |id: &EntityId| sorted.binary_search(id).is_ok();
         self.element_types.keys().any(hit)
             || self
-                .side_wrt
+                .members
                 .iter()
-                .any(|(f, vs)| hit(f) || vs.iter().any(hit))
+                .any(|((f, c), vs)| hit(f) || hit(c) || vs.iter().any(hit))
     }
 }
 
@@ -171,24 +185,25 @@ mod tests {
             id(EntityKind::TopoVolume, 2),
             id(EntityKind::TopoVolume, 3),
         );
+        let c = id(EntityKind::Color, 1);
         let mut l = FemLayer::default();
-        l.set_side_wrt(f, Some(v));
+        l.set_side_wrt(f, c, Some(v));
         // The face splits, then the volume splits.
         let mut s = Successors::new();
         s.insert(f, vec![g, h]);
         assert!(l.references_any(&[f]));
         l.on_succession(&s);
-        assert_eq!(l.side_wrt(g), &[v]);
-        assert_eq!(l.side_wrt(h), &[v]);
-        assert!(l.side_wrt(f).is_empty());
+        assert_eq!(l.side_wrt(g, c), &[v]);
+        assert_eq!(l.side_wrt(h, c), &[v]);
+        assert!(l.side_wrt(f, c).is_empty());
         let mut s = Successors::new();
         s.insert(v, vec![v1, v2]);
         assert!(l.references_any(&[v]));
         l.on_succession(&s);
-        assert_eq!(l.side_wrt(g), &[v1, v2]);
+        assert_eq!(l.side_wrt(g, c), &[v1, v2]);
         // Retiring the old ids leaves the pieces; retiring both pieces drops the entry.
         l.on_retired(&[f, v]);
-        assert_eq!(l.side_prefs().count(), 4);
+        assert_eq!(l.memberships().count(), 2);
         l.on_retired(&[v1, v2]);
         assert!(l.is_empty());
     }
@@ -197,10 +212,28 @@ mod tests {
     fn references_any_matches_faces_volumes_and_colors() {
         let f = id(EntityKind::TopoFace, 1);
         let v = id(EntityKind::TopoVolume, 1);
+        let c = id(EntityKind::Color, 1);
         let other = id(EntityKind::TopoVolume, 9);
         let mut l = FemLayer::default();
-        l.set_side_wrt(f, Some(v));
-        assert!(l.references_any(&[other, v]) && l.references_any(&[f]));
+        l.set_side_wrt(f, c, Some(v));
+        assert!(l.references_any(&[other, v]) && l.references_any(&[f, c]));
+        assert!(l.references_any(&[c]));
         assert!(!l.references_any(&[other]));
+    }
+
+    #[test]
+    fn a_face_is_in_several_sidesets() {
+        let f = id(EntityKind::TopoFace, 1);
+        let (v1, v2) = (id(EntityKind::TopoVolume, 1), id(EntityKind::TopoVolume, 2));
+        let (c1, c2) = (id(EntityKind::Color, 1), id(EntityKind::Color, 2));
+        let mut l = FemLayer::default();
+        l.set_side_wrt(f, c1, Some(v1));
+        l.set_side_wrt(f, c2, Some(v2));
+        assert_eq!(l.side_wrt(f, c1), &[v1]);
+        assert_eq!(l.side_wrt(f, c2), &[v2]);
+        // Re-adding without wrt clears only that pair's preference.
+        l.set_side_wrt(f, c1, None);
+        assert!(l.side_wrt(f, c1).is_empty());
+        assert_eq!(l.memberships().count(), 2);
     }
 }
