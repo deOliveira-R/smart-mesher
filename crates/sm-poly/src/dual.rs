@@ -11,9 +11,10 @@ use crate::stats;
 use sm_mesh_api::{Finished, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SerialAlloc, TagValues};
 
 /// Rounds of the concave-cell repair. Each round splits every cell that still fails; split
-/// wedges are valid by construction, so only neighbours whose edge faces were refined can fail
-/// in the next round (in practice one or two rounds).
-const MAX_SPLIT_ROUNDS: usize = 8;
+/// wedges are valid by construction, but refining a cell bends the faces of its neighbours, so
+/// a failure can cascade along a model edge (10 rounds on a 10x10x6 tet-meshed brick). The cap
+/// only stops a pathological loop; it is far above what real meshes need.
+const MAX_SPLIT_ROUNDS: usize = 256;
 
 /// Dualize a conformal all-tetrahedron mesh into polyhedral cells.
 ///
@@ -88,7 +89,7 @@ pub fn dualize<B: MeshBuild>(
         .collect();
     let wedge_tags: Vec<i64> = (0..data.n_cells()).filter(|&c| data.c_alive[c]).map(|c| tags_all[c]).collect();
     let wedged: Vec<bool> = tags_all.iter().map(|&t| t > 0).collect();
-    concave::break_hex_wedges(&mut data, &wedged);
+    concave::break_primitive_cells(&mut data, &wedged, opts.all_polyhedra);
     polydata::commit(&data, &mut b, want_edges)?;
     if rep.split_cells > 0 {
         b.add_tag(stats::WEDGE_TAG, MeshEntityKind::Cell, TagValues::I64(wedge_tags))?;

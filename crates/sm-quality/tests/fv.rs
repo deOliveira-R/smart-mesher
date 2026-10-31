@@ -155,14 +155,15 @@ fn cell_determinant_matches_analytic_values() {
     assert!((det(&hp.mesh, &g) - want).abs() < TOL);
 }
 
-/// Boundary faces do not count (checkMesh): a corner cell of a two-cell stack has one internal
-/// face, so its face-area tensor has rank 1 and the determinant is zero.
+/// Boundary faces count: the cells of a two-cell stack have one internal face and five boundary
+/// faces, and their face-area tensor is full rank (regression for an internal-only variant that
+/// gave 0 and failed every small mesh).
 #[test]
-fn cell_determinant_ignores_boundary_faces_of_cells_with_internal_faces() {
+fn cell_determinant_counts_boundary_faces() {
     let m = stretched_pair();
     let g = fv_geometry(&m).unwrap();
     let d = fv_compute(&m, &g, &[FvMetric::CellDeterminant]).unwrap();
-    assert!(d[0].values.iter().all(|&v| v.abs() < TOL), "{:?}", d[0].values);
+    assert!(d[0].values.iter().all(|&v| v > 0.1), "{:?}", d[0].values);
 }
 
 /// A prism over `base` (CCW, in the xy-plane, with z offsets `zb`) of height 1, as one polyhedron.

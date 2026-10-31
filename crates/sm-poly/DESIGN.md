@@ -145,6 +145,13 @@ rebuilds the `PolyData` until no cell fails, see "Concave cells"). `commit` then
 faces and unused points. Cell shapes are inferred by
 `finish`: a dual cell with hex topology (all four cells of one tet) comes out as `Hex`; the
 block-level element type `POLYHEDRON` belongs to the fem/export layer, not to this crate.
+Such fast-path cells (`Tet`: the dual of a vertex with four neighbours; `Hex`, `Wedge`,
+`Pyramid`: single-corner wedges) would be rejected by a `POLYHEDRON` block, so with
+`PolyOptions::all_polyhedra` (set by `mesh.to_poly`) one face of each is subdivided, in the
+neighbour too: a quad along a diagonal, a triangle into three about its centroid (a new point on
+the face, so faces stay planar). The triangle is the first face of the tet whose neighbour stays
+valid (the extra point shifts the neighbour's vertex mean, which `Starness` uses). Without the
+option only single-corner wedges of split cells are broken.
 
 Classification set explicitly: vertices (see table), boundary and interface polygons (their
 `TopoFace`), cells (the region). Interior faces are left to `finish`. With an edge table
@@ -202,7 +209,9 @@ Repair, after the dual is built (`concave.rs`, `dual.rs`):
    the triangle centroid. Every other edge face around such a triangle passes through that
    centroid too (and is hub-split again if that makes it non-planar), so cells stay closed.
 5. **Rounds.** The neighbours whose faces bent are checked again; a failing one is split in the
-   next round (at most 8 rounds, in practice 1 or 2). Wedges are valid by construction.
+   next round. The failure can cascade along a model edge (10 rounds on a tet-meshed 10x10x6
+   brick, with 8 allowed 6 bad cells were left), so the cap is 256. Wedges are valid by
+   construction.
 
 Star-shapedness is judged by both rules: about the volume centroid (`validate_geometry`'s side
 tetrahedra) and about the mean of the cell's distinct vertices (sm-quality's `Starness`, the
@@ -285,7 +294,7 @@ edge failed `GeomSideTet` (cells 12, 96 of the `{x<2,y>2}` notch; also `{x>2,y<2
 All pass now, see "Concave cells". Residual risks: (1) a wedge is accepted with a relative
 margin of 1e-9 against a validator that uses a different origin, so a near-degenerate corner
 (a sliver tet at the vertex) could in principle still fail; a lone corner is convex, so this
-needs a degenerate tet; (2) the repair stops after 8 rounds; neither was observed. The tolerance
+needs a degenerate tet; (2) the repair stops after 256 rounds; neither was observed. The tolerance
 was not loosened (decision 12).
 
 ## Known gaps (W3b)
