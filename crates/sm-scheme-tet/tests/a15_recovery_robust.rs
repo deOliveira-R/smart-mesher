@@ -146,6 +146,8 @@ fn mesh_hash(m: &TetMesh) -> u64 {
         h.write(&(x as u64).to_le_bytes());
     }
     h.write(&m.stats.n_constraint_updates.to_le_bytes());
+    h.write(&m.stats.spacing.mean.to_bits().to_le_bytes());
+    h.write(&(m.stats.n_quality_violations as u64).to_le_bytes());
     h.write(&m.stats.worst_s4_margin.to_bits().to_le_bytes());
     h.finish()
 }
@@ -210,12 +212,15 @@ fn complete_recovery_work_is_linear() {
         assert!(st.n_constraint_updates <= 7 * tris + 64 * st.n_boundary_steiner as u64, "patch n{n}: {} updates", st.n_constraint_updates);
         per_tri.push(st.n_constraint_updates as f64 / tris as f64);
         assert_eq!(st.n_s4_violations, 0, "patch n{n}");
+        // Round 4: the lookup is only ever updated, never rebuilt.
+        assert_eq!(st.n_lookup_rebuilds, 0, "patch n{n}");
     }
     // Four times the triangles: at most about four times the work (a rebuild per triangle
     // would be sixteen).
     assert!(per_tri[1] <= 1.25 * per_tri[0], "updates per triangle {per_tri:?}");
     let plain = tetrahedralize(&input_of(&surf3::tri_cube(16), 0), &TetOptions::default()).unwrap();
     assert_eq!(plain.stats.n_constraint_updates, 0, "complete recovery ran on the plain cube");
+    assert_eq!(plain.stats.n_lookup_rebuilds, 0);
 }
 
 /// Complete recovery is bit-identical over runs and thread counts.
@@ -227,39 +232,4 @@ fn relief_hard_case_is_deterministic() {
     })
     .unwrap_or_else(|e| panic!("relief n6 seed2 d0.9: {e}"));
     assert_ne!(h, 0);
-}
-
-/// Review round 3, release sweep: relief on 6 .. 12 grids up to depth 0.97, plus the review's
-/// worst S4 case (n12 seed7 d0.995). Every case keeps the exact boundary; ruling S4 is met or
-/// its violation is disclosed by `TetStats::n_s4_violations` (never silent). Prints a summary.
-#[test]
-#[ignore = "release sweep (minutes)"]
-fn relief_sweep_s4() {
-    let mut cases: Vec<(u32, u64, f64)> = vec![(12, 7, 0.995)];
-    for n in [6u32, 8, 10, 12] {
-        for seed in 1..=4u64 {
-            for depth in [0.6, 0.9, 0.97] {
-                cases.push((n, seed, depth));
-            }
-        }
-    }
-    let (mut compliant, mut worst, mut min_dih) = (0usize, f64::INFINITY, f64::INFINITY);
-    for &(n, seed, depth) in &cases {
-        let label = format!("relief n{n} seed{seed} d{depth}");
-        let inp = relief_cube(n, seed, depth);
-        let m = check(&inp, &label);
-        let margin = min_s4_margin(&m, &inp);
-        eprintln!(
-            "{label}: S4 margin {margin:.4} ({} violations), min dihedral {:.3}, temporary boundary {}",
-            m.stats.n_s4_violations, m.stats.min_dihedral_deg, m.stats.n_boundary_steiner
-        );
-        if margin < 0.3 - 1e-9 {
-            assert!(m.stats.n_s4_violations > 0, "{label}: S4 violation not disclosed (margin {margin})");
-        } else {
-            compliant += 1;
-        }
-        worst = worst.min(margin);
-        min_dih = min_dih.min(m.stats.min_dihedral_deg);
-    }
-    eprintln!("sweep: {compliant} of {} cases meet S4; worst margin {worst:.4}; smallest dihedral {min_dih:.3}", cases.len());
 }

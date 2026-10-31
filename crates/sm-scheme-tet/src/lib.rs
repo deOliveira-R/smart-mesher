@@ -19,6 +19,7 @@ mod refine;
 mod relocate;
 mod scheme;
 mod recover;
+mod spacing;
 mod steiner;
 mod tds;
 mod validate;
@@ -28,6 +29,7 @@ pub use geom::{in_sphere, ori};
 pub use pipeline::tetrahedralize;
 pub use scheme::{NAME, TetParams, TetVolume, register};
 pub use quality::{TetQ, tet_quality};
+pub use spacing::{MAX_DIAGNOSTICS, MIN_DIHEDRAL_DEG, MIN_MEAN_RATIO, TARGET_R};
 
 use geom::V3;
 
@@ -101,6 +103,100 @@ impl Default for TetOptions<'_> {
     }
 }
 
+/// Distribution of the normalized spacing `r = d / h_loc` of the interior Steiner points
+/// (ruling INT-7): `d` the distance to the nearest input triangle (or the boundary vertex on
+/// it), `h_loc` the size field at the point. `r` is clipped at `cap`. All zero without points.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpacingStats {
+    /// Number of interior Steiner points measured.
+    pub count: usize,
+    /// Mean of `r`.
+    pub mean: f64,
+    /// Standard deviation of `r` (population).
+    pub std_dev: f64,
+    /// 1st percentile of `r` (lowest-rank method: the value at index `floor(0.01 (count - 1))` of the sorted list).
+    pub p01: f64,
+    /// Smallest `r`.
+    pub min: f64,
+    /// The objective: the target value of `r` ([`TARGET_R`]).
+    pub target: f64,
+    /// Root mean square deviation of `r` from `target` (the objective's value).
+    pub rms_dev: f64,
+    /// Clip value of `r` (a point farther than the search reach has at least this).
+    pub cap: f64,
+}
+
+impl PartialEq for SpacingStats {
+    fn eq(&self, o: &Self) -> bool {
+        self.count == o.count
+            && [self.mean, self.std_dev, self.p01, self.min, self.target, self.rms_dev, self.cap].map(f64::to_bits)
+                == [o.mean, o.std_dev, o.p01, o.min, o.target, o.rms_dev, o.cap].map(f64::to_bits)
+    }
+}
+
+/// The measure a [`QualityDiagnostic`] is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum QualityMetric {
+    /// Smallest dihedral angle of a tet, degrees (floor [`MIN_DIHEDRAL_DEG`]).
+    MinDihedral,
+    /// Mean ratio of a tet (floor [`MIN_MEAN_RATIO`]); a proxy for cell quality.
+    MeanRatio,
+}
+
+/// What would probably cure a [`QualityDiagnostic`].
+#[derive(Clone, Copy, Debug)]
+pub enum SuggestedFix {
+    /// Refine the size field near the position to `h` (the tet has a Steiner vertex).
+    RefineSizeNear {
+        /// Suggested local size.
+        h: f64,
+    },
+    /// The tet spans input vertices only, which are frozen: remesh the listed input triangles
+    /// finer (about `h`) or smooth the surface there.
+    RefineInputSurface {
+        /// Suggested local surface size.
+        h: f64,
+    },
+}
+
+impl PartialEq for SuggestedFix {
+    fn eq(&self, o: &Self) -> bool {
+        match (self, o) {
+            (Self::RefineSizeNear { h: a }, Self::RefineSizeNear { h: b }) | (Self::RefineInputSurface { h: a }, Self::RefineInputSurface { h: b }) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+/// A tet below the quality floor, located (ruling INT-7). Never hidden, never an error.
+#[derive(Clone, Debug)]
+pub struct QualityDiagnostic {
+    /// Centroid of the tet.
+    pub position: [f64; 3],
+    /// Nearby input triangles (indices into `SurfaceInput::tris` as given by the caller, the
+    /// owners of the surface there), sorted ascending, at most 6.
+    pub triangles: Vec<u32>,
+    /// The measure that is below its floor.
+    pub metric: QualityMetric,
+    /// Measured value.
+    pub value: f64,
+    /// The floor.
+    pub threshold: f64,
+    /// Suggested fix.
+    pub fix: SuggestedFix,
+}
+
+impl PartialEq for QualityDiagnostic {
+    fn eq(&self, o: &Self) -> bool {
+        self.position.map(f64::to_bits) == o.position.map(f64::to_bits)
+            && self.triangles == o.triangles
+            && self.metric == o.metric
+            && self.value.to_bits() == o.value.to_bits()
+            && self.threshold.to_bits() == o.threshold.to_bits()
+            && self.fix == o.fix
+    }
+}
+
 /// Statistics of a run. `stage_ms` is excluded from equality and from every hash.
 #[derive(Clone, Debug, Default)]
 pub struct TetStats {
@@ -125,6 +221,18 @@ pub struct TetStats {
     /// Smallest `dist(p, T) / h_T` over those points, capped at 0.3 (exactly 0.3 when
     /// `n_s4_violations == 0`; 0 only in a `Default` value).
     pub worst_s4_margin: f64,
+    /// Distribution of the normalized spacing of the interior Steiner points (ruling INT-7).
+    pub spacing: SpacingStats,
+    /// Tets below the quality floor (a tet counts once per metric): the exact count.
+    pub n_quality_violations: usize,
+    /// The worst [`MAX_DIAGNOSTICS`] of them, located, worst first by `value / threshold` (ruling INT-7).
+    pub quality_diagnostics: Vec<QualityDiagnostic>,
+    /// Times the constraint lookup of complete recovery was rebuilt from scratch (0: it is
+    /// always updated incrementally).
+    pub n_lookup_rebuilds: u64,
+    /// Points the post-classification removal pass did not try or finish because its work cap
+    /// was reached (0 when it ran to completion).
+    pub n_removal_deferred: usize,
     /// Flips performed (recovery and optimization).
     pub flips: usize,
     /// Smoothing passes performed.
@@ -154,6 +262,11 @@ impl PartialEq for TetStats {
             && self.n_constraint_updates == o.n_constraint_updates
             && self.n_s4_violations == o.n_s4_violations
             && self.worst_s4_margin.to_bits() == o.worst_s4_margin.to_bits()
+            && self.spacing == o.spacing
+            && self.n_quality_violations == o.n_quality_violations
+            && self.quality_diagnostics == o.quality_diagnostics
+            && self.n_lookup_rebuilds == o.n_lookup_rebuilds
+            && self.n_removal_deferred == o.n_removal_deferred
             && self.flips == o.flips
             && self.smooth_passes == o.smooth_passes
             && self.unrefinable == o.unrefinable

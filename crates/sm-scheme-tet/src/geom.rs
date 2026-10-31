@@ -180,6 +180,44 @@ pub(crate) fn dist2_point_tri(p: V3, a: V3, b: V3, c: V3) -> f64 {
     norm2(sub(p, add(a, add(scale(ab, v), scale(ac, w)))))
 }
 
+/// Closest point of triangle `a,b,c` to `p`.
+pub(crate) fn closest_point_tri(p: V3, a: V3, b: V3, c: V3) -> V3 {
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let ap = sub(p, a);
+    let d1 = dot(ab, ap);
+    let d2 = dot(ac, ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = sub(p, b);
+    let d3 = dot(ab, bp);
+    let d4 = dot(ac, bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return add(a, scale(ab, d1 / (d1 - d3)));
+    }
+    let cp = sub(p, c);
+    let d5 = dot(ab, cp);
+    let d6 = dot(ac, cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return add(a, scale(ac, d2 / (d2 - d6)));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return add(b, scale(sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    add(a, add(scale(ab, vb * denom), scale(ac, vc * denom)))
+}
+
 /// `true` if `x` is usable as a predicate coordinate (zero or within the exact range).
 #[inline]
 pub(crate) fn coord_ok(x: f64) -> bool {

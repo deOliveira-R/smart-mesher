@@ -40,6 +40,10 @@ const MAX_SPLITS: usize = 4096;
 const MAX_FACE_STEPS: usize = 8192;
 /// Sweeps over the boundary Steiner points during suppression.
 const MAX_SWEEPS: usize = 8;
+/// [`Dt::remove_points`] does not try a point whose star has more tets than this.
+pub(crate) const MAX_REMOVE_STAR: usize = 160;
+/// Fill work (see [`Dt::work`]) one [`Dt::remove_points`] call may spend.
+pub(crate) const REMOVE_WORK: u64 = 30_000_000;
 /// Growth rounds of one side cavity of a suppressed point.
 const SIDE_GROW: usize = 6;
 /// Base budget (candidate tets) of a refill of a side without a point; a point star is the
@@ -77,7 +81,13 @@ pub(crate) enum On {
 pub(crate) struct Bnd {
     /// Tiles of the recovered input triangles: triangle (oriented like its input triangle) and
     /// the input triangle.
-    pub subs: Vec<([u32; 3], u32)>,
+    /// Keyed by a serial that grows with creation, so iterating gives creation order.
+    pub subs: BTreeMap<u32, ([u32; 3], u32)>,
+    /// Next tile serial.
+    next_sub: u32,
+    /// Tiles (serials) by vertex: lets a suppression find the fan of its point without
+    /// scanning every tile.
+    by_vertex: BTreeMap<u32, BTreeSet<u32>>,
     /// Points of each input edge, from the first to the second endpoint of its sorted key.
     chains: Vec<Vec<u32>>,
     /// Subsegment (sorted endpoints) and the input edge it lies on.
@@ -95,7 +105,13 @@ pub(crate) struct Bnd {
     /// Constraint-table entries inserted or removed: the work measure of the incremental
     /// constraint lookup (each tile, subsegment or split costs O(1) entries, never a rebuild).
     pub work: u64,
+    /// Times the lookup was rebuilt from the tiles (never in the incremental design).
+    pub rebuilds: u64,
 }
+
+/// The tile lookup: faces and edges by owner multiset.
+#[cfg(test)]
+type Lookup = (BTreeMap<[u32; 3], BTreeMap<u32, u32>>, BTreeMap<[u32; 2], BTreeMap<u32, u32>>);
 
 /// Add one `owner` to a multiset entry.
 fn ms_add<K: Ord>(m: &mut BTreeMap<K, BTreeMap<u32, u32>>, k: K, owner: u32) {
@@ -122,7 +138,7 @@ impl Bnd {
         let chains = orig.edges.iter().map(|e| e.0.to_vec()).collect();
         let segs = orig.edges.iter().enumerate().map(|(i, e)| (e.0, i as u32)).collect();
         let work = orig.edges.len() as u64;
-        Self { subs: Vec::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()], tile_faces: BTreeMap::new(), tile_edges: BTreeMap::new(), work }
+        Self { subs: BTreeMap::new(), next_sub: 0, by_vertex: BTreeMap::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()], tile_faces: BTreeMap::new(), tile_edges: BTreeMap::new(), work, rebuilds: 0 }
     }
 
     /// Owner of constraint edge `(a,b)`: the smallest of the owner of the input edge whose
@@ -145,7 +161,51 @@ impl Bnd {
     /// Add tile `t` of input triangle `owner` to the surface and the lookup.
     fn add_tile(&mut self, t: [u32; 3], owner: u32) {
         self.index_tile(t, owner, true);
-        self.subs.push((t, owner));
+        let id = self.next_sub;
+        self.next_sub += 1;
+        self.subs.insert(id, (t, owner));
+        for v in t {
+            self.by_vertex.entry(v).or_default().insert(id);
+        }
+    }
+
+    /// Remove tile `id` from the surface and the lookup.
+    fn remove_tile(&mut self, id: u32) {
+        let Some((t, owner)) = self.subs.remove(&id) else { return };
+        self.index_tile(t, owner, false);
+        for v in t {
+            if let Some(s) = self.by_vertex.get_mut(&v) {
+                s.remove(&id);
+                if s.is_empty() {
+                    self.by_vertex.remove(&v);
+                }
+            }
+        }
+    }
+
+    /// Input triangle (owner, not a tile serial) of the first tile at `v`: what a located
+    /// error must name; 0 when no tile has `v`.
+    fn owner_near(&self, v: u32) -> u32 {
+        self.tiles_at(v).next().map_or(0, |i| self.subs[&i].1)
+    }
+
+    /// Rebuild the lookup from the tiles (tests: the incremental lookup must equal this).
+    #[cfg(test)]
+    fn rebuilt_lookup(&mut self) -> Lookup {
+        self.rebuilds += 1;
+        let (mut f, mut e) = (BTreeMap::new(), BTreeMap::new());
+        for &(t, owner) in self.subs.values() {
+            ms_add(&mut f, sorted3(t[0], t[1], t[2]), owner);
+            for r in 0..3 {
+                ms_add(&mut e, key2(t[r], t[(r + 1) % 3]), owner);
+            }
+        }
+        (f, e)
+    }
+
+    /// Tiles (serials, ascending) that have vertex `v`.
+    fn tiles_at(&self, v: u32) -> impl Iterator<Item = u32> + '_ {
+        self.by_vertex.get(&v).into_iter().flatten().copied()
     }
 
     /// Insert (`add`) or remove the lookup entries of tile `t`.
@@ -374,7 +434,7 @@ impl Recover<'_> {
                 return Err(fail(self.orig.edges[e as usize].1, Some(k), "a recovered edge piece was lost"));
             }
         }
-        let subs = self.bnd.subs.clone();
+        let subs: Vec<([u32; 3], u32)> = self.bnd.subs.values().copied().collect();
         for (t, tri) in subs {
             if !self.face_present(sorted3(t[0], t[1], t[2])) {
                 return Err(fail(tri, None, "a recovered triangle piece was lost"));
@@ -990,8 +1050,8 @@ impl Recover<'_> {
         match self.bnd.on.keys().next() {
             None => Ok(()),
             Some(&p) => {
-                let si = self.bnd.subs.iter().position(|s| s.0.contains(&p)).unwrap_or(0) as u32;
-                Err(fail(si, None, "a temporary boundary Steiner point could not be moved off the surface"))
+                let owner = self.bnd.owner_near(p);
+                Err(fail(owner, None, "a temporary boundary Steiner point could not be moved off the surface"))
             }
         }
     }
@@ -1002,8 +1062,9 @@ impl Recover<'_> {
         let Some(&on) = self.bnd.on.get(&p) else { return Ok(true) };
         // The fans of `p`, by input triangle: directed link edges x -> y of subfaces (p, x, y).
         let mut fans: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-        let mut fan_idx: Vec<usize> = Vec::new();
-        for (i, s) in self.bnd.subs.iter().enumerate() {
+        let mut fan_idx: Vec<u32> = Vec::new();
+        for i in self.bnd.tiles_at(p) {
+            let s = self.bnd.subs[&i];
             let t = s.0;
             if let Some(r) = t.iter().position(|&x| x == p) {
                 fans.entry(s.1).or_default().push((t[(r + 1) % 3], t[(r + 2) % 3]));
@@ -1015,7 +1076,7 @@ impl Recover<'_> {
             On::Edge(_) => 2,
         };
         if fans.len() != want {
-            return Err(fail(fan_idx.first().map_or(0, |&i| i as u32), None, "inconsistent fan around a boundary Steiner point"));
+            return Err(fail(fan_idx.first().map_or(0, |i| self.bnd.subs[i].1), None, "inconsistent fan around a boundary Steiner point"));
         }
         // Polygons without `p`, triangulated in their input triangle's plane.
         let mut new_subs: Vec<([u32; 3], u32)> = Vec::new();
@@ -1072,7 +1133,7 @@ impl Recover<'_> {
         self.dt.tds.star(p, &mut star);
         star.sort_unstable();
         let fan_keys: BTreeSet<[u32; 3]> = fan_idx.iter().map(|&i| {
-            let t = self.bnd.subs[i].0;
+            let t = self.bnd.subs[&i].0;
             sorted3(t[0], t[1], t[2])
         }).collect();
         let mut seed_in = None;
@@ -1083,7 +1144,7 @@ impl Recover<'_> {
                 if !g.contains(&p) || !fan_keys.contains(&sorted3(g[0], g[1], g[2])) {
                     continue;
                 }
-                let solid = fan_idx.iter().any(|&i| same_cycle(g, self.bnd.subs[i].0));
+                let solid = fan_idx.iter().any(|&i| same_cycle(g, self.bnd.subs[&i].0));
                 if solid {
                     seed_in.get_or_insert(t);
                 } else {
@@ -1140,16 +1201,9 @@ impl Recover<'_> {
         self.dt.tds.replace(&old, &new, &mut ids)?;
         self.flips += 1;
         // Update the surface.
-        let mut keep: Vec<([u32; 3], u32)> = Vec::with_capacity(self.bnd.subs.len());
-        let subs = std::mem::take(&mut self.bnd.subs);
-        for (i, s) in subs.into_iter().enumerate() {
-            if fan_idx.binary_search(&i).is_err() {
-                keep.push(s);
-            } else {
-                self.bnd.index_tile(s.0, s.1, false);
-            }
+        for &i in &fan_idx {
+            self.bnd.remove_tile(i);
         }
-        self.bnd.subs = keep;
         for (t, tri) in new_subs {
             self.bnd.add_tile(t, tri);
         }
@@ -1375,10 +1429,38 @@ impl crate::delaunay::Dt {
     /// (vertex removal by exact gift wrapping); points on the mesh boundary stay. Returns the
     /// number removed. Constraints are kept: every face and edge inside a star contains its
     /// centre, which is not a surface point.
-    pub(crate) fn remove_points(&mut self, from: usize, to: usize) -> Result<usize, TetError> {
-        let mut removed = 0;
+    ///
+    /// Bounded: points are tried in order of their star size; a star with more than
+    /// [`MAX_REMOVE_STAR`] tets is not tried, and no point is started once the fill work of this
+    /// call reaches `limit` (see [`REMOVE_WORK`]). Every point skipped that way adds one to
+    /// `deferred` (the point stays, which is always valid).
+    pub(crate) fn remove_points(&mut self, from: usize, to: usize, limit: u64, deferred: &mut usize) -> Result<usize, TetError> {
+        // Cheapest first (smallest star, then index), so the work cap is spent on many small
+        // refills rather than a few large ones.
+        let mut star = Vec::new();
+        let mut order: Vec<(usize, u32)> = Vec::new();
         for v in from..to.min(self.pts.len()) {
-            if self.remove_vertex(v as u32)? {
+            self.tds.star(v as u32, &mut star);
+            if !star.is_empty() {
+                order.push((star.len(), v as u32));
+            }
+        }
+        order.sort_unstable();
+        let mut removed = 0;
+        let start = self.work.load(std::sync::atomic::Ordering::Relaxed);
+        for (k, &(len, v)) in order.iter().enumerate() {
+            let spent = self.work.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(start);
+            if len > MAX_REMOVE_STAR || spent >= limit {
+                // Sorted by size: this and every later point is over the cap or unaffordable.
+                *deferred += order[k..].len();
+                break;
+            }
+            self.tds.star(v, &mut star);
+            if star.len() > MAX_REMOVE_STAR {
+                *deferred += 1;
+                continue;
+            }
+            if self.remove_vertex(v)? {
                 removed += 1;
             }
         }
@@ -1545,6 +1627,31 @@ mod tests {
         for tw in [25.0, 35.0, 45.0, 55.0] {
             complete_only(&format!("prism {tw}"), &tower(3, &[(0.0, 0.0), (1.0, tw)]));
         }
+    }
+
+    /// The surface bookkeeping of complete recovery: the by-vertex index and the lookup follow
+    /// `add_tile` / `remove_tile`, and errors name the owner (input triangle), never the tile
+    /// serial.
+    #[test]
+    fn bnd_index_follows_tiles_and_names_owners() {
+        let con = Constraints::new(&[[0, 1, 2], [0, 2, 3]]);
+        let mut b = Bnd::new(&con);
+        // Owner 1 is created first, so its tile has serial 0 and owner 0 has serial 1.
+        b.add_tile([0, 2, 3], 1);
+        b.add_tile([0, 1, 2], 0);
+        b.add_tile([4, 1, 2], 0);
+        assert_eq!(b.tiles_at(0).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(b.tiles_at(4).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(b.owner_near(4), 0);
+        assert_eq!(b.owner_near(3), 1, "owner of the tile, not its serial 0");
+        assert_eq!(b.owner_near(9), 0);
+        b.remove_tile(2);
+        assert!(b.tiles_at(4).next().is_none());
+        assert_eq!(b.tiles_at(1).collect::<Vec<_>>(), vec![1]);
+        let (f, e) = b.rebuilt_lookup();
+        assert_eq!(f, b.tile_faces);
+        assert_eq!(e, b.tile_edges);
+        assert_eq!(b.rebuilds, 1);
     }
 
     #[test]

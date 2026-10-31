@@ -5,6 +5,10 @@ use sm_scheme_tet::{SurfaceInput, TetMesh, ori};
 use sm_testkit::surf3::SurfaceFixture;
 use std::collections::BTreeMap;
 
+mod r;
+#[allow(unused_imports)]
+pub use r::*;
+
 pub fn input_of(f: &SurfaceFixture, v: usize) -> SurfaceInput {
     SurfaceInput { points: f.points.clone(), tris: f.oriented_tris(v) }
 }
