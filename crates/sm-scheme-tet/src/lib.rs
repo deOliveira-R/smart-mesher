@@ -30,7 +30,7 @@ pub use geom::{in_sphere, ori};
 pub use pipeline::tetrahedralize_without_respace;
 pub use pipeline::tetrahedralize;
 pub use scheme::{NAME, TetParams, TetVolume, register};
-pub use quality::{TetQ, tet_quality};
+pub use quality::{TetQ, scaled_jacobian, tet_quality};
 pub use spacing::{MIN_DIHEDRAL_DEG, MIN_MEAN_RATIO, TARGET_R};
 
 use geom::V3;

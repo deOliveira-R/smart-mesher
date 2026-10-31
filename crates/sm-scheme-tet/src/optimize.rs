@@ -94,7 +94,7 @@ impl Dt {
     /// ratio and dihedral angle stay above `RESPACE_KEEP_MR` / `RESPACE_KEEP_DIHEDRAL` times
     /// their values now or above `RESPACE_GOOD_MR` / `RESPACE_GOOD_DIHEDRAL`, whichever is
     /// lower, the incident tets stay at or above the mesh's minimum mean ratio and dihedral
-    /// from before the pass (and the quality floor), the S4 margin does not shrink and the
+    /// and scaled Jacobian from before the pass (and the quality floor), the S4 margin does not shrink and the
     /// deviation of `r` falls.
     /// Points deeper than the target are left alone (pulling them towards the surface would
     /// serve no purpose). Same
@@ -103,20 +103,21 @@ impl Dt {
         // Global floors: the mesh minima now, never below the quality floor of INT-7. A move
         // changes only the tets of its vertex, so keeping each of them above these keeps the
         // mesh minima (mean ratio and dihedral) from falling.
-        let (mut gmr, mut gdih) = (f64::INFINITY, f64::INFINITY);
+        let (mut gmr, mut gdih, mut gsj) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
         for t in 0..self.tds.slots() as u32 {
             if self.tds.alive[t as usize] && self.tds.ghost_slot(t).is_none() {
                 let v = self.tds.verts[t as usize];
                 let q = crate::quality::tet_quality(v.map(|i| self.pts[i as usize]));
                 gmr = gmr.min(q.mean_ratio);
                 gdih = gdih.min(q.min_dihedral);
+                gsj = gsj.min(crate::quality::scaled_jacobian(v.map(|i| self.pts[i as usize])));
             }
         }
-        let floors = (gmr.max(MIN_MEAN_RATIO), gdih.max(MIN_DIHEDRAL_DEG));
+        let floors = (gmr.max(MIN_MEAN_RATIO), gdih.max(MIN_DIHEDRAL_DEG), gsj);
         self.smooth_with(first_movable, max_passes, guard, Some((meter, floors)))
     }
 
-    fn smooth_with(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>, meter: Option<(&Meter<'_, '_>, (f64, f64))>) -> usize {
+    fn smooth_with(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>, meter: Option<(&Meter<'_, '_>, (f64, f64, f64))>) -> usize {
         let np = self.pts.len();
         // Vertex -> tets (CSR). The topology does not change while smoothing.
         let mut count = vec![0u32; np + 1];
@@ -255,15 +256,15 @@ impl Dt {
     }
 
     /// One vertex of the spacing pass: step towards the spacing target.
-    fn respace_vertex(&self, v: u32, guard: &Guard<'_>, meter: &Meter<'_, '_>, floors: (f64, f64), inc: &[u32]) -> Option<(V3, f64)> {
+    fn respace_vertex(&self, v: u32, guard: &Guard<'_>, meter: &Meter<'_, '_>, floors: (f64, f64, f64), inc: &[u32]) -> Option<(V3, f64)> {
         let x = self.pts[v as usize];
         let (target, dev0) = meter.respace_target(x)?;
         if dev0 < 0.02 {
             return None;
         }
         // (smallest mean ratio, smallest dihedral) of the incident tets with `v` at `pos`.
-        let local = |pos: V3| -> Option<(f64, f64)> {
-            let (mut mr, mut dih) = (f64::INFINITY, f64::INFINITY);
+        let local = |pos: V3| -> Option<(f64, f64, f64)> {
+            let (mut mr, mut dih, mut sj) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
             for &t in inc {
                 let w = self.tds.verts[t as usize];
                 let p = |i: usize| if w[i] == v { pos } else { self.pts[w[i] as usize] };
@@ -273,8 +274,9 @@ impl Dt {
                 let q = crate::quality::tet_quality([p(0), p(1), p(2), p(3)]);
                 mr = mr.min(q.mean_ratio);
                 dih = dih.min(q.min_dihedral);
+                sj = sj.min(crate::quality::scaled_jacobian([p(0), p(1), p(2), p(3)]));
             }
-            Some((mr, dih))
+            Some((mr, dih, sj))
         };
         // Size grading: the worst ratio of mean edge lengths between an incident tet and its
         // neighbour, with `v` at `pos`. A move may not make it worse than it is or than 1.4.
@@ -303,15 +305,16 @@ impl Dt {
             worst
         };
         let base_grading = grading(x).max(RESPACE_GRADING);
-        let (base_mr, base_dih) = local(x)?;
+        let (base_mr, base_dih, _) = local(x)?;
         let floor = guard.margin(x);
         // Half, quarter, eighth of the way: short steps keep the size grading of the mesh.
         let mut alpha = 0.5;
         for _ in 0..3 {
             let cand = add(x, scale(sub(target, x), alpha));
-            if let Some((mr, dih)) = local(cand)
+            if let Some((mr, dih, sj)) = local(cand)
                 && mr >= (RESPACE_KEEP_MR * base_mr).min(RESPACE_GOOD_MR).max(floors.0)
                 && dih >= (RESPACE_KEEP_DIHEDRAL * base_dih).min(RESPACE_GOOD_DIHEDRAL).max(floors.1)
+                && sj >= floors.2
                 && guard.margin(cand) >= floor
                 && grading(cand) <= base_grading
             {
