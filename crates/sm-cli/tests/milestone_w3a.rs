@@ -43,6 +43,9 @@ use w3a_support::*;
 // Re-run round 2 (2026-10-30, sm-poly/sm-quality/sm-smooth fixes merged; the sm-scheme-tet
 // rework 5a69115 is not in this merge): unchanged, hybrid 0.147 (A) / 0.146 (B), `mt` 0.147 (A)
 // / 0.134 (B), after smoothing 0.185 (A) / 0.154 (B). Floors unchanged; row 8 still fails.
+// Re-run round 3 (2026-10-31, sm-scheme-tet 411daf1 drops the adapter's centroid split): back to
+// the first-run values, hybrid 0.307 (A) / 0.282 (B), `mt` 0.286 (both), after smoothing 0.253
+// (A) / 0.184 (B). Floors unchanged; row 8 passes.
 /// Minimum scaled Jacobian of the hexes.
 const SJ_HEX: f64 = 0.2;
 /// Minimum scaled Jacobian of the wedges.
