@@ -40,6 +40,9 @@ use w3a_support::*;
 // Re-run round 1 (2026-10-30, after sm-scheme-tet's `split_boundary_heavy` centroid split): tets
 // of the unsmoothed hybrid 0.147 (A) / 0.146 (B), `mt` 0.147 (A) / 0.134 (B). The floors are NOT
 // lowered: row 8 fails and the drop is reported to crates/sm-scheme-tet/.
+// Re-run round 2 (2026-10-30, sm-poly/sm-quality/sm-smooth fixes merged; the sm-scheme-tet
+// rework 5a69115 is not in this merge): unchanged, hybrid 0.147 (A) / 0.146 (B), `mt` 0.147 (A)
+// / 0.134 (B), after smoothing 0.185 (A) / 0.154 (B). Floors unchanged; row 8 still fails.
 /// Minimum scaled Jacobian of the hexes.
 const SJ_HEX: f64 = 0.2;
 /// Minimum scaled Jacobian of the wedges.
