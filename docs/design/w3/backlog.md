@@ -49,3 +49,14 @@ Principle: our own checks decide whether a mesh is valid and how good it is. Ext
 - **Hybrid policy.** Use Serpent's rejection test (`dt` 0.9) at run time, plus a per-node, per-band cost model decided at build time; both depend only on (node, material, energy). A majorant violation is an error, never clamped. Use track-length estimators on surface segments and collision estimators on delta segments; mixing both in one tally needs tests.
 - **Benchmark honestly.** Compare segments per track × cost per segment against one ray fire per track. Compare against DAGMC `ray_fire` (MOAB and double-down/Embree) and XDG `walk_elements`; XDG already walks tet/hex meshes, so cell walking alone is not novel. Our claims rest on exact analytic faces on polyhedral cells, no restart from the tree root, native instancing, hinted location, determinism and flat memory.
 - **Serpent gaps.** The research could not reach serpent.vtt.fi (HTTP 403). STL point-in-solid, the adaptive search mesh and polyhedral-cell location are unverified. The user can paste the wiki pages "Delta- and surface-tracking", `polymesh.html` and `check_stl.html`.
+
+## From W3a integration (2026-10-31; details in `w3a-report.md`)
+- **OpenFOAM INT-8 on one-layer 2D cases** (sm-meshio, sm-fem): every cell of a one-layer hex or wedge mesh is split. Add an export option to disable the split and a 2D fixture.
+- **Export notes in `smesh export --json`** (sm-cli/sm-server): then assert the INT-8 split count against `smeshCellMap` in the milestone.
+- **Warped dual faces** (sm-meshio): split into planar pieces in the OpenFOAM exporter; measure INT-9 counts.
+- **Transport diagnostic** (sm-quality/sm-diag): flag cells with two or more boundary faces.
+- **Smooth suggestion** (sm-diag): `mesh.quality` should suggest `smooth` for spread scaled-Jacobian warnings on real meshes.
+- **sm-scheme-tet:** `recover_facet` rounding (n=64 cliff); `RecoveryFailed.tri` placeholder; pass-level respace unit test; O(n·hints) restart check.
+- **sm-server:** `Server::open` binds another builder's pending store.
+- **Contracts:** `SchemeNote` / `Patch::notes` (sm-scheme-api); `MeshEntry.derived_from`.
+- sm-cadio wall-clock tests → work counters; sm-poly typed error for unrepaired cells.
