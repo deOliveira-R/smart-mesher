@@ -16,6 +16,40 @@ use crate::types::{Method, NodeSelect, Objective, SmoothError, SmoothInput, Smoo
 /// A point.
 pub(crate) type V = [f64; 3];
 
+/// A polygon face with at least four vertices that starts within this relative deviation
+/// (distance to the vertex-mean plane over `sqrt(area)`, as `sm_mesh_api::validate_geometry`
+/// measures it) is kept within it. Half the validator's default `GeomTol::planarity` (1e-6).
+pub(crate) const PLANAR_TOL: f64 = 5e-7;
+
+/// Relative planarity deviation of a polygon (`0` for a triangle or a zero-area face).
+pub(crate) fn planar_dev(p: &[V]) -> f64 {
+    let n = p.len();
+    if n < 4 {
+        return 0.0;
+    }
+    let k = 1.0 / n as f64;
+    let a = p.iter().fold([0.0; 3], |s, q| [s[0] + q[0] * k, s[1] + q[1] * k, s[2] + q[2] * k]);
+    let mut av = [0.0; 3];
+    for i in 0..n {
+        let (u, w) = (p[i], p[(i + 1) % n]);
+        let (u, w) = ([u[0] - a[0], u[1] - a[1], u[2] - a[2]], [w[0] - a[0], w[1] - a[1], w[2] - a[2]]);
+        av = [
+            av[0] + 0.5 * (u[1] * w[2] - u[2] * w[1]),
+            av[1] + 0.5 * (u[2] * w[0] - u[0] * w[2]),
+            av[2] + 0.5 * (u[0] * w[1] - u[1] * w[0]),
+        ];
+    }
+    let len = (av[0] * av[0] + av[1] * av[1] + av[2] * av[2]).sqrt();
+    if len.is_nan() || len <= 0.0 {
+        return 0.0;
+    }
+    let dev = p
+        .iter()
+        .map(|q| ((q[0] - a[0]) * av[0] + (q[1] - a[1]) * av[1] + (q[2] - a[2]) * av[2]).abs() / len)
+        .fold(0.0, f64::max);
+    dev / len.sqrt()
+}
+
 /// How a node may move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -68,6 +102,13 @@ pub(crate) struct Prep<'a> {
     pub vf: Vec<u32>,
     /// Winslow neighbours `[E, N, W, S, NE, NW, SW, SE]` of every eligible node (Winslow only).
     pub wnb: Vec<[u32; 8]>,
+    /// Planar polygon faces (3-D meshes): `face -> slot` (`u32::MAX` = not protected), CSR of the
+    /// slot's vertices, and CSR `vertex -> slots`. See [`PLANAR_TOL`].
+    pub face_slot: Vec<u32>,
+    pub pf_off: Vec<u32>,
+    pub pf_v: Vec<u32>,
+    pub vpf_off: Vec<u32>,
+    pub vpf: Vec<u32>,
     pub pinned: BTreeMap<String, usize>,
     pub pinned_entities: BTreeMap<String, Vec<EntityId>>,
 }
@@ -81,6 +122,17 @@ impl<'a> Prep<'a> {
     }
     pub fn nbrs(&self, v: usize) -> &[u32] {
         &self.adj[self.adj_off[v] as usize..self.adj_off[v + 1] as usize]
+    }
+    /// Vertices of protected planar face slot `s`.
+    pub fn pf_verts(&self, s: usize) -> &[u32] {
+        &self.pf_v[self.pf_off[s] as usize..self.pf_off[s + 1] as usize]
+    }
+    /// Protected planar face slots containing `v`.
+    pub fn planar_of(&self, v: usize) -> &[u32] {
+        if self.vpf_off.is_empty() {
+            return &[];
+        }
+        &self.vpf[self.vpf_off[v] as usize..self.vpf_off[v + 1] as usize]
     }
     pub fn faces_of(&self, v: usize) -> &[u32] {
         if self.vf_off.is_empty() {
@@ -633,6 +685,46 @@ impl<'a> Prep<'a> {
             vf_off = c2;
         }
         let _ = MeshEntityKind::Vertex;
+        // ---- planar polygon faces (3-D): kept planar by the guard ------------------------------------
+        let mut face_slot = vec![u32::MAX; if dim2 { 0 } else { nf }];
+        let (mut pf_off, mut pf_v) = (vec![0u32], Vec::new());
+        let mut vpf_off = vec![0u32; if dim2 { 0 } else { n + 1 }];
+        let mut vpf = Vec::new();
+        if !dim2 {
+            let xyz = mesh.coords();
+            let mut pts: Vec<V> = Vec::new();
+            #[allow(clippy::needless_range_loop)]
+            for f in 0..nf {
+                let lp = &co.face_vertices[co.face_vertex_offsets[f] as usize..co.face_vertex_offsets[f + 1] as usize];
+                if lp.len() < 4 || !lp.iter().any(|v| mode[v.get()] != Mode::Pinned) {
+                    continue;
+                }
+                pts.clear();
+                pts.extend(lp.iter().map(|v| {
+                    let q = xyz.get(v.get());
+                    [q.x, q.y, q.z]
+                }));
+                if planar_dev(&pts) <= PLANAR_TOL {
+                    face_slot[f] = (pf_off.len() - 1) as u32;
+                    pf_v.extend(lp.iter().map(|v| v.get() as u32));
+                    pf_off.push(pf_v.len() as u32);
+                    for v in lp {
+                        vpf_off[v.get() + 1] += 1;
+                    }
+                }
+            }
+            for i in 0..n {
+                vpf_off[i + 1] += vpf_off[i];
+            }
+            vpf = vec![0u32; vpf_off[n] as usize];
+            let mut fill = vpf_off.clone();
+            for s in 0..pf_off.len() - 1 {
+                for &v in &pf_v[pf_off[s] as usize..pf_off[s + 1] as usize] {
+                    vpf[fill[v as usize] as usize] = s as u32;
+                    fill[v as usize] += 1;
+                }
+            }
+        }
         Ok(Prep {
             mesh,
             topo,
@@ -656,6 +748,11 @@ impl<'a> Prep<'a> {
             vf_off,
             vf,
             wnb,
+            face_slot,
+            pf_off,
+            pf_v,
+            vpf_off,
+            vpf,
             pinned,
             pinned_entities,
         })
