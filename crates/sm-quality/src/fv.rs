@@ -378,12 +378,10 @@ impl Ctx<'_> {
                     return f64::NAN;
                 }
                 let mut mt = [[0.0f64; 3]; 3];
-                // checkMesh uses only internal faces, unless the cell has none (then all faces).
-                let any_internal = faces.iter().any(|sf| self.mesh.face_right(sf.face()).is_some());
+                // All faces count (plan section 3, FV metric spec): a cell with one internal
+                // face and five boundary faces is well posed. Internal-only is a checkMesh
+                // quirk that exporters/adapters handle themselves.
                 for sf in faces {
-                    if any_internal && self.mesh.face_right(sf.face()).is_none() {
-                        continue;
-                    }
                     let s = self.g.face_area[sf.face().get()];
                     let len = norm(s);
                     if len <= V_SMALL {
