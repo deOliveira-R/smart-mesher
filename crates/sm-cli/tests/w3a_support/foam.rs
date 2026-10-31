@@ -161,3 +161,86 @@ pub fn check_case(case: &Path) -> FoamCheck {
     }
     FoamCheck { problems, mesh: Some(m), ties }
 }
+
+/// What the exporter's INT-8 small-determinant split did to one case.
+#[derive(Debug, Default)]
+pub struct SplitFacts {
+    /// Internal cells split (cells appearing more than once in `cell_map`).
+    pub parents: usize,
+    /// Exported sub-cells of those parents.
+    pub sub_cells: usize,
+    /// Internal faces added by the split (one per parent edge).
+    pub added_faces: usize,
+    /// Split parents by internal shape.
+    pub by_shape: std::collections::BTreeMap<String, usize>,
+}
+
+/// Row 11 counts: the exported case against the internal mesh as INT-8 defines the export.
+/// Without a cell map the counts are equal. With one: `cell_map.len() == n_cells`, the map is
+/// onto `0..cell_count`, every split parent has one sub-cell per face, points = vertices + one
+/// centroid per split parent, boundary faces unchanged, internal faces = ours + one per parent
+/// edge (a tet adds 6).
+pub fn compare_counts(pm: &PolyMesh, mesh: &dyn sm_mesh_api::MeshRead) -> (Vec<String>, Option<SplitFacts>) {
+    use sm_mesh_api::{CellIx, FaceIx};
+    let mut p = Vec::new();
+    let (nv, nc, nf) = (mesh.vertex_count(), mesh.cell_count(), mesh.face_count());
+    let our_internal = (0..nf).filter(|&f| mesh.face_right(FaceIx::new(f)).is_some()).count();
+    let (fb, fi) = (pm.n_faces() - pm.n_internal(), pm.n_internal());
+    if pm.cell_map.is_empty() {
+        for (what, a, b) in [("points", pm.points.len(), nv), ("cells", pm.n_cells as usize, nc), ("faces", pm.n_faces(), nf), ("internal faces", fi, our_internal)] {
+            if a != b {
+                p.push(format!("{what}: {a} != {b}"));
+            }
+        }
+        return (p, None);
+    }
+    if pm.cell_map.len() != pm.n_cells as usize {
+        p.push(format!("cell_map has {} entries for {} cells", pm.cell_map.len(), pm.n_cells));
+        return (p, None);
+    }
+    let mut mult = vec![0usize; nc];
+    for &c in &pm.cell_map {
+        match mult.get_mut(c as usize) {
+            Some(m) => *m += 1,
+            None => {
+                p.push(format!("cell_map entry {c} >= internal cell count {nc}"));
+                return (p, None);
+            }
+        }
+    }
+    let missing = mult.iter().filter(|&&m| m == 0).count();
+    if missing > 0 {
+        p.push(format!("cell_map is not onto the internal cells: {missing} internal cells have no exported cell"));
+    }
+    let mut sf = SplitFacts::default();
+    let mut bad_mult = Vec::new();
+    for (c, &m) in mult.iter().enumerate() {
+        if m <= 1 {
+            continue;
+        }
+        let cf = mesh.cell_faces(CellIx::new(c));
+        let corners: usize = cf.iter().map(|s| mesh.face_vertices(s.face()).len()).sum();
+        if m != cf.len() {
+            bad_mult.push((c, m, cf.len()));
+        }
+        sf.parents += 1;
+        sf.sub_cells += m;
+        sf.added_faces += corners / 2;
+        *sf.by_shape.entry(format!("{:?}", mesh.cell_shape(CellIx::new(c)))).or_insert(0) += 1;
+    }
+    if !bad_mult.is_empty() {
+        p.push(format!("{} split parents do not have one sub-cell per face (cell, sub-cells, faces): {:?}", bad_mult.len(), &bad_mult[..bad_mult.len().min(5)]));
+    }
+    let want_cells = nc + sf.sub_cells - sf.parents;
+    for (what, a, b) in [
+        ("cells (internal + sub-cells - split parents)", pm.n_cells as usize, want_cells),
+        ("points (vertices + one centroid per split parent)", pm.points.len(), nv + sf.parents),
+        ("boundary faces (unchanged by the split)", fb, nf - our_internal),
+        ("internal faces (ours + one per split parent edge)", fi, our_internal + sf.added_faces),
+    ] {
+        if a != b {
+            p.push(format!("{what}: {a} != {b}"));
+        }
+    }
+    (p, Some(sf))
+}

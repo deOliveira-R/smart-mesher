@@ -11,6 +11,9 @@
 # every mandatory check that ran passed; 1 otherwise. Work dir: target/conformance/<utc>-<pid>/
 # with report.json (removed on success unless --keep; kept on failure).
 set -uo pipefail
+# check_openfoam.py gets the label: polydual / w3a_poly record the INT-9 checkMesh warnings
+# (report.json `openfoam_warnings`); INT-8 splits are read from smeshCellMap
+# (`openfoam_int8_splits`).
 export PYTHONDONTWRITEBYTECODE=1
 
 if [ "${SM_CONFORMANCE:-}" != "1" ]; then
@@ -144,7 +147,7 @@ check_mesh() { # check_mesh <fixture> <label> <mesh id> <project dir>
                 > "$d/checkMesh.log" 2>&1
             local mode=""
             [ "$fx" = "hexbox" ] && mode="exact0"
-            if ! python3 "$TOOLS/check_openfoam.py" "$RESULTS/$label.openfoam.json" "$d/checkMesh.log" "$d/case" "$d/info.json" "$d/quality.json" $mode >>"$LOG" 2>&1; then
+            if ! python3 "$TOOLS/check_openfoam.py" "$RESULTS/$label.openfoam.json" "$d/checkMesh.log" "$d/case" "$d/info.json" "$d/quality.json" "$label" $mode >>"$LOG" 2>&1; then
                 result "$RESULTS/$label.openfoam.json" fail "\"check_openfoam.py crashed (see conformance.log)\""
             fi
         fi
@@ -210,6 +213,17 @@ for row in rows:
     for k in ("validate", "openfoam", "meshio", "exodus"):
         for p in row.get(k, {}).get("problems", []):
             print(f"      {k}: {p}")
+    w = row.get("openfoam", {}).get("warnings")
+    if w is not None:
+        print(f"      openfoam warnings (INT-9, not gating): {w}")
+    sp = row.get("openfoam", {}).get("facts", {}).get("int8_split")
+    if sp:
+        print(f"      openfoam INT-8 split: {sp['split_cells']} cells into {sp['sub_cells']} sub-cells, +{sp['added_internal_faces']} internal faces")
+warnings = {r["label"]: r["openfoam"]["warnings"] for r in rows if "warnings" in r.get("openfoam", {})}
+splits = {r["label"]: r["openfoam"]["facts"]["int8_split"]["split_cells"] for r in rows if "int8_split" in r.get("openfoam", {}).get("facts", {})}
+report["openfoam_warnings"] = warnings
+report["openfoam_int8_splits"] = splits
+json.dump(report, open(out, "w"), indent=1)
 print(f"summary: {summary}; mandatory_ok: {report['mandatory_ok']}")
 EOF
 ok=$(python3 -c 'import json,sys; print(1 if json.load(open(sys.argv[1]))["mandatory_ok"] else 0)' "$WORK/report.json")

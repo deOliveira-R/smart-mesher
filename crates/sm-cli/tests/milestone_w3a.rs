@@ -46,13 +46,19 @@ use w3a_support::*;
 // Re-run round 3 (2026-10-31, sm-scheme-tet 411daf1 drops the adapter's centroid split): back to
 // the first-run values, hybrid 0.307 (A) / 0.282 (B), `mt` 0.286 (both), after smoothing 0.253
 // (A) / 0.184 (B). Floors unchanged; row 8 passes.
-/// Minimum scaled Jacobian of the hexes.
+// Re-run round 4 (2026-10-31, w3-int2 at ea9fd98: sm-scheme-tet INT-7 rounds 4 and 5 merged,
+// INT-8 exporter split): hybrid before smoothing 0.259 (A) / 0.173 (B), after smoothing 0.253
+// (A) / 0.185 (B), `mt` 0.233 (A) / 0.217 (B); hex 1.0, wedge 0.738 (A) / 0.732 (B). Floors
+// unchanged; row 8 fails (tets below 0.25) and the drop is reported to crates/sm-scheme-tet/.
+/// Minimum scaled Jacobian of the hexes (measured 1.0).
 const SJ_HEX: f64 = 0.2;
-/// Minimum scaled Jacobian of the wedges.
+/// Minimum scaled Jacobian of the wedges (measured 0.732 .. 0.738 after smoothing).
 const SJ_WEDGE: f64 = 0.3;
-/// Minimum scaled Jacobian of unsmoothed tets (initial 0.3, calibrated: measured 0.282).
+/// Minimum scaled Jacobian of unsmoothed tets (initial 0.3; calibrated on round 3's 0.282;
+/// round 4 measured 0.173 .. 0.259, below the floor).
 const SJ_TET: f64 = 0.25;
-/// Minimum scaled Jacobian of tets after the milestone's smoothing (measured 0.199).
+/// Minimum scaled Jacobian of tets after the milestone's smoothing (round 3 measured 0.184;
+/// round 4 measured 0.185 (B) / 0.253 (A)).
 const SJ_TET_SMOOTHED: f64 = 0.15;
 
 /// sha256 of `sm_testkit::w3a::STEP` (pinned by the testkit).
@@ -1212,10 +1218,31 @@ fn mesh_rows(h: Head, rows: &mut Tagged<'_>, api: &Api, ops: &Ops, fork_dir: &Pa
         if r.ties > 0 {
             rows.note(11, format!("{case}: {} foam.upper_triangular_tie warnings (faces sharing an owner/neighbour pair; checkMesh judges)", r.ties));
         }
+        // INT-8: the exporter splits small-determinant cells; compare with the exported mesh as
+        // the ruling defines it (exact equality when nothing was split).
         if let Some(pmsh) = &r.mesh {
-            rows.eq(11, &format!("{case}: points"), &pmsh.points.len(), &mesh.vertex_count());
-            rows.eq(11, &format!("{case}: cells"), &(pmsh.n_cells as usize), &mesh.cell_count());
-            rows.eq(11, &format!("{case}: faces"), &pmsh.n_faces(), &mesh.face_count());
+            let (problems, split) = foam::compare_counts(pmsh, mesh);
+            for p in problems {
+                rows.fail(11, format!("{case}: {p}"));
+            }
+            match split {
+                Some(s) => rows.note(
+                    11,
+                    format!(
+                        "{case}: INT-8 split {} internal cells {:?} into {} sub-cells (+{} internal faces, +{} points); exported {} cells, {} points, {} faces",
+                        s.parents,
+                        s.by_shape,
+                        s.sub_cells,
+                        s.added_faces,
+                        s.parents,
+                        pmsh.n_cells,
+                        pmsh.points.len(),
+                        pmsh.n_faces()
+                    ),
+                ),
+                None if pmsh.cell_map.is_empty() => rows.note(11, format!("{case}: no INT-8 split (no smeshCellMap); counts equal the internal mesh")),
+                None => {}
+            }
         }
     }
     // INT-1: polycase cells = pairs + wedges - split_cells.
