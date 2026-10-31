@@ -1,0 +1,5 @@
+error[missing-argument]: `session.stage` needs the file path
+ --> stage_missing_path.smesh:1:14
+  |
+1 | session.stage()
+  |              ^^ write `session.stage("part.step")`

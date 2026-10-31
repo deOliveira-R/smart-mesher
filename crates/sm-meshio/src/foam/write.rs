@@ -118,7 +118,7 @@ fn labels_inline_or_block(v: &[u32], ty: &str, fmt: impl Fn(usize, &mut Vec<u8>)
 
 impl PolyMesh {
     /// The polyMesh files, in this order: `points`, `faces`, `owner`, `neighbour`, `boundary`,
-    /// then `cellZones` and `faceZones` only when non-empty. Scalars are written in Rust's
+    /// then `cellZones` and `faceZones` only when non-empty, then `smeshCellMap` only when cells were split. Scalars are written in Rust's
     /// shortest round-trip form, so [`parse_polymesh`](super::parse_polymesh) restores the points
     /// bit for bit. A NaN or infinite coordinate is [`FoamError::NonFinite`]; an inconsistent
     /// mesh (CSR, counts) is [`MeshioError::Inconsistent`].
@@ -211,6 +211,12 @@ impl PolyMesh {
             b.extend_from_slice(b")\n");
             out.push(file("faceZones", "regIOobject", None, b));
         }
+        if !self.cell_map.is_empty() {
+            if self.cell_map.len() != self.n_cells as usize {
+                return Err(MeshioError::Inconsistent("cell map length differs from the cell count".into()));
+            }
+            out.push(super::split::cell_map_file(&self.cell_map));
+        }
         Ok(out)
     }
 
@@ -223,7 +229,7 @@ impl PolyMesh {
         for f in &files {
             std::fs::write(dir.join(&f.name), &f.bytes)?;
         }
-        for stale in ["cellZones", "faceZones"] {
+        for stale in ["cellZones", "faceZones", super::CELL_MAP_FILE] {
             if !files.iter().any(|f| f.name == stale) {
                 match std::fs::remove_file(dir.join(stale)) {
                     Ok(()) => {}

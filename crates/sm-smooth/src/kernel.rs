@@ -8,7 +8,7 @@ use sm_quality::{Context, Metric, eval};
 use sm_topo_api::PointClass;
 
 use crate::normals::CarrierNormals;
-use crate::prep::{Geo, Mode, Prep, V};
+use crate::prep::{Geo, Mode, PLANAR_TOL, Prep, V, planar_dev};
 use crate::types::{Method, Objective};
 
 /// `beta` values at or above this are treated as infinitely bad.
@@ -106,9 +106,25 @@ impl Kernel<'_, '_> {
         new.0.is_finite() && new.0 >= lim && (old.1 <= 0.0 || old.1.is_nan() || new.1 > 0.0)
     }
 
+    /// Planar faces of `v` stay planar with `v` at `x`.
+    fn planar_ok(&self, v: usize, x: V, pos: &[V]) -> bool {
+        let mut buf = Pts::new();
+        for &s in self.prep.planar_of(v) {
+            buf.clear();
+            buf.extend(self.prep.pf_verts(s as usize).iter().map(|&w| if w as usize == v { x } else { pos[w as usize] }));
+            if planar_dev(&buf) > PLANAR_TOL {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Guard: every incident cell keeps `SJ' >= min(SJ, floor)` and a positive volume stays
     /// positive. Returns the new cell metrics when the candidate passes.
     fn guard(&self, v: usize, x: V, pos: &[V], cache: &CellCache) -> Option<NewMetrics> {
+        if !self.planar_ok(v, x, pos) {
+            return None;
+        }
         let mut buf = Pts::new();
         let mut out = NewMetrics::new();
         for &c in self.prep.cells_of(v) {
@@ -146,7 +162,21 @@ impl Kernel<'_, '_> {
     /// Guard check of a whole cell: positions `after` against the cached pre-sweep metrics
     /// (Jacobi repair).
     pub fn cell_violates(&self, c: usize, after: &[V], cache: &CellCache) -> bool {
-        !self.cell_ok(cache.m[c], self.cell_metrics(c, after))
+        if !self.cell_ok(cache.m[c], self.cell_metrics(c, after)) {
+            return true;
+        }
+        if self.prep.face_slot.is_empty() {
+            return false;
+        }
+        let mut buf = Pts::new();
+        self.prep.mesh.cell_faces(sm_mesh_api::CellIx::new(c)).iter().any(|sf| {
+            let slot = self.prep.face_slot[sf.face().get()];
+            slot != u32::MAX && {
+                buf.clear();
+                buf.extend(self.prep.pf_verts(slot as usize).iter().map(|&w| after[w as usize]));
+                planar_dev(&buf) > PLANAR_TOL
+            }
+        })
     }
 
     /// Minimum `Shape` over the cells of `v` with `v` at `x`.

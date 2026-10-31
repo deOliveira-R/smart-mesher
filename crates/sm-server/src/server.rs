@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use sm_cadio::InputRef;
 use sm_engine::{ApplyOptions, EngineError, ProjectConfig, Workspace, WorkspaceBuilder};
 use sm_lang::diag::render_all;
 use sm_lang::{Event, Interpreter, Options, SourceMap};
@@ -13,7 +14,8 @@ use sm_protocol::{
 };
 
 use crate::error::{ServerError, SessionError};
-use crate::host::{ExportParams, SessionHost, resolve_path, status_result, to_json};
+use crate::host::{ExportParams, SessionHost, project_inputs, resolve_path, stage_bytes, status_result, to_json};
+use crate::standard::{bind_pending_inputs, clear_pending_inputs};
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
 type Opener = Arc<dyn Fn() -> WorkspaceBuilder + Send + Sync>;
@@ -32,29 +34,47 @@ impl Server {
     /// A server over an in-memory workspace built from `builder`. `session.open` is not
     /// available (the builder is consumed); use [`from_factory`](Self::from_factory) for that.
     pub fn new(builder: WorkspaceBuilder) -> Result<Self, ServerError> {
-        Ok(Self { ws: builder.memory()?, opener: None })
+        let ws = builder.memory()?;
+        clear_pending_inputs();
+        Ok(Self { ws, opener: None })
     }
 
     /// A server over an in-memory workspace from `factory`, which `session.open` calls again to
     /// build the workspace of the opened project (same plugins, services, clock and author).
     pub fn from_factory(factory: impl Fn() -> WorkspaceBuilder + Send + Sync + 'static) -> Result<Self, ServerError> {
         let ws = factory().memory()?;
+        clear_pending_inputs();
         Ok(Self { ws, opener: Some(Arc::new(factory)) })
     }
 
     /// A server over an existing workspace (for example one opened with `smesh -p dir`).
     pub fn from_workspace(ws: Workspace) -> Self {
+        clear_pending_inputs();
         Self { ws, opener: None }
     }
 
     /// A server over the project at `dir`, opened (and replayed strictly) with `builder`.
+    ///
+    /// The input store of the most recent distribution builder assembled on this thread (if no
+    /// other server consumed it) is bound to `<dir>/inputs/` before the replay, so the replay
+    /// finds staged STEP files. If `builder` is not that one (another builder was made in
+    /// between), the pending store (which then belongs to a different builder) is still bound to
+    /// `dir`, which is harmless because staging rebinds to the attached project and an in-memory
+    /// workspace unbinds; the opened builder's own store is bound only after the open, and replaying a STEP import may fail
+    /// with `step.input_missing`: build the builder right before use. Staging always binds to
+    /// the attached project.
     pub fn open(builder: WorkspaceBuilder, dir: impl AsRef<Path>) -> Result<Self, ServerError> {
-        Ok(Self::from_workspace(builder.open(dir)?))
+        bind_pending_inputs(dir.as_ref());
+        let ws = builder.open(dir)?;
+        let _ = project_inputs(&ws);
+        Ok(Self::from_workspace(ws))
     }
 
     /// A server over a new project at `dir` (absent or empty directory) named `name`.
     pub fn create(builder: WorkspaceBuilder, dir: impl AsRef<Path>, name: &str) -> Result<Self, ServerError> {
-        Ok(Self::from_workspace(builder.create(dir, ProjectConfig::new(name))?))
+        let ws = builder.create(dir, ProjectConfig::new(name))?;
+        let _ = project_inputs(&ws);
+        Ok(Self::from_workspace(ws))
     }
 
     /// Let `session.open` rebuild the distribution with `factory`.
@@ -72,6 +92,13 @@ impl Server {
     /// Give the workspace back (to close it, for example).
     pub fn into_workspace(self) -> Workspace {
         self.ws
+    }
+
+    /// Stage `bytes` in the content-addressed input store (`<project>/inputs/` when a project is
+    /// attached, memory otherwise) and return their `{sha256, bytes}`. Ops such as
+    /// `model.import_step` record the sha256, never a path.
+    pub fn stage_input(&self, bytes: &[u8]) -> Result<InputRef, ServerError> {
+        stage_bytes(&self.ws, bytes)
     }
 
     fn host(&mut self) -> SessionHost<'_> {
@@ -144,13 +171,23 @@ impl Server {
                 format!("opening a project would discard the in-memory session ({} nodes); `session.save` it elsewhere first", self.ws.timeline().len()),
             ));
         }
-        let new = match opener().open(&dir) {
+        // Only a replay needs the pre-bind; a create binds afterwards via `project_inputs`.
+        let fresh = |replay: bool| {
+            clear_pending_inputs();
+            let b = opener();
+            if replay {
+                bind_pending_inputs(&dir);
+            }
+            b
+        };
+        let new = match fresh(true).open(&dir) {
             Err(EngineError::NotAProject(_)) if create => {
                 let name = dir.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
-                opener().create(&dir, ProjectConfig::new(name))?
+                fresh(false).create(&dir, ProjectConfig::new(name))?
             }
             other => other?,
         };
+        let _ = project_inputs(&new);
         self.ws = new;
         to_json(&status_result(&self.ws))
     }

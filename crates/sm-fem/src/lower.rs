@@ -10,6 +10,7 @@ use sm_meshio::DeckRecord;
 use sm_model_api::{BoundaryKind, DeckSide, Domain, FaceRole};
 use sm_topo_api::TopologyView;
 
+use crate::element::ElementType;
 use crate::error::FemError;
 use crate::layer::FemLayer;
 
@@ -50,6 +51,8 @@ pub struct Lowered {
     pub decks: Vec<DeckRecord>,
     /// The sets added, in the order they were added.
     pub sets: Vec<SetSummary>,
+    /// Declared element type per emitted block set (by set name); blocks with none are absent.
+    pub block_types: BTreeMap<String, ElementType>,
 }
 
 impl Lowered {
@@ -59,6 +62,7 @@ impl Lowered {
             mesh: Arc::clone(&mesh.mesh),
             decks: Vec::new(),
             sets: Vec::new(),
+            block_types: BTreeMap::new(),
         }
     }
 }
@@ -68,6 +72,7 @@ struct Pending {
     members: SetMembers,
     label: Option<i64>,
     origin: SetOrigin,
+    ty: Option<ElementType>,
 }
 
 /// Lower the blocks, sidesets and decks of `model` onto a copy of `mesh`.
@@ -123,7 +128,11 @@ pub fn lower(
     let mut host = (*mesh.mesh).clone_host();
     let mut alloc = alloc.clone();
     let mut sets = Vec::with_capacity(pending.len());
+    let mut block_types = BTreeMap::new();
     for p in pending {
+        if let Some(ty) = p.ty {
+            block_types.insert(p.name.clone(), ty);
+        }
         let len = p.members.len();
         host.add_set(&p.name, p.members, &mut alloc)?;
         if let Some(l) = p.label {
@@ -144,6 +153,7 @@ pub fn lower(
         mesh: Arc::from(host),
         decks: records,
         sets,
+        block_types,
     })
 }
 
@@ -181,7 +191,8 @@ fn blocks(
         };
         cells.sort_unstable();
         cells.dedup();
-        if let Some(ty) = fem.element_type(color) {
+        let declared = fem.element_type(color);
+        if let Some(ty) = declared {
             if !ty.is_linear() {
                 return Err(FemError::Unsupported(format!("element type {ty}")));
             }
@@ -201,6 +212,7 @@ fn blocks(
             members: SetMembers::Cells(cells),
             label: Some(i64::from(row.label)),
             origin: SetOrigin::Block,
+            ty: declared,
         });
     }
     Ok(())
@@ -213,10 +225,14 @@ fn sidesets(
     out: &mut Vec<Pending>,
 ) -> Result<(), FemError> {
     let (md, topo) = (model.model(), model.topo());
-    // Live piece -> hidden host face carrying a `wrt` (lowest host wins, as in `live_face_color`).
+    // Live piece -> hidden host face carrying memberships (lowest host wins, as in
+    // `live_face_color`).
     let mut host_of: BTreeMap<EntityId, EntityId> = BTreeMap::new();
+    // Face -> the sideset colors `fem.sideset_add` put it in (the model keeps only one color).
+    let mut extra: BTreeMap<EntityId, Vec<EntityId>> = BTreeMap::new();
     let mut last = None;
-    for (face, _) in fem.side_prefs() {
+    for (face, color, _) in fem.memberships() {
+        extra.entry(face).or_default().push(color);
         if last.replace(face) != Some(face) && !topo.is_alive(face) {
             for x in topo.live_cover(face) {
                 host_of.entry(x).or_insert(face);
@@ -228,7 +244,15 @@ fn sidesets(
         if !matches!(ent.kind(), EntityKind::TopoFace | EntityKind::PartitionFace) {
             continue;
         }
-        if let Some(c) = md.live_face_color(ent, topo) {
+        let mut colors: Vec<EntityId> = md.live_face_color(ent, topo).into_iter().collect();
+        for src in [Some(ent), host_of.get(&ent).copied()].into_iter().flatten() {
+            if let Some(cs) = extra.get(&src) {
+                colors.extend_from_slice(cs);
+            }
+        }
+        colors.sort_unstable();
+        colors.dedup();
+        for c in colors {
             by_color.entry(c).or_default().push(ent);
         }
     }
@@ -241,11 +265,11 @@ fn sidesets(
             let Some(set) = m.classified_on(ent) else {
                 continue;
             };
-            let mut prefs = fem.side_wrt(ent);
+            let mut prefs = fem.side_wrt(ent, color);
             if prefs.is_empty()
                 && let Some(h) = host_of.get(&ent)
             {
-                prefs = fem.side_wrt(*h);
+                prefs = fem.side_wrt(*h, color);
             }
             let wrt = wrt_cells(topo, ent, prefs)?;
             for &f in &set.faces {
@@ -262,6 +286,7 @@ fn sidesets(
             members: SetMembers::Sides(sides),
             label: Some(i64::from(row.label)),
             origin: SetOrigin::Sideset,
+            ty: None,
         });
     }
     Ok(())
@@ -370,6 +395,7 @@ fn deck_sets(model: &ModelLayer, m: &dyn MeshRead, out: &mut Vec<Pending>) -> Ve
                 members: SetMembers::Faces(faces),
                 label: None,
                 origin: SetOrigin::DeckFace,
+                ty: None,
             });
             Some(name)
         };

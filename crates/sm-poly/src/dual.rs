@@ -8,12 +8,13 @@ use crate::polydata;
 use crate::prep::Prep;
 use crate::resolver::EdgeResolver;
 use crate::stats;
-use sm_mesh_api::{Finished, MeshBuild, MeshDim, MeshError, MeshRead, SerialAlloc};
+use sm_mesh_api::{Finished, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SerialAlloc, TagValues};
 
 /// Rounds of the concave-cell repair. Each round splits every cell that still fails; split
-/// wedges are valid by construction, so only neighbours whose edge faces were refined can fail
-/// in the next round (in practice one or two rounds).
-const MAX_SPLIT_ROUNDS: usize = 8;
+/// wedges are valid by construction, but refining a cell bends the faces of its neighbours, so
+/// a failure can cascade along a model edge (10 rounds on a 10x10x6 tet-meshed brick). The cap
+/// only stops a pathological loop; it is far above what real meshes need.
+const MAX_SPLIT_ROUNDS: usize = 256;
 
 /// Dualize a conformal all-tetrahedron mesh into polyhedral cells.
 ///
@@ -46,11 +47,11 @@ pub fn dualize<B: MeshBuild>(
     let want_edges = opts.edges.unwrap_or_else(|| src.edges().is_some());
     let mut split = Split::default();
     let mut round = 0;
-    let (mut data, counts) = loop {
+    let (mut data, counts, c_key) = loop {
         let (data, counts, c_key) = polydata::build(&prep, &split);
         round += 1;
         if round > MAX_SPLIT_ROUNDS {
-            break (data, counts);
+            break (data, counts, c_key);
         }
         let mut new: Vec<u32> = concave::bad_cells(&data)
             .into_iter()
@@ -59,7 +60,7 @@ pub fn dualize<B: MeshBuild>(
             .collect();
         new.dedup();
         if new.is_empty() {
-            break (data, counts);
+            break (data, counts, c_key);
         }
         let mut vsplit = prep.vsplit.clone();
         let mut planned = false;
@@ -72,7 +73,7 @@ pub fn dualize<B: MeshBuild>(
         }
         if !planned {
             // nothing changes: rebuilding would give the same data
-            break (data, counts);
+            break (data, counts, c_key);
         }
         prep.set_split_vertices(vsplit)?;
     };
@@ -81,7 +82,18 @@ pub fn dualize<B: MeshBuild>(
     if let Some(a) = &opts.agglomerate {
         rep.merges = agglom::agglomerate(&mut data, a);
     }
+    // Per output cell, the wedge count of the dual cell it came from (0 for an unsplit cell), so
+    // `mesh.poly_info` can report `wedges` and `split_cells` from the mesh alone.
+    let tags_all: Vec<i64> = (0..data.n_cells())
+        .map(|c| if split.is_split(c_key[c]) { i64::from(split.n_wedges(c_key[c])) } else { 0 })
+        .collect();
+    let wedge_tags: Vec<i64> = (0..data.n_cells()).filter(|&c| data.c_alive[c]).map(|c| tags_all[c]).collect();
+    let wedged: Vec<bool> = tags_all.iter().map(|&t| t > 0).collect();
+    concave::break_primitive_cells(&mut data, &wedged, opts.all_polyhedra);
     polydata::commit(&data, &mut b, want_edges)?;
+    if rep.split_cells > 0 {
+        b.add_tag(stats::WEDGE_TAG, MeshEntityKind::Cell, TagValues::I64(wedge_tags))?;
+    }
     let fin = b.finish(alloc)?;
     rep.cells = data.c_alive.iter().filter(|a| **a).count();
     rep.points = sm_mesh_api::MeshRead::vertex_count(&fin.mesh);

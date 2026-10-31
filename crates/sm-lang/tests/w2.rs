@@ -47,6 +47,7 @@ impl Host for Recording<'_> {
         self.log.push(cmd.clone());
         match cmd {
             SessionCommand::Hash => Ok(json!("ab".repeat(32))),
+            SessionCommand::Stage { path } => Ok(json!({"sha256": "cd".repeat(32), "bytes": path.len()})),
             SessionCommand::Status => Ok(json!({"branch": "main", "nodes": 3})),
             SessionCommand::Save if self.fail_save => Err(HostError { code: "io".into(), message: "disk full".into() }),
             _ => Ok(json!({"ok": true})),
@@ -134,7 +135,7 @@ fn a_host_without_a_session_reports_unsupported() {
 
 #[test]
 fn session_in_batch_is_an_error_for_every_verb() {
-    for call in ["session.save()", "session.export(\"a.vtu\")", "session.hash()", "session.status()"] {
+    for call in ["session.save()", "session.export(\"a.vtu\")", "session.hash()", "session.status()", "session.stage(\"a.step\")"] {
         let d = first_error(&format!("batch {{\n{call}\n}}\n"));
         assert_eq!(d.code, "session-in-batch", "{call}");
     }
@@ -146,6 +147,33 @@ fn statements_cannot_be_used_as_values_but_queries_can() {
     assert_eq!(first_error("print session.export(\"a.vtu\")\n").code, "op-in-expression");
     let (_, rep) = run_rec("let x = session.hash()\n");
     assert!(rep.ok());
+}
+
+#[test]
+fn export_accepts_four_formats_and_suggests_among_four() {
+    for f in ["smsh", "vtu", "exodus", "openfoam"] {
+        let (log, rep) = run_rec(&format!("session.export(\"o\", format: \"{f}\")\n"));
+        assert!(rep.ok(), "{f}");
+        assert!(matches!(&log[0], SessionCommand::Export { format: Some(g), .. } if g == f));
+    }
+    let d = first_error("session.export(\"o\", format: \"exodos\")\n");
+    assert_eq!(d.code, "invalid-argument");
+    let h = d.help.clone().unwrap_or_default();
+    assert!(h.contains("did you mean \"exodus\""), "{h}");
+    let h = first_error("session.export(\"o\", format: \"zzzzzzzz\")\n").help.unwrap_or_default();
+    assert!(h.contains("\"smsh\"") && h.contains("\"vtu\"") && h.contains("\"exodus\"") && h.contains("\"openfoam\""), "{h}");
+}
+
+#[test]
+fn stage_is_a_value_command() {
+    let (log, rep) = run_rec("let s = session.stage(\"p.step\")\nprint s.sha256\nsession.stage(path: \"q.step\")\n");
+    assert!(rep.ok(), "{:?}", rep.diagnostics);
+    assert_eq!(log, [SessionCommand::Stage { path: "p.step".into() }, SessionCommand::Stage { path: "q.step".into() }]);
+    assert_eq!(first_error("session.stage()\n").code, "missing-argument");
+    assert_eq!(first_error("session.stage(3)\n").code, "type-mismatch");
+    assert_eq!(first_error("session.stage(\"\")\n").code, "type-mismatch");
+    assert_eq!(first_error("session.stage(\"a\", \"b\")\n").code, "positional-ambiguous");
+    assert_eq!(first_error("session.stage(\"a\", format: \"x\")\n").code, "unknown-argument");
 }
 
 #[test]
@@ -288,13 +316,13 @@ fn complete(src: &str) -> Vec<(CandidateKind, String)> {
 fn command_names_complete() {
     let items = complete("session.");
     let labels: Vec<_> = items.iter().map(|(_, l)| l.as_str()).collect();
-    assert_eq!(labels, ["session.export", "session.hash", "session.save", "session.status"]);
+    assert_eq!(labels, ["session.export", "session.hash", "session.save", "session.stage", "session.status"]);
     let labels: Vec<_> = complete("timeline.").into_iter().map(|(_, l)| l).collect();
     assert!(labels.contains(&"timeline.branch".to_owned()) && labels.contains(&"timeline.head".to_owned()), "{labels:?}");
     let params: Vec<_> = complete("session.export(").into_iter().map(|(_, l)| l).collect();
     assert_eq!(params, ["path", "format", "mesh", "provenance"]);
     let fmt: Vec<_> = complete("session.export(\"a\", format: ").into_iter().filter(|(k, _)| *k == CandidateKind::Value).map(|(_, l)| l).collect();
-    assert_eq!(fmt, ["\"smsh\"", "\"vtu\""]);
+    assert_eq!(fmt, ["\"smsh\"", "\"vtu\"", "\"exodus\"", "\"openfoam\""]);
 }
 
 #[test]

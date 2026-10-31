@@ -1,0 +1,5 @@
+// End of both heads: the three volumes are the analytic part, so a STEP order surprise fails here.
+assert abs(model.measure(entity: v1).volume - 1200.0) < 1e-9, "V1 volume"
+assert abs(model.measure(entity: v2).volume - 200.0) < 1e-9, "V2 volume"
+assert abs(model.measure(entity: v3).volume - 600.0) < 1e-9, "V3 volume"
+let h0 = timeline.head().node

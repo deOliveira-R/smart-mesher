@@ -23,7 +23,8 @@ fn add_faces(m: &mut ReferenceMesh, name: &str, faces: Vec<FaceIx>, alloc: &mut 
 }
 
 fn build(m: &dyn MeshRead) -> FoamBuild {
-    build_polymesh(m, &FoamOptions::default()).unwrap()
+    // The IR -> polyMesh mapping itself; the INT-8 split has its own tests (`tests/foam_split.rs`).
+    build_polymesh(m, &FoamOptions::new().split_small_determinant(false)).unwrap()
 }
 
 fn foam_err(r: sm_meshio::Result<FoamBuild>) -> FoamError {

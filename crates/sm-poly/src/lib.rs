@@ -28,7 +28,7 @@ pub use error::PolyError;
 pub use ops::{PolyInfo, ToPoly};
 pub use options::{Agglomerate, DualReport, FaceMode, PolyOptions};
 pub use resolver::{EdgeResolver, TopologyResolver, VertexClassResolver};
-pub use stats::{PolyStats, Spread, face_nonplanarity, poly_stats};
+pub use stats::{PolyStats, Spread, WEDGE_TAG, face_nonplanarity, poly_stats};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 

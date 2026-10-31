@@ -97,8 +97,8 @@ fn tools_cover_catalog_batch_and_fixed() {
     let n = names(&tools(&mut Mock::new(), "2025-06-18"));
     for want in [
         "core__batch", "model__create_brick", "mesh__run", "demo__count", "topo__related",
-        "run_script", "session_hash", "session_export", "session_status", "timeline_branch",
-        "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
+        "run_script", "session_hash", "session_export", "session_stage", "session_status",
+        "timeline_branch", "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
     ] {
         assert!(n.iter().any(|x| x == want), "missing {want}: {n:?}");
     }
@@ -106,13 +106,13 @@ fn tools_cover_catalog_batch_and_fixed() {
     for x in &n {
         let fixed = !x.contains("__");
         let is_fixed = [
-            "run_script", "session_hash", "session_export", "session_status", "timeline_branch",
-            "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
+            "run_script", "session_hash", "session_export", "session_stage", "session_status",
+            "timeline_branch", "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
         ]
         .contains(&x.as_str());
         assert_eq!(fixed, is_fixed, "{x}");
     }
-    assert_eq!(n.len(), 18);
+    assert_eq!(n.len(), 19);
 }
 
 #[test]
@@ -643,7 +643,7 @@ fn help_lists_and_describes() {
         ],
     );
     let list = r[0]["result"]["structuredContent"]["tools"].as_array().unwrap();
-    assert_eq!(list.len(), 18);
+    assert_eq!(list.len(), 19);
     assert_eq!(r[1]["result"]["structuredContent"]["name"], "mesh__run");
     assert_eq!(r[1]["result"]["structuredContent"], r[2]["result"]["structuredContent"]);
     assert!(r[1]["result"]["structuredContent"]["inputSchema"].is_object());
@@ -738,4 +738,28 @@ fn respelled_ids_feed_back_as_arguments() {
         }
     }
     assert!(seen >= 3, "ids found in tool text: {seen}");
+}
+
+#[test]
+fn export_schema_lists_four_formats() {
+    let ts = tools(&mut Mock::new(), "2025-06-18");
+    let t = ts.iter().find(|t| t["name"] == "session_export").unwrap();
+    assert_eq!(
+        t["inputSchema"]["properties"]["format"]["enum"],
+        json!(["smsh", "vtu", "exodus", "openfoam"])
+    );
+    let d = t["inputSchema"]["properties"]["format"]["description"].as_str().unwrap();
+    assert!(d.contains("openfoam: path is the case directory"), "{d}");
+}
+
+#[test]
+fn session_stage_returns_sha256_and_bytes() {
+    let one = |args: Value| run(&mut Mock::new(), &[init("2025-06-18"), call(1, "session_stage", args)]);
+    let r = one(json!({"path": "a \"b\"$.step"}));
+    let res = &r[1]["result"];
+    assert_eq!(res["isError"], false);
+    assert_eq!(res["structuredContent"], json!({"sha256": "ab".repeat(32), "bytes": 5}));
+    assert_eq!(one(json!({"path": "missing.step"}))[1]["result"]["isError"], true);
+    assert!(one(json!({}))[1]["error"].is_object(), "path is required");
+    assert!(one(json!({"path": "x", "extra": 1}))[1]["error"].is_object(), "unknown argument");
 }

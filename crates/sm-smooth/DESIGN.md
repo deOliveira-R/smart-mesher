@@ -138,6 +138,16 @@ flipped quad reads inverted (`Context::default()` would use the cell's own Newel
 never see a flip). The same `CarrierNormals` is passed as `SurfaceNormals::Field` to
 `compute` / `validity` for the report.
 
+**Planarity (3-D meshes).** Every mesh face with four or more vertices that is planar at the
+start (relative deviation `<= 5e-7`, measured as `validate_geometry` does: distance to the
+vertex-mean plane over `sqrt(area)`) must stay within that bound: a candidate that warps it is a
+guard rejection, and the Jacobi repair checks the same for the cells it re-evaluates. Without
+this, the interior nodes of an extruded (sweep) column move differently from the top and bottom
+face nodes, tilt the column and make the side quads non-planar (W3-INT milestone row 6, up to
+1.4e-2 with `fix_boundary: true`). Faces that start warped (curved carriers, perturbed meshes)
+are not restricted. Cost: nodes of planar-faced meshes move only when their moves keep every
+incident planar face planar, so extruded columns are largely frozen.
+
 ## Schedules
 
 - **Colored**: greedy first-fit colouring of the movable nodes in ascending index; two nodes

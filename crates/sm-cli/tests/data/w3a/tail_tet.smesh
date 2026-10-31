@@ -1,0 +1,13 @@
+// W3a milestone tet branch (plan §4.2): the whole part tet-meshed, then dualized to polyhedra
+// with the source kept. Block element types are left undeclared (the two meshes differ in shape).
+mesh.size(targets: v1 | v2 | v3, size: @SIZE@)
+mesh.scheme(targets: topo.related(kind: "TopoFace", within: v1 | v2 | v3), scheme: "trimesh")
+mesh.scheme(targets: v1 | v2 | v3, scheme: "tetmesh")
+let mt = mesh.run(targets: v1 | v2 | v3)
+fem.block_add(block: 1, volumes: v1)
+fem.block_add(block: 2, volumes: v2)
+fem.block_add(block: 3, volumes: v3)
+fem.sideset_add(sideset: 1, faces: topo.related(kind: "TopoFace", within: v1), wrt: v1)
+fem.sideset_add(sideset: 2, faces: topo.related(kind: "TopoFace", within: v2), wrt: v2)
+fem.sideset_add(sideset: 3, faces: topo.related(kind: "TopoFace", within: v3), wrt: v3)
+let pm = mesh.to_poly(mesh: mt.mesh[0], keep_source: true)

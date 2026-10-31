@@ -23,6 +23,7 @@ pub(crate) enum Fixed {
     RunScript,
     SessionHash,
     SessionExport,
+    SessionStage,
     SessionStatus,
     TimelineBranch,
     TimelineCheckout,
@@ -32,10 +33,11 @@ pub(crate) enum Fixed {
     Help,
 }
 
-const FIXED: [Fixed; 10] = [
+const FIXED: [Fixed; 11] = [
     Fixed::RunScript,
     Fixed::SessionHash,
     Fixed::SessionExport,
+    Fixed::SessionStage,
     Fixed::SessionStatus,
     Fixed::TimelineBranch,
     Fixed::TimelineCheckout,
@@ -60,6 +62,7 @@ impl Fixed {
             Fixed::RunScript => "run_script",
             Fixed::SessionHash => "session_hash",
             Fixed::SessionExport => "session_export",
+            Fixed::SessionStage => "session_stage",
             Fixed::SessionStatus => "session_status",
             Fixed::TimelineBranch => "timeline_branch",
             Fixed::TimelineCheckout => "timeline_checkout",
@@ -76,6 +79,8 @@ impl Fixed {
             Fixed::RunScript => "script.run",
             Fixed::SessionHash => "session.hash",
             Fixed::SessionExport => "session.export",
+            // No protocol method: answered by `script.run` of `session.stage(path)`.
+            Fixed::SessionStage => "script.run",
             Fixed::SessionStatus => "timeline.status",
             Fixed::TimelineBranch => "timeline.branch",
             Fixed::TimelineCheckout => "timeline.checkout",
@@ -91,6 +96,7 @@ impl Fixed {
             Fixed::RunScript => "Run script",
             Fixed::SessionHash => "State hash",
             Fixed::SessionExport => "Export mesh",
+            Fixed::SessionStage => "Stage input file",
             Fixed::SessionStatus => "Session status",
             Fixed::TimelineBranch => "Create branch",
             Fixed::TimelineCheckout => "Check out revision",
@@ -122,8 +128,13 @@ impl Fixed {
             Fixed::SessionExport => {
                 "Export a mesh to a file and/or inline as base64. A relative `path` resolves \
                  against the project root, else the server's working directory. `format` is \
-                 inferred from the extension. Without `mesh` the only mesh is exported; no mesh \
-                 or several meshes is an error."
+                 inferred from the extension. Formats: smsh, vtu, exodus, openfoam. Without \
+                 `mesh` the only mesh is exported; no mesh or several meshes is an error."
+            }
+            Fixed::SessionStage => {
+                "Read a file (for example a STEP part) into the project's content-addressed input \
+                 store. Returns `{sha256, bytes}`; pass the `sha256` as `source` of \
+                 `model__import_step`. Staging is idempotent."
             }
             Fixed::SessionStatus => {
                 "Where the session stands: HEAD, current node, depth, state hash, branches, redo \
@@ -175,7 +186,7 @@ impl Fixed {
             Fixed::SessionExport => (
                 json!({
                     "path": {"type": "string", "description": "Output file; omit for inline-only output."},
-                    "format": {"type": "string", "enum": ["smsh", "vtu"], "description": "Defaults to the path extension."},
+                    "format": {"type": "string", "enum": ["smsh", "vtu", "exodus", "openfoam"], "description": "Defaults to the path extension. openfoam: path is the case directory."},
                     "mesh": {
                         "type": "string",
                         "pattern": "^[A-Za-z]+#[0-9]+$",
@@ -186,6 +197,10 @@ impl Fixed {
                     "inline": {"type": "boolean", "description": "Return the bytes base64-encoded in the result."},
                 }),
                 json!([]),
+            ),
+            Fixed::SessionStage => (
+                json!({"path": {"type": "string", "minLength": 1, "description": "File to stage; relative paths resolve against the project root, else the working directory."}}),
+                json!(["path"]),
             ),
             Fixed::TimelineBranch => (
                 json!({

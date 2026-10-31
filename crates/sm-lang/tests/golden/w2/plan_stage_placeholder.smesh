@@ -1,0 +1,3 @@
+let m = w2.make_mesh()
+let p = m.mesh
+session.stage(p)

@@ -394,7 +394,12 @@ deterministic:
    keeps what it has), the S4 margin does not shrink, the ratio of mean edge lengths of adjacent tets does not
    exceed `max(its value now, 1.4)` (size grading) and the deviation falls. Round 5: **and the
    incident tets stay at or above the global minima** of mean ratio and dihedral that the mesh
-   had when the pass began (clamped from below at `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`). The
+   had when the pass began (clamped from below at `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`),
+   **and at or above the global minimum scaled Jacobian** (W3-INT2 row 8: the downstream
+   cell-quality metric is the scaled Jacobian, which the other two guards do not bound; without
+   it the w3a part dropped from 0.286 .. 0.307 to 0.17 .. 0.26, and with it the pass leaves the
+   minimum exactly as it was, traced stage by stage: flips, smoothing and relocation do not
+   lower it, only the unguarded respace did; `int7_r5::respace_never_lowers_the_min_scaled_jacobian`). The
    local relative guards alone let many vertices each take 1 .. 3 % off a neighbourhood that was
    the mesh minimum (round 4: ball `icosphere(1, 4)` h 0.1 min dihedral 23.0 -> 19.3, cube with
    a NaN/0.08 size field 26.1 -> 20.3, gradation-1 ball 26.2 -> 19.8). With the global floor

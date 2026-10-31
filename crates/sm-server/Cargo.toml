@@ -32,6 +32,17 @@ sm-tess = { path = "../sm-tess" }
 sm-topo = { path = "../sm-topo" }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+sm-scheme-submap = { path = "../sm-scheme-submap" }
+sm-scheme-pave = { path = "../sm-scheme-pave" }
+sm-scheme-tri = { path = "../sm-scheme-tri" }
+sm-scheme-sweep = { path = "../sm-scheme-sweep" }
+sm-scheme-tet = { path = "../sm-scheme-tet" }
+sm-boolean = { path = "../sm-boolean" }
+sm-cadio = { path = "../sm-cadio" }
+sm-smooth = { path = "../sm-smooth" }
+sm-poly = { path = "../sm-poly" }
+sm-diag = { path = "../sm-diag" }
+sm-rt = { path = "../sm-rt" }
 serde = "1"
 serde_json = "1"
 thiserror = "2"

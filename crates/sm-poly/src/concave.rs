@@ -15,7 +15,7 @@ use crate::geom::{self, V3};
 use crate::polydata::PolyData;
 use crate::prep::{NONE, Prep};
 use rayon::prelude::*;
-use sm_mesh_api::{CellIx, Side};
+use sm_mesh_api::{CellIx, Side, SignedFace};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
@@ -26,6 +26,45 @@ const MARGIN: f64 = 1e-9;
 /// Side tetrahedra at or below this fraction of the cell volume count as failing in
 /// [`bad_cells`] (rounding level; far below any side tetrahedron of a regular cell).
 const DETECT_MARGIN: f64 = 1e-12;
+
+/// A face of a cell is "visible" from the vertex mean (sm-quality's `Starness` metric) when
+/// `cos(area vector, apex - mean) >` this. Wedges are accepted above [`STAR_MARGIN`]; a cell is
+/// flagged by [`bad_cells`] at or below [`STAR_DETECT`] (rounding level).
+const STAR_MARGIN: f64 = 1e-6;
+const STAR_DETECT: f64 = 1e-9;
+
+/// Smallest `cos(area vector, apex - c)` over the loops (same rule as sm-quality's `Starness`:
+/// fan area vector about the loop mean), `c` the mean of the cell's distinct vertices.
+fn min_starness<'a>(c: V3, loops: impl Iterator<Item = &'a [V3]>) -> f64 {
+    let mut m = f64::INFINITY;
+    for l in loops {
+        let n = l.len();
+        let ap = geom::mean(l);
+        let mut a = [0.0; 3];
+        for i in 0..n {
+            let x = geom::cross(geom::sub(l[i], ap), geom::sub(l[(i + 1) % n], ap));
+            a = [a[0] + 0.5 * x[0], a[1] + 0.5 * x[1], a[2] + 0.5 * x[2]];
+        }
+        let d = geom::sub(ap, c);
+        let den = geom::dot(a, a).sqrt() * geom::dot(d, d).sqrt();
+        m = m.min(if den <= 1e-300 { 0.0 } else { geom::dot(a, d) / den });
+    }
+    m
+}
+
+/// Mean of the distinct points among `ids` (virtual point ids).
+fn distinct_mean(p: &Prep<'_>, ids: &[[u32; 4]]) -> V3 {
+    let mut u: SmallVec<[u32; 64]> = ids.iter().flatten().copied().collect();
+    u.sort_unstable();
+    u.dedup();
+    let mut s = [0.0; 3];
+    for &x in &u {
+        let q = p.coord(x);
+        s = [s[0] + q[0], s[1] + q[1], s[2] + q[2]];
+    }
+    let n = u.len().max(1) as f64;
+    [s[0] / n, s[1] / n, s[2] / n]
+}
 
 /// Split decisions: per split dual cell (ckey index), the wedge of each of its tets.
 #[derive(Default)]
@@ -157,13 +196,15 @@ fn wedge_ok(p: &Prep<'_>, corners: &[Corner], tets: &[u32], members: &[usize]) -
         return false;
     }
     let min = MARGIN * vol;
-    loops.iter().all(|l| {
+    let centroid_ok = loops.iter().all(|l| {
         let ap = geom::mean(l);
         (0..4).all(|i| {
             let (a, b) = (l[i], l[(i + 1) % 4]);
             geom::dot(geom::sub(ap, g), geom::cross(geom::sub(a, g), geom::sub(b, g))) > min
         })
-    })
+    });
+    // also star-shaped about the vertex mean (the sm-quality `Starness` rule)
+    centroid_ok && min_starness(distinct_mean(p, &ids), loops.iter().map(|l| &l[..])) > STAR_MARGIN
 }
 
 /// The tets of `region` at `v`, ascending (the union of the rings of the cell's slots).
@@ -227,6 +268,171 @@ pub(crate) fn plan(p: &Prep<'_>, cell: usize) -> Option<Vec<(u32, u32)>> {
     Some(tets.into_iter().zip(wedge).collect())
 }
 
+/// Sizes of the append-only arrays of [`PolyData`], to undo a tentative [`subdivide`].
+struct Mark {
+    pts: usize,
+    faces: usize,
+    f_pts: usize,
+}
+
+impl Mark {
+    fn of(d: &PolyData) -> Self {
+        Self { pts: d.pts.len(), faces: d.n_faces(), f_pts: d.f_pts.len() }
+    }
+    fn rollback(self, d: &mut PolyData) {
+        d.pts.truncate(self.pts);
+        d.pcls.truncate(self.pts);
+        d.f_pts.truncate(self.f_pts);
+        d.f_off.truncate(self.faces + 1);
+        d.f_cls.truncate(self.faces);
+        d.f_cells.truncate(self.faces);
+        d.f_alive.truncate(self.faces);
+    }
+}
+
+/// Push the pieces of face `f` (a quad: two triangles along a diagonal; a triangle: three
+/// triangles about a new centroid point classified like the face, or like cell `c` for an
+/// interior face). The pieces inherit the owners of `f`; `f` itself is left alone.
+fn subdivide(d: &mut PolyData, f: usize, c: usize) -> SmallVec<[u32; 3]> {
+
+    let l: SmallVec<[u32; 4]> = d.face_loop(f).iter().copied().collect();
+    let cls = d.f_cls[f];
+    let parts: SmallVec<[u32; 3]> = if l.len() == 4 {
+        [d.push_face(&[l[0], l[1], l[2]], cls), d.push_face(&[l[0], l[2], l[3]], cls)].into_iter().collect()
+    } else {
+        let g = geom::mean(&[d.pts[l[0] as usize], d.pts[l[1] as usize], d.pts[l[2] as usize]]);
+        let gc = match cls {
+            Some(e) => sm_mesh_api::Classification::on(e),
+            None => sm_mesh_api::Classification::on(d.regions[d.c_region[c] as usize]),
+        };
+        let gi = d.pts.len() as u32;
+        d.pts.push(g);
+        d.pcls.push(gc);
+        (0..3).map(|i| d.push_face(&[l[i], l[(i + 1) % 3], gi], cls)).collect()
+    };
+    let owners = d.f_cells[f];
+    for &g in &parts {
+        d.f_cells[g as usize] = owners;
+    }
+    parts
+}
+
+/// Face list of cell `o` (edited or original) with `f` replaced by `parts` on `side_ix` (0 left).
+fn spliced(
+    d: &PolyData,
+    edits: &[Option<Vec<SignedFace>>],
+    o: usize,
+    f: usize,
+    parts: &[u32],
+    side_ix: usize,
+) -> Vec<SignedFace> {
+    let side = if side_ix == 0 { Side::Left } else { Side::Right };
+    let mut list = edits[o].clone().unwrap_or_else(|| d.cell_faces(o).to_vec());
+    if let Some(i) = list.iter().position(|sf| sf.face().get() == f) {
+        list.splice(i..=i, parts.iter().map(|&g| SignedFace::new(sm_mesh_api::FaceIx(g), side)));
+    }
+    list
+}
+
+/// Every neighbour of `c` across `f` still passes [`cell_ok_faces`] with `f` replaced by `parts`.
+fn neighbours_ok(d: &PolyData, edits: &[Option<Vec<SignedFace>>], f: usize, c: usize, parts: &[u32]) -> bool {
+    let owners = d.f_cells[f];
+    owners.iter().enumerate().all(|(k, &o)| {
+        o == NONE || o as usize == c || cell_ok_faces(d, &spliced(d, edits, o as usize, f, parts, k))
+    })
+}
+
+/// A cell whose face sizes and vertex count match a fast-path shape (`Tet`, `Hex`, `Wedge`,
+/// `Pyramid`) is tagged with that shape by the mesh, but a polyhedral mesh must keep every cell
+/// `Polyhedron` (exporters declare one `POLYHEDRON` block). Such cells occur as a single-corner
+/// wedge (6 quads, 8 points) and as the dual of a vertex with four neighbours (4 triangles).
+/// One face of each is subdivided, in the neighbouring cell too, so the shape stays
+/// `Polyhedron` and every face stays planar: a quad becomes two triangles along a diagonal, a
+/// triangle becomes three triangles about its centroid (a new point on the face).
+///
+/// With `all` false only single-corner wedges (`wedged[c]`, cells that came from split dual
+/// cells) are broken; the library default leaves other cells, e.g. the four hexahedra of a
+/// single tet, as the mesh infers them.
+pub(crate) fn break_primitive_cells(d: &mut PolyData, wedged: &[bool], all: bool) {
+    let nc = d.n_cells();
+    let mut edits: Vec<Option<Vec<SignedFace>>> = vec![None; nc];
+    let mut any = false;
+    for c in 0..nc {
+        if !d.c_alive[c] {
+            continue;
+        }
+        let faces: Vec<SignedFace> = edits[c].clone().unwrap_or_else(|| d.cell_faces(c).to_vec());
+        if faces.len() < 4 || faces.len() > 6 {
+            continue;
+        }
+        let (mut tris, mut quads, mut other) = (0usize, 0usize, 0usize);
+        let mut pts: SmallVec<[u32; 24]> = SmallVec::new();
+        for sf in &faces {
+            let l = d.face_loop(sf.face().get());
+            match l.len() {
+                3 => tris += 1,
+                4 => quads += 1,
+                _ => other += 1,
+            }
+            pts.extend_from_slice(l);
+        }
+        pts.sort_unstable();
+        pts.dedup();
+        let shape = (tris, quads, pts.len());
+        let primitive = other == 0
+            && if all {
+                matches!(shape, (4, 0, 4) | (0, 6, 8) | (2, 3, 6) | (4, 1, 5))
+            } else {
+                wedged[c] && shape == (0, 6, 8)
+            };
+        if !primitive {
+            continue;
+        }
+        // A quad is split along a diagonal (no new point). A tetrahedron has only triangles: one
+        // is split about its centroid, which moves the vertex mean of the neighbour, so take
+        // the first face whose neighbour stays valid (sm-quality `Starness` and the side tets).
+        let quad = faces.iter().map(|sf| sf.face().get()).find(|&f| d.face_loop(f).len() == 4);
+        let cands: SmallVec<[usize; 6]> = match quad {
+            Some(f) => SmallVec::from_slice(&[f]),
+            None => faces.iter().map(|sf| sf.face().get()).collect(),
+        };
+        let mut pick = None;
+        for &f in &cands {
+            let mark = Mark::of(d);
+            let parts = subdivide(d, f, c);
+            if neighbours_ok(d, &edits, f, c, &parts) {
+                pick = Some((f, parts));
+                break;
+            }
+            mark.rollback(d);
+        }
+        let (f, parts) = pick.unwrap_or_else(|| (cands[0], subdivide(d, cands[0], c)));
+        d.f_alive[f] = false;
+        let owners = d.f_cells[f];
+        for (k, &o) in owners.iter().enumerate() {
+            if o == NONE {
+                continue;
+            }
+            edits[o as usize] = Some(spliced(d, &edits, o as usize, f, &parts, k));
+        }
+        any = true;
+    }
+    if !any {
+        return;
+    }
+    let (mut off, mut cf) = (vec![0u32], Vec::new());
+    for (c, e) in edits.iter().enumerate() {
+        match e {
+            Some(l) => cf.extend_from_slice(l),
+            None if d.c_alive[c] => cf.extend_from_slice(d.cell_faces(c)),
+            None => {}
+        }
+        off.push(cf.len() as u32);
+    }
+    d.c_off = off;
+    d.c_faces = cf;
+}
+
 /// Output cells that fail the `validate_geometry` volume or side-tetrahedron rule, ascending.
 /// Same rule as the validator (fan rule, vertex-mean apex). The finished mesh orders a cell's
 /// faces and rotates face loops differently, which changes rounding only, so a cell is also
@@ -238,13 +444,42 @@ pub(crate) fn bad_cells(d: &PolyData) -> Vec<u32> {
         .collect()
 }
 
+/// Points of the loop of `sf` as seen from its cell (outward winding).
+fn oriented(d: &PolyData, sf: &SignedFace) -> SmallVec<[V3; 8]> {
+    let mut v: SmallVec<[V3; 8]> = d.face_loop(sf.face().get()).iter().map(|&x| d.pts[x as usize]).collect();
+    if sf.side() == Side::Right {
+        v.reverse();
+    }
+    v
+}
+
 fn cell_ok(d: &PolyData, c: usize) -> bool {
-    let faces = d.cell_faces(c);
+    cell_ok_faces(d, d.cell_faces(c))
+}
+
+/// [`cell_ok`] for an explicit face list.
+fn cell_ok_faces(d: &PolyData, faces: &[SignedFace]) -> bool {
     let (vol, g) = agglom::vol_centroid(d, faces);
     if vol <= 0.0 {
         return false;
     }
     let min = DETECT_MARGIN * vol;
+    // sm-quality `Starness`: star-shaped about the mean of the cell's distinct vertices
+    let mut vs: SmallVec<[u32; 64]> =
+        faces.iter().flat_map(|sf| d.face_loop(sf.face().get()).iter().copied()).collect();
+    vs.sort_unstable();
+    vs.dedup();
+    let mut vm = [0.0; 3];
+    for &x in &vs {
+        let q = d.pts[x as usize];
+        vm = [vm[0] + q[0], vm[1] + q[1], vm[2] + q[2]];
+    }
+    let nv = vs.len().max(1) as f64;
+    let vm = [vm[0] / nv, vm[1] / nv, vm[2] / nv];
+    let loops: SmallVec<[SmallVec<[V3; 8]>; 16]> = faces.iter().map(|sf| oriented(d, sf)).collect();
+    if min_starness(vm, loops.iter().map(|v| &v[..])) <= STAR_DETECT {
+        return false;
+    }
     faces.iter().all(|sf| {
         let l = d.face_loop(sf.face().get());
         let ap = agglom::apex(d, l);

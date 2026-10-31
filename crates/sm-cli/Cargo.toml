@@ -29,6 +29,18 @@ sm-mesh-api = { path = "../sm-mesh-api" }
 sm-quality = { path = "../sm-quality" }
 # Milestone: MCP text content may use the script spelling of ids (sm-mcp `respell` feature).
 sm-lang = { path = "../sm-lang" }
+# W3a milestone (tests/milestone_w3a.rs): in-process meshes and models (rows 6-13), the Exodus
+# test decoder (row 10), the dual report (row 11), the tracker (row 13).
+sm-layer-api = { path = "../sm-layer-api" }
+sm-mesh = { path = "../sm-mesh" }
+sm-exodus = { path = "../sm-exodus" }
+sm-poly = { path = "../sm-poly" }
+sm-rt = { path = "../sm-rt" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+# Row 13: trace the same bundle in a 1-thread and an N-thread pool.
+rayon = "1"
 
 [[bin]]
 name = "smesh"

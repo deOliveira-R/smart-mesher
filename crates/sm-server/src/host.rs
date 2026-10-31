@@ -4,18 +4,21 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
+use sm_cadio::InputRef;
 use sm_core::{EntityId, EntityKind};
 use sm_engine::{ApplyOptions, Workspace};
 use sm_fem::{ExportFormat as FemFormat, ExportRequest, FemError};
 use sm_lang::{Host, HostError, QueryRelations, Relations, SessionCommand, TimelineCommand, TimelineHead};
 use sm_layer_api::MeshLayer;
 use sm_op_api::{Delta, Engine, Hash256, Head, OpRecord, Registry, Rev, State};
-use sm_protocol::{ExportFormat, ExportResult, StatusResult};
+use sm_protocol::{ExportFormat, ExportResult, ExportedFile, StatusResult};
 
 use crate::b64;
-use crate::error::SessionError;
+use crate::error::{ServerError, SessionError};
+use crate::standard::InputsHandle;
 
 /// Name of the adjacency query the language's `kind in X` filters call.
 pub const RELATIONS_QUERY: &str = "topo.related";
@@ -150,6 +153,8 @@ impl<'w> SessionHost<'w> {
         }
         let format = match (p.format, &path) {
             (Some(f), Some(path)) => {
+                // An OpenFOAM path is a case directory: its name says nothing about the format, but a
+                // single-file extension (`.vtu`, `.exo`, ...) is almost surely a mistake.
                 if let Some(by_ext) = known_format_of(path)
                     && by_ext != f
                 {
@@ -168,10 +173,12 @@ impl<'w> SessionHost<'w> {
         let fem_format = match format {
             ExportFormat::Smsh => FemFormat::Smsh,
             ExportFormat::Vtu => FemFormat::Vtu,
+            ExportFormat::Exodus => FemFormat::Exodus,
+            ExportFormat::Openfoam => FemFormat::OpenFoam,
             other => {
                 return Err(SessionError::new(
                     "unsupported-format",
-                    format!("export format `{}` is not available yet", format_name(other)),
+                    format!("export format `{}` is not available", format_name(other)),
                 ));
             }
         };
@@ -181,11 +188,25 @@ impl<'w> SessionHost<'w> {
                 format_name(format)
             )));
         }
+        if fem_format.is_multi_file() && p.inline {
+            return Err(SessionError::bad_request(format!(
+                "`{}` writes several files and cannot be returned inline: pass a `path` (the case directory) without `inline`",
+                format_name(format)
+            )));
+        }
         let state = self.ws.state();
         let mut req = ExportRequest::new(fem_format);
         req.mesh = p.mesh;
         if p.provenance {
             req.provenance = provenance_of(self.ws.status().position);
+        }
+        if fem_format.is_multi_file() {
+            let Some(dir) = &path else {
+                return Err(SessionError::bad_request(format!("`{}` needs a `path` (the case directory)", format_name(format))));
+            };
+            let bundle = sm_fem::export_files(state, &req).map_err(|e| export_error(&e, state, p.mesh))?;
+            let files: Vec<(&str, &[u8])> = bundle.files.iter().map(|f| (f.name.as_str(), f.bytes.as_slice())).collect();
+            return write_dir(dir, format, &files);
         }
         let mut bytes = Vec::new();
         sm_fem::export(state, &req, &mut bytes).map_err(|e| export_error(&e, state, p.mesh))?;
@@ -223,6 +244,13 @@ impl<'w> SessionHost<'w> {
             }
             SessionCommand::Hash => Ok(Value::String(self.ws.state_hash().to_hex())),
             SessionCommand::Status => Ok(strip_nulls(to_json(&self.status_result())?)),
+            SessionCommand::Stage { path } => {
+                let full = self.resolve_path(path)?;
+                let bytes = std::fs::read(&full)
+                    .map_err(|e| SessionError::new("io", format!("reading {}: {e}", full.display())))?;
+                let r = stage_bytes(self.ws, &bytes).map_err(|e| SessionError::new("input-store", e.to_string()))?;
+                to_json(&r)
+            }
             other => Err(SessionError::new(
                 "session-unsupported",
                 format!("`session.{}` is not supported by this server", other.verb()),
@@ -331,7 +359,7 @@ pub(crate) fn resolve_path(root: Option<&Path>, path: &str) -> Result<PathBuf, S
 fn format_of(path: &Path) -> Result<ExportFormat, SessionError> {
     known_format_of(path).ok_or_else(|| {
         SessionError::bad_request(format!(
-            "cannot infer the export format from {}: use `.smsh` or `.vtu`, or pass `format`",
+            "cannot infer the export format from {}: use `.smsh`, `.vtu`, `.exo`, `.e`, `.g` or `.exodus`, or pass `format` (`openfoam` always needs it)",
             path.display()
         ))
     })
@@ -341,18 +369,21 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
     match s {
         "smsh" => Ok(ExportFormat::Smsh),
         "vtu" => Ok(ExportFormat::Vtu),
-        other => Err(SessionError::bad_request(format!("unknown export format `{other}` (expected `smsh` or `vtu`)"))),
+        "exodus" => Ok(ExportFormat::Exodus),
+        "openfoam" => Ok(ExportFormat::Openfoam),
+        other => Err(SessionError::bad_request(format!(
+            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus` or `openfoam`)"
+        ))),
     }
 }
 
-/// The format a `.smsh`/`.vtu` extension names; none for any other extension.
-///
-/// Note: this, `parse_format` and `sm-cli`'s `Format` do not yet know `exodus`/`openfoam`
-/// (the W3a integration task wires them; `ExportFormat` already has the variants).
+/// The format a known extension names (`.smsh`, `.vtu`, `.exo` `.e` `.g` `.exodus`); none for any
+/// other extension. OpenFOAM is never inferred: its path is a directory.
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("smsh") => Some(ExportFormat::Smsh),
         Some("vtu") => Some(ExportFormat::Vtu),
+        Some("exo" | "e" | "g" | "exodus") => Some(ExportFormat::Exodus),
         _ => None,
     }
 }
@@ -387,21 +418,100 @@ fn export_error(e: &FemError, state: &State, named: Option<EntityId>) -> Session
     }
 }
 
-/// Write `bytes` to `path` through a sibling temp file and a rename, so a reader never sees a
-/// half-written export.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A sibling temp path that no concurrent writer shares: `.<name>.<pid>.<counter>.part`.
+fn unique_tmp(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    let mut tmp = std::ffi::OsString::from(".");
+    tmp.push(name);
+    tmp.push(format!(".{}.{}.part", std::process::id(), TMP_COUNTER.fetch_add(1, Ordering::Relaxed)));
+    Some(path.with_file_name(tmp))
+}
+
+/// Write `bytes` to `path` through a unique sibling temp file and a rename, so a reader never
+/// sees a half-written export.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     let io = |what: &str, e: std::io::Error| SessionError::new("io", format!("{what} {}: {e}", path.display()));
-    let Some(name) = path.file_name() else {
+    let Some(tmp) = unique_tmp(path) else {
         return Err(SessionError::bad_request(format!("{} has no file name", path.display())));
     };
-    let mut tmp_name = name.to_owned();
-    tmp_name.push(".part");
-    let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, bytes).map_err(|e| io("writing", e))?;
+    std::fs::write(&tmp, bytes).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io("writing", e)
+    })?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         io("renaming into", e)
     })
+}
+
+/// Write the files of a multi-file export below `root` (each through a unique temp name and a
+/// rename; parent directories are created) and describe them. `files` are `(relative name, bytes)`.
+/// `sha256` of the result is the SHA-256 of the manifest lines `name\tsha256hex\n`, sorted by name.
+fn write_dir(root: &Path, format: ExportFormat, files: &[(&str, &[u8])]) -> Result<ExportResult, SessionError> {
+    let mut sorted: Vec<&(&str, &[u8])> = files.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let mut listing = Vec::with_capacity(sorted.len());
+    let mut manifest = String::new();
+    let mut total = 0u64;
+    let mut tmps: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(sorted.len());
+    let cleanup = |tmps: &[(PathBuf, PathBuf)]| tmps.iter().for_each(|(t, _)| drop(std::fs::remove_file(t)));
+    for (name, bytes) in sorted {
+        let rel = Path::new(name);
+        if rel.is_absolute() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+            cleanup(&tmps);
+            return Err(SessionError::internal(format!("export file name {name:?} is not a plain relative path")));
+        }
+        let full = root.join(rel);
+        let mut step = || -> Result<(), SessionError> {
+            let io = |what: &str, e: std::io::Error| SessionError::new("io", format!("{what} {}: {e}", full.display()));
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| io("creating directory for", e))?;
+            }
+            let tmp = unique_tmp(&full).ok_or_else(|| SessionError::internal("export file without a name"))?;
+            tmps.push((tmp.clone(), full.clone()));
+            std::fs::write(&tmp, bytes).map_err(|e| io("writing", e))
+        };
+        if let Err(e) = step() {
+            cleanup(&tmps);
+            return Err(e);
+        }
+        let h = Hash256::of(bytes);
+        manifest.push_str(&format!("{name}\t{}\n", h.to_hex()));
+        total += bytes.len() as u64;
+        listing.push(ExportedFile::new(*name, bytes.len() as u64, h));
+    }
+    for (i, (tmp, full)) in tmps.iter().enumerate() {
+        if let Err(e) = std::fs::rename(tmp, full) {
+            cleanup(&tmps[i..]);
+            return Err(SessionError::new("io", format!("renaming into {}: {e}", full.display())));
+        }
+    }
+    Ok(ExportResult::new(Some(root.to_string_lossy().into_owned()), format, total, Hash256::of(manifest.as_bytes()))
+        .with_files(listing))
+}
+
+/// The input-store handle of the workspace's distribution, bound to `<root>/inputs` when the
+/// workspace has a project, unbound (memory) when it has none, so staged blobs only ever land
+/// in the attached project.
+pub(crate) fn project_inputs(ws: &Workspace) -> Option<&InputsHandle> {
+    let handle = ws.session().engine().services().get::<InputsHandle>()?;
+    if let Some(root) = ws.root() {
+        let want = root.join("inputs");
+        if handle.0.bound_dir().as_deref() != Some(want.as_path()) {
+            handle.0.bind(root);
+        }
+    } else if handle.0.bound_dir().is_some() {
+        handle.0.unbind();
+    }
+    Some(handle)
+}
+
+/// Stage `bytes` in the workspace's input store.
+pub(crate) fn stage_bytes(ws: &Workspace, bytes: &[u8]) -> Result<InputRef, ServerError> {
+    let handle = project_inputs(ws).ok_or_else(|| ServerError::Input("this distribution has no input store".into()))?;
+    handle.0.stage(bytes).map_err(|e| ServerError::Input(e.to_string()))
 }
 
 /// `v` as JSON; a serialization failure is an `internal` error, never a null success.

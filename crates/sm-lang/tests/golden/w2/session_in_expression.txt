@@ -3,4 +3,4 @@ error[op-in-expression]: `session.export` is a statement, not a function
   |
 1 | print session.export("a.vtu")
   |       ^^^^^^^^^^^^^^ this session command cannot be used inside expressions
-  = help: write it as its own statement (`session.hash()` and `session.status()` do have values)
+  = help: write it as its own statement (`session.hash()`, `session.status()` and `session.stage()` do have values)

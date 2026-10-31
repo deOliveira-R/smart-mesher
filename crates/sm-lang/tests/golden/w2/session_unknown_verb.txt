@@ -3,4 +3,4 @@ error[unknown-name]: no session command `session.explode`
   |
 1 | session.explode()
   |         ^^^^^^^ not a session command
-  = help: session commands: export(path, format, mesh, provenance), save(), hash(), status()
+  = help: session commands: export(path, format, mesh, provenance), save(), hash(), status(), stage(path)

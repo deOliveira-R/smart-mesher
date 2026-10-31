@@ -49,6 +49,12 @@ pub enum FemError {
     /// The writer failed.
     #[error("mesh writer: {0}")]
     Meshio(#[from] MeshioError),
+    /// The format writes several files; use `export_files`.
+    #[error("format '{0}' writes several files; use export_files")]
+    MultiFile(&'static str),
+    /// The Exodus writer failed.
+    #[error("exodus writer: {0}")]
+    Exodus(#[from] sm_exodus::ExodusError),
     /// Writing to the sink failed.
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
@@ -67,6 +73,8 @@ impl FemError {
             Self::Unsupported(_) => "unsupported",
             Self::Mesh(_) => "mesh",
             Self::Meshio(_) => "meshio",
+            Self::MultiFile(_) => "multi-file-format",
+            Self::Exodus(_) => "exodus",
             Self::Io(_) => "io",
         }
     }

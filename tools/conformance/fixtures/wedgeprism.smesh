@@ -1,0 +1,18 @@
+// Conformance fixture wedgeprism: a 10 x 10 x 4 block swept from a triangulated z = 0 face (WEDGE6).
+let b = model.create_brick(x: 10.0, y: 10.0, z: 4.0, center: [5.0, 5.0, 2.0])
+let s = b.volume
+let t = b.volume
+for f in topo.related(kind: "TopoFace", within: b.volume) {
+    let bb = model.measure(entity: f).bbox
+    if abs(bb.lo[2]) < 1e-9 and abs(bb.hi[2]) < 1e-9 { set s = f }
+    if abs(bb.lo[2] - 4.0) < 1e-9 and abs(bb.hi[2] - 4.0) < 1e-9 { set t = f }
+}
+assert s != b.volume and t != b.volume, "source/target faces not found"
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: s, scheme: "trimesh")
+mesh.scheme(targets: b.volume, scheme: "sweep", params: { source: s, target: t })
+let m = mesh.run(targets: b.volume)
+fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "WEDGE6")
+fem.sideset_add(sideset: 1, faces: topo.related(kind: "TopoFace", within: b.volume), wrt: b.volume)
+print "check", "wedgeprism", m.mesh[0]

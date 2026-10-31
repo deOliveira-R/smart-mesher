@@ -1,0 +1,14 @@
+// W3a milestone path B (plan §4.1): bottom-up webcut + unite (regularize) + imprint + merge.
+let b  = model.create_brick(x: 20.0, y: 20.0, z: 4.0, center: [10.0, 10.0, 2.0])
+let c1 = model.webcut_plane(targets: b.body, plane: { origin: [10.0, 0.0, 0.0], normal: [1.0, 0.0, 0.0] })
+let c2 = model.webcut_plane(targets: c1.positive, plane: { origin: [0.0, 10.0, 0.0], normal: [0.0, 1.0, 0.0] })
+let c3 = model.webcut_plane(targets: c2.positive, plane: { origin: [10.0, 20.0, 0.0], normal: [1.0, 1.0, 0.0] })
+model.delete(bodies: c3.positive)                              // the far triangle x+y>30
+let u  = model.unite(bodies: c1.negative | c2.negative)        // L [0,10]x[0,20] + [10,20]x[0,10]
+let b3 = model.create_brick(x: 10.0, y: 10.0, z: 6.0, center: [15.0, 15.0, 7.0])
+let parts = u.bodies | c3.negative | b3.body
+model.imprint(bodies: parts)
+model.merge(entities: parts)
+let v1 = u.volumes
+let v2 = topo.related(kind: "TopoVolume", within: c3.negative)
+let v3 = b3.volume

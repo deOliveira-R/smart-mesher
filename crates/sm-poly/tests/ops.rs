@@ -224,6 +224,7 @@ fn acc8_poly_info_equals_poly_stats() {
     let want = serde_json::to_value(poly_stats(layer.get(pm).unwrap().mesh())).unwrap();
     assert_eq!(v, want);
     assert_eq!(v["cells"], 64);
+    assert_eq!((v["wedges"].as_u64(), v["split_cells"].as_u64()), (Some(0), Some(0)));
     assert!(s.engine().run_query(s.state(), "mesh.poly_info", &json!({"mesh": "Mesh#9"}), &q.control()).is_err());
 }
 

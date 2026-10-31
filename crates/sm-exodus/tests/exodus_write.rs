@@ -289,6 +289,24 @@ fn acc5_mixed_transition_blocks() {
     assert_eq!(got, [(1, "unassigned_TET4"), (2, "unassigned_HEX8"), (3, "unassigned_WEDGE6"), (4, "unassigned_PYRAMID5")]);
 }
 
+/// meshio 5.3.5 maps only `TETRA` / `WEDGE` / `PYRAMID` (Cubit spellings); `TET4` etc. raise
+/// KeyError. The file must carry those, while `read_exodus` reports the canonical names.
+#[test]
+fn file_uses_meshio_readable_element_types() {
+    let cases = [
+        (meshes::single_tet().unwrap(), "TETRA", "TET4"),
+        (meshes::single_wedge().unwrap(), "WEDGE", "WEDGE6"),
+        (meshes::single_pyramid().unwrap(), "PYRAMID", "PYRAMID5"),
+        (meshes::single_hex().unwrap(), "HEX8", "HEX8"),
+    ];
+    for (fx, raw, canon) in cases {
+        let bytes = exodus_bytes(&fx.mesh, &ExodusOptions::default()).unwrap();
+        let cdl = NcFile::read(&bytes).unwrap().to_cdl();
+        assert!(cdl.contains(&format!("elem_type = \"{raw}\"")), "{raw}: {cdl}");
+        assert_eq!(read_exodus(&bytes).unwrap().blocks[0].elem_type, canon);
+    }
+}
+
 #[test]
 fn mixed_set_splits_by_shape() {
     let mut m = meshes::mixed_transition().unwrap().mesh;
@@ -412,8 +430,8 @@ fn acc6_round_trip_every_fixture_and_format() {
             assert_eq!(d.nodesets[0].nodes, vec![1, nv as i64]);
             let names: Vec<(i64, &str, usize)> = d.sidesets.iter().map(|s| (s.id, s.name.as_str(), s.elems.len())).collect();
             assert_eq!(names, [(3, "bnd", fx.boundary_faces), (4, "deck", 1)]);
-            if d.face_blocks.len() > 1 {
-                // Several NFACED blocks: the second face block has a nonzero global face base.
+            if d.blocks.iter().filter(|b| b.elem_type == "NFACED").count() > 1 {
+                // Several NFACED blocks share one face block; later blocks use a nonzero face base.
                 check_poly(&m, &d);
             }
             decoded.push(d);
@@ -610,6 +628,30 @@ fn acc7_mixed_template_and_nfaced_blocks() {
     // Disabling polyhedra is a typed error.
     let o = ExodusOptions::default().polyhedra(false);
     assert!(matches!(exodus_bytes(&m, &o), Err(ExodusError::Unsupported(_))));
+}
+
+/// Several NFACED element blocks share ONE face block (vtkExodusIIReader misreads the first face
+/// of any later face block), with file-global face numbers in each block's `facconn`.
+#[test]
+fn several_nfaced_blocks_share_one_face_block() {
+    let p: Vec<[f64; 3]> = vec![
+        [0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.],
+        [2., 0., 0.], [2., 1., 0.], [2., 0., 1.], [2., 1., 1.],
+    ];
+    let left = vec![vec![0, 4, 7, 3], vec![1, 2, 6, 5], vec![0, 1, 5, 4], vec![3, 7, 6, 2], vec![0, 3, 2, 1], vec![4, 5, 6], vec![4, 6, 7]];
+    let right = vec![vec![1, 5, 6, 2], vec![8, 9, 11, 10], vec![1, 2, 9, 8], vec![5, 10, 11], vec![5, 11, 6], vec![1, 8, 10, 5], vec![2, 6, 11, 9]];
+    let mut m = meshes::build_mesh(&p, &[meshes::CellSpec::Poly(left), meshes::CellSpec::Poly(right)], &mut SerialAlloc::new()).unwrap();
+    let mut a = SerialAlloc::new();
+    add_set(&mut m, &mut a, "pa", Some(1), cells(&[0]));
+    add_set(&mut m, &mut a, "pb", Some(2), cells(&[1]));
+    let d = read_exodus(&exodus_bytes(&m, &ExodusOptions::default()).unwrap()).unwrap();
+    assert_eq!(d.blocks.len(), 2);
+    assert!(d.blocks.iter().all(|b| b.elem_type == "NFACED"));
+    assert_eq!(d.face_blocks.len(), 1, "one shared face block");
+    assert_eq!(d.face_blocks[0].num_faces, 14);
+    assert_eq!(d.blocks[0].face_connectivity, (1..=7).collect::<Vec<i64>>());
+    assert_eq!(d.blocks[1].face_connectivity, (8..=14).collect::<Vec<i64>>());
+    check_poly(&m, &d);
 }
 
 // ---- dimension 2 ---------------------------------------------------------------------------

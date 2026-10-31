@@ -1,0 +1,9 @@
+// W3a milestone path A (plan §4.1): content-addressed STEP import. The test replaces `@STEP@`
+// with the absolute path of a temp file holding `sm_testkit::w3a::STEP`.
+let s = session.stage("@STEP@")
+let p = model.import_step(source: { sha256: s.sha256 })      // 3 solids: V1, V2, V3 in STEP-id order
+model.imprint(bodies: p.bodies)
+model.merge(entities: p.bodies)
+let v1 = p.volumes[0]
+let v2 = p.volumes[1]
+let v3 = p.volumes[2]

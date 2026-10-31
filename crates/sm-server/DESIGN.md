@@ -64,9 +64,15 @@ what happened. A script that fails to *parse* applies nothing.
   `mesh`, `meshio`, `io`).
 * **Path rule:** an absolute path is used as is; a relative path resolves against the project root
   when a project is attached, otherwise against the server process's working directory.
-* The format is inferred from `.smsh` / `.vtu` when `format` is absent; anything else is `bad-request`.
-  An explicit `format` that disagrees with a `.smsh` / `.vtu` extension is `bad-request` (an explicit
-  format on any other extension is honoured).
+* The format is inferred from `.smsh` / `.vtu` / `.exo` `.e` `.g` `.exodus` (Exodus) when `format` is
+  absent; anything else is `bad-request`. `openfoam` is never inferred: it needs an explicit `format`
+  and `path` is the case directory (files go to `<path>/constant/polyMesh/`). An explicit `format`
+  that disagrees with a known extension is `bad-request` (an explicit format on any other extension is
+  honoured, except that `openfoam` on a known single-file extension (`.vtu`, `.exo`, ...) is `bad-request`).
+* Multi-file formats go through `sm_fem::export_files`; each file is written to a unique temp name
+  (`.<name>.<pid>.<counter>.part`) and renamed. `ExportResult.files` lists them sorted by name, `bytes`
+  is the total and `sha256` is the SHA-256 of the manifest lines `name\tsha256hex\n`. `inline: true`
+  with a multi-file format is `bad-request`.
   Inline-only export (`path` absent, `inline: true`) needs an explicit format.
 * Bytes are built in memory (needed for the SHA-256 and the optional base64), then written to
   `<name>.part` and renamed, so a reader never sees a half-written file. A failed export writes nothing.
@@ -125,3 +131,22 @@ errs. `distribution(schemes)` is the same wiring around any scheme registry (tes
 * Scripts run with default interpreter limits; `Options` is not configurable per request yet.
 * `session.*` script statements depend on sm-lang T9; the host side is implemented and tested through
   `Host::session`.
+
+### Inputs (D6) and wiring (D3)
+
+* `standard()` installs the boolean, cadio, smooth, poly, diag and rt plugins besides the W2 ones, the
+  `mesher` service, `sm_diag::OpNames` (names of every registered op, built from a scratch registry
+  of the same plugins) and the input store: `StepInputs` over `ProjectInputs` (memory until bound,
+  `<project>/inputs/<sha256>.stp` once bound) plus `InputsHandle` for staging.
+* Binding: the store cannot know the project at builder time, so `Server::open`, `Server::create` and
+  `session.open` bind the store of the builder just assembled on the same thread (thread-local hand-off
+  in `standard.rs`) to `<dir>/inputs/` before the project replays. The hand-off is cleared by
+  `Server::new`/`from_factory`/`from_workspace`, and after open/create/`session.open` the handle is
+  re-bound to `<root>/inputs` if it is bound elsewhere; `stage_input` does the same, so staging always
+  lands in the attached project. Limits: `standard().open(dir)` called directly (bypassing `Server`) keeps
+  the in-memory store, and `Server::open(b, dir)` with a builder that is not the most recent one made
+  on the thread binds only after the replay (a STEP import then replays with `step.input_missing`).
+  No full fix without builder introspection: api_change_request to sm-engine, a `WorkspaceBuilder`
+  services getter (or a project-dir-aware service hook called by `open`/`create` before replay).
+* `Server::stage_input(bytes)` and `session.stage(path)` (`SessionCommand::Stage`) stage bytes and return
+  `{sha256, bytes}`; ops record the hash, never a path.

@@ -13,6 +13,9 @@ pub enum ServerError {
     /// The workspace could not be built, created or opened.
     #[error("workspace: {0}")]
     Engine(#[from] EngineError),
+    /// The input store could not take the bytes, or the distribution has none.
+    #[error("input store: {0}")]
+    Input(String),
 }
 
 /// Errors of [`try_standard`](crate::try_standard): the standard distribution is misassembled.

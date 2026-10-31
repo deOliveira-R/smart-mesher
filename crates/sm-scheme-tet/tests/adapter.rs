@@ -259,6 +259,41 @@ fn brick10_size2_through_the_driver() {
     let _ = (VertexIx::new(0), vertex_point as fn(&dyn TopologyView, EntityId) -> _);
 }
 
+/// The adapter returns the tetrahedralization as is: no post-split of boundary-heavy tets (an
+/// exporter concern), so the worst tet keeps the pipeline's own quality.
+#[test]
+fn adapter_does_not_degrade_tet_quality() {
+    let (topo, ids, _) = brick_setup([10.0, 10.0, 10.0]);
+    let out = mesh_with(&topo, ids.volume, &size_intent(2.0), &registry(None), &Sequential).expect("mesh");
+    let m = &out.finished.mesh;
+    let mut worst = f64::INFINITY;
+    for c in 0..m.count(MeshEntityKind::Cell) {
+        let k = m.cell_corners(CellIx::new(c)).expect("tet corners");
+        let p: Vec<[f64; 3]> = k
+            .iter()
+            .map(|&v| {
+                let q = m.point(v.get());
+                [q.x, q.y, q.z]
+            })
+            .collect();
+        // Scaled Jacobian at each corner, 1 for the regular tet.
+        for i in 0..4 {
+            let e: Vec<[f64; 3]> = (1..4)
+                .map(|j| {
+                    let q = p[(i + j) % 4];
+                    [q[0] - p[i][0], q[1] - p[i][1], q[2] - p[i][2]]
+                })
+                .collect();
+            let det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) - e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0])
+                + e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+            let l: f64 = e.iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).product();
+            // Orientation-free: the corner order of a cell is not guaranteed positive.
+            worst = worst.min(det.abs() / l * std::f64::consts::SQRT_2);
+        }
+    }
+    assert!(worst >= 0.25, "min scaled Jacobian {worst}");
+}
+
 #[test]
 fn brick_with_void_has_both_shells() {
     let mut topo = CellComplex::new();

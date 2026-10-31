@@ -16,12 +16,14 @@
 mod build;
 mod check;
 mod parse;
+mod split;
 mod tar;
 mod write;
 
 pub use build::build_polymesh;
 pub use check::{FoamIssue, check_polymesh};
 pub use parse::{parse_polymesh, read_polymesh_dir};
+pub use split::{CELL_MAP_FILE, SMALL_DETERMINANT, cell_determinants};
 pub use write::{FoamFile, write_polymesh};
 
 use crate::report::LossReport;
@@ -220,6 +222,9 @@ pub struct FoamOptions {
     pub face_zones: Vec<String>,
     /// Deck records of the model (a mirror deck's face set becomes a `symmetryPlane` when planar).
     pub decks: Vec<DeckRecord>,
+    /// Split cells whose checkMesh determinant is below [`SMALL_DETERMINANT`] into face-pyramid
+    /// sub-cells (ruling INT-8). On by default; meshes without such cells are unaffected.
+    pub split_small_determinant: bool,
 }
 
 impl Default for FoamOptions {
@@ -231,6 +236,7 @@ impl Default for FoamOptions {
             cell_zones: ZoneSelect::All,
             face_zones: Vec::new(),
             decks: Vec::new(),
+            split_small_determinant: true,
         }
     }
 }
@@ -268,6 +274,11 @@ impl FoamOptions {
     /// Attach all deck records.
     pub fn decks(mut self, d: Vec<DeckRecord>) -> Self {
         self.decks = d;
+        self
+    }
+    /// Enable or disable the small-determinant split.
+    pub fn split_small_determinant(mut self, on: bool) -> Self {
+        self.split_small_determinant = on;
         self
     }
     /// Attach one deck record.
@@ -379,6 +390,9 @@ pub struct PolyMesh {
     pub cell_zones: Vec<PolyZone>,
     /// Face zones.
     pub face_zones: Vec<PolyFaceZone>,
+    /// Exported cell -> internal (source mesh) cell, written as `smeshCellMap`. Empty when the
+    /// export did not split any cell (the map is then the identity and no file is written).
+    pub cell_map: Vec<u32>,
 }
 
 impl PolyMesh {
@@ -451,9 +465,9 @@ pub struct FoamReport {
 pub struct FoamBuild {
     /// The polyMesh.
     pub mesh: PolyMesh,
-    /// Source face index of every foam face.
+    /// Source face index of every foam face (`u32::MAX` for faces the small-determinant split added).
     pub face_of_foam: Vec<u32>,
-    /// Source vertex index of every foam point.
+    /// Source vertex index of every foam point (`u32::MAX` for split centroids).
     pub point_of_foam: Vec<u32>,
     /// Counts, patches and losses.
     pub report: FoamReport,

@@ -4,7 +4,7 @@
 
 mod common;
 use common::*;
-use sm_scheme_tet::{SizeSpec, SurfaceInput, TetOptions, tetrahedralize, tetrahedralize_without_respace};
+use sm_scheme_tet::{SizeSpec, TetMesh, scaled_jacobian, SurfaceInput, TetOptions, tetrahedralize, tetrahedralize_without_respace};
 use sm_testkit::surf3::{self, SplitMix64};
 
 fn relief_cube(n: u32, seed: u64, depth: f64) -> SurfaceInput {
@@ -52,6 +52,24 @@ fn respace_never_lowers_the_mesh_minima() {
         assert!(a.min_dihedral_deg >= b.min_dihedral_deg - 1e-9, "{label}: min dihedral {} < {}", a.min_dihedral_deg, b.min_dihedral_deg);
         assert!(a.min_mean_ratio >= b.min_mean_ratio - 1e-12, "{label}: min mean ratio {} < {}", a.min_mean_ratio, b.min_mean_ratio);
         assert!(a.spacing.rms_dev <= b.spacing.rms_dev + 1e-9, "{label}: spacing got worse");
+    }
+}
+
+fn min_sj(m: &TetMesh) -> f64 {
+    m.tets.iter().map(|t| scaled_jacobian(t.map(|i| m.points[i as usize]))).fold(f64::INFINITY, f64::min)
+}
+
+/// W3-INT2 row 8: the downstream metric is the scaled Jacobian, which the mean-ratio and
+/// dihedral floors do not bound. The spacing pass keeps it at the mesh minimum too, so the
+/// end-to-end minimum is at least that of the same build without the pass.
+#[test]
+fn respace_never_lowers_the_min_scaled_jacobian() {
+    for (label, inp, opts) in respace_cases() {
+        let with = tetrahedralize(&inp, &opts).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let without = tetrahedralize_without_respace(&inp, &opts).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let (a, b) = (min_sj(&with), min_sj(&without));
+        eprintln!("{label}: min scaled Jacobian {b:.4} -> {a:.4}");
+        assert!(a >= b - 1e-12, "{label}: min scaled Jacobian {a} < {b}");
     }
 }
 

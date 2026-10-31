@@ -13,7 +13,7 @@ use sm_testkit::meshes::{hex_block_2x2x2, single_hex};
 // ---- helpers --------------------------------------------------------------------------------------
 
 fn good() -> Vec<FoamFile> {
-    build_polymesh(&single_hex().unwrap().mesh, &FoamOptions::default()).unwrap().mesh.files().unwrap()
+    build_polymesh(&single_hex().unwrap().mesh, &FoamOptions::new().split_small_determinant(false)).unwrap().mesh.files().unwrap()
 }
 
 fn replace(files: &[FoamFile], name: &str, from: &str, to: &str) -> Vec<FoamFile> {
@@ -319,7 +319,7 @@ fn read_dir_round_trips_and_write_dir_removes_stale_zone_files() {
     assert!(!dir.join("cellZones").exists() && !dir.join("faceZones").exists());
     assert_eq!(read_polymesh_dir(&dir).unwrap(), bare.mesh);
     // write_polymesh = build + write_dir, returning the report.
-    let r = write_polymesh(&hex_block([2, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap(), &FoamOptions::default(), &dir).unwrap();
+    let r = write_polymesh(&hex_block([2, 1, 1], [1.0; 3], &mut SerialAlloc::new()).unwrap(), &FoamOptions::new().split_small_determinant(false), &dir).unwrap();
     assert_eq!((r.n_cells, r.n_faces, r.n_internal_faces), (2, 11, 1));
     assert_eq!(read_polymesh_dir(&dir).unwrap().n_cells, 2);
     assert!(matches!(read_polymesh_dir(&dir.join("nope")), Err(MeshioError::Io(_))));

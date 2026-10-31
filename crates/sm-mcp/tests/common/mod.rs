@@ -200,6 +200,15 @@ impl Endpoint for Mock {
                 _ => Err(RpcError::application("unknown-query", format!("no query `{name}`"))),
             },
             Request::ScriptRun { text, .. } => {
+                if text.starts_with("session.stage(") {
+                    if text.contains("missing") {
+                        return Err(RpcError::application("script-error", "session.stage failed"));
+                    }
+                    let ev = json!({"event": "session", "command": "stage", "applied": true,
+                        "result": {"sha256": "ab".repeat(32), "bytes": 5}});
+                    return Ok(serde_json::to_value(ScriptResult::new(h(3), "", vec![ev], json!([])))
+                        .unwrap());
+                }
                 if text.contains("fail") {
                     Err(RpcError::application("script-error", "line 1: TopoFace#3 is not a volume")
                         .with_data(json!({"line": 1})))
