@@ -50,15 +50,19 @@ use w3a_support::*;
 // INT-8 exporter split): hybrid before smoothing 0.259 (A) / 0.173 (B), after smoothing 0.253
 // (A) / 0.185 (B), `mt` 0.233 (A) / 0.217 (B); hex 1.0, wedge 0.738 (A) / 0.732 (B). Floors
 // unchanged; row 8 fails (tets below 0.25) and the drop is reported to crates/sm-scheme-tet/.
+// Re-run round 5 (2026-10-31, w3-int2 round 1: eaa1be3 adds scaled Jacobian to the respace
+// guard): back to round 3, hybrid before smoothing 0.308 (A) / 0.282 (B), after smoothing 0.253
+// (A) / 0.185 (B), `mt` 0.286 (both); hex 1.0, wedge 0.738 (A) / 0.732 (B). Floors unchanged;
+// row 8 passes. Same values with RAYON_NUM_THREADS=1.
 /// Minimum scaled Jacobian of the hexes (measured 1.0).
 const SJ_HEX: f64 = 0.2;
 /// Minimum scaled Jacobian of the wedges (measured 0.732 .. 0.738 after smoothing).
 const SJ_WEDGE: f64 = 0.3;
 /// Minimum scaled Jacobian of unsmoothed tets (initial 0.3; calibrated on round 3's 0.282;
-/// round 4 measured 0.173 .. 0.259, below the floor).
+/// round 4 measured 0.173 .. 0.259, below the floor; round 5 measured 0.282 .. 0.308).
 const SJ_TET: f64 = 0.25;
 /// Minimum scaled Jacobian of tets after the milestone's smoothing (round 3 measured 0.184;
-/// round 4 measured 0.185 (B) / 0.253 (A)).
+/// round 4 measured 0.185 (B) / 0.253 (A); round 5 measured 0.185 (B) / 0.253 (A)).
 const SJ_TET_SMOOTHED: f64 = 0.15;
 
 /// sha256 of `sm_testkit::w3a::STEP` (pinned by the testkit).
