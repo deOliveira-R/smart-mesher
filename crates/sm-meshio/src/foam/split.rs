@@ -58,18 +58,35 @@ pub fn cell_determinants(pm: &PolyMesh) -> Vec<f64> {
             cnt[c] += 1;
         }
     }
-    (0..nc)
-        .map(|c| {
-            let avg = if cnt[c] > 0 { mag[c] / f64::from(cnt[c]) } else { 0.0 };
-            if cnt[c] == 0 || avg < 1e-150 {
-                return 0.0;
-            }
-            let k = 1.0 / (avg * avg);
-            let [xx, xy, xz, yy, yz, zz] = a[c].map(|v| v * k);
-            let det = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
-            det.abs() / 8.0
-        })
-        .collect()
+    // Differs from OpenFOAM only for 2D/1D meshes (meshD) and in applying the ROOTVSMALL test
+    // to the mean area instead of the area sum; neither changes results for our 3D exports.
+    (0..nc).map(|c| det_from_tensor(a[c], mag[c], cnt[c])).collect()
+}
+
+/// Determinant measure from the summed area tensor, summed magnitudes and face count.
+fn det_from_tensor(a: [f64; 6], mag: f64, cnt: u32) -> f64 {
+    let avg = if cnt > 0 { mag / f64::from(cnt) } else { 0.0 };
+    if cnt == 0 || avg < 1e-150 {
+        return 0.0;
+    }
+    let k = 1.0 / (avg * avg);
+    let [xx, xy, xz, yy, yz, zz] = a.map(|v| v * k);
+    let det = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
+    det.abs() / 8.0
+}
+
+/// Determinant measure of a cell with the given internal face area vectors.
+fn det_of_normals(ns: &[[f64; 3]]) -> f64 {
+    let mut a = [0.0f64; 6];
+    let mut mag = 0.0;
+    for n in ns {
+        let t = [n[0] * n[0], n[0] * n[1], n[0] * n[2], n[1] * n[1], n[1] * n[2], n[2] * n[2]];
+        for k in 0..6 {
+            a[k] += t[k];
+        }
+        mag += (t[0] + t[3] + t[5]).sqrt();
+    }
+    det_from_tensor(a, mag, ns.len() as u32)
 }
 
 /// Sum of the signed volumes of the fan tets (apex, m, a, b) over an outward base loop, `m` the
@@ -132,9 +149,11 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
     let (nf, ni) = (pm.n_faces(), pm.n_internal());
     let det = cell_determinants(pm);
     let mut cand = vec![NONE; nc];
+    let mut cell_of: Vec<u32> = Vec::new();
     let mut n_cand = 0usize;
     for c in 0..nc {
         if det[c] < threshold {
+            cell_of.push(c as u32);
             cand[c] = n_cand as u32;
             n_cand += 1;
         }
@@ -211,6 +230,23 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
         let n = vs.len() as f64;
         let cen = [sum[0] / n, sum[1] / n, sum[2] / n];
         if loops.iter().all(|l| pyramid_volume(&pm.points, l, cen) > 0.0) {
+            // Keep the parent when its worst sub-cell would not be better than it.
+            let mut worst = f64::INFINITY;
+            for (i, l) in loops.iter().enumerate() {
+                let mut ns: Vec<[f64; 3]> = Vec::with_capacity(l.len() + 1);
+                if (fs[i].0 as usize) < ni {
+                    ns.push(area_vector(&pm.points, l));
+                }
+                for e in 0..l.len() {
+                    let (a, b) = (pm.points[l[e] as usize], pm.points[l[(e + 1) % l.len()] as usize]);
+                    let (u, v) = ([a[0] - cen[0], a[1] - cen[1], a[2] - cen[2]], [b[0] - cen[0], b[1] - cen[1], b[2] - cen[2]]);
+                    ns.push([(u[1] * v[2] - u[2] * v[1]) / 2.0, (u[2] * v[0] - u[0] * v[2]) / 2.0, (u[0] * v[1] - u[1] * v[0]) / 2.0]);
+                }
+                worst = worst.min(det_of_normals(&ns));
+            }
+            if worst <= det[cell_of[k] as usize] {
+                continue;
+            }
             splittable[k] = true;
             across[k] = ac;
             centre[k] = cen;

@@ -445,7 +445,7 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
                 "foam.small_det_unsplit",
                 LossSeverity::Degraded,
                 info.unsplit as usize,
-                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} that cannot be split (faces not a closed manifold, or a face pyramid around the centroid has non-positive volume): written unsplit"),
+                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} that cannot be split (faces not a closed manifold, a face pyramid around the centroid has non-positive volume, or the split would not improve the worst determinant): written unsplit"),
             );
         }
         if !info.split_cells.is_empty() {

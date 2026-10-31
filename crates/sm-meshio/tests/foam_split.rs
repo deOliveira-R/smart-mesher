@@ -199,3 +199,20 @@ fn classification_patches_split_too() {
     assert_eq!(b.mesh.n_cells, 8);
     assert!(b.mesh.patches.iter().map(|p| p.n_faces).sum::<u32>() == 6);
 }
+
+#[test]
+fn a_split_never_leaves_a_cell_worse_than_its_parent() {
+    // Two flat slivers glued on (0 1 2); a split is applied only when it improves the worst cell.
+    let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0.3, 0.3, 1e-4], [0.3, 0.3, -1e-4]];
+    let cells = [CellSpec::Template(CellShape::Tet, vec![0, 1, 2, 3]), CellSpec::Template(CellShape::Tet, vec![0, 2, 1, 4])];
+    let m = build_mesh(&p, &cells, &mut SerialAlloc::new()).unwrap();
+    let plain = build_polymesh(&m, &split_off()).unwrap();
+    assert!(cell_determinants(&plain.mesh).iter().all(|d| *d < SMALL_DETERMINANT));
+    let b = build_polymesh(&m, &FoamOptions::default()).unwrap();
+    // No exported cell is worse than its parent, whether or not it was split.
+    let before = cell_determinants(&plain.mesh);
+    for (c, d) in cell_determinants(&b.mesh).iter().enumerate() {
+        let parent = if b.mesh.cell_map.is_empty() { c } else { b.mesh.cell_map[c] as usize };
+        assert!(*d > before[parent], "cell {c}: {d} vs parent {}", before[parent]);
+    }
+}
