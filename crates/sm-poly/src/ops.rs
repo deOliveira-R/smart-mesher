@@ -83,7 +83,7 @@ impl TypedOp for ToPoly {
         let mut alloc: SerialAlloc = alloc0.clone();
         let (fin, _report) = crate::dualize(
             src,
-            &PolyOptions::new(),
+            &PolyOptions::new().with_all_polyhedra(true),
             &TopologyResolver(model.topo()),
             MeshBuilder::new(),
             &mut alloc,

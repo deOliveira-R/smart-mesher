@@ -35,9 +35,21 @@ pub struct PolyOptions {
     /// Merge small cells into a neighbour (default off; library only, not reachable from the op).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agglomerate: Option<Agglomerate>,
+    /// Keep every cell `Polyhedron`: a dual cell whose faces form a `Tet`, `Hex`, `Wedge` or
+    /// `Pyramid` (e.g. the dual of a vertex with four neighbours is a tetrahedron) gets one face
+    /// subdivided, in its neighbour too, so a mesh meant for a `POLYHEDRON` block has no
+    /// fast-path cell. Default off (the single-corner wedges of split cells are always
+    /// broken); `mesh.to_poly` turns it on.
+    #[serde(default)]
+    pub all_polyhedra: bool,
 }
 
 impl PolyOptions {
+    /// Set [`PolyOptions::all_polyhedra`].
+    pub fn with_all_polyhedra(mut self, all_polyhedra: bool) -> Self {
+        self.all_polyhedra = all_polyhedra;
+        self
+    }
     /// The defaults: [`FaceMode::Planar`], edge table iff the source has one.
     pub fn new() -> Self {
         Self::default()
