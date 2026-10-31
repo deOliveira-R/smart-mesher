@@ -4,6 +4,7 @@ use super::{
     FoamBuild, FoamError, FoamOptions, FoamPatchType, FoamReport, PatchOrigin, PatchSource, PatchSummary, PolyFaceZone, PolyMesh, PolyPatch, PolyZone, ShapeCounts,
     ZoneSelect, sanitize,
 };
+use super::split::{CELL_MAP_FILE, SMALL_DETERMINANT, split_small_determinant};
 use crate::error::{MeshioError, Result};
 use crate::report::{LossItem, LossReport, LossSeverity};
 use crate::smsh::{DeckParams, check_columns};
@@ -432,19 +433,79 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
             }
             a
         });
+    let mut counts = counts;
+    let mut poly = PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells: nc as u32, patches: poly_patches, cell_zones, face_zones, cell_map: Vec::new() };
+    let mut point_of_foam = point_of_foam;
+    let mut n_int = n_int;
+    if opts.split_small_determinant
+        && let Some(info) = split_small_determinant(&mut poly, SMALL_DETERMINANT)
+    {
+        {
+            if info.unsplit > 0 {
+                note(
+                    "foam.small_det_unsplit",
+                    LossSeverity::Degraded,
+                    info.unsplit as usize,
+                    format!("cells with checkMesh determinant < {SMALL_DETERMINANT} whose faces are not a closed manifold: written unsplit"),
+                );
+            }
+            if !info.split_cells.is_empty() {
+                note(
+                    "foam.small_det_split",
+                    LossSeverity::Degraded,
+                    info.split_cells.len(),
+                    format!(
+                        "cells with checkMesh determinant < {SMALL_DETERMINANT} split at the centroid into {} sub-cells (zones and patches kept); exported cell -> internal cell map in {CELL_MAP_FILE}",
+                        info.sub_cells
+                    ),
+                );
+                if info.remaining > 0 {
+                    note(
+                        "foam.small_det_remaining",
+                        LossSeverity::Degraded,
+                        info.remaining as usize,
+                        format!("exported cells still below checkMesh determinant {SMALL_DETERMINANT} after the split"),
+                    );
+                }
+                // The census follows the exported cells.
+                for &c in &info.split_cells {
+                    let i = match mesh.cell_shape(CellIx::new(c as usize)) {
+                        CellShape::Hex => 0,
+                        CellShape::Wedge => 1,
+                        CellShape::Pyramid => 2,
+                        CellShape::Tet => 3,
+                        _ => 4,
+                    };
+                    counts[i] -= 1;
+                }
+                counts[3] += info.sub_shapes[0];
+                counts[2] += info.sub_shapes[1];
+                counts[4] += info.sub_shapes[2];
+                let ni_old = n_int;
+                n_int += info.added_faces;
+                let mut fof = vec![NONE; poly.n_faces()];
+                for (old, &new) in info.new_of_old_face.iter().enumerate() {
+                    fof[new as usize] = face_of_foam[old];
+                }
+                face_of_foam = fof;
+                point_of_foam.resize(poly.points.len(), NONE);
+                debug_assert!(n_int > ni_old);
+            }
+        }
+    }
     let report = FoamReport {
-        n_points: points.len() as u64,
-        n_cells: nc as u64,
-        n_faces: nf as u64,
+        n_points: poly.points.len() as u64,
+        n_cells: u64::from(poly.n_cells),
+        n_faces: poly.n_faces() as u64,
         n_internal_faces: n_int as u64,
         shape_counts: ShapeCounts { hexahedra: counts[0], prisms: counts[1], pyramids: counts[2], tetrahedra: counts[3], polyhedra: counts[4] },
-        patches: poly_patches
+        patches: poly
+            .patches
             .iter()
             .map(|p| PatchSummary { name: p.name.clone(), patch_type: p.patch_type, start_face: p.start_face, n_faces: p.n_faces, origin: p.origin.clone() })
             .collect(),
         loss,
     };
-    let poly = PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells: nc as u32, patches: poly_patches, cell_zones, face_zones };
     Ok(FoamBuild { mesh: poly, face_of_foam, point_of_foam, report })
 }
 

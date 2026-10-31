@@ -516,7 +516,15 @@ pub fn parse_polymesh(files: &[FoamFile]) -> Result<PolyMesh> {
         face_zones = z;
     }
 
-    Ok(PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells, patches, cell_zones, face_zones })
+    let mut cell_map = Vec::new();
+    if let Some(f) = find(files, super::CELL_MAP_FILE)? {
+        cell_map = label_file(f)?;
+        if cell_map.len() != n_cells as usize {
+            return Err(mal(format!("{} has {} entries for {n_cells} cells", super::CELL_MAP_FILE, cell_map.len())));
+        }
+    }
+
+    Ok(PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells, patches, cell_zones, face_zones, cell_map })
 }
 
 /// Read the polyMesh files of directory `dir` (normally `<case>/constant/polyMesh`) and parse
@@ -526,7 +534,7 @@ pub fn read_polymesh_dir(dir: &Path) -> Result<PolyMesh> {
     for name in ["points", "faces", "owner", "neighbour", "boundary"] {
         files.push(FoamFile { name: name.to_string(), bytes: std::fs::read(dir.join(name))? });
     }
-    for name in ["cellZones", "faceZones"] {
+    for name in ["cellZones", "faceZones", super::CELL_MAP_FILE] {
         match std::fs::read(dir.join(name)) {
             Ok(bytes) => files.push(FoamFile { name: name.to_string(), bytes }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

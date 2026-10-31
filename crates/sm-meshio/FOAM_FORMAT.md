@@ -188,5 +188,33 @@ decide mesh validity; that stays `sm_mesh_api::validate`, which the exporter nev
 `foam.default_patch` (info), `foam.name_sanitized` (info), `foam.unused_points_dropped` (info),
 `foam.set_skipped`, `foam.patch_overlap`, `foam.nonconformal_as_patch`,
 `foam.partition_cut_as_patch`, `foam.symmetry_not_planar`, `foam.deck_cyclic_not_emitted`,
-`foam.zone_both_sides`, `foam.high_order_dropped` (all degraded). One item per
+`foam.zone_both_sides`, `foam.high_order_dropped`, `foam.small_det_split`,
+`foam.small_det_remaining`, `foam.small_det_unsplit` (all degraded). One item per
 `(code, detail)`; the detail names the set or patch.
+
+## 11. Small-determinant split (ruling INT-8)
+
+The internal mesh stays exact; the exporter maps to what `checkMesh` accepts. A cell whose
+checkMesh cell determinant (`foam::cell_determinants`: `det(sum n n^T)` over the cell's internal
+faces, `n` the unit normal, divided by `(N/3)^3`; a cell with no internal face counts as 1) is
+below `foam::SMALL_DETERMINANT` (0.001) is replaced by one sub-cell per face: a face pyramid
+around the cell's vertex centroid (for a tet, the 4-tet centroid split). A tet with three
+boundary faces has one internal face and determinant 0, so it is always split.
+
+* Cells keep source order; parent `p` becomes consecutive cells. Sub-cell `i` is the pyramid over
+  the cell's `i`-th face (ascending foam face order). The centroid is a new last point; the
+  triangles (centroid, edge) between sub-cells are new internal faces; internal faces are
+  re-sorted upper triangular; patches keep their faces and shift `startFace`.
+* cellZones list every sub-cell of a member; patches keep their faces (so sub-cells keep the
+  parent's boundary); faceZone labels are renumbered.
+* `FoamBuild::face_of_foam` / `point_of_foam` hold `u32::MAX` for added faces and points.
+* File `constant/polyMesh/smeshCellMap` (only when a cell was split): a `labelList`, line `i` =
+  internal (source mesh) cell of exported cell `i`. `parse_polymesh` / `read_polymesh_dir` restore
+  it into `PolyMesh::cell_map`; OpenFOAM ignores the unknown file.
+* Report: `foam.small_det_split` (count = split parents; detail gives the sub-cell total),
+  `foam.small_det_remaining` (exported cells still below the threshold: slivers), and
+  `foam.small_det_unsplit` (flagged cells whose faces are not a closed manifold). Shape counts
+  follow the exported cells.
+* `FoamOptions::split_small_determinant(false)` disables it. Meshes with no flagged cell (for
+  example hex or wedge meshes with three or more internal faces per cell) export byte for byte
+  as without the pass. A lone cell (no internal face) is not flagged.
