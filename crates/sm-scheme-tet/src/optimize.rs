@@ -10,7 +10,7 @@ use crate::error::TetError;
 use crate::flips::{FlipScratch, Plan};
 use crate::geom::{V3, add, mean_ratio, ori, scale, sub};
 use crate::guard::Guard;
-use crate::spacing::Meter;
+use crate::spacing::{MIN_DIHEDRAL_DEG, MIN_MEAN_RATIO, Meter};
 use rayon::prelude::*;
 
 /// A spacing move may lower the local minimum mean ratio / dihedral angle by at most these
@@ -93,15 +93,30 @@ impl Dt {
     /// spacing is the target, as far as no incident tet is inverted, the local minimum mean
     /// ratio and dihedral angle stay above `RESPACE_KEEP_MR` / `RESPACE_KEEP_DIHEDRAL` times
     /// their values now or above `RESPACE_GOOD_MR` / `RESPACE_GOOD_DIHEDRAL`, whichever is
-    /// lower, the S4 margin does not shrink and the deviation of `r` falls.
+    /// lower, the incident tets stay at or above the mesh's minimum mean ratio and dihedral
+    /// from before the pass (and the quality floor), the S4 margin does not shrink and the
+    /// deviation of `r` falls.
     /// Points deeper than the target are left alone (pulling them towards the surface would
     /// serve no purpose). Same
     /// colouring and ordering as [`Dt::smooth`]. Returns the number of passes performed.
     pub(crate) fn respace(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>, meter: &Meter<'_, '_>) -> usize {
-        self.smooth_with(first_movable, max_passes, guard, Some(meter))
+        // Global floors: the mesh minima now, never below the quality floor of INT-7. A move
+        // changes only the tets of its vertex, so keeping each of them above these keeps the
+        // mesh minima (mean ratio and dihedral) from falling.
+        let (mut gmr, mut gdih) = (f64::INFINITY, f64::INFINITY);
+        for t in 0..self.tds.slots() as u32 {
+            if self.tds.alive[t as usize] && self.tds.ghost_slot(t).is_none() {
+                let v = self.tds.verts[t as usize];
+                let q = crate::quality::tet_quality(v.map(|i| self.pts[i as usize]));
+                gmr = gmr.min(q.mean_ratio);
+                gdih = gdih.min(q.min_dihedral);
+            }
+        }
+        let floors = (gmr.max(MIN_MEAN_RATIO), gdih.max(MIN_DIHEDRAL_DEG));
+        self.smooth_with(first_movable, max_passes, guard, Some((meter, floors)))
     }
 
-    fn smooth_with(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>, meter: Option<&Meter<'_, '_>>) -> usize {
+    fn smooth_with(&mut self, first_movable: usize, max_passes: usize, guard: &Guard<'_>, meter: Option<(&Meter<'_, '_>, (f64, f64))>) -> usize {
         let np = self.pts.len();
         // Vertex -> tets (CSR). The topology does not change while smoothing.
         let mut count = vec![0u32; np + 1];
@@ -171,7 +186,7 @@ impl Dt {
                             let inc = &inc[count[v as usize] as usize..count[v as usize + 1] as usize];
                             match meter {
                                 None => this.smooth_vertex(v, guard, inc),
-                                Some(m) => this.respace_vertex(v, guard, m, inc),
+                                Some((m, floors)) => this.respace_vertex(v, guard, m, floors, inc),
                             }
                         })
                         .collect()
@@ -240,7 +255,7 @@ impl Dt {
     }
 
     /// One vertex of the spacing pass: step towards the spacing target.
-    fn respace_vertex(&self, v: u32, guard: &Guard<'_>, meter: &Meter<'_, '_>, inc: &[u32]) -> Option<(V3, f64)> {
+    fn respace_vertex(&self, v: u32, guard: &Guard<'_>, meter: &Meter<'_, '_>, floors: (f64, f64), inc: &[u32]) -> Option<(V3, f64)> {
         let x = self.pts[v as usize];
         let (target, dev0) = meter.respace_target(x)?;
         if dev0 < 0.02 {
@@ -295,8 +310,8 @@ impl Dt {
         for _ in 0..3 {
             let cand = add(x, scale(sub(target, x), alpha));
             if let Some((mr, dih)) = local(cand)
-                && mr >= (RESPACE_KEEP_MR * base_mr).min(RESPACE_GOOD_MR)
-                && dih >= (RESPACE_KEEP_DIHEDRAL * base_dih).min(RESPACE_GOOD_DIHEDRAL)
+                && mr >= (RESPACE_KEEP_MR * base_mr).min(RESPACE_GOOD_MR).max(floors.0)
+                && dih >= (RESPACE_KEEP_DIHEDRAL * base_dih).min(RESPACE_GOOD_DIHEDRAL).max(floors.1)
                 && guard.margin(cand) >= floor
                 && grading(cand) <= base_grading
             {

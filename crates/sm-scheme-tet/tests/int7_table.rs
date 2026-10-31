@@ -9,7 +9,7 @@
 
 mod common;
 use common::*;
-use sm_scheme_tet::{SurfaceInput, TetOptions, tetrahedralize};
+use sm_scheme_tet::{SizeSpec, SurfaceInput, TetOptions, tetrahedralize};
 use sm_testkit::surf3::{self, SplitMix64};
 
 fn relief_cube(n: u32, seed: u64, depth: f64) -> SurfaceInput {
@@ -25,8 +25,12 @@ fn relief_cube(n: u32, seed: u64, depth: f64) -> SurfaceInput {
 }
 
 fn row(set: &str, label: &str, inp: &SurfaceInput) {
+    row_with(set, label, inp, &TetOptions::default());
+}
+
+fn row_with(set: &str, label: &str, inp: &SurfaceInput, opts: &TetOptions<'_>) {
     let t = std::time::Instant::now();
-    let m = tetrahedralize(inp, &TetOptions::default()).unwrap_or_else(|e| panic!("{label}: {e}"));
+    let m = tetrahedralize(inp, opts).unwrap_or_else(|e| panic!("{label}: {e}"));
     let secs = t.elapsed().as_secs_f64();
     check_boundary(&m, &inp.tris).unwrap_or_else(|e| panic!("{label}: {e}"));
     let r = spacing_r(&m, inp);
@@ -36,16 +40,28 @@ fn row(set: &str, label: &str, inp: &SurfaceInput) {
     // Ruling S4 is met, or its violation is disclosed (never silent).
     assert!(margin >= 0.3 - 1e-9 || m.stats.n_s4_violations > 0, "{label}: S4 violation not disclosed (margin {margin})");
     println!(
-        "ROW|{set}|{label}|{} tris|{secs:.1} s|{} steiner|{} tets|r n={c} mean={mean:.3} sd={sd:.3} p01={p01:.3} min={min:.3} rms_dev={rms:.3}|min dihedral {:.3}|mean ratio min {:.4} mean {:.4}|max R/l {:.2}|S4 margin {margin:.4} ({} viol)",
+        "ROW|{set}|{label}|{} tris|{secs:.1} s|{} steiner|{} tets|r n={c} mean={mean:.3} sd={sd:.3} p01={p01:.3} min={min:.3} rms_dev={rms:.3} (in-crate with the size option: {:.4})|min dihedral {:.3}|mean ratio min {:.4} mean {:.4}|max R/l {:.2}|S4 margin {margin:.4} ({} viol)",
         inp.tris.len(),
         m.stats.n_steiner,
         m.tets.len(),
+        m.stats.spacing.rms_dev,
         m.stats.min_dihedral_deg,
         m.stats.min_mean_ratio,
         m.stats.mean_mean_ratio,
         m.stats.max_radius_edge,
         m.stats.n_s4_violations
     );
+}
+
+/// Round 5: four meshes with good quality (the review measured what `respace` cost them).
+#[test]
+#[ignore = "round 5 table: four good meshes"]
+fn table_good4() {
+    row_with("good4", "ball icosphere(1,4) h0.1", &input_of(&surf3::icosphere(1.0, 4), 0), &TetOptions { size: SizeSpec::Constant(0.1), ..TetOptions::default() });
+    let nan_field = |p: [f64; 3]| if p[2] > 0.5 { f64::NAN } else { 0.08 };
+    row_with("good4", "cube(4) NaN/0.08 field", &input_of(&surf3::tri_cube(4), 0), &TetOptions { size: SizeSpec::Field(&nan_field), ..TetOptions::default() });
+    row("good4", "cube_with_cavity(4)", &input_of(&surf3::cube_with_cavity(4), 0));
+    row_with("good4", "ball icosphere(1,3) gradation 1", &input_of(&surf3::icosphere(1.0, 3), 0), &TetOptions { gradation: 1.0, ..TetOptions::default() });
 }
 
 #[test]

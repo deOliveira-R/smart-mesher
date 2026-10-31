@@ -26,10 +26,12 @@ mod validate;
 
 pub use error::TetError;
 pub use geom::{in_sphere, ori};
+#[doc(hidden)]
+pub use pipeline::tetrahedralize_without_respace;
 pub use pipeline::tetrahedralize;
 pub use scheme::{NAME, TetParams, TetVolume, register};
 pub use quality::{TetQ, tet_quality};
-pub use spacing::{MAX_DIAGNOSTICS, MIN_DIHEDRAL_DEG, MIN_MEAN_RATIO, TARGET_R};
+pub use spacing::{MIN_DIHEDRAL_DEG, MIN_MEAN_RATIO, TARGET_R};
 
 use geom::V3;
 
@@ -88,6 +90,9 @@ pub struct TetOptions<'a> {
     pub max_steiner: usize,
     /// Dihedral angle goal in degrees for the (reserved) level 3 (default 15).
     pub min_dihedral_goal_deg: f64,
+    /// Most quality diagnostics to return (the worst first); 0 returns every violation
+    /// (default 0, ruling INT-7: all of them are located).
+    pub max_diagnostics: usize,
 }
 
 impl Default for TetOptions<'_> {
@@ -99,6 +104,7 @@ impl Default for TetOptions<'_> {
             optimize: 2,
             max_steiner: 0,
             min_dihedral_goal_deg: 15.0,
+            max_diagnostics: 0,
         }
     }
 }
@@ -174,7 +180,9 @@ pub struct QualityDiagnostic {
     /// Centroid of the tet.
     pub position: [f64; 3],
     /// Nearby input triangles (indices into `SurfaceInput::tris` as given by the caller, the
-    /// owners of the surface there), sorted ascending, at most 6.
+    /// owners of the surface there), sorted ascending, at most 6. Empty when the centroid is
+    /// deeper in the interior than the reach of every input triangle (about 1.5 of its own size),
+    /// which happens for large tets in coarsely meshed regions.
     pub triangles: Vec<u32>,
     /// The measure that is below its floor.
     pub metric: QualityMetric,
@@ -210,6 +218,12 @@ pub struct TetStats {
     /// Temporary boundary Steiner points that complete recovery inserted on input edges and
     /// triangles and then moved off the surface (none remain in the output).
     pub n_boundary_steiner: usize,
+    /// Times the build restarted from the Delaunay stage with extra interior points because
+    /// boundary recovery failed (at most 2). Every restart repeats the whole recovery.
+    pub n_recovery_restarts: usize,
+    /// Temporary boundary Steiner points that the failed attempts of those restarts had
+    /// inserted (work thrown away; not in `n_boundary_steiner`, which counts the last attempt).
+    pub n_boundary_steiner_discarded: usize,
     /// Constraint-lookup entries (subsegments, tiles and their edges) inserted or removed by
     /// complete recovery: its work measure, linear in the surface size plus the temporary
     /// points (0 when complete recovery did not run).
@@ -225,13 +239,15 @@ pub struct TetStats {
     pub spacing: SpacingStats,
     /// Tets below the quality floor (a tet counts once per metric): the exact count.
     pub n_quality_violations: usize,
-    /// The worst [`MAX_DIAGNOSTICS`] of them, located, worst first by `value / threshold` (ruling INT-7).
+    /// Every one of them (or the worst [`TetOptions::max_diagnostics`] if that is set), located,
+    /// worst first by `value / threshold`, ties by tet index in the canonical order (ruling INT-7).
     pub quality_diagnostics: Vec<QualityDiagnostic>,
     /// Times the constraint lookup of complete recovery was rebuilt from scratch (0: it is
     /// always updated incrementally).
     pub n_lookup_rebuilds: u64,
-    /// Points the post-classification removal pass did not try or finish because its work cap
-    /// was reached (0 when it ran to completion).
+    /// Distinct recovery points that the post-classification removal passes skipped (star above
+    /// the size cap or work cap reached, in either of the two calls) and that are still in the
+    /// output (0 when the passes ran to completion).
     pub n_removal_deferred: usize,
     /// Flips performed (recovery and optimization).
     pub flips: usize,
@@ -259,6 +275,8 @@ impl PartialEq for TetStats {
             && self.n_steiner_recovery == o.n_steiner_recovery
             && self.n_steiner_refine == o.n_steiner_refine
             && self.n_boundary_steiner == o.n_boundary_steiner
+            && self.n_recovery_restarts == o.n_recovery_restarts
+            && self.n_boundary_steiner_discarded == o.n_boundary_steiner_discarded
             && self.n_constraint_updates == o.n_constraint_updates
             && self.n_s4_violations == o.n_s4_violations
             && self.worst_s4_margin.to_bits() == o.worst_s4_margin.to_bits()
