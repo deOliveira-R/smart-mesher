@@ -207,67 +207,6 @@ fn classify(dt: &Dt, con: &Constraints, tris: &[[u32; 3]]) -> Result<Vec<u32>, T
     Ok((0..slots as u32).filter(|&t| dt.tds.alive[t as usize] && state[t as usize] != 2).collect())
 }
 
-/// Split every tet with two or more faces on the input surface at its centroid (1 to 4).
-///
-/// Finite-volume solvers (OpenFOAM `checkMesh`) judge a cell by the face normals of its interior
-/// faces only; a tet with two boundary faces keeps two interior faces, a rank-2 normal set, and is
-/// reported as under-determined. After the split each sub-tet has at most one boundary face. The
-/// split is local (the tet's own faces stay faces of the sub-tets), so the mesh stays conformal
-/// and the boundary is untouched. A tet is left alone when a sub-tet would not be exactly
-/// positive. Returns the number of tets split.
-fn split_tets(points: &mut Vec<V3>, tets: &mut Vec<[u32; 4]>, tris: &[[u32; 3]]) -> usize {
-    let mut bnd: Vec<[u32; 3]> = tris.iter().map(|t| sorted3(t[0], t[1], t[2])).collect();
-    bnd.sort_unstable();
-    let is_bnd = |a: u32, b: u32, c: u32| bnd.binary_search(&sorted3(a, b, c)).is_ok();
-    let mut out: Vec<[u32; 4]> = Vec::with_capacity(tets.len());
-    let mut n_split = 0;
-    for &t in tets.iter() {
-        let n_b = (0..4).filter(|&i| is_bnd(t[(i + 1) % 4], t[(i + 2) % 4], t[(i + 3) % 4])).count();
-        if n_b >= 2 {
-            let p = t.map(|i| points[i as usize]);
-            let mut m = [0.0; 3];
-            for q in p {
-                m = crate::geom::add(m, q);
-            }
-            if let Some(m) = sanitize(crate::geom::scale(m, 0.25)) {
-                let mi = points.len() as u32;
-                let subs: [[u32; 4]; 4] = std::array::from_fn(|k| {
-                    let mut s = t;
-                    s[k] = mi;
-                    s
-                });
-                let pm = |s: &[u32; 4]| {
-                    let q = |i: usize| if s[i] == mi { m } else { points[s[i] as usize] };
-                    ori(q(0), q(1), q(2), q(3)) > 0
-                };
-                if subs.iter().all(pm) {
-                    points.push(m);
-                    out.extend(subs);
-                    n_split += 1;
-                    continue;
-                }
-            }
-        }
-        out.push(t);
-    }
-    *tets = out;
-    n_split
-}
-
-/// [`split_tets`] on a finished mesh, refreshing its canonical order and statistics. `tris` are the
-/// input surface triangles the mesh was built from. Returns the number of tets split.
-pub(crate) fn split_boundary_heavy(mesh: &mut TetMesh, tris: &[[u32; 3]]) -> usize {
-    let n = split_tets(&mut mesh.points, &mut mesh.tets, tris);
-    if n > 0 {
-        canonical_tets(&mut mesh.tets);
-        let s = &mut mesh.stats;
-        s.n_steiner += n;
-        s.n_steiner_refine += n;
-        (s.min_dihedral_deg, s.max_dihedral_deg, s.max_radius_edge, s.min_mean_ratio, s.mean_mean_ratio) = mesh_stats(&mesh.points, &mesh.tets);
-    }
-    n
-}
-
 /// Tetrahedralize the volume enclosed by `input`; see the crate docs.
 pub fn tetrahedralize(input: &SurfaceInput, opts: &TetOptions<'_>) -> Result<TetMesh, TetError> {
     tetrahedralize_with(input, opts, false)

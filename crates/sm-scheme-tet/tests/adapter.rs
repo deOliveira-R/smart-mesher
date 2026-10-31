@@ -259,39 +259,39 @@ fn brick10_size2_through_the_driver() {
     let _ = (VertexIx::new(0), vertex_point as fn(&dyn TopologyView, EntityId) -> _);
 }
 
-/// Finite-volume solvers judge a cell by its interior faces only (OpenFOAM `checkMesh` cell
-/// determinant); a tet with two boundary faces keeps two interior normals and is under-determined.
+/// The adapter returns the tetrahedralization as is: no post-split of boundary-heavy tets (an
+/// exporter concern), so the worst tet keeps the pipeline's own quality.
 #[test]
-fn no_cell_is_under_determined_by_its_interior_faces() {
+fn adapter_does_not_degrade_tet_quality() {
     let (topo, ids, _) = brick_setup([10.0, 10.0, 10.0]);
     let out = mesh_with(&topo, ids.volume, &size_intent(2.0), &registry(None), &Sequential).expect("mesh");
     let m = &out.finished.mesh;
     let mut worst = f64::INFINITY;
     for c in 0..m.count(MeshEntityKind::Cell) {
-        let mut a = [[0.0f64; 3]; 3];
-        let mut n_int = 0;
-        for sf in m.cell_faces(CellIx::new(c)) {
-            let f = sf.face();
-            if m.face_right(f).is_none() {
-                continue;
-            }
-            n_int += 1;
-            let s = sm_mesh_api::face_geometry(m, f).area_vector;
-            let s = [s.x, s.y, s.z];
-            let l = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
-            for i in 0..3 {
-                for j in 0..3 {
-                    a[i][j] += s[i] * s[j] / l;
-                }
-            }
+        let k = m.cell_corners(CellIx::new(c)).expect("tet corners");
+        let p: Vec<[f64; 3]> = k
+            .iter()
+            .map(|&v| {
+                let q = m.point(v.get());
+                [q.x, q.y, q.z]
+            })
+            .collect();
+        // Scaled Jacobian at each corner, 1 for the regular tet.
+        for i in 0..4 {
+            let e: Vec<[f64; 3]> = (1..4)
+                .map(|j| {
+                    let q = p[(i + j) % 4];
+                    [q[0] - p[i][0], q[1] - p[i][1], q[2] - p[i][2]]
+                })
+                .collect();
+            let det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) - e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0])
+                + e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+            let l: f64 = e.iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).product();
+            // Orientation-free: the corner order of a cell is not guaranteed positive.
+            worst = worst.min(det.abs() / l * std::f64::consts::SQRT_2);
         }
-        assert!(n_int >= 3, "cell {c} has {n_int} interior faces");
-        let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-        let tr3 = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
-        worst = worst.min(det / (tr3 * tr3 * tr3));
     }
-    assert!(worst >= 1e-3, "smallest interior-face determinant {worst}");
+    assert!(worst >= 0.25, "min scaled Jacobian {worst}");
 }
 
 #[test]
