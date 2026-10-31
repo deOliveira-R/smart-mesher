@@ -37,6 +37,9 @@ use w3a_support::*;
 // fix_boundary false) 0.199 (B) / 0.253 (A). Hex and wedge keep the initial floors; the tet
 // floor is lowered to 0.25 for unsmoothed tets and to 0.15 after smoothing (the guard allows
 // any drop above `guard_floor`, checked separately).
+// Re-run round 1 (2026-10-30, after sm-scheme-tet's `split_boundary_heavy` centroid split): tets
+// of the unsmoothed hybrid 0.147 (A) / 0.146 (B), `mt` 0.147 (A) / 0.134 (B). The floors are NOT
+// lowered: row 8 fails and the drop is reported to crates/sm-scheme-tet/.
 /// Minimum scaled Jacobian of the hexes.
 const SJ_HEX: f64 = 0.2;
 /// Minimum scaled Jacobian of the wedges.
