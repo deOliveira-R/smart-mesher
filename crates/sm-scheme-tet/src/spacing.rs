@@ -24,8 +24,6 @@ const REACH: f64 = 1.5;
 pub const MIN_DIHEDRAL_DEG: f64 = 5.0;
 /// Quality floor: smallest mean ratio of a tet.
 pub const MIN_MEAN_RATIO: f64 = 0.05;
-/// Diagnostics kept in `TetStats::quality_diagnostics` (the worst; the count is exact).
-pub const MAX_DIAGNOSTICS: usize = 256;
 /// Nearby input triangles listed per diagnostic.
 const NEAR_TRIS: usize = 6;
 
@@ -121,9 +119,10 @@ impl<'a, 'o> Meter<'a, 'o> {
         s
     }
 
-    /// Tets below the quality floor as `(count, worst diagnostics)`; triangle ids in the
-    /// diagnostics are indices into the triangle list this meter was built over.
-    pub fn quality_floor(&self, points: &[V3], n_input: usize, tets: &[[u32; 4]]) -> (usize, Vec<QualityDiagnostic>) {
+    /// Tets below the quality floor as `(count, diagnostics)` (all, or the worst
+    /// `max_diagnostics` if that is non-zero); triangle ids in the diagnostics are indices into
+    /// the triangle list this meter was built over (empty for a centroid beyond the reach of every triangle).
+    pub fn quality_floor(&self, points: &[V3], n_input: usize, tets: &[[u32; 4]], max_diagnostics: usize) -> (usize, Vec<QualityDiagnostic>) {
         let per_tet: Vec<[Option<f64>; 2]> = tets
             .par_iter()
             .map(|t| {
@@ -147,7 +146,9 @@ impl<'a, 'o> Meter<'a, 'o> {
             QualityMetric::MeanRatio => x.0 / MIN_MEAN_RATIO,
         };
         found.sort_by(|a, b| sev(a).total_cmp(&sev(b)).then(a.1.cmp(&b.1)).then((a.2 as u8).cmp(&(b.2 as u8))));
-        found.truncate(MAX_DIAGNOSTICS);
+        if max_diagnostics > 0 {
+            found.truncate(max_diagnostics);
+        }
         let diags = found
             .into_iter()
             .map(|(value, ti, metric)| {

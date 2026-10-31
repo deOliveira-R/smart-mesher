@@ -70,7 +70,7 @@ fn quality_floor_violations_are_located_and_sorted() {
     let m = mesh(&inp, "relief n6 seed3 d0.9");
     let st = &m.stats;
     assert!(st.n_quality_violations > 0, "min dihedral {}", st.min_dihedral_deg);
-    assert!(!st.quality_diagnostics.is_empty() && st.quality_diagnostics.len() <= sm_scheme_tet::MAX_DIAGNOSTICS);
+    assert!(!st.quality_diagnostics.is_empty());
     assert!(st.quality_diagnostics.len() <= st.n_quality_violations);
     let lo = [0.0; 3];
     let hi = [1.0; 3];
@@ -192,6 +192,9 @@ fn tiled_relief_work_per_triangle_is_bounded() {
         );
         assert!(st.n_boundary_steiner > 0, "tiled n{n}: complete recovery did not run");
         assert_eq!(st.n_lookup_rebuilds, 0, "tiled n{n}");
+        // Round 5: no whole-build restart (a restart repeats all the recovery and is the cause of
+        // the n = 64 cliff, see DESIGN.md); the discarded work is zero with it.
+        assert_eq!((st.n_recovery_restarts, st.n_boundary_steiner_discarded), (0, 0), "tiled n{n}");
         assert!(st.n_constraint_updates as f64 <= 7.0 * tris + 64.0 * st.n_boundary_steiner as f64, "tiled n{n}");
         per_tri.push((st.n_constraint_updates as f64 / tris, st.flips as f64 / tris));
     }
@@ -214,11 +217,13 @@ fn record_tiled_relief() {
         let st = &m.stats;
         let sp = st.spacing;
         eprintln!(
-            "tiled n{n}: {} tris, {} tets in {s:.2} s; stage ms {:?}; temporary boundary {}; updates {}; flips {}; deferred {}; r mean {:.3} sd {:.3} p01 {:.3} min {:.3}; min dihedral {:.3}; {} quality violations; S4 {} violations (worst {:.4})",
+            "tiled n{n}: {} tris, {} tets in {s:.2} s; stage ms {:?}; temporary boundary {} (+{} discarded in {} restarts); updates {}; flips {}; deferred {}; r mean {:.3} sd {:.3} p01 {:.3} min {:.3}; min dihedral {:.3}; {} quality violations; S4 {} violations (worst {:.4})",
             inp.tris.len(),
             m.tets.len(),
             st.stage_ms.map(|x| x.round()),
             st.n_boundary_steiner,
+            st.n_boundary_steiner_discarded,
+            st.n_recovery_restarts,
             st.n_constraint_updates,
             st.flips,
             st.n_removal_deferred,

@@ -184,9 +184,9 @@ impl Bnd {
     }
 
     /// Input triangle (owner, not a tile serial) of the first tile at `v`: what a located
-    /// error must name; 0 when no tile has `v`.
-    fn owner_near(&self, v: u32) -> u32 {
-        self.tiles_at(v).next().map_or(0, |i| self.subs[&i].1)
+    /// error must name; `None` when no tile has `v`.
+    fn owner_near(&self, v: u32) -> Option<u32> {
+        self.tiles_at(v).next().map(|i| self.subs[&i].1)
     }
 
     /// Rebuild the lookup from the tiles (tests: the incremental lookup must equal this).
@@ -705,8 +705,7 @@ impl Recover<'_> {
         }
         self.dt.pinned[p as usize] = true;
         self.bnd.on.insert(p, on);
-        self.n_boundary_steiner += 1;
-    }
+        self.n_boundary_steiner += 1;    }
 
     /// Record that subsegment `(u,w)` of an input edge was split at `p`.
     fn on_seg_split(&mut self, u: u32, w: u32, p: u32) -> u32 {
@@ -1050,8 +1049,11 @@ impl Recover<'_> {
         match self.bnd.on.keys().next() {
             None => Ok(()),
             Some(&p) => {
-                let owner = self.bnd.owner_near(p);
-                Err(fail(owner, None, "a temporary boundary Steiner point could not be moved off the surface"))
+                match self.bnd.owner_near(p) {
+                    Some(owner) => Err(fail(owner, None, "a temporary boundary Steiner point could not be moved off the surface")),
+                    // `tri` is a placeholder (0) here: no triangle is known.
+                    None => Err(fail(0, None, "a temporary boundary Steiner point could not be moved off the surface (no surface tile has it: `tri` is a placeholder, not a triangle)")),
+                }
             }
         }
     }
@@ -1076,7 +1078,10 @@ impl Recover<'_> {
             On::Edge(_) => 2,
         };
         if fans.len() != want {
-            return Err(fail(fan_idx.first().map_or(0, |i| self.bnd.subs[i].1), None, "inconsistent fan around a boundary Steiner point"));
+            return Err(match fan_idx.first() {
+                Some(i) => fail(self.bnd.subs[i].1, None, "inconsistent fan around a boundary Steiner point"),
+                None => fail(0, None, "inconsistent fan around a boundary Steiner point (no surface tile has it: `tri` is a placeholder, not a triangle)"),
+            });
         }
         // Polygons without `p`, triangulated in their input triangle's plane.
         let mut new_subs: Vec<([u32; 3], u32)> = Vec::new();
@@ -1432,9 +1437,9 @@ impl crate::delaunay::Dt {
     ///
     /// Bounded: points are tried in order of their star size; a star with more than
     /// [`MAX_REMOVE_STAR`] tets is not tried, and no point is started once the fill work of this
-    /// call reaches `limit` (see [`REMOVE_WORK`]). Every point skipped that way adds one to
-    /// `deferred` (the point stays, which is always valid).
-    pub(crate) fn remove_points(&mut self, from: usize, to: usize, limit: u64, deferred: &mut usize) -> Result<usize, TetError> {
+    /// call reaches `limit` (see [`REMOVE_WORK`]). Every point skipped that way is added to
+    /// the set `deferred` (a point skipped by two calls is one entry) (the point stays, which is always valid).
+    pub(crate) fn remove_points(&mut self, from: usize, to: usize, limit: u64, deferred: &mut std::collections::BTreeSet<u32>) -> Result<usize, TetError> {
         // Cheapest first (smallest star, then index), so the work cap is spent on many small
         // refills rather than a few large ones.
         let mut star = Vec::new();
@@ -1452,12 +1457,12 @@ impl crate::delaunay::Dt {
             let spent = self.work.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(start);
             if len > MAX_REMOVE_STAR || spent >= limit {
                 // Sorted by size: this and every later point is over the cap or unaffordable.
-                *deferred += order[k..].len();
+                deferred.extend(order[k..].iter().map(|x| x.1));
                 break;
             }
             self.tds.star(v, &mut star);
             if star.len() > MAX_REMOVE_STAR {
-                *deferred += 1;
+                deferred.insert(v);
                 continue;
             }
             if self.remove_vertex(v)? {
@@ -1502,7 +1507,7 @@ mod tests {
     /// Mesh with complete recovery only (no interior-point recovery first) and check the
     /// boundary exactly, the orientation, the input points and the volume.
     fn complete_only(name: &str, inp: &SurfaceInput) {
-        let m = crate::pipeline::tetrahedralize_with(inp, &TetOptions { optimize: 0, ..TetOptions::default() }, true).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let m = crate::pipeline::tetrahedralize_with(inp, &TetOptions { optimize: 0, ..TetOptions::default() }, true, true).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(m.points[..inp.points.len()], inp.points[..], "{name}");
         let mut faces: BTreeMap<[u32; 3], usize> = BTreeMap::new();
         let mut vol = 0.0;
@@ -1642,9 +1647,9 @@ mod tests {
         b.add_tile([4, 1, 2], 0);
         assert_eq!(b.tiles_at(0).collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(b.tiles_at(4).collect::<Vec<_>>(), vec![2]);
-        assert_eq!(b.owner_near(4), 0);
-        assert_eq!(b.owner_near(3), 1, "owner of the tile, not its serial 0");
-        assert_eq!(b.owner_near(9), 0);
+        assert_eq!(b.owner_near(4), Some(0));
+        assert_eq!(b.owner_near(3), Some(1), "owner of the tile, not its serial 0");
+        assert_eq!(b.owner_near(9), None, "no tile has the vertex");
         b.remove_tile(2);
         assert!(b.tiles_at(4).next().is_none());
         assert_eq!(b.tiles_at(1).collect::<Vec<_>>(), vec![1]);
@@ -1674,5 +1679,26 @@ mod tests {
         let (p, d) = edge_line_closest([-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, -1.0, 1.0], [0.0, 1.0, 1.0]).unwrap();
         assert_eq!(p, [0.0, 0.0, 0.0]);
         assert_eq!(d, 1.0);
+    }
+
+    /// Review round 4: a point skipped by both removal calls is one deferred point, not two.
+    #[test]
+    fn deferred_removals_are_distinct_points() {
+        let mut r = 99u64;
+        let mut rnd = || {
+            r = crate::delaunay::splitmix(r);
+            (r >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut pts: Vec<V3> = (0..8).map(|i| [(i & 1) as f64, ((i >> 1) & 1) as f64, ((i >> 2) & 1) as f64]).collect();
+        pts.extend((0..40).map(|_| [0.1 + 0.8 * rnd(), 0.1 + 0.8 * rnd(), 0.1 + 0.8 * rnd()]));
+        let mut dt = crate::delaunay::build(pts, None, None).unwrap();
+        let np = dt.pts.len();
+        let mut deferred = BTreeSet::new();
+        // A zero work limit defers every point with a star, in every call.
+        assert_eq!(dt.remove_points(8, np, 0, &mut deferred).unwrap(), 0);
+        let once = deferred.len();
+        assert_eq!(once, 40);
+        assert_eq!(dt.remove_points(8, np, 0, &mut deferred).unwrap(), 0);
+        assert_eq!(deferred.len(), once, "the second call counted the same points again");
     }
 }

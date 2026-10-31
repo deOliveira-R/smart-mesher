@@ -495,6 +495,96 @@ triangle sizes (the clip makes that region read "at least the cap"). (c) Polyhed
 a metric that is no longer the rule). (e) A real count in `n_lookup_rebuilds`: there is no rebuild
 code path, so it is 0 by construction and serves as a tripwire.
 
+## What changed in review round 5 (Opus review of round 4, should-fix items)
+
+1. **`respace` may not lower the mesh minima.** Before the pass the global minimum mean ratio and
+   minimum dihedral are measured; every accepted move must leave its incident tets at or above
+   them (in addition to the local relative guards), and never below `MIN_MEAN_RATIO` /
+   `MIN_DIHEDRAL_DEG` (`optimize.rs::respace_vertex`). A hidden
+   `tetrahedralize_without_respace` is the baseline of the test
+   `int7_r5::respace_never_lowers_the_mesh_minima` (ball `icosphere(1,4)` h 0.1, cube with a
+   NaN/0.08 field, `cube_with_cavity(4)`, gradation-1 ball, relief n6 seed2: min dihedral and min
+   mean ratio with the pass are at least those without, and the rms deviation of `r` does not
+   rise).
+2. DESIGN.md Optimization: the monotonicity text now says what holds (flips and smoothing raise
+   the local minimum; `respace` keeps the global minima it found; step 9 and the flips after it
+   are not covered by the claim, and the end-to-end gates are the measured floors).
+3. `n_removal_deferred` counts distinct points: the set of skipped points is kept across the two
+   `remove_points` calls and the count is the number still in the output (unit test
+   `steiner::tests::deferred_removals_are_distinct_points`). At tiled n = 64 it is 60 (it was
+   reported as 555 by the double count).
+4. `quality_diagnostics` is uncapped by default (every violation located, worst first, ties by
+   canonical tet index); `TetOptions::max_diagnostics` (0 = all) is the optional cap;
+   `MAX_DIAGNOSTICS` is gone. Thin slab (`tri_cube(6)`, z * 0.02): 400 counted, 400 located
+   (`int7_r5::diagnostics_are_uncapped_by_default`, which also checks the capped prefix is the
+   same list).
+5. `Bnd::owner_near` returns `Option<u32>`; when no tile has the vertex, the error says so in its
+   reason and `tri` is a documented placeholder 0 (same for the inconsistent-fan error).
+   `QualityDiagnostic.triangles` is documented as possibly empty (centroid beyond the 1.5 h reach
+   of every triangle).
+6. **Tiled-relief cliff: cause found, not fixed** (DESIGN.md, "The tiled-relief cliff"). New
+   counters `n_recovery_restarts` and `n_boundary_steiner_discarded`.
+
+Measurement notes. Before = 686f9be (round 4 as merged), after = this round, both built and run
+in turn on the same idle host (4 `#[ignore]` tables in `tests/int7_table.rs`, independent `r`).
+Times of the tables are from one run each.
+
+**Four good meshes** (`int7_table::table_good4`; "no pass" is the same build without `respace`,
+from `int7_r5`; rms = in-crate rms deviation of `r`, which honours the size option):
+
+| mesh | min dihedral: no pass / before / after | min mean ratio: no pass / before / after | mean mean ratio: no pass / before / after | rms dev of r: no pass / before / after | gain kept |
+|---|---|---|---|---|---|
+| ball `icosphere(1,4)` h 0.1 (6 661 pts) | 23.016 / 19.340 / 23.016 | 0.5519 / 0.4986 / 0.5519 | 0.8836 / 0.8749 / 0.8754 | 0.2082 / 0.1887 / 0.1891 | 98 % |
+| cube(4), field NaN above z 0.5, 0.08 below | 27.039 / 20.457 / 27.039 | 0.5916 / 0.5119 / 0.5956 | 0.8595 / 0.8252 / 0.8332 | 0.2237 / 0.1658 / 0.1744 | 85 % |
+| `cube_with_cavity(4)` | 23.652 / 20.340 / 23.652 | 0.5998 / 0.5038 / 0.6003 | 0.8459 / 0.8257 / 0.8296 | 0.3245 / 0.1917 / 0.2058 | 89 % |
+| ball `icosphere(1,3)`, gradation 1 | 26.159 / 19.790 / 26.159 | 0.5910 / 0.4958 / 0.5910 | 0.8901 / 0.8772 / 0.8791 | 0.5432 / 0.5337 / 0.5341 | 96 % |
+
+(The review's exact cube and cavity inputs were not recorded; these are my reconstructions, and
+the before column reproduces its 19.3 / 20.3 / 19.8 for three of them. "Gain kept" =
+(no pass - after) / (no pass - before) of the rms deviation.) Spacing is nearly all kept; the
+minimum quality is back to exactly what the mesh had.
+
+**The eleven hard relief cases** (`table_a15`): identical before and after in every column (rms
+dev, r mean, min dihedral, min and mean mean ratio, Steiner count, S4 violations; for example
+n6 seed2 d0.9: rms 0.268, dihedral 5.240, mean ratio 0.1070 / 0.7232 both). Their minima lie
+below the floors, so the pass could already not lower them; the guard changes nothing there.
+
+**The 49-case sweep** (`table_sweep`, release):
+
+| | before | after |
+|---|---|---|
+| cases with S4 violations (of 49) | 12 | 12 |
+| S4 violations in all | 47 | 47 |
+| mean over cases of the mean r | 0.611 | 0.611 |
+| mean rms deviation of r | 0.266 | 0.266 |
+| smallest minimum dihedral (degrees) | 0.004 | 0.004 |
+| mean minimum dihedral (degrees) | 1.79 | 1.79 |
+| mean of the mean ratio | 0.6849 | 0.6849 |
+| total wall time (s) | 295 | 292 |
+
+No case changed (no S4 outcome, no dihedral, no rms): the global floor only acts where the mesh
+has quality to lose. The round 4 dihedral regressions of the sweep (n12 seed7 d0.995 0.010 ->
+0.004 and others) were caused by the removal order and budget interplay measured in round 4, not
+by `respace`; they are unchanged and still disclosed.
+
+**Tiled relief** (`record_tiled_relief`, release, idle host; before = 686f9be counters from
+round 4 with the same code path, times from the loaded runs of round 4 are not comparable):
+
+| n | triangles | time after (s) | temporary boundary points | restarts / points discarded | removals deferred (distinct) | min dihedral | quality violations |
+|---|---|---|---|---|---|---|---|
+| 16 | 3 072 | 1.4 | 111 | 0 / 0 | 0 | 0.355 | 62 |
+| 32 | 12 288 | 4.9 | 238 | 0 / 0 | 0 | 0.238 | 88 |
+| 48 | 27 648 | 5.1 | 355 | 0 / 0 | 0 | 0.139 | 154 |
+| 64 | 49 152 | 27.8 | 2 643 | 2 / 1 312 | 60 (555 counted twice before) | 0.008 | 173 |
+
+Cause of the n = 64 row: one patch in 64 defeats complete recovery at attempts 0 and 1, each
+failure restarts the whole build with up to 3 072 more interior hint points, and the last
+attempt runs with 6 144 foreign points, which triples its temporary points and doubles its
+recovery time. Details and the declined fixes (restricting or capping the hints is a lottery
+that fails the build on some settings) are in DESIGN.md.
+**Declined:** the cliff fix (needs a change in complete recovery, not in the restart policy);
+the order of the removal passes and the relocation budget (unchanged).
+
 ## Acceptance bullet to test
 
 | # | bullet | test(s) |
@@ -599,7 +689,10 @@ Earlier rounds: release and debug `cargo test -p sm-scheme-tet --all-features` p
 * Round 4 (INT-7): the quality floor is met by the hard relief cases only partly: 62 .. 173 tets
   below 5 degrees on the tiled relief (min dihedral 0.008 .. 0.355 degrees); 12 of 49 sweep cases
   still end with S4 violations (a reported metric, no longer the rule); n = 64 tiled needs 2 643
-  temporary boundary points (cause not investigated); 555 recovery points stay in the mesh
-  because their removal exceeded the cap; `respace` costs the balls 4.6 degrees of minimum
-  dihedral. The located diagnostics reach `TetStats` only: there is no carrier to sm-diag (see
-  the api_change_request above).
+  temporary boundary points (cause found in round 5: two whole-build restarts, see below);
+  60 recovery points stay in the mesh because their removal exceeded the cap. The located
+  diagnostics reach `TetStats` only: there is no carrier to sm-diag (see the api_change_request
+  above).
+* Round 5: complete recovery fails on about one hard patch in 60 (`recover_facet`, "not tiled by
+  mesh faces after removing its crossing edges"); the only remedy is a whole-build restart with
+  hints, which is a lottery (tiled n = 64: 2 restarts, 28 s against 5 s at n = 48). Not fixed.

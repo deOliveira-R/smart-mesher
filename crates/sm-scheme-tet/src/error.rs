@@ -51,7 +51,8 @@ pub enum TetError {
     /// A triangle (or one of its edges) could not be recovered without boundary Steiner points.
     #[error("boundary recovery failed for triangle {tri} (edge {edge:?}): {reason}")]
     RecoveryFailed {
-        /// The triangle that could not be recovered.
+        /// The triangle that could not be recovered (a placeholder 0 when the reason says that
+        /// no triangle is known).
         tri: u32,
         /// The edge that could not be recovered, if the failure is edge-specific.
         edge: Option<[u32; 2]>,

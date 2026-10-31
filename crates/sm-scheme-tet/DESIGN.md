@@ -322,8 +322,23 @@ away from the boundary; refine the surface mesh if the interior must be finer.
   vertex-index order; each class is evaluated in parallel (`par_iter().collect()` keeps index
   order) and written back in index order. Passes stop when the average gain drops below 1e-4.
   Sequence: flips, smooth (<= 12), flips, smooth (<= 8), flips.
-* The monotonicity requirement (minimum mean ratio never below the `optimize=0` value) holds
-  because every accepted operation raises the local minimum.
+* **Spacing, `Dt::respace`** (INT-7, below), the last move of level 2. It is the one operation
+  that does not raise a local minimum; it is constrained to leave the mesh minima alone.
+* The monotonicity requirement (acceptance 8: the minimum mean ratio, and the minimum dihedral,
+  never below the values before optimization) holds in two parts. Flips and smoothing accept
+  an operation only if the minimum of the tets it replaces strictly rises, so they cannot lower
+  the mesh minimum. `respace` may lower the quality of the tets of the vertex it moves, but only
+  down to the *global* minima of mean ratio and dihedral that the mesh had when the pass started
+  (and never below `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`): every accepted move keeps all
+  incident tets at or above those two values, and a move changes only its own incident tets, so
+  the mesh minima after the pass are at least those before it, in any order of acceptance and
+  for any thread count. What may still change the minima afterwards is step 9 (S4 relocation,
+  which can trade quality for distance from the surface and runs again after the pass) and
+  the flip sweep that follows it; the claim is therefore "the pass does not lower the minima"
+  (asserted against the same build without the pass in `int7_r5::respace_never_lowers_the_mesh_minima`)
+  and the end-to-end gates are the measured floors of `a08_quality`. A mesh whose minimum
+  already lies below the quality floor keeps what it has (the floor applied to a move is
+  `max(global minimum, MIN)`, which a below-floor vertex can only meet by improving).
 
 ## Ruling INT-7: spacing objective, quality floor, located diagnostics (review round 4)
 
@@ -377,13 +392,19 @@ deterministic:
    `min(0.99 base, 0.5)` and the local minimum dihedral at least `min(0.97 base, 20 degrees)`
    (a neighbourhood better than 0.5 / 20 degrees may trade the excess for spacing; one below
    keeps what it has), the S4 margin does not shrink, the ratio of mean edge lengths of adjacent tets does not
-   exceed `max(its value now, 1.4)` (size grading) and the deviation falls. Colour classes
-   as in `smooth`: bit-identical for any thread count. The trade is real and measured (round 4
-   report): on the ball `icosphere(1, 5)`, `h = 0.07`, min dihedral 23.7 -> 19.1 degrees, min
-   mean ratio 0.554 -> 0.496, mean 0.881 -> 0.872; on the hard relief cases the mean of the
-   mean ratio falls by 0.01 .. 0.05 while the rms deviation of `r` falls by 0.01 .. 0.1. A
-   first version with a looser rule (`min(base, 0.3)` per pass, six passes) cascaded to min
-   dihedral 9.3 and min mean ratio 0.30 on the ball and was dropped.
+   exceed `max(its value now, 1.4)` (size grading) and the deviation falls. Round 5: **and the
+   incident tets stay at or above the global minima** of mean ratio and dihedral that the mesh
+   had when the pass began (clamped from below at `MIN_MEAN_RATIO` / `MIN_DIHEDRAL_DEG`). The
+   local relative guards alone let many vertices each take 1 .. 3 % off a neighbourhood that was
+   the mesh minimum (round 4: ball `icosphere(1, 4)` h 0.1 min dihedral 23.0 -> 19.3, cube with
+   a NaN/0.08 size field 26.1 -> 20.3, gradation-1 ball 26.2 -> 19.8). With the global floor
+   the minima are exactly those of the same build without the pass on the four good meshes
+   and on the relief cases (`int7_r5::respace_never_lowers_the_mesh_minima`), and 85 .. 98 %
+   of the spacing gain (fall of the rms deviation of `r`) is kept on them (report, round 5).
+   Colour classes as in `smooth`: bit-identical for any thread count. A first version with a
+   looser rule (`min(base, 0.3)` per pass, six passes) cascaded to min dihedral 9.3 and min
+   mean ratio 0.30 on the ball and was dropped. The mean of the mean ratio still falls by about
+   0.001 .. 0.03 (spacing is bought with average quality, not with the worst tets).
 
 **Quality floor.** `MIN_DIHEDRAL_DEG = 5` (smallest dihedral of a tet) and `MIN_MEAN_RATIO =
 0.05` (mean ratio of a tet, the in-crate proxy for cell quality). 5 degrees is the level the
@@ -391,11 +412,17 @@ optimizer reaches on non-pathological input (0 violations on the ball `icosphere
 asserted in `int7`; the ball record has a 19 degree minimum), well above the 0.5 / 1.5 degree test floors of the hard relief
 cases. The dual polyhedral cell quality after `mesh.to_poly` is not computable here (sm-poly
 owns it); the tet mean ratio is the proxy, and the polyhedral metric belongs to sm-diag.
-Every tet below a threshold, per metric, is counted (`n_quality_violations`, exact); the worst
-`MAX_DIAGNOSTICS = 256` (by `value / threshold`, then tet index) are returned as
-`TetStats::quality_diagnostics`, each a `QualityDiagnostic`: position (tet centroid), the six
-nearest input triangles (indices into `SurfaceInput::tris` as the caller listed them, i.e. the
-owners; the pipeline's canonical reordering is undone), metric, measured value, threshold and a
+Every tet below a threshold, per metric, is counted (`n_quality_violations`, exact) and, by
+default, every one is located: `TetStats::quality_diagnostics` has exactly
+`n_quality_violations` entries, sorted worst first by `value / threshold`, then tet index in the
+canonical order, then metric (deterministic; a thin slab, `tri_cube(6)` with z scaled by 0.02,
+has 400 located of 400 counted, `int7_r5::diagnostics_are_uncapped_by_default`).
+`TetOptions::max_diagnostics` (default 0 = no cap) keeps only the worst that many, for callers
+that want a bounded list; the count stays exact. Each entry is a `QualityDiagnostic`:
+position (tet centroid), up to six nearest input triangles (indices into `SurfaceInput::tris`
+as the caller listed them, i.e. the owners; the pipeline's canonical reordering is undone;
+**empty** when the centroid is deeper than the reach, 1.5 triangle sizes, of every input
+triangle, which large interior tets of a coarse region can be), metric, measured value, threshold and a
 `SuggestedFix`: `RefineSizeNear { h }` (half the local size) when the tet has an interior
 vertex, `RefineInputSurface { h }` when it spans input vertices only (frozen: remesh those
 triangles finer or smooth the surface there). Violations are never hidden and never an error.
@@ -415,6 +442,36 @@ triangles finer or smooth the surface there). Violations are never hidden and ne
   `int7::tiled_relief_work_per_triangle_is_bounded` are tripwires for someone reintroducing one.
   `steiner::tests::bnd_index_follows_tiles_and_names_owners` checks the incremental lookup
   against a rebuild.
+
+**The tiled-relief cliff (round 5, investigated, not changed).** `tiled_cube(n, 8, 2, 0.9)` at
+n = 48 needs 355 temporary boundary points and 5 s; n = 64 needed 2 643 and 28 s (1.8 times the
+triangles). Instrumented (counters `n_recovery_restarts`, `n_boundary_steiner_discarded`):
+
+| | n = 48 (36 patches) | n = 64 (64 patches) |
+|---|---|---|
+| interior-point recovery | fails at attempt 0 | fails at attempts 0, 1, 2 |
+| complete recovery | succeeds at attempt 0: 355 points | fails at attempt 0 (451 points, triangle 26383: "not tiled by mesh faces after removing its crossing edges") and attempt 1 (861 points, then triangle 8619), succeeds at attempt 2 with 2 643 |
+| restarts / points discarded | 0 / 0 | 2 / 1 312 |
+| extra interior points of the restarts | 0 | 3 072, then 6 144 (hints of every failed patch, cap `max(32, n_input / 8)`) |
+
+So the anomaly is not the patches: it is that one hard patch out of 64 defeats complete
+recovery, and a failure restarts the *whole* build (all 64 patches) with up to `n_input / 8`
+hint points taken from all failed patches of the surface. Two restarts repeat the recovery
+three times; the last attempt runs with 6 144 foreign interior points in the Delaunay
+triangulation, which make its recovery 3.3 times larger (2 643 points against about 800 per
+attempt without them) and 2 times slower (recover stage 14.6 s against 7.3 s with 64 extras).
+The number of failing patches grows with the number of patches (the relief of each patch is a
+random draw), hence "from about 40 patches on". Fixes tried and **declined**: (a) keeping
+only the hints within 8 or 3 edge lengths of the failed triangle, (b) capping the extras at
+32 per restart. Every variant changed the outcome of a lottery, not the cause: the same
+triangle 26383 fails again at attempts 0 and 1 whatever the extras, and the build only
+succeeds when the perturbation happens to cure it (cap 32 with all hints: all three attempts
+fail, `RecoveryFailed`; cap 32 within 8 edge lengths: fails; cap 32 within 3 edge lengths:
+succeeds with 507 points in 17 s; cap 3 072 within 3: 780 points, 20 s). A policy that passes one case and
+fails another by chance is not safe to ship. The real fix is in complete recovery
+(`recover_facet`: the rounding case in which no tiling shows up for a triangle), a different
+change. Work counters stay in tests (`int7::tiled_relief_work_per_triangle_is_bounded` asserts
+0 restarts at the sizes it runs); wall time stays in `record_tiled_relief`.
 
 ## Quality definitions and the `sm_quality` cross-check
 
