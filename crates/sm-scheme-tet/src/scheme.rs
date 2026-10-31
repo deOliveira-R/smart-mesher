@@ -252,7 +252,9 @@ impl Scheme for TetVolume {
                 opts.max_steiner = 8 * input.points.len() + 100_000 + wanted.min(1.0e8) as usize;
             }
         }
-        let mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
+        let mut mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
+        // Finite-volume export needs every cell to keep three independent interior face normals.
+        crate::pipeline::split_boundary_heavy(&mut mesh, &input.tris);
         Ok(build_patch(target, owner, &mesh, &keys))
     }
 }
