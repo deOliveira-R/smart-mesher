@@ -63,6 +63,18 @@ rt_index! {
     InstanceId
 }
 
+rt_index! {
+    /// A node of the disjoint majorant partition (see [`crate::segments`]): a lattice slot, a
+    /// universe instance, a meshed leaf. Leaves tile space; the root bounds everything.
+    NodeId
+}
+rt_index! {
+    /// A deduplicated set of regions. Majorant tables are keyed by `(MaterialSetId, band)`.
+    /// Every region has a singleton set (`HierarchyView::region_set`), so a surface segment's
+    /// majorant is exactly its region's total cross section.
+    MaterialSetId
+}
+
 impl CellId {
     /// The implicit complement: space inside the domain that no cell covers (DAGMC's implicit
     /// complement). It has no mesh cell; the tracker uses the boundary-face BVH there. A tracker

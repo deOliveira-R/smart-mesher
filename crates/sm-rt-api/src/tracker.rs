@@ -204,6 +204,11 @@ pub trait Tracker: Send + Sync {
     fn export_cache(&self) -> Option<CacheImage> {
         None
     }
+    /// The segment-iterator view (majorant hierarchy, delta tracking), or `None`. Present
+    /// exactly when [`TrackerCaps::MAJORANT`] is set. See [`crate::segments`].
+    fn majorant_view(&self) -> Option<&dyn crate::segments::MajorantTracker> {
+        None
+    }
 
     // ---- primitives ----------------------------------------------------------------------
 
