@@ -37,8 +37,8 @@ domains:
   decomposition:  {summary: "virtual, reversible split into meshable pieces",                                     layers: [P.decomposition]}
   intent:         {summary: "sizing and interval solving",                                           layers: [I.intent]}
   meshing:        {summary: "meshing driver + scheme families",                                      layers: [X.mesh]}
-  mesh-db:        {summary: "mesh database, classification, hierarchy, validator",                   layers: [X.mesh, X.hierarchy]}
-  mesh-ops:       {summary: "quality, smoothing, modification",                                      layers: [X.mesh]}
+  mesh-db:        {summary: "mesh database, classification, hierarchy, mesh validity",                  layers: [X.mesh, X.hierarchy]}
+  mesh-ops:       {summary: "quality metrics, diagnostics, smoothing, modification",                     layers: [X.mesh]}
   interfaces:     {summary: "non-conformal detection, intersection, conformize",                     layers: [X.interfaces]}
   tracking:       {summary: "ray-tracing acceleration from the known hierarchy",                     layers: [D.derived]}
   distribution:   {summary: "parallel partitioning and ownership",                                   layers: [D.derived]}
@@ -102,6 +102,7 @@ nodes:
   boundary-kind:     {domain: model-semantics, summary: "Deck (mirror/translation/rotation + pairing + transform) vs response (tag) vs interface, per boundary face"}
   symmetry:          {domain: model-semantics, summary: "Deck group, fundamental domain, detect (colored invariants) / declare, cut-and-keep-chamber, unfold"}
   instancing:        {domain: model-semantics, summary: "Prototype / Instance / Lattice (nestable, hex+cartesian), overrides, flatten paths"}
+  model-validity:    {domain: model-semantics, summary: "Model invariants: coloring partition, boundary kinds, deck pairing per deck, coincidence from topology (sm-model-api validate)"}
   # partition
   decomposition:     {domain: decomposition, summary: "Virtual cuts/composites for meshability; sweep groups; reversible; coloring-preserving"}
   # intent
@@ -111,8 +112,8 @@ nodes:
   mesh-store:        {domain: mesh-db, summary: "Face-first tables, oriented incidences, adjacency indexes, tags, stable ids"}
   classification:    {domain: mesh-db, summary: "Mesh entity -> (model/partition entity, params); closure rules"}
   mesh-geometry:     {domain: mesh-db, summary: "Coordinates, (shape, degree, basis) per cell, polyhedral face geometry rules"}
-  mesh-hierarchy:    {domain: mesh-db, summary: "Multiple meshes per model (fine/coarse for CMFD/AMG), inter-mesh maps, instanced view, symmetric unfold"}
-  validator:         {domain: mesh-db, summary: "Cross-layer invariants (classification closure, coloring partition, orientation, deck consistency, coverage)"}
+  mesh-hierarchy:    {domain: mesh-db, summary: "Multiple meshes per model (fine/coarse for CMFD/AMG), inter-mesh maps, instanced view, symmetric unfold; owns its own consistency checks (levels nest, maps total)"}
+  mesh-validity:     {domain: mesh-db, summary: "Mesh invariants: closedness, incidence, orientation, classification closure, coverage; stable violation codes (sm-mesh-api validate, validate_geometry)"}
   # meshing
   mesh-driver:       {domain: meshing, summary: "Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, deck copy constraints"}
   scheme-curve:      {domain: meshing, summary: "equal, bias, dualbias, stretch, curvature, copy"}
@@ -125,7 +126,8 @@ nodes:
   scheme-convert:    {domain: meshing, summary: "THex, QTri, HTet, TQuad, degree elevation"}
   boundary-layer:    {domain: meshing, summary: "inflation layers on response boundaries (never on deck boundaries)"}
   # mesh-ops
-  quality:           {domain: mesh-ops, summary: "metrics (Verdict + finite-volume face metrics) and validity; diagnostics ops (sm-diag) report located, geometry-linked findings with suggested fixes"}
+  quality:           {domain: mesh-ops, summary: "Quality metrics (Verdict + finite-volume face metrics) on any mesh; a measuring lens, usable as soon as a mesh exists (sm-quality)"}
+  diagnostics:       {domain: mesh-ops, summary: "The verdict: mesh.quality / mesh.validate / mesh.flag_cells report located, geometry-linked findings and suggest next ops by name (sm-diag)"}
   smooth:            {domain: mesh-ops, summary: "smoothing/optimization/untangling; keeps mirror-plane nodes on plane, paired nodes paired (W3a: deck-pair nodes pinned)"}
   modify:            {domain: mesh-ops, summary: "refine, coarsen, pillow, collapse, remesh"}
   # interfaces
@@ -175,6 +177,9 @@ edges:   # user -> provider : interface
   - [boundary-kind, topo-store, "topo-query-api: boundary faces, sides"]
   - [boundary-kind, coloring, "coloring-api (exterior vs material sides)"]
   - [symmetry, boundary-kind, "boundary-api: deck faces, transforms"]
+  - [model-validity, coloring, "coloring-api"]
+  - [model-validity, boundary-kind, "boundary-api"]
+  - [model-validity, topo-store, "topo-api: coincident faces, face moments"]
   - [symmetry, coloring, "coloring-api: colored invariants"]
   - [symmetry, boolean, "cut along mirror plane (keep chamber)"]
   - [instancing, coloring, "coloring-api (per-instance overrides)"]
@@ -193,8 +198,10 @@ edges:   # user -> provider : interface
   - [mesh-hierarchy, classification, "classification-api"]
   - [mesh-hierarchy, instancing, "instancing-api"]
   - [mesh-hierarchy, symmetry, "group-action-api: unfold with orientation flips"]
-  - [validator, mesh-hierarchy, "hierarchy-api"]
-  - [validator, boundary-kind, "boundary-api"]
+  - [mesh-validity, mesh-store, "mesh-api"]
+  - [mesh-validity, classification, "classification-api"]
+  - [mesh-validity, mesh-geometry, "mesh-geometry-api"]
+  - [mesh-validity, boundary-kind, "boundary-api"]
   - [mesh-driver, classification, "classification-api (write)"]
   - [mesh-driver, mesh-geometry, "mesh-geometry-api"]
   - [mesh-driver, interval-solve, "solved intervals"]
@@ -211,6 +218,9 @@ edges:   # user -> provider : interface
   - [boundary-layer, mesh-driver, "scheme-api: MeshTransform"]
   - [quality, mesh-geometry, "mesh-geometry-api"]
   - [smooth, quality, "quality-api"]
+  - [diagnostics, quality, "quality-api"]
+  - [diagnostics, mesh-validity, "validator-api"]
+  - [diagnostics, classification, "classification-api (locate findings on geometry)"]
   - [smooth, classification, "classification-api (project to geometry)"]
   - [smooth, boundary-kind, "boundary-api (deck constraints)"]
   - [modify, classification, "classification-api"]
@@ -224,7 +234,8 @@ edges:   # user -> provider : interface
   - [tracking-structure, boundary-kind, "boundary-api (deck = reflect/periodic on hit)"]
   - [partitioner, mesh-store, "mesh-api"]
   - [discretization, mesh-store, "mesh-api"]
-  - [ir-store, validator, "validator-api"]
+  - [ir-store, mesh-validity, "validator-api"]
+  - [ir-store, model-validity, "model-validator-api"]
   - [ir-store, face-intersect, "overlap-api"]
   - [ir-store, partitioner, "distribution-api"]
   - [ir-store, discretization, "fields-api"]

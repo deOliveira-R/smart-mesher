@@ -1,5 +1,5 @@
 graph BT
-  tracking_structure["tracking-structure<br/><small>Hierarchy-aware BVH (lattice/instance -> volume -> surface), exact quadric/analytic hits, face-side next-volume, mesh walking</small>"]
+  tracking_structure["tracking-structure<br/><small>Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, exact analytic refine (W3b), .smrt cache; C ABI + DAGMC shims in sm-rt-capi</small>"]
   mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
   tracking_structure -->|hierarchy-api (instances, levels)| mesh_hierarchy
   geom_intersect(["geom-intersect (shape)"])

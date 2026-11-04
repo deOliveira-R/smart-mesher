@@ -4,8 +4,8 @@
 Usage: tools/graph.py [--domain NAME | --stages]
   no arg: domain-level view; --domain: zoom into one domain; --stages: workflow view (docs/graph/stages.yaml).
 Checks: every edge endpoint exists, every node has a known domain, the graph is acyclic,
-every node sits in exactly one stage group or span. Stage-order findings are warnings (stderr):
-a dependency on a node from a later stage, and a span that depends on stage nodes.
+every node sits in exactly one stage group or span, and dependencies respect the workflow order
+(rules at the top of stages.yaml; listed `exceptions` are allowed and printed).
 """
 import sys, pathlib, re
 
@@ -75,7 +75,11 @@ for a, b, _ in node_edges:
 # ---- workflow view: stages.yaml places every node in one stage group or one span
 st = yaml.safe_load((ROOT / "docs/graph/stages.yaml").read_text())
 stage_of, group_of, warnings = {}, {}, []  # stage_of: stage index, or None for a span
+pos = {}  # span id -> "below" | "above"
 for sid, sp in st["spans"].items():
+    pos[sid] = sp.get("position")
+    if pos[sid] not in ("below", "above"):
+        errors.append(f"stages: span {sid} needs position: below | above")
     for n in sp["nodes"]:
         if n in group_of:
             errors.append(f"stages: {n} placed twice ({group_of[n]}, {sid})")
@@ -93,16 +97,36 @@ for n in nodes:
     if n not in group_of:
         errors.append(f"stages: node {n} is not placed")
 stage_ids = [s_["id"] for s_ in st["stages"]]
+exceptions = {(e[0], e[1]): e[2] for e in st.get("exceptions") or []}
+for (a, b), why in exceptions.items():
+    if not any((a, b) == (x, y) for x, y, _ in node_edges):
+        errors.append(f"stages: exception {a} -> {b} is not an edge in concepts.yaml")
+
+def where(n):
+    return stage_ids[stage_of[n]] if stage_of[n] is not None else f"{pos[group_of[n]]}-span {group_of[n]}"
+
 back = set()
 for a, b, lab in node_edges:
     if a not in stage_of or b not in stage_of:
         continue
     sa, sb = stage_of[a], stage_of[b]
-    if sa is not None and sb is not None and sb > sa:
+    pb = pos.get(group_of[b]) if sb is None else None
+    pa = pos.get(group_of[a]) if sa is None else None
+    if pa == "above":
+        continue  # binds the stages: may use anything
+    if pb == "above":
+        bad = True
+    elif pa == "below":
+        bad = pb != "below"
+    else:  # a in a stage
+        bad = sb is not None and sb > sa
+    if bad:
         back.add((a, b))
-        warnings.append(f"stage order: {a} ({stage_ids[sa]}) uses {b} ({stage_ids[sb]}) via {lab}")
-    elif sa is None and sb is not None:
-        warnings.append(f"span {group_of[a]}: {a} uses stage node {b} ({stage_ids[sb]}) via {lab}")
+        msg = f"{a} ({where(a)}) uses {b} ({where(b)}) via {lab}"
+        if (a, b) in exceptions:
+            warnings.append(f"allowed exception: {msg}: {exceptions[(a, b)]}")
+        else:
+            errors.append(f"stage order: {msg}")
 
 if errors:
     print("\n".join("ERROR: " + e for e in errors))
@@ -150,4 +174,4 @@ else:
         print(f'  {mid(d)}["{d} {("[" + layers + "]") if layers else ""}<br/><small>{v["summary"]}</small>"]')
     for a, b, _ in dom_edges:
         print(f"  {mid(a)} --> {mid(b)}")
-print(f"%% ok: {len(nodes)} nodes, {len(node_edges)} edges, {len(doms)} domains, {len(st['stages'])} stages, {len(warnings)} stage warnings", file=sys.stderr)
+print(f"%% ok: {len(nodes)} nodes, {len(node_edges)} edges, {len(doms)} domains, {len(st['stages'])} stages, {len(exceptions)} stage exceptions", file=sys.stderr)

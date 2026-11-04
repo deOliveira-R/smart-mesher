@@ -1,0 +1,87 @@
+graph LR
+  subgraph model["1. Model: an exact, colored model with known boundaries and symmetry"]
+    g_import["Import<br/><small>cad-io</small>"]
+    g_shape["Shape<br/><small>geom, geom-intersect, csg</small>"]
+    g_brep["B-rep<br/><small>topo-store, construct, boolean, imprint-merge, heal, tess</small>"]
+    g_meaning["Colors and boundaries<br/><small>coloring, boundary-kind</small>"]
+    g_symmetry["Symmetry and instancing<br/><small>symmetry, instancing</small>"]
+    g_model_validity["Model validity<br/><small>model-validity</small>"]
+  end
+  subgraph decompose["2. Decompose: meshable pieces (virtual, reversible, colors untouched)"]
+    g_decomposition["Decomposition<br/><small>virtual-topo, decomposition</small>"]
+  end
+  subgraph intent["3. Intent: how each piece should be meshed"]
+    g_sizing["Sizing and intervals<br/><small>sizing, interval-solve</small>"]
+  end
+  subgraph mesh["4. Mesh: a mesh classified onto the model"]
+    g_mesh_db["Mesh store<br/><small>mesh-store, classification, mesh-geometry</small>"]
+    g_driver["Driver<br/><small>mesh-driver</small>"]
+    g_schemes2["Curve and surface schemes<br/><small>scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri</small>"]
+    g_schemes3["Volume schemes<br/><small>scheme-hex, scheme-tet, boundary-layer</small>"]
+    g_measure["Validity and quality metrics<br/><small>mesh-validity, quality</small>"]
+  end
+  subgraph reshape["5. Reshape: the mesh the analysis wants (polyhedral, smoothed, conformal)"]
+    g_convert["Convert<br/><small>scheme-convert, scheme-poly</small>"]
+    g_improve["Improve<br/><small>smooth, modify</small>"]
+    g_interfaces["Interfaces<br/><small>interface-detect, face-intersect, conformize</small>"]
+  end
+  subgraph check["6. Check: a verdict: is this mesh acceptable?"]
+    g_verdict["Diagnostics<br/><small>diagnostics</small>"]
+  end
+  subgraph enrich["7. Enrich: derived data for an accepted mesh"]
+    g_hierarchy["Hierarchy<br/><small>mesh-hierarchy</small>"]
+    g_tracking["Tracking<br/><small>tracking-structure</small>"]
+    g_distribution["Distribution<br/><small>partitioner</small>"]
+    g_fields["Fields<br/><small>discretization</small>"]
+  end
+  subgraph export["8. Export: files other codes read"]
+    g_store["Native store<br/><small>ir-store</small>"]
+    g_exporters["Exporters<br/><small>exporters</small>"]
+  end
+  s_foundation[/"Foundation (all stages)<br/><small>math, predicates</small>"/]
+  s_history[/"History (all stages)<br/><small>ops, timeline</small>"/]
+  s_state[/"Session state (all stages)<br/><small>state-layers</small>"/]
+  s_frontends[/"Frontends (all stages)<br/><small>lang, server, mcp, py, cli, gui</small>"/]
+  g_brep --> g_shape
+  g_decomposition --> g_brep
+  g_meaning --> g_brep
+  g_symmetry --> g_meaning
+  g_model_validity --> g_meaning
+  g_model_validity --> g_brep
+  g_symmetry --> g_brep
+  g_decomposition --> g_meaning
+  g_sizing --> g_decomposition
+  g_sizing --> g_meaning
+  g_mesh_db --> g_decomposition
+  g_mesh_db --> g_brep
+  g_hierarchy --> g_mesh_db
+  g_hierarchy --> g_symmetry
+  g_measure --> g_mesh_db
+  g_measure --> g_meaning
+  g_driver --> g_mesh_db
+  g_driver --> g_sizing
+  g_driver --> g_meaning
+  g_schemes2 --> g_driver
+  g_schemes3 --> g_driver
+  g_convert --> g_mesh_db
+  g_convert --> g_driver
+  g_improve --> g_measure
+  g_verdict --> g_measure
+  g_verdict --> g_mesh_db
+  g_improve --> g_mesh_db
+  g_improve --> g_meaning
+  g_interfaces --> g_mesh_db
+  g_interfaces --> g_meaning
+  g_tracking --> g_hierarchy
+  g_tracking --> g_shape
+  g_tracking --> g_meaning
+  g_distribution --> g_mesh_db
+  g_fields --> g_mesh_db
+  g_store --> g_measure
+  g_store --> g_model_validity
+  g_store --> g_interfaces
+  g_store --> g_distribution
+  g_store --> g_fields
+  g_store --> g_tracking
+  g_import --> g_brep
+  g_exporters --> g_store

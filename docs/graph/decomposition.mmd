@@ -5,6 +5,6 @@ graph BT
   coloring(["coloring (model-semantics)"])
   decomposition -->|coloring-api (must be preserved)| coloring
   sizing(["sizing (intent)"])
-  sizing -->|partition-query-api| decomposition
+  sizing -->|decomposition-api| decomposition
   classification(["classification (mesh-db)"])
-  classification -->|partition-query-api| decomposition
+  classification -->|decomposition-api| decomposition

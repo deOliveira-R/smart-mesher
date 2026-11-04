@@ -8,22 +8,39 @@
 # - groups: the big concepts inside a stage (collapsible in the view). Members are concepts.yaml nodes.
 # - spans:  big concepts present at every stage (history, frontends, foundation).
 # Every concepts.yaml node appears in exactly one group or span (checked by tools/graph.py; view: tools/graph.py --stages).
-# A dependency whose provider sits in a LATER stage than its user is an ordering conflict:
-# either the placement is wrong or the dependency is. The view lists them.
+# Rules (tools/graph.py fails CI on a break, unless the edge is listed under `exceptions`):
+# - a stage node may use nodes of its own stage, of earlier stages, and of below-spans;
+# - a below-span node may use only below-span nodes (it exists before any stage);
+# - an above-span node may use anything (it binds the stages together);
+# - nothing in a stage or a below-span may use an above-span node.
+# Workflow loops (check -> smooth -> check; check -> change intent -> remesh) are iteration by the
+# user or an agent through ops named at run time (sm-diag suggests ops by name). They are never a
+# code dependency, so they never appear as an edge.
 
 spans:
-  history:
-    title: History
-    role: "every state change is an op on a replayable timeline"
-    nodes: [ops, timeline, state-layers]
-  frontends:
-    title: Frontends
-    role: "how a person or an agent drives the stages"
-    nodes: [lang, server, mcp, py, cli, gui]
   foundation:
     title: Foundation
+    position: below
     role: "math and exact predicates under everything"
     nodes: [math, predicates]
+  history:
+    title: History
+    position: below
+    role: "every state change is an op on a replayable timeline"
+    nodes: [ops, timeline]
+  state:
+    title: Session state
+    position: above
+    role: "the model and meshes as layers stored in the timeline"
+    nodes: [state-layers]
+  frontends:
+    title: Frontends
+    position: above
+    role: "how a person or an agent drives the stages"
+    nodes: [lang, server, mcp, py, cli, gui]
+
+# Edges allowed to break the rules above, each with its reason: [user, provider, reason].
+exceptions: []
 
 stages:
   - id: model
@@ -35,6 +52,7 @@ stages:
       brep:     {title: B-rep,             nodes: [topo-store, construct, boolean, imprint-merge, heal, tess], note: "the cell complex and the operations that edit it"}
       meaning:  {title: Colors and boundaries, nodes: [coloring, boundary-kind], note: "material colors on volumes; deck / response / interface on faces"}
       symmetry: {title: Symmetry and instancing, nodes: [symmetry, instancing], note: "deck group, fundamental domain, lattices"}
+      model-validity: {title: Model validity, nodes: [model-validity], note: "the stage that makes the model says what a valid model is"}
 
   - id: decompose
     title: Decompose
@@ -56,6 +74,7 @@ stages:
       driver:   {title: Driver,     nodes: [mesh-driver]}
       schemes2: {title: Curve and surface schemes, nodes: [scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri]}
       schemes3: {title: Volume schemes, nodes: [scheme-hex, scheme-tet, boundary-layer]}
+      measure:  {title: Validity and quality metrics, nodes: [mesh-validity, quality], note: "what a valid mesh is, and the measuring lens; both usable as soon as a mesh exists"}
 
   - id: reshape
     title: Reshape
@@ -69,7 +88,7 @@ stages:
     title: Check
     makes: "a verdict: is this mesh acceptable?"
     groups:
-      quality: {title: Quality and validation, nodes: [quality, validator]}
+      verdict: {title: Diagnostics, nodes: [diagnostics], note: "findings are located on the geometry and suggest next ops by name"}
 
   - id: enrich
     title: Enrich

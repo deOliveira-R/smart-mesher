@@ -24,11 +24,15 @@ graph BT
   coloring -->|topo-query-api: volume ids| topo_store
   boundary_kind(["boundary-kind (model-semantics)"])
   boundary_kind -->|topo-query-api: boundary faces, sides| topo_store
+  model_validity(["model-validity (model-semantics)"])
+  model_validity -->|topo-api: coincident faces, face moments| topo_store
   symmetry(["symmetry (model-semantics)"])
   symmetry -->|cut along mirror plane (keep chamber)| boolean
-  decomposition(["decomposition (partition)"])
+  decomposition(["decomposition (decomposition)"])
   decomposition -->|overlay-api| virtual_topo
   classification(["classification (mesh-db)"])
   classification -->|topo-query-api| topo_store
   cad_io(["cad-io (io)"])
   cad_io -->|topo-edit-api| topo_store
+  state_layers(["state-layers (history)"])
+  state_layers -->|topo-edit-api| topo_store

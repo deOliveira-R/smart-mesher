@@ -2,6 +2,7 @@ graph BT
   boundary_kind["boundary-kind<br/><small>Deck (mirror/translation/rotation + pairing + transform) vs response (tag) vs interface, per boundary face</small>"]
   coloring["coloring<br/><small>Material ids per volume (exact partition), blocks/assemblies, names; mixed-material cells TBD</small>"]
   instancing["instancing<br/><small>Prototype / Instance / Lattice (nestable, hex+cartesian), overrides, flatten paths</small>"]
+  model_validity["model-validity<br/><small>Model invariants: coloring partition, boundary kinds, deck pairing per deck, coincidence from topology (sm-model-api validate)</small>"]
   symmetry["symmetry<br/><small>Deck group, fundamental domain, detect (colored invariants) / declare, cut-and-keep-chamber, unfold</small>"]
   topo_store(["topo-store (topology)"])
   coloring -->|topo-query-api: volume ids| topo_store
@@ -9,12 +10,16 @@ graph BT
   boundary_kind -->|topo-query-api: boundary faces, sides| topo_store
   boundary_kind -->|coloring-api (exterior vs material sides)| coloring
   symmetry -->|boundary-api: deck faces, transforms| boundary_kind
+  model_validity -->|coloring-api| coloring
+  model_validity -->|boundary-api| boundary_kind
+  topo_store(["topo-store (topology)"])
+  model_validity -->|topo-api: coincident faces, face moments| topo_store
   symmetry -->|coloring-api: colored invariants| coloring
   boolean(["boolean (topology)"])
   symmetry -->|cut along mirror plane (keep chamber)| boolean
   instancing -->|coloring-api (per-instance overrides)| coloring
   instancing -->|group-action-api (shared machinery)| symmetry
-  decomposition(["decomposition (partition)"])
+  decomposition(["decomposition (decomposition)"])
   decomposition -->|coloring-api (must be preserved)| coloring
   sizing(["sizing (intent)"])
   sizing -->|boundary-api| boundary_kind
@@ -24,8 +29,8 @@ graph BT
   mesh_hierarchy -->|instancing-api| instancing
   mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
   mesh_hierarchy -->|group-action-api: unfold with orientation flips| symmetry
-  validator(["validator (mesh-db)"])
-  validator -->|boundary-api| boundary_kind
+  mesh_validity(["mesh-validity (mesh-db)"])
+  mesh_validity -->|boundary-api| boundary_kind
   mesh_driver(["mesh-driver (meshing)"])
   mesh_driver -->|boundary-api: deck copy constraints| boundary_kind
   smooth(["smooth (mesh-ops)"])
@@ -34,3 +39,7 @@ graph BT
   interface_detect -->|boundary-api (declared interfaces, deck pairs)| boundary_kind
   tracking_structure(["tracking-structure (tracking)"])
   tracking_structure -->|boundary-api (deck = reflect/periodic on hit)| boundary_kind
+  ir_store(["ir-store (io)"])
+  ir_store -->|model-validator-api| model_validity
+  state_layers(["state-layers (history)"])
+  state_layers -->|model-api| coloring

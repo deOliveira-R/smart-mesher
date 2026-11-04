@@ -23,6 +23,9 @@ graph BT
   scheme_tri -->|scheme-api: SurfaceScheme| mesh_driver
   scheme_hex -->|scheme-api: VolumeScheme| mesh_driver
   scheme_tet -->|scheme-api: VolumeScheme| mesh_driver
-  scheme_poly -->|scheme-api: VolumeScheme| mesh_driver
+  mesh_store(["mesh-store (mesh-db)"])
+  scheme_poly -->|mesh-api (tet mesh in, polyhedral mesh out; W3a op mesh.to_poly)| mesh_store
+  classification(["classification (mesh-db)"])
+  scheme_poly -->|classification-api (dual faces/cells keep geometry links)| classification
   scheme_convert -->|scheme-api: MeshTransform| mesh_driver
   boundary_layer -->|scheme-api: MeshTransform| mesh_driver
