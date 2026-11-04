@@ -989,7 +989,25 @@ fn run_path(h: Head, t: &Path, step: &Path, all: &mut Rows, facts: &mut PathFact
     for (k, d) in &api.timings {
         timings.push(format!("[{}] {k}: {d:.2?}", h.tag()));
     }
-    mesh_rows(h, &mut rows, api, &cli.ops, &dir, &proj, facts);
+    // Export notes of the script's exports (`smesh run --json` events), by case directory name.
+    let export_notes: BTreeMap<String, Value> = cli.run["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|ev| ev["event"] == "session" && ev["command"] == "export")
+        .filter_map(|ev| {
+            let name = Path::new(ev["result"]["path"].as_str()?).file_name()?.to_str()?.to_owned();
+            Some((name, ev["result"]["notes"].clone()))
+        })
+        .collect();
+    // `smesh export --json` itself prints the same notes as the script's export of `case`.
+    if let Ok(v) = &cli.re_case {
+        let script = export_notes.get("case").filter(|n| !n.is_null());
+        rows.check(11, v.get("notes") == script, || {
+            format!("smesh export --format openfoam --json notes {:?} differ from the script's `case` export {script:?}", v.get("notes"))
+        });
+    }
+    mesh_rows(h, &mut rows, api, &cli.ops, &dir, &proj, &export_notes, facts);
 }
 
 /// Model faces of a volume, from `topo.related` on a state.
@@ -1011,8 +1029,8 @@ fn param_id(ops: &[(String, Value)], pred: impl Fn(&str, &Value) -> bool, path: 
     id_of(v.as_str().ok_or_else(|| format!("{path:?} is not an id in {p}"))?)
 }
 
-#[allow(clippy::too_many_lines)]
-fn mesh_rows(h: Head, rows: &mut Tagged<'_>, api: &Api, ops: &Ops, fork_dir: &Path, proj: &Path, facts: &mut PathFacts) {
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn mesh_rows(h: Head, rows: &mut Tagged<'_>, api: &Api, ops: &Ops, fork_dir: &Path, proj: &Path, export_notes: &BTreeMap<String, Value>, facts: &mut PathFacts) {
     // Volumes and sweep faces from the recorded ops.
     // v1, v2, v3 are the volumes of blocks 1, 2, 3 (the recorded `mesh.size` targets are sorted
     // by id, which is not the V1, V2, V3 order on path B).
@@ -1228,6 +1246,20 @@ fn mesh_rows(h: Head, rows: &mut Tagged<'_>, api: &Api, ops: &Ops, fork_dir: &Pa
             let (problems, split) = foam::compare_counts(pmsh, mesh);
             for p in problems {
                 rows.fail(11, format!("{case}: {p}"));
+            }
+            // INT-8 through the CLI: the export notes carry foam.small_det_split with one count
+            // per split parent cell (distinct parents in smeshCellMap).
+            if case != "polycase" {
+                match export_notes.get(case).and_then(Value::as_array) {
+                    None => rows.fail(11, format!("{case}: `smesh run --json` export event carries no `notes`")),
+                    Some(notes) => {
+                        let got = notes.iter().find(|n| n["code"] == "foam.small_det_split").and_then(|n| n["count"].as_u64());
+                        let want = split.as_ref().map(|s| s.parents as u64);
+                        rows.check(11, got == want, || {
+                            format!("{case}: export note foam.small_det_split count {got:?}, smeshCellMap has {want:?} distinct split parents")
+                        });
+                    }
+                }
             }
             match split {
                 Some(s) => rows.note(

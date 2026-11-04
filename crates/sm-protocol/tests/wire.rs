@@ -585,4 +585,9 @@ fn export_formats_and_file_listing_are_additive() {
         json!([{"name": "points", "bytes": 10, "sha256": hs(2)}, {"name": "faces", "bytes": 20, "sha256": hs(3)}])
     );
     assert_eq!(serde_json::from_value::<ExportResult>(js).unwrap(), multi);
+    let noted = multi.clone().with_notes(vec![sm_protocol::ExportNote::parse("foam.small_det_split: cells split: a, b x3")]);
+    let js = serde_json::to_value(&noted).unwrap();
+    assert_eq!(js["notes"], json!([{"code": "foam.small_det_split", "count": 3, "detail": "cells split: a, b"}]));
+    assert_eq!(serde_json::from_value::<ExportResult>(js).unwrap(), noted);
+    assert_eq!(sm_protocol::ExportNote::parse("odd line").code, "note");
 }
