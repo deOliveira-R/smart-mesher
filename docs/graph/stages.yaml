@@ -7,7 +7,7 @@
 # - stages: ordered. Each stage "makes" one thing that later stages build on.
 # - groups: the big concepts inside a stage (collapsible in the view). Members are concepts.yaml nodes.
 # - spans:  big concepts present at every stage (history, frontends, foundation).
-# Every concepts.yaml node appears in exactly one group or span.
+# Every concepts.yaml node appears in exactly one group or span (checked by tools/graph.py; view: tools/graph.py --stages).
 # A dependency whose provider sits in a LATER stage than its user is an ordering conflict:
 # either the placement is wrong or the dependency is. The view lists them.
 

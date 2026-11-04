@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Validate the concept graph and render it as Mermaid.
 
-Usage: tools/graph.py [--domain NAME]   # no arg: domain-level view; --domain: zoom into one domain
-Checks: every edge endpoint exists, every node has a known domain, the graph is acyclic.
+Usage: tools/graph.py [--domain NAME | --stages]
+  no arg: domain-level view; --domain: zoom into one domain; --stages: workflow view (docs/graph/stages.yaml).
+Checks: every edge endpoint exists, every node has a known domain, the graph is acyclic,
+every node sits in exactly one stage group or span. Stage-order findings are warnings (stderr):
+a dependency on a node from a later stage, and a span that depends on stage nodes.
 """
 import sys, pathlib, re
 
@@ -69,6 +72,38 @@ for a, b, _ in node_edges:
     if da != db and db != "foundation" and (da, db) not in allowed:  # foundation is usable by all
         errors.append(f"edge {a}->{b} crosses {da}->{db}, which has no domain edge")
 
+# ---- workflow view: stages.yaml places every node in one stage group or one span
+st = yaml.safe_load((ROOT / "docs/graph/stages.yaml").read_text())
+stage_of, group_of, warnings = {}, {}, []  # stage_of: stage index, or None for a span
+for sid, sp in st["spans"].items():
+    for n in sp["nodes"]:
+        if n in group_of:
+            errors.append(f"stages: {n} placed twice ({group_of[n]}, {sid})")
+        stage_of[n], group_of[n] = None, sid
+for i, stg in enumerate(st["stages"]):
+    for gid, gr in stg["groups"].items():
+        for n in gr["nodes"]:
+            if n in group_of:
+                errors.append(f"stages: {n} placed twice ({group_of[n]}, {gid})")
+            stage_of[n], group_of[n] = i, gid
+for n in group_of:
+    if n not in nodes:
+        errors.append(f"stages: unknown node {n}")
+for n in nodes:
+    if n not in group_of:
+        errors.append(f"stages: node {n} is not placed")
+stage_ids = [s_["id"] for s_ in st["stages"]]
+back = set()
+for a, b, lab in node_edges:
+    if a not in stage_of or b not in stage_of:
+        continue
+    sa, sb = stage_of[a], stage_of[b]
+    if sa is not None and sb is not None and sb > sa:
+        back.add((a, b))
+        warnings.append(f"stage order: {a} ({stage_ids[sa]}) uses {b} ({stage_ids[sb]}) via {lab}")
+    elif sa is None and sb is not None:
+        warnings.append(f"span {group_of[a]}: {a} uses stage node {b} ({stage_ids[sb]}) via {lab}")
+
 if errors:
     print("\n".join("ERROR: " + e for e in errors))
     sys.exit(1)
@@ -76,7 +111,27 @@ if errors:
 def mid(s):
     return re.sub(r"[^A-Za-z0-9_]", "_", s)
 
-if "--domain" in sys.argv:
+for w in warnings:
+    print("WARNING: " + w, file=sys.stderr)
+
+if "--stages" in sys.argv:
+    print("graph LR")
+    for i, stg in enumerate(st["stages"]):
+        print(f'  subgraph {mid(stg["id"])}["{i + 1}. {stg["title"]}: {stg["makes"]}"]')
+        for gid, gr in stg["groups"].items():
+            print(f'    {mid("g_" + gid)}["{gr["title"]}<br/><small>{", ".join(gr["nodes"])}</small>"]')
+        print("  end")
+    for sid, sp in st["spans"].items():
+        print(f'  {mid("s_" + sid)}[/"{sp["title"]} (all stages)<br/><small>{", ".join(sp["nodes"])}</small>"/]')
+    seen, back_groups = set(), {(group_of[a], group_of[b]) for a, b in back}
+    for a, b, _ in node_edges:  # group-level edges; backward ones dashed
+        ga, gb = group_of[a], group_of[b]
+        if ga == gb or stage_of[a] is None or stage_of[b] is None or (ga, gb) in seen:
+            continue
+        seen.add((ga, gb))
+        arrow = "-.->" if (ga, gb) in back_groups else "-->"
+        print(f"  {mid('g_' + ga)} {arrow} {mid('g_' + gb)}")
+elif "--domain" in sys.argv:
     dom = sys.argv[sys.argv.index("--domain") + 1]
     inside = {n for n, d in nodes.items() if d["domain"] == dom}
     print("graph BT")
@@ -95,4 +150,4 @@ else:
         print(f'  {mid(d)}["{d} {("[" + layers + "]") if layers else ""}<br/><small>{v["summary"]}</small>"]')
     for a, b, _ in dom_edges:
         print(f"  {mid(a)} --> {mid(b)}")
-print(f"%% ok: {len(nodes)} nodes, {len(node_edges)} edges, {len(doms)} domains", file=sys.stderr)
+print(f"%% ok: {len(nodes)} nodes, {len(node_edges)} edges, {len(doms)} domains, {len(st['stages'])} stages, {len(warnings)} stage warnings", file=sys.stderr)
