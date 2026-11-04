@@ -280,6 +280,45 @@ impl State {
         true
     }
 
+    /// First id of `first..first+n` (one kind) that is not live, if any.
+    pub(crate) fn first_dead_in(&self, first: EntityId, n: u64) -> Option<EntityId> {
+        let kind = first.kind();
+        let s = first.serial();
+        let Some(t) = self.entities.kinds.get(&kind) else {
+            return Some(first);
+        };
+        if s < 1 {
+            return Some(first);
+        }
+        let end = s.saturating_add(n);
+        let live_end = end.min(t.next);
+        if let Some(&d) = t.retired.range(s..live_end.max(s)).next() {
+            return EntityId::new(kind, d);
+        }
+        if end > t.next { EntityId::new(kind, s.max(t.next)).or(Some(first)) } else { None }
+    }
+
+    /// Retire `n` consecutive live serials (checked by the caller with `first_dead_in`).
+    pub(crate) fn retire_range(&mut self, first: EntityId, n: u64) {
+        let t = Arc::make_mut(
+            Arc::make_mut(&mut self.entities)
+                .kinds
+                .entry(first.kind())
+                .or_default(),
+        );
+        let s = first.serial();
+        let serials = s..s + n;
+        for x in serials.clone() {
+            t.retired_acc.add(&x.to_le_bytes());
+        }
+        if t.retired.is_empty() {
+            // Sorted input builds the tree in bulk.
+            t.retired = serials.collect();
+        } else {
+            t.retired.extend(serials);
+        }
+    }
+
     /// Identity of the state: allocation state and every non-empty
     /// [`Authoritative`](LayerRole::Authoritative) layer in name order. Derived and empty layers
     /// do not contribute. O(kinds + layers) given memoized layer hashes; independent of platform
