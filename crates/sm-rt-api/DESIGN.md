@@ -70,3 +70,7 @@ the query surface; this file explains the choices.
 * `AnalyticWorld::cell_volume` is exact when shapes nest cleanly and `None` otherwise.
 * `ray_fire` with an origin outside the model is `RayFire::Miss` (DAGMC returns no hit);
   `Lost` is only for failures after a valid start.
+
+## W3b extension: segment iterator (additive)
+
+`segments.rs` adds `Flight` (one segment iterator, surface and delta modes), `MajorantTracker` (reached via `Tracker::majorant_view`, caps `MAJORANT`/`REGION_JUMP`), `HierarchyView` (disjoint partition, material sets), `MajorantTable` (keyed by set and band), `FlightTally` and `RtError::MajorantViolated` (code -12). No existing signature changed; the stub implements it. Tests: `tests/segments.rs`.

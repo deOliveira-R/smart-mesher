@@ -157,6 +157,19 @@ pub enum RtError {
     /// A geometry operation failed (analytic refine, ray hits).
     #[error(transparent)]
     Geom(#[from] GeomError),
+    /// A total cross section exceeded the majorant of the node's material set. Never clamped:
+    /// the table or the material assignment is wrong.
+    #[error("majorant violated: sigma_t {sigma_t} exceeds sigma_M {majorant} (material set {set}, band {band})")]
+    MajorantViolated {
+        /// The material set.
+        set: u32,
+        /// The energy band.
+        band: u32,
+        /// The offending total cross section.
+        sigma_t: f64,
+        /// The tabulated majorant.
+        majorant: f64,
+    },
 }
 
 impl RtError {
@@ -177,6 +190,7 @@ impl RtError {
     /// | `BadAlbedo` | -9 |
     /// | `BinCountMismatch` | -10 |
     /// | `InvalidInput` | -11 |
+    /// | `MajorantViolated` | -12 |
     ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
@@ -192,6 +206,7 @@ impl RtError {
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
             Self::InvalidInput(_) => -11,
+            Self::MajorantViolated { .. } => -12,
         }
     }
 }

@@ -371,6 +371,11 @@ impl TrackerCaps {
     pub const ANALYTIC: Self = Self(32);
     /// Traversal in `f32` boxes with `f64` confirmation (`Precision::F32Traversal`).
     pub const F32_TRAVERSAL: Self = Self(64);
+    /// Implements [`crate::segments::MajorantTracker`]: `Tracker::majorant_view` is `Some`.
+    pub const MAJORANT: Self = Self(128);
+    /// Honours [`crate::segments::SegmentScale::Region`] with fewer events than cells walked
+    /// (an exact per-region boundary structure); without it the scale is merged cell steps.
+    pub const REGION_JUMP: Self = Self(256);
     /// Union of two sets.
     pub const fn union(self, o: Self) -> Self {
         Self(self.0 | o.0)

@@ -31,11 +31,14 @@
 use crate::boundary::{FaceAction, ResponseKind};
 use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
 use crate::error::{BuildIssue, LostCause, Result, RtError};
-use crate::ids::{CellId, ComponentId, FaceId, InstanceId, RegionId, SurfaceId};
+use crate::ids::{CellId, ComponentId, FaceId, InstanceId, MaterialSetId, NodeId, RegionId, SurfaceId};
 use crate::input::{BuildInput, BuildOptions, BuildReport, RecoveryPolicy, TrackerBuilder};
 use crate::state::{
     Closest, LEVEL_INLINE, Level, Located, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo, SurfaceTable,
     TrackState, TrackerCaps,
+};
+use crate::segments::{
+    FlightSegment, HierarchyView, MajorantTracker, NodeInfo, NodeKind, SegmentQuery, SegmentScale, TrackMode, choose_mode,
 };
 use crate::tally::TrackBundle;
 use crate::tracker::{Tracker, TrackerInfo, check_direction, hashed_direction, lost, move_along};
@@ -272,6 +275,8 @@ pub struct AnalyticWorld {
     recovery: RecoveryPolicy,
     /// Exact volume per local cell (`n + 1` entries), `None` when not exact.
     volumes: Vec<Option<f64>>,
+    /// Material sets: singleton `{r}` per region, then the set of all regions (the node set).
+    sets: Vec<Vec<RegionId>>,
 }
 
 /// Relation of two shapes.
@@ -484,6 +489,7 @@ impl AnalyticWorld {
             block_size: 256,
             recovery: RecoveryPolicy::Fail,
             volumes: Vec::new(),
+            sets: (0..=n).map(|r| vec![RegionId::new(r)]).chain(core::iter::once((0..=n).map(RegionId::new).collect())).collect(),
         };
         w.volumes = local_volumes(&w.shapes, &w.ebox);
         w.info.faces = n + 6;
@@ -797,6 +803,7 @@ impl AnalyticWorld {
 impl Tracker for AnalyticWorld {
     fn caps(&self) -> TrackerCaps {
         let mut c = TrackerCaps::ANALYTIC.union(TrackerCaps::EXACT_PLANAR);
+        c = c.union(TrackerCaps::MAJORANT).union(TrackerCaps::REGION_JUMP);
         if self.lattice.is_some() {
             c = c.union(TrackerCaps::HIERARCHY);
         }
@@ -824,6 +831,10 @@ impl Tracker for AnalyticWorld {
             return None;
         }
         *self.volumes.get(c.get() % self.n_local())?
+    }
+
+    fn majorant_view(&self) -> Option<&dyn MajorantTracker> {
+        Some(self)
     }
 
     fn locate(&self, p: Point3, dir: Option<Vector3>, _hint: Option<CellId>, _scratch: &mut Scratch) -> Result<Located> {
@@ -984,6 +995,140 @@ impl Tracker for AnalyticWorld {
             all.append(&p?)?;
         }
         Ok(all)
+    }
+}
+
+/// Face of the step end, if it crossed one.
+fn end_face(e: &StepEnd) -> Option<FaceId> {
+    match *e {
+        StepEnd::CellFace { face, .. } | StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(face),
+        _ => None,
+    }
+}
+
+impl AnalyticWorld {
+    fn n_elems(&self) -> usize {
+        self.dims().iter().product()
+    }
+    /// The set of all regions (the set every leaf node carries).
+    fn node_set(&self) -> MaterialSetId {
+        MaterialSetId::new(self.n() + 1)
+    }
+    fn leaf_bounds(&self, e: usize) -> Aabb {
+        let idx = self.idx_of(e);
+        let lo = Point3::new(self.wall(idx, 0, false), self.wall(idx, 1, false), self.wall(idx, 2, false));
+        let hi = Point3::new(self.wall(idx, 0, true), self.wall(idx, 1, true), self.wall(idx, 2, true));
+        Aabb { lo, hi }
+    }
+}
+
+/// Nodes: leaf `e` is element `e`; with a lattice the root is node `n_elems`, else leaf 0 is the root.
+impl HierarchyView for AnalyticWorld {
+    fn node_count(&self) -> usize {
+        self.n_elems() + usize::from(self.lattice.is_some())
+    }
+    fn root(&self) -> NodeId {
+        NodeId::new(if self.lattice.is_some() { self.n_elems() } else { 0 })
+    }
+    fn node(&self, n: NodeId) -> Option<NodeInfo> {
+        let ne = self.n_elems();
+        let cells = self.n_local() as u32;
+        if n.get() < ne {
+            let parent = if self.lattice.is_some() { NodeId::new(ne) } else { NodeId::NONE };
+            Some(NodeInfo::new(n, parent, self.leaf_bounds(n.get()), NodeKind::Analytic, self.node_set(), cells))
+        } else if self.lattice.is_some() && n.get() == ne {
+            Some(NodeInfo::new(n, NodeId::NONE, self.domain, NodeKind::Internal, self.node_set(), cells * ne as u32))
+        } else {
+            None
+        }
+    }
+    fn node_of_cell(&self, c: CellId) -> Option<NodeId> {
+        (c.get() < self.n_cells()).then(|| NodeId::new(c.get() / self.n_local()))
+    }
+    fn set_count(&self) -> usize {
+        self.sets.len()
+    }
+    fn set_regions(&self, s: MaterialSetId) -> Option<&[RegionId]> {
+        self.sets.get(s.get()).map(Vec::as_slice)
+    }
+    fn region_set(&self, r: RegionId) -> Option<MaterialSetId> {
+        (r.get() <= self.n()).then(|| MaterialSetId::new(r.get()))
+    }
+}
+
+impl MajorantTracker for AnalyticWorld {
+    fn hierarchy(&self) -> &dyn HierarchyView {
+        self
+    }
+
+    fn advance_segment(&self, st: &mut TrackState, q: &SegmentQuery<'_>, scratch: &mut Scratch) -> Result<FlightSegment> {
+        let (first, region, face_in) = (st.cell, st.region, st.entered_via);
+        let nl = self.n_local();
+        let node = NodeId::new(if first.is_none() { 0 } else { first.get() / nl });
+        let mode = choose_mode(q.policy, q.table, self.node_set(), q.band, nl);
+        let set = match mode {
+            TrackMode::Surface => MaterialSetId::new(region.get().min(self.n())),
+            TrackMode::Delta => self.node_set(),
+        };
+        let sigma_m = q.table.majorant(set, q.band).ok_or(RtError::UnknownId { kind: "material set", id: set.0 })?;
+        let mut total = 0.0;
+        let mut merged = 0u32;
+        let mut end;
+        loop {
+            let s = self.step(st, q.max_dist - total, scratch)?;
+            total += s.dist;
+            merged += 1;
+            end = s.end;
+            // Delta runs to the node wall (or limit); region scale merges same-region steps.
+            let more = match mode {
+                TrackMode::Delta => matches!(end, StepEnd::CellFace { .. } | StepEnd::RegionBoundary { .. }) && !st.cell.is_none(),
+                TrackMode::Surface => {
+                    q.scale == SegmentScale::Region && matches!(end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) && st.region == region
+                }
+            };
+            if !more {
+                break;
+            }
+            if merged > 2 * self.n() as u32 + 8 {
+                end = StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded));
+                break;
+            }
+        }
+        Ok(FlightSegment::new(mode, node, set, first, region, total, sigma_m)
+            .with_faces(face_in, end_face(&end))
+            .with_resolved(mode == TrackMode::Surface && merged == 1)
+            .with_end(end))
+    }
+
+    fn locate_in_node(&self, node: NodeId, p: Point3, dir: Option<Vector3>, _scratch: &mut Scratch) -> Result<Located> {
+        if node.get() >= self.n_elems() {
+            return Err(RtError::UnknownId { kind: "node", id: node.0 });
+        }
+        let idx = self.idx_of(node.get());
+        let pl = shift(p, self.offset(idx));
+        let tol = self.tol.linear;
+        if (0..3).any(|a| comp(pl, a) < comp(self.ebox.lo, a) - tol || comp(pl, a) > comp(self.ebox.hi, a) + tol) {
+            return Err(RtError::InvalidInput("point is outside the node"));
+        }
+        let on_face = self.shapes.iter().position(|s| s.signed_distance(pl).abs() <= tol).map(FaceId::new);
+        let q = match (on_face, dir) {
+            (Some(_), Some(d)) => Point3::new(pl.x + d.x * tol * 10.0, pl.y + d.y * tol * 10.0, pl.z + d.z * tol * 10.0),
+            _ => pl,
+        };
+        let c = self.classify(q);
+        Ok(Located::new(CellId::new(node.get() * self.n_local() + c), RegionId::new(c), on_face).with_levels(self.levels_for(node.get(), idx)))
+    }
+
+    /// Distance to the nearest shape surface or element wall (a lower bound of every cell change).
+    fn safety_distance(&self, st: &TrackState, _scratch: &mut Scratch) -> Result<f64> {
+        if st.cell.is_none() || st.cell.get() >= self.n_cells() {
+            return Ok(0.0);
+        }
+        let e = st.cell.get() / self.n_local();
+        let pl = shift(st.pos, self.offset(self.idx_of(e)));
+        let walls = (0..3).map(|a| (comp(self.ebox.hi, a) - comp(pl, a)).min(comp(pl, a) - comp(self.ebox.lo, a))).fold(f64::INFINITY, f64::min);
+        let shapes = self.shapes.iter().map(|s| s.signed_distance(pl).abs()).fold(f64::INFINITY, f64::min);
+        Ok(walls.min(shapes).max(0.0))
     }
 }
 
