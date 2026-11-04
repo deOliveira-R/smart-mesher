@@ -1,7 +1,14 @@
 graph BT
-  cad_io["cad-io<br/><small>Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC); STEP export</small>"]
+  cad_io["cad-io<br/><small>Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC; importers reject overlapping decks, Q4)</small>"]
+  export_dagmc["export-dagmc<br/><small>DAGMC h5m (W3b, Q6): triangle surfaces with forward/backward volume senses, mat:<set name> groups, opt-in mat:Graveyard; from a classified mesh or sm-tess facets</small>"]
+  export_gmsh["export-gmsh<br/><small>Gmsh msh 4.1 (W3b, Q6): ASCII by default, binary option; physical groups via discrete entities; polyhedra are an error by default</small>"]
   exporters["exporters<br/><small>one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report</small>"]
+  hdf5_io["hdf5-io<br/><small>Minimal deterministic pure-Rust HDF5 writer (W3b, private module of sm-meshio, extractable): superblock v2, compact groups, contiguous datasets, no timestamps</small>"]
   ir_store["ir-store<br/><small>native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook</small>"]
+  model_export["model-export<br/><small>model.export (W3b, Q10): Model-stage read-only command writing the B-rep as STEP through sm_cadio::write_step (O5 default: a query returning the bytes; a path is written outside history, like session.export); not a mesh export</small>"]
+  rt_benchmark["rt-benchmark<br/><small>Reproducible, fairness-checked tracking benchmark against DAGMC (MOAB, double-down) and XDG (W3b, sm-rt-bench, Q9); record-only; --model <local STEP> is never committed</small>"]
+  rt_capi["rt-capi<br/><small>C ABI over sm-rt-api trackers (sm-rt-capi): open the tracking file, DAGMC-shaped shims, two-phase callback-free flight entries, per-node materials, -12 mapping</small>"]
+  tracking_file["tracking-file<br/><small>The tracking handover file (W3b, Q2): geometry, connectivity and the material name of each region; the transport code opens it through sm-rt via the C ABI and pairs names with its own cross sections (O1 default: the .smrt image, written by session.export format smrt)</small>"]
   mesh_validity(["mesh-validity (mesh-db)"])
   ir_store -->|validator-api| mesh_validity
   model_validity(["model-validity (model-semantics)"])
@@ -17,3 +24,38 @@ graph BT
   topo_store(["topo-store (topology)"])
   cad_io -->|topo-edit-api| topo_store
   exporters -->|ir-api (read)| ir_store
+  topo_store(["topo-store (topology)"])
+  model_export -->|topo-query-api (write_step reads a TopologyView)| topo_store
+  export_dagmc -->|hdf5 writer| hdf5_io
+  mesh_store(["mesh-store (mesh-db)"])
+  export_dagmc -->|mesh-api: MeshRead| mesh_store
+  classification(["classification (mesh-db)"])
+  export_dagmc -->|face and cell classification give surfaces and volumes| classification
+  coloring(["coloring (model-semantics)"])
+  export_dagmc -->|coloring-api: cell sets to mat: groups| coloring
+  tess(["tess (topology)"])
+  export_dagmc -->|tessellated facets for model_from_facets (benchmark facet twin)| tess
+  tracking_structure(["tracking-structure (tracking)"])
+  export_dagmc -->|rt-api: FacetInput (input type of model_from_facets)| tracking_structure
+  mesh_store(["mesh-store (mesh-db)"])
+  export_gmsh -->|mesh-api: MeshRead| mesh_store
+  classification(["classification (mesh-db)"])
+  export_gmsh -->|classification-api: discrete entities| classification
+  tracking_structure(["tracking-structure (tracking)"])
+  tracking_file -->|tracking-api: what the file must let sm-rt rebuild| tracking_structure
+  coloring(["coloring (model-semantics)"])
+  tracking_file -->|coloring-api: region material names| coloring
+  rt_capi -->|smrt_open(path)| tracking_file
+  tracking_structure(["tracking-structure (tracking)"])
+  rt_capi -->|tracking-api| tracking_structure
+  delta_tracking(["delta-tracking (tracking)"])
+  rt_capi -->|flight cursor entries| delta_tracking
+  tracking_analytic(["tracking-analytic (tracking)"])
+  rt_benchmark -->|analytic rows| tracking_analytic
+  delta_tracking(["delta-tracking (tracking)"])
+  rt_benchmark -->|W-flight rows| delta_tracking
+  csg_bridge(["csg-bridge (tracking)"])
+  rt_benchmark -->|exact geometry from the model cases| csg_bridge
+  tess(["tess (topology)"])
+  rt_benchmark -->|facet twin| tess
+  rt_benchmark -->|h5m cross-check (stretch)| export_dagmc

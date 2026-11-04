@@ -46,11 +46,27 @@ graph BT
   face_intersect -->|mesh-geometry-api| mesh_geometry
   tracking_structure(["tracking-structure (tracking)"])
   tracking_structure -->|hierarchy-api (instances, levels)| mesh_hierarchy
+  majorant_hierarchy(["majorant-hierarchy (tracking)"])
+  majorant_hierarchy -->|hierarchy-api (instances, lattices, levels)| mesh_hierarchy
   partitioner(["partitioner (distribution)"])
   partitioner -->|mesh-api| mesh_store
   discretization(["discretization (fields)"])
   discretization -->|mesh-api| mesh_store
   ir_store(["ir-store (io)"])
   ir_store -->|validator-api| mesh_validity
+  export_dagmc(["export-dagmc (io)"])
+  export_dagmc -->|mesh-api: MeshRead| mesh_store
+  export_dagmc(["export-dagmc (io)"])
+  export_dagmc -->|face and cell classification give surfaces and volumes| classification
+  export_gmsh(["export-gmsh (io)"])
+  export_gmsh -->|mesh-api: MeshRead| mesh_store
+  export_gmsh(["export-gmsh (io)"])
+  export_gmsh -->|classification-api: discrete entities| classification
+  plan_explain(["plan-explain (meshing)"])
+  plan_explain -->|cells per shape on each entity| classification
   state_layers(["state-layers (history)"])
   state_layers -->|mesh-api| mesh_store
+  py(["py (frontends)"])
+  py -->|mesh-api (read-only snapshot tables; .smsh names)| mesh_store
+  view_data(["view-data (frontends)"])
+  view_data -->|mesh-api: MeshRead| mesh_store

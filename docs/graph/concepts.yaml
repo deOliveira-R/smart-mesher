@@ -69,6 +69,7 @@ domain_edges:   # user -> provider
   - [tracking, mesh-db]
   - [tracking, model-semantics]
   - [tracking, shape]
+  - [tracking, topology]       # W3b: csg-bridge reads quadric carriers of model faces
   - [distribution, mesh-db]
   - [fields, mesh-db]
   - [io, mesh-db]
@@ -80,6 +81,9 @@ domain_edges:   # user -> provider
   - [io, topology]
   - [history, "*"]
   - [frontends, history]
+  - [frontends, mesh-db]       # W3b: py and view-data read MeshRead tables
+  - [frontends, mesh-ops]      # W3b: view-data overlays quality; gui shows diagnostics
+  - [frontends, topology]      # W3b: gui draws view.tessellate
 
 nodes:
   # foundation
@@ -115,7 +119,9 @@ nodes:
   mesh-hierarchy:    {domain: mesh-db, summary: "Multiple meshes per model (fine/coarse for CMFD/AMG), inter-mesh maps, instanced view, symmetric unfold; owns its own consistency checks (levels nest, maps total)"}
   mesh-validity:     {domain: mesh-db, summary: "Mesh invariants: closedness, incidence, orientation, classification closure, coverage; stable violation codes (sm-mesh-api validate, validate_geometry)"}
   # meshing
-  mesh-driver:       {domain: meshing, summary: "Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, deck copy constraints"}
+  mesh-driver:       {domain: meshing, summary: "Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, deck copy constraints; surface-only selection into a dimension-2 mesh (W3b, mesh.run on faces)"}
+  scheme-auto:       {domain: meshing, summary: "Pluggable auto meshing (W3b, mesh.auto {strategy}): registered strategies only choose schemes and record explicit scheme assignments into history; replay never re-runs a strategy. Strategy `default`: surfaces map/submap/pave/trimesh, volumes map/sweep/tetmesh (mesh.auto_tet warning), triangle sources pave"}
+  plan-explain:      {domain: meshing, summary: "mesh.plan query (W3b): which scheme ran or will run per entity, with intervals, reasons and passed-over candidates"}
   scheme-curve:      {domain: meshing, summary: "equal, bias, dualbias, stretch, curvature, copy"}
   scheme-quad-structured:   {domain: meshing, summary: "map, submap, copy (incl. under deck transform), mirror"}
   scheme-quad-unstructured: {domain: meshing, summary: "paving and related"}
@@ -135,15 +141,27 @@ nodes:
   face-intersect:    {domain: interfaces, summary: "overlap polygons/areas/weights (symmetric overlap table)"}
   conformize:        {domain: interfaces, summary: "replace coarse faces by fine faces to make an interface conformal"}
   # tracking
-  tracking-structure: {domain: tracking, summary: "Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, exact analytic refine (W3b), .smrt cache; C ABI + DAGMC shims in sm-rt-capi"}
+  tracking-structure: {domain: tracking, summary: "Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, .smrt cache. Analytic leaves, the majorant partition and delta flights are their own nodes (W3b); the C ABI is rt-capi"}
+  tracking-analytic: {domain: tracking, summary: "ANALYTIC leaf (W3b, sm-rt): exact CSG quadrics and tori under the shared world walker (rect lattices, universes; pointy-top hex is stretch, Q3). Cells must be disjoint (Q4): no first-wins order"}
+  majorant-hierarchy: {domain: tracking, summary: "Disjoint majorant partition (W3b, sm-rt): lattice/universe nodes plus a kd split over meshed regions; deduplicated material sets per node. Holds no cross sections (Q2): the caller passes one majorant per node"}
+  delta-tracking:    {domain: tracking, summary: "Segment iterator (W3b, sm-rt): surface and delta segments over the majorant partition, resumable caller-owned cursor, hinted location from the owning node, safety distance, region jump; a caller sigma_t above the node majorant is error -12"}
+  csg-bridge:        {domain: tracking, summary: "Model -> CSG world (W3b, sm-rt): analytic primitives, prototypes and lattices of the model become CsgLeafInput + WorldSpec for the analytic tracker and the benchmark"}
+  overlap-check:     {domain: tracking, summary: "Check-stage op (W3b, Q4; library in RT-ANALYTIC, op registered by RT-BRIDGE): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples"}
   # distribution
   partitioner:       {domain: distribution, summary: "graph partitioning, owners, ghosts, global ids"}
   # fields
   discretization:    {domain: fields, summary: "sections, function spaces, field storage"}
   # io
   ir-store:          {domain: io, summary: "native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook"}
-  cad-io:            {domain: io, summary: "Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC); STEP export"}
+  cad-io:            {domain: io, summary: "Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC; importers reject overlapping decks, Q4)"}
+  model-export:      {domain: io, summary: "model.export (W3b, Q10): Model-stage read-only command writing the B-rep as STEP through sm_cadio::write_step (O5 default: a query returning the bytes; a path is written outside history, like session.export); not a mesh export"}
   exporters:         {domain: io, summary: "one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report"}
+  hdf5-io:           {domain: io, summary: "Minimal deterministic pure-Rust HDF5 writer (W3b, private module of sm-meshio, extractable): superblock v2, compact groups, contiguous datasets, no timestamps"}
+  export-dagmc:      {domain: io, summary: "DAGMC h5m (W3b, Q6): triangle surfaces with forward/backward volume senses, mat:<set name> groups, opt-in mat:Graveyard; from a classified mesh or sm-tess facets"}
+  export-gmsh:       {domain: io, summary: "Gmsh msh 4.1 (W3b, Q6): ASCII by default, binary option; physical groups via discrete entities; polyhedra are an error by default"}
+  tracking-file:     {domain: io, summary: "The tracking handover file (W3b, Q2): geometry, connectivity and the material name of each region; the transport code opens it through sm-rt via the C ABI and pairs names with its own cross sections (O1 default: the .smrt image, written by session.export format smrt)"}
+  rt-capi:           {domain: io, summary: "C ABI over sm-rt-api trackers (sm-rt-capi): open the tracking file, DAGMC-shaped shims, two-phase callback-free flight entries, per-node materials, -12 mapping"}
+  rt-benchmark:      {domain: io, summary: "Reproducible, fairness-checked tracking benchmark against DAGMC (MOAB, double-down) and XDG (W3b, sm-rt-bench, Q9); record-only; --model <local STEP> is never committed"}
   # history
   ops:               {domain: history, summary: "Op registry and apply(): the only way state changes"}
   timeline:          {domain: history, summary: "Op DAG, replay, snapshots, branches, project on disk"}
@@ -152,9 +170,11 @@ nodes:
   lang:              {domain: frontends, summary: "command language -> ops"}
   server:            {domain: frontends, summary: "session host + protocol"}
   mcp:               {domain: frontends, summary: "MCP tools over the protocol"}
-  py:                {domain: frontends, summary: "Python bindings"}
+  py:                {domain: frontends, summary: "Python bindings (W3b, sm-py, package smartmesh, abi3 >= 3.10, Q7): typed ops from the catalog, numpy mesh table snapshots, .smsh mmap reader"}
   cli:               {domain: frontends, summary: "smesh binary"}
-  gui:               {domain: frontends, summary: "web/desktop viewer and editor"}
+  gui:               {domain: frontends, summary: "Web viewer (W3b, Q8: WebGL2 client in crates/sm-view/web/, read-only plus script console); editor later"}
+  view-data:         {domain: frontends, summary: "Renderer-neutral buffers for the viewer (W3b, sm-view): mesh skin, cell-based clip, per-cell scalar overlays, scene summary"}
+  script-record:     {domain: frontends, summary: "Session history written out as a replayable script (W3b, sm-lang record; inverse of the parser)"}
 
 edges:   # user -> provider : interface
   - [predicates, math, "math-api"]
@@ -232,6 +252,23 @@ edges:   # user -> provider : interface
   - [tracking-structure, mesh-hierarchy, "hierarchy-api (instances, levels)"]
   - [tracking-structure, geom-intersect, "ray/surface intersection"]
   - [tracking-structure, boundary-kind, "boundary-api (deck = reflect/periodic on hit)"]
+  - [tracking-analytic, tracking-structure, "tracking-api: Tracker, world walker, Leaf"]
+  - [tracking-analytic, csg, "csg-api: half-space cells, quadric/torus ray kernels"]
+  - [tracking-analytic, geom-intersect, "ray/surface intersection"]
+  - [tracking-analytic, instancing, "instancing-api: lattices and universes as WorldSpec"]
+  - [majorant-hierarchy, tracking-structure, "tracking-api: cells, faces, locate, step"]
+  - [majorant-hierarchy, mesh-hierarchy, "hierarchy-api (instances, lattices, levels)"]
+  - [delta-tracking, majorant-hierarchy, "majorant-api: nodes, material sets, caller majorants"]
+  - [delta-tracking, tracking-structure, "tracking-api: step, boundary decks"]
+  - [delta-tracking, boundary-kind, "boundary-api: deck faces applied in flight"]
+  - [csg-bridge, tracking-structure, "rt-api input types (CsgLeafInput, WorldSpec)"]
+  - [csg-bridge, csg, "csg-api"]
+  - [csg-bridge, instancing, "instancing-api: prototypes, lattices"]
+  - [csg-bridge, coloring, "coloring-api: region material names"]
+  - [csg-bridge, topo-store, "topo-query-api: quadric carriers of faces"]
+  - [overlap-check, csg, "csg-api: cell membership by half-space signs"]
+  - [overlap-check, geom-intersect, "ray/surface intersection for ray sampling"]
+  - [overlap-check, instancing, "instancing-api: cells inside lattices and universes"]
   - [partitioner, mesh-store, "mesh-api"]
   - [discretization, mesh-store, "mesh-api"]
   - [ir-store, mesh-validity, "validator-api"]
@@ -242,6 +279,28 @@ edges:   # user -> provider : interface
   - [ir-store, tracking-structure, "tracking-api"]
   - [cad-io, topo-store, "topo-edit-api"]
   - [exporters, ir-store, "ir-api (read)"]
+  - [model-export, topo-store, "topo-query-api (write_step reads a TopologyView)"]
+  - [export-dagmc, hdf5-io, "hdf5 writer"]
+  - [export-dagmc, mesh-store, "mesh-api: MeshRead"]
+  - [export-dagmc, classification, "face and cell classification give surfaces and volumes"]
+  - [export-dagmc, coloring, "coloring-api: cell sets to mat: groups"]
+  - [export-dagmc, tess, "tessellated facets for model_from_facets (benchmark facet twin)"]
+  - [export-dagmc, tracking-structure, "rt-api: FacetInput (input type of model_from_facets)"]
+  - [export-gmsh, mesh-store, "mesh-api: MeshRead"]
+  - [export-gmsh, classification, "classification-api: discrete entities"]
+  - [tracking-file, tracking-structure, "tracking-api: what the file must let sm-rt rebuild"]
+  - [tracking-file, coloring, "coloring-api: region material names"]
+  - [rt-capi, tracking-file, "smrt_open(path)"]
+  - [rt-capi, tracking-structure, "tracking-api"]
+  - [rt-capi, delta-tracking, "flight cursor entries"]
+  - [rt-benchmark, tracking-analytic, "analytic rows"]
+  - [rt-benchmark, delta-tracking, "W-flight rows"]
+  - [rt-benchmark, csg-bridge, "exact geometry from the model cases"]
+  - [rt-benchmark, tess, "facet twin"]
+  - [rt-benchmark, export-dagmc, "h5m cross-check (stretch)"]
+  - [scheme-auto, mesh-driver, "AutoStrategy/DefaultStrategy over Driver::plan scores and fallback; records explicit mesh.scheme assignments"]
+  - [plan-explain, mesh-driver, "plan, attempts and rejections"]
+  - [plan-explain, classification, "cells per shape on each entity"]
   - [ops, timeline, "timeline-api"]
   - [lang, ops, "op-api"]
   - [server, ops, "op-api"]
@@ -255,6 +314,17 @@ edges:   # user -> provider : interface
   - [py, server, "protocol (in-process)"]
   - [cli, server, "protocol (in-process)"]
   - [gui, server, "protocol (remote)"]
+  - [py, mesh-store, "mesh-api (read-only snapshot tables; .smsh names)"]
+  - [py, state-layers, "layer-api (MeshLayer at HEAD)"]
+  - [view-data, mesh-store, "mesh-api: MeshRead"]
+  - [view-data, quality, "quality-api: compute"]
+  - [view-data, state-layers, "layer-api: ModelLayer, MeshLayer"]
+  - [gui, view-data, "protocol queries view.*"]
+  - [gui, tess, "protocol query view.tessellate"]
+  - [gui, diagnostics, "protocol queries mesh.validate / mesh.quality"]
+  - [script-record, lang, "printer/parser round trip"]
+  - [script-record, timeline, "timeline-api: Timeline, Head (read only)"]
+  - [server, script-record, "script.record method"]
   - [ops, "*", "op-api: each node registers its Ops"]
 
 open:
