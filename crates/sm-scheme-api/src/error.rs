@@ -319,6 +319,14 @@ pub enum SchemeError {
     /// The input topology, model or intent is unusable.
     #[error("input: {0}")]
     Input(String),
+    /// The plan needs more cells than `DriverOptions::max_cells` allows (a rough estimate).
+    #[error("the plan needs about {cells:.3e} cells, above the budget of {max}; use a larger size")]
+    OverBudget {
+        /// Estimated cell count.
+        cells: f64,
+        /// The budget.
+        max: u64,
+    },
     /// Re-planning after fallbacks did not converge.
     #[error("gave up after {} attempts", attempts.len())]
     ReplanLimit {

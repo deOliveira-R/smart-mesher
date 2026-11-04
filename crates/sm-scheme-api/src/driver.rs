@@ -6,7 +6,7 @@ use crate::copy;
 use crate::error::{Attempt, FailureKind, Phase, Result, SchemeError};
 use crate::exec::Executor;
 use crate::geom;
-use crate::intent::{MeshIntent, SchemeName};
+use crate::intent::{MeshIntent, RequestCascade, SchemeName};
 use crate::patch::{ElemShape, Patch, PatchBuilder, PatchSet};
 use crate::plan::{CopyMode, Plan};
 use crate::problem::{MeshConstraint, Selection};
@@ -16,6 +16,7 @@ use crate::solve::{CornerPicker, IntervalSolver};
 use crate::target::{Job, NodeKey, SchemeDim, Target};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sm_core::EntityId;
+use sm_topo_api::{TopologyView, TopologyViewExt};
 use sm_mesh_api::{
     CellShape, Classification, Finished, MeshBuild, MeshDim, MeshEntityRef, SerialAlloc, VertexIx,
 };
@@ -33,6 +34,11 @@ pub struct DriverOptions {
     /// Tolerance of copy redundancy checks and verification (default: the model's linear
     /// tolerance).
     pub copy_tolerance: Option<f64>,
+    /// Refuse a plan whose [`Driver::estimate_cells`] exceeds this, before generating
+    /// anything (`SchemeError::OverBudget`). `None`: no budget.
+    pub max_cells: Option<u64>,
+    /// How interval requests from edges, faces and volumes are resolved on one edge.
+    pub cascade: RequestCascade,
 }
 
 impl DriverOptions {
@@ -50,6 +56,16 @@ impl DriverOptions {
         self.classify_edges = on;
         self
     }
+    /// Choose the request cascade.
+    pub fn with_cascade(mut self, cascade: RequestCascade) -> Self {
+        self.cascade = cascade;
+        self
+    }
+    /// Set the cell budget checked on every plan.
+    pub fn with_max_cells(mut self, n: u64) -> Self {
+        self.max_cells = Some(n);
+        self
+    }
     /// Set the copy tolerance.
     pub fn with_copy_tolerance(mut self, tol: f64) -> Self {
         self.copy_tolerance = Some(tol);
@@ -63,6 +79,8 @@ impl Default for DriverOptions {
             max_replans: 16,
             classify_edges: false,
             copy_tolerance: None,
+            max_cells: None,
+            cascade: RequestCascade::default(),
         }
     }
 }
@@ -647,6 +665,78 @@ impl<'r> Driver<'r> {
         builder: B,
         alloc: &mut SerialAlloc,
     ) -> Result<Meshed<B::Output>> {
+        self.mesh_loop(input, intent, rej, None, exec, builder, alloc)
+    }
+
+    /// [`Driver::mesh`] from a plan the caller already made with [`Driver::plan`] for the same
+    /// `input` and `intent` (plan once). The plan is checked against `options.max_cells` and
+    /// generated; a failure a different scheme could avoid re-plans as in [`Driver::mesh`].
+    /// The result equals `Driver::mesh`'s.
+    pub fn mesh_from_plan<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        intent: &MeshIntent,
+        plan: Plan,
+        exec: &dyn Executor,
+        builder: B,
+        alloc: &mut SerialAlloc,
+    ) -> Result<Meshed<B::Output>> {
+        let rej = plan.rejections.clone();
+        self.mesh_loop(input, intent, &rej, Some(plan), exec, builder, alloc)
+    }
+
+    /// Rough cell count of `plan` for the volumes in `targets`: per volume, the cube of the
+    /// geometric mean of the solved interval counts of its edges (exact for a structured hex
+    /// brick: `a*b*c`). Edges not in the plan are skipped; a volume with none falls back to the
+    /// mean over the whole plan. It only catches absurd requests: for few long edges and
+    /// non-structured faces it can be off by a large factor in either direction.
+    pub fn estimate_cells(plan: &Plan, view: &dyn TopologyView, targets: &[EntityId]) -> f64 {
+        let geo = |counts: &mut dyn Iterator<Item = u32>| -> Option<f64> {
+            let (mut sum, mut n) = (0.0_f64, 0usize);
+            for c in counts {
+                sum += f64::from(c.max(1)).ln();
+                n += 1;
+            }
+            (n > 0).then(|| (sum / n as f64).exp().powi(3))
+        };
+        let mut total = 0.0;
+        for &t in targets {
+            let mut edges: Vec<EntityId> = view
+                .volume_faces(t)
+                .iter()
+                .flat_map(|&f| view.coedges(f).map(|c| c.key.edge))
+                .collect();
+            edges.sort_unstable();
+            edges.dedup();
+            let est = geo(&mut edges.iter().filter_map(|&e| plan.intervals(e)))
+                .or_else(|| geo(&mut plan.intervals.iter().map(|p| p.1)));
+            total += est.unwrap_or(0.0);
+        }
+        total
+    }
+
+    fn check_budget(&self, input: &MeshInput<'_>, plan: &Plan) -> Result<()> {
+        let Some(max) = self.options.max_cells else {
+            return Ok(());
+        };
+        let cells = Self::estimate_cells(plan, input.topo, input.selection);
+        if cells > max as f64 {
+            return Err(SchemeError::OverBudget { cells, max });
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mesh_loop<B: MeshBuild>(
+        &self,
+        input: &MeshInput<'_>,
+        intent: &MeshIntent,
+        rej: &Rejections,
+        mut first: Option<Plan>,
+        exec: &dyn Executor,
+        builder: B,
+        alloc: &mut SerialAlloc,
+    ) -> Result<Meshed<B::Output>> {
         let owned = if self.size.is_none() {
             field_for(intent.defaults.sizing.as_ref())?
         } else {
@@ -656,7 +746,12 @@ impl<'r> Driver<'r> {
         let mut rej = rej.clone();
         let mut history: Vec<Attempt> = Vec::new();
         for _ in 0..=self.options.max_replans {
-            let step = match self.plan_with(input, intent, &rej) {
+            let planned = match first.take() {
+                Some(p) => Ok(p),
+                None => self.plan_with(input, intent, &rej),
+            }
+            .and_then(|p| self.check_budget(input, &p).map(|()| p));
+            let step = match planned {
                 Err(e) => {
                     let blame = e.blame();
                     Err((e, blame))
