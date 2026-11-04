@@ -63,6 +63,39 @@ impl ExportedFile {
     }
 }
 
+/// One loss or format note of an export (what the format could not carry).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ExportNote {
+    /// Stable machine code, for example `foam.small_det_split`.
+    pub code: String,
+    /// Number of entities affected.
+    pub count: u64,
+    /// Human-readable detail.
+    pub detail: String,
+}
+
+impl ExportNote {
+    /// A note.
+    pub fn new(code: impl Into<String>, count: u64, detail: impl Into<String>) -> Self {
+        Self { code: code.into(), count, detail: detail.into() }
+    }
+
+    /// Parse the `code: detail xcount` line an exporter reports. A line of another shape becomes
+    /// a note with code `note`, count 1 and the whole line as detail.
+    pub fn parse(line: &str) -> Self {
+        if let Some((code, rest)) = line.split_once(": ")
+            && !code.is_empty()
+            && !code.contains(' ')
+            && let Some((detail, n)) = rest.rsplit_once(" x")
+            && let Ok(count) = n.parse::<u64>()
+        {
+            return Self::new(code, count, detail);
+        }
+        Self::new("note", 1, line)
+    }
+}
+
 /// Result of `session.export`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -82,6 +115,9 @@ pub struct ExportResult {
     /// where `bytes` and `sha256` describe the one file).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ExportedFile>,
+    /// What the format could not carry (loss and format notes), in exporter order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<ExportNote>,
 }
 
 impl ExportResult {
@@ -99,7 +135,15 @@ impl ExportResult {
             sha256,
             base64: None,
             files: Vec::new(),
+            notes: Vec::new(),
         }
+    }
+
+    /// Attach the exporter's loss and format notes.
+    #[must_use]
+    pub fn with_notes(mut self, notes: Vec<ExportNote>) -> Self {
+        self.notes = notes;
+        self
     }
 
     /// Attach the per-file listing of a multi-file export.

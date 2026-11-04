@@ -251,6 +251,22 @@ def export_notes(case):
     return None
 
 
+def note_code(n):
+    """Code of a note: a structured {code,count,detail} object or a `code: detail xN` line."""
+    return n.get("code") if isinstance(n, dict) else str(n).split(":", 1)[0]
+
+
+def note_detail(n):
+    return n.get("detail", "") if isinstance(n, dict) else str(n)
+
+
+def note_count(n):
+    if isinstance(n, dict):
+        return n.get("count")
+    m = re.search(r" x(\d+)$", str(n))
+    return int(m.group(1)) if m else None
+
+
 def main(out, log, case, info_path, quality_path, label="", mode=""):
     problems, facts, warnings = [], {}, {}
     text = open(log, encoding="latin-1").read()
@@ -290,16 +306,17 @@ def main(out, log, case, info_path, quality_path, label="", mode=""):
         problems += sp
         split = {"split_cells": parents, "sub_cells": sub_cells, "added_internal_faces": added, "census_delta": delta}
         notes = export_notes(case)
-        line = next((n for n in notes or [] if n.startswith("foam.small_det_split")), None)
+        line = next((n for n in notes or [] if note_code(n) == "foam.small_det_split"), None)
         split["note"] = line
-        m = re.search(r"into (\d+) sub-cells.* x(\d+)$", line or "")
         if notes is None:
-            # `smesh export --json` prints sm-protocol's ExportResult, which has no notes field.
-            split["note"] = "export notes not available from `smesh export --json` (ExportResult has no notes)"
-        elif not m:
+            split["note"] = "export notes not available (no export_foam.json with a `notes` list next to the case)"
+        elif line is None:
             problems.append(f"export notes do not report the INT-8 split: {notes}")
-        elif (int(m.group(2)), int(m.group(1))) != (parents, sub_cells):
-            problems.append(f"export note reports {m.group(2)} split cells / {m.group(1)} sub-cells, smeshCellMap gives {parents} / {sub_cells}")
+        else:
+            m = re.search(r"into (\d+) sub-cells", note_detail(line))
+            got = (note_count(line), int(m.group(1)) if m else None)
+            if got != (parents, sub_cells):
+                problems.append(f"export note reports {got[0]} split cells / {got[1]} sub-cells, smeshCellMap gives {parents} / {sub_cells}")
         facts["int8_split"] = split
     shapes = info.get("cell_shapes", {})
     ours = {
