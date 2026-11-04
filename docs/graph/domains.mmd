@@ -29,6 +29,7 @@ graph BT
   meshing --> mesh_db
   meshing --> intent
   meshing --> model_semantics
+  meshing --> decomposition
   mesh_ops --> mesh_db
   mesh_ops --> model_semantics
   interfaces --> mesh_db
@@ -36,6 +37,7 @@ graph BT
   tracking --> mesh_db
   tracking --> model_semantics
   tracking --> shape
+  tracking --> topology
   distribution --> mesh_db
   fields --> mesh_db
   io --> mesh_db
@@ -46,3 +48,6 @@ graph BT
   io --> model_semantics
   io --> topology
   frontends --> history
+  frontends --> mesh_db
+  frontends --> mesh_ops
+  frontends --> topology

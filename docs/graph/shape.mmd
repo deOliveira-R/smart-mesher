@@ -19,3 +19,13 @@ graph BT
   imprint_merge -->|intersect-api| geom_intersect
   tracking_structure(["tracking-structure (tracking)"])
   tracking_structure -->|ray/surface intersection| geom_intersect
+  tracking_analytic(["tracking-analytic (tracking)"])
+  tracking_analytic -->|csg-api: half-space cells, quadric/torus ray kernels| csg
+  tracking_analytic(["tracking-analytic (tracking)"])
+  tracking_analytic -->|ray/surface intersection| geom_intersect
+  csg_bridge(["csg-bridge (tracking)"])
+  csg_bridge -->|csg-api| csg
+  overlap_check(["overlap-check (tracking)"])
+  overlap_check -->|csg-api: cell membership by half-space signs| csg
+  overlap_check(["overlap-check (tracking)"])
+  overlap_check -->|ray/surface intersection for ray sampling| geom_intersect

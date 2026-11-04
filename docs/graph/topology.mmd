@@ -32,7 +32,17 @@ graph BT
   decomposition -->|overlay-api| virtual_topo
   classification(["classification (mesh-db)"])
   classification -->|topo-query-api| topo_store
+  csg_bridge(["csg-bridge (tracking)"])
+  csg_bridge -->|topo-query-api: quadric carriers of faces| topo_store
   cad_io(["cad-io (io)"])
   cad_io -->|topo-edit-api| topo_store
+  model_export(["model-export (io)"])
+  model_export -->|topo-query-api (write_step reads a TopologyView)| topo_store
+  export_dagmc(["export-dagmc (io)"])
+  export_dagmc -->|FacetInput adapter (benchmark facet twin)| tess
+  rt_benchmark(["rt-benchmark (io)"])
+  rt_benchmark -->|facet twin| tess
   state_layers(["state-layers (history)"])
   state_layers -->|topo-edit-api| topo_store
+  gui(["gui (frontends)"])
+  gui -->|protocol query view.tessellate| tess

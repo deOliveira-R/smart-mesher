@@ -1,10 +1,56 @@
 graph BT
-  tracking_structure["tracking-structure<br/><small>Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, exact analytic refine (W3b), .smrt cache; C ABI + DAGMC shims in sm-rt-capi</small>"]
+  csg_bridge["csg-bridge<br/><small>Model -> CSG world (W3b, sm-rt): analytic primitives, prototypes and lattices of the model become CsgLeafInput + WorldSpec for the analytic tracker and the benchmark</small>"]
+  delta_tracking["delta-tracking<br/><small>Segment iterator (W3b, sm-rt): surface and delta segments over the majorant partition, resumable caller-owned cursor, hinted location from the owning node, safety distance, region jump; a caller sigma_t above the node majorant is error -12</small>"]
+  majorant_hierarchy["majorant-hierarchy<br/><small>Disjoint majorant partition (W3b, sm-rt): lattice/universe nodes plus a kd split over meshed regions; deduplicated material sets per node. Holds no cross sections (Q2): the caller passes one majorant per node</small>"]
+  overlap_check["overlap-check<br/><small>Check-stage op (W3b, Q4): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples</small>"]
+  tracking_analytic["tracking-analytic<br/><small>ANALYTIC leaf (W3b, sm-rt): exact CSG quadrics and tori under the shared world walker (rect lattices, universes; pointy-top hex is stretch, Q3). Cells must be disjoint (Q4): no first-wins order</small>"]
+  tracking_structure["tracking-structure<br/><small>Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, .smrt cache. Analytic leaves, the majorant partition and delta flights are their own nodes (W3b); the C ABI is rt-capi</small>"]
   mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
   tracking_structure -->|hierarchy-api (instances, levels)| mesh_hierarchy
   geom_intersect(["geom-intersect (shape)"])
   tracking_structure -->|ray/surface intersection| geom_intersect
   boundary_kind(["boundary-kind (model-semantics)"])
   tracking_structure -->|boundary-api (deck = reflect/periodic on hit)| boundary_kind
+  tracking_analytic -->|tracking-api: Tracker, world walker, Leaf| tracking_structure
+  csg(["csg (shape)"])
+  tracking_analytic -->|csg-api: half-space cells, quadric/torus ray kernels| csg
+  geom_intersect(["geom-intersect (shape)"])
+  tracking_analytic -->|ray/surface intersection| geom_intersect
+  instancing(["instancing (model-semantics)"])
+  tracking_analytic -->|instancing-api: lattices and universes as WorldSpec| instancing
+  majorant_hierarchy -->|tracking-api: cells, faces, locate, step| tracking_structure
+  mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
+  majorant_hierarchy -->|hierarchy-api (instances, lattices, levels)| mesh_hierarchy
+  delta_tracking -->|majorant-api: nodes, material sets, caller majorants| majorant_hierarchy
+  delta_tracking -->|tracking-api: step, boundary decks| tracking_structure
+  boundary_kind(["boundary-kind (model-semantics)"])
+  delta_tracking -->|boundary-api: deck faces applied in flight| boundary_kind
+  csg_bridge -->|rt-api input types (CsgLeafInput, WorldSpec)| tracking_structure
+  csg(["csg (shape)"])
+  csg_bridge -->|csg-api| csg
+  instancing(["instancing (model-semantics)"])
+  csg_bridge -->|instancing-api: prototypes, lattices| instancing
+  coloring(["coloring (model-semantics)"])
+  csg_bridge -->|coloring-api: region material names| coloring
+  topo_store(["topo-store (topology)"])
+  csg_bridge -->|topo-query-api: quadric carriers of faces| topo_store
+  csg(["csg (shape)"])
+  overlap_check -->|csg-api: cell membership by half-space signs| csg
+  geom_intersect(["geom-intersect (shape)"])
+  overlap_check -->|ray/surface intersection for ray sampling| geom_intersect
+  instancing(["instancing (model-semantics)"])
+  overlap_check -->|instancing-api: cells inside lattices and universes| instancing
   ir_store(["ir-store (io)"])
   ir_store -->|tracking-api| tracking_structure
+  tracking_file(["tracking-file (io)"])
+  tracking_file -->|tracking-api: what the file must let sm-rt rebuild| tracking_structure
+  rt_capi(["rt-capi (io)"])
+  rt_capi -->|tracking-api| tracking_structure
+  rt_capi(["rt-capi (io)"])
+  rt_capi -->|flight cursor entries| delta_tracking
+  rt_benchmark(["rt-benchmark (io)"])
+  rt_benchmark -->|analytic rows| tracking_analytic
+  rt_benchmark(["rt-benchmark (io)"])
+  rt_benchmark -->|W-flight rows| delta_tracking
+  rt_benchmark(["rt-benchmark (io)"])
+  rt_benchmark -->|exact geometry from the model cases| csg_bridge

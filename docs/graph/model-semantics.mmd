@@ -39,7 +39,21 @@ graph BT
   interface_detect -->|boundary-api (declared interfaces, deck pairs)| boundary_kind
   tracking_structure(["tracking-structure (tracking)"])
   tracking_structure -->|boundary-api (deck = reflect/periodic on hit)| boundary_kind
+  tracking_analytic(["tracking-analytic (tracking)"])
+  tracking_analytic -->|instancing-api: lattices and universes as WorldSpec| instancing
+  delta_tracking(["delta-tracking (tracking)"])
+  delta_tracking -->|boundary-api: deck faces applied in flight| boundary_kind
+  csg_bridge(["csg-bridge (tracking)"])
+  csg_bridge -->|instancing-api: prototypes, lattices| instancing
+  csg_bridge(["csg-bridge (tracking)"])
+  csg_bridge -->|coloring-api: region material names| coloring
+  overlap_check(["overlap-check (tracking)"])
+  overlap_check -->|instancing-api: cells inside lattices and universes| instancing
   ir_store(["ir-store (io)"])
   ir_store -->|model-validator-api| model_validity
+  export_dagmc(["export-dagmc (io)"])
+  export_dagmc -->|coloring-api: cell sets to mat: groups| coloring
+  tracking_file(["tracking-file (io)"])
+  tracking_file -->|coloring-api: region material names| coloring
   state_layers(["state-layers (history)"])
   state_layers -->|model-api| coloring

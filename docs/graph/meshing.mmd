@@ -1,6 +1,8 @@
 graph BT
   boundary_layer["boundary-layer<br/><small>inflation layers on response boundaries (never on deck boundaries)</small>"]
-  mesh_driver["mesh-driver<br/><small>Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, deck copy constraints</small>"]
+  mesh_driver["mesh-driver<br/><small>Dimension hierarchy, scheme selection, fallbacks, imposed child schemes, deck copy constraints; surface-only selection into a dimension-2 mesh (W3b, mesh.run on faces)</small>"]
+  plan_explain["plan-explain<br/><small>mesh.plan query (W3b): which scheme ran or will run per entity, with intervals, reasons and passed-over candidates</small>"]
+  scheme_auto["scheme-auto<br/><small>Pluggable auto meshing (W3b, mesh.auto {strategy}): registered strategies only choose schemes and record explicit scheme assignments into history; replay never re-runs a strategy. Strategy `default`: surfaces map/submap/pave/trimesh, volumes map/sweep/tetmesh (mesh.auto_tet warning), triangle sources pave</small>"]
   scheme_convert["scheme-convert<br/><small>THex, QTri, HTet, TQuad, degree elevation</small>"]
   scheme_curve["scheme-curve<br/><small>equal, bias, dualbias, stretch, curvature, copy</small>"]
   scheme_hex["scheme-hex<br/><small>volume map, submap, sweep, multisweep, copy</small>"]
@@ -29,3 +31,9 @@ graph BT
   scheme_poly -->|classification-api (dual faces/cells keep geometry links)| classification
   scheme_convert -->|scheme-api: MeshTransform| mesh_driver
   boundary_layer -->|scheme-api: MeshTransform| mesh_driver
+  scheme_auto -->|scheme-api: AutoPolicy, applicability scores, Selection| mesh_driver
+  decomposition(["decomposition (decomposition)"])
+  scheme_auto -->|decomposition-api: PieceShape hints outrank detection| decomposition
+  plan_explain -->|plan, attempts and rejections| mesh_driver
+  classification(["classification (mesh-db)"])
+  plan_explain -->|cells per shape on each entity| classification

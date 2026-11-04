@@ -37,7 +37,7 @@ spans:
     title: Frontends
     position: above
     role: "how a person or an agent drives the stages"
-    nodes: [lang, server, mcp, py, cli, gui]
+    nodes: [lang, server, mcp, py, cli, gui, view-data, script-record]
 
 # Edges allowed to break the rules above, each with its reason: [user, provider, reason].
 exceptions: []
@@ -48,6 +48,7 @@ stages:
     makes: "an exact, colored model with known boundaries and symmetry"
     groups:
       import:   {title: Import,            nodes: [cad-io]}
+      cad-export: {title: CAD export,      nodes: [model-export], note: "model.export writes STEP; a Model-stage op, not a mesh export (Q10)"}
       shape:    {title: Shape,             nodes: [geom, geom-intersect, csg], note: "curves and surfaces; CSG quadrics sit beside NURBS"}
       brep:     {title: B-rep,             nodes: [topo-store, construct, boolean, imprint-merge, heal, tess], note: "the cell complex and the operations that edit it"}
       meaning:  {title: Colors and boundaries, nodes: [coloring, boundary-kind], note: "material colors on volumes; deck / response / interface on faces"}
@@ -71,7 +72,7 @@ stages:
     makes: "a mesh classified onto the model"
     groups:
       mesh-db:  {title: Mesh store, nodes: [mesh-store, classification, mesh-geometry], note: "classification is the bridge back to the model"}
-      driver:   {title: Driver,     nodes: [mesh-driver]}
+      driver:   {title: Driver,     nodes: [mesh-driver, scheme-auto, plan-explain], note: "auto strategies only choose schemes; their choices are recorded as explicit assignments (Q5)"}
       schemes2: {title: Curve and surface schemes, nodes: [scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri]}
       schemes3: {title: Volume schemes, nodes: [scheme-hex, scheme-tet, boundary-layer]}
       measure:  {title: Validity and quality metrics, nodes: [mesh-validity, quality], note: "what a valid mesh is, and the measuring lens; both usable as soon as a mesh exists"}
@@ -90,13 +91,14 @@ stages:
     makes: "a verdict: is this mesh acceptable?"
     groups:
       verdict: {title: Diagnostics, nodes: [diagnostics], note: "findings are located on the geometry and suggest next ops by name"}
+      geometry-check: {title: Geometry overlap check, nodes: [overlap-check], note: "samples points and rays; CSG cells must be disjoint (Q4)"}
 
   - id: enrich
     title: Enrich
     makes: "derived data for an accepted mesh"
     groups:
       hierarchy:    {title: Hierarchy,    nodes: [mesh-hierarchy], note: "coarse levels, instances, unfold"}
-      tracking:     {title: Tracking,     nodes: [tracking-structure], note: "what Monte Carlo walks"}
+      tracking:     {title: Tracking,     nodes: [tracking-structure, tracking-analytic, majorant-hierarchy, delta-tracking, csg-bridge], note: "what Monte Carlo walks; no cross sections inside (Q2)"}
       distribution: {title: Distribution, nodes: [partitioner]}
       fields:       {title: Fields,       nodes: [discretization]}
 
@@ -105,4 +107,6 @@ stages:
     makes: "files other codes read"
     groups:
       store:     {title: Native store, nodes: [ir-store]}
-      exporters: {title: Exporters,    nodes: [exporters]}
+      exporters: {title: Exporters,    nodes: [exporters, export-dagmc, export-gmsh, hdf5-io]}
+      handover:  {title: Transport handover, nodes: [tracking-file, rt-capi], note: "the transport code links sm-rt and opens the file through the C ABI (Q2)"}
+      verify:    {title: Verification, nodes: [rt-benchmark], note: "record-only benchmark; nothing depends on it"}

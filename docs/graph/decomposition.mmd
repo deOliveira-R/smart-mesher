@@ -8,3 +8,5 @@ graph BT
   sizing -->|decomposition-api| decomposition
   classification(["classification (mesh-db)"])
   classification -->|decomposition-api| decomposition
+  scheme_auto(["scheme-auto (meshing)"])
+  scheme_auto -->|decomposition-api: PieceShape hints outrank detection| decomposition
