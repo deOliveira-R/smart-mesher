@@ -158,7 +158,7 @@ Nothing else is renamed.
 spellings: `//` and `/* */` comments, the `FoamFile` header, `N(...)`, `N\n(\n...\n)`,
 `List<T> N(...)`, `N{v}`, nested `k(i ...)` faces, quoted patch names, the `boundary` dictionary,
 and both zone files. `format binary` and `faceCompactList` are `Unsupported`; patch types other
-than the five above (cyclic, processor, wedge, ...) are `Unsupported`. Syntax errors are
+than the six above (cyclic, processor, ...) are `Unsupported`. Syntax errors are
 `Parse{file, line, detail}`, consistency errors (counts, index ranges, negative labels,
 non-finite coordinates, a patch past the faces) are `Malformed`. The parser is iterative and
 declared counts never size an allocation: lists grow as tokens are read and the count is compared
@@ -189,7 +189,7 @@ decide mesh validity; that stays `sm_mesh_api::validate`, which the exporter nev
 `foam.set_skipped`, `foam.patch_overlap`, `foam.nonconformal_as_patch`,
 `foam.partition_cut_as_patch`, `foam.symmetry_not_planar`, `foam.deck_cyclic_not_emitted`,
 `foam.zone_both_sides`, `foam.high_order_dropped`, `foam.small_det_split`,
-`foam.small_det_remaining`, `foam.small_det_unsplit` (all degraded). One item per
+`foam.small_det_remaining`, `foam.small_det_unsplit`, `foam.small_det_2d_unsplit` (all degraded). One item per
 `(code, detail)`; the detail names the set or patch.
 
 ## 11. Small-determinant split (ruling INT-8)
@@ -222,7 +222,48 @@ an interior cube cell 1.
 * `FoamOptions::split_small_determinant(false)` disables it. Meshes with no flagged cell (for
   example hex or wedge meshes with three or more internal faces per cell) export byte for byte
   as without the pass.
-* One-layer hex or wedge meshes (for example `hex_block([n, n, 1])`, the usual 2D OpenFOAM setup)
-  have rank-2 internal normals, so checkMesh flags every cell and they are split into pyramids.
-  That breaks their use as a 2D case with `empty` patches; disable the split for such exports
-  (`FoamOptions::split_small_determinant(false)`). `sm_fem::export_files` has no switch for it yet.
+* 2D cases. OpenFOAM's `checkMesh` evaluates the determinant in the resolved directions only:
+  `checkGeometry.C` calls `mesh.checkCellDeterminant(true, &cells)`; the `polyMesh` override
+  (`polyMeshCheck.C`) passes `geometricD()` as `meshD` to `primitiveMeshTools::cellDeterminant`
+  (`primitiveMeshTools.C`). With `nDims` resolved directions: 3 (or 0) is the 3D rule above;
+  2 sets the knocked-out diagonal entry of the normalised area tensor to 1 before the
+  determinant (`areaTensor.zz() = 1` for a z-empty slab), so a cell with two orthogonal internal
+  faces is `1/8`; 1 gives every cell 1. `meshD` is `polyMesh::calcDirections`: every component
+  of the normalised sum of `cmptMag(Sf)` over `empty` patch faces above 1e-6 is knocked out
+  (`solutionD`); `geometricD` additionally knocks out the components of each `wedge` patch's
+  `centreNormal` (from the average unit face normal `n`, `sign(n_i) (max(|n_i|, 0.5) - 0.5)`,
+  normalised; `wedgePolyPatch::calcGeometry`). Patches without faces are ignored. We follow this
+  rule (`foam::geometric_directions`, `foam::cell_determinants`, which read the patch types of
+  the polyMesh), so a one-layer hex slab with `empty` front and back, or an axisymmetric wedge
+  mesh with `wedge` patches (`FoamPatchType::Empty` / `Wedge`, chosen with
+  `PatchSource::Explicit`), is not split and gets no `smeshCellMap`. Without such patches a
+  one-layer hex or wedge mesh (for example `hex_block([n, n, 1])`) has rank-2 internal normals,
+  checkMesh flags every cell, and it is split as above. The split never runs on a 2D case
+  (fewer than three resolved directions in `foam::geometric_directions`): cells that still
+  fall below the threshold there (a cell with a single internal face, such as a corner triangle
+  of an extruded tri-prism slab, or a 1-cell-wide slab) are kept unsplit and reported as
+  `foam.small_det_2d_unsplit` (count = flagged cells). Both choices fail one checkMesh check, and the
+  exporter keeps the exact unsplit cells. Unsplit, checkMesh 2506 (`-allGeometry -allTopology`)
+  on a 2x2 tri-prism slab (empty front/back) reports `***Cells with small determinant (< 0.001)
+  found, number of cells: 2` and `Failed 1 mesh checks.`. Split, the centroid split of a 2D cell
+  adds edges that are not aligned with or perpendicular to the non-empty directions, which the
+  same checkMesh fails (`Number of edges not aligned with or perpendicular to non-empty
+  directions`; 12 on a 2x2 tri-prism slab with 2 corner triangles, 8 -> 16 cells).
+  `checkMesh` (opencfd/openfoam-default:2506) on a 4x4x1 empty slab: `Mesh OK`, determinant
+  minimum 0.125 average 0.28125; on a 4-cell axisymmetric wedge mesh (2.5 degree half angle,
+  prism row on the axis plus a hex row): `Mesh OK`, minimum 0.0511415134648249, average
+  0.178152764506552, 2 geometric directions (pinned in `tests/foam_2d.rs`).
+  Degenerate cases differing from OpenFOAM's `polyMesh::calcDirections`: (a) a zero wedge
+  vector sum makes OpenFOAM reset `geometricD` to all 1, whereas we keep the empty knockouts;
+  (b) with every direction knocked out OpenFOAM's `cellDeterminant` uses the 3D rule, whereas
+  `cell_determinants` does too but the split treats the mesh as 2D and skips it.
+* The split can be switched off: `FoamOptions::split_small_determinant(false)`, or
+  `sm_fem::ExportRequest::split_small_determinant = false` for `export_files` (default true).
+  The `session.export` wire request and the CLI do not carry the switch yet, nor a way to name
+  `empty` / `wedge` patches.
+* Open follow-ups. A 2D-aware split of flagged 2D cells (split the 2D footprint and extrude the
+  pieces, so every new edge lies in-plane or along the empty direction) would pass both
+  checkMesh checks. The wire `session.export` request and the CLI carry neither the split
+  switch nor a way to name `empty` / `wedge` patches, and `sm_fem::export_files` never emits
+  them, so through sm-fem only the off switch is reachable; the 2D rule is reachable only via
+  `FoamOptions` with `PatchSource::Explicit`.

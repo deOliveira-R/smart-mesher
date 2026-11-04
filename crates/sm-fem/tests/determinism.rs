@@ -63,10 +63,12 @@ fn observe(rig: &Rig, mesh: Option<sm_core::EntityId>) -> Observed {
     let st = rig.state();
     let mut smsh = Vec::new();
     let mut vtu = Vec::new();
-    let req = |format| ExportRequest {
-        format,
-        mesh,
-        provenance: Some("00".repeat(32)),
+    let req = |format| {
+        let r = ExportRequest::new(format).provenance("00".repeat(32));
+        match mesh {
+            Some(id) => r.mesh(id),
+            None => r,
+        }
     };
     let rep = export(st, &req(ExportFormat::Smsh), &mut smsh).expect("smsh");
     export(st, &req(ExportFormat::Vtu), &mut vtu).expect("vtu");

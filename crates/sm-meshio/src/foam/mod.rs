@@ -23,7 +23,7 @@ mod write;
 pub use build::build_polymesh;
 pub use check::{FoamIssue, check_polymesh};
 pub use parse::{parse_polymesh, read_polymesh_dir};
-pub use split::{CELL_MAP_FILE, SMALL_DETERMINANT, cell_determinants};
+pub use split::{CELL_MAP_FILE, SMALL_DETERMINANT, cell_determinants, geometric_directions};
 pub use write::{FoamFile, write_polymesh};
 
 use crate::report::LossReport;
@@ -119,10 +119,13 @@ pub enum FoamPatchType {
     Symmetry,
     /// An `empty` patch (user-selected only; never inferred).
     Empty,
+    /// A `wedge` patch (axisymmetric case; user-selected only, two planar patches symmetric
+    /// about a coordinate plane).
+    Wedge,
 }
 
 impl FoamPatchType {
-    /// The OpenFOAM type word: `patch`, `wall`, `symmetryPlane`, `symmetry`, `empty`.
+    /// The OpenFOAM type word: `patch`, `wall`, `symmetryPlane`, `symmetry`, `empty`, `wedge`.
     pub const fn as_str(self) -> &'static str {
         match self {
             FoamPatchType::Patch => "patch",
@@ -130,6 +133,7 @@ impl FoamPatchType {
             FoamPatchType::SymmetryPlane => "symmetryPlane",
             FoamPatchType::Symmetry => "symmetry",
             FoamPatchType::Empty => "empty",
+            FoamPatchType::Wedge => "wedge",
         }
     }
 
@@ -141,6 +145,7 @@ impl FoamPatchType {
             "symmetryPlane" => FoamPatchType::SymmetryPlane,
             "symmetry" => FoamPatchType::Symmetry,
             "empty" => FoamPatchType::Empty,
+            "wedge" => FoamPatchType::Wedge,
             _ => return None,
         })
     }
