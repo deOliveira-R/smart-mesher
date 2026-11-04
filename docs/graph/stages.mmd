@@ -19,11 +19,12 @@ graph LR
     g_schemes2["Curve and surface schemes<br/><small>scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri</small>"]
     g_schemes3["Volume schemes<br/><small>scheme-hex, scheme-tet, boundary-layer</small>"]
     g_measure["Validity and quality metrics<br/><small>mesh-validity, quality</small>"]
+    g_interfaces["Interfaces<br/><small>interface-detect, face-intersect</small>"]
   end
   subgraph reshape["5. Reshape: the mesh the analysis wants (polyhedral, smoothed, conformal)"]
     g_convert["Convert<br/><small>scheme-convert, scheme-poly</small>"]
     g_improve["Improve<br/><small>smooth, modify</small>"]
-    g_interfaces["Interfaces<br/><small>interface-detect, face-intersect, conformize</small>"]
+    g_conformize["Conformize<br/><small>conformize</small>"]
   end
   subgraph check["6. Check: a verdict: is this mesh acceptable?"]
     g_verdict["Diagnostics<br/><small>diagnostics</small>"]
@@ -72,6 +73,7 @@ graph LR
   g_improve --> g_meaning
   g_interfaces --> g_mesh_db
   g_interfaces --> g_meaning
+  g_conformize --> g_interfaces
   g_tracking --> g_hierarchy
   g_tracking --> g_shape
   g_tracking --> g_meaning

@@ -75,6 +75,7 @@ stages:
       schemes2: {title: Curve and surface schemes, nodes: [scheme-curve, scheme-quad-structured, scheme-quad-unstructured, scheme-tri]}
       schemes3: {title: Volume schemes, nodes: [scheme-hex, scheme-tet, boundary-layer]}
       measure:  {title: Validity and quality metrics, nodes: [mesh-validity, quality], note: "what a valid mesh is, and the measuring lens; both usable as soon as a mesh exists"}
+      interfaces: {title: Interfaces, nodes: [interface-detect, face-intersect], note: "read-only: unmatched faces and overlap tables; may be built lazily and cached by content"}
 
   - id: reshape
     title: Reshape
@@ -82,7 +83,7 @@ stages:
     groups:
       convert:    {title: Convert,    nodes: [scheme-convert, scheme-poly], note: "tet to polyhedral dual lives here"}
       improve:    {title: Improve,    nodes: [smooth, modify]}
-      interfaces: {title: Interfaces, nodes: [interface-detect, face-intersect, conformize]}
+      conformize: {title: Conformize, nodes: [conformize], note: "the edit: replace coarse faces by fine faces; detection and overlaps are read in Mesh"}
 
   - id: check
     title: Check

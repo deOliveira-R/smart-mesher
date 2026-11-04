@@ -122,7 +122,7 @@ nodes:
   scheme-tri:        {domain: meshing, summary: "Delaunay, advancing front, primitives"}
   scheme-hex:        {domain: meshing, summary: "volume map, submap, sweep, multisweep, copy"}
   scheme-tet:        {domain: meshing, summary: "Delaunay + boundary recovery + optimization"}
-  scheme-poly:       {domain: meshing, summary: "polyhedral: duals, agglomeration, polyhedron scheme"}
+  scheme-poly:       {domain: meshing, summary: "polyhedral: dual of a tet mesh plus small-cell agglomeration (sm-poly); a direct polyhedron scheme is planned and will be its own Mesh-stage node"}
   scheme-convert:    {domain: meshing, summary: "THex, QTri, HTet, TQuad, degree elevation"}
   boundary-layer:    {domain: meshing, summary: "inflation layers on response boundaries (never on deck boundaries)"}
   # mesh-ops
