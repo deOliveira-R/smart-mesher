@@ -6,13 +6,13 @@
 //! triangles) points out of the volume and the triangles are kept; `Side::Right` flips them.
 //! Void shells use the same rule, so their triangles point into the cavity.
 
-use crate::{SizeSpec, SurfaceInput, TetError, TetMesh, TetOptions, tetrahedralize};
+use crate::{QualityDiagnostic, QualityMetric, SizeSpec, SuggestedFix, SurfaceInput, TetError, TetMesh, TetOptions, tetrahedralize};
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_mesh_api::{CellShape, Param};
 use sm_scheme_api::{
     Applicability, Caps, ElemShape, Firmness, GenCtx, GenerateFailure, NodeKey, Params, Patch, PatchBuilder, PlanCtx,
-    Requirements, Scheme, SchemeDim, SchemeRegistry, SizeField, Target,
+    Requirements, Scheme, SchemeDim, SchemeNote, SchemeRegistry, SizeField, Target,
 };
 use sm_topo_api::{CellFlags, Dim, Incidence, Side, TopologyView, TopologyViewExt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +37,15 @@ pub struct TetParams {
     /// Size gradation (default 1.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradation: Option<f64>,
+    /// Reporting floor for the smallest tet dihedral angle in degrees (default
+    /// [`MIN_DIHEDRAL_DEG`](crate::MIN_DIHEDRAL_DEG), at most 70.5): tets below it become
+    /// located scheme notes. Does not change the mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_dihedral_deg: Option<f64>,
+    /// Reporting floor for the tet mean ratio (default
+    /// [`MIN_MEAN_RATIO`](crate::MIN_MEAN_RATIO), at most 1). Does not change the mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_mean_ratio: Option<f64>,
 }
 
 impl TetParams {
@@ -62,6 +71,14 @@ impl TetParams {
         if let Some(g) = p.gradation
             && !(g.is_finite() && g >= 1.0) {
                 return Err(format!("tetmesh params: gradation = {g} must be finite and >= 1"));
+            }
+        if let Some(d) = p.min_dihedral_deg
+            && !(d.is_finite() && (0.0..=70.5).contains(&d)) {
+                return Err(format!("tetmesh params: min_dihedral_deg = {d} must be in 0..=70.5"));
+            }
+        if let Some(m) = p.min_mean_ratio
+            && !(m.is_finite() && (0.0..=1.0).contains(&m)) {
+                return Err(format!("tetmesh params: min_mean_ratio = {m} must be in 0..=1"));
             }
         Ok(p)
     }
@@ -242,6 +259,12 @@ impl Scheme for TetVolume {
         if let Some(g) = p.gradation {
             opts.gradation = g;
         }
+        if let Some(d) = p.min_dihedral_deg {
+            opts.floor_dihedral_deg = d;
+        }
+        if let Some(m) = p.min_mean_ratio {
+            opts.floor_mean_ratio = m;
+        }
         if let Some(c) = const_size {
             // The default Steiner budget scales with the boundary; a constant size that is fine
             // against a coarse boundary needs room for the interior points (about one per six
@@ -253,7 +276,7 @@ impl Scheme for TetVolume {
             }
         }
         let mesh = tetrahedralize(&input, &opts).map_err(|e| explain(&e, target, &input, &tri_keys, &tri_face, &keys))?;
-        Ok(build_patch(target, owner, &mesh, &keys))
+        Ok(build_patch(target, owner, &mesh, &keys, &tri_face))
     }
 }
 
@@ -321,7 +344,27 @@ fn locate(e: &TetError, input: &SurfaceInput, tri_keys: &[[NodeKey; 3]], key_of:
 }
 
 /// Emit the patch: Steiner points as nodes owned by the piece, boundary points as references.
-fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey]) -> Patch {
+/// A core quality diagnostic as a scheme note: the faces owning the nearby input triangles
+/// (the volume when the tet is deep inside), the metric, and the suggested fix in words.
+fn note_of(d: &QualityDiagnostic, owner: EntityId, tri_face: &[EntityId]) -> SchemeNote {
+    let mut entities: Vec<EntityId> = d.triangles.iter().filter_map(|&t| tri_face.get(t as usize).copied()).collect();
+    entities.sort_unstable();
+    entities.dedup();
+    if entities.is_empty() {
+        entities.push(owner);
+    }
+    let metric = match d.metric {
+        QualityMetric::MinDihedral => "min_dihedral",
+        QualityMetric::MeanRatio => "mean_ratio",
+    };
+    let suggestion = match d.fix {
+        SuggestedFix::RefineSizeNear { h } => format!("refine the size field near this point to about {h:.6e}"),
+        SuggestedFix::RefineInputSurface { h } => format!("remesh the listed faces finer (about {h:.6e}) or smooth the surface there"),
+    };
+    SchemeNote { position: Point3::new(d.position[0], d.position[1], d.position[2]), entities, metric: metric.to_owned(), value: d.value, threshold: d.threshold, suggestion }
+}
+
+fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey], tri_face: &[EntityId]) -> Patch {
     let mut pb = PatchBuilder::new(target);
     let mut local: Vec<u32> = Vec::with_capacity(mesh.points.len());
     for (i, p) in mesh.points.iter().enumerate() {
@@ -334,6 +377,9 @@ fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey]
     }
     for t in &mesh.tets {
         pb.push(ElemShape::Cell(CellShape::Tet), &t.map(|i| local[i as usize]));
+    }
+    for d in &mesh.stats.quality_diagnostics {
+        pb.note(note_of(d, owner, tri_face));
     }
     pb.finish()
 }

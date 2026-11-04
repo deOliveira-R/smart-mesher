@@ -165,10 +165,13 @@ impl TypedOp for MeshRun {
             .map_err(failed)?;
         ctx.step(2, 3, "committing")?;
 
+        // INT-7: the schemes' located diagnostics ride on the (unhashed) plan record.
+        let mut plan = out.plan;
+        plan.notes = out.patches.notes();
         let entry = MeshEntry::new(
             Box::new(out.finished.mesh),
             targets,
-            Some(out.plan),
+            Some(plan),
             model.hash_quanta(),
         );
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")

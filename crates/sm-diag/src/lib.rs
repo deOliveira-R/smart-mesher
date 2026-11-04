@@ -15,6 +15,7 @@ mod common;
 mod error;
 mod flag;
 mod locate;
+mod notes;
 mod quality;
 mod suggest;
 mod validate;
@@ -28,6 +29,7 @@ pub use common::SCHEMA_VERSION;
 pub use error::DiagError;
 pub use flag::{Level, MAX_GROW, MeshFlagCells, flagged_cells, grow_cells};
 pub use locate::{EntityRef, NEAR_CAP};
+pub use notes::{MAX_SCHEME_NOTES, SchemeFinding, scheme_findings};
 pub use quality::{
     Cluster, HistogramOut, MAX_CLUSTERS, MAX_WORST, MeshQuality, MetricReport, ProfileName, QualityOptions, QualityReport, SummaryOut, ThresholdOut, ValiditySummary,
     Verdict, WorstEntry, quality_report,
