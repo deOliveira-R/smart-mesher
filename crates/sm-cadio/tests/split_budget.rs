@@ -134,7 +134,7 @@ fn stack(sides: usize, rows: usize, k: usize, seams: &[usize]) -> (Vec<u8>, f64,
     (w.s.into_bytes(), vol, (seams.len() + 1) * m + seams.len())
 }
 
-/// The tests of this binary run one at a time: two of them compare wall times.
+/// The tests of this binary run one at a time: two of them compare work counters.
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -145,23 +145,23 @@ fn env(name: &str, default: usize) -> usize {
 }
 
 /// Decode `prism(sides, rows, k)`; panics unless it reads (the closed face split into four
-/// pieces) or is refused with `DecodeBudget`. Returns the decode time in seconds, the model
+/// pieces) or is refused with `DecodeBudget`. Returns the work done, the model
 /// when it read, and the exact volume.
-fn run(sides: usize, rows: usize, k: usize) -> (f64, Option<sm_cadio::BrepModel>, f64) {
+fn run(sides: usize, rows: usize, k: usize) -> (sm_cadio::Work, Option<sm_cadio::BrepModel>, f64) {
     let (bytes, vol, edges) = prism(sides, rows, k);
-    let t = std::time::Instant::now();
+    let w0 = sm_cadio::work();
     let res = read_step(&bytes, &ReadOptions::default());
-    let dt = t.elapsed().as_secs_f64();
+    let dt = sm_cadio::work().since(w0);
     match res {
         Ok(m) => {
             let split = m.notes.iter().any(|n| n.code == NoteCode::SplitClosedFace && n.severity == NoteSeverity::Info);
-            eprintln!("prism sides={sides} rows={rows} k={k}: {} bytes, {edges} edges: read in {dt:.3} s, {} faces, split={split}", bytes.len(), m.solids[0].faces.len());
+            eprintln!("prism sides={sides} rows={rows} k={k}: {} bytes, {edges} edges: read, {dt:?}, {} faces, split={split}", bytes.len(), m.solids[0].faces.len());
             assert!(split, "the closed face was not split: {:?}", m.notes);
             assert_eq!(m.solids[0].faces.len(), 2 + 4);
             (dt, Some(m), vol)
         }
         Err(e) => {
-            eprintln!("prism sides={sides} rows={rows} k={k}: {} bytes, {edges} edges: refused in {dt:.3} s: {e}", bytes.len());
+            eprintln!("prism sides={sides} rows={rows} k={k}: {} bytes, {edges} edges: refused, {dt:?}: {e}", bytes.len());
             assert!(matches!(e, StepError::DecodeBudget { .. }), "{e:?}");
             (dt, None, vol)
         }
@@ -191,13 +191,12 @@ fn a_small_closed_bspline_prism_reads_splits_and_measures() {
 fn a_large_closed_bspline_face_with_many_edges_decodes_in_linear_time() {
     let _serial = serial();
     let (sides, rows, k) = (env("SPLIT_SIDES", 199), env("SPLIT_ROWS", 200), env("SPLIT_K", 3));
-    // Minimum of three repeats per size: a single wall-time sample is noisy on a loaded machine.
-    let best = |s: usize, r: usize| (0..3).map(|_| run(s, r, k).0).fold(f64::INFINITY, f64::min);
-    let (t_half, t_full) = (best(sides / 2, rows / 2), best(sides, rows));
-    let limit = if cfg!(debug_assertions) { 60.0 } else { 10.0 };
-    assert!(t_full < limit, "{t_full:.3} s over {limit} s");
-    // Linear work: 2x the edges, 4x the net and the file. `E nu nv` work gives 8x.
-    assert!(t_full < 6.0 * t_half.max(0.05), "full {t_full:.3} s vs half {t_half:.3} s");
+    let (w_half, w_full) = (run(sides / 2, rows / 2, k).0, run(sides, rows, k).0);
+    // Global (grid search) projections are capped per face, however many edges bound it.
+    assert!(w_full.global_projections <= 16, "{w_full:?}");
+    // Linear work: 2x the edges is about 2x the Newton runs (`E nu nv` work would show up as
+    // far more runs or global searches).
+    assert!(w_full.newton_runs <= 3 * w_half.newton_runs.max(100), "full {w_full:?} vs half {w_half:?}");
 }
 
 /// Plain prisms whose generators pass through boundary vertices (polygon corners, and the shared
@@ -251,7 +250,7 @@ fn two_split_faces_sharing_cut_edges_both_split() {
 }
 
 /// Many split faces in one solid: the split is one pass with one closure check, so doubling
-/// the layers about doubles the time (before round 4 every split cloned and checked the whole
+/// the layers about doubles the closure-check work (before round 4 every split cloned and checked the whole
 /// solid). `SPLIT_LAYERS` overrides the size.
 #[test]
 fn many_split_faces_in_one_solid_cost_linear_time() {
@@ -260,13 +259,14 @@ fn many_split_faces_in_one_solid_cost_linear_time() {
     let time = |n: usize| {
         let seams: Vec<usize> = (0..n).map(|l| 2 * (l % 2)).collect();
         let (bytes, _, _) = stack(5, 4, 3, &seams);
-        let t = std::time::Instant::now();
+        let w0 = sm_cadio::work();
         let m = read_step(&bytes, &ReadOptions::default()).expect("reads");
-        let dt = t.elapsed().as_secs_f64();
+        let w = sm_cadio::work().since(w0);
         assert_eq!(m.solids[0].faces.len(), 2 + 4 * n);
-        eprintln!("{n} layers: {} bytes, read in {dt:.3} s", bytes.len());
-        dt
+        eprintln!("{n} layers: {} bytes, {w:?}", bytes.len());
+        w.closure_coedges
     };
     let (half, full) = (time(layers / 2), time(layers));
-    assert!(full < 4.0 * half.max(0.05), "full {full:.3} s vs half {half:.3} s");
+    // Quadratic work (one whole-solid check per split) would be 4x per doubling.
+    assert!(full <= 3 * half.max(1), "full {full} vs half {half} coedge visits");
 }

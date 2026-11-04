@@ -149,6 +149,7 @@ impl Walk {
 /// revisit, whatever the fan-out); more than `walk.limit` placements, at any level, is
 /// [`StepError::TooManyInstances`], so a small file cannot make the walk allocate without bound.
 pub(crate) fn instances(file: &StepFile, asm: &Assembly, rep: u64, scale_of: &dyn Fn(u64) -> f64, walk: &mut Walk) -> Result<Vec<Transform>, StepError> {
+    crate::work::add(&crate::work::WALK_STEPS, 1);
     if walk.path.contains(&rep) {
         return Err(StepError::Cycle { id: rep });
     }

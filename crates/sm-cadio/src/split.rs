@@ -294,6 +294,7 @@ fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> 
 
 /// One Gauss-Newton run: the projection when it lands within `tol`, and where the run ended.
 fn newton(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> (Option<Uv>, Uv) {
+    crate::work::add(&crate::work::NEWTON_RUNS, 1);
     let dom = surf.domain();
     let (mut u, mut v) = (uv0.u, uv0.v);
     for _ in 0..50 {
@@ -358,6 +359,7 @@ impl Proj<'_> {
             return Err("too many boundary points needed a global projection".into());
         }
         self.global_left -= 1;
+        crate::work::add(&crate::work::GLOBAL_PROJECTIONS, 1);
         // No seed: a seed on the far side of a kink would trap the search in a local minimum.
         let uv = self.surf.project(p, None).map_err(|e| e.to_string())?.uv;
         // A global result can stall on a kink line; polish it from either side.

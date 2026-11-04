@@ -81,9 +81,15 @@ fn samples(e: &Edge, curve: &dyn ParametricCurve) -> [Point3; 5] {
 /// sample, which is the same point in either direction; a match must lie in one of the cells
 /// within `tol` (3 per axis, a ulp-padded span), so many distinct edges between the same two vertices do not compare all pairs.
 pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(usize, Sense)> {
+    weld_edges_counted(edges, curves, tol).0
+}
+
+/// [`weld_edges`] plus the number of candidate edge pairs compared (a work counter).
+pub(crate) fn weld_edges_counted(edges: &[Edge], curves: &[CurveRec], tol: f64) -> (Vec<(usize, Sense)>, u64) {
+    let mut compared = 0u64;
     let mut out: Vec<(usize, Sense)> = (0..edges.len()).map(|i| (i, Sense::Forward)).collect();
     if tol.is_nan() || tol <= 0.0 {
-        return out;
+        return (out, 0);
     }
     let smp: Vec<[Point3; 5]> = edges.iter().map(|e| samples(e, curves[e.curve].def.as_curve())).collect();
     let mut kept: BTreeMap<(usize, usize, i64, i64, i64), Vec<usize>> = BTreeMap::new();
@@ -105,6 +111,7 @@ pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(
                         if found.is_some_and(|f| f.0 < k) {
                             break;
                         }
+                        compared += 1;
                         // Same direction when the start vertices agree (closed edges: whichever samples match).
                         let same_dir = e.start == edges[k].start;
                         let hit = if closed {
@@ -133,7 +140,7 @@ pub(crate) fn weld_edges(edges: &[Edge], curves: &[CurveRec], tol: f64) -> Vec<(
             None => kept.entry((a, b, c.0, c.1, c.2)).or_default().push(i),
         }
     }
-    out
+    (out, compared)
 }
 
 #[cfg(test)]
@@ -272,10 +279,11 @@ mod tests {
         let mut curves = Vec::new();
         let n = 20_000;
         let edges: Vec<Edge> = (0..n).map(|k| bowed(&mut curves, a, b, p(0.5, 0.01 * k as f64, 0.0), false)).collect();
-        let t = std::time::Instant::now();
-        let got = weld_edges(&edges, &curves, 1e-6);
-        // A full scan compares 2e8 pairs (minutes in a debug build).
-        assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+        let (got, compared) = weld_edges_counted(&edges, &curves, 1e-6);
+        // A full scan compares n(n-1)/2 = 2e8 pairs; the cell index compares O(n).
+        assert!(compared < 20 * n as u64, "{compared} comparisons for {n} edges");
+        let (_, half) = weld_edges_counted(&edges[..n / 2], &curves, 1e-6);
+        assert!(compared <= 3 * half.max(1), "{compared} vs {half} at half size");
         assert!(got.iter().enumerate().all(|(i, g)| g.0 == i));
     }
 }

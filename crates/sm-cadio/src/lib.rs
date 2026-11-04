@@ -29,6 +29,7 @@ mod source;
 mod split;
 mod units;
 mod weld;
+pub mod work;
 mod write;
 
 pub use decode::read_step;
@@ -42,6 +43,7 @@ pub use query::StepInfoQuery;
 pub use realize::{Inverted, RealizeOptions, Realized, realize};
 pub use source::{InlineSource, MAX_INLINE_BYTES, Sha256Source, Source};
 pub use weld::weld_vertices;
+pub use work::{Work, work};
 pub use write::{Loss, StepSchema, WriteOptions, WriteReport, export_step, write_step};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
