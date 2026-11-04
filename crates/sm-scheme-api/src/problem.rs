@@ -32,6 +32,15 @@ pub enum Origin {
         /// The target it was planning.
         target: Target,
     },
+    /// A scheme's count preference ([`IntervalSink::prefer`]): a goal that replaces the other
+    /// goals of its class without being a soft count. A solver that does not know this origin
+    /// treats the record as a plain goal.
+    Preference {
+        /// The scheme.
+        scheme: SchemeName,
+        /// The target it was planning.
+        target: Target,
+    },
     /// A deck boundary of the model (`sm-model-api`).
     Deck {
         /// The boundary record.
@@ -1022,6 +1031,30 @@ impl<'a> IntervalSink<'a> {
         );
         self.problem
             .push_interval(self.origin.clone(), IntervalConstraint::Goal { edge, goal })
+    }
+
+    /// State the count `edge` should have, derived by the scheme from sizes (a bias or stretch
+    /// scheme computing `n` from a first size and a growth ratio).
+    ///
+    /// Unlike [`goal`](Self::goal), which is averaged with the edge's sizing goal and `Default`
+    /// counts, a preference **replaces** those goals on its equal-count class (several
+    /// preferences average), and unlike `fix(.., Firmness::Soft)` it is not a soft count: a
+    /// user's soft or hard count still wins, and ranges and linear rows still bind the rounded
+    /// value. Pass a finite, positive value.
+    pub fn prefer(&mut self, edge: EntityId, goal: f64) -> ConstraintId {
+        debug_assert!(
+            goal.is_finite() && goal > 0.0,
+            "interval preference must be finite and positive, got {goal}"
+        );
+        let origin = match &self.origin {
+            Origin::Scheme { scheme, target } => Origin::Preference {
+                scheme: scheme.clone(),
+                target: *target,
+            },
+            other => other.clone(),
+        };
+        self.problem
+            .push_interval(origin, IntervalConstraint::Goal { edge, goal })
     }
 
     /// Bound a count.

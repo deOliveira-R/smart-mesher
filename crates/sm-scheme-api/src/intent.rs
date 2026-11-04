@@ -194,6 +194,33 @@ impl BoundaryLayerIntent {
     }
 }
 
+/// Command order of an interval request: a counter stamped by [`MeshIntent::set_intervals`].
+/// Not part of the serialized form, of equality or of any hash: it only breaks ties between
+/// requests of equal firmness in the planner's [`RequestCascade::Firmness`] rule, and reads as
+/// "unordered" (0) after a round trip through serde.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandSeq(pub u64);
+
+impl PartialEq for CommandSeq {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// How the planner resolves interval requests that reach the same edge from an edge, a face
+/// and a volume (decision 9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum RequestCascade {
+    /// An edge request beats a face request, which beats a volume request, whatever their
+    /// firmness; the lowest id wins within a level (the original rule).
+    #[default]
+    Level,
+    /// Cubit's rule: the firmer request wins; at equal firmness the latest command wins
+    /// ([`CommandSeq`]); unordered ties fall back to the [`Level`](Self::Level) rule.
+    Firmness,
+}
+
 /// Everything asked for one entity (edge, face, volume or piece).
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -208,6 +235,10 @@ pub struct EntityIntent {
     /// Interval request (curves; on a face or volume it applies to every edge of it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intervals: Option<Firm<IntervalRequest>>,
+    /// Command order of `intervals` (see [`CommandSeq`]); stamped by `set_intervals`.
+    #[serde(skip)]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub intervals_seq: CommandSeq,
     /// Boundary layer request (faces).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary_layer: Option<BoundaryLayerIntent>,
@@ -475,8 +506,20 @@ impl MeshIntent {
     }
 
     /// Request intervals on `id`.
+    ///
+    /// Stamps the command order that [`RequestCascade::Firmness`] uses to let the latest
+    /// command win among equally firm requests.
     pub fn set_intervals(&mut self, id: EntityId, req: Firm<IntervalRequest>) {
-        self.entity_mut(id).intervals = Some(req);
+        let seq = self
+            .entities
+            .values()
+            .map(|e| e.intervals_seq.0)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let e = self.entity_mut(id);
+        e.intervals = Some(req);
+        e.intervals_seq = CommandSeq(seq);
     }
 
     /// Sort corner overrides, group members and transform targets (later entries for the same
