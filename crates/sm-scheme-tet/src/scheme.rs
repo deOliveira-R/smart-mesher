@@ -325,7 +325,8 @@ fn explain(e: &TetError, target: Target, input: &SurfaceInput, tri_keys: &[[Node
 /// the offending triangle, if any.
 fn locate(e: &TetError, input: &SurfaceInput, tri_keys: &[[NodeKey; 3]], key_of: &dyn Fn(u32) -> NodeKey) -> (Vec<NodeKey>, Option<u32>) {
     let tri = match e {
-        TetError::InvertedShell { tri } | TetError::DegenerateTri { tri } | TetError::BadIndex { tri, .. } | TetError::RecoveryFailed { tri, .. } => Some(*tri),
+        TetError::InvertedShell { tri } | TetError::DegenerateTri { tri } | TetError::BadIndex { tri, .. } => Some(*tri),
+        TetError::RecoveryFailed { tri, .. } => *tri,
         TetError::SelfIntersection { tri_a, .. } => Some(*tri_a),
         _ => None,
     };
@@ -397,7 +398,7 @@ mod tests {
         let input = SurfaceInput { points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], tris: vec![[0, 1, 2], [0, 3, 1]] };
         let tri_keys = vec![[keys[0], keys[1], keys[2]], [keys[0], keys[3], keys[1]]];
         let tri_face = vec![face, face];
-        let e = TetError::RecoveryFailed { tri: 1, edge: Some([0, 3]), reason: "forced".into() };
+        let e = TetError::RecoveryFailed { tri: Some(1), edge: Some([0, 3]), reason: "forced".into() };
         let g = explain(&e, Target::Volume(vol), &input, &tri_keys, &tri_face, &keys);
         assert!(g.reason.contains("TopoFace#12"), "{}", g.reason);
         assert!(g.reason.contains("refine intervals on the curves of TopoFace#12"), "{}", g.reason);

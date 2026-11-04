@@ -204,6 +204,22 @@ fn tiled_relief_work_per_triangle_is_bounded() {
     assert!(per_tri[1].1 <= 1.5 * per_tri[0].1 + 0.05, "flips per triangle {per_tri:?}");
 }
 
+/// The 64 x 64 tiled relief (64 hard patches): complete boundary recovery tiles every triangle
+/// at once, with no whole-build restart (a restart flooded the triangulation with hint points,
+/// 2 643 temporary boundary points and 28 s at the time). Work counters, not wall clock; release
+/// builds only (debug takes hours).
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release only")]
+fn tiled_relief_n64_recovers_without_restarts() {
+    let inp = tiled_cube(64, 8, 2, 0.9);
+    let m = mesh(&inp, "tiled n64");
+    let st = &m.stats;
+    eprintln!("tiled n64: boundary Steiner {}, restarts {}", st.n_boundary_steiner, st.n_recovery_restarts);
+    assert_eq!((st.n_recovery_restarts, st.n_boundary_steiner_discarded), (0, 0));
+    assert!(st.n_boundary_steiner > 0 && st.n_boundary_steiner < 1000, "{}", st.n_boundary_steiner);
+    assert_eq!(st.n_lookup_rebuilds, 0);
+}
+
 /// Release timings of tiled relief (record only): `n = 16 .. 64`.
 #[test]
 #[ignore = "performance record"]
