@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, Weak};
 
 use sm_cadio::{CadioPlugin, DirInputStore, InputRef, InputStore, MemoryInputStore, StepInputs};
 use sm_engine::WorkspaceBuilder;
@@ -112,19 +112,33 @@ impl InputStore for ProjectInputs {
 pub struct InputsHandle(pub Arc<ProjectInputs>);
 
 thread_local! {
-    /// The store of the builder most recently assembled on this thread, awaiting its project.
-    static PENDING: RefCell<Option<Arc<ProjectInputs>>> = const { RefCell::new(None) };
+    /// The stores of the builders assembled on this thread and not yet consumed by a server, each
+    /// awaiting its project. Weak, so a dropped builder leaves nothing behind.
+    static PENDING: RefCell<Vec<Weak<ProjectInputs>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Forget any store awaiting a project (called before building a builder to open).
+/// Forget every store awaiting a project (called before building a builder to open).
 pub(crate) fn clear_pending_inputs() {
-    PENDING.with(|p| p.borrow_mut().take());
+    PENDING.with(|p| p.borrow_mut().clear());
 }
 
-/// Bind the store of the builder just assembled on this thread to `project`, if there is one.
-pub(crate) fn bind_pending_inputs(project: &Path) {
-    if let Some(store) = PENDING.with(|p| p.borrow_mut().take()) {
-        store.bind(project);
+/// Bind every live pending store of this thread to `project` for a replay and return them. The
+/// builder being opened is not identifiable from outside the engine, so its store is among them;
+/// the caller must [`release_pending_inputs`] afterwards so the others stay unbound.
+pub(crate) fn bind_pending_inputs(project: &Path) -> Vec<Arc<ProjectInputs>> {
+    let stores: Vec<_> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut())).iter().filter_map(Weak::upgrade).collect();
+    for s in &stores {
+        s.bind(project);
+    }
+    stores
+}
+
+/// Unbind the stores returned by [`bind_pending_inputs`], except `keep` (the opened workspace's own).
+pub(crate) fn release_pending_inputs(bound: &[Arc<ProjectInputs>], keep: Option<&Arc<ProjectInputs>>) {
+    for s in bound {
+        if !keep.is_some_and(|k| Arc::ptr_eq(k, s)) {
+            s.unbind();
+        }
     }
 }
 
@@ -163,7 +177,11 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
             sm_sizing::auto_size(view, targets, factor).map_err(|e| e.to_string())
         }));
     let inputs = Arc::new(ProjectInputs::new());
-    PENDING.with(|p| *p.borrow_mut() = Some(inputs.clone()));
+    PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        p.retain(|w| w.strong_count() > 0);
+        p.push(Arc::downgrade(&inputs));
+    });
     let names = op_names(&core);
     let services = Services::new()
         .with_versioned("mesher", 1, mesher)

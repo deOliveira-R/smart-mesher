@@ -313,3 +313,26 @@ fn two_builders_open_then_memory_server_stages_in_memory() {
     assert_eq!(mem.stage_input(b"hello").expect("stage").bytes, 5);
     assert!(inputs_empty(&proj), "the in-memory server wrote into projA/inputs");
 }
+
+#[test]
+fn open_replays_with_its_own_store_when_a_newer_builder_exists() {
+    let dir = TempDir::new("w3openown");
+    let proj = dir.path().join("proj");
+    let mut s = Server::create(std_builder(), &proj, "proj").expect("create");
+    let staged = s.stage_input(sm_testkit::w3a::STEP).expect("stage");
+    apply(&mut s, "model.import_step", json!({"source": {"sha256": staged.sha256}}));
+    let h = hash(&mut s);
+    call(&mut s, Request::Save);
+    drop(s);
+    let b1 = std_builder();
+    let b2 = standard();
+    // b1 is not the most recent builder: its own store must still serve the replay.
+    let mut opened = Server::open(b1, &proj).expect("open replays the STEP import");
+    assert_eq!(hash(&mut opened), h);
+    drop(opened);
+    // And b2 (never opened) stays in memory.
+    let mem = Server::new(b2).expect("mem");
+    mem.stage_input(b"hello").expect("stage");
+    let n = std::fs::read_dir(proj.join("inputs")).expect("dir").count();
+    assert_eq!(n, 1, "the in-memory server wrote into the project");
+}

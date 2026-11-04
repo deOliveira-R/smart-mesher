@@ -15,7 +15,7 @@ use sm_protocol::{
 
 use crate::error::{ServerError, SessionError};
 use crate::host::{ExportParams, SessionHost, project_inputs, resolve_path, stage_bytes, status_result, to_json};
-use crate::standard::{bind_pending_inputs, clear_pending_inputs};
+use crate::standard::{bind_pending_inputs, clear_pending_inputs, release_pending_inputs};
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
 type Opener = Arc<dyn Fn() -> WorkspaceBuilder + Send + Sync>;
@@ -55,19 +55,17 @@ impl Server {
 
     /// A server over the project at `dir`, opened (and replayed strictly) with `builder`.
     ///
-    /// The input store of the most recent distribution builder assembled on this thread (if no
-    /// other server consumed it) is bound to `<dir>/inputs/` before the replay, so the replay
-    /// finds staged STEP files. If `builder` is not that one (another builder was made in
-    /// between), the pending store (which then belongs to a different builder) is still bound to
-    /// `dir`, which is harmless because staging rebinds to the attached project and an in-memory
-    /// workspace unbinds; the opened builder's own store is bound only after the open, and replaying a STEP import may fail
-    /// with `step.input_missing`: build the builder right before use. Staging always binds to
-    /// the attached project.
+    /// The input stores of the distribution builders assembled on this thread (and not consumed
+    /// by another server) are bound to `<dir>/inputs/` for the replay, so it finds staged STEP
+    /// files whichever of them is `builder`. Afterwards only the opened workspace's own store
+    /// stays bound; the others are unbound again, so a server made from another builder keeps
+    /// staging in memory. A builder not made by this crate has no store and gets none.
     pub fn open(builder: WorkspaceBuilder, dir: impl AsRef<Path>) -> Result<Self, ServerError> {
-        bind_pending_inputs(dir.as_ref());
-        let ws = builder.open(dir)?;
-        let _ = project_inputs(&ws);
-        Ok(Self::from_workspace(ws))
+        let bound = bind_pending_inputs(dir.as_ref());
+        let opened = builder.open(dir);
+        let own = opened.as_ref().ok().and_then(|ws| project_inputs(ws)).map(|h| h.0.clone());
+        release_pending_inputs(&bound, own.as_ref());
+        Ok(Self::from_workspace(opened?))
     }
 
     /// A server over a new project at `dir` (absent or empty directory) named `name`.
@@ -176,7 +174,8 @@ impl Server {
             clear_pending_inputs();
             let b = opener();
             if replay {
-                bind_pending_inputs(&dir);
+                // The only pending store is the one just built, so nothing to release.
+                let _ = bind_pending_inputs(&dir);
             }
             b
         };
