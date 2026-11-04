@@ -182,6 +182,15 @@ pub enum Command {
         /// Embed provenance data.
         #[arg(long)]
         provenance: bool,
+        /// OpenFOAM only: do not split cells that fail checkMesh's determinant check.
+        #[arg(long)]
+        no_split_small_determinant: bool,
+        /// OpenFOAM only: write this face set as an `empty` patch (2D cases); repeatable.
+        #[arg(long, value_name = "SET")]
+        empty_patch: Vec<String>,
+        /// OpenFOAM only: write this face set as a `wedge` patch (axisymmetric cases); repeatable.
+        #[arg(long, value_name = "SET")]
+        wedge_patch: Vec<String>,
     },
     /// Store a file (e.g. a STEP file) in the project's input store and print `{sha256, bytes}`.
     ///

@@ -559,6 +559,9 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             mesh,
             format,
             provenance,
+            no_split_small_determinant,
+            empty_patch,
+            wedge_patch,
         } => {
             let format = match format {
                 Some(Format::Smsh) => ExportFormat::Smsh,
@@ -584,6 +587,10 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 mesh,
                 provenance: *provenance,
                 inline: false,
+                options: None,
+                split_small_determinant: no_split_small_determinant.then_some(false),
+                empty_patches: empty_patch.clone(),
+                wedge_patches: wedge_patch.clone(),
             };
             let v = call(ep, req)?;
             let r: ExportResult = typed(v.clone(), "session.export")?;

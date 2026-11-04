@@ -23,6 +23,42 @@ impl ApplyResult {
     }
 }
 
+/// Result of `script.record`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ScriptRecordResult {
+    /// The recorded command-language text.
+    pub text: String,
+    /// Number of timeline nodes recorded.
+    pub nodes: u64,
+    /// Number of statements in `text`.
+    pub statements: u64,
+    /// Named refs (branches and tags) and the node hash each points at.
+    pub refs: BTreeMap<String, Hash256>,
+    /// Plugins and services the replaying server must provide.
+    pub requires: Vec<String>,
+    /// Things the text could not carry or had to approximate.
+    pub notes: Vec<String>,
+    /// Whether replaying `text` reproduced the hashes; present only when `verify` was asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+}
+
+impl ScriptRecordResult {
+    /// Build a result.
+    pub fn new(
+        text: String,
+        nodes: u64,
+        statements: u64,
+        refs: BTreeMap<String, Hash256>,
+        requires: Vec<String>,
+        notes: Vec<String>,
+        verified: Option<bool>,
+    ) -> Self {
+        Self { text, nodes, statements, refs, requires, notes, verified }
+    }
+}
+
 /// Result of `session.hash`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -81,16 +117,21 @@ impl ExportNote {
         Self { code: code.into(), count, detail: detail.into() }
     }
 
-    /// Parse the `code: detail xcount` line an exporter reports. A line of another shape becomes
-    /// a note with code `note`, count 1 and the whole line as detail.
+    /// Parse the `code: detail xcount` line an exporter reports. A `code: detail` line with a
+    /// missing count keeps its code with count 1. A line of another shape becomes a note with
+    /// code `note`, count 1 and the whole line as detail.
     pub fn parse(line: &str) -> Self {
         if let Some((code, rest)) = line.split_once(": ")
             && !code.is_empty()
             && !code.contains(' ')
-            && let Some((detail, n)) = rest.rsplit_once(" x")
-            && let Ok(count) = n.parse::<u64>()
         {
-            return Self::new(code, count, detail);
+            if let Some((detail, n)) = rest.rsplit_once(" x")
+                && let Ok(count) = n.parse::<u64>()
+            {
+                return Self::new(code, count, detail);
+            }
+            // A missing or malformed count keeps the code.
+            return Self::new(code, 1, rest);
         }
         Self::new("note", 1, line)
     }

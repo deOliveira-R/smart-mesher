@@ -41,7 +41,7 @@ fn meshed_brick(s: &mut Server) {
 }
 
 fn export(s: &mut Server, path: Option<&str>, format: Option<ExportFormat>, inline: bool) -> Result<ExportResult, RpcError> {
-    let r = s.call(Request::Export { path: path.map(Into::into), format, mesh: None, provenance: false, inline })?;
+    let r = s.call(Request::Export { path: path.map(Into::into), format, mesh: None, provenance: false, inline, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] })?;
     Ok(serde_json::from_value(r).expect("ExportResult"))
 }
 
@@ -110,19 +110,19 @@ fn exodus_exports_by_extension_and_inline_and_openfoam_writes_a_case_directory()
     let inline = export(&mut s, None, Some(ExportFormat::Exodus), true).expect("inline exodus");
     assert!(inline.base64.is_some());
     // OpenFOAM is never inferred from a path.
-    let e = err(&mut s, Request::Export { path: Some(dir.path().join("case").to_string_lossy().into_owned()), format: None, mesh: None, provenance: false, inline: false });
+    let e = err(&mut s, Request::Export { path: Some(dir.path().join("case").to_string_lossy().into_owned()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] });
     assert_eq!(e.kind, "bad-request");
     // Multi-file formats cannot be inline.
-    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true });
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] });
     assert_eq!(e.kind, "bad-request");
     assert!(e.message.contains("several files"), "{}", e.message);
-    let e = err(&mut s, Request::Export { path: Some("x".into()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true });
+    let e = err(&mut s, Request::Export { path: Some("x".into()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] });
     assert_eq!(e.kind, "bad-request");
 
     // An explicit openfoam on a single-file extension is a mistake, not a case directory.
     for name in ["x.vtu", "case.exo"] {
         let p = dir.path().join(name);
-        let e = err(&mut s, Request::Export { path: Some(p.to_string_lossy().into_owned()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: false });
+        let e = err(&mut s, Request::Export { path: Some(p.to_string_lossy().into_owned()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] });
         assert_eq!(e.kind, "bad-request", "{name}");
         assert!(!p.exists(), "{name} must not be created");
     }
@@ -335,4 +335,89 @@ fn open_replays_with_its_own_store_when_a_newer_builder_exists() {
     mem.stage_input(b"hello").expect("stage");
     let n = std::fs::read_dir(proj.join("inputs")).expect("dir").count();
     assert_eq!(n, 1, "the in-memory server wrote into the project");
+}
+
+/// P5: a one-layer slab with `empty` patches is a 2D case and is not split; the same slab as
+/// plain patches is split, and `split_small_determinant: false` turns the split off.
+#[test]
+fn openfoam_empty_patches_and_the_split_flag() {
+    let dir = TempDir::new("p5");
+    let mut s = Server::new(std_builder()).expect("server");
+    let b = apply(&mut s, "model.create_brick", json!({"x": 3.0, "y": 3.0, "z": 1.0}));
+    let vol = b["delta"]["outputs"]["volume"][0].as_str().expect("volume").to_owned();
+    let faces = &b["delta"]["outputs"]["faces"];
+    apply(&mut s, "mesh.size", json!({"targets": [vol], "size": 1.0}));
+    apply(&mut s, "mesh.scheme", json!({"targets": [vol], "scheme": "map"}));
+    apply(&mut s, "mesh.run", json!({"targets": [vol]}));
+    apply(&mut s, "fem.sideset_add", json!({"sideset": 1, "faces": [faces[4]], "name": "front"}));
+    apply(&mut s, "fem.sideset_add", json!({"sideset": 2, "faces": [faces[5]], "name": "back"}));
+
+    let run = |s: &mut Server, name: &str, split: Option<bool>, empty: &[&str], wedge: &[&str]| -> Result<(ExportResult, String), RpcError> {
+        let case = dir.path().join(name);
+        let r = s.call(Request::Export {
+            path: Some(case.to_string_lossy().into_owned()),
+            format: Some(ExportFormat::Openfoam),
+            mesh: None,
+            provenance: false,
+            inline: false,
+            options: None,
+            split_small_determinant: split,
+            empty_patches: empty.iter().map(|x| (*x).to_owned()).collect(),
+            wedge_patches: wedge.iter().map(|x| (*x).to_owned()).collect(),
+        })?;
+        let r: ExportResult = serde_json::from_value(r).expect("ExportResult");
+        let boundary = std::fs::read_to_string(case.join("constant/polyMesh/boundary")).expect("boundary");
+        Ok((r, boundary))
+    };
+    let has_map = |r: &ExportResult| r.files.iter().any(|f| f.name.ends_with("/smeshCellMap"));
+
+    let (plain, _) = run(&mut s, "plain", None, &[], &[]).expect("plain");
+    assert!(has_map(&plain), "default: the slab is split");
+    let (off, _) = run(&mut s, "off", Some(false), &[], &[]).expect("off");
+    assert!(!has_map(&off), "split_small_determinant: false");
+    let (twod, boundary) = run(&mut s, "twod", None, &["front", "back"], &[]).expect("2d");
+    assert!(!has_map(&twod), "empty patches: a 2D case is not split");
+    assert_eq!(boundary.matches("type            empty;").count(), 2, "{boundary}");
+    let (wedge, boundary) = run(&mut s, "wedge", None, &["front"], &["back"]).expect("wedge");
+    assert!(!has_map(&wedge));
+    assert!(boundary.contains("type            wedge;") && boundary.contains("type            empty;"), "{boundary}");
+
+    // Errors: unknown set, overlap, non-OpenFOAM format.
+    let e = run(&mut s, "bad1", None, &["nope"], &[]).expect_err("unknown set");
+    assert_eq!(e.kind, "meshio", "{e}");
+    assert!(e.message.contains("no set named 'nope'"), "{e}");
+    let e = run(&mut s, "bad2", None, &["front"], &["front"]).expect_err("both");
+    assert_eq!(e.kind, "bad-request", "{e}");
+    let e = s
+        .call(Request::Export {
+            path: None,
+            format: Some(ExportFormat::Vtu),
+            mesh: None,
+            provenance: false,
+            inline: true,
+            options: None,
+            split_small_determinant: None,
+            empty_patches: vec!["front".into()],
+            wedge_patches: vec![],
+        })
+        .expect_err("vtu");
+    assert_eq!(e.kind, "bad-request", "{e}");
+}
+
+/// The W3b formats parse, infer from extensions and are answered with a typed error until wired.
+#[test]
+fn new_formats_and_script_record_are_typed_unsupported() {
+    let dir = TempDir::new("p5b");
+    let mut s = Server::new(std_builder()).expect("server");
+    meshed_brick(&mut s);
+    for (name, f) in [("a.h5m", ExportFormat::Dagmc), ("a.msh", ExportFormat::Gmsh), ("a.smrt", ExportFormat::Smrt)] {
+        let p = dir.path().join(name).to_string_lossy().into_owned();
+        for format in [None, Some(f)] {
+            let e = export(&mut s, Some(&p), format, false).expect_err(name);
+            assert_eq!(e.kind, "unsupported-format", "{name}: {e}");
+        }
+        assert!(!dir.path().join(name).exists());
+    }
+    let e = s.call(Request::ScriptRecord { forks: Default::default(), check: Default::default(), verify: false, raw: false }).expect_err("record");
+    assert_eq!(e.kind, "unsupported", "{e}");
 }

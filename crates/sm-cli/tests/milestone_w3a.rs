@@ -187,7 +187,7 @@ fn with_size(ops: &[(String, Value)], size: f64) -> Vec<(String, Value)> {
 }
 
 fn export_req(mesh: EntityId) -> Request {
-    Request::Export { path: None, format: Some(ExportFormat::Exodus), mesh: Some(mesh), provenance: false, inline: true }
+    Request::Export { path: None, format: Some(ExportFormat::Exodus), mesh: Some(mesh), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![] }
 }
 
 fn in_process(h: Head, ops: &Ops) -> R<Api> {

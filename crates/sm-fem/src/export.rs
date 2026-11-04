@@ -5,7 +5,7 @@ use std::io::Write;
 use sm_core::EntityId;
 use sm_exodus::{ExodusOptions, write_exodus};
 use sm_layer_api::{MeshLayer, ModelLayer};
-use sm_meshio::foam::{FoamOptions, build_polymesh};
+use sm_meshio::foam::{FoamOptions, FoamPatchType, build_polymesh};
 use sm_meshio::{LossReport, SmshWriter, VtuOptions, vtu_loss_report, write_vtu};
 use sm_op_api::State;
 
@@ -58,6 +58,10 @@ pub struct ExportRequest {
     /// 2D cases with `empty` or `wedge` patches are judged by OpenFOAM's 2D rule). On by default
     /// ([`ExportRequest::new`]); `false` writes the internal cells as they are.
     pub split_small_determinant: bool,
+    /// OpenFOAM only: names of face (side) sets written as `empty` patches (2D cases).
+    pub empty_patches: Vec<String>,
+    /// OpenFOAM only: names of face (side) sets written as `wedge` patches (axisymmetric cases).
+    pub wedge_patches: Vec<String>,
 }
 
 impl ExportRequest {
@@ -68,7 +72,24 @@ impl ExportRequest {
             mesh: None,
             provenance: None,
             split_small_determinant: true,
+            empty_patches: Vec::new(),
+            wedge_patches: Vec::new(),
         }
+    }
+
+    /// OpenFOAM: write these face (side) sets as `empty` patches. With empty or wedge patches
+    /// the case is 2D and the small-determinant split does not apply.
+    #[must_use]
+    pub fn empty_patches(mut self, names: Vec<String>) -> Self {
+        self.empty_patches = names;
+        self
+    }
+
+    /// OpenFOAM: write these face (side) sets as `wedge` patches.
+    #[must_use]
+    pub fn wedge_patches(mut self, names: Vec<String>) -> Self {
+        self.wedge_patches = names;
+        self
     }
 
     /// Export the named mesh instead of the state's only one.
@@ -280,9 +301,15 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
     let (id, lowered) = prepare(state, req)?;
     let (files, notes) = match req.format {
         ExportFormat::OpenFoam => {
-            let opts = FoamOptions::new()
+            let mut opts = FoamOptions::new()
                 .decks(lowered.decks.clone())
                 .split_small_determinant(req.split_small_determinant);
+            for n in &req.empty_patches {
+                opts = opts.patch_type(n.clone(), FoamPatchType::Empty);
+            }
+            for n in &req.wedge_patches {
+                opts = opts.patch_type(n.clone(), FoamPatchType::Wedge);
+            }
             let build = build_polymesh((*lowered.mesh).as_read(), &opts)?;
             let files = build
                 .mesh

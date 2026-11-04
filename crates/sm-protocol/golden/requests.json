@@ -41,6 +41,19 @@
       "name": "model.volumes"
     }
   },
+  "script.record.default": {
+    "method": "script.record",
+    "params": {}
+  },
+  "script.record.full": {
+    "method": "script.record",
+    "params": {
+      "check": "every",
+      "forks": "refs",
+      "raw": true,
+      "verify": true
+    }
+  },
   "script.run": {
     "method": "script.run",
     "params": {
@@ -61,10 +74,35 @@
       "provenance": true
     }
   },
+  "session.export.gmsh_options": {
+    "method": "session.export",
+    "params": {
+      "format": "gmsh",
+      "options": {
+        "binary": true
+      },
+      "path": "m.msh"
+    }
+  },
   "session.export.minimal": {
     "method": "session.export",
     "params": {
       "format": "smsh"
+    }
+  },
+  "session.export.openfoam_2d": {
+    "method": "session.export",
+    "params": {
+      "empty_patches": [
+        "front",
+        "back"
+      ],
+      "format": "openfoam",
+      "path": "case",
+      "split_small_determinant": false,
+      "wedge_patches": [
+        "w"
+      ]
     }
   },
   "session.hash.at_empty": {

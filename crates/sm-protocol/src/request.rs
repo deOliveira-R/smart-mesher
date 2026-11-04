@@ -20,6 +20,50 @@ pub enum ExportFormat {
     /// OpenFOAM `polyMesh` case directory (ASCII); the result lists the files in
     /// [`ExportResult::files`](crate::ExportResult::files).
     Openfoam,
+    /// DAGMC `.h5m` (MOAB HDF5) file; options `{graveyard}`.
+    Dagmc,
+    /// Gmsh `.msh` format 4.1 file; options `{binary, polyhedra}`.
+    Gmsh,
+    /// The self-contained `.smrt` tracking image for the transport handover; no options.
+    Smrt,
+}
+
+/// Which timeline heads `script.record` records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum RecordForks {
+    /// Only the linear history up to the current position.
+    #[default]
+    Head,
+    /// Every named ref (branches and tags) is recorded.
+    Refs,
+}
+
+impl RecordForks {
+    fn is_default(&self) -> bool {
+        *self == Self::Head
+    }
+}
+
+/// How often `script.record` embeds a state-hash check in the recorded script.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum RecordCheck {
+    /// No checks.
+    None,
+    /// A check at each recorded tip.
+    #[default]
+    Tips,
+    /// A check after every node.
+    Every,
+}
+
+impl RecordCheck {
+    fn is_default(&self) -> bool {
+        *self == Self::Tips
+    }
 }
 
 /// Every method name of the protocol, sorted. [`Request`]'s serde tags are exactly these.
@@ -27,6 +71,7 @@ pub const METHODS: &[&str] = &[
     "apply",
     "catalog",
     "query",
+    "script.record",
     "script.run",
     "session.export",
     "session.hash",
@@ -107,6 +152,23 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         includes: BTreeMap<String, String>,
     },
+    /// Record the timeline as command-language text: result is a
+    /// [`ScriptRecordResult`](crate::ScriptRecordResult).
+    #[serde(rename = "script.record")]
+    ScriptRecord {
+        /// Which heads to record (default `head`).
+        #[serde(default, skip_serializing_if = "RecordForks::is_default")]
+        forks: RecordForks,
+        /// Hash checks to embed (default `tips`).
+        #[serde(default, skip_serializing_if = "RecordCheck::is_default")]
+        check: RecordCheck,
+        /// Replay the recorded text in a scratch session and report whether the hashes agree.
+        #[serde(default, skip_serializing_if = "is_false")]
+        verify: bool,
+        /// Record ops as raw `apply` records instead of command sugar.
+        #[serde(default, skip_serializing_if = "is_false")]
+        raw: bool,
+    },
     /// Where the workspace stands: result is a [`StatusResult`](crate::StatusResult).
     #[serde(rename = "timeline.status")]
     Status,
@@ -166,6 +228,19 @@ pub enum Request {
         /// Return the bytes base64-encoded in the result.
         #[serde(default, skip_serializing_if = "is_false")]
         inline: bool,
+        /// Per-format options (an object), validated by the exporter: `gmsh`
+        /// `{binary, polyhedra}`, `dagmc` `{graveyard}`; `smrt` takes none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<Value>,
+        /// OpenFOAM only: split cells that fail checkMesh's determinant check. On when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        split_small_determinant: Option<bool>,
+        /// OpenFOAM only: names of face (side) sets written as `empty` patches (2D cases).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        empty_patches: Vec<String>,
+        /// OpenFOAM only: names of face (side) sets written as `wedge` patches (axisymmetric).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        wedge_patches: Vec<String>,
     },
     /// Persist pending state to disk: result is a [`StatusResult`](crate::StatusResult).
     #[serde(rename = "session.save")]
@@ -189,6 +264,7 @@ impl Request {
             Request::Apply { .. } => "apply",
             Request::Query { .. } => "query",
             Request::ScriptRun { .. } => "script.run",
+            Request::ScriptRecord { .. } => "script.record",
             Request::Status => "timeline.status",
             Request::Log { .. } => "timeline.log",
             Request::Checkout { .. } => "timeline.checkout",
