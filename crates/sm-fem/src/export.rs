@@ -44,8 +44,9 @@ impl ExportFormat {
     }
 }
 
-/// What to export.
+/// What to export. Build with [`ExportRequest::new`] and the builder methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ExportRequest {
     /// Output format.
     pub format: ExportFormat,
@@ -68,6 +69,27 @@ impl ExportRequest {
             provenance: None,
             split_small_determinant: true,
         }
+    }
+
+    /// Export the named mesh instead of the state's only one.
+    #[must_use]
+    pub fn mesh(mut self, id: EntityId) -> Self {
+        self.mesh = Some(id);
+        self
+    }
+
+    /// Record `hash` as provenance (`.smsh` and Exodus).
+    #[must_use]
+    pub fn provenance(mut self, hash: impl Into<String>) -> Self {
+        self.provenance = Some(hash.into());
+        self
+    }
+
+    /// Switch the OpenFOAM small-determinant split on or off (default on).
+    #[must_use]
+    pub fn split_small_determinant(mut self, on: bool) -> Self {
+        self.split_small_determinant = on;
+        self
     }
 }
 
@@ -258,7 +280,9 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
     let (id, lowered) = prepare(state, req)?;
     let (files, notes) = match req.format {
         ExportFormat::OpenFoam => {
-            let opts = FoamOptions::new().decks(lowered.decks.clone()).split_small_determinant(req.split_small_determinant);
+            let opts = FoamOptions::new()
+                .decks(lowered.decks.clone())
+                .split_small_determinant(req.split_small_determinant);
             let build = build_polymesh((*lowered.mesh).as_read(), &opts)?;
             let files = build
                 .mesh

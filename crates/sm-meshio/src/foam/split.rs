@@ -217,6 +217,10 @@ pub(crate) struct SplitInfo {
     /// Cells below the threshold that could not be split (open or non-manifold cell, or a
     /// face pyramid around the centroid with non-positive volume).
     pub unsplit: u64,
+    /// Cells below the threshold left unsplit because the mesh is 2D (fewer than three resolved
+    /// directions): checkMesh tolerates a small determinant there, but a split would create edges
+    /// not aligned with the non-empty directions.
+    pub unsplit_2d: u64,
     /// Exported cells still below the threshold after the split.
     pub remaining: u64,
     /// Foam face before the split -> foam face after it.
@@ -245,6 +249,12 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
     let dirs = geometric_directions(pm);
     let two_d = two_d_of(dirs);
     let det = cell_determinants_in(pm, dirs);
+    if dirs.iter().any(|d| *d != 1) {
+        // 2D: a split adds edges that are not aligned with or perpendicular to the non-empty
+        // directions (a checkMesh failure), so flagged cells stay as they are.
+        let n = det.iter().filter(|d| **d < threshold).count() as u64;
+        return (n > 0).then(|| SplitInfo { unsplit_2d: n, ..Default::default() });
+    }
     let mut cand = vec![NONE; nc];
     let mut cell_of: Vec<u32> = Vec::new();
     let mut n_cand = 0usize;

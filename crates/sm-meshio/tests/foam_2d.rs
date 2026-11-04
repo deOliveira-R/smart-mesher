@@ -187,6 +187,62 @@ fn the_2d_export_is_deterministic_over_threads() {
     assert_eq!(base, hash(0));
 }
 
+/// A one-layer slab of 2x2 squares, each split into two triangular prisms (8 cells). The two
+/// corner triangles (0,0)-(1,0)-(0,1) and (2,2)-(2,1)-(1,2) have one internal face each. Face
+/// sets `front` (z = 0) and `back` (z = 1).
+fn tri_prism_slab() -> ReferenceMesh {
+    let id = |i: usize, j: usize| j * 3 + i;
+    let mut p: Vec<[f64; 3]> = Vec::new();
+    for z in [0.0, 1.0] {
+        for j in 0..3 {
+            for i in 0..3 {
+                p.push([i as f64, j as f64, z]);
+            }
+        }
+    }
+    let mut cells = Vec::new();
+    let mut prism = |a: usize, b: usize, c: usize| {
+        cells.push(CellSpec::Template(CellShape::Wedge, vec![a, b, c, a + 9, b + 9, c + 9]));
+    };
+    for j in 0..2 {
+        for i in 0..2 {
+            let (a, b, c, d) = (id(i, j), id(i + 1, j), id(i + 1, j + 1), id(i, j + 1));
+            // Diagonal b-d everywhere: the triangles at the (0,0) and (2,2) grid corners have two
+            // boundary edges (one internal face); at (2,0) and (0,2) the diagonal runs through the corner.
+            prism(a, b, d);
+            prism(b, c, d);
+        }
+    }
+    let mut alloc = SerialAlloc::new();
+    let mut m = build_mesh(&p, &cells, &mut alloc).unwrap();
+    let f = boundary_faces(&m, |c| c[2] < 0.5);
+    let b = boundary_faces(&m, |c| c[2] > 0.5);
+    assert_eq!((f.len(), b.len()), (8, 8));
+    MeshEdit::add_set(&mut m, "front", SetMembers::Faces(f), &mut alloc).unwrap();
+    MeshEdit::add_set(&mut m, "back", SetMembers::Faces(b), &mut alloc).unwrap();
+    m
+}
+
+#[test]
+fn corner_triangles_of_a_tri_prism_slab_stay_unsplit_in_2d() {
+    let m = tri_prism_slab();
+    let o = slab_opts(FoamPatchType::Empty, FoamPatchType::Empty);
+    let b = build_polymesh(&m, &o).unwrap();
+    assert_eq!(b.mesh.n_cells, 8);
+    assert!(b.mesh.cell_map.is_empty());
+    assert!(b.mesh.files().unwrap().iter().all(|f| f.name != CELL_MAP_FILE));
+    assert!(b.report.loss.get("foam.small_det_split").is_none());
+    // The two corner triangles (one internal face each) are flagged and kept, with a note.
+    let flagged = cell_determinants(&b.mesh).iter().filter(|d| **d < SMALL_DETERMINANT).count();
+    assert_eq!(flagged, 2);
+    let note = b.report.loss.get("foam.small_det_2d_unsplit").expect("2D note");
+    assert_eq!(note.count, 2, "{note:?}");
+    // Without empty patches the same mesh is the 3D case and is split.
+    let plain = build_polymesh(&m, &FoamOptions::new()).unwrap();
+    assert!(plain.mesh.n_cells > 8);
+    assert!(plain.report.loss.get("foam.small_det_2d_unsplit").is_none());
+}
+
 /// Writes the 2D fixtures to `$SM_FOAM2D_OUT/{slab,wedge}/constant/polyMesh` for checkMesh runs.
 #[test]
 fn emit_2d_cases_for_checkmesh() {

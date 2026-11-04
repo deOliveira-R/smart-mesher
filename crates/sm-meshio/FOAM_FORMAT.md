@@ -189,7 +189,7 @@ decide mesh validity; that stays `sm_mesh_api::validate`, which the exporter nev
 `foam.set_skipped`, `foam.patch_overlap`, `foam.nonconformal_as_patch`,
 `foam.partition_cut_as_patch`, `foam.symmetry_not_planar`, `foam.deck_cyclic_not_emitted`,
 `foam.zone_both_sides`, `foam.high_order_dropped`, `foam.small_det_split`,
-`foam.small_det_remaining`, `foam.small_det_unsplit` (all degraded). One item per
+`foam.small_det_remaining`, `foam.small_det_unsplit`, `foam.small_det_2d_unsplit` (all degraded). One item per
 `(code, detail)`; the detail names the set or patch.
 
 ## 11. Small-determinant split (ruling INT-8)
@@ -238,8 +238,15 @@ an interior cube cell 1.
   mesh with `wedge` patches (`FoamPatchType::Empty` / `Wedge`, chosen with
   `PatchSource::Explicit`), is not split and gets no `smeshCellMap`. Without such patches a
   one-layer hex or wedge mesh (for example `hex_block([n, n, 1])`) has rank-2 internal normals,
-  checkMesh flags every cell, and it is split as above. Cells with a single internal face
-  (a 1-cell-wide slab, two cells in a row) stay flagged in 2D too, as in checkMesh.
+  checkMesh flags every cell, and it is split as above. The split never runs on a 2D case
+  (fewer than three resolved directions in `foam::geometric_directions`): cells that still
+  fall below the threshold there (a cell with a single internal face, such as a corner triangle
+  of an extruded tri-prism slab, or a 1-cell-wide slab) are kept unsplit and reported as
+  `foam.small_det_2d_unsplit` (count = flagged cells). checkMesh only warns about their
+  determinant, whereas the centroid split of a 2D cell adds edges that are not aligned with or
+  perpendicular to the non-empty directions, which checkMesh 2506 (`-allGeometry
+  -allTopology`) fails (`Number of edges not aligned with or perpendicular to non-empty
+  directions`; 12 on a 2x2 tri-prism slab with 2 corner triangles, 8 -> 16 cells).
   `checkMesh` (opencfd/openfoam-default:2506) on a 4x4x1 empty slab: `Mesh OK`, determinant
   minimum 0.125 average 0.28125; on a 4-cell axisymmetric wedge mesh (2.5 degree half angle,
   prism row on the axis plus a hex row): `Mesh OK`, minimum 0.0511, 2 geometric directions.

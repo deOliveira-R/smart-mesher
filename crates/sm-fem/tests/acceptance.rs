@@ -296,7 +296,6 @@ fn sideset_on_plus_x_face_has_100_left_sides() {
 
 // ---- Interior faces: both sides, or the side of `wrt`
 
-
 // ---- A face in two sidesets lowers into both (the model keeps one face color)
 
 #[test]
@@ -558,53 +557,21 @@ fn mesh_selection_errors_are_typed() {
         "{e:?}"
     );
     for id in [m1, m2] {
-        let rep = export(
-            r.state(),
-            &ExportRequest {
-                mesh: Some(id),
-                ..req.clone()
-            },
-            &mut sink,
-        )
-        .expect("named mesh");
+        let rep = export(r.state(), &req.clone().mesh(id), &mut sink).expect("named mesh");
         assert_eq!(rep.mesh, id);
     }
     let bogus = sm_core::EntityId::new(EntityKind::Mesh, 99).expect("id");
-    let e = export(
-        r.state(),
-        &ExportRequest {
-            mesh: Some(bogus),
-            ..req.clone()
-        },
-        &mut sink,
-    )
-    .expect_err("unknown");
+    let e = export(r.state(), &req.clone().mesh(bogus), &mut sink).expect_err("unknown");
     assert!(matches!(e, FemError::UnknownMesh(_)), "{e:?}");
 
     // Deleting a volume marks its mesh stale: refused with a typed error.
     r.apply(KillVolume { volume: v[0] });
-    let e = export(
-        r.state(),
-        &ExportRequest {
-            mesh: Some(m1),
-            ..req.clone()
-        },
-        &mut sink,
-    )
-    .expect_err("stale");
+    let e = export(r.state(), &req.clone().mesh(m1), &mut sink).expect_err("stale");
     assert!(
         matches!(e, FemError::StaleMesh(id) if id == m1) && e.code() == "stale-mesh",
         "{e:?}"
     );
-    export(
-        r.state(),
-        &ExportRequest {
-            mesh: Some(m2),
-            ..req
-        },
-        &mut sink,
-    )
-    .expect("other mesh");
+    export(r.state(), &req.mesh(m2), &mut sink).expect("other mesh");
 }
 
 #[test]

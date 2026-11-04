@@ -440,6 +440,14 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
     if opts.split_small_determinant
         && let Some(info) = split_small_determinant(&mut poly, SMALL_DETERMINANT)
     {
+        if info.unsplit_2d > 0 {
+            note(
+                "foam.small_det_2d_unsplit",
+                LossSeverity::Degraded,
+                info.unsplit_2d as usize,
+                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} in a 2D case (empty or wedge patches): not split, since the split breaks checkMesh's 2D edge-alignment check; checkMesh only warns"),
+            );
+        }
         if info.unsplit > 0 {
             note(
                 "foam.small_det_unsplit",
