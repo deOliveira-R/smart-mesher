@@ -217,7 +217,10 @@ pub enum RequestCascade {
     #[default]
     Level,
     /// Cubit's rule: the firmer request wins; at equal firmness the latest command wins
-    /// ([`CommandSeq`]); unordered ties fall back to the [`Level`](Self::Level) rule.
+    /// ([`CommandSeq`]); unordered ties fall back to the [`Level`](Self::Level) rule. The
+    /// mesher's `mesh.size` and `mesh.intervals` resolve that tie when they run (they write the
+    /// winning request on the edges it overrides), so a stored intent plans identically with
+    /// or without the command order (for example after a round trip through serde).
     Firmness,
 }
 
@@ -487,6 +490,11 @@ pub struct MeshIntent {
     /// Defaults.
     #[serde(default)]
     pub defaults: Defaults,
+    /// Running count of [`set_intervals`](Self::set_intervals) commands (see [`CommandSeq`]);
+    /// not serialized, never compared.
+    #[serde(skip)]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    interval_commands: CommandSeq,
 }
 
 impl MeshIntent {
@@ -510,13 +518,8 @@ impl MeshIntent {
     /// Stamps the command order that [`RequestCascade::Firmness`] uses to let the latest
     /// command win among equally firm requests.
     pub fn set_intervals(&mut self, id: EntityId, req: Firm<IntervalRequest>) {
-        let seq = self
-            .entities
-            .values()
-            .map(|e| e.intervals_seq.0)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        self.interval_commands.0 += 1;
+        let seq = self.interval_commands.0;
         let e = self.entity_mut(id);
         e.intervals = Some(req);
         e.intervals_seq = CommandSeq(seq);

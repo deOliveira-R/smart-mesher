@@ -273,6 +273,7 @@ impl NodeGrid {
 /// collects them in patch (target) order, then in the order the scheme emitted them
 /// ([`PatchSet::notes`], [`Meshed::notes`](crate::Meshed::notes)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SchemeNote {
     /// Where the finding is (for a cell metric, the cell centroid).
     pub position: Point3,
@@ -287,6 +288,27 @@ pub struct SchemeNote {
     pub threshold: f64,
     /// What would probably cure it, in words.
     pub suggestion: String,
+}
+
+impl SchemeNote {
+    /// A note with every field given.
+    pub fn new(
+        position: Point3,
+        entities: Vec<EntityId>,
+        metric: impl Into<String>,
+        value: f64,
+        threshold: f64,
+        suggestion: impl Into<String>,
+    ) -> Self {
+        Self {
+            position,
+            entities,
+            metric: metric.into(),
+            value,
+            threshold,
+            suggestion: suggestion.into(),
+        }
+    }
 }
 
 /// What one scheme invocation produced. Pure data: nothing is written to the mesh until commit.
@@ -711,14 +733,7 @@ mod note_tests {
     use sm_core::EntityKind;
 
     fn note(v: f64) -> SchemeNote {
-        SchemeNote {
-            position: Point3::new(v, 0.0, 0.0),
-            entities: vec![],
-            metric: "m".into(),
-            value: v,
-            threshold: 1.0,
-            suggestion: "s".into(),
-        }
+        SchemeNote::new(Point3::new(v, 0.0, 0.0), vec![], "m", v, 1.0, "s")
     }
 
     #[test]
