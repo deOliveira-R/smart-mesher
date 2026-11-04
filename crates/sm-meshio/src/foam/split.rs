@@ -40,7 +40,9 @@ pub(crate) fn area_vector(points: &[[f64; 3]], loop_: &[u32]) -> [f64; 3] {
 /// (normalised) exceeds 1e-6; wedge patches knock out the components of their `centreNormal`
 /// (from the average unit face normal `n`: `sign(n_i) * (max(|n_i|, 0.5) - 0.5)`, normalised;
 /// magnitudes summed over wedge patches, normalised, > 1e-6). Patches without faces are
-/// ignored. A mesh with neither is `[1, 1, 1]`.
+/// ignored. A mesh with neither is `[1, 1, 1]`. Divergence from OpenFOAM in a degenerate case:
+/// when the wedge vector sums to zero OpenFOAM resets `geometricD` to all 1; here the empty
+/// knockouts are kept.
 pub fn geometric_directions(pm: &PolyMesh) -> [i8; 3] {
     let mut empty = [0.0f64; 3];
     let mut wedge = [0.0f64; 3];
@@ -107,6 +109,7 @@ pub fn geometric_directions(pm: &PolyMesh) -> [i8; 3] {
 
 /// OpenFOAM `primitiveMeshTools::cellDeterminant` of every cell, as `checkMesh` evaluates it:
 /// `polyMesh::checkCellDeterminant` passes `geometricD()` ([`geometric_directions`]) as `meshD`.
+/// Only this function applies the 2D rule; the split path never sees a 2D mesh.
 /// With `Sf` the face area vectors of the cell's internal faces and `avg` their mean magnitude,
 /// the area tensor is `sum (Sf/avg)(Sf/avg)^T` and the result is `|det| / 8` (an interior cube
 /// cell is 1, a cube corner cell with 3 internal faces is 1/8). A cell with no internal face,
@@ -170,8 +173,8 @@ fn det_from_tensor(a: [f64; 6], mag: f64, cnt: u32, two_d: Option<usize>) -> f64
     det.abs() / 8.0
 }
 
-/// Determinant measure of a cell with the given internal face area vectors.
-fn det_of_normals(ns: &[[f64; 3]], two_d: Option<usize>) -> f64 {
+/// 3D determinant measure of a cell with the given internal face area vectors.
+fn det_of_normals(ns: &[[f64; 3]]) -> f64 {
     let mut a = [0.0f64; 6];
     let mut mag = 0.0;
     for n in ns {
@@ -181,7 +184,7 @@ fn det_of_normals(ns: &[[f64; 3]], two_d: Option<usize>) -> f64 {
         }
         mag += (t[0] + t[3] + t[5]).sqrt();
     }
-    det_from_tensor(a, mag, ns.len() as u32, two_d)
+    det_from_tensor(a, mag, ns.len() as u32, None)
 }
 
 /// Sum of the signed volumes of the fan tets (apex, m, a, b) over an outward base loop, `m` the
@@ -218,8 +221,9 @@ pub(crate) struct SplitInfo {
     /// face pyramid around the centroid with non-positive volume).
     pub unsplit: u64,
     /// Cells below the threshold left unsplit because the mesh is 2D (fewer than three resolved
-    /// directions): checkMesh tolerates a small determinant there, but a split would create edges
-    /// not aligned with the non-empty directions.
+    /// directions): checkMesh fails its determinant check on them, but a split would create edges
+    /// not aligned with the non-empty directions (failing its edge-alignment check); the exporter
+    /// keeps the exact cells.
     pub unsplit_2d: u64,
     /// Exported cells still below the threshold after the split.
     pub remaining: u64,
@@ -247,7 +251,6 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
     let nc = pm.n_cells as usize;
     let (nf, ni) = (pm.n_faces(), pm.n_internal());
     let dirs = geometric_directions(pm);
-    let two_d = two_d_of(dirs);
     let det = cell_determinants_in(pm, dirs);
     if dirs.iter().any(|d| *d != 1) {
         // 2D: a split adds edges that are not aligned with or perpendicular to the non-empty
@@ -349,7 +352,7 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
                     let (u, v) = ([a[0] - cen[0], a[1] - cen[1], a[2] - cen[2]], [b[0] - cen[0], b[1] - cen[1], b[2] - cen[2]]);
                     ns.push([(u[1] * v[2] - u[2] * v[1]) / 2.0, (u[2] * v[0] - u[0] * v[2]) / 2.0, (u[0] * v[1] - u[1] * v[0]) / 2.0]);
                 }
-                worst = worst.min(det_of_normals(&ns, two_d));
+                worst = worst.min(det_of_normals(&ns));
             }
             if worst <= det[cell_of[k] as usize] {
                 continue;

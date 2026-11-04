@@ -445,7 +445,7 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
                 "foam.small_det_2d_unsplit",
                 LossSeverity::Degraded,
                 info.unsplit_2d as usize,
-                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} in a 2D case (empty or wedge patches): not split, since the split breaks checkMesh's 2D edge-alignment check; checkMesh only warns"),
+                format!("cells with checkMesh determinant < {SMALL_DETERMINANT} in a 2D case (empty or wedge patches): not split, since the split fails checkMesh's 2D edge-alignment check (the unsplit cells fail its determinant check instead; the exporter keeps the exact cells)"),
             );
         }
         if info.unsplit > 0 {

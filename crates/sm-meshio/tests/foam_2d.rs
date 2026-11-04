@@ -253,3 +253,17 @@ fn emit_2d_cases_for_checkmesh() {
     let r = write_polymesh(&wedge_mesh(4), &slab_opts(FoamPatchType::Wedge, FoamPatchType::Wedge), &out.join("wedge/constant/polyMesh")).unwrap();
     assert_eq!(r.n_cells, 8);
 }
+
+/// `cell_determinants` equals checkMesh 2506 (`-allGeometry`) on the 2D fixtures.
+#[test]
+fn determinants_match_checkmesh_2506() {
+    let stats = |m: &ReferenceMesh, t| {
+        let b = build_polymesh(m, &slab_opts(t, t)).unwrap();
+        let d = cell_determinants(&b.mesh);
+        (d.iter().cloned().fold(f64::INFINITY, f64::min), d.iter().sum::<f64>() / d.len() as f64)
+    };
+    let (min, avg) = stats(&wedge_mesh(4), FoamPatchType::Wedge);
+    assert!((min - 0.0511415134648249).abs() < 1e-12 && (avg - 0.178152764506552).abs() < 1e-12, "{min} {avg}");
+    let (min, avg) = stats(&slab(4), FoamPatchType::Empty);
+    assert!((min - 0.125).abs() < 1e-12 && (avg - 0.28125).abs() < 1e-12, "{min} {avg}");
+}
