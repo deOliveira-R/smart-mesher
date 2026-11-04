@@ -10,15 +10,16 @@
 //!   and the frame is the world frame. With a [`RectLattice`] the domain is the lattice box, the
 //!   frame is centred on the element, and every shape must lie strictly inside the element
 //!   (so lattice walls never cut a shape).
-//! * Local cell `c < n` is shape `c` (the first shape containing a point wins, so list inner shapes
-//!   first); local cell `n` is the background. The background is a *real* cell per element (so
+//! * Shapes must be pairwise nested or disjoint (partial overlap, or two identical shapes, is an
+//!   `InvalidInput` build error: cells are disjoint and a point is never resolved by order).
+//!   Local cell `c < n` is shape `c` minus the shapes strictly inside it, so a point belongs to
+//!   the innermost shape containing it; local cell `n` is the background. The background is a *real* cell per element (so
 //!   tallies bin it) and its region carries `implicit_complement`, because it plays DAGMC's role
 //!   (what no shape covers); `locate` never returns `CellId::COMPLEMENT`, which is for trackers
 //!   whose complement has no cells.
-//! * `cell_volume` is exact when it can be: a shape cell is its primitive minus the earlier
-//!   shapes strictly nested in it, the background is the element box minus the outermost
-//!   shapes; it is `None` whenever shapes partly overlap, are not pairwise disjoint at the top
-//!   level, or leave the element box. The global cell of element `e` (x fastest) is
+//! * `cell_volume` is exact when it can be: a shape cell is its primitive minus the shapes
+//!   strictly nested in it, the background is the element box minus the outermost shapes; it is
+//!   `None` whenever a shape leaves the element box. The global cell of element `e` (x fastest) is
 //!   `e * (n + 1) + c`. **Regions are prototypes**: region `c` is shared by all elements.
 //! * Surface `i < n` is shape `i`'s surface (shared by all elements), surface `n + k` is domain
 //!   face `k` (`-x,+x,-y,+y,-z,+z`). `FaceId` equals `SurfaceId`. Lattice walls are not model
@@ -27,6 +28,12 @@
 //!   must be a domain face).
 //! * Hierarchy: with a lattice, `TrackState::levels` holds one [`Level`] (component 1 = the
 //!   lattice, instance = element index, lattice = element indices).
+//! * Majorant partition (`NodeId`s index the *prototype* tree): by default the element is one
+//!   leaf (node 0); [`AnalyticWorld::with_node_grid`] splits it into a regular grid of leaves
+//!   whose material sets differ (a leaf lists the regions that may occur in it). A lattice adds
+//!   one `Lattice` node above the prototype. All elements share the prototype's node ids; the
+//!   instance comes from the state's levels. Delta segments end at the leaf wall, reported as
+//!   `StepEnd::SlotChange` with the cell entered (possibly the same cell).
 
 use crate::boundary::{FaceAction, ResponseKind};
 use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
@@ -38,7 +45,7 @@ use crate::state::{
     TrackState, TrackerCaps,
 };
 use crate::segments::{
-    FlightSegment, HierarchyView, MajorantTracker, NodeInfo, NodeKind, SegmentQuery, SegmentScale, TrackMode, choose_mode,
+    FlightSegment, HierarchyView, MajorantTracker, MaterialSets, NodeInfo, NodeKind, SegmentQuery, SegmentScale, TrackMode, choose_mode,
 };
 use crate::tally::TrackBundle;
 use crate::tracker::{Tracker, TrackerInfo, check_direction, hashed_direction, lost, move_along};
@@ -275,8 +282,12 @@ pub struct AnalyticWorld {
     recovery: RecoveryPolicy,
     /// Exact volume per local cell (`n + 1` entries), `None` when not exact.
     volumes: Vec<Option<f64>>,
-    /// Material sets: singleton `{r}` per region, then the set of all regions (the node set).
-    sets: Vec<Vec<RegionId>>,
+    /// Material sets: singleton `{r}` per region first, then node sets.
+    msets: MaterialSets,
+    /// Leaves of the element's majorant partition per axis (`[1, 1, 1]`: the element is a leaf).
+    grid: [u32; 3],
+    /// Material set of each leaf, then of the prototype's internal node when `grid` splits it.
+    node_sets: Vec<MaterialSetId>,
 }
 
 /// Relation of two shapes.
@@ -300,21 +311,34 @@ fn disjoint(a: &Shape, b: &Shape) -> bool {
     }
 }
 
-/// Volume of the union of `members` (indices into `shapes`) when it is exactly the sum of the
-/// outermost members: those must be pairwise disjoint. `None` otherwise.
+/// Volume of the union of `members` (indices into `shapes`): the sum of the outermost members.
+/// Shapes are nested or disjoint (checked at build), so those are pairwise disjoint; `None` if
+/// they somehow are not.
 fn union_volume(shapes: &[Shape], members: &[usize]) -> Option<f64> {
-    // Outermost: not contained in another member (identical shapes: the lowest index is kept).
-    let outer: Vec<usize> = members
-        .iter()
-        .copied()
-        .filter(|&j| !members.iter().any(|&k| k != j && contains(&shapes[k], &shapes[j]) && (!contains(&shapes[j], &shapes[k]) || k < j)))
-        .collect();
+    // Outermost: not contained in another member.
+    let outer: Vec<usize> = members.iter().copied().filter(|&j| !members.iter().any(|&k| k != j && contains(&shapes[k], &shapes[j]))).collect();
     for (x, &i) in outer.iter().enumerate() {
         if outer[x + 1..].iter().any(|&j| !disjoint(&shapes[i], &shapes[j])) {
             return None;
         }
     }
     Some(outer.iter().map(|&i| shapes[i].volume()).sum())
+}
+
+/// The innermost shape containing `p` (smallest volume, then lowest index), skipping `skip`.
+/// Shapes are nested or disjoint, so the containing shapes form a chain.
+fn innermost(shapes: &[Shape], p: Point3, skip: Option<usize>) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, s) in shapes.iter().enumerate() {
+        if Some(i) == skip || s.signed_distance(p) > 0.0 {
+            continue;
+        }
+        let v = s.volume();
+        if best.is_none_or(|(_, bv)| v < bv) {
+            best = Some((i, v));
+        }
+    }
+    best.map(|b| b.0)
 }
 
 /// Exact volume of each local cell (`n` shape cells, then the background) in the element box.
@@ -326,14 +350,7 @@ fn local_volumes(shapes: &[Shape], ebox: &Aabb) -> Vec<Option<f64>> {
             if !contains(&bx, s) {
                 return None;
             }
-            let mut nested = Vec::new();
-            for (j, o) in shapes[..c].iter().enumerate() {
-                if contains(s, o) {
-                    nested.push(j);
-                } else if !disjoint(s, o) {
-                    return None;
-                }
-            }
+            let nested: Vec<usize> = (0..shapes.len()).filter(|&j| j != c && contains(s, &shapes[j])).collect();
             Some(s.volume() - union_volume(shapes, &nested)?)
         })();
         out.push(exact);
@@ -361,8 +378,8 @@ fn box_exit(o: Point3, d: Vector3, b: &Aabb) -> (f64, usize) {
 }
 
 impl AnalyticWorld {
-    /// A flat world: `shapes` (priority order, inner first) in `domain`, with one action per
-    /// domain face (`-x,+x,-y,+y,-z,+z`).
+    /// A flat world: `shapes` (pairwise nested or disjoint, in any order) in `domain`, with one
+    /// action per domain face (`-x,+x,-y,+y,-z,+z`).
     pub fn new(shapes: Vec<Shape>, domain: Aabb, actions: [FaceAction; 6]) -> Result<Self> {
         Self::build(shapes, None, domain, actions)
     }
@@ -447,6 +464,18 @@ impl AnalyticWorld {
                 }
             }
         }
+        for i in 0..n {
+            for j in i + 1..n {
+                let (a, b) = (&shapes[i], &shapes[j]);
+                let related = disjoint(a, b) || contains(a, b) != contains(b, a);
+                if !related {
+                    issues.push(BuildIssue::new(
+                        "analytic.overlap",
+                        format!("shapes {i} and {j} overlap partly or coincide; shapes must be pairwise nested or disjoint"),
+                    ));
+                }
+            }
+        }
         for (k, act) in actions.iter().enumerate() {
             match act {
                 FaceAction::Transmit => issues.push(BuildIssue::new("analytic.action", format!("domain face {k} cannot transmit"))),
@@ -460,15 +489,15 @@ impl AnalyticWorld {
         if !issues.is_empty() {
             return Err(RtError::Build(issues));
         }
-        let mut regions: Vec<RegionInfo> = (0..n).map(|i| RegionInfo { entity: None, name: format!("shape{i}"), implicit_complement: false }).collect();
-        regions.push(RegionInfo { entity: None, name: "background".into(), implicit_complement: true });
+        let mut regions: Vec<RegionInfo> = (0..n).map(|i| RegionInfo::new(format!("shape{i}"))).collect();
+        regions.push(RegionInfo::new("background").as_implicit_complement());
         let bg = RegionId::new(n);
-        // Region across each shape surface: the first *other* shape containing a point just
-        // outside it, else the background (exact for properly nested shapes).
+        // Region across each shape surface: the innermost *other* shape containing a point just
+        // outside it, else the background.
         let mut surfaces: Vec<SurfaceInfo> = Vec::with_capacity(n + 6);
         for (i, s) in shapes.iter().enumerate() {
             let q = s.outside_sample();
-            let across = shapes.iter().enumerate().position(|(j, o)| j != i && o.signed_distance(q) <= 0.0).map_or(bg, RegionId::new);
+            let across = innermost(&shapes, q, Some(i)).map_or(bg, RegionId::new);
             surfaces.push(SurfaceInfo { entity: None, front: RegionId::new(i), back: across, boundary: None });
         }
         for act in actions {
@@ -489,8 +518,11 @@ impl AnalyticWorld {
             block_size: 256,
             recovery: RecoveryPolicy::Fail,
             volumes: Vec::new(),
-            sets: (0..=n).map(|r| vec![RegionId::new(r)]).chain(core::iter::once((0..=n).map(RegionId::new).collect())).collect(),
+            msets: MaterialSets::new(),
+            grid: [1, 1, 1],
+            node_sets: Vec::new(),
         };
+        w.index_nodes();
         w.volumes = local_volumes(&w.shapes, &w.ebox);
         w.info.faces = n + 6;
         w.info.exact_faces = n + 6;
@@ -525,6 +557,11 @@ impl AnalyticWorld {
         }
         for a in &self.actions {
             a.hash_into(&mut h);
+        }
+        // The default partition adds nothing, so worlds without a node grid keep their hash.
+        if self.grid != [1, 1, 1] {
+            h.write_u64(2);
+            self.grid.iter().for_each(|&g| h.write_u64(u64::from(g)));
         }
         h.finish()
     }
@@ -578,9 +615,9 @@ impl AnalyticWorld {
         v
     }
 
-    /// First shape containing the element-frame point `p` (or the background).
+    /// Innermost shape containing the element-frame point `p` (or the background).
     fn classify(&self, p: Point3) -> usize {
-        self.shapes.iter().position(|s| s.signed_distance(p) <= 0.0).unwrap_or(self.n())
+        innermost(&self.shapes, p, None).unwrap_or(self.n())
     }
 
     /// True if `p` is within the on-face tolerance of a lattice wall.
@@ -722,6 +759,10 @@ impl AnalyticWorld {
                 }
             }
         }
+        // A trailing grid only when not the default: older images decode unchanged.
+        if self.grid != [1, 1, 1] {
+            self.grid.iter().for_each(|&g| u(&mut o, u64::from(g)));
+        }
         o
     }
 
@@ -796,7 +837,13 @@ impl AnalyticWorld {
                 _ => return Err(RtError::CacheCorrupt("unknown action tag".into())),
             };
         }
-        Self::build(shapes, lattice, domain, actions)
+        let w = Self::build(shapes, lattice, domain, actions)?;
+        if r.0.is_empty() {
+            return Ok(w);
+        }
+        let mut g = || u32::try_from(r.u()?).map_err(|_| RtError::CacheCorrupt("grid exceeds u32".into()));
+        let grid = [g()?, g()?, g()?];
+        w.with_node_grid(grid)
     }
 }
 
@@ -1010,46 +1057,158 @@ impl AnalyticWorld {
     fn n_elems(&self) -> usize {
         self.dims().iter().product()
     }
-    /// The set of all regions (the set every leaf node carries).
-    fn node_set(&self) -> MaterialSetId {
-        MaterialSetId::new(self.n() + 1)
+    /// Number of leaves of the element's partition.
+    fn n_leaves(&self) -> usize {
+        self.grid.iter().map(|&g| g as usize).product()
     }
-    fn leaf_bounds(&self, e: usize) -> Aabb {
-        let idx = self.idx_of(e);
-        let lo = Point3::new(self.wall(idx, 0, false), self.wall(idx, 1, false), self.wall(idx, 2, false));
-        let hi = Point3::new(self.wall(idx, 0, true), self.wall(idx, 1, true), self.wall(idx, 2, true));
-        Aabb { lo, hi }
+    /// True when the element is split into several leaves (so an internal prototype node exists).
+    fn split(&self) -> bool {
+        self.n_leaves() > 1
+    }
+    /// Id of the prototype's internal node (only when the element is split).
+    fn proto_node(&self) -> NodeId {
+        NodeId::new(self.n_leaves())
+    }
+    /// Id of the lattice node (only with a lattice).
+    fn lattice_node(&self) -> NodeId {
+        NodeId::new(self.n_leaves() + usize::from(self.split()))
+    }
+    /// The set of all regions (the set of the prototype node).
+    fn all_set(&self) -> MaterialSetId {
+        *self.node_sets.last().expect("index_nodes ran")
+    }
+
+    /// Intern the singleton sets, then the leaf sets and the all-regions set.
+    fn index_nodes(&mut self) {
+        let n = self.n();
+        let mut m = MaterialSets::new();
+        for r in 0..=n {
+            m.intern([RegionId::new(r)]);
+        }
+        let mut node_sets = Vec::with_capacity(self.n_leaves() + 1);
+        for k in 0..self.n_leaves() {
+            let b = self.leaf_box(k);
+            let bx = Shape::Box { lo: b.lo, hi: b.hi };
+            // Conservative: shapes whose primitive meets the box; the background unless one
+            // shape swallows the whole box.
+            let mut regs: Vec<RegionId> = (0..n).filter(|&c| !disjoint(&self.shapes[c], &bx)).map(RegionId::new).collect();
+            if !self.shapes.iter().any(|s| contains(s, &bx)) {
+                regs.push(RegionId::new(n));
+            }
+            node_sets.push(m.intern(regs));
+        }
+        node_sets.push(m.intern((0..=n).map(RegionId::new)));
+        self.msets = m;
+        self.node_sets = node_sets;
+    }
+
+    /// Split the element into a regular grid of majorant-partition leaves, each with the set of
+    /// regions that may occur in it. Changes the structure hash only when the grid is not
+    /// `[1, 1, 1]`.
+    pub fn with_node_grid(mut self, grid: [u32; 3]) -> Result<Self> {
+        let count = grid.iter().try_fold(1usize, |acc, &g| acc.checked_mul(g as usize));
+        if grid.contains(&0) || count.is_none_or(|c| c > 1 << 16) {
+            return Err(RtError::InvalidInput("node grid needs between 1 and 65536 leaves"));
+        }
+        self.grid = grid;
+        self.index_nodes();
+        self.info.structure_hash = self.compute_hash();
+        Ok(self)
+    }
+
+    /// Box of leaf `k` in the element frame (x fastest). Faces shared by two leaves have
+    /// bit-identical coordinates, and the outer faces are the element box's.
+    fn leaf_box(&self, k: usize) -> Aabb {
+        let g = self.grid.map(|g| g as usize);
+        let idx = [k % g[0], (k / g[0]) % g[1], k / (g[0] * g[1])];
+        let at = |a: usize, i: usize| {
+            if i == 0 {
+                comp(self.ebox.lo, a)
+            } else if i == g[a] {
+                comp(self.ebox.hi, a)
+            } else {
+                comp(self.ebox.lo, a) + (comp(self.ebox.hi, a) - comp(self.ebox.lo, a)) * (i as f64) / (g[a] as f64)
+            }
+        };
+        Aabb {
+            lo: Point3::new(at(0, idx[0]), at(1, idx[1]), at(2, idx[2])),
+            hi: Point3::new(at(0, idx[0] + 1), at(1, idx[1] + 1), at(2, idx[2] + 1)),
+        }
+    }
+
+    /// Leaf containing the element-frame point `pl`; on a leaf wall the direction decides.
+    fn leaf_at(&self, pl: Point3, dir: Option<Vector3>) -> usize {
+        let g = self.grid.map(|g| g as usize);
+        let mut idx = [0usize; 3];
+        for (a, slot) in idx.iter_mut().enumerate() {
+            let (lo, hi) = (comp(self.ebox.lo, a), comp(self.ebox.hi, a));
+            let size = (hi - lo) / g[a] as f64;
+            let x = (comp(pl, a) - lo) / size;
+            let r = x.round();
+            let mut i = x.floor() as i64;
+            if (x - r).abs() * size <= self.tol.linear {
+                i = match dir.map(|d| compv(d, a)) {
+                    Some(v) if v > 0.0 => r as i64,
+                    _ => r as i64 - 1,
+                };
+            }
+            *slot = i.clamp(0, g[a] as i64 - 1) as usize;
+        }
+        idx[0] + g[0] * (idx[1] + g[1] * idx[2])
+    }
+
+    /// Element index of a level path (0 without a lattice).
+    fn instance_of(&self, levels: &[Level]) -> usize {
+        if self.lattice.is_some() { levels.first().map_or(0, |l| l.instance.get()) } else { 0 }
     }
 }
 
-/// Nodes: leaf `e` is element `e`; with a lattice the root is node `n_elems`, else leaf 0 is the root.
+/// Nodes of the prototype tree: leaves `0..g` (`g` = leaves per element, 1 by default); when the
+/// element is split, node `g` is the prototype's internal node; with a lattice the last node is
+/// the `Lattice` node and the root. Every element shares the prototype's nodes.
 impl HierarchyView for AnalyticWorld {
     fn node_count(&self) -> usize {
-        self.n_elems() + usize::from(self.lattice.is_some())
+        self.n_leaves() + usize::from(self.split()) + usize::from(self.lattice.is_some())
     }
     fn root(&self) -> NodeId {
-        NodeId::new(if self.lattice.is_some() { self.n_elems() } else { 0 })
+        if self.lattice.is_some() {
+            self.lattice_node()
+        } else if self.split() {
+            self.proto_node()
+        } else {
+            NodeId::new(0)
+        }
     }
     fn node(&self, n: NodeId) -> Option<NodeInfo> {
-        let ne = self.n_elems();
-        let cells = self.n_local() as u32;
-        if n.get() < ne {
-            let parent = if self.lattice.is_some() { NodeId::new(ne) } else { NodeId::NONE };
-            Some(NodeInfo::new(n, parent, self.leaf_bounds(n.get()), NodeKind::Analytic, self.node_set(), cells))
-        } else if self.lattice.is_some() && n.get() == ne {
-            Some(NodeInfo::new(n, NodeId::NONE, self.domain, NodeKind::Internal, self.node_set(), cells * ne as u32))
+        let g = self.n_leaves();
+        let nl = self.n_local() as u32;
+        let above = if self.lattice.is_some() { self.lattice_node() } else { NodeId::NONE };
+        if n.get() < g {
+            let parent = if self.split() { self.proto_node() } else { above };
+            let set = self.node_sets[n.get()];
+            let cells = self.msets.get(set).map_or(0, |s| s.len() as u32);
+            Some(NodeInfo::new(n, parent, self.leaf_box(n.get()), NodeKind::Analytic, set, cells))
+        } else if self.split() && n == self.proto_node() {
+            Some(NodeInfo::new(n, above, self.ebox, NodeKind::Internal, self.all_set(), nl))
+        } else if self.lattice.is_some() && n == self.lattice_node() {
+            Some(NodeInfo::new(n, NodeId::NONE, self.domain, NodeKind::Lattice, self.all_set(), nl * self.n_elems() as u32))
         } else {
             None
         }
     }
+    /// The lowest-id leaf whose set contains the cell's region (a leaf that meets the cell).
     fn node_of_cell(&self, c: CellId) -> Option<NodeId> {
-        (c.get() < self.n_cells()).then(|| NodeId::new(c.get() / self.n_local()))
+        if c.get() >= self.n_cells() {
+            return None;
+        }
+        let r = RegionId::new(c.get() % self.n_local());
+        (0..self.n_leaves()).find(|&k| self.msets.get(self.node_sets[k]).is_some_and(|s| s.contains(&r))).map(NodeId::new)
     }
     fn set_count(&self) -> usize {
-        self.sets.len()
+        self.msets.len()
     }
     fn set_regions(&self, s: MaterialSetId) -> Option<&[RegionId]> {
-        self.sets.get(s.get()).map(Vec::as_slice)
+        self.msets.get(s)
     }
     fn region_set(&self, r: RegionId) -> Option<MaterialSetId> {
         (r.get() <= self.n()).then(|| MaterialSetId::new(r.get()))
@@ -1064,21 +1223,37 @@ impl MajorantTracker for AnalyticWorld {
     fn advance_segment(&self, st: &mut TrackState, q: &SegmentQuery<'_>, scratch: &mut Scratch) -> Result<FlightSegment> {
         let (first, region, face_in) = (st.cell, st.region, st.entered_via);
         let nl = self.n_local();
-        let node = NodeId::new(if first.is_none() { 0 } else { first.get() / nl });
-        let mode = choose_mode(q.policy, q.table, self.node_set(), q.band, nl);
-        let set = match mode {
-            TrackMode::Surface => MaterialSetId::new(region.get().min(self.n())),
-            TrackMode::Delta => self.node_set(),
+        let located = !first.is_none() && first.get() < self.n_cells();
+        // The leaf the segment starts in and the distance to its wall.
+        let (node, leaf_exit) = if located {
+            let pl = shift(st.pos, self.offset(self.idx_of(first.get() / nl)));
+            let k = self.leaf_at(pl, Some(st.dir));
+            (NodeId::new(k), box_exit(pl, st.dir, &self.leaf_box(k)).0)
+        } else {
+            (NodeId::new(0), f64::INFINITY)
         };
-        let sigma_m = q.table.majorant(set, q.band).ok_or(RtError::UnknownId { kind: "material set", id: set.0 })?;
+        // The one majorant entry this call reads, validated before the state moves.
+        let sigma_m = q.input.majorant(node)?;
+        scratch.counters.node_visits += 1;
+        let mode = choose_mode(q.policy, node, &q.input);
+        let set = self.node_sets[node.get()];
+        let cut_at_leaf = mode == TrackMode::Delta && self.split();
         let mut total = 0.0;
         let mut merged = 0u32;
         let mut end;
         loop {
-            let s = self.step(st, q.max_dist - total, scratch)?;
+            let remaining = q.max_dist - total;
+            let limit = if cut_at_leaf { remaining.min((leaf_exit - total).max(0.0)) } else { remaining };
+            let s = self.step(st, limit, scratch)?;
+            scratch.counters.steps += 1;
             total += s.dist;
             merged += 1;
             end = s.end;
+            if cut_at_leaf && matches!(end, StepEnd::Limit) && limit < remaining {
+                // Reached the leaf wall inside a cell: a node wall is not a model face.
+                end = StepEnd::SlotChange { to_cell: st.cell };
+                break;
+            }
             // Delta runs to the node wall (or limit); region scale merges same-region steps.
             let more = match mode {
                 TrackMode::Delta => matches!(end, StepEnd::CellFace { .. } | StepEnd::RegionBoundary { .. }) && !st.cell.is_none(),
@@ -1100,23 +1275,33 @@ impl MajorantTracker for AnalyticWorld {
             .with_end(end))
     }
 
-    fn locate_in_node(&self, node: NodeId, p: Point3, dir: Option<Vector3>, _scratch: &mut Scratch) -> Result<Located> {
-        if node.get() >= self.n_elems() {
+    fn locate_in_node(&self, node: NodeId, levels: &[Level], p: Point3, dir: Option<Vector3>, scratch: &mut Scratch) -> Result<Located> {
+        if node.get() >= self.node_count() {
             return Err(RtError::UnknownId { kind: "node", id: node.0 });
         }
-        let idx = self.idx_of(node.get());
+        let e = self.instance_of(levels);
+        if e >= self.n_elems() {
+            return Err(RtError::InvalidInput("level path names an element outside the lattice"));
+        }
+        let idx = self.idx_of(e);
         let pl = shift(p, self.offset(idx));
         let tol = self.tol.linear;
-        if (0..3).any(|a| comp(pl, a) < comp(self.ebox.lo, a) - tol || comp(pl, a) > comp(self.ebox.hi, a) + tol) {
+        let bounds = match self.node(node) {
+            Some(n) if n.kind == NodeKind::Lattice => self.ebox,
+            Some(n) => n.bounds,
+            None => return Err(RtError::UnknownId { kind: "node", id: node.0 }),
+        };
+        if (0..3).any(|a| comp(pl, a) < comp(bounds.lo, a) - tol || comp(pl, a) > comp(bounds.hi, a) + tol) {
             return Err(RtError::InvalidInput("point is outside the node"));
         }
+        scratch.counters.locate_candidates += self.n_local() as u64;
         let on_face = self.shapes.iter().position(|s| s.signed_distance(pl).abs() <= tol).map(FaceId::new);
         let q = match (on_face, dir) {
             (Some(_), Some(d)) => Point3::new(pl.x + d.x * tol * 10.0, pl.y + d.y * tol * 10.0, pl.z + d.z * tol * 10.0),
             _ => pl,
         };
         let c = self.classify(q);
-        Ok(Located::new(CellId::new(node.get() * self.n_local() + c), RegionId::new(c), on_face).with_levels(self.levels_for(node.get(), idx)))
+        Ok(Located::new(CellId::new(e * self.n_local() + c), RegionId::new(c), on_face).with_levels(self.levels_for(e, idx)))
     }
 
     /// Distance to the nearest shape surface or element wall (a lower bound of every cell change).
@@ -1812,11 +1997,21 @@ mod tests {
         assert!((vols.iter().sum::<f64>() - 1000.0).abs() < 1e-9);
         assert_eq!(w.cell_volume(CellId::new(3)), None);
         assert_eq!(w.cell_volume(CellId::NONE), None);
-        // Partly overlapping spheres: the overlapped cell and the background are not exact.
-        let o = world(vec![sphere(1.0), Shape::Sphere { center: p(1.0, 0.0, 0.0), radius: 1.0 }], vac());
-        assert!(o.cell_volume(CellId::new(0)).is_some());
-        assert_eq!(o.cell_volume(CellId::new(1)), None);
-        assert_eq!(o.cell_volume(CellId::new(2)), None);
+        // Partly overlapping spheres are a build error: cells are disjoint, never resolved by order.
+        let two = vec![sphere(1.0), Shape::Sphere { center: p(1.0, 0.0, 0.0), radius: 1.0 }];
+        match AnalyticWorld::simple(two, domain(), vac()) {
+            Err(RtError::Build(issues)) => assert!(issues.iter().any(|i| i.code == "analytic.overlap"), "{issues:?}"),
+            other => panic!("partial overlap must not build, got {other:?}"),
+        }
+        // So are identical shapes (two cells for one point).
+        assert!(AnalyticWorld::simple(vec![sphere(1.0), sphere(1.0)], domain(), vac()).is_err());
+        // Order carries no priority: outer-first gives the same cells (the innermost shape wins).
+        let rev = world(vec![sphere(2.0), sphere(1.0)], vac());
+        let mut sc = Scratch::new();
+        let mut at = |w: &AnalyticWorld, x: f64| w.locate(p(x, 0.0, 0.0), None, None, &mut sc).unwrap().region;
+        let got = (at(&rev, 0.5), at(&rev, 1.5), at(&rev, 3.0));
+        assert_eq!(got, (RegionId::new(1), RegionId::new(0), RegionId::new(2)));
+        assert!((rev.cell_volume(CellId::new(0)).unwrap() - (ball(2.0) - ball(1.0))).abs() < 1e-12);
         // A shape leaving the domain is not exact either.
         let big = world(vec![sphere(9.0)], vac());
         assert_eq!(big.cell_volume(CellId::new(0)), None);

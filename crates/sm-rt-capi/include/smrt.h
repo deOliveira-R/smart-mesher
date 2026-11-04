@@ -36,6 +36,7 @@ extern "C" {
 #define SMRT_ERR_BAD_ALBEDO (-9)
 #define SMRT_ERR_BIN_COUNT (-10)
 #define SMRT_ERR_INVALID_INPUT (-11)
+#define SMRT_ERR_MAJORANT (-12)
 #define SMRT_ERR_NULL (-100)
 #define SMRT_ERR_PANIC (-101)
 #define SMRT_ERR_BAD_ARG (-102)
@@ -72,6 +73,14 @@ extern "C" {
 #define SMRT_ORIENT_ANY 0
 
 #define SMRT_LOST_NONE 0
+#define SMRT_LOST_NO_CELL 1
+#define SMRT_LOST_NO_EXIT_FACE 2
+#define SMRT_LOST_INCONSISTENT_ENTRY 3
+#define SMRT_LOST_NON_FINITE 4
+#define SMRT_LOST_MAX_STEPS 5
+#define SMRT_LOST_RECOVERY_FAILED 6
+#define SMRT_LOST_SENSE_MISMATCH 7
+#define SMRT_LOST_OVERLAP 8
 
 /* ---- handles ------------------------------------------------------------------------------ */
 typedef struct SmrtTracker SmrtTracker; /* opaque, shared, read-only */

@@ -3,6 +3,7 @@
 use crate::boundary::FaceAction;
 use crate::error::LostInfo;
 use crate::ids::{CellId, ComponentId, FaceId, InstanceId, RegionId, SurfaceId};
+use crate::segments::WorkCounters;
 use sm_core::{EntityId, Point3, Vector3};
 use smallvec::SmallVec;
 
@@ -76,6 +77,9 @@ pub struct Scratch {
     pub ids: Vec<u32>,
     /// General real buffer.
     pub work: Vec<f64>,
+    /// Deterministic work counters (benchmark with these, not clocks). Kept by [`Scratch::clear`];
+    /// reset with [`Scratch::clear_counters`]. Never read by a result.
+    pub counters: WorkCounters,
 }
 
 impl Scratch {
@@ -85,13 +89,17 @@ impl Scratch {
     }
     /// Scratch with capacity for `n` entries in each buffer.
     pub fn with_capacity(n: usize) -> Self {
-        Self { hits: Vec::with_capacity(n), ids: Vec::with_capacity(n), work: Vec::with_capacity(n) }
+        Self { hits: Vec::with_capacity(n), ids: Vec::with_capacity(n), work: Vec::with_capacity(n), counters: WorkCounters::default() }
     }
-    /// Empty every buffer, keeping capacity.
+    /// Empty every buffer, keeping capacity and the work counters.
     pub fn clear(&mut self) {
         self.hits.clear();
         self.ids.clear();
         self.work.clear();
+    }
+    /// Zero the work counters.
+    pub fn clear_counters(&mut self) {
+        self.counters = WorkCounters::default();
     }
 }
 
@@ -109,7 +117,9 @@ pub enum StepEnd {
         to: CellId,
     },
     /// Crossed a lattice or instance wall that is not a model face: the cell changes, the
-    /// region need not. State is in `to_cell`, `levels` updated.
+    /// region need not. State is in `to_cell`, `levels` updated. A delta segment that ends at a
+    /// wall of the majorant partition inside a cell also reports this, with `to_cell` the same
+    /// cell and `levels` unchanged.
     SlotChange {
         /// The cell entered.
         to_cell: CellId,
@@ -259,16 +269,24 @@ pub struct RegionInfo {
     pub name: String,
     /// True for the implicit complement.
     pub implicit_complement: bool,
+    /// Integer tags attached to the region (DAGMC-style properties, for example a group id),
+    /// in insertion order. Empty unless the producer sets them.
+    pub tags: Vec<(String, i64)>,
 }
 
 impl RegionInfo {
     /// A named ordinary region (not the implicit complement), with no model entity.
     pub fn new(name: impl Into<String>) -> Self {
-        Self { entity: None, name: name.into(), implicit_complement: false }
+        Self { entity: None, name: name.into(), implicit_complement: false, tags: Vec::new() }
     }
     /// Link the region to its model entity.
     pub fn with_entity(mut self, e: EntityId) -> Self {
         self.entity = Some(e);
+        self
+    }
+    /// Attach an integer tag.
+    pub fn with_tag(mut self, key: impl Into<String>, value: i64) -> Self {
+        self.tags.push((key.into(), value));
         self
     }
     /// Mark the region as the implicit complement.

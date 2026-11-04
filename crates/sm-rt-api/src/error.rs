@@ -6,7 +6,7 @@
 //! the hot path never allocates an error and a lost particle carries enough data to be
 //! diagnosed (`LostInfo`).
 
-use crate::ids::{CellId, FaceId, SurfaceId};
+use crate::ids::{CellId, FaceId, NodeId, SurfaceId};
 use sm_core::{EntityId, Point3, Vector3};
 use sm_geom_api::GeomError;
 
@@ -27,6 +27,13 @@ pub enum LostCause {
     MaxStepsExceeded,
     /// Recovery by nudge + re-location was tried and failed.
     RecoveryFailed,
+    /// The first crossing found is an entry and there is no exit within a few tolerances (a
+    /// leak in a facet boundary or a sense error). `LostInfo::retries` counts the nudges tried.
+    SenseMismatch,
+    /// Two cells (or placements) that must be disjoint both contain the point. The step ends
+    /// `Lost` with the state unchanged and is never retried by nudging: the model is wrong, not
+    /// the arithmetic. `locate` reports it on the same path as `NoCellContainsPoint`.
+    Overlap,
 }
 
 /// A located, linked description of a lost particle. This is what `mesh.validate` /
@@ -48,12 +55,19 @@ pub struct LostInfo {
     pub nearest_surface: Option<SurfaceId>,
     /// Model entity (volume/face) the last cell is classified on, when known.
     pub classified_on: Option<EntityId>,
+    /// Nudge retries attempted before giving up (`0` when none were tried).
+    pub retries: u32,
 }
 
 impl LostInfo {
     /// Construct (the type is `#[non_exhaustive]`).
     pub const fn new(cause: LostCause, pos: Point3, dir: Vector3, last_cell: CellId) -> Self {
-        Self { cause, pos, dir, last_cell, last_face: None, nearest_surface: None, classified_on: None }
+        Self { cause, pos, dir, last_cell, last_face: None, nearest_surface: None, classified_on: None, retries: 0 }
+    }
+    /// Record the number of nudge retries attempted.
+    pub const fn with_retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
+        self
     }
 }
 
@@ -157,18 +171,30 @@ pub enum RtError {
     /// A geometry operation failed (analytic refine, ray hits).
     #[error(transparent)]
     Geom(#[from] GeomError),
-    /// A total cross section exceeded the majorant of the node's material set. Never clamped:
-    /// the table or the material assignment is wrong.
-    #[error("majorant violated: sigma_t {sigma_t} exceeds sigma_M {majorant} (material set {set}, band {band})")]
+    /// A caller-supplied total cross section exceeded the majorant of the segment's node.
+    /// Never clamped: the majorant slice or the material assignment is wrong. The flight state
+    /// is not advanced.
+    #[error("majorant violated: sigma_t {sigma_t} exceeds sigma_M {majorant} (node {}, cell {})", .node.0, .cell.0)]
     MajorantViolated {
-        /// The material set.
-        set: u32,
-        /// The energy band.
-        band: u32,
+        /// The node whose majorant was exceeded.
+        node: NodeId,
         /// The offending total cross section.
         sigma_t: f64,
-        /// The tabulated majorant.
+        /// The caller's majorant of that node.
         majorant: f64,
+        /// The point of the collision (the last probed point, else the segment start).
+        pos: Point3,
+        /// The cell at that point (the segment's first cell when nothing was probed).
+        cell: CellId,
+    },
+    /// A majorant entry read by a call is NaN, infinite or negative. Shares code -11 with
+    /// [`RtError::InvalidInput`] (an invalid argument) but names the node.
+    #[error("invalid majorant {value} for node {}: must be finite and >= 0", .node.0)]
+    InvalidMajorant {
+        /// The node whose entry is bad.
+        node: NodeId,
+        /// The offending value.
+        value: f64,
     },
 }
 
@@ -192,6 +218,8 @@ impl RtError {
     /// | `InvalidInput` | -11 |
     /// | `MajorantViolated` | -12 |
     ///
+    /// `InvalidMajorant` reports as -11 (an `InvalidInput` that names the node).
+    ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
         match self {
@@ -205,7 +233,7 @@ impl RtError {
             Self::Geom(_) => -8,
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
-            Self::InvalidInput(_) => -11,
+            Self::InvalidInput(_) | Self::InvalidMajorant { .. } => -11,
             Self::MajorantViolated { .. } => -12,
         }
     }
@@ -220,7 +248,7 @@ mod tests {
 
     #[test]
     fn codes_are_frozen() {
-        let all: [(RtError, i32); 11] = [
+        let all: [(RtError, i32); 12] = [
             (RtError::Build(vec![]), -1),
             (RtError::BadDirection { norm: 0.0 }, -2),
             (RtError::NonFinite("x"), -3),
@@ -232,6 +260,10 @@ mod tests {
             (RtError::BadAlbedo { value: 2.0 }, -9),
             (RtError::BinCountMismatch { left: 1, right: 2 }, -10),
             (RtError::InvalidInput("x"), -11),
+            (
+                RtError::MajorantViolated { node: NodeId(0), sigma_t: 2.0, majorant: 1.0, pos: Point3::new(0.0, 0.0, 0.0), cell: CellId(0) },
+                -12,
+            ),
         ];
         for (e, c) in &all {
             assert_eq!(e.code(), *c, "{e}");
@@ -241,6 +273,7 @@ mod tests {
         codes.dedup();
         assert_eq!(codes.len(), all.len());
         assert!(codes.iter().all(|&c| c < 0 && c > -100));
+        assert_eq!(RtError::InvalidMajorant { node: NodeId(3), value: f64::NAN }.code(), -11);
     }
 
     #[test]

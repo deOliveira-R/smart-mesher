@@ -143,9 +143,10 @@ pub enum ComponentKind {
         /// Index into the inputs slice.
         input: usize,
     },
-    /// Placed children; where placements overlap the lowest index wins (CSG-like priority).
+    /// Placed children. Placements must be disjoint; overlapping placements are a build error
+    /// (`world.overlap`).
     Union {
-        /// Placements, in priority order.
+        /// Placements; order carries no priority.
         placements: Vec<Placement>,
     },
     /// A lattice.

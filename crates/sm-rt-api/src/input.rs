@@ -11,6 +11,7 @@
 
 use crate::boundary::BoundarySpec;
 use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher};
+use crate::csg::CsgLeafInput;
 use crate::error::{BuildIssue, Result, RtError};
 use crate::tracker::Tracker;
 use sm_core::{EntityId, Point3};
@@ -78,7 +79,44 @@ pub enum FacetFallback {
     Always,
 }
 
+/// Options of the disjoint majorant partition (the kd/octree over a mesh leaf that delta tracking
+/// and `rt.partition` use). The default is "no partition".
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct PartitionOptions {
+    /// Build the partition. Off by default: a build without it is bit-identical to one from
+    /// before the partition existed.
+    pub enabled: bool,
+    /// Split a node while it holds more than this many candidate cells.
+    pub leaf_cells: u32,
+    /// Maximum depth of the partition tree.
+    pub max_depth: u32,
+    /// Build the per-region structure that lets `fire` jump over a region
+    /// ([`crate::TrackerCaps::REGION_JUMP`]). Results equal the walk's within `1e-12 (1 + d)`.
+    pub region_jump: bool,
+}
+
+impl Default for PartitionOptions {
+    fn default() -> Self {
+        Self { enabled: false, leaf_cells: 8, max_depth: 24, region_jump: false }
+    }
+}
+
+impl PartitionOptions {
+    /// Hash of every field.
+    pub fn content_hash(&self) -> ContentHash {
+        let mut h = ContentHasher::new();
+        h.write_u64(u64::from(self.enabled));
+        h.write_u64(u64::from(self.leaf_cells));
+        h.write_u64(u64::from(self.max_depth));
+        h.write_u64(u64::from(self.region_jump));
+        h.finish()
+    }
+}
+
 /// Tunables of a build. Defaults are part of the options hash.
+///
+/// `BuildOptions` is `Copy` (frozen: `tests/freeze.rs` asserts it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct BuildOptions {
@@ -103,6 +141,9 @@ pub struct BuildOptions {
     /// Event cap per `fire` / `trace` call (a loop guard); exceeding it is
     /// `LostCause::MaxStepsExceeded`.
     pub max_events: u32,
+    /// Majorant partition options. Mixed into the options hash only when not the default, so
+    /// cache keys of builds that do not use it are unchanged.
+    pub partition: PartitionOptions,
 }
 
 impl Default for BuildOptions {
@@ -116,11 +157,18 @@ impl Default for BuildOptions {
             precision: Precision::F64,
             facets: FacetFallback::NoImplicitOnly,
             max_events: 1_000_000,
+            partition: PartitionOptions::default(),
         }
     }
 }
 
 impl BuildOptions {
+    /// The same options with the given partition options.
+    pub fn with_partition(mut self, partition: PartitionOptions) -> Self {
+        self.partition = partition;
+        self
+    }
+
     /// Hash for the cache key. Covers every field.
     pub fn content_hash(&self) -> ContentHash {
         let mut h = ContentHasher::new();
@@ -146,6 +194,9 @@ impl BuildOptions {
             FacetFallback::Always => 2,
         });
         h.write_u64(u64::from(self.max_events));
+        if self.partition != PartitionOptions::default() {
+            h.write_hash(self.partition.content_hash());
+        }
         h.finish()
     }
 }
@@ -443,6 +494,41 @@ pub fn facet_sides_from_topo(view: &dyn TopologyView, face: EntityId) -> Option<
     view.face_sides(face).map(|s| (s.left, s.right))
 }
 
+/// One leaf of a hierarchical input: the geometry a `ComponentKind::Leaf { input: i }` stands for.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum LeafInput<'a> {
+    /// A polyhedral volume mesh.
+    Mesh(MeshInput<'a>),
+    /// Triangles only.
+    Facets(&'a FacetInput),
+    /// CSG cells (see [`crate::csg`]).
+    Csg(CsgLeafInput<'a>),
+}
+
+/// A hierarchical world over leaf inputs: the world graph, its leaves (indexed by
+/// `ComponentKind::Leaf { input }`) and the model boundary conditions.
+///
+/// `cache_key` mixes `WorldSpec::content_hash` and each leaf's key. Instances of one prototype
+/// share a prototype tracker; the input holds each leaf once.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct HierInput<'a> {
+    /// Components, placements and lattices.
+    pub spec: &'a crate::world::WorldSpec,
+    /// Leaf inputs, indexed by `ComponentKind::Leaf { input }`.
+    pub leaves: &'a [LeafInput<'a>],
+    /// Boundary conditions of the world.
+    pub boundaries: &'a BoundarySpec,
+}
+
+impl<'a> HierInput<'a> {
+    /// Construct (the type is `#[non_exhaustive]`).
+    pub fn new(spec: &'a crate::world::WorldSpec, leaves: &'a [LeafInput<'a>], boundaries: &'a BoundarySpec) -> Self {
+        Self { spec, leaves, boundaries }
+    }
+}
+
 /// Any buildable input.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
@@ -453,8 +539,11 @@ pub enum BuildInput<'a> {
     Facets(&'a FacetInput, &'a BoundarySpec),
     /// B-rep with facets.
     Brep(BrepInput<'a>),
-    /// A hierarchical world over previously built trackers.
+    /// A hierarchical world over previously built trackers. Still `Unsupported` by real builders;
+    /// use [`BuildInput::Hier`].
     World(&'a crate::world::WorldSpec),
+    /// A hierarchical world over leaf inputs (meshes, facets, CSG).
+    Hier(HierInput<'a>),
 }
 
 /// What a build found besides the tracker. Nothing here is fatal (fatal problems are
@@ -485,10 +574,25 @@ pub trait TrackerBuilder: Send + Sync {
     /// result has the same `structure_hash` as `build` of the same inputs, and
     /// `report.from_cache` is true.
     fn load(&self, input: &BuildInput<'_>, opts: &BuildOptions, image: &CacheImage) -> Result<(Box<dyn Tracker>, BuildReport)>;
+    /// Open a tracker from a cache image alone, without the build input (the reader path of the
+    /// exported `.smrt` file: a transport code has no mesh to give). The result has the
+    /// `structure_hash` recorded in the image and `report.from_cache == true`. The default is
+    /// `Err(Unsupported)`.
+    fn load_image(&self, _image: &CacheImage) -> Result<(Box<dyn Tracker>, BuildReport)> {
+        Err(RtError::Unsupported("this builder cannot open a cache image without its input"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_partition_leaves_the_options_hash_alone() {
+        // The default hash is the pre-partition hash: the partition block is skipped.
+        let o = BuildOptions::default();
+        assert_eq!(o.with_partition(PartitionOptions::default()).content_hash(), o.content_hash());
+        assert!(!PartitionOptions::default().enabled);
+    }
+
     #[test]
     fn nudge_rule_is_pinned_and_not_cumulative() {
         let tol = ModelTolerance::DEFAULT;
@@ -621,6 +725,10 @@ mod tests {
         variants.push(p.content_hash());
         let mut p = o;
         p.max_events += 1;
+        variants.push(p.content_hash());
+        let p = o.with_partition(PartitionOptions { enabled: true, ..PartitionOptions::default() });
+        variants.push(p.content_hash());
+        let p = o.with_partition(PartitionOptions { leaf_cells: 9, ..PartitionOptions::default() });
         variants.push(p.content_hash());
         let n = variants.len();
         variants.sort();

@@ -95,7 +95,7 @@ fn header_and_fortran_list_exactly_the_exported_symbols() {
     assert_eq!(in_th, hooks);
 
     // Status constants agree across Rust, C and Fortran.
-    let consts: [(&str, i32); 17] = [
+    let consts: [(&str, i32); 26] = [
         ("SMRT_OK", SMRT_OK),
         ("SMRT_NO_HIT", SMRT_NO_HIT),
         ("SMRT_ERR_BUILD", SMRT_ERR_BUILD),
@@ -109,6 +109,15 @@ fn header_and_fortran_list_exactly_the_exported_symbols() {
         ("SMRT_ERR_BAD_ALBEDO", SMRT_ERR_BAD_ALBEDO),
         ("SMRT_ERR_BIN_COUNT", SMRT_ERR_BIN_COUNT),
         ("SMRT_ERR_INVALID_INPUT", SMRT_ERR_INVALID_INPUT),
+        ("SMRT_ERR_MAJORANT", SMRT_ERR_MAJORANT),
+        ("SMRT_LOST_NO_CELL", SMRT_LOST_NO_CELL),
+        ("SMRT_LOST_NO_EXIT_FACE", SMRT_LOST_NO_EXIT_FACE),
+        ("SMRT_LOST_INCONSISTENT_ENTRY", SMRT_LOST_INCONSISTENT_ENTRY),
+        ("SMRT_LOST_NON_FINITE", SMRT_LOST_NON_FINITE),
+        ("SMRT_LOST_MAX_STEPS", SMRT_LOST_MAX_STEPS),
+        ("SMRT_LOST_RECOVERY_FAILED", SMRT_LOST_RECOVERY_FAILED),
+        ("SMRT_LOST_SENSE_MISMATCH", SMRT_LOST_SENSE_MISMATCH),
+        ("SMRT_LOST_OVERLAP", SMRT_LOST_OVERLAP),
         ("SMRT_ERR_NULL", SMRT_ERR_NULL),
         ("SMRT_ERR_PANIC", SMRT_ERR_PANIC),
         ("SMRT_ERR_BAD_ARG", SMRT_ERR_BAD_ARG),
