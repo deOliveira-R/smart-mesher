@@ -55,6 +55,24 @@ pub enum PolyError {
         /// The face.
         face: FaceIx,
     },
+    /// A dual cell is not star-shaped (or has non-positive volume) and the wedge repair could
+    /// not fix it, so the output would fail `validate_geometry`. The cell is the dual of
+    /// `vertex` in `region`; `count` is the number of such cells (this is the first, by output
+    /// order).
+    #[error(
+        "dual cell of vertex {} in region {region:?} near ({:.6e}, {:.6e}, {:.6e}) is not star-shaped and could not be repaired ({count} such cell(s))",
+        vertex.0, at[0], at[1], at[2]
+    )]
+    UnrepairedCell {
+        /// The primal vertex whose dual cell failed.
+        vertex: VertexIx,
+        /// The model region of the cell.
+        region: EntityId,
+        /// Centroid of the failing cell (the cell's vertex mean if its volume is not positive).
+        at: [f64; 3],
+        /// Number of unrepaired cells.
+        count: usize,
+    },
     /// The mesh builder refused something.
     #[error(transparent)]
     Mesh(#[from] MeshError),
