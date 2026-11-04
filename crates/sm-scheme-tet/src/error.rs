@@ -49,11 +49,11 @@ pub enum TetError {
         index: u32,
     },
     /// A triangle (or one of its edges) could not be recovered without boundary Steiner points.
-    #[error("boundary recovery failed for triangle {tri} (edge {edge:?}): {reason}")]
+    #[error("boundary recovery failed for {} (edge {edge:?}): {reason}", tri.map_or_else(|| "an unknown triangle".to_string(), |t| format!("triangle {t}")))]
     RecoveryFailed {
-        /// The triangle that could not be recovered (a placeholder 0 when the reason says that
-        /// no triangle is known).
-        tri: u32,
+        /// The triangle that could not be recovered; `None` when no triangle is known (never a
+        /// placeholder index).
+        tri: Option<u32>,
         /// The edge that could not be recovered, if the failure is edge-specific.
         edge: Option<[u32; 2]>,
         /// What went wrong.
@@ -82,4 +82,18 @@ pub enum TetError {
     /// An internal invariant broke (a bug or a pathological input).
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TetError;
+
+    /// A recovery failure without a known triangle says so instead of naming one.
+    #[test]
+    fn recovery_failure_without_triangle_names_none() {
+        let e = TetError::RecoveryFailed { tri: None, edge: None, reason: "x".into() };
+        assert!(e.to_string().contains("unknown triangle"), "{e}");
+        let e = TetError::RecoveryFailed { tri: Some(7), edge: None, reason: "x".into() };
+        assert!(e.to_string().contains("triangle 7"), "{e}");
+    }
 }

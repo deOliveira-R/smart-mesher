@@ -38,6 +38,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_SPLITS: usize = 4096;
 /// Flips and splits of crossing edges per input triangle.
 const MAX_FACE_STEPS: usize = 8192;
+/// Rounds of clearing the edges that pierce the holes of a missing tiling, per input triangle.
+const MAX_HOLE_ROUNDS: usize = 8;
 /// Sweeps over the boundary Steiner points during suppression.
 const MAX_SWEEPS: usize = 8;
 /// [`Dt::remove_points`] does not try a point whose star has more tets than this.
@@ -237,7 +239,7 @@ fn key2(a: u32, b: u32) -> [u32; 2] {
 }
 
 fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError {
-    TetError::RecoveryFailed { tri, edge, reason: reason.into() }
+    TetError::RecoveryFailed { tri: Some(tri), edge, reason: reason.into() }
 }
 
 /// Intersection of the line through `p, q` with the plane of `a, b, c` (floating point).
@@ -705,7 +707,8 @@ impl Recover<'_> {
         }
         self.dt.pinned[p as usize] = true;
         self.bnd.on.insert(p, on);
-        self.n_boundary_steiner += 1;    }
+        self.n_boundary_steiner += 1;
+    }
 
     /// Record that subsegment `(u,w)` of an input edge was split at `p`.
     fn on_seg_split(&mut self, u: u32, w: u32, p: u32) -> u32 {
@@ -782,9 +785,66 @@ impl Recover<'_> {
             let refs: Vec<[V3; 3]> = ears.iter().map(|e| e.map(|i| self.dt.pts[i as usize])).collect();
             self.clear_crossings(tri, &refs, &mut vs)?;
         }
+        // The points of the facet are rounded off its plane, so the mesh faces between them can
+        // lie on the other side of an edge that touches the exact plane (an endpoint with
+        // orientation 0 never "crosses" it). Still without a tiling, some triangles of mesh
+        // edges between the points are not faces: the edges that pierce them go the same way.
+        for _ in 0..MAX_HOLE_ROUNDS {
+            if self.read_tiling(t, &poly, &vs).is_some() {
+                break;
+            }
+            let holes = self.hole_triangles(&vs);
+            if holes.is_empty() {
+                break;
+            }
+            let before = (vs.len(), self.flips, self.dt.pts.len());
+            self.clear_crossings(tri, &holes, &mut vs)?;
+            if before == (vs.len(), self.flips, self.dt.pts.len()) {
+                break;
+            }
+        }
         let tiles = self.read_tiling(t, &poly, &vs).ok_or_else(|| fail(tri, None, "triangle is not tiled by mesh faces after removing its crossing edges"))?;
         self.commit_tiles(tri, tiles);
         Ok(())
+    }
+
+    /// Triangles of mesh edges between the points `vs` that are not mesh faces (as point
+    /// triples, in sorted order of their ids): the holes a missing tile leaves, plus triangles
+    /// that enclose other points of `vs` (no edge without an endpoint in `vs` pierces those).
+    fn hole_triangles(&mut self, vs: &[u32]) -> Vec<[V3; 3]> {
+        let mut vset: Vec<u32> = vs.to_vec();
+        vset.sort_unstable();
+        let mut adj: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+        let mut faces: BTreeSet<[u32; 3]> = BTreeSet::new();
+        let mut star = Vec::new();
+        for &v in &vset {
+            self.dt.tds.star(v, &mut star);
+            for &tet in &star {
+                let w = self.dt.tds.verts[tet as usize];
+                for &x in &w {
+                    if x != v && x != GHOST && vset.binary_search(&x).is_ok() {
+                        adj.entry(v).or_default().insert(x);
+                    }
+                }
+                for i in 0..4 {
+                    let f = self.dt.tds.face(tet, i);
+                    if f.iter().all(|x| vset.binary_search(x).is_ok()) {
+                        faces.insert(sorted3(f[0], f[1], f[2]));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (&a, na) in &adj {
+            for &b in na.range(a + 1..) {
+                for &c in na.range(b + 1..) {
+                    if adj.get(&b).is_some_and(|nb| nb.contains(&c)) && !faces.contains(&[a, b, c]) {
+                        out.push([a, b, c].map(|i| self.dt.pts[i as usize]));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Remove every tet edge that crosses one of the reference triangles `refs` of input
@@ -1530,6 +1590,28 @@ mod tests {
         }
         let want = surf3::polyhedron_volume(&inp.points, &inp.tris);
         assert!((vol - want).abs() <= 1e-10 * want.abs().max(1.0), "{name}: volume {vol} vs {want}");
+    }
+
+    /// Complete recovery alone on the 64 x 64 tiled relief (`tiled_cube(64, 8, 2, 0.9)`): a
+    /// triangle there was not tiled (a mesh edge between the rounded points of a facet passed
+    /// through a hole the exact plane test never sees). Heavy (minutes), run by hand.
+    #[test]
+    #[ignore = "heavy: minutes in release"]
+    fn complete_recovery_alone_meshes_tiled_relief_n64() {
+        let n: u32 = 64;
+        let f = surf3::tri_cube(n);
+        let mut inp = SurfaceInput { points: f.points.clone(), tris: f.oriented_tris(0) };
+        let mut rng = surf3::SplitMix64(2);
+        let lim = 8.0 / f64::from(n);
+        for p in &mut inp.points {
+            if p[2] == 1.0 && p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 1.0 {
+                let (ix, iy) = ((p[0] * f64::from(n)).round() as u32, (p[1] * f64::from(n)).round() as u32);
+                if ix % 8 != 0 && iy % 8 != 0 {
+                    p[2] = 1.0 - 0.9 * lim * rng.unit().abs();
+                }
+            }
+        }
+        complete_only("tiled n64", &inp);
     }
 
     /// Complete recovery alone recovers every surf3 fixture (it is the fallback of the normal

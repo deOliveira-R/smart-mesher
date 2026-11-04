@@ -448,7 +448,7 @@ triangles finer or smooth the surface there). Violations are never hidden and ne
   `steiner::tests::bnd_index_follows_tiles_and_names_owners` checks the incremental lookup
   against a rebuild.
 
-**The tiled-relief cliff (round 5, investigated, not changed).** `tiled_cube(n, 8, 2, 0.9)` at
+**The tiled-relief cliff (round 5, investigated; root cause fixed in w3a-fu, see the end of this paragraph).** `tiled_cube(n, 8, 2, 0.9)` at
 n = 48 needs 355 temporary boundary points and 5 s; n = 64 needed 2 643 and 28 s (1.8 times the
 triangles). Instrumented (counters `n_recovery_restarts`, `n_boundary_steiner_discarded`):
 
@@ -477,6 +477,25 @@ fails another by chance is not safe to ship. The real fix is in complete recover
 (`recover_facet`: the rounding case in which no tiling shows up for a triangle), a different
 change. Work counters stay in tests (`int7::tiled_relief_work_per_triangle_is_bounded` asserts
 0 restarts at the sizes it runs); wall time stays in `record_tiled_relief`.
+
+*Fixed (w3a-fu).* Cause, found by dumping the failing triangle 26383: its tiling lacked one
+tile, (12934, 24925, 24928), whose three edges were mesh edges but which was not a face. The edge
+(12933, 24459) pierced it. 12933 lies exactly on the plane of the input triangle (orientation 0),
+so the exact test `ori(x) * ori(y) < 0` of `crossing_edge` never reports an edge that starts on
+the plane, while the tile lies through points rounded off the plane (an edge point has
+orientation +1, another -1). The ear triangulation of the polygon did not help either: the
+missing tile involves a corner and two edge points, not an ear. `recover_facet` now has a third
+stage: while no tiling shows up, the triangles of mesh edges between the points of the facet
+that are not mesh faces (`hole_triangles`, at most `MAX_HOLE_ROUNDS` rounds, stopping when a round
+changes nothing) are reference triangles for `clear_crossings`, which removes or splits the edges
+piercing them exactly like those of the exact triangle. Triangles that merely enclose other
+points of the facet are harmless there (no edge without an endpoint on the facet pierces them).
+Result: `tiled_cube(64, 8, 2, 0.9)` recovers at attempt 0 with 477 temporary boundary points, 0
+restarts, 0 discarded (was 2 643, 2 restarts, 1 312). Tests: `int7::tiled_relief_n64_recovers_without_restarts`
+(release) and the ignored `steiner::tests::complete_recovery_alone_meshes_tiled_relief_n64`.
+The restart loop keeps hint containment in `BTreeSet`s of coordinates (O(hints log n)).
+`TetError::RecoveryFailed::tri` is an `Option<u32>`: `None` where no triangle is known (it used
+to be a placeholder 0 that the canonical-order remap turned into a real-looking id).
 
 ## Quality definitions and the `sm_quality` cross-check
 

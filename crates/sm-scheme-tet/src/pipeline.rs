@@ -82,9 +82,9 @@ fn boundary_sizes(points: &[V3], tris: &[[u32; 3]], total: usize) -> Vec<f64> {
 /// component is tiny (a few dozen vertices). Such a body is one pocket: a single point that sees
 /// all of it (Schönhardt-like prisms and their affine images) is what recovery needs, while on
 /// larger surfaces a far-away centroid would only get in the way.
-fn pocket_point(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>) -> Option<V3> {
+fn pocket_point(points: &[V3], tris: &[[u32; 3]], tri: Option<u32>, edge: Option<[u32; 2]>) -> Option<V3> {
     const MAX_VERTS: usize = 64;
-    let t0 = tris.get(tri as usize)?;
+    let t0 = tris.get(tri? as usize)?;
     let mut by_vert: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
     for (i, t) in tris.iter().enumerate() {
         for &v in t {
@@ -114,9 +114,9 @@ fn pocket_point(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2
 
 /// A Steiner candidate inside the solid next to triangle `tri` (inward normal offset), tried
 /// when recovery fails around it and no other candidate was accepted.
-fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: u32, edge: Option<[u32; 2]>, attempt: usize, guard: &Guard<'_>) -> Option<V3> {
+fn steiner_near(points: &[V3], tris: &[[u32; 3]], tri: Option<u32>, edge: Option<[u32; 2]>, attempt: usize, guard: &Guard<'_>) -> Option<V3> {
     use crate::geom::{add, cross, dist, scale, sub};
-    let t = tris.get(tri as usize)?;
+    let t = tris.get(tri? as usize)?;
     let [a, b, c] = t.map(|i| points[i as usize]);
     let n = cross(sub(b, a), sub(c, a));
     let nl = crate::geom::dot(n, n).sqrt();
@@ -246,7 +246,7 @@ pub(crate) fn tetrahedralize_with(input: &SurfaceInput, opts: &TetOptions<'_>, c
     };
     run(&canonical, opts, stage_ms, complete_only, respace).map(remap_diags).map_err(|e| match e {
         TetError::InvertedShell { tri } => TetError::InvertedShell { tri: back(tri) },
-        TetError::RecoveryFailed { tri, edge, reason } => TetError::RecoveryFailed { tri: back(tri), edge, reason },
+        TetError::RecoveryFailed { tri, edge, reason } => TetError::RecoveryFailed { tri: tri.map(back), edge, reason },
         TetError::SelfIntersection { tri_a, tri_b } => {
             let (a, b) = (back(tri_a), back(tri_b));
             TetError::SelfIntersection { tri_a: a.min(b), tri_b: a.max(b) }
@@ -267,6 +267,11 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     let guard = Guard::new(&input.points, &input.tris);
     let meter = crate::spacing::Meter::new(&input.points, &input.tris, opts);
     let mut extra: Vec<V3> = Vec::new();
+    // Hint containment by coordinates (`==` semantics: -0.0 and 0.0 are one point), so a restart
+    // costs O(hints log n), not O(hints * n).
+    let point_key = |p: &V3| p.map(|x| (x + 0.0).to_bits());
+    let input_set: std::collections::BTreeSet<[u64; 3]> = input.points.iter().map(point_key).collect();
+    let mut extra_set: std::collections::BTreeSet<[u64; 3]> = std::collections::BTreeSet::new();
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
     let (mut restarts, mut discarded) = (0usize, 0usize);
@@ -298,7 +303,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         d.droppable_from = (n + N_FAR) as u32;
         let r = {
             let mut rec = Recover::new(&mut d, &con, &guard, max_steiner, n as u32, attempt);
-            let mut r = if complete_only { Err(TetError::RecoveryFailed { tri: 0, edge: None, reason: String::new() }) } else { rec.run() };
+            let mut r = if complete_only { Err(TetError::RecoveryFailed { tri: None, edge: None, reason: String::new() }) } else { rec.run() };
             // A tiny body (a Schönhardt-like pocket) restarts with its centroid; anything else
             // that is stuck goes to complete recovery with temporary boundary Steiner points.
             if let Err(TetError::RecoveryFailed { tri, edge, .. }) = &r {
@@ -336,18 +341,18 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                     .chain(r.2.iter())
                     .copied()
                     .enumerate()
-                    .filter(|(_, p)| !input.points.contains(p) && guard.margin(*p) >= MIN_MARGIN)
+                    .filter(|(_, p)| !input_set.contains(&point_key(p)) && guard.margin(*p) >= MIN_MARGIN)
                     .map(|(i, p)| (if i == 0 && pocket.is_some() { f64::INFINITY } else { guard.score(p) }, i, p))
                     .collect();
                 scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
                 for (_, _, h) in scored {
-                    if extra.len() < cap && !extra.contains(&h) {
+                    if extra.len() < cap && extra_set.insert(point_key(&h)) {
                         extra.push(h);
                     }
                 }
                 if extra.len() == before {
                     match steiner_near(&input.points, &input.tris, tri, edge, attempt, &guard) {
-                        Some(p) if !extra.contains(&p) => extra.push(p),
+                        Some(p) if extra_set.insert(point_key(&p)) => extra.push(p),
                         _ => return Err(TetError::RecoveryFailed { tri, edge, reason }),
                     }
                 }

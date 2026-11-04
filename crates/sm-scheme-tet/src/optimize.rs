@@ -328,3 +328,72 @@ impl Dt {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TetOptions;
+    use sm_testkit::surf3;
+
+    /// Minimum (mean ratio, dihedral, scaled Jacobian) over the live tets.
+    fn minima(dt: &Dt) -> (f64, f64, f64) {
+        let (mut mr, mut dih, mut sj) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        for t in 0..dt.tds.slots() as u32 {
+            if dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none() {
+                let p = dt.tds.verts[t as usize].map(|i| dt.pts[i as usize]);
+                let q = crate::quality::tet_quality(p);
+                mr = mr.min(q.mean_ratio);
+                dih = dih.min(q.min_dihedral);
+                sj = sj.min(crate::quality::scaled_jacobian(p));
+            }
+        }
+        (mr, dih, sj)
+    }
+
+    /// The spacing pass alone, on the Delaunay tetrahedralization of an icosphere with interior
+    /// points too close to the surface: the spacing deviation of those points falls, the
+    /// surface points stay, every tet stays positive and the mesh minima (mean ratio, dihedral,
+    /// scaled Jacobian) never drop.
+    #[test]
+    fn respace_pass_improves_spacing_and_keeps_the_minima() {
+        let f = surf3::icosphere(1.0, 2);
+        let n = f.points.len();
+        let mut pts = f.points.clone();
+        // Interior points (deterministic): the centre and points at radius 0.86 below every 9th
+        // surface vertex, nudged off the radial line.
+        pts.push([1e-3, -2e-3, 3e-3]);
+        for (k, p) in f.points.iter().enumerate().filter(|(k, _)| k % 9 == 0) {
+            let j = 1e-2 * ((k % 7) as f64 - 3.0);
+            pts.push([0.86 * p[0] + j, 0.86 * p[1] - j, 0.86 * p[2] + 0.5 * j]);
+        }
+        let tris = f.oriented_tris(0);
+        let opts = TetOptions::default();
+        let guard = Guard::new(&f.points, &tris);
+        let meter = Meter::new(&f.points, &tris, &opts);
+        let mut dt = crate::delaunay::build(pts, None, None).unwrap();
+        // Drop the ghost tets (outside the hull), as the pipeline drops the exterior.
+        let ghosts: Vec<u32> = (0..dt.tds.slots() as u32).filter(|&t| dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_some()).collect();
+        dt.tds.remove(&ghosts);
+        let before = dt.pts.clone();
+        let (mr0, dih0, sj0) = minima(&dt);
+        let dev = |dt: &Dt| -> f64 { dt.pts[n..].iter().map(|&p| meter.deviation(p)).sum() };
+        let dev0 = dev(&dt);
+        let passes = dt.respace(n, 3, &guard, &meter);
+        let (mr1, dih1, sj1) = minima(&dt);
+        assert!(passes >= 1);
+        assert!(dt.pts[n..] != before[n..], "no point moved");
+        assert_eq!(dt.pts[..n], before[..n], "surface points moved");
+        assert!(dev(&dt) < dev0, "spacing deviation did not improve: {dev0} -> {}", dev(&dt));
+        // Spacing statistic over the interior points improves as well.
+        let s0 = meter.stats(&before[n..]);
+        let s1 = meter.stats(&dt.pts[n..]);
+        assert!(s1.rms_dev < s0.rms_dev, "rms deviation {} -> {}", s0.rms_dev, s1.rms_dev);
+        assert!(mr1 >= mr0 && dih1 >= dih0 && sj1 >= sj0, "minima dropped: mr {mr0} -> {mr1}, dihedral {dih0} -> {dih1}, sj {sj0} -> {sj1}");
+        for t in 0..dt.tds.slots() as u32 {
+            if dt.tds.alive[t as usize] && dt.tds.ghost_slot(t).is_none() {
+                let p = dt.tds.verts[t as usize].map(|i| dt.pts[i as usize]);
+                assert!(ori(p[0], p[1], p[2], p[3]) > 0, "inverted tet {t}");
+            }
+        }
+    }
+}

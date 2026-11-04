@@ -185,7 +185,7 @@ struct Cavity {
 type Corridor = (Vec<u32>, Vec<(u32, usize)>);
 
 fn fail(tri: u32, edge: Option<[u32; 2]>, reason: impl Into<String>) -> TetError {
-    TetError::RecoveryFailed { tri, edge, reason: reason.into() }
+    TetError::RecoveryFailed { tri: Some(tri), edge, reason: reason.into() }
 }
 
 impl<'a> Recover<'a> {
