@@ -73,7 +73,13 @@ impl TypedOp for MeshRun {
                     .map(|(m, _)| m)
                     .collect();
                 if ids.len() > 1 {
-                    let list: Vec<String> = ids.iter().map(ToString::to_string).collect();
+                    let list: Vec<String> = ids
+                        .iter()
+                        .map(|m| match meshes.get(*m).and_then(|e| e.derived_from) {
+                            Some(src) => format!("{m}, derived from {src}"),
+                            None => m.to_string(),
+                        })
+                        .collect();
                     return Err(OpError::Invalid(format!(
                         "{t} already has {} meshes ({}); mesh.delete the ones you do not \
                          want first",
