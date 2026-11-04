@@ -14,7 +14,7 @@ use sm_fem::{ExportFormat as FemFormat, ExportRequest, FemError};
 use sm_lang::{Host, HostError, QueryRelations, Relations, SessionCommand, TimelineCommand, TimelineHead};
 use sm_layer_api::MeshLayer;
 use sm_op_api::{Delta, Engine, Hash256, Head, OpRecord, Registry, Rev, State};
-use sm_protocol::{ExportFormat, ExportResult, ExportedFile, StatusResult};
+use sm_protocol::{ExportFormat, ExportNote, ExportResult, ExportedFile, StatusResult};
 
 use crate::b64;
 use crate::error::{ServerError, SessionError};
@@ -206,10 +206,10 @@ impl<'w> SessionHost<'w> {
             };
             let bundle = sm_fem::export_files(state, &req).map_err(|e| export_error(&e, state, p.mesh))?;
             let files: Vec<(&str, &[u8])> = bundle.files.iter().map(|f| (f.name.as_str(), f.bytes.as_slice())).collect();
-            return write_dir(dir, format, &files);
+            return Ok(write_dir(dir, format, &files)?.with_notes(notes_of(&bundle.notes)));
         }
         let mut bytes = Vec::new();
-        sm_fem::export(state, &req, &mut bytes).map_err(|e| export_error(&e, state, p.mesh))?;
+        let report = sm_fem::export(state, &req, &mut bytes).map_err(|e| export_error(&e, state, p.mesh))?;
         if let Some(path) = &path {
             write_atomic(path, &bytes)?;
         }
@@ -218,7 +218,8 @@ impl<'w> SessionHost<'w> {
             format,
             bytes.len() as u64,
             Hash256::of(&bytes),
-        );
+        )
+        .with_notes(notes_of(&report.notes));
         if p.inline {
             out = out.with_base64(b64::encode(&bytes));
         }
@@ -449,6 +450,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
 /// Write the files of a multi-file export below `root` (each through a unique temp name and a
 /// rename; parent directories are created) and describe them. `files` are `(relative name, bytes)`.
 /// `sha256` of the result is the SHA-256 of the manifest lines `name\tsha256hex\n`, sorted by name.
+fn notes_of(lines: &[String]) -> Vec<ExportNote> {
+    lines.iter().map(|l| ExportNote::parse(l)).collect()
+}
+
 fn write_dir(root: &Path, format: ExportFormat, files: &[(&str, &[u8])]) -> Result<ExportResult, SessionError> {
     let mut sorted: Vec<&(&str, &[u8])> = files.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));

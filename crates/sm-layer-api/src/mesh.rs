@@ -30,6 +30,11 @@ pub struct MeshEntry {
     /// The model entities of the selection changed or were deleted after meshing; the mesh no
     /// longer matches the model.
     pub stale: bool,
+    /// The mesh entry this one was derived from (`mesh.to_poly` sets it to the source mesh), for
+    /// provenance and error messages. `None` for a mesh generated directly. **Not hashed**, like
+    /// `plan`: it is a function of the op history, and leaving it out keeps every existing layer
+    /// hash unchanged. It may name an entry that has since been deleted.
+    pub derived_from: Option<EntityId>,
 }
 
 impl MeshEntry {
@@ -46,6 +51,7 @@ impl MeshEntry {
             plan: plan.map(Arc::new),
             quanta,
             stale: false,
+            derived_from: None,
         }
     }
 

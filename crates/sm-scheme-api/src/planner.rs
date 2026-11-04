@@ -19,7 +19,9 @@ use crate::driver::{Driver, Rejections};
 use crate::error::{Attempt, FailureKind, Infeasible, Phase, Result, SchemeError};
 use crate::firm::{Firm, Firmness};
 use crate::geom;
-use crate::intent::{IntervalRequest, MeshIntent, Params, SchemeChoice, SchemeName};
+use crate::intent::{
+    IntervalRequest, MeshIntent, Params, RequestCascade, SchemeChoice, SchemeName,
+};
 use crate::plan::{CopyClass, CopyMode, Plan, TransformPlan};
 use crate::problem::{
     ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink,
@@ -453,6 +455,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             rejections: self.rej.clone(),
             attempts: self.attempts,
             sizing: self.intent.defaults.sizing.clone(),
+            notes: Vec::new(),
             index: Default::default(),
         })
     }
@@ -1663,9 +1666,21 @@ impl<'a, 'r> Planner<'a, 'r> {
         let topo = self.input.topo;
         let intent = self.intent;
         // Requests cascade volume -> face -> edge; the lowest id wins within a level.
-        let mut req: BTreeMap<EntityId, Firm<IntervalRequest>> = BTreeMap::new();
+        // `Level`: a later level overwrites. `Firmness`: the candidate with the greater
+        // (firmness, command order) wins and a tie keeps the later level, so unordered
+        // requests resolve as in `Level`.
+        let by_firmness = self.drv.options.cascade == RequestCascade::Firmness;
+        let mut req: BTreeMap<EntityId, (Firm<IntervalRequest>, u64)> = BTreeMap::new();
+        let mut put = |e: EntityId, r: Firm<IntervalRequest>, seq: u64| match req.get(&e) {
+            Some((old, old_seq)) if by_firmness && (old.firmness, *old_seq) > (r.firmness, seq) => {}
+            _ => {
+                req.insert(e, (r, seq));
+            }
+        };
         for v in self.region.volumes.iter().rev() {
-            if let Some(r) = intent.entities.get(v).and_then(|e| e.intervals) {
+            if let Some(ent) = intent.entities.get(v)
+                && let Some(r) = ent.intervals
+            {
                 for f in self
                     .region
                     .vol_faces
@@ -1674,21 +1689,25 @@ impl<'a, 'r> Planner<'a, 'r> {
                     .unwrap_or(&[])
                 {
                     for e in self.input.face_edges(*f) {
-                        req.insert(e, r);
+                        put(e, r, ent.intervals_seq.0);
                     }
                 }
             }
         }
         for f in self.region.faces.iter().rev() {
-            if let Some(r) = intent.entities.get(f).and_then(|e| e.intervals) {
+            if let Some(ent) = intent.entities.get(f)
+                && let Some(r) = ent.intervals
+            {
                 for e in self.input.face_edges(*f) {
-                    req.insert(e, r);
+                    put(e, r, ent.intervals_seq.0);
                 }
             }
         }
         for e in &self.region.edges {
-            if let Some(r) = intent.entities.get(e).and_then(|x| x.intervals) {
-                req.insert(*e, r);
+            if let Some(ent) = intent.entities.get(e)
+                && let Some(r) = ent.intervals
+            {
+                put(*e, r, ent.intervals_seq.0);
             }
         }
         let owned = if self.drv.size.is_none() {
@@ -1698,7 +1717,7 @@ impl<'a, 'r> Planner<'a, 'r> {
         };
         let field: Option<&dyn SizeField> = self.drv.size.or(owned.as_deref());
         for &e in &self.region.edges {
-            let c = match req.get(&e) {
+            let c = match req.get(&e).map(|x| &x.0) {
                 Some(Firm {
                     value: IntervalRequest::Count(n),
                     firmness,

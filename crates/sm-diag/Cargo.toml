@@ -14,6 +14,7 @@ bench = false
 sm-core = { path = "../sm-core", features = ["serde", "schemars"] }
 sm-mesh-api = { path = "../sm-mesh-api", features = ["serde", "schemars"] }
 sm-quality = { path = "../sm-quality" }
+sm-scheme-api = { path = "../sm-scheme-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
 rayon = "1"
@@ -29,6 +30,9 @@ sm-mesher = { path = "../sm-mesher" }
 # Contract crates the shared test rig needs (bricks, stub schemes); no W3a crate.
 sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs", "schemars"] }
+sm-scheme-curve = { path = "../sm-scheme-curve" }
+sm-scheme-tri = { path = "../sm-scheme-tri" }
+sm-scheme-tet = { path = "../sm-scheme-tet" }
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]

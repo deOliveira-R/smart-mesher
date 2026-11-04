@@ -6,8 +6,8 @@ use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
 use sm_mesh::MeshBuilder;
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
-use sm_scheme_api::{Driver, DriverOptions, MeshInput, Plan, SchemeError, WholeFaces};
-use sm_topo_api::{Dim, TopologyView, TopologyViewExt};
+use sm_scheme_api::{Driver, DriverOptions, MeshInput, SchemeError, WholeFaces};
+use sm_topo_api::Dim;
 
 use crate::config::MesherConfig;
 use crate::exec::RayonExec;
@@ -44,43 +44,10 @@ fn failed(e: SchemeError) -> OpError {
     match e {
         SchemeError::Input(_)
         | SchemeError::BadParams { .. }
+        | SchemeError::OverBudget { .. }
         | SchemeError::UnknownScheme { .. } => OpError::Invalid(e.to_string()),
         other => OpError::Failed(other.to_string()),
     }
-}
-
-/// Rough cell count: per volume, the cube of the geometric mean of the solved interval counts of
-/// its edges (exact for a structured hex brick: `a*b*c`). Edges that are not in the plan are
-/// skipped; a volume with none falls back to the mean over the whole plan. Only used to catch
-/// absurd requests, so over- or under-shooting by a small factor is fine.
-///
-/// Limit: only edge counts are seen. For a volume with few, long edges and non-structured faces
-/// (a cylinder whose curved face has one seam edge) the cube of the mean edge count can be far
-/// from the true count, in either direction. It is a guard against runaway requests, not a
-/// forecast.
-fn estimate_cells(plan: &Plan, view: &dyn TopologyView, targets: &[EntityId]) -> f64 {
-    let geo = |counts: &mut dyn Iterator<Item = u32>| -> Option<f64> {
-        let (mut sum, mut n) = (0.0_f64, 0usize);
-        for c in counts {
-            sum += f64::from(c.max(1)).ln();
-            n += 1;
-        }
-        (n > 0).then(|| (sum / n as f64).exp().powi(3))
-    };
-    let mut total = 0.0;
-    for &t in targets {
-        let mut edges: Vec<EntityId> = view
-            .volume_faces(t)
-            .iter()
-            .flat_map(|&f| view.coedges(f).map(|c| c.key.edge))
-            .collect();
-        edges.sort_unstable();
-        edges.dedup();
-        let est = geo(&mut edges.iter().filter_map(|&e| plan.intervals(e)))
-            .or_else(|| geo(&mut plan.intervals.iter().map(|p| p.1)));
-        total += est.unwrap_or(0.0);
-    }
-    total
 }
 
 impl TypedOp for MeshRun {
@@ -106,7 +73,13 @@ impl TypedOp for MeshRun {
                     .map(|(m, _)| m)
                     .collect();
                 if ids.len() > 1 {
-                    let list: Vec<String> = ids.iter().map(ToString::to_string).collect();
+                    let list: Vec<String> = ids
+                        .iter()
+                        .map(|m| match meshes.get(*m).and_then(|e| e.derived_from) {
+                            Some(src) => format!("{m}, derived from {src}"),
+                            None => m.to_string(),
+                        })
+                        .collect();
                     return Err(OpError::Invalid(format!(
                         "{t} already has {} meshes ({}); mesh.delete the ones you do not \
                          want first",
@@ -144,31 +117,31 @@ impl TypedOp for MeshRun {
         };
         let mut driver = Driver::new(cfg.registry(), cfg.solver(), cfg.picker());
         driver.size = field.as_deref();
-        driver.options = DriverOptions::new();
+        driver.options = DriverOptions::new().with_max_cells(cfg.max_cells());
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
-        // Refuse absurd requests before generating anything. This plans a second time inside
-        // `Driver::mesh` (no plan-reuse API yet: W3 item). A plan error is reported here, not
-        // by the second call.
+        // Plan once; the driver enforces the cell budget on this plan and every re-plan.
         let plan = driver.plan(&input, &intent).map_err(failed)?;
-        let est = estimate_cells(&plan, model.topo(), &targets);
-        if est > cfg.max_cells() as f64 {
-            return Err(OpError::Invalid(format!(
-                "the plan needs about {est:.3e} cells, above the budget of {} \
-                 (MesherConfig::with_max_cells); use a larger size",
-                cfg.max_cells()
-            )));
-        }
         // Work on a copy of the allocator; the layer only advances on success.
         let mut alloc = alloc0.clone();
         let out = driver
-            .mesh(&input, &intent, &RayonExec, MeshBuilder::new(), &mut alloc)
+            .mesh_from_plan(
+                &input,
+                &intent,
+                plan,
+                &RayonExec,
+                MeshBuilder::new(),
+                &mut alloc,
+            )
             .map_err(failed)?;
         ctx.step(2, 3, "committing")?;
 
+        // INT-7: the schemes' located diagnostics ride on the (unhashed) plan record.
+        let mut plan = out.plan;
+        plan.notes = out.patches.notes();
         let entry = MeshEntry::new(
             Box::new(out.finished.mesh),
             targets,
-            Some(out.plan),
+            Some(plan),
             model.hash_quanta(),
         );
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")

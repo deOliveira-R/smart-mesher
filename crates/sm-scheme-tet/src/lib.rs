@@ -93,6 +93,12 @@ pub struct TetOptions<'a> {
     /// Most quality diagnostics to return (the worst first); 0 returns every violation
     /// (default 0, ruling INT-7: all of them are located).
     pub max_diagnostics: usize,
+    /// Reporting floor for the smallest dihedral angle of a tet, degrees (default
+    /// [`MIN_DIHEDRAL_DEG`]). Only the diagnostics and their count change; the mesh does not.
+    pub floor_dihedral_deg: f64,
+    /// Reporting floor for the mean ratio of a tet (default [`MIN_MEAN_RATIO`]). Only the
+    /// diagnostics and their count change; the mesh does not.
+    pub floor_mean_ratio: f64,
 }
 
 impl Default for TetOptions<'_> {
@@ -105,6 +111,8 @@ impl Default for TetOptions<'_> {
             max_steiner: 0,
             min_dihedral_goal_deg: 15.0,
             max_diagnostics: 0,
+            floor_dihedral_deg: MIN_DIHEDRAL_DEG,
+            floor_mean_ratio: MIN_MEAN_RATIO,
         }
     }
 }

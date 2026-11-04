@@ -452,7 +452,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     let n_steiner_recovery = (n + N_FAR..first_refine.min(dt.pts.len())).filter(|&i| used[i]).count();
     // Ruling S4 over every interior point of the output (disclosed, never silent).
     let spacing = meter.stats(&points[n..]);
-    let (n_quality_violations, quality_diagnostics) = meter.quality_floor(&points, n, &tets, opts.max_diagnostics);
+    let (n_quality_violations, quality_diagnostics) = meter.quality_floor(&points, n, &tets, opts.max_diagnostics, (opts.floor_dihedral_deg, opts.floor_mean_ratio));
     // Distinct deferred points that are still in the mesh.
     let n_removal_deferred = deferred.iter().filter(|&&v| used[v as usize]).count();
     let margins: Vec<f64> = points[n..].iter().map(|&p| guard.margin(p)).filter(|&m| m < crate::guard::S4).collect();

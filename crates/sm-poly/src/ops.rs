@@ -94,6 +94,7 @@ impl TypedOp for ToPoly {
         let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
         entry.plan = plan;
         entry.stale = stale;
+        entry.derived_from = Some(source);
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")?;
         // The new mesh is a derived copy of the source (`A -> [A, A']`), or its replacement.
         if self.keep_source == Some(false) {

@@ -65,6 +65,8 @@ struct Class {
     soft: Option<u32>,
     goal_sum: f64,
     goal_n: u32,
+    pref_sum: f64,
+    pref_n: u32,
     min: u32,
     max: u32,
     value: u32,
@@ -174,6 +176,8 @@ impl IntervalSolver for ReferenceIntervalSolver {
                     soft: None,
                     goal_sum: 0.0,
                     goal_n: 0,
+                    pref_sum: 0.0,
+                    pref_n: 0,
                     min: 1,
                     max: u32::MAX,
                     value: 1,
@@ -219,8 +223,13 @@ impl IntervalSolver for ReferenceIntervalSolver {
                 IntervalConstraint::Goal { edge, goal } => {
                     let c = &mut classes[class_of[ix(edge).ok_or_else(|| unknown(edge, r.id))?]];
                     if goal.is_finite() && *goal > 0.0 {
-                        c.goal_sum += goal;
-                        c.goal_n += 1;
+                        if matches!(r.origin, crate::problem::Origin::Preference { .. }) {
+                            c.pref_sum += goal;
+                            c.pref_n += 1;
+                        } else {
+                            c.goal_sum += goal;
+                            c.goal_n += 1;
+                        }
                     }
                 }
                 IntervalConstraint::Range { edge, min, max } => {
@@ -240,6 +249,8 @@ impl IntervalSolver for ReferenceIntervalSolver {
             }
             c.goal = if let Some(s) = c.soft {
                 f64::from(s)
+            } else if c.pref_n > 0 {
+                c.pref_sum / f64::from(c.pref_n)
             } else if c.goal_n > 0 {
                 c.goal_sum / f64::from(c.goal_n)
             } else {

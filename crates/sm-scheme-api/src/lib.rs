@@ -54,10 +54,11 @@ pub use error::{Attempt, FailureKind, GenerateFailure, Infeasible, Phase, Result
 pub use exec::{Executor, ScopedThreads, Sequential};
 pub use firm::{Firm, Firmness};
 pub use intent::{
-    AutoPolicy, BoundaryLayerIntent, CornerIntent, Defaults, EntityIntent, IntervalRequest,
-    MeshGroup, MeshIntent, Params, SchemeChoice, SchemeName, SizingSpec, TransformIntent,
+    AutoPolicy, BoundaryLayerIntent, CommandSeq, CornerIntent, Defaults, EntityIntent,
+    IntervalRequest, MeshGroup, MeshIntent, Params, RequestCascade, SchemeChoice, SchemeName,
+    SizingSpec, TransformIntent,
 };
-pub use patch::{ElemShape, Elements, NodeGrid, Patch, PatchBuilder, PatchNode, PatchSet};
+pub use patch::{ElemShape, Elements, NodeGrid, Patch, PatchBuilder, PatchNode, PatchSet, SchemeNote};
 pub use plan::{CopyClass, CopyMember, CopyMode, Footprint, Plan, TransformPlan};
 pub use problem::{
     Claim, ConstraintId, CopyConstraint, CopyReason, Imposition, IntervalConstraint, IntervalSink,

@@ -5,6 +5,7 @@
 use crate::driver::Rejections;
 use crate::error::Attempt;
 use crate::intent::{SchemeChoice, SizingSpec};
+use crate::patch::SchemeNote;
 use crate::problem::{ConstraintId, Lazy, MeshingProblem, Role, TargetPlan};
 use crate::target::{Job, Target, TransformId};
 use crate::vertex::FaceLayout;
@@ -108,6 +109,12 @@ pub struct Plan {
     /// The sizing of the intent this plan came from, so `generate` can rebuild the size field.
     #[serde(default)]
     pub sizing: Option<SizingSpec>,
+    /// Located diagnostics of the schemes that generated the mesh (quality-floor violations,
+    /// ruling INT-7), in patch order. Empty when planning; the mesher fills it from
+    /// [`Meshed::notes`](crate::Meshed::notes) after generation. Skipped when empty, so plans
+    /// without notes serialize exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<SchemeNote>,
     #[serde(skip)]
     pub(crate) index: Lazy<PlanIndex>,
 }

@@ -86,6 +86,21 @@ The stored plan is exactly the driver's: failures that caused a re-plan are in
 `plan.rejections`, candidates passed over by the final plan in `plan.attempts`. The plan is not
 hashed.
 
+#### Scheme notes (ruling INT-7)
+
+Schemes attach located diagnostics (`SchemeNote`: position, nearby model entities, metric, value,
+threshold, suggestion) to their `Patch`. After the run, `mesh.run` stores `PatchSet::notes()`
+(target order, then emission order) in `Plan::notes`, so `mesh.quality` can read them later from
+`MeshEntry::plan`.
+
+Why there: `MeshEntry` is the only per-mesh record that survives the op, and its `plan` is the
+existing *unhashed* provenance slot (`MeshEntry` is in a frozen contract crate this change may not
+extend; a new entry field would be the cleaner home and can replace this later). `Plan::notes` is
+`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a plan without notes serializes
+byte-for-byte as before; no layer digest reads the plan, so no state or layer hash moves, with or
+without notes. A notes-bearing plan is still a pure function of the hashed inputs. Notes are not
+errors: a quality-floor violation never fails `mesh.run`.
+
 ### mesh.run cell budget
 
 Before generating, `mesh.run` plans once (`Driver::plan`) and estimates the cells as
@@ -129,6 +144,20 @@ Reading: commit is the largest driver phase (58% of generate+commit) and the op 
 mesh), so plan section 5 risk 3 is **partly triggered**: a 10^6-cell run is seconds, not
 milliseconds. It is workable for W2; a bulk commit path (`MeshBuild::add_template_cells`) would
 cut the 2.7 s, and the op overhead needs a profile before W3. No ACR is raised now.
+
+### Bulk mesh commit: measurement (w3b-acr)
+
+`cargo test --release -p sm-mesher --test bulk_perf -- --ignored --nocapture` (record only, no
+gate; `SM_BULK_N` sets the brick edge). Loaded shared machine, so timings vary by about 2x
+between runs. Before any change: `mesh.run` 11.9-16.4 s, `mesh.delete` 5.6-12 s at 10^6 cells.
+Instrumenting `retire_mesh` (5.06 M ids): `mesh_ids` 0.10 s, liveness check 0.27-0.41 s, layer
+removal ~0, and the per-id `ApplyCtx::retire` loop 7-11 s, i.e. nearly all of `mesh.delete`.
+`insert_mesh` (id check, adoption by `adopt_range`, layer insert) is 0.23 s: adoption is already
+bulk. The remainder of `mesh.run` over the driver is the state hash after the op.
+`ApplyCtx::retire` costs a SHA-256 for the multiset accumulator, a `BTreeSet` insert and a push
+to `Delta.removed` per id; `State::retire` is crate-private to sm-op-api, so a bulk retire cannot
+be built from sm-layer-api. It needs an `ApplyCtx::retire_range` (see the wave report). After:
+unchanged, nothing adopted by this item (hashes unchanged).
 
 The stub schemes are reference code; the numbers bound the driver and commit path, they do not
 predict production schemes.
