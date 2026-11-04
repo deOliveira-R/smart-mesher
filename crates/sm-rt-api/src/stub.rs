@@ -37,7 +37,12 @@ use crate::state::{
     Closest, LEVEL_INLINE, Level, Located, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo, SurfaceTable,
     TrackState, TrackerCaps,
 };
-use crate::tally::TrackBundle;
+use crate::majorant::{
+    FlightConfig, FlightScratch, MajorantSegment, MajorantSink, MajorantStructure, MajorantTracker, NodeInfo, NodeKind,
+    TrackMode,
+};
+use crate::ids::{MaterialSetId, NodeId};
+use crate::tally::{Flow, TraceEnd, TraceOptions, TrackBundle};
 use crate::tracker::{Tracker, TrackerInfo, check_direction, hashed_direction, lost, move_along};
 use crate::world::{ComponentKind, LatticeKind, WorldSpec};
 use sm_core::{Aabb, Point3, Transform, Vector3};
@@ -272,6 +277,8 @@ pub struct AnalyticWorld {
     recovery: RecoveryPolicy,
     /// Exact volume per local cell (`n + 1` entries), `None` when not exact.
     volumes: Vec<Option<f64>>,
+    /// Majorant partition: root, plus one leaf node per lattice element.
+    majorant: MajorantStructure,
 }
 
 /// Relation of two shapes.
@@ -471,6 +478,7 @@ impl AnalyticWorld {
         }
         let diag = (domain.hi - domain.lo).norm();
         let tol = ModelTolerance::for_extent(diag);
+        let majorant = build_majorant(n, lattice.as_ref(), domain, n_cells)?;
         let mut w = Self {
             shapes,
             lattice,
@@ -484,6 +492,7 @@ impl AnalyticWorld {
             block_size: 256,
             recovery: RecoveryPolicy::Fail,
             volumes: Vec::new(),
+            majorant,
         };
         w.volumes = local_volumes(&w.shapes, &w.ebox);
         w.info.faces = n + 6;
@@ -791,6 +800,141 @@ impl AnalyticWorld {
             };
         }
         Self::build(shapes, lattice, domain, actions)
+    }
+}
+
+/// Majorant partition of the stub: regions are the local `n + 1`; set 0 holds all of them, set
+/// `1 + r` only region `r`. A flat world is one leaf; a lattice is a root plus one leaf per element.
+fn build_majorant(n: usize, lattice: Option<&RectLattice>, domain: Aabb, n_cells: usize) -> Result<MajorantStructure> {
+    let nl = n + 1;
+    let mut offsets = vec![0u32, nl as u32];
+    let mut regions: Vec<RegionId> = (0..nl).map(RegionId::new).collect();
+    for r in 0..nl {
+        regions.push(RegionId::new(r));
+        offsets.push(regions.len() as u32);
+    }
+    let region_set = (0..nl).map(|r| MaterialSetId::new(1 + r)).collect();
+    let mut nodes = Vec::new();
+    match lattice {
+        None => nodes.push(NodeInfo::new(NodeId(0), None, domain, MaterialSetId(0), NodeKind::Root, n_cells as u32)),
+        Some(l) => {
+            let mut root = NodeInfo::new(NodeId(0), None, domain, MaterialSetId(0), NodeKind::Root, n_cells as u32);
+            root.leaf = false;
+            root.delta_ok = false;
+            nodes.push(root);
+            let [nx, ny, nz] = [l.dims[0] as usize, l.dims[1] as usize, l.dims[2] as usize];
+            for e in 0..nx * ny * nz {
+                let idx = [e % nx, (e / nx) % ny, e / (nx * ny)];
+                let lo = Point3::new(l.origin.x + idx[0] as f64 * l.pitch[0], l.origin.y + idx[1] as f64 * l.pitch[1], l.origin.z + idx[2] as f64 * l.pitch[2]);
+                let hi = Point3::new(lo.x + l.pitch[0], lo.y + l.pitch[1], lo.z + l.pitch[2]);
+                nodes.push(NodeInfo::new(NodeId::new(1 + e), Some(NodeId(0)), Aabb { lo, hi }, MaterialSetId(0), NodeKind::Lattice, nl as u32));
+            }
+        }
+    }
+    MajorantStructure::new(nodes, offsets, regions, region_set)
+}
+
+/// Post-step handling shared with `Tracker::trace`: `Some(end)` ends the walk.
+fn walk_end(s: &Step, st: &TrackState, opts: &TraceOptions) -> Option<TraceEnd> {
+    match s.end {
+        StepEnd::Limit => Some(TraceEnd::Limit),
+        StepEnd::CellFace { .. } | StepEnd::SlotChange { .. } => None,
+        StepEnd::RegionBoundary { .. } if st.cell.is_none() => Some(TraceEnd::LeftModel),
+        StepEnd::RegionBoundary { .. } => None,
+        StepEnd::Boundary { action, .. } if action.applied_in_step() && !opts.stop_at_deck => None,
+        StepEnd::Boundary { surface, face, action } => Some(TraceEnd::Boundary { surface, face, action }),
+        StepEnd::Lost(l) => Some(TraceEnd::Lost(l)),
+    }
+}
+
+impl MajorantTracker for AnalyticWorld {
+    fn majorant_structure(&self) -> &MajorantStructure {
+        &self.majorant
+    }
+
+    fn majorant_segments(&self, st: &mut TrackState, cfg: &FlightConfig<'_>, sink: &mut dyn MajorantSink, fs: &mut FlightScratch) -> Result<TraceEnd> {
+        let (band, table, policy, opts) = (cfg.band, cfg.table, cfg.policy, &cfg.opts);
+        check_direction(st.dir, self.tol.angular)?;
+        table.check_for(&self.majorant)?;
+        if opts.max_dist.is_nan() || opts.max_dist < 0.0 {
+            return Err(RtError::InvalidInput("max_dist must be >= 0"));
+        }
+        let nl = self.n_local();
+        let mut t = 0.0;
+        for _ in 0..opts.max_steps {
+            let rem = opts.max_dist - t;
+            let valid = !st.cell.is_none() && st.cell.get() < self.n_cells();
+            let e = if valid { st.cell.get() / nl } else { 0 };
+            let node_id = NodeId::new(if self.lattice.is_some() { 1 + e } else { 0 });
+            let node = &self.majorant.nodes()[node_id.get()];
+            let entry = table.entry(node.set, band).ok_or(RtError::UnknownId { kind: "band", id: u32::from(band.0) })?;
+            fs.counters.node_visits += 1;
+            let mode = if valid { policy.mode_for(node, entry) } else { TrackMode::Surface };
+            if mode == TrackMode::Delta {
+                let off = self.offset(self.idx_of(e));
+                let (t_wall, k) = box_exit(shift(st.pos, off), st.dir, &self.ebox);
+                let len = t_wall.min(rem);
+                if !len.is_finite() {
+                    return Ok(TraceEnd::Lost(lost(st, LostCause::NonFinite)));
+                }
+                let exact = self.majorant.regions_of(node.set).len() == 1;
+                fs.counters.delta_segments += 1;
+                if len > 0.0 {
+                    let seg = MajorantSegment::new(node_id, mode, CellId::NONE, RegionId::NONE, node.set, t, len, entry.sigma_max, exact);
+                    if sink.segment(&seg) == Flow::Stop {
+                        move_along(st, len);
+                        st.entered_via = None;
+                        return Ok(TraceEnd::Stopped);
+                    }
+                }
+                if t_wall > rem {
+                    move_along(st, len);
+                    st.entered_via = None;
+                    return Ok(TraceEnd::Limit);
+                }
+                let s = self.step_wall(st, e, t_wall, k, st.cell, st.region)?;
+                t += s.dist;
+                if let Some(end) = walk_end(&s, st, opts) {
+                    return Ok(end);
+                }
+                continue;
+            }
+            let face_in = st.entered_via;
+            let s = self.step(st, rem, &mut fs.base)?;
+            if !matches!(s.end, StepEnd::Lost(_)) && !(s.dist == 0.0 && matches!(s.end, StepEnd::Limit)) {
+                let set = self.majorant.leaf_set(s.region).ok_or(RtError::UnknownId { kind: "region", id: s.region.0 })?;
+                let sm = table.entry(set, band).ok_or(RtError::UnknownId { kind: "material set", id: set.0 })?.sigma_max;
+                let face_out = match s.end {
+                    StepEnd::CellFace { face, .. } | StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(face),
+                    _ => None,
+                };
+                let mut seg = MajorantSegment::new(node_id, TrackMode::Surface, s.cell, s.region, set, t, s.dist, sm, true);
+                seg.face_in = face_in;
+                seg.face_out = face_out;
+                fs.counters.surface_segments += 1;
+                if sink.segment(&seg) == Flow::Stop {
+                    return Ok(TraceEnd::Stopped);
+                }
+            }
+            t += s.dist;
+            if let Some(end) = walk_end(&s, st, opts) {
+                return Ok(end);
+            }
+        }
+        Ok(TraceEnd::Lost(lost(st, LostCause::MaxStepsExceeded)))
+    }
+
+    fn locate_in_node(&self, node: NodeId, p: Point3, dir: Option<Vector3>, _fs: &mut FlightScratch) -> Result<crate::state::Located> {
+        let n = self.majorant.node(node).ok_or(RtError::UnknownId { kind: "node", id: node.0 })?;
+        if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+            return Err(RtError::NonFinite("position"));
+        }
+        let t = self.tol.linear;
+        let inside = (0..3).all(|a| comp(p, a) >= comp(n.bounds.lo, a) - t && comp(p, a) <= comp(n.bounds.hi, a) + t);
+        if !inside {
+            return Err(RtError::InvalidInput("point is outside the node"));
+        }
+        Ok(self.locate_dir(p, dir).unwrap_or_else(|| crate::state::Located::new(CellId::NONE, RegionId::NONE, None)))
     }
 }
 

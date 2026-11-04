@@ -24,6 +24,10 @@
 //!   `sm_model_api` decks; [`Tracker::resolve_boundary`].
 //! * [`compat`]: DAGMC-shaped `ray_fire`, `point_in_volume`, `next_vol`, `surface_sense`,
 //!   `get_angle`.
+//! * [`mod@majorant`]: segment-wise delta tracking over a disjoint partition: [`MajorantStructure`]
+//!   (tracker-owned), [`MajorantTable`] (caller-owned, energy-dependent), [`MajorantTracker`]
+//!   (`majorant_segments`, `next_tentative`, `fly`), [`HybridPolicy`]; surface tracking is the
+//!   special case of one cell per segment.
 //! * [`CacheImage`]: the rebuildable `.smrt` sidecar keyed by composite content hash.
 //! * `stub` (feature `stubs`): `stub::AnalyticWorld`, a reference implementor with exact
 //!   answers, and its builder.
@@ -93,6 +97,7 @@ pub mod compat;
 pub mod error;
 pub mod ids;
 pub mod input;
+pub mod majorant;
 pub mod state;
 #[cfg(feature = "stubs")]
 pub mod stub;
@@ -103,10 +108,14 @@ pub mod world;
 pub use boundary::{BoundaryDef, BoundarySelector, BoundarySpec, FaceAction, ResponseKind, ResponseMap, wrap_transform};
 pub use cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
 pub use error::{BuildIssue, LostCause, LostInfo, Result, RtError};
-pub use ids::{CellId, ComponentId, FaceId, InstanceId, PrototypeId, RegionId, SurfaceId};
+pub use ids::{CellId, ComponentId, FaceId, InstanceId, MaterialSetId, NodeId, PrototypeId, RegionId, SurfaceId};
 pub use input::{
     BrepInput, BuildInput, BuildOptions, BuildReport, ComplementPolicy, FacetFallback, FacetInput, MeshInput, Precision,
     RecoveryPolicy, RegionRule, SurfaceRefine, TrackerBuilder, UnsealedEdge, facet_sides_from_topo,
+};
+pub use majorant::{
+    BandId, CollisionOracle, EnergyBands, Flight, FlightConfig, FlightCounters, FlightOutcome, FlightScratch, HybridPolicy, MajorantEntry,
+    MajorantSegment, MajorantSink, MajorantStructure, MajorantTable, MajorantTracker, NodeInfo, NodeKind, TentativeHit, TrackMode,
 };
 pub use state::{
     BoundaryHit, Closest, LEVEL_INLINE, Level, Located, Peek, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo,

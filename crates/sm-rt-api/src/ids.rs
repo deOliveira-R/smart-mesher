@@ -28,6 +28,14 @@ macro_rules! rt_index {
 }
 
 rt_index! {
+    /// A node of the majorant partition (`MajorantStructure`). Parents have smaller ids than children.
+    NodeId
+}
+rt_index! {
+    /// A deduplicated set of regions sharing one majorant row (`MajorantTable`).
+    MaterialSetId
+}
+rt_index! {
     /// A material region: what the physics sees (a B-rep volume, a block). Several tracking
     /// cells share one region. `RegionId::NONE` is "outside the model".
     RegionId

@@ -144,6 +144,20 @@ pub enum RtError {
         /// Bins in the merged tally.
         right: usize,
     },
+    /// A caller-supplied total cross section disagrees with the majorant table: it exceeds the
+    /// majorant (delta tracking would be biased), or differs from the exact value of a
+    /// single-region set. Never clamped.
+    #[error("majorant violated in set {set}, band {band}: sigma_t = {sigma_t}, table sigma_max = {sigma_max}")]
+    MajorantViolated {
+        /// Raw `MaterialSetId`.
+        set: u32,
+        /// Raw `BandId`.
+        band: u16,
+        /// The caller's total cross section.
+        sigma_t: f64,
+        /// The table's majorant for that (set, band).
+        sigma_max: f64,
+    },
     /// An argument is outside its documented domain (for example a random number outside
     /// `[0, 1]`).
     #[error("invalid argument: {0}")]
@@ -192,6 +206,7 @@ impl RtError {
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
             Self::InvalidInput(_) => -11,
+            Self::MajorantViolated { .. } => -12,
         }
     }
 }
