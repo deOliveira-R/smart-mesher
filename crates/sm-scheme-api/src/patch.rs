@@ -8,6 +8,7 @@
 
 use crate::target::{NodeKey, Target};
 use sm_core::{EntityId, Point3};
+use serde::{Deserialize, Serialize};
 use sm_mesh_api::{CellShape, Param};
 use std::collections::{BTreeMap, HashMap};
 
@@ -265,6 +266,29 @@ impl NodeGrid {
     }
 }
 
+/// A located diagnostic a scheme attaches to its output (ruling INT-7: a quality-floor
+/// violation is reported where it is, never hidden, and is not a build failure).
+///
+/// Notes ride on the [`Patch`] that produced them and do not affect the mesh. The driver
+/// collects them in patch (target) order, then in the order the scheme emitted them
+/// ([`PatchSet::notes`], [`Meshed::notes`](crate::Meshed::notes)).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SchemeNote {
+    /// Where the finding is (for a cell metric, the cell centroid).
+    pub position: Point3,
+    /// Model entities near the finding (for example the faces whose triangles are close),
+    /// ascending; may be empty.
+    pub entities: Vec<EntityId>,
+    /// Name of the measure that is out of bounds (`min_dihedral`, `mean_ratio`, ...).
+    pub metric: String,
+    /// Measured value.
+    pub value: f64,
+    /// The bound it violates.
+    pub threshold: f64,
+    /// What would probably cure it, in words.
+    pub suggestion: String,
+}
+
 /// What one scheme invocation produced. Pure data: nothing is written to the mesh until commit.
 ///
 /// Element indices `i < nodes.len()` name `nodes[i]`; otherwise they name
@@ -289,6 +313,8 @@ pub struct Patch {
     /// claimed face of a surface element. Empty means every element belongs to the target
     /// entity; otherwise one entry per element.
     pub owners: Vec<EntityId>,
+    /// Located diagnostics of the scheme (quality-floor violations); never affect the mesh.
+    pub notes: Vec<SchemeNote>,
 }
 
 impl Patch {
@@ -301,7 +327,15 @@ impl Patch {
             elements: Elements::new(),
             grid: None,
             owners: Vec::new(),
+            notes: Vec::new(),
         }
+    }
+
+    /// Attach a located diagnostic.
+    #[must_use]
+    pub fn with_note(mut self, note: SchemeNote) -> Self {
+        self.notes.push(note);
+        self
     }
 
     /// The canonical key of local index `local`.
@@ -440,6 +474,7 @@ pub struct PatchBuilder {
     grid: Option<NodeGrid>,
     owners: Vec<EntityId>,
     cur_owner: Option<EntityId>,
+    notes: Vec<SchemeNote>,
 }
 
 impl PatchBuilder {
@@ -454,6 +489,7 @@ impl PatchBuilder {
             grid: None,
             owners: Vec::new(),
             cur_owner: None,
+            notes: Vec::new(),
         }
     }
 
@@ -497,6 +533,11 @@ impl PatchBuilder {
         self.cur_owner = Some(piece);
     }
 
+    /// Attach a located diagnostic to the patch.
+    pub fn note(&mut self, note: SchemeNote) {
+        self.notes.push(note);
+    }
+
     /// Attach the structured view.
     pub fn grid(&mut self, g: NodeGrid) {
         self.grid = Some(g);
@@ -519,6 +560,7 @@ impl PatchBuilder {
             elements: self.elements,
             grid: self.grid,
             owners: self.owners,
+            notes: self.notes,
         }
     }
 }
@@ -641,6 +683,12 @@ impl PatchSet {
         self.patches.values()
     }
 
+    /// The notes of every patch, in target order and, within a patch, emission order: the same
+    /// for every executor and thread count.
+    pub fn notes(&self) -> Vec<SchemeNote> {
+        self.patches.values().flat_map(|p| p.notes.iter().cloned()).collect()
+    }
+
     /// Every node in commit order.
     pub fn nodes(&self) -> impl Iterator<Item = (NodeKey, Point3, Param)> + '_ {
         (0..self.keys.len()).map(move |i| (self.keys[i], self.points[i], self.params[i]))
@@ -654,5 +702,37 @@ impl PatchSet {
     /// The targets in merge order.
     pub fn merge_order(&self) -> &[Target] {
         &self.order
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+    use sm_core::EntityKind;
+
+    fn note(v: f64) -> SchemeNote {
+        SchemeNote {
+            position: Point3::new(v, 0.0, 0.0),
+            entities: vec![],
+            metric: "m".into(),
+            value: v,
+            threshold: 1.0,
+            suggestion: "s".into(),
+        }
+    }
+
+    #[test]
+    fn notes_ride_on_patches_in_target_then_emission_order() {
+        let t = |n| Target::Volume(EntityId::new(EntityKind::TopoVolume, n).unwrap());
+        let mut set = PatchSet::new();
+        // Inserted out of target order: notes() follows the target order.
+        let mut b = PatchBuilder::new(t(2));
+        b.note(note(3.0));
+        b.note(note(4.0));
+        set.insert(b.finish()).unwrap();
+        set.insert(Patch::new(t(1)).with_note(note(1.0)).with_note(note(2.0))).unwrap();
+        let v: Vec<f64> = set.notes().iter().map(|n| n.value).collect();
+        assert_eq!(v, [1.0, 2.0, 3.0, 4.0]);
+        assert!(PatchSet::new().notes().is_empty());
     }
 }

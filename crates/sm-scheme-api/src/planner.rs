@@ -453,6 +453,7 @@ impl<'a, 'r> Planner<'a, 'r> {
             rejections: self.rej.clone(),
             attempts: self.attempts,
             sizing: self.intent.defaults.sizing.clone(),
+            notes: Vec::new(),
             index: Default::default(),
         })
     }

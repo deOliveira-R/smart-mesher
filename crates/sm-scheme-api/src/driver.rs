@@ -7,7 +7,7 @@ use crate::error::{Attempt, FailureKind, Phase, Result, SchemeError};
 use crate::exec::Executor;
 use crate::geom;
 use crate::intent::{MeshIntent, SchemeName};
-use crate::patch::{ElemShape, Patch, PatchBuilder, PatchSet};
+use crate::patch::{ElemShape, Patch, PatchBuilder, PatchSet, SchemeNote};
 use crate::plan::{CopyMode, Plan};
 use crate::problem::{MeshConstraint, Selection};
 use crate::scheme::{GenCtx, MeshInput, SchemeRegistry};
@@ -129,6 +129,11 @@ pub struct Meshed<M> {
 }
 
 impl<M> Meshed<M> {
+    /// The located diagnostics of every patch ([`PatchSet::notes`]), in deterministic order.
+    pub fn notes(&self) -> Vec<SchemeNote> {
+        self.patches.notes()
+    }
+
     /// The mesh vertex of a node: by the commit correspondence ([`Driver::commit`]) it is
     /// `VertexIx(patches.index_of(key))`. `None` for a key the patch set does not hold.
     pub fn vertex_of(&self, key: NodeKey) -> Option<VertexIx> {

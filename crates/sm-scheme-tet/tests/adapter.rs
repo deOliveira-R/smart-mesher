@@ -514,3 +514,29 @@ fn adapter_result_does_not_depend_on_patch_listing_order() {
         assert_eq!(patch_content(&out, ids.volume), want, "shuffle {seed}");
     }
 }
+
+/// INT-7: quality-floor violations reach the driver result as located scheme notes, in a
+/// deterministic order, and a tightened floor changes the notes but not the mesh.
+#[test]
+fn quality_floor_violations_become_scheme_notes() {
+    let (topo, ids, _) = brick_setup([10.0, 10.0, 10.0]);
+    let reg = registry(None);
+    let base = size_intent(3.0);
+    let plain = mesh_with(&topo, ids.volume, &base, &reg, &Sequential).expect("mesh");
+    assert!(plain.notes().is_empty(), "default floor: a clean cube mesh has no violation");
+
+    let mut tight = size_intent(3.0);
+    tight.set_scheme(ids.volume, SchemeChoice::with_params(NAME, serde_json::json!({"min_dihedral_deg": 60.0}), Firmness::Hard));
+    let a = mesh_with(&topo, ids.volume, &tight, &reg, &Sequential).expect("mesh");
+    let b = mesh_with(&topo, ids.volume, &tight, &reg, &ScopedThreads(4)).expect("mesh");
+    let notes = a.notes();
+    assert!(!notes.is_empty());
+    assert_eq!(notes, b.notes(), "same notes for every executor");
+    assert_eq!(state_signature(&a), state_signature(&plain), "the floor is reporting only");
+    for n in &notes {
+        assert_eq!(n.metric, "min_dihedral");
+        assert!(n.value < 60.0 && n.threshold == 60.0);
+        assert!(!n.entities.is_empty() && !n.suggestion.is_empty());
+        assert!([n.position.x, n.position.y, n.position.z].iter().all(|c| (-1e-9..=10.0 + 1e-9).contains(c)), "inside the brick: {:?}", n.position);
+    }
+}

@@ -122,12 +122,14 @@ impl<'a, 'o> Meter<'a, 'o> {
     /// Tets below the quality floor as `(count, diagnostics)` (all, or the worst
     /// `max_diagnostics` if that is non-zero); triangle ids in the diagnostics are indices into
     /// the triangle list this meter was built over (empty for a centroid beyond the reach of every triangle).
-    pub fn quality_floor(&self, points: &[V3], n_input: usize, tets: &[[u32; 4]], max_diagnostics: usize) -> (usize, Vec<QualityDiagnostic>) {
+    /// `floors` are the bounds `(min dihedral in degrees, min mean ratio)`.
+    pub fn quality_floor(&self, points: &[V3], n_input: usize, tets: &[[u32; 4]], max_diagnostics: usize, floors: (f64, f64)) -> (usize, Vec<QualityDiagnostic>) {
+        let (floor_dih, floor_mr) = floors;
         let per_tet: Vec<[Option<f64>; 2]> = tets
             .par_iter()
             .map(|t| {
                 let q = tet_quality(t.map(|i| points[i as usize]));
-                [(q.min_dihedral < MIN_DIHEDRAL_DEG).then_some(q.min_dihedral), (q.mean_ratio < MIN_MEAN_RATIO).then_some(q.mean_ratio)]
+                [(q.min_dihedral < floor_dih).then_some(q.min_dihedral), (q.mean_ratio < floor_mr).then_some(q.mean_ratio)]
             })
             .collect();
         let mut found: Vec<(f64, u32, QualityMetric)> = Vec::new();
@@ -142,8 +144,8 @@ impl<'a, 'o> Meter<'a, 'o> {
         let total = found.len();
         // Worst first by value / threshold; ties by tet index (canonically sorted), then metric.
         let sev = |x: &(f64, u32, QualityMetric)| match x.2 {
-            QualityMetric::MinDihedral => x.0 / MIN_DIHEDRAL_DEG,
-            QualityMetric::MeanRatio => x.0 / MIN_MEAN_RATIO,
+            QualityMetric::MinDihedral => x.0 / floor_dih,
+            QualityMetric::MeanRatio => x.0 / floor_mr,
         };
         found.sort_by(|a, b| sev(a).total_cmp(&sev(b)).then(a.1.cmp(&b.1)).then((a.2 as u8).cmp(&(b.2 as u8))));
         if max_diagnostics > 0 {
@@ -165,8 +167,8 @@ impl<'a, 'o> Meter<'a, 'o> {
                 let input_only = t.iter().all(|&x| (x as usize) < n_input);
                 let fix = if input_only { SuggestedFix::RefineInputSurface { h: h_new } } else { SuggestedFix::RefineSizeNear { h: h_new } };
                 let threshold = match metric {
-                    QualityMetric::MinDihedral => MIN_DIHEDRAL_DEG,
-                    QualityMetric::MeanRatio => MIN_MEAN_RATIO,
+                    QualityMetric::MinDihedral => floor_dih,
+                    QualityMetric::MeanRatio => floor_mr,
                 };
                 QualityDiagnostic { position: c, triangles, metric, value, threshold, fix }
             })

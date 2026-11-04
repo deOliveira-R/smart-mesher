@@ -86,6 +86,21 @@ The stored plan is exactly the driver's: failures that caused a re-plan are in
 `plan.rejections`, candidates passed over by the final plan in `plan.attempts`. The plan is not
 hashed.
 
+#### Scheme notes (ruling INT-7)
+
+Schemes attach located diagnostics (`SchemeNote`: position, nearby model entities, metric, value,
+threshold, suggestion) to their `Patch`. After the run, `mesh.run` stores `PatchSet::notes()`
+(target order, then emission order) in `Plan::notes`, so `mesh.quality` can read them later from
+`MeshEntry::plan`.
+
+Why there: `MeshEntry` is the only per-mesh record that survives the op, and its `plan` is the
+existing *unhashed* provenance slot (`MeshEntry` is in a frozen contract crate this change may not
+extend; a new entry field would be the cleaner home and can replace this later). `Plan::notes` is
+`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a plan without notes serializes
+byte-for-byte as before; no layer digest reads the plan, so no state or layer hash moves, with or
+without notes. A notes-bearing plan is still a pure function of the hashed inputs. Notes are not
+errors: a quality-floor violation never fails `mesh.run`.
+
 ### mesh.run cell budget
 
 Before generating, `mesh.run` plans once (`Driver::plan`) and estimates the cells as

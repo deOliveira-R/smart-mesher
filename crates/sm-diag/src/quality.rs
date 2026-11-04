@@ -16,6 +16,7 @@ use crate::analysis::{G_FAIL, G_WARN, MetricColumn, SkippedMetric, ThresholdOver
 use crate::common::{fin, resolve_mesh, schema_version};
 use crate::error::DiagError;
 use crate::locate::{EntityRef, entity_ref, location, near, owner};
+use crate::notes::{SchemeFinding, scheme_findings};
 use crate::suggest::{InvalidOwner, MetricFacts, Suggestion, suggest};
 
 /// Largest accepted `worst_n`.
@@ -226,6 +227,23 @@ pub struct QualityReport {
     pub skipped: Vec<SkippedMetric>,
     /// Suggested actions.
     pub suggestions: Vec<Suggestion>,
+    /// Located diagnostics the meshing schemes attached (quality-floor violations, ruling
+    /// INT-7), at most [`MAX_SCHEME_NOTES`](crate::MAX_SCHEME_NOTES). Not graded: they do not
+    /// change `verdict`. Absent when there are none.
+    ///
+    /// Hidden from the JSON schema for now: the schema golden may not change without an
+    /// orchestrator ruling (remove `schemars(skip)` and re-bless it to publish the field).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(skip)]
+    pub scheme_notes: Vec<SchemeFinding>,
+    /// Number of scheme notes in all (more than `scheme_notes` lists if capped). Absent when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[schemars(skip)]
+    pub n_scheme_notes: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn sense_name(s: Sense) -> &'static str {
@@ -564,6 +582,8 @@ pub fn quality_report(m: &dyn MeshRead, o: &QualityOptions, ops: &dyn Fn(&str) -
         metrics,
         skipped,
         suggestions,
+        scheme_notes: Vec::new(),
+        n_scheme_notes: 0,
     })
 }
 
@@ -629,7 +649,11 @@ impl TypedQuery for MeshQuality {
         };
         let names = cx.service::<OpNames>().ok();
         let ops = |op: &str| names.is_some_and(|n| n.0.contains(op));
-        Ok(quality_report(entry.mesh(), &o, &ops)?)
+        let mut report = quality_report(entry.mesh(), &o, &ops)?;
+        if let Some(plan) = &entry.plan {
+            (report.n_scheme_notes, report.scheme_notes) = scheme_findings(entry.mesh(), &plan.notes);
+        }
+        Ok(report)
     }
 }
 
