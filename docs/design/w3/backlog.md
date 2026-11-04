@@ -60,3 +60,24 @@ Principle: our own checks decide whether a mesh is valid and how good it is. Ext
 - **sm-server:** `Server::open` binds another builder's pending store.
 - **Contracts:** `SchemeNote` / `Patch::notes` (sm-scheme-api); `MeshEntry.derived_from`.
 - sm-cadio wall-clock tests → work counters; sm-poly typed error for unrepaired cells.
+
+## From the post-W3a contract batch and W3a follow-ups (2026-11-04)
+Merged: contract batch 55a20a9; follow-ups foam2d, tet, server, cadio, poly (a55b1ed..ee78766).
+
+Rulings proposed for W3b-0:
+- Firmness cascade (decision 9): resolve at command time in `mesh.size`/`mesh.intervals` so stored intent is order-free; flip `mesh.run` to Firmness only after a milestone A/B with unchanged hashes.
+- Re-bless the `mesh.quality` output schema golden once to publish `scheme_notes` / `n_scheme_notes`.
+- Move scheme notes from `Plan` to an unhashed `MeshEntry::notes`; until then clear `plan.notes` in `mesh.to_poly`.
+- sm-op-api ACR: `ApplyCtx::retire_range` for bulk delete (10⁶ cells: 7-11 s today); test hash equality with per-id retire.
+- sm-protocol ACR: `session.export` gets `split_small_determinant` (default true) and a way to name empty/wedge patches; sm-fem emits them. Add 2D conformance fixtures (incl. the unsplit tri-prism slab).
+
+Cleanups:
+- sm-server `host.rs`: move `notes_of` above `write_dir`'s doc comment.
+- sm-scheme-api: `SchemeNote` `#[non_exhaustive]` + constructor; `MeshIntent::set_intervals` running counter (O(n²) today).
+- sm-mesher DESIGN.md "Scheme notes" text is stale; sm-diag dev-deps comment.
+- `ExportNote::parse` loses the code when the count is missing.
+- sm-meshio: misleading comment in `tests/foam_2d.rs`; FOAM_FORMAT.md §8 "six above" needs the list; §11 open follow-ups.
+- sm-scheme-tet: n=64 cliff test runs only in release (CI is debug); hint-index work-counter test; record path B smoothed tet SJ 0.1848.
+- sm-cadio: refusal tests no longer bound parse work; per-run Newton cost not counted; tighten `global_projections <= 16` to MAX_GLOBAL; `sm_cadio::work` module/function name clash; global atomics on the public API.
+- sm-poly: map `UnrepairedCell` to `OpError::Failed`, not `Invalid`; `tests/robust.rs` asserts nothing about `region`; agglomeration can make invalid cells after the check.
+- Commit a268047 has a Sonnet co-author trailer (process note only).
