@@ -264,6 +264,7 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let decode_base = |i: &usize| -> BaseResult {
         let (id, kind, report, _) = &preps[*i];
         let mut local = Vec::new();
+        crate::work::add(&crate::work::SOLIDS_DECODED, 1);
         let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
         Ok((solid, local, stats))
     };
@@ -662,6 +663,7 @@ fn pole_loop(surface: &sm_geom_api::SurfaceDef, pole: usize, loop_id: u64, tol: 
 /// Every edge must cancel (forward uses minus reverse uses) in every shell.
 pub(crate) fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge]) -> Result<(), StepError> {
     for sh in shells {
+        crate::work::add(&crate::work::CLOSURE_COEDGES, sh.faces.iter().flat_map(|&fi| &faces[fi].loops).map(Vec::len).sum());
         let mut net: BTreeMap<usize, i64> = BTreeMap::new();
         for &fi in &sh.faces {
             for lp in &faces[fi].loops {

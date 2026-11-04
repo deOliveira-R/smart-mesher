@@ -203,11 +203,7 @@ fn mutated_and_random_inputs_never_panic() {
     // 2400 cases by default; `SM_CADIO_FUZZ_CASES=n` runs a longer sweep.
     let cases = std::env::var("SM_CADIO_FUZZ_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(2400u64);
     for idx in 0..cases {
-        let t0 = std::time::Instant::now();
         let r = catch_unwind(AssertUnwindSafe(|| one_case(idx, &corpus)));
-        if t0.elapsed().as_secs_f64() > 1.0 {
-            eprintln!("slow case {idx}: {:.1} s", t0.elapsed().as_secs_f64());
-        }
         if let Err(e) = r {
             let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default();
             panic!("case {idx} failed: {msg}");
