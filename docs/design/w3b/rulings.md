@@ -54,8 +54,8 @@ These override the W3b drafts and the planning critique. Where a ruling leaves a
 - **Q7. Python bindings.** Package `smartmesh`, Python ≥ 3.10 abi3, not on PyPI, no zero-copy views. CLAUDE.md now allows PyO3 macro-generated `unsafe` in `crates/sm-py` (ddc2122).
 - **Q8. Web viewer.** WebGL2 with a renderer-neutral buffer contract. Client in `crates/sm-view/web/`, read-only plus script console. The Node CI job is non-blocking.
 
-## Proposed 2026-11-04, awaiting the user's explicit OK
-From the post-W3a contract batch review. Do not bless any golden on these until confirmed.
+## Contract-batch proposals (approved by the user 2026-11-04)
+From the post-W3a contract batch review. P1 still flips only after a milestone A/B with unchanged hashes.
 - **P1.** Firmness cascade:
   - resolve at command time in `mesh.size` / `mesh.intervals`, so stored intent is order-free;
   - flip `mesh.run` to Firmness only after a milestone A/B with unchanged hashes;
@@ -64,3 +64,15 @@ From the post-W3a contract batch review. Do not bless any golden on these until 
 - **P3.** Move scheme notes from `Plan` to an unhashed `MeshEntry::notes`. Until then, `mesh.to_poly` clears `plan.notes`.
 - **P4.** sm-op-api ACR `ApplyCtx::retire_range` for bulk delete, with a test that the hash equals per-id retire.
 - **P5.** sm-protocol ACR: `session.export` gets `split_small_determinant` (default true) and empty/wedge patch naming.
+
+## Plan open items (ruled by the user 2026-11-04, accepting the recommendations)
+- **O1.** The transport code opens a self-contained `.smrt` file written by `session.export` with `ExportFormat::Smrt`.
+- **O2.** One majorant per region, passed by the caller on each tracking call. There is no energy-band index in the contract.
+- **O3.** The caller chooses between surface and delta tracking per region (`set_policy`, `block`).
+- **O5.** `model.export` is a read-only query. The file write happens outside history, like `session.export`.
+- **O6.** `rt.check_overlaps` is a read-only query, seed 0 by default.
+- **O7.** MCNP/OpenMC importers (which reject overlapping decks) go to W3c.
+- **O12.** Ask the user for FreeCAD-generated shapes with known volumes when the CSG bridge starts.
+- **O16.** The viewer polls `session.hash`; server push waits for a later wave.
+- **O17.** Overlaps between bodies are found at track time and by `rt.check_overlaps`, not proved absent at build.
+- **P1-P5.** Approved.
