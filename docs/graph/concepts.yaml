@@ -154,12 +154,12 @@ nodes:
   # io
   ir-store:          {domain: io, summary: "native IR: schema, physical profiles (mmap/Zarr/HDF5), versioning, validation hook"}
   cad-io:            {domain: io, summary: "Geometry import only: STEP (AP203/214/242), IGES, SAT (cq-acis as reference), STL as faceted geometry, CSG (MCNP/OpenMC; importers reject overlapping decks, Q4)"}
-  model-export:      {domain: io, summary: "model.export (W3b, Q10): Model-stage op writing the B-rep as STEP through sm_cadio::write_step; not a mesh export"}
+  model-export:      {domain: io, summary: "model.export (W3b, Q10): Model-stage read-only command writing the B-rep as STEP through sm_cadio::write_step (O5 default: a query returning the bytes; a path is written outside history, like session.export); not a mesh export"}
   exporters:         {domain: io, summary: "one sub-node per target (CGNS, Exodus, OpenFOAM, DAGMC, VTKHDF, Gmsh, MED, OpenMC/MCNP CSG, ...), each with a loss report"}
   hdf5-io:           {domain: io, summary: "Minimal deterministic pure-Rust HDF5 writer (W3b, private module of sm-meshio, extractable): superblock v2, compact groups, contiguous datasets, no timestamps"}
   export-dagmc:      {domain: io, summary: "DAGMC h5m (W3b, Q6): triangle surfaces with forward/backward volume senses, mat:<set name> groups, opt-in mat:Graveyard; from a classified mesh or sm-tess facets"}
   export-gmsh:       {domain: io, summary: "Gmsh msh 4.1 (W3b, Q6): ASCII by default, binary option; physical groups via discrete entities; polyhedra are an error by default"}
-  tracking-file:     {domain: io, summary: "The tracking handover file (W3b, Q2): geometry, connectivity and the material name of each region; the transport code opens it through sm-rt via the C ABI and pairs names with its own cross sections (format is an open item)"}
+  tracking-file:     {domain: io, summary: "The tracking handover file (W3b, Q2): geometry, connectivity and the material name of each region; the transport code opens it through sm-rt via the C ABI and pairs names with its own cross sections (O1 default: the .smrt image, written by session.export format smrt)"}
   rt-capi:           {domain: io, summary: "C ABI over sm-rt-api trackers (sm-rt-capi): open the tracking file, DAGMC-shaped shims, two-phase callback-free flight entries, per-node materials, -12 mapping"}
   rt-benchmark:      {domain: io, summary: "Reproducible, fairness-checked tracking benchmark against DAGMC (MOAB, double-down) and XDG (W3b, sm-rt-bench, Q9); record-only; --model <local STEP> is never committed"}
   # history
