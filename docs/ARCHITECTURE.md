@@ -19,7 +19,7 @@ Status: **proposal, awaiting review**. Nothing here is built yet.
 |---|---|---|
 | Kernel, meshers, I/O, server | **Rust** (cargo workspace) | Native speed, SIMD (`std::simd`/`wide`), easy data parallelism (`rayon`), memory safety for a codebase written by many agents, and compile-time enforcement of crate interfaces, which is what makes parallel development safe. Compiles to WASM. |
 | GPU compute (later) | `wgpu` compute shaders | Portable (Metal/Vulkan/DX12). For smoothing, quality evaluation, big queries. |
-| Frontend | **TypeScript + WebGPU** (three.js/WebGPU renderer or raw) | Runs in a browser against a local or remote backend; can be wrapped in Tauri for a desktop app later. Gets render-ready binary buffers from the backend, so it never holds the full volume mesh. |
+| Frontend | **TypeScript + WebGL2** (client in `crates/sm-view/web/`) | Runs in a browser against a local or remote backend; can be wrapped in Tauri for a desktop app later. Gets render-ready binary buffers from the backend, so it never holds the full volume mesh. |
 | Scripting | **Python** via PyO3 (`smartmesh` module) | Parametric studies, notebooks. Same op API. |
 | Agent interface | **MCP server** (Rust, stdio + HTTP) | Thin adapter over the backend protocol. |
 
@@ -124,8 +124,8 @@ L4  sm-rt-bench    ray-tracing benchmarks and scaling harness (not published)
 L4  sm-rt-capi     C ABI (+ DAGMC-shaped shims) over sm-rt-api trackers for Fortran/C++ transport codes
 L5  sm-server      session host; protocol over WebSocket (JSON-RPC control + binary frames for buffers)
 L5  sm-mcp         MCP tools → protocol
-L6  sm-py          PyO3 bindings (package `smartmesh`, abi3 >= 3.10; feature `python`; `ci/py.sh`)
 L5  sm-cli         `smesh` binary: headless run of scripts, server start, export
+L6  sm-py          PyO3 bindings (package `smartmesh`, abi3 >= 3.10; feature `python`; `ci/py.sh`)
 ```
 
 A crate may depend only on crates in lower layers.
