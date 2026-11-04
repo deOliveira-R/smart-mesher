@@ -111,6 +111,7 @@ L3  sm-scheme-*    one crate per scheme family, all implementing the same traits
 L3  sm-diag        mesh.validate / mesh.quality / mesh.flag_cells: located, geometry-linked, actionable diagnostics
 L3  sm-poly        tet → polyhedral conversion (median dual, planar faces, features), agglomeration
 L3  sm-rt          ray tracing / particle tracking (implements sm-rt-api: cell walking, BVH locate, .smrt cache)
+L3  sm-view        renderer-neutral view buffers (skin, clip, scalar overlays); WebGL2 client in `crates/sm-view/web/` (Q8, replaces `frontend/`)
 L3  sm-smooth      Laplacian, centroid area pull, equipotential, Winslow, condition-number/optimization, untangle
 L3  sm-modify      refine, coarsen, pillow, collapse, remesh, align, mesh boolean/cleanup
 L2  sm-fem         blocks, sidesets, nodesets, materials, element type assignment, BC sets
@@ -119,12 +120,12 @@ L2  sm-meshio      native format (below), VTU/VTKHDF, OpenFOAM polyMesh (ASCII),
 L2  sm-exodus      Exodus II writer (own netCDF classic / 64-bit-offset encoder), NFACED/NSIDED polyhedra
 L4  sm-engine      Op registry, apply(), state, Delta, undo/redo, timeline DAG, snapshots, replay
 L4  sm-lang        our command language → Ops (parser, completion, help generated from Op schemas)
+L4  sm-rt-bench    ray-tracing benchmarks and scaling harness (not published)
 L4  sm-rt-capi     C ABI (+ DAGMC-shaped shims) over sm-rt-api trackers for Fortran/C++ transport codes
 L5  sm-server      session host; protocol over WebSocket (JSON-RPC control + binary frames for buffers)
 L5  sm-mcp         MCP tools → protocol
-L5  sm-py          PyO3 bindings
+L6  sm-py          PyO3 bindings (package `smartmesh`, abi3 >= 3.10; feature `python`; `ci/py.sh`)
 L5  sm-cli         `smesh` binary: headless run of scripts, server start, export
-    frontend/      TS + WebGPU client
 ```
 
 A crate may depend only on crates in lower layers.
