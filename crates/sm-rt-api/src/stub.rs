@@ -40,6 +40,9 @@ use crate::state::{
 use crate::tally::TrackBundle;
 use crate::tracker::{Tracker, TrackerInfo, check_direction, hashed_direction, lost, move_along};
 use crate::world::{ComponentKind, LatticeKind, WorldSpec};
+
+mod majorant;
+pub use majorant::AnalyticHierarchy;
 use sm_core::{Aabb, Point3, Transform, Vector3};
 use sm_geom_api::{GeomError, ModelTolerance, Ray};
 use smallvec::SmallVec;
@@ -796,7 +799,7 @@ impl AnalyticWorld {
 
 impl Tracker for AnalyticWorld {
     fn caps(&self) -> TrackerCaps {
-        let mut c = TrackerCaps::ANALYTIC.union(TrackerCaps::EXACT_PLANAR);
+        let mut c = TrackerCaps::ANALYTIC.union(TrackerCaps::EXACT_PLANAR).union(TrackerCaps::MAJORANT);
         if self.lattice.is_some() {
             c = c.union(TrackerCaps::HIERARCHY);
         }
@@ -824,6 +827,14 @@ impl Tracker for AnalyticWorld {
             return None;
         }
         *self.volumes.get(c.get() % self.n_local())?
+    }
+
+    fn majorant_hierarchy(
+        &self,
+        materials: &crate::majorant::MaterialMap,
+        opts: &crate::majorant::HierarchyOptions,
+    ) -> Result<std::sync::Arc<dyn crate::majorant::MajorantHierarchy>> {
+        Ok(std::sync::Arc::new(AnalyticHierarchy::build(self, materials, opts)?))
     }
 
     fn locate(&self, p: Point3, dir: Option<Vector3>, _hint: Option<CellId>, _scratch: &mut Scratch) -> Result<Located> {

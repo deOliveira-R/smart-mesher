@@ -157,6 +157,19 @@ pub enum RtError {
     /// A geometry operation failed (analytic refine, ray hits).
     #[error(transparent)]
     Geom(#[from] GeomError),
+    /// A cross section exceeded the majorant of the node that bounds it. This is always an
+    /// error, never clamped: clamping would bias the flux silently.
+    #[error("cross section {sigma} exceeds the majorant {majorant} of material set {set} in band {band}")]
+    MajorantViolation {
+        /// Material set whose bound was exceeded.
+        set: u32,
+        /// Energy band.
+        band: u32,
+        /// The offending cross section.
+        sigma: f64,
+        /// The bound it exceeded.
+        majorant: f64,
+    },
 }
 
 impl RtError {
@@ -177,6 +190,7 @@ impl RtError {
     /// | `BadAlbedo` | -9 |
     /// | `BinCountMismatch` | -10 |
     /// | `InvalidInput` | -11 |
+    /// | `MajorantViolation` | -12 |
     ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
@@ -192,6 +206,7 @@ impl RtError {
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
             Self::InvalidInput(_) => -11,
+            Self::MajorantViolation { .. } => -12,
         }
     }
 }
@@ -226,6 +241,13 @@ mod tests {
         codes.dedup();
         assert_eq!(codes.len(), all.len());
         assert!(codes.iter().all(|&c| c < 0 && c > -100));
+    }
+
+    #[test]
+    fn majorant_violation_code_is_next_free() {
+        let e = RtError::MajorantViolation { set: 0, band: 1, sigma: 2.0, majorant: 1.0 };
+        assert_eq!(e.code(), -12);
+        assert!(e.to_string().contains("exceeds the majorant"));
     }
 
     #[test]

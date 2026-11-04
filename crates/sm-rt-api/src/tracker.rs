@@ -30,6 +30,8 @@ use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher};
 use crate::error::{LostCause, LostInfo, Result, RtError};
 use crate::ids::{CellId, FaceId, InstanceId, RegionId};
 use crate::input::Precision;
+use crate::majorant::{HierarchyOptions, MajorantHierarchy, MaterialMap};
+use std::sync::Arc;
 use crate::state::{
     BoundaryHit, Closest, Located, Peek, RegionTable, Scratch, Step, StepEnd, SurfaceTable, TrackState, TrackerCaps,
 };
@@ -434,6 +436,14 @@ pub trait Tracker: Send + Sync {
             }
             _ => Err(RtError::Unsupported("tally spec")),
         }
+    }
+
+    /// The disjoint majorant hierarchy of this tracker for delta and hybrid tracking (needs
+    /// [`TrackerCaps::MAJORANT`]). `materials` maps regions to the caller's material keys.
+    /// The result is independent of thread count; its `structure_hash` covers the tracker's
+    /// and the map's. Default: `Unsupported`.
+    fn majorant_hierarchy(&self, _materials: &MaterialMap, _opts: &HierarchyOptions) -> Result<Arc<dyn MajorantHierarchy>> {
+        Err(RtError::Unsupported("majorant hierarchy"))
     }
 
     /// Whether `p` (moving along `dir`) is in `region`: DAGMC `point_in_volume`.

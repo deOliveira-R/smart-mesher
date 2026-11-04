@@ -371,6 +371,9 @@ impl TrackerCaps {
     pub const ANALYTIC: Self = Self(32);
     /// Traversal in `f32` boxes with `f64` confirmation (`Precision::F32Traversal`).
     pub const F32_TRAVERSAL: Self = Self(64);
+    /// Provides a majorant hierarchy ([`crate::majorant::MajorantHierarchy`]) through
+    /// `Tracker::majorant_hierarchy`: majorant segments, hinted location, delta tracking.
+    pub const MAJORANT: Self = Self(128);
     /// Union of two sets.
     pub const fn union(self, o: Self) -> Self {
         Self(self.0 | o.0)
@@ -422,6 +425,7 @@ mod tests {
             TrackerCaps::PERIODIC,
             TrackerCaps::ANALYTIC,
             TrackerCaps::F32_TRAVERSAL,
+            TrackerCaps::MAJORANT,
         ];
         let u = all.iter().fold(TrackerCaps::default(), |a, &b| a.union(b));
         assert_eq!(u.0.count_ones() as usize, all.len());

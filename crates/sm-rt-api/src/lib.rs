@@ -20,6 +20,9 @@
 //!   from a mesh, facets, a B-rep or a world; [`FacetInput::check_watertight`] is the located
 //!   diagnostic that replaces DAGMC's repair step.
 //! * [`WorldSpec`]: universes, placements, lattices ([`StepEnd::SlotChange`] at their walls).
+//! * [`mod@majorant`]: the disjoint majorant hierarchy ([`MajorantHierarchy`], [`MajorantTable`],
+//!   [`MajorantSegment`], [`sample_flight`]): delta, surface and hybrid tracking as views over one
+//!   partition, with hinted point location. Reached through [`Tracker::majorant_hierarchy`].
 //! * [`mod@boundary`]: [`FaceAction`], [`ResponseKind`], [`BoundarySpec`], derived from
 //!   `sm_model_api` decks; [`Tracker::resolve_boundary`].
 //! * [`compat`]: DAGMC-shaped `ray_fire`, `point_in_volume`, `next_vol`, `surface_sense`,
@@ -93,6 +96,7 @@ pub mod compat;
 pub mod error;
 pub mod ids;
 pub mod input;
+pub mod majorant;
 pub mod state;
 #[cfg(feature = "stubs")]
 pub mod stub;
@@ -103,10 +107,15 @@ pub mod world;
 pub use boundary::{BoundaryDef, BoundarySelector, BoundarySpec, FaceAction, ResponseKind, ResponseMap, wrap_transform};
 pub use cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
 pub use error::{BuildIssue, LostCause, LostInfo, Result, RtError};
-pub use ids::{CellId, ComponentId, FaceId, InstanceId, PrototypeId, RegionId, SurfaceId};
+pub use ids::{BandId, CellId, ComponentId, FaceId, InstanceId, MaterialSetId, NodeId, PrototypeId, RegionId, SurfaceId};
 pub use input::{
     BrepInput, BuildInput, BuildOptions, BuildReport, ComplementPolicy, FacetFallback, FacetInput, MeshInput, Precision,
     RecoveryPolicy, RegionRule, SurfaceRefine, TrackerBuilder, UnsealedEdge, facet_sides_from_topo,
+};
+pub use majorant::{
+    CostModel, CursorLevel, EnergyBands, Estimator, Extent, FlightEnd, FlightEvent, FlightStats, HierarchyOptions, Majorant,
+    MajorantHierarchy, MajorantSegment, MajorantTable, MarchCursor, MarchEnd, MarchOptions, MaterialMap, MaterialSets, NodeInfo,
+    NodeKind, NodeMode, NodeTable, RefinePolicy, SegmentMode, XsBound, sample_flight,
 };
 pub use state::{
     BoundaryHit, Closest, LEVEL_INLINE, Level, Located, Peek, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo,

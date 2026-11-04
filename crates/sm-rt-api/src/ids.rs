@@ -62,6 +62,18 @@ rt_index! {
     /// ascending `InstanceId`, so global `CellId`s never collide.
     InstanceId
 }
+rt_index! {
+    /// A node of the majorant hierarchy ([`crate::majorant`]). Node 0 is the root.
+    NodeId
+}
+rt_index! {
+    /// A deduplicated set of material keys ([`crate::majorant::MaterialSets`]).
+    MaterialSetId
+}
+rt_index! {
+    /// An energy band of [`crate::majorant::EnergyBands`].
+    BandId
+}
 
 impl CellId {
     /// The implicit complement: space inside the domain that no cell covers (DAGMC's implicit
