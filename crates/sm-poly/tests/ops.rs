@@ -112,6 +112,8 @@ fn acc8_default_keeps_the_source() {
     let (src, poly) = (layer.get(mesh1()).unwrap(), layer.get(id(EntityKind::Mesh, 2)).unwrap());
     assert_eq!(src.mesh().count(MeshEntityKind::Cell), 162);
     assert_eq!(poly.mesh().count(MeshEntityKind::Cell), 64);
+    assert_eq!(poly.derived_from, Some(mesh1()), "to_poly records its source");
+    assert_eq!(src.derived_from, None);
     for (kind, mk) in [
         (EntityKind::MeshCell, MeshEntityKind::Cell),
         (EntityKind::MeshFace, MeshEntityKind::Face),

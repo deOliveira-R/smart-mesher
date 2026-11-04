@@ -130,6 +130,20 @@ mesh), so plan section 5 risk 3 is **partly triggered**: a 10^6-cell run is seco
 milliseconds. It is workable for W2; a bulk commit path (`MeshBuild::add_template_cells`) would
 cut the 2.7 s, and the op overhead needs a profile before W3. No ACR is raised now.
 
+### Bulk mesh commit: measurement (w3b-acr)
+
+`cargo test --release -p sm-mesher --test bulk_perf -- --ignored --nocapture` (record only, no
+gate; `SM_BULK_N` sets the brick edge). Loaded shared machine, so timings vary by about 2x
+between runs. Before any change: `mesh.run` 11.9-16.4 s, `mesh.delete` 5.6-12 s at 10^6 cells.
+Instrumenting `retire_mesh` (5.06 M ids): `mesh_ids` 0.10 s, liveness check 0.27-0.41 s, layer
+removal ~0, and the per-id `ApplyCtx::retire` loop 7-11 s, i.e. nearly all of `mesh.delete`.
+`insert_mesh` (id check, adoption by `adopt_range`, layer insert) is 0.23 s: adoption is already
+bulk. The remainder of `mesh.run` over the driver is the state hash after the op.
+`ApplyCtx::retire` costs a SHA-256 for the multiset accumulator, a `BTreeSet` insert and a push
+to `Delta.removed` per id; `State::retire` is crate-private to sm-op-api, so a bulk retire cannot
+be built from sm-layer-api. It needs an `ApplyCtx::retire_range` (see the wave report). After:
+unchanged, nothing adopted by this item (hashes unchanged).
+
 The stub schemes are reference code; the numbers bound the driver and commit path, they do not
 predict production schemes.
 
