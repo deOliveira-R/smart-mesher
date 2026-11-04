@@ -31,9 +31,7 @@ graph BT
   scheme_poly -->|classification-api (dual faces/cells keep geometry links)| classification
   scheme_convert -->|scheme-api: MeshTransform| mesh_driver
   boundary_layer -->|scheme-api: MeshTransform| mesh_driver
-  scheme_auto -->|scheme-api: AutoPolicy, applicability scores, Selection| mesh_driver
-  decomposition(["decomposition (decomposition)"])
-  scheme_auto -->|decomposition-api: PieceShape hints outrank detection| decomposition
+  scheme_auto -->|AutoStrategy/DefaultStrategy over Driver::plan scores and fallback; records explicit mesh.scheme assignments| mesh_driver
   plan_explain -->|plan, attempts and rejections| mesh_driver
   classification(["classification (mesh-db)"])
   plan_explain -->|cells per shape on each entity| classification

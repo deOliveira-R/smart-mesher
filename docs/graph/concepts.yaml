@@ -62,7 +62,6 @@ domain_edges:   # user -> provider
   - [meshing, mesh-db]
   - [meshing, intent]
   - [meshing, model-semantics]
-  - [meshing, decomposition]   # W3b: scheme-auto reads PieceShape hints
   - [mesh-ops, mesh-db]
   - [mesh-ops, model-semantics]
   - [interfaces, mesh-db]
@@ -147,7 +146,7 @@ nodes:
   majorant-hierarchy: {domain: tracking, summary: "Disjoint majorant partition (W3b, sm-rt): lattice/universe nodes plus a kd split over meshed regions; deduplicated material sets per node. Holds no cross sections (Q2): the caller passes one majorant per node"}
   delta-tracking:    {domain: tracking, summary: "Segment iterator (W3b, sm-rt): surface and delta segments over the majorant partition, resumable caller-owned cursor, hinted location from the owning node, safety distance, region jump; a caller sigma_t above the node majorant is error -12"}
   csg-bridge:        {domain: tracking, summary: "Model -> CSG world (W3b, sm-rt): analytic primitives, prototypes and lattices of the model become CsgLeafInput + WorldSpec for the analytic tracker and the benchmark"}
-  overlap-check:     {domain: tracking, summary: "Check-stage op (W3b, Q4): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples"}
+  overlap-check:     {domain: tracking, summary: "Check-stage op (W3b, Q4; library in RT-ANALYTIC, op registered by RT-BRIDGE): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples"}
   # distribution
   partitioner:       {domain: distribution, summary: "graph partitioning, owners, ghosts, global ids"}
   # fields
@@ -285,7 +284,8 @@ edges:   # user -> provider : interface
   - [export-dagmc, mesh-store, "mesh-api: MeshRead"]
   - [export-dagmc, classification, "face and cell classification give surfaces and volumes"]
   - [export-dagmc, coloring, "coloring-api: cell sets to mat: groups"]
-  - [export-dagmc, tess, "FacetInput adapter (benchmark facet twin)"]
+  - [export-dagmc, tess, "tessellated facets for model_from_facets (benchmark facet twin)"]
+  - [export-dagmc, tracking-structure, "rt-api: FacetInput (input type of model_from_facets)"]
   - [export-gmsh, mesh-store, "mesh-api: MeshRead"]
   - [export-gmsh, classification, "classification-api: discrete entities"]
   - [tracking-file, tracking-structure, "tracking-api: what the file must let sm-rt rebuild"]
@@ -298,8 +298,7 @@ edges:   # user -> provider : interface
   - [rt-benchmark, csg-bridge, "exact geometry from the model cases"]
   - [rt-benchmark, tess, "facet twin"]
   - [rt-benchmark, export-dagmc, "h5m cross-check (stretch)"]
-  - [scheme-auto, mesh-driver, "scheme-api: AutoPolicy, applicability scores, Selection"]
-  - [scheme-auto, decomposition, "decomposition-api: PieceShape hints outrank detection"]
+  - [scheme-auto, mesh-driver, "AutoStrategy/DefaultStrategy over Driver::plan scores and fallback; records explicit mesh.scheme assignments"]
   - [plan-explain, mesh-driver, "plan, attempts and rejections"]
   - [plan-explain, classification, "cells per shape on each entity"]
   - [ops, timeline, "timeline-api"]

@@ -39,7 +39,7 @@ graph BT
   model_export(["model-export (io)"])
   model_export -->|topo-query-api (write_step reads a TopologyView)| topo_store
   export_dagmc(["export-dagmc (io)"])
-  export_dagmc -->|FacetInput adapter (benchmark facet twin)| tess
+  export_dagmc -->|tessellated facets for model_from_facets (benchmark facet twin)| tess
   rt_benchmark(["rt-benchmark (io)"])
   rt_benchmark -->|facet twin| tess
   state_layers(["state-layers (history)"])

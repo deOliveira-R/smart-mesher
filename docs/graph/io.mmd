@@ -34,7 +34,9 @@ graph BT
   coloring(["coloring (model-semantics)"])
   export_dagmc -->|coloring-api: cell sets to mat: groups| coloring
   tess(["tess (topology)"])
-  export_dagmc -->|FacetInput adapter (benchmark facet twin)| tess
+  export_dagmc -->|tessellated facets for model_from_facets (benchmark facet twin)| tess
+  tracking_structure(["tracking-structure (tracking)"])
+  export_dagmc -->|rt-api: FacetInput (input type of model_from_facets)| tracking_structure
   mesh_store(["mesh-store (mesh-db)"])
   export_gmsh -->|mesh-api: MeshRead| mesh_store
   classification(["classification (mesh-db)"])

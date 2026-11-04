@@ -2,7 +2,7 @@ graph BT
   csg_bridge["csg-bridge<br/><small>Model -> CSG world (W3b, sm-rt): analytic primitives, prototypes and lattices of the model become CsgLeafInput + WorldSpec for the analytic tracker and the benchmark</small>"]
   delta_tracking["delta-tracking<br/><small>Segment iterator (W3b, sm-rt): surface and delta segments over the majorant partition, resumable caller-owned cursor, hinted location from the owning node, safety distance, region jump; a caller sigma_t above the node majorant is error -12</small>"]
   majorant_hierarchy["majorant-hierarchy<br/><small>Disjoint majorant partition (W3b, sm-rt): lattice/universe nodes plus a kd split over meshed regions; deduplicated material sets per node. Holds no cross sections (Q2): the caller passes one majorant per node</small>"]
-  overlap_check["overlap-check<br/><small>Check-stage op (W3b, Q4): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples</small>"]
+  overlap_check["overlap-check<br/><small>Check-stage op (W3b, Q4; library in RT-ANALYTIC, op registered by RT-BRIDGE): samples points and rays to detect overlapping CSG cells, as OpenMC's geometry debug mode does; overlap cannot be proven absent for general CSG, so findings are located samples</small>"]
   tracking_analytic["tracking-analytic<br/><small>ANALYTIC leaf (W3b, sm-rt): exact CSG quadrics and tori under the shared world walker (rect lattices, universes; pointy-top hex is stretch, Q3). Cells must be disjoint (Q4): no first-wins order</small>"]
   tracking_structure["tracking-structure<br/><small>Contract sm-rt-api (mesh-native base, decision 12): cell walking on the polyhedral mesh, BVH locate, hierarchy (lattice/instance), deck faces in-step, .smrt cache. Analytic leaves, the majorant partition and delta flights are their own nodes (W3b); the C ABI is rt-capi</small>"]
   mesh_hierarchy(["mesh-hierarchy (mesh-db)"])
@@ -42,6 +42,8 @@ graph BT
   overlap_check -->|instancing-api: cells inside lattices and universes| instancing
   ir_store(["ir-store (io)"])
   ir_store -->|tracking-api| tracking_structure
+  export_dagmc(["export-dagmc (io)"])
+  export_dagmc -->|rt-api: FacetInput (input type of model_from_facets)| tracking_structure
   tracking_file(["tracking-file (io)"])
   tracking_file -->|tracking-api: what the file must let sm-rt rebuild| tracking_structure
   rt_capi(["rt-capi (io)"])
