@@ -7,7 +7,7 @@
 //! a tet, the centroid split into 4 tets). Sub-cells keep the parent's zones and boundary
 //! patches, and `smeshCellMap` records which internal cell each exported cell came from.
 
-use super::{FoamFile, PolyFaceZone, PolyMesh, PolyPatch, PolyZone};
+use super::{FoamFile, FoamPatchType, PolyFaceZone, PolyMesh, PolyPatch, PolyZone};
 use rayon::prelude::*;
 
 const NONE: u32 = u32::MAX;
@@ -34,12 +34,96 @@ pub(crate) fn area_vector(points: &[[f64; 3]], loop_: &[u32]) -> [f64; 3] {
     s
 }
 
-/// OpenFOAM `primitiveMeshTools::cellDeterminant` of every cell. With `Sf` the face area
-/// vectors of the cell's internal faces and `avg` their mean magnitude, the area tensor is
-/// `sum (Sf/avg)(Sf/avg)^T` and the result is `|det| / 8` (an interior cube cell is 1, a cube
-/// corner cell with 3 internal faces is 1/8). A cell with no internal face, or `avg` below
-/// 1e-150, is 0: checkMesh flags it.
+/// OpenFOAM `polyMesh::geometricD` of the mesh, from its `empty` and `wedge` patches
+/// (`polyMesh::calcDirections`): `1` for a direction the mesh resolves, `-1` for a knocked-out
+/// one. Empty patches knock out every component whose share of the summed `|Sf|` components
+/// (normalised) exceeds 1e-6; wedge patches knock out the components of their `centreNormal`
+/// (from the average unit face normal `n`: `sign(n_i) * (max(|n_i|, 0.5) - 0.5)`, normalised;
+/// magnitudes summed over wedge patches, normalised, > 1e-6). Patches without faces are
+/// ignored. A mesh with neither is `[1, 1, 1]`.
+pub fn geometric_directions(pm: &PolyMesh) -> [i8; 3] {
+    let mut empty = [0.0f64; 3];
+    let mut wedge = [0.0f64; 3];
+    let (mut has_empty, mut has_wedge) = (false, false);
+    for p in &pm.patches {
+        if p.n_faces == 0 {
+            continue;
+        }
+        let range = p.start_face as usize..(p.start_face + p.n_faces) as usize;
+        match p.patch_type {
+            FoamPatchType::Empty => {
+                has_empty = true;
+                for f in range {
+                    let a = area_vector(&pm.points, pm.face(f));
+                    for d in 0..3 {
+                        empty[d] += a[d].abs();
+                    }
+                }
+            }
+            FoamPatchType::Wedge => {
+                has_wedge = true;
+                // gAverage of the unit face normals.
+                let mut n = [0.0f64; 3];
+                for f in range.clone() {
+                    let a = area_vector(&pm.points, pm.face(f));
+                    let m = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                    if m > 0.0 {
+                        for d in 0..3 {
+                            n[d] += a[d] / m;
+                        }
+                    }
+                }
+                let cnt = range.len() as f64;
+                let mut c = [0.0f64; 3];
+                for d in 0..3 {
+                    let v = n[d] / cnt;
+                    c[d] = if v == 0.0 { 0.0 } else { v.signum() * (v.abs().max(0.5) - 0.5) };
+                }
+                let m = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+                if m > 0.0 {
+                    for d in 0..3 {
+                        wedge[d] += (c[d] / m).abs();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let knock = |v: [f64; 3], on: bool, d: &mut [i8; 3]| {
+        let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if on && m > 0.0 {
+            for k in 0..3 {
+                d[k] = if v[k] / m > 1e-6 { -1 } else { 1 };
+            }
+        }
+    };
+    let mut d = [1i8; 3];
+    knock(empty, has_empty, &mut d);
+    // geometricD starts from solutionD (empty directions) and also knocks out wedge ones.
+    let mut g = d;
+    knock(wedge, has_wedge, &mut g);
+    g
+}
+
+/// OpenFOAM `primitiveMeshTools::cellDeterminant` of every cell, as `checkMesh` evaluates it:
+/// `polyMesh::checkCellDeterminant` passes `geometricD()` ([`geometric_directions`]) as `meshD`.
+/// With `Sf` the face area vectors of the cell's internal faces and `avg` their mean magnitude,
+/// the area tensor is `sum (Sf/avg)(Sf/avg)^T` and the result is `|det| / 8` (an interior cube
+/// cell is 1, a cube corner cell with 3 internal faces is 1/8). A cell with no internal face,
+/// or `avg` below 1e-150, is 0: checkMesh flags it. 2D rule: with two resolved directions the
+/// knocked-out diagonal entry of the tensor is set to 1 (a one-layer slab with `empty` front
+/// and back, or a `wedge` case, is then well determined); with one resolved direction every
+/// cell is 1.
 pub fn cell_determinants(pm: &PolyMesh) -> Vec<f64> {
+    cell_determinants_in(pm, geometric_directions(pm))
+}
+
+/// [`cell_determinants`] with the mesh directions given.
+fn cell_determinants_in(pm: &PolyMesh, dirs: [i8; 3]) -> Vec<f64> {
+    let two_d = two_d_of(dirs);
+    if dirs.iter().filter(|d| **d == 1).count() == 1 {
+        return vec![1.0; pm.n_cells as usize];
+    }
     let nc = pm.n_cells as usize;
     let ni = pm.n_internal();
     let sf: Vec<[f64; 3]> = (0..ni).into_par_iter().map(|i| area_vector(&pm.points, pm.face(i))).collect();
@@ -58,25 +142,36 @@ pub fn cell_determinants(pm: &PolyMesh) -> Vec<f64> {
             cnt[c] += 1;
         }
     }
-    // Differs from OpenFOAM only for 2D/1D meshes (meshD) and in applying the ROOTVSMALL test
-    // to the mean area instead of the area sum; neither changes results for our 3D exports.
-    (0..nc).map(|c| det_from_tensor(a[c], mag[c], cnt[c])).collect()
+    // Differs from OpenFOAM only in applying the ROOTVSMALL test to the mean area instead of the
+    // area sum, which does not change results for our exports.
+    (0..nc).map(|c| det_from_tensor(a[c], mag[c], cnt[c], two_d)).collect()
+}
+
+/// The knocked-out direction when exactly two are resolved (OpenFOAM's `nDims == 2` branch).
+fn two_d_of(dirs: [i8; 3]) -> Option<usize> {
+    if dirs.iter().filter(|d| **d == 1).count() == 2 { dirs.iter().rposition(|d| *d != 1) } else { None }
 }
 
 /// Determinant measure from the summed area tensor, summed magnitudes and face count.
-fn det_from_tensor(a: [f64; 6], mag: f64, cnt: u32) -> f64 {
+fn det_from_tensor(a: [f64; 6], mag: f64, cnt: u32, two_d: Option<usize>) -> f64 {
     let avg = if cnt > 0 { mag / f64::from(cnt) } else { 0.0 };
     if cnt == 0 || avg < 1e-150 {
         return 0.0;
     }
     let k = 1.0 / (avg * avg);
-    let [xx, xy, xz, yy, yz, zz] = a.map(|v| v * k);
+    let [mut xx, xy, xz, mut yy, yz, mut zz] = a.map(|v| v * k);
+    match two_d {
+        Some(0) => xx = 1.0,
+        Some(1) => yy = 1.0,
+        Some(_) => zz = 1.0,
+        None => {}
+    }
     let det = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
     det.abs() / 8.0
 }
 
 /// Determinant measure of a cell with the given internal face area vectors.
-fn det_of_normals(ns: &[[f64; 3]]) -> f64 {
+fn det_of_normals(ns: &[[f64; 3]], two_d: Option<usize>) -> f64 {
     let mut a = [0.0f64; 6];
     let mut mag = 0.0;
     for n in ns {
@@ -86,7 +181,7 @@ fn det_of_normals(ns: &[[f64; 3]]) -> f64 {
         }
         mag += (t[0] + t[3] + t[5]).sqrt();
     }
-    det_from_tensor(a, mag, ns.len() as u32)
+    det_from_tensor(a, mag, ns.len() as u32, two_d)
 }
 
 /// Sum of the signed volumes of the fan tets (apex, m, a, b) over an outward base loop, `m` the
@@ -147,7 +242,9 @@ struct Ent {
 pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Option<SplitInfo> {
     let nc = pm.n_cells as usize;
     let (nf, ni) = (pm.n_faces(), pm.n_internal());
-    let det = cell_determinants(pm);
+    let dirs = geometric_directions(pm);
+    let two_d = two_d_of(dirs);
+    let det = cell_determinants_in(pm, dirs);
     let mut cand = vec![NONE; nc];
     let mut cell_of: Vec<u32> = Vec::new();
     let mut n_cand = 0usize;
@@ -242,7 +339,7 @@ pub(crate) fn split_small_determinant(pm: &mut PolyMesh, threshold: f64) -> Opti
                     let (u, v) = ([a[0] - cen[0], a[1] - cen[1], a[2] - cen[2]], [b[0] - cen[0], b[1] - cen[1], b[2] - cen[2]]);
                     ns.push([(u[1] * v[2] - u[2] * v[1]) / 2.0, (u[2] * v[0] - u[0] * v[2]) / 2.0, (u[0] * v[1] - u[1] * v[0]) / 2.0]);
                 }
-                worst = worst.min(det_of_normals(&ns));
+                worst = worst.min(det_of_normals(&ns, two_d));
             }
             if worst <= det[cell_of[k] as usize] {
                 continue;

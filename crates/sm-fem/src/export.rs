@@ -53,6 +53,10 @@ pub struct ExportRequest {
     pub mesh: Option<EntityId>,
     /// Timeline hash to record as provenance (`.smsh` and Exodus).
     pub provenance: Option<String>,
+    /// OpenFOAM only: split cells that fail checkMesh's cell-determinant check (ruling INT-8;
+    /// 2D cases with `empty` or `wedge` patches are judged by OpenFOAM's 2D rule). On by default
+    /// ([`ExportRequest::new`]); `false` writes the internal cells as they are.
+    pub split_small_determinant: bool,
 }
 
 impl ExportRequest {
@@ -62,6 +66,7 @@ impl ExportRequest {
             format,
             mesh: None,
             provenance: None,
+            split_small_determinant: true,
         }
     }
 }
@@ -253,7 +258,7 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
     let (id, lowered) = prepare(state, req)?;
     let (files, notes) = match req.format {
         ExportFormat::OpenFoam => {
-            let opts = FoamOptions::new().decks(lowered.decks.clone());
+            let opts = FoamOptions::new().decks(lowered.decks.clone()).split_small_determinant(req.split_small_determinant);
             let build = build_polymesh((*lowered.mesh).as_read(), &opts)?;
             let files = build
                 .mesh

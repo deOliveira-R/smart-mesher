@@ -237,3 +237,23 @@ fn exodus_of_a_block_mesh_has_the_block_and_notes_are_lines() {
             .all(|n| n.contains(": ") && n.contains(" x"))
     );
 }
+
+#[test]
+fn export_request_switches_the_openfoam_split_off() {
+    let r = fixture_rig("mixed_transition");
+    let has_map = |b: &sm_fem::ExportBundle| b.files.iter().any(|f| f.name.ends_with("/smeshCellMap"));
+    let on = files(&r, ExportFormat::OpenFoam);
+    assert!(has_map(&on), "default splits the few-face cells");
+    assert!(on.notes.iter().any(|n| n.starts_with("foam.small_det_split")), "{:?}", on.notes);
+    let mut req = ExportRequest::new(ExportFormat::OpenFoam);
+    assert!(req.split_small_determinant, "default is the current behaviour");
+    req.split_small_determinant = false;
+    let off = export_files(r.state(), &req).expect("bundle");
+    assert!(!has_map(&off));
+    assert!(off.notes.iter().all(|n| !n.starts_with("foam.small_det")), "{:?}", off.notes);
+    let fx = mixed_transition().expect("fixture");
+    let built = build_polymesh(&fx.mesh, &FoamOptions::new().split_small_determinant(false)).expect("build");
+    let owner = off.files.iter().find(|f| f.name.ends_with("/owner")).expect("owner");
+    let want = built.mesh.files().expect("files").into_iter().find(|f| f.name == "owner").expect("owner");
+    assert_eq!(owner.bytes, want.bytes);
+}

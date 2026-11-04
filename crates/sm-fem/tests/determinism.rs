@@ -67,6 +67,7 @@ fn observe(rig: &Rig, mesh: Option<sm_core::EntityId>) -> Observed {
         format,
         mesh,
         provenance: Some("00".repeat(32)),
+        split_small_determinant: true,
     };
     let rep = export(st, &req(ExportFormat::Smsh), &mut smsh).expect("smsh");
     export(st, &req(ExportFormat::Vtu), &mut vtu).expect("vtu");
