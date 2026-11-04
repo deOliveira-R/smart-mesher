@@ -418,3 +418,23 @@ fn split_cells_are_deterministic() {
     };
     sm_testkit::determinism::check(2, 4, run).unwrap();
 }
+
+/// A cell the wedge repair cannot fix is a typed error naming the cell and its location. The
+/// repair is switched off (`0` rounds) on the reflex `x<2,y>2` notch, whose interface-edge cells
+/// are not star-shaped; with the repair on, the same input dualizes.
+#[test]
+fn unrepaired_cell_is_a_typed_error() {
+    let m = regionized_block(&|c| c[0] < 2.0 && c[1] > 2.0);
+    let opts = PolyOptions::new();
+    let r = sm_poly::dualize_with_rounds(&m, &opts, &EndsResolver, ReferenceBuilder::new(), &mut SerialAlloc::new(), 0);
+    let Err(e) = r else { panic!("expected UnrepairedCell, got Ok") };
+    let PolyError::UnrepairedCell { vertex, region, at, count } = &e else { panic!("expected UnrepairedCell, got {e}") };
+    assert!(*count > 0);
+    assert!((vertex.0 as usize) < m.vertex_count());
+    let _ = region;
+    // the location lies on the notch's interface edge neighbourhood, inside the block [0,4]^3
+    assert!(at.iter().all(|x| (0.0..=4.0).contains(x)), "{at:?}");
+    let msg = e.to_string();
+    assert!(msg.contains("not star-shaped") && msg.contains(&format!("vertex {}", vertex.0)), "{msg}");
+    assert!(dual_ref(&m, &opts, &EndsResolver).is_ok());
+}

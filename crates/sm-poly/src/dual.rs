@@ -8,7 +8,9 @@ use crate::polydata;
 use crate::prep::Prep;
 use crate::resolver::EdgeResolver;
 use crate::stats;
-use sm_mesh_api::{Finished, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SerialAlloc, TagValues};
+use sm_mesh_api::{
+    Finished, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SerialAlloc, TagValues, VertexIx,
+};
 
 /// Rounds of the concave-cell repair. Each round splits every cell that still fails; split
 /// wedges are valid by construction, but refining a cell bends the faces of its neighbours, so
@@ -32,13 +34,27 @@ const MAX_SPLIT_ROUNDS: usize = 256;
 /// # Errors
 /// [`PolyError::NotTet`], [`PolyError::Dim2`], [`PolyError::UnsupportedFaceKind`],
 /// [`PolyError::OpenRing`], [`PolyError::AmbiguousEdge`], [`PolyError::UnsupportedFeature`],
-/// [`PolyError::BadClassification`] and [`PolyError::Mesh`] (builder failure).
+/// [`PolyError::BadClassification`], [`PolyError::UnrepairedCell`] and [`PolyError::Mesh`] (builder failure).
 pub fn dualize<B: MeshBuild>(
+    src: &dyn MeshRead,
+    opts: &PolyOptions,
+    edges: &dyn EdgeResolver,
+    b: B,
+    alloc: &mut SerialAlloc,
+) -> Result<(Finished<B::Output>, DualReport), PolyError> {
+    dualize_with_rounds(src, opts, edges, b, alloc, MAX_SPLIT_ROUNDS)
+}
+
+/// [`dualize`] with an explicit cap on the concave-cell repair rounds (`0` disables the repair,
+/// so any cell that is not star-shaped yields [`PolyError::UnrepairedCell`]). For tests.
+#[doc(hidden)]
+pub fn dualize_with_rounds<B: MeshBuild>(
     src: &dyn MeshRead,
     opts: &PolyOptions,
     edges: &dyn EdgeResolver,
     mut b: B,
     alloc: &mut SerialAlloc,
+    max_rounds: usize,
 ) -> Result<(Finished<B::Output>, DualReport), PolyError> {
     if b.dim() != MeshDim::Three || b.vertex_count() != 0 || b.face_count() != 0 || b.cell_count() != 0 {
         return Err(PolyError::Mesh(MeshError::State("dualize needs a fresh dimension-3 builder".into())));
@@ -47,20 +63,17 @@ pub fn dualize<B: MeshBuild>(
     let want_edges = opts.edges.unwrap_or_else(|| src.edges().is_some());
     let mut split = Split::default();
     let mut round = 0;
-    let (mut data, counts, c_key) = loop {
+    let (mut data, counts, c_key, unrepaired) = loop {
         let (data, counts, c_key) = polydata::build(&prep, &split);
         round += 1;
-        if round > MAX_SPLIT_ROUNDS {
-            break (data, counts, c_key);
+        let bad = concave::bad_cells(&data);
+        if round > max_rounds {
+            break (data, counts, c_key, bad);
         }
-        let mut new: Vec<u32> = concave::bad_cells(&data)
-            .into_iter()
-            .map(|c| c_key[c as usize])
-            .filter(|&c| !split.is_split(c))
-            .collect();
+        let mut new: Vec<u32> = bad.iter().map(|&c| c_key[c as usize]).filter(|&c| !split.is_split(c)).collect();
         new.dedup();
         if new.is_empty() {
-            break (data, counts, c_key);
+            break (data, counts, c_key, bad);
         }
         let mut vsplit = prep.vsplit.clone();
         let mut planned = false;
@@ -73,10 +86,20 @@ pub fn dualize<B: MeshBuild>(
         }
         if !planned {
             // nothing changes: rebuilding would give the same data
-            break (data, counts, c_key);
+            break (data, counts, c_key, bad);
         }
         prep.set_split_vertices(vsplit)?;
     };
+    if let Some(&first) = unrepaired.first() {
+        let key = prep.ckeys[c_key[first as usize] as usize];
+        let at = concave::cell_location(&data, first as usize);
+        return Err(PolyError::UnrepairedCell {
+            vertex: VertexIx(key as u32),
+            region: prep.regions[(key >> 32) as usize],
+            at,
+            count: unrepaired.len(),
+        });
+    }
     let mut rep = DualReport::default();
     polydata::fill_report(&mut rep, &counts, &prep);
     if let Some(a) = &opts.agglomerate {

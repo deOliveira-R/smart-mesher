@@ -444,6 +444,26 @@ pub(crate) fn bad_cells(d: &PolyData) -> Vec<u32> {
         .collect()
 }
 
+/// Representative point of output cell `c`: its volume centroid, or the mean of its distinct
+/// vertices when the volume is not positive.
+pub(crate) fn cell_location(d: &PolyData, c: usize) -> V3 {
+    let faces = d.cell_faces(c);
+    let (vol, g) = agglom::vol_centroid(d, faces);
+    if vol > 0.0 && g.iter().all(|x| x.is_finite()) {
+        return g;
+    }
+    let mut vs: SmallVec<[u32; 64]> =
+        faces.iter().flat_map(|sf| d.face_loop(sf.face().get()).iter().copied()).collect();
+    vs.sort_unstable();
+    vs.dedup();
+    let n = vs.len().max(1) as f64;
+    let s = vs.iter().fold([0.0; 3], |s, &x| {
+        let q = d.pts[x as usize];
+        [s[0] + q[0], s[1] + q[1], s[2] + q[2]]
+    });
+    [s[0] / n, s[1] / n, s[2] / n]
+}
+
 /// Points of the loop of `sf` as seen from its cell (outward winding).
 fn oriented(d: &PolyData, sf: &SignedFace) -> SmallVec<[V3; 8]> {
     let mut v: SmallVec<[V3; 8]> = d.face_loop(sf.face().get()).iter().map(|&x| d.pts[x as usize]).collect();

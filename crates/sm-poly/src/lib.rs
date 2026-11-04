@@ -24,6 +24,8 @@ mod resolver;
 mod stats;
 
 pub use dual::dualize;
+#[doc(hidden)]
+pub use dual::dualize_with_rounds;
 pub use error::PolyError;
 pub use ops::{PolyInfo, ToPoly};
 pub use options::{Agglomerate, DualReport, FaceMode, PolyOptions};
