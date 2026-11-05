@@ -101,6 +101,21 @@ pub enum Metric {
     /// Smallest cosine between an outward face normal and the direction from the vertex mean to
     /// the face mean; positive if and only if the cell is star-shaped about its vertex mean.
     Starness,
+    /// Equiangle skew `max((a_max - a_e)/(180 - a_e), (a_e - a_min)/a_e)` (triangle, quad, tet,
+    /// hex; 0 is ideal). Angles are interior angles (2-D) or dihedral angles (3-D); `a_e` is 60,
+    /// 90, `acos(1/3)` and 90 degrees.
+    EquiangleSkew,
+    /// Tetrahedron mean ratio `12 (3V)^(2/3) / sum l^2` (1 is ideal; Knupp's shape measure).
+    MeanRatio,
+    /// Tetrahedron inradius `3V / sum A` (a length).
+    Inradius,
+    /// Tetrahedron squish index: largest `1 - cos` between a face area vector and the vector from
+    /// the cell centre to the face centre (0 is ideal).
+    SquishIndex,
+    /// Hex smallest over largest corner Jacobian determinant (1 is ideal).
+    NodalJacobianRatio,
+    /// Wedge: worst quad face `d_max / (sqrt2 l_min)` (1 is ideal, larger is worse).
+    MaxStretch,
 }
 
 impl Metric {
@@ -136,6 +151,12 @@ impl Metric {
         Metric::MaxAngle,
         Metric::Sphericity,
         Metric::Starness,
+        Metric::EquiangleSkew,
+        Metric::MeanRatio,
+        Metric::Inradius,
+        Metric::SquishIndex,
+        Metric::NodalJacobianRatio,
+        Metric::MaxStretch,
     ];
 
     /// True if the metric is defined for `shape`.
@@ -144,6 +165,9 @@ impl Metric {
         use Metric as M;
         let common = matches!(self, M::Volume | M::Jacobian | M::ScaledJacobian | M::EdgeRatio | M::MinAngle | M::MaxAngle);
         let sized = matches!(self, M::RelativeSizeSquared | M::ShapeAndSize | M::Shape | M::Condition);
+        if self == M::EquiangleSkew && matches!(shape, S::Tri | S::Quad | S::Tet | S::Hex) {
+            return true;
+        }
         match shape {
             S::Tri => {
                 common
@@ -167,6 +191,7 @@ impl Metric {
                             | M::Shear
                             | M::ShearAndSize
                             | M::Oddy
+                            | M::RadiusRatio
                     )
             }
             S::Polygon => common || matches!(self, M::AspectRatio),
@@ -183,6 +208,9 @@ impl Metric {
                             | M::Distortion
                             | M::Sphericity
                             | M::Starness
+                            | M::MeanRatio
+                            | M::Inradius
+                            | M::SquishIndex
                     )
             }
             S::Hex => {
@@ -202,6 +230,7 @@ impl Metric {
                             | M::Oddy
                             | M::Diagonal
                             | M::Dimension
+                            | M::NodalJacobianRatio
                             | M::Sphericity
                             | M::Starness
                     )
@@ -211,7 +240,7 @@ impl Metric {
                     || sized
                     || matches!(
                         self,
-                        M::MaxAspectFrobenius | M::MeanAspectFrobenius | M::Distortion | M::Sphericity | M::Starness
+                        M::MaxAspectFrobenius | M::MeanAspectFrobenius | M::Distortion | M::Sphericity | M::Starness | M::MaxStretch
                     )
             }
             S::Pyramid => {
@@ -266,7 +295,9 @@ impl Metric {
             | M::ShapeAndSize
             | M::ShearAndSize => 1.0,
             M::CollapseRatio => (2.0f64 / 3.0).sqrt(),
-            M::Skew | M::Taper | M::Oddy => 0.0,
+            M::Skew | M::Taper | M::Oddy | M::EquiangleSkew | M::SquishIndex => 0.0,
+            M::MeanRatio | M::NodalJacobianRatio | M::MaxStretch => 1.0,
+            M::Inradius => return None,
             M::MinAngle | M::MaxAngle => match (shape, self) {
                 (S::Tri, _) => 60.0,
                 (S::Quad, _) => 90.0,
@@ -324,6 +355,7 @@ pub fn eval(metric: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Option<
     let sc = Scale::of(p);
     let d = if matches!(shape, CellShape::Tri | CellShape::Quad | CellShape::Polygon) { 2 } else { 3 };
     let run = |p: &[V], ctx: &Context| match shape {
+        _ if crate::extra::owns(metric, shape) => crate::extra::eval(metric, shape, p, ctx),
         CellShape::Tri | CellShape::Quad | CellShape::Polygon => planar::eval(metric, shape, p, ctx),
         _ => solid::eval(metric, shape, p, ctx),
     };
@@ -335,7 +367,7 @@ pub fn eval(metric: Metric, shape: CellShape, p: &[V], ctx: &Context) -> Option<
     let v = run(&q, &c)?;
     Some(match metric {
         Metric::Volume | Metric::Jacobian => sc.up(v, d),
-        Metric::Dimension => sc.up(v, 1),
+        Metric::Dimension | Metric::Inradius => sc.up(v, 1),
         _ => v,
     })
 }

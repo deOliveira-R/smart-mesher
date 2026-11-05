@@ -380,6 +380,10 @@ proptest! {
             let g1 = fv_geometry(&tm).unwrap();
             let c1 = fv_compute(&tm, &g1, FV_ALL).unwrap();
             for (a, b) in c0.iter().zip(&c1) {
+                // checkMesh's cell aspect ratio is componentwise, hence axis dependent.
+                if a.metric == FvMetric::CellAspectRatio {
+                    continue;
+                }
                 for (i, (x, y)) in a.values.iter().zip(&b.values).enumerate() {
                     prop_assert!(close(*x, *y), "{name} {:?} #{i} scale {scale}: {x} vs {y}", a.metric);
                 }
