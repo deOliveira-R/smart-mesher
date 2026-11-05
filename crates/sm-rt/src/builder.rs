@@ -50,6 +50,7 @@ fn unsupported(input: &BuildInput<'_>) -> RtError {
     match input {
         BuildInput::Brep(_) => RtError::Unsupported("BuildInput::Brep (W3b)"),
         BuildInput::World(_) => RtError::Unsupported("BuildInput::World (W3b)"),
+        BuildInput::Hier(_) => RtError::Unsupported("BuildInput::Hier (W3b)"),
         _ => RtError::Unsupported("unknown BuildInput variant"),
     }
 }

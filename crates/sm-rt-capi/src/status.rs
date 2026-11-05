@@ -34,6 +34,8 @@ pub const SMRT_ERR_BAD_ALBEDO: i32 = -9;
 pub const SMRT_ERR_BIN_COUNT: i32 = -10;
 /// `RtError::InvalidInput`.
 pub const SMRT_ERR_INVALID_INPUT: i32 = -11;
+/// `RtError::MajorantViolated`: a total cross section exceeded the node majorant.
+pub const SMRT_ERR_MAJORANT: i32 = -12;
 /// A required pointer argument was null.
 pub const SMRT_ERR_NULL: i32 = -100;
 /// A panic was caught at the boundary (the process survives; see the last-error message).

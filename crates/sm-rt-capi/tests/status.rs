@@ -26,6 +26,16 @@ fn every_rt_error_maps_to_its_distinct_negative_code() {
         (RtError::BadAlbedo { value: 2.0 }, SMRT_ERR_BAD_ALBEDO),
         (RtError::BinCountMismatch { left: 1, right: 2 }, SMRT_ERR_BIN_COUNT),
         (RtError::InvalidInput("x"), SMRT_ERR_INVALID_INPUT),
+        (
+            RtError::MajorantViolated {
+                node: sm_rt_api::NodeId(0),
+                sigma_t: 2.0,
+                majorant: 1.0,
+                pos: sm_core::Point3::new(0.0, 0.0, 0.0),
+                cell: sm_rt_api::CellId(0),
+            },
+            SMRT_ERR_MAJORANT,
+        ),
     ];
     let mut seen = Vec::new();
     for (e, want) in all {
@@ -37,7 +47,7 @@ fn every_rt_error_maps_to_its_distinct_negative_code() {
     }
     seen.sort_unstable();
     seen.dedup();
-    assert_eq!(seen.len(), 11);
+    assert_eq!(seen.len(), 12);
     assert!(seen.iter().all(|&c| (-99..0).contains(&c)));
     // The ABI-level codes sit outside the contract's range and are distinct.
     let abi = [SMRT_ERR_NULL, SMRT_ERR_PANIC, SMRT_ERR_BAD_ARG, SMRT_ERR_LOST];

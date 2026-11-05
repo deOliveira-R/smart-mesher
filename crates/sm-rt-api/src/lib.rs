@@ -24,6 +24,10 @@
 //!   `sm_model_api` decks; [`Tracker::resolve_boundary`].
 //! * [`compat`]: DAGMC-shaped `ray_fire`, `point_in_volume`, `next_vol`, `surface_sense`,
 //!   `get_angle`.
+//! * [`segments`]: the segment iterator ([`FlightCursor`], [`Flight`]) with two modes (surface,
+//!   delta), the disjoint majorant partition ([`HierarchyView`]), the caller's per-call
+//!   majorants ([`FlightInput`]; cross sections never enter this crate) and [`FlightTally`].
+//! * [`csg`]: CSG leaf input ([`CsgLeafInput`]); cells must be disjoint, there is no priority.
 //! * [`CacheImage`]: the rebuildable `.smrt` sidecar keyed by composite content hash.
 //! * `stub` (feature `stubs`): `stub::AnalyticWorld`, a reference implementor with exact
 //!   answers, and its builder.
@@ -90,9 +94,11 @@
 pub mod boundary;
 pub mod cache;
 pub mod compat;
+pub mod csg;
 pub mod error;
 pub mod ids;
 pub mod input;
+pub mod segments;
 pub mod state;
 #[cfg(feature = "stubs")]
 pub mod stub;
@@ -101,12 +107,18 @@ pub mod tracker;
 pub mod world;
 
 pub use boundary::{BoundaryDef, BoundarySelector, BoundarySpec, FaceAction, ResponseKind, ResponseMap, wrap_transform};
+pub use csg::{CsgCellDef, CsgLeafInput, CsgRegion};
 pub use cache::{CacheImage, CacheKey, ContentHash, ContentHasher, SectionTag, TrackerKind};
 pub use error::{BuildIssue, LostCause, LostInfo, Result, RtError};
-pub use ids::{CellId, ComponentId, FaceId, InstanceId, PrototypeId, RegionId, SurfaceId};
+pub use ids::{CellId, ComponentId, FaceId, InstanceId, MaterialSetId, NodeId, PrototypeId, RegionId, SurfaceId};
 pub use input::{
-    BrepInput, BuildInput, BuildOptions, BuildReport, ComplementPolicy, FacetFallback, FacetInput, MeshInput, Precision,
-    RecoveryPolicy, RegionRule, SurfaceRefine, TrackerBuilder, UnsealedEdge, facet_sides_from_topo,
+    BrepInput, BuildInput, BuildOptions, BuildReport, ComplementPolicy, FacetFallback, FacetInput, HierInput, LeafInput,
+    MeshInput, PartitionOptions, Precision, RecoveryPolicy, RegionRule, SurfaceRefine, TrackerBuilder, UnsealedEdge,
+    facet_sides_from_topo,
+};
+pub use segments::{
+    Flight, FlightCursor, FlightInput, FlightOptions, FlightSegment, FlightTally, HierarchyView, MajorantTracker, MaterialSets,
+    ModePolicy, NodeInfo, NodeKind, SegmentQuery, SegmentScale, TrackMode, WorkCounters, choose_mode, validate_partition,
 };
 pub use state::{
     BoundaryHit, Closest, LEVEL_INLINE, Level, Located, Peek, RegionInfo, RegionTable, Scratch, Step, StepEnd, SurfaceInfo,

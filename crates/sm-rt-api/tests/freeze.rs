@@ -5,9 +5,25 @@
 use sm_core::{Aabb, Point3, Transform, Vector3};
 use sm_rt_api::stub::{AnalyticWorld, Shape};
 use sm_rt_api::{
-    ComponentId, ComponentKind, FacetInput, InstanceId, InstancePolicy, Level, Placement, ResponseKind, RtError, Scratch,
-    TrackBundle, Tracker, WorldSpec,
+    BuildInput, BuildOptions, ComponentId, ComponentKind, CsgLeafInput, FacetInput, FlightInput, HierInput, InstanceId, InstancePolicy,
+    Level, PartitionOptions, Placement, ResponseKind, RtError, Scratch, TrackBundle, Tracker, WorldSpec,
 };
+
+fn _copy<T: Copy>() {}
+
+/// `BuildOptions` stays `Copy` (the cross-section table that would have broken this is gone),
+/// and so do the per-call and hierarchical inputs.
+#[test]
+fn inputs_stay_copy() {
+    _copy::<BuildOptions>();
+    _copy::<PartitionOptions>();
+    _copy::<BuildInput<'_>>();
+    _copy::<HierInput<'_>>();
+    _copy::<CsgLeafInput<'_>>();
+    _copy::<FlightInput<'_>>();
+    _copy::<sm_rt_api::FlightOptions>();
+    _copy::<sm_rt_api::WorkCounters>();
+}
 
 #[test]
 fn growable_inputs_build_outside_the_crate() {

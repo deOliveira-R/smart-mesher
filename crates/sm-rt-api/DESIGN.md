@@ -67,6 +67,10 @@ the query surface; this file explains the choices.
 * The stub's "background" is a real cell per element, numbered after the shape cells. Its region
   carries `implicit_complement`, but `locate` never returns `CellId::COMPLEMENT`; that sentinel
   is for trackers whose complement has no cells.
-* `AnalyticWorld::cell_volume` is exact when shapes nest cleanly and `None` otherwise.
+* Stub shapes must be pairwise nested or disjoint (partial overlap is an `RtError::Build` error with issue `analytic.overlap`, like `csg.overlap`/`world.overlap`); a point belongs to the innermost shape containing it, and order carries no priority. `AnalyticWorld::cell_volume` is exact unless a shape leaves the element box.
 * `ray_fire` with an origin outside the model is `RayFire::Miss` (DAGMC returns no hit);
   `Lost` is only for failures after a valid start.
+
+## W3b extension: segment iterator, majorants, CSG leaf (rewritten at W3b-0)
+
+`segments.rs`: `FlightCursor` (opaque, resumable, no borrow; `Flight` is a thin wrapper), `FlightInput { majorants, block }` passed on every call (one majorant per prototype-tree `NodeId`; the tracker holds no cross section and no copy), `check_collision` against the cached node majorant (`RtError::MajorantViolated`, code -12; `InvalidMajorant` shares -11), `MajorantTracker`/`HierarchyView` (disjoint partition, deduplicated `MaterialSets`), `WorkCounters` in `Scratch`. `ModePolicy` is `Surface | Delta`; hybrid is caller-driven (`set_policy`, `block`). The energy-band axis, `MajorantTable` and `FlightStats` are gone. `PartitionOptions` is hashed into `BuildOptions` only when non-default; `BuildOptions` stays `Copy`. `csg.rs`: `CsgRegion`, `CsgCellDef`, `CsgLeafInput` (cells must be disjoint; overlap is `csg.overlap`/`world.overlap` at build, `LostCause::Overlap` at track time). `BuildInput::Hier(HierInput)` with `LeafInput::{Mesh, Facets, Csg}`; `TrackerBuilder::load_image`; `Tracker::{surface_area, surface_faces}`; `RegionInfo::tags`; `LostCause::{SenseMismatch, Overlap}`, `LostInfo::retries`. Tests: `tests/segments.rs`, `tests/freeze.rs`.

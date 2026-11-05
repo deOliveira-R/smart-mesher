@@ -161,6 +161,8 @@ fn lost_code(c: LostCause) -> i32 {
         LostCause::NonFinite => 4,
         LostCause::MaxStepsExceeded => 5,
         LostCause::RecoveryFailed => 6,
+        LostCause::SenseMismatch => 7,
+        LostCause::Overlap => 8,
         _ => 6,
     }
 }
