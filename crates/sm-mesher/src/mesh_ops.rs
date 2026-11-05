@@ -118,7 +118,9 @@ impl TypedOp for MeshRun {
         };
         let mut driver = Driver::new(cfg.registry(), cfg.solver(), cfg.picker());
         driver.size = field.as_deref();
-        driver.options = DriverOptions::new().with_max_cells(cfg.max_cells());
+        driver.options = DriverOptions::new()
+            .with_max_cells(cfg.max_cells())
+            .with_cascade(cfg.cascade());
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
         // Plan once; the driver enforces the cell budget on this plan and every re-plan.
         let plan = driver.plan(&input, &intent).map_err(failed)?;
@@ -136,15 +138,16 @@ impl TypedOp for MeshRun {
             .map_err(failed)?;
         ctx.step(2, 3, "committing")?;
 
-        // INT-7: the schemes' located diagnostics ride on the (unhashed) plan record.
-        let mut plan = out.plan;
-        plan.notes = out.patches.notes();
-        let entry = MeshEntry::new(
+        // INT-7: the schemes' located diagnostics ride on the (unhashed) entry, not the plan:
+        // the plan reproduces its mesh exactly and a derived mesh does not inherit the notes.
+        let notes = out.patches.notes();
+        let mut entry = MeshEntry::new(
             Box::new(out.finished.mesh),
             targets,
-            Some(plan),
+            Some(out.plan),
             model.hash_quanta(),
         );
+        entry.notes = notes;
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")
     }
 }

@@ -208,6 +208,85 @@
       ],
       "type": "object"
     },
+    "SchemeFinding": {
+      "description": "A scheme's located diagnostic, placed on the mesh.",
+      "properties": {
+        "cell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The mesh cell nearest to `position`; absent if the mesh has no cell."
+        },
+        "entities": {
+          "description": "Model entities the scheme named (for example the nearby faces).",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": "array"
+        },
+        "metric": {
+          "description": "The measure that is out of bounds, as the scheme names it (`min_dihedral`, ...).",
+          "type": "string"
+        },
+        "near": {
+          "description": "Lower-dimensional model entities around that cell.",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "That cell's own classification."
+        },
+        "position": {
+          "description": "The position the scheme reported.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "suggestion": {
+          "description": "What would probably cure it.",
+          "type": "string"
+        },
+        "threshold": {
+          "description": "The bound it violates.",
+          "format": "double",
+          "type": "number"
+        },
+        "value": {
+          "description": "Measured value.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metric",
+        "value",
+        "threshold",
+        "suggestion",
+        "position",
+        "entities",
+        "near"
+      ],
+      "type": "object"
+    },
     "Severity": {
       "description": "Severity of a violation. Errors make a mesh invalid, warnings do not.",
       "oneOf": [
@@ -514,6 +593,12 @@
       },
       "type": "array"
     },
+    "n_scheme_notes": {
+      "description": "Number of scheme notes in all (more than `scheme_notes` lists if capped). Absent when 0.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
     "profile": {
       "description": "The profile graded.",
       "type": "string"
@@ -523,6 +608,13 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "scheme_notes": {
+      "description": "Located diagnostics the meshing schemes attached (quality-floor violations, ruling\nINT-7), at most [`MAX_SCHEME_NOTES`](crate::MAX_SCHEME_NOTES). Not graded: they do not\nchange `verdict`. Absent when there are none.",
+      "items": {
+        "$ref": "#/$defs/SchemeFinding"
+      },
+      "type": "array"
     },
     "skipped": {
       "description": "Metrics no cell supports.",

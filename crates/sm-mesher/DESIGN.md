@@ -60,7 +60,30 @@ so for the "firmer request wins" check any `default`-firmness `mesh.size` (impli
 `mesh.intervals` on the same entity (the most recent command wins at the same level), and a
 `hard` request is still kept. A request never overwrites a firmer one on the same entity: the op keeps the
 firmer request and emits a `mesh.firmness_kept` warning. Requests cascade volume, face, edge
-inside the planner (an edge's own request wins).
+inside the planner.
+
+*Cascade across entities (ruling P1).* `MesherConfig::cascade` is `RequestCascade::Firmness`
+(Cubit's rule): where requests from an edge, a face and a volume reach the same edge, the firmer
+wins; at equal firmness the latest command wins. The stored intent stays order-free: the planner
+needs only "firmer wins, then edge over face over volume, then lowest id", and `mesh.size` /
+`mesh.intervals` resolve the "latest command" part when they run, by writing the new request on
+each edge where an equally firm, different request from another entity would otherwise beat it
+(an identical request writes nothing). The plan therefore does not depend on the command history
+and survives a round trip through serde. `RequestCascade::Level` (the original rule: an edge
+request beats a face request beats a volume request whatever their firmness) stays available via
+`MesherConfig::with_cascade`. The default was flipped to `Firmness` after an A/B of the W2
+milestone, `p0_rows` and `milestone_w3a`: every intent layer hash and every `mesh.run` topology
+hash and cell count was identical under both.
+
+Limits of "order-free" (known, latent). (1) The written rows live on the edges that exist at
+command time. If a later topology op (such as webcut) deletes and replaces those edges, the rows
+are dropped (intent_layer retain) and the planner's `(firmness, intervals_seq)` comparison
+decides again, so the outcome depends on command order. A serde-loaded intent, where every seq is
+0, would then plan face-over-volume where a live session plans latest-wins. No production path
+deserializes `IntentLayer` today. (2) `resolve_latest_wins` compares firmness as stored, so a
+default-firmness `mesh.size` (which `set_intervals` treats as competing at soft) never overrides
+an older soft request on another entity; this matches the planner but not the "any interval
+command raises the curve to at least soft" note.
 
 `auto` (1..=10) is resolved at apply time through the `AutoSizeFn` hook and recorded as a plain
 size, so replay never runs the hook again.
@@ -90,16 +113,15 @@ hashed.
 
 Schemes attach located diagnostics (`SchemeNote`: position, nearby model entities, metric, value,
 threshold, suggestion) to their `Patch`. After the run, `mesh.run` stores `PatchSet::notes()`
-(target order, then emission order) in `Plan::notes`, so `mesh.quality` can read them later from
-`MeshEntry::plan`.
+(target order, then emission order) in `MeshEntry::notes`, so `mesh.quality` can read them later.
 
-Why there: `MeshEntry` is the only per-mesh record that survives the op, and its `plan` is the
-existing *unhashed* provenance slot (`MeshEntry` is in a frozen contract crate this change may not
-extend; a new entry field would be the cleaner home and can replace this later). `Plan::notes` is
-`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so a plan without notes serializes
-byte-for-byte as before; no layer digest reads the plan, so no state or layer hash moves, with or
-without notes. A notes-bearing plan is still a pure function of the hashed inputs. Notes are not
-errors: a quality-floor violation never fails `mesh.run`.
+`MeshEntry::notes` is an *unhashed* per-entry record (like `plan` and `derived_from`): no layer
+digest reads it, so no state or layer hash moves, with or without notes. It is a pure function of
+the hashed inputs. `Plan` no longer carries notes: a plan reproduces its mesh exactly, and the
+mesh derived by `mesh.to_poly` does not inherit the notes (they are positioned on the source
+cells; the derived entry starts with none). Notes are not errors: a quality-floor violation
+never fails `mesh.run`. `mesh.quality` publishes them as `scheme_notes` (capped at
+`MAX_SCHEME_NOTES`) and `n_scheme_notes` (all of them); both are absent when there are none.
 
 ### mesh.run cell budget
 
