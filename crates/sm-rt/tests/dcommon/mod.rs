@@ -58,7 +58,7 @@ pub fn mirror_all() -> BoundarySpec {
 }
 
 /// Majorant of every node: the largest sigma of the regions of its set, times `scale`.
-pub fn node_majorants(t: &MeshTracker, sigma_region: &[f64], scale: f64) -> Vec<f64> {
+pub fn node_majorants(t: &dyn Tracker, sigma_region: &[f64], scale: f64) -> Vec<f64> {
     let h = t.majorant_view().expect("partition").hierarchy();
     (0..h.node_count())
         .map(|n| {
@@ -70,7 +70,7 @@ pub fn node_majorants(t: &MeshTracker, sigma_region: &[f64], scale: f64) -> Vec<
 }
 
 /// Sigma by region from a closure of the region name.
-pub fn sigma_by_name(t: &MeshTracker, f: impl Fn(&str) -> f64) -> Vec<f64> {
+pub fn sigma_by_name(t: &dyn Tracker, f: impl Fn(&str) -> f64) -> Vec<f64> {
     t.regions().0.iter().map(|r| f(&r.name)).collect()
 }
 
@@ -87,7 +87,7 @@ pub fn iso_dir(r: &mut SplitMix64) -> [f64; 3] {
     let z = r.unit();
     let phi = std::f64::consts::PI * r.unit();
     let s = (1.0 - z * z).max(0.0).sqrt();
-    [s * phi.cos(), s * phi.sin(), z]
+    [s * phi.cos(), s * std::hint::black_box(phi).sin(), z]
 }
 
 /// Tallies of a batch of histories.
@@ -151,7 +151,7 @@ impl Score {
 /// The physics of a run: sigma per region, scattering probability per region (`None`: pure
 /// absorber), majorants per node, blocked nodes and the mode policy.
 pub struct Run<'a> {
-    pub t: &'a MeshTracker,
+    pub t: &'a dyn Tracker,
     pub sigma: &'a [f64],
     pub scatter: Option<&'a [f64]>,
     pub maj: &'a [f64],
@@ -168,7 +168,10 @@ impl Run<'_> {
     pub fn history(&self, p: Point3, d: [f64; 3], rng: &mut SplitMix64, sc: &mut Scratch, score: &mut Score) {
         let view = self.t.majorant_view().expect("MAJORANT");
         let input = FlightInput::new(self.maj).with_block(self.block);
+        // A flight start with no hint is located through the BVH (counted); the flight itself is not.
+        let bvh0 = sc.counters.bvh_descents;
         let mut st = self.t.init_state(p, v3(d), None, sc).expect("start");
+        sc.counters.bvh_descents = bvh0;
         score.histories += 1;
         let mut path = 0.0;
         loop {

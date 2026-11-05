@@ -405,6 +405,7 @@ impl MeshTracker {
             }
         }
         sc.hits.clear();
+        sc.counters.bvh_descents += 1;
         {
             let (hits, ids) = (&mut sc.hits, &mut sc.ids);
             self.core.cell_bvh.visit_point(p, self.tol(), ids, |c| hits.push((0.0, c)));
@@ -490,6 +491,7 @@ impl MeshTracker {
         let tol = self.tol();
         // Faces within tol of p.
         sc.hits.clear();
+        sc.counters.bvh_descents += 1;
         {
             let (hits, ids) = (&mut sc.hits, &mut sc.ids);
             self.core.face_bvh.visit_point(p, tol, ids, |f| hits.push((0.0, f)));

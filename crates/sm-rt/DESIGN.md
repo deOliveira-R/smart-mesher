@@ -352,6 +352,16 @@ children; sets are `MaterialSets` (ids by first appearance in node order, then o
 region). Build recurses with `rayon::join` and collects in order, so the bytes do not depend on
 the thread count (`partition_hash`).
 
+*Size.* The split rule is the contract's and has no node budget, and a plane that cuts cells puts
+them in both children, so the tree can be much larger than the cell count when no plane lines up with
+the cells. Recorded (`tests/delta.rs`, `checker_block(12)`: 1728 cells, 4 regions by `(i + j + k) mod 4`,
+candidate planes at ninths of the box): `leaf_cells = 8` gives 7877 nodes (1.9 MB tracker memory),
+`leaf_cells = 1` gives 993771 nodes (99 MB), because a region can only be isolated by splitting down
+to the `16 tol` width limit or `max_depth`. A cap would change the split rule (a node budget cannot be
+applied inside the parallel build without changing which subtrees stop, and an error after the fact
+would turn a legal build into a failure), so none is applied here: `max_depth` (default 24, at most
+48) and `leaf_cells` are the controls, and `rt.partition` reports `nodes`, `leaves`, `depth` and `memory_bytes` before a code commits to a partition.
+
 **Segments.** `advance_segment` descends the kd tree from the root with the point and the
 direction (a point on a split goes to the child the ray enters; O(depth), counted in
 `node_visits`), reads exactly one majorant (`FlightInput::majorant`, before the state moves) and
@@ -376,37 +386,129 @@ if the cached safety is positive" shortcut is left to the caller (the safety tes
 nothing. `fire` from a convex or general cell of region `R` finds the first crossing that leaves `R`
 (ties within the ray tie width go to the lowest face id), puts the state on that face in the cell on
 `R`'s side and lets one `step` apply the event, so the end kind, surface, `to_region`, `to_cell` and
-the deck action are `step`'s; the distance is the same to rounding. Anything unusual (entering
+the deck action are `step`'s; the distance is the walk's up to the tolerance of ruling R1 (below).
+Anything unusual (entering
 crossing before the exit, no exit, a lost step) falls back to the walk. A `Limit` ends with one
-locate. Rays through an exact edge or vertex tie are decided by the exact predicates, so the jump
-may leave through another face of that edge than the walk: kind, surface, region and distance agree,
-face and `to_cell` may not (tested on rays through cell centres along axes and diagonals). `step`
-and `trace` never jump. Recorded (`examples/bench_delta.rs`, counters only): `hex_block(40)`,
+locate.
+
+*Tolerance (ruling R1).* A flat `1e-12 (1 + d)` between jump and walk is ill-posed for grazing exits:
+the walk's error grows like `1 / |d.n|` with the exit face normal `n`. A jump must (1) return the same
+end kind, surface, region and `to_region` as the walk; (2) match the exact exit distance, computed from
+the exit face, within `1e-12 (1 + d)`; (3) agree with the walk within
+`1e-12 (1 + d) / max(|d.n|, 1e-6)`. On an exact edge or vertex tie the face and `to_cell` may differ
+(the exact predicates decide which face of the edge the jump leaves through); kind, surface,
+`to_region` and distance still agree, and the jump's face must contain the exit point (closed
+polygon) or share a vertex with the walk's face. `tests/delta_jump.rs` checks all of it: on rays
+through cell centres along axes and diagonals, on a non-convex region, and on a complement region
+(`ComplementPolicy::Region` with a reflecting default, rays ending on a virtual box side `n_faces + k`
+and rays starting in the complement are counted and compared against the exact box-plane distance).
+`step` and `trace` never jump. Recorded (`examples/bench_delta.rs`, counters only): `hex_block(40)`,
 5000 fires, 163 face tests (27 steps) per fire by the walk, 11 by the jump.
 
 **Cache.** Sections `Private(5)` (options, root box), `Private(6)` (kd nodes), `Private(7)`
 (candidates, node sets and cells, sets). (`Private(4)` is the region-tag table, so the plan's
 `4..8` became `5..8`.) Derived data (node boxes, parents, boundary flags, cell-to-node, the jump
 index) is rebuilt on load; the decoder checks every count against the bytes left and the tree
-structure (children after parents, each node referenced once). `structure_hash` does not include
+structure (children after parents, each node referenced once), and `Partition::from_raw` checks the
+meaning that does not need the mesh geometry: a leaf node's set contains the region of every
+candidate cell of every kd leaf below it, a node that is itself a kd leaf has exactly its candidate
+count of cells (one when preassigned), a node below a leaf node counts at least its distinct cells, and
+a parent's set covers each child's; a mismatch is `CacheCorrupt`. It does not re-derive that a
+candidate list is geometrically complete (a cell dropped from a leaf it meets is not detected), so a
+hostile image can make `locate` answer wrongly but never read out of range. `structure_hash` does not include
 the partition (the options are in the cache key, so another option is `CacheStale`); the partition
-has its own `partition_hash`. A world prototype is built without a partition (flights across
-lattices are W3b-RT-DELTA-WORLD).
+has its own `partition_hash`. A world's prototypes carry the partition when
+`PartitionOptions::enabled` (see "Flights across worlds"); a world has no cache image.
+
+## Flights across worlds (`world.rs`, W3b-RT-DELTA-WORLD)
+
+With `PartitionOptions::enabled` every prototype leaf of a `BuildInput::Hier` gets its kd partition
+(`leaf_cells` and `max_depth` apply to each) and the `WorldTracker` has the majorant view
+(`caps |= MAJORANT`). Without it nothing changes: no node tables, the same `locate` path, the same
+hashes. `region_jump` on a world is `Unsupported` (`fire` walks), as is a facet leaf (no partition) and
+a CSG leaf (`AnalyticTrackerBuilder` refuses a partition): an option is honoured or refused, never
+dropped.
+
+**Nodes are the prototype tree.** `NodeId`s are first one node per reachable union or lattice
+component (reverse post-order, so a parent precedes its children), then the partition nodes of each
+prototype in leaf-input order (`proto_off`). Instances have no nodes: every element filled with one
+universe shares its prototype's nodes, so `node_count` is independent of the element count (a 3x1 and a
+30x3 lattice of one pin give the same slice length; tested) and per-instance majorants need distinct
+prototypes, as distinct materials do (regions are prototypes). The parent of a prototype's root node
+is the first component node that holds it in that order. A component node reports `NodeKind::Lattice`
+for unions and lattices alike: the kind whose children are prototypes in their own frames, which
+`validate_partition` does not tile against the node's box. Material sets are interned world-wide
+(prototype sets mapped by the region offset, one singleton per region, then the component sets as the
+union of their children's), so a node's set covers every region below it and `validate_partition`
+passes. Node boxes are in the node's own frame (prototype frame for partition nodes).
+
+**Segments.** `advance_segment` resolves the instance from `TrackState::levels` (index arithmetic,
+the composed global-to-leaf map), descends the prototype's kd tree from the root with the local point
+and direction, and reads the one majorant of that partition node: lattice and union nodes are internal
+and never read. A *surface* segment is one `step` (or one `fire`); a *delta* segment is the chord in
+the prototype node's box, as for a mesh tracker: straight to the wall when no outer face of the
+prototype is among the node's candidate cells, otherwise walked with the world's `step` up to the
+wall, so neighbour instances and the world boundary are `step`'s events. The segment ends there with
+the `step` event, or at the wall as `SlotChange` into the same or the next cell of the *same*
+instance (`levels` do not change inside a segment; a `step` that crosses into another instance ends
+the segment). A lattice wall is therefore crossed inside the segment stream with no per-element
+state: the next call starts in the neighbour element and finds its node by the kd descent of the
+shared prototype. Rounding: the wall coordinate is snapped in the local frame and the global
+position is mapped back; if rounding leaves its local image on the wrong side of the wall, the
+global coordinate that moves that local axis the most is bumped by a few ulps (never along the ray,
+which would not move the coordinate for a ray nearly parallel to the wall) until the image is on
+the entering side, so the next descent never returns the node just left (`past_wall`). A global
+position carries an absolute error of about an ulp, so the exit of a line that grazes a wall is off
+by that over `|d.n|` (the argument of ruling R1): segment sums equal the chord to 1e-12 for ordinary
+lines and to that scaled by `0.05 / min|d_k|` for grazing ones (`tests/delta_world.rs`).
+
+**Locating.** `locate_in_node` takes the prototype node and the segment's `levels`: the element is
+resolved from the levels by index arithmetic (counted in `lattice_index_locates`, one per probe, equal
+to `tentative` in a delta flight through a lattice), the point is mapped into the prototype frame,
+the kd descent starts at the node, and the leaf's candidate list is searched with the same probes
+as `locate` (no BVH). With a partition the world's own `locate` and step relocation also search
+prototype leaves through the kd candidate lists instead of the leaf BVH, which gives the same cells
+(a partition does not change `trace_bundle`; tested), so `bvh_descents == 0` in flights, including
+across element walls. `safety_distance` maps the state into the prototype frame and asks the
+prototype.
+
+`WorkCounters::bvh_descents` counts the BVH point-location descents of the mesh tracker (it was
+never incremented before, so `bvh_descents == 0` asserted nothing); a flight start with no hint is
+located through the BVH and is counted, the flight is not.
+
+**Recorded** (`tests/delta_world.rs`, debug, counters only): 600 histories on a 17x17 lattice of
+two-region pins (pure absorber, 0.8 / 0.2 per cm): surface 3370 segments; delta 2797 segments and 580
+tentative collisions, `bvh_descents == 0` in both; segment sums equal the box chord to about 2e-13 on
+a two-level lattice and a rotated placement. A world has one default boundary rule, so the slab of the
+single-mesh tests (mirror sides, vacuum ends) is not available: the isotropic-source test compares
+the lattice with the same geometry as one mesh, and the analytic `E3` leakage stays on the single mesh
+(`delta_stats.rs`).
 
 ## Plugin
 
-`RtPlugin` (id `rt`) registers the queries `rt.info`, `rt.check` and `rt.locate` over a `Mesh`
+`RtPlugin` (id `rt`) registers the queries `rt.info`, `rt.check`, `rt.locate` and `rt.partition` over a `Mesh`
 entity: the tracker is built from the `meshes` layer entry with the model's boundary tables
 (`BoundarySpec::add_model_face`; response records default to vacuum, overridable per record name)
 and cached in the session's derived cache keyed by the exact content of `model` and `meshes`.
-`rt.fire` is not provided.
+`rt.partition {mesh, leaf_cells?, max_depth?}` (defaults 8 and 24; `leaf_cells >= 1`, `max_depth <= 48`)
+builds the mesh tracker with the majorant partition and reports its structure only: `nodes`,
+`leaves`, `depth`, `preassigned_leaves`, `sets`, `cells_per_leaf {min, max, mean}`, `memory_bytes`,
+`structure_hash` (the tracker's) and `partition_hash` (arrays, sets and options). Omitted parameters
+equal their defaults in the cache key. `rt.fire` is not provided.
 
 ## Determinism
 
 Queries are pure functions of the tracker and arguments; ties go to the lowest id; no clock, thread
 id or RNG is read. `trace_bundle` is overridden (rayon over fixed `block_size` blocks, blocks
 appended in order) and is bit-identical to the default sequential walk (tested). The only mutable
-state is `nudge_count()`, which no query reads. Tests: build, cache bytes and bundle hash for
+state is `nudge_count()`, which no query reads.
+*Profile independence.* Release builds fuse `x.sin()` and `x.cos()` of one argument into a single
+`sincos` call that can differ by an ulp from the two libm calls a debug build makes, so a ray
+generator written `[s * phi.cos(), s * phi.sin(), z]` gave other directions, hence another bundle hash,
+in release (the `hex_block6` golden in `tests/flat_golden.rs` differed between profiles for this
+reason; no hash moved, the tests' generators were wrong). `vec3::sin_cos` keeps the calls separate
+(`black_box` on one argument) in the library (the white-boundary direction, the overlap sampler); the
+test helpers do the same. Tests: build, cache bytes and bundle hash for
 `RAYON_NUM_THREADS=1` against N threads and concurrent runs (`sm_testkit::determinism::check`).
 
 ## Throughput (record only)
@@ -432,6 +534,6 @@ more memory and did not change the large case, so it was dropped.
 
 CSG leaves under `Union`/`Lattice` (needs `WorldTracker` to host a non-mesh leaf; hex lattices),
 a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics,
-`Brep` and `World` inputs (`Unsupported`), delta flights across lattices and universes, hex lattices, a world cache image,
+`Brep` and `World` inputs (`Unsupported`), hex lattices, region jump and facet or CSG leaves in flown worlds, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
 `rt.fire`, exact `closest` for curved faces, overlap detection in `check` (the world has its own).

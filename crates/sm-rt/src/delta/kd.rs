@@ -368,7 +368,12 @@ impl Partition {
     }
 
     /// Validate the arrays (hostile input safe) and derive node boxes, parents, flags, the
-    /// cell-to-node table and the region-jump index.
+    /// cell-to-node table and the region-jump index. Validation covers the structure (counts,
+    /// links, ranges) and the meaning that does not need the mesh geometry: node sets cover the
+    /// regions of their candidate cells and their children's sets, and leaf cell counts match
+    /// their candidate lists. It does not re-derive that a candidate list is geometrically
+    /// complete (a cell dropped from a leaf it meets is not detected), so a hostile image can
+    /// make `locate` answer wrongly but never read out of range.
     pub(crate) fn from_raw(raw: Raw, core: &Core, nreg: usize) -> Result<Self> {
         let Raw { params, root_box, kd, cands, node_set, node_cells, set_lists } = raw;
         let nc = core.n_cells();
@@ -437,6 +442,8 @@ impl Partition {
         let nn = node_set.len();
         let mut nodes: Vec<NodeRec> = Vec::with_capacity(nn);
         let mut cell_node = vec![NONE; nc];
+        // (owner node-leaf, cell) over every kd leaf below it, for the meaning checks below.
+        let mut owned: Vec<(u32, u32)> = Vec::new();
         // (kd index, box, parent node, owner node-leaf)
         let mut stack: Vec<(usize, [f64; 6], u32, u32)> = vec![(0, root_box, NO, NO)];
         while let Some((k, bx, parent, owner)) = stack.pop() {
@@ -459,6 +466,7 @@ impl Partition {
                     return Err(bad("kd leaf outside a node leaf"));
                 }
                 for &c in &cands[n.a as usize..(n.a + n.b) as usize] {
+                    owned.push((my_owner, c));
                     if ext[c as usize] {
                         nodes[my_owner as usize].boundary = true;
                     }
@@ -486,7 +494,117 @@ impl Partition {
         if nodes.len() != nn {
             return Err(bad("node count"));
         }
+        // Meaning, not only structure. Every node set holds the regions of the candidate cells
+        // of every kd leaf below a leaf node, a node that is itself a kd leaf has exactly that
+        // many cells (one when preassigned), and a parent's set covers its children's.
+        owned.sort_unstable();
+        owned.dedup();
+        let mut distinct = vec![0u32; nn];
+        for &(owner, c) in &owned {
+            distinct[owner as usize] += 1;
+            let regs = sets.get(MaterialSetId(nodes[owner as usize].set)).unwrap_or(&[]);
+            if regs.binary_search(&RegionId(core.c_region[c as usize])).is_err() {
+                return Err(bad("a node set misses the region of one of its candidate cells"));
+            }
+        }
+        for (i, n) in nodes.iter().enumerate() {
+            if n.leaf {
+                let k = kd[n.kd as usize];
+                let ok = if k.axis == LEAF {
+                    n.cells == if k.flags & F_PRE != 0 { 1 } else { k.b }
+                } else {
+                    distinct[i] <= n.cells && n.cells as usize <= nc
+                };
+                if !ok {
+                    return Err(bad("node cell count does not match its candidates"));
+                }
+            }
+            if n.parent != NO {
+                let ps = sets.get(MaterialSetId(nodes[n.parent as usize].set)).unwrap_or(&[]);
+                let cs = sets.get(MaterialSetId(n.set)).unwrap_or(&[]);
+                if cs.iter().any(|r| ps.binary_search(r).is_err()) {
+                    return Err(bad("a node set is not covered by its parent's"));
+                }
+            }
+        }
         let jump = if params.region_jump { Some(JumpIndex::build(core, nreg, 4)) } else { None };
         Ok(Self { params, root_box, kd, cands, nodes, sets, region_set, cell_node, jump })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `from_raw` checks the meaning of a decoded partition, not only its structure.
+    use super::*;
+    use crate::{MeshTracker, MeshTrackerBuilder};
+    use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RegionRule};
+    use sm_testkit::meshes::hex_block_two_volumes;
+
+    fn tracker() -> MeshTracker {
+        let fx = hex_block_two_volumes([8, 4, 4], [1.0; 3], 4).unwrap();
+        let (rules, bnd, comp) = (RegionRule::ByVolumeClassification, BoundarySpec::default(), ComplementPolicy::Outside);
+        let mut p = PartitionOptions::default();
+        p.enabled = true;
+        p.leaf_cells = 4;
+        let input = BuildInput::Mesh(MeshInput::new(&fx.mesh, &rules, &bnd, &comp));
+        MeshTrackerBuilder.build_concrete(&input, &BuildOptions::default().with_partition(p)).unwrap().0
+    }
+
+    fn raw_of(p: &Partition) -> Raw {
+        Raw {
+            params: p.params,
+            root_box: p.root_box,
+            kd: p.kd.clone(),
+            cands: p.cands.clone(),
+            node_set: p.nodes.iter().map(|n| n.set).collect(),
+            node_cells: p.nodes.iter().map(|n| n.cells).collect(),
+            set_lists: (0..p.sets.len()).map(|s| p.sets.get(MaterialSetId::new(s)).unwrap().iter().map(|r| r.0).collect()).collect(),
+        }
+    }
+
+    fn corrupt(r: Result<Partition>) -> bool {
+        matches!(r, Err(RtError::CacheCorrupt(_)))
+    }
+
+    #[test]
+    fn a_meaningless_but_well_formed_partition_is_cache_corrupt() {
+        let t = tracker();
+        let p = t.part.as_ref().unwrap();
+        let nreg = t.regions.0.len();
+        assert_eq!(nreg, 2);
+        let singleton = |r: u32| p.region_set[r as usize];
+        let sets_of = |n: &NodeRec| p.sets.get(MaterialSetId(n.set)).unwrap().to_vec();
+        // The unmodified arrays round trip.
+        let ok = Partition::from_raw(raw_of(p), &t.core, nreg).unwrap();
+        assert_eq!(ok.content_hash(), p.content_hash());
+        // A leaf that holds both regions, with a set that lists only one.
+        let both = p.nodes.iter().position(|n| n.leaf && sets_of(n).len() == 2).expect("an interface leaf");
+        let mut raw = raw_of(p);
+        raw.node_set[both] = singleton(0);
+        assert!(corrupt(Partition::from_raw(raw, &t.core, nreg)), "set misses a candidate region");
+        // A single-region leaf given the other region's set.
+        let one = p.nodes.iter().position(|n| n.leaf && sets_of(n) == [RegionId(0)]).expect("a pure leaf");
+        let mut raw = raw_of(p);
+        raw.node_set[one] = singleton(1);
+        assert!(corrupt(Partition::from_raw(raw, &t.core, nreg)));
+        // A node leaf that is itself a kd leaf with the wrong cell count.
+        let kd_leaf = p.nodes.iter().position(|n| n.leaf && p.kd[n.kd as usize].axis == LEAF && p.kd[n.kd as usize].flags & F_PRE == 0).expect("a plain kd leaf");
+        let mut raw = raw_of(p);
+        raw.node_cells[kd_leaf] += 1;
+        assert!(corrupt(Partition::from_raw(raw, &t.core, nreg)), "cell count");
+        // A preassigned leaf must count one cell.
+        if let Some(pre) = p.nodes.iter().position(|n| n.leaf && p.kd[n.kd as usize].flags & F_PRE != 0) {
+            let mut raw = raw_of(p);
+            raw.node_cells[pre] = 2;
+            assert!(corrupt(Partition::from_raw(raw, &t.core, nreg)));
+        }
+        // An internal node whose set does not cover a child's.
+        let inner = p.nodes.iter().position(|n| !n.leaf && sets_of(n).len() == 2).expect("an internal node over both regions");
+        let child = p.nodes.iter().position(|n| n.parent == inner as u32 && sets_of(n).len() == 2);
+        if child.is_some() {
+            let mut raw = raw_of(p);
+            raw.node_set[inner] = singleton(0);
+            assert!(corrupt(Partition::from_raw(raw, &t.core, nreg)), "parent set must cover the child's");
+        }
     }
 }

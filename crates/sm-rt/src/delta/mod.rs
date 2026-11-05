@@ -13,7 +13,7 @@
 //!
 //! Cross sections never enter: the caller passes one majorant per node per call.
 
-mod flight;
+pub(crate) mod flight;
 mod io;
 mod jump;
 mod kd;
@@ -85,7 +85,52 @@ pub(crate) struct Partition {
     pub jump: Option<JumpIndex>,
 }
 
+/// Structure facts of a partition: no cross section and no geometry beyond counts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PartitionStats {
+    pub nodes: usize,
+    pub leaves: usize,
+    /// Edges on the longest root-to-leaf path of the partition nodes.
+    pub depth: u32,
+    pub preassigned: usize,
+    pub sets: usize,
+    pub cells_min: u32,
+    pub cells_max: u32,
+    pub cells_mean: f64,
+    pub bytes: usize,
+}
+
 impl Partition {
+    /// Counts for `rt.partition`.
+    pub fn stats(&self) -> PartitionStats {
+        let mut depth = vec![0u32; self.nodes.len()];
+        let (mut max_depth, mut leaves, mut pre) = (0u32, 0usize, 0usize);
+        let (mut cmin, mut cmax, mut csum) = (u32::MAX, 0u32, 0u64);
+        for (i, n) in self.nodes.iter().enumerate() {
+            // Nodes are in preorder: a parent has a lower index.
+            depth[i] = if n.parent == NO { 0 } else { depth[n.parent as usize] + 1 };
+            max_depth = max_depth.max(depth[i]);
+            if n.leaf {
+                leaves += 1;
+                pre += usize::from(self.kd[n.kd as usize].flags & F_PRE != 0);
+                cmin = cmin.min(n.cells);
+                cmax = cmax.max(n.cells);
+                csum += u64::from(n.cells);
+            }
+        }
+        PartitionStats {
+            nodes: self.nodes.len(),
+            leaves,
+            depth: max_depth,
+            preassigned: pre,
+            sets: self.sets.len(),
+            cells_min: if leaves == 0 { 0 } else { cmin },
+            cells_max: cmax,
+            cells_mean: if leaves == 0 { 0.0 } else { csum as f64 / leaves as f64 },
+            bytes: self.bytes(),
+        }
+    }
+
     /// Heap bytes.
     pub fn bytes(&self) -> usize {
         self.kd.len() * core::mem::size_of::<KdNode>()

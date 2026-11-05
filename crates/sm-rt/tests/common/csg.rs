@@ -44,7 +44,7 @@ pub fn random_dir(r: &mut SplitMix64) -> Vector3 {
     let z = r.unit();
     let phi = std::f64::consts::PI * r.unit();
     let s = (1.0 - z * z).max(0.0).sqrt();
-    v3(s * phi.cos(), s * phi.sin(), z)
+    v3(s * phi.cos(), s * std::hint::black_box(phi).sin(), z)
 }
 
 /// A seeded frame at `origin` with a random orientation.
