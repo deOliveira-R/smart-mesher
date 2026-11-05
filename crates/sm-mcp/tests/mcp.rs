@@ -97,7 +97,7 @@ fn tools_cover_catalog_batch_and_fixed() {
     let n = names(&tools(&mut Mock::new(), "2025-06-18"));
     for want in [
         "core__batch", "model__create_brick", "mesh__run", "demo__count", "topo__related",
-        "run_script", "session_hash", "session_export", "session_stage", "session_status",
+        "run_script", "record_script", "session_hash", "session_export", "session_stage", "session_status",
         "timeline_branch", "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
     ] {
         assert!(n.iter().any(|x| x == want), "missing {want}: {n:?}");
@@ -106,13 +106,13 @@ fn tools_cover_catalog_batch_and_fixed() {
     for x in &n {
         let fixed = !x.contains("__");
         let is_fixed = [
-            "run_script", "session_hash", "session_export", "session_stage", "session_status",
+            "run_script", "record_script", "session_hash", "session_export", "session_stage", "session_status",
             "timeline_branch", "timeline_checkout", "timeline_undo", "timeline_redo", "timeline_log", "help",
         ]
         .contains(&x.as_str());
         assert_eq!(fixed, is_fixed, "{x}");
     }
-    assert_eq!(n.len(), 19);
+    assert_eq!(n.len(), 20);
 }
 
 #[test]
@@ -643,7 +643,7 @@ fn help_lists_and_describes() {
         ],
     );
     let list = r[0]["result"]["structuredContent"]["tools"].as_array().unwrap();
-    assert_eq!(list.len(), 19);
+    assert_eq!(list.len(), 20);
     assert_eq!(r[1]["result"]["structuredContent"]["name"], "mesh__run");
     assert_eq!(r[1]["result"]["structuredContent"], r[2]["result"]["structuredContent"]);
     assert!(r[1]["result"]["structuredContent"]["inputSchema"].is_object());

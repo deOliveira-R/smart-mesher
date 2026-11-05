@@ -52,9 +52,12 @@ model__unite
 model__webcut_cylinder
 model__webcut_plane
 model__webcut_surface
+record_script
 rt__check
+rt__check_overlaps
 rt__info
 rt__locate
+rt__partition
 run_script
 session_export
 session_hash
@@ -66,4 +69,7 @@ timeline_log
 timeline_redo
 timeline_undo
 topo__related
+view__mesh_scalar
+view__mesh_skin
+view__scene
 view__tessellate
