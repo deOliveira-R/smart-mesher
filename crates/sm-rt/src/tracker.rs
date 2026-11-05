@@ -12,6 +12,7 @@ use sm_rt_api::{
     RegionTable, Result, RtError, Scratch, Step, StepEnd, SurfaceId, SurfaceTable, TallySpec, TraceOptions, TrackBundle, TrackState, TrackerCaps, TrackerInfo,
     TrackerKind, hashed_direction,
 };
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Cell-walking tracker for polyhedral meshes and watertight facet soups (VOLUME_MESH +
@@ -30,6 +31,23 @@ pub struct MeshTracker {
     pub(crate) recovery: RecoveryPolicy,
     pub(crate) bounds: [f64; 6],
     nudges: AtomicU64,
+    /// Faces of each surface, CSR (`surf_off`), ascending face id. Derived, never serialized.
+    surf_off: Vec<u32>,
+    surf_faces: Vec<FaceId>,
+    /// Area of each surface (sum of fan-triangle areas, ascending face order).
+    surf_area: Vec<f64>,
+    /// The mesh this tracker was built from, when the builder kept it (`MeshTrackerBuilder::build_arc`).
+    mesh: Option<MeshHandle>,
+}
+
+/// Shared handle to the source mesh (gives `Tracker::mesh` and a `Debug` for the tracker).
+#[derive(Clone)]
+pub(crate) struct MeshHandle(pub Arc<dyn MeshRead + Send + Sync>);
+
+impl core::fmt::Debug for MeshHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("MeshHandle(..)")
+    }
 }
 
 /// The pieces of a tracker apart from its info and options.
@@ -66,7 +84,40 @@ impl MeshTracker {
             }
         }
         info.bounds = Aabb { lo: Point3::new(b[0], b[1], b[2]), hi: Point3::new(b[3], b[4], b[5]) };
-        Self { core, info, regions, surfaces, kind, complement, cell_sets, block_size, recovery, bounds: b, nudges: AtomicU64::new(0) }
+        let ns = surfaces.0.len();
+        let mut counts = vec![0u32; ns + 1];
+        for &s in &core.f_surface {
+            if s != NONE {
+                counts[s as usize + 1] += 1;
+            }
+        }
+        for i in 0..ns {
+            counts[i + 1] += counts[i];
+        }
+        let mut cursor = counts.clone();
+        let mut surf_faces = vec![FaceId::NONE; counts[ns] as usize];
+        let mut surf_area = vec![0.0; ns];
+        for f in 0..core.n_faces() {
+            let s = core.f_surface[f];
+            if s == NONE {
+                continue;
+            }
+            surf_faces[cursor[s as usize] as usize] = FaceId::new(f);
+            cursor[s as usize] += 1;
+            let mut a = 0.0;
+            for i in 0..core.n_tris(f) {
+                let (_, [p, q, r]) = core.tri(f, i);
+                a += 0.5 * norm(crate::vec3::cross(sub(q, p), sub(r, p)));
+            }
+            surf_area[s as usize] += a;
+        }
+        Self { core, info, regions, surfaces, kind, complement, cell_sets, block_size, recovery, bounds: b, nudges: AtomicU64::new(0), surf_off: counts, surf_faces, surf_area, mesh: None }
+    }
+
+    /// Keep a shared handle to the source mesh so `Tracker::mesh` returns it.
+    pub(crate) fn with_mesh(mut self, mesh: Arc<dyn MeshRead + Send + Sync>) -> Self {
+        self.mesh = Some(MeshHandle(mesh));
+        self
     }
 
     /// Number of nudge recoveries performed by `step` since construction (a per-tracker
@@ -477,7 +528,7 @@ impl MeshTracker {
 
     // ---- closest -------------------------------------------------------------------------
 
-    fn closest_inner(&self, p: [f64; 3], region: Option<RegionId>, sc: &mut Scratch) -> Option<Closest> {
+    pub(crate) fn closest_inner(&self, p: [f64; 3], region: Option<RegionId>, sc: &mut Scratch) -> Option<Closest> {
         let mut best: Option<(f64, u32, [f64; 3])> = None;
         let mut best2 = f64::INFINITY;
         self.core.face_bvh.visit_closest(p, best2, &mut sc.ids, |f| {
@@ -527,8 +578,8 @@ impl MeshTracker {
         let ex = match ex {
             Ok(e) => e,
             Err(ExitFail::Outside) => return Ok(Once::Fail(LostCause::NoCellContainsPoint)),
-            // `LostCause` has no sense-mismatch member in the frozen contract; both map here.
-            Err(ExitFail::NoExit | ExitFail::Sense) => return Ok(Once::Fail(LostCause::NoExitFace)),
+            Err(ExitFail::NoExit) => return Ok(Once::Fail(LostCause::NoExitFace)),
+            Err(ExitFail::Sense) => return Ok(Once::Fail(LostCause::SenseMismatch)),
         };
         let region = RegionId(self.core.c_region[c]);
         if ex.t > max_dist {
@@ -708,7 +759,16 @@ impl sm_rt_api::Tracker for MeshTracker {
         self.core.c_volume.get(c.get()).copied()
     }
     fn mesh(&self) -> Option<&dyn MeshRead> {
-        None
+        self.mesh.as_ref().map(|m| &*m.0 as &dyn MeshRead)
+    }
+    fn surface_area(&self, s: SurfaceId) -> Result<Option<f64>> {
+        self.surf_area.get(s.get()).map(|&a| Some(a)).ok_or(RtError::UnknownId { kind: "surface", id: s.0 })
+    }
+    fn surface_faces(&self, s: SurfaceId) -> &[FaceId] {
+        match (self.surf_off.get(s.get()), self.surf_off.get(s.get() + 1)) {
+            (Some(&a), Some(&b)) => &self.surf_faces[a as usize..b as usize],
+            _ => &[],
+        }
     }
     fn export_cache(&self) -> Option<CacheImage> {
         crate::image::export(self)
@@ -747,11 +807,13 @@ impl sm_rt_api::Tracker for MeshTracker {
         // Recovery: attempt k moves from the original position by tol.linear * 2^k.
         let tries = self.recovery.tries();
         let origin = (st.pos, st.dir, st.cell, st.entered_via);
+        let mut attempted = 0u32;
         for k in 0..tries {
             let nd = RecoveryPolicy::nudge_distance(&self.info.tol, k);
             if nd > max_dist {
                 break;
             }
+            attempted += 1;
             let q = add([origin.0.x, origin.0.y, origin.0.z], scale([origin.1.x, origin.1.y, origin.1.z], nd));
             let loc = self.locate_inner(q, Some([origin.1.x, origin.1.y, origin.1.z]), Some(origin.2), scratch);
             if loc.cell.is_none() {
@@ -770,7 +832,7 @@ impl sm_rt_api::Tracker for MeshTracker {
             }
         }
         let cause = if tries > 0 { LostCause::RecoveryFailed } else { first };
-        let info = self.lost_info(st, cause, scratch);
+        let info = self.lost_info(st, cause, scratch).with_retries(attempted);
         let region = region_of_state(self, st);
         Ok(Step::new(0.0, st.cell, region, StepEnd::Lost(info)))
     }

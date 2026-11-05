@@ -58,15 +58,14 @@ counts lengths, not capacities, so a loaded cache reports the same number).
   fan triangle iff the three edge functions `orient3d(o, o+d, a, b)` have equal sign. Each edge's
   endpoints are ordered by vertex index (apex edges by `n_vertices + face`), so neighbouring
   triangles of a cell evaluate each shared edge identically, and an exact zero is resolved by
-  `sm_math::sos::orient3d_sos` with ids = vertex indices (line points get the two largest ids). An
-  exactly degenerate edge therefore allocates inside `sm-math`; generic positions never do. This is a
-  known gap that cannot be fixed locally (`orient3d_sos` is owned by `sm-math`; a fix needs an
-  allocation-free SoS entry point there). The
+  `sm_math::sos::orient3d_sos_noalloc` with ids = vertex indices (line points get the two largest
+  ids), the allocation-free entry with the same results as the allocating one, so a degenerate edge
+  allocates no more than a generic one (`tests/alloc.rs`, Kuhn-lattice rays). The
   parameter `t` comes from the face plane (the triangle plane for a non-planar face). The exit is
   the first outward crossing at `t >= -tol`; entering crossings at `t <= 4 tol` are the entry
   itself and ignored; a first crossing that is entering beyond that is retried against exiting
-  crossings within `4 tol`, else the step reports `Lost(NoExitFace)` (the frozen `LostCause` has no
-  sense-mismatch member). Cells with more than 24 faces whose faces are all surface faces (facet
+  crossings within `4 tol`, else the step reports `Lost(SenseMismatch)`; `LostInfo::retries` counts
+  the nudges a failed recovery tried (`RecoveryFailed`). Cells with more than 24 faces whose faces are all surface faces (facet
   shells) walk through `face_bvh` with ordered ray traversal and the same exact test at the leaves.
 * **Events.** `CellFace` (same region), `RegionBoundary` (other region), `Boundary` (model
   boundary; the contract has one boundary event). `Reflect` (mirror deck) is applied inside `step`
@@ -167,7 +166,8 @@ once non-matching faces are supported).
 
 `export_cache` writes the contract sections: `FacePlanes`, `CellInfo` (cell CSR, regions, flags,
 boxes, volumes), `Bvh` (surface faces), `CellBvh`, `Tables` (regions, surfaces, mesh cell sets),
-`Boundaries`; and `Private(0..3)` (header, vertices, face connectivity, apexes). `load` copies into
+`Boundaries`; and `Private(0..3)` (header, vertices, face connectivity, apexes); `Private(4)`
+(region tags) only when some region carries tags, so tag-free images keep their bytes. `load` copies into
 `Vec`s, validates every length and index (a hostile image is `CacheCorrupt`, never a panic) and
 recomputes the structure hash, which must equal the stored one. The `.smrt` file is the
 `CacheImage::encode` bytes verbatim (`write_smrt`, `read_smrt`). The key is the contract's
@@ -175,6 +175,80 @@ recomputes the structure hash, which must equal the stored one. The `.smrt` file
 (mesh) or `FacetInput::content_hash`; boundary = `BoundarySpec::content_hash`; options =
 `BuildOptions::content_hash`; builder version 1. The mesh's own hashes define identity, so a key is
 exactly as canonical as the mesh; the cell index is part of it.
+
+`TrackerBuilder::load_image` (and the free `load_image`) opens an image with no input: the reader
+path of the handover file (`session.export` format `smrt`, read by the transport code through the C
+ABI). Such a tracker has no mesh (`Tracker::mesh()` is `None`); a build from an `Arc` mesh
+(`MeshTrackerBuilder::build_arc`) keeps the handle, so `mesh()` is `Some` for it. Region tags
+(`RegionInfo::tags`) are attached by `BuildExtras` (by region name), enter the structure hash and the
+cache key, and survive the image. `surface_area` (sum of fan-triangle areas, ascending face order)
+and `surface_faces` (CSR, ascending) are derived at assembly and never serialized.
+
+## World (`world.rs`)
+
+`BuildInput::Hier` builds a `WorldTracker` (`MeshTrackerBuilder::build`/`build_world`):
+a DAG of components over prototype `MeshTracker`s, one per distinct leaf input (mesh or facets; a
+CSG leaf is `Unsupported` until the analytic tracker). A leaf is built as a prototype with vacuum
+boundaries and no complement: its own boundary conditions and complement policy do not apply in a
+world.
+
+**Numbering.** Regions, surfaces and faces are numbered per prototype (prefix offsets over
+prototypes in ascending leaf-input order): regions are prototypes, so every instance of a leaf
+shares its regions, and `surface_area` is the area of one instance. Cells are numbered per instance
+by prefix sums in ascending instance order (union placements in order; lattice elements x fastest):
+a lattice with one fill component computes `element * cells(fill)` with no table, otherwise one
+`u64` prefix per element. The reverse map (`cell_region`, `cell_volume`, the locate hint) is a
+binary search per level. The total must stay below `u32::MAX - 1`.
+
+**Levels.** `TrackState::levels` has one entry per union or lattice below the root: a union entry is
+`(component, placement index, [0; 3])`, a lattice entry `(component, linear element index, element
+index)`. The leaf is the child of the last entry (a bare leaf root has no levels). A step rebuilds
+the instance frame from the levels (composed global-to-leaf map, no cache, no allocation up to
+`LEVEL_INLINE`). Placements must be rigid (`R^T R = I` within 1e-12, mirrors allowed), else
+`world.nonrigid`; lattices are rectangular with `outer: None` (hex lattices, outer fills, per-surface
+boundary rules and periodic world boundaries are `Unsupported`; hex is stretch S1, not done).
+`InstancePolicy` is ignored (the contract says it never changes results).
+
+**Lattices.** An element's fill lives in the element frame (origin at the element centre, as
+`Lattice::element_center`); the fill must fit its element (`world.lattice_fit`, x and y, and z with
+more than one layer), so a particle leaving a fill through its outer face has left the element. A
+single-layer lattice has no z walls. The element index is O(1) index arithmetic (floor division;
+on a wall within `tol` both neighbours are candidates and the leaf's own direction-aware locate
+decides, preferring the slab the direction enters). The walls come from the prototype's outer faces,
+which coincide with the element walls: there is no separate Amanatides-Woo march, because a fill
+that fits and a particle that leaves it need only the neighbour lookup; edge and corner exits fall
+out of the candidate product (diagonal neighbour first when the direction enters it).
+
+**Step.** The prototype's own `step` runs in the instance frame (distances are preserved by the
+rigid maps; the global position is advanced as `o + d t`, never mapped back). A prototype face
+or region event maps its ids to global ones. Leaving through an outer face relocates the exit
+point from the root excluding the instance just left (rounding must not hand it back): a neighbour
+instance gives `SlotChange` when the region is the same and `RegionBoundary` (surface and face of the
+face just left) otherwise; no neighbour means the model boundary, where the world's default
+`BoundarySpec` applies (`Reflect` is applied in `step`, a `Respond` is left on the face and resolved
+by `resolve_boundary`, which the world overrides to take the normal from the instance frame).
+`face_normal(face, p)` locates an instance of the face near `p` and rotates the prototype normal
+(an extra search; `resolve_boundary` uses the state's levels instead). `closest` is a branch-and-bound
+over components (a lattice scans its elements, O(elements)). Recovery nudges happen inside the
+prototype.
+
+**Overlap (Q4).** Union placements must be disjoint. Build: sort-and-sweep over the placed boxes
+(tolerance padded); for each overlapping pair, every boundary vertex (vertex of a face with one
+cell) of each is located in the other, and one strictly inside a cell beyond `tol` is
+`world.overlap` naming both placements and the point (frame of the union). AABB overlap alone is
+not an error: a pin placed in the hole of a moderator leaf builds, its chords exact. The narrow phase
+counts its work (`overlap_vertex_tests`) and misses overlaps where no vertex of either lies inside
+the other (crossed bars), and identical placements (all vertices on faces). Track time: `locate`
+of a point strictly inside two placements gives no cell (the `NoCellContainsPoint` path); a step in a
+placement that has box-overlap partners tests the chord it is about to take against each partner,
+first by the chord midpoint strictly inside the partner, then (leaf partners) by the first entry of
+the ray into the partner strictly inside the chord (`enter_from_outside`; a non-leaf partner uses
+its box and confirms by locating just inside). A hit is `Lost(Overlap)`, state unchanged and never
+nudged. Cost: two partner queries per step in a placement with partners, none otherwise. The
+sampling check `rt.check_overlaps` (and the CSG leaf) is RT-ANALYTIC/RT-BRIDGE.
+
+**Cache.** A world has no cache image (`export_cache` is `None`; `load` is `Unsupported`); its
+cache key is `World`, topology `HierInput::content_hash`, hierarchy `WorldSpec::content_hash`.
 
 ## Plugin
 
@@ -213,6 +287,6 @@ more memory and did not change the large case, so it was dropped.
 
 ## Deferred (W3b) and not done
 
-ANALYTIC and HIERARCHY backends, `Brep` and `World` inputs (`Unsupported`), non-matching periodic
-faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
-`rt.fire`, exact `closest` for curved faces, overlap detection in `check`.
+ANALYTIC backend, `Brep` and `World` inputs (`Unsupported`), hex lattices, a world cache image,
+non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
+`rt.fire`, exact `closest` for curved faces, overlap detection in `check` (the world has its own).
