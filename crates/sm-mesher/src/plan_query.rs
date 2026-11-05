@@ -811,7 +811,7 @@ impl TypedQuery for MeshPlanQuery {
                     .ok_or_else(|| OpError::MissingLayer("intent".into()))?
                     .intent();
                 let field = size_field(cfg, intent)?;
-                let driver = make_driver(cfg, field.as_deref(), faces);
+                let driver = make_driver(cfg, field.as_deref(), faces, targets.len());
                 let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
                 let mut blockers = run_guards(meshes, model.topo(), &targets, faces);
                 let mut r = match driver.plan(&input, intent) {

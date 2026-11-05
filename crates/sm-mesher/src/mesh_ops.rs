@@ -270,17 +270,19 @@ pub(crate) fn size_field(
     }
 }
 
-/// The driver `mesh.run` and `mesh.plan` share. A face run checks its own budget (the driver's
+/// The driver `mesh.run` and `mesh.plan` share (replan budget `16 + 2 * n_targets`). A face run checks its own budget (the driver's
 /// estimate counts volumes), so the driver's is off for it.
 pub(crate) fn make_driver<'a>(
     cfg: &'a MesherConfig,
     field: Option<&'a dyn SizeField>,
     faces: bool,
+    n_targets: usize,
 ) -> Driver<'a> {
     let mut driver = Driver::new(cfg.registry(), cfg.solver(), cfg.picker());
     driver.size = field;
     driver.options = DriverOptions::new()
         .with_max_cells(cfg.max_cells())
+        .with_max_replans(crate::auto::replan_budget(n_targets))
         .with_cascade(cfg.cascade());
     if faces {
         driver.options.max_cells = None;
@@ -328,7 +330,7 @@ impl TypedOp for MeshRun {
         }
 
         let field = size_field(&cfg, &intent)?;
-        let driver = make_driver(&cfg, field.as_deref(), faces);
+        let driver = make_driver(&cfg, field.as_deref(), faces, targets.len());
         let input = MeshInput::new(model.topo(), model.model(), &WholeFaces, &targets);
         // Plan once; the driver enforces the cell budget on this plan and every re-plan
         // (volumes), or we do for the first plan (faces).

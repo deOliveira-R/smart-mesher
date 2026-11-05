@@ -653,6 +653,7 @@ fn registered_schemas_carry_entity_kinds_and_declared_outputs() {
         "mesh.run",
         "mesh.delete",
         "mesh.default_size",
+        "mesh.auto",
     ] {
         let schema = serde_json::to_value(reg.schema(name).expect("schema")).expect("json");
         let props = schema["properties"].as_object().expect("properties");
@@ -669,8 +670,8 @@ fn registered_schemas_carry_entity_kinds_and_declared_outputs() {
     let q = serde_json::to_value(
         reg.query_catalog()
             .into_iter()
-            .next()
-            .expect("query")
+            .map(|q| q.expect("query"))
+            .find(|q| q.name == "mesh.info")
             .expect("info")
             .schema,
     )

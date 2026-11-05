@@ -190,13 +190,13 @@ fn firmness_topo(ctx: &ApplyCtx<'_>) -> Result<Option<ModelLayer>, OpError> {
     Ok(Some(ctx.layer::<ModelLayer>()?.clone()))
 }
 
-fn finish(layer: &mut IntentLayer) -> Result<(), OpError> {
+pub(crate) fn finish(layer: &mut IntentLayer) -> Result<(), OpError> {
     let i = layer.intent_mut();
     i.canonicalize();
     i.check().map_err(scheme_err)
 }
 
-fn warn_kept(ctx: &mut ApplyCtx<'_>, op: &str, kept: &[EntityId]) {
+pub(crate) fn warn_kept(ctx: &mut ApplyCtx<'_>, op: &str, kept: &[EntityId]) {
     if !kept.is_empty() {
         ctx.warn(
             "mesh.firmness_kept",
@@ -344,6 +344,29 @@ impl TypedOp for MeshIntervals {
     }
 }
 
+/// Store `choice` (and `fallbacks`) on `t` unless a firmer scheme is already there. Returns
+/// whether it applied.
+pub(crate) fn store_scheme(
+    layer: &mut IntentLayer,
+    t: EntityId,
+    choice: &SchemeChoice,
+    fallbacks: &[SchemeChoice],
+    firmness: Firmness,
+) -> bool {
+    let i = layer.intent_mut();
+    if i.entities
+        .get(&t)
+        .and_then(|e| e.scheme.as_ref())
+        .is_some_and(|old| old.firmness > firmness)
+    {
+        return false;
+    }
+    let e = i.entity_mut(t);
+    e.scheme = Some(choice.clone());
+    e.fallbacks = fallbacks.to_vec();
+    true
+}
+
 /// `mesh.scheme`: choose the meshing scheme of volumes, faces or curves.
 ///
 /// The scheme must be registered for the target's dimension (or be the reserved `copy`). The
@@ -405,18 +428,9 @@ impl TypedOp for MeshScheme {
         let layer = ctx.layer_mut::<IntentLayer>()?;
         let mut kept = Vec::new();
         for &t in &targets {
-            let i = layer.intent_mut();
-            if i.entities
-                .get(&t)
-                .and_then(|e| e.scheme.as_ref())
-                .is_some_and(|old| old.firmness > firmness)
-            {
+            if !store_scheme(layer, t, &choice, &fallbacks, firmness) {
                 kept.push(t);
-                continue;
             }
-            let e = i.entity_mut(t);
-            e.scheme = Some(choice.clone());
-            e.fallbacks = fallbacks.clone();
         }
         finish(layer)?;
         warn_kept(ctx, Self::NAME, &kept);

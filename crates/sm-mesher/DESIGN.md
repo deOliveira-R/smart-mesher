@@ -277,6 +277,37 @@ Hashes unchanged.
 The stub schemes are reference code; the numbers bound the driver and commit path, they do not
 predict production schemes.
 
+## Auto selection (W3b-AUTO, ruling Q5)
+
+Automatic scheme choice is a **pluggable strategy that is consulted once and stored**.
+
+* `AutoStrategy { name, description, choose(&AutoInput) -> Vec<SchemeAssignment> }`; strategies
+  live in `MesherConfig::strategies()` (`with_strategy` replaces by name). `DefaultStrategy`
+  (`"default"`) is registered by `MesherConfig::new`.
+* `mesh.auto {strategy = "default", targets?}` runs the strategy at apply and stores itself as
+  `mesh.auto {strategy, assignments: [{target, scheme, params}]}` through
+  `ApplyCtx::set_canonical_record`. A record that already holds `assignments` applies them and
+  never looks up a strategy, so replay calls no strategy and swapping or deleting a strategy
+  cannot move a recorded hash. The effect equals one hard `mesh.scheme` per assignment (same
+  intent, same hash). Targets that already have an intent scheme are never in the answer.
+* `DefaultStrategy` lists: surface `[map, submap, pave, trimesh]`, volume `[map, sweep,
+  tetmesh]`, curve `[equal]` (names not registered are dropped). It installs them as
+  `defaults.auto` on a copy of the intent, plans, and meshes into a scratch mesh through the
+  driver's replan loop, so a candidate that only fails at generation is rejected and replaced
+  (fallbacks). The winners are the plan rows with `Selection::Auto` for faces and volumes; faces
+  a parent imposes or claims, copies and curves are not assigned. List order breaks equal
+  scores (the planner's rule).
+* `replan_budget(n) = 16 + 2 n` is the driver's `max_replans` for `mesh.run`, `mesh.plan` and the
+  strategy (each target that must fall back costs one replan). Runs that used to fit in 16
+  are unaffected.
+* Warning `mesh.auto_tet` per volume the strategy gave a tet mesher, listing why the earlier
+  candidates were passed over and ending with the fix. Query `mesh.auto_strategies`.
+* `standard_schemes` lists are untouched (strict), so a run without `mesh.auto` has the same
+  plan and hash as before. `sm_mesher::census` compares today's plan with the strategy's,
+  per volume, for the SERVER-HOST census (it reads the state and writes nothing).
+* Cost: the strategy meshes the targets once in scratch, so `mesh.auto` costs about one
+  `mesh.run`.
+
 ## Known gaps
 
 * No `on_succession` for the intent layer.
