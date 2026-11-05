@@ -78,7 +78,7 @@ pub enum PolyError {
     /// (by output order); `count` is the number of such cells. Lower the merge ratio or the
     /// concavity limit, or disable agglomeration.
     #[error(
-        "agglomerated cell in region {region:?} near ({:.6e}, {:.6e}, {:.6e}) is not star-shaped ({count} such cell(s)); reduce the agglomeration ratio or concavity limit",
+        "agglomerated cell in region {region:?} near ({:.6e}, {:.6e}, {:.6e}) is not star-shaped or has non-positive volume ({count} such cell(s)); reduce the agglomeration ratio or concavity limit",
         at[0], at[1], at[2]
     )]
     InvalidAgglomeration {

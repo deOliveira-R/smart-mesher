@@ -487,7 +487,7 @@ fn cell_ok(d: &PolyData, c: usize) -> bool {
 }
 
 /// [`cell_ok`] for an explicit face list.
-fn cell_ok_faces(d: &PolyData, faces: &[SignedFace]) -> bool {
+pub(crate) fn cell_ok_faces(d: &PolyData, faces: &[SignedFace]) -> bool {
     let (vol, g) = agglom::vol_centroid(d, faces);
     if vol <= 0.0 {
         return false;

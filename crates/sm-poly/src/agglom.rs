@@ -194,7 +194,23 @@ fn merge_ok(d: &PolyData, a: usize, b: usize, max_concavity: f64) -> bool {
             }
         }
     }
-    true
+    // the same rule the post-agglomeration check and `validate_geometry` apply
+    SKIP_VALIDITY.with(|k| k.get()) || crate::concave::cell_ok_faces(d, &faces)
+}
+
+thread_local! {
+    static SKIP_VALIDITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test hook: run `f` with the star-validity test of merges disabled on this thread, so the
+/// post-agglomeration check ([`PolyError::InvalidAgglomeration`](crate::PolyError)) can be
+/// exercised. Not part of the supported API.
+#[doc(hidden)]
+pub fn with_unchecked_merges<R>(f: impl FnOnce() -> R) -> R {
+    let prev = SKIP_VALIDITY.with(|k| k.replace(true));
+    let r = f();
+    SKIP_VALIDITY.with(|k| k.set(prev));
+    r
 }
 
 /// True if the boundary edges of the face set (edges used by exactly one of its faces) form one

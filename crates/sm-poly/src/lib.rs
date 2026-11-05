@@ -23,6 +23,7 @@ mod prep;
 mod resolver;
 mod stats;
 
+pub use agglom::with_unchecked_merges;
 pub use dual::dualize;
 #[doc(hidden)]
 pub use dual::dualize_with_rounds;

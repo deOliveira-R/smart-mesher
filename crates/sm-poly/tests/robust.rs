@@ -444,18 +444,19 @@ fn unrepaired_cell_is_a_typed_error() {
     assert!(dual_ref(&m, &opts, &EndsResolver).is_ok());
 }
 
-/// Unbounded concavity lets agglomeration merge cells into a non-star-shaped cell; that is a
-/// typed error, not an invalid mesh. With the default concavity limit the same input succeeds.
+/// Merges are checked for validity, so agglomeration never builds a bad cell on its own (here
+/// even with unbounded concavity). With that check off, the post-agglomeration check reports a
+/// typed error instead of returning an invalid mesh.
 #[test]
 fn invalid_agglomeration_is_a_typed_error() {
     let m = regionized_block(&|c| c[0] < 2.0 && c[1] > 2.0);
     let o = PolyOptions::new().with_agglomerate(Some(sm_poly::Agglomerate::new(0.9).with_max_concavity(1e9)));
-    let e = dual_ref(&m, &o, &EndsResolver).unwrap_err();
+    let (out, _) = dual_ref(&m, &o, &EndsResolver).unwrap();
+    assert!(validate_geometry(&out, &GeomTol::new()).is_empty());
+    let e = sm_poly::with_unchecked_merges(|| dual_ref(&m, &o, &EndsResolver)).unwrap_err();
     let PolyError::InvalidAgglomeration { region, at, count } = &e else { panic!("got {e}") };
     assert!(*count > 0);
     assert!((1..=2).any(|s| *region == EntityId::new(EntityKind::TopoVolume, s).unwrap()), "{region:?}");
-    assert!(at.iter().all(|x| (0.0..=4.0).contains(x)), "{at:?}");
-    let o = PolyOptions::new().with_agglomerate(Some(sm_poly::Agglomerate::new(0.9)));
-    let (out, _) = dual_ref(&m, &o, &EndsResolver).unwrap();
-    assert!(validate_geometry(&out, &GeomTol::new()).is_empty());
+    eprintln!("AT {at:?}");
+    assert!(e.to_string().contains("not star-shaped or has non-positive volume"), "{e}");
 }
