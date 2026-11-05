@@ -36,6 +36,7 @@ const SIGNATURE: [u8; 8] = [0x89, b'H', b'D', b'F', b'\r', b'\n', 0x1a, b'\n'];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Dtype {
     /// Unsigned 8-bit integer, little endian.
+    #[allow(dead_code)] // constructed by tests and the reader only
     U8,
     /// Signed 32-bit integer, little endian.
     I32,
