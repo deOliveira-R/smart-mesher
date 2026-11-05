@@ -270,7 +270,7 @@ impl Group {
 impl Dataset {
     /// Values as `u64` (the dataset must be `U64`).
     pub fn as_u64(&self) -> Vec<u64> {
-        self.data.chunks_exact(8).map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).collect()
+        self.data.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect()
     }
     /// Values as `i64`.
     pub fn as_i64(&self) -> Vec<i64> {
@@ -278,7 +278,7 @@ impl Dataset {
     }
     /// Values as `i32`.
     pub fn as_i32(&self) -> Vec<i32> {
-        self.data.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+        self.data.as_chunks::<4>().0.iter().map(|c| i32::from_le_bytes(*c)).collect()
     }
     /// Values as `f64`.
     pub fn as_f64(&self) -> Vec<f64> {

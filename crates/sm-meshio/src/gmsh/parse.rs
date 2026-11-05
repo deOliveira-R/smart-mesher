@@ -216,10 +216,8 @@ pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Data, GmshError> {
         return bad("only data-size 8 is read");
     }
     p.binary = binary;
-    if binary {
-        if p.i32()? != 1 {
-            return bad("endianness check word is not 1");
-        }
+    if binary && p.i32()? != 1 {
+        return bad("endianness check word is not 1");
     }
     p.end("MeshFormat")?;
     let mut d = Msh4Data { binary, physical_names: Vec::new(), entities: Default::default(), node_blocks: Vec::new(), element_blocks: Vec::new() };

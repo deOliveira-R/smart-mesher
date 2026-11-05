@@ -56,6 +56,20 @@ pub struct GmshOptions {
     pub lines_and_points: bool,
 }
 
+impl GmshOptions {
+    /// These options with binary output on or off.
+    pub fn with_binary(mut self, binary: bool) -> Self {
+        self.binary = binary;
+        self
+    }
+
+    /// These options with the given polyhedra policy.
+    pub fn with_polyhedra(mut self, polyhedra: PolyPolicy) -> Self {
+        self.polyhedra = polyhedra;
+        self
+    }
+}
+
 impl Default for GmshOptions {
     fn default() -> Self {
         Self { binary: false, polyhedra: PolyPolicy::Error, boundary_elements: true, lines_and_points: true }

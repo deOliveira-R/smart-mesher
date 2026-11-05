@@ -88,6 +88,13 @@ pub struct Graveyard {
     pub thickness_frac: f64,
 }
 
+impl Graveyard {
+    /// A graveyard with the given inner-box scale and wall thickness fraction.
+    pub fn new(scale: f64, thickness_frac: f64) -> Self {
+        Self { scale, thickness_frac }
+    }
+}
+
 impl Default for Graveyard {
     fn default() -> Self {
         Self { scale: 1.1, thickness_frac: 0.05 }
@@ -107,6 +114,12 @@ pub struct DagmcOptions {
 }
 
 impl DagmcOptions {
+    /// These options with a `FACETING_TOL` tag of `tol`.
+    pub fn with_faceting_tol(mut self, tol: f64) -> Self {
+        self.faceting_tol = Some(tol);
+        self
+    }
+
     /// The default options with a graveyard.
     pub fn with_graveyard(graveyard: Graveyard) -> Self {
         Self { graveyard: Some(graveyard), ..Self::default() }

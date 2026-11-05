@@ -483,10 +483,10 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
                 }
             }
         }
-        for v in 0..nv {
+        for (v, &sig) in vert_sig.iter().enumerate().take(nv) {
             let c = mesh.vertex_class(sm_mesh_api::VertexIx::new(v)).entity;
             if c.kind() == EntityKind::TopoVertex {
-                el.push((0, c.serial(), vert_sig[v]), T_POINT, &[v as u32]);
+                el.push((0, c.serial(), sig), T_POINT, &[v as u32]);
             }
         }
     }
@@ -559,9 +559,9 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
         }
     };
     let elem_ent: Vec<u32> = (0..el.len()).map(|i| find(&(el.dim[i], el.serial[i], el.sig[i])).map_or(0, |e| e as u32)).collect();
-    for i in 0..el.len() {
+    for (i, &e) in elem_ent.iter().enumerate() {
         for &n in el.nodes(i) {
-            grow(elem_ent[i] as usize, n as usize, &mut lo, &mut hi);
+            grow(e as usize, n as usize, &mut lo, &mut hi);
         }
     }
     for (n, &e) in node_ent.iter().enumerate() {
@@ -604,16 +604,13 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
     out.eol();
     for (i, e) in ents.iter().enumerate() {
         out.i32(tag_of[i] as i32);
-        if e.0 == 0 {
-            for k in 0..3 {
-                out.f64(if lo[i][k].is_finite() { lo[i][k] } else { 0.0 });
-            }
-        } else {
-            for k in 0..3 {
-                out.f64(if lo[i][k].is_finite() { lo[i][k] } else { 0.0 });
-            }
-            for k in 0..3 {
-                out.f64(if hi[i][k].is_finite() { hi[i][k] } else { 0.0 });
+        let fin = |v: f64| if v.is_finite() { v } else { 0.0 };
+        for v in lo[i] {
+            out.f64(fin(v));
+        }
+        if e.0 != 0 {
+            for v in hi[i] {
+                out.f64(fin(v));
             }
         }
         let phys = &sigs.table[e.2 as usize];
@@ -671,8 +668,8 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
             out.eol();
         }
         for &n in &order[a..b] {
-            for k in 0..3 {
-                out.f64(pts[n as usize][k]);
+            for v in pts[n as usize] {
+                out.f64(v);
             }
             out.eol();
         }

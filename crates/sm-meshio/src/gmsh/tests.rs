@@ -8,8 +8,7 @@ fn smoke_and_dump() {
     let m = mixed_transition().unwrap();
     for (name, mesh) in [("hex2", &f.mesh), ("mixed", &m.mesh)] {
         for binary in [false, true] {
-            let mut o = GmshOptions::default();
-            o.binary = binary;
+            let o = GmshOptions::default().with_binary(binary);
             let mut out = Vec::new();
             let r = write_msh4(mesh, &o, &mut out).unwrap();
             let p = parse_msh4(&out).unwrap();
