@@ -76,3 +76,13 @@ From the post-W3a contract batch review. P1 still flips only after a milestone A
 - **O16.** The viewer polls `session.hash`; server push waits for a later wave.
 - **O17.** Overlaps between bodies are found at track time and by `rt.check_overlaps`, not proved absent at build.
 - **P1-P5.** Approved.
+
+## Orchestrator rulings during W3b-2 (2026-11-05)
+- **R1. Region-jump tolerance (`Tracker::fire`, RT-DELTA acceptance 9).** A flat `1e-12 (1 + d)` between jump and walk is ill-posed for grazing exits: the walk's error grows like 1/|d̂·n|. A jump at exit face normal n must:
+  - return the same end kind, surface, region and to_region as the walk;
+  - match the exact exit distance (computed from the exit face) within `1e-12 (1 + d)`;
+  - agree with the walk within `1e-12 (1 + d) / max(|d̂·n|, 1e-6)`.
+
+  On an exact edge or vertex tie, the face and to_cell may differ; kind, surface, to_region and distance still agree. The `Tracker::fire` doc clause in sm-rt-api is updated to match.
+- **R2. ACR approved:** `MeshInput::topology_content_hash()` in sm-rt-api. It reproduces the bytes of sm-rt's builder `mesh_topology_hash` exactly, so that sm-rt and `LeafInput::content_hash` share one implementation of the mesh part without moving any cache key.
+- **R3. DIAG acceptance 2 (and plan §3.2 `remove_set`).** `mesh.flag_cells` followed by `mesh.unflag_cells` restores the mesh content, the set list and the topology/geometry hashes. The state hash may still differ, because the meshes-layer digest includes allocator counters, which never roll back. The digest is not changed: changing it would move every meshes hash.
