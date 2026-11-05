@@ -310,6 +310,7 @@ fn volumes_of(view: &dyn TopologyView, bodies: Option<&[EntityId]>) -> Result<Ve
                     Some(Dim::Volume) => {
                         out.insert(id);
                     }
+                    // Unreachable through `model.export`, whose query refuses other kinds first.
                     _ => return Err(export_err(format!("{id} is not a body or a volume"))),
                 }
             }
@@ -387,7 +388,34 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
 /// As [`write_step`], plus [`StepError::Export`] when the state has no `model` layer.
 pub fn export_step(state: &State, bodies: Option<&[EntityId]>, o: &WriteOptions, w: &mut dyn Write) -> Result<WriteReport, StepError> {
     let layer = state.layer::<ModelLayer>().ok_or_else(|| export_err("the state has no model layer"))?;
-    write_step(layer.topo(), bodies, o, w)
+    let mut report = write_step(layer.topo(), bodies, o, w)?;
+    // Colors and names are not written: locate each one on an exported cell. Only the report
+    // changes, never the bytes. `write_step` succeeded, so the selection resolves.
+    let view = layer.topo();
+    let volumes = volumes_of(view, bodies)?;
+    let mut exported: BTreeSet<EntityId> = BTreeSet::new();
+    for &v in &volumes {
+        exported.insert(v);
+        exported.extend(view.boundary(v).iter().map(|e| e.cell));
+    }
+    for &b in view.cells(Dim::Body) {
+        if view.boundary(b).iter().any(|e| volumes.binary_search(&e.cell).is_ok()) {
+            exported.insert(b);
+        }
+    }
+    let model = layer.model();
+    for row in model.colors() {
+        let cells = model.volumes_of_color(row.id).into_iter().chain(model.faces_of_color(row.id));
+        for c in cells.filter(|c| exported.contains(c)) {
+            report.losses.push(Loss { cell: Some(c), what: format!("color '{}' (label {}) on {c} not written", row.name, row.label) });
+        }
+    }
+    for g in model.groups() {
+        for &m in g.members.iter().filter(|m| exported.contains(m)) {
+            report.losses.push(Loss { cell: Some(m), what: format!("group/name '{}' of {m} not written", g.name) });
+        }
+    }
+    Ok(report)
 }
 
 fn write_solid(wr: &mut Writer<'_>, vol: EntityId, report: &mut WriteReport, tol: f64) -> Result<u64, StepError> {

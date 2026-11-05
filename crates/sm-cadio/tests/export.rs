@@ -171,6 +171,8 @@ fn unsupported_carrier_is_a_typed_error_naming_the_cell() {
     let h = cc.shapes_mut().expect("shapes").add_surface(q).expect("add");
     cc.set_carrier(ids.faces[0], Carrier::Surface(SurfaceCarrier { surface: h, sense: Sense::Forward })).expect("carrier");
     cc.end_op().expect("end");
+    // No registered op builds an implicit-surface face (only the library path reaches this
+    // carrier), so the `model.export` query is covered here through the error mapping below.
     let e = sm_cadio::write_step(&cc, None, &sm_cadio::WriteOptions::default(), &mut Vec::new()).expect_err("implicit");
     assert!(matches!(&e, sm_cadio::StepError::Unsupported { entity, .. } if entity.contains(&ids.faces[0].to_string())), "{e:?}");
     assert_eq!(e.code(), "step.unsupported");
