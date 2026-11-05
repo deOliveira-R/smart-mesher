@@ -1384,6 +1384,7 @@ dependencies = [
  "sm-scheme-curve",
  "sm-scheme-tet",
  "sm-scheme-tri",
+ "sm-smooth",
  "sm-testkit",
  "sm-topo-api",
  "thiserror",

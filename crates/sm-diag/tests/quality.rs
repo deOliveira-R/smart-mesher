@@ -324,7 +324,7 @@ fn smooth_becomes_available_when_the_op_is_registered() {
         assert_eq!(s.available, want);
         assert_eq!(s.op.as_deref(), Some("mesh.smooth"));
         assert_eq!(s.targets, vec![m.mesh_id()]);
-        assert!(s.args.is_none());
+        assert_eq!(s.args, Some(serde_json::json!({"set": "diag.skewness"})));
     }
     assert!(by_name(&with, "skewness").clusters.iter().all(|c| c.enrichment < 1.5));
 }

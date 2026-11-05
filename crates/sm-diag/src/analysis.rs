@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sm_mesh_api::{FaceIx, MeshDim, MeshRead};
 use sm_quality::{
     CHUNK, FvColumn, FvEntity, FvMetric, Grade, Measure, Options, Profile, QualityError, Rule, Sense, compute, fv_compute, fv_geometry, rules,
+    transport_extra_rules,
 };
 
 use crate::error::DiagError;
@@ -65,6 +66,14 @@ fn any_rule(profile: Profile, measure: Measure) -> Option<Rule> {
     std::iter::once(profile).chain(Profile::ALL.iter().copied()).find_map(|p| rules(p).iter().find(|r| r.measure == measure).copied())
 }
 
+/// The rule `profile` grades `measure` with when asked for by name: its own, or for Transport
+/// also the opt-in two-boundary-face rule (not in the default metric list, so default reports
+/// keep their five metrics).
+fn profile_rule(profile: Profile, measure: Measure) -> Option<Rule> {
+    let extra = (profile == Profile::Transport).then(transport_extra_rules).unwrap_or(&[]);
+    rules(profile).iter().chain(extra).find(|r| r.measure == measure).copied()
+}
+
 /// Measures to compute with their effective rule (`None` = computed but not graded).
 ///
 /// `metrics` of `None` means the rules of `profile`. A requested metric is graded only if a rule
@@ -82,7 +91,7 @@ pub(crate) fn resolve(
             let mut out: Vec<(Measure, Option<Rule>)> = Vec::new();
             for &m in ms {
                 if !out.iter().any(|(x, _)| *x == m) {
-                    out.push((m, rules(profile).iter().find(|r| r.measure == m).copied()));
+                    out.push((m, profile_rule(profile, m)));
                 }
             }
             out
