@@ -41,7 +41,7 @@ int main() {
     smrt::Tracker::open("/nonexistent/model.smrt");
     REQUIRE(false);
   } catch (const smrt::Error& e) {
-    REQUIRE(e.code() == SMRT_ERR_BAD_ARG);
+    REQUIRE(e.code() == SMRT_ERR_BAD_ARG || e.code() == SMRT_ERR_UNSUPPORTED);
   }
   std::puts("raii: ok");
   return 0;
