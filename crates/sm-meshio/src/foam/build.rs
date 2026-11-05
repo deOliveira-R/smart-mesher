@@ -4,6 +4,7 @@ use super::{
     FoamBuild, FoamError, FoamOptions, FoamPatchType, FoamReport, PatchOrigin, PatchSource, PatchSummary, PolyFaceZone, PolyMesh, PolyPatch, PolyZone, ShapeCounts,
     ZoneSelect, sanitize,
 };
+use super::warp::split_warped_faces;
 use super::split::{CELL_MAP_FILE, SMALL_DETERMINANT, split_small_determinant};
 use crate::error::{MeshioError, Result};
 use crate::report::{LossItem, LossReport, LossSeverity};
@@ -58,10 +59,14 @@ fn check_ranges(mesh: &dyn MeshRead, nv: usize, nc: usize) -> Result<()> {
 ///
 /// Errors: [`FoamError::NotThreeDimensional`], [`FoamError::InactiveCells`],
 /// [`FoamError::NonFinite`], [`FoamError::Orientation`] (an interior face with `left >= right`),
-/// [`FoamError::UnknownSet`], [`FoamError::PatchOverlap`] and the name errors.
+/// [`FoamError::UnknownSet`], [`FoamError::PatchOverlap`], [`FoamError::BadWarpTolerance`] and the
+/// name errors.
 pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBuild> {
     if mesh.dim() != MeshDim::Three {
         return Err(fe(FoamError::NotThreeDimensional));
+    }
+    if !(opts.warp_tolerance.is_finite() && opts.warp_tolerance >= 0.0) {
+        return Err(fe(FoamError::BadWarpTolerance(opts.warp_tolerance)));
     }
     check_columns(mesh)?;
     let (nv, nf, nc) = (mesh.vertex_count(), mesh.face_count(), mesh.cell_count());
@@ -448,6 +453,43 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
     let mut poly = PolyMesh { points, face_offsets, face_points, owner, neighbour, n_cells: nc as u32, patches: poly_patches, cell_zones, face_zones, cell_map: Vec::new() };
     let mut point_of_foam = point_of_foam;
     let mut n_int = n_int;
+    let mut warp_report = None;
+    let mut warped_cell = vec![false; nc];
+    if opts.split_warped_faces
+        && let Some(info) = split_warped_faces(&mut poly, opts.warp_tolerance)
+    {
+        // Pieces map to the source face they replace; the apex points have no source vertex.
+        let mut fof = Vec::with_capacity(poly.n_faces());
+        for (old, w) in info.first_of_old.windows(2).enumerate() {
+            fof.extend(std::iter::repeat_n(face_of_foam[old], (w[1] - w[0]) as usize));
+        }
+        face_of_foam = fof;
+        point_of_foam.resize(poly.points.len(), NONE);
+        n_int += info.added_internal;
+        // A cell with a split face is a polyhedron to checkMesh.
+        for &c in &info.cells {
+            warped_cell[c as usize] = true;
+            let i = match mesh.cell_shape(CellIx::new(c as usize)) {
+                CellShape::Hex => 0,
+                CellShape::Wedge => 1,
+                CellShape::Pyramid => 2,
+                CellShape::Tet => 3,
+                _ => 4,
+            };
+            counts[i] -= 1;
+            counts[4] += 1;
+        }
+        note(
+            "foam.warped_faces_split",
+            LossSeverity::Degraded,
+            info.report.faces_split as usize,
+            format!(
+                "warped faces (planarity deviation above {:e}) replaced by {} planar triangles about the face centre; cells with a split face: {}; concave cells (face planes) {} -> {}",
+                opts.warp_tolerance, info.report.pieces, info.report.cells_affected, info.report.concave_before, info.report.concave_after
+            ),
+        );
+        warp_report = Some(info.report);
+    }
     if opts.split_small_determinant
         && let Some(info) = split_small_determinant(&mut poly, SMALL_DETERMINANT)
     {
@@ -488,6 +530,7 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
             // The census follows the exported cells.
             for &c in &info.split_cells {
                 let i = match mesh.cell_shape(CellIx::new(c as usize)) {
+                    _ if warped_cell[c as usize] => 4,
                     CellShape::Hex => 0,
                     CellShape::Wedge => 1,
                     CellShape::Pyramid => 2,
@@ -522,6 +565,7 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
             .map(|p| PatchSummary { name: p.name.clone(), patch_type: p.patch_type, start_face: p.start_face, n_faces: p.n_faces, origin: p.origin.clone() })
             .collect(),
         loss,
+        warp: warp_report,
     };
     Ok(FoamBuild { mesh: poly, face_of_foam, point_of_foam, report })
 }
