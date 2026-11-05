@@ -15,7 +15,7 @@ use sm_protocol::{
 
 use crate::error::{ServerError, SessionError};
 use crate::host::{ExportParams, SessionHost, project_inputs, resolve_path, stage_bytes, status_result, to_json};
-use crate::standard::{bind_pending_inputs, clear_pending_inputs, release_pending_inputs};
+use crate::standard::with_opening;
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
 type Opener = Arc<dyn Fn() -> WorkspaceBuilder + Send + Sync>;
@@ -35,7 +35,6 @@ impl Server {
     /// available (the builder is consumed); use [`from_factory`](Self::from_factory) for that.
     pub fn new(builder: WorkspaceBuilder) -> Result<Self, ServerError> {
         let ws = builder.memory()?;
-        clear_pending_inputs();
         Ok(Self { ws, opener: None })
     }
 
@@ -43,29 +42,23 @@ impl Server {
     /// build the workspace of the opened project (same plugins, services, clock and author).
     pub fn from_factory(factory: impl Fn() -> WorkspaceBuilder + Send + Sync + 'static) -> Result<Self, ServerError> {
         let ws = factory().memory()?;
-        clear_pending_inputs();
         Ok(Self { ws, opener: Some(Arc::new(factory)) })
     }
 
     /// A server over an existing workspace (for example one opened with `smesh -p dir`).
     pub fn from_workspace(ws: Workspace) -> Self {
-        clear_pending_inputs();
         Self { ws, opener: None }
     }
 
     /// A server over the project at `dir`, opened (and replayed strictly) with `builder`.
     ///
-    /// The input stores of the distribution builders assembled on this thread (and not consumed
-    /// by another server) are bound to `<dir>/inputs/` for the replay, so it finds staged STEP
-    /// files whichever of them is `builder`. Afterwards only the opened workspace's own store
-    /// stays bound; the others are unbound again, so a server made from another builder keeps
-    /// staging in memory. A builder not made by this crate has no store and gets none.
+    /// The builder's own input store is bound to `<dir>/inputs/` while the engine installs its
+    /// plugins, before the project replays, so the replay finds staged STEP files. The binding
+    /// belongs to this builder alone: no other builder or server, on this or any thread, is
+    /// affected. A builder not made by this crate has no store and gets none.
     pub fn open(builder: WorkspaceBuilder, dir: impl AsRef<Path>) -> Result<Self, ServerError> {
-        let bound = bind_pending_inputs(dir.as_ref());
-        let opened = builder.open(dir);
-        let own = opened.as_ref().ok().and_then(|ws| project_inputs(ws)).map(|h| h.0.clone());
-        release_pending_inputs(&bound, own.as_ref());
-        Ok(Self::from_workspace(opened?))
+        let dir = dir.as_ref();
+        Ok(Self::from_workspace(with_opening(dir, || builder.open(dir))?))
     }
 
     /// A server over a new project at `dir` (absent or empty directory) named `name`.
@@ -169,20 +162,11 @@ impl Server {
                 format!("opening a project would discard the in-memory session ({} nodes); `session.save` it elsewhere first", self.ws.timeline().len()),
             ));
         }
-        // Only a replay needs the pre-bind; a create binds afterwards via `project_inputs`.
-        let fresh = |replay: bool| {
-            clear_pending_inputs();
-            let b = opener();
-            if replay {
-                // The only pending store is the one just built, so nothing to release.
-                let _ = bind_pending_inputs(&dir);
-            }
-            b
-        };
-        let new = match fresh(true).open(&dir) {
+        // Only a replay binds up front; a create binds afterwards via `project_inputs`.
+        let new = match with_opening(&dir, || opener().open(&dir)) {
             Err(EngineError::NotAProject(_)) if create => {
                 let name = dir.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
-                fresh(false).create(&dir, ProjectConfig::new(name))?
+                opener().create(&dir, ProjectConfig::new(name))?
             }
             other => other?,
         };
