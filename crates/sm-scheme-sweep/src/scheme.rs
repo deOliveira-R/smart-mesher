@@ -1,6 +1,6 @@
 //! The `"sweep"` volume scheme.
 
-use crate::discover::{Columns, discover_columns};
+use crate::discover::{Columns, discover_columns, prefilter, vertex_lists};
 use crate::emit::generate_prism;
 use crate::fit::{best_effort_transform, fit_target_transform};
 use crate::params::{SweepParams, TargetMode};
@@ -50,29 +50,54 @@ fn outward_normal(
     }
 }
 
-/// Source and target faces: from the parameters, else the first valid pair (lowest ids first).
+/// Source and target faces: from the parameters, else the lowest-id valid pair (explicit
+/// hashes depend on this choice). Returns the columns and the number of valid pairs, counted
+/// exhaustively only when `count_all` (otherwise the search stops at the first and the count
+/// is 1). Pairs failing the cheap vertex prefilter skip the column walk with the same error
+/// text.
 fn find_columns(
     input: &MeshInput<'_>,
     target: Target,
     sp: &SweepParams,
-) -> Result<Columns, String> {
+    count_all: bool,
+) -> Result<(Columns, usize), String> {
     let t = input.topo;
     let faces = input.piece_faces(target).map_err(|e| e.to_string())?;
     let v = target.entity().ok_or("a sweep meshes a single piece")?;
     let one = [(v, faces.clone())];
     match (sp.source, sp.target) {
-        (Some([s]), Some([g])) => discover_columns(t, &one, s, g).map_err(|e| e.to_string()),
+        (Some([s]), Some([g])) => discover_columns(t, &one, s, g)
+            .map(|c| (c, 1))
+            .map_err(|e| e.to_string()),
         (None, None) => {
             let mut last = String::from("the piece has fewer than two faces");
+            let verts = vertex_lists(t, &faces);
+            let mut first: Option<Columns> = None;
+            let mut valid = 0usize;
             for (i, &s) in faces.iter().enumerate() {
-                for &g in &faces[i + 1..] {
+                for (j, &g) in faces.iter().enumerate().skip(i + 1) {
+                    if let Err(e) = prefilter(&verts[i], &verts[j]) {
+                        last = e.to_string();
+                        continue;
+                    }
                     match discover_columns(t, &one, s, g) {
-                        Ok(st) => return Ok(st),
+                        Ok(st) => {
+                            valid += 1;
+                            if !count_all {
+                                return Ok((st, 1));
+                            }
+                            if first.is_none() {
+                                first = Some(st);
+                            }
+                        }
                         Err(e) => last = e.to_string(),
                     }
                 }
             }
-            Err(format!("no pair of faces gives columns (last: {last})"))
+            match first {
+                Some(c) => Ok((c, valid)),
+                None => Err(format!("no pair of faces gives columns (last: {last})")),
+            }
         }
         _ => Err("give both source and target, or neither".into()),
     }
@@ -82,9 +107,10 @@ pub(crate) fn analyse(
     input: &MeshInput<'_>,
     target: Target,
     sp: &SweepParams,
-) -> Result<Analysis, String> {
+    count_all: bool,
+) -> Result<(Analysis, usize), String> {
     let t = input.topo;
-    let columns = find_columns(input, target, sp)?;
+    let (columns, pairs) = find_columns(input, target, sp, count_all)?;
     let v = target.entity().ok_or("a sweep meshes a single piece")?;
     let vm = columns.vertex_map(t);
     let mut src: Vec<Point3> = Vec::with_capacity(vm.len());
@@ -128,7 +154,7 @@ pub(crate) fn analyse(
             });
         }
     };
-    Ok(Analysis { columns, transform })
+    Ok((Analysis { columns, transform }, pairs))
 }
 
 fn bad_input(reason: impl Into<String>) -> SchemeError {
@@ -170,8 +196,14 @@ impl Scheme for Sweep {
         let Ok(sp) = SweepParams::from_params(p) else {
             return Applicability::yes(60, "parameters are checked when planning");
         };
-        match analyse(cx.input, target, &sp) {
-            Ok(_) => Applicability::yes(60, "1-to-1 sweepable"),
+        match analyse(cx.input, target, &sp, true) {
+            Ok((an, k)) => Applicability::yes(
+                60,
+                format!(
+                    "1-to-1 sweepable from {} to {} ({k} valid pairs)",
+                    an.columns.source, an.columns.target
+                ),
+            ),
             Err(e) => Applicability::no(e),
         }
     }
@@ -183,11 +215,12 @@ impl Scheme for Sweep {
         out: &mut Requirements<'_>,
     ) -> sm_scheme_api::Result<()> {
         let sp = SweepParams::from_params(p)?;
-        let an = analyse(cx.input, target, &sp).map_err(|reason| SchemeError::NotApplicable {
-            target,
-            scheme: SchemeName::new(crate::NAME),
-            reason,
-        })?;
+        let (an, _) =
+            analyse(cx.input, target, &sp, false).map_err(|reason| SchemeError::NotApplicable {
+                target,
+                scheme: SchemeName::new(crate::NAME),
+                reason,
+            })?;
         let st = &an.columns;
         out.role(
             Target::Surface(st.source),

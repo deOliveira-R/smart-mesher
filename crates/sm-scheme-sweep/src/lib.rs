@@ -34,6 +34,8 @@ mod scheme;
 /// The registered scheme name.
 pub const NAME: &str = "sweep";
 
+#[cfg(feature = "test-hooks")]
+pub use discover::counters;
 pub use discover::{Column, Columns, discover_columns};
 pub use error::SweepError;
 pub use fit::{fit_affine, fit_target_transform};

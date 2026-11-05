@@ -84,6 +84,47 @@ fn coedge_count(t: &dyn TopologyView, f: EntityId) -> usize {
         .sum()
 }
 
+/// Work counters for tests (feature `test-hooks`): how often the full column walk ran.
+#[cfg(feature = "test-hooks")]
+pub mod counters {
+    use std::cell::Cell;
+    thread_local! {
+        static DISCOVER_CALLS: Cell<u64> = const { Cell::new(0) };
+    }
+    /// Reset this thread's `discover_columns` call counter.
+    pub fn reset_discover_calls() {
+        DISCOVER_CALLS.with(|c| c.set(0));
+    }
+    /// Number of `discover_columns` calls on this thread since the last reset.
+    pub fn discover_calls() -> u64 {
+        DISCOVER_CALLS.with(Cell::get)
+    }
+    pub(crate) fn bump() {
+        DISCOVER_CALLS.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// Cheap necessary conditions on a source/target pair given their sorted vertex lists: no
+/// shared vertex and equal vertex counts. Returns the exact error `discover_columns` gives.
+pub(crate) fn prefilter(vs: &[EntityId], vg: &[EntityId]) -> Result<(), SweepError> {
+    if vs.iter().any(|v| vg.binary_search(v).is_ok()) {
+        return Err(no("source and target share a vertex"));
+    }
+    if vs.len() != vg.len() {
+        return Err(no(format!(
+            "source has {} vertices, target {} (many-to-one sweeps are not supported)",
+            vs.len(),
+            vg.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Sorted vertex lists of faces (for pair prefiltering).
+pub(crate) fn vertex_lists(t: &dyn TopologyView, faces: &[EntityId]) -> Vec<Vec<EntityId>> {
+    faces.iter().map(|f| face_vertices(t, *f)).collect()
+}
+
 fn no(reason: impl Into<String>) -> SweepError {
     SweepError::NoColumns(reason.into())
 }
@@ -108,6 +149,8 @@ pub fn discover_columns(
     source: EntityId,
     target: EntityId,
 ) -> Result<Columns, SweepError> {
+    #[cfg(feature = "test-hooks")]
+    counters::bump();
     let all: BTreeSet<EntityId> = members.iter().flat_map(|m| m.1.iter().copied()).collect();
     if !all.contains(&source) || !all.contains(&target) || source == target {
         return Err(no(format!(
@@ -120,16 +163,7 @@ pub fn discover_columns(
         .filter(|f| members.iter().filter(|m| m.1.contains(f)).count() >= 2)
         .collect();
     let (vs, vg) = (face_vertices(t, source), face_vertices(t, target));
-    if vs.iter().any(|v| vg.contains(v)) {
-        return Err(no("source and target share a vertex"));
-    }
-    if vs.len() != vg.len() {
-        return Err(no(format!(
-            "source has {} vertices, target {} (many-to-one sweeps are not supported)",
-            vs.len(),
-            vg.len()
-        )));
-    }
+    prefilter(&vs, &vg)?;
     let mut excluded: BTreeSet<EntityId> = BTreeSet::new();
     for f in [source, target].iter().chain(interfaces_set.iter()) {
         excluded.extend(t.face_edges(*f).iter().copied());
