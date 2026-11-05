@@ -190,7 +190,8 @@ decide mesh validity; that stays `sm_mesh_api::validate`, which the exporter nev
 `foam.set_skipped`, `foam.patch_overlap`, `foam.nonconformal_as_patch`,
 `foam.partition_cut_as_patch`, `foam.symmetry_not_planar`, `foam.deck_cyclic_not_emitted`,
 `foam.zone_both_sides`, `foam.high_order_dropped`, `foam.small_det_split`,
-`foam.small_det_remaining`, `foam.small_det_unsplit`, `foam.small_det_2d_unsplit` (all degraded). One item per
+`foam.small_det_remaining`, `foam.small_det_unsplit`, `foam.small_det_2d_unsplit`,
+`foam.warped_faces_split` (all degraded). One item per
 `(code, detail)`; the detail names the set or patch.
 
 ## 11. Small-determinant split (ruling INT-8)
@@ -267,3 +268,37 @@ an interior cube cell 1.
   `docs/design/w3b/plan.md`, pending), and `sm_fem::export_files` never emits them, so through
   sm-fem only the off switch is reachable; the 2D rule is reachable only via `FoamOptions` with
   `PatchSource::Explicit`.
+
+## 12. Warped-face split (W3b FOAM-WARP, opt-in)
+
+`FoamOptions::split_warped_faces(true)` replaces each polygonal face whose planarity deviation
+`foam::face_warpage` (largest vertex distance from the plane through the face centre with the
+Newell normal, over `sqrt(|Sf|)`) exceeds `warp_tolerance` (default `1e-9`) by the triangles
+(edge, apex), the apex being OpenFOAM's face centre `fc`. Properties, all tested in
+`tests/foam_warp.rs`:
+
+* Every exported face is planar to 1e-12 (the pieces are triangles).
+* The pieces' area vectors sum to the face's `Sf` and the apex lies on the plane
+  `Sf . (x - fc) = 0`, so the OpenFOAM pyramid volume `1/3 sum Sf . (fc - x0)` of both adjacent
+  cells is conserved to rounding (tested at 1e-12 relative).
+* The internal mesh is untouched: cells, cell order, zones and `smeshCellMap` are as without the
+  pass; points keep their indices and the apexes are appended (`point_of_foam` is `u32::MAX`);
+  pieces are consecutive, patches keep their faces (boundary faces split too), `faceZone`
+  labels list every piece. `face_of_foam` of a piece is the source face.
+* Pieces of one internal face share (owner, neighbour): `check_polymesh` reports
+  `foam.upper_triangular_tie` (a warning) for them.
+* Census: a cell with a split face counts as a polyhedron. Report: `FoamReport::warp`
+  (`WarpReport`: faces, pieces, points, cells, concave cells before and after) and the loss item
+  `foam.warped_faces_split`. `foam::concave_cell_count` is an in-process approximation of
+  checkMesh's `Concave cells (using face planes)` (cosine above 1e-5 against the plane of a face
+  through its centre), not a replacement for running checkMesh.
+* Planar meshes export byte for byte as without the pass; the default options serialize as
+  before (the new keys appear only when set).
+
+INT-9 measurement (`concave_counts_are_recorded_before_and_after`): on warped hex blocks the
+split turns 0 concave cells into every cell concave (3x3x3, amplitude 0.03: 0 -> 27; amplitude
+0.08: 0 -> 27; 4x4x4, 0.05: 0 -> 64). A triangulated warped face is a shallow cone, so the cell
+on its inner side sees the apex as a dimple. The pass is therefore off by default; whether a
+plane-based concave check accepts the dimples depends on checkMesh's tolerance and was not run
+here (no OpenFOAM on this machine). The polydual (1046) and `w3a_poly` (3966) counts need
+sm-poly (L3) and are measured by `tools/conformance/check_openfoam.py`, not from this crate.

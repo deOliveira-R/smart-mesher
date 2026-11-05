@@ -40,7 +40,7 @@ fn norm(a: V3) -> f64 {
 
 /// Area vector (pointing along the loop's right-hand normal) and centroid of a face, with
 /// OpenFOAM's estimate: triangles about the vertex mean weighted by their projected area.
-fn face_geometry(pts: &[V3], f: &[u32]) -> (V3, V3) {
+pub(crate) fn face_geometry(pts: &[V3], f: &[u32]) -> (V3, V3) {
     let p = |i: usize| pts[f[i] as usize];
     if f.len() == 3 {
         let n = cross(sub(p(1), p(0)), sub(p(2), p(0)));
@@ -228,4 +228,50 @@ pub fn check_polymesh(m: &PolyMesh, tol: f64) -> Vec<FoamIssue> {
         }
     }
     out
+}
+
+/// Number of cells that are concave by face planes, an in-process version of checkMesh's
+/// `Concave cells (using face planes)`: a cell is concave when some vertex of the cell that is not
+/// on face `f` lies beyond the plane of `f` (through its centre, outward normal), seen from the
+/// face centre at a cosine above `1e-5`. Counts only; independent of thread count. An
+/// approximation of OpenFOAM's test for before/after comparisons, not a replacement for running
+/// `checkMesh`. Meshes with inconsistent topology count 0.
+pub fn concave_cell_count(m: &PolyMesh) -> u64 {
+    let (nf, ni, nc) = (m.owner.len(), m.neighbour.len(), m.n_cells as usize);
+    if m.face_offsets.len() != nf + 1 || ni > nf || m.owner.iter().chain(&m.neighbour).any(|c| *c as usize >= nc) || m.face_points.iter().any(|v| *v as usize >= m.points.len()) {
+        return 0;
+    }
+    let geo: Vec<(V3, V3)> = (0..nf).into_par_iter().map(|f| face_geometry(&m.points, m.face(f))).collect();
+    let mut cell_faces: Vec<Vec<(u32, bool)>> = vec![Vec::new(); nc];
+    for f in 0..nf {
+        cell_faces[m.owner[f] as usize].push((f as u32, true));
+        if f < ni {
+            cell_faces[m.neighbour[f] as usize].push((f as u32, false));
+        }
+    }
+    cell_faces
+        .par_iter()
+        .filter(|fs| {
+            let mut vs: Vec<u32> = fs.iter().flat_map(|&(f, _)| m.face(f as usize).iter().copied()).collect();
+            vs.sort_unstable();
+            vs.dedup();
+            fs.iter().any(|&(f, own)| {
+                let (sf, fc) = geo[f as usize];
+                let len = norm(sf);
+                if len <= 0.0 {
+                    return false;
+                }
+                let s = if own { 1.0 } else { -1.0 } / len;
+                let on = m.face(f as usize);
+                vs.iter().any(|v| {
+                    if on.contains(v) {
+                        return false;
+                    }
+                    let d = sub(m.points[*v as usize], fc);
+                    let l = norm(d);
+                    l > 0.0 && s * dot(sf, d) / l > 1e-5
+                })
+            })
+        })
+        .count() as u64
 }
