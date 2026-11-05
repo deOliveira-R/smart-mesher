@@ -67,6 +67,30 @@ impl TypedOp for InsertBlock {
     }
 }
 
+/// Like [`InsertBlock`] but with the production `sm_mesh::Mesh` store (which supports
+/// `remove_set`). Role `mesh`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InsertSmBlock {
+    pub n: [u32; 3],
+    #[serde(default)]
+    pub moves: Vec<(usize, [f64; 3])>,
+}
+
+impl TypedOp for InsertSmBlock {
+    const NAME: &'static str = "test.insert_sm_block";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let before = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mut after = before.clone();
+        let mut mesh = sm_mesh::generate::hex_block_bulk(self.n, [1.0; 3], &mut after).map_err(|e| OpError::Failed(e.to_string()))?.mesh;
+        for (v, p) in &self.moves {
+            MeshEdit::set_point(&mut mesh, PointIx::new(*v), Point3::new(p[0], p[1], p[2])).map_err(|e| OpError::Failed(e.to_string()))?;
+        }
+        let quanta = ctx.layer::<ModelLayer>()?.hash_quanta();
+        insert_mesh(ctx, MeshEntry::new(Box::new(mesh), Vec::new(), None, quanta), &before, after, "mesh")
+    }
+}
+
 /// Insert the sheared (`kind = "sheared"`) or stretched (`"stretched"`) hex pair.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -121,9 +145,11 @@ pub fn registry() -> Registry {
     reg.install(&CoreLayers::default()).expect("layers");
     reg.install(&MeshPlugin).expect("mesher");
     reg.install(&DiagPlugin).expect("diag");
+    reg.install(&sm_smooth::SmoothPlugin).expect("smooth");
     reg.register::<CreateBrick>().expect("brick");
     reg.register::<InsertBlock>().expect("block");
     reg.register::<InsertPair>().expect("pair");
+    reg.register::<InsertSmBlock>().expect("sm block");
     reg.register::<KillVolume>().expect("kill");
     reg
 }
@@ -188,6 +214,15 @@ impl Rig {
         let mut r = Self::new();
         r.apply(CreateBrick { size: [n[0] as f64, n[1] as f64, n[2] as f64] }).expect("brick");
         let (_, d) = r.apply(InsertBlock { n, h: [1.0; 3], moves: moves.to_vec() }).expect("block");
+        let mesh = d.outputs["mesh"][0];
+        (r, mesh)
+    }
+
+    /// Brick plus an `sm_mesh::Mesh` block.
+    pub fn with_sm_block(n: [u32; 3], moves: &[(usize, [f64; 3])]) -> (Self, EntityId) {
+        let mut r = Self::new();
+        r.apply(CreateBrick { size: [n[0] as f64, n[1] as f64, n[2] as f64] }).expect("brick");
+        let (_, d) = r.apply(InsertSmBlock { n, moves: moves.to_vec() }).expect("block");
         let mesh = d.outputs["mesh"][0];
         (r, mesh)
     }

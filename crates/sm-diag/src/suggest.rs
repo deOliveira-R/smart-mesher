@@ -7,7 +7,7 @@
 //! |---|---|
 //! | cluster on a `TopoEdge`, fraction >= 0.5 and enrichment >= 2 | `adjust_intervals` (op `mesh.intervals`, params `{current_count}`) |
 //! | cluster on a `TopoFace`, same thresholds | `change_scheme` (op `mesh.scheme`); for `face_flatness`, `face_warp`, `face_concavity` on the transport profile `refine_surface` (op `mesh.size`) instead |
-//! | bad entities of a metric and no cluster with enrichment >= 1.5 | `smooth` (op `mesh.smooth`) |
+//! | bad entities of a metric and no cluster with enrichment >= 1.5 | `smooth` (op `mesh.smooth`, args `{set: "diag.<metric>"}`), preceded by an `inspect` step (`mesh.flag_cells {name: "diag.<metric>", metrics: [<metric>], level: "warn"}`) unless the mesh already has that set |
 //! | bad entities of a metric and none of the rules above produced a suggestion for it (a hot spot below the cluster thresholds or on a vertex) | `inspect` (op `mesh.flag_cells`): store the bad cells as a set to look at |
 //! | inverted or degenerate cells | `fix_geometry_or_scheme` per owning volume, no op |
 
@@ -97,6 +97,15 @@ impl Availability<'_> {
     }
 }
 
+fn profile_wire(p: Profile) -> &'static str {
+    match p {
+        Profile::OpenFoam => "openfoam",
+        Profile::Fluent => "fluent",
+        Profile::Transport => "transport",
+        _ => "generic",
+    }
+}
+
 pub(crate) fn suggest(
     m: &dyn MeshRead,
     profile: Profile,
@@ -168,7 +177,35 @@ pub(crate) fn suggest(
             }
         }
         if f.n_bad > 0 && !f.clusters.iter().any(|c| c.enrichment >= SPREAD_ENRICHMENT) {
+            // `mesh.smooth {set}` reuses the `mesh.flag_cells` set `diag.<metric>`: when the
+            // mesh lacks it, an `inspect` step creating it comes first.
+            let set = format!("diag.{name}");
+            let has_set = m.set_by_name(&set).is_some();
             let (available, why) = av.of(OP_SMOOTH);
+            let mut reason = format!("{name}: {} bad entities are spread over the mesh, no hot spot; smoothing may help", f.n_bad);
+            if !has_set {
+                reason.push_str(&format!(" (needs the cell set `{set}` from the preceding `inspect` step)"));
+            }
+            reason.push_str(&why);
+            if !has_set {
+                let (flag_available, flag_why) = av.of(OP_FLAG);
+                let mut args = json!({ "name": set, "metrics": [name], "level": "warn" });
+                if profile != Profile::Generic {
+                    args["profile"] = json!(profile_wire(profile));
+                }
+                out.push(Suggestion {
+                    id: format!("inspect:{mesh}:{name}"),
+                    kind: "inspect".into(),
+                    severity,
+                    metric: name.into(),
+                    targets: vec![mesh],
+                    op: Some(OP_FLAG.into()),
+                    args: Some(args),
+                    params: json!({ "n_bad": f.n_bad }),
+                    reason: format!("{name}: flag its bad cells as the set `{set}`, the input of the `smooth` step that follows{flag_why}"),
+                    available: flag_available,
+                });
+            }
             out.push(Suggestion {
                 id: format!("smooth:{mesh}:{name}"),
                 kind: "smooth".into(),
@@ -176,9 +213,9 @@ pub(crate) fn suggest(
                 metric: name.into(),
                 targets: vec![mesh],
                 op: Some(OP_SMOOTH.into()),
-                args: None,
+                args: Some(json!({ "set": set })),
                 params: json!({ "n_bad": f.n_bad }),
-                reason: format!("{name}: {} bad entities are spread over the mesh, no hot spot; smoothing may help{why}", f.n_bad),
+                reason,
                 available,
             });
         }
