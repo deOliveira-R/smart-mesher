@@ -14,6 +14,7 @@ mod crc;
 pub mod dagmc;
 pub mod error;
 pub mod foam;
+pub mod gmsh;
 #[cfg(feature = "testing")]
 #[doc(hidden)]
 pub mod h5;
