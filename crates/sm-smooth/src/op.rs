@@ -47,6 +47,10 @@ pub struct MeshSmooth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("x-entity-kind" = ["TopoVolume", "TopoFace", "TopoEdge"]))]
     pub entities: Option<Vec<EntityId>>,
+    /// Restrict to the nodes of the cells in this cell set (a name given to `mesh.flag_cells`).
+    /// Exclusive with `entities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
     /// Update rule, e.g. `{"kind":"laplacian","relax":1.0}` or
     /// `{"kind":"optimize","objective":"mean_ratio","p":4}`.
     pub method: Method,
@@ -80,6 +84,10 @@ pub struct MeshSmoothPreview {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("x-entity-kind" = ["TopoVolume", "TopoFace", "TopoEdge"]))]
     pub entities: Option<Vec<EntityId>>,
+    /// Restrict to the nodes of the cells in this cell set (a name given to `mesh.flag_cells`).
+    /// Exclusive with `entities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
     /// Update rule.
     pub method: Method,
     /// Sweeps, 1 to 10000 (default 10).
@@ -101,7 +109,7 @@ pub struct MeshSmoothPreview {
 }
 
 fn request(
-    entities: &Option<Vec<EntityId>>,
+    (entities, set): (&Option<Vec<EntityId>>, &Option<String>),
     method: Method,
     iterations: Option<u32>,
     tolerance: Option<f64>,
@@ -114,10 +122,14 @@ fn request(
     if !(1..=10_000).contains(&iterations) {
         return Err(OpError::Invalid(format!("iterations {iterations} must be in 1..=10000")));
     }
-    let nodes = match entities {
-        None => NodeSelect::All,
-        Some(v) if v.is_empty() => return Err(OpError::Invalid("entities is empty; omit it to smooth the whole mesh".into())),
-        Some(v) => NodeSelect::Entities(v.clone()),
+    let nodes = match (entities, set) {
+        (Some(_), Some(_)) => return Err(OpError::Invalid("entities and set are exclusive".into())),
+        (None, Some(name)) => NodeSelect::Set(name.clone()),
+        (None, None) => NodeSelect::All,
+        (Some(v), None) if v.is_empty() => {
+            return Err(OpError::Invalid("entities is empty; omit it to smooth the whole mesh".into()));
+        }
+        (Some(v), None) => NodeSelect::Entities(v.clone()),
     };
     Ok(SmoothRequest {
         nodes,
@@ -132,19 +144,20 @@ fn request(
 
 impl MeshSmooth {
     fn request(&self) -> Result<SmoothRequest, OpError> {
-        request(&self.entities, self.method, self.iterations, self.tolerance, self.schedule, self.fix_boundary, self.guard_floor)
+        request((&self.entities, &self.set), self.method, self.iterations, self.tolerance, self.schedule, self.fix_boundary, self.guard_floor)
     }
 }
 
 impl MeshSmoothPreview {
     fn request(&self) -> Result<SmoothRequest, OpError> {
-        request(&self.entities, self.method, self.iterations, self.tolerance, self.schedule, self.fix_boundary, self.guard_floor)
+        request((&self.entities, &self.set), self.method, self.iterations, self.tolerance, self.schedule, self.fix_boundary, self.guard_floor)
     }
 }
 
 fn map_err(e: SmoothError) -> OpError {
     match e {
         SmoothError::UnknownEntity(id) => OpError::UnknownEntity(id),
+        e @ SmoothError::UnknownSet { .. } => OpError::Invalid(e.to_string()),
         SmoothError::Unsupported(s) => OpError::Unsupported(format!("mesh.smooth: {s}")),
         other => OpError::Invalid(other.to_string()),
     }

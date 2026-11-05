@@ -2010,6 +2010,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sm-core",
+ "sm-diag",
  "sm-geom-api",
  "sm-layer-api",
  "sm-mesh",
