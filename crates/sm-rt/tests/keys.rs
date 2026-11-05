@@ -1,11 +1,7 @@
-//! Cache keys of mesh inputs are pinned (W3b-1 backlog: the mesh part of `LeafInput::content_hash`
-//! duplicates the builder's `mesh_topology_hash`).
-//!
-//! The two encodings differ today (the leaf hash carries a variant tag, length-prefixes the
-//! complement name and mixes the boundary conditions; the builder keeps the boundary hash in its
-//! own key field), so one implementation cannot serve both without moving a key. Sharing needs a
-//! contract helper that reproduces the builder's bytes (see the `api_change_request` of the
-//! W3b-RT-DELTA report). Until then this test pins both, so any change to either is deliberate.
+//! Cache keys of mesh inputs are pinned. The builder's `topology_hash` is
+//! `MeshInput::topology_content_hash` (ruling R2); the leaf hash shares its mesh-and-rule part and
+//! keeps its own variant tag, length-prefixed complement name and boundary mix. Both are pinned
+//! against values recorded before the helper existed, so no key moved.
 use sm_mesh_api::SerialAlloc;
 use sm_mesh_api::reference::hex_block;
 use sm_rt::MeshTrackerBuilder;
@@ -16,6 +12,7 @@ fn key_of(rule: &RegionRule, comp: &ComplementPolicy, n: u32) -> (u128, u128, u1
     let bnd = BoundarySpec::default();
     let mi = MeshInput::new(&mesh, rule, &bnd, comp);
     let k = MeshTrackerBuilder.cache_key(&BuildInput::Mesh(mi), &BuildOptions::default()).unwrap();
+    assert_eq!(k.topology_hash, mi.topology_content_hash());
     (k.topology_hash.0, k.boundary_hash.0, LeafInput::Mesh(mi).content_hash().0)
 }
 

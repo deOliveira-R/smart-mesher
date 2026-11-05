@@ -3,7 +3,7 @@
 use crate::build::{Built, build_facets, build_mesh};
 use crate::image::{import, make_info};
 use crate::tracker::{MeshTracker, Parts};
-use sm_mesh_api::{MeshRead, SetMembers, geometry_hash, topology_hash};
+use sm_mesh_api::{MeshRead, SetMembers};
 use std::sync::Arc;
 use crate::world::WorldTracker;
 use sm_rt_api::{
@@ -52,33 +52,6 @@ impl BuildExtras {
 /// `Brep` and `World` inputs are `RtError::Unsupported`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeshTrackerBuilder;
-
-fn mesh_topology_hash(inp: &sm_rt_api::MeshInput<'_>) -> ContentHash {
-    let m = inp.mesh;
-    let mut h = ContentHasher::new();
-    h.write_u64(topology_hash(m));
-    h.write_u64(geometry_hash(m));
-    match inp.regions {
-        RegionRule::ByVolumeClassification => h.write_u64(1),
-        RegionRule::ByCellSets(names) => {
-            h.write_u64(2);
-            for n in names {
-                h.write_u64(n.len() as u64);
-                h.write_bytes(n.as_bytes());
-            }
-        }
-        _ => h.write_u64(0),
-    }
-    match inp.complement {
-        ComplementPolicy::Outside => h.write_u64(0),
-        ComplementPolicy::Region(n) => {
-            h.write_u64(1);
-            h.write_bytes(n.as_bytes());
-        }
-        _ => h.write_u64(9),
-    }
-    h.finish()
-}
 
 fn unsupported(input: &BuildInput<'_>) -> RtError {
     match input {
@@ -206,7 +179,7 @@ impl TrackerBuilder for MeshTrackerBuilder {
 
     fn cache_key(&self, input: &BuildInput<'_>, opts: &BuildOptions) -> Result<CacheKey> {
         let (kind, topo, boundary) = match input {
-            BuildInput::Mesh(m) => (TrackerKind::MeshWalk, mesh_topology_hash(m), m.boundaries.content_hash()),
+            BuildInput::Mesh(m) => (TrackerKind::MeshWalk, m.topology_content_hash(), m.boundaries.content_hash()),
             BuildInput::Facets(f, b) => (TrackerKind::Facets, f.content_hash(), b.content_hash()),
             BuildInput::Hier(h) if crate::analytic::has_csg(h) => return crate::analytic::AnalyticTrackerBuilder.cache_key(input, opts),
             BuildInput::Hier(h) => {

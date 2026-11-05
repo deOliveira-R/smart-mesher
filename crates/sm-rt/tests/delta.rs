@@ -758,28 +758,39 @@ fn acc12_errors() {
     assert!(matches!(MeshTrackerBuilder.build_concrete(&input, &BuildOptions::default().with_partition(bad)), Err(RtError::Build(_))));
 }
 
-#[test]
-fn node_visits_do_not_scan_the_slice() {
-    // A partition with thousands of nodes: the work of one call does not depend on the slice
-    // length (only on the depth of the descent).
-    let fx = checker_block(12);
+/// Node visits of the first delta segment of one fixed ray on `checker_block(m)`, and the
+/// node count.
+fn first_segment_visits(m: u32) -> (usize, u64) {
+    let fx = checker_block(m);
     let t = build_part(&fx.mesh, &checker_rule(), &vacuum(), popts(1, false));
     let view = t.majorant_view().unwrap();
     let n = view.hierarchy().node_count();
-    assert!(n > 500, "{n} nodes");
-    let maj = vec![1.0; n];
     let mut sc = Scratch::new();
     let st = t.init_state(p3([0.3, 0.4, 0.5]), v3([0.6, 0.0, 0.8]), None, &mut sc).unwrap();
-    let mut s2 = st.clone();
-    let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
-    sc.clear_counters();
-    cur.next_segment(view, FlightInput::new(&maj), &mut s2, &mut sc).unwrap().unwrap();
-    assert!(sc.counters.node_visits > 0 && sc.counters.node_visits < 200, "{} visits for {n} nodes", sc.counters.node_visits);
-    // Same call with a different (equal-length) slice: identical counter.
-    let maj2 = vec![5.0; n];
-    let mut s3 = st.clone();
-    let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
-    let before = sc.counters.node_visits;
-    cur.next_segment(view, FlightInput::new(&maj2), &mut s3, &mut sc).unwrap().unwrap();
-    assert_eq!(sc.counters.node_visits - before, before);
+    let mut visits = [0u64; 2];
+    // Two different slices of the same length: identical work.
+    for (k, v) in [1.0, 5.0].into_iter().enumerate() {
+        let maj = vec![v; n];
+        let mut s2 = st.clone();
+        let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
+        sc.clear_counters();
+        cur.next_segment(view, FlightInput::new(&maj), &mut s2, &mut sc).unwrap().unwrap();
+        visits[k] = sc.counters.node_visits;
+    }
+    assert_eq!(visits[0], visits[1]);
+    (n, visits[0])
+}
+
+#[test]
+fn node_visits_do_not_scan_the_slice() {
+    // The work of one call depends on the depth of the descent, not on the slice length: the
+    // partition grows by a factor of 27 in cell count (4^3 to 12^3) between the two fixtures, the visits by far less.
+    let (n_small, v_small) = first_segment_visits(4);
+    let (n_big, v_big) = first_segment_visits(12);
+    assert!(n_big >= 10_000, "{n_big} nodes");
+    assert!(v_small > 0 && v_big > 0);
+    assert!(v_big < 200, "{v_big} visits for {n_big} nodes");
+    // Descent depth grows with log(nodes): far from the growth in nodes.
+    assert!(v_big <= 3 * v_small + 40, "visits {v_small} -> {v_big} scale with nodes {n_small} -> {n_big}");
+    eprintln!("node visits: {v_small} for {n_small} nodes, {v_big} for {n_big} nodes");
 }

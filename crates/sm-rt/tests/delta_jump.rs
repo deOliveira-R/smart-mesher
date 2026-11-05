@@ -5,21 +5,94 @@ mod dcommon;
 use common::*;
 use dcommon::*;
 use sm_mesh_api::reference::hex_block;
-use sm_mesh_api::{CellIx, SerialAlloc};
+use sm_mesh_api::{CellIx, FaceIx, MeshRead, SerialAlloc};
 use sm_rt::MeshTracker;
-use sm_rt_api::{FireResult, RegionRule, Scratch, StepEnd, TrackState, Tracker, TrackerCaps};
+use sm_rt_api::{FaceId, FireResult, RegionRule, Scratch, StepEnd, TrackState, Tracker, TrackerCaps};
 use sm_testkit::meshes::{MeshFixture, SetSpec, with_sets};
 
-fn same_end(a: &StepEnd, b: &StepEnd, strict: bool) -> bool {
+/// The face a fire ended on, if the end is a face event.
+fn end_face(e: &StepEnd) -> Option<FaceId> {
+    match e {
+        StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(*face),
+        _ => None,
+    }
+}
+
+/// Kind, surface, region and (for boundaries) action of an end; faces and cells are compared
+/// separately because of the tie rule.
+fn same_kind(a: &StepEnd, b: &StepEnd) -> bool {
     match (a, b) {
         (StepEnd::Limit, StepEnd::Limit) => true,
-        (StepEnd::RegionBoundary { surface: s0, face: f0, to_region: r0, to_cell: c0 }, StepEnd::RegionBoundary { surface: s1, face: f1, to_region: r1, to_cell: c1 }) => {
-            s0 == s1 && r0 == r1 && (!strict || (f0 == f1 && c0 == c1))
-        }
-        (StepEnd::Boundary { surface: s0, face: f0, action: a0 }, StepEnd::Boundary { surface: s1, face: f1, action: a1 }) => s0 == s1 && a0 == a1 && (!strict || f0 == f1),
+        (StepEnd::RegionBoundary { surface: s0, to_region: r0, .. }, StepEnd::RegionBoundary { surface: s1, to_region: r1, .. }) => s0 == s1 && r0 == r1,
+        (StepEnd::Boundary { surface: s0, action: a0, .. }, StepEnd::Boundary { surface: s1, action: a1, .. }) => s0 == s1 && a0 == a1,
         (StepEnd::Lost(_), StepEnd::Lost(_)) => true,
         _ => false,
     }
+}
+
+/// Exact distance from `o` along unit `d` to the plane of face `f` (planar faces), with the
+/// face normal. `None` for faces that are not mesh faces.
+fn exact_exit(t: &MeshTracker, mesh: &dyn MeshRead, f: FaceId, o: [f64; 3], d: [f64; 3]) -> Option<(f64, [f64; 3])> {
+    if f.get() >= mesh.face_count() {
+        return None;
+    }
+    let v = mesh.face_vertices(FaceIx::new(f.get()))[0];
+    let p0 = mesh.point(v.get());
+    let n = t.face_normal(f, p0).ok()?;
+    let n = [n.x, n.y, n.z];
+    let nd = dot(n, d);
+    let num = n[0] * (p0.x - o[0]) + n[1] * (p0.y - o[1]) + n[2] * (p0.z - o[2]);
+    Some((num / nd, n))
+}
+
+/// Ruling R1: the jump matches the exact exit distance within `1e-12 (1 + d)` and the walk
+/// within `1e-12 (1 + d) / max(|d.n|, 1e-6)`, with the same end kind, surface, region and
+/// to_region. Face and to_cell are the walk's, except on an exact edge or vertex tie, where the
+/// jump's face must also contain the exit point.
+fn compare(jump: &MeshTracker, walk: &MeshTracker, mesh: &dyn MeshRead, rays: &[([f64; 3], [f64; 3], f64)], name: &str) -> (u64, u64, u64) {
+    let (mut sj, mut sw) = (Scratch::new(), Scratch::new());
+    let mut checked = 0;
+    for (i, (o, d, lim)) in rays.iter().enumerate() {
+        let a = walk.init_state(p3(*o), v3(*d), None, &mut sw).unwrap();
+        if a.cell.is_none() {
+            continue;
+        }
+        let b = jump.init_state(p3(*o), v3(*d), None, &mut sj).unwrap();
+        assert_eq!(a, b);
+        let (mut sa, mut sb): (TrackState, TrackState) = (a, b);
+        let ra: FireResult = walk.fire(&mut sa, *lim, 1_000_000, &mut sw).unwrap();
+        let rb: FireResult = jump.fire(&mut sb, *lim, 1_000_000, &mut sj).unwrap();
+        let ctx = format!("{name} ray {i} from {o:?} dir {d:?} limit {lim}: walk {ra:?} vs jump {rb:?}");
+        assert!(same_kind(&ra.end, &rb.end), "{ctx}");
+        let mut tol_walk = 1e-12 * (1.0 + ra.dist);
+        let mut same_face = true;
+        if let Some(f) = end_face(&ra.end) {
+            if let Some((ex, n)) = exact_exit(walk, mesh, f, *o, *d) {
+                assert!((rb.dist - ex).abs() <= 1e-12 * (1.0 + ex), "{ctx}: exact {ex}");
+                tol_walk /= dot(n, *d).abs().max(1e-6);
+            }
+            let fb = end_face(&rb.end).unwrap();
+            same_face = f == fb;
+            if !same_face {
+                // Tie: the jump's face must contain the exit point too.
+                let (ex2, _) = exact_exit(jump, mesh, fb, *o, *d).unwrap_or((rb.dist, [0.0; 3]));
+                assert!((ex2 - rb.dist).abs() <= 1e-12 * (1.0 + rb.dist), "{ctx}: tie face distance {ex2}");
+            }
+            if same_face && let (StepEnd::RegionBoundary { to_cell: c0, .. }, StepEnd::RegionBoundary { to_cell: c1, .. }) = (&ra.end, &rb.end) {
+                assert_eq!(c0, c1, "{ctx}");
+            }
+        }
+        assert!((ra.dist - rb.dist).abs() <= tol_walk, "{ctx}: tol {tol_walk}");
+        if !matches!(ra.end, StepEnd::Lost(_)) {
+            assert_eq!(sa.region, sb.region, "{ctx}");
+            if same_face {
+                assert_eq!(sa.cell, sb.cell, "{ctx}: final cell");
+            }
+        }
+        checked += 1;
+    }
+    assert!(checked > rays.len() as u64 / 2, "{name}: {checked} of {} rays started inside", rays.len());
+    (sw.counters.face_tests, sj.counters.face_tests + sj.counters.node_visits, sj.counters.jumps)
 }
 
 /// A block with region `a` an L-shape (`i < n/2 || j < n/2`, non-convex) and region `b` the
@@ -45,31 +118,6 @@ fn l_shape(n: u32) -> MeshFixture {
     with_sets(base, &[SetSpec::new("a", sm_mesh_api::SetMembers::Cells(a)), SetSpec::new("b", sm_mesh_api::SetMembers::Cells(b))]).unwrap()
 }
 
-fn compare(jump: &MeshTracker, walk: &MeshTracker, rays: &[([f64; 3], [f64; 3], f64)], name: &str, strict: bool) -> (u64, u64, u64) {
-    let (mut sj, mut sw) = (Scratch::new(), Scratch::new());
-    let mut checked = 0;
-    for (i, (o, d, lim)) in rays.iter().enumerate() {
-        let a = walk.init_state(p3(*o), v3(*d), None, &mut sw).unwrap();
-        if a.cell.is_none() {
-            continue;
-        }
-        let b = jump.init_state(p3(*o), v3(*d), None, &mut sj).unwrap();
-        assert_eq!(a, b);
-        let (mut sa, mut sb): (TrackState, TrackState) = (a, b);
-        let ra: FireResult = walk.fire(&mut sa, *lim, 1_000_000, &mut sw).unwrap();
-        let rb: FireResult = jump.fire(&mut sb, *lim, 1_000_000, &mut sj).unwrap();
-        assert!(same_end(&ra.end, &rb.end, strict), "{name} ray {i} from {o:?} dir {d:?} limit {lim}: walk {ra:?} vs jump {rb:?}");
-        assert!((ra.dist - rb.dist).abs() <= 1e-12 * (1.0 + ra.dist), "{name} ray {i}: walk {} vs jump {}", ra.dist, rb.dist);
-        if strict && !matches!(ra.end, StepEnd::Lost(_)) {
-            assert_eq!(sa.cell, sb.cell, "{name} ray {i}: final cell");
-            assert_eq!(sa.region, sb.region);
-        }
-        checked += 1;
-    }
-    assert!(checked > rays.len() as u64 / 2, "{name}: {checked} of {} rays started inside", rays.len());
-    (sw.counters.face_tests, sj.counters.face_tests + sj.counters.node_visits, sj.counters.jumps)
-}
-
 fn random_rays(name: &str, n: usize, lo: f64, hi: f64) -> Vec<([f64; 3], [f64; 3], f64)> {
     let mut r = rng(name);
     (0..n)
@@ -90,7 +138,7 @@ fn acc09_jump_equals_walk_on_one_region_and_a_non_convex_region() {
     let jump = build_part(&mesh, &rule, &vacuum(), popts(8, true));
     assert!(jump.caps().has(TrackerCaps::REGION_JUMP));
     let walk = build_plain(&mesh, &rule, &vacuum());
-    let (w, j, jumps) = compare(&jump, &walk, &random_rays("acc09_hex20", n, 0.0, 20.0), "hex_block(20)", true);
+    let (w, j, jumps) = compare(&jump, &walk, &mesh, &random_rays("acc09_hex20", n, 0.0, 20.0), "hex_block(20)");
     assert!(jumps > 0);
     eprintln!("hex_block(20): walk face_tests {w}, jump face_tests+node_visits {j}, jumps {jumps}");
     // Two regions, one of them non-convex.
@@ -98,11 +146,11 @@ fn acc09_jump_equals_walk_on_one_region_and_a_non_convex_region() {
     let rule = RegionRule::ByCellSets(vec!["a".into(), "b".into()]);
     let jump = build_part(&fx.mesh, &rule, &vacuum(), popts(4, true));
     let walk = build_plain(&fx.mesh, &rule, &vacuum());
-    compare(&jump, &walk, &random_rays("acc09_l", n, 0.0, 8.0), "l_shape(8)", true);
+    compare(&jump, &walk, &fx.mesh, &random_rays("acc09_l", n, 0.0, 8.0), "l_shape(8)");
     // Mirror decks: the deck event is the walk's.
     let jump = build_part(&fx.mesh, &rule, &mirror_all(), popts(4, true));
     let walk = build_plain(&fx.mesh, &rule, &mirror_all());
-    compare(&jump, &walk, &random_rays("acc09_l_mirror", n / 4, 0.0, 8.0), "l_shape(8) mirror", true);
+    compare(&jump, &walk, &fx.mesh, &random_rays("acc09_l_mirror", n / 4, 0.0, 8.0), "l_shape(8) mirror");
 }
 
 #[test]
@@ -129,7 +177,7 @@ fn acc09_ties_on_axes_and_diagonals_end_on_the_same_surface() {
             }
         }
     }
-    compare(&jump, &walk, &rays, "ties", false);
+    compare(&jump, &walk, &fx.mesh, &rays, "ties");
 }
 
 #[test]
@@ -139,7 +187,7 @@ fn acc09_jump_does_less_work_than_the_walk_on_a_large_block() {
     let rule = RegionRule::ByVolumeClassification;
     let jump = build_part(&mesh, &rule, &vacuum(), popts(8, true));
     let walk = build_plain(&mesh, &rule, &vacuum());
-    let (w, j, jumps) = compare(&jump, &walk, &random_rays("acc09_hex40", n, 0.0, 40.0), "hex_block(40)", true);
+    let (w, j, jumps) = compare(&jump, &walk, &mesh, &random_rays("acc09_hex40", n, 0.0, 40.0), "hex_block(40)");
     eprintln!("hex_block(40), {n} rays: walk face_tests {w}, jump face_tests+node_visits {j} ({jumps} jumps)");
     assert!(j < w, "jump {j} must do fewer tests than the walk {w}");
     // `step` and `trace` never jump.

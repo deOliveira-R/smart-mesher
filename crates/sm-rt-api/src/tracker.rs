@@ -309,8 +309,11 @@ pub trait Tracker: Send + Sync {
     /// `CellFace` or `SlotChange`: those are skipped (a table lookup each).
     ///
     /// An override may jump over the cells of a region (see [`TrackerCaps::REGION_JUMP`]). It
-    /// returns the same `StepEnd` variant with the same ids and `to_cell` as the default walk, and
-    /// a distance within `1e-12 (1 + d)` of it. `step` and `trace` never jump.
+    /// returns the same end kind, surface, region and `to_region` as the default walk; its
+    /// distance is within `1e-12 (1 + d)` of the exact exit distance (from the exit face) and
+    /// within `1e-12 (1 + d) / max(|d.n|, 1e-6)` of the walk's, `n` the exit face normal. Face and
+    /// `to_cell` are the walk's, except on an exact edge or vertex tie, where they may differ.
+    /// `step` and `trace` never jump.
     fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, scratch: &mut Scratch) -> Result<FireResult> {
         let mut total = 0.0;
         for _ in 0..max_steps {
