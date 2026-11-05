@@ -10,8 +10,8 @@
 //!   and the frame is the world frame. With a [`RectLattice`] the domain is the lattice box, the
 //!   frame is centred on the element, and every shape must lie strictly inside the element
 //!   (so lattice walls never cut a shape).
-//! * Shapes must be pairwise nested or disjoint (partial overlap, or two identical shapes, is an
-//!   `InvalidInput` build error: cells are disjoint and a point is never resolved by order).
+//! * Shapes must be pairwise nested or disjoint (partial overlap, or two identical shapes, is a
+//!   `RtError::Build` error with issue `analytic.overlap`: cells are disjoint and a point is never resolved by order).
 //!   Local cell `c < n` is shape `c` minus the shapes strictly inside it, so a point belongs to
 //!   the innermost shape containing it; local cell `n` is the background. The background is a *real* cell per element (so
 //!   tallies bin it) and its region carries `implicit_complement`, because it plays DAGMC's role
@@ -850,7 +850,7 @@ impl AnalyticWorld {
 impl Tracker for AnalyticWorld {
     fn caps(&self) -> TrackerCaps {
         let mut c = TrackerCaps::ANALYTIC.union(TrackerCaps::EXACT_PLANAR);
-        c = c.union(TrackerCaps::MAJORANT).union(TrackerCaps::REGION_JUMP);
+        c = c.union(TrackerCaps::MAJORANT);
         if self.lattice.is_some() {
             c = c.union(TrackerCaps::HIERARCHY);
         }
@@ -1238,6 +1238,7 @@ impl MajorantTracker for AnalyticWorld {
         let mode = choose_mode(q.policy, node, &q.input);
         let set = self.node_sets[node.get()];
         let cut_at_leaf = mode == TrackMode::Delta && self.split();
+        let saved = st.clone();
         let mut total = 0.0;
         let mut merged = 0u32;
         let mut end;
@@ -1258,14 +1259,18 @@ impl MajorantTracker for AnalyticWorld {
             let more = match mode {
                 TrackMode::Delta => matches!(end, StepEnd::CellFace { .. } | StepEnd::RegionBoundary { .. }) && !st.cell.is_none(),
                 TrackMode::Surface => {
-                    q.scale == SegmentScale::Region && matches!(end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) && st.region == region
+                    // A slot change is an element wall: `levels` must stay constant over a segment.
+                    q.scale == SegmentScale::Region && matches!(end, StepEnd::CellFace { .. }) && st.region == region
                 }
             };
             if !more {
                 break;
             }
             if merged > 2 * self.n() as u32 + 8 {
-                end = StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded));
+                // `StepEnd::Lost` leaves the state unchanged (MajorantTracker contract).
+                let info = lost(st, LostCause::MaxStepsExceeded);
+                *st = saved;
+                end = StepEnd::Lost(info);
                 break;
             }
         }

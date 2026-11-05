@@ -64,14 +64,16 @@ rt_index! {
 }
 
 rt_index! {
-    /// A node of the disjoint majorant partition (see [`crate::segments`]): a lattice slot, a
-    /// universe instance, a meshed leaf. Leaves tile space; the root bounds everything.
+    /// A node of the disjoint majorant partition (see [`crate::segments`]). Ids index the
+    /// *prototype* tree, not placed instances: every instance of a prototype shares its nodes
+    /// (and so one majorant entry). Leaves tile space; the root bounds everything.
     NodeId
 }
 rt_index! {
-    /// A deduplicated set of regions. Majorant tables are keyed by `(MaterialSetId, band)`.
-    /// Every region has a singleton set (`HierarchyView::region_set`), so a surface segment's
-    /// majorant is exactly its region's total cross section.
+    /// A deduplicated set of regions (the regions a node holds, see
+    /// `HierarchyView::set_regions`). Every region has a singleton set
+    /// (`HierarchyView::region_set`). The crate holds no cross sections: the caller maps sets
+    /// to its own majorants and passes one per `NodeId` in `FlightInput`.
     MaterialSetId
 }
 

@@ -67,7 +67,7 @@ the query surface; this file explains the choices.
 * The stub's "background" is a real cell per element, numbered after the shape cells. Its region
   carries `implicit_complement`, but `locate` never returns `CellId::COMPLEMENT`; that sentinel
   is for trackers whose complement has no cells.
-* Stub shapes must be pairwise nested or disjoint (partial overlap is an `InvalidInput` build error); a point belongs to the innermost shape containing it, and order carries no priority. `AnalyticWorld::cell_volume` is exact unless a shape leaves the element box.
+* Stub shapes must be pairwise nested or disjoint (partial overlap is an `RtError::Build` error with issue `analytic.overlap`, like `csg.overlap`/`world.overlap`); a point belongs to the innermost shape containing it, and order carries no priority. `AnalyticWorld::cell_volume` is exact unless a shape leaves the element box.
 * `ray_fire` with an origin outside the model is `RayFire::Miss` (DAGMC returns no hit);
   `Lost` is only for failures after a valid start.
 

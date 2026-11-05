@@ -215,7 +215,8 @@ pub trait HierarchyView: Send + Sync {
     fn root(&self) -> NodeId;
     /// A node, or `None` for an unknown id.
     fn node(&self, n: NodeId) -> Option<NodeInfo>;
-    /// The leaf owning a cell.
+    /// A leaf that meets the cell (the lowest id when several do: a cell of a gridded prototype
+    /// can span several leaves, so this is not unique ownership).
     fn node_of_cell(&self, c: CellId) -> Option<NodeId>;
     /// Number of material sets (ids are dense `0..set_count`).
     fn set_count(&self) -> usize;

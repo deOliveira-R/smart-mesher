@@ -12,7 +12,13 @@
 use crate::cache::{ContentHash, ContentHasher};
 use crate::input::ComplementPolicy;
 use sm_core::Aabb;
-use sm_geom_api::{CsgCell, GeomStore, Sign};
+use sm_geom_api::{CsgCell, GeomStore, ShapeValue, Sign};
+
+/// Length-prefixed string, so concatenated fields are unambiguous.
+fn write_str(h: &mut ContentHasher, s: &str) {
+    h.write_u64(s.len() as u64);
+    h.write_bytes(s.as_bytes());
+}
 
 /// A region of space as a union of intersections of half-spaces (a DNF over signed surfaces).
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -39,7 +45,8 @@ impl CsgRegion {
     }
     /// Hash by *value*: term order and half-space order as given, each surface by its
     /// definition in `geom` (not by its handle), so renumbering handles does not move it.
-    /// A handle the store does not know hashes as a distinct marker.
+    /// A handle the store does not know hashes as a distinct marker. (The def hash is the
+    /// def's own value stream at exact bits; it is a new contract hash, with length prefixes.)
     pub fn content_hash(&self, geom: &dyn GeomStore) -> ContentHash {
         let mut h = ContentHasher::new();
         h.write_u64(self.terms.len() as u64);
@@ -53,12 +60,36 @@ impl CsgRegion {
                 match geom.surface_def(hs.surface) {
                     Some(def) => {
                         h.write_u64(1);
-                        // `Debug` prints floats with their shortest round-trip text: by value.
-                        let text = match def.implicit_def() {
-                            Some(i) => format!("{i:?}"),
-                            None => format!("{def:?}"),
-                        };
-                        h.write_bytes(text.as_bytes());
+                        // Explicit fields (the def's own value stream, exact bits), not `Debug`.
+                        def.for_each_value(|v| match v {
+                            ShapeValue::Int(x) => {
+                                h.write_u64(1);
+                                h.write_u64(x);
+                            }
+                            ShapeValue::Length(x) => {
+                                h.write_u64(2);
+                                h.write_f64(x);
+                            }
+                            ShapeValue::Angle(x) => {
+                                h.write_u64(3);
+                                h.write_f64(x);
+                            }
+                            ShapeValue::Unitless(x) => {
+                                h.write_u64(4);
+                                h.write_f64(x);
+                            }
+                            ShapeValue::Param(x) => {
+                                h.write_u64(5);
+                                h.write_f64(x);
+                            }
+                            // A future kind of value: hash its text rather than drop it.
+                            other => {
+                                h.write_u64(0);
+                                write_str(&mut h, &format!("{other:?}"));
+                            }
+                        });
+                        // Terminator, so one def's values cannot run into the next half-space.
+                        h.write_u64(0xFFFF_FFFF);
                     }
                     None => h.write_u64(0),
                 }
@@ -117,7 +148,7 @@ impl<'a> CsgLeafInput<'a> {
         h.write_u64(self.cells.len() as u64);
         for c in self.cells {
             h.write_hash(c.region.content_hash(self.geom));
-            h.write_bytes(c.name.as_bytes());
+            write_str(&mut h, &c.name);
             h.write_u64(u64::from(c.volume.is_some()));
             h.write_f64(c.volume.unwrap_or(0.0));
         }
@@ -135,9 +166,10 @@ impl<'a> CsgLeafInput<'a> {
         match self.complement {
             ComplementPolicy::Region(name) => {
                 h.write_u64(1);
-                h.write_bytes(name.as_bytes());
+                write_str(&mut h, name);
             }
-            _ => h.write_u64(0),
+            // Exhaustive in this crate: a new policy fails to compile here until it is hashed.
+            ComplementPolicy::Outside => h.write_u64(0),
         }
         h.finish()
     }

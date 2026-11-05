@@ -205,7 +205,8 @@ pub trait Tracker: Send + Sync {
         None
     }
     /// Area of a model surface (DAGMC `measure_area`), when the tracker knows it. The default
-    /// is `Ok(None)`; an unknown id is `UnknownId`.
+    /// is `Ok(None)` for every id and never errors; an implementor that knows its surfaces
+    /// returns `UnknownId` for an id it does not have.
     fn surface_area(&self, _s: SurfaceId) -> Result<Option<f64>> {
         Ok(None)
     }

@@ -438,6 +438,29 @@ fn probe_is_hinted_and_stop_at_places_the_state() {
 }
 
 #[test]
+fn region_scale_segments_never_span_an_element_wall() {
+    // Background on both sides of the wall at x = -2 used to merge into one unresolved segment,
+    // whose probe then located the second half with the first element's level path.
+    let w = lattice();
+    let m = majorants(&w);
+    let (o, d) = (p(-5.9, -3.9, 0.0), Vector3::new(1.0, 0.0, 0.0));
+    let mut sc = Scratch::new();
+    let mut st = start(&w, o, d, &mut sc);
+    let mut fl = Flight::new(&w, &mut st, &mut sc, FlightInput::new(&m), FlightOptions::default().with_scale(SegmentScale::Region)).unwrap();
+    let mut n = 0;
+    while let Some(seg) = fl.next_segment().unwrap() {
+        for f in [0.1, 0.5, 0.9] {
+            let t = seg.t0 + f * (seg.t1 - seg.t0);
+            let x = o.x + t;
+            let loc = fl.probe(t).unwrap();
+            assert_eq!(loc.levels[0].instance.get(), ((x + 6.0) / 4.0).floor() as usize, "x = {x}");
+        }
+        n += 1;
+    }
+    assert!(n >= 3);
+}
+
+#[test]
 fn safety_distance_is_a_lower_bound() {
     let w = flat();
     let mut rng = Rng(3);

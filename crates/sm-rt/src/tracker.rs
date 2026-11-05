@@ -139,6 +139,15 @@ impl MeshTracker {
             h.write_u64(r.name.len() as u64);
             h.write_bytes(r.name.as_bytes());
             h.write_u64(u64::from(r.implicit_complement));
+            // Tags are hashed only when present, so tag-free trackers keep their hashes.
+            if !r.tags.is_empty() {
+                h.write_u64(r.tags.len() as u64);
+                for (k, v) in &r.tags {
+                    h.write_u64(k.len() as u64);
+                    h.write_bytes(k.as_bytes());
+                    h.write_u64(*v as u64);
+                }
+            }
         }
         h.write_u64(surfaces.0.len() as u64);
         for s in &surfaces.0 {
