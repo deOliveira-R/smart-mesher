@@ -75,6 +75,16 @@ request beats a face request beats a volume request whatever their firmness) sta
 milestone, `p0_rows` and `milestone_w3a`: every intent layer hash and every `mesh.run` topology
 hash and cell count was identical under both.
 
+Limits of "order-free" (known, latent). (1) The written rows live on the edges that exist at
+command time. If a later topology op (such as webcut) deletes and replaces those edges, the rows
+are dropped (intent_layer retain) and the planner's `(firmness, intervals_seq)` comparison
+decides again, so the outcome depends on command order. A serde-loaded intent, where every seq is
+0, would then plan face-over-volume where a live session plans latest-wins. No production path
+deserializes `IntentLayer` today. (2) `resolve_latest_wins` compares firmness as stored, so a
+default-firmness `mesh.size` (which `set_intervals` treats as competing at soft) never overrides
+an older soft request on another entity; this matches the planner but not the "any interval
+command raises the curve to at least soft" note.
+
 `auto` (1..=10) is resolved at apply time through the `AutoSizeFn` hook and recorded as a plain
 size, so replay never runs the hook again.
 

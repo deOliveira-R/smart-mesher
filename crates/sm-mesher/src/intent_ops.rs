@@ -140,8 +140,8 @@ fn level_of(id: EntityId) -> u8 {
 /// reaches on which an equally firm request from another entity would beat it by that tie rule
 /// gets `req` written on it directly (unless a firmer request also reaches the edge, which wins
 /// anyway). An identical request (same value and firmness) is no conflict and writes nothing, so
-/// one `mesh.size` over volumes that share edges stays one row per volume. The stored intent then gives the same plan whatever the history, and after a
-/// round trip through serde. Firmness is compared as stored (`default < soft < hard`).
+/// one `mesh.size` over volumes that share edges stays one row per volume. The stored intent
+/// then gives the same plan whatever the history, and after a round trip through serde. Firmness is compared as stored (`default < soft < hard`).
 fn resolve_latest_wins(
     layer: &mut IntentLayer,
     topo: &dyn TopologyView,

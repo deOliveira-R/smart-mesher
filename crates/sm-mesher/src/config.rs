@@ -42,11 +42,7 @@ impl MesherConfig {
             size_fields: None,
             auto_size: None,
             max_cells: DEFAULT_MAX_CELLS,
-            cascade: if std::env::var_os("SM_CASCADE").is_some() {
-                RequestCascade::Firmness
-            } else {
-                RequestCascade::default()
-            },
+            cascade: RequestCascade::Firmness,
         }
     }
 
@@ -136,6 +132,12 @@ impl MesherConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_cascade_is_firmness() {
+        let cfg = MesherConfig::new(sm_scheme_api::stubs::registry());
+        assert_eq!(cfg.cascade(), RequestCascade::Firmness);
+    }
 
     #[test]
     fn config_builders_replace_the_defaults() {
