@@ -13,10 +13,35 @@ pub fn deps_dir() -> PathBuf {
     std::env::current_exe().expect("exe").parent().expect("deps dir").to_path_buf()
 }
 
-pub fn scratch(name: &str) -> PathBuf {
+/// A scratch directory, removed on drop unless the thread is panicking (a failing test keeps its
+/// files for inspection).
+pub struct ScratchDir(PathBuf);
+
+impl std::ops::Deref for ScratchDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for ScratchDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+pub fn scratch(name: &str) -> ScratchDir {
     let d = std::env::temp_dir().join(format!("smrt-capi-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&d).expect("scratch dir");
-    d
+    ScratchDir(d)
 }
 
 /// The host target triple (the tests always compile for the machine they run on).

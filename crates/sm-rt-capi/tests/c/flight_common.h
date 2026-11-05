@@ -126,6 +126,8 @@ static void run_case(const char *label, const SmrtTracker *t, const Model *m, in
                 continue;
             }
             if (seg.mode == SMRT_MODE_SURFACE) {
+                /* tau = u/(1-u) is a stand-in variate, not a physical exponential optical depth;
+                 * the C and Rust references only have to agree with each other. */
                 double sg = m->sig[ri], u = unit01(), tau = u / (1.0 - u);
                 if (sg > 0.0 && tau / sg < len) {
                     double tt = seg.t0 + tau / sg;

@@ -133,7 +133,7 @@ fn header_and_fortran_list_exactly_the_exported_symbols() {
         assert!(raw_f90.contains(&f), "{f}");
     }
     // Flight, segment and node constants agree across Rust, C and Fortran.
-    let flight_consts: [(&str, i64); 19] = [
+    let flight_consts: [(&str, i64); 20] = [
         ("SMRT_MODE_SURFACE", SMRT_MODE_SURFACE),
         ("SMRT_MODE_DELTA", SMRT_MODE_DELTA),
         ("SMRT_POLICY_SURFACE", SMRT_POLICY_SURFACE),
@@ -151,6 +151,7 @@ fn header_and_fortran_list_exactly_the_exported_symbols() {
         ("SMRT_NODE_ANALYTIC", SMRT_NODE_ANALYTIC),
         ("SMRT_NODE_MESH", SMRT_NODE_MESH),
         ("SMRT_NODE_HOMOGENEOUS", SMRT_NODE_HOMOGENEOUS),
+        ("SMRT_NODE_UNKNOWN", SMRT_NODE_UNKNOWN),
         ("SMRT_ABI_VERSION", i64::from(SMRT_ABI_VERSION)),
         ("SMRT_LOST_OVERLAP", i64::from(SMRT_LOST_OVERLAP)),
     ];

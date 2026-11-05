@@ -86,6 +86,7 @@ module smrt
   integer(c_int64_t), parameter :: SMRT_NODE_ANALYTIC = 2_c_int64_t
   integer(c_int64_t), parameter :: SMRT_NODE_MESH = 3_c_int64_t
   integer(c_int64_t), parameter :: SMRT_NODE_HOMOGENEOUS = 4_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_NODE_UNKNOWN = 5_c_int64_t
 
   ! ---- data (layouts identical to smrt.h)
   type, bind(C) :: SmrtLevel
