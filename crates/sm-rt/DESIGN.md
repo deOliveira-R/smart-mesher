@@ -250,6 +250,85 @@ sampling check `rt.check_overlaps` (and the CSG leaf) is RT-ANALYTIC/RT-BRIDGE.
 **Cache.** A world has no cache image (`export_cache` is `None`; `load` is `Unsupported`); its
 cache key is `World`, topology `HierInput::content_hash`, hierarchy `WorldSpec::content_hash`.
 
+## Analytic leaf (`analytic/`)
+
+`AnalyticTrackerBuilder` builds an `AnalyticTracker` from a `BuildInput::Hier` whose root is one
+`Csg` leaf (`MeshTrackerBuilder::build` dispatches CSG worlds to it). Tracking is surface tracking
+in exact geometry: no mesh, no facets. **Scope as landed:** a single CSG leaf with its own
+boundaries. `Union` and `Lattice` worlds of CSG leaves are `Unsupported`, because `WorldTracker`
+hosts only `MeshTracker` prototypes (see "Deferred").
+
+**Cells are disjoint (Q4).** There is no cell order and no first-wins rule (OpenMC and MCNP resolve
+overlaps by order; this tracker reports them). `locate` evaluates each cell by its own half-spaces;
+a point matched by two cells is `NONE` from `locate` (the same path as no cell) and
+`Lost(Overlap)` inside `step`, never retried by nudging. `step` tests only the cells of the
+`surface -> cells` CSR across the crossed surface, evaluates **all** of them (no early exit), and
+reports two matches as `Lost(Overlap)` with the state unchanged. Completeness is the sampled
+`check_overlaps(&HierInput, n_points, n_rays, seed)` (stratified points and points along random
+chords, seeded by `seed` and the leaf hash; same findings for any thread count; `csg.overlap`
+and `csg.gap` with the sample point). The session op `rt.check_overlaps` belongs to RT-BRIDGE.
+
+**Surface kinds** (`kernel.rs`), classified once from the `SurfaceDef` (not from coefficients):
+
+| kind | `sd` (sign of the half-space function) | ray roots | conditioning |
+|---|---|---|---|
+| plane | `n . (p - o)` | one | exact |
+| sphere | `\|p - c\| - r` | closest approach `tc -+ sqrt((r - m)(r + m))` | perpendicular offset `m` formed directly |
+| cylinder (any axis) | `\|perp(p - o)\| - r` | same with the perpendicular parts | same |
+| cone (double cone, apex handled) | `rho cos a - \|z\| sin a` | quadratic after shifting to the closest approach to the apex | shifted origin; double roots give no event |
+| torus (ring) | `hypot(hypot(x, y) - R, z) - r` | quartic about the closest approach to the centre, fixed-size solver, two Newton steps on compensated (Graillat) Horner residuals | chord of a near-tangent line has relative error `~ eps / sqrt(r^2 - b^2)` |
+| general quadric (also the elliptic kinds) | `f / \|grad f\|` | ray polynomial evaluated in double-double | limited by the input coefficients |
+
+`SurfaceDef::Cone` is one nappe parametrically, but its implicit form (the one half-spaces use) is
+the double cone; both nappes are surfaces here, and a cell takes one nappe by a plane. Tangent
+(double) roots produce **no** event: a zero-length chord changes no cell. No kernel allocates.
+
+**Tolerance and ties.** A point with `|sd| <= tol.linear` is on that surface; its side is the sign
+of `grad . dir` (moving into), a tangential direction uses `hashed_direction(p)`, `dir = None`
+uses `hashed_direction(p)` for every on-face decision. An edge point uses the rule per surface.
+`Located::on_face` is the lowest on-face surface of the matched cell (of the whole leaf for the
+complement). After a hit the crossed surface's side is forced to the side the ray moves into and
+the other surfaces within tolerance use the direction rule; if the current cell still contains
+the point (a union cell crossing an interior surface) there is no event. A root of the entry
+surface that repeats the crossing just made (same direction, within `tol / |d.n|`) is skipped; a
+root crossing back is an event however close (a grazing chord).
+
+**Concentric fast path.** Nested spheres or coaxial cylinders (a pin cell, TRISO layers) locate by
+a binary search over the distinct radii plus the other half-spaces of the one or two candidate
+cells per shell; a point within `tol` of a radius takes the generic path. `surface_evals` per
+locate on a 12-ring pin cell is 3. The generic path (`locate_generic`) evaluates every cell.
+
+**Counters** (`Scratch::counters`): `surface_evals`, `locate_candidates`, `slow_locates` (the
+cold full-leaf scan, also used for an edge crossing next to another surface), `nudges`.
+
+**Boundaries.** `FaceId == SurfaceId` (local ids by first appearance in the cell DNFs). A surface
+named by a `BoundarySpec` entity rule is a boundary: `Reflect` and `Wrap` are applied in `step`
+(bit-exact for planes), `Respond` is reported and not applied. Leaving the cells otherwise is a
+boundary with the spec's default (`Reflect` or `Respond`); a default `Wrap` and face-set selectors
+are `Unsupported`. With `ComplementPolicy::Region` the complement cell fills the leaf bounds and
+its six box faces follow the surfaces. The cap `PERIODIC` is set when a rule wraps.
+
+**Build checks** (`BuildReport::issues`; located by cell or surface): `csg.unbounded` (a cell is
+not provably bounded and the leaf has no bounds; fatal with a complement region), `csg.degenerate_surface`
+(fatal), `csg.empty_cell` (a cell whose terms are provably empty by sign conflicts, parallel planes
+or sphere and plane tests), `csg.unused_surface` (a store surface no cell names), `csg.unknown_surface`
+(fatal), `boundary.unknown_mate` (fatal). The "provably bounded" test understands spheres, tori,
+axis-aligned cylinders and axis-aligned planes; anything else needs the leaf `bounds`.
+
+**Structure hash** is by value (surface definitions, cell DNFs in input order, names, volumes,
+bounds, complement, resolved boundary actions), so permuting surface handles does not move it.
+No cache image.
+
+**Record-only numbers** (acceptance 16; release, 1 thread, Apple M1 Max, no gate, harness
+included; `cargo test --release -p sm-rt --test analytic_bench -- --ignored --nocapture`):
+12-ring pin cell in a box, 3.8e6 segments/s, 23 surface evals per segment, `slow_locates` 12 per 1e6
+segments (edge crossings); `locate` 1.2e7 points/s with the concentric fast path and 2.9e6 without;
+torus 1.3e5 lines/s.
+
+**Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
+sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
+torus (`Unsupported` for a general quadric). No speedup over either is claimed.
+
 ## Plugin
 
 `RtPlugin` (id `rt`) registers the queries `rt.info`, `rt.check` and `rt.locate` over a `Mesh`
@@ -287,6 +366,7 @@ more memory and did not change the large case, so it was dropped.
 
 ## Deferred (W3b) and not done
 
-ANALYTIC backend, `Brep` and `World` inputs (`Unsupported`), hex lattices, a world cache image,
+CSG leaves under `Union`/`Lattice` (needs `WorldTracker` to host a non-mesh leaf; hex lattices),
+a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics, `Brep` and `World` inputs (`Unsupported`), hex lattices, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
 `rt.fire`, exact `closest` for curved faces, overlap detection in `check` (the world has its own).

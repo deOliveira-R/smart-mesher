@@ -192,6 +192,7 @@ impl TrackerBuilder for MeshTrackerBuilder {
         let (kind, topo, boundary) = match input {
             BuildInput::Mesh(m) => (TrackerKind::MeshWalk, mesh_topology_hash(m), m.boundaries.content_hash()),
             BuildInput::Facets(f, b) => (TrackerKind::Facets, f.content_hash(), b.content_hash()),
+            BuildInput::Hier(h) if crate::analytic::has_csg(h) => return crate::analytic::AnalyticTrackerBuilder.cache_key(input, opts),
             BuildInput::Hier(h) => {
                 return Ok(CacheKey::new(TrackerKind::World, BUILDER_VERSION, h.content_hash(), h.spec.content_hash(), h.boundaries.content_hash(), opts.content_hash()));
             }
@@ -201,6 +202,11 @@ impl TrackerBuilder for MeshTrackerBuilder {
     }
 
     fn build(&self, input: &BuildInput<'_>, opts: &BuildOptions) -> Result<(Box<dyn Tracker>, BuildReport)> {
+        if let BuildInput::Hier(h) = input
+            && crate::analytic::has_csg(h)
+        {
+            return crate::analytic::AnalyticTrackerBuilder.build(input, opts);
+        }
         if matches!(input, BuildInput::Hier(_)) {
             let (t, report) = self.build_world(input, opts)?;
             return Ok((Box::new(t), report));
