@@ -21,6 +21,7 @@ pub(crate) enum Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fixed {
     RunScript,
+    RecordScript,
     SessionHash,
     SessionExport,
     SessionStage,
@@ -33,8 +34,9 @@ pub(crate) enum Fixed {
     Help,
 }
 
-const FIXED: [Fixed; 11] = [
+const FIXED: [Fixed; 12] = [
     Fixed::RunScript,
+    Fixed::RecordScript,
     Fixed::SessionHash,
     Fixed::SessionExport,
     Fixed::SessionStage,
@@ -60,6 +62,7 @@ impl Fixed {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Fixed::RunScript => "run_script",
+            Fixed::RecordScript => "record_script",
             Fixed::SessionHash => "session_hash",
             Fixed::SessionExport => "session_export",
             Fixed::SessionStage => "session_stage",
@@ -77,6 +80,7 @@ impl Fixed {
     pub(crate) fn method(self) -> Option<&'static str> {
         Some(match self {
             Fixed::RunScript => "script.run",
+            Fixed::RecordScript => "script.record",
             Fixed::SessionHash => "session.hash",
             Fixed::SessionExport => "session.export",
             // No protocol method: answered by `script.run` of `session.stage(path)`.
@@ -94,6 +98,7 @@ impl Fixed {
     fn title(self) -> &'static str {
         match self {
             Fixed::RunScript => "Run script",
+            Fixed::RecordScript => "Record script",
             Fixed::SessionHash => "State hash",
             Fixed::SessionExport => "Export mesh",
             Fixed::SessionStage => "Stage input file",
@@ -110,7 +115,11 @@ impl Fixed {
     fn read_only(self) -> bool {
         matches!(
             self,
-            Fixed::SessionHash | Fixed::SessionStatus | Fixed::TimelineLog | Fixed::Help
+            Fixed::RecordScript
+                | Fixed::SessionHash
+                | Fixed::SessionStatus
+                | Fixed::TimelineLog
+                | Fixed::Help
         )
     }
 
@@ -120,6 +129,12 @@ impl Fixed {
                 "Run smart-mesh command-language text against the session. Commands apply ops in \
                  order and a failure stops the script. The result holds the final state hash, the \
                  printed output, one event per command and the diagnostics."
+            }
+            Fixed::RecordScript => {
+                "Record the timeline as command-language text that rebuilds it on an empty project: \
+                 one statement per node, branches as `timeline.branch`, state-hash checks at the \
+                 tips. `forks: refs` records every named ref. `verify` replays the text in a scratch \
+                 session and reports whether the hashes agree."
             }
             Fixed::SessionHash => {
                 "Quantized hash of the whole state at `at` (the current state when absent), plus \
@@ -181,6 +196,15 @@ impl Fixed {
                     },
                 }),
                 json!(["text"]),
+            ),
+            Fixed::RecordScript => (
+                json!({
+                    "forks": {"type": "string", "enum": ["head", "refs"], "description": "Which heads to record (default head)."},
+                    "check": {"type": "string", "enum": ["none", "tips", "every"], "description": "Hash checks to embed (default tips)."},
+                    "verify": {"type": "boolean", "description": "Replay the text in a scratch session and report `verified`."},
+                    "raw": {"type": "boolean", "description": "Write raw `apply` records instead of command sugar."},
+                }),
+                json!([]),
             ),
             Fixed::SessionHash => (json!({"at": rev("Revision to hash.")}), json!([])),
             Fixed::SessionExport => (

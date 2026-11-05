@@ -4,6 +4,8 @@
 //! * [`InProcess`]: call an endpoint with text or typed requests, no I/O.
 //! * [`serve_lines`] / [`serve_stdio`]: JSON-lines, one request per line, one reply per line.
 //! * `serve_ws` (feature `ws`): one request per WebSocket text frame.
+//! * `serve_http_ws` (feature `ws`): the same, with any number of simultaneous connections sharing one
+//!   endpoint, plus plain `GET` of the web viewer's static files on the same port.
 //!
 //! A request without an `id` (a JSON-RPC notification, which this protocol does not support) gets
 //! an `INVALID_REQUEST` reply with `id: null`; an unreadable line gets a `PARSE_ERROR` reply.
@@ -161,12 +163,14 @@ pub fn serve_stdio(endpoint: &mut (impl Endpoint + ?Sized)) -> io::Result<()> {
 }
 
 #[cfg(feature = "ws")]
-pub use ws::{serve_ws, serve_ws_listener};
+pub use ws::{serve_http_ws, serve_http_ws_listener, serve_ws, serve_ws_listener};
 
 #[cfg(feature = "ws")]
 mod ws {
-    use std::io;
+    use std::io::{self, Read, Write};
     use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+    use std::sync::{PoisonError, mpsc};
+    use std::time::{Duration, Instant};
 
     use serde_json::Value;
     use sm_protocol::{Endpoint, Response, RpcError};
@@ -224,5 +228,196 @@ mod ws {
     pub fn serve_ws(endpoint: &mut (impl Endpoint + ?Sized), addr: impl ToSocketAddrs) -> io::Result<()> {
         let listener = TcpListener::bind(addr)?;
         serve_ws_listener(endpoint, &listener, None, |e| eprintln!("sm-server: connection ended: {e}"))
+    }
+
+    /// Longest request head (request line and headers) read from a connection, in bytes.
+    const MAX_HEAD: usize = 8192;
+    /// How long a new connection may take to send its request head.
+    const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// One request waiting for the endpoint: the frame text and where its reply goes.
+    type Job = (String, mpsc::Sender<Response>);
+
+    /// What a new connection asked for.
+    enum Kind {
+        /// A WebSocket upgrade.
+        Upgrade,
+        /// A plain HTTP request: method and path.
+        Http(String, String),
+        /// Not HTTP, too large, or silent: drop.
+        Bad,
+    }
+
+    /// Look at the request head without consuming it, so a WebSocket upgrade can still go to
+    /// `tungstenite` untouched.
+    fn classify(stream: &TcpStream) -> Kind {
+        let deadline = Instant::now() + HEAD_TIMEOUT;
+        let mut buf = vec![0u8; MAX_HEAD];
+        let _ = stream.set_read_timeout(Some(HEAD_TIMEOUT));
+        let kind = loop {
+            let n = match stream.peek(&mut buf) {
+                Ok(0) | Err(_) => break Kind::Bad,
+                Ok(n) => n,
+            };
+            if let Some(end) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+                break parse_head(&buf[..end]);
+            }
+            if n == MAX_HEAD || Instant::now() >= deadline {
+                break Kind::Bad;
+            }
+            // Only a prefix has arrived; peek returns it again until more comes.
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let _ = stream.set_read_timeout(None);
+        kind
+    }
+
+    fn parse_head(head: &[u8]) -> Kind {
+        let Ok(text) = std::str::from_utf8(head) else { return Kind::Bad };
+        let mut lines = text.split("\r\n");
+        let mut first = lines.next().unwrap_or("").split(' ');
+        let (Some(method), Some(target)) = (first.next(), first.next()) else { return Kind::Bad };
+        let upgrade = lines.any(|l| {
+            l.split_once(':')
+                .is_some_and(|(k, v)| k.trim().eq_ignore_ascii_case("upgrade") && v.trim().eq_ignore_ascii_case("websocket"))
+        });
+        if upgrade {
+            return Kind::Upgrade;
+        }
+        let path = target.split(['?', '#']).next().unwrap_or("/");
+        Kind::Http(method.to_owned(), path.to_owned())
+    }
+
+    /// The asset served at `path` (`/` is the index page).
+    fn asset_for(path: &str) -> Option<&'static sm_view::Asset> {
+        let rel = path.trim_start_matches('/');
+        let rel = if rel.is_empty() { "index.html" } else { rel };
+        sm_view::assets().iter().find(|a| a.path == rel)
+    }
+
+    fn respond(stream: &mut TcpStream, status: &str, mime: &str, body: &[u8], with_body: bool) -> io::Result<()> {
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        if with_body {
+            stream.write_all(body)?;
+        }
+        stream.flush()
+    }
+
+    fn serve_http(mut stream: TcpStream, method: &str, path: &str) -> io::Result<()> {
+        // Consume the request head (it was only peeked) so closing does not reset the connection.
+        let mut sink = vec![0u8; MAX_HEAD];
+        let mut seen: Vec<u8> = Vec::new();
+        while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut sink)?;
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&sink[..n]);
+        }
+        let get = method == "GET";
+        if !get && method != "HEAD" {
+            return respond(&mut stream, "405 Method Not Allowed", "text/plain; charset=utf-8", b"method not allowed\n", true);
+        }
+        match asset_for(path) {
+            Some(a) => respond(&mut stream, "200 OK", a.mime, a.bytes, get),
+            None => respond(&mut stream, "404 Not Found", "text/plain; charset=utf-8", b"not found\n", get),
+        }
+    }
+
+    fn serve_shared_connection(jobs: &mpsc::Sender<Job>, stream: TcpStream) -> io::Result<()> {
+        match classify(&stream) {
+            Kind::Bad => Ok(()),
+            Kind::Http(method, path) => serve_http(stream, &method, &path),
+            Kind::Upgrade => {
+                let mut socket = accept(stream).map_err(|e| io::Error::other(e.to_string()))?;
+                loop {
+                    let msg = match socket.read() {
+                        Ok(m) => m,
+                        Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => return Ok(()),
+                        Err(e) => return Err(io_err(e)),
+                    };
+                    let resp = match msg {
+                        Message::Text(t) => {
+                            let (tx, rx) = mpsc::channel();
+                            if jobs.send((t.as_str().to_owned(), tx)).is_err() {
+                                return Ok(());
+                            }
+                            match rx.recv() {
+                                Ok(r) => r,
+                                Err(_) => return Ok(()),
+                            }
+                        }
+                        Message::Binary(_) => {
+                            Response::err(Value::Null, RpcError::invalid_request("binary frames are not supported; send JSON text"))
+                        }
+                        Message::Close(_) => return Ok(()),
+                        _ => continue,
+                    };
+                    socket.send(Message::text(reply_text(&resp))).map_err(io_err)?;
+                }
+            }
+        }
+    }
+
+    /// Serve any number of simultaneous connections from `listener` against one endpoint, until
+    /// `max_connections` have been accepted and have ended (`None`: forever).
+    ///
+    /// A connection is either a WebSocket client (one JSON-RPC message per text frame) or a plain
+    /// `GET`/`HEAD` of the viewer's static files ([`sm_view::assets`]; `/` is `index.html`).
+    /// Connections run on their own threads but only move text: the calling thread owns the
+    /// endpoint and handles requests one at a time in arrival order, so the session keeps its
+    /// single writer and every client sees the same state. There is no server push; clients poll
+    /// `session.hash` to notice changes. A failing connection is reported through `on_error`.
+    pub fn serve_http_ws_listener(
+        endpoint: &mut (impl Endpoint + ?Sized),
+        listener: &TcpListener,
+        max_connections: Option<usize>,
+        on_error: impl Fn(io::Error) + Sync,
+    ) -> io::Result<()> {
+        let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
+        let accept_error = std::sync::Mutex::new(None::<io::Error>);
+        std::thread::scope(|scope| {
+            let (on_error, accept_error) = (&on_error, &accept_error);
+            scope.spawn(move || {
+                let mut served = 0usize;
+                std::thread::scope(|conns| {
+                    while max_connections.is_none_or(|m| served < m) {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                let tx = jobs_tx.clone();
+                                conns.spawn(move || {
+                                    if let Err(e) = serve_shared_connection(&tx, stream) {
+                                        on_error(e);
+                                    }
+                                });
+                                served += 1;
+                            }
+                            Err(e) => {
+                                *accept_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    drop(jobs_tx);
+                });
+            });
+            for (text, reply) in jobs_rx {
+                let _ = reply.send(endpoint.handle_text(&text));
+            }
+        });
+        match accept_error.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Bind `addr` and run [`serve_http_ws_listener`] forever.
+    pub fn serve_http_ws(endpoint: &mut (impl Endpoint + ?Sized), addr: impl ToSocketAddrs) -> io::Result<()> {
+        let listener = TcpListener::bind(addr)?;
+        serve_http_ws_listener(endpoint, &listener, None, |e| eprintln!("sm-server: connection ended: {e}"))
     }
 }

@@ -10,7 +10,8 @@ use sm_lang::diag::render_all;
 use sm_lang::{Event, Interpreter, Options, SourceMap};
 use sm_op_api::{OpInfoOwned, QueryInfoOwned, Rev};
 use sm_protocol::{
-    ApplyResult, CatalogResult, Endpoint, HashResult, PROTOCOL_VERSION, Request, RpcError, ScriptResult,
+    ApplyResult, CatalogResult, Endpoint, HashResult, PROTOCOL_VERSION, RecordCheck, RecordForks, Request, RpcError,
+    ScriptRecordResult, ScriptResult,
 };
 
 use crate::error::{ServerError, SessionError};
@@ -144,6 +145,42 @@ impl Server {
         }
     }
 
+    /// `script.record`: the timeline as command-language text ([`sm_lang::record_script`]), optionally replayed in a
+    /// scratch session to check that the hashes agree.
+    fn record_script(&self, forks: RecordForks, check: RecordCheck, verify: bool, raw: bool) -> Result<Value, SessionError> {
+        let failed = |e: sm_lang::RecordError| SessionError::new("record-failed", e.to_string());
+        let o = sm_lang::RecordOptions::default()
+            .with_forks(match forks {
+                RecordForks::Refs => sm_lang::Forks::Refs,
+                _ => sm_lang::Forks::Head,
+            })
+            .with_check(match check {
+                RecordCheck::None => sm_lang::Check::None,
+                RecordCheck::Every => sm_lang::Check::Every,
+                _ => sm_lang::Check::Tips,
+            })
+            .with_style(if raw { sm_lang::Style::Raw } else { sm_lang::Style::Readable });
+        let (tl, head) = (self.ws.timeline(), self.ws.session().head());
+        let rec = sm_lang::record_script(self.ws.registry(), tl, head, &o).map_err(failed)?;
+        let verified = if verify {
+            let report = sm_lang::verify_recording(self.ws.session().engine(), tl, head, &rec).map_err(failed)?;
+            Some(report.all_equal() && report.clean)
+        } else {
+            None
+        };
+        let requires = rec
+            .requires
+            .iter()
+            .map(|r| match r {
+                sm_lang::Requirement::Input { sha256 } => format!("input sha256:{sha256}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        let notes = rec.notes.iter().map(ToString::to_string).collect();
+        let refs = rec.refs.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        to_json(&ScriptRecordResult::new(rec.text, rec.nodes as u64, rec.statements as u64, refs, requires, notes, verified))
+    }
+
     fn open_project(&mut self, path: &str, create: bool) -> Result<Value, SessionError> {
         let Some(opener) = self.opener.clone() else {
             return Err(SessionError::new("open-unsupported", "this server was built without a distribution factory, so it cannot open projects"));
@@ -228,9 +265,7 @@ impl Server {
                 })?;
                 to_json(&r)
             }
-            Request::ScriptRecord { .. } => {
-                Err(SessionError::new("unsupported", "`script.record` is not available in this server yet"))
-            }
+            Request::ScriptRecord { forks, check, verify, raw } => self.record_script(forks, check, verify, raw),
             Request::Save => {
                 self.host().save()?;
                 to_json(&status_result(&self.ws))
