@@ -506,10 +506,56 @@ pub enum LeafInput<'a> {
     Csg(CsgLeafInput<'a>),
 }
 
+impl LeafInput<'_> {
+    /// Content hash of the leaf by value (its key in a hierarchical `cache_key`). A mesh leaf
+    /// mixes the mesh topology and geometry hashes, the region rule, the complement policy and
+    /// its boundary conditions; a facet leaf is [`FacetInput::content_hash`]; a CSG leaf is
+    /// [`CsgLeafInput::content_hash`]. Each is tagged by variant, so equal bytes in different
+    /// kinds never collide.
+    pub fn content_hash(&self) -> ContentHash {
+        let mut h = ContentHasher::new();
+        match self {
+            Self::Mesh(m) => {
+                h.write_u64(1);
+                h.write_u64(sm_mesh_api::topology_hash(m.mesh));
+                h.write_u64(sm_mesh_api::geometry_hash(m.mesh));
+                match m.regions {
+                    RegionRule::ByVolumeClassification => h.write_u64(1),
+                    RegionRule::ByCellSets(names) => {
+                        h.write_u64(2);
+                        for n in names {
+                            h.write_u64(n.len() as u64);
+                            h.write_bytes(n.as_bytes());
+                        }
+                    }
+                }
+                match m.complement {
+                    ComplementPolicy::Outside => h.write_u64(0),
+                    ComplementPolicy::Region(n) => {
+                        h.write_u64(1);
+                        h.write_u64(n.len() as u64);
+                        h.write_bytes(n.as_bytes());
+                    }
+                }
+                h.write_hash(m.boundaries.content_hash());
+            }
+            Self::Facets(f) => {
+                h.write_u64(2);
+                h.write_hash(f.content_hash());
+            }
+            Self::Csg(c) => {
+                h.write_u64(3);
+                h.write_hash(c.content_hash());
+            }
+        }
+        h.finish()
+    }
+}
+
 /// A hierarchical world over leaf inputs: the world graph, its leaves (indexed by
 /// `ComponentKind::Leaf { input }`) and the model boundary conditions.
 ///
-/// `cache_key` mixes `WorldSpec::content_hash` and each leaf's key. Instances of one prototype
+/// `cache_key` mixes `WorldSpec::content_hash` and each leaf's key ([`HierInput::content_hash`]). Instances of one prototype
 /// share a prototype tracker; the input holds each leaf once.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
@@ -526,6 +572,20 @@ impl<'a> HierInput<'a> {
     /// Construct (the type is `#[non_exhaustive]`).
     pub fn new(spec: &'a crate::world::WorldSpec, leaves: &'a [LeafInput<'a>], boundaries: &'a BoundarySpec) -> Self {
         Self { spec, leaves, boundaries }
+    }
+
+    /// The `topology_hash` of a hierarchical cache key: `WorldSpec::content_hash` mixed with the
+    /// leaf count and each leaf's [`LeafInput::content_hash`] in index order. The model
+    /// boundary conditions are not part of it; they go in the key's `boundary_hash`
+    /// ([`BoundarySpec::content_hash`]). Builders call this so they share one key.
+    pub fn content_hash(&self) -> ContentHash {
+        let mut h = ContentHasher::new();
+        h.write_hash(self.spec.content_hash());
+        h.write_u64(self.leaves.len() as u64);
+        for l in self.leaves {
+            h.write_hash(l.content_hash());
+        }
+        h.finish()
     }
 }
 
@@ -622,6 +682,33 @@ mod tests {
             back: vec![Region::Exterior; 4],
             face: (1..=4).map(face).collect(),
         }
+    }
+
+    #[test]
+    fn hier_and_leaf_content_hashes_follow_their_parts() {
+        use crate::ids::ComponentId;
+        use crate::world::{ComponentKind, InstancePolicy, WorldSpec};
+        let (a, mut b) = (tet(), tet());
+        b.vertices[3][2] += 0.5;
+        let spec = WorldSpec::new(vec![ComponentKind::Leaf { input: 0 }], ComponentId::new(0), InstancePolicy::default());
+        let bc = BoundarySpec::default();
+        let hash = |f: &FacetInput| {
+            let leaves = [LeafInput::Facets(f)];
+            HierInput::new(&spec, &leaves, &bc).content_hash()
+        };
+        assert_eq!(hash(&a), hash(&a));
+        assert_ne!(hash(&a), hash(&b), "leaf content moves the key");
+        // A leaf is tagged by kind: it is not the bare facet hash.
+        let la = LeafInput::Facets(&a);
+        assert_eq!(la.content_hash(), la.content_hash());
+        assert_ne!(la.content_hash(), a.content_hash());
+        // A different graph over the same leaf moves it too.
+        let two = WorldSpec::new(vec![ComponentKind::Leaf { input: 0 }, ComponentKind::Leaf { input: 0 }], ComponentId::new(1), InstancePolicy::default());
+        let leaves = [la];
+        assert_ne!(HierInput::new(&spec, &leaves, &bc).content_hash(), HierInput::new(&two, &leaves, &bc).content_hash());
+        // The leaf count is mixed in.
+        let leaves2 = [la, la];
+        assert_ne!(HierInput::new(&spec, &leaves, &bc).content_hash(), HierInput::new(&spec, &leaves2, &bc).content_hash());
     }
 
     #[test]
