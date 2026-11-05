@@ -125,3 +125,23 @@ fn warm_scratch_means_zero_allocations_for_every_surface_kind() {
     assert!(events > 1000, "{events}");
     assert_eq!(n, 0, "{n} allocations in {events} events");
 }
+
+/// Steps through the complement cell (a `Region` complement borders every surface) allocate
+/// nothing either.
+#[test]
+fn complement_region_steps_allocate_nothing() {
+    let mut fx = Fx::new(20.0);
+    let sph = fx.sphere(p3(0.0, 0.0, 0.0), 4.0);
+    let cyl = fx.cylinder(Frame::at(p3(8.0, 0.0, 0.0)), 2.0);
+    let pl = fx.plane(p3(-8.0, 0.0, 0.0), v3(-1.0, 0.0, 0.0));
+    fx.cell1("ball", &[hs(sph, true)]);
+    fx.cell1("rod", &[hs(cyl, true)]);
+    fx.cell1("wall", &[hs(pl, true), hs(sph, false)]);
+    let t = fx.build();
+    let mut sc = Scratch::new();
+    let _ = workload(&t, &mut sc, "warm-a");
+    let _ = workload(&t, &mut sc, "warm-b");
+    let ((events, _), n) = count_allocs(|| workload(&t, &mut sc, "measured"));
+    assert!(events > 1000, "{events}");
+    assert_eq!(n, 0, "{n} allocations in {events} events");
+}

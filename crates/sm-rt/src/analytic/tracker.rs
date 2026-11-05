@@ -300,6 +300,11 @@ impl AnalyticTracker {
 
     /// Cell, region and the surface the point lies on (if any).
     fn locate_inner(&self, p: V3, d: V3, hint: Option<CellId>, sc: &mut Scratch) -> Located {
+        self.locate_ov(p, d, hint, sc).0
+    }
+
+    /// `locate_inner` plus whether the point is matched by two cells (an overlap).
+    fn locate_ov(&self, p: V3, d: V3, hint: Option<CellId>, sc: &mut Scratch) -> (Located, bool) {
         let cnt = &mut sc.counters;
         cnt.locates += 1;
         if let Some(h) = hint
@@ -308,18 +313,21 @@ impl AnalyticTracker {
             && self.leaf.contains(h.get(), p, d, None, cnt)
             && self.leaf.on_face(h.get(), p).is_none()
         {
-            return Located::new(h, RegionId(self.leaf.cell_region[h.get()]), None);
+            return (Located::new(h, RegionId(self.leaf.cell_region[h.get()]), None), false);
         }
         match self.leaf.locate_cold(p, d, cnt) {
             Found::One(c) => {
                 let on = self.leaf.on_face(c as usize, p).map(FaceId);
-                Located::new(CellId(c), RegionId(self.leaf.cell_region[c as usize]), on)
+                (Located::new(CellId(c), RegionId(self.leaf.cell_region[c as usize]), on), false)
             }
-            Found::None => match self.complement {
-                Some(r) if self.in_bounds(p) => Located::new(CellId::COMPLEMENT, r, self.leaf.on_face_any(p).map(FaceId)),
-                _ => Located::new(CellId::NONE, RegionId::NONE, None),
-            },
-            Found::Overlap => Located::new(CellId::NONE, RegionId::NONE, None),
+            Found::None => (
+                match self.complement {
+                    Some(r) if self.in_bounds(p) => Located::new(CellId::COMPLEMENT, r, self.leaf.on_face_any(p).map(FaceId)),
+                    _ => Located::new(CellId::NONE, RegionId::NONE, None),
+                },
+                false,
+            ),
+            Found::Overlap => (Located::new(CellId::NONE, RegionId::NONE, None), true),
         }
     }
 
@@ -362,16 +370,10 @@ impl AnalyticTracker {
 
         // Breakpoints: the first root of each relevant surface ahead of the position.
         sc.hits.clear();
-        let all: Vec<u32>;
-        let list: &[u32] = if comp {
-            // The complement borders every cell: all surfaces are relevant.
-            all = (0..ns as u32).collect();
-            &all
-        } else {
-            self.leaf.cell_surfs(cur.get())
-        };
+        // The complement borders every cell: all surfaces are relevant.
+        let (list, all): (&[u32], core::ops::Range<u32>) = if comp { (&[], 0..ns as u32) } else { (self.leaf.cell_surfs(cur.get()), 0..0) };
         let mut buf = [0.0f64; 4];
-        for &s in list {
+        for s in list.iter().copied().chain(all) {
             sc.counters.surface_evals += 1;
             let k = self.leaf.surfs[s as usize].hits(o, d, max_dist, &mut buf);
             for &t in &buf[..k] {
@@ -469,17 +471,25 @@ impl AnalyticTracker {
                     let (op, od, oe) = (st.pos, st.dir, st.entered_via);
                     let np = transform.apply_point(st.pos);
                     let nd = transform.apply_vector(st.dir);
-                    let loc = self.locate_inner(a3(np), av(nd), None, sc);
-                    if loc.cell.is_none() {
-                        st.pos = op;
-                        st.dir = od;
-                        st.entered_via = oe;
-                        return Ok(Once::Fail(LostCause::NoCellContainsPoint));
-                    }
+                    // Neighbour search over the cells of the mate surface (no root re-locate).
+                    let (nq, ndir) = (a3(np), av(nd));
+                    let m = mate.get();
+                    let dn = if m < ns { dot(self.leaf.surfs[m].normal(nq), ndir) } else { 0.0 };
+                    let found = if m < ns { self.leaf.across(None, m as u32, if dn >= 0.0 { 1 } else { -1 }, nq, ndir, &mut sc.counters) } else { Next::Exterior };
+                    let (cell, reg) = match found {
+                        Next::Cell(c) => (CellId(c), RegionId(self.leaf.cell_region[c as usize])),
+                        Next::Exterior if self.complement.is_some() && self.in_bounds(nq) => (CellId::COMPLEMENT, self.region_of(CellId::COMPLEMENT)),
+                        Next::Exterior | Next::Overlap => {
+                            st.pos = op;
+                            st.dir = od;
+                            st.entered_via = oe;
+                            return Ok(Once::Fail(if found == Next::Overlap { LostCause::Overlap } else { LostCause::NoCellContainsPoint }));
+                        }
+                    };
                     st.pos = np;
                     st.dir = nd;
-                    st.cell = loc.cell;
-                    st.region = loc.region;
+                    st.cell = cell;
+                    st.region = reg;
                     st.entered_via = Some(mate);
                 }
                 _ => {}
@@ -582,7 +592,10 @@ impl Tracker for AnalyticTracker {
             }
             attempted += 1;
             let q = madd(op, od, nd);
-            let loc = self.locate_inner(q, od, None, scratch);
+            let (loc, overlap) = self.locate_ov(q, od, None, scratch);
+            if overlap {
+                return Ok(self.lost_step(st, LostCause::Overlap, attempted));
+            }
             if loc.cell.is_none() {
                 continue;
             }
@@ -591,11 +604,15 @@ impl Tracker for AnalyticTracker {
             tmp.cell = loc.cell;
             tmp.region = loc.region;
             tmp.entered_via = loc.on_face;
-            if let Once::Done(mut s) = self.step_once(&mut tmp, max_dist - nd, scratch)? {
-                s.dist += nd;
-                *st = tmp;
-                scratch.counters.nudges += 1;
-                return Ok(s);
+            match self.step_once(&mut tmp, max_dist - nd, scratch)? {
+                Once::Done(mut s) => {
+                    s.dist += nd;
+                    *st = tmp;
+                    scratch.counters.nudges += 1;
+                    return Ok(s);
+                }
+                Once::Fail(LostCause::Overlap) => return Ok(self.lost_step(st, LostCause::Overlap, attempted)),
+                Once::Fail(_) => {}
             }
         }
         let cause = if tries > 0 { LostCause::RecoveryFailed } else { first };

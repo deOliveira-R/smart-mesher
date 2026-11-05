@@ -399,3 +399,26 @@ fn step_ends_report_cells_and_faces() {
     assert!((s.dist - 2.0).abs() < 1e-12);
     assert!(matches!(s.end, StepEnd::RegionBoundary { to_cell, .. } if to_cell == CellId::new(0)));
 }
+
+/// Two distinct but coincident planes split a box: the right cell does not name the left cell's
+/// plane, so the neighbour search misses it and the full-leaf scan must find the right half.
+#[test]
+fn coincident_surfaces_do_not_send_the_particle_to_vacuum() {
+    let mut fx = Fx::new(10.0);
+    let bx = fx.box_planes(p3(-4.0, -4.0, -4.0), p3(4.0, 4.0, 4.0));
+    let p1 = fx.plane(p3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0));
+    let p2 = fx.plane(p3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0));
+    let mut left: Vec<_> = bx[2..].iter().map(|&p| hs(p, true)).collect();
+    let mut right = left.clone();
+    left.extend([hs(bx[0], true), hs(p1, true)]);
+    right.extend([hs(bx[1], true), hs(p2, false)]);
+    fx.cell1("left", &left);
+    fx.cell1("right", &right);
+    let t = fx.build();
+    let mut sc = Scratch::new();
+    let tr = trace(&t, p3(-4.0, 0.3, 0.2), v3(1.0, 0.0, 0.0), f64::INFINITY, &mut sc);
+    let cells: Vec<_> = tr.segs.iter().map(|s| s.cell).collect();
+    assert_eq!(&cells[..2], &[CellId::new(0), CellId::new(1)], "{cells:?}");
+    assert!((tr.segs[0].length - 4.0).abs() < 1e-12 && (tr.segs[1].length - 4.0).abs() < 1e-12);
+    assert!(sc.counters.slow_locates > 0);
+}

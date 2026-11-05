@@ -285,7 +285,7 @@ the double cone; both nappes are surfaces here, and a cell takes one nappe by a 
 
 **Tolerance and ties.** A point with `|sd| <= tol.linear` is on that surface; its side is the sign
 of `grad . dir` (moving into), a tangential direction uses `hashed_direction(p)`, `dir = None`
-uses `hashed_direction(p)` for every on-face decision. An edge point uses the rule per surface.
+uses `hashed_direction(p)` for every on-face decision. An edge point uses the rule per surface. The band is the contract `tol.linear` (1e-6 by default), wider than the draft's 1e-12: a point that close to a surface is on it for every decision, which keeps `locate` and `step` consistent. When no neighbour cell across a crossed surface matches, `step` runs the full-leaf scan (counted in `slow_locates`) next to another surface or strictly inside the bounds, so coincident or duplicate surfaces cannot send a particle to vacuum mid-geometry. A wrap lands by the cell search over the mate surface's cells, and an overlap there or in nudge recovery is `Lost(Overlap)`, never retried.
 `Located::on_face` is the lowest on-face surface of the matched cell (of the whole leaf for the
 complement). After a hit the crossed surface's side is forced to the side the ray moves into and
 the other surfaces within tolerance use the direction rule; if the current cell still contains

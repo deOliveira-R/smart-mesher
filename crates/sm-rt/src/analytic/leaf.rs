@@ -520,10 +520,16 @@ impl Leaf {
         (0..self.surfs.len() as u32).find(|&s| self.surfs[s as usize].sd(p).abs() <= self.tol)
     }
 
+    /// Is `p` inside the leaf bounds by more than the on-face band?
+    fn strictly_inside(&self, p: V3) -> bool {
+        let (b, t) = (&self.bounds, self.tol);
+        p[0] > b.lo.x + t && p[0] < b.hi.x - t && p[1] > b.lo.y + t && p[1] < b.hi.y - t && p[2] > b.lo.z + t && p[2] < b.hi.z - t
+    }
+
     /// Across the surface `s` just crossed at `p` (moving toward side `sense`) out of `cur`
     /// (`None` for the complement): tests every cell of the `surface -> cells` CSR (no early
-    /// exit, so two matches are an overlap); a crossing next to another surface falls back to
-    /// the full-leaf scan.
+    /// exit, so two matches are an overlap); a crossing next to another surface, or
+    /// strictly inside the bounds, falls back to the full-leaf scan (`slow_locates`).
     pub(crate) fn across(&self, cur: Option<u32>, s: u32, sense: i8, p: V3, d: V3, cnt: &mut WorkCounters) -> Next {
         let (mut n, mut one) = (0u32, 0u32);
         for &c in self.surf_cells(s as usize) {
@@ -538,8 +544,12 @@ impl Leaf {
         }
         match n {
             0 => {
+                // No neighbour matched. The full-leaf scan runs next to another surface of the
+                // current cell, and anywhere strictly inside the leaf bounds (a coincident or
+                // duplicate surface leaves the neighbour the CSR does not list); a crossing on
+                // the bounds is a genuine exit.
                 let edge = cur.is_some_and(|c| self.cell_surfs(c as usize).iter().any(|&o| o != s && self.surfs[o as usize].sd(p).abs() <= self.tol));
-                if edge {
+                if edge || self.strictly_inside(p) {
                     cnt.slow_locates += 1;
                     match self.locate_all(p, d, Some((s, sense)), cnt) {
                         Found::One(c) if Some(c) != cur => Next::Cell(c),
