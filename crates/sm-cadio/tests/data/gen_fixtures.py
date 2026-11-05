@@ -413,6 +413,35 @@ def fillet_text():
     return header(AP214, "block_fillet_nurbs") + d.text() + FOOTER
 
 
+def style_item(d, item, rgb, cname):
+    """Attach a surface color to `item` (a solid or a face) through a STYLED_ITEM."""
+    c = d.add(f"COLOUR_RGB('{cname}',{fmt(rgb[0])},{fmt(rgb[1])},{fmt(rgb[2])})")
+    fac = d.add(f"FILL_AREA_STYLE_COLOUR('',#{c})")
+    fas = d.add(f"FILL_AREA_STYLE('',(#{fac}))")
+    ssfa = d.add(f"SURFACE_STYLE_FILL_AREA(#{fas})")
+    sss = d.add(f"SURFACE_SIDE_STYLE('',(#{ssfa}))")
+    ssu = d.add(f"SURFACE_STYLE_USAGE(.BOTH.,#{sss})")
+    psa = d.add(f"PRESENTATION_STYLE_ASSIGNMENT((#{ssu}))")
+    d.add(f"STYLED_ITEM('color',(#{psa}),#{item})")
+
+
+def named_colored_text():
+    """Four unit bricks in a row. fuel: red 'uo2'; clad: blue with no color name; water: a green
+    color on one face only (ignored); an unnamed solid (product name 'part') in red 'uo2'."""
+    d = Doc()
+    ctx = unit_context(d, "mm")
+    solids = []
+    for k, nm in enumerate(["fuel", "clad", "water", ""]):
+        s = brick_parts(d, (float(k) * 2.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+        solids.append((d.add(f"MANIFOLD_SOLID_BREP('{nm}',#{s.shell()})"), s))
+    product(d, ctx, [i for i, _ in solids])
+    style_item(d, solids[0][0], (1.0, 0.0, 0.0), "uo2")
+    style_item(d, solids[1][0], (0.0, 0.0, 1.0), "")
+    style_item(d, solids[2][1].f[0], (0.0, 1.0, 0.0), "face_green")
+    style_item(d, solids[3][0], (1.0, 0.0, 0.0), "uo2")
+    return header(AP214, "named_colored") + d.text() + FOOTER
+
+
 def inverted_text():
     """A brick whose faces point inward: the importer must flip it (step.inverted_solid)."""
     d = Doc()
@@ -534,6 +563,7 @@ def main():
     write("brick_ap203.stp", brick_text((1.0, 2.0, 3.0), (2.0, 3.0, 4.0), schema=AP203, ap203=True, name="brick_2x3x4"))
     write("brick_inch.stp", brick_text((0.0, 0.0, 0.0), (1.0, 2.0, 3.0), length="inch", name="brick_inch"))
     write("two_bricks.stp", two_bricks_text())
+    write("named_colored.stp", named_colored_text())
     write("brick_with_void.stp", void_text(False))
     write("brick_with_void_inward.stp", void_text(True))
     write("frustum_r2_r1_h3.stp", frustum_text())

@@ -1316,6 +1316,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sm-core",
+ "sm-engine",
  "sm-geom-api",
  "sm-layer-api",
  "sm-model-api",

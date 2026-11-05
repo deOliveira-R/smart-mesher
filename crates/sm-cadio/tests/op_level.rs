@@ -14,7 +14,7 @@ use sm_op_api::{ApplyError, DerivedCache, OpError, OpRecord, Plugin, QuietContro
 use sm_topo_api::Dim;
 
 fn op(source: Source) -> ImportStep {
-    ImportStep { source, name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None }
+    ImportStep { source, name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None }
 }
 
 fn store() -> Arc<MemoryInputStore> {

@@ -49,7 +49,7 @@ fn session_with_two_bricks() -> Session {
     reg.register::<Decorate>().expect("register");
     let services = Services::new().with(StepInputs(store));
     let mut s = Session::new(Engine::new(Arc::new(reg), services, Arc::new(DerivedCache::default())).expect("engine"));
-    let op = ImportStep { source: Source::inline(&data("two_bricks.stp")), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None };
+    let op = ImportStep { source: Source::inline(&data("two_bricks.stp")), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None };
     run(&mut s, &op).expect("import");
     s
 }
