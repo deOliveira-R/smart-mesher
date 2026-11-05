@@ -82,7 +82,8 @@ pub(crate) fn face_geometry(pts: &[V3], f: &[u32]) -> (V3, V3) {
 /// skipped; this includes `n_cells` larger than the owner plus neighbour entry count, reported as
 /// "N cells but only A owner and B neighbour entries" and returned alone), `foam.owner_not_below_neighbour`, `foam.not_upper_triangular` (internal faces not
 /// ordered by owner then neighbour), `foam.upper_triangular_tie` (equal `(owner, neighbour)` of
-/// two faces: a warning, checkMesh may need strictly increasing neighbours), `foam.patch_range`
+/// two faces: a warning only; checkMesh accepts it and prints just an info line about
+/// "multiple inbetween faces"), `foam.patch_range`
 /// (patches do not tile `n_internal..n_faces`), `foam.point_unused`, `foam.cell_too_few_faces`
 /// (fewer than 4), `foam.cell_unclosed` (`|sum Sf| > tol * sum |Sf|`),
 /// `foam.cell_nonpositive_volume`, `foam.face_orientation` (`Sf . (fc - cc) <= 0` for the owner).

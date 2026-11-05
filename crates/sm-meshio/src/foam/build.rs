@@ -59,10 +59,14 @@ fn check_ranges(mesh: &dyn MeshRead, nv: usize, nc: usize) -> Result<()> {
 ///
 /// Errors: [`FoamError::NotThreeDimensional`], [`FoamError::InactiveCells`],
 /// [`FoamError::NonFinite`], [`FoamError::Orientation`] (an interior face with `left >= right`),
-/// [`FoamError::UnknownSet`], [`FoamError::PatchOverlap`] and the name errors.
+/// [`FoamError::UnknownSet`], [`FoamError::PatchOverlap`], [`FoamError::BadWarpTolerance`] and the
+/// name errors.
 pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBuild> {
     if mesh.dim() != MeshDim::Three {
         return Err(fe(FoamError::NotThreeDimensional));
+    }
+    if !(opts.warp_tolerance.is_finite() && opts.warp_tolerance >= 0.0) {
+        return Err(fe(FoamError::BadWarpTolerance(opts.warp_tolerance)));
     }
     check_columns(mesh)?;
     let (nv, nf, nc) = (mesh.vertex_count(), mesh.face_count(), mesh.cell_count());

@@ -333,3 +333,13 @@ fn the_split_survives_the_small_determinant_split() {
     assert_eq!(b.report.n_cells, u64::from(b.mesh.n_cells));
     assert_eq!(b.report.shape_counts.pyramids + b.report.shape_counts.tetrahedra + b.report.shape_counts.polyhedra, u64::from(b.mesh.n_cells));
 }
+
+#[test]
+fn a_bad_warp_tolerance_is_rejected() {
+    let m = warped_block(2, 0.03);
+    for t in [-1e-9, f64::NAN, f64::INFINITY] {
+        let r = build_polymesh(&m, &on().warp_tolerance(t));
+        assert!(r.is_err(), "tolerance {t} must be rejected");
+    }
+    assert!(build_polymesh(&m, &on().warp_tolerance(0.0)).is_ok());
+}

@@ -87,6 +87,9 @@ pub enum FoamError {
     /// Two patches (or two zones of one kind) have the same name after sanitizing.
     #[error("two entries are called '{0}' after sanitizing")]
     DuplicateName(String),
+    /// `warp_tolerance` is NaN, infinite or negative.
+    #[error("warp_tolerance {0} must be finite and >= 0")]
+    BadWarpTolerance(f64),
     /// A syntax error in a polyMesh file.
     #[error("{file}:{line}: {detail}")]
     Parse {
@@ -315,7 +318,8 @@ impl FoamOptions {
         self.split_warped_faces = on;
         self
     }
-    /// Set the planarity tolerance of the warped-face split.
+    /// Set the planarity tolerance of the warped-face split. A value that is not finite or is
+    /// negative makes the export fail with [`FoamError::BadWarpTolerance`].
     pub fn warp_tolerance(mut self, tol: f64) -> Self {
         self.warp_tolerance = tol;
         self

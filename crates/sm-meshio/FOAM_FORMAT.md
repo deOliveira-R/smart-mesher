@@ -286,7 +286,9 @@ Newell normal, over `sqrt(|Sf|)`) exceeds `warp_tolerance` (default `1e-9`) by t
   pieces are consecutive, patches keep their faces (boundary faces split too), `faceZone`
   labels list every piece. `face_of_foam` of a piece is the source face.
 * Pieces of one internal face share (owner, neighbour): `check_polymesh` reports
-  `foam.upper_triangular_tie` (a warning) for them.
+  `foam.upper_triangular_tie` (a warning) for them. checkMesh does not fail on this: it prints only the info line
+  `Found 26 (63) neighbouring cells with multiple inbetween faces` and `Upper triangular
+  ordering OK.`.
 * Census: a cell with a split face counts as a polyhedron. Report: `FoamReport::warp`
   (`WarpReport`: faces, pieces, points, cells, concave cells before and after) and the loss item
   `foam.warped_faces_split`. `foam::concave_cell_count` is an in-process approximation of
@@ -295,10 +297,24 @@ Newell normal, over `sqrt(|Sf|)`) exceeds `warp_tolerance` (default `1e-9`) by t
 * Planar meshes export byte for byte as without the pass; the default options serialize as
   before (the new keys appear only when set).
 
-INT-9 measurement (`concave_counts_are_recorded_before_and_after`): on warped hex blocks the
-split turns 0 concave cells into every cell concave (3x3x3, amplitude 0.03: 0 -> 27; amplitude
-0.08: 0 -> 27; 4x4x4, 0.05: 0 -> 64). A triangulated warped face is a shallow cone, so the cell
-on its inner side sees the apex as a dimple. The pass is therefore off by default; whether a
-plane-based concave check accepts the dimples depends on checkMesh's tolerance and was not run
-here (no OpenFOAM on this machine). The polydual (1046) and `w3a_poly` (3966) counts need
-sm-poly (L3) and are measured by `tools/conformance/check_openfoam.py`, not from this crate.
+INT-9 measurement (`concave_counts_are_recorded_before_and_after`, in-process) and checkMesh
+(`checkMesh -allGeometry -allTopology`, opencfd/openfoam-default:2506, the conformance image,
+run on `tests/foam_warp.rs::warped_block` exported without and with the split):
+
+| case | concave, no split | concave, split | max skewness (off -> on) | max non-orthogonality deg (off -> on) |
+|---|---|---|---|---|
+| 3x3x3, amp 0.03 | 0 | 27 | ~0.05-0.13 -> ~1.05-1.19 | 5.6 -> 6.6 |
+| 3x3x3, amp 0.08 | 0 | 27 | same range | 22.1 -> 25.8 |
+| 4x4x4, amp 0.05 | 0 | 64 | same range | 15.9 -> 18.4 |
+
+Without the split every case is `Mesh OK` (`Concave cell check OK`). With the split every case
+reports `***Concave cells (using face planes) found` (counts above, equal to the in-process
+`concave_cell_count`) and `Failed 1 mesh checks`: **the split turns checkMesh-clean warped hex
+meshes into failing ones.** Skewness stays under the limit of 4 and the non-orthogonality rise is
+small. A triangulated warped face is a shallow cone, so the cell on its inner side sees the apex
+as a dimple. The pass is therefore off by default (the evidence supports that); whether to keep
+the pass at all is an orchestrator ruling. The polydual (1046) and `w3a_poly` (3966) counts need
+sm-poly (L3) and are measured by `tools/conformance/check_openfoam.py` (W3b-INT), not from this
+crate.
+
+`warp_tolerance` must be finite and >= 0 (`FoamError::BadWarpTolerance` otherwise).
