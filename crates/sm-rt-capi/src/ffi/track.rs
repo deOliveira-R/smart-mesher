@@ -4,8 +4,7 @@ use super::{SmrtCtx, SmrtTracker, exclusive, guard, read3, read3_opt, shared, wr
 use crate::convert::*;
 use crate::status::*;
 use crate::types::*;
-use sm_rt_api::{BoundaryAction, CellId, Level, RegionId, Scratch, StepEnd, TrackState, check_direction};
-use sm_rt_api::{ComponentId, InstanceId};
+use sm_rt_api::{BoundaryAction, Scratch, StepEnd, TrackState, check_direction};
 use std::sync::Arc;
 
 /// Create a context (particle state + scratch) for `tracker`. The context holds its own
@@ -94,30 +93,7 @@ pub unsafe extern "C" fn smrt_set_state(ctx: *mut SmrtCtx, state: *const SmrtSta
     guard(|| {
         // SAFETY: caller contract above.
         let (c, s) = unsafe { (exclusive(ctx, "ctx")?, shared(state, "state")?) };
-        let n = usize::try_from(s.levels_len).ok().filter(|&n| n <= SMRT_MAX_LEVELS && s.levels_total == s.levels_len);
-        let Some(n) = n else {
-            return Err(Fail::bad("levels_total must equal levels_len and be at most 8"));
-        };
-        check_direction(vector(s.dir), c.tracker.info().tol.angular)?;
-        if !s.pos.iter().all(|v| v.is_finite()) {
-            return Err(Fail::Rt(sm_rt_api::RtError::NonFinite("position")));
-        }
-        let mut st = TrackState::new(point(s.pos), vector(s.dir));
-        st.cell = cell_in(s.cell)?;
-        // NONE is "outside"; COMPLEMENT is valid only when the model has an implicit complement.
-        let special = st.cell == CellId::NONE || (st.cell == CellId::COMPLEMENT && c.complement.is_some());
-        if !special && st.cell.get() >= c.tracker.cell_count() {
-            return Err(Fail::Rt(sm_rt_api::RtError::UnknownId { kind: "cell", id: st.cell.get() as u32 }));
-        }
-        st.region = region_in(s.region, c.complement)?;
-        if st.region != RegionId::NONE && st.region.0 as usize >= c.tracker.regions().0.len() {
-            return Err(Fail::Rt(sm_rt_api::RtError::UnknownId { kind: "region", id: st.region.0 }));
-        }
-        st.entered_via = if s.entered_via < 0 { None } else { Some(face_in(s.entered_via)?) };
-        for l in &s.levels[..n] {
-            let id = |v: i64| u32::try_from(v).map_err(|_| Fail::bad("negative level id"));
-            st.levels.push(Level::new(ComponentId(id(l.component)?), InstanceId(id(l.instance)?), l.lattice));
-        }
+        let st = state_in(&*c.tracker, c.complement, s)?;
         c.st = st;
         Ok(SMRT_OK)
     })

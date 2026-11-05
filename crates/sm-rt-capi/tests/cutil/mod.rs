@@ -70,6 +70,11 @@ pub fn cxx_compiler() -> Command {
 
 /// Build a C program linked to the cdylib and run it; returns its stdout.
 pub fn build_and_run_c(src: &Path, name: &str) -> String {
+    build_and_run_c_args(src, name, &[])
+}
+
+/// Like [`build_and_run_c`], passing `args` to the program.
+pub fn build_and_run_c_args(src: &Path, name: &str, args: &[&str]) -> String {
     let dir = scratch(name);
     let exe = dir.join(name);
     let deps = deps_dir();
@@ -79,7 +84,7 @@ pub fn build_and_run_c(src: &Path, name: &str) -> String {
     let tests_c = crate_dir().join("tests/c");
     let cpp = src.extension().is_some_and(|e| e == "cpp");
     let mut cc = if cpp { cxx_compiler() } else { c_compiler() };
-    cc.args([if cpp { "-std=c++17" } else { "-std=c11" }, "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE"])
+    cc.args([if cpp { "-std=c++17" } else { "-std=c11" }, "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE", "-ffp-contract=off"])
         .arg(format!("-I{}", inc.display()))
         .arg(format!("-I{}", tests_c.display()))
         .arg(src)
@@ -89,7 +94,7 @@ pub fn build_and_run_c(src: &Path, name: &str) -> String {
         .arg(format!("-Wl,-rpath,{}", deps.display()))
         .arg("-lm");
     check_ok(&format!("compile {name}"), &run(&mut cc));
-    let out = run(&mut Command::new(&exe));
+    let out = run(Command::new(&exe).args(args));
     check_ok(&format!("run {name}"), &out);
     String::from_utf8_lossy(&out.stdout).into_owned()
 }

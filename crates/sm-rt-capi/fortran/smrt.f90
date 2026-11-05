@@ -30,7 +30,7 @@ module smrt
   integer(c_int32_t), parameter :: SMRT_ERR_LOST = -103
 
   ! ---- ids and enums
-  integer(c_int32_t), parameter :: SMRT_ABI_VERSION = 10000
+  integer(c_int32_t), parameter :: SMRT_ABI_VERSION = 10100
   integer(c_int64_t), parameter :: SMRT_NONE = -1_c_int64_t
   integer(c_int64_t), parameter :: SMRT_COMPLEMENT = -2_c_int64_t
   integer(c_int32_t), parameter :: SMRT_MAX_LEVELS = 8
@@ -68,6 +68,24 @@ module smrt
   integer(c_int32_t), parameter :: SMRT_LOST_RECOVERY_FAILED = 6
   integer(c_int32_t), parameter :: SMRT_LOST_SENSE_MISMATCH = 7
   integer(c_int32_t), parameter :: SMRT_LOST_OVERLAP = 8
+
+  integer(c_int64_t), parameter :: SMRT_MODE_SURFACE = 0_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_MODE_DELTA = 1_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_POLICY_SURFACE = 0_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_POLICY_DELTA = 1_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_SCALE_CELL = 0_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_SCALE_REGION = 1_c_int64_t
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_RUNNING = 0
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_LIMIT = 1
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_LEFT_MODEL = 2
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_BOUNDARY = 3
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_LOST = 4
+  integer(c_int32_t), parameter :: SMRT_FLIGHT_STOPPED = 5
+  integer(c_int64_t), parameter :: SMRT_NODE_INTERNAL = 0_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_NODE_LATTICE = 1_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_NODE_ANALYTIC = 2_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_NODE_MESH = 3_c_int64_t
+  integer(c_int64_t), parameter :: SMRT_NODE_HOMOGENEOUS = 4_c_int64_t
 
   ! ---- data (layouts identical to smrt.h)
   type, bind(C) :: SmrtLevel
@@ -154,6 +172,38 @@ module smrt
     integer(c_int64_t) :: max_steps
     integer(c_int64_t) :: stop_at_deck
   end type SmrtTraceOpts
+
+  type, bind(C) :: SmrtNodeInfo
+    integer(c_int64_t) :: parent
+    integer(c_int64_t) :: kind
+    integer(c_int64_t) :: set
+    integer(c_int64_t) :: cells
+    real(c_double) :: bounds_lo(3)
+    real(c_double) :: bounds_hi(3)
+  end type SmrtNodeInfo
+
+  type, bind(C) :: SmrtFlightOpts
+    real(c_double) :: max_dist
+    integer(c_int64_t) :: max_steps
+    integer(c_int64_t) :: stop_at_deck
+    integer(c_int64_t) :: policy
+    integer(c_int64_t) :: scale
+  end type SmrtFlightOpts
+
+  type, bind(C) :: SmrtSegment
+    integer(c_int64_t) :: mode
+    integer(c_int64_t) :: node
+    integer(c_int64_t) :: set
+    integer(c_int64_t) :: cell
+    integer(c_int64_t) :: region
+    integer(c_int64_t) :: resolved
+    integer(c_int64_t) :: face_in
+    integer(c_int64_t) :: face_out
+    real(c_double) :: t0
+    real(c_double) :: t1
+    real(c_double) :: sigma_m
+    type(SmrtStep) :: step
+  end type SmrtSegment
 
   type, bind(C) :: SmrtRays
     type(c_ptr) :: x, y, z
@@ -416,5 +466,189 @@ module smrt
       real(c_double), intent(out) :: out_area
       integer(c_int32_t) :: rc
     end function smrt_dag_measure_area
+
+    function smrt_dag_surface_faces(tracker, surface, out, cap, out_n) bind(C, name="smrt_dag_surface_faces") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: surface
+      integer(c_int64_t), intent(out) :: out(*)
+      integer(c_int64_t), value :: cap
+      integer(c_int64_t), intent(out) :: out_n
+      integer(c_int32_t) :: rc
+    end function smrt_dag_surface_faces
+
+    function smrt_dag_get_angle_surface(tracker, surface, p, out_normal) &
+        bind(C, name="smrt_dag_get_angle_surface") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t, c_double
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: surface
+      real(c_double), intent(in) :: p(3)
+      real(c_double), intent(out) :: out_normal(3)
+      integer(c_int32_t) :: rc
+    end function smrt_dag_get_angle_surface
+
+    ! ---- region names and tags
+    function smrt_region_name(tracker, region, buf, cap) bind(C, name="smrt_region_name") result(n)
+      import :: c_ptr, c_char, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: region
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int64_t), value :: cap
+      integer(c_int32_t) :: n
+    end function smrt_region_name
+
+    function smrt_region_n_tags(tracker, region, out_n) bind(C, name="smrt_region_n_tags") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: region
+      integer(c_int64_t), intent(out) :: out_n
+      integer(c_int32_t) :: rc
+    end function smrt_region_n_tags
+
+    function smrt_region_tag(tracker, region, index, buf, cap, out_value) bind(C, name="smrt_region_tag") result(n)
+      import :: c_ptr, c_char, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: region
+      integer(c_int64_t), value :: index
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int64_t), value :: cap
+      integer(c_int64_t), intent(out) :: out_value
+      integer(c_int32_t) :: n
+    end function smrt_region_tag
+
+    ! ---- majorant partition and material sets
+    function smrt_n_nodes(tracker, out_n) bind(C, name="smrt_n_nodes") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), intent(out) :: out_n
+      integer(c_int32_t) :: rc
+    end function smrt_n_nodes
+
+    function smrt_node_info(tracker, node, out) bind(C, name="smrt_node_info") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t, SmrtNodeInfo
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: node
+      type(SmrtNodeInfo), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_node_info
+
+    function smrt_node_set(tracker, node, out_set) bind(C, name="smrt_node_set") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: node
+      integer(c_int64_t), intent(out) :: out_set
+      integer(c_int32_t) :: rc
+    end function smrt_node_set
+
+    function smrt_n_sets(tracker, out_n) bind(C, name="smrt_n_sets") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), intent(out) :: out_n
+      integer(c_int32_t) :: rc
+    end function smrt_n_sets
+
+    function smrt_set_regions(tracker, set, out, cap, out_n) bind(C, name="smrt_set_regions") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: tracker
+      integer(c_int64_t), value :: set
+      integer(c_int64_t), intent(out) :: out(*)
+      integer(c_int64_t), value :: cap
+      integer(c_int64_t), intent(out) :: out_n
+      integer(c_int32_t) :: rc
+    end function smrt_set_regions
+
+    ! ---- flights (arrays are passed to every call and never retained)
+    function smrt_flight_input_validate(tracker, majorants, n_nodes, block, n_block) &
+        bind(C, name="smrt_flight_input_validate") result(rc)
+      import :: c_ptr, c_int32_t, c_size_t, c_double
+      type(c_ptr), value :: tracker
+      real(c_double), intent(in) :: majorants(*)
+      integer(c_size_t), value :: n_nodes
+      type(c_ptr), value :: block   ! uint32_t array or C_NULL_PTR
+      integer(c_size_t), value :: n_block
+      integer(c_int32_t) :: rc
+    end function smrt_flight_input_validate
+
+    function smrt_flight_new(tracker, state, opts, out) bind(C, name="smrt_flight_new") result(rc)
+      import :: c_ptr, c_int32_t, SmrtState
+      type(c_ptr), value :: tracker
+      type(SmrtState), intent(in) :: state
+      type(c_ptr), value :: opts   ! SmrtFlightOpts or C_NULL_PTR
+      type(c_ptr), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_flight_new
+
+    function smrt_flight_free(flight) bind(C, name="smrt_flight_free") result(rc)
+      import :: c_ptr, c_int32_t
+      type(c_ptr), value :: flight
+      integer(c_int32_t) :: rc
+    end function smrt_flight_free
+
+    function smrt_flight_next(flight, majorants, n_nodes, block, n_block, out) bind(C, name="smrt_flight_next") result(rc)
+      import :: c_ptr, c_int32_t, c_size_t, c_double, SmrtSegment
+      type(c_ptr), value :: flight
+      real(c_double), intent(in) :: majorants(*)
+      integer(c_size_t), value :: n_nodes
+      type(c_ptr), value :: block
+      integer(c_size_t), value :: n_block
+      type(SmrtSegment), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_flight_next
+
+    function smrt_flight_probe(flight, majorants, n_nodes, block, n_block, t, out) &
+        bind(C, name="smrt_flight_probe") result(rc)
+      import :: c_ptr, c_int32_t, c_size_t, c_double, SmrtLocated
+      type(c_ptr), value :: flight
+      real(c_double), intent(in) :: majorants(*)
+      integer(c_size_t), value :: n_nodes
+      type(c_ptr), value :: block
+      integer(c_size_t), value :: n_block
+      real(c_double), value :: t
+      type(SmrtLocated), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_flight_probe
+
+    function smrt_flight_stop_at(flight, majorants, n_nodes, block, n_block, t, out) &
+        bind(C, name="smrt_flight_stop_at") result(rc)
+      import :: c_ptr, c_int32_t, c_size_t, c_double, SmrtLocated
+      type(c_ptr), value :: flight
+      real(c_double), intent(in) :: majorants(*)
+      integer(c_size_t), value :: n_nodes
+      type(c_ptr), value :: block
+      integer(c_size_t), value :: n_block
+      real(c_double), value :: t
+      type(SmrtLocated), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_flight_stop_at
+
+    function smrt_flight_check(flight, sigma_t) bind(C, name="smrt_flight_check") result(rc)
+      import :: c_ptr, c_int32_t, c_double
+      type(c_ptr), value :: flight
+      real(c_double), value :: sigma_t
+      integer(c_int32_t) :: rc
+    end function smrt_flight_check
+
+    function smrt_flight_set_policy(flight, policy) bind(C, name="smrt_flight_set_policy") result(rc)
+      import :: c_ptr, c_int32_t, c_int64_t
+      type(c_ptr), value :: flight
+      integer(c_int64_t), value :: policy
+      integer(c_int32_t) :: rc
+    end function smrt_flight_set_policy
+
+    function smrt_flight_get_state(flight, out) bind(C, name="smrt_flight_get_state") result(rc)
+      import :: c_ptr, c_int32_t, SmrtState
+      type(c_ptr), value :: flight
+      type(SmrtState), intent(out) :: out
+      integer(c_int32_t) :: rc
+    end function smrt_flight_get_state
+
+    function smrt_flight_end(flight, out_kind, out_event, out_dist) bind(C, name="smrt_flight_end") result(rc)
+      import :: c_ptr, c_int32_t, c_double
+      type(c_ptr), value :: flight
+      integer(c_int32_t), intent(out) :: out_kind
+      type(c_ptr), value :: out_event   ! SmrtStep or C_NULL_PTR
+      type(c_ptr), value :: out_dist    ! double or C_NULL_PTR
+      integer(c_int32_t) :: rc
+    end function smrt_flight_end
   end interface
 end module smrt

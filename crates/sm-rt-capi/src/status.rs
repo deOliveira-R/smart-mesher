@@ -113,26 +113,27 @@ pub fn last_error() -> String {
     LAST_ERROR.try_with(|s| s.borrow().clone()).unwrap_or_default()
 }
 
+/// Copy `s` into `buf` (NUL-terminated, cut at a UTF-8 boundary to fit) and return its full
+/// length in bytes, excluding the NUL (snprintf semantics). An empty `buf` is not written.
+pub fn copy_text(s: &str, buf: &mut [u8]) -> usize {
+    let bytes = s.as_bytes();
+    if let Some(room) = buf.len().checked_sub(1) {
+        // Cut at a UTF-8 boundary so the C string stays valid text.
+        let mut n = bytes.len().min(room);
+        while n > 0 && !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        buf[..n].copy_from_slice(&bytes[..n]);
+        buf[n] = 0;
+    }
+    bytes.len()
+}
+
 /// Copy this thread's message into `buf` (NUL-terminated, truncated to fit) and return its full
 /// length in bytes, excluding the NUL (snprintf semantics). Pure safe code: the FFI layer hands
 /// in a slice.
 pub fn copy_last_error(buf: &mut [u8]) -> usize {
-    LAST_ERROR
-        .try_with(|s| {
-            let s = s.borrow();
-            let bytes = s.as_bytes();
-            if let Some(room) = buf.len().checked_sub(1) {
-                // Cut at a UTF-8 boundary so the C string stays valid text.
-                let mut n = bytes.len().min(room);
-                while n > 0 && !s.is_char_boundary(n) {
-                    n -= 1;
-                }
-                buf[..n].copy_from_slice(&bytes[..n]);
-                buf[n] = 0;
-            }
-            bytes.len()
-        })
-        .unwrap_or(0)
+    LAST_ERROR.try_with(|s| copy_text(&s.borrow(), buf)).unwrap_or(0)
 }
 
 /// Message of a caught panic payload.

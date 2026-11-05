@@ -202,9 +202,9 @@ pub unsafe extern "C" fn smrt_dag_measure_volume(tracker: *const SmrtTracker, re
     })
 }
 
-/// DAGMC `measure_area`. The contract has no per-surface area table, so this returns
-/// `SMRT_ERR_UNSUPPORTED` (`-5`) for every valid surface (see the api change request in
-/// `W3_REPORT.md`). Unknown surfaces are `SMRT_ERR_UNKNOWN_ID`.
+/// DAGMC `measure_area`: the area of `surface` when the tracker knows it (the sum of its face
+/// areas for the mesh tracker). A tracker without surface areas (for example the contract's
+/// stub) returns `SMRT_ERR_UNSUPPORTED` (`-5`); an unknown surface is `SMRT_ERR_UNKNOWN_ID`.
 ///
 /// # Safety
 /// `tracker` is null or a live handle; `out_area` is null or valid for a write.
@@ -217,7 +217,77 @@ pub unsafe extern "C" fn smrt_dag_measure_area(tracker: *const SmrtTracker, surf
         if t.inner.surfaces().get(s).is_none() {
             return Err(sm_rt_api::RtError::UnknownId { kind: "surface", id: s.0 }.into());
         }
-        *out = f64::NAN;
-        Err(sm_rt_api::RtError::Unsupported("surface areas are not in the tracker contract").into())
+        match t.inner.surface_area(s)? {
+            Some(a) => {
+                *out = a;
+                Ok(SMRT_OK)
+            }
+            None => {
+                *out = f64::NAN;
+                Err(sm_rt_api::RtError::Unsupported("this tracker has no surface areas").into())
+            }
+        }
+    })
+}
+
+/// The faces of `surface` in ascending id order (`Tracker::surface_faces`): up to `cap` ids go to
+/// `out` and the full count to `*out_n` (a first call with `cap = 0` sizes the buffer). `out` may
+/// be null when `cap` is `0`. A tracker that does not list surface faces reports `0` faces.
+/// An unknown surface is `SMRT_ERR_UNKNOWN_ID`. Returns `0`.
+///
+/// # Safety
+/// `tracker` is null or a live handle; `out` is null or valid for `cap` writes; `out_n` is null or
+/// valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn smrt_dag_surface_faces(tracker: *const SmrtTracker, surface: i64, out: *mut i64, cap: i64, out_n: *mut i64) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract above.
+        let (t, out_n) = unsafe { (shared(tracker, "tracker")?, exclusive(out_n, "out_n")?) };
+        let cap = usize::try_from(cap).map_err(|_| Fail::bad("negative capacity"))?;
+        let s = surface_in(surface)?;
+        if t.inner.surfaces().get(s).is_none() {
+            return Err(sm_rt_api::RtError::UnknownId { kind: "surface", id: s.0 }.into());
+        }
+        let faces = t.inner.surface_faces(s);
+        if cap > 0 {
+            if out.is_null() {
+                return Err(Fail::Null("out"));
+            }
+            // SAFETY: `out` is non-null and valid for `cap` writes by the caller contract.
+            let dst = unsafe { std::slice::from_raw_parts_mut(out, cap) };
+            for (d, f) in dst.iter_mut().zip(faces) {
+                *d = id_out(f.0);
+            }
+        }
+        *out_n = i64::try_from(faces.len()).unwrap_or(i64::MAX);
+        Ok(SMRT_OK)
+    })
+}
+
+/// DAGMC `get_angle` by surface: the unit normal at `p[3]` of the lowest-numbered face of
+/// `surface` (`Tracker::surface_faces`), the normal of the whole surface when it is planar. For
+/// a curved or faceted surface, take the face a step or ray reported and call `smrt_dag_get_angle`.
+/// `SMRT_ERR_UNSUPPORTED` when the tracker lists no faces for the surface. Returns `0`.
+///
+/// # Safety
+/// `tracker` is null or a live handle; `p` three readable doubles; `out_normal` three writable
+/// doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn smrt_dag_get_angle_surface(tracker: *const SmrtTracker, surface: i64, p: *const f64, out_normal: *mut f64) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract above.
+        let (t, p) = unsafe { (shared(tracker, "tracker")?, read3(p, "p")?) };
+        if out_normal.is_null() {
+            return Err(Fail::Null("out_normal"));
+        }
+        let s = surface_in(surface)?;
+        if t.inner.surfaces().get(s).is_none() {
+            return Err(sm_rt_api::RtError::UnknownId { kind: "surface", id: s.0 }.into());
+        }
+        let face = t.inner.surface_faces(s).first().copied().ok_or(sm_rt_api::RtError::Unsupported("this tracker lists no faces for the surface"))?;
+        let n = compat::get_angle(&*t.inner, face, point(p))?;
+        // SAFETY: `out_normal` is non-null and valid for three doubles by the caller contract.
+        unsafe { write3(out_normal, arr(n), "out_normal")? };
+        Ok(SMRT_OK)
     })
 }

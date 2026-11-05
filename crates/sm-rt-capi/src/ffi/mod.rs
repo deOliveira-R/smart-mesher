@@ -15,11 +15,13 @@ use std::sync::{Arc, OnceLock};
 
 mod bundle;
 mod dag;
+mod flight;
 mod info;
 mod track;
 
 pub use bundle::*;
 pub use dag::*;
+pub use flight::*;
 pub use info::*;
 pub use track::*;
 
@@ -165,4 +167,25 @@ pub(crate) fn same_tracker(t: &SmrtTracker, c: &SmrtCtx) -> Result<(), Fail> {
     } else {
         Err(Fail::bad("ctx was created from a different tracker"))
     }
+}
+
+/// Copy `s` into the caller's buffer (`snprintf` semantics) and return its length as a status.
+/// `buf` may be null only when `cap` is `0`.
+///
+/// # Safety
+/// `buf` is null or valid for `cap` bytes of writes.
+pub(crate) unsafe fn write_text(s: &str, buf: *mut std::ffi::c_char, cap: i64, name: &'static str) -> Result<i32, Fail> {
+    let cap = usize::try_from(cap).map_err(|_| Fail::bad("negative buffer capacity"))?;
+    let len = if cap == 0 {
+        s.len()
+    } else {
+        if buf.is_null() {
+            return Err(Fail::Null(name));
+        }
+        // SAFETY: `buf` is non-null and valid for `cap` bytes by the caller contract; `u8` and
+        // `c_char` have the same layout.
+        let dst = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), cap) };
+        crate::status::copy_text(s, dst)
+    };
+    Ok(i32::try_from(len).unwrap_or(i32::MAX))
 }

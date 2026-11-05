@@ -20,6 +20,7 @@ pub mod bundle;
 pub mod convert;
 #[allow(unsafe_code)]
 pub mod ffi;
+pub mod loader;
 pub mod status;
 pub mod types;
 
