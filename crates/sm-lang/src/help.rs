@@ -114,8 +114,14 @@ pub fn language_summary() -> &'static str {
 "
 }
 
-/// Detailed help for one op or query.
+/// Detailed help for one op or query, with the default export formats.
 pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
+    let formats: Vec<String> = crate::host::DEFAULT_EXPORT_FORMATS.iter().map(|s| (*s).to_owned()).collect();
+    op_help_with_formats(registry, name, &formats)
+}
+
+/// Detailed help for one op or query; `session.export` lists `formats` (a host's `Host::export_formats`).
+pub fn op_help_with_formats(registry: &Registry, name: &str, formats: &[String]) -> Result<String, String> {
     if name == "language" {
         return Ok(language_summary().to_owned());
     }
@@ -131,7 +137,10 @@ pub fn op_help(registry: &Registry, name: &str) -> Result<String, String> {
     }
     if let Some(verb) = name.strip_prefix("session.") {
         return match verb {
-            "export" => Ok("session.export(path: string, format?: \"smsh\" | \"vtu\" | \"exodus\" | \"openfoam\", mesh?: id, provenance?: bool)  (session command, not an op)\nWrite a mesh to a file. `path` may be positional; a relative path is resolved by the host. `format` defaults to the file extension (`openfoam` must be named, and `path` is then the case directory); `mesh` defaults to the only mesh; `provenance` embeds the timeline hash.\n".to_owned()),
+            "export" => Ok(format!(
+                "session.export(path: string, format?: {}, mesh?: id, provenance?: bool)  (session command, not an op)\nWrite a mesh to a file. `path` may be positional; a relative path is resolved by the host. `format` defaults to the file extension (`openfoam` must be named, and `path` is then the case directory); `mesh` defaults to the only mesh; `provenance` embeds the timeline hash.\n",
+                formats.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>().join(" | ")
+            )),
             "save" => Ok("session.save()  (session command, not an op)\nSave the project.\n".to_owned()),
             "hash" => Ok("session.hash()  (session command, not an op)\nReturns the state hash. May be used in expressions.\n".to_owned()),
             "stage" => Ok("session.stage(path: string)  (session command, not an op)\nStore a file\'s bytes in the project input store. Returns {sha256, bytes}; pass the sha256 to ops such as `model.import_step`. May be used in expressions. The host reads the file; the language does no I/O.\n".to_owned()),

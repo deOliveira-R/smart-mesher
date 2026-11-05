@@ -119,11 +119,15 @@ impl TimelineHead {
     }
 }
 
+/// The export formats a host accepts unless it says otherwise (see [`Host::export_formats`]).
+pub const DEFAULT_EXPORT_FORMATS: [&str; 4] = ["smsh", "vtu", "exodus", "openfoam"];
+
 /// What the interpreter needs from its environment.
 ///
-/// Production hosts adapt a timeline `Session` (one node per applied record). sm-lang itself never
+/// Production hosts adapt a timeline `Session` (one node per applied record). The interpreter never
 /// builds a `Meta` (author/time are not its business), so [`EngineHost`] applies through
 /// `Engine::apply_record_canonical`, the documented replay path, and [`PlanHost`] applies nothing.
+/// Only `verify_recording` builds one (`Meta::default()`), for its private replay session.
 pub trait Host {
     /// The op/query registry.
     fn registry(&self) -> &Registry;
@@ -156,6 +160,12 @@ pub trait Host {
     /// Never called when [`executes`](Self::executes) is false.
     fn session(&mut self, cmd: &SessionCommand) -> Result<Json, HostError> {
         Err(HostError { code: "session-unsupported".into(), message: format!("this host has no session: `session.{}` is unavailable", cmd.verb()) })
+    }
+    /// The format names `session.export(format: ...)` accepts, in the order help and completion list them.
+    /// The default is the four formats the language shipped with, so a host that adds a format (`step`, `msh4`, `h5m`)
+    /// overrides this and needs no change in this crate.
+    fn export_formats(&self) -> Vec<String> {
+        DEFAULT_EXPORT_FORMATS.iter().map(|s| (*s).to_owned()).collect()
     }
     /// Text of an included file. The language performs no I/O itself.
     fn load(&mut self, path: &str) -> Result<String, String> {

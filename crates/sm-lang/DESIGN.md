@@ -123,3 +123,41 @@ Union gains nothing from chunking at this size; it is kept chunked only so that 
 * Completion is lexical: it does not infer the types of expressions beyond the enclosing call parameter; fields are offered only for variables that
   hold an op result or an object.
 * `QueryRelations` and `Relations` define a convention that the topology plugin has to implement (`W1_REPORT.md`).
+
+## W3b script record (`print.rs`, `record.rs`)
+
+The inverse of the parser: a timeline becomes a script that rebuilds it on an empty project. Pure functions of
+`(Registry, Timeline, Head, options)`; no I/O, no clock, no node hash, author, time or message in the text.
+
+* **Printer** (`print_op`): `name(arg: value, ...)`, arguments in schema order (required first, then by name; this is `View::params()`), floats by
+  `fmt_num`, `i64::MIN` as `-9223372036854775807 - 1` (the literal does not lex), only the lexer's string escapes (`\$` before `{`),
+  ids in id-typed positions as script ids (`Face#3`, `GeomSurface#7`), everywhere else strings stay strings. A key that is not a plain
+  identifier goes through `...{ "k": v }`. `Style::Raw` puts every parameter in one spread and keeps ids as strings.
+  `core.batch` prints as `batch { let b<ordinal>m<member> = op(...) ... }`; only referenced members are bound. `"$i.role[k]"` is
+  `b.role[k]`, `"$i.role[*]"` is `b.role` as an array element, a stored `"$$x"` is the literal `"$x"`. A stored bare `"$i.role"` has no source
+  form (`PrintError::BareReference`, or `normalize_refs` writes `[0]`).
+* **Self-check** (always on): each statement is lexed and parsed again and folded to JSON by a small constant folder (no interpreter, no
+  registry); the JSON must equal the record's params exactly (integer against float kind, f64 bits except `-0.0`, key set, order).
+  A mismatch is `PrintError::RoundTrip`; the readable form then falls back to `Raw` for that statement with `RecordNote::RawFallback`.
+* **Recorder** (`record_script`): `Forks::Head` is the root path of the head's node (replay starts on an unborn `main`, so a head on `r != main` ends
+  with `timeline.branch("r")` and `main` also exists at the tip: documented, Q12). `Forks::Refs` walks the union of the ref root paths as a tree
+  (children in node-hash order). It starts `timeline.checkout(empty: true)`; a ref is created with `timeline.branch` where it is reached;
+  at a fork every child is carried by the smallest ref name in its subtree, all carriers are created at the fork first, the child the
+  attached ref continues into goes last, and the others are entered with `timeline.checkout("<carrier>")`. A lone child on a detached run with
+  nothing to leave behind continues detached. The script ends with `timeline.checkout("<head ref>")` when the source head is attached.
+  Nodes reachable from no ref are not recorded (`Orphans`). `Check::Tips` (default) appends `assert session.hash() == "<hex>"` (the stored
+  `Check.state`) after every ref tip; the production host's `session.hash()` is the hex string itself, so there is no `.state`.
+  Older op versions are printed from `decode` then `OpRecord::of` (`Migrated`); a nested batch member of another version is
+  `PrintError::Unprintable`. `source: { sha256 }` anywhere in a record is a `Requirement::Input` and a header line.
+* **Verification** (`verify_recording`): runs the text in a fresh `Session` through the interpreter and compares, per recorded ref, the tip state hash and
+  the records on the root path (source records migrated). A failing statement is reported by number and by the node it records.
+
+Deferred:
+
+* `ids: bind` (print ids created by earlier statements as `let b = ...; b.body`, so a script replays on a non-empty project): needs the op outputs,
+  which the timeline does not store. Literal ids are exact only on an empty project.
+* Node messages and authors as comments, `Forks::All` (orphans through temporary refs), `timeline.reset`, restoring a detached head.
+* Raw does not bypass the language's liveness check of an id-typed parameter (`entity-not-found`); a record naming an id the op accepted
+  but the language considers dead has no script form that replays. `verify_recording` reports it with its node.
+* Transport and surfaces (protocol `script.record`, `smesh record`, the MCP tool): W3b-SERVER-HOST. The STEP writer as an export format is not here:
+  `Host::export_formats` lets a host add `step`, `msh4` or `h5m` without an edit in this crate.
