@@ -228,6 +228,15 @@ impl MeshEdit for Mesh {
         self.sets.sort_by_key(|s| s.id);
         Ok(id)
     }
+    fn remove_set(&mut self, id: EntityId) -> Result<()> {
+        let i = self
+            .sets
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| MeshError::State(format!("no set {id}")))?;
+        self.sets.remove(i);
+        Ok(())
+    }
     fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {
         let i = self
             .sets

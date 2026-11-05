@@ -3,8 +3,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
-use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh, retire_mesh};
+use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer, insert_mesh};
 use sm_mesh::MeshBuilder;
+use sm_mesh_api::{MeshEntityKind, MeshRead};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_scheme_api::{Driver, DriverOptions, MeshInput, SchemeError, WholeFaces};
 use sm_topo_api::Dim;
@@ -205,8 +206,52 @@ impl TypedOp for MeshDelete {
         meshes.sort_unstable();
         meshes.dedup();
         for m in meshes {
-            retire_mesh(ctx, m)?;
+            retire_mesh_bulk(ctx, m)?;
         }
         Ok(())
     }
+}
+
+/// Same contract as `sm_layer_api::retire_mesh` (retires the `Mesh` id and every vertex,
+/// edge, face, cell and set id of the mesh), but retires consecutive id runs with
+/// [`ApplyCtx::retire_range`]. State hash and `Delta::removed` are identical to the per-id path.
+fn retire_mesh_bulk(ctx: &mut ApplyCtx<'_>, mesh: EntityId) -> Result<(), OpError> {
+    let ids = {
+        let entry = ctx
+            .layer::<MeshLayer>()?
+            .get(mesh)
+            .ok_or(OpError::UnknownEntity(mesh))?;
+        let m: &dyn MeshRead = entry.mesh();
+        let mut ids = vec![mesh];
+        for kind in [
+            MeshEntityKind::Vertex,
+            MeshEntityKind::Edge,
+            MeshEntityKind::Face,
+            MeshEntityKind::Cell,
+        ] {
+            ids.extend((0..m.count(kind)).map(|i| m.id(kind, i as u32)));
+        }
+        ids.extend(m.sets().iter().map(|s| s.id));
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    // Maximal consecutive runs of one kind.
+    let mut runs: Vec<(EntityId, u64)> = Vec::new();
+    for &id in &ids {
+        match runs.last_mut() {
+            Some((first, n))
+                if first.kind() == id.kind() && first.serial() + *n == id.serial() =>
+            {
+                *n += 1;
+            }
+            _ => runs.push((id, 1)),
+        }
+    }
+    // A dead id fails the op, and the engine then discards the whole scratch state.
+    ctx.layer_mut::<MeshLayer>()?.remove(mesh);
+    for (first, n) in runs {
+        ctx.retire_range(first, n)?;
+    }
+    Ok(())
 }

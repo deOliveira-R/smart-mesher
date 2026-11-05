@@ -490,6 +490,13 @@ pub trait MeshEdit: MeshRead {
         members: SetMembers,
         alloc: &mut SerialAlloc,
     ) -> Result<EntityId>;
+    /// Remove the set with id `id`. The mesh must afterwards equal (content, set list, state
+    /// hash) the mesh before that set was added: no tombstone or counter remains. The caller
+    /// retires the id. Provided: implementations without set removal return `Unsupported`.
+    fn remove_set(&mut self, id: EntityId) -> Result<()> {
+        let _ = id;
+        Err(MeshError::Unsupported("remove_set".into()))
+    }
     /// Set or clear the integer label of the set `name` (must stay unique per members kind).
     /// Provided: implementations without labels return `Unsupported`.
     fn set_label(&mut self, name: &str, label: Option<i64>) -> Result<()> {

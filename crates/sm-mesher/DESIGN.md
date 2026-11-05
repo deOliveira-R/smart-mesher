@@ -156,8 +156,17 @@ removal ~0, and the per-id `ApplyCtx::retire` loop 7-11 s, i.e. nearly all of `m
 bulk. The remainder of `mesh.run` over the driver is the state hash after the op.
 `ApplyCtx::retire` costs a SHA-256 for the multiset accumulator, a `BTreeSet` insert and a push
 to `Delta.removed` per id; `State::retire` is crate-private to sm-op-api, so a bulk retire cannot
-be built from sm-layer-api. It needs an `ApplyCtx::retire_range` (see the wave report). After:
-unchanged, nothing adopted by this item (hashes unchanged).
+be built from sm-layer-api. It needs an `ApplyCtx::retire_range` (see the wave report).
+
+After (w3b-0, P4): `ApplyCtx::retire_range(first, n)` retires a consecutive run with one liveness
+range query, a bulk-built `BTreeSet` and one `Delta.removed` reserve; the accumulator and state
+hash are bit-identical to per-id `retire` (test `retire_range_equals_per_id_retire` in
+sm-op-api). `mesh.delete` coalesces the sorted mesh ids into runs (`retire_mesh_bulk` in
+`mesh_ops.rs`; same contract as `sm_layer_api::retire_mesh`). Same test, same loaded machine,
+n=100: `mesh.delete` 4.5 s (was 5.6-12 s), `mesh.run` 11.6 s (unchanged). The rest of
+`mesh.delete` is one SHA-256 per id for the multiset accumulator (5.06 M); making that parallel
+needs `rayon` in sm-op-api (the sum is order-independent, so the result would stay identical).
+Hashes unchanged.
 
 The stub schemes are reference code; the numbers bound the driver and commit path, they do not
 predict production schemes.
