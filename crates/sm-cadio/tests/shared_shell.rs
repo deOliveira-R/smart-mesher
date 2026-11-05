@@ -41,7 +41,6 @@ fn shell_fan(fixture: &[u8], n: usize) -> Vec<u8> {
 
 #[test]
 fn a_few_solids_over_one_shell_are_decoded_once_and_cloned() {
-    let _serial = serial();
     let one = read_step(sm_testkit::step::BOX_FILLET1.bytes, &ReadOptions::default()).expect("one");
     let m = read_step(&fan(sm_testkit::step::BOX_FILLET1.bytes, 3), &ReadOptions::default()).expect("fan of 3");
     assert_eq!(m.solids.len(), 4);
@@ -56,7 +55,6 @@ fn a_few_solids_over_one_shell_are_decoded_once_and_cloned() {
 
 #[test]
 fn a_few_distinct_shells_over_the_same_faces_still_read() {
-    let _serial = serial();
     let one = read_step(sm_testkit::step::BOX_FILLET1.bytes, &ReadOptions::default()).expect("one");
     let m = read_step(&shell_fan(sm_testkit::step::BOX_FILLET1.bytes, 3), &ReadOptions::default()).expect("3 shells");
     assert_eq!(m.solids.len(), 4);
@@ -65,16 +63,9 @@ fn a_few_distinct_shells_over_the_same_faces_still_read() {
     }
 }
 
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn assert_refused_fast(bytes: &[u8], name: &str) {
-    let _serial = serial();
-    let w0 = sm_cadio::work();
-    let e = read_step(bytes, &ReadOptions::default()).expect_err(name);
-    let w = sm_cadio::work().since(w0);
+    let (res, w) = sm_cadio::read_step_metered(bytes, &ReadOptions::default());
+    let e = res.expect_err(name);
     eprintln!("{name}: {} bytes refused, {w:?}: {e}", bytes.len());
     assert!(matches!(e, StepError::DecodeBudget { .. }), "{name}: {e:?}");
     assert_eq!(e.code(), "step.decode_budget");
@@ -82,6 +73,10 @@ fn assert_refused_fast(bytes: &[u8], name: &str) {
     assert!(msg.contains("copies") && !msg.contains("assembly flattening"), "{msg}");
     // Refused from the entity graph before any body is decoded.
     assert_eq!(w.solids_decoded, 0, "{name}: {w:?}");
+    // Parse work is bounded by the input (each entity takes at least `#n=X();`), and nothing
+    // after the refusal ran: no closure checks, no assembly walk, no projections.
+    assert!(w.entities_parsed > 0 && w.entities_parsed as usize <= bytes.len() / 6, "{name}: {w:?}");
+    assert_eq!((w.closure_coedges, w.walk_steps, w.newton_runs, w.global_projections), (0, 0, 0, 0), "{name}: {w:?}");
 }
 
 #[test]
@@ -103,7 +98,6 @@ fn loft_with_4000_distinct_shells_over_its_faces_is_refused_before_decoding() {
 
 #[test]
 fn a_closed_nurbs_face_that_cannot_be_split_is_kept_with_a_warning() {
-    let _serial = serial();
     // The loft's lateral face also runs its bottom circle (#21) forward and back: still closed,
     // but no longer the plain seam configuration the splitter handles.
     let text = String::from_utf8(sm_testkit::step::LOFT_BSPLINE.bytes.to_vec()).expect("utf8");

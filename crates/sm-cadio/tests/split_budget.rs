@@ -134,12 +134,6 @@ fn stack(sides: usize, rows: usize, k: usize, seams: &[usize]) -> (Vec<u8>, f64,
     (w.s.into_bytes(), vol, (seams.len() + 1) * m + seams.len())
 }
 
-/// The tests of this binary run one at a time: two of them compare work counters.
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn env(name: &str, default: usize) -> usize {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -149,9 +143,7 @@ fn env(name: &str, default: usize) -> usize {
 /// when it read, and the exact volume.
 fn run(sides: usize, rows: usize, k: usize) -> (sm_cadio::Work, Option<sm_cadio::BrepModel>, f64) {
     let (bytes, vol, edges) = prism(sides, rows, k);
-    let w0 = sm_cadio::work();
-    let res = read_step(&bytes, &ReadOptions::default());
-    let dt = sm_cadio::work().since(w0);
+    let (res, dt) = sm_cadio::read_step_metered(&bytes, &ReadOptions::default());
     match res {
         Ok(m) => {
             let split = m.notes.iter().any(|n| n.code == NoteCode::SplitClosedFace && n.severity == NoteSeverity::Info);
@@ -172,7 +164,6 @@ fn run(sides: usize, rows: usize, k: usize) -> (sm_cadio::Work, Option<sm_cadio:
 /// 1e-6 of the platform quadrature over piecewise-linear patches).
 #[test]
 fn a_small_closed_bspline_prism_reads_splits_and_measures() {
-    let _serial = serial();
     let (_, m, vol) = run(5, 4, 3);
     let m = m.expect("reads");
     let (h, r) = common::import_into(common::cell_complex, &m);
@@ -189,11 +180,10 @@ fn a_small_closed_bspline_prism_reads_splits_and_measures() {
 /// overridden for measurement with `SPLIT_SIDES`, `SPLIT_ROWS`, `SPLIT_K`.
 #[test]
 fn a_large_closed_bspline_face_with_many_edges_decodes_in_linear_time() {
-    let _serial = serial();
     let (sides, rows, k) = (env("SPLIT_SIDES", 199), env("SPLIT_ROWS", 200), env("SPLIT_K", 3));
     let (w_half, w_full) = (run(sides / 2, rows / 2, k).0, run(sides, rows, k).0);
     // Global (grid search) projections are capped per face, however many edges bound it.
-    assert!(w_full.global_projections <= 16, "{w_full:?}");
+    assert!(w_full.global_projections <= sm_cadio::MAX_GLOBAL as u64, "{w_full:?}");
     // Linear work: 2x the edges is about 2x the Newton runs (`E nu nv` work would show up as
     // far more runs or global searches).
     assert!(w_full.newton_runs <= 3 * w_half.newton_runs.max(100), "full {w_full:?} vs half {w_half:?}");
@@ -203,7 +193,6 @@ fn a_large_closed_bspline_face_with_many_edges_decodes_in_linear_time() {
 /// ring of same-seam layers) are split like any other: the crossing is the vertex itself.
 #[test]
 fn generators_through_boundary_vertices_split_the_face() {
-    let _serial = serial();
     // (sides, k, seams): square and triangle with one edge per side, corner cuts with sub-vertices,
     // and layers whose seams coincide (the generators of each layer meet the shared ring at the
     // vertices the layer below created).
@@ -232,7 +221,6 @@ fn generators_through_boundary_vertices_split_the_face() {
 /// realizes valid and has the exact volume.
 #[test]
 fn two_split_faces_sharing_cut_edges_both_split() {
-    let _serial = serial();
     let (bytes, vol, _) = stack(5, 4, 3, &[0, 2]);
     let m = read_step(&bytes, &ReadOptions::default()).expect("reads");
     let splits = m.notes.iter().filter(|n| n.code == NoteCode::SplitClosedFace && n.severity == NoteSeverity::Info).count();
@@ -254,14 +242,12 @@ fn two_split_faces_sharing_cut_edges_both_split() {
 /// solid). `SPLIT_LAYERS` overrides the size.
 #[test]
 fn many_split_faces_in_one_solid_cost_linear_time() {
-    let _serial = serial();
     let layers = env("SPLIT_LAYERS", 200);
     let time = |n: usize| {
         let seams: Vec<usize> = (0..n).map(|l| 2 * (l % 2)).collect();
         let (bytes, _, _) = stack(5, 4, 3, &seams);
-        let w0 = sm_cadio::work();
-        let m = read_step(&bytes, &ReadOptions::default()).expect("reads");
-        let w = sm_cadio::work().since(w0);
+        let (m, w) = sm_cadio::read_step_metered(&bytes, &ReadOptions::default());
+        let m = m.expect("reads");
         assert_eq!(m.solids[0].faces.len(), 2 + 4 * n);
         eprintln!("{n} layers: {} bytes, {w:?}", bytes.len());
         w.closure_coedges
@@ -269,4 +255,22 @@ fn many_split_faces_in_one_solid_cost_linear_time() {
     let (half, full) = (time(layers / 2), time(layers));
     // Quadratic work (one whole-solid check per split) would be 4x per doubling.
     assert!(full <= 3 * half.max(1), "full {full} vs half {half} coedge visits");
+}
+
+/// Counters are per read: the same file gives the same totals every time, whatever else runs
+/// (no process-wide accumulation), and `newton_runs` is the cost of that one read.
+#[test]
+fn work_is_counted_per_run_and_does_not_accumulate() {
+    let (bytes, _, _) = prism(5, 4, 3);
+    let o = ReadOptions::default();
+    let (_, a) = sm_cadio::read_step_metered(&bytes, &o);
+    let (_, b) = sm_cadio::read_step_metered(&bytes, &o);
+    assert!(a.newton_runs > 0 && a.solids_decoded == 1, "{a:?}");
+    assert_eq!(a, b);
+    // Concurrent reads do not mix their counters.
+    let totals: Vec<sm_cadio::Work> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4).map(|_| s.spawn(|| sm_cadio::read_step_metered(&bytes, &o).1)).collect();
+        hs.into_iter().map(|h| h.join().expect("thread")).collect()
+    });
+    assert!(totals.iter().all(|t| *t == a), "{totals:?} vs {a:?}");
 }

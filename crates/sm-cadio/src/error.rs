@@ -151,6 +151,15 @@ pub enum StepError {
     /// The writer cannot export the model (or an I/O error while writing).
     #[error("export: {0}")]
     Export(String),
+    /// An export selection names a cell that does not exist (or is no longer alive).
+    #[error("export: {cell} is not a live cell of the model")]
+    UnknownCell {
+        /// The cell.
+        cell: sm_core::EntityId,
+    },
+    /// An export selection is empty, or selects nothing that has a volume.
+    #[error("export: the selection has no volume to write")]
+    EmptySelection,
 }
 
 fn fmt_open(issues: &[OpenEdge]) -> String {
@@ -195,12 +204,17 @@ impl StepError {
             Self::Inline(_) => "step.inline",
             Self::Export(_) => "step.export",
             Self::BadOption(_) => "step.bad_option",
+            Self::UnknownCell { .. } => "step.unknown_cell",
+            Self::EmptySelection => "step.empty_selection",
         }
     }
 }
 
 impl From<StepError> for OpError {
     fn from(e: StepError) -> Self {
+        if let StepError::UnknownCell { cell } = e {
+            return OpError::UnknownEntity(cell);
+        }
         OpError::Invalid(format!("{}: {e}", e.code()))
     }
 }

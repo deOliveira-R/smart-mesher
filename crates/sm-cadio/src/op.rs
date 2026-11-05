@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::{ModelLayer, TopoHost, commit_topology, topo_txn};
-use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
+use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 use sm_topo_api::{Severity, TopologyView, check_cells, validate_geometry};
 
 use crate::decode::read_step;
@@ -12,6 +12,7 @@ use crate::inputs::StepInputs;
 use crate::model::{LengthUnit, NoteCode, NoteSeverity, ReadOptions};
 use crate::realize::{RealizeOptions, realize};
 use crate::source::{Source, load};
+use crate::write::{StepSchema, WriteOptions, WriteReport, export_step};
 
 /// Output roles of the import (all `Many`, in STEP-id order).
 const IMPORT_OUTPUTS: &[OutputRole] = &[
@@ -156,5 +157,82 @@ impl TypedOp for ImportStep {
             ctx.warn("step.validate", msg, &[cell]);
         }
         Ok(())
+    }
+}
+
+/// STEP application protocol of `model.export`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportSchema {
+    /// AP214 (default).
+    #[default]
+    Ap214,
+    /// AP242.
+    Ap242,
+}
+
+/// `model.export {bodies?, schema?, path?}`: the model's bodies as STEP text.
+///
+/// A read-only command, not a timeline op: it adds no timeline node and leaves the state hash
+/// unchanged, so replay never writes a file. The reply carries the bytes (base64) and a
+/// [`WriteReport`] (entities written, and what STEP cannot hold, located by cell). Output is
+/// byte-identical for equal input: fixed header time stamp, entities numbered in model-id
+/// order.
+///
+/// - `bodies`: bodies (standing for their volumes) or volumes to write; default every body
+///   (every volume when the model has no bodies). An empty list, a dead id or an id of another
+///   kind is refused, naming the entity.
+/// - `schema`: `ap214` (default) or `ap242`.
+/// - `path`: accepted so the input schema is stable; this library ignores it. The server host
+///   writes the bytes to a session path outside history.
+///
+/// Errors: `unknown-entity`, `wrong-kind`, or `invalid-params` with a `step.*` code
+/// (`step.unsupported` names the cell whose curve or surface kind STEP export cannot hold).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportStepQuery {
+    /// Bodies or volumes to write (default all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-entity-kind" = ["TopoBody", "TopoVolume"]))]
+    pub bodies: Option<Vec<EntityId>>,
+    /// STEP application protocol (default `ap214`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<ExportSchema>,
+    /// Session path to write to (honoured by the server host, ignored here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Reply of `model.export`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExportStepReply {
+    /// The STEP file, base64 (standard alphabet, padded).
+    pub step: String,
+    /// What was written and what was lost.
+    pub report: WriteReport,
+}
+
+impl TypedQuery for ExportStepQuery {
+    const NAME: &'static str = "model.export";
+    type Output = ExportStepReply;
+
+    fn run(&self, state: &State, _cx: &QueryCtx<'_>) -> Result<ExportStepReply, OpError> {
+        use base64::Engine as _;
+        let layer = state.layer::<ModelLayer>().ok_or_else(|| OpError::MissingLayer(<ModelLayer as sm_op_api::LayerType>::NAME.to_owned()))?;
+        if let Some(list) = &self.bodies {
+            for &id in list {
+                if layer.topo().is_alive(id) && !matches!(id.kind(), EntityKind::TopoBody | EntityKind::TopoVolume) {
+                    return Err(OpError::WrongKind { id, expected: EntityKind::TopoBody });
+                }
+            }
+        }
+        let schema = match self.schema.unwrap_or_default() {
+            ExportSchema::Ap214 => StepSchema::Ap214,
+            ExportSchema::Ap242 => StepSchema::Ap242,
+        };
+        let opts = WriteOptions { schema, ..WriteOptions::default() };
+        let mut buf = Vec::new();
+        let report = export_step(state, self.bodies.as_deref(), &opts, &mut buf)?;
+        Ok(ExportStepReply { step: base64::engine::general_purpose::STANDARD.encode(&buf), report })
     }
 }

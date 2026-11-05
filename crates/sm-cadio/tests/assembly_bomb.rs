@@ -35,25 +35,28 @@ fn fan_out_file(fan: usize, levels: usize) -> Vec<u8> {
 
 #[test]
 fn a_fan_out_bomb_is_refused_with_a_typed_error() {
-    let _serial = serial();
     // 4 links per level over 12 levels would be 4^12 = 16.7M solids from about 17 KB.
     let bytes = fan_out_file(4, 12);
     assert!(bytes.len() < 40_000, "{}", bytes.len());
-    let e = read_step(&bytes, &ReadOptions { assume_unit: None, ..ReadOptions::default() }).expect_err("bomb");
+    let (res, w) = sm_cadio::read_step_metered(&bytes, &ReadOptions { assume_unit: None, ..ReadOptions::default() });
+    let e = res.expect_err("bomb");
+    // The refusal bounds the work: parse is linear in the file, the walk is capped by the
+    // instance limit (not 4^12), and no solid is decoded.
+    assert!(w.entities_parsed as usize <= bytes.len() / 6, "{w:?}");
+    assert!(w.walk_steps <= 16 * 1024, "{w:?}");
+    assert_eq!(w.solids_decoded, 0, "{w:?}");
     assert!(matches!(e, StepError::TooManyInstances { .. }), "{e:?}");
     assert_eq!(e.code(), "step.too_many_instances");
 }
 
 #[test]
 fn a_modest_nesting_still_flattens() {
-    let _serial = serial();
     let m = read_step(&fan_out_file(2, 3), &ReadOptions::default()).expect("2^3 instances");
     assert_eq!(m.solids.len(), 8);
 }
 
 #[test]
 fn a_self_linked_cycle_with_high_fan_out_stops_at_the_first_revisit_and_falls_back_to_local_coordinates() {
-    let _serial = serial();
     // The representation linked to itself `fan` times: the first revisit is a cycle (the old
     // depth counter did fan^16 work first).
     let mut s = pin_prefix();
@@ -64,17 +67,12 @@ fn a_self_linked_cycle_with_high_fan_out_stops_at_the_first_revisit_and_falls_ba
     }
     s += "#1100 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#1,#1,$);\n";
     s += FOOTER;
-    let w0 = sm_cadio::work();
-    let m = read_step(s.as_bytes(), &ReadOptions::default()).expect("a cycle degrades, it does not fail");
+    let (m, w) = sm_cadio::read_step_metered(s.as_bytes(), &ReadOptions::default());
+    let m = m.expect("a cycle degrades, it does not fail");
     // The first revisit stops the walk: a handful of steps, not fan^16.
-    let steps = sm_cadio::work().since(w0).walk_steps;
+    let steps = w.walk_steps;
     assert!(steps <= 4, "{steps} walk steps");
     assert_eq!(m.solids.len(), 1);
     assert!(m.notes.iter().any(|n| n.code.as_str() == "step.assembly_transforms_ignored"), "{:?}", m.notes);
 }
 
-/// Tests that read counters run one at a time (the counters are process-wide).
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}

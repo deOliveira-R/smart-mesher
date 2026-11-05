@@ -1319,6 +1319,7 @@ dependencies = [
  "sm-geom-api",
  "sm-layer-api",
  "sm-op-api",
+ "sm-server",
  "sm-testkit",
  "sm-topo",
  "sm-topo-api",

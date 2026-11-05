@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Frame, SurfaceDef};
 use sm_layer_api::ModelLayer;
@@ -54,7 +56,7 @@ impl Default for WriteOptions {
 }
 
 /// Something the STEP file cannot represent.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Loss {
     /// The cell concerned, if one.
     pub cell: Option<EntityId>,
@@ -63,7 +65,7 @@ pub struct Loss {
 }
 
 /// What [`write_step`] wrote.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteReport {
     /// Solids written (one per volume).
     pub solids: usize,
@@ -283,6 +285,14 @@ fn unit_entities(w: &mut Writer<'_>, unit: LengthUnit, unc: f64, cell: EntityId)
 
 fn volumes_of(view: &dyn TopologyView, bodies: Option<&[EntityId]>) -> Result<Vec<EntityId>, StepError> {
     let mut out: BTreeSet<EntityId> = BTreeSet::new();
+    if let Some(list) = bodies {
+        if list.is_empty() {
+            return Err(StepError::EmptySelection);
+        }
+        if let Some(&bad) = list.iter().find(|&&id| !view.is_alive(id)) {
+            return Err(StepError::UnknownCell { cell: bad });
+        }
+    }
     match bodies {
         None => {
             for &b in view.cells(Dim::Body) {
@@ -320,7 +330,7 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
     let tol = view.tolerance().linear;
     let mut wr = Writer { view, out: String::new(), next: 0 };
     let mut report = WriteReport::default();
-    let Some(&anchor) = volumes.first() else { return Err(export_err("there is no volume to write")) };
+    let Some(&anchor) = volumes.first() else { return Err(if bodies.is_some() { StepError::EmptySelection } else { export_err("there is no volume to write") }) };
     let ctx = unit_entities(&mut wr, o.unit, tol, anchor)?;
     // Product structure around the one representation (written last, it lists the solids).
     let ac = wr.add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
