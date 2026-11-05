@@ -37,7 +37,7 @@ class MeshOps:
         """`mesh.intervals`: ask for an interval count on volumes, faces or curves."""
 
     def run(self, *, targets: Sequence[EntityId | str]) -> ApplyResult:
-        """`mesh.run`: mesh whole volumes with the driver and store the result as one mesh.
+        """`mesh.run`: mesh whole volumes, or faces only, with the driver and store the result as one mesh.
         Output `mesh` (one, Mesh): the new mesh"""
 
     def scheme(self, *, fallbacks: Sequence[str] = ..., firmness: Literal['default', 'soft', 'hard'] | None = ..., params: Mapping[str, Any] | None = ..., scheme: str, targets: Sequence[EntityId | str]) -> ApplyResult:
@@ -46,7 +46,7 @@ class MeshOps:
     def size(self, *, auto: int | None = ..., firmness: Literal['default', 'soft', 'hard'] | None = ..., size: float | None = ..., targets: Sequence[EntityId | str]) -> ApplyResult:
         """`mesh.size`: ask for an element size on volumes, faces or curves."""
 
-    def smooth(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., tolerance: float | None = ...) -> ApplyResult:
+    def smooth(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., set: str | None = ..., tolerance: float | None = ...) -> ApplyResult:
         """`mesh.smooth`: smooth the nodes of a mesh in place (the mesh keeps its ids; no id is minted or retired). Boundary nodes stay on their curves and surfaces, vertices never move, and the guard refuses any move that makes an incident cell worse than `min(its ScaledJacobian, guard_floor)` or turns a positive volume non-positive."""
 
     def to_poly(self, *, keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
@@ -55,6 +55,11 @@ class MeshOps:
 
 class ModelOps:
     """Ops `model.*` (keyword-only; `s.ops.model.<op>(...)` applies one)."""
+    def copy(self, *, count: int | None = ..., entities: Sequence[EntityId | str], xform: Mapping[str, Any] | None = ...) -> ApplyResult:
+        """`model.copy`: `count` copies of the selected volumes or bodies.
+        Output `volumes` (many, TopoVolume): The new volumes, ascending.
+        Output `bodies` (many, TopoBody): The new bodies, ascending."""
+
     def create_brick(self, *, center: Sequence[float] | None = ..., x: float, y: float | None = ..., z: float | None = ...) -> ApplyResult:
         """`model.create_brick`: an axis-aligned box centred on `center` (default the origin).
         Output `body` (one, TopoBody): The new body.
@@ -71,8 +76,48 @@ class ModelOps:
         Output `edges` (many, TopoEdge): The edges of the solid.
         Output `vertices` (many, TopoVertex): The vertices of the solid."""
 
+    def create_frustum(self, *, center: Sequence[float] | None = ..., height: float, minor: float | None = ..., radius: float, top: float | None = ...) -> ApplyResult:
+        """`model.create_frustum`: a circular or elliptic cone, cone frustum, cylinder or apex, about the z axis through `center`.
+        Output `body` (one, TopoBody): The new body.
+        Output `volume` (one, TopoVolume): The new volume.
+        Output `faces` (many, TopoFace): The faces of the solid.
+        Output `edges` (many, TopoEdge): The edges of the solid.
+        Output `vertices` (many, TopoVertex): The vertices of the solid."""
+
+    def create_prism(self, *, center: Sequence[float] | None = ..., height: float, minor: float | None = ..., radius: float, sides: int) -> ApplyResult:
+        """`model.create_prism`: a regular `sides`-gon prism about the z axis through `center`.
+        Output `body` (one, TopoBody): The new body.
+        Output `volume` (one, TopoVolume): The new volume.
+        Output `faces` (many, TopoFace): The faces of the solid.
+        Output `edges` (many, TopoEdge): The edges of the solid.
+        Output `vertices` (many, TopoVertex): The vertices of the solid."""
+
+    def create_pyramid(self, *, center: Sequence[float] | None = ..., height: float, minor: float | None = ..., radius: float, sides: int, top: float | None = ...) -> ApplyResult:
+        """`model.create_pyramid`: a regular `sides`-gon pyramid or truncated pyramid.
+        Output `body` (one, TopoBody): The new body.
+        Output `volume` (one, TopoVolume): The new volume.
+        Output `faces` (many, TopoFace): The faces of the solid.
+        Output `edges` (many, TopoEdge): The edges of the solid.
+        Output `vertices` (many, TopoVertex): The vertices of the solid."""
+
     def create_sphere(self, *, center: Sequence[float] | None = ..., radius: float) -> ApplyResult:
         """`model.create_sphere`: a solid sphere centred on `center` (default the origin).
+        Output `body` (one, TopoBody): The new body.
+        Output `volume` (one, TopoVolume): The new volume.
+        Output `faces` (many, TopoFace): The faces of the solid.
+        Output `edges` (many, TopoEdge): The edges of the solid.
+        Output `vertices` (many, TopoVertex): The vertices of the solid."""
+
+    def create_sphere_part(self, *, center: Sequence[float] | None = ..., inner: float | None = ..., octants: Mapping[str, Any] | None = ..., radius: float) -> ApplyResult:
+        """`model.create_sphere_part`: the general form of `model.create_sphere`.
+        Output `body` (one, TopoBody): The new body.
+        Output `volume` (one, TopoVolume): The new volume.
+        Output `faces` (many, TopoFace): The faces of the solid.
+        Output `edges` (many, TopoEdge): The edges of the solid.
+        Output `vertices` (many, TopoVertex): The vertices of the solid."""
+
+    def create_torus(self, *, center: Sequence[float] | None = ..., major: float, minor: float) -> ApplyResult:
+        """`model.create_torus`: a solid ring torus about the z axis through `center`.
         Output `body` (one, TopoBody): The new body.
         Output `volume` (one, TopoVolume): The new volume.
         Output `faces` (many, TopoFace): The faces of the solid.
@@ -112,12 +157,20 @@ class ModelOps:
         """`model.move`: translate volumes by `delta`.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
 
+    def move_to(self, *, anchor: Literal['centroid', 'bbox_center'] | None = ..., entities: Sequence[EntityId | str], to: Sequence[float] | Mapping[str, Any] | EntityId | str) -> ApplyResult:
+        """`model.move_to`: translate the selection so that its anchor lands on `to`.
+        Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
+
     def reflect(self, *, entities: Sequence[EntityId | str], normal: Sequence[float], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.reflect`: mirror volumes in the plane through `origin` (default the origin) with normal `normal`. Face orientation is repaired, so the volumes keep a positive volume and outward normals.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
 
     def rotate(self, *, angle_deg: float, axis: Sequence[float], entities: Sequence[EntityId | str], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.rotate`: rotate volumes by `angle_deg` degrees (right-hand rule) about the axis through `origin` (default the origin) with direction `axis`.
+        Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
+
+    def rotate_about(self, *, angle_deg: float, axis: Sequence[float] | Literal['x', 'y', 'z'] | None = ..., entities: Sequence[EntityId | str], face: EntityId | str = ..., origin: Sequence[float] | None = ..., vertices: Sequence[EntityId | str] | None = ...) -> ApplyResult:
+        """`model.rotate_about`: rotate the selection by `angle_deg` (right-hand rule) about an axis given by exactly one of three forms.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
 
     def scale(self, *, entities: Sequence[EntityId | str], factor: float, origin: Sequence[float] | None = ...) -> ApplyResult:
@@ -172,13 +225,16 @@ class MeshQueries:
     def info(self, *, mesh: EntityId | str) -> Any:
         """`mesh.info`: counts, hashes and total measure of one mesh."""
 
+    def plan(self, *, attempts: bool = ..., mesh: EntityId | str = ..., targets: Sequence[EntityId | str] | None = ...) -> Any:
+        """`mesh.plan`: explain a mesh run. Read-only; no id is minted and nothing is generated."""
+
     def poly_info(self, *, mesh: EntityId | str) -> Any:
         """`mesh.poly_info`: statistics of a mesh (faces per cell, vertices per face, planarity, volumes, boundary area). Equal to [`poly_stats`]."""
 
     def quality(self, *, bins: int = ..., mesh: EntityId | str = ..., metrics: Sequence[str] | None = ..., profile: Literal['generic', 'openfoam', 'fluent', 'transport'] = ..., thresholds: Mapping[str, Any] = ..., worst_n: int = ...) -> Any:
         """`mesh.quality`: grade a mesh against a profile and say where and why it is bad."""
 
-    def smooth_preview(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., tolerance: float | None = ...) -> Any:
+    def smooth_preview(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., set: str | None = ..., tolerance: float | None = ...) -> Any:
         """`mesh.smooth_preview`: the [`SmoothReport`] `mesh.smooth` would produce, without changing the state. Same arguments as [`MeshSmooth`]."""
 
     def validate(self, *, geometry: bool = ..., limit: int = ..., mesh: EntityId | str = ..., min_volume: float = ..., planarity: float = ...) -> Any:
@@ -186,6 +242,9 @@ class MeshQueries:
 
 class ModelQueries:
     """Queries `model.*` (`s.q.model.<query>(...)`; read-only)."""
+    def export(self, *, bodies: Sequence[EntityId | str] | None = ..., path: str | None = ..., schema: Literal['ap214', 'ap242'] | None = ...) -> Any:
+        """`model.export {bodies?, schema?, path?}`: the model's bodies as STEP text."""
+
     def list(self, *, kind: Literal['TopoVertex', 'TopoEdge', 'TopoFace', 'TopoVolume', 'TopoBody', 'Curve', 'Surface', 'Color', 'Group', 'Boundary', 'Instance', 'Prototype', 'Lattice', 'Symmetry', 'Cluster', 'PartitionCell', 'PartitionFace', 'PartitionEdge', 'PartitionVertex', 'Mesh', 'MeshVertex', 'MeshEdge', 'MeshFace', 'MeshCell', 'Interface', 'MeshSet', 'MeshInstance']) -> Any:
         """`model.list {kind}`: every live entity of `kind` owned by the model layer, ascending."""
 
