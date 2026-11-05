@@ -82,6 +82,7 @@ impl From<&Agreement> for AgreementSummary {
 
 /// One row: a tracker in a mode on a workload with a thread count.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Row {
     /// Tracker name.
     pub tracker: String,
@@ -219,6 +220,12 @@ pub struct ResultFile {
     pub image_digest: String,
     /// Rows.
     pub rows: Vec<Row>,
+    /// Rows that could not be produced, each with the failing command or reason (never hashed).
+    #[serde(default)]
+    pub partial: Vec<String>,
+    /// Observations that are not rows, e.g. how two competitors compared (never hashed).
+    #[serde(default)]
+    pub notes: Vec<String>,
     /// SHA-256 over the non-timing fields of the rows.
     pub result_hash: String,
 }

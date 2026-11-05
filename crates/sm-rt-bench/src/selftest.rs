@@ -47,5 +47,19 @@ pub fn self_test() -> Result<Vec<Check>> {
         let back = ResultFile::from_json(&serde_json::to_string(&file)?)?;
         out.push(check(&format!("schema round trip {}", case.name()), back == file && file.compute_hash()? == file.result_hash, file.result_hash.clone()));
     }
+    // sm-rt rows at the smallest scale that has no degenerate facet: the analytic row against the
+    // truth, the facet and mesh rows against their twin reference, flights stable across threads.
+    let small = Scale { rays: 150, ..Scale::reduced() };
+    let data = build(Case::P1, &small)?;
+    let mut rows = crate::smrt::smrt_rows(&data, &small, 8);
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Track, Workload::Flight], histories: 600, seed: 7 };
+    let track_cfg = RunConfig { workloads: vec![Workload::Track], ..cfg.clone() };
+    let flight_cfg = RunConfig { workloads: vec![Workload::Flight], ..cfg };
+    let (geo, ag) = run_case(&data, &mut rows.geometric, "surface", &track_cfg, Env::detect())?;
+    let failed: usize = ag.iter().map(|a| a.failed).sum();
+    out.push(check("smrt facets and analytic P1", failed == 0 && !geo.rows.is_empty(), format!("{} rows, {failed} disagreements", geo.rows.len())));
+    let (fly, _) = run_case(&data, &mut rows.mesh_flight, "surface", &flight_cfg, Env::detect())?;
+    let tally_failed: usize = fly.rows.iter().map(|r| r.agreement.failed).sum();
+    out.push(check("smrt walk, delta and block flights P1", tally_failed == 0 && fly.rows.iter().all(|r| r.determinism.stable == Some(true)), format!("{} rows, {tally_failed} tally disagreements", fly.rows.len())));
     Ok(out)
 }

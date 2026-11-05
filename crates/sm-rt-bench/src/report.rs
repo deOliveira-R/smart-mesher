@@ -72,7 +72,7 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
         for f in &cfiles {
             for r in &f.rows {
                 seen.insert(r.tracker.as_str());
-                let failed = f.rows.iter().any(|x| x.tracker == r.tracker && x.agreement.failed > 0);
+                let failed = f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && x.agreement.failed > 0);
                 let det = format!("{} {}", r.determinism.hash.get(..12).unwrap_or(""), match r.determinism.stable {
                     Some(true) => "stable",
                     Some(false) => "UNSTABLE",
@@ -81,7 +81,7 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
                 let _ = writeln!(
                     out,
                     "| {} | {} | {} | {} | {} | {} | {:.3} | {:.1} | {:.3} | {:.3} | {} | {} | {:.3e} | {:.2} | {}/{} ({}) | {} |",
-                    r.tracker,
+                    if env.smoke() { format!("{} (smoke)", r.tracker) } else { r.tracker.clone() },
                     r.mode,
                     r.workload,
                     r.threads,
@@ -100,6 +100,20 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
                     r.agreement.grazing,
                     det
                 );
+            }
+        }
+        let partial: Vec<&String> = cfiles.iter().flat_map(|f| f.partial.iter()).collect();
+        if !partial.is_empty() {
+            let _ = writeln!(out, "\nPartial (not run, nothing invented):\n");
+            for p in partial {
+                let _ = writeln!(out, "- {p}");
+            }
+        }
+        let notes: Vec<&String> = cfiles.iter().flat_map(|f| f.notes.iter()).collect();
+        if !notes.is_empty() {
+            let _ = writeln!(out, "\nObservations:\n");
+            for n in notes {
+                let _ = writeln!(out, "- {n}");
             }
         }
         let missing: Vec<&str> = KNOWN_TRACKERS.iter().copied().filter(|t| !seen.contains(t)).collect();

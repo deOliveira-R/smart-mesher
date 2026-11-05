@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod bound;
 pub mod cases;
 pub mod cli;
 pub mod compare;
@@ -32,6 +33,7 @@ pub mod result;
 pub mod rng;
 pub mod runner;
 pub mod selftest;
+pub mod smrt;
 pub mod truth;
 pub mod twin;
 
