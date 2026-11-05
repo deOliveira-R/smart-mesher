@@ -26,3 +26,20 @@ Eight tasks merged as b67f107: RT-ANALYTIC, AUTO, EXPORT-WIRE, DIAG, CAD-ATTR, F
 
 ## Backlog
 - **CAD-ATTR:** an explicit `attributes: false` serializes into the op record. The node hash then differs from an omitted field, while the state hash is the same. Normalize `Some(false)` to `None`, or fix the DESIGN.md wording.
+
+## W3b-2 tail (merged 4286563)
+RT-DELTA and RT-CAPI passed review.
+- CI passed.
+- A/B against 9ec4a7a: every state hash and exported file is identical, including .smrt, .h5m and .msh.
+- Acceptance 9 passes at 10⁶ rays under ruling R1.
+
+Accepted deviations:
+- The sm-rt-api edits for R1 and R2 came in through the RT-DELTA worker commit cf9bdd1.
+- sm-rt-capi turns the `sm-rt` loader feature on by default, and `SMRT_ABI_VERSION` goes from 10000 to 10100 (additive).
+- RT-DELTA uses image sections Private(5..7); the plan said Private(4..8), but Private(4) is the region-tag table.
+
+R2 scope: the builder still writes a complement Region name without a length prefix, while `LeafInput::content_hash` prefixes it. Unifying them would move complement leaf keys, so they are left as is.
+
+W3b-INT hand-off: add the sm-rt-capi `--no-default-features --features stubs` configuration to tools/ci.sh, so the -5 (unsupported) path stays tested.
+
+Abandoned fix attempt archived as tag `archive/w3b/rt-delta-attempt-1`.
