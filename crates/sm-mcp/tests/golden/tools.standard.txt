@@ -10,6 +10,7 @@ mesh__delete
 mesh__flag_cells
 mesh__info
 mesh__intervals
+mesh__plan
 mesh__poly_info
 mesh__quality
 mesh__run
@@ -19,10 +20,17 @@ mesh__smooth
 mesh__smooth_preview
 mesh__to_poly
 mesh__validate
+model__copy
 model__create_brick
 model__create_cylinder
+model__create_frustum
+model__create_prism
+model__create_pyramid
 model__create_sphere
+model__create_sphere_part
+model__create_torus
 model__delete
+model__export
 model__import_step
 model__imprint
 model__intersect
@@ -31,8 +39,10 @@ model__measure
 model__merge
 model__merge_check
 model__move
+model__move_to
 model__reflect
 model__rotate
+model__rotate_about
 model__scale
 model__subtract
 model__unite
