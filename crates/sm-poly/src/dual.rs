@@ -34,7 +34,7 @@ const MAX_SPLIT_ROUNDS: usize = 256;
 /// # Errors
 /// [`PolyError::NotTet`], [`PolyError::Dim2`], [`PolyError::UnsupportedFaceKind`],
 /// [`PolyError::OpenRing`], [`PolyError::AmbiguousEdge`], [`PolyError::UnsupportedFeature`],
-/// [`PolyError::BadClassification`], [`PolyError::UnrepairedCell`] and [`PolyError::Mesh`] (builder failure).
+/// [`PolyError::BadClassification`], [`PolyError::UnrepairedCell`], [`PolyError::InvalidAgglomeration`] and [`PolyError::Mesh`] (builder failure).
 pub fn dualize<B: MeshBuild>(
     src: &dyn MeshRead,
     opts: &PolyOptions,
@@ -104,6 +104,16 @@ pub fn dualize_with_rounds<B: MeshBuild>(
     polydata::fill_report(&mut rep, &counts, &prep);
     if let Some(a) = &opts.agglomerate {
         rep.merges = agglom::agglomerate(&mut data, a);
+        if rep.merges > 0 {
+            let bad = concave::bad_alive_cells(&data);
+            if let Some(&first) = bad.first() {
+                return Err(PolyError::InvalidAgglomeration {
+                    region: data.regions[data.c_region[first as usize] as usize],
+                    at: concave::cell_location(&data, first as usize),
+                    count: bad.len(),
+                });
+            }
+        }
     }
     // Per output cell, the wedge count of the dual cell it came from (0 for an unsplit cell), so
     // `mesh.poly_info` can report `wedges` and `split_cells` from the mesh alone.
