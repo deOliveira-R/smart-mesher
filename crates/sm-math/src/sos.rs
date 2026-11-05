@@ -328,3 +328,214 @@ pub fn insphere_sos(
     }
     sos_sign(&v, &[a.id, b.id, c.id, d.id, e.id])
 }
+
+// ---------------------------------------------------------------------------------------------
+// Allocation-free orient3d_sos
+
+/// Number of non-empty partial matchings of a 4 x 3 grid (rows x coordinate columns).
+const NM3: usize = 72;
+/// Number of rank permutations of four points.
+const NPERM4: usize = 24;
+
+/// One monomial of the perturbed determinant: up to three `(row, col)` cells, `k` of them used.
+#[derive(Clone, Copy)]
+struct Mono {
+    cells: [(u8, u8); 3],
+    k: u8,
+}
+
+const EMPTY_MONO: Mono = Mono {
+    cells: [(0, 0); 3],
+    k: 0,
+};
+
+/// All non-empty matchings of the 4 x 3 grid, in enumeration order.
+const fn all_monos() -> [Mono; NM3] {
+    let mut out = [EMPTY_MONO; NM3];
+    let mut n = 0;
+    let mut code = 1;
+    while code < 256 {
+        // Base-4 digit per row: 0 = unmatched, 1..=3 = column + 1.
+        let mut cols_used = 0u32;
+        let mut ok = true;
+        let mut m = EMPTY_MONO;
+        let mut r = 0;
+        while r < 4 {
+            let d = (code >> (2 * r)) & 3;
+            if d != 0 {
+                let c = d - 1;
+                if cols_used & (1 << c) != 0 {
+                    ok = false;
+                } else {
+                    cols_used |= 1 << c;
+                    m.cells[m.k as usize] = (r as u8, c as u8);
+                    m.k += 1;
+                }
+            }
+            r += 1;
+        }
+        if ok && m.k > 0 {
+            out[n] = m;
+            n += 1;
+        }
+        code += 1;
+    }
+    out
+}
+
+/// Monomials ordered by perturbation exponent for every rank permutation, indexed by Lehmer
+/// code (the same code as the allocating version).
+const fn build_table() -> [[Mono; NM3]; NPERM4] {
+    let monos = all_monos();
+    let mut table = [[EMPTY_MONO; NM3]; NPERM4];
+    let mut code = 0;
+    while code < NPERM4 {
+        // Decode the Lehmer code into `pos`: digit i counts later entries smaller than pos[i].
+        let mut digits = [0usize; 4];
+        let mut c = code;
+        let mut i = 4;
+        while i > 0 {
+            i -= 1;
+            let base = 4 - i;
+            digits[i] = c % base;
+            c /= base;
+        }
+        let mut used = [false; 4];
+        let mut pos = [0usize; 4];
+        let mut i = 0;
+        while i < 4 {
+            let mut skip = digits[i];
+            let mut v = 0;
+            loop {
+                if !used[v] {
+                    if skip == 0 {
+                        break;
+                    }
+                    skip -= 1;
+                }
+                v += 1;
+            }
+            used[v] = true;
+            pos[i] = v;
+            i += 1;
+        }
+        // Key per monomial, then insertion sort by key.
+        let mut keyed = [(0u32, 0usize); NM3];
+        let mut j = 0;
+        while j < NM3 {
+            let m = monos[j];
+            let mut key = 0u32;
+            let mut t = 0;
+            while t < m.k as usize {
+                let (r, cc) = m.cells[t];
+                key += 1u32 << (pos[r as usize] * 3 + cc as usize);
+                t += 1;
+            }
+            keyed[j] = (key, j);
+            j += 1;
+        }
+        let mut a = 1;
+        while a < NM3 {
+            let cur = keyed[a];
+            let mut b = a;
+            while b > 0 && keyed[b - 1].0 > cur.0 {
+                keyed[b] = keyed[b - 1];
+                b -= 1;
+            }
+            keyed[b] = cur;
+            a += 1;
+        }
+        let mut j = 0;
+        while j < NM3 {
+            table[code][j] = monos[keyed[j].1];
+            j += 1;
+        }
+        code += 1;
+    }
+    table
+}
+
+/// Fixed perturbation table for 4-point predicates: 24 rank permutations x 72 monomials.
+static TABLE4: [[Mono; NM3]; NPERM4] = build_table();
+
+/// Coordinate `c` of a point.
+#[inline]
+fn coord(p: &Point3, c: usize) -> f64 {
+    match c {
+        0 => p.x,
+        1 => p.y,
+        _ => p.z,
+    }
+}
+
+/// [`orient3d_sos`] without heap allocation: same results, fixed-size perturbation table.
+///
+/// Every minor of the perturbed determinant is a 3 x 3 determinant of the projected points
+/// (an exact `orient2d`), a coordinate difference, or the constant 1, so no expansion
+/// arithmetic is needed.
+pub fn orient3d_sos_noalloc(
+    a: Tagged<Point3>,
+    b: Tagged<Point3>,
+    c: Tagged<Point3>,
+    d: Tagged<Point3>,
+) -> Result<Sign, SosError> {
+    let s = orient3d(a.point, b.point, c.point, d.point);
+    if !s.is_zero() {
+        return Ok(s);
+    }
+    let pts = [a.point, b.point, c.point, d.point];
+    let ids = [a.id, b.id, c.id, d.id];
+    let mut order = [0usize, 1, 2, 3];
+    order.sort_by_key(|&r| ids[r]);
+    for w in order.windows(2) {
+        if ids[w[0]] == ids[w[1]] {
+            return Err(SosError::DuplicateId(ids[w[0]]));
+        }
+    }
+    let mut pos = [0usize; 4];
+    for (rank, &r) in order.iter().enumerate() {
+        pos[r] = rank;
+    }
+    let mut code = 0usize;
+    for i in 0..4 {
+        let smaller = pos[i + 1..].iter().filter(|&&p| p < pos[i]).count();
+        code = code * (4 - i) + smaller;
+    }
+    for m in &TABLE4[code] {
+        let cells = &m.cells[..m.k as usize];
+        let (mut rows_used, mut cols_used) = (0u32, 0u32);
+        let mut parity = 0usize;
+        for (i, &(r, c)) in cells.iter().enumerate() {
+            rows_used |= 1 << r;
+            cols_used |= 1 << c;
+            parity += r as usize + c as usize;
+            parity += cells[i + 1..]
+                .iter()
+                .filter(|&&(r2, c2)| r2 > r && c2 < c)
+                .count();
+        }
+        let mut rows = [0usize; 4];
+        let mut nr = 0;
+        for r in (0..4).filter(|&r| rows_used & (1 << r) == 0) {
+            rows[nr] = r;
+            nr += 1;
+        }
+        let mut cs = [0usize; 3];
+        for (slot, c) in (0..3).filter(|&c| cols_used & (1 << c) == 0).enumerate() {
+            cs[slot] = c;
+        }
+        let s = match nr {
+            3 => {
+                let p = |i: usize| [coord(&pts[rows[i]], cs[0]), coord(&pts[rows[i]], cs[1])];
+                orient2d(p(0), p(1), p(2))
+            }
+            2 => Sign::of(coord(&pts[rows[0]], cs[0]) - coord(&pts[rows[1]], cs[0])),
+            _ => Sign::Positive,
+        };
+        if !s.is_zero() {
+            return Ok(if parity.is_multiple_of(2) { s } else { -s });
+        }
+    }
+    debug_assert!(false, "SoS fell through with distinct ids");
+    Err(SosError::Unresolved)
+}
