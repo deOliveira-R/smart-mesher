@@ -23,6 +23,7 @@ module smrt
   integer(c_int32_t), parameter :: SMRT_ERR_BIN_COUNT = -10
   integer(c_int32_t), parameter :: SMRT_ERR_INVALID_INPUT = -11
   integer(c_int32_t), parameter :: SMRT_ERR_MAJORANT = -12
+  integer(c_int32_t), parameter :: SMRT_ERR_INVALID_MAJORANT = -13
   integer(c_int32_t), parameter :: SMRT_ERR_NULL = -100
   integer(c_int32_t), parameter :: SMRT_ERR_PANIC = -101
   integer(c_int32_t), parameter :: SMRT_ERR_BAD_ARG = -102
