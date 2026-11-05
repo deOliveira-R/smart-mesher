@@ -1566,6 +1566,7 @@ name = "sm-mesher"
 version = "0.0.0"
 dependencies = [
  "criterion 0.5.1",
+ "proptest",
  "rayon",
  "schemars",
  "serde",

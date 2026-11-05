@@ -422,7 +422,8 @@ fn bad_intent_requests_are_rejected_and_change_nothing() {
         ),
         ("mesh.default_size", json!({})),
         ("mesh.default_size", json!({"function": "linear"})), // no builder
-        ("mesh.run", json!({"targets": ["TopoFace#1"]})),
+        // Faces are valid targets since W3b-SURFPLAN; a curve is not.
+        ("mesh.run", json!({"targets": ["TopoEdge#1"]})),
         ("mesh.run", json!({"targets": []})),
     ];
     for (op, p) in bad {
