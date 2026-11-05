@@ -9,6 +9,8 @@ use sm_scheme_api::{
 };
 use sm_topo_api::TopologyView;
 
+use crate::auto::{AutoStrategy, StrategyRegistry};
+
 /// Builds a size field from a sizing spec (`None` for no field).
 pub type SizeFieldFn =
     Arc<dyn Fn(&SizingSpec) -> Result<Option<Box<dyn SizeField>>, SchemeError> + Send + Sync>;
@@ -27,6 +29,7 @@ pub struct MesherConfig {
     auto_size: Option<AutoSizeFn>,
     max_cells: u64,
     cascade: RequestCascade,
+    strategies: StrategyRegistry,
 }
 
 /// Default cell budget of [`MesherConfig::max_cells`].
@@ -43,6 +46,7 @@ impl MesherConfig {
             auto_size: None,
             max_cells: DEFAULT_MAX_CELLS,
             cascade: RequestCascade::Firmness,
+            strategies: StrategyRegistry::default(),
         }
     }
 
@@ -68,6 +72,19 @@ impl MesherConfig {
     /// The request cascade of `mesh.size`, `mesh.intervals` and `mesh.run`.
     pub fn cascade(&self) -> RequestCascade {
         self.cascade
+    }
+
+    /// Register an auto strategy (replacing one of the same name). `DefaultStrategy` is
+    /// registered by [`MesherConfig::new`].
+    #[must_use]
+    pub fn with_strategy(mut self, s: Arc<dyn AutoStrategy>) -> Self {
+        self.strategies.insert(s);
+        self
+    }
+
+    /// The auto strategies `mesh.auto` can name.
+    pub fn strategies(&self) -> &StrategyRegistry {
+        &self.strategies
     }
 
     /// The cell budget of `mesh.run`.

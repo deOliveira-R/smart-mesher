@@ -6,8 +6,8 @@
 //! | [`MesherConfig`] | the service: scheme registry, interval solver, corner picker, size-field and auto-size hooks, injected by the distribution |
 //! | [`IntentLayer`] | the `intent` layer (depends on `model`) |
 //! | [`RayonExec`] | the driver [`Executor`](sm_scheme_api::Executor) on the rayon pool |
-//! | ops | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size` (intent), `mesh.run` (volumes or faces), `mesh.delete` (meshes) |
-//! | queries | `mesh.info`, `mesh.plan` (explain what ran or will run, and why) |
+//! | ops | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size`, `mesh.auto` (intent), `mesh.run` (volumes or faces), `mesh.delete` (meshes) |
+//! | queries | `mesh.info`, `mesh.plan` (explain what ran or will run, and why), `mesh.auto_strategies` |
 //!
 //! This crate names no scheme crate and no sizing crate: schemes, the solver and the picker all
 //! arrive through [`MesherConfig`]. See `DESIGN.md`.
@@ -17,6 +17,8 @@
 //! [`MeshPlugin`], and inject a [`MesherConfig`] service
 //! (`Services::new().with_versioned("mesher", 1, cfg)`).
 
+mod auto;
+mod census;
 mod config;
 mod exec;
 mod info;
@@ -25,6 +27,12 @@ mod intent_ops;
 mod mesh_ops;
 mod plan_query;
 
+pub use auto::{
+    AutoInput, AutoLists, AutoStrategy, DEFAULT_STRATEGY, DefaultStrategy, MeshAuto,
+    MeshAutoStrategiesQuery, SchemeAssignment, StrategiesInfo, StrategyInfo, StrategyRegistry,
+    replan_budget,
+};
+pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
 pub use info::{MeshInfo, MeshInfoQuery};
@@ -55,8 +63,10 @@ impl Plugin for MeshPlugin {
         registry.register::<MeshDefaultSize>()?;
         registry.register::<MeshRun>()?;
         registry.register::<MeshDelete>()?;
+        registry.register::<MeshAuto>()?;
         registry.register_query::<MeshInfoQuery>()?;
         registry.register_query::<MeshPlanQuery>()?;
+        registry.register_query::<MeshAutoStrategiesQuery>()?;
         Ok(())
     }
 }
