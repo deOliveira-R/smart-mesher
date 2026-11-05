@@ -568,10 +568,10 @@ recorded here so a change of the tet scheme can be compared with it; it is not a
 
 `TetStats::n_facet_hole_rounds` (rounds of the hole-triangle stage of `recover_facet`, the stage
 that fixed the n = 64 tiled-relief cliff), `n_hint_candidates` and `n_hint_lookups` (restart hint
-selection: one `BTreeSet` query per candidate and at most one insertion). They are in
+selection: one `BTreeSet` query per candidate and at most one insertion, counted inside the set wrapper). They are in
 `PartialEq` and in no hash. Tests: `int7::restart_hint_index_work_is_linear_in_candidates`
-(runs in CI, debug) and `int7::tiled_relief_n64_recovers_without_restarts` (release; prints the
-hole rounds). A smaller, debug-feasible case that reaches the hole stage was searched for and
+(runs in CI, debug) and `int7::tiled_relief_n64_recovers_without_restarts` (release; asserts the hole
+stage is reached, `n_facet_hole_rounds > 0`, measured 1 round). A smaller, debug-feasible case that reaches the hole stage was searched for and
 not found: `tiled_cube(n, 8, seed, 0.9)` for n = 16 and seeds 1 .. 10 (complete recovery alone,
 release, up to 100 s each on a loaded host) never entered it, so the hole stage needs the
 exact-plane coincidence of the n = 64 patch; the cliff regression therefore stays release-only,
