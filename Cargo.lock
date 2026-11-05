@@ -1592,8 +1592,11 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-mesh-api",
+ "sm-meshio",
  "sm-model-api",
+ "sm-rt-api",
  "sm-testkit",
+ "sm-topo-api",
  "thiserror",
 ]
 

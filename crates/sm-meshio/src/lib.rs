@@ -11,8 +11,14 @@
 //! See `DESIGN.md`.
 
 mod crc;
+pub mod dagmc;
 pub mod error;
 pub mod foam;
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod h5;
+#[cfg(not(feature = "testing"))]
+mod h5;
 mod le;
 pub mod report;
 pub mod smsh;
