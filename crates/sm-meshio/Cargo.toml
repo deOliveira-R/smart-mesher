@@ -1,6 +1,6 @@
 [package]
 name = "sm-meshio"
-description = "Mesh export: native .smsh container and VTU, later Exodus, CGNS, Gmsh and others."
+description = "Mesh export: native .smsh container, VTU, OpenFOAM, DAGMC h5m and Gmsh msh4."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

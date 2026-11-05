@@ -345,7 +345,7 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
                 let f = sf.face();
                 if mesh.face_vertices(f).len() >= 4
                     && let Some(nb) = mesh.across(*sf)
-                    && state[nb.get()] != 2
+                    && state.get(nb.get()).is_none_or(|s| *s != 2)
                 {
                     return Err(GmshError::NonconformingDecomposition { face: f.0 });
                 }
@@ -410,8 +410,13 @@ pub fn write_msh4(mesh: &dyn MeshRead, o: &GmshOptions, w: &mut dyn Write) -> Re
             let fi = FaceIx::new(f);
             let l = mesh.face_left(fi);
             let r = mesh.face_right(fi);
-            let (Some(&lv), rv) = (vol_serial.get(l.get()), r.and_then(|c| vol_serial.get(c.get()).copied())) else {
+            let (Some(&lv), rv) = (vol_serial.get(l.get()), r.map(|c| vol_serial.get(c.get()).copied())) else {
                 return unsupported(format!("face {f} has a cell out of range"));
+            };
+            let rv = match rv {
+                Some(None) => return unsupported(format!("face {f} has a cell out of range")),
+                Some(Some(v)) => Some(v),
+                None => None,
             };
             if rv == Some(lv) {
                 continue;

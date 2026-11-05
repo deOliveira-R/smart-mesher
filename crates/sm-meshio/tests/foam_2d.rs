@@ -124,7 +124,7 @@ fn a_one_layer_slab_with_empty_patches_is_not_split() {
     let d = cell_determinants(&pm);
     let (lo, hi) = d.iter().fold((f64::MAX, 0.0f64), |(l, h), x| (l.min(*x), h.max(*x)));
     assert!((lo - 0.125).abs() < 1e-14 && (hi - 0.5).abs() < 1e-14, "{lo} {hi}");
-    // One empty patch and one plain patch still knock out z (the empty patch alone decides).
+    // Two empty patches knock out z (one empty and one plain patch: `only_the_empty_patch_set_decides_the_directions`).
     assert_eq!(geometric_directions(&pm), [1, 1, -1]);
 }
 

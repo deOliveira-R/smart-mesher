@@ -5,6 +5,8 @@
 //!
 //! * [`smsh`]: the native format (`SMSH_FORMAT.md`), writer and reader.
 //! * [`foam`]: OpenFOAM polyMesh (ASCII) writer, parser and checker.
+//! * [`dagmc`]: DAGMC `.h5m` (MOAB HDF5) faceted B-rep writer (`H5M_FORMAT.md`).
+//! * [`gmsh`]: Gmsh MSH 4.1 writer, ASCII and binary, and a round-trip parser.
 //! * [`report`]: the loss report every exporter shares.
 //! * [`vtu`]: ParaView / VTK export with polyhedra, mixed cells and region/color cell data.
 //!

@@ -209,7 +209,7 @@ impl Group {
     pub fn new() -> Self {
         Self::default()
     }
-    /// The child group `name`, created if absent. Panics-free: a non-group child is replaced.
+    /// The child group `name`, created if absent (a non-group child of that name is replaced).
     pub fn group(&mut self, name: &str) -> &mut Group {
         let e = self.children.entry(name.to_string()).or_insert_with(|| Obj::Group(Group::new()));
         if !matches!(e, Obj::Group(_)) {
@@ -217,9 +217,11 @@ impl Group {
         }
         match e {
             Obj::Group(g) => g,
-            _ => unreachable!("just made a group"),
+            // Replaced by a group just above: statically dead, not reachable from any input.
+            _ => unreachable!("normalised to a group above"),
         }
     }
+
     /// Add or replace a dataset.
     pub fn put_dataset(&mut self, name: &str, d: Dataset) {
         self.children.insert(name.to_string(), Obj::Dataset(d));

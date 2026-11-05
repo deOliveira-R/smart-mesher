@@ -1,9 +1,9 @@
 //! DAGMC `.h5m` export: a faceted B-rep (triangles, surfaces with a forward and a backward
 //! volume, volumes, `mat:` groups) written as a MOAB HDF5 file that DAGMC and OpenMC read.
 //!
-//! * [`model_from_mesh`]: skin and interface faces of a classified [`MeshRead`] to a
+//! * [`model_from_mesh`]: skin and interface faces of a classified [`sm_mesh_api::MeshRead`] to a
 //!   [`DagmcModel`] (quads split on the shorter diagonal, polygons fanned from a centroid).
-//! * [`model_from_facets`]: the same model from sm-tess style facets ([`FacetInput`]).
+//! * [`model_from_facets`]: the same model from sm-tess style facets ([`sm_rt_api::FacetInput`]).
 //! * [`write_h5m`], [`export_h5m`]: the byte-exact writer (private pure-Rust HDF5 subset).
 //!
 //! The file layout, with the MOAB sources it follows, is in `H5M_FORMAT.md`. Names are fixed:
