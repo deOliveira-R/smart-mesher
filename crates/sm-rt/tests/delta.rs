@@ -327,6 +327,7 @@ fn acc04_hinted_location_equals_locate() {
     let mut r = rng("acc04");
     let mut sc = Scratch::new();
     let mut compared = 0u64;
+    let mut probe_descents = 0u64;
     // Random points: located through the flight machinery by stopping at a random distance.
     for i in 0..n {
         let near = i % 10 == 0;
@@ -350,21 +351,25 @@ fn acc04_hinted_location_equals_locate() {
         let mut st2 = st.clone();
         let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
         let Some(seg) = cur.next_segment(view, input, &mut st2, &mut sc).unwrap() else { continue };
-        let before = sc.counters.bvh_descents;
+        // The reference `locate` calls below use the BVH (and are counted); only the probes are
+        // measured, so each is bracketed.
+        let b0 = sc.counters.bvh_descents;
         let loc1 = cur.probe(view, input, &mut sc, seg.t0).unwrap();
+        probe_descents += sc.counters.bvh_descents - b0;
         // At t0 the delta segment locates the start point from its node.
         assert!(located_equal(&loc0, &loc1) || seg.resolved, "i={i} p={o:?}: locate {loc0:?} vs hinted {loc1:?}");
         // And a point inside the segment.
         let tm = seg.t0 + 0.37 * (seg.t1 - seg.t0);
         let pm = st.pos + st.dir * tm;
         let want = t.locate(pm, Some(st.dir), None, &mut sc).unwrap();
+        let b1 = sc.counters.bvh_descents;
         let got = cur.probe(view, input, &mut sc, tm).unwrap();
+        probe_descents += sc.counters.bvh_descents - b1;
         assert!(located_equal(&want, &got), "i={i} mid-segment point {pm:?}: {want:?} vs {got:?}");
-        assert_eq!(sc.counters.bvh_descents, before);
         compared += 1;
     }
     assert!(compared > n as u64 / 2);
-    assert_eq!(sc.counters.bvh_descents, 0, "no BVH descent anywhere in the flights");
+    assert_eq!(probe_descents, 0, "no BVH descent in a hinted location");
 }
 
 #[test]
@@ -793,4 +798,22 @@ fn node_visits_do_not_scan_the_slice() {
     // Descent depth grows with log(nodes): far from the growth in nodes.
     assert!(v_big <= 3 * v_small + 40, "visits {v_small} -> {v_big} scale with nodes {n_small} -> {n_big}");
     eprintln!("node visits: {v_small} for {n_small} nodes, {v_big} for {n_big} nodes");
+}
+
+/// Records the size of the partition of `checker_block(12)` (1728 cells, 4 regions by
+/// `(i + j + k) mod 4`): with `leaf_cells = 1` no plane at a ninth of the box lines up with the
+/// cells, so isolating a region runs to the width limit and the tree is huge. Counters, not clocks;
+/// the numbers are in DESIGN.md. `rt.partition` reports them before a code commits to a partition.
+#[test]
+fn partition_size_of_a_checker_block_is_recorded() {
+    let fx = checker_block(12);
+    let rule = checker_rule();
+    let mut rows = Vec::new();
+    for leaf in [8, 1] {
+        let t = build_part(&fx.mesh, &rule, &vacuum(), popts(leaf, false));
+        let h = t.majorant_view().unwrap().hierarchy();
+        rows.push((leaf, h.node_count(), t.info().memory_bytes));
+    }
+    eprintln!("checker_block(12) (leaf_cells, nodes, tracker memory bytes): {rows:?}");
+    assert!(rows[1].1 > rows[0].1);
 }

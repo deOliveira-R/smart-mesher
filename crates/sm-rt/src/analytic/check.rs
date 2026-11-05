@@ -110,7 +110,8 @@ pub fn check_overlaps(input: &HierInput<'_>, n_points: usize, n_rays: usize, see
                     let z = 2.0 * unit(rb, 3) - 1.0;
                     let phi = std::f64::consts::TAU * unit(rb, 4);
                     let sn = ((1.0 - z) * (1.0 + z)).max(0.0).sqrt();
-                    let d = [sn * phi.cos(), sn * phi.sin(), z];
+                    let (sp, cp) = crate::vec3::sin_cos(phi);
+                    let d = [sn * cp, sn * sp, z];
                     // Chord through the box.
                     let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
                     for a in 0..3 {

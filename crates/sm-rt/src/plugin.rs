@@ -1,4 +1,4 @@
-//! The `rt` plugin: read-only queries `rt.info`, `rt.check` and `rt.locate` over a mesh of the
+//! The `rt` plugin: read-only queries `rt.info`, `rt.check`, `rt.locate` and `rt.partition` over a mesh of the
 //! `meshes` layer and the boundary tables of the `model` layer. No layers, no ops.
 //!
 //! Tracking is not part of the protocol or of `.smsh` in W3a: the queries build the tracker in
@@ -18,7 +18,7 @@ use sm_rt_api::{
 };
 use std::sync::Arc;
 
-/// The `rt` plugin: read-only ray-tracing queries (`rt.info`, `rt.check`, `rt.locate`).
+/// The `rt` plugin: read-only ray-tracing queries (`rt.info`, `rt.check`, `rt.locate`, `rt.partition`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RtPlugin;
 
@@ -31,6 +31,7 @@ impl Plugin for RtPlugin {
         registry.register_query::<RtInfo>()?;
         registry.register_query::<RtCheck>()?;
         registry.register_query::<RtLocate>()?;
+        registry.register_query::<RtPartition>()?;
         Ok(())
     }
 }
@@ -357,5 +358,104 @@ impl TypedQuery for RtLocate {
             });
         }
         Ok(out)
+    }
+}
+
+/// `rt.partition {mesh, leaf_cells?, max_depth?}`: the structure of the majorant partition a
+/// delta-tracking code would use over a mesh (read-only; no cross section is involved, the split
+/// rule looks at regions and cell counts only).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RtPartition {
+    /// The mesh to partition.
+    #[schemars(extend("x-entity-kind" = ["Mesh"]))]
+    pub mesh: EntityId,
+    /// Stop splitting a node of at most this many candidate cells (default 8, at least 1).
+    #[serde(default)]
+    pub leaf_cells: Option<u32>,
+    /// Deepest split (default 24, at most 48).
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+}
+
+/// Cells (candidates) per leaf node.
+#[derive(Clone, Debug, Serialize, JsonSchema, PartialEq)]
+pub struct CellsPerLeaf {
+    /// Fewest.
+    pub min: u32,
+    /// Most.
+    pub max: u32,
+    /// Mean.
+    pub mean: f64,
+}
+
+/// Result of `rt.partition`.
+#[derive(Clone, Debug, Serialize, JsonSchema, PartialEq)]
+pub struct RtPartitionOut {
+    /// Partition nodes (the length of a caller's majorant slice).
+    pub nodes: usize,
+    /// Leaf nodes (the ones that yield delta segments).
+    pub leaves: usize,
+    /// Longest root-to-leaf path, in edges.
+    pub depth: u32,
+    /// Leaves whose box lies inside one convex cell.
+    pub preassigned_leaves: usize,
+    /// Distinct material sets (regions of a node, deduplicated).
+    pub sets: usize,
+    /// Candidate cells per leaf.
+    pub cells_per_leaf: CellsPerLeaf,
+    /// Heap bytes of the partition arrays.
+    pub memory_bytes: usize,
+    /// Structure hash of the tracker (hex).
+    pub structure_hash: String,
+    /// Content hash of the partition itself (hex): arrays, sets and options.
+    pub partition_hash: String,
+}
+
+impl TypedQuery for RtPartition {
+    const NAME: &'static str = "rt.partition";
+    type Output = RtPartitionOut;
+
+    fn run(&self, state: &State, cx: &QueryCtx<'_>) -> Result<RtPartitionOut, OpError> {
+        let (leaf_cells, max_depth) = (self.leaf_cells.unwrap_or(8), self.max_depth.unwrap_or(24));
+        if leaf_cells == 0 {
+            return Err(OpError::Invalid("leaf_cells must be at least 1".into()));
+        }
+        if max_depth > 48 {
+            return Err(OpError::Invalid("max_depth must be at most 48".into()));
+        }
+        let (model, meshes) = layers(state)?;
+        let entry = meshes.get(self.mesh).ok_or(OpError::UnknownEntity(self.mesh))?;
+        // The canonical input has both parameters filled in, so omitting one equals passing its default.
+        let params = serde_json::to_value((self.mesh.to_string(), leaf_cells, max_depth)).map_err(|e| OpError::Invalid(e.to_string()))?;
+        let key = state.cache_key("rt.partition", &[MODEL, MESHES], &params)?;
+        let out = cx.derived().get_or_compute_sized("rt.partition", key, || {
+            let spec = boundary_spec(model, &[])?;
+            let (rules, complement) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside);
+            let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
+            let mut opts = BuildOptions::default();
+            opts.recovery = sm_rt_api::RecoveryPolicy::Fail;
+            let mut p = sm_rt_api::PartitionOptions::default();
+            p.enabled = true;
+            p.leaf_cells = leaf_cells;
+            p.max_depth = max_depth;
+            let opts = opts.with_partition(p);
+            let (tracker, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(rt_error)?;
+            let part = tracker.partition().ok_or_else(|| OpError::Failed("the tracker has no partition".into()))?;
+            let st = part.stats();
+            let out = RtPartitionOut {
+                nodes: st.nodes,
+                leaves: st.leaves,
+                depth: st.depth,
+                preassigned_leaves: st.preassigned,
+                sets: st.sets,
+                cells_per_leaf: CellsPerLeaf { min: st.cells_min, max: st.cells_max, mean: st.cells_mean },
+                memory_bytes: st.bytes,
+                structure_hash: tracker.info().structure_hash.to_string(),
+                partition_hash: part.content_hash().to_string(),
+            };
+            Ok::<_, OpError>((out, 256))
+        })?;
+        Ok((*out).clone())
     }
 }

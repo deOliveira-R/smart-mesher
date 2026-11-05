@@ -21,6 +21,7 @@
 
 use crate::bvh::{Box6, EMPTY_BOX, box_dist2, union};
 use crate::builder::build_proto;
+use crate::delta::flight::{box_exit, end_face};
 use crate::tracker::MeshTracker;
 use crate::vec3::{dot, finite3, madd, norm, scale, sub};
 use rayon::prelude::*;
@@ -28,6 +29,7 @@ use sm_core::{Aabb, Point3, Transform, Vector3};
 use sm_geom_api::Ray;
 use sm_mesh_api::MeshRead;
 use sm_rt_api::{
+    FlightSegment, HierarchyView, MajorantTracker, MaterialSetId, MaterialSets, NodeId, NodeInfo, NodeKind, SegmentQuery, SegmentScale, TrackMode, choose_mode,
     BinMap, BoundaryAction, BoundaryDef, BuildIssue, BuildOptions, BuildReport, CacheImage, CacheKey, CellId, Closest, ComponentId, ComponentKind, ContentHash, ContentHasher, FaceAction,
     FaceId, HierInput, InstanceId, LatticeKind, LeafInput, Level, LostCause, Located, PeriodicImage, RegionId, RegionTable, ResponseKind, Result, RtError, Scratch,
     Step, StepEnd, SurfaceId, SurfaceInfo, SurfaceTable, TallySpec, TraceOptions, TrackBundle, TrackState, Tracker, TrackerCaps, TrackerInfo, hashed_direction, lost,
@@ -310,6 +312,8 @@ pub struct WorldTracker {
     block_size: usize,
     any_partners: bool,
     overlap_vertex_tests: u64,
+    /// The majorant node tables (`PartitionOptions::enabled`).
+    hier: Option<WorldHier>,
 }
 
 impl core::fmt::Debug for WorldTracker {
@@ -352,6 +356,9 @@ impl WorldTracker {
             BoundaryDef::Wrap { .. } => return Err(RtError::Unsupported("periodic boundary on a hierarchical world")),
             _ => FaceAction::Respond(ResponseKind::Vacuum),
         };
+        if opts.partition.region_jump {
+            return Err(RtError::Unsupported("region jump on a hierarchical world (flights use the prototypes' kd partitions; `fire` walks)"));
+        }
         let spec = h.spec;
         let n = spec.components.len();
         let tol = opts.tol.linear;
@@ -463,9 +470,15 @@ impl WorldTracker {
             block_size: opts.block_size as usize,
             any_partners,
             overlap_vertex_tests: 0,
+            hier: None,
         };
         t.info.structure_hash = t.hash_structure(spec.content_hash());
         t.narrow_phase()?;
+        if opts.partition.enabled {
+            let hier = build_hier(&t.protos, &t.comps, t.root)?;
+            t.info.memory_bytes += hier.bytes();
+            t.hier = Some(hier);
+        }
         Ok((t, report))
     }
 
@@ -740,7 +753,13 @@ impl WorldTracker {
                     return Loc::Miss;
                 }
                 let core = &self.protos[*pi].tracker.core;
-                let loc = self.protos[*pi].tracker.locate_inner(p, Some(dir), None, sc);
+                let tr = &self.protos[*pi].tracker;
+                // With a partition the leaf is located from its kd candidate lists: the same
+                // answer as the BVH path, without a BVH descent.
+                let loc = match tr.partition() {
+                    Some(part) => tr.locate_from_root(part, p, dir, sc),
+                    None => tr.locate_inner(p, Some(dir), None, sc),
+                };
                 if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
                     return Loc::Miss;
                 }
@@ -1024,7 +1043,11 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
 
 impl Tracker for WorldTracker {
     fn caps(&self) -> TrackerCaps {
-        if self.info.faceted_faces == 0 { TrackerCaps::HIERARCHY.union(TrackerCaps::EXACT_PLANAR) } else { TrackerCaps::HIERARCHY }
+        let c = if self.info.faceted_faces == 0 { TrackerCaps::HIERARCHY.union(TrackerCaps::EXACT_PLANAR) } else { TrackerCaps::HIERARCHY };
+        if self.hier.is_some() { c.union(TrackerCaps::MAJORANT) } else { c }
+    }
+    fn majorant_view(&self) -> Option<&dyn MajorantTracker> {
+        self.hier.as_ref().map(|_| self as &dyn MajorantTracker)
     }
     fn info(&self) -> &TrackerInfo {
         &self.info
@@ -1277,10 +1300,11 @@ impl Tracker for WorldTracker {
                 let t2 = crate::vec3::cross(n_in, t1);
                 let (s, c) = (u[0].sqrt(), (1.0 - u[0]).sqrt());
                 let phi = 2.0 * core::f64::consts::PI * u[1];
+                let (sp, cp) = crate::vec3::sin_cos(phi);
                 let dd = [
-                    t1[0] * (s * phi.cos()) + t2[0] * (s * phi.sin()) + n_in[0] * c,
-                    t1[1] * (s * phi.cos()) + t2[1] * (s * phi.sin()) + n_in[1] * c,
-                    t1[2] * (s * phi.cos()) + t2[2] * (s * phi.sin()) + n_in[2] * c,
+                    t1[0] * (s * cp) + t2[0] * (s * sp) + n_in[0] * c,
+                    t1[1] * (s * cp) + t2[1] * (s * sp) + n_in[1] * c,
+                    t1[2] * (s * cp) + t2[2] * (s * sp) + n_in[2] * c,
                 ];
                 st.dir = v3(scale(dd, 1.0 / norm(dd)));
                 st.entered_via = Some(face);
@@ -1389,5 +1413,409 @@ impl WorldTracker {
                 None
             }
         }
+    }
+}
+
+// ---- majorant nodes and delta flights ---------------------------------------------------
+
+const NO_NODE: u32 = u32::MAX;
+
+/// A lattice or union component as a node of the prototype tree.
+struct CompNode {
+    parent: u32,
+    bounds: Box6,
+    set: u32,
+    cells: u32,
+}
+
+/// The node tables of a world with `PartitionOptions::enabled`.
+///
+/// `NodeId`s index the prototype tree: first one node per reachable union or lattice
+/// component (parents before children), then the partition nodes of each prototype leaf
+/// (`proto_off`). Instances have no nodes: every element filled with one universe shares its
+/// subtree, so the majorant slice does not grow with the element count.
+pub(crate) struct WorldHier {
+    comp_nodes: Vec<CompNode>,
+    proto_off: Vec<u32>,
+    proto_parent: Vec<u32>,
+    /// Per prototype: its set ids to world set ids.
+    set_map: Vec<Vec<u32>>,
+    sets: MaterialSets,
+    region_set: Vec<u32>,
+    root_node: u32,
+    n_nodes: u32,
+}
+
+impl WorldHier {
+    fn bytes(&self) -> usize {
+        self.comp_nodes.len() * core::mem::size_of::<CompNode>() + self.proto_off.len() * 8 + self.set_map.iter().map(|m| m.len() * 4).sum::<usize>() + self.region_set.len() * 4
+    }
+}
+
+fn comp_kids(c: &Comp) -> Vec<usize> {
+    let mut k: Vec<usize> = match &c.kind {
+        Kind::Leaf(_) => Vec::new(),
+        Kind::Union { places, .. } => places.iter().map(|p| p.child).collect(),
+        Kind::Lattice(l) => l.fill.iter().map(|&f| f as usize).collect(),
+    };
+    k.sort_unstable();
+    k.dedup();
+    k
+}
+
+fn build_hier(protos: &[Proto], comps: &[Comp], root: usize) -> Result<WorldHier> {
+    let n = comps.len();
+    let order = post_order(n, root, &|c| comp_kids(&comps[c]));
+    let mut comp_node = vec![NO_NODE; n];
+    let mut ncomp = 0u32;
+    for &c in order.iter().rev() {
+        if !matches!(comps[c].kind, Kind::Leaf(_)) {
+            comp_node[c] = ncomp;
+            ncomp += 1;
+        }
+    }
+    let no_part = || RtError::Unsupported("a prototype of this world has no partition");
+    let mut proto_off = Vec::with_capacity(protos.len());
+    let mut acc = u64::from(ncomp);
+    for p in protos {
+        proto_off.push(u32::try_from(acc).map_err(|_| RtError::Unsupported("more than u32::MAX majorant nodes"))?);
+        acc += p.tracker.partition().ok_or_else(no_part)?.nodes.len() as u64;
+    }
+    let n_nodes = u32::try_from(acc).map_err(|_| RtError::Unsupported("more than u32::MAX majorant nodes"))?;
+    // First parent in parents-first order.
+    let mut comp_parent = vec![NO_NODE; n];
+    let mut proto_parent = vec![NO_NODE; protos.len()];
+    for &c in order.iter().rev() {
+        let me = comp_node[c];
+        if me == NO_NODE {
+            continue;
+        }
+        for k in comp_kids(&comps[c]) {
+            match comps[k].kind {
+                Kind::Leaf(p) => {
+                    if proto_parent[p] == NO_NODE {
+                        proto_parent[p] = me;
+                    }
+                }
+                _ => {
+                    if comp_parent[k] == NO_NODE {
+                        comp_parent[k] = me;
+                    }
+                }
+            }
+        }
+    }
+    // Sets: each prototype's sets in id order, then one singleton per region, then the
+    // components (children first).
+    let mut sets = MaterialSets::new();
+    let mut set_map = Vec::with_capacity(protos.len());
+    for p in protos {
+        let part = p.tracker.partition().ok_or_else(no_part)?;
+        let m: Vec<u32> = (0..part.sets.len()).map(|s| sets.intern(part.sets.get(MaterialSetId::new(s)).unwrap_or(&[]).iter().map(|r| RegionId(r.0 + p.region_off))).0).collect();
+        set_map.push(m);
+    }
+    let nreg: usize = protos.iter().map(|p| p.tracker.regions().0.len()).sum();
+    let region_set: Vec<u32> = (0..nreg).map(|r| sets.intern([RegionId::new(r)]).0).collect();
+    let mut csets: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut comp_nodes: Vec<CompNode> = (0..ncomp).map(|_| CompNode { parent: NO_NODE, bounds: EMPTY_BOX, set: 0, cells: 0 }).collect();
+    for &c in &order {
+        match &comps[c].kind {
+            Kind::Leaf(p) => {
+                let part = protos[*p].tracker.partition().ok_or_else(no_part)?;
+                csets[c] = part.sets.get(MaterialSetId(part.nodes[0].set)).unwrap_or(&[]).iter().map(|r| r.0 + protos[*p].region_off).collect();
+            }
+            _ => {
+                let mut v: Vec<u32> = comp_kids(&comps[c]).into_iter().flat_map(|k| csets[k].clone()).collect();
+                v.sort_unstable();
+                v.dedup();
+                let id = sets.intern(v.iter().map(|&r| RegionId(r))).0;
+                let nd = &mut comp_nodes[comp_node[c] as usize];
+                nd.parent = comp_parent[c];
+                nd.bounds = comps[c].bounds;
+                nd.set = id;
+                nd.cells = u32::try_from(comps[c].cells).unwrap_or(u32::MAX);
+                csets[c] = v;
+            }
+        }
+    }
+    let root_node = match comps[root].kind {
+        Kind::Leaf(p) => proto_off[p],
+        _ => comp_node[root],
+    };
+    Ok(WorldHier { comp_nodes, proto_off, proto_parent, set_map, sets, region_set, root_node, n_nodes })
+}
+
+impl HierarchyView for WorldTracker {
+    fn node_count(&self) -> usize {
+        self.hier.as_ref().map_or(0, |h| h.n_nodes as usize)
+    }
+    fn root(&self) -> NodeId {
+        self.hier.as_ref().map_or(NodeId::NONE, |h| NodeId(h.root_node))
+    }
+    fn node(&self, n: NodeId) -> Option<NodeInfo> {
+        let h = self.hier.as_ref()?;
+        let i = n.0;
+        let up = |p: u32| if p == NO_NODE { NodeId::NONE } else { NodeId(p) };
+        if let Some(c) = h.comp_nodes.get(i as usize) {
+            let b = if box_empty(&c.bounds) { [0.0; 6] } else { c.bounds };
+            let bounds = Aabb { lo: Point3::new(b[0], b[1], b[2]), hi: Point3::new(b[3], b[4], b[5]) };
+            // Unions and lattices both hold prototypes in their own frames, which do not tile
+            // the component's box: `NodeKind::Lattice` is the kind whose children are not tiled.
+            return Some(NodeInfo::new(n, up(c.parent), bounds, NodeKind::Lattice, MaterialSetId(c.set), c.cells));
+        }
+        let p = h.proto_off.partition_point(|&o| o <= i).checked_sub(1)?;
+        let part = self.protos[p].tracker.partition()?;
+        let local = i - h.proto_off[p];
+        let info = HierarchyView::node(part, NodeId(local))?;
+        let rec = part.nodes.get(local as usize)?;
+        let parent = if rec.parent == NO_NODE { up(h.proto_parent[p]) } else { NodeId(rec.parent + h.proto_off[p]) };
+        Some(NodeInfo::new(n, parent, info.bounds, info.kind, MaterialSetId(*h.set_map[p].get(info.set.get())?), info.cells))
+    }
+    fn node_of_cell(&self, c: CellId) -> Option<NodeId> {
+        let h = self.hier.as_ref()?;
+        let (_, p, local) = self.resolve_cell(u64::from(c.0))?;
+        let part = self.protos[p].tracker.partition()?;
+        let nn = part.cell_node.get(local as usize).copied().filter(|&x| x != crate::core::NONE)?;
+        Some(NodeId(nn + h.proto_off[p]))
+    }
+    fn set_count(&self) -> usize {
+        self.hier.as_ref().map_or(0, |h| h.sets.len())
+    }
+    fn set_regions(&self, s: MaterialSetId) -> Option<&[RegionId]> {
+        self.hier.as_ref()?.sets.get(s)
+    }
+    fn region_set(&self, r: RegionId) -> Option<MaterialSetId> {
+        self.hier.as_ref()?.region_set.get(r.get()).copied().map(MaterialSetId)
+    }
+}
+
+/// Perturb the global point `g` by a few ulps (never along the ray: a ray nearly parallel to the
+/// wall would not move the coordinate at all) until its image under `g2l` is on the entering side
+/// of the wall `wall` of local axis `ax` (`hi`: the high wall), so the next descent from the rounded
+/// global position picks the node behind the wall, never the node just left.
+fn past_wall(g2l: &Aff, g: [f64; 3], ax: usize, wall: f64, hi: bool) -> [f64; 3] {
+    let ok = |q: [f64; 3]| {
+        let l = g2l.pt(q)[ax];
+        if hi { l >= wall } else { l <= wall }
+    };
+    if ok(g) {
+        return g;
+    }
+    // The global coordinate that moves local axis `ax` the most, bumped toward the wall's far side.
+    let row = g2l.m[ax];
+    let j = (0..3).max_by(|&a, &b| row[a].abs().total_cmp(&row[b].abs())).unwrap_or(0);
+    let toward = if (row[j] > 0.0) == hi { 1.0 } else { -1.0 };
+    let ulp = f64::EPSILON * (1.0 + g[0].abs().max(g[1].abs()).max(g[2].abs()));
+    let mut q = g;
+    for k in 1..=64 {
+        q[j] = g[j] + toward * ulp * f64::from(k);
+        if ok(q) {
+            return q;
+        }
+    }
+    q
+}
+
+impl WorldTracker {
+    /// Hash of the prototypes' majorant partitions in prototype order, if the world has them.
+    /// Independent of the thread count; `structure_hash` does not include it.
+    pub fn partition_hash(&self) -> Option<ContentHash> {
+        self.hier.as_ref()?;
+        let mut h = ContentHasher::new();
+        for p in &self.protos {
+            h.write_hash(p.tracker.partition_hash()?);
+        }
+        Some(h.finish())
+    }
+
+    /// Prototype index and local node of a partition node id.
+    fn proto_node(&self, node: NodeId) -> Option<(usize, u32)> {
+        let h = self.hier.as_ref()?;
+        if (node.0 as usize) < h.comp_nodes.len() || node.0 >= h.n_nodes {
+            return None;
+        }
+        let p = h.proto_off.partition_point(|&o| o <= node.0).checked_sub(1)?;
+        Some((p, node.0 - h.proto_off[p]))
+    }
+
+    fn through_lattice(&self, levels: &[Level]) -> bool {
+        levels.iter().any(|l| matches!(self.comps[l.component.get()].kind, Kind::Lattice(_)))
+    }
+}
+
+impl MajorantTracker for WorldTracker {
+    fn hierarchy(&self) -> &dyn HierarchyView {
+        self
+    }
+
+    fn advance_segment(&self, st: &mut TrackState, q: &SegmentQuery<'_>, sc: &mut Scratch) -> Result<FlightSegment> {
+        let Some(h) = &self.hier else { return Err(RtError::Unsupported("tracker was built without a partition")) };
+        let (o, d) = (a3(st.pos), av3(st.dir));
+        if !finite3(o) || !finite3(d) {
+            return Err(RtError::NonFinite("state"));
+        }
+        let (first, region, face_in) = (st.cell, st.region, st.entered_via);
+        let set_of = |n: NodeId| self.node(n).map_or(MaterialSetId(0), |i| i.set);
+        if first.is_none() || first == CellId::COMPLEMENT || first.get() >= self.info.cells {
+            // Nothing located: a surface segment from `step`, which reports the loss.
+            let node = NodeId(h.root_node);
+            let sigma_m = q.input.majorant(node)?;
+            let s = self.step(st, q.max_dist, sc)?;
+            return Ok(FlightSegment::new(TrackMode::Surface, node, set_of(node), s.cell, s.region, s.dist, sigma_m).with_faces(face_in, end_face(&s.end)).with_resolved(true).with_end(s.end));
+        }
+        let fr = self.frame_of(&st.levels)?;
+        let pr = &self.protos[fr.proto];
+        let Some(part) = pr.tracker.partition() else { return Err(RtError::Unsupported("tracker was built without a partition")) };
+        let c = u64::from(first.0);
+        if c < fr.base || c >= fr.base + pr.tracker.core.n_cells() as u64 {
+            return Err(RtError::UnknownId { kind: "cell", id: first.0 });
+        }
+        let (ol, dl) = (fr.g2l.pt(o), fr.g2l.vec(d));
+        let mut visits = 0;
+        let (_, lnode, node_box) = part.descend(0, part.root_box, ol, dl, &mut visits);
+        sc.counters.node_visits += visits;
+        let rec = &part.nodes[lnode as usize];
+        let node_id = NodeId(h.proto_off[fr.proto] + lnode);
+        // The one majorant entry this call reads, before the state moves.
+        let sigma_m = q.input.majorant(node_id)?;
+        let mode = choose_mode(q.policy, node_id, &q.input);
+        let set = MaterialSetId(h.set_map[fr.proto][rec.set as usize]);
+        let saved = st.clone();
+        match mode {
+            TrackMode::Surface if q.scale == SegmentScale::Cell => {
+                let s = self.step(st, q.max_dist, sc)?;
+                Ok(FlightSegment::new(mode, node_id, set, s.cell, s.region, s.dist, sigma_m).with_faces(face_in, end_face(&s.end)).with_resolved(true).with_end(s.end))
+            }
+            TrackMode::Surface => {
+                let r = self.fire(st, q.max_dist, self.info.max_events, sc)?;
+                let (mut end, mut total) = (r.end, r.dist);
+                if let StepEnd::Lost(_) = end {
+                    st.clone_from(&saved);
+                    total = 0.0;
+                    end = r.end;
+                }
+                Ok(FlightSegment::new(mode, node_id, set, first, region, total, sigma_m).with_faces(face_in, end_face(&end)).with_resolved(false).with_end(end))
+            }
+            TrackMode::Delta => {
+                let (t_wall, ax, hi) = box_exit(ol, dl, &node_box);
+                let want_wall = t_wall < q.max_dist;
+                let limit = if want_wall { t_wall } else { q.max_dist };
+                let mut total = 0.0;
+                let mut end;
+                if rec.boundary {
+                    // An outer face of the prototype may be inside: walk with `step` (events,
+                    // neighbour instances and the world boundary are its), up to the wall.
+                    let start_levels = st.levels.clone();
+                    let mut iters = 0u32;
+                    loop {
+                        let s = self.step(st, (limit - total).max(0.0), sc)?;
+                        total += s.dist;
+                        end = s.end;
+                        let more = match end {
+                            StepEnd::CellFace { .. } => true,
+                            StepEnd::RegionBoundary { to_cell, .. } => !to_cell.is_none(),
+                            _ => false,
+                        };
+                        // Another instance: the segment ends there (levels are constant over a segment).
+                        if !more || st.levels != start_levels {
+                            break;
+                        }
+                        iters += 1;
+                        if iters > self.info.max_events {
+                            end = StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded));
+                            break;
+                        }
+                    }
+                } else {
+                    // No outer face of the prototype inside the node: straight to the wall or the limit.
+                    total = limit;
+                    st.pos = p3(madd(o, d, limit));
+                    end = StepEnd::Limit;
+                }
+                if let StepEnd::Lost(_) = end {
+                    st.clone_from(&saved);
+                    total = 0.0;
+                } else if matches!(end, StepEnd::Limit) && (want_wall || !rec.boundary) {
+                    let mut pl = fr.g2l.pt(a3(st.pos));
+                    if want_wall {
+                        let wall = if hi { node_box[3 + ax] } else { node_box[ax] };
+                        pl[ax] = wall;
+                        st.pos = p3(past_wall(&fr.g2l, fr.g2l.pt_back(pl), ax, wall, hi));
+                    }
+                    let loc = pr.tracker.locate_from_root(part, pl, dl, sc);
+                    if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
+                        st.cell = CellId::NONE;
+                        st.region = RegionId::NONE;
+                        st.entered_via = None;
+                        end = StepEnd::RegionBoundary { surface: SurfaceId::NONE, face: FaceId::NONE, to_region: RegionId::NONE, to_cell: CellId::NONE };
+                    } else {
+                        st.cell = CellId::new((fr.base + u64::from(loc.cell.0)) as usize);
+                        st.region = RegionId(loc.region.0 + pr.region_off);
+                        st.entered_via = loc.on_face.map(|f| FaceId(f.0 + pr.face_off));
+                        end = if want_wall { StepEnd::SlotChange { to_cell: st.cell } } else { StepEnd::Limit };
+                    }
+                }
+                Ok(FlightSegment::new(mode, node_id, set, first, region, total, sigma_m).with_faces(face_in, end_face(&end)).with_resolved(false).with_end(end))
+            }
+        }
+    }
+
+    fn locate_in_node(&self, node: NodeId, levels: &[Level], p: Point3, dir: Option<Vector3>, sc: &mut Scratch) -> Result<Located> {
+        let Some((pi, local)) = self.proto_node(node) else {
+            return Err(if self.hier.is_none() { RtError::Unsupported("tracker was built without a partition") } else { RtError::UnknownId { kind: "node", id: node.0 } });
+        };
+        let fr = self.frame_of(levels)?;
+        if fr.proto != pi {
+            return Err(RtError::InvalidInput("the levels do not lead to the prototype of the node"));
+        }
+        let pa = a3(p);
+        if !finite3(pa) {
+            return Err(RtError::NonFinite("position"));
+        }
+        let da = match dir {
+            Some(v) => {
+                let a = av3(v);
+                if !finite3(a) {
+                    return Err(RtError::NonFinite("direction"));
+                }
+                a
+            }
+            None => [0.0; 3],
+        };
+        let pr = &self.protos[pi];
+        let part = pr.tracker.partition().ok_or(RtError::Unsupported("tracker was built without a partition"))?;
+        let rec = &part.nodes[local as usize];
+        let (q, dl) = (fr.g2l.pt(pa), fr.g2l.vec(da));
+        let tol = self.tol;
+        let inside = (0..3).all(|k| q[k] >= rec.bounds[k] - tol && q[k] <= rec.bounds[3 + k] + tol);
+        let (start, bx) = if inside { (rec.kd as usize, rec.bounds) } else { (0, part.root_box) };
+        let mut visits = 0;
+        let (leaf, _, _) = part.descend(start, bx, q, dl, &mut visits);
+        sc.counters.node_visits += visits;
+        // The owning element is resolved from the levels by index arithmetic.
+        if self.through_lattice(levels) {
+            sc.counters.lattice_index_locates += 1;
+        }
+        let lv: Levels = levels.iter().cloned().collect();
+        let loc = pr.tracker.locate_leaf(part, leaf, q, dir.map(|_| dl), sc);
+        if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
+            return Ok(Located::new(CellId::NONE, RegionId::NONE, None).with_levels(lv));
+        }
+        Ok(self.global_located(Hit { proto: pi, base: fr.base, local: loc, levels: lv, strict: true }))
+    }
+
+    fn safety_distance(&self, st: &TrackState, sc: &mut Scratch) -> Result<f64> {
+        if st.cell.is_none() || st.cell == CellId::COMPLEMENT || st.cell.get() >= self.info.cells {
+            return Ok(0.0);
+        }
+        let fr = self.frame_of(&st.levels)?;
+        let pr = &self.protos[fr.proto];
+        let c = u64::from(st.cell.0);
+        if c < fr.base || c >= fr.base + pr.tracker.core.n_cells() as u64 {
+            return Err(RtError::UnknownId { kind: "cell", id: st.cell.0 });
+        }
+        let mut ls = TrackState::new(p3(fr.g2l.pt(a3(st.pos))), v3(fr.g2l.vec(av3(st.dir))));
+        ls.cell = CellId((c - fr.base) as u32);
+        pr.tracker.safety_distance(&ls, sc)
     }
 }

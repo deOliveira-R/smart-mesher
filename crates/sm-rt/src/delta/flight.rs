@@ -12,13 +12,13 @@ use sm_rt_api::{
 
 static NO_HIERARCHY: NoHierarchy = NoHierarchy;
 
-fn p3(a: [f64; 3]) -> Point3 {
+pub(crate) fn p3(a: [f64; 3]) -> Point3 {
     Point3::new(a[0], a[1], a[2])
 }
 
 /// Distance along unit `d` from `o` to the wall of `bx` it leaves through, with the axis and
 /// whether it is the high wall.
-fn box_exit(o: [f64; 3], d: [f64; 3], bx: &[f64; 6]) -> (f64, usize, bool) {
+pub(crate) fn box_exit(o: [f64; 3], d: [f64; 3], bx: &[f64; 6]) -> (f64, usize, bool) {
     let mut best = (f64::INFINITY, 0usize, false);
     for k in 0..3 {
         if d[k] > 0.0 {
@@ -36,7 +36,7 @@ fn box_exit(o: [f64; 3], d: [f64; 3], bx: &[f64; 6]) -> (f64, usize, bool) {
     (best.0.max(0.0), best.1, best.2)
 }
 
-fn end_face(e: &StepEnd) -> Option<FaceId> {
+pub(crate) fn end_face(e: &StepEnd) -> Option<FaceId> {
     match e {
         StepEnd::CellFace { face, .. } | StepEnd::RegionBoundary { face, .. } | StepEnd::Boundary { face, .. } => Some(*face),
         _ => None,
@@ -57,7 +57,7 @@ impl MeshTracker {
     /// `locate` over the candidate list of one kd leaf: the same cells, order and probes as the
     /// BVH path of `locate_inner` (bounding boxes padded by `tol` filter the candidates), so the
     /// answer is identical; no BVH descent.
-    fn locate_leaf(&self, part: &Partition, kd_leaf: usize, p: [f64; 3], dir: Option<[f64; 3]>, sc: &mut Scratch) -> Located {
+    pub(crate) fn locate_leaf(&self, part: &Partition, kd_leaf: usize, p: [f64; 3], dir: Option<[f64; 3]>, sc: &mut Scratch) -> Located {
         let tol = self.tol();
         if !self.in_bounds(p, tol) {
             return Located::new(CellId::NONE, RegionId::NONE, None);
@@ -99,7 +99,7 @@ impl MeshTracker {
     }
 
     /// Locate from the root of the partition (a kd descent, never the cell BVH).
-    fn locate_from_root(&self, part: &Partition, p: [f64; 3], d: [f64; 3], sc: &mut Scratch) -> Located {
+    pub(crate) fn locate_from_root(&self, part: &Partition, p: [f64; 3], d: [f64; 3], sc: &mut Scratch) -> Located {
         let mut visits = 0;
         let (leaf, _, _) = part.descend(0, part.root_box, p, d, &mut visits);
         sc.counters.node_visits += visits;

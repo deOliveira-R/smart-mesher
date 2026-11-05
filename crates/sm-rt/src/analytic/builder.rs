@@ -32,6 +32,9 @@ impl AnalyticTrackerBuilder {
     pub fn build_concrete(&self, input: &BuildInput<'_>, opts: &BuildOptions) -> Result<(AnalyticTracker, BuildReport)> {
         let BuildInput::Hier(h) = input else { return Err(RtError::Unsupported("the analytic tracker builds from BuildInput::Hier with a CSG leaf")) };
         let leaf = root_leaf(h)?;
+        if opts.partition.enabled {
+            return Err(RtError::Unsupported("majorant partition of a CSG leaf"));
+        }
         let key = cache_key(&leaf, h.spec.content_hash(), h.boundaries, opts);
         AnalyticTracker::build(&leaf, h.boundaries, opts, key)
     }

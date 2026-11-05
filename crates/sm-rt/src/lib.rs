@@ -14,7 +14,10 @@
 //!   `DESIGN.md`, "Majorant partition and delta flights".
 //! * [`check_facets`] is the grouped, located watertightness diagnostic.
 //! * [`write_smrt`], [`read_smrt`], [`load_image`] handle the `.smrt` sidecar.
-//! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`.
+//! * With `BuildOptions::partition.enabled` a [`WorldTracker`] also implements the majorant view: the
+//!   nodes are the prototype tree (a lattice is one node; elements of one universe share its subtree),
+//!   and delta flights cross element walls inside the segment stream.
+//! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`, `rt.partition`.
 
 #![forbid(unsafe_code)]
 

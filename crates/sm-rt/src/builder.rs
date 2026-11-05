@@ -104,11 +104,8 @@ impl MeshTrackerBuilder {
 /// walker resolves (neighbour instance, or the world boundary), so the leaf is built with vacuum
 /// boundaries and no complement.
 pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(MeshTracker, BuildReport)> {
-    // The world walker does not use a prototype's majorant partition (flights across worlds are
-    // a later task), so prototypes are built without one and keep their structure unchanged.
-    let mut plain = *opts;
-    plain.partition = sm_rt_api::PartitionOptions::default();
-    let opts = &plain;
+    // A prototype keeps the world's partition options: its kd partition serves the flights of
+    // every instance. (`region_jump` is refused by the world build before this point.)
     let vac = BoundarySpec::default();
     match leaf {
         LeafInput::Mesh(m) => {
@@ -225,7 +222,9 @@ impl TrackerBuilder for MeshTrackerBuilder {
 }
 
 /// Restore a tracker from a cache image alone (no mesh, no staleness check against inputs):
-/// what a `.smrt` sidecar opener such as the C ABI uses. The image is fully validated.
+/// what a `.smrt` sidecar opener such as the C ABI uses. The image is validated for structure and
+/// for the meaning of the partition's node sets and counts (see `Partition::from_raw`), not
+/// re-derived from the geometry.
 pub fn load_image(image: &CacheImage) -> Result<MeshTracker> {
     import(image)
 }

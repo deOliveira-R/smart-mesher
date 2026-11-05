@@ -415,6 +415,11 @@ fn build_checks_and_errors() {
     assert!(t.export_cache().is_none());
     assert!(matches!(AnalyticTrackerBuilder.load_image(&img), Err(RtError::Unsupported(_))));
     fx2.boundaries = BoundarySpec::default();
+    // A partition option is refused on a CSG leaf, never silently dropped.
+    let mut part = sm_rt_api::PartitionOptions::default();
+    part.enabled = true;
+    assert!(matches!(fx2.build_with(&BuildOptions::default().with_partition(part)), Err(RtError::Unsupported(_))));
+    assert!(fx2.build_with(&BuildOptions::default()).is_ok());
     assert!(fx2.with_hier(|h| matches!(AnalyticTrackerBuilder.load(&BuildInput::Hier(*h), &BuildOptions::default(), &img), Err(RtError::Unsupported(_)))));
     // A world that places or tiles CSG leaves is not hosted by the analytic tracker yet.
     let spec = sm_rt_api::WorldSpec::new(
