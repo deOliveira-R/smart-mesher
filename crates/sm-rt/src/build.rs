@@ -225,7 +225,11 @@ pub(crate) fn build_mesh(inp: &MeshInput<'_>, opts: &BuildOptions) -> Result<Bui
 }
 
 /// Build from a watertight facet soup: one polyhedral cell per region, one face per triangle.
-pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOptions) -> Result<Built, RtError> {
+///
+/// With `with_complement == false` (a leaf of a hierarchical world) there is no implicit
+/// complement region: every exterior face carries the spec's boundary action, so leaving the
+/// shells ends the leaf walk with a `Boundary` event.
+pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOptions, with_complement: bool) -> Result<Built, RtError> {
     f.validate()?;
     let issues = check_facets(f, spec);
     if !issues.is_empty() {
@@ -297,7 +301,9 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
     }
     core.c_region = (0..nr as u32).collect();
     let mut regions: Vec<RegionInfo> = vols.iter().map(|v| RegionInfo::new(v.to_string()).with_entity(*v)).collect();
-    regions.push(RegionInfo::new("complement").as_implicit_complement());
+    if with_complement {
+        regions.push(RegionInfo::new("complement").as_implicit_complement());
+    }
 
     let keys: Vec<(u64, u32, u32)> = (0..nt).map(|i| (f.face[i].to_raw(), core.f_left[i], core.f_right[i])).collect();
     let mut uniq = keys.clone();
@@ -335,14 +341,14 @@ pub(crate) fn build_facets(f: &FacetInput, spec: &BoundarySpec, opts: &BuildOpti
     let mate_faces = |e: EntityId| -> Vec<u32> { by_entity.get(&e.to_raw()).cloned().unwrap_or_default() };
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
-    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, &mut warnings, true, |t| f.face[t as usize]);
+    assign_actions(&mut core, spec, &rule_faces, &mate_faces, opts, &mut issues, &mut warnings, with_complement, |t| f.face[t as usize]);
     if !issues.is_empty() {
         return Err(RtError::Build(issues));
     }
     fill_surface_boundaries(&core, &mut surfaces);
     let mut report = BuildReport::default();
     report.issues = warnings;
-    Ok(Built { core, regions: RegionTable(regions), surfaces: SurfaceTable(surfaces), complement: Some(nr as u32), kind: TrackerKind::Facets, report })
+    Ok(Built { core, regions: RegionTable(regions), surfaces: SurfaceTable(surfaces), complement: with_complement.then_some(nr as u32), kind: TrackerKind::Facets, report })
 }
 
 fn fill_surface_boundaries(core: &Core, surfaces: &mut [SurfaceInfo]) {
