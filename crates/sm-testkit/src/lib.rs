@@ -6,6 +6,7 @@
 //! - [`surf3`]: closed triangulated surfaces (cube, icosphere, torus, cavity, shared interface,
 //!   Schonhardt, noisy sphere) with exact enclosed volumes.
 //! - [`lattice`]: classified hex/tet/quad/tube lattices on a real topology, with a constrained jitter.
+//! - [`rays`]: degenerate ray families (through lattice vertices and edges) for simulation-of-simplicity tests.
 //! - [`topo`]: synthetic B-rep volumes and model fixtures.
 //! - [`topo_conformance`]: the generic topology conformance suite for `TopologyEdit` implementations.
 //! - [`topo_differential`]: lock-step comparison and a seeded random driver for two implementations.
@@ -25,6 +26,7 @@ pub mod geom;
 pub mod lattice;
 pub mod loops2d;
 pub mod meshes;
+pub mod rays;
 pub mod step;
 pub mod strategies;
 pub mod surf3;

@@ -170,6 +170,38 @@ pub fn nested_spheres(radii: &[f64]) -> Result<TopoFixture, FixtureError> {
     })
 }
 
+/// [`tiled_relief_with`] at the W3 recovery-stress setting: `8 x 8` tiles, seed 2, depth 0.9
+/// (`tiled_cube(n, 8, 2, 0.9)` of the tet scheme's tests). `n` is raised to a multiple of 8.
+pub fn tiled_relief(n: u32) -> crate::surf3::SurfaceFixture {
+    tiled_relief_with(n, 8, 2, 0.9)
+}
+
+/// A closed triangulated unit cube ([`crate::surf3::tri_cube`]) whose top face (`z = 1`) carries
+/// hard relief in every `k x k` tile of its `n x n` grid: tile-interior vertices are pushed down
+/// by `depth * (k / n) * |u|`, `u` from a `SplitMix64` seeded with `seed`, drawn in point order;
+/// tile borders stay flat, so tiles are independent. `k` is raised to at least 1 and `n` to the
+/// next multiple of `k`. The enclosed volume is recomputed from the moved points (divergence
+/// theorem), so it is 1 minus the volume of the dents.
+pub fn tiled_relief_with(n: u32, k: u32, seed: u64, depth: f64) -> crate::surf3::SurfaceFixture {
+    let k = k.max(1);
+    let n = n.max(1).div_ceil(k) * k;
+    let mut fx = crate::surf3::tri_cube(n);
+    let mut rng = crate::surf3::SplitMix64(seed);
+    let lim = f64::from(k) / f64::from(n);
+    for p in &mut fx.points {
+        if p[2] == 1.0 && p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 1.0 {
+            let (ix, iy) = ((p[0] * f64::from(n)).round() as u32, (p[1] * f64::from(n)).round() as u32);
+            if ix % k != 0 && iy % k != 0 {
+                p[2] = 1.0 - depth * lim * rng.unit().abs();
+            }
+        }
+    }
+    fx.name = "tiled_relief";
+    let tris = fx.oriented_tris(0);
+    fx.volumes[0].enclosed_volume = crate::surf3::polyhedron_volume(&fx.points, &tris);
+    fx
+}
+
 /// A model with its topology.
 #[derive(Clone, Debug)]
 pub struct ModelFixture {

@@ -11,7 +11,7 @@ use core::f64::consts::TAU;
 use sm_core::{EntityId, EntityKind, Point3};
 use sm_mesh_api::reference::{ReferenceBuilder, ReferenceMesh, hex_block};
 use sm_mesh_api::{
-    CellShape, Classification, FaceIx, MeshBuild, MeshEntityRef, MeshError, MeshRead, Param, Result, SerialAlloc, VertexIx,
+    CellShape, Classification, FaceIx, MeshBuild, MeshEdit, MeshEntityRef, MeshError, MeshRead, Param, Result, SerialAlloc, SetMembers, VertexIx,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -776,4 +776,132 @@ pub fn nonconvex_poly() -> Result<MeshFixture> {
     // Brick: (2,0,0)=2, (3,0,0)=16, (3,1,0)=17, (2,1,0)=3, then the same at z = 1: 10, 18, 19, 11.
     let brick = CellSpec::Template(CellShape::Hex, vec![2, 16, 17, 3, 10, 18, 19, 11]);
     fixture("nonconvex_poly", &pts, &[prism, brick], vec![3.0, 1.0], 18.0)
+}
+
+/// Hex cells `(k, j, i)`-ordered over an `n` lattice (points numbered `(k * (n1+1) + j) * (n0+1) + i`
+/// at `(i h0, j h1, k h2)`), each tagged by `vol(i, j, k)`.
+fn hex_lattice_cells(n: [usize; 3], h: [f64; 3], vol: impl Fn(usize, usize, usize) -> u64) -> (Vec<[f64; 3]>, Vec<(CellSpec, u64)>) {
+    let m = [n[0] + 1, n[1] + 1, n[2] + 1];
+    let mut pts = Vec::with_capacity(m[0] * m[1] * m[2]);
+    for k in 0..m[2] {
+        for j in 0..m[1] {
+            for i in 0..m[0] {
+                pts.push([i as f64 * h[0], j as f64 * h[1], k as f64 * h[2]]);
+            }
+        }
+    }
+    let mut cells = Vec::with_capacity(n[0] * n[1] * n[2]);
+    for k in 0..n[2] {
+        for j in 0..n[1] {
+            for i in 0..n[0] {
+                let ix = |o: [usize; 3]| ((k + o[2]) * m[1] + (j + o[1])) * m[0] + i + o[0];
+                let corners = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]].map(ix).to_vec();
+                cells.push((CellSpec::Template(CellShape::Hex, corners), vol(i, j, k)));
+            }
+        }
+    }
+    (pts, cells)
+}
+
+/// Add one cell set per `TopoVolume` serial (`volume_<serial>`, ascending) holding the cells of
+/// that volume; `cell_vol` is the volume of each cell in cell order.
+fn add_volume_cell_sets(mesh: &mut ReferenceMesh, alloc: &mut SerialAlloc, cell_vol: &[u64]) -> Result<()> {
+    let vols: BTreeSet<u64> = cell_vol.iter().copied().collect();
+    for v in vols {
+        let members = cell_vol.iter().enumerate().filter(|(_, c)| **c == v).map(|(i, _)| sm_mesh_api::CellIx::new(i)).collect();
+        mesh.add_set(&format!("volume_{v}"), SetMembers::Cells(members), alloc)?;
+    }
+    Ok(())
+}
+
+/// A hexahedral box split into two volumes: an `n[0] x n[1] x n[2]` lattice with cell sizes `h`;
+/// cells with lattice `i < split` are `TopoVolume#1`, the others `TopoVolume#2`. Cells are in
+/// `(k, j, i)` order (`i` fastest). The interface `i = split` is `n1 n2` quads shared by the two
+/// volumes, classified on one `TopoFace` (see [`build_mesh_volumes`]). The mesh carries two cell
+/// sets: `volume_1` (the `split n1 n2` cells with `i < split`) and `volume_2` (the rest).
+///
+/// Invariants: every cell has volume `h0 h1 h2`; the volumes are `split n1 n2 h0 h1 h2` and
+/// `(n0 - split) n1 n2 h0 h1 h2`; the skin is all quads, `2 (n0 n1 + n1 n2 + n0 n2)` boundary
+/// faces of total area `2 (L0 L1 + L1 L2 + L0 L2)` (`Li = ni hi`). Needs `0 < split < n[0]`,
+/// nonzero counts and positive finite `h`, else [`MeshError::State`].
+pub fn hex_block_two_volumes(n: [u32; 3], h: [f64; 3], split: u32) -> Result<MeshFixture> {
+    check_block(n, &h)?;
+    if split == 0 || split >= n[0] {
+        return Err(MeshError::State("hex_block_two_volumes needs 0 < split < n[0]".into()));
+    }
+    let nc = n.map(|x| x as usize);
+    let (pts, cells) = hex_lattice_cells(nc, h, |i, _, _| if (i as u32) < split { 1 } else { 2 });
+    let mut alloc = SerialAlloc::new();
+    let mut mesh = build_mesh_volumes(&pts, &cells, &mut alloc)?;
+    let cell_vol: Vec<u64> = cells.iter().map(|c| c.1).collect();
+    add_volume_cell_sets(&mut mesh, &mut alloc, &cell_vol)?;
+    let ext = [nc[0] as f64 * h[0], nc[1] as f64 * h[1], nc[2] as f64 * h[2]];
+    let boundary_faces = boundary_face_count(&mesh);
+    Ok(MeshFixture {
+        name: "hex_block_two_volumes",
+        mesh,
+        cell_volumes: vec![h[0] * h[1] * h[2]; cells.len()],
+        volume: ext[0] * ext[1] * ext[2],
+        area: 2.0 * (ext[0] * ext[1] + ext[1] * ext[2] + ext[0] * ext[2]),
+        boundary_faces,
+    })
+}
+
+/// A hexahedral cube nested in a hexahedral shell: the `[0,3]^3` lattice of 27 unit hexes; the
+/// centre cell `[1,2]^3` (cell 13 in `(k, j, i)` order) is the core (`TopoVolume#1`, cell set
+/// `volume_1`) and the other 26 form the shell around it (`TopoVolume#2`, cell set `volume_2`).
+///
+/// Invariants: every cell has volume 1 (core 1, shell 26, total 27); the outer skin has 54
+/// boundary quads and area 54; the 6 core faces are interior faces between the two volumes,
+/// classified on 6 `TopoFace`s (one per plane), so the shell has an inner and an outer boundary.
+pub fn nested_shell_volumes() -> Result<MeshFixture> {
+    let (pts, cells) = hex_lattice_cells([3, 3, 3], [1.0; 3], |i, j, k| if (i, j, k) == (1, 1, 1) { 1 } else { 2 });
+    let mut alloc = SerialAlloc::new();
+    let mut mesh = build_mesh_volumes(&pts, &cells, &mut alloc)?;
+    let cell_vol: Vec<u64> = cells.iter().map(|c| c.1).collect();
+    add_volume_cell_sets(&mut mesh, &mut alloc, &cell_vol)?;
+    let boundary_faces = boundary_face_count(&mesh);
+    Ok(MeshFixture { name: "nested_shell_volumes", mesh, cell_volumes: vec![1.0; 27], volume: 27.0, area: 54.0, boundary_faces })
+}
+
+/// One named set to add with [`with_sets`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetSpec {
+    /// Set name, unique within the mesh.
+    pub name: String,
+    /// The members (ascending, unique, in range).
+    pub members: SetMembers,
+    /// Optional integer label (unique per members kind).
+    pub label: Option<i64>,
+}
+
+impl SetSpec {
+    /// A set without a label.
+    pub fn new(name: &str, members: SetMembers) -> Self {
+        Self { name: name.into(), members, label: None }
+    }
+
+    /// The same set with an integer label.
+    pub fn labeled(mut self, label: i64) -> Self {
+        self.label = Some(label);
+        self
+    }
+}
+
+/// `fixture` with the sets of `specs` added in order. Existing sets are kept and their ids are
+/// not reused. Geometry, classification and the analytic expectations are unchanged. Fails like
+/// `MeshEdit::add_set` (duplicate name, members unsorted or out of range, duplicate label).
+pub fn with_sets(mut fixture: MeshFixture, specs: &[SetSpec]) -> Result<MeshFixture> {
+    let mut alloc = SerialAlloc::new();
+    let used = fixture.mesh.sets().iter().map(|s| s.id.serial()).max().unwrap_or(0);
+    for _ in 0..used {
+        alloc.one(EntityKind::MeshSet)?;
+    }
+    for s in specs {
+        fixture.mesh.add_set(&s.name, s.members.clone(), &mut alloc)?;
+        if s.label.is_some() {
+            fixture.mesh.set_label(&s.name, s.label)?;
+        }
+    }
+    Ok(fixture)
 }
