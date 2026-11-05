@@ -108,6 +108,8 @@ pub fn run_case(label: &str, t: &dyn Tracker, mode: u32, nhist: i64, seed: u64) 
             if seg.mode == TrackMode::Surface {
                 let sg = sig[ri];
                 let u = rng.unit01();
+                // tau = u/(1-u) is a stand-in variate, not a physical exponential optical depth;
+                // the C and Rust references only have to agree with each other.
                 let tau = u / (1.0 - u);
                 if sg > 0.0 && tau / sg < len {
                     let mut tt = seg.t0 + tau / sg;

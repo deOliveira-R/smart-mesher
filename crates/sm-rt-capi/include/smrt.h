@@ -101,6 +101,7 @@ extern "C" {
 #define SMRT_NODE_ANALYTIC 2
 #define SMRT_NODE_MESH 3
 #define SMRT_NODE_HOMOGENEOUS 4
+#define SMRT_NODE_UNKNOWN 5 /* a kind newer than this header: treat as opaque */
 
 /* ---- handles ------------------------------------------------------------------------------ */
 typedef struct SmrtTracker SmrtTracker; /* opaque, shared, read-only */
@@ -248,7 +249,8 @@ int32_t smrt_info(const SmrtTracker *tracker, SmrtInfo *out);
 int32_t smrt_region_info(const SmrtTracker *tracker, int64_t region, SmrtRegionInfo *out);
 int32_t smrt_version(void);
 int32_t smrt_last_error_message(char *buf, int64_t cap);
-/* snprintf semantics: returns the full length; buf may be NULL when cap is 0. */
+/* snprintf semantics: smrt_region_name and smrt_region_tag return the full length (>= 0), NOT a
+ * status; a negative value is an SMRT_ERR_* code. buf may be NULL when cap is 0. */
 int32_t smrt_region_name(const SmrtTracker *tracker, int64_t region, char *buf, int64_t cap);
 int32_t smrt_region_n_tags(const SmrtTracker *tracker, int64_t region, int64_t *out_n);
 int32_t smrt_region_tag(const SmrtTracker *tracker, int64_t region, int64_t index, char *buf, int64_t cap,

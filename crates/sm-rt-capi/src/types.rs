@@ -311,6 +311,8 @@ pub const SMRT_NODE_ANALYTIC: i64 = 2;
 pub const SMRT_NODE_MESH: i64 = 3;
 /// `SmrtNodeInfo::kind`: homogeneous leaf (one region).
 pub const SMRT_NODE_HOMOGENEOUS: i64 = 4;
+/// `SmrtNodeInfo::kind`: a node kind this library revision cannot name (future kinds).
+pub const SMRT_NODE_UNKNOWN: i64 = 5;
 
 /// One node of the majorant partition (`smrt_node_info`).
 #[repr(C)]

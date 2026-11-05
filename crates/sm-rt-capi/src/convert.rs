@@ -437,7 +437,8 @@ pub fn node_kind_out(k: NodeKind) -> i64 {
         NodeKind::Lattice => SMRT_NODE_LATTICE,
         NodeKind::Analytic => SMRT_NODE_ANALYTIC,
         NodeKind::Mesh => SMRT_NODE_MESH,
-        _ => SMRT_NODE_HOMOGENEOUS,
+        NodeKind::Homogeneous => SMRT_NODE_HOMOGENEOUS,
+        _ => SMRT_NODE_UNKNOWN, // a kind added after this ABI revision
     }
 }
 
