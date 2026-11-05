@@ -90,3 +90,30 @@ pub(crate) fn copy_volume<E: TopologyEdit + ?Sized>(topo: &mut E, volume: Entity
     topo.make_body(&[nv])?;
     Ok(nv)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_topo_api::{CellComplex, OpId, TopologyView, fixtures};
+
+    /// Copies share the surface handles of the original: a subtract with N targets never
+    /// duplicates the tool's geometry, only its cells.
+    #[test]
+    fn copies_share_geometry_handles() {
+        let mut t = CellComplex::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = fixtures::brick(&mut t, sm_core::Point3::new(0.0, 0.0, 0.0), [1.0; 3]).unwrap();
+        let copies: Vec<EntityId> = (0..3).map(|_| copy_volume(&mut t, b.volume).unwrap()).collect();
+        t.end_op().unwrap();
+        let surfaces = |v: EntityId| -> Vec<EntityId> {
+            let mut s: Vec<EntityId> = t.volume_faces(v).iter().filter_map(|&f| geo::face_surface(&t, f).map(|(_, sc)| sc.surface)).collect();
+            s.sort();
+            s
+        };
+        let base = surfaces(b.volume);
+        assert_eq!(base.len(), 6);
+        for c in copies {
+            assert_eq!(surfaces(c), base);
+        }
+    }
+}
