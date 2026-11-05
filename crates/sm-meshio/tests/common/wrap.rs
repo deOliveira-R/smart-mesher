@@ -74,6 +74,14 @@ impl<'a> Wrap<'a> {
         self.rebuild();
         self
     }
+    /// Delete new face `i` from the face table (the cell tables are not touched: a deleted skin
+    /// face leaves a hole, as a damaged export would).
+    pub fn without_face(mut self, i: usize) -> Self {
+        self.perm.remove(i);
+        self.kinds.remove(i);
+        self.rebuild();
+        self
+    }
     /// Override the kind of new face `i`.
     pub fn kind(mut self, i: usize, k: FaceKind) -> Self {
         self.kinds[i] = k;
@@ -138,7 +146,7 @@ impl MeshRead for Wrap<'_> {
         self.dim
     }
     fn count(&self, k: MeshEntityKind) -> usize {
-        self.inner.count(k)
+        if k == MeshEntityKind::Face { self.perm.len() } else { self.inner.count(k) }
     }
     fn id(&self, k: MeshEntityKind, ix: u32) -> EntityId {
         self.inner.id(k, ix)
