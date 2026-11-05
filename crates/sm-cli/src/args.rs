@@ -16,6 +16,12 @@ pub enum Format {
     Exodus,
     /// An OpenFOAM `constant/polyMesh` case: the argument is a directory, not a file.
     Openfoam,
+    /// DAGMC `.h5m` (MOAB HDF5) file.
+    Dagmc,
+    /// Gmsh `.msh` format 4.1 file.
+    Gmsh,
+    /// Self-contained `.smrt` tracking image for the transport handover.
+    Smrt,
 }
 
 /// Quality profiles accepted by `smesh quality --profile`.
@@ -191,6 +197,10 @@ pub enum Command {
         /// OpenFOAM only: write this face set as a `wedge` patch (axisymmetric cases); repeatable.
         #[arg(long, value_name = "SET")]
         wedge_patch: Vec<String>,
+        /// Per-format option `KEY=VALUE` (VALUE is JSON, else a string), e.g. `--option binary=true`
+        /// for `.msh` or `--option graveyard=true` for `.h5m`; repeatable.
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        option: Vec<String>,
     },
     /// Store a file (e.g. a STEP file) in the project's input store and print `{sha256, bytes}`.
     ///

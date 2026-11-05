@@ -17,6 +17,7 @@ use sm_op_api::{Delta, Engine, Hash256, Head, OpRecord, Registry, Rev, State};
 use sm_protocol::{ExportFormat, ExportNote, ExportResult, ExportedFile, StatusResult};
 
 use crate::b64;
+use crate::mesh_export;
 use crate::error::{ServerError, SessionError};
 use crate::standard::InputsHandle;
 
@@ -25,6 +26,9 @@ pub const RELATIONS_QUERY: &str = "topo.related";
 
 /// Largest include file the host loads, in bytes.
 const MAX_INCLUDE_BYTES: u64 = 16 << 20;
+
+/// The export formats of `session.export`, in the order help lists them.
+const EXPORT_FORMATS: [&str; 7] = ["smsh", "vtu", "exodus", "openfoam", "dagmc", "gmsh", "smrt"];
 
 /// What `session.export` asks for, in protocol terms.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -178,11 +182,14 @@ impl<'w> SessionHost<'w> {
             (None, Some(path)) => format_of(path)?,
             (None, None) => return Err(SessionError::bad_request("inline export needs an explicit `format`")),
         };
+        let own = mesh_export::handles(format);
         let fem_format = match format {
             ExportFormat::Smsh => FemFormat::Smsh,
             ExportFormat::Vtu => FemFormat::Vtu,
             ExportFormat::Exodus => FemFormat::Exodus,
             ExportFormat::Openfoam => FemFormat::OpenFoam,
+            // Written by `mesh_export`; the fem format only keeps the shared checks below simple.
+            _ if own => FemFormat::Smsh,
             other => {
                 return Err(SessionError::new(
                     "unsupported-format",
@@ -190,7 +197,7 @@ impl<'w> SessionHost<'w> {
                 ));
             }
         };
-        if !p.options.as_ref().is_none_or(Value::is_null) {
+        if !own && !p.options.as_ref().is_none_or(Value::is_null) {
             return Err(SessionError::bad_request(format!(
                 "`{}` takes no `options`",
                 format_name(format)
@@ -212,13 +219,17 @@ impl<'w> SessionHost<'w> {
                 format_name(format)
             )));
         }
-        if fem_format.is_multi_file() && p.inline {
+        if !own && fem_format.is_multi_file() && p.inline {
             return Err(SessionError::bad_request(format!(
                 "`{}` writes several files and cannot be returned inline: pass a `path` (the case directory) without `inline`",
                 format_name(format)
             )));
         }
         let state = self.ws.state();
+        if own {
+            let w = mesh_export::write(state, format, p.mesh, p.options.as_ref())?;
+            return finish_file(path.as_deref(), format, &w.bytes, &notes_of(&w.notes), p.inline);
+        }
         let mut req = ExportRequest::new(fem_format);
         req.mesh = p.mesh;
         req.split_small_determinant = p.split_small_determinant.unwrap_or(true);
@@ -237,20 +248,7 @@ impl<'w> SessionHost<'w> {
         }
         let mut bytes = Vec::new();
         let report = sm_fem::export(state, &req, &mut bytes).map_err(|e| export_error(&e, state, p.mesh))?;
-        if let Some(path) = &path {
-            write_atomic(path, &bytes)?;
-        }
-        let mut out = ExportResult::new(
-            path.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            format,
-            bytes.len() as u64,
-            Hash256::of(&bytes),
-        )
-        .with_notes(notes_of(&report.notes));
-        if p.inline {
-            out = out.with_base64(b64::encode(&bytes));
-        }
-        Ok(out)
+        finish_file(path.as_deref(), format, &bytes, &notes_of(&report.notes), p.inline)
     }
 
     fn session_value(&mut self, cmd: &SessionCommand) -> Result<Value, SessionError> {
@@ -333,7 +331,13 @@ impl Host for SessionHost<'_> {
     }
 
     fn query(&mut self, name: &str, params: &Value) -> Result<Value, HostError> {
-        self.ws.query(name, params).map_err(|e| SessionError::from(e).into())
+        let out = self.ws.query(name, params).map_err(SessionError::from)?;
+        write_query_file(self.ws.root(), name, params, &out)?;
+        Ok(out)
+    }
+
+    fn export_formats(&self) -> Vec<String> {
+        EXPORT_FORMATS.iter().map(|s| (*s).to_owned()).collect()
     }
 
     fn timeline(&mut self, cmd: &TimelineCommand) -> Result<(), HostError> {
@@ -356,6 +360,25 @@ impl Host for SessionHost<'_> {
     fn load(&mut self, path: &str) -> Result<String, String> {
         self.load_include(path)
     }
+}
+
+/// `model.export {path}`: the query library ignores `path`, so the host writes the returned STEP
+/// bytes there (atomically, outside history, like `session.export`). Any other query, or one
+/// without a `path`, is left alone.
+pub(crate) fn write_query_file(root: Option<&Path>, name: &str, input: &Value, out: &Value) -> Result<(), SessionError> {
+    if name != "model.export" {
+        return Ok(());
+    }
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let path = resolve_path(root, path)?;
+    let bytes = out
+        .get("step")
+        .and_then(Value::as_str)
+        .and_then(b64::decode)
+        .ok_or_else(|| SessionError::internal("`model.export` returned no STEP bytes"))?;
+    write_atomic(&path, &bytes)
 }
 
 /// The protocol's status of `ws`.
@@ -444,7 +467,7 @@ fn provenance_of(position: Option<Hash256>) -> Option<String> {
 /// A failed [`sm_fem::export`] as a session error, with [`FemError::code`] as the code. A state
 /// without a `meshes` layer holds no mesh (`no-mesh`), or, when `named` asks for one,
 /// does not hold that one (`unknown-mesh`); an ambiguous pick lists the meshes in `data.meshes`.
-fn export_error(e: &FemError, state: &State, named: Option<EntityId>) -> SessionError {
+pub(crate) fn export_error(e: &FemError, state: &State, named: Option<EntityId>) -> SessionError {
     match e {
         FemError::NoMeshLayer if named.is_some() => SessionError::new("unknown-mesh", e.to_string()),
         FemError::NoMeshLayer => SessionError::new("no-mesh", e.to_string()),
@@ -483,6 +506,20 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
         let _ = std::fs::remove_file(&tmp);
         io("renaming into", e)
     })
+}
+
+/// Write `bytes` atomically when there is a `path`, and describe the export (with the bytes
+/// base64-encoded when `inline`).
+fn finish_file(path: Option<&Path>, format: ExportFormat, bytes: &[u8], notes: &[ExportNote], inline: bool) -> Result<ExportResult, SessionError> {
+    if let Some(path) = path {
+        write_atomic(path, bytes)?;
+    }
+    let mut out = ExportResult::new(path.map(|p| p.to_string_lossy().into_owned()), format, bytes.len() as u64, Hash256::of(bytes))
+        .with_notes(notes.to_vec());
+    if inline {
+        out = out.with_base64(b64::encode(bytes));
+    }
+    Ok(out)
 }
 
 fn notes_of(lines: &[String]) -> Vec<ExportNote> {

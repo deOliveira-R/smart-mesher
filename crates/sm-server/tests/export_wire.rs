@@ -1,0 +1,411 @@
+//! W3b-EXPORT-WIRE: DAGMC `.h5m`, Gmsh `.msh` and the `.smrt` handover through `session.export`
+//! (in-process, CLI and MCP), and `model.export` with a `path`.
+mod common;
+
+use std::cell::RefCell;
+use std::io::Cursor;
+use std::path::Path;
+use std::rc::Rc;
+
+use base64::Engine as _;
+use common::TempDir;
+use serde_json::{Value, json};
+use sm_geom_api::Ray;
+use sm_layer_api::MeshLayer;
+use sm_op_api::Hash256;
+use sm_protocol::{Endpoint, ExportFormat, ExportResult, Request, RpcError};
+use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
+use sm_server::{Server, standard_with};
+
+const TIME: &str = "2026-10-24T00:00:00Z";
+
+fn builder() -> sm_engine::WorkspaceBuilder {
+    standard_with(Some("tester".into()), Some(TIME.into()))
+}
+
+const TWO_BRICKS: &str = r#"
+let a = model.create_brick(x: 2.0, y: 2.0, z: 2.0, center: [1.0, 1.0, 1.0])
+let b = model.create_brick(x: 2.0, y: 2.0, z: 2.0, center: [3.0, 1.0, 1.0])
+model.imprint(bodies: a.body | b.body)
+model.merge(entities: a.body | b.body)
+fem.block_add(block: 1, volumes: a.volume, name: "fuel")
+fem.block_add(block: 2, volumes: b.volume, name: "water")
+mesh.size(targets: a.volume | b.volume, size: 1.0)
+"#;
+
+const HEX: &str = r#"
+mesh.scheme(targets: a.volume | b.volume, scheme: "map")
+let m = mesh.run(targets: a.volume | b.volume)
+"#;
+
+const POLY: &str = r#"
+mesh.scheme(targets: topo.related(kind: "TopoFace", within: a.volume | b.volume), scheme: "trimesh")
+mesh.scheme(targets: a.volume | b.volume, scheme: "tetmesh")
+let mt = mesh.run(targets: a.volume | b.volume)
+let pm = mesh.to_poly(mesh: mt.mesh[0], keep_source: false)
+"#;
+
+fn server(parts: &[&str]) -> Server {
+    let mut s = Server::new(builder()).expect("server");
+    let text = parts.concat();
+    s.call(Request::ScriptRun { text, path: None, includes: Default::default() }).unwrap_or_else(|e| panic!("fixture script: {e} {}", e.data));
+    s
+}
+
+fn hex_server() -> Server {
+    server(&[TWO_BRICKS, HEX])
+}
+
+fn export_req(path: &Path, format: Option<ExportFormat>, options: Option<Value>) -> Request {
+    Request::Export {
+        path: Some(path.to_string_lossy().into_owned()),
+        format,
+        mesh: None,
+        provenance: false,
+        inline: false,
+        options,
+        split_small_determinant: None,
+        empty_patches: vec![],
+        wedge_patches: vec![],
+    }
+}
+
+fn export(s: &mut Server, path: &Path, format: Option<ExportFormat>, options: Option<Value>) -> Result<ExportResult, RpcError> {
+    let v = s.call(export_req(path, format, options))?;
+    Ok(serde_json::from_value(v).expect("ExportResult"))
+}
+
+fn read(p: &Path) -> Vec<u8> {
+    std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// A server shared between the in-process calls and the CLI.
+struct Shared(Rc<RefCell<Server>>);
+
+impl Endpoint for Shared {
+    fn call(&mut self, req: Request) -> Result<Value, RpcError> {
+        self.0.borrow_mut().call(req)
+    }
+}
+
+/// `smesh <args>` against `server`; returns (exit code, stdout, stderr).
+fn cli(server: &Rc<RefCell<Server>>, args: &[&str]) -> (i32, String, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut input = Cursor::new(Vec::new());
+    let mut io = sm_cli::Io { stdin: &mut input, stdout: &mut out, stderr: &mut err };
+    let mut connect = |_: &sm_cli::Settings| -> Result<Box<dyn Endpoint>, String> { Ok(Box::new(Shared(Rc::clone(server)))) };
+    let argv: Vec<&str> = std::iter::once("smesh").chain(args.iter().copied()).collect();
+    let code = sm_cli::run(argv, &mut connect, &mut io);
+    (code, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
+}
+
+/// One MCP `tools/call`; returns the `result` object.
+fn mcp(server: &mut Server, tool: &str, args: Value) -> Value {
+    let msgs = [
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":args}}),
+    ];
+    let input: String = msgs.iter().map(|m| format!("{m}\n")).collect();
+    let mut out = Vec::new();
+    sm_mcp::run_stdio(server, Cursor::new(input.into_bytes()), &mut out).expect("run");
+    let replies: Vec<Value> = String::from_utf8(out).expect("utf8").lines().map(|l| serde_json::from_str(l).expect("json")).collect();
+    replies[1].clone()
+}
+
+#[test]
+fn each_format_is_byte_identical_in_process_cli_and_mcp() {
+    let dir = TempDir::new("wire-same");
+    let s = Rc::new(RefCell::new(hex_server()));
+    for ext in ["h5m", "msh", "smrt"] {
+        let p0 = dir.path().join(format!("inproc.{ext}"));
+        let r = export(&mut s.borrow_mut(), &p0, None, None).unwrap_or_else(|e| panic!("{ext}: {e} {}", e.data));
+        let want = read(&p0);
+        assert!(!want.is_empty() && r.bytes as usize == want.len(), "{ext}");
+        assert_eq!(r.sha256, Hash256::of(&want), "{ext}");
+
+        let p1 = dir.path().join(format!("cli.{ext}"));
+        let (code, _, err) = cli(&s, &["export", p1.to_str().expect("utf8")]);
+        assert_eq!(code, 0, "{ext}: {err}");
+        assert_eq!(read(&p1), want, "{ext}: cli differs");
+
+        let p2 = dir.path().join(format!("mcp.{ext}"));
+        let reply = mcp(&mut s.borrow_mut(), "session_export", json!({"path": p2.to_string_lossy()}));
+        assert!(reply["result"]["isError"] != json!(true), "{ext}: {reply}");
+        assert_eq!(read(&p2), want, "{ext}: mcp differs");
+    }
+}
+
+#[test]
+fn options_reach_the_writers_through_every_front_end() {
+    let dir = TempDir::new("wire-opts");
+    let s = Rc::new(RefCell::new(hex_server()));
+    let ascii = dir.path().join("ascii.msh");
+    export(&mut s.borrow_mut(), &ascii, None, None).expect("ascii");
+    let bin = dir.path().join("bin.msh");
+    export(&mut s.borrow_mut(), &bin, None, Some(json!({"binary": true}))).expect("binary");
+    let (a, b) = (read(&ascii), read(&bin));
+    assert_ne!(a, b, "binary differs from ascii");
+    assert!(b.starts_with(b"$MeshFormat\n4.1 1 8\n"), "binary header: {:?}", String::from_utf8_lossy(&b[..24.min(b.len())]));
+    assert!(a.starts_with(b"$MeshFormat\n4.1 0 8\n"));
+    let parsed = sm_meshio::gmsh::parse_msh4(&b).expect("binary parses");
+    assert_eq!(parsed.node_count(), sm_meshio::gmsh::parse_msh4(&a).expect("ascii parses").node_count());
+
+    let cli_bin = dir.path().join("cli_bin.msh");
+    let (code, _, err) = cli(&s, &["export", cli_bin.to_str().expect("utf8"), "--option", "binary=true"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read(&cli_bin), b);
+    let mcp_bin = dir.path().join("mcp_bin.msh");
+    let reply = mcp(&mut s.borrow_mut(), "session_export", json!({"path": mcp_bin.to_string_lossy(), "options": {"binary": true}}));
+    assert!(reply["result"]["isError"] != json!(true), "{reply}");
+    assert_eq!(read(&mcp_bin), b);
+
+    // The DAGMC graveyard is opt-in and named `mat:Graveyard`.
+    let plain = dir.path().join("plain.h5m");
+    export(&mut s.borrow_mut(), &plain, None, None).expect("plain");
+    let grave = dir.path().join("grave.h5m");
+    export(&mut s.borrow_mut(), &grave, None, Some(json!({"graveyard": true}))).expect("graveyard");
+    let (p, g) = (read(&plain), read(&grave));
+    let has = |bytes: &[u8], needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(!has(&p, b"mat:Graveyard") && has(&g, b"mat:Graveyard"));
+    assert!(has(&p, b"mat:fuel") && has(&p, b"mat:water"), "material groups from the block names");
+    let cli_grave = dir.path().join("cli_grave.h5m");
+    let (code, _, err) = cli(&s, &["export", cli_grave.to_str().expect("utf8"), "--option", "graveyard=true"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(read(&cli_grave), g);
+}
+
+#[test]
+fn polyhedra_are_a_typed_error_with_the_hint_unless_a_policy_is_given() {
+    let dir = TempDir::new("wire-poly");
+    let mut s = server(&[TWO_BRICKS, POLY]);
+    let p = dir.path().join("poly.msh");
+    let e = export(&mut s, &p, None, None).expect_err("polyhedra refused by default");
+    assert_eq!(e.kind, "polyhedra-unsupported", "{e}");
+    assert!(e.data["hint"].is_string() && e.data["count"].as_u64().unwrap_or(0) > 0, "{}", e.data);
+    assert!(e.message.contains("polyhedra"), "{}", e.message);
+    assert!(!p.exists(), "nothing is written on failure");
+    for policy in ["decompose", "drop"] {
+        export(&mut s, &p, None, Some(json!({"polyhedra": policy}))).unwrap_or_else(|e| panic!("{policy}: {e}"));
+        assert!(!read(&p).is_empty());
+    }
+    let r = export(&mut s, &p, None, Some(json!({"polyhedra": "drop"}))).expect("drop");
+    assert!(r.notes.iter().any(|n| n.code == "msh.poly_dropped"), "{:?}", r.notes);
+}
+
+#[test]
+fn loss_notes_carry_the_format_codes() {
+    let dir = TempDir::new("wire-notes");
+    // No material groups: the volumes are in no set.
+    let mut s = server(&[
+        "let a = model.create_brick(x: 1.0, y: 1.0, z: 1.0)\nmesh.size(targets: a.volume, size: 0.5)\nmesh.scheme(targets: a.volume, scheme: \"map\")\nmesh.run(targets: a.volume)\n",
+    ]);
+    let r = export(&mut s, &dir.path().join("a.h5m"), None, None).expect("h5m");
+    assert!(r.notes.iter().any(|n| n.code == "h5m.volume_without_material"), "{:?}", r.notes);
+    assert!(r.notes.iter().all(|n| n.code.starts_with("h5m.")), "{:?}", r.notes);
+    // Inline carries the same bytes as the file.
+    let v = s
+        .call(Request::Export {
+            path: None,
+            format: Some(ExportFormat::Dagmc),
+            mesh: None,
+            provenance: false,
+            inline: true,
+            options: None,
+            split_small_determinant: None,
+            empty_patches: vec![],
+            wedge_patches: vec![],
+        })
+        .expect("inline");
+    let inline: ExportResult = serde_json::from_value(v).expect("result");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(inline.base64.expect("base64")).expect("decode");
+    assert_eq!(bytes, read(&dir.path().join("a.h5m")));
+    assert_eq!(inline.notes, r.notes);
+}
+
+#[test]
+fn unknown_option_keys_are_rejected_per_format() {
+    let dir = TempDir::new("wire-badopt");
+    let mut s = hex_server();
+    let cases = [
+        ("a.msh", json!({"graveyard": true})),
+        ("a.msh", json!({"binary": "yes"})),
+        ("a.msh", json!({"polyhedra": "repair"})),
+        ("a.h5m", json!({"binary": true})),
+        ("a.h5m", json!({"graveyard": 3})),
+        ("a.smrt", json!({"binary": true})),
+        ("a.smsh", json!({"binary": true})),
+        ("a.vtu", json!({"graveyard": true})),
+    ];
+    for (name, options) in cases {
+        let p = dir.path().join(name);
+        let e = export(&mut s, &p, None, Some(options.clone())).expect_err(&format!("{name} {options}"));
+        assert_eq!(e.kind, "bad-request", "{name} {options}: {e}");
+        assert!(!p.exists(), "{name} {options}: nothing written");
+    }
+    let e = export(&mut s, &dir.path().join("a.msh"), None, Some(json!({"graveyard": true}))).expect_err("bad key");
+    assert!(e.message.contains("graveyard") && e.message.contains("binary"), "{}", e.message);
+    // A format that disagrees with the extension is still refused.
+    let e = export(&mut s, &dir.path().join("a.msh"), Some(ExportFormat::Dagmc), None).expect_err("mismatch");
+    assert_eq!(e.kind, "bad-request");
+}
+
+#[test]
+fn exports_are_deterministic_across_runs_and_thread_counts() {
+    let dir = TempDir::new("wire-det");
+    let mut s = hex_server();
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    for ext in ["h5m", "msh", "smrt"] {
+        let p = dir.path().join(format!("x.{ext}"));
+        let first = export(&mut s, &p, None, None).expect("first").sha256;
+        let again = export(&mut s, &p, None, None).expect("again").sha256;
+        let single = one.install(|| export(&mut s, &p, None, None).expect("1 thread").sha256);
+        assert_eq!(first, again, "{ext}");
+        assert_eq!(first, single, "{ext}: 1 thread");
+        assert_eq!(Hash256::of(&read(&p)), first);
+    }
+    // A freshly built session gives the same bytes.
+    let mut t = hex_server();
+    let (p, q) = (dir.path().join("s.smrt"), dir.path().join("t.smrt"));
+    export(&mut s, &p, None, None).expect("s");
+    export(&mut t, &q, None, None).expect("t");
+    assert_eq!(read(&p), read(&q));
+}
+
+#[test]
+fn smrt_loads_to_the_in_process_tracker() {
+    let dir = TempDir::new("wire-smrt");
+    let mut s = hex_server();
+    let p = dir.path().join("a.smrt");
+    export(&mut s, &p, None, None).expect("smrt");
+    let image = sm_rt::read_smrt(&read(&p)).expect("read_smrt");
+    let loaded = sm_rt::load_image(&image).expect("load_image");
+
+    // The tracker `rt.info` and the exporter build: structure hash and region names.
+    let state = s.workspace().state();
+    let layer = state.layer::<MeshLayer>().expect("meshes");
+    let (id, entry) = layer.meshes().next().expect("one mesh");
+    let info = s.workspace().query("rt.info", &json!({"mesh": id.to_string()})).expect("rt.info");
+    assert_eq!(info["structure_hash"].as_str().expect("hash"), loaded.structure_hash().to_string());
+    let names: Vec<String> = info["regions"].as_array().expect("regions").iter().map(|r| r["name"].as_str().expect("name").to_owned()).collect();
+    let loaded_names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(loaded_names, names);
+    assert!(names.len() >= 2, "{names:?}");
+
+    // Built in process from the same mesh.
+    let (rules, complement, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside, BoundarySpec::default());
+    let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
+    let mut opts = BuildOptions::default();
+    opts.recovery = RecoveryPolicy::Fail;
+    let (built, _) = sm_rt::MeshTrackerBuilder.build_concrete(&input, &opts).expect("build");
+    assert_eq!(built.structure_hash(), loaded.structure_hash());
+
+    // 1e4 seeded rays through both: bit-identical bundles.
+    let mut rng = sm_testkit::surf3::SplitMix64(0x5eed);
+    let rays: Vec<Ray> = (0..10_000)
+        .map(|_| {
+            let o = |lo: f64, hi: f64, r: &mut sm_testkit::surf3::SplitMix64| lo + (hi - lo) * (r.unit() + 1.0) / 2.0;
+            let origin = sm_core::Point3::new(o(-1.0, 5.0, &mut rng), o(-1.0, 3.0, &mut rng), o(-1.0, 3.0, &mut rng));
+            let dir = sm_core::Vector3::new(rng.unit(), rng.unit(), rng.unit());
+            Ray { origin, dir }
+        })
+        .collect();
+    let (a, b) = (built.trace_bundle(&rays, &TraceOptions::default()).expect("built"), loaded.trace_bundle(&rays, &TraceOptions::default()).expect("loaded"));
+    assert_eq!(a.content_hash(), b.content_hash());
+}
+
+fn staged_part(s: &mut Server) {
+    let r = s.stage_input(sm_testkit::w3a::STEP).expect("stage");
+    s.call(Request::Apply { op: "model.import_step".into(), params: json!({"source": {"sha256": r.sha256}}), version: None }).expect("import");
+}
+
+#[test]
+fn model_export_with_a_path_writes_the_bytes_outside_history() {
+    let dir = TempDir::new("wire-step");
+    let mut s = Server::new(builder()).expect("server");
+    staged_part(&mut s);
+    let (hash, nodes) = (s.workspace().state_hash(), s.workspace().timeline().len());
+
+    // Without a path the result is returned as is.
+    let plain = s.call(Request::Query { name: "model.export".into(), input: json!({}), at: None }).expect("inline");
+    let inline = base64::engine::general_purpose::STANDARD.decode(plain["step"].as_str().expect("step")).expect("b64");
+    assert!(!dir.path().join("part.step").exists());
+
+    let path = dir.path().join("part.step");
+    let with = s
+        .call(Request::Query { name: "model.export".into(), input: json!({"path": path.to_string_lossy()}), at: None })
+        .expect("with path");
+    assert_eq!(with, plain, "the reply is the same with or without a path");
+    assert_eq!(read(&path), inline, "file is byte-equal to the inline bytes");
+    assert_eq!((s.workspace().state_hash(), s.workspace().timeline().len()), (hash, nodes), "no timeline node, no hash change");
+    assert!(std::fs::read_dir(dir.path()).expect("dir").all(|e| !e.expect("e").file_name().to_string_lossy().ends_with(".part")), "no temp file left");
+
+    // Re-import gives the three volumes.
+    let mut t = Server::new(builder()).expect("server");
+    let r = t.stage_input(&read(&path)).expect("stage");
+    let out = t.call(Request::Apply { op: "model.import_step".into(), params: json!({"source": {"sha256": r.sha256}}), version: None }).expect("import");
+    let vols = out["delta"]["outputs"]["volumes"].as_array().expect("volumes").clone();
+    assert_eq!(vols.len(), 3);
+    for (v, want) in vols.iter().zip(sm_testkit::w3a::VOLUMES) {
+        let m = t.call(Request::Query { name: "model.measure".into(), input: json!({"entity": v}), at: None }).expect("measure");
+        let got = m["volume"].as_f64().expect("volume");
+        assert!(((got - want) / want).abs() <= 1e-9, "{got} vs {want}");
+    }
+
+    // A script call writes too, and a bad path is a typed io error.
+    let script = dir.path().join("script.step");
+    let text = format!("model.export(path: {:?})\n", script.to_string_lossy());
+    s.call(Request::ScriptRun { text, path: None, includes: Default::default() }).expect("script");
+    assert_eq!(read(&script), inline);
+    let bad = s
+        .call(Request::Query { name: "model.export".into(), input: json!({"path": dir.path().join("no/such/dir/x.step").to_string_lossy()}), at: None })
+        .expect_err("io");
+    assert_eq!(bad.kind, "io");
+}
+
+/// Plugin installation in `Server::open` stays on the calling thread: the scoped `OPENING`
+/// binding that points a builder's input store at the project is thread-local.
+#[test]
+fn plugins_install_on_the_calling_thread_when_a_project_opens() {
+    use sm_op_api::{Plugin, Registry, RegistryError};
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    struct Probe(Arc<Mutex<Vec<ThreadId>>>);
+    impl Plugin for Probe {
+        fn id(&self) -> &str {
+            "test.thread-probe"
+        }
+        fn register(&self, _: &mut Registry) -> Result<(), RegistryError> {
+            self.0.lock().expect("lock").push(std::thread::current().id());
+            Ok(())
+        }
+    }
+
+    let dir = TempDir::new("wire-open-thread");
+    let project = dir.path().join("p");
+    drop(Server::create(builder(), &project, "p").expect("create"));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let probe = Arc::clone(&seen);
+    let opener = std::thread::spawn(move || {
+        let me = std::thread::current().id();
+        let s = Server::open(builder().plugin(Probe(probe)), &project).expect("open");
+        // The open bound the distribution's input store to this project, on this thread.
+        assert!(s.stage_input(b"x").is_ok());
+        me
+    });
+    let me = opener.join().expect("thread");
+    let ids = seen.lock().expect("lock").clone();
+    assert!(!ids.is_empty(), "the probe plugin was installed");
+    assert!(ids.iter().all(|t| *t == me), "every install ran on the opening thread: {ids:?} vs {me:?}");
+    assert_ne!(me, std::thread::current().id());
+}
+
+#[test]
+fn script_help_lists_the_new_formats() {
+    let mut s = Server::new(builder()).expect("server");
+    let r = s.call(Request::ScriptRun { text: "session.export(\"a.xyz\", format: \"nope\")\n".into(), path: None, includes: Default::default() }).expect_err("unknown format");
+    let rendered = r.data["rendered"].as_str().unwrap_or_default().to_owned() + &r.message;
+    for f in ["dagmc", "gmsh", "smrt"] {
+        assert!(rendered.contains(f), "{f} missing from: {rendered}");
+    }
+}
