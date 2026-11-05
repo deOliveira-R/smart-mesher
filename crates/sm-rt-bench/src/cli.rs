@@ -40,7 +40,7 @@ fn parse(args: &[String]) -> Result<Args> {
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -162,12 +162,15 @@ fn verify_legacy(dir: &Path, case: Case, data: &cases::CaseData) -> Result<()> {
     Ok(())
 }
 
+/// Trackers `run --trackers` knows: the stub, sm-rt and the Docker competitors.
+const TRACKERS: [&str; 5] = ["stub", "smrt", "dagmc-moab", "dagmc-dd", "xdg"];
+
 fn run(a: &Args) -> Result<i32> {
     let scale = scale_of(a)?;
-    let trackers: Vec<&str> = a.opts.get("trackers").map_or("stub", String::as_str).split(',').collect();
+    let trackers: Vec<&str> = a.opts.get("trackers").map_or("stub", String::as_str).split(',').map(str::trim).collect();
     for t in &trackers {
-        if *t != "stub" {
-            return Err(BenchError::Unavailable(format!("tracker {t:?}: sm-rt, DAGMC and XDG rows are RTBENCH-B (this build has the stub only)")));
+        if !TRACKERS.contains(t) {
+            return Err(BenchError::Usage(format!("unknown tracker {t:?} (known: {})", TRACKERS.join(", "))));
         }
     }
     let threads: Vec<usize> = a.opts.get("threads").map_or("1", String::as_str).split(',').map(|s| s.trim().parse().map_err(|_| BenchError::Usage("--threads".into()))).collect::<Result<_>>()?;
@@ -176,23 +179,66 @@ fn run(a: &Args) -> Result<i32> {
     if let Some(model) = a.opts.get("model") {
         return run_model(a, Path::new(model), &cfg, &out_dir);
     }
+    let flight_cells: usize = num(a, "flight-cells", 24)?;
     let mut code = 0;
     for case in cases_of(a)? {
         let data = cases::build(case, &scale)?;
-        let mut adapters: Vec<Box<dyn Adapter>> = match stub_adapter(&data) {
-            Ok(s) => vec![Box::new(s)],
-            Err(e) => {
-                println!("{}: skipped ({e})", case.name());
-                code = code.max(2);
-                continue;
-            }
+        let env = Env::detect();
+        let mut file = ResultFile::new(&data.case, &data.manifest.scale, env.clone());
+        let mut failed = 0usize;
+        let mut absorb = |f: ResultFile, ag: Vec<crate::compare::Agreement>| {
+            failed += ag.iter().map(|g| g.failed).sum::<usize>() + f.rows.iter().filter(|r| r.workload == "w-flight").map(|r| r.agreement.failed).sum::<usize>();
+            file.rows.extend(f.rows);
         };
-        let workloads: Vec<Workload> = cfg.workloads.clone();
-        let cfg1 = RunConfig { workloads, ..cfg.clone() };
-        let (mut file, agreements) = run_case(&data, &mut adapters, "surface", &cfg1, Env::detect())?;
+        if trackers.contains(&"stub") {
+            match stub_adapter(&data) {
+                Ok(s) => {
+                    let mut adapters: Vec<Box<dyn Adapter>> = vec![Box::new(s)];
+                    let (f, ag) = run_case(&data, &mut adapters, "surface", &cfg, env.clone())?;
+                    absorb(f, ag);
+                }
+                Err(e) => {
+                    println!("{}: stub skipped ({e})", case.name());
+                    code = code.max(2);
+                }
+            }
+        }
+        if trackers.contains(&"smrt") {
+            let mut rows = crate::smrt::smrt_rows(&data, &scale, flight_cells);
+            for n in &rows.notes {
+                println!("{n}");
+                file.partial.push(n.clone());
+            }
+            let geometric = RunConfig { workloads: vec![Workload::Track, Workload::Fire, Workload::FireLocate], ..cfg.clone() };
+            let flight = RunConfig { workloads: vec![Workload::Flight], ..cfg.clone() };
+            for (adapters, c) in [(&mut rows.geometric, &geometric), (&mut rows.exact_flight, &flight), (&mut rows.mesh_flight, &flight)] {
+                if adapters.is_empty() {
+                    continue;
+                }
+                let (f, ag) = run_case(&data, adapters, "surface", c, env.clone())?;
+                absorb(f, ag);
+            }
+        }
+        let competitors: Vec<&&str> = trackers.iter().filter(|t| crate::docker::image_of(t).is_some()).collect();
+        if !competitors.is_empty() {
+            let dir = std::env::temp_dir().join(format!("smrt-bench-case-{}", std::process::id()));
+            data.write(&dir)?;
+            for t in competitors {
+                match crate::docker::run_competitor(&crate_dir(), t, &dir, &data.case, &cfg.threads) {
+                    crate::docker::Competitor::Rows(r) => file.rows.extend(r),
+                    crate::docker::Competitor::Partial(why) => {
+                        println!("{}: partial: {t}: {why}", case.name());
+                        file.partial.push(format!("{t}: {why}"));
+                        code = code.max(2);
+                    }
+                }
+            }
+            // Best effort: the temporary copy of the case files is not needed any more.
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         file.git_sha = git_sha();
+        file.seal()?;
         let path = write_result(&out_dir, &file)?;
-        let failed: usize = agreements.iter().map(|g| g.failed).sum();
         println!("{}: {} rows, {failed} disagreements, result_hash {} -> {}", case.name(), file.rows.len(), file.result_hash, path.display());
         if failed > 0 {
             code = 1;

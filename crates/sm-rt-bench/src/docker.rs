@@ -121,6 +121,69 @@ fn build_image(root: &Path, name: &str, rel: &str, pins: &BTreeMap<String, Strin
     }
 }
 
+/// Result of asking a competitor image to run a case.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Competitor {
+    /// Rows printed by the driver (one JSON `Row` per line).
+    Rows(Vec<crate::result::Row>),
+    /// Not run: the failing command or the reason (reported as `partial`, never as numbers).
+    Partial(String),
+}
+
+/// Tracker name (`dagmc-moab`, `dagmc-dd`, `xdg`) to its image name.
+pub fn image_of(tracker: &str) -> Option<&'static str> {
+    IMAGES.iter().map(|(n, _)| *n).find(|n| n.strip_prefix("smrt-bench-") == Some(tracker))
+}
+
+fn last_line(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").to_string()
+}
+
+/// Run `tracker`'s image on a case directory (`smcase.json`, `facets.bin`, `rays.bin`, ...,
+/// written by `CaseData::write`, mounted read-only at `/data/<case>`): `docker run --rm -v
+/// DIR:/data:ro IMAGE <case> <threads>...`. Each stdout line that starts with `{` is a `Row`.
+/// Anything that stops the run (no Docker, digests `UNSET`, image not built, a failing
+/// container, unparsable output) is [`Competitor::Partial`] with the command and its last line
+/// of output.
+pub fn run_competitor(root: &Path, tracker: &str, data_dir: &Path, case: &str, threads: &[usize]) -> Competitor {
+    let Some(image) = image_of(tracker) else { return Competitor::Partial(format!("unknown competitor {tracker:?}")) };
+    let probe = |args: &[&str]| std::process::Command::new("docker").args(args).output();
+    match probe(&["version", "--format", "{{.Server.Version}}"]) {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return Competitor::Partial(format!("`docker version` failed: {}", last_line(&o.stderr))),
+        Err(e) => return Competitor::Partial(format!("`docker version` failed: {e}")),
+    }
+    let pins = std::fs::read_to_string(root.join("docker/pins.env")).map(|t| parse_pins(&t)).unwrap_or_default();
+    let unset: Vec<&String> = pins.iter().filter(|(k, v)| k.ends_with("_DIGEST") && (v.as_str() == "UNSET" || v.is_empty())).map(|(k, _)| k).collect();
+    if !unset.is_empty() {
+        return Competitor::Partial(format!("{image}: docker/pins.env has {unset:?} UNSET; pin the base digests, then `smrt-bench docker-check`"));
+    }
+    if !probe(&["image", "inspect", image]).is_ok_and(|o| o.status.success()) {
+        return Competitor::Partial(format!("`docker image inspect {image}` failed: the image is not built (`smrt-bench docker-check` builds it)"));
+    }
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(["run", "--rm", "-v"]).arg(format!("{}:/data:ro", data_dir.display())).arg(image).arg(case);
+    cmd.args(threads.iter().map(usize::to_string));
+    let shown = format!("docker run --rm -v {}:/data:ro {image} {case} {}", data_dir.display(), threads.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let mut rows = Vec::new();
+            for l in String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.starts_with('{')) {
+                match serde_json::from_str::<crate::result::Row>(l) {
+                    Ok(mut r) => {
+                        r.tracker = tracker.to_string();
+                        rows.push(r);
+                    }
+                    Err(e) => return Competitor::Partial(format!("`{shown}` printed a line that is not a row: {e}")),
+                }
+            }
+            if rows.is_empty() { Competitor::Partial(format!("`{shown}` printed no rows")) } else { Competitor::Rows(rows) }
+        }
+        Ok(o) => Competitor::Partial(format!("`{shown}` failed: {}", last_line(&o.stderr))),
+        Err(e) => Competitor::Partial(format!("`{shown}` failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

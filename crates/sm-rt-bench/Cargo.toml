@@ -22,6 +22,8 @@ sm-model-api = { path = "../sm-model-api" }
 sm-tess = { path = "../sm-tess" }
 sm-cadio = { path = "../sm-cadio" }
 sm-rt-api = { path = "../sm-rt-api", features = ["stubs"] }
+sm-rt = { path = "../sm-rt" }
+sm-mesh-api = { path = "../sm-mesh-api" }
 sm-testkit = { path = "../sm-testkit" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

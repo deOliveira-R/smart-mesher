@@ -294,10 +294,14 @@ fn build_legacy(case: Case, scale: &Scale) -> Result<CaseData> {
 }
 
 /// Pin cell geometry constants (cm).
-const R_FUEL: f64 = 0.4096;
-const R_CLAD: f64 = 0.475;
-const PITCH: f64 = 1.26;
-const PIN_H: f64 = 100.0;
+/// Fuel radius of the pin cases, cm.
+pub const R_FUEL: f64 = 0.4096;
+/// Cladding outer radius of the pin cases, cm.
+pub const R_CLAD: f64 = 0.475;
+/// Square pin pitch, cm.
+pub const PITCH: f64 = 1.26;
+/// Pin height, cm.
+pub const PIN_H: f64 = 100.0;
 
 fn pin_solids(centers: &[[f64; 2]], with_water: bool) -> Vec<Solid> {
     let mut s = Vec::new();
