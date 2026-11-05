@@ -765,9 +765,13 @@ fn serve_defaults_to_stdio_and_ws_is_reported_unavailable() {
         Box::new(canned),
     );
     assert_eq!((o.code, o.out.lines().count()), (0, 1));
-    let o = go(&["serve", "--ws", "127.0.0.1:0", "--memory"]);
-    assert_eq!(o.code, 2);
-    assert!(o.err.contains("WebSocket"), "{}", o.err);
+    // With the `ws` feature `serve --ws` really serves (tests/serve_ws.rs); without it, it is a usage error.
+    #[cfg(not(feature = "ws"))]
+    {
+        let o = go(&["serve", "--ws", "127.0.0.1:0", "--memory"]);
+        assert_eq!(o.code, 2);
+        assert!(o.err.contains("WebSocket"), "{}", o.err);
+    }
     assert_eq!(go(&["serve", "--stdio", "--ws", "x", "--memory"]).code, 2);
 }
 

@@ -26,7 +26,8 @@ use clap::Parser;
 use serde_json::Value;
 use sm_protocol::{
     ApplyResult, Endpoint, EntityId, ExportFormat, ExportResult, Hash256, HashResult,
-    INTERNAL_ERROR, INVALID_PARAMS, Request, Rev, RpcError, ScriptResult, StatusResult,
+    INTERNAL_ERROR, INVALID_PARAMS, RecordCheck, RecordForks, Request, Rev, RpcError,
+    ScriptRecordResult, ScriptResult, StatusResult,
 };
 
 pub use args::{Cli, Command, Format, Global, QualityProfile};
@@ -43,6 +44,7 @@ pub fn usage() -> &'static str {
      commands:\n\
      \x20 new <dir>                     create a project\n\
      \x20 run <script>                  run a command-language script\n\
+     \x20 record [--forks refs]         print the timeline as a script\n\
      \x20 apply <op> <json>             apply one op\n\
      \x20 query <name> [json]           run a read-only query\n\
      \x20 log | status                  inspect the timeline\n\
@@ -258,6 +260,7 @@ fn execute(cli: &Cli, connect: &mut Connect<'_>, io: &mut Io<'_>) -> Res<()> {
             p.display()
         )));
     }
+    #[cfg(not(feature = "ws"))]
     if let Command::Serve { ws: Some(addr), .. } = &cli.command {
         return Err(Failure::usage(format!(
             "--ws {addr}: this build has no WebSocket transport (sm-server's `ws` feature); use --stdio"
@@ -436,6 +439,48 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             let v = call(ep, req)?;
             let r: ScriptResult = typed(v.clone(), "script.run")?;
             render::script(io, json, &r, &v, *print_hash);
+            Ok(())
+        }
+        Command::Record {
+            forks,
+            check,
+            verify,
+            raw,
+            output,
+        } => {
+            let req = Request::ScriptRecord {
+                forks: if forks == "refs" {
+                    RecordForks::Refs
+                } else {
+                    RecordForks::Head
+                },
+                check: match check.as_str() {
+                    "none" => RecordCheck::None,
+                    "every" => RecordCheck::Every,
+                    _ => RecordCheck::Tips,
+                },
+                verify: *verify,
+                raw: *raw,
+            };
+            let v = call(ep, req)?;
+            let r: ScriptRecordResult = typed(v.clone(), "script.record")?;
+            if let Some(path) = output {
+                std::fs::write(path, &r.text).map_err(|e| {
+                    Failure::local(format!("cannot write {}: {e}", path.display()))
+                })?;
+            }
+            render::record(io, json, &r, &v, output.as_deref());
+            if r.verified == Some(false) {
+                return Err(Failure {
+                    exit: 1,
+                    err: RpcError::new(
+                        INTERNAL_ERROR,
+                        "record-unverified",
+                        "replaying the recorded script did not reproduce the hashes",
+                    ),
+                    quiet: json,
+                });
+            }
             Ok(())
         }
         Command::Apply {
@@ -648,10 +693,13 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             render::quality(io, json, &v);
             Ok(())
         }
-        Command::Serve { stdio: _, ws } => {
-            debug_assert!(ws.is_none(), "rejected in execute");
-            serve_stdio(ep, io)
-        }
+        Command::Serve { stdio: _, ws } => match ws {
+            None => serve_stdio(ep, io),
+            #[cfg(feature = "ws")]
+            Some(addr) => serve_ws(ep, addr, io),
+            #[cfg(not(feature = "ws"))]
+            Some(_) => unreachable!("rejected in execute"),
+        },
         Command::Mcp => sm_mcp::run_stdio(ep, &mut *io.stdin, &mut *io.stdout)
             .map_err(|e| Failure::local(format!("mcp: {e}"))),
         Command::Help { op } => {
@@ -660,6 +708,19 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             help::show(io, json, &cat, &v, op.as_deref())
         }
     }
+}
+
+/// Serve the viewer and WebSocket clients on `addr` until the process is stopped: one session shared by every
+/// connection, static files on plain `GET`.
+#[cfg(feature = "ws")]
+fn serve_ws(ep: &mut dyn Endpoint, addr: &str, io: &mut Io<'_>) -> Res<()> {
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| Failure::local(format!("cannot listen on {addr}: {e}")))?;
+    if let Ok(bound) = listener.local_addr() {
+        let _ = writeln!(io.stderr, "smesh: serving the viewer and WebSocket at http://{bound}/");
+    }
+    sm_server::serve_http_ws_listener(ep, &listener, None, |e| eprintln!("smesh: connection ended: {e}"))
+        .map_err(|e| Failure::local(format!("serve: {e}")))
 }
 
 /// JSON-RPC lines in, one reply line per request line out, until EOF. All protocol work is

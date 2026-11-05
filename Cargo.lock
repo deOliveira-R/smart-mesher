@@ -1355,6 +1355,7 @@ dependencies = [
  "sm-server",
  "sm-testkit",
  "sm-topo-api",
+ "tungstenite",
 ]
 
 [[package]]
@@ -2003,6 +2004,7 @@ dependencies = [
  "sm-testkit",
  "sm-topo",
  "sm-topo-api",
+ "sm-view",
  "thiserror",
  "tungstenite",
 ]

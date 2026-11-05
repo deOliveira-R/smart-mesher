@@ -404,11 +404,12 @@ fn openfoam_empty_patches_and_the_split_flag() {
     assert_eq!(e.kind, "bad-request", "{e}");
 }
 
-/// `script.record` is answered with a typed error until SERVER-HOST wires it. (The W3b export
-/// formats are wired: see `export_wire.rs`.)
+/// `script.record` on an empty timeline succeeds and records no node (the full milestone round trip is in
+/// `script_record.rs`).
 #[test]
-fn script_record_is_typed_unsupported() {
+fn script_record_on_an_empty_timeline_records_nothing() {
     let mut s = Server::new(std_builder()).expect("server");
-    let e = s.call(Request::ScriptRecord { forks: Default::default(), check: Default::default(), verify: false, raw: false }).expect_err("record");
-    assert_eq!(e.kind, "unsupported", "{e}");
+    let v = s.call(Request::ScriptRecord { forks: Default::default(), check: Default::default(), verify: true, raw: false }).expect("record");
+    assert_eq!(v["nodes"], 0, "{v}");
+    assert_eq!(v["verified"], true, "{v}");
 }

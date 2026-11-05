@@ -44,6 +44,7 @@ sm-poly = { path = "../sm-poly" }
 sm-diag = { path = "../sm-diag" }
 sm-rt = { path = "../sm-rt" }
 sm-rt-api = { path = "../sm-rt-api" }
+sm-view = { path = "../sm-view" }
 sm-meshio = { path = "../sm-meshio" }
 sm-model-api = { path = "../sm-model-api" }
 serde = "1"
