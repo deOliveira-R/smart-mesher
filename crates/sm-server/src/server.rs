@@ -228,9 +228,22 @@ impl Server {
                 let (state, layers) = self.host().hash_at(at.as_ref())?;
                 to_json(&HashResult::new(state, layers))
             }
-            Request::Export { path, format, mesh, provenance, inline } => {
-                let r = self.host().export(&ExportParams { path, format, mesh, provenance, inline })?;
+            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches } => {
+                let r = self.host().export(&ExportParams {
+                    path,
+                    format,
+                    mesh,
+                    provenance,
+                    inline,
+                    options,
+                    split_small_determinant,
+                    empty_patches,
+                    wedge_patches,
+                })?;
                 to_json(&r)
+            }
+            Request::ScriptRecord { .. } => {
+                Err(SessionError::new("unsupported", "`script.record` is not available in this server yet"))
             }
             Request::Save => {
                 self.host().save()?;

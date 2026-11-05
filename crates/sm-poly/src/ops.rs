@@ -93,6 +93,7 @@ impl TypedOp for ToPoly {
         let new = fin.mesh.mesh_id();
         let mut entry = MeshEntry::new(Box::new(fin.mesh), selection, None, quanta);
         entry.plan = plan;
+        // Scheme notes (`entry.notes`) are located on the source cells: not inherited.
         entry.stale = stale;
         entry.derived_from = Some(source);
         insert_mesh(ctx, entry, &alloc0, alloc, "mesh")?;

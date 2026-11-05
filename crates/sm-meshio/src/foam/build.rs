@@ -210,6 +210,17 @@ pub fn build_polymesh(mesh: &dyn MeshRead, opts: &FoamOptions) -> Result<FoamBui
     }
     patches.retain(|p| !p.faces.is_empty());
 
+    // Per-set patch types (empty / wedge naming).
+    for (set, ty) in &opts.patch_types {
+        if mesh.set_by_name(set).is_none() {
+            return Err(fe(FoamError::UnknownSet(set.clone())));
+        }
+        let Some(p) = patches.iter_mut().find(|p| matches!(&p.origin, PatchOrigin::Set(s) if s == set)) else {
+            return Err(fe(FoamError::IneligibleSet { set: set.clone(), detail: "is not a patch of this export (not a boundary face set, or the patch source does not use it)".into() }));
+        };
+        p.patch_type = *ty;
+    }
+
     // Decks: a mirror's face set becomes a symmetryPlane when exactly planar; translation and
     // rotation pairs stay plain patches (no cyclic output).
     let diag = bbox_diagonal(mesh);

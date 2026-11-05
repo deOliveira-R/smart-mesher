@@ -28,7 +28,7 @@
 use crate::boundary::ResponseKind;
 use crate::cache::{CacheImage, CacheKey, ContentHash, ContentHasher};
 use crate::error::{LostCause, LostInfo, Result, RtError};
-use crate::ids::{CellId, FaceId, InstanceId, RegionId};
+use crate::ids::{CellId, FaceId, InstanceId, RegionId, SurfaceId};
 use crate::input::Precision;
 use crate::state::{
     BoundaryHit, Closest, Located, Peek, RegionTable, Scratch, Step, StepEnd, SurfaceTable, TrackState, TrackerCaps,
@@ -204,6 +204,21 @@ pub trait Tracker: Send + Sync {
     fn export_cache(&self) -> Option<CacheImage> {
         None
     }
+    /// Area of a model surface (DAGMC `measure_area`), when the tracker knows it. The default
+    /// is `Ok(None)` for every id and never errors; an implementor that knows its surfaces
+    /// returns `UnknownId` for an id it does not have.
+    fn surface_area(&self, _s: SurfaceId) -> Result<Option<f64>> {
+        Ok(None)
+    }
+    /// The faces (facets) of a model surface, ascending. The default is empty.
+    fn surface_faces(&self, _s: SurfaceId) -> &[FaceId] {
+        &[]
+    }
+    /// The segment-iterator view (majorant hierarchy, delta tracking), or `None`. Present
+    /// exactly when [`TrackerCaps::MAJORANT`] is set. See [`crate::segments`].
+    fn majorant_view(&self) -> Option<&dyn crate::segments::MajorantTracker> {
+        None
+    }
 
     // ---- primitives ----------------------------------------------------------------------
 
@@ -292,6 +307,10 @@ pub trait Tracker: Send + Sync {
     /// DAGMC `ray_fire`: walk through cells of the current region until the region changes, a
     /// model boundary is reached, the limit is hit or the particle is lost. `end` is never
     /// `CellFace` or `SlotChange`: those are skipped (a table lookup each).
+    ///
+    /// An override may jump over the cells of a region (see [`TrackerCaps::REGION_JUMP`]). It
+    /// returns the same `StepEnd` variant with the same ids and `to_cell` as the default walk, and
+    /// a distance within `1e-12 (1 + d)` of it. `step` and `trace` never jump.
     fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, scratch: &mut Scratch) -> Result<FireResult> {
         let mut total = 0.0;
         for _ in 0..max_steps {

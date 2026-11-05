@@ -12,3 +12,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pip install pyyaml
       - run: tools/ci.sh
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: crates/sm-py/ci/py.sh
+  web:
+    # Non-blocking (Q8).
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - working-directory: crates/sm-view/web
+        run: |
+          if [ -f package.json ]; then npm ci && npm test; else echo "no package.json yet"; fi

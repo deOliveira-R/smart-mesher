@@ -31,9 +31,10 @@ pub use error::{
     APPLICATION_ERROR, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
     PARSE_ERROR, RpcError,
 };
-pub use request::{ExportFormat, METHODS, Request};
+pub use request::{ExportFormat, METHODS, RecordCheck, RecordForks, Request};
 pub use result::{
-    ApplyResult, CatalogResult, ExportNote, ExportResult, ExportedFile, HashResult, ScriptResult, StatusResult,
+    ApplyResult, CatalogResult, ExportNote, ExportResult, ExportedFile, HashResult, ScriptRecordResult,
+    ScriptResult, StatusResult,
 };
 
 /// Protocol version carried in [`CatalogResult::protocol`]. 0 means unstable until W3: any

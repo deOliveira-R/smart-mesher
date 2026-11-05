@@ -290,8 +290,15 @@ impl<'a> ApplyCtx<'a> {
         }
     }
 
-    /// Let the op supply the canonical stored form of itself (used by `core.batch`).
-    pub(crate) fn set_canonical_record(&mut self, rec: OpRecord) {
+    /// Let the op supply the canonical stored form of itself (used by `core.batch`; plugin ops
+    /// such as an auto-mesher may use it too). The host stores this record instead of the
+    /// one it was given, and replays it.
+    ///
+    /// Contract: the stored record must replay to the same [`Delta`] and state, without
+    /// consulting anything the original apply consulted (other ops' results, caches, services
+    /// that may change). Calling it again replaces the earlier record. It has no effect on the
+    /// state hash; only the stored record changes.
+    pub fn set_canonical_record(&mut self, rec: OpRecord) {
         self.canonical = Some(rec);
     }
 
@@ -512,6 +519,31 @@ impl<'a> ApplyCtx<'a> {
         } else {
             Err(OpError::UnknownEntity(id))
         }
+    }
+
+    /// Retire `n` consecutive live entities `first`, `first+1`, ... of one kind.
+    ///
+    /// Equivalent to calling [`retire`](Self::retire) on each id in order (same ids in
+    /// [`Delta::removed`], bit-identical allocation state and state hash), but without the
+    /// per-id set lookups and reallocation. All-or-nothing: if any id of the range is not
+    /// live, nothing is retired and [`OpError::UnknownEntity`] names the first dead id.
+    /// `n == 0` is a no-op.
+    pub fn retire_range(&mut self, first: EntityId, n: u64) -> Result<(), OpError> {
+        if n == 0 {
+            return Ok(());
+        }
+        if let Some(dead) = self.state.first_dead_in(first, n) {
+            return Err(OpError::UnknownEntity(dead));
+        }
+        self.state.retire_range(first, n);
+        self.removed.reserve(usize::try_from(n).unwrap_or(0));
+        for k in 0..n {
+            // In range: `first_dead_in` checked `first.serial() + n - 1 < next`.
+            if let Some(id) = EntityId::new(first.kind(), first.serial() + k) {
+                self.removed.push(id);
+            }
+        }
+        Ok(())
     }
 
     /// Fail with [`OpError::UnknownEntity`] unless `id` is live. Use for every id in params.

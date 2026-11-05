@@ -350,5 +350,17 @@
       "method": "session.hash",
       "params": {}
     }
+  },
+  {
+    "shape": "absent",
+    "input": {
+      "jsonrpc": "2.0",
+      "id": "r",
+      "method": "script.record"
+    },
+    "request": {
+      "method": "script.record",
+      "params": {}
+    }
   }
 ]

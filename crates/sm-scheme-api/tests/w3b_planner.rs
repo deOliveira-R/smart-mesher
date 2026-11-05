@@ -204,6 +204,39 @@ fn command_order_is_not_serialized_and_does_not_affect_equality() {
 }
 
 #[test]
+fn the_command_counter_keeps_counting_after_a_request_is_removed() {
+    let (_, ids, _) = brick_setup([1.0; 3]);
+    let req = Firm::soft(IntervalRequest::Count(2));
+    let mut a = MeshIntent::default();
+    a.set_intervals(ids.edges[0], req);
+    a.set_intervals(ids.edges[1], req);
+    // The latest command is the one on edge 1; removing it must not let the counter go back.
+    a.entities.remove(&ids.edges[1]);
+    a.set_intervals(ids.edges[2], req);
+    let seq = |i: &MeshIntent, e| i.entities[&e].intervals_seq.0;
+    assert_eq!(seq(&a, ids.edges[0]), 1);
+    assert_eq!(seq(&a, ids.edges[2]), 3);
+}
+
+#[test]
+fn scheme_notes_are_built_with_the_constructor() {
+    let n = sm_scheme_api::SchemeNote::new(
+        sm_core::Point3::new(1.0, 2.0, 3.0),
+        vec![ids_edge()],
+        "mean_ratio",
+        0.1,
+        0.2,
+        "refine",
+    );
+    assert_eq!((n.metric.as_str(), n.value, n.threshold), ("mean_ratio", 0.1, 0.2));
+    assert_eq!(n.suggestion, "refine");
+}
+
+fn ids_edge() -> EntityId {
+    brick_setup([1.0; 3]).1.edges[0]
+}
+
+#[test]
 fn mesh_from_plan_equals_mesh_and_enforces_the_budget() {
     let (topo, ids, model) = brick_setup([2.0; 3]);
     let reg = registry();

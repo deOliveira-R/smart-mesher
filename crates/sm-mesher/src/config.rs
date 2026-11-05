@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use sm_core::EntityId;
 use sm_scheme_api::{
-    CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeError,
-    SchemeRegistry, SizeField, SizingSpec,
+    CornerPicker, IntervalSolver, ReferenceCornerPicker, ReferenceIntervalSolver, RequestCascade,
+    SchemeError, SchemeRegistry, SizeField, SizingSpec,
 };
 use sm_topo_api::TopologyView;
 
@@ -26,6 +26,7 @@ pub struct MesherConfig {
     size_fields: Option<SizeFieldFn>,
     auto_size: Option<AutoSizeFn>,
     max_cells: u64,
+    cascade: RequestCascade,
 }
 
 /// Default cell budget of [`MesherConfig::max_cells`].
@@ -41,6 +42,7 @@ impl MesherConfig {
             size_fields: None,
             auto_size: None,
             max_cells: DEFAULT_MAX_CELLS,
+            cascade: RequestCascade::Firmness,
         }
     }
 
@@ -50,6 +52,22 @@ impl MesherConfig {
     pub fn with_max_cells(mut self, max_cells: u64) -> Self {
         self.max_cells = max_cells;
         self
+    }
+
+    /// Choose how interval requests from edges, faces and volumes cascade (default
+    /// [`RequestCascade::Firmness`], Cubit's rule; [`RequestCascade::Level`] is the original
+    /// edge-beats-face-beats-volume rule). With [`RequestCascade::Firmness`], `mesh.size` and
+    /// `mesh.intervals` resolve "latest equally firm command wins" when they run, so the stored
+    /// intent is order-free, and `mesh.run` plans with the same rule.
+    #[must_use]
+    pub fn with_cascade(mut self, cascade: RequestCascade) -> Self {
+        self.cascade = cascade;
+        self
+    }
+
+    /// The request cascade of `mesh.size`, `mesh.intervals` and `mesh.run`.
+    pub fn cascade(&self) -> RequestCascade {
+        self.cascade
     }
 
     /// The cell budget of `mesh.run`.
@@ -114,6 +132,12 @@ impl MesherConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_cascade_is_firmness() {
+        let cfg = MesherConfig::new(sm_scheme_api::stubs::registry());
+        assert_eq!(cfg.cascade(), RequestCascade::Firmness);
+    }
 
     #[test]
     fn config_builders_replace_the_defaults() {

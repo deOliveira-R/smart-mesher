@@ -62,6 +62,22 @@ pub const SMRT_ORIENT_ANY: i32 = 0;
 
 /// `SmrtStep::lost_cause`: not lost.
 pub const SMRT_LOST_NONE: i32 = 0;
+/// `SmrtStep::lost_cause`: `LostCause::NoCellContainsPoint`.
+pub const SMRT_LOST_NO_CELL: i32 = 1;
+/// `SmrtStep::lost_cause`: `LostCause::NoExitFace`.
+pub const SMRT_LOST_NO_EXIT_FACE: i32 = 2;
+/// `SmrtStep::lost_cause`: `LostCause::InconsistentEntryFace`.
+pub const SMRT_LOST_INCONSISTENT_ENTRY: i32 = 3;
+/// `SmrtStep::lost_cause`: `LostCause::NonFinite`.
+pub const SMRT_LOST_NON_FINITE: i32 = 4;
+/// `SmrtStep::lost_cause`: `LostCause::MaxStepsExceeded`.
+pub const SMRT_LOST_MAX_STEPS: i32 = 5;
+/// `SmrtStep::lost_cause`: `LostCause::RecoveryFailed` (also any future cause).
+pub const SMRT_LOST_RECOVERY_FAILED: i32 = 6;
+/// `SmrtStep::lost_cause`: `LostCause::SenseMismatch`.
+pub const SMRT_LOST_SENSE_MISMATCH: i32 = 7;
+/// `SmrtStep::lost_cause`: `LostCause::Overlap` (two cells that must be disjoint contain the point).
+pub const SMRT_LOST_OVERLAP: i32 = 8;
 
 /// One hierarchy level (mirrors the contract's `Level`).
 #[repr(C)]

@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind};
 use sm_layer_api::ModelLayer;
 use sm_op_api::{ApplyCtx, OpError, TypedOp};
-use sm_scheme_api::{Firm, Firmness, IntervalRequest, Params, SchemeChoice, SchemeDim, SizingSpec};
+use sm_scheme_api::{
+    Firm, Firmness, IntervalRequest, Params, RequestCascade, SchemeChoice, SchemeDim, SizingSpec,
+};
+use sm_topo_api::{CellFlags, TopologyView};
 
 use crate::config::MesherConfig;
 use crate::intent_layer::IntentLayer;
@@ -101,6 +104,92 @@ fn set_intervals(
     true
 }
 
+/// Edges a request on `id` reaches (an edge, the edges of a face, the edges of a volume's
+/// faces), ascending, without degenerate ones: what the planner puts the request on.
+fn edges_of(topo: &dyn TopologyView, id: EntityId) -> Vec<EntityId> {
+    let mut v: Vec<EntityId> = match id.kind() {
+        EntityKind::TopoEdge => vec![id],
+        EntityKind::TopoFace => topo.face_edges(id).to_vec(),
+        EntityKind::TopoVolume => topo
+            .volume_faces(id)
+            .iter()
+            .flat_map(|&f| topo.face_edges(f).iter().copied())
+            .collect(),
+        _ => Vec::new(),
+    };
+    v.retain(|e| !topo.flags(*e).contains(CellFlags::DEGENERATE));
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Cascade level of an entity: edge beats face beats volume.
+fn level_of(id: EntityId) -> u8 {
+    match id.kind() {
+        EntityKind::TopoEdge => 2,
+        EntityKind::TopoFace => 1,
+        _ => 0,
+    }
+}
+
+/// Command-time half of [`RequestCascade::Firmness`] (decision 9, ruling P1).
+///
+/// The planner resolves a firmness cascade as "firmer wins; a tie goes to the edge, then the
+/// face, then the volume, then the lowest id" and needs no command order. Cubit lets the latest
+/// command win a tie. So when `req` has just been stored on face or volume `t`, every edge it
+/// reaches on which an equally firm request from another entity would beat it by that tie rule
+/// gets `req` written on it directly (unless a firmer request also reaches the edge, which wins
+/// anyway). An identical request (same value and firmness) is no conflict and writes nothing, so
+/// one `mesh.size` over volumes that share edges stays one row per volume. The stored intent
+/// then gives the same plan whatever the history, and after a round trip through serde. Firmness is compared as stored (`default < soft < hard`).
+fn resolve_latest_wins(
+    layer: &mut IntentLayer,
+    topo: &dyn TopologyView,
+    t: EntityId,
+    req: Firm<IntervalRequest>,
+) {
+    if t.kind() == EntityKind::TopoEdge {
+        return; // the highest level: the plain edge request already wins every tie
+    }
+    let mine = edges_of(topo, t);
+    let i = layer.intent_mut();
+    let others: Vec<(EntityId, Firm<IntervalRequest>, Vec<EntityId>)> = i
+        .entities
+        .iter()
+        .filter(|(k, _)| **k != t)
+        .filter_map(|(k, e)| {
+            let r = e.intervals?;
+            (r.firmness >= req.firmness).then(|| (*k, r, edges_of(topo, *k)))
+        })
+        .collect();
+    for e in mine {
+        let (mut tie_lost, mut firmer) = (false, false);
+        for (x, other, reach) in &others {
+            if reach.binary_search(&e).is_err() {
+                continue;
+            }
+            if other.firmness > req.firmness {
+                firmer = true;
+            } else if *other != req
+                && (level_of(*x) > level_of(t) || (level_of(*x) == level_of(t) && *x < t))
+            {
+                tie_lost = true;
+            }
+        }
+        if tie_lost && !firmer {
+            i.set_intervals(e, req);
+        }
+    }
+}
+
+/// The model (a cheap clone), when the configured cascade needs command-time resolution.
+fn firmness_topo(ctx: &ApplyCtx<'_>) -> Result<Option<ModelLayer>, OpError> {
+    if ctx.service::<MesherConfig>()?.cascade() != RequestCascade::Firmness {
+        return Ok(None);
+    }
+    Ok(Some(ctx.layer::<ModelLayer>()?.clone()))
+}
+
 fn finish(layer: &mut IntentLayer) -> Result<(), OpError> {
     let i = layer.intent_mut();
     i.canonicalize();
@@ -177,6 +266,7 @@ impl TypedOp for MeshSize {
         // Stored as given, but any `default`-firmness size (implicit or explicit) competes at
         // `soft`: in Cubit any interval command raises the curve to at least soft.
         let level = firmness.max(Firmness::Soft);
+        let topo = firmness_topo(ctx)?;
         let layer = ctx.layer_mut::<IntentLayer>()?;
         let mut kept = Vec::new();
         for &t in &targets {
@@ -186,6 +276,8 @@ impl TypedOp for MeshSize {
             };
             if !set_intervals(layer, t, req, level) {
                 kept.push(t);
+            } else if let Some(m) = &topo {
+                resolve_latest_wins(layer, m.topo(), t, req);
             }
         }
         finish(layer)?;
@@ -220,6 +312,7 @@ impl TypedOp for MeshIntervals {
         if self.count == 0 {
             return Err(OpError::Invalid("`count` must be >= 1".into()));
         }
+        let topo = firmness_topo(ctx)?;
         let layer = ctx.layer_mut::<IntentLayer>()?;
         let mut kept = Vec::new();
         for &t in &targets {
@@ -239,6 +332,8 @@ impl TypedOp for MeshIntervals {
             };
             if !set_intervals(layer, t, req, firmness) {
                 kept.push(t);
+            } else if let Some(m) = &topo {
+                resolve_latest_wins(layer, m.topo(), t, req);
             }
         }
         finish(layer)?;

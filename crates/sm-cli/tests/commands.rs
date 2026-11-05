@@ -643,7 +643,11 @@ fn export_infers_the_format_from_the_extension() {
             format: Some(ExportFormat::Smsh),
             mesh: None,
             provenance: false,
-            inline: false
+            inline: false,
+            options: None,
+            split_small_determinant: None,
+            empty_patches: vec![],
+            wedge_patches: vec![]
         }]
     );
     assert!(
@@ -679,6 +683,7 @@ fn export_flags_mesh_format_and_provenance() {
         mesh,
         provenance,
         inline,
+        ..
     } = &o.requests[0]
     else {
         panic!()

@@ -104,6 +104,10 @@ fn cases() -> Vec<(Request, Value)> {
                 mesh: Some(eid(7)),
                 provenance: true,
                 inline: true,
+                options: None,
+                split_small_determinant: None,
+                empty_patches: vec![],
+                wedge_patches: vec![],
             },
             json!({"method": "session.export", "params": {"path": "out.vtu", "format": "vtu", "mesh": "TopoVolume#7", "provenance": true, "inline": true}}),
         ),
@@ -114,8 +118,58 @@ fn cases() -> Vec<(Request, Value)> {
                 mesh: None,
                 provenance: false,
                 inline: false,
+                options: None,
+                split_small_determinant: None,
+                empty_patches: vec![],
+                wedge_patches: vec![],
             },
             json!({"method": "session.export", "params": {"format": "smsh"}}),
+        ),
+        (
+            Request::Export {
+                path: Some("case".into()),
+                format: Some(ExportFormat::Openfoam),
+                mesh: None,
+                provenance: false,
+                inline: false,
+                options: None,
+                split_small_determinant: Some(false),
+                empty_patches: vec!["front".into(), "back".into()],
+                wedge_patches: vec!["w".into()],
+            },
+            json!({"method": "session.export", "params": {"path": "case", "format": "openfoam", "split_small_determinant": false, "empty_patches": ["front", "back"], "wedge_patches": ["w"]}}),
+        ),
+        (
+            Request::Export {
+                path: Some("m.msh".into()),
+                format: Some(ExportFormat::Gmsh),
+                mesh: None,
+                provenance: false,
+                inline: false,
+                options: Some(json!({"binary": true})),
+                split_small_determinant: None,
+                empty_patches: vec![],
+                wedge_patches: vec![],
+            },
+            json!({"method": "session.export", "params": {"path": "m.msh", "format": "gmsh", "options": {"binary": true}}}),
+        ),
+        (
+            Request::ScriptRecord {
+                forks: RecordForks::Head,
+                check: RecordCheck::Tips,
+                verify: false,
+                raw: false,
+            },
+            json!({"method": "script.record", "params": {}}),
+        ),
+        (
+            Request::ScriptRecord {
+                forks: RecordForks::Refs,
+                check: RecordCheck::Every,
+                verify: true,
+                raw: true,
+            },
+            json!({"method": "script.record", "params": {"forks": "refs", "check": "every", "verify": true, "raw": true}}),
         ),
         (Request::Save, json!({"method": "session.save"})),
         (
@@ -146,6 +200,10 @@ const NAMES: &[&str] = &[
     "session.hash.default",
     "session.export.full",
     "session.export.minimal",
+    "session.export.openfoam_2d",
+    "session.export.gmsh_options",
+    "script.record.default",
+    "script.record.full",
     "session.save",
     "session.open",
 ];
@@ -206,7 +264,7 @@ fn lenient_covers_every_unit_method_and_all_optional_method() {
             );
         }
     }
-    for m in ["session.hash", "session.export"] {
+    for m in ["session.hash", "session.export", "script.record"] {
         assert!(table.iter().any(|c| c["input"]["method"] == m && c["shape"] == "absent"));
     }
 }
@@ -281,7 +339,11 @@ fn optional_fields_accept_missing_and_null() {
             format: None,
             mesh: None,
             provenance: false,
-            inline: false
+            inline: false,
+            options: None,
+            split_small_determinant: None,
+            empty_patches: vec![],
+            wedge_patches: vec![]
         }
     );
     let r: Request =
@@ -567,8 +629,35 @@ fn deterministic_encoding() {
 }
 
 #[test]
+fn script_record_result_round_trips_and_omits_unverified() {
+    let r = sm_protocol::ScriptRecordResult::new(
+        "mesh.run()\n".into(),
+        3,
+        1,
+        [("main".to_string(), h(4))].into_iter().collect(),
+        vec!["sm-mesher".into()],
+        vec!["note".into()],
+        None,
+    );
+    let js = serde_json::to_value(&r).unwrap();
+    assert!(js.get("verified").is_none(), "{js}");
+    assert_eq!(serde_json::from_value::<sm_protocol::ScriptRecordResult>(js).unwrap(), r);
+    let mut v = r.clone();
+    v.verified = Some(true);
+    let js = serde_json::to_value(&v).unwrap();
+    assert_eq!(js["verified"], json!(true));
+    assert_eq!(serde_json::from_value::<sm_protocol::ScriptRecordResult>(js).unwrap(), v);
+}
+
+#[test]
 fn export_formats_and_file_listing_are_additive() {
-    for (f, s) in [(ExportFormat::Exodus, "exodus"), (ExportFormat::Openfoam, "openfoam")] {
+    for (f, s) in [
+        (ExportFormat::Exodus, "exodus"),
+        (ExportFormat::Openfoam, "openfoam"),
+        (ExportFormat::Dagmc, "dagmc"),
+        (ExportFormat::Gmsh, "gmsh"),
+        (ExportFormat::Smrt, "smrt"),
+    ] {
         assert_eq!(serde_json::to_value(f).unwrap(), json!(s));
         assert_eq!(serde_json::from_value::<ExportFormat>(json!(s)).unwrap(), f);
     }
@@ -590,4 +679,12 @@ fn export_formats_and_file_listing_are_additive() {
     assert_eq!(js["notes"], json!([{"code": "foam.small_det_split", "count": 3, "detail": "cells split: a, b"}]));
     assert_eq!(serde_json::from_value::<ExportResult>(js).unwrap(), noted);
     assert_eq!(sm_protocol::ExportNote::parse("odd line").code, "note");
+    // A `code: detail` line with a missing or malformed count keeps its code.
+    for line in ["foam.x: detail words", "foam.x: detail xabc", "foam.x: detail x"] {
+        let n = sm_protocol::ExportNote::parse(line);
+        assert_eq!((n.code.as_str(), n.count), ("foam.x", 1), "{line}");
+    }
+    assert_eq!(sm_protocol::ExportNote::parse("foam.x: detail words").detail, "detail words");
+    let n = sm_protocol::ExportNote::parse("foam.x: a x2 b x4");
+    assert_eq!((n.count, n.detail.as_str()), (4, "a x2 b"));
 }

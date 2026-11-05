@@ -1,0 +1,17 @@
+[package]
+name = "sm-view"
+description = "Renderer-neutral view buffers (skin, clip, scalar overlays) and the web viewer client in web/."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+
+[lints]
+workspace = true

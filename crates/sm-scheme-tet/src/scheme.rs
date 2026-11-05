@@ -362,7 +362,7 @@ fn note_of(d: &QualityDiagnostic, owner: EntityId, tri_face: &[EntityId]) -> Sch
         SuggestedFix::RefineSizeNear { h } => format!("refine the size field near this point to about {h:.6e}"),
         SuggestedFix::RefineInputSurface { h } => format!("remesh the listed faces finer (about {h:.6e}) or smooth the surface there"),
     };
-    SchemeNote { position: Point3::new(d.position[0], d.position[1], d.position[2]), entities, metric: metric.to_owned(), value: d.value, threshold: d.threshold, suggestion }
+    SchemeNote::new(Point3::new(d.position[0], d.position[1], d.position[2]), entities, metric, d.value, d.threshold, suggestion)
 }
 
 fn build_patch(target: Target, owner: EntityId, mesh: &TetMesh, keys: &[NodeKey], tri_face: &[EntityId]) -> Patch {

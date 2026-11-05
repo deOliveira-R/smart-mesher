@@ -1,0 +1,17 @@
+[package]
+name = "sm-rt-bench"
+description = "Ray-tracing benchmarks and scaling harness over sm-rt-api."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+bench = false
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+
+[lints]
+workspace = true
