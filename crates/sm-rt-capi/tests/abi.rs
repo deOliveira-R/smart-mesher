@@ -363,11 +363,14 @@ fn info_region_info_and_measures() {
 }
 
 #[test]
-fn open_without_a_backend_is_unsupported_and_free_order_is_safe() {
+fn open_of_a_missing_file_is_a_typed_error_and_free_order_is_safe() {
     let mut out: *mut SmrtTracker = std::ptr::null_mut();
-    let path = c"model.smrt";
+    let path = c"no-such-model.smrt";
+    // Without the loader feature the code is unsupported; with it, an unreadable file is a bad
+    // argument. Either way `*out` is null and the message names the entry point.
+    let want = if cfg!(feature = "sm-rt") { SMRT_ERR_BAD_ARG } else { SMRT_ERR_UNSUPPORTED };
     // SAFETY: valid NUL-terminated path and out slot.
-    assert_eq!(unsafe { smrt_open(path.as_ptr(), &mut out) }, SMRT_ERR_UNSUPPORTED);
+    assert_eq!(unsafe { smrt_open(path.as_ptr(), &mut out) }, want);
     assert!(out.is_null());
     assert!(err_msg().contains("smrt_open"));
     assert_eq!(smrt_version(), SMRT_ABI_VERSION);

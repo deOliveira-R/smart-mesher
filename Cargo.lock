@@ -1782,6 +1782,8 @@ dependencies = [
  "rayon",
  "sm-core",
  "sm-geom-api",
+ "sm-mesh-api",
+ "sm-rt",
  "sm-rt-api",
  "sm-testkit",
 ]

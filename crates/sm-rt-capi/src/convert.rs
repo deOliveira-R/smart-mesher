@@ -4,8 +4,8 @@ use crate::status::Fail;
 use crate::types::*;
 use sm_core::{Point3, Vector3};
 use sm_rt_api::{
-    BoundaryHit, CellId, Closest, FaceAction, FaceId, Level, LostCause, LostInfo, Located, Peek, RegionId, ResponseKind, RtError, Step,
-    StepEnd, SurfaceId, TrackState,
+    BoundaryHit, CellId, Closest, ComponentId, FaceAction, FaceId, FlightOptions, FlightSegment, InstanceId, Level, LostCause, LostInfo, Located, ModePolicy,
+    NodeKind, Peek, RegionId, ResponseKind, RtError, SegmentScale, Step, StepEnd, SurfaceId, TraceEnd, TrackMode, TrackState, Tracker, check_direction,
 };
 
 /// Id sentinels as the contract spells them.
@@ -326,6 +326,118 @@ pub fn response_in(kind: i32, albedo: f64) -> Result<ResponseKind, Fail> {
         SMRT_RESP_ALBEDO => Ok(ResponseKind::Albedo(albedo)),
         SMRT_RESP_REFLECTIVE => Ok(ResponseKind::Reflective),
         k => Err(Fail::bad(format!("unknown response kind {k}"))),
+    }
+}
+
+/// A C state to a `TrackState` for `tracker`. `levels_total` must equal `levels_len` and be at
+/// most 8 (a deeper path cannot be set from C), the direction must be unit within the model
+/// tolerance, and the ids must exist.
+pub fn state_in(tracker: &dyn Tracker, complement: Option<RegionId>, s: &SmrtState) -> Result<TrackState, Fail> {
+    let n = usize::try_from(s.levels_len).ok().filter(|&n| n <= SMRT_MAX_LEVELS && s.levels_total == s.levels_len);
+    let Some(n) = n else {
+        return Err(Fail::bad("levels_total must equal levels_len and be at most 8"));
+    };
+    check_direction(vector(s.dir), tracker.info().tol.angular)?;
+    if !s.pos.iter().all(|v| v.is_finite()) {
+        return Err(Fail::Rt(RtError::NonFinite("position")));
+    }
+    let mut st = TrackState::new(point(s.pos), vector(s.dir));
+    st.cell = cell_in(s.cell)?;
+    // NONE is "outside"; COMPLEMENT is valid only when the model has an implicit complement.
+    let special = st.cell == CellId::NONE || (st.cell == CellId::COMPLEMENT && complement.is_some());
+    if !special && st.cell.get() >= tracker.cell_count() {
+        return Err(Fail::Rt(RtError::UnknownId { kind: "cell", id: st.cell.get() as u32 }));
+    }
+    st.region = region_in(s.region, complement)?;
+    if st.region != RegionId::NONE && st.region.0 as usize >= tracker.regions().0.len() {
+        return Err(Fail::Rt(RtError::UnknownId { kind: "region", id: st.region.0 }));
+    }
+    st.entered_via = if s.entered_via < 0 { None } else { Some(face_in(s.entered_via)?) };
+    for l in &s.levels[..n] {
+        let id = |v: i64| u32::try_from(v).map_err(|_| Fail::bad("negative level id"));
+        st.levels.push(Level::new(ComponentId(id(l.component)?), InstanceId(id(l.instance)?), l.lattice));
+    }
+    Ok(st)
+}
+
+/// C flight options (or the defaults for `None`) to `FlightOptions`. `max_dist <= 0` or infinite
+/// is unlimited and `max_steps <= 0` is the default budget, as for `SmrtTraceOpts`.
+pub fn flight_opts_in(o: Option<&SmrtFlightOpts>) -> Result<FlightOptions, Fail> {
+    let mut f = FlightOptions::default();
+    let Some(o) = o else { return Ok(f) };
+    if o.max_dist.is_nan() {
+        return Err(Fail::bad("max_dist is NaN"));
+    }
+    if o.max_dist > 0.0 && o.max_dist.is_finite() {
+        f = f.with_max_dist(o.max_dist);
+    }
+    if o.max_steps > 0 {
+        f = f.with_max_steps(u32::try_from(o.max_steps).unwrap_or(u32::MAX));
+    }
+    f = f.with_stop_at_deck(o.stop_at_deck != 0);
+    f = f.with_policy(match o.policy {
+        SMRT_POLICY_SURFACE => ModePolicy::Surface,
+        SMRT_POLICY_DELTA => ModePolicy::Delta,
+        v => return Err(Fail::bad(format!("unknown flight policy {v}"))),
+    });
+    f = f.with_scale(match o.scale {
+        SMRT_SCALE_CELL => SegmentScale::Cell,
+        SMRT_SCALE_REGION => SegmentScale::Region,
+        v => return Err(Fail::bad(format!("unknown segment scale {v}"))),
+    });
+    Ok(f)
+}
+
+/// A flight segment to its C view.
+pub fn segment_out(s: &FlightSegment, comp: Option<RegionId>, out: &mut SmrtSegment) {
+    out.mode = if s.mode == TrackMode::Delta { SMRT_MODE_DELTA } else { SMRT_MODE_SURFACE };
+    out.node = id_out(s.node.0);
+    out.set = id_out(s.set.0);
+    out.cell = cell_out(s.cell);
+    out.region = region_out(s.region, comp);
+    out.resolved = i64::from(s.resolved);
+    out.face_in = face_out(s.face_in);
+    out.face_out = face_out(s.face_out);
+    out.t0 = s.t0;
+    out.t1 = s.t1;
+    out.sigma_m = s.sigma_m;
+    fire_out(s.length(), &s.end, s.cell, s.region, comp, &mut out.step);
+}
+
+/// Why a flight ended to `(SMRT_FLIGHT_* kind, event)`; the event carries the boundary or the
+/// lost details where the kind has any.
+pub fn flight_end_out(e: Option<&TraceEnd>, comp: Option<RegionId>, out: &mut SmrtStep) -> i32 {
+    *out = SmrtStep { face: SMRT_NONE, surface: SMRT_NONE, to_region: SMRT_NONE, to_cell: SMRT_NONE, lost_cell: SMRT_NONE, cell: SMRT_NONE, region: SMRT_NONE, ..SmrtStep::default() };
+    match e {
+        None => SMRT_FLIGHT_RUNNING,
+        Some(TraceEnd::Limit) => SMRT_FLIGHT_LIMIT,
+        Some(TraceEnd::LeftModel) => SMRT_FLIGHT_LEFT_MODEL,
+        Some(TraceEnd::Stopped) => SMRT_FLIGHT_STOPPED,
+        Some(TraceEnd::Boundary { surface, face, action }) => {
+            end_into(&StepEnd::Boundary { surface: *surface, face: *face, action: *action }, comp, out);
+            SMRT_FLIGHT_BOUNDARY
+        }
+        Some(TraceEnd::Lost(l)) => {
+            lost_into(l, out);
+            SMRT_FLIGHT_LOST
+        }
+        // A variant added to the contract later: report it as a lost flight of unknown cause.
+        Some(_) => {
+            out.end = SMRT_END_LOST;
+            out.lost_cause = SMRT_LOST_RECOVERY_FAILED;
+            SMRT_FLIGHT_LOST
+        }
+    }
+}
+
+/// `SMRT_NODE_*` of a node kind.
+pub fn node_kind_out(k: NodeKind) -> i64 {
+    match k {
+        NodeKind::Internal => SMRT_NODE_INTERNAL,
+        NodeKind::Lattice => SMRT_NODE_LATTICE,
+        NodeKind::Analytic => SMRT_NODE_ANALYTIC,
+        NodeKind::Mesh => SMRT_NODE_MESH,
+        _ => SMRT_NODE_HOMOGENEOUS,
     }
 }
 

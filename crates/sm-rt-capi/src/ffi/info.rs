@@ -1,6 +1,6 @@
 //! Tracker lifetime, introspection, `smrt_open`, version and the thread-local error message.
 
-use super::{SmrtTracker, exclusive, guard, shared};
+use super::{SmrtTracker, exclusive, guard, shared, write_text};
 use crate::convert::region_in;
 use crate::status::*;
 use crate::types::*;
@@ -26,9 +26,12 @@ pub unsafe extern "C" fn smrt_tracker_free(tracker: *mut SmrtTracker) -> i32 {
     })
 }
 
-/// Open a `.smrt` tracker image. Without the `sm-rt` cargo feature (the W3a state) no loader is
-/// linked and this returns `SMRT_ERR_UNSUPPORTED` (`-5`) with an explanatory message; the
-/// loader is wired when sm-rt is on main. On success `*out` is a tracker handle.
+/// Open the tracking file at `path` (a `.smrt` image, as written by `session.export` format
+/// `smrt` or by `sm_rt::write_smrt_file`) through `sm_rt::load_image`. On success `*out` is a
+/// tracker handle (free it with `smrt_tracker_free`); on failure `*out` is null. An unreadable
+/// file is `SMRT_ERR_BAD_ARG`, an invalid image `SMRT_ERR_CACHE_CORRUPT` / `SMRT_ERR_CACHE_STALE`;
+/// a build without the `sm-rt` feature returns `SMRT_ERR_UNSUPPORTED`. The file holds geometry,
+/// connectivity and region names only: no cross section ever enters the library.
 ///
 /// # Safety
 /// `path` is null or a NUL-terminated string; `out` is null or valid for one write.
@@ -42,13 +45,71 @@ pub unsafe extern "C" fn smrt_open(path: *const c_char, out: *mut *mut SmrtTrack
         let out = unsafe { exclusive(out, "out")? };
         *out = std::ptr::null_mut();
         // SAFETY: `path` is non-null and NUL-terminated by the caller contract.
-        let _path = unsafe { CStr::from_ptr(path) };
-        let msg = if cfg!(feature = "sm-rt") {
-            "smrt_open: the `sm-rt` feature is on but no loader is wired in this build"
-        } else {
-            "smrt_open: no tracker backend linked (build sm-rt-capi with the `sm-rt` feature)"
-        };
-        Err(Fail::Rt(sm_rt_api::RtError::Unsupported(msg)))
+        let path = unsafe { CStr::from_ptr(path) };
+        let path = path.to_str().map_err(|_| Fail::bad("smrt_open: path is not valid UTF-8"))?;
+        let t = crate::loader::open_smrt(std::path::Path::new(path))?;
+        *out = crate::tracker_into_raw(t);
+        Ok(SMRT_OK)
+    })
+}
+
+/// Copy the name of `region` (the material name the caller pairs with its cross sections) into
+/// `buf` (NUL-terminated, truncated to `cap` bytes) and return its full length in bytes without
+/// the NUL (`snprintf` semantics; a region with an empty name gives `0`). `buf` may be null when
+/// `cap` is `0`, to ask for the length. `region` accepts `SMRT_COMPLEMENT`.
+///
+/// # Safety
+/// `tracker` is null or a live handle; `buf` is null or valid for `cap` bytes of writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn smrt_region_name(tracker: *const SmrtTracker, region: i64, buf: *mut c_char, cap: i64) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract above.
+        let t = unsafe { shared(tracker, "tracker")? };
+        let r = region_in(region, t.complement)?;
+        let info = t.inner.regions().get(r).ok_or(sm_rt_api::RtError::UnknownId { kind: "region", id: r.0 })?;
+        // SAFETY: `buf` is null or valid for `cap` bytes by the caller contract.
+        let len = unsafe { write_text(&info.name, buf, cap, "buf")? };
+        Ok(len)
+    })
+}
+
+/// Number of integer tags of `region` (DAGMC-style properties such as a group id).
+///
+/// # Safety
+/// `tracker` is null or a live handle; `out_n` is null or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn smrt_region_n_tags(tracker: *const SmrtTracker, region: i64, out_n: *mut i64) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract above.
+        let (t, out) = unsafe { (shared(tracker, "tracker")?, exclusive(out_n, "out_n")?) };
+        let r = region_in(region, t.complement)?;
+        let info = t.inner.regions().get(r).ok_or(sm_rt_api::RtError::UnknownId { kind: "region", id: r.0 })?;
+        *out = i64::try_from(info.tags.len()).unwrap_or(i64::MAX);
+        Ok(SMRT_OK)
+    })
+}
+
+/// Tag `index` of `region` (insertion order): its value goes to `*out_value`, its key into `buf`
+/// like `smrt_region_name`; returns the key length. `index` out of range is `SMRT_ERR_UNKNOWN_ID`.
+///
+/// # Safety
+/// `tracker` is null or a live handle; `buf` is null or valid for `cap` bytes of writes;
+/// `out_value` is null or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn smrt_region_tag(tracker: *const SmrtTracker, region: i64, index: i64, buf: *mut c_char, cap: i64, out_value: *mut i64) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract above.
+        let (t, out) = unsafe { (shared(tracker, "tracker")?, exclusive(out_value, "out_value")?) };
+        let r = region_in(region, t.complement)?;
+        let info = t.inner.regions().get(r).ok_or(sm_rt_api::RtError::UnknownId { kind: "region", id: r.0 })?;
+        let (key, value) = usize::try_from(index)
+            .ok()
+            .and_then(|i| info.tags.get(i))
+            .ok_or(sm_rt_api::RtError::UnknownId { kind: "region tag", id: u32::try_from(index).unwrap_or(u32::MAX) })?;
+        // SAFETY: `buf` is null or valid for `cap` bytes by the caller contract.
+        let len = unsafe { write_text(key, buf, cap, "buf")? };
+        *out = *value;
+        Ok(len)
     })
 }
 

@@ -39,10 +39,13 @@ A test greps that no file under `src/` outside `src/ffi/` contains the keyword. 
 * `SmrtCtx`: its own `Arc` clone of the tracker, a `Scratch` and the particle's `TrackState`. One
   thread at a time (documented, not locked). Tracker and context handles may be freed in any order.
 * Rust constructors: `tracker_into_raw(Arc<dyn Tracker>) -> *mut SmrtTracker` (safe function).
-  `smrt_open(path, &out)` takes a `.smrt` image path. The loader is not linked in W3a:
-  without the `sm-rt` cargo feature (off) it returns `SMRT_ERR_UNSUPPORTED`. The feature exists so the
-  orchestrator's wiring is a manifest change; see "smrt_open" in `W3_REPORT.md` for what else the
-  loader needs.
+  `smrt_open(path, &out)` opens the `.smrt` handover image (written by `session.export` format
+  `smrt` or `sm_rt::write_smrt_file`) with `sm_rt::read_smrt` and `sm_rt::load_image` (`src/loader.rs`,
+  cargo feature `sm-rt`, on by default). An unreadable file is `-102` (the message names it), an
+  invalid image `-7`/`-6`; without the feature the code is `-5`. The image holds geometry,
+  connectivity and region names only: no cross section ever enters the library (Q2).
+* `SmrtFlight`: its own `Arc` clone of the tracker, a `Scratch`, the `TrackState` and the opaque
+  `FlightCursor`. One thread at a time. It holds no caller pointer between calls.
 * After a panic inside a context call the particle state may be inconsistent: re-initialise it.
 
 ## Ids
@@ -77,7 +80,15 @@ All pointers are checked for null first. `ctx` functions take the context of exa
 
 | Function | Notes |
 |---|---|
-| `smrt_open(path, &tracker)` | `.smrt` loader; unsupported without a backend |
+| `smrt_open(path, &tracker)` | `.smrt` loader (`load_image`); `-5` without the `sm-rt` feature |
+| `smrt_region_name(tracker, region, buf, cap)`, `smrt_region_n_tags`, `smrt_region_tag(tracker, region, i, buf, cap, &value)` | region (material) names and integer tags; `snprintf` semantics (full length returned) |
+| `smrt_n_nodes`, `smrt_node_info`, `smrt_node_set`, `smrt_n_sets`, `smrt_set_regions` | the majorant partition and its material sets; `-5` when the tracker has no partition |
+| `smrt_flight_input_validate(tracker, majorants, n_nodes, block, n_block)` | one-time `FlightInput::validate` (O(n)) |
+| `smrt_flight_new(tracker, &state, opts, &flight)`, `smrt_flight_free` | start a flight of a located state; opts null = defaults |
+| `smrt_flight_next(flight, majorants, n_nodes, block, n_block, &SmrtSegment)` | 0 segment, 1 done, < 0 error |
+| `smrt_flight_probe`, `smrt_flight_stop_at` (same arrays, plus `t`) | locate a tentative collision / end the flight at a real one |
+| `smrt_flight_check(flight, sigma_t)` | against the majorant cached at the last `next`; `-12` on violation, state unchanged |
+| `smrt_flight_set_policy`, `smrt_flight_get_state`, `smrt_flight_end(flight, &kind, &event, &dist)` | hybrid switching, state, why the flight ended |
 | `smrt_tracker_free(tracker)`, `smrt_ctx_new(tracker, &ctx)`, `smrt_ctx_free(ctx)` | lifetimes |
 | `smrt_info(tracker, &SmrtInfo)` | cells, faces, regions, surfaces, prototypes, copies, memory_bytes, exact/faceted faces, caps, complement region, structure hash lo/hi, bounds, tolerances |
 | `smrt_region_info(tracker, region, &SmrtRegionInfo)` | original id (model entity serial), colour id (always -1, the contract has none), measure (volume), complement flag |
@@ -90,7 +101,7 @@ All pointers are checked for null first. `ctx` functions take the context of exa
 | `smrt_locate(ctx, p[3], dir_or_null, hint, &SmrtLocated)` | state untouched |
 | `smrt_closest(ctx, p[3], region, &SmrtClosest)` | `closest_to_location` |
 | `smrt_trace_bundle(tracker, n, &SmrtRays, block_size, opts, out_buf, cap, &out_len)` | see below |
-| `smrt_dag_ray_fire`, `smrt_dag_point_in_volume`, `smrt_dag_next_vol`, `smrt_dag_surface_sense`, `smrt_dag_get_angle`, `smrt_dag_measure_volume`, `smrt_dag_measure_area` | DAGMC shims |
+| `smrt_dag_ray_fire`, `smrt_dag_point_in_volume`, `smrt_dag_next_vol`, `smrt_dag_surface_sense`, `smrt_dag_get_angle`, `smrt_dag_get_angle_surface`, `smrt_dag_surface_faces`, `smrt_dag_measure_volume`, `smrt_dag_measure_area` | DAGMC shims |
 | `smrt_version()`, `smrt_last_error_message(buf, cap)` | |
 
 Fortran spelling: `fortran/smrt.f90` mirrors `smrt.h` with four renames the language forces (Fortran is
@@ -104,6 +115,30 @@ eight are counted in `levels_total` and not copied (`levels_len <= 8`): truncate
 `smrt_set_state` refuses `levels_total != levels_len` or more than eight levels (`-102`).
 Every struct has only 8-byte members, so there is no hidden padding; a test compiles `static_assert`s
 for every size and offset (generated from `size_of`/`offset_of`) against `smrt.h`.
+
+### Flights (W3b-RT-CAPI)
+
+The transport code owns every cross section; the library sees only names and node ids. The code
+reads the node sets (`smrt_node_set`, `smrt_set_regions`), pairs `smrt_region_name` of each region
+with its own cross section, builds one majorant per node (`max` over the set), and passes the array
+to each call. Two-phase and callback free: `smrt_flight_next` returns a segment, the code samples its
+own flight length (`sigma_m` is `majorants[node]` of that call) and either asks for the next segment
+or ends the flight at a collision with `smrt_flight_probe` (find the region of a tentative
+collision) and `smrt_flight_stop_at`. `smrt_flight_check(flight, sigma_t)` compares the real total
+cross section with the cached majorant: `-12` and nothing moves when `sigma_t > majorant * (1 + 1e-12)`.
+
+Per-call validation is that of the Rust `FlightInput`: `n_nodes` must equal the node count and
+`n_block <= n_nodes` (checked before an array is read, so a mismatch is `-11`, never an out-of-bounds
+read); the one majorant a call reads is checked (`-13`, state unchanged); neither array is scanned.
+`block` (`uint32_t` node ids, sorted and unique) is read in place as `&[NodeId]` (`NodeId` is
+`repr(transparent)` over `u32`), so there is no per-call copy or allocation; a test counts allocations
+over `next`/`probe`/`check`. `smrt_flight_input_validate` is the one-time `O(n)` check.
+
+The tests run the same transport loop in C (`tests/c/flight_common.h`) and in Rust
+(`tests/common/flight_ref.rs`) and compare the printed tallies bit for bit (1e4 histories each of
+surface, delta and delta-with-block flights, on the stub world and on a mesh tracker opened from a
+`.smrt` written by sm-rt). The loop uses only `+ - * /` and `sqrt` and the C is compiled with
+`-ffp-contract=off`, so equality does not depend on the libm.
 
 ### `smrt_step`, `smrt_fire` and events
 
@@ -139,11 +174,13 @@ The shims call `sm_rt_api::compat` one to one. Documented differences:
 4. **Implicit complement** is `SMRT_COMPLEMENT` (see Ids), usable as `volume` and returned by `next_vol`.
 5. **Surface sense** is `+1` when the surface normal points *out of* the volume, `-1` into it (the
    DAGMC forward/reverse convention); a volume that does not touch the surface gives status 1.
-6. **`smrt_dag_get_angle` takes a face id**, not a surface id: the contract's `face_normal` is
-   per face and has no surface-to-face map. `smrt_dag_ray_fire` returns the face hit in the optional
-   `out_face`. (They coincide in the stub; in a mesh tracker they do not.)
+6. **`smrt_dag_get_angle` takes a face id**; `smrt_dag_get_angle_surface` takes a surface id and
+   uses its lowest-numbered face (`Tracker::surface_faces`), exact for a planar surface;
+   `smrt_dag_surface_faces` lists the faces. `smrt_dag_ray_fire` returns the face hit in the optional
+   `out_face`. (Face and surface ids coincide in the stub; in a mesh tracker they do not.)
 7. **`smrt_dag_measure_volume`** sums `cell_volume` over the region's cells in index order (NaN if any
-   is unknown). **`smrt_dag_measure_area` is unsupported** (`-5`): the contract has no per-surface area.
+   is unknown). **`smrt_dag_measure_area`** returns `Tracker::surface_area` (the mesh tracker's face
+   area sum); a tracker without surface areas (the stub) gives `-5`.
 8. **Lost particles** are `SMRT_ERR_LOST` (`-103`) in the shims, a value (`SMRT_END_LOST`) elsewhere.
 9. `ray_fire` from an origin outside the model, or from outside `volume` with `EXITING`, is a miss
    (status 1) and not an error, as in DAGMC.

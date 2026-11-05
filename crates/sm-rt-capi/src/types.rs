@@ -8,7 +8,7 @@
 //! region's raw id. All structs have only 8-byte members, so there is no hidden padding.
 
 /// ABI version `major * 10000 + minor * 100 + patch`, returned by `smrt_version`.
-pub const SMRT_ABI_VERSION: i32 = 10000;
+pub const SMRT_ABI_VERSION: i32 = 10100;
 /// Id sentinel: none / outside the model.
 pub const SMRT_NONE: i64 = -1;
 /// Id sentinel: the implicit complement (region or cell).
@@ -271,4 +271,107 @@ pub struct SmrtRays {
     /// Start cell hint per ray; may be null. Ignored by the contract's `trace_bundle` (each ray
     /// is located from scratch); kept so callers can pass their SoA unchanged.
     pub start_cell: *const i64,
+}
+
+/// `SmrtSegment::mode`: surface segment (one cell or region run; the caller samples with its own
+/// cross section).
+pub const SMRT_MODE_SURFACE: i64 = 0;
+/// `SmrtSegment::mode`: delta segment (a chord through one leaf with the leaf majorant).
+pub const SMRT_MODE_DELTA: i64 = 1;
+
+/// `SmrtFlightOpts::policy`: surface segments only.
+pub const SMRT_POLICY_SURFACE: i64 = 0;
+/// `SmrtFlightOpts::policy`: delta segments except in blocked nodes.
+pub const SMRT_POLICY_DELTA: i64 = 1;
+/// `SmrtFlightOpts::scale`: one surface segment per cell.
+pub const SMRT_SCALE_CELL: i64 = 0;
+/// `SmrtFlightOpts::scale`: one surface segment per maximal run inside one region.
+pub const SMRT_SCALE_REGION: i64 = 1;
+
+/// `smrt_flight_end` kind: the flight is still running.
+pub const SMRT_FLIGHT_RUNNING: i32 = 0;
+/// `smrt_flight_end` kind: `max_dist` reached.
+pub const SMRT_FLIGHT_LIMIT: i32 = 1;
+/// `smrt_flight_end` kind: left the model.
+pub const SMRT_FLIGHT_LEFT_MODEL: i32 = 2;
+/// `smrt_flight_end` kind: reached a model boundary (`SmrtStep` holds surface, face, action).
+pub const SMRT_FLIGHT_BOUNDARY: i32 = 3;
+/// `smrt_flight_end` kind: lost (`SmrtStep` holds the cause).
+pub const SMRT_FLIGHT_LOST: i32 = 4;
+/// `smrt_flight_end` kind: ended by `smrt_flight_stop_at` (a collision).
+pub const SMRT_FLIGHT_STOPPED: i32 = 5;
+
+/// `SmrtNodeInfo::kind`: internal node (never yields segments).
+pub const SMRT_NODE_INTERNAL: i64 = 0;
+/// `SmrtNodeInfo::kind`: lattice (never yields segments).
+pub const SMRT_NODE_LATTICE: i64 = 1;
+/// `SmrtNodeInfo::kind`: analytic leaf.
+pub const SMRT_NODE_ANALYTIC: i64 = 2;
+/// `SmrtNodeInfo::kind`: mesh leaf.
+pub const SMRT_NODE_MESH: i64 = 3;
+/// `SmrtNodeInfo::kind`: homogeneous leaf (one region).
+pub const SMRT_NODE_HOMOGENEOUS: i64 = 4;
+
+/// One node of the majorant partition (`smrt_node_info`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SmrtNodeInfo {
+    /// Parent node (`-1` for the root).
+    pub parent: i64,
+    /// `SMRT_NODE_*`.
+    pub kind: i64,
+    /// Material set of the node (regions that occur inside).
+    pub set: i64,
+    /// Tracking cells inside.
+    pub cells: i64,
+    /// Frame-local bounds, minimum.
+    pub bounds_lo: [f64; 3],
+    /// Frame-local bounds, maximum.
+    pub bounds_hi: [f64; 3],
+}
+
+/// Options of `smrt_flight_new` (null pointer = defaults of `FlightOptions`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmrtFlightOpts {
+    /// Flight length limit (`<= 0` or infinite = unlimited).
+    pub max_dist: f64,
+    /// Segment budget (`<= 0` = the default, 1e6).
+    pub max_steps: i64,
+    /// Non-zero: end the flight at deck boundaries.
+    pub stop_at_deck: i64,
+    /// `SMRT_POLICY_*`.
+    pub policy: i64,
+    /// `SMRT_SCALE_*`.
+    pub scale: i64,
+}
+
+/// One flight segment (`smrt_flight_next`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SmrtSegment {
+    /// `SMRT_MODE_*`.
+    pub mode: i64,
+    /// Leaf node.
+    pub node: i64,
+    /// Material set of the node.
+    pub set: i64,
+    /// Cell at the segment start.
+    pub cell: i64,
+    /// Region at the segment start (`-2` implicit complement).
+    pub region: i64,
+    /// 1 if the whole segment lies in `cell`.
+    pub resolved: i64,
+    /// Face crossed to enter the segment (`-1` none).
+    pub face_in: i64,
+    /// Face crossed to leave it (`-1` none).
+    pub face_out: i64,
+    /// Flight parameter at the start.
+    pub t0: f64,
+    /// Flight parameter at the end.
+    pub t1: f64,
+    /// Majorant of the node (`majorants[node]` of the call).
+    pub sigma_m: f64,
+    /// The ending event, as `smrt_step` reports it (`dist` is the segment length).
+    pub step: SmrtStep,
 }

@@ -3,7 +3,7 @@
 use crate::build::{Built, build_facets, build_mesh};
 use crate::image::{import, make_info};
 use crate::tracker::{MeshTracker, Parts};
-use sm_mesh_api::{MeshRead, SetMembers, geometry_hash, topology_hash};
+use sm_mesh_api::{MeshRead, SetMembers};
 use std::sync::Arc;
 use crate::world::WorldTracker;
 use sm_rt_api::{
@@ -52,33 +52,6 @@ impl BuildExtras {
 /// `Brep` and `World` inputs are `RtError::Unsupported`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeshTrackerBuilder;
-
-fn mesh_topology_hash(inp: &sm_rt_api::MeshInput<'_>) -> ContentHash {
-    let m = inp.mesh;
-    let mut h = ContentHasher::new();
-    h.write_u64(topology_hash(m));
-    h.write_u64(geometry_hash(m));
-    match inp.regions {
-        RegionRule::ByVolumeClassification => h.write_u64(1),
-        RegionRule::ByCellSets(names) => {
-            h.write_u64(2);
-            for n in names {
-                h.write_u64(n.len() as u64);
-                h.write_bytes(n.as_bytes());
-            }
-        }
-        _ => h.write_u64(0),
-    }
-    match inp.complement {
-        ComplementPolicy::Outside => h.write_u64(0),
-        ComplementPolicy::Region(n) => {
-            h.write_u64(1);
-            h.write_bytes(n.as_bytes());
-        }
-        _ => h.write_u64(9),
-    }
-    h.finish()
-}
 
 fn unsupported(input: &BuildInput<'_>) -> RtError {
     match input {
@@ -131,6 +104,11 @@ impl MeshTrackerBuilder {
 /// walker resolves (neighbour instance, or the world boundary), so the leaf is built with vacuum
 /// boundaries and no complement.
 pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(MeshTracker, BuildReport)> {
+    // The world walker does not use a prototype's majorant partition (flights across worlds are
+    // a later task), so prototypes are built without one and keep their structure unchanged.
+    let mut plain = *opts;
+    plain.partition = sm_rt_api::PartitionOptions::default();
+    let opts = &plain;
     let vac = BoundarySpec::default();
     match leaf {
         LeafInput::Mesh(m) => {
@@ -148,6 +126,9 @@ pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(
 }
 
 fn build_flat(input: &BuildInput<'_>, opts: &BuildOptions, extras: &BuildExtras, key: Option<CacheKey>, with_complement: bool) -> Result<(MeshTracker, BuildReport)> {
+    if opts.partition.region_jump && !opts.partition.enabled {
+        return Err(RtError::Build(vec![sm_rt_api::BuildIssue::new("partition.region_jump", "region_jump needs PartitionOptions::enabled".to_owned())]));
+    }
     {
         let (built, cell_sets) = match input {
             BuildInput::Mesh(m) => {
@@ -179,6 +160,14 @@ fn build_flat(input: &BuildInput<'_>, opts: &BuildOptions, extras: &BuildExtras,
         if let Some(m) = &extras.mesh {
             t = t.with_mesh(m.clone());
         }
+        if opts.partition.enabled {
+            if kind == TrackerKind::Facets {
+                return Err(RtError::Unsupported("majorant partition of a facet input"));
+            }
+            let params = crate::delta::Params { leaf_cells: opts.partition.leaf_cells, max_depth: opts.partition.max_depth, region_jump: opts.partition.region_jump };
+            let part = crate::delta::Partition::build(&t.core, t.regions.0.len(), t.complement, opts.tol.linear, params)?;
+            t = t.with_partition(part);
+        }
         Ok((t, report))
     }
 }
@@ -190,7 +179,7 @@ impl TrackerBuilder for MeshTrackerBuilder {
 
     fn cache_key(&self, input: &BuildInput<'_>, opts: &BuildOptions) -> Result<CacheKey> {
         let (kind, topo, boundary) = match input {
-            BuildInput::Mesh(m) => (TrackerKind::MeshWalk, mesh_topology_hash(m), m.boundaries.content_hash()),
+            BuildInput::Mesh(m) => (TrackerKind::MeshWalk, m.topology_content_hash(), m.boundaries.content_hash()),
             BuildInput::Facets(f, b) => (TrackerKind::Facets, f.content_hash(), b.content_hash()),
             BuildInput::Hier(h) if crate::analytic::has_csg(h) => return crate::analytic::AnalyticTrackerBuilder.cache_key(input, opts),
             BuildInput::Hier(h) => {

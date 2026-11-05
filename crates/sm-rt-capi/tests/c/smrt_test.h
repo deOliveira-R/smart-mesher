@@ -10,6 +10,8 @@
 #define STUB_REFLECTIVE_BOX 5  /* empty box, reflective response */
 #define STUB_ALBEDO_BOX 6      /* empty box, albedo 0.5 response */
 #define STUB_LATTICE 7         /* 3x3x3 lattice, pitch 4, domain [0,12]^3, sphere of `radius` per element */
+#define STUB_GRID 8            /* sphere of `radius`, majorant partition [2,2,2]: 9 nodes (root + 8 leaves) */
+#define STUB_PANIC_ON_SEGMENT 97 /* STUB_GRID whose advance_segment() panics */
 #define STUB_PANIC_ON_STEP 99  /* STUB_SPHERE whose step() panics */
 
 int32_t smrt_test_stub(int32_t kind, double radius, SmrtTracker **out);

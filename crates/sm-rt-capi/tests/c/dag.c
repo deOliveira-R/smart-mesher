@@ -61,7 +61,8 @@ int main(void) {
     CHECK(smrt_init_state(c, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1) == SMRT_ERR_BAD_DIRECTION);
     CHECK(smrt_last_error_message(msg, sizeof msg) > 0 && strstr(msg, "direction") != NULL);
     SmrtTracker *none = NULL;
-    CHECK(smrt_open("x.smrt", &none) == SMRT_ERR_UNSUPPORTED && none == NULL);
+    int32_t orc = smrt_open("/nonexistent/x.smrt", &none); /* -5 only in a build without the loader */
+    CHECK((orc == SMRT_ERR_BAD_ARG || orc == SMRT_ERR_UNSUPPORTED) && none == NULL);
 
     /* a stub whose step() panics: the process survives with -101 */
     SmrtTracker *pt = NULL;

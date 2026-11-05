@@ -9,6 +9,9 @@
 //!   (placements, rectangular lattices, global instance-numbered cells).
 //! * [`AnalyticTrackerBuilder`] builds an [`AnalyticTracker`] for a CSG leaf (exact quadric and
 //!   torus surface tracking); [`check_overlaps`] is the sampled overlap and gap check.
+//! * With `BuildOptions::partition.enabled` a [`MeshTracker`] also implements the majorant view
+//!   (kd partition, surface and delta flight segments, safety distance, region-jump `fire`); see
+//!   `DESIGN.md`, "Majorant partition and delta flights".
 //! * [`check_facets`] is the grouped, located watertightness diagnostic.
 //! * [`write_smrt`], [`read_smrt`], [`load_image`] handle the `.smrt` sidecar.
 //! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`.
@@ -20,6 +23,7 @@ mod build;
 mod builder;
 mod bvh;
 mod core;
+mod delta;
 mod facets;
 mod image;
 mod plugin;

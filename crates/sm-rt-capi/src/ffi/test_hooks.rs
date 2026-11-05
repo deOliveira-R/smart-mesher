@@ -7,8 +7,8 @@ use crate::status::*;
 use sm_core::{Aabb, Point3, Vector3};
 use sm_rt_api::stub::{AnalyticWorld, RectLattice, Shape};
 use sm_rt_api::{
-    CellId, Closest, FaceAction, FaceId, Located, RegionId, RegionTable, ResponseKind, Result as RtResult, Scratch, Step,
-    SurfaceTable, TrackState, Tracker, TrackerCaps, TrackerInfo,
+    CellId, Closest, FaceAction, FaceId, FlightSegment, HierarchyView, Level, Located, MajorantTracker, NodeId, RegionId, RegionTable, ResponseKind,
+    Result as RtResult, Scratch, SegmentQuery, Step, SurfaceTable, TrackState, Tracker, TrackerCaps, TrackerInfo,
 };
 use std::sync::Arc;
 
@@ -29,6 +29,11 @@ pub const STUB_REFLECTIVE_BOX: i32 = 5;
 pub const STUB_ALBEDO_BOX: i32 = 6;
 /// Kind: 3x3x3 lattice with pitch 4 (domain `[0,12]^3`), one sphere of radius `radius` per element.
 pub const STUB_LATTICE: i32 = 7;
+/// Kind: one sphere of radius `radius` and a `[2, 2, 2]` majorant partition (9 nodes, the root and
+/// eight leaves), vacuum domain.
+pub const STUB_GRID: i32 = 8;
+/// Kind: the `STUB_GRID` world, but `advance_segment` panics.
+pub const STUB_PANIC_ON_SEGMENT: i32 = 97;
 /// Kind: the `STUB_SPHERE` world, but its region table has no implicit complement flag.
 pub const STUB_NO_COMPLEMENT: i32 = 98;
 /// Kind: the `STUB_SPHERE` world, but `step` panics.
@@ -49,6 +54,7 @@ pub fn world(kind: i32, radius: f64) -> Option<AnalyticWorld> {
     let vac = ResponseKind::Vacuum;
     match kind {
         STUB_SPHERE | STUB_PANIC_ON_STEP | STUB_NO_COMPLEMENT => AnalyticWorld::simple(vec![sphere(radius)], domain(), vac).ok(),
+        STUB_GRID | STUB_PANIC_ON_SEGMENT => AnalyticWorld::simple(vec![sphere(radius)], domain(), vac).and_then(|w| w.with_node_grid([2, 2, 2])).ok(),
         STUB_SHELLS => AnalyticWorld::simple((1..=5).map(|k| sphere(radius * f64::from(k) / 5.0)).collect(), domain(), vac).ok(),
         STUB_MIRROR_BOX => AnalyticWorld::new(vec![], domain(), all(FaceAction::Reflect)).ok(),
         STUB_WHITE_BOX => AnalyticWorld::simple(vec![], domain(), ResponseKind::White).ok(),
@@ -96,6 +102,57 @@ impl Tracker for PanicOnStep {
     }
     fn face_normal(&self, f: FaceId, p: Point3) -> RtResult<Vector3> {
         self.0.face_normal(f, p)
+    }
+}
+
+/// A tracker whose `advance_segment` panics (everything else forwards to the wrapped world).
+pub struct PanicOnSegment(pub AnalyticWorld);
+
+impl Tracker for PanicOnSegment {
+    fn caps(&self) -> TrackerCaps {
+        self.0.caps()
+    }
+    fn info(&self) -> &TrackerInfo {
+        self.0.info()
+    }
+    fn regions(&self) -> &RegionTable {
+        self.0.regions()
+    }
+    fn surfaces(&self) -> &SurfaceTable {
+        self.0.surfaces()
+    }
+    fn cell_region(&self, c: CellId) -> Option<RegionId> {
+        self.0.cell_region(c)
+    }
+    fn cell_volume(&self, c: CellId) -> Option<f64> {
+        self.0.cell_volume(c)
+    }
+    fn locate(&self, p: Point3, dir: Option<Vector3>, hint: Option<CellId>, scratch: &mut Scratch) -> RtResult<Located> {
+        self.0.locate(p, dir, hint, scratch)
+    }
+    fn step(&self, st: &mut TrackState, max_dist: f64, scratch: &mut Scratch) -> RtResult<Step> {
+        self.0.step(st, max_dist, scratch)
+    }
+    fn closest(&self, p: Point3, region: Option<RegionId>, scratch: &mut Scratch) -> RtResult<Option<Closest>> {
+        self.0.closest(p, region, scratch)
+    }
+    fn face_normal(&self, f: FaceId, p: Point3) -> RtResult<Vector3> {
+        self.0.face_normal(f, p)
+    }
+    fn majorant_view(&self) -> Option<&dyn MajorantTracker> {
+        Some(self)
+    }
+}
+
+impl MajorantTracker for PanicOnSegment {
+    fn hierarchy(&self) -> &dyn HierarchyView {
+        self.0.hierarchy()
+    }
+    fn advance_segment(&self, _st: &mut TrackState, _q: &SegmentQuery<'_>, _scratch: &mut Scratch) -> RtResult<FlightSegment> {
+        panic!("deliberate panic in MajorantTracker::advance_segment")
+    }
+    fn locate_in_node(&self, node: NodeId, levels: &[Level], p: Point3, dir: Option<Vector3>, scratch: &mut Scratch) -> RtResult<Located> {
+        self.0.locate_in_node(node, levels, p, dir, scratch)
     }
 }
 
@@ -150,6 +207,7 @@ pub fn tracker_for(kind: i32, radius: f64) -> Option<Arc<dyn Tracker>> {
     let w = world(kind, radius)?;
     Some(match kind {
         STUB_PANIC_ON_STEP => Arc::new(PanicOnStep(w)),
+        STUB_PANIC_ON_SEGMENT => Arc::new(PanicOnSegment(w)),
         STUB_NO_COMPLEMENT => Arc::new(NoComplement::new(w)),
         _ => Arc::new(w),
     })

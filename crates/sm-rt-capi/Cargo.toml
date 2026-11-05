@@ -13,13 +13,12 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 bench = false
 
 [features]
-default = []
+default = ["sm-rt"]
 # Test-only exports (`smrt_test_*`) that build stub trackers for the C tests; pulls the contract stub.
 stubs = ["sm-rt-api/stubs"]
-# Loader for `smrt_open`. OFF in W3a: the orchestrator adds `sm-rt` as an optional dependency and
-# changes this line to `sm-rt = ["dep:sm-rt"]` once sm-rt is on main. Without it `smrt_open`
-# returns `SMRT_ERR_UNSUPPORTED`.
-sm-rt = []
+# Loader for `smrt_open` (`sm_rt::load_image`). On by default; without it `smrt_open` returns
+# `SMRT_ERR_UNSUPPORTED`.
+sm-rt = ["dep:sm-rt"]
 
 [dependencies]
 sm-rt-api = { path = "../sm-rt-api" }
@@ -27,10 +26,13 @@ sm-rt-api = { path = "../sm-rt-api" }
 sm-core = { path = "../sm-core" }
 sm-geom-api = { path = "../sm-geom-api" }
 rayon = "1"
+sm-rt = { path = "../sm-rt", optional = true }
 
 [dev-dependencies]
 sm-rt-api = { path = "../sm-rt-api", features = ["stubs"] }
 sm-testkit = { path = "../sm-testkit" }
+sm-rt = { path = "../sm-rt" }
+sm-mesh-api = { path = "../sm-mesh-api" }
 cc = "1"
 
 [lints]

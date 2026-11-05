@@ -132,6 +132,33 @@ fn header_and_fortran_list_exactly_the_exported_symbols() {
         let f = format!("{name} = {v}");
         assert!(raw_f90.contains(&f), "{f}");
     }
+    // Flight, segment and node constants agree across Rust, C and Fortran.
+    let flight_consts: [(&str, i64); 19] = [
+        ("SMRT_MODE_SURFACE", SMRT_MODE_SURFACE),
+        ("SMRT_MODE_DELTA", SMRT_MODE_DELTA),
+        ("SMRT_POLICY_SURFACE", SMRT_POLICY_SURFACE),
+        ("SMRT_POLICY_DELTA", SMRT_POLICY_DELTA),
+        ("SMRT_SCALE_CELL", SMRT_SCALE_CELL),
+        ("SMRT_SCALE_REGION", SMRT_SCALE_REGION),
+        ("SMRT_FLIGHT_RUNNING", i64::from(SMRT_FLIGHT_RUNNING)),
+        ("SMRT_FLIGHT_LIMIT", i64::from(SMRT_FLIGHT_LIMIT)),
+        ("SMRT_FLIGHT_LEFT_MODEL", i64::from(SMRT_FLIGHT_LEFT_MODEL)),
+        ("SMRT_FLIGHT_BOUNDARY", i64::from(SMRT_FLIGHT_BOUNDARY)),
+        ("SMRT_FLIGHT_LOST", i64::from(SMRT_FLIGHT_LOST)),
+        ("SMRT_FLIGHT_STOPPED", i64::from(SMRT_FLIGHT_STOPPED)),
+        ("SMRT_NODE_INTERNAL", SMRT_NODE_INTERNAL),
+        ("SMRT_NODE_LATTICE", SMRT_NODE_LATTICE),
+        ("SMRT_NODE_ANALYTIC", SMRT_NODE_ANALYTIC),
+        ("SMRT_NODE_MESH", SMRT_NODE_MESH),
+        ("SMRT_NODE_HOMOGENEOUS", SMRT_NODE_HOMOGENEOUS),
+        ("SMRT_ABI_VERSION", i64::from(SMRT_ABI_VERSION)),
+        ("SMRT_LOST_OVERLAP", i64::from(SMRT_LOST_OVERLAP)),
+    ];
+    for (name, v) in flight_consts {
+        assert!(raw_header.contains(&format!("#define {name} {v}")), "{name} = {v} in smrt.h");
+        let f = format!("{name} = {v}");
+        assert!(raw_f90.contains(&f) || raw_f90.contains(&format!("{f}_c_int64_t")), "{f} in smrt.f90");
+    }
     let id_consts: [(&str, i64); 3] = [("SMRT_NONE", SMRT_NONE), ("SMRT_COMPLEMENT", SMRT_COMPLEMENT), ("SMRT_MAX_LEVELS", SMRT_MAX_LEVELS as i64)];
     for (name, v) in id_consts {
         assert!(raw_header.contains(&format!("#define {name} ")), "{name}");
@@ -156,6 +183,9 @@ fn layout_c() -> String {
     lay!(SmrtRegionInfo { original_id, color_id, measure, implicit_complement });
     lay!(SmrtTraceOpts { max_dist, max_steps, stop_at_deck });
     lay!(SmrtRays { x, y, z, u, v, w, start_cell });
+    lay!(SmrtNodeInfo { parent, kind, set, cells, bounds_lo, bounds_hi });
+    lay!(SmrtFlightOpts { max_dist, max_steps, stop_at_deck, policy, scale });
+    lay!(SmrtSegment { mode, node, set, cell, region, resolved, face_in, face_out, t0, t1, sigma_m, step });
     s
 }
 
@@ -218,6 +248,7 @@ fn fortran_module_compiles_and_runs_when_gfortran_exists() {
         let mut extra = vec!["-cpp"];
         extra.extend(refs);
         assert!(link("tests/fortran/chord.f90", "chord", &extra).contains("fortran chord ok"));
+        assert!(link("tests/fortran/flight.f90", "flight", &[]).contains("fortran flight ok"));
     }
 }
 

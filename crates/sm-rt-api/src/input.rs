@@ -242,6 +242,40 @@ impl<'a> MeshInput<'a> {
     pub fn new(mesh: &'a dyn MeshRead, regions: &'a RegionRule, boundaries: &'a BoundarySpec, complement: &'a ComplementPolicy) -> Self {
         Self { mesh, regions, boundaries, complement }
     }
+
+    /// Mesh topology and geometry hashes and the region rule: the part of the mesh hash that the
+    /// tracker cache key and [`LeafInput::content_hash`] share.
+    fn write_mesh_and_rule(&self, h: &mut ContentHasher) {
+        h.write_u64(sm_mesh_api::topology_hash(self.mesh));
+        h.write_u64(sm_mesh_api::geometry_hash(self.mesh));
+        match self.regions {
+            RegionRule::ByVolumeClassification => h.write_u64(1),
+            RegionRule::ByCellSets(names) => {
+                h.write_u64(2);
+                for n in names {
+                    h.write_u64(n.len() as u64);
+                    h.write_bytes(n.as_bytes());
+                }
+            }
+        }
+    }
+
+    /// Hash of the mesh, the region rule and the complement policy: the `topology_hash` of a
+    /// mesh tracker cache key. Bytes are exactly those the `sm-rt` builder always hashed, so no
+    /// existing key moves (the `Region` name is written without a length prefix here; the leaf
+    /// hash keeps its own prefixed encoding).
+    pub fn topology_content_hash(&self) -> ContentHash {
+        let mut h = ContentHasher::new();
+        self.write_mesh_and_rule(&mut h);
+        match self.complement {
+            ComplementPolicy::Outside => h.write_u64(0),
+            ComplementPolicy::Region(n) => {
+                h.write_u64(1);
+                h.write_bytes(n.as_bytes());
+            }
+        }
+        h.finish()
+    }
 }
 
 /// Triangles with the regions on both sides. Positions are `f64` (unlike the render
@@ -517,18 +551,7 @@ impl LeafInput<'_> {
         match self {
             Self::Mesh(m) => {
                 h.write_u64(1);
-                h.write_u64(sm_mesh_api::topology_hash(m.mesh));
-                h.write_u64(sm_mesh_api::geometry_hash(m.mesh));
-                match m.regions {
-                    RegionRule::ByVolumeClassification => h.write_u64(1),
-                    RegionRule::ByCellSets(names) => {
-                        h.write_u64(2);
-                        for n in names {
-                            h.write_u64(n.len() as u64);
-                            h.write_bytes(n.as_bytes());
-                        }
-                    }
-                }
+                m.write_mesh_and_rule(&mut h);
                 match m.complement {
                     ComplementPolicy::Outside => h.write_u64(0),
                     ComplementPolicy::Region(n) => {

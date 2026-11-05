@@ -10,9 +10,9 @@ program smrt_version_check
     print *, 'version mismatch', v
     stop 1
   end if
-  ! smrt_open without a backend reports unsupported (nothing to open in W3a).
-  rc = smrt_open('none.smrt' // c_null_char, trk)
-  if (rc /= SMRT_ERR_UNSUPPORTED) then
+  ! smrt_open of a missing file is a bad argument (unsupported only in a build without the loader).
+  rc = smrt_open('/nonexistent/none.smrt' // c_null_char, trk)
+  if (rc /= SMRT_ERR_BAD_ARG .and. rc /= SMRT_ERR_UNSUPPORTED) then
     print *, 'smrt_open status', rc
     stop 2
   end if
