@@ -771,3 +771,5 @@ fn a_size_finer_than_the_boundary_falls_back_to_what_the_boundary_allows() {
     let m = pave_region(&[counted_rect(4.0, 3.0, [8, 6, 8, 6])], &id_metric, Some(&f), &o).expect("equal counts");
     assert!(m.quads.len() > 48, "{} quads", m.quads.len());
 }
+
+mod w3b;

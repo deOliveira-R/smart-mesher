@@ -56,6 +56,9 @@ pub struct PaveParams {
     pub gradation: Option<f64>,
     /// Smoothing sweeps, at most 10000 (default 30).
     pub smooth_iters: Option<u32>,
+    /// Valence cleanup of every mesh (default false, which keeps results of earlier waves
+    /// bit-identical; meshes made by the corner rule are always cleaned).
+    pub cleanup: Option<bool>,
 }
 
 impl PaveParams {
@@ -78,6 +81,9 @@ impl PaveParams {
                 return Err(format!("pave: smooth_iters {n} exceeds 10000"));
             }
             o.smooth_iters = n;
+        }
+        if let Some(c) = p.cleanup {
+            o.cleanup = c;
         }
         Ok(o)
     }
