@@ -37,6 +37,7 @@ extern "C" {
 #define SMRT_ERR_BIN_COUNT (-10)
 #define SMRT_ERR_INVALID_INPUT (-11)
 #define SMRT_ERR_MAJORANT (-12)
+#define SMRT_ERR_INVALID_MAJORANT (-13)
 #define SMRT_ERR_NULL (-100)
 #define SMRT_ERR_PANIC (-101)
 #define SMRT_ERR_BAD_ARG (-102)

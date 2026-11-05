@@ -61,7 +61,7 @@ Every function returns `int32_t`.
 |---|---|---|
 | 0 | `SMRT_OK` | done |
 | 1 | `SMRT_NO_HIT` | not an error: `smrt_step`/`smrt_fire`/`smrt_peek` reached the limit without an event (`end == SMRT_END_LIMIT`); `smrt_init_state`/`smrt_locate` found the point outside the model; `smrt_closest` has no boundary; `smrt_resolve_boundary` terminated the particle; `smrt_dag_ray_fire` miss; `smrt_dag_next_vol`/`surface_sense` for a region that does not touch the surface |
-| -1 .. -12 | `RtError::code()` | `Build`, `BadDirection`, `NonFinite`, `UnknownId`, `Unsupported`, `CacheStale`, `CacheCorrupt`, `Geom`, `BadAlbedo`, `BinCountMismatch`, `InvalidInput`, `MajorantViolated` = `SMRT_ERR_MAJORANT` (-12; `InvalidMajorant` reports as -11) (frozen by the contract) |
+| -1 .. -13 | `RtError::code()` | `Build`, `BadDirection`, `NonFinite`, `UnknownId`, `Unsupported`, `CacheStale`, `CacheCorrupt`, `Geom`, `BadAlbedo`, `BinCountMismatch`, `InvalidInput`, `MajorantViolated` = `SMRT_ERR_MAJORANT` (-12), `InvalidMajorant` = `SMRT_ERR_INVALID_MAJORANT` (-13) (frozen by the contract) |
 | -100 | `SMRT_ERR_NULL` | a required pointer was null |
 | -101 | `SMRT_ERR_PANIC` | a panic was caught at the boundary (the process survives) |
 | -102 | `SMRT_ERR_BAD_ARG` | bad enum, size, capacity, or an argument outside its domain |
