@@ -1,7 +1,7 @@
 //! Similarity transforms of whole volumes: `model.move`, `model.rotate`, `model.scale`,
 //! `model.reflect`.
 //!
-//! All four share [`apply_similarity`]. The selection (volumes, or bodies standing for their
+//! All four share [`apply_similarity`] (as do `model.move_to` and `model.rotate_about` in `xform2.rs`). The selection (volumes, or bodies standing for their
 //! members) is closed downwards; every cell of the closure moves, so a closure cell that an
 //! unselected volume also uses (a face shared with a neighbour) refuses the op instead of tearing
 //! the model. Inside one topology transaction it
@@ -32,7 +32,7 @@ use sm_topo_api::{
     Carrier, CellFlags, CoedgeKey, CurveCarrier, Dim, FaceUseSpec, Side, SurfaceCarrier, TopologyViewExt,
 };
 
-const OUTPUTS: &[OutputRole] = &[OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "The transformed volumes (they keep their ids).")];
+pub(crate) const OUTPUTS: &[OutputRole] = &[OutputRole::new("volumes", &[EntityKind::TopoVolume], Cardinality::Many, "The transformed volumes (they keep their ids).")];
 
 /// Why a transform could not be applied.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -60,6 +60,12 @@ pub enum XformError {
     /// A shape or pcurve kind this transform cannot carry exactly.
     #[error("{0}")]
     Unsupported(String),
+    /// Not exactly one of the alternative forms was given.
+    #[error("{0}")]
+    NeedExactlyOne(String),
+    /// A degenerate geometric input (coincident vertices, zero normal).
+    #[error("{0}")]
+    Degenerate(String),
     /// A pcurve does not lie on its surface after the transform (an internal consistency check).
     #[error("pcurve of {key:?} is {gap:e} away from its edge after the transform")]
     PcurveDrift {
@@ -73,7 +79,7 @@ pub enum XformError {
 impl From<XformError> for OpError {
     fn from(e: XformError) -> Self {
         match e {
-            XformError::BadParam(_) | XformError::EmptySelection | XformError::Meshed(..) | XformError::Shared { .. } | XformError::SharedShape(_) => OpError::Invalid(e.to_string()),
+            XformError::BadParam(_) | XformError::NeedExactlyOne(_) | XformError::Degenerate(_) | XformError::EmptySelection | XformError::Meshed(..) | XformError::Shared { .. } | XformError::SharedShape(_) => OpError::Invalid(e.to_string()),
             _ => OpError::Failed(e.to_string()),
         }
     }
@@ -81,11 +87,11 @@ impl From<XformError> for OpError {
 
 /// An affine map that is a similarity: `scale` is the uniform factor (1 for rigid maps).
 #[derive(Clone, Copy, Debug)]
-struct Xf {
-    t: Transform,
-    scale: f64,
+pub(crate) struct Xf {
+    pub(crate) t: Transform,
+    pub(crate) scale: f64,
     /// Whether the op is meant to reverse handedness (only `model.reflect`).
-    improper: bool,
+    pub(crate) improper: bool,
 }
 
 impl Xf {
@@ -96,7 +102,7 @@ impl Xf {
     /// Checks that the linear part is the similarity the op claims: `M^T M = scale^2 I` and
     /// the determinant sign matches `improper`. Guards against a degenerate matrix built from
     /// an overflowing intermediate.
-    fn check_similarity(&self) -> Result<(), XformError> {
+    pub(crate) fn check_similarity(&self) -> Result<(), XformError> {
         let (m, s2) = (&self.t.m, self.scale * self.scale);
         let finite = m.iter().flatten().all(|c| c.is_finite()) && self.t.t.x.is_finite() && self.t.t.y.is_finite() && self.t.t.z.is_finite();
         let mut ok = finite && s2.is_finite() && s2 > 0.0;
@@ -114,7 +120,7 @@ impl Xf {
     }
 }
 
-fn finite_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
+pub(crate) fn finite_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
     if v.iter().all(|c| c.is_finite()) { Ok(Vector3::new(v[0], v[1], v[2])) } else { Err(XformError::BadParam(format!("`{name}` must be finite, got {v:?}"))) }
 }
 
@@ -122,7 +128,7 @@ fn finite_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
 /// component is in `[-1, 1]` and its norm in `[1, sqrt 3]`. `sm_core::Transform::rotation` and
 /// `reflection` take `sqrt(dot)` of the raw vector, which overflows for `|v| > ~1e154` and
 /// would build a wrong matrix; it also underflows for tiny vectors that are perfectly valid.
-fn nonzero_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
+pub(crate) fn nonzero_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
     finite_vec(name, v)?;
     let m = v.iter().fold(0.0f64, |a, c| a.max(c.abs()));
     if m == 0.0 {
@@ -132,9 +138,51 @@ fn nonzero_vec(name: &str, v: [f64; 3]) -> Result<Vector3, XformError> {
     if u.norm().is_finite() { Ok(u) } else { Err(XformError::BadParam(format!("`{name}` cannot be normalised, got {v:?}"))) }
 }
 
-fn origin_of(o: Option<[f64; 3]>) -> Result<Point3, XformError> {
+pub(crate) fn origin_of(o: Option<[f64; 3]>) -> Result<Point3, XformError> {
     let v = finite_vec("origin", o.unwrap_or([0.0; 3]))?;
     Ok(Point3::new(v.x, v.y, v.z))
+}
+
+/// The translation by `delta`.
+pub(crate) fn move_xf(delta: [f64; 3]) -> Result<Xf, XformError> {
+    let d = finite_vec("delta", delta)?;
+    Ok(Xf { t: Transform::translation(d), scale: 1.0, improper: false })
+}
+
+/// The right-hand rotation by `angle_deg` about the axis through `origin` with direction `axis`.
+pub(crate) fn rotation_xf(axis: [f64; 3], angle_deg: f64, origin: Option<[f64; 3]>) -> Result<Xf, XformError> {
+    let axis = nonzero_vec("axis", axis)?;
+    if !angle_deg.is_finite() {
+        return Err(XformError::BadParam(format!("`angle_deg` must be finite, got {angle_deg}")));
+    }
+    let o = origin_of(origin)?;
+    let t = Transform::rotation(o, axis, angle_deg.to_radians()).ok_or_else(|| XformError::BadParam("`axis` must be non-zero".into()))?;
+    Ok(Xf { t, scale: 1.0, improper: false })
+}
+
+/// The uniform scale by `f` about `origin`.
+pub(crate) fn scale_xf(f: f64, origin: Option<[f64; 3]>) -> Result<Xf, XformError> {
+    if !(f.is_finite() && f > 0.0) {
+        return Err(XformError::BadParam(format!("`factor` must be finite and positive, got {f}")));
+    }
+    let s2 = f * f;
+    if !(s2.is_finite() && s2 > 0.0) {
+        return Err(XformError::BadParam(format!("`factor` {f:e} is too large or small: its square must be finite and non-zero")));
+    }
+    let o = origin_of(origin)?;
+    let ov = Vector3::new(o.x, o.y, o.z);
+    let t = Transform { m: [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, f]], t: ov * (1.0 - f) };
+    Ok(Xf { t, scale: f, improper: false })
+}
+
+/// The reflection in the plane through `origin` with normal `normal`.
+pub(crate) fn reflect_xf(normal: [f64; 3], origin: Option<[f64; 3]>) -> Result<Xf, XformError> {
+    let n = nonzero_vec("normal", normal)?;
+    let o = origin_of(origin)?;
+    // `Transform::reflection(n, d)` takes the offset in the scale of the unnormalized `n`.
+    let d = n.dot(Vector3::new(o.x, o.y, o.z));
+    let t = Transform::reflection(n, d).ok_or_else(|| XformError::BadParam("`normal` must be non-zero".into()))?;
+    Ok(Xf { t, scale: 1.0, improper: true })
 }
 
 /// `model.move`: translate volumes by `delta`.
@@ -152,8 +200,7 @@ impl TypedOp for Move {
     const NAME: &'static str = "model.move";
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let d = finite_vec("delta", self.delta)?;
-        apply_similarity(ctx, &self.entities, Xf { t: Transform::translation(d), scale: 1.0, improper: false })
+        apply_similarity(ctx, &self.entities, move_xf(self.delta)?)
     }
 }
 
@@ -178,13 +225,7 @@ impl TypedOp for Rotate {
     const NAME: &'static str = "model.rotate";
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let axis = nonzero_vec("axis", self.axis)?;
-        if !self.angle_deg.is_finite() {
-            return Err(XformError::BadParam(format!("`angle_deg` must be finite, got {}", self.angle_deg)).into());
-        }
-        let o = origin_of(self.origin)?;
-        let t = Transform::rotation(o, axis, self.angle_deg.to_radians()).ok_or_else(|| XformError::BadParam("`axis` must be non-zero".into()))?;
-        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0, improper: false })
+        apply_similarity(ctx, &self.entities, rotation_xf(self.axis, self.angle_deg, self.origin)?)
     }
 }
 
@@ -206,18 +247,7 @@ impl TypedOp for Scale {
     const NAME: &'static str = "model.scale";
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let f = self.factor;
-        if !(f.is_finite() && f > 0.0) {
-            return Err(XformError::BadParam(format!("`factor` must be finite and positive, got {f}")).into());
-        }
-        let s2 = f * f;
-        if !(s2.is_finite() && s2 > 0.0) {
-            return Err(XformError::BadParam(format!("`factor` {f:e} is too large or small: its square must be finite and non-zero")).into());
-        }
-        let o = origin_of(self.origin)?;
-        let ov = Vector3::new(o.x, o.y, o.z);
-        let t = Transform { m: [[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, f]], t: ov * (1.0 - f) };
-        apply_similarity(ctx, &self.entities, Xf { t, scale: f, improper: false })
+        apply_similarity(ctx, &self.entities, scale_xf(self.factor, self.origin)?)
     }
 }
 
@@ -241,23 +271,18 @@ impl TypedOp for Reflect {
     const NAME: &'static str = "model.reflect";
     const OUTPUTS: &'static [OutputRole] = OUTPUTS;
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
-        let n = nonzero_vec("normal", self.normal)?;
-        let o = origin_of(self.origin)?;
-        // `Transform::reflection(n, d)` takes the offset in the scale of the unnormalized `n`.
-        let d = n.dot(Vector3::new(o.x, o.y, o.z));
-        let t = Transform::reflection(n, d).ok_or_else(|| XformError::BadParam("`normal` must be non-zero".into()))?;
-        apply_similarity(ctx, &self.entities, Xf { t, scale: 1.0, improper: true })
+        apply_similarity(ctx, &self.entities, reflect_xf(self.normal, self.origin)?)
     }
 }
 
 /// The resolved selection: the volumes (ascending) and the downward closure (ascending, all
 /// ranks, volumes included).
-struct Selection {
-    volumes: Vec<EntityId>,
-    closure: Vec<EntityId>,
+pub(crate) struct Selection {
+    pub(crate) volumes: Vec<EntityId>,
+    pub(crate) closure: Vec<EntityId>,
 }
 
-fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Selection, OpError> {
+pub(crate) fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Selection, OpError> {
     if entities.is_empty() {
         return Err(XformError::EmptySelection.into());
     }
@@ -306,7 +331,7 @@ fn select(ctx: &ApplyCtx<'_>, entities: &[EntityId]) -> Result<Selection, OpErro
     Ok(Selection { volumes, closure: closure.into_iter().collect() })
 }
 
-fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf: Xf) -> Result<(), OpError> {
+pub(crate) fn apply_similarity(ctx: &mut ApplyCtx<'_>, entities: &[EntityId], xf: Xf) -> Result<(), OpError> {
     let tr = xf.t.t;
     if !(tr.x.is_finite() && tr.y.is_finite() && tr.z.is_finite()) {
         return Err(XformError::BadParam("the translation overflows: `origin` is too large for this transform".into()).into());
@@ -348,7 +373,9 @@ fn uv_map(old: &SurfaceDef, xf: &Xf) -> Option<UvMap> {
     match old {
         SurfaceDef::Plane(_) => Some(UvMap { au: s, bu: 0.0, av: s }),
         SurfaceDef::Cylinder(_) => Some(UvMap { au: angle.0, bu: angle.1, av: s }),
-        SurfaceDef::Sphere(_) => Some(UvMap { au: angle.0, bu: angle.1, av: 1.0 }),
+        SurfaceDef::Sphere(_) | SurfaceDef::Torus(_) => Some(UvMap { au: angle.0, bu: angle.1, av: 1.0 }),
+        // `v` is a length along the axis or a generator.
+        SurfaceDef::Cone(_) | SurfaceDef::EllipticCylinder(_) | SurfaceDef::EllipticCone(_) => Some(UvMap { au: angle.0, bu: angle.1, av: s }),
         SurfaceDef::Nurbs(_) => Some(UvMap::IDENTITY),
         _ => None,
     }
@@ -366,7 +393,7 @@ fn map_pcurve(pc: &PCurve, m: &UvMap, c: f64) -> Result<PCurve, XformError> {
     })
 }
 
-fn transform_cells(topo: &mut dyn TopoHost, closure: &[EntityId], xf: &Xf) -> Result<(), OpError> {
+pub(crate) fn transform_cells(topo: &mut dyn TopoHost, closure: &[EntityId], xf: &Xf) -> Result<(), OpError> {
     let inside: BTreeSet<EntityId> = closure.iter().copied().collect();
     let of_kind = |k: EntityKind| closure.iter().copied().filter(move |c| c.kind() == k);
     let vertices: Vec<EntityId> = of_kind(EntityKind::TopoVertex).collect();
