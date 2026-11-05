@@ -496,6 +496,43 @@ builds the mesh tracker with the majorant partition and reports its structure on
 `structure_hash` (the tracker's) and `partition_hash` (arrays, sets and options). Omitted parameters
 equal their defaults in the cache key. `rt.fire` is not provided.
 
+`rt.check_overlaps {bodies?, samples?, rays?, seed?: u64 = 0}` (read-only query, ruling O6) runs the
+sampled overlap and gap check over the *model* seen as CSG cells (next section), not over a mesh. Defaults
+are 10000 points and 500 chords; the cache key is the canonical input with every default filled in, so a call
+without `seed` is a call with `seed: 0` (same cache entry, same bytes), and the output echoes the effective
+seed. Findings carry the sample point and the cells (volume id, color name, placed copy). `ok` means no
+overlap (gaps are reported, they do not fail the check; pins in vacuum are all gap). It runs on the
+flattened world when that has at most `MAX_FLAT_CELLS` cells (so two placed copies that overlap are found)
+and per prototype leaf otherwise (`scope: "prototypes"`).
+
+## Model to CSG bridge (`bridge.rs`, W3b-RT-BRIDGE)
+
+`csg_world(model, topo, opts) -> CsgWorld` turns a model into CSG leaves and a `WorldSpec`.
+* A volume is one cell named by its color (id when uncolored); its region is the intersection of one
+  half-space per face use: the face's surface on the side the volume lies. `Side::Left` means the face
+  normal points out of the volume, the carrier sense says whether the face normal is the surface normal,
+  and `Sign::Negative` is `f <= 0` (every kind's `f` grows outward), so the volume is on the negative side
+  iff (Left, Forward) or (Right, Reversed). A `Carrier::Csg` volume is used as given.
+* Planes, spheres, cylinders, tori, implicit quadrics and elliptic cylinders are taken as they are. A cone
+  face brings the plane through its apex (the kernel's cone is a double cone; the face is one nappe).
+* A prototype is a leaf; clusters and instances are `Union`s; a Cartesian lattice is a rectangular
+  `Lattice` (slot (0,0,0) at the lattice origin, so the world origin is `-pitch/2`; a 2D lattice gets
+  z pitch 1e9, the model has none). Volumes in no prototype are cells of a root leaf.
+* **Unsupported**, typed with the entity: NURBS faces (names the face), a volume outside a cone nappe,
+  elliptic cones, baffles and faces without a surface, a volume that uses one surface on both sides,
+  hex lattices, recolored or clipped slots/members/instances, path overrides. A model with nothing to track
+  is `Invalid`.
+* **Assumption, not checked here:** a volume equals the intersection of its face half-spaces and its faces
+  cover their surfaces (convex pieces, annuli of coaxial quadrics). Anything else shows as overlaps or gaps in
+  `rt.check_overlaps`.
+* **Hosting:** the analytic tracker takes one bare CSG leaf (`WorldTracker` hosts mesh prototypes only, and an
+  existing test pins `Union`/`Lattice` of CSG as `Unsupported` there). `CsgWorld::flatten` expands the
+  world into one leaf, one cell per placed volume copy, surfaces moved by `SurfaceDef::transformed` (the
+  returned `Sense` flips the half-space under improper placements), identical surfaces shared;
+  `CsgWorld::analytic_tracker` does that when needed. Tracking results do not depend on flattening.
+  The complement region option makes the space between cells a region; stepping through it scans all
+  surfaces (no cell-box BVH yet), so use it for small worlds or short paths.
+
 ## Determinism
 
 Queries are pure functions of the tracker and arguments; ties go to the lowest id; no clock, thread

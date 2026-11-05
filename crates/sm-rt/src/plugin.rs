@@ -32,6 +32,7 @@ impl Plugin for RtPlugin {
         registry.register_query::<RtCheck>()?;
         registry.register_query::<RtLocate>()?;
         registry.register_query::<RtPartition>()?;
+        registry.register_query::<crate::RtCheckOverlaps>()?;
         Ok(())
     }
 }

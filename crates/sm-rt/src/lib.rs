@@ -17,11 +17,15 @@
 //! * With `BuildOptions::partition.enabled` a [`WorldTracker`] also implements the majorant view: the
 //!   nodes are the prototype tree (a lattice is one node; elements of one universe share its subtree),
 //!   and delta flights cross element walls inside the segment stream.
-//! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`, `rt.partition`.
+//! * [`csg_world`] bridges a model (volumes, prototypes, lattices, clusters) to CSG leaves and a
+//!   [`sm_rt_api::WorldSpec`] ([`CsgWorld`]); [`CsgWorld::analytic_tracker`] tracks it exactly.
+//! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`, `rt.partition`,
+//!   `rt.check_overlaps`.
 
 #![forbid(unsafe_code)]
 
 mod analytic;
+mod bridge;
 mod build;
 mod builder;
 mod bvh;
@@ -29,6 +33,7 @@ mod core;
 mod delta;
 mod facets;
 mod image;
+mod overlaps_query;
 mod plugin;
 mod tracker;
 mod vec3;
@@ -36,9 +41,11 @@ mod walk;
 mod world;
 
 pub use analytic::{ANALYTIC_BUILDER_VERSION, AnalyticTracker, AnalyticTrackerBuilder, check_overlaps};
+pub use bridge::{BridgeError, CellInfo, CheckScope, CsgWorld, CsgWorldOptions, MAX_FLAT_CELLS, WorldFinding, check_world_overlaps, csg_world};
 pub use builder::{BUILDER_VERSION, BuildExtras, MeshTrackerBuilder, load_image};
 pub use facets::check_facets;
 pub use image::{read_smrt, write_smrt, write_smrt_file};
+pub use overlaps_query::{OverlapCellOut, OverlapFindingOut, RtCheckOverlaps, RtCheckOverlapsOut};
 pub use plugin::RtPlugin;
 pub use tracker::MeshTracker;
 pub use world::WorldTracker;
