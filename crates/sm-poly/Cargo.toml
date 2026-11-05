@@ -10,6 +10,11 @@ license.workspace = true
 [lib]
 bench = false
 
+[features]
+# Test hook (`with_unchecked_merges`) that skips the agglomeration validity check so the
+# post-agglomeration error can be exercised. Off in production builds; enabled for this crate's tests.
+test-hooks = []
+
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-mesh-api = { path = "../sm-mesh-api" }
@@ -24,6 +29,7 @@ serde = { version = "1", features = ["derive"] }
 schemars = "1"
 
 [dev-dependencies]
+sm-poly = { path = ".", features = ["test-hooks"] }
 sm-testkit = { path = "../sm-testkit" }
 sm-quality = { path = "../sm-quality" }
 proptest = { version = "1", default-features = false, features = ["std"] }
