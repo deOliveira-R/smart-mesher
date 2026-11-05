@@ -2,7 +2,7 @@
 //!
 //! Options are `--key value` pairs and bare flags; there is no argument-parser dependency.
 
-use crate::adapter::{Adapter, Workload, stub_adapter};
+use crate::adapter::{Adapter, WorkInput, Workload, stub_adapter};
 use crate::cases::{self, Case, Scale};
 use crate::error::{BenchError, Result};
 use crate::formats::{Facets, Rays};
@@ -223,15 +223,46 @@ fn run(a: &Args) -> Result<i32> {
         if !competitors.is_empty() {
             let dir = std::env::temp_dir().join(format!("smrt-bench-case-{}", std::process::id()));
             data.write(&dir)?;
+            // The facet-twin run of sm-rt is the reference every competitor holding the same
+            // triangles is judged against; the analytic truth gives the geom_error column.
+            let reference = crate::smrt::facets_adapter(&data).and_then(|mut a| {
+                let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: cfg.seed };
+                a.run(Workload::Track, &w).map(|o| o.tracks)
+            });
+            let mut dumps: Vec<(String, Vec<crate::truth::Track>)> = Vec::new();
             for t in competitors {
-                match crate::docker::run_competitor(&crate_dir(), t, &dir, &data.case, &cfg.threads) {
-                    crate::docker::Competitor::Rows(r) => file.rows.extend(r),
+                match crate::docker::run_competitor(&crate_dir(), t, &dir, &data.case, &cfg.threads, cfg.reps, cfg.warmup) {
+                    crate::docker::Competitor::Rows { mut rows, tracks } => {
+                        if let Some(tracks) = tracks {
+                            let (geom, _) = crate::runner::geom_error(&data, &tracks, data.rays.len())?;
+                            let agree = match &reference {
+                                Ok(r) => Some(crate::compare::compare(&tracks, r, data.manifest.diag, data.manifest.chord_tol)?),
+                                Err(_) => None,
+                            };
+                            for r in rows.iter_mut().filter(|r| r.workload == "w-track") {
+                                r.geom_error = geom;
+                                if let Some(a) = &agree {
+                                    r.agreement = crate::result::AgreementSummary::from(a);
+                                    failed += a.failed;
+                                }
+                            }
+                            if let Err(e) = &reference {
+                                file.partial.push(format!("{t}: agreement with the sm-rt facet twin not checked: {e}"));
+                            }
+                            dumps.push((t.to_string(), tracks));
+                        }
+                        file.rows.extend(rows);
+                    }
                     crate::docker::Competitor::Partial(why) => {
                         println!("{}: partial: {t}: {why}", case.name());
                         file.partial.push(format!("{t}: {why}"));
                         code = code.max(2);
                     }
                 }
+            }
+            if let [(na, ta), (nb, tb)] = &dumps[..] {
+                let equal = ta.iter().zip(tb).filter(|(x, y)| x.regions == y.regions).count();
+                file.notes.push(format!("{na} and {nb}: {equal} of {} rays have equal region sequences", ta.len().min(tb.len())));
             }
             // Best effort: the temporary copy of the case files is not needed any more.
             let _ = std::fs::remove_dir_all(&dir);

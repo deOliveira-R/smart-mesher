@@ -332,13 +332,14 @@ impl TrackerAdapter {
             let mut t = Track { regions: Vec::new(), chords: Vec::new() };
             let mut left = false;
             for s in range {
-                out.counters.segments += 1;
                 let r = self.bench(sm_rt_api::RegionId(bundle.region[s]));
-                // W-track ends at the first entry into the complement (the truth scene does the same).
+                // W-track ends at the first entry into the complement (the truth scene and the
+                // DAGMC loop do the same); segments past it are not counted either.
                 left |= r < 0 && !t.regions.is_empty();
                 if left {
                     continue;
                 }
+                out.counters.segments += 1;
                 if t.regions.last() == Some(&r) {
                     if let Some(l) = t.chords.last_mut() {
                         *l += bundle.length[s];

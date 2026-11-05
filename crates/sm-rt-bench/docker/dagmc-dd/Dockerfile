@@ -22,7 +22,7 @@ RUN mamba create -y -n dagmc --override-channels -c https://conda.anaconda.org/c
     && cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -DCMAKE_BUILD_TYPE=Release -DMOAB_DIR=$CONDA_PREFIX \
     && cmake --build build -j && cmake --install build \
     && git clone --branch v${DAGMC_VERSION} https://github.com/svalinn/DAGMC /src/DAGMC \
-    && cmake -S /src/DAGMC -B /src/DAGMC/build -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -DCMAKE_BUILD_TYPE=Release -DDOUBLE_DOWN=ON -DMOAB_DIR=$CONDA_PREFIX \
+    && cmake -S /src/DAGMC -B /src/DAGMC/build -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -DCMAKE_BUILD_TYPE=Release -DDOUBLE_DOWN=ON -DDOUBLE_DOWN_DIR=$CONDA_PREFIX -DBUILD_TESTS=OFF -DMOAB_DIR=$CONDA_PREFIX \
     && cmake --build /src/DAGMC/build -j && cmake --install /src/DAGMC/build ) \
     && mamba clean -afy
 
@@ -35,7 +35,12 @@ RUN set -eux; \
     inc="$CONDA_PREFIX/include"; \
     cxx="$(ls $CONDA_PREFIX/bin/*-g++ | head -n1)"; \
     "$cxx" -O3 -std=c++17 -pthread -DSMRT_BENCH_DOUBLE_DOWN -I"$inc" -I"$inc/dagmc" -I"$inc/eigen3" /bench/dagmc_driver.cpp -o /bench/dagmc_driver \
-        -L"$CONDA_PREFIX/lib" -ldagmc -lMOAB -ldouble-down -lembree4 -Wl,-rpath,"$CONDA_PREFIX/lib"; \
-    /bench/dagmc_driver --version | grep -i 'double-down'
+        -L"$CONDA_PREFIX/lib" -ldagmc -lMOAB -Wl,-rpath,"$CONDA_PREFIX/lib"; \
+    "$cxx" -O2 -std=c++17 -I"$inc" -I"$inc/eigen3" /bench/facets_to_h5m.cpp -o /bench/facets_to_h5m \
+        -L"$CONDA_PREFIX/lib" -lMOAB -Wl,-rpath,"$CONDA_PREFIX/lib"; \
+    test -x "$CONDA_PREFIX/bin/check_watertight" || test -x "$CONDA_PREFIX/tools/check_watertight"; \
+    /bench/dagmc_driver --version | grep -i 'double-down'; \
+    ldd /bench/dagmc_driver | grep -Eq "libdd\\."
 
+ENV SMRT_TRACKER=dagmc-dd SMRT_MODE=embree SMRT_PRECISION=mixed
 ENTRYPOINT ["/bin/bash", "/bench/run_case.sh"]

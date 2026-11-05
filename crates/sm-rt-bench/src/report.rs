@@ -109,6 +109,13 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
                 let _ = writeln!(out, "- {p}");
             }
         }
+        let notes: Vec<&String> = cfiles.iter().flat_map(|f| f.notes.iter()).collect();
+        if !notes.is_empty() {
+            let _ = writeln!(out, "\nObservations:\n");
+            for n in notes {
+                let _ = writeln!(out, "- {n}");
+            }
+        }
         let missing: Vec<&str> = KNOWN_TRACKERS.iter().copied().filter(|t| !seen.contains(t)).collect();
         if !missing.is_empty() {
             let _ = writeln!(out, "\nNot measured in this report for {case}: {}.", missing.join(", "));

@@ -348,7 +348,10 @@ fn ball_rays(n: usize) -> Rays {
     let mut rays = Rays::default();
     while rays.len() < n {
         let p = [(2.0 * rng.unit() - 1.0) * R_SPHERE, (2.0 * rng.unit() - 1.0) * R_SPHERE, (2.0 * rng.unit() - 1.0) * R_SPHERE];
-        if p.iter().map(|x| x * x).sum::<f64>() < R_SPHERE * R_SPHERE {
+        // Starts within 1e-5 of the surface are rejected, like the start band of the case
+        // generator: inside the locate tolerance a start may legitimately be reported outside.
+        let r = p.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if r < R_SPHERE - 1e-5 {
             rays.push(p, rng.direction(), 0);
         }
     }
@@ -529,10 +532,10 @@ fn the_report_labels_macos_rows_smoke_lists_partial_rows_and_claims_no_ratio() {
 #[test]
 fn run_competitor_without_an_image_is_partial_with_the_command() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let bad = sm_rt_bench::docker::run_competitor(root, "no-such-tracker", root, "P1", &[1]);
+    let bad = sm_rt_bench::docker::run_competitor(root, "no-such-tracker", root, "P1", &[1], 1, 0);
     assert!(matches!(bad, sm_rt_bench::docker::Competitor::Partial(_)));
-    match sm_rt_bench::docker::run_competitor(root, "xdg", root, "P1", &[1]) {
+    match sm_rt_bench::docker::run_competitor(root, "xdg", root, "P1", &[1], 1, 0) {
         sm_rt_bench::docker::Competitor::Partial(why) => assert!(why.contains('`') || why.contains("pins.env"), "{why}"),
-        sm_rt_bench::docker::Competitor::Rows(r) => assert!(!r.is_empty()),
+        sm_rt_bench::docker::Competitor::Rows { rows, .. } => assert!(!rows.is_empty()),
     }
 }

@@ -223,6 +223,9 @@ pub struct ResultFile {
     /// Rows that could not be produced, each with the failing command or reason (never hashed).
     #[serde(default)]
     pub partial: Vec<String>,
+    /// Observations that are not rows, e.g. how two competitors compared (never hashed).
+    #[serde(default)]
+    pub notes: Vec<String>,
     /// SHA-256 over the non-timing fields of the rows.
     pub result_hash: String,
 }
