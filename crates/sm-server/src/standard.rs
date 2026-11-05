@@ -2,14 +2,14 @@
 
 use std::cell::RefCell;
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock, Weak};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use sm_cadio::{CadioPlugin, DirInputStore, InputRef, InputStore, MemoryInputStore, StepInputs};
 use sm_engine::WorkspaceBuilder;
 use sm_layer_api::CoreLayers;
 use sm_mesher::{MeshPlugin, MesherConfig};
 use sm_model::ModelPlugin;
-use sm_op_api::{Plugin, Registry, Services};
+use sm_op_api::{Plugin, Registry, RegistryError, Services};
 use sm_scheme_api::{SchemeDim, SchemeRegistry};
 use sm_sizing::{AnglePicker, IiaSolver};
 use sm_tess::TessPlugin;
@@ -61,7 +61,8 @@ pub fn distribution(schemes: SchemeRegistry) -> WorkspaceBuilder {
 /// [`MemoryInputStore`]. [`Server::open`](crate::Server::open), [`Server::create`](crate::Server::create)
 /// and `session.open` bind it to `<project>/inputs/` before the project replays, so the project
 /// directory alone carries everything a replay needs. Binding is done by this crate for the
-/// builder it just built on the same thread; a caller that opens a project with
+/// builder being opened (each builder owns its store; nothing is shared between sessions or
+/// threads); a caller that opens a project with
 /// `standard().open(dir)` directly gets the in-memory store (a STEP import then replays only if
 /// the blob was staged in this process).
 #[derive(Debug, Default)]
@@ -112,33 +113,40 @@ impl InputStore for ProjectInputs {
 pub struct InputsHandle(pub Arc<ProjectInputs>);
 
 thread_local! {
-    /// The stores of the builders assembled on this thread and not yet consumed by a server, each
-    /// awaiting its project. Weak, so a dropped builder leaves nothing behind.
-    static PENDING: RefCell<Vec<Weak<ProjectInputs>>> = const { RefCell::new(Vec::new()) };
+    /// The project directory of the `open` call running on this thread, if any. It is set only
+    /// for the duration of that synchronous call, so it never outlives it and never leaks to
+    /// another builder, server or thread.
+    static OPENING: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
 }
 
-/// Forget every store awaiting a project (called before building a builder to open).
-pub(crate) fn clear_pending_inputs() {
-    PENDING.with(|p| p.borrow_mut().clear());
-}
-
-/// Bind every live pending store of this thread to `project` for a replay and return them. The
-/// builder being opened is not identifiable from outside the engine, so its store is among them;
-/// the caller must [`release_pending_inputs`] afterwards so the others stay unbound.
-pub(crate) fn bind_pending_inputs(project: &Path) -> Vec<Arc<ProjectInputs>> {
-    let stores: Vec<_> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut())).iter().filter_map(Weak::upgrade).collect();
-    for s in &stores {
-        s.bind(project);
-    }
-    stores
-}
-
-/// Unbind the stores returned by [`bind_pending_inputs`], except `keep` (the opened workspace's own).
-pub(crate) fn release_pending_inputs(bound: &[Arc<ProjectInputs>], keep: Option<&Arc<ProjectInputs>>) {
-    for s in bound {
-        if !keep.is_some_and(|k| Arc::ptr_eq(k, s)) {
-            s.unbind();
+/// Run `f` (a builder's `open`) with `project` as the directory the builder's own input store
+/// binds to while the engine installs its plugins, i.e. before the project replays.
+pub(crate) fn with_opening<T>(project: &Path, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<std::path::PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OPENING.with(|o| *o.borrow_mut() = self.0.take());
         }
+    }
+    let prev = OPENING.with(|o| o.borrow_mut().replace(project.to_owned()));
+    let _restore = Restore(prev);
+    f()
+}
+
+/// Registers nothing; when installed inside [`with_opening`] it binds its own store to the
+/// project being opened. This is how a builder finds its store without any global registry.
+struct InputsPlugin(Arc<ProjectInputs>);
+
+impl Plugin for InputsPlugin {
+    fn id(&self) -> &str {
+        "sm-server.inputs"
+    }
+
+    fn register(&self, _registry: &mut Registry) -> Result<(), RegistryError> {
+        if let Some(dir) = OPENING.with(|o| o.borrow().clone()) {
+            self.0.bind(&dir);
+        }
+        Ok(())
     }
 }
 
@@ -177,16 +185,11 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
             sm_sizing::auto_size(view, targets, factor).map_err(|e| e.to_string())
         }));
     let inputs = Arc::new(ProjectInputs::new());
-    PENDING.with(|p| {
-        let mut p = p.borrow_mut();
-        p.retain(|w| w.strong_count() > 0);
-        p.push(Arc::downgrade(&inputs));
-    });
     let names = op_names(&core);
     let services = Services::new()
         .with_versioned("mesher", 1, mesher)
         .with(StepInputs(inputs.clone()))
-        .with(InputsHandle(inputs))
+        .with(InputsHandle(inputs.clone()))
         .with(names);
     WorkspaceBuilder::new()
         .plugin(core)
@@ -200,6 +203,7 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
         .plugin(sm_poly::PolyPlugin)
         .plugin(sm_diag::DiagPlugin)
         .plugin(sm_rt::RtPlugin)
+        .plugin(InputsPlugin(inputs))
         .services(services)
 }
 

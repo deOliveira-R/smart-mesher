@@ -196,7 +196,7 @@ impl<'w> SessionHost<'w> {
                 format_name(format)
             )));
         }
-        let foam_only = p.split_small_determinant == Some(false) || !p.empty_patches.is_empty() || !p.wedge_patches.is_empty();
+        let foam_only = p.split_small_determinant.is_some() || !p.empty_patches.is_empty() || !p.wedge_patches.is_empty();
         if foam_only && format != ExportFormat::Openfoam {
             return Err(SessionError::bad_request(format!(
                 "`split_small_determinant`, `empty_patches` and `wedge_patches` only apply to `openfoam`, not `{}`",
@@ -485,13 +485,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     })
 }
 
-/// Write the files of a multi-file export below `root` (each through a unique temp name and a
-/// rename; parent directories are created) and describe them. `files` are `(relative name, bytes)`.
-/// `sha256` of the result is the SHA-256 of the manifest lines `name\tsha256hex\n`, sorted by name.
 fn notes_of(lines: &[String]) -> Vec<ExportNote> {
     lines.iter().map(|l| ExportNote::parse(l)).collect()
 }
 
+/// Write the files of a multi-file export below `root` (each through a unique temp name and a
+/// rename; parent directories are created) and describe them. `files` are `(relative name, bytes)`.
+/// `sha256` of the result is the SHA-256 of the manifest lines `name\tsha256hex\n`, sorted by name.
 fn write_dir(root: &Path, format: ExportFormat, files: &[(&str, &[u8])]) -> Result<ExportResult, SessionError> {
     let mut sorted: Vec<&(&str, &[u8])> = files.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
