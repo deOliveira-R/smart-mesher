@@ -1,0 +1,6 @@
+let b = model.create_brick(x: 10.0, y: 10.0, z: 10.0)
+mesh.size(targets: b.volume, size: 1.0)
+mesh.scheme(targets: b.volume, scheme: "map")
+let m = mesh.run(targets: b.volume)
+fem.block_add(block: 1, volumes: b.volume)
+fem.block_element_type(block: 1, element_type: "HEX8")
