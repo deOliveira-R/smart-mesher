@@ -14,7 +14,7 @@ use sm_protocol::{
 };
 
 use crate::error::{ServerError, SessionError};
-use crate::host::{ExportParams, SessionHost, project_inputs, resolve_path, stage_bytes, status_result, to_json};
+use crate::host::{ExportParams, SessionHost, project_inputs, resolve_path, stage_bytes, status_result, to_json, write_query_file};
 use crate::standard::with_opening;
 
 /// Rebuilds the distribution (plugins and services) for `session.open`.
@@ -185,10 +185,12 @@ impl Server {
             Request::Query { name, input, at } => {
                 // An omitted input is `null` on the wire; queries take an object.
                 let input = if input.is_null() { Value::Object(Default::default()) } else { input };
-                match at {
-                    None => Ok(self.ws.query(&name, &input)?),
-                    Some(rev) => Ok(self.ws.query_at(&rev, &name, &input)?),
-                }
+                let out = match at {
+                    None => self.ws.query(&name, &input)?,
+                    Some(rev) => self.ws.query_at(&rev, &name, &input)?,
+                };
+                write_query_file(self.ws.root(), &name, &input, &out)?;
+                Ok(out)
             }
             Request::Log { from, limit } => to_json(&self.ws.log(from, limit)?),
             Request::Status => to_json(&status_result(&self.ws)),

@@ -18,12 +18,14 @@ mod check;
 mod parse;
 mod split;
 mod tar;
+mod warp;
 mod write;
 
 pub use build::build_polymesh;
-pub use check::{FoamIssue, check_polymesh};
+pub use check::{FoamIssue, check_polymesh, concave_cell_count};
 pub use parse::{parse_polymesh, read_polymesh_dir};
 pub use split::{CELL_MAP_FILE, SMALL_DETERMINANT, cell_determinants, geometric_directions};
+pub use warp::{WARP_TOLERANCE, WarpReport, face_warpage};
 pub use write::{FoamFile, write_polymesh};
 
 use crate::report::LossReport;
@@ -85,6 +87,9 @@ pub enum FoamError {
     /// Two patches (or two zones of one kind) have the same name after sanitizing.
     #[error("two entries are called '{0}' after sanitizing")]
     DuplicateName(String),
+    /// `warp_tolerance` is NaN, infinite or negative.
+    #[error("warp_tolerance {0} must be finite and >= 0")]
+    BadWarpTolerance(f64),
     /// A syntax error in a polyMesh file.
     #[error("{file}:{line}: {detail}")]
     Parse {
@@ -230,6 +235,15 @@ pub struct FoamOptions {
     /// Split cells whose checkMesh determinant is below [`SMALL_DETERMINANT`] into face-pyramid
     /// sub-cells (ruling INT-8). On by default; meshes without such cells are unaffected.
     pub split_small_determinant: bool,
+    /// Split warped faces (planarity deviation above [`FoamOptions::warp_tolerance`]) into
+    /// planar triangles about the face centre. Off by default (FOAM_FORMAT.md section 12: the
+    /// pieces raise the concave-cell count); meshes whose faces are planar are
+    /// unaffected and export byte for byte as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub split_warped_faces: bool,
+    /// Relative planarity deviation ([`face_warpage`]) above which a face is split.
+    #[serde(skip_serializing_if = "is_default_warp_tolerance")]
+    pub warp_tolerance: f64,
     /// Patch type per face / side set name, applied to the patch built from that set (`Sets` and
     /// `Explicit` sources). The way to ask for `empty` or `wedge` patches without listing every
     /// patch. A name that is no set, or whose set is not a patch of this build, is an error.
@@ -247,6 +261,8 @@ impl Default for FoamOptions {
             face_zones: Vec::new(),
             decks: Vec::new(),
             split_small_determinant: true,
+            split_warped_faces: false,
+            warp_tolerance: WARP_TOLERANCE,
             patch_types: std::collections::BTreeMap::new(),
         }
     }
@@ -297,11 +313,26 @@ impl FoamOptions {
         self.patch_types.insert(set.into(), t);
         self
     }
+    /// Enable or disable the warped-face split.
+    pub fn split_warped_faces(mut self, on: bool) -> Self {
+        self.split_warped_faces = on;
+        self
+    }
+    /// Set the planarity tolerance of the warped-face split. A value that is not finite or is
+    /// negative makes the export fail with [`FoamError::BadWarpTolerance`].
+    pub fn warp_tolerance(mut self, tol: f64) -> Self {
+        self.warp_tolerance = tol;
+        self
+    }
     /// Attach one deck record.
     pub fn deck(mut self, d: DeckRecord) -> Self {
         self.decks.push(d);
         self
     }
+}
+
+fn is_default_warp_tolerance(t: &f64) -> bool {
+    *t == WARP_TOLERANCE
 }
 
 /// Where a patch came from.
@@ -474,6 +505,10 @@ pub struct FoamReport {
     pub patches: Vec<PatchSummary>,
     /// What the format could not carry.
     pub loss: LossReport,
+    /// The warped-face split with INT-9 concave counts before and after; absent when no face
+    /// was split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<WarpReport>,
 }
 
 /// The result of [`build_polymesh`].

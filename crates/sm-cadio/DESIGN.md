@@ -271,3 +271,41 @@ unsupported carrier (`step.unsupported`, naming the cell).
 Work counters are per call: `read_step_metered` returns `(Result, Work)`, with the meter threaded
 through decode, the assembly walk and the closed-face split. There is no process-wide state, so
 tests need no serialization. `Work::entities_parsed` bounds parse work in refusal tests.
+
+## Names and colors: `attributes` (W3b-CAD-ATTR)
+
+`model.import_step {attributes: true}` (default off; absent or `false` the op, its record JSON,
+its state and its hash are exactly as before, and `IMPL_VERSION` stays 2). After the cells are
+committed, one model-only transaction (`model_txn`) adds groups and volume colors; the module is
+`attrs.rs`, which re-parses the bytes (the reader's `BrepModel` stays attribute-free).
+
+- **Groups first (Q14).** One group per distinct name, holding the volume of each solid of that
+  name (the body for a sheet). Name = the solid's `name`, else the `PRODUCT` name reached
+  `SHAPE_DEFINITION_REPRESENTATION -> PRODUCT_DEFINITION_SHAPE -> PRODUCT_DEFINITION ->
+  PRODUCT_DEFINITION_FORMATION -> PRODUCT`. Instances of one placed solid share its name, so they
+  share a group.
+- **Colors only from solids (Q14).** A `STYLED_ITEM` / `OVER_RIDING_STYLED_ITEM` whose item is the
+  solid, followed through the usual presentation chain to a `COLOUR_RGB` or
+  `DRAUGHTING_PRE_DEFINED_COLOUR`. Each distinct color name is one `Domain::Volume` color (label =
+  next free; name = the file's color name, else `rgb_rrggbb`); a volume color of that name that
+  already exists is reused. RGB values are not stored (colors are labels); they appear in the
+  name when the file gives none. Face-only colors are ignored and counted.
+- **Report.** `step.attr_groups`, `step.attr_colors`, `step.attr_ignored` (face-only and other
+  styled items) as info; `step.attr_skipped` as a warning for a taken group name, a color name
+  in another domain, a name with two RGB values, a colored sheet. A skipped item never fails the
+  import. The `step.attributes` info (counts of entities not imported) stays, with a suffix.
+- **Limits.** Styles on `MAPPED_ITEM`s, per-face colors, layers, PMI and transparency are not
+  imported. Everything is deterministic: names are sorted in a `BTreeMap`, the lowest styled-item
+  id wins.
+
+## Dev-only dependency cycle: `sm-cadio -> sm-server (dev) -> sm-cadio`
+
+`sm-server` (through `standard()`) registers `CadioPlugin`, so it depends on `sm-cadio`. The
+integration tests of `model.export` and `attributes` need the real `standard()` distribution (the
+registry with every plugin, real `model.measure`, the JSON surface, the diagnostics policy), so
+`sm-cadio` lists `sm-server` (and `sm-engine`) under `[dev-dependencies]`. Cargo allows this:
+dev-dependencies are not part of the library's dependency graph, so the library build has no
+cycle. The cost is that the test build compiles `sm-cadio` twice (the crate under test and the
+copy `sm-server` links), so the types of the two copies are distinct. The tests therefore go
+through the JSON surface (`apply_json`, `query`) and never pass `sm_cadio` types into `sm_server`
+APIs. The alternative, a test-only plugin registry in `sm-testkit`, would duplicate `standard()`.

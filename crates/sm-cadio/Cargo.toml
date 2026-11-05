@@ -16,6 +16,7 @@ sm-geom-api = { path = "../sm-geom-api", features = ["serde", "schemars"] }
 sm-topo-api = { path = "../sm-topo-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
+sm-model-api = { path = "../sm-model-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
@@ -28,9 +29,9 @@ smallvec = "1"
 [dev-dependencies]
 # Integration tests of `model.export` run on the real `standard()` distribution (a dev-only cycle).
 sm-server = { path = "../sm-server" }
+sm-engine = { path = "../sm-engine" }
 sm-topo = { path = "../sm-topo" }
 sm-testkit = { path = "../sm-testkit" }
-sm-model-api = { path = "../sm-model-api" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 criterion = { version = "0.5", default-features = false }
 

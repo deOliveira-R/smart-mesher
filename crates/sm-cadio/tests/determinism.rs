@@ -56,7 +56,7 @@ fn the_import_state_hash_is_bit_identical_across_runs_and_thread_counts() {
                 in_pool(threads, || {
                     let mut s = session(factory, Arc::clone(&st));
                     // The validators are read-only and deterministic; `check` only costs time here.
-                    let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: Some(false) };
+                    let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: Some(false), attributes: None };
                     run(&mut s, &op).expect("import");
                     (s.state().hash(), s.state().layer_hash("model"))
                 })
@@ -73,7 +73,7 @@ fn cold_replay_from_the_root_does_not_diverge() {
     let r = st.put(sm_testkit::w3a::STEP);
     for factory in [cell_complex as Factory, topo_store] {
         let mut s = sm_op_api::Session::new(engine(factory, Arc::clone(&st), sm_op_api::DerivedCache::disabled()));
-        let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None };
+        let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None };
         let (h, _) = run(&mut s, &op).expect("import");
         let q = sm_op_api::QuietControl::new();
         let cold = s.state_at_from_root(h, &q.control()).expect("no Diverged");

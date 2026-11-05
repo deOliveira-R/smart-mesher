@@ -18,6 +18,7 @@ mod locate;
 mod notes;
 mod quality;
 mod suggest;
+mod unflag;
 mod validate;
 
 use std::collections::BTreeSet;
@@ -34,6 +35,7 @@ pub use quality::{
     Cluster, HistogramOut, MAX_CLUSTERS, MAX_WORST, MeshQuality, MetricReport, ProfileName, QualityOptions, QualityReport, SummaryOut, ThresholdOut, ValiditySummary,
     Verdict, WorstEntry, quality_report,
 };
+pub use unflag::MeshUnflagCells;
 pub use suggest::{MIN_ENRICHMENT, MIN_FRACTION, OP_INTERVALS, OP_SCHEME, OP_SIZE, OP_SMOOTH, SPREAD_ENRICHMENT, Suggestion};
 pub use validate::{
     Finding, GeometryStatus, MAX_LIMIT, MeshValidate, OwnerCount, Severity, ValidateOptions, ValidateReport, Violation, build_report, validate_mesh,
@@ -52,7 +54,7 @@ impl OpNames {
     }
 }
 
-/// The `diag` plugin: queries `mesh.validate` and `mesh.quality`, op `mesh.flag_cells`.
+/// The `diag` plugin: queries `mesh.validate` and `mesh.quality`, ops `mesh.flag_cells` and `mesh.unflag_cells`.
 ///
 /// Registers no layer; install `sm_layer_api::CoreLayers` first.
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,6 +69,7 @@ impl Plugin for DiagPlugin {
         registry.register_query::<MeshValidate>()?;
         registry.register_query::<MeshQuality>()?;
         registry.register::<MeshFlagCells>()?;
+        registry.register::<MeshUnflagCells>()?;
         Ok(())
     }
 }

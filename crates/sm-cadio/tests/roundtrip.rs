@@ -178,7 +178,7 @@ fn bodies_can_be_selected_and_unsupported_geometry_is_named() {
 fn a_session_state_exports_like_its_topology() {
     let st = Arc::new(MemoryInputStore::new());
     let mut s = session(topo_store, Arc::clone(&st));
-    let op = ImportStep { source: Source::inline(&data("brick_with_void.stp")), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None };
+    let op = ImportStep { source: Source::inline(&data("brick_with_void.stp")), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None };
     run(&mut s, &op).expect("import");
     let mut a = Vec::new();
     export_step(s.state(), None, &WriteOptions::default(), &mut a).expect("export");
@@ -187,7 +187,7 @@ fn a_session_state_exports_like_its_topology() {
     assert_eq!(a, b);
     // The exported file imports into a fresh session with the same model hash.
     let mut s2 = session(cell_complex, st);
-    let op2 = ImportStep { source: Source::inline(&a), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None };
+    let op2 = ImportStep { source: Source::inline(&a), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None };
     run(&mut s2, &op2).expect("re-import");
     assert_eq!(model(&s2).topo().canonical_hash(), model(&s).topo().canonical_hash());
 }

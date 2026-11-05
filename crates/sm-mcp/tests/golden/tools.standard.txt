@@ -5,6 +5,8 @@ fem__block_element_type
 fem__block_remove
 fem__sideset_add
 help
+mesh__auto
+mesh__auto_strategies
 mesh__default_size
 mesh__delete
 mesh__flag_cells
@@ -19,6 +21,7 @@ mesh__size
 mesh__smooth
 mesh__smooth_preview
 mesh__to_poly
+mesh__unflag_cells
 mesh__validate
 model__copy
 model__create_brick

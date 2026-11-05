@@ -404,20 +404,11 @@ fn openfoam_empty_patches_and_the_split_flag() {
     assert_eq!(e.kind, "bad-request", "{e}");
 }
 
-/// The W3b formats parse, infer from extensions and are answered with a typed error until wired.
+/// `script.record` is answered with a typed error until SERVER-HOST wires it. (The W3b export
+/// formats are wired: see `export_wire.rs`.)
 #[test]
-fn new_formats_and_script_record_are_typed_unsupported() {
-    let dir = TempDir::new("p5b");
+fn script_record_is_typed_unsupported() {
     let mut s = Server::new(std_builder()).expect("server");
-    meshed_brick(&mut s);
-    for (name, f) in [("a.h5m", ExportFormat::Dagmc), ("a.msh", ExportFormat::Gmsh), ("a.smrt", ExportFormat::Smrt)] {
-        let p = dir.path().join(name).to_string_lossy().into_owned();
-        for format in [None, Some(f)] {
-            let e = export(&mut s, Some(&p), format, false).expect_err(name);
-            assert_eq!(e.kind, "unsupported-format", "{name}: {e}");
-        }
-        assert!(!dir.path().join(name).exists());
-    }
     let e = s.call(Request::ScriptRecord { forks: Default::default(), check: Default::default(), verify: false, raw: false }).expect_err("record");
     assert_eq!(e.kind, "unsupported", "{e}");
 }
