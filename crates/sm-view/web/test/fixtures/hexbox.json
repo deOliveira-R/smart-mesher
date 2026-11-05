@@ -1,0 +1,1421 @@
+{
+  "format": "smview-fixture/1",
+  "name": "hexbox",
+  "replies": {
+    "mesh.quality": [
+      {
+        "match": {},
+        "reply": {
+          "cells": 16,
+          "dim": 3,
+          "mesh": "Mesh#1",
+          "metrics": [
+            {
+              "entity": "cell",
+              "metric": "scaled_jacobian",
+              "worst": [
+                {
+                  "entity": {
+                    "id": "MeshCell#15",
+                    "index": 14
+                  },
+                  "grade": "warn",
+                  "location": [
+                    2.546691176470589,
+                    1.54093137254902,
+                    1.535171568627451
+                  ],
+                  "near": [],
+                  "owner": "TopoVolume#1",
+                  "value": 0.6526544819170276
+                }
+              ]
+            }
+          ],
+          "profile": "generic",
+          "schema_version": 1,
+          "suggestions": [
+            {
+              "args": {
+                "iterations": 10,
+                "mesh": "Mesh#1"
+              },
+              "available": true,
+              "id": "smooth:Mesh#1:scaled_jacobian",
+              "kind": "smooth",
+              "metric": "scaled_jacobian",
+              "op": "mesh.smooth",
+              "params": {},
+              "reason": "bad cells cluster around one displaced node; smoothing relaxes it",
+              "severity": "warning",
+              "targets": [
+                "Mesh#1"
+              ]
+            }
+          ],
+          "verdict": "warn"
+        }
+      }
+    ],
+    "mesh.validate": [
+      {
+        "match": {},
+        "reply": {
+          "geometry_checked": true,
+          "mesh": "Mesh#1",
+          "schema_version": 1,
+          "total": 1,
+          "truncated": false,
+          "valid": true,
+          "violations": [
+            {
+              "code": "geom.face_nonplanar",
+              "detail": "a face of the cell next to the displaced node is not planar",
+              "entity": {
+                "id": "MeshCell#15",
+                "index": 14
+              },
+              "location": [
+                2.546691176470589,
+                1.54093137254902,
+                1.535171568627451
+              ],
+              "near": [],
+              "owner": "TopoVolume#1",
+              "severity": "warning"
+            }
+          ]
+        }
+      }
+    ],
+    "script.run": [
+      {
+        "match": {},
+        "reply": {
+          "diagnostics": [],
+          "output": null,
+          "state": "dd3d57eefa00b912086c13cbc61d349e28e0511ee83be8b83507408a6357dd81"
+        }
+      }
+    ],
+    "session.hash": [
+      {
+        "match": {
+          "at": {
+            "node": "7d61586ade3f3adae4c99da825fdb0acf91ea64519f88d0473ce605e62dcde0f"
+          }
+        },
+        "reply": {
+          "layers": {},
+          "state": "e6142fd7d6660bd4e7e60b67348f388abfee092b778cf1b9d656e97ab8183bb4"
+        }
+      },
+      {
+        "match": {},
+        "reply": {
+          "layers": {},
+          "state": "dd3d57eefa00b912086c13cbc61d349e28e0511ee83be8b83507408a6357dd81"
+        }
+      }
+    ],
+    "timeline.log": [
+      {
+        "match": {},
+        "reply": [
+          {
+            "author": "test",
+            "depth": 2,
+            "message": "",
+            "node": "a88db6d889b3e52c9ae5256c02a8f3e45d2a0b20c97d124a2b6bb5ebb7c9909f",
+            "op": "test.insert_mesh",
+            "parent": "7d61586ade3f3adae4c99da825fdb0acf91ea64519f88d0473ce605e62dcde0f",
+            "time": ""
+          },
+          {
+            "author": "test",
+            "depth": 1,
+            "message": "",
+            "node": "7d61586ade3f3adae4c99da825fdb0acf91ea64519f88d0473ce605e62dcde0f",
+            "op": "test.create_brick",
+            "parent": null,
+            "time": ""
+          }
+        ]
+      }
+    ],
+    "timeline.status": [
+      {
+        "match": {},
+        "reply": {
+          "branches": {
+            "main": "a88db6d889b3e52c9ae5256c02a8f3e45d2a0b20c97d124a2b6bb5ebb7c9909f"
+          },
+          "depth": 2,
+          "dirty": false,
+          "head": {
+            "ref": "main"
+          },
+          "nodes": 2,
+          "position": "a88db6d889b3e52c9ae5256c02a8f3e45d2a0b20c97d124a2b6bb5ebb7c9909f",
+          "project": null,
+          "redo": 0,
+          "state": "dd3d57eefa00b912086c13cbc61d349e28e0511ee83be8b83507408a6357dd81"
+        }
+      }
+    ],
+    "view.mesh_scalar": [
+      {
+        "match": {
+          "metric": "scaled_jacobian"
+        },
+        "reply": {
+          "bad_cells": 4,
+          "count": 16,
+          "max": 1.0,
+          "mean": 0.9296099416620648,
+          "mesh": "Mesh#1",
+          "metric": "scaled_jacobian",
+          "min": 0.6526544819170276,
+          "schema_version": 1,
+          "undefined_cells": 0,
+          "values": "AACAP5soWD+ognI/AACAPwAAgD8/32k/FuhRPwAAgD8AAIA/z9JhPzCjZz8AAIA/AACAP7exaD9dFCc/AACAPw==",
+          "worst": [
+            {
+              "cell": {
+                "id": "MeshCell#15",
+                "index": 14
+              },
+              "location": [
+                2.546691176470589,
+                1.54093137254902,
+                1.535171568627451
+              ],
+              "value": 0.6526544819170276
+            },
+            {
+              "cell": {
+                "id": "MeshCell#7",
+                "index": 6
+              },
+              "location": [
+                2.538657407407407,
+                1.5319444444444439,
+                0.4881944444444443
+              ],
+              "value": 0.8199476234186709
+            },
+            {
+              "cell": {
+                "id": "MeshCell#2",
+                "index": 1
+              },
+              "location": [
+                1.5524456521739132,
+                0.5422101449275363,
+                0.5319746376811595
+              ],
+              "value": 0.8443696194114069
+            },
+            {
+              "cell": {
+                "id": "MeshCell#10",
+                "index": 9
+              },
+              "location": [
+                1.5441287878787877,
+                0.534469696969697,
+                1.4945075757575754
+              ],
+              "value": 0.8821229563969747
+            },
+            {
+              "cell": {
+                "id": "MeshCell#11",
+                "index": 10
+              },
+              "location": [
+                2.531469298245614,
+                0.5063596491228071,
+                1.5163377192982455
+              ],
+              "value": 0.9048338095913208
+            },
+            {
+              "cell": {
+                "id": "MeshCell#14",
+                "index": 13
+              },
+              "location": [
+                1.5249999999999995,
+                1.516666666666666,
+                1.5083333333333329
+              ],
+              "value": 0.9089617104926324
+            },
+            {
+              "cell": {
+                "id": "MeshCell#6",
+                "index": 5
+              },
+              "location": [
+                1.5350198412698413,
+                1.5101190476190474,
+                0.5169642857142857
+              ],
+              "value": 0.9135627073092001
+            },
+            {
+              "cell": {
+                "id": "MeshCell#3",
+                "index": 2
+              },
+              "location": [
+                2.5250000000000004,
+                0.5166666666666668,
+                0.5083333333333335
+              ],
+              "value": 0.947306158055805
+            },
+            {
+              "cell": {
+                "id": "MeshCell#1",
+                "index": 0
+              },
+              "location": [
+                0.49999999999999983,
+                0.5,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#4",
+                "index": 3
+              },
+              "location": [
+                3.5,
+                0.5,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#5",
+                "index": 4
+              },
+              "location": [
+                0.5,
+                1.4999999999999998,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#8",
+                "index": 7
+              },
+              "location": [
+                3.5,
+                1.4999999999999998,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#9",
+                "index": 8
+              },
+              "location": [
+                0.5,
+                0.5,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#12",
+                "index": 11
+              },
+              "location": [
+                3.5,
+                0.5,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#13",
+                "index": 12
+              },
+              "location": [
+                0.5,
+                1.4999999999999998,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#16",
+                "index": 15
+              },
+              "location": [
+                3.5,
+                1.4999999999999998,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            }
+          ],
+          "worst_end": "low"
+        }
+      },
+      {
+        "match": {
+          "metric": "edge_ratio"
+        },
+        "reply": {
+          "bad_cells": 0,
+          "count": 16,
+          "max": 1.6887426837300732,
+          "mean": 1.2537523050589354,
+          "mesh": "Mesh#1",
+          "metric": "edge_ratio",
+          "min": 1.0,
+          "schema_version": 1,
+          "undefined_cells": 0,
+          "values": "AACAP/bXqD+4KNg/AACAPwAAgD/VRsQ/gqLJPwAAgD8AAIA/HSauP7go2D8AAIA/AACAP9VGxD+aL64/AACAPw==",
+          "worst": [
+            {
+              "cell": {
+                "id": "MeshCell#1",
+                "index": 0
+              },
+              "location": [
+                0.49999999999999983,
+                0.5,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#4",
+                "index": 3
+              },
+              "location": [
+                3.5,
+                0.5,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#5",
+                "index": 4
+              },
+              "location": [
+                0.5,
+                1.4999999999999998,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#8",
+                "index": 7
+              },
+              "location": [
+                3.5,
+                1.4999999999999998,
+                0.5
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#9",
+                "index": 8
+              },
+              "location": [
+                0.5,
+                0.5,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#12",
+                "index": 11
+              },
+              "location": [
+                3.5,
+                0.5,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#13",
+                "index": 12
+              },
+              "location": [
+                0.5,
+                1.4999999999999998,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#16",
+                "index": 15
+              },
+              "location": [
+                3.5,
+                1.4999999999999998,
+                1.4999999999999998
+              ],
+              "value": 1.0
+            },
+            {
+              "cell": {
+                "id": "MeshCell#2",
+                "index": 1
+              },
+              "location": [
+                1.5524456521739132,
+                0.5422101449275363,
+                0.5319746376811595
+              ],
+              "value": 1.3190905958272918
+            },
+            {
+              "cell": {
+                "id": "MeshCell#10",
+                "index": 9
+              },
+              "location": [
+                1.5441287878787877,
+                0.534469696969697,
+                1.4945075757575754
+              ],
+              "value": 1.36053806627644
+            },
+            {
+              "cell": {
+                "id": "MeshCell#15",
+                "index": 14
+              },
+              "location": [
+                2.546691176470589,
+                1.54093137254902,
+                1.535171568627451
+              ],
+              "value": 1.3608276348795432
+            },
+            {
+              "cell": {
+                "id": "MeshCell#6",
+                "index": 5
+              },
+              "location": [
+                1.5350198412698413,
+                1.5101190476190474,
+                0.5169642857142857
+              ],
+              "value": 1.5334116705410035
+            },
+            {
+              "cell": {
+                "id": "MeshCell#14",
+                "index": 13
+              },
+              "location": [
+                1.5249999999999995,
+                1.516666666666666,
+                1.5083333333333329
+              ],
+              "value": 1.5334116705410035
+            },
+            {
+              "cell": {
+                "id": "MeshCell#7",
+                "index": 6
+              },
+              "location": [
+                2.538657407407407,
+                1.5319444444444439,
+                0.4881944444444443
+              ],
+              "value": 1.5752718754175359
+            },
+            {
+              "cell": {
+                "id": "MeshCell#3",
+                "index": 2
+              },
+              "location": [
+                2.5250000000000004,
+                0.5166666666666668,
+                0.5083333333333335
+              ],
+              "value": 1.6887426837300732
+            },
+            {
+              "cell": {
+                "id": "MeshCell#11",
+                "index": 10
+              },
+              "location": [
+                2.531469298245614,
+                0.5063596491228071,
+                1.5163377192982455
+              ],
+              "value": 1.6887426837300732
+            }
+          ],
+          "worst_end": "low"
+        }
+      }
+    ],
+    "view.mesh_skin": [
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "clipped_cells": 16,
+          "indices": "",
+          "kept_cells": 0,
+          "mesh": "Mesh#1",
+          "node_vertices": 0,
+          "outline_indices": "",
+          "owners": [],
+          "positions": "",
+          "schema_version": 1,
+          "tri_cell": "",
+          "tri_count": 0,
+          "tri_owner": "",
+          "vertex_count": 0
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "origin": [
+              1.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              1.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 12,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAAAAAADAAAABAAAAAMAAAAFAAAABAAAAAYAAAABAAAABAAAAAEAAAAAAAAABAAAAAUAAAAHAAAABAAAAAcAAAAGAAAAAQAAAAgAAAAJAAAAAQAAAAkAAAACAAAABgAAAAoAAAAIAAAABgAAAAgAAAABAAAABgAAAAcAAAALAAAABgAAAAsAAAAKAAAACgAAAAsAAAAJAAAACgAAAAkAAAAIAAAAAwAAAAIAAAAMAAAAAwAAAAwAAAANAAAABQAAAAMAAAANAAAABQAAAA0AAAAOAAAABQAAAA4AAAAPAAAABQAAAA8AAAAHAAAADgAAAA0AAAAMAAAADgAAAAwAAAAPAAAAAgAAAAkAAAAQAAAAAgAAABAAAAAMAAAABwAAAA8AAAARAAAABwAAABEAAAALAAAACwAAABEAAAAQAAAACwAAABAAAAAJAAAADwAAAAwAAAAQAAAADwAAABAAAAARAAAA",
+          "kept_cells": 4,
+          "mesh": "Mesh#1",
+          "node_vertices": 18,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABgAAAAEAAAAIAAAAAgAAAAMAAAACAAAACQAAAAIAAAAMAAAAAwAAAAUAAAADAAAADQAAAAQAAAAFAAAABAAAAAYAAAAFAAAABwAAAAUAAAAOAAAABgAAAAcAAAAGAAAACgAAAAcAAAALAAAABwAAAA8AAAAIAAAACQAAAAgAAAAKAAAACQAAAAsAAAAJAAAAEAAAAAoAAAALAAAACwAAABEAAAAMAAAADQAAAAwAAAAPAAAADAAAABAAAAANAAAADgAAAA4AAAAPAAAADwAAABEAAAAQAAAAEQAAAA==",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAAEAAAAAAAACAPwAAAEAAAIA/AAAAAAAAAEAAAAAAAAAAAAAAAEAAAIA/AACAPwAAgD8AAABAAACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAAEAAAABAAAAAAAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAA=",
+          "tri_count": 32,
+          "tri_owner": "BgAAAAYAAAACAAAAAgAAAAQAAAAEAAAAAQAAAAEAAAAGAAAABgAAAAQAAAAEAAAAAQAAAAEAAAADAAAAAwAAAAYAAAAGAAAAAgAAAAIAAAABAAAAAQAAAAUAAAAFAAAABgAAAAYAAAABAAAAAQAAAAMAAAADAAAABQAAAAUAAAA=",
+          "vertex_count": 18
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "origin": [
+              2.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              2.3,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 8,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAAAAAAAAQAAAAFAAAAAAAAAAUAAAABAAAAAAAAAAMAAAAGAAAAAAAAAAYAAAAEAAAABwAAAAgAAAAJAAAABwAAAAkAAAAKAAAAAQAAAAcAAAAKAAAAAQAAAAoAAAACAAAAAQAAAAUAAAAIAAAAAQAAAAgAAAAHAAAABAAAAAsAAAAMAAAABAAAAAwAAAAFAAAABAAAAAYAAAANAAAABAAAAA0AAAALAAAACwAAAA0AAAAOAAAACwAAAA4AAAAMAAAACAAAAA8AAAAQAAAACAAAABAAAAAJAAAABQAAAAwAAAAPAAAABQAAAA8AAAAIAAAADAAAAA4AAAAQAAAADAAAABAAAAAPAAAAAwAAAAIAAAARAAAAAwAAABEAAAASAAAAAwAAABIAAAATAAAAAwAAABMAAAAGAAAAEgAAABEAAAAUAAAAEgAAABQAAAATAAAACgAAAAkAAAAVAAAACgAAABUAAAAWAAAAAgAAAAoAAAAWAAAAAgAAABYAAAARAAAAEQAAABYAAAAVAAAAEQAAABUAAAAUAAAABgAAABMAAAAXAAAABgAAABcAAAANAAAADQAAABcAAAAYAAAADQAAABgAAAAOAAAAEwAAABQAAAAYAAAAEwAAABgAAAAXAAAACQAAABAAAAAZAAAACQAAABkAAAAVAAAADgAAABgAAAAZAAAADgAAABkAAAAQAAAAFAAAABUAAAAZAAAAFAAAABkAAAAYAAAA",
+          "kept_cells": 8,
+          "mesh": "Mesh#1",
+          "node_vertices": 26,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAHAAAAAgAAAAMAAAACAAAACgAAAAIAAAARAAAAAwAAAAYAAAADAAAAEgAAAAQAAAAFAAAABAAAAAYAAAAEAAAACwAAAAUAAAAIAAAABQAAAAwAAAAGAAAADQAAAAYAAAATAAAABwAAAAgAAAAHAAAACgAAAAgAAAAJAAAACAAAAA8AAAAJAAAACgAAAAkAAAAQAAAACQAAABUAAAAKAAAAFgAAAAsAAAAMAAAACwAAAA0AAAAMAAAADgAAAAwAAAAPAAAADQAAAA4AAAANAAAAFwAAAA4AAAAQAAAADgAAABgAAAAPAAAAEAAAABAAAAAZAAAAEQAAABIAAAARAAAAFAAAABEAAAAWAAAAEgAAABMAAAATAAAAFAAAABMAAAAXAAAAFAAAABUAAAAUAAAAGAAAABUAAAAWAAAAFQAAABkAAAAXAAAAGAAAABgAAAAZAAAA",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAQAAAAAAAAAAAAAAAQAAAgD8AAAAAMzMTQJqZmT/NzIw/AAAAQAAAAAAAAIA/AAAAAAAAAEAAAAAAAACAPwAAAEAAAAAAAAAAAAAAAEAAAIA/AACAPwAAAEAAAIA/AAAAQAAAAEAAAAAAAAAAQAAAAEAAAIA/AACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAgD8AAABAAAAAQAAAgD8AAABAAAAAQAAAAAAAAABAAAAAAAAAAEAAAABAAACAPwAAAEAAAABAAAAAQAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABQAAAAUAAAAFAAAABQAAAAUAAAAFAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACQAAAAkAAAAJAAAACQAAAAkAAAAJAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADQAAAA0AAAANAAAADQAAAA0AAAANAAAA",
+          "tri_count": 48,
+          "tri_owner": "AgAAAAIAAAAEAAAABAAAAAEAAAABAAAABgAAAAYAAAACAAAAAgAAAAQAAAAEAAAABAAAAAQAAAABAAAAAQAAAAMAAAADAAAABgAAAAYAAAAEAAAABAAAAAMAAAADAAAAAgAAAAIAAAABAAAAAQAAAAUAAAAFAAAABgAAAAYAAAACAAAAAgAAAAUAAAAFAAAAAQAAAAEAAAADAAAAAwAAAAUAAAAFAAAABgAAAAYAAAADAAAAAwAAAAUAAAAFAAAA",
+          "vertex_count": 26
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "origin": [
+              3.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              3.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 4,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAAAAAAAAQAAAAFAAAAAAAAAAUAAAABAAAAAAAAAAMAAAAGAAAAAAAAAAYAAAAEAAAAAQAAAAcAAAAIAAAAAQAAAAgAAAACAAAAAQAAAAUAAAAJAAAAAQAAAAkAAAAHAAAACgAAAAsAAAAMAAAACgAAAAwAAAANAAAABwAAAAoAAAANAAAABwAAAA0AAAAIAAAABwAAAAkAAAALAAAABwAAAAsAAAAKAAAABAAAAA4AAAAPAAAABAAAAA8AAAAFAAAABAAAAAYAAAAQAAAABAAAABAAAAAOAAAADgAAABAAAAARAAAADgAAABEAAAAPAAAABQAAAA8AAAASAAAABQAAABIAAAAJAAAADwAAABEAAAATAAAADwAAABMAAAASAAAACwAAABQAAAAVAAAACwAAABUAAAAMAAAACQAAABIAAAAUAAAACQAAABQAAAALAAAAEgAAABMAAAAVAAAAEgAAABUAAAAUAAAAAwAAAAIAAAAWAAAAAwAAABYAAAAXAAAAAwAAABcAAAAYAAAAAwAAABgAAAAGAAAAFwAAABYAAAAZAAAAFwAAABkAAAAYAAAAAgAAAAgAAAAaAAAAAgAAABoAAAAWAAAAFgAAABoAAAAbAAAAFgAAABsAAAAZAAAADQAAAAwAAAAcAAAADQAAABwAAAAdAAAACAAAAA0AAAAdAAAACAAAAB0AAAAaAAAAGgAAAB0AAAAcAAAAGgAAABwAAAAbAAAABgAAABgAAAAeAAAABgAAAB4AAAAQAAAAEAAAAB4AAAAfAAAAEAAAAB8AAAARAAAAGAAAABkAAAAfAAAAGAAAAB8AAAAeAAAAEQAAAB8AAAAgAAAAEQAAACAAAAATAAAAGQAAABsAAAAgAAAAGQAAACAAAAAfAAAADAAAABUAAAAhAAAADAAAACEAAAAcAAAAEwAAACAAAAAhAAAAEwAAACEAAAAVAAAAGwAAABwAAAAhAAAAGwAAACEAAAAgAAAA",
+          "kept_cells": 12,
+          "mesh": "Mesh#1",
+          "node_vertices": 34,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAHAAAAAgAAAAMAAAACAAAACAAAAAIAAAAWAAAAAwAAAAYAAAADAAAAFwAAAAQAAAAFAAAABAAAAAYAAAAEAAAADgAAAAUAAAAJAAAABQAAAA8AAAAGAAAAEAAAAAYAAAAYAAAABwAAAAgAAAAHAAAACQAAAAcAAAAKAAAACAAAAA0AAAAIAAAAGgAAAAkAAAALAAAACQAAABIAAAAKAAAACwAAAAoAAAANAAAACwAAAAwAAAALAAAAFAAAAAwAAAANAAAADAAAABUAAAAMAAAAHAAAAA0AAAAdAAAADgAAAA8AAAAOAAAAEAAAAA8AAAARAAAADwAAABIAAAAQAAAAEQAAABAAAAAeAAAAEQAAABMAAAARAAAAHwAAABIAAAATAAAAEgAAABQAAAATAAAAFQAAABMAAAAgAAAAFAAAABUAAAAVAAAAIQAAABYAAAAXAAAAFgAAABkAAAAWAAAAGgAAABcAAAAYAAAAGAAAABkAAAAYAAAAHgAAABkAAAAbAAAAGQAAAB8AAAAaAAAAGwAAABoAAAAdAAAAGwAAABwAAAAbAAAAIAAAABwAAAAdAAAAHAAAACEAAAAeAAAAHwAAAB8AAAAgAAAAIAAAACEAAAA=",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAQAAAAAAAAAAAAAAAQAAAAAAAAIA/AAAAQAAAgD8AAAAAAABAQAAAAAAAAAAAAABAQAAAgD8AAAAAAABAQAAAgD8AAIA/AABAQAAAAAAAAIA/AAAAAAAAAEAAAAAAAACAPwAAAEAAAAAAAAAAAAAAAEAAAIA/AACAPwAAAEAAAIA/AAAAQAAAAEAAAAAAAAAAQAAAAEAAAIA/AABAQAAAAEAAAAAAAABAQAAAAEAAAIA/AACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAgD8AAABAAAAAQAAAAAAAAABAAAAAQAAAgD8AAABAAABAQAAAgD8AAABAAABAQAAAAAAAAABAAAAAAAAAAEAAAABAAACAPwAAAEAAAABAAAAAQAAAAEAAAABAAABAQAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAQAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAUAAAAFAAAABQAAAAUAAAAGAAAABgAAAAYAAAAGAAAABgAAAAYAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAJAAAACQAAAAkAAAAJAAAACgAAAAoAAAAKAAAACgAAAAoAAAAKAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADQAAAA0AAAANAAAADQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA==",
+          "tri_count": 64,
+          "tri_owner": "AgAAAAIAAAAEAAAABAAAAAEAAAABAAAAAgAAAAIAAAAEAAAABAAAAAYAAAAGAAAAAgAAAAIAAAAEAAAABAAAAAQAAAAEAAAAAQAAAAEAAAADAAAAAwAAAAQAAAAEAAAAAwAAAAMAAAAGAAAABgAAAAQAAAAEAAAAAwAAAAMAAAACAAAAAgAAAAEAAAABAAAABQAAAAUAAAACAAAAAgAAAAUAAAAFAAAABgAAAAYAAAACAAAAAgAAAAUAAAAFAAAAAQAAAAEAAAADAAAAAwAAAAUAAAAFAAAAAwAAAAMAAAAFAAAABQAAAAYAAAAGAAAAAwAAAAMAAAAFAAAABQAAAA==",
+          "vertex_count": 34
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "clipped_cells": 16,
+          "indices": "",
+          "kept_cells": 0,
+          "mesh": "Mesh#1",
+          "node_vertices": 0,
+          "outline_indices": "",
+          "owners": [],
+          "positions": "",
+          "schema_version": 1,
+          "tri_cell": "",
+          "tri_count": 0,
+          "tri_owner": "",
+          "vertex_count": 0
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "origin": [
+              0.0,
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              1.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 12,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAACAAAABAAAAAIAAAABAAAABgAAAAAAAAADAAAABgAAAAMAAAAHAAAABgAAAAQAAAABAAAABgAAAAEAAAAAAAAABgAAAAcAAAAFAAAABgAAAAUAAAAEAAAACAAAAAkAAAAKAAAACAAAAAoAAAALAAAACgAAAAkAAAAMAAAACgAAAAwAAAANAAAACwAAAA4AAAAPAAAACwAAAA8AAAAIAAAACwAAAAoAAAANAAAACwAAAA0AAAAOAAAADgAAAA0AAAAMAAAADgAAAAwAAAAPAAAAAwAAAAIAAAAQAAAAAwAAABAAAAARAAAABQAAABIAAAAQAAAABQAAABAAAAACAAAABwAAAAMAAAARAAAABwAAABEAAAATAAAABwAAABMAAAASAAAABwAAABIAAAAFAAAAEwAAABEAAAAQAAAAEwAAABAAAAASAAAAFAAAABUAAAAJAAAAFAAAAAkAAAAIAAAACQAAABUAAAAWAAAACQAAABYAAAAMAAAACAAAAA8AAAAXAAAACAAAABcAAAAUAAAADwAAAAwAAAAWAAAADwAAABYAAAAXAAAAFAAAABcAAAAWAAAAFAAAABYAAAAVAAAA",
+          "kept_cells": 4,
+          "mesh": "Mesh#1",
+          "node_vertices": 24,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAGAAAAAQAAAAIAAAABAAAABAAAAAIAAAADAAAAAgAAAAUAAAACAAAAEAAAAAMAAAAHAAAAAwAAABEAAAAEAAAABQAAAAQAAAAGAAAABQAAAAcAAAAFAAAAEgAAAAYAAAAHAAAABwAAABMAAAAIAAAACQAAAAgAAAALAAAACAAAAA8AAAAIAAAAFAAAAAkAAAAKAAAACQAAAAwAAAAJAAAAFQAAAAoAAAALAAAACgAAAA0AAAALAAAADgAAAAwAAAANAAAADAAAAA8AAAAMAAAAFgAAAA0AAAAOAAAADgAAAA8AAAAPAAAAFwAAABAAAAARAAAAEAAAABIAAAARAAAAEwAAABIAAAATAAAAFAAAABUAAAAUAAAAFwAAABUAAAAWAAAAFgAAABcAAAA=",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AABAQAAAAAAAAIA/AABAQAAAgD8AAIA/AABAQAAAgD8AAAAAAABAQAAAAAAAAAAAAACAQAAAgD8AAIA/AACAQAAAgD8AAAAAAACAQAAAAAAAAAAAAACAQAAAAAAAAIA/AACAPwAAgD8AAABAAACAPwAAAAAAAABAAAAAAAAAgD8AAABAAAAAAAAAAAAAAABAAABAQAAAAAAAAABAAABAQAAAgD8AAABAAACAQAAAgD8AAABAAACAQAAAAAAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACwAAAAsAAAALAAAACwAAAAsAAAALAAAACwAAAAsAAAALAAAACwAAAA==",
+          "tri_count": 40,
+          "tri_owner": "BgAAAAYAAAAGAAAABgAAAAMAAAADAAAABAAAAAQAAAABAAAAAQAAAAYAAAAGAAAABgAAAAYAAAADAAAAAwAAAAQAAAAEAAAAAgAAAAIAAAAGAAAABgAAAAYAAAAGAAAAAwAAAAMAAAABAAAAAQAAAAUAAAAFAAAABgAAAAYAAAAGAAAABgAAAAMAAAADAAAAAgAAAAIAAAAFAAAABQAAAA==",
+          "vertex_count": 24
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "origin": [
+              0.0,
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              1.2,
+              2.0
+            ]
+          ],
+          "clipped_cells": 8,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAAGAAAABAAAAAYAAAAHAAAABAAAAAAAAAADAAAABAAAAAMAAAAFAAAABAAAAAcAAAABAAAABAAAAAEAAAAAAAAAAwAAAAIAAAAIAAAAAwAAAAgAAAAJAAAABQAAAAoAAAALAAAABQAAAAsAAAAGAAAABQAAAAMAAAAJAAAABQAAAAkAAAAKAAAACQAAAAgAAAAMAAAACQAAAAwAAAANAAAACgAAAA4AAAAPAAAACgAAAA8AAAALAAAACgAAAAkAAAANAAAACgAAAA0AAAAOAAAADQAAAAwAAAAQAAAADQAAABAAAAARAAAADgAAABIAAAATAAAADgAAABMAAAAPAAAADgAAAA0AAAARAAAADgAAABEAAAASAAAAEgAAABEAAAAQAAAAEgAAABAAAAATAAAAAQAAABQAAAAVAAAAAQAAABUAAAACAAAABwAAAAYAAAAWAAAABwAAABYAAAAXAAAABwAAABcAAAAUAAAABwAAABQAAAABAAAAFwAAABYAAAAVAAAAFwAAABUAAAAUAAAAAgAAABUAAAAYAAAAAgAAABgAAAAIAAAABgAAAAsAAAAZAAAABgAAABkAAAAWAAAAFgAAABkAAAAYAAAAFgAAABgAAAAVAAAACAAAABgAAAAaAAAACAAAABoAAAAMAAAACwAAAA8AAAAbAAAACwAAABsAAAAZAAAAGQAAABsAAAAaAAAAGQAAABoAAAAYAAAADAAAABoAAAAcAAAADAAAABwAAAAQAAAADwAAABMAAAAdAAAADwAAAB0AAAAbAAAAEwAAABAAAAAcAAAAEwAAABwAAAAdAAAAGwAAAB0AAAAcAAAAGwAAABwAAAAaAAAA",
+          "kept_cells": 8,
+          "mesh": "Mesh#1",
+          "node_vertices": 30,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABwAAAAEAAAAUAAAAAgAAAAMAAAACAAAACAAAAAIAAAAVAAAAAwAAAAUAAAADAAAACQAAAAQAAAAFAAAABAAAAAcAAAAFAAAABgAAAAUAAAAKAAAABgAAAAcAAAAGAAAACwAAAAYAAAAWAAAABwAAABcAAAAIAAAACQAAAAgAAAAMAAAACAAAABgAAAAJAAAACgAAAAkAAAANAAAACgAAAAsAAAAKAAAADgAAAAsAAAAPAAAACwAAABkAAAAMAAAADQAAAAwAAAAQAAAADAAAABoAAAANAAAADgAAAA0AAAARAAAADgAAAA8AAAAOAAAAEgAAAA8AAAATAAAADwAAABsAAAAQAAAAEQAAABAAAAATAAAAEAAAABwAAAARAAAAEgAAABIAAAATAAAAEwAAAB0AAAAUAAAAFQAAABQAAAAXAAAAFQAAABYAAAAVAAAAGAAAABYAAAAXAAAAFgAAABkAAAAYAAAAGQAAABgAAAAaAAAAGQAAABsAAAAaAAAAGwAAABoAAAAcAAAAGwAAAB0AAAAcAAAAHQAAAA==",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAgD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/MzMTQJqZmT/NzIw/AAAAQAAAgD8AAAAAAAAAQAAAAAAAAAAAAAAAQAAAAAAAAIA/AABAQAAAgD8AAIA/AABAQAAAgD8AAAAAAABAQAAAAAAAAAAAAABAQAAAAAAAAIA/AACAQAAAgD8AAIA/AACAQAAAgD8AAAAAAACAQAAAAAAAAAAAAACAQAAAAAAAAIA/AAAAAAAAgD8AAABAAACAPwAAgD8AAABAAACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAQAAAgD8AAABAAAAAQAAAAAAAAABAAABAQAAAgD8AAABAAABAQAAAAAAAAABAAACAQAAAgD8AAABAAACAQAAAAAAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACQAAAAkAAAAJAAAACQAAAAkAAAAJAAAACgAAAAoAAAAKAAAACgAAAAoAAAAKAAAACwAAAAsAAAALAAAACwAAAAsAAAALAAAACwAAAAsAAAA=",
+          "tri_count": 56,
+          "tri_owner": "BgAAAAYAAAADAAAAAwAAAAQAAAAEAAAAAQAAAAEAAAAGAAAABgAAAAMAAAADAAAABAAAAAQAAAAGAAAABgAAAAMAAAADAAAABAAAAAQAAAAGAAAABgAAAAMAAAADAAAABAAAAAQAAAACAAAAAgAAAAYAAAAGAAAAAwAAAAMAAAABAAAAAQAAAAUAAAAFAAAABgAAAAYAAAADAAAAAwAAAAUAAAAFAAAABgAAAAYAAAADAAAAAwAAAAUAAAAFAAAABgAAAAYAAAADAAAAAwAAAAIAAAACAAAABQAAAAUAAAA=",
+          "vertex_count": 30
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "origin": [
+              0.0,
+              1.5,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 4,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAAAAAAAAQAAAAFAAAAAAAAAAUAAAABAAAAAAAAAAMAAAAGAAAAAAAAAAYAAAAEAAAABQAAAAcAAAAIAAAABQAAAAgAAAAJAAAAAQAAAAoAAAALAAAAAQAAAAsAAAACAAAAAQAAAAUAAAAJAAAAAQAAAAkAAAAKAAAACQAAAAgAAAAMAAAACQAAAAwAAAANAAAACgAAAA4AAAAPAAAACgAAAA8AAAALAAAACgAAAAkAAAANAAAACgAAAA0AAAAOAAAADgAAABAAAAARAAAADgAAABEAAAAPAAAADgAAAA0AAAASAAAADgAAABIAAAAQAAAAEAAAABIAAAATAAAAEAAAABMAAAARAAAABQAAABQAAAAVAAAABQAAABUAAAAHAAAABAAAABYAAAAUAAAABAAAABQAAAAFAAAABAAAAAYAAAAXAAAABAAAABcAAAAWAAAAFgAAABcAAAAVAAAAFgAAABUAAAAUAAAADAAAABgAAAAZAAAADAAAABkAAAANAAAADQAAABkAAAAaAAAADQAAABoAAAASAAAAEgAAABoAAAAbAAAAEgAAABsAAAATAAAAGQAAABgAAAAbAAAAGQAAABsAAAAaAAAAAwAAAAIAAAAcAAAAAwAAABwAAAAdAAAAAwAAAB0AAAAeAAAAAwAAAB4AAAAGAAAAHQAAABwAAAAfAAAAHQAAAB8AAAAeAAAABwAAAB8AAAAgAAAABwAAACAAAAAIAAAAAgAAAAsAAAAhAAAAAgAAACEAAAAcAAAAHAAAACEAAAAgAAAAHAAAACAAAAAfAAAACAAAACAAAAAiAAAACAAAACIAAAAMAAAACwAAAA8AAAAjAAAACwAAACMAAAAhAAAAIQAAACMAAAAiAAAAIQAAACIAAAAgAAAADwAAABEAAAAkAAAADwAAACQAAAAjAAAAEQAAABMAAAAlAAAAEQAAACUAAAAkAAAAIwAAACQAAAAlAAAAIwAAACUAAAAiAAAABwAAABUAAAAmAAAABwAAACYAAAAfAAAABgAAAB4AAAAnAAAABgAAACcAAAAXAAAAFwAAACcAAAAmAAAAFwAAACYAAAAVAAAAHgAAAB8AAAAmAAAAHgAAACYAAAAnAAAAIgAAACgAAAAYAAAAIgAAABgAAAAMAAAAEwAAABsAAAApAAAAEwAAACkAAAAlAAAAGAAAACgAAAApAAAAGAAAACkAAAAbAAAAIgAAACUAAAApAAAAIgAAACkAAAAoAAAA",
+          "kept_cells": 12,
+          "mesh": "Mesh#1",
+          "node_vertices": 42,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAKAAAAAgAAAAMAAAACAAAACwAAAAIAAAAcAAAAAwAAAAYAAAADAAAAHQAAAAQAAAAFAAAABAAAAAYAAAAEAAAAFgAAAAUAAAAHAAAABQAAAAkAAAAFAAAAFAAAAAYAAAAXAAAABgAAAB4AAAAHAAAACAAAAAcAAAAVAAAABwAAAB8AAAAIAAAACQAAAAgAAAAMAAAACAAAACAAAAAJAAAACgAAAAkAAAANAAAACgAAAAsAAAAKAAAADgAAAAsAAAAPAAAACwAAACEAAAAMAAAADQAAAAwAAAAYAAAADAAAACIAAAANAAAADgAAAA0AAAASAAAADQAAABkAAAAOAAAADwAAAA4AAAAQAAAADwAAABEAAAAPAAAAIwAAABAAAAARAAAAEAAAABIAAAARAAAAEwAAABEAAAAkAAAAEgAAABMAAAASAAAAGgAAABMAAAAbAAAAEwAAACUAAAAUAAAAFQAAABQAAAAWAAAAFQAAABcAAAAVAAAAJgAAABYAAAAXAAAAFwAAACcAAAAYAAAAGQAAABgAAAAbAAAAGAAAACgAAAAZAAAAGgAAABoAAAAbAAAAGwAAACkAAAAcAAAAHQAAABwAAAAfAAAAHAAAACEAAAAdAAAAHgAAAB4AAAAfAAAAHgAAACcAAAAfAAAAIAAAAB8AAAAmAAAAIAAAACEAAAAgAAAAIgAAACEAAAAjAAAAIgAAACMAAAAiAAAAJQAAACIAAAAoAAAAIwAAACQAAAAkAAAAJQAAACUAAAApAAAAJgAAACcAAAAoAAAAKQAAAA==",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/MzMTQJqZmT/NzIw/AAAAQAAAgD8AAAAAAAAAQAAAAAAAAAAAAAAAQAAAAAAAAIA/AABAQAAAgD8AAIA/AABAQAAAgD8AAAAAAABAQAAAAAAAAAAAAABAQAAAAAAAAIA/AACAQAAAAAAAAAAAAACAQAAAAAAAAIA/AACAQAAAgD8AAAAAAACAQAAAgD8AAIA/AACAPwAAAEAAAAAAAACAPwAAAEAAAIA/AAAAAAAAAEAAAAAAAAAAAAAAAEAAAIA/AABAQAAAAEAAAIA/AABAQAAAAEAAAAAAAACAQAAAAEAAAAAAAACAQAAAAEAAAIA/AACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAgD8AAABAAAAAQAAAgD8AAABAAAAAQAAAAAAAAABAAABAQAAAgD8AAABAAABAQAAAAAAAAABAAACAQAAAAAAAAABAAACAQAAAgD8AAABAAACAPwAAAEAAAABAAAAAAAAAAEAAAABAAABAQAAAAEAAAABAAACAQAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAHAAAABwAAAAcAAAAHAAAABwAAAAcAAAAHAAAABwAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAkAAAAJAAAACQAAAAkAAAAJAAAACQAAAAoAAAAKAAAACgAAAAoAAAAKAAAACgAAAAsAAAALAAAACwAAAAsAAAALAAAACwAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADwAAAA8AAAAPAAAADwAAAA8AAAAPAAAADwAAAA8AAAA=",
+          "tri_count": 80,
+          "tri_owner": "AwAAAAMAAAAFAAAABQAAAAEAAAABAAAABwAAAAcAAAADAAAAAwAAAAUAAAAFAAAABwAAAAcAAAADAAAAAwAAAAUAAAAFAAAAAwAAAAMAAAAFAAAABQAAAAIAAAACAAAABwAAAAcAAAAFAAAABQAAAAEAAAABAAAABAAAAAQAAAAHAAAABwAAAAUAAAAFAAAAAgAAAAIAAAAEAAAABAAAAAMAAAADAAAAAQAAAAEAAAAGAAAABgAAAAcAAAAHAAAAAwAAAAMAAAAGAAAABgAAAAcAAAAHAAAAAwAAAAMAAAAGAAAABgAAAAMAAAADAAAAAgAAAAIAAAAGAAAABgAAAAcAAAAHAAAAAQAAAAEAAAAEAAAABAAAAAYAAAAGAAAABwAAAAcAAAACAAAAAgAAAAQAAAAEAAAABgAAAAYAAAA=",
+          "vertex_count": 42
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          "clipped_cells": 16,
+          "indices": "",
+          "kept_cells": 0,
+          "mesh": "Mesh#1",
+          "node_vertices": 0,
+          "outline_indices": "",
+          "owners": [],
+          "positions": "",
+          "schema_version": 1,
+          "tri_cell": "",
+          "tri_count": 0,
+          "tri_owner": "",
+          "vertex_count": 0
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              0.5
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              1.1
+            ]
+          ],
+          "clipped_cells": 11,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAMAAAACAAAABAAAAAIAAAAFAAAABgAAAAAAAAADAAAABgAAAAMAAAAEAAAABgAAAAcAAAABAAAABgAAAAEAAAAAAAAABgAAAAQAAAAFAAAABgAAAAUAAAAHAAAACAAAAAkAAAAKAAAACAAAAAoAAAALAAAACgAAAAkAAAAMAAAACgAAAAwAAAANAAAACAAAAA4AAAAPAAAACAAAAA8AAAAJAAAACwAAABAAAAAOAAAACwAAAA4AAAAIAAAACwAAAAoAAAARAAAACwAAABEAAAAQAAAAEAAAABEAAAAPAAAAEAAAAA8AAAAOAAAAAQAAABIAAAATAAAAAQAAABMAAAACAAAABQAAAAIAAAATAAAABQAAABMAAAAUAAAABwAAABUAAAASAAAABwAAABIAAAABAAAABwAAAAUAAAAUAAAABwAAABQAAAAVAAAAFQAAABQAAAATAAAAFQAAABMAAAASAAAADAAAABYAAAAXAAAADAAAABcAAAANAAAADAAAAAkAAAAYAAAADAAAABgAAAAWAAAADQAAABcAAAAZAAAADQAAABkAAAAKAAAAFwAAABYAAAAYAAAAFwAAABgAAAAZAAAACQAAAA8AAAAaAAAACQAAABoAAAAYAAAACgAAABkAAAAbAAAACgAAABsAAAARAAAAEQAAABsAAAAaAAAAEQAAABoAAAAPAAAAGQAAABgAAAAaAAAAGQAAABoAAAAbAAAA",
+          "kept_cells": 5,
+          "mesh": "Mesh#1",
+          "node_vertices": 28,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAGAAAAAQAAAAIAAAABAAAABwAAAAEAAAASAAAAAgAAAAMAAAACAAAABQAAAAIAAAATAAAAAwAAAAQAAAAEAAAABQAAAAQAAAAGAAAABQAAAAcAAAAFAAAAFAAAAAYAAAAHAAAABwAAABUAAAAIAAAACQAAAAgAAAALAAAACAAAAA4AAAAJAAAACgAAAAkAAAAMAAAACQAAAA8AAAAJAAAAGAAAAAoAAAALAAAACgAAAA0AAAAKAAAAEQAAAAoAAAAZAAAACwAAABAAAAAMAAAADQAAAAwAAAAWAAAADQAAABcAAAAOAAAADwAAAA4AAAAQAAAADwAAABEAAAAPAAAAGgAAABAAAAARAAAAEQAAABsAAAASAAAAEwAAABIAAAAVAAAAEwAAABQAAAAUAAAAFQAAABYAAAAXAAAAFgAAABgAAAAXAAAAGQAAABgAAAAZAAAAGAAAABoAAAAZAAAAGwAAABoAAAAbAAAA",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoVolume#1"
+          ],
+          "positions": "AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAABAQAAAAAAAAIA/AABAQAAAgD8AAIA/AABAQAAAgD8AAAAAAABAQAAAAAAAAAAAMzMTQJqZmT/NzIw/AAAAQAAAgD8AAAAAAACAQAAAAAAAAIA/AACAQAAAgD8AAIA/AACAQAAAAAAAAAAAAACAQAAAgD8AAAAAAACAPwAAAEAAAAAAAACAPwAAAEAAAIA/AAAAAAAAAEAAAIA/AAAAAAAAAEAAAAAAAAAAQAAAAEAAAIA/AAAAQAAAAEAAAAAAAABAQAAAAEAAAIA/AABAQAAAAEAAAAAAAACAQAAAAEAAAIA/AACAQAAAAEAAAAAA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAADAAAABgAAAAYAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAGAAAABgAAAAYAAAAGAAAABgAAAAYAAAAGAAAABgAAAAcAAAAHAAAABwAAAAcAAAAHAAAABwAAAAcAAAAHAAAA",
+          "tri_count": 48,
+          "tri_owner": "BgAAAAYAAAAGAAAABgAAAAMAAAADAAAABQAAAAUAAAABAAAAAQAAAAYAAAAGAAAABgAAAAYAAAAGAAAABgAAAAMAAAADAAAABQAAAAUAAAACAAAAAgAAAAYAAAAGAAAABgAAAAYAAAAFAAAABQAAAAEAAAABAAAABAAAAAQAAAAGAAAABgAAAAYAAAAGAAAABQAAAAUAAAAEAAAABAAAAAYAAAAGAAAABQAAAAUAAAACAAAAAgAAAAQAAAAEAAAA",
+          "vertex_count": 28
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              1.1
+            ]
+          ],
+          "clipped_cells": 8,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAABAAAABAAAAAEAAAAAAAAABAAAAAYAAAAHAAAABAAAAAcAAAAFAAAABAAAAAAAAAADAAAABAAAAAMAAAAGAAAAAQAAAAgAAAAJAAAAAQAAAAkAAAACAAAABQAAAAoAAAAIAAAABQAAAAgAAAABAAAABQAAAAcAAAALAAAABQAAAAsAAAAKAAAACAAAAAwAAAANAAAACAAAAA0AAAAJAAAACgAAAA4AAAAMAAAACgAAAAwAAAAIAAAACgAAAAsAAAAPAAAACgAAAA8AAAAOAAAADAAAABAAAAARAAAADAAAABEAAAANAAAADgAAABIAAAAQAAAADgAAABAAAAAMAAAADgAAAA8AAAATAAAADgAAABMAAAASAAAAEgAAABMAAAARAAAAEgAAABEAAAAQAAAAAwAAAAIAAAAUAAAAAwAAABQAAAAVAAAABgAAABYAAAAXAAAABgAAABcAAAAHAAAABgAAAAMAAAAVAAAABgAAABUAAAAWAAAAFgAAABUAAAAUAAAAFgAAABQAAAAXAAAAAgAAAAkAAAAYAAAAAgAAABgAAAAUAAAABwAAABcAAAAZAAAABwAAABkAAAALAAAAFwAAABQAAAAYAAAAFwAAABgAAAAZAAAACQAAAA0AAAAaAAAACQAAABoAAAAYAAAACwAAABkAAAAbAAAACwAAABsAAAAPAAAAGQAAABgAAAAaAAAAGQAAABoAAAAbAAAADQAAABEAAAAcAAAADQAAABwAAAAaAAAADwAAABsAAAAdAAAADwAAAB0AAAATAAAAEwAAAB0AAAAcAAAAEwAAABwAAAARAAAAGwAAABoAAAAcAAAAGwAAABwAAAAdAAAA",
+          "kept_cells": 8,
+          "mesh": "Mesh#1",
+          "node_vertices": 30,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAIAAAAAgAAAAMAAAACAAAACQAAAAIAAAAUAAAAAwAAAAYAAAADAAAAFQAAAAQAAAAFAAAABAAAAAYAAAAFAAAABwAAAAUAAAAKAAAABgAAAAcAAAAGAAAAFgAAAAcAAAALAAAABwAAABcAAAAIAAAACQAAAAgAAAAKAAAACAAAAAwAAAAJAAAADQAAAAkAAAAYAAAACgAAAAsAAAAKAAAADgAAAAsAAAAPAAAACwAAABkAAAAMAAAADQAAAAwAAAAOAAAADAAAABAAAAANAAAAEQAAAA0AAAAaAAAADgAAAA8AAAAOAAAAEgAAAA8AAAATAAAADwAAABsAAAAQAAAAEQAAABAAAAASAAAAEQAAABMAAAARAAAAHAAAABIAAAATAAAAEwAAAB0AAAAUAAAAFQAAABQAAAAXAAAAFAAAABgAAAAVAAAAFgAAABYAAAAXAAAAFwAAABkAAAAYAAAAGQAAABgAAAAaAAAAGQAAABsAAAAaAAAAGwAAABoAAAAcAAAAGwAAAB0AAAAcAAAAHQAAAA==",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAQAAAAAAAAIA/MzMTQJqZmT/NzIw/AAAAQAAAAAAAAAAAAAAAQAAAgD8AAAAAAABAQAAAAAAAAIA/AABAQAAAgD8AAIA/AABAQAAAAAAAAAAAAABAQAAAgD8AAAAAAACAQAAAAAAAAIA/AACAQAAAgD8AAIA/AACAQAAAAAAAAAAAAACAQAAAgD8AAAAAAACAPwAAAEAAAIA/AAAAAAAAAEAAAIA/AAAAAAAAAEAAAAAAAACAPwAAAEAAAAAAAAAAQAAAAEAAAIA/AAAAQAAAAEAAAAAAAABAQAAAAEAAAIA/AABAQAAAAEAAAAAAAACAQAAAAEAAAIA/AACAQAAAAEAAAAAA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAACAAAAAgAAAAIAAAACAAAAAgAAAAIAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABQAAAAUAAAAFAAAABQAAAAUAAAAFAAAABgAAAAYAAAAGAAAABgAAAAYAAAAGAAAABwAAAAcAAAAHAAAABwAAAAcAAAAHAAAABwAAAAcAAAA=",
+          "tri_count": 56,
+          "tri_owner": "BgAAAAYAAAADAAAAAwAAAAUAAAAFAAAAAQAAAAEAAAAGAAAABgAAAAMAAAADAAAABQAAAAUAAAAGAAAABgAAAAMAAAADAAAABQAAAAUAAAAGAAAABgAAAAMAAAADAAAABQAAAAUAAAACAAAAAgAAAAYAAAAGAAAABQAAAAUAAAABAAAAAQAAAAQAAAAEAAAABgAAAAYAAAAFAAAABQAAAAQAAAAEAAAABgAAAAYAAAAFAAAABQAAAAQAAAAEAAAABgAAAAYAAAAFAAAABQAAAAIAAAACAAAABAAAAAQAAAA=",
+          "vertex_count": 30
+        }
+      },
+      {
+        "match": {
+          "clip": {
+            "normal": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "origin": [
+              0.0,
+              0.0,
+              1.5
+            ]
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 3,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAAAAAAAAQAAAAFAAAAAAAAAAUAAAABAAAAAAAAAAMAAAAGAAAAAAAAAAYAAAAEAAAAAQAAAAcAAAAIAAAAAQAAAAgAAAACAAAAAQAAAAUAAAAJAAAAAQAAAAkAAAAHAAAACAAAAAoAAAALAAAACAAAAAsAAAAMAAAABwAAAA0AAAAKAAAABwAAAAoAAAAIAAAABwAAAAkAAAAOAAAABwAAAA4AAAANAAAADQAAAA8AAAAQAAAADQAAABAAAAAKAAAADQAAAA4AAAARAAAADQAAABEAAAAPAAAADwAAABEAAAASAAAADwAAABIAAAAQAAAABAAAABMAAAAUAAAABAAAABQAAAAFAAAABAAAAAYAAAAVAAAABAAAABUAAAATAAAAEwAAABUAAAAWAAAAEwAAABYAAAAUAAAAFwAAAAwAAAAYAAAAFwAAABgAAAAWAAAABQAAABQAAAAZAAAABQAAABkAAAAJAAAAFAAAABYAAAAYAAAAFAAAABgAAAAZAAAADAAAAAsAAAAaAAAADAAAABoAAAAYAAAACQAAABkAAAAbAAAACQAAABsAAAAOAAAAGQAAABgAAAAaAAAAGQAAABoAAAAbAAAADgAAABsAAAAcAAAADgAAABwAAAARAAAAEQAAABwAAAAdAAAAEQAAAB0AAAASAAAAGwAAABoAAAAdAAAAGwAAAB0AAAAcAAAAAwAAAAIAAAAeAAAAAwAAAB4AAAAfAAAAAwAAAB8AAAAgAAAAAwAAACAAAAAGAAAAHwAAAB4AAAAhAAAAHwAAACEAAAAgAAAACAAAAAwAAAAiAAAACAAAACIAAAAjAAAAFwAAACEAAAAiAAAAFwAAACIAAAAMAAAAAgAAAAgAAAAjAAAAAgAAACMAAAAeAAAAHgAAACMAAAAiAAAAHgAAACIAAAAhAAAAJAAAACUAAAALAAAAJAAAAAsAAAAKAAAACgAAABAAAAAmAAAACgAAACYAAAAkAAAAEAAAABIAAAAnAAAAEAAAACcAAAAmAAAAJAAAACYAAAAnAAAAJAAAACcAAAAlAAAAFwAAABYAAAAoAAAAFwAAACgAAAAhAAAABgAAACAAAAApAAAABgAAACkAAAAVAAAAFQAAACkAAAAoAAAAFQAAACgAAAAWAAAAIAAAACEAAAAoAAAAIAAAACgAAAApAAAAJQAAACoAAAAaAAAAJQAAABoAAAALAAAAEgAAAB0AAAArAAAAEgAAACsAAAAnAAAAGgAAACoAAAArAAAAGgAAACsAAAAdAAAAJQAAACcAAAArAAAAJQAAACsAAAAqAAAA",
+          "kept_cells": 13,
+          "mesh": "Mesh#1",
+          "node_vertices": 44,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAHAAAAAgAAAAMAAAACAAAACAAAAAIAAAAeAAAAAwAAAAYAAAADAAAAHwAAAAQAAAAFAAAABAAAAAYAAAAEAAAAEwAAAAUAAAAJAAAABQAAABQAAAAGAAAAFQAAAAYAAAAgAAAABwAAAAgAAAAHAAAACQAAAAcAAAANAAAACAAAAAoAAAAIAAAADAAAAAgAAAAjAAAACQAAAA4AAAAJAAAAGQAAAAoAAAALAAAACgAAAA0AAAAKAAAAEAAAAAoAAAAkAAAACwAAAAwAAAALAAAAGgAAAAsAAAAlAAAADAAAABcAAAAMAAAAGAAAAAwAAAAiAAAADQAAAA4AAAANAAAADwAAAA4AAAARAAAADgAAABsAAAAPAAAAEAAAAA8AAAARAAAAEAAAABIAAAAQAAAAJgAAABEAAAASAAAAEQAAABwAAAASAAAAHQAAABIAAAAnAAAAEwAAABQAAAATAAAAFQAAABQAAAAWAAAAFAAAABkAAAAVAAAAFgAAABUAAAApAAAAFgAAABcAAAAWAAAAGAAAABYAAAAoAAAAFwAAACEAAAAYAAAAGQAAABgAAAAaAAAAGQAAABsAAAAaAAAAGwAAABoAAAAdAAAAGgAAACoAAAAbAAAAHAAAABwAAAAdAAAAHQAAACsAAAAeAAAAHwAAAB4AAAAhAAAAHgAAACMAAAAfAAAAIAAAACAAAAAhAAAAIAAAACkAAAAhAAAAIgAAACEAAAAoAAAAIgAAACMAAAAkAAAAJQAAACQAAAAmAAAAJQAAACcAAAAlAAAAKgAAACYAAAAnAAAAJwAAACsAAAAoAAAAKQAAACoAAAArAAAA",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6",
+            "TopoVolume#1"
+          ],
+          "positions": "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAQAAAAAAAAAAAAAAAQAAAAAAAAIA/AAAAQAAAgD8AAAAAAABAQAAAAAAAAIA/AABAQAAAgD8AAIA/MzMTQJqZmT/NzIw/AABAQAAAAAAAAAAAAABAQAAAgD8AAAAAAACAQAAAAAAAAAAAAACAQAAAAAAAAIA/AACAQAAAgD8AAAAAAACAQAAAgD8AAIA/AAAAAAAAAEAAAAAAAACAPwAAAEAAAAAAAAAAAAAAAEAAAIA/AACAPwAAAEAAAIA/AACAPwAAgD8AAIA/AAAAQAAAAEAAAIA/AAAAQAAAAEAAAAAAAABAQAAAAEAAAIA/AABAQAAAAEAAAAAAAACAQAAAAEAAAAAAAACAQAAAAEAAAIA/AACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAgD8AAABAAAAAQAAAgD8AAABAAAAAQAAAAAAAAABAAABAQAAAAAAAAABAAABAQAAAgD8AAABAAACAQAAAAAAAAABAAACAQAAAgD8AAABAAACAPwAAAEAAAABAAAAAAAAAAEAAAABAAABAQAAAAEAAAABAAACAQAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAQAAAAIAAAACAAAAAgAAAAIAAAACAAAAAgAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAUAAAAFAAAABQAAAAUAAAAFAAAABQAAAAYAAAAGAAAABgAAAAYAAAAGAAAABgAAAAcAAAAHAAAABwAAAAcAAAAHAAAABwAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAkAAAAJAAAACQAAAAkAAAAJAAAACQAAAAkAAAAJAAAACwAAAAsAAAALAAAACwAAAAsAAAALAAAACwAAAAsAAAAMAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADAAAAA8AAAAPAAAADwAAAA8AAAAPAAAADwAAAA8AAAAPAAAA",
+          "tri_count": 84,
+          "tri_owner": "AwAAAAMAAAAFAAAABQAAAAEAAAABAAAAAwAAAAMAAAAFAAAABQAAAAcAAAAHAAAAAwAAAAMAAAAFAAAABQAAAAMAAAADAAAABQAAAAUAAAACAAAAAgAAAAUAAAAFAAAAAQAAAAEAAAAEAAAABAAAAAcAAAAHAAAABQAAAAUAAAAEAAAABAAAAAcAAAAHAAAABQAAAAUAAAAEAAAABAAAAAUAAAAFAAAAAgAAAAIAAAAEAAAABAAAAAMAAAADAAAAAQAAAAEAAAAGAAAABgAAAAcAAAAHAAAABwAAAAcAAAADAAAAAwAAAAYAAAAGAAAABwAAAAcAAAADAAAAAwAAAAIAAAACAAAABgAAAAYAAAAHAAAABwAAAAEAAAABAAAABAAAAAQAAAAGAAAABgAAAAcAAAAHAAAAAgAAAAIAAAAEAAAABAAAAAYAAAAGAAAA",
+          "vertex_count": 44
+        }
+      },
+      {
+        "match": {},
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "clipped_cells": 0,
+          "indices": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAAAAAAAAQAAAAFAAAAAAAAAAUAAAABAAAAAAAAAAMAAAAGAAAAAAAAAAYAAAAEAAAAAQAAAAcAAAAIAAAAAQAAAAgAAAACAAAAAQAAAAUAAAAJAAAAAQAAAAkAAAAHAAAABwAAAAoAAAALAAAABwAAAAsAAAAIAAAABwAAAAkAAAAMAAAABwAAAAwAAAAKAAAACgAAAA0AAAAOAAAACgAAAA4AAAALAAAACgAAAAwAAAAPAAAACgAAAA8AAAANAAAADQAAAA8AAAAQAAAADQAAABAAAAAOAAAABAAAABEAAAASAAAABAAAABIAAAAFAAAABAAAAAYAAAATAAAABAAAABMAAAARAAAAEQAAABMAAAAUAAAAEQAAABQAAAASAAAABQAAABIAAAAVAAAABQAAABUAAAAJAAAAEgAAABQAAAAWAAAAEgAAABYAAAAVAAAACQAAABUAAAAXAAAACQAAABcAAAAMAAAAFQAAABYAAAAYAAAAFQAAABgAAAAXAAAADAAAABcAAAAZAAAADAAAABkAAAAPAAAADwAAABkAAAAaAAAADwAAABoAAAAQAAAAFwAAABgAAAAaAAAAFwAAABoAAAAZAAAAAwAAAAIAAAAbAAAAAwAAABsAAAAcAAAAAwAAABwAAAAdAAAAAwAAAB0AAAAGAAAAHAAAABsAAAAeAAAAHAAAAB4AAAAdAAAAAgAAAAgAAAAfAAAAAgAAAB8AAAAbAAAAGwAAAB8AAAAgAAAAGwAAACAAAAAeAAAACAAAAAsAAAAhAAAACAAAACEAAAAfAAAAHwAAACEAAAAiAAAAHwAAACIAAAAgAAAACwAAAA4AAAAjAAAACwAAACMAAAAhAAAADgAAABAAAAAkAAAADgAAACQAAAAjAAAAIQAAACMAAAAkAAAAIQAAACQAAAAiAAAABgAAAB0AAAAlAAAABgAAACUAAAATAAAAEwAAACUAAAAmAAAAEwAAACYAAAAUAAAAHQAAAB4AAAAmAAAAHQAAACYAAAAlAAAAFAAAACYAAAAnAAAAFAAAACcAAAAWAAAAHgAAACAAAAAnAAAAHgAAACcAAAAmAAAAFgAAACcAAAAoAAAAFgAAACgAAAAYAAAAIAAAACIAAAAoAAAAIAAAACgAAAAnAAAAEAAAABoAAAApAAAAEAAAACkAAAAkAAAAGAAAACgAAAApAAAAGAAAACkAAAAaAAAAIgAAACQAAAApAAAAIgAAACkAAAAoAAAA",
+          "kept_cells": 16,
+          "mesh": "Mesh#1",
+          "node_vertices": 42,
+          "outline_indices": "AAAAAAEAAAAAAAAAAwAAAAAAAAAEAAAAAQAAAAIAAAABAAAABQAAAAEAAAAHAAAAAgAAAAMAAAACAAAACAAAAAIAAAAbAAAAAwAAAAYAAAADAAAAHAAAAAQAAAAFAAAABAAAAAYAAAAEAAAAEQAAAAUAAAAJAAAABQAAABIAAAAGAAAAEwAAAAYAAAAdAAAABwAAAAgAAAAHAAAACQAAAAcAAAAKAAAACAAAAAsAAAAIAAAAHwAAAAkAAAAMAAAACQAAABUAAAAKAAAACwAAAAoAAAAMAAAACgAAAA0AAAALAAAADgAAAAsAAAAhAAAADAAAAA8AAAAMAAAAFwAAAA0AAAAOAAAADQAAAA8AAAAOAAAAEAAAAA4AAAAjAAAADwAAABAAAAAPAAAAGQAAABAAAAAaAAAAEAAAACQAAAARAAAAEgAAABEAAAATAAAAEgAAABQAAAASAAAAFQAAABMAAAAUAAAAEwAAACUAAAAUAAAAFgAAABQAAAAmAAAAFQAAABYAAAAVAAAAFwAAABYAAAAYAAAAFgAAACcAAAAXAAAAGAAAABcAAAAZAAAAGAAAABoAAAAYAAAAKAAAABkAAAAaAAAAGgAAACkAAAAbAAAAHAAAABsAAAAeAAAAGwAAAB8AAAAcAAAAHQAAAB0AAAAeAAAAHQAAACUAAAAeAAAAIAAAAB4AAAAmAAAAHwAAACAAAAAfAAAAIQAAACAAAAAiAAAAIAAAACcAAAAhAAAAIgAAACEAAAAjAAAAIgAAACQAAAAiAAAAKAAAACMAAAAkAAAAJAAAACkAAAAlAAAAJgAAACYAAAAnAAAAJwAAACgAAAAoAAAAKQAAAA==",
+          "owners": [
+            "TopoFace#1",
+            "TopoFace#2",
+            "TopoFace#3",
+            "TopoFace#4",
+            "TopoFace#5",
+            "TopoFace#6"
+          ],
+          "positions": "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAQAAAAAAAAAAAAAAAQAAAAAAAAIA/AAAAQAAAgD8AAAAAAABAQAAAAAAAAAAAAABAQAAAAAAAAIA/AABAQAAAgD8AAAAAAACAQAAAAAAAAAAAAACAQAAAAAAAAIA/AACAQAAAgD8AAAAAAACAQAAAgD8AAIA/AAAAAAAAAEAAAAAAAACAPwAAAEAAAAAAAAAAAAAAAEAAAIA/AACAPwAAAEAAAIA/AAAAQAAAAEAAAAAAAAAAQAAAAEAAAIA/AABAQAAAAEAAAAAAAABAQAAAAEAAAIA/AACAQAAAAEAAAAAAAACAQAAAAEAAAIA/AACAPwAAAAAAAABAAAAAAAAAAAAAAABAAAAAAAAAgD8AAABAAACAPwAAgD8AAABAAAAAQAAAAAAAAABAAAAAQAAAgD8AAABAAABAQAAAAAAAAABAAABAQAAAgD8AAABAAACAQAAAAAAAAABAAACAQAAAgD8AAABAAAAAAAAAAEAAAABAAACAPwAAAEAAAABAAAAAQAAAAEAAAABAAABAQAAAAEAAAABAAACAQAAAAEAAAABA",
+          "schema_version": 1,
+          "tri_cell": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAQAAAAIAAAACAAAAAgAAAAIAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAFAAAABQAAAAUAAAAFAAAABgAAAAYAAAAGAAAABgAAAAcAAAAHAAAABwAAAAcAAAAHAAAABwAAAAgAAAAIAAAACAAAAAgAAAAIAAAACAAAAAkAAAAJAAAACQAAAAkAAAAKAAAACgAAAAoAAAAKAAAACwAAAAsAAAALAAAACwAAAAsAAAALAAAADAAAAAwAAAAMAAAADAAAAAwAAAAMAAAADQAAAA0AAAANAAAADQAAAA4AAAAOAAAADgAAAA4AAAAPAAAADwAAAA8AAAAPAAAADwAAAA8AAAA=",
+          "tri_count": 80,
+          "tri_owner": "AwAAAAMAAAAFAAAABQAAAAEAAAABAAAAAwAAAAMAAAAFAAAABQAAAAMAAAADAAAABQAAAAUAAAADAAAAAwAAAAUAAAAFAAAAAgAAAAIAAAAFAAAABQAAAAEAAAABAAAABAAAAAQAAAAFAAAABQAAAAQAAAAEAAAABQAAAAUAAAAEAAAABAAAAAUAAAAFAAAAAgAAAAIAAAAEAAAABAAAAAMAAAADAAAAAQAAAAEAAAAGAAAABgAAAAMAAAADAAAABgAAAAYAAAADAAAAAwAAAAYAAAAGAAAAAwAAAAMAAAACAAAAAgAAAAYAAAAGAAAAAQAAAAEAAAAEAAAABAAAAAYAAAAGAAAABAAAAAQAAAAGAAAABgAAAAQAAAAEAAAABgAAAAYAAAACAAAAAgAAAAQAAAAEAAAABgAAAAYAAAA=",
+          "vertex_count": 42
+        }
+      }
+    ],
+    "view.scene": [
+      {
+        "match": {
+          "@at": {
+            "node": "7d61586ade3f3adae4c99da825fdb0acf91ea64519f88d0473ce605e62dcde0f"
+          }
+        },
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "bodies": [
+            {
+              "id": "TopoBody#1",
+              "volumes": [
+                "TopoVolume#1"
+              ]
+            }
+          ],
+          "meshes": [],
+          "schema_version": 1,
+          "volumes": [
+            {
+              "id": "TopoVolume#1"
+            }
+          ]
+        }
+      },
+      {
+        "match": {},
+        "reply": {
+          "bbox": [
+            [
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              2.0,
+              2.0
+            ]
+          ],
+          "bodies": [
+            {
+              "id": "TopoBody#1",
+              "volumes": [
+                "TopoVolume#1"
+              ]
+            }
+          ],
+          "meshes": [
+            {
+              "bbox": [
+                [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  4.0,
+                  2.0,
+                  2.0
+                ]
+              ],
+              "cells": 16,
+              "derived_from": [],
+              "digest": "76e51cdbbe370e70b64415d1f9b120ad4426625d1b85a64d724a036b669eb160",
+              "dim": 3,
+              "facets": 68,
+              "id": "Mesh#1",
+              "name": "Mesh#1",
+              "nodes": 45
+            }
+          ],
+          "schema_version": 1,
+          "volumes": [
+            {
+              "id": "TopoVolume#1"
+            }
+          ]
+        }
+      }
+    ],
+    "view.tessellate": [
+      {
+        "match": {},
+        "reply": {
+          "angle_tol": 0.3,
+          "chord_tol": 0.0,
+          "edge_indices": "AAAAAAEAAAACAAAAAwAAAAQAAAAFAAAABgAAAAcAAAAAAAAAAgAAAAEAAAADAAAABAAAAAYAAAAFAAAABwAAAAAAAAAEAAAAAQAAAAUAAAACAAAABgAAAAMAAAAHAAAA",
+          "edges": [
+            {
+              "count": 2,
+              "edge": "TopoEdge#1",
+              "first": 0
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#2",
+              "first": 2
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#3",
+              "first": 4
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#4",
+              "first": 6
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#5",
+              "first": 8
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#6",
+              "first": 10
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#7",
+              "first": 12
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#8",
+              "first": 14
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#9",
+              "first": 16
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#10",
+              "first": 18
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#11",
+              "first": 20
+            },
+            {
+              "count": 2,
+              "edge": "TopoEdge#12",
+              "first": 22
+            }
+          ],
+          "faces": [
+            {
+              "boundary_only": false,
+              "face": "TopoFace#1",
+              "first_index": 0,
+              "index_count": 6
+            },
+            {
+              "boundary_only": false,
+              "face": "TopoFace#2",
+              "first_index": 6,
+              "index_count": 6
+            },
+            {
+              "boundary_only": false,
+              "face": "TopoFace#3",
+              "first_index": 12,
+              "index_count": 6
+            },
+            {
+              "boundary_only": false,
+              "face": "TopoFace#4",
+              "first_index": 18,
+              "index_count": 6
+            },
+            {
+              "boundary_only": false,
+              "face": "TopoFace#5",
+              "first_index": 24,
+              "index_count": 6
+            },
+            {
+              "boundary_only": false,
+              "face": "TopoFace#6",
+              "first_index": 30,
+              "index_count": 6
+            }
+          ],
+          "indices": "AAAAAAQAAAAGAAAAAAAAAAYAAAACAAAAAQAAAAMAAAAHAAAAAQAAAAcAAAAFAAAAAAAAAAEAAAAFAAAAAAAAAAUAAAAEAAAAAgAAAAYAAAAHAAAAAgAAAAcAAAADAAAAAAAAAAIAAAADAAAAAAAAAAMAAAABAAAABAAAAAUAAAAHAAAABAAAAAcAAAAGAAAA",
+          "max_edge": null,
+          "positions": "AAAAAAAAAAAAAAAAAACAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAACAQAAAAEAAAAAAAAAAAAAAAAAAAABAAACAQAAAAAAAAABAAAAAAAAAAEAAAABAAACAQAAAAEAAAABA",
+          "triangle_count": 12,
+          "vertex_count": 8
+        }
+      }
+    ]
+  }
+}

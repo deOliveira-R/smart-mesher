@@ -1,0 +1,4 @@
+node_modules/
+.build/
+e2e/out/
+.distcheck/
