@@ -42,7 +42,7 @@ fn plugin_registers_the_op_and_the_query_but_no_layers() {
     assert_eq!(CadioPlugin.id(), "cadio");
     let ops: Vec<&str> = reg.op_names().into_iter().filter(|n| !n.starts_with("core.")).collect();
     assert_eq!(ops, ["model.import_step"]);
-    assert_eq!(reg.query_names(), ["cad.step_info"]);
+    assert_eq!(reg.query_names(), ["cad.step_info", "model.export"]);
     assert!(reg.layer_roles().is_empty(), "layers belong to CoreLayers");
 }
 

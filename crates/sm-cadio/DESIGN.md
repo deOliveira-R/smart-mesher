@@ -259,3 +259,15 @@ transaction); they are recorded, not gated.
 See `W3_REPORT.md` for the measured values, deviations and gaps.
 - `cad.step_info` describes the file as written (the loft: 3 faces, 1 NURBS and 2 planes); the import
   may hold more faces after the closed-face split above (6 for the loft).
+
+## `model.export` and work counters (W3b)
+
+`model.export {bodies?, schema?, path?}` is a read-only `TypedQuery` over `export_step`: it returns
+`{step: <base64>, report: WriteReport}`, adds no timeline node and leaves the state hash alone.
+`path` is in the schema but ignored here (the server host writes it, outside history). Refusals:
+dead id (`unknown-entity`), non-body/volume id (`wrong-kind`), empty list (`step.empty_selection`),
+unsupported carrier (`step.unsupported`, naming the cell).
+
+Work counters are per call: `read_step_metered` returns `(Result, Work)`, with the meter threaded
+through decode, the assembly walk and the closed-face split. There is no process-wide state, so
+tests need no serialization. `Work::entities_parsed` bounds parse work in refusal tests.

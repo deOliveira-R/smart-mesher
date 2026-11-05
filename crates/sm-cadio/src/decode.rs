@@ -15,6 +15,7 @@ use crate::model::*;
 use crate::part21::{self, Entity, StepFile};
 use crate::units::{self, ContextUnits, FileLength};
 use crate::weld::{weld_edges, weld_vertices};
+use crate::work::{Meter, Work};
 
 /// Smallest cap on placed solid instances of a file.
 const INSTANCE_FLOOR: usize = 1024;
@@ -41,8 +42,19 @@ const DECODE_PER_UNIT: usize = 8;
 /// Any [`StepError`]; see the variants. A file without a length unit is an error unless
 /// [`ReadOptions::assume_unit`] is set.
 pub fn read_step(bytes: &[u8], opts: &ReadOptions) -> Result<BrepModel, StepError> {
-    let file = part21::parse(bytes)?;
-    read_file(&file, opts)
+    read_step_metered(bytes, opts).0
+}
+
+/// [`read_step`] plus the [`Work`] this one read did, counted per call (no process-wide state,
+/// so concurrent reads do not mix). The work is returned on failure too, so a test can bound
+/// what a refused file cost.
+pub fn read_step_metered(bytes: &[u8], opts: &ReadOptions) -> (Result<BrepModel, StepError>, Work) {
+    let meter = Meter::default();
+    let res = part21::parse(bytes).and_then(|file| {
+        meter.parsed(file.entities.len());
+        read_file(&file, opts, &meter)
+    });
+    (res, meter.snapshot())
 }
 
 /// Solid entities of the file in ascending id order.
@@ -100,7 +112,7 @@ pub(crate) fn scan_skipped(file: &StepFile) -> Skipped {
     s
 }
 
-pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel, StepError> {
+pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions, meter: &Meter) -> Result<BrepModel, StepError> {
     if !(opts.weld_tol.is_finite() && opts.weld_tol >= 0.0) {
         return Err(StepError::BadOption(format!("weld tolerance {} must be finite and non-negative", opts.weld_tol)));
     }
@@ -208,7 +220,7 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
             (Some(a), Some(rep)) => {
                 let own = length.um;
                 let scale_of = |r: u64| rep_um.get(&r).copied().unwrap_or(own) / target_um;
-                let mut walk = assembly::Walk::new(instance_limit.saturating_sub(instance_total));
+                let mut walk = assembly::Walk::new(instance_limit.saturating_sub(instance_total), meter);
                 match assembly::instances(file, a, *rep, &scale_of, &mut walk) {
                     Ok(v) if !v.is_empty() => {
                         instance_total += v.len();
@@ -264,8 +276,8 @@ pub(crate) fn read_file(file: &StepFile, opts: &ReadOptions) -> Result<BrepModel
     let decode_base = |i: &usize| -> BaseResult {
         let (id, kind, report, _) = &preps[*i];
         let mut local = Vec::new();
-        crate::work::add(&crate::work::SOLIDS_DECODED, 1);
-        let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local)?;
+        meter.solid_decoded();
+        let (solid, stats) = read_solid(ents, *id, *kind, report.clone(), opts, &mut local, meter)?;
         Ok((solid, local, stats))
     };
     let bases: Vec<BaseResult> = if firsts.len() >= 8 { firsts.par_iter().map(decode_base).collect() } else { firsts.iter().map(decode_base).collect() };
@@ -428,9 +440,9 @@ pub(crate) fn solid_shell_refs(ents: Ents<'_>, id: u64, kind: SolidKind) -> Resu
     Ok(srcs)
 }
 
-fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts: &ReadOptions, notes: &mut Vec<Note>) -> Result<(Solid, (usize, usize)), StepError> {
+fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts: &ReadOptions, notes: &mut Vec<Note>, meter: &Meter) -> Result<(Solid, (usize, usize)), StepError> {
     if kind == SolidKind::Faceted {
-        return read_faceted(ents, id, units, opts);
+        return read_faceted(ents, id, units, opts, meter);
     }
     // Name and shells: outer shell and voids for a solid (simple or complex spelling), the
     // shells of a surface model for a sheet.
@@ -627,10 +639,10 @@ fn read_solid(ents: Ents<'_>, id: u64, kind: SolidKind, units: UnitReport, opts:
         shells[f.shell].faces.push(fi);
     }
     if kind != SolidKind::Sheet {
-        check_closed(id, &shells, &faces, &kept)?;
+        check_closed(id, &shells, &faces, &kept, meter)?;
     }
     let mut solid = Solid { id, instance: 0, name, kind, units, vertices, curves, surfaces, edges: kept, faces, shells };
-    crate::split::split_closed_nurbs(&mut solid, opts.weld_tol, notes);
+    crate::split::split_closed_nurbs(&mut solid, opts.weld_tol, notes, meter);
     Ok((solid, (welded_vertices, welded_edges)))
 }
 
@@ -661,9 +673,9 @@ fn pole_loop(surface: &sm_geom_api::SurfaceDef, pole: usize, loop_id: u64, tol: 
 }
 
 /// Every edge must cancel (forward uses minus reverse uses) in every shell.
-pub(crate) fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge]) -> Result<(), StepError> {
+pub(crate) fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: &[Edge], meter: &Meter) -> Result<(), StepError> {
     for sh in shells {
-        crate::work::add(&crate::work::CLOSURE_COEDGES, sh.faces.iter().flat_map(|&fi| &faces[fi].loops).map(Vec::len).sum());
+        meter.closure_coedges(sh.faces.iter().flat_map(|&fi| &faces[fi].loops).map(Vec::len).sum());
         let mut net: BTreeMap<usize, i64> = BTreeMap::new();
         for &fi in &sh.faces {
             for lp in &faces[fi].loops {
@@ -685,7 +697,7 @@ pub(crate) fn check_closed(solid: u64, shells: &[Shell], faces: &[Face], edges: 
 /// edges the straight segments between consecutive points (one per unordered vertex pair, id =
 /// the `POLY_LOOP` that first used it), each face gets a plane through its outer loop (Newell
 /// normal, so the loop is counter-clockwise seen from outside as in a `FACE_OUTER_BOUND`).
-fn read_faceted(ents: Ents<'_>, id: u64, units: UnitReport, opts: &ReadOptions) -> Result<(Solid, (usize, usize)), StepError> {
+fn read_faceted(ents: Ents<'_>, id: u64, units: UnitReport, opts: &ReadOptions, meter: &Meter) -> Result<(Solid, (usize, usize)), StepError> {
     use sm_geom_api::{CurveDef, Frame, Interval, Line, Plane, SurfaceDef};
     let a = ents.rec(id, id, "FACETED_BREP")?;
     let (shell_id, shell_reversed) = shell_of(ents, a.reference(1)?, id)?;
@@ -796,7 +808,7 @@ fn read_faceted(ents: Ents<'_>, id: u64, units: UnitReport, opts: &ReadOptions) 
         faces.push(Face { id: *fid, surface, sense: Sense::Forward, loops, shell: 0 });
     }
     let shells = vec![Shell { id: shell_id, kind: ShellKind::Outer, faces: (0..faces.len()).collect() }];
-    check_closed(id, &shells, &faces, &edges)?;
+    check_closed(id, &shells, &faces, &edges, meter)?;
     let name = a.string(0);
     Ok((Solid { id, instance: 0, name, kind: SolidKind::Faceted, units, vertices, curves, surfaces, edges, faces, shells }, (welded, 0)))
 }

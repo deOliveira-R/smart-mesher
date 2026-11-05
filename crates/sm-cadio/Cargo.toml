@@ -26,8 +26,11 @@ rayon = "1"
 smallvec = "1"
 
 [dev-dependencies]
+# Integration tests of `model.export` run on the real `standard()` distribution (a dev-only cycle).
+sm-server = { path = "../sm-server" }
 sm-topo = { path = "../sm-topo" }
 sm-testkit = { path = "../sm-testkit" }
+sm-model-api = { path = "../sm-model-api" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 criterion = { version = "0.5", default-features = false }
 

@@ -29,6 +29,7 @@ use sm_topo_api::Sense;
 use std::collections::BTreeMap;
 
 use crate::decode::check_closed;
+use crate::work::Meter;
 use crate::model::{Coedge, CurveRec, Edge, Face, Note, NoteCode, Solid, SurfaceRec, Vertex};
 
 /// Number of faces a closed face is split into.
@@ -48,7 +49,7 @@ type Cut = (f64, usize, usize);
 /// in every loop at the end, the faces are reordered and the solid compacted once, and closure
 /// is checked once. If that check fails the solid is restored and every split face is reported
 /// as left as is. Work is linear in the solid plus the split faces' own size.
-pub(crate) fn split_closed_nurbs(solid: &mut Solid, tol: f64, notes: &mut Vec<Note>) {
+pub(crate) fn split_closed_nurbs(solid: &mut Solid, tol: f64, notes: &mut Vec<Note>, meter: &Meter) {
     let n0 = solid.faces.len();
     let mut snapshot: Option<Solid> = None;
     // Dead edge -> its pieces in traversal order (pieces may die in turn).
@@ -65,7 +66,7 @@ pub(crate) fn split_closed_nurbs(solid: &mut Solid, tol: f64, notes: &mut Vec<No
         if snapshot.is_none() {
             snapshot = Some(solid.clone());
         }
-        match try_split(solid, fi, dir, tol, &mut children) {
+        match try_split(solid, fi, dir, tol, &mut children, meter) {
             Ok(more) => {
                 split_notes.push(notes.len());
                 notes.push(Note::info(NoteCode::SplitClosedFace, format!("face #{id} on a closed NURBS surface split into {PIECES} faces along generators (volume and area integrals need an open parameter span)"), vec![id]));
@@ -118,7 +119,7 @@ pub(crate) fn split_closed_nurbs(solid: &mut Solid, tol: f64, notes: &mut Vec<No
             }
         }
     }
-    if let Err(e) = check_closed(solid.id, &solid.shells, &solid.faces, &solid.edges) {
+    if let Err(e) = check_closed(solid.id, &solid.shells, &solid.faces, &solid.edges, meter) {
         let why = format!("the split solid is not closed: {e}");
         if let Some(orig) = snapshot {
             *solid = orig;
@@ -281,20 +282,20 @@ fn cut(s: &NurbsSurface, params: &[f64]) -> Result<(Vec<NurbsSurface>, Vec<Nurbs
 /// Gauss-Newton projection of `p` onto `surf` from `uv0` (no global search). On a surface with
 /// a kink (degree 1 in a direction) the iteration can stall on the kink line when the seed lies
 /// across it; it is then retried from points slightly to either side of where it stalled.
-fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> Option<Uv> {
-    let (found, stalled) = newton(surf, p, uv0, tol);
+fn local_project(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64, meter: &Meter) -> Option<Uv> {
+    let (found, stalled) = newton(surf, p, uv0, tol, meter);
     if found.is_some() {
         return found;
     }
     let dom = surf.domain();
     let (du, dv) = (1e-6 * dom.u.range.len(), 1e-6 * dom.v.range.len());
     let starts = [(-du, 0.0), (du, 0.0), (0.0, -dv), (0.0, dv)];
-    starts.iter().find_map(|&(a, b)| newton(surf, p, Uv::new(dom.u.range.clamp(stalled.u + a), dom.v.range.clamp(stalled.v + b)), tol).0)
+    starts.iter().find_map(|&(a, b)| newton(surf, p, Uv::new(dom.u.range.clamp(stalled.u + a), dom.v.range.clamp(stalled.v + b)), tol, meter).0)
 }
 
 /// One Gauss-Newton run: the projection when it lands within `tol`, and where the run ended.
-fn newton(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> (Option<Uv>, Uv) {
-    crate::work::add(&crate::work::NEWTON_RUNS, 1);
+fn newton(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64, meter: &Meter) -> (Option<Uv>, Uv) {
+    meter.newton_run();
     let dom = surf.domain();
     let (mut u, mut v) = (uv0.u, uv0.v);
     for _ in 0..50 {
@@ -331,7 +332,7 @@ fn newton(surf: &dyn ParametricSurface, p: Point3, uv0: Uv, tol: f64) -> (Option
 /// Global (grid search) projections allowed per split face. Each costs about `64 nu nv` surface
 /// evaluations (degree at most `MAX_DEGREE`), so a face costs a constant times its surface size
 /// however many edges bound it; every other projection is Newton from a nearby projected point.
-const MAX_GLOBAL: usize = 8;
+pub const MAX_GLOBAL: usize = 8;
 
 /// Projection onto the surface of one split face: local Newton from a seed, with a capped number
 /// of global searches as the fallback.
@@ -339,18 +340,19 @@ struct Proj<'a> {
     surf: &'a NurbsSurface,
     tol: f64,
     global_left: usize,
+    meter: &'a Meter,
 }
 
 impl Proj<'_> {
     /// Project `p` from `seed` when there is one, else (or when Newton fails) by a global search.
     fn project(&mut self, p: Point3, seed: Option<Uv>) -> Result<Uv, String> {
         if let Some(uv0) = seed {
-            if let Some(uv) = local_project(self.surf, p, uv0, self.tol) {
+            if let Some(uv) = local_project(self.surf, p, uv0, self.tol, self.meter) {
                 return Ok(uv);
             }
             // The seed may lie across a kink (a corner of a polygonal section): start from the
             // middle of the knot spans around where the iteration stalled.
-            let (_, st) = newton(self.surf, p, uv0, self.tol);
+            let (_, st) = newton(self.surf, p, uv0, self.tol, self.meter);
             if let Some(uv) = self.neighbour_spans(p, st) {
                 return Ok(uv);
             }
@@ -359,11 +361,11 @@ impl Proj<'_> {
             return Err("too many boundary points needed a global projection".into());
         }
         self.global_left -= 1;
-        crate::work::add(&crate::work::GLOBAL_PROJECTIONS, 1);
+        self.meter.global_projection();
         // No seed: a seed on the far side of a kink would trap the search in a local minimum.
         let uv = self.surf.project(p, None).map_err(|e| e.to_string())?.uv;
         // A global result can stall on a kink line; polish it from either side.
-        Ok(if (self.surf.jet(uv).p - p).norm() > self.tol { local_project(self.surf, p, uv, self.tol).unwrap_or(uv) } else { uv })
+        Ok(if (self.surf.jet(uv).p - p).norm() > self.tol { local_project(self.surf, p, uv, self.tol, self.meter).unwrap_or(uv) } else { uv })
     }
 }
 
@@ -379,7 +381,7 @@ impl Proj<'_> {
         };
         let us = spans(&s.knots_u, s.degree_u, s.nu, st.u).into_iter().map(|u| Uv::new(u, st.v));
         let vs = spans(&s.knots_v, s.degree_v, s.nv, st.v).into_iter().map(|v| Uv::new(st.u, v));
-        us.chain(vs).find_map(|start| newton(s, p, start, self.tol).0)
+        us.chain(vs).find_map(|start| newton(s, p, start, self.tol, self.meter).0)
     }
 }
 
@@ -422,12 +424,12 @@ fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: I
         uvs[i] = uv;
         prev = Some(uv);
     }
-    let (surf, tol) = (proj.surf, proj.tol);
+    let (surf, tol, meter) = (proj.surf, proj.tol, proj.meter);
     // End points: projected from the nearest sample; on a generator when within `tol` of it.
     let mut ends = Vec::new();
     for (hi, t, near) in [(false, range.lo, uvs[0]), (true, range.hi, uvs[SAMPLES - 1])] {
         let p = curve.eval(t);
-        let Some(uv) = local_project(surf, p, near, tol) else { continue };
+        let Some(uv) = local_project(surf, p, near, tol, meter) else { continue };
         for (k, &uk) in us.iter().enumerate() {
             if (surf.jet(Uv::new(uk, uv.v)).p - p).norm() <= tol {
                 ends.push((hi, k));
@@ -444,7 +446,7 @@ fn crossings(proj: &mut Proj, curve: &dyn sm_geom_api::ParametricCurve, range: I
             let (mut ta, mut tb, mut uva) = (ts[i], ts[i + 1], uvs[i]);
             for _ in 0..80 {
                 let tm = 0.5 * (ta + tb);
-                let uvm = local_project(surf, curve.eval(tm), uva, tol).ok_or("projection failed while locating a generator crossing")?;
+                let uvm = local_project(surf, curve.eval(tm), uva, tol, meter).ok_or("projection failed while locating a generator crossing")?;
                 if (uvm.u - uk) * da > 0.0 {
                     (ta, uva) = (tm, uvm);
                 } else {
@@ -489,9 +491,9 @@ fn expand(sub: &BTreeMap<usize, Vec<usize>>, c: Coedge) -> Vec<Coedge> {
 /// Split face `fi` of `s` in place. Returns the pieces after the first (which replaces the face
 /// in its slot) and records the cut edges, now dead, in `children`. On failure everything the
 /// attempt appended is truncated away and nothing else has changed.
-fn try_split(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>) -> Result<Vec<Face>, String> {
+fn try_split(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>, meter: &Meter) -> Result<Vec<Face>, String> {
     let lens = (s.vertices.len(), s.curves.len(), s.edges.len(), s.surfaces.len());
-    let r = split_face(s, fi, dir, tol, children);
+    let r = split_face(s, fi, dir, tol, children, meter);
     if r.is_err() {
         s.vertices.truncate(lens.0);
         s.curves.truncate(lens.1);
@@ -501,7 +503,7 @@ fn try_split(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeM
     r
 }
 
-fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>) -> Result<Vec<Face>, String> {
+fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTreeMap<usize, Vec<usize>>, meter: &Meter) -> Result<Vec<Face>, String> {
     let face = s.faces[fi].clone();
     let SurfaceDef::Nurbs(orig) = &s.surfaces[face.surface].def else { return Err("not a NURBS surface".into()) };
     let orig = orig.clone();
@@ -521,7 +523,7 @@ fn split_face(s: &mut Solid, fi: usize, dir: Dir, tol: f64, children: &mut BTree
         return Err("another edge appears twice in the loop".into());
     }
     let etol = tol.max(1e-6);
-    let mut proj = Proj { surf: &base, tol: etol * 10.0, global_left: MAX_GLOBAL };
+    let mut proj = Proj { surf: &base, tol: etol * 10.0, global_left: MAX_GLOBAL, meter };
     // ---- project the edges in loop order, each seeded from the previous one
     let mut tracks: BTreeMap<usize, (Hits, Track)> = BTreeMap::new();
     let mut seed: Option<Uv> = None;
