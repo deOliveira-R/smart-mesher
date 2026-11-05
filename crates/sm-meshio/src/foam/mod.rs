@@ -230,6 +230,11 @@ pub struct FoamOptions {
     /// Split cells whose checkMesh determinant is below [`SMALL_DETERMINANT`] into face-pyramid
     /// sub-cells (ruling INT-8). On by default; meshes without such cells are unaffected.
     pub split_small_determinant: bool,
+    /// Patch type per face / side set name, applied to the patch built from that set (`Sets` and
+    /// `Explicit` sources). The way to ask for `empty` or `wedge` patches without listing every
+    /// patch. A name that is no set, or whose set is not a patch of this build, is an error.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub patch_types: std::collections::BTreeMap<String, FoamPatchType>,
 }
 
 impl Default for FoamOptions {
@@ -242,6 +247,7 @@ impl Default for FoamOptions {
             face_zones: Vec::new(),
             decks: Vec::new(),
             split_small_determinant: true,
+            patch_types: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -284,6 +290,11 @@ impl FoamOptions {
     /// Enable or disable the small-determinant split.
     pub fn split_small_determinant(mut self, on: bool) -> Self {
         self.split_small_determinant = on;
+        self
+    }
+    /// Give the patch built from face / side set `set` the type `t`.
+    pub fn patch_type(mut self, set: impl Into<String>, t: FoamPatchType) -> Self {
+        self.patch_types.insert(set.into(), t);
         self
     }
     /// Attach one deck record.

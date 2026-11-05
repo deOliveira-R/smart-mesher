@@ -39,6 +39,14 @@ pub struct ExportParams {
     pub provenance: bool,
     /// Return the bytes base64-encoded in the result.
     pub inline: bool,
+    /// Per-format options (an object); the exporter validates them.
+    pub options: Option<Value>,
+    /// OpenFOAM only: split cells that fail checkMesh's determinant check (on when `None`).
+    pub split_small_determinant: Option<bool>,
+    /// OpenFOAM only: face (side) sets written as `empty` patches.
+    pub empty_patches: Vec<String>,
+    /// OpenFOAM only: face (side) sets written as `wedge` patches.
+    pub wedge_patches: Vec<String>,
 }
 
 /// Adjacency from the registered `topo.related` query, owning a handle to the engine so the host
@@ -182,6 +190,22 @@ impl<'w> SessionHost<'w> {
                 ));
             }
         };
+        if !p.options.as_ref().is_none_or(Value::is_null) {
+            return Err(SessionError::bad_request(format!(
+                "`{}` takes no `options`",
+                format_name(format)
+            )));
+        }
+        let foam_only = p.split_small_determinant == Some(false) || !p.empty_patches.is_empty() || !p.wedge_patches.is_empty();
+        if foam_only && format != ExportFormat::Openfoam {
+            return Err(SessionError::bad_request(format!(
+                "`split_small_determinant`, `empty_patches` and `wedge_patches` only apply to `openfoam`, not `{}`",
+                format_name(format)
+            )));
+        }
+        if let Some(n) = p.empty_patches.iter().find(|n| p.wedge_patches.contains(n)) {
+            return Err(SessionError::bad_request(format!("set `{n}` is named in both `empty_patches` and `wedge_patches`")));
+        }
         if p.provenance && format != ExportFormat::Smsh {
             return Err(SessionError::bad_request(format!(
                 "`provenance` is only recorded in `smsh` exports, not `{}`",
@@ -197,6 +221,9 @@ impl<'w> SessionHost<'w> {
         let state = self.ws.state();
         let mut req = ExportRequest::new(fem_format);
         req.mesh = p.mesh;
+        req.split_small_determinant = p.split_small_determinant.unwrap_or(true);
+        req.empty_patches = p.empty_patches.clone();
+        req.wedge_patches = p.wedge_patches.clone();
         if p.provenance {
             req.provenance = provenance_of(self.ws.status().position);
         }
@@ -236,6 +263,7 @@ impl<'w> SessionHost<'w> {
                     mesh: *mesh,
                     provenance: *provenance,
                     inline: false,
+                    ..ExportParams::default()
                 })?;
                 to_json(&r)
             }
@@ -360,7 +388,7 @@ pub(crate) fn resolve_path(root: Option<&Path>, path: &str) -> Result<PathBuf, S
 fn format_of(path: &Path) -> Result<ExportFormat, SessionError> {
     known_format_of(path).ok_or_else(|| {
         SessionError::bad_request(format!(
-            "cannot infer the export format from {}: use `.smsh`, `.vtu`, `.exo`, `.e`, `.g` or `.exodus`, or pass `format` (`openfoam` always needs it)",
+            "cannot infer the export format from {}: use `.smsh`, `.vtu`, `.exo`, `.e`, `.g`, `.exodus`, `.h5m`, `.msh` or `.smrt`, or pass `format` (`openfoam` always needs it)",
             path.display()
         ))
     })
@@ -372,19 +400,26 @@ fn parse_format(s: &str) -> Result<ExportFormat, SessionError> {
         "vtu" => Ok(ExportFormat::Vtu),
         "exodus" => Ok(ExportFormat::Exodus),
         "openfoam" => Ok(ExportFormat::Openfoam),
+        "dagmc" => Ok(ExportFormat::Dagmc),
+        "gmsh" => Ok(ExportFormat::Gmsh),
+        "smrt" => Ok(ExportFormat::Smrt),
         other => Err(SessionError::bad_request(format!(
-            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus` or `openfoam`)"
+            "unknown export format `{other}` (expected `smsh`, `vtu`, `exodus`, `openfoam`, `dagmc`, `gmsh` or `smrt`)"
         ))),
     }
 }
 
-/// The format a known extension names (`.smsh`, `.vtu`, `.exo` `.e` `.g` `.exodus`); none for any
+/// The format a known extension names (`.smsh`, `.vtu`, `.exo` `.e` `.g` `.exodus`, `.h5m`, `.msh`,
+/// `.smrt`); none for any
 /// other extension. OpenFOAM is never inferred: its path is a directory.
 fn known_format_of(path: &Path) -> Option<ExportFormat> {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("smsh") => Some(ExportFormat::Smsh),
         Some("vtu") => Some(ExportFormat::Vtu),
         Some("exo" | "e" | "g" | "exodus") => Some(ExportFormat::Exodus),
+        Some("h5m") => Some(ExportFormat::Dagmc),
+        Some("msh") => Some(ExportFormat::Gmsh),
+        Some("smrt") => Some(ExportFormat::Smrt),
         _ => None,
     }
 }
@@ -394,6 +429,9 @@ fn format_name(f: ExportFormat) -> &'static str {
         ExportFormat::Vtu => "vtu",
         ExportFormat::Exodus => "exodus",
         ExportFormat::Openfoam => "openfoam",
+        ExportFormat::Dagmc => "dagmc",
+        ExportFormat::Gmsh => "gmsh",
+        ExportFormat::Smrt => "smrt",
         _ => "smsh",
     }
 }

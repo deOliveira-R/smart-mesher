@@ -578,7 +578,7 @@ fn fixed_tools_map_to_protocol_requests() {
     assert!(matches!(&reqs[1], Request::Hash { at: None }));
     assert!(matches!(&reqs[2], Request::Hash { at: Some(sm_op_api::Rev::Empty) }));
     assert!(matches!(&reqs[3], Request::Hash { at: Some(sm_op_api::Rev::Node(_)) }));
-    assert!(matches!(&reqs[4], Request::Export { path: Some(p), format: Some(ExportFormat::Vtu), mesh: Some(_), provenance: true, inline: true } if p == "o.vtu"));
+    assert!(matches!(&reqs[4], Request::Export { path: Some(p), format: Some(ExportFormat::Vtu), mesh: Some(_), provenance: true, inline: true, .. } if p == "o.vtu"));
     assert!(matches!(&reqs[5], Request::Status));
     assert!(matches!(&reqs[6], Request::Branch { name, at: Some(_) } if name == "alt"));
     assert!(matches!(&reqs[7], Request::Checkout { rev: sm_op_api::Rev::Ref(b) } if b == "main"));

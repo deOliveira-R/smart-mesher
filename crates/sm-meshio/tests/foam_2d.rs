@@ -129,6 +129,17 @@ fn a_one_layer_slab_with_empty_patches_is_not_split() {
 }
 
 #[test]
+fn patch_types_by_set_name_match_the_explicit_form() {
+    let m = slab(3);
+    let by_name = FoamOptions::new().patch_type("front", FoamPatchType::Empty).patch_type("back", FoamPatchType::Empty);
+    let a = assert_unsplit(&m, &by_name, 9);
+    let b = assert_unsplit(&m, &slab_opts(FoamPatchType::Empty, FoamPatchType::Empty), 9);
+    assert_eq!(a, b);
+    // An unknown set is an error.
+    assert!(build_polymesh(&m, &FoamOptions::new().patch_type("nope", FoamPatchType::Empty)).is_err());
+}
+
+#[test]
 fn only_the_empty_patch_set_decides_the_directions() {
     // Front empty, back a plain patch: the normals still say z.
     let m = slab(2);
