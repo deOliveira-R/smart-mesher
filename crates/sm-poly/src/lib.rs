@@ -23,6 +23,7 @@ mod prep;
 mod resolver;
 mod stats;
 
+#[cfg(feature = "test-hooks")]
 pub use agglom::with_unchecked_merges;
 pub use dual::dualize;
 #[doc(hidden)]

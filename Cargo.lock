@@ -1665,6 +1665,7 @@ dependencies = [
  "sm-mesh",
  "sm-mesh-api",
  "sm-op-api",
+ "sm-poly",
  "sm-quality",
  "sm-testkit",
  "sm-topo-api",
