@@ -46,7 +46,7 @@ fn import_1000_bricks(c: &mut Criterion) {
         g.bench_function(label, |b| {
             b.iter(|| {
                 let mut s = session(Arc::clone(&store));
-                let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check };
+                let op = ImportStep { source: Source::sha256(r.sha256.clone()), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check, attributes: None };
                 let q = QuietControl::new();
                 s.apply(&op, sm_op_api::Meta::new("bench", "", ""), &q.control()).expect("import")
             })

@@ -14,6 +14,7 @@
 
 mod args;
 mod assembly;
+mod attrs;
 mod budget;
 mod decode;
 mod edge;
