@@ -446,3 +446,139 @@ pub fn registry_w2() -> Registry {
 pub fn engine_w2() -> Engine {
     Engine::new(Arc::new(registry_w2()), Services::new(), Arc::new(DerivedCache::default())).unwrap()
 }
+
+// ---- script-record demo ops ----------------------------------------------------------------------
+
+/// A mode enum for [`Zoo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ZooMode {
+    /// First.
+    Alpha,
+    /// Second.
+    Beta,
+}
+
+/// A nested object for [`Zoo`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ZooNested {
+    /// Floats.
+    pub a: Vec<f64>,
+    /// Optional text.
+    pub b: Option<String>,
+}
+
+/// Parameters of every shape: nested objects, arrays, i64, f64, bool, enum strings, optional fields, ids and free-form JSON.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Zoo {
+    /// Text.
+    pub name: String,
+    /// Integer.
+    pub n: i64,
+    /// Float.
+    pub x: f64,
+    /// Flag.
+    pub flag: bool,
+    /// Enum.
+    pub mode: ZooMode,
+    /// Nested object.
+    pub nested: Option<ZooNested>,
+    /// Strings.
+    #[serde(default)]
+    pub list: Vec<String>,
+    /// A face.
+    #[schemars(extend("x-entity-kind" = ["TopoFace"]))]
+    pub face: Option<EntityId>,
+    /// Several ids.
+    #[serde(default)]
+    pub ids: Vec<EntityId>,
+    /// Free-form JSON.
+    pub extra: Option<serde_json::Value>,
+}
+
+impl TypedOp for Zoo {
+    const NAME: &'static str = "test.zoo";
+    fn apply(&self, _: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        Ok(())
+    }
+}
+
+/// Free-form parameters: any top-level key.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ZooFree {
+    /// Anything.
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, serde_json::Value>,
+}
+
+impl TypedOp for ZooFree {
+    const NAME: &'static str = "test.zoo_free";
+    fn apply(&self, _: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        Ok(())
+    }
+}
+
+/// Where an input came from.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ImportSource {
+    /// Content hash.
+    pub sha256: String,
+}
+
+/// An op that names a staged input.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Import {
+    /// The staged file.
+    pub source: ImportSource,
+    /// A label.
+    pub label: Option<String>,
+}
+
+impl TypedOp for Import {
+    const NAME: &'static str = "test.import";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.layer_mut::<DemoModel>()?.notes.push(format!("import {}", self.source.sha256));
+        Ok(())
+    }
+}
+
+/// Version 2 of an op whose version 1 called `label` `name`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Legacy {
+    /// The label.
+    pub label: String,
+    /// A count.
+    pub count: u32,
+}
+
+impl TypedOp for Legacy {
+    const NAME: &'static str = "test.legacy";
+    const VERSION: u32 = 2;
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        ctx.layer_mut::<DemoModel>()?.notes.push(format!("{}#{}", self.label, self.count));
+        Ok(())
+    }
+}
+
+/// [`registry_w2`] plus the script-record ops.
+pub fn registry_script() -> Registry {
+    let mut r = registry_w2();
+    r.register::<Zoo>().unwrap();
+    r.register::<ZooFree>().unwrap();
+    r.register::<Import>().unwrap();
+    r.register::<Legacy>().unwrap();
+    r.register_migration("test.legacy", 1, |mut v| {
+        if let Some(m) = v.as_object_mut()
+            && let Some(n) = m.remove("name")
+        {
+            m.insert("label".into(), n);
+        }
+        Ok(v)
+    })
+    .unwrap();
+    r
+}
+
+pub fn engine_script() -> Engine {
+    Engine::new(Arc::new(registry_script()), Services::new(), Arc::new(DerivedCache::default())).unwrap()
+}

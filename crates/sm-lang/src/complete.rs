@@ -79,7 +79,7 @@ const COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// Parameters of the commands that take any (a [`ParamInfo`] each).
-fn command_params(name: &str) -> Option<Vec<ParamInfo>> {
+fn command_params(name: &str, formats: &[String]) -> Option<Vec<ParamInfo>> {
     let p = |n: &str, required: bool, ty: &str, d: &str, choices: &[&str], is_entity: bool, kinds: Vec<EntityKind>| ParamInfo {
         name: n.to_owned(),
         required,
@@ -93,7 +93,15 @@ fn command_params(name: &str) -> Option<Vec<ParamInfo>> {
     Some(match name {
         "session.export" => vec![
             p("path", true, "string", "destination file", &[], false, vec![]),
-            p("format", false, "\"smsh\" | \"vtu\" | \"exodus\" | \"openfoam\"", "output format (default: from the extension; openfoam needs it, path is the case directory)", &["smsh", "vtu", "exodus", "openfoam"], false, vec![]),
+            p(
+                "format",
+                false,
+                &formats.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>().join(" | "),
+                "output format (default: from the extension; openfoam needs it, path is the case directory)",
+                &formats.iter().map(String::as_str).collect::<Vec<_>>(),
+                false,
+                vec![],
+            ),
             p("mesh", false, "id", "the mesh to export (default: the only one)", &[], true, vec![EntityKind::Mesh]),
             p("provenance", false, "bool", "embed the timeline hash", &[], false, vec![]),
         ],
@@ -510,7 +518,8 @@ impl<H: Host + ?Sized> Interpreter<'_, H> {
         segs.reverse();
         let written = segs.join(".");
         let name = if segs.len() == 1 { self.aliases.get(&written).cloned().unwrap_or(written) } else { written };
-        let params = match command_params(&name) {
+        let formats = self.host.export_formats();
+        let params = match command_params(&name, &formats) {
             Some(p) => p,
             None => self.lookup_callable(&name)?.params(),
         };
