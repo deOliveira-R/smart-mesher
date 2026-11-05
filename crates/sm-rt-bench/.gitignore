@@ -1,0 +1,6 @@
+# Local STEP models (`--model`) and everything derived from them are never committed.
+/models/
+/local/
+*.step
+*.stp
+*.h5m

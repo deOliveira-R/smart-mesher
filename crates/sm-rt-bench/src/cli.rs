@@ -1,0 +1,244 @@
+//! Command line of `smrt-bench`: `gen`, `run`, `report`, `self-test`, `docker-check`.
+//!
+//! Options are `--key value` pairs and bare flags; there is no argument-parser dependency.
+
+use crate::adapter::{Adapter, Workload, stub_adapter};
+use crate::cases::{self, Case, Scale};
+use crate::error::{BenchError, Result};
+use crate::formats::{Facets, Rays};
+use crate::result::{BenchEnv, Env, ResultFile, write_result};
+use crate::runner::{RunConfig, run_case};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+struct Args {
+    cmd: String,
+    opts: BTreeMap<String, String>,
+    flags: Vec<String>,
+}
+
+const FLAGS: [&str; 4] = ["check", "print", "dry-run", "help"];
+
+fn parse(args: &[String]) -> Result<Args> {
+    let cmd = args.first().cloned().ok_or_else(|| BenchError::Usage(usage()))?;
+    let mut opts = BTreeMap::new();
+    let mut flags = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        let key = a.strip_prefix("--").ok_or_else(|| BenchError::Usage(format!("unexpected argument {a:?}")))?;
+        if FLAGS.contains(&key) {
+            flags.push(key.to_string());
+            i += 1;
+        } else {
+            let v = args.get(i + 1).ok_or_else(|| BenchError::Usage(format!("--{key} needs a value")))?;
+            opts.insert(key.to_string(), v.clone());
+            i += 2;
+        }
+    }
+    Ok(Args { cmd, opts, flags })
+}
+
+fn usage() -> String {
+    "smrt-bench <gen|run|report|self-test|docker-check> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check".to_string()
+}
+
+fn crate_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn num<T: std::str::FromStr>(a: &Args, key: &str, default: T) -> Result<T> {
+    match a.opts.get(key) {
+        None => Ok(default),
+        Some(v) => v.parse().map_err(|_| BenchError::Usage(format!("--{key}: cannot parse {v:?}"))),
+    }
+}
+
+fn scale_of(a: &Args) -> Result<Scale> {
+    let name = a.opts.get("scale").map_or("reduced", String::as_str);
+    let mut s = Scale::parse(name).ok_or_else(|| BenchError::Usage(format!("unknown scale {name:?}")))?;
+    if let Some(n) = a.opts.get("rays") {
+        let n: usize = n.parse().map_err(|_| BenchError::Usage("--rays".into()))?;
+        s.rays = n;
+        s.f1_rays = n;
+    }
+    Ok(s)
+}
+
+fn cases_of(a: &Args) -> Result<Vec<Case>> {
+    match a.opts.get("cases") {
+        None => Ok(Case::ALL.to_vec()),
+        Some(list) => list.split(',').map(|n| Case::parse(n.trim()).ok_or_else(|| BenchError::Usage(format!("unknown case {n:?}")))).collect(),
+    }
+}
+
+fn git_sha() -> String {
+    std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(crate_dir()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+/// Entry point: returns the process exit code (0 ok, 1 failure, 2 unavailable or unblessed).
+pub fn main_with(args: &[String]) -> Result<i32> {
+    let a = parse(args)?;
+    if a.flags.iter().any(|f| f == "help") {
+        println!("{}", usage());
+        return Ok(0);
+    }
+    match a.cmd.as_str() {
+        "gen" => cmd_gen(&a),
+        "run" => run(&a),
+        "report" => report(&a),
+        "self-test" => {
+            let checks = crate::selftest::self_test()?;
+            for c in &checks {
+                println!("{} {}: {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail);
+            }
+            Ok(i32::from(checks.iter().any(|c| !c.ok)))
+        }
+        "docker-check" => {
+            let mut code = 0;
+            for (name, st) in crate::docker::docker_check(&crate_dir())? {
+                println!("{name}: {st:?}");
+                if !matches!(st, crate::docker::ImageStatus::Built { .. }) {
+                    code = 2;
+                }
+            }
+            Ok(code)
+        }
+        other => Err(BenchError::Usage(format!("unknown command {other:?}\n{}", usage()))),
+    }
+}
+
+fn cmd_gen(a: &Args) -> Result<i32> {
+    let scale = scale_of(a)?;
+    let cases = cases_of(a)?;
+    let expected_path = a.opts.get("expected").map_or_else(|| crate_dir().join("expected_sha256.txt"), PathBuf::from);
+    let expected = if a.flags.iter().any(|f| f == "check") { Some(std::fs::read_to_string(&expected_path).map_err(|e| BenchError::io(&expected_path, e))?) } else { None };
+    let out_dir = a.opts.get("out").map(PathBuf::from);
+    let mut code = 0;
+    for case in cases {
+        let data = cases::build(case, &scale)?;
+        if let Some(dir) = &out_dir {
+            data.write(dir)?;
+        }
+        if a.flags.iter().any(|f| f == "print") {
+            for l in cases::expected_lines(&scale, &data)? {
+                println!("{l}");
+            }
+        }
+        if let Some(text) = &expected {
+            let rep = cases::check_against(text, &scale, &data)?;
+            println!("{} {}: {} matched, {} mismatched, {} unblessed for this platform", scale.name, case.name(), rep.matched, rep.mismatched.len(), rep.unblessed.len());
+            for m in &rep.mismatched {
+                println!("  MISMATCH {m}");
+            }
+            for m in &rep.unblessed {
+                println!("  unblessed {m}");
+            }
+            if !rep.ok() {
+                code = 1;
+            } else if !rep.unblessed.is_empty() && code == 0 {
+                code = 2;
+            }
+        }
+        if let Some(dir) = a.opts.get("legacy-data")
+            && matches!(case, Case::C1 | Case::C2 | Case::C3)
+        {
+            verify_legacy(Path::new(dir), case, &data)?;
+            println!("{}: equals the W3a files in {dir}", case.name());
+        }
+    }
+    Ok(code)
+}
+
+fn verify_legacy(dir: &Path, case: Case, data: &cases::CaseData) -> Result<()> {
+    let d = dir.join(case.name());
+    let fpath = d.join("facets.bin");
+    let rpath = d.join("rays.bin");
+    let f = Facets::from_bytes(&std::fs::read(&fpath).map_err(|e| BenchError::io(&fpath, e))?)?;
+    let r = Rays::from_bytes(&std::fs::read(&rpath).map_err(|e| BenchError::io(&rpath, e))?)?;
+    if f != data.facets || r != data.rays.truncated(r.len()) || r.len() != data.rays.len() {
+        return Err(BenchError::Check(format!("{} differs from the W3a files (use --rays {} to match the W3a count)", case.name(), r.len())));
+    }
+    Ok(())
+}
+
+fn run(a: &Args) -> Result<i32> {
+    let scale = scale_of(a)?;
+    let trackers: Vec<&str> = a.opts.get("trackers").map_or("stub", String::as_str).split(',').collect();
+    for t in &trackers {
+        if *t != "stub" {
+            return Err(BenchError::Unavailable(format!("tracker {t:?}: sm-rt, DAGMC and XDG rows are RTBENCH-B (this build has the stub only)")));
+        }
+    }
+    let threads: Vec<usize> = a.opts.get("threads").map_or("1", String::as_str).split(',').map(|s| s.trim().parse().map_err(|_| BenchError::Usage("--threads".into()))).collect::<Result<_>>()?;
+    let cfg = RunConfig { reps: num(a, "reps", 7)?, warmup: num(a, "warmup", 3)?, threads, histories: num(a, "histories", 10_000)?, ..RunConfig::default() };
+    let out_dir = a.opts.get("out").map_or_else(|| crate_dir().join("results"), PathBuf::from);
+    if let Some(model) = a.opts.get("model") {
+        return run_model(a, Path::new(model), &cfg, &out_dir);
+    }
+    let mut code = 0;
+    for case in cases_of(a)? {
+        let data = cases::build(case, &scale)?;
+        let mut adapters: Vec<Box<dyn Adapter>> = match stub_adapter(&data) {
+            Ok(s) => vec![Box::new(s)],
+            Err(e) => {
+                println!("{}: skipped ({e})", case.name());
+                code = code.max(2);
+                continue;
+            }
+        };
+        let workloads: Vec<Workload> = cfg.workloads.clone();
+        let cfg1 = RunConfig { workloads, ..cfg.clone() };
+        let (mut file, agreements) = run_case(&data, &mut adapters, "surface", &cfg1, Env::detect())?;
+        file.git_sha = git_sha();
+        let path = write_result(&out_dir, &file)?;
+        let failed: usize = agreements.iter().map(|g| g.failed).sum();
+        println!("{}: {} rows, {failed} disagreements, result_hash {} -> {}", case.name(), file.rows.len(), file.result_hash, path.display());
+        if failed > 0 {
+            code = 1;
+        }
+    }
+    let env_path = out_dir.join("bench-env.json");
+    if !env_path.exists() {
+        std::fs::write(&env_path, serde_json::to_vec_pretty(&BenchEnv::detect())?).map_err(|e| BenchError::io(&env_path, e))?;
+    }
+    Ok(code)
+}
+
+fn run_model(a: &Args, model: &Path, cfg: &RunConfig, out_dir: &Path) -> Result<i32> {
+    let bytes = std::fs::read(model).map_err(|e| BenchError::io(model, e))?;
+    let sag: f64 = num(a, "sag", 1e-2)?;
+    let rays: usize = num(a, "rays", 1000)?;
+    let data = cases::build_model(&bytes, sag, rays)?;
+    println!("model: {} triangles, {} rays, sag {sag}, threads {:?}", data.manifest.triangles, data.manifest.rays, cfg.threads);
+    if a.flags.iter().any(|f| f == "dry-run") {
+        println!("dry run: nothing written");
+        return Ok(0);
+    }
+    // No tracker in this build can run a general model (stub: spheres and boxes only), so the
+    // result has no rows; it records the case only. It is written outside the repository only.
+    let mut file = ResultFile::new("model", "model", Env::detect());
+    file.model_run = true;
+    file.git_sha = git_sha();
+    file.seal()?;
+    let path = write_result(out_dir, &file)?;
+    println!("wrote {}", path.display());
+    Ok(0)
+}
+
+fn report(a: &Args) -> Result<i32> {
+    let dir = a.opts.get("results").ok_or_else(|| BenchError::Usage("report needs --results DIR".into()))?;
+    let mut files = Vec::new();
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| BenchError::io(dir, e))?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json") && p.file_name().is_some_and(|n| n != "bench-env.json")).collect();
+    paths.sort();
+    for p in paths {
+        let text = std::fs::read_to_string(&p).map_err(|e| BenchError::io(&p, e))?;
+        files.push(ResultFile::from_json(&text)?);
+    }
+    let md = crate::report::render(&files)?;
+    match a.opts.get("out") {
+        Some(o) => std::fs::write(o, md).map_err(|e| BenchError::io(o, e))?,
+        None => print!("{md}"),
+    }
+    Ok(0)
+}
