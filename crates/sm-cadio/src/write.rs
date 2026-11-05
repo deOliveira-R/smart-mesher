@@ -384,6 +384,11 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
 
 /// Write the bodies of a session state (its `model` layer) as a STEP file.
 ///
+/// Beyond the [`write_step`] losses, colors and group/name memberships are reported for every
+/// exported cell (selected volumes, their faces, edges and vertices, and the bodies holding
+/// them). Order: the `write_step` losses, then per color row (row order) its volumes then its
+/// faces (each ascending by cell), then per group (group order) its members in member order.
+///
 /// # Errors
 /// As [`write_step`], plus [`StepError::Export`] when the state has no `model` layer.
 pub fn export_step(state: &State, bodies: Option<&[EntityId]>, o: &WriteOptions, w: &mut dyn Write) -> Result<WriteReport, StepError> {
@@ -394,9 +399,12 @@ pub fn export_step(state: &State, bodies: Option<&[EntityId]>, o: &WriteOptions,
     let view = layer.topo();
     let volumes = volumes_of(view, bodies)?;
     let mut exported: BTreeSet<EntityId> = BTreeSet::new();
-    for &v in &volumes {
-        exported.insert(v);
-        exported.extend(view.boundary(v).iter().map(|e| e.cell));
+    // Closure of the selected volumes down to their edges and vertices.
+    let mut stack: Vec<EntityId> = volumes.clone();
+    while let Some(c) = stack.pop() {
+        if exported.insert(c) {
+            stack.extend(view.boundary(c).iter().map(|e| e.cell));
+        }
     }
     for &b in view.cells(Dim::Body) {
         if view.boundary(b).iter().any(|e| volumes.binary_search(&e.cell).is_ok()) {
