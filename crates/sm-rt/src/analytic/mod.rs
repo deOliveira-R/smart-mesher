@@ -14,4 +14,5 @@ mod tracker;
 pub(crate) use builder::has_csg;
 pub use builder::AnalyticTrackerBuilder;
 pub use check::check_overlaps;
+pub(crate) use check::check_located;
 pub use tracker::{ANALYTIC_BUILDER_VERSION, AnalyticTracker};

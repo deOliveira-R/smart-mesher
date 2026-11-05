@@ -1739,6 +1739,7 @@ dependencies = [
  "sm-testkit",
  "sm-topo-api",
  "smallvec",
+ "thiserror",
 ]
 
 [[package]]

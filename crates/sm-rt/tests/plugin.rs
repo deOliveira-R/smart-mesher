@@ -148,7 +148,7 @@ fn rt_partition_reports_structure_deterministically() {
 fn r2_rt_queries_are_listed_with_schemas() {
     let s = session();
     let reg = s.engine().registry();
-    for n in ["rt.info", "rt.check", "rt.locate", "rt.partition"] {
+    for n in ["rt.info", "rt.check", "rt.locate", "rt.partition", "rt.check_overlaps"] {
         assert!(reg.query_names().contains(&n), "{n} registered");
     }
     // Every schema generates and the entity-kind hint is present on the mesh argument.

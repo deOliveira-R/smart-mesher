@@ -62,6 +62,20 @@ fn classify(leaf: &Leaf, q: [f64; 3]) -> Option<Finding> {
 /// A leaf whose bounds are not finite cannot be sampled and gives one `csg.unbounded` issue.
 /// Each finding names the sample point, the cells, and the seed.
 pub fn check_overlaps(input: &HierInput<'_>, n_points: usize, n_rays: usize, seed: u64) -> Vec<BuildIssue> {
+    check_located(input, n_points, n_rays, seed).into_iter().map(|l| l.issue).collect()
+}
+
+/// A finding with the leaf and the local cells it names (for callers that map cells to volumes).
+pub(crate) struct Located {
+    pub issue: BuildIssue,
+    /// Index into the input's leaves.
+    pub leaf: usize,
+    /// Local cell indices (two for `csg.overlap`, none for `csg.gap`).
+    pub cells: Vec<u32>,
+}
+
+/// [`check_overlaps`] with the cells of each finding.
+pub(crate) fn check_located(input: &HierInput<'_>, n_points: usize, n_rays: usize, seed: u64) -> Vec<Located> {
     let mut out = Vec::new();
     let mut used: BTreeSet<usize> = BTreeSet::new();
     for c in &input.spec.components {
@@ -74,14 +88,14 @@ pub fn check_overlaps(input: &HierInput<'_>, n_points: usize, n_rays: usize, see
         let leaf = match Leaf::compile(csg, &ModelTolerance::DEFAULT) {
             Ok((l, _)) => l,
             Err(sm_rt_api::RtError::Build(v)) => {
-                out.extend(v);
+                out.extend(v.into_iter().map(|issue| Located { issue, leaf: i, cells: Vec::new() }));
                 continue;
             }
             Err(_) => continue,
         };
         let (lo, hi) = ([leaf.bounds.lo.x, leaf.bounds.lo.y, leaf.bounds.lo.z], [leaf.bounds.hi.x, leaf.bounds.hi.y, leaf.bounds.hi.z]);
         if (0..3).any(|k| !(lo[k].is_finite() && hi[k].is_finite() && hi[k] - lo[k] < 1e29)) {
-            out.push(BuildIssue::new("csg.unbounded", format!("leaf {i}: the bounds are not finite, so the leaf cannot be sampled")).suggest("give the leaf bounds"));
+            out.push(Located { issue: BuildIssue::new("csg.unbounded", format!("leaf {i}: the bounds are not finite, so the leaf cannot be sampled")).suggest("give the leaf bounds"), leaf: i, cells: Vec::new() });
             continue;
         }
         let lh = csg.content_hash().0;
@@ -132,16 +146,22 @@ pub fn check_overlaps(input: &HierInput<'_>, n_points: usize, n_rays: usize, see
             match f {
                 Finding::Overlap(q, a, b) => {
                     if pairs.len() < MAX_REPORT && pairs.insert((a, b)) {
-                        out.push(
-                            BuildIssue::new("csg.overlap", format!("leaf {i}: cells {a} and {b} both contain the point (seed {seed}); cells must be disjoint"))
+                        out.push(Located {
+                            issue: BuildIssue::new("csg.overlap", format!("leaf {i}: cells {a} and {b} both contain the point (seed {seed}); cells must be disjoint"))
                                 .at(Point3::new(q[0], q[1], q[2]))
                                 .suggest("make the cells disjoint (subtract one from the other)"),
-                        );
+                            leaf: i,
+                            cells: vec![a, b],
+                        });
                     }
                 }
                 Finding::Gap(q) => {
                     if n_gap < MAX_REPORT {
-                        out.push(BuildIssue::new("csg.gap", format!("leaf {i}: no cell contains the point (seed {seed})")).at(Point3::new(q[0], q[1], q[2])).suggest("add a cell for the gap or shrink the leaf bounds"));
+                        out.push(Located {
+                            issue: BuildIssue::new("csg.gap", format!("leaf {i}: no cell contains the point (seed {seed})")).at(Point3::new(q[0], q[1], q[2])).suggest("add a cell for the gap or shrink the leaf bounds"),
+                            leaf: i,
+                            cells: Vec::new(),
+                        });
                     }
                     n_gap += 1;
                 }
