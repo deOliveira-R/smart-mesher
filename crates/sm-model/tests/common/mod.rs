@@ -2,6 +2,10 @@
 //! test-only op that inserts a mesh on a volume (to exercise the meshed-volume rule).
 #![allow(dead_code)]
 
+mod geo;
+#[allow(unused_imports)]
+pub use geo::*;
+
 use std::sync::Arc;
 
 use schemars::JsonSchema;

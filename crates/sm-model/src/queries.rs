@@ -210,7 +210,7 @@ fn ellipse_extremes(frame: &sm_geom_api::Frame, a: f64, b: f64, range: Interval,
     }
 }
 
-fn edge_bbox(topo: &dyn TopologyView, e: EntityId) -> Aabb {
+pub(crate) fn edge_bbox(topo: &dyn TopologyView, e: EntityId) -> Aabb {
     let mut bb = Aabb::empty();
     for inc in topo.boundary(e) {
         if let Carrier::Point(p) = topo.carrier(inc.cell) {
@@ -236,7 +236,7 @@ fn edge_bbox(topo: &dyn TopologyView, e: EntityId) -> Aabb {
     bb
 }
 
-fn face_bbox(topo: &dyn TopologyView, f: EntityId) -> Aabb {
+pub(crate) fn face_bbox(topo: &dyn TopologyView, f: EntityId) -> Aabb {
     let mut bb = Aabb::empty();
     for &e in topo.face_edges(f) {
         bb = bb.union(&edge_bbox(topo, e));
@@ -247,7 +247,7 @@ fn face_bbox(topo: &dyn TopologyView, f: EntityId) -> Aabb {
     bb
 }
 
-fn face_area(topo: &dyn TopologyView, f: EntityId) -> Result<(f64, Option<Point3>), OpError> {
+pub(crate) fn face_area(topo: &dyn TopologyView, f: EntityId) -> Result<(f64, Option<Point3>), OpError> {
     // A whole sphere keeps its closed form: it is exact, and goldens depend on its bits (the
     // numeric `face_moments` also covers it since CR-1, to ~1e-12).
     if let Some((c, r)) = whole_sphere(topo, f) {
@@ -262,7 +262,7 @@ fn face_area(topo: &dyn TopologyView, f: EntityId) -> Result<(f64, Option<Point3
 }
 
 /// `(volume, centroid)` of a volume.
-fn volume_value(topo: &dyn TopologyView, v: EntityId) -> Result<(f64, Option<Point3>), OpError> {
+pub(crate) fn volume_value(topo: &dyn TopologyView, v: EntityId) -> Result<(f64, Option<Point3>), OpError> {
     // Whole-sphere volumes keep the exact closed form (see `face_area`).
     let faces = topo.volume_faces(v);
     if let [f] = faces

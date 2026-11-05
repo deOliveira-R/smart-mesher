@@ -15,15 +15,15 @@ use sm_topo_api::fixtures::brick;
 use sm_topo_api::{CellFlags, CoedgeKey, CoedgeSpec, CurveCarrier, FaceUseSpec, Sense, ShellKind, ShellSpec, Side, SurfaceCarrier};
 
 /// Ids produced by a primitive builder, grouped by output role.
-struct Built {
-    body: EntityId,
-    volume: EntityId,
-    faces: Vec<EntityId>,
-    edges: Vec<EntityId>,
-    vertices: Vec<EntityId>,
+pub(crate) struct Built {
+    pub(crate) body: EntityId,
+    pub(crate) volume: EntityId,
+    pub(crate) faces: Vec<EntityId>,
+    pub(crate) edges: Vec<EntityId>,
+    pub(crate) vertices: Vec<EntityId>,
 }
 
-const SOLID_OUTPUTS: &[OutputRole] = &[
+pub(crate) const SOLID_OUTPUTS: &[OutputRole] = &[
     OutputRole::new("body", &[EntityKind::TopoBody], Cardinality::One, "The new body."),
     OutputRole::new("volume", &[EntityKind::TopoVolume], Cardinality::One, "The new volume."),
     OutputRole::new("faces", &[EntityKind::TopoFace], Cardinality::Many, "The faces of the solid."),
@@ -31,18 +31,18 @@ const SOLID_OUTPUTS: &[OutputRole] = &[
     OutputRole::new("vertices", &[EntityKind::TopoVertex], Cardinality::Many, "The vertices of the solid."),
 ];
 
-fn positive(name: &str, v: f64) -> Result<f64, OpError> {
+pub(crate) fn positive(name: &str, v: f64) -> Result<f64, OpError> {
     if v.is_finite() && v > 0.0 { Ok(v) } else { Err(OpError::Invalid(format!("`{name}` must be finite and positive, got {v}"))) }
 }
 
-fn finite3(name: &str, v: [f64; 3]) -> Result<Point3, OpError> {
+pub(crate) fn finite3(name: &str, v: [f64; 3]) -> Result<Point3, OpError> {
     if v.iter().all(|c| c.is_finite()) { Ok(Point3::new(v[0], v[1], v[2])) } else { Err(OpError::Invalid(format!("`{name}` must be finite, got {v:?}"))) }
 }
 
 /// Require `lo < hi` and both finite: the derived coordinates must be representable and
 /// distinct (an extent that underflows or vanishes next to the centre would give coincident
 /// corners). Extents that are representable but below the model tolerance are accepted.
-fn span(name: &str, lo: f64, hi: f64) -> Result<(), OpError> {
+pub(crate) fn span(name: &str, lo: f64, hi: f64) -> Result<(), OpError> {
     if lo.is_finite() && hi.is_finite() && lo < hi {
         Ok(())
     } else {
@@ -54,7 +54,7 @@ fn span(name: &str, lo: f64, hi: f64) -> Result<(), OpError> {
 ///
 /// `smallest` is the smallest feature size (an extent or a diameter); one at or below the model's
 /// linear tolerance would merge points the tolerance calls identical, so it is refused.
-fn create(ctx: &mut ApplyCtx<'_>, smallest: f64, build: impl FnOnce(&mut dyn TopoHost) -> Result<Built, LayerError>) -> Result<(), OpError> {
+pub(crate) fn create(ctx: &mut ApplyCtx<'_>, smallest: f64, build: impl FnOnce(&mut dyn TopoHost) -> Result<Built, LayerError>) -> Result<(), OpError> {
     let (b, txn) = topo_txn(ctx, |topo, _model| {
         let tol = topo.tolerance().linear;
         if smallest <= tol {
@@ -175,20 +175,20 @@ impl TypedOp for CreateSphere {
     }
 }
 
-fn curve(topo: &mut dyn TopoHost, def: CurveDef) -> Result<EntityId, LayerError> {
+pub(crate) fn curve(topo: &mut dyn TopoHost, def: CurveDef) -> Result<EntityId, LayerError> {
     Ok(topo.shapes_mut()?.add_curve(def)?)
 }
 
-fn surface(topo: &mut dyn TopoHost, def: SurfaceDef) -> Result<EntityId, LayerError> {
+pub(crate) fn surface(topo: &mut dyn TopoHost, def: SurfaceDef) -> Result<EntityId, LayerError> {
     Ok(topo.shapes_mut()?.add_surface(def)?)
 }
 
-fn line2(origin: (f64, f64), dir: (f64, f64), range: Interval) -> PCurve {
+pub(crate) fn line2(origin: (f64, f64), dir: (f64, f64), range: Interval) -> PCurve {
     PCurve::Line2(Line2 { origin: Uv::new(origin.0, origin.1), dir: Uv::new(dir.0, dir.1), range })
 }
 
 /// The `sm_topo_api::fixtures::cylinder` construction with its bottom-circle centre at `base`.
-fn build_cylinder(topo: &mut dyn TopoHost, base: Point3, r: f64, h: f64) -> Result<Built, LayerError> {
+pub(crate) fn build_cylinder(topo: &mut dyn TopoHost, base: Point3, r: f64, h: f64) -> Result<Built, LayerError> {
     let top = Point3::new(base.x, base.y, base.z + h);
     let vb = topo.make_vertex(Point3::new(base.x + r, base.y, base.z))?;
     let vt = topo.make_vertex(Point3::new(base.x + r, base.y, base.z + h))?;
@@ -227,7 +227,7 @@ fn build_cylinder(topo: &mut dyn TopoHost, base: Point3, r: f64, h: f64) -> Resu
 }
 
 /// The `sm_topo_api::fixtures::sphere` construction centred on `c`.
-fn build_sphere(topo: &mut dyn TopoHost, c: Point3, r: f64) -> Result<Built, LayerError> {
+pub(crate) fn build_sphere(topo: &mut dyn TopoHost, c: Point3, r: f64) -> Result<Built, LayerError> {
     let vs = topo.make_vertex(Point3::new(c.x, c.y, c.z - r))?;
     let vn = topo.make_vertex(Point3::new(c.x, c.y, c.z + r))?;
     let frame = Frame::from_zx(c, Vector3::new(0.0, -1.0, 0.0), Vector3::new(1.0, 0.0, 0.0))?;
