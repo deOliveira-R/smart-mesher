@@ -50,7 +50,7 @@ pub fn usage() -> &'static str {
      \x20 checkout <rev>                move HEAD\n\
      \x20 fork <name> [--at hash]       branch and switch\n\
      \x20 undo | redo                   step through the timeline\n\
-     \x20 export <file> [--mesh id]     write .smsh, .vtu, .exo or (--format openfoam) a case dir\n\
+     \x20 export <file> [--mesh id]     write .smsh, .vtu, .exo, .h5m, .msh, .smrt or (--format openfoam) a case dir\n\
      \x20 stage <file>                  store a file in the input store: {sha256, bytes}\n\
      \x20 validate [--mesh id]          check a mesh (exit 1 when invalid)\n\
      \x20 quality [--mesh id] [--profile p] [--worst n]\n\
@@ -562,19 +562,26 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
             no_split_small_determinant,
             empty_patch,
             wedge_patch,
+            option,
         } => {
             let format = match format {
                 Some(Format::Smsh) => ExportFormat::Smsh,
                 Some(Format::Vtu) => ExportFormat::Vtu,
                 Some(Format::Exodus) => ExportFormat::Exodus,
                 Some(Format::Openfoam) => ExportFormat::Openfoam,
+                Some(Format::Dagmc) => ExportFormat::Dagmc,
+                Some(Format::Gmsh) => ExportFormat::Gmsh,
+                Some(Format::Smrt) => ExportFormat::Smrt,
                 None => match file.extension().and_then(|e| e.to_str()) {
                     Some("smsh") => ExportFormat::Smsh,
                     Some("vtu") => ExportFormat::Vtu,
                     Some("exo" | "exodus") => ExportFormat::Exodus,
+                    Some("h5m") => ExportFormat::Dagmc,
+                    Some("msh") => ExportFormat::Gmsh,
+                    Some("smrt") => ExportFormat::Smrt,
                     _ => {
                         return Err(Failure::usage(format!(
-                            "cannot infer the export format of {}; use a .smsh, .vtu or .exo name or pass --format (openfoam always needs it)",
+                            "cannot infer the export format of {}; use a .smsh, .vtu, .exo, .h5m, .msh or .smrt name or pass --format (openfoam always needs it)",
                             file.display()
                         )));
                     }
@@ -587,7 +594,7 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 mesh,
                 provenance: *provenance,
                 inline: false,
-                options: None,
+                options: parse_options(option)?,
                 split_small_determinant: no_split_small_determinant.then_some(false),
                 empty_patches: empty_patch.clone(),
                 wedge_patches: wedge_patch.clone(),
@@ -713,4 +720,23 @@ fn includes_of(script: &Path, text: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     scan(dir, text, 0, &mut out);
     out
+}
+
+/// `--option KEY=VALUE` flags as the `options` object of `session.export`: the value is parsed as
+/// JSON when it is valid JSON, else taken as a string. None when there are no flags.
+fn parse_options(items: &[String]) -> Result<Option<Value>, Failure> {
+    if items.is_empty() {
+        return Ok(None);
+    }
+    let mut map = serde_json::Map::new();
+    for item in items {
+        let Some((k, v)) = item.split_once('=').filter(|(k, _)| !k.is_empty()) else {
+            return Err(Failure::usage(format!("--option expects KEY=VALUE, got `{item}`")));
+        };
+        let value = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        if map.insert(k.to_owned(), value).is_some() {
+            return Err(Failure::usage(format!("--option `{k}` given twice")));
+        }
+    }
+    Ok(Some(Value::Object(map)))
 }
