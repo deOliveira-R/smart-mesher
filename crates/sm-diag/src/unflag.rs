@@ -29,6 +29,7 @@ pub struct MeshUnflagCells {
 
 impl TypedOp for MeshUnflagCells {
     const NAME: &'static str = "mesh.unflag_cells";
+    const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
         let (id, mut host, alloc, set_id) = {
