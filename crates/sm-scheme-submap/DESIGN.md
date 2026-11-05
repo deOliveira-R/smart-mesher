@@ -117,7 +117,23 @@ work is sequential, so results do not depend on the thread count.
 
 ## Deferred to W3b
 
-- Parameter-space blending through pcurves (`GenCtx::loop_uvs`), periodic and seam faces.
+- Submap on closed NURBS faces (needs the `sample_face` pcurve change; waits on O14).
 - `Reversal` (slit) corners.
 - Inner loops (holes).
 - Auto selection by score (`yes(80)` / `yes(20)` are provisional, decision 12 and ruling S1).
+
+## W3b-2: periodic faces and graded cuts
+
+- **Periodic faces.** When the carrier surface is periodic in u or v and `GenCtx::loop_uvs`
+  gives the pcurve parameters of the loop (and they line up with the logical sides node by
+  node), boundary nodes carry their unrolled `(u, v)`; cut nodes interpolate the parameters
+  and block interiors blend them (weights: 3-D chord fractions of the same lines), then the
+  node is `surface.eval(uv)`: on the surface to rounding, no projection. A seam node is one
+  key referenced from both sides, so the mesh has one column of seam nodes. Any other face, or
+  a face whose pcurves do not line up, keeps the 3-D Coons plus `snap_to_face` path unchanged
+  (planar outputs are bit-identical).
+- **Graded cut lines.** Cut nodes take the average of the chord fractions of the nearest placed
+  lattice lines on each side (a boundary line or an earlier cut) over the cut's rows; if those
+  are uniform the exact `s / (m + 1)` is kept, so uniform inputs do not move. The thin-L table
+  above is unaffected: its cuts have no interior node or uniform neighbours (the low Jacobian
+  there is the count/geometry mismatch, not the cut spacing).

@@ -11,7 +11,7 @@ use sm_scheme_api::stubs::brick_setup;
 use sm_scheme_api::{
     Applicability, Attempt, CornerPicker, Driver, FailureKind, Firm, Firmness, IntervalSolver,
     MeshInput, MeshIntent, Meshed, Params, Phase, PlanCtx, ReferenceCornerPicker,
-    ReferenceIntervalSolver, SchemeChoice, SchemeError, ScopedThreads, Sequential, SideDir, Target,
+    ReferenceIntervalSolver, SchemeChoice, SchemeRegistry, SchemeError, ScopedThreads, Sequential, SideDir, Target,
     VertexType, WholeFaces, geom,
 };
 use sm_scheme_submap::blocks::{cuts, decompose};
@@ -948,4 +948,158 @@ fn perf_large_l_shape() {
             m.vertex_count()
         );
     }
+}
+
+// ------------------------------------------------------------------------ W3b periodic faces
+
+/// Mesh the lateral face of a cylinder `r`, `h` with submap imposed Hard at `size`.
+fn mesh_cylinder(r: f64, h: f64, size: f64, pair: &Solvers) -> (Meshed<sm_mesh::Mesh>, sm_topo_api::CellComplex) {
+    use sm_topo_api::fixtures::with_op;
+    use sm_topo_api::{CellComplex, OpId};
+    let mut topo = CellComplex::new();
+    let ids = with_op(&mut topo, OpId(1), |t| sm_topo_api::fixtures::cylinder(t, r, h))
+        .expect("cylinder");
+    let lat = ids.faces[2];
+    let mut intent = sized(size);
+    intent.set_scheme(lat, SchemeChoice::new("submap", Firmness::Hard));
+    let reg = registry();
+    let driver = Driver::new(&reg, &*pair.0, &*pair.1);
+    let model = sm_model_api::Model::new();
+    let sel = [lat];
+    let out = {
+        let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+        driver
+            .mesh(
+                &input,
+                &intent,
+                &Sequential,
+                sm_mesh::MeshBuilder::surface(),
+                &mut sm_mesh_api::SerialAlloc::new(),
+            )
+            .expect("mesh the cylinder lateral face")
+    };
+    (out, topo)
+}
+
+/// Every vertex of the mesh lies on the cylinder `x^2 + y^2 = r^2`, `0 <= z <= h`.
+fn assert_on_cylinder(m: &dyn MeshRead, r: f64, h: f64) {
+    for p in points(m) {
+        assert!(((p[0] * p[0] + p[1] * p[1]).sqrt() - r).abs() < 1e-12, "{p:?} off the surface");
+        assert!(p[2] > -1e-12 && p[2] < h + 1e-12, "{p:?}");
+    }
+}
+
+#[test]
+fn periodic_cylinder_lateral_is_all_quads_with_exact_area() {
+    let (r, h) = (1.0f64, 2.0f64);
+    for pair in solver_pairs() {
+        let (out, topo) = mesh_cylinder(r, h, 0.25, &pair);
+        let m = &out.finished.mesh;
+        let (n, rows) = (25usize, 8usize);
+        assert_eq!(m.cell_count(), n * rows, "{}", pair.2);
+        // The seam is one column of nodes, not two.
+        assert_eq!(m.vertex_count(), n * (rows + 1), "{}", pair.2);
+        for c in 0..m.cell_count() {
+            assert_eq!(m.cell_corners(CellIx::new(c)).expect("c").len(), 4);
+        }
+        assert!(validate(m).is_empty(), "{}: {:?}", pair.2, validate(m));
+        assert_on_cylinder(m, r, h);
+        assert_quads_follow_normal(m, &topo);
+        // Flat quads inscribed in the cylinder: exactly n 2 r sin(pi/n) h, below 4 pi by the
+        // chord error 1 - sinc(pi/n).
+        let chord = n as f64 * 2.0 * r * (std::f64::consts::PI / n as f64).sin() * h;
+        let exact = 2.0 * std::f64::consts::PI * r * h;
+        assert!((area(m) - chord).abs() < 1e-12, "{}: {}", pair.2, area(m));
+        let bound = exact * (1.0 - (std::f64::consts::PI / n as f64).sin() / (std::f64::consts::PI / n as f64));
+        assert!(exact - area(m) <= bound * (1.0 + 1e-9) && area(m) < exact, "{}", pair.2);
+        let (lo, hi) = scaled_jacobian_range(m);
+        assert!(lo > 0.999 && hi < 1.0 + 1e-12, "{}: {lo} {hi}", pair.2);
+    }
+}
+
+#[test]
+fn periodic_cylinder_other_sizes_and_radii() {
+    let pair = &solver_pairs()[0];
+    for (r, h, size) in [(0.5, 3.0, 0.3), (2.0, 0.5, 0.4), (1.0, 2.0, 1.2)] {
+        let (out, topo) = mesh_cylinder(r, h, size, pair);
+        let m = &out.finished.mesh;
+        assert!(validate(m).is_empty());
+        assert_on_cylinder(m, r, h);
+        assert_quads_follow_normal(m, &topo);
+        assert!(area(m) < 2.0 * std::f64::consts::PI * r * h);
+    }
+}
+
+#[test]
+fn periodic_cylinder_is_deterministic_across_threads_and_runs() {
+    use sm_topo_api::fixtures::with_op;
+    use sm_topo_api::{CellComplex, OpId};
+    let mut topo = CellComplex::new();
+    let ids = with_op(&mut topo, OpId(1), |t| sm_topo_api::fixtures::cylinder(t, 1.0, 2.0))
+        .expect("cylinder");
+    let lat = ids.faces[2];
+    let mut intent = sized(0.25);
+    intent.set_scheme(lat, SchemeChoice::new("submap", Firmness::Hard));
+    let reg = registry();
+    let solver = ReferenceIntervalSolver::default();
+    let driver = Driver::new(&reg, &solver, &ReferenceCornerPicker);
+    let model = sm_model_api::Model::new();
+    let sel = [lat];
+    let run = |exec: &dyn sm_scheme_api::Executor| -> Vec<[u64; 3]> {
+        let input = MeshInput::new(&topo, &model, &WholeFaces, &sel);
+        let out = driver
+            .mesh(&input, &intent, exec, sm_mesh::MeshBuilder::surface(), &mut sm_mesh_api::SerialAlloc::new())
+            .expect("mesh");
+        points(&out.finished.mesh).iter().map(|p| p.map(f64::to_bits)).collect()
+    };
+    let one = run(&Sequential);
+    assert_eq!(one, run(&Sequential));
+    assert_eq!(one, run(&ScopedThreads(4)));
+}
+
+/// The L with counts (4, 4, 2, 4, 2, 8) and the bias scheme on the bottom edge: the lattice is
+/// `(0,0) (4,0) (4,2) (8,2) (8,4) (0,4)` and the one cut node (from the reflex corner to the
+/// middle of the left edge) inherits the grading of the bottom side, averaged with the uniform
+/// opposite side.
+#[test]
+fn graded_cut_line_follows_the_neighbouring_boundary_spacing() {
+    let l = face_of(&loops2d::l_shape());
+    let mut reg = SchemeRegistry::new();
+    sm_scheme_curve::register(&mut reg).expect("curve");
+    sm_scheme_submap::register(&mut reg).expect("submap");
+    let mut intent = counts(&[
+        (l.edges[0], 4),
+        (l.edges[1], 4),
+        (l.edges[2], 2),
+        (l.edges[3], 4),
+        (l.edges[4], 2),
+        (l.edges[5], 8),
+    ]);
+    intent.set_scheme(
+        l.edges[0],
+        SchemeChoice::with_params("bias", serde_json::json!({ "ratio": 3.0 }), Firmness::Hard),
+    );
+    let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
+    let out = mesh_with(&reg, &solver, &picker, &l, &intent, &Sequential).expect("mesh");
+    assert_eq!(
+        polygon_of(&out, l.face).verts,
+        vec![(0, 0), (4, 0), (4, 2), (8, 2), (8, 4), (0, 4)]
+    );
+    let m = &out.finished.mesh;
+    assert!(validate(m).is_empty());
+    assert_quads_follow_normal(m, &l.topo);
+    assert!((area(m) - 3.0).abs() < 1e-12);
+    let pts = points(m);
+    let mut bottom: Vec<f64> = pts.iter().filter(|p| p[1].abs() < 1e-12).map(|p| p[0]).collect();
+    bottom.sort_by(f64::total_cmp);
+    assert_eq!(bottom.len(), 5);
+    let g1 = (bottom[2] - bottom[1]) / (bottom[2] - bottom[0]);
+    assert!((g1 - 0.5).abs() > 0.05, "the bottom side is graded: {g1}");
+    let want_x = 1.0 - 0.5 * (g1 + 0.5);
+    let cut: Vec<&[f64; 3]> = pts
+        .iter()
+        .filter(|p| (p[1] - 1.0).abs() < 1e-12 && p[0] > 1e-12 && p[0] < 1.0 - 1e-12)
+        .collect();
+    assert_eq!(cut.len(), 1);
+    assert!((cut[0][0] - want_x).abs() < 1e-12, "{} vs {want_x}", cut[0][0]);
 }

@@ -5,6 +5,7 @@ use crate::blocks::{Block, Cut, cuts, decompose};
 use crate::lattice::{PointRows, lattice_polygon};
 use crate::{NAME, tfi};
 use sm_core::Point3;
+use sm_geom_api::{ParametricSurface, Uv};
 use sm_scheme_api::geom;
 use sm_scheme_api::{
     ElemShape, FailureKind, GenCtx, GenerateFailure, NodeKey, Param, Patch, PatchBuilder, SideDir,
@@ -20,6 +21,76 @@ enum State {
     Boundary,
     /// Interior node placed.
     Placed,
+}
+
+/// Surface parameters of the boundary nodes of every side (`side k`: one `[u, v]` per node but
+/// the last), read from the pcurves through [`GenCtx::loop_uvs`], when the face lies on a
+/// periodic surface. `None` (the 3-D path) for any other face or when the pcurves and the
+/// sides do not line up.
+fn side_uvs(
+    cx: &GenCtx<'_>,
+    f: sm_core::EntityId,
+    side_keys: &[Vec<NodeKey>],
+) -> Option<Vec<Vec<[f64; 2]>>> {
+    let topo = cx.input.topo;
+    let sm_topo_api::Carrier::Surface(sc) = topo.carrier(f) else {
+        return None;
+    };
+    let dom = topo.shapes().surface(sc.surface)?.domain();
+    if !(dom.u.is_periodic() || dom.v.is_periodic()) {
+        return None;
+    }
+    let layout = cx.plan.layout(f)?;
+    let lp = cx.loops(f).ok()?.into_iter().next()?;
+    let uvs = cx.loop_uvs(f, &lp)?;
+    let n = lp.nodes.len();
+    let mut out = Vec::with_capacity(side_keys.len());
+    for (side, keys) in layout.sides.iter().zip(side_keys) {
+        let c0 = *side.coedges.first()?;
+        let first = lp.uses.iter().find(|u| u.coedge == c0)?.first as usize;
+        let m = keys.len().checked_sub(1)?;
+        let mut row = Vec::with_capacity(m);
+        for (q, key) in keys[..m].iter().enumerate() {
+            let at = (first + q) % n;
+            if lp.nodes[at] != *key {
+                return None;
+            }
+            row.push(uvs[at]);
+        }
+        out.push(row);
+    }
+    Some(out)
+}
+
+/// Fractions along a cut of `m` interior nodes. Uniform unless the nearest placed lattice lines
+/// on either side (a boundary line or an earlier cut) are graded, in which case the average of
+/// their chord fractions over the cut's rows; a uniform reference gives the exact `s / (m + 1)`.
+fn cut_fractions(m: i64, refs: &[Vec<f64>]) -> Vec<f64> {
+    let uniform = |s: i64| s as f64 / (m + 1) as f64;
+    let graded = !refs.is_empty()
+        && refs.iter().any(|r| {
+            r.len() == (m + 2) as usize
+                && r.iter()
+                    .enumerate()
+                    .any(|(s, v)| (v - uniform(s as i64)).abs() > 1e-9)
+        });
+    (1..=m)
+        .map(|s| {
+            if !graded {
+                return uniform(s);
+            }
+            let ok: Vec<&Vec<f64>> = refs.iter().filter(|r| r.len() == (m + 2) as usize).collect();
+            ok.iter().map(|r| r[s as usize]).sum::<f64>() / ok.len() as f64
+        })
+        .collect()
+}
+
+fn eval_uv(surface: &Option<&dyn ParametricSurface>, w: [f64; 2]) -> [f64; 3] {
+    // `side_uv` is only `Some` with a surface (checked in `run`).
+    surface.map_or([0.0; 3], |s| {
+        let p = s.eval(Uv::new(w[0], w[1]));
+        [p.x, p.y, p.z]
+    })
 }
 
 pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFailure> {
@@ -94,6 +165,8 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
     let mut pos = vec![[0.0f64; 3]; total];
     let mut param = vec![Param::None; total];
     let mut bkey = vec![NodeKey::new(f, u32::MAX); total];
+    let side_uv = side_uvs(cx, f, &side_keys);
+    let mut uv = vec![[0.0f64; 2]; total];
     for (k, keys) in side_keys.iter().enumerate() {
         let (dx, dy) = crate::lattice::step(poly.dirs[k]);
         let (x, y) = poly.verts[k];
@@ -110,6 +183,9 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
             state[o] = State::Boundary;
             pos[o] = [p.x, p.y, p.z];
             bkey[o] = *key;
+            if let Some(su) = &side_uv {
+                uv[o] = su[k][m as usize];
+            }
         }
     }
 
@@ -136,6 +212,14 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
         Ok(([q.x, q.y, q.z], prm))
     };
 
+    let surface = match topo.carrier(f) {
+        sm_topo_api::Carrier::Surface(sc) => topo.shapes().surface(sc.surface),
+        _ => None,
+    };
+    if side_uv.is_some() && surface.is_none() {
+        return Err(internal("periodic face lost its surface".into()));
+    }
+
     // 2. Blocks and cut nodes.
     let blocks: Vec<Block> = decompose(&poly);
     let cut_lines: Vec<Cut> = cuts(&blocks);
@@ -149,15 +233,39 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
         }
         let (p, q) = (pos[po], pos[qo]);
         let m = c.j1 - c.j0 - 1;
+        // Graded spacing from the nearest placed lines to the left and right of the cut.
+        let mut refs: Vec<Vec<f64>> = Vec::new();
+        for step in [-1i64, 1] {
+            let mut x = c.x + step;
+            while let Some(line) = (c.j0..=c.j1)
+                .map(|b| rows.ordinal(x, b).map(|o| o as usize))
+                .collect::<Option<Vec<usize>>>()
+            {
+                if line.iter().all(|&o| state[o] != State::Pending) {
+                    let pts: Vec<[f64; 3]> = line.iter().map(|&o| pos[o]).collect();
+                    refs.push(tfi::chord_fractions(&pts));
+                    break;
+                }
+                x += step;
+            }
+        }
+        let fr = cut_fractions(m, &refs);
         for s in 1..=m {
             let o = ord(c.x, c.j0 + s)?;
             if state[o] != State::Pending {
                 return Err(internal("cut node placed twice".into()));
             }
-            let t = s as f64 / (m + 1) as f64;
-            let at: [f64; 3] = std::array::from_fn(|d| p[d] + (q[d] - p[d]) * t);
-            let (pt, prm) = snap(at)?;
-            (pos[o], param[o], state[o]) = (pt, prm, State::Placed);
+            let t = fr[(s - 1) as usize];
+            if side_uv.is_some() {
+                let (a, b) = (uv[po], uv[qo]);
+                let w: [f64; 2] = std::array::from_fn(|d| a[d] + (b[d] - a[d]) * t);
+                (pos[o], uv[o]) = (eval_uv(&surface, w), w);
+                (param[o], state[o]) = (Param::Surface(w), State::Placed);
+            } else {
+                let at: [f64; 3] = std::array::from_fn(|d| p[d] + (q[d] - p[d]) * t);
+                let (pt, prm) = snap(at)?;
+                (pos[o], param[o], state[o]) = (pt, prm, State::Placed);
+            }
         }
     }
 
@@ -174,17 +282,40 @@ pub(crate) fn run(cx: &GenCtx<'_>, target: Target) -> Result<Patch, GenerateFail
         let top = line(&mut (blk.i0..=blk.i1).map(|a| (a, blk.j1)))?;
         let left = line(&mut (blk.j0..=blk.j1).map(|b| (blk.i0, b)))?;
         let right = line(&mut (blk.j0..=blk.j1).map(|b| (blk.i1, b)))?;
-        let inner = tfi::coons(&bottom, &top, &left, &right)
-            .ok_or_else(|| internal("block boundary lines disagree in size".into()))?;
         let w = (blk.width() - 1) as usize;
-        for (n, p) in inner.iter().enumerate() {
+        let place = |state: &[State], n: usize| -> Result<(usize, i64, i64), GenerateFailure> {
             let (a, b) = (blk.i0 + 1 + (n % w) as i64, blk.j0 + 1 + (n / w) as i64);
             let o = ord(a, b)?;
             if state[o] != State::Pending {
                 return Err(internal(format!("block interior ({a}, {b}) placed twice")));
             }
-            let (pt, prm) = snap(*p)?;
-            (pos[o], param[o], state[o]) = (pt, prm, State::Placed);
+            Ok((o, a, b))
+        };
+        if side_uv.is_some() {
+            // Blend the parameters, weighted by the 3-D chord fractions of the same lines.
+            let uv_line = |pts: &mut dyn Iterator<Item = (i64, i64)>| -> Result<Vec<[f64; 2]>, GenerateFailure> {
+                pts.map(|(a, b)| ord(a, b).map(|o| uv[o])).collect()
+            };
+            let ub = uv_line(&mut (blk.i0..=blk.i1).map(|a| (a, blk.j0)))?;
+            let ut = uv_line(&mut (blk.i0..=blk.i1).map(|a| (a, blk.j1)))?;
+            let ul = uv_line(&mut (blk.j0..=blk.j1).map(|b| (blk.i0, b)))?;
+            let ur = uv_line(&mut (blk.j0..=blk.j1).map(|b| (blk.i1, b)))?;
+            let wts = [&bottom, &top, &left, &right].map(|l| tfi::chord_fractions(l));
+            let inner = tfi::blend(&ub, &ut, &ul, &ur, &wts)
+                .ok_or_else(|| internal("block boundary lines disagree in size".into()))?;
+            for (n, w) in inner.iter().enumerate() {
+                let (o, _, _) = place(&state, n)?;
+                (pos[o], uv[o]) = (eval_uv(&surface, *w), *w);
+                (param[o], state[o]) = (Param::Surface(*w), State::Placed);
+            }
+        } else {
+            let inner = tfi::coons(&bottom, &top, &left, &right)
+                .ok_or_else(|| internal("block boundary lines disagree in size".into()))?;
+            for (n, p) in inner.iter().enumerate() {
+                let (o, _, _) = place(&state, n)?;
+                let (pt, prm) = snap(*p)?;
+                (pos[o], param[o], state[o]) = (pt, prm, State::Placed);
+            }
         }
     }
     if state.contains(&State::Pending) {

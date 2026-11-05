@@ -13,6 +13,8 @@ bench = false
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-scheme-api = { path = "../sm-scheme-api" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
 thiserror = "2"
 
 [dev-dependencies]
@@ -20,9 +22,9 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesh-api = { path = "../sm-mesh-api" }
 sm-model-api = { path = "../sm-model-api" }
 sm-quality = { path = "../sm-quality" }
-sm-topo-api = { path = "../sm-topo-api" }
 sm-sizing = { path = "../sm-sizing" }
 sm-scheme-map = { path = "../sm-scheme-map" }
+sm-scheme-curve = { path = "../sm-scheme-curve" }
 sm-testkit = { path = "../sm-testkit" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 proptest = { version = "1", default-features = false, features = ["std"] }

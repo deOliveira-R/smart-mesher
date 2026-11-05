@@ -38,19 +38,34 @@ pub(crate) fn coons(
     left: &[[f64; 3]],
     right: &[[f64; 3]],
 ) -> Option<Vec<[f64; 3]>> {
+    let w = [bottom, top, left, right].map(chord_fractions);
+    blend(bottom, top, left, right, &w)
+}
+
+/// The same blend over `D`-dimensional lines with caller-given fractions `[bottom, top, left,
+/// right]` (used for surface parameters, weighted by the 3-D chord fractions).
+pub(crate) fn blend<const D: usize>(
+    bottom: &[[f64; D]],
+    top: &[[f64; D]],
+    left: &[[f64; D]],
+    right: &[[f64; D]],
+    w: &[Vec<f64>; 4],
+) -> Option<Vec<[f64; D]>> {
     let (ni, nj) = (bottom.len(), left.len());
     if ni < 2 || nj < 2 || top.len() != ni || right.len() != nj {
         return None;
     }
-    let (wb, wt) = (chord_fractions(bottom), chord_fractions(top));
-    let (wl, wr) = (chord_fractions(left), chord_fractions(right));
+    if w[0].len() != ni || w[1].len() != ni || w[2].len() != nj || w[3].len() != nj {
+        return None;
+    }
+    let (wb, wt, wl, wr) = (&w[0], &w[1], &w[2], &w[3]);
     let (p00, p10, p01, p11) = (bottom[0], bottom[ni - 1], top[0], top[ni - 1]);
     let mut out = Vec::with_capacity((ni - 2) * (nj - 2));
     for j in 1..nj - 1 {
         let v = 0.5 * (wl[j] + wr[j]);
         for i in 1..ni - 1 {
             let u = 0.5 * (wb[i] + wt[i]);
-            let p: [f64; 3] = std::array::from_fn(|d| {
+            let p: [f64; D] = std::array::from_fn(|d| {
                 let edges = (1.0 - v) * bottom[i][d] + v * top[i][d];
                 let sides = (1.0 - u) * left[j][d] + u * right[j][d];
                 let corners = (1.0 - u) * (1.0 - v) * p00[d]
