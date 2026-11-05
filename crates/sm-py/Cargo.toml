@@ -1,0 +1,28 @@
+[package]
+name = "sm-py"
+description = "Python bindings (package `smartmesh`, abi3 >= 3.10) over the session host."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "smartmesh"
+crate-type = ["cdylib", "rlib"]
+bench = false
+
+[features]
+# The extension module proper; off by default so the workspace builds without a Python toolchain.
+python = ["dep:pyo3", "dep:numpy"]
+
+[dependencies]
+sm-server = { path = "../sm-server" }
+pyo3 = { workspace = true, optional = true }
+numpy = { workspace = true, optional = true }
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+
+[lints]
+workspace = true

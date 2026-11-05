@@ -1,0 +1,11 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "smartmesh"
+requires-python = ">=3.10"
+dynamic = ["version"]
+
+[tool.maturin]
+features = ["python"]
