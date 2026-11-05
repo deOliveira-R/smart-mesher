@@ -239,7 +239,11 @@ fn auto_selection_records_score_reason_and_losers() {
         "{:?}",
         vp.selection
     );
-    assert_eq!(vp.reason, "1-to-1 sweepable");
+    assert!(
+        vp.reason.starts_with("1-to-1 sweepable from ") && vp.reason.ends_with(" valid pairs)"),
+        "{}",
+        vp.reason
+    );
     // Applicable losers are recorded with their scores; inapplicable ones with their reasons.
     let lost = |scheme: &str| {
         out.plan
