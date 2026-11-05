@@ -15,6 +15,7 @@ mod arrange;
 mod assemble;
 mod bodies;
 pub mod boolean;
+mod bvh;
 mod cc;
 mod copy;
 pub mod error;
@@ -35,7 +36,9 @@ pub use error::BooleanError;
 pub use boolean::{BoolOptions, BoolOutcome, BoolRule, boolean};
 pub use imprint::{ImprintOptions, ImprintOutcome, imprint_bodies};
 pub use webcut::{CutTool, KeepSide, WebcutOptions, WebcutOutcome, webcut};
+pub use bvh::CandidateStats;
 pub use locate::{PointLocation, locate_point};
+pub use pieces::candidate_pair_stats;
 pub use merge::{MergeKind, MergeKinds, MergeOptions, MergePair, MergeReport, MergeStatus, MergedCell, SkipReason, merge, merge_check};
 
 use sm_op_api::{Plugin, Registry, RegistryError};

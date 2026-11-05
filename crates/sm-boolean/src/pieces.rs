@@ -9,6 +9,7 @@ use sm_geom::{CurveGeometry, CurveSurface, SsiOptions, SsiResult, curve_surface,
 use sm_geom_api::{CurveDef, Interval, ModelTolerance, SurfaceDef};
 use sm_topo_api::{Carrier, PointClass, TopologyView, TopologyViewExt};
 
+use crate::bvh::{Bvh, CandidateStats};
 use crate::cc;
 use crate::error::BooleanError;
 use crate::faceclass;
@@ -97,20 +98,49 @@ fn pad_box(b: Aabb, pad: f64) -> Aabb {
 }
 
 /// Candidate pairs `(a, b)` with `a` from `fa` and `b` from `fb` whose padded boxes overlap,
-/// ascending by `(a, b)`. Boxes are computed in parallel and collected in index order.
+/// ascending by `(a, b)`. Boxes are computed in parallel and collected in index order; the
+/// pairs come from a BVH over `fb`'s boxes, so the work is near `|fa| log |fb|`.
 pub(crate) fn candidate_pairs<V: TopologyView + ?Sized>(view: &V, fa: &[EntityId], fb: &[EntityId], pad: f64) -> Vec<(EntityId, EntityId)> {
-    let boxes = |list: &[EntityId]| -> Vec<(EntityId, Aabb)> { list.par_iter().map(|&f| (f, geo::face_aabb(view, f, pad))).collect() };
+    candidate_pairs_counted(view, fa, fb, pad).0
+}
+
+/// [`candidate_pairs`] with its work counters.
+pub(crate) fn candidate_pairs_counted<V: TopologyView + ?Sized>(view: &V, fa: &[EntityId], fb: &[EntityId], pad: f64) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
+    let boxes = |list: &[EntityId]| -> Vec<Aabb> { list.par_iter().map(|&f| geo::face_aabb(view, f, pad)).collect() };
     let (ba, bb) = (boxes(fa), boxes(fb));
+    let tree = Bvh::build(&bb);
+    let per: Vec<(Vec<u32>, CandidateStats)> = ba
+        .par_iter()
+        .map(|q| {
+            let (mut hits, mut st) = (Vec::new(), CandidateStats::default());
+            if !q.is_empty() {
+                tree.overlapping(&bb, q, &mut hits, &mut st);
+            }
+            (hits, st)
+        })
+        .collect();
     let mut out = Vec::new();
-    for (a, boxa) in &ba {
-        for (b, boxb) in &bb {
-            if a != b && geo::aabb_overlap(boxa, boxb) {
-                out.push((*a, *b));
+    let mut stats = CandidateStats::default();
+    for (i, (hits, st)) in per.iter().enumerate() {
+        stats.add(st);
+        for &j in hits {
+            if fa[i] != fb[j as usize] {
+                out.push((fa[i], fb[j as usize]));
             }
         }
     }
     out.sort();
-    out
+    (out, stats)
+}
+
+/// Candidate face pairs between two face lists, with the BVH work counters.
+///
+/// Pairs `(a, b)`, `a` from `fa` and `b` from `fb`, whose boxes (grown by `pad`) overlap,
+/// ascending, excluding `a == b`. `candidate_tests` counts the leaf-level box pair tests and
+/// `node_visits` the BVH node visits; both depend only on the inputs. Diagnostic entry point
+/// for the work-bound tests.
+pub fn candidate_pair_stats(view: &dyn TopologyView, fa: &[EntityId], fb: &[EntityId], pad: f64) -> (Vec<(EntityId, EntityId)>, CandidateStats) {
+    candidate_pairs_counted(view, fa, fb, pad)
 }
 
 struct PairOut {

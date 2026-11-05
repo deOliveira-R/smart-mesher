@@ -100,18 +100,16 @@ fn outward_normal<V: TopologyView + ?Sized>(view: &V, f: EntityId, own: EntityId
 }
 
 /// Class of a fragment, with its interior probe point and its outward normal there.
-fn classify_frag<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, f: EntityId, own: EntityId, other: EntityId, other_uses: &[locate::Use]) -> Result<(Class, Point3, Vector3), BooleanError> {
+fn classify_frag<V: TopologyView + ?Sized>(view: &V, cache: &faceclass::FaceCache, f: EntityId, own: EntityId, other: EntityId, other_idx: &locate::UseIndex) -> Result<(Class, Point3, Vector3), BooleanError> {
     let tol = *view.tolerance();
     let lin = tol.linear;
     let p = faceclass::interior_point(view, cache, f)?.ok_or(BooleanError::Unsupported("cannot find a point inside a fragment"))?;
     let n_own = outward_normal(view, f, own, p)?;
-    for &(g, _) in other_uses {
-        if locate::on_face(view, cache, g, p, lin)? {
-            let n_g = outward_normal(view, g, other, p)?;
-            return Ok((if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite }, p, n_own));
-        }
+    if let Some((g, _)) = other_idx.on_which(view, cache, p, lin)? {
+        let n_g = outward_normal(view, g, other, p)?;
+        return Ok((if n_own.dot(n_g) > 0.0 { Class::OnSame } else { Class::OnOpposite }, p, n_own));
     }
-    let loc = locate::locate_in_uses(view, cache, other_uses, p, &tol)?;
+    let loc = locate::locate_indexed(view, cache, other_idx, p, &tol)?;
     match loc {
         PointLocation::In => Ok((Class::In, p, n_own)),
         PointLocation::Out => Ok((Class::Out, p, n_own)),
@@ -313,8 +311,8 @@ fn fuse2<E: TopologyEdit + ?Sized>(topo: &mut E, rule: BoolRule, va: EntityId, v
     // 5. Classification.
     let fa_now: Vec<EntityId> = topo.volume_faces(va).to_vec();
     let fb_now: Vec<EntityId> = topo.volume_faces(vb).to_vec();
-    let uses_a = locate::volume_uses(&*topo, va);
-    let uses_b = locate::volume_uses(&*topo, vb);
+    let uses_a = locate::UseIndex::new(&*topo, &locate::volume_uses(&*topo, va));
+    let uses_b = locate::UseIndex::new(&*topo, &locate::volume_uses(&*topo, vb));
     let cache = faceclass::FaceCache::new();
     let mut class_a: Vec<(EntityId, Class, Point3, Vector3)> = Vec::new();
     for &f in &fa_now {
