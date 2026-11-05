@@ -1,8 +1,8 @@
 //! Quality profiles: which metrics to grade and with which limits.
 //!
 //! The numbers are data in one table per profile (`DESIGN.md`, "Finite-volume metrics"). The
-//! OpenFOAM and Fluent profiles carry the tools' own limits; Generic and Transport are
-//! provisional engineering guesses.
+//! OpenFOAM and Fluent profiles carry the tools' own limits; Generic is a
+//! provisional engineering guess; the Transport numbers are ratified (Q14).
 
 use crate::fv::FvMetric;
 use crate::metric::Metric;
@@ -41,6 +41,12 @@ impl Metric {
             Metric::MaxAngle => "max_angle",
             Metric::Sphericity => "sphericity",
             Metric::Starness => "starness",
+            Metric::EquiangleSkew => "equiangle_skew",
+            Metric::MeanRatio => "mean_ratio",
+            Metric::Inradius => "inradius",
+            Metric::SquishIndex => "squish_index",
+            Metric::NodalJacobianRatio => "nodal_jacobian_ratio",
+            Metric::MaxStretch => "max_stretch",
         }
     }
 
@@ -60,7 +66,7 @@ pub enum Profile {
     OpenFoam,
     /// Fluent mesh-check guidance (orthogonal quality only).
     Fluent,
-    /// Planar convex faces for ray tracing and sweeps (provisional).
+    /// Planar convex faces for ray tracing and sweeps (ratified, Q14).
     Transport,
 }
 
@@ -110,13 +116,13 @@ impl Measure {
     }
 
     /// Unit of the values: `"deg"` for angles, `"volume"` for `Volume` and `Jacobian`, `"length"`
-    /// for hex `Dimension`, `""` otherwise.
+    /// for hex `Dimension` and tet `Inradius`, `""` otherwise.
     pub const fn unit(self) -> &'static str {
         match self {
             Measure::Fv(m) => m.unit(),
             Measure::Verdict(Metric::MinAngle | Metric::MaxAngle) => "deg",
             Measure::Verdict(Metric::Volume | Metric::Jacobian) => "volume",
-            Measure::Verdict(Metric::Dimension) => "length",
+            Measure::Verdict(Metric::Dimension | Metric::Inradius) => "length",
             Measure::Verdict(_) => "",
         }
     }
@@ -255,12 +261,25 @@ const FLUENT: &[Rule] = &[rule(
 )];
 
 const TRANSPORT: &[Rule] = &[
-    rule(f(FvMetric::FaceFlatness), Sense::LowerIsWorse, Some(0.9999), 0.999, None, "provisional, awaits ratification"),
-    rule(f(FvMetric::FaceConcavity), Sense::HigherIsWorse, Some(0.1), 1.0, None, "provisional, awaits ratification"),
-    rule(v(Metric::Starness), Sense::LowerIsWorse, Some(0.2), 0.0, None, "provisional, awaits ratification"),
-    rule(v(Metric::EdgeRatio), Sense::HigherIsWorse, Some(20.0), 200.0, None, "provisional, awaits ratification"),
-    rule(f(FvMetric::VolumeRatio), Sense::HigherIsWorse, Some(10.0), 100.0, None, "provisional, awaits ratification"),
+    rule(f(FvMetric::FaceFlatness), Sense::LowerIsWorse, Some(0.9999), 0.999, None, "ratified (Q14)"),
+    rule(f(FvMetric::FaceConcavity), Sense::HigherIsWorse, Some(0.1), 1.0, None, "ratified (Q14)"),
+    rule(v(Metric::Starness), Sense::LowerIsWorse, Some(0.2), 0.0, None, "ratified (Q14)"),
+    rule(v(Metric::EdgeRatio), Sense::HigherIsWorse, Some(20.0), 200.0, None, "ratified (Q14)"),
+    rule(f(FvMetric::VolumeRatio), Sense::HigherIsWorse, Some(10.0), 100.0, None, "ratified (Q14)"),
 ];
+
+/// Rules that belong to the Transport profile but are held out of [`rules`] so that existing
+/// `mesh.quality` reports keep their metric list until the report layer opts in (W3b-DIAG).
+const TRANSPORT_EXTRA: &[Rule] = &[
+    // Two or more boundary faces (count > 1) warn; the rule never fails.
+    rule(f(FvMetric::BoundaryFaceCount), Sense::HigherIsWorse, Some(1.0), f64::INFINITY, None, "cells with two or more boundary faces"),
+];
+
+/// Transport rules added in W3b that are not part of [`rules`]: the two-boundary-face flag.
+/// Grade [`FvMetric::BoundaryFaceCount`] with it to flag cells with two or more boundary faces.
+pub fn transport_extra_rules() -> &'static [Rule] {
+    TRANSPORT_EXTRA
+}
 
 /// The rules of `profile`, in grading order.
 pub fn rules(profile: Profile) -> &'static [Rule] {

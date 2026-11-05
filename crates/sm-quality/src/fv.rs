@@ -138,6 +138,14 @@ pub enum FvMetric {
     FaceConcavity,
     /// `det(M) / (tr(M)/3)^3`, `M = sum_f Sf (x) Sf / |Sf|` (1 for a cube).
     CellDeterminant,
+    /// Equiangle skewness of a face: `max((a_max - a_e)/(180 - a_e), (a_e - a_min)/a_e)` over its
+    /// interior angles, `a_e = 180 (n - 2) / n` (0 is ideal).
+    EquiangleSkewness,
+    /// checkMesh cell aspect ratio: `max / min` over the components of `sum |Sf|` (componentwise
+    /// absolute face area vectors); 1 for an axis-aligned cube.
+    CellAspectRatio,
+    /// Number of boundary faces of a cell (faces without a neighbour); a count stored as `f64`.
+    BoundaryFaceCount,
 }
 
 impl FvMetric {
@@ -152,12 +160,17 @@ impl FvMetric {
         FvMetric::FaceWarp,
         FvMetric::FaceConcavity,
         FvMetric::CellDeterminant,
+        FvMetric::EquiangleSkewness,
+        FvMetric::CellAspectRatio,
+        FvMetric::BoundaryFaceCount,
     ];
 
     /// Whether the metric has one value per face or per cell.
     pub const fn entity(self) -> FvEntity {
         match self {
-            FvMetric::OrthogonalQuality | FvMetric::CellDeterminant => FvEntity::Cell,
+            FvMetric::OrthogonalQuality | FvMetric::CellDeterminant | FvMetric::CellAspectRatio | FvMetric::BoundaryFaceCount => {
+                FvEntity::Cell
+            }
             _ => FvEntity::Face,
         }
     }
@@ -174,6 +187,9 @@ impl FvMetric {
             FvMetric::FaceWarp => "face_warp",
             FvMetric::FaceConcavity => "face_concavity",
             FvMetric::CellDeterminant => "cell_determinant",
+            FvMetric::EquiangleSkewness => "equiangle_skewness",
+            FvMetric::CellAspectRatio => "cell_aspect_ratio",
+            FvMetric::BoundaryFaceCount => "boundary_face_count",
         }
     }
 
@@ -309,6 +325,30 @@ impl Ctx<'_> {
         max_sin.min(1.0).asin().to_degrees()
     }
 
+    /// Equiangle skewness of face `f` (interior angles about the face's own area vector).
+    fn equiangle(&self, f: usize) -> f64 {
+        let l = self.mesh.face_vertices(FaceIx::new(f));
+        let n = l.len();
+        let sf = self.g.face_area[f];
+        if n < 3 || norm(sf) <= ROOT_V_SMALL {
+            return 1.0;
+        }
+        let nhat = scale(sf, 1.0 / norm(sf));
+        let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
+        for i in 0..n {
+            let (p, q, r) = (self.point(l[(i + n - 1) % n]), self.point(l[i]), self.point(l[(i + 1) % n]));
+            let (a, b) = (sub(r, q), sub(p, q));
+            let mut ang = cross(a, b).iter().zip(nhat).map(|(x, y)| x * y).sum::<f64>().atan2(dot(a, b)).to_degrees();
+            if ang < 0.0 {
+                ang += 360.0;
+            }
+            lo = lo.min(ang);
+            hi = hi.max(ang);
+        }
+        let ideal = 180.0 * (n as f64 - 2.0) / n as f64;
+        crate::extra::equiangle(lo, hi, ideal)
+    }
+
     fn face_value(&self, m: FvMetric, f: usize) -> f64 {
         let fi = FaceIx::new(f);
         if !self.mesh.face_active(fi) {
@@ -346,7 +386,11 @@ impl Ctx<'_> {
             FvMetric::FaceFlatness => self.flatness(f),
             FvMetric::FaceWarp => self.warp(f),
             FvMetric::FaceConcavity => self.concavity(f),
-            FvMetric::OrthogonalQuality | FvMetric::CellDeterminant => f64::NAN,
+            FvMetric::EquiangleSkewness => self.equiangle(f),
+            FvMetric::OrthogonalQuality
+            | FvMetric::CellDeterminant
+            | FvMetric::CellAspectRatio
+            | FvMetric::BoundaryFaceCount => f64::NAN,
         }
     }
 
@@ -402,6 +446,19 @@ impl Ctx<'_> {
                     + mt[0][2] * (mt[1][0] * mt[2][1] - mt[1][1] * mt[2][0]);
                 det / (tr3 * tr3 * tr3)
             }
+            FvMetric::CellAspectRatio => {
+                if faces.is_empty() {
+                    return f64::NAN;
+                }
+                let mut s = [0.0f64; 3];
+                for sf in faces {
+                    let a = self.g.face_area[sf.face().get()];
+                    s = [s[0] + a[0].abs(), s[1] + a[1].abs(), s[2] + a[2].abs()];
+                }
+                let (lo, hi) = (s[0].min(s[1]).min(s[2]), s[0].max(s[1]).max(s[2]));
+                if lo <= V_SMALL { DBL_MAX } else { (hi / lo).min(DBL_MAX) }
+            }
+            FvMetric::BoundaryFaceCount => faces.iter().filter(|sf| self.mesh.across(**sf).is_none()).count() as f64,
             _ => f64::NAN,
         }
     }

@@ -69,7 +69,7 @@ proptest! {
                 let (a, b) = (eval(m, shape, &p, &c0).unwrap(), eval(m, shape, &q, &c1).unwrap());
                 let factor = match m {
                     Metric::Volume | Metric::Jacobian => s.powi(dim),
-                    Metric::Dimension => s,
+                    Metric::Dimension | Metric::Inradius => s,
                     _ => 1.0,
                 };
                 prop_assert!(close(a * factor, b), "{m:?} on {shape:?}: {a} * {factor} vs {b}");

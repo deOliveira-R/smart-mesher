@@ -15,6 +15,7 @@
 mod check;
 mod driver;
 mod error;
+mod extra;
 mod faces;
 mod fv;
 mod metric;
@@ -35,4 +36,4 @@ pub use metric::{Context, Metric, eval};
 pub use stats::{CHUNK, Histogram, Summary, histogram, histogram_auto, summarize};
 pub use vec::{DBL_MAX, TINY, V};
 pub use fv::{FvColumn, FvEntity, FvGeometry, FvMetric, Reduce, face_to_cell, fv_compute, fv_geometry};
-pub use profile::{Grade, Measure, Profile, Rule, Sense, rules};
+pub use profile::{Grade, Measure, Profile, Rule, Sense, rules, transport_extra_rules};
