@@ -81,3 +81,10 @@ Cleanups:
 - sm-cadio: refusal tests no longer bound parse work; per-run Newton cost not counted; tighten `global_projections <= 16` to MAX_GLOBAL; `sm_cadio::work` module/function name clash; global atomics on the public API.
 - sm-poly: map `UnrepairedCell` to `OpError::Failed`, not `Invalid`; `tests/robust.rs` asserts nothing about `region`; agglomeration can make invalid cells after the check.
 - Commit a268047 has a Sonnet co-author trailer (process note only).
+
+## From W3b-0 (2026-11-05)
+- P1 limits (sm-mesher DESIGN.md): rows written at command time on edges that a later webcut replaces fall back to the (firmness, seq) tie-break, and a serde-loaded intent (seq 0) may plan differently; a default-firmness `mesh.size` never overrides an older soft request on another entity. Add tests before W3b-SUBMAP or any path that loads IntentLayer through serde.
+- Move `retire_mesh_bulk` (sm-mesher) into `sm_layer_api::retire_mesh` so every caller gets the range path (orchestrator, frozen crate).
+- `mesh.delete`: the remaining ~4.5 s at 10⁶ cells is one SHA-256 per id; a parallel, order-independent sum needs rayon in sm-op-api.
+- sm-rt `RegionInfo.tags`: not carried in cache images, and hashed without a presence marker; fix when a producer first sets tags.
+- DAGMC reference h5m: volume 177 is in both `mat:Graveyard` and `mat:Steel_comp`; EXPORT must not take it as a one-material-per-volume example.
