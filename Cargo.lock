@@ -1681,10 +1681,19 @@ dependencies = [
 name = "sm-py"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "numpy",
+ "proptest",
  "pyo3",
+ "serde_json",
+ "sm-core",
+ "sm-layer-api",
+ "sm-mesh-api",
+ "sm-meshio",
+ "sm-protocol",
  "sm-server",
  "sm-testkit",
+ "thiserror",
 ]
 
 [[package]]

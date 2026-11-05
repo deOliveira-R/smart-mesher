@@ -5,7 +5,16 @@ build-backend = "maturin"
 [project]
 name = "smartmesh"
 requires-python = ">=3.10"
+dependencies = ["numpy>=1.23,<3"]
 dynamic = ["version"]
 
 [tool.maturin]
+python-source = "python"
+module-name = "smartmesh._native"
 features = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
