@@ -89,14 +89,15 @@ pub fn docker_check(root: &Path) -> Result<Vec<(String, ImageStatus)>> {
     let lint = lint_all(root)?;
     let mut out = Vec::new();
     let unset: Vec<String> = pins.iter().filter(|(k, v)| k.ends_with("_DIGEST") && (v.as_str() == "UNSET" || v.is_empty())).map(|(k, _)| k.clone()).collect();
-    let docker = std::process::Command::new("docker").arg("version").output();
+    // Probed only once lint and pins pass: an unpinned tree never touches Docker.
+    let mut docker: Option<bool> = None;
     for (name, rel) in IMAGES {
         let mine: Vec<String> = lint.iter().filter(|m| m.starts_with(name) || m.starts_with(rel)).cloned().collect();
         let status = if !mine.is_empty() {
             ImageStatus::LintFailed(mine)
         } else if !unset.is_empty() {
             ImageStatus::Unpinned(unset.clone())
-        } else if docker.as_ref().map_or(true, |o| !o.status.success()) {
+        } else if !*docker.get_or_insert_with(|| std::process::Command::new("docker").arg("version").output().is_ok_and(|o| o.status.success())) {
             ImageStatus::Unavailable("docker version".to_string())
         } else {
             build_image(root, name, rel, &pins)

@@ -303,7 +303,7 @@ pub fn inside_repo(path: &Path) -> bool {
     real.ancestors().any(|a| a.join(".git").exists())
 }
 
-/// Write `f` into `dir` as `<case>-<tracker_set>-<UTC>-<pid>.json`, opened with `create_new`.
+/// Write `f` into `dir` as `<case>-<tracker_set>-<UTC>-<pid>-<n>.json` (`n` counts writes of this process), opened with `create_new`.
 /// A `model_run` file is refused when `dir` is inside a git work tree: the model and everything
 /// derived from it must not reach the repository.
 pub fn write_result(dir: &Path, f: &ResultFile) -> Result<PathBuf> {
@@ -312,7 +312,9 @@ pub fn write_result(dir: &Path, f: &ResultFile) -> Result<PathBuf> {
     }
     std::fs::create_dir_all(dir).map_err(|e| BenchError::io(dir, e))?;
     let stamp: String = f.env.date_utc.chars().filter(|c| c.is_ascii_digit() || *c == 'T' || *c == 'Z').collect();
-    let name = format!("{}-{}-{}-{}.json", f.case, if f.tracker_set.is_empty() { "none" } else { &f.tracker_set }, stamp, std::process::id());
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{}-{}-{}-{}-{}.json", f.case, if f.tracker_set.is_empty() { "none" } else { &f.tracker_set }, stamp, std::process::id(), seq);
     let path = dir.join(name);
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| BenchError::io(&path, e))?;
     let mut text = serde_json::to_vec_pretty(f)?;

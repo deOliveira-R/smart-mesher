@@ -239,7 +239,10 @@ fn result_files_are_never_overwritten_and_model_runs_stay_out_of_the_repo() {
     let mut f = file("P1", "smrt", Env::detect(), 0);
     let p1 = write_result(&tmp, &f).unwrap();
     assert!(p1.exists());
-    assert!(write_result(&tmp, &f).is_err(), "same name: create_new refuses to overwrite");
+    let before = std::fs::read(&p1).unwrap();
+    let p1b = write_result(&tmp, &f).unwrap();
+    assert_ne!(p1, p1b, "a second write of the same case gets its own file (counter suffix)");
+    assert_eq!(std::fs::read(&p1).unwrap(), before, "the first file is untouched");
     f.model_run = true;
     f.case = "model".into();
     write_result(&tmp, &f).unwrap();

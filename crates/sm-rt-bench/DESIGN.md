@@ -14,7 +14,7 @@ the harness.
 | Rule | Enforcement |
 |---|---|
 | (a) same bytes in: every tracker reads the same ray file and the same facet or tet file | the generator writes them once; every file has a SHA-256 in `smcase.json`; `smrt-bench gen --check` compares with `expected_sha256.txt` |
-| (b) same session and machine: trackers interleaved ABAB per repetition; no comparison across machines or days | `runner::run_interleaved` (call order asserted from the adapters' own log); `report::render` refuses different `cpu_model`, OS/arch, `machine_id` or UTC day |
+| (b) same session and machine: trackers interleaved ABAB per repetition (fixed index order, not alternated to ABBA: a known first-position bias, identical for every case, left as is); no comparison across machines or days | `runner::run_interleaved` (call order asserted from the adapters' own log); `report::render` refuses different `cpu_model`, OS/arch, `machine_id` or UTC day |
 | (c) best effort for each side: hinted start for DAGMC and sm-rt alike; location rows separate | `Workload::Fire` (hinted, `prepare` untimed) and `Workload::FireLocate` are separate rows |
 | (d) precision is a column | `Row::precision`; double-down is `mixed`, sm-rt is `f64` |
 | (e) geometry fidelity is measured | `geom_error` per row: max and mean chord error and region-sequence failures per 1e5 tracks against `truth::Scene` |
@@ -49,7 +49,9 @@ Rays, tets and the hand-built facets use only IEEE-exact operations. Facets from
 bounding box comes from them) and every `smcase.json` (it carries the platform tag) are recorded
 in `expected_sha256.txt` **per `os-arch`** (`...@macos-aarch64`). The first run on the Linux x86_64
 machine prints the missing lines with `smrt-bench gen --scale <s> --print`; until they are added
-there `gen --check` reports them `unblessed` (exit code 2) and the tests fail loudly. This crate
+there `gen --check` reports them `unblessed` (exit code 2) and the test reports them without failing (`recorded_hashes_match...` still fails on any mismatch and on
+any unblessed platform-independent file). Blessing Linux lines needs a run there and an orchestrator
+ruling. This crate
 does not claim identical tessellations across platforms.
 
 ## Formats
@@ -111,3 +113,15 @@ Dockerfiles copy arrive with RTBENCH-B. None of the images has been built from t
 * The `H1` mesh is a structured tet mesh because `sm-scheme-tet` has no conforming inclusion
   meshing in this wave.
 * W-flight runs in surface mode only here; delta and `block` modes need the delta tracker.
+
+## Deferred to RTBENCH-B
+
+* `REPORT_TEMPLATE.md` (the narrative skeleton around the tables `report::render` prints) is not in
+  this crate yet; RTBENCH-B writes it together with the real competitor drivers.
+* The dagmc-dd image checks the double-down commit only on the source-build branch; the conda-forge
+  branch is identified by the package list in `conda-packages.txt`. The driver's `--version` is
+  currently a macro set by the Dockerfile. RTBENCH-B makes the driver report the version of the
+  library it actually links.
+* `smcase.json` embeds the platform tag, so its hash is platform-keyed even for C1-C3 and H1.
+  Dropping the tag from the hashed manifest would move every blessed `smcase.json` hash; that
+  needs an orchestrator ruling and a re-bless.

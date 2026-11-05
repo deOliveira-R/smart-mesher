@@ -26,7 +26,7 @@ pub const MAX_LISTED: usize = 1000;
 pub struct Disagreement {
     /// Ray index.
     pub ray: usize,
-    /// `region_sequence`, `length` (different number of chords) or `chord` (a chord differs by more than the tolerance).
+    /// `region_sequence`, `length` (a track whose regions and chords differ in count: malformed input, counted as failed) or `chord` (a chord differs by more than the tolerance).
     pub kind: String,
     /// Sequence of the first tracker (the one being judged).
     pub a: Track,
@@ -107,6 +107,14 @@ pub fn compare(a: &[Track], b: &[Track], diag: f64, chord_tol: f64) -> Result<Ag
     let mut rep = Agreement { checked: a.len(), ..Agreement::default() };
     let (mut sum, mut count) = (0.0f64, 0usize);
     for (i, (ta, tb)) in a.iter().zip(b).enumerate() {
+        // A malformed track (regions and chords of different length) would be silently truncated by zip.
+        if ta.regions.len() != ta.chords.len() || tb.regions.len() != tb.chords.len() {
+            rep.failed += 1;
+            if rep.listed.len() < MAX_LISTED {
+                rep.listed.push(Disagreement { ray: i, kind: "length".to_string(), a: ta.clone(), b: tb.clone() });
+            }
+            continue;
+        }
         let mut dropped = Vec::new();
         let ca = canonical(ta, thr, i, "a", &mut dropped);
         let cb = canonical(tb, thr, i, "b", &mut dropped);
@@ -213,6 +221,17 @@ mod tests {
         // A chord just above the threshold is a real sequence difference.
         let a2 = vec![t(&[0, 1, 0], &[1.0, 2.0 * GRAZE_FACTOR * diag, 1.0])];
         assert_eq!(compare(&a2, &b, diag, 1e-9).unwrap().failed, 1);
+    }
+
+    #[test]
+    fn a_malformed_track_is_a_length_disagreement() {
+        let good = vec![t(&[0, 1], &[1.0, 2.0])];
+        let bad = vec![t(&[0, 1], &[1.0])];
+        for (a, b) in [(&bad, &good), (&good, &bad)] {
+            let rep = compare(a, b, 100.0, 1e-9).unwrap();
+            assert_eq!((rep.failed, rep.sequence_failures), (1, 0));
+            assert_eq!(rep.listed[0].kind, "length");
+        }
     }
 
     #[test]
