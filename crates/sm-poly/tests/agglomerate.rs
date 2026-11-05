@@ -117,7 +117,16 @@ fn s2_is_deterministic_and_builders_agree() {
 fn s2_keep_mode_and_warped_inputs_stay_valid() {
     let w = meshes::tet_block_warped([4, 4, 4], [1.0; 3], 0.1).unwrap();
     for mode in [FaceMode::Planar, FaceMode::Keep] {
-        let (m, rep) = dual_ref(&w.mesh, &opts(0.75).with_faces(mode), &VertexClassResolver).unwrap();
+        let r = dual_ref(&w.mesh, &opts(0.75).with_faces(mode), &VertexClassResolver);
+        if mode == FaceMode::Keep {
+            // Keep mode leaves faces non-planar; a merge can then give a cell that fails the
+            // star rule. That is the typed post-agglomeration error, never an invalid mesh.
+            if let Err(e) = &r {
+                assert!(matches!(e, sm_poly::PolyError::InvalidAgglomeration { .. }), "{e}");
+                continue;
+            }
+        }
+        let (m, rep) = r.unwrap_or_else(|e| panic!("{mode:?}: {e}"));
         assert!(validate(&m).is_empty(), "{mode:?}: {:?}", validate(&m));
         assert!(rel(rep.total_volume, w.volume) < 1e-12);
         if mode == FaceMode::Planar {

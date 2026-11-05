@@ -27,7 +27,8 @@ use crate::stats::{PolyStats, poly_stats};
 ///
 /// Atomic: any refusal (not 3D, a non-tet cell, an already polyhedral mesh, a non-conformal
 /// face, an unsupported mesh topology) fails with `OpError::Invalid`, and a mesh with an
-/// unsupported feature (a seam or dangling feature edge) with `OpError::Unsupported`; the state
+/// unsupported feature (a seam or dangling feature edge) with `OpError::Unsupported`; a cell that
+/// cannot be repaired to a valid star-shaped polyhedron with `OpError::Failed`; the state
 /// is unchanged either way.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +51,7 @@ const OUTPUTS: &[OutputRole] = &[OutputRole::new(
 fn refuse(e: PolyError) -> OpError {
     match e {
         PolyError::Mesh(m) => OpError::Failed(m.to_string()),
+        e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. }) => OpError::Failed(e.to_string()),
         PolyError::UnsupportedFeature { vertex } => OpError::Unsupported(format!(
             "vertex {} has exactly one feature edge in a region (a seam or a dangling curve); not supported in this version",
             vertex.0
@@ -128,5 +130,21 @@ impl TypedQuery for PolyInfo {
             .ok_or_else(|| OpError::MissingLayer("meshes".into()))?;
         let e = layer.get(self.mesh).ok_or(OpError::UnknownEntity(self.mesh))?;
         Ok(poly_stats(e.mesh()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_core::EntityKind;
+
+    #[test]
+    fn unrepaired_and_agglomeration_failures_are_failed_not_invalid() {
+        let region = EntityId::new(EntityKind::TopoVolume, 1).unwrap();
+        let a = PolyError::UnrepairedCell { vertex: sm_mesh_api::VertexIx(3), region, at: [1.0; 3], count: 2 };
+        let b = PolyError::InvalidAgglomeration { region, at: [1.0; 3], count: 1 };
+        assert!(matches!(refuse(a), OpError::Failed(m) if m.contains("not star-shaped")));
+        assert!(matches!(refuse(b), OpError::Failed(m) if m.contains("agglomerated cell")));
+        assert!(matches!(refuse(PolyError::Dim2), OpError::Invalid(_)));
     }
 }

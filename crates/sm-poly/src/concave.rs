@@ -444,6 +444,15 @@ pub(crate) fn bad_cells(d: &PolyData) -> Vec<u32> {
         .collect()
 }
 
+/// Alive output cells that fail the same rule as [`bad_cells`], ascending (for the check after
+/// agglomeration, where merged-away cells are empty).
+pub(crate) fn bad_alive_cells(d: &PolyData) -> Vec<u32> {
+    (0..d.n_cells() as u32)
+        .into_par_iter()
+        .filter(|&c| d.c_alive[c as usize] && !cell_ok(d, c as usize))
+        .collect()
+}
+
 /// Representative point of output cell `c`: its volume centroid, or the mean of its distinct
 /// vertices when the volume is not positive.
 pub(crate) fn cell_location(d: &PolyData, c: usize) -> V3 {
