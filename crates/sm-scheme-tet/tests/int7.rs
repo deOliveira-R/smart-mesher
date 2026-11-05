@@ -214,10 +214,69 @@ fn tiled_relief_n64_recovers_without_restarts() {
     let inp = tiled_cube(64, 8, 2, 0.9);
     let m = mesh(&inp, "tiled n64");
     let st = &m.stats;
-    eprintln!("tiled n64: boundary Steiner {}, restarts {}", st.n_boundary_steiner, st.n_recovery_restarts);
+    eprintln!("tiled n64: boundary Steiner {}, restarts {}, hole rounds {}", st.n_boundary_steiner, st.n_recovery_restarts, st.n_facet_hole_rounds);
     assert_eq!((st.n_recovery_restarts, st.n_boundary_steiner_discarded), (0, 0));
+    assert!(st.n_facet_hole_rounds > 0, "the hole-triangle stage was not reached: the test no longer guards the cliff");
     assert!(st.n_boundary_steiner > 0 && st.n_boundary_steiner < 1000, "{}", st.n_boundary_steiner);
     assert_eq!(st.n_lookup_rebuilds, 0);
+}
+
+/// Stacked twisted prisms (ring `k` at height `z`, rotated by `rot` degrees): the towers need
+/// interior points, so their builds restart with a pocket point and hints.
+fn tower(rings: &[(f64, f64)]) -> SurfaceInput {
+    let mut points = Vec::new();
+    for &(z, rot) in rings {
+        for i in 0..3 {
+            let a = std::f64::consts::TAU * f64::from(i) / 3.0 + rot.to_radians();
+            points.push([a.cos(), a.sin(), z]);
+        }
+    }
+    let top = 3 * (rings.len() as u32 - 1);
+    let mut tris: Vec<[u32; 3]> = vec![[0, 2, 1], [top, top + 1, top + 2]];
+    for l in 0..rings.len() as u32 - 1 {
+        let (lo, hi) = (3 * l, 3 * l + 3);
+        for i in 0..3u32 {
+            let j = (i + 1) % 3;
+            tris.push([lo + i, lo + j, hi + j]);
+            tris.push([lo + i, hi + j, hi + i]);
+        }
+    }
+    SurfaceInput { points, tris }
+}
+
+/// Alternating twisted towers of `k` rings (twist 20 degrees): each restarts once with a few
+/// to a few dozen hint candidates (measured 8, 15, 29 for k = 3, 6, 8).
+fn alt_tower(k: usize) -> SurfaceInput {
+    let rings: Vec<(f64, f64)> = (0..k).map(|i| (0.3 * i as f64, if i % 2 == 1 { 20.0 } else { 0.0 })).collect();
+    tower(&rings)
+}
+
+/// Hint index (restart hint selection through `BTreeSet`s of coordinates): work counters, not
+/// wall clock. The lookups are counted inside the sets (`contains` and `insert`), so a linear
+/// scan in place of the index leaves them below one per candidate. Every case must restart, with
+/// strictly more candidates as the tower grows, and the lookups per candidate stay within a
+/// fixed band (one query plus at most one insertion, so about 2) at every size: O(1) index
+/// operations per candidate.
+#[test]
+fn restart_hint_index_work_is_linear_in_candidates() {
+    let mut per_cand = Vec::new();
+    let mut cands = Vec::new();
+    for k in [3usize, 6, 8] {
+        let name = format!("tower k{k}");
+        let m = mesh(&alt_tower(k), &name);
+        let st = &m.stats;
+        eprintln!("{name}: restarts {}, hint candidates {}, lookups {}", st.n_recovery_restarts, st.n_hint_candidates, st.n_hint_lookups);
+        assert!(st.n_recovery_restarts > 0 && st.n_hint_candidates > 0, "{name}: no restart, the hint index is not exercised");
+        // Each candidate is queried once; at most one insertion each; one per fallback point.
+        assert!(st.n_hint_lookups >= st.n_hint_candidates, "{name}: index bypassed ({} lookups)", st.n_hint_lookups);
+        assert!(st.n_hint_lookups <= 2 * st.n_hint_candidates + st.n_recovery_restarts as u64, "{name}: {} lookups", st.n_hint_lookups);
+        per_cand.push(st.n_hint_lookups as f64 / st.n_hint_candidates as f64);
+        cands.push(st.n_hint_candidates);
+    }
+    assert_eq!(per_cand.len(), 3);
+    assert!(cands.windows(2).all(|w| w[0] < w[1]), "candidate counts must grow with the tower: {cands:?}");
+    let (lo, hi) = per_cand.iter().fold((f64::INFINITY, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
+    assert!(hi - lo <= 0.25, "lookups per candidate changed with size: {per_cand:?}");
 }
 
 /// Release timings of tiled relief (record only): `n = 16 .. 64`.

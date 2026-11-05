@@ -253,6 +253,16 @@ pub struct TetStats {
     /// Times the constraint lookup of complete recovery was rebuilt from scratch (0: it is
     /// always updated incrementally).
     pub n_lookup_rebuilds: u64,
+    /// Rounds of the hole-triangle stage of facet recovery (last attempt): nonzero only where
+    /// a mesh edge between the rounded points of a facet pierced a missing tile.
+    pub n_facet_hole_rounds: u64,
+    /// Hint-index queries and insertions over all restarts (a `BTreeSet` lookup each): the
+    /// work measure of restart hint selection: one query and at most one insertion per candidate
+    /// hint, plus at most one more per restart for the fallback `steiner_near` insertion.
+    pub n_hint_lookups: u64,
+    /// Candidate hint points (pocket point, hints of the failed recoveries) examined by the
+    /// restarts.
+    pub n_hint_candidates: u64,
     /// Distinct recovery points that the post-classification removal passes skipped (star above
     /// the size cap or work cap reached, in either of the two calls) and that are still in the
     /// output (0 when the passes ran to completion).
@@ -292,6 +302,9 @@ impl PartialEq for TetStats {
             && self.n_quality_violations == o.n_quality_violations
             && self.quality_diagnostics == o.quality_diagnostics
             && self.n_lookup_rebuilds == o.n_lookup_rebuilds
+            && self.n_facet_hole_rounds == o.n_facet_hole_rounds
+            && self.n_hint_lookups == o.n_hint_lookups
+            && self.n_hint_candidates == o.n_hint_candidates
             && self.n_removal_deferred == o.n_removal_deferred
             && self.flips == o.flips
             && self.smooth_passes == o.smooth_passes
