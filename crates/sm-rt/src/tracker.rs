@@ -38,6 +38,8 @@ pub struct MeshTracker {
     surf_area: Vec<f64>,
     /// The mesh this tracker was built from, when the builder kept it (`MeshTrackerBuilder::build_arc`).
     mesh: Option<MeshHandle>,
+    /// The majorant partition (`PartitionOptions::enabled`), with the delta-flight support.
+    pub(crate) part: Option<crate::delta::Partition>,
 }
 
 /// Shared handle to the source mesh (gives `Tracker::mesh` and a `Debug` for the tracker).
@@ -65,7 +67,7 @@ enum Once {
     Fail(LostCause),
 }
 
-enum Probe {
+pub(crate) enum Probe {
     In,
     Out { across: u32 },
     /// On (within tolerance of) faces; `rank` is 0 when the direction enters through all of them,
@@ -111,7 +113,20 @@ impl MeshTracker {
             }
             surf_area[s as usize] += a;
         }
-        Self { core, info, regions, surfaces, kind, complement, cell_sets, block_size, recovery, bounds: b, nudges: AtomicU64::new(0), surf_off: counts, surf_faces, surf_area, mesh: None }
+        Self { core, info, regions, surfaces, kind, complement, cell_sets, block_size, recovery, bounds: b, nudges: AtomicU64::new(0), surf_off: counts, surf_faces, surf_area, mesh: None, part: None }
+    }
+
+    /// Attach the majorant partition (adds `MAJORANT`, and `REGION_JUMP` when it carries the index).
+    pub(crate) fn with_partition(mut self, p: crate::delta::Partition) -> Self {
+        self.info.memory_bytes += p.bytes();
+        self.part = Some(p);
+        self
+    }
+
+    /// Hash of the majorant partition (arrays, sets, options), if the tracker has one. It is
+    /// independent of the thread count; `structure_hash` does not include it.
+    pub fn partition_hash(&self) -> Option<ContentHash> {
+        self.part.as_ref().map(|p| p.content_hash())
     }
 
     /// Keep a shared handle to the source mesh so `Tracker::mesh` returns it.
@@ -227,7 +242,7 @@ impl MeshTracker {
     }
 
     #[inline]
-    fn tol(&self) -> f64 {
+    pub(crate) fn tol(&self) -> f64 {
         self.info.tol.linear
     }
 
@@ -241,11 +256,11 @@ impl MeshTracker {
         }
     }
 
-    fn in_bounds(&self, p: [f64; 3], pad: f64) -> bool {
+    pub(crate) fn in_bounds(&self, p: [f64; 3], pad: f64) -> bool {
         (0..3).all(|k| p[k] >= self.bounds[k] - pad && p[k] <= self.bounds[3 + k] + pad)
     }
 
-    fn outside(&self, p: [f64; 3]) -> Located {
+    pub(crate) fn outside(&self, p: [f64; 3]) -> Located {
         match self.complement {
             Some(r) if self.in_bounds(p, self.tol()) => Located::new(CellId::COMPLEMENT, RegionId(r), None),
             _ => Located::new(CellId::NONE, RegionId::NONE, None),
@@ -368,7 +383,7 @@ impl MeshTracker {
         Probe::On { face: on, rank: if enters { 0 } else { 2 } }
     }
 
-    fn probe(&self, c: usize, p: [f64; 3], dir: &mut Option<[f64; 3]>) -> Probe {
+    pub(crate) fn probe(&self, c: usize, p: [f64; 3], dir: &mut Option<[f64; 3]>) -> Probe {
         if self.core.c_flags[c] & C_CONVEX != 0 { self.convex_probe(c, p, dir) } else { self.generic_probe(c, p, dir) }
     }
 
@@ -570,6 +585,8 @@ impl MeshTracker {
         }
         let entry = st.entered_via.map_or(NONE, |f| f.0);
         let tol = self.tol();
+        sc.counters.steps += 1;
+        sc.counters.face_tests += u64::from(self.core.c_off[c + 1] - self.core.c_off[c]);
         let ex = if self.core.c_flags[c] & C_CONVEX != 0 {
             self.core.exit_convex(c, o, d, entry, tol)
         } else {
@@ -738,7 +755,31 @@ impl Votes {
 
 impl sm_rt_api::Tracker for MeshTracker {
     fn caps(&self) -> TrackerCaps {
-        TrackerCaps::VOLUME_MESH.union(TrackerCaps::EXACT_PLANAR)
+        let mut c = TrackerCaps::VOLUME_MESH.union(TrackerCaps::EXACT_PLANAR);
+        if let Some(p) = &self.part {
+            c = c.union(TrackerCaps::MAJORANT);
+            if p.jump.is_some() {
+                c = c.union(TrackerCaps::REGION_JUMP);
+            }
+        }
+        c
+    }
+    fn majorant_view(&self) -> Option<&dyn sm_rt_api::MajorantTracker> {
+        self.part.as_ref().map(|_| self as &dyn sm_rt_api::MajorantTracker)
+    }
+    fn fire(&self, st: &mut TrackState, dist_limit: f64, max_steps: u32, scratch: &mut Scratch) -> Result<sm_rt_api::FireResult> {
+        if self.part.as_ref().is_some_and(|p| p.jump.is_some()) {
+            return crate::delta::jump_fire(self, st, dist_limit, max_steps, scratch);
+        }
+        let mut total = 0.0;
+        for _ in 0..max_steps {
+            let s = self.step(st, dist_limit - total, scratch)?;
+            total += s.dist;
+            if !matches!(s.end, StepEnd::CellFace { .. } | StepEnd::SlotChange { .. }) {
+                return Ok(sm_rt_api::FireResult::new(total, s.end));
+            }
+        }
+        Ok(sm_rt_api::FireResult::new(total, StepEnd::Lost(sm_rt_api::lost(st, LostCause::MaxStepsExceeded))))
     }
     fn info(&self) -> &TrackerInfo {
         &self.info
