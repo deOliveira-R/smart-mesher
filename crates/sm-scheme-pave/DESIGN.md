@@ -131,6 +131,14 @@ at `4 x` the first attempt's vertices (at least 4000). A small face therefore fa
 under a second (a thin triangle that used to take 3 s now takes about 0.5 s), a large
 one after a few attempts.
 
+### Corner rule (W3b)
+
+When no placement recombines a single-loop region, `corner.rs` reads it as a three-corner region (the three largest left turns, counts `a, b, c`, sum even). Arms `r_a = (b + c - a) / 2` (and permutations) all at least 1 give three structured blocks around one valence-3 centre (transfinite interpolation, five centre candidates, best worst-corner-sine wins). If an arm is zero or negative the region is cut from a corner to a node of the opposite side (cut node count near the local spacing) into two such regions. Every candidate is checked with exact predicates and a corner sine of at least 1e-3; `20/1/21` stays a typed failure (no cut works). It runs only after the ladder and the strip fill failed, so every mesh the old code found is bit-identical. 150 seeded random triangles: 0 failures (was 32).
+
+### Valence cleanup (W3b)
+
+`clean.rs`: valence-2 interior nodes are removed (the two quads merge) and the diagonal of a quad between two valence-3 interior nodes is collapsed (merged node valence 4); both keep exact convexity and the boundary untouched. Corner-rule meshes are always cleaned and smoothed; for every other mesh it is `PaveOptions::cleanup` / scheme parameter `cleanup` (default off, because turning it on moves existing hashes). On the 40 stars it lowers the irregularity (sum of |4 - valence|) from 27033 to 18475 with min SJ unchanged (0.201).
+
 ### Strip fill
 
 A single loop whose boundary nodes split into four logical sides with equal opposite counts

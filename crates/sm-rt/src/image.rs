@@ -17,6 +17,8 @@ const TAG_META: u16 = 0;
 const TAG_POS: u16 = 1;
 const TAG_FACES: u16 = 2;
 const TAG_APEX: u16 = 3;
+/// Region tags; present only when some region has tags, so tag-free images keep their bytes.
+const TAG_TAGS: u16 = 4;
 
 fn bad(msg: &str) -> RtError {
     RtError::CacheCorrupt(msg.to_owned())
@@ -184,9 +186,7 @@ pub(crate) fn export(t: &MeshTracker) -> Option<CacheImage> {
     let mut cb = W::default();
     write_bvh(&mut cb, &c.cell_bvh);
 
-    Some(CacheImage {
-        key,
-        sections: vec![
+    let mut sections = vec![
             (SectionTag::FacePlanes, planes.0),
             (SectionTag::CellInfo, cells.0),
             (SectionTag::Bvh, fb.0),
@@ -197,8 +197,20 @@ pub(crate) fn export(t: &MeshTracker) -> Option<CacheImage> {
             (SectionTag::Private(TAG_POS), pos.0),
             (SectionTag::Private(TAG_FACES), faces.0),
             (SectionTag::Private(TAG_APEX), apex.0),
-        ],
-    })
+    ];
+    if t.regions.0.iter().any(|r| !r.tags.is_empty()) {
+        let mut tg = W::default();
+        tg.u64(t.regions.0.len() as u64);
+        for r in &t.regions.0 {
+            tg.u64(r.tags.len() as u64);
+            for (k, v) in &r.tags {
+                tg.bytes(k.as_bytes());
+                tg.u64(*v as u64);
+            }
+        }
+        sections.push((SectionTag::Private(TAG_TAGS), tg.0));
+    }
+    Some(CacheImage { key, sections })
 }
 
 // ---- reading ------------------------------------------------------------------------------
@@ -402,6 +414,20 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
             info = info.as_implicit_complement();
         }
         regions.push(info);
+    }
+    if let Some(tb) = img.section(SectionTag::Private(TAG_TAGS)) {
+        let mut tr = R::new(tb);
+        if tr.len(8)? != regions.len() {
+            return Err(bad("tag table length"));
+        }
+        for reg in regions.iter_mut() {
+            let n = tr.len(16)?;
+            for _ in 0..n {
+                let k = String::from_utf8(tr.bytes()?).map_err(|_| bad("tag key"))?;
+                reg.tags.push((k, tr.u64()? as i64));
+            }
+        }
+        tr.done()?;
     }
     let ns = r.len(8)?;
     let mut surfaces = Vec::with_capacity(ns);

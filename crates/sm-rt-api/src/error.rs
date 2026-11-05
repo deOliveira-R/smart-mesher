@@ -187,8 +187,8 @@ pub enum RtError {
         /// The cell at that point (the segment's first cell when nothing was probed).
         cell: CellId,
     },
-    /// A majorant entry read by a call is NaN, infinite or negative. Shares code -11 with
-    /// [`RtError::InvalidInput`] (an invalid argument) but names the node.
+    /// A majorant entry read by a call is NaN, infinite or negative. Code -13 (it names the
+    /// node; [`RtError::InvalidInput`] is -11).
     #[error("invalid majorant {value} for node {}: must be finite and >= 0", .node.0)]
     InvalidMajorant {
         /// The node whose entry is bad.
@@ -217,8 +217,7 @@ impl RtError {
     /// | `BinCountMismatch` | -10 |
     /// | `InvalidInput` | -11 |
     /// | `MajorantViolated` | -12 |
-    ///
-    /// `InvalidMajorant` reports as -11 (an `InvalidInput` that names the node).
+    /// | `InvalidMajorant` | -13 |
     ///
     /// A variant added later gets the next free code (never reused).
     pub fn code(&self) -> i32 {
@@ -233,8 +232,9 @@ impl RtError {
             Self::Geom(_) => -8,
             Self::BadAlbedo { .. } => -9,
             Self::BinCountMismatch { .. } => -10,
-            Self::InvalidInput(_) | Self::InvalidMajorant { .. } => -11,
+            Self::InvalidInput(_) => -11,
             Self::MajorantViolated { .. } => -12,
+            Self::InvalidMajorant { .. } => -13,
         }
     }
 }
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn codes_are_frozen() {
-        let all: [(RtError, i32); 12] = [
+        let all: [(RtError, i32); 13] = [
             (RtError::Build(vec![]), -1),
             (RtError::BadDirection { norm: 0.0 }, -2),
             (RtError::NonFinite("x"), -3),
@@ -264,6 +264,7 @@ mod tests {
                 RtError::MajorantViolated { node: NodeId(0), sigma_t: 2.0, majorant: 1.0, pos: Point3::new(0.0, 0.0, 0.0), cell: CellId(0) },
                 -12,
             ),
+            (RtError::InvalidMajorant { node: NodeId(3), value: f64::NAN }, -13),
         ];
         for (e, c) in &all {
             assert_eq!(e.code(), *c, "{e}");
@@ -273,7 +274,6 @@ mod tests {
         codes.dedup();
         assert_eq!(codes.len(), all.len());
         assert!(codes.iter().all(|&c| c < 0 && c > -100));
-        assert_eq!(RtError::InvalidMajorant { node: NodeId(3), value: f64::NAN }.code(), -11);
     }
 
     #[test]

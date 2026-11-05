@@ -144,3 +144,10 @@ depends only on the chunk length.
   SVD, SVD vs Gram-matrix eigenvalues, `x^2-2`, `cos x = x`, odd and double roots).
 - Determinism: workload hashed for 1 vs N rayon threads, repeated, and concurrent callers
   (`sm_testkit::determinism::check`).
+
+## Allocation-free SoS (W3b)
+
+`sos::orient3d_sos_noalloc` returns the same signs as `orient3d_sos` with no heap use. The
+perturbation table (24 rank permutations x 72 monomials of the 4x3 grid) is built at compile
+time. Every minor of the perturbed determinant is an exact `orient2d` of the projected points,
+a coordinate difference or the constant 1, so no expansion arithmetic is needed.

@@ -8,6 +8,8 @@
 //! perfect matching exists); smart-Laplacian smoothing.
 
 mod cdt;
+mod clean;
+mod corner;
 mod front;
 mod matching;
 mod metric;
@@ -30,11 +32,14 @@ pub struct PaveOptions {
     pub smooth_iters: u32,
     /// Maximum rounds of edge splitting when the triangle dual has no perfect matching.
     pub max_rounds: u32,
+    /// Valence cleanup (valence-2 removal, diagonal collapse) of every result. Off by default so
+    /// that existing meshes stay bit-identical; meshes from the corner rule are always cleaned.
+    pub cleanup: bool,
 }
 
 impl Default for PaveOptions {
     fn default() -> Self {
-        PaveOptions { gradation: 0.3, smooth_iters: 30, max_rounds: 6 }
+        PaveOptions { gradation: 0.3, smooth_iters: 30, max_rounds: 6, cleanup: false }
     }
 }
 
@@ -216,6 +221,9 @@ const STRIP_GOOD: f64 = 0.3;
 /// ... and only if its quads are at most this many times the wanted size.
 const STRIP_MAX_SCALE: f64 = 1.2;
 
+/// Passes of valence cleanup at most.
+const CLEAN_PASSES: u32 = 12;
+
 /// The production ladder: first the strategies that recovered the most regions in the
 /// surveys of `tests.rs` (`survey_cover`), then every other candidate.
 fn ladder() -> Vec<Strategy> {
@@ -391,24 +399,29 @@ fn pave_with(
     // A structured grid for a single loop whose nodes split into four sides with equal
     // opposite counts (thin strips); the triangle route cannot recombine those.
     let mut strip: Option<strip::Strip> = if ranges.len() == 1 { strip::strip_fill(&w) } else { None };
-    let finish_strip = |s: strip::Strip| -> Result<Solution, PaveError> {
-        let mut pts = w.clone();
-        pts.extend_from_slice(&s.interior);
-        let met = pts.iter().map(|p| space.met(*p)).collect::<Result<Vec<_>, _>>()?;
-        smooth::smooth(&mut pts, &met, &s.quads, nb, opts.smooth_iters);
-        // The grid ignores the size field: report how much coarser (or finer) its quads are
-        // than the wanted size, as the geometric mean of edge length over wanted size.
+    // How much coarser (or finer) than the wanted size a mesh is: the geometric mean of the
+    // mean quad edge length over the wanted size.
+    let scale_of = |pts: &[[f64; 2]], quads: &[[u32; 4]]| -> Result<f64, PaveError> {
         let mut probe = Mesher::new(&space, cdt.clone(), nb, size_map.clone(), Tuning { hscale: 1.0, row_factor: 1.0, drop_run: 2 })?;
         let mut log_sum = 0.0;
-        for q in &s.quads {
+        for q in quads {
             let p: [[f64; 2]; 4] = core::array::from_fn(|k| pts[q[k] as usize]);
             let c = [0.25 * (p[0][0] + p[1][0] + p[2][0] + p[3][0]), 0.25 * (p[0][1] + p[1][1] + p[2][1] + p[3][1])];
             let m = space.met(c)?;
             let edge = (0..4).map(|k| m.len([p[(k + 1) % 4][0] - p[k][0], p[(k + 1) % 4][1] - p[k][1]])).sum::<f64>() / 4.0;
             log_sum += (edge / probe.wanted(c)?).ln();
         }
-        let scale = (log_sum / s.quads.len().max(1) as f64).exp();
-        Ok((pts, s.quads, 0, if scale.is_finite() { scale } else { 1.0 }))
+        let scale = (log_sum / quads.len().max(1) as f64).exp();
+        Ok(if scale.is_finite() { scale } else { 1.0 })
+    };
+    let finish_strip = |s: strip::Strip| -> Result<Solution, PaveError> {
+        let mut pts = w.clone();
+        pts.extend_from_slice(&s.interior);
+        let met = pts.iter().map(|p| space.met(*p)).collect::<Result<Vec<_>, _>>()?;
+        smooth::smooth(&mut pts, &met, &s.quads, nb, opts.smooth_iters);
+        // The grid ignores the size field: report its scale.
+        let scale = scale_of(&pts, &s.quads)?;
+        Ok((pts, s.quads, 0, scale))
     };
 
     // The ladder of strategies: the first that recombines completely wins. Coarse regions
@@ -487,9 +500,29 @@ fn pave_with(
             None => strip.take().map(finish_strip).transpose()?,
         };
     }
-    let Some((pts, quads, rounds, size_scale)) = result else {
+    // The corner rule: a three-corner loop that no placement recombined is filled by blocks
+    // (always cleaned and smoothed here: no existing result is affected).
+    let mut corner_rule = false;
+    if result.is_none()
+        && ranges.len() == 1
+        && let Some((interior, quads)) = corner::corner_fill(&w)
+    {
+        let mut pts = w.clone();
+        pts.extend(interior);
+        let scale = scale_of(&pts, &quads)?;
+        result = Some((pts, quads, 0, scale));
+        corner_rule = true;
+    }
+    let Some((mut pts, mut quads, rounds, size_scale)) = result else {
         return Err(last_err);
     };
+    if corner_rule || opts.cleanup {
+        let changed = clean::cleanup(&mut pts, &mut quads, nb, CLEAN_PASSES);
+        if corner_rule || changed {
+            let met = pts.iter().map(|p| space.met(*p)).collect::<Result<Vec<_>, _>>()?;
+            smooth::smooth(&mut pts, &met, &quads, nb, opts.smooth_iters);
+        }
+    }
 
     // Back to the parameter space; boundary nodes are the input, bit for bit.
     let mut points: Vec<[f64; 2]> = uv;

@@ -122,3 +122,13 @@ faces; tolerant healing of gaps above `linear_max`; partial-overlap merge of cur
 `overlapping`, never merged); instanced and decomposed volumes (guarded); mesh-level booleans;
 virtual topology; promotion of `cc.rs` into sm-geom; multi-edge cut chains between different loops of
 a holed face; a per-op COW cost fix for 10^5-face models.
+
+## W3b-1: candidate-pair BVH
+
+`pieces::candidate_pairs` queries a BVH (`bvh.rs`, median split, index tie-break) over the second
+face list instead of scanning F^2 pairs; output is the same sorted set. `candidate_pair_stats`
+reports `candidate_tests` (leaf-level box tests) and `node_visits` (recorded only). Fragment
+classification uses `locate::UseIndex`: faces whose sampled box is exact (plane, straight edges) are
+found through the BVH, every other face is always a candidate; candidates are visited in use order,
+so results equal the unindexed scan. Copies made for a subtract with N targets already share the
+surface and curve handles (only cells are copied; see `copy.rs` test).

@@ -41,6 +41,9 @@ mesh), a loss report saying what OpenFOAM could not carry, and an in-process par
 | `foam::build` | `build_polymesh`: face reordering, patch and zone assignment, `FoamReport` |
 | `foam::write`, `foam::tar` | `PolyMesh::files` / `write_dir` / `write_tar`, `write_polymesh` |
 | `foam::parse`, `foam::check` | `parse_polymesh` / `read_polymesh_dir`, `check_polymesh` |
+| `dagmc::model`, `dagmc::write` | `model_from_mesh` / `model_from_facets` (`DagmcModel`, sense normalisation, closed-volume check, graveyard), `write_h5m` / `export_h5m` |
+| `h5` | private pure-Rust HDF5 subset writer (and, under `test` / feature `testing`, its reader); no `sm-*` imports |
+| `gmsh::write`, `gmsh::parse` | `write_msh4` (ASCII or binary), `parse_msh4` (round-trip tests only, not a general reader) |
 | `le`, `crc` | little-endian packing, CRC-32 (slicing-by-8) |
 
 Decoded edge tables and sets use the contract types (`sm_mesh_api::EdgeTable`, `MeshSet`).
@@ -123,6 +126,34 @@ for patches, zones, names and losses are in `FOAM_FORMAT.md`. `PolyMesh` keeps i
 (about 12 M `u32` per million hexahedra); `PolyMesh::write_tar` exists for `Write`-based
 consumers, while the integration plan writes the case directory.
 
+## DAGMC `.h5m`
+
+`dagmc::model_from_mesh` reads a classified mesh through `MeshRead` and builds a `DagmcModel`:
+triangles grouped by surface, a forward and a backward volume per surface, `mat:` groups from cell
+sets. One assembler serves the mesh and the facet inputs (`model_from_facets` on
+`sm_rt_api::FacetInput`, the geometry the DAGMC benchmark traces, so both trackers see the same
+triangles): it normalises senses (first triangle names the forward volume, reversed windings are
+flipped), sorts by surface id and runs the closed-volume check by sorting directed edge uses, so no
+hash order and no tolerance. `write_h5m` turns the model into a `h5::Group` tree and `h5::write_file`
+into bytes; the layout, tags and evidence are in `H5M_FORMAT.md`. Why not the `hdf5` crate: it links C
+libhdf5 and writes allocation- and time-dependent bytes; the subset is a few hundred lines and the
+independent checks (h5py, MOAB, DAGMC) judge it. `sm-meshio` now depends on `sm-rt-api` (for
+`FacetInput`) and `sm-topo-api` (for `Region`), both contract crates; the `testing` feature (a self
+dev-dependency) exposes `h5` and its reader to the integration tests only.
+
+## Gmsh MSH 4.1
+
+`gmsh::write_msh4` follows the quirk that physical groups belong to entities: an entity is one
+classification entity plus one set-membership signature, so a cell set that holds part of a
+`TopoVolume` splits it (`msh.entity_split`), tags ascend per dimension in (model id, signature)
+order, and a node belongs to the lowest-tagged piece of its classification entity. Cells are the
+four volume types in the corner order the mesh IR already uses (checked against positive Jacobians
+for tet, hex, wedge and pyramid, and by Gmsh itself); boundary and interface faces on a `TopoFace`
+become triangles and quads; classified edges and vertices become lines and points. Polyhedra follow
+`PolyPolicy` (default `Error`, hint `use openfoam, vtu or exodus`; `Decompose` into tetrahedra around
+cell and face centroids, only where every neighbour across a polygonal face is decomposed too;
+`Drop`). ASCII reals are shortest round-trip, binary is little endian `size_t` 8.
+
 ## Determinism
 
 No hash-ordered iteration. Parallelism is only over fixed-size index chunks writing disjoint
@@ -130,11 +161,24 @@ output windows, and per-array independent jobs collected in order (`par_iter().c
 order). Tests compare 1-thread and N-thread output by hash (`sm_testkit::determinism::check`)
 for the whole corpus, both formats, and a block larger than every chunk size. The OpenFOAM files,
 the tar stream, the index maps and the report, and `.smsh` 1.1 bytes with element types are
-checked the same way (`tests/determinism.rs`), including a 64,000-cell block.
+checked the same way (`tests/determinism.rs`), including a 64,000-cell block. The h5m and msh4
+writers (no parallel code, sorted containers only) are checked by hash across runs and pools in
+`tests/dagmc.rs` and `tests/gmsh.rs`; the h5m file holds no timestamp or history, and Tier A
+(`check_h5m.py --twin`) compares two runs byte for byte and through h5py metadata.
 
 ## Limits (see W1_REPORT.md)
 
+Deferred, one line each: h5m curve (`Edge2`) and vertex sets (`include_curves`); h5m reader or
+import; CAD names and colours from STEP to groups; density and temperature metadata on `mat:`
+groups; msh4 degree-2 elements, `$Periodic`, `$PartitionedEntities`, `$NodeData`; msh 2.2; MED and
+CGNS; an `sm-hdf5` crate extraction when VTKHDF or an ir-store HDF5 profile needs it; mapping
+`Partition*` classification to the parent `Topo*` entity (an sm-fem lowering step); pydagmc-based
+watertightness comparison (our meshes are watertight by construction); `pydagmc.Model` in Tier B
+(the conda-forge MOAB has no `pymoab`; `probe.cpp` reports the same lists).
+
+Throughput (record only, no gate): the bench `export` has `dagmc_gmsh_*` groups (64,000 hexes;
+`SM_BENCH_TETS=63` adds 1.5 million tets); numbers are recorded by hand when run on a quiet machine.
+
 High-order geometry is not exported to VTU (corners only; `vtu_loss_report` says so); VTU has no
-face/side-set or boundary skin output; Exodus lives in `sm-exodus`, CGNS / Gmsh / DAGMC / Fluent
-are W3b; `.smsh` import returns arrays, not a `MeshRead`. OpenFOAM: ASCII only, no binary, no
+face/side-set or boundary skin output; Exodus lives in `sm-exodus`, CGNS / Fluent are not written; `.smsh` import returns arrays, not a `MeshRead`. OpenFOAM: ASCII only, no binary, no
 cyclic / AMI patches, dimension-3 meshes without inactive cells only (see `FOAM_FORMAT.md`).

@@ -26,7 +26,7 @@ fn ideal_elements_keep_their_ideal_metrics_at_any_scale() {
                 let w = eval(m, shape, &base, &Context { normal: None, ref_size: e(Metric::Volume, shape, &base) }).unwrap();
                 let w = match m {
                     Metric::Volume | Metric::Jacobian => w * s.powi(dim),
-                    Metric::Dimension => w * s,
+                    Metric::Dimension | Metric::Inradius => w * s,
                     _ => w,
                 };
                 assert!((v - w).abs() <= 1e-9 * (1.0 + w.abs()), "{m:?} on {shape:?} at scale {s}: {v} vs {w}");

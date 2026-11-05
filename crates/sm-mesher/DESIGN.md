@@ -26,6 +26,7 @@ fields arrive through the `MesherConfig` service, so this crate names no scheme 
 | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size` | edit the intent. |
 | `mesh.run`, `mesh.delete` | the driver node; `insert_mesh` / `retire_mesh` of `sm-layer-api`. |
 | `mesh.info` | query: counts by shape, topology hash, quantized geometry hash, total volume, `stale`. |
+| `mesh.plan` | query: explain what ran (`mesh`) or will run (`targets`): scheme per entity and why, interval counts and their source, `plan_hash`, `blockers`. `explain_plan` is the pure core. |
 
 ## IntentLayer
 
@@ -90,14 +91,50 @@ size, so replay never runs the hook again.
 
 ### mesh.run
 
-1. Resolve targets (live `TopoVolume`s, sorted, de-duplicated). Refuse a volume that already has
-   a mesh, or that shares a face with a meshed volume outside `targets` (`mesh.delete first`).
+1. Resolve targets: live `TopoVolume`s **or** `TopoFace`s, sorted, de-duplicated; a mix is
+   `Invalid("mesh.run takes volumes or faces, not both; run it twice")`. Run the guards (below).
 2. Clone the read layers (`Arc` clones) and the allocator; build the size field from
    `defaults.sizing` through the hook if there is one.
-3. `Driver::mesh(&input, &intent, &RayonExec, MeshBuilder::new(), &mut alloc_copy)`. Re-plans
-   around failing schemes happen inside the driver.
+3. `Driver::plan` once, then `Driver::mesh_from_plan(&input, &intent, plan, &RayonExec,
+   builder, &mut alloc_copy)` with `MeshBuilder::new()` (volumes) or `MeshBuilder::surface()`
+   (faces). Re-plans around failing schemes happen inside the driver.
 4. `insert_mesh(ctx, entry, &alloc0, alloc, "mesh")` adopts the minted ids (one range per kind,
-   `Mesh` first) and inserts the entry. Output role `mesh` (cardinality one).
+   `Mesh` first) and inserts the entry; its selection is the targets. Output role `mesh`
+   (cardinality one). The op name, role and argument are the same for faces, so recorded
+   scripts and hashes are unchanged.
+
+#### Surface-only runs (faces)
+
+A face run (Cubit `mesh surface`) makes a dimension-2 mesh: QUAD4 for quad schemes, TRI3 for tri
+schemes, polygons for mixed. `mesh.delete {targets: [faces]}`, staleness and `mesh_of(face)` work
+through the entry selection with no layer change. The scheme of a face is whatever the registry
+and the intent give (`mesh.scheme` on a face works as for a volume).
+
+Guards (all `OpError::Invalid`, state untouched; `mesh.run` fails with the first, `mesh.plan`
+lists all as `blockers`):
+
+| Case | Text |
+|---|---|
+| face already in an entry | `TopoFace#5 is already meshed (Mesh#1); mesh.delete first` |
+| face of a meshed volume | `TopoFace#5 bounds TopoVolume#1, already meshed (Mesh#1); mesh.delete first` |
+| face sharing an edge with a face meshed in another entry (selected, or of a meshed volume), not in `targets` (Q13) | `TopoFace#1 shares TopoEdge#n with TopoFace#5, meshed in Mesh#1; mesh them together in one mesh.run, or mesh.delete Mesh#1 first` |
+| volume with a face in a surface mesh | `TopoVolume#1 has a face in a surface mesh: TopoFace#5 is in Mesh#1; mesh.delete first` |
+
+Sequential meshing against meshed neighbours stays a backlog item. Faces of a dead host cell are
+refused by `live_targets`.
+
+**A request on the volume does not reach a face run.** The planner puts a volume's size or count
+on the edges of the volumes in the run, so with faces only it is ignored (the edges fall back to
+the built-in default goal, one interval per unit size). Set `mesh.size` / `mesh.intervals` on the
+faces or their edges. `mesh.run` emits the warning `mesh.volume_request_ignored` (not hashed)
+when a target face has no request of its own but a bounding volume has one, and `mesh.plan`
+shows `why: default` for such edges.
+
+Cell budget for faces: the driver's estimate counts volumes, so for a face run the driver budget
+is off and `mesh.run` checks `sum over faces of (geometric mean of the face's edge counts)^2`
+against `max_cells` after the first plan (same `OverBudget` text). Re-plans after a failure are
+not budget-checked for faces (the driver's budget is the only hook; a face branch in
+`Driver::estimate_cells` would remove this gap).
 
 Atomicity: the driver builds into a fresh builder and `finish` leaves the allocator unchanged on
 error, so a failed run adopts nothing; the engine discards the scratch state.
@@ -122,6 +159,8 @@ mesh derived by `mesh.to_poly` does not inherit the notes (they are positioned o
 cells; the derived entry starts with none). Notes are not errors: a quality-floor violation
 never fails `mesh.run`. `mesh.quality` publishes them as `scheme_notes` (capped at
 `MAX_SCHEME_NOTES`) and `n_scheme_notes` (all of them); both are absent when there are none.
+`mesh.plan` reports the same notes (`notes`, `ran` only) from `MeshEntry::notes`; a plan made
+for `targets` has none, because notes exist only after generation.
 
 ### mesh.run cell budget
 
@@ -132,12 +171,57 @@ guards against e.g. `size 1e-6` on a 10-unit brick (about 10^21 cells). The esti
 (anisotropic meshes are estimated by their mean count; exact for a structured brick, but only
 edge counts are seen, so a volume with few long edges, e.g. a cylinder with one seam edge on its
 curved face, can be off by a large factor either way); it only catches absurd requests. A plan
-error is returned as such, before the budget check. The plan is computed twice on an accepted
-run (cheap: 0.11 ms at 10^6 cells; `Driver::mesh_from_plan` is a W3 contract item).
+error is returned as such, before the budget check. The plan is made once: the driver checks the
+budget on it inside `Driver::mesh_from_plan` and on every re-plan (volumes); for faces see
+"Surface-only runs".
 
 ### mesh.delete
 
-`meshes` xor `targets` (volumes); `retire_mesh` per mesh, sorted. Any error fails the op.
+`meshes` xor `targets` (volumes or faces); `retire_mesh` per mesh, sorted. Any error fails the
+op.
+
+### mesh.plan (explain)
+
+`mesh.plan {mesh | targets, attempts = true}` (exactly one of `mesh` and `targets`) is a
+read-only query registered next to `mesh.info`; it mints no id and changes no state.
+
+* `mesh`: what **ran**, from `MeshEntry::plan` (`status: ran`, `stale` copied). A mesh without a
+  plan (imported) is `Invalid("mesh has no plan")`.
+* `targets`: what **will run**: the same input, intent, size field and driver as `mesh.run`
+  (`make_driver`, shared code) and one `Driver::plan` call, no generation (`status: will_run`).
+  A planning failure is `status: infeasible` with `failure` (the `SchemeError` text, for an
+  infeasible interval system its reason, constraint ids, entities and blame), not a query
+  error. The guards above come back as `blockers` (same texts) and an over-budget estimate as
+  one more blocker; `mesh.run` on the same input fails with `blockers[0]`.
+
+`PlanReport` fields: `status`, `mesh`, `stale`, `dim` (2 or 3), `selection`, `estimated_cells`
+(`will_run`), `waves`, `plan_hash` (FNV-1a of the JSON serialization of the plan, 16 hex
+digits; a `ran` report of a plan made with no re-plan equals the `will_run` hash taken before
+the run on the same state), `blockers`, `failure`, `entities`, `intervals`, `notes`.
+
+* `entities`: one row per `plan.problem.targets` entry (curves, surfaces, volumes, groups,
+  ascending): `scheme`, `how` (`intent#rank`, `registry#rank`, `piece_shape`, `imposed`, `auto`,
+  `copy`, `claimed`), `score`, `reason` (verbatim), `params`, `caps`, `claimed_by`, `copy_of`
+  (the class root), and `alternatives`: the candidates that lost, as `{scheme, phase, kind,
+  message}`: failures that forced a re-plan (`plan.rejections`) first, then what the final plan
+  passed over (`plan.attempts`), duplicates dropped. `elements` is `{"Quad": 6}` (cells
+  classified on the entity) for `ran` and the caps' element type (`"QUAD4"`, `"TRI3"`,
+  `"HEX8"`, ..., `"mixed"`) for `will_run`; `cells` is the classified count (`ran`).
+* `intervals`: one row per solved edge, ascending: `count`, `why`, and every request that reaches
+  the edge as `requests` (`origin`, `kind`, `value`, `agrees` with the solved count, `winner`).
+  `why` is computed here from the public `MeshingProblem.intervals` records: the strongest
+  direct request (a fixed count or goal) that agrees with the solved count decides, by rank
+  `hard_intent` (a hard user count or size) < `deck` < `scheme` (scheme requirement or
+  preference; names scheme and target) < `soft_intent` (a soft user count or size) <
+  `sizing_goal` (`mesh.size` default firmness, or the default sizing; carries `goal`) <
+  `default` (no request reached the edge: the built-in goal of 1). If no direct request agrees
+  and linear or even-sum rows mention the edge, the count is `derived` (the rows' ids in
+  `constraints`, marked as winners); the disagreeing goal is still listed. `soft_intent` and
+  `piece` are additions to the draft's list: a soft user count is neither a hard one nor a size
+  goal.
+
+Determinism: the report is a pure function of `(state, request)`; maps are `BTreeMap`, rows are
+in plan order, and nothing reads a clock or the thread count.
 
 ## Determinism
 
@@ -202,7 +286,11 @@ predict production schemes.
   applicable". Fix by re-issuing `mesh.scheme`; a typed-reference convention for params is a
   W3 item.
 * `fallbacks` carry names only (no parameters).
-* Whole volumes only (`PieceRef::Whole`); no decomposition pieces, no surface-only `mesh.run`.
+* Whole volumes (`PieceRef::Whole`) and whole faces only; no decomposition pieces.
+* No sequential meshing against meshed neighbours (a face next to a meshed face, a volume over
+  meshed faces): refused by the guards.
+* `mesh.plan` is not cached in the `DerivedCache`; it plans on every call. Generation-time
+  scheme notes are only available for `ran` reports.
 * Neighbour guard is per face adjacency to *meshed* volumes; it does not look through
   coincident-face pairs.
 * No partial success (`mesh.run` is all or nothing, as the research doc decides for W2).

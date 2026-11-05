@@ -270,14 +270,16 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     // Hint containment by coordinates (`==` semantics: -0.0 and 0.0 are one point), so a restart
     // costs O(hints log n), not O(hints * n).
     let point_key = |p: &V3| p.map(|x| (x + 0.0).to_bits());
-    let input_set: std::collections::BTreeSet<[u64; 3]> = input.points.iter().map(point_key).collect();
-    let mut extra_set: std::collections::BTreeSet<[u64; 3]> = std::collections::BTreeSet::new();
+    let input_set = KeySet::new(input.points.iter().map(point_key).collect());
+    let mut extra_set = KeySet::new(std::collections::BTreeSet::new());
     let (mut dt, mut flips, mut t_delaunay, mut t_recover);
     let mut attempt = 0;
     let (mut restarts, mut discarded) = (0usize, 0usize);
     let mut bnd_steiner: usize;
     let mut con_updates: u64;
     let mut lookup_rebuilds: u64;
+    let mut hole_rounds: u64;
+    let mut hint_candidates = 0u64;
     loop {
         let t1 = Instant::now();
         let mut pts = input.points.clone();
@@ -315,6 +317,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
             bnd_steiner = rec.n_boundary_steiner;
             con_updates = rec.bnd.work;
             lookup_rebuilds = rec.bnd.rebuilds;
+            hole_rounds = rec.bnd.hole_rounds;
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
@@ -336,6 +339,8 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                 restarts += 1;
                 discarded += bnd_steiner;
                 let pocket = pocket_point(&input.points, &input.tris, tri, edge);
+                let ncand = (pocket.iter().count() + r.2.len()) as u64;
+                hint_candidates += ncand;
                 let mut scored: Vec<(f64, usize, V3)> = pocket
                     .iter()
                     .chain(r.2.iter())
@@ -474,6 +479,9 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         n_quality_violations,
         quality_diagnostics,
         n_lookup_rebuilds: lookup_rebuilds,
+        n_facet_hole_rounds: hole_rounds,
+        n_hint_lookups: input_set.ops() + extra_set.ops(),
+        n_hint_candidates: hint_candidates,
         n_removal_deferred,
         n_s4_violations: margins.len(),
         worst_s4_margin,
@@ -488,4 +496,28 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         stage_ms,
     };
     Ok(TetMesh { points, n_input: n, tets, stats })
+}
+
+/// Coordinate-key set whose `contains`/`insert` count themselves, so the hint-lookup work
+/// counter measures the index operations actually performed.
+struct KeySet {
+    set: std::collections::BTreeSet<[u64; 3]>,
+    ops: std::cell::Cell<u64>,
+}
+
+impl KeySet {
+    fn new(set: std::collections::BTreeSet<[u64; 3]>) -> Self {
+        Self { set, ops: std::cell::Cell::new(0) }
+    }
+    fn contains(&self, k: &[u64; 3]) -> bool {
+        self.ops.set(self.ops.get() + 1);
+        self.set.contains(k)
+    }
+    fn insert(&mut self, k: [u64; 3]) -> bool {
+        self.ops.set(self.ops.get() + 1);
+        self.set.insert(k)
+    }
+    fn ops(&self) -> u64 {
+        self.ops.get()
+    }
 }

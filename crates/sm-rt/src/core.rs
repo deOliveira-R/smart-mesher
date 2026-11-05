@@ -10,7 +10,7 @@ use crate::bvh::{Box6, Bvh, EMPTY_BOX, union};
 use crate::vec3::{add, cross, dot, norm, scale, sub};
 use rayon::prelude::*;
 use sm_core::Point3;
-use sm_math::sos::{Tagged, orient3d_sos};
+use sm_math::sos::{Tagged, orient3d_sos_noalloc};
 use sm_math::{Sign, orient3d};
 use sm_rt_api::FaceAction;
 
@@ -250,14 +250,14 @@ impl Core {
     /// Sign of the edge function of the line `(o, o2)` against the oriented edge `a -> b`, with
     /// exact zeros resolved by simulation of simplicity (ids: vertex index, apex `n_vertices +
     /// face`, line points the two largest ids). Antisymmetric in `(a, b)`; an exactly degenerate
-    /// edge allocates inside `sm-math`.
+    /// edge uses the allocation-free SoS entry.
     #[inline]
     fn edge_sign(o: Point3, o2: Point3, ia: u64, pa: [f64; 3], ib: u64, pb: [f64; 3]) -> i8 {
         let (lo, hi, flip) = if ia < ib { ((ia, pa), (ib, pb), false) } else { ((ib, pb), (ia, pa), true) };
         let (plo, phi) = (Point3::new(lo.1[0], lo.1[1], lo.1[2]), Point3::new(hi.1[0], hi.1[1], hi.1[2]));
         let s = match orient3d(o, o2, plo, phi) {
             Sign::Zero => {
-                orient3d_sos(Tagged::new(o, ID_O), Tagged::new(o2, ID_O2), Tagged::new(plo, lo.0), Tagged::new(phi, hi.0)).unwrap_or(Sign::Positive)
+                orient3d_sos_noalloc(Tagged::new(o, ID_O), Tagged::new(o2, ID_O2), Tagged::new(plo, lo.0), Tagged::new(phi, hi.0)).unwrap_or(Sign::Positive)
             }
             s => s,
         };

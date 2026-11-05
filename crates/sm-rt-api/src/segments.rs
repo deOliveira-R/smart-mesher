@@ -713,7 +713,8 @@ impl FlightCursor {
 
     /// The next segment, or `None` once the flight has ended ([`FlightCursor::end`]). The state
     /// is advanced to the segment's end. `InvalidInput` for slices of the wrong length;
-    /// `InvalidMajorant` for a bad entry at the segment's node (the state is then unchanged).
+    /// `InvalidMajorant` for a bad entry at the segment's node and `NonFinite` for a bad segment
+    /// length (the state is unchanged in both).
     pub fn next_segment(
         &mut self,
         t: &dyn MajorantTracker,
@@ -736,6 +737,8 @@ impl FlightCursor {
         let mut seg = t.advance_segment(st, &q, s)?;
         self.steps += 1;
         if !(seg.length().is_finite() && seg.length() >= 0.0) {
+            // Nothing advanced: put the state back as the error contract says.
+            st.clone_from(&self.pre);
             return Err(RtError::NonFinite("segment length"));
         }
         seg.t0 += self.t;

@@ -1,6 +1,6 @@
 [package]
 name = "sm-rt-bench"
-description = "Ray-tracing benchmarks and scaling harness over sm-rt-api."
+description = "Ray-tracing benchmarks and scaling harness over sm-rt-api: cases, formats, agreement checker, fairness gates, reports."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -10,8 +10,24 @@ license.workspace = true
 [lib]
 bench = false
 
-[dev-dependencies]
+[[bin]]
+name = "smrt-bench"
+path = "src/bin/smrt-bench.rs"
+
+[dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-topo-api = { path = "../sm-topo-api" }
+sm-model-api = { path = "../sm-model-api" }
+sm-tess = { path = "../sm-tess" }
+sm-cadio = { path = "../sm-cadio" }
+sm-rt-api = { path = "../sm-rt-api", features = ["stubs"] }
 sm-testkit = { path = "../sm-testkit" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+thiserror = "2"
 
 [lints]
 workspace = true

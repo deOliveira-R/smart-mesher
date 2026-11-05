@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sm_core::{EntityId, EntityKind};
 use sm_geom_api::{Domain1, Interval, ParametricCurve, ParametricSurface};
 use sm_mesh_api::{
-    CellIx, CellShape, Classification, FaceIx, MeshDim, MeshEntityKind, MeshRead, Param, VertexIx,
+    CellIx, CellShape, Classification, FaceIx, MeshDim, MeshEntityKind, MeshRead, MeshSet, Param, SetMembers, VertexIx,
 };
 use sm_model_api::{BoundaryKind, Deck};
 use sm_quality::Metric;
@@ -481,7 +481,7 @@ impl<'a> Prep<'a> {
         let top_kind = if dim2 { EntityKind::TopoFace } else { EntityKind::TopoVolume };
         let mut selected = vec![false; n];
         match &req.nodes {
-            NodeSelect::All => {
+            NodeSelect::All | NodeSelect::Set(_) => {
                 // A face or edge node of a 3-D mesh moves only if every volume above it is meshed
                 // here: a volume in another mesh entry would otherwise lose conformity.
                 let mut conformal: BTreeMap<EntityId, bool> = BTreeMap::new();
@@ -550,6 +550,36 @@ impl<'a> Prep<'a> {
                         }
                     }
                 }
+            }
+        }
+
+        if let NodeSelect::Set(name) = &req.nodes {
+            let unknown = || SmoothError::UnknownSet {
+                name: name.clone(),
+                available: mesh
+                    .sets()
+                    .iter()
+                    .filter(|s| matches!(s.members, SetMembers::Cells(_)))
+                    .map(|s| s.name.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            };
+            let Some(MeshSet { members: SetMembers::Cells(cells), .. }) = mesh.set_by_name(name) else {
+                return Err(unknown());
+            };
+            let mut in_set = vec![false; n];
+            for c in cells {
+                if c.get() >= nc {
+                    return Err(SmoothError::BadParams(format!("set {name:?} holds cell {} out of range ({nc})", c.get())));
+                }
+                let (a, b) = (corner_off[c.get()] as usize, corner_off[c.get() + 1] as usize);
+                for &v in &corners[a..b] {
+                    in_set[v as usize] = true;
+                }
+            }
+            for (s, m) in selected.iter_mut().zip(&in_set) {
+                *s &= *m;
             }
         }
 

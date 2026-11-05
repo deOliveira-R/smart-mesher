@@ -231,22 +231,25 @@ Angles are evaluated as `atan2(|a x b|, a . b)`, which equals `acos(a.b/(|a||b|)
 
 **Closed forms in the tests.** Sheared hex pair (B's x=2 layer shifted 2 in y): shared face non-orthogonality 45, skewness 1, weight 0.5, orthogonal quality `1/sqrt2` (A) and `1/sqrt5` (B), B's boundary face skewness 2. Stretched pair (widths 1, 2): volume ratio 2, weight 1/3. Determinants: cube 1, 1x1x2 brick 0.864, regular hexagonal prism 0.9932. Saddle quad (h = 1/4): flatness `1/sqrt(1+4h^2)`, warp `atan(2h)`; dart quad concavity `asin(0.8)`; L-shaped hexagon 90.
 
-**Profiles** (`rules(Profile)`; a value equal to a limit passes; `fail_boundary` applies to boundary faces). All Generic and Transport numbers are provisional engineering guesses held in one table in `profile.rs`; the Transport numbers await the user's ratification before they are advertised.
+**Profiles** (`rules(Profile)`; a value equal to a limit passes; `fail_boundary` applies to boundary faces). The Generic numbers are provisional engineering guesses; the Transport numbers are ratified (Q14, values unchanged). All are held in one table in `profile.rs`.
 
 | Profile | Rules (warn / fail) |
 |---|---|
 | Generic | ScaledJacobian 0.2 / 0.05 (lower is worse); EdgeRatio 10 / 100; NonOrthogonality 50 / 70; Skewness 2 / 4 (boundary 20); VolumeRatio 4 / 20; InterpolationWeight 0.2 / 0.05 (lower); FaceFlatness 0.9 / 0.8 (lower); FaceConcavity 5 / 10 |
 | OpenFoam | NonOrthogonality fail 70; Skewness fail 4 (boundary 20); InterpolationWeight fail 0.05; FaceFlatness warn 0.8 (never fails: `fail = -inf`); FaceConcavity fail 10; CellDeterminant fail 1e-3 |
-| Fluent | OrthogonalQuality 0.1 / 0.01 (lower). Equiangle skewness is a documented gap |
-| Transport | FaceFlatness 0.9999 / 0.999 (lower); FaceConcavity 0.1 / 1; Starness 0.2 / 0 (lower); EdgeRatio 20 / 200; VolumeRatio 10 / 100. Suits planar convex faces for ray tracing and sweeps |
+| Fluent | OrthogonalQuality 0.1 / 0.01 (lower). Equiangle skewness is available as `EquiangleSkewness` but is not graded |
+| Transport | FaceFlatness 0.9999 / 0.999 (lower); FaceConcavity 0.1 / 1; Starness 0.2 / 0 (lower); EdgeRatio 20 / 200; VolumeRatio 10 / 100; Suits planar convex faces for ray tracing and sweeps |
 
 `Metric::name()/from_name()`, `FvMetric::name()/from_name()` and `Profile::name()/from_name()` use the snake_case of the variant and round-trip over `ALL`. These names become public API when released.
 
-**Known gaps.** Equiangle and equivolume skewness (Fluent), the cell-level aspect ratio in the checkMesh definition and face-pyramid volumes are deferred. High-order cells use the corner skeleton (faces are the corner loops).
+**W3b additions.** `EquiangleSkewness` (face): `max((a_max - a_e)/(180 - a_e), (a_e - a_min)/a_e)` over the face's interior angles about its own area vector, `a_e = 180 (n-2)/n`; 0 for regular faces. `CellAspectRatio` (cell, checkMesh): `max/min` of the components of `sum_f |Sf|` taken componentwise, so it is axis dependent by definition (a cube rotated 45 degrees about z scores sqrt2); `DBL_MAX` when a component is 0. `BoundaryFaceCount` (cell): number of faces without a neighbour, graded by `transport_extra_rules()` (warn when 2 or more; the 3x3x1 slab has 9 such cells, the 3x3x3 block 20). The rule is deliberately not in `rules(Transport)`: adding it would add a sixth metric to every Transport `mesh.quality` report (`sm-diag` asserts the five-metric list), so the report layer opts in (W3b-DIAG, pending ruling). No other rule uses the new metrics, so existing graded outputs are unchanged.
+
+**Known gaps.** Equivolume skewness (Fluent) and face-pyramid volumes are deferred. High-order cells use the corner skeleton (faces are the corner loops).
 
 ## Known gaps
 
-* **Missing Verdict metrics:** `*_equiangle_skew` (all shapes), `tri_normalized_inradius`, `quad_radius_ratio`, `tet_mean_ratio`, `tet_normalized_inradius`, `tet_inradius`, `tet_squish_index`, `tet_equivolume_skew`, `hex_nodal_jacobian_ratio`, hex/tet `timestep`, `wedge_max_stretch` (`Stretch` is not applied to wedges). PARITY lists "full" as P1.
+* **W3b metrics** (`extra.rs`; tests `tests/w3b_metrics.rs`): `EquiangleSkew` (tri 60, quad 90, tet `acos(1/3)` dihedral, hex 90 dihedral; `max((a_max-a_e)/(180-a_e), (a_e-a_min)/a_e)`, from the existing `MinAngle`/`MaxAngle`), `MeanRatio` (tet: `12 (3V)^(2/3)/sum l^2`; 0 if `V <= 0`), `Inradius` (tet: `3V/sum A`, a length, negative if inverted), `SquishIndex` (tet: max over faces of `1 - cos` between the outward area vector and the vector from vertex mean to face mean), `NodalJacobianRatio` (hex: min over max of the 8 corner determinants, signed; 0 if the max is not positive; a frustum with top side `k` scores `k^2`), `MaxStretch` (wedge: worst quad face of `d_max/(sqrt2 l_min)`, i.e. the inverse of the quad `Stretch`; larger is worse), and `RadiusRatio` extended to quads (`(d_max/2)/(2A/P)/sqrt2`, half the longer diagonal over the inradius `2A/P`, square = 1). The Verdict C++ sources were not available offline: `EquiangleSkew`, `MeanRatio` and `Inradius` follow the standard definitions; `SquishIndex`, `MaxStretch` and the quad `RadiusRatio` are smart-mesh definitions (documented here) and are not claimed Verdict-identical.
+* **Still missing Verdict metrics:** `tri_normalized_inradius`, `tet_normalized_inradius`, `tet_equivolume_skew`, hex/tet `timestep`, wedge/pyramid/polygon equiangle skew. PARITY lists "full" as P1.
 * **Thresholds.** The "Accept" columns of the Verdict tables are documentation only; the graded limits are in `profile.rs` (see "Finite-volume metrics").
 * High-order cells are evaluated on the corner skeleton; no curved-element Jacobian sampling.
 * **Degenerate threshold** is `TINY = 1e-30` on power-of-two-normalised coordinates, not Verdict's `VERDICT_DBL_MIN`; values on exactly degenerate elements are not all Verdict-identical (see the deviations list).

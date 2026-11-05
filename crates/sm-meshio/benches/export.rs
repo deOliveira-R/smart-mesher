@@ -6,7 +6,9 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use sm_mesh_api::SerialAlloc;
 use sm_mesh_api::reference::hex_block;
+use sm_meshio::dagmc::{DagmcOptions, export_h5m};
 use sm_meshio::foam::{FoamOptions, build_polymesh, parse_polymesh};
+use sm_meshio::gmsh::{GmshOptions, write_msh4};
 use sm_meshio::{SmshFile, SmshWriter, VtuEncoding, VtuOptions, vtu_bytes};
 use std::hint::black_box;
 
@@ -47,5 +49,31 @@ fn foam_polymesh(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, export, foam_polymesh);
+/// DAGMC h5m and Gmsh msh4 (ASCII, binary) on 64,000 hexes, and on `SM_BENCH_TETS` tets per axis
+/// (`6 n^3` tets; `n = 63` is the 10^6-tet record) when that variable is set. Record-only: bytes
+/// per second go to `DESIGN.md` by hand, nothing is asserted.
+fn dagmc_and_gmsh(c: &mut Criterion) {
+    let hex = hex_block([40, 40, 40], [1.0; 3], &mut SerialAlloc::new()).expect("block");
+    let mut meshes: Vec<(String, sm_mesh_api::reference::ReferenceMesh)> = vec![("64k_hex".into(), hex)];
+    if let Some(n) = std::env::var("SM_BENCH_TETS").ok().and_then(|v| v.parse::<u32>().ok()) {
+        meshes.push((format!("{}_tet", 6 * (n as usize).pow(3)), sm_testkit::meshes::tet_block([n; 3], [1.0; 3]).expect("tet block").mesh));
+    }
+    for (name, m) in &meshes {
+        let mut out = Vec::new();
+        let h5m = export_h5m(m, &DagmcOptions::default(), &mut out).expect("h5m");
+        let ascii = write_msh4(m, &GmshOptions::default(), &mut Vec::new()).expect("msh");
+        let bin = write_msh4(m, &GmshOptions::default().with_binary(true), &mut Vec::new()).expect("msh");
+        let mut g = c.benchmark_group(format!("dagmc_gmsh_{name}"));
+        g.sample_size(10);
+        g.throughput(Throughput::Bytes(h5m.bytes));
+        g.bench_function("h5m", |b| b.iter(|| black_box(export_h5m(m, &DagmcOptions::default(), &mut Vec::new()).expect("h5m"))));
+        g.throughput(Throughput::Bytes(ascii.bytes));
+        g.bench_function("msh4_ascii", |b| b.iter(|| black_box(write_msh4(m, &GmshOptions::default(), &mut Vec::new()).expect("msh"))));
+        g.throughput(Throughput::Bytes(bin.bytes));
+        g.bench_function("msh4_binary", |b| b.iter(|| black_box(write_msh4(m, &GmshOptions::default().with_binary(true), &mut Vec::new()).expect("msh"))));
+        g.finish();
+    }
+}
+
+criterion_group!(benches, export, foam_polymesh, dagmc_and_gmsh);
 criterion_main!(benches);

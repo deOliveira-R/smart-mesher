@@ -1215,6 +1215,15 @@ impl HierarchyView for AnalyticWorld {
     }
 }
 
+/// `StepEnd::Lost` leaves the state unchanged and the length is 0 (MajorantTracker contract),
+/// also when earlier steps of the merged segment had advanced.
+fn undo_if_lost(end: &StepEnd, st: &mut TrackState, saved: TrackState, total: &mut f64) {
+    if matches!(end, StepEnd::Lost(_)) {
+        *st = saved;
+        *total = 0.0;
+    }
+}
+
 impl MajorantTracker for AnalyticWorld {
     fn hierarchy(&self) -> &dyn HierarchyView {
         self
@@ -1267,13 +1276,11 @@ impl MajorantTracker for AnalyticWorld {
                 break;
             }
             if merged > 2 * self.n() as u32 + 8 {
-                // `StepEnd::Lost` leaves the state unchanged (MajorantTracker contract).
-                let info = lost(st, LostCause::MaxStepsExceeded);
-                *st = saved;
-                end = StepEnd::Lost(info);
+                end = StepEnd::Lost(lost(st, LostCause::MaxStepsExceeded));
                 break;
             }
         }
+        undo_if_lost(&end, st, saved, &mut total);
         Ok(FlightSegment::new(mode, node, set, first, region, total, sigma_m)
             .with_faces(face_in, end_face(&end))
             .with_resolved(mode == TrackMode::Surface && merged == 1)
@@ -1803,6 +1810,90 @@ mod tests {
         assert_eq!(st.pos.x, 12.0);
         assert_eq!(st.levels[0].lattice, [2, 0, 0], "re-entered in the last column");
         assert_eq!(st.cell, CellId(2 * 3 + 2));
+    }
+
+    /// A `Lost` step inside a merged segment undoes the earlier steps (state back, length 0);
+    /// any other end keeps them. The loop cannot be driven to a mid-segment loss with the
+    /// stub's shapes, so the rule is tested on its own.
+    #[test]
+    fn lost_inside_a_merged_segment_restores_the_state() {
+        let w = lattice_world([FaceAction::Respond(vac()); 6]);
+        let mut sc = Scratch::new();
+        let saved = w.init_state(p(8.2, 2.0, 2.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        let mut moved = saved.clone();
+        moved.pos = p(9.5, 2.0, 2.0);
+        let end = StepEnd::Lost(lost(&moved, LostCause::MaxStepsExceeded));
+        let (mut st, mut total) = (moved.clone(), 1.3);
+        undo_if_lost(&end, &mut st, saved.clone(), &mut total);
+        assert_eq!((st, total), (saved.clone(), 0.0));
+        let (mut st, mut total) = (moved.clone(), 1.3);
+        undo_if_lost(&StepEnd::Limit, &mut st, saved, &mut total);
+        assert_eq!((st, total), (moved, 1.3));
+    }
+
+    /// An implementor that reports a NaN segment length after moving the state.
+    struct NanLength(AnalyticWorld);
+    impl Tracker for NanLength {
+        fn caps(&self) -> TrackerCaps {
+            self.0.caps()
+        }
+        fn info(&self) -> &TrackerInfo {
+            self.0.info()
+        }
+        fn regions(&self) -> &RegionTable {
+            self.0.regions()
+        }
+        fn surfaces(&self) -> &SurfaceTable {
+            self.0.surfaces()
+        }
+        fn cell_region(&self, c: CellId) -> Option<RegionId> {
+            self.0.cell_region(c)
+        }
+        fn cell_volume(&self, c: CellId) -> Option<f64> {
+            self.0.cell_volume(c)
+        }
+        fn locate(&self, p: Point3, d: Option<Vector3>, h: Option<CellId>, sc: &mut Scratch) -> Result<Located> {
+            self.0.locate(p, d, h, sc)
+        }
+        fn step(&self, st: &mut TrackState, m: f64, sc: &mut Scratch) -> Result<Step> {
+            self.0.step(st, m, sc)
+        }
+        fn closest(&self, p: Point3, r: Option<RegionId>, sc: &mut Scratch) -> Result<Option<Closest>> {
+            self.0.closest(p, r, sc)
+        }
+        fn face_normal(&self, f: FaceId, p: Point3) -> Result<Vector3> {
+            self.0.face_normal(f, p)
+        }
+        fn majorant_view(&self) -> Option<&dyn MajorantTracker> {
+            Some(self)
+        }
+    }
+    impl MajorantTracker for NanLength {
+        fn hierarchy(&self) -> &dyn HierarchyView {
+            self.0.hierarchy()
+        }
+        fn advance_segment(&self, st: &mut TrackState, q: &SegmentQuery<'_>, sc: &mut Scratch) -> Result<FlightSegment> {
+            let mut seg = self.0.advance_segment(st, q, sc)?;
+            seg.t1 = f64::NAN;
+            Ok(seg)
+        }
+        fn locate_in_node(&self, n: NodeId, l: &[Level], p: Point3, d: Option<Vector3>, sc: &mut Scratch) -> Result<Located> {
+            self.0.locate_in_node(n, l, p, d, sc)
+        }
+    }
+
+    #[test]
+    fn a_non_finite_segment_length_restores_the_state() {
+        use crate::segments::{FlightInput, FlightOptions};
+        let w = NanLength(lattice_world([FaceAction::Respond(vac()); 6]));
+        let mut sc = Scratch::new();
+        let mut st = w.init_state(p(8.2, 2.0, 2.0), v(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        let before = st.clone();
+        let mut cur = w.begin(&st, &FlightOptions::default()).unwrap();
+        let maj = vec![1.0; w.0.node_count()];
+        let r = cur.next_segment(&w, FlightInput::new(&maj), &mut st, &mut sc);
+        assert!(matches!(r, Err(RtError::NonFinite("segment length"))), "{r:?}");
+        assert_eq!(st, before, "the error leaves the state as it was");
     }
 
     #[test]

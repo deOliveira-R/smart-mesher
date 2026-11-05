@@ -158,7 +158,8 @@ Nothing else is renamed.
 spellings: `//` and `/* */` comments, the `FoamFile` header, `N(...)`, `N\n(\n...\n)`,
 `List<T> N(...)`, `N{v}`, nested `k(i ...)` faces, quoted patch names, the `boundary` dictionary,
 and both zone files. `format binary` and `faceCompactList` are `Unsupported`; patch types other
-than the six above (cyclic, processor, ...) are `Unsupported`. Syntax errors are
+than the six the writer emits (`patch`, `wall`, `symmetryPlane`, `symmetry`, `empty`, `wedge`;
+`FoamPatchType`) (cyclic, processor, ...) are `Unsupported`. Syntax errors are
 `Parse{file, line, detail}`, consistency errors (counts, index ranges, negative labels,
 non-finite coordinates, a patch past the faces) are `Malformed`. The parser is iterative and
 declared counts never size an allocation: lists grow as tokens are read and the count is compared
@@ -259,11 +260,10 @@ an interior cube cell 1.
   `cell_determinants` does too but the split treats the mesh as 2D and skips it.
 * The split can be switched off: `FoamOptions::split_small_determinant(false)`, or
   `sm_fem::ExportRequest::split_small_determinant = false` for `export_files` (default true).
-  The `session.export` wire request and the CLI do not carry the switch yet, nor a way to name
-  `empty` / `wedge` patches.
-* Open follow-ups. A 2D-aware split of flagged 2D cells (split the 2D footprint and extrude the
-  pieces, so every new edge lies in-plane or along the empty direction) would pass both
-  checkMesh checks. The wire `session.export` request and the CLI carry neither the split
-  switch nor a way to name `empty` / `wedge` patches, and `sm_fem::export_files` never emits
-  them, so through sm-fem only the off switch is reachable; the 2D rule is reachable only via
-  `FoamOptions` with `PatchSource::Explicit`.
+* Open follow-ups. (1) A 2D-aware split of flagged 2D cells (split the 2D footprint and extrude
+  the pieces, so every new edge lies in-plane or along the empty direction) would pass both
+  checkMesh checks; not scheduled. (2) The wire `session.export` request and the CLI carry
+  neither the split switch nor a way to name `empty` / `wedge` patches (proposal P5 in
+  `docs/design/w3b/plan.md`, pending), and `sm_fem::export_files` never emits them, so through
+  sm-fem only the off switch is reachable; the 2D rule is reachable only via `FoamOptions` with
+  `PatchSource::Explicit`.

@@ -130,7 +130,7 @@ pub struct Token {
 /// syntax later cannot change the meaning of a valid script (`return (x)` would otherwise already parse as a call).
 pub const FUTURE_WORDS: [&str; 7] = ["fn", "def", "return", "while", "break", "continue", "import"];
 
-fn keyword(s: &str) -> Option<Tok> {
+pub(crate) fn keyword(s: &str) -> Option<Tok> {
     Some(match s {
         "let" => Tok::Let,
         "set" => Tok::Set,

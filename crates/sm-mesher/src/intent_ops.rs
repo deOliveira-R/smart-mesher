@@ -234,6 +234,7 @@ pub struct MeshSize {
 
 impl TypedOp for MeshSize {
     const NAME: &'static str = "mesh.size";
+    const IMPL_VERSION: u32 = 2;
     const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
@@ -305,6 +306,7 @@ pub struct MeshIntervals {
 
 impl TypedOp for MeshIntervals {
     const NAME: &'static str = "mesh.intervals";
+    const IMPL_VERSION: u32 = 2;
     const NO_OUTPUTS: bool = true;
 
     fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {

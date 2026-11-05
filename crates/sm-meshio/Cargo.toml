@@ -1,6 +1,6 @@
 [package]
 name = "sm-meshio"
-description = "Mesh export: native .smsh container and VTU, later Exodus, CGNS, Gmsh and others."
+description = "Mesh export: native .smsh container, VTU, OpenFOAM, DAGMC h5m and Gmsh msh4."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -11,11 +11,15 @@ license.workspace = true
 default = []
 # Memory-mapped file access for the .smsh reader (needs `unsafe` in memmap2).
 mmap = ["dep:memmap2"]
+# Exposes the private `h5` writer and its test reader to integration tests (self dev-dependency).
+testing = []
 
 [dependencies]
 sm-core = { path = "../sm-core" }
 sm-mesh-api = { path = "../sm-mesh-api", features = ["bytemuck"] }
 sm-model-api = { path = "../sm-model-api" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-topo-api = { path = "../sm-topo-api" }
 thiserror = "2"
 rayon = "1"
 bytemuck = "1"
@@ -24,6 +28,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 memmap2 = { version = "0.9", optional = true }
 
 [dev-dependencies]
+sm-meshio = { path = ".", features = ["testing"] }
 sm-testkit = { path = "../sm-testkit" }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "1", default-features = false, features = ["std"] }

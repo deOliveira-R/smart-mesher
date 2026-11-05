@@ -129,15 +129,16 @@ const MAX_DEPTH: usize = 64;
 
 /// State of one instance walk: the representations on the current path (cycle detection) and the
 /// largest number of placements the walk may produce.
-pub(crate) struct Walk {
+pub(crate) struct Walk<'a> {
     path: Vec<u64>,
+    meter: &'a crate::work::Meter,
     /// Limit on the placements of one solid (and on every intermediate list).
     pub limit: usize,
 }
 
-impl Walk {
-    pub(crate) fn new(limit: usize) -> Self {
-        Self { path: Vec::new(), limit }
+impl<'a> Walk<'a> {
+    pub(crate) fn new(limit: usize, meter: &'a crate::work::Meter) -> Self {
+        Self { path: Vec::new(), meter, limit }
     }
 }
 
@@ -149,7 +150,7 @@ impl Walk {
 /// revisit, whatever the fan-out); more than `walk.limit` placements, at any level, is
 /// [`StepError::TooManyInstances`], so a small file cannot make the walk allocate without bound.
 pub(crate) fn instances(file: &StepFile, asm: &Assembly, rep: u64, scale_of: &dyn Fn(u64) -> f64, walk: &mut Walk) -> Result<Vec<Transform>, StepError> {
-    crate::work::add(&crate::work::WALK_STEPS, 1);
+    walk.meter.walk_step();
     if walk.path.contains(&rep) {
         return Err(StepError::Cycle { id: rep });
     }

@@ -8,7 +8,8 @@
 //! | [`read_step`] | STEP bytes to a plain [`BrepModel`], independent of any topology store |
 //! | [`edge_range`], [`weld_vertices`] | edge parameter ranges and reader-side stitching |
 //! | [`realize`] | put a [`BrepModel`] into any `TopologyEdit` host inside an open operation |
-//! | [`ImportStep`], [`StepInfoQuery`], [`CadioPlugin`] | the `model.import_step` op and `cad.step_info` query |
+//! | [`ImportStep`], [`StepInfoQuery`], [`ExportStepQuery`], [`CadioPlugin`] | the `model.import_step` op, the `cad.step_info` and `model.export` queries |
+//! | [`read_step_metered`], [`Work`] | a read with per-call work counters |
 //! | [`inputs`] | content-addressed blobs: [`StepInputs`], [`MemoryInputStore`], [`DirInputStore`], [`stage_file`] |
 
 mod args;
@@ -29,26 +30,27 @@ mod source;
 mod split;
 mod units;
 mod weld;
-pub mod work;
+mod work;
 mod write;
 
-pub use decode::read_step;
+pub use decode::{read_step, read_step_metered};
 pub use edge::edge_range;
 pub use error::{OpenEdge, StepError};
 pub use inputs::{DirInputStore, InputRef, InputStore, MemoryInputStore, StepInputs, sha256_hex, stage_file};
 pub use inspect::{SolidInfo, StepInfo, UnsupportedInfo};
 pub use model::*;
-pub use op::ImportStep;
+pub use op::{ExportSchema, ExportStepQuery, ExportStepReply, ImportStep};
 pub use query::StepInfoQuery;
 pub use realize::{Inverted, RealizeOptions, Realized, realize};
 pub use source::{InlineSource, MAX_INLINE_BYTES, Sha256Source, Source};
+pub use split::MAX_GLOBAL;
 pub use weld::weld_vertices;
-pub use work::{Work, work};
+pub use work::Work;
 pub use write::{Loss, StepSchema, WriteOptions, WriteReport, export_step, write_step};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 
-/// The `cadio` plugin: registers `model.import_step` and `cad.step_info`, no layers
+/// The `cadio` plugin: registers `model.import_step`, `cad.step_info` and the read-only `model.export`, no layers
 /// (`sm_layer_api::CoreLayers` registers them). Needs the [`StepInputs`] service for
 /// `{sha256}` sources.
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,6 +64,7 @@ impl Plugin for CadioPlugin {
     fn register(&self, registry: &mut Registry) -> Result<(), RegistryError> {
         registry.register::<ImportStep>()?;
         registry.register_query::<StepInfoQuery>()?;
+        registry.register_query::<ExportStepQuery>()?;
         Ok(())
     }
 }

@@ -109,6 +109,9 @@ pub(crate) struct Bnd {
     pub work: u64,
     /// Times the lookup was rebuilt from the tiles (never in the incremental design).
     pub rebuilds: u64,
+    /// Rounds of the hole-triangle stage of `recover_facet` that cleared crossings (the path of
+    /// the tiled-relief n = 64 cliff).
+    pub hole_rounds: u64,
 }
 
 /// The tile lookup: faces and edges by owner multiset.
@@ -140,7 +143,7 @@ impl Bnd {
         let chains = orig.edges.iter().map(|e| e.0.to_vec()).collect();
         let segs = orig.edges.iter().enumerate().map(|(i, e)| (e.0, i as u32)).collect();
         let work = orig.edges.len() as u64;
-        Self { subs: BTreeMap::new(), next_sub: 0, by_vertex: BTreeMap::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()], tile_faces: BTreeMap::new(), tile_edges: BTreeMap::new(), work, rebuilds: 0 }
+        Self { subs: BTreeMap::new(), next_sub: 0, by_vertex: BTreeMap::new(), chains, segs, on: BTreeMap::new(), face_pts: BTreeMap::new(), done: vec![false; orig.tris.len()], tile_faces: BTreeMap::new(), tile_edges: BTreeMap::new(), work, rebuilds: 0, hole_rounds: 0 }
     }
 
     /// Owner of constraint edge `(a,b)`: the smallest of the owner of the input edge whose
@@ -798,6 +801,7 @@ impl Recover<'_> {
                 break;
             }
             let before = (vs.len(), self.flips, self.dt.pts.len());
+            self.bnd.hole_rounds += 1;
             self.clear_crossings(tri, &holes, &mut vs)?;
             if before == (vs.len(), self.flips, self.dt.pts.len()) {
                 break;

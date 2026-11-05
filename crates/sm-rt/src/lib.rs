@@ -5,6 +5,8 @@
 //!
 //! * [`MeshTrackerBuilder`] builds a [`MeshTracker`] from a mesh ([`sm_rt_api::BuildInput::Mesh`])
 //!   or a watertight facet soup ([`sm_rt_api::BuildInput::Facets`]).
+//! * [`WorldTracker`] is the hierarchical walker built from [`sm_rt_api::BuildInput::Hier`]
+//!   (placements, rectangular lattices, global instance-numbered cells).
 //! * [`check_facets`] is the grouped, located watertightness diagnostic.
 //! * [`write_smrt`], [`read_smrt`], [`load_image`] handle the `.smrt` sidecar.
 //! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`.
@@ -21,9 +23,11 @@ mod plugin;
 mod tracker;
 mod vec3;
 mod walk;
+mod world;
 
-pub use builder::{BUILDER_VERSION, MeshTrackerBuilder, load_image};
+pub use builder::{BUILDER_VERSION, BuildExtras, MeshTrackerBuilder, load_image};
 pub use facets::check_facets;
 pub use image::{read_smrt, write_smrt, write_smrt_file};
 pub use plugin::RtPlugin;
 pub use tracker::MeshTracker;
+pub use world::WorldTracker;

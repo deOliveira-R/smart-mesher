@@ -31,6 +31,9 @@ pub enum NodeSelect {
     Entities(Vec<EntityId>),
     /// Explicit vertices (still subject to the constraint table and the pins).
     Vertices(Vec<VertexIx>),
+    /// The nodes of the cells in the named cell set (the sets `mesh.flag_cells` stores). The
+    /// boundary rule of [`NodeSelect::All`] applies to those nodes (`fix_boundary`).
+    Set(String),
 }
 
 /// Node-update rule.
@@ -225,6 +228,14 @@ pub enum SmoothError {
     /// A vertex of the input has a NaN or infinite coordinate.
     #[error("vertex {0} has a non-finite coordinate")]
     NonFiniteInput(usize),
+    /// The named set does not exist in the mesh (or is not a cell set).
+    #[error("unknown cell set {name:?}; mesh sets: [{}]", available.join(", "))]
+    UnknownSet {
+        /// The requested name.
+        name: String,
+        /// Names of the cell sets of the mesh, ascending.
+        available: Vec<String>,
+    },
     /// The selection leaves no movable node.
     #[error("nothing to smooth: no selected node is free to move")]
     NothingToSmooth,

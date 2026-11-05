@@ -73,6 +73,22 @@ pub enum PolyError {
         /// Number of unrepaired cells.
         count: usize,
     },
+    /// After agglomeration a merged cell is not star-shaped or has non-positive volume, so the
+    /// output would fail `validate_geometry`. `region` and `at` describe the first such cell
+    /// (by output order); `count` is the number of such cells. Lower the merge ratio or the
+    /// concavity limit, or disable agglomeration.
+    #[error(
+        "agglomerated cell in region {region:?} near ({:.6e}, {:.6e}, {:.6e}) is not star-shaped or has non-positive volume ({count} such cell(s)); reduce the agglomeration ratio or concavity limit",
+        at[0], at[1], at[2]
+    )]
+    InvalidAgglomeration {
+        /// The model region of the first failing cell.
+        region: EntityId,
+        /// Centroid of the first failing cell.
+        at: [f64; 3],
+        /// Number of failing merged cells.
+        count: usize,
+    },
     /// The mesh builder refused something.
     #[error(transparent)]
     Mesh(#[from] MeshError),

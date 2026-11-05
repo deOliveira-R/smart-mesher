@@ -8,21 +8,31 @@ publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "smartmesh"
+name = "_native"
 crate-type = ["cdylib", "rlib"]
 bench = false
 
 [features]
 # The extension module proper; off by default so the workspace builds without a Python toolchain.
 python = ["dep:pyo3", "dep:numpy"]
+# Panic hooks for the Python tests (`_native._panic`); never in a release wheel.
+test-hooks = []
 
 [dependencies]
 sm-server = { path = "../sm-server" }
+sm-protocol = { path = "../sm-protocol" }
+sm-core = { path = "../sm-core" }
+sm-layer-api = { path = "../sm-layer-api" }
+sm-mesh-api = { path = "../sm-mesh-api", features = ["bytemuck"] }
+serde_json = "1"
+thiserror = "2"
+bytemuck = "1"
 pyo3 = { workspace = true, optional = true }
 numpy = { workspace = true, optional = true }
 
 [dev-dependencies]
 sm-testkit = { path = "../sm-testkit" }
-
+proptest = "1"
+sm-meshio = { path = "../sm-meshio" }
 [lints]
 workspace = true

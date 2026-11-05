@@ -11,9 +11,11 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sm_core::{EntityId, Point3, Vector3};
-use sm_geom_api::{Crossing, Interval, ModelTolerance, Ray, RayHit, Uv};
-use sm_topo_api::{PointClass, Sense, TopologyView, TopologyViewExt};
+use sm_core::{Aabb, EntityId, Point3, Vector3};
+use sm_geom_api::{Crossing, CurveDef, Interval, ModelTolerance, Ray, RayHit, SurfaceDef, Uv};
+use sm_topo_api::{Carrier, PointClass, Sense, TopologyView, TopologyViewExt};
+
+use crate::bvh::{Bvh, CandidateStats};
 
 use crate::error::BooleanError;
 use crate::geo;
@@ -59,19 +61,116 @@ pub(crate) fn volume_uses<V: TopologyView + ?Sized>(view: &V, volume: EntityId) 
     view.face_uses(volume).map(|u| (u.face, u.sense)).collect()
 }
 
+/// A spatial index over the boundary uses of a region, for repeated point location.
+///
+/// Faces whose box is exact (a plane bounded by straight edges) are found through a BVH; every
+/// other face is always a candidate, because its sampled box need not contain the face. The
+/// candidate lists are returned in use order, so results equal the unindexed scan.
+pub(crate) struct UseIndex {
+    uses: Vec<Use>,
+    boxes: Vec<Aabb>,
+    always: Vec<u32>,
+    bvh: Bvh,
+    bbox: Aabb,
+    pad: f64,
+}
+
+/// True if the sampled box of `f` bounds the face (plane, straight edges).
+fn box_is_exact<V: TopologyView + ?Sized>(view: &V, f: EntityId) -> bool {
+    if !matches!(crate::pieces::surface_def_of(view, f), Some(SurfaceDef::Plane(_))) {
+        return false;
+    }
+    view.face_edges(f).iter().all(|&e| match view.carrier(e) {
+        Carrier::Curve(cc) => matches!(view.shapes().curve_def(cc.curve), Some(CurveDef::Line(_))),
+        _ => true,
+    })
+}
+
+impl UseIndex {
+    /// Index `uses`.
+    pub(crate) fn new<V: TopologyView + ?Sized>(view: &V, uses: &[Use]) -> UseIndex {
+        let pad = 10.0 * view.tolerance().linear_max.max(view.tolerance().linear);
+        let mut bbox = Aabb::empty();
+        let mut boxes = Vec::with_capacity(uses.len());
+        let mut always = Vec::new();
+        for (i, &(f, _)) in uses.iter().enumerate() {
+            bbox = bbox.union(&geo::face_aabb(view, f, 0.0));
+            if box_is_exact(view, f) {
+                boxes.push(geo::face_aabb(view, f, pad));
+            } else {
+                boxes.push(Aabb::empty());
+                always.push(i as u32);
+            }
+        }
+        let bvh = Bvh::build(&boxes);
+        UseIndex { uses: uses.to_vec(), boxes, always, bvh, bbox, pad }
+    }
+
+    fn finish(&self, mut v: Vec<u32>) -> Vec<u32> {
+        v.extend_from_slice(&self.always);
+        v.sort_unstable();
+        v
+    }
+
+    fn near_point(&self, p: Point3) -> Vec<u32> {
+        let q = Aabb { lo: Point3::new(p.x - self.pad, p.y - self.pad, p.z - self.pad), hi: Point3::new(p.x + self.pad, p.y + self.pad, p.z + self.pad) };
+        let (mut v, mut st) = (Vec::new(), CandidateStats::default());
+        self.bvh.overlapping(&self.boxes, &q, &mut v, &mut st);
+        self.finish(v)
+    }
+
+    fn along_ray(&self, p: Point3, dir: Vector3, reach: f64) -> Vec<u32> {
+        let (mut v, mut st) = (Vec::new(), CandidateStats::default());
+        self.bvh.along_ray(&self.boxes, [p.x, p.y, p.z], [dir.x, dir.y, dir.z], reach, &mut v, &mut st);
+        self.finish(v)
+    }
+
+    /// True if `p` is on one of the faces (within the linear tolerance); returns the first such
+    /// face in use order.
+    pub(crate) fn on_which<V: TopologyView + ?Sized>(&self, view: &V, cache: &crate::faceclass::FaceCache, p: Point3, tol: f64) -> Result<Option<Use>, BooleanError> {
+        for i in self.near_point(p) {
+            let u = self.uses[i as usize];
+            if on_face(view, cache, u.0, p, tol)? {
+                return Ok(Some(u));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Locate `p` against a region given by its boundary uses.
 pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, uses: &[Use], p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+    locate_impl(view, cache, uses, None, p, tol)
+}
+
+/// [`locate_in_uses`] through a prebuilt index; the result equals the unindexed scan.
+pub(crate) fn locate_indexed<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, idx: &UseIndex, p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+    locate_impl(view, cache, &idx.uses, Some(idx), p, tol)
+}
+
+fn locate_impl<V: TopologyView + ?Sized>(view: &V, cache: &crate::faceclass::FaceCache, uses: &[Use], idx: Option<&UseIndex>, p: Point3, tol: &ModelTolerance) -> Result<PointLocation, BooleanError> {
+    let all = |_: ()| -> Vec<u32> { (0..uses.len() as u32).collect() };
     // 1. On: distance to every face.
-    for &(f, _) in uses {
-        if on_face(view, cache, f, p, tol.linear)? {
+    let on_c = match idx {
+        Some(ix) => ix.near_point(p),
+        None => all(()),
+    };
+    for &i in &on_c {
+        if on_face(view, cache, uses[i as usize].0, p, tol.linear)? {
             return Ok(PointLocation::On);
         }
     }
     // 2. Ray casting.
-    let mut bbox = sm_core::Aabb::from_point(p);
-    for &(f, _) in uses {
-        bbox = bbox.union(&geo::face_aabb(view, f, 0.0));
-    }
+    let bbox = match idx {
+        Some(ix) => ix.bbox.union(&Aabb::from_point(p)),
+        None => {
+            let mut b = Aabb::from_point(p);
+            for &(f, _) in uses {
+                b = b.union(&geo::face_aabb(view, f, 0.0));
+            }
+            b
+        }
+    };
     let diag = geo::dist(bbox.lo, bbox.hi);
     let reach = 2.0 * diag + 1.0;
     let mut last_ambiguous: Option<EntityId> = None;
@@ -79,7 +178,12 @@ pub(crate) fn locate_in_uses<V: TopologyView + ?Sized>(view: &V, cache: &crate::
         let dir = direction(k);
         let ray = Ray { origin: p, dir };
         let mut sum = 0i64;
-        for &(f, sense) in uses {
+        let ray_c = match idx {
+            Some(ix) => ix.along_ray(p, dir, reach),
+            None => all(()),
+        };
+        for &ui in &ray_c {
+            let (f, sense) = uses[ui as usize];
             let Some((surf, sc)) = geo::face_surface(view, f) else { return Err(BooleanError::Unsupported("a face of the volume has no surface")) };
             let mut hits: Vec<RayHit> = Vec::new();
             if surf.ray_hits_tol(&ray, Interval::new(0.0, reach), tol, &mut hits).is_err() {
@@ -168,4 +272,34 @@ pub fn locate_point(view: &dyn TopologyView, volume: EntityId, p: Point3) -> Res
     let uses = volume_uses(view, volume);
     let tol = *view.tolerance();
     locate_in_uses(view, &crate::faceclass::FaceCache::new(), &uses, p, &tol)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sm_topo_api::{CellComplex, OpId, TopologyEdit, fixtures};
+
+    /// The indexed locate equals the unindexed scan on a grid of points around a brick
+    /// (inside, on faces, edges and vertices, outside).
+    #[test]
+    fn indexed_locate_equals_the_scan() {
+        let mut t = CellComplex::new();
+        t.begin_op(OpId(1)).unwrap();
+        let b = fixtures::brick(&mut t, Point3::new(0.0, 0.0, 0.0), [1.0, 2.0, 3.0]).unwrap();
+        t.end_op().unwrap();
+        let uses = volume_uses(&t, b.volume);
+        let idx = UseIndex::new(&t, &uses);
+        let tol = *t.tolerance();
+        let cache = crate::faceclass::FaceCache::new();
+        for i in -2..=6 {
+            for j in -2..=10 {
+                for k in -2..=14 {
+                    let p = Point3::new(i as f64 * 0.25, j as f64 * 0.25, k as f64 * 0.25);
+                    let a = locate_in_uses(&t, &cache, &uses, p, &tol).map_err(|e| e.to_string());
+                    let c = locate_indexed(&t, &cache, &idx, p, &tol).map_err(|e| e.to_string());
+                    assert_eq!(a, c, "{p:?}");
+                }
+            }
+        }
+    }
 }

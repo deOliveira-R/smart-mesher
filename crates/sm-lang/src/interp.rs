@@ -24,8 +24,6 @@ use crate::value::{Outcome, Sel, Val, fmt_num};
 const SESSION_VERBS: [&str; 5] = ["export", "save", "hash", "status", "stage"];
 /// The `session.*` verbs that have a value and may appear in expressions.
 const SESSION_VALUE_VERBS: [&str; 3] = ["hash", "status", "stage"];
-/// Export formats `session.export` accepts.
-const EXPORT_FORMATS: [&str; 4] = ["smsh", "vtu", "exodus", "openfoam"];
 
 /// Interpreter limits.
 #[derive(Clone, Debug)]
@@ -415,7 +413,7 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                     Some(p) => {
                         let dotted = p.dotted();
                         let full = self.aliases.get(&dotted).cloned().unwrap_or(dotted);
-                        match help::op_help(self.host.registry(), &full) {
+                        match help::op_help_with_formats(self.host.registry(), &full, &self.host.export_formats()) {
                             Ok(t) => t,
                             Err(m) => return self.fail(Diagnostic::error("unknown-name", p.span, m).label("not an op or query")),
                         }
@@ -1083,12 +1081,14 @@ impl<'h, H: Host + ?Sized> Interpreter<'h, H> {
                         return self.fail(Diagnostic::error("type-mismatch", *psp, format!("`path` needs a non-empty string, found {}", other.a_type())).label("not a path"));
                     }
                 };
+                let formats = self.host.export_formats();
                 let format = match get("format") {
                     None => None,
-                    Some((_, Val::Str(f), _)) if EXPORT_FORMATS.contains(&f.as_str()) => Some(f.clone()),
+                    Some((_, Val::Str(f), _)) if formats.iter().any(|x| x == f) => Some(f.clone()),
                     Some((_, Val::Str(f), sp)) => {
-                        let mut d = Diagnostic::error("invalid-argument", *sp, format!("unknown export format {f:?}")).label("not a format").help("formats: \"smsh\", \"vtu\", \"exodus\", \"openfoam\"");
-                        if let Some(sg) = suggest(f, EXPORT_FORMATS) {
+                        let list = formats.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
+                        let mut d = Diagnostic::error("invalid-argument", *sp, format!("unknown export format {f:?}")).label("not a format").help(format!("formats: {list}"));
+                        if let Some(sg) = suggest(f, formats.iter().map(String::as_str)) {
                             d = d.help(format!("did you mean \"{sg}\"?"));
                         }
                         return self.fail(d);

@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, Point3};
 use sm_geom_api::{CurveDef, Frame, SurfaceDef};
 use sm_layer_api::ModelLayer;
@@ -54,7 +56,7 @@ impl Default for WriteOptions {
 }
 
 /// Something the STEP file cannot represent.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Loss {
     /// The cell concerned, if one.
     pub cell: Option<EntityId>,
@@ -63,7 +65,7 @@ pub struct Loss {
 }
 
 /// What [`write_step`] wrote.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteReport {
     /// Solids written (one per volume).
     pub solids: usize,
@@ -283,6 +285,14 @@ fn unit_entities(w: &mut Writer<'_>, unit: LengthUnit, unc: f64, cell: EntityId)
 
 fn volumes_of(view: &dyn TopologyView, bodies: Option<&[EntityId]>) -> Result<Vec<EntityId>, StepError> {
     let mut out: BTreeSet<EntityId> = BTreeSet::new();
+    if let Some(list) = bodies {
+        if list.is_empty() {
+            return Err(StepError::EmptySelection);
+        }
+        if let Some(&bad) = list.iter().find(|&&id| !view.is_alive(id)) {
+            return Err(StepError::UnknownCell { cell: bad });
+        }
+    }
     match bodies {
         None => {
             for &b in view.cells(Dim::Body) {
@@ -300,6 +310,7 @@ fn volumes_of(view: &dyn TopologyView, bodies: Option<&[EntityId]>) -> Result<Ve
                     Some(Dim::Volume) => {
                         out.insert(id);
                     }
+                    // Unreachable through `model.export`, whose query refuses other kinds first.
                     _ => return Err(export_err(format!("{id} is not a body or a volume"))),
                 }
             }
@@ -320,7 +331,7 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
     let tol = view.tolerance().linear;
     let mut wr = Writer { view, out: String::new(), next: 0 };
     let mut report = WriteReport::default();
-    let Some(&anchor) = volumes.first() else { return Err(export_err("there is no volume to write")) };
+    let Some(&anchor) = volumes.first() else { return Err(if bodies.is_some() { StepError::EmptySelection } else { export_err("there is no volume to write") }) };
     let ctx = unit_entities(&mut wr, o.unit, tol, anchor)?;
     // Product structure around the one representation (written last, it lists the solids).
     let ac = wr.add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
@@ -373,11 +384,46 @@ pub fn write_step(view: &dyn TopologyView, bodies: Option<&[EntityId]>, o: &Writ
 
 /// Write the bodies of a session state (its `model` layer) as a STEP file.
 ///
+/// Beyond the [`write_step`] losses, colors and group/name memberships are reported for every
+/// exported cell (selected volumes, their faces, edges and vertices, and the bodies holding
+/// them). Order: the `write_step` losses, then per color row (row order) its volumes then its
+/// faces (each ascending by cell), then per group (group order) its members in member order.
+///
 /// # Errors
 /// As [`write_step`], plus [`StepError::Export`] when the state has no `model` layer.
 pub fn export_step(state: &State, bodies: Option<&[EntityId]>, o: &WriteOptions, w: &mut dyn Write) -> Result<WriteReport, StepError> {
     let layer = state.layer::<ModelLayer>().ok_or_else(|| export_err("the state has no model layer"))?;
-    write_step(layer.topo(), bodies, o, w)
+    let mut report = write_step(layer.topo(), bodies, o, w)?;
+    // Colors and names are not written: locate each one on an exported cell. Only the report
+    // changes, never the bytes. `write_step` succeeded, so the selection resolves.
+    let view = layer.topo();
+    let volumes = volumes_of(view, bodies)?;
+    let mut exported: BTreeSet<EntityId> = BTreeSet::new();
+    // Closure of the selected volumes down to their edges and vertices.
+    let mut stack: Vec<EntityId> = volumes.clone();
+    while let Some(c) = stack.pop() {
+        if exported.insert(c) {
+            stack.extend(view.boundary(c).iter().map(|e| e.cell));
+        }
+    }
+    for &b in view.cells(Dim::Body) {
+        if view.boundary(b).iter().any(|e| volumes.binary_search(&e.cell).is_ok()) {
+            exported.insert(b);
+        }
+    }
+    let model = layer.model();
+    for row in model.colors() {
+        let cells = model.volumes_of_color(row.id).into_iter().chain(model.faces_of_color(row.id));
+        for c in cells.filter(|c| exported.contains(c)) {
+            report.losses.push(Loss { cell: Some(c), what: format!("color '{}' (label {}) on {c} not written", row.name, row.label) });
+        }
+    }
+    for g in model.groups() {
+        for &m in g.members.iter().filter(|m| exported.contains(m)) {
+            report.losses.push(Loss { cell: Some(m), what: format!("group/name '{}' of {m} not written", g.name) });
+        }
+    }
+    Ok(report)
 }
 
 fn write_solid(wr: &mut Writer<'_>, vol: EntityId, report: &mut WriteReport, tol: f64) -> Result<u64, StepError> {
