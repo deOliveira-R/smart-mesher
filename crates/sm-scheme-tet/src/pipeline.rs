@@ -278,6 +278,8 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
     let mut bnd_steiner: usize;
     let mut con_updates: u64;
     let mut lookup_rebuilds: u64;
+    let mut hole_rounds: u64;
+    let (mut hint_lookups, mut hint_candidates) = (0u64, 0u64);
     loop {
         let t1 = Instant::now();
         let mut pts = input.points.clone();
@@ -315,6 +317,7 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
             bnd_steiner = rec.n_boundary_steiner;
             con_updates = rec.bnd.work;
             lookup_rebuilds = rec.bnd.rebuilds;
+            hole_rounds = rec.bnd.hole_rounds;
             (r, rec.flips, rec.hints.clone())
         };
         t_recover = ms(t2);
@@ -336,6 +339,9 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                 restarts += 1;
                 discarded += bnd_steiner;
                 let pocket = pocket_point(&input.points, &input.tris, tri, edge);
+                let ncand = (pocket.iter().count() + r.2.len()) as u64;
+                hint_candidates += ncand;
+                hint_lookups += ncand;
                 let mut scored: Vec<(f64, usize, V3)> = pocket
                     .iter()
                     .chain(r.2.iter())
@@ -346,11 +352,13 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
                     .collect();
                 scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
                 for (_, _, h) in scored {
+                    hint_lookups += u64::from(extra.len() < cap);
                     if extra.len() < cap && extra_set.insert(point_key(&h)) {
                         extra.push(h);
                     }
                 }
                 if extra.len() == before {
+                    hint_lookups += 1;
                     match steiner_near(&input.points, &input.tris, tri, edge, attempt, &guard) {
                         Some(p) if extra_set.insert(point_key(&p)) => extra.push(p),
                         _ => return Err(TetError::RecoveryFailed { tri, edge, reason }),
@@ -474,6 +482,9 @@ fn run(input: &SurfaceInput, opts: &TetOptions<'_>, mut stage_ms: [f64; 5], comp
         n_quality_violations,
         quality_diagnostics,
         n_lookup_rebuilds: lookup_rebuilds,
+        n_facet_hole_rounds: hole_rounds,
+        n_hint_lookups: hint_lookups,
+        n_hint_candidates: hint_candidates,
         n_removal_deferred,
         n_s4_violations: margins.len(),
         worst_s4_margin,

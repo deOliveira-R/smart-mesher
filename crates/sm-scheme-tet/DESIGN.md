@@ -555,6 +555,29 @@ robustness (random voxel shapes, mean 0.19 s each in release over 122 cases, the
 throughput. The adapter's default Steiner budget is `8 n + 100 000`, raised by an estimate of the
 interior point count when a constant `size` parameter is given.
 
+## Downstream record: path B smoothed tets (W3b-1)
+
+In the W3a acceptance of the hybrid mesher (`docs/design/w3/w3a-report.md`), path B, the tets
+this scheme produced inside the hybrid mesh, reached a minimum scaled Jacobian of **0.282**
+before and **0.1848** after smoothing (path A: 0.308 and 0.253). The 0.1848 is the lowest value
+of any tet in the hybrid acceptance, and the reason the downstream floor for smoothed tets is
+0.15. It is a measurement of the whole hybrid pipeline (this scheme's tets plus the smoother),
+recorded here so a change of the tet scheme can be compared with it; it is not a gate of this crate.
+
+## Counters added in W3b-1
+
+`TetStats::n_facet_hole_rounds` (rounds of the hole-triangle stage of `recover_facet`, the stage
+that fixed the n = 64 tiled-relief cliff), `n_hint_candidates` and `n_hint_lookups` (restart hint
+selection: one `BTreeSet` query per candidate and at most one insertion). They are in
+`PartialEq` and in no hash. Tests: `int7::restart_hint_index_work_is_linear_in_candidates`
+(runs in CI, debug) and `int7::tiled_relief_n64_recovers_without_restarts` (release; prints the
+hole rounds). A smaller, debug-feasible case that reaches the hole stage was searched for and
+not found: `tiled_cube(n, 8, seed, 0.9)` for n = 16 and seeds 1 .. 10 (complete recovery alone,
+release, up to 100 s each on a loaded host) never entered it, so the hole stage needs the
+exact-plane coincidence of the n = 64 patch; the cliff regression therefore stays release-only,
+with `int7::tiled_relief_work_per_triangle_is_bounded` (n = 16 and 24 in debug) guarding the
+restart-free recovery that CI can afford.
+
 ## Stretch and deferred
 
 Not done (stretch): S1 edge removal with interior-vertex collapse as `optimize = 3` (`3` stays
