@@ -328,6 +328,70 @@ torus 1.3e5 lines/s.
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
 torus (`Unsupported` for a general quadric). No speedup over either is claimed.
+## Majorant partition and delta flights (`delta/`, W3b-RT-DELTA)
+
+Switched on by `BuildOptions::partition.enabled` (default off: nothing below exists and the
+structure hash, image bytes and every W3a output are unchanged). Mesh input only; a facet input is
+`Unsupported`. `region_jump` needs `enabled`. The tracker then has `caps |= MAJORANT`
+(`| REGION_JUMP` with the jump index) and `majorant_view()`.
+
+**Partition.** A kd tree over the cell boxes padded by 4 `tol`; leaves tile it. A cell is listed in
+every leaf it may meet (its box padded by 2 `tol` meets the leaf, and for convex cells no face
+plane has all eight corners beyond it by more than 2 `tol`), so the listing is a superset of what
+the cell BVH would return. The split rule never sees a cross section: split while the candidates
+hold more than one region and more than `leaf_cells` cells (depth at most `max_depth`); 8 equally
+spaced planes per axis, cost = sum over the children of volume fraction x (candidates + region
+spread), ties to the lowest axis then position, a plane that separates nothing stops the split. A
+node whose box lies inside one convex cell with a 2 `tol` margin is *preassigned* (one candidate,
+locating inside it tests nothing). The node that stops splitting keeps a **location-only
+subtree** (kd nodes without a `NodeId`) that splits by cell count alone, so locating in a
+one-region leaf with thousands of cells still tests few cells; majorant nodes and their material
+sets are untouched by it. `NodeId`s are the nodes in preorder; the set of a leaf is the regions of
+its candidates (plus the complement region unless preassigned), of an internal node the union of its
+children; sets are `MaterialSets` (ids by first appearance in node order, then one singleton per
+region). Build recurses with `rayon::join` and collects in order, so the bytes do not depend on
+the thread count (`partition_hash`).
+
+**Segments.** `advance_segment` descends the kd tree from the root with the point and the
+direction (a point on a split goes to the child the ray enters; O(depth), counted in
+`node_visits`), reads exactly one majorant (`FlightInput::majorant`, before the state moves) and
+picks the mode with `choose_mode`. *Surface*: one `step` (`SegmentScale::Cell`; a segment is the
+`trace` segment bit for bit) or one `fire` (`Region`, which jumps when it can). *Delta*: the
+segment ends at the wall of the node box (`SlotChange` into the same or the next cell), at the
+limit, or at a model event. A node none of whose candidate cells has a face with no cell behind it
+(`boundary` flag) goes straight to the wall with no cell walking; a node that has one walks its
+cells with `step` up to the wall, so deck events, `Respond` faces and the complement are exactly
+`step`'s. At the end of a delta segment the cell is located from the new node's candidate list; the
+coordinate that reached the wall is snapped to it, so the next descent enters the next node.
+Complement and unlocated states are surface segments (the mode is reported as `Surface`).
+`locate_in_node` descends from the node (from the kd root if the point is outside the node, which a
+region-run segment may be) and runs the same candidate loop as the BVH path of `locate` (cells
+whose box padded by `tol` contains the point, ascending ids, the same probes and tie ranks), so
+the answer equals `locate(p, dir, None)` with no BVH descent (`bvh_descents == 0`).
+`safety_distance` is the exact distance to the nearest face plane of a convex cell, 0 otherwise;
+the cursor caches it. The contract gives `locate_in_node` no previous cell, so the "previous cell
+if the cached safety is positive" shortcut is left to the caller (the safety test shows it).
+
+**Region jump.** Per region a BVH over the faces that separate it from another region or from
+nothing. `fire` from a convex or general cell of region `R` finds the first crossing that leaves `R`
+(ties within the ray tie width go to the lowest face id), puts the state on that face in the cell on
+`R`'s side and lets one `step` apply the event, so the end kind, surface, `to_region`, `to_cell` and
+the deck action are `step`'s; the distance is the same to rounding. Anything unusual (entering
+crossing before the exit, no exit, a lost step) falls back to the walk. A `Limit` ends with one
+locate. Rays through an exact edge or vertex tie are decided by the exact predicates, so the jump
+may leave through another face of that edge than the walk: kind, surface, region and distance agree,
+face and `to_cell` may not (tested on rays through cell centres along axes and diagonals). `step`
+and `trace` never jump. Recorded (`examples/bench_delta.rs`, counters only): `hex_block(40)`,
+5000 fires, 163 face tests (27 steps) per fire by the walk, 11 by the jump.
+
+**Cache.** Sections `Private(5)` (options, root box), `Private(6)` (kd nodes), `Private(7)`
+(candidates, node sets and cells, sets). (`Private(4)` is the region-tag table, so the plan's
+`4..8` became `5..8`.) Derived data (node boxes, parents, boundary flags, cell-to-node, the jump
+index) is rebuilt on load; the decoder checks every count against the bytes left and the tree
+structure (children after parents, each node referenced once). `structure_hash` does not include
+the partition (the options are in the cache key, so another option is `CacheStale`); the partition
+has its own `partition_hash`. A world prototype is built without a partition (flights across
+lattices are W3b-RT-DELTA-WORLD).
 
 ## Plugin
 
@@ -367,6 +431,7 @@ more memory and did not change the large case, so it was dropped.
 ## Deferred (W3b) and not done
 
 CSG leaves under `Union`/`Lattice` (needs `WorldTracker` to host a non-mesh leaf; hex lattices),
-a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics, `Brep` and `World` inputs (`Unsupported`), hex lattices, a world cache image,
+a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics,
+`Brep` and `World` inputs (`Unsupported`), delta flights across lattices and universes, hex lattices, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
 `rt.fire`, exact `closest` for curved faces, overlap detection in `check` (the world has its own).

@@ -210,6 +210,9 @@ pub(crate) fn export(t: &MeshTracker) -> Option<CacheImage> {
         }
         sections.push((SectionTag::Private(TAG_TAGS), tg.0));
     }
+    if let Some(p) = &t.part {
+        sections.extend(crate::delta::write_sections(p));
+    }
     Some(CacheImage { key, sections })
 }
 
@@ -458,7 +461,12 @@ pub(crate) fn import(img: &CacheImage) -> Result<MeshTracker> {
         return Err(bad("structure hash mismatch"));
     }
     let info = make_info(&core, &regions, &surfaces, kind, tol, max_events, hash, Some(img.key));
-    Ok(MeshTracker::assemble(Parts { core, regions, surfaces, kind, complement, cell_sets }, info, block_size, recovery))
+    let part = crate::delta::read_sections(img, &core, regions.0.len())?;
+    let t = MeshTracker::assemble(Parts { core, regions, surfaces, kind, complement, cell_sets }, info, block_size, recovery);
+    Ok(match part {
+        Some(p) => t.with_partition(p),
+        None => t,
+    })
 }
 
 fn validate_core(c: &Core, nv: usize, nf: usize, nc: usize, nreg: usize, nsurf: usize, sets: &[(String, Vec<u32>)]) -> Result<()> {

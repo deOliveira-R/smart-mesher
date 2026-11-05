@@ -131,6 +131,11 @@ impl MeshTrackerBuilder {
 /// walker resolves (neighbour instance, or the world boundary), so the leaf is built with vacuum
 /// boundaries and no complement.
 pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(MeshTracker, BuildReport)> {
+    // The world walker does not use a prototype's majorant partition (flights across worlds are
+    // a later task), so prototypes are built without one and keep their structure unchanged.
+    let mut plain = *opts;
+    plain.partition = sm_rt_api::PartitionOptions::default();
+    let opts = &plain;
     let vac = BoundarySpec::default();
     match leaf {
         LeafInput::Mesh(m) => {
@@ -148,6 +153,9 @@ pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(
 }
 
 fn build_flat(input: &BuildInput<'_>, opts: &BuildOptions, extras: &BuildExtras, key: Option<CacheKey>, with_complement: bool) -> Result<(MeshTracker, BuildReport)> {
+    if opts.partition.region_jump && !opts.partition.enabled {
+        return Err(RtError::Build(vec![sm_rt_api::BuildIssue::new("partition.region_jump", "region_jump needs PartitionOptions::enabled".to_owned())]));
+    }
     {
         let (built, cell_sets) = match input {
             BuildInput::Mesh(m) => {
@@ -178,6 +186,14 @@ fn build_flat(input: &BuildInput<'_>, opts: &BuildOptions, extras: &BuildExtras,
         let mut t = MeshTracker::assemble(Parts { core, regions, surfaces, kind, complement, cell_sets }, info, opts.block_size as usize, opts.recovery);
         if let Some(m) = &extras.mesh {
             t = t.with_mesh(m.clone());
+        }
+        if opts.partition.enabled {
+            if kind == TrackerKind::Facets {
+                return Err(RtError::Unsupported("majorant partition of a facet input"));
+            }
+            let params = crate::delta::Params { leaf_cells: opts.partition.leaf_cells, max_depth: opts.partition.max_depth, region_jump: opts.partition.region_jump };
+            let part = crate::delta::Partition::build(&t.core, t.regions.0.len(), t.complement, opts.tol.linear, params)?;
+            t = t.with_partition(part);
         }
         Ok((t, report))
     }
