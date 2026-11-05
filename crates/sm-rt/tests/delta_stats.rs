@@ -58,15 +58,18 @@ fn beam(mode: ModePolicy, mixed: bool, s1: f64, s2: f64, a: u32, l: u32, n: usiz
     let fx = hex_block_two_volumes([l, 1, 1], [1.0; 3], a).unwrap();
     let t = build_part(&fx.mesh, &RegionRule::ByVolumeClassification, &vacuum(), popts(1, false));
     let mut sc = Scratch::new();
-    let low = t.locate(p3([0.5, 0.5, 0.5]), None, None, &mut sc).unwrap().region;
-    let sigma: Vec<f64> = (0..t.regions().0.len()).map(|r| if r == low.get() { s1 } else { s2 }).collect();
+    let first = t.locate(p3([0.5, 0.5, 0.5]), None, None, &mut sc).unwrap().region;
+    let sigma: Vec<f64> = (0..t.regions().0.len()).map(|r| if r == first.get() { s1 } else { s2 }).collect();
+    // The low-sigma region is chosen by sigma, not by position (x < a holds `s1`).
+    let low = sigma.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)).map(|(r, _)| t.locate(p3([if r == first.get() { 0.5 } else { f64::from(l) - 0.5 }, 0.5, 0.5]), None, None, &mut sc).unwrap().region).unwrap();
+    assert_eq!(sigma[low.get()], s1.min(s2));
     let maj = node_majorants(&t, &sigma, 1.0);
     // The partition separates the low-sigma leaf: a leaf holding only that region exists and
     // its majorant is exactly s1 (the global majorant would give s2).
     let h = t.majorant_view().unwrap().hierarchy();
     let pure_low = (0..h.node_count()).filter(|&i| h.node(NodeId::new(i)).unwrap().is_leaf()).filter(|&i| h.set_regions(h.node(NodeId::new(i)).unwrap().set).unwrap() == [low]).count();
     assert!(pure_low > 0, "the low-sigma region must have a leaf of its own");
-    assert!(maj.contains(&s1));
+    assert!(maj.contains(&s1.min(s2)));
     let block: Vec<NodeId> = if mixed {
         // Mixed policy: even-numbered leaves delta, odd-numbered surface (blocked).
         (0..h.node_count()).filter(|&i| h.node(NodeId::new(i)).unwrap().is_leaf() && i % 2 == 1).map(NodeId::new).collect()

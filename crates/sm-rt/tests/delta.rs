@@ -762,11 +762,11 @@ fn acc12_errors() {
 fn node_visits_do_not_scan_the_slice() {
     // A partition with thousands of nodes: the work of one call does not depend on the slice
     // length (only on the depth of the descent).
-    let fx = checker_block(12);
+    let fx = checker_block(24);
     let t = build_part(&fx.mesh, &checker_rule(), &vacuum(), popts(1, false));
     let view = t.majorant_view().unwrap();
     let n = view.hierarchy().node_count();
-    assert!(n > 500, "{n} nodes");
+    assert!(n >= 10_000, "{n} nodes");
     let maj = vec![1.0; n];
     let mut sc = Scratch::new();
     let st = t.init_state(p3([0.3, 0.4, 0.5]), v3([0.6, 0.0, 0.8]), None, &mut sc).unwrap();

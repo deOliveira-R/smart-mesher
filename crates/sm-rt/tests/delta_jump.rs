@@ -45,7 +45,21 @@ fn l_shape(n: u32) -> MeshFixture {
     with_sets(base, &[SetSpec::new("a", sm_mesh_api::SetMembers::Cells(a)), SetSpec::new("b", sm_mesh_api::SetMembers::Cells(b))]).unwrap()
 }
 
+/// Exit distance of a ray from the box `[0, hi]^3`, by the slab formula (well conditioned: the
+/// numerator is a difference of nearby doubles, so it is exact to one rounding).
+fn box_exit(o: &[f64; 3], d: &[f64; 3], hi: f64) -> f64 {
+    (0..3).filter(|&i| d[i] != 0.0).map(|i| (if d[i] > 0.0 { hi } else { 0.0 } - o[i]) / d[i]).fold(f64::INFINITY, f64::min)
+}
+
 fn compare(jump: &MeshTracker, walk: &MeshTracker, rays: &[([f64; 3], [f64; 3], f64)], name: &str, strict: bool) -> (u64, u64, u64) {
+    compare_box(jump, walk, rays, name, strict, None)
+}
+
+/// With `exact_box = Some(hi)` (a one-region `[0, hi]^3` block) a `Boundary` end is also checked
+/// against the exact slab exit. The walk accumulates a rounding error per crossed cell, amplified
+/// by `1/|d.n|` for grazing rays, so the walk is compared within a conditioning-scaled tolerance
+/// and the jump (one plane test) is the reference.
+fn compare_box(jump: &MeshTracker, walk: &MeshTracker, rays: &[([f64; 3], [f64; 3], f64)], name: &str, strict: bool, exact_box: Option<f64>) -> (u64, u64, u64) {
     let (mut sj, mut sw) = (Scratch::new(), Scratch::new());
     let mut checked = 0;
     for (i, (o, d, lim)) in rays.iter().enumerate() {
@@ -59,7 +73,14 @@ fn compare(jump: &MeshTracker, walk: &MeshTracker, rays: &[([f64; 3], [f64; 3], 
         let ra: FireResult = walk.fire(&mut sa, *lim, 1_000_000, &mut sw).unwrap();
         let rb: FireResult = jump.fire(&mut sb, *lim, 1_000_000, &mut sj).unwrap();
         assert!(same_end(&ra.end, &rb.end, strict), "{name} ray {i} from {o:?} dir {d:?} limit {lim}: walk {ra:?} vs jump {rb:?}");
-        assert!((ra.dist - rb.dist).abs() <= 1e-12 * (1.0 + ra.dist), "{name} ray {i}: walk {} vs jump {}", ra.dist, rb.dist);
+        // Walk drift ~ n_cells * eps * L / |d.n|; |d.n| is bounded below by the smallest component.
+        let dmin = d.iter().map(|x| x.abs()).fold(f64::INFINITY, f64::min).max(1e-300);
+        let tol = 1e-12 * (1.0 + ra.dist) + 256.0 * f64::EPSILON * (1.0 + o.iter().fold(0.0f64, |m, x| m.max(x.abs()))) / dmin.min(1.0);
+        assert!((ra.dist - rb.dist).abs() <= tol, "{name} ray {i}: walk {} vs jump {} (tol {tol})", ra.dist, rb.dist);
+        if let (Some(hi), StepEnd::Boundary { .. }) = (exact_box, &rb.end) {
+            let t = box_exit(o, d, hi);
+            assert!((rb.dist - t).abs() <= 1e-14 * (1.0 + t), "{name} ray {i}: jump {} vs exact slab exit {t}", rb.dist);
+        }
         if strict && !matches!(ra.end, StepEnd::Lost(_)) {
             assert_eq!(sa.cell, sb.cell, "{name} ray {i}: final cell");
             assert_eq!(sa.region, sb.region);
@@ -90,7 +111,7 @@ fn acc09_jump_equals_walk_on_one_region_and_a_non_convex_region() {
     let jump = build_part(&mesh, &rule, &vacuum(), popts(8, true));
     assert!(jump.caps().has(TrackerCaps::REGION_JUMP));
     let walk = build_plain(&mesh, &rule, &vacuum());
-    let (w, j, jumps) = compare(&jump, &walk, &random_rays("acc09_hex20", n, 0.0, 20.0), "hex_block(20)", true);
+    let (w, j, jumps) = compare_box(&jump, &walk, &random_rays("acc09_hex20", n, 0.0, 20.0), "hex_block(20)", true, Some(20.0));
     assert!(jumps > 0);
     eprintln!("hex_block(20): walk face_tests {w}, jump face_tests+node_visits {j}, jumps {jumps}");
     // Two regions, one of them non-convex.
