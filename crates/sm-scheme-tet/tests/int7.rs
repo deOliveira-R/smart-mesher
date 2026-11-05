@@ -244,35 +244,39 @@ fn tower(rings: &[(f64, f64)]) -> SurfaceInput {
     SurfaceInput { points, tris }
 }
 
+/// Alternating twisted towers of `k` rings (twist 20 degrees): each restarts once with a few
+/// to a few dozen hint candidates (measured 8, 15, 29 for k = 3, 6, 8).
+fn alt_tower(k: usize) -> SurfaceInput {
+    let rings: Vec<(f64, f64)> = (0..k).map(|i| (0.3 * i as f64, if i % 2 == 1 { 20.0 } else { 0.0 })).collect();
+    tower(&rings)
+}
+
 /// Hint index (restart hint selection through `BTreeSet`s of coordinates): work counters, not
 /// wall clock. The lookups are counted inside the sets (`contains` and `insert`), so a linear
-/// scan in place of the index leaves them below one per candidate, and the lookups per
-/// candidate must not grow with the surface size (O(1) index operations per candidate).
+/// scan in place of the index leaves them below one per candidate. Every case must restart, with
+/// strictly more candidates as the tower grows, and the lookups per candidate stay within a
+/// fixed band (one query plus at most one insertion, so about 2) at every size: O(1) index
+/// operations per candidate.
 #[test]
 fn restart_hint_index_work_is_linear_in_candidates() {
-    let cases = [
-        ("tower2", tower(&[(0.0, 0.0), (1.0, 30.0), (2.0, 0.0)])),
-        ("tower5", tower(&[(0.0, 0.0), (0.2, 40.0), (0.4, 0.0), (0.6, 40.0), (0.8, 0.0)])),
-    ];
     let mut per_cand = Vec::new();
-    for (name, inp) in &cases {
-        let m = mesh(inp, name);
+    let mut cands = Vec::new();
+    for k in [3usize, 6, 8] {
+        let name = format!("tower k{k}");
+        let m = mesh(&alt_tower(k), &name);
         let st = &m.stats;
         eprintln!("{name}: restarts {}, hint candidates {}, lookups {}", st.n_recovery_restarts, st.n_hint_candidates, st.n_hint_lookups);
-        if st.n_recovery_restarts > 0 {
-            assert!(st.n_hint_candidates > 0, "{name}");
-            // Each candidate is queried once; at most one insertion each; one per fallback point.
-            assert!(st.n_hint_lookups >= st.n_hint_candidates, "{name}: index bypassed ({} lookups)", st.n_hint_lookups);
-            assert!(st.n_hint_lookups <= 2 * st.n_hint_candidates + st.n_recovery_restarts as u64, "{name}: {} lookups", st.n_hint_lookups);
-            per_cand.push(st.n_hint_lookups as f64 / st.n_hint_candidates as f64);
-        } else {
-            assert_eq!((st.n_hint_lookups, st.n_hint_candidates), (0, 0), "{name}");
-        }
+        assert!(st.n_recovery_restarts > 0 && st.n_hint_candidates > 0, "{name}: no restart, the hint index is not exercised");
+        // Each candidate is queried once; at most one insertion each; one per fallback point.
+        assert!(st.n_hint_lookups >= st.n_hint_candidates, "{name}: index bypassed ({} lookups)", st.n_hint_lookups);
+        assert!(st.n_hint_lookups <= 2 * st.n_hint_candidates + st.n_recovery_restarts as u64, "{name}: {} lookups", st.n_hint_lookups);
+        per_cand.push(st.n_hint_lookups as f64 / st.n_hint_candidates as f64);
+        cands.push(st.n_hint_candidates);
     }
-    assert!(!per_cand.is_empty(), "no case restarted: the test no longer exercises the hint index");
-    if let [a, b] = per_cand[..] {
-        assert!((a - b).abs() <= 1.0, "lookups per candidate changed with size: {per_cand:?}");
-    }
+    assert_eq!(per_cand.len(), 3);
+    assert!(cands.windows(2).all(|w| w[0] < w[1]), "candidate counts must grow with the tower: {cands:?}");
+    let (lo, hi) = per_cand.iter().fold((f64::INFINITY, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
+    assert!(hi - lo <= 0.25, "lookups per candidate changed with size: {per_cand:?}");
 }
 
 /// Release timings of tiled relief (record only): `n = 16 .. 64`.

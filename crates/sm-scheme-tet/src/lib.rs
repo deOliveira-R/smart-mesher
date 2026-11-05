@@ -257,7 +257,8 @@ pub struct TetStats {
     /// a mesh edge between the rounded points of a facet pierced a missing tile.
     pub n_facet_hole_rounds: u64,
     /// Hint-index queries and insertions over all restarts (a `BTreeSet` lookup each): the
-    /// work measure of restart hint selection, at most two per candidate hint.
+    /// work measure of restart hint selection: one query and at most one insertion per candidate
+    /// hint, plus at most one more per restart for the fallback `steiner_near` insertion.
     pub n_hint_lookups: u64,
     /// Candidate hint points (pocket point, hints of the failed recoveries) examined by the
     /// restarts.
