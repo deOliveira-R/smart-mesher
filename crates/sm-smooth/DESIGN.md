@@ -56,6 +56,10 @@ Fixtures (all from `sm_testkit::lattice`, names as in the task): `hex`, `tet_kuh
    mean is over distinct nodes. A dim-2 tube seam works because the seam facets are classified
    on the lateral face, which is above the seam edge, and their end nodes are on the seam edge.
 4. **Selection** (`NodeSelect`).
+   - `Set(name)` (W3b): the corner nodes of the cells of the named cell set (the sets
+     `mesh.flag_cells` stores), then the `All` boundary rule (`fix_boundary`) on those nodes.
+     An unknown name, or a non-cell set, is `UnknownSet` listing the cell-set names. The op
+     argument `set` is exclusive with `entities`.
    - `All`: volume-classified nodes; with `fix_boundary: false` also edge and face nodes. In a
      dim-2 mesh the `TopoFace` nodes are the interior nodes and are always selected
      (deviation: the task text says "volume-classified", which would leave a surface mesh with
@@ -170,7 +174,7 @@ sweeps; `accepted` counts updates that changed the position.
 
 ## Op and diagnostics
 
-`mesh.smooth { mesh, entities?, method, iterations?, tolerance?, schedule?, fix_boundary?,
+`mesh.smooth { mesh, entities?, set?, method, iterations?, tolerance?, schedule?, fix_boundary?,
 guard_floor? }`, `deny_unknown_fields`, `x-entity-kind` on every id. `method` is internally
 tagged (`{"kind":"laplacian","relax":1.0}`, `{"kind":"optimize","objective":"mean_ratio","p":4}`).
 The body validates and smooths on the shared mesh first (no copy), then clones the host,

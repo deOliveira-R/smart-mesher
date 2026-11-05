@@ -255,6 +255,7 @@ pub fn engine_with(cache: DerivedCache) -> Engine {
     reg.install(&CoreLayers::new(|| -> Box<dyn TopoHost> { Box::new(CellComplex::new()) })).expect("core layers");
     reg.install(&MeshPlugin).expect("mesher");
     reg.install(&SmoothPlugin).expect("smooth");
+    reg.install(&sm_diag::DiagPlugin).expect("diag");
     reg.register::<CreateBrick>().expect("brick");
     reg.register::<JitterMesh>().expect("jitter");
     reg.register::<Webcut>().expect("webcut");
