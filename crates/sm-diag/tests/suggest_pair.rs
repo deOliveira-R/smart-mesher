@@ -146,11 +146,48 @@ fn two_boundary_face_cells_are_flagged_and_located_under_transport() {
     let mr = &r["metrics"][0];
     assert_eq!(mr["n_warn"], 9);
     assert_eq!(mr["n_fail"], 0);
+    // Analytic distribution: 1 cell with 2 boundary faces, 4 with 3, 4 with 4.
+    assert_eq!(mr["summary"]["max"].as_f64().unwrap(), 4.0);
+    assert_eq!(mr["summary"]["min"].as_f64().unwrap(), 2.0);
+    assert_eq!(mr["worst"].as_array().unwrap().len(), 3);
     for w in mr["worst"].as_array().unwrap() {
         assert!(w["location"].is_array() && w["owner"].is_string(), "{w}");
-        assert!(w["value"].as_f64().unwrap() >= 3.0);
+        assert_eq!(w["value"].as_f64().unwrap(), 4.0);
     }
     let mut rig = rig;
     let (_, d) = rig.json("mesh.flag_cells", json!({"name": "wall", "profile": "transport", "metrics": ["boundary_face_count"], "level": "warn", "include_invalid": false})).unwrap();
     assert_eq!(d.outputs["set"].len(), 1);
+}
+
+#[test]
+fn non_generic_profile_inspect_args_carry_the_profile_and_grade_the_same_cells() {
+    let (mut rig, mesh) = Rig::with_block([5, 5, 5], &jittered_moves(0.45));
+    let q = rig.query("mesh.quality", json!({"mesh": mesh, "profile": "openfoam"})).unwrap();
+    let sg = q["suggestions"].as_array().unwrap().clone();
+    let inspect = sg.iter().find(|s| s["kind"] == "inspect").unwrap_or_else(|| panic!("{sg:#?}"));
+    assert_eq!(inspect["args"]["profile"], "openfoam");
+    let metric = inspect["metric"].as_str().unwrap();
+    let report = q["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == metric).unwrap();
+    let n_bad = inspect["params"]["n_bad"].as_u64().unwrap();
+    assert!(n_bad > 0 && n_bad <= 10);
+    // Cells touching the report's bad entities (all within the default worst list).
+    let mut expect: Vec<String> = report["worst"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["grade"] != "ok")
+        .flat_map(|w| w["cells"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()))
+        .collect();
+    expect.sort();
+    expect.dedup();
+    assert!(!expect.is_empty());
+    // The suggestion's args keep the default `include_invalid`; switch it off to isolate grading.
+    let mut args = with_mesh_arg(mesh, &inspect["args"]);
+    args["include_invalid"] = json!(false);
+    rig.json("mesh.flag_cells", args).unwrap();
+    let layer = rig.state().layer::<sm_layer_api::MeshLayer>().unwrap();
+    let m = layer.get(mesh).unwrap().mesh();
+    let set = m.set_by_name(&format!("diag.{metric}")).unwrap();
+    let sm_mesh_api::SetMembers::Cells(cells) = &set.members else { panic!("not a cell set") };
+    assert_eq!(cells.len(), expect.len(), "{expect:?}");
 }

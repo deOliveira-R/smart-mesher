@@ -12,9 +12,10 @@ use crate::common::resolve_mesh;
 
 /// `mesh.unflag_cells`: remove the cell set `set` from a mesh.
 ///
-/// The inverse of `mesh.flag_cells`: the mesh, its set list and the state hash afterwards equal
-/// those before the set was added. Only cell sets can be removed. An unknown name is an error
-/// that lists the sets of the mesh.
+/// The inverse of `mesh.flag_cells`: the mesh content (topology and geometry) and its set list
+/// afterwards equal those before the set was added. Allocator state (next serial, retired set
+/// id) does not roll back, so the state hash is not restored. Only cell sets can be removed. An
+/// unknown name is an error that lists the sets of the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MeshUnflagCells {

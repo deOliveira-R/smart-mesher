@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sm_core::{EntityId, EntityKind};
-use sm_mesh_api::MeshRead;
+use sm_mesh_api::{MeshRead, SetMembers};
 use sm_quality::{FvMetric, Measure, Profile};
 
 use crate::quality::Cluster;
@@ -97,15 +97,6 @@ impl Availability<'_> {
     }
 }
 
-fn profile_wire(p: Profile) -> &'static str {
-    match p {
-        Profile::OpenFoam => "openfoam",
-        Profile::Fluent => "fluent",
-        Profile::Transport => "transport",
-        _ => "generic",
-    }
-}
-
 pub(crate) fn suggest(
     m: &dyn MeshRead,
     profile: Profile,
@@ -180,7 +171,7 @@ pub(crate) fn suggest(
             // `mesh.smooth {set}` reuses the `mesh.flag_cells` set `diag.<metric>`: when the
             // mesh lacks it, an `inspect` step creating it comes first.
             let set = format!("diag.{name}");
-            let has_set = m.set_by_name(&set).is_some();
+            let has_set = m.set_by_name(&set).is_some_and(|s| matches!(s.members, SetMembers::Cells(_)));
             let (available, why) = av.of(OP_SMOOTH);
             let mut reason = format!("{name}: {} bad entities are spread over the mesh, no hot spot; smoothing may help", f.n_bad);
             if !has_set {
@@ -191,7 +182,7 @@ pub(crate) fn suggest(
                 let (flag_available, flag_why) = av.of(OP_FLAG);
                 let mut args = json!({ "name": set, "metrics": [name], "level": "warn" });
                 if profile != Profile::Generic {
-                    args["profile"] = json!(profile_wire(profile));
+                    args["profile"] = json!(profile.name());
                 }
                 out.push(Suggestion {
                     id: format!("inspect:{mesh}:{name}"),
