@@ -1,9 +1,10 @@
 # sm-rt-bench design
 
-The tracking benchmark of smart-mesh against DAGMC (MOAB, double-down/Embree) and XDG. This
-crate holds the **stub-only half** (RTBENCH-A): generator, formats, agreement checker, fairness
-gates, result schema, report, self-test and the Dockerfiles. Runs of sm-rt (analytic, hierarchy,
-delta) and of the Docker competitors are RTBENCH-B.
+The tracking benchmark of smart-mesh against DAGMC (MOAB, double-down/Embree) and XDG. RTBENCH-A
+holds the generator, formats, agreement checker, fairness gates, result schema, report, self-test and
+the Dockerfiles; RTBENCH-B (below, "sm-rt rows") adds the sm-rt adapters (facets, analytic through
+RT-BRIDGE, hierarchy, delta and block flights) and the Docker competitor runs. Results of this
+wave are macOS smoke rows; the published table waits for the Linux x86_64 machine (O11).
 
 Acceptance is reproducibility and fairness, not winning. Nothing here gates on wall-clock time,
 no speedup is claimed in code, docs or report text, and every number in a report is produced by
@@ -85,43 +86,144 @@ when the output directory is inside a git work tree (`result::inside_repo`; `.gi
 or a file); `--dry-run` writes nothing at all. The crate `.gitignore` lists `*.step`, `*.stp`,
 `*.h5m`, `models/` and `local/`.
 
-## Protocol for C++ drivers (RTBENCH-B)
+## sm-rt rows (RTBENCH-B)
 
-Each driver reads the case files and prints one JSON object per (workload, threads) in the row
-format above, with a running checksum of its outputs and no I/O or allocation in the timed loop.
-The Rust runner reads those lines into the same `Row` type, so one `report` renders everything.
-To add a competitor: a Dockerfile under `docker/<name>/`, a pinned entry in `docker/pins.env`,
-a driver under `drivers/<name>/`, an entry in `docker::IMAGES`.
+`smrt-bench run --trackers smrt` builds every row that the case allows (`crate::smrt`); a row that
+cannot be built is listed under "Partial" in the report with the reason, never dropped silently.
+
+| `mode` | Tracker | Geometry | Workloads |
+|---|---|---|---|
+| `facets` | `MeshTracker` over the facet twin | the triangles DAGMC and XDG hold | W-track, W-fire (hinted and located) |
+| `analytic` | `AnalyticTracker` | exact spheres, cylinders and planes; P2 through `sm_rt::csg_world` (RT-BRIDGE), flattened | W-track, W-fire; W-flight in its own group |
+| `hierarchy` | `WorldTracker` | P2: one pin prototype (facets) in the model's own lattice and cluster | W-track, W-fire; `pins_touched` |
+| `walk`, `delta`, `block` | `MeshTracker` with a majorant partition | tet twin: H1's own mesh, else a stair-stepped Kuhn mesh of the scene | W-flight |
+
+Rows of one tracker name (`smrt`) differ by `mode`; the report keys the fairness gates by
+`(tracker, mode)`. Region ids are mapped back from the tracker's regions (model entity for facets
+and meshes, region name for CSG cells), so every row speaks the manifest's ids.
+
+* **W-track** ends at the first entry into the complement, as the truth scene does; sm-rt traces the
+  whole line (the work is done, the timing includes it), DAGMC's loop stops at the complement, and the
+  `segments` counter counts the segments up to that entry, so `segments_per_track` is comparable.
+* **Flights** use `FlightCursor`: surface segments sample with the benchmark's own `sigma_t`, delta
+  segments sample with the node majorant (the largest `sigma_t` of the regions of the node's set)
+  and locate every tentative collision. `block` is the caller-driven mixed policy (ruling O3): delta
+  everywhere except the leaves that hold more than one region, which are blocked to surface
+  segments. The `walk` row steps cell by cell with `Tracker::step` (no partition). The delta modes
+  leave the track-length slots of the tally at zero except in surface segments.
+* **Counters** (work, never time) per row: `surface_segments`, `delta_segments`, `tentative`
+  (as sm-rt counts them), `rejected` (virtual collisions, counted by the caller: sm-rt cannot know the
+  verdict), `node_visits`, `face_tests`, `bvh_descents`, `lattice_index_locates`, and `pins_touched`
+  (hierarchy W-track: the start element plus one per `SlotChange`, counted untimed in `prepare`).
+  They join `result_hash` and the determinism hash only when non-zero, so rows of the stub keep
+  their hashes.
+* **P2 has no moderator** (pins stand in vacuum), so a ray of P2's own twin ends in its first pin
+  and `pins_touched` is one per ray. The element counter is therefore checked on
+  `smrt::hierarchy_moderated`: the same lattice and cluster filled with P1's moderated pin cell, against
+  an independent grid walk (`tests/smrt.rs`, `dda_cells`): touched elements never exceed the cells the
+  ray's projection crosses.
+* **Analytic limits**: a cell is a solid minus the solids one level inside it, so a box inside a
+  solid needs a union of half-spaces and is `Unavailable` (H1 has no analytic row); a cylinder inside a
+  solid must span the parent's z range. The tracker builds no hierarchical CSG worlds
+  (`RtError::Unsupported`), so the analytic P2 row is the flattened bridge world.
+* **Zero-area triangles**: the coarsest hand-built moderator (scale `tiny`) has a few; the tracker
+  refuses them and dropping them opens the shell, so the `facets` row of P1 at scale `tiny` is reported
+  `partial`. Scales `reduced` and `full` have none. The case files are not touched.
+
+### Agreement and `geom_error`
+
+An adapter on the exact geometry (`Adapter::exact`) is judged against the analytic truth. Adapters on a
+facet or mesh twin are judged against the first of them (they hold the same triangles; their distance
+from the truth is the `geom_error` column, not a disagreement). Flight tallies are judged against
+the first adapter of the group by `runner::compare_tallies`: per-region collision counts, leaked and
+absorbed histories, 4 sigma, with the variance estimated from the spread of the 256-history blocks
+(identical blocks for every adapter and thread count).
+
+**Twin bound** (`bound.rs`, acceptance 3 second half). A facet twin is inscribed: at a curved
+surface the facet plane lies inside it by at most `sag`. A ray crossing at angle `theta` to the normal
+reaches the facet plane at most `sag / cos(theta)` from the exact crossing, with
+`cos(theta) = rho sqrt(1 - b^2 / r^2)` for a vertical cylinder (`rho` the horizontal speed, `b` the
+horizontal offset from the axis) and `sqrt(1 - b^2 / r^2)` for a sphere. The bound of a ray is the
+sum over all its crossings of curved surfaces plus `1e-9 diag`; flat faces are exact. A ray with
+`cos(theta) < 0.05` at some crossing is grazing and is counted, not judged. `compare_bounded`
+requires equal region sequences and chords within the bound; if that fails it may drop the chords
+that could vanish in the twin (shorter than `2 bound`, then `4 bound`) with the tolerance widened by
+`bound * (1 + 2 dropped)`. On P1 and P2 at scale `reduced` every judged ray passes.
+
+### Flight unbiasedness (acceptance 6)
+
+A pure absorber sphere (`Sigma` 0.3, `R` 5), starts uniform in the ball, isotropic. Expected
+transmission per start: analytic row, `exp(-Sigma d)` with `d` the distance to the sphere; mesh rows
+(stair-stepped sphere in a 16^3 Kuhn block), `exp(-Sigma L)` with `L` the chord the same mesh gives
+that start. The variance is the exact binomial sum `sum p (1 - p)`; surface, delta and `block` are
+within 4 sigma. The run in CI has 2e5 histories; the 1e6 run is `#[ignore]` (`--ignored --release`).
+
+## Protocol for C++ drivers
+
+Each driver prints one JSON `Row` per line on stdout (`#[serde(default)]`: omitted fields are
+zero) and, once per run, a line `{"tracks": [{"r": [...], "c": [...]}, ...]}` with every ray's region
+ids and chords in ray order, which the runner compares with the sm-rt facet row (agreement) and with
+the analytic truth (`geom_error`). The container entry point is `run_case.sh <case> <threads>...`
+with the case directory mounted read-only at `/data/<case>`; `SMRT_REPS` and `SMRT_WARMUP` come from
+`run`, `SMRT_TRACKER`, `SMRT_MODE` and `SMRT_PRECISION` from the image. Rows carry rates (median,
+min, max of the timed repetitions), `segments_per_track`, `ns_per_segment`, `build_s` split into
+`load_s` and `tree_s`, `peak_rss_bytes`, `lost`, a determinism hash over the outputs in ray order
+(`stable`: equal across the repetitions) and counters. To add a competitor: a Dockerfile under
+`docker/<name>/`, a pinned entry in `docker/pins.env`, a driver under `drivers/<name>/`, an entry in
+`docker::IMAGES`.
+
+`run_competitor` never invents a number: no Docker, `UNSET` digests, a missing image, a failing
+container or an unparsable line is `Partial` with the command and its last output line, and the
+report lists it.
 
 ## Docker
 
-`docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. Base images are `FROM image@sha256:${..._DIGEST}`
-with the digests in `docker/pins.env`, source commits pinned (double-down `437ad209eac5`, XDG
-`83efb306e152`) and verified by `git rev-parse` in the build. The digests are **`UNSET`** in the
-repository: no digest is invented here. `smrt-bench docker-check` lints the files (`:latest` and
-digest-less `FROM` fail), refuses to build while a digest is `UNSET`, and otherwise builds each
-image and records the failing command if Docker or a build is unavailable. The drivers the
-Dockerfiles copy arrive with RTBENCH-B. None of the images has been built from this task.
+`docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. Base images are `FROM image@sha256:${..._DIGEST}` with
+the digests in `docker/pins.env` (index digests of `condaforge/miniforge3:24.9.2-0` and
+`ubuntu:24.04`, read with `docker buildx imagetools inspect`), source commits pinned (double-down
+`437ad209eac5`, XDG `83efb306e152`) and verified by `git rev-parse` in the build. `smrt-bench
+docker-check` lints the files (`:latest` and digest-less `FROM` fail), refuses to build while a digest
+is `UNSET`, and otherwise builds each image and records the failing command. `dagmc_driver --version`
+prints the backend (`moab-obb` or `double-down`) and the linked DAGMC version; the images also check
+with `ldd` that `dagmc-moab` does not and `dagmc-dd` does link double-down. 
+
+On the macOS aarch64 development machine (Docker Desktop, native linux/aarch64, 2026-11-05):
+`dagmc-moab` built (conda-forge `dagmc 3.2.4 nodoubledown`, `moab 5.6.0`); `dagmc-dd` built from source
+(double-down at the pinned commit, DAGMC `v3.2.4` with `DOUBLE_DOWN_DIR`; the conda-forge variant
+`*double_down*` did not resolve, so the Dockerfile's source fallback ran) and its driver links
+`libdd`; `xdg` has no driver (`NoDriver`). `run --cases P1 --scale reduced --rays 20000` gave
+`dagmc-moab` and `dagmc-dd` equal region sequences on all 20000 rays, and both agreed with the sm-rt facet
+row on all of them (the harness's own output).
+
+## Fairness of the published table (O11)
+
+The published table waits for the bare-metal Linux x86_64 machine. Every other OS or architecture
+renders under the `SMOKE RESULT` banner and `report` suffixes tracker names with `(smoke)`; no result
+file or `REPORT.md` of this wave is committed (`results/` holds no files), and no text states a
+ratio between trackers.
+
+## Hashed output and the clock
+
+`date_utc`, `git_sha`, the write counter and the process id appear only in `env`, in the file name and
+in the file itself, never in `result_hash`, in `Output::content_hash` or in the determinism check
+(`two_smrt_runs_give_one_result_hash_and_date_and_sequence_stay_out_of_it`).
 
 ## Known limitations
 
 * `--model`: `sm_tess` cannot tessellate imported faces on periodic surfaces (cylinder, sphere,
   torus, cone) because `sm-cadio` leaves their pcurves unset; B-spline faces tessellate but are
-  slow in a debug build. Real fusion models need that fixed upstream (or a pcurve pass).
-* The stub tracker only knows spheres and boxes, so tracker rows exist for `C1`, `C2`, `H1`;
-  the analytic cylinder and hierarchy rows need sm-rt (RTBENCH-B).
+  slow in a debug build. Real fusion models need that fixed upstream (or a pcurve pass). A `--model`
+  run has no rows: no sm-rt row builds a general model here.
+* The stub tracker only knows spheres and boxes; the sm-rt analytic row covers spheres and
+  cylinders (see above).
 * The `H1` mesh is a structured tet mesh because `sm-scheme-tet` has no conforming inclusion
-  meshing in this wave.
-* W-flight runs in surface mode only here; delta and `block` modes need the delta tracker.
-
-## Deferred to RTBENCH-B
-
-* `REPORT_TEMPLATE.md` (the narrative skeleton around the tables `report::render` prints) is not in
-  this crate yet; RTBENCH-B writes it together with the real competitor drivers.
-* The dagmc-dd image checks the double-down commit only on the source-build branch; the conda-forge
-  branch is identified by the package list in `conda-packages.txt`. The driver's `--version` is
-  currently a macro set by the Dockerfile. RTBENCH-B makes the driver report the version of the
-  library it actually links.
+  meshing in this wave. P2 has no tet twin (pins in vacuum do not fill their box), so it has no
+  delta or block rows.
+* The DAGMC driver implements W-track only; W-fire and W-flight rows of the competitors, the
+  XDG driver and the `smtets_to_moab` converter are not written, and the `xdg` image is reported
+  `partial` with the failing build command.
+* Stretch B5 (`--external-h5m`), B6 (import of the smart-mesh DAGMC exporter's h5m), B7 (OpenMC CSG
+  row) and B8 (through-the-C-ABI row) are not done.
 * `smcase.json` embeds the platform tag, so its hash is platform-keyed even for C1-C3 and H1.
   Dropping the tag from the hashed manifest would move every blessed `smcase.json` hash; that
   needs an orchestrator ruling and a re-bless.

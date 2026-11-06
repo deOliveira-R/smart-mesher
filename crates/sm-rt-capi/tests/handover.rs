@@ -41,8 +41,8 @@ fn brick_tracker(partition: bool) -> MeshTracker {
     MeshTrackerBuilder.build_concrete(&input, &opts).expect("build").0
 }
 
-fn write_image(t: &MeshTracker, name: &str) -> PathBuf {
-    let path = scratch("handover").join(name);
+fn write_image(dir: &Path, t: &MeshTracker, name: &str) -> PathBuf {
+    let path = dir.join(name);
     write_smrt_file(&path, &t.export_cache().expect("cache image")).expect("write .smrt");
     path
 }
@@ -64,7 +64,8 @@ fn case_lines(out: &str) -> Vec<String> {
 #[test]
 fn c_handover_flights_equal_the_rust_path_bit_for_bit() {
     let t = brick_tracker(true);
-    let file = write_image(&t, "brick.smrt");
+    let dir = scratch("handover-brick");
+    let file = write_image(&dir, &t, "brick.smrt");
     let corrupt = file.with_file_name("corrupt.smrt");
     let mut bytes = std::fs::read(&file).expect("read");
     let n = bytes.len() / 2;
@@ -72,7 +73,8 @@ fn c_handover_flights_equal_the_rust_path_bit_for_bit() {
     std::fs::write(&corrupt, bytes).expect("write corrupt");
 
     let out = build_and_run_c_args(&crate_dir().join("tests/c/handover.c"), "handover", &[file.to_str().expect("utf8"), corrupt.to_str().expect("utf8")]);
-    assert!(out.contains("handover: ok"), "{out}");    // Region names reach the C code: the mesh has two named volumes plus the complement.
+    assert!(out.contains("handover: ok"), "{out}");
+    // Region names reach the C code: the mesh has two named volumes plus the complement.
     assert!(out.lines().filter(|l| l.starts_with("REGION ")).count() >= 2, "{out}");
 
     let lines = case_lines(&out);
@@ -101,7 +103,8 @@ fn last_error() -> String {
 #[test]
 fn opened_tracker_is_the_built_tracker_and_has_names_sets_and_nodes() {
     let t = brick_tracker(true);
-    let h = open(&write_image(&t, "names.smrt"));
+    let dir = scratch("handover-names");
+    let h = open(&write_image(&dir, &t, "names.smrt"));
     let mut info = SmrtInfo::default();
     // SAFETY: live handle and out slot.
     assert_eq!(unsafe { smrt_info(h, &mut info) }, 0);
@@ -153,7 +156,8 @@ fn opened_tracker_is_the_built_tracker_and_has_names_sets_and_nodes() {
 #[test]
 fn a_tracker_without_a_partition_has_no_nodes_and_no_flights() {
     let t = brick_tracker(false);
-    let h = open(&write_image(&t, "plain.smrt"));
+    let dir = scratch("handover-plain");
+    let h = open(&write_image(&dir, &t, "plain.smrt"));
     let mut n = 0i64;
     let st = SmrtState::default();
     let mut f = std::ptr::null_mut();
@@ -184,7 +188,8 @@ fn surface_count(t: &MeshTracker) -> usize {
 fn measure_area_and_get_angle_equal_the_analytic_face_values() {
     let fx = hex_block_two_volumes([6, 3, 3], [1.0; 3], SPLIT).expect("brick");
     let t = brick_tracker(false);
-    let h = open(&write_image(&t, "faces.smrt"));
+    let dir = scratch("handover-faces");
+    let h = open(&write_image(&dir, &t, "faces.smrt"));
     let co = fx.mesh.coords();
     assert!(surface_count(&t) >= 5, "{} surfaces", surface_count(&t));
     let mut total_boundary = 0.0;
@@ -261,7 +266,8 @@ fn surface_normals_point_out_of_the_front_region() {
     // surface's front region; stepping along it enters the back region (or leaves the model).
     let fx = hex_block_two_volumes([6, 3, 3], [1.0; 3], SPLIT).expect("brick");
     let t = brick_tracker(false);
-    let h = open(&write_image(&t, "orient.smrt"));
+    let dir = scratch("handover-orient");
+    let h = open(&write_image(&dir, &t, "orient.smrt"));
     let mesh = &fx.mesh;
     let co = mesh.coords();
     let mut sc = Scratch::new();
@@ -282,7 +288,8 @@ fn surface_normals_point_out_of_the_front_region() {
         let behind = t.locate(at(-1.0), None, None, &mut sc).expect("locate").region;
         let ahead = t.locate(at(1.0), None, None, &mut sc).expect("locate").region;
         assert_eq!(behind, info.front, "surface {s}: against the normal is the front region");
-        let comp = t.regions().implicit_complement();        let ahead_ok = ahead == info.back || (info.back.is_none() && (ahead.is_none() || Some(ahead) == comp));
+        let comp = t.regions().implicit_complement();
+        let ahead_ok = ahead == info.back || (info.back.is_none() && (ahead.is_none() || Some(ahead) == comp));
         assert!(ahead_ok, "surface {s}: along the normal is {ahead:?}, back is {:?}", info.back);
     }
     // SAFETY: freed once.
@@ -322,7 +329,8 @@ fn words(h: *const SmrtTracker, threads: usize) -> Vec<u64> {
 #[test]
 fn determinism_runs_and_thread_counts_and_c_output() {
     let t = brick_tracker(true);
-    let file = write_image(&t, "det.smrt");
+    let dir = scratch("handover-det");
+    let file = write_image(&dir, &t, "det.smrt");
     let h = open(&file);
     let one = words(h, 1);
     let many = words(h, 4);

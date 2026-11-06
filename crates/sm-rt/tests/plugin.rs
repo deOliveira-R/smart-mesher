@@ -1,4 +1,4 @@
-//! The `rt` plugin: `rt.info`, `rt.check`, `rt.locate` over a session with `CoreLayers`.
+//! The `rt` plugin: `rt.info`, `rt.check`, `rt.locate`, `rt.partition` over a session with `CoreLayers`.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -97,10 +97,58 @@ fn r2_rt_queries_report_info_check_and_locate() {
 }
 
 #[test]
+fn rt_partition_reports_structure_deterministically() {
+    let q = QuietControl::new();
+    let run = |s: &Session, mesh: EntityId, args: serde_json::Value| {
+        let mut a = args;
+        a["mesh"] = json!(mesh.to_string());
+        s.engine().run_query(s.state(), "rt.partition", &a, &q.control())
+    };
+    let mut s = session();
+    s.apply(&HexModel { n: 4, wall: false }, Meta::new("test", "", ""), &q.control()).expect("model + mesh");
+    let mesh = mesh_id(&s);
+    let a = run(&s, mesh, json!({})).expect("rt.partition");
+    // One region: the root is a leaf holding the 64 cells (or splits by cell count only below it,
+    // which adds no nodes); the structure is what the library gives.
+    assert_eq!(a["nodes"], 1);
+    assert_eq!(a["leaves"], 1);
+    assert_eq!(a["depth"], 0);
+    // The node set {r} is the region's singleton set: one distinct set.
+    assert_eq!(a["sets"], 1);
+    assert_eq!(a["cells_per_leaf"]["max"], 64);
+    assert!(a["memory_bytes"].as_u64().unwrap() > 0);
+    assert!(a["structure_hash"].is_string() && a["partition_hash"].is_string());
+    // Omitted parameters equal their defaults; a second call (derived cache) and a fresh session agree.
+    assert_eq!(a, run(&s, mesh, json!({ "leaf_cells": 8, "max_depth": 24 })).unwrap());
+    let mut s2 = session();
+    s2.apply(&HexModel { n: 4, wall: false }, Meta::new("test", "", ""), &q.control()).unwrap();
+    assert_eq!(a, run(&s2, mesh_id(&s2), json!({})).unwrap());
+    // A different leaf_cells key gives a different partition hash.
+    let b = run(&s, mesh, json!({ "leaf_cells": 1, "max_depth": 3 })).unwrap();
+    assert_ne!(a["partition_hash"], b["partition_hash"]);
+    // Bad parameters are typed errors.
+    assert!(run(&s, mesh, json!({ "leaf_cells": 0 })).is_err());
+    assert!(run(&s, mesh, json!({ "max_depth": 49 })).is_err());
+    assert!(run(&s, EntityId::new(sm_core::EntityKind::Mesh, 999).unwrap(), json!({})).is_err());
+    assert!(run(&s, mesh, json!({ "bogus": 1 })).is_err());
+    // Same bytes for 1 and N threads.
+    let h = sm_testkit::determinism::check(1, 4, |th| {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(th).build().unwrap();
+        pool.install(|| {
+            let mut s = session();
+            s.apply(&HexModel { n: 4, wall: false }, Meta::new("test", "", ""), &q.control()).unwrap();
+            run(&s, mesh_id(&s), json!({ "leaf_cells": 2 })).unwrap().to_string()
+        })
+    })
+    .unwrap();
+    assert!(h.contains("partition_hash"));
+}
+
+#[test]
 fn r2_rt_queries_are_listed_with_schemas() {
     let s = session();
     let reg = s.engine().registry();
-    for n in ["rt.info", "rt.check", "rt.locate"] {
+    for n in ["rt.info", "rt.check", "rt.locate", "rt.partition", "rt.check_overlaps"] {
         assert!(reg.query_names().contains(&n), "{n} registered");
     }
     // Every schema generates and the entity-kind hint is present on the mesh argument.

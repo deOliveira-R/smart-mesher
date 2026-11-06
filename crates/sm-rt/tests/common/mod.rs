@@ -54,7 +54,7 @@ pub fn random_frame(r: &mut SplitMix64) -> ([f64; 3], [f64; 3], [f64; 3]) {
     let z = r.unit();
     let phi = std::f64::consts::PI * r.unit();
     let s = (1.0 - z * z).max(0.0).sqrt();
-    let d = [s * phi.cos(), s * phi.sin(), z];
+    let d = [s * phi.cos(), s * std::hint::black_box(phi).sin(), z];
     let a = if d[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
     let e1 = cross(d, a);
     let l = dot(e1, e1).sqrt();
@@ -69,7 +69,7 @@ pub fn iur_line(r: &mut SplitMix64, center: [f64; 3], rho: f64) -> ([f64; 3], [f
     let (d, e1, e2) = random_frame(r);
     let rad = rho * ((r.unit() + 1.0) * 0.5).sqrt();
     let ang = std::f64::consts::PI * r.unit();
-    let (c, s) = (rad * ang.cos(), rad * ang.sin());
+    let (c, s) = (rad * ang.cos(), rad * std::hint::black_box(ang).sin());
     ([center[0] + c * e1[0] + s * e2[0], center[1] + c * e1[1] + s * e2[1], center[2] + c * e1[2] + s * e2[2]], d)
 }
 

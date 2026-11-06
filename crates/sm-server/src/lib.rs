@@ -32,4 +32,4 @@ pub use standard::{
 pub use sm_engine::{ApplyOptions, FixedClock, Workspace};
 pub use transport::{InProcess, MAX_LINE_BYTES, serve_lines, serve_lines_with_limit, serve_stdio};
 #[cfg(feature = "ws")]
-pub use transport::{serve_ws, serve_ws_listener};
+pub use transport::{MAX_LIVE_CONNECTIONS, serve_http_ws, serve_http_ws_listener, serve_ws, serve_ws_listener};

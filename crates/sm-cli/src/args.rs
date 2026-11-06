@@ -115,6 +115,26 @@ pub enum Command {
         #[arg(long)]
         print_hash: bool,
     },
+    /// Print the timeline as a command-language script that rebuilds it.
+    ///
+    /// The script goes to stdout (or `-o FILE`); notes go to stderr.
+    Record {
+        /// Which heads to record: the linear history to HEAD, or every named ref.
+        #[arg(long, value_parser = ["head", "refs"], default_value = "head")]
+        forks: String,
+        /// Where to embed state-hash checks.
+        #[arg(long, value_parser = ["none", "tips", "every"], default_value = "tips")]
+        check: String,
+        /// Replay the script in a scratch session and fail (exit 1) unless the hashes agree.
+        #[arg(long)]
+        verify: bool,
+        /// Write ops as raw `name(...{json})` records instead of readable sugar.
+        #[arg(long)]
+        raw: bool,
+        /// Write the script to this file instead of stdout.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Apply one op to the current state.
     Apply {
         /// Op name, e.g. `model.create_brick`.

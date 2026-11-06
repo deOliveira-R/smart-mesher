@@ -163,6 +163,7 @@ fn each_plugin(core: &CoreLayers, mut f: impl FnMut(&dyn Plugin)) {
     f(&sm_poly::PolyPlugin);
     f(&sm_diag::DiagPlugin);
     f(&sm_rt::RtPlugin);
+    f(&sm_view::ViewPlugin);
 }
 
 /// The names of every op the plugins register (INT-3). A plugin that fails to install here fails
@@ -203,6 +204,7 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
         .plugin(sm_poly::PolyPlugin)
         .plugin(sm_diag::DiagPlugin)
         .plugin(sm_rt::RtPlugin)
+        .plugin(sm_view::ViewPlugin)
         .plugin(InputsPlugin(inputs))
         .services(services)
 }

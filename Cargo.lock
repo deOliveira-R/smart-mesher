@@ -1355,6 +1355,7 @@ dependencies = [
  "sm-server",
  "sm-testkit",
  "sm-topo-api",
+ "tungstenite",
 ]
 
 [[package]]
@@ -1739,6 +1740,7 @@ dependencies = [
  "sm-testkit",
  "sm-topo-api",
  "smallvec",
+ "thiserror",
 ]
 
 [[package]]
@@ -1766,7 +1768,9 @@ dependencies = [
  "sm-cadio",
  "sm-core",
  "sm-geom-api",
+ "sm-mesh-api",
  "sm-model-api",
+ "sm-rt",
  "sm-rt-api",
  "sm-tess",
  "sm-testkit",
@@ -2003,6 +2007,7 @@ dependencies = [
  "sm-testkit",
  "sm-topo",
  "sm-topo-api",
+ "sm-view",
  "thiserror",
  "tungstenite",
 ]

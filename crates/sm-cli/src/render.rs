@@ -1,7 +1,7 @@
 //! Output: `--json` prints the server's value verbatim; the human forms are short and stable.
 
 use serde_json::Value;
-use sm_protocol::{ApplyResult, ExportResult, HashResult, ScriptResult, StatusResult};
+use sm_protocol::{ApplyResult, ExportResult, HashResult, ScriptRecordResult, ScriptResult, StatusResult};
 
 use crate::{Failure, Io, Res};
 
@@ -96,6 +96,38 @@ pub(crate) fn hash(io: &mut Io<'_>, json: bool, r: &HashResult, raw: &Value, lay
         for (name, h) in &r.layers {
             line(io, &format!("  {name}: {h}"));
         }
+    }
+}
+
+pub(crate) fn record(
+    io: &mut Io<'_>,
+    json: bool,
+    r: &ScriptRecordResult,
+    raw: &Value,
+    output: Option<&std::path::Path>,
+) {
+    if json {
+        line(io, &compact(raw));
+        return;
+    }
+    for n in &r.notes {
+        let _ = writeln!(io.stderr, "note: {n}");
+    }
+    match output {
+        Some(p) => line(
+            io,
+            &format!("wrote {} ({} nodes, {} statements)", p.display(), r.nodes, r.statements),
+        ),
+        None => {
+            let _ = write!(io.stdout, "{}", r.text);
+        }
+    }
+    if let Some(ok) = r.verified {
+        let _ = writeln!(
+            io.stderr,
+            "verify: {}",
+            if ok { "replay reproduces the hashes" } else { "REPLAY DIFFERS" }
+        );
     }
 }
 

@@ -1,4 +1,4 @@
-//! No heap allocation in `smrt_flight_next` / `probe` / `check` / `stop_at` once the flight exists
+//! No heap allocation in `smrt_flight_next` / `probe` / `check` once the flight exists
 //! (the per-segment calls of a transport loop). One test per file so no other thread perturbs
 //! the counter.
 #![cfg(feature = "stubs")]

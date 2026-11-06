@@ -37,3 +37,11 @@ pub(crate) fn finite3(a: [f64; 3]) -> bool {
 pub(crate) fn linf(a: [f64; 3]) -> f64 {
     a[0].abs().max(a[1].abs()).max(a[2].abs())
 }
+
+/// `(sin x, cos x)` as two separate libm calls in every profile. Release builds otherwise fuse
+/// `x.sin()` and `x.cos()` into one `sincos` whose result can differ by an ulp from the
+/// separate calls, so values (and the hashes of what they feed) would depend on the profile.
+#[inline]
+pub(crate) fn sin_cos(x: f64) -> (f64, f64) {
+    (x.sin(), core::hint::black_box(x).cos())
+}

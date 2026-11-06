@@ -90,27 +90,86 @@ pub fn geom_error(data: &CaseData, tracks: &[Track], n: usize) -> Result<(GeomEr
     Ok((g, rep))
 }
 
+/// Agreement of W-flight tallies (4 sigma): per-region collision counts, leaked and absorbed
+/// histories of `judged` against `reference`. The variance of each tally is estimated from the
+/// spread of the history blocks (a block is 256 consecutive histories, the same blocks for every
+/// adapter); a tally without block statistics uses Poisson variance. Slots that are zero on both
+/// sides are not counted. Track-length slots are not compared: delta segments do not score them.
+pub fn compare_tallies(judged: &Output, reference: &Output) -> AgreementSummary {
+    let mut s = AgreementSummary::default();
+    if judged.tally.len() != reference.tally.len() || judged.tally.len() < 2 {
+        s.failed = 1;
+        return s;
+    }
+    let nreg = (judged.tally.len() - 2) / 2;
+    let var = |o: &Output, k: usize| -> f64 {
+        let b = o.tally_blocks as f64;
+        if o.tally_blocks < 2 || o.tally_sq.len() != o.tally.len() {
+            return o.tally[k].abs();
+        }
+        let sample = (o.tally_sq[k] - o.tally[k] * o.tally[k] / b) / (b - 1.0);
+        b * sample.max(0.0)
+    };
+    let slots = (0..nreg).chain([2 * nreg, 2 * nreg + 1]);
+    for k in slots {
+        let (a, b) = (judged.tally[k], reference.tally[k]);
+        if a == 0.0 && b == 0.0 {
+            continue;
+        }
+        s.checked += 1;
+        let sigma = (var(judged, k) + var(reference, k)).sqrt();
+        if (a - b).abs() > 4.0 * sigma {
+            s.failed += 1;
+        }
+    }
+    s
+}
+
 /// Run `cfg` on every adapter for one case and collect a sealed result file. `mode` names the
-/// traversal mode of the adapters (all adapters of one call share it).
+/// traversal mode of adapters that do not name their own.
+///
+/// Agreement: an adapter on the exact geometry is judged against the analytic truth; adapters on
+/// a facet or mesh twin are judged against the first of them (they hold the same twin; their
+/// distance from the truth is the `geom_error` column, not a disagreement). W-flight tallies
+/// are judged against the first adapter's tally ([`compare_tallies`]).
 pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, cfg: &RunConfig, env: Env) -> Result<(ResultFile, Vec<Agreement>)> {
     let mut file = ResultFile::new(&data.case, &data.manifest.scale, env);
     let mut agreements = Vec::new();
     let regions = data.manifest.regions.clone();
-    let mut hashes: Vec<(usize, Workload, Vec<String>)> = Vec::new(); // (adapter, workload, per-thread-count hash)
+    // Output hash of every (adapter, workload) per thread count, for the stability check.
+    let mut hashes: Vec<Vec<Vec<String>>> = vec![vec![Vec::new(); cfg.workloads.len()]; adapters.len()];
+    let mut row_of: Vec<Vec<Vec<usize>>> = vec![vec![Vec::new(); cfg.workloads.len()]; adapters.len()];
+    let twin_ref = adapters.iter().position(|a| !a.exact());
     for &threads in &cfg.threads {
-        for &w in &cfg.workloads {
+        for (wi, &w) in cfg.workloads.iter().enumerate() {
             let input = WorkInput { rays: &data.rays, regions: &regions, threads, histories: cfg.histories, seed: cfg.seed };
             let (samples, _trace) = run_interleaved(adapters, w, &input, cfg.reps, cfg.warmup)?;
             for (i, s) in samples.iter().enumerate() {
                 let units = if w == Workload::Flight { cfg.histories } else { data.rays.len() } as f64;
                 let rates: Vec<f64> = s.ns.iter().map(|ns| units / (ns.max(1.0) * 1e-9)).collect();
                 let c = s.output.counters;
-                let (geom, agree) = if w == Workload::Track { geom_error(data, &s.output.tracks, data.rays.len())? } else { (GeomError::default(), Agreement::default()) };
+                let (geom, agree) = if w == Workload::Track {
+                    let (g, truth_agree) = geom_error(data, &s.output.tracks, data.rays.len())?;
+                    let agree = match twin_ref {
+                        Some(r) if !adapters[i].exact() => {
+                            if r == i {
+                                Agreement { checked: s.output.tracks.len(), ..Agreement::default() }
+                            } else {
+                                compare::compare(&s.output.tracks, &samples[r].output.tracks, data.manifest.diag, data.manifest.chord_tol)?
+                            }
+                        }
+                        _ => truth_agree,
+                    };
+                    (g, agree)
+                } else {
+                    (GeomError::default(), Agreement::default())
+                };
+                let tally_agree = if w == Workload::Flight && i > 0 { Some(compare_tallies(&s.output, &samples[0].output)) } else { None };
                 let median_ns = Stat::of(&s.ns).median;
                 let bi = adapters[i].build_info();
                 let row = Row {
                     tracker: adapters[i].name(),
-                    mode: mode.to_string(),
+                    mode: adapters[i].mode().unwrap_or_else(|| mode.to_string()),
                     workload: w.name().to_string(),
                     threads,
                     precision: adapters[i].precision().to_string(),
@@ -121,15 +180,15 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                     structure_bytes: bi.structure_bytes,
                     lost: c.lost,
                     geom_error: geom,
-                    agreement: AgreementSummary::from(&agree),
+                    agreement: tally_agree.unwrap_or_else(|| AgreementSummary::from(&agree)),
                     determinism: Determinism { hash: s.output.content_hash(), stable: None },
                     counters: c,
                     ..Row::default()
                 };
-                let same = s.hashes.iter().all(|h| *h == s.hashes[0]);
-                hashes.push((i, w, vec![row.determinism.hash.clone()]));
                 let mut row = row;
-                row.determinism.stable = Some(same);
+                row.determinism.stable = Some(s.hashes.iter().all(|h| *h == s.hashes[0]));
+                hashes[i][wi].push(row.determinism.hash.clone());
+                row_of[i][wi].push(file.rows.len());
                 file.rows.push(row);
                 if w == Workload::Track {
                     agreements.push(agree);
@@ -138,9 +197,13 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
         }
     }
     // Stability across thread counts: the same (adapter, workload) must hash equal for every count.
-    for row in &mut file.rows {
-        let all_equal = hashes.iter().filter(|(i, w, _)| adapters[*i].name() == row.tracker && w.name() == row.workload).all(|(_, _, h)| h[0] == row.determinism.hash);
-        row.determinism.stable = row.determinism.stable.map(|s| s && all_equal);
+    for i in 0..adapters.len() {
+        for wi in 0..cfg.workloads.len() {
+            let equal = hashes[i][wi].windows(2).all(|p| p[0] == p[1]);
+            for &r in &row_of[i][wi] {
+                file.rows[r].determinism.stable = file.rows[r].determinism.stable.map(|s| s && equal);
+            }
+        }
     }
     file.seal()?;
     Ok((file, agreements))
