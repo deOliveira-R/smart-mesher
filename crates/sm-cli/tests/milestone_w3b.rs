@@ -579,3 +579,207 @@ fn report(rows: &Rows, timings: &[(String, f64)], t0: Instant) {
     println!("    total: {:.2} s", t0.elapsed().as_secs_f64());
     assert!(rows.fails.values().all(Vec::is_empty), "milestone rows failed: {:?}", rows.fails);
 }
+
+// ------------------------------------------------------------------ SUBMAP version question
+
+/// W3b-2 SUBMAP changed the output of `submap` on periodic faces and on graded neighbours (cut
+/// fractions) without a `mesh.run` or mesher service version bump; twelve ungraded fixtures kept
+/// their hashes. INT decision (W3b-INT, 2026-11-05): no bump. The graded case is pinned here
+/// instead: an L-slab (sweep with a `submap` source face and `pave`/`trimesh` neighbours) whose
+/// source loop has one edge refined to 0.2 against 0.5 elsewhere, so the submap sees unequal
+/// interval counts along the loop. Blessed on 2026-11-05 at the integration tip; a change of
+/// these hashes means the submap output moved again and needs a version-bump ruling.
+const SUBMAP_GRADED: &str = "let a = model.create_brick(x: 2.0, y: 2.0, z: 1.0, center: [1.0, 1.0, 0.5])\n\
+    let t = model.create_brick(x: 2.0, y: 2.0, z: 3.0, center: [2.0, 2.0, 0.5])\n\
+    let r = model.subtract(targets: a.body, tools: t.body)\n\
+    mesh.size(targets: r.volumes, size: 0.5)\n\
+    mesh.size(targets: Edge#9, size: 0.2)\n\
+    mesh.auto(strategy: \"default\")\n\
+    let m = mesh.run(targets: r.volumes)\n\
+    print \"mesh\", m.mesh[0]\n";
+const SUBMAP_GRADED_TOPOLOGY_HASH: &str = "c99bcaa8d93e9a5e";
+const SUBMAP_GRADED_GEOMETRY_HASH: &str = "43ecc0a4b59b3715";
+const SUBMAP_GRADED_STATE_HASH: &str = "7b71fd6dd5c3dd7136a6a1b78a40c8fa3f851877e9f069a73f164f731b0c0b1f";
+
+fn graded_submap_run() -> R<(Value, String, usize)> {
+    let mut s = Server::new(standard_with(Some(AUTHOR.into()), Some(TIME.into()))).map_err(e)?;
+    let run = s
+        .call(Request::ScriptRun { text: SUBMAP_GRADED.into(), path: None, includes: Default::default() })
+        .map_err(|x| format!("script.run: {x} {}", x.data["rendered"].as_str().unwrap_or("")))?;
+    let mesh = prints_of(run["output"].as_str().unwrap_or(""));
+    let id = one(&mesh, "mesh")?;
+    let info = s.call(Request::Query { name: "mesh.info".into(), input: json!({"mesh": id}), at: None }).map_err(e)?;
+    let plan = s.call(Request::Query { name: "mesh.plan".into(), input: json!({"mesh": id}), at: None }).map_err(e)?;
+    let submaps = plan["entities"].as_array().map_or(0, |v| v.iter().filter(|x| x["scheme"] == "submap").count());
+    let h = s.call(Request::Hash { at: None }).map_err(e)?;
+    Ok((info, h["state"].as_str().unwrap_or("").to_owned(), submaps))
+}
+
+#[test]
+fn submap_graded_input_is_pinned() {
+    let (info, state, submaps) = graded_submap_run().expect("graded submap run");
+    assert!(submaps >= 1, "the fixture must exercise submap, plan had {submaps} submap rows");
+    assert_eq!(info["cells"], 36);
+    assert!((info["volume"].as_f64().expect("volume") - 3.0).abs() < 1e-9);
+    assert_eq!(info["topology_hash"], SUBMAP_GRADED_TOPOLOGY_HASH, "submap output on a graded input moved");
+    assert_eq!(info["geometry_hash"], SUBMAP_GRADED_GEOMETRY_HASH, "submap output on a graded input moved");
+    assert_eq!(state, SUBMAP_GRADED_STATE_HASH, "state hash of the graded submap fixture moved");
+    // One thread gives the same bytes.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let (info1, state1, _) = pool.install(|| graded_submap_run().expect("1 thread"));
+    assert_eq!((info1["topology_hash"].clone(), info1["geometry_hash"].clone(), state1), (info["topology_hash"].clone(), info["geometry_hash"].clone(), state));
+}
+
+// ------------------------------------------------------------------ viewer live smoke (plan 5.3)
+
+#[cfg(feature = "ws")]
+mod viewer {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::process::{Child, Stdio};
+    use std::time::Duration;
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::http::HeaderValue;
+
+    /// A running `smesh serve --ws`, killed on drop.
+    struct Serve(Child);
+
+    impl Drop for Serve {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn free_addr() -> String {
+        TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").to_string()
+    }
+
+    fn connect_retry(addr: &str) -> TcpStream {
+        for _ in 0..400 {
+            if let Ok(s) = TcpStream::connect(addr) {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("smesh serve did not start on {addr}");
+    }
+
+    /// The WebSocket upgrade with an optional `Origin`: the reply or the HTTP status that refused it.
+    fn upgrade(addr: &str, origin: Option<&str>) -> Result<tungstenite::WebSocket<TcpStream>, u16> {
+        let mut req = format!("ws://{addr}").into_client_request().expect("request");
+        if let Some(o) = origin {
+            req.headers_mut().insert("Origin", HeaderValue::from_str(o).expect("origin"));
+        }
+        match tungstenite::client(req, connect_retry(addr)) {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp))) => Err(resp.status().as_u16()),
+            Err(x) => panic!("upgrade failed unexpectedly: {x}"),
+        }
+    }
+
+    fn rpc(ws: &mut tungstenite::WebSocket<TcpStream>, id: u64, method: &str, params: Value) -> Value {
+        ws.send(tungstenite::Message::text(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string())).expect("send");
+        loop {
+            if let tungstenite::Message::Text(t) = ws.read().expect("read") {
+                let v: Value = serde_json::from_str(t.as_str()).expect("json");
+                assert_eq!(v["id"], id, "{v}");
+                assert!(v.get("error").is_none_or(Value::is_null), "{method}: {v}");
+                return v["result"].clone();
+            }
+        }
+    }
+
+    fn tool(name: &str) -> Option<String> {
+        Command::new(name).arg("--version").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    }
+
+    /// A directory with `node_modules/playwright-core`, installed on demand; the reason when it cannot be.
+    fn playwright_dir() -> Result<PathBuf, String> {
+        if let Some(d) = std::env::var_os("W3B_PLAYWRIGHT_DIR") {
+            return Ok(PathBuf::from(d));
+        }
+        let dir = target_dir().join("w3b-viewer");
+        if dir.join("node_modules/playwright-core").exists() {
+            return Ok(dir);
+        }
+        std::fs::create_dir_all(&dir).map_err(e)?;
+        let o = Command::new("npm")
+            .args(["install", "--prefix"])
+            .arg(&dir)
+            .args(["playwright-core@1.49.1", "--no-audit", "--no-fund", "--no-package-lock", "--ignore-scripts"])
+            .output()
+            .map_err(|x| format!("npm: {x}"))?;
+        if o.status.success() && dir.join("node_modules/playwright-core").exists() {
+            Ok(dir)
+        } else {
+            Err(format!("npm install playwright-core failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")))
+        }
+    }
+
+    /// Row M11: the viewer against a live `smesh serve --ws`. A foreign `Origin` is refused (403)
+    /// and the served address is accepted, both with and without an `Origin` header; the page
+    /// itself runs in Chromium when playwright-core and a Chromium or Chrome binary exist, else the
+    /// Node protocol path runs alone and the skip is printed.
+    #[test]
+    fn viewer_live_smoke() {
+        let dir = scratch("viewer");
+        let proj = dir.join("proj");
+        ok_text(&["new", &ts(&proj)], Some(&dir), Threads::Inherit).expect("new");
+        let out = ok_text(&["-p", &ts(&proj), "run", &ts(&script_path()), "--author", AUTHOR, "--fixed-time", TIME], Some(&dir), Threads::Inherit).expect("run");
+        let h_mesh = one(&prints_of(&out), "h_mesh").expect("h_mesh");
+
+        let addr = free_addr();
+        let child = Command::new(env!("CARGO_BIN_EXE_smesh"))
+            .args(["-p", &ts(&proj), "serve", "--ws", &addr])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn smesh serve --ws");
+        let _serve = Serve(child);
+        connect_retry(&addr);
+
+        // The Origin rule.
+        let foreign = upgrade(&addr, Some("http://evil.example"));
+        assert_eq!(foreign.err(), Some(403), "a foreign Origin must be refused with 403");
+        let (host, port) = addr.rsplit_once(':').expect("host:port");
+        let other = port.parse::<u16>().expect("port") - 1;
+        assert_eq!(upgrade(&addr, Some(&format!("http://{host}:{other}"))).err(), Some(403), "same host, other port is foreign");
+        let mut same = upgrade(&addr, Some(&format!("http://{addr}"))).expect("the served origin is accepted");
+        assert_eq!(rpc(&mut same, 1, "session.hash", json!({}))["state"], h_mesh.as_str());
+        let mut none = upgrade(&addr, None).expect("a client without Origin is accepted");
+        let scene = rpc(&mut none, 2, "query", json!({"name": "view.scene", "input": {}}));
+        assert_eq!(scene["volumes"].as_array().map(Vec::len), Some(45), "the live session serves the lattice");
+        println!("viewer: foreign Origin refused (403), served Origin and no Origin accepted, session.hash == h_mesh");
+
+        // The page.
+        let Some(node) = tool("node") else {
+            println!("SKIP viewer browser path: node is not installed");
+            return;
+        };
+        let major: u32 = node.trim_start_matches('v').split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if major < 22 {
+            println!("SKIP viewer smoke: node {node} has no global WebSocket (needs 22+)");
+            return;
+        }
+        let mut cmd = Command::new("node");
+        cmd.arg(repo().join("tools/w3b_viewer_smoke.mjs")).arg(format!("http://{addr}/")).arg(dir.join("viewer-out"));
+        match playwright_dir() {
+            Ok(d) => {
+                cmd.env("W3B_PLAYWRIGHT_DIR", d);
+            }
+            Err(x) => println!("viewer: no playwright ({x}); the browser path will be skipped"),
+        }
+        let o = cmd.output().expect("run node");
+        let text = String::from_utf8_lossy(&o.stdout).into_owned();
+        println!("{text}");
+        assert!(o.status.success() && text.lines().any(|l| l == "OK"), "viewer smoke failed:\n{text}\n{}", String::from_utf8_lossy(&o.stderr));
+        if let Some(l) = text.lines().find(|l| l.starts_with("SKIP browser")) {
+            println!("{l}");
+        } else {
+            assert!(text.lines().any(|l| l.starts_with("page_triangles ")), "{text}");
+            assert!(text.lines().any(|l| l.starts_with("followed_redo ")), "{text}");
+        }
+    }
+}

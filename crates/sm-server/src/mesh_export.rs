@@ -152,7 +152,9 @@ fn lowered(state: &State, named: Option<EntityId>) -> Result<Lowered, SessionErr
     }
 }
 
-/// The `.smrt` image of the mesh tracker `rt.info` builds for the same mesh (default responses).
+/// The `.smrt` image of the mesh tracker for the selected mesh (default responses, vacuum
+/// boundaries), built with the majorant partition ([`smrt_build_options`]). `rt.info` builds
+/// the same tracker without the partition, so the structure hashes of the two differ.
 fn smrt(state: &State, named: Option<EntityId>) -> Result<Written, SessionError> {
     let entry = select(state, named).map_err(|e| export_error(&e, state, named))?;
     let model = state

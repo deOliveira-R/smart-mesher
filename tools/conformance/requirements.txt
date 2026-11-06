@@ -1,7 +1,9 @@
 # Python side of tools/conformance.sh (venv at target/conformance/venv). Pinned on the first
-# green run (2026-10-30, CPython 3.13, macOS arm64). gmsh==4.15.2 is needed only by the stretch
-# Gmsh comparison and is not installed here.
+# green run (2026-10-30, CPython 3.13, macOS arm64). h5py and gmsh are the Tier A readers of
+# `--only dagmc` and `--only gmsh` (W3b-INT, 2026-11-05).
 meshio==5.3.5
 netCDF4==1.7.5.1.post1
 numpy==2.5.4
 vtk==9.7.1
+h5py==3.16.0
+gmsh==4.15.2
