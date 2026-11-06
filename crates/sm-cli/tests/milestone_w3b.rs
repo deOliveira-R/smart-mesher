@@ -72,10 +72,10 @@ type Prints = BTreeMap<String, Vec<String>>;
 fn prints_of(text: &str) -> Prints {
     let mut m: Prints = BTreeMap::new();
     for l in text.lines() {
-        if let Some((k, v)) = l.split_once(' ') {
-            if k.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-                m.entry(k.to_owned()).or_default().push(v.trim().to_owned());
-            }
+        if let Some((k, v)) = l.split_once(' ')
+            && k.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        {
+            m.entry(k.to_owned()).or_default().push(v.trim().to_owned());
         }
     }
     m
@@ -258,7 +258,10 @@ fn build_c_driver(dir: &Path) -> R<PathBuf> {
 }
 
 /// The `ROW id PASS|FAIL detail` lines of the driver (and the whole text).
-fn run_c_driver(smrt: &Path) -> R<(Vec<(String, bool, String)>, String)> {
+/// One `ROW` line of the C driver: id, passed, detail.
+type DriverRow = (String, bool, String);
+
+fn run_c_driver(smrt: &Path) -> R<(Vec<DriverRow>, String)> {
     let dir = scratch("cdriver");
     let exe = build_c_driver(&dir)?;
     let o = Command::new(&exe).arg(smrt).output().map_err(|x| format!("run w3b_driver: {x}"))?;
@@ -439,7 +442,7 @@ fn milestone_w3b() {
         if let Some(x) = r {
             rows.fail(9, format!("{what} front end: {x}"));
             if what == "Python" {
-                rows.fail(8, format!("{x}"));
+                rows.fail(8, x.to_string());
             }
         }
     }

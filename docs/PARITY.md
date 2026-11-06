@@ -8,13 +8,13 @@ Gaps still to research (per-scheme manual pages not read yet): exact behavior of
 ## A. Environment & session — `sm-engine`, `sm-lang`, `sm-server`
 - [x] P0 Command language (own syntax): entity lists, ranges, `all`, `except`, `in` filters (e.g. "surfaces in volume 2") (W2: sm-lang, tests/fix0.rs, fix1.rs, run.rs)
 - [x] P0 Script files (play), comments, variables (replaces APREPRO) (W2: milestone.rs)
-- [ ] P1 Script record: write a session's op history out as a script file (the timeline already stores every op)
+- [x] P1 Script record: a session's op history written out as a script that replays to equal state hashes; `script.record` / `smesh record` / MCP `record_script`, `--forks head|refs`, `--check none|tips|every`, `--verify` (W3b: sm-lang tests/script_record.rs `linear_history_replays_to_the_same_state`; sm-server tests/script_record.rs `recorded_script_replays_to_equal_per_ref_tips`; sm-cli milestone_w3b.rs row M7 `milestone_w3b`, `--forks refs` of the milestone replays equal)
 - [x] P0 Headless/batch mode (W2: `smesh` CLI, `serve --stdio`, milestone.rs)
 - [ ] P1 Groups: add/remove/equals/xor, unite/intersect/subtract groups
 - [ ] P1 Entity naming, persistent IDs, ID renumbering controls
 - [ ] P1 Undo/redo; **beyond Cubit:** timeline DAG with fork/checkout
 - [ ] P1 Listing/query: list entity, measure distance/angle/area/volume, bounding boxes
-- [ ] P1 Python API: query plus op execution (Cubit's API is read-only plus `cmd`)
+- [x] P1 Python API: query plus op execution (package `smartmesh`, abi3 wheel, typed ops, `cmd`, mesh tables as numpy) (W3b: sm-py pytest tests/test_slice.py, test_step.py, test_mesh.py, wheel_check.py via crates/sm-py/ci/py.sh; sm-cli milestone_w3b.rs row M8 `milestone_w3b` runs the milestone from the installed wheel and replays its main line with typed ops to equal state hashes)
 - [ ] P2 Settings system (warnings, verbosity, stop-on-error, memory limits, parallel meshing toggle)
 - [ ] P2 Crash save / autosave (largely free with the op log)
 
@@ -22,7 +22,7 @@ Gaps still to research (per-scheme manual pages not read yet): exact behavior of
 Primitives (P0 brick, rest P1):
 - [x] P0 brick (W2: sm-model, milestone.rs; same hashes on TopoStore and CellComplex)
 - [x] P1 cylinder · sphere (W2: sm-model, tests/primitives.rs)
-- [ ] P1 frustum/cone (elliptic, top radius) · prism (n sides) · pyramid · sphere (with inner radius, octant options) · torus
+- [x] P1 frustum/cone (elliptic, top radius) · prism (n sides) · pyramid · sphere (with inner radius, octant options) · torus (W3b: sm-model, tests/prim2.rs `frustum_counts_volume_area_and_inversion`, `prism_and_pyramid_analytic`, `torus_matches_the_fixture_and_closed_forms`; tests/sphere_part.rs `all_26_cut_sets_are_clean_with_the_listed_counts`, `every_hollow_cut_set_is_clean_with_analytic_volume`)
 Bottom-up (P1):
 - [ ] vertex (coords, on curve, intersection) · curve (line, arc, circle, ellipse, spline through/control points, offset, projection) · surface (from curves, planar, net, offset, sweep, skin/loft) · volume (from surfaces, sweep/revolve/extrude surface, thicken sheet)
 Booleans (P1):
@@ -30,7 +30,7 @@ Booleans (P1):
 - [ ] mixed-dimension unite
 Transforms (P1):
 - [x] move · rotate · scale · reflect (W2: sm-model, tests/transforms.rs; which axis/vertex/normal forms exist not audited)
-- [ ] move (delta, to location) · rotate (axis, two vertices, surface normal) · copy variants
+- [x] move (delta, to location) · rotate (axis, two vertices, surface normal) · copy variants (W3b: sm-model, tests/xform2.rs `move_to_a_point_moves_the_centroid_exactly_and_an_omitted_coordinate_stays`, tests/copy.rs `brick_copy_count_3_move`; sm-cli milestone_w3b.rs row M1 `milestone_w3b`: a pin cell and a 3x3 lattice by two `model.copy` steps, volumes and the merged interfaces checked)
 Decomposition, i.e. webcut (P1):
 - [x] plane by vertices / surface / axis plane + offset · cylinder (and sphere) · imprint/merge options (`nomerge`) · section (keep half) (W3a: sm-boolean, tests/webcut.rs, ops.rs, quadric_ops.rs)
 - [ ] tool body · sheet body/surface · extended surface
@@ -45,7 +45,8 @@ Import (P1 STEP, STL; P2 rest):
 - [x] STEP AP203/214/242 B-rep, content-addressed `model.import_step`, assemblies (W3a: sm-cadio, tests/acceptance.rs, roundtrip.rs, assembly_bomb.rs; milestone_w3a.rs path A)
 - [ ] IGES · SAT · STL/facets (as faceted geometry) · MCNP/OpenMC CSG · native project (our op log). Mesh-based geometry: deferred with mesh import.
 Export (P1):
-- [ ] STEP · IGES · facets/STL (STEP writer exists in sm-cadio, tests/roundtrip.rs, but is not an op yet)
+- [x] STEP: `model.export`, a read-only query (the `path` write happens outside history) (W3b: sm-cadio tests/export.rs, tests/roundtrip.rs; sm-server tests/export_wire.rs `model_export_with_a_path_writes_the_bytes_outside_history`; sm-cli milestone_w3b.rs row M5 `milestone_w3b`: the lattice re-imports with equal volumes, state hash and node unchanged)
+- [ ] IGES · facets/STL
 Attributes & metadata (P2): names, colors, assemblies/parts, attribute propagation through ops
 
 ## C. Meshing — `sm-mesh`, `sm-sizing`, `sm-scheme-*`, `sm-quality`, `sm-smooth`, `sm-modify`
@@ -61,12 +62,13 @@ Surface schemes:
 - [x] P1 submap (W3a: sm-scheme-submap, tests/submap.rs; corner picking not checked, corner types derived from the loop)
 - [x] P1 pave (unstructured quad, CDT + matching, any number of loops) (W3a: sm-scheme-pave, tests/driver.rs)
 - [x] P1 trimesh/tridelaunay (constrained Delaunay + Ruppert/Chew) · triadvance (advancing front) (W3a: sm-scheme-tri, tests/accept_brick.rs, accept_planar.rs, front.rs)
-- [ ] P1 tripave · trimap · triprimitive · circle · hole · pentagon · polyhedron · copy · mirror · auto selection
+- [ ] P1 tripave · trimap · triprimitive · circle · hole · pentagon · polyhedron · copy · mirror
 Volume schemes:
 - [x] P0 map (W2: sm-scheme-mapvol; milestone.rs row 6)
 - [x] P1 sweep, 1-to-1 only: translate, twist, linking surfaces, rotation about an outside axis; quad->hex, tri->wedge, polygon->prism (W3a: sm-scheme-sweep, tests/bricks.rs, curved.rs; many-to-1, multisweep, projected target, 360 degree revolve open)
 - [x] P1 tetmesh (Delaunay + boundary recovery, interior Steiner points only, quality floor) (W3a: sm-scheme-tet, tests/a02_cube.rs, a04_cavity.rs, a08_quality.rs, adapter.rs; hybrid hex/wedge/tet in sm-cli tests/milestone_w3a.rs)
-- [ ] P1 volume submap · sweep many-to-1 / many-to-many multisweep · copy · auto selection
+- [ ] P1 volume submap · sweep many-to-1 / many-to-many multisweep · copy
+- [x] P1 auto selection: `mesh.auto {strategy}` with registered strategies; `default` picks map / submap / pave / trimesh for faces and map / sweep / tetmesh for volumes (warning `mesh.auto_tet` on the tet fallback); the choices are stored as explicit scheme assignments, so replay calls no strategy (W3b: sm-mesher tests/auto.rs; sm-server tests/auto_select.rs `b1_brick_auto_equals_the_explicit_map_script`, `b2_l_slab_sweeps_with_a_submap_source`, `b4_tetrahedron_falls_to_tetmesh_with_a_warning`; sm-cli milestone_w3b.rs row M2 `milestone_w3b`: 63 assignments on the lattice, replay under an unregistered strategy name reaches the same hash. Known limits, pinned: plate with a hole (`b5_plate_with_a_hole_pinned_outcome`) and auto next to a hard tet neighbour (`b6_auto_next_to_a_hard_tet_neighbour_pinned_outcome`))
 - [ ] P2 sphere · tetprimitive · polyhedron · radialmesh (free mesh) · Sculpt (overlay-grid hex, parallel)
 Conversion:
 - [ ] P1 THex (tet→hex) · QTri (quad→tri, 2/4 split) · HTet (hex→tet) · TQuad (tri→quad)
@@ -97,14 +99,16 @@ Mesh deletion (P1): delete mesh with propagation · free meshes. **Mesh import: 
 - [x] P0 native `.smsh` · VTU (inspect in ParaView) (W1: sm-meshio, round-trip tested)
 - [x] P1 Exodus II: blocks, side sets, node sets, NFACED/NSIDED polyhedra, CDF-1/2/5 (large model), pure-Rust writer, `mesh.exo` (W3a: sm-exodus, tests/exodus_write.rs, sides.rs, netcdf.rs; milestone_w3a.rs row 10; no netCDF-4/HDF5)
 - [x] OpenFOAM polyMesh (incl. polyhedral cells, cell zones, patches, split of near-degenerate cells with a cell map) (W3a: sm-meshio, tests/foam.rs, foam_split.rs, foam_parse.rs; milestone_w3a.rs row 11; checkMesh run via tools/conformance, INT-8/INT-9)
-- [ ] P1 Exodus netCDF4, Gmsh msh4, Abaqus (.inp, partial/explicit), DAGMC (h5m, relevant for transport)
+- [x] P1 Gmsh msh4 (ASCII and binary) and DAGMC h5m (`mat:<set>` groups, opt-in graveyard) (W3b: sm-meshio tests/gmsh.rs, tests/dagmc.rs; sm-server tests/export_wire.rs `each_format_is_byte_identical_in_process_cli_and_mcp`; `SM_CONFORMANCE=1 tools/conformance.sh --only dagmc|gmsh`: h5py, MOAB and DAGMC read the h5m, Gmsh and meshio read the msh; sm-cli milestone_w3b.rs row M4 `milestone_w3b`)
+- [ ] P1 Exodus netCDF4, Abaqus (.inp, partial/explicit)
 - [ ] P2 Nastran, CGNS, I-DEAS UNV, Patran, LS-DYNA, Fluent, Sierra, VRML
 - [ ] Export options: by block/sideset/nodeset, 2D/3D dimension, renumbering, everything/overwrite
 
 ## F. Beyond-Cubit requirements (ours)
 - [x] Timeline: undo/redo, checkout any node, fork (W2: milestone.rs row 2; compare branches is P1)
 - [x] Git-native project format (W1: sm-engine)
-- [ ] Remote backend + web frontend + headless (W2: protocol server over stdio and headless CLI done; remote transport and web frontend open)
+- [x] Web frontend, read-only plus a script console: WebGL2 viewer served by `smesh serve --ws`, live by polling `session.hash`; a browser `Origin` must match the served address, 64 live connections at most (W3b: crates/sm-view/web (`npm test`, `SM_VIEWER_E2E=1 npm run e2e`), sm-server tests/live_viewer.rs, sm-cli tests/serve_ws.rs; sm-cli milestone_w3b.rs `viewer::viewer_live_smoke`: foreign Origin refused with 403, the page in Chrome draws the server's skin and follows undo and redo)
+- [ ] Remote backend + headless (W2: protocol server over stdio and headless CLI done; remote staging, auth and server push open)
 - [x] MCP server for agent control (W2: sm-mcp, MCP 2025-06-18 stdio; milestone.rs)
 - [x] Deterministic replay (bit-identical state hashes) (W1: sm-engine strict replay + 1/N-thread CI)
 - [x] Polyhedral-first native format: `.smsh` and VTU carry POLYHEDRON cells (W3a: sm-meshio, tests/smsh.rs, vtu.rs; milestone_w3a.rs row 12)
