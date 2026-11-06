@@ -13,7 +13,7 @@ use sm_op_api::State;
 use sm_protocol::ExportFormat;
 use sm_rt::MeshTrackerBuilder;
 use sm_rt_api::{
-    BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, RecoveryPolicy, RegionRule, ResponseKind, ResponseMap, RtError, Tracker,
+    BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, ResponseKind, ResponseMap, RtError, Tracker,
 };
 
 use crate::error::SessionError;
@@ -161,13 +161,23 @@ fn smrt(state: &State, named: Option<EntityId>) -> Result<Written, SessionError>
     let spec = boundary_spec(model)?;
     let (rules, complement) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside);
     let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
-    let mut opts = BuildOptions::default();
-    opts.recovery = RecoveryPolicy::Fail;
+    let opts = smrt_build_options();
     let (tracker, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(rt_error)?;
     let image = tracker.export_cache().ok_or_else(|| SessionError::new("smrt-unavailable", "the tracker exports no cache image"))?;
     let mut bytes = Vec::new();
     sm_rt::write_smrt(&mut bytes, &image).map_err(|e| SessionError::new("io", format!("encoding the tracking image: {e}")))?;
     Ok(Written { bytes, notes: Vec::new() })
+}
+
+/// Build options of the `.smrt` handover image. The majorant partition is on, so the file carries
+/// the node sets and node bounds a transport code needs for delta tracking (`smrt_n_nodes`,
+/// `smrt_node_set`); without it the opened tracker answers `SMRT_ERR_UNSUPPORTED` to those calls.
+pub(crate) fn smrt_build_options() -> BuildOptions {
+    let mut part = PartitionOptions::default();
+    part.enabled = true;
+    let mut opts = BuildOptions::default().with_partition(part);
+    opts.recovery = RecoveryPolicy::Fail;
+    opts
 }
 
 /// Boundary conditions as `rt.info` takes them with no response bindings: every response record

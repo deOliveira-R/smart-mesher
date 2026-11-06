@@ -14,7 +14,7 @@ use sm_geom_api::Ray;
 use sm_layer_api::MeshLayer;
 use sm_op_api::Hash256;
 use sm_protocol::{Endpoint, ExportFormat, ExportResult, Request, RpcError};
-use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
+use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
 use sm_server::{Server, standard_with};
 
 const TIME: &str = "2026-10-24T00:00:00Z";
@@ -280,12 +280,14 @@ fn smrt_loads_to_the_in_process_tracker() {
     let image = sm_rt::read_smrt(&read(&p)).expect("read_smrt");
     let loaded = sm_rt::load_image(&image).expect("load_image");
 
-    // The tracker `rt.info` and the exporter build: structure hash and region names.
+    // The tracker `rt.info` builds: the same region names. The image also carries the majorant
+    // partition (W3b-INT D1), which `rt.info`'s default build does not have.
     let state = s.workspace().state();
     let layer = state.layer::<MeshLayer>().expect("meshes");
     let (id, entry) = layer.meshes().next().expect("one mesh");
     let info = s.workspace().query("rt.info", &json!({"mesh": id.to_string()})).expect("rt.info");
-    assert_eq!(info["structure_hash"].as_str().expect("hash"), loaded.structure_hash().to_string());
+    assert!(loaded.caps().has(sm_rt_api::TrackerCaps::MAJORANT), "the handover image carries the partition");
+    assert!(loaded.majorant_view().is_some_and(|v| v.hierarchy().node_count() > 0));
     let names: Vec<String> = info["regions"].as_array().expect("regions").iter().map(|r| r["name"].as_str().expect("name").to_owned()).collect();
     let loaded_names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
     assert_eq!(loaded_names, names);
@@ -294,7 +296,9 @@ fn smrt_loads_to_the_in_process_tracker() {
     // Built in process from the same mesh.
     let (rules, complement, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside, BoundarySpec::default());
     let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
-    let mut opts = BuildOptions::default();
+    let mut part = PartitionOptions::default();
+    part.enabled = true;
+    let mut opts = BuildOptions::default().with_partition(part);
     opts.recovery = RecoveryPolicy::Fail;
     let (built, _) = sm_rt::MeshTrackerBuilder.build_concrete(&input, &opts).expect("build");
     assert_eq!(built.structure_hash(), loaded.structure_hash());
