@@ -41,7 +41,7 @@ drive it with a recording fake endpoint, and the binary passes `connect_standard
 | `validate [--mesh id]` | `query{mesh.validate, {mesh?}}`; exit 1 when `valid` is false (the report is still printed) |
 | `quality [--mesh id] [--profile p] [--worst n]` | `query{mesh.quality, {mesh?, profile?, worst_n?}}` |
 | `serve [--stdio]` | loop of `Endpoint::handle_text`, one reply line per request line |
-| `serve --ws addr` | not available in this build (exit 1) |
+| `serve --ws addr` | HTTP (viewer assets) plus WebSocket JSON-RPC on `addr` (default `ws` feature). A browser `Origin` must match the served address, else 403; at most 64 live connections (`MAX_LIVE_CONNECTIONS`), else 503 |
 | `mcp` | `sm_mcp::run_stdio` |
 | `help [op]` | `catalog` |
 
