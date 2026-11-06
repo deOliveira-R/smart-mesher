@@ -439,11 +439,16 @@ fn census_of_the_fixture_models_and_the_repository_scripts() {
             corpus.push((rel.to_owned(), text));
         }
     }
+    // Scripts export to relative paths; send those to a temporary directory so the tree stays clean.
+    let tmp = std::env::temp_dir().join(format!("sm-server-census-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("temp dir");
+    let out = format!("\"{}/", tmp.display());
     let (mut volumes_seen, mut changed, mut report) = (0usize, 0usize, String::new());
     for (name, text) in &corpus {
+        let text = text.replace("\"out.", &out);
         let mut s = server();
         // Includes and failures do not matter: the census reads whatever model the script got to.
-        let _ = script(&mut s, text);
+        let _ = script(&mut s, &text);
         let census = census_of(&mut s);
         volumes_seen += census.rows.len();
         for row in census.changed() {
@@ -457,6 +462,7 @@ fn census_of_the_fixture_models_and_the_repository_scripts() {
             }
         }
     }
+    let _ = std::fs::remove_dir_all(&tmp);
     println!("census: {} models, {volumes_seen} volumes, {changed} changed\n{report}", corpus.len());
     assert!(volumes_seen >= corpus.len() - 1);
     // The cases the acceptance fixtures are built for must be among the changed rows.

@@ -163,7 +163,7 @@ pub fn serve_stdio(endpoint: &mut (impl Endpoint + ?Sized)) -> io::Result<()> {
 }
 
 #[cfg(feature = "ws")]
-pub use ws::{serve_http_ws, serve_http_ws_listener, serve_ws, serve_ws_listener};
+pub use ws::{MAX_LIVE_CONNECTIONS, serve_http_ws, serve_http_ws_listener, serve_ws, serve_ws_listener};
 
 #[cfg(feature = "ws")]
 mod ws {
@@ -174,7 +174,11 @@ mod ws {
 
     use serde_json::Value;
     use sm_protocol::{Endpoint, Response, RpcError};
-    use tungstenite::{Message, accept};
+    use std::net::{IpAddr, SocketAddr};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tungstenite::handshake::server::{ErrorResponse, Request, Response as HsResponse};
+    use tungstenite::http::StatusCode;
+    use tungstenite::{Message, accept_hdr};
 
     use super::reply_text;
 
@@ -185,8 +189,54 @@ mod ws {
         }
     }
 
+    /// Whether a browser page with this `Origin` may talk to a server reached at `local`.
+    ///
+    /// No `Origin` (a non-browser client) is accepted. Otherwise the origin must be `http://host[:port]`
+    /// naming the address the connection arrived on; `localhost`, `127.0.0.1` and `[::1]` are
+    /// interchangeable only when that address is loopback, and the port must match either way.
+    fn origin_allowed(origin: Option<&str>, local: SocketAddr) -> bool {
+        let Some(origin) = origin else { return true };
+        let Some(authority) = origin.strip_prefix("http://") else { return false };
+        if authority.is_empty() || authority.contains(['/', '?', '#', '@']) {
+            return false;
+        }
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if !p.contains(']') => match p.parse::<u16>() {
+                Ok(p) => (h, p),
+                Err(_) => return false,
+            },
+            _ => (authority, 80),
+        };
+        if port != local.port() {
+            return false;
+        }
+        let host = host.to_ascii_lowercase();
+        let ip = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().ok();
+        if local.ip().is_loopback() && (host == "localhost" || ip.is_some_and(|i| i.is_loopback())) {
+            return true;
+        }
+        ip == Some(local.ip())
+    }
+
+    /// The handshake callback: refuse a foreign `Origin` with 403 before the upgrade.
+    // The `Err` type is fixed by tungstenite's `Callback` trait.
+    #[allow(clippy::result_large_err)]
+    fn check_origin(local: SocketAddr) -> impl FnOnce(&Request, HsResponse) -> Result<HsResponse, ErrorResponse> {
+        move |req, resp| {
+            let origin = req.headers().get("origin").map(|v| v.to_str().unwrap_or("\u{0}invalid"));
+            if origin_allowed(origin, local) {
+                Ok(resp)
+            } else {
+                let mut r = ErrorResponse::new(Some("origin not allowed\n".to_owned()));
+                *r.status_mut() = StatusCode::FORBIDDEN;
+                Err(r)
+            }
+        }
+    }
+
     fn serve_connection(endpoint: &mut (impl Endpoint + ?Sized), stream: TcpStream) -> io::Result<()> {
-        let mut socket = accept(stream).map_err(|e| io::Error::other(e.to_string()))?;
+        let local = stream.local_addr()?;
+        let mut socket = accept_hdr(stream, check_origin(local)).map_err(|e| io::Error::other(e.to_string()))?;
         loop {
             let msg = match socket.read() {
                 Ok(m) => m,
@@ -234,6 +284,9 @@ mod ws {
     const MAX_HEAD: usize = 8192;
     /// How long a new connection may take to send its request head.
     const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Most connections the shared listener keeps open at once; further ones get `503`.
+    pub const MAX_LIVE_CONNECTIONS: usize = 64;
 
     /// One request waiting for the endpoint: the frame text and where its reply goes.
     type Job = (String, mpsc::Sender<Response>);
@@ -333,7 +386,8 @@ mod ws {
             Kind::Bad => Ok(()),
             Kind::Http(method, path) => serve_http(stream, &method, &path),
             Kind::Upgrade => {
-                let mut socket = accept(stream).map_err(|e| io::Error::other(e.to_string()))?;
+                let local = stream.local_addr()?;
+                let mut socket = accept_hdr(stream, check_origin(local)).map_err(|e| io::Error::other(e.to_string()))?;
                 loop {
                     let msg = match socket.read() {
                         Ok(m) => m,
@@ -372,6 +426,12 @@ mod ws {
     /// endpoint and handles requests one at a time in arrival order, so the session keeps its
     /// single writer and every client sees the same state. There is no server push; clients poll
     /// `session.hash` to notice changes. A failing connection is reported through `on_error`.
+    ///
+    /// Safety limits: a WebSocket upgrade is accepted only when its `Origin` header is absent or is
+    /// `http://` plus the address the server is reached at (loopback names are equal only on a
+    /// loopback address); any other origin gets `403` before the upgrade, so a web page cannot drive
+    /// the session from the user's browser. At most [`MAX_LIVE_CONNECTIONS`] connections are open at
+    /// once; the rest get `503` and are closed.
     pub fn serve_http_ws_listener(
         endpoint: &mut (impl Endpoint + ?Sized),
         listener: &TcpListener,
@@ -384,17 +444,29 @@ mod ws {
             let (on_error, accept_error) = (&on_error, &accept_error);
             scope.spawn(move || {
                 let mut served = 0usize;
+                let live = AtomicUsize::new(0);
+                let live = &live;
                 std::thread::scope(|conns| {
                     while max_connections.is_none_or(|m| served < m) {
                         match listener.accept() {
-                            Ok((stream, _)) => {
+                            Ok((mut stream, _)) => {
+                                served += 1;
+                                if live.fetch_add(1, Ordering::SeqCst) >= MAX_LIVE_CONNECTIONS {
+                                    live.fetch_sub(1, Ordering::SeqCst);
+                                    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                                    let _ = respond(&mut stream, "503 Service Unavailable", "text/plain; charset=utf-8", b"too many connections\n", true);
+                                    // Drain the request so closing does not reset the connection under the reply.
+                                    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                                    let _ = stream.read(&mut [0u8; MAX_HEAD]);
+                                    continue;
+                                }
                                 let tx = jobs_tx.clone();
                                 conns.spawn(move || {
                                     if let Err(e) = serve_shared_connection(&tx, stream) {
                                         on_error(e);
                                     }
+                                    live.fetch_sub(1, Ordering::SeqCst);
                                 });
-                                served += 1;
                             }
                             Err(e) => {
                                 *accept_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);

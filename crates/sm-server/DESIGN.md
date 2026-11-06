@@ -99,6 +99,13 @@ diagnostics in `data`; `not-persisted` carries the recorded node. Protocol-level
   (64 MiB) is discarded and answered with `INVALID_REQUEST`. Nothing is dropped silently.
 * `serve_ws` (feature `ws`, tungstenite): one text frame per message. Connections are served one at a
   time, which keeps the single-writer rule without a lock; binary frames get `INVALID_REQUEST`.
+* `serve_http_ws` (what `smesh serve --ws` runs): static viewer files and WebSocket clients on one
+  port. Security: `script.run` reaches `session.export` (writes files) and `session.stage` (reads
+  files), so a web page in the user's browser must not be able to connect. An upgrade is accepted
+  only when `Origin` is absent (a non-browser client) or equals `http://<address served>` (same
+  port; `localhost`, `127.0.0.1` and `[::1]` count as equal only when the address is loopback);
+  anything else is refused with `403` before the upgrade. `serve_ws` applies the same check. The
+  shared listener keeps at most `MAX_LIVE_CONNECTIONS` (64) connections open; more get `503`.
 
 ### The standard distribution
 

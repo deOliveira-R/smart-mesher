@@ -16,11 +16,16 @@ type Client = WebSocket<MaybeTlsStream<TcpStream>>;
 
 /// Start a server on a thread that serves `connections` connections, then returns.
 fn start(connections: usize) -> (SocketAddr, std::thread::JoinHandle<()>) {
+    start_with(connections, |e| panic!("connection failed: {e}"))
+}
+
+/// Like [`start`], with the connection-error handler chosen by the test.
+fn start_with(connections: usize, on_error: impl Fn(std::io::Error) + Send + Sync + 'static) -> (SocketAddr, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let h = std::thread::spawn(move || {
         let mut s = Server::new(standard_with(Some("tester".into()), Some(TIME.into()))).expect("server");
-        serve_http_ws_listener(&mut s, &listener, Some(connections), |e| panic!("connection failed: {e}")).expect("serve");
+        serve_http_ws_listener(&mut s, &listener, Some(connections), on_error).expect("serve");
     });
     (addr, h)
 }
@@ -126,4 +131,45 @@ fn many_clients_share_one_writer_and_agree() {
         c.close(None).expect("close");
     }
     h.join().expect("server thread");
+}
+
+fn connect_with_origin(addr: SocketAddr, origin: &str) -> Result<Client, tungstenite::Error> {
+    use tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{addr}").into_client_request().expect("request");
+    req.headers_mut().insert("Origin", origin.parse().expect("header"));
+    connect(req).map(|c| c.0)
+}
+
+#[test]
+fn websocket_origin_is_checked_before_the_upgrade() {
+    let (addr, h) = start_with(7, |_| {});
+    // No Origin (a non-browser client) connects.
+    let mut c = client(addr);
+    assert!(!rpc(&mut c, 1, "session.hash", json!({})).is_null());
+    drop(c);
+    // The served address, spelled either way on loopback, connects.
+    for origin in [format!("http://{addr}"), format!("http://localhost:{}", addr.port())] {
+        let mut c = connect_with_origin(addr, &origin).unwrap_or_else(|e| panic!("{origin}: {e}"));
+        assert!(!rpc(&mut c, 1, "session.hash", json!({})).is_null());
+    }
+    // Foreign host, wrong port and wrong scheme get 403.
+    for origin in ["http://evil.example", "http://127.0.0.1:1", "https://127.0.0.1", "null"] {
+        match connect_with_origin(addr, origin) {
+            Err(tungstenite::Error::Http(r)) => assert_eq!(r.status().as_u16(), 403, "{origin}"),
+            other => panic!("{origin}: expected 403, got {:?}", other.map(|_| ())),
+        }
+    }
+    h.join().expect("server");
+}
+
+#[test]
+fn connections_beyond_the_cap_get_503() {
+    let cap = sm_server::MAX_LIVE_CONNECTIONS;
+    let (addr, h) = start_with(cap + 1, |_| {});
+    let mut held: Vec<Client> = (0..cap).map(|_| client(addr)).collect();
+    let (status, _) = http(addr, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(status.starts_with("HTTP/1.1 503"), "{status}");
+    assert!(!rpc(&mut held[0], 1, "session.hash", json!({})).is_null());
+    drop(held);
+    h.join().expect("server");
 }
