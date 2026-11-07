@@ -3,7 +3,7 @@
 
 use serde_json::{Map, Value};
 use sm_core::EntityId;
-use sm_fem::{FemError, FemLayer, Lowered, lower};
+use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, lower};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
 use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
@@ -161,14 +161,44 @@ fn smrt(state: &State, named: Option<EntityId>) -> Result<Written, SessionError>
         .layer::<ModelLayer>()
         .ok_or_else(|| SessionError::new("no-model", "`smrt` export needs the model layer (region names come from the model)"))?;
     let spec = boundary_spec(model)?;
-    let (rules, complement) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside);
-    let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
+    let complement = ComplementPolicy::Outside;
+    let (rules, lowered, notes) = smrt_regions(state, named);
+    let host = match &lowered {
+        Some(l) => (*l.mesh).as_read(),
+        None => entry.mesh(),
+    };
+    let input = BuildInput::Mesh(MeshInput::new(host, &rules, &spec, &complement));
     let opts = smrt_build_options();
     let (tracker, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(rt_error)?;
     let image = tracker.export_cache().ok_or_else(|| SessionError::new("smrt-unavailable", "the tracker exports no cache image"))?;
     let mut bytes = Vec::new();
     sm_rt::write_smrt(&mut bytes, &image).map_err(|e| SessionError::new("io", format!("encoding the tracking image: {e}")))?;
-    Ok(Written { bytes, notes: Vec::new() })
+    Ok(Written { bytes, notes })
+}
+
+/// Region rule of the `.smrt` (Q2): regions are named after the blocks (the material groups that
+/// become `mat:<name>` in `.h5m`) when every cell lies in a block; the lowered mesh that
+/// carries the block sets is returned with the rule. Otherwise (no blocks, a cell in no block, or a
+/// lowering error) regions are the volume ids and a note says why.
+fn smrt_regions(state: &State, named: Option<EntityId>) -> (RegionRule, Option<Lowered>, Vec<String>) {
+    let fallback = |why: String| (RegionRule::ByVolumeClassification, None, vec![format!("smrt-region-names: regions are named by volume id ({why})")]);
+    let lowered = match lowered(state, named) {
+        Ok(l) => l,
+        Err(e) => return fallback(format!("block lowering failed: {e}")),
+    };
+    let names: Vec<String> = lowered.sets.iter().filter(|s| s.origin == SetOrigin::Block).map(|s| s.name.clone()).collect();
+    if names.is_empty() {
+        return fallback("the model has no blocks".to_owned());
+    }
+    let mesh = (*lowered.mesh).as_read();
+    // Each cell has one volume with one color, so a cell is in at most one block set: the
+    // blocks cover the mesh exactly when their sizes sum to the cell count.
+    let covered: usize = lowered.sets.iter().filter(|s| s.origin == SetOrigin::Block).map(|s| s.len).sum();
+    let total = mesh.cell_count();
+    if covered != total {
+        return fallback(format!("{} of {total} cells are in no block", total - covered.min(total)));
+    }
+    (RegionRule::ByCellSets(names), Some(lowered), Vec::new())
 }
 
 /// Build options of the `.smrt` handover image. The majorant partition is on, so the file carries

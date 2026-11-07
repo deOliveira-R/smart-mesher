@@ -46,13 +46,14 @@ static void row(const char *id, int ok, const char *fmt, ...) {
     } while (0)
 
 /* ---- the code's own cross sections, by material name ---------------------------------------
- * session.export names a region after its volume (`TopoVolume#<n>`); the code decides what that
- * material is. Here: a fixed pseudo-table keyed by the name's bytes, five values 0.5 .. 1.5, so
- * neighbouring regions differ (mixed node sets) and no sigma is known to smart-mesh. */
+ * session.export names each region after its block (material group, `mat:<name>` in .h5m); the
+ * code decides what that material is: fuel and water here. smart-mesh and sm-rt never see a
+ * cross section. A name the code does not know (the complement) gets 1.0 and is not counted. */
+static int known_material(const char *name) { return strcmp(name, "fuel") == 0 || strcmp(name, "water") == 0; }
 static double sigma_of(const char *name) {
-    unsigned s = 0;
-    for (const char *p = name; *p; p++) s = s * 31u + (unsigned char)*p;
-    return 0.5 + (double)(s % 5u) * 0.25;
+    if (strcmp(name, "fuel") == 0) return 1.5;
+    if (strcmp(name, "water") == 0) return 0.5;
+    return 1.0;
 }
 
 /* ---- deterministic randomness ------------------------------------------------------------- */
@@ -423,10 +424,12 @@ int main(int argc, char **argv) {
     model_load(t, &m);
 
     /* node sets and region names reach the code; its own sigma per name */
-    int64_t nvol = 0;
+    int64_t nvol = 0, hasfuel = 0, haswater = 0;
     for (int64_t r = 0; r < m.nreg; r++) {
         printf("REGION %lld %s sigma=%g\n", (long long)r, m.names[r], m.sig[r]);
-        if (strncmp(m.names[r], "TopoVolume#", 11) == 0) nvol++;
+        if (known_material(m.names[r])) nvol++;
+        if (strcmp(m.names[r], "fuel") == 0) hasfuel++;
+        if (strcmp(m.names[r], "water") == 0) haswater++;
     }
     printf("INFO nodes=%lld sets=%lld regions=%lld complement=%lld cells=%lld\n", (long long)m.nnodes, (long long)m.nsets, (long long)m.nreg,
            (long long)m.comp, (long long)m.info.cells);
@@ -444,8 +447,8 @@ int main(int argc, char **argv) {
             }
         free(ids);
     }
-    row("names", nvol == m.nreg && m.nreg >= 2 && m.nnodes > 1 && m.nsets >= 1 && mixed >= 1,
-        "%lld regions named by volume, %lld nodes, %lld sets (%lld with mixed sigma)", (long long)nvol, (long long)m.nnodes, (long long)m.nsets,
+    row("names", hasfuel == 1 && haswater == 1 && nvol == 2 && nvol <= m.nreg && m.nreg >= 2 && m.nnodes > 1 && m.nsets >= 1 && mixed >= 1,
+        "%lld material regions (fuel, water) by name, %lld nodes, %lld sets (%lld with mixed sigma)", (long long)nvol, (long long)m.nnodes, (long long)m.nsets,
         (long long)mixed);
 
     check_chords(t, &m);
