@@ -94,4 +94,4 @@ Cleanups:
 - tools/w3b_driver.c: the chord tolerance has a (1+chord) factor that R7 lacks (drop it or note it); `ridx()` would read `sig[-1]` if a segment came back with region SMRT_COMPLEMENT under ComplementPolicy::Outside (unreached today; guard it).
 - sm-server `smrt_regions`: ByCellSets resolves sets by name, so a non-block cell set with a block's name could be picked; add a comment or test.
 - PARITY Transforms row: M1 checks only volume counts and total volume, not "the merged interfaces"; reword or point to M4/M6.
-- Open for a ruling: `.smrt` has one region per block (volume identity is not in the file); models with volumes in no block fall back to volume-id names with a note (or should that be a typed error?); FOAM-WARP `split_warped_faces` needs a `session.export` option like P5.
+- Ruled (R9-R11 in docs/design/w3b/rulings.md): one region per block; volume-id fallback with a warning; FOAM-WARP option goes into W3c. Check that the fallback note is surfaced as a warning in CLI/MCP output.

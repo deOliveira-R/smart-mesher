@@ -86,3 +86,8 @@ From the post-W3a contract batch review. P1 still flips only after a milestone A
   On an exact edge or vertex tie, the face and to_cell may differ; kind, surface, to_region and distance still agree. The `Tracker::fire` doc clause in sm-rt-api is updated to match.
 - **R2. ACR approved:** `MeshInput::topology_content_hash()` in sm-rt-api. It reproduces the bytes of sm-rt's builder `mesh_topology_hash` exactly, so that sm-rt and `LeafInput::content_hash` share one implementation of the mesh part without moving any cache key.
 - **R3. DIAG acceptance 2 (and plan §3.2 `remove_set`).** `mesh.flag_cells` followed by `mesh.unflag_cells` restores the mesh content, the set list and the topology/geometry hashes. The state hash may still differ, because the meshes-layer digest includes allocator counters, which never roll back. The digest is not changed: changing it would move every meshes hash.
+
+## User rulings after W3b-INT (2026-11-07)
+- **R9. `.smrt` regions:** one region per material block is right; volume identity is not needed in the file.
+- **R10. Volumes in no block:** fall back to volume-id region names with a warning. A clean export (no warning) means the model is fully defined; users fix the model until the warning goes away.
+- **R11. FOAM-WARP:** add a `session.export` option for `split_warped_faces` (like P5) in W3c.
