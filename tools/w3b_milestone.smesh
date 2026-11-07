@@ -1,0 +1,107 @@
+// W3b integration milestone (docs/design/w3b/plan.md section 5.1).
+//
+// A pin cell (square fuel pin in four moderator bricks) and a 3x3 lattice of it built by
+// `model.copy`; `model.export` STEP and its re-import on a side branch; a face-only `mesh.run`
+// with `mesh.plan` on another branch; then `mesh.auto { strategy: "default" }`, the volume run,
+// and every mesh export. Files are written relative to the session's working directory (the
+// project root under `-p`): the harness runs this script in its own directory per front end.
+//
+// It prints `key value...` lines; tests/milestone_w3b.rs and tools/w3b_driver.py compare them
+// between the CLI, MCP, in-process and Python front ends.
+
+// ---------------------------------------------------------------- model: pin cell and lattice
+let pf = model.create_brick(x: 0.8, y: 0.8, z: 1.0)
+let wl = model.create_brick(x: 0.23, y: 1.26, z: 1.0, center: [-0.515, 0.0, 0.0])
+let wr = model.create_brick(x: 0.23, y: 1.26, z: 1.0, center: [0.515, 0.0, 0.0])
+let wb = model.create_brick(x: 0.8, y: 0.23, z: 1.0, center: [0.0, -0.515, 0.0])
+let wt = model.create_brick(x: 0.8, y: 0.23, z: 1.0, center: [0.0, 0.515, 0.0])
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 5, "pin cell: fuel plus four moderator bricks"
+let water = wl.volume | wr.volume | wb.volume | wt.volume
+
+// two copy steps make the 3x3 lattice (the copy carries no colors or names)
+let fx = model.copy(entities: pf.volume, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let wx = model.copy(entities: water, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let fy = model.copy(entities: pf.volume | fx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+let wy = model.copy(entities: water | wx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 45, "3x3 lattice: 9 pin cells of 5 volumes"
+assert count(fx.volumes) == 2 and count(fy.volumes) == 6, "copy counts"
+let fuels = pf.volume | fx.volumes | fy.volumes
+let waters = water | wx.volumes | wy.volumes
+assert count(fuels) == 9 and count(waters) == 36, "9 fuel pins, 36 moderator bricks"
+fem.block_add(1, volumes: fuels, name: "fuel")
+fem.block_add(2, volumes: waters, name: "water")
+mesh.size(targets: all volumes, size: 0.3)
+
+let tot = 0.0
+for v in all volumes {
+  set tot = tot + model.measure(entity: v).volume
+}
+assert tot > 14.2883 and tot < 14.2885, "lattice volume 9 x 1.26^2 x 1"
+print "model_volume", tot
+let h_model = session.hash()
+let n_model = timeline.head().node
+print "h_model", h_model
+
+// ---------------------------------------------------------------- model.export STEP and re-import
+// A read-only query: it writes the file outside history and leaves the state hash alone.
+let ex = model.export(path: "milestone.step")
+assert session.hash() == h_model, "model.export leaves the state hash unchanged"
+assert timeline.head().node == n_model, "model.export adds no node"
+print "step_bytes", ex.report.bytes
+let st = session.stage("milestone.step")
+timeline.branch("reimport", at: n_model)
+timeline.checkout(empty: true)
+model.import_step(source: {sha256: st.sha256})
+assert count(all volumes) == 45, "re-import: 45 volumes"
+let tot2 = 0.0
+for v in all volumes {
+  print "vol_b", model.measure(entity: v).volume
+  set tot2 = tot2 + model.measure(entity: v).volume
+}
+assert tot2 - tot < 1e-9 and tot - tot2 < 1e-9, "re-import: equal total volume"
+print "step_volume", tot2
+timeline.checkout("main")
+assert session.hash() == h_model, "back on main"
+for v in all volumes {
+  print "vol_a", model.measure(entity: v).volume
+}
+
+// ---------------------------------------------------------------- face-only run and plan
+timeline.branch("faces", at: n_model)
+mesh.size(targets: pf.faces, size: 0.2)
+let fplan = mesh.plan(targets: pf.faces[0])
+assert fplan.status == "will_run", "face plan"
+let fm = mesh.run(targets: pf.faces[0])
+let fi = mesh.info(mesh: fm.mesh[0])
+assert fi.cells > 1, "face run made a surface mesh"
+print "face_cells", fi.cells
+let fback = mesh.plan(mesh: fm.mesh[0])
+assert fback.status == "ran", "face plan of the ran mesh"
+timeline.checkout("main")
+assert session.hash() == h_model, "faces branch left main alone"
+
+// ---------------------------------------------------------------- auto and the volume run
+let au = mesh.auto(strategy: "default")
+let h_auto = session.hash()
+print "h_auto", h_auto
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+assert mi.cells == 675, "675 hexes"
+print "cells", mi.cells
+print "mesh", m.mesh[0]
+let mplan = mesh.plan(mesh: m.mesh[0])
+assert mplan.status == "ran", "plan of the ran mesh"
+let h_mesh = session.hash()
+print "h_mesh", h_mesh
+
+// ---------------------------------------------------------------- exports (no graveyard here)
+session.export("milestone.smsh")
+session.export("milestone.msh")
+session.export("milestone.h5m")
+session.export("milestone.smrt")
+assert session.hash() == h_mesh, "exports leave the state hash unchanged"
+print "head", timeline.head().branch

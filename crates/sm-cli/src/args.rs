@@ -256,7 +256,10 @@ pub enum Command {
         /// Read requests from stdin and answer on stdout (the default).
         #[arg(long, conflicts_with = "ws")]
         stdio: bool,
-        /// Listen for WebSocket clients on this address (needs a server built with `ws`).
+        /// Listen for WebSocket clients on this address (needs a server built with `ws`). The
+        /// viewer page is served on the same port. A WebSocket upgrade from a browser is accepted
+        /// only when its `Origin` is the served address (any other origin gets 403); clients that
+        /// send no `Origin` are accepted. At most 64 connections are live at once (the 65th gets 503).
         #[arg(long, value_name = "ADDR")]
         ws: Option<String>,
     },

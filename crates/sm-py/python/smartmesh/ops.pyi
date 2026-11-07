@@ -23,6 +23,9 @@ class FemOps:
 
 class MeshOps:
     """Ops `mesh.*` (keyword-only; `s.ops.mesh.<op>(...)` applies one)."""
+    def auto(self, *, assignments: Sequence[Mapping[str, Any]] | None = ..., strategy: str | None = ..., targets: Sequence[EntityId | str] | None = ...) -> ApplyResult:
+        """`mesh.auto`: let a strategy choose schemes for targets that have none, and store its choices."""
+
     def default_size(self, *, function: str | None = ..., params: Mapping[str, Any] | None = ..., size: float | None = ...) -> ApplyResult:
         """`mesh.default_size`: the model-wide default sizing, used where no request reaches an edge."""
 
@@ -52,6 +55,9 @@ class MeshOps:
     def to_poly(self, *, keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
         """`mesh.to_poly`: convert a whole all-tet mesh into a new polyhedral mesh.
         Output `mesh` (one, Mesh): the new polyhedral mesh"""
+
+    def unflag_cells(self, *, mesh: EntityId | str = ..., set: str) -> ApplyResult:
+        """`mesh.unflag_cells`: remove the cell set `set` from a mesh."""
 
 class ModelOps:
     """Ops `model.*` (keyword-only; `s.ops.model.<op>(...)` applies one)."""
@@ -127,7 +133,7 @@ class ModelOps:
     def delete(self, *, bodies: Sequence[EntityId | str]) -> ApplyResult:
         """`model.delete`: delete bodies, their volumes, and every face, edge and vertex that no surviving cell uses (`kill_cascade`). All retired ids are retired in the entity table, the model tables drop the deleted volumes and faces, and `meshes` entries on a deleted volume become `stale` (they are not deleted: `mesh.delete` retires meshes)."""
 
-    def import_step(self, *, assume_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., check: bool | None = ..., name: str | None = ..., sheets: bool | None = ..., solids: Sequence[int] | None = ..., source: Mapping[str, Any], to_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., weld_tol: float | None = ...) -> ApplyResult:
+    def import_step(self, *, assume_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., attributes: bool | None = ..., check: bool | None = ..., name: str | None = ..., sheets: bool | None = ..., solids: Sequence[int] | None = ..., source: Mapping[str, Any], to_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., weld_tol: float | None = ...) -> ApplyResult:
         """`model.import_step`: read the B-rep solids of a STEP file into the model.
         Output `bodies` (many, TopoBody): One body per imported solid.
         Output `volumes` (many, TopoVolume): One volume per imported solid (none for sheets).
@@ -222,6 +228,9 @@ class CadQueries:
 
 class MeshQueries:
     """Queries `mesh.*` (`s.q.mesh.<query>(...)`; read-only)."""
+    def auto_strategies(self) -> Any:
+        """`mesh.auto_strategies`: the registered strategies."""
+
     def info(self, *, mesh: EntityId | str) -> Any:
         """`mesh.info`: counts, hashes and total measure of one mesh."""
 
@@ -259,11 +268,17 @@ class RtQueries:
     def check(self, *, mesh: EntityId | str, responses: Sequence[Mapping[str, Any]] = ...) -> Any:
         """`rt.check {mesh, responses?}`: can a tracker be built, and what does the build find?"""
 
+    def check_overlaps(self, *, bodies: Sequence[EntityId | str] | None = ..., rays: int | None = ..., samples: int | None = ..., seed: int | None = ...) -> Any:
+        """`rt.check_overlaps {bodies?, samples?, rays?, seed?}`: sampled overlap and gap check of the model seen as CSG cells (read-only; see [`csg_world`]). Stratified points and random chords are classified against every cell; two matching cells are a `csg.overlap` (with the point and both cells), none a `csg.gap`. The samples depend only on `seed` (default 0) and the cell geometry, so the findings are the same for any thread count and every repeat. The effective seed is part of the cached input and is echoed in the output."""
+
     def info(self, *, mesh: EntityId | str, responses: Sequence[Mapping[str, Any]] = ...) -> Any:
         """`rt.info {mesh, responses?}`: structure facts of the tracker built from a mesh."""
 
     def locate(self, *, dir: Sequence[float] | None = ..., mesh: EntityId | str, points: Sequence[Sequence[float]], responses: Sequence[Mapping[str, Any]] = ...) -> Any:
         """`rt.locate {mesh, points, dir?, responses?}`: the cell and region containing each point."""
+
+    def partition(self, *, leaf_cells: int | None = ..., max_depth: int | None = ..., mesh: EntityId | str) -> Any:
+        """`rt.partition {mesh, leaf_cells?, max_depth?}`: the structure of the majorant partition a delta-tracking code would use over a mesh (read-only; no cross section is involved, the split rule looks at regions and cell counts only)."""
 
 class TopoQueries:
     """Queries `topo.*` (`s.q.topo.<query>(...)`; read-only)."""
@@ -272,6 +287,15 @@ class TopoQueries:
 
 class ViewQueries:
     """Queries `view.*` (`s.q.view.<query>(...)`; read-only)."""
+    def mesh_scalar(self, *, bad_above: float | None = ..., bad_below: float | None = ..., mesh: EntityId | str = ..., metric: str, worst: int = ...) -> Any:
+        """Input of `view.mesh_scalar`."""
+
+    def mesh_skin(self, *, clip: Mapping[str, Any] | None = ..., max_tris: int = ..., mesh: EntityId | str = ..., outline: bool = ..., volumes: Sequence[EntityId | str] | None = ...) -> Any:
+        """Input of `view.mesh_skin`."""
+
+    def scene(self) -> Any:
+        """Input of `view.scene` (none)."""
+
     def tessellate(self, *, angle_tol: float | None = ..., chord_tol: float | None = ..., entities: Sequence[EntityId | str], max_edge: float | None = ...) -> Any:
         """Input of `view.tessellate`."""
 

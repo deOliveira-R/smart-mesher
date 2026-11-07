@@ -77,3 +77,11 @@ Review items, all in `crates/sm-diag/` plus an additive change in `crates/sm-qua
 6. **`flag_cells` warning** uses the wire name (`Level::name()`: `fail` or `warn`) instead of `{:?}`; asserted in `empty_selection_warns_and_adds_nothing`.
 
 Declined: none.
+
+## W3b note (W3b-INT, 2026-11-05)
+
+What W3b-DIAG added is in `tests/suggest_pair.rs`: the two-step smooth suggestion (the `mesh.flag_cells` set, then `mesh.smooth {set}` over it), `mesh.unflag_cells`, and the opt-in two-boundary-face transport diagnostic (a separate diagnostic, not a sixth Transport metric: as a sixth metric it moved an sm-diag test).
+
+* **`mesh.flag_cells` then `mesh.unflag_cells` restores the mesh content, the set list and the topology and geometry hashes, but not the state hash.** The `meshes` layer digest covers allocator counters (the next serial and the retired set id) that never roll back. Orchestrator ruling R3 (`docs/design/w3b/rulings.md`) accepts this: the digest is not changed, because changing it would move every `meshes` hash. The comment at `tests/suggest_pair.rs` ("See the DIAG report (needs_ruling)") refers to this note and to R3. `undo` and `redo` of the removal restore the state hash exactly.
+* The milestone (`crates/sm-cli/tests/milestone_w3b.rs`) does not use flag or unflag; the W3a milestone still gets its smooth suggestion from the synthetic `quality_spread` query (W3a report, deviation 1).
+* Still open for W3c or later: shell-orientation validation for dimension-2 meshes, equiangle skewness, the checkMesh cell aspect ratio, per-material profiles and the `DerivedCache`.

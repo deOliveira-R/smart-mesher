@@ -14,7 +14,7 @@ use sm_geom_api::Ray;
 use sm_layer_api::MeshLayer;
 use sm_op_api::Hash256;
 use sm_protocol::{Endpoint, ExportFormat, ExportResult, Request, RpcError};
-use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
+use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
 use sm_server::{Server, standard_with};
 
 const TIME: &str = "2026-10-24T00:00:00Z";
@@ -280,21 +280,25 @@ fn smrt_loads_to_the_in_process_tracker() {
     let image = sm_rt::read_smrt(&read(&p)).expect("read_smrt");
     let loaded = sm_rt::load_image(&image).expect("load_image");
 
-    // The tracker `rt.info` and the exporter build: structure hash and region names.
+    // Q2: the regions carry the block (material) names, not volume ids. The image also carries the
+    // majorant partition (W3b-INT D1), which `rt.info`'s default build does not have.
     let state = s.workspace().state();
     let layer = state.layer::<MeshLayer>().expect("meshes");
-    let (id, entry) = layer.meshes().next().expect("one mesh");
-    let info = s.workspace().query("rt.info", &json!({"mesh": id.to_string()})).expect("rt.info");
-    assert_eq!(info["structure_hash"].as_str().expect("hash"), loaded.structure_hash().to_string());
-    let names: Vec<String> = info["regions"].as_array().expect("regions").iter().map(|r| r["name"].as_str().expect("name").to_owned()).collect();
+    let (_, entry) = layer.meshes().next().expect("one mesh");
+    assert!(loaded.caps().has(sm_rt_api::TrackerCaps::MAJORANT), "the handover image carries the partition");
+    assert!(loaded.majorant_view().is_some_and(|v| v.hierarchy().node_count() > 0));
     let loaded_names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
-    assert_eq!(loaded_names, names);
-    assert!(names.len() >= 2, "{names:?}");
+    assert_eq!(loaded_names, ["fuel", "water"], "regions are named by block");
 
-    // Built in process from the same mesh.
-    let (rules, complement, spec) = (RegionRule::ByVolumeClassification, ComplementPolicy::Outside, BoundarySpec::default());
-    let input = BuildInput::Mesh(MeshInput::new(entry.mesh(), &rules, &spec, &complement));
-    let mut opts = BuildOptions::default();
+    // Built in process from the same mesh, with the block sets lowered onto it.
+    let model = state.layer::<sm_layer_api::ModelLayer>().expect("model");
+    let none = sm_fem::FemLayer::default();
+    let lowered = sm_fem::lower(model, entry, state.layer::<sm_fem::FemLayer>().unwrap_or(&none), layer.alloc()).expect("lower");
+    let (rules, complement, spec) = (RegionRule::ByCellSets(vec!["fuel".into(), "water".into()]), ComplementPolicy::Outside, BoundarySpec::default());
+    let input = BuildInput::Mesh(MeshInput::new((*lowered.mesh).as_read(), &rules, &spec, &complement));
+    let mut part = PartitionOptions::default();
+    part.enabled = true;
+    let mut opts = BuildOptions::default().with_partition(part);
     opts.recovery = RecoveryPolicy::Fail;
     let (built, _) = sm_rt::MeshTrackerBuilder.build_concrete(&input, &opts).expect("build");
     assert_eq!(built.structure_hash(), loaded.structure_hash());
@@ -408,4 +412,19 @@ fn script_help_lists_the_new_formats() {
     for f in ["dagmc", "gmsh", "smrt"] {
         assert!(rendered.contains(f), "{f} missing from: {rendered}");
     }
+}
+
+#[test]
+fn smrt_regions_fall_back_to_volume_ids_without_blocks() {
+    let dir = TempDir::new("wire-smrt-nob");
+    let script: String = TWO_BRICKS.lines().filter(|l| !l.contains("block_add")).collect::<Vec<_>>().join("\n");
+    assert!(!script.contains("block_add"));
+    let mut s = server(&[&script, HEX]);
+    let p = dir.path().join("a.smrt");
+    let r = export(&mut s, &p, None, None).expect("smrt");
+    let image = sm_rt::read_smrt(&read(&p)).expect("read_smrt");
+    let loaded = sm_rt::load_image(&image).expect("load_image");
+    let names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
+    assert!(names.len() >= 2 && names.iter().all(|n| n.starts_with("TopoVolume#")), "{names:?}");
+    assert!(format!("{:?}", r.notes).contains("smrt-region-names"), "{:?}", r.notes);
 }

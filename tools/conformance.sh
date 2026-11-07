@@ -3,11 +3,15 @@
 # NOT part of tools/ci.sh. Our validator judges meshes; the external tools judge exporters only:
 # a fixture whose mesh fails `smesh validate` is reported as OUR BUG and skips the tools.
 #
-#   SM_CONFORMANCE=1 tools/conformance.sh [--only openfoam|meshio|exodus] [--keep]
+#   SM_CONFORMANCE=1 tools/conformance.sh [--only openfoam|meshio|exodus|dagmc|gmsh] [--keep]
 #
 # Without SM_CONFORMANCE=1 it prints 'conformance skipped' and exits 0. A missing prerequisite
-# (docker + opencfd/openfoam-default:2506, a Python with venv) exits 3 unless
-# SM_CONFORMANCE_ALLOW_SKIP=1 (then those checks are reported as skipped). Exit 0 only when
+# (docker + opencfd/openfoam-default:2506, docker + smesh-dagmc-conformance (Tier B of --only
+# dagmc: docker build -t smesh-dagmc-conformance tools/conformance/dagmc), a Python with venv)
+# exits 3 unless SM_CONFORMANCE_ALLOW_SKIP=1 (then those checks are reported as skipped).
+# `--only dagmc` and `--only gmsh` check the W3b exporters: Tier A (h5py, gmsh, meshio in the
+# venv) on the sm-meshio export_conformance cases and on tools/w3b_milestone.smesh, Tier B
+# (MOAB / DAGMC in docker) on the two-volume file. Exit 0 only when
 # every mandatory check that ran passed; 1 otherwise. Work dir: target/conformance/<utc>-<pid>/
 # with report.json (removed on success unless --keep; kept on failure).
 set -uo pipefail
@@ -30,13 +34,13 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --only) ONLY="${2:-}"; shift 2 ;;
         --keep) KEEP=1; shift ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 case "$ONLY" in
-    ""|openfoam|meshio|exodus) ;;
-    *) echo "--only takes openfoam, meshio or exodus" >&2; exit 2 ;;
+    ""|openfoam|meshio|exodus|dagmc|gmsh) ;;
+    *) echo "--only takes openfoam, meshio, exodus, dagmc or gmsh" >&2; exit 2 ;;
 esac
 want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
 
@@ -70,9 +74,29 @@ if want openfoam; then
         fi
     fi
 fi
+IMAGE_DAGMC="${SM_CONFORMANCE_DAGMC_IMAGE:-smesh-dagmc-conformance}"
+SKIP_DAGMC_DOCKER=""
+DOCKER_PLATFORM_DAGMC=()
+if want dagmc; then
+    if ! command -v docker >/dev/null 2>&1; then
+        missing "docker (Tier B of --only dagmc)"; SKIP_DAGMC_DOCKER="no docker"
+    elif ! docker image inspect "$IMAGE_DAGMC" >/dev/null 2>&1; then
+        missing "docker image $IMAGE_DAGMC (docker build -t $IMAGE_DAGMC tools/conformance/dagmc)"; SKIP_DAGMC_DOCKER="no image $IMAGE_DAGMC"
+    else
+        arch="$(docker image inspect --format '{{.Architecture}}' "$IMAGE_DAGMC")"
+        if [ "$arch" = "amd64" ] && [ "$(uname -m)" = "arm64" ]; then
+            DOCKER_PLATFORM_DAGMC=(--platform linux/amd64)
+        fi
+    fi
+fi
 VENV="$ROOT/target/conformance/venv"
 PY="$VENV/bin/python"
-if want meshio || want exodus; then
+# Python modules the wanted checks import.
+PYMODS="numpy"
+if want meshio || want exodus; then PYMODS="$PYMODS, meshio, netCDF4, vtk"; fi
+if want dagmc; then PYMODS="$PYMODS, h5py"; fi
+if want gmsh; then PYMODS="$PYMODS, gmsh, meshio"; fi
+if want meshio || want exodus || want dagmc || want gmsh; then
     if [ ! -x "$PY" ]; then
         base="${SM_CONFORMANCE_PYTHON:-}"
         if [ -z "$base" ]; then
@@ -85,8 +109,12 @@ if want meshio || want exodus; then
             rm -rf "$VENV"
             missing "python venv from tools/conformance/requirements.txt"; SKIP_PY="no python venv"
         fi
-    elif ! "$PY" -c "import meshio, netCDF4, numpy, vtk" >>"$LOG" 2>&1; then
-        missing "python packages of tools/conformance/requirements.txt in $VENV"; SKIP_PY="venv incomplete"
+    elif ! "$PY" -c "import $PYMODS" >>"$LOG" 2>&1; then
+        # A venv from before the W3b pins: try once to complete it.
+        "$VENV/bin/pip" install -q -r "$TOOLS/requirements.txt" >>"$LOG" 2>&1
+        if ! "$PY" -c "import $PYMODS" >>"$LOG" 2>&1; then
+            missing "python packages of tools/conformance/requirements.txt in $VENV"; SKIP_PY="venv incomplete"
+        fi
     fi
 fi
 
@@ -98,10 +126,14 @@ fi
 SMESH="${CARGO_TARGET_DIR:-$ROOT/target}/release/smesh"
 mkdir -p "$WORK/fixtures"
 cp "$TOOLS"/fixtures/*.smesh "$WORK/fixtures/"
+LEGACY=0
+if want openfoam || want meshio || want exodus; then LEGACY=1; fi
+if [ $LEGACY = 1 ]; then
 say "emitting the milestone fixtures w3a_hybrid and w3a_tet"
 if ! (cd "$ROOT" && MILESTONE_W3A_EMIT="$WORK/fixtures" cargo test -q -p sm-cli --test milestone_w3a emit_conformance_scripts) >>"$LOG" 2>&1 \
     || [ ! -f "$WORK/fixtures/w3a_hybrid.smesh" ] || [ ! -f "$WORK/fixtures/w3a_tet.smesh" ]; then
     say "FAIL: could not emit w3a_hybrid / w3a_tet"; exit 1
+fi
 fi
 
 RESULTS="$WORK/results"
@@ -171,6 +203,7 @@ check_mesh() { # check_mesh <fixture> <label> <mesh id> <project dir>
 }
 
 # ---------------------------------------------------------------- fixtures
+if [ $LEGACY = 1 ]; then
 for fx in hexbox wedgeprism tetbox polydual w3a_hybrid w3a_tet; do
     say "fixture $fx"
     proj="$WORK/proj_$fx"
@@ -188,6 +221,87 @@ for fx in hexbox wedgeprism tetbox polydual w3a_hybrid w3a_tet; do
         check_mesh "$fx" "$label" "$mesh" "$proj"
     done < "$WORK/checks_$fx.txt"
 done
+fi
+
+# ---------------------------------------------------------------- W3b: DAGMC .h5m and Gmsh msh4
+# Inputs: the sm-meshio `export_conformance` cases (analytic expectations; written twice for the
+# byte-identity check) and tools/w3b_milestone.smesh (the lattice, plus the graveyard and binary
+# variants through `smesh export --option`). Tier A is h5py / gmsh / meshio in the venv, Tier B
+# is MOAB and DAGMC in the smesh-dagmc-conformance image. Our validator is not involved: these
+# files are exporter output, judged by the external readers only.
+w3b_check() { # w3b_check <label> <kind> <fixture> <command...>; the command writes $RESULTS/<label>.<kind>.json
+    local label="$1" kind="$2" fx="$3"
+    shift 3
+    printf '{"fixture": "%s", "label": "%s", "mesh": ""}\n' "$fx" "$label" > "$RESULTS/$label.meta.json"
+    if [ -n "$SKIP_PY" ]; then
+        result "$RESULTS/$label.$kind.json" skipped "\"$SKIP_PY\""
+        return
+    fi
+    "$@" >>"$LOG" 2>&1
+    if [ ! -s "$RESULTS/$label.$kind.json" ]; then
+        result "$RESULTS/$label.$kind.json" fail "\"check crashed before writing a result (see conformance.log)\""
+    fi
+}
+if want dagmc || want gmsh; then
+    IN="$WORK/export_in"
+    IN2="$WORK/export_in2"
+    say "writing the export_conformance cases (sm-meshio example), twice"
+    if ! (cd "$ROOT" && cargo run -q --release -p sm-meshio --example export_conformance -- "$IN") >>"$LOG" 2>&1 \
+        || ! (cd "$ROOT" && cargo run -q --release -p sm-meshio --example export_conformance -- "$IN2") >>"$LOG" 2>&1; then
+        say "FAIL: cargo run -p sm-meshio --example export_conformance"; exit 1
+    fi
+    say "running tools/w3b_milestone.smesh"
+    W3B="$WORK/w3b"
+    mkdir -p "$W3B"
+    proj="$WORK/proj_w3b"
+    "$SMESH" new "$proj" >>"$LOG" 2>&1
+    if ! "$SMESH" run "$ROOT/tools/w3b_milestone.smesh" -p "$proj" --json > "$WORK/run_w3b.json" 2>>"$LOG" \
+        || ! "$SMESH" export "$W3B/milestone_gy.h5m" --format dagmc --option graveyard=true -p "$proj" >>"$LOG" 2>&1 \
+        || ! "$SMESH" export "$W3B/milestone_bin.msh" --format gmsh --option binary=true -p "$proj" >>"$LOG" 2>&1; then
+        say "  w3b_milestone: OUR BUG (the milestone script or its export failed: $(head -c 400 "$WORK/run_w3b.json"))"
+        printf '{"fixture": "w3b_milestone", "label": "w3b_milestone", "mesh": ""}\n' > "$RESULTS/w3b_milestone.meta.json"
+        result "$RESULTS/w3b_milestone.validate.json" fail "\"OUR BUG: the milestone script failed\""
+    else
+        cp "$proj/milestone.h5m" "$W3B/milestone.h5m"
+        cp "$proj/milestone.msh" "$W3B/milestone.msh"
+        REF="$TOOLS/fixtures/ref/dagmc_two_volume.h5m"
+        if want dagmc; then
+            say "dagmc Tier A (h5py)"
+            w3b_check dagmc_two_volume h5m export_conformance "$PY" "$TOOLS/check_h5m.py" "$RESULTS/dagmc_two_volume.h5m.json" \
+                "$IN/two_volume.h5m" "$REF" "$IN/two_volume.expect.json" --twin "$IN2/two_volume.h5m"
+            w3b_check dagmc_hex_blocks h5m export_conformance "$PY" "$TOOLS/check_h5m.py" "$RESULTS/dagmc_hex_blocks.h5m.json" \
+                "$IN/hex_blocks.h5m" "$REF" --twin "$IN2/hex_blocks.h5m"
+            w3b_check w3b_milestone h5m w3b_milestone "$PY" "$TOOLS/check_h5m.py" "$RESULTS/w3b_milestone.h5m.json" "$W3B/milestone.h5m" "$REF"
+            w3b_check w3b_milestone_graveyard h5m w3b_milestone "$PY" "$TOOLS/check_h5m.py" "$RESULTS/w3b_milestone_graveyard.h5m.json" "$W3B/milestone_gy.h5m" "$REF"
+            say "dagmc Tier B (MOAB and DAGMC in $IMAGE_DAGMC)"
+            printf '{"fixture": "export_conformance", "label": "dagmc_two_volume", "mesh": ""}\n' > "$RESULTS/dagmc_two_volume.meta.json"
+            if [ -n "$SKIP_DAGMC_DOCKER" ]; then
+                result "$RESULTS/dagmc_two_volume.dagmc.json" skipped "\"$SKIP_DAGMC_DOCKER\""
+            else
+                docker run --rm ${DOCKER_PLATFORM_DAGMC[@]+"${DOCKER_PLATFORM_DAGMC[@]}"} --user "$(id -u):$(id -g)" \
+                    -v "$IN:/in:ro" -v "$RESULTS:/out" "$IMAGE_DAGMC" \
+                    python /opt/check_dagmc.py /in/two_volume.h5m /in/two_volume.expect.json /out/dagmc_two_volume.dagmc.json >>"$LOG" 2>&1
+                if [ ! -s "$RESULTS/dagmc_two_volume.dagmc.json" ]; then
+                    result "$RESULTS/dagmc_two_volume.dagmc.json" fail "\"the DAGMC image wrote no result (see conformance.log)\""
+                fi
+            fi
+        fi
+        if want gmsh; then
+            say "gmsh Tier A (gmsh, meshio)"
+            for f in "$IN"/*.msh; do
+                base="$(basename "$f" .msh)"
+                exp="$IN/$base.expect.json"
+                if [ -f "$exp" ]; then
+                    w3b_check "gmsh_$base" msh4 export_conformance "$PY" "$TOOLS/check_msh4.py" "$RESULTS/gmsh_$base.msh4.json" "$f" "$exp"
+                else
+                    w3b_check "gmsh_$base" msh4 export_conformance "$PY" "$TOOLS/check_msh4.py" "$RESULTS/gmsh_$base.msh4.json" "$f"
+                fi
+            done
+            w3b_check w3b_milestone_ascii msh4 w3b_milestone "$PY" "$TOOLS/check_msh4.py" "$RESULTS/w3b_milestone_ascii.msh4.json" "$W3B/milestone.msh"
+            w3b_check w3b_milestone_binary msh4 w3b_milestone "$PY" "$TOOLS/check_msh4.py" "$RESULTS/w3b_milestone_binary.msh4.json" "$W3B/milestone_bin.msh"
+        fi
+    fi
+fi
 
 # ---------------------------------------------------------------- report
 python3 - "$RESULTS" "$WORK/report.json" "$IMAGE" "$ONLY" <<'EOF'
@@ -208,9 +322,9 @@ for label, parts in checks.items():
 report = {"image": image, "only": only or "all", "mandatory_ok": summary["fail"] == 0, "summary": summary, "checks": rows}
 json.dump(report, open(out, "w"), indent=1)
 for row in rows:
-    parts = ", ".join(f"{k} {row[k]['status']}" for k in ("validate", "openfoam", "meshio", "exodus") if k in row)
-    print(f"  {row['label']:12s} {parts}")
-    for k in ("validate", "openfoam", "meshio", "exodus"):
+    parts = ", ".join(f"{k} {row[k]['status']}" for k in ("validate", "openfoam", "meshio", "exodus", "h5m", "dagmc", "msh4") if k in row)
+    print(f"  {row['label']:26s} {parts}")
+    for k in ("validate", "openfoam", "meshio", "exodus", "h5m", "dagmc", "msh4"):
         for p in row.get(k, {}).get("problems", []):
             print(f"      {k}: {p}")
     w = row.get("openfoam", {}).get("warnings")
