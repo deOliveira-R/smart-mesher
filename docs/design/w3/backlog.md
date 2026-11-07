@@ -88,3 +88,10 @@ Cleanups:
 - `mesh.delete`: the remaining ~4.5 s at 10⁶ cells is one SHA-256 per id; a parallel, order-independent sum needs rayon in sm-op-api.
 - sm-rt `RegionInfo.tags`: not carried in cache images, and hashed without a presence marker; fix when a producer first sets tags.
 - DAGMC reference h5m: volume 177 is in both `mat:Graveyard` and `mat:Steel_comp`; EXPORT must not take it as a one-material-per-volume example.
+
+## From W3b-INT acceptance (2026-11-07)
+- w3b-report.md: number the deviations D1-D8 consistently; record the CI result (rc=0, 59-70 min); name the Chrome and playwright-core versions used by the viewer smoke.
+- tools/w3b_driver.c: the chord tolerance has a (1+chord) factor that R7 lacks (drop it or note it); `ridx()` would read `sig[-1]` if a segment came back with region SMRT_COMPLEMENT under ComplementPolicy::Outside (unreached today; guard it).
+- sm-server `smrt_regions`: ByCellSets resolves sets by name, so a non-block cell set with a block's name could be picked; add a comment or test.
+- PARITY Transforms row: M1 checks only volume counts and total volume, not "the merged interfaces"; reword or point to M4/M6.
+- Open for a ruling: `.smrt` has one region per block (volume identity is not in the file); models with volumes in no block fall back to volume-id names with a note (or should that be a typed error?); FOAM-WARP `split_warped_faces` needs a `session.export` option like P5.
