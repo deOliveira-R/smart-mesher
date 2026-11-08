@@ -261,7 +261,15 @@ fn run(a: &Args) -> Result<i32> {
         }
         let competitors: Vec<&&str> = trackers.iter().filter(|t| crate::docker::image_of(t).is_some()).collect();
         if !competitors.is_empty() {
+            // Removed on every exit path (an early `?` included).
+            struct RemoveOnDrop(PathBuf);
+            impl Drop for RemoveOnDrop {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
             let dir = std::env::temp_dir().join(format!("smrt-bench-case-{}", std::process::id()));
+            let _guard = RemoveOnDrop(dir.clone());
             data.write(&dir)?;
             // The facet-twin run of sm-rt is the reference every competitor holding the same
             // triangles is judged against; the analytic truth gives the geom_error column.
@@ -319,8 +327,6 @@ fn run(a: &Args) -> Result<i32> {
                     file.notes.push(format!("{na} and {nb}: {equal} of {} rays have equal region sequences", ta.len().min(tb.len())));
                 }
             }
-            // Best effort: the temporary copy of the case files is not needed any more.
-            let _ = std::fs::remove_dir_all(&dir);
         }
         file.git_sha = git_sha();
         file.seal()?;

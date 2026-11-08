@@ -282,14 +282,25 @@ pub fn docker_check(root: &Path) -> Result<Vec<(String, ImageStatus)>> {
     if let Some(want) = pins.get("MOAB_VERSION") {
         for (name, st) in &mut out {
             if let ImageStatus::Built { identity, .. } = st
-                && !identity.moab_version.is_empty()
-                && identity.moab_version != *want
+                && let Some(why) = moab_mismatch(name, &identity.moab_version, want)
             {
-                *st = ImageStatus::Failed(format!("{name} has MOAB {} but docker/pins.env pins {want}", identity.moab_version));
+                *st = ImageStatus::Failed(why);
             }
         }
     }
     Ok(out)
+}
+
+/// Why an image's MOAB does not match the pin: a different version, or no `moab=` line in its
+/// `versions.txt` (an unchecked image is reported, never passed).
+fn moab_mismatch(name: &str, have: &str, want: &str) -> Option<String> {
+    if have.is_empty() {
+        Some(format!("{name}: versions.txt lists no moab= line, so MOAB {want} (docker/pins.env) cannot be checked"))
+    } else if have != want {
+        Some(format!("{name} has MOAB {have} but docker/pins.env pins {want}"))
+    } else {
+        None
+    }
 }
 
 fn build_image(root: &Path, name: &str, rel: &str, pins: &BTreeMap<String, String>, platform: Platform) -> ImageStatus {
@@ -584,15 +595,21 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
     if !unset.is_empty() {
         return Competitor::Partial(format!("{image}: docker/pins.env has {unset:?} UNSET; pin the base digests, then `smrt-bench docker-check`"));
     }
-    let Some(image_platform) = docker_ok(&["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image]) else {
+    // The id is read once, here, and the container runs by id: a rebuild of the tag during the
+    // run cannot swap the image under the rows.
+    let Some(inspected) = docker_ok(&["image", "inspect", "--format", "{{.Id}}|{{.Os}}/{{.Architecture}}", image]) else {
         return Competitor::Partial(format!("`docker image inspect {image}` failed: the image is not built (`smrt-bench docker-check` builds it)"));
     };
+    let (image_id, image_platform) = inspected.split_once('|').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();
     let host = match Platform::host() {
         Ok(h) => h,
         Err(e) => return Competitor::Partial(format!("{image}: {e}")),
     };
     if let Err(m) = check_image_platform(image, &image_platform, host) {
         return Competitor::Partial(m);
+    }
+    if !image_id.starts_with("sha256:") {
+        return Competitor::Partial(format!("`docker image inspect {image}` printed no image id"));
     }
     let Some(ncpu) = docker_ok(&["info", "--format", "{{.NCPU}}"]).and_then(|s| s.parse::<usize>().ok()) else {
         return Competitor::Partial("`docker info --format {{.NCPU}}` failed: cannot check --threads against the Docker VM".to_string());
@@ -618,9 +635,9 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
         cmd.arg("-e").arg(format!("{k}={v}"));
         shown.push_str(&format!(" -e {k}={v}"));
     }
-    cmd.arg(image).arg(case);
+    cmd.arg(&image_id).arg(case);
     cmd.args(threads.iter().map(usize::to_string));
-    shown.push_str(&format!(" {image} {case} {}", threads.iter().map(usize::to_string).collect::<Vec<_>>().join(" ")));
+    shown.push_str(&format!(" {image_id} ({image}) {case} {}", threads.iter().map(usize::to_string).collect::<Vec<_>>().join(" ")));
     match cmd.output() {
         Ok(o) if o.status.success() => match parse_driver_output(tracker, &String::from_utf8_lossy(&o.stdout)) {
             Ok((rows, _, _)) if rows.is_empty() => Competitor::Partial(format!("`{shown}` printed no rows")),
@@ -635,6 +652,13 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moab_pin_check_reports_a_missing_or_wrong_version() {
+        assert_eq!(moab_mismatch("i", "5.6.0", "5.6.0"), None);
+        assert!(moab_mismatch("i", "5.5.1", "5.6.0").unwrap().contains("5.5.1"));
+        assert!(moab_mismatch("i", "", "5.6.0").unwrap().contains("no moab= line"));
+    }
 
     fn root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

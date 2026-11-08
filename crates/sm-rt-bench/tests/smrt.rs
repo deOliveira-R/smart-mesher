@@ -463,7 +463,7 @@ fn read_results(dir: &std::path::Path) -> Vec<ResultFile> {
 
 #[test]
 fn two_smrt_runs_give_one_result_hash_and_date_and_sequence_stay_out_of_it() {
-    let tmp = std::env::temp_dir().join(format!("smrt-bench-hash-{}", std::process::id()));
+    let tmp = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("smrt-bench-hash-{}", std::process::id()));
     let mut hashes = Vec::new();
     for k in 0..2 {
         let out = tmp.join(format!("run{k}"));
@@ -501,7 +501,14 @@ fn two_smrt_runs_give_one_result_hash_and_date_and_sequence_stay_out_of_it() {
 
 #[test]
 fn the_report_labels_macos_rows_smoke_lists_partial_rows_and_claims_no_ratio() {
-    let tmp = std::env::temp_dir().join(format!("smrt-bench-report-{}", std::process::id()));
+    let tmp = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("smrt-bench-report-{}", std::process::id()));
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _guard = RemoveOnDrop(tmp.clone());
     let code = sm_rt_bench::cli::main_with(&args(&["run", "--cases", "P1", "--trackers", "smrt,dagmc-moab,dagmc-dd,xdg", "--scale", "reduced", "--rays", "200", "--reps", "1", "--warmup", "0", "--histories", "800", "--out", tmp.to_str().unwrap()])).unwrap();
     let files = read_results(&tmp);
     assert_eq!(files.len(), 1);
