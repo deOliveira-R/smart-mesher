@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sm_geom_api::Ray;
 use sm_layer_api::MeshLayer;
 use sm_op_api::Hash256;
-use sm_protocol::{Endpoint, ExportFormat, ExportResult, Request, RpcError};
+use sm_protocol::{Endpoint, ExportFormat, ExportResult, NoteSeverity, Request, RpcError};
 use sm_rt_api::{BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, TraceOptions, Tracker};
 use sm_server::{Server, standard_with};
 
@@ -36,6 +36,20 @@ mesh.size(targets: a.volume | b.volume, size: 1.0)
 const HEX: &str = r#"
 mesh.scheme(targets: a.volume | b.volume, scheme: "map")
 let m = mesh.run(targets: a.volume | b.volume)
+"#;
+
+/// A brick cut by three oblique planes into a general hexahedron, map-meshed: its interior
+/// faces are warped. (The dual `POLY` below has no face above the warp tolerance, so it cannot
+/// exercise the pass.)
+const WARPED: &str = r#"
+let a = model.create_brick(x: 4.0, y: 4.0, z: 4.0, center: [2.0, 2.0, 2.0])
+let c1 = model.webcut_plane(targets: a.body, plane: {origin: [3.0, 0.0, 0.0], normal: [1.0, 0.4, 0.0]})
+let c2 = model.webcut_plane(targets: c1.negative, plane: {origin: [0.0, 0.0, 3.0], normal: [0.3, 0.1, 1.0]})
+let c3 = model.webcut_plane(targets: c2.negative, plane: {origin: [0.0, 3.0, 0.0], normal: [0.2, 1.0, 0.3]})
+let v = topo.related(kind: "TopoVolume", within: c3.negative)
+mesh.size(targets: v, size: 0.5)
+mesh.scheme(targets: v, scheme: "map")
+let m = mesh.run(targets: v)
 "#;
 
 const POLY: &str = r#"
@@ -203,6 +217,7 @@ fn loss_notes_carry_the_format_codes() {
     let r = export(&mut s, &dir.path().join("a.h5m"), None, None).expect("h5m");
     assert!(r.notes.iter().any(|n| n.code == "h5m.volume_without_material"), "{:?}", r.notes);
     assert!(r.notes.iter().all(|n| n.code.starts_with("h5m.")), "{:?}", r.notes);
+    assert!(r.notes.iter().all(|n| n.severity == NoteSeverity::Info), "{:?}", r.notes);
     // Inline carries the same bytes as the file.
     let v = s
         .call(Request::Export {
@@ -278,7 +293,8 @@ fn smrt_loads_to_the_in_process_tracker() {
     let dir = TempDir::new("wire-smrt");
     let mut s = hex_server();
     let p = dir.path().join("a.smrt");
-    export(&mut s, &p, None, None).expect("smrt");
+    let r = export(&mut s, &p, None, None).expect("smrt");
+    assert!(r.notes.is_empty(), "a fully blocked model exports with no note: {:?}", r.notes);
     let image = sm_rt::read_smrt(&read(&p)).expect("read_smrt");
     let loaded = sm_rt::load_image(&image).expect("load_image");
 
@@ -428,5 +444,136 @@ fn smrt_regions_fall_back_to_volume_ids_without_blocks() {
     let loaded = sm_rt::load_image(&image).expect("load_image");
     let names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
     assert!(names.len() >= 2 && names.iter().all(|n| n.starts_with("TopoVolume#")), "{names:?}");
-    assert!(format!("{:?}", r.notes).contains("smrt-region-names"), "{:?}", r.notes);
+    assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
+    let n = &r.notes[0];
+    assert_eq!(n.code, "smrt-region-names");
+    assert_eq!(n.severity, NoteSeverity::Warning);
+    assert!(n.detail.contains("no blocks") && n.detail.contains("fem.block_add"), "{}", n.detail);
+}
+
+#[test]
+fn smrt_warns_when_a_volume_is_in_no_block() {
+    let dir = TempDir::new("wire-smrt-partial");
+    let script: String = TWO_BRICKS.lines().filter(|l| !l.contains("block: 2")).collect::<Vec<_>>().join("\n");
+    let mut s = server(&[&script, HEX]);
+    let p = dir.path().join("a.smrt");
+    let r = export(&mut s, &p, None, None).expect("smrt");
+    assert_eq!(r.notes.len(), 1, "{:?}", r.notes);
+    assert!(r.notes[0].is_warning() && r.notes[0].code == "smrt-region-names", "{:?}", r.notes);
+    assert!(r.notes[0].detail.contains("cells are in no block"), "{}", r.notes[0].detail);
+    let loaded = sm_rt::load_image(&sm_rt::read_smrt(&read(&p)).expect("read_smrt")).expect("load_image");
+    let names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
+    assert!(names.iter().all(|n| n.starts_with("TopoVolume#")), "{names:?}");
+}
+
+/// A block and a sideset cannot share a name: the op refuses the second one in either order, so
+/// `smrt_regions` never sees two sets of one name and the first-match lookup of `ByCellSets`
+/// cannot mis-pick. (`sm_fem::lower` also rejects collisions with mesh sets.)
+#[test]
+fn smrt_block_and_sideset_names_cannot_collide() {
+    let dir = TempDir::new("wire-smrt-dup");
+    let faces = "topo.related(kind: \"TopoFace\", within: a.volume)";
+    let run = |text: String| Server::new(builder()).expect("server").call(Request::ScriptRun { text, path: None, includes: Default::default() });
+    let side = format!("fem.sideset_add(sideset: 1, faces: {faces}, name: \"fuel\")\n");
+    let e = run(format!("{TWO_BRICKS}{side}")).expect_err("sideset named like a block");
+    assert!(e.to_string().contains("already used"), "{e}");
+    // Sideset first, block second: refused too.
+    let no_blocks: String = TWO_BRICKS.lines().filter(|l| !l.contains("fem.block_add")).collect::<Vec<_>>().join("\n");
+    let e = run(format!("{no_blocks}\n{side}fem.block_add(block: 1, volumes: a.volume, name: \"fuel\")\n")).expect_err("block named like a sideset");
+    assert!(e.to_string().contains("already used"), "{e}");
+    // The surviving state exports with block names and no warning.
+    let mut s = server(&[TWO_BRICKS, &format!("fem.sideset_add(sideset: 1, faces: {faces}, name: \"outer\")\n"), HEX]);
+    let p = dir.path().join("a.smrt");
+    let r = export(&mut s, &p, None, None).expect("smrt");
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let loaded = sm_rt::load_image(&sm_rt::read_smrt(&read(&p)).expect("read_smrt")).expect("load_image");
+    let names: Vec<String> = loaded.regions().0.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["fuel", "water"]);
+}
+
+fn foam_req(path: &Path, format: ExportFormat, warp: bool) -> Request {
+    match export_req(path, Some(format), None) {
+        Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, .. } => {
+            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, split_warped_faces: warp }
+        }
+        other => other,
+    }
+}
+
+fn foam_run(s: &mut Server, dir: &Path, name: &str, warp: bool) -> ExportResult {
+    let v = s.call(foam_req(&dir.join(name), ExportFormat::Openfoam, warp)).unwrap_or_else(|e| panic!("{e} {}", e.data));
+    serde_json::from_value(v).expect("ExportResult")
+}
+
+fn case_files(dir: &Path, name: &str) -> Vec<(String, Vec<u8>)> {
+    let root = dir.join(name);
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).expect("read_dir") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push((p.strip_prefix(&root).expect("prefix").to_string_lossy().into_owned(), read(&p)));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The point count of a case: the first bare integer line of `constant/polyMesh/points`.
+fn n_points(files: &[(String, Vec<u8>)]) -> u64 {
+    let (_, b) = files.iter().find(|(n, _)| n.ends_with("polyMesh/points")).expect("points");
+    String::from_utf8_lossy(b).lines().find_map(|l| l.trim().parse::<u64>().ok()).expect("count line")
+}
+
+fn warp_count(r: &ExportResult) -> Option<u64> {
+    r.notes.iter().find(|n| n.code == "foam.warped_faces_split").map(|n| n.count)
+}
+
+#[test]
+fn split_warped_faces_reaches_the_openfoam_exporter() {
+    let dir = TempDir::new("wire-warp");
+    let mut s = server(&[WARPED]);
+    let on = foam_run(&mut s, dir.path(), "on", true);
+    let n = warp_count(&on).unwrap_or_else(|| panic!("precondition: the oblique hexahedron has warped faces: {:?}", on.notes));
+    assert!(n > 0);
+    let off = foam_run(&mut s, dir.path(), "off", false);
+    assert_eq!(warp_count(&off), None, "{:?}", off.notes);
+    let (a, b) = (case_files(dir.path(), "on"), case_files(dir.path(), "off"));
+    let faces = |v: &[(String, Vec<u8>)]| v.iter().find(|(n, _)| n.ends_with("polyMesh/faces")).map(|(_, b)| b.clone()).expect("faces");
+    assert_ne!(faces(&a), faces(&b), "flag on changes the faces file");
+    let owner = |v: &[(String, Vec<u8>)]| v.iter().find(|(n, _)| n.ends_with("polyMesh/owner")).map(|(_, b)| b.clone()).expect("owner");
+    assert_ne!(owner(&a), owner(&b));
+    assert_eq!(n_points(&a), n_points(&b) + n, "one apex point per split face");
+    // Default (flag absent) equals an explicit false: byte-identical.
+    let again = foam_run(&mut s, dir.path(), "off2", false);
+    assert_eq!(case_files(dir.path(), "off2"), b);
+    assert_eq!(again.sha256, off.sha256);
+    // Determinism: two runs give the same bytes.
+    let first = foam_run(&mut s, dir.path(), "on2", true);
+    assert_eq!(case_files(dir.path(), "on2"), a);
+    assert_eq!(first.sha256, on.sha256);
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let single = one.install(|| foam_run(&mut s, dir.path(), "on3", true));
+    assert_eq!(single.sha256, on.sha256, "1 thread");
+    assert_eq!(case_files(dir.path(), "on3"), a);
+}
+
+#[test]
+fn split_warped_faces_is_openfoam_only_and_planar_meshes_are_unchanged() {
+    let dir = TempDir::new("wire-warp-bad");
+    let mut s = hex_server();
+    for (fmt, name) in [(ExportFormat::Gmsh, "a.msh"), (ExportFormat::Dagmc, "a.h5m"), (ExportFormat::Smrt, "a.smrt"), (ExportFormat::Vtu, "a.vtu")] {
+        let e = s.call(foam_req(&dir.path().join(name), fmt, true)).expect_err("openfoam only");
+        assert_eq!(e.kind, "bad-request", "{e}");
+        assert!(e.message.contains("split_warped_faces"), "{e}");
+    }
+    let on = foam_run(&mut s, dir.path(), "on", true);
+    let off = foam_run(&mut s, dir.path(), "off", false);
+    assert_eq!(warp_count(&on), None, "{:?}", on.notes);
+    assert_eq!(case_files(dir.path(), "on"), case_files(dir.path(), "off"));
+    assert_eq!(on.sha256, off.sha256);
 }

@@ -51,6 +51,8 @@ pub struct ExportParams {
     pub empty_patches: Vec<String>,
     /// OpenFOAM only: face (side) sets written as `wedge` patches.
     pub wedge_patches: Vec<String>,
+    /// OpenFOAM only: split warped faces into planar triangles (off by default).
+    pub split_warped_faces: bool,
 }
 
 /// Adjacency from the registered `topo.related` query, owning a handle to the engine so the host
@@ -203,10 +205,10 @@ impl<'w> SessionHost<'w> {
                 format_name(format)
             )));
         }
-        let foam_only = p.split_small_determinant.is_some() || !p.empty_patches.is_empty() || !p.wedge_patches.is_empty();
+        let foam_only = p.split_small_determinant.is_some() || !p.empty_patches.is_empty() || !p.wedge_patches.is_empty() || p.split_warped_faces;
         if foam_only && format != ExportFormat::Openfoam {
             return Err(SessionError::bad_request(format!(
-                "`split_small_determinant`, `empty_patches` and `wedge_patches` only apply to `openfoam`, not `{}`",
+                "`split_small_determinant`, `split_warped_faces`, `empty_patches` and `wedge_patches` only apply to `openfoam`, not `{}`",
                 format_name(format)
             )));
         }
@@ -228,13 +230,14 @@ impl<'w> SessionHost<'w> {
         let state = self.ws.state();
         if own {
             let w = mesh_export::write(state, format, p.mesh, p.options.as_ref())?;
-            return finish_file(path.as_deref(), format, &w.bytes, &notes_of(&w.notes), p.inline);
+            return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);
         }
         let mut req = ExportRequest::new(fem_format);
         req.mesh = p.mesh;
         req.split_small_determinant = p.split_small_determinant.unwrap_or(true);
         req.empty_patches = p.empty_patches.clone();
         req.wedge_patches = p.wedge_patches.clone();
+        req.split_warped_faces = p.split_warped_faces;
         if p.provenance {
             req.provenance = provenance_of(self.ws.status().position);
         }

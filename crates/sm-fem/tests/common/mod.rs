@@ -260,7 +260,49 @@ impl TypedOp for KillVolume {
     }
 }
 
-/// Insert a reference mesh fixture (`mixed_transition` or `dual_patch`) as a mesh that matches
+/// A 3x3x3 hex block of unit side whose interior nodes are displaced by a fixed pattern: the
+/// interior faces warp, the boundary stays planar.
+fn warped_hex() -> sm_mesh_api::Result<sm_testkit::meshes::MeshFixture> {
+    warped_hex_amp(0.04)
+}
+
+/// [`warped_hex`] with displacement amplitude `amp` (`0.0` gives the planar block).
+pub fn warped_hex_amp(amp: f64) -> sm_mesh_api::Result<sm_testkit::meshes::MeshFixture> {
+    use sm_mesh_api::{CellShape, SerialAlloc};
+    use sm_testkit::meshes::{CellSpec, MeshFixture, build_mesh};
+    let n = 3usize;
+    let np = n + 1;
+    let id = |i: usize, j: usize, k: usize| (k * np + j) * np + i;
+    let mut pts = vec![[0.0; 3]; np * np * np];
+    for k in 0..np {
+        for j in 0..np {
+            for i in 0..np {
+                let mut p = [i as f64 / n as f64, j as f64 / n as f64, k as f64 / n as f64];
+                let inner = |a: usize| a > 0 && a < n;
+                if inner(i) && inner(j) && inner(k) {
+                    let s = (i * 3 + j * 5 + k * 7) as f64;
+                    p[0] += amp * s.sin();
+                    p[1] += amp * (s * 1.7).cos();
+                    p[2] += amp * (s * 2.3).sin();
+                }
+                pts[id(i, j, k)] = p;
+            }
+        }
+    }
+    let mut cells = Vec::new();
+    for k in 0..n {
+        for j in 0..n {
+            for i in 0..n {
+                let v = vec![id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k), id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1), id(i, j + 1, k + 1)];
+                cells.push(CellSpec::Template(CellShape::Hex, v));
+            }
+        }
+    }
+    let mesh = build_mesh(&pts, &cells, &mut SerialAlloc::new())?;
+    Ok(MeshFixture { name: "warped_hex", mesh, cell_volumes: Vec::new(), volume: 1.0, area: 6.0, boundary_faces: 54 })
+}
+
+/// Insert a reference mesh fixture (`mixed_transition`, `dual_patch`, `warped_hex`, `planar_hex`) as a mesh that matches
 /// no model entity.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -276,6 +318,8 @@ impl TypedOp for FixtureMesh {
         let fx = match self.name.as_str() {
             "mixed_transition" => mixed_transition(),
             "dual_patch" => dual_patch(),
+            "warped_hex" => warped_hex(),
+            "planar_hex" => warped_hex_amp(0.0),
             n => return Err(OpError::Invalid(format!("no fixture {n}"))),
         }
         .map_err(|e| OpError::Failed(e.to_string()))?;
