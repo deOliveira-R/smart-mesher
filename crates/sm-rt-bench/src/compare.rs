@@ -167,9 +167,60 @@ pub fn write_disagreements(path: &Path, list: &[Disagreement]) -> Result<()> {
     Ok(())
 }
 
+/// Agreement of W-fire outputs, `(distance, region entered)` per ray (`-1` complement, `-2` lost):
+/// distances must agree within `chord_tol`; the regions entered must be equal, except that a ray
+/// whose distance on either side is below `GRAZE_FACTOR * diag` is counted as grazing, not failed.
+/// A ray lost on exactly one side fails; lost on both is not compared. `ray` lists the indices of
+/// the failed rays (at most [`MAX_LISTED`]).
+pub fn compare_fires(a: &[(f64, i32)], b: &[(f64, i32)], diag: f64, chord_tol: f64) -> Result<(crate::result::AgreementSummary, Vec<usize>)> {
+    if a.len() != b.len() {
+        return Err(BenchError::Check(format!("fire outputs have {} and {} rays", a.len(), b.len())));
+    }
+    let mut s = crate::result::AgreementSummary::default();
+    let mut failed = Vec::new();
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if x.1 == -2 && y.1 == -2 {
+            continue;
+        }
+        s.checked += 1;
+        let graze = x.0.min(y.0) < GRAZE_FACTOR * diag && x.1 != -2 && y.1 != -2;
+        let lost = x.1 == -2 || y.1 == -2;
+        let far = (x.0 - y.0).abs() > chord_tol;
+        let bad = if lost || far {
+            true
+        } else if x.1 != y.1 {
+            if graze {
+                s.grazing += 1;
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if bad {
+            s.failed += 1;
+            if failed.len() < MAX_LISTED {
+                failed.push(i);
+            }
+        }
+    }
+    Ok((s, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fires_agree_within_tolerance_and_grazing_is_counted() {
+        let a = [(1.0, 2), (3.0, 4), (0.0, -2), (1e-12, 5), (2.0, 1)];
+        let b = [(1.0 + 1e-12, 2), (3.0, 5), (0.0, -2), (2e-12, 6), (2.0, -2)];
+        let (s, failed) = compare_fires(&a, &b, 100.0, 1e-9).unwrap();
+        assert_eq!((s.checked, s.failed, s.grazing), (4, 2, 1));
+        assert_eq!(failed, vec![1, 4]);
+        assert!(compare_fires(&a, &b[..2], 1.0, 1.0).is_err());
+    }
 
     fn t(r: &[i32], c: &[f64]) -> Track {
         Track { regions: r.to_vec(), chords: c.to_vec() }

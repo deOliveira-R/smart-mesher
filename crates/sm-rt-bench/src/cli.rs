@@ -50,7 +50,7 @@ fn parse(args: &[String]) -> Result<Args> {
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight (competitors)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -208,7 +208,13 @@ fn run(a: &Args) -> Result<i32> {
         }
     }
     let threads: Vec<usize> = a.opts.get("threads").map_or("1", String::as_str).split(',').map(|s| s.trim().parse().map_err(|_| BenchError::Usage("--threads".into()))).collect::<Result<_>>()?;
-    let cfg = RunConfig { reps: num(a, "reps", 7)?, warmup: num(a, "warmup", 3)?, threads, histories: num(a, "histories", 10_000)?, ..RunConfig::default() };
+    let cfg = RunConfig { reps: num(a, "reps", 7)?, warmup: num(a, "warmup", 3)?, threads, histories: num(a, "histories", 10_000)?, seed: num(a, "seed", RunConfig::default().seed)?, ..RunConfig::default() };
+    let workloads: Vec<&str> = a.opts.get("workloads").map_or("track,fire,fire-locate,flight", String::as_str).split(',').map(str::trim).collect();
+    for w in &workloads {
+        if !["track", "fire", "fire-locate", "flight"].contains(w) {
+            return Err(BenchError::Usage(format!("unknown workload {w:?} (known: track, fire, fire-locate, flight)")));
+        }
+    }
     let out_dir = a.opts.get("out").map_or_else(|| crate_dir().join("results"), PathBuf::from);
     if let Some(model) = a.opts.get("model") {
         return run_model(a, Path::new(model), &cfg, &out_dir);
@@ -259,18 +265,15 @@ fn run(a: &Args) -> Result<i32> {
             data.write(&dir)?;
             // The facet-twin run of sm-rt is the reference every competitor holding the same
             // triangles is judged against; the analytic truth gives the geom_error column.
-            let reference = crate::smrt::facets_adapter(&data).and_then(|mut a| {
-                let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: cfg.seed };
-                a.run(Workload::Track, &w).map(|o| o.tracks)
-            });
+            let reference = facet_reference(&data, &cfg, &workloads);
             let mut dumps: Vec<(String, Vec<crate::truth::Track>)> = Vec::new();
+            let opts = crate::docker::CompetitorOpts { workloads: workloads.iter().map(|w| w.to_string()).collect(), histories: cfg.histories, seed: cfg.seed, regions: data.manifest.regions.clone() };
             for t in competitors {
-
-                match crate::docker::run_competitor(&crate_dir(), t, &dir, &data.case, &cfg.threads, cfg.reps, cfg.warmup) {
-                    crate::docker::Competitor::Rows { mut rows, tracks } => {
+                match crate::docker::run_competitor_with(&crate_dir(), t, &dir, &data.case, &cfg.threads, cfg.reps, cfg.warmup, &opts) {
+                    crate::docker::Competitor::Rows { mut rows, tracks, dumps: other } => {
                         if let Some(tracks) = tracks {
                             let (geom, _) = crate::runner::geom_error(&data, &tracks, data.rays.len())?;
-                            let agree = match &reference {
+                            let agree = match &reference.tracks {
                                 Ok(r) => Some(crate::compare::compare(&tracks, r, data.manifest.diag, data.manifest.chord_tol)?),
                                 Err(_) => None,
                             };
@@ -278,14 +281,17 @@ fn run(a: &Args) -> Result<i32> {
                                 r.geom_error = geom;
                                 if let Some(a) = &agree {
                                     r.agreement = crate::result::AgreementSummary::from(a);
-                                    failed += a.failed;
                                 }
                             }
-                            if let Err(e) = &reference {
+                            if let Some(a) = &agree {
+                                failed += a.failed;
+                            }
+                            if let Err(e) = &reference.tracks {
                                 file.partial.push(format!("{t}: agreement with the sm-rt facet twin not checked: {e}"));
                             }
                             dumps.push((t.to_string(), tracks));
                         }
+                        failed += judge_workloads(t, &data, &reference, &other, &mut rows, &mut file.notes, &mut file.partial)?;
                         file.rows.extend(rows);
                         // Identity of the image that produced these rows (outside `result_hash`).
                         match crate::docker::image_of(t).map(crate::docker::image_identity) {
@@ -307,9 +313,11 @@ fn run(a: &Args) -> Result<i32> {
                     }
                 }
             }
-            if let [(na, ta), (nb, tb)] = &dumps[..] {
-                let equal = ta.iter().zip(tb).filter(|(x, y)| x.regions == y.regions).count();
-                file.notes.push(format!("{na} and {nb}: {equal} of {} rays have equal region sequences", ta.len().min(tb.len())));
+            for (x, (na, ta)) in dumps.iter().enumerate() {
+                for (nb, tb) in &dumps[x + 1..] {
+                    let equal = ta.iter().zip(tb).filter(|(p, q)| p.regions == q.regions).count();
+                    file.notes.push(format!("{na} and {nb}: {equal} of {} rays have equal region sequences", ta.len().min(tb.len())));
+                }
             }
             // Best effort: the temporary copy of the case files is not needed any more.
             let _ = std::fs::remove_dir_all(&dir);
@@ -371,4 +379,100 @@ fn report(a: &Args) -> Result<i32> {
         None => print!("{md}"),
     }
     Ok(0)
+}
+
+/// sm-rt's facet-twin outputs: what every competitor on the same triangles is judged against.
+struct FacetReference {
+    tracks: Result<Vec<crate::truth::Track>>,
+    fire: Option<crate::adapter::Output>,
+    flight: Option<crate::adapter::Output>,
+    /// Why a reference output is missing.
+    why: Vec<String>,
+}
+
+/// Run the sm-rt facets adapter on the workloads the competitors run (one thread; the outputs do
+/// not depend on it).
+fn facet_reference(data: &cases::CaseData, cfg: &RunConfig, workloads: &[&str]) -> FacetReference {
+    let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: cfg.histories, seed: cfg.seed };
+    let mut adapter = match crate::smrt::facets_adapter(data) {
+        Ok(a) => a,
+        Err(e) => return FacetReference { tracks: Err(e), fire: None, flight: None, why: Vec::new() },
+    };
+    let tracks = adapter.run(Workload::Track, &w).map(|o| o.tracks);
+    let mut why = Vec::new();
+    let mut keep = |what: &str, r: Result<crate::adapter::Output>| match r {
+        Ok(o) => Some(o),
+        Err(e) => {
+            why.push(format!("{what}: {e}"));
+            None
+        }
+    };
+    let fire = if workloads.iter().any(|x| x.starts_with("fire")) { keep("fire", adapter.prepare(Workload::Fire, &w).and_then(|()| adapter.run(Workload::Fire, &w))) } else { None };
+    let flight = if workloads.contains(&"flight") { keep("flight", adapter.run(Workload::Flight, &w)) } else { None };
+    FacetReference { tracks, fire, flight, why }
+}
+
+/// Judge the fire and flight rows of one competitor against the facet reference: the dump of a
+/// workload (printed for the first thread count) is compared once and its summary is put on every
+/// row of that workload whose output hash equals the dumped row's; a row with another hash (a
+/// different output across thread counts) is marked unstable. Returns the number of failed checks.
+fn judge_workloads(tracker: &str, data: &cases::CaseData, reference: &FacetReference, dumps: &std::collections::BTreeMap<String, crate::adapter::Output>, rows: &mut [crate::result::Row], notes: &mut Vec<String>, partial: &mut Vec<String>) -> Result<usize> {
+    let mut failed = 0;
+    for (workload, out) in dumps {
+        let Some(dumped_hash) = rows.iter().find(|r| &r.workload == workload).map(|r| r.determinism.hash.clone()) else { continue };
+        let summary = match workload.as_str() {
+            "w-fire" | "w-fire-locate" => match &reference.fire {
+                Some(r) => {
+                    let (s, bad) = crate::compare::compare_fires(&out.fires, &r.fires, data.manifest.diag, data.manifest.chord_tol)?;
+                    if !bad.is_empty() {
+                        notes.push(format!("{tracker} {workload}: failed rays (first {}): {:?}", bad.len().min(10), &bad[..bad.len().min(10)]));
+                    }
+                    notes.push(format!("{tracker} {workload}: {} of {} rays agree with the sm-rt facets fire ({} grazing, {} failed)", s.checked - s.failed, s.checked, s.grazing, s.failed));
+                    Some(s)
+                }
+                None => {
+                    partial.push(format!("{tracker} {workload}: sm-rt facets fire reference not available ({})", reference.why.join("; ")));
+                    None
+                }
+            },
+            "w-flight" => match &reference.flight {
+                Some(r) => {
+                    let s = crate::runner::compare_tallies_with(out, r, true);
+                    if out.tally.len() != r.tally.len() {
+                        notes.push(format!("{tracker} {workload}: tally lengths differ ({} against {})", out.tally.len(), r.tally.len()));
+                    }
+                    notes.push(format!("{tracker} {workload}: {} tally slots (collisions, track length, leaked, absorbed) checked against the sm-rt facets flight at 4 sigma, {} failed", s.checked, s.failed));
+                    Some(s)
+                }
+                None => {
+                    partial.push(format!("{tracker} {workload}: sm-rt facets flight reference not available ({})", reference.why.join("; ")));
+                    None
+                }
+            },
+            _ => None,
+        };
+        if let Some(s) = &summary {
+            failed += s.failed;
+        }
+        for r in rows.iter_mut().filter(|r| &r.workload == workload) {
+            if r.determinism.hash == dumped_hash {
+                if let Some(s) = &summary {
+                    r.agreement = *s;
+                }
+            } else {
+                r.determinism.stable = Some(false);
+            }
+        }
+    }
+    // Hash equality across thread counts for every workload (stable stays as the driver said it).
+    for w in ["w-track", "w-fire", "w-fire-locate", "w-flight"] {
+        let hashes: Vec<&String> = rows.iter().filter(|r| r.workload == w).map(|r| &r.determinism.hash).collect();
+        if hashes.windows(2).any(|p| p[0] != p[1]) {
+            for r in rows.iter_mut().filter(|r| r.workload == w) {
+                r.determinism.stable = Some(false);
+            }
+            notes.push(format!("{tracker} {w}: output hash differs across thread counts"));
+        }
+    }
+    Ok(failed)
 }
