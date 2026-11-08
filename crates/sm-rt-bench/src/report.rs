@@ -15,7 +15,7 @@ use std::fmt::Write;
 pub const KNOWN_TRACKERS: [&str; 4] = ["smrt", "dagmc-moab", "dagmc-dd", "xdg"];
 
 /// What the benchmark does not do, whatever the numbers say (fairness rule h).
-pub const NOT_MEASURED: [&str; 7] = [
+pub const NOT_MEASURED: [&str; 11] = [
     "GPU rows (XDG GPRT) and the libMesh backend",
     "mesh-tally workloads (MOC/Sn segment lists, segment-callback API)",
     "multi-node scaling and Serpent",
@@ -23,7 +23,14 @@ pub const NOT_MEASURED: [&str; 7] = [
     "cell walking on tets is not claimed novel (XDG does it): rows separate walking the same tets from analytic and hierarchy modes",
     "the C-ABI call cost (it stays in sm-rt-capi/bench)",
     "x86_64 and aarch64 results are never merged into one table",
+    "H1 analytic row (the analytic world cannot hold a box inside a solid: needs a union of half-spaces in sm-rt)",
+    "P2 tet twin (the pins stand in vacuum, so no volume fills their box)",
+    "--model runs on imported periodic faces (sm-cadio leaves their pcurves unset)",
+    "core pinning inside Docker (not possible in Docker Desktop's VM): rows say `cores not pinned`",
 ];
+
+/// Extra limitation of a Mac smoke run, printed when the machine is macOS.
+pub const MAC_ASYMMETRY: &str = "Apple Silicon has performance and efficiency cores (M1 Max: 8P+2E): thread counts above the performance cores mix core types, and the VM scheduler hides which is which";
 
 /// Check that `files` may share a table: same CPU model, OS, architecture, machine and UTC day.
 pub fn check_same_machine(files: &[ResultFile]) -> Result<()> {
@@ -54,6 +61,12 @@ fn rate_cell(failed: bool, f: &crate::result::Stat) -> String {
 
 /// Render the report for `files` (one per case and tracker set).
 pub fn render(files: &[ResultFile]) -> Result<String> {
+    render_with_docker(files, None)
+}
+
+/// Like [`render`], with the Docker VM block of `bench-env.json` (CPUs, memory, kernel) printed
+/// under the banner, followed by the identity of every competitor image in the files.
+pub fn render_with_docker(files: &[ResultFile], vm: Option<&crate::result::DockerVm>) -> Result<String> {
     check_same_machine(files)?;
     let env = &files[0].env;
     let mut out = String::new();
@@ -62,6 +75,22 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
         let _ = writeln!(out, "> **SMOKE RESULT.** Produced on {}-{}, not on bare-metal Linux x86_64. It is a check that the harness runs, not a published table (ruling Q9).\n", env.os, env.arch);
     }
     let _ = writeln!(out, "Machine: {} ({} logical CPUs, governor {}), OS {}-{}, UTC day {}, machine id {}.\n", env.cpu_model, env.ncpu, env.governor, env.os, env.arch, env.day(), env.machine_id);
+    if let Some(v) = vm {
+        let _ = writeln!(out, "Docker VM: {} CPUs, {:.1} GiB memory, kernel {}, {} (server {}); container CPU line: {}. Competitor rows ran inside this VM, cores not pinned.\n", v.ncpu, v.mem_total_bytes as f64 / (1u64 << 30) as f64, v.kernel, v.operating_system, v.server_version, v.container_cpu);
+    }
+    let mut images: std::collections::BTreeMap<&str, &crate::result::ImageIdentity> = std::collections::BTreeMap::new();
+    for f in files {
+        for (t, id) in &f.images {
+            images.entry(t.as_str()).or_insert(id);
+        }
+    }
+    if !images.is_empty() {
+        let _ = writeln!(out, "Images:\n");
+        for (t, id) in &images {
+            let _ = writeln!(out, "- {t}: {} {}, base index sha256:{}, sources [{}], MOAB {}, conda lock sha256:{}, versions sha256:{}", id.image_id, id.platform, id.base_index_digest, id.source_commits.join("; "), if id.moab_version.is_empty() { "n/a" } else { &id.moab_version }, if id.conda_lock_sha256.is_empty() { "none" } else { &id.conda_lock_sha256 }, id.versions_sha256);
+        }
+        out.push('\n');
+    }
     let cases: BTreeSet<&str> = files.iter().map(|f| f.case.as_str()).collect();
     for case in &cases {
         let _ = writeln!(out, "## {case}\n");
@@ -125,6 +154,9 @@ pub fn render(files: &[ResultFile]) -> Result<String> {
     let _ = writeln!(out, "## What was not measured\n");
     for l in NOT_MEASURED {
         let _ = writeln!(out, "- {l}");
+    }
+    if env.os == "macos" {
+        let _ = writeln!(out, "- {MAC_ASYMMETRY}");
     }
     Ok(out)
 }
