@@ -1,10 +1,12 @@
-//! OpenMC `geometry.xml` reader (stub until W3c-CSG-OPENMC).
+//! OpenMC `geometry.xml` / `materials.xml` reader (stub until W3c-CSG-OPENMC).
 
-use crate::ImportError;
+use crate::{CsgIr, ImportError};
 
-/// Import an OpenMC geometry from its `geometry.xml` text.
+/// Import an OpenMC geometry from the text of its `geometry.xml` and, when there is one, of its
+/// `materials.xml`.
 ///
-/// Always returns [`ImportError::Unsupported`] until the reader lands.
-pub fn import(_geometry_xml: &str) -> Result<(), ImportError> {
-    Err(ImportError::Unsupported("the OpenMC reader is not implemented yet".into()))
+/// # Errors
+/// Always [`ImportError::Unsupported`] until the reader lands.
+pub fn import(_geometry_xml: &str, _materials_xml: Option<&str>) -> Result<CsgIr, ImportError> {
+    Err(ImportError::Unsupported { line: None, what: "the OpenMC reader is not implemented yet".into() })
 }
