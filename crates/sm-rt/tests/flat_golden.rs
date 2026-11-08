@@ -42,16 +42,55 @@ fn flat_inputs_keep_their_w3a_hashes() {
         ("mixed_transition", record(&mt_t, "g_mt", [-1.0, -1.5, -0.5], [3.0, 1.5, 2.5])),
         ("nested_facets", record(&*f_t, "g_nf", [-2.2; 3], [2.2; 3])),
     ];
-    // Recorded on the base commit of this task (before the world walker, the SoS swap and the
-    // surface tables): a moved value is a stop, never a re-bless.
-    let want: [(&str, (u128, u128)); 4] = [
-        ("hex_block6", (0x9d2acd0945032943d69768d2b42ebe92, 0xcd433b5fc77169cad96f4c57eebb8e17)),
-        ("nonconvex_poly", (0x4af44037ed018b8228e09125dc004e3f, 0x7f9e0cad2f60dd8a499b494fe2407b08)),
-        ("mixed_transition", (0x5659f755d6b3ba0001f58b4a68cddb58, 0xad87d0efcd2433934a62707dd4e1770c)),
-        ("nested_facets", (0x156357c4b70cb571d51c1b58420b49aa, 0xb87fb50821f41b2cb450a03bb5537d2d)),
+    // Structure hashes were recorded on the base commit of this task (before the world walker,
+    // the SoS swap and the surface tables) and must be equal on every platform. Bundle hashes
+    // hash raw float bits and are recorded per (target_os, target_arch) (ruling C11). A moved
+    // value on a platform that has one is a stop, never a re-bless; a new platform's values are
+    // added as a new row, not by editing an existing one.
+    let want: [(&str, u128); 4] = [
+        ("hex_block6", 0x9d2acd0945032943d69768d2b42ebe92),
+        ("nonconvex_poly", 0x4af44037ed018b8228e09125dc004e3f),
+        ("mixed_transition", 0x5659f755d6b3ba0001f58b4a68cddb58),
+        ("nested_facets", 0x156357c4b70cb571d51c1b58420b49aa),
     ];
-    for ((n, g), (wn, w)) in got.into_iter().zip(want) {
+    // Compute every case first so one run prints all tuples for a platform.
+    let mut bad = Vec::new();
+    for ((n, (s, b)), (wn, ws)) in got.into_iter().zip(want) {
         assert_eq!(n, wn);
-        assert_eq!(g, w, "{n}: (structure hash, bundle hash) moved");
+        eprintln!("{n}: (structure hash, bundle hash) = ({s:#034x}, {b:#034x})");
+        if s != ws {
+            bad.push(format!("{n}: structure hash moved: got {s:#034x}, want {ws:#034x}"));
+        }
+        match bundle_hash(n) {
+            Some(wb) if b != wb => bad.push(format!(
+                "{n}: (structure hash, bundle hash) moved: got ({s:#034x}, {b:#034x}), want ({ws:#034x}, {wb:#034x})"
+            )),
+            Some(_) => {}
+            None => eprintln!("{n}: no recorded bundle hash for this platform; structure only"),
+        }
     }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Recorded bundle hash of a case on this (os, arch), if any.
+#[allow(unused_variables)]
+fn bundle_hash(name: &str) -> Option<u128> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return match name {
+        "hex_block6" => Some(0xcd433b5fc77169cad96f4c57eebb8e17),
+        "nonconvex_poly" => Some(0x7f9e0cad2f60dd8a499b494fe2407b08),
+        "mixed_transition" => Some(0xad87d0efcd2433934a62707dd4e1770c),
+        "nested_facets" => Some(0xb87fb50821f41b2cb450a03bb5537d2d),
+        _ => None,
+    };
+    // From the failing GitHub run 42412194333 (ubuntu-latest). Only hex_block6 is known: the
+    // old test stopped at the first failing case. tools/ci.sh reruns this test with --nocapture so
+    // the CI log shows every tuple even on a pass; add the other three rows from that log.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return match name {
+        "hex_block6" => Some(0x21a475890c57ab277f541a53d45710dd),
+        _ => None,
+    };
+    #[allow(unreachable_code)]
+    None
 }

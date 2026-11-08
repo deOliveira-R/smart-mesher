@@ -643,6 +643,8 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 split_small_determinant: no_split_small_determinant.then_some(false),
                 empty_patches: empty_patch.clone(),
                 wedge_patches: wedge_patch.clone(),
+                // The `--split-warped-faces` flag is added by W3c-EXPORT-B.
+                split_warped_faces: false,
             };
             let v = call(ep, req)?;
             let r: ExportResult = typed(v.clone(), "session.export")?;
