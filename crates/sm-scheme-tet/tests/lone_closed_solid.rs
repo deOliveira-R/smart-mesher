@@ -8,7 +8,7 @@ use sm_scheme_api::{
     Driver, MeshInput, MeshIntent, ReferenceCornerPicker, ReferenceIntervalSolver, SchemeRegistry, Sequential,
     SizingSpec, WholeFaces,
 };
-use sm_topo_api::fixtures::{cylinder, sphere, with_op};
+use sm_topo_api::fixtures::{cylinder, nested_spheres, sphere, with_op};
 use sm_topo_api::{CellComplex, OpId};
 
 fn registry() -> SchemeRegistry {
@@ -20,15 +20,15 @@ fn registry() -> SchemeRegistry {
 }
 
 /// Returns `(n_tets, sum of tet volumes, volume enclosed by the boundary triangles)`.
-fn mesh_volumes(topo: &CellComplex, vol: sm_core::EntityId, h: f64) -> (usize, f64, f64) {
+fn mesh_volumes(topo: &CellComplex, vols: &[sm_core::EntityId], h: f64) -> (usize, f64, f64) {
     let model = sm_model_api::Model::new();
     let mut intent = MeshIntent::default();
     intent.defaults.sizing = Some(SizingSpec::Constant { size: h });
     let reg = registry();
     let (solver, picker) = (ReferenceIntervalSolver::default(), ReferenceCornerPicker);
     let driver = Driver::new(&reg, &solver, &picker);
-    let sel = [vol];
-    let input = MeshInput::new(topo, &model, &WholeFaces, &sel);
+    let sel = vols;
+    let input = MeshInput::new(topo, &model, &WholeFaces, sel);
     let out = driver
         .mesh(&input, &intent, &Sequential, ReferenceBuilder::new(), &mut SerialAlloc::new())
         .expect("lone closed solid meshes");
@@ -67,7 +67,7 @@ fn lone_cylinder_volume_matches_its_boundary_triangulation() {
     let (r, h) = (0.4, 1.0);
     let mut topo = CellComplex::new();
     let c = with_op(&mut topo, OpId(1), |t| cylinder(t, r, h)).unwrap();
-    let (n, sum, enclosed) = mesh_volumes(&topo, c.volume, 0.2);
+    let (n, sum, enclosed) = mesh_volumes(&topo, &[c.volume], 0.2);
     assert!(n > 100, "{n} tets");
     assert!((sum - enclosed).abs() <= 1e-12 * enclosed.abs(), "sum {sum} vs boundary {enclosed}");
     // A polygonal prism inscribed in the circle lies below the analytic volume.
@@ -79,9 +79,45 @@ fn lone_cylinder_volume_matches_its_boundary_triangulation() {
 fn lone_sphere_volume_matches_its_boundary_triangulation() {
     let mut topo = CellComplex::new();
     let s = with_op(&mut topo, OpId(1), |t| sphere(t, 1.0)).unwrap();
-    let (n, sum, enclosed) = mesh_volumes(&topo, s.volume, 0.3);
+    let (n, sum, enclosed) = mesh_volumes(&topo, &[s.volume], 0.3);
     assert!(n > 100, "{n} tets");
     assert!((sum - enclosed).abs() <= 1e-12 * enclosed.abs(), "sum {sum} vs boundary {enclosed}");
     let exact = 4.0 / 3.0 * std::f64::consts::PI;
     assert!(sum < exact && sum > 0.9 * exact, "volume {sum} vs 4 pi/3 = {exact}");
+}
+
+/// Analytic bounds for the shell between radii 0.5 and 1 (inscribed polyhedra lie below).
+fn assert_shell_bounds(sum: f64) {
+    let exact = 4.0 / 3.0 * std::f64::consts::PI * (1.0 - 0.125);
+    assert!(sum < exact && sum > 0.9 * exact, "shell volume {sum} vs {exact}");
+}
+
+#[test]
+fn lone_shell_with_cavity_meshes() {
+    // The Void cavity is a 1-face shell, which the old `<4` rule refused.
+    let mut topo = CellComplex::new();
+    let ids = with_op(&mut topo, OpId(1), |t| nested_spheres(t, &[0.5, 1.0])).unwrap();
+    let (n, sum, enclosed) = mesh_volumes(&topo, &[ids.volumes[1]], 0.3);
+    assert!(n > 100, "{n} tets");
+    assert!((sum - enclosed).abs() <= 1e-12 * enclosed.abs(), "sum {sum} vs boundary {enclosed}");
+    assert_shell_bounds(sum);
+}
+
+#[test]
+fn hard_tet_ball_next_to_tet_shell_is_conformal() {
+    // Both volumes together: the ball and the shell share the curved face at r = 0.5. The
+    // boundary is the outer sphere alone, so a gap or overlap at the interface would break the
+    // equality of the tet total with the outer sphere's enclosed volume.
+    let mut topo = CellComplex::new();
+    let ids = with_op(&mut topo, OpId(1), |t| nested_spheres(t, &[0.5, 1.0])).unwrap();
+    let (n, sum, enclosed) = mesh_volumes(&topo, &[ids.volumes[0], ids.volumes[1]], 0.3);
+    assert!(n > 100, "{n} tets");
+    assert!((sum - enclosed).abs() <= 1e-12 * enclosed.abs(), "sum {sum} vs outer boundary {enclosed}");
+    let exact = 4.0 / 3.0 * std::f64::consts::PI;
+    assert!(sum < exact && sum > 0.9 * exact, "volume {sum} vs {exact}");
+    // Each volume alone: ball plus shell must add up (same interface triangulation).
+    let (_, ball, _) = mesh_volumes(&topo, &[ids.volumes[0]], 0.3);
+    let (_, shell, _) = mesh_volumes(&topo, &[ids.volumes[1]], 0.3);
+    assert!((ball + shell - sum).abs() <= 1e-12 * sum, "ball {ball} + shell {shell} vs {sum}");
+    assert_shell_bounds(shell);
 }
