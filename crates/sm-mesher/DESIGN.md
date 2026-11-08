@@ -300,6 +300,23 @@ Automatic scheme choice is a **pluggable strategy that is consulted once and sto
 * `replan_budget(n) = 16 + 2 n` is the driver's `max_replans` for `mesh.run`, `mesh.plan` and the
   strategy (each target that must fall back costs one replan). Runs that used to fit in 16
   are unaffected.
+* Plan-time blame (W3c). `Driver::plan` can fail before any generation with
+  `NoApplicableScheme` when a face is imposed incompatibly (tri by a hard `tetmesh` neighbour,
+  quad by an auto `map`). `scratch_plan` (so `mesh.auto` and the census) plans through
+  `plan_with_blame`: on that error it rejects the entries of `imposed_by` (sorted, never
+  `copy`, never already rejected) one at a time. A rejection is kept once the replan gets past
+  the target; if the same target fails again, or the rejected scheme's own volume has no
+  scheme left, it is dropped and the next entry is tried, so the culprit need not be the entry
+  with the lowest id. Every try, kept or dropped, counts against the same `replan_budget` as
+  generation-time rejections (`mesh_from_plan` gets the remainder; a budget of 0 returns the
+  planner's own error, and running out afterwards is `ReplanLimit`). Kept rejections travel in
+  `plan.rejections`. `mesh.run` and `mesh.plan` do not replan (`mesh.auto` stores explicit
+  assignments, and hard assignments are never blamed). Only inputs that failed to plan before
+  change; no existing hash moves.
+* B6 outcome (ruling C2): two merged bricks with a hard `tetmesh` on the left. The right
+  volume's `map` is rejected and it falls to `sweep` from the shared triangle face: cells
+  `{Tet: 160, Wedge: 32}`, volume 16, conformal, validator empty. An all-tet fill needs an
+  explicit `tetmesh` (or a future `tet` strategy).
 * Warning `mesh.auto_tet` per volume the strategy gave a tet mesher, listing why the earlier
   candidates were passed over and ending with the fix. Query `mesh.auto_strategies`.
 * `standard_schemes` lists are untouched (strict), so a run without `mesh.auto` has the same
