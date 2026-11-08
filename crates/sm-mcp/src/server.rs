@@ -313,6 +313,21 @@ impl<'e> Mcp<'e> {
         if let Some(sum) = structured.get("summary").and_then(Value::as_str).filter(|s| !s.is_empty()) {
             text = format!("{sum}\n{text}");
         }
+        // Export notes of severity `warning` lead the text, before the summary and the JSON.
+        let warnings: String = structured
+            .get("notes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|n| n.get("severity").and_then(Value::as_str) == Some("warning"))
+            .map(|n| {
+                let f = |k| n.get(k).and_then(Value::as_str).unwrap_or_default();
+                format!("warning: {}: {}\n", f("code"), f("detail"))
+            })
+            .collect();
+        if !warnings.is_empty() {
+            text = format!("{warnings}{text}");
+        }
         let mut m = Map::new();
         m.insert("content".into(), json!([{"type": "text", "text": text}]));
         if self.version.has_structured_output() {
