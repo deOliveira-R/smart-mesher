@@ -257,8 +257,8 @@ impl ImportedCsg {
     /// The sampled leaf is a check-only copy of the flat cells plus one extra `<outside>` cell
     /// (`outside_region`), over the bounds of the tracking leaf; the tracking leaf and
     /// [`Self::content_hash`] do not see it. A sample in `<outside>` is neither a gap nor an
-    /// overlap: findings that involve `<outside>` are dropped, so the space beyond a vacuum
-    /// (or other flagged) boundary that is not the bounding box is not reported.
+    /// overlap: gaps are taken from this leaf only, and overlaps from the plain tracking leaf
+    /// (so `<outside>` pairs cannot crowd real pairs out of sm-rt's capped report).
     ///
     /// # Errors
     /// `Invalid` for out-of-range effort, `Build` when the model cannot be compiled.
@@ -266,14 +266,18 @@ impl ImportedCsg {
         opts.validate()?;
         let run = |h: &HierInput<'_>| check_overlaps(h, opts.samples as usize, opts.rays as usize, opts.seed);
         let n = self.cells.len();
-        let issues = match self.outside_region().zip(self.check_bounds()) {
-            Some((outside, bounds)) => {
-                let mut cells = self.cells.clone();
-                cells.push(CsgCellDef::new(outside, OUTSIDE_CELL));
-                self.with_hier_of(CsgLeafInput::new(&self.store, &cells, Some(bounds), &self.complement), run)
-            }
-            None => self.with_hier(run),
-        };
+        // Overlaps (and everything but gaps) come from the plain tracking leaf: sm-rt reports at
+        // most MAX_REPORT distinct pairs, so `<outside>` pairs must never compete for those slots.
+        let mut issues = self.with_hier(run);
+        if let Some((outside, bounds)) = self.outside_region().zip(self.check_bounds()) {
+            // Gaps come from the check leaf with `<outside>`, where space beyond a flagged
+            // boundary is covered and so not a gap.
+            issues.retain(|i| i.code != "csg.gap");
+            let mut cells = self.cells.clone();
+            cells.push(CsgCellDef::new(outside, OUTSIDE_CELL));
+            let with_outside = self.with_hier_of(CsgLeafInput::new(&self.store, &cells, Some(bounds), &self.complement), run);
+            issues.extend(with_outside.into_iter().filter(|i| i.code == "csg.gap"));
+        }
         let mut out = CheckOutcome::default();
         let mut build = Vec::new();
         for i in issues {
