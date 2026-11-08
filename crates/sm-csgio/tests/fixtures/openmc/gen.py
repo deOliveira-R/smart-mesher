@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import signal
 import tempfile
 
 import warnings
@@ -610,7 +611,11 @@ def oracle(work, spec_name):
 
 def run_model(name, outdir):
     spec = MODELS[name]()
+    # Everything temporary (ours and any `omc_*` file OpenMC itself creates) lives under one
+    # directory that is removed on every exit path, including SIGINT/SIGTERM; nothing is left in
+    # the system temp dir.
     work = tempfile.mkdtemp(prefix="smcsg_omc_")
+    prev = {s: signal.signal(s, lambda *_: sys.exit(130)) for s in (signal.SIGINT, signal.SIGTERM)}
     try:
         write_model(spec, work)
         write_support(work)
@@ -620,11 +625,13 @@ def run_model(name, outdir):
         # dummy library (the only difference).
         shutil.copy(os.path.join(work, "materials.xml"), os.path.join(dest, "materials.xml"))
         rewrite_materials_xs(os.path.join(work, "materials.xml"))
-        subprocess.run([sys.executable, os.path.abspath(__file__), "--oracle", name, "--work", work], check=True, cwd=work)
+        subprocess.run([sys.executable, os.path.abspath(__file__), "--oracle", name, "--work", work], check=True, cwd=work, env={**os.environ, "TMPDIR": work, "TEMP": work, "TMP": work})
         for fn in ("geometry.xml", "oracle.json"):
             shutil.copy(os.path.join(work, fn), os.path.join(dest, fn))
         print("wrote", dest)
     finally:
+        for sig, h in prev.items():
+            signal.signal(sig, h)
         shutil.rmtree(work, ignore_errors=True)
 
 
