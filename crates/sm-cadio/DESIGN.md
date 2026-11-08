@@ -274,8 +274,12 @@ tests need no serialization. `Work::entities_parsed` bounds parse work in refusa
 
 ## Names and colors: `attributes` (W3b-CAD-ATTR)
 
-`model.import_step {attributes: true}` (default off; absent or `false` the op, its record JSON,
-its state and its hash are exactly as before, and `IMPL_VERSION` stays 2). After the cells are
+`model.import_step {attributes: true}` (default off; absent, the op, its record JSON,
+its state and its hash are exactly as before, and `IMPL_VERSION` stays 2. An explicit `false` has
+the same state and state hash as absent, but it is recorded as `"attributes": false`, so its node
+hash differs from the absent form. The node hash covers the op params, so omitting `Some(false)`
+on write would change the identity of any recorded node that holds it; W3c-CLEAN-CADIO kept the
+code and fixed this wording). After the cells are
 committed, one model-only transaction (`model_txn`) adds groups and volume colors; the module is
 `attrs.rs`, which re-parses the bytes (the reader's `BrepModel` stays attribute-free).
 

@@ -106,6 +106,10 @@ fn imports_without_the_option_are_unchanged() {
     // The recorded op is the same JSON as before the option existed.
     let op = serde_json::to_value(sm_cadio::ImportStep { source: sm_cadio::Source::inline(&bytes), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: None }).expect("json");
     assert!(op.get("attributes").is_none());
+    // An explicit `false` is recorded as such (the node hash covers the params, so it is not
+    // normalised away); only its state is equal to the plain import's.
+    let op = serde_json::to_value(sm_cadio::ImportStep { source: sm_cadio::Source::inline(&bytes), name: None, to_unit: None, assume_unit: None, weld_tol: None, solids: None, sheets: None, check: None, attributes: Some(false) }).expect("json");
+    assert_eq!(op.get("attributes"), Some(&serde_json::json!(false)));
     // The cells are those of the plain import.
     let topo_a = a.state().layer::<ModelLayer>().expect("model").topo();
     let topo_c = c.state().layer::<ModelLayer>().expect("model").topo();
