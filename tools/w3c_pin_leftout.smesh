@@ -1,0 +1,18 @@
+// W3c export-warning fixture (ruling C10, R10): the through pin cell with only the fuel in a
+// block. The moderator volume is in no block, so a `.smrt` export falls back to volume-id region
+// names and carries a `smrt-region-names` warning note. The script itself writes nothing: the
+// front ends export it and compare the warning.
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "fuel and moderator"
+fem.block_add(1, volumes: fu.volume, name: "fuel")
+mesh.size(targets: all volumes, size: 0.3)
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+assert mesh.info(mesh: m.mesh[0]).cells == 48, "48 hexes"
+print "mesh", m.mesh[0]
+print "h_mesh", session.hash()
