@@ -1,0 +1,19 @@
+[package]
+name = "sm-csgio"
+description = "CSG model import (OpenMC geometry.xml) into a deterministic constructive-solid-geometry IR."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+# XML reader for OpenMC decks (W3c-CSG-OPENMC); pinned exactly, released 2025-10-12.
+roxmltree = "=0.21.1"
