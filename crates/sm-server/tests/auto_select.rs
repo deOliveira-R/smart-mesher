@@ -284,17 +284,22 @@ fn b5_plate_with_a_hole_pinned_outcome() {
 
 // ---- B6: auto next to a hard neighbour (pinned) --------------------------------------------------
 
-/// Observed with the real schemes: the right volume cannot be re-planned to `tetmesh` next to a hard
-/// `tetmesh` neighbour, because the shared face is imposed quad by the right volume's `map` and tri by the
-/// left one, and the replan loop does not blame the auto volume for it. Pinned as observed (see the report).
+/// `mesh.auto` next to a hard `tetmesh` neighbour (W3c-MESHER-REPLAN, ruling C2). The right volume's `map`
+/// imposes quad on the shared face and the neighbour imposes tri, so the plan-time replan rejects `map`; the
+/// volume falls to the best remaining scheme (`sweep` from the tri face: wedges conformal to the tets).
 #[test]
-fn b6_auto_next_to_a_hard_tet_neighbour_pinned_outcome() {
+fn b6_auto_next_to_a_hard_tet_neighbour_falls_back_to_a_conformal_scheme() {
     let mut s = server();
-    ok(&mut s, TWO_BRICKS_HARD_TET);
-    let before = state_hash(&mut s);
-    let e = script(&mut s, "mesh.auto(strategy: \"default\")\n").expect_err("observed: no applicable scheme for the shared face");
-    assert!(e.message.contains("no applicable scheme") && e.message.contains("imposition"), "{e}");
-    assert_eq!(state_hash(&mut s), before, "a failed mesh.auto changes nothing");
+    ok(&mut s, &format!("{TWO_BRICKS_HARD_TET}mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: a.volume | b.volume)\n"));
+    let i = info(&mut s);
+    assert!((i["volume"].as_f64().expect("volume") - 16.0).abs() < 1e-9, "{i}");
+    assert!(valid(&mut s), "the shared face conforms");
+    let rows = mesh_plan(&mut s);
+    let vols: Vec<&Row> = rows.iter().filter(|r| r.kind == "volume").collect();
+    assert_eq!(vols.len(), 2, "{rows:?}");
+    assert!(vols.iter().any(|r| r.scheme == "tetmesh"), "left stays tetmesh: {rows:?}");
+    assert!(vols.iter().any(|r| r.scheme != "tetmesh" && r.scheme != "map"), "right is not map: {rows:?}");
+    assert_eq!(i["cell_shapes"], json!({"Tet": 160, "Wedge": 32}), "observed on the final code: {i}");
 
     // With the right volume also explicit, the hard neighbours mesh and the interface conforms.
     let mut t = server();
