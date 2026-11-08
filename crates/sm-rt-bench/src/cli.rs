@@ -1,4 +1,4 @@
-//! Command line of `smrt-bench`: `gen`, `run`, `report`, `self-test`, `docker-check`.
+//! Command line of `smrt-bench`: `gen`, `run`, `report`, `self-test`, `docker-check`, `docker-lock`.
 //!
 //! Options are `--key value` pairs and bare flags; there is no argument-parser dependency.
 
@@ -15,6 +15,8 @@ struct Args {
     cmd: String,
     opts: BTreeMap<String, String>,
     flags: Vec<String>,
+    /// Bare words after the command (only `docker-lock IMAGE` takes one).
+    positional: Vec<String>,
 }
 
 const FLAGS: [&str; 4] = ["check", "print", "dry-run", "help"];
@@ -23,10 +25,15 @@ fn parse(args: &[String]) -> Result<Args> {
     let cmd = args.first().cloned().ok_or_else(|| BenchError::Usage(usage()))?;
     let mut opts = BTreeMap::new();
     let mut flags = Vec::new();
+    let mut positional = Vec::new();
     let mut i = 1;
     while i < args.len() {
         let a = &args[i];
-        let key = a.strip_prefix("--").ok_or_else(|| BenchError::Usage(format!("unexpected argument {a:?}")))?;
+        let Some(key) = a.strip_prefix("--") else {
+            positional.push(a.clone());
+            i += 1;
+            continue;
+        };
         if FLAGS.contains(&key) {
             flags.push(key.to_string());
             i += 1;
@@ -36,11 +43,14 @@ fn parse(args: &[String]) -> Result<Args> {
             i += 2;
         }
     }
-    Ok(Args { cmd, opts, flags })
+    if cmd != "docker-lock" && !positional.is_empty() {
+        return Err(BenchError::Usage(format!("unexpected argument {:?}", positional[0])));
+    }
+    Ok(Args { cmd, opts, flags, positional })
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -97,14 +107,38 @@ pub fn main_with(args: &[String]) -> Result<i32> {
         "docker-check" => {
             let mut code = 0;
             for (name, st) in crate::docker::docker_check(&crate_dir())? {
-                println!("{name}: {st:?}");
+                print_image_status(&name, &st);
                 if !matches!(st, crate::docker::ImageStatus::Built { .. }) {
                     code = 2;
                 }
             }
             Ok(code)
         }
+        "docker-lock" => {
+            let which = a.positional.first().ok_or_else(|| BenchError::Usage("docker-lock needs an image (dagmc-moab or dagmc-dd)".into()))?;
+            let path = crate::docker::docker_lock(&crate_dir(), which)?;
+            println!("wrote {}", path.display());
+            Ok(0)
+        }
         other => Err(BenchError::Usage(format!("unknown command {other:?}\n{}", usage()))),
+    }
+}
+
+fn print_image_status(name: &str, st: &crate::docker::ImageStatus) {
+    match st {
+        crate::docker::ImageStatus::Built { id, identity, driver_version, lock } => {
+            println!("{name}: built");
+            println!("  id               {id}");
+            println!("  platform         {}", identity.platform);
+            println!("  base index       sha256:{}", identity.base_index_digest);
+            println!("  source commits   {}", identity.source_commits.join("; "));
+            println!("  moab             {}", if identity.moab_version.is_empty() { "not listed" } else { &identity.moab_version });
+            println!("  conda lock       {}", if identity.conda_lock_sha256.is_empty() { "none (apt image)".to_string() } else { format!("sha256:{}", identity.conda_lock_sha256) });
+            println!("  versions.txt     sha256:{}", identity.versions_sha256);
+            println!("  build            {lock}");
+            println!("  driver --version {driver_version}");
+        }
+        other => println!("{name}: {other:?}"),
     }
 }
 
@@ -231,6 +265,7 @@ fn run(a: &Args) -> Result<i32> {
             });
             let mut dumps: Vec<(String, Vec<crate::truth::Track>)> = Vec::new();
             for t in competitors {
+
                 match crate::docker::run_competitor(&crate_dir(), t, &dir, &data.case, &cfg.threads, cfg.reps, cfg.warmup) {
                     crate::docker::Competitor::Rows { mut rows, tracks } => {
                         if let Some(tracks) = tracks {
@@ -252,6 +287,18 @@ fn run(a: &Args) -> Result<i32> {
                             dumps.push((t.to_string(), tracks));
                         }
                         file.rows.extend(rows);
+                        // Identity of the image that produced these rows (outside `result_hash`).
+                        match crate::docker::image_of(t).map(crate::docker::image_identity) {
+                            Some(Ok(id)) => {
+                                if file.image_digest.is_empty() {
+                                    file.image_digest = id.image_id.clone();
+                                }
+                                file.images.insert(t.to_string(), id);
+                            }
+                            Some(Err(e)) => file.partial.push(format!("{t}: image identity not recorded: {e}")),
+                            None => {}
+                        }
+                        file.notes.push(format!("{t}: cores not pinned (Docker Desktop VM does not allow it); container limited with --cpus {}", cfg.threads.iter().copied().max().unwrap_or(1)));
                     }
                     crate::docker::Competitor::Partial(why) => {
                         println!("{}: partial: {t}: {why}", case.name());
@@ -277,7 +324,11 @@ fn run(a: &Args) -> Result<i32> {
     }
     let env_path = out_dir.join("bench-env.json");
     if !env_path.exists() {
-        std::fs::write(&env_path, serde_json::to_vec_pretty(&BenchEnv::detect())?).map_err(|e| BenchError::io(&env_path, e))?;
+        let mut be = BenchEnv::detect();
+        if trackers.iter().any(|t| crate::docker::image_of(t).is_some()) {
+            be.docker = crate::docker::detect_vm(crate::docker::any_local_image());
+        }
+        std::fs::write(&env_path, serde_json::to_vec_pretty(&be)?).map_err(|e| BenchError::io(&env_path, e))?;
     }
     Ok(code)
 }
@@ -312,7 +363,9 @@ fn report(a: &Args) -> Result<i32> {
         let text = std::fs::read_to_string(&p).map_err(|e| BenchError::io(&p, e))?;
         files.push(ResultFile::from_json(&text)?);
     }
-    let md = crate::report::render(&files)?;
+    let env_path = Path::new(dir).join("bench-env.json");
+    let vm = std::fs::read_to_string(&env_path).ok().and_then(|t| serde_json::from_str::<BenchEnv>(&t).ok()).and_then(|b| b.docker);
+    let md = crate::report::render_with_docker(&files, vm.as_ref())?;
     match a.opts.get("out") {
         Some(o) => std::fs::write(o, md).map_err(|e| BenchError::io(o, e))?,
         None => print!("{md}"),
