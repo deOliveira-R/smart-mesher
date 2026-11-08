@@ -153,6 +153,37 @@ const TWO_BRICKS_HARD_TET: &str = "let a = model.create_brick(x: 2.0, y: 2.0, z:
     mesh.size(targets: a.volume | b.volume, size: 1.0)\n\
     mesh.scheme(targets: a.volume, scheme: \"tetmesh\")\n";
 
+/// A round pin cell: a 1.26 x 1.26 x 1.0 moderator brick with a z cylinder (r = 0.4, height `h`, centered)
+/// of fuel. The moderator is the brick minus a consumed copy of the cylinder (no `keep`), then imprint and
+/// merge. `h` = 1.0 goes through, 0.8 is enclosed. `brick_first` picks the creation order (entity ids).
+fn pin_fixture(h: f64, brick_first: bool) -> String {
+    let brick = "let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)\n";
+    let fuel = format!("let fu = model.create_cylinder(height: {h}, radius: 0.4)\n");
+    let tool = format!("let tl = model.create_cylinder(height: {h}, radius: 0.4)\n");
+    let head = if brick_first { format!("{brick}{fuel}{tool}") } else { format!("{fuel}{tool}{brick}") };
+    format!(
+        "{head}let mo = model.subtract(targets: br.body, tools: tl.body)\n\
+         model.imprint(bodies: all bodies)\nmodel.merge()\n\
+         assert count(all volumes) == 2, \"fuel and moderator\"\n\
+         mesh.size(targets: all volumes, size: 0.3)\n"
+    )
+}
+
+/// The pin cell and a 3x3 lattice of it by `model.copy` (as in the W3b milestone), 18 volumes.
+fn lattice_fixture(h: f64) -> String {
+    format!(
+        "{}let vs = all volumes\n\
+         let cx = model.copy(entities: vs, count: 2, xform: {{kind: \"move\", delta: [1.26, 0.0, 0.0]}})\n\
+         let cy = model.copy(entities: vs | cx.volumes, count: 2, xform: {{kind: \"move\", delta: [0.0, 1.26, 0.0]}})\n\
+         model.imprint(bodies: all bodies)\nmodel.merge()\n\
+         assert count(all volumes) == 18, \"3x3 lattice of two-volume pins\"\n\
+         mesh.size(targets: all volumes, size: 0.3)\n",
+        pin_fixture(h, true)
+    )
+}
+
+const RUN_ALL: &str = "mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: all volumes)\n";
+
 fn run_fixture(fixture: &str, tail: &str) -> (Server, Value) {
     let mut s = server();
     let v = ok(&mut s, &format!("{fixture}{tail}"));
@@ -253,22 +284,18 @@ fn b4_tetrahedron_falls_to_tetmesh_with_a_warning() {
 
 // ---- B5: plate with a hole --------------------------------------------------------------------------
 
-/// A face with an inner loop that a parent imposes on has no hex/tet mesher in the strict lists, but
-/// `mesh.auto` now falls to `tetmesh` (W3c-MESHER-REPLAN, ruling C1: an all-tet result is accepted). The
-/// volume is within 2 percent of the analytic 16 - pi, the mesh is valid and has only tets.
+/// A plate with a through hole meshes all-hex through `mesh.auto` (W3c-CYL-SCHEMES: the sweep strip check
+/// picks the annulus pair). Volume is the 12-sided polygon, 16 - 3 = 13, and within 1.1 percent of 16 - pi.
 #[test]
-fn b5_plate_with_a_hole_falls_to_all_tet() {
+fn b5_plate_with_a_hole_meshes_all_hex() {
     let (mut s, run) = run_fixture(PLATE, RUN);
     let i = info(&mut s);
-    let exact = 16.0 - std::f64::consts::PI;
     let got = i["volume"].as_f64().expect("volume");
-    assert!((got - exact).abs() / exact < 0.02, "volume {got} vs {exact}");
-    assert_eq!(i["cell_shapes"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["Tet".to_owned()]), "{i}");
+    assert!((got - 13.0).abs() < 1e-9, "polygon volume {got}");
+    assert!((got - (16.0 - std::f64::consts::PI)).abs() / (16.0 - std::f64::consts::PI) < 0.012, "{got}");
+    assert_eq!(i["cell_shapes"], json!({"Hex": 154}), "observed on the merged code: {i}");
     assert!(valid(&mut s));
-    // `mesh.auto_tet` is advisory; when emitted it names the volume.
-    for w in auto_tet(&run) {
-        assert_eq!(w["entities"].as_array().map(Vec::len), Some(1), "{w}");
-    }
+    assert!(auto_tet(&run).is_empty(), "no tet fallback warning");
 
     // The workaround a user has today: an explicit tet mesher meshes it, volume within 2 percent of 16 - pi.
     let mut t = server();
@@ -278,6 +305,7 @@ fn b5_plate_with_a_hole_falls_to_all_tet() {
     let got = i["volume"].as_f64().expect("volume");
     assert!((got - exact).abs() / exact < 0.02, "volume {got} vs {exact}");
     assert!(valid(&mut t));
+    assert_eq!(i["cell_shapes"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["Tet".to_owned()]), "{i}");
     assert!(i["rejections"].as_u64().is_some_and(|r| r <= 2), "{i}");
 }
 
@@ -533,4 +561,135 @@ fn standard_catalog_has_the_view_auto_and_record_entries() {
     sorted.sort();
     sorted.dedup();
     assert_eq!(sorted, queries);
+}
+
+// ---- W3c-CYL-PIN: round pin and lattice ------------------------------------------------------------
+
+const PIN_VOLUME: f64 = 1.26 * 1.26;
+
+/// Runs `text` and returns the server, the run result and `mesh.info`.
+fn run_info(text: &str) -> (Server, Value, Value) {
+    let mut s = server();
+    let run = ok(&mut s, text);
+    let i = info(&mut s);
+    (s, run, i)
+}
+
+fn assert_pin(text: &str, volumes: f64, shapes: Value, tet_warnings: usize) -> String {
+    let (mut s, run, i) = run_info(text);
+    let got = i["volume"].as_f64().expect("volume");
+    assert!((got - volumes).abs() < 1e-9, "volume {got} vs {volumes}: {i}");
+    assert_eq!(i["cell_shapes"], shapes, "observed on the merged code: {i}");
+    assert!(valid(&mut s), "valid and conformal: {i}");
+    assert_eq!(auto_tet(&run).len(), tet_warnings, "mesh.auto_tet warnings");
+    state_hash(&mut s)
+}
+
+/// Through pin (H = 1.0): all-hex, both creation orders. The cylinder sweeps a pave disk, the moderator an
+/// annulus; the shared cylinder face is quads on both sides, so `validate` is empty.
+#[test]
+fn pin_through_is_all_hex_in_both_creation_orders() {
+    let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 48}), 0);
+    let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 48}), 0);
+    assert_ne!(a, b, "different entity ids are different states");
+}
+
+/// Enclosed pin (H = 0.8, ruling C1): all-tet, with a `mesh.auto_tet` warning for each of the two volumes.
+/// The planner replan that resolves the quad/tri conflict on the cylinder face runs inside `mesh.auto`
+/// (scratch plan), so `mesh.run` plans nothing twice and `mesh.info.rejections` is 0: the warnings are the
+/// evidence (acceptance 7 is asserted through them).
+#[test]
+fn pin_enclosed_is_all_tet_in_both_creation_orders() {
+    for brick_first in [true, false] {
+        let text = format!("{}{RUN_ALL}", pin_fixture(0.8, brick_first));
+        let (mut s, run, i) = run_info(&text);
+        assert_eq!(i["cell_shapes"], json!({"Tet": 733}), "brick_first={brick_first}: {i}");
+        assert!((i["volume"].as_f64().expect("volume") - PIN_VOLUME).abs() < 1e-12, "{i}");
+        assert!(valid(&mut s));
+        let w = auto_tet(&run);
+        assert_eq!(w.len(), 2, "one warning per volume: {w:?}");
+        assert!(w.iter().all(|d| d["entities"].as_array().map(Vec::len) == Some(1)), "{w:?}");
+    }
+}
+
+/// 3x3 lattices by `model.copy`: 18 volumes each, through all-hex, enclosed all-tet.
+#[test]
+fn pin_lattices_through_and_enclosed() {
+    assert_pin(&format!("{}{RUN_ALL}", lattice_fixture(1.0)), 9.0 * PIN_VOLUME, json!({"Hex": 432}), 0);
+    let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", lattice_fixture(0.8)));
+    assert_eq!(i["selection"].as_array().map(Vec::len), Some(18));
+    assert_eq!(i["cell_shapes"], json!({"Tet": 6647}), "{i}");
+    assert!((i["volume"].as_f64().expect("volume") - 9.0 * PIN_VOLUME).abs() < 1e-9, "{i}");
+    assert!(valid(&mut s));
+}
+
+fn pin_scenario_hashes() -> Vec<String> {
+    let texts = [
+        format!("{}{RUN_ALL}", pin_fixture(1.0, true)),
+        format!("{}{RUN_ALL}", pin_fixture(0.8, true)),
+        format!("{}{RUN_ALL}", lattice_fixture(1.0)),
+        format!("{}{RUN_ALL}", lattice_fixture(0.8)),
+        format!("{PLATE}{RUN}"),
+    ];
+    texts
+        .iter()
+        .map(|t| {
+            let mut s = server();
+            ok(&mut s, t);
+            state_hash(&mut s)
+        })
+        .collect()
+}
+
+/// Two runs and 1 thread vs default give the same state hashes for pins, lattices and B5.
+#[test]
+fn pin_runs_are_deterministic_across_runs_and_thread_counts() {
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let a = one.install(pin_scenario_hashes);
+    let b = pin_scenario_hashes();
+    let c = pin_scenario_hashes();
+    assert_eq!(a, b, "1 thread vs default");
+    assert_eq!(b, c, "two runs");
+    let mut distinct = a.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), a.len(), "the scenarios are different states");
+}
+
+/// In-process, CLI (`smesh run`) and MCP (`run_script`) agree on the through-lattice and enclosed-pin hashes.
+#[test]
+fn pin_hashes_are_equal_in_process_cli_and_mcp() {
+    for (name, text) in [
+        ("lattice", format!("{}{RUN_ALL}", lattice_fixture(1.0))),
+        ("enclosed", format!("{}{RUN_ALL}", pin_fixture(0.8, true))),
+    ] {
+        let mut direct = server();
+        ok(&mut direct, &text);
+        let want = state_hash(&mut direct);
+
+        let dir = TempDir::new("pin-cli");
+        let file = dir.path().join("pin.smesh");
+        std::fs::write(&file, &text).expect("write script");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut input = std::io::Cursor::new(Vec::new());
+        let mut io = sm_cli::Io { stdin: &mut input, stdout: &mut out, stderr: &mut err };
+        let mut connect = |s: &sm_cli::Settings| sm_cli::connect_standard(s);
+        let args = ["smesh", "--memory", "--author", "tester", "--fixed-time", TIME, "run", file.to_str().expect("utf8"), "--print-hash"];
+        let code = sm_cli::run(args, &mut connect, &mut io);
+        let stdout = String::from_utf8_lossy(&out).into_owned();
+        assert_eq!(code, 0, "{name}: {} {}", stdout, String::from_utf8_lossy(&err));
+        assert_eq!(stdout.lines().last(), Some(want.as_str()), "{name}: CLI hash");
+
+        let mut m = server();
+        let msgs = [
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_script","arguments":{"text": text}}}),
+        ];
+        let input: String = msgs.iter().map(|m| format!("{m}\n")).collect();
+        let mut out = Vec::new();
+        sm_mcp::run_stdio(&mut m, std::io::Cursor::new(input.into_bytes()), &mut out).expect("mcp");
+        let replies: Vec<Value> = String::from_utf8(out).expect("utf8").lines().map(|l| serde_json::from_str(l).expect("json")).collect();
+        assert_ne!(replies[1]["result"]["isError"], json!(true), "{name}: {}", replies[1]);
+        assert_eq!(state_hash(&mut m), want, "{name}: MCP hash");
+    }
 }
