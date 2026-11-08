@@ -10,10 +10,27 @@ license.workspace = true
 [lib]
 bench = false
 
+[[bin]]
+name = "smcsg"
+path = "src/bin/smcsg.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+sm-rt-api = { path = "../sm-rt-api" }
+sm-rt = { path = "../sm-rt" }
 thiserror = "2"
+# JSON output of `smcsg --json` (already in the workspace lock; keys are sorted, so output is stable).
+serde_json = "1"
 # XML reader for OpenMC decks (W3c-CSG-OPENMC); pinned exactly, released 2025-10-12.
 roxmltree = "=0.21.1"
+
+[dev-dependencies]
+sm-model = { path = "../sm-model" }
+sm-model-api = { path = "../sm-model-api" }
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
+rayon = "1"
