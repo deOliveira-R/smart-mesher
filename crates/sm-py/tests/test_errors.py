@@ -70,7 +70,7 @@ def test_failing_script_statement_raises_with_the_partial_state(s: sm.Session) -
         lambda s: s.model.create_brick(x=1.0, center=[0.0, float("-inf"), 0.0]),
         lambda s: s.ops.mesh.run(targets=["Nonsense#1"]),
         lambda s: s.ops.mesh.run(targets=["TopoVolume1"]),
-        lambda s: s.ops.mesh.run(targets=["TopoFace#1"]),  # wrong kind
+        lambda s: s.ops.mesh.run(targets=["Mesh#1"]),  # wrong kind (faces are valid since SURFPLAN)
         lambda s: s.ops.mesh.run(targets=[3]),
         lambda s: s.model.create_brick(),  # missing required
         lambda s: s.model.create_brick(x=1.0, widht=2.0),  # misspelled keyword
