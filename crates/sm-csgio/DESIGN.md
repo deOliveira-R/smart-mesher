@@ -22,10 +22,16 @@ sampling) or `ImportedCsg::import` (flatten, sampled check, reject overlaps).
    dropped, survivors sorted by definition bytes and renumbered; literals within a term and terms
    within a region sorted; flat cells sorted by (name, terms, source). `content_hash` is computed
    on that form, so it does not depend on deck ids or text order (test `canonical.rs`).
-5. **Check** (`ImportedCsg::check`): `sm_rt::check_overlaps` over the flat leaf (default 100 000
-   points, 2 000 chords, seed 0; never below the op's 10 000 and 500). An overlap becomes
-   `ImportError::Overlap` naming the deck cells and lattice elements; gaps and an unbounded leaf are
-   warnings (`import.gap`, `import.unbounded`).
+5. **Check** (`ImportedCsg::check`): `sm_rt::check_overlaps` (default 100 000 points, 2 000
+   chords, seed 0; never below the op's 10 000 and 500) over two leaves. The plain tracking leaf
+   yields overlaps, an unbounded leaf and build issues; sm-rt caps its report at a few distinct
+   pairs, so `<outside>` pairs must never compete for those slots. A second, check-only leaf adds
+   one `<outside>` cell (the outer half-spaces of boundary-flagged surfaces that every flat cell
+   uses on one side only) and yields the gaps, so space beyond a vacuum or reflective surface is not
+   a gap. It is built only when such a one-sided flagged surface exists and the leaf is bounded;
+   otherwise gaps come from the plain leaf. An overlap becomes `ImportError::Overlap` naming the
+   deck cells and lattice elements; gaps and an unbounded leaf are warnings (`import.gap`,
+   `import.unbounded`). The check leaf never reaches the tracker or `content_hash`.
 
 ## Conventions (IR level; format readers convert)
 

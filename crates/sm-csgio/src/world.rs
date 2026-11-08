@@ -285,9 +285,8 @@ impl ImportedCsg {
             match i.code {
                 "csg.overlap" => {
                     let cells = parse_cells(&i.message);
-                    if cells.is_some_and(|(a, b)| a >= n || b >= n) {
-                        continue;
-                    }
+                    // Overlaps come from the plain leaf, whose cells are exactly the `n` flat cells.
+                    debug_assert!(cells.is_none_or(|(a, b)| a < n && b < n), "overlap names a cell beyond the flat cells: {}", i.message);
                     let found = point.zip(cells).and_then(|(point, (a, b))| Some(OverlapFinding { point, a: self.sources.get(a)?.clone(), b: self.sources.get(b)?.clone() }));
                     match found {
                         Some(f) => out.overlaps.push(f),

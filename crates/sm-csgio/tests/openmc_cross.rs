@@ -64,7 +64,12 @@ fn assembly_xml(n: usize) -> String {
 
 #[test]
 fn the_model_bridge_and_the_openmc_deck_agree_on_the_pin_assembly() {
-    let n = 2;
+    for n in [1, 2] {
+        bridge_vs_deck(n);
+    }
+}
+
+fn bridge_vs_deck(n: usize) {
     let fix = pin_assembly(n, PITCH, RF, RC, H).unwrap();
     let w = csg_world(&fix.model, &fix.complex, &CsgWorldOptions::default()).unwrap();
     let bridge = w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
@@ -94,12 +99,12 @@ fn the_model_bridge_and_the_openmc_deck_agree_on_the_pin_assembly() {
         for name in ["fuel", "clad"] {
             let (a, c) = (want.get(name).copied().unwrap_or(0.0), got.get(name).copied().unwrap_or(0.0));
             worst = worst.max((a - c).abs());
-            assert!((a - c).abs() < 1e-9, "ray {k} {o:?} {d:?}: {name} bridge {a}, deck {c}");
+            assert!((a - c).abs() < 1e-11 * a.abs().max(1.0), "ray {k} {o:?} {d:?}: {name} bridge {a}, deck {c}");
         }
         compared += 1;
     }
     assert_eq!(compared, 10_000);
-    eprintln!("worst chord difference {worst:e}");
+    eprintln!("n={n}: worst chord difference {worst:e}");
 }
 
 fn in_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
@@ -133,7 +138,7 @@ fn fingerprint(name: &str) -> (u128, Vec<String>, Vec<u64>) {
 
 #[test]
 fn fixture_imports_are_identical_across_runs_and_thread_counts() {
-    for name in ["deck_o", "pin", "lattice2d", "lattice3d", "rotations", "nested", "lattice_xf", "surfaces", "grammar"] {
+    for name in ["deck_o", "pin", "lattice2d", "lattice3d", "rotations", "nested", "lattice_xf", "surfaces", "grammar", "translated"] {
         let a = fingerprint(name);
         assert_eq!(a, fingerprint(name), "{name}: two runs");
         assert_eq!(a, in_pool(1, || fingerprint(name)), "{name}: one thread");
