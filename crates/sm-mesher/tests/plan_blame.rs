@@ -324,7 +324,8 @@ fn the_second_imposed_by_entry_can_be_the_one_blamed() {
     // Two tries were needed, so a budget of 1 stops (budget 2 passes).
     let mut c = build(DefaultStrategy::with_lists(l.clone()).with_fixed_budget(1));
     let e = err_text(run_json(&mut c, "mesh.auto", json!({})));
-    assert!(e.contains("ReplanLimit") || e.contains("gave up"), "{e}");
+    // ReplanLimit is the only variant whose text is "gave up after N attempts".
+    assert!(e.contains("gave up after 1 attempts"), "{e}");
     let mut d = build(DefaultStrategy::with_lists(l).with_fixed_budget(2));
     run_json(&mut d, "mesh.auto", json!({})).expect("budget 2");
 }
@@ -341,5 +342,6 @@ fn plan_time_and_generation_time_rejections_share_one_budget() {
     let rec = go(2).expect("n + m = 2 fits a budget of 2");
     assert_eq!(scheme_of(&rec, "TopoVolume#3"), "okswp");
     let e = err_text(go(1));
-    assert!(e.contains("ReplanLimit") || e.contains("gave up"), "{e}");
+    // ReplanLimit is the only variant whose text is "gave up after N attempts".
+    assert!(e.contains("gave up after 1 attempts"), "{e}");
 }
