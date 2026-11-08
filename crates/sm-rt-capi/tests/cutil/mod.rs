@@ -38,8 +38,11 @@ impl Drop for ScratchDir {
     }
 }
 
+/// Scratch dirs live under cargo's per-package `target/tmp`, not `$TMPDIR`: a killed or aborted
+/// test run (which skips `Drop`) then leaves its dirs inside `target/`, where `cargo clean` removes
+/// them, instead of leaking `smrt-capi-<pid>-*` into the system temp dir forever.
 pub fn scratch(name: &str) -> ScratchDir {
-    let d = std::env::temp_dir().join(format!("smrt-capi-{}-{name}", std::process::id()));
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("smrt-capi-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&d).expect("scratch dir");
     ScratchDir(d)
 }

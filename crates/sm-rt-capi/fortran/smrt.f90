@@ -30,7 +30,7 @@ module smrt
   integer(c_int32_t), parameter :: SMRT_ERR_LOST = -103
 
   ! ---- ids and enums
-  integer(c_int32_t), parameter :: SMRT_ABI_VERSION = 10100
+  integer(c_int32_t), parameter :: SMRT_ABI_VERSION = 10200
   integer(c_int64_t), parameter :: SMRT_NONE = -1_c_int64_t
   integer(c_int64_t), parameter :: SMRT_COMPLEMENT = -2_c_int64_t
   integer(c_int32_t), parameter :: SMRT_MAX_LEVELS = 8

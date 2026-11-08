@@ -328,6 +328,7 @@ fn acc04_hinted_location_equals_locate() {
     let mut sc = Scratch::new();
     let mut compared = 0u64;
     let mut probe_descents = 0u64;
+    let mut seg_descents = 0u64;
     // Random points: located through the flight machinery by stopping at a random distance.
     for i in 0..n {
         let near = i % 10 == 0;
@@ -350,7 +351,10 @@ fn acc04_hinted_location_equals_locate() {
         let st = t.init_state(p3(o), v3(d), None, &mut sc).unwrap();
         let mut st2 = st.clone();
         let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
-        let Some(seg) = cur.next_segment(view, input, &mut st2, &mut sc).unwrap() else { continue };
+        let bs = sc.counters.bvh_descents;
+        let first = cur.next_segment(view, input, &mut st2, &mut sc).unwrap();
+        seg_descents += sc.counters.bvh_descents - bs;
+        let Some(seg) = first else { continue };
         // The reference `locate` calls below use the BVH (and are counted); only the probes are
         // measured, so each is bracketed.
         let b0 = sc.counters.bvh_descents;
@@ -370,6 +374,7 @@ fn acc04_hinted_location_equals_locate() {
     }
     assert!(compared > n as u64 / 2);
     assert_eq!(probe_descents, 0, "no BVH descent in a hinted location");
+    assert_eq!(seg_descents, 0, "no BVH descent in a delta segment that starts at an owning node");
 }
 
 #[test]
