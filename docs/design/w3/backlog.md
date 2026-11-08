@@ -97,7 +97,7 @@ Cleanups:
 - Ruled (R9-R11 in docs/design/w3b/rulings.md): one region per block; volume-id fallback with a warning; FOAM-WARP option goes into W3c. Check that the fallback note is surfaced as a warning in CLI/MCP output.
 
 ## From W3c sub-waves 1+2 (merged 2026-11-08, d2e7731; for W3c-INT unless marked W4)
-- **User call: XDG pin.** BENCH-PIN moved the pin back 12 commits on the false premise that `83efb306e152` never existed (it exists and descends from `fec80980ce29`). Choose the commit before BENCH-XDG, then reword or drop the `assert_ne!` in `sm-bench` docker.rs.
+- ~~XDG pin~~ resolved 2026-11-08: back to `83efb306e152` (W3c ruling C15); move to the newest upstream commit when W4 writes the driver.
 - **Deviations to record in the W3c report:**
   - CYL-PIN acceptance 7: `mesh.info` shows 0 rejections because the replan runs in `mesh.auto`'s scratch plan; the `mesh.auto_tet` warnings are the evidence. Pin `rejections == 0`.
   - B5 (plate with a hole) is a hex sweep under `mesh.auto` (154 hexes), not tets. MESHER-REPLAN rewrote the b5 row; CYL-PIN owns it.

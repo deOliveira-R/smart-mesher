@@ -20,6 +20,7 @@ These answer `plan.md` section "Open questions for the user" (C1-C14) and overri
 - **C12. Platform pins:** milestone identity hashes pinned in `tools/platform/expected.txt` and enforced on Linux CI. On a divergence: fix the near-tie decision locally first; a portable libm only if that fails; raw-bit hashes may stay per platform.
 - **C13. Benchmark:** W3c does pinning, identity and Docker hygiene (DAGMC W-fire/W-flight if time allows); XDG image and tet walk go to W4; apt versions are recorded rather than frozen by a snapshot mirror.
 - **C14. Face-only `mesh.run` sizing:** keep the current behaviour (volume size not inherited, with the warning); revisit if it proves unsuitable.
+- **C15. XDG pin (2026-11-08):** `83efb306e152` (xdg-org/xdg, 2026-10-26), the commit our research read. BENCH-PIN had moved it to `fec80980ce29` after cloning the lagging personal fork `pshriwise/xdg`. Clone only `xdg-org/xdg`. When W4 writes the XDG driver, pin the newest upstream commit that builds and runs, so we benchmark against the strongest current XDG.
 
 ## Process note
 GitHub CI (Linux x86_64) has been red on `main` since the W3b-1 merge (2026-11-05): `flat_golden` (bundle hash differs on Linux) and sm-py `test_errors.py [<lambda>5]`. Local `tools/ci.sh` on macOS was green. From W3c on, a wave merges only with GitHub CI green on its pull request as well as the local run.
