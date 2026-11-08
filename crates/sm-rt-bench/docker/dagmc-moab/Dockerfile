@@ -1,25 +1,39 @@
 # dagmc-moab: DAGMC with the MOAB OBB tree (no double-down), W3a recipe with pinned inputs.
 #
 # Build context: the crate directory (crates/sm-rt-bench). Build arguments come from docker/pins.env
-# (`smrt-bench docker-check` passes them). The driver sources are delivered with the runs
-# (RTBENCH-B) under drivers/.
+# (`smrt-bench docker-check` passes them). When docker/locks/<image>.<platform>.txt exists the conda
+# environment is created from that explicit lock (`smrt-bench docker-lock` writes it), else it is
+# solved against conda-forge. Versions of everything installed are recorded in /bench/versions.txt.
 ARG MINIFORGE_DIGEST
 FROM condaforge/miniforge3@sha256:${MINIFORGE_DIGEST}
 
+ARG MINIFORGE_DIGEST
 ARG DAGMC_VERSION=3.2.4
+ARG MOAB_VERSION=5.6.0
+ARG LOCKFILE=no-lock
 ARG HTTPS_PROXY
 ARG https_proxy
 
-RUN mamba create -y -n dagmc --override-channels -c https://conda.anaconda.org/conda-forge \
-        moab "dagmc=${DAGMC_VERSION}=*nodoubledown*" eigen cxx-compiler \
+# README.md is always present, so the glob matching nothing (no lock for this platform) is fine.
+COPY docker/locks/README.md docker/locks/${LOCKFILE}* /locks/
+RUN if [ -f "/locks/${LOCKFILE}" ]; then \
+        echo "creating the environment from /locks/${LOCKFILE}"; \
+        mamba create -y -n dagmc --file "/locks/${LOCKFILE}"; \
+    else \
+        mamba create -y -n dagmc --override-channels -c https://conda.anaconda.org/conda-forge \
+            "moab=${MOAB_VERSION}" "dagmc=${DAGMC_VERSION}=*nodoubledown*" eigen cxx-compiler; \
+    fi \
     && mamba clean -afy
 
 ENV CONDA_PREFIX=/opt/conda/envs/dagmc PATH=/opt/conda/envs/dagmc/bin:$PATH
 
 WORKDIR /bench
 COPY drivers/dagmc/ /bench/
-# Package versions go into every result file.
-RUN mamba list -n dagmc --export > /bench/conda-packages.txt
+# Identity of the image: package versions, the explicit lock of this solve, base digest, sources.
+RUN mamba list -n dagmc --export > /bench/versions.txt \
+    && mamba list -n dagmc --explicit --md5 > /bench/conda-explicit.txt \
+    && echo "${MINIFORGE_DIGEST}" > /bench/base-index-digest.txt \
+    && echo "conda-forge only (dagmc ${DAGMC_VERSION} nodoubledown)" > /bench/source-commits.txt
 RUN set -eux; \
     inc="$CONDA_PREFIX/include"; \
     cxx="$(ls $CONDA_PREFIX/bin/*-g++ | head -n1)"; \

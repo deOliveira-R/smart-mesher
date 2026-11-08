@@ -7,6 +7,7 @@ use crate::compare::Agreement;
 use crate::error::{BenchError, Result};
 use crate::rng::sha256_hex;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -216,8 +217,13 @@ pub struct ResultFile {
     pub env: Env,
     /// Source commit of the harness (empty when unknown).
     pub git_sha: String,
-    /// Docker image digest of the competitor (empty for in-process trackers).
+    /// Image id of the first competitor with an identity (empty for in-process trackers); kept
+    /// for old readers, `images` has every competitor.
     pub image_digest: String,
+    /// Identity of the image behind each competitor tracker (`dagmc-moab`, ...). Not part of
+    /// `result_hash`: the platform differs between machines on purpose.
+    #[serde(default)]
+    pub images: BTreeMap<String, ImageIdentity>,
     /// Rows.
     pub rows: Vec<Row>,
     /// Rows that could not be produced, each with the failing command or reason (never hashed).
@@ -228,6 +234,48 @@ pub struct ResultFile {
     pub notes: Vec<String>,
     /// SHA-256 over the non-timing fields of the rows.
     pub result_hash: String,
+}
+
+/// What identifies the image that produced the rows of a competitor. Read from the image after the
+/// build (`docker image inspect` plus the files the Dockerfile records under `/bench`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageIdentity {
+    /// `docker image inspect` `.Id`.
+    pub image_id: String,
+    /// First repo digest Docker lists (a local image's own `name@sha256:`), empty if none.
+    pub repo_digest: String,
+    /// Index digest of the base image (the pin in `docker/pins.env`).
+    pub base_index_digest: String,
+    /// `os/arch` of the image, e.g. `linux/arm64`.
+    pub platform: String,
+    /// Source commits built into the image, one entry per line of `/bench/source-commits.txt`.
+    pub source_commits: Vec<String>,
+    /// SHA-256 of the explicit conda lock of the image (empty when it has none).
+    pub conda_lock_sha256: String,
+    /// SHA-256 of `/bench/versions.txt` (conda export or `dpkg-query -W`).
+    pub versions_sha256: String,
+    /// MOAB version from `/bench/versions.txt` (empty when not listed).
+    pub moab_version: String,
+}
+
+/// The Docker Desktop VM as the container sees it. On macOS the container's CPU count, memory
+/// and kernel are the VM's, not the host's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DockerVm {
+    /// `docker info` `NCPU`.
+    pub ncpu: usize,
+    /// `docker info` `MemTotal`, bytes.
+    pub mem_total_bytes: u64,
+    /// `docker info` `KernelVersion`.
+    pub kernel: String,
+    /// `docker version` server version.
+    pub server_version: String,
+    /// `docker info` `OperatingSystem`.
+    pub operating_system: String,
+    /// First CPU model line of the container's `/proc/cpuinfo` (or a note when there is none).
+    pub container_cpu: String,
 }
 
 /// The non-timing view of a row that `result_hash` covers.
@@ -337,13 +385,16 @@ pub struct BenchEnv {
     pub rustc: String,
     /// Machine and moment.
     pub env: Env,
+    /// The Docker VM, when Docker answered at the time of the run.
+    #[serde(default)]
+    pub docker: Option<DockerVm>,
 }
 
 impl BenchEnv {
     /// Detect the current environment.
     pub fn detect() -> Self {
         let rustc = std::process::Command::new("rustc").arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-        Self { rustc, env: Env::detect() }
+        Self { rustc, env: Env::detect(), docker: None }
     }
 }
 
@@ -379,6 +430,45 @@ mod tests {
         assert_eq!(b.compute_hash().unwrap(), a.result_hash);
         b.rows[0].lost = 1;
         assert_ne!(b.compute_hash().unwrap(), a.result_hash);
+    }
+
+    #[test]
+    fn image_identity_round_trips_and_stays_out_of_the_result_hash() {
+        let id = ImageIdentity {
+            image_id: "sha256:abc".into(),
+            repo_digest: String::new(),
+            base_index_digest: "937d".into(),
+            platform: "linux/arm64".into(),
+            source_commits: vec!["double-down=437ad209eac5".into()],
+            conda_lock_sha256: "aa".into(),
+            versions_sha256: "bb".into(),
+            moab_version: "5.6.0".into(),
+        };
+        let text = serde_json::to_string(&id).unwrap();
+        assert_eq!(serde_json::from_str::<ImageIdentity>(&text).unwrap(), id);
+        let mut a = ResultFile::new("P1", "tiny", Env::default());
+        a.rows.push(Row { tracker: "dagmc-moab".into(), workload: "w-track".into(), threads: 1, ..Row::default() });
+        a.seal().unwrap();
+        let mut b = a.clone();
+        b.images.insert("dagmc-moab".into(), id);
+        b.image_digest = "sha256:abc".into();
+        assert_eq!(b.compute_hash().unwrap(), a.result_hash);
+        let back = ResultFile::from_json(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back, b);
+        // A file written before `images` existed still loads.
+        let mut v: serde_json::Value = serde_json::to_value(&a).unwrap();
+        v.as_object_mut().unwrap().remove("images");
+        assert!(ResultFile::from_json(&v.to_string()).unwrap().images.is_empty());
+    }
+
+    #[test]
+    fn bench_env_without_a_docker_block_still_loads() {
+        let e = BenchEnv { rustc: "rustc 1".into(), env: Env::default(), docker: Some(DockerVm { ncpu: 10, ..DockerVm::default() }) };
+        let text = serde_json::to_string(&e).unwrap();
+        assert_eq!(serde_json::from_str::<BenchEnv>(&text).unwrap(), e);
+        let mut v: serde_json::Value = serde_json::to_value(&e).unwrap();
+        v.as_object_mut().unwrap().remove("docker");
+        assert_eq!(serde_json::from_value::<BenchEnv>(v).unwrap().docker, None);
     }
 
     #[test]
