@@ -5,8 +5,9 @@
  * assigns sigma per NAME (smart-mesh and sm-rt never see a cross section) and passes one majorant
  * per node to every flight call. It then checks what fits a pin-cell lattice:
  *   i.   1e4 seeded lines: the segment lengths of the surface flight and of the delta flight both
- *        sum to the chord of the model's bounding box (tolerance 1e-12 x (1 + chord), widened for
- *        grazing lines by 0.05 / min|d_k| as in rulings R1 and R7);
+ *        sum to the chord of the model's bounding box. Tolerance 1e-12 x (1 + chord) x
+ *        max(1, 0.05 / min|d_k|): R7 gives 1e-12 x max(1, 0.05 / min|d_k|); the extra (1 + chord)
+ *        factor only widens it (worst/tol was 5.3e-15 against 1e-12, so the margin is large);
  *   ii.  an absorption-only source: the surface (track-length) and the delta (collision) flux
  *        estimates per region agree within 4 sigma, with fixed seeds;
  *   iii. an understated majorant for one node is caught by smrt_flight_check with -12 and the
@@ -77,7 +78,10 @@ typedef struct {
 } Model;
 
 static int64_t ridx(const Model *m, int64_t r) {
-    if (r == SMRT_COMPLEMENT) return m->comp;
+    if (r == SMRT_COMPLEMENT) {
+        MUST(m->comp >= 0); /* the file has no complement region: a complement segment is a bug */
+        return m->comp;
+    }
     MUST(r >= 0 && r < m->nreg);
     return r;
 }
