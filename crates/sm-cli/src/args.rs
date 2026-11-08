@@ -211,6 +211,10 @@ pub enum Command {
         /// OpenFOAM only: do not split cells that fail checkMesh's determinant check.
         #[arg(long)]
         no_split_small_determinant: bool,
+        /// OpenFOAM only: split warped faces into planar triangles (off by default; on warped
+        /// hex meshes it makes checkMesh's concave-cell check fail, see FOAM_FORMAT.md section 12).
+        #[arg(long)]
+        split_warped_faces: bool,
         /// OpenFOAM only: write this face set as an `empty` patch (2D cases); repeatable.
         #[arg(long, value_name = "SET")]
         empty_patch: Vec<String>,

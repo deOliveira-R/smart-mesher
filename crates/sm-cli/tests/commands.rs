@@ -723,6 +723,59 @@ fn export_json_is_the_export_result_and_bad_inputs_are_usage_errors() {
     }
 }
 
+fn export_with_notes(_: &Request) -> Result<Value, RpcError> {
+    Ok(json!({
+        "path": "a.smrt", "format": "smrt", "bytes": 42, "sha256": h("e").to_string(),
+        "notes": [
+            {"code": "smrt-region-names", "count": 1, "detail": "regions are named by volume id (no blocks)", "severity": "warning"},
+            {"code": "foam.small_det_split", "count": 3, "detail": "split cells"}
+        ]
+    }))
+}
+
+#[test]
+fn export_notes_go_to_stderr_and_stdout_is_unchanged() {
+    let o = go_with(&["export", "a.smrt", "--memory"], "", Box::new(export_with_notes));
+    assert_eq!(o.code, 0);
+    assert!(o.out.starts_with("wrote a.smrt (42 bytes, sha256 ") && o.out.lines().count() == 1, "{}", o.out);
+    assert_eq!(
+        o.err.lines().collect::<Vec<_>>(),
+        [
+            "warning: smrt-region-names: regions are named by volume id (no blocks)",
+            "note: foam.small_det_split: split cells (x3)"
+        ]
+    );
+}
+
+#[test]
+fn export_json_stdout_is_the_raw_result_and_warnings_still_reach_stderr() {
+    let o = go_with(&["export", "a.smrt", "--json", "--memory"], "", Box::new(export_with_notes));
+    assert_eq!(o.code, 0);
+    assert_eq!(o.out.lines().count(), 1);
+    assert_eq!(o.json(), export_with_notes(&Request::Status).unwrap());
+    assert_eq!(o.json()["notes"][0]["severity"], "warning");
+    assert_eq!(
+        o.err.lines().collect::<Vec<_>>(),
+        ["warning: smrt-region-names: regions are named by volume id (no blocks)"]
+    );
+}
+
+#[test]
+fn export_without_notes_prints_nothing_on_stderr() {
+    for args in [&["export", "a.smsh", "--memory"][..], &["export", "a.smsh", "--json", "--memory"]] {
+        let o = go(args);
+        assert_eq!((o.code, o.err.as_str()), (0, ""), "{args:?}");
+    }
+}
+
+#[test]
+fn export_split_warped_faces_flag_sets_the_request_field() {
+    let on = go(&["export", "case", "--format", "openfoam", "--split-warped-faces", "--memory"]);
+    assert!(matches!(&on.requests[0], Request::Export { split_warped_faces: true, .. }));
+    let off = go(&["export", "case", "--format", "openfoam", "--memory"]);
+    assert!(matches!(&off.requests[0], Request::Export { split_warped_faces: false, .. }));
+}
+
 // ---- transports ----------------------------------------------------------------------------
 
 #[test]
