@@ -327,6 +327,15 @@ fn b6_auto_next_to_a_hard_tet_neighbour_falls_back_to_a_conformal_scheme() {
     assert!(vols.iter().any(|r| r.scheme == "tetmesh"), "left stays tetmesh: {rows:?}");
     assert!(vols.iter().any(|r| r.scheme != "tetmesh" && r.scheme != "map"), "right is not map: {rows:?}");
     assert_eq!(i["cell_shapes"], json!({"Tet": 160, "Wedge": 32}), "observed on the final code: {i}");
+    // The right volume's rejected `map` attempt is not observable through the public API: `mesh.auto` stores
+    // explicit assignments (`intent#0`, empty `alternatives` in `mesh.plan`), the replan runs in a scratch
+    // plan, `mesh.auto` emits no diagnostic when it does not fall to tets, and a plan before `mesh.auto` has no
+    // surface or volume rows for this model. What is observable is the outcome and its recorded reason.
+    let right = rows.iter().find(|r| r.kind == "volume" && r.scheme == "sweep").expect("right volume sweeps");
+    assert_eq!(right.how, "intent#0", "{rows:?}");
+    let report = query(&mut s, "mesh.plan", json!({"mesh": "Mesh#1"}));
+    let reason = report["entities"].as_array().expect("entities").iter().find(|e| e["target"] == right.target.as_str()).expect("row")["reason"].as_str().expect("reason").to_owned();
+    assert!(reason.contains("1-to-1 sweepable from"), "{reason}");
 
     // With the right volume also explicit, the hard neighbours mesh and the interface conforms.
     let mut t = server();
@@ -515,9 +524,8 @@ fn census_of_the_fixture_models_and_the_repository_scripts() {
         }
     }
     // Scripts export to relative paths; send those to a temporary directory so the tree stays clean.
-    let tmp = std::env::temp_dir().join(format!("sm-server-census-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).expect("temp dir");
-    let out = format!("\"{}/", tmp.display());
+    let tmp = TempDir::new("census");
+    let out = format!("\"{}/", tmp.path().display());
     let (mut volumes_seen, mut changed, mut report) = (0usize, 0usize, String::new());
     for (name, text) in &corpus {
         let text = text.replace("\"out.", &out);
@@ -537,7 +545,7 @@ fn census_of_the_fixture_models_and_the_repository_scripts() {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&tmp);
+    drop(tmp);
     println!("census: {} models, {volumes_seen} volumes, {changed} changed\n{report}", corpus.len());
     assert!(volumes_seen >= corpus.len() - 1);
     // The cases the acceptance fixtures are built for must be among the changed rows.
@@ -620,10 +628,64 @@ fn pin_enclosed_is_all_tet_in_both_creation_orders() {
         assert_eq!(i["cell_shapes"], json!({"Tet": 733}), "brick_first={brick_first}: {i}");
         assert!((i["volume"].as_f64().expect("volume") - PIN_VOLUME).abs() < 1e-12, "{i}");
         assert!(valid(&mut s));
+        assert_eq!(i["rejections"], 0, "the replan runs in a scratch plan inside mesh.auto: {i}");
         let w = auto_tet(&run);
         assert_eq!(w.len(), 2, "one warning per volume: {w:?}");
         assert!(w.iter().all(|d| d["entities"].as_array().map(Vec::len) == Some(1)), "{w:?}");
+        // Each warning quotes why map and sweep were passed over, and ends with the fix.
+        for d in &w {
+            let msg = d["message"].as_str().expect("message");
+            assert!(msg.contains("passed over: map: ") && msg.contains("map needs exactly 6; sweep: "), "{msg}");
+            assert!(msg.contains("To keep hexes: `mesh.scheme"), "{msg}");
+        }
+        if brick_first {
+            // Entity ids are fixed by the creation order: fuel is Volume#2, moderator Volume#4.
+            let text_of = |v: &str| {
+                let d = w.iter().find(|d| d["entities"] == json!([v])).unwrap_or_else(|| panic!("no warning for {v}: {w:?}"));
+                d["message"].as_str().expect("message").to_owned()
+            };
+            let fuel = text_of("TopoVolume#2");
+            assert!(fuel.contains("map: 3 faces; map needs exactly 6"), "{fuel}");
+            assert!(fuel.contains("sweep: rejected after a NotApplicable failure in Resolve"), "{fuel}");
+            assert!(fuel.contains("overridden by imposition"), "{fuel}");
+            let moderator = text_of("TopoVolume#4");
+            assert!(moderator.contains("map: 9 faces; map needs exactly 6"), "{moderator}");
+            assert!(moderator.contains("sweep: no pair of faces gives columns"), "{moderator}");
+        }
     }
+}
+
+/// The through pin's stored plan: the cylinder and the moderator are each a sweep from a pave source with a
+/// copy target; the side faces and the shared cylinder face are map (imposed by the sweeps).
+#[test]
+fn pin_through_plan_rows_are_sweeps_of_pave_sources_with_copy_targets() {
+    let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)));
+    assert_eq!(i["rejections"], 0, "{i}");
+    let report = query(&mut s, "mesh.plan", json!({"mesh": "Mesh#1"}));
+    let rows = plan_rows(&report);
+    // Fuel is Volume#2, moderator Volume#4 (brick first).
+    for v in ["TopoVolume#2", "TopoVolume#4"] {
+        let r = scheme_of(&rows, v);
+        assert_eq!((r.kind.as_str(), r.scheme.as_str(), r.how.as_str()), ("volume", "sweep", "intent#0"), "{v}: {rows:?}");
+    }
+    assert_eq!(rows.iter().filter(|r| r.kind == "volume").count(), 2, "{rows:?}");
+    let pave = faces_by_scheme(&rows, "pave");
+    assert_eq!(pave.len(), 2, "one pave source per volume: {rows:?}");
+    assert!(pave.iter().all(|r| r.how == "intent#0"), "{pave:?}");
+    let copies: Vec<&Row> = rows.iter().filter(|r| r.kind == "surface" && r.scheme == "copy").collect();
+    assert_eq!(copies.len(), 2, "one copy target per volume: {rows:?}");
+    // Every copy target copies one of the pave sources.
+    let sources: Vec<&str> = pave.iter().map(|r| r.target.as_str()).collect();
+    for c in &copies {
+        let e = report["entities"].as_array().expect("entities").iter().find(|e| e["target"] == c.target.as_str()).expect("copy entity");
+        let of = e["copy_of"].as_str().unwrap_or_else(|| panic!("copy_of: {e}"));
+        assert!(sources.contains(&of), "{} copies {of}, sources {sources:?}", c.target);
+    }
+    // The four brick sides and the cylinder face map; nothing else is a face scheme.
+    let mut map: Vec<&str> = faces_by_scheme(&rows, "map").iter().map(|r| r.target.as_str()).collect();
+    map.sort();
+    assert_eq!(map, ["TopoFace#1", "TopoFace#2", "TopoFace#3", "TopoFace#4", "TopoFace#9"], "{rows:?}");
+    assert_eq!(rows.iter().filter(|r| r.kind == "surface").count(), 9, "{rows:?}");
 }
 
 /// 3x3 lattices by `model.copy`: 18 volumes each, through all-hex, enclosed all-tet.
@@ -633,7 +695,7 @@ fn pin_lattices_through_and_enclosed() {
     let (mut s, _, i) = run_info(&format!("{}{RUN_ALL}", lattice_fixture(0.8)));
     assert_eq!(i["selection"].as_array().map(Vec::len), Some(18));
     assert_eq!(i["cell_shapes"], json!({"Tet": 6647}), "{i}");
-    assert!((i["volume"].as_f64().expect("volume") - 9.0 * PIN_VOLUME).abs() < 1e-9, "{i}");
+    assert!((i["volume"].as_f64().expect("volume") - 9.0 * PIN_VOLUME).abs() < 1e-12, "{i}");
     assert!(valid(&mut s));
 }
 
@@ -670,40 +732,47 @@ fn pin_runs_are_deterministic_across_runs_and_thread_counts() {
     assert_eq!(distinct.len(), a.len(), "the scenarios are different states");
 }
 
-/// In-process, CLI (`smesh run`) and MCP (`run_script`) agree on the through-lattice and enclosed-pin hashes.
+/// In-process, CLI (`smesh run --print-hash`) and MCP (`run_script`) reach the same state hash for `text`.
+fn assert_three_way_hash(name: &str, text: &str) {
+    let mut direct = server();
+    ok(&mut direct, text);
+    let want = state_hash(&mut direct);
+
+    let dir = TempDir::new("pin-cli");
+    let file = dir.path().join("pin.smesh");
+    std::fs::write(&file, text).expect("write script");
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut input = std::io::Cursor::new(Vec::new());
+    let mut io = sm_cli::Io { stdin: &mut input, stdout: &mut out, stderr: &mut err };
+    let mut connect = |s: &sm_cli::Settings| sm_cli::connect_standard(s);
+    let args = ["smesh", "--memory", "--author", "tester", "--fixed-time", TIME, "run", file.to_str().expect("utf8"), "--print-hash"];
+    let code = sm_cli::run(args, &mut connect, &mut io);
+    let stdout = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(code, 0, "{name}: {} {}", stdout, String::from_utf8_lossy(&err));
+    assert_eq!(stdout.lines().last(), Some(want.as_str()), "{name}: CLI hash");
+
+    let mut m = server();
+    let msgs = [
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_script","arguments":{"text": text}}}),
+    ];
+    let input: String = msgs.iter().map(|m| format!("{m}\n")).collect();
+    let mut out = Vec::new();
+    sm_mcp::run_stdio(&mut m, std::io::Cursor::new(input.into_bytes()), &mut out).expect("mcp");
+    let replies: Vec<Value> = String::from_utf8(out).expect("utf8").lines().map(|l| serde_json::from_str(l).expect("json")).collect();
+    assert_ne!(replies[1]["result"]["isError"], json!(true), "{name}: {}", replies[1]);
+    assert_eq!(state_hash(&mut m), want, "{name}: MCP hash");
+}
+
+/// In-process, CLI and MCP agree on the single through pin, the through lattice, the enclosed pin and B5.
 #[test]
 fn pin_hashes_are_equal_in_process_cli_and_mcp() {
     for (name, text) in [
+        ("through pin", format!("{}{RUN_ALL}", pin_fixture(1.0, true))),
         ("lattice", format!("{}{RUN_ALL}", lattice_fixture(1.0))),
         ("enclosed", format!("{}{RUN_ALL}", pin_fixture(0.8, true))),
+        ("b5 plate", format!("{PLATE}{RUN}")),
     ] {
-        let mut direct = server();
-        ok(&mut direct, &text);
-        let want = state_hash(&mut direct);
-
-        let dir = TempDir::new("pin-cli");
-        let file = dir.path().join("pin.smesh");
-        std::fs::write(&file, &text).expect("write script");
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let mut input = std::io::Cursor::new(Vec::new());
-        let mut io = sm_cli::Io { stdin: &mut input, stdout: &mut out, stderr: &mut err };
-        let mut connect = |s: &sm_cli::Settings| sm_cli::connect_standard(s);
-        let args = ["smesh", "--memory", "--author", "tester", "--fixed-time", TIME, "run", file.to_str().expect("utf8"), "--print-hash"];
-        let code = sm_cli::run(args, &mut connect, &mut io);
-        let stdout = String::from_utf8_lossy(&out).into_owned();
-        assert_eq!(code, 0, "{name}: {} {}", stdout, String::from_utf8_lossy(&err));
-        assert_eq!(stdout.lines().last(), Some(want.as_str()), "{name}: CLI hash");
-
-        let mut m = server();
-        let msgs = [
-            json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
-            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_script","arguments":{"text": text}}}),
-        ];
-        let input: String = msgs.iter().map(|m| format!("{m}\n")).collect();
-        let mut out = Vec::new();
-        sm_mcp::run_stdio(&mut m, std::io::Cursor::new(input.into_bytes()), &mut out).expect("mcp");
-        let replies: Vec<Value> = String::from_utf8(out).expect("utf8").lines().map(|l| serde_json::from_str(l).expect("json")).collect();
-        assert_ne!(replies[1]["result"]["isError"], json!(true), "{name}: {}", replies[1]);
-        assert_eq!(state_hash(&mut m), want, "{name}: MCP hash");
+        assert_three_way_hash(name, &text);
     }
 }

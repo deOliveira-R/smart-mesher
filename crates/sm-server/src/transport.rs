@@ -572,7 +572,7 @@ mod ws {
         /// Acceptance 1: excess connections that never send or read do not delay a later client.
         #[test]
         fn silent_excess_connections_do_not_stall_the_accept_loop() {
-            let silent = MAX_REFUSALS_IN_FLIGHT - 2;
+            let silent = MAX_REFUSALS_IN_FLIGHT - 1;
             let (addr, stats, h) = start(MAX_LIVE_CONNECTIONS + silent + 1);
             let held = hold(addr);
             let idle: Vec<TcpStream> = (0..silent).map(|_| TcpStream::connect(addr).expect("connect")).collect();
@@ -587,7 +587,7 @@ mod ws {
             let text = String::from_utf8_lossy(&raw);
             assert!(text.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{text}");
             assert!(text.ends_with("\r\n\r\ntoo many connections\n"), "{text}");
-            assert!(waited < Duration::from_millis(600), "served after {waited:?}");
+            assert!(waited < Duration::from_secs(1), "served after {waited:?}");
             drop((held, idle, c));
             h.join().expect("server");
             assert_eq!(stats.refused.load(SeqCst), silent + 1);

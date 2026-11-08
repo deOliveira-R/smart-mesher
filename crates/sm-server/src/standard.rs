@@ -261,31 +261,51 @@ pub fn standard() -> WorkspaceBuilder {
 #[cfg(test)]
 mod opening_tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::time::Duration;
 
     use sm_op_api::{Plugin, Registry, RegistryError};
 
     use super::*;
     use crate::Server;
 
-    /// Waits on a barrier while `OPENING` is set, so two opens overlap for certain.
-    struct Rendezvous(Arc<Barrier>);
+    /// Meets the other open while `OPENING` is set, so two opens overlap for certain. Unlike a
+    /// barrier, a partner that never comes fails the open after a timeout instead of hanging.
+    struct Rendezvous(Sender<()>, Mutex<Receiver<()>>);
 
     impl Plugin for Rendezvous {
         fn id(&self) -> &str {
             "test.rendezvous"
         }
         fn register(&self, _: &mut Registry) -> Result<(), RegistryError> {
-            self.0.wait();
-            Ok(())
+            self.0.send(()).map_err(|_| RegistryError::BadOpName("rendezvous: partner gone".into()))?;
+            let rx = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+            rx.recv_timeout(Duration::from_secs(10)).map_err(|_| RegistryError::BadOpName("rendezvous: timed out".into()))
         }
     }
 
-    fn scratch(tag: &str) -> PathBuf {
+    /// A scratch directory removed on drop, also when the test panics.
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(tag: &str) -> Scratch {
         let p = std::env::temp_dir().join(format!("sm-server-opening-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("scratch dir");
-        p
+        Scratch(p)
     }
 
     fn opening() -> Option<PathBuf> {
@@ -317,14 +337,15 @@ mod opening_tests {
         for (i, d) in dirs.iter().enumerate() {
             drop(Server::create(standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into())), d, &format!("p{i}")).expect("create"));
         }
-        let barrier = Arc::new(Barrier::new(2));
+        let ((tx_a, rx_a), (tx_b, rx_b)) = (channel(), channel());
+        let mut ends = [Some(Rendezvous(tx_a, Mutex::new(rx_b))), Some(Rendezvous(tx_b, Mutex::new(rx_a)))];
         let payloads: [&[u8]; 2] = [b"payload for project a", b"payload for project b"];
         let sha = std::thread::scope(|s| {
             let hs: Vec<_> = (0..2)
                 .map(|i| {
-                    let (dir, barrier) = (dirs[i].clone(), Arc::clone(&barrier));
+                    let (dir, end) = (dirs[i].clone(), ends[i].take().expect("one end per thread"));
                     s.spawn(move || {
-                        let b = standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into())).plugin(Rendezvous(barrier));
+                        let b = standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into())).plugin(end);
                         let server = Server::open(b, &dir).expect("open");
                         assert_eq!(opening(), None, "OPENING is clear after open on this thread");
                         server.stage_input(payloads[i]).expect("stage").sha256
@@ -339,7 +360,6 @@ mod opening_tests {
             assert!(own.iter().any(|f| f.contains(&sha[i])), "project {i} holds its own blob: {own:?}");
             assert!(!other.iter().any(|f| f.contains(&sha[i])), "project {} does not hold project {i}'s blob: {other:?}", 1 - i);
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An `open` that fails (no such project) still leaves `OPENING` clear.
@@ -352,9 +372,8 @@ mod opening_tests {
         // The guard also restores an outer binding when opens nest.
         with_opening(&root, || {
             with_opening(&missing, || ());
-            assert_eq!(opening().as_deref(), Some(root.as_path()));
+            assert_eq!(opening().as_deref(), Some(&*root));
         });
         assert_eq!(opening(), None);
-        let _ = std::fs::remove_dir_all(&root);
     }
 }
