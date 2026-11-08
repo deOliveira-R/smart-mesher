@@ -251,7 +251,8 @@ impl Server {
                 let (state, layers) = self.host().hash_at(at.as_ref())?;
                 to_json(&HashResult::new(state, layers))
             }
-            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches } => {
+            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, split_warped_faces: _ } => {
+                // `split_warped_faces` is wired through `ExportParams` by W3c-EXPORT-A.
                 let r = self.host().export(&ExportParams {
                     path,
                     format,

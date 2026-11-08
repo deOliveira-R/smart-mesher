@@ -33,8 +33,8 @@ pub use error::{
 };
 pub use request::{ExportFormat, METHODS, RecordCheck, RecordForks, Request};
 pub use result::{
-    ApplyResult, CatalogResult, ExportNote, ExportResult, ExportedFile, HashResult, ScriptRecordResult,
-    ScriptResult, StatusResult,
+    ApplyResult, CatalogResult, ExportNote, ExportResult, ExportedFile, HashResult, NoteSeverity,
+    ScriptRecordResult, ScriptResult, StatusResult,
 };
 
 /// Protocol version carried in [`CatalogResult::protocol`]. 0 means unstable until W3: any

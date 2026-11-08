@@ -647,7 +647,8 @@ fn export_infers_the_format_from_the_extension() {
             options: None,
             split_small_determinant: None,
             empty_patches: vec![],
-            wedge_patches: vec![]
+            wedge_patches: vec![],
+            split_warped_faces: false,
         }]
     );
     assert!(
