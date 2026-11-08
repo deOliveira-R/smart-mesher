@@ -67,6 +67,7 @@ fn export_req(path: &Path, format: Option<ExportFormat>, options: Option<Value>)
         split_small_determinant: None,
         empty_patches: vec![],
         wedge_patches: vec![],
+        split_warped_faces: false,
     }
 }
 
@@ -214,6 +215,7 @@ fn loss_notes_carry_the_format_codes() {
             split_small_determinant: None,
             empty_patches: vec![],
             wedge_patches: vec![],
+            split_warped_faces: false,
         })
         .expect("inline");
     let inline: ExportResult = serde_json::from_value(v).expect("result");

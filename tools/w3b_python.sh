@@ -12,7 +12,11 @@ VENV="${1:?usage: w3b_python.sh <venv-dir>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-python3}"
 
-[ -x "$VENV/bin/python" ] || "$PYTHON" -m venv "$VENV"
+# A cached target/ (CI rust-cache) can restore a partial venv; rebuild unless it is whole.
+if [ ! -x "$VENV/bin/python" ] || [ ! -f "$VENV/bin/activate" ]; then
+  rm -rf "$VENV"
+  "$PYTHON" -m venv "$VENV"
+fi
 # shellcheck disable=SC1091
 . "$VENV/bin/activate"
 if ! pip install --quiet numpy maturin >&2; then

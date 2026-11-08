@@ -108,6 +108,7 @@ fn cases() -> Vec<(Request, Value)> {
                 split_small_determinant: None,
                 empty_patches: vec![],
                 wedge_patches: vec![],
+                split_warped_faces: false,
             },
             json!({"method": "session.export", "params": {"path": "out.vtu", "format": "vtu", "mesh": "TopoVolume#7", "provenance": true, "inline": true}}),
         ),
@@ -122,6 +123,7 @@ fn cases() -> Vec<(Request, Value)> {
                 split_small_determinant: None,
                 empty_patches: vec![],
                 wedge_patches: vec![],
+                split_warped_faces: false,
             },
             json!({"method": "session.export", "params": {"format": "smsh"}}),
         ),
@@ -136,6 +138,7 @@ fn cases() -> Vec<(Request, Value)> {
                 split_small_determinant: Some(false),
                 empty_patches: vec!["front".into(), "back".into()],
                 wedge_patches: vec!["w".into()],
+                split_warped_faces: false,
             },
             json!({"method": "session.export", "params": {"path": "case", "format": "openfoam", "split_small_determinant": false, "empty_patches": ["front", "back"], "wedge_patches": ["w"]}}),
         ),
@@ -150,8 +153,24 @@ fn cases() -> Vec<(Request, Value)> {
                 split_small_determinant: None,
                 empty_patches: vec![],
                 wedge_patches: vec![],
+                split_warped_faces: false,
             },
             json!({"method": "session.export", "params": {"path": "m.msh", "format": "gmsh", "options": {"binary": true}}}),
+        ),
+        (
+            Request::Export {
+                path: Some("case".into()),
+                format: Some(ExportFormat::Openfoam),
+                mesh: None,
+                provenance: false,
+                inline: false,
+                options: None,
+                split_small_determinant: None,
+                empty_patches: vec![],
+                wedge_patches: vec![],
+                split_warped_faces: true,
+            },
+            json!({"method": "session.export", "params": {"path": "case", "format": "openfoam", "split_warped_faces": true}}),
         ),
         (
             Request::ScriptRecord {
@@ -202,6 +221,7 @@ const NAMES: &[&str] = &[
     "session.export.minimal",
     "session.export.openfoam_2d",
     "session.export.gmsh_options",
+    "session.export.openfoam_warp",
     "script.record.default",
     "script.record.full",
     "session.save",
@@ -327,6 +347,23 @@ fn every_method_is_covered_and_listed() {
 }
 
 #[test]
+fn note_severity_wire() {
+    use sm_protocol::{ExportNote, NoteSeverity};
+    let info = ExportNote::new("a", 1, "d");
+    assert_eq!(serde_json::to_value(&info).unwrap(), json!({"code": "a", "count": 1, "detail": "d"}));
+    assert!(!info.is_warning());
+    let w = ExportNote::warning("a", 1, "d");
+    assert_eq!(serde_json::to_value(&w).unwrap(), json!({"code": "a", "count": 1, "detail": "d", "severity": "warning"}));
+    assert!(w.is_warning());
+    let back: ExportNote = serde_json::from_value(json!({"code": "a", "count": 1, "detail": "d"})).unwrap();
+    assert_eq!(back.severity, NoteSeverity::Info);
+    assert_eq!(serde_json::from_value::<ExportNote>(serde_json::to_value(&w).unwrap()).unwrap(), w);
+    // `false` is skipped, so the pre-existing request goldens are byte-identical.
+    let off: Request = serde_json::from_value(json!({"method": "session.export", "params": {"split_warped_faces": false}})).unwrap();
+    assert!(!serde_json::to_string(&off).unwrap().contains("split_warped_faces"));
+}
+
+#[test]
 fn optional_fields_accept_missing_and_null() {
     let r: Request = serde_json::from_value(
         json!({"method": "session.export", "params": {"path": null, "format": null, "mesh": null}}),
@@ -343,7 +380,8 @@ fn optional_fields_accept_missing_and_null() {
             options: None,
             split_small_determinant: None,
             empty_patches: vec![],
-            wedge_patches: vec![]
+            wedge_patches: vec![],
+            split_warped_faces: false,
         }
     );
     let r: Request =
@@ -523,6 +561,13 @@ fn result_golden_and_round_trip() {
     );
     rt(&mut m, "export.inline", &ExportResult::new(None, ExportFormat::Vtu, 3, h(8)).with_base64("AAEC"),
         json!({"path": null, "format": "vtu", "bytes": 3, "sha256": hs(8), "base64": "AAEC"}),
+    );
+
+    rt(&mut m, "export.warning_note",
+        &ExportResult::new(Some("a.smrt".into()), ExportFormat::Smrt, 5, h(7))
+            .with_notes(vec![sm_protocol::ExportNote::warning("smrt-region-names", 1, "regions are named by volume id")]),
+        json!({"path": "a.smrt", "format": "smrt", "bytes": 5, "sha256": hs(7),
+               "notes": [{"code": "smrt-region-names", "count": 1, "detail": "regions are named by volume id", "severity": "warning"}]}),
     );
 
     rt(&mut m, "script", &ScriptResult::new(h(9), "ok\n", vec![json!({"cmd": "brick"})], json!([])),

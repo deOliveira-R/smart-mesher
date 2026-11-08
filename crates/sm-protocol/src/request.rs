@@ -241,6 +241,9 @@ pub enum Request {
         /// OpenFOAM only: names of face (side) sets written as `wedge` patches (axisymmetric).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         wedge_patches: Vec<String>,
+        /// OpenFOAM only: split warped faces into planar triangles. Off when absent.
+        #[serde(default, skip_serializing_if = "is_false")]
+        split_warped_faces: bool,
     },
     /// Persist pending state to disk: result is a [`StatusResult`](crate::StatusResult).
     #[serde(rename = "session.save")]

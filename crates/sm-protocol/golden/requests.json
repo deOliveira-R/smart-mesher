@@ -105,6 +105,14 @@
       ]
     }
   },
+  "session.export.openfoam_warp": {
+    "method": "session.export",
+    "params": {
+      "format": "openfoam",
+      "path": "case",
+      "split_warped_faces": true
+    }
+  },
   "session.hash.at_empty": {
     "method": "session.hash",
     "params": {

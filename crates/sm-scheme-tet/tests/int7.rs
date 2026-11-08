@@ -221,14 +221,30 @@ fn tiled_relief_n64_recovers_without_restarts() {
     assert_eq!(st.n_lookup_rebuilds, 0);
 }
 
-/// Stacked twisted prisms (ring `k` at height `z`, rotated by `rot` degrees): the towers need
-/// interior points, so their builds restart with a pocket point and hints.
+/// Ring vertices `(cos a, sin a)` for `a = TAU * i / 3 + rot` with `rot` = 0 or 20 degrees, as
+/// bit patterns: libm `cos` differs by one ulp between macOS and glibc (cos(TAU/3)), which flips
+/// whether the k = 3 tower restarts. Pinned bits give every platform the same input.
+const RING_BITS: [[(u64, u64); 3]; 2] = [
+    [
+        (0x3FF0_0000_0000_0000, 0x0000_0000_0000_0000),
+        (0xBFDF_FFFF_FFFF_FFFD, 0x3FEB_B67A_E858_4CAB),
+        (0xBFE0_0000_0000_0004, 0xBFEB_B67A_E858_4CA8),
+    ],
+    [
+        (0x3FEE_11F6_4252_2D1C, 0x3FD5_E3A8_748A_0BF5),
+        (0xBFE8_836F_A2CF_5038, 0x3FE4_91B7_523C_161E),
+        (0xBFC6_3A1A_7E0B_73A8, 0xBFEF_838B_8C81_1C16),
+    ],
+];
+
+/// Stacked twisted prisms (ring `k` at height `z`, rotated by `rot` degrees, 0 or 20): the towers
+/// need interior points, so their builds restart with a pocket point and hints.
 fn tower(rings: &[(f64, f64)]) -> SurfaceInput {
     let mut points = Vec::new();
     for &(z, rot) in rings {
-        for i in 0..3 {
-            let a = std::f64::consts::TAU * f64::from(i) / 3.0 + rot.to_radians();
-            points.push([a.cos(), a.sin(), z]);
+        let ring = if rot == 0.0 { &RING_BITS[0] } else { assert_eq!(rot, 20.0); &RING_BITS[1] };
+        for &(c, s) in ring {
+            points.push([f64::from_bits(c), f64::from_bits(s), z]);
         }
     }
     let top = 3 * (rings.len() as u32 - 1);

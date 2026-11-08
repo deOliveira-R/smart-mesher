@@ -99,6 +99,25 @@ impl ExportedFile {
     }
 }
 
+/// How loudly an export note should be surfaced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum NoteSeverity {
+    /// Informational: what the format could not carry. The default, never serialised.
+    #[default]
+    Info,
+    /// The export succeeded but the user should act on it (for example a fallback was taken).
+    Warning,
+}
+
+impl NoteSeverity {
+    /// True for [`NoteSeverity::Info`] (serde skip predicate).
+    pub fn is_info(&self) -> bool {
+        matches!(self, NoteSeverity::Info)
+    }
+}
+
 /// One loss or format note of an export (what the format could not carry).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -109,12 +128,25 @@ pub struct ExportNote {
     pub count: u64,
     /// Human-readable detail.
     pub detail: String,
+    /// Severity; `Info` when absent on the wire and skipped when `Info`.
+    #[serde(default, skip_serializing_if = "NoteSeverity::is_info")]
+    pub severity: NoteSeverity,
 }
 
 impl ExportNote {
-    /// A note.
+    /// An informational note.
     pub fn new(code: impl Into<String>, count: u64, detail: impl Into<String>) -> Self {
-        Self { code: code.into(), count, detail: detail.into() }
+        Self { code: code.into(), count, detail: detail.into(), severity: NoteSeverity::Info }
+    }
+
+    /// A warning note.
+    pub fn warning(code: impl Into<String>, count: u64, detail: impl Into<String>) -> Self {
+        Self { severity: NoteSeverity::Warning, ..Self::new(code, count, detail) }
+    }
+
+    /// True when the severity is [`NoteSeverity::Warning`].
+    pub fn is_warning(&self) -> bool {
+        self.severity == NoteSeverity::Warning
     }
 
     /// Parse the `code: detail xcount` line an exporter reports. A `code: detail` line with a
