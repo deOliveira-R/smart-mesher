@@ -282,3 +282,49 @@ fn export_request_switches_the_openfoam_split_off() {
         .expect("owner");
     assert_eq!(owner.bytes, want.bytes);
 }
+
+fn foam_bytes(b: &sm_fem::ExportBundle, name: &str) -> Vec<u8> {
+    b.files.iter().find(|f| f.name.ends_with(name)).map(|f| f.bytes.clone()).unwrap_or_else(|| panic!("no {name}"))
+}
+
+#[test]
+fn split_warped_faces_is_off_by_default_and_changes_only_warped_meshes() {
+    let r = fixture_rig("warped_hex");
+    let req = ExportRequest::new(ExportFormat::OpenFoam);
+    assert!(!req.split_warped_faces, "default is off");
+    let off = export_files(r.state(), &req).expect("off");
+    assert!(off.notes.iter().all(|n| !n.starts_with("foam.warped_faces_split")), "{:?}", off.notes);
+    let on = export_files(r.state(), &req.clone().split_warped_faces(true)).expect("on");
+    assert!(on.notes.iter().any(|n| n.starts_with("foam.warped_faces_split")), "{:?}", on.notes);
+    assert_ne!(foam_bytes(&on, "/faces"), foam_bytes(&off, "/faces"));
+    // Setting the flag back off gives the default bytes.
+    let back = export_files(r.state(), &req.split_warped_faces(false)).expect("back");
+    assert_eq!(foam_bytes(&back, "/faces"), foam_bytes(&off, "/faces"));
+    assert_eq!(foam_bytes(&back, "/owner"), foam_bytes(&off, "/owner"));
+    assert_eq!(foam_bytes(&back, "/points"), foam_bytes(&off, "/points"));
+}
+
+#[test]
+fn split_warped_faces_leaves_planar_meshes_byte_identical() {
+    let r = fixture_rig("planar_hex");
+    let off = export_files(r.state(), &ExportRequest::new(ExportFormat::OpenFoam)).expect("off");
+    let on = export_files(r.state(), &ExportRequest::new(ExportFormat::OpenFoam).split_warped_faces(true)).expect("on");
+    assert!(on.notes.iter().all(|n| !n.starts_with("foam.warped_faces_split")), "{:?}", on.notes);
+    for f in ["/faces", "/owner", "/neighbour", "/points", "/boundary"] {
+        assert_eq!(foam_bytes(&on, f), foam_bytes(&off, f), "{f}");
+    }
+}
+
+#[test]
+fn split_warped_faces_output_is_deterministic_across_threads() {
+    let r = fixture_rig("warped_hex");
+    let req = ExportRequest::new(ExportFormat::OpenFoam).split_warped_faces(true);
+    let a = export_files(r.state(), &req).expect("a");
+    let b = export_files(r.state(), &req).expect("b");
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let c = one.install(|| export_files(r.state(), &req).expect("c"));
+    let hash = |x: &sm_fem::ExportBundle| x.files.iter().map(|f| (f.name.clone(), f.bytes.clone())).collect::<Vec<_>>();
+    assert_eq!(hash(&a), hash(&b));
+    assert_eq!(hash(&a), hash(&c));
+    assert_eq!(a.notes, c.notes);
+}

@@ -10,7 +10,7 @@ use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
 use sm_meshio::report::LossReport;
 use sm_model_api::BoundaryKind;
 use sm_op_api::State;
-use sm_protocol::ExportFormat;
+use sm_protocol::{ExportFormat, ExportNote};
 use sm_rt::MeshTrackerBuilder;
 use sm_rt_api::{
     BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, ResponseKind, ResponseMap, RtError, Tracker,
@@ -27,11 +27,11 @@ pub(crate) fn handles(format: ExportFormat) -> bool {
 /// Bytes and loss notes (`code: detail xcount`) of one export.
 pub(crate) struct Written {
     pub bytes: Vec<u8>,
-    pub notes: Vec<String>,
+    pub notes: Vec<ExportNote>,
 }
 
-fn notes_of(loss: &LossReport) -> Vec<String> {
-    loss.items.iter().map(|i| format!("{}: {} x{}", i.code, i.detail, i.count)).collect()
+fn notes_of(loss: &LossReport) -> Vec<ExportNote> {
+    loss.items.iter().map(|i| ExportNote::parse(&format!("{}: {} x{}", i.code, i.detail, i.count))).collect()
 }
 
 /// The options object of `format`: absent or `null` is empty; anything else must be an object
@@ -179,9 +179,16 @@ fn smrt(state: &State, named: Option<EntityId>) -> Result<Written, SessionError>
 /// Region rule of the `.smrt` (Q2): regions are named after the blocks (the material groups that
 /// become `mat:<name>` in `.h5m`) when every cell lies in a block; the lowered mesh that
 /// carries the block sets is returned with the rule. Otherwise (no blocks, a cell in no block, or a
-/// lowering error) regions are the volume ids and a note says why.
-fn smrt_regions(state: &State, named: Option<EntityId>) -> (RegionRule, Option<Lowered>, Vec<String>) {
-    let fallback = |why: String| (RegionRule::ByVolumeClassification, None, vec![format!("smrt-region-names: regions are named by volume id ({why})")]);
+/// lowering error) regions are the volume ids and a warning note says why (R10).
+///
+/// Invariant: `ByCellSets` resolves names with `set_by_name`, the first match. `sm_fem::lower`
+/// rejects block names that collide with mesh sets and emits blocks before sidesets, so a block
+/// name is unique among the lowered sets; a duplicate would fall back with the warning.
+fn smrt_regions(state: &State, named: Option<EntityId>) -> (RegionRule, Option<Lowered>, Vec<ExportNote>) {
+    let fallback = |why: String| {
+        let detail = format!("regions are named by volume id ({why}); fix the model so every volume is in a block (fem.block_add)");
+        (RegionRule::ByVolumeClassification, None, vec![ExportNote::warning("smrt-region-names", 1, detail)])
+    };
     let lowered = match lowered(state, named) {
         Ok(l) => l,
         Err(e) => return fallback(format!("block lowering failed: {e}")),

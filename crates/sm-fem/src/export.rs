@@ -62,6 +62,10 @@ pub struct ExportRequest {
     pub empty_patches: Vec<String>,
     /// OpenFOAM only: names of face (side) sets written as `wedge` patches (axisymmetric cases).
     pub wedge_patches: Vec<String>,
+    /// OpenFOAM only: split warped faces into planar triangles (off by default: it makes
+    /// checkMesh's concave-cell check fail on warped hex meshes, see `FOAM_FORMAT.md` section 12).
+    /// Planar meshes export byte for byte as without the pass.
+    pub split_warped_faces: bool,
 }
 
 impl ExportRequest {
@@ -74,6 +78,7 @@ impl ExportRequest {
             split_small_determinant: true,
             empty_patches: Vec::new(),
             wedge_patches: Vec::new(),
+            split_warped_faces: false,
         }
     }
 
@@ -103,6 +108,13 @@ impl ExportRequest {
     #[must_use]
     pub fn provenance(mut self, hash: impl Into<String>) -> Self {
         self.provenance = Some(hash.into());
+        self
+    }
+
+    /// Switch the OpenFOAM warped-face split on or off (default off).
+    #[must_use]
+    pub fn split_warped_faces(mut self, on: bool) -> Self {
+        self.split_warped_faces = on;
         self
     }
 
@@ -303,7 +315,8 @@ pub fn export_files(state: &State, req: &ExportRequest) -> Result<ExportBundle, 
         ExportFormat::OpenFoam => {
             let mut opts = FoamOptions::new()
                 .decks(lowered.decks.clone())
-                .split_small_determinant(req.split_small_determinant);
+                .split_small_determinant(req.split_small_determinant)
+                .split_warped_faces(req.split_warped_faces);
             for n in &req.empty_patches {
                 opts = opts.patch_type(n.clone(), FoamPatchType::Empty);
             }
