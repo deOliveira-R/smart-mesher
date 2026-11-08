@@ -319,6 +319,28 @@ def lattice_xf():
     return Spec(g, m.collection(), ((-4, -4, -1), (4, 4, 1)), rays)
 
 
+@model
+def outer_structured():
+    """A 1x1 lattice (pitch 2) whose `outer` universe is position dependent: an off-centre
+    cylinder of one material in another. OpenMC looks `outer` up in the frame of each virtual
+    out-of-range element, i.e. it tiles it at the lattice pitch around the array. The Rust reader
+    refuses such an `outer` (Unsupported); the test uses this oracle to check that the tiling
+    reading is what OpenMC does."""
+    import openmc
+
+    m = Mats()
+    inner = openmc.Universe(10, cells=[openmc.Cell(100, fill=m("fuel"))])
+    outer = disc_universe(openmc, m, 30, "gas", 0.5, 900, center=(0.2, -0.1))
+    lat = openmc.RectLattice(20)
+    lat.lower_left = (-1.0, -1.0)
+    lat.pitch = (2.0, 2.0)
+    lat.universes = [[inner]]
+    lat.outer = outer
+    reg, _ = box_region(openmc, (-5, -5, -1), (5, 5, 1), VAC)
+    root = openmc.Universe(0, cells=[openmc.Cell(1, fill=lat, region=reg)])
+    return Spec(openmc.Geometry(root), m.collection(), ((-5, -5, -1), (5, 5, 1)), [((-5, 0.1, 0.0), (1, 0, 0))])
+
+
 def _bays(names_and_builders, halfwidth=2.0, spacing=6.0):
     """One bay per surface along x: each holds `in` (negative side) and `out` of one surface."""
     import openmc

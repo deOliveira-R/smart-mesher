@@ -1,11 +1,12 @@
 //! OpenMC `geometry.xml` / `materials.xml` reader.
 //!
 //! Supported (see `DESIGN.md` for the table and for how each convention was confirmed against
-//! OpenMC itself): `<surface>` of the types plane, x/y/z-plane, x/y/z-cylinder, cylinder, sphere,
-//! x/y/z-cone, cone, quadric and circular x/y/z-torus, with `boundary` transmission, vacuum,
+//! OpenMC itself): `<surface>` of the types plane, x/y/z-plane, x/y/z-cylinder, sphere,
+//! x/y/z-cone, quadric and circular x/y/z-torus, with `boundary` transmission, vacuum,
 //! reflective or white; `<cell>` with `material` (an id or `void`), `fill`, `universe`, `region`,
-//! `translation` and `rotation`; rectangular `<lattice>` with `outer`; `materials.xml` for names.
-//! Refused with [`ImportError::Unsupported`]: `hex_lattice`, `dagmc_universe`, periodic boundaries,
+//! `translation` and `rotation`; rectangular `<lattice>` with a position-independent `outer`; `materials.xml` for names.
+//! Refused with [`ImportError::Unsupported`]: a lattice `outer` universe whose cells have regions,
+//! the general `cylinder` and `cone` types (OpenMC's C++ layer rejects them), `hex_lattice`, `dagmc_universe`, periodic boundaries,
 //! a `material` list, elliptic tori, lattices nested directly in a lattice, and rotations that are
 //! not proper orthonormal matrices.
 //!
@@ -160,6 +161,7 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
             lattice_ids.insert(id_of(&cx, n)?);
         }
     }
+    let mut lattice_lines: BTreeMap<u32, u32> = BTreeMap::new();
     let mut filled: BTreeSet<u32> = BTreeSet::new();
     let mut universes: BTreeSet<u32> = BTreeSet::new();
     let mut used_materials: BTreeSet<u32> = BTreeSet::new();
@@ -168,7 +170,10 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
         match tag {
             "surface" => surface(&gdoc, n, &mut ir)?,
             "cell" => cell(&gdoc, n, &mut ir, &lattice_ids, &mut filled, &mut universes, &mut used_materials, &mut dropped)?,
-            "lattice" => lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?,
+            "lattice" => {
+                lattice(&gdoc, n, &mut ir, &lattice_ids, &mut filled)?;
+                lattice_lines.insert(id_of(&ctx(&gdoc, n, "lattice".into()), n)?, ctx(&gdoc, n, String::new()).line);
+            }
             "hex_lattice" | "dagmc_universe" => {
                 let cx = ctx(&gdoc, n, tag.into());
                 return Err(unsupported(&cx, format!("<{tag}> is not supported (rectangular lattices only; no DAGMC universes)")));
@@ -185,6 +190,16 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
             return Err(ImportError::Invalid(format!("id {id} is both a lattice and the universe of a cell")));
         }
     }
+    // OpenMC looks `outer` up per virtual element (tiled at the lattice pitch); the IR places it
+    // once. Only a position-independent `outer` is therefore the same thing in both.
+    for (id, l) in &ir.lattices {
+        if let Some(u) = l.outer
+            && !homogeneous(&ir, u, &mut BTreeSet::new())
+        {
+            let cx = Ctx { line: lattice_lines.get(id).copied().unwrap_or(0), what: format!("lattice {id}") };
+            return Err(unsupported(&cx, format!("outer universe {u} depends on position (OpenMC tiles `outer` at the lattice pitch around the array, this reader places it once); only an `outer` whose cells have no region, recursively, is supported")));
+        }
+    }
     let roots: Vec<u32> = universes.iter().copied().filter(|u| !filled.contains(u)).collect();
     ir.root_universe = match roots.as_slice() {
         [r] => *r,
@@ -196,6 +211,30 @@ pub fn import(geometry_xml: &str, materials_xml: Option<&str>) -> Result<CsgIr, 
         ir.dropped.push(count_label(n, k));
     }
     Ok(ir)
+}
+
+/// True when every cell of universe `u` has a region that is all of space and any universe it fills
+/// is homogeneous too (a lattice fill is positional).
+fn homogeneous(ir: &CsgIr, u: u32, seen: &mut BTreeSet<u32>) -> bool {
+    fn all_space(e: &crate::ir::Expr) -> bool {
+        use crate::ir::Expr;
+        match e {
+            Expr::And(v) => v.iter().all(all_space),
+            Expr::Or(v) => v.iter().any(all_space),
+            _ => false,
+        }
+    }
+    if !seen.insert(u) {
+        return false;
+    }
+    ir.cells.values().filter(|c| c.universe == u).all(|c| {
+        all_space(&c.region)
+            && match &c.fill {
+                Fill::Universe { id, .. } => homogeneous(ir, *id, seen),
+                Fill::Lattice { .. } => false,
+                _ => true,
+            }
+    })
 }
 
 fn surface(doc: &Document<'_>, n: Node<'_, '_>, ir: &mut CsgIr) -> Result<(), ImportError> {

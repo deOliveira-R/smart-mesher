@@ -37,7 +37,7 @@ sampling) or `ImportedCsg::import` (flatten, sampled check, reject overlaps).
 | Lattice universe origin | element centre |
 | Lattice `universes` order | `i` fastest, then `j`, then `k` (readers reverse any top-to-bottom row order) |
 | Infinite pitch | allowed on an axis with one element; no clip there, centre coordinate 0 |
-| `outer` universe | placed with the lattice frame origin, fills container minus array box |
+| `outer` universe | IR core: placed once with the lattice frame origin, fills container minus array box. OpenMC instead looks `outer` up in the frame of each virtual out-of-range element, i.e. tiles it at the lattice pitch (`outer_structured`); the OpenMC reader therefore accepts only a position-independent `outer` (cells without region, recursively) and refuses the rest as Unsupported |
 | Region names (C9) | material `name` if non-empty, unique, not `void`, not another material's fallback; else `material_<id>`; no material is `void`; override map wins; two materials with one name is an error |
 | Boundary flags | vacuum: `Respond(Vacuum)`; reflective: `Reflect` (warning `import.reflective_curved` unless planar); white: `Respond(White)`; others: default vacuum |
 
@@ -86,11 +86,11 @@ the rotation transpose in the reader fails five of the eleven oracle tests.
 | Item | Convention (confirmed by fixture) |
 |---|---|
 | Surface sense | negative side is `f < 0` for every type; cones are the double cone, quadrics keep `f` as written, `plane A B C D` is `Ax+By+Cz-D` (`surfaces`) |
-| Cylinder, cone, torus coefficients | `x-cylinder y0 z0 r`, `y-cylinder x0 z0 r`, `z-cylinder x0 y0 r`; general `cylinder`/`cone` `x0 y0 z0 r[2] dx dy dz`; `x-cone x0 y0 z0 R^2`; tori `x0 y0 z0 A B C` with `B == C` (`surfaces`) |
+| Cylinder, cone, torus coefficients | `x-cylinder y0 z0 r`, `y-cylinder x0 z0 r`, `z-cylinder x0 y0 r`; the general `cylinder` and `cone` types are not OpenMC geometry.xml types (OpenMC 0.16.0 Python writes a quadric, its C++ layer has no such type) and are refused as Unsupported; `x-cone x0 y0 z0 R^2`; tori `x0 y0 z0 A B C` with `B == C` (`surfaces`) |
 | Region grammar | `~` over juxtaposition (and) over `\|`; `+n` and `n` are the positive side; parentheses nest (`grammar`) |
 | Lattice `universes` text | layers `k` from the lowest `z` up; within a layer rows from the highest `y` down; each row left to right in `+x` (`lattice2d`, `lattice3d`) |
 | Lattice element | box from `lower_left + [i,j,k] * pitch`; the universe's origin is the element centre; a 2-D lattice has no `z` extent (`lattice2d`, `lattice3d`) |
-| `outer` | fills the container outside the array box; its origin is the lattice frame origin (`lattice2d`, `lattice_xf`) |
+| `outer` | a homogeneous `outer` fills the container outside the array box (`lattice2d`, `lattice_xf`; these cannot see an origin). A structured `outer` is tiled at the lattice pitch by OpenMC (`outer_structured`, OpenMC 0.16.0 `find_cell`), which the reader does not reproduce: Unsupported |
 | `translation t`, `rotation M` | OpenMC's `u = M (r - t)` from cell frame `r` to the filled universe frame `u`; the IR transform is `r = M^T u + t` (`rotations`, `translated`) |
 | `rotation` angles | three angles `(phi, theta, psi)` in degrees give `M = Rz(-psi) Ry(-theta) Rx(-phi)`; nine entries are `M` row-major (`rotations`: single-axis, three-axis, negative angles, the matrix form) |
 | Nested fills | the transforms compose outer to inner as in OpenMC (`nested`) |
@@ -113,7 +113,7 @@ unique, else `material_<id>`; `void` for void cells; `ImportOptions::material_na
 ## Refused (`Unsupported` with element and line)
 
 `hex_lattice`, `dagmc_universe`, other geometry elements, periodic boundaries, a `material` list,
-tori with `B != C` or `A <= B`, unknown surface types, a lattice used as an element or as the
+tori with `B != C` or `A <= B`, general `cylinder`/`cone` surfaces, a lattice `outer` with position-dependent cells, unknown surface types, a lattice used as an element or as the
 `outer` of another lattice (the IR holds universes there), rotation matrices that are not proper
 orthonormal. Invalid: duplicate ids, wrong coefficient or `universes` counts, a cell with both or
 neither of `fill` and `material`, translation or rotation on a material cell, bad regions, zero or

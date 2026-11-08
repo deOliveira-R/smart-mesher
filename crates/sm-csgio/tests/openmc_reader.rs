@@ -155,13 +155,15 @@ fn materials_names_void_and_unknown_ids() {
 
 #[test]
 fn refused_features_name_the_element_and_the_line() {
-    let cases: [(&str, &str); 7] = [
+    let cases: [(&str, &str); 9] = [
         (r#"<hex_lattice id="2"><pitch>1</pitch></hex_lattice>"#, "hex_lattice"),
         (r#"<dagmc_universe id="2" filename="x.h5m"/>"#, "dagmc_universe"),
         (r#"<cell id="9" material="1 2" region="-1"/>"#, "material list"),
         (r#"<surface id="9" type="x-torus" coeffs="0 0 0 2 0.5 0.4"/>"#, "unequal"),
         (r#"<surface id="9" type="x-torus" coeffs="0 0 0 0.4 0.5 0.5"/>"#, "ring tori"),
         (r#"<surface id="9" type="y-plane" coeffs="1" boundary="periodic"/>"#, "periodic"),
+        (r#"<surface id="9" type="cylinder" coeffs="0 0 0 1 0 0 1"/>"#, "not an OpenMC geometry.xml type"),
+        (r#"<surface id="9" type="cone" coeffs="0 0 0 1 0 0 1"/>"#, "not an OpenMC geometry.xml type"),
         (r#"<surface id="9" type="x-hyperboloid" coeffs="1"/>"#, "x-hyperboloid"),
     ];
     for (extra, needle) in cases {
@@ -313,5 +315,29 @@ fn hostile_input_never_panics() {
         if let Ok(ir) = openmc::import(&text, None) {
             let _ = ImportedCsg::instantiate(&ir, &ImportOptions::default());
         }
+    }
+}
+
+#[test]
+fn a_position_dependent_lattice_outer_is_unsupported_and_a_homogeneous_one_is_fine() {
+    let lat = |outer_region: &str| {
+        format!(
+            r#"<geometry>
+<cell id="10" material="1" universe="1"/>
+<cell id="30" material="2" universe="3" region="{outer_region}"/>
+<cell id="1" fill="20" region="-1"/>
+<surface id="1" type="sphere" coeffs="0 0 0 5" boundary="vacuum"/>
+<surface id="2" type="z-cylinder" coeffs="0 0 0.3"/>
+<lattice id="20"><pitch>2 2</pitch><dimension>1 1</dimension><lower_left>-1 -1</lower_left><universes>1</universes><outer>3</outer></lattice>
+</geometry>"#
+        )
+    };
+    assert!(openmc::import(&lat(""), None).is_ok());
+    match openmc::import(&lat("-2"), None) {
+        Err(ImportError::Unsupported { line: Some(l), what }) => {
+            assert_eq!(l, 7, "{what}");
+            assert!(what.contains("outer universe 3") && what.contains("tiles"), "{what}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
     }
 }

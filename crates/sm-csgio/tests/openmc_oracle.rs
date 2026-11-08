@@ -154,3 +154,34 @@ fn the_fixtures_are_not_a_vacuous_oracle() {
     let mats: std::collections::BTreeSet<_> = fx.oracle["points"].as_array().unwrap().iter().filter_map(|p| p["cell"].as_u64()).collect();
     assert!(mats.len() >= 12, "the lattice fixture should visit most cells, saw {}", mats.len());
 }
+
+/// OpenMC tiles a position-dependent `outer` at the lattice pitch, one copy per virtual element;
+/// the reader refuses such a deck rather than place `outer` once (see DESIGN.md).
+#[test]
+fn a_structured_outer_is_tiled_by_openmc_and_refused_here() {
+    let d = dir("outer_structured");
+    let read = |f: &str| std::fs::read_to_string(d.join(f)).unwrap();
+    match openmc::import(&read("geometry.xml"), Some(&read("materials.xml"))) {
+        Err(sm_csgio::ImportError::Unsupported { what, .. }) => assert!(what.contains("outer universe 30"), "{what}"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+    let o: Value = serde_json::from_str(&read("oracle.json")).unwrap();
+    // Outside the array box [-1,1]^2 the recorded cell is the one a tiling at pitch 2 predicts:
+    // element centres at 2k, disc of radius 0.5 centred 0.2,-0.1 off the element centre.
+    let (mut inside_disc, mut outside_disc) = (0, 0);
+    for p in o["points"].as_array().unwrap() {
+        let q = vec3(&p["p"]);
+        if q[0].abs() <= 1.0 && q[1].abs() <= 1.0 {
+            continue;
+        }
+        let local = |v: f64| v - 2.0 * (v / 2.0).round();
+        let (lx, ly) = (local(q[0]) - 0.2, local(q[1]) + 0.1);
+        let want = if lx * lx + ly * ly < 0.25 { 900 } else { 901 };
+        if (lx * lx + ly * ly - 0.25).abs() < 1e-6 {
+            continue;
+        }
+        assert_eq!(p["cell"].as_u64(), Some(want), "OpenMC at {q:?}");
+        if want == 900 { inside_disc += 1 } else { outside_disc += 1 }
+    }
+    assert!(inside_disc >= 10 && outside_disc >= 10, "{inside_disc} {outside_disc}");
+}

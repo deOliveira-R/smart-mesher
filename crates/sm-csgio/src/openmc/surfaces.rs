@@ -1,14 +1,14 @@
 //! OpenMC `<surface>` types to IR surfaces.
 //!
 //! Sense: every OpenMC surface is a function `f` with the negative side `f < 0`, the IR's
-//! `Sign::Negative`. Cones and quadrics are kept as written (a double cone, `f` as given);
+//! `Sign::Negative`. The general `cylinder` and `cone` types are refused (OpenMC has none). Cones and quadrics are kept as written (a double cone, `f` as given);
 //! circular tori need `A > B == C`; the other tori are refused.
 
 use super::{Ctx, invalid, unsupported};
 use crate::ImportError;
 use crate::ir::Surf;
 use sm_core::{Point3, Vector3};
-use sm_geom_api::{Cylinder, Frame, ImplicitDef, Quadric, SurfaceDef, Torus};
+use sm_geom_api::{Frame, ImplicitDef, Quadric, SurfaceDef, Torus};
 
 fn axis_index(c: char) -> usize {
     match c {
@@ -16,14 +16,6 @@ fn axis_index(c: char) -> usize {
         'y' => 1,
         _ => 2,
     }
-}
-
-fn dir(v: [f64; 3], cx: &Ctx, what: &str) -> Result<Vector3, ImportError> {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if !(n.is_finite() && n > 0.0) {
-        return Err(invalid(cx, format!("{what} has a zero direction")));
-    }
-    Ok(Vector3::new(v[0] / n, v[1] / n, v[2] / n))
 }
 
 fn axis_vec(axis: usize) -> Vector3 {
@@ -73,11 +65,6 @@ pub(super) fn build(cx: &Ctx, ty: &str, c: &[f64]) -> Result<Surf, ImportError> 
             o[it.next().unwrap_or(0)] = c[1];
             wrap(Surf::cylinder(ax, o, radius(c[2])?))
         }
-        "cylinder" => {
-            want(7)?;
-            let f = frame(cx, [c[0], c[1], c[2]], dir([c[4], c[5], c[6]], cx, "a cylinder")?)?;
-            Cylinder::new(f, radius(c[3])?).map(|d| Surf::new(SurfaceDef::Cylinder(d))).map_err(|e| invalid(cx, format!("invalid surface: {e}")))
-        }
         "sphere" => {
             want(4)?;
             wrap(Surf::sphere([c[0], c[1], c[2]], radius(c[3])?))
@@ -87,11 +74,8 @@ pub(super) fn build(cx: &Ctx, ty: &str, c: &[f64]) -> Result<Surf, ImportError> 
             let f = frame(cx, [c[0], c[1], c[2]], axis_vec(axis_index(ty.chars().next().unwrap_or('z'))))?;
             cone(cx, &f, c[3])
         }
-        "cone" => {
-            want(7)?;
-            let f = frame(cx, [c[0], c[1], c[2]], dir([c[4], c[5], c[6]], cx, "a cone")?)?;
-            cone(cx, &f, c[3])
-        }
+        // OpenMC's Python API writes these as quadrics and its C++ layer rejects the bare types.
+        "cylinder" | "cone" => Err(unsupported(cx, format!("surface type {ty:?} is not an OpenMC geometry.xml type (its Python API writes a quadric); write a quadric"))),
         "quadric" => {
             want(10)?;
             if c.iter().any(|v| !v.is_finite()) {
