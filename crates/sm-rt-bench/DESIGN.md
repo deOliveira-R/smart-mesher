@@ -219,8 +219,8 @@ report lists it.
 `docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. `docker/pins.env` is the single source of every pin:
 base images are `FROM image@sha256:${..._DIGEST}` (index digests of `condaforge/miniforge3:24.9.2-0`
 and `ubuntu:24.04`, read with `docker buildx imagetools inspect`; an index digest covers arm64 and
-amd64), and `DOUBLE_DOWN_COMMIT`, `DAGMC_VERSION`, `XDG_COMMIT` (`fec80980ce29`, xdg-org/xdg
-"Element walk updates (#250)") and `MOAB_VERSION` (`5.6.0`, the MOAB of the conda DAGMC images, so every
+amd64), and `DOUBLE_DOWN_COMMIT`, `DAGMC_VERSION`, `XDG_COMMIT` (`83efb306e152`, xdg-org/xdg
+"Format a fatal_error message given a single integer (#264)", 2026-10-26) and `MOAB_VERSION` (`5.6.0`, the MOAB of the conda DAGMC images, so every
 row is fed by one MOAB) are `ARG` defaults in the Dockerfiles that the lint requires to equal the
 `pins.env` value (it fails on drift, on a `*_COMMIT` that is not 12 hex digits, on `:latest` and on a
 digest-less `FROM`). `docker-check` passes each pin the Dockerfile declares as a build argument.
@@ -254,8 +254,10 @@ images also check with `ldd` that `dagmc-moab` does not and `dagmc-dd` does link
 
 The XDG API is readable (`include/xdg/xdg.h`: `XDG::create(MOAB, EMBREE)`, `ray_fire`, `find_volume`,
 `walk_elements`; it reads the DAGMC style MOAB file), so the `xdg` rows can reuse `facets_to_h5m`; the
-driver is W4 work. The old pin `83efb306e152` is also a commit of xdg-org/xdg (12 commits after the
-current pin), so the W3c change of pin is a choice of the planned commit, not the repair of a missing one.
+driver is W4 work. The pin is `83efb306e152`, the commit `docs/research/dagmc-internals.md` was read
+at (user ruling 2026-11-08). W3c briefly pinned `fec80980ce29` because a clone of the personal fork
+`pshriwise/xdg`, which stops at 2026-09-08, lacked `83efb306e152`; clone only `xdg-org/xdg`. When W4
+writes the XDG driver, move the pin to the newest upstream commit that builds and runs.
 
 Native linux/aarch64 on the macOS development machine (Docker Desktop, rebuilt 2026-11-08 from the
 locks in `docker/locks/`; the lock rebuild has the same conda lock hash, versions hash and driver `--version`

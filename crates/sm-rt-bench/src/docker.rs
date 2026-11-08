@@ -653,12 +653,11 @@ mod tests {
     }
 
     #[test]
-    fn the_xdg_pin_is_the_one_in_pins_env_twelve_hex_digits_and_not_the_old_one() {
+    fn the_xdg_pin_is_the_one_in_pins_env_and_twelve_hex_digits() {
         let pins = parse_pins(&std::fs::read_to_string(root().join("docker/pins.env")).unwrap());
         let xdg = &pins["XDG_COMMIT"];
         assert!(is_short_commit(xdg), "{xdg}");
-        assert_ne!(xdg, "83efb306e152");
-        assert_eq!(xdg, "fec80980ce29");
+        assert_eq!(xdg, "83efb306e152");
         assert_eq!(pins["MOAB_VERSION"], "5.6.0");
         let text = std::fs::read_to_string(root().join("docker/xdg/Dockerfile")).unwrap();
         assert_eq!(arg_default(&text, "XDG_COMMIT").as_deref(), Some(xdg.as_str()));
@@ -676,10 +675,10 @@ mod tests {
         let pins = std::fs::read_to_string(root().join("docker/pins.env")).unwrap();
         std::fs::write(tmp.join("docker/pins.env"), &pins).unwrap();
         assert!(lint_all(&tmp).unwrap().is_empty());
-        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=fec80980ce29", "XDG_COMMIT=83efb306e152")).unwrap();
+        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=83efb306e152", "XDG_COMMIT=fec80980ce29")).unwrap();
         let p = lint_all(&tmp).unwrap();
-        assert!(p.iter().any(|m| m.contains("ARG XDG_COMMIT=fec80980ce29 differs from docker/pins.env (83efb306e152)")), "{p:?}");
-        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=fec80980ce29", "XDG_COMMIT=fec8098")).unwrap();
+        assert!(p.iter().any(|m| m.contains("ARG XDG_COMMIT=83efb306e152 differs from docker/pins.env (fec80980ce29)")), "{p:?}");
+        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=83efb306e152", "XDG_COMMIT=83efb30")).unwrap();
         assert!(lint_all(&tmp).unwrap().iter().any(|m| m.contains("not 12 hex digits")));
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -759,7 +758,7 @@ mod tests {
         let dx = std::fs::read_to_string(root().join("docker/xdg/Dockerfile")).unwrap();
         let (ax, lx) = build_args(&tmp, "smrt-bench-xdg", "docker/xdg/Dockerfile", &dx, &pins, arm);
         let ax = ax.join(" ");
-        assert!(ax.contains("XDG_COMMIT=fec80980ce29") && ax.contains("MOAB_VERSION=5.6.0") && ax.contains("UBUNTU_DIGEST=") && !ax.contains("MINIFORGE") && !ax.contains("LOCKFILE"), "{ax}");
+        assert!(ax.contains("XDG_COMMIT=83efb306e152") && ax.contains("MOAB_VERSION=5.6.0") && ax.contains("UBUNTU_DIGEST=") && !ax.contains("MINIFORGE") && !ax.contains("LOCKFILE"), "{ax}");
         assert!(lx.is_none());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
