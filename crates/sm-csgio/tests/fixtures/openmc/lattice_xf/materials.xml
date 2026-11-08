@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <material id="1" name="fuel0">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="2" name="water">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="3" name="fuel1">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="4" name="fuel2">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="5" name="fuel3">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="6" name="gas">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+</materials>

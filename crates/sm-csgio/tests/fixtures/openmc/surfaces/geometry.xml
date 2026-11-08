@@ -1,0 +1,76 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="10" material="1" region="-171 117 -151 167 -168 169 -170" universe="0"/>
+  <cell id="11" material="2" region="171 117 -151 167 -168 169 -170" universe="0"/>
+  <cell id="12" material="1" region="-172 151 -152 167 -168 169 -170" universe="0"/>
+  <cell id="13" material="2" region="172 151 -152 167 -168 169 -170" universe="0"/>
+  <cell id="14" material="1" region="-173 152 -153 167 -168 169 -170" universe="0"/>
+  <cell id="15" material="2" region="173 152 -153 167 -168 169 -170" universe="0"/>
+  <cell id="16" material="1" region="-174 153 -154 167 -168 169 -170" universe="0"/>
+  <cell id="17" material="2" region="174 153 -154 167 -168 169 -170" universe="0"/>
+  <cell id="18" material="1" region="-175 154 -155 167 -168 169 -170" universe="0"/>
+  <cell id="19" material="2" region="175 154 -155 167 -168 169 -170" universe="0"/>
+  <cell id="20" material="1" region="-176 155 -156 167 -168 169 -170" universe="0"/>
+  <cell id="21" material="2" region="176 155 -156 167 -168 169 -170" universe="0"/>
+  <cell id="22" material="1" region="-177 156 -157 167 -168 169 -170" universe="0"/>
+  <cell id="23" material="2" region="177 156 -157 167 -168 169 -170" universe="0"/>
+  <cell id="24" material="1" region="-178 157 -158 167 -168 169 -170" universe="0"/>
+  <cell id="25" material="2" region="178 157 -158 167 -168 169 -170" universe="0"/>
+  <cell id="26" material="1" region="-179 158 -159 167 -168 169 -170" universe="0"/>
+  <cell id="27" material="2" region="179 158 -159 167 -168 169 -170" universe="0"/>
+  <cell id="28" material="1" region="-180 159 -160 167 -168 169 -170" universe="0"/>
+  <cell id="29" material="2" region="180 159 -160 167 -168 169 -170" universe="0"/>
+  <cell id="30" material="1" region="-181 160 -161 167 -168 169 -170" universe="0"/>
+  <cell id="31" material="2" region="181 160 -161 167 -168 169 -170" universe="0"/>
+  <cell id="32" material="1" region="-182 161 -162 167 -168 169 -170" universe="0"/>
+  <cell id="33" material="2" region="182 161 -162 167 -168 169 -170" universe="0"/>
+  <cell id="34" material="1" region="-183 162 -163 167 -168 169 -170" universe="0"/>
+  <cell id="35" material="2" region="183 162 -163 167 -168 169 -170" universe="0"/>
+  <cell id="36" material="1" region="-184 163 -164 167 -168 169 -170" universe="0"/>
+  <cell id="37" material="2" region="184 163 -164 167 -168 169 -170" universe="0"/>
+  <cell id="38" material="1" region="-185 164 -165 167 -168 169 -170" universe="0"/>
+  <cell id="39" material="2" region="185 164 -165 167 -168 169 -170" universe="0"/>
+  <cell id="40" material="1" region="-186 165 -166 167 -168 169 -170" universe="0"/>
+  <cell id="41" material="2" region="186 165 -166 167 -168 169 -170" universe="0"/>
+  <cell id="42" material="1" region="-187 166 -150 167 -168 169 -170" universe="0"/>
+  <cell id="43" material="2" region="187 166 -150 167 -168 169 -170" universe="0"/>
+  <surface id="117" type="x-plane" boundary="vacuum" coeffs="-3.0"/>
+  <surface id="150" type="x-plane" boundary="vacuum" coeffs="99.0"/>
+  <surface id="151" type="x-plane" coeffs="3.0"/>
+  <surface id="152" type="x-plane" coeffs="9.0"/>
+  <surface id="153" type="x-plane" coeffs="15.0"/>
+  <surface id="154" type="x-plane" coeffs="21.0"/>
+  <surface id="155" type="x-plane" coeffs="27.0"/>
+  <surface id="156" type="x-plane" coeffs="33.0"/>
+  <surface id="157" type="x-plane" coeffs="39.0"/>
+  <surface id="158" type="x-plane" coeffs="45.0"/>
+  <surface id="159" type="x-plane" coeffs="51.0"/>
+  <surface id="160" type="x-plane" coeffs="57.0"/>
+  <surface id="161" type="x-plane" coeffs="63.0"/>
+  <surface id="162" type="x-plane" coeffs="69.0"/>
+  <surface id="163" type="x-plane" coeffs="75.0"/>
+  <surface id="164" type="x-plane" coeffs="81.0"/>
+  <surface id="165" type="x-plane" coeffs="87.0"/>
+  <surface id="166" type="x-plane" coeffs="93.0"/>
+  <surface id="167" type="y-plane" boundary="vacuum" coeffs="-3"/>
+  <surface id="168" type="y-plane" boundary="vacuum" coeffs="3"/>
+  <surface id="169" type="z-plane" boundary="vacuum" coeffs="-3"/>
+  <surface id="170" type="z-plane" boundary="vacuum" coeffs="3"/>
+  <surface id="171" type="plane" coeffs="1.0 2.0 -0.5 0.3"/>
+  <surface id="172" type="x-plane" coeffs="6.4"/>
+  <surface id="173" type="y-plane" coeffs="0.25"/>
+  <surface id="174" type="z-plane" coeffs="-0.35"/>
+  <surface id="175" type="x-cylinder" coeffs="0.3 -0.2 0.9"/>
+  <surface id="176" type="y-cylinder" coeffs="30.2 -0.35 0.8"/>
+  <surface id="177" type="z-cylinder" coeffs="35.75 0.4 1.1"/>
+  <surface id="178" type="quadric" coeffs="0.2380952380952381 0.809523809523811 0.9523809523809538 -0.7619047619047626 0.1904761904761905 0.3809523809523813 -20.314285714285717 32.34285714285718 -16.571428571428587 432.84571428571434"/>
+  <surface id="179" type="sphere" coeffs="48.3 -0.1 0.2 1.2"/>
+  <surface id="180" type="x-cone" coeffs="54.2 0.1 -0.3 0.36"/>
+  <surface id="181" type="y-cone" coeffs="59.8 0.4 0.1 0.5"/>
+  <surface id="182" type="z-cone" coeffs="66.1 -0.3 0.2 0.3"/>
+  <surface id="183" type="quadric" coeffs="0.6346396965865992 -0.170670037926675 0.6788874841972188 -0.5309734513274336 -0.35398230088495575 -0.10619469026548671 -91.41946902654867 38.31605562579013 7.863211125158025 3292.2334134007583"/>
+  <surface id="184" type="quadric" coeffs="0.5 1.0 2.0 0.2 -0.3 0.1 -78.4 -15.400000000000002 -7.700000000000001 3071.7"/>
+  <surface id="185" type="x-torus" coeffs="84.1 0.2 -0.1 1.2 0.4 0.4"/>
+  <surface id="186" type="y-torus" coeffs="89.9 0.1 0.2 1.1 0.35 0.35"/>
+  <surface id="187" type="z-torus" coeffs="96.2 -0.1 0.15 1.3 0.45 0.45"/>
+</geometry>

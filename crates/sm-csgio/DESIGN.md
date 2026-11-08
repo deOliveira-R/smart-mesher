@@ -5,7 +5,7 @@ shaped after MCNP. The core is frozen after merge; `src/openmc/` (W3c-CSG-OPENMC
 
 ## Pipeline
 
-`openmc::import(geometry, materials) -> CsgIr` (stub) then `ImportedCsg::instantiate` (flatten, no
+`openmc::import(geometry, materials) -> CsgIr` then `ImportedCsg::instantiate` (flatten, no
 sampling) or `ImportedCsg::import` (flatten, sampled check, reject overlaps).
 
 1. **IR** (`ir.rs`): `BTreeMap`s of surfaces (`SurfaceDef` plus boundary flag), cells (region
@@ -41,8 +41,8 @@ sampling) or `ImportedCsg::import` (flatten, sampled check, reject overlaps).
 | Region names (C9) | material `name` if non-empty, unique, not `void`, not another material's fallback; else `material_<id>`; no material is `void`; override map wins; two materials with one name is an error |
 | Boundary flags | vacuum: `Respond(Vacuum)`; reflective: `Reflect` (warning `import.reflective_curved` unless planar); white: `Respond(White)`; others: default vacuum |
 
-The OpenMC reader must confirm (against OpenMC itself, ruling C7) the lattice row order, the
-rotation convention and the `outer` frame, and refuse with `Unsupported` what it cannot confirm.
+The OpenMC reader confirmed (against OpenMC itself, ruling C7) the lattice row order, the
+rotation convention and the `outer` frame; see "OpenMC reader" below.
 
 ## Known limits
 
@@ -61,3 +61,68 @@ rotation convention and the `outer` frame, and refuse with `Unsupported` what it
 Undefined surface, material, universe or lattice; a universe that contains itself; DNF over 4096
 terms; more than `max_cells` flat cells; malformed lattices (zero dimensions, wrong universe
 count, non-positive pitch); a deck with no cell left; check effort below the op's defaults.
+
+# OpenMC reader (W3c-CSG-OPENMC)
+
+`src/openmc/` (`mod.rs` walk and lattices, `surfaces.rs`, `region.rs`, `xform.rs`) reads
+`geometry.xml` and an optional `materials.xml` with `roxmltree` (DTDs refused, element depth capped
+at 64 by a pre-scan, 8 M nodes, 256 MiB of text). Every field is accepted as an attribute or as a
+child element. Errors carry the 1-based line (`Parse { line, col }`, `Unsupported { line }`,
+`Invalid("line N: ...")`).
+
+## Confirmed against OpenMC itself (ruling C7)
+
+`tests/fixtures/openmc/gen.py` builds small models, writes `geometry.xml` and `materials.xml`, and
+asks OpenMC 0.16.0 (the `openmc` conda env's python) what is where on exactly those files:
+`openmc.lib.find_cell` at 600 random points, and chords (each ray stepped at 0.002 and every cell
+change bisected to about 1e-12). No nuclear data is configured on this machine, so the models use
+materials with a one-group dummy multi-group library written on the fly (`openmc.MGXSLibrary`,
+`energy_mode = multi-group`); `openmc.lib.init` then accepts the committed XML (the committed
+`materials.xml` lacks only the `<cross_sections>` line the oracle run adds). The answers are
+committed as `oracle.json`; `tests/openmc_oracle.rs` compares the import against them (material at
+every point; chord per material to 2e-9) and needs no OpenMC. Mutating the lattice row order or
+the rotation transpose in the reader fails five of the eleven oracle tests.
+
+| Item | Convention (confirmed by fixture) |
+|---|---|
+| Surface sense | negative side is `f < 0` for every type; cones are the double cone, quadrics keep `f` as written, `plane A B C D` is `Ax+By+Cz-D` (`surfaces`) |
+| Cylinder, cone, torus coefficients | `x-cylinder y0 z0 r`, `y-cylinder x0 z0 r`, `z-cylinder x0 y0 r`; general `cylinder`/`cone` `x0 y0 z0 r[2] dx dy dz`; `x-cone x0 y0 z0 R^2`; tori `x0 y0 z0 A B C` with `B == C` (`surfaces`) |
+| Region grammar | `~` over juxtaposition (and) over `\|`; `+n` and `n` are the positive side; parentheses nest (`grammar`) |
+| Lattice `universes` text | layers `k` from the lowest `z` up; within a layer rows from the highest `y` down; each row left to right in `+x` (`lattice2d`, `lattice3d`) |
+| Lattice element | box from `lower_left + [i,j,k] * pitch`; the universe's origin is the element centre; a 2-D lattice has no `z` extent (`lattice2d`, `lattice3d`) |
+| `outer` | fills the container outside the array box; its origin is the lattice frame origin (`lattice2d`, `lattice_xf`) |
+| `translation t`, `rotation M` | OpenMC's `u = M (r - t)` from cell frame `r` to the filled universe frame `u`; the IR transform is `r = M^T u + t` (`rotations`, `translated`) |
+| `rotation` angles | three angles `(phi, theta, psi)` in degrees give `M = Rz(-psi) Ry(-theta) Rx(-phi)`; nine entries are `M` row-major (`rotations`: single-axis, three-axis, negative angles, the matrix form) |
+| Nested fills | the transforms compose outer to inner as in OpenMC (`nested`) |
+| Lattice in a transformed cell | the lattice frame is the cell frame after the transform (`lattice_xf`) |
+| Root universe | the one universe no cell, lattice element or `outer` fills (OpenMC's Python API writes `universe="1"` for its root, so `0` is not assumed) |
+| Void | `material="void"` (a cell with no material and no fill is an error) |
+
+To rerun: `gen.py [--out DIR] [MODEL ...]` with that python; it writes `<model>/geometry.xml`,
+`materials.xml` and `oracle.json` and leaves nothing else behind (OpenMC runs in a temporary
+directory, one subprocess per model). Ray origins are nudged 5e-3 into the model because a start on
+a surface is ambiguous in every code.
+
+## Names and materials
+
+Region names follow C9 (`names.rs`): the material `name` of `materials.xml` when non-empty and
+unique, else `material_<id>`; `void` for void cells; `ImportOptions::material_names` renames. Without
+`materials.xml` every material id a cell uses becomes an unnamed material. Densities, nuclides,
+`temperature` and `volume` are dropped and listed in `CsgIr::dropped`.
+
+## Refused (`Unsupported` with element and line)
+
+`hex_lattice`, `dagmc_universe`, other geometry elements, periodic boundaries, a `material` list,
+tori with `B != C` or `A <= B`, unknown surface types, a lattice used as an element or as the
+`outer` of another lattice (the IR holds universes there), rotation matrices that are not proper
+orthonormal. Invalid: duplicate ids, wrong coefficient or `universes` counts, a cell with both or
+neither of `fill` and `material`, translation or rotation on a material cell, bad regions, zero or
+several root universes.
+
+## Differences from the draft (`drafts/csg-import.md`)
+
+* Acceptance 17: an oversize pin (r = 1.2 in a pitch 2 lattice) is not an overlap. OpenMC looks a
+  point up only inside its own element, so the spill is clipped; the importer does the same
+  (`openmc_reader.rs`, `oversize_pins_are_clipped_...`).
+* Acceptance 19: the fallback region name is `material_<id>` (C9), not `m<id>`.
+* Multi-row lattices and multi-axis rotations are supported, not refused: both are confirmed.
