@@ -1954,6 +1954,8 @@ dependencies = [
  "sm-model-api",
  "sm-quality",
  "sm-scheme-api",
+ "sm-scheme-curve",
+ "sm-scheme-tri",
  "sm-testkit",
  "sm-topo-api",
  "thiserror",

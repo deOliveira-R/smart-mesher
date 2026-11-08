@@ -27,6 +27,8 @@ sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs"] }
 sm-mesh = { path = "../sm-mesh" }
 sm-quality = { path = "../sm-quality" }
 sm-model-api = { path = "../sm-model-api" }
+sm-scheme-tri = { path = "../sm-scheme-tri" }
+sm-scheme-curve = { path = "../sm-scheme-curve" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 criterion = { version = "0.5", default-features = false }
 

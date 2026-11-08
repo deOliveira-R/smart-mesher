@@ -171,8 +171,8 @@ impl Scheme for TetVolume {
         if let Some(why) = u.unsupported {
             return Applicability::no(format!("unsupported: {why}"));
         }
-        if u.uses.len() < 4 {
-            return Applicability::no("a closed shell needs at least four faces");
+        if u.uses.is_empty() {
+            return Applicability::no("the volume has no boundary faces");
         }
         if !shell_closed(cx.input.topo, &u.uses) {
             return Applicability::no("the boundary shell is not closed");

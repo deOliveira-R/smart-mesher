@@ -141,8 +141,8 @@ fn no(reason: impl Into<String>) -> SweepError {
 /// # Errors
 /// [`SweepError::NoColumns`] naming why: the faces touch, the vertex counts differ (many-to-one
 /// is not supported), a vertex has no column or no straight continuation, two columns end at
-/// one target vertex, the columns differ in length, or a linking face has fewer than four
-/// coedges.
+/// one target vertex, the columns differ in length, a linking face has fewer than four
+/// coedges, or a linking face is not a strip (inner loops, or fewer than two column coedges).
 pub fn discover_columns(
     t: &dyn TopologyView,
     members: &[(EntityId, Vec<EntityId>)],
@@ -309,9 +309,27 @@ pub fn discover_columns(
         .copied()
         .filter(|f| *f != source && *f != target && !interfaces_set.contains(f))
         .collect();
+    let column_edges: BTreeSet<EntityId> = columns
+        .iter()
+        .flat_map(|c| c.path.iter().map(|(e, _)| *e))
+        .collect();
     for l in &linking {
         if coedge_count(t, *l) < 4 {
             return Err(no(format!("linking face {l} has fewer than four coedges")));
+        }
+        // A linking face must be a strip: one loop, and at least two column coedges
+        // (a seam counts twice). Otherwise the pair is not a prism.
+        if t.loops(*l).count() != 1 {
+            return Err(no(format!(
+                "linking face {l} has inner loops (not a strip)"
+            )));
+        }
+        let n = t
+            .coedges(*l)
+            .filter(|c| column_edges.contains(&c.key.edge))
+            .count();
+        if n < 2 {
+            return Err(no(format!("linking face {l} has {n} column coedges")));
         }
     }
     Ok(Columns {
