@@ -84,7 +84,8 @@ fn bundle_hash(name: &str) -> Option<u128> {
         _ => None,
     };
     // From the failing GitHub run 42412194333 (ubuntu-latest). Only hex_block6 is known: the
-    // old test stopped at the first failing case. The rest are added once CI prints them.
+    // old test stopped at the first failing case. tools/ci.sh reruns this test with --nocapture so
+    // the CI log shows every tuple even on a pass; add the other three rows from that log.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     return match name {
         "hex_block6" => Some(0x21a475890c57ab277f541a53d45710dd),

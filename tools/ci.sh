@@ -16,6 +16,9 @@ cargo build -p sm-py
 CAPI_STUBS_TARGET="${CAPI_STUBS_TARGET:-target/capi-stubs}"
 CARGO_TARGET_DIR="$CAPI_STUBS_TARGET" cargo test -p sm-rt-capi --no-default-features --features stubs
 cargo test --workspace --no-fail-fast --exclude sm-py --all-features
+# Passing tests have their output captured; rerun with --nocapture so the CI log carries the
+# flat_golden hash tuples (needed to record the bundle hashes of a new platform).
+cargo test -p sm-rt --all-features --test flat_golden -- --nocapture
 cargo test -p sm-py
 RAYON_NUM_THREADS=1 cargo test --workspace --no-fail-fast --exclude sm-py --all-features
 RAYON_NUM_THREADS=1 cargo test -p sm-py
