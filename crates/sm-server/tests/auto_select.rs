@@ -578,7 +578,7 @@ fn run_info(text: &str) -> (Server, Value, Value) {
 fn assert_pin(text: &str, volumes: f64, shapes: Value, tet_warnings: usize) -> String {
     let (mut s, run, i) = run_info(text);
     let got = i["volume"].as_f64().expect("volume");
-    assert!((got - volumes).abs() < 1e-9, "volume {got} vs {volumes}: {i}");
+    assert!((got - volumes).abs() < 1e-12, "volume {got} vs {volumes}: {i}");
     assert_eq!(i["cell_shapes"], shapes, "observed on the merged code: {i}");
     assert!(valid(&mut s), "valid and conformal: {i}");
     assert_eq!(auto_tet(&run).len(), tet_warnings, "mesh.auto_tet warnings");
@@ -592,6 +592,20 @@ fn pin_through_is_all_hex_in_both_creation_orders() {
     let a = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, true)), PIN_VOLUME, json!({"Hex": 48}), 0);
     let b = assert_pin(&format!("{}{RUN_ALL}", pin_fixture(1.0, false)), PIN_VOLUME, json!({"Hex": 48}), 0);
     assert_ne!(a, b, "different entity ids are different states");
+
+    // Per-volume check against the polygon formula. The size-0.3 pave disk of the r = 0.4 cylinder is an
+    // n = 8 polygon, so the curved interface is the inscribed octagon: fuel = H (n/2) r^2 sin(2 pi/n).
+    // The draft's "2.2 percent of pi r^2" bound was written for n = 12 and does not hold at n = 8.
+    let (n, r, h) = (8.0_f64, 0.4_f64, 1.0_f64);
+    let fuel = h * (n / 2.0) * r * r * (2.0 * std::f64::consts::PI / n).sin();
+    for (target, want, hex) in [("fu.volume", fuel, 12), ("mo.volumes", PIN_VOLUME - fuel, 36)] {
+        let tail = format!("mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: {target})\n");
+        let (mut s, _, i) = run_info(&format!("{}{tail}", pin_fixture(1.0, true)));
+        let got = i["volume"].as_f64().expect("volume");
+        assert!((got - want).abs() < 1e-12, "{target}: volume {got} vs polygon {want}: {i}");
+        assert_eq!(i["cell_shapes"], json!({"Hex": hex}), "{target}: {i}");
+        assert!(valid(&mut s), "{target}: {i}");
+    }
 }
 
 /// Enclosed pin (H = 0.8, ruling C1): all-tet, with a `mesh.auto_tet` warning for each of the two volumes.
