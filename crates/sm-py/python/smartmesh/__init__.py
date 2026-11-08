@@ -10,6 +10,7 @@ True
 from . import _native, smsh
 from .errors import (
     ApplicationError,
+    ExportWarning,
     InternalError,
     InvalidParamsError,
     InvalidRequestError,
@@ -24,6 +25,7 @@ from .results import (
     ApplyResult,
     Catalog,
     Diagnostic,
+    ExportNote,
     ExportResult,
     InputRef,
     LogEntry,
@@ -44,7 +46,9 @@ __all__ = [
     "Catalog",
     "Diagnostic",
     "EntityId",
+    "ExportNote",
     "ExportResult",
+    "ExportWarning",
     "InputRef",
     "InternalError",
     "InvalidParamsError",

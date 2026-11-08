@@ -25,5 +25,14 @@ def centroid(m: sm.Mesh) -> npt.NDArray[np.float64]:
     return np.asarray(m.points.mean(axis=0), dtype=np.float64)
 
 
+def exports(s: sm.Session) -> None:
+    r: sm.ExportResult = s.export("a.h5m", format="dagmc", graveyard=True)
+    s.export("a.msh", format="gmsh", binary=True, polyhedra="drop", options={"x": 1})
+    s.export("a.case", format="openfoam", split_small_determinant=False, split_warped_faces=True, empty_patches=["e"])
+    w: list[sm.ExportNote] = r.warnings
+    sev: str = w[0].severity if w else "info"
+    assert issubclass(sm.ExportWarning, UserWarning) and sev
+
+
 if __name__ == "__main__":
     print(centroid(build(sm.Session.memory())))
