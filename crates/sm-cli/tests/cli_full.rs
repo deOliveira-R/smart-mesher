@@ -10,7 +10,7 @@ use serde_json::Value;
 const PIN: [&str; 4] = ["--author", "it", "--fixed-time", "2026-10-24T00:00:00Z"];
 
 fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("smesh-full-{}-{name}", std::process::id()));
+    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("smesh-full-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("tmp");
     d
