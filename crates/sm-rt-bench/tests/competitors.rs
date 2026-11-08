@@ -68,38 +68,50 @@ fn docker_ready(tracker: &str) -> bool {
     up
 }
 
-/// Run the pure-absorber ball of C1 (Sigma_t = Sigma_a = 0.3 inside the ball, vacuum outside)
-/// through the container: a history leaks with probability `exp(-0.3 * ball chord)` of its ray, so
-/// the leaked count has mean `sum p` and variance `sum p (1 - p)` (4 sigma, plus 1% for the facet
-/// sag of the icosphere).
+/// Run the pure-absorber ball of C1 (Sigma_t = Sigma_a = 1.5 inside the ball, vacuum outside)
+/// through the container with 2e5 histories (history `h` uses ray `h % n`). A history leaks with
+/// probability `exp(-1.5 * chord)` of its ray, so the leaked count has mean `sum p` and variance
+/// `sum p (1 - p)`. The chords come from the sm-rt facets twin, which are exact for the icosphere
+/// the container also sees, so the tolerance is a pure 4 sigma.
 fn absorber_unbiased(tracker: &str) {
     if !docker_ready(tracker) {
         return;
     }
+    const SIGMA: f64 = 1.5;
+    const HISTORIES: usize = 200_000;
     let data = build(Case::C1, &Scale::tiny()).unwrap();
-    let regions = vec![spec(0, 0.3, 0.3), spec(1, 0.0, 0.0)];
+    let regions = vec![spec(0, SIGMA, SIGMA), spec(1, 0.0, 0.0)];
     let dir = std::env::temp_dir().join(format!("smrt-bench-abs-{}-{tracker}", std::process::id()));
     data.write(&dir).unwrap();
-    let scene = data.scene.as_ref().unwrap();
     let n = data.rays.len();
+    let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: 1 };
+    let mut twin = sm_rt_bench::smrt::facets_adapter(&data).unwrap();
+    twin.prepare(Workload::Track, &w).unwrap();
+    let tracks = twin.run(Workload::Track, &w).unwrap().tracks;
+    assert_eq!(tracks.len(), n);
+    let p_ray: Vec<f64> = tracks
+        .iter()
+        .map(|t| {
+            let chord: f64 = t.regions.iter().zip(&t.chords).filter(|(r, _)| **r == 0).map(|(_, c)| c).sum();
+            (-SIGMA * chord).exp()
+        })
+        .collect();
     let (mut mean, mut var) = (0.0, 0.0);
-    for i in 0..n {
-        let t = scene.track(data.rays.origin[i], data.rays.dir[i]);
-        let chord: f64 = t.regions.iter().zip(&t.chords).filter(|(r, _)| **r == 0).map(|(_, c)| c).sum();
-        let p = (-0.3 * chord).exp();
+    for h in 0..HISTORIES {
+        let p = p_ray[h % n];
         mean += p;
         var += p * (1.0 - p);
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let opts = CompetitorOpts { workloads: vec!["flight".into()], histories: n, seed: 7, regions };
+    let opts = CompetitorOpts { workloads: vec!["flight".into()], histories: HISTORIES, seed: 7, regions };
     let res = run_competitor_with(root, tracker, &dir, &data.case, &[2], 1, 0, &opts);
     let _ = std::fs::remove_dir_all(&dir);
     let Competitor::Rows { rows, dumps, .. } = res else { panic!("competitor did not run: {res:?}") };
     let out = &dumps["w-flight"];
     let (leaked, absorbed) = (out.tally[4], out.tally[5]);
     assert_eq!(rows[0].lost, 0);
-    assert_eq!(leaked + absorbed, n as f64, "every history ends leaked or absorbed");
-    let tol = 4.0 * var.sqrt() + 0.01 * mean;
+    assert_eq!(leaked + absorbed, HISTORIES as f64, "every history ends leaked or absorbed");
+    let tol = 4.0 * var.sqrt();
     assert!((leaked - mean).abs() <= tol, "{tracker}: leaked {leaked} vs {mean} +- {tol}");
 }
 
