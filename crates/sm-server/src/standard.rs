@@ -257,3 +257,104 @@ pub fn standard() -> WorkspaceBuilder {
         Err(e) => panic!("the standard distribution is misassembled: {e}"),
     }
 }
+
+#[cfg(test)]
+mod opening_tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+
+    use sm_op_api::{Plugin, Registry, RegistryError};
+
+    use super::*;
+    use crate::Server;
+
+    /// Waits on a barrier while `OPENING` is set, so two opens overlap for certain.
+    struct Rendezvous(Arc<Barrier>);
+
+    impl Plugin for Rendezvous {
+        fn id(&self) -> &str {
+            "test.rendezvous"
+        }
+        fn register(&self, _: &mut Registry) -> Result<(), RegistryError> {
+            self.0.wait();
+            Ok(())
+        }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("sm-server-opening-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("scratch dir");
+        p
+    }
+
+    fn opening() -> Option<PathBuf> {
+        OPENING.with(|o| o.borrow().clone())
+    }
+
+    fn files_under(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_owned()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push(p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                }
+            }
+        }
+        out
+    }
+
+    /// Two threads open two projects at the same time; each stages into its own project only,
+    /// and `OPENING` is clear again on each thread afterwards.
+    #[test]
+    fn concurrent_opens_bind_their_own_project() {
+        let root = scratch("two");
+        let dirs = [root.join("a"), root.join("b")];
+        for (i, d) in dirs.iter().enumerate() {
+            drop(Server::create(standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into())), d, &format!("p{i}")).expect("create"));
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let payloads: [&[u8]; 2] = [b"payload for project a", b"payload for project b"];
+        let sha = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..2)
+                .map(|i| {
+                    let (dir, barrier) = (dirs[i].clone(), Arc::clone(&barrier));
+                    s.spawn(move || {
+                        let b = standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into())).plugin(Rendezvous(barrier));
+                        let server = Server::open(b, &dir).expect("open");
+                        assert_eq!(opening(), None, "OPENING is clear after open on this thread");
+                        server.stage_input(payloads[i]).expect("stage").sha256
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().expect("thread")).collect::<Vec<_>>()
+        });
+        assert_ne!(sha[0], sha[1]);
+        for i in 0..2 {
+            let (own, other) = (files_under(&dirs[i].join("inputs")), files_under(&dirs[1 - i].join("inputs")));
+            assert!(own.iter().any(|f| f.contains(&sha[i])), "project {i} holds its own blob: {own:?}");
+            assert!(!other.iter().any(|f| f.contains(&sha[i])), "project {} does not hold project {i}'s blob: {other:?}", 1 - i);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An `open` that fails (no such project) still leaves `OPENING` clear.
+    #[test]
+    fn a_failed_open_clears_opening() {
+        let root = scratch("fail");
+        let missing = root.join("no-such-project");
+        assert!(Server::open(standard_with(None, None), &missing).is_err());
+        assert_eq!(opening(), None);
+        // The guard also restores an outer binding when opens nest.
+        with_opening(&root, || {
+            with_opening(&missing, || ());
+            assert_eq!(opening().as_deref(), Some(root.as_path()));
+        });
+        assert_eq!(opening(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
