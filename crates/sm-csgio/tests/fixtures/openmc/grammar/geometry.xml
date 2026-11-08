@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<geometry>
+  <!-- infinite universe 5: cell 11 is  -1 | 2 -3  =  -1 | (2 -3) -->
+  <cell id="11" material="1" universe="5" region="-1 | 2 -3"/>
+  <cell id="12" material="2" universe="5" region="~(-1 | 2 -3)"/>
+  <!-- infinite universe 6: double complement -->
+  <cell id="13" universe="6"><material>3</material><region>~(+1 | ~(2 -3))</region></cell>
+  <cell id="14" material="4" universe="6" region="~(-1 2 -3)"/>
+  <!-- the left part is universe 5, the right part universe 6 -->
+  <cell id="1" fill="5" region="  +11 -10 12
+        -13 14 -15 "/>
+  <cell id="2" fill="6" region="10 -16 12 -13 14 -15"/>
+  <surface id="1" type="sphere" coeffs="0 0 0 1.5"/>
+  <surface id="2" type="x-plane" coeffs="0.5"/>
+  <surface id="3" type="sphere" coeffs="1 1 0 1.2"/>
+  <surface id="10" type="x-plane" coeffs="0.2"/>
+  <surface id="11" type="x-plane" coeffs="-4" boundary="vacuum"/>
+  <surface id="12" type="y-plane" coeffs="-4" boundary="vacuum"/>
+  <surface id="13" type="y-plane" coeffs="4" boundary="vacuum"/>
+  <surface id="14" type="z-plane" coeffs="-4" boundary="vacuum"/>
+  <surface id="15" type="z-plane" coeffs="4" boundary="vacuum"/>
+  <surface id="16" type="x-plane" coeffs="4" boundary="vacuum"/>
+</geometry>

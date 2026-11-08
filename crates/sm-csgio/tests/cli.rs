@@ -107,9 +107,9 @@ fn the_binary_exits_2_on_a_deck_it_cannot_read() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("smcsg-bin");
     std::fs::create_dir_all(&dir).unwrap();
     let deck = dir.join("geometry.xml");
-    std::fs::write(&deck, "<geometry/>").unwrap();
+    std::fs::write(&deck, "<geometry><cell id=\"1\" material=\"void\" region=\"-1\"/><surface id=\"1\" type=\"sphere\" coeffs=\"0 0 0 1\" boundary=\"periodic\"/></geometry>").unwrap();
     let run = |args: &[&std::ffi::OsStr]| std::process::Command::new(bin).args(args).output().unwrap();
-    // The OpenMC reader is the stub: unsupported, exit 2.
+    // A periodic boundary is unsupported: exit 2.
     let o = run(&["check".as_ref(), deck.as_os_str()]);
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("unsupported"));

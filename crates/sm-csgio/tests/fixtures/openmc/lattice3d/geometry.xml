@@ -1,0 +1,60 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" fill="50" region="41 -42 43 -44 45 -46" universe="0"/>
+  <cell id="100" material="1" region="-29" universe="10"/>
+  <cell id="101" material="2" region="29" universe="10"/>
+  <cell id="110" material="3" region="-30" universe="11"/>
+  <cell id="111" material="2" region="30" universe="11"/>
+  <cell id="120" material="4" region="-31" universe="12"/>
+  <cell id="121" material="2" region="31" universe="12"/>
+  <cell id="130" material="5" region="-32" universe="13"/>
+  <cell id="131" material="2" region="32" universe="13"/>
+  <cell id="140" material="6" region="-33" universe="14"/>
+  <cell id="141" material="2" region="33" universe="14"/>
+  <cell id="150" material="7" region="-34" universe="15"/>
+  <cell id="151" material="2" region="34" universe="15"/>
+  <cell id="160" material="8" region="-35" universe="16"/>
+  <cell id="161" material="2" region="35" universe="16"/>
+  <cell id="170" material="9" region="-36" universe="17"/>
+  <cell id="171" material="2" region="36" universe="17"/>
+  <cell id="180" material="10" region="-37" universe="18"/>
+  <cell id="181" material="2" region="37" universe="18"/>
+  <cell id="190" material="11" region="-38" universe="19"/>
+  <cell id="191" material="2" region="38" universe="19"/>
+  <cell id="200" material="12" region="-39" universe="20"/>
+  <cell id="201" material="2" region="39" universe="20"/>
+  <cell id="210" material="13" region="-40" universe="21"/>
+  <cell id="211" material="2" region="40" universe="21"/>
+  <lattice id="50">
+    <pitch>1.0 1.5 0.8</pitch>
+    <dimension>2 2 3</dimension>
+    <lower_left>-1.0 -1.5 -1.2</lower_left>
+    <universes>
+10 11 
+12 13 
+
+14 15 
+16 17 
+
+18 19 
+20 21 </universes>
+  </lattice>
+  <surface id="29" type="sphere" coeffs="0.0 0.0 0.0 0.25"/>
+  <surface id="30" type="sphere" coeffs="0.0 0.0 0.0 0.265"/>
+  <surface id="31" type="sphere" coeffs="0.0 0.0 0.0 0.28"/>
+  <surface id="32" type="sphere" coeffs="0.0 0.0 0.0 0.295"/>
+  <surface id="33" type="sphere" coeffs="0.0 0.0 0.0 0.31"/>
+  <surface id="34" type="sphere" coeffs="0.0 0.0 0.0 0.325"/>
+  <surface id="35" type="sphere" coeffs="0.0 0.0 0.0 0.33999999999999997"/>
+  <surface id="36" type="sphere" coeffs="0.0 0.0 0.0 0.355"/>
+  <surface id="37" type="sphere" coeffs="0.0 0.0 0.0 0.37"/>
+  <surface id="38" type="sphere" coeffs="0.0 0.0 0.0 0.385"/>
+  <surface id="39" type="sphere" coeffs="0.0 0.0 0.0 0.4"/>
+  <surface id="40" type="sphere" coeffs="0.0 0.0 0.0 0.415"/>
+  <surface id="41" type="x-plane" boundary="vacuum" coeffs="-1"/>
+  <surface id="42" type="x-plane" boundary="vacuum" coeffs="1"/>
+  <surface id="43" type="y-plane" boundary="vacuum" coeffs="-1.5"/>
+  <surface id="44" type="y-plane" boundary="vacuum" coeffs="1.5"/>
+  <surface id="45" type="z-plane" boundary="vacuum" coeffs="-1.2"/>
+  <surface id="46" type="z-plane" boundary="vacuum" coeffs="1.2"/>
+</geometry>

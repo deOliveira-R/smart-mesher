@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="1" fill="6" region="82 -83 84 -85 86 -87" translation="0.7 -0.4 0.9" rotation="20 -30 45" universe="0"/>
+  <cell id="10" fill="5" region="76 -77 78 -79 80 -81" translation="2.0 1.0 0.0" rotation="0 40 70" universe="6"/>
+  <cell id="11" material="4" region="-76 | 77 | -78 | 79 | -80 | 81" universe="6"/>
+  <cell id="100" material="1" region="69 -70 71 -72 73 -74" universe="5"/>
+  <cell id="101" material="2" region="-75" universe="5"/>
+  <cell id="102" material="3" region="(-69 | 70 | -71 | 72 | -73 | 74) 75" universe="5"/>
+  <surface id="69" type="x-plane" coeffs="0.5"/>
+  <surface id="70" type="x-plane" coeffs="1.5"/>
+  <surface id="71" type="y-plane" coeffs="0.2"/>
+  <surface id="72" type="y-plane" coeffs="0.7"/>
+  <surface id="73" type="z-plane" coeffs="-0.3"/>
+  <surface id="74" type="z-plane" coeffs="0.9"/>
+  <surface id="75" type="sphere" coeffs="-1.0 0.5 -0.7 0.4"/>
+  <surface id="76" type="x-plane" coeffs="0.0"/>
+  <surface id="77" type="x-plane" coeffs="4.0"/>
+  <surface id="78" type="y-plane" coeffs="-1.0"/>
+  <surface id="79" type="y-plane" coeffs="3.0"/>
+  <surface id="80" type="z-plane" coeffs="-2.0"/>
+  <surface id="81" type="z-plane" coeffs="2.0"/>
+  <surface id="82" type="x-plane" boundary="vacuum" coeffs="-8"/>
+  <surface id="83" type="x-plane" boundary="vacuum" coeffs="8"/>
+  <surface id="84" type="y-plane" boundary="vacuum" coeffs="-8"/>
+  <surface id="85" type="y-plane" boundary="vacuum" coeffs="8"/>
+  <surface id="86" type="z-plane" boundary="vacuum" coeffs="-8"/>
+  <surface id="87" type="z-plane" boundary="vacuum" coeffs="8"/>
+</geometry>
