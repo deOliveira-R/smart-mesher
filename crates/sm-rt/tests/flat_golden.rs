@@ -89,6 +89,9 @@ fn bundle_hash(name: &str) -> Option<u128> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     return match name {
         "hex_block6" => Some(0x21a475890c57ab277f541a53d45710dd),
+        "nonconvex_poly" => Some(0xd88c1ac6430cdbf35c94b1be24b37627),
+        "mixed_transition" => Some(0x02973ad67e28a8981126ca32545b815e),
+        "nested_facets" => Some(0x754e51e2e9adde0dedc9bbcaa9c6652d),
         _ => None,
     };
     #[allow(unreachable_code)]
