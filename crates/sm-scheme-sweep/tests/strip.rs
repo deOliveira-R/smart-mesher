@@ -73,3 +73,57 @@ fn hollow_cylinder_annulus_pair_is_valid() {
     assert_eq!(c.linking.len(), 2);
     assert_eq!(c.columns.len(), 2);
 }
+
+/// A brick with a through cylindrical hole (`instanced_core`): of the 21 face pairs of the holed
+/// brick exactly one is a valid sweep, annulus to annulus. The side-to-side pairs look like
+/// prisms but their linking faces have no column coedges.
+#[test]
+fn through_hole_brick_has_exactly_the_annulus_pair() {
+    let fx = sm_testkit::topo::instanced_core(1).unwrap();
+    let t = &fx.complex;
+    let holed = *t
+        .cells(Dim::Volume)
+        .iter()
+        .find(|&&v| faces_of(t, v).len() == 7)
+        .expect("holed brick volume with 7 faces");
+    let faces = faces_of(t, holed);
+    let members = [(holed, faces.clone())];
+    let n_edges = |f: EntityId| t.face_edges(f).len();
+    let annuli: Vec<EntityId> = faces.iter().copied().filter(|&f| n_edges(f) == 5).collect();
+    assert_eq!(annuli.len(), 2, "two annulus faces");
+    let sides: Vec<EntityId> = faces.iter().copied().filter(|&f| n_edges(f) == 4).collect();
+    assert_eq!(sides.len(), 4, "four side faces");
+
+    let mut valid = Vec::new();
+    let mut rejected = Vec::new();
+    for (i, &s) in faces.iter().enumerate() {
+        for &g in &faces[i + 1..] {
+            match discover_columns(t, &members, s, g) {
+                Ok(_) => valid.push((s, g)),
+                Err(e) => rejected.push(((s, g), e.to_string())),
+            }
+        }
+    }
+    assert_eq!(valid.len() + rejected.len(), 21);
+    assert_eq!(valid.len(), 1, "valid pairs: {valid:?}");
+    let (a, b) = valid[0];
+    assert!(annuli.contains(&a) && annuli.contains(&b) && a != b, "the valid pair is the two annuli");
+
+    // Opposite side faces share no edge.
+    let shares = |x: EntityId, y: EntityId| t.face_edges(x).iter().any(|e| t.face_edges(y).contains(e));
+    let mut opposite = 0;
+    for (i, &s) in sides.iter().enumerate() {
+        for &g in &sides[i + 1..] {
+            if shares(s, g) {
+                continue;
+            }
+            opposite += 1;
+            let (_, why) = rejected
+                .iter()
+                .find(|((x, y), _)| (*x, *y) == (s, g) || (*x, *y) == (g, s))
+                .expect("side pair rejected");
+            assert!(why.contains("0 column coedges"), "{why}");
+        }
+    }
+    assert_eq!(opposite, 2, "two opposite side pairs");
+}
