@@ -155,6 +155,8 @@ that could vanish in the twin (shorter than `2 bound`, then `4 bound`) with the 
 
 ### Flight unbiasedness (acceptance 6)
 
+The competitor check of acceptance 6 uses the C1 tiny ball (`R` = 1, `Sigma` = 1.5; the same optical radius as the draft's `R` 5, `Sigma` 0.3).
+
 A pure absorber sphere (`Sigma` 0.3, `R` 5), starts uniform in the ball, isotropic. Expected
 transmission per start: analytic row, `exp(-Sigma d)` with `d` the distance to the sphere; mesh rows
 (stair-stepped sphere in a 16^3 Kuhn block), `exp(-Sigma L)` with `L` the chord the same mesh gives
