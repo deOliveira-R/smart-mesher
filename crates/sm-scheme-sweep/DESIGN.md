@@ -31,7 +31,14 @@ Planning (all three phases share one analysis, `scheme::analyse`):
    loop contributes its own columns). `NotApplicable` (with a reason) when a source vertex has
    no column, source and target share a vertex, the vertex counts differ (many-to-one), two
    columns end at one target vertex, or a linking face has fewer than four *coedges* (a
-   cylinder face has three distinct edges, its seam is used twice). Without `source`/`target`
+   cylinder face has three distinct edges, its seam is used twice), or a linking face is not a
+   *strip* (W3c strip check: it must have exactly one loop and at least two column coedges, a
+   seam counting twice; reasons `linking face {l} has inner loops (not a strip)` and `linking
+   face {l} has {n} column coedges`). The strip check stops a pair such as the two side faces
+   of a brick with a through hole (the annuli would become linking faces) or two faces of an
+   enclosed cavity from passing, so an explicit `sweep` on such a pair now fails at plan time
+   rather than at generation. It does not require every other edge to lie on the source or
+   target (multi-step columns and mid-height edges stay valid). Without `source`/`target`
    the face pairs are tried lowest ids first.
 2. *Target transform* (`fit_target_transform`). See below. `target_mode: "auto"` registers the
    copy only when the fit is accepted; `"copy"` registers it with the best-effort transform.
