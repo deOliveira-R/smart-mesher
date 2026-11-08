@@ -53,6 +53,13 @@ pub struct TetVolume; pub fn register(&mut SchemeRegistry) -> sm_scheme_api::Res
   In the adapter, orientation is read from the topology and never inferred from geometry: a face
   use with `Side::Left` (volume on the left, normal out of the volume) keeps the winding of the
   face patch's triangles, `Side::Right` flips it; void shells follow the same rule.
+* **Applicability is the closed-shell check, not a face count (W3c).** `TetVolume` is applicable
+  when the volume has boundary faces and every non-degenerate edge of its face uses is traversed
+  once in each direction (`shell_closed`). The old rule "at least four faces" refused a cylinder
+  (three faces, seam used twice), so an enclosed fuel pin could not fall back to tets. Any closed
+  shell is accepted, including one-face shells (sphere, torus): the face-count rule would need
+  an extra "periodic only" exception with no geometric reason, whereas a shell that is not
+  closed is still refused. Faces still need triangle meshes (`require_caps(TRI, Hard)`).
 * **Sign conventions** (pinned by tests against `sm_testkit::meshes::single_tet` and
   `sm_mesh_api::cell_volume`): `ori(a,b,c,d) = -sm_math::orient3d(a,b,c,d)` is `+1` for a
   positive-volume `CellShape::Tet`, i.e. the sign of `det(b-a, c-a, d-a)`. For such a tet
