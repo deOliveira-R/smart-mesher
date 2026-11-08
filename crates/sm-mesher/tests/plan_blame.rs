@@ -6,11 +6,14 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::*;
 use serde_json::json;
-use sm_mesher::{AutoLists, DefaultStrategy, MesherConfig};
-use sm_op_api::{DerivedCache, Hash256, OpRecord, Session};
+use sm_mesher::{
+    AutoInput, AutoLists, AutoStrategy, DefaultStrategy, MesherConfig, SchemeAssignment,
+};
+use sm_op_api::{DerivedCache, Hash256, OpRecord, QuietControl, Session};
 use sm_scheme_api::stubs;
 use sm_scheme_api::{
     Applicability, Caps, Firmness, GenCtx, GenerateFailure, IntervalCtx, IntervalSink, Params,
@@ -126,13 +129,63 @@ fn lists(volume: &[&str]) -> AutoLists {
     }
 }
 
-fn cut_session(schemes: Vec<CapSweep>, hard_v1: Option<&str>, strat: DefaultStrategy) -> Session {
+/// Delegates to the default strategy and counts `choose` calls.
+struct CountingDefault {
+    inner: DefaultStrategy,
+    calls: Arc<AtomicUsize>,
+}
+
+impl AutoStrategy for CountingDefault {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+    fn choose(&self, input: &AutoInput<'_>) -> Result<Vec<SchemeAssignment>, SchemeError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.choose(input)
+    }
+}
+
+/// A different strategy (other name, other choices) that must never run during replay.
+struct Other {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AutoStrategy for Other {
+    fn name(&self) -> &'static str {
+        "other"
+    }
+    fn choose(&self, input: &AutoInput<'_>) -> Result<Vec<SchemeAssignment>, SchemeError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(input
+            .targets()
+            .iter()
+            .map(|&t| SchemeAssignment::new(t, "flakyswp"))
+            .collect())
+    }
+}
+
+fn cut_engine(
+    schemes: Vec<CapSweep>,
+    strat: Arc<dyn AutoStrategy>,
+    cache: DerivedCache,
+) -> sm_op_api::Engine {
     let mut reg = stubs::registry();
     for s in schemes {
         reg.register(Box::new(s)).expect("register");
     }
-    let cfg = MesherConfig::new(reg).with_strategy(Arc::new(strat));
-    let mut s = Session::new(engine_cfg(cfg, DerivedCache::default()));
+    engine_cfg(MesherConfig::new(reg).with_strategy(strat), cache)
+}
+
+fn cut_session(schemes: Vec<CapSweep>, hard_v1: Option<&str>, strat: DefaultStrategy) -> Session {
+    cut_session_with(schemes, hard_v1, Arc::new(strat))
+}
+
+fn cut_session_with(
+    schemes: Vec<CapSweep>,
+    hard_v1: Option<&str>,
+    strat: Arc<dyn AutoStrategy>,
+) -> Session {
+    let mut s = Session::new(cut_engine(schemes, strat, DerivedCache::default()));
     run(
         &mut s,
         &CreateBrick {
@@ -189,10 +242,18 @@ fn err_text<T>(r: Result<T, sm_op_api::TimelineError>) -> String {
 fn plan_time_blame_rejects_the_auto_imposer_and_replays() {
     // V1 is hard `triswp` (tri on the cap); V2's best candidate `quadswp` imposes quad on it.
     let strat = DefaultStrategy::with_lists(lists(&["quadswp", "okswp"]));
-    let mut s = cut_session(sweeps(None, None, None), Some("triswp"), strat.clone());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting = CountingDefault {
+        inner: strat.clone(),
+        calls: calls.clone(),
+    };
+    let mut s = cut_session_with(sweeps(None, None, None), Some("triswp"), Arc::new(counting));
     run_json(&mut s, "mesh.auto", json!({})).expect("auto replans at plan time");
     assert_eq!(scheme_of(&head_record(&s), "TopoVolume#3"), "okswp");
+    let auto_rec = head_record(&s);
     run_both(&mut s).expect("run");
+    let at_record = calls.load(Ordering::SeqCst);
+    assert_eq!(at_record, 1, "one strategy call at record time");
 
     // The stored record is explicit: a second build gives the same hashes.
     let h = s.state().hash();
@@ -200,6 +261,38 @@ fn plan_time_blame_rejects_the_auto_imposer_and_replays() {
     run_json(&mut t, "mesh.auto", json!({})).expect("auto");
     run_both(&mut t).expect("run");
     assert_eq!(t.state().hash(), h);
+
+    // (a) Replay from the root reproduces every node's hash without calling the strategy.
+    let q = QuietControl::new();
+    let head = s.position().expect("head");
+    let nodes = s.timeline().path_to_root(head).expect("path");
+    assert!(nodes.len() >= 5, "{}", nodes.len());
+    for &n in &nodes {
+        let st = s
+            .state_at_from_root(n, &q.control())
+            .expect("replay verifies the recorded hash");
+        assert_eq!(st.hash(), s.timeline().get(n).expect("node").check.state);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), at_record, "replay: 0 calls");
+
+    // (b) apply_record of the stored records under an engine with another strategy.
+    let c2 = Arc::new(AtomicUsize::new(0));
+    let eng2 = cut_engine(
+        sweeps(None, None, None),
+        Arc::new(Other { calls: c2.clone() }),
+        DerivedCache::disabled(),
+    );
+    let mut st = eng2.registry().new_state();
+    let mut saw_auto = false;
+    for &n in &nodes {
+        let node = s.timeline().get(n).expect("node");
+        eng2.apply_record(&mut st, &node.body.op, &q.control())
+            .expect("replay");
+        assert_eq!(st.hash(), node.check.state);
+        saw_auto |= node.body.op == auto_rec;
+    }
+    assert!(saw_auto, "the mesh.auto record was replayed");
+    assert_eq!(c2.load(Ordering::SeqCst), 0);
 
     // Negative control: no replan allowed gives the planner's own error and changes nothing.
     let mut c = cut_session(
