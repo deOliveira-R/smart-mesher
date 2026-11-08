@@ -41,6 +41,37 @@ pub fn deck_o_gap() -> CsgIr {
     })
 }
 
+/// One cell `-1 2 -3` in a vacuum z-cylinder (r=1) between vacuum planes z=+-1, plus an inner
+/// fuel cell when `two` (the pin-cell shape). The outer boundary is not the bounding box.
+pub fn deck_cyl(two: bool) -> CsgIr {
+    let mut ir = CsgIr::new(0);
+    ir.surfaces.insert(1, Surf::cylinder(2, [0.0; 3], 1.0).unwrap().with_flag(BoundaryFlag::Vacuum));
+    ir.surfaces.insert(2, Surf::axis_plane(2, -1.0).with_flag(BoundaryFlag::Vacuum));
+    ir.surfaces.insert(3, Surf::axis_plane(2, 1.0).with_flag(BoundaryFlag::Vacuum));
+    ir.materials.insert(1, Material::default());
+    ir.materials.insert(2, Material::default());
+    if two {
+        ir.surfaces.insert(4, Surf::cylinder(2, [0.0; 3], 0.5).unwrap());
+        ir.cells.insert(1, Cell::new(0, Expr::signed(&[-4, 2, -3]), Some(1)));
+        ir.cells.insert(2, Cell::new(0, Expr::signed(&[4, -1, 2, -3]), Some(2)));
+    } else {
+        ir.cells.insert(1, Cell::new(0, Expr::signed(&[-1, 2, -3]), Some(1)));
+    }
+    ir
+}
+
+/// A fuel sphere in a water sphere (vacuum, r=2): the outer boundary is curved.
+pub fn deck_sph() -> CsgIr {
+    let mut ir = CsgIr::new(0);
+    ir.surfaces.insert(1, Surf::sphere([0.0; 3], 1.0).unwrap());
+    ir.surfaces.insert(2, Surf::sphere([0.0; 3], 2.0).unwrap().with_flag(BoundaryFlag::Vacuum));
+    ir.materials.insert(1, Material::default());
+    ir.materials.insert(2, Material::default());
+    ir.cells.insert(1, Cell::new(0, Expr::signed(&[-1]), Some(1)));
+    ir.cells.insert(2, Cell::new(0, Expr::signed(&[1, -2]), Some(2)));
+    ir
+}
+
 pub fn import(ir: &CsgIr) -> ImportedCsg {
     ImportedCsg::import(ir, &ImportOptions::default()).unwrap()
 }

@@ -31,7 +31,7 @@ fn fingerprint(ir: &sm_csgio::CsgIr) -> (Result<u128, ImportError>, Vec<u64>, Ve
 
 #[test]
 fn imports_are_identical_across_runs_and_thread_counts() {
-    for ir in [deck_o(), deck_o_overlap(), deck_o_gap()] {
+    for ir in [deck_o(), deck_o_overlap(), deck_o_gap(), deck_cyl(false), deck_cyl(true), deck_sph()] {
         let a = fingerprint(&ir);
         let b = fingerprint(&ir);
         let one = in_pool(1, || fingerprint(&ir));

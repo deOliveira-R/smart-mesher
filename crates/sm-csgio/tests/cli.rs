@@ -9,6 +9,8 @@ fn loader(req: &LoadRequest<'_>) -> Result<CsgIr, ImportError> {
     match req.deck.to_str().unwrap() {
         "ok" => Ok(deck_o()),
         "overlap" => Ok(deck_o_overlap()),
+        "cyl" => Ok(deck_cyl(false)),
+        "sph" => Ok(deck_sph()),
         "gap" => Ok(deck_o_gap()),
         "unsupported" => Err(ImportError::Unsupported { line: Some(3), what: "hex_lattice".into() }),
         "parse" => Err(ImportError::Parse { line: 2, col: 5, msg: "bad".into() }),
@@ -42,6 +44,15 @@ fn exit_1_for_an_overlap_and_for_gaps_only_when_strict() {
     let (code, out, _) = smcsg(&["check", "gap", "--strict-gaps"]);
     assert_eq!(code, 1);
     assert!(out.starts_with("gaps:"), "{out}");
+}
+
+#[test]
+fn curved_vacuum_boundaries_are_clean_even_with_strict_gaps() {
+    for deck in ["cyl", "sph"] {
+        let (code, out, err) = smcsg(&["check", deck, "--strict-gaps"]);
+        assert_eq!(code, 0, "{deck}: {out} {err}");
+        assert!(err.is_empty(), "{deck}: {err}");
+    }
 }
 
 #[test]

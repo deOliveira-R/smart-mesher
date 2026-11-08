@@ -5,12 +5,12 @@ use crate::instantiate::{Instantiated, instantiate};
 use crate::ir::{BoundaryFlag, CsgIr, Sign};
 use crate::names::{VOID_REGION, resolve_region_names};
 use crate::ImportError;
-use sm_core::Aabb;
+use sm_core::{Aabb, EntityId};
 use sm_geom_api::{CsgCell, GeomAppend, HalfSpace, MemoryStore, SurfaceDef};
 use sm_rt::{AnalyticTracker, AnalyticTrackerBuilder, MAX_FLAT_CELLS, check_overlaps};
 use sm_rt_api::{
     BoundaryDef, BoundarySelector, BoundarySpec, BuildInput, BuildOptions, BuildReport, ComplementPolicy, ComponentId, ComponentKind, ContentHash, ContentHasher, CsgCellDef, CsgLeafInput, CsgRegion, HierInput,
-    InstancePolicy, LeafInput, ResponseKind, WorldSpec,
+    InstancePolicy, LeafInput, ResponseKind, Tracker, WorldSpec,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -112,6 +112,8 @@ pub struct ImportedCsg {
     boundaries: BoundarySpec,
     bounds: Option<Aabb>,
     complement: ComplementPolicy,
+    /// Store handles of the surfaces that carry a boundary flag (for the check's `<outside>`).
+    flagged: Vec<EntityId>,
     report: ImportReport,
 }
 
@@ -120,6 +122,9 @@ impl core::fmt::Debug for ImportedCsg {
         f.debug_struct("ImportedCsg").field("cells", &self.cells.len()).finish()
     }
 }
+
+/// Name of the check-only cell beyond the flagged boundaries.
+const OUTSIDE_CELL: &str = "<outside>";
 
 fn cell_name(names: &BTreeMap<u32, String>, material: Option<u32>) -> String {
     material.and_then(|m| names.get(&m).cloned()).unwrap_or_else(|| VOID_REGION.to_string())
@@ -154,6 +159,7 @@ impl ImportedCsg {
             sources.push(source);
         }
         let mut rules = Vec::new();
+        let mut flagged = Vec::new();
         let mut warnings = Vec::new();
         for (i, f) in flags.iter().enumerate() {
             let def = match f {
@@ -167,6 +173,7 @@ impl ImportedCsg {
                     BoundaryDef::Reflect
                 }
             };
+            flagged.push(ids[i]);
             rules.push((BoundarySelector::Entity(ids[i]), def));
         }
         Ok(Self {
@@ -176,6 +183,7 @@ impl ImportedCsg {
             boundaries: BoundarySpec::new(BoundaryDef::Respond(ResponseKind::Vacuum), rules),
             bounds: opts.bounds,
             complement: ComplementPolicy::Outside,
+            flagged,
             report: ImportReport { warnings, dropped: ir.dropped.clone(), checked: None },
         })
     }
@@ -203,28 +211,80 @@ impl ImportedCsg {
     }
 
     fn with_hier<R>(&self, f: impl FnOnce(&HierInput<'_>) -> R) -> R {
+        self.with_hier_of(self.leaf(), f)
+    }
+
+    fn with_hier_of<R>(&self, leaf: CsgLeafInput<'_>, f: impl FnOnce(&HierInput<'_>) -> R) -> R {
         let spec = WorldSpec::new(vec![ComponentKind::Leaf { input: 0 }], ComponentId(0), InstancePolicy::Flatten);
-        let leaves = [LeafInput::Csg(self.leaf())];
+        let leaves = [LeafInput::Csg(leaf)];
         let h = HierInput::new(&spec, &leaves, &self.boundaries);
         f(&h)
+    }
+
+    /// The `<outside>` region of the check: the union of the outer half-spaces of the
+    /// boundary-flagged surfaces that every flat cell uses on one side only (one single-literal
+    /// term per surface). Space beyond a flagged surface is not a gap, whatever its shape (a
+    /// vacuum cylinder or sphere leaves the corners of the bounding box outside the model).
+    /// `None` when no surface qualifies.
+    fn outside_region(&self) -> Option<CsgRegion> {
+        // (used on the positive side, used on the negative side)
+        let mut used: BTreeMap<EntityId, (bool, bool)> = self.flagged.iter().map(|h| (*h, (false, false))).collect();
+        for c in &self.cells {
+            for t in c.region.terms() {
+                for hs in &t.halfspaces {
+                    if let Some(u) = used.get_mut(&hs.surface) {
+                        match hs.sign {
+                            Sign::Positive => u.0 = true,
+                            Sign::Negative => u.1 = true,
+                        }
+                    }
+                }
+            }
+        }
+        // One-sided use only; the outer half-space is the side no cell uses.
+        let terms: Vec<CsgCell> = used
+            .into_iter()
+            .filter(|(_, (pos, neg))| pos != neg)
+            .map(|(surface, (pos, _))| CsgCell::new([HalfSpace { surface, sign: if pos { Sign::Negative } else { Sign::Positive } }]))
+            .collect();
+        (!terms.is_empty()).then(|| CsgRegion::new(terms))
     }
 
     /// Sample the flat model for overlapping cells and gaps (`sm_rt::check_overlaps`). Findings
     /// are the same for any thread count. An overlap names the deck cells (and lattice elements)
     /// of both cells.
     ///
+    /// The sampled leaf is a check-only copy of the flat cells plus one extra `<outside>` cell
+    /// (`outside_region`), over the bounds of the tracking leaf; the tracking leaf and
+    /// [`Self::content_hash`] do not see it. A sample in `<outside>` is neither a gap nor an
+    /// overlap: findings that involve `<outside>` are dropped, so the space beyond a vacuum
+    /// (or other flagged) boundary that is not the bounding box is not reported.
+    ///
     /// # Errors
     /// `Invalid` for out-of-range effort, `Build` when the model cannot be compiled.
     pub fn check(&self, opts: &CheckOptions) -> Result<CheckOutcome, ImportError> {
         opts.validate()?;
-        let issues = self.with_hier(|h| check_overlaps(h, opts.samples as usize, opts.rays as usize, opts.seed));
+        let run = |h: &HierInput<'_>| check_overlaps(h, opts.samples as usize, opts.rays as usize, opts.seed);
+        let n = self.cells.len();
+        let issues = match self.outside_region().zip(self.check_bounds()) {
+            Some((outside, bounds)) => {
+                let mut cells = self.cells.clone();
+                cells.push(CsgCellDef::new(outside, OUTSIDE_CELL));
+                self.with_hier_of(CsgLeafInput::new(&self.store, &cells, Some(bounds), &self.complement), run)
+            }
+            None => self.with_hier(run),
+        };
         let mut out = CheckOutcome::default();
         let mut build = Vec::new();
         for i in issues {
             let point = i.location.map(|p| [p.x, p.y, p.z]);
             match i.code {
                 "csg.overlap" => {
-                    let found = point.zip(parse_cells(&i.message)).and_then(|(point, (a, b))| Some(OverlapFinding { point, a: self.sources.get(a)?.clone(), b: self.sources.get(b)?.clone() }));
+                    let cells = parse_cells(&i.message);
+                    if cells.is_some_and(|(a, b)| a >= n || b >= n) {
+                        continue;
+                    }
+                    let found = point.zip(cells).and_then(|(point, (a, b))| Some(OverlapFinding { point, a: self.sources.get(a)?.clone(), b: self.sources.get(b)?.clone() }));
                     match found {
                         Some(f) => out.overlaps.push(f),
                         None => build.push(i),
@@ -236,6 +296,17 @@ impl ImportedCsg {
             }
         }
         if build.is_empty() { Ok(out) } else { Err(ImportError::Build { issues: build }) }
+    }
+
+    /// Finite bounds to sample: the given ones, else those of the tracking leaf. `None` when the
+    /// leaf is not provably bounded (the plain check then reports `import.unbounded`).
+    fn check_bounds(&self) -> Option<Aabb> {
+        let b = match self.bounds {
+            Some(b) => b,
+            None => self.tracker(&BuildOptions::default()).ok()?.0.bounds(),
+        };
+        let (lo, hi) = ([b.lo.x, b.lo.y, b.lo.z], [b.hi.x, b.hi.y, b.hi.z]);
+        (0..3).all(|k| lo[k].is_finite() && hi[k].is_finite() && hi[k] - lo[k] < 1e29).then_some(b)
     }
 
     /// Build the analytic tracker of the model.

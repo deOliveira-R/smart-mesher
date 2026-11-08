@@ -69,6 +69,36 @@ fn gap_is_a_warning_with_a_point_in_the_unclaimed_sphere() {
 }
 
 #[test]
+fn space_beyond_a_curved_vacuum_boundary_is_not_a_gap() {
+    for ir in [deck_cyl(false), deck_cyl(true), deck_sph()] {
+        let m = import(&ir);
+        assert!(m.report().warnings.is_empty(), "{:?}", m.report());
+    }
+}
+
+#[test]
+fn an_interior_gap_in_a_cylinder_deck_is_still_found() {
+    // Remove the annulus of the two-cell pin: the gap is inside the cylinder.
+    let mut ir = deck_cyl(true);
+    ir.cells.remove(&2);
+    let m = import(&ir);
+    let gaps: Vec<_> = m.report().warnings.iter().filter(|w| w.code == "import.gap").collect();
+    assert!(!gaps.is_empty(), "{:?}", m.report());
+    for g in gaps {
+        let p = g.point.unwrap();
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        assert!((0.5 - 1e-9..=1.0 + 1e-9).contains(&r), "gap point {p:?} is outside the annulus");
+    }
+}
+
+#[test]
+fn the_check_does_not_change_the_model_hash() {
+    let ir = deck_cyl(true);
+    let a = ImportedCsg::instantiate(&ir, &ImportOptions::default()).unwrap().content_hash();
+    assert_eq!(a, import(&ir).content_hash());
+}
+
+#[test]
 fn names_follow_c9() {
     let named = |a: Option<&str>, b: Option<&str>| {
         let mut ir = deck_o();
