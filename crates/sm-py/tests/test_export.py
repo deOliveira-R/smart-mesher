@@ -25,6 +25,20 @@ def _poly(s: sm.Session) -> sm.EntityId:
     return poly
 
 
+# A brick cut by three oblique planes into a general hexahedron, map-meshed: its interior faces
+# are warped. (The dual POLY from `_poly` has no face above the warp tolerance.)
+WARPED = """
+let a = model.create_brick(x: 4.0, y: 4.0, z: 4.0, center: [2.0, 2.0, 2.0])
+let c1 = model.webcut_plane(targets: a.body, plane: {origin: [3.0, 0.0, 0.0], normal: [1.0, 0.4, 0.0]})
+let c2 = model.webcut_plane(targets: c1.negative, plane: {origin: [0.0, 0.0, 3.0], normal: [0.3, 0.1, 1.0]})
+let c3 = model.webcut_plane(targets: c2.negative, plane: {origin: [0.0, 3.0, 0.0], normal: [0.2, 1.0, 0.3]})
+let v = topo.related(kind: "TopoVolume", within: c3.negative)
+mesh.size(targets: v, size: 0.5)
+mesh.scheme(targets: v, scheme: "map")
+let m = mesh.run(targets: v)
+"""
+
+
 def test_dagmc_graveyard_sugar_equals_options(cube: sm.Session, tmp_path: pathlib.Path) -> None:
     plain, a, b = (tmp_path / n for n in ("plain.h5m", "a.h5m", "b.h5m"))
     cube.export(plain, format="dagmc")
@@ -169,11 +183,11 @@ def test_smrt_fully_blocked_is_silent(cube: sm.Session, tmp_path: pathlib.Path) 
 
 @pytest.mark.xfail(reason=NO_SERVER_A, strict=False)
 def test_split_warped_faces_flag(s: sm.Session, tmp_path: pathlib.Path) -> None:
-    pm = _poly(s)
-    r = s.export(tmp_path / "case", format="openfoam", split_warped_faces=True, mesh=pm)
+    s.run_script(WARPED)
+    r = s.export(tmp_path / "case", format="openfoam", split_warped_faces=True)
     assert any(n.code == "foam.warped_faces_split" for n in r.notes)
     with pytest.raises(sm.SmartMeshError) as ei:
-        s.export(tmp_path / "x.msh", format="gmsh", split_warped_faces=True, mesh=pm)
+        s.export(tmp_path / "x.msh", format="gmsh", split_warped_faces=True)
     assert ei.value.kind == "bad-request"
 
 
