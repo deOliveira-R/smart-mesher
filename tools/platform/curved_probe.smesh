@@ -1,0 +1,23 @@
+// Curved-geometry probe (information only; not a milestone, not in expected.txt): a cylinder, a
+// sphere and a torus; a STEP export and re-import on a branch; `view.tessellate` facet counts.
+// Volume or face meshing of curved entities is not available at 9ac71ca (`mesh.auto`, `tetmesh`
+// and face `mesh.run` all refuse them), so the curved paths reachable here are model creation,
+// STEP out/in and sm_tess. A libm difference would show first in the tessellation counts.
+let c = model.create_cylinder(radius: 0.5, height: 1.0, center: [0.0, 0.0, 0.0])
+let s = model.create_sphere(0.5, center: [2.0, 0.0, 0.0])
+let t = model.create_torus(major: 0.7, minor: 0.25, center: [4.0, 0.0, 0.0])
+let h_model = session.hash()
+print "h_model", h_model
+let n_model = timeline.head().node
+let tv = view.tessellate(entities: all volumes)
+print "tess_triangles", tv.triangle_count
+print "tess_vertices", tv.vertex_count
+let ex = model.export(path: "probe.step")
+print "step_bytes", ex.report.bytes
+let st = session.stage("probe.step")
+timeline.branch("reimport", at: n_model)
+timeline.checkout(empty: true)
+model.import_step(source: {sha256: st.sha256})
+let h_reimport = session.hash()
+print "h_reimport", h_reimport
+timeline.checkout("main")
