@@ -390,11 +390,14 @@ fn acc04_preassigned_leaf_does_zero_tests_and_hinted_equals_locate_on_mixed() {
     let st = t.init_state(p3([1.5, 1.5, 1.5]), v3([1.0, 0.0, 0.0]), None, &mut sc).unwrap();
     let mut s2 = st.clone();
     let mut cur = view.begin(&st, &FlightOptions::default().with_policy(ModePolicy::Delta)).unwrap();
+    sc.clear_counters();
     let seg = cur.next_segment(view, input, &mut s2, &mut sc).unwrap().unwrap();
+    assert_eq!(sc.counters.bvh_descents, 0, "next_segment descended a BVH");
     sc.clear_counters();
     let l = cur.probe(view, input, &mut sc, seg.t0).unwrap();
     assert_eq!(l.cell, st.cell);
     assert_eq!(sc.counters.locate_candidates, 0);
+    assert_eq!(sc.counters.bvh_descents, 0, "probe descended a BVH");
     // The mixed-shape fixture agrees with locate everywhere we try.
     let mt = mixed_transition().unwrap();
     let t = build_part(&mt.mesh, &RegionRule::ByVolumeClassification, &vacuum(), popts(1, false));
