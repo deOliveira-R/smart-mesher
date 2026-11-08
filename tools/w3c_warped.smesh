@@ -1,0 +1,14 @@
+// W3c OpenFOAM `split_warped_faces` fixture (ruling R11, docs/design/w3c/drafts/export-opts.md
+// acceptance 3): a brick cut by three oblique planes into a general hexahedron, map-meshed, so its
+// interior faces are warped. The same text as `WARPED` in crates/sm-server/tests/export_wire.rs.
+// The pin meshes are planar-faced, so this is the case where the flag changes the files.
+let a = model.create_brick(x: 4.0, y: 4.0, z: 4.0, center: [2.0, 2.0, 2.0])
+let c1 = model.webcut_plane(targets: a.body, plane: {origin: [3.0, 0.0, 0.0], normal: [1.0, 0.4, 0.0]})
+let c2 = model.webcut_plane(targets: c1.negative, plane: {origin: [0.0, 0.0, 3.0], normal: [0.3, 0.1, 1.0]})
+let c3 = model.webcut_plane(targets: c2.negative, plane: {origin: [0.0, 3.0, 0.0], normal: [0.2, 1.0, 0.3]})
+let v = topo.related(kind: "TopoVolume", within: c3.negative)
+mesh.size(targets: v, size: 0.5)
+mesh.scheme(targets: v, scheme: "map")
+let m = mesh.run(targets: v)
+print "mesh", m.mesh[0]
+print "h_mesh", session.hash()

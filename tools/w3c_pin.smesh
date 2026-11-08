@@ -1,0 +1,70 @@
+// W3c round-pin milestone (docs/design/w3c/plan.md section 5.1, rulings C1, C4).
+//
+// A through pin (H = 1.0): a 1.26 x 1.26 x 1.0 moderator brick minus a consumed copy of a
+// z cylinder (r = 0.4), plus the cylinder itself as fuel, then imprint and merge. (`model.subtract`
+// without `keep`: `keep: true` would keep the target brick too.) A 3x3 lattice of the pin cell by
+// `model.copy` (18 volumes), blocks per material, `mesh.auto { strategy: "default" }` (explicit
+// assignments in history), `mesh.run`, `mesh.validate`, and the `.smrt` and OpenFOAM exports.
+// Files are written relative to the session's working directory.
+//
+// It prints `key value...` lines; tests/milestone_w3c_pin.rs and tools/w3c_driver.py compare
+// them between the CLI, MCP, in-process and Python front ends.
+
+// ---------------------------------------------------------------- model: pin cell and lattice
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "pin cell: fuel and moderator"
+
+// two copy steps make the 3x3 lattice (the copy carries no colors or names)
+let fx = model.copy(entities: fu.volume, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let mx = model.copy(entities: mo.volumes, count: 2, xform: {kind: "move", delta: [1.26, 0.0, 0.0]})
+let fy = model.copy(entities: fu.volume | fx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+let my = model.copy(entities: mo.volumes | mx.volumes, count: 2, xform: {kind: "move", delta: [0.0, 1.26, 0.0]})
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 18, "3x3 lattice: 9 pin cells of 2 volumes"
+let fuels = fu.volume | fx.volumes | fy.volumes
+let mods = mo.volumes | mx.volumes | my.volumes
+assert count(fuels) == 9 and count(mods) == 9, "9 fuel pins, 9 moderator cells"
+fem.block_add(1, volumes: fuels, name: "fuel")
+fem.block_add(2, volumes: mods, name: "moderator")
+mesh.size(targets: all volumes, size: 0.3)
+
+let tot = 0.0
+for v in all volumes {
+  set tot = tot + model.measure(entity: v).volume
+}
+assert tot > 14.2883 and tot < 14.2885, "lattice volume 9 x 1.26^2 x 1"
+print "model_volume", tot
+let h_model = session.hash()
+print "h_model", h_model
+
+// ---------------------------------------------------------------- auto and the volume run
+let au = mesh.auto(strategy: "default")
+let h_auto = session.hash()
+print "h_auto", h_auto
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+assert mi.cells == 432, "432 hexes"
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "mesh_volume", mi.volume
+print "mesh", m.mesh[0]
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty (conformal interfaces)"
+print "violations", val.total
+let mplan = mesh.plan(mesh: m.mesh[0])
+assert mplan.status == "ran", "plan of the ran mesh"
+let h_mesh = session.hash()
+print "h_mesh", h_mesh
+
+// ---------------------------------------------------------------- exports
+// The .smrt has one region per block; every volume is in a block, so the export has no notes.
+session.export("pin.smrt")
+session.export("pin_foam", format: "openfoam")
+assert session.hash() == h_mesh, "exports leave the state hash unchanged"
+print "head", timeline.head().branch

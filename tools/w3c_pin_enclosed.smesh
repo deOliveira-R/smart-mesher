@@ -1,0 +1,35 @@
+// W3c enclosed-pin row (ruling C1): a pin whose fuel is shorter than the moderator (H = 0.8 in a
+// 1.0 brick), so the cylinder is closed by moderator on every side. All-tet for now (O-grid
+// all-hex and hex-tet transition cells are W4); `mesh.auto` warns once per tet volume.
+//
+// Same prints as tools/w3c_pin.smesh where they apply.
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 0.8, radius: 0.4)
+let tl = model.create_cylinder(height: 0.8, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 2, "fuel and moderator"
+fem.block_add(1, volumes: fu.volume, name: "fuel")
+fem.block_add(2, volumes: mo.volumes, name: "moderator")
+mesh.size(targets: all volumes, size: 0.3)
+let h_model = session.hash()
+print "h_model", h_model
+
+let au = mesh.auto(strategy: "default")
+let h_auto = session.hash()
+print "h_auto", h_auto
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+assert mi.cells == 733, "733 tets"
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "mesh_volume", mi.volume
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty"
+print "violations", val.total
+let h_mesh = session.hash()
+print "h_mesh", h_mesh
+session.export("enclosed.smrt")
+assert session.hash() == h_mesh, "exports leave the state hash unchanged"
+print "head", timeline.head().branch
