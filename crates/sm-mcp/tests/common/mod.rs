@@ -12,7 +12,7 @@ use sm_op_api::{
     TypedOp, TypedQuery,
 };
 use sm_protocol::{
-    ApplyResult, CatalogResult, Endpoint, ExportFormat, ExportResult, HashResult, PROTOCOL_VERSION,
+    ApplyResult, CatalogResult, Endpoint, ExportFormat, ExportNote, ExportResult, HashResult, PROTOCOL_VERSION,
     Request, RpcError, ScriptResult, StatusResult,
 };
 
@@ -232,13 +232,21 @@ impl Endpoint for Mock {
             Request::Export { mesh: None, .. } => {
                 Err(RpcError::application("no-mesh", "the state holds no mesh"))
             }
-            Request::Export { path, .. } => Ok(serde_json::to_value(ExportResult::new(
-                path,
-                ExportFormat::Smsh,
-                12,
-                h(7),
-            ))
-            .unwrap()),
+            Request::Export { path, .. } => {
+                // `warn.smrt` carries a warning and an info note, `info.smsh` an info note only.
+                let notes = match path.as_deref() {
+                    Some("warn.smrt") => vec![
+                        ExportNote::warning("smrt-region-names", 1, "regions are named by volume id (no blocks)"),
+                        ExportNote::new("foam.small_det_split", 2, "split"),
+                    ],
+                    Some("info.smsh") => vec![ExportNote::new("foam.small_det_split", 2, "split")],
+                    _ => vec![],
+                };
+                Ok(serde_json::to_value(
+                    ExportResult::new(path, ExportFormat::Smsh, 12, h(7)).with_notes(notes),
+                )
+                .unwrap())
+            }
             _ => Err(RpcError::method_not_found("?")),
         }
     }

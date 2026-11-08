@@ -96,6 +96,13 @@ pub fn geom_error(data: &CaseData, tracks: &[Track], n: usize) -> Result<(GeomEr
 /// adapter); a tally without block statistics uses Poisson variance. Slots that are zero on both
 /// sides are not counted. Track-length slots are not compared: delta segments do not score them.
 pub fn compare_tallies(judged: &Output, reference: &Output) -> AgreementSummary {
+    compare_tallies_with(judged, reference, false)
+}
+
+/// [`compare_tallies`], optionally also comparing the per-region track-length slots. That is valid
+/// only between two surface-mode flights (delta segments do not score track length): the DAGMC
+/// rows against the sm-rt facets surface flight.
+pub fn compare_tallies_with(judged: &Output, reference: &Output, track_length: bool) -> AgreementSummary {
     let mut s = AgreementSummary::default();
     if judged.tally.len() != reference.tally.len() || judged.tally.len() < 2 {
         s.failed = 1;
@@ -110,7 +117,8 @@ pub fn compare_tallies(judged: &Output, reference: &Output) -> AgreementSummary 
         let sample = (o.tally_sq[k] - o.tally[k] * o.tally[k] / b) / (b - 1.0);
         b * sample.max(0.0)
     };
-    let slots = (0..nreg).chain([2 * nreg, 2 * nreg + 1]);
+    let lengths = if track_length { nreg..2 * nreg } else { 0..0 };
+    let slots = (0..nreg).chain(lengths).chain([2 * nreg, 2 * nreg + 1]);
     for k in slots {
         let (a, b) = (judged.tally[k], reference.tally[k]);
         if a == 0.0 && b == 0.0 {

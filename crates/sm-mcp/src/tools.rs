@@ -143,8 +143,11 @@ impl Fixed {
             Fixed::SessionExport => {
                 "Export a mesh to a file and/or inline as base64. A relative `path` resolves \
                  against the project root, else the server's working directory. `format` is \
-                 inferred from the extension. Formats: smsh, vtu, exodus, openfoam. Without \
-                 `mesh` the only mesh is exported; no mesh or several meshes is an error."
+                 inferred from the extension. Formats: smsh, vtu, exodus, openfoam, dagmc, gmsh, \
+                 smrt. Without `mesh` the only mesh is exported; no mesh or several meshes is an \
+                 error. Export notes come back in `notes`; those with severity `warning` (for \
+                 example the `.smrt` fallback to volume-id region names) also lead the text \
+                 content as `warning:` lines, before the JSON."
             }
             Fixed::SessionStage => {
                 "Read a file (for example a STEP part) into the project's content-addressed input \
@@ -210,7 +213,7 @@ impl Fixed {
             Fixed::SessionExport => (
                 json!({
                     "path": {"type": "string", "description": "Output file; omit for inline-only output."},
-                    "format": {"type": "string", "enum": ["smsh", "vtu", "exodus", "openfoam"], "description": "Defaults to the path extension. openfoam: path is the case directory."},
+                    "format": {"type": "string", "enum": ["smsh", "vtu", "exodus", "openfoam", "dagmc", "gmsh", "smrt"], "description": "Defaults to the path extension. openfoam: path is the case directory."},
                     "mesh": {
                         "type": "string",
                         "pattern": "^[A-Za-z]+#[0-9]+$",
@@ -219,6 +222,11 @@ impl Fixed {
                     },
                     "provenance": {"type": "boolean", "description": "Include provenance data."},
                     "inline": {"type": "boolean", "description": "Return the bytes base64-encoded in the result."},
+                    "options": {"type": "object", "description": "Per-format options, validated by the exporter: gmsh {binary: boolean, polyhedra: \"error\"|\"decompose\"|\"drop\"}, dagmc {graveyard}; smrt takes none."},
+                    "split_small_determinant": {"type": "boolean", "description": "OpenFOAM only: split cells that fail checkMesh's determinant check (default true)."},
+                    "split_warped_faces": {"type": "boolean", "description": "OpenFOAM only: split warped faces into planar triangles (default false; makes checkMesh's concave-cell check fail on warped hex meshes)."},
+                    "empty_patches": {"type": "array", "items": {"type": "string"}, "description": "OpenFOAM only: face set names written as `empty` patches (2D cases)."},
+                    "wedge_patches": {"type": "array", "items": {"type": "string"}, "description": "OpenFOAM only: face set names written as `wedge` patches (axisymmetric cases)."},
                 }),
                 json!([]),
             ),

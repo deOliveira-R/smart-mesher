@@ -45,7 +45,7 @@ extern "C" {
 #define SMRT_ERR_LOST (-103)
 
 /* ---- ids and enums ------------------------------------------------------------------------ */
-#define SMRT_ABI_VERSION 10100 /* major*10000 + minor*100 + patch */
+#define SMRT_ABI_VERSION 10200 /* major*10000 + minor*100 + patch */
 #define SMRT_NONE (-1)
 #define SMRT_COMPLEMENT (-2)
 #define SMRT_MAX_LEVELS 8

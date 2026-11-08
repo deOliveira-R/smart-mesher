@@ -110,6 +110,11 @@ everywhere (C, Fortran and Rust), `SmrtStep%end` is `end_code`, the `kind` argum
 `smrt_resolve_boundary` is `resp_kind`, and the `uint64_t` hash fields of `SmrtInfo` are `int64` bit
 patterns. `smrt_version()` is the one entry without `guard`: it returns a constant and cannot panic.
 
+ABI version rule: `SMRT_ABI_VERSION` is `major*10000 + minor*100 + patch` (header, `types.rs` and
+`fortran/smrt.f90` carry the same number; `tests/abi.rs`, `tests/header.rs` and `tests/c/chords.c`
+compare them with `smrt_version()`). A new enum value or constant bumps the minor version, a layout
+or signature change bumps the major version. 10200 added `SMRT_NODE_UNKNOWN`.
+
 `SmrtState`, `SmrtStep`, `SmrtLocated`, `SmrtLevel[8]` mirror the contract. Hierarchy levels past
 eight are counted in `levels_total` and not copied (`levels_len <= 8`): truncated, never an overrun.
 `smrt_set_state` refuses `levels_total != levels_len` or more than eight levels (`-102`).

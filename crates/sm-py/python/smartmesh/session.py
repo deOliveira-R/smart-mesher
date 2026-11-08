@@ -11,6 +11,7 @@ import difflib
 import json
 import os
 import re
+import warnings
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, cast
 
@@ -18,7 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 from . import _native, errors
-from .errors import InvalidParamsError, SmartMeshError, invalid
+from .errors import ExportWarning, InvalidParamsError, SmartMeshError, invalid
 from .ids import EntityId, coerce
 from .mesh import Mesh
 from .results import (
@@ -460,8 +461,31 @@ class Session:
         mesh: EntityId | str | None = None,
         provenance: bool = False,
         inline: bool = False,
+        options: Mapping[str, Any] | None = None,
+        graveyard: bool | Mapping[str, float] | None = None,
+        binary: bool | None = None,
+        polyhedra: Literal["error", "decompose", "drop"] | None = None,
+        split_small_determinant: bool | None = None,
+        split_warped_faces: bool = False,
+        empty_patches: Sequence[str] = (),
+        wedge_patches: Sequence[str] = (),
     ) -> ExportResult:
-        """Export a mesh to `path` (format inferred from the extension) or inline (`.data`)."""
+        """Export a mesh to `path` (format inferred from the extension) or inline (`.data`).
+
+        `options` is the per-format option object (`gmsh {binary, polyhedra}`, `dagmc {graveyard}`).
+        `graveyard`, `binary` and `polyhedra` are sugar merged into it; naming a key in both places
+        raises `ValueError` before any request. The OpenFOAM switches `split_small_determinant`,
+        `split_warped_faces`, `empty_patches` and `wedge_patches` are top-level. The server validates
+        per-format options and rejects options the format does not take (`SmartMeshError`).
+        Every note with severity `warning` is also raised as an `ExportWarning`.
+        """
+        merged: dict[str, Any] = dict(options) if options is not None else {}
+        for key, val in (("graveyard", graveyard), ("binary", binary), ("polyhedra", polyhedra)):
+            if val is None:
+                continue
+            if key in merged:
+                raise ValueError(f"export option `{key}` is given both in `options` and as a keyword")
+            merged[key] = val
         params: dict[str, Any] = {}
         if path is not None:
             params["path"] = os.fspath(path)
@@ -473,7 +497,20 @@ class Session:
             params["provenance"] = True
         if inline:
             params["inline"] = True
-        return ExportResult.from_json(self._request("session.export", params))
+        if merged:
+            params["options"] = merged
+        if split_small_determinant is not None:
+            params["split_small_determinant"] = split_small_determinant
+        if split_warped_faces:
+            params["split_warped_faces"] = True
+        if empty_patches:
+            params["empty_patches"] = list(empty_patches)
+        if wedge_patches:
+            params["wedge_patches"] = list(wedge_patches)
+        result = ExportResult.from_json(self._request("session.export", params))
+        for note in result.warnings:
+            warnings.warn(f"{note.code}: {note.detail}", ExportWarning, stacklevel=2)
+        return result
 
     def meshes(self) -> list[MeshInfo]:
         """Summaries of the meshes in the current state (the `mesh.info` query)."""

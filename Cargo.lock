@@ -1379,7 +1379,17 @@ dependencies = [
 name = "sm-csgio"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "rayon",
  "roxmltree",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-model",
+ "sm-model-api",
+ "sm-rt",
+ "sm-rt-api",
+ "sm-testkit",
  "thiserror",
 ]
 
@@ -1954,6 +1964,8 @@ dependencies = [
  "sm-model-api",
  "sm-quality",
  "sm-scheme-api",
+ "sm-scheme-curve",
+ "sm-scheme-tri",
  "sm-testkit",
  "sm-topo-api",
  "thiserror",

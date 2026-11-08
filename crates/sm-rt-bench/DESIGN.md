@@ -126,9 +126,12 @@ and meshes, region name for CSG cells), so every row speaks the manifest's ids.
   solid needs a union of half-spaces and is `Unavailable` (H1 has no analytic row); a cylinder inside a
   solid must span the parent's z range. The tracker builds no hierarchical CSG worlds
   (`RtError::Unsupported`), so the analytic P2 row is the flattened bridge world.
-* **Zero-area triangles**: the coarsest hand-built moderator (scale `tiny`) has a few; the tracker
-  refuses them and dropping them opens the shell, so the `facets` row of P1 at scale `tiny` is reported
-  `partial`. Scales `reduced` and `full` have none. The case files are not touched.
+* **Zero-area triangles** (fixed in W3c): at scale `tiny` a ring point lay exactly on the diagonal of the
+  square cell, so `twin::add_moderator` added a corner vertex on top of it and emitted zero-area
+  triangles, which the tracker refuses (dropping them opened the shell, so the `facets` row of P1 was
+  `partial`). The corner is now not added when it coincides with a ring point; the polyline is the same.
+  Only `tiny/P1/facets.bin` and `tiny/P1/smcase.json` hashes changed (`expected_sha256.txt`); `reduced`
+  and `full` bytes are identical, and a test asserts no zero-area triangle at either scale.
 
 ### Agreement and `geom_error`
 
@@ -172,28 +175,95 @@ min, max of the timed repetitions), `segments_per_track`, `ns_per_segment`, `bui
 `docker/<name>/`, a pinned entry in `docker/pins.env`, a driver under `drivers/<name>/`, an entry in
 `docker::IMAGES`.
 
+### W-fire and W-flight in the DAGMC drivers (W3c BENCH-WORKLOADS)
+
+`dagmc_driver --workload track|fire|fire-locate|flight` (default `track`); `run_case.sh` loops over
+`SMRT_WORKLOADS` (comma list) and the thread counts, and `run --workloads` (default all four)
+sets it. After a row the driver prints, for the first thread count only, the dump of its workload:
+`{"tracks": ...}`, `{"fires": [[dist, to_region], ...]}` (to-region `-1` complement, `-2` lost) or
+`{"tally": [...], "tally_sq": [...], "blocks": B}`; the runner attaches a dump to the row printed
+before it ([`docker::parse_driver_output`]).
+
+* **Fire** is one `ray_fire` per ray from the region the ray file names (hinted, no ray history) up
+  to the first region boundary. `fire-locate` first finds the start volume by a loop over the
+  volumes with `point_in_volume`, then the implicit complement: DAGMC's own `find_volume` is not
+  exported by libdagmc 3.2.4 (the declaration sits behind `MOAB_VERSION_*` macros no installed
+  header defines), so the same linear loop is written in the driver. The fire rows are judged ray
+  by ray against the sm-rt facets fire ([`compare::compare_fires`]: distances within `chord_tol`,
+  regions equal, a ray with a distance below `5e-9 * diag` is counted as grazing, not failed).
+* **Flight** reimplements the Rust surface history (`adapter.rs` `history`): the same SplitMix64
+  stream per history (`for_index(seed, h)`, ported to C++, seeded from `--seed` and the history
+  index only), `tau = -ln(1 - u)`, isotropic rejection direction, collision and track-length
+  tallies, leaked and absorbed counts, history `h` starts from ray `h % rays` in the ray file's
+  region, blocks of 256 histories reduced in block order (so the result is the same for any
+  thread count). The port is not bitwise: `std::log` and `std::sqrt` may differ from Rust's libm,
+  so a path can diverge after a rounding difference; the agreement is the statistical one,
+  [`runner::compare_tallies_with`] against the sm-rt facets *surface* flight on the same triangles
+  (4 sigma from the block spread; collision, track-length, leaked and absorbed slots, so
+  `checked = 2 * regions + 2`). `sigma.txt` (`id sigma_t sigma_a`, shortest round-trip decimals)
+  is written by the runner into the case directory; a region without a line is a lost history, as
+  in the Rust adapter. The facets adapter's flight treats a step that ends in a complement cell as a
+  leak (it used to error).
+* Determinism of a competitor row stays observed: the driver hash is equal across repetitions
+  (`stable`), the runner also marks a workload unstable when the hashes of its thread counts
+  differ. Nothing asserts equality with sm-rt (`result_hash` of two runs is equal, so the
+  competitor output is reproducible, but the hash of a row is not an sm-rt hash).
+* `xdg` rows stay `partial` (no image, W4).
+
 `run_competitor` never invents a number: no Docker, `UNSET` digests, a missing image, a failing
 container or an unparsable line is `Partial` with the command and its last output line, and the
 report lists it.
 
 ## Docker
 
-`docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. Base images are `FROM image@sha256:${..._DIGEST}` with
-the digests in `docker/pins.env` (index digests of `condaforge/miniforge3:24.9.2-0` and
-`ubuntu:24.04`, read with `docker buildx imagetools inspect`), source commits pinned (double-down
-`437ad209eac5`, XDG `83efb306e152`) and verified by `git rev-parse` in the build. `smrt-bench
-docker-check` lints the files (`:latest` and digest-less `FROM` fail), refuses to build while a digest
-is `UNSET`, and otherwise builds each image and records the failing command. `dagmc_driver --version`
-prints the backend (`moab-obb` or `double-down`) and the linked DAGMC version; the images also check
-with `ldd` that `dagmc-moab` does not and `dagmc-dd` does link double-down. 
+`docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. `docker/pins.env` is the single source of every pin:
+base images are `FROM image@sha256:${..._DIGEST}` (index digests of `condaforge/miniforge3:24.9.2-0`
+and `ubuntu:24.04`, read with `docker buildx imagetools inspect`; an index digest covers arm64 and
+amd64), and `DOUBLE_DOWN_COMMIT`, `DAGMC_VERSION`, `XDG_COMMIT` (`fec80980ce29`, xdg-org/xdg
+"Element walk updates (#250)") and `MOAB_VERSION` (`5.6.0`, the MOAB of the conda DAGMC images, so every
+row is fed by one MOAB) are `ARG` defaults in the Dockerfiles that the lint requires to equal the
+`pins.env` value (it fails on drift, on a `*_COMMIT` that is not 12 hex digits, on `:latest` and on a
+digest-less `FROM`). `docker-check` passes each pin the Dockerfile declares as a build argument.
 
-On the macOS aarch64 development machine (Docker Desktop, native linux/aarch64, 2026-11-05):
-`dagmc-moab` built (conda-forge `dagmc 3.2.4 nodoubledown`, `moab 5.6.0`); `dagmc-dd` built from source
-(double-down at the pinned commit, DAGMC `v3.2.4` with `DOUBLE_DOWN_DIR`; the conda-forge variant
-`*double_down*` did not resolve, so the Dockerfile's source fallback ran) and its driver links
-`libdd`; `xdg` has no driver (`NoDriver`). `run --cases P1 --scale reduced --rays 20000` gave
-`dagmc-moab` and `dagmc-dd` equal region sequences on all 20000 rays, and both agreed with the sm-rt facet
-row on all of them (the harness's own output).
+* **Platform.** Builds and runs name `--platform linux/<host arch>` and refuse an image of another
+  architecture (a leftover amd64 image under qemu is not benchmarked). x86_64 and aarch64 results are
+  never merged.
+* **Conda locks.** `docker/locks/<image>.<platform>.txt` is the explicit list (`@EXPLICIT`, url#md5) of a
+  built image. `smrt-bench docker-lock dagmc-moab` writes it from `/bench/conda-explicit.txt`;
+  `docker-check` builds with the lock of exactly the build platform (`--build-arg LOCKFILE=`) and, when
+  there is none, says `no lock for linux/<arch>: will solve and write one` and solves against
+  conda-forge. A lock of the other architecture is never read. The dd image builds double-down and DAGMC
+  from source only when the environment holds no conda double-down DAGMC, so a lock of the source-build
+  path (conda parts only) is reused with the same source step.
+* **apt.** Recorded, not frozen (ruling C13): the xdg image writes `dpkg-query -W` into
+  `/bench/versions.txt`; its hash is in the identity. No snapshot mirror. XDG image and driver are W4.
+* **Identity.** Each image records `/bench/{versions,conda-explicit,base-index-digest,source-commits}.txt`.
+  `ImageIdentity` (image id, repo digest, base index digest, platform, source commits, conda lock hash,
+  versions hash, MOAB version) is read after the build and stored per competitor tracker in the result's
+  `images` map (`image_digest` keeps the first image id). It is not in `result_hash`, and files without
+  `images` still load. `docker-check` prints it per image together with the driver's `--version` line.
+* **VM block.** On macOS the container is in Docker Desktop's Linux VM. `bench-env.json` gets a
+  `docker` block (`NCPU`, `MemTotal`, kernel, server version, OS, the container's own CPU line) and
+  `report` prints it under the banner. `run` passes `--cpus` = the largest requested thread count and
+  refuses more threads than the VM has CPUs (no clamp). Cores cannot be pinned there: every competitor
+  row has the note `cores not pinned`, and the report lists it with the 8P+2E asymmetry of the M1 Max.
+  The smoke set on the Mac is `--threads 1,4`.
+
+`dagmc_driver --version` prints the backend (`moab-obb` or `double-down`) and the linked DAGMC version; the
+images also check with `ldd` that `dagmc-moab` does not and `dagmc-dd` does link double-down.
+
+The XDG API is readable (`include/xdg/xdg.h`: `XDG::create(MOAB, EMBREE)`, `ray_fire`, `find_volume`,
+`walk_elements`; it reads the DAGMC style MOAB file), so the `xdg` rows can reuse `facets_to_h5m`; the
+driver is W4 work. The old pin `83efb306e152` is also a commit of xdg-org/xdg (12 commits after the
+current pin), so the W3c change of pin is a choice of the planned commit, not the repair of a missing one.
+
+Native linux/aarch64 on the macOS development machine (Docker Desktop, rebuilt 2026-11-08 from the
+locks in `docker/locks/`; the lock rebuild has the same conda lock hash, versions hash and driver `--version`
+as the floating solve):
+`dagmc-moab` is conda-forge `dagmc 3.2.4 nodoubledown` with `moab 5.6.0`; `dagmc-dd` is built from source
+(the conda-forge `*double_down*` variant does not resolve on arm64) and its driver links `libdd`; `xdg`
+has no driver (`NoDriver`). `run --cases P1 --scale reduced --rays 20000` gave `dagmc-moab` and `dagmc-dd`
+equal region sequences on all 20000 rays, and both agreed with the sm-rt facet row on all of them.
 
 ## Fairness of the published table (O11)
 
@@ -219,9 +289,13 @@ in the file itself, never in `result_hash`, in `Output::content_hash` or in the 
 * The `H1` mesh is a structured tet mesh because `sm-scheme-tet` has no conforming inclusion
   meshing in this wave. P2 has no tet twin (pins in vacuum do not fill their box), so it has no
   delta or block rows.
-* The DAGMC driver implements W-track only; W-fire and W-flight rows of the competitors, the
-  XDG driver and the `smtets_to_moab` converter are not written, and the `xdg` image is reported
-  `partial` with the failing build command.
+* The DAGMC driver implements W-track, W-fire (hinted and located) and W-flight; the XDG driver
+  and the `smtets_to_moab` converter (W4) are not written, and the `xdg` image is reported
+  `partial` (`NoDriver`) with the failing build command. The C++ flight is not bit-identical to
+  the Rust one (libm), only statistically (4 sigma) in agreement.
+* Competitor containers run in Docker Desktop's VM on a Mac: the cores are not pinned, and the 8P+2E
+  asymmetry of the M1 Max is not visible. Only `--threads 1,4` is a smoke set there.
+* apt packages of the xdg image are recorded, not frozen.
 * Stretch B5 (`--external-h5m`), B6 (import of the smart-mesh DAGMC exporter's h5m), B7 (OpenMC CSG
   row) and B8 (through-the-C-ABI row) are not done.
 * `smcase.json` embeds the platform tag, so its hash is platform-keyed even for C1-C3 and H1.

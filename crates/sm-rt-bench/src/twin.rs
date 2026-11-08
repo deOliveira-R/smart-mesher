@@ -171,7 +171,12 @@ pub fn add_moderator(tw: &mut PinTwin, a: f64, h: f64, region: i32) -> Result<()
         if s0 == s1 {
             between.push(None);
         } else {
-            between.push(Some(corner(s0, s1).ok_or_else(|| BenchError::Geometry("ring angular gap exceeds 90 degrees".into()))?));
+            let k = corner(s0, s1).ok_or_else(|| BenchError::Geometry("ring angular gap exceeds 90 degrees".into()))?;
+            // A ring point exactly on the diagonal already is the corner: a second vertex there
+            // would give zero-area triangles (and the tracker refuses them), so the corner is
+            // not added; the polyline is the same.
+            let on = |p: [f64; 2]| (p[0] - k[0]).abs() <= 1e-12 * a && (p[1] - k[1]).abs() <= 1e-12 * a;
+            between.push(if on(sq_pts[i]) || on(sq_pts[(i + 1) % n]) { None } else { Some(k) });
         }
     }
     let f = &mut tw.facets;

@@ -37,6 +37,10 @@ class SmartMeshError(Exception):
         return f"[{self.kind}] {self.message}"
 
 
+class ExportWarning(UserWarning):
+    """An export finished but with a warning note (for example `.smrt` regions named by volume id)."""
+
+
 class ParseError(SmartMeshError):
     """The request text was not valid JSON."""
 

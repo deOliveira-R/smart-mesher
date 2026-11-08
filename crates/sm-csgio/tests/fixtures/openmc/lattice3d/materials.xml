@@ -1,0 +1,55 @@
+<?xml version='1.0' encoding='utf-8'?>
+<materials>
+  <material id="1" name="fuel0">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="2" name="water">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="3" name="fuel1">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="4" name="fuel2">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="5" name="fuel3">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="6" name="fuel4">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="7" name="fuel5">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="8" name="fuel6">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="9" name="fuel7">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="10" name="fuel8">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="11" name="fuel9">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="12" name="fuel10">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+  <material id="13" name="fuel11">
+    <density value="1.0" units="macro"/>
+    <macroscopic name="dummy"/>
+  </material>
+</materials>

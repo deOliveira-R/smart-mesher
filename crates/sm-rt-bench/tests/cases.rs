@@ -262,3 +262,45 @@ fn manifests_carry_the_workload_and_the_hashes() {
     let json = serde_json::to_string(&d.manifest).unwrap();
     assert_eq!(serde_json::from_str::<sm_rt_bench::formats::Manifest>(&json).unwrap(), d.manifest);
 }
+
+/// P1 at `tiny` used to have zero-area moderator triangles (a ring point exactly on the diagonal of
+/// the square cell got a second vertex there), so its `facets` row was `partial`. None remain, and
+/// the tracker accepts the twin.
+#[test]
+fn p1_has_no_zero_area_triangles_and_its_facets_twin_builds_at_tiny() {
+    for scale in [Scale::tiny(), Scale::reduced()] {
+        let d = build(Case::P1, &scale).unwrap();
+        let f = &d.facets;
+        let zero = f
+            .tris
+            .iter()
+            .filter(|t| {
+                let p = |i: u32| f.verts[i as usize];
+                let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                n[0] * n[0] + n[1] * n[1] + n[2] * n[2] == 0.0
+            })
+            .count();
+        assert_eq!(zero, 0, "{}: zero-area triangles", scale.name);
+        assert!(sm_rt_bench::smrt::facets_adapter(&d).is_ok(), "{}: facets twin must build", scale.name);
+    }
+}
+
+/// The only lines of `expected_sha256.txt` that W3c-BENCH-PIN changed against the blessed file of
+/// `9ac71ca` (kept next to this test) are the `tiny/P1/` ones; every other hash is unchanged.
+#[test]
+fn only_tiny_p1_lines_of_the_recorded_hashes_changed() {
+    const BEFORE: &str = include_str!("expected_sha256.9ac71ca.txt");
+    const NOW: &str = include_str!("../expected_sha256.txt");
+    let (before, now): (Vec<&str>, Vec<&str>) = (BEFORE.lines().collect(), NOW.lines().collect());
+    assert_eq!(before.len(), now.len());
+    let changed: Vec<&str> = now.iter().zip(&before).filter(|(a, b)| a != b).map(|(a, _)| *a).collect();
+    assert!(!changed.is_empty(), "the weld moved the tiny P1 facets: its lines are re-blessed");
+    for l in &changed {
+        assert!(l.contains("  tiny/P1/"), "changed line outside tiny/P1: {l}");
+    }
+    // Same keys, same order: nothing was added or dropped.
+    let key = |l: &&str| l.split_once("  ").map(|(_, k)| k.to_string());
+    assert_eq!(now.iter().map(key).collect::<Vec<_>>(), before.iter().map(key).collect::<Vec<_>>());
+}

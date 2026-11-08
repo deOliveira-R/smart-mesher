@@ -131,7 +131,20 @@ pub(crate) fn record(
     }
 }
 
+/// Export notes on stderr (stdout is unchanged): every note in text mode, warnings only with
+/// `--json`, so `smesh export --json | jq` still shows what the user should act on.
+fn export_notes(io: &mut Io<'_>, json: bool, r: &ExportResult) {
+    for n in &r.notes {
+        if n.is_warning() {
+            let _ = writeln!(io.stderr, "warning: {}: {}", n.code, n.detail);
+        } else if !json {
+            let _ = writeln!(io.stderr, "note: {}: {} (x{})", n.code, n.detail, n.count);
+        }
+    }
+}
+
 pub(crate) fn export(io: &mut Io<'_>, json: bool, r: &ExportResult, raw: &Value) {
+    export_notes(io, json, r);
     if json {
         line(io, &compact(raw));
         return;

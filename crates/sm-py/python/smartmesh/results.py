@@ -196,6 +196,7 @@ class ExportNote:
     code: str
     count: int
     detail: str
+    severity: str = "info"
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,11 @@ class ExportResult:
     data: builtins.bytes | None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def warnings(self) -> list[ExportNote]:
+        """The notes with severity `warning` (the model should be fixed until there are none)."""
+        return [n for n in self.notes if n.severity == "warning"]
+
     @classmethod
     def from_json(cls, d: Mapping[str, Any]) -> ExportResult:
         known = ("path", "format", "bytes", "sha256", "base64", "files", "notes")
@@ -221,7 +227,7 @@ class ExportResult:
             bytes=int(d.get("bytes", 0)),
             sha256=str(d.get("sha256", "")),
             files=[ExportedFile(str(f["name"]), int(f["bytes"]), str(f["sha256"])) for f in d.get("files") or []],
-            notes=[ExportNote(str(n["code"]), int(n["count"]), str(n["detail"])) for n in d.get("notes") or []],
+            notes=[ExportNote(str(n["code"]), int(n["count"]), str(n["detail"]), str(n.get("severity", "info"))) for n in d.get("notes") or []],
             data=base64.b64decode(b64) if isinstance(b64, str) else None,
             extra=_extra(d, known),
         )

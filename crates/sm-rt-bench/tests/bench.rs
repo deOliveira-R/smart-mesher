@@ -322,3 +322,26 @@ fn run_case_produces_a_sealed_stable_result_and_cli_self_test_passes() {
         assert!(c.ok, "{}: {}", c.name, c.detail);
     }
 }
+
+#[test]
+fn the_report_prints_the_docker_vm_images_and_the_limits_of_a_mac_smoke_run_without_a_ratio() {
+    use sm_rt_bench::result::{DockerVm, ImageIdentity};
+    let mut f = file("P1", "dagmc-moab", env("Apple M1 Max", "2026-11-07", "macos", "aarch64"), 0);
+    f.images.insert(
+        "dagmc-moab".into(),
+        ImageIdentity { image_id: "sha256:feed".into(), platform: "linux/arm64".into(), base_index_digest: "937d".into(), moab_version: "5.6.0".into(), ..ImageIdentity::default() },
+    );
+    assert_eq!(f.compute_hash().unwrap(), f.result_hash, "images stay out of the hash");
+    let vm = DockerVm { ncpu: 10, mem_total_bytes: 16_745_758_720, kernel: "7.0.14-linuxkit".into(), server_version: "29".into(), operating_system: "Docker Desktop".into(), container_cpu: "CPU part : 0x022".into() };
+    let md = report::render_with_docker(&[f.clone()], Some(&vm)).unwrap();
+    for needle in ["SMOKE RESULT", "Docker VM: 10 CPUs", "15.6 GiB", "7.0.14-linuxkit", "cores not pinned", "sha256:feed linux/arm64", "H1 analytic", "P2 tet twin", "--model", "8P+2E"] {
+        assert!(md.contains(needle), "{needle} missing:\n{md}");
+    }
+    let lower = md.to_lowercase();
+    for banned in ["x faster", "speedup", " times faster", "times as fast"] {
+        assert!(!lower.contains(banned), "{banned}");
+    }
+    // Without the VM block and images the report is as before.
+    let plain = report::render(&[file("P1", "smrt", env("Apple M1 Max", "2026-11-07", "macos", "aarch64"), 0)]).unwrap();
+    assert!(!plain.contains("Docker VM:") && !plain.contains("Images:"));
+}

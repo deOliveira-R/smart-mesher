@@ -620,7 +620,13 @@ fn fixed_tool_schemas_match_the_protocol_request_fields() {
         let t = ts.iter().find(|t| t["name"] == n).unwrap();
         t["inputSchema"]["properties"].as_object().unwrap().keys().cloned().collect()
     };
-    assert_eq!(props("session_export"), ["format", "inline", "mesh", "path", "provenance"]);
+    assert_eq!(
+        props("session_export"),
+        [
+            "empty_patches", "format", "inline", "mesh", "options", "path", "provenance",
+            "split_small_determinant", "split_warped_faces", "wedge_patches"
+        ]
+    );
     assert_eq!(props("run_script"), ["includes", "path", "text"]);
     assert_eq!(props("timeline_log"), ["from", "limit"]);
     assert_eq!(props("timeline_branch"), ["at", "name"]);
@@ -741,15 +747,77 @@ fn respelled_ids_feed_back_as_arguments() {
 }
 
 #[test]
-fn export_schema_lists_four_formats() {
+fn export_schema_lists_every_protocol_format() {
     let ts = tools(&mut Mock::new(), "2025-06-18");
     let t = ts.iter().find(|t| t["name"] == "session_export").unwrap();
-    assert_eq!(
-        t["inputSchema"]["properties"]["format"]["enum"],
-        json!(["smsh", "vtu", "exodus", "openfoam"])
-    );
+    let all = [
+        ExportFormat::Smsh,
+        ExportFormat::Vtu,
+        ExportFormat::Exodus,
+        ExportFormat::Openfoam,
+        ExportFormat::Dagmc,
+        ExportFormat::Gmsh,
+        ExportFormat::Smrt,
+    ];
+    // The tool enum equals the protocol type's own schema enum (a new variant breaks this), in
+    // the same order as the hand list.
+    let serde_names: Vec<Value> = all.iter().map(|f| serde_json::to_value(f).unwrap()).collect();
+    let proto = serde_json::to_value(schemars::schema_for!(ExportFormat)).unwrap();
+    let mut proto_names: Vec<Value> = match proto.get("enum") {
+        Some(Value::Array(a)) => a.clone(),
+        _ => proto["oneOf"].as_array().unwrap().iter().map(|v| v["const"].clone()).collect(),
+    };
+    let mut tool_names: Vec<Value> = t["inputSchema"]["properties"]["format"]["enum"].as_array().unwrap().clone();
+    assert_eq!(tool_names, serde_names);
+    proto_names.sort_by_key(|v| v.to_string());
+    tool_names.sort_by_key(|v| v.to_string());
+    assert_eq!(tool_names, proto_names, "session_export format enum is stale against ExportFormat");
+    for n in serde_names {
+        assert!(serde_json::from_value::<ExportFormat>(n).is_ok());
+    }
     let d = t["inputSchema"]["properties"]["format"]["description"].as_str().unwrap();
     assert!(d.contains("openfoam: path is the case directory"), "{d}");
+    assert_eq!(t["inputSchema"]["additionalProperties"], false);
+}
+
+#[test]
+fn export_arguments_build_the_matching_request() {
+    let mut m = Mock::new();
+    let r = run(
+        &mut m,
+        &[
+            init("2025-06-18"),
+            call(1, "session_export", json!({"format": "smrt", "path": "a.smrt", "mesh": "Mesh#1"})),
+            call(2, "session_export", json!({"format": "gmsh", "path": "a.msh", "mesh": "Mesh#1", "options": {"binary": true}})),
+            call(3, "session_export", json!({"format": "openfoam", "path": "c", "mesh": "Mesh#1", "split_warped_faces": true, "empty_patches": ["e"]})),
+        ],
+    );
+    assert!(r[1..].iter().all(|x| x["result"]["isError"] == false), "{r:?}");
+    let reqs = &m.log;
+    assert!(matches!(&reqs[0], Request::Export { format: Some(ExportFormat::Smrt), path: Some(p), options: None, split_warped_faces: false, .. } if p == "a.smrt"));
+    assert!(matches!(&reqs[1], Request::Export { format: Some(ExportFormat::Gmsh), options: Some(o), .. } if *o == json!({"binary": true})));
+    assert!(matches!(&reqs[2], Request::Export { format: Some(ExportFormat::Openfoam), split_warped_faces: true, empty_patches, .. } if empty_patches == &["e".to_owned()]));
+}
+
+#[test]
+fn export_warning_notes_lead_the_text_and_info_only_results_are_unchanged() {
+    let one = |path: &str| {
+        let r = run(&mut Mock::new(), &[init("2025-06-18"), call(1, "session_export", json!({"path": path, "mesh": "Mesh#1"}))]);
+        r[1]["result"].clone()
+    };
+    let w = one("warn.smrt");
+    let text = w["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("warning: smrt-region-names: regions are named by volume id"), "{text}");
+    assert_eq!(text.lines().count(), 2, "one warning line, then the JSON: {text}");
+    assert!(text.lines().nth(1).unwrap().starts_with('{'));
+    assert_eq!(w["structuredContent"]["notes"][0]["severity"], "warning");
+    assert!(w["structuredContent"]["notes"][1].get("severity").is_none());
+    for path in ["info.smsh", "plain.smsh"] {
+        let r = one(path);
+        let text = r["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("warning:") && text.starts_with('{') && !text.contains('\n'), "{text}");
+        assert_eq!(text, serde_json::to_string(&r["structuredContent"]).unwrap());
+    }
 }
 
 #[test]

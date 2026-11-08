@@ -17,8 +17,8 @@ use sm_mesh::MeshBuilder;
 use sm_mesh_api::SerialAlloc;
 use sm_op_api::{ApplyCtx, OpError, OpRecord, QueryCtx, State, TypedOp, TypedQuery};
 use sm_scheme_api::{
-    Attempt, AutoPolicy, Firmness, MeshInput, MeshIntent, Params, Plan, SchemeChoice, SchemeDim,
-    SchemeError, SchemeName, Selection, Target, WholeFaces,
+    Attempt, AutoPolicy, Driver, FailureKind, Firmness, MeshInput, MeshIntent, Params, Phase, Plan,
+    Rejections, SchemeChoice, SchemeDim, SchemeError, SchemeName, Selection, Target, WholeFaces,
 };
 use sm_topo_api::{Dim, TopologyView};
 
@@ -168,6 +168,80 @@ impl AutoLists {
     }
 }
 
+/// Plan with the replan loop applied at plan time. Returns the plan and the number of
+/// rejections tried (they share `max_replans` with generation-time ones).
+///
+/// `Driver::plan` fails with `NoApplicableScheme` when the imposition of a neighbour cannot be
+/// met (a tri face next to a `map` volume that imposes quad). The error lists the imposing
+/// parents that can be re-planned, in sorted order; each is tried in turn: its rejection is
+/// kept if the replan gets past this target, and dropped if the same target fails again (or
+/// the rejected scheme's own target runs out of candidates), so the culprit need not be the
+/// first entry. Every try counts against the budget. With a
+/// budget of 0 the planner's own error is returned unchanged.
+pub(crate) fn plan_with_blame(
+    driver: &Driver<'_>,
+    input: &MeshInput<'_>,
+    intent: &MeshIntent,
+) -> Result<(Plan, usize), SchemeError> {
+    let budget = driver.options.max_replans;
+    let mut rej = Rejections::default();
+    let mut used = 0usize;
+    let mut history: Vec<Attempt> = Vec::new();
+    loop {
+        let err = match driver.plan_with(input, intent, &rej) {
+            Ok(plan) => return Ok((plan, used)),
+            Err(e) => e,
+        };
+        let SchemeError::NoApplicableScheme {
+            target, imposed_by, ..
+        } = &err
+        else {
+            return Err(err);
+        };
+        let cands: Vec<&(Target, SchemeName)> = imposed_by
+            .iter()
+            .filter(|(t, s)| s.as_str() != SchemeName::COPY && !rej.contains(*t, s))
+            .collect();
+        let mut next: Option<Rejections> = None;
+        for (i, (t, s)) in cands.iter().map(|c| (&c.0, &c.1)).enumerate() {
+            if used >= budget {
+                return Err(if used == 0 {
+                    err
+                } else {
+                    SchemeError::ReplanLimit { attempts: history }
+                });
+            }
+            used += 1;
+            let a = Attempt::new(
+                *t,
+                s.clone(),
+                Phase::Resolve,
+                FailureKind::NotApplicable,
+                err.to_string(),
+            );
+            let mut trial = rej.clone();
+            trial.insert(a.clone());
+            match driver.plan_with(input, intent, &trial) {
+                Ok(plan) => return Ok((plan, used)),
+                Err(SchemeError::NoApplicableScheme { target: t2, .. })
+                    if (t2 == *target || t2 == *t) && i + 1 < cands.len() =>
+                {
+                    history.push(a);
+                }
+                Err(_) => {
+                    history.push(a);
+                    next = Some(trial);
+                    break;
+                }
+            }
+        }
+        match next {
+            Some(n) => rej = n,
+            None => return Err(err),
+        }
+    }
+}
+
 /// Plan and mesh `targets` into a scratch mesh (nothing is stored) and return the final plan and
 /// every attempt passed over or rejected on the way. This is what finds fallbacks that only
 /// show at generation time.
@@ -186,7 +260,8 @@ pub(crate) fn scratch_plan(
         driver.options.max_replans = n;
     }
     let mi = MeshInput::new(model.topo(), model.model(), &WholeFaces, targets);
-    let plan = driver.plan(&mi, intent)?;
+    let (plan, used) = plan_with_blame(&driver, &mi, intent)?;
+    driver.options.max_replans = driver.options.max_replans.saturating_sub(used);
     if faces {
         let cells = estimate_face_cells(&plan, model.topo(), targets);
         if cells > cfg.max_cells() as f64 {
