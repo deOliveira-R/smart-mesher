@@ -251,25 +251,24 @@ fn b4_tetrahedron_falls_to_tetmesh_with_a_warning() {
     assert_eq!(w[0]["entities"], json!([vol]));
 }
 
-// ---- B5: plate with a hole (pinned) --------------------------------------------------------------
+// ---- B5: plate with a hole --------------------------------------------------------------------------
 
-/// Observed with the real schemes: the strategy cannot place a hex or tet mesher on a face with an inner
-/// loop that a parent imposes on, and reports every candidate's reason. The state is unchanged. Written as
-/// the observed outcome so that the day the strategy learns the tet fallback for this case the test
-/// fails loudly and gets updated together with the report (`W3B_SERVER_HOST_REPORT.md`).
+/// A face with an inner loop that a parent imposes on has no hex/tet mesher in the strict lists, but
+/// `mesh.auto` now falls to `tetmesh` (W3c-MESHER-REPLAN, ruling C1: an all-tet result is accepted). The
+/// volume is within 2 percent of the analytic 16 - pi, the mesh is valid and has only tets.
 #[test]
-fn b5_plate_with_a_hole_pinned_outcome() {
-    let mut s = server();
-    ok(&mut s, PLATE);
-    let before = state_hash(&mut s);
-    let e = script(&mut s, RUN).expect_err("observed: the strategy reports no applicable scheme");
-    assert!(e.message.contains("no applicable scheme"), "{e}");
-    for scheme in ["map", "submap", "pave", "trimesh"] {
-        assert!(e.message.contains(&format!("\"{scheme}\"")), "candidate `{scheme}` not named: {e}");
+fn b5_plate_with_a_hole_falls_to_all_tet() {
+    let (mut s, run) = run_fixture(PLATE, RUN);
+    let i = info(&mut s);
+    let exact = 16.0 - std::f64::consts::PI;
+    let got = i["volume"].as_f64().expect("volume");
+    assert!((got - exact).abs() / exact < 0.02, "volume {got} vs {exact}");
+    assert_eq!(i["cell_shapes"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["Tet".to_owned()]), "{i}");
+    assert!(valid(&mut s));
+    // `mesh.auto_tet` is advisory; when emitted it names the volume.
+    for w in auto_tet(&run) {
+        assert_eq!(w["entities"].as_array().map(Vec::len), Some(1), "{w}");
     }
-    assert!(e.message.contains("inner loops"), "{e}");
-    // The failed op left nothing behind except what ran before it.
-    assert_eq!(state_hash(&mut s), before);
 
     // The workaround a user has today: an explicit tet mesher meshes it, volume within 2 percent of 16 - pi.
     let mut t = server();
