@@ -438,6 +438,55 @@ mod ws {
         max_connections: Option<usize>,
         on_error: impl Fn(io::Error) + Sync,
     ) -> io::Result<()> {
+        serve_shared(endpoint, listener, max_connections, on_error, &RefusalStats::default())
+    }
+
+    /// Most `503` replies written at once; further excess connections are closed without a reply.
+    const MAX_REFUSALS_IN_FLIGHT: usize = 8;
+
+    /// Counters of the excess-connection path (kept for tests; they never affect behaviour).
+    #[derive(Default)]
+    struct RefusalStats {
+        in_flight: AtomicUsize,
+        high_water: AtomicUsize,
+        refused: AtomicUsize,
+        dropped: AtomicUsize,
+    }
+
+    impl RefusalStats {
+        /// Claim a refusal slot; `false` (and one more drop counted) when all are taken.
+        fn enter(&self) -> bool {
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            if now > MAX_REFUSALS_IN_FLIGHT {
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+                return false;
+            }
+            self.high_water.fetch_max(now, Ordering::SeqCst);
+            self.refused.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn leave(&self) {
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Write the `503` and drain the request so closing does not reset the connection under it.
+    fn refuse(stream: &mut TcpStream) {
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+        let _ = respond(stream, "503 Service Unavailable", "text/plain; charset=utf-8", b"too many connections\n", true);
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+        let _ = stream.read(&mut [0u8; MAX_HEAD]);
+    }
+
+    fn serve_shared(
+        endpoint: &mut (impl Endpoint + ?Sized),
+        listener: &TcpListener,
+        max_connections: Option<usize>,
+        on_error: impl Fn(io::Error) + Sync,
+        stats: &RefusalStats,
+    ) -> io::Result<()> {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let accept_error = std::sync::Mutex::new(None::<io::Error>);
         std::thread::scope(|scope| {
@@ -453,11 +502,14 @@ mod ws {
                                 served += 1;
                                 if live.fetch_add(1, Ordering::SeqCst) >= MAX_LIVE_CONNECTIONS {
                                     live.fetch_sub(1, Ordering::SeqCst);
-                                    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                                    let _ = respond(&mut stream, "503 Service Unavailable", "text/plain; charset=utf-8", b"too many connections\n", true);
-                                    // Drain the request so closing does not reset the connection under the reply.
-                                    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-                                    let _ = stream.read(&mut [0u8; MAX_HEAD]);
+                                    // The reply may wait on a slow peer, so it never runs on the accept thread.
+                                    if stats.enter() {
+                                        conns.spawn(move || {
+                                            refuse(&mut stream);
+                                            stats.leave();
+                                        });
+                                    }
+                                    // Otherwise too many refusals are in flight: close without a reply.
                                     continue;
                                 }
                                 let tx = jobs_tx.clone();
@@ -491,5 +543,79 @@ mod ws {
     pub fn serve_http_ws(endpoint: &mut (impl Endpoint + ?Sized), addr: impl ToSocketAddrs) -> io::Result<()> {
         let listener = TcpListener::bind(addr)?;
         serve_http_ws_listener(endpoint, &listener, None, |e| eprintln!("sm-server: connection ended: {e}"))
+    }
+
+    #[cfg(test)]
+    mod refusal_tests {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        /// Serve on a thread; it returns the stats once `connections` connections have ended.
+        fn start(connections: usize) -> (SocketAddr, Arc<RefusalStats>, std::thread::JoinHandle<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let stats = Arc::new(RefusalStats::default());
+            let seen = Arc::clone(&stats);
+            let h = std::thread::spawn(move || {
+                let mut s = crate::Server::new(crate::standard_with(Some("t".into()), Some("2026-10-24T00:00:00Z".into()))).expect("server");
+                serve_shared(&mut s, &listener, Some(connections), |_| {}, &seen).expect("serve");
+            });
+            (addr, stats, h)
+        }
+
+        /// `MAX_LIVE_CONNECTIONS` idle connections, each counted live once the server has them.
+        fn hold(addr: SocketAddr) -> Vec<TcpStream> {
+            (0..MAX_LIVE_CONNECTIONS).map(|_| TcpStream::connect(addr).expect("connect")).collect()
+        }
+
+        /// Acceptance 1: excess connections that never send or read do not delay a later client.
+        #[test]
+        fn silent_excess_connections_do_not_stall_the_accept_loop() {
+            let silent = MAX_REFUSALS_IN_FLIGHT - 2;
+            let (addr, stats, h) = start(MAX_LIVE_CONNECTIONS + silent + 1);
+            let held = hold(addr);
+            let idle: Vec<TcpStream> = (0..silent).map(|_| TcpStream::connect(addr).expect("connect")).collect();
+            // One more excess connection that does send a request: it must get its 503 promptly
+            // (before the fix each silent one cost the accept thread up to 200 ms first).
+            let t = Instant::now();
+            let mut c = TcpStream::connect(addr).expect("connect");
+            c.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").expect("write");
+            let mut raw = Vec::new();
+            c.read_to_end(&mut raw).expect("read");
+            let waited = t.elapsed();
+            let text = String::from_utf8_lossy(&raw);
+            assert!(text.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{text}");
+            assert!(text.ends_with("\r\n\r\ntoo many connections\n"), "{text}");
+            assert!(waited < Duration::from_millis(600), "served after {waited:?}");
+            drop((held, idle, c));
+            h.join().expect("server");
+            assert_eq!(stats.refused.load(SeqCst), silent + 1);
+            assert_eq!(stats.dropped.load(SeqCst), 0);
+        }
+
+        /// Acceptance 2: a flood never has more than the cap of refusals in flight.
+        #[test]
+        fn a_flood_of_excess_connections_is_capped() {
+            let flood = 4 * MAX_REFUSALS_IN_FLIGHT;
+            let (addr, stats, h) = start(MAX_LIVE_CONNECTIONS + flood);
+            let held = hold(addr);
+            let idle: Vec<TcpStream> = (0..flood).map(|_| TcpStream::connect(addr).expect("connect")).collect();
+            // Hold everything until the server has dealt with every excess connection (silent
+            // clients keep each refusal busy for its read wait, so the cap is reached).
+            // Dropping earlier would free live slots and let later connections in.
+            let t = Instant::now();
+            while stats.refused.load(SeqCst) + stats.dropped.load(SeqCst) < flood {
+                assert!(t.elapsed() < Duration::from_secs(20), "server stalled");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            drop((held, idle));
+            h.join().expect("server");
+            let (refused, dropped) = (stats.refused.load(SeqCst), stats.dropped.load(SeqCst));
+            assert_eq!(refused + dropped, flood);
+            assert!(stats.high_water.load(SeqCst) <= MAX_REFUSALS_IN_FLIGHT, "{}", stats.high_water.load(SeqCst));
+            assert!(dropped > 0, "the cap was exercised");
+            assert_eq!(stats.in_flight.load(SeqCst), 0);
+        }
     }
 }
