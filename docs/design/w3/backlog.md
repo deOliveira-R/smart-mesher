@@ -95,3 +95,31 @@ Cleanups:
 - sm-server `smrt_regions`: ByCellSets resolves sets by name, so a non-block cell set with a block's name could be picked; add a comment or test.
 - PARITY Transforms row: M1 checks only volume counts and total volume, not "the merged interfaces"; reword or point to M4/M6.
 - Ruled (R9-R11 in docs/design/w3b/rulings.md): one region per block; volume-id fallback with a warning; FOAM-WARP option goes into W3c. Check that the fallback note is surfaced as a warning in CLI/MCP output.
+
+## From W3c sub-waves 1+2 (merged 2026-11-08, d2e7731; for W3c-INT unless marked W4)
+- **User call: XDG pin.** BENCH-PIN moved the pin back 12 commits on the false premise that `83efb306e152` never existed (it exists and descends from `fec80980ce29`). Choose the commit before BENCH-XDG, then reword or drop the `assert_ne!` in `sm-bench` docker.rs.
+- **Deviations to record in the W3c report:**
+  - CYL-PIN acceptance 7: `mesh.info` shows 0 rejections because the replan runs in `mesh.auto`'s scratch plan; the `mesh.auto_tet` warnings are the evidence. Pin `rejections == 0`.
+  - B5 (plate with a hole) is a hex sweep under `mesh.auto` (154 hexes), not tets. MESHER-REPLAN rewrote the b5 row; CYL-PIN owns it.
+  - The census does not show B6; `plate` is its only error-to-success change.
+  - CLEAN-RT fixed the temp-dir leak by moving to `CARGO_TARGET_TMPDIR`; the root cause of the empty dirs is still unknown.
+  - BENCH-WORKLOADS acceptance 6 uses the C1 tiny ball (same optical radius 1.5).
+- **Tests to tighten:**
+  - sm-py `test_export.py`: drop the stale `xfail(strict=False)` marks and `NO_SERVER_A`.
+  - `plan_blame.rs`: assert `ReplanLimit` only.
+  - auto_select: assert the through-pin plan rows, the auto_tet warning text, and 3-way CLI/MCP/in-process equality for the single through pin and B5.
+  - sm-csgio: compare 1-thread vs N-thread findings; 1e-11 relative tolerance in `openmc_cross`; add the `translated` fixture; make the oracle-mutation test import a row-swapped variant.
+  - sm-csgio cli test: fix the `(A && B) || C` precedence.
+  - sm-rt delta.rs acc04: clear counters before `next_segment`.
+  - sm-cli EXPORT-C: byte-compare gmsh `binary=True` with the CLI `--option binary=true`.
+  - sm-server: transport stall bound of 1 s with 7 silent connections; give the `concurrent_opens` barrier a timeout.
+  - sm-bench `cases.rs`: compare only the shared keys.
+- **Small fixes:**
+  - LINUX-HASH: pin `RUSTUP_TOOLCHAIN=1.99.1` and print `rustc -V`; correct the key count (239); make `hashes.sh` fail on `error.*` keys; fix the `submap_graded.smesh` comment.
+  - sm-csgio `world.rs`: the dead overlap filter becomes a debug_assert; update DESIGN.md step 5 (two-leaf check).
+  - sm-rt-capi DESIGN.md:111: `smrt_version` does go through `guard`.
+  - sm-bench: report images with no `moab=` line; read the image id once.
+  - BENCH-WORKLOADS: limit complement-cell leaks to the facet exterior; bounds-check `vols[r0]` in the DAGMC driver.
+  - MESHER-REPLAN: reuse the trial error, saving one planner pass.
+  - The `plan.md:142` `m<id>` wording (C9 overrides it).
+- **W4:** `smesh run` text mode should print per-op `delta.diagnostics`, so a CLI user sees the `mesh.auto_tet` warnings.
