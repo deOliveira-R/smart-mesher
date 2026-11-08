@@ -1,0 +1,14 @@
+// The SUBMAP_GRADED fixture of crates/sm-cli/tests/milestone_w3b.rs (same ops), plus prints of
+// the mesh hashes so tools/platform/hashes.sh can record them. Expected state hash with
+// `--author it --fixed-time 2026-10-24T00:00:00Z`: 7b71fd6dd5c3dd71...0b1f (checked by hashes.sh).
+let a = model.create_brick(x: 2.0, y: 2.0, z: 1.0, center: [1.0, 1.0, 0.5])
+let t = model.create_brick(x: 2.0, y: 2.0, z: 3.0, center: [2.0, 2.0, 0.5])
+let r = model.subtract(targets: a.body, tools: t.body)
+mesh.size(targets: r.volumes, size: 0.5)
+mesh.size(targets: Edge#9, size: 0.2)
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: r.volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "topology_hash", mi.topology_hash
+print "geometry_hash", mi.geometry_hash
+print "cells", mi.cells
