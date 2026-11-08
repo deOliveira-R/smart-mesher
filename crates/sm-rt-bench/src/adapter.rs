@@ -512,7 +512,12 @@ impl TrackerAdapter {
         }
         let mut tau = -(1.0 - rng.unit()).ln();
         loop {
-            let reg = usize::try_from(self.bench(st.region)).map_err(|_| BenchError::Tracker("history is in the complement".into()))?;
+            // A step that ends in a cell of the complement (a facet world has explicit exterior
+            // cells) is a leak, like a RegionBoundary into `NONE`.
+            let Ok(reg) = usize::try_from(self.bench(st.region)) else {
+                tally[2 * nreg] += 1.0;
+                return Ok(());
+            };
             if reg >= nreg {
                 return Err(BenchError::Tracker(format!("region {reg} has no cross section")));
             }

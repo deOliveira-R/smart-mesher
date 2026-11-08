@@ -175,6 +175,41 @@ min, max of the timed repetitions), `segments_per_track`, `ns_per_segment`, `bui
 `docker/<name>/`, a pinned entry in `docker/pins.env`, a driver under `drivers/<name>/`, an entry in
 `docker::IMAGES`.
 
+### W-fire and W-flight in the DAGMC drivers (W3c BENCH-WORKLOADS)
+
+`dagmc_driver --workload track|fire|fire-locate|flight` (default `track`); `run_case.sh` loops over
+`SMRT_WORKLOADS` (comma list) and the thread counts, and `run --workloads` (default all four)
+sets it. After a row the driver prints, for the first thread count only, the dump of its workload:
+`{"tracks": ...}`, `{"fires": [[dist, to_region], ...]}` (to-region `-1` complement, `-2` lost) or
+`{"tally": [...], "tally_sq": [...], "blocks": B}`; the runner attaches a dump to the row printed
+before it ([`docker::parse_driver_output`]).
+
+* **Fire** is one `ray_fire` per ray from the region the ray file names (hinted, no ray history) up
+  to the first region boundary. `fire-locate` first finds the start volume by a loop over the
+  volumes with `point_in_volume`, then the implicit complement: DAGMC's own `find_volume` is not
+  exported by libdagmc 3.2.4 (the declaration sits behind `MOAB_VERSION_*` macros no installed
+  header defines), so the same linear loop is written in the driver. The fire rows are judged ray
+  by ray against the sm-rt facets fire ([`compare::compare_fires`]: distances within `chord_tol`,
+  regions equal, a ray with a distance below `5e-9 * diag` is counted as grazing, not failed).
+* **Flight** reimplements the Rust surface history (`adapter.rs` `history`): the same SplitMix64
+  stream per history (`for_index(seed, h)`, ported to C++, seeded from `--seed` and the history
+  index only), `tau = -ln(1 - u)`, isotropic rejection direction, collision and track-length
+  tallies, leaked and absorbed counts, history `h` starts from ray `h % rays` in the ray file's
+  region, blocks of 256 histories reduced in block order (so the result is the same for any
+  thread count). The port is not bitwise: `std::log` and `std::sqrt` may differ from Rust's libm,
+  so a path can diverge after a rounding difference; the agreement is the statistical one,
+  [`runner::compare_tallies_with`] against the sm-rt facets *surface* flight on the same triangles
+  (4 sigma from the block spread; collision, track-length, leaked and absorbed slots, so
+  `checked = 2 * regions + 2`). `sigma.txt` (`id sigma_t sigma_a`, shortest round-trip decimals)
+  is written by the runner into the case directory; a region without a line is a lost history, as
+  in the Rust adapter. The facets adapter's flight treats a step that ends in a complement cell as a
+  leak (it used to error).
+* Determinism of a competitor row stays observed: the driver hash is equal across repetitions
+  (`stable`), the runner also marks a workload unstable when the hashes of its thread counts
+  differ. Nothing asserts equality with sm-rt (`result_hash` of two runs is equal, so the
+  competitor output is reproducible, but the hash of a row is not an sm-rt hash).
+* `xdg` rows stay `partial` (no image, W4).
+
 `run_competitor` never invents a number: no Docker, `UNSET` digests, a missing image, a failing
 container or an unparsable line is `Partial` with the command and its last output line, and the
 report lists it.
@@ -254,9 +289,10 @@ in the file itself, never in `result_hash`, in `Output::content_hash` or in the 
 * The `H1` mesh is a structured tet mesh because `sm-scheme-tet` has no conforming inclusion
   meshing in this wave. P2 has no tet twin (pins in vacuum do not fill their box), so it has no
   delta or block rows.
-* The DAGMC driver implements W-track only; W-fire and W-flight rows of the competitors (W3c
-  BENCH-WORKLOADS), the XDG driver and the `smtets_to_moab` converter (W4) are not written, and the
-  `xdg` image is reported `partial` (`NoDriver`) with the failing build command.
+* The DAGMC driver implements W-track, W-fire (hinted and located) and W-flight; the XDG driver
+  and the `smtets_to_moab` converter (W4) are not written, and the `xdg` image is reported
+  `partial` (`NoDriver`) with the failing build command. The C++ flight is not bit-identical to
+  the Rust one (libm), only statistically (4 sigma) in agreement.
 * Competitor containers run in Docker Desktop's VM on a Mac: the cores are not pinned, and the 8P+2E
   asymmetry of the M1 Max is not visible. Only `--threads 1,4` is a smoke set there.
 * apt packages of the xdg image are recorded, not frozen.

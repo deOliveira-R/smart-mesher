@@ -458,6 +458,9 @@ pub enum Competitor {
         rows: Vec<crate::result::Row>,
         /// Tracks of the W-track run, if the driver dumped them.
         tracks: Option<Vec<crate::truth::Track>>,
+        /// Dumps of the other workloads (fires, flight tallies), keyed by workload name
+        /// (`w-fire`, `w-fire-locate`, `w-flight`).
+        dumps: BTreeMap<String, crate::adapter::Output>,
     },
     /// Not run: the failing command or the reason (reported as `partial`, never as numbers).
     Partial(String),
@@ -472,6 +475,74 @@ struct TrackJson {
 #[derive(serde::Deserialize)]
 struct TracksLine {
     tracks: Vec<TrackJson>,
+}
+
+#[derive(serde::Deserialize)]
+struct FiresLine {
+    fires: Vec<(f64, i32)>,
+}
+
+#[derive(serde::Deserialize)]
+struct TallyLine {
+    tally: Vec<f64>,
+    tally_sq: Vec<f64>,
+    blocks: usize,
+}
+
+/// What a competitor run does besides W-track (all additive; the default is W-track only).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompetitorOpts {
+    /// Workloads to run, by driver name: `track`, `fire`, `fire-locate`, `flight`.
+    pub workloads: Vec<String>,
+    /// Histories of `flight`.
+    pub histories: usize,
+    /// Seed of the flight streams.
+    pub seed: u64,
+    /// Regions with cross sections (`flight` only; written to `sigma.txt` in the case directory).
+    pub regions: Vec<crate::formats::RegionSpec>,
+}
+
+impl Default for CompetitorOpts {
+    fn default() -> Self {
+        Self { workloads: vec!["track".into()], histories: 10_000, seed: 0x5eed, regions: Vec::new() }
+    }
+}
+
+/// `sigma.txt` of the flight driver: one `id sigma_t sigma_a` line per region (`{:?}` prints the
+/// shortest decimal that round-trips, so the driver reads the same doubles).
+pub fn sigma_text(regions: &[crate::formats::RegionSpec]) -> String {
+    regions.iter().filter(|r| r.id >= 0).map(|r| format!("{} {:?} {:?}\n", r.id, r.sigma_t, r.sigma_a)).collect()
+}
+
+/// Parsed stdout of a driver: the rows, the track dump and the other dumps by workload.
+pub type DriverOutput = (Vec<crate::result::Row>, Option<Vec<crate::truth::Track>>, BTreeMap<String, crate::adapter::Output>);
+
+/// Parse the stdout of a driver: rows, the track dump and the dumps that follow a row (a `fires`
+/// or `tally` line belongs to the workload of the row printed just before it).
+pub fn parse_driver_output(tracker: &str, stdout: &str) -> core::result::Result<DriverOutput, String> {
+    let mut rows: Vec<crate::result::Row> = Vec::new();
+    let mut tracks = None;
+    let mut dumps = BTreeMap::new();
+    for l in stdout.lines().filter(|l| l.starts_with('{')) {
+        let last = rows.last().map(|r| r.workload.clone());
+        if l.starts_with("{\"tracks\"") {
+            let t = serde_json::from_str::<TracksLine>(l).map_err(|e| format!("a track dump that does not parse: {e}"))?;
+            tracks = Some(t.tracks.into_iter().map(|t| crate::truth::Track { regions: t.r, chords: t.c }).collect());
+        } else if l.starts_with("{\"fires\"") {
+            let f = serde_json::from_str::<FiresLine>(l).map_err(|e| format!("a fire dump that does not parse: {e}"))?;
+            let w = last.ok_or("a fire dump before any row")?;
+            dumps.insert(w, crate::adapter::Output { fires: f.fires, ..Default::default() });
+        } else if l.starts_with("{\"tally\"") {
+            let t = serde_json::from_str::<TallyLine>(l).map_err(|e| format!("a tally dump that does not parse: {e}"))?;
+            let w = last.ok_or("a tally dump before any row")?;
+            dumps.insert(w, crate::adapter::Output { tally: t.tally, tally_sq: t.tally_sq, tally_blocks: t.blocks, ..Default::default() });
+        } else {
+            let mut r = serde_json::from_str::<crate::result::Row>(l).map_err(|e| format!("a line that is not a row: {e}"))?;
+            r.tracker = tracker.to_string();
+            rows.push(r);
+        }
+    }
+    Ok((rows, tracks, dumps))
 }
 
 /// Tracker name (`dagmc-moab`, `dagmc-dd`, `xdg`) to its image name.
@@ -493,6 +564,14 @@ fn last_line(b: &[u8]) -> String {
 /// an image of another architecture, too many threads, a failing container, unparsable output) is
 /// [`Competitor::Partial`] with the command and its last line of output.
 pub fn run_competitor(root: &Path, tracker: &str, data_dir: &Path, case: &str, threads: &[usize], reps: usize, warmup: usize) -> Competitor {
+    run_competitor_with(root, tracker, data_dir, case, threads, reps, warmup, &CompetitorOpts::default())
+}
+
+/// [`run_competitor`] with workloads: the container also gets `SMRT_WORKLOADS`, `SMRT_HISTORIES`
+/// and `SMRT_SEED`, and `flight` needs `opts.regions` (written to `DIR/<case>/sigma.txt` before
+/// the container starts). A `fires` or `tally` dump line belongs to the row printed before it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &str, threads: &[usize], reps: usize, warmup: usize, opts: &CompetitorOpts) -> Competitor {
     let Some(image) = image_of(tracker) else { return Competitor::Partial(format!("unknown competitor {tracker:?}")) };
     let probe = |args: &[&str]| std::process::Command::new("docker").args(args).output();
     match probe(&["version", "--format", "{{.Server.Version}}"]) {
@@ -522,32 +601,32 @@ pub fn run_competitor(root: &Path, tracker: &str, data_dir: &Path, case: &str, t
         Ok(c) => c,
         Err(m) => return Competitor::Partial(format!("{image}: {m}")),
     };
-    let mut cmd = std::process::Command::new("docker");
-    cmd.args(["run", "--rm", "--platform", host.docker, "--cpus", &cpus.to_string(), "-v"]).arg(format!("{}:/data:ro", data_dir.display())).arg("-e").arg(format!("SMRT_REPS={reps}")).arg("-e").arg(format!("SMRT_WARMUP={warmup}")).arg(image).arg(case);
-    cmd.args(threads.iter().map(usize::to_string));
-    let shown = format!("docker run --rm --platform {} --cpus {cpus} -v {}:/data:ro -e SMRT_REPS={reps} -e SMRT_WARMUP={warmup} {image} {case} {}", host.docker, data_dir.display(), threads.iter().map(usize::to_string).collect::<Vec<_>>().join(" "));
-    match cmd.output() {
-        Ok(o) if o.status.success() => {
-            let mut rows = Vec::new();
-            let mut tracks = None;
-            for l in String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.starts_with('{')) {
-                if l.starts_with("{\"tracks\"") {
-                    match serde_json::from_str::<TracksLine>(l) {
-                        Ok(t) => tracks = Some(t.tracks.into_iter().map(|t| crate::truth::Track { regions: t.r, chords: t.c }).collect()),
-                        Err(e) => return Competitor::Partial(format!("`{shown}` printed a track dump that does not parse: {e}")),
-                    }
-                    continue;
-                }
-                match serde_json::from_str::<crate::result::Row>(l) {
-                    Ok(mut r) => {
-                        r.tracker = tracker.to_string();
-                        rows.push(r);
-                    }
-                    Err(e) => return Competitor::Partial(format!("`{shown}` printed a line that is not a row: {e}")),
-                }
-            }
-            if rows.is_empty() { Competitor::Partial(format!("`{shown}` printed no rows")) } else { Competitor::Rows { rows, tracks } }
+    if opts.workloads.iter().any(|w| !["track", "fire", "fire-locate", "flight"].contains(&w.as_str())) {
+        return Competitor::Partial(format!("{image}: unknown workload in {:?}", opts.workloads));
+    }
+    if opts.workloads.iter().any(|w| w == "flight") {
+        let p = data_dir.join(case).join("sigma.txt");
+        if let Err(e) = std::fs::write(&p, sigma_text(&opts.regions)) {
+            return Competitor::Partial(format!("{image}: cannot write {}: {e}", p.display()));
         }
+    }
+    let envs = [("SMRT_REPS", reps.to_string()), ("SMRT_WARMUP", warmup.to_string()), ("SMRT_WORKLOADS", opts.workloads.join(",")), ("SMRT_HISTORIES", opts.histories.to_string()), ("SMRT_SEED", opts.seed.to_string())];
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(["run", "--rm", "--platform", host.docker, "--cpus", &cpus.to_string(), "-v"]).arg(format!("{}:/data:ro", data_dir.display()));
+    let mut shown = format!("docker run --rm --platform {} --cpus {cpus} -v {}:/data:ro", host.docker, data_dir.display());
+    for (k, v) in &envs {
+        cmd.arg("-e").arg(format!("{k}={v}"));
+        shown.push_str(&format!(" -e {k}={v}"));
+    }
+    cmd.arg(image).arg(case);
+    cmd.args(threads.iter().map(usize::to_string));
+    shown.push_str(&format!(" {image} {case} {}", threads.iter().map(usize::to_string).collect::<Vec<_>>().join(" ")));
+    match cmd.output() {
+        Ok(o) if o.status.success() => match parse_driver_output(tracker, &String::from_utf8_lossy(&o.stdout)) {
+            Ok((rows, _, _)) if rows.is_empty() => Competitor::Partial(format!("`{shown}` printed no rows")),
+            Ok((rows, tracks, dumps)) => Competitor::Rows { rows, tracks, dumps },
+            Err(e) => Competitor::Partial(format!("`{shown}` printed {e}")),
+        },
         Ok(o) => Competitor::Partial(format!("`{shown}` failed: {}", last_line(&o.stderr))),
         Err(e) => Competitor::Partial(format!("`{shown}` failed: {e}")),
     }
