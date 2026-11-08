@@ -309,6 +309,49 @@ fn b6_auto_next_to_a_hard_tet_neighbour_falls_back_to_a_conformal_scheme() {
     assert!(valid(&mut t));
 }
 
+const B6_TEXT: &str = "mesh.auto(strategy: \"default\")\nlet m = mesh.run(targets: a.volume | b.volume)\n";
+
+/// B6 determinism (acceptance 11): two runs, 1 thread vs default, and in-process vs CLI vs MCP.
+#[test]
+fn b6_hash_is_deterministic_and_equal_in_process_cli_and_mcp() {
+    let text = format!("{TWO_BRICKS_HARD_TET}{B6_TEXT}");
+    let hash = || {
+        let mut s = server();
+        ok(&mut s, &text);
+        state_hash(&mut s)
+    };
+    let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let a = one.install(hash);
+    let want = hash();
+    assert_eq!(a, want, "1 thread vs default");
+    assert_eq!(want, hash(), "two runs");
+
+    let dir = TempDir::new("b6-cli");
+    let file = dir.path().join("b6.smesh");
+    std::fs::write(&file, &text).expect("write script");
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut input = std::io::Cursor::new(Vec::new());
+    let mut io = sm_cli::Io { stdin: &mut input, stdout: &mut out, stderr: &mut err };
+    let mut connect = |s: &sm_cli::Settings| sm_cli::connect_standard(s);
+    let args = ["smesh", "--memory", "--author", "tester", "--fixed-time", TIME, "run", file.to_str().expect("utf8"), "--print-hash"];
+    let code = sm_cli::run(args, &mut connect, &mut io);
+    let stdout = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(code, 0, "{} {}", stdout, String::from_utf8_lossy(&err));
+    assert_eq!(stdout.lines().last(), Some(want.as_str()), "CLI hash");
+
+    let mut m = server();
+    let msgs = [
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_script","arguments":{"text": text}}}),
+    ];
+    let input: String = msgs.iter().map(|m| format!("{m}\n")).collect();
+    let mut out = Vec::new();
+    sm_mcp::run_stdio(&mut m, std::io::Cursor::new(input.into_bytes()), &mut out).expect("mcp");
+    let replies: Vec<Value> = String::from_utf8(out).expect("utf8").lines().map(|l| serde_json::from_str(l).expect("json")).collect();
+    assert_ne!(replies[1]["result"]["isError"], json!(true), "{}", replies[1]);
+    assert_eq!(state_hash(&mut m), want, "MCP hash");
+}
+
 // ---- B8: determinism, and the three front ends ---------------------------------------------------
 
 fn scenario_hashes() -> Vec<String> {
