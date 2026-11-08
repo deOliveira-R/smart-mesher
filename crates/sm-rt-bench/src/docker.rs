@@ -467,6 +467,8 @@ pub enum Competitor {
     Rows {
         /// The rows.
         rows: Vec<crate::result::Row>,
+        /// Id (`sha256:...`) of the image the container ran by; identity of the rows is read from it.
+        image_id: String,
         /// Tracks of the W-track run, if the driver dumped them.
         tracks: Option<Vec<crate::truth::Track>>,
         /// Dumps of the other workloads (fires, flight tallies), keyed by workload name
@@ -641,7 +643,7 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
     match cmd.output() {
         Ok(o) if o.status.success() => match parse_driver_output(tracker, &String::from_utf8_lossy(&o.stdout)) {
             Ok((rows, _, _)) if rows.is_empty() => Competitor::Partial(format!("`{shown}` printed no rows")),
-            Ok((rows, tracks, dumps)) => Competitor::Rows { rows, tracks, dumps },
+            Ok((rows, tracks, dumps)) => Competitor::Rows { rows, image_id, tracks, dumps },
             Err(e) => Competitor::Partial(format!("`{shown}` printed {e}")),
         },
         Ok(o) => Competitor::Partial(format!("`{shown}` failed: {}", last_line(&o.stderr))),
