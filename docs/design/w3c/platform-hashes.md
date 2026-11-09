@@ -1,10 +1,10 @@
 # Platform hashes: macOS arm64 against Linux arm64 (W3c-LINUX-HASH)
 
-Smoke evidence. Everything below was run on one Mac (Apple Silicon, Docker Desktop VM, `linux/arm64`, no emulation) at commit `9ac71ca` on 2026-11-07/08. Linux x86_64 evidence comes from GitHub CI only. Plan: `plan.md` task W3c-LINUX-HASH; rulings C3, C11, C12 in `rulings.md`. No crate source was touched.
+Smoke evidence. Everything below was run on one Mac (Apple Silicon, Docker Desktop VM, `linux/arm64`, no emulation) at commit `9ac71ca` on 2026-11-07/08 (first run) and rerun on the W3c-INT commit (base `8f62f64` plus the PLATFORM changes, 2026-11-08, with `tools/w3c_pin.smesh` added; table below). Linux x86_64 evidence comes from GitHub CI only. Plan: `plan.md` task W3c-LINUX-HASH; rulings C3, C11, C12 in `rulings.md`. No crate source was touched.
 
 ## Result in one paragraph
 
-Every identity (state) hash of the milestone scripts is equal on macOS arm64 and on Linux arm64, for glibc 2.36 and glibc 2.39, with default threads and with `RAYON_NUM_THREADS=1`. That covers 6 scripts, 238 keys (every timeline node, every branch tip, the four layer hashes, the state hash, the memory-run hash, the printed `h_*` hashes). No existing milestone hash moved (C3: nothing to stop). The only raw-bit hashes that differ are the `sm-rt` `flat_golden` bundle hashes (test-side ray generator, see below) and the platform tag inside `smcase.json`. The Linux arm64 `flat_golden` bundle hashes equal the Linux x86_64 values already recorded from GitHub CI. C12 therefore needs no near-tie fix and no portable libm on the evidence so far; `expected.txt` is for W3c-INT.
+Every identity (state) hash of the milestone scripts is equal on macOS arm64 and on Linux arm64, for glibc 2.36 and glibc 2.39, with default threads and with `RAYON_NUM_THREADS=1`. That covers 7 scripts, 288 keys (239 for the six scripts of the first run, plus 49 for `w3c_pin`; 307 with the information-only `curved_probe`) (every timeline node, every branch tip, the four layer hashes, the state hash, the memory-run hash, the printed `h_*` hashes). No existing milestone hash moved (C3: nothing to stop). The only raw-bit hashes that differ are the `sm-rt` `flat_golden` bundle hashes (test-side ray generator, see below) and the platform tag inside `smcase.json`. The Linux arm64 `flat_golden` bundle hashes equal the Linux x86_64 values already recorded from GitHub CI. C12 therefore needs no near-tie fix and no portable libm on the evidence so far; `tools/platform/expected.txt` and `crates/sm-cli/tests/platform_pins.rs` (W3c-INT, below) now make Linux x86_64 CI enforce the identity hashes.
 
 ## Environment
 
@@ -13,8 +13,9 @@ Every identity (state) hash of the milestone scripts is equal on macOS arm64 and
 | platform | darwin-arm64 | linux-aarch64 | linux-aarch64 |
 | libc | Apple libm | glibc 2.36 | glibc 2.39 (GitHub runner's glibc) |
 | image | none | `rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c` (index digest) | `ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852` (index digest) plus rustup 1.99 (unpinned rustup installer) |
-| toolchain | rust-toolchain.toml 1.99 | image's 1.99 via `RUSTUP_TOOLCHAIN` | rustup `--default-toolchain 1.99` |
+| toolchain | rust-toolchain.toml 1.99 | image's 1.99.1 via `RUSTUP_TOOLCHAIN=1.99.1` (printed as `rustc -V`) | rustup `--default-toolchain 1.99.1` |
 | profile | dev, debug = line-tables-only | same | same |
+| rustc / rustup (W3c-INT rerun) | rust-toolchain.toml 1.99 | rustc 1.99.1 (58cf8f9c3 2026-10-13), rustup 1.29.3 | same versions, recorded at image build in `/usr/local/share/toolchain-versions.txt` |
 
 Digests were read with `docker buildx imagetools inspect` on 2026-11-07 (`tools/platform/pins.env`), not invented. apt package versions inside the images are recorded by the image build, not frozen (C13). The Dockerfile build prints two `InvalidDefaultArgInFrom` lint warnings (the digest is a build arg); the run lint in `run_container.sh` (every `FROM` has `@sha256:`, no `:latest`, digests are 64 hex) is what enforces pinning. The repo is mounted read-only; `CARGO_HOME` and the target dir are named volumes; `cargo --locked`.
 
@@ -34,12 +35,15 @@ All rows: macOS = Linux (glibc 2.36) = Linux (glibc 2.39). Pins `--author it --f
 | W3b `tools/w3b_milestone.smesh` | `h_model` | `66e4ac03a259d7e8411d7365470a6917770db7ae5fd57492aba72f04fe1e204e` |
 | | `h_auto` | `fca39b7908faae617c67ba6ae5ee63f457225ac56982ddf21c5d955e40f469c4` |
 | | `h_mesh` (= final state) | `6f6c19f042a4b23529cfa0d05ff6c4bbd212e9862fefebacf18617f682b7ea2f` |
+| W3c `tools/w3c_pin.smesh` (through pin, 3x3 lattice, 432 hexes) | `h_model` | `f238f0340fc123ef799f241e7f9ff99e3d5d7ef848113f9a6c20f768d47b4e9d` |
+| | `h_auto` | `1f4b0912569abb477044a9d2bf42f024b5936a30220888ea5bfd28f9234fdbe1` |
+| | `h_mesh` (= final state) | `6953b909cfbaf576efe1828577f6daf73039b0fa4934677a99dab0172f1a36f6` |
 | SUBMAP_GRADED (`tools/platform/submap_graded.smesh`) | topology / geometry | `c99bcaa8d93e9a5e` / `43ecc0a4b59b3715` |
 | | state | `7b71fd6dd5c3dd7136a6a1b78a40c8fa3f851877e9f069a73f164f731b0c0b1f` |
 
 The SUBMAP_GRADED values equal the literals in `crates/sm-cli/tests/milestone_w3b.rs:603-605`, and the platform script has the same ops (an added `mesh.info` query and prints).
 
-Per-script key counts compared: `w2_milestone` 21, `w2_fork` 25, `w3a_hybrid` 63, `w3a_tet` 49, `w3b_milestone` 56, `w3b_submap_graded` 25, `curved_probe` 19. Same key set on both sides for every script; `compare.py` treats a key present on one side only as a difference.
+Per-script key counts compared: `w2_milestone` 21, `w2_fork` 25, `w3a_hybrid` 63, `w3a_tet` 49, `w3b_milestone` 56, `w3b_submap_graded` 25, `w3c_pin` 49, `curved_probe` 19 (307 in all; 239 for the first six, 258 with `curved_probe`). Same key set on both sides for every script; `compare.py` treats a key present on one side only as a difference.
 
 Controls:
 - Same host twice, default threads: equal (macOS `mac1` vs `mac2`, 6 scripts).
@@ -50,7 +54,7 @@ Controls:
 
 ### Curved probe (information only)
 
-`tools/platform/curved_probe.smesh`: cylinder, sphere, torus; `view.tessellate` counts; STEP export (5180 bytes) and re-import (`h_reimport`). Equal on macOS and both Linux images (state `aa4a9b9f...37dd2`, 2600 triangles, 1304 vertices, `h_reimport` `a304b519...26aa`). This is only the model and sm-tess count path: at `9ac71ca` `mesh.auto`, `tetmesh` and face `mesh.run` refuse curved entities ("no applicable scheme"), so no curved mesh hash exists yet. `tessellate` positions are `f32` raw bits and were not compared. The first hashed curved mesh will be `w3c_pin.smesh` (W3c-INT reruns `hashes.sh`, which picks it up when present).
+`tools/platform/curved_probe.smesh`: cylinder, sphere, torus; `view.tessellate` counts; STEP export (5180 bytes) and re-import (`h_reimport`). Equal on macOS and both Linux images (state `aa4a9b9f...37dd2`, 2600 triangles, 1304 vertices, `h_reimport` `a304b519...26aa`). This is only the model and sm-tess count path: at `9ac71ca` `mesh.auto`, `tetmesh` and face `mesh.run` refuse curved entities ("no applicable scheme"), so no curved mesh hash exists yet. `tessellate` positions are `f32` raw bits and were not compared. The first hashed curved mesh is `w3c_pin.smesh` (INT rerun below): its 49 keys, including the layer hashes, `h_model`, `h_auto`, `h_mesh`, the cell count and the printed mesh volume (`14.288400000000104`, a float), are equal on macOS, Linux glibc 2.36 and glibc 2.39. The cylinder, imprint and merge path therefore does not expose the 1-ulp libm difference at these values. Only the identity keys are pinned (the volume is not).
 
 `cos(TAU/3)` as computed by the host libm (`tools/platform/cos_probe.py`): macOS `0xbfdffffffffffffd`, glibc 2.36 and 2.39 `0xbfdffffffffffffc`. One ulp, the same case that made `sm-scheme-tet` `int7` pin ring coordinates (below).
 
@@ -93,8 +97,16 @@ Tiny scale only. The facet equality is an observation, not a ruling: the `@macos
 - Earlier: `submap_graded_input_is_pinned` passes on Linux x86_64 against the macOS-blessed literals.
 - Caveat: the gate was red from the W3b-1 merge until the `flat_golden` rows; crates sorted after `sm-rt` were not exercised on Linux during that period (`--no-fail-fast` fixes the masking).
 
+## W3c-INT rerun (commit base 8f62f64 + PLATFORM changes)
+
+`tools/platform/hashes.sh` on macOS arm64 and in `linux/arm64` containers (rust:1.99-bookworm glibc 2.36, ubuntu:24.04 glibc 2.39), `compare.py` mac against each Linux: all 8 scripts `equal` (`w2_milestone` 21, `w2_fork` 25, `w3a_hybrid` 63, `w3a_tet` 49, `w3b_milestone` 56, `w3b_submap_graded` 25, `w3c_pin` 49, `curved_probe` 19), `RESULT: all equal`, no `error.*` key (`hashes.sh` now exits 1 if one appears). The milestone hashes of C3 (W2 `1fc1366d...`, W3a A/B, W3b `h_model`/`h_auto`/`h_mesh`, SUBMAP_GRADED) are unchanged. `flat_golden` on Linux arm64 gives the same four (structure, bundle) tuples as the table above on both images.
+
+`crates/sm-cli/tests/platform_pins.rs` (passes on macOS, in the glibc 2.36 container and in the glibc 2.39 container; each run does default threads and `RAYON_NUM_THREADS=1` and both equal `expected.txt`): 62 lines, 7 scripts (state, layer hashes, branch tips, memory-run hash, hash-like and count prints; not the per-node rows, floats or `curved_probe`). Refresh only after a ruling: `PLATFORM_PINS_EMIT=<file> cargo test -p sm-cli --test platform_pins`.
+
+Follow-up fixes made in this rerun: `run_container.sh` pins `RUSTUP_TOOLCHAIN=1.99.1` and prints `rustc -V` / `rustup -V`; the ubuntu image installs toolchain 1.99.1 and records the versions; `collect.py` stores every error as `error.<step>` with one helper; `submap_graded.smesh` no longer claims `hashes.sh` checks its hash (it is pinned in `expected.txt`).
+
 ## C12 and what is left
 
 - Nothing diverged, so no near-tie localisation was needed, and no per-platform state hash is proposed.
-- For W3c-INT: write `tools/platform/expected.txt` from the table above (state hashes; the `w3c_pin` rows once the script exists) and `crates/sm-cli/tests/platform_pins.rs`; rerun `run_container.sh` and `hashes.sh` on the INT commit.
+- Done at W3c-INT: `tools/platform/expected.txt` and `crates/sm-cli/tests/platform_pins.rs` (see the rerun section). Original instruction: rerun `run_container.sh` and `hashes.sh` on the INT commit.
 - Open risk, not closed by this run: Linux x86_64 beyond `SUBMAP_GRADED` and the CI run is unverified for the other state hashes until `platform_pins.rs` runs on CI. glibc on x86_64 selects `sin`/`cos`/`exp`/`log`/`pow` variants at run time, which arm64 does not exercise; the `int7` ulp case shows near-tie decisions exist in `sm-scheme-tet`.

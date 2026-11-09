@@ -139,7 +139,7 @@ Workers of sub-wave 1 branch from the commit that contains 0.1-0.5.
 - **Owner:** `crates/sm-csgio/` (new; picked up by the `crates/*` glob).
 - **Scope:** `drafts/csg-import.md` Scope 1-7 with the critique deltas: canonical order of the flat leaf (store surfaces sorted by definition bytes, flat cells by (name, DNF)) before `content_hash`; `roxmltree` as the XML crate (W3c-0 item 0.5); `pub mod openmc;` and `pub mod mcnp;` pre-declared in `lib.rs` and the `--format` dispatch pre-wired in `src/bin/smcsg.rs` (both returning `Unsupported`), so the format tasks touch only their own directories; dev-dependencies `sm-model` and `sm-testkit`.
 - **Contract changes / ACRs:** none (`drafts/csg-import.md` Contract changes).
-- **Acceptance:** `drafts/csg-import.md` acceptance 3, 4 and 5 against a hand-built IR of Deck A (no parser yet), 12 (core errors: cyclic universe, unknown universe, `TooManyTerms`, `max_cells`), 21, 22 (canonical order makes it hold), 23 (core parts); the `smcsg` exit codes 0/1/2 on hand-built worlds. Names and gaps per C9 (defaults: `m<id>`, `void`, gaps as warnings, `--strict-gaps`).
+- **Acceptance:** `drafts/csg-import.md` acceptance 3, 4 and 5 against a hand-built IR of Deck A (no parser yet), 12 (core errors: cyclic universe, unknown universe, `TooManyTerms`, `max_cells`), 21, 22 (canonical order makes it hold), 23 (core parts); the `smcsg` exit codes 0/1/2 on hand-built worlds. Names and gaps per C9 (defaults: the material `name` when non-empty and unique, else `material_<id>`; `void`; gaps as warnings; `--strict-gaps`).
 - **Gates:** after W3c-0 item 0.5. Core frozen after merge. Blocks: CSG-OPENMC, CSG-MCNP.
 - **Hash impact:** none (new crate, no ops, no protocol surface).
 

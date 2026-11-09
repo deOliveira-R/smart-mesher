@@ -44,10 +44,12 @@ docker run --rm --platform "$platform" \
   -v "sm-platform-cargo-$base-$arch:/cache/cargo" -v "sm-platform-target-$base-$arch:/cache/target" \
   -e CARGO_HOME=/cache/cargo -e CARGO_TARGET_DIR=/cache/target \
   -e PLATFORM_SCRATCH=/cache/target/platform-scratch \
-  -e RUSTUP_TOOLCHAIN=1.99 -e RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-}" \
+  -e RUSTUP_TOOLCHAIN=1.99.1 -e RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-}" \
   -e CARGO_PROFILE_DEV_DEBUG=line-tables-only -e CARGO_PROFILE_TEST_DEBUG=line-tables-only \
   -w /src "$tag" bash -c '
     echo "platform linux-$(uname -m) glibc $(getconf GNU_LIBC_VERSION | cut -d" " -f2)"
+    echo "rustc: $(rustc -V) | $(rustup -V 2>&1 | head -1)"
+    [ ! -f /usr/local/share/toolchain-versions.txt ] || sed "s/^/image toolchain record: /" /usr/local/share/toolchain-versions.txt
     echo "image '"$tag"' base digest '"$([ "$base" = rust ] && echo "$RUST_DIGEST" || echo "$UBUNTU_DIGEST")"'"
     [ -n "$RAYON_NUM_THREADS" ] || unset RAYON_NUM_THREADS
     exec "$@"' bash "$@"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print sorted `script|key|value` identity-hash lines for the milestone scripts (W2 milestone and
-# fork, W3a hybrid and tet, W3b milestone, the SUBMAP_GRADED fixture, and w3c_pin.smesh when it
-# exists). Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
+# fork, W3a hybrid and tet, W3b milestone, the SUBMAP_GRADED fixture, w3c_pin.smesh, and the
+# information-only curved probe). Exits 1 if any step left an `error.*` key. Runs the same on macOS and in the Linux container (tools/platform/run_container.sh).
 #
 #   tools/platform/hashes.sh OUT_FILE [--extras]
 #
@@ -37,10 +37,14 @@ run w3a_tet "$emit/w3a_tet.smesh"
 run w3b_milestone tools/w3b_milestone.smesh
 run w3b_submap_graded tools/platform/submap_graded.smesh
 run curved_probe tools/platform/curved_probe.smesh   # information only (see platform-hashes.md)
-if [ -f tools/w3c_pin.smesh ]; then run w3c_pin tools/w3c_pin.smesh; fi
+run w3c_pin tools/w3c_pin.smesh
 LC_ALL=C sort "$out.tmp" > "$out"
 rm -f "$out.tmp"
 echo "wrote $out ($(wc -l < "$out") lines)"
+if grep -E '^[^|]*\|error\.' "$out"; then
+  echo "hashes.sh: a step failed (error.* keys above); the table is not usable" >&2
+  exit 1
+fi
 
 if [ "$extras" = "--extras" ]; then
   {

@@ -21,6 +21,12 @@ PIN = ["--author", "it", "--fixed-time", "2026-10-24T00:00:00Z"]
 KEEP = re.compile(r"^(h_|.*hash|mesh|cells|face_cells|head|tess_|step_bytes)")
 
 
+def last_line(r):
+    """Last non-empty line of a failed run's stderr (else stdout), or its return code."""
+    text = (r.stderr or r.stdout).strip().splitlines()
+    return text[-1][:300] if text else f"rc={r.returncode}"
+
+
 def main():
     smesh, name, script, scratch = sys.argv[1:5]
     script = os.path.abspath(script)
@@ -37,8 +43,7 @@ def main():
     def js(step, args, cwd=scratch):
         r = run(args, cwd)
         if r.returncode != 0:
-            rows[f"error.{step}"] = (r.stderr or r.stdout).strip().splitlines()[-1:] and \
-                (r.stderr or r.stdout).strip().splitlines()[-1]
+            rows[f"error.{step}"] = last_line(r)
             return None
         try:
             return json.loads(r.stdout)
@@ -81,7 +86,7 @@ def main():
     if r.returncode == 0 and r.stdout.strip():
         rows["mem.state"] = r.stdout.strip().splitlines()[-1]
     else:
-        rows["error.mem"] = (r.stderr or r.stdout).strip()[-200:]
+        rows["error.mem"] = last_line(r)
     for k in sorted(rows):
         print(f"{name}|{k}|{rows[k]}")
 
