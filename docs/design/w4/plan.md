@@ -34,7 +34,7 @@ One worker per row. Rows that share a crate run one after the other, in the orde
 | W4-CSG-CLASSIFY | `sm-csgbrep` (new) | a1 | S | `crates/sm-csgbrep/src/quadric.rs` and its tests |
 | W4-CSG-PROBE | `sm-boolean` (one test file) | a1 | S | `crates/sm-boolean/tests/webcut_probe.rs` (new) |
 | W4-REGIONS-CUT | `sm-boolean` (files) | a1 | S/M | `crates/sm-boolean/src/subdivide.rs`, `tests/subdivide.rs` (new), the op registration line in `src/lib.rs` |
-| W4-CSG-LIBFN (if W4-0.4 asks) | `sm-model`, `sm-fem` | a1 | S | library entry points named by W4-0.4 only |
+| W4-CSG-LIBFN (dropped: csgbrief.md §6; fallback signatures in §3.4) | `sm-model`, `sm-fem` | a1 | S | library entry points named by W4-0.4 only |
 | W4-CLI-DIAG | `sm-cli` | a1 | S | `crates/sm-cli/` (src and existing tests) |
 | W4-EXO-VERIFY | `sm-exodus` | a1 | S | `crates/sm-exodus/` (tests and docs unless a bug is found) |
 | W4-DAGMC-MODEL | `sm-server`, `sm-meshio/src/dagmc` | a1 | M/L | `crates/sm-server/`, `crates/sm-meshio/src/dagmc/` |
@@ -155,7 +155,7 @@ Common to every W4-0 task: start from `9cac369` (`git checkout --detach 9cac369`
 #### W4-0.1 CENSUS. Census baseline (independent; nobody waits on it)
 - **Owner:** `tools/census/` (new), `docs/design/w4/census-base.txt` (new).
 - **Spec:** write `tools/census/census.sh` (bash; a `python3 -I` helper in the same directory is allowed) that measures, at the checked-out commit, every value of the §7 population and prints one line per value, sorted, as `<group>|<key>|<os-arch or any>|<value>`, with a header of `#` lines (commit, `uname -sm`, `rustc -V`, date not included so two runs are byte-identical). Values are measured by running code (tests with `--nocapture`, `tools/platform/hashes.sh`, the CLI on the committed scripts, sha256 of committed golden and fixture files), never copied from test source. Groups: `platform` (the 62 data lines of `tools/platform/expected.txt`, recomputed, plus its sha256), `w3c_pin` (432 hexes, 733 tets, two `mesh.auto_tet` warnings), `submap_graded`, `p0_rows`, `flat_golden` (per os-arch tuples), `rtbench` (each existing line of `crates/sm-rt-bench/expected_sha256.txt`), `export` (the format hashes of `each_format_is_byte_identical_in_process_cli_and_mcp` and the sha256 of the format golden files), `dagmc` (the `crates/sm-meshio/tests/dagmc.rs` goldens), `poly` (375 cells at `crates/sm-poly/tests/acceptance.rs:93` and the `acc7_determinism` hash), `conformance` (sha256 of the `polydual` and `w3a_poly` fixtures), `csgio` (sha256 of every `oracle.json` and the `content_hash` goldens), and `golden-reviewed` (sha256 of every file under `crates/*/golden/` and `crates/*/tests/golden/`: these may change only by the reviewed insertions of §7, so they are listed separately). Linux rows (`flat_golden`, platform) come from the log of the last green GitHub CI run on `main` (`gh run list`, `gh run view --log`); the run id is recorded in the header, and rows that the log does not carry are listed as `missing` with the reason. Add `--compare <file>`: prints keys whose value differs or that are missing on either side and exits 1 if any.
-- **Acceptance:** (1) `tools/census/census.sh > a.txt; tools/census/census.sh > b.txt; cmp a.txt b.txt` succeeds, and `RAYON_NUM_THREADS=1 tools/census/census.sh | cmp - a.txt` succeeds; (2) `docs/design/w4/census-base.txt` equals `a.txt` produced at `9cac369` on macOS arm64 plus the Linux rows; (3) `tools/census/census.sh --compare docs/design/w4/census-base.txt` exits 0 at the task commit; editing one value in a copy of the file makes it exit 1 and print that key; (4) every group named above has at least one line, and the `platform` group has exactly 62 data lines plus the file's sha256 row; (5) `shellcheck` and `ruff` (for the helper) are clean; (6) no file outside the owner paths changes.
+- **Acceptance:** (1) `tools/census/census.sh > a.txt; tools/census/census.sh > b.txt; cmp a.txt b.txt` succeeds, and `RAYON_NUM_THREADS=1 tools/census/census.sh | cmp - a.txt` succeeds; (2) `docs/design/w4/census-base.txt` equals `a.txt` produced at `69ba521` (docs-only over `9cac369`; header comments may differ, and the two sm-protocol golden rows were refreshed after W4-0.5) on macOS arm64 plus the Linux rows; (3) `tools/census/census.sh --compare docs/design/w4/census-base.txt` exits 0 at the task commit; editing one value in a copy of the file makes it exit 1 and print that key; (4) every group named above has at least one line, and the `platform` group has exactly 62 data lines plus the file's sha256 row; (5) `shellcheck` and `ruff` (for the helper) are clean; (6) no file outside the owner paths changes.
 - **Hash impact:** none.
 
 #### W4-0.2 SKEL. New crate skeletons and registration
@@ -231,7 +231,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Gates:** none. Merge before W4-RT-ROWS branches.
 - **Hash impact:** none.
 
-### W4-RT-WORLD. `sm-rt`: 2D-lattice z pitch, then CSG prototypes under `Lattice`/`Union`
+### W4-RT-WORLD. `sm-rt`: CSG prototypes under `Lattice`/`Union`
 - **Owner:** `crates/sm-rt/`.
 - **Scope:** ruling OR-a supersedes `drafts/rt.md` §W4-RT-LATZ: the 2D-lattice z rule stays (centre z = `origin.z + 0.5 * pitch[2]`, `PITCH_2D` stays), so LATZ is not built and its pitch-0 acceptance and hash note do not apply. Only §W4-RT-CSG-WORLD is built here (sm-rt part only; the P2 `analytic-hierarchy` bench row is W4-RT-ROWS). Hex lattices are W4-RT-HEX (b), not this task.
 - **Acceptance:** §W4-RT-CSG-WORLD acceptance except the bench row (`pins_touched`, `structure_bytes` are checked in an sm-rt test on the P2 world).
@@ -271,7 +271,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Gates:** W4-0.6.
 - **Hash impact:** new op only.
 
-### W4-CSG-LIBFN (only if W4-0.4 asks for it). `sm-model` + `sm-fem`
+### W4-CSG-LIBFN (dropped by csgbrief.md §6; kept as the fallback in §3.4). `sm-model` + `sm-fem`
 - **Scope:** the public library functions named in W4-0.4 (copy with pitch and count; block and sideset add), each wrapping today's op body so the op and the function share one code path.
 - **Acceptance:** the ops' outputs and every test in both crates are unchanged; the new functions have rustdoc and one test each.
 - **Hash impact:** none (the op bodies call the same code).
@@ -458,7 +458,7 @@ Integration agent after the W4c merges (tasks not merged are listed as carried).
 ```
 W4-0: 0.1 census ∥ 0.2 skeletons ∥ 0.3 sm-rt-api ACRs ∥ 0.4 CSGBRIEF ∥ 0.5 sm-protocol ACR ∥ 0.6 sm-model-api ACR ∥ 0.7 docs/tools
  ├─ a1: POLY-MEASURE ∥ POLY-VOLDIAG ∥ RT-XDG ∥ RT-VERDICT ∥ RT-WORLD ∥ HEX-STRAT ∥ HEX-DECOMP ∥ HEX-OGRID-K
- │      ∥ CSG-CLASSIFY ∥ CSG-PROBE ∥ REGIONS-CUT ∥ CSG-LIBFN (if 0.4) ∥ CLI-DIAG ∥ EXO-VERIFY ∥ DAGMC-MODEL ∥ REFCORPUS
+ │      ∥ CSG-CLASSIFY ∥ CSG-PROBE ∥ REGIONS-CUT ∥ CLI-DIAG ∥ EXO-VERIFY ∥ DAGMC-MODEL ∥ REFCORPUS
  ├─ a2: POLY-VORO (MEASURE + table review) ; HEX-QUERY (STRAT, DECOMP) ; HEX-OGRID-S (OGRID-K)
  │      CSG-CORE (CLASSIFY, PROBE, 0.4/LIBFN) ; RT-ROWS (RT-XDG, RT-VERDICT, RT-WORLD) ; RT-CELLINDEX (RT-WORLD)
  │      REGIONS-SPLIT (REGIONS-CUT, DAGMC-MODEL, LIBFN)

@@ -1,6 +1,7 @@
 # smart-mesh hash census (tools/census/census.sh)
 # commit: 69ba521fae50b63fd15506d6293b584871d6b606
 # note: measured at 69ba521, docs-only over 9cac369 (values identical); tools/platform/expected.txt has 62 data lines plus 1 comment line
+# note: golden-reviewed rows for sm-protocol rejected.json and requests.json refreshed at a9d86ca after W4-0.5 (ACR-DAGMC-SRC, additive golden insertions)
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
@@ -241,8 +242,8 @@ golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|9392349f971c91
 golden-reviewed|crates/sm-mesh-api/tests/golden/validate_broken.txt|any|1bae7b5412546e55a0011438cdea9f8d016e9f90845ec64eb96f8bd23fc6dfad
 golden-reviewed|crates/sm-protocol/golden/catalog.json|any|01d3b85aefa31cbb182bf06cafdae2c2ec604ed2a172706354f1817212ffc60a
 golden-reviewed|crates/sm-protocol/golden/lenient.json|any|104ca833bb34bfd34ae1123f86615f45267a272a7c72dcb8a8adb2470a272be0
-golden-reviewed|crates/sm-protocol/golden/rejected.json|any|a41ce86044029ca7e62ee66f08edbcc92748a0998bf2ab31b8627339be24aad7
-golden-reviewed|crates/sm-protocol/golden/requests.json|any|c4222fe6010c74167df68bbe42b6cbcdb4ab990c40aec3a489039bbf99ea00b3
+golden-reviewed|crates/sm-protocol/golden/rejected.json|any|d09a19ac29d59c85439d760e0748cdb1cdcebe7473b08f03731cee8e6356f9d1
+golden-reviewed|crates/sm-protocol/golden/requests.json|any|a0a66b3d37fcdf32f4bac7f5ea960caf927d7af47c6c3624daac6ced584d051d
 golden-reviewed|crates/sm-protocol/golden/results.json|any|6766d33cf417f6304178f6228a42181916b4c29090b9ece9473faab0487386bf
 golden-reviewed|crates/sm-testkit/tests/golden/validate_meshes.txt|any|85c70104f8ba4dbda80556fc83a7e83c3d20f02511c28bfa9ebc0fae988fc683
 p0_rows|row1.cells|any|27

@@ -102,7 +102,7 @@ Legend: done (with the commit or task), kept (stays as the current behaviour), W
 - **Region granularity of the `.smrt`** (per-volume region tag option): **fired (user ruling D9, W4-REGIONS)**. Regions are one per block by default; the opt-in split by lattice position, ring and sector is W4-REGIONS (`docs/design/w4/rulings.md` D9).
 - **Node 20 run of the sm-view web job:** W4. Trigger: the next edit of the sm-view web job or CI image change.
 - **Re-run of the C driver and the Python row on the Linux benchmark machine (O11):** W4. Trigger: access to the Linux benchmark machine. The W3c smoke was on macOS only (Q9).
-- **sm-rt 2D lattice z pitch 1e9 sentinel; O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
+- **O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. (The 2D lattice z pitch 1e9 sentinel is decided by W4 OR-a: `PITCH_2D` stays; the rule is pinned by the sm-rt-api `element_center_z_2d` test.) Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
 - **Benchmark items:**
   - `smtets_to_moab`: W4, trigger: the XDG tet walk work (the same tet inputs are needed).
   - P1 `facets` row partial at `tiny` (zero-area triangles in the hand-built moderator): kept, the reduced and larger scales are used for the smoke.
