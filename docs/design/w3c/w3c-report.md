@@ -95,7 +95,7 @@ GitHub CI has been green since the W3c-0 merge:
 
 From W3c on a wave merges only with GitHub CI green as well as the local run (process note in `rulings.md`).
 
-GitHub CI result of the final INT PR: see PR.
+GitHub CI result of the final INT PR (PR #4, run 42544784727 on bb964d7): green. `gate` pass (1h34m), `python` pass (2m43s), `web` pass (12s). `platform_pins` (`identity_hashes_match_expected_on_every_platform`) passed on Linux x86_64 in both `ci.sh` passes, so the identity hashes of `expected.txt` hold on x86_64 glibc as well (C12).
 
 ## Platform hash results
 
