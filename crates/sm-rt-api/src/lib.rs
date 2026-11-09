@@ -113,7 +113,7 @@ pub use error::{BuildIssue, LostCause, LostInfo, Result, RtError};
 pub use ids::{CellId, ComponentId, FaceId, InstanceId, MaterialSetId, NodeId, PrototypeId, RegionId, SurfaceId};
 pub use input::{
     BrepInput, BuildInput, BuildOptions, BuildReport, ComplementPolicy, FacetFallback, FacetInput, HierInput, LeafInput,
-    MeshInput, PartitionOptions, Precision, RecoveryPolicy, RegionRule, SurfaceRefine, TrackerBuilder, UnsealedEdge,
+    MeshInput, PartitionOptions, Precision, RecoveryPolicy, RegionRule, RegionSet, SurfaceRefine, TrackerBuilder, UnsealedEdge,
     facet_sides_from_topo,
 };
 pub use segments::{

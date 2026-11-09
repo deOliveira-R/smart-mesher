@@ -57,7 +57,7 @@ Sizing / intervals:
 - [ ] P1 hard/soft intervals, interval matching (integer program over all curves) · relative intervals · periodic intervals · vertex sizing · bias/dualbias · sizing functions · auto size function · mesh preview
 Curve schemes:
 - [x] P0 equal (W2: sm-scheme-curve; p0_rows.rs row 4)
-- [ ] P1 bias · dualbias · curvature · stretch · pinpoint · copy
+- [ ] P1 bias · dualbias · curvature · stretch · pinpoint · copy. **Partly done:** bias, dualbias, curvature and stretch exist (`sm-scheme-curve`, `register` in `crates/sm-scheme-curve/src/lib.rs`, tests in `crates/sm-scheme-curve/tests/{spacing,driver,engine}.rs`, commit cdd237d, registered in `standard_schemes`); pinpoint and copy are open
 Surface schemes:
 - [x] P0 map (W2: sm-scheme-map, inside volume runs; `mesh.run` on faces alone is W3)
 - [x] P1 submap (W3a: sm-scheme-submap, tests/submap.rs; corner picking not checked, corner types derived from the loop)

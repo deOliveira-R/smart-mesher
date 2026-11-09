@@ -88,6 +88,31 @@ pub enum ModelError {
     /// The decomposition of this volume must be undone before its topology changes.
     #[error("volume {0} is decomposed; undo the decomposition before changing its topology")]
     DecompositionActive(EntityId),
+    /// A lattice frame name is not `[A-Za-z0-9_]+`.
+    #[error("lattice frame name {0:?} must match [A-Za-z0-9_]+")]
+    BadFrameName(String),
+    /// A region tag or frame parent names a lattice frame that is not defined.
+    #[error("unknown lattice frame {0:?}")]
+    UnknownFrame(String),
+    /// The parent chain of a lattice frame loops back (the frame is on or leads into the cycle).
+    #[error("lattice frame {0:?} is part of a parent cycle")]
+    FrameCycle(String),
+    /// A region tag's slot is outside the layout of its frame.
+    #[error("slot {ix:?} is outside lattice frame {frame:?}")]
+    SlotOutsideLayout {
+        /// The frame.
+        frame: String,
+        /// The slot.
+        ix: crate::instancing::SlotIx,
+    },
+    /// A ring or sector index is not below its count.
+    #[error("sub-index {index} must be below its count {count}")]
+    BadSubIndex {
+        /// The index.
+        index: u32,
+        /// The count.
+        count: u32,
+    },
 }
 
 /// Result alias for this crate.

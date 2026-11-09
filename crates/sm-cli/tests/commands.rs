@@ -649,6 +649,7 @@ fn export_infers_the_format_from_the_extension() {
             empty_patches: vec![],
             wedge_patches: vec![],
             split_warped_faces: false,
+            source: Default::default(),
         }]
     );
     assert!(

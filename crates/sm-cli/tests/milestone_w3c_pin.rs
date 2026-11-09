@@ -230,6 +230,7 @@ fn export_req(path: &Path, format: Option<ExportFormat>, warp: bool) -> Request 
         empty_patches: vec![],
         wedge_patches: vec![],
         split_warped_faces: warp,
+        source: Default::default(),
     }
 }
 

@@ -64,6 +64,21 @@
       "text": "brick x 1"
     }
   },
+  "session.export.dagmc_source_absent": {
+    "method": "session.export",
+    "params": {
+      "format": "dagmc",
+      "path": "m.h5m"
+    }
+  },
+  "session.export.dagmc_source_model": {
+    "method": "session.export",
+    "params": {
+      "format": "dagmc",
+      "path": "m.h5m",
+      "source": "model"
+    }
+  },
   "session.export.full": {
     "method": "session.export",
     "params": {

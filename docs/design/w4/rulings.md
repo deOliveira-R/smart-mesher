@@ -17,3 +17,17 @@ These answer `plan.md` section 9 (D1-D10) and override the plan and drafts where
 ## Process
 - C3 carries over: any move of an existing hash other than D5's stops the task and goes to the user.
 - A sub-wave merges only with GitHub CI green on its PR as well as the local run.
+
+## Orchestrator rulings
+Design calls with one-sided answers, made by the orchestrator (not user decisions; the user can veto any of them). They bind W4 workers.
+
+- **sm-rt-bench and sm-poly.** `sm-rt-bench` may depend on `sm-poly` (library only) for the L2b polyhedral twin.
+- **Conforming tet twin.** The conforming P1 tet twin is generated offline with the `smesh` CLI into the case directory, and its SHA-256 is pinned per os-arch. `sm-rt-bench` takes no `sm-mesher` dependency (`drafts/rt.md` risk 8).
+- **Healing.** It lives in `sm-boolean`, tolerance first (raise per-entity tolerance, then weld or merge within it; geometry moves only on request). Collapse is virtual, with the gap bookkeeping of ACR-V3 (`drafts/vtopo.md` D3, D4).
+- **Pre-registered win criteria.** A benchmark row is a win only if the agreement check passed for both trackers, the median rate is higher by more than the larger min-max spread at 1 thread and at the full physical-core count, memory and build time are shown beside it, and the sign holds in each of three independent sessions. Losses are published. The criteria are fixed in code before any real table exists (`drafts/rt.md` Q2).
+- **Headline build.** The headline uses the default build for every tracker. A second sm-rt row built with `-C target-cpu=native` is published and labelled as such (`drafts/rt.md` Q5).
+- **`renumber`.** It is not in the export selection (`drafts/export.md` D3). It can be added later as an opt-in key.
+- **GPU smoothing and quality.** Not in W4 (user ruling D10). Trigger to revisit, from `drafts/export.md` D5: a measured smoothing or quality pass above a threshold the user names (for example more than 60 s at 10^7 cells on CPU), together with a GPU determinism rule the user approves.
+- **OR-a (W4-0.3 part d): 2D lattice z.** Keep the existing lattice behaviour. For a 2D lattice (`dims[2] == 1`) the element centre z stays `origin.z + 0.5 * pitch[2]` (`bridge.rs:325` and sm-rt's `Lat::center` rely on it). The docs that say "z pitch ignored" are corrected to the actual rule and a test pins it. No behaviour change, no hash moves; `drafts/rt.md` W4-RT-LATZ is not built.
+- **OR-b (W4-0.5): `source` in test literals.** The mechanical `source: Default::default()` / `ExportSource::Mesh` additions in existing test literals of `sm-server/tests` and `sm-cli/tests` are accepted (no asserted value changes). MCP and Python exposure of `source` is deferred to W4-DAGMC-MODEL.
+- **OR-c (W4-0.6 / ACR-REGIONS): hash tags.** Tag 13 is already used by instancing clusters (`sm-model-api` `canonical.rs`). Lattice frames use tag 14 and region tags use tag 15, emitted only when non-empty, after the decomposition table.

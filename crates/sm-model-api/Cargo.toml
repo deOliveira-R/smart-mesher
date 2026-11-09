@@ -28,3 +28,5 @@ thiserror = "2"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }

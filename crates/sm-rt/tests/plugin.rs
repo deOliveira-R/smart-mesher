@@ -68,6 +68,7 @@ fn r2_rt_queries_report_info_check_and_locate() {
     assert_eq!(info["cells"], 64);
     assert_eq!(info["faces"], 3 * 4 * 4 * 5);
     assert_eq!(info["faceted_faces"], 0);
+    assert_eq!(info["convex_cells"], 64);
     assert_eq!(info["caps"], json!(["volume_mesh", "exact_planar"]));
     assert_eq!(info["bounds"], json!([[0.0, 0.0, 0.0], [4.0, 4.0, 4.0]]));
     assert_eq!(info["regions"].as_array().unwrap().len(), 1);

@@ -108,7 +108,8 @@ Fortran spelling: `fortran/smrt.f90` mirrors `smrt.h` with four renames the lang
 case-insensitive and `end`/`kind` are poor identifiers): `SMRT_VERSION` is `SMRT_ABI_VERSION`
 everywhere (C, Fortran and Rust), `SmrtStep%end` is `end_code`, the `kind` argument of
 `smrt_resolve_boundary` is `resp_kind`, and the `uint64_t` hash fields of `SmrtInfo` are `int64` bit
-patterns. `smrt_version()` returns a constant and cannot fail, but still goes through `guard` like every other entry.
+patterns. `smrt_version()` returns a constant and cannot fail, but still goes through `guard` like every
+other entry.
 
 ABI version rule: `SMRT_ABI_VERSION` is `major*10000 + minor*100 + patch` (header, `types.rs` and
 `fortran/smrt.f90` carry the same number; `tests/abi.rs`, `tests/header.rs` and `tests/c/chords.c`

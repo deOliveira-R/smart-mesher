@@ -6,11 +6,11 @@ Sources: W2 integration (decision 10), the post-integration contract batch, and 
 - **CR-2 completion** (`sm-model-api`): `validate` still uses `FaceMoments::plane`. Switch it to `TopologyView::face_plane`, then drop sm-model's `Tolerance::with_linear(1e-6)` mirror-deck workaround.
 - **Plan once** (`sm-scheme-api`): `Driver::mesh_from_plan`, plus `DriverOptions::max_cells` or a cell estimate on `Plan`. Today `mesh.run` plans twice and keeps its own budget.
 - **Planner firmness cascade** (`sm-scheme-api`): today an edge request always beats a face or volume request. Cubit's rule is that firmness decides first, then the latest command wins (decision 9).
-- **Scheme-derived counts** (`sm-scheme-api`): `IntervalSink::goal` is averaged with the edge's sizing goal and the Default counts. So bias/stretch schemes that derive n from sizes cannot use it: n comes out as 2 instead of 6. They need a preference that replaces the sizing goal without becoming a soft count.
+- **Scheme-derived counts** (`sm-scheme-api`) **(done: `IntervalSink::prefer` and its solver precedence, commit 3a7f17e, tests `crates/sm-scheme-api/tests/w3b_planner.rs` (`deriver` with `prefer`) and `crates/sm-mesher/tests/surface.rs:503`; the curve schemes still call `fix(.., Soft)` and move to `prefer` in W4-SIZE-INTERVALS)**: `IntervalSink::goal` is averaged with the edge's sizing goal and the Default counts. So bias/stretch schemes that derive n from sizes cannot use it: n comes out as 2 instead of 6. They need a preference that replaces the sizing goal without becoming a soft count.
 - **Bulk mesh commit** (`sm-layer-api`, `sm-mesh-api`): bulk adopt/retire and `MeshBuild::add_template_cells`. A 10⁶-cell `mesh.run`+`mesh.delete` takes 10.6 s, against 4.7 s for the driver alone.
 - **`ModelLayer` from `(TopoHost, Model)`** (`sm-layer-api`): lets sm-fem test against `sm_testkit::topo::mirror_chamber()` instead of an in-test op.
 - **Overlay `MeshRead` for export** (`sm-mesh-api`): sm-fem's `clone_host` is O(mesh) per export and has not been measured at 10⁶ cells.
-- **Element type in `.smsh`** (`sm-meshio` format): it is checked at export but not written. Fold this into the polyhedral-format work.
+- **Element type in `.smsh`** (`sm-meshio` format) **(done: `.smsh` 1.1 writes `element_types`, commit 5528a87, `SmshWriter::element_type`; tests `crates/sm-meshio/tests/smsh11.rs`, e.g. `hex8_on_a_1000_cell_block_round_trips`)**: it is checked at export but not written. Fold this into the polyhedral-format work.
 
 ## Features
 - **`mesh.plan` / explain query:** report which scheme ran or will run on each entity (`mesh.info` has counts only).
@@ -21,7 +21,7 @@ Sources: W2 integration (decision 10), the post-integration contract batch, and 
 - **Sequential meshing against meshed neighbours:** replaces the `mesh.run` neighbour guard (decision 9).
 
 ## Small owner items
-- sm-server `write_atomic` uses a fixed `.part` temp name. Use a unique one (pid + counter) so concurrent exports are safe.
+- **(done: `unique_tmp` in `crates/sm-server/src/host.rs` names the temp `.<name>.<pid>.<counter>.part`, commit 7875d12; tests `crates/sm-server/tests/session.rs:317`, `export_wire.rs:362`, `crates/sm-cli/tests/binary.rs:14`)** sm-server `write_atomic` uses a fixed `.part` temp name. Use a unique one (pid + counter) so concurrent exports are safe.
 - sm-mcp: an engine-backed variant of `respelled_ids_feed_back_as_arguments` (needs a real-kernel dev-dependency).
 - sm-mesh `contract_alloc`: the warm-up before the measured pass weakens the zero-allocation contract. Drop it (the per-thread counter alone fixed the flake), or assert that the cold pass allocates nothing too.
 - A `cargo fmt` pass over sm-mcp and sm-scheme-api (pre-existing drift; CI does not check fmt).
@@ -99,10 +99,10 @@ Legend: done (with the commit or task), kept (stays as the current behaviour), W
   - P1 limits tests (`sm-mesher/DESIGN.md:79-87`). Trigger: any code that loads `IntentLayer` through serde.
 
 ### Remaining W3b report open items (dispositions)
-- **Region granularity of the `.smrt`** (per-volume region tag option): kept. Regions are one per block; no code has asked for per-volume regions. W4 trigger: the first request for it.
+- **Region granularity of the `.smrt`** (per-volume region tag option): **fired (user ruling D9, W4-REGIONS)**. Regions are one per block by default; the opt-in split by lattice position, ring and sector is W4-REGIONS (`docs/design/w4/rulings.md` D9).
 - **Node 20 run of the sm-view web job:** W4. Trigger: the next edit of the sm-view web job or CI image change.
 - **Re-run of the C driver and the Python row on the Linux benchmark machine (O11):** W4. Trigger: access to the Linux benchmark machine. The W3c smoke was on macOS only (Q9).
-- **sm-rt 2D lattice z pitch 1e9 sentinel; O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
+- **O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. (The 2D lattice z pitch 1e9 sentinel is decided by W4 OR-a: `PITCH_2D` stays; the rule is pinned by the sm-rt-api `element_center_z_2d` test.) Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
 - **Benchmark items:**
   - `smtets_to_moab`: W4, trigger: the XDG tet walk work (the same tet inputs are needed).
   - P1 `facets` row partial at `tiny` (zero-area triangles in the hand-built moderator): kept, the reduced and larger scales are used for the smoke.
@@ -149,6 +149,6 @@ Carried (new follow-ups from the INT reviews; none blocks W4):
 - sm-csgio `gen.py`: call `openmc.reset_auto_ids()` before each model, so fixtures regenerate byte for byte per model; exit 143 on SIGTERM.
 - sm-server auto_select: assert distinct `copy_of` values in the through-pin plan rows.
 - sm-rt-bench: check the `sha256:` image id before the platform; assert the id in `absorber_unbiased`; give an exact lost count in `flight_step_into_an_unmapped_region_is_lost_not_a_leak`.
-- tools/platform `collect.py:58`: `error.new` should go through `last_line(r)`; record the macOS `rustc -V`; `cargo fmt` `platform_pins.rs`.
+- tools/platform `collect.py:58`: `error.new` should go through `last_line(r)`; record the macOS `rustc -V`; `cargo fmt` `platform_pins.rs`. **W4-0.7 did the first two:** `error.new` uses `last_line`; macOS arm64 `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `rustup 1.29.0 (2026-03-05)` (channel 1.99 from `rust-toolchain.toml`, same rustc as the Linux images' 1.99.1). `cargo fmt` of `platform_pins.rs` is still open (HYGIENE-CLI).
 - sm-mesher `auto.rs`: note that the `known` shortcut assumes `plan_with` is pure.
-- PIN: check the fuel-block mesh volume analytically; add a no-blocks CLI/Python check; mypy/ruff on `tools/w3c_driver.py`.
+- PIN: check the fuel-block mesh volume analytically; add a no-blocks CLI/Python check; mypy/ruff on `tools/w3c_driver.py` (the last part is done in W4-0.7: `ruff check` and `MYPYPATH=crates/sm-py/python mypy --strict` with numpy are clean).

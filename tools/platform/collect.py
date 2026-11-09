@@ -28,6 +28,9 @@ def last_line(r):
 
 
 def main():
+    if len(sys.argv) != 5 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
     smesh, name, script, scratch = sys.argv[1:5]
     script = os.path.abspath(script)
     smesh = os.path.abspath(smesh)
@@ -51,8 +54,9 @@ def main():
             rows[f"error.{step}"] = f"bad json: {e}"
             return None
 
-    if run(["new", proj]).returncode != 0:
-        rows["error.new"] = "smesh new failed"
+    r_new = run(["new", proj])
+    if r_new.returncode != 0:
+        rows["error.new"] = last_line(r_new)
     out = js("run", ["run", script, "-p", proj, *PIN, "--json"])
     if out is not None:
         for line in str(out.get("output", "")).splitlines():
@@ -91,4 +95,5 @@ def main():
         print(f"{name}|{k}|{rows[k]}")
 
 
-main()
+if __name__ == "__main__":
+    main()

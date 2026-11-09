@@ -36,12 +36,22 @@ impl Placement {
 pub enum LatticeKind {
     /// Rectangular with pitch per axis; elements are centred on `origin + (i + 1/2) * pitch`.
     Rect {
-        /// Pitch along x, y, z (z pitch ignored for 2D lattices, `dims[2] == 1`).
+        /// Pitch along x, y, z. For a 2D lattice (`dims[2] == 1`) `pitch[2]` is not validated (any
+        /// value) but still places the element centre at `origin.z + 0.5 * pitch[2]`.
         pitch: [f64; 3],
     },
-    /// Hexagonal (pointy-top) with flat-to-flat pitch, axial coordinates `(q, r)`, optional z stack.
+    /// Hexagonal, rows along x (pointy-top; `HexOrient::XRows` in sm-model-api), flat-to-flat
+    /// pitch, axial coordinates `(q, r)`, optional z stack.
     Hex {
         /// Flat-to-flat distance between neighbour centres.
+        pitch: f64,
+        /// Axial pitch (z) when `dims[2] > 1`.
+        z_pitch: f64,
+    },
+    /// Hexagonal, rows along y (flat-top; `HexOrient::YRows` in sm-model-api): centre
+    /// `pitch * (sqrt(3)/2 q, r + q/2)`, axial coordinates `(q, r)`, optional z stack.
+    HexYRows {
+        /// Centre-to-centre distance between neighbours.
         pitch: f64,
         /// Axial pitch (z) when `dims[2] > 1`.
         z_pitch: f64,
@@ -86,6 +96,14 @@ impl Lattice {
                     self.origin.z + f64::from(idx[2]) * z_pitch,
                 )
             }
+            LatticeKind::HexYRows { pitch, z_pitch } => {
+                let (q, r) = (f64::from(idx[0]), f64::from(idx[1]));
+                Point3::new(
+                    self.origin.x + pitch * (3.0_f64.sqrt() / 2.0) * q,
+                    self.origin.y + pitch * (r + q / 2.0),
+                    self.origin.z + f64::from(idx[2]) * z_pitch,
+                )
+            }
         }
     }
 
@@ -122,7 +140,7 @@ impl Lattice {
         let z_used = self.dims[2] > 1;
         let pitch_ok = match self.kind {
             LatticeKind::Rect { pitch } => pos(pitch[0]) && pos(pitch[1]) && (!z_used || pos(pitch[2])),
-            LatticeKind::Hex { pitch, z_pitch } => pos(pitch) && (!z_used || pos(z_pitch)),
+            LatticeKind::Hex { pitch, z_pitch } | LatticeKind::HexYRows { pitch, z_pitch } => pos(pitch) && (!z_used || pos(z_pitch)),
         };
         if !pitch_ok {
             out.push(BuildIssue::new("world.lattice_pitch", format!("component {comp}: lattice pitch must be positive and finite")));
@@ -273,6 +291,11 @@ impl WorldSpec {
                             h.write_f64(pitch);
                             h.write_f64(z_pitch);
                         }
+                        LatticeKind::HexYRows { pitch, z_pitch } => {
+                            h.write_u64(3);
+                            h.write_f64(pitch);
+                            h.write_f64(z_pitch);
+                        }
                     }
                     for v in [l.origin.x, l.origin.y, l.origin.z] {
                         h.write_f64(v);
@@ -375,6 +398,38 @@ mod tests {
         assert!((c.x - 1.89).abs() < 1e-12 && (c.y - 0.63).abs() < 1e-12);
     }
 
+    fn pinned_world(kind: LatticeKind) -> WorldSpec {
+        WorldSpec::new(
+            vec![ComponentKind::Leaf { input: 0 }, ComponentKind::Lattice(Lattice::new(kind, Point3::new(0.5, -1.0, 0.25), [3, 2, 1], vec![ComponentId(0); 6], None))],
+            ComponentId(1),
+            InstancePolicy::Hierarchical,
+        )
+    }
+
+    #[test]
+    fn hex_y_rows_centres_and_hashes() {
+        let at = |kind, idx| Lattice::new(kind, Point3::new(0.0, 0.0, 0.0), [2, 2, 1], vec![ComponentId(0); 4], None).element_center(idx);
+        let y = LatticeKind::HexYRows { pitch: 2.0, z_pitch: 1.0 };
+        let (c, d) = (at(y, [1, 0, 0]), at(y, [0, 1, 0]));
+        assert!((c.x - 3.0_f64.sqrt()).abs() < 1e-15 && (c.y - 1.0).abs() < 1e-15 && c.z == 0.0);
+        assert!((d.x).abs() < 1e-15 && (d.y - 2.0).abs() < 1e-15 && d.z == 0.0);
+        // Hex (x rows) is unchanged at the same indices.
+        let x = LatticeKind::Hex { pitch: 2.0, z_pitch: 1.0 };
+        let (c, d) = (at(x, [1, 0, 0]), at(x, [0, 1, 0]));
+        assert!((c.x - 2.0).abs() < 1e-15 && c.y == 0.0);
+        assert!((d.x - 1.0).abs() < 1e-15 && (d.y - 3.0_f64.sqrt()).abs() < 1e-15);
+        // Hashes recorded on the pre-change build (`69ba521`); tag 3 is new.
+        let rect = pinned_world(LatticeKind::Rect { pitch: [1.5, 2.0, 3.0] }).content_hash().0;
+        let hex = pinned_world(LatticeKind::Hex { pitch: 2.0, z_pitch: 3.0 }).content_hash().0;
+        assert_eq!(rect, 1700215266027343801748544934918756362, "Rect world hash moved");
+        assert_eq!(hex, 319496166502686958548462170805874099311, "Hex world hash moved");
+        let hy = pinned_world(LatticeKind::HexYRows { pitch: 2.0, z_pitch: 3.0 });
+        assert_ne!(hy.content_hash().0, hex);
+        assert!(hy.validate(1).unwrap().is_empty());
+        let bad = pinned_world(LatticeKind::HexYRows { pitch: -1.0, z_pitch: 1.0 });
+        assert!(matches!(bad.validate(1), Err(RtError::Build(i)) if i.iter().any(|b| b.code == "world.lattice_pitch")));
+    }
+
     #[test]
     fn depth_is_linear_on_nested_lattices_and_total_on_bad_ids() {
         // 24 levels of 17x17 lattices of the previous level: 289^24 paths, 25 components.
@@ -435,9 +490,22 @@ mod tests {
         assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [f64::NAN, 1.0, 1.0] }).contains(&"world.lattice_pitch"));
         assert!(code_of(&|l| l.kind = LatticeKind::Hex { pitch: -1.0, z_pitch: 1.0 }).contains(&"world.lattice_pitch"));
         assert!(code_of(&|l| l.origin = Point3::new(f64::INFINITY, 0.0, 0.0)).contains(&"world.lattice_origin"));
-        // 2D lattice: z pitch is ignored.
+        // 2D lattice: z pitch is not validated (it still sets the centre z, see `element_center_z_2d`).
         assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [1.0, 1.0, 0.0] }).is_empty());
         assert_eq!(Lattice::new(LatticeKind::Rect { pitch: [1.0; 3] }, Point3::new(0.0, 0.0, 0.0), [u32::MAX; 3], vec![], None).element_count(), None);
+    }
+
+    #[test]
+    fn element_center_z_2d() {
+        let o = Point3::new(1.0, 2.0, 3.0);
+        let rect = Lattice::new(LatticeKind::Rect { pitch: [1.0, 1.0, 4.0] }, o, [2, 2, 1], vec![], None);
+        assert_eq!(rect.element_center([0, 0, 0]).z, 3.0 + 0.5 * 4.0);
+        let rect0 = Lattice::new(LatticeKind::Rect { pitch: [1.0, 1.0, 0.0] }, o, [2, 2, 1], vec![], None);
+        assert_eq!(rect0.element_center([1, 1, 0]).z, 3.0);
+        // Hex kinds differ: centre z is `origin.z + k * z_pitch`, so a 2D hex lattice sits at origin.z.
+        for kind in [LatticeKind::Hex { pitch: 1.0, z_pitch: 4.0 }, LatticeKind::HexYRows { pitch: 1.0, z_pitch: 4.0 }] {
+            assert_eq!(Lattice::new(kind, o, [2, 2, 1], vec![], None).element_center([0, 0, 0]).z, 3.0);
+        }
     }
 
     #[test]

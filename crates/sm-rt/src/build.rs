@@ -8,7 +8,7 @@ use sm_core::{EntityId, Point3};
 use sm_mesh_api::{CellIx, FaceIx, FaceKind, MeshDim, SetMembers, cell_volume};
 use sm_rt_api::{
     BoundaryDef, BoundarySelector, BoundarySpec, BuildIssue, BuildOptions, BuildReport, ComplementPolicy, FaceAction, FacetInput, MeshInput, RegionId,
-    RegionInfo, RegionRule, RegionTable, ResponseKind, RtError, SurfaceInfo, SurfaceTable, TrackerKind,
+    RegionInfo, RegionRule, RegionSet, RegionTable, ResponseKind, RtError, SurfaceInfo, SurfaceTable, TrackerKind,
 };
 use sm_topo_api::Region;
 use std::collections::BTreeMap;
@@ -109,9 +109,24 @@ pub(crate) fn build_mesh(inp: &MeshInput<'_>, opts: &BuildOptions) -> Result<Bui
                 c_region[c] = uniq.binary_search(e).map_or(NONE, |i| i as u32);
             }
         }
-        RegionRule::ByCellSets(names) => {
-            for (ri, name) in names.iter().enumerate() {
-                regions.push(RegionInfo::new(name.clone()));
+        RegionRule::ByCellSets(_) | RegionRule::ByTaggedCellSets(_) => {
+            // Plain sets: region = set name, no tags.
+            let plain;
+            let sets: &[RegionSet] = match inp.regions {
+                RegionRule::ByTaggedCellSets(s) => s,
+                RegionRule::ByCellSets(names) => {
+                    plain = names.iter().map(|n| RegionSet::new(n.clone(), n.clone())).collect::<Vec<_>>();
+                    &plain
+                }
+                _ => &[],
+            };
+            for (ri, rs) in sets.iter().enumerate() {
+                let name = &rs.set;
+                let mut info = RegionInfo::new(rs.name.clone());
+                for (k, v) in &rs.tags {
+                    info = info.with_tag(k.clone(), *v);
+                }
+                regions.push(info);
                 let Some(set) = m.set_by_name(name) else {
                     push_issue(&mut fatal, BuildIssue::new("mesh.region_set_missing", format!("cell set `{name}` does not exist")));
                     continue;
