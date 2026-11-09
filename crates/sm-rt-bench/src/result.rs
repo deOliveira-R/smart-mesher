@@ -142,6 +142,10 @@ pub struct Env {
     pub date_utc: String,
     /// Hash of cpu model, ncpu, os and arch (no host names).
     pub machine_id: String,
+    /// Virtualisation: `none` on bare metal, the hypervisor name in a VM, `n/a` off Linux,
+    /// `unknown` (or empty, for files written before this field) when it was not detected.
+    #[serde(default)]
+    pub virt: String,
 }
 
 impl Env {
@@ -153,18 +157,70 @@ impl Env {
         let cpu_model = cpu_model(&os);
         let governor = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").map_or_else(|_| "n/a".to_string(), |s| s.trim().to_string());
         let machine_id = sha256_hex(format!("{cpu_model}|{ncpu}|{os}|{arch}").as_bytes())[..16].to_string();
-        Self { cpu_model, governor, ncpu, os, arch, date_utc: utc_now(), machine_id }
+        let virt = detect_virt(&os);
+        Self { cpu_model, governor, ncpu, os, arch, date_utc: utc_now(), machine_id, virt }
     }
 
-    /// True unless this is Linux on x86_64: such results are smoke results only (ruling Q9).
+    /// Why this is not a publishable machine; empty means bare-metal Linux x86_64 with the
+    /// `performance` governor (ruling Q9, plan D6). Anything not proven is a reason.
+    pub fn smoke_reasons(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if self.os != "linux" || self.arch != "x86_64" {
+            v.push(format!("{}-{} is not Linux x86_64", self.os, self.arch));
+        }
+        if self.os == "linux" {
+            match self.virt.as_str() {
+                "none" => {}
+                "" | "unknown" => v.push("bare metal not confirmed (virtualisation not detected)".to_string()),
+                x => v.push(format!("virtual machine ({x})")),
+            }
+            if self.governor != "performance" {
+                v.push(format!("governor is {}, not performance", self.governor));
+            }
+        }
+        v
+    }
+
+    /// True unless this is bare-metal Linux x86_64 with the `performance` governor: such
+    /// results are smoke results only (ruling Q9).
     pub fn smoke(&self) -> bool {
-        self.os != "linux" || self.arch != "x86_64"
+        !self.smoke_reasons().is_empty()
     }
 
     /// The UTC day, `YYYY-MM-DD`.
     pub fn day(&self) -> &str {
         self.date_utc.get(..10).unwrap_or(&self.date_utc)
     }
+}
+
+/// Virtualisation field from `systemd-detect-virt --vm` output (it prints `none` yet exits
+/// non-zero on bare metal) with `/proc/cpuinfo` as the fallback (`hypervisor` flag).
+pub fn virt_from(detect_out: Option<&str>, cpuinfo: Option<&str>) -> String {
+    if let Some(o) = detect_out.map(str::trim).filter(|o| !o.is_empty() && !o.contains(char::is_whitespace)) {
+        return o.to_string();
+    }
+    match cpuinfo {
+        Some(t) if t.lines().any(|l| l.starts_with("flags") && l.split_whitespace().any(|w| w == "hypervisor")) => "hypervisor".to_string(),
+        Some(t) if t.lines().any(|l| l.starts_with("flags")) => "none".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn detect_virt(os: &str) -> String {
+    if os != "linux" {
+        return "n/a".to_string();
+    }
+    let out = std::process::Command::new("systemd-detect-virt").arg("--vm").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    virt_from(out.as_deref(), std::fs::read_to_string("/proc/cpuinfo").ok().as_deref())
+}
+
+/// SMT state from `/sys/devices/system/cpu/smt/control` (`on`, `off`, ...); `n/a` when absent.
+pub fn smt_from(control: Option<&str>) -> String {
+    control.map(str::trim).filter(|s| !s.is_empty()).map_or_else(|| "n/a".to_string(), str::to_string)
+}
+
+fn run_text(prog: &str, args: &[&str]) -> String {
+    std::process::Command::new(prog).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
 fn cpu_model(os: &str) -> String {
@@ -388,13 +444,38 @@ pub struct BenchEnv {
     /// The Docker VM, when Docker answered at the time of the run.
     #[serde(default)]
     pub docker: Option<DockerVm>,
+    /// Kernel release (`uname -r`).
+    #[serde(default)]
+    pub kernel: String,
+    /// `lscpu` output (Linux; empty elsewhere).
+    #[serde(default)]
+    pub lscpu: String,
+    /// SMT state (`on`, `off`, `n/a`).
+    #[serde(default)]
+    pub smt: String,
+    /// Isolated core list from the kernel (`/sys/devices/system/cpu/isolated`), empty when none.
+    #[serde(default)]
+    pub isolated_cores: String,
+    /// Core list the run was pinned to (`--cpuset-cpus` and `taskset`), from `SMRT_BENCH_CORES`.
+    #[serde(default)]
+    pub cores: String,
 }
 
 impl BenchEnv {
     /// Detect the current environment.
     pub fn detect() -> Self {
         let rustc = std::process::Command::new("rustc").arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-        Self { rustc, env: Env::detect(), docker: None }
+        let read = |p: &str| std::fs::read_to_string(p).ok();
+        Self {
+            rustc,
+            env: Env::detect(),
+            docker: None,
+            kernel: run_text("uname", &["-r"]),
+            lscpu: run_text("lscpu", &[]),
+            smt: smt_from(read("/sys/devices/system/cpu/smt/control").as_deref()),
+            isolated_cores: read("/sys/devices/system/cpu/isolated").map(|s| s.trim().to_string()).unwrap_or_default(),
+            cores: std::env::var("SMRT_BENCH_CORES").unwrap_or_default(),
+        }
     }
 }
 
@@ -463,12 +544,48 @@ mod tests {
 
     #[test]
     fn bench_env_without_a_docker_block_still_loads() {
-        let e = BenchEnv { rustc: "rustc 1".into(), env: Env::default(), docker: Some(DockerVm { ncpu: 10, ..DockerVm::default() }) };
+        let e = BenchEnv { rustc: "rustc 1".into(), env: Env::default(), docker: Some(DockerVm { ncpu: 10, ..DockerVm::default() }), kernel: "6.8.0".into(), lscpu: "Architecture: x86_64".into(), smt: "off".into(), isolated_cores: "2-7".into(), cores: "2-7".into() };
         let text = serde_json::to_string(&e).unwrap();
         assert_eq!(serde_json::from_str::<BenchEnv>(&text).unwrap(), e);
         let mut v: serde_json::Value = serde_json::to_value(&e).unwrap();
         v.as_object_mut().unwrap().remove("docker");
         assert_eq!(serde_json::from_value::<BenchEnv>(v).unwrap().docker, None);
+        // A record written before the x86_64 fields existed still loads, with them empty.
+        let old = r#"{"rustc":"rustc 1","env":{"cpu_model":"c","governor":"g","ncpu":1,"os":"linux","arch":"x86_64","date_utc":"2026-11-05T00:00:00Z","machine_id":"m"}}"#;
+        let b: BenchEnv = serde_json::from_str(old).unwrap();
+        assert_eq!((b.kernel.as_str(), b.smt.as_str(), b.env.virt.as_str()), ("", "", ""));
+        assert!(b.env.smoke(), "an unproven machine is a smoke machine");
+    }
+
+    fn fake(os: &str, arch: &str, virt: &str, governor: &str) -> Env {
+        Env { os: os.into(), arch: arch.into(), virt: virt.into(), governor: governor.into(), ..Env::default() }
+    }
+
+    #[test]
+    fn banner_decision_over_four_fake_environments() {
+        assert!(fake("linux", "x86_64", "none", "performance").smoke_reasons().is_empty());
+        assert!(!fake("linux", "x86_64", "none", "performance").smoke());
+        let vm = fake("linux", "x86_64", "kvm", "performance");
+        assert!(vm.smoke());
+        assert_eq!(vm.smoke_reasons(), vec!["virtual machine (kvm)".to_string()]);
+        let ps = fake("linux", "x86_64", "none", "powersave");
+        assert_eq!(ps.smoke_reasons(), vec!["governor is powersave, not performance".to_string()]);
+        let mac = fake("macos", "aarch64", "n/a", "n/a");
+        assert_eq!(mac.smoke_reasons(), vec!["macos-aarch64 is not Linux x86_64".to_string()]);
+        // Undetected virtualisation and Linux arm64 are not publishable either.
+        assert!(fake("linux", "x86_64", "", "performance").smoke());
+        assert!(fake("linux", "aarch64", "none", "performance").smoke());
+    }
+
+    #[test]
+    fn virt_detection_parses_tool_output_and_cpuinfo() {
+        assert_eq!(virt_from(Some("none\n"), None), "none");
+        assert_eq!(virt_from(Some("kvm"), Some("flags : fpu")), "kvm");
+        assert_eq!(virt_from(Some("Failed to run: no such file"), Some("flags\t: fpu hypervisor")), "hypervisor");
+        assert_eq!(virt_from(None, Some("flags\t: fpu sse")), "none");
+        assert_eq!(virt_from(None, None), "unknown");
+        assert_eq!(smt_from(Some("on\n")), "on");
+        assert_eq!(smt_from(None), "n/a");
     }
 
     #[test]
