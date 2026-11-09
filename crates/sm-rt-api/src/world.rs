@@ -36,7 +36,8 @@ impl Placement {
 pub enum LatticeKind {
     /// Rectangular with pitch per axis; elements are centred on `origin + (i + 1/2) * pitch`.
     Rect {
-        /// Pitch along x, y, z (z pitch ignored for 2D lattices, `dims[2] == 1`).
+        /// Pitch along x, y, z. For a 2D lattice (`dims[2] == 1`) `pitch[2]` is not validated (any
+        /// value) but still places the element centre at `origin.z + 0.5 * pitch[2]`.
         pitch: [f64; 3],
     },
     /// Hexagonal, rows along x (pointy-top; `HexOrient::XRows` in sm-model-api), flat-to-flat
@@ -489,9 +490,22 @@ mod tests {
         assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [f64::NAN, 1.0, 1.0] }).contains(&"world.lattice_pitch"));
         assert!(code_of(&|l| l.kind = LatticeKind::Hex { pitch: -1.0, z_pitch: 1.0 }).contains(&"world.lattice_pitch"));
         assert!(code_of(&|l| l.origin = Point3::new(f64::INFINITY, 0.0, 0.0)).contains(&"world.lattice_origin"));
-        // 2D lattice: z pitch is ignored.
+        // 2D lattice: z pitch is not validated (it still sets the centre z, see `element_center_z_2d`).
         assert!(code_of(&|l| l.kind = LatticeKind::Rect { pitch: [1.0, 1.0, 0.0] }).is_empty());
         assert_eq!(Lattice::new(LatticeKind::Rect { pitch: [1.0; 3] }, Point3::new(0.0, 0.0, 0.0), [u32::MAX; 3], vec![], None).element_count(), None);
+    }
+
+    #[test]
+    fn element_center_z_2d() {
+        let o = Point3::new(1.0, 2.0, 3.0);
+        let rect = Lattice::new(LatticeKind::Rect { pitch: [1.0, 1.0, 4.0] }, o, [2, 2, 1], vec![], None);
+        assert_eq!(rect.element_center([0, 0, 0]).z, 3.0 + 0.5 * 4.0);
+        let rect0 = Lattice::new(LatticeKind::Rect { pitch: [1.0, 1.0, 0.0] }, o, [2, 2, 1], vec![], None);
+        assert_eq!(rect0.element_center([1, 1, 0]).z, 3.0);
+        // Hex kinds differ: centre z is `origin.z + k * z_pitch`, so a 2D hex lattice sits at origin.z.
+        for kind in [LatticeKind::Hex { pitch: 1.0, z_pitch: 4.0 }, LatticeKind::HexYRows { pitch: 1.0, z_pitch: 4.0 }] {
+            assert_eq!(Lattice::new(kind, o, [2, 2, 1], vec![], None).element_center([0, 0, 0]).z, 3.0);
+        }
     }
 
     #[test]
