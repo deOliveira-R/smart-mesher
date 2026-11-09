@@ -119,6 +119,9 @@ pub struct TrackerInfo {
     pub exact_faces: usize,
     /// Faces tracked through facets (NURBS or [`crate::FacetFallback::Always`]).
     pub faceted_faces: usize,
+    /// Cells the tracker flagged convex (planar faces, small face count), which take the convex
+    /// fast path. 0 for trackers whose leaves carry no such flag (analytic, world).
+    pub convex_cells: usize,
     /// Hash of the built structure (independent of thread count).
     pub structure_hash: ContentHash,
     /// Model tolerance the tracker was built with.
@@ -143,6 +146,7 @@ impl TrackerInfo {
             memory_bytes: 0,
             exact_faces: 0,
             faceted_faces: 0,
+            convex_cells: 0,
             structure_hash,
             tol: ModelTolerance::DEFAULT,
             precision: Precision::F64,

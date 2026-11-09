@@ -536,6 +536,7 @@ pub(crate) fn make_info(core: &Core, regions: &RegionTable, surfaces: &SurfaceTa
     let nf = core.n_faces();
     let nonplanar = core.f_flags.iter().filter(|&&f| f & F_PLANAR == 0).count();
     info.faces = nf;
+    info.convex_cells = core.c_flags.iter().filter(|&&f| f & crate::core::C_CONVEX != 0).count();
     let table_bytes: usize = regions.0.iter().map(|r| 24 + r.name.len()).sum::<usize>() + surfaces.0.len() * core::mem::size_of::<SurfaceInfo>();
     info.memory_bytes = core.memory_bytes() + table_bytes;
     if kind == TrackerKind::Facets {
