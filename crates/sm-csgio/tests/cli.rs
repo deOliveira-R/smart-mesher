@@ -37,7 +37,7 @@ fn exit_0_for_a_clean_deck() {
 fn exit_1_for_an_overlap_and_for_gaps_only_when_strict() {
     let (code, out, _) = smcsg(&["check", "overlap"]);
     assert_eq!(code, 1);
-    assert!(out.starts_with("overlap:") && out.contains("cells 1 and 2") || out.contains("cells 2 and 1"), "{out}");
+    assert!(out.starts_with("overlap:") && (out.contains("cells 1 and 2") || out.contains("cells 2 and 1")), "{out}");
     let (code, out, err) = smcsg(&["check", "gap"]);
     assert_eq!(code, 0, "{out}");
     assert!(err.lines().any(|l| l.starts_with("warning: import.gap")), "{err}");

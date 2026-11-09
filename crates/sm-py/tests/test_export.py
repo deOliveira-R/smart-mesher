@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import warnings
 from typing import Any
 
 import pytest
 
 import smartmesh as sm
+from conftest import CRATE, smesh_bin
 from helpers import slice_typed
 from smartmesh.session import Session
-
-NO_SERVER_A = "needs W3c-EXPORT-A (server emits severity and split_warped_faces); runs at combine"
 
 
 def _poly(s: sm.Session) -> sm.EntityId:
@@ -53,6 +53,27 @@ def test_graveyard_mapping_is_passed_through(cube: sm.Session, tmp_path: pathlib
     cube.export(a, format="dagmc", graveyard={"scale": 1.5})
     cube.export(b, format="dagmc", options={"graveyard": {"scale": 1.5}})
     assert a.read_bytes() == b.read_bytes()
+
+
+def test_gmsh_binary_matches_cli(s: sm.Session, tmp_path: pathlib.Path) -> None:
+    """The Python `binary=True` export is byte-identical to `smesh export --option binary=true`."""
+    slice_typed(s)
+    py_ascii, py_bin = tmp_path / "py_a.msh", tmp_path / "py_b.msh"
+    s.export(py_ascii, format="gmsh")
+    s.export(py_bin, format="gmsh", binary=True)
+    exe = str(smesh_bin())
+    proj = tmp_path / "proj"
+    for args in (
+        ["new", str(proj)],
+        ["-p", str(proj), "run", str(CRATE / "tests" / "slice.smesh")],
+        ["-p", str(proj), "export", str(tmp_path / "cli_a.msh"), "--format", "gmsh"],
+        ["-p", str(proj), "export", str(tmp_path / "cli_b.msh"), "--format", "gmsh", "--option", "binary=true"],
+    ):
+        r = subprocess.run([exe, *args], capture_output=True, text=True, cwd=tmp_path)
+        assert r.returncode == 0, (args, r.stdout, r.stderr)
+    assert py_bin.read_bytes().startswith(b"$MeshFormat\n4.1 1 8\n")
+    assert py_bin.read_bytes() == (tmp_path / "cli_b.msh").read_bytes()
+    assert py_ascii.read_bytes() == (tmp_path / "cli_a.msh").read_bytes()
 
 
 def test_gmsh_binary_and_polyhedra(s: sm.Session, tmp_path: pathlib.Path) -> None:
@@ -162,7 +183,6 @@ def test_request_shape_for_the_new_keywords() -> None:
     assert t.calls[-1][1] == {"path": "a.smsh"}  # defaults send nothing new
 
 
-@pytest.mark.xfail(reason=NO_SERVER_A, strict=False)
 def test_smrt_no_blocks_warns(s: sm.Session, tmp_path: pathlib.Path) -> None:
     b = s.model.create_brick(x=2.0)
     vol = b.outputs["volume"]
@@ -181,7 +201,6 @@ def test_smrt_fully_blocked_is_silent(cube: sm.Session, tmp_path: pathlib.Path) 
     assert r.warnings == []
 
 
-@pytest.mark.xfail(reason=NO_SERVER_A, strict=False)
 def test_split_warped_faces_flag(s: sm.Session, tmp_path: pathlib.Path) -> None:
     s.run_script(WARPED)
     r = s.export(tmp_path / "case", format="openfoam", split_warped_faces=True)

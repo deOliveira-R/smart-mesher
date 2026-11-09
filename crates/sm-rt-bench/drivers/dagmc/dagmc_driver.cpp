@@ -110,6 +110,7 @@ static void trace_range(moab::DagMC& dag, const Rays& R, size_t lo, size_t hi, E
     double pos[3] = {R.o[3 * i], R.o[3 * i + 1], R.o[3 * i + 2]};
     const double dir[3] = {R.d[3 * i], R.d[3 * i + 1], R.d[3 * i + 2]};
     const int32_t r0 = R.region[i];
+    if (r0 >= 0 && static_cast<size_t>(r0) >= vols.size()) { c.lost++; c.count.push_back(0); continue; }
     EntityHandle vol = r0 < 0 ? ic : vols[static_cast<size_t>(r0)];
     moab::DagMC::RayHistory history;
     uint32_t segs = 0;
@@ -165,6 +166,7 @@ static void fire_range(moab::DagMC& dag, const Rays& R, size_t lo, size_t hi, En
     const double pos[3] = {R.o[3 * i], R.o[3 * i + 1], R.o[3 * i + 2]};
     const double dir[3] = {R.d[3 * i], R.d[3 * i + 1], R.d[3 * i + 2]};
     const int32_t r0 = R.region[i];
+    if (r0 >= 0 && static_cast<size_t>(r0) >= vols.size()) { c.lost++; c.dist.push_back(0.0); c.to.push_back(-2); continue; }
     EntityHandle vol = r0 < 0 ? ic : vols[static_cast<size_t>(r0)];
     if (locate) {
       c.locates++;
@@ -257,7 +259,7 @@ static void flight_history(moab::DagMC& dag, const Rays& R, uint64_t h, uint64_t
   double dir[3] = {R.d[3 * k], R.d[3 * k + 1], R.d[3 * k + 2]};
   c.histories++;
   const int32_t r0 = R.region[k];
-  if (r0 < 0) { c.lost++; return; }
+  if (r0 < 0 || static_cast<size_t>(r0) >= vols.size()) { c.lost++; return; }
   EntityHandle vol = vols[static_cast<size_t>(r0)];
   size_t reg = static_cast<size_t>(r0);
   moab::DagMC::RayHistory hist;

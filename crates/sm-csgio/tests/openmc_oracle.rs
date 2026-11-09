@@ -146,13 +146,46 @@ fn region_grammar_and_precedence() {
     conforms("grammar");
 }
 
+/// Import `name` with its `geometry.xml` edited by `edit` and count the oracle points where the
+/// imported material differs from what OpenMC recorded for the unedited deck.
+fn disagreements(name: &str, edit: impl FnOnce(&str) -> String) -> usize {
+    let d = dir(name);
+    let read = |f: &str| std::fs::read_to_string(d.join(f)).unwrap();
+    let geometry = edit(&read("geometry.xml"));
+    assert_ne!(geometry, read("geometry.xml"), "{name}: the edit changed nothing");
+    let ir = openmc::import(&geometry, Some(&read("materials.xml"))).unwrap_or_else(|e| panic!("{name} variant: {e}"));
+    let m = ImportedCsg::import(&ir, &ImportOptions::default()).unwrap_or_else(|e| panic!("{name} variant: {e}"));
+    let o: Value = serde_json::from_str(&read("oracle.json")).unwrap();
+    let mat = o["cell_material"].as_object().unwrap();
+    let t = tracker(&m);
+    let mut sc = Scratch::new();
+    let mut bad = 0;
+    for p in o["points"].as_array().unwrap() {
+        let Some(cell) = p["cell"].as_u64() else { continue };
+        let q = vec3(&p["p"]);
+        let want = mat[&cell.to_string()].as_str().unwrap();
+        match t.locate(Point3::new(q[0], q[1], q[2]), None, None, &mut sc) {
+            Ok(l) if t.regions().get(l.region).is_some_and(|r| r.name == want) => {}
+            _ => bad += 1,
+        }
+    }
+    bad
+}
+
 #[test]
 fn the_fixtures_are_not_a_vacuous_oracle() {
     // The lattice and rotation fixtures separate the conventions: a wrong reading must differ.
-    // Row order: swapping the first and last row of the 3x2 lattice changes the answer at points.
     let (_, fx) = load("lattice2d");
     let mats: std::collections::BTreeSet<_> = fx.oracle["points"].as_array().unwrap().iter().filter_map(|p| p["cell"].as_u64()).collect();
     assert!(mats.len() >= 12, "the lattice fixture should visit most cells, saw {}", mats.len());
+    // Row order: swapping the two rows of the 3x2 lattice must contradict OpenMC at some point.
+    let swapped = disagreements("lattice2d", |g| g.replace("10 11 12 \n13 14 15 ", "13 14 15 \n10 11 12 "));
+    assert!(swapped > 0, "row-swapped lattice agrees with OpenMC everywhere: the oracle cannot see row order");
+    // Rotation: the transposed (inverse) nine-entry matrix of cell 10 must contradict OpenMC.
+    let m = "0.34618861305875415 -0.9238381097714865 0.1633297006741365 0.7424038765061041 0.1633297006741365 -0.6497383265795595 0.573576436351046 0.34618861305875415 0.7424038765061041";
+    let t = "0.34618861305875415 0.7424038765061041 0.573576436351046 -0.9238381097714865 0.1633297006741365 0.34618861305875415 0.1633297006741365 -0.6497383265795595 0.7424038765061041";
+    let transposed = disagreements("rotations", |g| g.replace(m, t));
+    assert!(transposed > 0, "transposed rotation agrees with OpenMC everywhere: the oracle cannot see rotation direction");
 }
 
 /// OpenMC tiles a position-dependent `outer` at the lattice pitch, one copy per virtual element;

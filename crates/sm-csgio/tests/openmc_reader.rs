@@ -97,15 +97,22 @@ fn region_forms_agree_and_precedence_matters() {
 #[test]
 fn overlap_is_rejected_with_the_deck_cells_for_one_and_many_threads() {
     let ir = openmc::import(&deck_o_xml("2 -3 4 -5 6 -7"), None).unwrap();
-    for threads in [1, 4] {
+    let run = |threads: usize| {
         let e = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| ImportedCsg::import(&ir, &ImportOptions::default()).unwrap_err());
         let ImportError::Overlap { findings } = e else { panic!("expected Overlap, got {e:?}") };
-        let f = &findings[0];
-        assert!((f.point[0].powi(2) + f.point[1].powi(2) + f.point[2].powi(2)).sqrt() < 1.0);
-        let mut cells = [f.a.cell, f.b.cell];
-        cells.sort_unstable();
-        assert_eq!(cells, [1, 2]);
-    }
+        assert!(!findings.is_empty());
+        findings
+            .iter()
+            .map(|f| {
+                assert!((f.point[0].powi(2) + f.point[1].powi(2) + f.point[2].powi(2)).sqrt() < 1.0);
+                let mut cells = [f.a.cell, f.b.cell];
+                cells.sort_unstable();
+                assert_eq!(cells, [1, 2]);
+                (f.point.map(f64::to_bits), f.a.cell, f.b.cell)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run(1), run(4), "finding lists (point bits and cells) differ between 1 and 4 threads");
 }
 
 #[test]

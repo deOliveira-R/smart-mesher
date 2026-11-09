@@ -112,6 +112,7 @@ fn absorber_unbiased(tracker: &str) {
     assert_eq!(rows[0].lost, 0);
     assert_eq!(leaked + absorbed, HISTORIES as f64, "every history ends leaked or absorbed");
     let tol = 4.0 * var.sqrt();
+    println!("{tracker}: leaked {leaked}, mean {mean:.1}, sd {:.1}, z {:.2}", var.sqrt(), (leaked - mean) / var.sqrt());
     assert!((leaked - mean).abs() <= tol, "{tracker}: leaked {leaked} vs {mean} +- {tol}");
 }
 

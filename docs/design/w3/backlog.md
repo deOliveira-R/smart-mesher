@@ -82,44 +82,62 @@ Cleanups:
 - sm-poly: map `UnrepairedCell` to `OpError::Failed`, not `Invalid`; `tests/robust.rs` asserts nothing about `region`; agglomeration can make invalid cells after the check.
 - Commit a268047 has a Sonnet co-author trailer (process note only).
 
-## From W3b-0 (2026-11-05)
-- P1 limits (sm-mesher DESIGN.md): rows written at command time on edges that a later webcut replaces fall back to the (firmness, seq) tie-break, and a serde-loaded intent (seq 0) may plan differently; a default-firmness `mesh.size` never overrides an older soft request on another entity. Add tests before W3b-SUBMAP or any path that loads IntentLayer through serde.
-- Move `retire_mesh_bulk` (sm-mesher) into `sm_layer_api::retire_mesh` so every caller gets the range path (orchestrator, frozen crate).
-- `mesh.delete`: the remaining ~4.5 s at 10⁶ cells is one SHA-256 per id; a parallel, order-independent sum needs rayon in sm-op-api.
-- sm-rt `RegionInfo.tags`: not carried in cache images, and hashed without a presence marker; fix when a producer first sets tags.
-- DAGMC reference h5m: volume 177 is in both `mat:Graveyard` and `mat:Steel_comp`; EXPORT must not take it as a one-material-per-volume example.
+## Dispositions after W3c-INT (2026-11-08)
 
-## From W3b-INT acceptance (2026-11-07)
-- w3b-report.md: number the deviations D1-D8 consistently; record the CI result (rc=0, 59-70 min); name the Chrome and playwright-core versions used by the viewer smoke.
-- tools/w3b_driver.c: the chord tolerance has a (1+chord) factor that R7 lacks (drop it or note it); `ridx()` would read `sig[-1]` if a segment came back with region SMRT_COMPLEMENT under ComplementPolicy::Outside (unreached today; guard it).
-- sm-server `smrt_regions`: ByCellSets resolves sets by name, so a non-block cell set with a block's name could be picked; add a comment or test.
-- PARITY Transforms row: M1 checks only volume counts and total volume, not "the merged interfaces"; reword or point to M4/M6.
-- Ruled (R9-R11 in docs/design/w3b/rulings.md): one region per block; volume-id fallback with a warning; FOAM-WARP option goes into W3c. Check that the fallback note is surfaced as a warning in CLI/MCP output.
+Legend: done (with the commit or task), kept (stays as the current behaviour), W4 (with its trigger). Items from the W3b-0, W3b-INT and W3b report open lists that were already done or void are listed once as done.
 
-## From W3c sub-waves 1+2 (merged 2026-11-08, d2e7731; for W3c-INT unless marked W4)
-- ~~XDG pin~~ resolved 2026-11-08: back to `83efb306e152` (W3c ruling C15); move to the newest upstream commit when W4 writes the driver.
-- **Deviations to record in the W3c report:**
-  - CYL-PIN acceptance 7: `mesh.info` shows 0 rejections because the replan runs in `mesh.auto`'s scratch plan; the `mesh.auto_tet` warnings are the evidence. Pin `rejections == 0`.
-  - B5 (plate with a hole) is a hex sweep under `mesh.auto` (154 hexes), not tets. MESHER-REPLAN rewrote the b5 row; CYL-PIN owns it.
-  - The census does not show B6; `plate` is its only error-to-success change.
-  - CLEAN-RT fixed the temp-dir leak by moving to `CARGO_TARGET_TMPDIR`; the root cause of the empty dirs is still unknown.
-  - BENCH-WORKLOADS acceptance 6 uses the C1 tiny ball (same optical radius 1.5).
-- **Tests to tighten:**
-  - sm-py `test_export.py`: drop the stale `xfail(strict=False)` marks and `NO_SERVER_A`.
-  - `plan_blame.rs`: assert `ReplanLimit` only.
-  - auto_select: assert the through-pin plan rows, the auto_tet warning text, and 3-way CLI/MCP/in-process equality for the single through pin and B5.
-  - sm-csgio: compare 1-thread vs N-thread findings; 1e-11 relative tolerance in `openmc_cross`; add the `translated` fixture; make the oracle-mutation test import a row-swapped variant.
-  - sm-csgio cli test: fix the `(A && B) || C` precedence.
-  - sm-rt delta.rs acc04: clear counters before `next_segment`.
-  - sm-cli EXPORT-C: byte-compare gmsh `binary=True` with the CLI `--option binary=true`.
-  - sm-server: transport stall bound of 1 s with 7 silent connections; give the `concurrent_opens` barrier a timeout.
-  - sm-bench `cases.rs`: compare only the shared keys.
-- **Small fixes:**
-  - LINUX-HASH: pin `RUSTUP_TOOLCHAIN=1.99.1` and print `rustc -V`; correct the key count (239); make `hashes.sh` fail on `error.*` keys; fix the `submap_graded.smesh` comment.
-  - sm-csgio `world.rs`: the dead overlap filter becomes a debug_assert; update DESIGN.md step 5 (two-leaf check).
-  - sm-rt-capi DESIGN.md:111: `smrt_version` does go through `guard`.
-  - sm-bench: report images with no `moab=` line; read the image id once.
-  - BENCH-WORKLOADS: limit complement-cell leaks to the facet exterior; bounds-check `vols[r0]` in the DAGMC driver.
-  - MESHER-REPLAN: reuse the trial error, saving one planner pass.
-  - The `plan.md:142` `m<id>` wording (C9 overrides it).
-- **W4:** `smesh run` text mode should print per-op `delta.diagnostics`, so a CLI user sees the `mesh.auto_tet` warnings.
+### From W3b-0 and the W3b report open items
+- **Done / void:** sm-poly `with_unchecked_merges` behind `test-hooks` (2d1e1ea, POLY2); dev-only cycle sm-cadio to sm-server in `crates/sm-cadio/DESIGN.md:301-308`; test-only `unsafe` rule in CLAUDE.md; Sonnet co-author process note (accurate, kept).
+- **Done in W3c:** ABI 10200 for `SMRT_NODE_UNKNOWN` with the rule in `sm-rt-capi` DESIGN.md (CLEAN-RT); driver tolerance comment and `ridx` guard (CLEAN-RT); acc04 brackets `next_segment` (CLEAN-RT, finished in INT FIX-RT: counters cleared, `bvh_descents == 0` asserted); 503 refusal off the accept thread with an in-flight cap and the two-thread `OPENING` test (CLEAN-SERVER, tightened in INT FIX-SERVER); `smrt_regions` duplicate-name test (EXPORT-A); `attributes: false` record: DESIGN.md wording fixed, code unchanged, because the node hash covers the params (CLEAN-CADIO, f256cad); fallback note reaches CLI, MCP and Python (EXPORT-A/B/C, C10).
+- **Kept:** volume `mesh.size` / `mesh.intervals` do not reach a face-only `mesh.run` (C14, with the `mesh.volume_request_ignored` warning). Complement name without a length prefix (R2; re-open only if leaf keys are ever re-based). DAGMC reference h5m volume 177 is in two groups: note for the export docs only.
+- **W4 triggers:**
+  - Re-plan after a failed face run is not budget-checked (sm-scheme-api ACR for a face branch in `Driver::estimate_cells`). Trigger: a face run seen to blow up on a replan. The replan count is already capped.
+  - sm-boolean `merge.rs:390` O(F^2) face-box scan. First task: a benchmark at 10^5 faces; then the output must equal the current `face_pairs`.
+  - `retire_mesh_bulk` into `sm_layer_api::retire_mesh` (frozen crate). Trigger: a second production caller.
+  - `mesh.delete` parallel sum (4.5 s at 10^6 cells, one SHA-256 per id; needs rayon in sm-op-api and an order-independent combine). Trigger: a requirement on 10^6-cell delete time.
+  - `RegionInfo.tags` not in cache images and hashed without a presence marker. Trigger: the first producer (for example DAGMC property import); fix together with a cache-image version bump.
+  - P1 limits tests (`sm-mesher/DESIGN.md:79-87`). Trigger: any code that loads `IntentLayer` through serde.
+
+### Remaining W3b report open items (dispositions)
+- **Region granularity of the `.smrt`** (per-volume region tag option): kept. Regions are one per block; no code has asked for per-volume regions. W4 trigger: the first request for it.
+- **Node 20 run of the sm-view web job:** W4. Trigger: the next edit of the sm-view web job or CI image change.
+- **Re-run of the C driver and the Python row on the Linux benchmark machine (O11):** W4. Trigger: access to the Linux benchmark machine. The W3c smoke was on macOS only (Q9).
+- **sm-rt 2D lattice z pitch 1e9 sentinel; O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
+- **Benchmark items:**
+  - `smtets_to_moab`: W4, trigger: the XDG tet walk work (the same tet inputs are needed).
+  - P1 `facets` row partial at `tiny` (zero-area triangles in the hand-built moderator): kept, the reduced and larger scales are used for the smoke.
+  - Linux `smcase.json` hash lines unblessed: W4, trigger: the first Linux benchmark run (Linux mesh hashes are covered by `tools/platform/expected.txt`).
+  - Docker digests UNSET: done in W3c (BENCH-PIN; the images record their sha256 id, and FIX-BENCH reads it once).
+  - Keep `date_utc` and the sequence counter out of hashed outputs: kept; W4 trigger: the next edit of the bench result writer, which should check both are outside `result_hash`.
+- **Not scheduled:** the WAIT list, hex lattices (Q3 stretch) and server push (O16) stay unscheduled; W4 trigger for each is an explicit user request. The MCNP importer is dropped (MCNP is not a target, OpenMC is; the OpenMC import is done, sm-csgio). Overlay `MeshRead` stays in Contract changes above.
+
+### From W3b-INT acceptance (done in W3c-INT)
+- Done: `w3b-report.md` deviations numbered D1..D8, GitHub CI recorded as red with causes (local `tools/ci.sh` rc = 0, 59 to 70 minutes, kept apart), Chrome version recorded (the run did not record it; the installed app reads 156.0.8078.80), repro recipe corrected (`model.subtract` without `keep`, then imprint and merge).
+- Done: PARITY Transforms row reworded (volume counts and total volume).
+- Done: `w3b_driver.c` tolerance comment and `ridx` guard (CLEAN-RT).
+- Done: `smrt_regions` set-name test (EXPORT-A); R9 to R11 follow-ups (fallback note surfaced, FOAM-WARP option, `split_warped_faces`).
+- Done: W3b plan B6 wording amended per C2.
+
+### From W3c sub-waves 1+2
+Done in W3c-INT (merged with this report):
+- XDG pin back at `83efb306e152` (C15, PR #3).
+- Test tightening: sm-py `test_export.py` marks and `NO_SERVER_A` dropped, gmsh `binary=True` byte-compared with the CLI (FIX-PY); `plan_blame.rs` asserts the `ReplanLimit` text (FIX-MESHER); auto_select plan rows, warning text, `rejections == 0`, three-way hash for the single through pin, the lattice, the enclosed pin and B5, transport stall bound and rendezvous timeout (FIX-SERVER); sm-csgio 1-vs-4-thread findings, 1e-11 tolerance, `translated` fixture, row-swapped and transposed-rotation oracle variants, cli precedence (FIX-CSGIO); delta.rs acc04 (FIX-RT).
+- Small fixes: LINUX-HASH (toolchain pin, key counts, `error.*` check, comment) (PLATFORM); sm-csgio `world.rs` debug_assert and DESIGN.md step 5 (FIX-CSGIO); sm-rt-capi DESIGN.md `smrt_version` and `guard` (FIX-RT); image id read once (FIX-BENCH); complement-leak limit and `vols[r0]` bounds check (BENCH-WORKLOADS follow-up, 785e765); MESHER-REPLAN trial error reused (FIX-MESHER); `plan.md:142` wording (C9).
+- Temp dirs: capi tests (CLEAN-RT) and the sm-cli `smesh-cli-*` and `smesh-full-*` helpers (FIX-CLI-TMP) use `CARGO_TARGET_TMPDIR`; the PIN, server and bench tests clean up by Drop guards. The root cause of the old empty `smrt-capi-*` dirs is still unknown. The sm-csgio leak could not be reproduced (`gen.py` hardened, not run).
+- sm-bench: `cases.rs` `only_tiny_p1_lines_of_the_recorded_hashes_changed` compares a BTreeMap of the shared keys (FIX-BENCH, af85afe); images with no `moab=` line are reported (`moab_mismatch` in `docker.rs`, test `moab_pin_check_reports_a_missing_or_wrong_version`; FIX-BENCH, af85afe).
+
+Carried (new follow-ups from the INT reviews; none blocks W4):
+- W4, test hygiene, trigger "next edit of that file":
+  - `milestone_w3c_pin.rs`: per-block fuel volume against the polygonal-cylinder area times H (the total volume is the same for any fill); a no-blocks fixture (detail "no blocks") next to the left-out one; the `ENCLOSED_HASHES` lookup uses `enumerate` instead of `position(..).unwrap_or(0)`.
+  - `tools/w3c_driver.py`: run mypy and ruff.
+  - auto_select through-pin plan rows: assert the `copy_of` values are distinct.
+  - sm-bench `absorber_unbiased` and `smrt.rs`: assert `image_id` starts with `sha256:` (the FIX-BENCH report claimed it; the diff has none); in `run_competitor_with` check the sha256 before the platform; tighten the flight `lost` count to the rays that meet the unmapped sphere.
+  - sm-mesher `auto.rs`: note that `known` assumes `Driver::plan_with` is pure; optional test that counts `plan_with` calls.
+  - sm-py: pytest keeps `$TMPDIR/pytest-of-$USER` (pass `--basetemp` in `py.sh`).
+  - sm-cli `target/tmp` collects per-pid dirs; add a Drop guard or fixed names. Other crates (sm-engine, sm-rt, sm-mcp, sm-server, sm-cadio, sm-rt-bench) still use `temp_dir()` in places: move them to `CARGO_TARGET_TMPDIR` when next touched.
+  - sm-csgio `gen.py`: SIGTERM exit code 143; `openmc.reset_auto_ids()` before each model so a subset run gives byte-identical `geometry.xml`.
+  - `RegistryError::BadOpName` is used for a test-only timeout in `standard.rs`; replace if a generic variant is ever added.
+  - `sm-rt-capi` DESIGN.md:111 is 118 columns wide.
+- W4, trigger "Linux x86_64 evidence": the first green GitHub gate on the INT PR is the x86_64 check of `tools/platform/expected.txt`; if it fails, follow C12.
+- W4: `smesh run` text mode prints per-op `delta.diagnostics`, so a CLI user sees the `mesh.auto_tet` warnings. Trigger: the first user report of a silent tet fallback (the JSON and MCP paths show them today).
+- W4 deferrals recorded in the W3c report: H1 analytic case, P2 tet twin, `--model` periodic faces, XDG tet walk and driver at the newest upstream (C15), O-grid all-hex pins (C1), hex-tet transition cells, `hex_only` / `tet` strategies (C5), CSG B-rep import (C8).

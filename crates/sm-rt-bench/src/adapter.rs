@@ -512,10 +512,15 @@ impl TrackerAdapter {
         }
         let mut tau = -(1.0 - rng.unit()).ln();
         loop {
-            // A step that ends in a cell of the complement (a facet world has explicit exterior
-            // cells) is a leak, like a RegionBoundary into `NONE`.
+            // Only the tracker's implicit complement (the facet world's exterior) is a leak, like
+            // a RegionBoundary into `NONE`. Any other state the map sends to -1 (no entity, a
+            // name without a spec, no region) is a mapping error: counted as lost.
             let Ok(reg) = usize::try_from(self.bench(st.region)) else {
-                tally[2 * nreg] += 1.0;
+                if !st.region.is_none() && self.tracker.regions().0.get(st.region.get()).is_some_and(|r| r.implicit_complement) {
+                    tally[2 * nreg] += 1.0;
+                } else {
+                    c.lost += 1;
+                }
                 return Ok(());
             };
             if reg >= nreg {

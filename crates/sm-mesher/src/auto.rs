@@ -187,10 +187,15 @@ pub(crate) fn plan_with_blame(
     let mut rej = Rejections::default();
     let mut used = 0usize;
     let mut history: Vec<Attempt> = Vec::new();
+    // The error of the last kept trial: planning with `rej` is already known to fail with it.
+    let mut known: Option<SchemeError> = None;
     loop {
-        let err = match driver.plan_with(input, intent, &rej) {
-            Ok(plan) => return Ok((plan, used)),
-            Err(e) => e,
+        let err = match known.take() {
+            Some(e) => e,
+            None => match driver.plan_with(input, intent, &rej) {
+                Ok(plan) => return Ok((plan, used)),
+                Err(e) => e,
+            },
         };
         let SchemeError::NoApplicableScheme {
             target, imposed_by, ..
@@ -202,7 +207,7 @@ pub(crate) fn plan_with_blame(
             .iter()
             .filter(|(t, s)| s.as_str() != SchemeName::COPY && !rej.contains(*t, s))
             .collect();
-        let mut next: Option<Rejections> = None;
+        let mut next: Option<(Rejections, SchemeError)> = None;
         for (i, (t, s)) in cands.iter().map(|c| (&c.0, &c.1)).enumerate() {
             if used >= budget {
                 return Err(if used == 0 {
@@ -228,15 +233,18 @@ pub(crate) fn plan_with_blame(
                 {
                     history.push(a);
                 }
-                Err(_) => {
+                Err(e2) => {
                     history.push(a);
-                    next = Some(trial);
+                    next = Some((trial, e2));
                     break;
                 }
             }
         }
         match next {
-            Some(n) => rej = n,
+            Some((n, e2)) => {
+                rej = n;
+                known = Some(e2);
+            }
             None => return Err(err),
         }
     }
