@@ -1,5 +1,6 @@
 # smart-mesh hash census (tools/census/census.sh)
 # commit: 69ba521fae50b63fd15506d6293b584871d6b606
+# note: measured at 69ba521, docs-only over 9cac369 (values identical); tools/platform/expected.txt has 62 data lines plus 1 comment line
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
