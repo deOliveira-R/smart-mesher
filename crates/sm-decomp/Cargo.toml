@@ -1,0 +1,17 @@
+[package]
+name = "sm-decomp"
+description = "Hex decomposition library: block decompositions of circular and polygonal regions (W4 HEX-DECOMP)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+
+
+[lints]
+workspace = true

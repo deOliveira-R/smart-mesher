@@ -21,7 +21,7 @@ use crate::error::StandardError;
 pub fn standard_schemes() -> Result<SchemeRegistry, StandardError> {
     let mut registry = SchemeRegistry::new();
     type Register = fn(&mut SchemeRegistry) -> sm_scheme_api::Result<()>;
-    let crates: [(&'static str, Register); 8] = [
+    let crates: [(&'static str, Register); 9] = [
         ("sm-scheme-curve", sm_scheme_curve::register),
         ("sm-scheme-map", sm_scheme_map::register),
         ("sm-scheme-mapvol", sm_scheme_mapvol::register),
@@ -30,6 +30,7 @@ pub fn standard_schemes() -> Result<SchemeRegistry, StandardError> {
         ("sm-scheme-tri", sm_scheme_tri::register),
         ("sm-scheme-sweep", sm_scheme_sweep::register),
         ("sm-scheme-tet", sm_scheme_tet::register),
+        ("sm-scheme-ogrid", sm_scheme_ogrid::register),
     ];
     for (crate_name, register) in crates {
         register(&mut registry).map_err(|e| StandardError::Register { crate_name, message: e.to_string() })?;
@@ -164,6 +165,8 @@ fn each_plugin(core: &CoreLayers, mut f: impl FnMut(&dyn Plugin)) {
     f(&sm_diag::DiagPlugin);
     f(&sm_rt::RtPlugin);
     f(&sm_view::ViewPlugin);
+    f(&sm_csgbrep::CsgbrepPlugin);
+    f(&sm_modify::ModifyPlugin);
 }
 
 /// The names of every op the plugins register (INT-3). A plugin that fails to install here fails
@@ -205,6 +208,8 @@ pub fn distribution_with_core(core: CoreLayers, schemes: SchemeRegistry) -> Work
         .plugin(sm_diag::DiagPlugin)
         .plugin(sm_rt::RtPlugin)
         .plugin(sm_view::ViewPlugin)
+        .plugin(sm_csgbrep::CsgbrepPlugin)
+        .plugin(sm_modify::ModifyPlugin)
         .plugin(InputsPlugin(inputs))
         .services(services)
 }
