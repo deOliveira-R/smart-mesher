@@ -192,6 +192,8 @@ pub struct RtInfoOut {
     pub exact_faces: usize,
     /// Faces tracked through their fan triangles (non-planar).
     pub faceted_faces: usize,
+    /// Cells flagged convex (convex fast path); 0 for trackers without the flag.
+    pub convex_cells: usize,
     /// Regions.
     pub regions: Vec<RegionOut>,
     /// Model surfaces.
@@ -230,6 +232,7 @@ impl TypedQuery for RtInfo {
             faces: info.faces,
             exact_faces: info.exact_faces,
             faceted_faces: info.faceted_faces,
+            convex_cells: info.convex_cells,
             regions: t
                 .regions()
                 .0

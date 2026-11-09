@@ -184,6 +184,19 @@ ABI). Such a tracker has no mesh (`Tracker::mesh()` is `None`); a build from an 
 cache key, and survive the image. `surface_area` (sum of fan-triangle areas, ascending face order)
 and `surface_faces` (CSR, ascending) are derived at assembly and never serialized.
 
+**Region rules (W4-0.3).** `RegionRule::ByTaggedCellSets(Vec<RegionSet>)` builds exactly as
+`ByCellSets` (same checks: set exists, is a cell set, no overlap, full cover), but region `i` is
+named `RegionSet::name` (the set name is only the lookup key) and carries `RegionSet::tags` in
+order, through `RegionInfo::with_tag`. The rule has its own cache-key tag (3). `ByCellSets` is the
+same code with `name == set` and no tags, so its trackers, images and hashes are unchanged (pinned
+in `tests/w4_0_3.rs`). `TrackerInfo::convex_cells` counts the cells flagged `C_CONVEX` (the convex
+fast path) for mesh trackers; analytic and world trackers report 0. `rt.info` prints it.
+
+*Finding on `docs/design/w3/backlog.md` ("`RegionInfo.tags` not in cache images and hashed without
+a presence marker").* Stale: images carry tags in an optional section written only when some region
+has tags (`image.rs`), and `hash_structure` writes a tag count only for regions that have tags, so
+the count is the presence marker and tag-free trackers keep their hashes. No change was needed.
+
 ## World (`world.rs`)
 
 `BuildInput::Hier` builds a `WorldTracker` (`MeshTrackerBuilder::build`/`build_world`):

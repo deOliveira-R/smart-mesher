@@ -210,6 +210,33 @@ pub enum RegionRule {
     ByVolumeClassification,
     /// Region = the named cell set (block); every cell must be in exactly one.
     ByCellSets(Vec<String>),
+    /// Like [`RegionRule::ByCellSets`], but each region takes its own `name` (not the set name)
+    /// and integer tags; regions are in the order given.
+    ByTaggedCellSets(Vec<RegionSet>),
+}
+
+/// One region of [`RegionRule::ByTaggedCellSets`]: a cell set, the region name and its tags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegionSet {
+    /// Name of the cell set (block) whose cells form the region.
+    pub set: String,
+    /// Region name (`RegionInfo::name`).
+    pub name: String,
+    /// Integer tags attached to the region, in order (`RegionInfo::tags`).
+    pub tags: Vec<(String, i64)>,
+}
+
+impl RegionSet {
+    /// A region `name` made of the cells of set `set`, with no tags.
+    pub fn new(set: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { set: set.into(), name: name.into(), tags: Vec::new() }
+    }
+    /// Attach an integer tag.
+    pub fn with_tag(mut self, key: impl Into<String>, value: i64) -> Self {
+        self.tags.push((key.into(), value));
+        self
+    }
 }
 
 /// What lies outside the cells (DAGMC implicit complement).
@@ -255,6 +282,22 @@ impl<'a> MeshInput<'a> {
                 for n in names {
                     h.write_u64(n.len() as u64);
                     h.write_bytes(n.as_bytes());
+                }
+            }
+            RegionRule::ByTaggedCellSets(sets) => {
+                h.write_u64(3);
+                h.write_u64(sets.len() as u64);
+                for s in sets {
+                    for text in [&s.set, &s.name] {
+                        h.write_u64(text.len() as u64);
+                        h.write_bytes(text.as_bytes());
+                    }
+                    h.write_u64(s.tags.len() as u64);
+                    for (k, v) in &s.tags {
+                        h.write_u64(k.len() as u64);
+                        h.write_bytes(k.as_bytes());
+                        h.write_u64(*v as u64);
+                    }
                 }
             }
         }
