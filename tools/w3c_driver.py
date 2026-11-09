@@ -9,6 +9,9 @@ Rust harness (crates/sm-cli/tests/milestone_w3c_pin.rs) compares them with the C
 in-process front ends.
 
 usage: w3c_driver.py <tools-dir> <out-dir>
+
+Type check: `MYPYPATH=crates/sm-py/python mypy --strict tools/w3c_driver.py` (needs numpy), and
+`ruff check tools/w3c_driver.py`.
 """
 
 from __future__ import annotations
