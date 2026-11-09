@@ -1,0 +1,30 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`mesh.volume_check`: the volume of every region of a mesh against the model volume it is\nclassified on.\n\nWorks for tet, hex, polyhedral and mixed meshes (cell volume is the fan polyhedron of its\nfaces). The deficit is `model - mesh`: for a round region meshed with `n` equal intervals it\nis the chord error, `pi r^2 H - 0.5 n r^2 sin(2 pi / n) H` for a cylinder. Read-only.",
+  "properties": {
+    "mesh": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EntityId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The mesh; defaults to the only mesh of the state.",
+      "x-entity-kind": [
+        "Mesh"
+      ]
+    }
+  },
+  "title": "mesh.volume_check",
+  "type": "object"
+}

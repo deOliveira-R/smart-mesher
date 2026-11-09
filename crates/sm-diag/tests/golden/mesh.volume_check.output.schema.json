@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "EntityId": {
+      "description": "Stable entity id `Kind#serial`",
+      "pattern": "^[A-Za-z]+#[0-9]+$",
+      "type": "string"
+    },
+    "RegionVolume": {
+      "description": "Volume of one region (all active cells classified on one entity).",
+      "properties": {
+        "cells": {
+          "description": "Active cells classified on it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deficit": {
+          "description": "`model_volume - mesh_volume`: positive when the mesh is smaller than the model (chord\nerror of a round region). `null` when the model volume is unknown.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mesh_volume": {
+          "description": "Sum of the cell volumes (compensated sum in cell order).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model_note": {
+          "description": "Why `model_volume` is `null`, when it is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_volume": {
+          "description": "The model volume (`TopologyView::volume_moments`); `null` if it cannot be computed.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "region": {
+          "$ref": "#/$defs/EntityId",
+          "description": "The classification entity of the cells (a `TopoVolume` for a model region)."
+        },
+        "relative_deficit": {
+          "description": "`deficit / model_volume`; `null` when undefined.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "region",
+        "cells"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Reply of `mesh.volume_check`.",
+  "properties": {
+    "cells": {
+      "description": "Number of active cells counted.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mesh": {
+      "$ref": "#/$defs/EntityId",
+      "description": "The mesh."
+    },
+    "regions": {
+      "description": "One row per classification entity of the active cells, ordered by entity id.",
+      "items": {
+        "$ref": "#/$defs/RegionVolume"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "description": "Wire version, 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "total_deficit": {
+      "description": "`total_model_volume - total_mesh_volume` over the regions whose model volume is known.",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "total_mesh_volume": {
+      "description": "Total mesh volume (sum of the region mesh volumes in region order).",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "total_model_volume": {
+      "description": "Total model volume over the regions whose model volume is known.",
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "mesh",
+    "regions",
+    "cells"
+  ],
+  "title": "VolumeReport",
+  "type": "object"
+}

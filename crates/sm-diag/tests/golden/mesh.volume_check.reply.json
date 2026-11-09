@@ -1,0 +1,18 @@
+{
+  "cells": 8,
+  "mesh": "Mesh#1",
+  "regions": [
+    {
+      "cells": 8,
+      "deficit": 0.6263310576872252,
+      "mesh_volume": 5.65685424949238,
+      "model_volume": 6.283185307179605,
+      "region": "TopoVolume#1",
+      "relative_deficit": 0.09968368384289665
+    }
+  ],
+  "schema_version": 1,
+  "total_deficit": 0.6263310576872252,
+  "total_mesh_volume": 5.65685424949238,
+  "total_model_volume": 6.283185307179605
+}

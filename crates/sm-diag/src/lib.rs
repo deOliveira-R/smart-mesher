@@ -20,6 +20,7 @@ mod quality;
 mod suggest;
 mod unflag;
 mod validate;
+mod volume;
 
 use std::collections::BTreeSet;
 
@@ -36,6 +37,7 @@ pub use quality::{
     Verdict, WorstEntry, quality_report,
 };
 pub use unflag::MeshUnflagCells;
+pub use volume::{MeshVolumeCheck, RegionVolume, VolumeReport, volume_report};
 pub use suggest::{MIN_ENRICHMENT, MIN_FRACTION, OP_INTERVALS, OP_SCHEME, OP_SIZE, OP_SMOOTH, SPREAD_ENRICHMENT, Suggestion};
 pub use validate::{
     Finding, GeometryStatus, MAX_LIMIT, MeshValidate, OwnerCount, Severity, ValidateOptions, ValidateReport, Violation, build_report, validate_mesh,
@@ -68,6 +70,7 @@ impl Plugin for DiagPlugin {
     fn register(&self, registry: &mut Registry) -> Result<(), RegistryError> {
         registry.register_query::<MeshValidate>()?;
         registry.register_query::<MeshQuality>()?;
+        registry.register_query::<MeshVolumeCheck>()?;
         registry.register::<MeshFlagCells>()?;
         registry.register::<MeshUnflagCells>()?;
         Ok(())
