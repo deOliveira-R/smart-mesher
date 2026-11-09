@@ -221,7 +221,7 @@ impl Model {
     /// Visit every persisted table in canonical order (`BTreeMap` order, declaration order for
     /// lists): the id allocator, colors, volume and face coloring, groups, boundaries, face
     /// boundaries, symmetry, provenance, recorded cut lineage, instancing and decomposition.
-    /// Lattice frames (tag 13) and region tags (tag 14) follow the decomposition and are emitted
+    /// Lattice frames (tag 14) and region tags (tag 15) follow the decomposition and are emitted
     /// only when non-empty. Each table starts with a tag and its length; strings are emitted as their length and
     /// 8-byte little-endian words.
     ///
@@ -580,10 +580,10 @@ impl Model {
             w.id(*f);
             w.ids(h.iter());
         }
-        // 13 (after the decomposition; clusters' 13 comes before 12) and 14: lattice frames and
+        // 14 and 15 (after the decomposition; clusters' 13 comes before 12): lattice frames and
         // region tags, only when non-empty, so models without them keep their words.
         if !self.lattice_frames.is_empty() {
-            w.int(13);
+            w.int(14);
             w.int(self.lattice_frames.len() as u64);
             for (name, fr) in &self.lattice_frames {
                 let LatticeFrame { layout: _, origin: _, parent: _ } = fr;
@@ -600,7 +600,7 @@ impl Model {
             }
         }
         if !self.region_tags.is_empty() {
-            w.int(14);
+            w.int(15);
             w.int(self.region_tags.len() as u64);
             for (v, t) in &self.region_tags {
                 w.id(*v);

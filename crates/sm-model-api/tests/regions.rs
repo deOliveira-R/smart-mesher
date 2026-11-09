@@ -167,7 +167,7 @@ fn word_stream_hashes_the_tables() {
     assert_ne!(with_frame, empty);
     // The prefix up to the end of the old tables is untouched; the frame table is appended.
     assert_eq!(&with_frame[..empty.len()], &empty[..]);
-    assert_eq!(with_frame[empty.len()], 13);
+    assert_eq!(with_frame[empty.len()], 14);
     m.set_region_tag(vol(1), tag("a", SlotIx::new(1, 1, 0))).unwrap();
     let with_tag = words(&m);
     assert_ne!(with_tag, with_frame);
