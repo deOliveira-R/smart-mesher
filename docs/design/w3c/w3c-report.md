@@ -81,7 +81,13 @@ Numbered in one scheme. D1 to D5 come from the sub-wave review (backlog "Deviati
 
 ## GitHub CI status
 
-Red on `main` since the W3b-1 merge (2026-11-05) for `flat_golden` (bundle hash on Linux) and sm-py `test_errors.py [<lambda>5]`. Both causes were fixed in sub-wave 0 (items 0.2, 0.3). The first W3c-0 PR run (42453750390) was still red; commit 9ac71ca then added the x86_64 `flat_golden` rows taken from PR #1 run 42448206605.
+Red on `main` since the W3b-1 merge (2026-11-05) for `flat_golden` (bundle hash on Linux) and sm-py `test_errors.py [<lambda>5]`. Both causes were fixed in sub-wave 0 (items 0.2, 0.3). The W3c-0 PR history, in order:
+- 42444227750 on 90c503d: red on sm-scheme-tet `int7.rs:269` `restart_hint_index_work_is_linear_in_candidates`. `cos(TAU/3)` differs by one ulp between macOS and glibc, so the k=3 tower did not restart on Linux. Fixed in sub-wave 0 by e6c1527 (int7 tower ring coordinates pinned to f64 bit patterns).
+- 42448206605 on e6c1527: green, and it printed the x86_64 `flat_golden` bundle rows.
+- 9ac71ca added those x86_64 rows for the other three cases.
+- 42453750390 on 9ac71ca: red on `milestone_w3b` row 8, because `w3b_python.sh` could not find `target/tmp/w3b-venv/bin/activate` (a partial venv restored by the CI cache).
+- 83aea58 rebuilds a partial venv in `tools/w3b_python.sh`.
+- 42457132759 on 83aea58: green.
 
 GitHub CI has been green since the W3c-0 merge:
 - `main`: 42463845479 (W3c-0 merge), 42482808601 (sub-waves 1+2 merge, PR #2), 42483031650 (backlog), 42496428949 (PR #3 merge).
