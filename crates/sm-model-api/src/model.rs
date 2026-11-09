@@ -10,6 +10,7 @@ use crate::color::{ColorRow, GroupRow};
 use crate::decomposition::Decomposition;
 use crate::error::{ModelError, Result};
 use crate::instancing::{ColorMap, Instancing};
+use crate::regions::{LatticeFrame, RegionTag};
 use crate::symmetry::{Provenance, Symmetry, pair_by_moments};
 use crate::xf::{GeomCache, Tolerance};
 use sm_core::{EntityId, EntityKind};
@@ -62,6 +63,10 @@ pub struct Model {
     pub(crate) cuts: Vec<Vec<Lineage>>,
     pub(crate) instancing: Instancing,
     pub(crate) decomposition: Decomposition,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "BTreeMap::is_empty"))]
+    pub(crate) lattice_frames: BTreeMap<String, LatticeFrame>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "BTreeMap::is_empty"))]
+    pub(crate) region_tags: BTreeMap<EntityId, RegionTag>,
 }
 
 /// Wire shape of [`Model`]; converted through [`Model::check_integrity`].
@@ -80,6 +85,10 @@ struct ModelData {
     cuts: Vec<Vec<Lineage>>,
     instancing: Instancing,
     decomposition: Decomposition,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    lattice_frames: BTreeMap<String, LatticeFrame>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    region_tags: BTreeMap<EntityId, RegionTag>,
 }
 
 #[cfg(feature = "serde")]
@@ -100,6 +109,8 @@ impl TryFrom<ModelData> for Model {
             cuts: d.cuts,
             instancing: d.instancing,
             decomposition: d.decomposition,
+            lattice_frames: d.lattice_frames,
+            region_tags: d.region_tags,
         };
         m.check_integrity()?;
         Ok(m)
@@ -179,6 +190,27 @@ impl Resolver {
             }
         }
         Ok(cand.into_iter().map(|(k, (_, v))| (k, v)).collect())
+    }
+
+    /// Re-key region tags one-to-many (the `volume_color` path). A new volume that inherits two
+    /// different tags gets none; equal tags are kept.
+    fn tags(&self, m: &BTreeMap<EntityId, RegionTag>) -> BTreeMap<EntityId, RegionTag> {
+        // `None` marks a conflict (stays conflicted whatever else arrives).
+        let mut cand: BTreeMap<EntityId, Option<&RegionTag>> = BTreeMap::new();
+        for (k, tag) in m {
+            for nk in self.resolve(*k) {
+                match cand.get(&nk) {
+                    None => {
+                        cand.insert(nk, Some(tag));
+                    }
+                    Some(Some(prev)) if *prev != tag => {
+                        cand.insert(nk, None);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        cand.into_iter().filter_map(|(k, t)| t.map(|t| (k, t.clone()))).collect()
     }
 
     fn color_map(&self, c: &ColorMap) -> ColorMap {
@@ -283,6 +315,7 @@ impl Model {
             return Err(ModelError::Cycle(l));
         }
         self.decomposition.check_integrity()?;
+        self.check_regions()?;
         // Group members: allowed kinds, model-minted members present, no nesting cycle.
         for r in self.groups.values() {
             for m in &r.members {
@@ -375,6 +408,7 @@ impl Model {
         for o in &mut next.instancing.overrides {
             o.recolor = r.color_map(&o.recolor);
         }
+        next.region_tags = r.tags(&self.region_tags);
         next.rekey_boundaries(&r, t)?;
         *self = next;
         Ok(())
