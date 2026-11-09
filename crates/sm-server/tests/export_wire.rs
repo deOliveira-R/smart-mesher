@@ -82,6 +82,7 @@ fn export_req(path: &Path, format: Option<ExportFormat>, options: Option<Value>)
         empty_patches: vec![],
         wedge_patches: vec![],
         split_warped_faces: false,
+        source: Default::default(),
     }
 }
 
@@ -231,6 +232,7 @@ fn loss_notes_carry_the_format_codes() {
             empty_patches: vec![],
             wedge_patches: vec![],
             split_warped_faces: false,
+            source: Default::default(),
         })
         .expect("inline");
     let inline: ExportResult = serde_json::from_value(v).expect("result");
@@ -494,7 +496,7 @@ fn smrt_block_and_sideset_names_cannot_collide() {
 fn foam_req(path: &Path, format: ExportFormat, warp: bool) -> Request {
     match export_req(path, Some(format), None) {
         Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, .. } => {
-            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, split_warped_faces: warp }
+            Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, split_warped_faces: warp, source: Default::default() }
         }
         other => other,
     }

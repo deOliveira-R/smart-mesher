@@ -31,7 +31,7 @@ pub use error::{
     APPLICATION_ERROR, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
     PARSE_ERROR, RpcError,
 };
-pub use request::{ExportFormat, METHODS, RecordCheck, RecordForks, Request};
+pub use request::{ExportFormat, ExportSource, METHODS, RecordCheck, RecordForks, Request};
 pub use result::{
     ApplyResult, CatalogResult, ExportNote, ExportResult, ExportedFile, HashResult, NoteSeverity,
     ScriptRecordResult, ScriptResult, StatusResult,

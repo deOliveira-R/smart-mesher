@@ -164,8 +164,8 @@ fn session_hash_at_rev_equals_state_at() {
 fn provenance_embeds_the_current_node() {
     let mut s = server();
     let m = apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    let plain = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
-    let prov = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let plain = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
+    let prov = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_ne!(plain["sha256"], prov["sha256"]);
     // The node hash is present in the container, and absent without provenance.
     let find = |v: &Value| -> bool {
@@ -210,7 +210,7 @@ fn errors_carry_contract_code_strings() {
     assert_eq!(err(&mut s, Request::Checkout { rev: Rev::Ref("nope".into()) }).kind, "unknown-ref");
     assert_eq!(err(&mut s, Request::Branch { name: "x".into(), at: None }).kind, "empty-position");
     assert_eq!(err(&mut s, Request::Save).kind, "no-project");
-    assert_eq!(err(&mut s, Request::Export { path: Some("x.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false }).kind, "no-mesh");
+    assert_eq!(err(&mut s, Request::Export { path: Some("x.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() }).kind, "no-mesh");
     // Protocol-level errors keep their JSON-RPC kinds.
     let mut ip = InProcess::new(server());
     let r: Value = serde_json::from_str(&ip.send_text(r#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#)).expect("json");
@@ -305,7 +305,7 @@ fn exports_smsh_and_vtu_with_the_path_rule() {
     let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
     apply(&mut s, "demo.add_hex", json!({"n": 2}));
     // Relative path under a project resolves against the project root.
-    let v = call(&mut s, Request::Export { path: Some("out.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let v = call(&mut s, Request::Export { path: Some("out.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     let file = proj.join("out.smsh");
     let bytes = std::fs::read(&file).expect("written below the project root");
     assert_eq!(v["path"], json!(file.to_string_lossy()));
@@ -317,17 +317,17 @@ fn exports_smsh_and_vtu_with_the_path_rule() {
     assert!(!proj.join("out.smsh.part").exists(), "temp file is gone");
     // Absolute path, explicit format overriding the extension, and the VTU is XML.
     let abs = dir.path().join("abs.dat");
-    call(&mut s, Request::Export { path: Some(abs.to_string_lossy().into_owned()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    call(&mut s, Request::Export { path: Some(abs.to_string_lossy().into_owned()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert!(String::from_utf8_lossy(&std::fs::read(&abs).expect("abs")).contains("VTKFile"));
     // Repeated exports are byte-identical.
-    call(&mut s, Request::Export { path: Some("again.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    call(&mut s, Request::Export { path: Some("again.smsh".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(std::fs::read(proj.join("again.smsh")).expect("again"), bytes);
     // Unknown extension without a format is a bad request; nothing is written.
-    let e = err(&mut s, Request::Export { path: Some("x.bin".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: Some("x.bin".into()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     assert!(!proj.join("x.bin").exists());
     // Neither path nor inline.
-    assert_eq!(err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false }).kind, "bad-request");
+    assert_eq!(err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() }).kind, "bad-request");
 }
 
 #[test]
@@ -346,14 +346,14 @@ fn memory_export_resolves_against_the_working_directory() {
 fn inline_export_returns_base64_of_the_bytes() {
     let mut s = server();
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    let v = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let v = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     let b64 = v["base64"].as_str().expect("base64");
     assert_eq!(v["path"], Value::Null);
     // Length of padded base64 for `bytes` bytes.
     let n = v["bytes"].as_u64().expect("bytes") as usize;
     assert_eq!(b64.len(), n.div_ceil(3) * 4);
     // Inline without a format cannot be inferred.
-    assert_eq!(err(&mut s, Request::Export { path: None, format: None, mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false }).kind, "bad-request");
+    assert_eq!(err(&mut s, Request::Export { path: None, format: None, mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() }).kind, "bad-request");
 }
 
 #[test]
@@ -361,14 +361,14 @@ fn export_picks_the_only_mesh_and_rejects_ambiguity() {
     let mut s = server();
     let m1 = apply(&mut s, "demo.add_hex", json!({"n": 1}));
     let id: String = m1.delta.outputs["mesh"][0].to_string();
-    let one = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let one = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     apply(&mut s, "demo.add_hex", json!({"n": 2}));
-    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "ambiguous-mesh");
     assert_eq!(e.data["meshes"].as_array().map(Vec::len), Some(2));
-    let named = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some(id.parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let named = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some(id.parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(named["sha256"], one["sha256"], "naming the first mesh gives the same bytes as the only-mesh default");
-    assert_eq!(err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some("Mesh#99".parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false }).kind, "unknown-mesh");
+    assert_eq!(err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some("Mesh#99".parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() }).kind, "unknown-mesh");
 }
 
 #[test]
@@ -460,14 +460,14 @@ fn export_rejects_a_format_that_disagrees_with_the_extension() {
     let proj = dir.path().join("p");
     let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    let e = err(&mut s, Request::Export { path: Some("x.vtu".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: Some("x.vtu".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     assert!(!proj.join("x.vtu").exists(), "nothing is written");
-    let e = err(&mut s, Request::Export { path: Some("x.SMSH".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: Some("x.SMSH".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     // Agreeing is fine, and so is an explicit format on an unknown extension.
-    call(&mut s, Request::Export { path: Some("ok.vtu".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
-    call(&mut s, Request::Export { path: Some("ok.dat".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    call(&mut s, Request::Export { path: Some("ok.vtu".into()), format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
+    call(&mut s, Request::Export { path: Some("ok.dat".into()), format: Some(ExportFormat::Smsh), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     // The same through the command language.
     use sm_lang::{Host, SessionCommand};
     let mut ws = s.into_workspace();
@@ -480,20 +480,20 @@ fn export_rejects_a_format_that_disagrees_with_the_extension() {
 fn provenance_is_rejected_for_vtu_which_cannot_record_it() {
     let mut s = server();
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     assert!(e.message.contains("provenance"), "{e}");
     // Without it, and for smsh, the same request works.
-    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
-    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
+    call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Smsh), mesh: None, provenance: true, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
 }
 
 #[test]
 fn a_named_mesh_in_a_state_without_meshes_is_unknown_not_missing() {
     let mut s = server();
-    let named = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some("Mesh#1".parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false };
+    let named = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: Some("Mesh#1".parse().expect("id")), provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() };
     assert_eq!(err(&mut s, named).kind, "unknown-mesh");
-    let unnamed = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false };
+    let unnamed = Request::Export { path: None, format: Some(ExportFormat::Vtu), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() };
     assert_eq!(err(&mut s, unnamed).kind, "no-mesh");
 }
 
@@ -503,8 +503,21 @@ fn exodus_inline_exports_and_openfoam_inline_is_bad_request() {
     let proj = dir.path().join("p");
     let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    let v = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Exodus), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let v = call(&mut s, Request::Export { path: None, format: Some(ExportFormat::Exodus), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(v["format"], "exodus");
-    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
+}
+
+#[test]
+fn source_model_is_unsupported_for_every_format() {
+    let dir = TempDir::new("srcmodel");
+    let proj = dir.path().join("p");
+    let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
+    apply(&mut s, "demo.add_hex", json!({"n": 1}));
+    for f in [ExportFormat::Smsh, ExportFormat::Vtu, ExportFormat::Exodus, ExportFormat::Openfoam, ExportFormat::Dagmc, ExportFormat::Gmsh, ExportFormat::Smrt] {
+        let e = err(&mut s, Request::Export { path: None, format: Some(f), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: sm_protocol::ExportSource::Model });
+        assert_eq!(e.kind, "unsupported-source", "{f:?}");
+        assert!(e.message.contains("source: model is not available yet"));
+    }
 }

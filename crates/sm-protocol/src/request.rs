@@ -15,17 +15,35 @@ pub enum ExportFormat {
     Smsh,
     /// VTK XML unstructured grid.
     Vtu,
-    /// Exodus II (NetCDF-4) file.
+    /// Exodus II file in classic netCDF (CDF-2 64-bit offset by default; no HDF5).
     Exodus,
     /// OpenFOAM `polyMesh` case directory (ASCII); the result lists the files in
     /// [`ExportResult::files`](crate::ExportResult::files).
     Openfoam,
-    /// DAGMC `.h5m` (MOAB HDF5) file; options `{graveyard}`.
+    /// DAGMC `.h5m` (MOAB HDF5) file; options are validated by the exporter; see sm-server `mesh_export.rs` for the keys of each format.
     Dagmc,
-    /// Gmsh `.msh` format 4.1 file; options `{binary, polyhedra}`.
+    /// Gmsh `.msh` format 4.1 file; options are validated by the exporter; see sm-server `mesh_export.rs` for the keys of each format.
     Gmsh,
     /// The self-contained `.smrt` tracking image for the transport handover; no options.
     Smrt,
+}
+
+/// Source of a `session.export`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ExportSource {
+    /// Export a volume mesh of the session (the default).
+    #[default]
+    Mesh,
+    /// DAGMC only: facets from the B-rep, no volume mesh.
+    Model,
+}
+
+impl ExportSource {
+    fn is_default(&self) -> bool {
+        *self == Self::Mesh
+    }
 }
 
 /// Which timeline heads `script.record` records.
@@ -228,8 +246,8 @@ pub enum Request {
         /// Return the bytes base64-encoded in the result.
         #[serde(default, skip_serializing_if = "is_false")]
         inline: bool,
-        /// Per-format options (an object), validated by the exporter: `gmsh`
-        /// `{binary, polyhedra}`, `dagmc` `{graveyard}`; `smrt` takes none.
+        /// Per-format options (an object), validated by the exporter; see sm-server
+        /// `mesh_export.rs` for the keys of each format.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         options: Option<Value>,
         /// OpenFOAM only: split cells that fail checkMesh's determinant check. On when absent.
@@ -244,6 +262,9 @@ pub enum Request {
         /// OpenFOAM only: split warped faces into planar triangles. Off when absent.
         #[serde(default, skip_serializing_if = "is_false")]
         split_warped_faces: bool,
+        /// What is exported. model: DAGMC only; facets from the B-rep, no volume mesh.
+        #[serde(default, skip_serializing_if = "ExportSource::is_default")]
+        source: ExportSource,
     },
     /// Persist pending state to disk: result is a [`StatusResult`](crate::StatusResult).
     #[serde(rename = "session.save")]

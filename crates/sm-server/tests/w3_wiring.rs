@@ -41,7 +41,7 @@ fn meshed_brick(s: &mut Server) {
 }
 
 fn export(s: &mut Server, path: Option<&str>, format: Option<ExportFormat>, inline: bool) -> Result<ExportResult, RpcError> {
-    let r = s.call(Request::Export { path: path.map(Into::into), format, mesh: None, provenance: false, inline, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false })?;
+    let r = s.call(Request::Export { path: path.map(Into::into), format, mesh: None, provenance: false, inline, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() })?;
     Ok(serde_json::from_value(r).expect("ExportResult"))
 }
 
@@ -110,19 +110,19 @@ fn exodus_exports_by_extension_and_inline_and_openfoam_writes_a_case_directory()
     let inline = export(&mut s, None, Some(ExportFormat::Exodus), true).expect("inline exodus");
     assert!(inline.base64.is_some());
     // OpenFOAM is never inferred from a path.
-    let e = err(&mut s, Request::Export { path: Some(dir.path().join("case").to_string_lossy().into_owned()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: Some(dir.path().join("case").to_string_lossy().into_owned()), format: None, mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     // Multi-file formats cannot be inline.
-    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
     assert!(e.message.contains("several files"), "{}", e.message);
-    let e = err(&mut s, Request::Export { path: Some("x".into()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+    let e = err(&mut s, Request::Export { path: Some("x".into()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
     assert_eq!(e.kind, "bad-request");
 
     // An explicit openfoam on a single-file extension is a mistake, not a case directory.
     for name in ["x.vtu", "case.exo"] {
         let p = dir.path().join(name);
-        let e = err(&mut s, Request::Export { path: Some(p.to_string_lossy().into_owned()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false });
+        let e = err(&mut s, Request::Export { path: Some(p.to_string_lossy().into_owned()), format: Some(ExportFormat::Openfoam), mesh: None, provenance: false, inline: false, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: Default::default() });
         assert_eq!(e.kind, "bad-request", "{name}");
         assert!(!p.exists(), "{name} must not be created");
     }
@@ -365,6 +365,7 @@ fn openfoam_empty_patches_and_the_split_flag() {
             empty_patches: empty.iter().map(|x| (*x).to_owned()).collect(),
             wedge_patches: wedge.iter().map(|x| (*x).to_owned()).collect(),
             split_warped_faces: false,
+            source: Default::default(),
         })?;
         let r: ExportResult = serde_json::from_value(r).expect("ExportResult");
         let boundary = std::fs::read_to_string(case.join("constant/polyMesh/boundary")).expect("boundary");
@@ -401,6 +402,7 @@ fn openfoam_empty_patches_and_the_split_flag() {
             empty_patches: vec!["front".into()],
             wedge_patches: vec![],
             split_warped_faces: false,
+            source: Default::default(),
         })
         .expect_err("vtu");
     assert_eq!(e.kind, "bad-request", "{e}");
