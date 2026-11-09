@@ -1,4 +1,6 @@
 //! O-grid surface scheme (W4 task HEX-OGRID): structured ring decomposition of circular faces into all-quad meshes.
+//! A self-contained kernel (ogrid and polar modes on a disk, an annulus with a 4-sided loop, a two-circle ring);
+//! it does not depend on `sm-decomp`.
 //! This skeleton (W4-0.2) registers nothing yet.
 
 use sm_scheme_api::SchemeRegistry;

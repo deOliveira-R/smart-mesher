@@ -1,6 +1,6 @@
 [package]
 name = "sm-modify"
-description = "Model modification ops (W4 MOD-* tasks)."
+description = "Mesh modification ops: hex to tet, quad to tri, uniform and local refinement (W4 MOD-* tasks)."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

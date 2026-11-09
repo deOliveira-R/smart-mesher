@@ -1,6 +1,6 @@
 [package]
 name = "sm-decomp"
-description = "Hex decomposition library: block decompositions of circular and polygonal regions (W4 HEX-DECOMP)."
+description = "Hex cut planner for round cavities: ordered webcut steps (W4 HEX-DECOMP)."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true

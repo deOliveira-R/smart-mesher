@@ -1,4 +1,6 @@
-//! The `modify` plugin (W4 tasks MOD-*). This skeleton (W4-0.2) registers no op yet.
+//! The `modify` plugin: mesh modification ops (W4 tasks MOD-HTET, MOD-REFINE-U, MOD-REFINE-L): `mesh.htet` and
+//! `mesh.qtri` (hex to tet with polyhedral closure, quad to tri), uniform `mesh.refine` with `LevelMap`, and local
+//! refinement with polyhedral hanging faces. This skeleton (W4-0.2) registers no op yet.
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 
