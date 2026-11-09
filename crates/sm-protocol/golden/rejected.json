@@ -53,5 +53,10 @@
     "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"catalog\",\"params\":{\"x\":1}}",
     "code": -32602,
     "kind": "invalid-params"
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.export\",\"params\":{\"source\":\"volume\"}}",
+    "code": -32602,
+    "kind": "invalid-params"
   }
 ]

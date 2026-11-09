@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use serde_json::Value;
 use sm_protocol::{
-    ApplyResult, Endpoint, EntityId, ExportFormat, ExportResult, Hash256, HashResult,
+    ApplyResult, Endpoint, EntityId, ExportFormat, ExportResult, ExportSource, Hash256, HashResult,
     INTERNAL_ERROR, INVALID_PARAMS, RecordCheck, RecordForks, Request, Rev, RpcError,
     ScriptRecordResult, ScriptResult, StatusResult,
 };
@@ -645,6 +645,7 @@ fn dispatch(cli: &Cli, ep: &mut dyn Endpoint, io: &mut Io<'_>) -> Res<()> {
                 empty_patches: empty_patch.clone(),
                 wedge_patches: wedge_patch.clone(),
                 split_warped_faces: *split_warped_faces,
+                source: ExportSource::Mesh,
             };
             let v = call(ep, req)?;
             let r: ExportResult = typed(v.clone(), "session.export")?;
