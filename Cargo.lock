@@ -1657,11 +1657,13 @@ dependencies = [
 name = "sm-model-api"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
  "sm-core",
  "sm-geom-api",
+ "sm-testkit",
  "sm-topo-api",
  "smallvec",
  "thiserror",

@@ -13,6 +13,7 @@
 //! | [`detect`] | symmetry detection from colored invariants, staged verification |
 //! | [`unfold`](mod@crate::unfold) | the unfolded model as a view of `(base, elem)` copies |
 //! | [`instancing`] | prototypes, instances, lattices, recoloring, [`flatten`] |
+//! | [`regions`] | lattice frames and region tags (provenance of lattice slot, pin ring, sector) |
 //! | [`decomposition`] | pieces (`PartitionCell`) over volumes, split / composite / unsplit |
 //! | [`validate`](mod@crate::validate) | the validator ([`validate()`](fn@crate::validate()), [`validate_unfolded`]) |
 //!
@@ -34,6 +35,7 @@ mod edit;
 pub mod error;
 pub mod instancing;
 pub mod model;
+pub mod regions;
 #[cfg(feature = "serde")]
 pub(crate) mod serde_pairs;
 pub mod symmetry;
@@ -48,6 +50,7 @@ pub use detect::{Candidate, CandidateKind, ColorInvariant, DetectionResult, Stag
 pub use error::{ModelError, Result};
 pub use instancing::{Cluster, ClusterMember, ColorMap, FlatClip, FlatEntry, FlatModel, Fill, HexOrient, InstanceRow, InstancePath, Instancing, Lattice, Layout, PathOverride, PathStep, Placement, Prototype, Slot, SlotIx, flatten};
 pub use model::{IdAlloc, Model};
+pub use regions::{LatticeFrame, RegionTag, SubIndex};
 pub use symmetry::{CutPlan, CutSpec, Keep, Provenance, Symmetry, plan_cut, point_group};
 pub use unfold::{CopyRef, Glue, UnfoldSpec, UnfoldedModel, unfold};
 pub use validate::{Issue, IssueCode, Report, Severity, validate, validate_unfolded};

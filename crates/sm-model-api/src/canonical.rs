@@ -7,6 +7,7 @@ use crate::decomposition::{CutCells, CutGeometry, Decomposition, Piece, PieceFac
 use crate::detect::Verification;
 use crate::instancing::{Cluster, ClusterMember, ColorMap, Fill, HexOrient, InstanceRow, Instancing, Lattice, Layout, PathOverride, PathStep, Prototype, Slot};
 use crate::model::Model;
+use crate::regions::{LatticeFrame, RegionTag};
 use crate::symmetry::{CutSpec, Keep, Provenance, Symmetry};
 use crate::xf::{Axis, Plane};
 use sm_core::{EntityId, Point3, Transform, Vector3};
@@ -108,6 +109,26 @@ impl W<'_, '_> {
             }
         }
     }
+    fn layout(&mut self, l: &Layout) {
+        match *l {
+            Layout::Cartesian { n, pitch } => {
+                self.int(1);
+                n.iter().for_each(|x| self.int(u64::from(*x)));
+                self.offset(pitch);
+            }
+            Layout::Hex { rings, pitch, orient, nz, dz } => {
+                self.int(2);
+                self.int(u64::from(rings));
+                self.len(pitch);
+                self.int(match orient {
+                    HexOrient::XRows => 1,
+                    HexOrient::YRows => 2,
+                });
+                self.int(u64::from(nz));
+                self.len(dz);
+            }
+        }
+    }
     fn side(&mut self, s: DeckSide) {
         self.int(match s {
             DeckSide::A => 1,
@@ -200,7 +221,8 @@ impl Model {
     /// Visit every persisted table in canonical order (`BTreeMap` order, declaration order for
     /// lists): the id allocator, colors, volume and face coloring, groups, boundaries, face
     /// boundaries, symmetry, provenance, recorded cut lineage, instancing and decomposition.
-    /// Each table starts with a tag and its length; strings are emitted as their length and
+    /// Lattice frames (tag 13) and region tags (tag 14) follow the decomposition and are emitted
+    /// only when non-empty. Each table starts with a tag and its length; strings are emitted as their length and
     /// 8-byte little-endian words.
     ///
     /// Floats follow the Q2 rule with `tol` (the model's topology tolerance): lengths (plane
@@ -212,7 +234,7 @@ impl Model {
     pub fn canonical_visit(&self, tol: &ModelTolerance, f: &mut dyn FnMut(HashWord)) {
         let mut w = W { tol, f };
         // Exhaustive patterns (no `..`): adding a field is a compile error until it is hashed.
-        let Model { ids: _, colors: _, volume_color: _, face_color: _, groups: _, boundaries: _, face_boundary: _, symmetry: _, provenance: _, cuts: _, instancing: _, decomposition: _ } = self;
+        let Model { ids: _, colors: _, volume_color: _, face_color: _, groups: _, boundaries: _, face_boundary: _, symmetry: _, provenance: _, cuts: _, instancing: _, decomposition: _, lattice_frames: _, region_tags: _ } = self;
         // 1. Id allocator.
         w.int(1);
         w.int(self.ids.next.len() as u64);
@@ -557,6 +579,50 @@ impl Model {
         for (f, h) in &d.split_cells {
             w.id(*f);
             w.ids(h.iter());
+        }
+        // 13 (after the decomposition; clusters' 13 comes before 12) and 14: lattice frames and
+        // region tags, only when non-empty, so models without them keep their words.
+        if !self.lattice_frames.is_empty() {
+            w.int(13);
+            w.int(self.lattice_frames.len() as u64);
+            for (name, fr) in &self.lattice_frames {
+                let LatticeFrame { layout: _, origin: _, parent: _ } = fr;
+                w.str(name);
+                w.layout(&fr.layout);
+                w.point(fr.origin);
+                match &fr.parent {
+                    None => w.int(0),
+                    Some(p) => {
+                        w.int(1);
+                        w.str(p);
+                    }
+                }
+            }
+        }
+        if !self.region_tags.is_empty() {
+            w.int(14);
+            w.int(self.region_tags.len() as u64);
+            for (v, t) in &self.region_tags {
+                w.id(*v);
+                let RegionTag { slots: _, ring: _, sector: _ } = t;
+                w.int(t.slots.len() as u64);
+                for (name, ix) in &t.slots {
+                    w.str(name);
+                    for c in [ix.i, ix.j, ix.k] {
+                        w.int(c as i64 as u64);
+                    }
+                }
+                for s in [t.ring, t.sector] {
+                    match s {
+                        None => w.int(0),
+                        Some(s) => {
+                            w.int(1);
+                            w.int(u64::from(s.index));
+                            w.int(u64::from(s.count));
+                        }
+                    }
+                }
+            }
         }
     }
 }
