@@ -1,6 +1,6 @@
 # W4 REGIONS: one region per lattice position, times pin subdivision (ruling D9)
 
-> Planning draft (W4), written by the W4 re-planner at `9cac369` after the user rulings (`../rulings.md` D9). Line numbers are against `9cac369` (code identical to `d2f4803`). Not critiqued by a second agent; the plan (`../plan.md` §4.1 W4-REGIONS-CUT, W4-REGIONS-SPLIT and §3 W4-0.3, W4-0.6) is the binding text.
+> Planning draft (W4), written by the W4 re-planner at `9cac369` after the user rulings (`../rulings.md` D9). Line numbers are against `9cac369` (code identical to `d2f4803`). Critiqued by the W4-0 final review: the tag fix is applied (14 and 15), and the 117-region count, the equal-area ring formula, R4 VOLFIT, the `HexOrient` formulas and `RegionRule` being `non_exhaustive` were checked. The plan (`../plan.md` §4.1 W4-REGIONS-CUT, W4-REGIONS-SPLIT and §3 W4-0.3, W4-0.6) is the binding text.
 
 ## Goal
 
@@ -22,7 +22,7 @@ D9: a lattice element can be defined once ("all pins equal", one region per mate
 ## Design
 
 ### R1. Where the indices live: one provenance table in the model (ACR-REGIONS, `sm-model-api`)
-Two additive tables in `Model`, both `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and emitted by `canonical_visit` **only when non-empty**, after the decomposition table, under new tags 13 and 14 (the `ColorMap` precedent, finding 7). An empty model hashes and serializes exactly as before.
+Two additive tables in `Model`, both `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]` and emitted by `canonical_visit` **only when non-empty**, after the decomposition table, under new tags 14 (frames) and 15 (region tags) (the `ColorMap` precedent, finding 7; tag 13 is already used by instancing clusters in `canonical.rs`, ruling OR-c). An empty model hashes and serializes exactly as before.
 - `lattice_frames: BTreeMap<String, LatticeFrame>`. `LatticeFrame { layout: Layout, origin: Point3, parent: Option<String> }`, `#[non_exhaustive]` with a constructor. It reuses `Layout` (Cartesian or Hex with `HexOrient`) and `SlotIx` (finding 7); it is provenance only and is unrelated to instancing (no prototype, no flatten). Slot `(0,0,0)` is centred at `origin` (the `Layout::offset` convention). `parent` nests frames (core > assembly > pin); a cycle or an unknown parent is refused.
 - `region_tags: BTreeMap<EntityId /* TopoVolume */, RegionTag>`. `RegionTag { slots: BTreeMap<String, SlotIx>, ring: Option<SubIndex>, sector: Option<SubIndex> }` with `SubIndex { index: u32, count: u32 }`, both `#[non_exhaustive]` with constructors.
 - Methods: `define_lattice_frame(name, frame)`, `lattice_frame(name)`, `lattice_frames()`, `set_region_tag(volume, tag)`, `clear_region_tag(volume)`, `region_tag(volume)`, `region_tags()`, and the pure helper `LatticeFrame::locate(p) -> Option<SlotIx>` (Cartesian: nearest centre by rounding `(p - origin) / pitch`; Hex: nearest centre in axial coordinates with cube rounding; `None` outside `layout.contains`). Frame names match `[A-Za-z0-9_]+` (they appear in region names).
