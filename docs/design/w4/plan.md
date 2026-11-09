@@ -1,5 +1,7 @@
 # W4 plan: polyhedral meshes for the transport code, ray tracing that beats DAGMC/XDG, then parity
 
+> **Rulings:** `rulings.md` (D1-D10, 2026-11-09) overrides this plan and the drafts where they differ.
+
 Base: `main` at `d2f4803` (W3c-INT merged in f2e831d, report follow-ups 63ec23b, backlog d2f4803). Inputs, all committed next to this file: the area drafts `docs/design/w4/drafts/<key>.md` (`poly.md`, `rt.md`, `hexpin.md`, `vtopo.md`, `csgbrep.md`, `meshops.md`, `export.md`). Each draft was corrected by an Opus critique, and every correction is marked **Critique delta** inside the draft, so a worker never needs the critique. The W3c plan (`docs/design/w3c/plan.md`) is the structural model.
 
 **Goals (user).** (1) Polyhedral meshes for the user's own neutron-transport code. (2) Ray tracing (`sm-rt`, `.smrt`) that beats DAGMC and XDG. Standing principle: Cubit is a bar to surpass, not to match; we pick the best design we can find. MCNP is not a target. OpenMC is the CSG format and the oracle (conda env `/Users/rodrigo/opt/miniforge/envs/openmc`, OpenMC 0.16.0).
