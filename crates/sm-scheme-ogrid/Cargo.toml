@@ -1,0 +1,17 @@
+[package]
+name = "sm-scheme-ogrid"
+description = "O-grid surface scheme: structured ring decomposition of circular faces (W4 HEX-OGRID)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-scheme-api = { path = "../sm-scheme-api" }
+
+[lints]
+workspace = true

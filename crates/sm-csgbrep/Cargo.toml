@@ -1,0 +1,17 @@
+[package]
+name = "sm-csgbrep"
+description = "CSG deck to B-rep import, checks and oracle (W4 CSG-* tasks)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+sm-op-api = { path = "../sm-op-api" }
+
+[lints]
+workspace = true

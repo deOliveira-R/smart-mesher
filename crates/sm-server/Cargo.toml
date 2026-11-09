@@ -37,6 +37,9 @@ sm-scheme-pave = { path = "../sm-scheme-pave" }
 sm-scheme-tri = { path = "../sm-scheme-tri" }
 sm-scheme-sweep = { path = "../sm-scheme-sweep" }
 sm-scheme-tet = { path = "../sm-scheme-tet" }
+sm-scheme-ogrid = { path = "../sm-scheme-ogrid" }
+sm-csgbrep = { path = "../sm-csgbrep" }
+sm-modify = { path = "../sm-modify" }
 sm-boolean = { path = "../sm-boolean" }
 sm-cadio = { path = "../sm-cadio" }
 sm-smooth = { path = "../sm-smooth" }

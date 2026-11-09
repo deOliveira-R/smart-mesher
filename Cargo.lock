@@ -1376,6 +1376,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-csgbrep"
+version = "0.0.0"
+dependencies = [
+ "sm-op-api",
+]
+
+[[package]]
 name = "sm-csgio"
 version = "0.0.0"
 dependencies = [
@@ -1392,6 +1399,10 @@ dependencies = [
  "sm-testkit",
  "thiserror",
 ]
+
+[[package]]
+name = "sm-decomp"
+version = "0.0.0"
 
 [[package]]
 name = "sm-diag"
@@ -1668,6 +1679,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-modify"
+version = "0.0.0"
+dependencies = [
+ "sm-op-api",
+]
+
+[[package]]
 name = "sm-op-api"
 version = "0.0.0"
 dependencies = [
@@ -1888,6 +1906,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm-scheme-ogrid"
+version = "0.0.0"
+dependencies = [
+ "sm-scheme-api",
+]
+
+[[package]]
 name = "sm-scheme-pave"
 version = "0.0.0"
 dependencies = [
@@ -2004,6 +2029,7 @@ dependencies = [
  "sm-cadio",
  "sm-cli",
  "sm-core",
+ "sm-csgbrep",
  "sm-diag",
  "sm-engine",
  "sm-fem",
@@ -2016,6 +2042,7 @@ dependencies = [
  "sm-meshio",
  "sm-model",
  "sm-model-api",
+ "sm-modify",
  "sm-op-api",
  "sm-poly",
  "sm-protocol",
@@ -2025,6 +2052,7 @@ dependencies = [
  "sm-scheme-curve",
  "sm-scheme-map",
  "sm-scheme-mapvol",
+ "sm-scheme-ogrid",
  "sm-scheme-pave",
  "sm-scheme-submap",
  "sm-scheme-sweep",
