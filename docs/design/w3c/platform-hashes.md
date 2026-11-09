@@ -109,4 +109,4 @@ Follow-up fixes made in this rerun: `run_container.sh` pins `RUSTUP_TOOLCHAIN=1.
 
 - Nothing diverged, so no near-tie localisation was needed, and no per-platform state hash is proposed.
 - Done at W3c-INT: `tools/platform/expected.txt` and `crates/sm-cli/tests/platform_pins.rs` (see the rerun section). Original instruction: rerun `run_container.sh` and `hashes.sh` on the INT commit.
-- Open risk, not closed by this run: Linux x86_64 beyond `SUBMAP_GRADED` and the CI run is unverified for the other state hashes until `platform_pins.rs` runs on CI. glibc on x86_64 selects `sin`/`cos`/`exp`/`log`/`pow` variants at run time, which arm64 does not exercise; the `int7` ulp case shows near-tie decisions exist in `sm-scheme-tet`.
+- Closed after this run: `platform_pins.rs` passed on the Linux x86_64 GitHub gate (runs 42544784727, 42553841653), so the pinned state hashes hold there too. Background: glibc on x86_64 selects `sin`/`cos`/`exp`/`log`/`pow` variants at run time, which arm64 does not exercise; the `int7` ulp case shows near-tie decisions exist in `sm-scheme-tet`.

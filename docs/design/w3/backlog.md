@@ -138,6 +138,6 @@ Carried (new follow-ups from the INT reviews; none blocks W4):
   - sm-csgio `gen.py`: SIGTERM exit code 143; `openmc.reset_auto_ids()` before each model so a subset run gives byte-identical `geometry.xml`.
   - `RegistryError::BadOpName` is used for a test-only timeout in `standard.rs`; replace if a generic variant is ever added.
   - `sm-rt-capi` DESIGN.md:111 is 118 columns wide.
-- W4, trigger "Linux x86_64 evidence": the first green GitHub gate on the INT PR is the x86_64 check of `tools/platform/expected.txt`; if it fails, follow C12.
+- ~~Linux x86_64 evidence~~ done: `platform_pins.rs` passed on the x86_64 GitHub gate (runs 42544784727, 42553841653). A future failure follows C12.
 - W4: `smesh run` text mode prints per-op `delta.diagnostics`, so a CLI user sees the `mesh.auto_tet` warnings. Trigger: the first user report of a silent tet fallback (the JSON and MCP paths show them today).
 - W4 deferrals recorded in the W3c report: H1 analytic case, P2 tet twin, `--model` periodic faces, XDG tet walk and driver at the newest upstream (C15), O-grid all-hex pins (C1), hex-tet transition cells, `hex_only` / `tet` strategies (C5), CSG B-rep import (C8).

@@ -29,7 +29,7 @@ Date: 2026-11-08. Pull requests: sub-wave 0 PR #1 (ed068df), sub-waves 1+2 PR #2
 | PLATFORM | 3dce752 | Hash table macOS arm64, Linux arm64 on glibc 2.36 and 2.39; `tools/platform/expected.txt` (62 lines, 7 scripts) and `crates/sm-cli/tests/platform_pins.rs` (C12); LINUX-HASH follow-ups. Table in `platform-hashes.md`. |
 | DOCS | this commit | This report, W3b report numbering and CI section, PARITY rows, backlog dispositions, B6 and `plan.md` wording. |
 
-Combine step 1 merged the eight worker commits with `--no-ff` merges onto 2a4d162 (8f62f64) with no conflicts. Its test run was cut short and gave no result; the combine step's own results are recorded by the combine step, not here.
+Combine step 1 merged the eight worker commits with `--no-ff` merges onto 2a4d162 (8f62f64) with no conflicts. Its test run was cut short and gave no result (D16).
 
 ## Milestone results
 
@@ -66,12 +66,12 @@ Numbered in one scheme. D1 to D5 come from the sub-wave review (backlog "Deviati
 8. **D8: enclosed pin** is a single cell (733 tets) in its own script file, not a row inside `w3c_pin.smesh`.
 9. **D9: P5 uses the left-out fixture** (one volume in no block, "cells are in no block"), not a model with no blocks at all. It runs the same `smrt-region-names` path; a no-blocks check is a backlog item.
 10. **D10: P1 volume check** compares the total volume, which is the same for any conformal fill. A per-block fuel volume against the polygonal-cylinder area is a backlog item.
-11. **D11: pinned literals were measured on macOS arm64.** Linux arm64 on two glibc versions gives the same values (platform table). Linux x86_64 is not verified yet.
+11. **D11: pinned literals were measured on macOS arm64.** Linux arm64 on two glibc versions gives the same values (platform table). Linux x86_64 also gives them: `platform_pins.rs` passed on the GitHub gate (runs 42544784727 and 42553841653).
 12. **D12: the Python pin run** does not replay the pin as typed ops (W3b did for its milestone); it runs the script and the typed exports.
 13. **D13: `tools/w3c_driver.py`** has not been run through mypy or ruff.
 14. **D14: FIX-BENCH report claim.** The worker said `sha256:` assertions were added to two bench tests; the diff has none. `run_competitor_with` already returns Partial when the id has no `sha256:` prefix, so there is no correctness gap.
 15. **D15: `BadOpName`** is used for a test-only rendezvous timeout in `crates/sm-server/src/standard.rs` (no better variant).
-16. **D16: Combine step 1 test run.** It returned no result (see above). The tests of the combined tree are run by the combine step and by GitHub CI on the INT PR.
+16. **D16: Combine step 1 test run.** It returned no result. The final combine covered it: on ae88c68 local `tools/ci.sh` rc=0 with no FAILED lines; `py.sh` rc=0, 59 passed, wheel check printing 1fc1366df0c3 under numpy 2.5.4 and 1.26.4; C3 census of release builds of 2a4d162 and ae88c68 byte-identical (16 rows, default threads and 1 thread); `w3c_pin.smesh` equal over 4 runs.
 
 ## Census
 
@@ -95,7 +95,7 @@ GitHub CI has been green since the W3c-0 merge:
 
 From W3c on a wave merges only with GitHub CI green as well as the local run (process note in `rulings.md`).
 
-GitHub CI result of the final INT PR (PR #4, run 42544784727 on bb964d7): green. `gate` pass (1h34m), `python` pass (2m43s), `web` pass (12s). `platform_pins` (`identity_hashes_match_expected_on_every_platform`) passed on Linux x86_64 in both `ci.sh` passes, so the identity hashes of `expected.txt` hold on x86_64 glibc as well (C12).
+GitHub CI result of the final INT PR (PR #4, run 42544784727 on bb964d7): green. `gate` pass (1h34m), `python` pass (2m43s), `web` pass (12s). Second run 42553841653 on ae88c68: all three pass. `platform_pins` (`identity_hashes_match_expected_on_every_platform`) passed on Linux x86_64 in both `ci.sh` passes, so the identity hashes of `expected.txt` hold on x86_64 glibc as well (C12).
 
 ## Platform hash results
 
@@ -112,7 +112,7 @@ Details in `platform-hashes.md` ("W3c-INT rerun"). All identity hashes are equal
 | w3c_pin | 49 | equal (first hashed curved mesh: `h_mesh` 6953b909..., 432 cells) |
 | curved_probe | 19 | equal (not pinned) |
 
-C12: the identity hashes are pinned in `tools/platform/expected.txt` (62 lines, 7 scripts; per-node rows, floats and curved_probe are not pinned) and enforced by `platform_pins.rs`, which passes on macOS and in both containers at default threads and 1 thread. Nothing is pinned per platform. `flat_golden` on Linux arm64 gives the same four (structure, bundle) tuples on both images. Linux x86_64 is unverified: glibc picks libm variants at run time there, which arm64 does not exercise. The first green GitHub gate on the INT PR is that check.
+C12: the identity hashes are pinned in `tools/platform/expected.txt` (62 lines, 7 scripts; per-node rows, floats and curved_probe are not pinned) and enforced by `platform_pins.rs`, which passes on macOS and in both containers at default threads and 1 thread. Nothing is pinned per platform. `flat_golden` on Linux arm64 gives the same four (structure, bundle) tuples on both images. Linux x86_64 (glibc, which picks libm variants at run time) also matches: `platform_pins.rs` passed in both `ci.sh` passes of GitHub runs 42544784727 and 42553841653.
 
 ## Benchmark smoke
 
