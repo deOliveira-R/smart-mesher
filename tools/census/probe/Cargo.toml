@@ -1,0 +1,19 @@
+# Census probe: measures values that no test prints (poly counts and determinism hashes, DAGMC
+# export reports, sm-csgio content hashes). Its own workspace root; not part of the repo workspace.
+[package]
+name = "census-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sm-core = { path = "../../../crates/sm-core" }
+sm-mesh = { path = "../../../crates/sm-mesh" }
+sm-mesh-api = { path = "../../../crates/sm-mesh-api" }
+sm-poly = { path = "../../../crates/sm-poly" }
+sm-meshio = { path = "../../../crates/sm-meshio" }
+sm-csgio = { path = "../../../crates/sm-csgio" }
+sm-testkit = { path = "../../../crates/sm-testkit" }
+rayon = "1"
