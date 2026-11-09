@@ -141,3 +141,14 @@ Carried (new follow-ups from the INT reviews; none blocks W4):
 - ~~Linux x86_64 evidence~~ done: `platform_pins.rs` passed on the x86_64 GitHub gate (runs 42544784727, 42553841653). A future failure follows C12.
 - W4: `smesh run` text mode prints per-op `delta.diagnostics`, so a CLI user sees the `mesh.auto_tet` warnings. Trigger: the first user report of a silent tet fallback (the JSON and MCP paths show them today).
 - W4 deferrals recorded in the W3c report: H1 analytic case, P2 tet twin, `--model` periodic faces, XDG tet walk and driver at the newest upstream (C15), O-grid all-hex pins (C1), hex-tet transition cells, `hex_only` / `tet` strategies (C5), CSG B-rep import (C8).
+
+## From W3c-INT review (2026-11-08; small, take with W4)
+- `milestone_w3c_pin` P5/P6/P9 skip with only a println when maturin is missing; fail instead when `CI=true`.
+- sm-py: pytest's basetemp retention leaves `pytest-of-$USER` in `$TMPDIR`; pass `--basetemp "$TMP/pytest"` in `py.sh`.
+- Per-pid `smesh-cli-*`/`smesh-full-*` dirs now collect under `target/tmp`; add a Drop guard.
+- sm-csgio `gen.py`: call `openmc.reset_auto_ids()` before each model, so fixtures regenerate byte for byte per model; exit 143 on SIGTERM.
+- sm-server auto_select: assert distinct `copy_of` values in the through-pin plan rows.
+- sm-rt-bench: check the `sha256:` image id before the platform; assert the id in `absorber_unbiased`; give an exact lost count in `flight_step_into_an_unmapped_region_is_lost_not_a_leak`.
+- tools/platform `collect.py:58`: `error.new` should go through `last_line(r)`; record the macOS `rustc -V`; `cargo fmt` `platform_pins.rs`.
+- sm-mesher `auto.rs`: note that the `known` shortcut assumes `plan_with` is pure.
+- PIN: check the fuel-block mesh volume analytically; add a no-blocks CLI/Python check; mypy/ruff on `tools/w3c_driver.py`.
