@@ -397,6 +397,30 @@ pub fn flight_adapter(tets: &Tets, mode: FlightMode, leaf_cells: u32) -> Result<
     }).with_region_map(map).on_twin())
 }
 
+/// The W-walk row of a tet mesh: the cell-walking tracker of the `walk` flight row, reporting the
+/// tet index of every cell crossed. The cell-to-tet map is built by locating each tet's centroid,
+/// so it does not assume the tracker keeps the input order; it must be a bijection.
+///
+/// # Errors
+/// The mesh builder's or the tracker's error, or [`BenchError::Tracker`] when a centroid is not
+/// located in a cell of its own.
+pub fn walk_adapter(tets: &Tets) -> Result<TrackerAdapter> {
+    let a = flight_adapter(tets, FlightMode::Surface, 8)?;
+    let n = tets.tets.len();
+    let mut map = vec![-1i32; a.tracker().cell_count().max(n)];
+    let mut scratch = sm_rt_api::Scratch::new();
+    for (i, t) in tets.tets.iter().enumerate() {
+        let c: [f64; 3] = core::array::from_fn(|k| t.iter().map(|&v| tets.nodes[v as usize][k]).sum::<f64>() / 4.0);
+        let loc = a.tracker().locate(pt(c), None, None, &mut scratch).map_err(bad)?;
+        let cell = loc.cell;
+        if cell.is_none() || cell.get() >= map.len() || map[cell.get()] >= 0 {
+            return Err(BenchError::Tracker(format!("tet {i}: its centroid is not located in a cell of its own (cell {})", cell.0)));
+        }
+        map[cell.get()] = i as i32;
+    }
+    Ok(a.with_cell_map(map).with_mode("walk"))
+}
+
 /// The tets as a reference mesh whose volume classes are the regions.
 ///
 /// # Errors

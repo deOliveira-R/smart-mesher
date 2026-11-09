@@ -20,6 +20,11 @@ pub const IMAGES: [(&str, &str); 3] = [
     ("smrt-bench-xdg", "docker/xdg/Dockerfile"),
 ];
 
+/// The XDG commit (12 hex digits) that `docker/pins.env` and `docker/xdg/Dockerfile` must carry.
+/// A bump edits those two files and this constant; the lint and the pin tests fail for any pair
+/// that disagrees (the tests compare `pins.env` with this constant, never with itself).
+pub const XDG_PIN: &str = "a5d67e635b96";
+
 /// Pins every Dockerfile must declare as `ARG KEY=<value of docker/pins.env>`:
 /// `(Dockerfile, KEY)`. The values are read from `pins.env`, never repeated here.
 pub const REQUIRED_PINS: [(&str, &str); 7] = [
@@ -496,6 +501,11 @@ struct FiresLine {
 }
 
 #[derive(serde::Deserialize)]
+struct WalkLine {
+    walk: Vec<TrackJson>,
+}
+
+#[derive(serde::Deserialize)]
 struct TallyLine {
     tally: Vec<f64>,
     tally_sq: Vec<f64>,
@@ -505,7 +515,8 @@ struct TallyLine {
 /// What a competitor run does besides W-track (all additive; the default is W-track only).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompetitorOpts {
-    /// Workloads to run, by driver name: `track`, `fire`, `fire-locate`, `flight`.
+    /// Workloads to run, by driver name: `track`, `fire`, `fire-locate`, `flight`, `walk` (tet
+    /// meshes: the xdg driver only, and the case needs `tets.bin`).
     pub workloads: Vec<String>,
     /// Histories of `flight`.
     pub histories: usize,
@@ -530,8 +541,8 @@ pub fn sigma_text(regions: &[crate::formats::RegionSpec]) -> String {
 /// Parsed stdout of a driver: the rows, the track dump and the other dumps by workload.
 pub type DriverOutput = (Vec<crate::result::Row>, Option<Vec<crate::truth::Track>>, BTreeMap<String, crate::adapter::Output>);
 
-/// Parse the stdout of a driver: rows, the track dump and the dumps that follow a row (a `fires`
-/// or `tally` line belongs to the workload of the row printed just before it).
+/// Parse the stdout of a driver: rows, the track dump and the dumps that follow a row (a `fires`,
+/// `tally` or `walk` line (tet indices and chords per ray, kept as tracks) belongs to the workload of the row printed just before it).
 pub fn parse_driver_output(tracker: &str, stdout: &str) -> core::result::Result<DriverOutput, String> {
     let mut rows: Vec<crate::result::Row> = Vec::new();
     let mut tracks = None;
@@ -541,6 +552,11 @@ pub fn parse_driver_output(tracker: &str, stdout: &str) -> core::result::Result<
         if l.starts_with("{\"tracks\"") {
             let t = serde_json::from_str::<TracksLine>(l).map_err(|e| format!("a track dump that does not parse: {e}"))?;
             tracks = Some(t.tracks.into_iter().map(|t| crate::truth::Track { regions: t.r, chords: t.c }).collect());
+        } else if l.starts_with("{\"walk\"") {
+            let t = serde_json::from_str::<WalkLine>(l).map_err(|e| format!("a walk dump that does not parse: {e}"))?;
+            let w = last.ok_or("a walk dump before any row")?;
+            let tracks = t.walk.into_iter().map(|t| crate::truth::Track { regions: t.r, chords: t.c }).collect();
+            dumps.insert(w, crate::adapter::Output { tracks, ..Default::default() });
         } else if l.starts_with("{\"fires\"") {
             let f = serde_json::from_str::<FiresLine>(l).map_err(|e| format!("a fire dump that does not parse: {e}"))?;
             let w = last.ok_or("a fire dump before any row")?;
@@ -607,11 +623,11 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
         Ok(h) => h,
         Err(e) => return Competitor::Partial(format!("{image}: {e}")),
     };
-    if let Err(m) = check_image_platform(image, &image_platform, host) {
-        return Competitor::Partial(m);
-    }
     if !image_id.starts_with("sha256:") {
         return Competitor::Partial(format!("`docker image inspect {image}` printed no image id"));
+    }
+    if let Err(m) = check_image_platform(image, &image_platform, host) {
+        return Competitor::Partial(m);
     }
     let Some(ncpu) = docker_ok(&["info", "--format", "{{.NCPU}}"]).and_then(|s| s.parse::<usize>().ok()) else {
         return Competitor::Partial("`docker info --format {{.NCPU}}` failed: cannot check --threads against the Docker VM".to_string());
@@ -620,7 +636,7 @@ pub fn run_competitor_with(root: &Path, tracker: &str, data_dir: &Path, case: &s
         Ok(c) => c,
         Err(m) => return Competitor::Partial(format!("{image}: {m}")),
     };
-    if opts.workloads.iter().any(|w| !["track", "fire", "fire-locate", "flight"].contains(&w.as_str())) {
+    if opts.workloads.iter().any(|w| !["track", "fire", "fire-locate", "flight", "walk"].contains(&w.as_str())) {
         return Competitor::Partial(format!("{image}: unknown workload in {:?}", opts.workloads));
     }
     if opts.workloads.iter().any(|w| w == "flight") {
@@ -683,7 +699,7 @@ mod tests {
         let pins = parse_pins(&std::fs::read_to_string(root().join("docker/pins.env")).unwrap());
         let xdg = &pins["XDG_COMMIT"];
         assert!(is_short_commit(xdg), "{xdg}");
-        assert_eq!(xdg, "83efb306e152");
+        assert_eq!(xdg, XDG_PIN);
         assert_eq!(pins["MOAB_VERSION"], "5.6.0");
         let text = std::fs::read_to_string(root().join("docker/xdg/Dockerfile")).unwrap();
         assert_eq!(arg_default(&text, "XDG_COMMIT").as_deref(), Some(xdg.as_str()));
@@ -701,10 +717,12 @@ mod tests {
         let pins = std::fs::read_to_string(root().join("docker/pins.env")).unwrap();
         std::fs::write(tmp.join("docker/pins.env"), &pins).unwrap();
         assert!(lint_all(&tmp).unwrap().is_empty());
-        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=83efb306e152", "XDG_COMMIT=fec80980ce29")).unwrap();
+        let current = format!("XDG_COMMIT={XDG_PIN}");
+        assert!(pins.contains(&current), "pins.env does not hold XDG_PIN");
+        std::fs::write(tmp.join("docker/pins.env"), pins.replace(&current, "XDG_COMMIT=fec80980ce29")).unwrap();
         let p = lint_all(&tmp).unwrap();
-        assert!(p.iter().any(|m| m.contains("ARG XDG_COMMIT=83efb306e152 differs from docker/pins.env (fec80980ce29)")), "{p:?}");
-        std::fs::write(tmp.join("docker/pins.env"), pins.replace("XDG_COMMIT=83efb306e152", "XDG_COMMIT=83efb30")).unwrap();
+        assert!(p.iter().any(|m| m.contains(&format!("ARG XDG_COMMIT={XDG_PIN} differs from docker/pins.env (fec80980ce29)"))), "{p:?}");
+        std::fs::write(tmp.join("docker/pins.env"), pins.replace(&current, "XDG_COMMIT=83efb30")).unwrap();
         assert!(lint_all(&tmp).unwrap().iter().any(|m| m.contains("not 12 hex digits")));
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -784,7 +802,7 @@ mod tests {
         let dx = std::fs::read_to_string(root().join("docker/xdg/Dockerfile")).unwrap();
         let (ax, lx) = build_args(&tmp, "smrt-bench-xdg", "docker/xdg/Dockerfile", &dx, &pins, arm);
         let ax = ax.join(" ");
-        assert!(ax.contains("XDG_COMMIT=83efb306e152") && ax.contains("MOAB_VERSION=5.6.0") && ax.contains("UBUNTU_DIGEST=") && !ax.contains("MINIFORGE") && !ax.contains("LOCKFILE"), "{ax}");
+        assert!(ax.contains(&format!("XDG_COMMIT={XDG_PIN}")) && ax.contains("MOAB_VERSION=5.6.0") && ax.contains("UBUNTU_DIGEST=") && !ax.contains("MINIFORGE") && !ax.contains("LOCKFILE"), "{ax}");
         assert!(lx.is_none());
         std::fs::remove_dir_all(&tmp).unwrap();
     }

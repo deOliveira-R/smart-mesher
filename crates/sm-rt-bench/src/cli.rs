@@ -6,7 +6,7 @@ use crate::adapter::{Adapter, WorkInput, Workload, stub_adapter};
 use crate::cases::{self, Case, Scale};
 use crate::error::{BenchError, Result};
 use crate::formats::{Facets, Rays};
-use crate::result::{BenchEnv, Env, ResultFile, write_result};
+use crate::result::{AgreementSummary, BenchEnv, Env, ResultFile, write_result};
 use crate::runner::{RunConfig, run_case};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ fn parse(args: &[String]) -> Result<Args> {
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight (competitors)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight,walk (competitors; walk: tet cases, sm-rt and xdg)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -209,10 +209,10 @@ fn run(a: &Args) -> Result<i32> {
     }
     let threads: Vec<usize> = a.opts.get("threads").map_or("1", String::as_str).split(',').map(|s| s.trim().parse().map_err(|_| BenchError::Usage("--threads".into()))).collect::<Result<_>>()?;
     let cfg = RunConfig { reps: num(a, "reps", 7)?, warmup: num(a, "warmup", 3)?, threads, histories: num(a, "histories", 10_000)?, seed: num(a, "seed", RunConfig::default().seed)?, ..RunConfig::default() };
-    let workloads: Vec<&str> = a.opts.get("workloads").map_or("track,fire,fire-locate,flight", String::as_str).split(',').map(str::trim).collect();
+    let workloads: Vec<&str> = a.opts.get("workloads").map_or("track,fire,fire-locate,flight,walk", String::as_str).split(',').map(str::trim).collect();
     for w in &workloads {
-        if !["track", "fire", "fire-locate", "flight"].contains(w) {
-            return Err(BenchError::Usage(format!("unknown workload {w:?} (known: track, fire, fire-locate, flight)")));
+        if !["track", "fire", "fire-locate", "flight", "walk"].contains(w) {
+            return Err(BenchError::Usage(format!("unknown workload {w:?} (known: track, fire, fire-locate, flight, walk)")));
         }
     }
     let out_dir = a.opts.get("out").map_or_else(|| crate_dir().join("results"), PathBuf::from);
@@ -258,6 +258,21 @@ fn run(a: &Args) -> Result<i32> {
                 let (f, ag) = run_case(&data, adapters, "surface", c, env.clone())?;
                 absorb(f, ag);
             }
+            // W-walk: the tet mesh walked cell by cell (cases with a tet mesh), the reference of XDG's `segments`.
+            if let Some(tets) = data.tets.as_ref().filter(|_| workloads.contains(&"walk")) {
+                match crate::smrt::walk_adapter(tets) {
+                    Ok(a) => {
+                        let mut adapters: Vec<Box<dyn Adapter>> = vec![Box::new(a)];
+                        let walk = RunConfig { workloads: vec![Workload::Walk], ..cfg.clone() };
+                        let (f, ag) = run_case(&data, &mut adapters, "surface", &walk, env.clone())?;
+                        absorb(f, ag);
+                    }
+                    Err(e) => {
+                        println!("{}: smrt walk not run: {e}", case.name());
+                        file.partial.push(format!("{}: smrt walk not run: {e}", case.name()));
+                    }
+                }
+            }
         }
         let competitors: Vec<&&str> = trackers.iter().filter(|t| crate::docker::image_of(t).is_some()).collect();
         if !competitors.is_empty() {
@@ -275,8 +290,14 @@ fn run(a: &Args) -> Result<i32> {
             // triangles is judged against; the analytic truth gives the geom_error column.
             let reference = facet_reference(&data, &cfg, &workloads);
             let mut dumps: Vec<(String, Vec<crate::truth::Track>)> = Vec::new();
-            let opts = crate::docker::CompetitorOpts { workloads: workloads.iter().map(|w| w.to_string()).collect(), histories: cfg.histories, seed: cfg.seed, regions: data.manifest.regions.clone() };
             for t in competitors {
+                // `walk` is a tet-mesh workload only the xdg driver has; no other tracker is asked for it.
+                let mine: Vec<String> = workloads.iter().filter(|w| **w != "walk" || (**t == *"xdg" && data.tets.is_some())).map(|w| w.to_string()).collect();
+                if mine.is_empty() {
+                    file.notes.push(format!("{t}: no requested workload applies to {}", case.name()));
+                    continue;
+                }
+                let opts = crate::docker::CompetitorOpts { workloads: mine, histories: cfg.histories, seed: cfg.seed, regions: data.manifest.regions.clone() };
                 match crate::docker::run_competitor_with(&crate_dir(), t, &dir, &data.case, &cfg.threads, cfg.reps, cfg.warmup, &opts) {
                     crate::docker::Competitor::Rows { mut rows, image_id, tracks, dumps: other } => {
                         if let Some(tracks) = tracks {
@@ -395,6 +416,8 @@ struct FacetReference {
     tracks: Result<Vec<crate::truth::Track>>,
     fire: Option<crate::adapter::Output>,
     flight: Option<crate::adapter::Output>,
+    /// The sm-rt tet walk (cases with a tet mesh).
+    walk: Option<crate::adapter::Output>,
     /// Why a reference output is missing.
     why: Vec<String>,
 }
@@ -405,7 +428,7 @@ fn facet_reference(data: &cases::CaseData, cfg: &RunConfig, workloads: &[&str]) 
     let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: cfg.histories, seed: cfg.seed };
     let mut adapter = match crate::smrt::facets_adapter(data) {
         Ok(a) => a,
-        Err(e) => return FacetReference { tracks: Err(e), fire: None, flight: None, why: Vec::new() },
+        Err(e) => return FacetReference { tracks: Err(e), fire: None, flight: None, walk: None, why: Vec::new() },
     };
     let tracks = adapter.run(Workload::Track, &w).map(|o| o.tracks);
     let mut why = Vec::new();
@@ -418,7 +441,11 @@ fn facet_reference(data: &cases::CaseData, cfg: &RunConfig, workloads: &[&str]) 
     };
     let fire = if workloads.iter().any(|x| x.starts_with("fire")) { keep("fire", adapter.prepare(Workload::Fire, &w).and_then(|()| adapter.run(Workload::Fire, &w))) } else { None };
     let flight = if workloads.contains(&"flight") { keep("flight", adapter.run(Workload::Flight, &w)) } else { None };
-    FacetReference { tracks, fire, flight, why }
+    let walk = match data.tets.as_ref().filter(|_| workloads.contains(&"walk")) {
+        Some(tets) => keep("walk", crate::smrt::walk_adapter(tets).and_then(|mut a| a.run(Workload::Walk, &w))),
+        None => None,
+    };
+    FacetReference { tracks, fire, flight, walk, why }
 }
 
 /// Judge the fire and flight rows of one competitor against the facet reference: the dump of a
@@ -458,6 +485,29 @@ fn judge_workloads(tracker: &str, data: &cases::CaseData, reference: &FacetRefer
                     None
                 }
             },
+            "w-walk" => match (&reference.walk, data.tets.as_ref()) {
+                (Some(r), Some(tets)) => {
+                    let diag = data.manifest.diag;
+                    let a = crate::compare::compare(&out.tracks, &r.tracks, diag, 1e-9 * diag)?;
+                    let (g, bad_truth) = crate::runner::walk_truth(tets, &data.rays, &out.tracks, diag)?;
+                    if !a.listed.is_empty() {
+                        notes.push(format!("{tracker} {workload}: rays that differ from the sm-rt walk (first {}): {:?}", a.listed.len().min(10), a.listed.iter().take(10).map(|d| d.ray).collect::<Vec<_>>()));
+                    }
+                    notes.push(format!(
+                        "{tracker} {workload}: {} of {} rays walk the same tets as sm-rt with chords within 1e-9 diag ({} grazing chords dropped, {} sequence failures); chord sums equal the analytic cube chord within 1e-9 diag on {} of {} rays (max error {:.3e})",
+                        a.checked - a.failed, a.checked, a.grazing, a.sequence_failures, g.tracks - bad_truth, g.tracks, g.max_chord_err
+                    ));
+                    for r in rows.iter_mut().filter(|r| &r.workload == workload) {
+                        r.geom_error = g;
+                    }
+                    // Two checks per ray: against the sm-rt walk and against the analytic chord sum.
+                    Some(AgreementSummary { checked: a.checked + g.tracks, failed: a.failed + bad_truth, grazing: a.grazing })
+                }
+                _ => {
+                    partial.push(format!("{tracker} {workload}: sm-rt walk reference not available ({})", reference.why.join("; ")));
+                    None
+                }
+            },
             _ => None,
         };
         if let Some(s) = &summary {
@@ -474,7 +524,7 @@ fn judge_workloads(tracker: &str, data: &cases::CaseData, reference: &FacetRefer
         }
     }
     // Hash equality across thread counts for every workload (stable stays as the driver said it).
-    for w in ["w-track", "w-fire", "w-fire-locate", "w-flight"] {
+    for w in ["w-track", "w-fire", "w-fire-locate", "w-flight", "w-walk"] {
         let hashes: Vec<&String> = rows.iter().filter(|r| r.workload == w).map(|r| &r.determinism.hash).collect();
         if hashes.windows(2).any(|p| p[0] != p[1]) {
             for r in rows.iter_mut().filter(|r| r.workload == w) {
@@ -484,4 +534,40 @@ fn judge_workloads(tracker: &str, data: &cases::CaseData, reference: &FacetRefer
         }
     }
     Ok(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cases::{Case, Scale, build};
+    use crate::result::Row;
+
+    /// What `judge_workloads` makes of a walk dump: a competitor that reproduces the sm-rt walk
+    /// passes both checks of every ray, and one wrong tet or one wrong chord is counted.
+    #[test]
+    fn a_walk_dump_is_judged_against_the_sm_rt_walk_and_the_analytic_chord() {
+        let data = build(Case::H1, &Scale::tiny()).unwrap();
+        let reference = facet_reference(&data, &RunConfig::default(), &["walk"]);
+        let walk = reference.walk.clone().expect("the sm-rt walk reference");
+        let n = data.rays.len();
+        let judge = |out: crate::adapter::Output| {
+            let dumps = std::collections::BTreeMap::from([("w-walk".to_string(), out)]);
+            let mut rows = vec![Row { workload: "w-walk".into(), ..Row::default() }];
+            let (mut notes, mut partial) = (Vec::new(), Vec::new());
+            let failed = judge_workloads("xdg", &data, &reference, &dumps, &mut rows, &mut notes, &mut partial).unwrap();
+            assert!(partial.is_empty(), "{partial:?}");
+            (failed, rows.remove(0), notes)
+        };
+        let (failed, row, notes) = judge(walk.clone());
+        assert_eq!((failed, row.agreement.checked, row.agreement.failed), (0, 2 * n, 0));
+        assert_eq!((row.geom_error.tracks, row.geom_error.max_chord_err <= 1e-9 * data.manifest.diag), (n, true));
+        assert!(notes.iter().any(|m| m.contains(&format!("{n} of {n} rays walk the same tets"))), "{notes:?}");
+        // One ray enters the wrong tet, one chord is off by 1e-6: both are found.
+        let mut bad = walk;
+        bad.tracks[0].regions[1] += 1;
+        bad.tracks[1].chords[0] += 1e-6;
+        let (failed, row, _) = judge(bad);
+        assert!(failed >= 2, "{failed}");
+        assert_eq!(row.agreement.failed, failed);
+    }
 }

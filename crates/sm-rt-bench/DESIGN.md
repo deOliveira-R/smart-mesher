@@ -210,7 +210,18 @@ before it ([`docker::parse_driver_output`]).
   (`stable`), the runner also marks a workload unstable when the hashes of its thread counts
   differ. Nothing asserts equality with sm-rt (`result_hash` of two runs is equal, so the
   competitor output is reproducible, but the hash of a row is not an sm-rt hash).
-* `xdg` rows stay `partial` (no image, W4).
+* `xdg` rows: `drivers/xdg/xdg_driver.cpp` speaks the same protocol (rows, `fires`, `tally` and
+  `tracks` dumps) and adds `walk`; precision is `mixed` (Embree traverses in single precision) and the
+  mode `embree`. Where the image cannot be built (linux/aarch64, see Docker) the xdg rows are
+  `partial` with the failing command, never a number.
+* `walk` (tet meshes, H1): sm-rt's `walk` row (`MeshTracker`, one segment per tet) and XDG's
+  `segments(start, start + u * 2 diag)` over `smtets_to_moab`'s file. The comparison is the tet
+  sequence per ray (chords under `5e-9 diag` dropped, `compare`) with chords within `1e-9 diag`, plus
+  the chord sum against the analytic chord through the cube (`runner::walk_truth`); a row counts two
+  checks per ray. `smtets_to_moab` writes the tets in file order with a `REGION` tag, reads the file
+  back and checks it (nt, nn, every tet bitwise, volume sum to 1e-12), and the driver verifies
+  element `i` = tet `i` against `tets.bin` before it walks. Conforming P1 tets (TETS (c)) are
+  W4-RT-ROWS. The pre-registered verdict rules are in [`VERDICT.md`](VERDICT.md).
 
 `run_competitor` never invents a number: no Docker, `UNSET` digests, a missing image, a failing
 container or an unparsable line is `Partial` with the command and its last output line, and the
@@ -221,8 +232,9 @@ report lists it.
 `docker/{dagmc-moab,dagmc-dd,xdg}/Dockerfile`. `docker/pins.env` is the single source of every pin:
 base images are `FROM image@sha256:${..._DIGEST}` (index digests of `condaforge/miniforge3:24.9.2-0`
 and `ubuntu:24.04`, read with `docker buildx imagetools inspect`; an index digest covers arm64 and
-amd64), and `DOUBLE_DOWN_COMMIT`, `DAGMC_VERSION`, `XDG_COMMIT` (`83efb306e152`, xdg-org/xdg
-"Format a fatal_error message given a single integer (#264)", 2026-10-26) and `MOAB_VERSION` (`5.6.0`, the MOAB of the conda DAGMC images, so every
+amd64), and `DOUBLE_DOWN_COMMIT`, `DAGMC_VERSION`, `XDG_COMMIT` (`a5d67e635b96`, xdg-org/xdg
+"Switching out tmate session for debugging CI runner to upterm (#266)", 2026-11-06; the constant
+`docker::XDG_PIN` is the test side of this pin) and `MOAB_VERSION` (`5.6.0`, the MOAB of the conda DAGMC images, so every
 row is fed by one MOAB) are `ARG` defaults in the Dockerfiles that the lint requires to equal the
 `pins.env` value (it fails on drift, on a `*_COMMIT` that is not 12 hex digits, on `:latest` and on a
 digest-less `FROM`). `docker-check` passes each pin the Dockerfile declares as a build argument.
@@ -254,19 +266,32 @@ digest-less `FROM`). `docker-check` passes each pin the Dockerfile declares as a
 `dagmc_driver --version` prints the backend (`moab-obb` or `double-down`) and the linked DAGMC version; the
 images also check with `ldd` that `dagmc-moab` does not and `dagmc-dd` does link double-down.
 
-The XDG API is readable (`include/xdg/xdg.h`: `XDG::create(MOAB, EMBREE)`, `ray_fire`, `find_volume`,
-`walk_elements`; it reads the DAGMC style MOAB file), so the `xdg` rows can reuse `facets_to_h5m`; the
-driver is W4 work. The pin is `83efb306e152`, the commit `docs/research/dagmc-internals.md` was read
-at (user ruling 2026-11-08). W3c briefly pinned `fec80980ce29` because a clone of the personal fork
-`pshriwise/xdg`, which stops at 2026-09-08, lacked `83efb306e152`; clone only `xdg-org/xdg`. When W4
-writes the XDG driver, move the pin to the newest upstream commit that builds and runs.
+The `xdg` image (`docker/xdg/Dockerfile`) builds MOAB 5.6.0 (Fortran, BLAS/LAPACK and tests off) and
+XDG from source, then `xdg_driver` (`XDG::create(MOAB, EMBREE)`, `ray_fire`, `find_volume`, `segments`),
+`smtets_to_moab` and `facets_to_h5m` (the DAGMC image's converter, run with `--no-watertight`: this
+image has no `check_watertight`; the DAGMC rows on the same facets carry that verdict).
+`run_case.sh` converts the case files inside the container and runs each requested workload.
+
+**XDG pin (W4-RT-XDG, step 0).** `git ls-remote https://github.com/xdg-org/xdg` gave HEAD
+`a5d67e635b96` (2026-11-06). It differs from `12f56f1` (the last code commit) only in
+`.github/workflows/ci.yml`, so those two are the same question; the previous pin `83efb306e152` is
+5 commits older and the new code (`num_volume_element_faces`) is not used by the driver. The pin is
+`a5d67e635b96`, the newest upstream commit. **It does not build on linux/aarch64**: `vec3da.h` includes
+`<immintrin.h>` and `<xmmintrin.h>` unconditionally (checked at `a5d67e6`; the build fails with `immintrin.h: No such file`), so on
+the Apple-silicon development machine `docker-check` reports xdg `Failed` with the compiler error
+(rc 2) and `run --trackers ...,xdg` records `partial`. The recipe was built and the driver run on
+linux/amd64 under Rosetta (development check only: Docker Desktop's emulation is a different CPU, and
+the runner refuses a non-host architecture for any recorded row). The x86_64 session machine builds the
+native image. W3c briefly pinned `fec80980ce29` because a clone of the personal fork `pshriwise/xdg`
+lagged; clone only `xdg-org/xdg`. A bump edits `pins.env`, the Dockerfile `ARG` and `docker::XDG_PIN`;
+the lint and the pin tests fail for any pair that disagrees.
 
 Native linux/aarch64 on the macOS development machine (Docker Desktop, rebuilt 2026-11-08 from the
 locks in `docker/locks/`; the lock rebuild has the same conda lock hash, versions hash and driver `--version`
 as the floating solve):
 `dagmc-moab` is conda-forge `dagmc 3.2.4 nodoubledown` with `moab 5.6.0`; `dagmc-dd` is built from source
 (the conda-forge `*double_down*` variant does not resolve on arm64) and its driver links `libdd`; `xdg`
-has no driver (`NoDriver`). `run --cases P1 --scale reduced --rays 20000` gave `dagmc-moab` and `dagmc-dd`
+cannot be built here (see the pin note above). `run --cases P1 --scale reduced --rays 20000` gave `dagmc-moab` and `dagmc-dd`
 equal region sequences on all 20000 rays, and both agreed with the sm-rt facet row on all of them.
 
 ## Fairness of the published table (O11)

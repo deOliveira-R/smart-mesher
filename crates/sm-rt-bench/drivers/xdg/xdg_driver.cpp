@@ -1,0 +1,582 @@
+// XDG driver of smrt-bench (xdg rows), same protocol as drivers/dagmc/dagmc_driver.cpp.
+//
+//   xdg_driver --version
+//   xdg_driver model.h5m rays.bin [--workload track|fire|fire-locate|flight|walk] [--threads N]
+//              [--reps 7] [--warmup 3] [--audit 1000] [--tracks] [--tracker NAME] [--mode MODE]
+//              [--precision P] [--histories N --seed S --sigma sigma.txt] [--tets tets.bin]
+//
+// Facet models (smfacets through facets_to_h5m): the DAGMC-style surface model, one volume set per
+// region (volume id = region + 1), loaded by XDG's MOAB mesh manager and ray traced by Embree.
+//   track        every ray followed to leakage with ray_fire (EXITING, with an exclude list) and
+//                next_volume, from the region the ray file names (the hint), as OpenMC would.
+//   fire         one ray_fire per ray from the hinted region; fire-locate starts from find_volume.
+//   flight       seeded isotropic-scatter histories in surface mode, the same physics and the same
+//                SplitMix64 streams as the DAGMC driver and the Rust adapter (adapter.rs `history`).
+// Tet models (smtets_to_moab): the walk workload.
+//   walk         XDG::segments(start, start + u * L) over the whole tet model: the sequence of
+//                (tet index, chord) per ray, L = twice the model's bounding box diagonal so the walk
+//                always leaves the mesh. With --tets, the element order is verified first: the
+//                vertex coordinates of XDG's element i must equal tet i of tets.bin bit for bit.
+//
+// Output: one JSON object per workload and thread count in the `smbench-result v1` row format
+// (DESIGN.md "Protocol for C++ drivers"); with --tracks the dump line of the workload follows the
+// row: {"tracks": ...} (track), {"fires": ...}, {"tally": ...} (flight) or {"walk": [{"r": tet
+// indices, "c": chords}, ...]} in ray order. A running FNV-1a hash of every output in ray order is
+// the anti-dead-code checksum and the determinism hash (blocks of 256 histories are reduced in
+// block order, so the result does not depend on the thread count).
+//
+// Precision is `mixed`: Embree traverses in single precision and XDG refines in double.
+#include <sys/resource.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <embree4/rtcore.h>
+
+#include "xdg/config.h"
+#include "xdg/xdg.h"
+
+#ifndef SMRT_XDG_COMMIT
+#define SMRT_XDG_COMMIT "unknown"
+#endif
+
+using xdg::ID_NONE;
+using xdg::MeshID;
+
+struct Rays {
+  std::vector<double> o, d;  // 3 per ray
+  std::vector<int32_t> region;
+  size_t n = 0;
+};
+
+static Rays read_rays(const char* path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) { std::fprintf(stderr, "cannot open %s\n", path); std::exit(2); }
+  uint32_t n = 0;
+  f.read(reinterpret_cast<char*>(&n), 4);
+  Rays r;
+  r.n = n;
+  std::vector<double> raw(static_cast<size_t>(n) * 6);
+  f.read(reinterpret_cast<char*>(raw.data()), raw.size() * 8);
+  r.region.resize(n);
+  f.read(reinterpret_cast<char*>(r.region.data()), static_cast<std::streamsize>(n) * 4);
+  if (!f) { std::fprintf(stderr, "%s: truncated smrays file\n", path); std::exit(2); }
+  r.o.resize(static_cast<size_t>(n) * 3);
+  r.d.resize(static_cast<size_t>(n) * 3);
+  for (size_t i = 0; i < n; i++)
+    for (int k = 0; k < 3; k++) { r.o[3 * i + k] = raw[6 * i + k]; r.d[3 * i + k] = raw[6 * i + 3 + k]; }
+  return r;
+}
+
+// smtets v1: nn, nt (u32), nodes (3 f64 each), tets (4 u32 each), region (i32 each).
+struct TetFile {
+  std::vector<double> nodes;
+  std::vector<uint32_t> tets;
+  size_t nt = 0;
+};
+
+static TetFile read_tets(const char* path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) { std::fprintf(stderr, "cannot open %s\n", path); std::exit(2); }
+  uint32_t nn = 0, nt = 0;
+  f.read(reinterpret_cast<char*>(&nn), 4);
+  f.read(reinterpret_cast<char*>(&nt), 4);
+  TetFile t;
+  t.nt = nt;
+  t.nodes.resize(static_cast<size_t>(nn) * 3);
+  t.tets.resize(static_cast<size_t>(nt) * 4);
+  f.read(reinterpret_cast<char*>(t.nodes.data()), t.nodes.size() * 8);
+  f.read(reinterpret_cast<char*>(t.tets.data()), t.tets.size() * 4);
+  if (!f) { std::fprintf(stderr, "%s: truncated smtets file\n", path); std::exit(2); }
+  return t;
+}
+
+// What the model's volumes look like: region r is volume id r + 1, the implicit complement is -1.
+struct Model {
+  xdg::XDG* x = nullptr;
+  const xdg::MeshManager* mm = nullptr;
+  MeshID ipc = ID_NONE;
+  std::vector<char> valid;  // by volume id: a region of the file (not the complement)
+  int32_t region_of(MeshID v) const {
+    if (v == ipc) return -1;
+    if (v > 0 && static_cast<size_t>(v) < valid.size() && valid[static_cast<size_t>(v)]) return v - 1;
+    return -2;
+  }
+  // Volume id of a region the ray file names (-1: complement); ID_NONE for an unknown region.
+  MeshID volume_of(int32_t r) const {
+    if (r < 0) return ipc;
+    return (static_cast<size_t>(r) + 1 < valid.size() && valid[static_cast<size_t>(r) + 1]) ? r + 1 : ID_NONE;
+  }
+};
+
+// Per-thread output of a contiguous range of rays.
+struct Chunk {
+  std::vector<int32_t> region;  // one entry per segment
+  std::vector<double> chord;
+  std::vector<uint32_t> count;  // segments per ray of the range
+  uint64_t crossings = 0, lost = 0, audits = 0;
+  void clear() { region.clear(); chord.clear(); count.clear(); crossings = lost = audits = 0; }
+};
+
+static xdg::Position pos_of(const Rays& R, size_t i) { return xdg::Position(R.o[3 * i], R.o[3 * i + 1], R.o[3 * i + 2]); }
+static xdg::Direction dir_of(const Rays& R, size_t i) { return xdg::Direction(R.d[3 * i], R.d[3 * i + 1], R.d[3 * i + 2]); }
+
+static void trace_range(const Model& M, const Rays& R, size_t lo, size_t hi, unsigned audit_every, Chunk& c) {
+  c.clear();
+  for (size_t i = lo; i < hi; i++) {
+    xdg::Position pos = pos_of(R, i);
+    const xdg::Direction dir = dir_of(R, i);
+    MeshID vol = M.volume_of(R.region[i]);
+    if (vol == ID_NONE) { c.lost++; c.count.push_back(0); continue; }
+    std::vector<MeshID> hist;
+    uint32_t segs = 0;
+    bool lost = false;
+    if (audit_every && vol != M.ipc && (i % audit_every) == 0) {
+      c.audits++;
+      if (!M.x->point_in_volume(vol, pos, &dir)) { c.lost++; c.count.push_back(0); continue; }
+    }
+    for (unsigned step = 0; step < 1000000 && !lost; step++) {
+      const auto hit = M.x->ray_fire(vol, pos, dir, xdg::INFTY, xdg::HitOrientation::EXITING, &hist);
+      if (hit.second == ID_NONE) { lost = true; break; }
+      const MeshID next = M.mm->next_volume(vol, hit.second);
+      // The chord just flown lies in `vol`.
+      c.region.push_back(M.region_of(vol));
+      c.chord.push_back(hit.first);
+      segs++;
+      pos += dir * hit.first;
+      c.crossings++;
+      if (audit_every && next != M.ipc && ((i + step) % audit_every) == 0) {
+        c.audits++;
+        const xdg::Position probe = pos + dir * 1e-6;
+        if (!M.x->point_in_volume(next, probe, &dir, &hist)) { lost = true; break; }
+      }
+      vol = next;
+      if (vol == M.ipc) break;  // leaked into the implicit complement
+    }
+    if (lost) c.lost++;
+    c.count.push_back(segs);
+  }
+}
+
+// ---- W-fire -------------------------------------------------------------------------------
+
+struct FireChunk {
+  std::vector<double> dist;
+  std::vector<int32_t> to;  // region entered, -1 complement, -2 lost
+  uint64_t lost = 0, locates = 0;
+  void clear() { dist.clear(); to.clear(); lost = locates = 0; }
+};
+
+static void fire_range(const Model& M, const Rays& R, size_t lo, size_t hi, bool locate, FireChunk& c) {
+  c.clear();
+  for (size_t i = lo; i < hi; i++) {
+    const xdg::Position pos = pos_of(R, i);
+    const xdg::Direction dir = dir_of(R, i);
+    MeshID vol = M.volume_of(R.region[i]);
+    if (!locate && vol == ID_NONE) { c.lost++; c.dist.push_back(0.0); c.to.push_back(-2); continue; }
+    if (locate) {
+      c.locates++;
+      vol = M.x->find_volume(pos, dir);  // a linear loop over the volumes, then the complement
+    }
+    const auto hit = M.x->ray_fire(vol, pos, dir, xdg::INFTY, xdg::HitOrientation::EXITING, nullptr);
+    if (hit.second == ID_NONE) { c.lost++; c.dist.push_back(0.0); c.to.push_back(-2); continue; }
+    c.dist.push_back(hit.first);
+    c.to.push_back(M.region_of(M.mm->next_volume(vol, hit.second)));
+  }
+}
+
+// ---- W-flight -----------------------------------------------------------------------------
+
+// Port of sm-rt-bench's SplitMix64 (src/rng.rs).
+struct SplitMix64 {
+  uint64_t s;
+  static SplitMix64 for_index(uint64_t seed, uint64_t index) {
+    SplitMix64 m{seed ^ (index * 0x9E3779B97F4A7C15ULL)};
+    m.next_u64();
+    return m;
+  }
+  uint64_t next_u64() {
+    s += 0x9E3779B97F4A7C15ULL;
+    uint64_t z = s;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+  }
+  double unit() { return static_cast<double>(next_u64() >> 11) * (1.0 / 9007199254740992.0); }
+  void direction(double d[3]) {
+    for (;;) {
+      const double x = 2.0 * unit() - 1.0, y = 2.0 * unit() - 1.0, z = 2.0 * unit() - 1.0;
+      const double n2 = x * x + y * y + z * z;
+      if (1e-6 < n2 && n2 <= 1.0) {
+        const double n = std::sqrt(n2);
+        d[0] = x / n; d[1] = y / n; d[2] = z / n;
+        return;
+      }
+    }
+  }
+};
+
+struct Sigma {
+  std::vector<double> t, a;  // by region id
+};
+
+static Sigma read_sigma(const char* path) {
+  std::ifstream f(path);
+  if (!f) { std::fprintf(stderr, "cannot open %s\n", path); std::exit(2); }
+  std::vector<std::array<double, 3>> all;
+  long id = 0;
+  double st = 0, sa = 0;
+  long maxid = -1;
+  while (f >> id >> st >> sa) { all.push_back({static_cast<double>(id), st, sa}); maxid = std::max(maxid, id); }
+  Sigma s;
+  s.t.assign(static_cast<size_t>(maxid + 1), 0.0);
+  s.a.assign(static_cast<size_t>(maxid + 1), 0.0);
+  for (const auto& r : all)
+    if (r[0] >= 0) { s.t[static_cast<size_t>(r[0])] = r[1]; s.a[static_cast<size_t>(r[0])] = r[2]; }
+  return s;
+}
+
+constexpr size_t BLOCK = 256;
+
+struct FlightCounts { uint64_t steps = 0, collisions = 0, lost = 0, histories = 0; };
+
+// One history; tally layout [collisions per region | track length per region | leaked | absorbed].
+static void flight_history(const Model& M, const Rays& R, uint64_t h, uint64_t seed, const Sigma& S, double* tally, FlightCounts& c) {
+  const size_t nreg = S.t.size();
+  const size_t k = static_cast<size_t>(h % R.n);
+  SplitMix64 rng = SplitMix64::for_index(seed, h);
+  xdg::Position pos = pos_of(R, k);
+  double dir_a[3] = {R.d[3 * k], R.d[3 * k + 1], R.d[3 * k + 2]};
+  c.histories++;
+  const int32_t r0 = R.region[k];
+  MeshID vol = r0 < 0 ? ID_NONE : M.volume_of(r0);
+  if (vol == ID_NONE) { c.lost++; return; }
+  size_t reg = static_cast<size_t>(r0);
+  std::vector<MeshID> hist;
+  double tau = -std::log(1.0 - rng.unit());
+  for (unsigned step = 0; step < 10000000; step++) {
+    if (reg >= nreg) { c.lost++; return; }
+    const double sig = S.t[reg];
+    const double max = sig > 0.0 ? tau / sig : std::numeric_limits<double>::infinity();
+    const xdg::Direction dir(dir_a[0], dir_a[1], dir_a[2]);
+    const auto hit = M.x->ray_fire(vol, pos, dir, xdg::INFTY, xdg::HitOrientation::EXITING, &hist);
+    if (hit.second == ID_NONE) { c.lost++; return; }
+    const double dist = hit.first;
+    c.steps++;
+    if (max < dist) {  // collision inside the volume
+      tally[nreg + reg] += max;
+      for (int q = 0; q < 3; q++) pos[q] += max * dir_a[q];
+      tally[reg] += 1.0;
+      c.collisions++;
+      if (rng.unit() * sig < S.a[reg]) { tally[2 * nreg + 1] += 1.0; return; }
+      rng.direction(dir_a);
+      hist.clear();
+      tau = -std::log(1.0 - rng.unit());
+      continue;
+    }
+    tally[nreg + reg] += dist;
+    tau -= sig * dist;
+    for (int q = 0; q < 3; q++) pos[q] += dist * dir_a[q];
+    const MeshID next = M.mm->next_volume(vol, hit.second);
+    if (next == M.ipc) { tally[2 * nreg] += 1.0; return; }
+    if (next == ID_NONE) { c.lost++; return; }
+    vol = next;
+    const int32_t rr = M.region_of(vol);
+    reg = rr < 0 ? nreg : static_cast<size_t>(rr);
+  }
+  c.lost++;
+}
+
+// ---- W-walk -------------------------------------------------------------------------------
+
+static void walk_range(const Model& M, const Rays& R, double length, size_t lo, size_t hi, Chunk& c) {
+  c.clear();
+  for (size_t i = lo; i < hi; i++) {
+    const xdg::Position start = pos_of(R, i);
+    const xdg::Direction dir = dir_of(R, i);
+    const xdg::Position end = start + dir * length;
+    const auto segs = M.x->segments(start, end);
+    if (segs.empty()) c.lost++;
+    for (const auto& s : segs) {
+      c.region.push_back(static_cast<int32_t>(M.mm->element_index(s.first)));
+      c.chord.push_back(s.second);
+    }
+    c.crossings += segs.size();
+    c.count.push_back(static_cast<uint32_t>(segs.size()));
+  }
+}
+
+static uint64_t fnv(uint64_t h, uint64_t x) {
+  for (int k = 0; k < 8; k++) { h ^= (x >> (8 * k)) & 0xff; h *= 0x100000001b3ULL; }
+  return h;
+}
+
+static double secs(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+  return std::chrono::duration<double>(b - a).count();
+}
+
+static void stat(std::vector<double> v, double& med, double& mn, double& mx) {
+  std::sort(v.begin(), v.end());
+  med = v[v.size() / 2]; mn = v.front(); mx = v.back();
+}
+
+static uint64_t bits(double x) { uint64_t b; std::memcpy(&b, &x, 8); return b; }
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
+    std::printf("xdg_driver backend=embree xdg=%s embree=%s\n", SMRT_XDG_COMMIT, RTC_VERSION_STRING);
+    return 0;
+  }
+  if (argc < 3) { std::fprintf(stderr, "usage: %s model.h5m rays.bin [options] | --version\n", argv[0]); return 2; }
+  unsigned threads = 1, reps = 7, warmup = 3, audit_every = 1000;
+  bool dump = false;
+  uint64_t histories = 10000, seed = 0x5eed;
+  std::string tracker = "xdg", mode = "embree", precision = "mixed", workload = "track", sigma_path, tets_path;
+  for (int i = 3; i < argc; i++) {
+    const std::string k = argv[i];
+    if (k == "--tracks") { dump = true; continue; }
+    if (i + 1 >= argc) { std::fprintf(stderr, "option %s needs a value\n", k.c_str()); return 2; }
+    const std::string v = argv[++i];
+    if (k == "--threads") threads = std::max(1, std::atoi(v.c_str()));
+    else if (k == "--reps") reps = std::max(1, std::atoi(v.c_str()));
+    else if (k == "--warmup") warmup = std::max(0, std::atoi(v.c_str()));
+    else if (k == "--audit") audit_every = std::max(0, std::atoi(v.c_str()));
+    else if (k == "--tracker") tracker = v;
+    else if (k == "--mode") mode = v;
+    else if (k == "--precision") precision = v;
+    else if (k == "--workload") workload = v;
+    else if (k == "--histories") histories = std::strtoull(v.c_str(), nullptr, 0);
+    else if (k == "--seed") seed = std::strtoull(v.c_str(), nullptr, 0);
+    else if (k == "--sigma") sigma_path = v;
+    else if (k == "--tets") tets_path = v;
+    else { std::fprintf(stderr, "unknown option %s\n", k.c_str()); return 2; }
+  }
+  const bool w_track = workload == "track", w_fire = workload == "fire", w_locate = workload == "fire-locate",
+             w_flight = workload == "flight", w_walk = workload == "walk";
+  if (!(w_track || w_fire || w_locate || w_flight || w_walk)) { std::fprintf(stderr, "unknown workload %s\n", workload.c_str()); return 2; }
+  if (w_flight && sigma_path.empty()) { std::fprintf(stderr, "--workload flight needs --sigma\n"); return 2; }
+
+  using clk = std::chrono::steady_clock;
+  // Errors in XDG throw instead of exiting, so a failure is reported with its message.
+  xdg::XDGConfig::config().set_fatal_error_handling(xdg::ErrorPolicy::THROW);
+  std::shared_ptr<xdg::XDG> x;
+  double load_s = 0.0, tree_s = 0.0;
+  try {
+    x = xdg::XDG::create(xdg::MeshLibrary::MOAB, xdg::RTLibrary::EMBREE);
+    const auto& mm = x->mesh_manager();
+    const auto t0 = clk::now();
+    mm->load_file(argv[1]);
+    mm->init();
+    mm->parse_metadata();
+    const auto t1 = clk::now();
+    x->prepare_raytracer();
+    const auto t2 = clk::now();
+    load_s = secs(t0, t1);
+    tree_s = secs(t1, t2);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "xdg load failed: %s\n", e.what());
+    return 3;
+  }
+  Model M;
+  M.x = x.get();
+  M.mm = x->mesh_manager().get();
+  M.ipc = M.mm->implicit_complement();
+  {
+    MeshID maxid = 0;
+    for (MeshID v : M.mm->volumes()) maxid = std::max(maxid, v);
+    M.valid.assign(static_cast<size_t>(maxid) + 1, 0);
+    for (MeshID v : M.mm->volumes()) if (v != M.ipc && v > 0) M.valid[static_cast<size_t>(v)] = 1;
+  }
+
+  const Rays R = read_rays(argv[2]);
+  if (R.n == 0) { std::fprintf(stderr, "no rays\n"); return 2; }
+
+  double walk_length = 0.0;
+  if (w_walk) {
+    const auto bb = M.mm->global_bounding_box();
+    const double dx = bb.max_x - bb.min_x, dy = bb.max_y - bb.min_y, dz = bb.max_z - bb.min_z;
+    walk_length = 2.0 * std::sqrt(dx * dx + dy * dy + dz * dz);
+    const size_t ne = static_cast<size_t>(M.mm->num_volume_elements());
+    if (!tets_path.empty()) {
+      // Element i of XDG must be tet i of tets.bin, vertex for vertex.
+      const TetFile T = read_tets(tets_path.c_str());
+      if (T.nt != ne) { std::fprintf(stderr, "walk: the model has %zu elements, tets.bin has %zu\n", ne, T.nt); return 3; }
+      size_t bad = 0;
+      for (size_t i = 0; i < T.nt; i++) {
+        const auto verts = M.mm->element_vertices(M.mm->element_id(i));
+        bool same = verts.size() == 4;
+        for (size_t a = 0; a < 4 && same; a++)
+          for (int q = 0; q < 3; q++)
+            same = same && bits(verts[a][q]) == bits(T.nodes[3 * T.tets[4 * i + a] + static_cast<size_t>(q)]);
+        bad += same ? 0 : 1;
+      }
+      if (bad) { std::fprintf(stderr, "walk: %zu of %zu elements differ from tets.bin (element order is not the file order)\n", bad, T.nt); return 3; }
+      std::fprintf(stderr, "walk: %zu elements equal tets.bin in order\n", T.nt);
+    }
+  }
+
+  Sigma S;
+  if (w_flight) S = read_sigma(sigma_path.c_str());  // regions without a line are lost (as in the Rust adapter)
+  const size_t nreg = S.t.size(), width = 2 * nreg + 2;
+  const size_t n_blocks = static_cast<size_t>((histories + BLOCK - 1) / BLOCK);
+
+  std::vector<Chunk> chunks(threads);
+  std::vector<FireChunk> fchunks(threads);
+  std::vector<double> block_tally(w_flight ? n_blocks * width : 0);
+  std::vector<FlightCounts> block_counts(w_flight ? n_blocks : 0);
+  const size_t span = (R.n + threads - 1) / threads;
+  const auto spawn = [&](const std::function<void(unsigned)>& body) {
+    std::vector<std::thread> pool;
+    for (unsigned t = 0; t < threads; t++) pool.emplace_back([&body, t] { body(t); });
+    for (auto& th : pool) th.join();
+  };
+  auto run_all = [&]() {
+    if (w_flight) {
+      std::fill(block_tally.begin(), block_tally.end(), 0.0);
+      std::atomic<size_t> next_block{0};
+      spawn([&](unsigned) {
+        for (size_t b = next_block++; b < n_blocks; b = next_block++) {
+          FlightCounts fc;
+          const uint64_t h1 = std::min<uint64_t>(histories, (b + 1) * BLOCK);
+          for (uint64_t h = b * BLOCK; h < h1; h++) flight_history(M, R, h, seed, S, &block_tally[b * width], fc);
+          block_counts[b] = fc;
+        }
+      });
+      return;
+    }
+    spawn([&](unsigned t) {
+      const size_t lo = std::min<size_t>(R.n, static_cast<size_t>(t) * span), hi = std::min<size_t>(R.n, lo + span);
+      if (w_track) trace_range(M, R, lo, hi, audit_every, chunks[t]);
+      else if (w_walk) walk_range(M, R, walk_length, lo, hi, chunks[t]);
+      else fire_range(M, R, lo, hi, w_locate, fchunks[t]);
+    });
+  };
+  const bool segment_output = w_track || w_walk;
+  auto hash_all = [&]() {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    if (w_flight) {
+      for (double v : block_tally) h = fnv(h, bits(v));
+      return h;
+    }
+    if (!segment_output) {
+      for (const auto& c : fchunks)
+        for (size_t s = 0; s < c.dist.size(); s++) { h = fnv(h, bits(c.dist[s])); h = fnv(h, static_cast<uint32_t>(c.to[s])); }
+      return h;
+    }
+    for (const auto& c : chunks) {
+      size_t s = 0;
+      for (uint32_t n : c.count) {
+        h = fnv(h, n);
+        for (uint32_t k = 0; k < n; k++, s++) { h = fnv(h, static_cast<uint32_t>(c.region[s])); h = fnv(h, bits(c.chord[s])); }
+      }
+    }
+    return h;
+  };
+
+  std::vector<double> rates;
+  uint64_t first_hash = 0;
+  bool stable = true;
+  const double units = w_flight ? static_cast<double>(histories) : static_cast<double>(R.n);
+  try {
+    for (unsigned rep = 0; rep < warmup + reps; rep++) {
+      const auto a = clk::now();
+      run_all();
+      const double s = secs(a, clk::now());
+      const uint64_t h = hash_all();
+      if (rep == 0) first_hash = h; else if (h != first_hash) stable = false;
+      if (rep >= warmup) rates.push_back(units / s);
+    }
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "xdg run failed: %s\n", e.what());
+    return 3;
+  }
+  uint64_t segments = 0, lost = 0, steps = 0, collisions = 0, locates = 0;
+  std::vector<double> tally(width, 0.0), tally_sq(width, 0.0);
+  if (segment_output) {
+    for (const auto& c : chunks) { segments += c.chord.size(); lost += c.lost; }
+    steps = segments;
+  } else if (w_flight) {
+    for (size_t b = 0; b < n_blocks; b++) {  // fixed block order
+      for (size_t k = 0; k < width; k++) {
+        const double v = block_tally[b * width + k];
+        tally[k] += v;
+        tally_sq[k] += v * v;
+      }
+      steps += block_counts[b].steps; collisions += block_counts[b].collisions; lost += block_counts[b].lost;
+    }
+  } else {
+    for (const auto& c : fchunks) { lost += c.lost; locates += c.locates; steps += c.dist.size(); }
+  }
+  double rm, rmin, rmax;
+  stat(rates, rm, rmin, rmax);
+  struct rusage ru;
+  getrusage(RUSAGE_SELF, &ru);
+  const unsigned long long rss = static_cast<unsigned long long>(ru.ru_maxrss) * 1024ULL;  // Linux: kilobytes
+  const double spt = segment_output ? static_cast<double>(segments) / static_cast<double>(R.n) : 0.0;
+  const double fph = w_flight ? static_cast<double>(steps) / static_cast<double>(histories ? histories : 1) : (segment_output ? 0.0 : 1.0);
+  char hashbuf[17];
+  std::snprintf(hashbuf, sizeof hashbuf, "%016llx", static_cast<unsigned long long>(first_hash));
+  const char* wname = w_track ? "w-track" : w_walk ? "w-walk" : w_fire ? "w-fire" : w_locate ? "w-fire-locate" : "w-flight";
+  std::printf(
+      "{\"tracker\":\"%s\",\"mode\":\"%s\",\"workload\":\"%s\",\"threads\":%u,\"precision\":\"%s\","
+      "\"rays_per_s\":{\"median\":%.1f,\"min\":%.1f,\"max\":%.1f,\"reps\":%u},"
+      "\"segments_per_track\":%.6f,\"ns_per_segment\":%.3f,\"fires_per_history\":%.6f,"
+      "\"build_s\":%.6f,\"load_s\":%.6f,\"tree_s\":%.6f,"
+      "\"peak_rss_bytes\":%llu,\"lost\":%llu,"
+      "\"determinism\":{\"hash\":\"%s\",\"stable\":%s},"
+      "\"counters\":{\"steps\":%llu,\"segments\":%llu,\"fires\":%llu,\"locates\":%llu,\"histories\":%llu,\"collisions\":%llu,\"lost\":%llu}}\n",
+      tracker.c_str(), mode.c_str(), wname, threads, precision.c_str(), rm, rmin, rmax, reps, spt,
+      segments ? 1e9 / (rm * spt) : 0.0, fph,
+      load_s + tree_s, load_s, tree_s, rss, static_cast<unsigned long long>(lost), hashbuf, stable ? "true" : "false",
+      static_cast<unsigned long long>(steps), static_cast<unsigned long long>(segments),
+      static_cast<unsigned long long>(segment_output || w_flight ? 0 : steps), static_cast<unsigned long long>(locates),
+      static_cast<unsigned long long>(w_flight ? histories : 0), static_cast<unsigned long long>(collisions),
+      static_cast<unsigned long long>(lost));
+  if (dump && segment_output) {
+    std::printf("{\"%s\":[", w_walk ? "walk" : "tracks");
+    bool first = true;
+    for (const auto& c : chunks) {
+      size_t s = 0;
+      for (uint32_t n : c.count) {
+        std::printf("%s{\"r\":[", first ? "" : ",");
+        first = false;
+        for (uint32_t k = 0; k < n; k++) std::printf("%s%d", k ? "," : "", c.region[s + k]);
+        std::printf("],\"c\":[");
+        for (uint32_t k = 0; k < n; k++) std::printf("%s%.17g", k ? "," : "", c.chord[s + k]);
+        std::printf("]}");
+        s += n;
+      }
+    }
+    std::printf("]}\n");
+  } else if (dump && !w_flight) {
+    std::printf("{\"fires\":[");
+    bool first = true;
+    for (const auto& c : fchunks)
+      for (size_t s = 0; s < c.dist.size(); s++) {
+        std::printf("%s[%.17g,%d]", first ? "" : ",", c.dist[s], c.to[s]);
+        first = false;
+      }
+    std::printf("]}\n");
+  } else if (dump) {
+    std::printf("{\"tally\":[");
+    for (size_t k = 0; k < width; k++) std::printf("%s%.17g", k ? "," : "", tally[k]);
+    std::printf("],\"tally_sq\":[");
+    for (size_t k = 0; k < width; k++) std::printf("%s%.17g", k ? "," : "", tally_sq[k]);
+    std::printf("],\"blocks\":%zu}\n", n_blocks);
+  }
+  return 0;
+}

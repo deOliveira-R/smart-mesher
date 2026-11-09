@@ -1,6 +1,9 @@
 // facets.bin ("smfacets v1", see bench/README.md) -> DAGMC h5m through MOAB's C++ API.
 //
-//   facets_to_h5m facets.bin out.h5m [--report report.json] [--swap-sense]
+//   facets_to_h5m facets.bin out.h5m [--report report.json] [--swap-sense] [--no-watertight]
+//
+// --no-watertight (the xdg image, which has no DAGMC tools) writes the file and skips the check
+// below: the report says `"watertight": null`; the DAGMC rows on the same facets carry the verdict.
 //
 // (Replaces the pymoab script: conda-forge has no pymoab build on linux-aarch64.)
 // Triangles with the same (forward, reverse) region pair that are connected through shared
@@ -55,14 +58,15 @@ static std::string json_escape(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) { std::fprintf(stderr, "usage: facets_to_h5m facets.bin out.h5m [--report f] [--swap-sense]\n"); return 2; }
+  if (argc < 3) { std::fprintf(stderr, "usage: facets_to_h5m facets.bin out.h5m [--report f] [--swap-sense] [--no-watertight]\n"); return 2; }
   const char* facets = argv[1];
   const char* h5m = argv[2];
   const char* report = nullptr;
-  bool swap = false;
+  bool swap = false, check = true;
   for (int i = 3; i < argc; i++) {
     if (!std::strcmp(argv[i], "--report") && i + 1 < argc) report = argv[++i];
     else if (!std::strcmp(argv[i], "--swap-sense")) swap = true;
+    else if (!std::strcmp(argv[i], "--no-watertight")) check = false;
     else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
   }
 
@@ -148,6 +152,14 @@ int main(int argc, char** argv) {
     for (int v : vs) if (v >= 0) CHECK(mb->add_parent_child(vols[v], s));
   }
   CHECK(mb->write_file(h5m));
+  if (!check) {
+    const std::string json = "{\"check_watertight_exit\": null, \"surfaces\": " + std::to_string(surfaces.size()) + ", \"triangles\": " + std::to_string(nt) +
+                             ", \"vertices\": " + std::to_string(nv) + ", \"volumes\": " + std::to_string(regions.size()) + ", \"watertight\": null, \"facets\": \"" +
+                             json_escape(facets) + "\"}";
+    if (report) { std::ofstream(report) << json << "\n"; }
+    std::printf("%s\n", json.c_str());
+    return 0;
+  }
 
   // DAGMC's own watertightness check (the make_watertight tool chain).
   std::string cmd = std::string("check_watertight '") + h5m + "' 2>&1";
