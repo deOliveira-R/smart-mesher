@@ -297,6 +297,14 @@ margin of 1e-9 against a validator that uses a different origin, so a near-degen
 needs a degenerate tet; (2) the repair stops after 256 rounds; neither was observed. The tolerance
 was not loosened (decision 12).
 
+## Measurements (W4-POLY-MEASURE)
+
+`PolyStats` (`mesh.poly_info`) gained: `convex_cells`, `fast_path_cells`, `over_cap_cells`, `convex_over_cap_cells`, `max_cell_convexity` (from `sm-quality`'s convexity rule, planarity tolerance `RT_PLANARITY_TOL = 1e-9` as in `sm-rt`), `multi_face_pairs` and `hub_split_share` (the share of interior faces that belong to a pair of cells sharing more than one face; hub triangles always do), and, for an all-tet mesh only, `dual_eligibility`. All have `serde(default)`; `dual_eligibility` is omitted when absent.
+
+`dual_eligibility(mesh)` (`src/measure.rs`) counts, with exact predicates and without constructing a circumcentre: interior faces that are not locally Delaunay (`insphere` of the far vertex of one tet in the circumsphere of the other, cospherical accepted), and tets whose circumcentre lies strictly outside across one of their own faces that is a boundary face or faces another region. The second test uses the sign of `N = |B|^2 (C x D).n + |C|^2 (D x B).n + |D|^2 |n|^2` in expansion arithmetic (`B, C, D` the edge vectors from one face vertex, `n = B x C`): `N < 0` iff the circumcentre is on the other side of the face from the opposite vertex. A circumcentre that leaves through a facet of another tet is not seen, which is exact for a locally convex region. The counts are sums over fixed chunks.
+
+Numbers and the pin list: `W4_POLY_MEASURE.md`.
+
 ## Known gaps (W3b)
 
 Partial dualization of a mixed mesh (needs conformize), circumcentric duals, vertex-moving

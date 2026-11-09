@@ -13,6 +13,7 @@
 //! range and the conventions for degenerate input.
 
 mod check;
+mod convexity;
 mod driver;
 mod error;
 mod extra;
@@ -31,6 +32,10 @@ pub use driver::{
     validity,
 };
 pub use check::check_indices;
+pub use convexity::{
+    CONVEX_CHECK_MAX, CellConvexity, ConvexityReport, RT_PLANARITY_TOL, cell_convexity, convexity_column, convexity_report,
+    fast_path_eligible,
+};
 pub use error::{QualityError, Result};
 pub use metric::{Context, Metric, eval};
 pub use stats::{CHUNK, Histogram, Summary, histogram, histogram_auto, summarize};
