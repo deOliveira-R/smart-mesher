@@ -98,6 +98,19 @@ Legend: done (with the commit or task), kept (stays as the current behaviour), W
   - `RegionInfo.tags` not in cache images and hashed without a presence marker. Trigger: the first producer (for example DAGMC property import); fix together with a cache-image version bump.
   - P1 limits tests (`sm-mesher/DESIGN.md:79-87`). Trigger: any code that loads `IntentLayer` through serde.
 
+### Remaining W3b report open items (dispositions)
+- **Region granularity of the `.smrt`** (per-volume region tag option): kept. Regions are one per block; no code has asked for per-volume regions. W4 trigger: the first request for it.
+- **Node 20 run of the sm-view web job:** W4. Trigger: the next edit of the sm-view web job or CI image change.
+- **Re-run of the C driver and the Python row on the Linux benchmark machine (O11):** W4. Trigger: access to the Linux benchmark machine. The W3c smoke was on macOS only (Q9).
+- **sm-rt 2D lattice z pitch 1e9 sentinel; O(surfaces)/O(cells) analytic void/complement stepping and cold locate (cell-box BVH):** W4. Trigger: a benchmark or user model where analytic stepping or cold locate dominates.
+- **Benchmark items:**
+  - `smtets_to_moab`: W4, trigger: the XDG tet walk work (the same tet inputs are needed).
+  - P1 `facets` row partial at `tiny` (zero-area triangles in the hand-built moderator): kept, the reduced and larger scales are used for the smoke.
+  - Linux `smcase.json` hash lines unblessed: W4, trigger: the first Linux benchmark run (Linux mesh hashes are covered by `tools/platform/expected.txt`).
+  - Docker digests UNSET: done in W3c (BENCH-PIN; the images record their sha256 id, and FIX-BENCH reads it once).
+  - Keep `date_utc` and the sequence counter out of hashed outputs: kept; W4 trigger: the next edit of the bench result writer, which should check both are outside `result_hash`.
+- **Not scheduled:** the WAIT list, hex lattices (Q3 stretch) and server push (O16) stay unscheduled; W4 trigger for each is an explicit user request. The MCNP importer is dropped (MCNP is not a target, OpenMC is; the OpenMC import is done, sm-csgio). Overlay `MeshRead` stays in Contract changes above.
+
 ### From W3b-INT acceptance (done in W3c-INT)
 - Done: `w3b-report.md` deviations numbered D1..D8, GitHub CI recorded as red with causes (local `tools/ci.sh` rc = 0, 59 to 70 minutes, kept apart), Chrome version recorded (the run did not record it; the installed app reads 156.0.8078.80), repro recipe corrected (`model.subtract` without `keep`, then imprint and merge).
 - Done: PARITY Transforms row reworded (volume counts and total volume).
@@ -111,7 +124,7 @@ Done in W3c-INT (merged with this report):
 - Test tightening: sm-py `test_export.py` marks and `NO_SERVER_A` dropped, gmsh `binary=True` byte-compared with the CLI (FIX-PY); `plan_blame.rs` asserts the `ReplanLimit` text (FIX-MESHER); auto_select plan rows, warning text, `rejections == 0`, three-way hash for the single through pin, the lattice, the enclosed pin and B5, transport stall bound and rendezvous timeout (FIX-SERVER); sm-csgio 1-vs-4-thread findings, 1e-11 tolerance, `translated` fixture, row-swapped and transposed-rotation oracle variants, cli precedence (FIX-CSGIO); delta.rs acc04 (FIX-RT).
 - Small fixes: LINUX-HASH (toolchain pin, key counts, `error.*` check, comment) (PLATFORM); sm-csgio `world.rs` debug_assert and DESIGN.md step 5 (FIX-CSGIO); sm-rt-capi DESIGN.md `smrt_version` and `guard` (FIX-RT); image id read once (FIX-BENCH); complement-leak limit and `vols[r0]` bounds check (BENCH-WORKLOADS follow-up, 785e765); MESHER-REPLAN trial error reused (FIX-MESHER); `plan.md:142` wording (C9).
 - Temp dirs: capi tests (CLEAN-RT) and the sm-cli `smesh-cli-*` and `smesh-full-*` helpers (FIX-CLI-TMP) use `CARGO_TARGET_TMPDIR`; the PIN, server and bench tests clean up by Drop guards. The root cause of the old empty `smrt-capi-*` dirs is still unknown. The sm-csgio leak could not be reproduced (`gen.py` hardened, not run).
-- Not verified by INT: sm-bench `cases.rs` compares only the shared keys (carried to the next bench edit).
+- sm-bench: `cases.rs` `only_tiny_p1_lines_of_the_recorded_hashes_changed` compares a BTreeMap of the shared keys (FIX-BENCH, af85afe); images with no `moab=` line are reported (`moab_mismatch` in `docker.rs`, test `moab_pin_check_reports_a_missing_or_wrong_version`; FIX-BENCH, af85afe).
 
 Carried (new follow-ups from the INT reviews; none blocks W4):
 - W4, test hygiene, trigger "next edit of that file":

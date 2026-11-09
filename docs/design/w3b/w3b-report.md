@@ -118,5 +118,5 @@ Two different things were called CI. They are kept apart here.
 - **Local `tools/ci.sh` on macOS (with the new sm-rt-capi `stubs` test and clippy): rc = 0, 59 to 70 minutes.** This is the only run that was green.
 - **GitHub Actions (Linux x86_64): red** on `main` from the W3b-1 merge (2026-11-05) on, including the W3b integration period (last four runs on main, for example run 42412194333). Causes:
   - `crates/sm-rt/tests/flat_golden.rs:55`: the bundle hash differs on Linux (the structure hash is equal). Addressed in W3c-0 item 0.2 (C11, per-platform bundle constants).
-  - sm-py job: `test_errors.py [<lambda>5]` fails. Addressed in W3c-0 item 0.3 (PY-CI).
+  - sm-py job: `test_errors.py [<lambda>5]` fails. Addressed in W3c-0 item 0.3 (PY-CI). Both causes were confirmed fixed by GitHub run 42463845479 (W3c-0 merge).
   - The W3b wave was merged on the local result alone. From W3c on, a wave merges only with GitHub CI green as well (see `docs/design/w3c/rulings.md`, process note).

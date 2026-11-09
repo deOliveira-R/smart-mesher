@@ -81,7 +81,13 @@ Numbered in one scheme. D1 to D5 come from the sub-wave review (backlog "Deviati
 
 ## GitHub CI status
 
-Red on `main` since the W3b-1 merge (2026-11-05) for `flat_golden` (bundle hash on Linux) and sm-py `test_errors.py [<lambda>5]`; both were addressed in sub-wave 0 (items 0.2, 0.3). From W3c on a wave merges only with GitHub CI green as well as the local run (process note in `rulings.md`).
+Red on `main` since the W3b-1 merge (2026-11-05) for `flat_golden` (bundle hash on Linux) and sm-py `test_errors.py [<lambda>5]`. Both causes were fixed in sub-wave 0 (items 0.2, 0.3). The first W3c-0 PR run (42453750390) was still red; commit 9ac71ca then added the x86_64 `flat_golden` rows taken from PR #1 run 42448206605.
+
+GitHub CI has been green since the W3c-0 merge:
+- `main`: 42463845479 (W3c-0 merge), 42482808601 (sub-waves 1+2 merge, PR #2), 42483031650 (backlog), 42496428949 (PR #3 merge).
+- PR runs: 42457132759, 42475545325, 42489103474.
+
+From W3c on a wave merges only with GitHub CI green as well as the local run (process note in `rulings.md`).
 
 GitHub CI result of the final INT PR: see PR.
 

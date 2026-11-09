@@ -30,7 +30,7 @@ Booleans (P1):
 - [ ] mixed-dimension unite
 Transforms (P1):
 - [x] move · rotate · scale · reflect (W2: sm-model, tests/transforms.rs; which axis/vertex/normal forms exist not audited)
-- [x] move (delta, to location) · rotate (axis, two vertices, surface normal) · copy variants (W3b: sm-model, tests/xform2.rs `move_to_a_point_moves_the_centroid_exactly_and_an_omitted_coordinate_stays`, tests/copy.rs `brick_copy_count_3_move`; sm-cli milestone_w3b.rs row M1 `milestone_w3b`: a pin cell and a 3x3 lattice by two `model.copy` steps, volume counts and total volume checked; conformal interfaces are checked by the M4 and M6 rows and, for the round pin, by `milestone_w3c_pin`)
+- [x] move (delta, to location) · rotate (axis, two vertices, surface normal) · copy variants (W3b: sm-model, tests/xform2.rs `move_to_a_point_moves_the_centroid_exactly_and_an_omitted_coordinate_stays`, tests/copy.rs `brick_copy_count_3_move`; sm-cli milestone_w3b.rs row M1 `milestone_w3b`: a pin cell and a 3x3 lattice by two `model.copy` steps, volume counts and total volume checked; conformal interfaces are checked for the round pin by `milestone_w3c_pin` P3, `mesh.validate` with 0 violations; the M6 chord sums equal the box chord, which is indirect evidence only)
 Decomposition, i.e. webcut (P1):
 - [x] plane by vertices / surface / axis plane + offset · cylinder (and sphere) · imprint/merge options (`nomerge`) · section (keep half) (W3a: sm-boolean, tests/webcut.rs, ops.rs, quadric_ops.rs)
 - [ ] tool body · sheet body/surface · extended surface
