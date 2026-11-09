@@ -5,7 +5,7 @@ use crate::image::{import, make_info};
 use crate::tracker::{MeshTracker, Parts};
 use sm_mesh_api::{MeshRead, SetMembers};
 use std::sync::Arc;
-use crate::world::WorldTracker;
+use crate::world::{Body, WorldTracker};
 use sm_rt_api::{
     BoundarySpec, BuildInput, BuildOptions, BuildReport, CacheImage, CacheKey, ComplementPolicy, ContentHash, ContentHasher, LeafInput, MeshInput, RegionRule, Result, RtError,
     Tracker, TrackerBuilder, TrackerKind,
@@ -103,7 +103,7 @@ impl MeshTrackerBuilder {
 /// conditions and complement policy do not apply inside a world: leaving the leaf is an event the
 /// walker resolves (neighbour instance, or the world boundary), so the leaf is built with vacuum
 /// boundaries and no complement.
-pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(MeshTracker, BuildReport)> {
+pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(Body, BuildReport)> {
     // A prototype keeps the world's partition options: its kd partition serves the flights of
     // every instance. (`region_jump` is refused by the world build before this point.)
     let vac = BoundarySpec::default();
@@ -111,13 +111,13 @@ pub(crate) fn build_proto(leaf: &LeafInput<'_>, opts: &BuildOptions) -> Result<(
         LeafInput::Mesh(m) => {
             let outside = ComplementPolicy::Outside;
             let input = BuildInput::Mesh(MeshInput::new(m.mesh, m.regions, &vac, &outside));
-            build_flat(&input, opts, &BuildExtras::default(), None, false)
+            build_flat(&input, opts, &BuildExtras::default(), None, false).map(|(t, r)| (Body::Mesh(t), r))
         }
         LeafInput::Facets(f) => {
             let input = BuildInput::Facets(f, &vac);
-            build_flat(&input, opts, &BuildExtras::default(), None, false)
+            build_flat(&input, opts, &BuildExtras::default(), None, false).map(|(t, r)| (Body::Mesh(t), r))
         }
-        LeafInput::Csg(_) => Err(RtError::Unsupported("CSG leaf (analytic tracker, W3b-RT-ANALYTIC)")),
+        LeafInput::Csg(c) => crate::analytic::build_proto_csg(c, opts).map(|(t, r)| (Body::Csg(Box::new(t)), r)),
         _ => Err(RtError::Unsupported("unknown leaf input variant")),
     }
 }
@@ -178,7 +178,7 @@ impl TrackerBuilder for MeshTrackerBuilder {
         let (kind, topo, boundary) = match input {
             BuildInput::Mesh(m) => (TrackerKind::MeshWalk, m.topology_content_hash(), m.boundaries.content_hash()),
             BuildInput::Facets(f, b) => (TrackerKind::Facets, f.content_hash(), b.content_hash()),
-            BuildInput::Hier(h) if crate::analytic::has_csg(h) => return crate::analytic::AnalyticTrackerBuilder.cache_key(input, opts),
+            BuildInput::Hier(h) if crate::analytic::is_bare_csg(h) => return crate::analytic::AnalyticTrackerBuilder.cache_key(input, opts),
             BuildInput::Hier(h) => {
                 return Ok(CacheKey::new(TrackerKind::World, BUILDER_VERSION, h.content_hash(), h.spec.content_hash(), h.boundaries.content_hash(), opts.content_hash()));
             }
@@ -189,7 +189,7 @@ impl TrackerBuilder for MeshTrackerBuilder {
 
     fn build(&self, input: &BuildInput<'_>, opts: &BuildOptions) -> Result<(Box<dyn Tracker>, BuildReport)> {
         if let BuildInput::Hier(h) = input
-            && crate::analytic::has_csg(h)
+            && crate::analytic::is_bare_csg(h)
         {
             return crate::analytic::AnalyticTrackerBuilder.build(input, opts);
         }
