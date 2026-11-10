@@ -1,6 +1,10 @@
 //! W4-EXO-VERIFY: does a real reader (libMesh `meshtool-opt`, the reader MOOSE and Griffin use)
 //! take our files? The tool comes from the user's moose env; every test prints a skip message and
-//! passes when it is missing. Set `SM_LIBMESH_BIN` to the `meshtool-opt` path to override.
+//! passes when it is missing. Set `SM_LIBMESH_BIN` to the `meshtool-opt` path, or `CONDA_PREFIX`
+//! to a moose env (`$CONDA_PREFIX/libmesh/bin/meshtool-opt`).
+//!
+//! Each test skips green when `meshtool-opt` is missing, so the libMesh result below is pinned
+//! only on the user's Mac (moose env); machines without it neither confirm nor refute it.
 //!
 //! Recorded result (libMesh 1.9.0-pre, moose env, 2026-11-09): the control file (hex, wedge,
 //! pyramid, tet blocks) is read; the `NFACED` file is refused with
@@ -13,10 +17,10 @@ use sm_testkit::meshes;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const MOOSE_ENV: &str = "/Users/rodrigo/opt/miniforge/envs/moose";
-
 fn meshtool() -> Option<PathBuf> {
-    let p = std::env::var_os("SM_LIBMESH_BIN").map_or_else(|| PathBuf::from(MOOSE_ENV).join("libmesh/bin/meshtool-opt"), PathBuf::from);
+    let p = std::env::var_os("SM_LIBMESH_BIN")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CONDA_PREFIX").map(|c| PathBuf::from(c).join("libmesh/bin/meshtool-opt")))?;
     p.is_file().then_some(p)
 }
 

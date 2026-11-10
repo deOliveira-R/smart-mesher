@@ -206,16 +206,25 @@ fn script_text_and_json_of_the_enclosed_pin() {
 
 #[test]
 fn steps_round_trip_through_json_and_have_a_schema() {
-    let v = B::new().brick(1.5, 0.75, -0.5, 0.5).enclosed(0.8, 0.0, 0.3, -0.1, 0.4).view();
+    let v = B::new()
+        .brick(1.5, 0.75, -0.5, 0.5)
+        .enclosed(0.8, 0.0, 0.3, -0.1, 0.4)
+        .view();
     let steps = plan_cuts_view(&v, TOL).expect("plan");
     let text = serde_json::to_string(&steps).expect("json");
     let back: Vec<CutStep> = serde_json::from_str(&text).expect("parse");
     assert_eq!(back, steps);
     assert_eq!(serde_json::to_string(&back).expect("json"), text);
     let schema = serde_json::to_string(&schemars::schema_for!(Vec<CutStep>)).expect("schema");
-    assert!(schema.contains("model.webcut_plane") && schema.contains("model.webcut_cylinder"), "{schema}");
+    assert!(
+        schema.contains("model.webcut_plane") && schema.contains("model.webcut_cylinder"),
+        "{schema}"
+    );
     // `PlaneArg` is nameable.
-    let _ = sm_decomp::PlaneArg { origin: [0.0; 3], normal: [0.0, 0.0, 1.0] };
+    let _ = sm_decomp::PlaneArg {
+        origin: [0.0; 3],
+        normal: [0.0, 0.0, 1.0],
+    };
 }
 
 #[test]
@@ -268,7 +277,13 @@ fn blind_cavities_get_their_end_plane_and_a_cylinder_on_the_solid_slab() {
     assert_eq!(plane_origin(&steps[0]), [0.0, 0.0, 0.2]);
     assert_eq!(steps[0].targets, vec![Target::Id { id: vol() }]);
     assert!(matches!(steps[1].cut, CutKind::Cylinder { radius, .. } if radius == 0.3));
-    assert_eq!(steps[1].targets, vec![Target::Step { step: 0, role: Role::Positive }]);
+    assert_eq!(
+        steps[1].targets,
+        vec![Target::Step {
+            step: 0,
+            role: Role::Positive
+        }]
+    );
     // Open at the top, closed at -0.2: the cylinder goes on the piece below the plane.
     let mut t = B::new().brick(0.63, 0.63, -0.5, 0.5);
     t.wall(0.0, 0.0, 0.3, -0.2, 0.5);
@@ -277,7 +292,13 @@ fn blind_cavities_get_their_end_plane_and_a_cylinder_on_the_solid_slab() {
     assert_eq!(steps.len(), 2);
     assert_eq!(plane_origin(&steps[0]), [0.0, 0.0, -0.2]);
     assert!(matches!(steps[1].cut, CutKind::Cylinder { .. }));
-    assert_eq!(steps[1].targets, vec![Target::Step { step: 0, role: Role::Negative }]);
+    assert_eq!(
+        steps[1].targets,
+        vec![Target::Step {
+            step: 0,
+            role: Role::Negative
+        }]
+    );
 }
 
 #[test]
@@ -444,7 +465,11 @@ fn cylinders(steps: &[CutStep]) -> usize {
 }
 
 fn plane_zs(steps: &[CutStep]) -> Vec<f64> {
-    steps.iter().filter(|s| is_plane(s)).map(|s| plane_origin(s)[2]).collect()
+    steps
+        .iter()
+        .filter(|s| is_plane(s))
+        .map(|s| plane_origin(s)[2])
+        .collect()
 }
 
 #[test]
@@ -460,7 +485,9 @@ fn coaxial_blind_holes_from_both_faces_are_refused_not_merged() {
     let r = reason(plan_cuts_view(&b.view(), TOL));
     assert!(r.contains("stacked on one axis"), "{r}");
     // Enclosed from below and blind from above is the mirror case: refused too.
-    let mut m = B::new().brick(0.63, 0.63, -0.5, 0.5).enclosed(0.0, 0.0, 0.4, -0.3, -0.1);
+    let mut m = B::new()
+        .brick(0.63, 0.63, -0.5, 0.5)
+        .enclosed(0.0, 0.0, 0.4, -0.3, -0.1);
     m.wall(0.0, 0.0, 0.4, 0.3, 0.5);
     m.disk(0.0, 0.0, 0.4, 0.3);
     assert!(reason(plan_cuts_view(&m.view(), TOL)).contains("stacked on one axis"));
@@ -468,7 +495,9 @@ fn coaxial_blind_holes_from_both_faces_are_refused_not_merged() {
 
 #[test]
 fn coaxial_blind_then_enclosed_cavity_cuts_one_cylinder_above_the_blind_end() {
-    let mut b = B::new().brick(0.63, 0.63, -0.5, 0.5).enclosed(0.0, 0.0, 0.4, -0.1, 0.3);
+    let mut b = B::new()
+        .brick(0.63, 0.63, -0.5, 0.5)
+        .enclosed(0.0, 0.0, 0.4, -0.1, 0.3);
     b.wall(0.0, 0.0, 0.4, -0.5, -0.3);
     b.disk(0.0, 0.0, 0.4, -0.3);
     let steps = plan_cuts_view(&b.view(), TOL).expect("plan");
@@ -477,8 +506,20 @@ fn coaxial_blind_then_enclosed_cavity_cuts_one_cylinder_above_the_blind_end() {
     assert_eq!(plane_zs(&steps), vec![-0.3, -0.1, 0.3]);
     assert_eq!(cylinders(&steps), 1);
     assert!(matches!(steps[1].cut, CutKind::Cylinder { .. }));
-    assert_eq!(steps[1].targets, vec![Target::Step { step: 0, role: Role::Positive }]);
-    assert_eq!(steps[2].targets, vec![Target::Step { step: 1, role: Role::Positive }]);
+    assert_eq!(
+        steps[1].targets,
+        vec![Target::Step {
+            step: 0,
+            role: Role::Positive
+        }]
+    );
+    assert_eq!(
+        steps[2].targets,
+        vec![Target::Step {
+            step: 1,
+            role: Role::Positive
+        }]
+    );
 }
 
 #[test]

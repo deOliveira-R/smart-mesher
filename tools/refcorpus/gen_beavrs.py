@@ -1,7 +1,8 @@
 """BEAVRS extracts (W4-REFCORPUS, source 2): a pin cell, one assembly and a 2D core slice.
 
-Run by build.py with the conda env python and ``PYTHONPATH`` set to the pinned BEAVRS checkout's
-``models/openmc`` directory: ``python -I -B gen_beavrs.py <id> <outdir>``. The pin and assembly
+Run by build.py with the conda env python and ``SM_RC_BEAVRS_SRC`` set to the pinned BEAVRS
+checkout's ``models/openmc`` directory (``python -I`` ignores PYTHONPATH, so the script adds it to
+``sys.path`` itself): ``python -I -B gen_beavrs.py <id> <outdir>``. The pin and assembly
 extracts follow the repository's own notebooks (``extract-pin.ipynb``, ``extract-assm.ipynb``);
 the core slice is its ``make_beavrs.py --2d`` model. The XML is written with
 ``openmc.reset_auto_ids()`` first, so ids are the order of creation in the (deterministic) builder.
