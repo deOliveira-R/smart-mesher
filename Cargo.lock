@@ -1379,11 +1379,28 @@ dependencies = [
 name = "sm-csgbrep"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-boolean",
+ "sm-cadio",
  "sm-core",
+ "sm-csgio",
+ "sm-engine",
+ "sm-fem",
  "sm-geom-api",
+ "sm-layer-api",
+ "sm-model",
+ "sm-model-api",
  "sm-op-api",
+ "sm-protocol",
+ "sm-server",
  "sm-testkit",
+ "sm-topo",
+ "sm-topo-api",
  "thiserror",
 ]
 
