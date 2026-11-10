@@ -15,7 +15,7 @@ mod mesh;
 pub use kernels::{
     AnnulusQuadParams, DiskParams, PolarParams, RingParams, ogrid_annulus_quad, ogrid_disk, polar_disk, ring,
 };
-pub use mesh::{OgridError, PlanarMesh, Result as KernelResult, inscribed_area};
+pub use mesh::{OgridError, PHASE_MAX_DEG, PlanarMesh, RATIO_MAX, Result as KernelResult, inscribed_area};
 
 use sm_scheme_api::SchemeRegistry;
 
