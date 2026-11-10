@@ -1,5 +1,7 @@
 //! The `csgbrep` plugin (W4 tasks CSG-*). This skeleton (W4-0.2) registers no op yet.
 
+pub mod quadric;
+
 use sm_op_api::{Plugin, Registry, RegistryError};
 
 /// The `csgbrep` plugin. In the W4-0.2 skeleton it registers no op, query or layer.

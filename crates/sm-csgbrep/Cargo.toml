@@ -12,6 +12,13 @@ bench = false
 
 [dependencies]
 sm-op-api = { path = "../sm-op-api" }
+sm-core = { path = "../sm-core" }
+sm-geom-api = { path = "../sm-geom-api" }
+thiserror = "2"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
