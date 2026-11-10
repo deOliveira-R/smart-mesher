@@ -77,11 +77,15 @@ pub struct RunConfig {
     /// non-exact adapter's fires with this chord tolerance (cm); the failures count as
     /// disagreements. Off by default.
     pub fire_tol: Option<f64>,
+    /// When set, replaces the manifest's chord tolerance in the W-track agreement of twin adapters
+    /// with each other (cm). Used where two rows hold the same geometry (`poly-walk` against the
+    /// tet walk); `geom_error` against the analytic scene keeps the manifest tolerance.
+    pub track_tol: Option<f64>,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        Self { reps: 7, warmup: 3, threads: vec![1], workloads: vec![Workload::Track, Workload::Fire, Workload::FireLocate, Workload::Flight], histories: 10_000, seed: 0x5eed, fire_tol: None }
+        Self { reps: 7, warmup: 3, threads: vec![1], workloads: vec![Workload::Track, Workload::Fire, Workload::FireLocate, Workload::Flight], histories: 10_000, seed: 0x5eed, fire_tol: None, track_tol: None }
     }
 }
 
@@ -215,7 +219,7 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                             if r == i {
                                 Agreement { checked: s.output.tracks.len(), ..Agreement::default() }
                             } else {
-                                compare::compare(&s.output.tracks, &samples[r].output.tracks, data.manifest.diag, data.manifest.chord_tol)?
+                                compare::compare(&s.output.tracks, &samples[r].output.tracks, data.manifest.diag, cfg.track_tol.unwrap_or(data.manifest.chord_tol))?
                             }
                         }
                         _ => truth_agree,

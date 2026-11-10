@@ -416,7 +416,7 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
     let d = build(Case::P1, &scale).unwrap();
     let mut rows = smrt_rows(&d, &scale, 12);
     assert_eq!(rows.mesh_flight.len(), 3, "{:?}", rows.notes);
-    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5, fire_tol: None };
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5, fire_tol: None, track_tol: None };
     let (f, _) = run_case(&d, &mut rows.mesh_flight, "surface", &cfg, Env::detect()).unwrap();
     let modes: Vec<&str> = f.rows.iter().map(|r| r.mode.as_str()).collect();
     assert!(modes.contains(&"walk") && modes.contains(&"delta") && modes.contains(&"block"), "{modes:?}");
@@ -604,7 +604,7 @@ fn h1_region_jump_fire_agrees_with_the_cell_walk_and_tests_fewer_faces() {
     let d = build(Case::H1, &scale).unwrap();
     let mut rows = smrt_rows(&d, &scale, 12);
     assert_eq!(rows.jump_fire.len(), 2, "{:?}", rows.notes);
-    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Fire, Workload::FireLocate], histories: 0, seed: 1, fire_tol: Some(1e-9 * d.manifest.diag) };
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Fire, Workload::FireLocate], histories: 0, seed: 1, fire_tol: Some(1e-9 * d.manifest.diag), track_tol: None };
     let (file, agreements) = run_case(&d, &mut rows.jump_fire, "surface", &cfg, Env::detect()).unwrap();
     assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
     for w in ["w-fire", "w-fire-locate"] {
@@ -615,4 +615,52 @@ fn h1_region_jump_fire_agrees_with_the_cell_walk_and_tests_fewer_faces() {
         assert!(jump.counters.face_tests < walk.counters.face_tests, "{w}: face tests {} (jump) against {} (walk)", jump.counters.face_tests, walk.counters.face_tests);
         println!("{w}: face tests per fire {:.1} (walk) {:.1} (jump), {} jumps of {} fires", walk.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.jumps, d.rays.len());
     }
+}
+
+/// W4-RT-POLY-ROW (L2b): the median dual of H1's tets keeps the geometry. Per-ray region
+/// sequences and chords equal the tet walk's within `1e-9 diag`, chord sums equal the cube chord,
+/// the volumes agree, and W-flight tallies agree at 4 sigma. The row is named `poly-*`, which the
+/// verdict never reads.
+#[test]
+fn h1_poly_dual_walks_the_same_regions_as_the_tets() {
+    let scale = Scale { rays: 2000, ..Scale::reduced() };
+    let d = build(Case::H1, &scale).unwrap();
+    let tets = d.tets.as_ref().unwrap();
+    let (mesh, rep) = sm_rt_bench::smrt::poly_twin(tets).unwrap();
+    // Volumes: the dual fills the same cube.
+    let src_vol: f64 = tets
+        .tets
+        .iter()
+        .map(|t| {
+            let p = |i: usize| tets.nodes[t[i] as usize];
+            let (a, b, c, e) = (p(0), p(1), p(2), p(3));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let w = [e[0] - a[0], e[1] - a[1], e[2] - a[2]];
+            ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs()
+        })
+        .sum();
+    assert!(((rep.total_volume - src_vol) / src_vol).abs() < 1e-12, "dual volume {} against tets {}", rep.total_volume, src_vol);
+    assert!((src_vol - 8.0e6).abs() / 8.0e6 < 1e-12, "the cube");
+    let _ = mesh;
+    let mut rows = smrt_rows(&d, &scale, 12);
+    assert_eq!(rows.poly.len(), 2, "{:?}", rows.notes);
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Track, Workload::Flight], histories: 20_000, seed: 3, fire_tol: None, track_tol: Some(1e-9 * d.manifest.diag) };
+    let (file, agreements) = run_case(&d, &mut rows.poly, "surface", &cfg, Env::detect()).unwrap();
+    assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
+    let row = |w: &str, m: &str| file.rows.iter().find(|r| r.workload == w && r.mode == m).unwrap();
+    let (tw, pw) = (row("w-track", "walk"), row("w-track", "poly-walk"));
+    assert_eq!((pw.agreement.checked, pw.agreement.failed), (d.rays.len(), 0));
+    assert_eq!(tw.lost + pw.lost, 0);
+    // Chord sums equal the cube chord (the cube is convex and rays start inside it).
+    let mut a = sm_rt_bench::smrt::poly_adapter(tets).unwrap();
+    let out = a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, 1, 0)).unwrap();
+    let (g, bad) = sm_rt_bench::runner::walk_truth(tets, &d.rays, &out.tracks, d.manifest.diag).unwrap();
+    assert_eq!(bad, 0, "chord sums off by up to {:e}", g.max_chord_err);
+    // Flight: tallies of the dual agree with the tet walk at 4 sigma.
+    let (tf, pf) = (row("w-flight", "walk"), row("w-flight", "poly-walk"));
+    assert!(pf.agreement.checked >= 4 && pf.agreement.failed == 0, "{:?} / {:?}", pf.agreement, tf.agreement);
+    // Fewer, larger cells: the dual has fewer cells than the tets have corners times regions.
+    assert!(pw.segments_per_track <= tw.segments_per_track * 2.0 + 1.0, "{} against {}", pw.segments_per_track, tw.segments_per_track);
+    println!("poly: {} cells from {} tets; segments per track {:.1} (poly) against {:.1} (tets)", rep.cells, tets.tets.len(), pw.segments_per_track, tw.segments_per_track);
 }

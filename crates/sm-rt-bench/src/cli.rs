@@ -261,7 +261,7 @@ fn run(a: &Args) -> Result<i32> {
             // `jump` (cases with a tet mesh): W-fire of the region jump against the cell walk on the same tets.
             if !rows.jump_fire.is_empty() && workloads.iter().any(|w| w.starts_with("fire")) {
                 let diag = data.manifest.diag;
-                let fire = RunConfig { workloads: vec![Workload::Fire, Workload::FireLocate], fire_tol: Some(1e-9 * diag), ..cfg.clone() };
+                let fire = RunConfig { workloads: vec![Workload::Fire, Workload::FireLocate], fire_tol: Some(1e-9 * diag), track_tol: None, ..cfg.clone() };
                 let (f, ag) = run_case(&data, &mut rows.jump_fire, "surface", &fire, env.clone())?;
                 for w in ["w-fire", "w-fire-locate"] {
                     let per = |m: &str| f.rows.iter().find(|r| r.workload == w && r.mode == m && r.threads == cfg.threads[0]).map(|r| (r.counters.face_tests as f64 / r.counters.fires.max(1) as f64, r.counters.jumps));
@@ -269,6 +269,21 @@ fn run(a: &Args) -> Result<i32> {
                         file.notes.push(format!("{} {w}: face tests per fire {fw:.1} (cell walk), {fj:.1} (region jump); {jumps} jumps taken", data.case));
                     }
                 }
+                absorb(f, ag);
+            }
+            // `poly-walk` (L2b, cases with a tet mesh): the median dual of the tets against the tet walk.
+            // Same geometry, other cells, so the tolerance is the strict one; the rows stay out of the verdict.
+            if !rows.poly.is_empty() && workloads.iter().any(|w| matches!(*w, "track" | "flight")) {
+                let diag = data.manifest.diag;
+                let mut wl = Vec::new();
+                for (name, w) in [("track", Workload::Track), ("flight", Workload::Flight)] {
+                    if workloads.contains(&name) {
+                        wl.push(w);
+                    }
+                }
+                let poly = RunConfig { workloads: wl, track_tol: Some(1e-9 * diag), ..cfg.clone() };
+                let (f, ag) = run_case(&data, &mut rows.poly, "surface", &poly, env.clone())?;
+                file.notes.push(format!("{}: poly-walk rows are a different mesh with the same geometry (median dual of the tets); they are never read by the verdict", data.case));
                 absorb(f, ag);
             }
             // W-walk: the tet mesh walked cell by cell (cases with a tet mesh), the reference of XDG's `segments`.
