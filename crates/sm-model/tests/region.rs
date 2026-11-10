@@ -105,7 +105,7 @@ fn hex_frames_tag_prisms_placed_at_their_slots_in_both_orientations() {
     for (orient, spec) in [(HexOrient::XRows, HexOrientSpec::XRows), (HexOrient::YRows, HexOrientSpec::YRows)] {
         both(|factory| {
             let mut s = session(factory);
-            let layout = Layout::Hex { rings: 3, pitch: 2.0, orient, nz: 1, dz: 1.0 };
+            let layout = Layout::Hex { rings: 3, pitch: 2.0, orient, nz: 1, dz: 0.0 };
             run(&mut s, &CreatePrism { height: 1.0, sides: 6, radius: 0.5, minor: None, center: None }).expect("prism");
             define(&mut s, "h", LayoutSpec::Hex { rings: 3, pitch: 2.0, orient: spec, nz: None, dz: None }, None);
             let slots = layout.indices();
@@ -197,5 +197,49 @@ fn nested_frames_keep_their_own_slots_and_region_clear_restores_the_hash() {
         run(&mut s, &RegionClear::default()).expect("clear all");
         assert_eq!(table(&s), RegionTable::default());
         assert_eq!(s.state().hash(), before, "empty tables hash as before");
+    });
+}
+
+#[test]
+fn two_value_frames_tag_bricks_at_any_z_height_not_only_around_z0() {
+    // 2D frame: `n` and `pitch` have two values, so the z pitch defaults to 0 (one z slot).
+    for h in [1.0, 100.0] {
+        both(|factory| {
+            let mut s = session(factory);
+            // 3 x 3 bricks spanning z in [0, h] (centroid z = h/2), tagged in one go.
+            run(&mut s, &CreateBrick { x: 1.0, y: Some(1.0), z: Some(h), center: None }).expect("brick");
+            run(&mut s, &Move { entities: vec![vol(1)], delta: [0.0, 0.0, h / 2.0] }).expect("lift");
+            let (_, d) = run(&mut s, &copy(vec![vol(1)], 2, [2.0, 0.0, 0.0], None)).expect("row");
+            let mut row = vec![vol(1)];
+            row.extend(d.outputs["volumes"].iter().copied());
+            run(&mut s, &copy(row, 2, [0.0, 2.0, 0.0], None)).expect("cols");
+            let vols = model(&s).topo().cells(sm_topo_api::Dim::Volume).to_vec();
+            assert_eq!(vols.len(), 9);
+            define(&mut s, "f", LayoutSpec::Cartesian { n: vec![3, 3], pitch: vec![2.0, 2.0] }, None);
+            run(&mut s, &LatticeTag { lattice: "f".into(), volumes: vols, outside: None }).expect("tag");
+            let t = table(&s);
+            assert_eq!(t.tags.len(), 9, "h = {h}");
+            let mut seen = std::collections::BTreeSet::new();
+            for row in &t.tags {
+                let c = measure(&s, row.volume).centroid.expect("centroid");
+                assert!((c[2] - h / 2.0).abs() < 1e-9);
+                let want = [(c[0] / 2.0).round() as i32, (c[1] / 2.0).round() as i32, 0];
+                assert_eq!(row.slots["f"], want);
+                assert!(seen.insert(want));
+            }
+        });
+    }
+}
+
+#[test]
+fn several_z_slots_demand_an_explicit_z_pitch() {
+    both(|factory| {
+        let mut s = session(factory);
+        let hex = LayoutSpec::Hex { rings: 2, pitch: 2.0, orient: HexOrientSpec::XRows, nz: Some(3), dz: None };
+        let e = run(&mut s, &LatticeDefine { name: "m".into(), layout: hex, origin: None, parent: None }).expect_err("dz").to_string();
+        assert!(e.contains("dz"), "{e}");
+        let cart3 = LayoutSpec::Cartesian { n: vec![2, 2, 2], pitch: vec![1.0, 1.0] };
+        let e = run(&mut s, &LatticeDefine { name: "c".into(), layout: cart3, origin: None, parent: None }).expect_err("z pitch").to_string();
+        assert!(e.contains("z slot"), "{e}");
     });
 }

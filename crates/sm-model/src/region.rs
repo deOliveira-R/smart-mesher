@@ -29,7 +29,8 @@ pub enum LayoutSpec {
     Cartesian {
         /// Slot counts per axis (2 or 3 values; a missing z count is 1).
         n: Vec<u32>,
-        /// Centre spacing per axis (2 or 3 values; a missing z pitch is 1).
+        /// Centre spacing per axis (2 or 3 values). A missing z pitch is 0, allowed only with
+        /// one z slot (every z lands in it); with several z slots it is required.
         pitch: Vec<f64>,
     },
     /// Hex lattice in axial `(q, r)` coordinates, `rings` rings (1 = one slot), `nz` layers.
@@ -43,7 +44,7 @@ pub enum LayoutSpec {
         /// Number of axial layers (default 1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nz: Option<u32>,
-        /// Axial spacing (default 1).
+        /// Axial spacing. Defaults to 0 for a single layer; required when `nz` > 1.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dz: Option<f64>,
     },
@@ -73,7 +74,10 @@ impl LayoutSpec {
             LayoutSpec::Cartesian { n, pitch } => {
                 let nf: Vec<f64> = n.iter().map(|&x| f64::from(x)).collect();
                 let n = axes("n", &nf, 1.0)?.map(|x| x as u32);
-                let p = axes("pitch", pitch, 1.0)?;
+                if pitch.len() == 2 && n[2] > 1 {
+                    return Err(OpError::Invalid("`pitch` needs a z value when there is more than one z slot".into()));
+                }
+                let p = axes("pitch", pitch, 0.0)?;
                 if p.iter().any(|x| !x.is_finite() || *x < 0.0) || p[0] <= 0.0 || p[1] <= 0.0 {
                     return Err(OpError::Invalid("`pitch` must be finite, with positive x and y".into()));
                 }
@@ -87,7 +91,11 @@ impl LayoutSpec {
                     HexOrientSpec::XRows => HexOrient::XRows,
                     HexOrientSpec::YRows => HexOrient::YRows,
                 };
-                Ok(Layout::Hex { rings: *rings, pitch: *pitch, orient, nz: nz.unwrap_or(1), dz: dz.unwrap_or(1.0) })
+                let nz = nz.unwrap_or(1);
+                if dz.is_none() && nz > 1 {
+                    return Err(OpError::Invalid("hex `dz` is required when `nz` > 1".into()));
+                }
+                Ok(Layout::Hex { rings: *rings, pitch: *pitch, orient, nz, dz: dz.unwrap_or(0.0) })
             }
         }
     }
