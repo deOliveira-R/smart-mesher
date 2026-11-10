@@ -30,6 +30,7 @@ mod pieces;
 mod poly2;
 mod regularize;
 mod registry;
+pub mod subdivide;
 pub mod webcut;
 
 pub use error::BooleanError;
@@ -62,6 +63,7 @@ impl Plugin for BooleanPlugin {
         registry.register::<ops::WebcutPlane>()?;
         registry.register::<ops::WebcutSurface>()?;
         registry.register::<ops::WebcutCylinder>()?;
+        registry.register::<subdivide::SubdividePin>()?;
         registry.register_query::<ops::MergeCheck>()?;
         Ok(())
     }
