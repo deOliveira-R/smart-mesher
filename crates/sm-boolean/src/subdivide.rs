@@ -22,6 +22,10 @@ use crate::pieces::surface_def_of;
 use crate::webcut::{CutTool, WebcutOptions, webcut};
 
 /// Azimuth (radians) of the seam of the cutting cylinders relative to the frame x axis.
+///
+/// Workaround for a kernel finding: with the default tool frame, webcut_cylinder/subtract fail
+/// validation ("result volume invalid") for a 0.475-radius cylinder cut at r=0.418 and r=0.476.
+/// Cuts at 0.3, 0.41, 0.42, 0.45 and 0.418 in a 0.48 cylinder pass. Cause unknown (W4-CSG-PROBE).
 const SEAM_TURN: f64 = 1.0;
 
 /// Largest ring or sector count per pin.
