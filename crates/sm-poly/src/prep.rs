@@ -5,7 +5,8 @@
 
 use crate::error::PolyError;
 use crate::geom::{self, V3};
-use crate::options::FaceMode;
+use crate::circum;
+use crate::options::{DualPoints, FaceMode};
 use crate::resolver::EdgeResolver;
 use rayon::prelude::*;
 use sm_core::EntityId;
@@ -68,7 +69,13 @@ pub(crate) struct Prep<'a> {
     pub tv: Vec<[u32; 4]>,
     pub treg: Vec<u32>,
     pub regions: Vec<EntityId>,
+    /// Dual point of every tet: its centroid, or (circumcentric) the circumcentre of its weld
+    /// group's anchor.
     pub tcent: Vec<V3>,
+    /// Circumcentric only: circumcentres per tet and the weld anchor of every tet, boundary
+    /// triangle and edge midpoint id (both empty in the barycentric dual).
+    pub tcirc: Vec<V3>,
+    pub anchor: Vec<u32>,
     pub ekeys: Vec<u64>,
     pub e_slot_off: Vec<u32>,
     pub s_edge: Vec<u32>,
@@ -96,6 +103,16 @@ pub(crate) struct Prep<'a> {
 }
 
 impl Prep<'_> {
+    /// True for the circumcentric dual.
+    pub fn circumcentric(&self) -> bool {
+        !self.anchor.is_empty()
+    }
+
+    /// Weld anchor of a virtual id (itself in the barycentric dual and for non-welded kinds).
+    pub fn canon(&self, vid: u32) -> u32 {
+        self.anchor.get(vid as usize).copied().unwrap_or(vid)
+    }
+
     /// Virtual point ids: tets, boundary-triangle centroids, edge midpoints, primal vertices,
     /// edge hubs.
     pub fn p_tri(&self, f: u32) -> u32 {
@@ -144,15 +161,17 @@ pub(crate) fn pair_key(a: u32, b: u32) -> u64 {
 }
 
 fn coord_of(p: &Prep<'_>, i: usize) -> V3 {
+    let i = p.canon(i as u32) as usize;
     let co = p.src.coords();
     let pt = |v: usize| [co.x[v], co.y[v], co.z[v]];
     if i < p.nt {
-        return p.tcent[i];
+        return if p.circumcentric() { p.tcirc[i] } else { p.tcent[i] };
     }
     let i = i - p.nt;
     if i < p.nf {
         let l = p.src.face_vertices(FaceIx::new(i));
-        return geom::mean(&[pt(l[0].get()), pt(l[1].get()), pt(l[2].get())]);
+        let q = [pt(l[0].get()), pt(l[1].get()), pt(l[2].get())];
+        return if p.circumcentric() { circum::tri_circumcentre(q[0], q[1], q[2]) } else { geom::mean(&q) };
     }
     let i = i - p.nf;
     if i < p.ne {
@@ -224,6 +243,7 @@ impl<'a> Prep<'a> {
         src: &'a dyn MeshRead,
         mode: FaceMode,
         resolver: &dyn EdgeResolver,
+        dual: DualPoints,
     ) -> Result<Self, PolyError> {
         if src.dim() == MeshDim::Two {
             return Err(PolyError::Dim2);
@@ -314,6 +334,8 @@ impl<'a> Prep<'a> {
             treg,
             regions,
             tcent,
+            tcirc: Vec::new(),
+            anchor: Vec::new(),
             ekeys,
             e_slot_off,
             s_edge,
@@ -333,6 +355,13 @@ impl<'a> Prep<'a> {
             mode,
             vsplit: vec![false; nv],
         };
+
+        if dual == DualPoints::Circumcentric {
+            let cp = circum::build(src, &prep.tv, &prep.treg, &prep.ekeys)?;
+            prep.tcirc = cp.tcirc;
+            prep.anchor = cp.anchor;
+            prep.tcent = (0..nt).map(|t| coord_of(&prep, t)).collect();
+        }
 
         // Rings, split edges, feature classes, hub decisions.
         let chunks: Vec<Result<SlotChunk, PolyError>> = (0..ns.div_ceil(SLOT_CHUNK))
@@ -460,14 +489,17 @@ impl<'a> Prep<'a> {
                 return Err(bad());
             }
             let mut m = SlotMeta { open, f_in: NONE, f_out, hub: false, split: false, mid: None };
+            // (centroid rings only: an outside circumcentre can wind a ring the other way)
             #[cfg(debug_assertions)]
-            self.assert_ring_orientation(&out.ring[ring_start..], s, a, b, open, f_out, start);
+            if !self.circumcentric() {
+                self.assert_ring_orientation(&out.ring[ring_start..], s, a, b, open, f_out, start);
+            }
             if open {
                 let (_, en) = exit_entry(self.src, start, a, b).ok_or_else(bad)?;
                 m.f_in = en.face().0;
                 self.classify_open(&mut m, a, b, resolver)?;
             }
-            if mode == FaceMode::Planar {
+            if mode == FaceMode::Planar && !self.circumcentric() {
                 let ring = &out.ring[ring_start..];
                 let k = ring.len();
                 if k + if open { 3 } else { 0 } > 3 {

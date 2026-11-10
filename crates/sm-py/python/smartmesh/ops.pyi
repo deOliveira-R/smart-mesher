@@ -52,7 +52,7 @@ class MeshOps:
     def smooth(self, *, entities: Sequence[EntityId | str] | None = ..., fix_boundary: bool | None = ..., guard_floor: float | None = ..., iterations: int | None = ..., mesh: EntityId | str, method: Mapping[str, Any], schedule: Literal['jacobi', 'colored'] | None = ..., set: str | None = ..., tolerance: float | None = ...) -> ApplyResult:
         """`mesh.smooth`: smooth the nodes of a mesh in place (the mesh keeps its ids; no id is minted or retired). Boundary nodes stay on their curves and surfaces, vertices never move, and the guard refuses any move that makes an incident cell worse than `min(its ScaledJacobian, guard_floor)` or turns a positive volume non-positive."""
 
-    def to_poly(self, *, keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
+    def to_poly(self, *, dual: Literal['barycentric', 'circumcentric'] = ..., keep_source: bool | None = ..., mesh: EntityId | str) -> ApplyResult:
         """`mesh.to_poly`: convert a whole all-tet mesh into a new polyhedral mesh.
         Output `mesh` (one, Mesh): the new polyhedral mesh"""
 
@@ -61,7 +61,7 @@ class MeshOps:
 
 class ModelOps:
     """Ops `model.*` (keyword-only; `s.ops.model.<op>(...)` applies one)."""
-    def copy(self, *, count: int | None = ..., entities: Sequence[EntityId | str], xform: Mapping[str, Any] | None = ...) -> ApplyResult:
+    def copy(self, *, count: int | None = ..., entities: Sequence[EntityId | str], lattice: str | None = ..., xform: Mapping[str, Any] | None = ...) -> ApplyResult:
         """`model.copy`: `count` copies of the selected volumes or bodies.
         Output `volumes` (many, TopoVolume): The new volumes, ascending.
         Output `bodies` (many, TopoBody): The new bodies, ascending."""
@@ -133,6 +133,15 @@ class ModelOps:
     def delete(self, *, bodies: Sequence[EntityId | str]) -> ApplyResult:
         """`model.delete`: delete bodies, their volumes, and every face, edge and vertex that no surviving cell uses (`kill_cascade`). All retired ids are retired in the entity table, the model tables drop the deleted volumes and faces, and `meshes` entries on a deleted volume become `stale` (they are not deleted: `mesh.delete` retires meshes)."""
 
+    def import_openmc(self, *, geometry: Mapping[str, Any], materials: Mapping[str, Any] | None = ..., options: Mapping[str, Any] | None = ...) -> ApplyResult:
+        """`model.import_openmc {geometry, materials?, options?}`: build the B-rep volumes of an OpenMC `geometry.xml` (and `materials.xml`) by space partition.
+        Output `volumes` (many, TopoVolume): Intermediate: the lattice element copies the import placed (a later merge may change their faces). Read `deck_volumes`.
+        Output `bodies` (many, TopoBody): Intermediate: the bodies of the lattice element copies. Read `deck_bodies`.
+        Output `deck_volumes` (many, TopoVolume): The final volumes of the deck, ascending.
+        Output `deck_bodies` (many, TopoBody): The final bodies of the deck, ascending.
+        Output `block` (many, Color): The volume colors that are the blocks, one per region name.
+        Output `sideset` (many, Color): The face colors that are the sidesets (vacuum, reflective, white)."""
+
     def import_step(self, *, assume_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., attributes: bool | None = ..., check: bool | None = ..., name: str | None = ..., sheets: bool | None = ..., solids: Sequence[int] | None = ..., source: Mapping[str, Any], to_unit: Literal['um', 'mm', 'cm', 'm', 'in', 'ft'] | None = ..., weld_tol: float | None = ...) -> ApplyResult:
         """`model.import_step`: read the B-rep solids of a STEP file into the model.
         Output `bodies` (many, TopoBody): One body per imported solid.
@@ -153,6 +162,12 @@ class ModelOps:
         Output `new_faces` (many, TopoFace): Faces on the intersection surfaces, created by the operation.
         Output `faces` (many, TopoFace): The remaining faces of the result volumes."""
 
+    def lattice_define(self, *, layout: Mapping[str, Any], name: str, origin: Sequence[float] | None = ..., parent: str | None = ...) -> ApplyResult:
+        """`model.lattice_define {name, layout, origin?, parent?}`: define a lattice frame, the provenance geometry that `model.lattice_tag` and `model.copy {lattice}` tag volumes against."""
+
+    def lattice_tag(self, *, lattice: str, outside: Literal['error', 'skip'] | None = ..., volumes: Sequence[EntityId | str]) -> ApplyResult:
+        """`model.lattice_tag {lattice, volumes, outside?}`: set each volume's slot in frame `lattice` from its centroid. Other frames' slots and ring and sector indices of the volume are kept."""
+
     def merge(self, *, check_only: bool | None = ..., entities: Sequence[EntityId | str] | None = ..., kinds: Sequence[Literal['vertex', 'edge', 'face']] | None = ..., tol: float | None = ...) -> ApplyResult:
         """`model.merge {entities?, kinds?, tol?, check_only?}`: merge coincident vertices, edges and faces (default: all bodies). Interface faces of the model's boundary tables are skipped. Survivors are reported by rank.
         Output `vertices` (many, TopoVertex): The surviving merged vertices.
@@ -170,6 +185,9 @@ class ModelOps:
     def reflect(self, *, entities: Sequence[EntityId | str], normal: Sequence[float], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.reflect`: mirror volumes in the plane through `origin` (default the origin) with normal `normal`. Face orientation is repaired, so the volumes keep a positive volume and outward normals.
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
+
+    def region_clear(self, *, volumes: Sequence[EntityId | str] | None = ...) -> ApplyResult:
+        """`model.region_clear {volumes?}`: drop region tags and lattice frames."""
 
     def rotate(self, *, angle_deg: float, axis: Sequence[float], entities: Sequence[EntityId | str], origin: Sequence[float] | None = ...) -> ApplyResult:
         """`model.rotate`: rotate volumes by `angle_deg` degrees (right-hand rule) about the axis through `origin` (default the origin) with direction `axis`.
@@ -236,6 +254,9 @@ class MeshQueries:
     def auto_strategies(self) -> Any:
         """`mesh.auto_strategies`: the registered strategies."""
 
+    def decompose_plan(self, *, volumes: Sequence[EntityId | str] | None = ...) -> Any:
+        """`mesh.decompose_plan`: the webcut steps that make round-cavity volumes sweepable. Read-only; nothing is cut and no id is minted. Apply the steps in order with `model.webcut_cylinder` / `model.webcut_plane`, then `model.imprint` and `model.merge`."""
+
     def info(self, *, mesh: EntityId | str) -> Any:
         """`mesh.info`: counts, hashes and total measure of one mesh."""
 
@@ -270,6 +291,9 @@ class ModelQueries:
 
     def merge_check(self, *, entities: Sequence[EntityId | str] | None = ..., tol: float | None = ...) -> Any:
         """`model.merge_check {entities?, tol?}`: report what a merge would do, without changing anything: every candidate pair with its status (`mergeable`, `near`, `overlapping`, `conflict`, `skipped`), the measured gap, the overlap area where it applies, and a hint."""
+
+    def region_tags(self, *, volumes: Sequence[EntityId | str] | None = ...) -> Any:
+        """`model.region_tags {volumes?}`: the lattice frames and the region tags (of `volumes`, or of every tagged volume). Read-only. Consumers read region indices from here, never from the output order of an op."""
 
 class RtQueries:
     """Queries `rt.*` (`s.q.rt.<query>(...)`; read-only)."""

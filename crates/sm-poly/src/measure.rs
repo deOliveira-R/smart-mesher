@@ -35,7 +35,7 @@ pub struct DualEligibility {
     pub outside_share: f64,
 }
 
-type P = [f64; 3];
+pub(crate) type P = [f64; 3];
 
 fn pt(m: &dyn MeshRead, v: VertexIx) -> P {
     let co = m.coords();
@@ -53,7 +53,32 @@ fn p3(p: P) -> Point3 {
 /// With `B = b - a`, `C = c - a`, `D = d - a`, the circumcentre offset is
 /// `(|B|^2 C x D + |C|^2 D x B + |D|^2 B x C) / (2 B.(C x D))`, so the sign is that of
 /// `N = |B|^2 (C x D).n + |C|^2 (D x B).n + |D|^2 |n|^2` (`B.(C x D) = D.n`).
-fn circumcentre_side(a: P, b: P, c: P, d: P) -> Sign {
+pub(crate) fn circumcentre_side(a: P, b: P, c: P, d: P) -> Sign {
+    // Floating-point filter: evaluate `N` in `f64` together with the same expression over absolute
+    // values (a permanent, so no cancellation). `N` has depth six in the rounded differences, so
+    // its rounding error is below about 30 ulp of that permanent; the bound below is three times
+    // larger. A clear sign is returned; anything near zero, or out of the safe magnitude range,
+    // goes to the exact path.
+    let df = |p: P| [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let (bb, cc, dd) = (df(b), df(c), df(d));
+    let cr = |u: [f64; 3], v: [f64; 3]| [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    let cra = |u: [f64; 3], v: [f64; 3]| [(u[1] * v[2]).abs() + (u[2] * v[1]).abs(), (u[2] * v[0]).abs() + (u[0] * v[2]).abs(), (u[0] * v[1]).abs() + (u[1] * v[0]).abs()];
+    let dt = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let (n, na) = (cr(bb, cc), cra(bb, cc));
+    let (cd, cda) = (cr(cc, dd), cra(cc, dd));
+    let (db, dba) = (cr(dd, bb), cra(dd, bb));
+    let (b2, c2, d2) = (dt(bb, bb), dt(cc, cc), dt(dd, dd));
+    let nn = dt(n, n);
+    let val = b2 * dt(cd, n) + c2 * dt(db, n) + d2 * nn;
+    let mag = b2 * dt(cda, na) + c2 * dt(dba, na) + d2 * nn;
+    if mag.is_finite() && (1e-100..1e100).contains(&mag) && val.abs() > 1e-14 * mag {
+        return if val > 0.0 { Sign::Positive } else { Sign::Negative };
+    }
+    circumcentre_side_exact(a, b, c, d)
+}
+
+/// The expansion-arithmetic evaluation of [`circumcentre_side`] (always exact).
+pub(crate) fn circumcentre_side_exact(a: P, b: P, c: P, d: P) -> Sign {
     type E = Expansion;
     let diff = |p: P| -> [E; 3] { [E::from_diff(p[0], a[0]), E::from_diff(p[1], a[1]), E::from_diff(p[2], a[2])] };
     let cross = |u: &[E; 3], v: &[E; 3]| -> [E; 3] {
@@ -77,53 +102,81 @@ fn tet_corners(m: &dyn MeshRead, c: CellIx) -> Option<[VertexIx; 4]> {
     (k.len() == 4).then(|| [k[0], k[1], k[2], k[3]])
 }
 
+/// Face `f` is interior and not locally Delaunay: the far vertex of one tet is strictly inside the
+/// circumsphere of the other (exact `insphere`; cospherical is accepted).
+fn face_non_delaunay(m: &dyn MeshRead, f: FaceIx) -> Option<bool> {
+    let r = m.face_right(f)?;
+    let l = m.face_left(f);
+    let (Some(tl), Some(tr)) = (tet_corners(m, l), tet_corners(m, r)) else { return Some(false) };
+    let fv = m.face_vertices(f);
+    let far = |t: &[VertexIx; 4]| t.iter().copied().find(|v| !fv.contains(v));
+    let (Some(dl), Some(dr)) = (far(&tl), far(&tr)) else { return Some(false) };
+    let (a, b, c) = (p3(pt(m, fv[0])), p3(pt(m, fv[1])), p3(pt(m, fv[2])));
+    let o = predicates::orient3d(a, b, c, p3(pt(m, dl)));
+    let s = predicates::insphere(a, b, c, p3(pt(m, dl)), p3(pt(m, dr)));
+    // `insphere` is positive inside for a positively oriented `abcd`.
+    Some(match (o, s) {
+        (Sign::Zero, _) | (_, Sign::Zero) => false,
+        (o, s) => o == s,
+    })
+}
+
+/// The circumcentre of tet `c` lies strictly outside one of its faces that is a model boundary or
+/// separates two regions (exact; on the face counts as inside).
+fn tet_outside(m: &dyn MeshRead, c: CellIx) -> bool {
+    let Some(t) = tet_corners(m, c) else { return false };
+    let region = m.classification(MeshEntityKind::Cell, c.get() as u32);
+    for sf in m.cell_faces(c) {
+        let walled = match m.across(*sf) {
+            None => true,
+            Some(o) => m.classification(MeshEntityKind::Cell, o.get() as u32) != region,
+        };
+        if !walled {
+            continue;
+        }
+        let fv = m.face_vertices(sf.face());
+        let Some(d) = t.iter().copied().find(|v| !fv.contains(v)) else { continue };
+        if fv.len() == 3 && circumcentre_side(pt(m, fv[0]), pt(m, fv[1]), pt(m, fv[2]), pt(m, d)) == Sign::Negative {
+            return true;
+        }
+    }
+    false
+}
+
 /// Counts for one chunk of faces (interior faces, non-Delaunay faces) and of cells (outside).
 fn count_chunk(m: &dyn MeshRead, k: usize, nf: usize, nc: usize) -> (usize, usize, usize) {
     let (mut interior, mut non_del, mut outside) = (0, 0, 0);
     for f in k * CHUNK..((k + 1) * CHUNK).min(nf) {
-        let f = FaceIx::new(f);
-        let Some(r) = m.face_right(f) else { continue };
-        let l = m.face_left(f);
-        interior += 1;
-        let (Some(tl), Some(tr)) = (tet_corners(m, l), tet_corners(m, r)) else { continue };
-        let fv = m.face_vertices(f);
-        let far = |t: &[VertexIx; 4]| t.iter().copied().find(|v| !fv.contains(v));
-        let (Some(dl), Some(dr)) = (far(&tl), far(&tr)) else { continue };
-        let (a, b, c) = (p3(pt(m, fv[0])), p3(pt(m, fv[1])), p3(pt(m, fv[2])));
-        let o = predicates::orient3d(a, b, c, p3(pt(m, dl)));
-        let s = predicates::insphere(a, b, c, p3(pt(m, dl)), p3(pt(m, dr)));
-        // `insphere` is positive inside for a positively oriented `abcd`.
-        let inside = match (o, s) {
-            (Sign::Zero, _) | (_, Sign::Zero) => false,
-            (o, s) => o == s,
-        };
-        non_del += usize::from(inside);
+        if let Some(bad) = face_non_delaunay(m, FaceIx::new(f)) {
+            interior += 1;
+            non_del += usize::from(bad);
+        }
     }
     // Cells of this chunk index range (same chunking over cells).
     for c in k * CHUNK..((k + 1) * CHUNK).min(nc) {
-        let c = CellIx::new(c);
-        let Some(t) = tet_corners(m, c) else { continue };
-        let region = m.classification(MeshEntityKind::Cell, c.get() as u32);
-        let mut out = false;
-        for sf in m.cell_faces(c) {
-            let f = sf.face();
-            let walled = match m.across(*sf) {
-                None => true,
-                Some(o) => m.classification(MeshEntityKind::Cell, o.get() as u32) != region,
-            };
-            if !walled {
-                continue;
-            }
-            let fv = m.face_vertices(f);
-            let Some(d) = t.iter().copied().find(|v| !fv.contains(v)) else { continue };
-            if fv.len() == 3 && circumcentre_side(pt(m, fv[0]), pt(m, fv[1]), pt(m, fv[2]), pt(m, d)) == Sign::Negative {
-                out = true;
-                break;
-            }
-        }
-        outside += usize::from(out);
+        outside += usize::from(tet_outside(m, CellIx::new(c)));
     }
     (interior, non_del, outside)
+}
+
+/// Where the first violation is: the centroid of the lowest non-Delaunay face, else the vertex
+/// mean of the lowest tet with an outside circumcentre. Serial; for the refusal message only.
+pub(crate) fn first_violation(m: &dyn MeshRead) -> Option<[f64; 3]> {
+    let mean = |vs: &[VertexIx]| {
+        let n = vs.len() as f64;
+        let mut s = [0.0; 3];
+        for v in vs {
+            let p = pt(m, *v);
+            s = [s[0] + p[0], s[1] + p[1], s[2] + p[2]];
+        }
+        [s[0] / n, s[1] / n, s[2] / n]
+    };
+    let (nc, nf) = (m.count(MeshEntityKind::Cell), m.count(MeshEntityKind::Face));
+    if let Some(f) = (0..nf).find(|&f| face_non_delaunay(m, FaceIx::new(f)) == Some(true)) {
+        return Some(mean(m.face_vertices(FaceIx::new(f))));
+    }
+    let c = (0..nc).find(|&c| tet_outside(m, CellIx::new(c)))?;
+    tet_corners(m, CellIx::new(c)).map(|t| mean(&t))
 }
 
 /// Dual-eligibility counts of an all-tet 3-D mesh; `None` for any other mesh.
@@ -204,6 +257,25 @@ mod tests {
 
     fn pt() -> impl Strategy<Value = P> {
         [-4.0f64..4.0, -4.0..4.0, -4.0..4.0]
+    }
+
+    proptest! {
+        #![proptest_config(config(512))]
+        // The filtered side equals the exact one, also on lattice points where zeros are common.
+        #[test]
+        fn filter_agrees_with_exact_on_lattice_and_reals(
+            a in [-3i32..3, -3..3, -3..3], b in [-3i32..3, -3..3, -3..3],
+            c in [-3i32..3, -3..3, -3..3], d in [-3i32..3, -3..3, -3..3],
+            r in [-1.0f64..1.0, -1.0..1.0, -1.0..1.0], s in 0u8..2,
+        ) {
+            let f = |p: [i32; 3]| p.map(f64::from);
+            let (a, b, c, d) = (f(a), f(b), f(c), f(d));
+            prop_assert_eq!(circumcentre_side(a, b, c, d), circumcentre_side_exact(a, b, c, d));
+            // a non-lattice perturbation of one point (`s` selects scaled-by-1e-7 or full)
+            let k = if s == 0 { 1e-7 } else { 1.0 };
+            let d2 = [d[0] + k * r[0], d[1] + k * r[1], d[2] + k * r[2]];
+            prop_assert_eq!(circumcentre_side(a, b, c, d2), circumcentre_side_exact(a, b, c, d2));
+        }
     }
 
     proptest! {

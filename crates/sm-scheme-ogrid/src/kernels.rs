@@ -1,7 +1,7 @@
 //! The kernels: `ogrid_disk`, `ogrid_annulus_quad`, `ring` and `polar_disk`. Pure functions on
 //! counts and reals; no topology types. All output is deterministic (fixed loop order, no hashing).
 
-use crate::mesh::{OgridError, PlanarMesh, Result, check_common, grading, polar_pt};
+use crate::mesh::{OgridError, PlanarMesh, Result, check_common, grading, guard, polar_pt};
 use std::f64::consts::{FRAC_PI_4, PI};
 
 fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
@@ -139,7 +139,7 @@ impl DiskParams {
 /// then collar radial lines and side interiors.
 pub fn ogrid_disk(p: &DiskParams) -> Result<PlanarMesh> {
     let (n, a, b, k) = (p.n, p.a, p.b, p.k);
-    check_common(k, p.ratio, p.radius)?;
+    check_common(k, p.ratio, p.radius, p.phase_deg)?;
     if a == 0 || b == 0 || n != 2 * (a + b) {
         return Err(OgridError::Counts(format!("need a, b >= 1 and n = 2(a+b), got n={n} a={a} b={b}")));
     }
@@ -182,7 +182,7 @@ pub fn ogrid_disk(p: &DiskParams) -> Result<PlanarMesh> {
         fixed[..n].iter_mut().for_each(|f| *f = true);
         smooth(&mut mesh, &fixed, p.smooth_iters);
     }
-    Ok(mesh)
+    guard(mesh, &format!("disk n={n} a={a} b={b} k={k}"))
 }
 
 /// Parameters of [`ogrid_annulus_quad`].
@@ -213,10 +213,13 @@ pub struct AnnulusQuadParams {
 /// side, so unequal `m` entries (or a circle close to the square) can twist the radial lines.
 /// After construction every quad corner is checked; [`OgridError::Inverted`] is returned when any
 /// scaled Jacobian is `<= 0` or any node is non-finite. Balanced `m` (all equal) with
-/// `phase_deg` = 45 (mod 360) and the circle strictly inside the square never fails; other phases
-/// twist the radial lines and may return `Inverted`.
+/// `phase_deg` = 45 (mod 360), `ratio` within `1e-6..=1e6`, `|phase_deg| <= 3600` and the circle
+/// strictly inside the square never fails (the guarantee holds only inside those ranges); other
+/// phases twist the radial lines and may return `Inverted`. Every kernel also rejects a `ratio`
+/// outside `1e-6..=1e6` or `|phase_deg| > 3600` with [`OgridError::Param`], and runs the same
+/// finite-node and scaled-Jacobian check before returning.
 pub fn ogrid_annulus_quad(p: &AnnulusQuadParams) -> Result<PlanarMesh> {
-    check_common(p.k, p.ratio, p.radius)?;
+    check_common(p.k, p.ratio, p.radius, p.phase_deg)?;
     let n: usize = p.m.iter().sum();
     if p.m.contains(&0) {
         return Err(OgridError::Counts("every square side needs >= 1 interval".into()));
@@ -244,14 +247,8 @@ pub fn ogrid_annulus_quad(p: &AnnulusQuadParams) -> Result<PlanarMesh> {
     let t = grading(p.k, p.ratio);
     let mut quads = Vec::new();
     fill_collar(&mut nodes, &mut quads, p.m, p.k, &t, &inner, &outer);
-    let mesh = PlanarMesh { nodes, quads, polys: Vec::new() };
-    // Unequal side counts twist the radial lines (circle nodes are equally spaced in angle,
-    // square nodes along each side); never return a tangled mesh.
-    let sj = mesh.min_scaled_jacobian();
-    if !mesh.nodes.iter().all(|q| q[0].is_finite() && q[1].is_finite()) || sj.is_nan() || sj <= 0.0 {
-        return Err(OgridError::Inverted(format!("m={:?}, min scaled Jacobian {sj}", p.m)));
-    }
-    Ok(mesh)
+    // Unequal side counts twist the radial lines; never return a tangled mesh.
+    guard(PlanarMesh { nodes, quads, polys: Vec::new() }, &format!("m={:?}", p.m))
 }
 
 /// Parameters of [`ring`].
@@ -274,7 +271,7 @@ pub struct RingParams {
 /// A structured `n x k` ring between two concentric circles. Quad count `k n`; node `(l, j)` is
 /// `l n + j` (layer `l = 0` is the inner circle). Euler characteristic 0.
 pub fn ring(p: &RingParams) -> Result<PlanarMesh> {
-    check_common(p.k, p.ratio, p.r_in)?;
+    check_common(p.k, p.ratio, p.r_in, p.phase_deg)?;
     if p.n < 3 || !(p.r_out.is_finite() && p.r_out > p.r_in) || !p.phase_deg.is_finite() {
         return Err(OgridError::Counts("ring needs n >= 3, r_out > r_in and a finite phase".into()));
     }
@@ -292,7 +289,7 @@ pub fn ring(p: &RingParams) -> Result<PlanarMesh> {
             quads.push([id(l, j), id(l + 1, j), id(l + 1, j + 1), id(l, j + 1)]);
         }
     }
-    Ok(PlanarMesh { nodes, quads, polys: Vec::new() })
+    guard(PlanarMesh { nodes, quads, polys: Vec::new() }, &format!("ring n={}", p.n))
 }
 
 /// Parameters of [`polar_disk`].
@@ -323,7 +320,7 @@ impl PolarParams {
 /// Polar disk: one central n-gon and `k` rings of `n` quads (`k n` quads). Node `(l, j)` is
 /// `l n + j`, ring `l = k` is the circle (nodes `k n ..`), so the circle nodes are the LAST `n`.
 pub fn polar_disk(p: &PolarParams) -> Result<PlanarMesh> {
-    check_common(p.k, p.ratio, p.radius)?;
+    check_common(p.k, p.ratio, p.radius, p.phase_deg)?;
     if p.n < 3 || !p.phase_deg.is_finite() {
         return Err(OgridError::Counts("polar needs n >= 3 and a finite phase".into()));
     }
@@ -346,5 +343,5 @@ pub fn polar_disk(p: &PolarParams) -> Result<PlanarMesh> {
         }
     }
     let poly: Vec<u32> = (0..p.n).map(|j| id(0, j)).collect();
-    Ok(PlanarMesh { nodes, quads, polys: vec![poly] })
+    guard(PlanarMesh { nodes, quads, polys: vec![poly] }, &format!("polar n={}", p.n))
 }

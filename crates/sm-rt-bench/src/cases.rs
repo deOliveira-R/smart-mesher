@@ -36,11 +36,18 @@ pub enum Case {
     H1,
     /// Synthetic fusion-like torus shells.
     F1,
+    /// The refcorpus OpenMC 17x17 assembly deck (W4-REFCORPUS `openmc-assembly-17x17`); exact rows only.
+    A17,
 }
 
 impl Case {
-    /// All cases in report order.
+    /// All cases in report order. Cases that need a file outside the repository ([`Case::EXTRA`])
+    /// are not in it: a default `gen` or `run` must work from a clean checkout.
     pub const ALL: [Case; 7] = [Case::C1, Case::C2, Case::C3, Case::P1, Case::P2, Case::H1, Case::F1];
+
+    /// Cases that are built only when named (`--cases A17`): they read a model from the reference
+    /// corpus (`tools/refcorpus`), and are `Unavailable` where it has not been built.
+    pub const EXTRA: [Case; 1] = [Case::A17];
 
     /// Case name (also the ray seed).
     pub fn name(self) -> &'static str {
@@ -52,12 +59,13 @@ impl Case {
             Case::P2 => "P2",
             Case::H1 => "H1",
             Case::F1 => "F1",
+            Case::A17 => "A17",
         }
     }
 
     /// Parse a name.
     pub fn parse(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.name() == s)
+        Self::ALL.into_iter().chain(Self::EXTRA).find(|c| c.name() == s)
     }
 
     fn legacy(self) -> Option<Legacy> {
@@ -258,6 +266,7 @@ pub fn build(case: Case, scale: &Scale) -> Result<CaseData> {
         Case::P2 => build_p2(scale),
         Case::H1 => build_h1(scale),
         Case::F1 => build_f1(scale),
+        Case::A17 => build_a17(scale),
     }
 }
 
@@ -552,6 +561,110 @@ fn build_f1(scale: &Scale) -> Result<CaseData> {
     finish("F1", scale.name, facets, rays, None, None, regions(&name_refs), sag, 1, 1, notes)
 }
 
+/// SHA-256 of `openmc-assembly-17x17/geometry.xml` as recorded in `tools/refcorpus/manifest.toml`
+/// (a test compares both constants with the manifest text).
+pub const A17_GEOMETRY_SHA256: &str = "17722a3583f4534f335cb6dc6dd9a750f400837d90e69c90796a0324640c7b24";
+/// SHA-256 of `openmc-assembly-17x17/materials.xml`, same source.
+pub const A17_MATERIALS_SHA256: &str = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52";
+
+/// The reference corpus directory (`SM_REFCORPUS_DIR`, else `~/.cache/smart-mesh/refcorpus`, as
+/// `tools/refcorpus/build.py` writes it).
+pub fn refcorpus_dir() -> std::path::PathBuf {
+    match std::env::var_os("SM_REFCORPUS_DIR") {
+        Some(d) if !d.is_empty() => d.into(),
+        _ => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache").join("smart-mesh").join("refcorpus"),
+    }
+}
+
+fn read_checked(path: &Path, sha: &str) -> Result<String> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            BenchError::Unavailable(format!("{} not found: run `python3 -I tools/refcorpus/build.py build` (SM_REFCORPUS_DIR names the corpus)", path.display()))
+        } else {
+            BenchError::io(path, e)
+        }
+    })?;
+    let got = sha256_hex(&bytes);
+    if got != sha {
+        return Err(BenchError::Check(format!("{}: sha256 {got} is not the manifest's {sha}", path.display())));
+    }
+    String::from_utf8(bytes).map_err(|_| BenchError::Check(format!("{}: not UTF-8", path.display())))
+}
+
+/// The refcorpus 17x17 assembly deck imported by `sm-csgio` (flat, canonical order). Both deck
+/// files are checked against the manifest's sha256 first.
+///
+/// # Errors
+/// [`BenchError::Unavailable`] when the corpus is not built, [`BenchError::Check`] on a hash
+/// mismatch, [`BenchError::Geometry`] when the import refuses the deck.
+pub fn a17_deck() -> Result<sm_csgio::ImportedCsg> {
+    a17_deck_in(&refcorpus_dir())
+}
+
+/// [`a17_deck`] reading `<corpus>/openmc-assembly-17x17/{geometry,materials}.xml`.
+///
+/// # Errors
+/// As [`a17_deck`].
+pub fn a17_deck_in(corpus: &Path) -> Result<sm_csgio::ImportedCsg> {
+    let dir = corpus.join("openmc-assembly-17x17");
+    let geometry = read_checked(&dir.join("geometry.xml"), A17_GEOMETRY_SHA256)?;
+    let materials = read_checked(&dir.join("materials.xml"), A17_MATERIALS_SHA256)?;
+    let ir = sm_csgio::openmc::import(&geometry, Some(&materials)).map_err(|e| BenchError::Geometry(format!("A17 deck: {e}")))?;
+    sm_csgio::ImportedCsg::import(&ir, &sm_csgio::ImportOptions::default()).map_err(|e| BenchError::Geometry(format!("A17 deck: {e}")))
+}
+
+/// A17: the refcorpus OpenMC 17x17 assembly (289 pins and guide tubes in two universes, reflective
+/// sides, vacuum top and bottom), tracked exactly as the deck says. There is no facet twin and no
+/// tet twin (a deck holds no triangles), so only sm-rt's exact rows run on it; rays start uniformly in
+/// the deck's box, regions are the deck's materials, ids by sorted name.
+fn build_a17(scale: &Scale) -> Result<CaseData> {
+    use sm_rt_api::Tracker;
+    let deck = a17_deck()?;
+    let (tracker, _) = deck.tracker(&sm_rt_api::BuildOptions::default()).map_err(|e| BenchError::Geometry(format!("A17 tracker: {e}")))?;
+    let names = deck.region_names();
+    let b = tracker.bounds();
+    let (lo, hi) = ([b.lo.x, b.lo.y, b.lo.z], [b.hi.x, b.hi.y, b.hi.z]);
+    let scratch = std::cell::RefCell::new(sm_rt_api::Scratch::new());
+    let classify = |p: [f64; 3]| -> Option<i32> {
+        let loc = tracker.locate(sm_core::Point3::new(p[0], p[1], p[2]), None, None, &mut scratch.borrow_mut()).ok()?;
+        let name = &tracker.regions().get(loc.region)?.name;
+        names.iter().position(|n| n == name).map(|i| i as i32)
+    };
+    let rays = gen_rays("A17", (lo, hi), scale.rays, &classify)?;
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let d = diag(lo, hi);
+    let mut files = BTreeMap::new();
+    let facets = Facets::default();
+    files.insert("facets.bin".to_string(), sha256_hex(&facets.to_bytes()));
+    files.insert("rays.bin".to_string(), sha256_hex(&rays.to_bytes()));
+    let manifest = Manifest {
+        schema: "smcase v1".into(),
+        case: "A17".into(),
+        scale: scale.name.into(),
+        regions: regions(&name_refs),
+        sag: 0.0,
+        chord_tol: chord_tolerance(d, 0.0),
+        bbox_lo: lo,
+        bbox_hi: hi,
+        diag: d,
+        vertices: 0,
+        triangles: 0,
+        tets: 0,
+        rays: rays.len(),
+        prototypes: 2,
+        copies: 289,
+        platform: platform_tag(),
+        notes: vec![
+            "refcorpus openmc-assembly-17x17: 17x17 lattice, universes 1 (fuel pin) and 2 (guide tube), 24 guide tubes and 1 instrument tube; reflective sides, vacuum top and bottom".into(),
+            format!("deck sha256: geometry.xml {A17_GEOMETRY_SHA256}, materials.xml {A17_MATERIALS_SHA256} (tools/refcorpus/manifest.toml)"),
+            "no facet twin and no tet twin: only sm-rt's exact rows run; the facets.bin is empty by design".into(),
+            "the deck is not in the repository: the corpus is built by tools/refcorpus/build.py".into(),
+        ],
+        files,
+    };
+    Ok(CaseData { case: "A17".into(), facets, rays, tets: None, scene: None, manifest })
+}
+
 /// A case from a local STEP model (`--model`). Never committed; start regions come from a
 /// parity test on the facets.
 pub fn build_model(bytes: &[u8], sag: f64, n_rays: usize) -> Result<CaseData> {
@@ -576,7 +689,7 @@ pub fn expected_lines(scale: &Scale, data: &CaseData) -> Result<Vec<String>> {
 
 /// Files that depend on `sm_tess` output (or carry the platform tag) are blessed per platform.
 fn platform_keyed(case: &str, file: &str) -> bool {
-    file == "smcase.json" || matches!(case, "P1" | "P2" | "F1")
+    file == "smcase.json" || matches!(case, "P1" | "P2" | "F1" | "A17")
 }
 
 /// Outcome of comparing generated files with the recorded hashes.

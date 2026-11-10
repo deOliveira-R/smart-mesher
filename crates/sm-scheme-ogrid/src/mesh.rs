@@ -186,12 +186,22 @@ pub(crate) fn grading(k: usize, ratio: f64) -> Vec<f64> {
     t
 }
 
-pub(crate) fn check_common(k: usize, ratio: f64, r: f64) -> Result<()> {
+/// Accepted layer ratio range: `1 / RATIO_MAX ..= RATIO_MAX`.
+pub const RATIO_MAX: f64 = 1e6;
+/// Accepted `|phase|` in degrees.
+pub const PHASE_MAX_DEG: f64 = 3600.0;
+
+pub(crate) fn check_common(k: usize, ratio: f64, r: f64, phase_deg: f64) -> Result<()> {
     if k == 0 {
         return Err(OgridError::Counts("k (layers) must be >= 1".into()));
     }
-    if !(ratio.is_finite() && ratio > 0.0) {
-        return Err(OgridError::Param(format!("ratio {ratio} must be finite and > 0")));
+    if !(ratio.is_finite() && (1.0 / RATIO_MAX..=RATIO_MAX).contains(&ratio)) {
+        return Err(OgridError::Param(format!("ratio {ratio} must be in [{:e}, {:e}]", 1.0 / RATIO_MAX, RATIO_MAX)));
+    }
+    if !(phase_deg.is_finite() && phase_deg.abs() <= PHASE_MAX_DEG) {
+        return Err(OgridError::Param(format!(
+            "phase {phase_deg} must be finite with |phase| <= {PHASE_MAX_DEG} degrees"
+        )));
     }
     if !(r.is_finite() && r > 0.0) {
         return Err(OgridError::Param(format!("radius {r} must be finite and > 0")));
@@ -201,4 +211,13 @@ pub(crate) fn check_common(k: usize, ratio: f64, r: f64) -> Result<()> {
 
 pub(crate) fn polar_pt(r: f64, ang: f64) -> [f64; 2] {
     [r * ang.cos(), r * ang.sin()]
+}
+
+/// Final guard of every kernel: finite nodes and every scaled Jacobian > 0, else `Inverted`.
+pub(crate) fn guard(mesh: PlanarMesh, what: &str) -> Result<PlanarMesh> {
+    let sj = mesh.min_scaled_jacobian();
+    if !mesh.nodes.iter().all(|q| q[0].is_finite() && q[1].is_finite()) || sj.is_nan() || sj <= 0.0 {
+        return Err(OgridError::Inverted(format!("{what}, min scaled Jacobian {sj}")));
+    }
+    Ok(mesh)
 }

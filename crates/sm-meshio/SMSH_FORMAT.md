@@ -196,6 +196,23 @@ n_nonconformal_faces, n_partition_cut_faces}` count faces by `face_kind`; `max_c
 largest `cell_face_offsets` row length and `max_face_vertices` the largest `face_offsets` row
 length. They exist so a ray tracer or transport sweep can size its scratch from the header.
 
+### 2.11 `region/` cell sets (the export region split)
+
+An export asked for `regions: {split: [...]}` (any of `"lattice"`, `"ring"`, `"sector"`) adds one
+ordinary cell set per region to `sets` (section 2.3), named `region/<name>`. It adds no header key,
+array or version: a reader that does not know the convention sees extra cell sets. The block sets
+(`fuel`, `water`, ...) are written as without the option, so `region/fuel` and the block `fuel`
+never collide (`/` is reserved in block names when a split is requested). The region sets of one
+mesh partition its cells (every cell is in exactly one), and are ordered by name.
+
+`<name>` is `<block>`, then `@<frame>[i,j]` for every lattice frame the cell's volume is tagged
+in (outer frame first; `[i,j,k]` when the frame has more than one layer), then `/r<ring>`, then
+`/s<sector>`, using only the requested parts: `region/fuel@core[2,3]@asm[5,7]/r1/s2`. The ring is
+0 for the innermost, the sector 0 starts at the pin's `angle0` and runs counter-clockwise. A
+volume without a tag in a requested part has no such part in its name (`region/water@a[1,0]`).
+Block names must not contain `@`, `/`, `[`, `]` or `,`. The same names, with the indices as integer
+tags, are the regions of the `.smrt` image.
+
 ## 3. Arrays
 
 Notation: `nv, np, nf, nc, ne` as in 2.1. "CSR" = an offsets array of `rows + 1` `u64` starting

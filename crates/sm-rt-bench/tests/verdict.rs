@@ -5,7 +5,7 @@ use sm_rt_bench::report::{self, Sign, is_polyhedral, render, render_sessions, ve
 use sm_rt_bench::result::{AgreementSummary, Env, ResultFile, Row, Stat};
 
 fn env(day: &str, os: &str, arch: &str, virt: &str, governor: &str) -> Env {
-    Env { cpu_model: "CPU A".into(), governor: governor.into(), ncpu: 16, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: virt.into() }
+    Env { cpu_model: "CPU A".into(), governor: governor.into(), ncpu: 16, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: virt.into(), virt_source: "systemd-detect-virt".into() }
 }
 
 fn bare(day: &str) -> Env {
@@ -255,4 +255,55 @@ fn a_polyhedral_row_cannot_change_a_verdict() {
         s.push(file("P1", &bare(d), &extra));
     }
     assert_eq!(render_sessions(&poly).unwrap(), render_sessions(&plain).unwrap());
+}
+
+/// `report --sessions A,B,C` reads three results directories and prints the aggregate; a wrong
+/// count and an empty directory are usage errors. The files go to a directory that is removed.
+#[test]
+fn report_sessions_is_wired_to_the_aggregator() {
+    use sm_rt_bench::cli::main_with;
+    use sm_rt_bench::result::write_result;
+    struct Rm(std::path::PathBuf);
+    impl Drop for Rm {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!("smrt-bench-sessions-{}", std::process::id()));
+    let _guard = Rm(root.clone());
+    let days = ["2026-11-10", "2026-11-12", "2026-11-15"];
+    let mut dirs = Vec::new();
+    for (i, d) in days.iter().enumerate() {
+        let dir = root.join(format!("s{i}"));
+        for f in session(&bare(d), false) {
+            write_result(&dir, &f).unwrap();
+        }
+        dirs.push(dir.display().to_string());
+    }
+    let out = root.join("sessions.md");
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let code = main_with(&a(&["report", "--sessions", &dirs.join(","), "--out", &out.display().to_string()])).unwrap();
+    assert_eq!(code, 0);
+    let md = std::fs::read_to_string(&out).unwrap();
+    assert!(md.contains("three-session verdict") && md.contains("| P1/w-fire/analytic | win | win | win | win |"), "{md}");
+    let err = main_with(&a(&["report", "--sessions", &dirs[..2].join(",")])).unwrap_err().to_string();
+    assert!(err.contains("exactly 3 sessions"), "{err}");
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    let err = main_with(&a(&["report", "--sessions", &format!("{},{},{}", dirs[0], dirs[1], root.join("empty").display())])).unwrap_err().to_string();
+    assert!(err.contains("holds no result files"), "{err}");
+}
+
+/// Two rows of one cell at the same thread count: the first in file order is the cell's row (the
+/// rule written in VERDICT.md); a later row with a different rate cannot change the sign.
+#[test]
+fn a_duplicate_row_at_one_thread_count_is_ignored_after_the_first() {
+    let e = bare("2026-11-10");
+    let base = [r("smrt", "analytic", "w-fire", 1, 200.0, 20.0), r("smrt", "analytic", "w-fire", 16, 3000.0, 20.0), r("dagmc-dd", "surface", "w-fire", 1, 100.0, 10.0), r("dagmc-dd", "surface", "w-fire", 16, 1000.0, 10.0)];
+    let plain = file("P1", &e, &base);
+    let mut dup = base.to_vec();
+    dup.insert(1, r("smrt", "analytic", "w-fire", 1, 1.0, 20.0)); // would be a loss if it counted
+    let doubled = file("P1", &e, &dup);
+    let sign = |f: &ResultFile| verdicts(std::slice::from_ref(f), "dagmc-dd").unwrap()[0].sign;
+    assert_eq!(sign(&plain), Sign::Win);
+    assert_eq!(sign(&doubled), Sign::Win);
 }

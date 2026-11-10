@@ -24,6 +24,8 @@ sm-cadio = { path = "../sm-cadio" }
 sm-rt-api = { path = "../sm-rt-api", features = ["stubs"] }
 sm-rt = { path = "../sm-rt" }
 sm-mesh-api = { path = "../sm-mesh-api" }
+sm-poly = { path = "../sm-poly" }
+sm-csgio = { path = "../sm-csgio" }
 sm-testkit = { path = "../sm-testkit" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

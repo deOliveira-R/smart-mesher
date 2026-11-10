@@ -23,7 +23,7 @@ fn centroid(s: &Session, v: EntityId) -> [f64; 3] {
 }
 
 fn copy(entities: Vec<EntityId>, count: Option<u32>, xform: Option<CopyXform>) -> ModelCopy {
-    ModelCopy { entities, count, xform }
+    ModelCopy { entities, count, xform, lattice: None }
 }
 
 fn mv(d: [f64; 3]) -> Option<CopyXform> {

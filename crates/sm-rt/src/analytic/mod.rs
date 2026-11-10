@@ -6,6 +6,7 @@
 //! * [`check_overlaps`] is the sampled overlap and gap check.
 
 mod builder;
+mod cellindex;
 mod check;
 mod kernel;
 mod leaf;

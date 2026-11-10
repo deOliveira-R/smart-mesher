@@ -16,7 +16,8 @@ use crate::vec::{V, add, cross, dot, norm, scale, sub};
 /// Cells with more faces than this are never fast-path eligible (the `sm-rt` check is quadratic).
 pub const CONVEX_CHECK_MAX: usize = 64;
 
-/// The `sm-rt` default planarity tolerance (`BuildOptions::planarity_tol`).
+/// The `sm-rt` default planarity tolerance (`BuildOptions::planarity_tol`); a test pins it
+/// against `sm_rt_api::BuildOptions::default()`.
 pub const RT_PLANARITY_TOL: f64 = 1e-9;
 
 /// Fixed chunk of the reductions (order independent anyway: counts and a maximum).
@@ -72,25 +73,22 @@ fn bbox_diam(pts: &[V]) -> f64 {
 pub fn cell_convexity(mesh: &dyn MeshRead, c: CellIx, planarity_tol: f64) -> CellConvexity {
     let co = mesh.coords();
     let sfs = mesh.cell_faces(c);
-    // Outward loops (reversed for the Right side) as points, with spans.
+    // Face loops in stored order (as `sm-rt` reads them), with spans and the side sign.
     let mut pts: SmallVec<[V; 96]> = SmallVec::new();
-    let mut spans: SmallVec<[(u32, u32); 16]> = SmallVec::new();
+    let mut spans: SmallVec<[(u32, u32, f64); 16]> = SmallVec::new();
     for sf in sfs {
         let l = mesh.face_vertices(sf.face());
         let start = pts.len() as u32;
-        let p = |v: &sm_mesh_api::VertexIx| [co.x[v.get()], co.y[v.get()], co.z[v.get()]];
-        match sf.side() {
-            Side::Left => pts.extend(l.iter().map(p)),
-            Side::Right => pts.extend(l.iter().rev().map(p)),
-        }
-        spans.push((start, l.len() as u32));
+        pts.extend(l.iter().map(|v| [co.x[v.get()], co.y[v.get()], co.z[v.get()]]));
+        spans.push((start, l.len() as u32, if sf.side() == Side::Left { 1.0 } else { -1.0 }));
     }
     let faces = sfs.len();
     let finite = pts.iter().all(|q| q.iter().all(|x| x.is_finite()));
     let mut planar = finite && faces > 0;
-    // Plane per face: (unit outward normal, offset).
-    let mut planes: SmallVec<[(V, f64); 16]> = SmallVec::new();
-    for &(s, n) in &spans {
+    // Plane per face from the stored loop: (unit normal, offset, side sign); the outside
+    // distance of a point is `sign * (n . p - d)`, the same arithmetic as `sm-rt`.
+    let mut planes: SmallVec<[(V, f64, f64); 16]> = SmallVec::new();
+    for &(s, n, sign) in &spans {
         let l = &pts[s as usize..(s + n) as usize];
         let apex = scale(l.iter().fold([0.0; 3], |a, &p| add(a, p)), 1.0 / l.len() as f64);
         let mut a = [0.0; 3];
@@ -100,7 +98,7 @@ pub fn cell_convexity(mesh: &dyn MeshRead, c: CellIx, planarity_tol: f64) -> Cel
         let len = norm(a);
         if !(len > 0.0 && len.is_finite()) {
             planar = false;
-            planes.push(([0.0; 3], 0.0));
+            planes.push(([0.0; 3], 0.0, sign));
             continue;
         }
         let nrm = scale(a, 1.0 / len);
@@ -110,13 +108,13 @@ pub fn cell_convexity(mesh: &dyn MeshRead, c: CellIx, planarity_tol: f64) -> Cel
         if !(l.len() == 3 || dev <= planarity_tol * diam) {
             planar = false;
         }
-        planes.push((nrm, d));
+        planes.push((nrm, d, sign));
     }
     let mut excess = 0.0f64;
     if finite {
-        for &(nrm, d) in &planes {
+        for &(nrm, d, sign) in &planes {
             for &p in &pts {
-                excess = excess.max(dot(nrm, p) - d);
+                excess = excess.max(sign * (dot(nrm, p) - d));
             }
         }
     }

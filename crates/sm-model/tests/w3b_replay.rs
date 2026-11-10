@@ -25,9 +25,9 @@ fn scenario() -> Vec<Box<dyn Op>> {
         Box::new(CreateSpherePart { radius: 2.0, inner: Some(1.0), octants: Some(Octants { x: Some(P), y: None, z: Some(P) }), center: Some([30.0, 0.0, 0.0]) }),
         Box::new(MoveTo { entities: vec![vol(1)], to: MoveTarget::Point(PointSpec { x: Some(-40.0), y: None, z: None }), anchor: None }),
         Box::new(RotateAbout { entities: vec![vol(2)], angle_deg: 33.0, axis: Some(AxisSpec::Name(AxisName::Z)), origin: Some([-20.0, 0.0, 0.0]), vertices: None, face: None }),
-        Box::new(ModelCopy { entities: vec![vol(3)], count: Some(3), xform: Some(CopyXform::Rotate { angle_deg: 20.0, axis: Some(AxisSpec::Vector([1.0, 1.0, 1.0])), origin: None, vertices: None, face: None }) }),
-        Box::new(ModelCopy { entities: vec![vol(4), vol(5)], count: Some(2), xform: Some(CopyXform::Reflect { normal: [1.0, 2.0, 3.0], origin: Some([0.0, 1.0, 0.0]) }) }),
-        Box::new(ModelCopy { entities: vec![id(EntityKind::TopoBody, 1)], count: None, xform: Some(CopyXform::Scale { factor: 1.25, origin: None }) }),
+        Box::new(ModelCopy { entities: vec![vol(3)], count: Some(3), xform: Some(CopyXform::Rotate { angle_deg: 20.0, axis: Some(AxisSpec::Vector([1.0, 1.0, 1.0])), origin: None, vertices: None, face: None }), lattice: None }),
+        Box::new(ModelCopy { entities: vec![vol(4), vol(5)], count: Some(2), xform: Some(CopyXform::Reflect { normal: [1.0, 2.0, 3.0], origin: Some([0.0, 1.0, 0.0]) }), lattice: None }),
+        Box::new(ModelCopy { entities: vec![id(EntityKind::TopoBody, 1)], count: None, xform: Some(CopyXform::Scale { factor: 1.25, origin: None }), lattice: None }),
     ]
 }
 

@@ -26,7 +26,7 @@ fn topology_resolver_finds_the_shared_curve() {
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.vertices[0]), on(b.vertices[7])]), None);
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.edges[9]), on(z0)]), None);
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.faces[0]), on(z0)]), None);
-    // opposite faces share no curve
+    // faces -x and +x of a brick share no curve
     assert_eq!(r.resolve(b.faces[0], b.faces[1], [on(z0), on(z0)]), None);
 }
 

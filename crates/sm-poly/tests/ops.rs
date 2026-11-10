@@ -50,6 +50,7 @@ fn build(kind: &str, n: [u32; 3], h: [f64; 3]) -> ReferenceMesh {
         "tet" => meshes::tet_block(n, h).expect("tet_block").mesh,
         "hex" => hex_block(n, h, &mut SerialAlloc::new()).expect("hex_block"),
         "mixed" => meshes::mixed_transition().expect("mixed_transition").mesh,
+        "tet_warped" => meshes::tet_block_warped(n, h, 0.1).expect("tet_block_warped").mesh,
         other => panic!("unknown kind {other}"),
     }
 }
@@ -256,7 +257,8 @@ fn registration_shape_matches_the_contract() {
     assert_eq!(schema["required"], json!(["mesh"]));
     assert_eq!(schema["properties"]["mesh"]["x-entity-kind"], json!(["Mesh"]));
     assert!(schema["properties"].get("keep_source").is_some());
-    assert_eq!(schema["properties"].as_object().unwrap().len(), 2, "no `targets`, `faces` or `agglomerate`");
+    assert!(schema["properties"].get("dual").is_some(), "W4-POLY-VORO adds `dual`");
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 3, "mesh, keep_source, dual: no `targets`, `faces` or `agglomerate`");
     assert_eq!(info.outputs.len(), 1);
     assert_eq!((info.outputs[0].name, info.outputs[0].kinds), ("mesh", &[EntityKind::Mesh][..]));
     assert_eq!(info.outputs[0].cardinality, sm_op_api::Cardinality::One);
@@ -269,3 +271,37 @@ fn registration_shape_matches_the_contract() {
     assert_eq!(before, only_poly.layer_roles().iter().map(|l| l.0).collect::<Vec<_>>());
 }
 
+
+#[test]
+fn dual_argument_selects_the_circumcentric_dual_and_refusal_is_atomic() {
+    // Kuhn block: circumcentric dual is the (n+1)^3 cube lattice (all_polyhedra splits one face of
+    // each hex, so every cell is still a polyhedron)
+    let mut s = session_with("tet");
+    let h0 = s.state().hash();
+    let (_, d) = run_json(&mut s, "mesh.to_poly", json!({"mesh": "Mesh#1", "dual": "circumcentric"})).expect("circumcentric");
+    let poly = d.outputs["mesh"][0];
+    let st = s.state();
+    let m = st.layer::<MeshLayer>().unwrap().get(poly).unwrap().mesh();
+    assert_eq!(m.count(MeshEntityKind::Cell), 4 * 4 * 4);
+    assert!((poly_stats(m).volume_sum - 27.0).abs() < 1e-12);
+    assert!(validate(m).is_empty() && validate_geometry(m, &GeomTol::default()).is_empty());
+    assert!(m.tag(MeshEntityKind::Cell, sm_poly::GENERATOR_TAGS[0]).is_some());
+    let h_circ = s.state().hash();
+    // the default dual of the same source gives another state
+    let mut b = session_with("tet");
+    assert_eq!(b.state().hash(), h0);
+    run_json(&mut b, "mesh.to_poly", json!({"mesh": "Mesh#1"})).unwrap();
+    assert_ne!(b.state().hash(), h_circ);
+    // an explicit "barycentric" is the default
+    let mut c = session_with("tet");
+    run_json(&mut c, "mesh.to_poly", json!({"mesh": "Mesh#1", "dual": "barycentric"})).unwrap();
+    assert_eq!(c.state().hash(), b.state().hash(), "the default is omitted from the canonical params");
+    // a non-Delaunay mesh is refused with the state unchanged
+    let mut w = session_with("tet_warped");
+    let before = w.state().hash();
+    let e = run_json(&mut w, "mesh.to_poly", json!({"mesh": "Mesh#1", "dual": "circumcentric"})).expect_err("refused");
+    assert!(e.to_string().contains("circumcentric dual"), "{e}");
+    assert_eq!(w.state().hash(), before);
+    // while the barycentric dual of it works
+    run_json(&mut w, "mesh.to_poly", json!({"mesh": "Mesh#1"})).expect("barycentric");
+}

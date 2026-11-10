@@ -28,3 +28,16 @@ cargo clippy -p sm-py --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude sm-py --no-deps --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc -p sm-py --no-deps
 python3 tools/graph.py > /dev/null
+# tools/refcorpus: the unittest needs only python3; ruff and mypy run where installed (the
+# mypy config imports openmc with ignores, so no OpenMC is needed).
+python3 -I -B -m unittest discover -s tools/refcorpus -p 'test_*.py'
+if command -v ruff > /dev/null; then
+    ruff check --no-cache --config tools/refcorpus/ruff.toml tools/refcorpus
+else
+    echo "ci.sh: ruff not installed, skipping the tools/refcorpus lint"
+fi
+if command -v mypy > /dev/null; then
+    (cd tools/refcorpus && mypy --cache-dir=/dev/null --config-file mypy.ini)
+else
+    echo "ci.sh: mypy not installed, skipping the tools/refcorpus type check"
+fi

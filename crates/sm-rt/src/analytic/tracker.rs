@@ -289,6 +289,62 @@ impl AnalyticTracker {
         best
     }
 
+    /// Rebuild the cell index for a threshold: built when the leaf has at least `min_cells`
+    /// cells (default 64), dropped otherwise (`usize::MAX` gives the all-cells, all-surfaces
+    /// paths, which are the oracle; `0` forces the index). Results do not depend on it.
+    #[must_use]
+    pub fn with_index_threshold(mut self, min_cells: usize) -> Self {
+        self.leaf.set_index_threshold(min_cells);
+        self
+    }
+
+    /// Number of tiles of the cell index, `None` when the leaf has none.
+    pub fn index_tiles(&self) -> Option<usize> {
+        self.leaf.index.as_ref().map(super::cellindex::CellIndex::n_tiles)
+    }
+
+    /// Hash of the cell index (node order and tile lists), `None` when the leaf has none.
+    pub fn index_digest(&self) -> Option<ContentHash> {
+        self.leaf.index.as_ref().map(super::cellindex::CellIndex::digest)
+    }
+
+    /// Locate `p` by the cell index (`indexed`) or by scanning every cell (the oracle), with the
+    /// overlap flag: `(located, true)` when two cells claim the point (the cell is then none).
+    ///
+    /// # Errors
+    /// `RtError::NonFinite` for a non-finite position or direction.
+    pub fn locate_checked(&self, p: Point3, dir: Option<Vector3>, indexed: bool, scratch: &mut Scratch) -> Result<(Located, bool)> {
+        let pa = a3(p);
+        if !finite3(pa) {
+            return Err(RtError::NonFinite("position"));
+        }
+        let d = match dir {
+            Some(d) => av(d),
+            None => {
+                let h = hashed_direction(p);
+                [h.x, h.y, h.z]
+            }
+        };
+        if !finite3(d) {
+            return Err(RtError::NonFinite("direction"));
+        }
+        if indexed {
+            return Ok(self.locate_ov(pa, d, None, scratch));
+        }
+        let cnt = &mut scratch.counters;
+        Ok(match self.leaf.locate_all(pa, d, None, cnt) {
+            Found::One(c) => (Located::new(CellId(c), RegionId(self.leaf.cell_region[c as usize]), self.leaf.on_face(c as usize, pa).map(FaceId)), false),
+            Found::Overlap => (Located::new(CellId::NONE, RegionId::NONE, None), true),
+            Found::None => (
+                match self.complement {
+                    Some(r) if self.in_bounds(pa) => Located::new(CellId::COMPLEMENT, r, self.leaf.on_face_any(pa).map(FaceId)),
+                    _ => Located::new(CellId::NONE, RegionId::NONE, None),
+                },
+                false,
+            ),
+        })
+    }
+
     /// Kind of each surface (`plane`, `sphere`, `cylinder`, `cone`, `torus`, `quadric`), by
     /// surface id.
     pub fn surface_kinds(&self) -> Vec<&'static str> {
@@ -396,48 +452,29 @@ impl AnalyticTracker {
         Step::new(0.0, st.cell, self.region_of(st.cell), StepEnd::Lost(l))
     }
 
-    fn step_once(&self, st: &mut TrackState, max_dist: f64, sc: &mut Scratch) -> Result<Once> {
-        let (o, d) = (a3(st.pos), av(st.dir));
-        let cur = st.cell;
-        let comp = cur == CellId::COMPLEMENT;
-        if cur.is_none() || (comp && self.complement.is_none()) {
-            return Ok(Once::Fail(LostCause::NoCellContainsPoint));
-        }
-        if !comp && cur.get() >= self.leaf.n_cells() {
-            return Err(RtError::UnknownId { kind: "cell", id: cur.0 });
-        }
-        let region = self.region_of(cur);
-        let entry = st.entered_via.map(|f| f.0);
-        let ns = self.n_surfs();
-        let tol = self.leaf.tol;
-        let cur_cell = if comp { None } else { Some(cur.0) };
-
-        // Breakpoints: the first root of each relevant surface ahead of the position.
-        sc.hits.clear();
-        // The complement borders every cell: all surfaces are relevant.
-        let (list, all): (&[u32], core::ops::Range<u32>) = if comp { (&[], 0..ns as u32) } else { (self.leaf.cell_surfs(cur.get()), 0..0) };
+    /// Append the roots of surface `s` in `(0, max_t]`, minus the duplicate of the crossing just made.
+    fn push_hits(&self, s: u32, o: V3, d: V3, max_t: f64, entry: Option<u32>, sc: &mut Scratch) {
         let mut buf = [0.0f64; 4];
-        for s in list.iter().copied().chain(all) {
-            sc.counters.surface_evals += 1;
-            let k = self.leaf.surfs[s as usize].hits(o, d, max_dist, &mut buf);
-            for &t in &buf[..k] {
-                if Some(s) == entry {
-                    // A duplicate of the crossing just made: same crossing direction, within the
-                    // on-face distance. A root crossing back (opposite direction) is a real
-                    // event, however close (a grazing chord).
-                    let surf = &self.leaf.surfs[s as usize];
-                    let (d0, dt) = (dot(surf.normal(o), d), dot(surf.normal(madd(o, d, t)), d));
-                    if (d0 > 0.0) == (dt > 0.0) && t <= tol / d0.abs().max(1e-3) {
-                        continue;
-                    }
+        sc.counters.surface_evals += 1;
+        let k = self.leaf.surfs[s as usize].hits(o, d, max_t, &mut buf);
+        for &t in &buf[..k] {
+            if Some(s) == entry {
+                // A duplicate of the crossing just made: same crossing direction, within the
+                // on-face distance. A root crossing back (opposite direction) is a real
+                // event, however close (a grazing chord).
+                let surf = &self.leaf.surfs[s as usize];
+                let (d0, dt) = (dot(surf.normal(o), d), dot(surf.normal(madd(o, d, t)), d));
+                if (d0 > 0.0) == (dt > 0.0) && t <= self.leaf.tol / d0.abs().max(1e-3) {
+                    continue;
                 }
-                sc.hits.push((t, s));
             }
+            sc.hits.push((t, s));
         }
-        sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        let (t_box, k_box) = if comp { box_exit(o, d, &self.leaf.bounds) } else { (f64::INFINITY, 0) };
+    }
 
-        let mut event: Option<(f64, u32, Next)> = None;
+    /// The first of the sorted `sc.hits` that is an event: a crossing out of the current cell
+    /// into another cell (or, from the complement, into one), before the box exit.
+    fn first_event(&self, cur_cell: Option<u32>, comp: bool, t_box: f64, o: V3, d: V3, sc: &mut Scratch) -> Option<(f64, u32, Next)> {
         for i in 0..sc.hits.len() {
             let (t, s) = sc.hits[i];
             if comp && t_box <= t {
@@ -458,8 +495,57 @@ impl AnalyticTracker {
             if comp && next == Next::Exterior {
                 continue;
             }
-            event = Some((t, s, next));
-            break;
+            return Some((t, s, next));
+        }
+        None
+    }
+
+    fn step_once(&self, st: &mut TrackState, max_dist: f64, sc: &mut Scratch) -> Result<Once> {
+        let (o, d) = (a3(st.pos), av(st.dir));
+        let cur = st.cell;
+        let comp = cur == CellId::COMPLEMENT;
+        if cur.is_none() || (comp && self.complement.is_none()) {
+            return Ok(Once::Fail(LostCause::NoCellContainsPoint));
+        }
+        if !comp && cur.get() >= self.leaf.n_cells() {
+            return Err(RtError::UnknownId { kind: "cell", id: cur.0 });
+        }
+        let region = self.region_of(cur);
+        let entry = st.entered_via.map(|f| f.0);
+        let ns = self.n_surfs();
+        let cur_cell = if comp { None } else { Some(cur.0) };
+
+        let (t_box, k_box) = if comp { box_exit(o, d, &self.leaf.bounds) } else { (f64::INFINITY, 0) };
+        let mut event: Option<(f64, u32, Next)> = None;
+        match self.leaf.index.as_ref().filter(|_| comp) {
+            // Complement with the cell index: the tiles along the ray front to back, each tested
+            // against its own surfaces; the first valid event of a tile at or before its exit is
+            // the first event of the ray (tiles are consecutive in `t`).
+            Some(ix) => {
+                let mut after = f64::NEG_INFINITY;
+                ix.walk(o, d, t_box.min(max_dist), |tile, t_exit| {
+                    sc.hits.clear();
+                    for &s in ix.tile_surfs(tile) {
+                        self.push_hits(s, o, d, t_exit, entry, sc);
+                    }
+                    sc.hits.retain(|h| h.0 > after);
+                    sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                    after = t_exit;
+                    event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+                    event.is_some()
+                });
+            }
+            None => {
+                // Breakpoints: the first root of each relevant surface ahead of the position.
+                sc.hits.clear();
+                // The complement borders every cell: all surfaces are relevant.
+                let (list, all): (&[u32], core::ops::Range<u32>) = if comp { (&[], 0..ns as u32) } else { (self.leaf.cell_surfs(cur.get()), 0..0) };
+                for s in list.iter().copied().chain(all) {
+                    self.push_hits(s, o, d, max_dist, entry, sc);
+                }
+                sc.hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                event = self.first_event(cur_cell, comp, t_box, o, d, sc);
+            }
         }
 
         if comp && t_box <= max_dist && event.is_none_or(|e| t_box <= e.0) {

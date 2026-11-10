@@ -24,6 +24,12 @@ agreement check passed.
    sm-rt is more than 2x the baseline on any of them is printed `win (qualified: ...)` with both
    numbers, never as a bare win. A value of 0 (not measured) never qualifies.
 
+A cell holds one sm-rt row per thread count. If a results set has two rows of one cell at the same
+thread count (for example a second build, or the same run twice), the first in file-name order is
+kept and the rest are ignored; `precision` is not a key. A labelled second build (such as the
+`target-cpu=native` row) therefore needs its own `mode` name, or its own results directory, to be
+judged.
+
 "Full core count" is the largest thread count present for the cell's sm-rt rows. A cell without
 rows at 1 thread and at a larger count is `incomplete`; so is a cell with no baseline row. W4-BENCH-X86
 must run both the 1-thread and the physical-core-count rows.
@@ -57,8 +63,12 @@ sessions, each checked by the same rule on its own, and compares only the per-ce
 
 `Env::smoke()` is false only for Linux x86_64 with `virt == "none"` (from
 `systemd-detect-virt --vm`, falling back to the `hypervisor` flag of `/proc/cpuinfo`) and governor
-`performance`. Anything not proven is smoke: a VM, `powersave`, an undetected virtualisation (also
-every result file written before the field existed), macOS, arm64. The banner lists the reasons.
+`performance`. A VM, `powersave`, an undetected virtualisation (also every result file written before
+the field existed), macOS and arm64 are smoke, and the banner lists the reasons. What is proven
+depends on the source recorded in `virt_source`: `systemd-detect-virt` is the proof; the `cpuinfo`
+fallback only sees the `hypervisor` flag, so a VM that hides it reads as `none` when
+`systemd-detect-virt` is missing. A table published from a `cpuinfo` result is therefore only as good
+as the host check of `tools/bench/x86_64.sh`, which must run `systemd-detect-virt` itself.
 `bench-env.json` records `kernel`, `lscpu`, `smt`, `isolated_cores` and `cores` (the pinned core
 list, taken from `SMRT_BENCH_CORES`) next to the existing `rustc`, `env` and `docker` blocks.
 

@@ -4,7 +4,7 @@
 //! The XDG container itself is exercised by the `#[ignore]` tests at the end (they need Docker and
 //! a native `smrt-bench-xdg` image, which only a host where XDG builds can have: XDG includes
 //! `<immintrin.h>` unconditionally, so there is no linux/aarch64 image). `SMRT_XDG_STDOUT=FILE`
-//! (and `SMRT_XDG_SCALE`, default `tiny`) judges the saved stdout of a driver run
+//! (the scale follows from its ray count, or `SMRT_XDG_SCALE`) judges the saved stdout of a driver run
 //! (`run_case.sh H1` with `SMRT_WORKLOADS=walk`) the same way, e.g. from an emulated amd64 image.
 
 use sm_rt_bench::adapter::{Adapter, Output, WorkInput, Workload};
@@ -162,9 +162,16 @@ fn saved_xdg_walk_output_agrees_with_the_sm_rt_walk() {
         println!("skipped: SMRT_XDG_STDOUT not set");
         return;
     };
-    let scale = std::env::var("SMRT_XDG_SCALE").ok().and_then(|s| Scale::parse(&s)).unwrap_or_else(Scale::tiny);
-    let d = build(Case::H1, &scale).unwrap();
     let (rows, _, dumps) = parse_driver_output("xdg", &std::fs::read_to_string(path).unwrap()).unwrap();
+    // The scale is the one whose ray count equals the dump's (tiny 200, reduced 10000, full 200000),
+    // unless SMRT_XDG_SCALE names it.
+    let n = dumps["w-walk"].tracks.len();
+    let scale = match std::env::var("SMRT_XDG_SCALE") {
+        Ok(s) => Scale::parse(&s).unwrap_or_else(|| panic!("SMRT_XDG_SCALE={s}: unknown scale")),
+        Err(_) => [Scale::tiny(), Scale::reduced(), Scale::full()].into_iter().find(|s| s.rays == n).unwrap_or_else(|| panic!("the saved walk output has {n} tracks, which is no scale's ray count; set SMRT_XDG_SCALE")),
+    };
+    assert_eq!(n, scale.rays, "the saved walk output has {n} tracks but scale {} has {} rays", scale.name, scale.rays);
+    let d = build(Case::H1, &scale).unwrap();
     assert!(rows.iter().all(|r| r.precision == "mixed" && r.workload == "w-walk" && r.lost == 0));
     judge_xdg_walk(&d, &dumps["w-walk"]);
 }

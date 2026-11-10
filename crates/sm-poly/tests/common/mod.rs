@@ -8,6 +8,8 @@ use sm_mesh_api::{
     CellIx, Classification, FaceIx, MeshEntityKind, MeshRead, SerialAlloc, cell_volume,
     face_area_vector,
 };
+use sm_mesh_api::CellShape;
+use sm_testkit::meshes::CellSpec;
 use sm_poly::{DualReport, EdgeResolver, PolyError, PolyOptions, dualize};
 
 /// Mints a `TopoEdge` id from the face pair (for fixtures whose edges are single intervals).
@@ -105,3 +107,79 @@ pub fn with_edge_table(mesh: &ReferenceMesh, topo: &dyn sm_topo_api::TopologyVie
     out.ensure_edges(&mut SerialAlloc::new(), &explicit).expect("edge table");
     out
 }
+
+pub fn orient(pts: &[[f64; 3]], v: [usize; 4]) -> CellSpec {
+    let (a, b, c, d) = (pts[v[0]], pts[v[1]], pts[v[2]], pts[v[3]]);
+    let det = (b[0] - a[0]) * ((c[1] - a[1]) * (d[2] - a[2]) - (c[2] - a[2]) * (d[1] - a[1]))
+        - (b[1] - a[1]) * ((c[0] - a[0]) * (d[2] - a[2]) - (c[2] - a[2]) * (d[0] - a[0]))
+        + (b[2] - a[2]) * ((c[0] - a[0]) * (d[1] - a[1]) - (c[1] - a[1]) * (d[0] - a[0]));
+    assert!(det != 0.0);
+    let o = if det > 0.0 { vec![v[0], v[1], v[2], v[3]] } else { vec![v[0], v[2], v[1], v[3]] };
+    CellSpec::Template(CellShape::Tet, o)
+}
+
+/// The BCC point block of `n^3` unit cubes: corners then centres. Tets are the disphenoid
+/// honeycomb `{c1, c2, p, q}` (adjacent centres, an edge of their shared square), and two tets
+/// per boundary pyramid. Returns the points, the tets and the number of corner points.
+pub fn bcc_patch(n: usize) -> (Vec<[f64; 3]>, Vec<CellSpec>, usize) {
+    let m = n + 1;
+    let corner = |i: usize, j: usize, k: usize| (k * m + j) * m + i;
+    let centre = |i: usize, j: usize, k: usize| m * m * m + (k * n + j) * n + i;
+    let mut pts = Vec::new();
+    for k in 0..m {
+        for j in 0..m {
+            for i in 0..m {
+                pts.push([i as f64, j as f64, k as f64]);
+            }
+        }
+    }
+    for k in 0..n {
+        for j in 0..n {
+            for i in 0..n {
+                pts.push([i as f64 + 0.5, j as f64 + 0.5, k as f64 + 0.5]);
+            }
+        }
+    }
+    let mut cells = Vec::new();
+    for k in 0..n {
+        for j in 0..n {
+            for i in 0..n {
+                let c = [i, j, k];
+                for d in 0..3 {
+                    for s in 0..2 {
+                        let (u, v) = ((d + 1) % 3, (d + 2) % 3);
+                        let mut nb = [i as isize, j as isize, k as isize];
+                        nb[d] += if s == 1 { 1 } else { -1 };
+                        let exists = nb.iter().all(|&x| (0..n as isize).contains(&x));
+                        if s == 0 && exists {
+                            continue; // the neighbour's s = 1 pass builds this square
+                        }
+                        let cyc: Vec<usize> = [(0, 0), (1, 0), (1, 1), (0, 1)]
+                            .iter()
+                            .map(|&(a, b)| {
+                                let mut q = c;
+                                q[d] += s;
+                                q[u] += a;
+                                q[v] += b;
+                                corner(q[0], q[1], q[2])
+                            })
+                            .collect();
+                        let c1 = centre(i, j, k);
+                        if exists {
+                            let c2 = centre(nb[0] as usize, nb[1] as usize, nb[2] as usize);
+                            for e in 0..4 {
+                                cells.push(orient(&pts, [c1, c2, cyc[e], cyc[(e + 1) % 4]]));
+                            }
+                        } else {
+                            // boundary pyramid: two tets split along a diagonal (cospherical base)
+                            cells.push(orient(&pts, [c1, cyc[0], cyc[1], cyc[2]]));
+                            cells.push(orient(&pts, [c1, cyc[0], cyc[2], cyc[3]]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (pts, cells, m * m * m)
+}
+

@@ -40,6 +40,12 @@ fn valid(r: &Rig) -> Result<(), String> {
     if i.is_empty() && g.is_empty() { Ok(()) } else { Err(format!("invalid: {} topo, {} geometry issues", i.len(), g.len())) }
 }
 
+/// `keep` discards the other side: its role is empty and exactly one volume is left in the model.
+fn only_kept(r: &Rig, discarded: &[f64]) -> Result<(), String> {
+    let n = r.topo().cells(Dim::Volume).len();
+    if discarded.is_empty() && n == 1 { Ok(()) } else { Err(format!("discarded side holds {} volume(s), model has {n} volume(s), want 0 and 1", discarded.len())) }
+}
+
 fn body_of(d: &Delta, role: &str) -> EntityId {
     d.outputs[role][0]
 }
@@ -81,8 +87,14 @@ fn tilted_cylinder(keep: KeepSide) -> Out {
             close("inside", neg.iter().sum(), inside)?;
             close("outside", pos.iter().sum(), 400.0 - inside)?;
         }
-        KeepSide::Negative => close("inside", neg.iter().sum(), inside)?,
-        KeepSide::Positive => close("outside", pos.iter().sum(), 400.0 - inside)?,
+        KeepSide::Negative => {
+            close("inside", neg.iter().sum(), inside)?;
+            only_kept(&r, &pos)?;
+        }
+        KeepSide::Positive => {
+            close("outside", pos.iter().sum(), 400.0 - inside)?;
+            only_kept(&r, &neg)?;
+        }
     }
     Ok(format!("inside {inside:.6}"))
 }
@@ -100,8 +112,14 @@ fn plane_cut(name: &str, size: f64, normal: [f64; 3], point: [f64; 3], keep: Kee
             close(&format!("{name} neg"), neg.iter().sum(), neg_vol)?;
             close(&format!("{name} pos"), pos.iter().sum(), total - neg_vol)?;
         }
-        KeepSide::Negative => close(&format!("{name} neg"), neg.iter().sum(), neg_vol)?,
-        KeepSide::Positive => close(&format!("{name} pos"), pos.iter().sum(), total - neg_vol)?,
+        KeepSide::Negative => {
+            close(&format!("{name} neg"), neg.iter().sum(), neg_vol)?;
+            only_kept(&r, &pos)?;
+        }
+        KeepSide::Positive => {
+            close(&format!("{name} pos"), pos.iter().sum(), total - neg_vol)?;
+            only_kept(&r, &neg)?;
+        }
     }
     Ok(format!("neg {neg_vol:.6}"))
 }
@@ -199,6 +217,10 @@ fn d2_cut_one_piece() -> Out {
     close("A lower", neg.iter().sum(), 0.5)?;
     close("A upper", pos.iter().sum(), 0.5)?;
     close("B", volume_of(t, b.volume), 1.0)?;
+    // The neighbour keeps its own body, and that body still bounds it.
+    if !t.boundary(b.body).iter().any(|e| e.cell == b.volume) {
+        return Err("B's body no longer bounds B's volume".into());
+    }
     if t.cells(Dim::Volume).len() != 3 {
         return Err(format!("{} volumes, want 3", t.cells(Dim::Volume).len()));
     }
@@ -293,6 +315,10 @@ fn d2_chain() -> Out {
     close("A again", v.iter().sum(), 1.0)?;
     close("B", volume_of(r.topo(), b.volume), 1.0)?;
     let on_x1 = faces_at_x(&r, b.volume, 1.0);
+    // Pinned: the neighbour's face on the cut plane stays one face, the model has 11 faces.
+    if on_x1 != 1 || count_faces(&r) != 11 {
+        return Err(format!("{} faces total, B has {on_x1} on x = 1, want 11 and 1", count_faces(&r)));
+    }
     Ok(format!("{} faces total, B has {on_x1} on x = 1", count_faces(&r)))
 }
 

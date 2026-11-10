@@ -8,6 +8,7 @@ mod delete;
 mod prim;
 mod prim2;
 mod queries;
+mod region;
 mod sphere_part;
 mod xform;
 mod xform2;
@@ -17,6 +18,7 @@ pub use delete::Delete;
 pub use prim::{CreateBrick, CreateCylinder, CreateSphere};
 pub use prim2::{CreateFrustum, CreatePrism, CreatePyramid, CreateTorus};
 pub use queries::{BBox, Measurement, ModelList, ModelMeasure, TopoRelated};
+pub use region::{FrameRow, HexOrientSpec, LatticeDefine, LatticeTag, LayoutSpec, Outside, RegionClear, RegionTable, RegionTags, TagRow};
 pub use sphere_part::{CreateSpherePart, HalfSpace, Octants};
 pub use xform::{Move, Reflect, Rotate, Scale, XformError};
 pub use xform2::{Anchor, AxisName, AxisSpec, MoveTarget, MoveTo, PointSpec, RotateAbout};
@@ -49,9 +51,13 @@ impl Plugin for ModelPlugin {
         registry.register::<RotateAbout>()?;
         registry.register::<ModelCopy>()?;
         registry.register::<Delete>()?;
+        registry.register::<LatticeDefine>()?;
+        registry.register::<LatticeTag>()?;
+        registry.register::<RegionClear>()?;
         registry.register_query::<TopoRelated>()?;
         registry.register_query::<ModelList>()?;
         registry.register_query::<ModelMeasure>()?;
+        registry.register_query::<RegionTags>()?;
         Ok(())
     }
 }
@@ -80,9 +86,12 @@ mod tests {
                 "model.create_sphere_part",
                 "model.create_torus",
                 "model.delete",
+                "model.lattice_define",
+                "model.lattice_tag",
                 "model.move",
                 "model.move_to",
                 "model.reflect",
+                "model.region_clear",
                 "model.rotate",
                 "model.rotate_about",
                 "model.scale"
@@ -90,7 +99,7 @@ mod tests {
         );
         let mut qs = reg.query_names();
         qs.sort_unstable();
-        assert_eq!(qs, ["model.list", "model.measure", "topo.related"]);
+        assert_eq!(qs, ["model.list", "model.measure", "model.region_tags", "topo.related"]);
     }
 
     #[test]
