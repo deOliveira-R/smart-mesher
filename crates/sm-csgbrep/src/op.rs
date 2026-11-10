@@ -351,7 +351,7 @@ fn build_reusing(ctx: &mut ApplyCtx<'_>, placed: &Placed, plan: &ReusePlan, bopt
             let place = |ctx: &mut ApplyCtx<'_>, from: [i32; 3], src: &[EntityId], step: [i32; 3], count: u32, out: &mut Built| -> Result<Vec<Placed3>, OpError> {
                 let before = live_bodies(ctx)?;
                 let d = delta([0; 3], step);
-                TypedOp::apply(&ModelCopy { entities: src.to_vec(), count: Some(count), xform: Some(CopyXform::Move { delta: d }) }, ctx)?;
+                TypedOp::apply(&ModelCopy { entities: src.to_vec(), count: Some(count), xform: Some(CopyXform::Move { delta: d }), lattice: None }, ctx)?;
                 let after = live_bodies(ctx)?;
                 let new: Vec<EntityId> = after.difference(&before).copied().collect();
                 if new.len() != src.len() * count as usize {
@@ -400,7 +400,7 @@ fn build_reusing(ctx: &mut ApplyCtx<'_>, placed: &Placed, plan: &ReusePlan, bopt
             for slot in left {
                 let d = delta(p.ref_slot, slot);
                 let before = live_bodies(ctx)?;
-                TypedOp::apply(&ModelCopy { entities: src_bodies.clone(), count: Some(1), xform: Some(CopyXform::Move { delta: d }) }, ctx)?;
+                TypedOp::apply(&ModelCopy { entities: src_bodies.clone(), count: Some(1), xform: Some(CopyXform::Move { delta: d }), lattice: None }, ctx)?;
                 let after = live_bodies(ctx)?;
                 let new: Vec<EntityId> = after.difference(&before).copied().collect();
                 if new.len() != src_bodies.len() {
