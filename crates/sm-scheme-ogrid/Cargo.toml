@@ -12,6 +12,11 @@ bench = false
 
 [dependencies]
 sm-scheme-api = { path = "../sm-scheme-api" }
+thiserror = "2"
+
+[dev-dependencies]
+sm-testkit = { path = "../sm-testkit" }
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
