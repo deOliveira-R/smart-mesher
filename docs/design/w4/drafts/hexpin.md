@@ -153,7 +153,7 @@ Ownership: one worker per row. New crates, their registration in `crates/sm-serv
   1. `mesh.auto_strategies` (`auto.rs:609-652`) lists the three names, ascending, with descriptions. **Critique delta:** the query is `mesh.auto_strategies`, not `mesh.strategies`.
   2. Brick (B1) and L-slab (B2): `hex_only` assignments equal `default`'s (compare assignment lists, not state hashes; the stored op carries the strategy name, `auto.rs:598`). Through pin and B5: equal except `ogrid` replaces `pave` on disk and annulus faces, while OGRID-S is not merged or Q1 is "no".
   3. Enclosed pin with `hex_only`: `mesh.auto` fails, naming the moderator volume id, with `tetmesh` absent from the tried list and the per-candidate reasons; the timeline is unchanged (the op is rejected).
-  4. `tet` on a brick: all volumes `tetmesh`, all faces `trimesh`, all cells Tet, zero `mesh.auto_tet` warnings, mesh volume equal to the brick to 1e-12.
+  4. `tet` on a brick: all volumes `tetmesh`, faces follow tetmesh's boundary scheme (the surface list `[trimesh]` does not apply to faces tetmesh imposes; a1 review), all cells Tet, zero `mesh.auto_tet` warnings, mesh volume equal to the brick to 1e-12.
   5. Replay of a recorded `hex_only` history reproduces the state hash with the strategy removed from the registry. (This repeats the W3b M2 proof for a new name; it is cheap and kept.)
   6. `mesh.info.volume_by_owner` sums to `volume` to 1e-12 on the through pin, and is equal for 1 and N threads.
 - **Hash impact:** none on state. The `mesh.info` reply gains a field, so the MCP golden `crates/sm-mcp/tests/golden/tools.standard.txt` changes if it records output schemas (orchestrator updates it).

@@ -152,3 +152,9 @@ Carried (new follow-ups from the INT reviews; none blocks W4):
 - tools/platform `collect.py:58`: `error.new` should go through `last_line(r)`; record the macOS `rustc -V`; `cargo fmt` `platform_pins.rs`. **W4-0.7 did the first two:** `error.new` uses `last_line`; macOS arm64 `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `rustup 1.29.0 (2026-03-05)` (channel 1.99 from `rust-toolchain.toml`, same rustc as the Linux images' 1.99.1). `cargo fmt` of `platform_pins.rs` is still open (HYGIENE-CLI).
 - sm-mesher `auto.rs`: note that the `known` shortcut assumes `plan_with` is pure.
 - PIN: check the fuel-block mesh volume analytically; add a no-blocks CLI/Python check; mypy/ruff on `tools/w3c_driver.py` (the last part is done in W4-0.7: `ruff check` and `MYPYPATH=crates/sm-py/python mypy --strict` with numpy are clean).
+
+## From W4-a1 review (2026-11-10; cosmetic, take with a task that touches the file)
+- sm-cli tests: `pub type Reply =Box<...>` in `tests/common/mod.rs` lacks a space; a double blank line at `tests/commands.rs:6`; `mod common;` / `use common::Scratch` sit between std `use` groups in `milestone.rs` and `p0_rows.rs`.
+- sm-cli `milestone_w3c_pin` P4: the fuel check divides the total fuel region volume by 9 (mean pin); a per-pin check is stronger once regions split per lattice slot (W4-REGIONS-SPLIT).
+- sm-exodus: `tests/libmesh.rs` meshtool fn and `libs` format line run past rustfmt width (`benches/exodus.rs` also drifts).
+- W4-RT-WORLD commit trailer said Opus 5.5 while the worker's harness said Sonnet; the orchestrator decides which trailer stands.
