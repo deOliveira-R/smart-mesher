@@ -546,3 +546,51 @@ fn run_competitor_without_an_image_is_partial_with_the_command() {
         sm_rt_bench::docker::Competitor::Rows { rows, .. } => assert!(!rows.is_empty()),
     }
 }
+
+// ---- W4-RT-ROWS: the P2 analytic-hierarchy row --------------------------------------------------
+
+/// Event sequences of the hierarchical analytic world equal the flattened analytic row on every
+/// ray (the flattened world is the oracle), `pins_touched` equals the facet `hierarchy` row's, and
+/// the structure does not grow with the copies the way the flattened one does.
+#[test]
+fn p2_analytic_hierarchy_equals_the_flattened_analytic_row_ray_by_ray() {
+    use sm_rt_bench::smrt::{analytic_hierarchy_p2, hierarchy_p2};
+    let scale = Scale { rays: 3000, ..Scale::reduced() };
+    let d = build(Case::P2, &scale).unwrap();
+    let inp = input(&d.rays, &d.manifest.regions, 1, 0);
+    let mut flat = analytic_p2_bridge(&scale, &d.manifest.regions).unwrap();
+    let mut hier = analytic_hierarchy_p2(&scale, &d.manifest.regions).unwrap();
+    assert_eq!(hier.mode().as_deref(), Some("analytic-hierarchy"));
+    let (of, oh) = (flat.run(Workload::Track, &inp).unwrap(), hier.run(Workload::Track, &inp).unwrap());
+    assert_eq!((of.counters.lost, oh.counters.lost), (0, 0));
+    // Same region sequences and chords (the world tolerance is far below 1e-9 diag).
+    let rep = sm_rt_bench::compare::compare(&oh.tracks, &of.tracks, d.manifest.diag, 1e-9 * d.manifest.diag).unwrap();
+    assert_eq!((rep.checked, rep.failed), (d.rays.len(), 0), "{rep:?}");
+    assert!(of.tracks.iter().any(|t| t.regions.len() > 1), "the rays cross interfaces");
+    // Fire (located and hinted) agrees too.
+    for w in [Workload::Fire, Workload::FireLocate] {
+        flat.prepare(w, &inp).unwrap();
+        hier.prepare(w, &inp).unwrap();
+        let (ff, fh) = (flat.run(w, &inp).unwrap(), hier.run(w, &inp).unwrap());
+        let (s, bad) = sm_rt_bench::compare::compare_fires(&fh.fires, &ff.fires, d.manifest.diag, 1e-9 * d.manifest.diag).unwrap();
+        assert_eq!((s.failed, bad.len()), (0, 0), "{w:?}: {s:?}");
+    }
+    // The facet `hierarchy` row (same lattice, same prototype placement): the same elements are touched.
+    let mut facet_h = hierarchy_p2(&scale, &d.manifest.regions).unwrap();
+    let ofh = facet_h.run(Workload::Track, &inp).unwrap();
+    assert_eq!(oh.counters.pins_touched, ofh.counters.pins_touched);
+    assert!(oh.counters.pins_touched >= d.rays.len() as u64);
+    // Structure: the flattened world grows with the copies, the hierarchy by the fill array only.
+    let bytes = |n: usize, hier: bool| {
+        let s = Scale { lattice_n: n, ..Scale::tiny() };
+        let r = [spec(0, "fuel", 1.0, 0.3), spec(1, "clad", 1.0, 0.3)];
+        let a = if hier { analytic_hierarchy_p2(&s, &r) } else { analytic_p2_bridge(&s, &r) }.unwrap();
+        a.build_info().structure_bytes
+    };
+    let (h1, h17) = (bytes(1, true), bytes(17, true));
+    let (f1, f17) = (bytes(1, false), bytes(17, false));
+    println!("structure bytes: hierarchy n=1 {h1}, n=17 {h17}; flattened n=1 {f1}, n=17 {f17}");
+    let copies = 9 * 17 * 17 - 9;
+    assert!(h17 - h1 <= 16 * copies as u64, "hierarchy grows by at most 16 bytes per added copy ({} per copy)", (h17 - h1) / copies as u64);
+    assert!(f17 - f1 > 20 * (h17 - h1), "the flattened world grows far faster");
+}

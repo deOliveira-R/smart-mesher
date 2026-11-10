@@ -278,6 +278,20 @@ pub fn hierarchy_p2(scale: &Scale, regions: &[RegionSpec]) -> Result<TrackerAdap
     Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("hierarchy").with_region_map(map).counting_touched().on_twin())
 }
 
+/// P2 as a hierarchical analytic world (W4-RT-WORLD): the model's lattice and cluster hosting
+/// one exact CSG pin prototype, built by `CsgWorld::world_tracker` with no flattening. It is the
+/// `analytic-hierarchy` row; the flattened `analytic` row is its oracle.
+///
+/// # Errors
+/// The bridge's or the world builder's error.
+pub fn analytic_hierarchy_p2(scale: &Scale, regions: &[RegionSpec]) -> Result<TrackerAdapter> {
+    let fix = p2_fixture(scale)?;
+    let w = sm_rt::csg_world(&fix.model, &fix.complex, &sm_rt::CsgWorldOptions::default()).map_err(bad)?;
+    let (t, _) = w.world_tracker(&BoundarySpec::default(), &BuildOptions::default()).map_err(bad)?;
+    let map = map_by_name(t.regions(), regions);
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic-hierarchy").with_region_map(map).counting_touched())
+}
+
 /// The model's lattice and cluster filled with the moderated pin cell of P1 (fuel, clad, water in
 /// a square cell of one pitch), so that rays cross lattice elements. P2's own twin has no
 /// moderator (pins stand in vacuum), so a ray there never leaves its first pin; this world is
@@ -469,6 +483,10 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
         match hierarchy_p2(scale, &data.manifest.regions) {
             Ok(a) => rows.geometric.push(Box::new(a)),
             Err(e) => note("hierarchy", e),
+        }
+        match analytic_hierarchy_p2(scale, &data.manifest.regions) {
+            Ok(a) => rows.geometric.push(Box::new(a)),
+            Err(e) => note("analytic-hierarchy", e),
         }
     }
     match tet_twin(data, flight_cells) {
