@@ -5,6 +5,8 @@ python3 -I -B -m unittest discover -s tools/refcorpus -p 'test_*.py'
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -74,6 +76,18 @@ class CheckTests(unittest.TestCase):
             self.assertTrue(bad[0].startswith("a/x.xml"))
             f.unlink()
             self.assertIn("missing", build.check_outputs(m, root)[0])
+
+
+class OfflineTests(unittest.TestCase):
+    def test_empty_cache_is_a_usage_error_not_a_traceback(self) -> None:
+        m = build.load_manifest()
+        for recipe in ("copy", "beavrs"):
+            eid = next(e["id"] for e in m["entry"] if e["recipe"] == recipe and not e.get("optional", False))
+            with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = build.main(["build", "--offline", "--out", d, "--only", eid])
+            self.assertEqual(rc, 2, recipe)
+            self.assertIn("not in cache", err.getvalue())
+            self.assertIn("fetch", err.getvalue())
 
 
 class RefusalTests(unittest.TestCase):

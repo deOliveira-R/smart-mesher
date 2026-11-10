@@ -90,7 +90,12 @@ const MESH: &str = "model.imprint(bodies: all bodies)\nmodel.merge()\nprint \"nv
 
 /// Every cell is a hex: the shapes line is exactly `{Hex: <cells>}`.
 fn assert_all_hex(o: &Outcome) {
-    assert_eq!(print_of(&o.out, "shapes"), format!("{{Hex: {}}}", print_of(&o.out, "cells")), "{}", o.out);
+    assert_eq!(
+        print_of(&o.out, "shapes"),
+        format!("{{Hex: {}}}", print_of(&o.out, "cells")),
+        "{}",
+        o.out
+    );
 }
 
 struct Outcome {
@@ -222,7 +227,11 @@ fn blind_holes_from_the_bottom_and_the_top_face() {
         );
         let o = apply_plan(&model);
         assert_eq!(o.steps.len(), 2, "{name}: {:?}", o.steps);
-        assert_eq!(print_of(&o.out, "nvol"), "4", "{name}: ring slab, solid slab split in ring and disc, fuel");
+        assert_eq!(
+            print_of(&o.out, "nvol"),
+            "4",
+            "{name}: ring slab, solid slab split in ring and disc, fuel"
+        );
         assert_eq!(print_of(&o.out, "violations"), "0", "{name}");
         assert_all_hex(&o);
         assert!((o.before - o.after).abs() <= 1e-12 * o.before, "{name}");
@@ -307,11 +316,15 @@ fn plans_are_bit_identical_across_runs_and_thread_counts() {
 fn coaxial(holes: &[(f64, f64)]) -> String {
     let mut m = "let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)\n".to_owned();
     for (i, (h, z)) in holes.iter().enumerate() {
-        m += &format!("let f{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n");
+        m += &format!(
+            "let f{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n"
+        );
     }
     let mut cur = "br.body".to_owned();
     for (i, (h, z)) in holes.iter().enumerate() {
-        m += &format!("let t{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n");
+        m += &format!(
+            "let t{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n"
+        );
         m += &format!("let m{i} = model.subtract(targets: {cur}, tools: t{i}.body)\n");
         cur = format!("m{i}.bodies");
     }
@@ -344,7 +357,11 @@ fn two_coaxial_blind_holes_from_bottom_and_top_are_refused() {
         })
         .collect();
     assert_eq!(refusals.len(), 1, "{refusals:?}");
-    assert!(refusals[0].contains("stacked on one axis"), "{}", refusals[0]);
+    assert!(
+        refusals[0].contains("stacked on one axis"),
+        "{}",
+        refusals[0]
+    );
     assert_eq!(s.workspace().state_hash(), before);
 }
 
@@ -354,6 +371,9 @@ fn coaxial_blind_hole_and_enclosed_cavity() {
     let o = apply_plan(&coaxial(&[(0.2, -0.4), (0.4, 0.1)]));
     assert_eq!(o.steps.len(), 4, "{:?}", o.steps);
     assert_clean(&o);
+    // The mesh itself fills the brick (unit height), not only the model-measure total.
+    let mv: f64 = print_of(&o.out, "mesh_volume").parse().expect("float");
+    assert!((mv - 1.26 * 1.26).abs() <= 1e-12 * mv, "mesh_volume {mv}");
 }
 
 #[test]

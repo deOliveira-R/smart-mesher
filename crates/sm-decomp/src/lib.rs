@@ -17,7 +17,8 @@ mod script;
 mod view;
 
 pub use plan::{
-    CutKind, CutStep, DecompError, FaceKind, FaceView, PlaneArg, Role, Target, VolumeView, plan_cuts_view,
+    CutKind, CutStep, DecompError, FaceKind, FaceView, PlaneArg, Role, Target, VolumeView,
+    plan_cuts_view,
 };
 pub use script::render_script;
 pub use view::{plan_cuts, volume_view};

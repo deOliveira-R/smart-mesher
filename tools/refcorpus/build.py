@@ -153,6 +153,14 @@ def cache_path(out: Path, repo: str, commit: str, path: str) -> Path:
     return out / ".cache" / repo.replace("/", "__") / commit / path
 
 
+def cached(out: Path, repo: str, commit: str, path: str) -> Path:
+    """The cached source file, or ``CorpusError`` when it was never fetched (offline builds)."""
+    p = cache_path(out, repo, commit, path)
+    if not p.exists():
+        raise CorpusError(f"{repo}@{commit[:8]}:{path} not in cache ({p}); run `build.py fetch` first")
+    return p
+
+
 def split_source(e: Entry) -> tuple[str, str]:
     """(``owner/repo``, commit) of an entry whose source is ``https://github.com/owner/repo@commit``."""
     url, commit = e["source"].split("@")
@@ -221,14 +229,14 @@ def build_entry(m: Manifest, e: Entry, out: Path) -> bool:
         run([str(freecadcmd()), str(sd / "gen_step.py")], out, {"SM_RC_STEP_OUT": str(d), "SM_RC_STEP_IDS": e["id"]})
     elif recipe == "beavrs":
         sup = next(s for s in m["support"] if s["source"] == "beavrs")
-        src = cache_path(out, sup["repo"], sup["commit"], "models/openmc")
+        src = cached(out, sup["repo"], sup["commit"], "models/openmc")
         run([str(openmc_python()), "-I", "-B", str(HERE / "gen_beavrs.py"), e["id"], str(d)], out, {"SM_RC_BEAVRS_SRC": str(src)})
     elif recipe == "copy":
         repo, commit = split_source(e)
         for p in e["fetch_paths"]:
             dest = d / p
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(cache_path(out, repo, commit, p), dest)
+            shutil.copyfile(cached(out, repo, commit, p), dest)
     elif recipe == "moose":
         exe = os.environ.get("SM_MOOSE_EXE")
         if not exe:
@@ -236,7 +244,7 @@ def build_entry(m: Manifest, e: Entry, out: Path) -> bool:
             print(f"skipped {e['id']}: SM_MOOSE_EXE is not set (optional)")
             return False
         repo, commit = split_source(e)
-        inp = cache_path(out, repo, commit, e["fetch_paths"][0])
+        inp = cached(out, repo, commit, e["fetch_paths"][0])
         run([exe, "-i", str(inp), "--mesh-only", str(d / "mesh.e")], inp.parent)
     else:
         raise CorpusError(f"{e['id']}: unknown recipe {recipe!r}")

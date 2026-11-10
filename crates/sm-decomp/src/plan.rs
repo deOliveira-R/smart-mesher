@@ -78,7 +78,9 @@ pub struct VolumeView {
 }
 
 /// Which output of an earlier step a later step cuts (the `WEBCUT_OUTPUTS` roles of `sm-boolean`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// The pieces on the side the tool normal points to (the outside of a cylinder).
@@ -322,7 +324,11 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
     for (_, c, r, a, b) in &walls {
         let same =
             |k: &Cavity| (k.radius - r).abs() <= tol && norm(axpy(k.center, -1.0, *c)) <= tol;
-        match cavities.iter_mut().rev().find(|k| same(k) && *a <= k.hi + tol) {
+        match cavities
+            .iter_mut()
+            .rev()
+            .find(|k| same(k) && *a <= k.hi + tol)
+        {
             Some(k) => {
                 k.lo = k.lo.min(*a);
                 k.hi = k.hi.max(*b);
@@ -379,7 +385,11 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
     // needs nothing.
     let tol_eq = |a: f64, b: f64| (a - b).abs() <= tol;
     let enclosed = |k: &Cavity| k.lo > lo + tol && k.hi < hi - tol;
-    let mut positions: Vec<f64> = cavities.iter().flat_map(|k| k.ends.iter().copied()).filter(|&s| s > lo + tol && s < hi - tol).collect();
+    let mut positions: Vec<f64> = cavities
+        .iter()
+        .flat_map(|k| k.ends.iter().copied())
+        .filter(|&s| s > lo + tol && s < hi - tol)
+        .collect();
     positions.sort_by(f64::total_cmp);
     positions.dedup_by(|b, a| (*b - *a).abs() <= tol);
 
@@ -394,7 +404,9 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
         if runs_on(k.circle).count() < 2 || runs_on(k.circle).all(&enclosed) {
             continue;
         }
-        let first = runs_on(k.circle).next().expect("a run");
+        let Some(first) = runs_on(k.circle).next() else {
+            continue; // unreachable: the count above is at least 2
+        };
         if blind_low(first) && runs_on(k.circle).skip(1).all(&enclosed) {
             if !stacked_blind.contains(&k.circle) {
                 stacked_blind.push(k.circle);
@@ -410,24 +422,46 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
     let mut prev = Target::Id { id: v.id };
     fn add(steps: &mut Vec<CutStep>, cut: CutKind, target: Target) -> usize {
         let step = steps.len();
-        steps.push(CutStep { step, cut, targets: vec![target] });
+        steps.push(CutStep {
+            step,
+            cut,
+            targets: vec![target],
+        });
         step
     }
-    let cylinder = |k: &Cavity| CutKind::Cylinder { radius: k.radius, axis: d, center: k.center };
+    let cylinder = |k: &Cavity| CutKind::Cylinder {
+        radius: k.radius,
+        axis: d,
+        center: k.center,
+    };
     // One cylinder cut per circle: it already separates every disc stacked on that circle.
     let mut cut: Vec<usize> = Vec::new();
-    for k in cavities.iter().filter(|k| enclosed(k) && !stacked_blind.contains(&k.circle)) {
+    for k in cavities
+        .iter()
+        .filter(|k| enclosed(k) && !stacked_blind.contains(&k.circle))
+    {
         if cut.contains(&k.circle) {
             continue;
         }
         cut.push(k.circle);
         let i = add(&mut steps, cylinder(k), prev);
-        prev = Target::Step { step: i, role: Role::Positive };
+        prev = Target::Step {
+            step: i,
+            role: Role::Positive,
+        };
     }
     for s in positions {
-        let plane = CutKind::Plane { plane: PlaneArg { origin: clean([d[0] * s, d[1] * s, d[2] * s]), normal: d } };
+        let plane = CutKind::Plane {
+            plane: PlaneArg {
+                origin: clean([d[0] * s, d[1] * s, d[2] * s]),
+                normal: d,
+            },
+        };
         let p = add(&mut steps, plane, prev);
-        prev = Target::Step { step: p, role: Role::Positive };
+        prev = Target::Step {
+            step: p,
+            role: Role::Positive,
+        };
         for k in &cavities {
             if cut.contains(&k.circle) {
                 continue;
@@ -435,15 +469,31 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
             if k.lo <= lo + tol && k.hi < hi - tol && tol_eq(k.hi, s) {
                 // Blind from the low end: the solid slab above the cavity.
                 cut.push(k.circle);
-                let i = add(&mut steps, cylinder(k), Target::Step { step: p, role: Role::Positive });
-                prev = Target::Step { step: i, role: Role::Positive };
+                let i = add(
+                    &mut steps,
+                    cylinder(k),
+                    Target::Step {
+                        step: p,
+                        role: Role::Positive,
+                    },
+                );
+                prev = Target::Step {
+                    step: i,
+                    role: Role::Positive,
+                };
             } else if k.hi >= hi - tol && k.lo > lo + tol && tol_eq(k.lo, s) {
                 // Blind from the high end: the solid slab under the cavity.
                 cut.push(k.circle);
-                add(&mut steps, cylinder(k), Target::Step { step: p, role: Role::Negative });
+                add(
+                    &mut steps,
+                    cylinder(k),
+                    Target::Step {
+                        step: p,
+                        role: Role::Negative,
+                    },
+                );
             }
         }
     }
     Ok(steps)
 }
-

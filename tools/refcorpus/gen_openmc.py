@@ -184,13 +184,22 @@ def deck_hex(out: Path, orientation: str, mixed: bool) -> None:
     geom = openmc.Geometry(openmc.Universe(cells=[cell], name="root"))
     geom.export_to_xml(str(out / "geometry.xml"))
     openmc.Materials(mats).export_to_xml(str(out / "materials.xml"))
-    # Self-check with OpenMC's own point lookup: the corner pin centre is a fuel cell, a point
-    # beyond the outer ring is outside, so the prism orientation matches the lattice orientation.
+    # Self-check with OpenMC's own point lookup. The corner pin centre is the fuel pin (a pin sits
+    # on the vertex axis of the lattice orientation, not in the outer water). The prism's vertex
+    # axis equals the lattice's, so a point at 7 pitches along it is inside the prism (its vertex
+    # is at 7.5 pitches); along the other axis the prism reaches only 6.5 pitches (its apothem), so
+    # the same distance is outside. A prism of the wrong orientation would swap the two.
     corner = (HEX_RINGS - 1) * HEX_PITCH
-    inside = (0.0, corner, 0.0) if orientation == "y" else (corner, 0.0, 0.0)
-    far = (0.0, 2 * apothem, 0.0)
-    assert geom.find(inside), f"{orientation}: corner pin centre not inside the boundary"
-    assert not geom.find(far), f"{orientation}: boundary too large"
+    vertex = (0.0, 1.0, 0.0) if orientation == "y" else (1.0, 0.0, 0.0)
+    flat = (1.0, 0.0, 0.0) if orientation == "y" else (0.0, 1.0, 0.0)
+    corner_pin = tuple(corner * c for c in vertex)
+    on_axis = tuple(HEX_RINGS * HEX_PITCH * c for c in vertex)
+    off_axis = tuple(HEX_RINGS * HEX_PITCH * c for c in flat)
+    leaf = geom.find(corner_pin)[-1]
+    assert getattr(leaf, "name", "") == "fuel pin inner", f"{orientation}: corner is {leaf!r}, not the fuel pin"
+    assert on_axis in -prism, f"{orientation}: 7 pitches along the vertex axis is outside the prism"
+    assert off_axis not in -prism, f"{orientation}: prism orientation differs from the lattice"
+    assert not geom.find((0.0, 2 * apothem, 0.0)), f"{orientation}: boundary too large"
 
 
 def deck_triso(out: Path) -> None:
