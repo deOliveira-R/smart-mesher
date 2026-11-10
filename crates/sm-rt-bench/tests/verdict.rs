@@ -63,8 +63,8 @@ fn session(e: &Env, flip: bool) -> Vec<ResultFile> {
         r("smrt", "facets", "w-fire", 1, 105.0, 30.0),
         r("smrt", "facets", "w-fire", 16, 1505.0, 30.0),
         // a loss (the claim-9 shape): walk-only is slower
-        r("smrt", "walk", "w-fire", 1, 20.0, 2.0),
-        r("smrt", "walk", "w-fire", 16, 300.0, 2.0),
+        r("smrt", "slow", "w-fire", 1, 20.0, 2.0),
+        r("smrt", "slow", "w-fire", 16, 300.0, 2.0),
     ];
     if flip {
         // The win flips to a loss on another day.
@@ -86,7 +86,7 @@ fn session(e: &Env, flip: bool) -> Vec<ResultFile> {
     bad16.threads = 16;
     a.extend([bad, bad16]);
     // missing thread count
-    a.push(r("smrt", "jump", "w-fire", 1, 900.0, 1.0));
+    a.push(r("smrt", "short", "w-fire", 1, 900.0, 1.0));
     vec![file("P1", e, &a)]
 }
 
@@ -99,14 +99,14 @@ fn golden_verdict_on_fabricated_rows() {
         ("P1/w-fire/delta", "n/c (challenger agreement failed or not checked)"),
         ("P1/w-fire/facets", "no claim (medians within the larger min-max spread at 1 threads)"),
         ("P1/w-fire/hierarchy", "win (qualified: build 3.000 s vs 1.000 s, more than 2x; structure 3000 B vs 1000 B, more than 2x)"),
-        ("P1/w-fire/jump", "incomplete (needs rows at 1 thread and at the full core count)"),
-        ("P1/w-fire/walk", "loss (baseline mode surface is faster at 1 threads)"),
+        ("P1/w-fire/short", "incomplete (needs rows at 1 thread and at the full core count)"),
+        ("P1/w-fire/slow", "loss (baseline mode surface is faster at 1 threads)"),
     ];
     let want: Vec<(String, String)> = want.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
     assert_eq!(got, want);
     assert_eq!(
         report::statement(&v, "dagmc-dd"),
-        "sm-rt beats dagmc-dd in 2 of 6 cells [P1/w-fire/analytic, P1/w-fire/hierarchy] and does not beat it in the rest: P1/w-fire/delta (n/c), P1/w-fire/facets (no claim), P1/w-fire/jump (incomplete), P1/w-fire/walk (loss)."
+        "sm-rt beats dagmc-dd in 2 of 6 cells [P1/w-fire/analytic, P1/w-fire/hierarchy] and does not beat it in the rest: P1/w-fire/delta (n/c), P1/w-fire/facets (no claim), P1/w-fire/short (incomplete), P1/w-fire/slow (loss)."
     );
     // No number of a tracker ratio appears in the statement.
     assert!(!report::statement(&v, "dagmc-dd").contains('x'));
@@ -173,7 +173,7 @@ fn three_sessions_one_sign_flip_is_no_claim() {
     let all: Vec<Vec<ResultFile>> = days.iter().map(|d| session(&bare(d), false)).collect();
     let md = render_sessions(&all).unwrap();
     assert!(md.contains("| P1/w-fire/analytic | win | win | win | win |"), "{md}");
-    assert!(md.contains("| P1/w-fire/walk | loss | loss | loss | loss |"), "{md}");
+    assert!(md.contains("| P1/w-fire/slow | loss | loss | loss | loss |"), "{md}");
     assert!(md.contains("sm-rt beats dagmc-dd in 2 of 6 cells"), "{md}");
     // Signs only: no number from a session appears.
     assert!(!md.contains("e2") && !md.contains("200"));
@@ -306,4 +306,23 @@ fn a_duplicate_row_at_one_thread_count_is_ignored_after_the_first() {
     let sign = |f: &ResultFile| verdicts(std::slice::from_ref(f), "dagmc-dd").unwrap()[0].sign;
     assert_eq!(sign(&plain), Sign::Win);
     assert_eq!(sign(&doubled), Sign::Win);
+}
+
+/// The jump group's W-fire rows (`walk`, `jump`) run on stair-stepped tets, the baselines on the facets:
+/// L3 rows never reach a verdict, as challenger rows, and they cannot make another cell `n/c`.
+#[test]
+fn l3_fire_rows_are_outside_the_verdict() {
+    use sm_rt_bench::report::is_l3;
+    let e = bare("2026-11-10");
+    let base = session(&e, false);
+    let want = verdicts(&base, "dagmc-dd").unwrap();
+    let mut bad = r("smrt", "jump", "w-fire", 1, 1e12, 1.0);
+    bad.failed = 3;
+    let extra = vec![bad, r("smrt", "jump", "w-fire", 16, 1e12, 1.0), r("smrt", "walk", "w-fire-locate", 1, 1e12, 1.0), r("smrt", "walk", "w-fire-locate", 16, 1e12, 1.0)];
+    assert!(extra.iter().all(|x| is_l3(&row(x))));
+    assert!(!is_l3(&row(&r("smrt", "walk", "w-flight", 1, 1.0, 1.0))), "the mesh_flight walk row is not L3");
+    let mut with = base.clone();
+    with.push(file("P1", &e, &extra));
+    assert_eq!(verdicts(&with, "dagmc-dd").unwrap(), want);
+    assert!(render(&with).unwrap().contains("L3 rows"));
 }

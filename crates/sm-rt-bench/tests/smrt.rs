@@ -633,8 +633,39 @@ fn h1_region_jump_fire_agrees_with_the_cell_walk_and_tests_fewer_faces() {
         assert_eq!((jump.agreement.checked, jump.agreement.failed), (d.rays.len(), 0), "{w}");
         assert!(jump.counters.jumps > 0 && walk.counters.jumps == 0, "{w}: jumps {} / {}", jump.counters.jumps, walk.counters.jumps);
         assert!(jump.counters.face_tests < walk.counters.face_tests, "{w}: face tests {} (jump) against {} (walk)", jump.counters.face_tests, walk.counters.face_tests);
+        assert!(sm_rt_bench::report::is_l3(walk) && sm_rt_bench::report::is_l3(jump), "{w}: group rows are L3, outside the verdict");
         println!("{w}: face tests per fire {:.1} (walk) {:.1} (jump), {} jumps of {} fires", walk.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.jumps, d.rays.len());
     }
+}
+
+/// The measured agreement of the jump with the walk (R1 level): the flat `1e-9 diag` tolerance of the
+/// run is a bound, this is the evidence. Recorded in `DESIGN.md`.
+#[test]
+fn h1_jump_is_within_r1_level_of_the_walk_in_distance() {
+    let scale = Scale { rays: 2000, ..Scale::reduced() };
+    let d = build(Case::H1, &scale).unwrap();
+    let mut rows = smrt_rows(&d, &scale, 12);
+    let [w, j] = rows.jump_fire.as_mut_slice() else { panic!("{:?}", rows.notes) };
+    let (max, n) = sm_rt_bench::smrt::max_fire_delta(&d, w.as_mut(), j.as_mut()).unwrap();
+    println!("max |delta d| jump vs walk: {max:e} cm over {n} rays (diag {})", d.manifest.diag);
+    assert!(n > 1900, "{n}");
+    // R1: 1e-12 (1 + d) with d up to the cube diagonal.
+    assert!(max <= 1e-12 * (1.0 + d.manifest.diag), "max |delta d| {max:e}");
+}
+
+/// A serial of 2^20 or more has no unambiguous pair identity: `PairEdges` declines it.
+#[test]
+fn pair_edges_declines_serials_beyond_20_bits() {
+    use sm_core::{EntityId, EntityKind};
+    use sm_poly::EdgeResolver;
+    let id = |s: u64| EntityId::new(EntityKind::TopoFace, s).unwrap();
+    let ends = [sm_mesh_api::Classification::on(id(1)); 2];
+    let pe = sm_rt_bench::smrt::PairEdges;
+    assert!(pe.resolve(id(3), id(5), ends).is_some());
+    assert!(pe.resolve(id((1 << 20) - 1), id((1 << 20) - 1), ends).is_some());
+    assert!(pe.resolve(id(1 << 20), id(1), ends).is_none());
+    assert!(pe.resolve(id(1), id(1 << 20), ends).is_none());
+    assert_ne!(pe.resolve(id(1), id(2), ends), pe.resolve(id(2), id(1), ends));
 }
 
 /// W4-RT-POLY-ROW (L2b): the median dual of H1's tets keeps the geometry. Per-ray region
@@ -667,9 +698,11 @@ fn h1_poly_dual_walks_the_same_regions_as_the_tets() {
     assert_eq!(rows.poly.len(), 2, "{:?}", rows.notes);
     let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Track, Workload::Flight], histories: 20_000, seed: 3, fire_tol: None, track_tol: Some(1e-9 * d.manifest.diag) };
     let (file, agreements) = run_case(&d, &mut rows.poly, "surface", &cfg, Env::detect()).unwrap();
+    // The reference has its own mode: no duplicate (tracker, mode, workload) with the mesh_flight `walk`.
+    assert!(file.rows.iter().all(sm_rt_bench::report::is_polyhedral), "every row of the poly group is outside the verdict");
     assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
     let row = |w: &str, m: &str| file.rows.iter().find(|r| r.workload == w && r.mode == m).unwrap();
-    let (tw, pw) = (row("w-track", "walk"), row("w-track", "poly-walk"));
+    let (tw, pw) = (row("w-track", "poly-ref"), row("w-track", "poly-walk"));
     assert_eq!((pw.agreement.checked, pw.agreement.failed), (d.rays.len(), 0));
     assert_eq!(tw.lost + pw.lost, 0);
     // Chord sums equal the cube chord (the cube is convex and rays start inside it).
@@ -678,7 +711,7 @@ fn h1_poly_dual_walks_the_same_regions_as_the_tets() {
     let (g, bad) = sm_rt_bench::runner::walk_truth(tets, &d.rays, &out.tracks, d.manifest.diag).unwrap();
     assert_eq!(bad, 0, "chord sums off by up to {:e}", g.max_chord_err);
     // Flight: tallies of the dual agree with the tet walk at 4 sigma.
-    let (tf, pf) = (row("w-flight", "walk"), row("w-flight", "poly-walk"));
+    let (tf, pf) = (row("w-flight", "poly-ref"), row("w-flight", "poly-walk"));
     assert!(pf.agreement.checked >= 4 && pf.agreement.failed == 0, "{:?} / {:?}", pf.agreement, tf.agreement);
     // Fewer, larger cells: the dual has fewer cells than the tets have corners times regions.
     assert!(pw.segments_per_track <= tw.segments_per_track * 2.0 + 1.0, "{} against {}", pw.segments_per_track, tw.segments_per_track);

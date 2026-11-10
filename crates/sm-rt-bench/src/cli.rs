@@ -279,6 +279,13 @@ fn run(a: &Args) -> Result<i32> {
                 let diag = data.manifest.diag;
                 let fire = RunConfig { workloads: vec![Workload::Fire, Workload::FireLocate], fire_tol: Some(1e-9 * diag), track_tol: None, ..cfg.clone() };
                 let (f, ag) = run_case(&data, &mut rows.jump_fire, "surface", &fire, env.clone())?;
+                if let [w, j] = rows.jump_fire.as_mut_slice() {
+                    match crate::smrt::max_fire_delta(&data, w.as_mut(), j.as_mut()) {
+                        Ok((d, n)) => file.notes.push(format!("{}: max |delta d| jump vs walk {d:.3e} cm over {n} rays (R1 bound 1e-12 (1 + d); run tolerance {:.3e})", data.case, 1e-9 * diag)),
+                        Err(e) => file.partial.push(format!("{}: max |delta d| jump vs walk not measured: {e}", data.case)),
+                    }
+                }
+                file.notes.push(format!("{}: jump and walk W-fire rows are L3 (stair-stepped tets against the facet twin of the baselines); they render apart and no verdict reads them", data.case));
                 for w in ["w-fire", "w-fire-locate"] {
                     let per = |m: &str| f.rows.iter().find(|r| r.workload == w && r.mode == m && r.threads == cfg.threads[0]).map(|r| (r.counters.face_tests as f64 / r.counters.fires.max(1) as f64, r.counters.jumps));
                     if let (Some((fw, _)), Some((fj, jumps))) = (per("walk"), per("jump")) {
@@ -319,7 +326,12 @@ fn run(a: &Args) -> Result<i32> {
             }
         }
         let competitors: Vec<&&str> = trackers.iter().filter(|t| crate::docker::image_of(t).is_some()).collect();
-        if !competitors.is_empty() {
+        if !competitors.is_empty() && data.facets.tris.is_empty() {
+            // A deck case (A17) has no facet twin: the competitors would get an empty facets.bin.
+            file.notes.push(format!("{}: competitors not run: the case has no facet twin (deck case)", case.name()));
+            file.partial.push(format!("{}: competitors skipped, no facet twin", case.name()));
+            code = code.max(2);
+        } else if !competitors.is_empty() {
             // Removed on every exit path (an early `?` included).
             struct RemoveOnDrop(PathBuf);
             impl Drop for RemoveOnDrop {

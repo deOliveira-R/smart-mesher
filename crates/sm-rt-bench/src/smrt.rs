@@ -440,11 +440,19 @@ pub fn mesh_adapter(mesh: &sm_mesh_api::reference::ReferenceMesh, mode: FlightMo
 /// Mints a feature curve per pair of model faces. The mesh's faces are the region interfaces (no
 /// model topology exists behind the benchmark's tets), so two interfaces meeting along a mesh edge
 /// are one curve by identity; only the identity of the edge matters to the dual's geometry.
-struct PairEdges;
+/// See above.
+#[doc(hidden)]
+pub struct PairEdges;
 
 impl sm_poly::EdgeResolver for PairEdges {
     fn resolve(&self, a: EntityId, b: EntityId, _ends: [sm_mesh_api::Classification; 2]) -> Option<EntityId> {
-        EntityId::new(EntityKind::TopoEdge, (a.serial() << 20) + b.serial())
+        // 20 bits per serial; a larger serial has no unambiguous pairing, so no identity.
+        const LIM: u64 = 1 << 20;
+        let (x, y) = (a.serial(), b.serial());
+        if x >= LIM || y >= LIM {
+            return None;
+        }
+        EntityId::new(EntityKind::TopoEdge, (x << 20) + y)
     }
 }
 
@@ -602,7 +610,11 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
         }
     }
     if let Some(t) = &data.tets {
-        match (flight_adapter(t, FlightMode::Surface, 8), poly_adapter(t)) {
+        // The reference has its own mode (`poly-ref`): `walk` is the mesh_flight row's, and a second
+        // `walk` row on the same cell would be dropped silently by the verdict. `poly-*` modes are
+        // outside the verdict, so the reference is too.
+        let reference = tet_mesh(t).and_then(|m| mesh_adapter(&m, FlightMode::Surface, 8, Some("poly-ref")));
+        match (reference, poly_adapter(t)) {
             (Ok(w), Ok(p)) => {
                 rows.poly.push(Box::new(w));
                 rows.poly.push(Box::new(p));
@@ -624,6 +636,26 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
     }
     rows.notes = notes;
     rows
+}
+
+/// Largest `|d_a - d_b|` of the W-fire distances of two adapters over the rays neither loses, and
+/// the number of rays compared (used to record how close the jump is to the walk, R1 level).
+///
+/// # Errors
+/// The adapters' errors, or [`BenchError::Check`] when the fire outputs differ in length.
+pub fn max_fire_delta(data: &CaseData, a: &mut dyn Adapter, b: &mut dyn Adapter) -> Result<(f64, usize)> {
+    use crate::adapter::{WorkInput, Workload};
+    let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: 1 };
+    let run = |x: &mut dyn Adapter| -> Result<Vec<(f64, i32)>> {
+        x.prepare(Workload::Fire, &w)?;
+        Ok(x.run(Workload::Fire, &w)?.fires)
+    };
+    let (fa, fb) = (run(a)?, run(b)?);
+    if fa.len() != fb.len() {
+        return Err(BenchError::Check(format!("fire outputs have {} and {} rays", fa.len(), fb.len())));
+    }
+    let both: Vec<f64> = fa.iter().zip(&fb).filter(|(x, y)| x.1 != -2 && y.1 != -2).map(|(x, y)| (x.0 - y.0).abs()).collect();
+    Ok((both.iter().copied().fold(0.0, f64::max), both.len()))
 }
 
 /// The rows' tracker handle, for tests that need the concrete `Tracker`.

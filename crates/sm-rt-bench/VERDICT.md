@@ -48,6 +48,21 @@ geometry; never read by the verdict)", and is dropped before the verdict reads a
 challenger and as baseline. `tests/verdict.rs::a_polyhedral_row_cannot_change_a_verdict` proves it,
 also through the three-session aggregate.
 
+## L3 rows are outside the verdict
+
+The W-fire rows of the jump group (`smrt` modes `walk` and `jump`, workloads `w-fire*`;
+`report::is_l3`) run on H1's stair-stepped tets, while the baselines hold the facet twin
+(icospheres): a cell of them would compare two geometries. They render in their own "L3 rows" table,
+are dropped before the verdict reads anything (as challenger, and they cannot make another cell `n/c`),
+and their own check (jump against walk on the same tets) stays in the agreement column. The reference
+walk of the polyhedral group is the `poly-ref` mode, so it is polyhedral and outside the verdict, and
+the `walk`/`w-flight` row of the tet-twin flights is the only row of that key. No cell may compare our
+rows on a different geometry against theirs without this label.
+`tests/verdict.rs::l3_fire_rows_are_outside_the_verdict` proves it.
+
+Not covered by this rule (open for W4-BENCH-X86): the tet-twin `walk`/`delta`/`block` W-flight rows are also
+on the stair-stepped tets (L3 by the same argument); a published table must label them or be reviewed first.
+
 ## Three sessions (`report::render_sessions`)
 
 `report::render` still refuses mixed machines or UTC days (rule b). The aggregator takes three
