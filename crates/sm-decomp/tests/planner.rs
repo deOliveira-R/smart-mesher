@@ -438,3 +438,64 @@ mod prop {
         }
     }
 }
+
+fn cylinders(steps: &[CutStep]) -> usize {
+    steps.iter().filter(|s| !is_plane(s)).count()
+}
+
+fn plane_zs(steps: &[CutStep]) -> Vec<f64> {
+    steps.iter().filter(|s| is_plane(s)).map(|s| plane_origin(s)[2]).collect()
+}
+
+#[test]
+fn coaxial_blind_holes_from_both_faces_are_refused_not_merged() {
+    // Blind -0.5..-0.2 and 0.2..0.5 on one axis in a -0.5..0.5 host: two cavities, not one through
+    // cavity. The disc between them cannot be cut out, so the planner refuses (it never emits a
+    // partial cut set).
+    let mut b = B::new().brick(0.63, 0.63, -0.5, 0.5);
+    b.wall(0.0, 0.0, 0.4, -0.5, -0.2);
+    b.disk(0.0, 0.0, 0.4, -0.2);
+    b.wall(0.0, 0.0, 0.4, 0.2, 0.5);
+    b.disk(0.0, 0.0, 0.4, 0.2);
+    let r = reason(plan_cuts_view(&b.view(), TOL));
+    assert!(r.contains("stacked on one axis"), "{r}");
+    // Enclosed from below and blind from above is the mirror case: refused too.
+    let mut m = B::new().brick(0.63, 0.63, -0.5, 0.5).enclosed(0.0, 0.0, 0.4, -0.3, -0.1);
+    m.wall(0.0, 0.0, 0.4, 0.3, 0.5);
+    m.disk(0.0, 0.0, 0.4, 0.3);
+    assert!(reason(plan_cuts_view(&m.view(), TOL)).contains("stacked on one axis"));
+}
+
+#[test]
+fn coaxial_blind_then_enclosed_cavity_cuts_one_cylinder_above_the_blind_end() {
+    let mut b = B::new().brick(0.63, 0.63, -0.5, 0.5).enclosed(0.0, 0.0, 0.4, -0.1, 0.3);
+    b.wall(0.0, 0.0, 0.4, -0.5, -0.3);
+    b.disk(0.0, 0.0, 0.4, -0.3);
+    let steps = plan_cuts_view(&b.view(), TOL).expect("plan");
+    // Plane at the blind end, one cylinder on the slab above it, then the enclosed run's planes on the ring.
+    assert_eq!(steps.len(), 4);
+    assert_eq!(plane_zs(&steps), vec![-0.3, -0.1, 0.3]);
+    assert_eq!(cylinders(&steps), 1);
+    assert!(matches!(steps[1].cut, CutKind::Cylinder { .. }));
+    assert_eq!(steps[1].targets, vec![Target::Step { step: 0, role: Role::Positive }]);
+    assert_eq!(steps[2].targets, vec![Target::Step { step: 1, role: Role::Positive }]);
+}
+
+#[test]
+fn coaxial_enclosed_cavities_with_a_gap_and_touching_walls() {
+    let two = B::new()
+        .brick(0.63, 0.63, -0.5, 0.5)
+        .enclosed(0.0, 0.0, 0.4, -0.3, -0.1)
+        .enclosed(0.0, 0.0, 0.4, 0.1, 0.3);
+    let steps = plan_cuts_view(&two.view(), TOL).expect("plan");
+    assert_eq!(cylinders(&steps), 1);
+    assert_eq!(steps.len(), 5);
+    // Touching walls are one run.
+    let mut t = B::new().brick(0.63, 0.63, -0.5, 0.5);
+    t.wall(0.0, 0.0, 0.4, -0.3, 0.0);
+    t.wall(0.0, 0.0, 0.4, 0.0, 0.3);
+    t.disk(0.0, 0.0, 0.4, -0.3);
+    t.disk(0.0, 0.0, 0.4, 0.3);
+    let steps = plan_cuts_view(&t.view(), TOL).expect("plan");
+    assert_eq!(cylinders(&steps), 1);
+}

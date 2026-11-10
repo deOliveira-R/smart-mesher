@@ -181,6 +181,8 @@ struct Cavity {
     lo: f64,
     hi: f64,
     ends: Vec<f64>,
+    /// Index of the first run on the same circle: runs of one circle share it.
+    circle: usize,
 }
 
 fn span(points: &[V3], d: V3) -> Option<(f64, f64)> {
@@ -200,7 +202,8 @@ fn span(points: &[V3], d: V3) -> Option<(f64, f64)> {
 /// # Errors
 /// [`DecompError::NoDecomposition`] with the reason when the volume has cavities with different
 /// axes, overlapping or nested cavities (stepped bores), partial cylinder walls, or faces that are
-/// neither planes nor cylinders parallel to the axis.
+/// neither planes nor cylinders parallel to the axis, or with stacked coaxial cavities whose solid
+/// disc between them the kernel cannot cut out (for example blind holes from both faces).
 pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompError> {
     let no = |reason: String| DecompError::NoDecomposition {
         volume: v.id,
@@ -314,28 +317,36 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
             .find(|o| o.is_ne())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    // Contiguous walls on one circle form a run (one cavity); a gap larger than tol starts a new run.
     let mut cavities: Vec<Cavity> = Vec::new();
     for (_, c, r, a, b) in &walls {
         let same =
             |k: &Cavity| (k.radius - r).abs() <= tol && norm(axpy(k.center, -1.0, *c)) <= tol;
-        match cavities.iter_mut().find(|k| same(k)) {
+        match cavities.iter_mut().rev().find(|k| same(k) && *a <= k.hi + tol) {
             Some(k) => {
                 k.lo = k.lo.min(*a);
                 k.hi = k.hi.max(*b);
                 k.ends.extend([*a, *b]);
             }
-            None => cavities.push(Cavity {
-                center: *c,
-                radius: *r,
-                lo: *a,
-                hi: *b,
-                ends: vec![*a, *b],
-            }),
+            None => {
+                let circle = cavities.iter().position(same).unwrap_or(cavities.len());
+                cavities.push(Cavity {
+                    center: *c,
+                    radius: *r,
+                    lo: *a,
+                    hi: *b,
+                    ends: vec![*a, *b],
+                    circle,
+                });
+            }
         }
     }
     // Disjoint footprints only: a nested or overlapping pair is a stepped bore.
     for (i, p) in cavities.iter().enumerate() {
         for q in &cavities[i + 1..] {
+            if p.circle == q.circle {
+                continue; // runs of one circle are stacked, not nested
+            }
             if norm(axpy(p.center, -1.0, q.center)) < p.radius + q.radius + tol {
                 return Err(no(format!(
                     "cavities of radius {} and {} overlap or nest (stepped or concentric bore)",
@@ -372,6 +383,29 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
     positions.sort_by(f64::total_cmp);
     positions.dedup_by(|b, a| (*b - *a).abs() <= tol);
 
+    // Several runs on one circle leave solid discs between them. The kernel cuts a disc out only
+    // when the cut face has a free edge, so the supported stacks are: enclosed runs only (one
+    // cylinder over the whole host), or a blind-from-below run followed by enclosed runs (plane at
+    // the blind end, then one cylinder on the slab above it). Anything else is refused.
+    let runs_on = |c: usize| cavities.iter().filter(move |k| k.circle == c);
+    let blind_low = |k: &Cavity| k.lo <= lo + tol && k.hi < hi - tol;
+    let mut stacked_blind: Vec<usize> = Vec::new(); // circles planned from their blind-low end
+    for k in &cavities {
+        if runs_on(k.circle).count() < 2 || runs_on(k.circle).all(&enclosed) {
+            continue;
+        }
+        let first = runs_on(k.circle).next().expect("a run");
+        if blind_low(first) && runs_on(k.circle).skip(1).all(&enclosed) {
+            if !stacked_blind.contains(&k.circle) {
+                stacked_blind.push(k.circle);
+            }
+        } else {
+            return Err(no(format!(
+                "cavities of radius {} are stacked on one axis with a blind end that is not the lowest run: the solid disc between them cannot be cut out",
+                k.radius
+            )));
+        }
+    }
     let mut steps: Vec<CutStep> = Vec::new();
     let mut prev = Target::Id { id: v.id };
     fn add(steps: &mut Vec<CutStep>, cut: CutKind, target: Target) -> usize {
@@ -380,7 +414,13 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
         step
     }
     let cylinder = |k: &Cavity| CutKind::Cylinder { radius: k.radius, axis: d, center: k.center };
-    for k in cavities.iter().filter(|k| enclosed(k)) {
+    // One cylinder cut per circle: it already separates every disc stacked on that circle.
+    let mut cut: Vec<usize> = Vec::new();
+    for k in cavities.iter().filter(|k| enclosed(k) && !stacked_blind.contains(&k.circle)) {
+        if cut.contains(&k.circle) {
+            continue;
+        }
+        cut.push(k.circle);
         let i = add(&mut steps, cylinder(k), prev);
         prev = Target::Step { step: i, role: Role::Positive };
     }
@@ -389,12 +429,17 @@ pub fn plan_cuts_view(v: &VolumeView, tol: f64) -> Result<Vec<CutStep>, DecompEr
         let p = add(&mut steps, plane, prev);
         prev = Target::Step { step: p, role: Role::Positive };
         for k in &cavities {
+            if cut.contains(&k.circle) {
+                continue;
+            }
             if k.lo <= lo + tol && k.hi < hi - tol && tol_eq(k.hi, s) {
                 // Blind from the low end: the solid slab above the cavity.
+                cut.push(k.circle);
                 let i = add(&mut steps, cylinder(k), Target::Step { step: p, role: Role::Positive });
                 prev = Target::Step { step: i, role: Role::Positive };
             } else if k.hi >= hi - tol && k.lo > lo + tol && tol_eq(k.lo, s) {
                 // Blind from the high end: the solid slab under the cavity.
+                cut.push(k.circle);
                 add(&mut steps, cylinder(k), Target::Step { step: p, role: Role::Negative });
             }
         }

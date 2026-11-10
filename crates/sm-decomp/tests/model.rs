@@ -302,3 +302,62 @@ fn plans_are_bit_identical_across_runs_and_thread_counts() {
     assert_eq!(a, one);
     assert_eq!(a, many);
 }
+
+/// Brick with coaxial cavities, each `(height, z)`, each filled by a fuel cylinder.
+fn coaxial(holes: &[(f64, f64)]) -> String {
+    let mut m = "let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)\n".to_owned();
+    for (i, (h, z)) in holes.iter().enumerate() {
+        m += &format!("let f{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n");
+    }
+    let mut cur = "br.body".to_owned();
+    for (i, (h, z)) in holes.iter().enumerate() {
+        m += &format!("let t{i} = model.create_cylinder(height: {h}, radius: 0.4, center: [0.0, 0.0, {z}])\n");
+        m += &format!("let m{i} = model.subtract(targets: {cur}, tools: t{i}.body)\n");
+        cur = format!("m{i}.bodies");
+    }
+    m
+}
+
+fn assert_clean(o: &Outcome) {
+    assert_eq!(print_of(&o.out, "violations"), "0", "{}", o.out);
+    assert_all_hex(o);
+    assert!((o.before - o.after).abs() <= 1e-12 * o.before);
+    assert!((o.before - 1.26 * 1.26).abs() <= 1e-12, "{}", o.before);
+}
+
+#[test]
+fn two_coaxial_blind_holes_from_bottom_and_top_are_refused() {
+    // Fuel at -0.5..-0.2 and 0.2..0.5. The old planner merged them into one through cavity and
+    // returned a partial plan (5 volumes, tets and wedges); now it refuses and cuts nothing.
+    let mut s = server();
+    run(&mut s, &coaxial(&[(0.3, -0.35), (0.3, 0.35)]));
+    let before = s.workspace().state_hash();
+    let refusals: Vec<String> = volumes(&s)
+        .into_iter()
+        .filter_map(|v| match plan(&s, v) {
+            Err(DecompError::NoDecomposition { reason, .. }) => Some(reason),
+            Err(e) => panic!("{e}"),
+            Ok(p) => {
+                assert!(p.is_empty(), "no partial plan: {p:?}");
+                None
+            }
+        })
+        .collect();
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert!(refusals[0].contains("stacked on one axis"), "{}", refusals[0]);
+    assert_eq!(s.workspace().state_hash(), before);
+}
+
+#[test]
+fn coaxial_blind_hole_and_enclosed_cavity() {
+    // Blind -0.5..-0.3 below an enclosed -0.1..0.3: plane, one cylinder, two planes.
+    let o = apply_plan(&coaxial(&[(0.2, -0.4), (0.4, 0.1)]));
+    assert_eq!(o.steps.len(), 4, "{:?}", o.steps);
+    assert_clean(&o);
+}
+
+#[test]
+fn two_coaxial_enclosed_cavities_with_a_gap_stay_all_hex() {
+    let o = apply_plan(&coaxial(&[(0.2, -0.2), (0.2, 0.2)]));
+    assert_clean(&o);
+}
