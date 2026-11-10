@@ -20,12 +20,12 @@ sm-layer-api = { path = "../sm-layer-api" }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 thiserror = "2"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [dev-dependencies]
 sm-topo = { path = "../sm-topo" }
 sm-testkit = { path = "../sm-testkit" }
 sm-mesh-api = { path = "../sm-mesh-api" }
-serde_json = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

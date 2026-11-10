@@ -15,10 +15,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sm_core::{EntityId, EntityKind, Transform};
 use sm_geom_api::{CurveDef, PCurve, SurfaceDef};
-use sm_layer_api::{ModelLayer, TopoHost, commit_topology, topo_txn};
+use sm_layer_api::{ModelLayer, TopoHost, commit_topology, model_txn, topo_txn};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, TypedOp};
 use sm_topo_api::{Carrier, CellFlags, CoedgeKey, CoedgeSpec, CurveCarrier, FaceUseSpec, Sense, ShellKind, ShellSpec, Side, SurfaceCarrier, TopoError, TopologyView, TopologyViewExt};
 
+use crate::region::{Outside, tag_volumes};
 use crate::xform::{Xf, XformError, move_xf, reflect_xf, scale_xf, transform_cells};
 use crate::xform2::{AxisSpec, RotationForm, resolve_rotation};
 
@@ -80,7 +81,8 @@ pub enum CopyXform {
 /// Copy `k` (1-based) is the source transformed by `xform` applied `k` times; without `xform`
 /// the copies coincide with the source. Each selected body gets one new body holding its volumes'
 /// copies; a volume selected on its own gets one new body per copy. Copies carry no names,
-/// colors, groups, boundary kinds, decks, meshes or decomposition records. Meshed and merged
+/// colors, groups, boundary kinds, decks, meshes or decomposition records (and no region tags,
+/// except the lattice slots `lattice` assigns). Meshed and merged
 /// volumes may be copied (the copy owns its cells). `count` is `1..=4096` (default 1).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +96,11 @@ pub struct ModelCopy {
     /// The per-copy transform (default none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xform: Option<CopyXform>,
+    /// A lattice frame (`model.lattice_define`): after copying, the source and the copies are
+    /// tagged with their slot in that frame from their centroids, as `model.lattice_tag` does
+    /// (default none; copies carry no tag otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lattice: Option<String>,
 }
 
 fn bad(e: TopoError) -> OpError {
@@ -270,6 +277,11 @@ impl TypedOp for ModelCopy {
         if self.entities.is_empty() {
             return Err(XformError::EmptySelection.into());
         }
+        if let Some(name) = &self.lattice
+            && ctx.layer::<ModelLayer>()?.model().lattice_frame(name).is_none()
+        {
+            return Err(OpError::Invalid(format!("unknown lattice frame `{name}` (model.lattice_define first)")));
+        }
         let xf = self.xform.as_ref().map(|x| resolve_xform(ctx, x)).transpose()?;
         if let Some(xf) = &xf {
             xf.check_similarity()?;
@@ -337,6 +349,13 @@ impl TypedOp for ModelCopy {
             bodies.sort_unstable();
             Ok((vols, bodies))
         })?;
-        commit_topology(ctx, &txn, &[("volumes", &vols), ("bodies", &bodies)])
+        commit_topology(ctx, &txn, &[("volumes", &vols), ("bodies", &bodies)])?;
+        if let Some(name) = &self.lattice {
+            let mut tagged: Vec<EntityId> = groups.iter().flatten().copied().chain(vols.iter().copied()).collect();
+            tagged.sort_unstable();
+            tagged.dedup();
+            model_txn(ctx, |m, t| tag_volumes(m, t, name, &tagged, Outside::Error), |_, _| Vec::new())?;
+        }
+        Ok(())
     }
 }

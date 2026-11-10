@@ -212,7 +212,7 @@ impl<'w> SessionHost<'w> {
                 ));
             }
         };
-        if !own && !p.options.as_ref().is_none_or(Value::is_null) {
+        if !own && format != ExportFormat::Smsh && !p.options.as_ref().is_none_or(Value::is_null) {
             return Err(SessionError::bad_request(format!(
                 "`{}` takes no `options`",
                 format_name(format)
@@ -244,6 +244,15 @@ impl<'w> SessionHost<'w> {
         if p.source == ExportSource::Model {
             let w = model_export::write_dagmc(state, p.options.as_ref())?;
             return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);
+        }
+        if format == ExportFormat::Smsh {
+            // `smsh` takes one option, `regions` (checked here); no split is the plain export below.
+            let split = mesh_export::smsh_split(p.options.as_ref())?;
+            if !split.is_empty() {
+                let prov = if p.provenance { provenance_of(self.ws.status().position) } else { None };
+                let w = mesh_export::write_smsh_split(state, p.mesh, prov, &split)?;
+                return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);
+            }
         }
         if own {
             let w = mesh_export::write(state, format, p.mesh, p.options.as_ref())?;
