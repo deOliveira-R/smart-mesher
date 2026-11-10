@@ -2,6 +2,8 @@
 //! not depend on the not-yet-merged server crates is asserted here (catalog, hash, usage,
 //! transports, error mapping); the full flows live in `tests/cli_full.rs`.
 
+mod common;
+
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
@@ -17,6 +19,7 @@ fn smesh(args: &[&str], stdin: &str, rayon_threads: Option<usize>) -> Output {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("per-call tmpdir");
+    let _guard = common::Scratch::guard(dir.clone());
     cmd.args(args)
         .current_dir(&dir)
         .stdin(Stdio::piped())

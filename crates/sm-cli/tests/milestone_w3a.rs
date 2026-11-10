@@ -13,6 +13,7 @@
 //! `tools/conformance.sh` (path B) to `$MILESTONE_W3A_EMIT` (default
 //! `$CARGO_TARGET_TMPDIR/milestone_w3a`).
 
+mod common;
 mod w3a_support;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,11 +71,8 @@ fn step_sha() -> &'static str {
     sm_testkit::step::W3A_PART.sha256
 }
 
-fn scratch() -> PathBuf {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("milestone_w3a-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
+fn scratch() -> common::Scratch {
+    common::Scratch::new(&format!("milestone_w3a-{}", std::process::id()))
 }
 
 fn ts(p: &Path) -> String {
@@ -85,9 +83,10 @@ fn ts(p: &Path) -> String {
 
 #[test]
 fn emit_conformance_scripts() {
-    let dir = std::env::var_os("MILESTONE_W3A_EMIT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_TARGET_TMPDIR")).join("milestone_w3a"));
+    // Without MILESTONE_W3A_EMIT the scripts go to a scratch dir that is removed on exit.
+    let emit = std::env::var_os("MILESTONE_W3A_EMIT").map(PathBuf::from);
+    let _scratch = emit.is_none().then(|| common::Scratch::new(&format!("milestone_w3a_emit-{}", std::process::id())));
+    let dir = emit.unwrap_or_else(|| _scratch.as_ref().expect("scratch").0.clone());
     std::fs::create_dir_all(&dir).expect("emit dir");
     std::fs::write(dir.join("w3a_hybrid.smesh"), emit_hybrid()).expect("write w3a_hybrid");
     std::fs::write(dir.join("w3a_tet.smesh"), emit_tet()).expect("write w3a_tet");
