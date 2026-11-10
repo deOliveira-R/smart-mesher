@@ -123,19 +123,21 @@ fn flight_leakage_of_a_pure_absorber_sphere_is_unbiased() {
 
 /// Stub world (sphere in a vacuum box; region 0 is the sphere, region 1 the implicit complement),
 /// transparent flight (`sigma_t = 0`) so every history walks to the end of its ray.
-fn complement_run(map: Vec<i32>, inside: bool) -> (Output, usize) {
+fn complement_run(map: Vec<i32>, inside: bool) -> (Output, usize, usize) {
     let sphere = Solid { shape: Shape::Sphere { c: [0.0; 3], r: 5.0 }, region: 0, depth: 1 };
     let rays = gen_rays("complement", ([-8.0; 3], [8.0; 3]), 400, &|p| (sphere.contains(p) == inside).then_some(0)).unwrap();
     let world = AnalyticWorld::simple(vec![StubShape::Sphere { center: Point3::new(0.0, 0.0, 0.0), radius: 5.0 }], Aabb { lo: Point3::new(-10.0, -10.0, -10.0), hi: Point3::new(10.0, 10.0, 10.0) }, ResponseKind::Vacuum).unwrap();
     let mut a = TrackerAdapter::new("stub", Box::new(world)).with_region_map(map);
     let regions = vec![RegionSpec { id: 0, name: "a".into(), sigma_t: 0.0, sigma_a: 0.0 }, RegionSpec { id: 1, name: "b".into(), sigma_t: 0.0, sigma_a: 0.0 }];
     let n = rays.len();
-    (a.run(Workload::Flight, &WorkInput { rays: &rays, regions: &regions, threads: 1, histories: n, seed: 3 }).unwrap(), n)
+    // Rays that meet the sphere ahead of them (starts outside it, so a hit has `t_in > 0`).
+    let hits = (0..n).filter(|&i| sphere.interval(rays.origin[i], rays.dir[i]).is_some_and(|(t_in, _)| t_in > 0.0)).count();
+    (a.run(Workload::Flight, &WorkInput { rays: &rays, regions: &regions, threads: 1, histories: n, seed: 3 }).unwrap(), n, hits)
 }
 
 #[test]
 fn flight_step_into_the_implicit_complement_is_a_leak() {
-    let (out, n) = complement_run(vec![0, -1], true);
+    let (out, n, _) = complement_run(vec![0, -1], true);
     assert_eq!(out.tally[4], n as f64, "every history leaks");
     assert_eq!(out.counters.lost, 0);
 }
@@ -144,10 +146,10 @@ fn flight_step_into_the_implicit_complement_is_a_leak() {
 fn flight_step_into_an_unmapped_region_is_lost_not_a_leak() {
     // The sphere maps to -1 but is not the complement: a mapping error. Histories start outside
     // (in the complement, mapped to 0) and those that reach the sphere are lost.
-    let (out, n) = complement_run(vec![-1, 0], false);
-    assert!(out.counters.lost > 0, "some rays reach the sphere");
-    assert_eq!(out.tally[4] + out.counters.lost as f64, n as f64, "rays that miss leak at the box, the rest are lost");
-    assert!(out.tally[4] > 0.0);
+    let (out, n, hits) = complement_run(vec![-1, 0], false);
+    assert!(hits > 0 && hits < n, "some rays reach the sphere and some miss it");
+    assert_eq!(out.counters.lost as usize, hits, "exactly the rays that meet the unmapped sphere are lost");
+    assert_eq!(out.tally[4] as usize, n - hits, "the others leak at the box");
 }
 
 #[test]
@@ -213,7 +215,7 @@ fn trackers_are_interleaved_abab_per_repetition() {
 }
 
 fn env(cpu: &str, day: &str, os: &str, arch: &str) -> Env {
-    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into() }
+    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: "none".into() }
 }
 
 fn file(case: &str, tracker: &str, e: Env, failed: usize) -> ResultFile {

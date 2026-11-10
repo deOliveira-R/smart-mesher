@@ -1,6 +1,6 @@
 [package]
 name = "sm-diag"
-description = "Mesh validation and quality diagnostics as queries and ops: mesh.validate, mesh.quality, mesh.flag_cells, mesh.unflag_cells."
+description = "Mesh validation and quality diagnostics as queries and ops: mesh.validate, mesh.quality, mesh.volume_check, mesh.flag_cells, mesh.unflag_cells."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -17,6 +17,7 @@ sm-quality = { path = "../sm-quality" }
 sm-scheme-api = { path = "../sm-scheme-api" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
+sm-topo-api = { path = "../sm-topo-api" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,13 +30,14 @@ sm-mesh = { path = "../sm-mesh" }
 sm-mesher = { path = "../sm-mesher" }
 # Test rig only: contract crates (bricks, stub schemes) and the curve/tri/tet schemes the
 # scheme-note tests run; no library dependency on any scheme crate.
-sm-topo-api = { path = "../sm-topo-api" }
 sm-scheme-api = { path = "../sm-scheme-api", features = ["stubs", "schemars"] }
 sm-scheme-curve = { path = "../sm-scheme-curve" }
 sm-scheme-tri = { path = "../sm-scheme-tri" }
 sm-scheme-tet = { path = "../sm-scheme-tet" }
 # Dev-dependency cycle (sm-smooth dev-depends on sm-diag): runs the suggested smooth step.
 sm-smooth = { path = "../sm-smooth" }
+# Dual-vs-tet volume test (sm-poly does not depend on sm-diag).
+sm-poly = { path = "../sm-poly" }
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]

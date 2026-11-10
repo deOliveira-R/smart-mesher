@@ -1,11 +1,25 @@
-//! O-grid surface scheme (W4 task HEX-OGRID): structured ring decomposition of circular faces into all-quad meshes.
-//! A self-contained kernel (ogrid and polar modes on a disk, an annulus with a 4-sided loop, a two-circle ring);
-//! it does not depend on `sm-decomp`.
-//! This skeleton (W4-0.2) registers nothing yet.
+//! O-grid surface scheme (W4 tasks HEX-OGRID-K, HEX-OGRID-S): structured ring decomposition of
+//! circular faces into all-quad meshes.
+//!
+//! This crate holds the pure kernels (task HEX-OGRID-K): [`ogrid_disk`] (five-block O-grid of a
+//! disk), [`ogrid_annulus_quad`] (circle inside a square), [`ring`] (between two circles) and
+//! [`polar_disk`] (central n-gon plus rings, for polyhedral/FV transport meshes). They take counts
+//! and reals and return a [`PlanarMesh`]; they depend on no topology type and not on `sm-decomp`.
+//! The `Scheme` adapter and its registration are HEX-OGRID-S; until then [`register`] adds nothing.
+
+#![allow(clippy::needless_range_loop)] // index-based grid loops read clearer here
+
+mod kernels;
+mod mesh;
+
+pub use kernels::{
+    AnnulusQuadParams, DiskParams, PolarParams, RingParams, ogrid_annulus_quad, ogrid_disk, polar_disk, ring,
+};
+pub use mesh::{OgridError, PlanarMesh, Result as KernelResult, inscribed_area};
 
 use sm_scheme_api::SchemeRegistry;
 
-/// Register the O-grid scheme. In the W4-0.2 skeleton it registers nothing and always succeeds.
+/// Register the O-grid scheme. Until HEX-OGRID-S it registers nothing and always succeeds.
 pub fn register(_registry: &mut SchemeRegistry) -> sm_scheme_api::Result<()> {
     Ok(())
 }

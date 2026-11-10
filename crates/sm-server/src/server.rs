@@ -10,7 +10,7 @@ use sm_lang::diag::render_all;
 use sm_lang::{Event, Interpreter, Options, SourceMap};
 use sm_op_api::{OpInfoOwned, QueryInfoOwned, Rev};
 use sm_protocol::{
-    ApplyResult, CatalogResult, Endpoint, ExportSource, HashResult, PROTOCOL_VERSION, RecordCheck, RecordForks, Request, RpcError,
+    ApplyResult, CatalogResult, Endpoint, HashResult, PROTOCOL_VERSION, RecordCheck, RecordForks, Request, RpcError,
     ScriptRecordResult, ScriptResult,
 };
 
@@ -252,9 +252,6 @@ impl Server {
                 to_json(&HashResult::new(state, layers))
             }
             Request::Export { path, format, mesh, provenance, inline, options, split_small_determinant, empty_patches, wedge_patches, split_warped_faces, source } => {
-                if source == ExportSource::Model {
-                    return Err(SessionError::new("unsupported-source", "source: model is not available yet"));
-                }
                 let r = self.host().export(&ExportParams {
                     path,
                     format,
@@ -266,6 +263,7 @@ impl Server {
                     empty_patches,
                     wedge_patches,
                     split_warped_faces,
+                    source,
                 })?;
                 to_json(&r)
             }

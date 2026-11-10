@@ -59,6 +59,14 @@ pub(crate) fn script(io: &mut Io<'_>, json: bool, r: &ScriptResult, raw: &Value,
     if has_diag {
         let _ = writeln!(io.stderr, "diagnostics: {}", compact(&r.diagnostics));
     }
+    // Per-op diagnostics (for example a `mesh.auto_tet` fallback), in script order.
+    for e in &r.events {
+        if matches!(e["event"].as_str(), Some("op" | "batch")) {
+            for d in e["delta"]["diagnostics"].as_array().into_iter().flatten() {
+                diagnostic(io, d);
+            }
+        }
+    }
     if print_hash {
         line(io, &r.state.to_string());
     }
@@ -75,15 +83,19 @@ pub(crate) fn apply(io: &mut Io<'_>, json: bool, op: &str, r: &ApplyResult, raw:
         line(io, &format!("  {role}: {}", ids.join(" ")));
     }
     for d in &r.delta.diagnostics {
-        let v = serde_json::to_value(d).unwrap_or_default();
-        let _ = writeln!(
-            io.stderr,
-            "{}: {}: {}",
-            v["severity"].as_str().unwrap_or("note"),
-            v["code"].as_str().unwrap_or(""),
-            v["message"].as_str().unwrap_or("")
-        );
+        diagnostic(io, &serde_json::to_value(d).unwrap_or_default());
     }
+}
+
+/// One diagnostic as `severity: code: message` on stderr (shared by `apply` and `script`).
+fn diagnostic(io: &mut Io<'_>, v: &Value) {
+    let _ = writeln!(
+        io.stderr,
+        "{}: {}: {}",
+        v["severity"].as_str().unwrap_or("note"),
+        v["code"].as_str().unwrap_or(""),
+        v["message"].as_str().unwrap_or("")
+    );
 }
 
 pub(crate) fn hash(io: &mut Io<'_>, json: bool, r: &HashResult, raw: &Value, layers: bool) {

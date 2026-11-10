@@ -23,6 +23,7 @@ mesh__smooth_preview
 mesh__to_poly
 mesh__unflag_cells
 mesh__validate
+mesh__volume_check
 model__copy
 model__create_brick
 model__create_cylinder
@@ -47,6 +48,7 @@ model__reflect
 model__rotate
 model__rotate_about
 model__scale
+model__subdivide_pin
 model__subtract
 model__unite
 model__webcut_cylinder

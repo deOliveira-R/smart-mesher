@@ -1379,7 +1379,12 @@ dependencies = [
 name = "sm-csgbrep"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "sm-core",
+ "sm-geom-api",
  "sm-op-api",
+ "sm-testkit",
+ "thiserror",
 ]
 
 [[package]]
@@ -1403,6 +1408,21 @@ dependencies = [
 [[package]]
 name = "sm-decomp"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-protocol",
+ "sm-server",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
+]
 
 [[package]]
 name = "sm-diag"
@@ -1419,6 +1439,7 @@ dependencies = [
  "sm-mesh-api",
  "sm-mesher",
  "sm-op-api",
+ "sm-poly",
  "sm-quality",
  "sm-scheme-api",
  "sm-scheme-curve",
@@ -1619,6 +1640,9 @@ dependencies = [
  "sm-model-api",
  "sm-op-api",
  "sm-scheme-api",
+ "sm-scheme-curve",
+ "sm-scheme-tet",
+ "sm-scheme-tri",
  "sm-testkit",
  "sm-topo-api",
 ]
@@ -1712,11 +1736,14 @@ dependencies = [
  "serde_json",
  "sm-core",
  "sm-layer-api",
+ "sm-math",
  "sm-mesh",
  "sm-mesh-api",
  "sm-op-api",
  "sm-poly",
  "sm-quality",
+ "sm-rt",
+ "sm-rt-api",
  "sm-testkit",
  "sm-topo-api",
  "smallvec",
@@ -1911,7 +1938,10 @@ dependencies = [
 name = "sm-scheme-ogrid"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "sm-scheme-api",
+ "sm-testkit",
+ "thiserror",
 ]
 
 [[package]]

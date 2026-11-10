@@ -421,7 +421,8 @@ fn build_checks_and_errors() {
     assert!(matches!(fx2.build_with(&BuildOptions::default().with_partition(part)), Err(RtError::Unsupported(_))));
     assert!(fx2.build_with(&BuildOptions::default()).is_ok());
     assert!(fx2.with_hier(|h| matches!(AnalyticTrackerBuilder.load(&BuildInput::Hier(*h), &BuildOptions::default(), &img), Err(RtError::Unsupported(_)))));
-    // A world that places or tiles CSG leaves is not hosted by the analytic tracker yet.
+    // A world that places or tiles CSG leaves is not the analytic tracker's: it refuses it and the
+    // world walker hosts it (tests/csg_world.rs).
     let spec = sm_rt_api::WorldSpec::new(
         vec![
             sm_rt_api::ComponentKind::Leaf { input: 0 },
@@ -434,8 +435,8 @@ fn build_checks_and_errors() {
     let leaves = [sm_rt_api::LeafInput::Csg(leaf)];
     let h = sm_rt_api::HierInput::new(&spec, &leaves, &fx2.boundaries);
     assert!(matches!(AnalyticTrackerBuilder.build(&BuildInput::Hier(h), &BuildOptions::default()), Err(RtError::Unsupported(_))));
-    // The mesh builder dispatches CSG worlds to the analytic builder.
-    assert!(matches!(sm_rt::MeshTrackerBuilder.build(&BuildInput::Hier(h), &BuildOptions::default()), Err(RtError::Unsupported(_))));
+    // The mesh builder hosts it in a world (a bare CSG leaf still goes to the analytic builder).
+    assert!(sm_rt::MeshTrackerBuilder.build(&BuildInput::Hier(h), &BuildOptions::default()).is_ok());
 }
 
 #[test]

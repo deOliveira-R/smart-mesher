@@ -11,7 +11,7 @@ use sm_core::{EntityId, EntityKind, Point3};
 use sm_diag::{DiagPlugin, OpNames};
 use sm_layer_api::{CoreLayers, LayerResultExt, MeshEntry, MeshLayer, ModelLayer, commit_topology, insert_mesh, topo_txn};
 use sm_mesh_api::reference::{ReferenceMesh, hex_block};
-use sm_mesh_api::{CellShape, MeshEdit, PointIx, SerialAlloc};
+use sm_mesh_api::{CellShape, MeshEdit, MeshEntityKind, MeshRead, PointIx, SerialAlloc};
 use sm_mesher::{MeshPlugin, MesherConfig};
 use sm_op_api::{
     ApplyCtx, Delta, DerivedCache, Engine, Hash256, Meta, Op, OpError, OpRecord, QuietControl, Registry, Services, Session, State, TimelineError, TypedOp,
@@ -136,6 +136,113 @@ impl TypedOp for KillVolume {
     }
 }
 
+/// A solid cylinder (`TopoVolume#1`) of radius `r` and height `h` about z.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateCylinder {
+    pub r: f64,
+    pub h: f64,
+}
+
+impl TypedOp for CreateCylinder {
+    const NAME: &'static str = "test.create_cylinder";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let (ids, txn) = topo_txn(ctx, |topo, _| sm_topo_api::fixtures::cylinder(topo, self.r, self.h).or_op())?;
+        commit_topology(ctx, &txn, &[("volume", &[ids.volume]), ("faces", &ids.faces), ("edges", &ids.edges)])
+    }
+}
+
+/// Points and cells of an `n`-gon prism of circumradius `r` and height `h` about z, cut into `n`
+/// wedges (`kind = "wedge"`) or into 3 tets each (`"tet"`, with matching diagonals).
+pub fn cylinder_cells(n: usize, r: f64, h: f64, kind: &str) -> (Vec<[f64; 3]>, Vec<CellSpec>) {
+    let mut p: Vec<[f64; 3]> = Vec::new();
+    for z in [0.0, h] {
+        for i in 0..n {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            p.push([r * a.cos(), r * a.sin(), z]);
+        }
+    }
+    p.extend([[0.0, 0.0, 0.0], [0.0, 0.0, h]]);
+    let (c0, c1) = (2 * n, 2 * n + 1);
+    let mut cells = Vec::new();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (b0, b1, t0, t1) = (i, j, n + i, n + j);
+        if kind == "wedge" {
+            cells.push(CellSpec::Template(CellShape::Wedge, vec![c0, b0, b1, c1, t0, t1]));
+        } else {
+            for tet in [[c0, b0, b1, t1], [c0, b0, t0, t1], [c0, c1, t0, t1]] {
+                let q = |k: usize| p[tet[k]];
+                let (a, b, c, d) = (q(0), q(1), q(2), q(3));
+                let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let w = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+                let det = u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0]);
+                let mut t = tet.to_vec();
+                if det < 0.0 {
+                    t.swap(1, 2);
+                }
+                cells.push(CellSpec::Template(CellShape::Tet, t));
+            }
+        }
+    }
+    (p, cells)
+}
+
+/// Insert the cylinder mesh of [`cylinder_cells`]. Role `mesh`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InsertCylinderMesh {
+    pub n: usize,
+    pub r: f64,
+    pub h: f64,
+    pub kind: String,
+}
+
+impl TypedOp for InsertCylinderMesh {
+    const NAME: &'static str = "test.insert_cylinder_mesh";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let before = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mut after = before.clone();
+        let (p, c) = cylinder_cells(self.n, self.r, self.h, &self.kind);
+        let mesh = build_mesh(&p, &c, &mut after).map_err(|e| OpError::Failed(e.to_string()))?;
+        let quanta = ctx.layer::<ModelLayer>()?.hash_quanta();
+        insert_mesh(ctx, MeshEntry::new(Box::new(mesh), Vec::new(), None, quanta), &before, after, "mesh")
+    }
+}
+
+/// Insert `sm_testkit::meshes::tet_block` (classified on `TopoVolume#1`). Role `mesh`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InsertTetBlock {
+    pub n: [u32; 3],
+}
+
+/// The allocator state a fresh build of `m` leaves behind.
+fn alloc_after(m: &dyn MeshRead) -> SerialAlloc {
+    let mut state = vec![
+        (EntityKind::Mesh, 2),
+        (EntityKind::MeshVertex, m.count(MeshEntityKind::Vertex) as u64 + 1),
+        (EntityKind::MeshFace, m.count(MeshEntityKind::Face) as u64 + 1),
+        (EntityKind::MeshCell, m.count(MeshEntityKind::Cell) as u64 + 1),
+    ];
+    if m.count(MeshEntityKind::Edge) > 0 {
+        state.push((EntityKind::MeshEdge, m.count(MeshEntityKind::Edge) as u64 + 1));
+    }
+    SerialAlloc::from_state(state).expect("alloc")
+}
+
+impl TypedOp for InsertTetBlock {
+    const NAME: &'static str = "test.insert_tet_block";
+    fn apply(&self, ctx: &mut ApplyCtx<'_>) -> Result<(), OpError> {
+        let before = ctx.layer::<MeshLayer>()?.alloc().clone();
+        let mesh = sm_testkit::meshes::tet_block(self.n, [1.0; 3]).map_err(|e| OpError::Failed(e.to_string()))?.mesh;
+        let after = alloc_after(&mesh);
+        let quanta = ctx.layer::<ModelLayer>()?.hash_quanta();
+        insert_mesh(ctx, MeshEntry::new(Box::new(mesh), Vec::new(), None, quanta), &before, after, "mesh")
+    }
+}
+
 pub fn id(kind: EntityKind, serial: u64) -> EntityId {
     EntityId::new(kind, serial).expect("id")
 }
@@ -151,6 +258,10 @@ pub fn registry() -> Registry {
     reg.register::<InsertPair>().expect("pair");
     reg.register::<InsertSmBlock>().expect("sm block");
     reg.register::<KillVolume>().expect("kill");
+    reg.register::<CreateCylinder>().expect("cylinder");
+    reg.register::<InsertTetBlock>().expect("tet block");
+    reg.register::<InsertCylinderMesh>().expect("cylinder mesh");
+    reg.install(&sm_poly::PolyPlugin).expect("poly");
     reg
 }
 

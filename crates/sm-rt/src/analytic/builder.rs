@@ -1,18 +1,35 @@
 //! [`AnalyticTrackerBuilder`]: the `TrackerBuilder` of CSG leaves.
 
 use super::tracker::{ANALYTIC_BUILDER_VERSION, AnalyticTracker, cache_key};
-use sm_rt_api::{BuildInput, BuildOptions, BuildReport, CacheImage, CacheKey, ComponentKind, CsgLeafInput, HierInput, LeafInput, Result, RtError, Tracker, TrackerBuilder};
+use sm_rt_api::{BoundarySpec, ComplementPolicy, ContentHash, BuildInput, BuildOptions, BuildReport, CacheImage, CacheKey, ComponentKind, CsgLeafInput, HierInput, LeafInput, Result, RtError, Tracker, TrackerBuilder};
 
 /// Builds an [`AnalyticTracker`] from a [`BuildInput::Hier`] whose root is one `Csg` leaf.
 ///
-/// Worlds that place or tile CSG leaves (`Union`, `Lattice`) are `RtError::Unsupported` until
-/// the world walker can host non-mesh leaves (see `DESIGN.md`, "Analytic leaf").
+/// Worlds that place or tile CSG leaves (`Union`, `Lattice`) are built by the world walker
+/// (`MeshTrackerBuilder::build_world`, `CsgWorld::world_tracker`), not here (see `DESIGN.md`,
+/// "Analytic leaf" and "World").
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AnalyticTrackerBuilder;
 
-/// Does any leaf of the input hold CSG cells?
-pub(crate) fn has_csg(h: &HierInput<'_>) -> bool {
-    h.leaves.iter().any(|l| matches!(l, LeafInput::Csg(_)))
+/// Is the world one bare CSG leaf (what the analytic tracker builds)?
+pub(crate) fn is_bare_csg(h: &HierInput<'_>) -> bool {
+    match h.spec.components.get(h.spec.root.get()) {
+        Some(ComponentKind::Leaf { input }) => matches!(h.leaves.get(*input), Some(LeafInput::Csg(_))),
+        _ => false,
+    }
+}
+
+/// Build the prototype tracker of one CSG leaf hosted by a world: vacuum boundaries and no
+/// complement region (the world owns what lies between and around instances, as for mesh leaves).
+pub(crate) fn build_proto_csg(leaf: &CsgLeafInput<'_>, opts: &BuildOptions) -> Result<(AnalyticTracker, BuildReport)> {
+    if opts.partition.enabled {
+        return Err(RtError::Unsupported("majorant partition of a CSG leaf"));
+    }
+    let outside = ComplementPolicy::Outside;
+    let l = CsgLeafInput::new(leaf.geom, leaf.cells, leaf.bounds, &outside);
+    let bnd = BoundarySpec::default();
+    let key = cache_key(&l, ContentHash(0), &bnd, opts);
+    AnalyticTracker::build(&l, &bnd, opts, key)
 }
 
 fn root_leaf<'a>(h: &HierInput<'a>) -> Result<CsgLeafInput<'a>> {

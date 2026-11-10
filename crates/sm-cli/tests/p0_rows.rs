@@ -28,18 +28,18 @@
 //!   three parallel edges keep 2 (opposite sides of a map face are equal), the other two
 //!   directions get 10/2.5 = 4 -> 2*4*4 = 32 hexes.
 
+mod common;
+
 use std::collections::BTreeMap;
+
+use common::Scratch;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("p0_rows_{tag}"));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
+fn scratch(tag: &str) -> Scratch {
+    Scratch::new(&format!("p0_rows_{}_{tag}", std::process::id()))
 }
 
 fn smesh(args: &[&str], stdin: &str) -> Output {

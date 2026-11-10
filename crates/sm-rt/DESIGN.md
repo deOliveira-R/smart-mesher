@@ -200,10 +200,35 @@ the count is the presence marker and tag-free trackers keep their hashes. No cha
 ## World (`world.rs`)
 
 `BuildInput::Hier` builds a `WorldTracker` (`MeshTrackerBuilder::build`/`build_world`):
-a DAG of components over prototype `MeshTracker`s, one per distinct leaf input (mesh or facets; a
-CSG leaf is `Unsupported` until the analytic tracker). A leaf is built as a prototype with vacuum
+a DAG of components over prototype trackers, one per distinct leaf input: a `MeshTracker` (mesh or
+facets) or, since W4-RT-WORLD, an `AnalyticTracker` (a `Csg` leaf; `Body` in `world.rs`, an enum, not
+a trait object, so the step stays a direct call). A leaf is built as a prototype with vacuum
 boundaries and no complement: its own boundary conditions and complement policy do not apply in a
 world.
+
+**CSG prototypes (W4-RT-WORLD).** A CSG leaf under `Union`/`Lattice` is tracked in exact geometry
+inside its element and the world resolves its outer faces as for a mesh leaf (relocate from the root;
+a neighbour is `SlotChange`/`RegionBoundary`, no neighbour is the world boundary). Differences from a
+mesh prototype, all deliberate:
+* *Outer face.* A point on a surface that has cells on only one side (`SurfaceInfo` front or back is
+  `NONE`) is on an outer face (`Body::strict` is false); a surface with cells on both sides is
+  interior. Mesh leaves use `f_right == NONE`.
+* *Reflection at the world boundary* uses the surface normal at the exit point (`face_normal`), the
+  mesh leaf its face plane.
+* *Overlap.* A CSG leaf has no vertex list, so the build-time narrow phase (boundary vertices of one
+  placement inside another) skips it; overlaps between placements are found by `probe_partners` at
+  step time (chord midpoint inside a partner; first entry into a CSG partner, from
+  `AnalyticTracker::enter_from_outside`, strictly inside the chord) and by `rt.check_overlaps`. Two
+  cells of one leaf holding a point is `Loc::Overlap`.
+* *No complement region, no partition.* The world is the boundary of the cells; a bridged world with
+  a complement region is refused by `CsgWorld::world_tracker` (use `analytic_tracker`);
+  `partition.enabled` with a CSG leaf is `Unsupported("majorant partition of a CSG leaf")`.
+  `safety_distance` of a CSG leaf is `Unsupported`. Hex lattices stay refused (W4-RT-HEX).
+* *Caps:* `HIERARCHY | ANALYTIC` (no `EXACT_PLANAR`, which names planar facets).
+* *Dispatch:* a world whose root is one bare CSG leaf is still the `AnalyticTracker` (same cache key);
+  any other world with a CSG leaf is a `WorldTracker` (kind `World`).
+The structure hash of a mesh-only world is unchanged (it hashes each prototype's own hash).
+The 2D-lattice z rule is unchanged (ruling OR-a): the element centre z is `origin.z + 0.5 * pitch[2]`.
 
 **Numbering.** Regions, surfaces and faces are numbered per prototype (prefix offsets over
 prototypes in ascending leaf-input order): regions are prototypes, so every instance of a leaf
@@ -266,10 +291,10 @@ cache key is `World`, topology `HierInput::content_hash`, hierarchy `WorldSpec::
 ## Analytic leaf (`analytic/`)
 
 `AnalyticTrackerBuilder` builds an `AnalyticTracker` from a `BuildInput::Hier` whose root is one
-`Csg` leaf (`MeshTrackerBuilder::build` dispatches CSG worlds to it). Tracking is surface tracking
-in exact geometry: no mesh, no facets. **Scope as landed:** a single CSG leaf with its own
-boundaries. `Union` and `Lattice` worlds of CSG leaves are `Unsupported`, because `WorldTracker`
-hosts only `MeshTracker` prototypes (see "Deferred").
+`Csg` leaf (`MeshTrackerBuilder::build` dispatches a bare CSG leaf to it). Tracking is surface
+tracking in exact geometry: no mesh, no facets. **Scope:** a single CSG leaf with its own boundaries.
+`Union` and `Lattice` worlds of CSG leaves are the `WorldTracker`'s (W4-RT-WORLD, see "World"); this
+builder refuses them with `Unsupported`.
 
 **Cells are disjoint (Q4).** There is no cell order and no first-wins rule (OpenMC and MCNP resolve
 overlaps by order; this tracker reports them). `locate` evaluates each cell by its own half-spaces;
@@ -538,11 +563,14 @@ and per prototype leaf otherwise (`scope: "prototypes"`).
 * **Assumption, not checked here:** a volume equals the intersection of its face half-spaces and its faces
   cover their surfaces (convex pieces, annuli of coaxial quadrics). Anything else shows as overlaps or gaps in
   `rt.check_overlaps`.
-* **Hosting:** the analytic tracker takes one bare CSG leaf (`WorldTracker` hosts mesh prototypes only, and an
-  existing test pins `Union`/`Lattice` of CSG as `Unsupported` there). `CsgWorld::flatten` expands the
+* **Hosting:** `CsgWorld::world_tracker` builds the hierarchy as it is (one analytic prototype per leaf,
+  a lattice index, no flattening; P2 `structure_bytes` grows only by the 4-byte fill entry per element).
+  The analytic tracker takes one bare CSG leaf; `CsgWorld::flatten` expands the
   world into one leaf, one cell per placed volume copy, surfaces moved by `SurfaceDef::transformed` (the
   returned `Sense` flips the half-space under improper placements), identical surfaces shared;
-  `CsgWorld::analytic_tracker` does that when needed. Tracking results do not depend on flattening.
+  `CsgWorld::analytic_tracker` does that when needed and is the oracle of the hierarchical build
+  (`tests/csg_world.rs`: cell, region and chord equal on seeded rays). Tracking results do not depend
+  on flattening.
   The complement region option makes the space between cells a region; stepping through it scans all
   surfaces (no cell-box BVH yet), so use it for small worlds or short paths.
 
@@ -582,7 +610,7 @@ more memory and did not change the large case, so it was dropped.
 
 ## Deferred (W3b) and not done
 
-CSG leaves under `Union`/`Lattice` (needs `WorldTracker` to host a non-mesh leaf; hex lattices),
+hex lattices (W4-RT-HEX),
 a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics,
 `Brep` and `World` inputs (`Unsupported`), hex lattices, region jump and facet or CSG leaves in flown worlds, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,

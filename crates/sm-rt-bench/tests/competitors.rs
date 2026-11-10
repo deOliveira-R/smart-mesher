@@ -106,7 +106,8 @@ fn absorber_unbiased(tracker: &str) {
     let opts = CompetitorOpts { workloads: vec!["flight".into()], histories: HISTORIES, seed: 7, regions };
     let res = run_competitor_with(root, tracker, &dir, &data.case, &[2], 1, 0, &opts);
     let _ = std::fs::remove_dir_all(&dir);
-    let Competitor::Rows { rows, dumps, .. } = res else { panic!("competitor did not run: {res:?}") };
+    let Competitor::Rows { rows, dumps, image_id, .. } = res else { panic!("competitor did not run: {res:?}") };
+    assert!(image_id.starts_with("sha256:"), "the container ran by image id: {image_id}");
     let out = &dumps["w-flight"];
     let (leaked, absorbed) = (out.tally[4], out.tally[5]);
     assert_eq!(rows[0].lost, 0);
@@ -165,4 +166,16 @@ fn dagmc_moab_fire_equals_the_sm_rt_facets_fire() {
 #[ignore = "needs Docker and the smrt-bench-dagmc-dd image"]
 fn dagmc_dd_fire_equals_the_sm_rt_facets_fire() {
     fire_equals_the_facets_twin("dagmc-dd");
+}
+
+#[test]
+#[ignore = "needs Docker and the smrt-bench-xdg image (x86_64 hosts: XDG does not build on aarch64)"]
+fn xdg_flight_of_an_absorber_is_unbiased() {
+    absorber_unbiased("xdg");
+}
+
+#[test]
+#[ignore = "needs Docker and the smrt-bench-xdg image (x86_64 hosts: XDG does not build on aarch64)"]
+fn xdg_fire_equals_the_sm_rt_facets_fire() {
+    fire_equals_the_facets_twin("xdg");
 }

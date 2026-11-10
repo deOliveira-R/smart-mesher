@@ -22,6 +22,8 @@ sm-mesh = { path = "../sm-mesh" }
 sm-op-api = { path = "../sm-op-api" }
 sm-layer-api = { path = "../sm-layer-api" }
 sm-topo-api = { path = "../sm-topo-api" }
+sm-math = { path = "../sm-math" }
+sm-quality = { path = "../sm-quality" }
 rayon = "1"
 thiserror = "2"
 smallvec = "1"
@@ -31,7 +33,8 @@ schemars = "1"
 [dev-dependencies]
 sm-poly = { path = ".", features = ["test-hooks"] }
 sm-testkit = { path = "../sm-testkit" }
-sm-quality = { path = "../sm-quality" }
+sm-rt = { path = "../sm-rt" }
+sm-rt-api = { path = "../sm-rt-api" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 criterion = { version = "0.5", default-features = false }
 serde_json = "1"

@@ -30,7 +30,7 @@ pub(crate) struct Written {
     pub notes: Vec<ExportNote>,
 }
 
-fn notes_of(loss: &LossReport) -> Vec<ExportNote> {
+pub(crate) fn notes_of(loss: &LossReport) -> Vec<ExportNote> {
     loss.items.iter().map(|i| ExportNote::parse(&format!("{}: {} x{}", i.code, i.detail, i.count))).collect()
 }
 
@@ -72,8 +72,10 @@ fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
     Ok(o)
 }
 
-fn dagmc_options(options: Option<&Value>) -> Result<DagmcOptions, SessionError> {
-    let m = options_map("dagmc", options, &["graveyard"])?;
+/// The `dagmc` options. `chord_tol` (a positive finite number) only applies to `source: model`
+/// (`model` true); with a mesh it is refused rather than ignored.
+pub(crate) fn dagmc_options(options: Option<&Value>, model: bool) -> Result<(DagmcOptions, Option<f64>), SessionError> {
+    let m = options_map("dagmc", options, &["graveyard", "chord_tol"])?;
     let mut o = DagmcOptions::default();
     match m.and_then(|m| m.get("graveyard")) {
         None | Some(Value::Null | Value::Bool(false)) => {}
@@ -89,7 +91,19 @@ fn dagmc_options(options: Option<&Value>) -> Result<DagmcOptions, SessionError> 
             )));
         }
     }
-    Ok(o)
+    let chord = match m.and_then(|m| m.get("chord_tol")) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            if !model {
+                return Err(SessionError::bad_request("`dagmc` option `chord_tol` only applies to `source: model` (a mesh is not re-faceted)"));
+            }
+            match v.as_f64() {
+                Some(x) if x.is_finite() && x > 0.0 => Some(x),
+                _ => return Err(SessionError::bad_request(format!("`dagmc` option `chord_tol` must be a positive number, found {v}"))),
+            }
+        }
+    };
+    Ok((o, chord))
 }
 
 /// Pick the mesh as `sm_fem::export` does: the named one, else the only one.
@@ -117,7 +131,7 @@ fn select(state: &State, named: Option<EntityId>) -> Result<&MeshEntry, FemError
 pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>, options: Option<&Value>) -> Result<Written, SessionError> {
     match format {
         ExportFormat::Dagmc => {
-            let o = dagmc_options(options)?;
+            let (o, _) = dagmc_options(options, false)?;
             let lowered = lowered(state, named)?;
             let mut bytes = Vec::new();
             let rep = export_h5m((*lowered.mesh).as_read(), &o, &mut bytes).map_err(dagmc_error)?;
@@ -264,7 +278,7 @@ fn gmsh_error(e: GmshError) -> SessionError {
     }
 }
 
-fn dagmc_error(e: DagmcError) -> SessionError {
+pub(crate) fn dagmc_error(e: DagmcError) -> SessionError {
     match &e {
         DagmcError::OpenSurface { volume, edge, at } => {
             SessionError::new("open-surface", e.to_string()).with_data(serde_json::json!({ "volume": volume, "edge": edge, "at": at }))
@@ -289,11 +303,15 @@ mod tests {
     fn option_keys_are_checked_per_format() {
         assert!(gmsh_options(Some(&json!({"binary": true, "polyhedra": "drop"}))).is_ok());
         assert!(gmsh_options(Some(&json!({"graveyard": true}))).is_err());
-        assert!(dagmc_options(Some(&json!({"binary": true}))).is_err());
-        assert!(dagmc_options(Some(&json!({"graveyard": {"scale": 1.2}}))).expect("object").graveyard.is_some());
-        assert!(dagmc_options(Some(&json!({"graveyard": false}))).expect("false").graveyard.is_none());
+        assert!(dagmc_options(Some(&json!({"binary": true})), false).is_err());
+        assert!(dagmc_options(Some(&json!({"graveyard": {"scale": 1.2}})), false).expect("object").0.graveyard.is_some());
+        assert!(dagmc_options(Some(&json!({"graveyard": false})), false).expect("false").0.graveyard.is_none());
         assert!(gmsh_options(Some(&json!({"binary": "yes"}))).is_err());
         assert!(gmsh_options(Some(&json!({"polyhedra": "fix"}))).is_err());
+        assert_eq!(dagmc_options(Some(&json!({"chord_tol": 0.25})), true).expect("model").1, Some(0.25));
+        assert!(dagmc_options(Some(&json!({"chord_tol": 0.25})), false).is_err(), "a mesh is not re-faceted");
+        assert!(dagmc_options(Some(&json!({"chord_tol": 0.0})), true).is_err());
+        assert!(dagmc_options(Some(&json!({"chord_tol": "fine"})), true).is_err());
         assert!(options_map("smrt", Some(&json!({"x": 1})), &[]).is_err());
     }
 }

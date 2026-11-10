@@ -31,6 +31,19 @@ use crate::mesh_ops::{estimate_face_cells, faces_mode, failed, make_driver, size
 /// Name of the strategy `mesh.auto` uses when none is given.
 pub const DEFAULT_STRATEGY: &str = "default";
 
+const DEFAULT_DESCRIPTION: &str = "planner scores over surface [map, submap, pave, trimesh] \
+     and volume [map, sweep, tetmesh]; list order breaks ties; failed candidates fall back \
+     through the replan loop";
+
+/// Name of the hex-only strategy: no tet candidate, `mesh.auto` fails instead of falling back.
+pub const HEX_ONLY_STRATEGY: &str = "hex_only";
+
+/// Name of the all-tet strategy: tetmesh volumes and trimesh faces, no `mesh.auto_tet` warning.
+///
+/// The recorded face assignments say `trimesh`, but the generated faces follow tetmesh's boundary
+/// scheme (`tridelaunay`), not the surface list.
+pub const TET_STRATEGY: &str = "tet";
+
 /// Replan budget for a run over `n_targets` targets: `16 + 2 * n_targets`.
 ///
 /// Each target that has to fall back costs one replan (the driver reports the first failed
@@ -156,6 +169,25 @@ pub struct AutoLists {
 }
 
 impl AutoLists {
+    /// The hex-only lists: surface `[map, submap, pave]`, volume `[map, sweep]`, curve `[equal]`.
+    /// No tet candidate, so a volume that cannot be meshed with hexes makes `mesh.auto` fail.
+    pub fn hex_only() -> Self {
+        let v = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect();
+        Self {
+            curve: v(&["equal"]),
+            surface: v(&["map", "submap", "pave"]),
+            volume: v(&["map", "sweep"]),
+        }
+    }
+    /// The all-tet lists: surface `[trimesh]`, volume `[tetmesh]`, curve `[equal]`.
+    pub fn tet() -> Self {
+        let v = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect();
+        Self {
+            curve: v(&["equal"]),
+            surface: v(&["trimesh"]),
+            volume: v(&["tetmesh"]),
+        }
+    }
     /// The standard lists: surface `[map, submap, pave, trimesh]`, volume `[map, sweep,
     /// tetmesh]`, curve `[equal]`.
     pub fn standard() -> Self {
@@ -188,6 +220,9 @@ pub(crate) fn plan_with_blame(
     let mut used = 0usize;
     let mut history: Vec<Attempt> = Vec::new();
     // The error of the last kept trial: planning with `rej` is already known to fail with it.
+    // This reuse is sound only because `Driver::plan_with` is pure (a function of its input,
+    // the intent and the rejections; it keeps no state between calls), so re-running it with
+    // the same `rej` would return the same error.
     let mut known: Option<SchemeError> = None;
     loop {
         let err = match known.take() {
@@ -301,6 +336,9 @@ pub(crate) fn scratch_plan(
 /// the lists.
 #[derive(Debug, Clone)]
 pub struct DefaultStrategy {
+    name: &'static str,
+    description: &'static str,
+    warn_tet: bool,
     lists: AutoLists,
     tet: &'static str,
     fixed_budget: Option<usize>,
@@ -317,10 +355,26 @@ impl DefaultStrategy {
     /// fallback.
     pub fn with_lists(lists: AutoLists) -> Self {
         Self {
+            name: DEFAULT_STRATEGY,
+            description: DEFAULT_DESCRIPTION,
+            warn_tet: true,
             lists,
             tet: "tetmesh",
             fixed_budget: None,
         }
+    }
+    /// Register under `name` with a one-line `description` (for `mesh.auto_strategies`).
+    #[must_use]
+    pub fn named(mut self, name: &'static str, description: &'static str) -> Self {
+        self.name = name;
+        self.description = description;
+        self
+    }
+    /// Do not report tet volumes with `mesh.auto_tet`: tets are what this strategy asks for.
+    #[must_use]
+    pub fn without_tet_warning(mut self) -> Self {
+        self.warn_tet = false;
+        self
     }
     /// Name the scheme that counts as the tet fallback (for `mesh.auto_tet`).
     #[must_use]
@@ -358,12 +412,11 @@ impl DefaultStrategy {
 
 impl AutoStrategy for DefaultStrategy {
     fn name(&self) -> &'static str {
-        DEFAULT_STRATEGY
+        self.name
     }
 
     fn description(&self) -> &'static str {
-        "planner scores over surface [map, submap, pave, trimesh] and volume [map, sweep, \
-         tetmesh]; list order breaks ties; failed candidates fall back through the replan loop"
+        self.description
     }
 
     fn choose(&self, input: &AutoInput<'_>) -> Result<Vec<SchemeAssignment>, SchemeError> {
@@ -396,7 +449,7 @@ impl AutoStrategy for DefaultStrategy {
             if !row.params.is_empty() {
                 a.params = Some(row.params.clone());
             }
-            if want == EntityKind::TopoVolume && row.scheme.as_str() == self.tet {
+            if self.warn_tet && want == EntityKind::TopoVolume && row.scheme.as_str() == self.tet {
                 let mut why: Vec<String> = Vec::new();
                 for at in &attempts {
                     if at.target == row.target && at.scheme != row.scheme {
@@ -422,12 +475,28 @@ pub struct StrategyRegistry {
 }
 
 impl Default for StrategyRegistry {
-    /// Holds [`DefaultStrategy`].
+    /// Holds `default`, `hex_only` and `tet`.
     fn default() -> Self {
         let mut r = Self {
             by_name: BTreeMap::new(),
         };
         r.insert(Arc::new(DefaultStrategy::default()));
+        r.insert(Arc::new(
+            DefaultStrategy::with_lists(AutoLists::hex_only()).named(
+                HEX_ONLY_STRATEGY,
+                "hexes only: surface [map, submap, pave], volume [map, sweep]; a volume with no \
+                 hex scheme fails instead of getting tets",
+            ),
+        ));
+        r.insert(Arc::new(
+            DefaultStrategy::with_lists(AutoLists::tet())
+                .named(
+                    TET_STRATEGY,
+                    "tets only: surface [trimesh], volume [tetmesh]; no mesh.auto_tet warning; faces \
+                     follow tetmesh's boundary scheme (tridelaunay), not the surface list",
+                )
+                .without_tet_warning(),
+        ));
         r
     }
 }
@@ -591,7 +660,7 @@ impl TypedOp for MeshAuto {
                     msg.push_str(&format!("; passed over: {}", why.join("; ")));
                 }
                 msg.push_str(&format!(
-                    ". To keep hexes: `mesh.scheme {} sweep` or use a strategy without tets",
+                    ". To keep hexes: `mesh.scheme {} sweep` or use strategy `hex_only`",
                     a.target
                 ));
                 ctx.warn("mesh.auto_tet", msg, &[a.target]);

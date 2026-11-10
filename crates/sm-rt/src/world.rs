@@ -22,6 +22,7 @@
 use crate::bvh::{Box6, EMPTY_BOX, box_dist2, union};
 use crate::builder::build_proto;
 use crate::delta::flight::{box_exit, end_face};
+use crate::analytic::AnalyticTracker;
 use crate::tracker::MeshTracker;
 use crate::vec3::{dot, finite3, madd, norm, scale, sub};
 use rayon::prelude::*;
@@ -164,8 +165,125 @@ fn slab(o: [f64; 3], d: [f64; 3], b: &Box6, pad: f64, t_max: f64) -> Option<(f64
 
 // ---- compiled world --------------------------------------------------------------------
 
+/// The tracker of one prototype: a mesh or facet leaf, or an analytic CSG leaf.
+#[allow(clippy::large_enum_variant)] // boxing the mesh tracker adds a pointer chase to every step
+pub(crate) enum Body {
+    Mesh(MeshTracker),
+    Csg(Box<AnalyticTracker>),
+}
+
+impl Body {
+    fn mesh(&self) -> Option<&MeshTracker> {
+        match self {
+            Body::Mesh(m) => Some(m),
+            Body::Csg(_) => None,
+        }
+    }
+    fn dynt(&self) -> &dyn Tracker {
+        match self {
+            Body::Mesh(m) => m,
+            Body::Csg(a) => &**a,
+        }
+    }
+    fn regions(&self) -> &RegionTable {
+        self.dynt().regions()
+    }
+    fn surfaces(&self) -> &SurfaceTable {
+        self.dynt().surfaces()
+    }
+    fn info(&self) -> &TrackerInfo {
+        self.dynt().info()
+    }
+    fn surface_faces(&self, s: SurfaceId) -> &[FaceId] {
+        self.dynt().surface_faces(s)
+    }
+    fn surface_area(&self, s: SurfaceId) -> Result<Option<f64>> {
+        self.dynt().surface_area(s)
+    }
+    fn n_cells(&self) -> usize {
+        match self {
+            Body::Mesh(m) => m.core.n_cells(),
+            Body::Csg(a) => a.n_cells(),
+        }
+    }
+    fn n_faces(&self) -> usize {
+        match self {
+            Body::Mesh(m) => m.core.n_faces(),
+            Body::Csg(a) => a.info().faces,
+        }
+    }
+    fn c_region(&self, local: usize) -> Option<u32> {
+        match self {
+            Body::Mesh(m) => m.core.c_region.get(local).copied(),
+            Body::Csg(a) => a.cell_region(CellId::new(local)).map(|r| r.0),
+        }
+    }
+    fn c_volume(&self, local: usize) -> Option<f64> {
+        match self {
+            Body::Mesh(m) => m.core.c_volume.get(local).copied(),
+            Body::Csg(a) => a.cell_volume(CellId::new(local)),
+        }
+    }
+    fn step(&self, st: &mut TrackState, max_dist: f64, sc: &mut Scratch) -> Result<Step> {
+        match self {
+            Body::Mesh(m) => m.step(st, max_dist, sc),
+            Body::Csg(a) => a.step(st, max_dist, sc),
+        }
+    }
+    /// Locate a leaf-frame point; the flag is set when two cells of the leaf hold it (an overlap).
+    fn locate(&self, p: [f64; 3], dir: [f64; 3], hint: Option<CellId>, sc: &mut Scratch) -> (Located, bool) {
+        match self {
+            Body::Mesh(m) => (m.locate_inner(p, Some(dir), hint, sc), false),
+            Body::Csg(a) => a.locate_ov(p, dir, hint, sc),
+        }
+    }
+    /// Is a located point strictly inside a cell of the leaf (not on one of its outer faces)?
+    fn strict(&self, loc: &Located) -> bool {
+        if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
+            return false;
+        }
+        match self {
+            Body::Mesh(m) => loc.on_face.is_none_or(|f| m.core.f_right[f.get()] != crate::core::NONE),
+            Body::Csg(a) => loc.on_face.is_none_or(|f| a.face_interior(f)),
+        }
+    }
+    /// Normal of a face at a leaf-frame point (a plane's normal for a mesh face).
+    fn face_normal(&self, f: FaceId, p: [f64; 3]) -> Result<[f64; 3]> {
+        match self {
+            Body::Mesh(m) => m.face_normal(f, p3(p)).map(av3),
+            Body::Csg(a) => a.face_normal(f, p3(p)).map(av3),
+        }
+    }
+    fn closest_inner(&self, p: [f64; 3], region: Option<RegionId>, sc: &mut Scratch) -> Option<Closest> {
+        match self {
+            Body::Mesh(m) => m.closest_inner(p, region, sc),
+            // A general quadric has no closest point: the leaf is skipped, as `closest` refuses it.
+            Body::Csg(a) => a.closest(p3(p), region, sc).ok().flatten(),
+        }
+    }
+    fn face_dist2(&self, f: usize, p: [f64; 3]) -> f64 {
+        match self {
+            Body::Mesh(m) => m.core.face_dist2(f, p).0,
+            Body::Csg(a) => {
+                let d = a.face_dist(FaceId::new(f), p);
+                d * d
+            }
+        }
+    }
+    /// First entry of the ray into the leaf from outside, within `max_t`.
+    fn enter_from_outside(&self, o: [f64; 3], d: [f64; 3], tol: f64, max_t: f64, sc: &mut Scratch) -> Option<f64> {
+        match self {
+            Body::Mesh(m) => m.core.enter_from_outside(o, d, tol, &mut sc.ids).map(|(t, _)| t),
+            Body::Csg(a) => a.enter_from_outside(o, d, max_t, sc).map(|(t, _)| t),
+        }
+    }
+    fn partition(&self) -> Option<&crate::delta::Partition> {
+        self.mesh().and_then(MeshTracker::partition)
+    }
+}
+
 struct Proto {
-    tracker: MeshTracker,
+    tracker: Body,
     region_off: u32,
     surf_off: u32,
     face_off: u32,
@@ -292,8 +410,9 @@ enum Loc {
 ///   (`dims[2] == 1`) have no z walls.
 /// * The leaf's own boundary conditions and complement policy do not apply in a world; the
 ///   world's `BoundarySpec::default` applies where a ray leaves the last instance. Per-surface
-///   rules, periodic boundaries, hex lattices, lattice `outer` fills and CSG leaves are
-///   `RtError::Unsupported`.
+///   rules, periodic boundaries, hex lattices and lattice `outer` fills are
+///   `RtError::Unsupported`. A CSG leaf is hosted as an [`AnalyticTracker`] prototype (no complement
+///   region, vacuum boundaries; `partition.enabled` is refused for it).
 /// * Region and surface tables hold each prototype once (regions are prototypes); a surface or
 ///   face id names the prototype's, `surface_area` is the area of one instance. `SurfaceInfo`
 ///   boundary actions are not recorded (they are a property of the world, not of a prototype).
@@ -546,8 +665,10 @@ impl WorldTracker {
     /// Vertices of the outer boundary of component `c`, in its own frame.
     fn boundary_vertices(&self, c: usize, out: &mut Vec<[f64; 3]>) {
         match &self.comps[c].kind {
+            // A CSG leaf has no vertices: overlaps with it are found by `probe_partners` and
+            // `rt.check_overlaps`.
             Kind::Leaf(p) => {
-                let core = &self.protos[*p].tracker.core;
+                let Some(core) = self.protos[*p].tracker.mesh().map(|m| &m.core) else { return };
                 let mut vs: BTreeSet<u32> = BTreeSet::new();
                 for f in 0..core.n_faces() {
                     if core.f_right[f] == crate::core::NONE {
@@ -752,18 +873,23 @@ impl WorldTracker {
                 if excl.is_some_and(|r| r.is_empty()) {
                     return Loc::Miss;
                 }
-                let core = &self.protos[*pi].tracker.core;
                 let tr = &self.protos[*pi].tracker;
                 // With a partition the leaf is located from its kd candidate lists: the same
                 // answer as the BVH path, without a BVH descent.
-                let loc = match tr.partition() {
-                    Some(part) => tr.locate_from_root(part, p, dir, sc),
-                    None => tr.locate_inner(p, Some(dir), None, sc),
+                let loc = match tr.mesh().and_then(|m| m.partition().map(|part| (m, part))) {
+                    Some((m, part)) => m.locate_from_root(part, p, dir, sc),
+                    None => {
+                        let (loc, overlap) = tr.locate(p, dir, None, sc);
+                        if overlap {
+                            return Loc::Overlap;
+                        }
+                        loc
+                    }
                 };
                 if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
                     return Loc::Miss;
                 }
-                let strict = loc.on_face.is_none_or(|f| core.f_right[f.get()] != crate::core::NONE);
+                let strict = tr.strict(&loc);
                 Loc::Hit(Hit { proto: *pi, base: 0, local: loc, levels: Levels::new(), strict })
             }
             Kind::Union { places, off, .. } => {
@@ -861,7 +987,7 @@ impl WorldTracker {
             }
             // Entry of the ray into the partner inside the chord.
             let entry = match &self.comps[pj.child].kind {
-                Kind::Leaf(pi) => self.protos[*pi].tracker.core.enter_from_outside(oj, dj, self.tol, &mut sc.ids).map(|(t, _)| t),
+                Kind::Leaf(pi) => self.protos[*pi].tracker.enter_from_outside(oj, dj, self.tol, t_end, sc),
                 _ => slab(oj, dj, &self.comps[pj.child].bounds, 0.0, t_end).map(|(a, _)| a),
             };
             if let Some(t) = entry
@@ -939,7 +1065,7 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
             let pi = proto_of_input[*input];
             let t = &protos[pi].tracker;
             let b = t.info().bounds;
-            Ok(Comp { kind: Kind::Leaf(pi), bounds: [b.lo.x, b.lo.y, b.lo.z, b.hi.x, b.hi.y, b.hi.z], cells: t.core.n_cells() as u64, inst: 1 })
+            Ok(Comp { kind: Kind::Leaf(pi), bounds: [b.lo.x, b.lo.y, b.lo.z, b.hi.x, b.hi.y, b.hi.z], cells: t.n_cells() as u64, inst: 1 })
         }
         Some(ComponentKind::Union { placements }) => {
             let mut places = Vec::with_capacity(placements.len());
@@ -1043,7 +1169,13 @@ fn compile(kind: Option<&ComponentKind>, ci: usize, done: &[Option<Comp>], proto
 
 impl Tracker for WorldTracker {
     fn caps(&self) -> TrackerCaps {
-        let c = if self.info.faceted_faces == 0 { TrackerCaps::HIERARCHY.union(TrackerCaps::EXACT_PLANAR) } else { TrackerCaps::HIERARCHY };
+        let csg = self.protos.iter().any(|p| matches!(p.tracker, Body::Csg(_)));
+        let mut c = TrackerCaps::HIERARCHY;
+        if csg {
+            c = c.union(TrackerCaps::ANALYTIC);
+        } else if self.info.faceted_faces == 0 {
+            c = c.union(TrackerCaps::EXACT_PLANAR);
+        }
         if self.hier.is_some() { c.union(TrackerCaps::MAJORANT) } else { c }
     }
     fn majorant_view(&self) -> Option<&dyn MajorantTracker> {
@@ -1061,11 +1193,11 @@ impl Tracker for WorldTracker {
     fn cell_region(&self, c: CellId) -> Option<RegionId> {
         let (_, p, local) = self.resolve_cell(u64::from(c.0))?;
         let pr = &self.protos[p];
-        pr.tracker.core.c_region.get(local as usize).map(|&r| RegionId(r + pr.region_off))
+        pr.tracker.c_region(local as usize).map(|r| RegionId(r + pr.region_off))
     }
     fn cell_volume(&self, c: CellId) -> Option<f64> {
         let (_, p, local) = self.resolve_cell(u64::from(c.0))?;
-        self.protos[p].tracker.core.c_volume.get(local as usize).copied()
+        self.protos[p].tracker.c_volume(local as usize)
     }
     fn mesh(&self) -> Option<&dyn MeshRead> {
         None
@@ -1107,10 +1239,9 @@ impl Tracker for WorldTracker {
             && let Ok(fr) = self.frame_of(&levels)
         {
             let pr = &self.protos[pi];
-            let loc = pr.tracker.locate_inner(fr.g2l.pt(pa), Some(fr.g2l.vec(d)), Some(CellId(local)), scratch);
-            let strict = !loc.cell.is_none() && loc.cell != CellId::COMPLEMENT && loc.on_face.is_none_or(|f| pr.tracker.core.f_right[f.get()] != crate::core::NONE);
-            if strict {
-                return Ok(self.global_located(Hit { proto: pi, base: fr.base, local: loc, levels, strict }));
+            let (loc, overlap) = pr.tracker.locate(fr.g2l.pt(pa), fr.g2l.vec(d), Some(CellId(local)), scratch);
+            if !overlap && pr.tracker.strict(&loc) {
+                return Ok(self.global_located(Hit { proto: pi, base: fr.base, local: loc, levels, strict: true }));
             }
         }
         Ok(match self.locate_rec(self.root, pa, d, scratch, None) {
@@ -1132,17 +1263,18 @@ impl Tracker for WorldTracker {
         }
         let fr = self.frame_of(&st.levels)?;
         let pr = &self.protos[fr.proto];
-        let ncell = pr.tracker.core.n_cells() as u64;
+        let ncell = pr.tracker.n_cells() as u64;
         let c = u64::from(st.cell.0);
         if c < fr.base || c >= fr.base + ncell {
             return Err(RtError::UnknownId { kind: "cell", id: st.cell.0 });
         }
         let local_cell = (c - fr.base) as u32;
-        let region_before = RegionId(pr.tracker.core.c_region[local_cell as usize] + pr.region_off);
+        let local_region = pr.tracker.c_region(local_cell as usize).ok_or(RtError::UnknownId { kind: "cell", id: st.cell.0 })?;
+        let region_before = RegionId(local_region + pr.region_off);
         let mut ls = TrackState::new(p3(fr.g2l.pt(o)), v3(fr.g2l.vec(d)));
         ls.cell = CellId(local_cell);
-        ls.region = RegionId(pr.tracker.core.c_region[local_cell as usize]);
-        ls.entered_via = st.entered_via.and_then(|f| f.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.core.n_faces()).map(FaceId));
+        ls.region = RegionId(local_region);
+        ls.entered_via = st.entered_via.and_then(|f| f.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.n_faces()).map(FaceId));
         let s = pr.tracker.step(&mut ls, max_dist, sc)?;
         let gface = |f: FaceId| FaceId(f.0 + pr.face_off);
         let gsurf = |x: SurfaceId| if x.is_none() { x } else { SurfaceId(x.0 + pr.surf_off) };
@@ -1210,8 +1342,13 @@ impl Tracker for WorldTracker {
                     Loc::Miss => {
                         commit(st);
                         if matches!(self.exit_action, FaceAction::Reflect) {
-                            let pl = pr.tracker.core.f_plane[face.get()];
-                            let n = fr.g2l.vec_back([pl[0], pl[1], pl[2]]);
+                            let n = match &pr.tracker {
+                                Body::Mesh(m) => {
+                                    let pl = m.core.f_plane[face.get()];
+                                    fr.g2l.vec_back([pl[0], pl[1], pl[2]])
+                                }
+                                Body::Csg(_) => fr.g2l.vec_back(pr.tracker.face_normal(face, a3(ls.pos))?),
+                            };
                             let r = sub(d, scale(n, 2.0 * dot(d, n)));
                             st.dir = v3(r);
                         }
@@ -1250,8 +1387,8 @@ impl Tracker for WorldTracker {
         let local = FaceId(f.0 - self.protos[pi].face_off);
         let aff = self.find_instance_with_face(self.root, pa, &Aff::ID, pi, local).ok_or(RtError::InvalidInput("the point is not on an instance of the face"))?;
         let q = aff.pt(pa);
-        let n = self.protos[pi].tracker.face_normal(local, p3(q))?;
-        Ok(v3(aff.vec_back(av3(n))))
+        let n = self.protos[pi].tracker.face_normal(local, q)?;
+        Ok(v3(aff.vec_back(n)))
     }
 
     fn periodic_image(&self, _f: FaceId) -> Result<Option<PeriodicImage>> {
@@ -1263,9 +1400,9 @@ impl Tracker for WorldTracker {
         let normal = |this: &Self, st: &TrackState| -> Result<[f64; 3]> {
             let fr = this.frame_of(&st.levels)?;
             let pr = &this.protos[fr.proto];
-            let local = face.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.core.n_faces()).ok_or(RtError::UnknownId { kind: "face", id: face.0 })?;
-            let n = pr.tracker.face_normal(FaceId(local), p3(fr.g2l.pt(a3(st.pos))))?;
-            Ok(fr.g2l.vec_back(av3(n)))
+            let local = face.0.checked_sub(pr.face_off).filter(|&l| (l as usize) < pr.tracker.n_faces()).ok_or(RtError::UnknownId { kind: "face", id: face.0 })?;
+            let n = pr.tracker.face_normal(FaceId(local), fr.g2l.pt(a3(st.pos)))?;
+            Ok(fr.g2l.vec_back(n))
         };
         let reflect = |this: &Self, st: &mut TrackState| -> Result<BoundaryAction> {
             let n = normal(this, st)?;
@@ -1388,7 +1525,7 @@ impl WorldTracker {
                 if *pi != target || !inside_box(&c.bounds, p, pad) {
                     return None;
                 }
-                let d2 = self.protos[*pi].tracker.core.face_dist2(f.get(), p).0;
+                let d2 = self.protos[*pi].tracker.face_dist2(f.get(), p);
                 (d2 <= pad * pad).then_some(*g2l)
             }
             Kind::Union { places, .. } => places.iter().filter(|pl| inside_box(&pl.bbox, p, pad)).find_map(|pl| self.find_instance_with_face(pl.child, pl.inv.pt(p), &g2l.then(&pl.inv), target, f)),
@@ -1623,7 +1760,7 @@ impl WorldTracker {
         self.hier.as_ref()?;
         let mut h = ContentHasher::new();
         for p in &self.protos {
-            h.write_hash(p.tracker.partition_hash()?);
+            h.write_hash(p.tracker.mesh()?.partition_hash()?);
         }
         Some(h.finish())
     }
@@ -1665,9 +1802,9 @@ impl MajorantTracker for WorldTracker {
         }
         let fr = self.frame_of(&st.levels)?;
         let pr = &self.protos[fr.proto];
-        let Some(part) = pr.tracker.partition() else { return Err(RtError::Unsupported("tracker was built without a partition")) };
+        let Some((mt, part)) = pr.tracker.mesh().and_then(|m| m.partition().map(|p| (m, p))) else { return Err(RtError::Unsupported("tracker was built without a partition")) };
         let c = u64::from(first.0);
-        if c < fr.base || c >= fr.base + pr.tracker.core.n_cells() as u64 {
+        if c < fr.base || c >= fr.base + pr.tracker.n_cells() as u64 {
             return Err(RtError::UnknownId { kind: "cell", id: first.0 });
         }
         let (ol, dl) = (fr.g2l.pt(o), fr.g2l.vec(d));
@@ -1742,7 +1879,7 @@ impl MajorantTracker for WorldTracker {
                         pl[ax] = wall;
                         st.pos = p3(past_wall(&fr.g2l, fr.g2l.pt_back(pl), ax, wall, hi));
                     }
-                    let loc = pr.tracker.locate_from_root(part, pl, dl, sc);
+                    let loc = mt.locate_from_root(part, pl, dl, sc);
                     if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
                         st.cell = CellId::NONE;
                         st.region = RegionId::NONE;
@@ -1783,7 +1920,7 @@ impl MajorantTracker for WorldTracker {
             None => [0.0; 3],
         };
         let pr = &self.protos[pi];
-        let part = pr.tracker.partition().ok_or(RtError::Unsupported("tracker was built without a partition"))?;
+        let (mt, part) = pr.tracker.mesh().and_then(|m| m.partition().map(|p| (m, p))).ok_or(RtError::Unsupported("tracker was built without a partition"))?;
         let rec = &part.nodes[local as usize];
         let (q, dl) = (fr.g2l.pt(pa), fr.g2l.vec(da));
         let tol = self.tol;
@@ -1797,7 +1934,7 @@ impl MajorantTracker for WorldTracker {
             sc.counters.lattice_index_locates += 1;
         }
         let lv: Levels = levels.iter().cloned().collect();
-        let loc = pr.tracker.locate_leaf(part, leaf, q, dir.map(|_| dl), sc);
+        let loc = mt.locate_leaf(part, leaf, q, dir.map(|_| dl), sc);
         if loc.cell.is_none() || loc.cell == CellId::COMPLEMENT {
             return Ok(Located::new(CellId::NONE, RegionId::NONE, None).with_levels(lv));
         }
@@ -1811,11 +1948,12 @@ impl MajorantTracker for WorldTracker {
         let fr = self.frame_of(&st.levels)?;
         let pr = &self.protos[fr.proto];
         let c = u64::from(st.cell.0);
-        if c < fr.base || c >= fr.base + pr.tracker.core.n_cells() as u64 {
+        if c < fr.base || c >= fr.base + pr.tracker.n_cells() as u64 {
             return Err(RtError::UnknownId { kind: "cell", id: st.cell.0 });
         }
+        let Some(mt) = pr.tracker.mesh() else { return Err(RtError::Unsupported("safety distance of a CSG leaf")) };
         let mut ls = TrackState::new(p3(fr.g2l.pt(a3(st.pos))), v3(fr.g2l.vec(av3(st.dir))));
         ls.cell = CellId((c - fr.base) as u32);
-        pr.tracker.safety_distance(&ls, sc)
+        mt.safety_distance(&ls, sc)
     }
 }

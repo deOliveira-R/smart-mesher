@@ -18,7 +18,8 @@
 //!   nodes are the prototype tree (a lattice is one node; elements of one universe share its subtree),
 //!   and delta flights cross element walls inside the segment stream.
 //! * [`csg_world`] bridges a model (volumes, prototypes, lattices, clusters) to CSG leaves and a
-//!   [`sm_rt_api::WorldSpec`] ([`CsgWorld`]); [`CsgWorld::analytic_tracker`] tracks it exactly.
+//!   [`sm_rt_api::WorldSpec`] ([`CsgWorld`]); [`CsgWorld::world_tracker`] tracks it exactly without flattening (CSG prototypes under
+//!   `Union`/`Lattice`); [`CsgWorld::analytic_tracker`] flattens and is the oracle.
 //! * [`RtPlugin`] registers the read-only queries `rt.info`, `rt.check`, `rt.locate`, `rt.partition`,
 //!   `rt.check_overlaps`.
 

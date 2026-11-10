@@ -90,6 +90,54 @@ pub fn geom_error(data: &CaseData, tracks: &[Track], n: usize) -> Result<(GeomEr
     Ok((g, rep))
 }
 
+/// Chord of the ray `origin + t * dir` through the axis-aligned box `lo..hi` (zero when it misses).
+fn box_chord(origin: [f64; 3], dir: [f64; 3], lo: [f64; 3], hi: [f64; 3]) -> f64 {
+    let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
+    for a in 0..3 {
+        if dir[a] == 0.0 {
+            if origin[a] < lo[a] || origin[a] > hi[a] {
+                return 0.0;
+            }
+            continue;
+        }
+        let (p, q) = ((lo[a] - origin[a]) / dir[a], (hi[a] - origin[a]) / dir[a]);
+        t0 = t0.max(p.min(q));
+        t1 = t1.min(p.max(q));
+    }
+    (t1 - t0).max(0.0)
+}
+
+/// W-walk against the analytic truth of a tet mesh: the chords of each ray must sum to the chord
+/// of the ray through the mesh's bounding box (the mesh is convex, e.g. H1's cube). Returns the
+/// error summary (`max_chord_err` over the sums, `tracks` rays checked) and the number of rays
+/// whose sum is off by more than `1e-9 * diag`.
+///
+/// # Errors
+/// [`crate::error::BenchError::Tracker`] when the number of tracks differs from the number of rays.
+pub fn walk_truth(tets: &crate::formats::Tets, rays: &crate::formats::Rays, tracks: &[Track], diag: f64) -> Result<(GeomError, usize)> {
+    if tracks.len() != rays.len() {
+        return Err(crate::error::BenchError::Tracker(format!("walk: {} tracks for {} rays", tracks.len(), rays.len())));
+    }
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for n in &tets.nodes {
+        for a in 0..3 {
+            lo[a] = lo[a].min(n[a]);
+            hi[a] = hi[a].max(n[a]);
+        }
+    }
+    let tol = 1e-9 * diag;
+    let (mut max, mut sum, mut failed) = (0.0f64, 0.0f64, 0usize);
+    for (i, t) in tracks.iter().enumerate() {
+        let err = (t.chords.iter().sum::<f64>() - box_chord(rays.origin[i], rays.dir[i], lo, hi)).abs();
+        max = max.max(err);
+        sum += err;
+        failed += usize::from(err > tol);
+    }
+    let n = tracks.len();
+    Ok((GeomError { max_chord_err: max, mean_chord_err: if n == 0 { 0.0 } else { sum / n as f64 }, sequence_failures_per_1e5: 0.0, tracks: n }, failed))
+}
+
 /// Agreement of W-flight tallies (4 sigma): per-region collision counts, leaked and absorbed
 /// histories of `judged` against `reference`. The variance of each tally is estimated from the
 /// spread of the history blocks (a block is 256 consecutive histories, the same blocks for every
@@ -169,6 +217,10 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                         _ => truth_agree,
                     };
                     (g, agree)
+                } else if w == Workload::Walk {
+                    let tets = data.tets.as_ref().ok_or_else(|| crate::error::BenchError::Usage("W-walk needs a tet mesh".into()))?;
+                    let (g, failed) = walk_truth(tets, &data.rays, &s.output.tracks, data.manifest.diag)?;
+                    (g, Agreement { checked: s.output.tracks.len(), failed, ..Agreement::default() })
                 } else {
                     (GeomError::default(), Agreement::default())
                 };
@@ -182,7 +234,7 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                     threads,
                     precision: adapters[i].precision().to_string(),
                     rays_per_s: Stat::of(&rates),
-                    segments_per_track: if w == Workload::Track && !data.rays.is_empty() { c.segments as f64 / data.rays.len() as f64 } else { 0.0 },
+                    segments_per_track: if (w == Workload::Track || w == Workload::Walk) && !data.rays.is_empty() { c.segments as f64 / data.rays.len() as f64 } else { 0.0 },
                     ns_per_segment: if c.segments > 0 { median_ns / c.segments as f64 } else { 0.0 },
                     fires_per_history: if w == Workload::Flight && c.histories > 0 { c.steps as f64 / c.histories as f64 } else if w == Workload::Fire || w == Workload::FireLocate { 1.0 } else { 0.0 },
                     structure_bytes: bi.structure_bytes,
@@ -198,7 +250,7 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                 hashes[i][wi].push(row.determinism.hash.clone());
                 row_of[i][wi].push(file.rows.len());
                 file.rows.push(row);
-                if w == Workload::Track {
+                if w == Workload::Track || w == Workload::Walk {
                     agreements.push(agree);
                 }
             }

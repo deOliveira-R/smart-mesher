@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
-use sm_protocol::{ExportFormat, Request};
+use sm_protocol::{ExportFormat, ExportSource, Request};
 
 fn tools(mock: &mut Mock, version: &str) -> Vec<Value> {
     let r = run(mock, &[init(version), list(1)]);
@@ -623,7 +623,7 @@ fn fixed_tool_schemas_match_the_protocol_request_fields() {
     assert_eq!(
         props("session_export"),
         [
-            "empty_patches", "format", "inline", "mesh", "options", "path", "provenance",
+            "empty_patches", "format", "inline", "mesh", "options", "path", "provenance", "source",
             "split_small_determinant", "split_warped_faces", "wedge_patches"
         ]
     );
@@ -790,13 +790,24 @@ fn export_arguments_build_the_matching_request() {
             call(1, "session_export", json!({"format": "smrt", "path": "a.smrt", "mesh": "Mesh#1"})),
             call(2, "session_export", json!({"format": "gmsh", "path": "a.msh", "mesh": "Mesh#1", "options": {"binary": true}})),
             call(3, "session_export", json!({"format": "openfoam", "path": "c", "mesh": "Mesh#1", "split_warped_faces": true, "empty_patches": ["e"]})),
+            call(4, "session_export", json!({"format": "dagmc", "path": "m.h5m", "source": "model", "options": {"chord_tol": 0.001}})),
         ],
     );
-    assert!(r[1..].iter().all(|x| x["result"]["isError"] == false), "{r:?}");
+    // The mock answers `no-mesh` to an export without `mesh`, so only the first three are ok;
+    // the fourth is checked through the request it logged.
+    assert!(r[1..4].iter().all(|x| x["result"]["isError"] == false), "{r:?}");
     let reqs = &m.log;
     assert!(matches!(&reqs[0], Request::Export { format: Some(ExportFormat::Smrt), path: Some(p), options: None, split_warped_faces: false, .. } if p == "a.smrt"));
     assert!(matches!(&reqs[1], Request::Export { format: Some(ExportFormat::Gmsh), options: Some(o), .. } if *o == json!({"binary": true})));
     assert!(matches!(&reqs[2], Request::Export { format: Some(ExportFormat::Openfoam), split_warped_faces: true, empty_patches, .. } if empty_patches == &["e".to_owned()]));
+    // `source` reaches the request; absent, it is the mesh.
+    assert!(matches!(&reqs[3], Request::Export { format: Some(ExportFormat::Dagmc), source: ExportSource::Model, options: Some(o), .. } if *o == json!({"chord_tol": 0.001})));
+    assert!(matches!(&reqs[0], Request::Export { source: ExportSource::Mesh, .. }));
+    let ts = tools(&mut Mock::new(), "2025-06-18");
+    let t = ts.iter().find(|t| t["name"] == "session_export").unwrap();
+    assert_eq!(t["inputSchema"]["properties"]["source"]["enum"], json!(["mesh", "model"]));
+    let bad = run(&mut Mock::new(), &[init("2025-06-18"), call(1, "session_export", json!({"source": "brep", "format": "dagmc", "path": "x.h5m"}))]);
+    assert_eq!(bad[1]["error"]["code"], -32602, "{bad:?}");
 }
 
 #[test]

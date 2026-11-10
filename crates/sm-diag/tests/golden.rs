@@ -14,7 +14,7 @@ fn rig_registry() -> sm_op_api::Registry {
 fn schemas_are_snapshotted() {
     let reg = rig_registry();
     let queries: Vec<_> = reg.query_catalog().into_iter().map(|q| q.expect("schema")).collect();
-    for q in queries.iter().filter(|q| q.name.starts_with("mesh.") && matches!(q.name.as_str(), "mesh.validate" | "mesh.quality")) {
+    for q in queries.iter().filter(|q| q.name.starts_with("mesh.") && matches!(q.name.as_str(), "mesh.validate" | "mesh.quality" | "mesh.volume_check")) {
         golden(&format!("{}.output.schema.json", q.name), &serde_json::to_value(&q.output_schema).unwrap(), 0.0);
         golden(&format!("{}.input.schema.json", q.name), &serde_json::to_value(&q.schema).unwrap(), 0.0);
     }
@@ -28,7 +28,7 @@ fn schemas_are_snapshotted() {
     assert!(format!("{:?}", outs[0].cardinality).contains("Optional"));
     let s = serde_json::to_string(&op.schema).unwrap();
     assert!(s.contains("x-entity-kind") && s.contains("\"Mesh\""), "{s}");
-    for name in ["mesh.validate", "mesh.quality"] {
+    for name in ["mesh.validate", "mesh.quality", "mesh.volume_check"] {
         let q = queries.iter().find(|q| q.name == name).unwrap();
         assert!(serde_json::to_string(&q.schema).unwrap().contains("x-entity-kind"), "{name}");
     }
@@ -37,7 +37,7 @@ fn schemas_are_snapshotted() {
 #[test]
 fn registered_by_the_plugin_only() {
     let reg = rig_registry();
-    assert!(reg.query_names().contains(&"mesh.validate") && reg.query_names().contains(&"mesh.quality"));
+    assert!(reg.query_names().contains(&"mesh.validate") && reg.query_names().contains(&"mesh.quality") && reg.query_names().contains(&"mesh.volume_check"));
     assert!(reg.op_names().contains(&"mesh.flag_cells"));
     // No layer is registered by the plugin: the layer order is that of CoreLayers + MeshPlugin.
     assert_eq!(sm_op_api::Plugin::id(&sm_diag::DiagPlugin), "diag");

@@ -591,9 +591,14 @@ fn strategies_query_lists_names_and_descriptions() {
         .run_query(s.state(), "mesh.auto_strategies", &json!({}), &q.control())
         .expect("query");
     let rows = out["strategies"].as_array().expect("rows");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["name"], "default");
-    assert!(!rows[0]["description"].as_str().expect("str").is_empty());
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| r["name"].as_str().expect("str"))
+        .collect();
+    assert_eq!(names, ["default", "hex_only", "tet"]);
+    for r in rows {
+        assert!(!r["description"].as_str().expect("str").is_empty());
+    }
 }
 
 #[test]

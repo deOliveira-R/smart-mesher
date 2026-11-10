@@ -674,13 +674,18 @@ fn pin_through_plan_rows_are_sweeps_of_pave_sources_with_copy_targets() {
     assert!(pave.iter().all(|r| r.how == "intent#0"), "{pave:?}");
     let copies: Vec<&Row> = rows.iter().filter(|r| r.kind == "surface" && r.scheme == "copy").collect();
     assert_eq!(copies.len(), 2, "one copy target per volume: {rows:?}");
-    // Every copy target copies one of the pave sources.
-    let sources: Vec<&str> = pave.iter().map(|r| r.target.as_str()).collect();
+    // Every copy target copies one of the pave sources, and no two copy the same one.
+    let mut sources: Vec<&str> = pave.iter().map(|r| r.target.as_str()).collect();
+    sources.sort_unstable();
+    let mut copied: Vec<&str> = Vec::new();
     for c in &copies {
         let e = report["entities"].as_array().expect("entities").iter().find(|e| e["target"] == c.target.as_str()).expect("copy entity");
         let of = e["copy_of"].as_str().unwrap_or_else(|| panic!("copy_of: {e}"));
         assert!(sources.contains(&of), "{} copies {of}, sources {sources:?}", c.target);
+        copied.push(of);
     }
+    copied.sort_unstable();
+    assert_eq!(copied, sources, "each pave source is copied exactly once (two rows share a `copy_of` otherwise)");
     // The four brick sides and the cylinder face map; nothing else is a face scheme.
     let mut map: Vec<&str> = faces_by_scheme(&rows, "map").iter().map(|r| r.target.as_str()).collect();
     map.sort();

@@ -34,8 +34,11 @@ pub struct ExodusOptions {
     pub faces_as_sidesets: bool,
     /// Also write `node_num_map` (the identity); `elem_num_map` is always written.
     pub write_node_num_map: bool,
-    /// Write polyhedra as `NFACED` blocks (experimental: unverified against SEACAS). When false a
-    /// polyhedral cell is `Unsupported`.
+    /// Write polyhedra as `NFACED` blocks (experimental). libMesh 1.9.0-pre (`meshtool-opt`, the
+    /// reader under MOOSE and Griffin) refuses such files with `key "NFACED" not found`
+    /// (`tests/libmesh.rs`); SEACAS `exodiff`/`epu` were not available to check. The structural
+    /// checks in this crate's tests are the only verification. When false a polyhedral cell is
+    /// `Unsupported`.
     pub polyhedra: bool,
     /// QA records `[code, version, date, time]`, each string at most 32 bytes. The default is one
     /// fixed placeholder record so the output is deterministic.

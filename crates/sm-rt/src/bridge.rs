@@ -20,11 +20,15 @@
 //!   coaxial quadrics). Other volumes are not detected here; the sampled check
 //!   (`rt.check_overlaps`) finds the overlaps and gaps they cause.
 //!
-//! The analytic tracker hosts one CSG leaf, so [`CsgWorld::flatten`] expands the world into one
-//! leaf (surfaces moved with `SurfaceDef::transformed`); [`CsgWorld::analytic_tracker`] does that
-//! when needed. Flattening never changes tracking results, only the number of cells.
+//! [`CsgWorld::world_tracker`] hosts the world as it is: the world walker tiles and places analytic
+//! prototype leaves, so a lattice of 2601 pins costs one pin and an index. The analytic tracker
+//! hosts one CSG leaf, so [`CsgWorld::flatten`] expands the world into one leaf (surfaces moved with
+//! `SurfaceDef::transformed`); [`CsgWorld::analytic_tracker`] does that and is the oracle of the
+//! hierarchical build. Flattening never changes tracking results, only the number of cells.
 
 use crate::analytic::{AnalyticTracker, AnalyticTrackerBuilder, check_located};
+use crate::builder::MeshTrackerBuilder;
+use crate::world::WorldTracker;
 use sm_core::{EntityId, Transform};
 use sm_geom_api::{CsgCell, Frame, GeomAppend, GeomStore, HalfSpace, MemoryStore, Plane, Sense, Sign, SurfaceDef};
 use sm_model_api::{Fill, Layout, Model};
@@ -588,6 +592,26 @@ impl CsgWorld {
             &flat
         };
         w.with_hier(boundaries, |h| AnalyticTrackerBuilder.build_concrete(&BuildInput::Hier(*h), opts))
+    }
+}
+
+impl CsgWorld {
+    /// Build the hierarchical tracker of this world: the lattices and unions are walked as they
+    /// are and each prototype leaf is one analytic tracker, so nothing is flattened (the cost
+    /// does not grow with the number of copies). Tracking results equal those of
+    /// [`Self::analytic_tracker`] up to the tolerance; that one stays as the oracle.
+    ///
+    /// What lies outside the cells is the model boundary (a world has no complement region), so
+    /// the world must have been bridged without [`CsgWorldOptions::complement`].
+    ///
+    /// # Errors
+    /// `RtError::Unsupported` for a complement region or a hex lattice; the world builder's errors
+    /// otherwise (`world.lattice_fit` when a prototype does not fit its lattice element, ...).
+    pub fn world_tracker(&self, boundaries: &BoundarySpec, opts: &BuildOptions) -> Result<(WorldTracker, BuildReport), RtError> {
+        if matches!(self.complement, ComplementPolicy::Region(_)) {
+            return Err(RtError::Unsupported("a hierarchical CSG world has no complement region; bridge without `complement` or use `analytic_tracker`"));
+        }
+        self.with_hier(boundaries, |h| MeshTrackerBuilder.build_world(&BuildInput::Hier(*h), opts))
     }
 }
 

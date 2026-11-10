@@ -11,7 +11,7 @@ mod kernel;
 mod leaf;
 mod tracker;
 
-pub(crate) use builder::has_csg;
+pub(crate) use builder::{build_proto_csg, is_bare_csg};
 pub use builder::AnalyticTrackerBuilder;
 pub use check::check_overlaps;
 pub(crate) use check::check_located;

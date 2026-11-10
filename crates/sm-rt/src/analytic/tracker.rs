@@ -245,6 +245,50 @@ impl AnalyticTracker {
         self.leaf.n_surfs()
     }
 
+    /// Number of cells.
+    pub(crate) fn n_cells(&self) -> usize {
+        self.leaf.n_cells()
+    }
+
+    /// Do cells lie on both sides of the surface (an interior face, not part of the outer
+    /// boundary of the leaf)? The world uses it to tell a point on an outer face from one
+    /// strictly inside the leaf.
+    pub(crate) fn face_interior(&self, f: FaceId) -> bool {
+        self.surfaces.0.get(f.get()).is_some_and(|s| !s.front.is_none() && !s.back.is_none())
+    }
+
+    /// Distance from the point to the surface of face `f` (a general quadric reports its absolute
+    /// implicit value instead: callers use it against a tolerance band only).
+    pub(crate) fn face_dist(&self, f: FaceId, p: V3) -> f64 {
+        self.leaf.surfs.get(f.get()).map_or(f64::INFINITY, |s| s.closest(p).map_or_else(|| s.sd(p).abs(), |(d, _)| d))
+    }
+
+    /// First entry of the ray `o + t d` (`t >= 0`) into a cell of the leaf from outside it:
+    /// `(t, surface)` of the earliest crossing of a surface that leads into a cell, ties by surface
+    /// id. `None` if the ray never enters within `max_t`.
+    pub(crate) fn enter_from_outside(&self, o: V3, d: V3, max_t: f64, sc: &mut Scratch) -> Option<(f64, u32)> {
+        let mut best: Option<(f64, u32)> = None;
+        let mut buf = [0.0f64; 4];
+        for s in 0..self.n_surfs() as u32 {
+            let k = self.leaf.surfs[s as usize].hits(o, d, max_t, &mut buf);
+            for &t in &buf[..k] {
+                if best.is_some_and(|b| (t, s) >= (b.0, b.1)) {
+                    continue;
+                }
+                let p = madd(o, d, t);
+                let dn = dot(self.leaf.surfs[s as usize].normal(p), d);
+                if dn == 0.0 {
+                    continue;
+                }
+                let sense: i8 = if dn > 0.0 { 1 } else { -1 };
+                if matches!(self.leaf.across(None, s, sense, p, d, &mut sc.counters), Next::Cell(_)) {
+                    best = Some((t, s));
+                }
+            }
+        }
+        best
+    }
+
     /// Kind of each surface (`plane`, `sphere`, `cylinder`, `cone`, `torus`, `quadric`), by
     /// surface id.
     pub fn surface_kinds(&self) -> Vec<&'static str> {
@@ -304,7 +348,7 @@ impl AnalyticTracker {
     }
 
     /// `locate_inner` plus whether the point is matched by two cells (an overlap).
-    fn locate_ov(&self, p: V3, d: V3, hint: Option<CellId>, sc: &mut Scratch) -> (Located, bool) {
+    pub(crate) fn locate_ov(&self, p: V3, d: V3, hint: Option<CellId>, sc: &mut Scratch) -> (Located, bool) {
         let cnt = &mut sc.counters;
         cnt.locates += 1;
         if let Some(h) = hint

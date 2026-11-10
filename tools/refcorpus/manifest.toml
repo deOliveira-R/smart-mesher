@@ -1,0 +1,549 @@
+# Reference corpus manifest (W4-REFCORPUS). Written by `build.py bless`; edit metadata by hand,
+# sha256 values only through bless. See docs/design/w4/refcorpus.md.
+
+[meta]
+schema = 1
+openmc = "0.16.0"
+freecad = "FreeCAD 1.1.4 20260928"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/assemblies.py"
+sha256 = "b02db838c889ff579660e0c5a511915f579d9803aa4b9b61fe68e75922f226ee"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/baffle.py"
+sha256 = "957b8cf52fcace4ebb916f13acaa8ec503fa7b368d4de61715a82461d9a98617"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/builder.py"
+sha256 = "76202c5f8c57383f639ac0b114ff16832c74bb15aab2c59b9ee706499b0c1617"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/constants.py"
+sha256 = "7533c55645752a104cb2741d8d07a9964c5c8864f202a117b28d19f7e27c291d"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/core.py"
+sha256 = "1ece156d369828a0bc6cb65f8d3d131d23b46a904b5f0d73c0c8bd23b3e64554"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/corebuilder.py"
+sha256 = "5c1cba8cb115c6dd9072f9aa50095334d815cda85ccb5e33f2a77b27d2f2942d"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/materials.py"
+sha256 = "4147a35087597dff6c8b0f755afce60a08851a87832cdd91476770a65a143983"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/pincells.py"
+sha256 = "918431c653980d7c831006cf8188523ef1665c618ad3870a26cde5495c233880"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/plots.py"
+sha256 = "504a614ae4e57ef966602f2a0afafd9680a97854c52e048e6579472f5cc2d4fb"
+
+[[support]]
+source = "beavrs"
+repo = "mit-crpg/BEAVRS"
+commit = "1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+path = "models/openmc/beavrs/univzero.py"
+sha256 = "5e207bba3c637b100e04afbe6a27eb7fedfbc573adbe92fa17ffa9a3aa9ad1a1"
+
+[[entry]]
+id = "openmc-pin"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-pin/geometry.xml"
+expected = "accepted"
+note = "PWR pin cell, reflective sides"
+
+[[entry.outputs]]
+path = "openmc-pin/geometry.xml"
+sha256 = "c20e2d4c7ec415c21be8f080c1951a07242b7fd669352fbfa273b51c482094d0"
+
+[[entry.outputs]]
+path = "openmc-pin/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-assembly-17x17"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-assembly-17x17/geometry.xml"
+expected = "accepted"
+note = "17x17 PWR assembly, 24 guide tubes + instrument tube (mixed universes)"
+
+[[entry.outputs]]
+path = "openmc-assembly-17x17/geometry.xml"
+sha256 = "17722a3583f4534f335cb6dc6dd9a750f400837d90e69c90796a0324640c7b24"
+
+[[entry.outputs]]
+path = "openmc-assembly-17x17/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-mini-3x3"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-mini-3x3/geometry.xml"
+expected = "accepted"
+note = "3x3 mini-assembly, 8 pins + 1 guide tube"
+
+[[entry.outputs]]
+path = "openmc-mini-3x3/geometry.xml"
+sha256 = "58b4863a34d69c24695950134d4676942c2b21a308b528c79d53312853616950"
+
+[[entry.outputs]]
+path = "openmc-mini-3x3/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-pin-layered"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-pin-layered/geometry.xml"
+expected = "accepted"
+note = "axially layered pin (z planes)"
+
+[[entry.outputs]]
+path = "openmc-pin-layered/geometry.xml"
+sha256 = "a7d53334f6f82e3812f509019ace76da013ae4ccb93e7d84a518930ac84cc266"
+
+[[entry.outputs]]
+path = "openmc-pin-layered/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-hex-y-7ring"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-hex-y-7ring/geometry.xml"
+expected = "unsupported:hex_lattice"
+note = "hex lattice orientation y, 7 rings, one pin universe"
+
+[[entry.outputs]]
+path = "openmc-hex-y-7ring/geometry.xml"
+sha256 = "19a7b5e322a51f8df68e3a8781922aac5463ef8b808d815494cce1ca3971e5ce"
+
+[[entry.outputs]]
+path = "openmc-hex-y-7ring/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-hex-x-7ring"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-hex-x-7ring/geometry.xml"
+expected = "unsupported:hex_lattice"
+note = "hex lattice orientation x, 7 rings, one pin universe"
+
+[[entry.outputs]]
+path = "openmc-hex-x-7ring/geometry.xml"
+sha256 = "74ae86330581363991c1623447206301d5c8f88f3ad589b0ce32f634db2b8c5c"
+
+[[entry.outputs]]
+path = "openmc-hex-x-7ring/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-hex-y-mixed"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-hex-y-mixed/geometry.xml"
+expected = "unsupported:hex_lattice"
+note = "hex lattice orientation y, 7 rings, pins and guide tubes (mixed)"
+
+[[entry.outputs]]
+path = "openmc-hex-y-mixed/geometry.xml"
+sha256 = "1bc8e033279e394704c97cb1b2347e868ec3eb5fe6791bdac60953aeb28024b9"
+
+[[entry.outputs]]
+path = "openmc-hex-y-mixed/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "openmc-triso-lattice"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-triso-lattice/geometry.xml"
+expected = "accepted"
+note = "TRISO-like sphere lattice, 4x4x4 particles"
+
+[[entry.outputs]]
+path = "openmc-triso-lattice/geometry.xml"
+sha256 = "50f26c13d9881dcd4d862464c344a4194952491a1f606550713ae0479df359f4"
+
+[[entry.outputs]]
+path = "openmc-triso-lattice/materials.xml"
+sha256 = "e33415f05143919cbcc853421432ad31a983622c9de9dd7a39d52c5121ec44c5"
+
+[[entry]]
+id = "openmc-cone-torus"
+category = "openmc"
+recipe = "openmc"
+source = "smart-mesh tools/refcorpus/gen_openmc.py"
+licence = "MIT (smart-mesh)"
+tool = "OpenMC 0.16.0"
+deck = "openmc-cone-torus/geometry.xml"
+expected = "accepted"
+note = "cone frustum, torus and sphere in a box (for W4-BOOL-TOOLS)"
+
+[[entry.outputs]]
+path = "openmc-cone-torus/geometry.xml"
+sha256 = "151eef0b017d43fc891c7dc125f4bf2ca0f838bd5cbda460b07777614db2bf9e"
+
+[[entry.outputs]]
+path = "openmc-cone-torus/materials.xml"
+sha256 = "aa0e3bf87f9f4b8fc3b5fc89a9fe00fa0e7eacbc9675e7a1e41e27fb744a7f52"
+
+[[entry]]
+id = "beavrs-pin"
+category = "beavrs"
+recipe = "beavrs"
+source = "https://github.com/mit-crpg/BEAVRS@1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+licence = "MIT (mit-crpg/BEAVRS LICENSE)"
+tool = "OpenMC 0.16.0"
+deck = "beavrs-pin/geometry.xml"
+needs = ["beavrs"]
+expected = "accepted"
+note = "pin cell, 1.6% enriched fuel rod active region (extract-pin.ipynb)"
+
+[[entry.outputs]]
+path = "beavrs-pin/geometry.xml"
+sha256 = "8fb5f842a153e7e22062733032a478f3e344db6d8529e37c3d5fcac860930a1c"
+
+[[entry.outputs]]
+path = "beavrs-pin/materials.xml"
+sha256 = "775769d582f1526c1519f1aafc9348e0a23af281fb13a08b3fb4eef4069b0ca2"
+
+[[entry]]
+id = "beavrs-assembly"
+category = "beavrs"
+recipe = "beavrs"
+source = "https://github.com/mit-crpg/BEAVRS@1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+licence = "MIT (mit-crpg/BEAVRS LICENSE)"
+tool = "OpenMC 0.16.0"
+deck = "beavrs-assembly/geometry.xml"
+needs = ["beavrs"]
+expected = "accepted"
+note = "17x17 assembly 'Fuel 1.6% enr instr no BAs', full height (extract-assm.ipynb)"
+
+[[entry.outputs]]
+path = "beavrs-assembly/geometry.xml"
+sha256 = "696c18ac5c11c3ad5e4deb010e0144c3edf6498e764f15054e9e8434bc984613"
+
+[[entry.outputs]]
+path = "beavrs-assembly/materials.xml"
+sha256 = "c0f26d1efac89435de6afcf05d7fd8e0a0828f5975acb6e12c57a4f0db423a57"
+
+[[entry]]
+id = "beavrs-core-2d"
+category = "beavrs"
+recipe = "beavrs"
+source = "https://github.com/mit-crpg/BEAVRS@1ccae04dc3830a5977f08ed7f5f7e1e51ded0d22"
+licence = "MIT (mit-crpg/BEAVRS LICENSE)"
+tool = "OpenMC 0.16.0"
+deck = "beavrs-core-2d/geometry.xml"
+needs = ["beavrs"]
+expected = "error:flat-model-has-more-than"
+note = "2D core slice (make_beavrs.py --2d)"
+
+[[entry.outputs]]
+path = "beavrs-core-2d/geometry.xml"
+sha256 = "d240ea00daee2f6566bf2308c43c8bdb9b1607b2233323f0758aaba0787cdccd"
+
+[[entry.outputs]]
+path = "beavrs-core-2d/materials.xml"
+sha256 = "c9ae8dea3328b9e5383967d8e668ecefbd7504b4abeac8cd82ef7997153c27d3"
+
+[[entry]]
+id = "vtb-htgr-assembly"
+category = "vtb"
+recipe = "copy"
+source = "https://github.com/idaholab/virtual_test_bed@12c7e6dc46ed1fd9c7a5a1defc162eea028a4f37"
+licence = "CC-BY-4.0 (idaholab/virtual_test_bed LICENSE)"
+tool = "none (verbatim copy)"
+deck = "vtb-htgr-assembly/htgr/assembly/geometry.xml"
+fetch_paths = ["htgr/assembly/geometry.xml", "htgr/assembly/materials.xml"]
+expected = "unsupported:material-list"
+note = "HTGR assembly OpenMC deck (hex lattices)"
+
+[[entry.outputs]]
+path = "vtb-htgr-assembly/htgr/assembly/geometry.xml"
+sha256 = "7863a6c348615ad94b9b867eeadd7f7f9b93ad651ac8dcc2f272795295ef032d"
+
+[[entry.outputs]]
+path = "vtb-htgr-assembly/htgr/assembly/materials.xml"
+sha256 = "90cec7042b546af66769fe3d3307c48a978633b4ae726aaa0775dfb2ee9a8cc5"
+
+[[entry]]
+id = "vtb-startr-openmc"
+category = "vtb"
+recipe = "copy"
+source = "https://github.com/idaholab/virtual_test_bed@12c7e6dc46ed1fd9c7a5a1defc162eea028a4f37"
+licence = "CC-BY-4.0 (idaholab/virtual_test_bed LICENSE)"
+tool = "none (verbatim copy)"
+deck = "vtb-startr-openmc/microreactors/STARTR/OpenMC/geometry.xml"
+fetch_paths = ["microreactors/STARTR/OpenMC/geometry.xml", "microreactors/STARTR/OpenMC/materials.xml"]
+expected = "unsupported:hex_lattice"
+note = "STARTR microreactor OpenMC deck (hex lattices)"
+
+[[entry.outputs]]
+path = "vtb-startr-openmc/microreactors/STARTR/OpenMC/geometry.xml"
+sha256 = "deba6eafeff76ea9c84cdf2ff101c1c57dd02b2b324b6494ae1b163e41e6d3e4"
+
+[[entry.outputs]]
+path = "vtb-startr-openmc/microreactors/STARTR/OpenMC/materials.xml"
+sha256 = "b5886e1a1b908dcd58adf9e5a814b79553ddb02764551d675c48fce903d719dc"
+
+[[entry]]
+id = "vtb-sefor-core-mesh"
+category = "vtb"
+recipe = "copy"
+source = "https://github.com/idaholab/virtual_test_bed@12c7e6dc46ed1fd9c7a5a1defc162eea028a4f37"
+licence = "CC-BY-4.0 (idaholab/virtual_test_bed LICENSE)"
+tool = "none (verbatim copy)"
+fetch_paths = ["sfr/sefor/Mesh/Mesh_Core-I-E_3D_450K.i"]
+note = "SEFOR SFR core: MOOSE reactor-module mesh input (hex patterns)"
+
+[[entry.outputs]]
+path = "vtb-sefor-core-mesh/sfr/sefor/Mesh/Mesh_Core-I-E_3D_450K.i"
+sha256 = "c66617a17367d9e90ad9183b311c82f39ad9d7c811e176cac1aca097dc2586a2"
+
+[[entry]]
+id = "step-clean-pin"
+category = "step-clean"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = []
+expected_basis = "no findings expected"
+note = "bare pin, cylinder r 0.475 L 10"
+
+[[entry.outputs]]
+path = "step-clean-pin/step-clean-pin.step"
+sha256 = "67a67d9034b3a7051a933e691171877538c234eb72e65d0deb1e95ad362f6db2"
+
+[[entry]]
+id = "step-clean-cladded-pin"
+category = "step-clean"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = []
+expected_basis = "no findings expected"
+note = "clad tube with end plugs around a fuel stack and plenum"
+
+[[entry.outputs]]
+path = "step-clean-cladded-pin/step-clean-cladded-pin.step"
+sha256 = "658ed812ce81e25e3d8b9ba3b83be177f7192c2504108cb91971dc1a0a4445f5"
+
+[[entry]]
+id = "step-clean-assembly-can"
+category = "step-clean"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = []
+expected_basis = "no findings expected"
+note = "square assembly can"
+
+[[entry.outputs]]
+path = "step-clean-assembly-can/step-clean-assembly-can.step"
+sha256 = "f4f751dca076b658ca64be96d937bcfacb27633ebe005c5a29c8ed1b86568d41"
+
+[[entry]]
+id = "step-clean-grid-spacer"
+category = "step-clean"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = []
+expected_basis = "no findings expected"
+note = "grid-spacer-like plate with 3x3 round holes"
+
+[[entry.outputs]]
+path = "step-clean-grid-spacer/step-clean-grid-spacer.step"
+sha256 = "463940f2641f06c91fbe271fb458add99576d7a35a00b926a68c328efc7591ec"
+
+[[entry]]
+id = "step-dirty-notch"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["small_edge", "small_face"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "unit brick minus a 1e-4 corner cube (9 small edges, 3 small faces)"
+
+[[entry.outputs]]
+path = "step-dirty-notch/step-dirty-notch.step"
+sha256 = "a06ae8f1a6c134afec3f185cbc6e4359b9d31c02edead2a62467e66f36a18569"
+
+[[entry]]
+id = "step-dirty-step"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["small_edge", "sliver_face"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "two unit bricks offset 1e-4 in x, fused (sliver faces)"
+
+[[entry.outputs]]
+path = "step-dirty-step/step-dirty-step.step"
+sha256 = "671bddd93da405f6e1a4ff5cd3863c0f630da20669890793460632d2fcf0f88c"
+
+[[entry]]
+id = "step-dirty-gap"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["gap_near"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "two unit bricks 1e-5 apart"
+
+[[entry.outputs]]
+path = "step-dirty-gap/step-dirty-gap.step"
+sha256 = "15acf069d2f05599e13a75cde21840197555b9cac8f858297f614489f49c80cf"
+
+[[entry]]
+id = "step-dirty-open-shell"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["open_shell"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "unit brick shell, one face removed"
+
+[[entry.outputs]]
+path = "step-dirty-open-shell/step-dirty-open-shell.step"
+sha256 = "ba65ed765082284f222b262bbb0ed4d28217e8b43f8eadfe65d5905591d1311d"
+
+[[entry]]
+id = "step-dirty-small-hole"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["small_hole"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "plate 1x1x0.1 with a through hole r 1e-3"
+
+[[entry.outputs]]
+path = "step-dirty-small-hole/step-dirty-small-hole.step"
+sha256 = "e48c5601825eae0370abab98ec09d365899738bd5081fa75560d1ef5af82823e"
+
+[[entry]]
+id = "step-dirty-fillet"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["blend_candidate"]
+expected_basis = "vtopo.md T3 acceptance"
+note = "unit brick, one edge rounded r 0.1"
+
+[[entry.outputs]]
+path = "step-dirty-fillet/step-dirty-fillet.step"
+sha256 = "cc7af1f67aa840864dcbc79d443658a460655fee7f9c36362be4017419c17090"
+
+[[entry]]
+id = "step-dirty-tol-edge"
+category = "step-dirty"
+recipe = "step"
+source = "smart-mesh tools/refcorpus/gen_step.py"
+licence = "MIT (smart-mesh)"
+tool = "FreeCAD 1.1.4 20260928"
+expected = ["gap_near", "open_shell"]
+expected_basis = "design estimate, no T3 fixture for this defect; BOOL-HEAL-A confirms or corrects"
+note = "unsewn brick faces, +x face displaced 5e-5 (edges mismatch within a 1e-4 tolerance)"
+
+[[entry.outputs]]
+path = "step-dirty-tol-edge/step-dirty-tol-edge.step"
+sha256 = "d252b62ed4ce92c77a3ac532ba524395f17552656c5e4717e319984c5331ed9c"
+
+[[entry]]
+id = "moose-sefor-mesh"
+category = "moose"
+recipe = "moose"
+source = "https://github.com/idaholab/virtual_test_bed@12c7e6dc46ed1fd9c7a5a1defc162eea028a4f37"
+licence = "CC-BY-4.0 (idaholab/virtual_test_bed LICENSE)"
+tool = "MOOSE reactor module (SM_MOOSE_EXE)"
+optional = true
+fetch_paths = ["sfr/sefor/Mesh/Mesh_Core-I-E_3D_450K.i"]
+note = "optional: reference Exodus mesh from the SEFOR mesh input, per os-arch, only with a MOOSE executable"
+
+[[entry.outputs]]
+path = "moose-sefor-mesh/mesh.e"
+sha256 = ""
