@@ -11,6 +11,7 @@ mod error;
 mod op;
 pub mod partition;
 pub mod quadric;
+pub mod reuse;
 
 pub use error::CsgbrepError;
 pub use op::{ImportOpenmc, OpenmcOptions, OverlapMode};

@@ -97,3 +97,38 @@ pub fn placed_cylinder(t: [f64; 3], rot: Option<&str>, r: f64) -> String {
     s.push_str("</geometry>\n");
     s
 }
+
+/// `n x n` lattice of two pin universes in a checkerboard (universe 10 where `i + j` is even,
+/// 11 where it is odd), each with fuel, gap and clad circles (radii `ra` and `rb`) and a
+/// moderator; pitch `p`, height `h`, vacuum on the container box; `outer` as in [`pin_lattice`].
+pub fn mixed_lattice(n: usize, p: f64, ra: (f64, f64, f64), rb: (f64, f64, f64), h: f64, outer: bool) -> String {
+    let half = n as f64 * p / 2.0;
+    let m = if outer { half + p / 2.0 } else { half };
+    // Rows are written top to bottom (the reader reverses OpenMC's row order); a checkerboard
+    // is symmetric enough that the parity of `i + j` is what matters for the volumes.
+    let rows: Vec<String> = (0..n).map(|r| (0..n).map(|c| if (r + c) % 2 == 0 { "10" } else { "11" }).collect::<Vec<_>>().join(" ")).collect();
+    let mut s = String::from("<?xml version='1.0' encoding='UTF-8'?>\n<geometry>\n");
+    s.push_str("  <cell id=\"1\" fill=\"20\" region=\"11 -12 13 -14 15 -16\" universe=\"0\"/>\n");
+    for (u, base) in [(10, 1), (11, 4)] {
+        s.push_str(&format!("  <cell id=\"{}\" material=\"1\" region=\"-{}\" universe=\"{u}\"/>\n", u * 10, base));
+        s.push_str(&format!("  <cell id=\"{}\" material=\"void\" region=\"{} -{}\" universe=\"{u}\"/>\n", u * 10 + 1, base, base + 1));
+        s.push_str(&format!("  <cell id=\"{}\" material=\"2\" region=\"{} -{}\" universe=\"{u}\"/>\n", u * 10 + 2, base + 1, base + 2));
+        s.push_str(&format!("  <cell id=\"{}\" material=\"3\" region=\"{}\" universe=\"{u}\"/>\n", u * 10 + 3, base + 2));
+    }
+    if outer {
+        s.push_str("  <cell id=\"900\" material=\"4\" universe=\"30\"/>\n");
+    }
+    s.push_str(&format!("  <lattice id=\"20\">\n    <pitch>{p} {p}</pitch>\n"));
+    if outer {
+        s.push_str("    <outer>30</outer>\n");
+    }
+    s.push_str(&format!("    <dimension>{n} {n}</dimension>\n    <lower_left>{} {}</lower_left>\n    <universes>\n{}\n</universes>\n  </lattice>\n", -half, -half, rows.join("\n")));
+    for (id, r) in [(1, ra.0), (2, ra.1), (3, ra.2), (4, rb.0), (5, rb.1), (6, rb.2)] {
+        s.push_str(&format!("  <surface id=\"{id}\" type=\"z-cylinder\" coeffs=\"0.0 0.0 {r}\"/>\n"));
+    }
+    for (id, ty, c) in [(11, "x-plane", -m), (12, "x-plane", m), (13, "y-plane", -m), (14, "y-plane", m), (15, "z-plane", -h / 2.0), (16, "z-plane", h / 2.0)] {
+        s.push_str(&format!("  <surface id=\"{id}\" type=\"{ty}\" boundary=\"vacuum\" coeffs=\"{c}\"/>\n"));
+    }
+    s.push_str("</geometry>\n");
+    s
+}

@@ -121,13 +121,9 @@ fn lattice_3x3_has_4n_volumes_and_deck_index_tags() {
     close("gap", by_name["void"], 9.0 * PI * (r2 * r2 - r1 * r1) * 2.0, 1e-9);
     close("moderator", by_name["m3"], 9.0 * (1.26 * 1.26 - PI * r3 * r3) * 2.0, 1e-9);
     let p = diag(&d, "import.partition");
-    println!("3x3: {p:?}");
-    // The kernel cuts of the flat partition: 3 circles per element, plus the interior lattice
-    // planes (n - 1 x-planes cut the box into strips, n - 1 y-planes cut each strip). The box
-    // planes coincide with the box faces and only report a side (a webcut call, no cut).
-    let n = 3;
-    let want = 3 * n * n + (n - 1) + (n - 1) * n;
-    assert!(p[0].starts_with(&format!("{want} kernel cuts")), "{p:?}");
+    // One prototype element per distinct universe (D4): its 3 circles are the only kernel cuts.
+    // The flat partition (`reuse_lattices: false`) is pinned in `tests/reuse.rs`.
+    assert!(p[0].starts_with("3 kernel cuts in"), "{p:?}");
 }
 
 #[test]
@@ -238,13 +234,14 @@ fn overlaps_fail_by_default_and_are_kept_by_the_first_on_request() {
 }
 
 #[test]
-#[ignore = "slow in debug (about 30 s); run with --ignored"]
 fn lattice_17x17_imports() {
     let mut r = Rig::new();
     let t = std::time::Instant::now();
     let d = r.import(&pin_lattice(17, 1.26, (0.4096, 0.418, 0.475), 2.0, false), Some(&materials(4))).unwrap();
     println!("17x17: {:?} in {:.1}s", diag(&d, "import.partition"), t.elapsed().as_secs_f64());
     assert_eq!(d.outputs["deck_volumes"].len(), 4 * 289);
+    // One prototype element: 3 circles, 288 copies in 1 + 17 calls' worth of slots.
+    assert!(diag(&d, "import.partition")[0].starts_with("3 kernel cuts in"), "{:?}", diag(&d, "import.partition"));
     check_tags(&r, &d, "lat20", [17, 17, 1], 0);
 }
 

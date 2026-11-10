@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::deck::{Origin, PSurf, Placed};
+use crate::deck::{Origin, PCell, PSurf, Placed};
 use crate::error::CsgbrepError;
 use sm_boolean::{BoolOptions, BoolRule, BooleanError, CutTool, WebcutOptions, boolean, webcut};
 use sm_core::{EntityId, Point3};
@@ -59,7 +59,29 @@ pub struct Stats {
     pub pieces: usize,
     /// Unions of same-cell pieces.
     pub unions: usize,
+    /// Kernel cuts made while building lattice prototypes (the rest are in the remainder).
+    pub proto_cuts: usize,
+    /// Prototype copies placed (`model.copy` calls with their slots).
+    pub copies: usize,
+    /// Imprint calls between a remainder volume and a lattice element.
+    pub imprints: usize,
+    /// Cells merged (vertices, edges and faces) after the copies.
+    pub merged: usize,
 }
+
+impl Stats {
+    /// Add the counters of a sub-build.
+    pub fn absorb(&mut self, o: &Stats) {
+        self.cut_calls += o.cut_calls;
+        self.cuts += o.cuts;
+        self.pieces += o.pieces;
+        self.unions += o.unions;
+    }
+}
+
+/// A box `[lo, hi]` of space that a build must leave empty (a lattice array that is filled by
+/// copies of prototypes instead).
+pub type Reserved = ([f64; 3], [f64; 3]);
 
 /// One final volume of the build.
 #[derive(Clone, Debug)]
@@ -77,18 +99,20 @@ pub struct Vol {
 pub struct Built {
     /// The final volumes.
     pub vols: Vec<Vol>,
-    /// Exterior faces on boundary-flagged surfaces: vacuum, reflective and white (ascending).
-    pub boundary_faces: [Vec<EntityId>; 3],
     /// Findings.
     pub notes: Vec<Note>,
     /// Counters.
     pub stats: Stats,
     /// The start box `[lo, hi]` the model was cut from.
     pub start: ([f64; 3], [f64; 3]),
+    /// Exterior faces on boundary-flagged surfaces: vacuum, reflective and white (ascending).
+    /// Filled by [`build`] and by the op after the copies are merged; empty from
+    /// [`build_subset`].
+    pub boundary_faces: [Vec<EntityId>; 3],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tri {
+pub(crate) enum Tri {
     T,
     F,
     U,
@@ -102,9 +126,9 @@ fn not(t: Tri) -> Tri {
     }
 }
 
-type Signs = BTreeMap<u32, bool>;
+pub(crate) type Signs = BTreeMap<u32, bool>;
 
-fn eval(e: &Expr, s: &Signs) -> Tri {
+pub(crate) fn eval(e: &Expr, s: &Signs) -> Tri {
     match e {
         Expr::Half(id, sign) => match s.get(id) {
             Some(&pos) => {
@@ -142,7 +166,7 @@ fn eval(e: &Expr, s: &Signs) -> Tri {
     }
 }
 
-fn surfaces_in(e: &Expr, out: &mut BTreeSet<u32>) {
+pub(crate) fn surfaces_in(e: &Expr, out: &mut BTreeSet<u32>) {
     match e {
         Expr::Half(s, _) => {
             out.insert(*s);
@@ -188,11 +212,11 @@ fn volume_of_body(topo: &dyn TopoHost, body: EntityId) -> Option<EntityId> {
 
 /// The start box `[lo, hi]`: the hull of the cell bounds, enlarged by 10% on every side that is
 /// not an axis-aligned deck plane (a curved extreme would otherwise be tangent to a box face).
-fn start_box(placed: &Placed, opts: &BuildOptions) -> Result<([f64; 3], [f64; 3]), CsgbrepError> {
+fn start_box(placed: &Placed, ids: &[usize], opts: &BuildOptions) -> Result<([f64; 3], [f64; 3]), CsgbrepError> {
     if let Some(b) = opts.bounds {
         return Ok(b);
     }
-    let b = placed.bounds();
+    let b = placed.bounds_of_cells(ids);
     if !b.finite() {
         return Err(CsgbrepError::Unbounded(format!("the bounds derived from the cells are {:?} to {:?}; give `options.bounds`", b.lo, b.hi)));
     }
@@ -249,14 +273,29 @@ fn flag_slot(f: BoundaryFlag) -> Option<usize> {
 /// `Unbounded` when no finite box exists, `Overlap` under the default policy, `Kernel` when a cut
 /// or union is refused (the message names the deck surface).
 pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> Result<Built, CsgbrepError> {
-    let (lo, hi) = start_box(placed, opts)?;
+    let ids: Vec<usize> = (0..placed.cells.len()).collect();
+    let mut b = build_subset(topo, placed, &ids, &[], opts)?;
+    b.boundary_faces = boundary_faces(topo, placed, &b.vols);
+    Ok(b)
+}
+
+/// As [`build`], for the cells `ids` only (indices of [`Placed::cells`], ascending). A piece no
+/// cell owns inside a `reserved` box is dropped silently; a piece a cell owns there is an overlap
+/// with the lattice that fills the box (an error, or dropped under a non-default policy).
+/// `Vol::cell` is the index in [`Placed::cells`].
+///
+/// # Errors
+/// As [`build`].
+pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], reserved: &[Reserved], opts: &BuildOptions) -> Result<Built, CsgbrepError> {
+    let cells: Vec<&PCell> = ids.iter().map(|&i| &placed.cells[i]).collect();
+    let (lo, hi) = start_box(placed, ids, opts)?;
     let size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     let b = brick(topo, Point3::new(lo[0], lo[1], lo[2]), size).map_err(topo_err)?;
     let mut out = Built { start: (lo, hi), ..Built::default() };
 
     // One-sided flagged surfaces: the unused side is outside the model.
     let mut used = BTreeMap::new();
-    for c in &placed.cells {
+    for c in &cells {
         sides_used(&c.expr, false, &mut used);
     }
     let outside: Vec<(u32, bool)> = used
@@ -270,7 +309,7 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
     queue.push_back(Piece { body: b.body, signs: Signs::new() });
     let mut done: Vec<(Piece, Vec<usize>)> = Vec::new();
     while let Some(piece) = queue.pop_front() {
-        let tri: Vec<Tri> = placed.cells.iter().map(|c| eval(&c.expr, &piece.signs)).collect();
+        let tri: Vec<Tri> = cells.iter().map(|c| eval(&c.expr, &piece.signs)).collect();
         let owners: Vec<usize> = (0..tri.len()).filter(|&i| tri[i] == Tri::T).collect();
         let unknown: Vec<usize> = (0..tri.len()).filter(|&i| tri[i] == Tri::U).collect();
         if unknown.is_empty() {
@@ -279,7 +318,7 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
         }
         let mut open = BTreeSet::new();
         for &i in &unknown {
-            surfaces_in(&placed.cells[i].expr, &mut open);
+            surfaces_in(&cells[i].expr, &mut open);
         }
         open.retain(|s| !piece.signs.contains_key(s));
         // The first surface whose side changes some candidate's value; else the first open one.
@@ -288,7 +327,7 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
             let (mut a, mut c) = (piece.signs.clone(), piece.signs.clone());
             a.insert(s, true);
             c.insert(s, false);
-            if unknown.iter().any(|&i| eval(&placed.cells[i].expr, &a) != eval(&placed.cells[i].expr, &c)) {
+            if unknown.iter().any(|&i| eval(&cells[i].expr, &a) != eval(&cells[i].expr, &c)) {
                 pick = Some(s);
                 break;
             }
@@ -319,8 +358,23 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
     for (piece, owners) in done {
         let vol = volume_of_body(topo, piece.body).ok_or_else(|| CsgbrepError::Invalid("a piece has no volume".into()))?;
         let moments = topo.volume_moments(vol).map_err(topo_err)?;
+        let in_reserved = |c: Option<Point3>| c.is_some_and(|c| reserved.iter().any(|(rl, rh)| (0..3).all(|a| [c.x, c.y, c.z][a] > rl[a] && [c.x, c.y, c.z][a] < rh[a])));
+        let in_array = in_reserved(moments.centroid());
         match owners.as_slice() {
+            [c] if in_array => {
+                // A cell of the remainder reaches into the array a lattice fills: an overlap.
+                let name = cells[*c].origin.to_string();
+                match opts.overlap {
+                    OverlapPolicy::Error => return Err(CsgbrepError::Overlap { a: name, b: "the lattice array".into(), volume: moments.volume }),
+                    OverlapPolicy::Report => out.notes.push(Note { code: "import.overlap", message: format!("cell {name} overlaps the lattice array in a piece of volume {:e}; kept by the lattice", moments.volume) }),
+                    OverlapPolicy::FirstWins => {}
+                }
+                topo.kill_cascade(piece.body).map_err(topo_err)?;
+            }
             [c] => keep.entry(*c).or_default().push(piece.body),
+            [] if in_array => {
+                topo.kill_cascade(piece.body).map_err(topo_err)?;
+            }
             [] => {
                 let beyond = outside.iter().any(|(s, side)| piece.signs.get(s) == Some(side));
                 let centre = moments.centroid();
@@ -331,7 +385,7 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
                 topo.kill_cascade(piece.body).map_err(topo_err)?;
             }
             [a, rest @ ..] => {
-                let (na, nb) = (placed.cells[*a].origin.to_string(), placed.cells[rest[0]].origin.to_string());
+                let (na, nb) = (cells[*a].origin.to_string(), cells[rest[0]].origin.to_string());
                 match opts.overlap {
                     OverlapPolicy::Error => return Err(CsgbrepError::Overlap { a: na, b: nb, volume: moments.volume }),
                     OverlapPolicy::Report => out.notes.push(Note { code: "import.overlap", message: format!("cells {na} and {nb} overlap in a piece of volume {:e}; kept by the first", moments.volume) }),
@@ -369,10 +423,10 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
             }
             let mut cur = bodies[order[0]];
             for &j in &order[1..] {
-                let r = boolean(topo, BoolRule::Unite, &[cur], &[bodies[j]], &BoolOptions::default()).map_err(|e| kernel(&format!("uniting the pieces of cell {}", placed.cells[cell].origin), e))?;
+                let r = boolean(topo, BoolRule::Unite, &[cur], &[bodies[j]], &BoolOptions::default()).map_err(|e| kernel(&format!("uniting the pieces of cell {}", cells[cell].origin), e))?;
                 match r.bodies.as_slice() {
                     [one] => cur = *one,
-                    other => return Err(CsgbrepError::Kernel(format!("uniting the pieces of cell {} gave {} bodies", placed.cells[cell].origin, other.len()))),
+                    other => return Err(CsgbrepError::Kernel(format!("uniting the pieces of cell {} gave {} bodies", cells[cell].origin, other.len()))),
                 }
                 out.stats.unions += 1;
             }
@@ -382,14 +436,22 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
     finals.sort_unstable();
     for (body, cell) in finals {
         let volume = volume_of_body(topo, body).ok_or_else(|| CsgbrepError::Invalid("a result has no volume".into()))?;
-        out.vols.push(Vol { volume, body, cell });
+        out.vols.push(Vol { volume, body, cell: ids[cell] });
     }
+    Ok(out)
+}
+
+/// Exterior faces of `vols` on boundary-flagged surfaces: vacuum, reflective and white
+/// (ascending). A face is exterior when exactly one volume uses it, so call this after the
+/// copies of a lattice are merged.
+pub fn boundary_faces(topo: &dyn TopoHost, placed: &Placed, vols: &[Vol]) -> [Vec<EntityId>; 3] {
+    let mut out: [Vec<EntityId>; 3] = Default::default();
 
     // ---- exterior faces on flagged surfaces ----
     let tol = 10.0 * topo.tolerance().linear;
     let flagged: Vec<(usize, &SurfaceDef)> = placed.surfaces.iter().filter_map(|s| flag_slot(s.flag).map(|k| (k, &s.def))).collect();
     let mut seen_faces = BTreeSet::new();
-    for v in &out.vols {
+    for v in vols {
         for &f in topo.volume_faces(v.volume) {
             if !seen_faces.insert(f) {
                 continue;
@@ -401,17 +463,43 @@ pub fn build(topo: &mut dyn TopoHost, placed: &Placed, opts: &BuildOptions) -> R
             let Carrier::Surface(sc) = topo.carrier(f) else { continue };
             let Some(def) = topo.shapes().surface_def(sc.surface) else { continue };
             if let Some((k, _)) = flagged.iter().find(|(_, d)| same_surface(def, d, tol)) {
-                out.boundary_faces[*k].push(f);
+                out[*k].push(f);
             }
         }
     }
-    for l in &mut out.boundary_faces {
+    for l in &mut out {
         l.sort_unstable();
     }
-    Ok(out)
+    out
 }
 
 /// Deck origin of a volume, for messages.
 pub fn origin_of<'a>(placed: &'a Placed, v: &Vol) -> &'a Origin {
     &placed.cells[v.cell].origin
+}
+
+/// True when the point `p` is in the region `e` (every surface it uses must be a plane or a
+/// cylinder; on a surface counts as the negative side).
+pub(crate) fn contains(placed: &Placed, e: &Expr, p: [f64; 3]) -> bool {
+    let mut ids = BTreeSet::new();
+    surfaces_in(e, &mut ids);
+    let mut signs = Signs::new();
+    for s in ids {
+        let v = match &placed.surfaces[s as usize].def {
+            SurfaceDef::Plane(pl) => {
+                let (o, n) = (pl.frame.origin, pl.frame.z);
+                (p[0] - o.x) * n.x + (p[1] - o.y) * n.y + (p[2] - o.z) * n.z
+            }
+            SurfaceDef::Cylinder(c) => {
+                let (o, z) = (c.frame.origin, c.frame.z);
+                let d = [p[0] - o.x, p[1] - o.y, p[2] - o.z];
+                let t = d[0] * z.x + d[1] * z.y + d[2] * z.z;
+                let r = [d[0] - t * z.x, d[1] - t * z.y, d[2] - t * z.z];
+                (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt() - c.radius
+            }
+            _ => 0.0,
+        };
+        signs.insert(s, v > 0.0);
+    }
+    eval(e, &signs) == Tri::T
 }

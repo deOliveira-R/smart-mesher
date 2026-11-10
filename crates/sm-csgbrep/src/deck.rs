@@ -99,6 +99,10 @@ pub struct LatticePlacement {
     pub parents_differ: bool,
     /// The placement carries a rotation (or other non-translation).
     pub rotated: bool,
+    /// The universe of each element, `[i + nx * (j + ny * k)]` (deck order).
+    pub universes: Vec<u32>,
+    /// The parent clips (region parts of the enclosing cells) of the first placement.
+    pub clips: Vec<Expr>,
 }
 
 /// The placed deck.
@@ -340,7 +344,7 @@ impl Placer<'_> {
         Ok(())
     }
 
-    fn note_lattice(&mut self, id: u32, lat: &Lattice, t: &Transform) {
+    fn note_lattice(&mut self, id: u32, lat: &Lattice, t: &Transform, clips: &[Expr]) {
         let parent = self.lattice_stack.last().copied();
         let rotated = !is_translation(t);
         match self.lattices.get_mut(&id) {
@@ -352,7 +356,7 @@ impl Placer<'_> {
             }
             None => {
                 let geometry = LatticeGeom { dims: lat.dims, pitch: lat.pitch, lower_left: lat.lower_left };
-                self.lattices.insert(id, LatticePlacement { geometry, id, xf: *t, parent, placements: 1, parents_differ: false, rotated });
+                self.lattices.insert(id, LatticePlacement { geometry, id, xf: *t, parent, placements: 1, parents_differ: false, rotated, universes: lat.universes.clone(), clips: clips.to_vec() });
             }
         }
     }
@@ -361,7 +365,7 @@ impl Placer<'_> {
         if self.lattice_stack.contains(&lid) {
             return Err(CsgbrepError::Invalid(format!("lattice {lid} contains itself")));
         }
-        self.note_lattice(lid, lat, t);
+        self.note_lattice(lid, lat, t, clips);
         self.lattice_stack.push(lid);
         let [nx, ny, nz] = lat.dims;
         let bound = |a: usize| lat.pitch[a].is_finite();
@@ -551,7 +555,11 @@ pub fn place(ir: &CsgIr, material_names: &BTreeMap<u32, String>, max_cells: usiz
         })
         .collect();
     cells.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.origin.cmp(&b.2.origin)));
-    Ok(Placed { surfaces, cells: cells.into_iter().map(|c| c.2).collect(), lattices: p.lattices.into_values().collect() })
+    let mut lattices: Vec<LatticePlacement> = p.lattices.into_values().collect();
+    for l in &mut lattices {
+        l.clips = l.clips.iter().map(|e| remap(e, &renum)).collect();
+    }
+    Ok(Placed { surfaces, cells: cells.into_iter().map(|c| c.2).collect(), lattices })
 }
 
 /// Axis-aligned bounds of a region with the provenance of each side.
@@ -662,9 +670,15 @@ pub fn bounds_of(e: &Expr, surfaces: &[PSurf]) -> Bounds {
 impl Placed {
     /// The hull of every cell's bounds.
     pub fn bounds(&self) -> Bounds {
+        let ids: Vec<usize> = (0..self.cells.len()).collect();
+        self.bounds_of_cells(&ids)
+    }
+
+    /// The hull of the bounds of the cells `ids`.
+    pub fn bounds_of_cells(&self, ids: &[usize]) -> Bounds {
         let mut b = Bounds::NONE;
-        for c in &self.cells {
-            b.join(&bounds_of(&c.expr, &self.surfaces));
+        for &i in ids {
+            b.join(&bounds_of(&self.cells[i].expr, &self.surfaces));
         }
         b
     }

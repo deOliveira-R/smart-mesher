@@ -20,6 +20,7 @@ sm-layer-api = { path = "../sm-layer-api" }
 sm-csgio = { path = "../sm-csgio" }
 sm-boolean = { path = "../sm-boolean" }
 sm-fem = { path = "../sm-fem" }
+sm-model = { path = "../sm-model" }
 sm-cadio = { path = "../sm-cadio" }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
@@ -27,7 +28,6 @@ base64 = "0.22"
 thiserror = "2"
 
 [dev-dependencies]
-sm-model = { path = "../sm-model" }
 sm-topo = { path = "../sm-topo" }
 serde_json = "1"
 sm-server = { path = "../sm-server" }
