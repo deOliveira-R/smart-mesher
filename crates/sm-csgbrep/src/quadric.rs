@@ -29,7 +29,7 @@ pub struct DeckSurface {
 #[non_exhaustive]
 pub enum ClassifyError {
     /// A valid quadric of a kind that is not built (ellipsoid, paraboloid, hyperboloid, ...).
-    #[error("unsupported quadric, surface {} {}: {what}", .surface.id, line_note(.surface))]
+    #[error("unsupported quadric, surface {}{}: {what}", .surface.id, line_note(.surface))]
     Unsupported {
         /// The deck surface.
         surface: DeckSurface,
@@ -37,7 +37,7 @@ pub enum ClassifyError {
         what: String,
     },
     /// The coefficients are not finite, or a surface constructor refused the result.
-    #[error("invalid quadric, surface {} {}: {what}", .surface.id, line_note(.surface))]
+    #[error("invalid quadric, surface {}{}: {what}", .surface.id, line_note(.surface))]
     Invalid {
         /// The deck surface.
         surface: DeckSurface,
@@ -47,7 +47,7 @@ pub enum ClassifyError {
 }
 
 fn line_note(s: &DeckSurface) -> String {
-    s.line.map(|l| format!("(line {l})")).unwrap_or_default()
+    s.line.map(|l| format!(" (line {l})")).unwrap_or_default()
 }
 
 /// The result of classifying a quadric.
@@ -132,15 +132,32 @@ pub fn classify(q: &Quadric, at: DeckSurface) -> Result<Classified, ClassifyErro
 
 /// Classify the quadric `q` (written `f = x^T Q x + l.x + k`) into exact parametric surfaces.
 ///
+/// The coefficients are first divided by a power of two near `max|coeff|` (exact, no bit is
+/// lost), so the Jacobi stop test and the tolerances below hold at any magnitude: a cylinder
+/// scaled by 1e-200 or a sphere scaled by 1e200 classify like the unscaled ones.
+///
 /// `tol` is relative: an eigenvalue is zero when `|lambda| <= tol * max|lambda|`, two are equal
 /// when they differ by at most `tol` times the larger, and the completed-square constant is zero
 /// when it is at most `tol` times the size of its terms. A quadric with all quadratic
 /// coefficients exactly zero is a plane (no unit-free test exists for "nearly zero").
+///
+/// Two limits of the relative tests, both fail-safe (a refusal, never a wrong surface):
+/// - `k_zero` is relative only to the translation terms `k` and `l_i^2 / (4 lambda_i)`. For a
+///   quadric centred at the world origin those terms are absent (`kp == k`), so a cone written
+///   with round-off `1e-15` in `k` has `kscale == |k|` and is refused as a hyperboloid.
+/// - The radius to offset ratio has an effective floor of about `3e-5`: a cylinder of radius
+///   `1e-3` at offset `1e4` is refused as a "degenerate cylinder" (`kp` falls below `tol` times
+///   the size of the cancelling terms).
 pub fn classify_with_tol(q: &Quadric, at: DeckSurface, tol: f64) -> Result<Classified, ClassifyError> {
     if q.coeffs.iter().any(|c| !c.is_finite()) {
         return Err(ClassifyError::Invalid { surface: at, what: "coefficients are not finite".into() });
     }
-    let [a, b, c, d, e, f, g, h, j, k] = q.coeffs;
+    let m = q.coeffs.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    // Exact power-of-two normalisation in two halves, so a subnormal maximum does not overflow.
+    let ex = if m > 0.0 { m.log2().floor() as i32 } else { 0 };
+    let (e1, e2) = (ex / 2, ex - ex / 2);
+    let sc = |c: f64| c * 2f64.powi(-e1) * 2f64.powi(-e2);
+    let [a, b, c, d, e, f, g, h, j, k] = q.coeffs.map(sc);
     let lin = V::new(g, h, j);
     let (lam, vecs) = jacobi([[a, d / 2.0, f / 2.0], [d / 2.0, b, e / 2.0], [f / 2.0, e / 2.0, c]]);
     let lmax = lam.iter().fold(0.0_f64, |m, l| m.max(l.abs()));
@@ -449,6 +466,32 @@ mod tests {
             assert!(msg.contains(name), "{name}: {msg}");
             assert!(msg.contains("surface 7") && msg.contains("line 12") && msg.contains("eigenvalues"), "{name}: {msg}");
         }
+    }
+
+    #[test]
+    fn extreme_magnitudes_classify_like_unit_ones() {
+        let fr = Frame::from_z(Point3::new(1.0, 2.0, 3.0), V::new(1.0, 2.0, 2.0)).unwrap();
+        for e in [-1000, -200, -30, 30, 200, 1000] {
+            let s = 2f64.powi(e / 2) * 2f64.powi(e - e / 2);
+            let cy = classify(&scaled(Quadric::cylinder(&fr, 2.5), s), AT).unwrap();
+            let [SurfaceDef::Cylinder(c)] = cy.surfaces.as_slice() else { panic!("scale 2^{e}: not a cylinder") };
+            assert!(rel(c.radius, 2.5) < 1e-12, "scale 2^{e}");
+            let sp = classify(&scaled(Quadric::sphere(&fr, 1.5), s), AT).unwrap();
+            let [SurfaceDef::Sphere(c)] = sp.surfaces.as_slice() else { panic!("scale 2^{e}: not a sphere") };
+            assert!(rel(c.radius, 1.5) < 1e-12, "scale 2^{e}");
+        }
+        // The decimal magnitudes of the review finding.
+        assert!(matches!(classify(&scaled(Quadric::cylinder(&fr, 2.5), 1e-200), AT).unwrap().surfaces.as_slice(), [SurfaceDef::Cylinder(_)]));
+        assert!(matches!(classify(&scaled(Quadric::sphere(&fr, 2.5), 1e200), AT).unwrap().surfaces.as_slice(), [SurfaceDef::Sphere(_)]));
+    }
+
+    #[test]
+    fn error_text_has_no_stray_space_without_a_line() {
+        let q = Quadric::from_local(&Frame::at(Point3::new(0.0, 0.0, 0.0)), [1.0, 2.0, 3.0], [0.0; 3], -1.0);
+        let msg = classify(&q, DeckSurface { id: 7, line: None }).unwrap_err().to_string();
+        assert!(msg.starts_with("unsupported quadric, surface 7: ellipsoid"), "{msg}");
+        let msg = classify(&q, AT).unwrap_err().to_string();
+        assert!(msg.starts_with("unsupported quadric, surface 7 (line 12): ellipsoid"), "{msg}");
     }
 
     #[test]
