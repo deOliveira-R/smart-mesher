@@ -6,7 +6,7 @@ Base `1a76bc2`. Numbers are measured, not asserted (the table test is `#[ignore]
 
 ## Table
 
-Poly meshes are `mesh.to_poly` defaults (`Planar`, no agglomeration). Eligibility rates are on the source tet mesh.
+Poly meshes: the library rows (tet_block, warped) use `PolyOptions::new()` (`Planar`, no agglomeration, without `with_all_polyhedra(true)`); the CLI rows use the `mesh.to_poly` op, which sets `with_all_polyhedra(true)`, so hub-split share and faces/cell differ slightly between the two groups. Eligibility rates are on the source tet mesh.
 "convex" = all faces planar and no vertex outside a face plane (the `sm-rt` test without the face cap);
 "fast path" = convex and at most 64 faces; "over 64" = more than 64 faces; "convex over 64" = convex but over the cap
 (what raising `CONVEX_CHECK_MAX` would recover).

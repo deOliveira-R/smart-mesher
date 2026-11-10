@@ -133,7 +133,7 @@ fn count_chunk(m: &dyn MeshRead, k: usize, nf: usize, nc: usize) -> (usize, usiz
 /// * Outside circumcentres: for each tet, the exact side of the circumcentre against each of its
 ///   faces that lies on the model boundary or towards another region (different cell
 ///   classification). Only the tet's own faces are tested: a circumcentre that leaves through a
-///   facet of a different tet is not seen, which is exact for a locally convex region.
+///   facet of a different tet is not seen, so the count is a lower bound, not exact.
 ///
 /// Counts are sums over fixed chunks, so the result does not depend on the thread count.
 pub fn dual_eligibility(m: &dyn MeshRead) -> Option<DualEligibility> {
