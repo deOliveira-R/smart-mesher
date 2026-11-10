@@ -14,10 +14,10 @@ use sm_fem::{ExportFormat as FemFormat, ExportRequest, FemError};
 use sm_lang::{Host, HostError, QueryRelations, Relations, SessionCommand, TimelineCommand, TimelineHead};
 use sm_layer_api::MeshLayer;
 use sm_op_api::{Delta, Engine, Hash256, Head, OpRecord, Registry, Rev, State};
-use sm_protocol::{ExportFormat, ExportNote, ExportResult, ExportedFile, StatusResult};
+use sm_protocol::{ExportFormat, ExportNote, ExportSource, ExportResult, ExportedFile, StatusResult};
 
 use crate::b64;
-use crate::mesh_export;
+use crate::{mesh_export, model_export};
 use crate::error::{ServerError, SessionError};
 use crate::standard::InputsHandle;
 
@@ -53,6 +53,8 @@ pub struct ExportParams {
     pub wedge_patches: Vec<String>,
     /// OpenFOAM only: split warped faces into planar triangles (off by default).
     pub split_warped_faces: bool,
+    /// `Model`: facets from the B-rep, no volume mesh (DAGMC only; `mesh` must be absent).
+    pub source: ExportSource,
 }
 
 /// Adjacency from the registered `topo.related` query, owning a handle to the engine so the host
@@ -184,6 +186,17 @@ impl<'w> SessionHost<'w> {
             (None, Some(path)) => format_of(path)?,
             (None, None) => return Err(SessionError::bad_request("inline export needs an explicit `format`")),
         };
+        if p.source == ExportSource::Model {
+            if format != ExportFormat::Dagmc {
+                return Err(SessionError::new(
+                    "unsupported-source",
+                    format!("`source: model` is only available for `dagmc`, not `{}`", format_name(format)),
+                ));
+            }
+            if p.mesh.is_some() {
+                return Err(SessionError::bad_request("`mesh` does not apply to `source: model` (no volume mesh is used)"));
+            }
+        }
         let own = mesh_export::handles(format);
         let fem_format = match format {
             ExportFormat::Smsh => FemFormat::Smsh,
@@ -228,6 +241,10 @@ impl<'w> SessionHost<'w> {
             )));
         }
         let state = self.ws.state();
+        if p.source == ExportSource::Model {
+            let w = model_export::write_dagmc(state, p.options.as_ref())?;
+            return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);
+        }
         if own {
             let w = mesh_export::write(state, format, p.mesh, p.options.as_ref())?;
             return finish_file(path.as_deref(), format, &w.bytes, &w.notes, p.inline);

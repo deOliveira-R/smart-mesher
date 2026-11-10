@@ -284,6 +284,8 @@ mod opening_tests {
             "test.rendezvous"
         }
         fn register(&self, _: &mut Registry) -> Result<(), RegistryError> {
+            // `RegistryError` has no variant for a test-local failure and a new one is an `sm-op-api`
+            // ACR, so `BadOpName` stands in and carries the message (it is not a bad op name).
             self.0.send(()).map_err(|_| RegistryError::BadOpName("rendezvous: partner gone".into()))?;
             let rx = self.1.lock().unwrap_or_else(PoisonError::into_inner);
             rx.recv_timeout(Duration::from_secs(10)).map_err(|_| RegistryError::BadOpName("rendezvous: timed out".into()))
@@ -306,8 +308,18 @@ mod opening_tests {
         }
     }
 
+    /// `<target>/tmp`, found from the test executable (`<target>/<profile>/deps/<exe>`): unit
+    /// tests do not get `CARGO_TARGET_TMPDIR`. Falls back to the system temp dir.
+    fn target_tmp() -> PathBuf {
+        let exe = std::env::current_exe().unwrap_or_default();
+        match exe.ancestors().nth(3) {
+            Some(target) if target.join("CACHEDIR.TAG").exists() => target.join("tmp"),
+            _ => std::env::temp_dir(),
+        }
+    }
+
     fn scratch(tag: &str) -> Scratch {
-        let p = std::env::temp_dir().join(format!("sm-server-opening-{tag}-{}", std::process::id()));
+        let p = target_tmp().join(format!("sm-server-opening-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("scratch dir");
         Scratch(p)

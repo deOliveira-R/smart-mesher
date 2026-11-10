@@ -465,6 +465,8 @@ class Session:
         graveyard: bool | Mapping[str, float] | None = None,
         binary: bool | None = None,
         polyhedra: Literal["error", "decompose", "drop"] | None = None,
+        chord_tol: float | None = None,
+        source: Literal["mesh", "model"] | None = None,
         split_small_determinant: bool | None = None,
         split_warped_faces: bool = False,
         empty_patches: Sequence[str] = (),
@@ -472,15 +474,18 @@ class Session:
     ) -> ExportResult:
         """Export a mesh to `path` (format inferred from the extension) or inline (`.data`).
 
-        `options` is the per-format option object (`gmsh {binary, polyhedra}`, `dagmc {graveyard}`).
-        `graveyard`, `binary` and `polyhedra` are sugar merged into it; naming a key in both places
+        `options` is the per-format option object (`gmsh {binary, polyhedra}`,
+        `dagmc {graveyard, chord_tol}`). `graveyard`, `binary`, `polyhedra` and `chord_tol` are sugar
+        merged into it; naming a key in both places
         raises `ValueError` before any request. The OpenFOAM switches `split_small_determinant`,
         `split_warped_faces`, `empty_patches` and `wedge_patches` are top-level. The server validates
         per-format options and rejects options the format does not take (`SmartMeshError`).
+        `source="model"` (DAGMC only) faces the `.h5m` straight from the B-rep at `chord_tol`: no
+        mesh is needed and `mesh` must not be given; the default `"mesh"` exports a volume mesh.
         Every note with severity `warning` is also raised as an `ExportWarning`.
         """
         merged: dict[str, Any] = dict(options) if options is not None else {}
-        for key, val in (("graveyard", graveyard), ("binary", binary), ("polyhedra", polyhedra)):
+        for key, val in (("graveyard", graveyard), ("binary", binary), ("polyhedra", polyhedra), ("chord_tol", chord_tol)):
             if val is None:
                 continue
             if key in merged:
@@ -499,6 +504,8 @@ class Session:
             params["inline"] = True
         if merged:
             params["options"] = merged
+        if source is not None:
+            params["source"] = source
         if split_small_determinant is not None:
             params["split_small_determinant"] = split_small_determinant
         if split_warped_faces:

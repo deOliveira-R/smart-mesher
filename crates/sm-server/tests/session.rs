@@ -510,14 +510,18 @@ fn exodus_inline_exports_and_openfoam_inline_is_bad_request() {
 }
 
 #[test]
-fn source_model_is_unsupported_for_every_format() {
+fn source_model_is_unsupported_except_for_dagmc() {
     let dir = TempDir::new("srcmodel");
     let proj = dir.path().join("p");
     let mut s = Server::create(demo_builder(), &proj, "p").expect("create");
     apply(&mut s, "demo.add_hex", json!({"n": 1}));
-    for f in [ExportFormat::Smsh, ExportFormat::Vtu, ExportFormat::Exodus, ExportFormat::Openfoam, ExportFormat::Dagmc, ExportFormat::Gmsh, ExportFormat::Smrt] {
+    for f in [ExportFormat::Smsh, ExportFormat::Vtu, ExportFormat::Exodus, ExportFormat::Openfoam, ExportFormat::Gmsh, ExportFormat::Smrt] {
         let e = err(&mut s, Request::Export { path: None, format: Some(f), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: sm_protocol::ExportSource::Model });
         assert_eq!(e.kind, "unsupported-source", "{f:?}");
-        assert!(e.message.contains("source: model is not available yet"));
+        assert!(e.message.contains("only available for `dagmc`"), "{}", e.message);
     }
+    // DAGMC takes the model path; this state has no model layer, so it is a typed error, not a
+    // silent fallback to the mesh.
+    let e = err(&mut s, Request::Export { path: None, format: Some(ExportFormat::Dagmc), mesh: None, provenance: false, inline: true, options: None, split_small_determinant: None, empty_patches: vec![], wedge_patches: vec![], split_warped_faces: false, source: sm_protocol::ExportSource::Model });
+    assert_eq!(e.kind, "no-model");
 }

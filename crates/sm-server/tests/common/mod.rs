@@ -164,7 +164,7 @@ pub struct TempDir(PathBuf);
 impl TempDir {
     pub fn new(tag: &str) -> Self {
         static N: AtomicU64 = AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!("sm-server-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let p = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sm-server-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&p).expect("temp dir");
         Self(p)
     }

@@ -16,6 +16,7 @@ mod b64;
 mod error;
 mod host;
 mod mesh_export;
+mod model_export;
 mod server;
 mod standard;
 pub mod transport;

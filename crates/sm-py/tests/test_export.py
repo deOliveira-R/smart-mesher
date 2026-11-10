@@ -181,6 +181,12 @@ def test_request_shape_for_the_new_keywords() -> None:
     assert t.calls[-1][1] == {"path": "a.h5m", "format": "dagmc", "options": {"graveyard": True}}
     s.export("a.smsh")
     assert t.calls[-1][1] == {"path": "a.smsh"}  # defaults send nothing new
+    s.export("m.h5m", source="model", chord_tol=0.001)
+    assert t.calls[-1][1] == {"path": "m.h5m", "options": {"chord_tol": 0.001}, "source": "model"}
+    s.export("m.h5m", source="mesh")
+    assert t.calls[-1][1] == {"path": "m.h5m", "source": "mesh"}
+    with pytest.raises(ValueError, match="chord_tol"):
+        s.export("m.h5m", source="model", chord_tol=0.1, options={"chord_tol": 0.2})
 
 
 def test_smrt_no_blocks_warns(s: sm.Session, tmp_path: pathlib.Path) -> None:
@@ -230,3 +236,36 @@ def test_export_is_deterministic_between_calls(cube: sm.Session, tmp_path: pathl
     ra = cube.export(a, format="dagmc", graveyard=True)
     rb = cube.export(b, format="dagmc", graveyard=True)
     assert ra.sha256 == rb.sha256 and a.read_bytes() == b.read_bytes()
+
+
+PIN = """
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+fem.block_add(block: 1, volumes: fu.volume, name: "fuel")
+fem.block_add(block: 2, volumes: mo.volumes, name: "moderator")
+"""
+
+
+def test_source_model_exports_dagmc_without_a_mesh(s: sm.Session, tmp_path: pathlib.Path) -> None:
+    """`source="model"` faces the B-rep: no mesh in the session, deterministic bytes, typed errors."""
+    s.run_script(PIN)
+    a, b = tmp_path / "a.h5m", tmp_path / "b.h5m"
+    ra = s.export(a, source="model", chord_tol=1e-3)
+    rb = s.export(b, source="model", options={"chord_tol": 1e-3})
+    assert a.read_bytes() == b.read_bytes() and ra.sha256 == rb.sha256
+    assert a.read_bytes()[:8] == b"\x89HDF\r\n\x1a\n"
+    coarse = s.export(tmp_path / "c.h5m", source="model", chord_tol=1e-2)
+    assert coarse.bytes < ra.bytes, "a finer chord tolerance writes more triangles"
+    with pytest.raises(sm.SmartMeshError) as ei:  # the mesh path has no mesh
+        s.export(tmp_path / "d.h5m")
+    assert ei.value.kind == "no-mesh"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(tmp_path / "e.msh", format="gmsh", source="model")
+    assert ei.value.kind == "unsupported-source"
+    with pytest.raises(sm.SmartMeshError) as ei:
+        s.export(tmp_path / "f.h5m", chord_tol=1e-3)  # a mesh is not re-faceted
+    assert ei.value.kind == "bad-request"
