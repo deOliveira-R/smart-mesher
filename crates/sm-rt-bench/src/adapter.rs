@@ -6,6 +6,8 @@
 //! * **W-track** follows each ray to leakage and returns its region sequence and chords.
 //! * **W-fire** fires from a known interior point to the first region boundary; `FireLocate`
 //!   includes the point location, `Fire` starts from a precomputed hint (separate rows).
+//! * **W-walk** (tet meshes) records the sequence of cells a ray crosses with the chord in each,
+//!   not merged by region (the L2 comparison with XDG's `segments`).
 //! * **W-flight** runs seeded Monte Carlo histories in surface mode (isotropic scatter,
 //!   absorption, exponential flights from a per-history splitmix64 stream, per-region collision
 //!   and track-length tallies). Delta and `block` modes are RTBENCH-B (they need the delta
@@ -36,6 +38,9 @@ pub enum Workload {
     FireLocate,
     /// W-flight (surface mode).
     Flight,
+    /// W-walk: every ray of a tet mesh followed to leakage, element by element (the tracks name
+    /// tet indices, not regions).
+    Walk,
 }
 
 impl Workload {
@@ -46,6 +51,7 @@ impl Workload {
             Workload::Fire => "w-fire",
             Workload::FireLocate => "w-fire-locate",
             Workload::Flight => "w-flight",
+            Workload::Walk => "w-walk",
         }
     }
 }
@@ -254,6 +260,8 @@ pub struct TrackerAdapter {
     map: Vec<i32>,
     tracker: Box<dyn Tracker>,
     hinted: Vec<TrackState>,
+    /// Tracker cell index to tet index (W-walk); empty: identity.
+    cell_map: Vec<i32>,
     count_touched: bool,
     touched: Option<u64>,
     twin: bool,
@@ -262,7 +270,7 @@ pub struct TrackerAdapter {
 impl TrackerAdapter {
     /// Wrap a tracker under `label`.
     pub fn new(label: impl Into<String>, tracker: Box<dyn Tracker>) -> Self {
-        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), count_touched: false, touched: None, twin: false }
+        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), cell_map: Vec::new(), count_touched: false, touched: None, twin: false }
     }
 
     /// Name the traversal mode of this adapter's rows.
@@ -290,6 +298,12 @@ impl TrackerAdapter {
     /// Mark the geometry as a facet or mesh twin (not the exact model).
     pub fn on_twin(mut self) -> Self {
         self.twin = true;
+        self
+    }
+
+    /// Map tracker cell indices to the tet indices W-walk reports.
+    pub fn with_cell_map(mut self, map: Vec<i32>) -> Self {
+        self.cell_map = map;
         self
     }
 
@@ -356,6 +370,32 @@ impl TrackerAdapter {
         }
         out.counters.steps = out.counters.segments;
         out.counters.pins_touched = self.touched.unwrap_or(0);
+        Ok(out)
+    }
+
+    /// W-walk: the cell sequence of every ray with the chord in each cell (no merging), up to
+    /// the tracker's own end (leaving the mesh).
+    fn walk(&self, input: &WorkInput<'_>) -> Result<Output> {
+        let rays = Self::rays_of(input);
+        let pool = Self::pool(input.threads)?;
+        let bundle = pool.install(|| self.tracker.trace_bundle(&rays, &TraceOptions::default())).map_err(trk)?;
+        let mut out = Output::default();
+        for i in 0..bundle.ray_count() {
+            let range = bundle.ray_range(i).ok_or_else(|| BenchError::Tracker("malformed bundle offsets".into()))?;
+            let mut t = Track { regions: Vec::with_capacity(range.len()), chords: Vec::with_capacity(range.len()) };
+            for s in range {
+                let c = bundle.cell[s] as usize;
+                let tet = if self.cell_map.is_empty() { c as i32 } else { self.cell_map.get(c).copied().ok_or_else(|| BenchError::Tracker(format!("cell {c} has no tet index")))? };
+                t.regions.push(tet);
+                t.chords.push(bundle.length[s]);
+            }
+            out.counters.segments += t.regions.len() as u64;
+            if bundle.end[i] == EndCode::Lost {
+                out.counters.lost += 1;
+            }
+            out.tracks.push(t);
+        }
+        out.counters.steps = out.counters.segments;
         Ok(out)
     }
 
@@ -707,6 +747,7 @@ impl Adapter for TrackerAdapter {
             Workload::Fire => self.fire(input, false),
             Workload::FireLocate => self.fire(input, true),
             Workload::Flight => self.flight(input),
+            Workload::Walk => self.walk(input),
         }
     }
 }
