@@ -258,6 +258,19 @@ fn run(a: &Args) -> Result<i32> {
                 let (f, ag) = run_case(&data, adapters, "surface", c, env.clone())?;
                 absorb(f, ag);
             }
+            // `jump` (cases with a tet mesh): W-fire of the region jump against the cell walk on the same tets.
+            if !rows.jump_fire.is_empty() && workloads.iter().any(|w| w.starts_with("fire")) {
+                let diag = data.manifest.diag;
+                let fire = RunConfig { workloads: vec![Workload::Fire, Workload::FireLocate], fire_tol: Some(1e-9 * diag), ..cfg.clone() };
+                let (f, ag) = run_case(&data, &mut rows.jump_fire, "surface", &fire, env.clone())?;
+                for w in ["w-fire", "w-fire-locate"] {
+                    let per = |m: &str| f.rows.iter().find(|r| r.workload == w && r.mode == m && r.threads == cfg.threads[0]).map(|r| (r.counters.face_tests as f64 / r.counters.fires.max(1) as f64, r.counters.jumps));
+                    if let (Some((fw, _)), Some((fj, jumps))) = (per("walk"), per("jump")) {
+                        file.notes.push(format!("{} {w}: face tests per fire {fw:.1} (cell walk), {fj:.1} (region jump); {jumps} jumps taken", data.case));
+                    }
+                }
+                absorb(f, ag);
+            }
             // W-walk: the tet mesh walked cell by cell (cases with a tet mesh), the reference of XDG's `segments`.
             if let Some(tets) = data.tets.as_ref().filter(|_| workloads.contains(&"walk")) {
                 match crate::smrt::walk_adapter(tets) {

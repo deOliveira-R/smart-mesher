@@ -92,6 +92,8 @@ pub struct Counters {
     pub lattice_index_locates: u64,
     /// Lattice elements (prototype instances) entered by W-track rays (hierarchy rows).
     pub pins_touched: u64,
+    /// Region jumps taken by `fire` (jump rows).
+    pub jumps: u64,
 }
 
 impl Counters {
@@ -105,6 +107,7 @@ impl Counters {
         self.face_tests += w.face_tests;
         self.bvh_descents += w.bvh_descents;
         self.lattice_index_locates += w.lattice_index_locates;
+        self.jumps += w.jumps;
     }
 
     /// The counters that only sm-rt rows fill, in a fixed order.
@@ -160,6 +163,9 @@ impl Output {
             for v in extra {
                 b.extend_from_slice(&v.to_le_bytes());
             }
+        }
+        if c.jumps != 0 {
+            b.extend_from_slice(&c.jumps.to_le_bytes());
         }
         sha256_hex(&b)
     }
@@ -265,12 +271,14 @@ pub struct TrackerAdapter {
     count_touched: bool,
     touched: Option<u64>,
     twin: bool,
+    /// Record the tracker's work counters of W-fire runs (jump rows).
+    fire_work: bool,
 }
 
 impl TrackerAdapter {
     /// Wrap a tracker under `label`.
     pub fn new(label: impl Into<String>, tracker: Box<dyn Tracker>) -> Self {
-        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), cell_map: Vec::new(), count_touched: false, touched: None, twin: false }
+        Self { label: label.into(), mode: None, flight: FlightMode::Surface, map: Vec::new(), tracker, hinted: Vec::new(), cell_map: Vec::new(), count_touched: false, touched: None, twin: false, fire_work: false }
     }
 
     /// Name the traversal mode of this adapter's rows.
@@ -310,6 +318,12 @@ impl TrackerAdapter {
     /// Count the lattice elements each W-track ray enters (hierarchy rows), untimed in `prepare`.
     pub fn counting_touched(mut self) -> Self {
         self.count_touched = true;
+        self
+    }
+
+    /// Record the tracker's work counters (`face_tests`, `node_visits`, `jumps`) of W-fire runs.
+    pub fn counting_fire_work(mut self) -> Self {
+        self.fire_work = true;
         self
     }
 
@@ -452,6 +466,9 @@ impl TrackerAdapter {
                 _ => -1,
             };
             out.fires.push((r.dist, to));
+        }
+        if self.fire_work {
+            out.counters.add_work(&scratch.counters);
         }
         Ok(out)
     }

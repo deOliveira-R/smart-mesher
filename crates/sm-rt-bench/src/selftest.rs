@@ -38,7 +38,7 @@ pub fn self_test() -> Result<Vec<Check>> {
     for case in [Case::C2, Case::H1] {
         let data = build(case, &tiny)?;
         let mut adapters: Vec<Box<dyn Adapter>> = vec![Box::new(stub_adapter(&data)?)];
-        let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 4], workloads: vec![Workload::Track, Workload::FireLocate, Workload::Flight], histories: 500, seed: 7 };
+        let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 4], workloads: vec![Workload::Track, Workload::FireLocate, Workload::Flight], histories: 500, seed: 7, fire_tol: None };
         let (file, agreements) = run_case(&data, &mut adapters, "surface", &cfg, Env::detect())?;
         let failed: usize = agreements.iter().map(|a| a.failed).sum();
         out.push(check(&format!("stub vs truth {}", case.name()), failed == 0, format!("{} tracks per thread count, {failed} disagreements", data.rays.len())));
@@ -52,7 +52,7 @@ pub fn self_test() -> Result<Vec<Check>> {
     let small = Scale { rays: 150, ..Scale::reduced() };
     let data = build(Case::P1, &small)?;
     let mut rows = crate::smrt::smrt_rows(&data, &small, 8);
-    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Track, Workload::Flight], histories: 600, seed: 7 };
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Track, Workload::Flight], histories: 600, seed: 7, fire_tol: None };
     let track_cfg = RunConfig { workloads: vec![Workload::Track], ..cfg.clone() };
     let flight_cfg = RunConfig { workloads: vec![Workload::Flight], ..cfg };
     let (geo, ag) = run_case(&data, &mut rows.geometric, "surface", &track_cfg, Env::detect())?;

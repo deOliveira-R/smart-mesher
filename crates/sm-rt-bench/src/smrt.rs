@@ -411,6 +411,36 @@ pub fn flight_adapter(tets: &Tets, mode: FlightMode, leaf_cells: u32) -> Result<
     }).with_region_map(map).on_twin())
 }
 
+/// The `jump` row (W4-RT-JUMP-ROW): `MeshTracker` over the tets with a majorant partition and
+/// `region_jump`, so `fire` leaves a region through its boundary faces instead of walking cell by
+/// cell. It records the tracker's work counters of W-fire runs (`face_tests`, `node_visits`, `jumps`).
+///
+/// # Errors
+/// The mesh builder's or the tracker's error.
+pub fn jump_adapter(tets: &Tets, leaf_cells: u32) -> Result<TrackerAdapter> {
+    let mesh = tet_mesh(tets)?;
+    let rule = RegionRule::ByVolumeClassification;
+    let (bnd, comp) = (BoundarySpec::default(), ComplementPolicy::Outside);
+    let mut part = PartitionOptions::default();
+    part.enabled = true;
+    part.region_jump = true;
+    part.leaf_cells = leaf_cells;
+    let opts = BuildOptions::default().with_partition(part);
+    let input = BuildInput::Mesh(MeshInput::new(&mesh, &rule, &bnd, &comp));
+    let (t, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(bad)?;
+    let map = map_by_entity(t.regions());
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_twin().counting_fire_work())
+}
+
+/// The reference of the `jump` row: the same tets walked cell by cell (no partition), W-fire work
+/// counters recorded. Its `mode` is `walk`.
+///
+/// # Errors
+/// The mesh builder's or the tracker's error.
+pub fn walk_fire_adapter(tets: &Tets) -> Result<TrackerAdapter> {
+    Ok(flight_adapter(tets, FlightMode::Surface, 8)?.counting_fire_work())
+}
+
 /// The W-walk row of a tet mesh: the cell-walking tracker of the `walk` flight row, reporting the
 /// tet index of every cell crossed. The cell-to-tet map is built by locating each tet's centroid,
 /// so it does not assume the tracker keeps the input order; it must be a bijection.
@@ -457,6 +487,8 @@ pub struct SmrtRows {
     pub exact_flight: Vec<Box<dyn Adapter>>,
     /// W-flight on the tet twin: walk (surface), delta and block, whose tallies are compared.
     pub mesh_flight: Vec<Box<dyn Adapter>>,
+    /// W-fire on the tet twin: the cell walk (reference) and the `jump` row (cases with a tet mesh).
+    pub jump_fire: Vec<Box<dyn Adapter>>,
     /// Why a row was not built.
     pub notes: Vec<String>,
 }
@@ -464,7 +496,7 @@ pub struct SmrtRows {
 /// Every sm-rt row of a case that can be built, with the reasons for the rows that cannot.
 /// `flight_cells` is the tet twin's resolution along the longest axis for cases without a tet mesh.
 pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRows {
-    let mut rows = SmrtRows { geometric: Vec::new(), exact_flight: Vec::new(), mesh_flight: Vec::new(), notes: Vec::new() };
+    let mut rows = SmrtRows { geometric: Vec::new(), exact_flight: Vec::new(), mesh_flight: Vec::new(), jump_fire: Vec::new(), notes: Vec::new() };
     let case = data.case.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut note = |what: &str, e: BenchError| notes.push(format!("{case}: smrt {what} not run: {e}"));
@@ -487,6 +519,15 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
         match analytic_hierarchy_p2(scale, &data.manifest.regions) {
             Ok(a) => rows.geometric.push(Box::new(a)),
             Err(e) => note("analytic-hierarchy", e),
+        }
+    }
+    if let Some(t) = &data.tets {
+        match (walk_fire_adapter(t), jump_adapter(t, 8)) {
+            (Ok(w), Ok(j)) => {
+                rows.jump_fire.push(Box::new(w));
+                rows.jump_fire.push(Box::new(j));
+            }
+            (Err(e), _) | (_, Err(e)) => note("jump", e),
         }
     }
     match tet_twin(data, flight_cells) {

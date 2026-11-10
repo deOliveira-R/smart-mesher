@@ -73,11 +73,15 @@ pub struct RunConfig {
     pub histories: usize,
     /// Seed of the history streams.
     pub seed: u64,
+    /// When set, W-fire and W-fire-locate rows of non-exact adapters are judged against the first
+    /// non-exact adapter's fires with this chord tolerance (cm); the failures count as
+    /// disagreements. Off by default.
+    pub fire_tol: Option<f64>,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        Self { reps: 7, warmup: 3, threads: vec![1], workloads: vec![Workload::Track, Workload::Fire, Workload::FireLocate, Workload::Flight], histories: 10_000, seed: 0x5eed }
+        Self { reps: 7, warmup: 3, threads: vec![1], workloads: vec![Workload::Track, Workload::Fire, Workload::FireLocate, Workload::Flight], histories: 10_000, seed: 0x5eed, fire_tol: None }
     }
 }
 
@@ -221,6 +225,15 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                     let tets = data.tets.as_ref().ok_or_else(|| crate::error::BenchError::Usage("W-walk needs a tet mesh".into()))?;
                     let (g, failed) = walk_truth(tets, &data.rays, &s.output.tracks, data.manifest.diag)?;
                     (g, Agreement { checked: s.output.tracks.len(), failed, ..Agreement::default() })
+                } else if let (Some(tol), true, Some(r)) = (cfg.fire_tol, matches!(w, Workload::Fire | Workload::FireLocate), twin_ref) {
+                    if adapters[i].exact() {
+                        (GeomError::default(), Agreement::default())
+                    } else if r == i {
+                        (GeomError::default(), Agreement { checked: s.output.fires.len(), ..Agreement::default() })
+                    } else {
+                        let (f, _) = compare::compare_fires(&s.output.fires, &samples[r].output.fires, data.manifest.diag, tol)?;
+                        (GeomError::default(), Agreement { checked: f.checked, failed: f.failed, grazing: f.grazing, ..Agreement::default() })
+                    }
                 } else {
                     (GeomError::default(), Agreement::default())
                 };
@@ -250,7 +263,7 @@ pub fn run_case(data: &CaseData, adapters: &mut [Box<dyn Adapter>], mode: &str, 
                 hashes[i][wi].push(row.determinism.hash.clone());
                 row_of[i][wi].push(file.rows.len());
                 file.rows.push(row);
-                if w == Workload::Track || w == Workload::Walk {
+                if w == Workload::Track || w == Workload::Walk || (cfg.fire_tol.is_some() && matches!(w, Workload::Fire | Workload::FireLocate)) {
                     agreements.push(agree);
                 }
             }

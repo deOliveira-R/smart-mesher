@@ -416,7 +416,7 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
     let d = build(Case::P1, &scale).unwrap();
     let mut rows = smrt_rows(&d, &scale, 12);
     assert_eq!(rows.mesh_flight.len(), 3, "{:?}", rows.notes);
-    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5 };
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5, fire_tol: None };
     let (f, _) = run_case(&d, &mut rows.mesh_flight, "surface", &cfg, Env::detect()).unwrap();
     let modes: Vec<&str> = f.rows.iter().map(|r| r.mode.as_str()).collect();
     assert!(modes.contains(&"walk") && modes.contains(&"delta") && modes.contains(&"block"), "{modes:?}");
@@ -593,4 +593,26 @@ fn p2_analytic_hierarchy_equals_the_flattened_analytic_row_ray_by_ray() {
     let copies = 9 * 17 * 17 - 9;
     assert!(h17 - h1 <= 16 * copies as u64, "hierarchy grows by at most 16 bytes per added copy ({} per copy)", (h17 - h1) / copies as u64);
     assert!(f17 - f1 > 20 * (h17 - h1), "the flattened world grows far faster");
+}
+
+/// W4-RT-JUMP-ROW: on every H1 ray the region jump agrees with the cell walk (same region, same
+/// distance within `1e-9 diag`: ruling R1's bound is far tighter than that for non-grazing exits),
+/// takes jumps, and tests fewer faces per fire.
+#[test]
+fn h1_region_jump_fire_agrees_with_the_cell_walk_and_tests_fewer_faces() {
+    let scale = Scale { rays: 2000, ..Scale::reduced() };
+    let d = build(Case::H1, &scale).unwrap();
+    let mut rows = smrt_rows(&d, &scale, 12);
+    assert_eq!(rows.jump_fire.len(), 2, "{:?}", rows.notes);
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Fire, Workload::FireLocate], histories: 0, seed: 1, fire_tol: Some(1e-9 * d.manifest.diag) };
+    let (file, agreements) = run_case(&d, &mut rows.jump_fire, "surface", &cfg, Env::detect()).unwrap();
+    assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
+    for w in ["w-fire", "w-fire-locate"] {
+        let row = |m: &str| file.rows.iter().find(|r| r.workload == w && r.mode == m).unwrap();
+        let (walk, jump) = (row("walk"), row("jump"));
+        assert_eq!((jump.agreement.checked, jump.agreement.failed), (d.rays.len(), 0), "{w}");
+        assert!(jump.counters.jumps > 0 && walk.counters.jumps == 0, "{w}: jumps {} / {}", jump.counters.jumps, walk.counters.jumps);
+        assert!(jump.counters.face_tests < walk.counters.face_tests, "{w}: face tests {} (jump) against {} (walk)", jump.counters.face_tests, walk.counters.face_tests);
+        println!("{w}: face tests per fire {:.1} (walk) {:.1} (jump), {} jumps of {} fires", walk.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.jumps, d.rays.len());
+    }
 }
