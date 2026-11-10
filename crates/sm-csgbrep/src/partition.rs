@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::deck::{Origin, PCell, PSurf, Placed};
 use crate::error::CsgbrepError;
 use sm_boolean::{BoolOptions, BoolRule, BooleanError, CutTool, WebcutOptions, boolean, webcut};
-use sm_core::{EntityId, Point3};
+use sm_core::{EntityId, Point3, Vector3};
 use sm_csgio::ir::{BoundaryFlag, Expr, Sign};
 use sm_geom_api::{Cylinder, Frame, SurfaceDef};
 use sm_layer_api::TopoHost;
-use sm_topo_api::{Carrier, Dim, fixtures::brick};
+use sm_topo_api::{Carrier, Dim, TopologyViewExt, fixtures::brick};
 
 /// What to do with a piece that two or more cells own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -267,6 +267,39 @@ fn flag_slot(f: BoundaryFlag) -> Option<usize> {
     }
 }
 
+/// True when the box of a body (vertices and 33 samples per curved edge) meets the interior of
+/// `r` by more than a sliver. A body that only touches the box from outside does not.
+fn meets_interior(topo: &dyn TopoHost, body: EntityId, r: Reserved) -> bool {
+    let Some(vol) = volume_of_body(topo, body) else { return true };
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let mut grow = |p: Point3| {
+        for (a, v) in [p.x, p.y, p.z].into_iter().enumerate() {
+            lo[a] = lo[a].min(v);
+            hi[a] = hi[a].max(v);
+        }
+    };
+    for &f in topo.volume_faces(vol) {
+        for &e in topo.face_edges(f) {
+            let Some((s, t)) = topo.edge_ends(e) else { return true };
+            for v in [s, t] {
+                match topo.carrier(v) {
+                    Carrier::Point(p) => grow(*p),
+                    _ => return true,
+                }
+            }
+            if let Carrier::Curve(cc) = topo.carrier(e)
+                && let Some(c) = topo.shapes().curve(cc.curve)
+            {
+                for k in 0..=32 {
+                    grow(c.eval(cc.range.lo + (cc.range.hi - cc.range.lo) * f64::from(k) / 32.0));
+                }
+            }
+        }
+    }
+    let eps = 1e-9 * (0..3).map(|a| r.1[a] - r.0[a]).fold(0.0_f64, f64::max);
+    (0..3).all(|a| lo[a] < r.1[a] - eps && hi[a] > r.0[a] + eps)
+}
+
 /// Build the B-rep volumes of `placed` inside the open operation of `topo`.
 ///
 /// # Errors
@@ -348,6 +381,42 @@ pub fn build_subset(topo: &mut dyn TopoHost, placed: &Placed, ids: &[usize], res
                 let mut signs = piece.signs.clone();
                 signs.insert(s, pos);
                 queue.push_back(Piece { body, signs });
+            }
+        }
+    }
+    // ---- cut the owned pieces by the reserved boxes, so array membership is exact ----
+    // A remainder piece can straddle an array box with its centroid outside; cut by the six box
+    // planes, each part is then wholly in or out and the overlap volume is the part's.
+    if !reserved.is_empty() {
+        for (piece, owners) in core::mem::take(&mut done) {
+            if owners.is_empty() || !reserved.iter().any(|r| meets_interior(&*topo, piece.body, *r)) {
+                done.push((piece, owners));
+                continue;
+            }
+            let mut parts = vec![piece.body];
+            for (rl, rh) in reserved {
+                for a in 0..3 {
+                    for (at, dir) in [(rl[a], 1.0), (rh[a], -1.0)] {
+                        let (mut origin, mut nrm) = ([0.0; 3], [0.0; 3]);
+                        origin[a] = at;
+                        nrm[a] = dir;
+                        let tool = CutTool::Plane { origin: Point3::new(origin[0], origin[1], origin[2]), normal: Vector3::new(nrm[0], nrm[1], nrm[2]) };
+                        let mut next = Vec::new();
+                        for body in parts {
+                            out.stats.cut_calls += 1;
+                            let r = webcut(topo, &[body], &tool, &WebcutOptions::default()).map_err(|e| kernel("cutting a remainder piece by an array box", e))?;
+                            let split = !((r.negative.is_empty() && r.positive == [body]) || (r.positive.is_empty() && r.negative == [body]));
+                            if split {
+                                out.stats.cuts += 1;
+                            }
+                            next.extend(r.negative.iter().chain(r.positive.iter()).copied());
+                        }
+                        parts = next;
+                    }
+                }
+            }
+            for body in parts {
+                done.push((Piece { body, signs: piece.signs.clone() }, owners.clone()));
             }
         }
     }

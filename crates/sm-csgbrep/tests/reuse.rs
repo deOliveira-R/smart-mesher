@@ -168,6 +168,20 @@ fn a_cell_reaching_into_the_array_is_an_overlap() {
         let e = Rig::new().import_with(&deck, Some(&materials(4)), opts).unwrap_err().to_string();
         assert!(e.contains("csg.overlap"), "{e}");
     }
+    // A cell that straddles the array box with its centroid outside: x in [-5, 0], the array
+    // starts at x = -1.89. The overlap is found on the part inside the box.
+    let straddle = pin_lattice(3, 1.26, (0.35, 0.37, 0.42), 2.0, false).replace("<geometry>\n", "<geometry>\n  <cell id=\"800\" material=\"4\" region=\"501 -502 13 -14 15 -16\" universe=\"0\"/>\n  <surface id=\"501\" type=\"x-plane\" coeffs=\"-5\"/>\n  <surface id=\"502\" type=\"x-plane\" coeffs=\"0\"/>\n");
+    // (Not run flat: the plane x = 0 through the pin axes hits a kernel limit, a half cylinder patch.)
+    let e = Rig::new().import_with(&straddle, Some(&materials(4)), None).unwrap_err().to_string();
+    assert!(e.contains("csg.overlap"), "{e}");
+    let mut r = Rig::new();
+    let o = OpenmcOptions { overlap: Some(sm_csgbrep::OverlapMode::Report), ..Default::default() };
+    let d = r.import_with(&straddle, Some(&materials(4)), Some(o)).unwrap();
+    assert!(!diag(&d, "import.overlap").is_empty());
+    let total: f64 = d.outputs["deck_volumes"].iter().map(|&v| r.volume(v)).sum();
+    // The array once, plus cell 800 outside the array box: x in [-5, -1.89], y in +-1.89, z in +-1.
+    let want = 9.0 * 1.26 * 1.26 * 2.0 + (5.0 - 1.89) * 3.78 * 2.0;
+    assert!((total - want).abs() < 1e-9 * want, "{total} vs {want}");
     // `report` keeps one owner per piece: the volume of the array, once.
     let mut r = Rig::new();
     let o = OpenmcOptions { overlap: Some(sm_csgbrep::OverlapMode::Report), ..Default::default() };
