@@ -5,13 +5,13 @@ mod common;
 use common::*;
 use sm_core::{Point3, Vector3};
 use sm_csgio::{ImportOptions, ImportedCsg, openmc};
-use sm_rt::{AnalyticTracker, CsgWorldOptions, MAX_FLAT_CELLS, csg_world};
+use sm_rt::{CsgWorldOptions, MAX_FLAT_CELLS, csg_world};
 use sm_rt_api::{BoundarySpec, BuildOptions, Flow, Scratch, TraceOptions, Tracker};
 use sm_testkit::topo::pin_assembly;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-fn chords_to(t: &AnalyticTracker, o: [f64; 3], d: [f64; 3], max: f64) -> (BTreeMap<String, f64>, f64) {
+fn chords_to(t: &dyn Tracker, o: [f64; 3], d: [f64; 3], max: f64) -> (BTreeMap<String, f64>, f64) {
     let mut sc = Scratch::new();
     let mut st = t.init_state(Point3::new(o[0], o[1], o[2]), Vector3::new(d[0], d[1], d[2]), None, &mut sc).unwrap();
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
@@ -72,7 +72,9 @@ fn the_model_bridge_and_the_openmc_deck_agree_on_the_pin_assembly() {
 fn bridge_vs_deck(n: usize) {
     let fix = pin_assembly(n, PITCH, RF, RC, H).unwrap();
     let w = csg_world(&fix.model, &fix.complex, &CsgWorldOptions::default()).unwrap();
-    let bridge = w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
+    // Both builds: the flattened leaf (the oracle) and the hierarchical world (W4-RT-CSG-WORLD).
+    let flat = w.analytic_tracker(&BoundarySpec::default(), &BuildOptions::default(), MAX_FLAT_CELLS).unwrap().0;
+    let hier = w.world_tracker(&BoundarySpec::default(), &BuildOptions::default()).unwrap().0;
     let materials = r#"<materials><material id="1" name="fuel"/><material id="2" name="clad"/></materials>"#;
     let ir = openmc::import(&assembly_xml(n), Some(materials)).unwrap();
     let m = ImportedCsg::import(&ir, &ImportOptions::default()).unwrap();
@@ -94,12 +96,14 @@ fn bridge_vs_deck(n: usize) {
         let p0 = [i * PITCH + b * nv.0, j * PITCH + b * nv.1, 0.8 + 1.4 * r.unit()];
         let half_clad = (RC * RC - b * b).sqrt() / rho;
         let o = [p0[0] - d[0] * (half_clad - delta), p0[1] - d[1] * (half_clad - delta), p0[2] - d[2] * (half_clad - delta)];
-        let (want, total) = chords_to(&bridge, o, d, f64::INFINITY);
-        let (got, _) = chords_to(&deck, o, d, total);
-        for name in ["fuel", "clad"] {
-            let (a, c) = (want.get(name).copied().unwrap_or(0.0), got.get(name).copied().unwrap_or(0.0));
-            worst = worst.max((a - c).abs());
-            assert!((a - c).abs() < 1e-11 * a.abs().max(1.0), "ray {k} {o:?} {d:?}: {name} bridge {a}, deck {c}");
+        for (label, bridge) in [("flat", &flat as &dyn Tracker), ("hier", &hier as &dyn Tracker)] {
+            let (want, total) = chords_to(bridge, o, d, f64::INFINITY);
+            let (got, _) = chords_to(&deck, o, d, total);
+            for name in ["fuel", "clad"] {
+                let (a, c) = (want.get(name).copied().unwrap_or(0.0), got.get(name).copied().unwrap_or(0.0));
+                worst = worst.max((a - c).abs());
+                assert!((a - c).abs() < 1e-11 * a.abs().max(1.0), "ray {k} {o:?} {d:?}: {name} {label} bridge {a}, deck {c}");
+            }
         }
         compared += 1;
     }
