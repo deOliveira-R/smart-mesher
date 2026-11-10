@@ -283,7 +283,8 @@ fn every_declared_entity_id_has_a_kind_annotation_and_ops_declare_outputs() {
         }
         let schema = serde_json::to_value(reg.schema(name).expect("schema")).expect("json");
         check_kinds(name, &schema);
-        if name != "model.delete" {
+        // Ops with no output role: they delete, or only write the lattice-frame and region tables.
+        if !["model.delete", "model.lattice_define", "model.lattice_tag", "model.region_clear"].contains(&name) {
             assert!(!reg.op_outputs(name).is_empty(), "{name} declares OUTPUTS");
         }
     }

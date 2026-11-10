@@ -15,6 +15,7 @@ mod error;
 mod export;
 mod layer;
 mod lower;
+pub mod region;
 mod ops;
 
 pub use element::ElementType;
@@ -23,7 +24,7 @@ pub use export::{
     ExportBundle, ExportFile, ExportFormat, ExportReport, ExportRequest, export, export_files,
 };
 pub use layer::{FEM_LAYER, FemLayer};
-pub use lower::{Lowered, SetOrigin, SetSummary, lower};
+pub use lower::{Lowered, SetOrigin, SetSummary, SplitError, lower, lower_split};
 pub use ops::{BlockAdd, BlockElementType, BlockRemove, SidesetAdd};
 
 use sm_op_api::{Plugin, Registry, RegistryError};

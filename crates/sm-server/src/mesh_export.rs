@@ -3,17 +3,19 @@
 
 use serde_json::{Map, Value};
 use sm_core::EntityId;
-use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, lower};
+use sm_fem::region::RegionSplit;
+use sm_fem::{FemError, FemLayer, Lowered, SetOrigin, SplitError, lower, lower_split};
 use sm_layer_api::{MeshEntry, MeshLayer, ModelLayer};
 use sm_meshio::dagmc::{DagmcError, DagmcOptions, Graveyard, export_h5m};
 use sm_meshio::gmsh::{GmshError, GmshOptions, PolyPolicy, write_msh4};
+use sm_meshio::SmshWriter;
 use sm_meshio::report::LossReport;
 use sm_model_api::BoundaryKind;
 use sm_op_api::State;
 use sm_protocol::{ExportFormat, ExportNote};
 use sm_rt::MeshTrackerBuilder;
 use sm_rt_api::{
-    BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, ResponseKind, ResponseMap, RtError, Tracker,
+    BoundarySpec, BuildInput, BuildOptions, ComplementPolicy, MeshInput, PartitionOptions, RecoveryPolicy, RegionRule, RegionSet, ResponseKind, ResponseMap, RtError, Tracker,
 };
 
 use crate::error::SessionError;
@@ -56,6 +58,65 @@ fn bool_option(name: &str, m: Option<&Map<String, Value>>, key: &str) -> Result<
         Some(Value::Bool(b)) => Ok(Some(*b)),
         Some(other) => Err(SessionError::bad_request(format!("`{name}` option `{key}` must be a boolean, found {other}"))),
     }
+}
+
+/// The `regions` option of `smsh` and `smrt`: `{"split": ["lattice", "ring", "sector"]}` (any
+/// subset; absent, `null` or an empty list is no split). Region sets of the same name rules go to
+/// `.smsh` as `region/<name>` cell sets and to `.smrt` as tagged regions.
+fn regions_option(name: &str, m: Option<&Map<String, Value>>) -> Result<RegionSplit, SessionError> {
+    let bad = |what: String| SessionError::bad_request(format!("`{name}` option `regions` {what} (expected {{\"split\": [\"lattice\", \"ring\", \"sector\"]}})"));
+    let Some(v) = m.and_then(|m| m.get("regions")).filter(|v| !v.is_null()) else {
+        return Ok(RegionSplit::NONE);
+    };
+    let Value::Object(o) = v else { return Err(bad(format!("must be an object, found {v}"))) };
+    if let Some(k) = o.keys().find(|k| k.as_str() != "split") {
+        return Err(bad(format!("has an unknown key `{k}`")));
+    }
+    let names: Vec<String> = match o.get("split") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.iter().map(|x| x.as_str().map(str::to_owned).ok_or_else(|| bad(format!("`split` holds {x}, not a part name")))).collect::<Result<_, _>>()?,
+        Some(other) => return Err(bad(format!("`split` must be an array of names, found {other}"))),
+    };
+    RegionSplit::from_names(&names).map_err(|n| bad(format!("`split` names the unknown part `{n}`")))
+}
+
+/// The region split asked of an `smsh` export (`options` is checked: only `regions` is allowed).
+pub(crate) fn smsh_split(options: Option<&Value>) -> Result<RegionSplit, SessionError> {
+    let m = options_map("smsh", options, &["regions"])?;
+    regions_option("smsh", m)
+}
+
+fn split_error(e: SplitError) -> SessionError {
+    match e {
+        SplitError::Region(r) => SessionError::new(r.code(), r.to_string()),
+        SplitError::Lower(f) => SessionError::from(&f),
+        other => SessionError::internal(other.to_string()),
+    }
+}
+
+/// The `.smsh` of the selected mesh with the region split lowered to `region/<name>` cell sets
+/// (the same bytes as `sm_fem::export` plus those sets). `provenance` is the timeline hash to
+/// record, as `session.export {provenance: true}` passes it.
+pub(crate) fn write_smsh_split(state: &State, named: Option<EntityId>, provenance: Option<String>, split: &RegionSplit) -> Result<Written, SessionError> {
+    let entry = select(state, named).map_err(|e| export_error(&e, state, named))?;
+    let model = state.layer::<ModelLayer>().ok_or_else(|| SessionError::new("no-model", "a region split needs the model layer (region tags come from the model)"))?;
+    let none = FemLayer::default();
+    let fem = state.layer::<FemLayer>().unwrap_or(&none);
+    let alloc = state.layer::<MeshLayer>().map(MeshLayer::alloc).ok_or_else(|| SessionError::internal("mesh layer vanished"))?;
+    let lowered = lower_split(model, entry, fem, alloc, split).map_err(split_error)?;
+    let mut writer = SmshWriter::new((*lowered.mesh).as_read());
+    if let Some(p) = provenance {
+        writer = writer.provenance(p);
+    }
+    for d in &lowered.decks {
+        writer = writer.deck(d.clone());
+    }
+    for (set, ty) in &lowered.block_types {
+        writer = writer.element_type(set.clone(), ty.name());
+    }
+    let mut bytes = Vec::new();
+    writer.write_to(&mut bytes).map_err(|e| SessionError::new("io", format!("writing the .smsh: {e}")))?;
+    Ok(Written { bytes, notes: Vec::new() })
 }
 
 fn gmsh_options(options: Option<&Value>) -> Result<GmshOptions, SessionError> {
@@ -145,8 +206,8 @@ pub(crate) fn write(state: &State, format: ExportFormat, named: Option<EntityId>
             Ok(Written { bytes, notes: notes_of(&rep.loss) })
         }
         _ => {
-            options_map("smrt", options, &[])?;
-            smrt(state, named)
+            let m = options_map("smrt", options, &["regions"])?;
+            smrt(state, named, &regions_option("smrt", m)?)
         }
     }
 }
@@ -169,14 +230,14 @@ fn lowered(state: &State, named: Option<EntityId>) -> Result<Lowered, SessionErr
 /// The `.smrt` image of the mesh tracker for the selected mesh (default responses, vacuum
 /// boundaries), built with the majorant partition ([`smrt_build_options`]). `rt.info` builds
 /// the same tracker without the partition, so the structure hashes of the two differ.
-fn smrt(state: &State, named: Option<EntityId>) -> Result<Written, SessionError> {
+fn smrt(state: &State, named: Option<EntityId>, split: &RegionSplit) -> Result<Written, SessionError> {
     let entry = select(state, named).map_err(|e| export_error(&e, state, named))?;
     let model = state
         .layer::<ModelLayer>()
         .ok_or_else(|| SessionError::new("no-model", "`smrt` export needs the model layer (region names come from the model)"))?;
     let spec = boundary_spec(model)?;
     let complement = ComplementPolicy::Outside;
-    let (rules, lowered, notes) = smrt_regions(state, named);
+    let (rules, lowered, notes) = if split.is_empty() { smrt_regions(state, named) } else { smrt_split_regions(state, named, split)? };
     let host = match &lowered {
         Some(l) => (*l.mesh).as_read(),
         None => entry.mesh(),
@@ -221,6 +282,23 @@ fn smrt_regions(state: &State, named: Option<EntityId>) -> (RegionRule, Option<L
         return fallback(format!("{} of {total} cells are in no block", total - covered.min(total)));
     }
     (RegionRule::ByCellSets(names), Some(lowered), Vec::new())
+}
+
+/// Region rule of a `.smrt` with a region split: one tagged region per region set. There is no
+/// fallback: a split that cannot be made is an error (`regions-need-blocks`, ...).
+fn smrt_split_regions(state: &State, named: Option<EntityId>, split: &RegionSplit) -> Result<(RegionRule, Option<Lowered>, Vec<ExportNote>), SessionError> {
+    let entry = select(state, named).map_err(|e| export_error(&e, state, named))?;
+    let model = state.layer::<ModelLayer>().ok_or_else(|| SessionError::new("no-model", "a region split needs the model layer (region tags come from the model)"))?;
+    let none = FemLayer::default();
+    let fem = state.layer::<FemLayer>().unwrap_or(&none);
+    let alloc = state.layer::<MeshLayer>().map(MeshLayer::alloc).ok_or_else(|| SessionError::internal("mesh layer vanished"))?;
+    let lowered = lower_split(model, entry, fem, alloc, split).map_err(split_error)?;
+    let sets: Vec<RegionSet> = lowered
+        .regions
+        .iter()
+        .map(|r| r.tags.iter().fold(RegionSet::new(r.set.clone(), r.name.clone()), |s, (k, v)| s.with_tag(k.clone(), *v)))
+        .collect();
+    Ok((RegionRule::ByTaggedCellSets(sets), Some(lowered), Vec::new()))
 }
 
 /// Build options of the `.smrt` handover image. The majorant partition is on, so the file carries

@@ -13,6 +13,10 @@ use sm_topo_api::TopologyView;
 use crate::element::ElementType;
 use crate::error::FemError;
 use crate::layer::FemLayer;
+use crate::region::{
+    PlanItem, REGION_SET_PREFIX, RegionError, RegionSplit, RegionSummary, block_name_ok,
+    plan_regions,
+};
 
 /// Where a lowered set came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +28,8 @@ pub enum SetOrigin {
     Sideset,
     /// One side of a deck boundary.
     DeckFace,
+    /// A region of the export split (`region/<name>`, see [`crate::region`]).
+    Region,
 }
 
 /// A summary of one set added by [`lower`].
@@ -53,6 +59,9 @@ pub struct Lowered {
     pub sets: Vec<SetSummary>,
     /// Declared element type per emitted block set (by set name); blocks with none are absent.
     pub block_types: BTreeMap<String, ElementType>,
+    /// The regions of a split lowering ([`lower_split`]), in name order; empty otherwise. Each
+    /// has a set in `sets` with origin [`SetOrigin::Region`].
+    pub regions: Vec<RegionSummary>,
 }
 
 impl Lowered {
@@ -63,6 +72,7 @@ impl Lowered {
             decks: Vec::new(),
             sets: Vec::new(),
             block_types: BTreeMap::new(),
+            regions: Vec::new(),
         }
     }
 }
@@ -121,7 +131,137 @@ pub fn lower(
     blocks(model, m, fem, &mut pending)?;
     sidesets(model, m, fem, &mut pending)?;
     let decks = deck_sets(model, m, &mut pending);
+    assemble(mesh, alloc, pending, decks, Vec::new())
+}
 
+/// Errors of [`lower_split`]: the lowering's own, or the region split's.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SplitError {
+    /// [`lower`] failed.
+    #[error(transparent)]
+    Lower(#[from] FemError),
+    /// The split cannot be made.
+    #[error(transparent)]
+    Region(#[from] RegionError),
+}
+
+/// [`lower`], then one cell set `region/<name>` per region of `split` (see [`crate::region`]).
+///
+/// The block, sideset and deck sets are exactly those of [`lower`]; the region sets follow them,
+/// ordered by name. An empty `split` is [`lower`] itself. Every cell must be in a block, so each
+/// region has a block to be named after: cells of a volume without a tag in a requested part
+/// simply have no such part in the name.
+///
+/// # Errors
+/// [`SplitError::Region`] with [`RegionError::NeedBlocks`] when the blocks do not cover the mesh,
+/// [`RegionError::NameReserved`] for a block name with `@`, `/`, `[`, `]` or `,`,
+/// [`RegionError::Ambiguous`], [`RegionError::Instances`] (the model has instances); otherwise the errors of [`lower`].
+pub fn lower_split(
+    model: &ModelLayer,
+    mesh: &MeshEntry,
+    fem: &FemLayer,
+    alloc: &SerialAlloc,
+    split: &RegionSplit,
+) -> Result<Lowered, SplitError> {
+    if split.is_empty() {
+        return Ok(lower(model, mesh, fem, alloc)?);
+    }
+    if !model.model().instancing().instances.is_empty() {
+        return Err(RegionError::Instances.into());
+    }
+    let m = mesh.mesh();
+    let mut pending: Vec<Pending> = Vec::new();
+    blocks(model, m, fem, &mut pending)?;
+    sidesets(model, m, fem, &mut pending)?;
+    let decks = deck_sets(model, m, &mut pending);
+
+    let block_sets: Vec<&Pending> = pending
+        .iter()
+        .filter(|p| p.origin == SetOrigin::Block)
+        .collect();
+    if block_sets.is_empty() {
+        return Err(
+            RegionError::NeedBlocks("the model has no blocks (fem.block_add)".into()).into(),
+        );
+    }
+    if let Some(p) = block_sets.iter().find(|p| !block_name_ok(&p.name)) {
+        return Err(RegionError::NameReserved(p.name.clone()).into());
+    }
+    // Each cell has one volume with one color, so a cell is in at most one block set: the
+    // blocks cover the mesh exactly when their sizes sum to the cell count.
+    let covered: usize = block_sets.iter().map(|p| p.members.len()).sum();
+    let total = m.cell_count();
+    if covered != total {
+        let why = format!(
+            "{} of {total} cells are in no block",
+            total - covered.min(total)
+        );
+        return Err(RegionError::NeedBlocks(why).into());
+    }
+    let (md, topo) = (model.model(), model.topo());
+    // Tag of a live volume or overlay piece: its own, else that of a stored host volume whose
+    // cover contains it (the lowest host id), as `live_volume_color` does for colors.
+    let mut inherited: BTreeMap<EntityId, &sm_model_api::RegionTag> = BTreeMap::new();
+    for (k, t) in md.region_tags() {
+        if !topo.is_alive(*k) {
+            for x in topo.live_cover(*k) {
+                inherited.entry(x).or_insert(t);
+            }
+        }
+    }
+    let tag_of = |ent: EntityId| md.region_tag(ent).or_else(|| inherited.get(&ent).copied());
+    let mut groups: Vec<(&str, Option<&sm_model_api::RegionTag>, Vec<CellIx>)> = Vec::new();
+    for p in &block_sets {
+        let SetMembers::Cells(cells) = &p.members else {
+            continue;
+        };
+        let mut by_ent: BTreeMap<EntityId, Vec<CellIx>> = BTreeMap::new();
+        for &c in cells {
+            by_ent.entry(m.cell_class(c).entity).or_default().push(c);
+        }
+        for (ent, cs) in by_ent {
+            groups.push((p.name.as_str(), tag_of(ent), cs));
+        }
+    }
+    let plan = plan_regions(
+        split,
+        md.lattice_frames(),
+        groups.iter().map(|(b, t, c)| PlanItem {
+            block: b,
+            tag: *t,
+            cells: c,
+        }),
+    )?;
+    let mut summaries = Vec::with_capacity(plan.regions.len());
+    for r in plan.regions {
+        let name = r.name.format();
+        let set = format!("{REGION_SET_PREFIX}{name}");
+        let len = r.cells.len();
+        pending.push(Pending {
+            name: set.clone(),
+            members: SetMembers::Cells(r.cells),
+            label: None,
+            origin: SetOrigin::Region,
+            ty: None,
+        });
+        summaries.push(RegionSummary {
+            name,
+            set,
+            tags: r.tags,
+            len,
+        });
+    }
+    Ok(assemble(mesh, alloc, pending, decks, summaries)?)
+}
+
+fn assemble(
+    mesh: &MeshEntry,
+    alloc: &SerialAlloc,
+    pending: Vec<Pending>,
+    decks: Vec<DeckPlan>,
+    regions: Vec<RegionSummary>,
+) -> Result<Lowered, FemError> {
     if pending.is_empty() {
         return Ok(Lowered::identity(mesh));
     }
@@ -154,6 +294,7 @@ pub fn lower(
         decks: records,
         sets,
         block_types,
+        regions,
     })
 }
 
@@ -245,7 +386,10 @@ fn sidesets(
             continue;
         }
         let mut colors: Vec<EntityId> = md.live_face_color(ent, topo).into_iter().collect();
-        for src in [Some(ent), host_of.get(&ent).copied()].into_iter().flatten() {
+        for src in [Some(ent), host_of.get(&ent).copied()]
+            .into_iter()
+            .flatten()
+        {
             if let Some(cs) = extra.get(&src) {
                 colors.extend_from_slice(cs);
             }
