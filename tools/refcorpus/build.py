@@ -213,7 +213,12 @@ def build_entry(m: Manifest, e: Entry, out: Path) -> bool:
     if recipe == "openmc":
         run([str(openmc_python()), "-I", "-B", str(HERE / "gen_openmc.py"), e["id"], str(d)], out)
     elif recipe == "step":
-        run([str(freecadcmd()), str(HERE / "gen_step.py")], out, {"SM_RC_STEP_OUT": str(d), "SM_RC_STEP_IDS": e["id"]})
+        # FreeCAD's embedded Python ignores PYTHONDONTWRITEBYTECODE, so run a copy under out/ to keep
+        # bytecode out of the repository.
+        sd = out / ".scripts"
+        sd.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(HERE / "gen_step.py", sd / "gen_step.py")
+        run([str(freecadcmd()), str(sd / "gen_step.py")], out, {"SM_RC_STEP_OUT": str(d), "SM_RC_STEP_IDS": e["id"]})
     elif recipe == "beavrs":
         sup = next(s for s in m["support"] if s["source"] == "beavrs")
         src = cache_path(out, sup["repo"], sup["commit"], "models/openmc")
