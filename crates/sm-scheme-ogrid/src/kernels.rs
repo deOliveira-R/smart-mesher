@@ -212,8 +212,9 @@ pub struct AnnulusQuadParams {
 /// Circle nodes are equally spaced in angle but square nodes are equally spaced along each
 /// side, so unequal `m` entries (or a circle close to the square) can twist the radial lines.
 /// After construction every quad corner is checked; [`OgridError::Inverted`] is returned when any
-/// scaled Jacobian is `<= 0` or any node is non-finite. Balanced `m` (all equal) with the circle
-/// strictly inside the square never fails.
+/// scaled Jacobian is `<= 0` or any node is non-finite. Balanced `m` (all equal) with
+/// `phase_deg` = 45 (mod 360) and the circle strictly inside the square never fails; other phases
+/// twist the radial lines and may return `Inverted`.
 pub fn ogrid_annulus_quad(p: &AnnulusQuadParams) -> Result<PlanarMesh> {
     check_common(p.k, p.ratio, p.radius)?;
     let n: usize = p.m.iter().sum();

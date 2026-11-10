@@ -123,6 +123,17 @@ fn acc6_tangled_unbalanced_sides_are_rejected() {
 }
 
 #[test]
+fn acc6_balanced_guarantee_needs_phase_45() {
+    let run = |m, phase_deg, rr: f64| {
+        ogrid_annulus_quad(&AnnulusQuadParams { m, k: 2, ratio: 1.0, phase_deg, radius: rr, side: 2.0 })
+    };
+    let e = run([3; 4], 0.0, 0.5);
+    assert!(matches!(e, Err(sm_scheme_ogrid::OgridError::Inverted(_))), "{e:?}");
+    let ok = run([3; 4], 45.0, 0.999).unwrap();
+    assert!(ok.min_scaled_jacobian() > 0.0);
+}
+
+#[test]
 fn acc6_square_annulus_area() {
     for (m, k) in [([3, 3, 3, 3], 2), ([4, 4, 4, 4], 3), ([3, 4, 3, 4], 2)] {
         let n: usize = m.iter().sum();
