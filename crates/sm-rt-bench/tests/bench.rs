@@ -215,7 +215,7 @@ fn trackers_are_interleaved_abab_per_repetition() {
 }
 
 fn env(cpu: &str, day: &str, os: &str, arch: &str) -> Env {
-    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into() }
+    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: "none".into() }
 }
 
 fn file(case: &str, tracker: &str, e: Env, failed: usize) -> ResultFile {
