@@ -132,8 +132,16 @@ experimental until a SEACAS reader confirms it.
   `num_fa_blk`, `num_face`, `fa_status`, `fa_prop1` (`name = "ID"`), `fa_names`.
 * Names follow `exodusII.h` as recalled (`DIM_NUM_FAC_PER_EL` = `num_fac_per_el%d`,
   `DIM_NUM_FA_IN_FBLK` = `num_fa_in_blk%d`, `VAR_FCONN` = `facconn%d`, `VAR_FBCONN` = `fbconn%d`).
-  Still not checked against SEACAS sources (none reachable here); a real libexodus/ParaView
-  read-back is the open verification.
+  Still not checked against SEACAS sources or a libexodus read-back (no `exodiff`/`epu` on the
+  host).
+* **W4-EXO-VERIFY result (2026-11-09).** libMesh 1.9.0-pre `meshtool-opt` (moose env) reads our
+  non-polyhedral control file and refuses the `NFACED` dual patch:
+  `map_find() error: key "NFACED" not found` (`exodusII_io_helper.C:560`, `get_conversion`). So
+  MOOSE/Griffin through Exodus cannot read our polyhedra; the mark stays experimental.
+  `tests/libmesh.rs` pins both outcomes and skips when the tool is missing (`SM_LIBMESH_BIN`
+  overrides the path; the binary needs `DYLD_LIBRARY_PATH` for `libnglib`, which the test sets).
+  If a later libMesh accepts `NFACED`, that test fails by design and the check becomes equal
+  faces per cell and volumes to 1e-12.
 * `int64_status` is the SEACAS `EX_*_INT64_DB` bitmask (maps 0x0400, ids 0x0800, bulk 0x1000, all 0x1C00; the
   inquiry flag 0x10000 is API-only and never stored); with `int64 = true` we write 7168 (0x1C00).
 * Side numbers of polygons and polyhedra are `u32` (position in the face list).
