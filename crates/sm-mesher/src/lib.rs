@@ -28,9 +28,9 @@ mod mesh_ops;
 mod plan_query;
 
 pub use auto::{
-    AutoInput, AutoLists, AutoStrategy, DEFAULT_STRATEGY, DefaultStrategy, MeshAuto,
-    MeshAutoStrategiesQuery, SchemeAssignment, StrategiesInfo, StrategyInfo, StrategyRegistry,
-    replan_budget,
+    AutoInput, AutoLists, AutoStrategy, DEFAULT_STRATEGY, DefaultStrategy, HEX_ONLY_STRATEGY,
+    MeshAuto, MeshAutoStrategiesQuery, SchemeAssignment, StrategiesInfo, StrategyInfo,
+    StrategyRegistry, TET_STRATEGY, replan_budget,
 };
 pub use census::{CensusOutcome, CensusReport, CensusRow, census};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};

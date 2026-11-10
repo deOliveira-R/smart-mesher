@@ -47,6 +47,9 @@ pub struct MeshInfo {
     pub geometry_hash: String,
     /// Total volume of the cells (area for a surface mesh), summed in a fixed order.
     pub volume: f64,
+    /// Volume (area for a surface mesh) of the cells by the model entity they are classified on,
+    /// ascending by id; each sum is taken in a fixed order, so it does not depend on thread count.
+    pub volume_by_owner: BTreeMap<EntityId, f64>,
     /// Candidates the final plan evaluated and passed over (`plan.attempts`).
     pub attempts: usize,
     /// Failures that caused a re-plan (`plan.rejections`).
@@ -68,6 +71,30 @@ fn total_volume(m: &dyn MeshRead) -> f64 {
         })
         .collect();
     parts.into_iter().sum()
+}
+
+/// Cell volumes summed per classifying entity: fixed chunks (cells in index order) reduced in
+/// parallel, then merged in chunk order.
+fn volume_by_owner(m: &dyn MeshRead) -> BTreeMap<EntityId, f64> {
+    let n = m.count(MeshEntityKind::Cell);
+    let parts: Vec<BTreeMap<EntityId, f64>> = (0..n.div_ceil(CHUNK))
+        .into_par_iter()
+        .map(|c| {
+            let mut acc: BTreeMap<EntityId, f64> = BTreeMap::new();
+            for i in c * CHUNK..((c + 1) * CHUNK).min(n) {
+                let ix = CellIx(i as u32);
+                *acc.entry(m.cell_class(ix).entity).or_default() += cell_volume(m, ix);
+            }
+            acc
+        })
+        .collect();
+    let mut out: BTreeMap<EntityId, f64> = BTreeMap::new();
+    for part in parts {
+        for (k, v) in part {
+            *out.entry(k).or_default() += v;
+        }
+    }
+    out
 }
 
 impl TypedQuery for MeshInfoQuery {
@@ -103,6 +130,7 @@ impl TypedQuery for MeshInfoQuery {
             topology_hash: format!("{:016x}", topology_hash(m)),
             geometry_hash: format!("{:016x}", geometry_hash_quantized(m, &e.quanta)),
             volume: total_volume(m),
+            volume_by_owner: volume_by_owner(m),
             attempts: e.plan.as_ref().map_or(0, |p| p.attempts.len()),
             rejections: e.plan.as_ref().map_or(0, |p| p.rejections.len()),
         })
