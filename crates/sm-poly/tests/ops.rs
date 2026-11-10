@@ -256,7 +256,8 @@ fn registration_shape_matches_the_contract() {
     assert_eq!(schema["required"], json!(["mesh"]));
     assert_eq!(schema["properties"]["mesh"]["x-entity-kind"], json!(["Mesh"]));
     assert!(schema["properties"].get("keep_source").is_some());
-    assert_eq!(schema["properties"].as_object().unwrap().len(), 2, "no `targets`, `faces` or `agglomerate`");
+    assert!(schema["properties"].get("dual").is_some(), "W4-POLY-VORO adds `dual`");
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 3, "mesh, keep_source, dual: no `targets`, `faces` or `agglomerate`");
     assert_eq!(info.outputs.len(), 1);
     assert_eq!((info.outputs[0].name, info.outputs[0].kinds), ("mesh", &[EntityKind::Mesh][..]));
     assert_eq!(info.outputs[0].cardinality, sm_op_api::Cardinality::One);

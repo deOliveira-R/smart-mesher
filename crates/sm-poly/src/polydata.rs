@@ -70,6 +70,29 @@ pub(crate) struct Counts {
     /// Dual cells split into wedges, and the wedges they became.
     pub split_cells: usize,
     pub wedges: usize,
+    /// Circumcentric: used virtual points merged into another point, and faces dropped because
+    /// welding left them without area.
+    pub welded_points: usize,
+    pub zero_faces: usize,
+}
+
+/// Drop consecutive repeated points of a cyclic loop; true if at least three remain.
+fn dedupe_loop(lp: &mut SmallVec<[u32; 32]>) -> bool {
+    lp.dedup();
+    while lp.len() > 1 && lp[0] == lp[lp.len() - 1] {
+        lp.pop();
+    }
+    lp.len() >= 3
+}
+
+/// The loop has exactly zero Newell area (collinear points, as welded lattice faces can have).
+fn has_zero_area(pts: &[V3], lp: &[u32]) -> bool {
+    let mut n = [0.0; 3];
+    for i in 0..lp.len() {
+        let c = geom::cross(pts[lp[i] as usize], pts[lp[(i + 1) % lp.len()] as usize]);
+        n = [n[0] + c[0], n[1] + c[1], n[2] + c[2]];
+    }
+    n == [0.0; 3]
 }
 
 /// Number the used points and record faces and cells in `(region, vertex)` order (the wedges
@@ -113,12 +136,34 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
     for &p in &prep.fan_pts {
         used[p as usize] = true;
     }
+    let mut counts = Counts::default();
+    if prep.circumcentric() {
+        // Move every used id onto its weld anchor (which becomes used).
+        let before = used.iter().filter(|u| **u).count();
+        for vid in 0..prep.anchor.len() {
+            let a = prep.anchor[vid] as usize;
+            if used[vid] && a != vid {
+                used[vid] = false;
+                used[a] = true;
+            }
+        }
+        counts.welded_points = before - used.iter().filter(|u| **u).count();
+    }
+    let n_tet_pts = used[..nt].iter().filter(|u| **u).count() as u32;
     let mut num = vec![NONE; used.len()];
     let mut npts = 0u32;
     for (i, &u) in used.iter().enumerate() {
         if u {
             num[i] = npts;
             npts += 1;
+        }
+    }
+    if prep.circumcentric() {
+        for vid in 0..prep.anchor.len() {
+            let a = prep.anchor[vid] as usize;
+            if a != vid {
+                num[vid] = num[a];
+            }
         }
     }
     let mut d = PolyData {
@@ -134,7 +179,7 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
         c_region: Vec::with_capacity(nc),
         c_alive: Vec::new(),
         regions: prep.regions.clone(),
-        n_tet_pts: nt as u32,
+        n_tet_pts,
     };
     for (vid, _) in used.iter().enumerate().filter(|(_, u)| **u) {
         d.pts.push(prep.coord(vid as u32));
@@ -142,7 +187,6 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
     }
     let nm = |vid: u32| num[vid as usize];
 
-    let mut counts = Counts::default();
     let mut slot_face: Vec<(u32, u32)> = vec![(NONE, 0); ns];
     let mut c_key: Vec<u32> = Vec::with_capacity(nc);
     // Interface polygons by canonical point cycle -> (face, runs canonical).
@@ -152,6 +196,8 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
     let mut cell_faces: Vec<SignedFace> = Vec::new();
     // Faces between the wedges of the current cell: (face, left wedge, right wedge).
     let mut seps: Vec<(u32, u32, u32)> = Vec::new();
+    // Interface polygons already counted as zero-area (a polygon is seen by both its cells).
+    let mut zero_shared: std::collections::BTreeSet<SmallVec<[u32; 32]>> = std::collections::BTreeSet::new();
     for cell in 0..nc {
         let slots = prep.slots_of_cell(cell);
         for &s in slots {
@@ -214,6 +260,15 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
                 }
                 lp.clear();
                 lp.extend(pts.iter().map(|&p| nm(p)));
+                if prep.circumcentric() {
+                    let key = canonical_cycle(&lp).0;
+                    if !dedupe_loop(&mut lp) || has_zero_area(&d.pts, &lp) {
+                        if !fm.iface || zero_shared.insert(key) {
+                            counts.zero_faces += 1;
+                        }
+                        continue;
+                    }
+                }
                 let sf = if fm.iface {
                     let (key, fwd) = canonical_cycle(&lp);
                     match shared.get(&key) {
@@ -393,6 +448,10 @@ fn emit_slot(
         if m.open {
             lp.push(nm(p.p_mid(e)));
         }
+        if p.circumcentric() && (!dedupe_loop(lp) || has_zero_area(&d.pts, lp)) {
+            counts.zero_faces += 1;
+            return 0;
+        }
         d.push_face(lp, None);
         return 1;
     }
@@ -520,4 +579,6 @@ pub(crate) fn fill_report(rep: &mut DualReport, counts: &Counts, prep: &Prep<'_>
     rep.split_fans = prep.split_fans;
     rep.split_cells = counts.split_cells;
     rep.wedges = counts.wedges;
+    rep.welded_points = counts.welded_points;
+    rep.zero_faces = counts.zero_faces;
 }

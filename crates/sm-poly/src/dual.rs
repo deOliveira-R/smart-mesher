@@ -3,10 +3,11 @@
 use crate::agglom;
 use crate::concave::{self, Split};
 use crate::error::PolyError;
-use crate::options::{DualReport, PolyOptions};
+use crate::options::{DualPoints, DualReport, PolyOptions};
 use crate::polydata;
 use crate::prep::Prep;
 use crate::resolver::EdgeResolver;
+use crate::measure;
 use crate::stats;
 use sm_mesh_api::{
     Finished, MeshBuild, MeshDim, MeshEntityKind, MeshError, MeshRead, SerialAlloc, TagValues, VertexIx,
@@ -42,7 +43,10 @@ pub fn dualize<B: MeshBuild>(
     b: B,
     alloc: &mut SerialAlloc,
 ) -> Result<(Finished<B::Output>, DualReport), PolyError> {
-    dualize_with_rounds(src, opts, edges, b, alloc, MAX_SPLIT_ROUNDS)
+    // No wedge repair in the circumcentric dual: its faces run through circumcentres, and a
+    // wedge rebuilds a cell from centroids (see `DESIGN.md`). A failing cell is refused.
+    let rounds = if opts.dual == DualPoints::Circumcentric { 0 } else { MAX_SPLIT_ROUNDS };
+    dualize_with_rounds(src, opts, edges, b, alloc, rounds)
 }
 
 /// [`dualize`] with an explicit cap on the concave-cell repair rounds (`0` disables the repair,
@@ -59,7 +63,19 @@ pub fn dualize_with_rounds<B: MeshBuild>(
     if b.dim() != MeshDim::Three || b.vertex_count() != 0 || b.face_count() != 0 || b.cell_count() != 0 {
         return Err(PolyError::Mesh(MeshError::State("dualize needs a fresh dimension-3 builder".into())));
     }
-    let mut prep = Prep::build(src, opts.faces, edges)?;
+    // The strict gate runs first (exact predicates on the source alone); a mesh that is not
+    // all-tet skips it and `Prep::build` refuses it.
+    if opts.dual == DualPoints::Circumcentric
+        && let Some(el) = measure::dual_eligibility(src)
+        && el.non_delaunay_faces + el.outside_circumcentres > 0
+    {
+        return Err(PolyError::NotOrthogonalDual {
+            non_delaunay_faces: el.non_delaunay_faces,
+            outside_circumcentres: el.outside_circumcentres,
+            first_at: measure::first_violation(src).unwrap_or([0.0; 3]),
+        });
+    }
+    let mut prep = Prep::build(src, opts.faces, edges, opts.dual)?;
     let want_edges = opts.edges.unwrap_or_else(|| src.edges().is_some());
     let mut split = Split::default();
     let mut round = 0;
@@ -126,6 +142,19 @@ pub fn dualize_with_rounds<B: MeshBuild>(
     polydata::commit(&data, &mut b, want_edges)?;
     if rep.split_cells > 0 {
         b.add_tag(stats::WEDGE_TAG, MeshEntityKind::Cell, TagValues::I64(wedge_tags))?;
+    }
+    if opts.dual == DualPoints::Circumcentric {
+        // The generator of each output cell: the primal vertex its dual cell belongs to.
+        let gen_of = |c: usize| {
+            let v = prep.ckeys[c_key[c] as usize] as u32 as usize;
+            let co = src.coords();
+            [co.x[v], co.y[v], co.z[v]]
+        };
+        let alive: Vec<usize> = (0..data.n_cells()).filter(|&c| data.c_alive[c]).collect();
+        for (k, name) in stats::GENERATOR_TAGS.iter().enumerate() {
+            let col: Vec<f64> = alive.iter().map(|&c| gen_of(c)[k]).collect();
+            b.add_tag(name, MeshEntityKind::Cell, TagValues::F64(col))?;
+        }
     }
     let fin = b.finish(alloc)?;
     rep.cells = data.c_alive.iter().filter(|a| **a).count();

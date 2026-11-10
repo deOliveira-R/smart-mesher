@@ -21,6 +21,30 @@ pub enum FaceMode {
     Keep,
 }
 
+/// Which points the dual cells are built through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DualPoints {
+    /// Tet centroids, boundary-triangle centroids and edge midpoints (the median dual; valid on
+    /// any tet mesh, faces are made planar by hub triangles). The default.
+    #[default]
+    Barycentric,
+    /// Tet and boundary-triangle circumcentres and edge midpoints (the Voronoi dual). Every dual
+    /// face lies in the bisector plane of its two generators, so cells are planar, convex and
+    /// orthogonal with one face per neighbour pair. Strict: a mesh that is not locally Delaunay,
+    /// or whose circumcentres leave their region, is refused with
+    /// [`PolyError::NotOrthogonalDual`](crate::PolyError::NotOrthogonalDual).
+    Circumcentric,
+}
+
+impl DualPoints {
+    /// True for the default ([`DualPoints::Barycentric`]); used to omit the field when serializing.
+    pub fn is_default(&self) -> bool {
+        *self == Self::Barycentric
+    }
+}
+
 /// Options of [`dualize`](crate::dualize).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -42,12 +66,21 @@ pub struct PolyOptions {
     /// broken); `mesh.to_poly` turns it on.
     #[serde(default)]
     pub all_polyhedra: bool,
+    /// Dual-point rule (default [`DualPoints::Barycentric`]; omitted from the serialized form
+    /// when default, so existing parameter hashes do not move).
+    #[serde(default, skip_serializing_if = "DualPoints::is_default")]
+    pub dual: DualPoints,
 }
 
 impl PolyOptions {
     /// Set [`PolyOptions::all_polyhedra`].
     pub fn with_all_polyhedra(mut self, all_polyhedra: bool) -> Self {
         self.all_polyhedra = all_polyhedra;
+        self
+    }
+    /// Set the dual-point rule.
+    pub fn with_dual(mut self, dual: DualPoints) -> Self {
+        self.dual = dual;
         self
     }
     /// The defaults: [`FaceMode::Planar`], edge table iff the source has one.
@@ -153,4 +186,16 @@ pub struct DualReport {
     pub min_cell_volume: f64,
     /// Sum of cell volumes.
     pub total_volume: f64,
+    /// Circumcentric dual: virtual points merged into another point because they coincide
+    /// exactly (cospherical tets, a boundary triangle whose circumcentre is an edge midpoint or
+    /// lies in the plane of its tet). 0 in the barycentric dual.
+    pub welded_points: usize,
+    /// Circumcentric dual: dual faces dropped because welding left fewer than three distinct
+    /// points (zero area). An interface polygon counts once. 0 in the barycentric dual.
+    pub zero_faces: usize,
+    /// Locally non-Delaunay interior faces of the source (0 on success; a circumcentric dual
+    /// refuses otherwise).
+    pub non_delaunay_faces: usize,
+    /// Tets whose circumcentre lies outside their region (0 on success).
+    pub outside_circumcentres: usize,
 }

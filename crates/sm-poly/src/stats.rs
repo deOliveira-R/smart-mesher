@@ -16,6 +16,11 @@ pub(crate) const CHUNK: usize = 2048;
 /// split.
 pub const WEDGE_TAG: &str = "poly.wedges";
 
+/// Names of the three `f64` cell tag columns (x, y, z) that a circumcentric dual adds: the
+/// generator point of each cell, the primal vertex whose Voronoi cell it is. The face between two
+/// cells lies in the bisector plane of their generators.
+pub const GENERATOR_TAGS: [&str; 3] = ["poly.generator.x", "poly.generator.y", "poly.generator.z"];
+
 /// Minimum, mean and maximum of a count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Spread {
