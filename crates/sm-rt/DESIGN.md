@@ -384,8 +384,14 @@ falls back to the full scan. Not indexed: `on_face_any` (a complement point repo
 surface of the whole leaf within the band, including the plane of a distant cell), `enter_from_outside`
 and the `Wrap` neighbour search (CSR). Known limit: two surfaces with identical geometry that
 only one cell names can pick a different surface id for the same event than the oracle (the
-distance and the next cell are equal);. P2 (flattened,
-3 x 3 x 9 pins, 324 surfaces): 22 surface evaluations per complement step against 326.
+distance and the next cell are equal).
+
+Measured counters (surface evaluations per complement step, indexed vs all-surfaces oracle):
+P2 (`pin_assembly(3)` flattened: 81 pins, 162 cells, 324 surfaces) 22 against 326. Reduced
+(n=2, 144 surfaces) 20.8 against 146.1. Full scale (n=17: 5202 cells, 10404 surfaces, 2500
+tiles, index build about 3 ms) 24.7 against 10406.8 (re-measured 25.3 against 10406.8).
+`slow_locates` per segment: 0 indexed against 0.22 to 0.26 for the oracle, with 0 mismatched
+event sequences.
 
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
