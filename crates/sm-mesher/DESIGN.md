@@ -26,6 +26,8 @@ fields arrive through the `MesherConfig` service, so this crate names no scheme 
 | `mesh.size`, `mesh.intervals`, `mesh.scheme`, `mesh.default_size` | edit the intent. |
 | `mesh.run`, `mesh.delete` | the driver node; `insert_mesh` / `retire_mesh` of `sm-layer-api`. |
 | `mesh.info` | query: counts by shape, topology hash, quantized geometry hash, total volume, `stale`. |
+| `mesh.preserve_volume` | op (W4-HEX-VOLFIT, ruling D4): moves the nodes of circular edges or cylinder faces radially to the equal-area radius so linear round regions hold the volume of the cylinder; opt-in, not idempotent, wedge-exact between sector cuts. |
+| `mesh.decompose_plan` | query: the webcut steps (`sm-decomp`) that make round-cavity volumes sweepable, per volume (`cuts`, `no_cuts`, `no_decomposition`); read-only, nothing is cut. |
 | `mesh.plan` | query: explain what ran (`mesh`) or will run (`targets`): scheme per entity and why, interval counts and their source, `plan_hash`, `blockers`. `explain_plan` is the pure core. |
 
 ## IntentLayer
@@ -290,7 +292,7 @@ Automatic scheme choice is a **pluggable strategy that is consulted once and sto
   never looks up a strategy, so replay calls no strategy and swapping or deleting a strategy
   cannot move a recorded hash. The effect equals one hard `mesh.scheme` per assignment (same
   intent, same hash). Targets that already have an intent scheme are never in the answer.
-* `DefaultStrategy` lists: surface `[map, submap, pave, trimesh]`, volume `[map, sweep,
+* `DefaultStrategy` lists: surface `[map, ogrid, submap, pave, trimesh]`, volume `[map, sweep,
   tetmesh]`, curve `[equal]` (names not registered are dropped). It installs them as
   `defaults.auto` on a copy of the intent, plans, and meshes into a scratch mesh through the
   driver's replan loop, so a candidate that only fails at generation is rejected and replaced
@@ -317,6 +319,11 @@ Automatic scheme choice is a **pluggable strategy that is consulted once and sto
   volume's `map` is rejected and it falls to `sweep` from the shared triangle face: cells
   `{Tet: 160, Wedge: 32}`, volume 16, conformal, validator empty. An all-tet fill needs an
   explicit `tetmesh` (or a future `tet` strategy).
+* Strategies `hex_only` (surface `[map, ogrid, submap, pave]`, volume `[map, sweep]`, no tet candidate)
+  and `tet` (`[trimesh]`, `[tetmesh]`, no `mesh.auto_tet` warning). When `hex_only` fails, the error
+  ends with a cut hint: for each target volume where `mesh.decompose_plan` returns `cuts`, the
+  steps as one line of `model.webcut_*` calls, to apply, then `model.imprint` and `model.merge`.
+  `ogrid` (ruling D5) is in `default` and `hex_only`; it wins on disks and circle annuli (score 70).
 * Warning `mesh.auto_tet` per volume the strategy gave a tet mesher, listing why the earlier
   candidates were passed over and ending with the fix. Query `mesh.auto_strategies`.
 * `standard_schemes` lists are untouched (strict), so a run without `mesh.auto` has the same
