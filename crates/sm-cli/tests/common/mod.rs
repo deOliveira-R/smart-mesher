@@ -11,7 +11,44 @@ use sm_cli::{Io, Settings, run};
 use sm_op_api::{Hash256, Head};
 use sm_protocol::{Endpoint, Request, RpcError, StatusResult};
 
-pub type Reply = Box<dyn FnMut(&Request) -> Result<Value, RpcError>>;
+/// A scratch directory under `CARGO_TARGET_TMPDIR`, removed on drop (pass or fail).
+pub struct Scratch(pub std::path::PathBuf);
+
+impl Scratch {
+    /// Wipe and create `$CARGO_TARGET_TMPDIR/<name>`.
+    pub fn new(name: &str) -> Self {
+        let d = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("scratch dir");
+        Self(d)
+    }
+
+    /// Guard a directory without creating it (a tree that a test fills lazily).
+    pub fn guard(d: std::path::PathBuf) -> Self {
+        Self(d)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for Scratch {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub type Reply =Box<dyn FnMut(&Request) -> Result<Value, RpcError>>;
 
 /// Records every request; answers with `reply`.
 pub struct Fake {

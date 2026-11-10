@@ -21,6 +21,7 @@
 //! | M9 | CLI, MCP, in-process and Python state hashes and files equal |
 //! | M10 | default threads and `RAYON_NUM_THREADS=1` equal |
 
+mod common;
 mod w3a_support;
 
 use std::collections::BTreeMap;
@@ -289,6 +290,7 @@ fn floats(p: &Prints, k: &str) -> R<Vec<f64>> {
 
 #[test]
 fn milestone_w3b() {
+    let _root = common::Scratch::guard(Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("milestone_w3b-{}", std::process::id())));
     let mut rows = Rows::default();
     let t0 = Instant::now();
     let mut timings: Vec<(String, f64)> = Vec::new();
@@ -726,7 +728,7 @@ mod viewer {
     /// Node protocol path runs alone and the skip is printed.
     #[test]
     fn viewer_live_smoke() {
-        let dir = scratch("viewer");
+        let dir = common::Scratch::new(&format!("milestone_w3b-{}-viewer", std::process::id()));
         let proj = dir.join("proj");
         ok_text(&["new", &ts(&proj)], Some(&dir), Threads::Inherit).expect("new");
         let out = ok_text(&["-p", &ts(&proj), "run", &ts(&script_path()), "--author", AUTHOR, "--fixed-time", TIME], Some(&dir), Threads::Inherit).expect("run");

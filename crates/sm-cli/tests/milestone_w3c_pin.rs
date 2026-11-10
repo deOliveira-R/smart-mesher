@@ -24,6 +24,7 @@
 //! | P10 | two runs and `RAYON_NUM_THREADS=1` vs default equal |
 //! | P11 | the state hashes pinned below (new hashes, blessed on macOS arm64 on the INT commit) |
 
+mod common;
 mod w3a_support;
 
 use std::collections::BTreeMap;
@@ -33,7 +34,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use sm_protocol::{Endpoint, ExportFormat, ExportResult, Request};
-use sm_rt_api::Tracker;
+use sm_rt_api::{CellId, Tracker};
 use sm_server::{Server, standard_with};
 
 use w3a_support::*;
@@ -198,11 +199,15 @@ fn mcp_front(script: &str, name: &str, files: &[&str], export: &str) -> R<Mcp> {
 
 /// An in-process server with the script run in it.
 fn in_process_server(script: &str, name: &str) -> R<(Server, Value, PathBuf)> {
-    let dir = scratch(name);
+    in_process_text(&script_text(script), &scratch(name))
+}
+
+/// An in-process server in `dir/proj` with `text` run in it.
+fn in_process_text(text: &str, dir: &Path) -> R<(Server, Value, PathBuf)> {
     let proj = dir.join("proj");
     let mut s = Server::create(standard_with(Some(AUTHOR.into()), Some(TIME.into())), &proj, "w3c").map_err(e)?;
     let v = s
-        .call(Request::ScriptRun { text: script_text(script), path: None, includes: Default::default() })
+        .call(Request::ScriptRun { text: text.to_owned(), path: None, includes: Default::default() })
         .map_err(|x| format!("script.run: {x} {}", x.data["rendered"].as_str().unwrap_or("")))?;
     Ok((s, v, proj))
 }
@@ -287,6 +292,37 @@ fn region_names(smrt: &Path) -> R<Vec<String>> {
     Ok(loaded.regions().0.iter().map(|r| r.name.clone()).collect())
 }
 
+/// Volume per region of a `.smrt`, summed from the tracker's cell volumes (regions in table order).
+fn region_volumes(smrt: &Path) -> R<Vec<(String, f64)>> {
+    let image = sm_rt::read_smrt(&read_bytes(smrt)?).map_err(e)?;
+    let loaded = sm_rt::load_image(&image).map_err(e)?;
+    let mut vols = vec![0.0; loaded.regions().0.len()];
+    for c in 0..loaded.info().cells {
+        let id = CellId::new(c);
+        let r = loaded.cell_region(id).ok_or_else(|| format!("cell {c} has no region"))?;
+        vols[r.get()] += loaded.cell_volume(id).ok_or_else(|| format!("cell {c} has no volume"))?;
+    }
+    Ok(loaded.regions().0.iter().zip(vols).map(|(r, v)| (r.name.clone(), v)).collect())
+}
+
+/// The side count `n` of the regular polygon inscribed in radius `r` whose prism of height `h`
+/// has volume `v`: `v = (n/2) r^2 sin(2 pi / n) h`, matched to 1e-9 relative. `None` unless
+/// exactly one `n` in 3..=256 fits.
+fn polygon_sides(v: f64, r: f64, h: f64) -> Option<usize> {
+    let fits: Vec<usize> = (3..=256usize)
+        .filter(|&n| {
+            let want = 0.5 * n as f64 * r * r * (2.0 * std::f64::consts::PI / n as f64).sin() * h;
+            (v - want).abs() <= 1e-9 * want
+        })
+        .collect();
+    (fits.len() == 1).then(|| fits[0])
+}
+
+/// With `CI=true` a missing Python wheel (maturin) is a failure, not a skip.
+fn python_skip_is_fatal(ci: Option<&str>) -> bool {
+    ci == Some("true")
+}
+
 fn auto_tet_warnings(run: &Value) -> usize {
     run["events"]
         .as_array()
@@ -297,6 +333,44 @@ fn auto_tet_warnings(run: &Value) -> usize {
 fn floats(p: &Prints, k: &str) -> R<f64> {
     let s = one(p, k)?;
     s.parse::<f64>().map_err(|x| format!("{k}: {s}: {x}"))
+}
+
+// ------------------------------------------------------------------ hygiene rows
+
+/// The no-blocks fixture: a meshed brick and no `fem.block_add`.
+const NO_BLOCKS: &str = "let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)\n\
+    mesh.size(targets: all volumes, size: 0.3)\n\
+    mesh.auto(strategy: \"default\")\n\
+    let m = mesh.run(targets: all volumes)\n\
+    print \"mesh\", m.mesh[0]\n";
+
+/// A model with no blocks exports a `.smrt` named by volume id, with the `smrt-region-names`
+/// warning that says there are no blocks (the other branch of the fallback than the left-out row).
+#[test]
+fn a_model_with_no_blocks_exports_with_volume_names_and_a_warning() {
+    let root = common::Scratch::new(&format!("milestone_w3c_pin-{}-noblocks", std::process::id()));
+    let (mut s, _, proj) = in_process_text(NO_BLOCKS, &root).expect("no-blocks run");
+    let r = export_in_process(&mut s, &proj.join("n.smrt"), None, false).expect("export");
+    assert!(r.notes.len() == 1 && r.notes[0].is_warning() && r.notes[0].code == "smrt-region-names", "{:?}", r.notes);
+    assert!(r.notes[0].detail.contains("no blocks"), "{:?}", r.notes);
+    let names = region_names(&proj.join("n.smrt")).expect("regions");
+    assert!(!names.is_empty() && names.iter().all(|n| n.starts_with("TopoVolume#")), "{names:?}");
+}
+
+#[test]
+fn a_missing_python_wheel_is_fatal_only_under_ci() {
+    assert!(python_skip_is_fatal(Some("true")));
+    assert!(!python_skip_is_fatal(Some("false")) && !python_skip_is_fatal(Some("")) && !python_skip_is_fatal(None));
+}
+
+/// The side count is recovered exactly from an analytic volume (r = 0.4, H = 1).
+#[test]
+fn polygon_sides_inverts_the_inscribed_polygon_volume() {
+    for n in [4usize, 8, 12, 16, 32] {
+        let v = 0.5 * n as f64 * 0.16 * (2.0 * std::f64::consts::PI / n as f64).sin();
+        assert_eq!(polygon_sides(v, 0.4, 1.0), Some(n));
+    }
+    assert_eq!(polygon_sides(std::f64::consts::PI * 0.16, 0.4, 1.0), None, "the true disk is no n-gon");
 }
 
 // ------------------------------------------------------------------ the milestone
@@ -356,6 +430,27 @@ fn milestone_w3c_pin() {
     match region_names(&dir) {
         Ok(names) => rows.eq(4, "regions of pin.smrt are the blocks", &names, &vec!["fuel".to_owned(), "moderator".to_owned()]),
         Err(x) => rows.fail(4, format!("pin.smrt: {x}")),
+    }
+    // P4, per block: each fuel pin is an inscribed n-gon prism (analytic, not only the total),
+    // and the blocks sum to the lattice.
+    match region_volumes(&dir) {
+        Ok(v) => {
+            let fuel = v.iter().find(|(n, _)| n == "fuel").map(|x| x.1);
+            let moderator = v.iter().find(|(n, _)| n == "moderator").map(|x| x.1);
+            match fuel.and_then(|f| polygon_sides(f / 9.0, 0.4, 1.0)) {
+                Some(n) => {
+                    rows.note(4, format!("fuel pin is a {n}-gon prism: volume (n/2) r^2 sin(2 pi / n) H"));
+                    rows.check(4, n % 4 == 0, || format!("fuel polygon has {n} sides (not a multiple of 4)"));
+                }
+                None => rows.fail(4, format!("fuel volume per pin {:?} matches no (n/2) r^2 sin(2 pi / n) H to 1e-9", fuel.map(|f| f / 9.0))),
+            }
+            if let (Some(f), Some(m)) = (fuel, moderator) {
+                rows.near(4, "fuel + moderator", f + m, 9.0 * 1.26 * 1.26, 1e-9);
+            } else {
+                rows.fail(4, format!("regions of pin.smrt: {v:?}"));
+            }
+        }
+        Err(x) => rows.fail(4, format!("pin.smrt volumes: {x}")),
     }
 
     // ---------------- project exports: no warning on stderr (P4), OpenFOAM with and without the flag (P6)
@@ -482,9 +577,14 @@ fn milestone_w3c_pin() {
     let pyr = match &py {
         Ok(Ok(p)) => Some(timed!("Python driver", python_run(p))),
         Ok(Err(reason)) => {
-            println!("SKIP P5/P6/P9 Python rows (wheel): {reason}");
+            let fatal = python_skip_is_fatal(std::env::var("CI").ok().as_deref());
+            println!("{} P5/P6/P9 Python rows (wheel): {reason}", if fatal { "FAIL" } else { "SKIP" });
             for row in [5, 6, 9] {
-                rows.note(row, format!("Python skipped: {reason}"));
+                if fatal {
+                    rows.fail(row, format!("Python wheel unavailable under CI=true: {reason}"));
+                } else {
+                    rows.note(row, format!("Python skipped: {reason}"));
+                }
             }
             None
         }
@@ -624,8 +724,8 @@ fn milestone_w3c_pin() {
                 Ok(n) => rows.eq(8, "enclosed.smrt regions are the blocks", &n, &vec!["fuel".to_owned(), "moderator".to_owned()]),
                 Err(x) => rows.fail(8, format!("enclosed.smrt: {x}")),
             }
-            for k in KEYS {
-                rows.eq(8, &format!("enclosed {k} pinned"), &h(f, k).unwrap_or_default(), &ENCLOSED_HASHES[KEYS.iter().position(|x| *x == k).unwrap_or(0)].to_owned());
+            for (i, k) in KEYS.iter().enumerate() {
+                rows.eq(8, &format!("enclosed {k} pinned"), &h(f, k).unwrap_or_default(), &ENCLOSED_HASHES[i].to_owned());
             }
         }
         (a, b) => rows.fail(8, format!("enclosed runs: {:?} {:?}", a.as_ref().err(), b.as_ref().err())),

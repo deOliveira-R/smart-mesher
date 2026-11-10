@@ -2,18 +2,18 @@
 //! (`sm-server` endpoint methods, `sm-model`, `sm-mesher`, ...). The integration phase's `milestone*.rs` files cover §4 of the plan;
 //! these exercise each command once.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::process::{Command, Output};
 
+use common::Scratch;
 use serde_json::Value;
 
 const PIN: [&str; 4] = ["--author", "it", "--fixed-time", "2026-10-24T00:00:00Z"];
 
-fn tmp(name: &str) -> PathBuf {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("smesh-full-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
+fn tmp(name: &str) -> Scratch {
+    Scratch::new(&format!("smesh-full-{}-{name}", std::process::id()))
 }
 
 fn smesh(args: &[&str], cwd: Option<&Path>) -> Output {
@@ -241,4 +241,44 @@ fn new_creates_a_project_instead_of_open_unsupported() {
         String::from_utf8_lossy(&o.stderr)
     );
     assert!(p.join("project.toml").is_file());
+}
+
+/// W4-CLI-DIAG: the enclosed pin falls back to tets in two volumes. Text mode prints one
+/// `warning: mesh.auto_tet: ...` line per volume on stderr, stdout is the script's own output,
+/// and the lines equal the `delta.diagnostics` of the `--json` result.
+#[test]
+fn run_prints_per_op_diagnostics_on_stderr_and_they_match_json() {
+    let d = tmp("diag");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/w3c_pin_enclosed.smesh");
+    let script = script.to_str().expect("utf8");
+    let text = smesh(&["run", script, "--memory"], Some(&d));
+    assert_eq!(text.status.code(), Some(0), "{}", String::from_utf8_lossy(&text.stderr));
+    let json = smesh(&["run", script, "--memory", "--json"], Some(&d));
+    assert_eq!(json.status.code(), Some(0));
+    assert!(json.stderr.is_empty(), "--json prints nothing on stderr: {}", String::from_utf8_lossy(&json.stderr));
+    let v: Value = serde_json::from_slice(&json.stdout).expect("json stdout");
+    let want: Vec<String> = v["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .flat_map(|e| e["delta"]["diagnostics"].as_array().cloned().unwrap_or_default())
+        .map(|x| format!("{}: {}: {}", x["severity"].as_str().unwrap(), x["code"].as_str().unwrap(), x["message"].as_str().unwrap()))
+        .collect();
+    let got: Vec<String> = String::from_utf8_lossy(&text.stderr).lines().map(str::to_owned).collect();
+    assert_eq!(got, want);
+    assert_eq!(want.len(), 2, "one per tet-fallback volume: {want:?}");
+    assert!(want.iter().all(|l| l.starts_with("warning: mesh.auto_tet: ")), "{want:?}");
+    // stdout is the script's printed text, as before.
+    assert_eq!(String::from_utf8_lossy(&text.stdout), v["output"].as_str().expect("output"));
+}
+
+/// A script with no diagnostics prints nothing on stderr.
+#[test]
+fn run_of_a_clean_script_prints_no_extra_lines() {
+    let d = tmp("diag_clean");
+    let s = d.join("clean.smesh");
+    std::fs::write(&s, "let b = model.create_brick(10.0)\nprint 1\n").expect("write");
+    let o = smesh(&["run", s.to_str().expect("utf8"), "--memory"], Some(&d));
+    assert_eq!(o.status.code(), Some(0));
+    assert!(o.stderr.is_empty(), "{}", String::from_utf8_lossy(&o.stderr));
 }

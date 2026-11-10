@@ -4,9 +4,8 @@
 //! `tests/binary.rs` and `tests/cli_full.rs`.
 mod common;
 
-use std::path::PathBuf;
 
-use common::{Outcome, canned, go, go_with, h, status_value};
+use common::{Outcome, Scratch, canned, go, go_with, h, status_value};
 use serde_json::{Value, json};
 use sm_cli::{Settings, discover_project};
 use sm_protocol::Rev;
@@ -15,11 +14,8 @@ use sm_protocol::{
     StatusResult,
 };
 
-fn tmp(name: &str) -> PathBuf {
-    let d = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("smesh-cli-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmp(name: &str) -> Scratch {
+    Scratch::new(&format!("smesh-cli-{}-{name}", std::process::id()))
 }
 
 fn methods(o: &Outcome) -> Vec<&'static str> {
@@ -276,7 +272,7 @@ fn project_is_discovered_from_an_enclosing_directory() {
     std::fs::write(root.join("project.toml"), "").unwrap();
     let deep = root.join("a/b");
     std::fs::create_dir_all(&deep).unwrap();
-    assert_eq!(discover_project(&deep), Some(root.clone()));
+    assert_eq!(discover_project(&deep), Some(root.0.clone()));
     let lone = tmp("nodiscover");
     // A temp directory may itself sit under a project in odd setups; only assert the positive case
     // when the ancestors are clean.
@@ -346,6 +342,47 @@ fn run_json_is_the_script_result() {
     let o = go(&["run", s.to_str().unwrap(), "--memory", "--json"]);
     let r: ScriptResult = serde_json::from_value(o.json()).unwrap();
     assert_eq!((r.state, r.output.as_str()), (h("s"), "hello\n"));
+}
+
+fn diag_reply(_: &Request) -> Result<Value, RpcError> {
+    let d = |sev: &str, code: &str, msg: &str| json!({"severity": sev, "code": code, "message": msg, "entities": []});
+    Ok(json!({
+        "state": h("s").to_string(), "output": "hello\n", "diagnostics": [],
+        "events": [
+            {"event": "op", "at": "a:1:1", "op": "mesh.auto", "delta": {"diagnostics": [d("warning", "mesh.auto_tet", "volume 1")]}},
+            {"event": "print", "at": "a:2:1", "text": "hello"},
+            {"event": "op", "at": "a:3:1", "op": "mesh.size", "delta": {"diagnostics": []}},
+            {"event": "batch", "at": "a:4:1", "op": "core.batch", "members": [],
+             "delta": {"diagnostics": [d("warning", "mesh.auto_tet", "volume 2"), d("note", "x.note", "n")]}},
+            {"event": "query", "at": "a:5:1", "name": "mesh.info", "result": {"diagnostics": [d("warning", "q", "not an op")]}}
+        ]
+    }))
+}
+
+#[test]
+fn run_prints_op_and_batch_diagnostics_in_script_order_on_stderr() {
+    let dir = tmp("rundiag");
+    let s = dir.join("a.smesh");
+    std::fs::write(&s, "print 1\n").unwrap();
+    let o = go_with(&["run", s.to_str().unwrap(), "--memory"], "", Box::new(diag_reply));
+    assert_eq!(o.code, 0, "a warning does not fail the run");
+    assert_eq!(o.out, "hello\n");
+    assert_eq!(
+        o.err,
+        "warning: mesh.auto_tet: volume 1\nwarning: mesh.auto_tet: volume 2\nnote: x.note: n\n"
+    );
+}
+
+#[test]
+fn run_json_with_diagnostics_is_the_raw_result_and_silent_on_stderr() {
+    let dir = tmp("rundiagjson");
+    let s = dir.join("a.smesh");
+    std::fs::write(&s, "print 1\n").unwrap();
+    let o = go_with(&["run", s.to_str().unwrap(), "--memory", "--json"], "", Box::new(diag_reply));
+    assert_eq!(o.code, 0);
+    assert!(o.err.is_empty(), "{}", o.err);
+    let want = serde_json::to_string(&diag_reply(&Request::Catalog).unwrap()).unwrap();
+    assert_eq!(o.out, format!("{want}\n"));
 }
 
 #[test]

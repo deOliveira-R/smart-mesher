@@ -10,6 +10,8 @@ mod vtu_check;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -75,12 +77,8 @@ fn read_text(p: &Path) -> String {
 }
 
 /// A fresh scratch directory (removed first).
-fn scratch() -> PathBuf {
-    let d =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("milestone-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
+fn scratch() -> common::Scratch {
+    common::Scratch::new(&format!("milestone-{}", std::process::id()))
 }
 
 #[derive(Clone, Copy)]
