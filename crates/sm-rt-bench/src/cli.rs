@@ -150,7 +150,15 @@ fn cmd_gen(a: &Args) -> Result<i32> {
     let out_dir = a.opts.get("out").map(PathBuf::from);
     let mut code = 0;
     for case in cases {
-        let data = cases::build(case, &scale)?;
+        let data = match cases::build(case, &scale) {
+            Ok(d) => d,
+            Err(BenchError::Unavailable(why)) => {
+                println!("{} {}: skipped ({why})", scale.name, case.name());
+                code = code.max(2);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(dir) = &out_dir {
             data.write(dir)?;
         }
@@ -222,7 +230,15 @@ fn run(a: &Args) -> Result<i32> {
     let flight_cells: usize = num(a, "flight-cells", 24)?;
     let mut code = 0;
     for case in cases_of(a)? {
-        let data = cases::build(case, &scale)?;
+        let data = match cases::build(case, &scale) {
+            Ok(d) => d,
+            Err(BenchError::Unavailable(why)) => {
+                println!("{}: skipped ({why})", case.name());
+                code = code.max(2);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let env = Env::detect();
         let mut file = ResultFile::new(&data.case, &data.manifest.scale, env.clone());
         let mut failed = 0usize;

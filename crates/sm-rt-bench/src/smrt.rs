@@ -234,12 +234,26 @@ pub fn analytic_p2_bridge(scale: &Scale, regions: &[RegionSpec]) -> Result<Track
     Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic").with_region_map(map))
 }
 
+/// The deck of case A17 as the analytic tracker, with the deck's own boundaries (reflective sides).
+///
+/// # Errors
+/// [`BenchError::Unavailable`] when the corpus is not built, or the import's or builder's error.
+pub fn analytic_deck(regions: &[RegionSpec]) -> Result<TrackerAdapter> {
+    let deck = crate::cases::a17_deck()?;
+    let (t, _) = deck.tracker(&BuildOptions::default()).map_err(bad)?;
+    let map = map_by_name(t.regions(), regions);
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic").with_region_map(map))
+}
+
 /// The analytic row of a case: P2 through the bridge, everything else from its scene.
 ///
 /// # Errors
 /// [`BenchError::Unavailable`] when the case has no analytic scene or one the half-space algebra
 /// cannot express.
 pub fn analytic_adapter(data: &CaseData, scale: &Scale) -> Result<TrackerAdapter> {
+    if data.case == "A17" {
+        return analytic_deck(&data.manifest.regions);
+    }
     if data.case == "P2" {
         return analytic_p2_bridge(scale, &data.manifest.regions);
     }
@@ -554,9 +568,12 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
     let case = data.case.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut note = |what: &str, e: BenchError| notes.push(format!("{case}: smrt {what} not run: {e}"));
-    match facets_adapter(data) {
-        Ok(a) => rows.geometric.push(Box::new(a)),
-        Err(e) => note("facets", e),
+    // A deck case (A17) has no facet twin: nothing to build, nothing partial.
+    if !data.facets.tris.is_empty() {
+        match facets_adapter(data) {
+            Ok(a) => rows.geometric.push(Box::new(a)),
+            Err(e) => note("facets", e),
+        }
     }
     match analytic_adapter(data, scale) {
         Ok(a) => rows.geometric.push(Box::new(a)),
