@@ -187,10 +187,20 @@ enum Miss {
 }
 
 /// The slot of `p`, or why there is none: outside the layout, or within `tol` of a slot border.
+///
+/// Probes `tol` away along +-x, +-y, +-z, the four xy diagonals (`sqrt 2 tol`, rectangular
+/// corners) and the eight xy directions at 30 and 60 degrees (hex edge normals in either
+/// orientation). A border at any other angle is still caught within `cos 15 deg` (0.96) of `tol`.
 fn locate_strict(frame: &LatticeFrame, p: Point3, tol: f64) -> Result<SlotIx, Miss> {
     let ix = frame.locate(p).ok_or(Miss::Outside)?;
     let t = tol;
-    for (dx, dy, dz) in [(t, 0.0, 0.0), (-t, 0.0, 0.0), (0.0, t, 0.0), (0.0, -t, 0.0), (0.0, 0.0, t), (0.0, 0.0, -t), (t, t, 0.0), (t, -t, 0.0), (-t, t, 0.0), (-t, -t, 0.0)] {
+    let (c, s) = (t * 0.5 * 3f64.sqrt(), t * 0.5);
+    let mut probes = vec![(t, 0.0, 0.0), (-t, 0.0, 0.0), (0.0, t, 0.0), (0.0, -t, 0.0), (0.0, 0.0, t), (0.0, 0.0, -t), (t, t, 0.0), (t, -t, 0.0), (-t, t, 0.0), (-t, -t, 0.0)];
+    for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        probes.push((sx * c, sy * s, 0.0));
+        probes.push((sx * s, sy * c, 0.0));
+    }
+    for (dx, dy, dz) in probes {
         if frame.locate(Point3::new(p.x + dx, p.y + dy, p.z + dz)) != Some(ix) {
             return Err(Miss::Boundary);
         }
