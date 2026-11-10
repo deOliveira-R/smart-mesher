@@ -76,23 +76,15 @@ pub(crate) struct Counts {
     pub zero_faces: usize,
 }
 
-/// Drop consecutive repeated points of a cyclic loop; true if at least three remain.
+/// Drop consecutive repeated points of a cyclic loop; true if at least three distinct remain.
+/// A loop that keeps three or more points stays even if they are collinear: dropping it would
+/// leave its neighbours' edges unmatched (a loop of two points cancels itself).
 fn dedupe_loop(lp: &mut SmallVec<[u32; 32]>) -> bool {
     lp.dedup();
     while lp.len() > 1 && lp[0] == lp[lp.len() - 1] {
         lp.pop();
     }
     lp.len() >= 3
-}
-
-/// The loop has exactly zero Newell area (collinear points, as welded lattice faces can have).
-fn has_zero_area(pts: &[V3], lp: &[u32]) -> bool {
-    let mut n = [0.0; 3];
-    for i in 0..lp.len() {
-        let c = geom::cross(pts[lp[i] as usize], pts[lp[(i + 1) % lp.len()] as usize]);
-        n = [n[0] + c[0], n[1] + c[1], n[2] + c[2]];
-    }
-    n == [0.0; 3]
 }
 
 /// Number the used points and record faces and cells in `(region, vertex)` order (the wedges
@@ -262,7 +254,7 @@ pub(crate) fn build(prep: &Prep<'_>, split: &Split) -> (PolyData, Counts, Vec<u3
                 lp.extend(pts.iter().map(|&p| nm(p)));
                 if prep.circumcentric() {
                     let key = canonical_cycle(&lp).0;
-                    if !dedupe_loop(&mut lp) || has_zero_area(&d.pts, &lp) {
+                    if !dedupe_loop(&mut lp) {
                         if !fm.iface || zero_shared.insert(key) {
                             counts.zero_faces += 1;
                         }
@@ -448,7 +440,7 @@ fn emit_slot(
         if m.open {
             lp.push(nm(p.p_mid(e)));
         }
-        if p.circumcentric() && (!dedupe_loop(lp) || has_zero_area(&d.pts, lp)) {
+        if p.circumcentric() && !dedupe_loop(lp) {
             counts.zero_faces += 1;
             return 0;
         }

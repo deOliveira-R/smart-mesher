@@ -224,3 +224,9 @@ fn measurement_table() {
     row("tet_block 4^3", &meshes::tet_block([4, 4, 4], [1.0; 3]).unwrap().mesh);
     row("tet_block 40^3 perturbed 0.15", &meshes::tet_block_warped([40, 40, 40], [1.0; 3], 0.15).unwrap().mesh);
 }
+
+/// The metric's tolerance is the one `sm-rt` builds with by default (a1 review: pin it).
+#[test]
+fn rt_planarity_tol_equals_the_sm_rt_default() {
+    assert_eq!(RT_PLANARITY_TOL.to_bits(), BuildOptions::default().planarity_tol.to_bits());
+}

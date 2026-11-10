@@ -305,9 +305,29 @@ was not loosened (decision 12).
 
 Numbers and the pin list: `W4_POLY_MEASURE.md`.
 
+## Circumcentric (Voronoi) dual (W4-POLY-VORO)
+
+`mesh.to_poly {dual: "circumcentric"}` / `PolyOptions::with_dual(DualPoints::Circumcentric)`. Opt-in; the default (`"barycentric"`) is omitted from the op params and from the serialized options, so no existing hash moves.
+
+**Construction.** The topology machinery (ring walk, slots, boundary fans, classification) is unchanged. Tet centroids become tet circumcentres, boundary-triangle centroids become triangle circumcentres (in the triangle's plane), edge midpoints stay. Every point of an edge face is then equidistant from the edge's two endpoints, so the face lies in their bisector plane: no hub triangles (`hub_split_faces = 0`), one face per neighbour pair, planar and exactly orthogonal on Delaunay input. Boundary fans still fall back to one quad per triangle where the surface is curved (as in `Planar`).
+
+**Exact welding (`src/circum.rs`).** No tolerance. Two tets of one region sharing a face are one group when `insphere` of the far vertex is exactly 0; a boundary triangle is welded with an edge midpoint when it has an exact right angle opposite that edge (expansion dot product), and with an adjacent tet when that tet's circumcentre is exactly in the triangle's plane (`circumcentre_side == 0`). The anchor of a group (midpoint over triangle over tet, then lowest id) supplies the coordinates, so welded points are bit-identical. After welding, loops lose consecutive repeated points; a loop left with fewer than three distinct points is dropped (`DualReport::zero_faces`, an interface polygon counted once). A loop that keeps three or more collinear points stays: dropping it would leave its neighbours' edges unmatched. `welded_points` counts used virtual points merged into another. On `tet_block([a,b,c])` the hand values are `5abc + 4(ab+bc+ca)` welded points and `ab(c+1) + bc(a+1) + ac(b+1) + abc` zero faces (face diagonals and body diagonals), pinned by `tests/voro.rs`; the dual is the `(a+1)(b+1)(c+1)` cube lattice, interior cells exactly 1, face/edge/corner cells 1/2, 1/4, 1/8.
+
+**Strict gate.** Before anything is built, `dual_eligibility`'s two exact counts must be zero, else `PolyError::NotOrthogonalDual { non_delaunay_faces, outside_circumcentres, first_at }` (op: `OpError::Failed`, state unchanged). The outside count is a lower bound (a circumcentre that leaves through another tet's boundary facet is not seen), so the result is also checked by the existing star-shape test and a failing cell is refused with `UnrepairedCell`. There is no non-strict mode and no wedge repair: the repair rebuilds a cell from centroid kites, which would not be conformal with neighbours whose faces run through circumcentres (the circumcentric analogue is VORO-CLIP). A flat tet (exact `orient3d` zero) has no circumcentre: `DegenerateTet`. The L-shape (a Kuhn lattice with a reflex edge) passes the gate and is refused at the reflex edge with `UnrepairedCell` (3 cells), as designed.
+
+**Generator tag.** The circumcentric dual adds three `f64` cell tags `poly.generator.x/.y/.z` (`GENERATOR_TAGS`): the primal vertex whose Voronoi cell the output cell is. With them the `.smsh` reader can recover the generator/neighbour geometry (face = bisector plane of two generators).
+
+**`.smsh` (ruling D2).** The `.smsh` writer computes the geometry cache (`gc_*`, `compute_geometry_cache`) for any mesh with polyhedral cells that carries none; cached volumes and centroids equal `cell_volume_centroid` (what `validate_geometry` evaluates) to 1e-12 relative. Meshes without polyhedra are written exactly as before.
+
+**Triggers for VORO-CLIP and POLY-CONFORM (ruling D1/D10), from `W4_POLY_MEASURE.md`.** On the four real tet meshes the strict gate refuses all (non-Delaunay interior faces 4.9 to 7.6 percent, outside circumcentres 0.07 to 8 percent of tets). Non-Delaunay faces dominate on `polydual` (442 faces against 3 tets) and `w3a_poly` (1504 against 51): the POLY-CONFORM trigger (refusals dominated by non-Delaunay interior faces) fires. On the enclosed pin both are material (102 faces, 59 tets = 8 percent): the VORO-CLIP trigger (outside circumcentres) fires there. Both stay unbuilt; the choice and the scope go to the orchestrator.
+
+**Finding (a1 review): `mesh.to_poly` on the sm-diag rig cylinder.** The refusal 'cannot resolve the feature edge between faces TopoFace#1 and TopoFace#2' is correct. The rig's model is a brick (`CreateBrick`), and a cylinder mesh classified on `TopoFace#1..3` names the brick's -x and +x faces, which share no model edge, so the `TopologyResolver` finds none (`AmbiguousEdge`). The `sm-diag` test therefore resolves with a library `Pair` resolver on the cylinder. Pinned in `tests/resolvers.rs`; nothing to fix in sm-poly (a rig with a cylinder model would work).
+
+**Test hook.** `with_ungated_circumcentric` (feature `test-hooks`, doc-hidden) disables the gate and the `UnrepairedCell` refusal on the calling thread, so the interior cells of patches whose boundary is not orthogonal (a BCC block, whose boundary-pyramid circumcentres are h/4 outside; Delaunay of random points) can be inspected. On the BCC patch the interior cells are truncated octahedra: 14 faces (6 squares, 8 hexagons), volume `h^3/2` to 1e-12, every face in the bisector plane of its two generators, every cell fast-path eligible.
+
 ## Known gaps (W3b)
 
-Partial dualization of a mixed mesh (needs conformize), circumcentric duals, vertex-moving
+Partial dualization of a mixed mesh (needs conformize), circumcentric duals on non-Delaunay meshes (VORO-CLIP / CONFORM triggers above), vertex-moving
 planarization, projection of boundary dual points onto the CAD surface (curved bodies deviate by
 the chord error), hybrid input, seam edges and a vertex with one split edge, a bulk builder
 commit, concavity repair beyond the agglomeration guard (wedges are star-shaped, not

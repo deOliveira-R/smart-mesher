@@ -19,6 +19,36 @@ use sm_mesh_api::{
 /// only stops a pathological loop; it is far above what real meshes need.
 const MAX_SPLIT_ROUNDS: usize = 256;
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    static UNGATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// True when the test hook disabled the circumcentric gate and the validity refusal.
+fn ungated() -> bool {
+    #[cfg(feature = "test-hooks")]
+    {
+        UNGATED.with(|k| k.get())
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        false
+    }
+}
+
+/// Test hook: run `f` with the circumcentric strict gate and the `UnrepairedCell` refusal
+/// disabled on this thread, so the shape of the interior cells of a patch whose boundary is not
+/// orthogonal (a BCC block, a random Delaunay set) can be checked. Boundary cells of such a
+/// mesh may be invalid. Not part of the supported API.
+#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
+pub fn with_ungated_circumcentric<R>(f: impl FnOnce() -> R) -> R {
+    let prev = UNGATED.with(|k| k.replace(true));
+    let r = f();
+    UNGATED.with(|k| k.set(prev));
+    r
+}
+
 /// Dualize a conformal all-tetrahedron mesh into polyhedral cells.
 ///
 /// One dual cell per (vertex, region) with the dual points and faces described in the crate
@@ -66,6 +96,7 @@ pub fn dualize_with_rounds<B: MeshBuild>(
     // The strict gate runs first (exact predicates on the source alone); a mesh that is not
     // all-tet skips it and `Prep::build` refuses it.
     if opts.dual == DualPoints::Circumcentric
+        && !ungated()
         && let Some(el) = measure::dual_eligibility(src)
         && el.non_delaunay_faces + el.outside_circumcentres > 0
     {
@@ -106,7 +137,9 @@ pub fn dualize_with_rounds<B: MeshBuild>(
         }
         prep.set_split_vertices(vsplit)?;
     };
-    if let Some(&first) = unrepaired.first() {
+    if let Some(&first) = unrepaired.first()
+        && !ungated()
+    {
         let key = prep.ckeys[c_key[first as usize] as usize];
         let at = concave::cell_location(&data, first as usize);
         return Err(PolyError::UnrepairedCell {

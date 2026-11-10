@@ -26,7 +26,10 @@ fn topology_resolver_finds_the_shared_curve() {
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.vertices[0]), on(b.vertices[7])]), None);
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.edges[9]), on(z0)]), None);
     assert_eq!(r.resolve(b.faces[0], b.faces[2], [on(b.faces[0]), on(z0)]), None);
-    // opposite faces share no curve
+    // opposite faces share no curve. This is why `mesh.to_poly` on a mesh classified for a cylinder
+    // (side = TopoFace#1, caps = TopoFace#2, #3) fails on the sm-diag rig, whose model is a brick:
+    // `TopoFace#1` and `#2` of a brick are -x and +x, which share no edge, so `AmbiguousEdge` is
+    // the right answer. It is a rig/model mismatch, not an sm-poly defect (W4-POLY-VORO finding d).
     assert_eq!(r.resolve(b.faces[0], b.faces[1], [on(z0), on(z0)]), None);
 }
 

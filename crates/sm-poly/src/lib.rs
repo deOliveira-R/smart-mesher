@@ -29,6 +29,9 @@ mod stats;
 #[cfg(feature = "test-hooks")]
 pub use agglom::with_unchecked_merges;
 pub use dual::dualize;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use dual::with_ungated_circumcentric;
 #[doc(hidden)]
 pub use dual::dualize_with_rounds;
 pub use error::PolyError;
