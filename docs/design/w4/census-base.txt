@@ -2,6 +2,7 @@
 # commit: 69ba521fae50b63fd15506d6293b584871d6b606
 # note: measured at 69ba521, docs-only over 9cac369 (values identical); tools/platform/expected.txt has 62 data lines plus 1 comment line
 # note: golden-reviewed rows for sm-protocol rejected.json and requests.json refreshed at a9d86ca after W4-0.5 (ACR-DAGMC-SRC, additive golden insertions)
+# note: golden-reviewed rows refreshed at the W4a-a1 part-2 combine (bdeea2a): sm-mcp tools.standard.txt (+mesh__volume_check, +model__subdivide_pin; OR-e), session.out.jsonl and session.out.respell.jsonl (session_export `source` property; OR-b), new sm-diag mesh.volume_check.* goldens (W4-POLY-VOLDIAG)
 # uname: Darwin arm64
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 # ci-run: 42568537757 (success, main, headSha cecd3b1bbcb538e6f36fa5875bffaf665349c32b)
@@ -81,6 +82,9 @@ golden-reviewed|crates/sm-diag/tests/golden/mesh.quality.reply.json|any|357fe723
 golden-reviewed|crates/sm-diag/tests/golden/mesh.validate.input.schema.json|any|f46d7594a65fc34c958668fc56ba620f321d4727fa7461d3a3c8d58a17991594
 golden-reviewed|crates/sm-diag/tests/golden/mesh.validate.output.schema.json|any|0f59e10b18877528d2973a3de48beb6145fec411e0968dacd1ffa3d6b45817d7
 golden-reviewed|crates/sm-diag/tests/golden/mesh.validate.reply.json|any|fe01e5ce2a7b969e12040c2ae1dc12c02319530ce2f723f2313f69d9472f9be2
+golden-reviewed|crates/sm-diag/tests/golden/mesh.volume_check.input.schema.json|any|e301bdd55b7f18a21e0553a3185b9b6070b9bf8a606239fcbae4e260b61b5871
+golden-reviewed|crates/sm-diag/tests/golden/mesh.volume_check.output.schema.json|any|4c2ded60336aab76c5acd7a39e90b67ddbf083d5b56c62b4986f3287bd9fd082
+golden-reviewed|crates/sm-diag/tests/golden/mesh.volume_check.reply.json|any|0295f55ea381db0a1ab46149471a2244fa5630653673bcc6a487f29fd99a42f3
 golden-reviewed|crates/sm-lang/tests/golden/parse/ambiguous_except.smesh|any|4067fb0d57e73ab0401e3d909e51ce9842be79b03f36c2b82fd6aa0d9fed6e9d
 golden-reviewed|crates/sm-lang/tests/golden/parse/ambiguous_except.txt|any|c1f0cf8ba077124d7d1de6d2ea5613a4608eb49a6236190b7d21ca967205f91c
 golden-reviewed|crates/sm-lang/tests/golden/parse/ambiguous_in.smesh|any|1d9ece5b55af3bcb6682d9da718b1ad07645f0a274b4af031ccc4d81a93c2ccd
@@ -236,9 +240,9 @@ golden-reviewed|crates/sm-lang/tests/golden/w2/wrong_kind_face_for_volume.txt|an
 golden-reviewed|crates/sm-lang/tests/golden/w2/wrong_kind_in_array.smesh|any|ff5c2c833613a65111947c69765906d8fea69fbbd1033c550ac13795a2e81df2
 golden-reviewed|crates/sm-lang/tests/golden/w2/wrong_kind_in_array.txt|any|416af7b42af489dbeead694b08208ca315d09e1a69015ad844ea264995a159a8
 golden-reviewed|crates/sm-mcp/tests/golden/session.in.jsonl|any|6e78c1f184ddd2601deb019714f0def4730d7cc4fd730fde2e7d93bc3a326419
-golden-reviewed|crates/sm-mcp/tests/golden/session.out.jsonl|any|7515c4991bfd9f5ff1c271c1c472d3d0869c1b1da6e1b7054d7cb67641985dd7
-golden-reviewed|crates/sm-mcp/tests/golden/session.out.respell.jsonl|any|dd8b75e7b9d4f55d66f2573f875195afe61f982edeba303b0c436e77abfa644e
-golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|9392349f971c91d7e93bbc243ed235b6c2eefee3dbdd06306db09a2ec0e1a615
+golden-reviewed|crates/sm-mcp/tests/golden/session.out.jsonl|any|4fe5380a28c1449b938c7612cf721bd5219c5976d368b5a8570b9949546a3d3a
+golden-reviewed|crates/sm-mcp/tests/golden/session.out.respell.jsonl|any|3d025964e068c69b4f4d7add46fbc2888463adf93c46951e7ff95eaa98ca0c58
+golden-reviewed|crates/sm-mcp/tests/golden/tools.standard.txt|any|3b93442c469dec20e4acf71b353c7730f7ef608a760424a881e182f5c3dead9f
 golden-reviewed|crates/sm-mesh-api/tests/golden/validate_broken.txt|any|1bae7b5412546e55a0011438cdea9f8d016e9f90845ec64eb96f8bd23fc6dfad
 golden-reviewed|crates/sm-protocol/golden/catalog.json|any|01d3b85aefa31cbb182bf06cafdae2c2ec604ed2a172706354f1817212ffc60a
 golden-reviewed|crates/sm-protocol/golden/lenient.json|any|104ca833bb34bfd34ae1123f86615f45267a272a7c72dcb8a8adb2470a272be0

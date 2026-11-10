@@ -39,6 +39,7 @@ One worker per row. Rows that share a crate run one after the other, in the orde
 | W4-EXO-VERIFY | `sm-exodus` | a1 | S | `crates/sm-exodus/` (tests and docs unless a bug is found) |
 | W4-DAGMC-MODEL | `sm-server`, `sm-meshio/src/dagmc` | a1 | M/L | `crates/sm-server/`, `crates/sm-meshio/src/dagmc/` |
 | W4-REFCORPUS | tools + doc (new) | a1 | M | `tools/refcorpus/` (new), `docs/design/w4/refcorpus.md` (new) (explicit permission) |
+| W4-A1-TIDY | tools + `sm-exodus` + `sm-decomp` | a2 | S | `tools/refcorpus/`, `crates/sm-exodus/`, `crates/sm-decomp/`, `tools/ci.sh` (refcorpus checks only, explicit) |
 | W4-POLY-VORO | `sm-poly` | a2 | L | `crates/sm-poly/` (and the `.smsh` `gc_*` fill in `crates/sm-meshio/src/smsh/` if missing, explicit permission) |
 | W4-HEX-QUERY | `sm-mesher` | a2 | S | `crates/sm-mesher/` |
 | W4-HEX-OGRID-S | `sm-scheme-ogrid` | a2 | M | `crates/sm-scheme-ogrid/` |
@@ -225,7 +226,6 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** new `expected_sha256.txt` lines only; existing lines byte equal.
 - **Plan delta (a1 review, ruling OR-d):** acceptance 6 (`docker-check` Ready for the host arch) is met only on x86_64. The XDG image is x86_64-only (upstream `vec3da.h` includes `immintrin.h`), so on arm64 `docker-check` reports `Failed` with the reason and the rows are `Partial`; a Rosetta amd64 smoke run is allowed; real numbers come from W4-BENCH-X86. Done in a1: the rows are `partial` with the command. The follow-ups for the same crate are under W4-RT-ROWS.
 
-
 ### W4-RT-VERDICT. `sm-rt-bench` (files): bare-metal banner and pre-registered verdict
 - **Owner:** `crates/sm-rt-bench/src/result.rs`, `src/report.rs`, their tests, `crates/sm-rt-bench/VERDICT.md` (new; RT-XDG links it from `DESIGN.md`). The script is W4-BENCH-X86 (after a2, ruling D6).
 - **Scope:** `drafts/rt.md` §W4-RT-X86 crate part (`bench-env.json` fields, `EnvRecord::smoke` gains virt and governor) and §W4-RT-PUBLISH verdict code with the separate `report --sessions` aggregator. Plan delta (ruling D6): the polyhedral rows render as a separately labelled table that the k-of-n verdict never reads; a golden test proves a polyhedral row cannot change a verdict.
@@ -245,8 +245,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Scope:** `drafts/hexpin.md` §W4-HEX-STRAT. Plan delta: `hex_only` lists `[map, submap, pave]` / `[map, sweep]` here; `ogrid` joins its list in W4-MESHER-LISTS after OGRID-S merges (an auto list that names an unregistered scheme fails, `standard.rs:240-241`).
 - **Acceptance:** `drafts/hexpin.md` §W4-HEX-STRAT acceptance 1-6 (acceptance 2: `hex_only` equals `default` everywhere until LISTS).
 - **Hash impact:** none on state; `mesh.info` gains `volume_by_owner`; the MCP golden diff, if any, is reviewed by the orchestrator.
-- **Plan delta (a1 review):** acceptance 4 is restated as: faces follow tetmesh's boundary scheme (on a brick the `tet` strategy records only `{tetmesh, Volume#1}`, and the surface list `[trimesh]` does not apply to faces tetmesh imposes); `tet` gives all-Tet cells, 0 `mesh.auto_tet` warnings and the exact brick volume (1e-12). The same restatement is in `drafts/hexpin.md`. The `tet` description and rustdoc say so. The stub-test assertion on faces must also require at least one face. The two minor items (replay with the strategy removed from the registry, `volume_by_owner` lookup caching) ride on W4-MESHER-LISTS (same crate).
-
+- **Plan delta (a1 review):** acceptance 4 is restated as: faces follow tetmesh's boundary scheme (on a brick the `tet` strategy records only `{tetmesh, Volume#1}`, and the surface list `[trimesh]` does not apply to faces tetmesh imposes); `tet` gives all-Tet cells, 0 `mesh.auto_tet` warnings and the exact brick volume (1e-12). The same restatement is in `drafts/hexpin.md`. Done by W4-HEX-STRAT-FIX (ba231e9): the `tet` description and rustdoc state the face scheme, the stub-test faces assertion requires at least one face, a real-geometry tet brick test checks all-Tet, 0 warnings and volume 24 to 1e-12, and replay swaps in a counting `hex_only` via `MesherConfig::with_strategy` (0 calls, equal hashes). Only the optional `volume_by_owner` caching remains, on W4-MESHER-LISTS.
 
 ### W4-HEX-DECOMP. `sm-decomp` (new): cut planner for round cavities
 - **Owner:** `crates/sm-decomp/`.
@@ -265,13 +264,11 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** none.
 - **Plan delta (a1 review):** the quadric scale and tolerance items listed under W4-CSG-CORE (power-of-two normalisation, `k_zero` and radius/offset floors, the cosmetic `line` text) are carried by CORE, which consumes the module.
 
-
 ### W4-CSG-PROBE. `sm-boolean` (one new test file): what the kernel cuts today
 - **Owner:** `crates/sm-boolean/tests/webcut_probe.rs`, plus a short report in the commit message.
 - **Scope / acceptance:** `drafts/csgbrep.md` §WEBCUT-PROBE items 1-4. Its item 4 result picks the D2 partition or the per-cell boolean fallback for CSG-CORE.
 - **Hash impact:** none.
 - **Plan delta (a1 review):** pin the measured details in `tests/webcut_probe.rs` (the W4-CSG-CORE worker does it, explicit permission for that file): `d2_chain` asserts `on_x1 == 1` and the face count (11 faces in total); `d2_cut_one_piece` asserts the neighbour's body still bounds `b.volume`; for `keep=Negative/Positive` (tilted_cylinder, plane_cut) the discarded side is gone (role empty or one volume in the model).
-
 
 ### W4-REGIONS-CUT. `sm-boolean` (files): `model.subdivide_pin` (ruling D9)
 - **Owner:** `crates/sm-boolean/src/subdivide.rs` (new), `crates/sm-boolean/tests/subdivide.rs` (new), the op registration line in `crates/sm-boolean/src/lib.rs`.
@@ -279,7 +276,6 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Gates:** W4-0.6.
 - **Hash impact:** new op only.
 - **Plan delta (a1 review):** kernel finding. `webcut_cylinder` / `subtract` fail with `result volume invalid` for a 0.475-radius cylinder cut at 0.418 or 0.476 with the default tool frame; turning the frame's x reference by 1 rad (SEAM_TURN) avoids it. The cause is investigated in W4-BOOL-TOOLS (b1).
-
 
 ### W4-CSG-LIBFN (dropped by csgbrief.md §6; kept as the fallback in §3.4). `sm-model` + `sm-fem`
 - **Scope:** the public library functions named in W4-0.4 (copy with pitch and count; block and sideset add), each wrapping today's op body so the op and the function share one code path.
@@ -332,7 +328,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** none for existing hashes (`dual` omitted when default; non-poly `.smsh` bytes unchanged); new pins by INT.
 
 ### W4-HEX-QUERY. `sm-mesher`: `mesh.decompose_plan`
-- **Scope / acceptance:** `drafts/hexpin.md` §W4-HEX-QUERY. **Gates:** after STRAT and DECOMP merge. **Hash impact:** none.
+- **Scope / acceptance:** `drafts/hexpin.md` §W4-HEX-QUERY. **Gates:** after STRAT and DECOMP merge. **Hash impact:** none. Plan delta (a1 review): runs alongside W4-A1-TIDY, which only edits `sm-decomp` internals (a let-else, no API change); HEX-QUERY only consumes `sm-decomp`.
 
 ### W4-HEX-OGRID-S. `sm-scheme-ogrid`: scheme adapter
 - **Scope / acceptance:** `drafts/hexpin.md` §W4-HEX-OGRID-S acceptance 1-4 (run with an explicit `mesh.scheme`, since no list names `ogrid` yet). **Gates:** after OGRID-K. **Hash impact:** none until a list names it.
@@ -345,7 +341,6 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** new op, new hashes only.
 - **Plan delta (a1 review, from CLASSIFY):** in `crates/sm-csgbrep/src/quadric.rs`, divide all 10 coefficients by a power of two near `max|coeff|` before Jacobi (exact, no bits lost); today the `off <= 1e-34*diag` stop test under/overflows at extreme magnitudes (a cylinder scaled by 1e-200 is refused as an 'empty quadric', a sphere scaled by 1e200 as a 'single point'; fail-safe but the wrong message, and the module doc says the tolerance is relative). Document in the `classify_with_tol` rustdoc: `k_zero` is relative only to the translation terms (for a quadric centred at the world origin `kp == k`, so a cone with round-off 1e-15 in k is refused as a hyperboloid), and the radius/offset ratio has an effective floor of about 3e-5 (r=1e-3 at offset 1e4 is refused as a 'degenerate cylinder'). Fix the stray space in the error text when `line` is None (`surface 7 : ellipsoid`). Explicit permission for `quadric.rs` and its tests, and for `crates/sm-boolean/tests/webcut_probe.rs` (the CSG-PROBE pins above).
 
-
 ### W4-RT-ROWS. `sm-rt-bench`: jump row, polyhedral row, conforming P1 twin, P2 hierarchy row
 - **Owner:** `crates/sm-rt-bench/`.
 - **Scope:** `drafts/rt.md` §W4-RT-JUMP-ROW, §W4-RT-POLY-ROW (L2b, via the `sm-poly` dependency ruled in W4-0.7), §W4-RT-TETS scope (c) (P1 only, generated with `smesh` and SHA-pinned), and the P2 `analytic-hierarchy` row of §W4-RT-CSG-WORLD. Plan delta (ruling D8): a case built from a W4-REFCORPUS OpenMC assembly deck (17x17) is added at `reduced` scale, with its deck sha256 from the manifest.
@@ -354,7 +349,6 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** new case files and `expected_sha256.txt` lines only.
 - **Plan delta (a1 review):** same-crate follow-ups. (1) Wire `report --sessions` in `crates/sm-rt-bench/src/cli.rs` (`render_sessions` exists; the error text and W4-BENCH-X86 name the flag). (2) `smrt::walk_adapter` requires `cell_count == nt`, or `walk()` rejects negative mapped values (today `cell_map` is sized `cell_count().max(nt)` and unmapped cells keep -1). (3) `xdg_driver` fire-locate handles `find_volume == ID_NONE` as one lost ray (-2), like the hinted path, instead of calling `ray_fire(ID_NONE)` (under THROW the whole row becomes Partial). (4) Fix the wording 'with the compiler error' in `pins.env` and `DESIGN.md`, or add the last error lines of the build output to the `Failed` message. (5) The H1 walk comparison at >= 1e5 rays at full scale: the only judged output has 10,000 rays (reduced); run at full scale, on x86 via W4-BENCH-X86 if arm64 cannot. (6) The `SMRT_XDG_SCALE` default `tiny` makes `saved_xdg_walk_output_agrees_with_the_sm_rt_walk` fail on reduced output with 'track counts differ 10000 vs 200': fix the default or the message. (7) `verdicts()` uses `dedup_by_key(threads)` and silently keeps the first row at the same thread count: key cells by precision too, or state the rule in `VERDICT.md`. (8) `VERDICT.md`: 'Anything not proven is smoke' overstates the `/proc/cpuinfo` fallback (a VM hiding the `hypervisor` flag reads as `none` when `systemd-detect-virt` is missing); reword, or record the fallback source in `virt`. (9) Consider failing or recording when XDG prints a warning on stderr during load (TETS acceptance 2 is not asserted); `ImageStatus::NoDriver` stays against the draft as a recorded deviation. `result.rs` and `report.rs` are W4-RT-VERDICT's; items 1, 7 and 8 get explicit permission for them in this task.
 
-
 ### W4-RT-CELLINDEX. `sm-rt`: disjoint kd tiling for analytic leaves
 - **Owner:** `crates/sm-rt/`.
 - **Scope / acceptance:** `drafts/rt.md` §W4-RT-CELLBVH (renamed W4-RT-CELLINDEX), acceptance 1-6. This also covers `drafts/csgbrep.md` §CSGBREP-TRACK-PERF, which is dropped as a duplicate.
@@ -362,13 +356,12 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Hash impact:** none; any move of `flat_golden` or W3b `h_*` stops the task.
 - **Plan delta (a1 review):** (1) enforce the draft's `sm-csgio openmc_cross` acceptance on the hierarchical build: in `bridge_vs_deck` (`crates/sm-csgio/tests/openmc_cross.rs`) change `chords_to` to take `&dyn Tracker` and build the bridge with `w.world_tracker(...)` (or run both builds); the a1 worker measured a worst chord difference of 4.37e-14 for n=1,2 at 10,000 rays. Explicit permission for that one test file. (2) Remove the duplicated 'hex lattices' entry from the deferred list in `crates/sm-rt/DESIGN.md` (the word appears 4 times; keep 'hex lattices (W4-RT-HEX)').
 
-
 ### W4-REGIONS-SPLIT. `sm-model` + `sm-fem` + `sm-server` (files): lattice frames, tagging, the export split (ruling D9)
 - **Owner:** `crates/sm-model/` (new `src/region.rs` with `model.lattice_define`, `model.lattice_tag`, the query `model.region_tags`; the optional `lattice` key of `model.copy` in `src/copy.rs`), `crates/sm-fem/src/lower.rs` and new `crates/sm-fem/src/region.rs`, `crates/sm-server/src/mesh_export.rs`, one new section of `crates/sm-meshio/SMSH_FORMAT.md` (explicit permission).
 - **Scope / acceptance:** `drafts/regions.md` R2, R3 and §W4-REGIONS-SPLIT acceptance 1-7 (the `regions: {split: [...]}` option on `smsh` and `smrt`; `region/` cell sets in `.smsh`; `ByTaggedCellSets` with integer tags in `.smrt`; the 3x3 subdivided lattice with exactly 117 regions; the no-split byte identity; the 17x17 x 10 rings x 8 sectors scale check).
 - **Gates:** W4-0.3, W4-0.6; after W4-REGIONS-CUT, W4-DAGMC-MODEL (`sm-server`) and W4-CSG-LIBFN if scheduled (`sm-model`, `sm-fem`). Must merge before W4-EXPORT-SELECT (b) branches (same files).
 - **Hash impact:** none on existing hashes (opt-in option and new ops; the model tables stay empty unless used). New pins by INT.
-- **Plan delta (a1 review):** (1) add a `model.region_clear` op (`crates/sm-model/src/region.rs`) to drop lattice frames and region tags. (2) `Delta.outputs` volumes are id-ordered, so consumers read indices from the region tags, never from output order. (3) `crates/sm-boolean/src/subdivide.rs` copies `ops::guard_volumes` (private); consider exposing it (explicit permission for the one-line `pub` in `crates/sm-boolean/src/ops.rs`, no behaviour change).
+- **Plan delta (a1 review):** (1) add a `model.region_clear` op (`crates/sm-model/src/region.rs`) to drop lattice frames and region tags. (2) `Delta.outputs` volumes are id-ordered, so consumers read indices from the region tags, never from output order. (3) moved to W4-BOOL-TOOLS, which owns `crates/sm-boolean/`.
 
 
 #### Step a3
@@ -379,8 +372,7 @@ Selection rule: a task is in W4a when it produces or improves a polyhedral trans
 - **Acceptance:** `drafts/hexpin.md` §W4-HEX-STRAT acceptance 2 restated (`hex_only` = `default` except disk/annulus faces); §W4-HEX-VOLFIT acceptance; plus a pin subdivided into 3 equal-area rings x 4 sectors with `n = 16` on every circle: after VOLFIT every region's mesh volume is `pi r^2 h / 12` to 1e-12 relative; the census diff equals exactly the D5 list.
 - **Gates:** after OGRID-S and QUERY merge; item (3)'s ring check after REGIONS-CUT.
 - **Hash impact:** exactly the D5 list (signed off by the user in ruling D5); nothing else.
-- **Plan delta (a1 review):** carries the two minor W4-HEX-STRAT leftovers: `replay_reproduces_the_recorded_hashes` replays with `hex_only` still registered, so replace the strategy with a counting or panicking one of the same name (`MesherConfig::with_strategy`, as `a8` does in `tests/auto.rs`), replay, and assert 0 calls and equal hashes; cache the last owner and its running sum per chunk in `volume_by_owner` (optional, not a hot path).
-
+- **Plan delta (a1 review):** one optional W4-HEX-STRAT leftover (the rest was done by HEX-STRAT-FIX, ba231e9): cache the last owner and its running sum per chunk in `volume_by_owner` (not a hot path).
 
 ### W4-HEX-PIN-INT. tests and scripts: the W4 pin milestone
 - **Owner:** `crates/sm-cli/tests/milestone_w4_pin.rs`, `tools/w4_pin_ogrid.smesh`, `tools/w4_pin_enclosed_hex.smesh` (explicit permission for these new `tools/` files).
@@ -418,8 +410,7 @@ W4-0b (ACR-LEVELMAP, ACR-V1, ACR-V3) lands first.
 - **BOOL-TOOLS scope / acceptance:** `drafts/csgbrep.md` §WEBCUT-TOOLS (size from the PROBE report). Unblocks the sphere/cone/torus decks of CSG-CORE and the lens row of CSG-CHECK (a small follow-up in `sm-csgbrep` by the CSG worker).
 - **BOOL-HEAL-A scope / acceptance:** `drafts/vtopo.md` §T0 REGULARIZE-OP and §T3 VTOPO-DETECT (`model.heal_check`), acceptance 1-6. Plan delta (ruling D8): thresholds are tuned on the W4-REFCORPUS dirty STEP files, and for each one the codes `model.heal_check` returns equal the manifest's `expected` codes.
 - **Hash impact:** none on existing hashes.
-- **Plan delta (a1 review):** find the cause of the REGIONS-CUT kernel finding: `webcut_cylinder` / `subtract` fail with `result volume invalid` for a 0.475-radius cylinder cut at 0.418 or 0.476 with the default tool frame, and turning the frame's x reference by 1 rad (SEAM_TURN) avoids it. A coincidence between the tool cylinder's seam and the target's faces is the first suspect. The fix or a documented limit is part of the acceptance, with a test at both cut positions.
-
+- **Plan delta (a1 review):** find the cause of the REGIONS-CUT kernel finding: `webcut_cylinder` / `subtract` fail with `result volume invalid` for a 0.475-radius cylinder cut at 0.418 or 0.476 with the default tool frame, and turning the frame's x reference by 1 rad (SEAM_TURN) avoids it. A coincidence between the tool cylinder's seam and the target's faces is the first suspect. The fix or a documented limit is part of the acceptance, with a test at both cut positions. Also: `subdivide::guard` copies the private `ops::guard_volumes`; make that `pub(crate)` and drop the copy (no behaviour change).
 
 ### W4-VTOPO-OPS. `sm-model`: virtual-topology ops on the layer's overlay
 - **Scope / acceptance:** `drafts/vtopo.md` §T1 VTOPO-OPS, acceptance 1-6. **Gates:** after ACR-V1, ACR-V3, and after W4-REGIONS-SPLIT (same crate). **Hash impact:** none on existing.
@@ -490,7 +481,7 @@ W4-0: 0.1 census ∥ 0.2 skeletons ∥ 0.3 sm-rt-api ACRs ∥ 0.4 CSGBRIEF ∥ 0
  │      ∥ CSG-CLASSIFY ∥ CSG-PROBE ∥ REGIONS-CUT ∥ CLI-DIAG ∥ EXO-VERIFY ∥ DAGMC-MODEL ∥ REFCORPUS
  ├─ a2: POLY-VORO (MEASURE + table review) ; HEX-QUERY (STRAT, DECOMP) ; HEX-OGRID-S (OGRID-K)
  │      CSG-CORE (CLASSIFY, PROBE, 0.4/LIBFN) ; RT-ROWS (RT-XDG, RT-VERDICT, RT-WORLD) ; RT-CELLINDEX (RT-WORLD)
- │      REGIONS-SPLIT (REGIONS-CUT, DAGMC-MODEL, LIBFN)
+ │      REGIONS-SPLIT (REGIONS-CUT, DAGMC-MODEL, LIBFN) ; A1-TIDY (REFCORPUS, EXO-VERIFY, HEX-DECOMP)
  ├─ a3: MESHER-LISTS (OGRID-S, QUERY; D4, D5; ring check after REGIONS-CUT) → HEX-PIN-INT
  │      CSG-CHECK → CSG-ORACLE (CORE; STRAT; REFCORPUS) ; POLY-MIXED (VORO)
  ├─ BENCH-X86 (RT-ROWS, RT-CELLINDEX)
