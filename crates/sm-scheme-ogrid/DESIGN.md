@@ -1,3 +1,7 @@
 # sm-scheme-ogrid
 
 The O-grid surface scheme (W4 tasks HEX-OGRID, HEX-OGRID-K; see drafts/hexpin.md D1): a self-contained kernel with ogrid and polar modes on a disk, an annulus with a 4-sided loop, and a two-circle ring. It does not depend on `sm-decomp`. It is registered in `sm_server::standard_schemes` (the array has 9 crates) but, in this W4-0.2 skeleton, `register` adds no scheme and the auto lists are unchanged. HEX-OGRID adds the scheme and its surface-list entries.
+
+## HEX-OGRID-K kernels (done)
+
+Pure functions returning a `PlanarMesh` (nodes, CCW quads, polygons): `ogrid_disk` (central `a x b` block plus four collar blocks of `k` layers, corners at circle nodes `0, a, a+b, 2a+b`, central corners at `core` x the circle radius, optional Jacobi smoothing), `ogrid_annulus_quad` (four trapezoid blocks, square corners at 45 degrees + 90 degrees x e), `ring` (periodic `n x k`) and `polar_disk` (central n-gon, `k` rings). Conventions: circle node `j` is at `phase + 360 j / n` degrees (the caller picks a phase that is a multiple of `360 / n` to match a seam-aligned edge mesh); `ratio` is the outermost over innermost layer thickness (geometric); smoothing relaxes the grading, so use it only with `ratio == 1`. Node orders are documented on each function. `collar` is deferred.

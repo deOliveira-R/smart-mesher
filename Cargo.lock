@@ -1911,7 +1911,10 @@ dependencies = [
 name = "sm-scheme-ogrid"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "sm-scheme-api",
+ "sm-testkit",
+ "thiserror",
 ]
 
 [[package]]
