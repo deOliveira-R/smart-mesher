@@ -1403,6 +1403,21 @@ dependencies = [
 [[package]]
 name = "sm-decomp"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-geom-api",
+ "sm-layer-api",
+ "sm-protocol",
+ "sm-server",
+ "sm-testkit",
+ "sm-topo-api",
+ "thiserror",
+]
 
 [[package]]
 name = "sm-diag"
