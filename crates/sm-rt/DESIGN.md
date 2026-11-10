@@ -371,9 +371,11 @@ empty or non-boxable cell is a candidate everywhere) padded by `4 tol`, so a poi
 on-face band of a surface still reaches every cell that could claim it. Nodes split at the median
 of the box centres on the axis with the smallest larger child (ties: total, then axis), tiles
 hold at most 8 cells or stop at depth 40, and a tile lists its cells and their surfaces
-ascending. The tree is a pure function of the boxes (sequential build): `index_digest()` is
-bit-identical across runs and thread counts. It is derived data: not hashed, not in
-`memory_bytes`, no cache image.
+ascending. A split that would push the total listed cells past 16 x the cell count (duplication
+from overlapping boxes, which can otherwise grow exponentially with depth) makes its node a tile
+instead; the budget is spent in build order. The tree is a pure function of the boxes (sequential
+build): `index_digest()` is bit-identical across runs and thread counts. It is derived data: not
+hashed, no cache image, but counted in `memory_bytes` (`with_index_threshold` re-counts it).
 Users: `locate_cold` (after the concentric fast path), the `across` full-leaf fallback
 (`locate_scan`, same answer as `locate_all`), and the complement step, which walks the tiles
 along the ray front to back, tests only their surfaces and takes the first valid event at or
@@ -593,8 +595,9 @@ and per prototype leaf otherwise (`scope: "prototypes"`).
   `CsgWorld::analytic_tracker` does that when needed and is the oracle of the hierarchical build
   (`tests/csg_world.rs`: cell, region and chord equal on seeded rays). Tracking results do not depend
   on flattening.
-  The complement region option makes the space between cells a region; stepping through it scans all
-  surfaces (no cell-box BVH yet), so use it for small worlds or short paths.
+  The complement region option makes the space between cells a region; stepping through it uses the
+  cell index (see "Cell index", built from 64 cells) and tests only the surfaces of the tiles along
+  the ray; below that threshold it scans all surfaces, so use it for small worlds or short paths.
 
 ## Determinism
 
