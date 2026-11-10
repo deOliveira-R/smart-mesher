@@ -215,7 +215,7 @@ fn trackers_are_interleaved_abab_per_repetition() {
 }
 
 fn env(cpu: &str, day: &str, os: &str, arch: &str) -> Env {
-    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: "none".into() }
+    Env { cpu_model: cpu.into(), governor: "performance".into(), ncpu: 8, os: os.into(), arch: arch.into(), date_utc: format!("{day}T10:00:00Z"), machine_id: "m1".into(), virt: "none".into(), virt_source: "systemd-detect-virt".into() }
 }
 
 fn file(case: &str, tracker: &str, e: Env, failed: usize) -> ResultFile {
@@ -339,7 +339,7 @@ fn model_dry_run_writes_nothing_under_the_repo() {
 fn run_case_produces_a_sealed_stable_result_and_cli_self_test_passes() {
     let d = build(Case::C2, &Scale { rays: 200, ..Scale::tiny() }).unwrap();
     let mut adapters: Vec<Box<dyn Adapter>> = vec![Box::new(stub_adapter(&d).unwrap())];
-    let cfg = RunConfig { reps: 2, warmup: 1, threads: vec![1, 3], workloads: vec![Workload::Track, Workload::Flight], histories: 300, seed: 3 };
+    let cfg = RunConfig { reps: 2, warmup: 1, threads: vec![1, 3], workloads: vec![Workload::Track, Workload::Flight], histories: 300, seed: 3, fire_tol: None, track_tol: None };
     let (f1, ag) = run_case(&d, &mut adapters, "surface", &cfg, Env::detect()).unwrap();
     let (f2, _) = run_case(&d, &mut adapters, "surface", &cfg, Env::detect()).unwrap();
     assert_eq!(f1.result_hash, f2.result_hash, "two runs, one string");

@@ -50,7 +50,7 @@ fn parse(args: &[String]) -> Result<Args> {
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight,walk (competitors; walk: tet cases, sm-rt and xdg)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight,walk (competitors; walk: tet cases, sm-rt and xdg)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE] | --sessions DIR1,DIR2,DIR3 [--out FILE]  (three sessions on three UTC days: verdict signs only)\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -150,7 +150,15 @@ fn cmd_gen(a: &Args) -> Result<i32> {
     let out_dir = a.opts.get("out").map(PathBuf::from);
     let mut code = 0;
     for case in cases {
-        let data = cases::build(case, &scale)?;
+        let data = match cases::build(case, &scale) {
+            Ok(d) => d,
+            Err(BenchError::Unavailable(why)) => {
+                println!("{} {}: skipped ({why})", scale.name, case.name());
+                code = code.max(2);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(dir) = &out_dir {
             data.write(dir)?;
         }
@@ -222,7 +230,15 @@ fn run(a: &Args) -> Result<i32> {
     let flight_cells: usize = num(a, "flight-cells", 24)?;
     let mut code = 0;
     for case in cases_of(a)? {
-        let data = cases::build(case, &scale)?;
+        let data = match cases::build(case, &scale) {
+            Ok(d) => d,
+            Err(BenchError::Unavailable(why)) => {
+                println!("{}: skipped ({why})", case.name());
+                code = code.max(2);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let env = Env::detect();
         let mut file = ResultFile::new(&data.case, &data.manifest.scale, env.clone());
         let mut failed = 0usize;
@@ -256,6 +272,34 @@ fn run(a: &Args) -> Result<i32> {
                     continue;
                 }
                 let (f, ag) = run_case(&data, adapters, "surface", c, env.clone())?;
+                absorb(f, ag);
+            }
+            // `jump` (cases with a tet mesh): W-fire of the region jump against the cell walk on the same tets.
+            if !rows.jump_fire.is_empty() && workloads.iter().any(|w| w.starts_with("fire")) {
+                let diag = data.manifest.diag;
+                let fire = RunConfig { workloads: vec![Workload::Fire, Workload::FireLocate], fire_tol: Some(1e-9 * diag), track_tol: None, ..cfg.clone() };
+                let (f, ag) = run_case(&data, &mut rows.jump_fire, "surface", &fire, env.clone())?;
+                for w in ["w-fire", "w-fire-locate"] {
+                    let per = |m: &str| f.rows.iter().find(|r| r.workload == w && r.mode == m && r.threads == cfg.threads[0]).map(|r| (r.counters.face_tests as f64 / r.counters.fires.max(1) as f64, r.counters.jumps));
+                    if let (Some((fw, _)), Some((fj, jumps))) = (per("walk"), per("jump")) {
+                        file.notes.push(format!("{} {w}: face tests per fire {fw:.1} (cell walk), {fj:.1} (region jump); {jumps} jumps taken", data.case));
+                    }
+                }
+                absorb(f, ag);
+            }
+            // `poly-walk` (L2b, cases with a tet mesh): the median dual of the tets against the tet walk.
+            // Same geometry, other cells, so the tolerance is the strict one; the rows stay out of the verdict.
+            if !rows.poly.is_empty() && workloads.iter().any(|w| matches!(*w, "track" | "flight")) {
+                let diag = data.manifest.diag;
+                let mut wl = Vec::new();
+                for (name, w) in [("track", Workload::Track), ("flight", Workload::Flight)] {
+                    if workloads.contains(&name) {
+                        wl.push(w);
+                    }
+                }
+                let poly = RunConfig { workloads: wl, track_tol: Some(1e-9 * diag), ..cfg.clone() };
+                let (f, ag) = run_case(&data, &mut rows.poly, "surface", &poly, env.clone())?;
+                file.notes.push(format!("{}: poly-walk rows are a different mesh with the same geometry (median dual of the tets); they are never read by the verdict", data.case));
                 absorb(f, ag);
             }
             // W-walk: the tet mesh walked cell by cell (cases with a tet mesh), the reference of XDG's `segments`.
@@ -392,8 +436,8 @@ fn run_model(a: &Args, model: &Path, cfg: &RunConfig, out_dir: &Path) -> Result<
     Ok(0)
 }
 
-fn report(a: &Args) -> Result<i32> {
-    let dir = a.opts.get("results").ok_or_else(|| BenchError::Usage("report needs --results DIR".into()))?;
+/// The result files of one results directory, in file-name order.
+fn load_results(dir: &str) -> Result<Vec<ResultFile>> {
     let mut files = Vec::new();
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| BenchError::io(dir, e))?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json") && p.file_name().is_some_and(|n| n != "bench-env.json")).collect();
     paths.sort();
@@ -401,9 +445,29 @@ fn report(a: &Args) -> Result<i32> {
         let text = std::fs::read_to_string(&p).map_err(|e| BenchError::io(&p, e))?;
         files.push(ResultFile::from_json(&text)?);
     }
-    let env_path = Path::new(dir).join("bench-env.json");
-    let vm = std::fs::read_to_string(&env_path).ok().and_then(|t| serde_json::from_str::<BenchEnv>(&t).ok()).and_then(|b| b.docker);
-    let md = crate::report::render_with_docker(&files, vm.as_ref())?;
+    Ok(files)
+}
+
+fn report(a: &Args) -> Result<i32> {
+    let md = if let Some(list) = a.opts.get("sessions") {
+        // Three session directories (`--sessions A,B,C`): signs only, see `report::render_sessions`.
+        let dirs: Vec<&str> = list.split(',').map(str::trim).filter(|d| !d.is_empty()).collect();
+        let mut sessions = Vec::new();
+        for d in &dirs {
+            let files = load_results(d)?;
+            if files.is_empty() {
+                return Err(BenchError::Usage(format!("--sessions: {d} holds no result files")));
+            }
+            sessions.push(files);
+        }
+        crate::report::render_sessions(&sessions)?
+    } else {
+        let dir = a.opts.get("results").ok_or_else(|| BenchError::Usage("report needs --results DIR or --sessions A,B,C".into()))?;
+        let files = load_results(dir)?;
+        let env_path = Path::new(dir).join("bench-env.json");
+        let vm = std::fs::read_to_string(&env_path).ok().and_then(|t| serde_json::from_str::<BenchEnv>(&t).ok()).and_then(|b| b.docker);
+        crate::report::render_with_docker(&files, vm.as_ref())?
+    };
     match a.opts.get("out") {
         Some(o) => std::fs::write(o, md).map_err(|e| BenchError::io(o, e))?,
         None => print!("{md}"),

@@ -309,3 +309,109 @@ fn only_tiny_p1_lines_of_the_recorded_hashes_changed() {
         assert!(k.starts_with("tiny/P1/"), "changed line outside tiny/P1: {k}");
     }
 }
+
+// ---- W4-RT-ROWS: A17, the refcorpus 17x17 assembly deck ---------------------------------------------
+
+/// The two deck hashes in the code are the ones `tools/refcorpus/manifest.toml` records for
+/// `openmc-assembly-17x17` (the manifest is the source; this keeps the constants honest).
+#[test]
+fn the_a17_deck_hashes_are_the_manifest_values() {
+    let manifest = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/refcorpus/manifest.toml")).unwrap();
+    let entry = manifest.split("[[entry]]").find(|e| e.contains("id = \"openmc-assembly-17x17\"")).expect("the manifest lists openmc-assembly-17x17");
+    let sha_of = |file: &str| -> String {
+        let after = entry.split(&format!("path = \"openmc-assembly-17x17/{file}\"")).nth(1).unwrap_or_else(|| panic!("no output {file}"));
+        let line = after.lines().find(|l| l.starts_with("sha256")).unwrap();
+        line.split('"').nth(1).unwrap().to_string()
+    };
+    assert_eq!(sha_of("geometry.xml"), cases::A17_GEOMETRY_SHA256);
+    assert_eq!(sha_of("materials.xml"), cases::A17_MATERIALS_SHA256);
+}
+
+/// A17 is built only when named; a default run never needs the corpus.
+#[test]
+fn a17_is_not_in_the_default_case_list_but_parses() {
+    assert!(!Case::ALL.contains(&Case::A17));
+    assert_eq!(Case::parse("A17"), Some(Case::A17));
+    assert_eq!(Case::parse("A17").map(Case::name), Some("A17"));
+}
+
+/// Where the corpus is not built the case is `Unavailable` (a skip, never a failure); a wrong deck
+/// is refused by its hash.
+#[test]
+fn a17_without_the_corpus_is_unavailable_and_a_changed_deck_is_refused() {
+    let dir = std::env::temp_dir().join(format!("smrt-bench-a17-{}", std::process::id()));
+    struct Rm(std::path::PathBuf);
+    impl Drop for Rm {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _g = Rm(dir.clone());
+    let e = cases::a17_deck_in(&dir).unwrap_err();
+    assert!(matches!(e, sm_rt_bench::error::BenchError::Unavailable(_)), "{e}");
+    std::fs::create_dir_all(dir.join("openmc-assembly-17x17")).unwrap();
+    std::fs::write(dir.join("openmc-assembly-17x17/geometry.xml"), "<geometry/>").unwrap();
+    let e = cases::a17_deck_in(&dir).unwrap_err();
+    assert!(matches!(e, sm_rt_bench::error::BenchError::Check(_)) && e.to_string().contains("not the manifest's"), "{e}");
+}
+
+/// The recorded `reduced/A17` bytes (blessed on macOS arm64; another platform reports them
+/// unblessed, a mismatch on a blessed platform fails).
+#[test]
+fn a17_reduced_bytes_equal_the_recorded_hashes() {
+    if !corpus_present() {
+        return;
+    }
+    let d = build(Case::A17, &Scale::reduced()).unwrap();
+    let rep = check_against(EXPECTED, &Scale::reduced(), &d).unwrap();
+    assert!(rep.ok(), "{rep:?}");
+    if !rep.unblessed.is_empty() {
+        println!("unblessed on {}: {:?}", platform_tag(), rep.unblessed);
+    }
+}
+
+fn corpus_present() -> bool {
+    let p = cases::refcorpus_dir().join("openmc-assembly-17x17/geometry.xml");
+    let ok = p.exists();
+    if !ok {
+        println!("skipped: {} is not built (python3 -I tools/refcorpus/build.py build)", p.display());
+    }
+    ok
+}
+
+/// With the corpus built: the case is deterministic across thread counts, platform-keyed, and the
+/// exact deck tracker gives the closed-form chords along a row of 17 fuel pins (analytic check).
+#[test]
+fn a17_deck_chords_along_a_pin_row_equal_the_closed_form() {
+    use sm_core::{Point3, Vector3};
+    use sm_rt_api::{Flow, Scratch, TraceOptions};
+    if !corpus_present() {
+        return;
+    }
+    let scale = Scale { rays: 200, ..Scale::reduced() };
+    let d = build(Case::A17, &scale).unwrap();
+    assert_eq!((d.manifest.rays, d.manifest.regions.len(), d.manifest.triangles), (200, 4, 0));
+    let names: Vec<&str> = d.manifest.regions.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Borated water", "Helium", "UO2 3.1%", "Zircaloy"]);
+    assert_eq!(case_hashes(Case::A17, &scale, 1), case_hashes(Case::A17, &scale, 3));
+    // y = -10.71 + 0.63 is the first row of pins, all fuel pins (universe 1). The x range is
+    // the deck's own, 21.42, started 1e-7 inside the reflective side and stopped just before the other.
+    let a = sm_rt_bench::smrt::analytic_deck(&d.manifest.regions).unwrap();
+    let t = a.tracker();
+    let (x0, len) = (-10.71 + 1e-7, 21.42 - 2e-7);
+    let mut sc = Scratch::new();
+    let mut st = t.init_state(Point3::new(x0, -10.71 + 0.63, 0.0), Vector3::new(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+    let mut by_name = std::collections::BTreeMap::<String, f64>::new();
+    let mut sink = |s: &sm_rt_api::Segment| {
+        *by_name.entry(t.regions().get(s.region).map(|r| r.name.clone()).unwrap_or_default()).or_default() += s.length;
+        Flow::Continue
+    };
+    t.trace(&mut st, &TraceOptions::default().with_max_dist(len), &mut sink, &mut sc).unwrap();
+    let (rf, rg, rc) = (0.4096, 0.418, 0.475);
+    let want = [("UO2 3.1%", 17.0 * 2.0 * rf), ("Helium", 17.0 * 2.0 * (rg - rf)), ("Zircaloy", 17.0 * 2.0 * (rc - rg)), ("Borated water", len - 17.0 * 2.0 * rc)];
+    for (name, w) in want {
+        let got = by_name.get(name).copied().unwrap_or(0.0);
+        assert!((got - w).abs() < 1e-9 * len, "{name}: {got} against {w}");
+    }
+    assert!((by_name.values().sum::<f64>() - len).abs() < 1e-9 * len);
+}

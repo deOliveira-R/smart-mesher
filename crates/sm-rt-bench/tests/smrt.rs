@@ -416,7 +416,7 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
     let d = build(Case::P1, &scale).unwrap();
     let mut rows = smrt_rows(&d, &scale, 12);
     assert_eq!(rows.mesh_flight.len(), 3, "{:?}", rows.notes);
-    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5 };
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1, 3], workloads: vec![Workload::Flight], histories: 40_000, seed: 5, fire_tol: None, track_tol: None };
     let (f, _) = run_case(&d, &mut rows.mesh_flight, "surface", &cfg, Env::detect()).unwrap();
     let modes: Vec<&str> = f.rows.iter().map(|r| r.mode.as_str()).collect();
     assert!(modes.contains(&"walk") && modes.contains(&"delta") && modes.contains(&"block"), "{modes:?}");
@@ -434,6 +434,11 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
 fn smrt_track_and_flight_hashes_are_equal_for_one_and_n_threads_and_two_runs() {
     for case in [Case::P1, Case::P2, Case::H1] {
         let scale = Scale { rays: 300, ..Scale::reduced() };
+        // H1 must carry the jump and poly groups, P2 the analytic-hierarchy row.
+        let d0 = build(case, &scale).unwrap();
+        let r0 = smrt_rows(&d0, &scale, 10);
+        assert_eq!((r0.jump_fire.len(), r0.poly.len()), if case == Case::H1 { (2, 2) } else { (0, 0) });
+        assert_eq!(r0.geometric.iter().any(|a| a.mode().as_deref() == Some("analytic-hierarchy")), case == Case::P2, "{}", d0.case);
         let d = build(case, &scale).unwrap();
         let h = sm_testkit::determinism::check(2, 4, |t| {
             let mut rows = smrt_rows(&d, &scale, 10);
@@ -442,6 +447,17 @@ fn smrt_track_and_flight_hashes_are_equal_for_one_and_n_threads_and_two_runs() {
                 hashes.push(a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
             }
             for a in rows.exact_flight.iter_mut().chain(rows.mesh_flight.iter_mut()) {
+                hashes.push(a.run(Workload::Flight, &input(&d.rays, &d.manifest.regions, t, 1500)).unwrap().content_hash());
+            }
+            // The jump row (fire, hinted and located, with its work counters) and the poly-walk row.
+            for a in rows.jump_fire.iter_mut() {
+                for w in [Workload::Fire, Workload::FireLocate] {
+                    a.prepare(w, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap();
+                    hashes.push(a.run(w, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
+                }
+            }
+            for a in rows.poly.iter_mut() {
+                hashes.push(a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
                 hashes.push(a.run(Workload::Flight, &input(&d.rays, &d.manifest.regions, t, 1500)).unwrap().content_hash());
             }
             hashes.join(" ")
@@ -467,11 +483,15 @@ fn two_smrt_runs_give_one_result_hash_and_date_and_sequence_stay_out_of_it() {
     let mut hashes = Vec::new();
     for k in 0..2 {
         let out = tmp.join(format!("run{k}"));
-        let code = sm_rt_bench::cli::main_with(&args(&["run", "--cases", "P1,H1", "--trackers", "smrt", "--scale", "reduced", "--rays", "300", "--reps", "1", "--warmup", "0", "--histories", "1500", "--out", out.to_str().unwrap()])).unwrap();
+        let code = sm_rt_bench::cli::main_with(&args(&["run", "--cases", "P1,P2,H1", "--trackers", "smrt", "--scale", "reduced", "--rays", "300", "--reps", "1", "--warmup", "0", "--histories", "1500", "--out", out.to_str().unwrap()])).unwrap();
         assert_eq!(code, 0);
         let files = read_results(&out);
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert!(files.iter().all(|f| f.rows.iter().all(|r| r.tracker == "smrt")));
+        // The new rows are in the result and stable: jump and poly-walk (H1), analytic-hierarchy (P2).
+        let modes = |case: &str| files.iter().filter(|f| f.case == case).flat_map(|f| f.rows.iter().map(|r| r.mode.clone())).collect::<std::collections::BTreeSet<_>>();
+        assert!(modes("H1").contains("jump") && modes("H1").contains("poly-walk"), "{:?}", modes("H1"));
+        assert!(modes("P2").contains("analytic-hierarchy"), "{:?}", modes("P2"));
         assert!(files.iter().all(|f| f.rows.iter().all(|r| r.determinism.stable == Some(true))));
         hashes.push(files.iter().map(|f| f.result_hash.clone()).collect::<Vec<_>>());
         for f in &files {
@@ -545,4 +565,122 @@ fn run_competitor_without_an_image_is_partial_with_the_command() {
         sm_rt_bench::docker::Competitor::Partial(why) => assert!(why.contains('`') || why.contains("pins.env"), "{why}"),
         sm_rt_bench::docker::Competitor::Rows { rows, .. } => assert!(!rows.is_empty()),
     }
+}
+
+// ---- W4-RT-ROWS: the P2 analytic-hierarchy row --------------------------------------------------
+
+/// Event sequences of the hierarchical analytic world equal the flattened analytic row on every
+/// ray (the flattened world is the oracle), `pins_touched` equals the facet `hierarchy` row's, and
+/// the structure does not grow with the copies the way the flattened one does.
+#[test]
+fn p2_analytic_hierarchy_equals_the_flattened_analytic_row_ray_by_ray() {
+    use sm_rt_bench::smrt::{analytic_hierarchy_p2, hierarchy_p2};
+    let scale = Scale { rays: 3000, ..Scale::reduced() };
+    let d = build(Case::P2, &scale).unwrap();
+    let inp = input(&d.rays, &d.manifest.regions, 1, 0);
+    let mut flat = analytic_p2_bridge(&scale, &d.manifest.regions).unwrap();
+    let mut hier = analytic_hierarchy_p2(&scale, &d.manifest.regions).unwrap();
+    assert_eq!(hier.mode().as_deref(), Some("analytic-hierarchy"));
+    let (of, oh) = (flat.run(Workload::Track, &inp).unwrap(), hier.run(Workload::Track, &inp).unwrap());
+    assert_eq!((of.counters.lost, oh.counters.lost), (0, 0));
+    // Same region sequences and chords (the world tolerance is far below 1e-9 diag).
+    let rep = sm_rt_bench::compare::compare(&oh.tracks, &of.tracks, d.manifest.diag, 1e-9 * d.manifest.diag).unwrap();
+    assert_eq!((rep.checked, rep.failed), (d.rays.len(), 0), "{rep:?}");
+    assert!(of.tracks.iter().any(|t| t.regions.len() > 1), "the rays cross interfaces");
+    // Fire (located and hinted) agrees too.
+    for w in [Workload::Fire, Workload::FireLocate] {
+        flat.prepare(w, &inp).unwrap();
+        hier.prepare(w, &inp).unwrap();
+        let (ff, fh) = (flat.run(w, &inp).unwrap(), hier.run(w, &inp).unwrap());
+        let (s, bad) = sm_rt_bench::compare::compare_fires(&fh.fires, &ff.fires, d.manifest.diag, 1e-9 * d.manifest.diag).unwrap();
+        assert_eq!((s.failed, bad.len()), (0, 0), "{w:?}: {s:?}");
+    }
+    // The facet `hierarchy` row (same lattice, same prototype placement): the same elements are touched.
+    let mut facet_h = hierarchy_p2(&scale, &d.manifest.regions).unwrap();
+    let ofh = facet_h.run(Workload::Track, &inp).unwrap();
+    assert_eq!(oh.counters.pins_touched, ofh.counters.pins_touched);
+    assert!(oh.counters.pins_touched >= d.rays.len() as u64);
+    // Structure: the flattened world grows with the copies, the hierarchy by the fill array only.
+    let bytes = |n: usize, hier: bool| {
+        let s = Scale { lattice_n: n, ..Scale::tiny() };
+        let r = [spec(0, "fuel", 1.0, 0.3), spec(1, "clad", 1.0, 0.3)];
+        let a = if hier { analytic_hierarchy_p2(&s, &r) } else { analytic_p2_bridge(&s, &r) }.unwrap();
+        a.build_info().structure_bytes
+    };
+    let (h1, h17) = (bytes(1, true), bytes(17, true));
+    let (f1, f17) = (bytes(1, false), bytes(17, false));
+    println!("structure bytes: hierarchy n=1 {h1}, n=17 {h17}; flattened n=1 {f1}, n=17 {f17}");
+    let copies = 9 * 17 * 17 - 9;
+    assert!(h17 - h1 <= 16 * copies as u64, "hierarchy grows by at most 16 bytes per added copy ({} per copy)", (h17 - h1) / copies as u64);
+    assert!(f17 - f1 > 20 * (h17 - h1), "the flattened world grows far faster");
+}
+
+/// W4-RT-JUMP-ROW: on every H1 ray the region jump agrees with the cell walk (same region, same
+/// distance within `1e-9 diag`: ruling R1's bound is far tighter than that for non-grazing exits),
+/// takes jumps, and tests fewer faces per fire.
+#[test]
+fn h1_region_jump_fire_agrees_with_the_cell_walk_and_tests_fewer_faces() {
+    let scale = Scale { rays: 2000, ..Scale::reduced() };
+    let d = build(Case::H1, &scale).unwrap();
+    let mut rows = smrt_rows(&d, &scale, 12);
+    assert_eq!(rows.jump_fire.len(), 2, "{:?}", rows.notes);
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Fire, Workload::FireLocate], histories: 0, seed: 1, fire_tol: Some(1e-9 * d.manifest.diag), track_tol: None };
+    let (file, agreements) = run_case(&d, &mut rows.jump_fire, "surface", &cfg, Env::detect()).unwrap();
+    assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
+    for w in ["w-fire", "w-fire-locate"] {
+        let row = |m: &str| file.rows.iter().find(|r| r.workload == w && r.mode == m).unwrap();
+        let (walk, jump) = (row("walk"), row("jump"));
+        assert_eq!((jump.agreement.checked, jump.agreement.failed), (d.rays.len(), 0), "{w}");
+        assert!(jump.counters.jumps > 0 && walk.counters.jumps == 0, "{w}: jumps {} / {}", jump.counters.jumps, walk.counters.jumps);
+        assert!(jump.counters.face_tests < walk.counters.face_tests, "{w}: face tests {} (jump) against {} (walk)", jump.counters.face_tests, walk.counters.face_tests);
+        println!("{w}: face tests per fire {:.1} (walk) {:.1} (jump), {} jumps of {} fires", walk.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.face_tests as f64 / d.rays.len() as f64, jump.counters.jumps, d.rays.len());
+    }
+}
+
+/// W4-RT-POLY-ROW (L2b): the median dual of H1's tets keeps the geometry. Per-ray region
+/// sequences and chords equal the tet walk's within `1e-9 diag`, chord sums equal the cube chord,
+/// the volumes agree, and W-flight tallies agree at 4 sigma. The row is named `poly-*`, which the
+/// verdict never reads.
+#[test]
+fn h1_poly_dual_walks_the_same_regions_as_the_tets() {
+    let scale = Scale { rays: 2000, ..Scale::reduced() };
+    let d = build(Case::H1, &scale).unwrap();
+    let tets = d.tets.as_ref().unwrap();
+    let (mesh, rep) = sm_rt_bench::smrt::poly_twin(tets).unwrap();
+    // Volumes: the dual fills the same cube.
+    let src_vol: f64 = tets
+        .tets
+        .iter()
+        .map(|t| {
+            let p = |i: usize| tets.nodes[t[i] as usize];
+            let (a, b, c, e) = (p(0), p(1), p(2), p(3));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let w = [e[0] - a[0], e[1] - a[1], e[2] - a[2]];
+            ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs()
+        })
+        .sum();
+    assert!(((rep.total_volume - src_vol) / src_vol).abs() < 1e-12, "dual volume {} against tets {}", rep.total_volume, src_vol);
+    assert!((src_vol - 8.0e6).abs() / 8.0e6 < 1e-12, "the cube");
+    let _ = mesh;
+    let mut rows = smrt_rows(&d, &scale, 12);
+    assert_eq!(rows.poly.len(), 2, "{:?}", rows.notes);
+    let cfg = RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: vec![Workload::Track, Workload::Flight], histories: 20_000, seed: 3, fire_tol: None, track_tol: Some(1e-9 * d.manifest.diag) };
+    let (file, agreements) = run_case(&d, &mut rows.poly, "surface", &cfg, Env::detect()).unwrap();
+    assert!(agreements.iter().all(|a| a.failed == 0), "{agreements:?}");
+    let row = |w: &str, m: &str| file.rows.iter().find(|r| r.workload == w && r.mode == m).unwrap();
+    let (tw, pw) = (row("w-track", "walk"), row("w-track", "poly-walk"));
+    assert_eq!((pw.agreement.checked, pw.agreement.failed), (d.rays.len(), 0));
+    assert_eq!(tw.lost + pw.lost, 0);
+    // Chord sums equal the cube chord (the cube is convex and rays start inside it).
+    let mut a = sm_rt_bench::smrt::poly_adapter(tets).unwrap();
+    let out = a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, 1, 0)).unwrap();
+    let (g, bad) = sm_rt_bench::runner::walk_truth(tets, &d.rays, &out.tracks, d.manifest.diag).unwrap();
+    assert_eq!(bad, 0, "chord sums off by up to {:e}", g.max_chord_err);
+    // Flight: tallies of the dual agree with the tet walk at 4 sigma.
+    let (tf, pf) = (row("w-flight", "walk"), row("w-flight", "poly-walk"));
+    assert!(pf.agreement.checked >= 4 && pf.agreement.failed == 0, "{:?} / {:?}", pf.agreement, tf.agreement);
+    // Fewer, larger cells: the dual has fewer cells than the tets have corners times regions.
+    assert!(pw.segments_per_track <= tw.segments_per_track * 2.0 + 1.0, "{} against {}", pw.segments_per_track, tw.segments_per_track);
+    println!("poly: {} cells from {} tets; segments per track {:.1} (poly) against {:.1} (tets)", rep.cells, tets.tets.len(), pw.segments_per_track, tw.segments_per_track);
 }

@@ -234,12 +234,26 @@ pub fn analytic_p2_bridge(scale: &Scale, regions: &[RegionSpec]) -> Result<Track
     Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic").with_region_map(map))
 }
 
+/// The deck of case A17 as the analytic tracker, with the deck's own boundaries (reflective sides).
+///
+/// # Errors
+/// [`BenchError::Unavailable`] when the corpus is not built, or the import's or builder's error.
+pub fn analytic_deck(regions: &[RegionSpec]) -> Result<TrackerAdapter> {
+    let deck = crate::cases::a17_deck()?;
+    let (t, _) = deck.tracker(&BuildOptions::default()).map_err(bad)?;
+    let map = map_by_name(t.regions(), regions);
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic").with_region_map(map))
+}
+
 /// The analytic row of a case: P2 through the bridge, everything else from its scene.
 ///
 /// # Errors
 /// [`BenchError::Unavailable`] when the case has no analytic scene or one the half-space algebra
 /// cannot express.
 pub fn analytic_adapter(data: &CaseData, scale: &Scale) -> Result<TrackerAdapter> {
+    if data.case == "A17" {
+        return analytic_deck(&data.manifest.regions);
+    }
     if data.case == "P2" {
         return analytic_p2_bridge(scale, &data.manifest.regions);
     }
@@ -276,6 +290,20 @@ pub fn hierarchy_p2(scale: &Scale, regions: &[RegionSpec]) -> Result<TrackerAdap
     let table = t.regions();
     let map = if table.0.iter().any(|r| r.entity.is_some()) { map_by_entity(table) } else { map_by_name(table, regions) };
     Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("hierarchy").with_region_map(map).counting_touched().on_twin())
+}
+
+/// P2 as a hierarchical analytic world (W4-RT-WORLD): the model's lattice and cluster hosting
+/// one exact CSG pin prototype, built by `CsgWorld::world_tracker` with no flattening. It is the
+/// `analytic-hierarchy` row; the flattened `analytic` row is its oracle.
+///
+/// # Errors
+/// The bridge's or the world builder's error.
+pub fn analytic_hierarchy_p2(scale: &Scale, regions: &[RegionSpec]) -> Result<TrackerAdapter> {
+    let fix = p2_fixture(scale)?;
+    let w = sm_rt::csg_world(&fix.model, &fix.complex, &sm_rt::CsgWorldOptions::default()).map_err(bad)?;
+    let (t, _) = w.world_tracker(&BoundarySpec::default(), &BuildOptions::default()).map_err(bad)?;
+    let map = map_by_name(t.regions(), regions);
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("analytic-hierarchy").with_region_map(map).counting_touched())
 }
 
 /// The model's lattice and cluster filled with the moderated pin cell of P1 (fuel, clad, water in
@@ -381,33 +409,115 @@ pub fn tet_twin(data: &CaseData, cells: usize) -> Result<Option<Tets>> {
 /// # Errors
 /// The mesh builder's or the tracker's error.
 pub fn flight_adapter(tets: &Tets, mode: FlightMode, leaf_cells: u32) -> Result<TrackerAdapter> {
-    let mesh = tet_mesh(tets)?;
+    mesh_adapter(&tet_mesh(tets)?, mode, leaf_cells, None)
+}
+
+/// A mesh (tets or polyhedra) as a cell-walking tracker flying in `mode`, regions by the volume
+/// classification. `label` replaces the default `mode` column (`walk`, `delta`, `block`).
+///
+/// # Errors
+/// The tracker's error.
+pub fn mesh_adapter(mesh: &sm_mesh_api::reference::ReferenceMesh, mode: FlightMode, leaf_cells: u32, label: Option<&str>) -> Result<TrackerAdapter> {
     let rule = RegionRule::ByVolumeClassification;
     let (bnd, comp) = (BoundarySpec::default(), ComplementPolicy::Outside);
     let mut part = PartitionOptions::default();
     part.enabled = mode != FlightMode::Surface;
     part.leaf_cells = leaf_cells;
     let opts = BuildOptions::default().with_partition(part);
+    let input = BuildInput::Mesh(MeshInput::new(mesh, &rule, &bnd, &comp));
+    let (t, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(bad)?;
+    let map = map_by_entity(t.regions());
+    let name = label.map_or_else(
+        || match mode {
+            FlightMode::Surface => "walk".to_string(),
+            m => m.name().to_string(),
+        },
+        str::to_string,
+    );
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(name).with_region_map(map).on_twin())
+}
+
+/// Mints a feature curve per pair of model faces. The mesh's faces are the region interfaces (no
+/// model topology exists behind the benchmark's tets), so two interfaces meeting along a mesh edge
+/// are one curve by identity; only the identity of the edge matters to the dual's geometry.
+struct PairEdges;
+
+impl sm_poly::EdgeResolver for PairEdges {
+    fn resolve(&self, a: EntityId, b: EntityId, _ends: [sm_mesh_api::Classification; 2]) -> Option<EntityId> {
+        EntityId::new(EntityKind::TopoEdge, (a.serial() << 20) + b.serial())
+    }
+}
+
+/// The median dual of a tet mesh (`sm-poly`), the polyhedral twin of the L2b rows: one cell per
+/// (vertex, region), regions kept. Dual cells straddle no region boundary, so the region interfaces
+/// are the tets' own triangles and the geometry is the same; only the cells differ.
+///
+/// # Errors
+/// [`BenchError::Geometry`] when the tets cannot be dualized (not conforming, bad classification).
+pub fn poly_twin(tets: &Tets) -> Result<(sm_mesh_api::reference::ReferenceMesh, sm_poly::DualReport)> {
+    let src = tet_mesh(tets)?;
+    let mut alloc = SerialAlloc::new();
+    let (f, rep) = sm_poly::dualize(&src, &sm_poly::PolyOptions::new(), &PairEdges, sm_mesh_api::reference::ReferenceBuilder::new(), &mut alloc).map_err(|e| BenchError::Geometry(format!("dual of the tets: {e}")))?;
+    Ok((f.mesh, rep))
+}
+
+/// The `poly-walk` row: cell walking over the polyhedral dual of the tets. The mode starts with
+/// `poly`, so the report keeps it out of the verdict ("different mesh, same geometry", ruling D6).
+///
+/// # Errors
+/// The dual's or the tracker's error.
+pub fn poly_adapter(tets: &Tets) -> Result<TrackerAdapter> {
+    let (mesh, _) = poly_twin(tets)?;
+    mesh_adapter(&mesh, FlightMode::Surface, 8, Some("poly-walk"))
+}
+
+/// The `jump` row (W4-RT-JUMP-ROW): `MeshTracker` over the tets with a majorant partition and
+/// `region_jump`, so `fire` leaves a region through its boundary faces instead of walking cell by
+/// cell. It records the tracker's work counters of W-fire runs (`face_tests`, `node_visits`, `jumps`).
+///
+/// # Errors
+/// The mesh builder's or the tracker's error.
+pub fn jump_adapter(tets: &Tets, leaf_cells: u32) -> Result<TrackerAdapter> {
+    let mesh = tet_mesh(tets)?;
+    let rule = RegionRule::ByVolumeClassification;
+    let (bnd, comp) = (BoundarySpec::default(), ComplementPolicy::Outside);
+    let mut part = PartitionOptions::default();
+    part.enabled = true;
+    part.region_jump = true;
+    part.leaf_cells = leaf_cells;
+    let opts = BuildOptions::default().with_partition(part);
     let input = BuildInput::Mesh(MeshInput::new(&mesh, &rule, &bnd, &comp));
     let (t, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(bad)?;
     let map = map_by_entity(t.regions());
-    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(match mode {
-        FlightMode::Surface => "walk".to_string(),
-        m => m.name().to_string(),
-    }).with_region_map(map).on_twin())
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_twin().counting_fire_work())
+}
+
+/// The reference of the `jump` row: the same tets walked cell by cell (no partition), W-fire work
+/// counters recorded. Its `mode` is `walk`.
+///
+/// # Errors
+/// The mesh builder's or the tracker's error.
+pub fn walk_fire_adapter(tets: &Tets) -> Result<TrackerAdapter> {
+    Ok(flight_adapter(tets, FlightMode::Surface, 8)?.counting_fire_work())
 }
 
 /// The W-walk row of a tet mesh: the cell-walking tracker of the `walk` flight row, reporting the
 /// tet index of every cell crossed. The cell-to-tet map is built by locating each tet's centroid,
-/// so it does not assume the tracker keeps the input order; it must be a bijection.
+/// so it does not assume the tracker keeps the input order; it must be a bijection, so the tracker
+/// must have exactly one cell per tet.
 ///
 /// # Errors
-/// The mesh builder's or the tracker's error, or [`BenchError::Tracker`] when a centroid is not
-/// located in a cell of its own.
+/// The mesh builder's or the tracker's error, or [`BenchError::Tracker`] when the cell count is not
+/// the tet count or a centroid is not located in a cell of its own.
 pub fn walk_adapter(tets: &Tets) -> Result<TrackerAdapter> {
     let a = flight_adapter(tets, FlightMode::Surface, 8)?;
     let n = tets.tets.len();
-    let mut map = vec![-1i32; a.tracker().cell_count().max(n)];
+    // One cell per tet: a tracker with more cells would leave unmapped cells at -1, which `walk`
+    // rejects only when a ray meets one; refuse it here with the numbers.
+    if a.tracker().cell_count() != n {
+        return Err(BenchError::Tracker(format!("the tracker has {} cells for {n} tets (W-walk needs one cell per tet)", a.tracker().cell_count())));
+    }
+    let mut map = vec![-1i32; n];
     let mut scratch = sm_rt_api::Scratch::new();
     for (i, t) in tets.tets.iter().enumerate() {
         let c: [f64; 3] = core::array::from_fn(|k| t.iter().map(|&v| tets.nodes[v as usize][k]).sum::<f64>() / 4.0);
@@ -443,6 +553,10 @@ pub struct SmrtRows {
     pub exact_flight: Vec<Box<dyn Adapter>>,
     /// W-flight on the tet twin: walk (surface), delta and block, whose tallies are compared.
     pub mesh_flight: Vec<Box<dyn Adapter>>,
+    /// W-fire on the tet twin: the cell walk (reference) and the `jump` row (cases with a tet mesh).
+    pub jump_fire: Vec<Box<dyn Adapter>>,
+    /// W-track and W-flight on the tet walk (reference) and on its polyhedral dual (`poly-walk`).
+    pub poly: Vec<Box<dyn Adapter>>,
     /// Why a row was not built.
     pub notes: Vec<String>,
 }
@@ -450,13 +564,16 @@ pub struct SmrtRows {
 /// Every sm-rt row of a case that can be built, with the reasons for the rows that cannot.
 /// `flight_cells` is the tet twin's resolution along the longest axis for cases without a tet mesh.
 pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRows {
-    let mut rows = SmrtRows { geometric: Vec::new(), exact_flight: Vec::new(), mesh_flight: Vec::new(), notes: Vec::new() };
+    let mut rows = SmrtRows { geometric: Vec::new(), exact_flight: Vec::new(), mesh_flight: Vec::new(), jump_fire: Vec::new(), poly: Vec::new(), notes: Vec::new() };
     let case = data.case.clone();
     let mut notes: Vec<String> = Vec::new();
     let mut note = |what: &str, e: BenchError| notes.push(format!("{case}: smrt {what} not run: {e}"));
-    match facets_adapter(data) {
-        Ok(a) => rows.geometric.push(Box::new(a)),
-        Err(e) => note("facets", e),
+    // A deck case (A17) has no facet twin: nothing to build, nothing partial.
+    if !data.facets.tris.is_empty() {
+        match facets_adapter(data) {
+            Ok(a) => rows.geometric.push(Box::new(a)),
+            Err(e) => note("facets", e),
+        }
     }
     match analytic_adapter(data, scale) {
         Ok(a) => rows.geometric.push(Box::new(a)),
@@ -469,6 +586,28 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
         match hierarchy_p2(scale, &data.manifest.regions) {
             Ok(a) => rows.geometric.push(Box::new(a)),
             Err(e) => note("hierarchy", e),
+        }
+        match analytic_hierarchy_p2(scale, &data.manifest.regions) {
+            Ok(a) => rows.geometric.push(Box::new(a)),
+            Err(e) => note("analytic-hierarchy", e),
+        }
+    }
+    if let Some(t) = &data.tets {
+        match (walk_fire_adapter(t), jump_adapter(t, 8)) {
+            (Ok(w), Ok(j)) => {
+                rows.jump_fire.push(Box::new(w));
+                rows.jump_fire.push(Box::new(j));
+            }
+            (Err(e), _) | (_, Err(e)) => note("jump", e),
+        }
+    }
+    if let Some(t) = &data.tets {
+        match (flight_adapter(t, FlightMode::Surface, 8), poly_adapter(t)) {
+            (Ok(w), Ok(p)) => {
+                rows.poly.push(Box::new(w));
+                rows.poly.push(Box::new(p));
+            }
+            (Err(e), _) | (_, Err(e)) => note("poly-walk", e),
         }
     }
     match tet_twin(data, flight_cells) {

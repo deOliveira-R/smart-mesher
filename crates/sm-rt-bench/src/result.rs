@@ -146,6 +146,11 @@ pub struct Env {
     /// `unknown` (or empty, for files written before this field) when it was not detected.
     #[serde(default)]
     pub virt: String,
+    /// Where `virt` came from: `systemd-detect-virt`, `cpuinfo` (the `hypervisor` flag of
+    /// `/proc/cpuinfo`: a VM that hides the flag reads as `none` there), `n/a` or empty (not
+    /// detected, or a file written before this field).
+    #[serde(default)]
+    pub virt_source: String,
 }
 
 impl Env {
@@ -157,8 +162,8 @@ impl Env {
         let cpu_model = cpu_model(&os);
         let governor = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").map_or_else(|_| "n/a".to_string(), |s| s.trim().to_string());
         let machine_id = sha256_hex(format!("{cpu_model}|{ncpu}|{os}|{arch}").as_bytes())[..16].to_string();
-        let virt = detect_virt(&os);
-        Self { cpu_model, governor, ncpu, os, arch, date_utc: utc_now(), machine_id, virt }
+        let (virt, virt_source) = detect_virt(&os);
+        Self { cpu_model, governor, ncpu, os, arch, date_utc: utc_now(), machine_id, virt, virt_source }
     }
 
     /// Why this is not a publishable machine; empty means bare-metal Linux x86_64 with the
@@ -206,12 +211,25 @@ pub fn virt_from(detect_out: Option<&str>, cpuinfo: Option<&str>) -> String {
     }
 }
 
-fn detect_virt(os: &str) -> String {
+/// Where [`virt_from`] took its answer: `systemd-detect-virt`, `cpuinfo`, or empty when neither
+/// gave one.
+pub fn virt_source_of(detect_out: Option<&str>, cpuinfo: Option<&str>) -> &'static str {
+    if detect_out.map(str::trim).is_some_and(|o| !o.is_empty() && !o.contains(char::is_whitespace)) {
+        "systemd-detect-virt"
+    } else if cpuinfo.is_some_and(|t| t.lines().any(|l| l.starts_with("flags"))) {
+        "cpuinfo"
+    } else {
+        ""
+    }
+}
+
+fn detect_virt(os: &str) -> (String, String) {
     if os != "linux" {
-        return "n/a".to_string();
+        return ("n/a".to_string(), "n/a".to_string());
     }
     let out = std::process::Command::new("systemd-detect-virt").arg("--vm").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    virt_from(out.as_deref(), std::fs::read_to_string("/proc/cpuinfo").ok().as_deref())
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok();
+    (virt_from(out.as_deref(), cpuinfo.as_deref()), virt_source_of(out.as_deref(), cpuinfo.as_deref()).to_string())
 }
 
 /// SMT state from `/sys/devices/system/cpu/smt/control` (`on`, `off`, ...); `n/a` when absent.
@@ -584,6 +602,10 @@ mod tests {
         assert_eq!(virt_from(Some("Failed to run: no such file"), Some("flags\t: fpu hypervisor")), "hypervisor");
         assert_eq!(virt_from(None, Some("flags\t: fpu sse")), "none");
         assert_eq!(virt_from(None, None), "unknown");
+        assert_eq!(virt_source_of(Some("none\n"), None), "systemd-detect-virt");
+        assert_eq!(virt_source_of(Some("Failed to run: no such file"), Some("flags\t: fpu hypervisor")), "cpuinfo");
+        assert_eq!(virt_source_of(None, Some("flags\t: fpu sse")), "cpuinfo");
+        assert_eq!(virt_source_of(None, None), "");
         assert_eq!(smt_from(Some("on\n")), "on");
         assert_eq!(smt_from(None), "n/a");
     }

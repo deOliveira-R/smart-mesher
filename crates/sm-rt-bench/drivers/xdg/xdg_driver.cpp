@@ -191,6 +191,8 @@ static void fire_range(const Model& M, const Rays& R, size_t lo, size_t hi, bool
     if (locate) {
       c.locates++;
       vol = M.x->find_volume(pos, dir);  // a linear loop over the volumes, then the complement
+      // No volume found: one lost ray (-2), as on the hinted path, and no ray_fire(ID_NONE).
+      if (vol == ID_NONE) { c.lost++; c.dist.push_back(0.0); c.to.push_back(-2); continue; }
     }
     const auto hit = M.x->ray_fire(vol, pos, dir, xdg::INFTY, xdg::HitOrientation::EXITING, nullptr);
     if (hit.second == ID_NONE) { c.lost++; c.dist.push_back(0.0); c.to.push_back(-2); continue; }
