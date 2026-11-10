@@ -214,6 +214,27 @@ fn a_polyhedral_row_cannot_change_a_verdict() {
     let mut with = base.clone();
     with.push(file("P1", &e, &extra));
     assert_eq!(verdicts(&with, "dagmc-dd").unwrap(), want, "a polyhedral row must not move any verdict");
+    // Failing-agreement polyhedral rows in the SAME files as the judged rows, on both the
+    // challenger and the baseline side, in both name forms, must not move a verdict either.
+    let mut same = base.clone();
+    for f in &mut same {
+        let mut bad = vec![
+            r("smrt", "walk", "poly-w-track", 1, 5.0, 1.0),
+            r("smrt", "poly-walk", "w-fire", 1, 5.0, 1.0),
+            r("smrt", "analytic", "poly-w-fire", 1, 5.0, 1.0),
+            r("dagmc-dd", "surface", "poly-w-fire", 1, 5.0, 1.0),
+            r("dagmc-dd", "poly-surface", "w-fire", 1, 5.0, 1.0),
+        ];
+        for x in &mut bad {
+            x.failed = 3;
+        }
+        f.rows.extend(bad.iter().map(row));
+        f.seal().unwrap();
+    }
+    assert_eq!(verdicts(&same, "dagmc-dd").unwrap(), want, "a failing polyhedral row must not make a cell n/c");
+    // The main table (above the polyhedral section) shows the same disagreements as without them.
+    let main = |md: &str| md.split("Polyhedral rows (").next().unwrap().matches("n/c (disagrees)").count();
+    assert_eq!(main(&render(&same).unwrap()), main(&render(&base).unwrap()));
     // A polyhedral row also cannot be the baseline (a slow one cannot make a loss a win, a fast one
     // cannot make a win a loss).
     let fast_base = vec![r("dagmc-dd", "poly-surface", "w-fire", 1, 1e12, 1.0), r("dagmc-dd", "poly-surface", "w-fire", 16, 1e12, 1.0)];

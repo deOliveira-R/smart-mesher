@@ -60,8 +60,11 @@ pub fn check_same_machine(files: &[ResultFile]) -> Result<()> {
 }
 
 /// True when any row of `r`'s tracker and mode in `f` failed its agreement check (rule g).
+/// Polyhedral rows are a separate population (ruling D6): they neither judge nor are judged by
+/// non-polyhedral rows, however they are named (mode or workload).
 fn disagrees(f: &ResultFile, r: &Row) -> bool {
-    f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && x.agreement.failed > 0)
+    let poly = is_polyhedral(r);
+    f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && is_polyhedral(x) == poly && x.agreement.failed > 0)
 }
 
 /// True for a polyhedral-mesh row: its `mode` or `workload` starts with `poly` (the L2b rows;
