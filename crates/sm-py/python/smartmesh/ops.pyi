@@ -183,6 +183,11 @@ class ModelOps:
         """`model.scale`: uniform scale of volumes by `factor` about `origin` (default the origin).
         Output `volumes` (many, TopoVolume): The transformed volumes (they keep their ids)."""
 
+    def subdivide_pin(self, *, axis: Sequence[float], center: Sequence[float], rings: Mapping[str, Any] | None = ..., sectors: Mapping[str, Any] | None = ..., volumes: Sequence[EntityId | str]) -> ApplyResult:
+        """`model.subdivide_pin {volumes, axis, center, rings?, sectors?}`: cut each solid cylinder or coaxial annulus into rings (0 innermost) and sectors (0 starting at `angle0`), and write the `ring` and `sector` of each piece's region tag. Lattice slots of a tagged volume stay on every piece. At least one of `rings` and `sectors` is required; a count of 1 cuts nothing and tags the volume `{index 0, count 1}`.
+        Output `volumes` (many, TopoVolume): The pieces (read their ring and sector from the region tags).
+        Output `bodies` (many, TopoBody): The bodies of the pieces, one per piece."""
+
     def subtract(self, *, keep: bool | None = ..., regularize: bool | None = ..., targets: Sequence[EntityId | str], tol: float | None = ..., tools: Sequence[EntityId | str]) -> ApplyResult:
         """`model.subtract {targets, tools, keep?, regularize?, tol?}`: remove every tool from every target. The tools are consumed unless `keep` is set.
         Output `bodies` (many, TopoBody): The result bodies, one per result volume.
@@ -248,6 +253,9 @@ class MeshQueries:
 
     def validate(self, *, geometry: bool = ..., limit: int = ..., mesh: EntityId | str = ..., min_volume: float = ..., planarity: float = ...) -> Any:
         """`mesh.validate`: check a mesh and locate what is wrong."""
+
+    def volume_check(self, *, mesh: EntityId | str = ...) -> Any:
+        """`mesh.volume_check`: the volume of every region of a mesh against the model volume it is classified on."""
 
 class ModelQueries:
     """Queries `model.*` (`s.q.model.<query>(...)`; read-only)."""
