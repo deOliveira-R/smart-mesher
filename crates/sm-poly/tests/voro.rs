@@ -268,5 +268,8 @@ fn acc1_all_polyhedra_face_count_and_acc4_keep_mode_is_planar_without_hubs() {
     // before `all_polyhedra`; the op default adds one subdivision face per cell
     assert_eq!(p.count(MeshEntityKind::Face), 144 + 96);
     let (q, rep) = dual_ref(&f.mesh, &circ().with_all_polyhedra(true), &VertexClassResolver).unwrap();
-    eprintln!("ALLPOLY faces {} cells {} {:?}", q.count(MeshEntityKind::Face), rep.cells, (0..q.count(MeshEntityKind::Cell)).map(|c| q.cell_shape(CellIx::new(c))).fold(std::collections::BTreeMap::new(), |mut m, s| { *m.entry(format!("{s:?}")).or_insert(0) += 1; m }));
+    assert_eq!(rep.cells, 64);
+    // 240 faces plus one subdivision face per cell
+    assert_eq!(q.count(MeshEntityKind::Face), 256);
+    assert!((0..64).all(|c| q.cell_shape(CellIx::new(c)) == CellShape::Polyhedron));
 }
