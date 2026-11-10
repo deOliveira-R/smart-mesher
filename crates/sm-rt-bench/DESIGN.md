@@ -35,6 +35,7 @@ cases:
 | `P1` | fuel 0, clad 1, water 2 | `sm_tess` of the `pin_assembly` base pin plus a hand-built planar moderator | r 0.4096 / 0.475, pitch 1.26, height 100; vacuum outside |
 | `P2` | fuel 0, clad 1 | the flattened placements of `pin_assembly(17, ..)` | `9 n^2` = 2601 copies of one prototype (a 3x3 cluster of 17x17 lattices, no guide tubes, no plates, no moderator); triangles = copies x triangles of one pin, asserted |
 | `H1` | inclusions 0..7, water 8 | cube, boxes, icospheres (hand-built) | 200 cm cube; 4 boxes (grid aligned, conforming in the tets) and 4 spheres (stair-stepped by tet centroid); Kuhn tets, `h1_cell` 4 cm (about 7.5e5 tets) |
+| `A17` | by sorted material name: Borated water 0, Helium 1, UO2 2, Zircaloy 3 | none (the deck holds no triangles; `facets.bin` is empty) | the W4-REFCORPUS OpenMC deck `openmc-assembly-17x17` (289 pins and guide tubes, reflective sides, vacuum top and bottom), imported by `sm-csgio`; exact rows only; opt-in (`--cases A17`), read from `$SM_REFCORPUS_DIR` or `~/.cache/smart-mesh/refcorpus`, both deck files checked against the manifest sha256 (`cases::A17_*_SHA256`, cross-checked with `tools/refcorpus/manifest.toml` by a test); `Unavailable` (a skip, exit 2) where the corpus is not built |
 | `F1` | shells 0..17 | nested full torus shells, R 600, minor radii 5..200 | synthetic; ports and the cut plane are not generated; at sag 0.05 it has about 1.8e6 triangles |
 
 Start labels are exact for the facet twin and the analytic model: points inside a band around a
@@ -97,11 +98,37 @@ cannot be built is listed under "Partial" in the report with the reason, never d
 | `analytic` | `AnalyticTracker` | exact spheres, cylinders and planes; P2 through `sm_rt::csg_world` (RT-BRIDGE), flattened | W-track, W-fire; W-flight in its own group |
 | `hierarchy` | `WorldTracker` | P2: one pin prototype (facets) in the model's own lattice and cluster | W-track, W-fire; `pins_touched` |
 | `walk`, `delta`, `block` | `MeshTracker` with a majorant partition | tet twin: H1's own mesh, else a stair-stepped Kuhn mesh of the scene | W-flight |
+| `analytic-hierarchy` | `WorldTracker` (`CsgWorld::world_tracker`, W4-RT-WORLD) | P2: the exact CSG pin prototype under the model's own lattice and cluster, no flattening | W-track, W-fire; `pins_touched` |
+| `jump` | `MeshTracker` over H1's tets, partition enabled, `region_jump` | the same tets as `walk` | W-fire (hinted and located) beside the `walk` mode on the same tets; `face_tests`, `node_visits` and `jumps` of the fire runs are recorded |
+| `poly-walk` | `MeshTracker` over the median dual of H1's tets (`sm-poly`, `dualize`) | polyhedra, same geometry | W-track and W-flight, beside the tet `walk` row; **never read by the verdict** |
 
 Rows of one tracker name (`smrt`) differ by `mode`; the report keys the fairness gates by
 `(tracker, mode)`. Region ids are mapped back from the tracker's regions (model entity for facets
 and meshes, region name for CSG cells), so every row speaks the manifest's ids.
 
+* **`analytic-hierarchy`** (W4-RT-ROWS) is judged by the tests against the flattened `analytic` row:
+  every P2 ray gives the same region sequence and chords (`1e-9 diag`), hinted and located fires agree,
+  `pins_touched` equals the facet `hierarchy` row's, and the structure grows by about 0.4 byte per added
+  copy (4164 bytes at `lattice_n` 1, 5316 at 17, against 5472 and 1581408 for the flattened world).
+* **`jump`** (W4-RT-JUMP-ROW): the group `[walk, jump]` runs W-fire and W-fire-locate with
+  `RunConfig::fire_tol = 1e-9 diag`, and each fire of `jump` is judged against the `walk` fire on the same
+  ray (`compare_fires`: same region, same distance). That is ruling R1's comparison with a flat tolerance;
+  R1's own bound `1e-12 (1 + d) / max(|d.n|, 1e-6)` needs the exit normal, which the benchmark does not
+  have, and `1e-9 diag` is the benchmark's standard. On H1 (reduced, 2000 rays) all fires agree, every fire
+  is a jump, and the face tests per fire are 57.9 (walk) and 10.7 (jump). H1's facets are icospheres and its
+  tets are stair-stepped, so a jump row and a DAGMC row on the facets differ by geometry (L3, `geom_error`):
+  the same-input comparison against XDG `ray_fire` on the tet model's region boundaries needs the per-region
+  volume sets of `smtets_to_moab`'s second step, which is not done (not needed by any acceptance of this row).
+* **`poly-walk`** (L2b): `smrt::poly_twin` dualizes `tet_mesh(tets)` with `sm_poly::dualize`
+  (`PolyOptions::new()`, faces `Planar`; an edge between two region interfaces gets a `TopoEdge` identity
+  minted from the face pair, `PairEdges`, since the benchmark's tets carry no model topology). Dual cells
+  are keyed `(vertex, region)`, so region interfaces are the tets' own triangles: per-ray region sequences
+  and chords equal the tet walk's within `1e-9 diag` (`RunConfig::track_tol` replaces the manifest's chord
+  tolerance for this group), chord sums equal the cube chord (`runner::walk_truth`), the dual volume equals
+  the tet volume to 1e-12, and the flight tallies agree with the tet `walk` flight at 4 sigma. The mode
+  starts with `poly`, which `report::is_polyhedral` drops from the verdict and renders in its own table
+  ("different mesh, same geometry"). `sm-rt-bench` depends on `sm-poly` (ruling W4-0.7) and on `sm-csgio`
+  (A17; a library dependency, the crate does not depend on `sm-rt-bench`).
 * **W-track** ends at the first entry into the complement, as the truth scene does; sm-rt traces the
   whole line (the work is done, the timing includes it), DAGMC's loop stops at the complement, and the
   `segments` counter counts the segments up to that entry, so `segments_per_track` is comparable.
@@ -220,8 +247,7 @@ before it ([`docker::parse_driver_output`]).
   the chord sum against the analytic chord through the cube (`runner::walk_truth`); a row counts two
   checks per ray. `smtets_to_moab` writes the tets in file order with a `REGION` tag, reads the file
   back and checks it (nt, nn, every tet bitwise, volume sum to 1e-12), and the driver verifies
-  element `i` = tet `i` against `tets.bin` before it walks. Conforming P1 tets (TETS (c)) are
-  W4-RT-ROWS. The pre-registered verdict rules are in [`VERDICT.md`](VERDICT.md).
+  element `i` = tet `i` against `tets.bin` before it walks. Conforming P1 tets (TETS (c)): see "Conforming P1 tet twin" below (not produced yet). The pre-registered verdict rules are in [`VERDICT.md`](VERDICT.md).
 
 `run_competitor` never invents a number: no Docker, `UNSET` digests, a missing image, a failing
 container or an unparsable line is `Partial` with the command and its last output line, and the
@@ -294,6 +320,18 @@ as the floating solve):
 cannot be built here (see the pin note above). `run --cases P1 --scale reduced --rays 20000` gave `dagmc-moab` and `dagmc-dd`
 equal region sequences on all 20000 rays, and both agreed with the sm-rt facet row on all of them.
 
+## Conforming P1 tet twin (TETS (c)): not produced
+
+`gen/p1_tets.smesh` builds P1's geometry (as two stacked 50 cm halves: the kernel refuses the 0.065 cm
+cladding-ring cut at 100 cm and takes it at 50) and runs `mesh.auto { strategy: "tet" }`. The model part
+works (6 volumes). The meshing does not: at size 0.5 the trimesh of the ring caps fails the quality gate
+(`minimum angle 0.819 deg is below the gate 12.000 deg`), and at size 0.1 the run did not finish in 300 s
+(debug build). A 0.065 cm ring in a 1.26 x 1.26 x 100 cm pin needs about 1e6 isotropic tets, so there is
+no `P1T` case, no `tets.bin` for P1 and no new `expected_sha256.txt` tet line. Adding tets to `P1` itself
+would move the blessed `reduced/P1/smcase.json` (C3), so the twin is a new case id when it exists. What it
+needs: a graded or anisotropic tet scheme, or a pin height the scheme can take. Nothing in `smesh` was
+changed.
+
 ## Fairness of the published table (O11)
 
 The published table waits for the bare-metal Linux x86_64 machine. Every other OS or architecture
@@ -318,10 +356,12 @@ in the file itself, never in `result_hash`, in `Output::content_hash` or in the 
 * The `H1` mesh is a structured tet mesh because `sm-scheme-tet` has no conforming inclusion
   meshing in this wave. P2 has no tet twin (pins in vacuum do not fill their box), so it has no
   delta or block rows.
-* The DAGMC driver implements W-track, W-fire (hinted and located) and W-flight; the XDG driver
-  and the `smtets_to_moab` converter (W4) are not written, and the `xdg` image is reported
-  `partial` (`NoDriver`) with the failing build command. The C++ flight is not bit-identical to
-  the Rust one (libm), only statistically (4 sigma) in agreement.
+* The DAGMC and XDG drivers implement W-track, W-fire (hinted and located) and W-flight (XDG adds
+  `walk`); the `xdg` image does not build on linux/aarch64 (`Failed`, rows `partial`). The C++ flight is
+  not bit-identical to the Rust one (libm), only statistically (4 sigma) in agreement. XDG's warnings on
+  stderr during load are not recorded or failed on (TETS acceptance 2 is not asserted): deferred, and the
+  H1 walk comparison at 1e5 rays or more at full scale waits for the x86_64 machine (W4-BENCH-X86); the
+  only judged output has 10000 rays (reduced).
 * Competitor containers run in Docker Desktop's VM on a Mac: the cores are not pinned, and the 8P+2E
   asymmetry of the M1 Max is not visible. Only `--threads 1,4` is a smoke set there.
 * apt packages of the xdg image are recorded, not frozen.

@@ -434,6 +434,11 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
 fn smrt_track_and_flight_hashes_are_equal_for_one_and_n_threads_and_two_runs() {
     for case in [Case::P1, Case::P2, Case::H1] {
         let scale = Scale { rays: 300, ..Scale::reduced() };
+        // H1 must carry the jump and poly groups, P2 the analytic-hierarchy row.
+        let d0 = build(case, &scale).unwrap();
+        let r0 = smrt_rows(&d0, &scale, 10);
+        assert_eq!((r0.jump_fire.len(), r0.poly.len()), if case == Case::H1 { (2, 2) } else { (0, 0) });
+        assert_eq!(r0.geometric.iter().any(|a| a.mode().as_deref() == Some("analytic-hierarchy")), case == Case::P2, "{}", d0.case);
         let d = build(case, &scale).unwrap();
         let h = sm_testkit::determinism::check(2, 4, |t| {
             let mut rows = smrt_rows(&d, &scale, 10);
@@ -442,6 +447,17 @@ fn smrt_track_and_flight_hashes_are_equal_for_one_and_n_threads_and_two_runs() {
                 hashes.push(a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
             }
             for a in rows.exact_flight.iter_mut().chain(rows.mesh_flight.iter_mut()) {
+                hashes.push(a.run(Workload::Flight, &input(&d.rays, &d.manifest.regions, t, 1500)).unwrap().content_hash());
+            }
+            // The jump row (fire, hinted and located, with its work counters) and the poly-walk row.
+            for a in rows.jump_fire.iter_mut() {
+                for w in [Workload::Fire, Workload::FireLocate] {
+                    a.prepare(w, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap();
+                    hashes.push(a.run(w, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
+                }
+            }
+            for a in rows.poly.iter_mut() {
+                hashes.push(a.run(Workload::Track, &input(&d.rays, &d.manifest.regions, t, 0)).unwrap().content_hash());
                 hashes.push(a.run(Workload::Flight, &input(&d.rays, &d.manifest.regions, t, 1500)).unwrap().content_hash());
             }
             hashes.join(" ")
@@ -467,11 +483,15 @@ fn two_smrt_runs_give_one_result_hash_and_date_and_sequence_stay_out_of_it() {
     let mut hashes = Vec::new();
     for k in 0..2 {
         let out = tmp.join(format!("run{k}"));
-        let code = sm_rt_bench::cli::main_with(&args(&["run", "--cases", "P1,H1", "--trackers", "smrt", "--scale", "reduced", "--rays", "300", "--reps", "1", "--warmup", "0", "--histories", "1500", "--out", out.to_str().unwrap()])).unwrap();
+        let code = sm_rt_bench::cli::main_with(&args(&["run", "--cases", "P1,P2,H1", "--trackers", "smrt", "--scale", "reduced", "--rays", "300", "--reps", "1", "--warmup", "0", "--histories", "1500", "--out", out.to_str().unwrap()])).unwrap();
         assert_eq!(code, 0);
         let files = read_results(&out);
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert!(files.iter().all(|f| f.rows.iter().all(|r| r.tracker == "smrt")));
+        // The new rows are in the result and stable: jump and poly-walk (H1), analytic-hierarchy (P2).
+        let modes = |case: &str| files.iter().filter(|f| f.case == case).flat_map(|f| f.rows.iter().map(|r| r.mode.clone())).collect::<std::collections::BTreeSet<_>>();
+        assert!(modes("H1").contains("jump") && modes("H1").contains("poly-walk"), "{:?}", modes("H1"));
+        assert!(modes("P2").contains("analytic-hierarchy"), "{:?}", modes("P2"));
         assert!(files.iter().all(|f| f.rows.iter().all(|r| r.determinism.stable == Some(true))));
         hashes.push(files.iter().map(|f| f.result_hash.clone()).collect::<Vec<_>>());
         for f in &files {

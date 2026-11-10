@@ -1,0 +1,52 @@
+// W4-RT-ROWS: the conforming tet twin of the benchmark case P1 (fuel 0, clad 1, water 2).
+//
+// STATUS (W4-RT-ROWS): this script does NOT yet produce a mesh, so no `P1T` case exists. The model
+// part works (6 volumes); `mesh.auto { strategy: "tet" }` fails at size 0.5 on the cladding ring caps
+// ("minimum angle 0.819 deg is below the gate 12.000 deg": the ring is 0.065 cm thick), and at size
+// 0.1 it did not finish in 300 s (debug build; a 0.065 ring at 100 cm height needs about 1e6
+// isotropic tets). The conforming P1 twin needs an anisotropic or graded tet scheme, or a pin height
+// the tet scheme can take; see DESIGN.md, "Conforming P1 tet twin". Kept as the starting point.
+//
+// The geometry is P1's: a 1.26 x 1.26 x 100 moderator brick around a cladding cylinder (r 0.475)
+// around a fuel cylinder (r 0.4096), axes on the z axis through the origin, z in [0, 100]. It is
+// built as two stacked halves of height 50 (the kernel refuses the 0.065 cm cladding ring cut at
+// height 100 and accepts it at 50), so the tets also conform at the plane z = 50; every region
+// is the union of its two halves. The cladding ring is cut away from the others (centre x = 10)
+// and moved into the moderator hole afterwards, since a ring touching the hole makes
+// `model.subtract` refuse the result. The cylinders are meshed as polygons, which is why the twin
+// is judged against the analytic truth with a sag allowance, as the facet twin is.
+
+let cl0 = model.create_cylinder(height: 50.0, radius: 0.475, center: [10.0, 0.0, 25.0])
+let fx0 = model.create_cylinder(height: 50.0, radius: 0.4096, center: [10.0, 0.0, 25.0])
+let cd0 = model.subtract(targets: cl0.body, tools: fx0.body)
+let fu0 = model.create_cylinder(height: 50.0, radius: 0.4096, center: [0.0, 0.0, 25.0])
+let br0 = model.create_brick(x: 1.26, y: 1.26, z: 50.0, center: [0.0, 0.0, 25.0])
+let cx0 = model.create_cylinder(height: 50.0, radius: 0.475, center: [0.0, 0.0, 25.0])
+let mo0 = model.subtract(targets: br0.body, tools: cx0.body)
+model.move(entities: cd0.volumes, delta: [-10.0, 0.0, 0.0])
+
+let cl1 = model.create_cylinder(height: 50.0, radius: 0.475, center: [10.0, 0.0, 75.0])
+let fx1 = model.create_cylinder(height: 50.0, radius: 0.4096, center: [10.0, 0.0, 75.0])
+let cd1 = model.subtract(targets: cl1.body, tools: fx1.body)
+let fu1 = model.create_cylinder(height: 50.0, radius: 0.4096, center: [0.0, 0.0, 75.0])
+let br1 = model.create_brick(x: 1.26, y: 1.26, z: 50.0, center: [0.0, 0.0, 75.0])
+let cx1 = model.create_cylinder(height: 50.0, radius: 0.475, center: [0.0, 0.0, 75.0])
+let mo1 = model.subtract(targets: br1.body, tools: cx1.body)
+model.move(entities: cd1.volumes, delta: [-10.0, 0.0, 0.0])
+
+model.imprint(bodies: all bodies)
+model.merge()
+assert count(all volumes) == 6, "fuel, cladding, moderator in two halves"
+fem.block_add(1, volumes: fu0.volume | fu1.volume, name: "fuel")
+fem.block_add(2, volumes: cd0.volumes | cd1.volumes, name: "clad")
+fem.block_add(3, volumes: mo0.volumes | mo1.volumes, name: "water")
+mesh.size(targets: all volumes, size: 0.5)
+let au = mesh.auto(strategy: "tet")
+let m = mesh.run(targets: all volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+print "cells", mi.cells
+print "shapes", mi.cell_shapes
+print "volume", mi.volume
+let val = mesh.validate(mesh: m.mesh[0])
+assert val.valid and val.total == 0, "validate is empty"
+session.export("p1_tets.msh", format: "gmsh")
