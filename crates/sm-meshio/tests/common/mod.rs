@@ -239,6 +239,10 @@ pub fn assert_matches(m: &dyn MeshRead, d: &SmshMesh) {
     match (m.geometry_cache(), &d.geometry_cache) {
         (None, None) => {}
         (Some(a), Some(b)) => assert_eq!(a, b),
+        // the writer computes the cache for polyhedral meshes that carry none (ruling D2)
+        (None, Some(b)) if (0..nc).any(|c| m.cell_shape(CellIx::new(c)) == CellShape::Polyhedron) => {
+            assert_eq!(*b, compute_geometry_cache(m));
+        }
         _ => panic!("geometry cache presence differs"),
     }
     // Sets and tags.

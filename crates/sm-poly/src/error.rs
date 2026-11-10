@@ -89,6 +89,27 @@ pub enum PolyError {
         /// Number of failing merged cells.
         count: usize,
     },
+    /// A circumcentric dual needs a locally Delaunay mesh whose circumcentres lie inside their
+    /// regions, and this mesh is not (exact predicates). Use the barycentric dual, or remesh.
+    /// `first_at` is the centroid of the first offending face (else tet).
+    #[error(
+        "the mesh has no valid circumcentric dual: {non_delaunay_faces} non-Delaunay interior face(s), {outside_circumcentres} tet(s) with an outside circumcentre, first near ({:.6e}, {:.6e}, {:.6e})",
+        first_at[0], first_at[1], first_at[2]
+    )]
+    NotOrthogonalDual {
+        /// Interior faces that are not locally Delaunay.
+        non_delaunay_faces: usize,
+        /// Tets whose circumcentre lies outside their region.
+        outside_circumcentres: usize,
+        /// Where the first violation is.
+        first_at: [f64; 3],
+    },
+    /// A tet has zero volume (exact `orient3d`), so it has no circumcentre.
+    #[error("cell {cell:?} is a flat tetrahedron and has no circumcentre")]
+    DegenerateTet {
+        /// The first flat tet.
+        cell: CellIx,
+    },
     /// The mesh builder refused something.
     #[error(transparent)]
     Mesh(#[from] MeshError),

@@ -9,7 +9,7 @@ use sm_mesh_api::{MeshDim, MeshRead, SerialAlloc};
 use sm_op_api::{ApplyCtx, Cardinality, OpError, OutputRole, QueryCtx, State, TypedOp, TypedQuery};
 
 use crate::error::PolyError;
-use crate::options::PolyOptions;
+use crate::options::{DualPoints, PolyOptions};
 use crate::resolver::TopologyResolver;
 use crate::stats::{PolyStats, poly_stats};
 
@@ -39,6 +39,12 @@ pub struct ToPoly {
     /// Keep the source mesh entry (default true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_source: Option<bool>,
+    /// Dual-point rule: `"barycentric"` (default, valid on any tet mesh) or `"circumcentric"`
+    /// (planar convex orthogonal cells with one face per neighbour pair; strict, refused with
+    /// `OpError::Failed` unless the mesh is locally Delaunay with inside circumcentres).
+    /// Omitted from the parameters when barycentric.
+    #[serde(default, skip_serializing_if = "DualPoints::is_default")]
+    pub dual: DualPoints,
 }
 
 const OUTPUTS: &[OutputRole] = &[OutputRole::new(
@@ -51,7 +57,7 @@ const OUTPUTS: &[OutputRole] = &[OutputRole::new(
 fn refuse(e: PolyError) -> OpError {
     match e {
         PolyError::Mesh(m) => OpError::Failed(m.to_string()),
-        e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. }) => OpError::Failed(e.to_string()),
+        e @ (PolyError::UnrepairedCell { .. } | PolyError::InvalidAgglomeration { .. } | PolyError::NotOrthogonalDual { .. }) => OpError::Failed(e.to_string()),
         PolyError::UnsupportedFeature { vertex } => OpError::Unsupported(format!(
             "vertex {} has exactly one feature edge in a region (a seam or a dangling curve); not supported in this version",
             vertex.0
@@ -85,7 +91,7 @@ impl TypedOp for ToPoly {
         let mut alloc: SerialAlloc = alloc0.clone();
         let (fin, _report) = crate::dualize(
             src,
-            &PolyOptions::new().with_all_polyhedra(true),
+            &PolyOptions::new().with_all_polyhedra(true).with_dual(self.dual),
             &TopologyResolver(model.topo()),
             MeshBuilder::new(),
             &mut alloc,

@@ -243,7 +243,19 @@ impl<'a> SmshWriter<'a> {
 
         // Cached geometry.
         let mut gc_info = None;
-        if let Some(g) = m.geometry_cache() {
+        // A mesh with polyhedral cells always carries the cache (the transport code reads cell
+        // volumes and centroids from the file, ruling D2); a mesh built without one gets it
+        // computed here. Meshes without polyhedra are written exactly as before.
+        let computed;
+        let cache = match m.geometry_cache() {
+            Some(g) => Some(g),
+            None if (0..nc).any(|c| m.cell_shape(CellIx::new(c)) == CellShape::Polyhedron) => {
+                computed = sm_mesh_api::compute_geometry_cache(m);
+                Some(&computed)
+            }
+            None => None,
+        };
+        if let Some(g) = cache {
             if g.face_area.len() != nf || g.face_centroid.len() != nf || g.face_apex.len() != nf || g.cell_volume.len() != nc || g.cell_centroid.len() != nc {
                 return Err(bad("geometry cache disagrees with the entity counts".into()));
             }
@@ -251,7 +263,7 @@ impl<'a> SmshWriter<'a> {
             push("gc_face_area", Dtype::F64, vec![nf as u64, 3], v3(nf, &|i| [g.face_area[i].x, g.face_area[i].y, g.face_area[i].z]).into());
             push("gc_face_centroid", Dtype::F64, vec![nf as u64, 3], v3(nf, &|i| [g.face_centroid[i].x, g.face_centroid[i].y, g.face_centroid[i].z]).into());
             push("gc_face_apex", Dtype::F64, vec![nf as u64, 3], v3(nf, &|i| [g.face_apex[i].x, g.face_apex[i].y, g.face_apex[i].z]).into());
-            push("gc_cell_volume", Dtype::F64, n1(nc), f64_bytes(&g.cell_volume));
+            push("gc_cell_volume", Dtype::F64, n1(nc), Cow::Owned(f64_bytes(&g.cell_volume).into_owned()));
             push("gc_cell_centroid", Dtype::F64, vec![nc as u64, 3], v3(nc, &|i| [g.cell_centroid[i].x, g.cell_centroid[i].y, g.cell_centroid[i].z]).into());
             gc_info = Some(GeometryCacheInfo { rule: g.rule.clone(), connectivity_hash: hex(g.connectivity_hash), coordinate_hash: hex(g.coordinate_hash) });
         }

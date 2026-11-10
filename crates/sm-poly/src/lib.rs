@@ -4,14 +4,16 @@
 //! | Item | What |
 //! |---|---|
 //! | [`dualize`] | the library entry point over any [`MeshBuild`](sm_mesh_api::MeshBuild) |
-//! | [`PolyOptions`], [`FaceMode`], [`DualReport`], [`PolyError`] | options, report, errors |
+//! | [`PolyOptions`], [`FaceMode`], [`DualPoints`], [`DualReport`], [`PolyError`] | options, report, errors |
 //! | [`EdgeResolver`], [`VertexClassResolver`], [`TopologyResolver`] | feature-curve identity of boundary edges |
+//! | [`GENERATOR_TAGS`] | cell tags holding the generator point of a circumcentric dual |
 //! | [`poly_stats`], [`PolyStats`] | statistics of a polyhedral mesh |
 //! | [`PolyPlugin`] | registers op `mesh.to_poly` and query `mesh.poly_info` (no layers) |
 //!
 //! Install [`PolyPlugin`] after `sm_layer_api::CoreLayers`.
 
 mod agglom;
+mod circum;
 mod concave;
 mod dual;
 mod error;
@@ -27,14 +29,17 @@ mod stats;
 #[cfg(feature = "test-hooks")]
 pub use agglom::with_unchecked_merges;
 pub use dual::dualize;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use dual::with_ungated_circumcentric;
 #[doc(hidden)]
 pub use dual::dualize_with_rounds;
 pub use error::PolyError;
 pub use measure::{DualEligibility, dual_eligibility};
 pub use ops::{PolyInfo, ToPoly};
-pub use options::{Agglomerate, DualReport, FaceMode, PolyOptions};
+pub use options::{Agglomerate, DualPoints, DualReport, FaceMode, PolyOptions};
 pub use resolver::{EdgeResolver, TopologyResolver, VertexClassResolver};
-pub use stats::{PolyStats, Spread, WEDGE_TAG, face_nonplanarity, poly_stats};
+pub use stats::{GENERATOR_TAGS, PolyStats, Spread, WEDGE_TAG, face_nonplanarity, poly_stats};
 
 use sm_op_api::{Plugin, Registry, RegistryError};
 
