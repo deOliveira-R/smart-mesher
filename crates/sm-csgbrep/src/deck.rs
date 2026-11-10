@@ -163,6 +163,26 @@ fn def_key(def: &SurfaceDef) -> Vec<u8> {
     k
 }
 
+/// Two placed planes or cylinders closer than this are one surface (below the kernel's linear
+/// tolerance, so merging them cannot change a result the kernel could resolve).
+const MERGE_TOL: f64 = 1e-7;
+
+/// True when `a` and `b` are the same plane (equal normal, offset within `tol`) or the same
+/// cylinder (equal axis, axis offset and radius within `tol`). Both are canonical.
+fn same_within(a: &SurfaceDef, b: &SurfaceDef, tol: f64) -> bool {
+    match (a, b) {
+        (SurfaceDef::Plane(p), SurfaceDef::Plane(q)) => {
+            let (n, m) = (p.frame.z, q.frame.z);
+            n.dot(m) >= 1.0 - 1e-14 && (p.frame.origin - q.frame.origin).dot(n).abs() <= tol
+        }
+        (SurfaceDef::Cylinder(p), SurfaceDef::Cylinder(q)) => {
+            let (z, w) = (p.frame.z, q.frame.z);
+            z.dot(w) >= 1.0 - 1e-14 && (p.radius - q.radius).abs() <= tol && (q.frame.origin - p.frame.origin).norm() <= tol
+        }
+        _ => false,
+    }
+}
+
 fn invalid(e: impl core::fmt::Display) -> CsgbrepError {
     CsgbrepError::Invalid(e.to_string())
 }
@@ -249,9 +269,21 @@ impl Placer<'_> {
             other => return Err(unsupported(deck_id, format!("surface kind {other:?} is not supported by the import"))),
         }
         let key = def_key(&moved);
-        let id = match self.index.get(&key) {
-            Some(i) => *i,
-            None => {
+        let near = if self.index.contains_key(&key) { None } else { self.defs.iter().position(|d| same_within(d, &moved, MERGE_TOL)) };
+        let id = match (self.index.get(&key).copied(), near) {
+            (Some(i), _) => i,
+            (None, Some(i)) => {
+                // Round-off twin of surface `i`: one surface, represented by the smaller key and
+                // the smaller deck id so the choice does not depend on the order of placement.
+                self.index.insert(key.clone(), i);
+                if key < self.keys[i] {
+                    self.defs[i] = moved;
+                    self.keys[i] = key;
+                }
+                self.deck_ids[i] = self.deck_ids[i].min(deck_id);
+                i
+            }
+            (None, None) => {
                 let i = self.defs.len();
                 self.defs.push(moved);
                 self.keys.push(key.clone());
