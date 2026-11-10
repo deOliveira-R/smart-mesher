@@ -39,6 +39,9 @@ const DEFAULT_DESCRIPTION: &str = "planner scores over surface [map, submap, pav
 pub const HEX_ONLY_STRATEGY: &str = "hex_only";
 
 /// Name of the all-tet strategy: tetmesh volumes and trimesh faces, no `mesh.auto_tet` warning.
+///
+/// The recorded face assignments say `trimesh`, but the generated faces follow tetmesh's boundary
+/// scheme (`tridelaunay`), not the surface list.
 pub const TET_STRATEGY: &str = "tet";
 
 /// Replan budget for a run over `n_targets` targets: `16 + 2 * n_targets`.
@@ -489,7 +492,8 @@ impl Default for StrategyRegistry {
             DefaultStrategy::with_lists(AutoLists::tet())
                 .named(
                     TET_STRATEGY,
-                    "tets only: surface [trimesh], volume [tetmesh]; no mesh.auto_tet warning",
+                    "tets only: surface [trimesh], volume [tetmesh]; no mesh.auto_tet warning; faces \
+                     follow tetmesh's boundary scheme (tridelaunay), not the surface list",
                 )
                 .without_tet_warning(),
         ));
