@@ -35,6 +35,15 @@ tools/bench/x86_64.sh --dry    # host check only; builds and runs nothing
 `--dry` must end with `dry: host check done`. If it prints `refused: ...` fix that line first
 (exit code 3). On a Mac or arm64 machine it prints `refused: not x86_64` and stops.
 
+## Start early: the session must end before 00:00 UTC
+
+Each result file is stamped with its own UTC time. A session whose files fall on two UTC days is
+refused by the report and is lost. The run time is not measured yet (below), and the first session
+also builds the images, so start at the beginning of your working day and never in the evening.
+The script prints, at start, the time of the next 00:00 UTC in your local time (for example it is
+21:00 at UTC-3, 01:00 at CET, 02:00 at CEST). On exit it checks that all `results/*.json` share one
+UTC day and says `UTC DAY MISMATCH` if not; then repeat the session on another day, starting earlier.
+
 ## The command, once per session
 
 ```sh
@@ -45,7 +54,8 @@ The checkout must have no local changes. The script writes to
 `~/smrt-bench-sessions/session-<UTC date>/` and refuses to reuse a directory, so two runs on
 one UTC day cannot mix. It does, in order: host self-check, `cargo build --release`,
 `smrt-bench self-test`, `docker-check` (builds the three competitor images, pinned in
-`crates/sm-rt-bench/docker/pins.env`), `gen --print` (the Linux hash lines), the run, and
+`crates/sm-rt-bench/docker/pins.env`), `docker-lock` (writes the two linux-x86_64 conda locks;
+untracked files, so the checkout stays clean, and they are copied into the session), `gen --print` (the Linux hash lines), the run, and
 `report`. The run is `--scale full --cases P1,H1,P2 --trackers smrt,dagmc-moab,dagmc-dd,xdg
 --threads 1,<physical cores> --reps 7 --warmup 3`, pinned to one thread per physical core
 (`taskset` for native code, `--cpuset-cpus` for containers, the same list, recorded in
@@ -72,7 +82,8 @@ One file per session, printed on the last line (`SEND BACK: ...`):
 
 It holds `results/` (the result JSON files and `bench-env.json`), `report.md` (this session on
 its own), `gen-print.txt` (Linux hash lines for blessing), `docker-check.txt` (image identities),
-`host.txt`, `commit.txt`, `stages.txt`, `session.log` and `SHA256SUMS`. It contains no model or
+`dagmc-moab.linux-x86_64.txt` and `dagmc-dd.linux-x86_64.txt` (the conda locks of the images; they
+have never been captured on x86_64 and this is the only run on that machine), `host.txt`, `commit.txt`, `stages.txt`, `session.log` and `SHA256SUMS`. It contains no model or
 customer data. Also say anything unusual (a throttling warning, another job running, a reboot
 between sessions).
 

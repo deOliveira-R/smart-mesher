@@ -135,6 +135,10 @@ echo "governor: ${governor_set:-unreadable}"
 echo "smt     : $smt   isolated cores: ${isolated:-none}"
 echo "cores   : $ncores physical, list $cores"
 echo "session : $session (UTC day $utc_day)"
+# Every result file carries its own date_utc; a session spanning 00:00 UTC is refused by the report.
+midnight_local="$(date -d "$utc_day 00:00 UTC + 1 day" '+%H:%M %Z on %Y-%m-%d' 2>/dev/null || echo "unknown (GNU date missing)")"
+now_utc="$(date -u +%H:%M)"
+warnings+=("UTC day rollover: it is $now_utc UTC now. The whole session must finish before 00:00 UTC (= $midnight_local local time), or the report refuses it and the session is lost. The first session also builds the images. If in doubt, Ctrl-C now and start earlier")
 for w in "${warnings[@]+"${warnings[@]}"}"; do echo "warning : $w"; done
 for r in "${refusals[@]+"${refusals[@]}"}"; do echo "refused : $r"; done
 
@@ -170,6 +174,22 @@ echo "== session start $started, commit $commit"
 # Containers: no network, pinned to the same cores as the native run. Only `docker run` is
 # touched; image builds keep their network (they are not part of the timed run).
 shim="$(mktemp -d "${TMPDIR:-/tmp}/smrt-docker-shim.XXXXXX")"
+# check_days: every results/*.json must carry the same UTC day in date_utc (and the start day).
+# shellcheck disable=SC2317  # runs from the EXIT trap
+check_days() {
+  local days n
+  days="$(grep -ho '"date_utc" *: *"[0-9-]*' "$session"/results/*.json 2>/dev/null | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$' | sort -u | paste -sd' ' -)" || true
+  n="$(printf '%s' "$days" | wc -w | tr -d ' ')"
+  if [ "$n" -eq 0 ]; then
+    echo "UTC days: no date_utc found in results/*.json (no result files)"
+  elif [ "$n" -gt 1 ]; then
+    echo "UTC DAY MISMATCH: the result files fall on different UTC days ($days). The report refuses this session: it is NOT usable. Run it again on a later day, starting earlier."
+  elif [ "$days" != "$utc_day" ]; then
+    echo "UTC DAY MISMATCH: the session started on $utc_day but the result files say $days. It is NOT usable as one session. Run it again on a later day."
+  else
+    echo "UTC days: all result files are on $days (ok)"
+  fi
+}
 # On every exit (also a failed stage) the session is checksummed and packed for sending.
 # shellcheck disable=SC2317  # runs from the EXIT trap
 finish() {
@@ -178,6 +198,7 @@ finish() {
   rm -rf "$shim"
   echo "== session end $(date -u +%Y-%m-%dT%H:%M:%SZ), exit $rc"
   (cd "$session" && find results -type f | sort | xargs sha256sum >SHA256SUMS) || true
+  check_days
   tarball="$parent/smrt-bench-$(basename "$session").tar.gz"
   tar -C "$parent" -czf "$tarball" "$(basename "$session")" && echo "SEND BACK: $tarball"
   exit "$rc"
@@ -248,6 +269,17 @@ stage docker-check docker_check || {
   echo "an image did not build: no competitor row is possible, stopping" >&2
   exit 1
 }
+# The linux-x86_64 conda locks (docker/locks/README.md): untracked files, so the clean check is
+# unaffected. Copied into the session so they are in the tarball.
+# shellcheck disable=SC2317  # run through `stage`
+lock_images() {
+  local k
+  for k in dagmc-moab dagmc-dd; do
+    "$bin" docker-lock "$k" || return 1
+    cp "$repo/crates/sm-rt-bench/docker/locks/$k.linux-x86_64.txt" "$session/" || return 1
+  done
+}
+stage docker-lock lock_images || stage_fail=1
 # Linux hash lines for blessing (unblessed until an orchestrator ruling).
 stage gen-print gen_print || stage_fail=1
 
