@@ -489,15 +489,21 @@ pub fn walk_fire_adapter(tets: &Tets) -> Result<TrackerAdapter> {
 
 /// The W-walk row of a tet mesh: the cell-walking tracker of the `walk` flight row, reporting the
 /// tet index of every cell crossed. The cell-to-tet map is built by locating each tet's centroid,
-/// so it does not assume the tracker keeps the input order; it must be a bijection.
+/// so it does not assume the tracker keeps the input order; it must be a bijection, so the tracker
+/// must have exactly one cell per tet.
 ///
 /// # Errors
-/// The mesh builder's or the tracker's error, or [`BenchError::Tracker`] when a centroid is not
-/// located in a cell of its own.
+/// The mesh builder's or the tracker's error, or [`BenchError::Tracker`] when the cell count is not
+/// the tet count or a centroid is not located in a cell of its own.
 pub fn walk_adapter(tets: &Tets) -> Result<TrackerAdapter> {
     let a = flight_adapter(tets, FlightMode::Surface, 8)?;
     let n = tets.tets.len();
-    let mut map = vec![-1i32; a.tracker().cell_count().max(n)];
+    // One cell per tet: a tracker with more cells would leave unmapped cells at -1, which `walk`
+    // rejects only when a ray meets one; refuse it here with the numbers.
+    if a.tracker().cell_count() != n {
+        return Err(BenchError::Tracker(format!("the tracker has {} cells for {n} tets (W-walk needs one cell per tet)", a.tracker().cell_count())));
+    }
+    let mut map = vec![-1i32; n];
     let mut scratch = sm_rt_api::Scratch::new();
     for (i, t) in tets.tets.iter().enumerate() {
         let c: [f64; 3] = core::array::from_fn(|k| t.iter().map(|&v| tets.nodes[v as usize][k]).sum::<f64>() / 4.0);

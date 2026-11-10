@@ -278,7 +278,7 @@ image has no `check_watertight`; the DAGMC rows on the same facets carry that ve
 5 commits older and the new code (`num_volume_element_faces`) is not used by the driver. The pin is
 `a5d67e635b96`, the newest upstream commit. **It does not build on linux/aarch64**: `vec3da.h` includes
 `<immintrin.h>` and `<xmmintrin.h>` unconditionally (checked at `a5d67e6`; the build fails with `immintrin.h: No such file`), so on
-the Apple-silicon development machine `docker-check` reports xdg `Failed` with the compiler error
+the Apple-silicon development machine `docker-check` reports xdg `Failed` with the last two error lines of the build output
 (rc 2) and `run --trackers ...,xdg` records `partial`. The recipe was built and the driver run on
 linux/amd64 under Rosetta (development check only: Docker Desktop's emulation is a different CPU, and
 the runner refuses a non-host architecture for any recorded row). The x86_64 session machine builds the

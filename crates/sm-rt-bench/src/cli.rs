@@ -50,7 +50,7 @@ fn parse(args: &[String]) -> Result<Args> {
 }
 
 fn usage() -> String {
-    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight,walk (competitors; walk: tet cases, sm-rt and xdg)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE]\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
+    "smrt-bench <gen|run|report|self-test|docker-check|docker-lock> [options]\n  gen    [--scale full|reduced|tiny] [--cases P1,H1] [--rays N] [--out DIR] [--check|--print] [--expected FILE] [--legacy-data DIR]\n  run    [--cases P1,H1] [--trackers stub,smrt,dagmc-moab,dagmc-dd,xdg] [--scale S] [--threads 1,4] [--reps 7] [--warmup 3] [--rays N] [--histories N] [--seed S] [--workloads track,fire,fire-locate,flight,walk (competitors; walk: tet cases, sm-rt and xdg)] [--flight-cells N] [--out DIR] [--model STEP --sag X [--dry-run]]\n  report --results DIR [--out FILE] | --sessions DIR1,DIR2,DIR3 [--out FILE]  (three sessions on three UTC days: verdict signs only)\n  self-test\n  docker-check   (build the competitor images for this host's platform, print their identity)\n  docker-lock IMAGE   (write docker/locks/<image>.<platform>.txt from a built conda image)".to_string()
 }
 
 fn crate_dir() -> PathBuf {
@@ -420,8 +420,8 @@ fn run_model(a: &Args, model: &Path, cfg: &RunConfig, out_dir: &Path) -> Result<
     Ok(0)
 }
 
-fn report(a: &Args) -> Result<i32> {
-    let dir = a.opts.get("results").ok_or_else(|| BenchError::Usage("report needs --results DIR".into()))?;
+/// The result files of one results directory, in file-name order.
+fn load_results(dir: &str) -> Result<Vec<ResultFile>> {
     let mut files = Vec::new();
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| BenchError::io(dir, e))?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json") && p.file_name().is_some_and(|n| n != "bench-env.json")).collect();
     paths.sort();
@@ -429,9 +429,29 @@ fn report(a: &Args) -> Result<i32> {
         let text = std::fs::read_to_string(&p).map_err(|e| BenchError::io(&p, e))?;
         files.push(ResultFile::from_json(&text)?);
     }
-    let env_path = Path::new(dir).join("bench-env.json");
-    let vm = std::fs::read_to_string(&env_path).ok().and_then(|t| serde_json::from_str::<BenchEnv>(&t).ok()).and_then(|b| b.docker);
-    let md = crate::report::render_with_docker(&files, vm.as_ref())?;
+    Ok(files)
+}
+
+fn report(a: &Args) -> Result<i32> {
+    let md = if let Some(list) = a.opts.get("sessions") {
+        // Three session directories (`--sessions A,B,C`): signs only, see `report::render_sessions`.
+        let dirs: Vec<&str> = list.split(',').map(str::trim).filter(|d| !d.is_empty()).collect();
+        let mut sessions = Vec::new();
+        for d in &dirs {
+            let files = load_results(d)?;
+            if files.is_empty() {
+                return Err(BenchError::Usage(format!("--sessions: {d} holds no result files")));
+            }
+            sessions.push(files);
+        }
+        crate::report::render_sessions(&sessions)?
+    } else {
+        let dir = a.opts.get("results").ok_or_else(|| BenchError::Usage("report needs --results DIR or --sessions A,B,C".into()))?;
+        let files = load_results(dir)?;
+        let env_path = Path::new(dir).join("bench-env.json");
+        let vm = std::fs::read_to_string(&env_path).ok().and_then(|t| serde_json::from_str::<BenchEnv>(&t).ok()).and_then(|b| b.docker);
+        crate::report::render_with_docker(&files, vm.as_ref())?
+    };
     match a.opts.get("out") {
         Some(o) => std::fs::write(o, md).map_err(|e| BenchError::io(o, e))?,
         None => print!("{md}"),
