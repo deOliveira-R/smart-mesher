@@ -20,6 +20,7 @@
 mod auto;
 mod census;
 mod config;
+mod decompose_query;
 mod exec;
 mod info;
 mod intent_layer;
@@ -33,6 +34,7 @@ pub use auto::{
     StrategyRegistry, TET_STRATEGY, replan_budget,
 };
 pub use census::{CensusOutcome, CensusReport, CensusRow, census};
+pub use decompose_query::{DecomposePlanReport, DecomposeStatus, MeshDecomposePlanQuery, VolumeCuts};
 pub use config::{AutoSizeFn, DEFAULT_MAX_CELLS, MesherConfig, SizeFieldFn};
 pub use exec::RayonExec;
 pub use info::{MeshInfo, MeshInfoQuery};
@@ -66,6 +68,7 @@ impl Plugin for MeshPlugin {
         registry.register::<MeshAuto>()?;
         registry.register_query::<MeshInfoQuery>()?;
         registry.register_query::<MeshPlanQuery>()?;
+        registry.register_query::<MeshDecomposePlanQuery>()?;
         registry.register_query::<MeshAutoStrategiesQuery>()?;
         Ok(())
     }

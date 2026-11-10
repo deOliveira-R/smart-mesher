@@ -23,6 +23,7 @@ use sm_scheme_api::{
 use sm_topo_api::{Dim, TopologyView};
 
 use crate::config::MesherConfig;
+use crate::decompose_query::{DecomposeStatus, volume_cuts};
 use crate::exec::RayonExec;
 use crate::intent_layer::IntentLayer;
 use crate::intent_ops::{finish, live_targets, store_scheme, warn_kept};
@@ -544,6 +545,23 @@ pub struct MeshAuto {
     pub assignments: Option<Vec<SchemeAssignment>>,
 }
 
+/// For a failed `hex_only` run: the cuts `mesh.decompose_plan` suggests for the target volumes, as text.
+fn cut_hint(model: &ModelLayer, targets: &[EntityId]) -> Option<String> {
+    let mut parts = Vec::new();
+    for &v in targets.iter().filter(|t| t.kind() == EntityKind::TopoVolume) {
+        let Ok(c) = volume_cuts(model.topo(), v) else { continue };
+        if c.status == DecomposeStatus::Cuts {
+            let lines: Vec<&str> = c.script.lines().collect();
+            parts.push(format!("{v} cannot be swept; suggested cuts: {}", lines.join("; ")));
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push("(query `mesh.decompose_plan`; apply the cuts, then `model.imprint` and `model.merge`)".into());
+    Some(parts.join(" "))
+}
+
 fn dim_of(id: EntityId) -> SchemeDim {
     if id.kind() == EntityKind::TopoFace {
         SchemeDim::Surface
@@ -611,7 +629,17 @@ impl TypedOp for MeshAuto {
                 }
                 let faces = faces_mode(&targets)?;
                 let input = AutoInput::new(&cfg, &model, &intent, &targets, faces, alloc);
-                strategy.choose(&input).map_err(failed)?
+                strategy.choose(&input).map_err(|e| {
+                    let hint = if strategy_name == HEX_ONLY_STRATEGY {
+                        cut_hint(&model, &targets)
+                    } else {
+                        None
+                    };
+                    match (failed(e), hint) {
+                        (OpError::Failed(m), Some(h)) => OpError::Failed(format!("{m}. {h}")),
+                        (e, _) => e,
+                    }
+                })?
             }
         };
         assignments.sort_by_key(|a| a.target);
