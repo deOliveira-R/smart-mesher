@@ -87,3 +87,62 @@ fn bcc_ungated_dual_is_refused_by_sm_rt_for_degenerate_boundary_faces() {
     let err = MeshTrackerBuilder.build_concrete(&input, &BuildOptions::default().with_partition(p)).expect_err("refused");
     assert!(format!("{err:?}").contains("mesh.degenerate_face"), "{err:?}");
 }
+
+/// The fast-path half of acceptance 8 on BCC: the interior truncated octahedra of the ungated
+/// dual, rebuilt as a mesh of their own, take the `sm-rt` fast path (`safety_distance > 0` at the
+/// centroid of every cell), so `sm-rt` itself confirms them convex and eligible.
+#[test]
+fn bcc_interior_truncated_octahedra_take_the_fast_path() {
+    use sm_mesh_api::{Side, VertexIx};
+    use sm_testkit::meshes::CellSpec;
+    let n = 4usize;
+    let (pts, cells, _) = bcc_patch(n);
+    let src = meshes::build_mesh(&pts, &cells, &mut SerialAlloc::new()).unwrap();
+    let opts = PolyOptions::new().with_dual(DualPoints::Circumcentric);
+    let (dual, _) = sm_poly::with_ungated_circumcentric(|| dual_ref(&src, &opts, &PairResolver)).unwrap();
+    let co = dual.coords();
+    let mut keep: Vec<usize> = Vec::new();
+    for c in 0..dual.count(MeshEntityKind::Cell) {
+        let (_, g) = cell_volume_centroid(&dual, CellIx::new(c));
+        let (lo, hi) = if [g.x, g.y, g.z].iter().all(|x| (x - x.round()).abs() < 1e-9) { (1.0, n as f64 - 1.0) } else { (1.5, n as f64 - 1.5) };
+        if [g.x, g.y, g.z].iter().all(|&x| x >= lo - 1e-9 && x <= hi + 1e-9) {
+            keep.push(c);
+        }
+    }
+    assert_eq!(keep.len(), 27 + 8);
+    // renumber the vertices these cells use
+    let mut map = std::collections::BTreeMap::new();
+    let mut sub_pts: Vec<[f64; 3]> = Vec::new();
+    let mut specs: Vec<CellSpec> = Vec::new();
+    for &c in &keep {
+        let mut loops: Vec<Vec<usize>> = Vec::new();
+        for sf in dual.cell_faces(CellIx::new(c)) {
+            let mut l: Vec<VertexIx> = dual.face_vertices(sf.face()).to_vec();
+            if sf.side() == Side::Right {
+                l.reverse();
+            }
+            loops.push(
+                l.iter()
+                    .map(|v| {
+                        *map.entry(v.get()).or_insert_with(|| {
+                            sub_pts.push([co.x[v.get()], co.y[v.get()], co.z[v.get()]]);
+                            sub_pts.len() - 1
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        specs.push(CellSpec::Poly(loops));
+    }
+    let oct = meshes::build_mesh(&sub_pts, &specs, &mut SerialAlloc::new()).unwrap();
+    let t = tracker(&oct);
+    let view = t.majorant_view().expect("partition");
+    let mut sc = Scratch::new();
+    for c in 0..keep.len() {
+        let (v, g) = cell_volume_centroid(&oct, CellIx::new(c));
+        assert!(rel(v, 0.5) < 1e-12, "cell {c}: volume {v}");
+        let st = t.init_state(g, Vector3::new(1.0, 0.0, 0.0), None, &mut sc).unwrap();
+        assert!(view.safety_distance(&st, &mut sc).unwrap() > 0.0, "cell {c}: not on the fast path");
+    }
+    assert_eq!(t.info().convex_cells, keep.len());
+}

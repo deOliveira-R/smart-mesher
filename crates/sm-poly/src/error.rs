@@ -8,9 +8,9 @@ use sm_mesh_api::{CellIx, FaceIx, MeshError, VertexIx};
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum PolyError {
-    /// A cell is not a tetrahedron (hex, wedge, pyramid, polyhedron, ...). A mesh that is
-    /// already polyhedral fails here.
-    #[error("cell {cell:?} is not a tetrahedron")]
+    /// The mesh has no tetrahedron (all hex, wedge, pyramid or polyhedral cells), so there is
+    /// nothing to dualize; a mesh that is already polyhedral fails here. `cell` is the first cell.
+    #[error("cell {cell:?} is not a tetrahedron and the mesh has no tetrahedron to dualize")]
     NotTet {
         /// The first offending cell.
         cell: CellIx,
@@ -110,6 +110,19 @@ pub enum PolyError {
         /// The first flat tet.
         cell: CellIx,
     },
+    /// The circumcentric output failed `validate_geometry` (a folded or zero-area face the
+    /// strict gate cannot see, such as on a BCC boundary), so it is refused instead of returned.
+    #[error("the circumcentric dual is not a valid mesh: {count} violation(s), first: {first}")]
+    InvalidOutput {
+        /// Number of validator violations.
+        count: usize,
+        /// The first violation, as text.
+        first: String,
+    },
+    /// A mixed (tet plus non-tet) mesh with an option the mixed path does not support, or a
+    /// transition face that is not a triangle.
+    #[error("mixed mesh: {0}")]
+    Mixed(&'static str),
     /// The mesh builder refused something.
     #[error(transparent)]
     Mesh(#[from] MeshError),

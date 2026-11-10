@@ -191,7 +191,8 @@ fn acc8_refusals_leave_the_state_untouched() {
     let mut s = session_with("hex");
     let e = assert_refused(&mut s, json!({"mesh": "Mesh#1"}));
     assert!(is_invalid(&e), "{e:?}");
-    // a mesh with one non-tet cell
+    // a mixed mesh is dualized by the library, but this fixture has no model topology for its
+    // feature edges, so the op refuses it as an unresolved edge (typed, state untouched)
     let mut s = session_with("mixed");
     let e = assert_refused(&mut s, json!({"mesh": "Mesh#1"}));
     assert!(is_invalid(&e), "{e:?}");

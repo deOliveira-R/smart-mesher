@@ -11,7 +11,7 @@ use crate::resolver::EdgeResolver;
 use rayon::prelude::*;
 use sm_core::EntityId;
 use sm_mesh_api::{
-    CellIx, CellShape, FaceIx, FaceKind, GeomTol, MeshDim, MeshEntityKind, MeshError, MeshRead, Side,
+    CellIx, CellShape, Classification, FaceIx, FaceKind, GeomTol, MeshDim, MeshEntityKind, MeshError, MeshRead, Side,
     VertexIx,
 };
 use smallvec::SmallVec;
@@ -100,9 +100,17 @@ pub(crate) struct Prep<'a> {
     /// Vertices whose boundary fans are emitted as one quad per triangle in every region
     /// (vertices of split cells, so interface polygons stay shared).
     pub vsplit: Vec<bool>,
+    /// Faces that bound the tet region only because a non-tet cell lies behind them (mixed
+    /// meshes; empty otherwise).
+    pub inner: Vec<Option<Classification>>,
 }
 
 impl Prep<'_> {
+    /// Classification of a source face; the true one for a transition face of a mixed mesh.
+    pub fn fclass(&self, f: FaceIx) -> Classification {
+        self.inner.get(f.get()).copied().flatten().unwrap_or_else(|| self.src.face_class(f))
+    }
+
     /// True for the circumcentric dual.
     pub fn circumcentric(&self) -> bool {
         !self.anchor.is_empty()
@@ -238,12 +246,15 @@ struct FanChunk {
 }
 
 impl<'a> Prep<'a> {
-    /// Validate the source and run every analysis stage.
+    /// Validate the source and run every analysis stage. `inner`: faces (of `src`) that bound the tet region only because a
+    /// non-tet cell lies behind them. They may be classified on a volume (dimension 3) instead
+    /// of a model face. Empty for a plain tet mesh.
     pub fn build(
         src: &'a dyn MeshRead,
         mode: FaceMode,
         resolver: &dyn EdgeResolver,
         dual: DualPoints,
+        inner: &[Option<Classification>],
     ) -> Result<Self, PolyError> {
         if src.dim() == MeshDim::Two {
             return Err(PolyError::Dim2);
@@ -354,6 +365,7 @@ impl<'a> Prep<'a> {
             split_fans: 0,
             mode,
             vsplit: vec![false; nv],
+            inner: inner.to_vec(),
         };
 
         if dual == DualPoints::Circumcentric {
@@ -557,11 +569,21 @@ impl<'a> Prep<'a> {
     ) -> Result<(), PolyError> {
         let src = self.src;
         let (fi, fo) = (FaceIx(m.f_in), FaceIx(m.f_out));
-        let (ci, co_) = (src.face_class(fi), src.face_class(fo));
+        let (ci, co_) = (self.fclass(fi), self.fclass(fo));
+        let inner = |f: FaceIx| self.inner.get(f.get()).is_some_and(Option::is_some);
         for (f, c) in [(fi, ci), (fo, co_)] {
-            if c.dim() != Some(2) {
+            // A face in front of a non-tet cell may lie inside a volume.
+            if c.dim() != Some(2) && !(inner(f) && c.dim() == Some(3)) {
                 return Err(PolyError::BadClassification { face: f });
             }
+        }
+        if ci.dim() != co_.dim() {
+            // a model face against a volume interface: the edge lies on the model face
+            let face = if ci.dim() == Some(2) { ci } else { co_ };
+            let table = src.edges().and_then(|t| t.find(VertexIx(a), VertexIx(b)).map(|e| t.class[e.get()]));
+            m.mid = Some(table.filter(|c| c.dim() == Some(1)).map_or(face.entity, |c| c.entity));
+            m.split = true;
+            return Ok(());
         }
         let table = src.edges().and_then(|t| {
             t.find(VertexIx(a), VertexIx(b)).map(|e| t.class[e.get()])
@@ -863,7 +885,7 @@ impl<'a> Prep<'a> {
                 }
             }
             let f0 = FaceIx(tris[chain[0]].0);
-            let cls = self.src.face_class(f0).entity;
+            let cls = self.fclass(f0).entity;
             let iface = self.src.face_kind(f0) == FaceKind::Interior;
             let mut kites = force_kites && chain.len() > 1;
             if !kites && mode == FaceMode::Planar && pts.len() > 3 {

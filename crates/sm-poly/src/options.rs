@@ -198,4 +198,6 @@ pub struct DualReport {
     pub non_delaunay_faces: usize,
     /// Tets whose circumcentre lies outside their region (0 on success).
     pub outside_circumcentres: usize,
+    /// Non-tet cells of a mixed mesh kept as polyhedra (0 for an all-tet mesh).
+    pub kept_cells: usize,
 }
