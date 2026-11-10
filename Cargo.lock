@@ -1939,8 +1939,14 @@ name = "sm-scheme-ogrid"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "serde",
+ "serde_json",
+ "sm-core",
+ "sm-protocol",
  "sm-scheme-api",
+ "sm-server",
  "sm-testkit",
+ "sm-topo-api",
  "thiserror",
 ]
 

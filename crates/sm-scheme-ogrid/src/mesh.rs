@@ -199,7 +199,9 @@ pub(crate) fn check_common(k: usize, ratio: f64, r: f64, phase_deg: f64) -> Resu
         return Err(OgridError::Param(format!("ratio {ratio} must be in [{:e}, {:e}]", 1.0 / RATIO_MAX, RATIO_MAX)));
     }
     if !(phase_deg.is_finite() && phase_deg.abs() <= PHASE_MAX_DEG) {
-        return Err(OgridError::Param(format!("phase {phase_deg} must be finite with |phase| <= {PHASE_MAX_DEG} degrees")));
+        return Err(OgridError::Param(format!(
+            "phase {phase_deg} must be finite with |phase| <= {PHASE_MAX_DEG} degrees"
+        )));
     }
     if !(r.is_finite() && r > 0.0) {
         return Err(OgridError::Param(format!("radius {r} must be finite and > 0")));
