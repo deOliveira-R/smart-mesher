@@ -4,6 +4,7 @@
 //! Cells must be disjoint (Q4): nothing here resolves a point by cell order. A point matched by
 //! two cells is an overlap.
 
+use super::cellindex::{CellIndex, DEFAULT_MIN_CELLS};
 use super::kernel::{ClassifyError, Surf, V3};
 use crate::vec3::{dot, madd, norm, sub};
 use sm_core::{Aabb, EntityId, EntityKind, Point3};
@@ -58,6 +59,10 @@ pub(crate) struct Leaf {
     pub region_names: Vec<String>,
     pub volumes: Vec<Option<f64>>,
     radial: Option<Radial>,
+    /// Raw cell boxes for the index (infinite sides allowed; a provably empty cell is unbounded here).
+    cbox: Vec<[f64; 6]>,
+    /// The kd tiling, built at `DEFAULT_MIN_CELLS` cells or more.
+    pub(super) index: Option<CellIndex>,
     pub tol: f64,
     ang: f64,
     pub bounds: Aabb,
@@ -253,11 +258,14 @@ impl Leaf {
 
         // Checks.
         let mut boxes: Vec<Option<[f64; 6]>> = Vec::with_capacity(n_cells);
+        let mut cbox: Vec<[f64; 6]> = Vec::with_capacity(n_cells);
+        let unbounded_box = [f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY];
         let mut n_empty = 0;
         for c in 0..n_cells {
             let (t0, t1) = (term_off[c] as usize, term_off[c + 1] as usize);
             let mut all_empty = true;
             let mut cb: Option<[f64; 6]> = Some([f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
+            let mut ib = [f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
             for t in t0..t1 {
                 let th = &hs[hs_off[t] as usize..hs_off[t + 1] as usize];
                 if term_empty(&surfs, th, tol) {
@@ -265,6 +273,10 @@ impl Leaf {
                 }
                 all_empty = false;
                 let b = term_box(&surfs, th);
+                for k in 0..3 {
+                    ib[k] = ib[k].min(b[k]);
+                    ib[3 + k] = ib[3 + k].max(b[3 + k]);
+                }
                 match (&mut cb, box_finite(&b)) {
                     (Some(acc), true) => {
                         for k in 0..3 {
@@ -281,8 +293,12 @@ impl Leaf {
                 }
                 n_empty += 1;
                 cb = Some([f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
+                // The index keeps a provably empty cell as a candidate everywhere, so it can never
+                // disagree with the all-cells scan inside the on-face band.
+                ib = unbounded_box;
             }
             boxes.push(cb);
+            cbox.push(ib);
         }
         let mut n_unused = 0;
         for i in 0..geom.surface_count() {
@@ -336,13 +352,28 @@ impl Leaf {
             region_names,
             volumes: input.cells.iter().map(|c| c.volume).collect(),
             radial: None,
+            cbox,
+            index: None,
             tol,
             ang: tol_m.angular,
             bounds,
             complement,
         };
         leaf.radial = leaf.detect_radial();
+        leaf.set_index_threshold(DEFAULT_MIN_CELLS);
         Ok((leaf, warn))
+    }
+
+    /// Build the kd tiling when the leaf has at least `min_cells` cells, else drop it (the
+    /// all-cells and all-surfaces paths, which are the oracle).
+    pub(crate) fn set_index_threshold(&mut self, min_cells: usize) {
+        self.index = None;
+        if self.n_cells() >= min_cells {
+            let b = &self.bounds;
+            let bounds = [b.lo.x, b.lo.y, b.lo.z, b.hi.x, b.hi.y, b.hi.z];
+            let cs = |c: usize| self.cell_surfs(c);
+            self.index = Some(CellIndex::build(&self.cbox, bounds, self.tol, &cs));
+        }
     }
 
     pub(crate) fn n_cells(&self) -> usize {
@@ -505,8 +536,27 @@ impl Leaf {
                 return found;
             }
         }
+        self.locate_scan(p, d, None, cnt)
+    }
+
+    /// Classify `p` against the cells of its tile when the index exists and holds `p`, else
+    /// against every cell (counted in `slow_locates`). Same answer as [`Self::locate_all`].
+    pub(crate) fn locate_scan(&self, p: V3, d: V3, force: Option<(u32, i8)>, cnt: &mut WorkCounters) -> Found {
+        if let Some(cands) = self.index.as_ref().and_then(|ix| ix.cells_at(p)) {
+            let mut found = Found::None;
+            for &c in cands {
+                cnt.locate_candidates += 1;
+                if self.contains(c as usize, p, d, force, cnt) {
+                    if found != Found::None {
+                        return Found::Overlap;
+                    }
+                    found = Found::One(c);
+                }
+            }
+            return found;
+        }
         cnt.slow_locates += 1;
-        self.locate_all(p, d, None, cnt)
+        self.locate_all(p, d, force, cnt)
     }
 
     /// The lowest surface within the on-face band of `p` among the cell's surfaces.
@@ -550,8 +600,7 @@ impl Leaf {
                 // the bounds is a genuine exit.
                 let edge = cur.is_some_and(|c| self.cell_surfs(c as usize).iter().any(|&o| o != s && self.surfs[o as usize].sd(p).abs() <= self.tol));
                 if edge || self.strictly_inside(p) {
-                    cnt.slow_locates += 1;
-                    match self.locate_all(p, d, Some((s, sense)), cnt) {
+                    match self.locate_scan(p, d, Some((s, sense)), cnt) {
                         Found::One(c) if Some(c) != cur => Next::Cell(c),
                         Found::Overlap => Next::Overlap,
                         _ => Next::Exterior,

@@ -363,6 +363,28 @@ included; `cargo test --release -p sm-rt --test analytic_bench -- --ignored --no
 segments (edge crossings); `locate` 1.2e7 points/s with the concentric fast path and 2.9e6 without;
 torus 1.3e5 lines/s.
 
+**Cell index (`analytic/cellindex.rs`, W4-RT-CELLINDEX).** A disjoint kd tiling over the cell boxes,
+built when the leaf has at least 64 cells (`AnalyticTracker::with_index_threshold` overrides it:
+`0` forces it, `usize::MAX` removes it and gives the all-cells, all-surfaces paths, which stay as
+the oracle). The boxes are the `term_box` necessary conditions (infinite sides kept; a provably
+empty or non-boxable cell is a candidate everywhere) padded by `4 tol`, so a point inside the
+on-face band of a surface still reaches every cell that could claim it. Nodes split at the median
+of the box centres on the axis with the smallest larger child (ties: total, then axis), tiles
+hold at most 8 cells or stop at depth 40, and a tile lists its cells and their surfaces
+ascending. The tree is a pure function of the boxes (sequential build): `index_digest()` is
+bit-identical across runs and thread counts. It is derived data: not hashed, not in
+`memory_bytes`, no cache image.
+Users: `locate_cold` (after the concentric fast path), the `across` full-leaf fallback
+(`locate_scan`, same answer as `locate_all`), and the complement step, which walks the tiles
+along the ray front to back, tests only their surfaces and takes the first valid event at or
+before the tile exit (`sc.counters.surface_evals` counts per tile). A point outside the root box
+falls back to the full scan. Not indexed: `on_face_any` (a complement point reports the lowest
+surface of the whole leaf within the band, including the plane of a distant cell), `enter_from_outside`
+and the `Wrap` neighbour search (CSR). Known limit: two surfaces with identical geometry that
+only one cell names can pick a different surface id for the same event than the oracle (the
+distance and the next cell are equal);. P2 (flattened,
+3 x 3 x 9 pins, 324 surfaces): 22 surface evaluations per complement step against 326.
+
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
 torus (`Unsupported` for a general quadric). No speedup over either is claimed.
@@ -611,7 +633,7 @@ more memory and did not change the large case, so it was dropped.
 ## Deferred (W3b) and not done
 
 hex lattices (W4-RT-HEX),
-a cell-box BVH for the cold CSG locate, `closest` lower bound for general quadrics,
-`Brep` and `World` inputs (`Unsupported`), hex lattices, region jump and facet or CSG leaves in flown worlds, a world cache image,
+`closest` lower bound for general quadrics,
+`Brep` and `World` inputs (`Unsupported`), region jump and facet or CSG leaves in flown worlds, a world cache image,
 non-matching periodic faces, `.smsh` chunk embedding, mmap load, SIMD/packet traversal, `Precision::F32Traversal`,
 `rt.fire`, exact `closest` for curved faces, overlap detection in `check` (the world has its own).
