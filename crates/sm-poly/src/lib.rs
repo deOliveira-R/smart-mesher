@@ -16,6 +16,7 @@ mod concave;
 mod dual;
 mod error;
 mod geom;
+mod measure;
 mod ops;
 mod options;
 mod polydata;
@@ -29,6 +30,7 @@ pub use dual::dualize;
 #[doc(hidden)]
 pub use dual::dualize_with_rounds;
 pub use error::PolyError;
+pub use measure::{DualEligibility, dual_eligibility};
 pub use ops::{PolyInfo, ToPoly};
 pub use options::{Agglomerate, DualReport, FaceMode, PolyOptions};
 pub use resolver::{EdgeResolver, TopologyResolver, VertexClassResolver};

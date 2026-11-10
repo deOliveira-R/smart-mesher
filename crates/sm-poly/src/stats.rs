@@ -1,6 +1,7 @@
 //! Statistics of a polyhedral mesh (`mesh.poly_info`).
 
 use crate::geom::{self, V3};
+use crate::measure::{self, DualEligibility};
 use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,33 @@ pub struct PolyStats {
     /// Dual cells that were split (see `DualReport::split_cells`); with `wedges`, the poly cell
     /// count is `(vertex, region) pairs + wedges - split_cells - merges`.
     pub split_cells: usize,
+    /// Convex cells in the `sm-rt` sense (all faces planar, no vertex outside a face plane),
+    /// whatever their face count. Planarity tolerance `sm_quality::RT_PLANARITY_TOL`.
+    #[serde(default)]
+    pub convex_cells: usize,
+    /// Cells the `sm-rt` fast path (Cyrus-Beck walk) takes: convex and at most
+    /// `sm_quality::CONVEX_CHECK_MAX` (64) faces.
+    #[serde(default)]
+    pub fast_path_cells: usize,
+    /// Cells with more than 64 faces.
+    #[serde(default)]
+    pub over_cap_cells: usize,
+    /// Convex cells with more than 64 faces (what raising `CONVEX_CHECK_MAX` would recover).
+    #[serde(default)]
+    pub convex_over_cap_cells: usize,
+    /// Largest `cell_convexity` of any cell (0 if all are convex).
+    #[serde(default)]
+    pub max_cell_convexity: f64,
+    /// Pairs of cells that share more than one interior face (hub splitting makes these).
+    #[serde(default)]
+    pub multi_face_pairs: usize,
+    /// Share of interior faces that belong to a multi-face pair (0 without interior faces).
+    /// Hub-split faces always do, so this is the hub-split share up to coincidences.
+    #[serde(default)]
+    pub hub_split_share: f64,
+    /// Dual-eligibility counts, only for an all-tet mesh (see [`crate::dual_eligibility`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dual_eligibility: Option<DualEligibility>,
 }
 
 fn spread(values: impl Iterator<Item = usize>) -> Spread {
@@ -161,6 +189,8 @@ pub fn poly_stats(m: &dyn MeshRead) -> PolyStats {
                 .sum::<f64>()
         })
         .collect();
+    let cv = sm_quality::convexity_report(m, sm_quality::RT_PLANARITY_TOL);
+    let (multi_face_pairs, in_multi, interior) = measure::multi_face_pairs(m);
     PolyStats {
         cells: nc,
         faces: nf,
@@ -174,5 +204,13 @@ pub fn poly_stats(m: &dyn MeshRead) -> PolyStats {
         boundary_area: parts.into_iter().sum(),
         wedges,
         split_cells,
+        convex_cells: cv.convex,
+        fast_path_cells: cv.eligible,
+        over_cap_cells: cv.over_cap,
+        convex_over_cap_cells: cv.convex_over_cap,
+        max_cell_convexity: cv.max_convexity,
+        multi_face_pairs,
+        hub_split_share: if interior > 0 { in_multi as f64 / interior as f64 } else { 0.0 },
+        dual_eligibility: measure::dual_eligibility(m),
     }
 }
