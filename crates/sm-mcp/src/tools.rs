@@ -145,7 +145,8 @@ impl Fixed {
                  against the project root, else the server's working directory. `format` is \
                  inferred from the extension. Formats: smsh, vtu, exodus, openfoam, dagmc, gmsh, \
                  smrt. Without `mesh` the only mesh is exported; no mesh or several meshes is an \
-                 error. Export notes come back in `notes`; those with severity `warning` (for \
+                 error. With `source` model (dagmc only) no mesh is needed: the .h5m is \
+                 faceted from the B-rep. Export notes come back in `notes`; those with severity `warning` (for \
                  example the `.smrt` fallback to volume-id region names) also lead the text \
                  content as `warning:` lines, before the JSON."
             }
@@ -222,7 +223,8 @@ impl Fixed {
                     },
                     "provenance": {"type": "boolean", "description": "Include provenance data."},
                     "inline": {"type": "boolean", "description": "Return the bytes base64-encoded in the result."},
-                    "options": {"type": "object", "description": "Per-format options, validated by the exporter: gmsh {binary: boolean, polyhedra: \"error\"|\"decompose\"|\"drop\"}, dagmc {graveyard}; smrt takes none."},
+                    "options": {"type": "object", "description": "Per-format options, validated by the exporter: gmsh {binary: boolean, polyhedra: \"error\"|\"decompose\"|\"drop\"}, dagmc {graveyard, chord_tol (source model only)}; smrt takes none."},
+                    "source": {"type": "string", "enum": ["mesh", "model"], "description": "What is exported (default mesh). model: DAGMC only; facets straight from the B-rep at options.chord_tol, no volume mesh (do not pass `mesh`)."},
                     "split_small_determinant": {"type": "boolean", "description": "OpenFOAM only: split cells that fail checkMesh's determinant check (default true)."},
                     "split_warped_faces": {"type": "boolean", "description": "OpenFOAM only: split warped faces into planar triangles (default false; makes checkMesh's concave-cell check fail on warped hex meshes)."},
                     "empty_patches": {"type": "array", "items": {"type": "string"}, "description": "OpenFOAM only: face set names written as `empty` patches (2D cases)."},
