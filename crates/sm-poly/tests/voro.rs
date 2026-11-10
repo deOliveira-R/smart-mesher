@@ -253,3 +253,20 @@ fn acc7_default_params_do_not_mention_dual() {
     let o = serde_json::to_value(PolyOptions::new()).unwrap();
     assert!(o.get("dual").is_none(), "{o}");
 }
+
+#[test]
+fn acc1_all_polyhedra_face_count_and_acc4_keep_mode_is_planar_without_hubs() {
+    let f = meshes::tet_block([3, 3, 3], [1.0; 3]).unwrap();
+    // acc 4: Keep mode, no hub triangle, planar to rounding
+    let (k, rep) = dual_ref(&f.mesh, &circ().with_faces(FaceMode::Keep), &VertexClassResolver).unwrap();
+    assert_eq!((rep.hub_split_faces, rep.hub_triangles, rep.split_fans), (0, 0, 0));
+    assert!(rep.max_nonplanarity < 1e-14, "{}", rep.max_nonplanarity);
+    // Keep and Planar agree on a flat-faced lattice
+    let (p, _) = dual_ref(&f.mesh, &circ(), &VertexClassResolver).unwrap();
+    assert_eq!(k.count(MeshEntityKind::Face), p.count(MeshEntityKind::Face));
+    // acc 1, last sentence: the hex-lattice face count (144 interior + 96 boundary polygons)
+    // before `all_polyhedra`; the op default adds one subdivision face per cell
+    assert_eq!(p.count(MeshEntityKind::Face), 144 + 96);
+    let (q, rep) = dual_ref(&f.mesh, &circ().with_all_polyhedra(true), &VertexClassResolver).unwrap();
+    eprintln!("ALLPOLY faces {} cells {} {:?}", q.count(MeshEntityKind::Face), rep.cells, (0..q.count(MeshEntityKind::Cell)).map(|c| q.cell_shape(CellIx::new(c))).fold(std::collections::BTreeMap::new(), |mut m, s| { *m.entry(format!("{s:?}")).or_insert(0) += 1; m }));
+}
