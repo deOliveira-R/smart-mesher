@@ -104,14 +104,27 @@ fn acc5_scaled_jacobian_at_the_central_corners() {
     }
 }
 
-fn square_annulus(m: [usize; 4], k: usize, rr: f64) -> PlanarMesh {
+fn try_annulus(m: [usize; 4], k: usize, rr: f64) -> Result<PlanarMesh, sm_scheme_ogrid::OgridError> {
     let side = 2.0;
-    ogrid_annulus_quad(&AnnulusQuadParams { m, k, ratio: 1.0, phase_deg: 45.0, radius: rr * side / 2.0, side }).unwrap()
+    ogrid_annulus_quad(&AnnulusQuadParams { m, k, ratio: 1.0, phase_deg: 45.0, radius: rr * side / 2.0, side })
+}
+
+fn square_annulus(m: [usize; 4], k: usize, rr: f64) -> PlanarMesh {
+    try_annulus(m, k, rr).unwrap()
+}
+
+#[test]
+fn acc6_tangled_unbalanced_sides_are_rejected() {
+    // Reviewer probes: each tangles the radial lines (negative SJ or signed area).
+    for (m, k, rr) in [([2, 5, 3, 4], 2, 0.9), ([1, 6, 1, 6], 2, 0.5), ([1, 1, 1, 5], 2, 0.5), ([1, 1, 1, 9], 2, 0.9)] {
+        let e = try_annulus(m, k, rr);
+        assert!(matches!(e, Err(sm_scheme_ogrid::OgridError::Inverted(_))), "m={m:?} rr={rr}: {e:?}");
+    }
 }
 
 #[test]
 fn acc6_square_annulus_area() {
-    for (m, k) in [([3, 3, 3, 3], 2), ([4, 4, 4, 4], 3), ([2, 5, 3, 4], 2)] {
+    for (m, k) in [([3, 3, 3, 3], 2), ([4, 4, 4, 4], 3), ([3, 4, 3, 4], 2)] {
         let n: usize = m.iter().sum();
         for rr in [0.1, 0.5, 0.9] {
             let mesh = square_annulus(m, k, rr);
@@ -120,6 +133,7 @@ fn acc6_square_annulus_area() {
             assert_eq!(mesh.euler(), 0);
             assert!((mesh.area() - exact).abs() <= 1e-12 * exact, "m={m:?} rr={rr}");
             assert!(mesh.min_quad_area() > 0.0, "inverted quad m={m:?} rr={rr}");
+            assert!(mesh.min_scaled_jacobian() > 0.0, "tangled m={m:?} rr={rr}");
         }
     }
 }
@@ -134,6 +148,21 @@ proptest! {
         prop_assert!(mesh.min_quad_area() > 0.0);
         prop_assert!(mesh.min_scaled_jacobian() > 0.0);
         prop_assert!((mesh.area() - exact).abs() <= 1e-12 * exact);
+    }
+
+    #[test]
+    fn acc6_unbalanced_is_valid_or_typed_error(
+        m in proptest::array::uniform4(1usize..8), k in 1usize..4, rr in 0.1f64..0.9,
+    ) {
+        match try_annulus(m, k, rr) {
+            Ok(mesh) => {
+                prop_assert!(mesh.min_scaled_jacobian() > 0.0);
+                prop_assert!(mesh.min_quad_area() > 0.0);
+                let exact = 4.0 - inscribed_area(m.iter().sum(), rr);
+                prop_assert!((mesh.area() - exact).abs() <= 1e-12 * exact);
+            }
+            Err(e) => prop_assert!(matches!(e, sm_scheme_ogrid::OgridError::Inverted(_))),
+        }
     }
 
     #[test]

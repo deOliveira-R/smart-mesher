@@ -207,6 +207,13 @@ pub struct AnnulusQuadParams {
 /// An annulus between a circle and a concentric axis-aligned square: four trapezoid blocks,
 /// radial lines from the square corners. Quad count `k n`. Node order: circle `0..n`, the square
 /// loop (`n` nodes, counter-clockwise from the corner at 45 degrees), then the interior layers.
+///
+/// # Errors
+/// Circle nodes are equally spaced in angle but square nodes are equally spaced along each
+/// side, so unequal `m` entries (or a circle close to the square) can twist the radial lines.
+/// After construction every quad corner is checked; [`OgridError::Inverted`] is returned when any
+/// scaled Jacobian is `<= 0` or any node is non-finite. Balanced `m` (all equal) with the circle
+/// strictly inside the square never fails.
 pub fn ogrid_annulus_quad(p: &AnnulusQuadParams) -> Result<PlanarMesh> {
     check_common(p.k, p.ratio, p.radius)?;
     let n: usize = p.m.iter().sum();
@@ -236,7 +243,14 @@ pub fn ogrid_annulus_quad(p: &AnnulusQuadParams) -> Result<PlanarMesh> {
     let t = grading(p.k, p.ratio);
     let mut quads = Vec::new();
     fill_collar(&mut nodes, &mut quads, p.m, p.k, &t, &inner, &outer);
-    Ok(PlanarMesh { nodes, quads, polys: Vec::new() })
+    let mesh = PlanarMesh { nodes, quads, polys: Vec::new() };
+    // Unequal side counts twist the radial lines (circle nodes are equally spaced in angle,
+    // square nodes along each side); never return a tangled mesh.
+    let sj = mesh.min_scaled_jacobian();
+    if !mesh.nodes.iter().all(|q| q[0].is_finite() && q[1].is_finite()) || sj.is_nan() || sj <= 0.0 {
+        return Err(OgridError::Inverted(format!("m={:?}, min scaled Jacobian {sj}", p.m)));
+    }
+    Ok(mesh)
 }
 
 /// Parameters of [`ring`].

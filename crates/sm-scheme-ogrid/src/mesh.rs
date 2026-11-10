@@ -22,6 +22,10 @@ pub enum OgridError {
     /// A real parameter is not finite or not in range.
     #[error("invalid parameter: {0}")]
     Param(String),
+    /// The construction produced a tangled mesh: a quad corner has scaled Jacobian <= 0 or a node
+    /// is not finite (the message names the worst value).
+    #[error("inverted or non-finite mesh: {0}")]
+    Inverted(String),
 }
 
 /// Result alias of the kernels.
