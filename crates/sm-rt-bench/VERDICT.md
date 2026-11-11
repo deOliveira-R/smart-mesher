@@ -50,18 +50,19 @@ also through the three-session aggregate.
 
 ## L3 rows are outside the verdict
 
-The W-fire rows of the jump group (`smrt` modes `walk` and `jump`, workloads `w-fire*`;
-`report::is_l3`) run on H1's stair-stepped tets, while the baselines hold the facet twin
-(icospheres): a cell of them would compare two geometries. They render in their own "L3 rows" table,
+Every sm-rt row on the stair-stepped tets is L3: the W-fire `walk`/`jump` rows and the W-flight
+`walk`/`delta`/`block` rows of the tet twin. The adapter stamps `geometry: tets` on the row at the
+source (`exact`, `facets`, `tets`, `shared-tets`, `polyhedra` are the values), and `report::is_l3` reads
+that field, never a mode name, so a future row cannot slip into k-of-n. The baselines hold the facet twin
+(icospheres): a cell of these rows would compare two geometries. They render in their own "L3 rows" table,
 are dropped before the verdict reads anything (as challenger, and they cannot make another cell `n/c`),
-and their own check (jump against walk on the same tets) stays in the agreement column. The reference
-walk of the polyhedral group is the `poly-ref` mode, so it is polyhedral and outside the verdict, and
-the `walk`/`w-flight` row of the tet-twin flights is the only row of that key. No cell may compare our
-rows on a different geometry against theirs without this label.
-`tests/verdict.rs::l3_fire_rows_are_outside_the_verdict` proves it.
-
-Not covered by this rule (open for W4-BENCH-X86): the tet-twin `walk`/`delta`/`block` W-flight rows are also
-on the stair-stepped tets (L3 by the same argument); a published table must label them or be reviewed first.
+and their own checks stay in the agreement column. The reference walk of the polyhedral group is the
+`poly-ref` mode, so it is polyhedral and outside the verdict. The W-walk row is `shared-tets`: XDG walks
+the same tets, so it stays a k-of-n cell. Competitor rows carry no geometry (empty): they hold the facets
+or the shared mesh by construction.
+`tests/verdict.rs::l3_fire_rows_are_outside_the_verdict` and
+`tests/smrt.rs::no_k_of_n_cell_mixes_geometries` (every row stamped, no tet row outside L3, one geometry
+per k-of-n cell) prove it.
 
 ## Three sessions (`report::render_sessions`)
 

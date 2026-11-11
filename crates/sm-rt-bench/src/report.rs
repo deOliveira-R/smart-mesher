@@ -67,12 +67,14 @@ fn disagrees(f: &ResultFile, r: &Row) -> bool {
     f.rows.iter().any(|x| x.tracker == r.tracker && x.mode == r.mode && (is_polyhedral(x), is_l3(x)) == class && x.agreement.failed > 0)
 }
 
-/// True for an sm-rt W-fire row of the jump group (`walk` and `jump` on H1's stair-stepped tets):
-/// geometry level L3 of `DESIGN.md`. The baselines hold the facet twin (icospheres), so a cell of
-/// these rows would compare two geometries; they render in their own table and no verdict reads them
-/// (their own check, the jump against the walk on the same tets, stays in the agreement column).
+/// True for an sm-rt row on the stair-stepped tets (`geometry` = `tets`: the W-fire `walk` and
+/// `jump` rows, the W-flight `walk`/`delta`/`block` rows of the mesh twin): geometry level L3 of
+/// `DESIGN.md`. The baselines hold the facet twin (icospheres), so a cell of these rows would compare
+/// two geometries; they render in their own table and no verdict reads them (their own checks stay in
+/// the agreement column). The adapter stamps the field, so no mode name decides it. Polyhedral rows
+/// keep their own table ([`is_polyhedral`]).
 pub fn is_l3(r: &Row) -> bool {
-    r.tracker == CHALLENGER && r.workload.starts_with("w-fire") && matches!(r.mode.as_str(), "walk" | "jump")
+    r.tracker == CHALLENGER && r.geometry == "tets" && !is_polyhedral(r)
 }
 
 /// True for a polyhedral-mesh row: its `mode` or `workload` starts with `poly` (the L2b rows;

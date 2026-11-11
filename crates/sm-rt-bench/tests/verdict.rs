@@ -36,6 +36,7 @@ fn row(x: &R) -> Row {
         workload: x.workload.into(),
         threads: x.threads,
         precision: "f64".into(),
+        geometry: if x.tracker == "smrt" && matches!(x.mode, "jump" | "walk") { "tets".into() } else { String::new() },
         rays_per_s: Stat { median: x.median, min: x.median - x.spread / 2.0, max: x.median + x.spread / 2.0, reps: 7 },
         build_s: x.build_s,
         structure_bytes: x.structure,
@@ -320,7 +321,10 @@ fn l3_fire_rows_are_outside_the_verdict() {
     bad.failed = 3;
     let extra = vec![bad, r("smrt", "jump", "w-fire", 16, 1e12, 1.0), r("smrt", "walk", "w-fire-locate", 1, 1e12, 1.0), r("smrt", "walk", "w-fire-locate", 16, 1e12, 1.0)];
     assert!(extra.iter().all(|x| is_l3(&row(x))));
-    assert!(!is_l3(&row(&r("smrt", "walk", "w-flight", 1, 1.0, 1.0))), "the mesh_flight walk row is not L3");
+    assert!(is_l3(&row(&r("smrt", "walk", "w-flight", 1, 1.0, 1.0))), "the mesh_flight walk row is on the tets: L3");
+    let mut plain = row(&r("smrt", "jump", "w-fire", 1, 1.0, 1.0));
+    plain.geometry = "facets".into();
+    assert!(!is_l3(&plain), "L3 follows the stamped geometry, not the mode name");
     let mut with = base.clone();
     with.push(file("P1", &e, &extra));
     assert_eq!(verdicts(&with, "dagmc-dd").unwrap(), want);

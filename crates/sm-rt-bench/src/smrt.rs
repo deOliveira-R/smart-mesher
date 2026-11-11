@@ -434,7 +434,7 @@ pub fn mesh_adapter(mesh: &sm_mesh_api::reference::ReferenceMesh, mode: FlightMo
         },
         str::to_string,
     );
-    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(name).with_region_map(map).on_twin())
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_flight_mode(mode).with_mode(name).with_region_map(map).on_tets())
 }
 
 /// Mints a feature curve per pair of model faces. The mesh's faces are the region interfaces (no
@@ -476,7 +476,7 @@ pub fn poly_twin(tets: &Tets) -> Result<(sm_mesh_api::reference::ReferenceMesh, 
 /// The dual's or the tracker's error.
 pub fn poly_adapter(tets: &Tets) -> Result<TrackerAdapter> {
     let (mesh, _) = poly_twin(tets)?;
-    mesh_adapter(&mesh, FlightMode::Surface, 8, Some("poly-walk"))
+    Ok(mesh_adapter(&mesh, FlightMode::Surface, 8, Some("poly-walk"))?.with_geometry(crate::adapter::Geometry::Polyhedra))
 }
 
 /// The `jump` row (W4-RT-JUMP-ROW): `MeshTracker` over the tets with a majorant partition and
@@ -497,7 +497,7 @@ pub fn jump_adapter(tets: &Tets, leaf_cells: u32) -> Result<TrackerAdapter> {
     let input = BuildInput::Mesh(MeshInput::new(&mesh, &rule, &bnd, &comp));
     let (t, _) = MeshTrackerBuilder.build_concrete(&input, &opts).map_err(bad)?;
     let map = map_by_entity(t.regions());
-    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_twin().counting_fire_work())
+    Ok(TrackerAdapter::new("smrt", Box::new(t)).with_mode("jump").with_region_map(map).on_tets().counting_fire_work())
 }
 
 /// The reference of the `jump` row: the same tets walked cell by cell (no partition), W-fire work
@@ -536,7 +536,7 @@ pub fn walk_adapter(tets: &Tets) -> Result<TrackerAdapter> {
         }
         map[cell.get()] = i as i32;
     }
-    Ok(a.with_cell_map(map).with_mode("walk"))
+    Ok(a.with_cell_map(map).with_mode("walk").with_geometry(crate::adapter::Geometry::SharedTets))
 }
 
 /// The tets as a reference mesh whose volume classes are the regions.
@@ -639,11 +639,13 @@ pub fn smrt_rows(data: &CaseData, scale: &Scale, flight_cells: usize) -> SmrtRow
 }
 
 /// Largest `|d_a - d_b|` of the W-fire distances of two adapters over the rays neither loses, and
-/// the number of rays compared (used to record how close the jump is to the walk, R1 level).
+/// the number of rays compared (used to record how close the jump is to the walk, R1 level). Rays
+/// where either distance is not finite are left out of the maximum and counted in the third value,
+/// so a NaN cannot vanish in the fold.
 ///
 /// # Errors
 /// The adapters' errors, or [`BenchError::Check`] when the fire outputs differ in length.
-pub fn max_fire_delta(data: &CaseData, a: &mut dyn Adapter, b: &mut dyn Adapter) -> Result<(f64, usize)> {
+pub fn max_fire_delta(data: &CaseData, a: &mut dyn Adapter, b: &mut dyn Adapter) -> Result<(f64, usize, usize)> {
     use crate::adapter::{WorkInput, Workload};
     let w = WorkInput { rays: &data.rays, regions: &data.manifest.regions, threads: 1, histories: 0, seed: 1 };
     let run = |x: &mut dyn Adapter| -> Result<Vec<(f64, i32)>> {
@@ -654,8 +656,15 @@ pub fn max_fire_delta(data: &CaseData, a: &mut dyn Adapter, b: &mut dyn Adapter)
     if fa.len() != fb.len() {
         return Err(BenchError::Check(format!("fire outputs have {} and {} rays", fa.len(), fb.len())));
     }
-    let both: Vec<f64> = fa.iter().zip(&fb).filter(|(x, y)| x.1 != -2 && y.1 != -2).map(|(x, y)| (x.0 - y.0).abs()).collect();
-    Ok((both.iter().copied().fold(0.0, f64::max), both.len()))
+    let both: Vec<(f64, f64)> = fa.iter().zip(&fb).filter(|(x, y)| x.1 != -2 && y.1 != -2).map(|(x, y)| (x.0, y.0)).collect();
+    Ok(fire_delta(&both))
+}
+
+/// `(max |a - b|, pairs compared, pairs skipped)` over pairs of distances; a pair with a
+/// non-finite member is skipped and counted instead of being folded.
+pub fn fire_delta(pairs: &[(f64, f64)]) -> (f64, usize, usize) {
+    let finite: Vec<f64> = pairs.iter().filter(|(a, b)| a.is_finite() && b.is_finite()).map(|(a, b)| (a - b).abs()).collect();
+    (finite.iter().copied().fold(0.0, f64::max), finite.len(), pairs.len() - finite.len())
 }
 
 /// The rows' tracker handle, for tests that need the concrete `Tracker`.

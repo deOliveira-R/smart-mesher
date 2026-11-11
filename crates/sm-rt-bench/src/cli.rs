@@ -281,7 +281,7 @@ fn run(a: &Args) -> Result<i32> {
                 let (f, ag) = run_case(&data, &mut rows.jump_fire, "surface", &fire, env.clone())?;
                 if let [w, j] = rows.jump_fire.as_mut_slice() {
                     match crate::smrt::max_fire_delta(&data, w.as_mut(), j.as_mut()) {
-                        Ok((d, n)) => file.notes.push(format!("{}: max |delta d| jump vs walk {d:.3e} cm over {n} rays (R1 bound 1e-12 (1 + d); run tolerance {:.3e})", data.case, 1e-9 * diag)),
+                        Ok((d, n, bad)) => file.notes.push(format!("{}: max |delta d| jump vs walk {d:.3e} cm over {n} rays, {bad} with a non-finite distance skipped (R1 bound 1e-12 (1 + d); run tolerance {:.3e})", data.case, 1e-9 * diag)),
                         Err(e) => file.partial.push(format!("{}: max |delta d| jump vs walk not measured: {e}", data.case)),
                     }
                 }

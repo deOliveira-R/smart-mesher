@@ -270,13 +270,20 @@ stage docker-check docker_check || {
   exit 1
 }
 # The linux-x86_64 conda locks (docker/locks/README.md): untracked files, so the clean check is
-# unaffected. Copied into the session so they are in the tarball.
+# unaffected. Copied into the session so they are in the tarball. A lock that already exists
+# (session 1 wrote it, and docker-check above built with it) is reused, not rewritten: writing
+# it again makes the next docker-check rebuild both conda images.
 # shellcheck disable=SC2317  # run through `stage`
 lock_images() {
-  local k
+  local k lock
   for k in dagmc-moab dagmc-dd; do
-    "$bin" docker-lock "$k" || return 1
-    cp "$repo/crates/sm-rt-bench/docker/locks/$k.linux-x86_64.txt" "$session/" || return 1
+    lock="$repo/crates/sm-rt-bench/docker/locks/$k.linux-x86_64.txt"
+    if [ -s "$lock" ]; then
+      echo "docker-lock: $k lock exists, reusing it (not rewritten)"
+    else
+      "$bin" docker-lock "$k" || return 1
+    fi
+    cp "$lock" "$session/" || return 1
   done
 }
 stage docker-lock lock_images || stage_fail=1

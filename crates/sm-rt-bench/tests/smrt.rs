@@ -428,6 +428,51 @@ fn p1_collision_tallies_of_walk_delta_and_block_agree_within_4_sigma() {
     assert!(f.rows.iter().all(|r| r.determinism.stable == Some(true)), "1 and 3 threads hash equal");
 }
 
+/// Fairness: every row names its geometry at the source, rows on the stair-stepped tets are L3
+/// (outside the verdict), and no k-of-n cell (case, workload, mode) of the rest mixes geometries.
+#[test]
+fn no_k_of_n_cell_mixes_geometries() {
+    use sm_rt_bench::report::{is_l3, is_polyhedral};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut cells: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+    let mut l3 = 0;
+    for case in [Case::P1, Case::P2, Case::H1] {
+        let scale = Scale { rays: 200, ..Scale::reduced() };
+        let d = build(case, &scale).unwrap();
+        let mut rows = smrt_rows(&d, &scale, 10);
+        let cfg = |w: Vec<Workload>| RunConfig { reps: 1, warmup: 0, threads: vec![1], workloads: w, histories: 100, seed: 1, fire_tol: None, track_tol: None };
+        let fire = vec![Workload::Fire, Workload::FireLocate];
+        let mut files = Vec::new();
+        files.push(run_case(&d, &mut rows.geometric, "surface", &cfg(vec![Workload::Track]), Env::detect()).unwrap().0);
+        files.push(run_case(&d, &mut rows.exact_flight, "surface", &cfg(vec![Workload::Flight]), Env::detect()).unwrap().0);
+        files.push(run_case(&d, &mut rows.mesh_flight, "surface", &cfg(vec![Workload::Flight]), Env::detect()).unwrap().0);
+        if !rows.jump_fire.is_empty() {
+            files.push(run_case(&d, &mut rows.jump_fire, "surface", &cfg(fire), Env::detect()).unwrap().0);
+        }
+        if !rows.poly.is_empty() {
+            files.push(run_case(&d, &mut rows.poly, "surface", &cfg(vec![Workload::Flight]), Env::detect()).unwrap().0);
+        }
+        for r in files.iter().flat_map(|f| &f.rows) {
+            assert!(!r.geometry.is_empty(), "{}/{}/{}: no geometry stamped", d.case, r.workload, r.mode);
+            if is_polyhedral(r) {
+                continue; // own table (ruling D6)
+            }
+            if is_l3(r) {
+                l3 += 1;
+                assert_eq!(r.geometry, "tets");
+                continue;
+            }
+            assert_ne!(r.geometry, "tets", "{}/{}/{}: a tet row must be L3", d.case, r.workload, r.mode);
+            cells.entry((d.case.clone(), r.workload.clone(), r.mode.clone())).or_default().insert(r.geometry.clone());
+        }
+    }
+    assert!(l3 > 0);
+    for (cell, g) in &cells {
+        assert_eq!(g.len(), 1, "{cell:?} mixes geometries {g:?}");
+    }
+    assert!(cells.keys().any(|(_, w, _)| w == "w-flight"));
+}
+
 // ---- acceptance 7: determinism ---------------------------------------------------------------------
 
 #[test]
@@ -646,11 +691,20 @@ fn h1_jump_is_within_r1_level_of_the_walk_in_distance() {
     let d = build(Case::H1, &scale).unwrap();
     let mut rows = smrt_rows(&d, &scale, 12);
     let [w, j] = rows.jump_fire.as_mut_slice() else { panic!("{:?}", rows.notes) };
-    let (max, n) = sm_rt_bench::smrt::max_fire_delta(&d, w.as_mut(), j.as_mut()).unwrap();
+    let (max, n, bad) = sm_rt_bench::smrt::max_fire_delta(&d, w.as_mut(), j.as_mut()).unwrap();
     println!("max |delta d| jump vs walk: {max:e} cm over {n} rays (diag {})", d.manifest.diag);
+    assert_eq!(bad, 0, "non-finite fire distances");
     assert!(n > 1900, "{n}");
     // R1: 1e-12 (1 + d) with d up to the cube diagonal.
     assert!(max <= 1e-12 * (1.0 + d.manifest.diag), "max |delta d| {max:e}");
+}
+
+/// A NaN distance is counted, not lost in the fold (`f64::max` ignores NaN).
+#[test]
+fn fire_delta_counts_non_finite_pairs() {
+    let (max, n, bad) = sm_rt_bench::smrt::fire_delta(&[(1.0, 1.5), (f64::NAN, 2.0), (3.0, f64::INFINITY), (2.0, 0.0)]);
+    assert_eq!((max, n, bad), (2.0, 2, 2));
+    assert_eq!(sm_rt_bench::smrt::fire_delta(&[]), (0.0, 0, 0));
 }
 
 /// A serial of 2^20 or more has no unambiguous pair identity: `PairEdges` declines it.
