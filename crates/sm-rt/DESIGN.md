@@ -371,9 +371,11 @@ empty or non-boxable cell is a candidate everywhere) padded by `4 tol`, so a poi
 on-face band of a surface still reaches every cell that could claim it. Nodes split at the median
 of the box centres on the axis with the smallest larger child (ties: total, then axis), tiles
 hold at most 8 cells or stop at depth 40, and a tile lists its cells and their surfaces
-ascending. The tree is a pure function of the boxes (sequential build): `index_digest()` is
-bit-identical across runs and thread counts. It is derived data: not hashed, not in
-`memory_bytes`, no cache image.
+ascending. A split that would push the total listed cells past 16 x the cell count (duplication
+from overlapping boxes, which can otherwise grow exponentially with depth) makes its node a tile
+instead; the budget is spent in build order. The tree is a pure function of the boxes (sequential
+build): `index_digest()` is bit-identical across runs and thread counts. It is derived data: not
+hashed, no cache image, but counted in `memory_bytes` (`with_index_threshold` re-counts it).
 Users: `locate_cold` (after the concentric fast path), the `across` full-leaf fallback
 (`locate_scan`, same answer as `locate_all`), and the complement step, which walks the tiles
 along the ray front to back, tests only their surfaces and takes the first valid event at or
@@ -382,8 +384,14 @@ falls back to the full scan. Not indexed: `on_face_any` (a complement point repo
 surface of the whole leaf within the band, including the plane of a distant cell), `enter_from_outside`
 and the `Wrap` neighbour search (CSR). Known limit: two surfaces with identical geometry that
 only one cell names can pick a different surface id for the same event than the oracle (the
-distance and the next cell are equal);. P2 (flattened,
-3 x 3 x 9 pins, 324 surfaces): 22 surface evaluations per complement step against 326.
+distance and the next cell are equal).
+
+Measured counters (surface evaluations per complement step, indexed vs all-surfaces oracle):
+P2 (`pin_assembly(3)` flattened: 81 pins, 162 cells, 324 surfaces) 22 against 326. Reduced
+(n=2, 144 surfaces) 20.8 against 146.1. Full scale (n=17: 5202 cells, 10404 surfaces, 2500
+tiles, index build about 3 ms) 24.7 against 10406.8 (re-measured 25.3 against 10406.8).
+`slow_locates` per segment: 0 indexed against 0.22 to 0.26 for the oracle, with 0 mismatched
+event sequences.
 
 **Differences from OpenMC and MCNP.** Disjoint cells instead of first-wins order; no per-surface
 sense array (senses are evaluated from `sd`); exact `closest` for plane, sphere, cylinder, cone and
@@ -593,8 +601,9 @@ and per prototype leaf otherwise (`scope: "prototypes"`).
   `CsgWorld::analytic_tracker` does that when needed and is the oracle of the hierarchical build
   (`tests/csg_world.rs`: cell, region and chord equal on seeded rays). Tracking results do not depend
   on flattening.
-  The complement region option makes the space between cells a region; stepping through it scans all
-  surfaces (no cell-box BVH yet), so use it for small worlds or short paths.
+  The complement region option makes the space between cells a region; stepping through it uses the
+  cell index (see "Cell index", built from 64 cells) and tests only the surfaces of the tiles along
+  the ray; below that threshold it scans all surfaces, so use it for small worlds or short paths.
 
 ## Determinism
 

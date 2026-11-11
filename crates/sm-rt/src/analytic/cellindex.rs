@@ -17,6 +17,9 @@ pub(crate) const DEFAULT_MIN_CELLS: usize = 64;
 const LEAF_CELLS: usize = 8;
 /// Depth cap of the tree.
 const MAX_DEPTH: u32 = 40;
+/// Total listed cells may exceed the cell count by at most this many times it (robustness guard:
+/// overlapping boxes duplicate lists at every split). Spent in build order, so it is deterministic.
+const DUP_BUDGET: usize = 15;
 /// Capacity of the traversal stack (more than the depth cap).
 const STACK: usize = 64;
 
@@ -46,6 +49,9 @@ struct Build<'a> {
     ix: CellIndex,
     cbox: Vec<[f64; 6]>,
     cell_surfs: &'a dyn Fn(usize) -> &'a [u32],
+    /// Extra list entries created by splits so far (`nl + nr - n` summed).
+    dup: usize,
+    dup_max: usize,
 }
 
 impl CellIndex {
@@ -74,7 +80,7 @@ impl CellIndex {
             cbox.push(c);
         }
         let ix = Self { root, nodes: Vec::new(), cell_off: vec![0], cells: Vec::new(), surf_off: vec![0], surfs: Vec::new() };
-        let mut b = Build { ix, cbox, cell_surfs };
+        let mut b = Build { ix, cbox, cell_surfs, dup: 0, dup_max: DUP_BUDGET * raw.len() };
         let all: Vec<u32> = (0..raw.len() as u32).collect();
         b.split(root, all, 0);
         b.ix
@@ -83,6 +89,16 @@ impl CellIndex {
     /// Number of tiles.
     pub(crate) fn n_tiles(&self) -> usize {
         self.cell_off.len() - 1
+    }
+
+    /// Total cells listed over all tiles.
+    pub(crate) fn listed_cells(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Heap bytes of the index.
+    pub(crate) fn bytes(&self) -> usize {
+        core::mem::size_of::<Node>() * self.nodes.len() + 4 * (self.cell_off.len() + self.cells.len() + self.surf_off.len() + self.surfs.len())
     }
 
     /// Hash of the node order and the tile lists (determinism checks).
@@ -246,10 +262,15 @@ impl Build<'_> {
                 best = Some((k, key.0, key.1, m));
             }
         }
-        let Some((k, worst, _, m)) = best else { return self.leaf(&cells) };
+        let Some((k, worst, total, m)) = best else { return self.leaf(&cells) };
         if worst >= cells.len() {
             return self.leaf(&cells);
         }
+        let extra = total.saturating_sub(cells.len());
+        if self.dup + extra > self.dup_max {
+            return self.leaf(&cells);
+        }
+        self.dup += extra;
         let left: Vec<u32> = cells.iter().copied().filter(|&c| self.cbox[c as usize][k] <= m).collect();
         let right: Vec<u32> = cells.iter().copied().filter(|&c| self.cbox[c as usize][3 + k] >= m).collect();
         let at = self.ix.nodes.len();
