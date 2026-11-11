@@ -28,6 +28,14 @@ cargo clippy -p sm-py --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude sm-py --no-deps --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc -p sm-py --no-deps
 python3 tools/graph.py > /dev/null
+# tools/bench/x86_64.sh (the x86 bench session script) is linted where shellcheck exists
+# (ubuntu runners ship it). Severity warning: shellcheck >= 0.10 adds info SC2329 for the step
+# functions, which the script calls indirectly through its `step` runner ("$@").
+if command -v shellcheck > /dev/null; then
+    shellcheck -S warning tools/bench/x86_64.sh
+else
+    echo "ci.sh: shellcheck not installed, skipping the tools/bench/x86_64.sh lint"
+fi
 # tools/refcorpus: the unittest needs only python3; ruff and mypy run where installed (the
 # mypy config imports openmc with ignores, so no OpenMC is needed).
 python3 -I -B -m unittest discover -s tools/refcorpus -p 'test_*.py'
