@@ -113,9 +113,10 @@ fn acc1_cylinder_ogrid_sweep_volume_is_the_inscribed_prism() {
     let out = run("cyl", &cyl("0.15", "")).unwrap();
     let (n, l) = (val(&out, "n"), val(&out, "layers"));
     assert_eq!(n, 16.0);
-    // a = b = n/4 central block plus one collar layer: a^2 + k n quads, swept l layers.
-    assert_eq!(val(&out, "cells"), (16.0 + 16.0) * l);
-    assert_eq!(text(&out, "shapes"), format!("{{Hex: {}}}", 32.0 * l));
+    // a = b = n/4 central block plus k = 2 collar layers (the layers follow the size 0.15): a^2 + k n
+    // quads, swept l layers.
+    assert_eq!(val(&out, "cells"), (16.0 + 2.0 * 16.0) * l);
+    assert_eq!(text(&out, "shapes"), format!("{{Hex: {}}}", 48.0 * l));
     let want = 1.0 * ngon(n, 0.4);
     assert!((val(&out, "volume") - want).abs() <= 1e-12 * want, "{} vs {want}", val(&out, "volume"));
     assert_eq!(val(&out, "violations"), 0.0);
@@ -244,8 +245,9 @@ fn acc1_pin_square_annulus_and_disk_are_conformal_and_exact() {
     assert!((val(&out, "volume") - 1.26 * 1.26).abs() <= 1e-12, "{}", val(&out, "volume"));
     // ... and each owner is its own exact n-gon prism (fuel 0.489834793427315 at n = 16).
     check_owners(&out, 1);
-    // 5 layers x (16 + 16 fuel + 16 moderator): ogrid, not a fallback, made the annulus.
-    assert_eq!(val(&out, "cells"), 240.0, "{out}");
+    // 5 layers x (16 + 2 x 16 fuel + 2 x 16 moderator): ogrid, not a fallback, made the annulus,
+    // with two radial layers each (about one size, 0.2, thick).
+    assert_eq!(val(&out, "cells"), 400.0, "{out}");
     assert!(
         text(&out, "shapes").starts_with("{Hex:") && !text(&out, "shapes").contains(','),
         "{}",
@@ -254,7 +256,7 @@ fn acc1_pin_square_annulus_and_disk_are_conformal_and_exact() {
     // The plan names ogrid for the fuel disk and for the square annulus.
     let plan = text(&out, "plan");
     assert!(plan.contains("reason: \"exact disk\""), "{plan}");
-    assert!(plan.contains("reason: \"circle in a square\""), "{plan}");
+    assert!(plan.contains("circle in a square"), "{plan}");
 }
 
 #[test]
@@ -287,7 +289,79 @@ fn acc1_lattice_is_conformal_and_two_runs_agree() {
     assert!((val(&a, "volume") - 9.0 * 1.26 * 1.26).abs() <= 1e-11, "{}", val(&a, "volume"));
     assert_eq!(text(&a, "hash"), text(&b, "hash"));
     check_owners(&a, 9);
-    assert_eq!(val(&a, "cells"), 9.0 * 240.0, "{a}");
+    assert_eq!(val(&a, "cells"), 9.0 * 400.0, "{a}");
+}
+
+/// B5 (a 4 x 4 plate with a r = 1 through hole) under `strategy: "default"` at `size`: the scheme
+/// of the annulus face, the cell count and the worst scaled Jacobian.
+fn b5_default(name: &str, size: f64) -> (String, String, f64) {
+    let script = format!(
+        r#"
+let a = model.create_brick(x: 4.0, y: 4.0, z: 1.0)
+let t = model.create_cylinder(height: 3.0, radius: 1.0)
+let r = model.subtract(targets: a.body, tools: t.body)
+mesh.size(targets: r.volumes, size: {size})
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: r.volumes)
+let mi = mesh.info(mesh: m.mesh[0])
+let pl = mesh.plan(mesh: m.mesh[0])
+for e in pl.entities {{
+  if e.kind == "surface" and e.scheme != "map" and e.scheme != "copy" {{
+    print "face", e.scheme
+  }}
+}}
+let q = mesh.quality(mesh: m.mesh[0], metrics: ["scaled_jacobian"], worst_n: 0)
+for x in q.metrics {{
+  print "sj", x.summary.min
+}}
+print "cells", mi.cells
+"#
+    );
+    let out = run(name, &script).unwrap();
+    (text(&out, "face"), text(&out, "cells"), val(&out, "sj"))
+}
+
+#[test]
+fn the_score_follows_the_size_ogrid_where_it_is_good_pave_where_it_is_not() {
+    // Fine enough: a balanced annulus with radial layers about one size thick wins ...
+    let (face, cells, sj) = b5_default("b5-fine", 0.5);
+    assert_eq!(face, "ogrid");
+    // n = 20 circle nodes, 3 layers, 2 sweep layers.
+    assert_eq!(cells, "120");
+    assert!(sj > 0.6, "min scaled Jacobian {sj}");
+    // ... too coarse for the circle count: the predicted edge ratio is above the limit, so pave
+    // keeps the face and the mesh is not worse than before.
+    let (face, _, _) = b5_default("b5-coarse", 1.0);
+    assert_eq!(face, "pave");
+}
+
+#[test]
+fn the_pin_at_the_pin_size_stays_with_the_unstructured_schemes() {
+    // At size 0.3 a disk of r = 0.4 gets 8 circle nodes; the best five-block O-grid there has a
+    // predicted edge ratio of 1.9, above the limit, and the moderator's is 2.4.
+    let out = run(
+        "pin-default",
+        r#"
+let br = model.create_brick(x: 1.26, y: 1.26, z: 1.0)
+let fu = model.create_cylinder(height: 1.0, radius: 0.4)
+let tl = model.create_cylinder(height: 1.0, radius: 0.4)
+let mo = model.subtract(targets: br.body, tools: tl.body)
+model.imprint(bodies: all bodies)
+model.merge()
+mesh.size(targets: all volumes, size: 0.3)
+mesh.auto(strategy: "default")
+let m = mesh.run(targets: all volumes)
+let pl = mesh.plan(mesh: m.mesh[0])
+for e in pl.entities {
+  if e.kind == "surface" and e.scheme == "ogrid" {
+    print "ogrid", e.target
+  }
+}
+print "done", 1
+"#,
+    )
+    .unwrap();
+    assert!(!out.contains("ogrid TopoFace"), "{out}");
 }
 
 #[test]
